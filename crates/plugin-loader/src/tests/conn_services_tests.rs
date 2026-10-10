@@ -1585,13 +1585,17 @@ fn an_upgrades_verify_off_reaches_the_table_and_a_v1_in_reads_none() {
     assert_eq!(*table.verify_offs.lock().unwrap(), vec![true, false, false]);
 }
 
-/// An `env` secret reference's value, as the linked `env` secret plugin resolves it.
+/// An `env` secret reference's value, as the linked `env` secret plugin (the kind's both-ways
+/// fixture, the real source) resolves it, its refusal the source's own text; any other module does
+/// not resolve.
+/// Every test of this binary installs this one ([`crate::dispatch::install_member_secrets`]: the
+/// first install holds).
 fn env_reference(r: &busbar_contract::secret_ref::SecretRef) -> Result<String, String> {
-    (r.module == busbar_contract::secret_ref::SECRET_MODULE_ENV)
-        .then(|| r.settings.get("key").and_then(serde_json::Value::as_str))
-        .flatten()
-        .and_then(|k| std::env::var(k).ok())
-        .ok_or_else(|| format!("{} does not resolve", r.describe()))
+    if r.module != busbar_contract::secret_ref::SECRET_MODULE_ENV {
+        return Err(format!("{} does not resolve", r.describe()));
+    }
+    let bytes = crate::both_ways::secret_fixture::resolve(&r.settings).map_err(|e| e.message)?;
+    String::from_utf8(bytes).map_err(|_| format!("{} is not UTF-8", r.describe()))
 }
 
 /// The member-program need (`settings.*`): each registration that names a program is a member.
@@ -1704,3 +1708,8 @@ fn an_establish_names_its_registration_and_a_shorter_head_names_none() {
         "the named registration, then none"
     );
 }
+
+// A member program's `env` secret that does not resolve, at the request-time hand-off (coordinator
+// ruling 2026-10-07).
+#[path = "member_secret_tests.rs"]
+mod member_secret_tests;
