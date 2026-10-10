@@ -7150,6 +7150,7 @@ impl Gate for KindIsolationGate {
             ROW_TRUTHS.to_string(),
             ROW_MATRIX.to_string(),
             matrix::ROW_LAW0.to_string(),
+            matrix::ROW_LAW0_BASE.to_string(),
         ];
         if self.ship {
             owed.push(ROW_DRAIN.to_string());
@@ -13220,3 +13221,8 @@ mod spec_allowed_tests {
         }
     }
 }
+
+// THE NEUTRAL CENSUS lives in its own file and is declared down here so that no line above moves:
+// the kind table and its rules are cited by line number across the ledgers.
+mod neutral;
+pub use neutral::{neutral_census, neutral_kind_src_roots, NeutralCensus};

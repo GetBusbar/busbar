@@ -1203,13 +1203,12 @@ fn a_declared_contract_abi_range_no_longer_decides_admission() {
 /// the wire when absent so every manifest packed before the field existed keeps its signed bytes.
 #[test]
 fn the_declared_contract_abi_range_is_signed_and_absent_by_default() {
-    let d: Declares =
-        serde_json::from_str(r#"{"contract_abi": {"min": 3, "max": 4}}"#).expect("parses");
+    let d =
+        Declares::from_declares_json(br#"{"contract_abi": {"min": 3, "max": 4}}"#).expect("parses");
     assert_eq!(d.contract_abi, Some(ContractAbiRange { min: 3, max: 4 }));
     assert!(!d.is_empty());
     assert!(
-        serde_json::from_str::<Declares>(r#"{"contract_abi": {"min": 3, "max": 4, "x": 1}}"#)
-            .is_err()
+        Declares::from_declares_json(br#"{"contract_abi": {"min": 3, "max": 4, "x": 1}}"#).is_err()
     );
     assert!(Declares::default().is_empty());
     assert_eq!(
@@ -1264,7 +1263,7 @@ fn a_declared_breaker_fact_round_trips_and_a_manifest_without_one_keeps_its_byte
 
     // STATED: it reads as stated, round-trips, and refuses a word it does not know.
     let stated = r#"{"breaker":{"bench_below_trip_threshold":false}}"#;
-    let d: Declares = serde_json::from_str(stated).expect("parses");
+    let d = Declares::from_declares_json(stated.as_bytes()).expect("parses");
     assert_eq!(
         d.breaker,
         Some(BreakerDecl {
@@ -1273,11 +1272,11 @@ fn a_declared_breaker_fact_round_trips_and_a_manifest_without_one_keeps_its_byte
     );
     assert!(!d.is_empty(), "a stated fact is a declaration");
     assert_eq!(serde_json::to_string(&d).expect("encodes"), stated);
-    assert!(serde_json::from_str::<Declares>(
-        r#"{"breaker":{"bench_below_trip_threshold":false,"x":1}}"#
+    assert!(Declares::from_declares_json(
+        br#"{"breaker":{"bench_below_trip_threshold":false,"x":1}}"#
     )
     .is_err());
-    assert!(serde_json::from_str::<Declares>(r#"{"breaker":{}}"#).is_err());
+    assert!(Declares::from_declares_json(br#"{"breaker":{}}"#).is_err());
 
     let mut m = quiet.clone();
     m.declares.breaker = d.breaker;
