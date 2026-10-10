@@ -163,47 +163,71 @@ fn a_tool_call_is_relayed_to_the_caller_as_is_and_the_gateway_answers_nothing() 
 
 /// P-ITEM: VOICE TOOL-ARGS (spec DONE item 2, "All P-item behaviours match 1.5.5"; the drive log's
 /// P5, commit 470351a480: "streamed tool-call arguments are discarded"). The model streams a call's
-/// arguments as several partial-JSON fragments; they reach the executor CONCATENATED, as one call,
-/// run once, on the call's close and not before.
+/// arguments as several partial-JSON fragments; none of them is lost, and they reach the caller
+/// whole, in order, as one call, counted once.
 ///
 /// Voice is new in 1.6.0; the 1.5.5 behaviour it matches is the llm surface's own streamed tool
 /// call (owner correction 2026-09-28): 1.5.5 accumulated every `InputJsonDelta` fragment of an open
 /// tool block and emitted the call ONCE on its block stop with the fully reassembled arguments,
 /// because parsing each fragment alone lost the arguments and split one call into many (v1.5.5
-/// `crates/busbar/src/proto/gemini/writer.rs:734-780`).
+/// `crates/busbar/src/proto/gemini/writer.rs:734-780`). The streaming plane holds no tool executor
+/// (LAW 11, QUESTIONS Q98): the caller runs the call, so the pin is on what the caller receives,
+/// and the gateway answers nothing upstream on any fragment or on the close.
 #[test]
-fn p_item_voice_tool_args_streamed_fragments_reach_the_executor_whole_and_once() {
+fn p_item_voice_tool_args_streamed_fragments_reach_the_caller_whole_and_once() {
     let mut p = pump();
     let mut sink = Turns::default();
-    let mut runs = Vec::new();
+    let mut down = Vec::new();
     let open = wire(serde_json::json!({"type":"response.output_item.added",
         "item":{"type":"function_call","call_id":"cw","name":"weather"}}));
-    let (_, r) = p.on_server_frame(open, 0, &mut sink, &serves_all);
-    assert!(r.is_empty(), "an announced call is not run");
+    let out = p.on_server_frame(open, 0, &mut sink);
+    assert!(out.upstream.is_empty(), "an announced call is not answered");
+    down.extend(out.downlink);
     for fragment in ["{\"lo", "c\":\"S", "F\"}"] {
         let delta = wire(
             serde_json::json!({"type":"response.function_call_arguments.delta",
             "call_id":"cw","delta":fragment}),
         );
-        let (_, r) = p.on_server_frame(delta, 0, &mut sink, &serves_all);
+        let out = p.on_server_frame(delta, 0, &mut sink);
         assert!(
-            r.is_empty(),
-            "a call is not run on a fragment of its arguments"
+            out.upstream.is_empty(),
+            "a fragment of a call's arguments is not answered"
         );
+        down.extend(out.downlink);
     }
     let done = wire(
         serde_json::json!({"type":"response.function_call_arguments.done",
         "call_id":"cw"}),
     );
-    let (_, r) = p.on_server_frame(done, 0, &mut sink, &serves_all);
-    runs.extend(r);
-    assert_eq!(runs.len(), 1, "one call, run once on its close");
-    assert_eq!(runs[0].name, "weather");
-    assert_eq!(runs[0].call_id, "cw");
+    let out = p.on_server_frame(done, 0, &mut sink);
+    assert!(out.upstream.is_empty(), "a closed call is not answered");
+    down.extend(out.downlink);
+    let frames: Vec<serde_json::Value> = down
+        .iter()
+        .map(|w| serde_json::from_slice(&w.0).expect("a downlink frame is json"))
+        .collect();
+    let args: String = frames
+        .iter()
+        .filter(|f| f["type"] == "response.function_call_arguments.delta")
+        .map(|f| f["delta"].as_str().expect("a delta carries its fragment"))
+        .collect();
     assert_eq!(
-        runs[0].args, b"{\"loc\":\"SF\"}",
-        "the fragments reach the executor whole, in order"
+        args, "{\"loc\":\"SF\"}",
+        "the fragments reach the caller whole, in order: {}",
+        texts(&down)
     );
+    assert_eq!(
+        frames
+            .iter()
+            .filter(|f| f["type"] == "response.function_call_arguments.done")
+            .count(),
+        1,
+        "one call, closed once: {}",
+        texts(&down)
+    );
+    p.settle_open_turn(&mut sink);
+    assert_eq!(sink.closed.len(), 1);
+    assert_eq!(sink.closed[0].1.tool_calls, 1, "one call, counted once");
 }
 
 /// A table that records what the pump asked of it.

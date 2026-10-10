@@ -10170,15 +10170,17 @@ impl Gate for KindIsolationGate {
         // table, so the finding names the step the loop expected. The subject is a plane with the
         // legacy face only: a plane that also serves through its door (the flipped ones) is judged
         // by its door's slots instead, so removing its legacy file leaves the door face standing.
+        // The a2a plane is the one left with the legacy face only (FLIP-STREAMING deleted the
+        // streaming plane's `plane.rs`; it serves through its door alone).
         let mut ov = Overlay::new();
-        ov.remove("crates/busbar-plane-streaming/src/plane.rs");
+        ov.remove("crates/busbar-plane-a2a/src/plane.rs");
         report.push(prove_rows_red(
             cx,
             subject,
             "a data plane that implements none of the strict step list",
             &[ROW_STEPS],
             ov,
-            &["missing-step", "busbar-plane-streaming"],
+            &["missing-step", "busbar-plane-a2a"],
         ));
 
         // A PLANE THAT RUNS THE KERNEL'S DECISION, both ways the ruling names: an `approve` of its

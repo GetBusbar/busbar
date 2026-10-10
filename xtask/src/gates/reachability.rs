@@ -3273,7 +3273,7 @@ impl Gate for ReachabilityGate {
                 );
                 ov
             },
-            "no linked-table row for `busbar-mcp` on the `plane` or `plane-door` axis",
+            "no linked-table row for `busbar-plane-mcp` on the `plane` or `plane-door` axis",
         ));
         // A DOOR ROW IS REGISTRATION (Part 2 #2, compiled-in = dropped-in): a door-shaped plane —
         // its declaration row on no `plane` axis, its crate linked again on `plane-door`, no

@@ -106,13 +106,15 @@ fn facts(path: &str, raw: &str) -> Facts {
             }
         }
     }
-    // A PLANE DOOR's Statement declares its sections as `Section { name: abi_str("…"), flags: … }`
+    // A PLANE DOOR's Statement declares its sections as `Section { name: abi_str(…), flags: … }`
     // rows: the one flagged `SECTION_DECLARING` is its declaring section, and a row flagged neither
     // declaring nor consumed is a section it owns beside it (the loader's own reading,
     // `registration().owns`). A door-only plane has no `PLANE_DECLARATION`; this is its declaration.
-    // Read only when EVERY row names its section as a string LITERAL: a door that spells them
-    // through other items still has its `PLANE_DECLARATION` row, which this census reads instead;
-    // a door-only plane states literals (its own test holds them equal to its grammar's constants).
+    // A door owns the grammar of the section it declares (the kernel folds it into the declared-
+    // section map carrier, DECL-FOLD), exactly as a PlaneDecl whose `owned_config_sections` names its
+    // `config_section`. A row's name is a string literal or a path to a string constant, resolved
+    // as a PlaneDecl's is; a row that only CONSUMES a section declares nothing and is not read. A
+    // door with a declaring or owned row spelled any other way is not read here.
     let mut from = 0;
     while let Some(at) = text[from..].find(DOOR_SECTIONS) {
         let start = from + at + DOOR_SECTIONS.len();
@@ -125,26 +127,35 @@ fn facts(path: &str, raw: &str) -> Facts {
         };
         let (mut declaring, mut owned) = (None, Vec::new());
         let mut rows = &text[open..close];
-        let mut literal = true;
+        let mut readable = true;
         while let Some(row) = rows.find("Section {") {
             let Some(body) = block(rows, row) else { break };
             rows = &rows[row + body.len() + 2..];
+            let flags = field(body, "flags").map(str::trim).unwrap_or_default();
+            if flags.contains("SECTION_CONSUMED") {
+                continue;
+            }
             let name = body
                 .find("abi_str(")
                 .map(|i| &body[i + "abi_str(".len()..])
                 .and_then(|n| n.find(')').map(|e| n[..e].trim().to_string()));
-            let flags = field(body, "flags").map(str::trim).unwrap_or_default();
-            let Some(name) = name.filter(|n| n.starts_with('"') && n.ends_with('"')) else {
-                literal = false;
+            let Some(name) = name.filter(|n| {
+                (n.len() >= 2 && n.starts_with('"') && n.ends_with('"'))
+                    || (!n.is_empty()
+                        && n.chars()
+                            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == ':'))
+            }) else {
+                readable = false;
                 continue;
             };
             if flags.contains("SECTION_DECLARING") {
                 declaring = Some(name);
-            } else if !flags.contains("SECTION_CONSUMED") {
+            } else {
                 owned.push(name);
             }
         }
-        if let (true, Some(declaring)) = (literal, declaring) {
+        if let (true, Some(declaring)) = (readable, declaring) {
+            owned.insert(0, declaring.clone());
             out.decls.push(Ok((declaring, owned)));
         }
     }
