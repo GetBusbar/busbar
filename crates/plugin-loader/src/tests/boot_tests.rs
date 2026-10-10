@@ -888,18 +888,14 @@ fn red_an_auth_door_declaring_a_secret_ref_is_handed_it_resolved_at_open() {
     );
 }
 
-/// A door that states nothing: the linked origin of a candidate built by hand.
-extern "C" fn stating_nothing() -> *const busbar_contract::abi::mechanism::door::Door {
-    std::ptr::null()
-}
-
-/// `cand` at `version`, LINKED.
+/// `cand` at `version`, LINKED (its door states nothing: the linked origin of a candidate built by
+/// hand).
 fn linked_cand(name: &str, version: &str) -> Candidate {
     Candidate {
         version: version.into(),
         origin: Origin::Linked(crate::dispatch::LinkedRow {
             statement: Vec::new(),
-            door: stating_nothing,
+            door: crate::dispatch_tests::null_door,
         }),
         ..cand(KindCode::Hook, name, &["short"], &[], &[])
     }

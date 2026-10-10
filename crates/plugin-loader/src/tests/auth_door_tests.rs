@@ -622,11 +622,6 @@ fn two_auth_rows_reading_one_credential_kind_refuse_to_open() {
         .is_ok());
 }
 
-/// A door that states nothing: a linked row whose load fails.
-extern "C" fn broken_door() -> *const busbar_contract::abi::mechanism::door::Door {
-    std::ptr::null()
-}
-
 /// THE LINKED AUTH ROW UNDER ITS CANONICAL NAME (ARCHITECT C'): the root names a built-in auth row
 /// canonically beside its key; the axis answers, opens and counts it as linked by EITHER name, and
 /// a row that will not load is refused in its KEY's words, as before the canonical name existed
@@ -636,7 +631,7 @@ fn a_linked_auth_row_answers_its_canonical_name_and_refuses_in_its_key() {
     let registry = PluginRegistry::empty()
         .link(vec![
             LinkedPlugin::auth_door_named("busbar-auth-judge", "judge", judge::door),
-            LinkedPlugin::auth_door_named("busbar-auth-broken", "broken", broken_door),
+            LinkedPlugin::auth_door_named("busbar-auth-broken", "broken", crate::dispatch_tests::null_door),
         ])
         .expect("the linked doors register");
     let rows = AuthRows::new(Arc::new(registry), dispatcher());
