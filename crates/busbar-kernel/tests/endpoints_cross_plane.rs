@@ -462,14 +462,19 @@ fn with_listing_door(
         trust_keys: Vec::new(),
         caller_credential_refusal: None,
         validate: Arc::new(|_: &[u8]| Ok(())),
-        facing: Arc::new(move |_: &[u8], _: &[u8], _: Option<&str>| {
-            Ok(DoorFacing {
-                listed: names.iter().map(|n| (*n).to_string()).collect(),
-                ..DoorFacing::default()
-            })
-        }),
+        facing: Arc::new(
+            move |_: &[u8],
+                  _: &[u8],
+                  _: Option<&str>,
+                  _: &[busbar_contract::plane_calls::DialectFacts]| {
+                Ok(DoorFacing {
+                    listed: names.iter().map(|n| (*n).to_string()).collect(),
+                    ..DoorFacing::default()
+                })
+            },
+        ),
     };
-    let facing = (reg.facing)(b"", b"", None).expect("faces");
+    let facing = (reg.facing)(b"", b"", None, &[]).expect("faces");
     let decl = fold(reg).expect("the listing door folds");
     let mut t = topology();
     t.install_plane_runtime(
@@ -477,6 +482,7 @@ fn with_listing_door(
         Arc::new(DoorSlot {
             section: DoorSection::new(section, serde_yaml::Value::Null),
             facing,
+            opened: true,
         }),
     );
     t.build()
@@ -558,4 +564,100 @@ async fn test_v1_models_bytes_unchanged_when_no_plane_lists_a_name() {
             );
         }
     }
+}
+
+// ── /healthz WITH MODEL LANES (ARCHITECT 2026-10-07 K5-H1 ruling; PB-43, pending OWNER signature) ──
+
+/// A door plane whose open answers for every generation, folded as the composition root folds one.
+fn opening_door() -> &'static busbar_kernel::plane::registry::PlaneDecl {
+    busbar_kernel::plane::door::fold(busbar_contract::plane_calls::PlaneRegistration {
+        key: "healthz-lanes-door",
+        section: "healthz_lanes_door",
+        owns: Vec::new(),
+        consumes: Vec::new(),
+        secret_refs: Vec::new(),
+        admin_routes: Vec::new(),
+        admin_openapi: None,
+        label: "Door",
+        subject_noun: "door member",
+        admin_noun: "member",
+        audit_kind: "door_member",
+        signing: None,
+        dialects: Vec::new(),
+        scope_kinds: Vec::new(),
+        billable_classes: Vec::new(),
+        fee_units: Vec::new(),
+        record_kinds: Vec::new(),
+        trust_keys: Vec::new(),
+        caller_credential_refusal: None,
+        validate: Arc::new(|_: &[u8]| Ok(())),
+        facing: Arc::new(
+            |_: &[u8],
+             _: &[u8],
+             _: Option<&str>,
+             _: &[busbar_contract::plane_calls::DialectFacts]| {
+                Ok(busbar_contract::plane_calls::DoorFacing::default())
+            },
+        ),
+    })
+    .expect("folds")
+}
+
+/// A deployment WITH model lanes is judged by its lanes alone, as in 1.5.5: every cell of its one
+/// lane Open answers 503 `no usable lanes`, even beside a configured plane that opened this
+/// generation; one ready cell answers 200 `ok`.
+#[tokio::test]
+async fn healthz_with_model_lanes_every_cell_open_stays_unready_beside_an_opened_plane() {
+    register_planes();
+    let fallback = linked::fallback();
+    let door = opening_door();
+    let _isolated =
+        busbar_kernel::plane::registry::TestRegistryIsolation::seeded(&[fallback, door]);
+    let section = busbar_kernel::plane::door::DoorSection::new(
+        door.config_section,
+        serde_yaml::from_str("member: {url: 'https://m'}").unwrap(),
+    );
+    let slot = (door.build)(&busbar_kernel::plane::registry::BuildCtx {
+        endpoint_slot: None,
+        agent_defs: &(),
+        tool_defs: &section,
+        public_url: None,
+        prior: None,
+        providers: None,
+    })
+    .expect("the configured door builds its generation's slot");
+    assert!(
+        busbar_kernel::plane::door::opened(slot.as_ref()),
+        "the door opened"
+    );
+    let mut fixture = TestApp::new()
+        .lane(LaneSpec::new(
+            "model-h",
+            busbar_kernel::proto::PROTO_OPENAI,
+            "http://h",
+        ))
+        .pool("p", &[(0, 1)])
+        .plane_sections(&[fallback.config_section, door.config_section]);
+    fixture.install_plane_runtime(door.key, slot);
+    let app = fixture.build();
+
+    let healthz = |app: Arc<App>| async move {
+        let resp = busbar_kernel::endpoints::healthz(CurrentApp(app)).await;
+        let status = resp.status().as_u16();
+        let body = axum::body::to_bytes(resp.into_body(), 1024).await.unwrap();
+        (status, body.to_vec())
+    };
+    assert_eq!(
+        healthz(app.clone()).await,
+        (200, b"ok".to_vec()),
+        "a ready lane answers ready"
+    );
+    let t = now();
+    app.store.force_open_in("", 0, t + 600);
+    app.store.force_open_in("p", 0, t + 600);
+    assert_eq!(
+        healthz(app).await,
+        (503, b"no usable lanes".to_vec()),
+        "with model lanes, every cell Open is unready whatever else opened"
+    );
 }

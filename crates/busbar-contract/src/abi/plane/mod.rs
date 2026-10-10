@@ -434,6 +434,16 @@ pub const ROUTE_SESSION: u8 = 2;
 /// not a refund (Part 2 #62). Unset, the answer is the caller's whole or not at all.
 pub const ROUTE_STREAM: u8 = 4;
 
+/// [`ArriveOut::route_flags`], on a unit the plane answers itself ([`ROUTE_LOCAL`]) alone: the plane
+/// answers it AS AN ADMITTED CALL. The kernel admits a keyed unit through its one check-then-charge
+/// on the plane's own pool, so the call counts its request against the caller's caps and is refused
+/// when they are spent (1.5.5's rule, R2: a verb answered out of busbar's own state is still
+/// admitted, metered and audited); it bills only what the plane reports, a fee unit it does not
+/// report given back. Unset, a local unit stating no expected units is admitted with nothing
+/// charged or counted (a notification, a public document). Set on a unit routed to any member, it
+/// contradicts its route.
+pub const ROUTE_COUNTED: u8 = 8;
+
 /// [`OnPieceIn::from`]: the piece is the caller's.
 pub const FROM_CALLER: u32 = 0;
 /// [`OnPieceIn::from`]: the piece is the far end's.
@@ -1374,6 +1384,21 @@ pub struct PlaneSnapshot {
     pub listed_len: usize,
 }
 
+/// ONE PROVIDER'S DIALECT FACTS, as a plane receives them at `open` (THE DESIGN section 4: a
+/// plane receives, at open, the dialect fields of the providers it references and resolves model
+/// to dialect itself; the kernel checks no dialect).
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct ProviderFacts {
+    /// The provider's name: its key in the root `providers:` map.
+    pub name: AbiStr,
+    /// Its `protocol`, as the configuration resolved it (after the catalog merge).
+    pub protocol: AbiStr,
+    /// Its `error_map`, as one JSON object; [`crate::abi::mechanism::call::BLOB_ABSENT`] when it
+    /// states none.
+    pub error_map: Blob,
+}
+
 /// The plane's `open` `in`: the lifecycle's, plus the deployment's public base URL.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -1387,6 +1412,13 @@ pub struct PlaneOpenIn {
     /// as written; [`crate::abi::mechanism::call::BLOB_ABSENT`] when it writes none (ARCHITECT
     /// Q-L3B-AUD: a plane reads its own sections and states its claims from them). A tail addition.
     pub owned: Blob,
+    /// THE DIALECT FACTS OF THE PROVIDERS ITS SECTION REFERENCES (each `models.<m>.provider`), one
+    /// per provider, in the order first referenced; NULL/0 = none. Read at `open` only: the root
+    /// `providers:` a door plane is served over are the deployment's at boot. A tail addition: a
+    /// host whose `in` ends before it hands none (the `in` is read up to its `size`).
+    pub providers: *const ProviderFacts,
+    /// How many.
+    pub providers_len: usize,
 }
 
 /// The plane's `open` `out`: the lifecycle's, plus the first generation's snapshot.
@@ -1594,7 +1626,8 @@ pub struct ArriveOut {
     /// [`ROUTE_POOL`] on every
     /// other outcome.
     pub route: u8,
-    /// On READY: `ROUTE_*` flag bits ([`ROUTE_ONCE`], [`ROUTE_SESSION`], [`ROUTE_STREAM`]); `0`
+    /// On READY: `ROUTE_*` flag bits ([`ROUTE_ONCE`], [`ROUTE_SESSION`], [`ROUTE_STREAM`],
+    /// [`ROUTE_COUNTED`]); `0`
     /// on every other outcome. A tail addition, in what was padding.
     pub route_flags: u8,
     /// Alignment padding.

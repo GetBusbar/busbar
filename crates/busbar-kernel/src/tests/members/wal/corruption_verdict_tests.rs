@@ -216,6 +216,8 @@ const VERSION_1_SEGMENT: &[u8] = include_bytes!("vectors/legacy_segment.bin");
 /// A VERSION-1 SEGMENT IS A LAYOUT THIS BUILD DOES NOT READ: quarantined whole, never read and never
 /// cut. Version 1 was never released, so no segment in the field holds it; reading it under its old
 /// rule (no header check, a digest failure cut as a torn tail) was a downgrade path and nothing else.
+/// Its frames end in zeros, as every layout before the end mark did; they are still not unfinished
+/// writes of this layout, because their version is not this layout's.
 /// Every record it holds is set aside with its identity taken, so no acknowledged number is handed
 /// out again.
 #[test]
@@ -234,7 +236,9 @@ fn a_version_1_segment_is_quarantined_never_read() {
         assert_eq!(frame[0..4], current[0..4]);
         assert_eq!(frame[6..34], current[6..34]);
         assert_eq!(frame[34..64], [0u8; 30]);
-        assert_eq!(frame[96..], current[96..]);
+        // Every payload byte; the current layout's last byte is its end mark, which version 1 did
+        // not have.
+        assert_eq!(frame[96..FRAME_BYTES - 1], current[96..FRAME_BYTES - 1]);
         assert_eq!(
             decode_frame(frame),
             Err(FrameError::UnknownVersion { found: 1 })
@@ -334,14 +338,17 @@ fn a_whole_final_frame_with_an_altered_header_is_quarantined_not_cut() {
     }
 }
 
-/// A tear INSIDE a version-2 frame's payload (the header was written whole) cannot be told from a
-/// whole frame altered afterwards, so it is quarantined rather than cut: the loud side of the
-/// ambiguity. Nothing is lost either way; the quarantine holds the bytes and says so.
+/// **A TEAR INSIDE A FRAME'S PAYLOAD IS A TORN TAIL, CUT SILENTLY** (Q128 kernel-wal 5). The write
+/// got past the header and the digest and stopped in the payload, leaving zeros to the frame's end.
+/// The frame's end mark is one of those zeros, so the write that made it never completed: nothing
+/// in it was acknowledged, and an ordinary crash is not reported as corruption. RED before the fix:
+/// the header checked and the digest did not, which read as a whole frame altered afterwards, and
+/// the crash raised a quarantine.
 #[test]
-fn a_tear_inside_a_whole_header_frame_is_quarantined_not_cut() {
+fn a_tear_inside_a_frames_payload_is_a_torn_tail_cut_silently() {
     let dir = TempDir::new("tear-payload");
     let written = four();
-    lay_down(dir.path(), &written);
+    let original = lay_down(dir.path(), &written);
     let path = segment_path(dir.path());
     let mut bytes = std::fs::read(&path).unwrap();
     for b in &mut bytes[3 * FRAME_BYTES + 100..] {
@@ -355,7 +362,118 @@ fn a_tear_inside_a_whole_header_frame_is_quarantined_not_cut() {
     )
     .unwrap();
     assert_eq!(wal.recovered(), &written[..3]);
-    assert_eq!(wal.quarantined().len(), 1);
+    assert!(wal.quarantined().is_empty(), "a crash is not corruption");
+    assert!(quarantine_files(dir.path()).is_empty());
+    assert_eq!(
+        std::fs::read(&path).unwrap(),
+        original[..3 * FRAME_BYTES].to_vec(),
+        "the torn frame is cut"
+    );
+    assert_eq!(
+        wal.next_free_seq(3),
+        4,
+        "an identity nothing acknowledged is not taken"
+    );
+}
+
+/// Write each of `commits` as its own group commit to a fresh log in `dir`, close it, and return
+/// the committed bytes of segment 0.
+fn lay_down_commits(dir: &Path, commits: &[Vec<Record>]) -> Vec<u8> {
+    let mut wal =
+        Wal::in_directory(dir, Box::new(NullShipper::new()), super::fixtures::wall_ms).unwrap();
+    let mut end = 0;
+    for commit in commits {
+        end = wal
+            .append_batch(&durability_token(), METER, commit)
+            .unwrap()
+            .durable_end;
+    }
+    drop(wal);
+    let bytes = std::fs::read(segment_path(dir)).unwrap();
+    bytes[..usize::try_from(end).unwrap()].to_vec()
+}
+
+/// **A COMMIT WHOSE PAGES LANDED OUT OF ORDER IS A TORN TAIL, NOT CORRUPTION** (Q128 kernel-wal 5).
+///
+/// A group commit spanning more than one page is written back in whatever order the kernel picks.
+/// A crash during its sync can land one page and not the page before it: frames that verify sit
+/// past frames that never landed. They are frames of the SAME commit, which never synced, so
+/// nothing in it was acknowledged — the commit is cut silently and its identities stay free. RED
+/// before the fix: any verifying frame past the stop meant "corrupt", whichever commit it was in.
+#[test]
+fn a_commit_whose_pages_landed_out_of_order_is_a_torn_tail() {
+    let dir = TempDir::new("pages-out-of-order");
+    // Two acknowledged records, then a commit of twelve single-frame records: frames 2..14, across
+    // the 4 KiB page boundary at frame 8.
+    let acknowledged = records(3, 1, 2, 200);
+    let torn_commit = records(3, 3, 12, 200);
+    let original = lay_down_commits(dir.path(), &[acknowledged.clone(), torn_commit.clone()]);
+    assert_eq!(original.len(), 14 * FRAME_BYTES);
+
+    // The second page landed; the first page's share of the torn commit did not.
+    let path = segment_path(dir.path());
+    let mut bytes = std::fs::read(&path).unwrap();
+    for b in &mut bytes[2 * FRAME_BYTES..8 * FRAME_BYTES] {
+        *b = 0;
+    }
+    std::fs::write(&path, bytes).unwrap();
+
+    let wal = Wal::in_directory(
+        dir.path(),
+        Box::new(NullShipper::new()),
+        super::fixtures::wall_ms,
+    )
+    .unwrap();
+    assert_eq!(wal.recovered(), acknowledged.as_slice());
+    assert!(
+        wal.quarantined().is_empty(),
+        "a crash mid-commit is not corruption"
+    );
+    assert!(quarantine_files(dir.path()).is_empty());
+    assert_eq!(
+        std::fs::read(&path).unwrap(),
+        original[..2 * FRAME_BYTES].to_vec(),
+        "the whole torn commit is cut, the frames of it that landed included"
+    );
+    assert_eq!(
+        wal.next_free_seq(3),
+        3,
+        "no identity of the commit nothing acknowledged is taken"
+    );
+}
+
+/// The other side of the same rule: damage in a commit that a SUBSEQUENT commit acknowledges is
+/// corruption whatever it looks like — even a frame of zeros, the shape a crash leaves — because a
+/// commit is only written after the one before it synced.
+#[test]
+fn damage_in_a_commit_a_subsequent_commit_acknowledges_is_corrupt_whatever_its_shape() {
+    let dir = TempDir::new("acknowledged-zeros");
+    let first = records(3, 1, 4, 200);
+    let next = records(3, 5, 2, 200);
+    lay_down_commits(dir.path(), &[first.clone(), next.clone()]);
+
+    let path = segment_path(dir.path());
+    let mut bytes = std::fs::read(&path).unwrap();
+    for b in &mut bytes[FRAME_BYTES..2 * FRAME_BYTES] {
+        *b = 0;
+    }
+    std::fs::write(&path, bytes).unwrap();
+
+    let wal = Wal::in_directory(
+        dir.path(),
+        Box::new(NullShipper::new()),
+        super::fixtures::wall_ms,
+    )
+    .unwrap();
+    assert_eq!(wal.recovered(), &first[..1]);
+    let q = wal.quarantined();
+    assert_eq!(q.len(), 1, "acknowledged records lost are reported");
+    assert_eq!(q[0].damage_at, FRAME_BYTES as u64);
+    let mut ids = q[0].identities.clone();
+    ids.sort_unstable();
+    assert_eq!(ids, vec![(3, 3), (3, 4), (3, 5), (3, 6)]);
+    assert_eq!(quarantine_files(dir.path()).len(), 1);
+    assert_eq!(wal.next_free_seq(3), 7);
 }
 
 #[test]

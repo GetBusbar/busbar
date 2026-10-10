@@ -998,8 +998,7 @@ fn a_pin_below_the_head_reads_the_history_as_it_stood_at_that_seq() {
 /// **THE CACHE IS WRITTEN AND IS NEVER AUTHORITATIVE.**
 ///
 /// The posting the pricing builds carries a cache — the head it settled at, the entry it
-/// resolved to, and both figures — so a reader has something to compare a
-/// re-derivation against. Corrupt every one of those figures and ask again: the answer is
+/// resolved to, and both figures. Corrupt every one of those figures and ask again: the answer is
 /// unchanged, because the lookup does not read them. A node that fell back to the cache would
 /// answer the corrupted number and call it money.
 #[test]
@@ -1037,10 +1036,6 @@ fn the_cached_price_rides_the_posting_and_is_never_read_back_for_money() {
             .expect("the lookup still answers"),
         priced.priced_nanos,
         "the money moved when the cache was corrupted, so the cache was on the money path"
-    );
-    assert!(
-        posting.cache_diverges(&priced),
-        "a corrupted cache went unnoticed"
     );
 }
 
@@ -4895,7 +4890,7 @@ async fn a_screened_veto_through_the_node_admits_nothing() {
 async fn a_full_journal_lane_refuses_a_new_unit_503_with_the_reason() {
     let slots = crate::root::store_double::RecordSlots::new();
     slots.refuse(true);
-    let lane = crate::root::durability::JournalLane::with_capacity(slots.calls(), "memory", 1)
+    let lane = crate::root::durability::JournalLane::with_capacity(slots.calls(), "test-store", 1)
         .expect("the lane starts");
     let book = Arc::new(std::sync::Mutex::new(
         crate::root::durability::build_on_store(
@@ -4939,7 +4934,7 @@ async fn a_full_journal_lane_refuses_a_new_unit_503_with_the_reason() {
         .expect("the body");
     let body = String::from_utf8_lossy(&body);
     assert!(
-        body.contains("journal is full") && body.contains("`memory`"),
+        body.contains("journal is full") && body.contains("`test-store`"),
         "the reason names the full journal and the store: {body}"
     );
     assert!(!built.load(std::sync::atomic::Ordering::SeqCst));

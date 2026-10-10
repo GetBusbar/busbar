@@ -48,7 +48,8 @@ pub fn op_id() -> busbar_contract::abi::store::OpId {
 
 /// THIS NODE: the node half of every `op_id` this process mints ([`op_id`]), the one node identity
 /// the kernel draws. The fixed audit record names it as the node that sealed it (THE DESIGN §1:
-/// "when (wall + monotonic, node)"). Never `0`.
+/// "when (wall + monotonic, node)"), except on a chain the configured store keeps, whose records
+/// name the id the store assigned the host. Never `0`.
 #[must_use]
 pub fn node() -> u64 {
     IDS.node

@@ -70,6 +70,7 @@ use busbar_contract::count::Count;
 
 use crate::cost::history::{History, HistorySeq, HistoryView};
 use crate::cost::posting::{checked_apply_tier, STANDARD_TIER_BP};
+use crate::cost::rate::ClassPrice;
 use crate::cost::{NANOS_PER_CENT, NANOS_PER_MICRO};
 
 /// Joins a plane key to its lane: `"<plane>\u{1f}<lane>"` is a lane priced by THAT plane's own card
@@ -253,8 +254,8 @@ pub enum MoneyError {
     },
     /// A present card names the lane but not this class. The direct statement of #42: *a hit class
     /// not priced ⇒ REFUSE, never a silent 0*. This is the arm every reserved-four derivation in
-    /// the tree is missing, and it is why an open meter class — a count of hops, of calls, of
-    /// seconds — bills as nothing on those paths.
+    /// the tree is missing, and it is why an open meter class — any count a plane declares beyond
+    /// the reserved four — bills as nothing on those paths.
     ClassUnpriced {
         /// The entry that was in force.
         card_seq: HistorySeq,
@@ -472,42 +473,37 @@ impl<'a> Tally<'a> {
         fee_count: Count,
     ) -> Result<(), MoneyError> {
         let (card_seq, node_card) = self.resolve(arrived_ms)?;
-        // THE CARD BY PLANE (#42 "scoped per plane", #47): the row's plane key picks its card, and a
-        // plane with no card of its own is billing off for that plane whatever another plane's says.
-        let (card, key) = node_card.plane_lane(lane);
-        // A PLANE'S FEE LANE (`"<plane>\u{1f}"`, [`crate::cost::plane_fee_lane`]) counts that plane's
-        // fee units: its reserved classes price at the plane's OWN fees (#44, #47), card or no card.
-        let fee_lane = key.is_empty() && lane.ends_with(PLANE_LANE_SEP);
-        let unpriced = |class: &str| MoneyError::ClassUnpriced {
-            card_seq,
-            lane: lane.to_string(),
-            class: class.to_string(),
-        };
+        // THE CARD BY PLANE (#42 "scoped per plane", #47), and the lane on it — ONE resolution,
+        // the same one the settlement lookup takes ([`crate::cost::RateCard::lane_pricing`]): the
+        // row's plane key picks its card, a plane with no card of its own is billing off for that
+        // plane, and a plane's FEE LANE (`"<plane>\u{1f}"`, [`crate::cost::plane_fee_lane`]) prices
+        // its reserved fee classes at the plane's OWN fees (#44, #47), card or no card.
+        let pricing = node_card.lane_pricing(lane);
+        let card = pricing.card;
         // A present card that names no entry for the lane REFUSES. BILLING OFF (#42, no card): every
         // class prices at nothing and nothing is "unpriced" — there is no card to be missing from.
-        let rates = if card.pricing_enabled() && !fee_lane {
-            Some(
-                card.lane_rates(key)
-                    .ok_or_else(|| MoneyError::LaneUnpriced {
-                        card_seq,
-                        lane: lane.to_string(),
-                    })?,
-            )
-        } else {
-            None
-        };
+        if !pricing.lane_named() {
+            return Err(MoneyError::LaneUnpriced {
+                card_seq,
+                lane: lane.to_string(),
+            });
+        }
         let mut amount: i128 = 0;
         for (class, count) in counts {
-            let unit_nanos = match (card.fee_of(class).filter(|_| fee_lane), rates) {
+            let unit_nanos = match pricing.class_price(class) {
                 // The fee dimension: never rounded, never divided (#44).
-                (Some(fee_minor), _) => minor_nanos(fee_minor)?,
+                ClassPrice::FeeMinor(fee_minor) => minor_nanos(fee_minor)?,
+                ClassPrice::Nanos(nanos) => i128::from(nanos),
                 // #42 STATED AS AN ARM: a present card silent about a class the traffic HIT is a
                 // refusal. A zero count is still a hit — the row reported the class. A fee lane
                 // carries nothing but the fee classes.
-                (None, Some(r)) if !r.class_priced(class) => return Err(unpriced(class)),
-                (None, Some(r)) => i128::from(r.nanos_per_unit(class)),
-                (None, None) if fee_lane && card.pricing_enabled() => return Err(unpriced(class)),
-                (None, None) => 0,
+                ClassPrice::Unpriced => {
+                    return Err(MoneyError::ClassUnpriced {
+                        card_seq,
+                        lane: lane.to_string(),
+                        class: class.to_string(),
+                    })
+                }
             };
             let line = count
                 .micros()
@@ -548,7 +544,7 @@ impl<'a> Tally<'a> {
         fee_count: Count,
     ) -> Result<(), MoneyError> {
         let (_card_seq, card) = self.resolve(arrived_ms)?;
-        let fee = fee_term(card.plane_lane(lane).0, fee_count)?;
+        let fee = fee_term(card.lane_pricing(lane).card, fee_count)?;
         self.add(tier_bp, fee)
     }
 
@@ -607,7 +603,7 @@ impl<'a> Tally<'a> {
 /// can only be a fee an operator CONFIGURED at nothing — #77(5)'s explicit zero row.
 ///
 /// It is the same term whether the card is present or absent, because an absent card still posts
-/// its flat fee (#42 `BUSBAR-1.6.0.md:367`: *"rate_card ABSENT ⇒ NOT billed"* for the CLASSES; the
+/// its flat fee (#42: *"rate_card ABSENT ⇒ NOT billed"* for the CLASSES; the
 /// fee is what such a deployment is actually billed).
 fn fee_term(card: &crate::cost::rate::RateCard, fee_count: Count) -> Result<i128, MoneyError> {
     fee_count

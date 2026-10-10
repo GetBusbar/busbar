@@ -852,7 +852,7 @@ fn the_boot_path_opens_the_configured_directory_and_seals_before_it_settles() {
     .expect("the app builds over the default memory store");
 
     // THE FUNCTION `run()` CALLS. Not a re-implementation of it, not a recording double of it.
-    let book = root::boot::book(&app, "memory").expect("the boot book opens");
+    let book = root::boot::book(&app, "test-store").expect("the boot book opens");
 
     let (on_disk, marker, first_record) = {
         let durability = book
@@ -1088,7 +1088,7 @@ fn the_boot_book_ships_its_opening_to_the_configured_store() {
 
 /// The journal's lane to `slots`, as `root::boot::book` opens one over the configured store.
 fn journal_lane(slots: &crate::root::store_double::RecordSlots) -> root::durability::JournalLane {
-    root::durability::JournalLane::start(slots.calls(), "memory").expect("the lane starts")
+    root::durability::JournalLane::start(slots.calls(), "test-store").expect("the lane starts")
 }
 
 /// THE OTHER HALF OF THE DISCIPLINE, and it is not a footnote: constructing an on-disk journal IS
@@ -1259,7 +1259,7 @@ fn one_seal_after_two_reloads() {
     };
 
     let boot = busbar_kernel::test_support::build_once(cfg(), None).expect("the boot builds");
-    let book = root::boot::book(&boot, "memory").expect("the boot book opens");
+    let book = root::boot::book(&boot, "test-store").expect("the boot book opens");
     let store = boot
         .governance
         .clone()

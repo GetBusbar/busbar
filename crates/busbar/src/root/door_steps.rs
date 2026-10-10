@@ -12,7 +12,7 @@
 //! | authenticate | the auth gate's verdict (the unit's principal); a unit with no key on a claim that takes a credential is refused (ARCHITECT P3 (a)) |
 //! | verify | the route the plane's `arrive` named, resolved against its section ([`DoorPools`], ARCHITECT Q-SW6/Q-FL3), a `ROUTE_SCOPE` unit to the one entry the principal's grant reaches among the plane's candidates (Q-DEL-A2A-SELECT, -SCOPE-TRUST); each member sealed under its (plane key, entry) |
 //! | approve | the caller's grant of the plane's scope kind over the route as named, then its fallback pool |
-//! | admit | a unit its plane answers itself (`ROUTE_LOCAL`) is admitted with no walk and nothing held or charged; `$`: a keyed unit is admitted and charged by the governance book's one check-then-charge (`GovState::try_admit_estimated`, the plane's expected units the estimate), its money facts opened on the money steps (`PlaneMoney::open`); a route its section does not hold is refused after the charge (1.5.5's order); an anonymous unit on an open claim is admitted with nothing held and no money |
+//! | admit | a unit its plane answers itself (`ROUTE_LOCAL`) is admitted with no walk and nothing held or charged, unless the plane counts it as an admitted call (`ROUTE_COUNTED`) or states expected units: then a keyed one is charged on the plane's pool as below; `$`: a keyed unit is admitted and charged by the governance book's one check-then-charge (`GovState::try_admit_estimated`, the plane's expected units the estimate), its money facts opened on the money steps (`PlaneMoney::open`); a route its section does not hold is refused after the charge (1.5.5's order); an anonymous unit on an open claim is admitted with nothing held and no money |
 //! | meter | the plane's last far-end-reported counts, as the unit's usage lines (an estimate never bills) |
 //! | audit | the record's facts: the decoded operation class and how the unit finished |
 //!
@@ -438,6 +438,8 @@ struct DoorUnit {
     expected: Vec<UnitCount>,
     /// Its operation is performed at most once (`ROUTE_ONCE`).
     once: bool,
+    /// The plane answers it itself as an admitted call (`ROUTE_COUNTED`): a keyed one is charged.
+    counted: bool,
     /// Its caller asked for the answer streamed (`ROUTE_STREAM`).
     stream: bool,
     routed: Option<Routed>,
@@ -697,6 +699,7 @@ impl DriverSteps for DoorSteps<'_> {
     fn route_flags(&self, _ctx: &UnitCtx, flags: u8) {
         let mut u = self.lock();
         u.once = flags & busbar_contract::abi::plane::ROUTE_ONCE != 0;
+        u.counted = flags & busbar_contract::abi::plane::ROUTE_COUNTED != 0;
         u.stream = flags & busbar_contract::abi::plane::ROUTE_STREAM != 0;
     }
 }
@@ -846,15 +849,17 @@ impl Units for DoorSteps<'_> {
         // is audited as every unit is.
         // A local unit whose plane EXPECTS units (its admission estimate) is charged as any keyed
         // unit is: the plane's own round, on the caller's budget (the served engine charged busbar's
-        // own ask round before it was asked; lane-dg-mcp 05e053183a).
-        let (local, estimated) = {
+        // own ask round before it was asked; lane-dg-mcp 05e053183a). So is one the plane answers
+        // AS AN ADMITTED CALL (ROUTE_COUNTED): a keyed one passes the one check-then-charge on the
+        // plane's pool, counting its request (R2, 1.5.5's rule), and keeps only the fee units the
+        // plane reports.
+        let (local, counted, estimated) = {
             let u = self.lock();
-            (
-                u.named
-                    .as_ref()
-                    .is_some_and(|(class, _)| *class == ROUTE_LOCAL),
-                !u.expected.is_empty(),
-            )
+            let local = u
+                .named
+                .as_ref()
+                .is_some_and(|(class, _)| *class == ROUTE_LOCAL);
+            (local, local && u.counted, !u.expected.is_empty())
         };
         // A UNIT ROUTED BY SCOPE that no one entry reached (Q-DEL-A2A-SELECT): refused before
         // anything is charged, as 1.5.5 chose the agent before its admission.
@@ -871,7 +876,7 @@ impl Units for DoorSteps<'_> {
             Admission::Refused => {
                 return SeatVerdict::refuse(token, Refusal::new(ReasonCode::Unauthenticated))
             }
-            Admission::Keyed if !local || estimated => {
+            Admission::Keyed if !local || counted || estimated => {
                 if let Some(key) = self.key.clone() {
                     if let Err(refusal) = self.charge(ctx, &key) {
                         return SeatVerdict::refuse(token, refusal);
@@ -1150,14 +1155,17 @@ pub fn compose_egress(
 // ── the members' routes (THE DESIGN §6 steps 2-3) ──────────────────────────────────────────────
 
 /// ONE `providers:` ENTRY as a door plane's member reaches it (THE DESIGN §6 step 2; #50, #51): the
-/// `base_url` it dials, its default `protocol`, its credential reference, the `auth:` style it
-/// states (`None` = its plane's dialect default) and the parameters that style is opened with.
+/// `base_url` it dials, its default `protocol` and `error_map` (the dialect fields its plane is handed
+/// at open), its credential reference, the `auth:` style it states (`None` = its plane's dialect
+/// default) and the parameters that style is opened with.
 #[derive(Debug, Clone)]
 pub struct ProviderRoute {
     /// `base_url`, as the operator (or the catalog) spelled it.
     pub base_url: String,
     /// The default wire protocol (#51).
     pub protocol: String,
+    /// The `error_map`, catalog-merged; empty = none stated.
+    pub error_map: BTreeMap<String, String>,
     /// `api_key`, a reference; resolved once, at the seal.
     pub credential: busbar_contract::secret_ref::SecretRef,
     /// `auth:`, the style it overrides its plane's dialect default with.
@@ -1222,6 +1230,11 @@ pub fn provider_routes(
                 ProviderRoute {
                     base_url: p.base_url.clone(),
                     protocol: p.protocol.clone(),
+                    error_map: p
+                        .error_map
+                        .iter()
+                        .map(|(k, v)| (k.clone(), v.clone()))
+                        .collect(),
                     credential: p.api_key.clone(),
                     style: p.auth.map(|a| style_word(a).to_string()),
                     params: StyleParams {
@@ -1233,6 +1246,20 @@ pub fn provider_routes(
             )
         })
         .collect()
+}
+
+/// THE DIALECT FACTS OF THE PROVIDERS `section` REFERENCES, read off `providers` through the one
+/// builder the probe's open uses too ([`busbar_contract::plane_calls::dialect_facts`]).
+#[must_use]
+pub fn dialect_facts(
+    section: &serde_yaml::Value,
+    providers: &BTreeMap<String, ProviderRoute>,
+) -> Vec<busbar_contract::plane_calls::DialectFacts> {
+    busbar_contract::plane_calls::dialect_facts(section, |name| {
+        providers
+            .get(name)
+            .map(|p| (p.protocol.clone(), p.error_map.clone()))
+    })
 }
 
 /// One auth plugin serving a style: its instance, opened for its outbound styles, and the style as
