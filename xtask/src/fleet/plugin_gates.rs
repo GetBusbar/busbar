@@ -2003,6 +2003,54 @@ mod tests {
         }
     }
 
+    /// Every banned driver a `[plugin-deps]` row names, and whose row is not a test's.
+    fn drivers_shipped(policy: &Json) -> Vec<String> {
+        let mut out = Vec::new();
+        for name in str_list(net_ban(policy).unwrap().get("crates")) {
+            let row = policy.get("plugin-deps").get(&name);
+            if *row == Json::Null {
+                continue;
+            }
+            let reason = row.get("reason").as_str().unwrap_or("");
+            if !reason.starts_with("TESTS ONLY:") {
+                out.push(format!(
+                    "{name}: its reason does not start with `TESTS ONLY:`"
+                ));
+            }
+            if str_list(row.get("repos")).is_empty() {
+                out.push(format!("{name}: its repos is empty"));
+            }
+        }
+        out
+    }
+
+    /// The drivers' `[plugin-deps]` rows (mysql, postgres, redis, ldap3) are dev-dependencies of
+    /// the plugin repos that test with them, never a crate a plugin ships (BUSBAR-1.6.0.md line 577).
+    #[test]
+    fn the_committed_policy_ships_no_driver() {
+        let committed = parse_toml(COMMITTED_POLICY).unwrap();
+        let rows: Vec<String> = str_list(net_ban(&committed).unwrap().get("crates"))
+            .into_iter()
+            .filter(|n| *committed.get("plugin-deps").get(n) != Json::Null)
+            .collect();
+        assert_eq!(rows, ["mysql", "postgres", "redis", "ldap3"]);
+        assert_eq!(drivers_shipped(&committed), Vec::<String>::new());
+
+        // RED: the ldap3 row read as the module's own client is refused, by name.
+        let row = COMMITTED_POLICY.find("[plugin-deps.ldap3]").unwrap();
+        let start = row + COMMITTED_POLICY[row..].find("\nreason = ").unwrap() + 1;
+        let end = start + COMMITTED_POLICY[start..].find('\n').unwrap();
+        let shipped = format!(
+            "{}reason = \"the LDAP client the module binds with\"{}",
+            &COMMITTED_POLICY[..start],
+            &COMMITTED_POLICY[end..]
+        );
+        assert_eq!(
+            drivers_shipped(&parse_toml(&shipped).unwrap()),
+            ["ldap3: its reason does not start with `TESTS ONLY:`"]
+        );
+    }
+
     #[test]
     fn cdep_text() {
         assert_eq!(
