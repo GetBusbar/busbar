@@ -614,7 +614,7 @@ fn the_release_feature_set_excludes_test_harness() {
     let manifest = std::fs::read_to_string(dir.join("Cargo.toml")).expect("read busbar's manifest");
     let default = features_reached(&manifest, "default");
     assert!(
-        default.contains("plane-mcp"),
+        default.contains("root-admin"),
         "the walk reads the default set: {default:?}"
     );
     assert!(
