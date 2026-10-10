@@ -4,18 +4,17 @@
 //! # busbar-kernel-ledger — the ledger unit
 //!
 //! What money IS, as opposed to where its bytes landed. This crate settles holds, keeps the running
-//! figures a checkpoint seals, states the one identity those figures have to satisfy, reprices every
-//! line by lookup against the dated rate-card history it was priced under, and hands each posting to
-//! the previous release's rows so nothing reading them notices a change.
+//! figures a checkpoint seals, states the one identity those figures have to satisfy, prices a line
+//! by lookup against the dated rate-card history, and hands each posting to the previous release's
+//! rows so nothing reading them notices a change.
 //!
 //! ## Quantities are the truth; a price is a lookup
 //!
-//! A booked line stores what happened — the quantities, the lane, the instant, the tier — and the
-//! two history numbers that say which snapshot it was settled under and which
-//! dated card that snapshot resolved to at that instant. It also stores a price, and that price is
-//! a CACHE: derived, re-derivable, and never the record. A statement is cut AS OF a snapshot and
-//! re-derives every figure from the quantities; it never sums the caches, so its answer does not
-//! depend on whether the recompute has been round yet.
+//! A booked line ([`recompute::Posting`]) stores what happened — the quantities, the lane, the
+//! instant, the tier — and no price at all (#71, #77(3)). A statement is cut AS OF a snapshot and
+//! derives every figure from the quantities by the one lookup. (The cost unit's own posting type
+//! can carry the figure the settlement lookup answered, [`cost::CachedPrice`]; the one production
+//! writer sets it on a posting it then drops, and nothing reads it.)
 //!
 //! **A booked line is never rewritten, and no adjusting line is booked beside it** (#77(2)). An
 //! amendment to the history is a dated card entry; the window it corrects reprices as a VIEW over
@@ -39,13 +38,11 @@
 //! separate traits because they are separate claims, and a node that files its own signatures on its
 //! own disk has proved nothing to anybody. The crate says so rather than implying otherwise.
 //!
-//! [`mod@recompute`] — every line priced again by lookup against the sealed history, from a watermark
-//! that is the last line actually checked rather than the last checkpoint. The difference is not
-//! pedantry: at a busy node's rate "since the last checkpoint" covers a few percent of the lines,
-//! and a line edited before that point would never be looked at again. Because the lookup is the
-//! amount, the recompute now CORRECTS a stale cache rather than only reporting it — and it still
-//! tells the two cases apart, because a cache going stale behind a head that moved is an amendment
-//! and a cache going stale behind a head that did not is somebody's hand.
+//! [`mod@recompute`] — the booked line and the one lookup that prices it ([`recompute::price_line`]),
+//! which a statement calls once per line. There is no watermark, no stored figure to correct and no
+//! sweep over the book here: a line carries no price to go stale. The check that a settled figure
+//! still agrees with its counts is the root's restart reconciliation, which replays the journal's
+//! counts into a second book and compares it with the live one.
 //!
 //! ## What this crate does not do
 //!
@@ -88,21 +85,18 @@ pub mod totals;
 pub mod verify;
 
 pub use checkpoint::{
-    AnchorError, AnchorState, AnchoredHead, ChainHead, Checkpoint, CheckpointAnchor,
-    CheckpointSecret, CheckpointVerifier, SealRefusal, SelfAttestingAnchor, SignError, Signature,
+    AnchorError, AnchoredHead, ChainHead, Checkpoint, CheckpointAnchor, CheckpointSecret,
+    CheckpointVerifier, SealRefusal, SelfAttestingAnchor, SignError, Signature,
 };
-pub use identity::{
-    attribution_holds, closed_window_is_settled, holds, residual, ClosedWindowMoved, Imbalance,
-    Residual,
-};
+pub use identity::{holds, residual, Imbalance, Residual};
 pub use legacy::{
     opening_balances, LegacyHead, LegacyMigrationSource, LegacyPosting, LegacyRows,
     LegacyWriteError, OpeningBalance, RecordingRows, SummedRows,
 };
 pub use migration::{
     migrate, opening_totals, LegacyFamily, LegacyFigure, LegacyFigures, LegacyLedgerRows,
-    MigrationError, MigrationMarker, MigrationRecords, NodeLocalRecords, Opening,
-    Outcome as MigrationOutcome, OPENING_CHECKPOINT_SEQ,
+    MigrationError, MigrationMarker, MigrationRecords, Opening, Outcome as MigrationOutcome,
+    OPENING_CHECKPOINT_SEQ,
 };
 pub use recompute::{
     divergence_of, price_line, Divergence, Posting, PostingOrigin, PricedLine, BASIS_POINTS,
@@ -112,9 +106,7 @@ pub use totals::{
     totals_as_of, Book, BucketId, BucketScope, CapDimension, Statement, StatementRow, Totals,
     TotalsKey, Unpriced, WindowStart,
 };
-pub use verify::{
-    sequences_are_monotonic, verify, AllWindowsOpen, Finding as VerifyFinding, WindowState,
-};
+pub use verify::{sequences_are_monotonic, verify, Finding as VerifyFinding};
 
 #[cfg(test)]
 #[path = "tests/mod.rs"]
