@@ -753,6 +753,7 @@ impl AuthCalls for AuthInstance {
             reply: Some(reply),
             recalled: false,
             answer: None,
+            faulted: false,
         })
     }
 
@@ -836,11 +837,14 @@ struct Submitted {
     reply: Option<Reply<VerifyIn, IdentifyOut>>,
     recalled: bool,
     answer: Option<VerifyAnswer>,
+    /// A step of it (the answer or the short re-call) answered FAULT ([`Verifying::faulted`]).
+    faulted: bool,
 }
 
 impl Submitted {
     /// Take a completed op: its verdict, or `None` after re-submitting a short answer.
     fn complete(&mut self, done: Done<VerifyIn, IdentifyOut>) -> Option<VerifyAnswer> {
+        self.faulted |= done.outcome == Outcome::Fault;
         let out = done.frame.as_ref().map(|f| f.out);
         if done.short && !self.recalled {
             self.recalled = true;
@@ -892,6 +896,10 @@ impl Verifying for Submitted {
             Poll::Ready(v) => Some(v),
             Poll::Pending => None,
         }
+    }
+
+    fn faulted(&self) -> bool {
+        self.faulted
     }
 }
 

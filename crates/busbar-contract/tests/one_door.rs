@@ -11,10 +11,30 @@
 use busbar_contract::abi::cold::STATUS_ERR;
 use busbar_contract::abi::sdk::__door;
 
-fn open(_cfg: &str) -> Result<Box<dyn busbar_contract::auth::AuthPlugin>, String> {
+/// The image's one handle type (it never opens: its constructor refuses).
+type Handle = Box<String>;
+
+fn open(_cfg: &str) -> Result<Handle, String> {
     Err("the one plugin refuses".into())
 }
-busbar_contract::export_login_plugin!(open);
+
+/// It serves no request: this image exists to prove its door's registration.
+///
+/// # Safety
+/// Called only through the SDK boundary, which never dereferences on its behalf.
+unsafe fn dispatch(
+    _handle: *mut std::ffi::c_void,
+    _bytes: &[u8],
+) -> busbar_contract::abi::sdk::BoundaryOutcome {
+    busbar_contract::abi::sdk::BoundaryOutcome::Unsupported("no request is served here".into())
+}
+
+busbar_contract::export_plugin!(
+    kind = "auth",
+    dispatch = dispatch,
+    ctor = open,
+    handle = Handle
+);
 
 #[test]
 fn the_frozen_symbols_answer_through_the_registered_plugin() {

@@ -230,6 +230,7 @@ pub static SEED: &[(&str, &[SeededCheck])] = &[
         ("test", "crates/busbar-kernel/src/auth/tests/tests.rs::test_extract_client_token_non_bearer_authorization_falls_through_to_x_api_key", "a non-Bearer Authorization falls through to x-api-key"),
         ("test", "crates/busbar-kernel/src/auth/tests/tests.rs::test_extract_client_token_non_bearer_authorization_falls_through_to_x_goog_api_key", "a non-Bearer Authorization falls through to x-goog-api-key"),
         ("test", "test_admin_v1_credential_cache_and_flush_endpoint", "POST /auth/cache/flush returns a real flushed count"),
+        ("test", "crates/busbar-kernel/src/auth/tests/tests.rs::every_request_is_verified_by_the_door_and_the_kernel_caches_no_verdict", "the kernel caches no verdict: one door verify per request, the second verdict the door's own"),
         ("oracle-cell", "admin.ops|PostAuthCacheFlush|ok", "the flush's {\"flushed\": N} diffed against the 1.5.5 binary"),
     ]),
     ("PB-36", &[
@@ -567,9 +568,6 @@ pub static SEED: &[(&str, &[SeededCheck])] = &[
         ("test", "begin_sets_httponly_secure_cookie_and_redirects", "the GET /auth/token begin flow"),
         ("test", "callback_state_mismatch_400", "constant-time state check"),
         ("test", "callback_nonce_mismatch_rejected", "the id_token nonce"),
-        ("test", "execute_hop_refuses_non_allowlisted_host", "the hop host allowlist"),
-        ("test", "vet_hop_url_enforces_https_allowlist_and_blocks_metadata", "ssrf_blocked_host on hops"),
-        ("test", "execute_hop_does_not_follow_redirect", "hops never follow redirects"),
         ("test", "refresh_rotates_key_and_revokes_the_old_one", "?refresh rotates and revokes"),
     ]),
     ("PB-101", &[

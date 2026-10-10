@@ -68,7 +68,7 @@ fn free_port() -> u16 {
 }
 
 /// A high worker count + `export.prometheus` + an OPEN auth chain (so `/metrics`, declared
-/// `RouteAuth::Key`, is reachable with no bearer at all — see `AuthChain::run_chain_cached`'s
+/// `RouteAuth::Key`, is reachable with no bearer at all — see `AuthChain::run_chain_with`'s
 /// `chain.is_empty() && !keys_in_chain` open-front-door arm) — nothing else is topology-specific.
 fn write_configs(dir: &Path, data_port: u16, admin_port: u16) {
     std::fs::write(

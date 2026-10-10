@@ -75,6 +75,30 @@ fn a_reject_at_any_position_denies_whatever_would_have_admitted_behind_it() {
     }
 }
 
+/// A `Reject` is re-asked every time: an invalid credential re-runs its module on every call, so
+/// the moment the module changes its mind the chain does too.
+///
+/// This is the deny path's instant-revocation property: nothing sits in front of the rejecting
+/// module that could skip it without the module ever being asked.
+#[test]
+fn a_rejection_is_re_asked_every_time() {
+    let rejecting = Canned::new("m", AuthOutcome::Reject);
+    let calls = rejecting.calls.clone();
+    let c = AuthChain::new(vec![entry("m", Box::new(rejecting))], false);
+
+    for i in 1..=5 {
+        assert_eq!(
+            c.run_chain_with(Some("bad"), None, 1000, None),
+            ChainVerdict::Denied
+        );
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::Relaxed),
+            i,
+            "the module is asked every time"
+        );
+    }
+}
+
 /// A chain that only ever passes ends DENIED, never open.
 ///
 /// The open door is one condition and one only: no boxed module and no keys arm. A chain that has

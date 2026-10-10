@@ -816,20 +816,62 @@ async fn forbidden_admin_requests_audit_once_per_window() {
     handle.abort();
 }
 
-// ── 1.5.2 admin-plane OIDC: scope collapse authorization + external admin-module dispatch/offload ──
+// ── 1.5.2 admin-plane OIDC: scope collapse authorization + external admin-module dispatch ────────
 
-/// A test-only external admin module that SLEEPS on the (blocking-pool) thread before returning —
-/// stands in for a wedged admin IdP doing blocking JWKS/introspection I/O. Returns `Pass` (so the
-/// chain fail-closed-denies) once it wakes. Injected via `TestApp::admin_module` as an external
-/// module, so the admin middleware OFFLOADS its call off the reactor.
-struct SleepingAdminModule(std::time::Duration);
-impl crate::auth::AuthModule for SleepingAdminModule {
-    fn name(&self) -> &'static str {
+/// A test-only external admin DOOR whose `verify` answers only after a delay, from a thread of its
+/// own (the dispatcher worker the plugin runs on) — stands in for a wedged admin IdP doing
+/// JWKS/introspection I/O. Answers `Pass` (so the chain fail-closed-denies) once it wakes; it never
+/// answers on the spot.
+struct SleepingAdminDoor(std::time::Duration);
+
+/// A `verify` the plugin answers later, from its own thread.
+struct AnsweredLater(tokio::sync::oneshot::Receiver<busbar_contract::auth_calls::VerifyAnswer>);
+
+impl std::future::Future for AnsweredLater {
+    type Output = busbar_contract::auth_calls::VerifyAnswer;
+    fn poll(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Self::Output> {
+        std::future::Future::poll(std::pin::Pin::new(&mut self.0), cx).map(|answer| {
+            answer.unwrap_or_else(|_| busbar_contract::auth_calls::Verified::Failed.into())
+        })
+    }
+}
+
+impl busbar_contract::auth_calls::Verifying for AnsweredLater {
+    fn settled(&mut self) -> Option<busbar_contract::auth_calls::VerifyAnswer> {
+        self.0.try_recv().ok()
+    }
+}
+
+impl busbar_contract::auth_calls::AuthCalls for SleepingAdminDoor {
+    fn name(&self) -> &str {
         "slow-oidc"
     }
-    fn authenticate(&self, _candidate: Option<&str>) -> crate::auth::AuthVerdict {
-        std::thread::sleep(self.0);
-        crate::auth::AuthVerdict::Pass
+    fn facts(&self) -> u32 {
+        0
+    }
+    fn verify_now(
+        &self,
+        _: &busbar_contract::auth_calls::VerifyRequest,
+    ) -> Option<busbar_contract::auth_calls::VerifyAnswer> {
+        None
+    }
+    fn verify(
+        &self,
+        _: busbar_contract::auth_calls::VerifyRequest,
+    ) -> Box<dyn busbar_contract::auth_calls::Verifying> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let hold = self.0;
+        std::thread::spawn(move || {
+            std::thread::sleep(hold);
+            let _ = tx.send(busbar_contract::auth_calls::Verified::Pass.into());
+        });
+        Box::new(AnsweredLater(rx))
+    }
+    fn refresh(&self) -> Result<u64, String> {
+        Ok(0)
     }
 }
 
@@ -988,8 +1030,8 @@ async fn admin_max_admin_scope_caps_binding() {
 
 /// An external admin module returning the reserved operator id `"admin"` ROLELESS must fall
 /// to `Grants::default()` — denied even on a GET (never `Grants::of(Full)`, which is gated on the
-/// compiled `ADMIN_TOKENS_PRINCIPAL_ID`, not the string id). Driven through the offloaded plugin
-/// dispatch path.
+/// compiled `ADMIN_TOKENS_PRINCIPAL_ID`, not the string id). Driven through the
+/// external-module dispatch path.
 #[tokio::test]
 async fn roleless_external_admin_principal_denied() {
     crate::snapshot::init();
@@ -1014,22 +1056,22 @@ async fn roleless_external_admin_principal_denied() {
     handle.abort();
 }
 
-/// A wedged (sleeping) external admin module must NOT stall the reactor — it is OFFLOADED to
-/// the blocking pool, so `/healthz` (and a concurrent admin request) stay responsive while it sleeps.
+/// A wedged (sleeping) external admin door must NOT stall the reactor — its `verify` is submitted
+/// and AWAITED, so `/healthz` (and a concurrent admin request) stay responsive while it sleeps.
 #[tokio::test]
-async fn admin_offload_does_not_stall_healthz() {
+async fn a_slow_admin_door_does_not_stall_healthz() {
     crate::snapshot::init();
     let app = crate::test_support::TestApp::new()
         .admin_chain(vec!["slow-oidc".to_string()])
-        .admin_module(
+        .admin_door(
             "slow-oidc",
-            Box::new(SleepingAdminModule(std::time::Duration::from_millis(800))),
+            std::sync::Arc::new(SleepingAdminDoor(std::time::Duration::from_millis(800))),
         )
         .build();
     let (base, handle) = serve_app(app).await;
     let client = reqwest::Client::new();
 
-    // Kick off an admin request that will OFFLOAD and sleep 800ms on a blocking thread.
+    // Kick off an admin request whose door answers only after 800ms.
     let admin_url = format!("{base}/api/v1/admin/keys");
     let c2 = client.clone();
     let admin = tokio::spawn(async move {
@@ -1039,11 +1081,11 @@ async fn admin_offload_does_not_stall_healthz() {
             .await
             .unwrap()
     });
-    // Give it a moment to enter the offloaded blocking sleep.
+    // Give it a moment to reach the door.
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
     // /healthz must RESPOND PROMPTLY — the reactor is NOT parked on the sleeping module. The status
-    // reflects app HEALTH (a lane-less test fixture reports 503), which is orthogonal to the offload;
+    // reflects app HEALTH (a lane-less test fixture reports 503), which is orthogonal to the door;
     // the invariant under test is that a response arrives at all, fast, while the admin module sleeps.
     let start = std::time::Instant::now();
     let hz = client.get(format!("{base}/healthz")).send().await.unwrap();
@@ -1056,11 +1098,11 @@ async fn admin_offload_does_not_stall_healthz() {
     );
     assert!(
         elapsed < std::time::Duration::from_millis(400),
-        "/healthz stalled for {elapsed:?} behind a sleeping admin module — the chain was not \
-         offloaded off the reactor"
+        "/healthz stalled for {elapsed:?} behind a sleeping admin door — the chain parked a \
+         reactor worker instead of awaiting it"
     );
 
-    // The offloaded admin request still completes (fail-closed 401: the sleeper returns Pass ⇒ the
+    // The awaited admin request still completes (fail-closed 401: the sleeper returns Pass ⇒ the
     // non-empty chain denies).
     let r = admin.await.unwrap();
     assert_eq!(
@@ -1719,7 +1761,7 @@ pub(super) fn admin_headers(bearer: Option<&str>, header: Option<&str>) -> Heade
 }
 
 /// TEST-ONLY: the admin chain as the synchronous probe walks it (the sync [`admin_door`]'s walk),
-/// over the two admin carriers. A chain that cannot be judged on the spot reads `Denied`.
+/// over the two admin carriers.
 pub(super) fn run_admin_chain_on(
     app: &crate::state::App,
     bearer: Option<&str>,
@@ -1729,8 +1771,8 @@ pub(super) fn run_admin_chain_on(
     let walk = std::pin::pin!(run_admin_chain(app, "GET", "/", &headers, true));
     let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
     match std::future::Future::poll(walk, &mut cx) {
-        std::task::Poll::Ready(Ok(answer)) => answer,
-        std::task::Poll::Ready(Err(_)) | std::task::Poll::Pending => (ChainVerdict::Denied, None),
+        std::task::Poll::Ready(answer) => answer,
+        std::task::Poll::Pending => (ChainVerdict::Denied, None),
     }
 }
 
@@ -1813,13 +1855,13 @@ async fn walk(verified: busbar_contract::auth_calls::Verified) -> AdminChainAnsw
     run_admin_chain(&app, "GET", "/", &headers, false).await
 }
 
-/// THE ADMIN DOOR ON THE OPERATOR'S DOOR (ARCHITECT ruling 2026-09-30, AUTH-DOOR Q1): the operator
-/// credential's verify is AWAITED, and its answer is read apart — an identity admits, a bad
-/// credential is the 1.5.5 refusal (Denied, 401), and an overloaded verifier or one that answered no
-/// verdict is 503 `unavailable`, never a 401. RED: were an overloaded or failed verify folded into a
-/// bad credential (as the cold lane did), the two `Err` arms below would read `Ok(Denied)`.
+/// THE ADMIN DOOR ON THE OPERATOR'S DOOR: the operator credential's verify is AWAITED, and an
+/// identity admits while a bad credential, a pass, an overloaded verifier and one that answered no
+/// verdict are each 1.5.5's refusal (Denied, the 401). The admin-door 503 (Q134) is not a signed
+/// accepted difference, so 1.5.5's answer stands. RED: an overloaded or failed verify read as a
+/// pass would admit through a later module; read as an outage it would be a new status.
 #[tokio::test]
-async fn the_operator_door_is_awaited_and_its_outage_is_not_a_bad_credential() {
+async fn the_operator_door_is_awaited_and_an_unjudged_verify_is_the_1_5_5_refusal() {
     use busbar_contract::auth_calls::{Verified, VerifiedIdentity};
     let identity = Verified::Identity(VerifiedIdentity {
         subject: "admin".into(),
@@ -1827,44 +1869,50 @@ async fn the_operator_door_is_awaited_and_its_outage_is_not_a_bad_credential() {
     });
     assert!(matches!(
         walk(identity).await,
-        Ok((ChainVerdict::Identified { .. }, _))
+        (ChainVerdict::Identified { .. }, _)
     ));
-    assert!(matches!(
-        walk(Verified::Reject).await,
-        Ok((ChainVerdict::Denied, None))
-    ));
-    assert!(matches!(
-        walk(Verified::Pass).await,
-        Ok((ChainVerdict::Denied, None))
-    ));
-    assert_eq!(
-        walk(Verified::Overloaded).await.err(),
-        Some(AdminUnavailable::Overloaded)
-    );
-    assert_eq!(
-        walk(Verified::Failed).await.err(),
-        Some(AdminUnavailable::Outage)
-    );
+    for refused in [
+        Verified::Reject,
+        Verified::Pass,
+        Verified::Overloaded,
+        Verified::Failed,
+    ] {
+        assert_eq!(
+            walk(refused.clone()).await,
+            (ChainVerdict::Denied, None),
+            "{refused:?}: 1.5.5's refusal"
+        );
+    }
 }
 
-/// The 503 an admin chain that could not be judged answers: the frozen v1 envelope's `unavailable`.
+/// On the wire: an operator-credential door that is overloaded, or answered no verdict, is answered
+/// 1.5.5's admin 401, byte for byte the refusal a bad credential earns — no 503.
 #[tokio::test]
-async fn an_unjudged_admin_chain_answers_503_unavailable() {
-    let mut bodies = Vec::new();
-    for why in [AdminUnavailable::Overloaded, AdminUnavailable::Outage] {
-        let resp = admin_unavailable_response(why);
-        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
-        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+async fn an_unjudged_operator_door_answers_the_1_5_5_admin_401() {
+    use busbar_contract::auth_calls::Verified;
+    crate::snapshot::init();
+    let mut answers = Vec::new();
+    for verified in [Verified::Reject, Verified::Overloaded, Verified::Failed] {
+        let (base, handle) = serve_app(operator_app(verified)).await;
+        let r = reqwest::Client::new()
+            .get(format!("{base}/api/v1/admin/keys"))
+            .bearer_auth("tok")
+            .send()
             .await
-            .expect("body");
-        bodies.push(body);
+            .unwrap();
+        let status = r.status().as_u16();
+        answers.push((status, r.text().await.unwrap()));
+        handle.abort();
     }
+    assert_eq!(answers[0].0, 401, "a bad credential is the admin 401");
     assert_eq!(
-        bodies[0], bodies[1],
-        "an outage answers the overloaded verifier's bytes: no new customer string"
+        answers[1], answers[0],
+        "an overloaded verifier: the same bytes"
     );
-    let v: serde_json::Value = serde_json::from_slice(&bodies[0]).expect("json");
-    assert_eq!(v["error"]["code"], "unavailable");
+    assert_eq!(
+        answers[2], answers[0],
+        "a verdict-less verifier: the same bytes"
+    );
 }
 
 /// The synchronous admin door (the dry run, the root's admin unit) PROBES the operator credential
@@ -2096,7 +2144,7 @@ async fn a_data_plane_door_without_a_verdict_answers_the_1_5_5_401_and_an_overlo
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 // L2-AUTH-4 (ARCHITECT ruling 2026-10-03): admin_auth's EXTERNAL modules open on the auth axis.
 // A door among them is awaited, lent the request's head and 1.5.5's candidate (`bearer.or(header)`),
-// never cached by the kernel, and an overloaded or verdict-less door is the ruled 503.
+// never cached by the kernel, and an overloaded or verdict-less door is 1.5.5's refusal (401).
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 
 /// An external admin door that identifies `ext:<who>` only when the lent credential is `tok`, and
@@ -2145,7 +2193,7 @@ impl busbar_contract::auth_calls::AuthCalls for LentCredentialDoor {
     }
 }
 
-/// An app whose admin chain is the external door `ext-door` alone (opened as a door: not cold).
+/// An app whose admin chain is the external door `ext-door` alone.
 fn external_door_app(
     otherwise: busbar_contract::auth_calls::Verified,
 ) -> std::sync::Arc<crate::state::App> {
@@ -2157,7 +2205,6 @@ fn external_door_app(
         "ext-door".to_string(),
         AdminModule {
             calls: std::sync::Arc::new(LentCredentialDoor(otherwise)),
-            cold: false,
         },
     );
     std::sync::Arc::get_mut(&mut app)
@@ -2170,11 +2217,13 @@ fn external_door_app(
 }
 
 /// The external admin door judges the candidate it is lent — the Bearer, else the admin header, as
-/// 1.5.5 handed an external module `bearer.or(header)` — awaited and on the spot; its identity is
-/// never cached by the kernel (R3: a door caches inside itself, even one stating cacheable); an
-/// overloaded door and one with no verdict are the ruled 503, a reject and a pass the 1.5.5 401.
+/// 1.5.5 handed an external module `bearer.or(header)` — awaited and on the spot (the kernel keeps
+/// no verdict: R3, a door caches inside itself); a reject, a pass, an overloaded door and one with no
+/// verdict are each 1.5.5's refusal (the 401: the admin-door 503 is not a signed accepted
+/// difference).
 #[tokio::test]
-async fn an_external_admin_door_is_lent_the_candidate_and_its_outage_is_the_ruled_503() {
+async fn an_external_admin_door_is_lent_the_candidate_and_an_unjudged_verify_is_the_1_5_5_refusal()
+{
     use busbar_contract::auth_calls::Verified;
     for headers in [
         admin_headers(Some("tok"), None),
@@ -2183,7 +2232,7 @@ async fn an_external_admin_door_is_lent_the_candidate_and_its_outage_is_the_rule
         let app = external_door_app(Verified::Reject);
         assert!(matches!(
             run_admin_chain(&app, "GET", "/", &headers, false).await,
-            Ok((ChainVerdict::Identified { ref module, .. }, _)) if module == "ext-door"
+            (ChainVerdict::Identified { ref module, .. }, _) if module == "ext-door"
         ));
         assert!(matches!(
             admin_door(&app, "GET", "/", &headers),
@@ -2191,20 +2240,112 @@ async fn an_external_admin_door_is_lent_the_candidate_and_its_outage_is_the_rule
         ));
     }
     let wrong = admin_headers(Some("not-tok"), None);
-    for (otherwise, want) in [
-        (Verified::Reject, Ok(())),
-        (Verified::Pass, Ok(())),
-        (Verified::Overloaded, Err(AdminUnavailable::Overloaded)),
-        (Verified::Failed, Err(AdminUnavailable::Outage)),
+    for otherwise in [
+        Verified::Reject,
+        Verified::Pass,
+        Verified::Overloaded,
+        Verified::Failed,
     ] {
         let app = external_door_app(otherwise.clone());
-        let got = run_admin_chain(&app, "GET", "/", &wrong, false).await;
-        match want {
-            Ok(()) => assert!(
-                matches!(got, Ok((ChainVerdict::Denied, None))),
-                "{otherwise:?}: the 1.5.5 refusal"
-            ),
-            Err(why) => assert_eq!(got.err(), Some(why), "{otherwise:?}: the ruled 503"),
-        }
+        assert_eq!(
+            run_admin_chain(&app, "GET", "/", &wrong, false).await,
+            (ChainVerdict::Denied, None),
+            "{otherwise:?}: the 1.5.5 refusal"
+        );
     }
+}
+
+/// A door that counts its verifies and answers from a script: `script[n]` for the n-th verify, the
+/// last answer thereafter. It states `FACT_CACHEABLE`, so a kernel that cached a cacheable door's
+/// verdict would answer the second request from the cache.
+struct ScriptedDoor {
+    script: Vec<busbar_contract::auth_calls::Verified>,
+    verifies: std::sync::atomic::AtomicUsize,
+}
+
+impl ScriptedDoor {
+    fn answer(&self) -> busbar_contract::auth_calls::VerifyAnswer {
+        let n = self
+            .verifies
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.script[n.min(self.script.len() - 1)].clone().into()
+    }
+}
+
+impl busbar_contract::auth_calls::AuthCalls for ScriptedDoor {
+    fn name(&self) -> &str {
+        "scripted-door"
+    }
+    fn facts(&self) -> u32 {
+        busbar_contract::abi::auth::FACT_CACHEABLE
+    }
+    fn verify_now(
+        &self,
+        _: &busbar_contract::auth_calls::VerifyRequest,
+    ) -> Option<busbar_contract::auth_calls::VerifyAnswer> {
+        Some(self.answer())
+    }
+    fn verify(
+        &self,
+        _: busbar_contract::auth_calls::VerifyRequest,
+    ) -> Box<dyn busbar_contract::auth_calls::Verifying> {
+        Box::new(OperatorAnswer(Some(self.answer())))
+    }
+    fn refresh(&self) -> Result<u64, String> {
+        Ok(0)
+    }
+}
+
+/// THE KERNEL HOLDS NO VERDICT CACHE (Q1: the kernel's verdict cache is deleted; a door caches
+/// inside itself, THE DESIGN §11 R3). The same credential presented twice is verified twice, one
+/// door call per request, even though the door states `FACT_CACHEABLE` — and the second verdict is
+/// the door's second answer: a door that identified the credential and then revoked it denies the
+/// second request. Before Q1 the kernel's `CredentialCache` answered a COLD module's repeated
+/// credential from its cache (one module call, the first verdict); any kernel cache that answered
+/// a door's credential the same way turns both assertions RED (one verify, `Identified` again).
+#[tokio::test]
+async fn every_request_is_verified_by_the_door_and_the_kernel_caches_no_verdict() {
+    use busbar_contract::auth_calls::{Verified, VerifiedIdentity};
+    let door = std::sync::Arc::new(ScriptedDoor {
+        script: vec![
+            Verified::Identity(VerifiedIdentity {
+                subject: "ext:who".into(),
+                groups: vec!["ops".into()],
+                ..VerifiedIdentity::default()
+            }),
+            Verified::Reject,
+        ],
+        verifies: std::sync::atomic::AtomicUsize::new(0),
+    });
+    let mut app = crate::test_support::TestApp::new()
+        .admin_chain(vec!["ext-door".to_string()])
+        .build();
+    let mut modules = std::collections::HashMap::new();
+    modules.insert(
+        "ext-door".to_string(),
+        AdminModule {
+            calls: door.clone(),
+        },
+    );
+    std::sync::Arc::get_mut(&mut app)
+        .expect("freshly built App Arc is unshared")
+        .admin_modules = std::sync::Arc::new(AdminAuthChain {
+        modules,
+        operator: Operator::new(crate::config::operator_provider()),
+    });
+    let headers = admin_headers(Some("tok"), None);
+    assert!(matches!(
+        run_admin_chain(&app, "GET", "/", &headers, false).await,
+        (ChainVerdict::Identified { ref module, .. }, _) if module == "ext-door"
+    ));
+    assert_eq!(
+        run_admin_chain(&app, "GET", "/", &headers, false).await,
+        (ChainVerdict::Denied, None),
+        "the second request is the door's second answer, never a cached Identified"
+    );
+    assert_eq!(
+        door.verifies.load(std::sync::atomic::Ordering::SeqCst),
+        2,
+        "one door verify per request"
+    );
 }

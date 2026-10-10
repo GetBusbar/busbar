@@ -5,7 +5,7 @@
 //! presented, the answer read as the admin chain reads it — an overloaded verifier and an outage
 //! kept apart from a bad credential.
 
-use crate::operator::{AdminUnavailable, Judgement, OperatorCredential};
+use crate::operator::{Judgement, OperatorCredential};
 use busbar_contract::auth::AuthVerdict;
 use busbar_contract::auth_calls::{
     AuthCalls, Verified, VerifiedIdentity, VerifyAnswer, VerifyRequest, Verifying,
@@ -105,8 +105,6 @@ fn kind(j: Option<Judgement>) -> &'static str {
         Some(Judgement::Verdict(AuthVerdict::Identify(_))) => "identify",
         Some(Judgement::Verdict(AuthVerdict::Reject)) => "reject",
         Some(Judgement::Verdict(AuthVerdict::Pass)) => "pass",
-        Some(Judgement::Overloaded) => "overloaded",
-        Some(Judgement::Outage) => "outage",
     }
 }
 
@@ -121,8 +119,8 @@ fn every_answer_is_read_as_the_admin_chain_reads_it() {
         (identity, "identify"),
         (Verified::Reject, "reject"),
         (Verified::Pass, "pass"),
-        (Verified::Overloaded, "overloaded"),
-        (Verified::Failed, "outage"),
+        (Verified::Overloaded, "reject"),
+        (Verified::Failed, "reject"),
     ] {
         let double = Double::new(verified, true);
         let credential = OperatorCredential::Module(double.clone());
@@ -167,9 +165,9 @@ fn the_identity_becomes_the_principal() {
 }
 
 #[test]
-fn a_probe_the_plugin_cannot_answer_on_the_spot_is_an_outage() {
+fn a_probe_the_plugin_cannot_answer_on_the_spot_is_a_refusal() {
     let credential = OperatorCredential::Module(Double::new(Verified::Pass, false));
-    assert_eq!(kind(credential.probe(&request())), "outage");
+    assert_eq!(kind(credential.probe(&request())), "reject");
 }
 
 #[test]
@@ -189,16 +187,16 @@ fn no_row_is_unanswered_and_no_token_passes() {
     assert_eq!(kind(OperatorCredential::Unset.probe(&request())), "pass");
 }
 
-/// THE ADMIN VERDICT MAPPING: a verdict is a verdict; an overloaded verifier and one that answered
-/// no verdict are `AdminUnavailable`, never a bad credential, awaited and probed alike, and both
-/// answer the one overloaded text. RED: folded into a `Reject`, the two `Err` rows read `Ok`.
+/// THE ADMIN VERDICT MAPPING (Q134: no admin 503 ships): a verdict is a verdict, and an overloaded
+/// verifier or one that answered no verdict is 1.5.5's refusal, awaited and probed alike. RED: an
+/// unjudged row read as anything but `reject` (the retired 503's `Err`).
 #[test]
-fn an_unjudged_admin_verdict_is_unavailable_not_a_refusal() {
+fn an_unjudged_admin_verdict_is_the_1_5_5_refusal() {
     for (verified, want) in [
-        (Verified::Reject, Ok("reject")),
-        (Verified::Pass, Ok("pass")),
-        (Verified::Overloaded, Err(AdminUnavailable::Overloaded)),
-        (Verified::Failed, Err(AdminUnavailable::Outage)),
+        (Verified::Reject, "reject"),
+        (Verified::Pass, "pass"),
+        (Verified::Overloaded, "reject"),
+        (Verified::Failed, "reject"),
     ] {
         let credential = OperatorCredential::Module(Double::new(verified, true));
         let judged = [
@@ -207,12 +205,7 @@ fn an_unjudged_admin_verdict_is_unavailable_not_a_refusal() {
         ];
         for (judged, how) in judged.into_iter().zip(["awaited", "probed"]) {
             let got = judged.expect("a row answers").verdict();
-            let got = got.map(|v| kind(Some(Judgement::Verdict(v))));
-            assert_eq!(got, want, "{how}");
+            assert_eq!(kind(Some(Judgement::Verdict(got))), want, "{how}");
         }
     }
-    assert_eq!(
-        AdminUnavailable::Outage.message(),
-        AdminUnavailable::Overloaded.message()
-    );
 }

@@ -9,25 +9,15 @@
 //!
 //! A row opens on the auth kind's MEMORY ABI (`abi::auth`, through [`AuthInstance`]) when it is a
 //! linked door ([`crate::registry::LinkedEntry::Door`]) or a dropped-in library exporting
-//! `busbar_plugin_door`.
-//!
-//! M6-COLD-DELETE: a row still on the COLD auth lane (a linked `BUSBAR_COLD_ENTRY`, or a dropped-in
-//! library with no door) opens through [`ColdAuth`], the not-yet-ported plugins' adapter (ARCHITECT
-//! ruling 2026-09-29, WIRE-AUTH Q3 option B: the cold path stays only until the oidc/github/ldap
-//! ports land). It and `crate::auth` are deleted at M6.
+//! `busbar_plugin_door`. A dropped-in library that states no door (a 1.5.5 JSON-contract auth
+//! plugin) is refused at its load, naming the rebuild ([`NO_DOOR`]).
 
-use std::future::Future;
-use std::pin::Pin;
 use std::sync::Arc;
-use std::task::{Context, Poll, Waker};
 
-use busbar_contract::abi::auth::{FACT_CACHEABLE, FACT_READS_CREDENTIALS};
+use busbar_contract::abi::auth::FACT_READS_CREDENTIALS;
 use busbar_contract::abi::mechanism::door::REWRITE_ALIAS;
 use busbar_contract::abi::mechanism::rendering::read;
-use busbar_contract::auth::{AuthModule, AuthVerdict};
-use busbar_contract::auth_calls::{
-    AuthCalls, Verified, VerifiedIdentity, VerifyAnswer, VerifyRequest, Verifying,
-};
+use busbar_contract::auth_calls::AuthCalls;
 use busbar_contract::conn::DeclaredConns;
 
 use crate::auth_door::{AuthInstance, AuthSink};
@@ -48,9 +38,10 @@ const MAX_INFLIGHT_CAP: u32 = 64;
 enum Door {
     /// On the memory ABI: the bound plugin and its envelope sink.
     Memory(Plugin<Auth>, AuthSink),
-    /// M6-COLD-DELETE: on the cold lane.
-    Cold,
 }
+
+/// Why a row that states no door does not open: a 1.5.5 JSON-contract auth plugin.
+pub const NO_DOOR: &str = "it speaks the 1.5.5 JSON auth contract, which this host does not load — rebuild the plugin against the 1.6.0 SDK";
 
 /// The auth rows of `registry`, opening instances on `dispatcher`. One per build: the kernel builds
 /// its registry per boot or apply and opens that build's auth instances over it, on the process's
@@ -142,10 +133,8 @@ impl AuthRows {
         };
         let loaded = match row.door() {
             Some(door) => LinkedRow::of(door).and_then(|r| load_linked::<Auth>(&r, bind)),
-            None if row.image_is_cold_linked() => return Ok(Door::Cold),
             None => match row.manifest.stated_rendering().map_err(refused)? {
-                // M6-COLD-DELETE: a dropped-in cold auth plugin states no Statement.
-                None => return Ok(Door::Cold),
+                None => return Err(refused(NO_DOOR.to_string())),
                 Some(stated) => load_dropped_bytes::<Auth>(&row.lib_bytes, name, &stated, bind),
             },
         };
@@ -267,37 +256,24 @@ impl AuthRows {
         let row = self
             .row(module)
             .ok_or_else(|| format!("no `kind: auth` plugin answers to '{module}'"))?;
-        match self.load(row, label, true)? {
-            Door::Memory(plugin, sink) => {
-                let kinds = plugin
-                    .context::<AuthFacts>()
-                    .map(|f| f.credential_kinds.clone())
-                    .unwrap_or_default();
-                self.one_reader_per_kind(row, &kinds)?;
-                let (settings, secrets) = crate::auth_door::split_secrets(&plugin, settings);
-                let text = settings.to_string();
-                let opened = AuthInstance::open(
-                    plugin,
-                    sink,
-                    self.dispatcher.clone(),
-                    label,
-                    text.as_bytes(),
-                    secrets,
-                )
-                .map_err(|e| format!("auth plugin '{module}': {e}"))?;
-                Ok(Arc::new(opened))
-            }
-            Door::Cold => {
-                // The cold lane took its settings as text: a JSON string's own text, else the
-                // document.
-                let text = match settings {
-                    serde_json::Value::String(s) => s.clone(),
-                    other => other.to_string(),
-                };
-                let module = self.registry.open_auth(module, &text)?;
-                Ok(Arc::new(ColdAuth::new(module)))
-            }
-        }
+        let Door::Memory(plugin, sink) = self.load(row, label, true)?;
+        let kinds = plugin
+            .context::<AuthFacts>()
+            .map(|f| f.credential_kinds.clone())
+            .unwrap_or_default();
+        self.one_reader_per_kind(row, &kinds)?;
+        let (settings, secrets) = crate::auth_door::split_secrets(&plugin, settings);
+        let text = settings.to_string();
+        let opened = AuthInstance::open(
+            plugin,
+            sink,
+            self.dispatcher.clone(),
+            label,
+            text.as_bytes(),
+            secrets,
+        )
+        .map_err(|e| format!("auth plugin '{module}': {e}"))?;
+        Ok(Arc::new(opened))
     }
 
     /// TEST STAND-IN: the auth row serving the outbound `style`, its instance opened for its
@@ -340,7 +316,7 @@ impl AuthRows {
 }
 
 /// The aliases `row`'s Statement states (its [`REWRITE_ALIAS`] rewrites; the design's One
-/// Statement): a linked door's own rendering, a dropped plugin's signed one. A cold row states none.
+/// Statement): a linked door's own rendering, a dropped plugin's signed one.
 /// A rendering that does not read back names nothing here; the load refuses it.
 fn stated_aliases(row: &LoadablePlugin) -> Vec<String> {
     let stated = match row.door() {
@@ -417,111 +393,6 @@ impl busbar_contract::auth_calls::AuthAxis for AuthRows {
         settings: &serde_json::Value,
     ) -> Result<Arc<dyn AuthCalls>, String> {
         AuthRows::open(self, module, label, settings)
-    }
-}
-
-/// M6-COLD-DELETE: a not-yet-ported auth plugin on the cold lane, as [`AuthCalls`]. Its
-/// `authenticate` is made on the caller's thread, as the kernel's chain has always made it, and
-/// answered on the spot; the loader lends it no blocking thread (one memory ABI: no
-/// `spawn_blocking` in the loader).
-pub struct ColdAuth {
-    module: Arc<dyn AuthModule>,
-    name: String,
-    facts: u32,
-}
-
-impl std::fmt::Debug for ColdAuth {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ColdAuth")
-            .field("name", &self.name)
-            .finish_non_exhaustive()
-    }
-}
-
-impl ColdAuth {
-    /// The adapter over an opened cold module.
-    #[must_use]
-    pub fn new(module: Box<dyn AuthModule>) -> Self {
-        let facts = if module.cacheable() {
-            FACT_CACHEABLE
-        } else {
-            0
-        };
-        Self {
-            name: module.name().to_string(),
-            module: Arc::from(module),
-            facts,
-        }
-    }
-}
-
-/// A cold verdict as the chain reads it.
-fn cold_verdict(v: AuthVerdict) -> Verified {
-    match v {
-        AuthVerdict::Identify(p) => Verified::Identity(VerifiedIdentity {
-            subject: p.id,
-            name: p.name,
-            groups: p.roles,
-            ttl_secs: p.ttl_secs,
-            ..VerifiedIdentity::default()
-        }),
-        AuthVerdict::Reject => Verified::Reject,
-        AuthVerdict::Pass => Verified::Pass,
-    }
-}
-
-/// One cold verify: its credential as the cold lane took it — the candidate the host lent
-/// ([`VerifyRequest::credential`]), as text; `None` = none presented.
-fn cold_credential(request: &VerifyRequest) -> Option<String> {
-    request
-        .credential
-        .as_ref()
-        .map(|c| String::from_utf8_lossy(c.expose_secret()).into_owned())
-}
-
-impl AuthCalls for ColdAuth {
-    fn name(&self) -> &str {
-        &self.name
-    }
-
-    fn facts(&self) -> u32 {
-        self.facts
-    }
-
-    fn verify_now(&self, request: &VerifyRequest) -> Option<VerifyAnswer> {
-        let credential = cold_credential(request);
-        // The cold lane names no strips: its verdict with its default decision.
-        Some(cold_verdict(self.module.authenticate(credential.as_deref())).into())
-    }
-
-    fn verify(&self, request: VerifyRequest) -> Box<dyn Verifying> {
-        Box::new(ColdVerifying(self.verify_now(&request)))
-    }
-
-    fn refresh(&self) -> Result<u64, String> {
-        // A cold plugin's verdicts are cached by the kernel (its `cacheable`), which the admin flush
-        // reaches directly: nothing is held here.
-        Ok(0)
-    }
-}
-
-/// A cold verify, answered on the spot.
-struct ColdVerifying(Option<VerifyAnswer>);
-
-impl Future for ColdVerifying {
-    type Output = VerifyAnswer;
-    fn poll(mut self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<VerifyAnswer> {
-        Poll::Ready(self.0.take().unwrap_or_else(|| Verified::Failed.into()))
-    }
-}
-
-impl Verifying for ColdVerifying {
-    fn settled(&mut self) -> Option<VerifyAnswer> {
-        let mut cx = Context::from_waker(Waker::noop());
-        match Pin::new(self).poll(&mut cx) {
-            Poll::Ready(v) => Some(v),
-            Poll::Pending => None,
-        }
     }
 }
 

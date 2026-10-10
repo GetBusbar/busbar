@@ -423,7 +423,7 @@ fn auth_plugin_loads_and_identifies_through_middleware() {
     .expect("preflight resolves the kind:auth plugin");
     let registry = std::sync::Arc::new(registry);
 
-    // The real load through the middleware — resolve → open_auth → box → chain.
+    // The real load through the middleware — resolve → the auth axis opens it → chain.
     let mw = AuthMiddleware::new(
         &cfg,
         &registry,
@@ -778,55 +778,89 @@ fn keys_module_is_not_a_plugin_ref() {
 
 // ── THE AUTH CHAIN MUST NOT RUN ON THE REACTOR ───────────────────────────────────
 //
-// A `kind: auth` plugin's `authenticate` is a synchronous FFI call, and behind it the module does
-// whatever it does — the shipped OIDC module fetches JWKS over blocking HTTPS with a 10s timeout.
-// `auth_middleware` is an `async fn` on a Tokio worker, so calling the chain inline hands that
-// worker to the plugin. A slow identity provider then parks one worker per in-flight request until
-// the runtime polls nothing at all: not other requests, not the admin plane, and not `/healthz`
-// (exempt from the chain, but it still needs a worker thread to run). The node fails its liveness
-// probe and is killed, over an IdP most of the stalled traffic never used.
+// A `kind: auth` plugin's `verify` may do network I/O (the OIDC module fetches JWKS over HTTPS).
+// `auth_middleware` is an `async fn` on a Tokio worker, so a chain that WAITED on the plugin on that
+// worker would hand it the worker: a slow identity provider would park one worker per in-flight
+// request until the runtime polled nothing at all — not other requests, not the admin plane, and
+// not `/healthz` (exempt from the chain, but it still needs a worker thread to run). The node would
+// fail its liveness probe. On the door, the request path SUBMITS each `verify` and AWAITS it.
 
-/// An auth module that blocks — the shape of every plugin that talks to a network identity
-/// provider. It signals the moment it is entered, so the test never has to guess at timing.
-struct BlockingModule {
-    entered: std::sync::mpsc::Sender<()>,
+/// A door whose `verify` answers only after `hold`, from a thread of its own (the dispatcher worker
+/// the plugin runs on). It signals the moment it is asked, so the test never has to guess at timing.
+struct SlowDoor {
+    entered: std::sync::Mutex<std::sync::mpsc::Sender<()>>,
     hold: std::time::Duration,
 }
-impl busbar_contract::auth::AuthModule for BlockingModule {
-    fn name(&self) -> &'static str {
-        "blocking-test-module"
-    }
-    fn authenticate(&self, _candidate: Option<&str>) -> busbar_contract::auth::AuthVerdict {
-        let _ = self.entered.send(());
-        std::thread::sleep(self.hold);
-        busbar_contract::auth::AuthVerdict::Pass
-    }
-    fn cacheable(&self) -> bool {
-        false
+
+/// A `verify` the plugin answers later.
+struct Later(tokio::sync::oneshot::Receiver<busbar_contract::auth_calls::VerifyAnswer>);
+
+impl std::future::Future for Later {
+    type Output = busbar_contract::auth_calls::VerifyAnswer;
+    fn poll(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Self::Output> {
+        std::future::Future::poll(std::pin::Pin::new(&mut self.0), cx).map(|answer| {
+            answer.unwrap_or_else(|_| busbar_contract::auth_calls::Verified::Failed.into())
+        })
     }
 }
 
-/// Called INLINE from `auth_middleware`, the probe below is never scheduled, because the single
-/// worker is inside the plugin. OFFLOADED to the blocking pool, the worker is free and the probe
-/// completes while the plugin is still blocking.
+impl busbar_contract::auth_calls::Verifying for Later {
+    fn settled(&mut self) -> Option<busbar_contract::auth_calls::VerifyAnswer> {
+        self.0.try_recv().ok()
+    }
+}
+
+impl busbar_contract::auth_calls::AuthCalls for SlowDoor {
+    fn name(&self) -> &str {
+        "slow-door"
+    }
+    fn facts(&self) -> u32 {
+        0
+    }
+    fn verify_now(
+        &self,
+        _: &busbar_contract::auth_calls::VerifyRequest,
+    ) -> Option<busbar_contract::auth_calls::VerifyAnswer> {
+        None
+    }
+    fn verify(
+        &self,
+        _: busbar_contract::auth_calls::VerifyRequest,
+    ) -> Box<dyn busbar_contract::auth_calls::Verifying> {
+        let _ = self.entered.lock().unwrap().send(());
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let hold = self.hold;
+        std::thread::spawn(move || {
+            std::thread::sleep(hold);
+            let _ = tx.send(busbar_contract::auth_calls::Verified::Pass.into());
+        });
+        Box::new(Later(rx))
+    }
+    fn refresh(&self) -> Result<u64, String> {
+        Ok(0)
+    }
+}
+
+/// While a door's `verify` is outstanding, the request path holds no worker: the probe below is
+/// scheduled on the one worker while the plugin is still answering.
 ///
 /// A one-worker runtime is not a contrived shape — busbar sizes its runtime from
 /// `available_parallelism()` and the docs recommend 1-2 workers for sidecar deployments. It is
 /// simply the smallest configuration in which "a worker is parked" is decidable.
 #[test]
-fn a_blocking_auth_plugin_does_not_park_the_reactor() {
+fn a_slow_auth_door_does_not_park_the_reactor() {
     let (tx, entered) = std::sync::mpsc::channel();
-    let auth = std::sync::Arc::new(AuthMiddleware::from_chain_for_test(
-        vec![(
-            "blocking".to_string(),
-            Box::new(BlockingModule {
-                entered: tx,
-                hold: std::time::Duration::from_secs(3),
-            }) as Box<dyn crate::auth::AuthModule>,
-        )],
-        /* offload = */ true,
-    ));
-
+    let door = SlowDoor {
+        entered: std::sync::Mutex::new(tx),
+        hold: std::time::Duration::from_secs(3),
+    };
+    let auth = std::sync::Arc::new(AuthMiddleware::from_doors_for_test(vec![(
+        "slow".to_string(),
+        std::sync::Arc::new(door) as std::sync::Arc<dyn busbar_contract::auth_calls::AuthCalls>,
+    )]));
     let rt = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(1)
         .enable_all()
@@ -845,10 +879,10 @@ fn a_blocking_auth_plugin_does_not_park_the_reactor() {
     });
     entered
         .recv_timeout(std::time::Duration::from_secs(10))
-        .expect("the auth module must actually have been entered");
+        .expect("the door must actually have been asked");
 
-    // Can the runtime still schedule anything while the module blocks? Signalled over a STD channel
-    // with a std timeout deliberately: a dead reactor has a dead timer driver, so a
+    // Can the runtime still schedule anything while the plugin answers? Signalled over a STD
+    // channel with a std timeout deliberately: a dead reactor has a dead timer driver, so a
     // `tokio::time::timeout` would hang instead of failing.
     let (ptx, probe) = std::sync::mpsc::channel();
     rt.spawn(async move {
@@ -857,43 +891,7 @@ fn a_blocking_auth_plugin_does_not_park_the_reactor() {
     let served = probe.recv_timeout(std::time::Duration::from_secs(2));
     assert!(
         matches!(served, Ok("healthz ok")),
-        "the runtime must keep serving while an auth module blocks; the worker is parked inside \
-         the plugin (got {served:?})"
-    );
-}
-
-/// The counterpart, so the offload is not applied blindly: an ALL-IN-PROCESS chain is called
-/// inline. Those modules are microsecond constant-time compares, and paying a `spawn_blocking` hop
-/// per request to protect against work that cannot block would be a pure regression. Asserted by
-/// behaviour — the verdict is identical and correct either way — plus the explicit flag.
-#[test]
-fn an_in_process_chain_is_not_offloaded() {
-    let auth = std::sync::Arc::new(AuthMiddleware::from_chain_for_test(
-        vec![(
-            "test-groups-module".to_string(),
-            Box::new(crate::auth::TestGroupsModule) as Box<dyn crate::auth::AuthModule>,
-        )],
-        /* offload = */ false,
-    ));
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("runtime");
-    // A current-thread runtime has NO blocking-pool round-trip to hide behind: if this path tried to
-    // offload, the verdict would still arrive, but the point is that it resolves synchronously
-    // within one poll of the future.
-    let verdict = rt.block_on(async {
-        AuthMiddleware::run_chain_on_request_path(
-            &auth,
-            Some("grp:admins".into()),
-            crate::auth::ChainHead::default(),
-            None,
-            None,
-        )
-        .await
-    });
-    assert!(
-        matches!(verdict, ChainVerdict::Identified { .. }),
-        "an in-process chain must keep identifying exactly as before"
+        "the runtime must keep serving while an auth door answers; the worker is parked on the \
+         plugin (got {served:?})"
     );
 }

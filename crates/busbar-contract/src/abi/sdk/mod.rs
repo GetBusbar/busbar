@@ -6,16 +6,13 @@
 //! (`plugin_door!`) and exports its ONE door symbol through `export_door!`; compiled in or dropped
 //! in, the host calls the same table.
 //!
-//! M6-COLD-DELETE residue: one JSON-lane export remains, over [`boundary`] — a `kind: auth`
-//! plugin's (`export_login_plugin!`: its verify and its hosted login), until that plugin's door
-//! re-pin. No store, secret, hook or export plugin has one.
+//! No plugin of any kind has a JSON-lane export: the COLD/JSON lane is gone. [`boundary`] and the
+//! frozen symbols below are the HOT lane's residue, deleted with it.
 
 // The SDK's `unsafe fn` bodies were written under the crate default (edition 2021: an `unsafe fn`
 // body is itself an unsafe context). The shared ABI root denies `unsafe_op_in_unsafe_fn` for the two
 // lanes; the SDK keeps the discipline it was written and reviewed under, unchanged by the merge.
 #![allow(unsafe_op_in_unsafe_fn)]
-
-use std::os::raw::c_void;
 
 pub mod boundary;
 pub use boundary::BoundaryOutcome;
@@ -72,10 +69,7 @@ pub use publish::{Generations, Keyed};
 pub mod life;
 
 // The `#[macro_export]` export macros, named at this module's path too.
-pub use crate::{
-    export_carrier, export_framer, export_login_plugin, export_plane, export_plugin,
-    export_transport,
-};
+pub use crate::{export_carrier, export_framer, export_plane, export_plugin, export_transport};
 
 /// The "decision observability" signal catalog: a plugin author references
 /// `busbar_contract::abi::sdk::Signal::CandidateBreakerState` (etc.) at compile time to declare which
@@ -94,103 +88,6 @@ pub mod __abi {
 /// The boundary a LINKED build hands the loader in place of a library (the macro's
 /// `BUSBAR_COLD_ENTRY`): named here so a plugin's linked-door entry can state its type.
 pub use crate::abi::cold::ColdEntry;
-
-// ── AUTH-plugin glue (`kind: auth`) ──────────────────────────────────────────────────────────────
-// The hosted login's JSON-lane export (M6-COLD-DELETE residue): the six-symbol shape via `export_plugin!`, its own handle type
-// (`Box<dyn AuthModule>`) and the identity-only auth wire. A denied credential is a SUCCESSFUL call
-// (`Reject`/`Pass` ride the OK payload); only a malformed request / encode failure is a protocol error.
-
-/// The auth handle behind the opaque `*mut c_void`: a boxed [`crate::auth::AuthPlugin`] — an auth
-/// module that is BOTH a verifier ([`crate::auth::AuthModule`]) and a login provider
-/// ([`crate::auth::LoginModule`], fail-closed by default for verify-only modules). Named at the module
-/// level so the `export_plugin!` expansion can pass it to `close_boundary::<$ty>`.
-pub type AuthHandle = Box<dyn crate::auth::AuthPlugin>;
-
-pub use crate::abi::cold::auth::{AuthRequest, AuthResponse};
-/// Re-export the auth wire and the two auth faces so an auth author (and the `dispatch_compiled_in`
-/// twin `export_login_plugin!` emits) names `busbar_contract::abi::sdk::AuthRequest` (etc.) without a direct
-/// `busbar-plugin` dependency, mirroring the hook re-export path.
-pub use crate::auth::{AuthModule, AuthPlugin};
-
-/// The auth handle behind the opaque `*mut c_void`: a boxed [`crate::auth::AuthPlugin`].
-type BoxedAuth = AuthHandle;
-
-/// The auth PAYLOAD schema version this SDK builds against (the manifest `abi_version` a `kind: auth`
-/// plugin declares): the auth kind's one version ([`crate::abi::auth::ABI_VERSION`]), so the loader's
-/// accepted version and this SDK's declared one cannot drift apart.
-pub fn auth_abi_version() -> u32 {
-    crate::abi::auth::ABI_VERSION
-}
-
-/// Run one [`crate::abi::cold::auth::AuthRequest`] against an `AuthModule` — the single match that
-/// maps the wire enum to the trait, unit-testable without FFI. An empty `credential` (no usable
-/// credential presented) is passed to `authenticate(None)`.
-pub fn dispatch_auth(
-    module: &dyn crate::auth::AuthPlugin,
-    req: crate::abi::cold::auth::AuthRequest,
-) -> crate::abi::cold::auth::AuthResponse {
-    use crate::abi::cold::auth::{AuthRequest, AuthResponse};
-    match req {
-        AuthRequest::Name => AuthResponse::Name(module.name().to_string()),
-        AuthRequest::Cacheable => AuthResponse::Cacheable(module.cacheable()),
-        // ABI v2: the pure redirect-vs-credential classification, resolved once at load.
-        AuthRequest::LoginKind => AuthResponse::LoginKind(module.login_kind().into()),
-        AuthRequest::Authenticate { credential } => {
-            let candidate = if credential.is_empty() {
-                None
-            } else {
-                Some(credential.as_str())
-            };
-            AuthResponse::from_outcome(module.authenticate(candidate))
-        }
-        // ABI v2 login primitives: convert the wire request to the engine shape, run the module's
-        // LoginModule (fail-closed default for verify-only modules), map the verdict back to the wire.
-        AuthRequest::BeginLogin(begin) => {
-            AuthResponse::from_login_outcome(module.begin_login(&begin.into()))
-        }
-        AuthRequest::CompleteLogin(complete) => {
-            AuthResponse::from_login_outcome(module.complete_login(&complete.into()))
-        }
-    }
-}
-
-/// Run one auth request and wrap the answer in the observability envelope (DECISIONS #85) — what
-/// actually goes on the wire (#2's auth witness, step (1)).
-///
-/// An auth module's verify and login faces report nothing on the back-channel, so the envelope is
-/// BARE (`{"result": …}`): what makes it load-bearing is not what it carries today but that the
-/// dropped-in door (`busbar_call`, via [`auth_dispatch`]) and the compiled-in door (the
-/// `dispatch_compiled_in` twin `export_login_plugin!` emits) run THIS function and nothing else, so the
-/// two builds of one crate are byte-identical on the wire and a compiled-in build has no
-/// back-channel of its own to reach. Shipped at auth payload schema v3 ([`auth_abi_version`]); the
-/// loader keeps the v1 floor and reads a bare (pre-envelope) answer exactly as before.
-pub fn dispatch_auth_enveloped(
-    module: &dyn crate::auth::AuthPlugin,
-    req: crate::abi::cold::auth::AuthRequest,
-) -> Envelope<crate::abi::cold::auth::AuthResponse> {
-    Envelope::bare(dispatch_auth(module, req))
-}
-
-/// The per-kind `dispatch` closure `export_login_plugin!` hands to [`boundary::call_boundary`]: decode an
-/// [`crate::abi::cold::auth::AuthRequest`], run it via [`dispatch_auth_enveloped`], and encode the
-/// enveloped [`crate::abi::cold::auth::AuthResponse`] into a [`BoundaryOutcome`]. An
-/// `authenticate` verdict (`Reject`/`Pass`) rides the OK payload — only an undecodable request /
-/// encode failure is non-OK.
-///
-/// # Safety
-/// `handle` is a live auth handle from `open` (guaranteed non-null by the boundary wrapper).
-pub unsafe fn auth_dispatch(handle: *mut c_void, bytes: &[u8]) -> BoundaryOutcome {
-    let module: &BoxedAuth = &*(handle as *const BoxedAuth);
-    let request: crate::abi::cold::auth::AuthRequest = match serde_json::from_slice(bytes) {
-        Ok(r) => r,
-        Err(e) => return BoundaryOutcome::Unsupported(format!("malformed request JSON: {e}")),
-    };
-    let resp = dispatch_auth_enveloped(module.as_ref(), request);
-    match serde_json::to_vec(&resp) {
-        Ok(payload) => BoundaryOutcome::Ok(payload),
-        Err(e) => BoundaryOutcome::Error(format!("response encode failed: {e}")),
-    }
-}
 
 /// The host log call — a HOST SERVICE (#83: the contract holds its shape, never an output of its
 /// own). [`LogSinkFn`](crate::abi::cold::LogSinkFn) is the shape; the host hands a plugin its sink
@@ -252,43 +149,6 @@ pub mod hostlog {
     pub fn info(msg: &str) {
         log(log_level::INFO, msg);
     }
-}
-
-/// Emit an `auth`-kind cdylib plugin from `$ctor` (a
-/// `fn(&str) -> Result<Box<dyn crate::auth::AuthPlugin>, String>`) — a LOGIN-CAPABLE module that
-/// implements BOTH [`crate::auth::AuthModule`] (verify) AND [`crate::auth::LoginModule`]
-/// (BeginLogin/CompleteLogin).
-///
-/// The ctor's `Box<dyn AuthPlugin>` is boxed DIRECTLY, so [`auth_dispatch`] sees the real
-/// [`crate::auth::LoginModule`] impl and the login arms work. It stamps `busbar_plugin_kind() ==
-/// "auth"` and the six neutral symbols (its `abi_version >= 2` is what the engine's capability gate
-/// reads to decide it can serve the browser flow).
-#[macro_export]
-macro_rules! export_login_plugin {
-    ($ctor:path) => {
-        /// The ctor already yields a login-capable `Box<dyn AuthPlugin>`, so it is exported DIRECTLY
-        /// — NOT through the verify-only adapter, which would mask the login capability.
-        #[doc(hidden)]
-        fn __busbar_login_open(
-            cfg: &str,
-        ) -> ::core::result::Result<$crate::abi::sdk::AuthHandle, ::std::string::String> {
-            $ctor(cfg)
-        }
-        $crate::export_plugin!(
-            kind = "auth",
-            dispatch = $crate::abi::sdk::auth_dispatch,
-            ctor = __busbar_login_open,
-            handle = $crate::abi::sdk::AuthHandle,
-        );
-        /// THE COMPILED-IN ENTRY POINT — the twin of the `busbar_call` symbol above, as
-        /// the same `dispatch_auth_enveloped` the C symbol runs.
-        pub fn dispatch_compiled_in(
-            module: &dyn $crate::abi::sdk::AuthPlugin,
-            req: $crate::abi::sdk::AuthRequest,
-        ) -> $crate::abi::sdk::Envelope<$crate::abi::sdk::AuthResponse> {
-            $crate::abi::sdk::dispatch_auth_enveloped(module, req)
-        }
-    };
 }
 
 // ── HOOK-plugin glue (`kind: hook`) ───────────────────────────────────────────────────────────────
@@ -456,9 +316,9 @@ pub mod __door {
 
     /// What one plugin image is, as its dropped-in door answers for it.
     pub enum Door {
-        /// The hosted login's JSON-lane auth image (M6-COLD-DELETE residue): the same entry its linked door hands
-        /// the loader, and the dropped-in door's sink install (`export_plugin!` generates it: the
-        /// sink plus this image's `tracing` forwarder).
+        /// A JSON-lane image (`export_plugin!`; no shipped plugin is one — residue of the frozen
+        /// symbols, deleted with the HOT lane): the entry its linked door hands the loader, and the
+        /// dropped-in door's sink install (the sink plus this image's `tracing` forwarder).
         Cold(&'static ColdEntry, SetLogSinkFn),
         /// A plane: the same decl its linked door hands the registry.
         Plane(&'static PlaneDecl),

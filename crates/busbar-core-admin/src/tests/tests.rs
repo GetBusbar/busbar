@@ -1463,20 +1463,80 @@ async fn test_admin_v1_idempotency_key_is_principal_scoped() {
     handle.abort();
 }
 
-/// The cache flush end-to-end: `POST /api/v1/admin/auth/cache/flush` is a full-scope mutation
-/// (read-only principals get 403), and it answers the count the auth plugins report dropping when
-/// they `refresh` (THE DESIGN 11.11 R3): the kernel caches no verdict, so after two reads by an
-/// external module's principal, a module that caches nothing inside itself (the in-process
-/// stand-in) reports nothing to drop.
+/// An external admin auth module on the door that passes every credential and holds its own
+/// inbound cache: each `refresh` (the admin flush) drops `FLUSHED` entries, as it reports them.
+struct CachingDoor(std::sync::atomic::AtomicUsize);
+
+const FLUSHED: u64 = 3;
+
+/// A `verify` answered on the spot.
+struct Passed;
+
+impl std::future::Future for Passed {
+    type Output = busbar_contract::auth_calls::VerifyAnswer;
+    fn poll(
+        self: std::pin::Pin<&mut Self>,
+        _: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Self::Output> {
+        std::task::Poll::Ready(busbar_contract::auth_calls::Verified::Pass.into())
+    }
+}
+
+impl busbar_contract::auth_calls::Verifying for Passed {
+    fn settled(&mut self) -> Option<busbar_contract::auth_calls::VerifyAnswer> {
+        Some(busbar_contract::auth_calls::Verified::Pass.into())
+    }
+}
+
+impl busbar_contract::auth_calls::AuthCalls for CachingDoor {
+    fn name(&self) -> &str {
+        "caching-door"
+    }
+    fn facts(&self) -> u32 {
+        0
+    }
+    fn verify_now(
+        &self,
+        _: &busbar_contract::auth_calls::VerifyRequest,
+    ) -> Option<busbar_contract::auth_calls::VerifyAnswer> {
+        Some(busbar_contract::auth_calls::Verified::Pass.into())
+    }
+    fn verify(
+        &self,
+        _: busbar_contract::auth_calls::VerifyRequest,
+    ) -> Box<dyn busbar_contract::auth_calls::Verifying> {
+        Box::new(Passed)
+    }
+    fn refresh(&self) -> Result<u64, String> {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(FLUSHED)
+    }
+}
+
+/// The credential-cache flush end-to-end: the inbound caches are the plugins' (THE DESIGN 11.11 R3),
+/// so `POST /api/v1/admin/auth/cache/flush` refreshes each opened auth instance the body names (its
+/// provider) — or all of them — and answers `{"flushed": N}` as the plugins report what they
+/// dropped. It is a full-scope mutation (read-only principals get 403), the operator credential
+/// holds no cache, and a malformed body is 400.
 #[tokio::test]
 async fn test_admin_v1_credential_cache_and_flush_endpoint() {
     busbar_kernel::snapshot::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
-    let mut app = crate::new_test_app().governance(gov).build();
+    let door = Arc::new(CachingDoor(std::sync::atomic::AtomicUsize::new(0)));
+    // The operator credential's provider, named once: the chain lists it and a flush addresses it.
+    let operator = "admin-tokens";
+    let mut app = crate::new_test_app()
+        .governance(gov)
+        .admin_door("ext-idp", door.clone())
+        .build();
     {
         let inner = Arc::get_mut(&mut app).expect("sole owner");
-        inner.admin_chain = vec!["test-scope-module".to_string(), "admin-tokens".to_string()];
+        inner.admin_chain = vec![
+            "test-scope-module".to_string(),
+            "ext-idp".to_string(),
+            operator.to_string(),
+        ];
         let mut table = std::collections::BTreeMap::new();
         table.insert(
             "viewers".to_string(),
@@ -1491,52 +1551,49 @@ async fn test_admin_v1_credential_cache_and_flush_endpoint() {
     }
     let router = crate::build_router(app);
     let (addr, handle, client) = spin_up(router).await;
+    let flush = |token: &'static str, body: Option<serde_json::Value>| {
+        let mut r = client
+            .post(format!("http://{addr}/api/v1/admin/auth/cache/flush"))
+            .header("x-admin-token", token);
+        if let Some(body) = body {
+            r = r
+                .header("content-type", "application/json")
+                .body(body.to_string());
+        }
+        r.send()
+    };
 
-    // Two reads as a group-mapped principal: the module's Identify lands in the cache.
-    for _ in 0..2 {
-        let r = client
-            .get(format!("http://{addr}/api/v1/admin/info"))
-            .header("x-admin-token", "grp:viewers")
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(r.status().as_u16(), 200);
-    }
-
-    // A read-only principal cannot flush (full-scope mutation).
-    let r = client
-        .post(format!("http://{addr}/api/v1/admin/auth/cache/flush"))
-        .header("x-admin-token", "grp:viewers")
-        .send()
-        .await
-        .unwrap();
+    // A read-only principal cannot flush (full-scope mutation), and reaches no plugin.
+    let r = flush("grp:viewers", None).await.unwrap();
     assert_eq!(r.status().as_u16(), 403, "flush is a full-scope mutation");
+    assert_eq!(door.0.load(std::sync::atomic::Ordering::SeqCst), 0);
 
-    // Operator flushes the module: the kernel holds nothing, and the stand-in caches nothing.
-    let r = client
-        .post(format!("http://{addr}/api/v1/admin/auth/cache/flush"))
-        .header("x-admin-token", "admintok")
-        .header("content-type", "application/json")
-        .body(serde_json::json!({"module": "test-scope-module"}).to_string())
-        .send()
+    // The operator flushes one provider's partition: that plugin drops its cache and says how much.
+    let r = flush("admintok", Some(serde_json::json!({"module": "ext-idp"})))
         .await
         .unwrap();
     assert_eq!(r.status().as_u16(), 200);
     let body: serde_json::Value = r.json().await.unwrap();
     assert_eq!(
-        body["flushed"], 0,
-        "the kernel caches no verdict; the stand-in module caches none inside itself"
+        body["flushed"], FLUSHED,
+        "what the plugin reported dropping"
     );
+    assert_eq!(door.0.load(std::sync::atomic::Ordering::SeqCst), 1);
 
-    // Flush-all with an empty body: nothing left.
-    let r = client
-        .post(format!("http://{addr}/api/v1/admin/auth/cache/flush"))
-        .header("x-admin-token", "admintok")
-        .send()
+    // A provider that holds no plugin cache (the operator credential) flushes nothing.
+    let r = flush("admintok", Some(serde_json::json!({"module": operator})))
         .await
         .unwrap();
     let body: serde_json::Value = r.json().await.unwrap();
-    assert_eq!(body["flushed"], 0, "nothing is cached kernel-side");
+    assert_eq!(body["flushed"], 0);
+    assert_eq!(door.0.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+    // Flush-all with an empty body reaches every plugin.
+    let r = flush("admintok", None).await.unwrap();
+    assert_eq!(r.status().as_u16(), 200);
+    let body: serde_json::Value = r.json().await.unwrap();
+    assert_eq!(body["flushed"], FLUSHED);
+    assert_eq!(door.0.load(std::sync::atomic::Ordering::SeqCst), 2);
 
     // Malformed body: invalid_request.
     let r = client

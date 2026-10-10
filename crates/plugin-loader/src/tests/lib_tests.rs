@@ -4,28 +4,26 @@
 //! Tests for `crates/plugin-loader/src/lib.rs`.
 
 use super::*;
-use busbar_contract::abi::cold::{
-    STATUS_PANIC, STATUS_PROTOCOL, STATUS_UNSUPPORTED, TRANSPORT_VERSION,
-};
+use busbar_contract::abi::cold::TRANSPORT_VERSION;
 
 /// The 1.5.5 store payload schema (v2). No loaded plugin states it since THE DESIGN §11.8 (the
 /// registry refuses it at boot, ruling C21/ABI-o1); the store adapter's shim suites bind an adapter
 /// at it to pin the schema-keyed shim rule.
 const PUBLISHED_STORE_SCHEMA: u32 = 2;
 
-/// The REAL plugin the loader-MECHANISM tests below dlopen (validation, inventory, the kind gates):
-/// the `auth` row of `[package.metadata.busbar.both-ways]`, the token-verifying OIDC module's
-/// dropped-in `cdylib`. It is on the auth kind's memory ABI (its row is a door row, and the table names
-/// its logic crate, so its cdylib is `<logic>_plugin`); every SDK-built library still answers the
-/// plugin-ABI handshake these tests drive (`busbar_abi`, `busbar_plugin_kind` and the four
-/// operational symbols), so it is the subject the cold auth cdylib was. A missing cdylib is a hard
-/// failure naming the command that builds it ([`super::both_ways::cdylib`]), never a silent skip.
-fn json_lane_plugin_path() -> std::path::PathBuf {
+/// The REAL plugin the loader-MECHANISM tests below dlopen (validation, inventory): the `auth` row
+/// of `[package.metadata.busbar.both-ways]`, the token-verifying OIDC module's dropped-in `cdylib`.
+/// It is on the auth kind's memory ABI (its row is a door row, and the table names its logic crate,
+/// so its cdylib is `<logic>_plugin`); every SDK-built library answers the plugin-ABI handshake
+/// these tests drive (`busbar_abi`, `busbar_plugin_kind` and the operational symbols). A missing
+/// cdylib is a hard failure naming the command that builds it ([`super::both_ways::cdylib`]), never
+/// a silent skip.
+fn handshake_plugin_path() -> std::path::PathBuf {
     let (logic, _) = super::both_ways::door_fixture("auth");
     super::both_ways::cdylib(&format!("{logic}_plugin"))
 }
 
-/// `validate_plugin` accepts the real JSON-lane fixture cdylib (ABI v1) without constructing an
+/// `validate_plugin` accepts the real handshake fixture cdylib (transport version 1) without constructing an
 /// instance, and `inventory` finds it in a plugins directory as valid.
 ///
 /// The directory is a fresh one holding a copy of the fixture, not the fixture's own directory: the
@@ -33,7 +31,7 @@ fn json_lane_plugin_path() -> std::path::PathBuf {
 /// every proc-macro and dependency dylib cargo put there.
 #[test]
 fn validate_and_inventory() {
-    let path = json_lane_plugin_path();
+    let path = handshake_plugin_path();
     assert_eq!(validate_plugin(&path).expect("validate"), TRANSPORT_VERSION);
 
     let file = path.file_name().unwrap().to_owned();
@@ -52,7 +50,7 @@ fn validate_and_inventory() {
     let fixture = inv
         .iter()
         .find(|p| std::ffi::OsStr::new(&p.file) == file)
-        .expect("the JSON-lane fixture in inventory");
+        .expect("the handshake fixture in inventory");
     assert!(fixture.valid);
     assert_eq!(fixture.abi_version, Some(TRANSPORT_VERSION));
     assert!(fixture.error.is_none());
@@ -198,7 +196,7 @@ fn the_library_extension_match_uses_this_filesystems_case_rule() {
 /// invalid one or crashing on it.
 #[test]
 fn inventory_reports_valid_and_invalid_libraries_in_the_same_directory() {
-    let real_plugin = json_lane_plugin_path();
+    let real_plugin = handshake_plugin_path();
     let dir = std::env::temp_dir().join(format!(
         "busbar-inventory-mixed-{}-{}",
         std::process::id(),
@@ -237,58 +235,14 @@ fn inventory_reports_valid_and_invalid_libraries_in_the_same_directory() {
     assert_eq!(real.abi_version, Some(TRANSPORT_VERSION));
 }
 
-/// `wire_up_raw`'s two independent kind gates must BOTH fire, and must fire for the RIGHT
-/// reason: exported-vs-expected (the ABI seam calling this as the wrong kind) and
-/// exported-vs-manifest (the signed manifest disagreeing with what the library actually
-/// exports) are two different attacks and must not be conflatable into one check.
-#[test]
-fn wire_up_raw_rejects_a_kind_mismatch_against_the_seam_and_the_manifest() {
-    let auth_plugin = json_lane_plugin_path();
-    let bytes = std::fs::read(&auth_plugin).expect("read the JSON-lane fixture cdylib");
-    let export = busbar_contract::abi::mechanism::kind::EXPORT;
-    let auth = busbar_contract::abi::mechanism::kind::AUTH;
-
-    // Seam mismatch: a real AUTH library loaded as an EXPORT plugin (expected_kind = export,
-    // exported_kind = auth) must be refused, naming both kinds. Both kind-check guards run BEFORE
-    // `busbar_open`, so the empty config never reaches the plugin.
-    let Err(err) = load_image(
-        Image::Bytes(&bytes),
-        "{}",
-        "kind-mismatch-seam",
-        export,
-        export,
-    ) else {
-        panic!("an auth library must not load as an export plugin");
-    };
-    assert!(err.contains("export"), "must name the expected kind: {err}");
-    assert!(err.contains("auth"), "must name the exported kind: {err}");
-
-    // Manifest mismatch: expected_kind matches exported_kind (both auth), but the signed
-    // manifest_kind lies about it — must still be refused.
-    let Err(err) = load_image(
-        Image::Bytes(&bytes),
-        "{}",
-        "kind-mismatch-manifest",
-        auth,
-        export,
-    ) else {
-        panic!("an exported-auth/manifest-export disagreement must be refused");
-    };
-    assert!(
-        err.contains("kind mismatch"),
-        "must name it as a manifest disagreement, not a seam mismatch: {err}"
-    );
-}
-
 /// NO LEGACY LOADING at the loader-mechanism paths (THE DESIGN §11.8, ruling C21/ABI-o1): a library
 /// with no `busbar_plugin_door` that states a JSON-contract kind by its `busbar_plugin_kind` symbol
-/// alone is a 1.5.5-era plugin. The symbol only CLASSIFIES it: the upload vet refuses it, the
-/// plugins inventory lists it invalid, and the kind gate refuses it even when the seam and the
-/// signed manifest agree with the kind it states, each naming the missing door and the rebuild.
+/// alone is a 1.5.5-era plugin. The symbol only CLASSIFIES it: the upload vet refuses it and the
+/// plugins inventory lists it invalid, each naming the missing door and the rebuild. (No JSON-lane
+/// kind gate is left to admit it: a library loads only through its door.)
 ///
 /// RED against a loader that takes a kind symbol on its word: every handshake and kind check
-/// passes, so the vet answers `Ok`, the inventory lists it valid and the gate admits it to
-/// `busbar_open`.
+/// passes, so the vet answers `Ok` and the inventory lists it valid.
 #[test]
 fn a_door_less_json_contract_library_is_refused_naming_the_rebuild() {
     let path = super::both_ways::example_cdylib("json_contract_auth");
@@ -329,14 +283,6 @@ fn a_door_less_json_contract_library_is_refused_naming_the_rebuild() {
     assert!(!listed.valid, "listed invalid: {listed:?}");
     assert_eq!(listed.abi_version, None, "{listed:?}");
     names_the_rebuild(listed.error.as_deref().expect("listed with its refusal"));
-
-    // The kind gate, with the seam and the signed manifest both agreeing on `auth`.
-    let bytes = std::fs::read(&path).expect("read the door-less cdylib");
-    let auth = busbar_contract::abi::mechanism::kind::AUTH;
-    let Err(gate) = load_image(Image::Bytes(&bytes), "{}", "json-contract-auth", auth, auth) else {
-        panic!("the kind gate must not admit a door-less library");
-    };
-    names_the_rebuild(&gate);
 }
 
 #[test]
@@ -349,93 +295,6 @@ fn plugin_library_filename_matches_this_platforms_naming_convention() {
     } else {
         assert_eq!(name, "libbusbar_foo_plugin.so");
     }
-}
-
-/// The response-length cap accepts a normal reply and REFUSES an over-cap length before any
-/// allocation — defense-in-depth against a plugin declaring a huge `out_len` and OOMing the engine.
-#[test]
-fn response_len_cap_refuses_oversized() {
-    assert!(response_len_ok(0, "p").is_ok());
-    assert!(response_len_ok(1024, "p").is_ok());
-    assert!(
-        response_len_ok(MAX_PLUGIN_RESPONSE_LEN, "p").is_ok(),
-        "the exact cap is allowed"
-    );
-    let err = response_len_ok(MAX_PLUGIN_RESPONSE_LEN + 1, "the-plugin").unwrap_err();
-    assert!(err.contains("oversized response"), "got {err}");
-    assert!(
-        err.contains("the-plugin"),
-        "names the offending plugin: {err}"
-    );
-}
-
-/// Pins the length cap on the `busbar_open` error path, mirroring `response_len_ok`'s on the
-/// `busbar_call` path. Covered as a unit test rather than over the ABI: there is no fake-open
-/// seam (`dyn_store_with_fake_call` only patches `call` on an already-opened `DynStore`), and
-/// the failure mode of an unchecked length is an out-of-bounds read, not a clean assertion
-/// failure.
-#[test]
-fn open_err_is_readable_refuses_an_oversized_length() {
-    assert!(
-        !open_err_is_readable(false, MAX_PLUGIN_RESPONSE_LEN + 1),
-        "an over-cap length must be refused"
-    );
-    assert!(
-        !open_err_is_readable(true, 64),
-        "a null err pointer is never readable"
-    );
-    assert!(
-        !open_err_is_readable(false, 0),
-        "a zero length carries no message"
-    );
-    assert!(
-        open_err_is_readable(false, 64),
-        "a sane, non-null, in-cap length is readable"
-    );
-    assert!(
-        open_err_is_readable(false, MAX_PLUGIN_RESPONSE_LEN),
-        "the exact cap is allowed, matching response_len_ok"
-    );
-}
-
-/// Direct classification proof (no FFI) of the total status → semantic-kind map. EXACTLY TWO shapes
-/// are the unsupported signal: the crisp `STATUS_UNSUPPORTED`, and the legacy v1 decode failure (a
-/// `STATUS_PROTOCOL` carrying `LEGACY_V1_UNDECODABLE_PREFIX`). A PANIC, a backend error (even one
-/// whose text says "unknown variant"), a BARE protocol violation, an unknown status, and every
-/// engine-internal error are NOT unsupported.
-#[test]
-fn transport_error_classification() {
-    // The two unsupported signals: the crisp code, and the shape the v1 SDK really emitted.
-    assert!(TransportError::from_status(STATUS_UNSUPPORTED, "unsupported", "p").is_unsupported());
-    assert!(TransportError::from_status(
-        STATUS_PROTOCOL,
-        "malformed request JSON: unknown variant `ListDenylist`",
-        "p"
-    )
-    .is_unsupported());
-
-    // A PANIC is a Fault, NEVER unsupported — this is what keeps a crash from opening the fallback.
-    assert!(!TransportError::from_status(STATUS_PANIC, "panicked", "p").is_unsupported());
-    // A backend error whose body contains "unknown variant" is NOT unsupported.
-    assert!(!TransportError::from_status(
-        busbar_contract::abi::cold::STATUS_ERR,
-        "unknown variant",
-        "p"
-    )
-    .is_unsupported());
-    // A BARE STATUS_PROTOCOL — null handle, null request pointer, or a v1-SDK caught panic — is a
-    // caller-protocol violation, NOT unsupported. Reading it as unsupported is the inversion that
-    // reopens the revocation fail-open.
-    assert!(!TransportError::from_status(STATUS_PROTOCOL, "", "p").is_unsupported());
-    // Nor is a STATUS_PROTOCOL carrying any OTHER message.
-    assert!(!TransportError::from_status(STATUS_PROTOCOL, "null handle", "p").is_unsupported());
-    // An unknown status defaults to Fault (propagate), never unsupported.
-    assert!(!TransportError::from_status(99, "novel status", "p").is_unsupported());
-    // An engine-internal error is always Fault.
-    assert!(!TransportError::engine("plugin response decode failed".into()).is_unsupported());
-    // A bare status still produces a diagnosable message naming the plugin and the status.
-    let m = TransportError::from_status(STATUS_PROTOCOL, "", "libstore.so").message;
-    assert!(m.contains("libstore.so") && m.contains("-1"), "{m}");
 }
 
 /// `validate_plugin` must UNLOAD on a plugin worker, not on the caller's thread.
@@ -454,123 +313,14 @@ fn transport_error_classification() {
 /// exits.
 #[test]
 fn validate_plugin_unloads_on_a_worker_not_the_callers_thread() {
-    let path = json_lane_plugin_path();
+    let path = handshake_plugin_path();
     let before = UNLOADS_ON_WORKER.with(std::cell::Cell::get);
-    validate_plugin(&path).expect("the JSON-lane fixture validates");
+    validate_plugin(&path).expect("the handshake fixture validates");
     let after = UNLOADS_ON_WORKER.with(std::cell::Cell::get);
     assert!(
         after > before,
         "validate_plugin unloaded the library WITHOUT routing it through dlclose_on_worker, so the \
          image's .fini_array ran on the caller's thread"
-    );
-}
-
-// ── A failing open that still published a handle ────────────────────────────────────────────────
-
-/// What the stub `busbar_close` below saw. A process-global because a `CloseFn` is a bare `extern`
-/// fn pointer with no captured state, exactly like the real ABI's.
-mod failed_open_reclaim {
-    use std::os::raw::c_void;
-    use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
-    use std::sync::{Mutex, MutexGuard};
-
-    pub static CLOSED_WITH: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
-    pub static CLOSE_CALLS: AtomicUsize = AtomicUsize::new(0);
-
-    /// The three tests below share the process-global counters above (see the doc comment on this
-    /// module: a `CloseFn` is a bare `extern` fn pointer with no captured state, so the stubs have
-    /// nowhere else to record what they saw). `cargo test` runs tests from the same binary
-    /// concurrently on separate threads by default, so without serializing access here, one test's
-    /// `reset()` or `fetch_add` can interleave with another's read, corrupting counts that look
-    /// like a production double-close but are actually a test race. Every test below must hold this
-    /// lock for its full body, from `reset()` through its final assertion.
-    static TEST_LOCK: Mutex<()> = Mutex::new(());
-
-    pub fn lock() -> MutexGuard<'static, ()> {
-        TEST_LOCK
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-    }
-
-    /// A plugin `busbar_close` that records the handle it was handed.
-    pub unsafe extern "C-unwind" fn record(handle: *mut c_void) {
-        CLOSED_WITH.store(handle, Ordering::SeqCst);
-        CLOSE_CALLS.fetch_add(1, Ordering::SeqCst);
-    }
-
-    /// A plugin `busbar_close` that panics — a bad destructor across the ABI.
-    pub unsafe extern "C-unwind" fn explode(_handle: *mut c_void) {
-        CLOSE_CALLS.fetch_add(1, Ordering::SeqCst);
-        panic!("a plugin destructor went wrong");
-    }
-
-    pub fn reset() {
-        CLOSED_WITH.store(std::ptr::null_mut(), Ordering::SeqCst);
-        CLOSE_CALLS.store(0, Ordering::SeqCst);
-    }
-}
-
-/// A non-SDK plugin may publish a handle AND answer a failure status — nothing in the ABI forbids
-/// it. The load still fails closed, but the instance it constructed must be reclaimed rather than
-/// left running with nobody holding it.
-#[test]
-fn a_failed_open_that_published_a_handle_still_closes_the_instance() {
-    use failed_open_reclaim as stub;
-    let _guard = stub::lock();
-    stub::reset();
-    let handle = &mut 7u8 as *mut u8 as *mut std::os::raw::c_void;
-
-    assert!(
-        reclaim_failed_open(stub::record, "acme-store-plugin", handle),
-        "a published handle is reclaimed"
-    );
-    assert_eq!(
-        stub::CLOSE_CALLS.load(std::sync::atomic::Ordering::SeqCst),
-        1,
-        "closed exactly once"
-    );
-    assert_eq!(
-        stub::CLOSED_WITH.load(std::sync::atomic::Ordering::SeqCst),
-        handle,
-        "closed the handle the plugin published, not some other pointer"
-    );
-}
-
-/// The well-behaved failure — no handle published — hands `close` nothing. Asking a plugin to free
-/// what it never allocated is its own bug.
-#[test]
-fn a_failed_open_with_no_handle_closes_nothing() {
-    use failed_open_reclaim as stub;
-    let _guard = stub::lock();
-    stub::reset();
-    assert!(!reclaim_failed_open(
-        stub::record,
-        "acme-store-plugin",
-        std::ptr::null_mut()
-    ));
-    assert_eq!(
-        stub::CLOSE_CALLS.load(std::sync::atomic::Ordering::SeqCst),
-        0
-    );
-}
-
-/// A `close` that panics while reclaiming is contained the same way every other crossing is: the
-/// handle leaks, the engine lives, and the load still returns its own error.
-#[test]
-fn a_panicking_close_during_reclaim_does_not_take_the_engine_down() {
-    use failed_open_reclaim as stub;
-    let _guard = stub::lock();
-    stub::reset();
-    let handle = &mut 9u8 as *mut u8 as *mut std::os::raw::c_void;
-    assert!(reclaim_failed_open(
-        stub::explode,
-        "acme-store-plugin",
-        handle
-    ));
-    assert_eq!(
-        stub::CLOSE_CALLS.load(std::sync::atomic::Ordering::SeqCst),
-        1,
-        "it was attempted"
     );
 }
 

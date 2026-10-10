@@ -183,51 +183,22 @@ pub fn migrated_token(op: &str) -> String {
     format!("governance.admin_token -> auth.admin_auth: [ {op}: {{ token: <secret-ref> }} ]")
 }
 
-/// What the operator credential answered one request.
+/// What the operator credential answered one request: a verdict — identified, a bad credential
+/// (1.5.5's refusal bytes), or not its credential. A verifier that is overloaded or answered no
+/// verdict is a bad credential, denied with 1.5.5's 401 (no admin 503 ships: Q134).
 #[derive(Debug)]
 pub enum Judgement {
-    /// A verdict: identified, a bad credential (1.5.5's refusal bytes), or not its credential.
+    /// The verdict.
     Verdict(AuthVerdict),
-    /// The verifier's `max_inflight` is full and the call was not queued: the request is answered
-    /// 503 unavailable, never refused as a bad credential (THE DESIGN's overloaded-verifier ruling).
-    Overloaded,
-    /// The verifier answered no verdict (FAILED, FAULT, REFUSED, a timeout): an outage, distinct
-    /// from a bad credential, as a login's `LoginOutcome::Outage` is (ARCHITECT ruling 2026-09-30,
-    /// AUTH-DOOR Q1).
-    Outage,
 }
 
 impl Judgement {
-    /// The judgement as the admin chain walks it: a verdict, or the chain cannot be judged.
-    ///
-    /// # Errors
-    /// The verifier is overloaded or answered no verdict.
-    pub fn verdict(self) -> Result<AuthVerdict, AdminUnavailable> {
+    /// The judgement as the admin chain walks it.
+    #[must_use]
+    pub fn verdict(self) -> AuthVerdict {
         match self {
-            Self::Verdict(v) => Ok(v),
-            Self::Overloaded => Err(AdminUnavailable::Overloaded),
-            Self::Outage => Err(AdminUnavailable::Outage),
+            Self::Verdict(v) => v,
         }
-    }
-}
-
-/// The admin chain could not be judged: the operator credential's verifier is overloaded or
-/// answered no verdict. The request is answered 503 `unavailable`, never refused as a bad
-/// credential (ARCHITECT ruling 2026-09-30, AUTH-DOOR Q1; THE DESIGN's overloaded-verifier ruling).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AdminUnavailable {
-    /// The verifier's `max_inflight` is full; the call was not queued.
-    Overloaded,
-    /// The verifier answered no verdict: an outage, distinct from a bad credential.
-    Outage,
-}
-
-impl AdminUnavailable {
-    /// The caller-safe message of the 503: ONE text for both causes. 1.5.5's operator verify was
-    /// in-process and had no outage, so there are no 1.5.5 bytes for one; it answers exactly as the
-    /// overloaded verifier does (ARCHITECT ruling 2026-09-30, AUTH-DOOR: no new customer string).
-    pub fn message(self) -> &'static str {
-        "the admin credential verifier is overloaded; retry shortly"
     }
 }
 
@@ -243,8 +214,8 @@ fn judgement(answer: VerifyAnswer) -> Judgement {
         })),
         Verified::Reject => Judgement::Verdict(AuthVerdict::Reject),
         Verified::Pass => Judgement::Verdict(AuthVerdict::Pass),
-        Verified::Overloaded => Judgement::Overloaded,
-        Verified::Failed => Judgement::Outage,
+        // An overloaded verifier, and one that answered no verdict, deny as 1.5.5 did (its 401).
+        Verified::Overloaded | Verified::Failed => Judgement::Verdict(AuthVerdict::Reject),
     }
 }
 
@@ -280,8 +251,8 @@ impl OperatorCredential {
 
     /// Judge `request` — the request's field lines at `Head`, handed through as presented: the
     /// plugin reads the carriers its Statement names (both admin carriers, folded), so the kernel
-    /// names none. AWAITS a pending verify (the admin door is async and never answers 503 for
-    /// pending I/O). `None` when no row answers: the caller says so, and passes.
+    /// names none. AWAITS a pending verify (the admin door is async: pending I/O is waited
+    /// for, never refused). `None` when no row answers: the caller says so, and passes.
     pub async fn judge(&self, request: VerifyRequest) -> Option<Judgement> {
         let module = match self {
             Self::Unanswered => return None,
@@ -304,7 +275,7 @@ impl OperatorCredential {
         Some(
             module
                 .verify_now(request)
-                .map_or(Judgement::Outage, judgement),
+                .map_or(Judgement::Verdict(AuthVerdict::Reject), judgement),
         )
     }
 }

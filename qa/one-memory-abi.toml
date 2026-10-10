@@ -156,32 +156,7 @@ item = "busbar_call"
 
 [[finding]]
 rule = "one-memory-abi:cold-lane"
-file = "crates/plugin-loader/src/auth.rs"
-item = "abi::cold"
-
-[[finding]]
-rule = "one-memory-abi:cold-lane"
-file = "crates/plugin-loader/src/hostlog.rs"
-item = "abi::cold"
-
-[[finding]]
-rule = "one-memory-abi:cold-lane"
 file = "crates/plugin-loader/src/lib.rs"
-item = "ColdEntry"
-
-[[finding]]
-rule = "one-memory-abi:cold-lane"
-file = "crates/plugin-loader/src/lib.rs"
-item = "abi::cold"
-
-[[finding]]
-rule = "one-memory-abi:cold-lane"
-file = "crates/plugin-loader/src/registry.rs"
-item = "ColdEntry"
-
-[[finding]]
-rule = "one-memory-abi:cold-lane"
-file = "crates/plugin-loader/src/registry.rs"
 item = "abi::cold"
 
 [[finding]]
