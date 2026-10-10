@@ -1373,15 +1373,14 @@ fn completed(admitted: &AdmittedCall, value: &Value, body: &[u8]) -> Settled {
 /// under the caller's id. The one addition is the dialect's `resultType: complete` on a result
 /// object that carries no `resultType` at all; a `resultType` the upstream sent is its own.
 fn relayed(id: &Value, value: &Value, body: &[u8]) -> Vec<u8> {
-    #[derive(serde::Deserialize)]
-    struct Answer<'a> {
-        #[serde(borrow)]
-        result: &'a serde_json::value::RawValue,
-    }
-    let Ok(answer) = serde_json::from_slice::<Answer<'_>>(body) else {
+    let busbar_contract::spans::Resolved::Found(span) =
+        busbar_contract::spans::resolve_pointer(body, "/result")
+    else {
         return result(id, value.clone());
     };
-    let sent = answer.result.get();
+    let Ok(sent) = std::str::from_utf8(span.of(body)) else {
+        return result(id, value.clone());
+    };
     let mut out = format!("{{\"id\":{id},\"jsonrpc\":\"2.0\",\"result\":");
     match sent.trim_start().strip_prefix('{') {
         Some(members) if value.get("resultType").is_none() => {
