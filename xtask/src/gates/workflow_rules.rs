@@ -18,6 +18,11 @@
 //! * **R14 — every third-party action runs from a commit sha** with its tag as a trailing comment,
 //!   because an action that can be force-moved under a name we already trust runs with our tokens.
 //! * **R15 — every attestation verify names the workflow that signed**, not just the repository.
+//! * **R16 — the engine runs from a commit, never a branch or a tag.** Every checkout of
+//!   busbar-release names a full 40-hex sha, either in the file or through an env var the job
+//!   shape-checks as 40 hex before the checkout (the org variable `vars.ENGINE_REF`, OWNER
+//!   2026-10-10: the engine pin lives outside this repo), and every job that downloads the engine
+//!   binary runs it only after `sha256sum -c` against `ENGINE_SHA256`.
 //!
 //! **The parser stays deliberately small, and here that is a correctness argument rather than a
 //! dependency one.** The rules are assertions about what a human WROTE (a trailing `# tag` comment
@@ -50,7 +55,16 @@ const ACTIONS_DIR: &str = ".github/actions";
 const MIN_WORKFLOWS: usize = 5;
 
 /// The rule ids, which are also the ledger row ids.
-const RULES: &[&str] = &["R1", "R11", "R14", "R15"];
+const RULES: &[&str] = &["R1", "R11", "R14", "R15", "R16"];
+
+/// R16's subject: the release engine's repository, and the name prefix of its CI binary on the
+/// `dev-bin` release.
+const ENGINE_REPO: &str = "GetBusbar/busbar-release";
+const ENGINE_ASSET: &str = "busbar-release-ci-";
+/// The shape test R16 requires of a variable engine pin, and the bytes check of the binary.
+const SHA40_TEST: &str = "=~ ^[0-9a-f]{40}$";
+const SHA256_CHECK: &str = "sha256sum -c";
+const SHA256_VAR: &str = "ENGINE_SHA256";
 
 // -------------------------------------------------------------------------------------------
 // THE SMALL PARSER
@@ -398,6 +412,199 @@ fn action_manifests(cx: &Ctx) -> Result<Vec<(String, String)>, String> {
     Ok(out)
 }
 
+/// The jobs of a workflow (comments already stripped): each job's name and its lines, from its
+/// header (a key at exactly two spaces under the top-level `jobs:`) to the next job or top-level key.
+fn jobs_of(text: &str) -> Vec<(String, Vec<&str>)> {
+    let mut out: Vec<(String, Vec<&str>)> = Vec::new();
+    let mut in_jobs = false;
+    for line in text.lines() {
+        if !line.starts_with(' ') && !line.trim().is_empty() {
+            in_jobs = line.trim_end() == "jobs:";
+            continue;
+        }
+        if !in_jobs {
+            continue;
+        }
+        let b = line.as_bytes();
+        if b.len() > 2 && b[0] == b' ' && b[1] == b' ' && b[2] != b' ' {
+            if let Some(name) = line.trim().strip_suffix(':') {
+                out.push((name.to_string(), Vec::new()));
+                continue;
+            }
+        }
+        if let Some((_, lines)) = out.last_mut() {
+            lines.push(line);
+        }
+    }
+    out
+}
+
+/// The value of `key:` in `text` (a flow mapping or a block line), the first time `key` appears as
+/// a key (not as the tail of a longer one): a quoted string up to its closing quote, an `${{ }}`
+/// expression whole, or a bare scalar up to whitespace, `,` or `}`.
+fn key_value(text: &str, key: &str) -> Option<String> {
+    let needle = format!("{key}:");
+    let mut from = 0usize;
+    while let Some(rel) = text[from..].find(&needle) {
+        let at = from + rel;
+        from = at + needle.len();
+        let before = text[..at].chars().next_back();
+        if before.is_some_and(|c| c.is_alphanumeric() || c == '_' || c == '-' || c == '.') {
+            continue;
+        }
+        let rest = text[from..].trim_start_matches([' ', '\t']);
+        let v = if let Some(q) = rest.strip_prefix('"') {
+            q.split('"').next().unwrap_or("")
+        } else if let Some(q) = rest.strip_prefix('\'') {
+            q.split('\'').next().unwrap_or("")
+        } else if rest.starts_with("${{") {
+            rest.find("}}").map(|i| &rest[..i + 2]).unwrap_or(rest)
+        } else {
+            let end = rest
+                .find(|c: char| c.is_whitespace() || c == ',' || c == '}')
+                .unwrap_or(rest.len());
+            &rest[..end]
+        };
+        return Some(v.trim().to_string());
+    }
+    None
+}
+
+/// `${{ env.NAME }}` -> `NAME`.
+fn env_ref(v: &str) -> Option<&str> {
+    let inner = v.strip_prefix("${{")?.strip_suffix("}}")?.trim();
+    let name = inner.strip_prefix("env.")?;
+    (!name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'))
+        .then_some(name)
+}
+
+/// The step span holding line `at` of `lines`: from the nearest `- ` item at or above it to the
+/// next item at that indent (exclusive).
+fn step_span(lines: &[&str], at: usize) -> String {
+    let indent = |l: &str| l.len() - l.trim_start().len();
+    let start = (0..=at)
+        .rev()
+        .find(|&i| lines[i].trim_start().starts_with("- "))
+        .unwrap_or(at);
+    let ind = indent(lines[start]);
+    let end = (start + 1..lines.len())
+        .find(|&i| {
+            let l = lines[i];
+            !l.trim().is_empty() && indent(l) <= ind
+        })
+        .unwrap_or(lines.len());
+    lines[start..end].join("\n")
+}
+
+/// R16 over one workflow's text (comments stripped).
+///
+/// THE ENGINE IS PINNED BY A COMMIT, AND ITS BYTES BY A DIGEST. promote.yml runs busbar-release's
+/// engine with the jobs' tokens; a checkout at a branch or a tag runs whatever that name points at
+/// today. The pin may be written in the file (a 40-hex sha) or held outside it (OWNER 2026-10-10:
+/// the org variable `vars.ENGINE_REF`, so an engine update never waits in predev's merge queue). The
+/// variable form is accepted only when the job proves at run time what the file can no longer show:
+/// a step BEFORE the checkout tests the variable against 40 hex and exits on anything else (an
+/// unset variable must FAIL, never fall back to the default branch an empty `ref:` checks out), and
+/// the downloaded binary runs only after `sha256sum -c` against `ENGINE_SHA256`.
+fn engine_pin_findings(name: &str, text: &str) -> Vec<Finding> {
+    let mut bad = Vec::new();
+    let top_env = top_level_block(text, "env");
+    for (job, lines) in jobs_of(text) {
+        let job_text = lines.join("\n");
+        let downloads = job_text.contains(ENGINE_ASSET);
+        let verifies = lines
+            .iter()
+            .any(|l| l.contains(SHA256_CHECK) && l.contains(SHA256_VAR));
+        if downloads && !verifies {
+            bad.push(Finding::new(
+                "R16",
+                format!(
+                    "{name}: job `{job}` downloads the engine binary ({ENGINE_ASSET}*) without \
+                     `{SHA256_CHECK}` against ${SHA256_VAR}: the bytes it runs with this job's \
+                     tokens are whatever the release holds under that name today."
+                ),
+            ));
+        }
+        for (i, line) in lines.iter().enumerate() {
+            if !line.contains(&format!("repository: {ENGINE_REPO}")) {
+                continue;
+            }
+            let span = step_span(&lines, i);
+            let Some(r) = key_value(&span, "ref").filter(|r| !r.is_empty()) else {
+                bad.push(Finding::new(
+                    "R16",
+                    format!(
+                        "{name}: job `{job}` checks out {ENGINE_REPO} with no `ref:`, so it runs \
+                         the engine's default branch, not a pinned commit."
+                    ),
+                ));
+                continue;
+            };
+            if is_sha40(&r) {
+                continue;
+            }
+            let Some(var) = env_ref(&r) else {
+                bad.push(Finding::new(
+                    "R16",
+                    format!(
+                        "{name}: job `{job}` checks out {ENGINE_REPO} at `{r}`, a branch or tag \
+                         the engine's owner can move, not a commit. Pin a 40-hex sha, or \
+                         `${{{{ env.RELEASE_REF }}}}` from vars.ENGINE_REF with its shape checked."
+                    ),
+                ));
+                continue;
+            };
+            // The variable's definition: the job's own env first, then the workflow's.
+            let def = key_value(&job_text, var).or_else(|| key_value(&top_env, var));
+            match def.as_deref() {
+                Some(d) if is_sha40(d) => continue,
+                Some(d) if d.starts_with("${{") => {}
+                other => {
+                    bad.push(Finding::new(
+                        "R16",
+                        format!(
+                            "{name}: job `{job}` checks out {ENGINE_REPO} at ${var} = `{}`, which \
+                             is not a commit: a branch or tag the engine's owner can move. Pin a \
+                             40-hex sha, or set {var} from vars.ENGINE_REF.",
+                            other.unwrap_or("(undefined)")
+                        ),
+                    ));
+                    continue;
+                }
+            }
+            let guarded = lines[..i].iter().any(|l| {
+                l.contains(SHA40_TEST)
+                    && (l.contains(&format!("${var}\""))
+                        || l.contains(&format!("${{{var}}}"))
+                        || l.contains(&format!("${var} ")))
+                    && l.contains("exit")
+            });
+            if !guarded {
+                bad.push(Finding::new(
+                    "R16",
+                    format!(
+                        "{name}: job `{job}` checks out {ENGINE_REPO} at the variable ${var} with \
+                         no step before it that tests ${var} `{SHA40_TEST}` and exits: an unset or \
+                         malformed variable then checks out the engine's default branch instead \
+                         of failing."
+                    ),
+                ));
+            }
+            if !verifies {
+                bad.push(Finding::new(
+                    "R16",
+                    format!(
+                        "{name}: job `{job}` pins the engine through ${var} but never runs \
+                         `{SHA256_CHECK}` against ${SHA256_VAR}: a variable pin is only a pin \
+                         when the bytes are checked at run time."
+                    ),
+                ));
+            }
+        }
+    }
+    bad
+}
+
 /// One finding, carrying the rule id that owns it so the row set is derived from the findings
 /// rather than restated beside them.
 #[derive(Debug, Clone)]
@@ -672,6 +879,12 @@ pub fn check(cx: &Ctx) -> Result<Vec<Finding>, String> {
         }
     }
 
+    // R16. THE ENGINE RUNS FROM A COMMIT, AND ITS BYTES FROM A DIGEST ([`engine_pin_findings`]).
+    for name in &names {
+        let text = strip_comments(&read(name).unwrap_or_default());
+        bad.extend(engine_pin_findings(name, &text));
+    }
+
     Ok(bad)
 }
 
@@ -686,6 +899,7 @@ fn rule_title(rule: &str) -> &'static str {
         "R11" => "no workflow pushes a commit to a release branch",
         "R14" => "every third-party action runs from a commit sha",
         "R15" => "every attestation verify names the workflow that signed",
+        "R16" => "the engine runs from a commit sha, its bytes from a sha256",
         _ => "workflow rule",
     }
 }
@@ -929,6 +1143,51 @@ fn mutations() -> Vec<Mutation> {
             creates: false,
         },
         Mutation {
+            // THE REGRESSION AS IT WOULD ACTUALLY ARRIVE: "just follow dev" -- the engine checked
+            // out at its branch, so every hop runs whatever dev holds at that minute.
+            label: "R16 the engine is checked out at a branch",
+            file: "promote.yml",
+            rule: "R16",
+            apply: |t| {
+                replace_once(
+                    t,
+                    "repository: GetBusbar/busbar-release, ref: \"${{ env.RELEASE_REF }}\"",
+                    "repository: GetBusbar/busbar-release, ref: dev",
+                )
+            },
+            creates: false,
+        },
+        Mutation {
+            // The same through the variable: the pin becomes a release tag.
+            label: "R16 the engine pin becomes a movable tag",
+            file: "promote.yml",
+            rule: "R16",
+            apply: |t| {
+                replace_once(
+                    t,
+                    "RELEASE_REF: \"${{ vars.ENGINE_REF }}\"",
+                    "RELEASE_REF: v1.6.0",
+                )
+            },
+            creates: false,
+        },
+        Mutation {
+            // The variable form loses its shape check: an unset variable is an empty `ref:`, and
+            // an empty `ref:` is the default branch, a silent fallback instead of a FAIL.
+            label: "R16 the variable pin's 40-hex shape check is dropped",
+            file: "promote.yml",
+            rule: "R16",
+            apply: |t| drop_first_line_with(t, SHA40_TEST),
+            creates: false,
+        },
+        Mutation {
+            label: "R16 the engine binary runs without its sha256 check",
+            file: "promote.yml",
+            rule: "R16",
+            apply: |t| drop_first_line_with(t, SHA256_CHECK),
+            creates: false,
+        },
+        Mutation {
             // The refspec form a promote script documents, which the `HEAD:<dst>` test and the
             // no-refspec test both walked past. THE ANCHOR IS `steps:`, NOT A `uses:` LINE: a
             // structural feature of every job cannot be renamed by a pin bump or a formatting pass.
@@ -945,6 +1204,22 @@ fn mutations() -> Vec<Mutation> {
             creates: false,
         },
     ]
+}
+
+/// `t` without the first line containing `needle` (unchanged when none does: the case then
+/// reports its anchor moved).
+fn drop_first_line_with(t: &str, needle: &str) -> String {
+    let mut done = false;
+    t.split_inclusive('\n')
+        .filter(|l| {
+            if !done && l.contains(needle) {
+                done = true;
+                false
+            } else {
+                true
+            }
+        })
+        .collect()
 }
 
 /// The R14 mutations both target the FIRST fully-pinned third-party action in the file, found by
