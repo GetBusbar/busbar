@@ -473,8 +473,8 @@ use crate::abi::hook::{
 use crate::abi::mechanism::lifecycle::{OpenIn, ReadyIn, RefreshIn, ValidateIn};
 use crate::abi::mechanism::ticket::HostTables;
 use crate::abi::plane::{
-    ArriveIn, OnPieceIn, OutField, PlaneCancelIn, PlaneDriveIn, ProjectIn, RecordWrite, RefusalIn,
-    ServeIn, UnitCount,
+    ArriveIn, OnPieceIn, OutField, PlaneCancelIn, PlaneDriveIn, PlaneOpenIn, ProjectIn,
+    ProviderFacts, RecordWrite, RefusalIn, ServeIn, UnitCount,
 };
 use crate::abi::transport::{
     AcceptIn, AdoptIn, ArrivalIn, BeginIn, ConnFacts, DatagramLane, DatagramPath, DatagramRoute,
@@ -512,6 +512,7 @@ lend! {
     }
     ValidateIn { buf(err_buf, err_cap) -> u8; }
     // THE PLANE KIND (`abi::plane`): request-path results go into host buffers.
+    PlaneOpenIn { list(providers, providers_len) -> ProviderFacts; }
     ArriveIn {
         list(fields, fields_len) -> Field;
         buf(units_buf, units_cap) -> UnitCount;

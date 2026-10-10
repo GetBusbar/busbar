@@ -1585,6 +1585,8 @@ pub fn build_app_from_config(
                     // coordination off its own prior runtime object across this apply — the same
                     // neutral `&dyn PlaneSlots` a container plane's `build_runtime` receives below.
                     prior: prior.map(|p| p as &dyn busbar_kernel::plane_host::PlaneSlots),
+                    // The resolved providers: a door plane's probe is handed its referenced ones.
+                    providers: Some(&cfg.providers),
                 };
                 (decl.build)(&ctx).map(|obj| (decl.key, obj))
             })

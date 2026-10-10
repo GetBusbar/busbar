@@ -789,11 +789,34 @@ fn journalling_carries_no_admin_row_and_the_root_holds_no_second_admin_ring() {
     }
 }
 
+/// A store that keeps every record it was handed, in order, behind a shared handle.
+#[derive(Default, Clone)]
+struct KeepingShipper(std::sync::Arc<std::sync::Mutex<Vec<busbar_kernel_wal::Record>>>);
+
+impl KeepingShipper {
+    fn records(&self) -> Vec<busbar_kernel_wal::Record> {
+        self.0.lock().expect("the kept records").clone()
+    }
+}
+
+impl busbar_kernel_wal::Shipper<busbar_kernel_wal::Record> for KeepingShipper {
+    fn ship(
+        &mut self,
+        records: &[busbar_kernel_wal::Record],
+    ) -> Result<(), busbar_kernel_wal::ShipError> {
+        self.0
+            .lock()
+            .expect("the kept records")
+            .extend_from_slice(records);
+        Ok(())
+    }
+}
+
 /// The shipped batches ARE the chain, so a node with no data directory that shipped everything
 /// has lost nothing it shipped.
 #[test]
 fn what_the_store_took_is_the_chain() {
-    let shipper = busbar_kernel_wal::BufferShipper::new();
+    let shipper = KeepingShipper::default();
     let mut durability = build_for_node(
         &DurabilityConfig { data_dir: None },
         4,

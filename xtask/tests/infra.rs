@@ -734,9 +734,9 @@ fn the_real_pipeline_workflow_parses_and_its_gate_call_sites_are_discoverable() 
     // EVERY GATE THE PIPELINE CALLS BY NAME IS ONE THE REGISTRY ANSWERS TO: a `cargo xtask gate
     // <typo>` is a step that exits 2 on every hop, and the registry is what can say so here rather
     // than in a red run.
-    // promote.yml is a thin bootstrap: it runs busbar-release's `ci/promote/*.sh` at RELEASE_REF,
-    // and the gate calls (the C header's `abi-header`, the registry's `--list`) live in those
-    // scripts, not in this file. So the file names no gate today; the loop below keeps holding
+    // promote.yml is a thin bootstrap: it runs busbar-release's `busbar-release ci hop` at
+    // RELEASE_REF, and the gate calls (the C header's `abi-header`, the registry's `--list`) live in
+    // that engine, not in this file. So the file names no gate today; the loop below keeps holding
     // anything it ever does name to the registry.
     let called = yaml_lite::xtask_gate_invocations(&text);
     for name in &called {
@@ -1595,4 +1595,31 @@ fn no_deferral_reports_the_unwaived_markers_and_the_stale_waiver_together() {
     // the gate could not read.
     assert_eq!(row("no-deferral:waiver-shape").status, Status::Pass);
     assert_eq!(row("no-deferral:discovery-floor").status, Status::Pass);
+}
+
+/// THE ONE-SHORT PLANT BITES ON THE REAL TREE. The self-test's floor case, driven over the committed
+/// tree: discovery must come back at exactly one under `DISCOVERY_FLOOR` and the floor row must
+/// refuse it as UNPROVEN. In the #627 merge group this plant cut one file from a tree already past
+/// the pin and the row read PASS.
+#[test]
+fn no_deferral_one_short_plant_leaves_the_real_tree_one_under_the_floor() {
+    use xtask::gates::no_deferral::{one_short_of_floor, DISCOVERY_FLOOR};
+
+    let base = cx();
+    let ov = one_short_of_floor(&base).expect("discovery reads the real tree");
+    let reg = gates::find("no-deferral").expect("the gate is registered");
+    let gate = (reg.build)();
+    let rows = gates::execute(gate.as_ref(), &base.with_overlay(ov)).rows;
+    let floor = rows
+        .iter()
+        .find(|r| r.id == "no-deferral:discovery-floor")
+        .expect("the floor row is owed and must be emitted");
+    assert_eq!(floor.status, Status::Fail, "{}", floor.detail);
+    let found = format!("found only {} shipped source file(s)", DISCOVERY_FLOOR - 1);
+    assert!(
+        floor.detail.contains(&found) && floor.detail.contains("UNPROVEN, not PASS"),
+        "the plant leaves {} files and the row says UNPROVEN: {}",
+        DISCOVERY_FLOOR - 1,
+        floor.detail
+    );
 }

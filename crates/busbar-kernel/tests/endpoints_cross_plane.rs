@@ -463,14 +463,19 @@ fn with_listing_door(
         caller_credential_refusal: None,
         fallback: false,
         validate: Arc::new(|_: &[u8]| Ok(())),
-        facing: Arc::new(move |_: &[u8], _: &[u8], _: Option<&str>| {
-            Ok(DoorFacing {
-                listed: names.iter().map(|n| (*n).to_string()).collect(),
-                ..DoorFacing::default()
-            })
-        }),
+        facing: Arc::new(
+            move |_: &[u8],
+                  _: &[u8],
+                  _: Option<&str>,
+                  _: &[busbar_contract::plane_calls::DialectFacts]| {
+                Ok(DoorFacing {
+                    listed: names.iter().map(|n| (*n).to_string()).collect(),
+                    ..DoorFacing::default()
+                })
+            },
+        ),
     };
-    let facing = (reg.facing)(b"", b"", None).expect("faces");
+    let facing = (reg.facing)(b"", b"", None, &[]).expect("faces");
     let decl = fold(reg).expect("the listing door folds");
     let mut t = topology();
     t.install_plane_runtime(
@@ -588,9 +593,14 @@ fn opening_door() -> &'static busbar_kernel::plane::registry::PlaneDecl {
         caller_credential_refusal: None,
         fallback: false,
         validate: Arc::new(|_: &[u8]| Ok(())),
-        facing: Arc::new(|_: &[u8], _: &[u8], _: Option<&str>| {
-            Ok(busbar_contract::plane_calls::DoorFacing::default())
-        }),
+        facing: Arc::new(
+            |_: &[u8],
+             _: &[u8],
+             _: Option<&str>,
+             _: &[busbar_contract::plane_calls::DialectFacts]| {
+                Ok(busbar_contract::plane_calls::DoorFacing::default())
+            },
+        ),
     })
     .expect("folds")
 }
@@ -615,6 +625,7 @@ async fn healthz_with_model_lanes_every_cell_open_stays_unready_beside_an_opened
         tool_defs: &section,
         public_url: None,
         prior: None,
+        providers: None,
     })
     .expect("the configured door builds its generation's slot");
     assert!(

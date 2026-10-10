@@ -174,7 +174,7 @@ impl HostServices for Host {
     fn work_find(&self, _: &Caller, _: Option<u64>, _: &[u8], _: Pended) -> Ran {
         Ran::Now(Stored::refused(UNSERVED))
     }
-    fn work_settle(&self, _: &Caller, _: u64, _: &[u8], _: Pended) -> Ran {
+    fn work_settle(&self, _: &Caller, _: Option<u64>, _: u64, _: &[u8], _: Pended) -> Ran {
         Ran::Now(Stored::refused(UNSERVED))
     }
     fn work_resume(&self, _: &Caller, _: Option<u64>, _: u64, _: Pended) -> Ran {
