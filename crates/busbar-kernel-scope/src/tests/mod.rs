@@ -3,9 +3,7 @@
 
 use super::*;
 
-mod bitset;
 mod egress;
-mod narrowing;
 
 /// The authorization matrix, ported from 1.5.5's `required_scope_matrix` test: reads (+ the two
 /// dry-run POSTs) are read-only, every mutation is full, unknown methods fail closed to full.
@@ -53,9 +51,9 @@ fn required_scope_matrix() {
 
 /// THE PORT IS VERBATIM OR IT IS A SECOND MATRIX WITH A SECOND OPINION.
 ///
-/// Three ways this copy used to differ from the enforced
-/// `busbar_kernel::admin::v1::contract::required_scope` it claims to port, each asserted against
-/// the behaviour of the `axum::http::Method`-backed original:
+/// Three ways a second copy of this matrix once differed from the enforced one (there is one copy
+/// now; the kernel's admin gate calls this function), each still asserted against the behaviour of
+/// 1.5.5's `axum::http::Method`-backed original:
 ///
 /// 1. A NON-CANONICAL VERB IS NOT A READ. `Method`'s equality is case-sensitive (RFC 9110 §9.1):
 ///    `get` is an EXTENSION method that merely looks like `GET`, and the enforced matrix therefore
@@ -126,48 +124,6 @@ fn the_scope_matrix_matches_the_enforced_one_verbatim() {
     );
 }
 
-/// `parse` drops the retired delegated tokens; `read-only`/`full` round-trip.
-#[test]
-fn scope_parse_drops_retired_tokens() {
-    assert!(Scope::parse("mint").is_none());
-    assert!(Scope::parse("hooks-register").is_none());
-    assert!(Scope::parse("bogus").is_none());
-    assert_eq!(Scope::parse("read-only"), Some(Scope::ReadOnly));
-    assert_eq!(Scope::parse("full"), Some(Scope::Full));
-    assert_eq!(Scope::ReadOnly.as_str(), "read-only");
-    assert_eq!(Scope::Full.as_str(), "full");
-}
-
-/// The two-rung chain: `ReadOnly` does not satisfy a `Full` requirement, `Full` satisfies both, and
-/// a `Full` grant capped by a `ReadOnly` ceiling collapses to read-only.
-#[test]
-fn readonly_not_allow_full_full_allows_readonly() {
-    assert!(!Scope::ReadOnly.allows(Scope::Full));
-    assert!(Scope::ReadOnly.allows(Scope::ReadOnly));
-    assert!(Scope::Full.allows(Scope::ReadOnly));
-    assert!(Scope::Full.allows(Scope::Full));
-
-    let capped = Grants::of(Scope::Full).capped_by(Scope::ReadOnly);
-    assert!(capped.allows(Scope::ReadOnly));
-    assert!(!capped.allows(Scope::Full));
-
-    for a in Scope::ALL {
-        for b in Scope::ALL {
-            let union = Grants::of(a).with(b);
-            for n in Scope::ALL {
-                assert_eq!(
-                    union.allows(n),
-                    a.allows(n) || b.allows(n),
-                    "Grants::of({a:?}).with({b:?}).allows({n:?})"
-                );
-            }
-        }
-    }
-    assert_eq!(Scope::Full.meet(Scope::ReadOnly), Scope::ReadOnly);
-    assert!(Scope::Full.dominates(Scope::ReadOnly));
-    assert!(!Scope::ReadOnly.dominates(Scope::Full));
-}
-
 /// The table test: `required_scope` reproduces every one of the 66 pinned 1.5.5 admin operations,
 /// and the table's own read-only/full split is exactly 34/32.
 #[test]
@@ -217,46 +173,4 @@ fn admin_scope_table_rows_are_well_formed() {
             entry.path
         );
     }
-}
-
-/// The design's own lookup key is the pair `(claim, operation class)`, and it can now be spelled.
-///
-/// Until the contract crate carried a claim's name, a 1.6.0-native plane had no way to be scoped at
-/// all: its operations could be declared, but nothing could say which of its claims a policy entry
-/// was about. What this pins is the two answers that are not "look it up": a pair the policy says
-/// nothing about has no required scope, which is a refusal rather than a pass.
-#[test]
-fn a_claims_operation_class_is_scoped_through_the_policy() {
-    use busbar_contract::{ClaimKey, OpClassId};
-
-    struct OnePolicy;
-    impl crate::PolicyView for OnePolicy {
-        fn required_scope(&self, claim: ClaimKey, op: OpClassId) -> Option<Scope> {
-            match (claim.as_str(), op.as_str()) {
-                ("chat", "completion") => Some(Scope::ReadOnly),
-                ("chat", "mint") => Some(Scope::Full),
-                _ => None,
-            }
-        }
-    }
-
-    let policy = OnePolicy;
-    assert_eq!(
-        crate::required_scope(ClaimKey::new("chat"), OpClassId::new("completion"), &policy),
-        Some(Scope::ReadOnly)
-    );
-    assert_eq!(
-        crate::required_scope(ClaimKey::new("chat"), OpClassId::new("mint"), &policy),
-        Some(Scope::Full)
-    );
-    // The same operation class under a claim the policy does not mention is not the same question.
-    assert_eq!(
-        crate::required_scope(
-            ClaimKey::new("other"),
-            OpClassId::new("completion"),
-            &policy
-        ),
-        None,
-        "an operation nobody wrote a policy entry for has not been authorized"
-    );
 }

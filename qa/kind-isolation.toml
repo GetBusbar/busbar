@@ -1854,8 +1854,8 @@ cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain 
 [[law0]]
 crate = "busbar-kernel-scope"
 axis  = "plane"
-count = "6"
-cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance"
+count = "3"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance. -3 for Q128 kernel-scope: the per-plane liveness switch's docs (`mcp_server`/`mcp_tool`) and its MCP-plane test are deleted"
 
 [[law0]]
 crate = "busbar-plugin-loader"

@@ -140,3 +140,7 @@ impl Grants {
         self.0 & s.bit() != 0
     }
 }
+
+#[cfg(test)]
+#[path = "tests/authz_tests.rs"]
+mod tests;

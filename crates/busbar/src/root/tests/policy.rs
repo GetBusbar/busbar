@@ -3,7 +3,6 @@
 //! super::*` reaches the private items it always did.
 
 use super::*;
-use busbar_kernel_scope::required_scope;
 
 /// **The hazard**, on the transport axis: a client built from the crate's own `Default` ignores
 /// what the operator wrote. A deployment that caps request bodies at 1 KiB gets a transport that
@@ -92,69 +91,4 @@ fn an_unset_body_cap_resolves_to_the_transport_default() {
         32 * 1024 * 1024,
         "the transport's own default body cap is the 32 MiB this deployment has always had"
     );
-}
-
-/// **Silence is a refusal.** The pair nobody wrote an entry for answers nothing, and the scope
-/// unit reads nothing as "not authorized". A view that answered a scope here would open every
-/// operation class the policy forgot to mention.
-#[test]
-fn a_pair_the_policy_is_silent_about_is_refused() {
-    let policy = ScopePolicy::new();
-    assert!(policy.is_empty());
-    assert_eq!(
-        required_scope(
-            ClaimKey::new("some-claim"),
-            OpClassId::new("some-op"),
-            &policy
-        ),
-        None
-    );
-}
-
-/// A declared pair answers what it was declared as, and nothing near it answers by association.
-#[test]
-fn only_the_declared_pair_answers() {
-    let claim = ClaimKey::new("claim-one");
-    let other_claim = ClaimKey::new("claim-two");
-    let op = OpClassId::new("op-read");
-    let other_op = OpClassId::new("op-write");
-
-    let policy = ScopePolicy::new().declaring(claim, op, Scope::ReadOnly);
-
-    assert_eq!(policy.len(), 1);
-    assert_eq!(required_scope(claim, op, &policy), Some(Scope::ReadOnly));
-    // The same claim's other operation class, and the other claim's same operation class,
-    // are both silent. The lookup key is the PAIR, and neither half implies the other.
-    assert_eq!(required_scope(claim, other_op, &policy), None);
-    assert_eq!(required_scope(other_claim, op, &policy), None);
-}
-
-/// Both rungs are expressible, and a mutation declared as full stays full. The two-rung chain
-/// is strict: read-only does not satisfy full.
-#[test]
-fn both_rungs_are_declarable_and_the_chain_is_strict() {
-    let claim = ClaimKey::new("claim");
-    let read = OpClassId::new("op-read");
-    let write = OpClassId::new("op-write");
-
-    let policy = ScopePolicy::new()
-        .declaring(claim, read, Scope::ReadOnly)
-        .declaring(claim, write, Scope::Full);
-
-    assert_eq!(required_scope(claim, read, &policy), Some(Scope::ReadOnly));
-    assert_eq!(required_scope(claim, write, &policy), Some(Scope::Full));
-}
-
-/// A later declaration of the same pair replaces the earlier one rather than accumulating, so a
-/// policy has one answer per pair and a reload cannot leave two.
-#[test]
-fn redeclaring_a_pair_replaces_it() {
-    let claim = ClaimKey::new("claim");
-    let op = OpClassId::new("op");
-    let policy = ScopePolicy::new()
-        .declaring(claim, op, Scope::ReadOnly)
-        .declaring(claim, op, Scope::Full);
-
-    assert_eq!(policy.len(), 1);
-    assert_eq!(required_scope(claim, op, &policy), Some(Scope::Full));
 }
