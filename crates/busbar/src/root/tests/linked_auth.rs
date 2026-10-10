@@ -598,9 +598,37 @@ fn blank_admin_token_refuses_to_start() {
 /// on the provider NAME skipped it and refused every admin request.
 #[tokio::test]
 async fn a_renamed_provider_backed_by_the_operator_module_is_the_operator_credential() {
+    renamed_provider_is_the_operator_credential(op()).await;
+}
+
+/// ONE PLUGIN, ONE IDENTITY (ARCHITECT C'): the operator credential's module named by its CANONICAL
+/// name (the manifest name its release tarball carries, its row's `linked-canonical` value) is the
+/// operator credential exactly as its key is — the same provider, the same full scope, the same
+/// carriers, the same refusal — because the kernel compares the plugin the module resolves to, not
+/// the spelling. RED before: the token on that provider was refused as misplaced, and nothing
+/// opened the operator credential behind it.
+#[tokio::test]
+async fn the_operator_module_named_by_its_canonical_name_is_the_operator_credential() {
+    let op = op();
+    let &(_, canonical, _) = crate::LINKED
+        .auths
+        .iter()
+        .find(|row| row.0 == op)
+        .expect("the root links the operator credential's row");
+    assert_ne!(canonical, op, "the row's canonical name is not its key");
+    assert!(config::names_operator(canonical) && config::names_operator(op));
+    renamed_provider_is_the_operator_credential(canonical).await;
+}
+
+/// `admin_auth: [ops]`, `ops: { module: <module>, token: <file> }`, built from configuration: the
+/// operator credential, on both carriers, at full scope; a wrong token refused with the frozen 401.
+async fn renamed_provider_is_the_operator_credential(module: &str) {
     link();
     busbar_kernel::snapshot::init();
-    let dir = std::env::temp_dir().join(format!("busbar-op-by-module-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!(
+        "busbar-op-by-module-{module}-{}",
+        std::process::id()
+    ));
     std::fs::create_dir_all(&dir).unwrap();
     let (token_path, key_path) = (dir.join("admin.token"), dir.join("signing.key"));
     std::fs::write(&token_path, TOKEN).unwrap();
@@ -608,28 +636,36 @@ async fn a_renamed_provider_backed_by_the_operator_module_is_the_operator_creden
     let mut cfg = cfg_with_credentials(&token_path, &key_path);
     let auth = cfg.auth.as_mut().expect("the fixture configures auth");
     auth.admin_auth[0].name = "ops".to_string();
+    auth.admin_auth[0].module = module.to_string();
     cfg.admin_auth = vec!["ops".to_string()];
     // The definition the resolved entry came from, as config.yaml would carry it.
     let ops: config::IdentityProviderCfg =
-        serde_yaml::from_str(&format!("module: {}", config::operator_provider())).expect("ops");
+        serde_yaml::from_str(&format!("module: {module}")).expect("ops");
     cfg.identity_providers.insert("ops".to_string(), ops);
     let app = Arc::new(busbar_kernel::test_support::build_once(cfg, None).expect("boot"));
     let _ = std::fs::remove_dir_all(&dir);
 
+    assert!(
+        app.admin_modules.operator.is("ops"),
+        "{module}: the provider is the operator credential"
+    );
     use busbar_contract::authz::Scope;
     assert!(
         busbar_kernel::auth::dry_run_admin_scope(&app, &bearer(TOKEN)).allows(Scope::Full),
-        "the operator token earns full scope through the renamed provider"
+        "{module}: the operator token earns full scope through the renamed provider"
     );
     for (bearer, header) in [(Some(TOKEN), None), (None, Some(TOKEN))] {
         let (status, body) = probe(app.clone(), bearer, header).await;
-        assert_eq!(status, 200, "bearer={bearer:?} header={header:?}: {body}");
+        assert_eq!(
+            status, 200,
+            "{module}: bearer={bearer:?} header={header:?}: {body}"
+        );
     }
     let (status, body) = probe(app, Some("wrong"), None).await;
     assert_eq!(
         (status, body),
         (401, unauthorized()),
-        "a wrong token is refused"
+        "{module}: a wrong token is refused"
     );
 }
 
@@ -646,7 +682,9 @@ async fn a_provider_named_like_the_operator_but_backed_by_another_module_is_that
     let named_op = || {
         let base = app(&[op], Vec::new());
         let defs = [(op, AnyCredential.name())].into_iter();
-        let operator = Operator::open(op, defs, false, None, |_| unreachable!()).expect("opens");
+        let is_op = |m: &str| config::names_operator(m);
+        let operator =
+            Operator::open(op, defs, &is_op, false, None, |_| unreachable!()).expect("opens");
         assert!(
             !operator.is(op),
             "a definition under the name, backed elsewhere"
