@@ -309,10 +309,10 @@ async fn a_claimed_request_is_served_through_the_door_and_its_money_posted() {
         key_file.display()
     ))
     .expect("a provider entry");
-    let providers = provider_routes(&std::collections::HashMap::from([(
-        "typesafe".to_string(),
-        provider,
-    )]));
+    let providers = provider_routes(
+        &std::collections::HashMap::from([("typesafe".to_string(), provider)]),
+        &busbar_kernel::config_validate::MetadataPosture::default(),
+    );
     let secrets = busbar_kernel::config::secret::SecretResolver::builtins_only();
     let auths = OutboundAuths::new(
         Arc::clone(&dispatcher),
@@ -2241,10 +2241,10 @@ async fn serve_configured(
         busbar_plane_decisions::config::PROTOCOL,
     ))
     .expect("a provider entry");
-    let providers = provider_routes(&std::collections::HashMap::from([(
-        "typesafe".to_string(),
-        provider,
-    )]));
+    let providers = provider_routes(
+        &std::collections::HashMap::from([("typesafe".to_string(), provider)]),
+        &busbar_kernel::config_validate::MetadataPosture::default(),
+    );
     let secrets = busbar_kernel::config::secret::SecretResolver::builtins_only();
     let auths = OutboundAuths::new(
         Arc::clone(&dispatcher),

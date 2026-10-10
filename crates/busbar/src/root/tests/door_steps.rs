@@ -377,6 +377,7 @@ fn provider(protocol: &str, style: Option<&str>) -> super::ProviderRoute {
         credential: busbar_contract::secret_ref::SecretRef::none(),
         style: style.map(str::to_string),
         params: super::StyleParams::default(),
+        metadata: busbar_kernel::config_validate::MetadataPosture::default(),
     }
 }
 
@@ -761,6 +762,25 @@ fn presented(answer: Option<&busbar_contract::auth_calls::Fields>) -> Option<Str
     }
 }
 
+/// The linked auth plugin that serves both mint styles (`oauth-client-credentials`, `jwt-bearer`),
+/// its mint connections declared and opened over `table`.
+fn linked_mint_plugin(table: &std::sync::Arc<TokenEndpoint>) -> super::OutboundAuths {
+    let dispatcher = std::sync::Arc::new(crate::root::loader::dispatch::Dispatcher::new(
+        crate::root::loader::dispatch::DispatchConfig::default(),
+    ));
+    crate::root::connector::install_io(&dispatcher);
+    // The row's canonical name is its key.
+    let name = "busbar-auth-oauth";
+    let linked: [busbar_kernel::preflight::LinkedAuth; 1] = [(name, name, busbar_auth_oauth::door)];
+    super::OutboundAuths::new(
+        dispatcher,
+        &linked,
+        None,
+        crate::root::loader::dispatch::ConnTable::Host(std::sync::Arc::clone(table)
+            as std::sync::Arc<dyn busbar_contract::conn::DeclaredConns>),
+    )
+}
+
 /// THE MEMBER UNDER `auth: oauth-client-credentials`, BOUND BY THE COMPOSITION (THE DESIGN §6 steps
 /// 2-3, §5, §6.5): the auth plugin serving the style is opened over the provider's own settings,
 /// so its `loopback-allowed` mint need is declared pinned to the provider's `token_url`; its tick schedule runs
@@ -791,31 +811,18 @@ async fn a_member_under_an_oauth_grant_presents_its_minted_then_refreshed_bearer
             params: super::StyleParams {
                 token_url: Some(TOKEN_URL.to_string()),
                 scope: Some("https://cognitiveservices.azure.com/.default".to_string()),
-                subject: None,
+                ..super::StyleParams::default()
             },
+            metadata: busbar_kernel::config_validate::MetadataPosture::default(),
         },
     )]
     .into();
     let table = std::sync::Arc::new(TokenEndpoint::default());
-    let dispatcher = std::sync::Arc::new(crate::root::loader::dispatch::Dispatcher::new(
-        crate::root::loader::dispatch::DispatchConfig::default(),
-    ));
-    crate::root::connector::install_io(&dispatcher);
-    // The row's canonical name is its key.
-    let name = "busbar-auth-oauth";
-    let linked: [busbar_kernel::preflight::LinkedAuth; 1] = [(name, name, busbar_auth_oauth::door)];
-    let auths = super::OutboundAuths::new(
-        dispatcher,
-        &linked,
-        None,
-        crate::root::loader::dispatch::ConnTable::Host(std::sync::Arc::clone(&table)
-            as std::sync::Arc<dyn busbar_contract::conn::DeclaredConns>),
-    );
     let secrets = busbar_kernel::config::secret::SecretResolver::builtins_only();
     let reach = super::DoorReach {
         providers: &providers,
         secrets: &secrets,
-        auths: std::sync::Arc::new(auths),
+        auths: std::sync::Arc::new(linked_mint_plugin(&table)),
         conns: std::sync::Arc::new(busbar_core_connector::Connector::new()),
         stream_ceiling_secs: 1,
         upgrades: Vec::new(),
@@ -878,6 +885,195 @@ async fn a_member_under_an_oauth_grant_presents_its_minted_then_refreshed_bearer
         opened[1].3,
         "grant_type=client_credentials&client_id=oracle-client-0001&client_secret=\
          oracle%3Asecret%3Awith%3Acolons&scope=https%3A%2F%2Fcognitiveservices.azure.com%2F.default"
+    );
+}
+
+/// A test-only 2048-bit PKCS#8 RSA private key (generated for the kernel's `jwt_bearer` tests and
+/// granting no real access), so the serving plugin can sign the assertion it mints with.
+const TEST_SA_KEY_PEM: &str = "-----BEGIN PRIVATE KEY-----\n\
+MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQCu2RTBghXyuvqd\n\
+v/4AIq1NcPzdRUCr0wyjEH35avOM9vSW+fuira0UtCQcyTHJZswoJqgwcdO2SRav\n\
+/QMZhnjB/sCzuvHrbILd/T0nK19Fdld/wKMQlQlqz94OpS5b0J/nEc7/IOTxszbq\n\
+4B2geG7lJc5wm3dMjKwr7IPbnWs5fMEVyZFaFsctrejOTURx8duff8eM2L+Lf5No\n\
+H2k0h+6blyDTq1Iu+9UM5/AfycgvdhPlcKCL1VZq9+YY5zW5GuXj997TnEWEeiam\n\
+ZfaHklhdSX3zzSUkShqayzaxX6YRdlUvE6yEIkjq/AVRVrMZDynyD7J0nsyjykhx\n\
+WVh79c5fAgMBAAECggEALHaz2onUPwfhl6AtXadz3s+u3i4wRgHDouwcvQK/sMdU\n\
+Z9hmb3YvH6a30EIx0P+9RzCdcMRhjGeFx3dWBHW3282G/624u5+6n+04Ue+rqKRx\n\
+l+FLFnpwDKOT2rGS2nJxV3el5iddUUG743rezeISgV9d4jEG44aaegkJdx3PGKz/\n\
+E76BIyi9H4oUgiqIyPW2trPEeg5n/1oVMHLGDBhotuM7VPUCegh/J3e1jSxcYvi8\n\
+0CutgOLynZAS1xSatbbp8nWrUSRHOUYrgE9OYbS7TSgGz1PjzdcmLEsHEGcor0wm\n\
+cT4oePDjZmuxICFBSg96Ffb82t6UGXC7xLQbglsfQQKBgQDlBOBtVQafWVJiEj83\n\
+fG2YfKTMx1neGO/6ftBMn7XUt4D/AbL0Kx0/Z5lfxm2cixlxcGWT6e96CmZmEsyA\n\
+RFSyuG/bvbTF1c0vaKXcjghtPH5TaB6MjgP3VmjOHR5V5o3JMQX0Xayxf/kBP//f\n\
+wfolsPUM5hcB7pMjVDQz0OZacQKBgQDDcm0i42UA1wrh4XUTNAbVHfacTm/zBhVB\n\
+zvtEC3WGkBCRdU9JSwFAJitPmxrVS3+w2fxO47IiSngeQEyC2neew/H5FrWSNs+L\n\
+xV9Jystubq6oTCulEGBP4gb99FkDY2RToNYOjVrEQDsmiijv3CeZyHnes0/8uMQq\n\
+5ekEveH9zwKBgBZvR9zt+1wYz+0zhGXXFpVdgHde//q1zqxnR9h5vMI9x7EzZWht\n\
+4MuZRnkPYyV2quNl801uGTuHUUimhsn556IqVyrbhp3qt9LxGW5lq4Wn62gYRwXV\n\
+06WjHVkzmQkpMLKIzuCFXKl2s9nffx1YTzzp/Ndqos5ZpKhNU1/QEwDBAoGAfVvA\n\
+WldFqmNDbJwCTp3ZIAqG6bx5m4O0ULBkg0FiUTvIFLQMdbMxCycwMnAGpvY04Yb/\n\
+iM4MrGfdYXHWYTuk6+U8J4sETNLxDfI7awYysxM03Wd1uvqk+7e6ylpWWZD/gZAw\n\
+m8bYh/W2usJ0/VvU3pMyb7/NNwh/chBjBBKSiAsCgYEAsTCMDD6CYdncyFWMtWpK\n\
+vaTrTko3xPDigybk5520jK5UkEaZr0meRn1CFYFAnfUs0sKB4EbWkcmkZOayPPtQ\n\
+su3l06s8o+WrP8Bp2GikIg+jVz9sdz9Vph0Vr0VOPwdBKbWUT4As0r6Muceq+sH6\n\
+oy3z0wnL4GXkIelYmU1zCk0=\n\
+-----END PRIVATE KEY-----\n";
+
+/// A member under `auth: jwt-bearer` whose service account names `token_uri`, sealed by the
+/// composition over `table` with `metadata` as the provider's posture: its routes, or why the load
+/// is refused.
+fn jwt_bearer_routes(
+    token_uri: &str,
+    metadata: busbar_kernel::config_validate::MetadataPosture,
+    table: &std::sync::Arc<TokenEndpoint>,
+) -> Result<std::collections::BTreeMap<String, busbar_kernel::plane_driver::MemberRoute>, String> {
+    use busbar_contract::abi::host::conn::connector::DIRECTION_OUTBOUND;
+    let sa = serde_json::json!({
+        "client_email": "svc@proj.iam.gserviceaccount.com",
+        "private_key": TEST_SA_KEY_PEM,
+        "token_uri": token_uri,
+    });
+    let key_file = std::env::temp_dir().join(format!(
+        "busbar-door-steps-jwt-{}-{}",
+        std::process::id(),
+        token_uri.len()
+    ));
+    std::fs::write(&key_file, sa.to_string()).expect("key");
+    let providers: std::collections::BTreeMap<String, super::ProviderRoute> = [(
+        "p".to_string(),
+        super::ProviderRoute {
+            base_url: "http://127.0.0.1:9".to_string(),
+            protocol: "d".to_string(),
+            credential: busbar_contract::secret_ref::SecretRef::file(
+                key_file.display().to_string(),
+            ),
+            style: Some("jwt-bearer".to_string()),
+            params: super::StyleParams::default(),
+            metadata,
+        },
+    )]
+    .into();
+    let secrets = busbar_kernel::config::secret::SecretResolver::builtins_only();
+    let reach = super::DoorReach {
+        providers: &providers,
+        secrets: &secrets,
+        auths: std::sync::Arc::new(linked_mint_plugin(table)),
+        conns: std::sync::Arc::new(busbar_core_connector::Connector::new()),
+        stream_ceiling_secs: 1,
+        upgrades: Vec::new(),
+    };
+    let section: serde_yaml::Value =
+        serde_yaml::from_str("models: {m: {provider: p}}").expect("yaml");
+    let facts = crate::root::loader::dispatch::kinds::plane::ServedFacts {
+        need_auths: vec![(DIRECTION_OUTBOUND, "jwt-bearer")],
+        dialects: vec!["d"],
+        ..Default::default()
+    };
+    let routes = super::member_routes(&section, &DoorPools::of(&section), &facts, &reach);
+    let _ = std::fs::remove_file(&key_file);
+    routes
+}
+
+/// RED (ARCHITECT 2026-10-04 parity ruling, THE DESIGN §5 `loopback-allowed`: "auth mint endpoints
+/// (`token_url`, `token_uri`)"; the oracle cell `egress.auth|jwt-bearer|mint-refresh`): THE MEMBER
+/// UNDER `auth: jwt-bearer` MINTS AT ITS SERVICE ACCOUNT'S `token_uri`. The serving plugin's
+/// `settings.token_uri` need is declared pinned to the endpoint the service account names (the
+/// seal fills it from the resolved credential), the first request carries the bearer minted there,
+/// and the mint is 1.5.5's RFC 7523 POST (`egress_auth/jwt_bearer.rs:172-178`, v1.5.5).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_member_under_jwt_bearer_mints_at_its_service_accounts_token_uri() {
+    use busbar_contract::auth_calls::FieldsRequest;
+    const TOKEN_URI: &str = "https://oauth2.example.com/token";
+    let table = std::sync::Arc::new(TokenEndpoint::default());
+    let routes = jwt_bearer_routes(
+        TOKEN_URI,
+        busbar_kernel::config_validate::MetadataPosture::default(),
+        &table,
+    )
+    .expect("the member resolves");
+    let binding = routes["m"].auth.clone().expect("its credential is bound");
+    assert!(
+        table
+            .declared
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|(_, _, target)| target.as_deref() == Some(TOKEN_URI)),
+        "the plugin's mint need, pinned to the service account's token_uri: {:?}",
+        table.declared.lock().unwrap()
+    );
+    // A bearer minted at the token_uri is presented once the first mint lands (asked for on
+    // the spot, so the cell reads the same whether a pre-mint call waits or answers no header).
+    let minted = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            let now = binding
+                .auth
+                .fields_now(binding.handle, &FieldsRequest::default());
+            if presented(now.as_ref()).is_some_and(|a| a.starts_with("Bearer oracle-minted-")) {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    })
+    .await;
+    assert!(
+        minted.is_ok(),
+        "a bearer minted at the token_uri is presented"
+    );
+    let opened = table.opened.lock().unwrap();
+    let (_, target, words, body) = &opened[0];
+    assert_eq!(target, TOKEN_URI);
+    assert_eq!(words, b"/token");
+    assert!(
+        body.starts_with(
+            "grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Ajwt-bearer&assertion="
+        ),
+        "1.5.5's RFC 7523 form: {body}"
+    );
+}
+
+/// RED (1.5.5 `main.rs:2960-2966` over `egress_auth/jwt_bearer.rs::validate_token_uri`, v1.5.5): A
+/// SERVICE ACCOUNT'S `token_uri` IS JUDGED AT THE SEAL, in 1.5.5's words — plaintext to a public
+/// host and a cloud-metadata host are refused, naming the provider; the provider's metadata posture
+/// carves the metadata host back out, as 1.5.5's did.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_service_account_token_uri_is_judged_at_the_seal_in_1_5_5s_words() {
+    use busbar_kernel::config_validate::MetadataPosture;
+    let table = std::sync::Arc::new(TokenEndpoint::default());
+    let Err(plaintext) = jwt_bearer_routes(
+        "http://oauth2.example.com/token",
+        MetadataPosture::default(),
+        &table,
+    ) else {
+        panic!("plaintext to a public host is refused");
+    };
+    assert_eq!(
+        plaintext,
+        "provider 'p' (jwt-bearer auth): service-account token_uri must use https for a public \
+         host (got 'http://oauth2.example.com/token'); it receives the signed JWT assertion, so \
+         plaintext http is permitted only for a private/loopback endpoint"
+    );
+    let Err(metadata) = jwt_bearer_routes(
+        "https://169.254.169.254/token",
+        MetadataPosture::default(),
+        &table,
+    ) else {
+        panic!("a metadata host is refused");
+    };
+    assert!(
+        metadata.starts_with(
+            "provider 'p' (jwt-bearer auth): service-account token_uri \
+             'https://169.254.169.254/token' targets a blocked cloud-metadata host"
+        ),
+        "{metadata}"
+    );
+    let allowed = MetadataPosture {
+        allow_overrides: vec!["169.254.169.254".to_string()],
+        ..MetadataPosture::default()
+    };
+    assert!(
+        jwt_bearer_routes("https://169.254.169.254/token", allowed, &table).is_ok(),
+        "the provider's allow-override carves the host back out"
     );
 }
 
