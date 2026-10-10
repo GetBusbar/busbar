@@ -4,7 +4,8 @@
 //! # busbar-kernel-audit — the audit unit
 //!
 //! The audit unit holds the fixed audit record every plane contributes to, the amendments that
-//! follow it, and the signature that says a node produced it.
+//! follow it, and the signature over each record's digest — a digest that names the node that
+//! sealed the record.
 //!
 //! ## The fixed audit record
 //!
@@ -32,8 +33,9 @@
 //!
 //! [`sign`] mints an ed25519 signature over each record's digest, in the process that sealed it, at
 //! the moment it sealed it. A chain of digests proves only that a file agrees with itself, and the
-//! file is one the operator fully controls; the signature is what says a NODE produced it. It is
-//! not retrofittable — a signature a receiver applies later proves that the receiver got those
+//! file is one the operator fully controls; the signature is what says the deployment's key vouched
+//! for the record at seal time, and the digest it covers names the node that sealed it
+//! ([`record::AuditRecord::node`]). It is not retrofittable — a signature a receiver applies later proves that the receiver got those
 //! bytes — so every record sealed before signing existed stays unprovable, whatever ships after.
 //!
 //! [`recipe`] publishes the exact field order that digest is taken over, and [`expose`] renders the
@@ -42,9 +44,8 @@
 //! and opens no outbound connection for any of this. Anchoring is somebody else's product, because
 //! a node cannot anchor to itself.
 //!
-//! [`heads`] keeps the anchors, forever, independently of how long records are kept — a puller that
-//! was offline while a window's records were pruned lost the records, which was the deal, and must
-//! not also lose the window's anchor.
+//! [`heads`] keeps the anchors — the heads a puller ties a window to — rebuilt from the sealed
+//! records at every boot, so a restart loses none of them.
 //!
 //! ## What a token buys here
 //!
@@ -66,15 +67,14 @@ pub mod record;
 pub mod sign;
 
 pub use amend::{
-    amends, content_access, correction, Access, Adjust, AmendBody, AmendChain, AmendClass,
-    AmendJournal, Amendment, ClassCounts, CorrectionError, CorrectionRefused, CountCorrection,
-    Reader, AMENDMENTS_RETAINED,
+    content_access, correction, Access, Adjust, AmendBody, AmendChain, AmendClass, AmendJournal,
+    Amendment, ClassCounts, CorrectionError, CorrectionRefused, CountCorrection, Reader,
+    AMENDMENTS_RETAINED,
 };
 pub use heads::{HeadHistory, SignedHead, HEAD_SAMPLE_SECONDS};
 pub use journal::{from_journal_body, journal_body, JOURNAL_TAG};
 pub use recipe::{
     digest_fields, digest_over, DigestField, DigestValue, Recipe, DIGEST_RECIPE, DIGEST_RECIPE_V2,
-    DIGEST_RECIPE_V3,
 };
 pub use record::{
     Audit, AuditBreak, AuditBreakKind, AuditChain, AuditInputs, AuditRecord, Controls, FinishClass,

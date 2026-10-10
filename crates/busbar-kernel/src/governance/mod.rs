@@ -78,6 +78,15 @@ pub const SELF_KEY_BINDING_MODE: &str = "user-bound";
 /// spelling (`"time-bound"`). Named `_APP` to contrast the self-serve personal `user-bound` key.
 pub const SELF_KEY_BINDING_MODE_APP: &str = "time-bound";
 
+/// The reserved [`busbar_contract::records::VirtualKey::labels`] entry a SELF-SERVE binding records
+/// its minting identity provider under: the `identity-providers:` instance name that asserted the
+/// subject. The self group and the derived id are keyed by subject alone, and two providers backed by
+/// one module can both assert `oidc:alice`, so the binding remembers which one minted it and the
+/// self-serve mint refuses any other. A row without it (minted before the label existed) adopts the
+/// first provider that logs in. Kept off the key metric series (`snapshot::money`), so recording it
+/// changes no scrape.
+pub const SELF_KEY_PROVIDER_LABEL: &str = "busbar_self_provider";
+
 /// The `generation_hash` marker for a signed-token binding at a given rotation generation.
 pub fn binding_marker(id: &str, generation: &str) -> String {
     format!("{BINDING_MARKER_PREFIX}{id}:{generation}")
@@ -796,6 +805,48 @@ pub enum SelfMintOp {
     Refresh,
 }
 
+/// Why the self-serve mint refused to issue. Each one is an admin's or another provider's hold on the
+/// subject, never a store failure; the token exchange maps every one to `Unbound` (403).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SelfMintRefusal {
+    /// The subject holds a self-serve binding an admin disabled (or revoked) and has not deleted. A
+    /// login or refresh must not re-enable it or route around it with a fresh key.
+    Disabled,
+    /// The subject's binding was minted through a different identity provider
+    /// ([`SELF_KEY_PROVIDER_LABEL`]).
+    OtherProvider,
+}
+
+/// A self-serve mint failure: a typed refusal, or the store failing underneath the mint.
+#[derive(Debug)]
+pub enum SelfMintError {
+    /// The mint was refused (see [`SelfMintRefusal`]); nothing was written.
+    Refused(SelfMintRefusal),
+    /// The store failed.
+    Store(RecordStoreError),
+}
+
+impl From<RecordStoreError> for SelfMintError {
+    fn from(e: RecordStoreError) -> Self {
+        SelfMintError::Store(e)
+    }
+}
+
+impl std::fmt::Display for SelfMintError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SelfMintError::Refused(SelfMintRefusal::Disabled) => {
+                f.write_str("self-serve mint refused: the subject's binding is disabled")
+            }
+            SelfMintError::Refused(SelfMintRefusal::OtherProvider) => f.write_str(
+                "self-serve mint refused: the subject's binding was minted by another identity \
+                 provider",
+            ),
+            SelfMintError::Store(e) => e.fmt(f),
+        }
+    }
+}
+
 /// THE single async door onto the self-serve mint path (`GovState::issue_self` /
 /// `GovState::refresh_self`). Both mint fns take `self_mint_lock` — a plain
 /// `std::sync::Mutex`, NOT a `tokio::sync::Mutex` — and, still holding it, perform SYNCHRONOUS
@@ -818,19 +869,20 @@ pub async fn mint_self_offloaded(
     gov: Arc<GovState>,
     op: SelfMintOp,
     user_sub: String,
+    provider: String,
     allowed_pools: Option<Vec<String>>,
     exp: u64,
     now: u64,
-) -> RecordStoreResult<(VirtualKey, String)> {
+) -> Result<(VirtualKey, String), SelfMintError> {
     tokio::task::spawn_blocking(move || match op {
-        SelfMintOp::Issue => gov.issue_self(&user_sub, allowed_pools, exp, now),
-        SelfMintOp::Refresh => gov.refresh_self(&user_sub, allowed_pools, exp, now),
+        SelfMintOp::Issue => gov.issue_self(&user_sub, &provider, allowed_pools, exp, now),
+        SelfMintOp::Refresh => gov.refresh_self(&user_sub, &provider, allowed_pools, exp, now),
     })
     .await
     .unwrap_or_else(|e| {
-        Err(RecordStoreError(format!(
+        Err(SelfMintError::Store(RecordStoreError(format!(
             "self-serve mint task failed to join: {e}"
-        )))
+        ))))
     })
 }
 
