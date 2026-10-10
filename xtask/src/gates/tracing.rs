@@ -44,18 +44,19 @@ pub const ROW_CLOSES: &str = "tracing:attribute-closes";
 const SCAN_ROOT: &str = "crates";
 const EXCLUDE_TESTS_DIR: &str = "/tests/";
 
-/// The denominator floor, pinned AT the measured count: the crates walk read 971 files on predev
-/// 39374ec00e (980 on 5e672d125d, before the egress_auth / auth_cache / ingress_sigv4 files left
-/// the kernel crates; it was 130 against a tree that had grown past 700). A drop below 971 is
-/// refused until a reviewed diff re-measures; the selftest plant removes one file and fails if the
-/// floor sits under the count. It is a `const` here and has no environment override: the only way
-/// to lower one is a reviewable source edit.
-const SCAN_FLOOR: usize = 971;
+/// The denominator floor, pinned AT the measured count: the crates walk reads 972 files on this
+/// branch merged with predev 3bc48823df (971 on predev 39374ec00e; 980 on 5e672d125d, before the
+/// egress_auth / auth_cache / ingress_sigv4 files left the kernel crates; it was 130 against a
+/// tree that had grown past 700). A drop below 972 is refused until a reviewed diff re-measures;
+/// the selftest plant removes one file and fails if the floor sits under the count. It is a
+/// `const` here and has no environment override: the only way to lower one is a reviewable
+/// source edit.
+const SCAN_FLOOR: usize = 972;
 
 /// THE SUBJECT FLOOR (item 228). The file floor above proves the walk opened the crates; it says
 /// nothing about whether the thing this gate judges is still there. "Every `#[instrument]` has a
 /// level" is as vacuous over zero SPANS as over zero files, and the files-to-spans ratio is ~150:1
-/// (971 files, 5 attributes), so every span could leave the tree with the file floor
+/// (972 files, 5 attributes), so every span could leave the tree with the file floor
 /// untouched. Armed at the measured count (arrival.rs 3, ingress/mod.rs 2); like the file floor it
 /// has no override, and lowering it is a reviewable source edit that says which span went where.
 const SPAN_FLOOR: usize = 5;
