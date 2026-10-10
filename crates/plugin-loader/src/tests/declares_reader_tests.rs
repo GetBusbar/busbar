@@ -5,16 +5,18 @@
 //! 2026-10-07): what it reads and refuses, and a scan of the tree that refuses any other site
 //! deserializing declares bytes straight into [`Declares`] with `serde_json`.
 
-use super::{Declares, DECLARES_NEED_SCHEMES};
+use super::Declares;
 use std::path::{Path, PathBuf};
 
 /// A declares document's `needs` is checked and left out of the section: the needs belong to the
-/// Statement. RED ARMS: a malformed `needs` (not a list, a non-string, a scheme no framer serves)
-/// is refused, and any other unknown key beside a well-formed `needs` is still refused.
+/// Statement. The reader names no scheme (core names no transport, Law 1): any non-empty name
+/// reads, and which ones a plugin may state is the conformance suite's check against its
+/// Statement. RED ARMS: a malformed `needs` (not a list, a non-string, an empty name) is refused,
+/// and any other unknown key beside a well-formed `needs` is still refused.
 #[test]
 fn the_reader_checks_and_drops_needs_and_refuses_every_other_unknown_key() {
     let with = Declares::from_declares_json(
-        br#"{"destinations": ["url"], "needs": ["https", "http", "tcp"]}"#,
+        br#"{"destinations": ["url"], "needs": ["scheme-a", "scheme-b"]}"#,
     )
     .expect("a well-formed `needs` reads");
     let without =
@@ -24,18 +26,12 @@ fn the_reader_checks_and_drops_needs_and_refuses_every_other_unknown_key() {
         serde_json::to_value(&with).unwrap(),
         serde_json::json!({"destinations": ["url"]})
     );
-    for scheme in DECLARES_NEED_SCHEMES {
-        let doc = format!(r#"{{"needs": ["{scheme}"]}}"#);
-        assert!(
-            Declares::from_declares_json(doc.as_bytes()).is_ok(),
-            "{scheme}"
-        );
-    }
+    assert!(Declares::from_declares_json(br#"{"needs": []}"#).is_ok());
     for bad in [
-        r#"{"needs": "http"}"#,
+        r#"{"needs": "scheme-a"}"#,
         r#"{"needs": [7]}"#,
-        r#"{"needs": ["gopher"]}"#,
-        r#"{"needs": ["tcp"], "series": []}"#,
+        r#"{"needs": [""]}"#,
+        r#"{"needs": ["scheme-a"], "series": []}"#,
         r#"{"series": []}"#,
         "not json",
     ] {
@@ -54,7 +50,7 @@ fn a_signed_manifest_section_stating_needs_is_refused() {
         serde_json::from_value::<super::Manifest>(serde_json::json!({
             "name": "n", "alias": "n", "kind": "export", "version": "1.0.0", "publisher": "p",
             "abi_version": 1, "sha256": "", "signature": "",
-            "declares": {"needs": ["http"]}
+            "declares": {"needs": ["scheme-a"]}
         }))
         .is_err()
     );

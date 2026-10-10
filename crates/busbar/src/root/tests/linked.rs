@@ -58,7 +58,7 @@ fn a_linked_export_row_and_a_different_dropped_in_plugin_spelling_its_module_ref
 /// root reads a linked export row's `DECLARES` through the one reader of a declares document, which
 /// checks and drops it. Over the real linked export rows, each restated with `needs` (as a
 /// networked sink's own repo states it) reads to the same manifest section as without and links
-/// into the registry. RED ARM: a malformed `needs` refuses the rows, naming the plugin.
+/// into the registry. RED ARM: a malformed `needs` (not a list) refuses the rows, naming the plugin.
 ///
 /// Compiled only where an export door is linked (`linked_axis_export_doors`, read off the
 /// linked-axes table rather than a feature that spells one sink): a build without one has no row
@@ -86,7 +86,7 @@ fn a_linked_export_declares_stating_needs_boots() {
             .collect()
     };
     let plain = linked_exports(doors).expect("the linked export rows");
-    let networked = linked_exports(&restated(r#"["http", "https"]"#))
+    let networked = linked_exports(&restated(r#"["scheme-a", "scheme-b"]"#))
         .expect("a linked declares stating `needs` reads");
     assert_eq!(
         networked
@@ -103,11 +103,11 @@ fn a_linked_export_declares_stating_needs_boots() {
         .link(networked)
         .expect("the rows link: the boot proceeds");
     // RED ARM: a malformed `needs` refuses the rows, naming the first row read.
-    let Err(refused) = linked_exports(&restated(r#"["gopher"]"#)) else {
-        panic!("a `needs` no framer serves must refuse the rows");
+    let Err(refused) = linked_exports(&restated(r#""scheme-a""#)) else {
+        panic!("a `needs` that is not a list must refuse the rows");
     };
     assert!(
-        refused.contains(first.name) && refused.contains("gopher"),
+        refused.contains(first.name) && refused.contains("`needs`"),
         "{refused}"
     );
 }

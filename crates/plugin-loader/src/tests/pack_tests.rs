@@ -186,9 +186,8 @@ fn pack_cli_embeds_the_declares_file() {
 
 /// A declares file's `needs` (the transport schemes the conformance suite and the fleet render read)
 /// is checked and left out of the SIGNED manifest: the needs belong to the Statement. RED ARMS, in
-/// the same test: a malformed `needs` (not a list, a non-string, a scheme no framer serves) is
-/// refused, and any other unknown key is still refused beside a well-formed `needs`; each writes no
-/// tarball.
+/// the same test: a malformed `needs` (not a list, a non-string, an empty name) is refused, and any
+/// other unknown key is still refused beside a well-formed `needs`; each writes no tarball.
 #[test]
 fn pack_cli_leaves_the_declares_needs_out_of_the_manifest() {
     let dir = std::env::temp_dir().join(format!("plugin-pack-needs-{}", std::process::id()));
@@ -230,7 +229,7 @@ fn pack_cli_leaves_the_declares_needs_out_of_the_manifest() {
     };
     let declared = serde_json::json!({"destinations": ["url"]});
     let mut with_needs = declared.clone();
-    with_needs["needs"] = serde_json::json!(["https", "http", "tcp"]);
+    with_needs["needs"] = serde_json::json!(["scheme-a", "scheme-b"]);
     let (code, manifest) = pack_with(&with_needs.to_string());
     assert_eq!(code, ExitCode::SUCCESS);
     let manifest = manifest.expect("the tarball was written");
@@ -242,9 +241,9 @@ fn pack_cli_leaves_the_declares_needs_out_of_the_manifest() {
     );
     // RED ARMS: a malformed `needs` is refused, nothing written.
     for bad in [
-        r#"{"needs": "http"}"#,
+        r#"{"needs": "scheme-a"}"#,
         r#"{"needs": [7]}"#,
-        r#"{"needs": ["gopher"]}"#,
+        r#"{"needs": [""]}"#,
     ] {
         let (code, manifest) = pack_with(bad);
         assert_eq!(code, ExitCode::FAILURE, "{bad} must be refused");
@@ -254,7 +253,7 @@ fn pack_cli_leaves_the_declares_needs_out_of_the_manifest() {
         );
     }
     // RED ARM: any other unknown key is still refused beside a well-formed `needs`.
-    let (code, manifest) = pack_with(r#"{"needs": ["tcp"], "series": []}"#);
+    let (code, manifest) = pack_with(r#"{"needs": ["scheme-a"], "series": []}"#);
     assert_eq!(code, ExitCode::FAILURE);
     assert!(
         manifest.is_none(),

@@ -2324,6 +2324,10 @@ async fn call_once(
 /// transient failure below the trip threshold — the 503 reaches the caller, and the NEXT call
 /// reaches the far end and is served. The root names no plane: it finds the fact by the door's
 /// Statement name. RED with the fact absent (the arm below).
+///
+/// A row that also states `needs` (the conformance suite's and the fleet render's) reads the same
+/// fact: the root reads the row through the one reader of a declares document, which checks and
+/// drops `needs` (ARCHITECT ruling (b)). RED ARM: a malformed `needs` is refused, naming the row.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_plane_stating_no_bench_below_the_trip_keeps_its_sole_member_through_one_503() {
     let _one = PUBLISHING.lock().await;
@@ -2338,6 +2342,20 @@ async fn a_plane_stating_no_bench_below_the_trip_keeps_its_sole_member_through_o
         }),
         "the root reads the fact off the door's declares, by its Statement name"
     );
+    let with_needs =
+        declaring(r#"{"needs":["scheme-a"],"breaker":{"bench_below_trip_threshold":false}}"#);
+    assert_eq!(
+        crate::root::linked::door_breaker(&with_needs, None, &decisions_name())
+            .expect("the fact reads beside `needs`"),
+        Some(crate::root::loader::sign::BreakerDecl {
+            bench_below_trip_threshold: false
+        })
+    );
+    let malformed = declaring(r#"{"needs":"scheme-a"}"#);
+    let refused = crate::root::linked::door_breaker(&malformed, None, &decisions_name())
+        .expect_err("a `needs` that is not a list");
+    let row = malformed.plane_door_declares[0].0;
+    assert!(refused.contains(row), "{refused}");
     let (port, mut heard) = far_end_failing_first(1).await;
     let serving = serve_over(&linked, instance, port).await;
 
@@ -2355,30 +2373,6 @@ async fn a_plane_stating_no_bench_below_the_trip_keeps_its_sole_member_through_o
         "one 503 below the trip benches nothing: the next call reaches the far end"
     );
     assert_eq!(status, StatusCode::OK, "and is served");
-}
-
-#[cfg(feature = "plane-decisions")]
-/// A linked plane door's `declares` row that states `needs` (the conformance suite's and the fleet
-/// render's) still reads its breaker fact: the root reads the row through the one reader of a
-/// declares document, which checks and drops `needs` (ARCHITECT ruling (b)). RED ARM: a malformed
-/// `needs` is refused, naming the row.
-#[test]
-fn a_plane_declares_stating_needs_still_reads_its_breaker_fact() {
-    let stated = declaring(r#"{"needs":["tcp"],"breaker":{"bench_below_trip_threshold":false}}"#);
-    assert_eq!(
-        crate::root::linked::door_breaker(&stated, None, &decisions_name())
-            .expect("the fact reads beside `needs`"),
-        Some(crate::root::loader::sign::BreakerDecl {
-            bench_below_trip_threshold: false
-        })
-    );
-    let refused = crate::root::linked::door_breaker(
-        &declaring(r#"{"needs":"tcp"}"#),
-        None,
-        &decisions_name(),
-    )
-    .expect_err("a `needs` that is not a list");
-    assert!(refused.contains("busbar-plane-decisions"), "{refused}");
 }
 
 #[cfg(feature = "plane-decisions")]
