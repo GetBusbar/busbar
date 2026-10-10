@@ -21,6 +21,25 @@
 //!   | `refusal.unauthenticated` | no credential: refused before any far-end hop, `401`, body exactly `{"error":{"code":"invalid_request","message":<text>}}` | driven.rs `refusal_body`; plane.rs `authenticate` (no anonymous surface) |
 //!   | `usage.billable-success-only` | the success posts one fee on the jev lane carrying the 42 units the far end reported, and the 422 posts nothing | meta.rs `CLASS_DECISION` + plane.rs `meter` (signed design C-3); ARCHITECT ruling 2026-10-02 (CONFORMANCE-RIGS Q4) |
 //!
+//!   THE GATING CHECKS (BUSBAR-1.6.0.md THE DESIGN §1, H2: "conformance rigs carry one cell per
+//!   Teller step per plane"), each named as its cell is in `qa/teller-steps.json`
+//!   (`matrix.decision.<step>.cell` = `jev.rig|<check>`), each judging DELTAS it reads itself on the
+//!   same boot, after the checks above:
+//!
+//!   | check | step | what a correct busbar does |
+//!   |---|---|---|
+//!   | `h2-authenticate-refusal` | authenticate | a forged bearer: `401` in jev's shape, no far-end hop, the ledger unmoved |
+//!   | `h2-meter-row` | meter | one success moves the jev lane by exactly one fee priced at the 42 units it reported |
+//!   | `h2-audit-record` | audit | one success seals exactly one `systemone` record, `Completed` (`GET /api/v1/admin/audit/head` + `/range`) |
+//!   | `h2-exit-terminal` | encode (exit) | two successes: two answers each the far end's bytes over one dial, exactly two fees, exactly two records |
+//!   | `h2-verify-refusal` | verify | a key granted only another pool (`allowed_pools`): `403` before Admit, no hop, nothing charged, no request counted |
+//!   | `h2-admit-refusal` | admit | a key whose group allows one request a day: served once, then `429` before the dial, nothing charged, no request counted |
+//!   | `h2-route-terminal` | route | the sole member answers `503`: the unit ends in a terminal 5xx in jev's shape, never the far end's bytes, nothing charged |
+//!
+//!   The route check runs last: the down lane benches the sole member for its cooldown. On this
+//!   plane a key's grant over the routed provider is judged over Verify's sealed set, so the verify
+//!   check's refusal is the kernel's answer before Admit draws (door_steps.rs `approve`).
+//!
 //!   `usage.billable-success-only` is read off `GET /api/v1/admin/ledger/totals` (ARCHITECT ruling
 //!   2026-10-02): on the jev lane `fee_count` must be exactly 1 AND the reported units must show.
 //!   The 1.6.0 node keeps its rows at bucket-day width (no lane, no provider), so there the jev
@@ -35,6 +54,7 @@
 //! check green ⇒ `pass`. `GET /v1/models` is not judged: that path keeps its 1.5.5 bytes.
 
 use std::path::Path;
+use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
@@ -55,7 +75,7 @@ const PROBE_HEADER: &str = "x-jev-conformance-probe";
 const REQUEST: &[u8] =
     b"{ \"state\" : {\"session\":\"conformance-state\",\"n\":[1, 2 ,3]},\n  \"context\":{} }";
 /// The far end's success: the usage count the plane meters, the same odd spacing.
-const SUCCESS: &[u8] =
+pub const SUCCESS: &[u8] =
     b"{\"request_id\" : \"req_conformance\", \"usage\":{\"units\":42},\"answers\":{\"decision\":\"approve\"}}";
 /// The far end's 422, echoing state and answers (the PII witness fixture's shape).
 const UNPROCESSABLE: &[u8] = b"{\"error\":{\"code\":\"invalid_state\",\"message\":\"bad transition\"},\"state\":{\"session\":\"conformance-state\"},\"answers\":{\"leaked\":\"never\"}}";
@@ -179,8 +199,8 @@ pub fn decide_jev(run: &JevRun) -> Outcome {
 }
 
 /// The refusal shape driven.rs `refusal_body` writes: exactly `{"error":{"code","message"}}`,
-/// both strings, the message non-empty, and nothing else at either level.
-pub fn is_jev_refusal(body: &[u8], code: &str) -> Result<(), String> {
+/// both strings, the message non-empty, and nothing else at either level. Answers the code word.
+pub fn jev_refusal_code(body: &[u8]) -> Result<String, String> {
     let v: Value =
         serde_json::from_slice(body).map_err(|e| format!("the refusal body is not JSON ({e})"))?;
     let top = v.as_object().ok_or("the refusal body is not an object")?;
@@ -197,56 +217,79 @@ pub fn is_jev_refusal(body: &[u8], code: &str) -> Result<(), String> {
         err.get("code").and_then(Value::as_str),
         err.get("message").and_then(Value::as_str),
     ) {
-        (Some(c), Some(m)) if c == code && !m.is_empty() => Ok(()),
+        (Some(c), Some(m)) if !c.is_empty() && !m.is_empty() => Ok(c.to_string()),
         _ => Err(format!(
-            "the refusal body is not {{\"error\":{{\"code\":\"{code}\",\"message\":<text>}}}}: {v}"
+            "the refusal body is not {{\"error\":{{\"code\":<word>,\"message\":<text>}}}}: {v}"
         )),
+    }
+}
+
+/// [`jev_refusal_code`], holding the code word to `code`.
+pub fn is_jev_refusal(body: &[u8], code: &str) -> Result<(), String> {
+    let got = jev_refusal_code(body)?;
+    if got == code {
+        Ok(())
+    } else {
+        Err(format!(
+            "the refusal body is not {{\"error\":{{\"code\":\"{code}\",\"message\":<text>}}}}: \
+             its code is `{got}`"
+        ))
     }
 }
 
 /// The units the far end reports on the success (`SUCCESS`'s `/usage/units`).
 pub const REPORTED_UNITS: u64 = 42;
 
-/// THE BILLING JUDGEMENT over `GET /api/v1/admin/ledger/totals` after one success and one 422: on
-/// the jev lane exactly one fee, priced at exactly [`REPORTED_UNITS`] micro-units (the card prices
-/// one unit at one micro-unit). A row is the jev lane's when it names it (`lane`/`provider`), or,
-/// at the width the 1.6.0 node keeps (no lane, no provider: every row is a bucket-day), when it is
-/// the rig's caller's own bucket (`bucket`, the key the rig minted and served under). Every other
-/// row is another lane's or another caller's and is not read.
-pub fn judge_jev_ledger(totals: &[u8], bucket: &str) -> Result<(), String> {
+/// What a set of ledger rows adds up to: the fees counted and the micro-units priced.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Spend {
+    pub fees: u64,
+    pub micros: u128,
+}
+
+/// The rows of `GET /api/v1/admin/ledger/totals`, summed. `bucket: Some(b)` reads the jev lane's
+/// rows only: a row that names the lane (`lane`/`provider`), or, at the width the 1.6.0 node keeps
+/// (no lane, no provider: every row is a bucket-day), the caller `b`'s own bucket. `None` reads
+/// every row on the node: what "nothing was charged to anyone" is judged over.
+pub fn ledger_spend(totals: &[u8], bucket: Option<&str>) -> Result<Spend, String> {
     let v: Value =
         serde_json::from_slice(totals).map_err(|e| format!("ledger/totals is not JSON ({e})"))?;
     let rows = v
         .get("rows")
         .and_then(Value::as_array)
         .ok_or("ledger/totals has no `rows`")?;
-    let mine: Vec<&Value> = rows
-        .iter()
-        .filter(|r| {
-            let (lane, provider) = (
-                r.get("lane").and_then(Value::as_str),
-                r.get("provider").and_then(Value::as_str),
-            );
-            (lane == Some(MODEL) && provider == Some(PROVIDER))
-                || (lane == Some("")
-                    && provider == Some("")
-                    && r.get("bucket").and_then(Value::as_str) == Some(bucket))
-        })
-        .collect();
-    let fees: u64 = mine
-        .iter()
-        .filter_map(|r| r.get("fee_count").and_then(Value::as_u64))
-        .sum();
-    let mut micros: u128 = 0;
-    for r in &mine {
+    let mut spend = Spend::default();
+    for r in rows.iter().filter(|r| {
+        let Some(bucket) = bucket else {
+            return true;
+        };
+        let (lane, provider) = (
+            r.get("lane").and_then(Value::as_str),
+            r.get("provider").and_then(Value::as_str),
+        );
+        (lane == Some(MODEL) && provider == Some(PROVIDER))
+            || (lane == Some("")
+                && provider == Some("")
+                && r.get("bucket").and_then(Value::as_str) == Some(bucket))
+    }) {
+        spend.fees += r.get("fee_count").and_then(Value::as_u64).unwrap_or(0);
         let text = r
             .get("priced_micros")
             .and_then(Value::as_str)
-            .ok_or("a jev ledger row carries no priced_micros text")?;
-        micros += text
+            .ok_or("a ledger row carries no priced_micros text")?;
+        spend.micros += text
             .parse::<u128>()
             .map_err(|_| format!("priced_micros `{text}` is not a non-negative integer"))?;
     }
+    Ok(spend)
+}
+
+/// THE BILLING JUDGEMENT over `GET /api/v1/admin/ledger/totals` after one success and one 422: on
+/// the jev lane ([`ledger_spend`] with the rig's caller's bucket) exactly one fee, priced at
+/// exactly [`REPORTED_UNITS`] micro-units (the card prices one unit at one micro-unit). Every other
+/// row is another lane's or another caller's and is not read.
+pub fn judge_jev_ledger(totals: &[u8], bucket: &str) -> Result<(), String> {
+    let Spend { fees, micros } = ledger_spend(totals, Some(bucket))?;
     if fees != 1 {
         return Err(format!(
             "ledger/totals counts {fees} fee(s) on lane {MODEL}/{PROVIDER} after one success and \
@@ -262,12 +305,243 @@ pub fn judge_jev_ledger(totals: &[u8], bucket: &str) -> Result<(), String> {
     Ok(())
 }
 
+// ── THE GATING CHECKS: one per Teller step H2 gates (qa/teller-steps.json `matrix.decision`) ──
+//
+// Each check's name is its cell's id in the teller-steps matrix, `jev.rig|<name>`, and the gate
+// resolves the cell to this file only while it still declares the name. Each is judged by a pure
+// function over what the rig observed, so its red arm is a test over a bad observation
+// (xtask/tests/conformance_rigs.rs), and the served leg only gathers.
+
+/// AUTHENTICATE: a bad credential is refused before Verify, with zero egress.
+pub const H2_AUTHENTICATE: &str = "h2-authenticate-refusal";
+/// VERIFY: a credential holding no grant for the decision provider is refused before Admit draws.
+pub const H2_VERIFY: &str = "h2-verify-refusal";
+/// ADMIT: a key past its group's request budget is refused before Route dials, and charged nothing.
+pub const H2_ADMIT: &str = "h2-admit-refusal";
+/// ROUTE: the sole member down, the unit ends terminal within itself.
+pub const H2_ROUTE: &str = "h2-route-terminal";
+/// METER: the usage delta of exactly one request, priced.
+pub const H2_METER: &str = "h2-meter-row";
+/// AUDIT: the audit chain gains exactly one entry, the right operation and outcome.
+pub const H2_AUDIT: &str = "h2-audit-record";
+/// ENCODE (THE DESIGN's exit): one terminal per unit, never a double post.
+pub const H2_EXIT: &str = "h2-exit-terminal";
+
+/// The seven gating checks, in the Teller's order.
+pub const H2_CHECKS: [&str; 7] = [
+    H2_AUTHENTICATE,
+    H2_VERIFY,
+    H2_ADMIT,
+    H2_ROUTE,
+    H2_METER,
+    H2_AUDIT,
+    H2_EXIT,
+];
+
+/// The operation class every unit on `POST /v1/systemone` is sealed under on the audit chain
+/// (`busbar-plane-decisions` ops.rs `OP_SYSTEMONE`).
+pub const AUDIT_OP_CLASS: &str = "systemone";
+
+/// The far end's transient failure: the down lane the route check dials.
+pub const UNAVAILABLE: &[u8] =
+    b"{\"error\":{\"code\":\"unavailable\",\"message\":\"the decision service is down\"}}";
+
+/// One call as the rig saw it from both ends: what the caller got, and how many requests reached
+/// the far end while it was in flight.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Call {
+    pub status: u16,
+    pub body: Vec<u8>,
+    pub hops: usize,
+}
+
+fn unchanged(before: Spend, after: Spend) -> Result<(), String> {
+    check(before == after, || {
+        format!(
+            "the ledger moved from {} fee(s) / {} micro-unit(s) to {} / {}; a refused unit is \
+             charged nothing",
+            before.fees, before.micros, after.fees, after.micros
+        )
+    })
+}
+
+/// A unit refused before its dial: the `status` refusal in jev's shape with `code`, no request at
+/// the far end, nothing on the ledger, and (where the key's usage was read) no request counted.
+pub fn judge_refused_before_dial(
+    call: &Call,
+    status: u16,
+    code: &str,
+    spend: (Spend, Spend),
+    requests: Option<(u64, u64)>,
+) -> Result<(), String> {
+    if call.status != status {
+        return Err(format!(
+            "answered {} `{}`, not the {status} refusal",
+            call.status,
+            show(&call.body)
+        ));
+    }
+    if call.hops != 0 {
+        return Err(format!(
+            "the refused unit reached the far end ({} hop(s)); it must be refused before the dial",
+            call.hops
+        ));
+    }
+    is_jev_refusal(&call.body, code)?;
+    unchanged(spend.0, spend.1)?;
+    match requests {
+        Some((was, now)) if was != now => Err(format!(
+            "the key's usage counts {was} request(s) before the refusal and {now} after; a \
+             refused unit counts none"
+        )),
+        _ => Ok(()),
+    }
+}
+
+/// ADMIT: the key's one budgeted request is served, then the next is refused `429` before its dial
+/// and charged nothing.
+pub fn judge_admit(
+    first: &Call,
+    second: &Call,
+    spend: (Spend, Spend),
+    requests: (u64, u64),
+) -> Result<(), String> {
+    if first.status != 200 || first.hops != 1 {
+        return Err(format!(
+            "the key's one budgeted request answered {} with {} hop(s), not a served 200; the \
+             refusal after it judges nothing",
+            first.status, first.hops
+        ));
+    }
+    judge_refused_before_dial(second, 429, "unsupported_operation", spend, Some(requests))
+}
+
+/// One served success, relayed byte for byte through exactly one dial.
+fn served_once(call: &Call) -> Result<(), String> {
+    check(
+        call.status == 200 && call.body == SUCCESS && call.hops == 1,
+        || {
+            format!(
+                "a success answered {} `{}` over {} hop(s), not the far end's 200 bytes over one",
+                call.status,
+                show(&call.body),
+                call.hops
+            )
+        },
+    )
+}
+
+/// The ledger moved by exactly `n` fees and `n` × [`REPORTED_UNITS`] micro-units.
+fn moved_by(spend: (Spend, Spend), n: u64) -> Result<(), String> {
+    let (before, after) = spend;
+    let fees = after.fees.checked_sub(before.fees);
+    let micros = after.micros.checked_sub(before.micros);
+    let want = u128::from(n * REPORTED_UNITS);
+    check(fees == Some(n) && micros == Some(want), || {
+        format!(
+            "the jev lane moved from {} fee(s) / {} micro-unit(s) to {} / {} over {n} served \
+             request(s); exactly {n} fee(s) and {want} micro-unit(s) are owed",
+            before.fees, before.micros, after.fees, after.micros
+        )
+    })
+}
+
+/// METER: one served request moves the jev lane by exactly one fee priced at the units it reported.
+pub fn judge_meter(call: &Call, spend: (Spend, Spend)) -> Result<(), String> {
+    served_once(call)?;
+    moved_by(spend, 1)
+}
+
+/// The window of the audit chain the rig read (`GET /api/v1/admin/audit/range`): exactly `want`
+/// records under [`AUDIT_OP_CLASS`], each `Completed`. Records of any other operation class (an
+/// admin read is a unit of its own) are not this plane's and are not counted.
+pub fn judge_audit_window(range: &[u8], want: usize) -> Result<(), String> {
+    let v: Value =
+        serde_json::from_slice(range).map_err(|e| format!("the audit range is not JSON ({e})"))?;
+    let records = v
+        .get("records")
+        .and_then(Value::as_array)
+        .ok_or("the audit range has no `records`")?;
+    let mine: Vec<&Value> = records
+        .iter()
+        .filter(|r| r.get("op_class").and_then(Value::as_str) == Some(AUDIT_OP_CLASS))
+        .collect();
+    if mine.len() != want {
+        return Err(format!(
+            "the audit chain gained {} `{AUDIT_OP_CLASS}` record(s) over {want} served unit(s); \
+             exactly {want} is owed",
+            mine.len()
+        ));
+    }
+    match mine
+        .iter()
+        .find(|r| r.get("outcome").and_then(Value::as_str) != Some("Completed"))
+    {
+        Some(r) => Err(format!(
+            "a served unit's record carries outcome {}, not Completed",
+            r.get("outcome").unwrap_or(&Value::Null)
+        )),
+        None => Ok(()),
+    }
+}
+
+/// AUDIT: one served request, one `Completed` record under the plane's operation class.
+pub fn judge_audit(call: &Call, range: &[u8]) -> Result<(), String> {
+    served_once(call)?;
+    judge_audit_window(range, 1)
+}
+
+/// ENCODE: two served units leave through one terminal each: two answers each the far end's bytes
+/// over one dial, exactly two fees on the lane and exactly two records on the chain.
+pub fn judge_exit(calls: &[Call], spend: (Spend, Spend), range: &[u8]) -> Result<(), String> {
+    if calls.len() != 2 {
+        return Err(format!("{} call(s) were judged, not two", calls.len()));
+    }
+    for call in calls {
+        served_once(call)?;
+    }
+    moved_by(spend, 2)?;
+    judge_audit_window(range, 2)
+}
+
+/// ROUTE: the sole member answers a transient failure; the unit ends terminal within itself: a 5xx
+/// in jev's refusal shape (the walk's terminal, never the far end's own bytes relayed), the down
+/// lane having been dialled, and nothing charged.
+pub fn judge_route(call: &Call, far: &[u8], spend: (Spend, Spend)) -> Result<(), String> {
+    if !(500..=599).contains(&call.status) {
+        return Err(format!(
+            "the down lane's unit answered {} `{}`, not a terminal 5xx",
+            call.status,
+            show(&call.body)
+        ));
+    }
+    if call.hops == 0 {
+        return Err("the unit never dialled the lane it was routed to".to_string());
+    }
+    if call.body == far {
+        return Err(
+            "the far end's own failure bytes were relayed; a transient failure ends in the \
+             walk's terminal"
+                .to_string(),
+        );
+    }
+    jev_refusal_code(&call.body)?;
+    unchanged(spend.0, spend.1)
+}
+
+/// The group whose keys may make one request a day: the admit check's budget.
+pub const ONE_REQUEST_GROUP: &str = "jev-conformance-one-request";
+
+/// The only pool the verify check's key is granted: not the decision provider.
+pub const ELSEWHERE: &str = "jev-conformance-elsewhere";
+
 /// The subject's generated config: one decisions model on the rig's far end, a data-plane key
-/// chain, the admin token, the decision class priced at 1 micro-unit per unit, and the far end's
-/// loopback address declared as an allowed destination (`advanced.allow_destinations`), as an
-/// operator declares one, so the connector's default destination guard (private, loopback and
-/// metadata addresses refused, QUESTIONS Q130/Q131) admits the dial. The oidf rig declares its IdP
-/// stub the same way. It names its store (`store: {module: memory}`), as every config must (owner ruling Q-STORE (B)).
+/// chain, the admin token, the [`ONE_REQUEST_GROUP`], the decision class priced at 1 micro-unit per
+/// unit, and the far end's loopback address declared as an allowed destination
+/// (`advanced.allow_destinations`), as an operator declares one, so the connector's default
+/// destination guard (private, loopback and metadata addresses refused, QUESTIONS Q130/Q131) admits
+/// the dial. The oidf rig declares its IdP stub the same way. It names its store (`store: {module:
+/// memory}`), as every config must (owner ruling Q-STORE (B)).
 pub fn jev_subject_config(data: u16, admin: u16, key_file: &Path) -> String {
     format!(
         "listen: \"127.0.0.1:{data}\"\n\
@@ -278,6 +552,7 @@ pub fn jev_subject_config(data: u16, admin: u16, key_file: &Path) -> String {
          identity-providers:\n  admin-tokens: {{ module: admin-tokens, token: {{ env: BUSBAR_ADMIN_TOKEN }} }}\n\
          auth:\n  chain: [keys]\n  admin_auth: [admin-tokens]\n  signing_key: {{ file: {} }}\n\
          advanced:\n  allow_destinations: [\"127.0.0.1\"]\n\
+         groups:\n  {ONE_REQUEST_GROUP}:\n    limits:\n      - {{ requests: 1, per: day }}\n\
          decisions:\n  models:\n    {MODEL}:\n      provider: {PROVIDER}\n\
          \x20 rate_card:\n    {MODEL}: {{ units: {{ decision: 1 }} }}\n",
         key_file.display()
@@ -568,6 +843,263 @@ impl Runner {
                 judge_jev_ledger(&r.body, &client_id)
             }),
         ));
+
+        // 5. THE GATING CHECKS, one per Teller step, each judged over deltas it reads itself.
+        let gate = Gate {
+            scratch: &scratch,
+            far: &far,
+            data_url: format!("{base}{PATH}"),
+            admin_url: format!("http://127.0.0.1:{admin}"),
+            admin_bearer: &admin_bearer,
+            nonce: &nonce,
+        };
+        let client = format!("Bearer {client_key}");
+        let minted = |body: Value| {
+            subject::mint_key_with(&scratch, admin, &admin_token, &body)
+                .map(|(token, id)| (format!("Bearer {token}"), id))
+        };
+        run.checks.extend([
+            (H2_AUTHENTICATE.to_string(), gate.authenticate(&client_key)),
+            (H2_METER.to_string(), gate.meter(&client, &client_id)),
+            (H2_AUDIT.to_string(), gate.audit(&client)),
+            (H2_EXIT.to_string(), gate.exit(&client, &client_id)),
+            (
+                H2_VERIFY.to_string(),
+                minted(serde_json::json!({ "name": ELSEWHERE, "allowed_pools": [ELSEWHERE] }))
+                    .and_then(|(bearer, id)| gate.verify(&bearer, &id)),
+            ),
+            (
+                H2_ADMIT.to_string(),
+                minted(serde_json::json!({
+                    "name": ONE_REQUEST_GROUP,
+                    "group": ONE_REQUEST_GROUP,
+                }))
+                .and_then(|(bearer, id)| gate.admit(&bearer, &id)),
+            ),
+            // Last: the down lane benches the sole member for its cooldown.
+            (H2_ROUTE.to_string(), gate.route(&client)),
+        ]);
         drop(booted);
+    }
+}
+
+/// How long a read waits for the node's postings and seals to land before it is final.
+const SETTLE: Duration = Duration::from_millis(300);
+/// How long a read waits for a posting or a seal the rig is owed.
+const OWED_WITHIN: Duration = Duration::from_secs(5);
+
+/// Read until `done` holds (or [`OWED_WITHIN`] passes), then once more after [`SETTLE`]: the final
+/// read is the one judged, so a late second posting is seen rather than raced past.
+fn settled<T>(
+    mut read: impl FnMut() -> Result<T, String>,
+    done: impl Fn(&T) -> bool,
+) -> Result<T, String> {
+    let deadline = Instant::now() + OWED_WITHIN;
+    loop {
+        let v = read()?;
+        if done(&v) || Instant::now() >= deadline {
+            std::thread::sleep(SETTLE);
+            return read();
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// The records under [`AUDIT_OP_CLASS`] in an audit range body (0 for one that does not read).
+fn op_records(range: &[u8]) -> usize {
+    serde_json::from_slice::<Value>(range)
+        .ok()
+        .and_then(|v| {
+            v.get("records").and_then(Value::as_array).map(|r| {
+                r.iter()
+                    .filter(|r| r.get("op_class").and_then(Value::as_str) == Some(AUDIT_OP_CLASS))
+                    .count()
+            })
+        })
+        .unwrap_or(0)
+}
+
+/// The caller's key with its last character changed: a credential of the right shape that no key
+/// on the node holds.
+fn forged(key: &str) -> String {
+    let mut k = key.to_string();
+    let swap = if k.ends_with('a') { 'b' } else { 'a' };
+    k.pop();
+    k.push(swap);
+    k
+}
+
+/// What the gating checks read through: the far end, the data path and the admin reads.
+struct Gate<'a> {
+    scratch: &'a Path,
+    far: &'a FarEnd,
+    data_url: String,
+    admin_url: String,
+    admin_bearer: &'a str,
+    nonce: &'a str,
+}
+
+impl Gate<'_> {
+    /// One call on the decisions path as `bearer` (`None`: no credential), and the far-end hops it
+    /// made.
+    fn call(&self, bearer: Option<&str>) -> Result<Call, String> {
+        let before = self.far.seen().len();
+        let mut h: Vec<(&str, &str)> = vec![
+            ("content-type", "application/json"),
+            (PROBE_HEADER, self.nonce),
+        ];
+        if let Some(b) = bearer {
+            h.push(("authorization", b));
+        }
+        let r = curl(self.scratch, "POST", &self.data_url, &h, Some(REQUEST), &[])?;
+        Ok(Call {
+            status: r.status,
+            body: r.body,
+            hops: self.far.seen().len() - before,
+        })
+    }
+
+    /// One served call: the far end queued with exactly one success first.
+    fn success(&self, bearer: &str) -> Result<Call, String> {
+        self.far.clear_replies();
+        self.far.reply(200, SUCCESS);
+        self.call(Some(bearer))
+    }
+
+    fn admin_get(&self, path: &str) -> Result<Vec<u8>, String> {
+        let r = curl(
+            self.scratch,
+            "GET",
+            &format!("{}{path}", self.admin_url),
+            &[("authorization", self.admin_bearer)],
+            None,
+            &[],
+        )?;
+        if r.status != 200 {
+            return Err(format!(
+                "GET {path} answered {} `{}`",
+                r.status,
+                show(&r.body)
+            ));
+        }
+        Ok(r.body)
+    }
+
+    fn spend(&self, bucket: Option<&str>) -> Result<Spend, String> {
+        ledger_spend(&self.admin_get("/api/v1/admin/ledger/totals")?, bucket)
+    }
+
+    /// The spend once the node has had time to post anything it was going to.
+    fn spend_settled(&self, bucket: Option<&str>) -> Result<Spend, String> {
+        settled(|| self.spend(bucket), |_| true)
+    }
+
+    /// The spend once at least `fees` fees are on it.
+    fn spend_reaching(&self, bucket: Option<&str>, fees: u64) -> Result<Spend, String> {
+        settled(|| self.spend(bucket), |s| s.fees >= fees)
+    }
+
+    fn requests(&self, key: &str) -> Result<u64, String> {
+        let body = self.admin_get(&format!("/api/v1/admin/keys/{key}/usage"))?;
+        serde_json::from_slice::<Value>(&body)
+            .ok()
+            .and_then(|v| v.get("requests").and_then(Value::as_u64))
+            .ok_or_else(|| {
+                format!(
+                    "the key's usage carries no `requests` count: {}",
+                    show(&body)
+                )
+            })
+    }
+
+    /// The position the next audit record takes.
+    fn next_seq(&self) -> Result<u64, String> {
+        let body = self.admin_get("/api/v1/admin/audit/head")?;
+        serde_json::from_slice::<Value>(&body)
+            .ok()
+            .and_then(|v| v.get("next_seq").and_then(Value::as_u64))
+            .ok_or_else(|| format!("the audit head carries no `next_seq`: {}", show(&body)))
+    }
+
+    /// Every record sealed from position `from` on, once at least `want` of the plane's are there.
+    fn sealed_since(&self, from: u64, want: usize) -> Result<Vec<u8>, String> {
+        settled(
+            || {
+                let next = self.next_seq()?;
+                if next <= from {
+                    return Ok(b"{\"records\":[]}".to_vec());
+                }
+                self.admin_get(&format!(
+                    "/api/v1/admin/audit/range?from={from}&to={}",
+                    next - 1
+                ))
+            },
+            |w| op_records(w) >= want,
+        )
+    }
+
+    fn authenticate(&self, client_key: &str) -> Result<(), String> {
+        self.far.clear_replies();
+        let before = self.spend(None)?;
+        let call = self.call(Some(&format!("Bearer {}", forged(client_key))))?;
+        let after = self.spend_settled(None)?;
+        judge_refused_before_dial(&call, 401, "invalid_request", (before, after), None)
+    }
+
+    fn meter(&self, client: &str, bucket: &str) -> Result<(), String> {
+        let before = self.spend(Some(bucket))?;
+        let call = self.success(client)?;
+        let after = self.spend_reaching(Some(bucket), before.fees + 1)?;
+        judge_meter(&call, (before, after))
+    }
+
+    fn audit(&self, client: &str) -> Result<(), String> {
+        let from = self.next_seq()?;
+        let call = self.success(client)?;
+        judge_audit(&call, &self.sealed_since(from, 1)?)
+    }
+
+    fn exit(&self, client: &str, bucket: &str) -> Result<(), String> {
+        let from = self.next_seq()?;
+        let before = self.spend(Some(bucket))?;
+        let calls = vec![self.success(client)?, self.success(client)?];
+        let after = self.spend_reaching(Some(bucket), before.fees + 2)?;
+        judge_exit(&calls, (before, after), &self.sealed_since(from, 2)?)
+    }
+
+    fn verify(&self, bearer: &str, key: &str) -> Result<(), String> {
+        self.far.clear_replies();
+        let (before, was) = (self.spend(None)?, self.requests(key)?);
+        let call = self.call(Some(bearer))?;
+        let after = self.spend_settled(None)?;
+        judge_refused_before_dial(
+            &call,
+            403,
+            "unsupported_operation",
+            (before, after),
+            Some((was, self.requests(key)?)),
+        )
+    }
+
+    fn admit(&self, bearer: &str, key: &str) -> Result<(), String> {
+        let start = self.spend(None)?;
+        let first = self.success(bearer)?;
+        let before = self.spend_reaching(None, start.fees + 1)?;
+        let was = self.requests(key)?;
+        self.far.clear_replies();
+        let second = self.call(Some(bearer))?;
+        let after = self.spend_settled(None)?;
+        judge_admit(&first, &second, (before, after), (was, self.requests(key)?))
+    }
+
+    fn route(&self, client: &str) -> Result<(), String> {
+        self.far.clear_replies();
+        // Twice: a walk that retries the sole member within the unit meets the same failure.
+        self.far.reply(503, UNAVAILABLE);
+        self.far.reply(503, UNAVAILABLE);
+        let before = self.spend(None)?;
+        let call = self.call(Some(client))?;
+        let after = self.spend_settled(None)?;
+        judge_route(&call, UNAVAILABLE, (before, after))
     }
 }
