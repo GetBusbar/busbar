@@ -104,35 +104,16 @@ fn linked_b(sink: Arc<dyn EnvelopeSink>) -> Plugin<WitnessKind> {
 }
 
 /// The dropped-in witness: the `log_witness_door` example cdylib `cargo test` built beside this
-/// binary. Under CI a missing artifact is a failure, never a skip.
-fn dropped_path() -> Option<PathBuf> {
-    let exe = std::env::current_exe().ok()?;
-    let examples = exe.parent()?.parent()?.join("examples");
-    let path = examples.join(format!(
-        "{}log_witness_door{}",
-        std::env::consts::DLL_PREFIX,
-        std::env::consts::DLL_SUFFIX
-    ));
-    let found = path.exists().then_some(path);
-    assert!(
-        found.is_some() || std::env::var_os("CI").is_none(),
-        "the log_witness_door example cdylib is not built under CI; a both-ways proof must not skip \
-         ({} holds {:?})",
-        examples.display(),
-        std::fs::read_dir(&examples)
-            .map(|d| d.filter_map(|e| e.ok()).map(|e| e.file_name()).collect::<Vec<_>>())
-            .unwrap_or_default()
-    );
-    found
+/// binary. A missing artifact is a failure naming the command that builds it, never a skip.
+fn dropped_path() -> PathBuf {
+    crate::both_ways::example_cdylib("log_witness_door")
 }
 
-fn dropped(sink: Arc<dyn EnvelopeSink>) -> Option<Plugin<WitnessKind>> {
+fn dropped(sink: Arc<dyn EnvelopeSink>) -> Plugin<WitnessKind> {
     // The signed manifest's rendering: the linked rlib's door, the same crate the cdylib is.
     let stated = rendering_of(witness::a::door).expect("the witness renders its Statement");
-    Some(
-        load_dropped::<WitnessKind>(&dropped_path()?, &stated, bind(sink))
-            .expect("the dropped witness loads"),
-    )
+    load_dropped::<WitnessKind>(&dropped_path(), &stated, bind(sink))
+        .expect("the dropped witness loads")
 }
 
 fn open(p: &Plugin<WitnessKind>) {
@@ -209,10 +190,7 @@ fn a_linked_and_a_dropped_plugin_write_byte_identical_log_files() {
     let (ld, dd) = (scratch("linked"), scratch("dropped"));
     let (ls, ds) = (sink(&ld, LogLevel::Trace), sink(&dd, LogLevel::Trace));
     run(linked(ls.clone()));
-    let Some(p) = dropped(ds.clone()) else {
-        return;
-    };
-    run(p);
+    run(dropped(ds.clone()));
     let (l, d) = (read(&ld, &ls), read(&dd, &ds));
     for want in [
         " INFO  log-witness export log_witness: tracing from the plugin who=\"a\" calls=1",
@@ -252,11 +230,10 @@ fn a_write_outside_the_capture_never_reaches_the_plugin_log() {
         let dir = scratch(tag);
         let s = sink(&dir, LogLevel::Trace);
         let p = if load {
-            Some(linked(s.clone()))
+            linked(s.clone())
         } else {
             dropped(s.clone())
         };
-        let Some(p) = p else { continue };
         std::thread::spawn(move || {
             open(&p);
             tick(&p, witness::OUTSIDE);
