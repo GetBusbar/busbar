@@ -241,17 +241,16 @@ pub struct ToolAllowCfg {
     /// widening it to legalise whatever it felt like returning that day. So it is approved here,
     /// beside the digest, by the operator who vouches for the tool.
     ///
-    /// ## And publishing it is only half of keeping it
+    /// ## Publishing it is all busbar does with it
     ///
-    /// busbar does not compute the structured result; an upstream does. Publishing a schema and
-    /// relaying whatever came back would put busbar in violation of that MUST every time the
-    /// upstream lied, with busbar's name on the answer. So `mcp::method` VALIDATES an upstream's
-    /// `structuredContent` against this schema before it reaches the caller, and a violation is
-    /// reported as a TOOL FAILURE — the upstream did not do what the operator approved it to do.
+    /// busbar does not compute the structured result; an upstream does, and its result reaches the
+    /// caller as the upstream sent it (Law 11). busbar never validates `structuredContent` against
+    /// this schema and never replaces a result that does not match it: the caller holds the schema
+    /// and judges the result.
     ///
-    /// ABSENT ⇒ no `outputSchema` is published and nothing is validated, which is every
-    /// registration that predates this field. There is no default and there is no inference: a
-    /// schema busbar guessed would be a promise nobody made.
+    /// ABSENT ⇒ no `outputSchema` is published, which is every registration that predates this
+    /// field. There is no default and there is no inference: a schema busbar guessed would be a
+    /// promise nobody made.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_schema: Option<serde_json::Value>,
     /// THE WIRE NAME busbar publishes for this tool, overriding the default

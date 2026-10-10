@@ -29,6 +29,7 @@
 use serde_json::{json, Map, Value};
 
 use crate::codec::PROTOCOL_VERSION;
+use crate::revision::Revision;
 
 /// The prefix of the id busbar spells its own requests on the line in.
 pub const ASK_ID_PREFIX: &str = "busbar:";
@@ -59,24 +60,16 @@ fn unsupported(id: &Value, message: &str) -> Value {
     })
 }
 
-/// The `initialize` answer: the dual-era negotiation the revision scopes to stdio. busbar
-/// implements ONE revision and says so; no session is created because the revision has none.
+/// The `initialize` answer to a client that names no session revision: the stateless revision,
+/// which needs no handshake and says so.
 #[must_use]
 pub fn initialize_result(id: &Value) -> Value {
     result(
         id,
         json!({
             "protocolVersion": PROTOCOL_VERSION,
-            "capabilities": {
-                "tools": { "listChanged": true },
-                "prompts": { "listChanged": true },
-                "resources": { "listChanged": true },
-                "completions": {},
-            },
-            "serverInfo": {
-                "name": "busbar",
-                "version": crate::tool_door::VERSION,
-            },
+            "capabilities": capabilities(),
+            "serverInfo": server_info(),
             "instructions": format!(
                 "This server speaks MCP revision {PROTOCOL_VERSION}: no handshake is required, \
                  and every request states its protocol version and client capabilities in \
@@ -86,11 +79,57 @@ pub fn initialize_result(id: &Value) -> Value {
     )
 }
 
+/// The `initialize` answer to a client that asked for a SESSION revision this plane carries: that
+/// revision, by negotiation (THE DESIGN section 2, the mcp bullet; [`crate::revision::accept_offered`]).
+/// The carrier session then speaks it: each following line is raised into the stateless shape and its
+/// answer lowered ([`crate::adapt`]).
+#[must_use]
+pub fn session_initialize_result(id: &Value, revision: Revision) -> Value {
+    result(
+        id,
+        json!({
+            "protocolVersion": revision.wire(),
+            "capabilities": capabilities(),
+            "serverInfo": server_info(),
+        }),
+    )
+}
+
+/// The capabilities the line carrier declares, in every revision it speaks: no `subscribe` and no
+/// `logging`, which the carrier refuses (`-32601`, [`era`]).
+fn capabilities() -> Value {
+    json!({
+        "tools": { "listChanged": true },
+        "prompts": { "listChanged": true },
+        "resources": { "listChanged": true },
+        "completions": {},
+    })
+}
+
+/// The server's name and version.
+fn server_info() -> Value {
+    json!({
+        "name": "busbar",
+        "version": crate::tool_door::VERSION,
+    })
+}
+
+/// The session revision an `initialize` asks for, when this plane carries it.
+fn requested_revision(value: &Value) -> Option<Revision> {
+    value
+        .pointer("/params/protocolVersion")
+        .and_then(Value::as_str)
+        .and_then(crate::revision::accept_offered)
+}
+
 /// What a stdio-era verb came to.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Era {
     /// Answered here, whole.
     Answer(Value),
+    /// `initialize` asking for a session revision: the revision the carrier session now speaks,
+    /// and the answer.
+    Opened(Revision, Value),
     /// Not a stdio-era verb: the one dispatch's.
     Dispatch,
 }
@@ -106,7 +145,10 @@ pub fn era(value: &Value) -> Era {
         return Era::Dispatch;
     };
     match method {
-        crate::adapt::METHOD_INITIALIZE => Era::Answer(initialize_result(id)),
+        crate::adapt::METHOD_INITIALIZE => match requested_revision(value) {
+            Some(revision) => Era::Opened(revision, session_initialize_result(id, revision)),
+            None => Era::Answer(initialize_result(id)),
+        },
         crate::adapt::METHOD_PING => Era::Answer(result(id, json!({}))),
         "logging/setLevel" => Era::Answer(unsupported(
             id,

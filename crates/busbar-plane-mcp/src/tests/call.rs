@@ -178,7 +178,6 @@ fn the_kernels_trust_verdict_is_rendered_and_never_judged_here() {
                 asked.push((entry.server.clone(), entry.tool.clone()));
                 trust.clone()
             },
-            &|_| false,
             &mut proceed,
         );
         assert_eq!(
@@ -220,7 +219,6 @@ fn the_verdict_is_asked_only_after_the_grants() {
         &no_header,
         &|_, _| false,
         &mut |_| panic!("the kernel is asked about an ungranted call"),
-        &|_| false,
         &mut proceed,
     ));
     assert_eq!(r.status, 404);
@@ -346,6 +344,83 @@ fn an_answer_binds_only_what_was_asked_and_never_a_sent_argument() {
     ));
 }
 
+/// `fs_read_file` admitted with `arguments`, then judged by `judge` ([`judge_arguments`]).
+fn judged(arguments: Value, judge: &mut dyn FnMut(&ToolEntry, &str) -> Option<u64>) -> Admission {
+    let p = params("fs_read_file", arguments);
+    let header = |name: &str| (name == "mcp-param-path").then(|| "/a".to_string());
+    let admission = admit_call(
+        &catalogue(),
+        &json!(7),
+        Some(&p),
+        &header,
+        &everyone,
+        &mut proceed,
+    );
+    judge_arguments(admission, judge)
+}
+
+/// THE ARGUMENT GUARD ASKS THE HOST (BUSBAR-1.6.0.md Appendix C B.3 item 11, `dest.judge`): every
+/// host the arguments name is put to the judge for the called tool, an IPv6 literal bracketed as
+/// `dest.judge` reads it, and the host's verdict alone decides. A host the plane holds no rule
+/// about is refused when the judge refuses it, in the guard's bytes; one the judge admits is sent.
+#[test]
+fn the_hosts_verdict_decides_an_argument_url() {
+    let arguments = json!({ "path": "/a", "fetch": "http://public.example/x", "peer": "https://[2001:db8::1]:8443/" });
+    let mut asked = Vec::new();
+    let a = go(judged(arguments.clone(), &mut |entry, dest| {
+        asked.push((entry.tool.clone(), dest.to_string()));
+        Some(busbar_contract::abi::host::service::DEST_ALLOWED)
+    }));
+    assert_eq!(
+        a.arguments, arguments,
+        "admitted, the arguments are sent as they came"
+    );
+    asked.sort();
+    assert_eq!(
+        asked,
+        [
+            ("read_file".to_string(), "[2001:db8::1]".to_string()),
+            ("read_file".to_string(), "public.example".to_string()),
+        ],
+        "each host is asked of the host, once, for the called tool"
+    );
+
+    let (r, line) = refused(judged(arguments, &mut |_, dest| {
+        Some(if dest == "public.example" {
+            busbar_contract::abi::host::service::DEST_METADATA
+        } else {
+            busbar_contract::abi::host::service::DEST_ALLOWED
+        })
+    }));
+    assert_eq!((r.status, r.code), (403, crate::codec::CODE_REFUSED));
+    assert_eq!(r.data, Some(json!({ "reason": "tool_argument_refused" })));
+    assert!(
+        r.message.starts_with("tool argument /fetch carries a URL"),
+        "{}",
+        r.message
+    );
+    let line = line.expect("logged");
+    assert_eq!(
+        (line.outcome, line.reason.as_str()),
+        ("refused", "tool_argument_refused")
+    );
+}
+
+/// A host that gives no verdict (it serves no `dest.judge`, or the judgement failed) refuses the
+/// value rather than admitting it unjudged; arguments naming no host never ask it.
+#[test]
+fn a_host_that_gives_no_verdict_refuses_the_argument() {
+    let (r, _) = refused(judged(
+        json!({ "path": "/a", "fetch": "https://public.example/" }),
+        &mut |_, _| None,
+    ));
+    assert_eq!(r.status, 403);
+    assert!(r.message.contains("could not be checked"), "{}", r.message);
+    go(judged(json!({ "path": "/a" }), &mut |_, dest| {
+        panic!("no host is named, yet `{dest}` was asked")
+    }));
+}
+
 fn admitted() -> AdmittedCall {
     let right = |name: &str| (name == "mcp-param-path").then(|| "/a".to_string());
     go(admit_call(
@@ -432,26 +507,93 @@ fn settle_far(far: &str) -> Settled {
     )
 }
 
+/// A result with no `resultType` gets the dialect's `complete` ahead of the upstream's own members,
+/// which follow as they came; an empty result is the stamp alone.
 #[test]
-fn a_result_is_normalised_stamped_and_dispatched() {
-    let (status, body, line) = answer_of(settle_far(
+fn a_result_is_stamped_and_dispatched() {
+    let settled = settle_far(
         r#"{"jsonrpc":"2.0","id":0,"result":{"content":[],"structuredContent":{"n":1}}}"#,
-    ));
+    );
+    let Settled::Answer { body: bytes, .. } = &settled else {
+        panic!("an answer: {settled:?}")
+    };
+    assert_eq!(
+        String::from_utf8_lossy(bytes),
+        r#"{"id":7,"jsonrpc":"2.0","result":{"resultType":"complete","content":[],"structuredContent":{"n":1}}}"#
+    );
+    let (status, body, line) = answer_of(settled);
     assert_eq!(status, 200);
     assert_eq!(body["id"], json!(7));
     assert_eq!(body["result"]["resultType"], json!("complete"));
     assert_eq!((line.outcome, line.reason.as_str()), ("dispatched", ""));
     assert_eq!(line.audit, Some(AuditRow::tool("fs_read_file", true)));
+    let (_, empty, _) = answer_of(settle_far(r#"{"jsonrpc":"2.0","id":0,"result":{ }}"#));
+    assert_eq!(empty["result"], json!({ "resultType": "complete" }));
 }
 
+/// The far end's answer carrying `result` as the upstream wrote it.
+fn far_result(result: &str) -> String {
+    format!(r#"{{"jsonrpc":"2.0","id":0,"result":{result}}}"#)
+}
+
+/// LAW 11 (THE DESIGN 2126, 2131-2132; product hard rule 3369-3373): a tool's result is the
+/// upstream's data and reaches the caller as the upstream sent it. `Vec<String>` and `<b>x</b>` in
+/// the content text, in `structuredContent` and in `_meta` are the tool's answer, not markup busbar
+/// may strip, and the result's bytes are the upstream's own, member order included.
+/// RED arm: a built-in strip served `Vec` for `Vec<String>` and `x` for `<b>x</b>`.
 #[test]
-fn structured_output_breaking_the_published_schema_is_a_tool_failure() {
-    let (status, body, line) = answer_of(settle_far(
-        r#"{"jsonrpc":"2.0","id":0,"result":{"content":[],"structuredContent":{}}}"#,
-    ));
+fn a_result_reaches_its_caller_as_the_upstream_sent_it() {
+    let sent = r#"{"resultType":"complete","structuredContent":{"t":"Vec<String>","n":1,"h":"<b>x</b>"},"content":[{"type":"text","text":"fn f() -> Vec<String> { <b>x</b> }"}],"_meta":{"m":"<i>y</i>"}}"#;
+    let settled = settle_far(&far_result(sent));
+    let Settled::Answer { body: bytes, .. } = &settled else {
+        panic!("an answer: {settled:?}")
+    };
+    assert!(
+        bytes.windows(sent.len()).any(|w| w == sent.as_bytes()),
+        "the upstream's result bytes, verbatim: {}",
+        String::from_utf8_lossy(bytes)
+    );
+    let (status, body, line) = answer_of(settled);
     assert_eq!(status, 200);
-    assert_eq!(body["result"]["isError"], json!(true));
-    assert_eq!(line.reason, "upstream_failed");
+    assert_eq!(body["id"], json!(7));
+    assert_eq!(
+        body["result"],
+        serde_json::from_str::<Value>(sent).expect("json"),
+        "the upstream's result, unchanged"
+    );
+    assert_eq!((line.outcome, line.reason.as_str()), ("dispatched", ""));
+}
+
+/// LAW 11 (THE DESIGN 2131-2132): a `structuredContent` that does not match the tool's published
+/// `outputSchema` is still the upstream's answer. It is relayed unchanged; busbar never answers in
+/// the upstream's place.
+/// RED arm: busbar replaced it with its own `isError` result, "The structured result was NOT
+/// served".
+#[test]
+fn structured_output_breaking_the_published_schema_is_relayed_unchanged() {
+    let sent = r#"{"resultType":"complete","content":[],"structuredContent":{}}"#;
+    let (status, body, line) = answer_of(settle_far(&far_result(sent)));
+    assert_eq!(status, 200);
+    assert_eq!(
+        body["result"],
+        serde_json::from_str::<Value>(sent).expect("json"),
+        "the upstream's result, as it came"
+    );
+    assert_eq!((line.outcome, line.reason.as_str()), ("dispatched", ""));
+    assert_eq!(line.audit, Some(AuditRow::tool("fs_read_file", true)));
+}
+
+/// THE TASK PATH SETTLES THE SAME RESULT (Law 11): a task's completed result is the upstream's,
+/// stored and served as it came. A source plant, because the task's continuation is reached only
+/// through a live door: no rewrite of the result is named on that path.
+/// RED arm: `door_tasks.rs` ran the markup strip over every completed task result.
+#[test]
+fn the_task_path_names_no_rewrite_of_the_result() {
+    let source = include_str!("../door_tasks.rs");
+    assert!(
+        !source.contains("sanitize::"),
+        "a task's completed result passes through no markup strip"
+    );
 }
 
 #[test]
@@ -474,6 +616,59 @@ fn an_upstream_error_is_a_tool_failure_naming_the_server() {
         Some(AuditRow::tool("fs_read_file", false)),
         "the call went out and did not succeed: rejected"
     );
+}
+
+/// LAW 11 (THE DESIGN 2126, 2131-2132; product hard rule 3369-3373): the upstream's JSON-RPC
+/// error message is the upstream's data and reaches the caller unchanged inside busbar's failure
+/// words; `Vec<String>` and `<b>x</b>` are not markup busbar may strip.
+/// RED arm: the failure text ran through the markup strip, serving `Vec` and `x`.
+#[test]
+fn an_upstream_error_message_reaches_its_caller_unchanged() {
+    let (_, body, _) = answer_of(settle_far(
+        r#"{"jsonrpc":"2.0","id":0,"error":{"code":-32602,"message":"want Vec<String>, got <b>x</b>"}}"#,
+    ));
+    let text = body["result"]["content"][0]["text"].as_str().expect("text");
+    assert_eq!(
+        text,
+        "The MCP server `fs` did not complete this tool call: MCP upstream answered JSON-RPC error -32602: want Vec<String>, got <b>x</b>"
+    );
+}
+
+/// P-ITEM: EMPTY REPLY / UNARY-EMPTY TERMINALITY (spec DONE item 2, "All P-item behaviours match
+/// 1.5.5"; the drive log's P4, commit 470351a480, which the money briefs name "mcp bills empty
+/// answer as complete"). An envelope with a real result is the upstream's complete answer; one
+/// with neither `result` nor `error` is never settled as one.
+///
+/// This is a money boundary. A JSON-RPC answer carries exactly one of `result` or `error`; a
+/// document with NEITHER used to fall through to a complete answer and charge the caller for a
+/// result that never came. On the served door it is the upstream's failure: an `isError` result
+/// naming the server, logged `upstream_failed` and audited rejected, never the `dispatched` line
+/// of a delivered result. The 1.5.5 behaviour this plane matches is its one surface's (the llm
+/// surface; owner correction 2026-09-28): a response the caller cannot use is not billed as a
+/// delivered one (v1.5.5 `crates/busbar/src/proxy/response_body.rs:415-440`).
+#[test]
+fn p_item_empty_reply_only_a_real_result_settles_complete() {
+    let (status, body, line) = answer_of(settle_far(r#"{"jsonrpc":"2.0","id":0,"result":{}}"#));
+    assert_eq!(status, 200);
+    assert_eq!(body["result"], json!({ "resultType": "complete" }));
+    assert_eq!((line.outcome, line.reason.as_str()), ("dispatched", ""));
+
+    let (status, body, line) = answer_of(settle_far(r#"{"jsonrpc":"2.0","id":0}"#));
+    assert_eq!(status, 200);
+    assert_eq!(body["id"], json!(7));
+    assert_eq!(body["result"]["isError"], json!(true));
+    let text = body["result"]["content"][0]["text"].as_str().expect("text");
+    assert!(
+        text.starts_with("The MCP server `fs` did not complete this tool call:")
+            && text.contains("neither `result` nor `error`"),
+        "{text}"
+    );
+    assert_eq!(
+        (line.outcome, line.reason.as_str()),
+        ("dispatched", "upstream_failed"),
+        "an empty envelope is the upstream's failure, never a delivered result"
+    );
+    assert_eq!(line.audit, Some(AuditRow::tool("fs_read_file", false)));
 }
 
 #[test]

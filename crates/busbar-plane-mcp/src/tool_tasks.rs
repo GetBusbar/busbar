@@ -35,11 +35,20 @@
 //!
 //! ## DURABILITY
 //!
-//! The served engine's registry was in-process: a restart lost every task. Here the handle is the
-//! kernel's (durable, scoped to the instance and the principal), and a terminal task's result is
-//! written to the plane's own records in chunks ([`result_chunks`]), so a settled task is answered
-//! across a restart. A task still running when its process ended has no continuation left; it is
-//! answered as the served engine answered every task after a restart: unknown.
+//! The served engine's registry was in-process: a restart lost every task. Here THE TASK STORE IS
+//! HOST RECORDS (THE DESIGN, the mcp bullet): the handle is the kernel's (durable, scoped to the
+//! instance and the principal); a live task's state — its status, its `inputRequests`, the answers
+//! it holds, the upstream ask it is parked on — is written to the plane's own records in chunks
+//! ([`live_parts`]) by every unit that moves it; and a terminal task's result likewise
+//! ([`result_chunks`]). So `tasks/get`, `tasks/update` and `tasks/cancel` answer a task from any
+//! node and across a restart; what an instance holds of a task is a cache of those rows, plus the
+//! halves only its own process has (the run it took, the unit running it).
+//!
+//! Every live task is indexed under its caller in the plane's records with its run's LEASE
+//! ([`TaskLease`]). A task-creating call settles, `cancelled`, every live task of its caller no process
+//! holds whose lease lapsed or that nothing moved past the abandonment ceiling: the handles a
+//! process that is gone left behind never exhaust the bound of live work (THE DESIGN, "Admission bounds
+//! live work; nothing evicts it").
 //!
 //! What IS honoured unconditionally is STRONG CONSISTENCY: the creating unit holds the task before
 //! the caller is handed its id, so a `tasks/get` issued with no delay between the two resolves.
@@ -100,6 +109,15 @@ pub const RESULT_CHUNK_BYTES: usize = 480;
 /// The most chunks one task's result is written in; a longer result is answered while the task is
 /// in hand and is not written.
 pub const MAX_RESULT_CHUNKS: usize = 256;
+
+/// THE RUN'S LEASE beyond its server's own `timeout:`: how long a task's run may go unheard from
+/// before another process takes its handle as left behind (the process running it gone) and settles
+/// it `cancelled`. Taken when the continuation is nested and renewed as each call goes out.
+pub const RUN_LEASE_MS: u64 = 300_000;
+
+/// The live-state chunks a settle strikes at the least: what a process that did not write a task's
+/// live state strikes of it.
+pub const LIVE_STRIKES: u32 = 4;
 
 /// A task's lifecycle state, as the wire spells it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -187,6 +205,12 @@ pub struct Task {
     /// THE UPSTREAM'S ASK IT IS PARKED ON, relayed (Law 11): answered through `tasks/update` and
     /// carried back to the member that asked, never merged into the tool's arguments.
     relay: Option<RelayPark>,
+    /// THE ROUND OF ITS OWN ASKS IT IS PARKED ON, and the call its run resumes with: the
+    /// continuation ended with the handle live, and the `tasks/update` that answers the round
+    /// nests the resume.
+    pub asked: Option<(usize, Value)>,
+    /// How many live-state chunks this instance wrote for it.
+    pub live_chunks: u32,
 }
 
 /// A TASK PARKED ON ITS UPSTREAM'S ASK: busbar's sealed state (bound to the principal, the tool and
@@ -226,6 +250,8 @@ impl Task {
             unsettled: false,
             chunks: 0,
             relay: None,
+            asked: None,
+            live_chunks: 0,
         }
     }
 
@@ -254,6 +280,117 @@ impl Task {
     #[must_use]
     pub fn owned_by(&self, principal: &str) -> bool {
         self.principal == principal
+    }
+
+    /// The key of its index row ([`TaskLease`]) in the plane's records.
+    #[must_use]
+    pub fn index_key(&self) -> Vec<u8> {
+        index_key(&self.principal, &self.id)
+    }
+
+    /// Whether it is parked on its upstream's ask.
+    #[must_use]
+    pub fn relayed(&self) -> bool {
+        self.relay.is_some()
+    }
+
+    /// THE LIVE STATE its records keep ([`live_parts`]): its status and last update, its
+    /// `inputRequests` in order, the answers it holds, the upstream ask and the round of its own
+    /// asks it is parked on.
+    #[must_use]
+    pub fn live(&self) -> Value {
+        let requests: Vec<Value> = self
+            .input_requests
+            .iter()
+            .map(|(k, v)| json!([k, v]))
+            .collect();
+        json!({
+            "status": self.status.token(),
+            "updated": self.updated_ms,
+            "requests": requests,
+            "answers": self.answers,
+            "relay": self.relay.as_ref().map(|p| json!({
+                "state": p.state,
+                "params": p.params,
+                "keys": p.keys,
+                "responses": p.responses,
+            })),
+            "asked": self.asked.as_ref().map(|(round, params)| json!([round, params])),
+        })
+    }
+
+    /// The live state its records hold ([`Task::live`]'s document), laid over a task read from its
+    /// row; a document that is not one leaves it as it is.
+    pub fn take_live(&mut self, live: &Value) {
+        let (Some(status), Some(updated)) = (
+            live.get("status")
+                .and_then(Value::as_str)
+                .and_then(Status::of_token),
+            live.get("updated").and_then(Value::as_u64),
+        ) else {
+            return;
+        };
+        self.status = status;
+        self.updated_ms = updated;
+        self.input_requests = live
+            .get("requests")
+            .and_then(Value::as_array)
+            .map(|pairs| {
+                pairs
+                    .iter()
+                    .filter_map(|p| {
+                        let pair = p.as_array()?;
+                        Some((pair.first()?.as_str()?.to_string(), pair.get(1)?.clone()))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        self.answers = live
+            .get("answers")
+            .and_then(Value::as_object)
+            .cloned()
+            .unwrap_or_default();
+        self.relay = live.get("relay").and_then(|r| {
+            Some(RelayPark {
+                state: r.get("state")?.as_str()?.to_string(),
+                params: r.get("params")?.clone(),
+                keys: r
+                    .get("keys")?
+                    .as_array()?
+                    .iter()
+                    .filter_map(|k| k.as_str().map(str::to_string))
+                    .collect(),
+                responses: r.get("responses")?.as_object()?.clone(),
+            })
+        });
+        self.asked = live.get("asked").and_then(|a| {
+            let pair = a.as_array()?;
+            Some((
+                usize::try_from(pair.first()?.as_u64()?).ok()?,
+                pair.get(1)?.clone(),
+            ))
+        });
+    }
+
+    /// THE HOST'S WORD over what the instance holds of this task: `host` (read from its rows and
+    /// records) replaces it, the instance keeping only its own halves — the run taken here, the unit
+    /// running it, a settle still owed, the chunks it wrote.
+    pub fn hosted(&mut self, host: Task) {
+        let kept = (
+            self.started,
+            self.runner,
+            self.unsettled,
+            self.chunks,
+            self.live_chunks,
+        );
+        *self = host;
+        (
+            self.started,
+            self.runner,
+            self.unsettled,
+            self.chunks,
+            self.live_chunks,
+        ) = kept;
     }
 
     /// Its status.
@@ -375,7 +512,12 @@ impl Task {
     /// Returns `false`, applying NOTHING, when this batch would grow the task's answer map past
     /// [`MAX_TASK_ANSWERS`] DISTINCT keys — refused whole, never truncated. A key already held is a
     /// REPEAT, not new, so re-answering one never counts against the ceiling.
+    ///
+    /// A TERMINAL task takes no input: the update is acknowledged and changes nothing.
     pub fn deliver(&mut self, responses: &Map<String, Value>, now_ms: u64) -> bool {
+        if self.status.is_terminal() {
+            return true;
+        }
         if let Some(park) = self.relay.as_mut() {
             for (key, value) in responses {
                 if park.keys.contains(key) {
@@ -649,15 +791,113 @@ pub fn chunk_prefix(id: &str) -> Vec<u8> {
 /// [`RESULT_CHUNK_BYTES`]; none when it would take more than [`MAX_RESULT_CHUNKS`].
 #[must_use]
 pub fn result_chunks(id: &str, terminal: &Value) -> Vec<(Vec<u8>, Vec<u8>)> {
-    let bytes = serde_json::to_vec(terminal).unwrap_or_default();
+    chunked(|n| chunk_key(id, n), terminal)
+}
+
+/// `value`'s bytes cut into plane records of at most [`RESULT_CHUNK_BYTES`], keyed `key(n)`; none
+/// when it would take more than [`MAX_RESULT_CHUNKS`].
+fn chunked(key: impl Fn(u32) -> Vec<u8>, value: &Value) -> Vec<(Vec<u8>, Vec<u8>)> {
+    let bytes = serde_json::to_vec(value).unwrap_or_default();
     let chunks: Vec<&[u8]> = bytes.chunks(RESULT_CHUNK_BYTES).collect();
     if chunks.len() > MAX_RESULT_CHUNKS {
         return Vec::new();
     }
     (0u32..)
         .zip(chunks)
-        .map(|(n, c)| (chunk_key(id, n), c.to_vec()))
+        .map(|(n, c)| (key(n), c.to_vec()))
         .collect()
+}
+
+/// The key of chunk `n` of task `id`'s live state: ordered, apart from its result's.
+#[must_use]
+pub fn live_key(id: &str, n: u32) -> Vec<u8> {
+    format!("{id}~/{n:04}").into_bytes()
+}
+
+/// The prefix every chunk of task `id`'s live state is keyed under.
+#[must_use]
+pub fn live_prefix(id: &str) -> Vec<u8> {
+    format!("{id}~/").into_bytes()
+}
+
+/// THE LIVE STATE, IN CHUNKS ([`Task::live`]), as [`result_chunks`] cuts a result.
+#[must_use]
+pub fn live_parts(id: &str, live: &Value) -> Vec<(Vec<u8>, Vec<u8>)> {
+    chunked(|n| live_key(id, n), live)
+}
+
+/// The live state read back from its chunks' bytes, in key order: the first document they hold (an
+/// earlier, longer state's chunks past it are not read); `None` when they hold none.
+#[must_use]
+pub fn read_live(bytes: &[u8]) -> Option<Value> {
+    serde_json::Deserializer::from_slice(bytes)
+        .into_iter::<Value>()
+        .next()?
+        .ok()
+}
+
+/// The prefix `principal`'s index rows are keyed under: a digest of the principal, never the
+/// principal itself.
+#[must_use]
+pub fn index_prefix(principal: &str) -> Vec<u8> {
+    let owner = busbar_contract::redacted::sha256_hex(principal.as_bytes());
+    format!("o/{}/", &owner[..32]).into_bytes()
+}
+
+/// The key of task `id`'s index row under `principal`.
+#[must_use]
+pub fn index_key(principal: &str, id: &str) -> Vec<u8> {
+    let mut key = index_prefix(principal);
+    key.extend_from_slice(id.as_bytes());
+    key
+}
+
+/// A LIVE TASK'S INDEX ROW: until when a run holds it, and when it last moved. What a create reads
+/// to find the tasks of its caller a process that is gone left behind.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TaskLease {
+    /// Until when its run holds it (Unix ms); `0`: no run does (it is parked on its caller).
+    pub until_ms: u64,
+    /// When it last moved (Unix ms).
+    pub updated_ms: u64,
+}
+
+/// The index row's version word.
+const LEASE_V1: &str = "l1";
+
+impl TaskLease {
+    /// The row's bytes: `l1|<until>|<updated>`.
+    #[must_use]
+    pub fn bytes(&self) -> Vec<u8> {
+        format!("{LEASE_V1}|{}|{}", self.until_ms, self.updated_ms).into_bytes()
+    }
+
+    /// A row read back; `None` for bytes that are not one.
+    #[must_use]
+    pub fn read(bytes: &[u8]) -> Option<Self> {
+        let text = std::str::from_utf8(bytes).ok()?;
+        let mut parts = text.split('|');
+        if parts.next()? != LEASE_V1 {
+            return None;
+        }
+        let until_ms = parts.next()?.parse().ok()?;
+        let updated_ms = parts.next()?.parse().ok()?;
+        if parts.next().is_some() {
+            return None;
+        }
+        Some(TaskLease {
+            until_ms,
+            updated_ms,
+        })
+    }
+
+    /// Whether the task it indexes is LEFT BEHIND at `now_ms`: its run's lease lapsed (the process
+    /// running it is gone), or nothing moved it past [`ACTIVE_TASK_ABANDON_MS`].
+    #[must_use]
+    pub fn left_behind(&self, now_ms: u64) -> bool {
+        (self.until_ms != 0 && now_ms > self.until_ms)
+            || now_ms.saturating_sub(self.updated_ms) > ACTIVE_TASK_ABANDON_MS
+    }
 }
 
 /// The terminal value read back from its chunks (in key order); `None` when they do not make one.

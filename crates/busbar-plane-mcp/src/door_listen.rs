@@ -20,7 +20,7 @@
 //! - Every frame is one `message` event (`event: message`, `data: <json>`), as predev wrote them.
 //! - THE SESSION'S ONE LINE carries the request's fee unit, reported with the acknowledgement.
 
-use super::{ask_entitlements, keep, write, CallUnit, Held, McpDoor, Pending, Written, MAX_UNITS};
+use super::{ask_entitlements, write, CallUnit, Held, McpDoor, Pending, Written, MAX_UNITS};
 use crate::catalogue::Lookup;
 use crate::framing::{events, CACHE_CONTROL, CONTENT_TYPE, EVENT_STREAM, NO_STORE};
 use crate::subscribe::{Listen, Standing, Step as ListenStep, KEEPALIVE_NS, MAX_LIFETIME_NS};
@@ -38,6 +38,11 @@ use serde_json::Value;
 /// re-asked the permission every 250 ms of a stream's life).
 pub(super) const POLL_NS: u64 = 250_000_000;
 
+/// The most subscriptions one caller holds open at once. A caller at it is refused its next one:
+/// a quota is a refusal its caller can act on (close one, then open), where an eviction of another
+/// caller's stream is not.
+pub(super) const MAX_LISTENS_PER_OWNER: usize = 64;
+
 /// What an idle stream writes to say it is alive: an event-stream comment, which every reader
 /// drops, so an intermediary does not reclaim a working connection.
 const KEEPALIVE: &[u8] = b": keepalive\n\n";
@@ -45,9 +50,15 @@ const KEEPALIVE: &[u8] = b": keepalive\n\n";
 /// The status an invalid `subscriptions/listen` is refused with.
 const STATUS_INVALID: u32 = 400;
 
+/// The status a `subscriptions/listen` is refused with when its caller is at its quota.
+const STATUS_QUOTA: u32 = 429;
+
 /// One held subscription, by its session's stream.
 #[derive(Debug, Clone)]
 pub(super) struct Listening {
+    /// The caller that opened it, by the reference the kernel lends every piece of its units (the
+    /// one the quota counts under).
+    owner: String,
     /// The subscription.
     listen: Box<Listen>,
     /// The session's caller-side ticket.
@@ -63,7 +74,7 @@ pub(super) struct Listening {
 }
 
 /// A frame of the stream: its head (status, fields and the request's fee unit) with the first.
-fn frame(bytes: Vec<u8>, done: bool, headed: bool) -> Pending {
+pub(super) fn frame(bytes: Vec<u8>, done: bool, headed: bool) -> Pending {
     let (fields, units) = if headed {
         (Vec::new(), Vec::new())
     } else {
@@ -201,14 +212,40 @@ fn open(plane: &McpDoor, ticket: Ticket, principal: &str, unit: &mut CallUnit) -
             Some(true)
         }
         Ok(listen) => {
+            let id = listen.id.clone();
             let listening = Listening {
+                owner: principal.to_string(),
                 listen: Box::new(listen),
                 ticket,
                 first_tick: 0,
                 due: false,
                 headed: false,
             };
-            keep(&plane.listens, MAX_UNITS, unit.key, listening);
+            // THE QUOTA REFUSES THE NEW STREAM, never evicts a held one: this caller at its own
+            // bound, or the instance at its total, is told so.
+            let admitted = plane.listens.with_all(|held| {
+                let full = held.len() >= MAX_UNITS
+                    || held.values().filter(|l| l.owner == principal).count()
+                        >= MAX_LISTENS_PER_OWNER;
+                if !full {
+                    held.insert(unit.key, listening);
+                }
+                !full
+            });
+            if !admitted {
+                let refusal = crate::tool_arrival::Refusal {
+                    status: STATUS_QUOTA,
+                    id: Some(id),
+                    code: crate::codec::CODE_REFUSED,
+                    message: format!(
+                        "this caller holds {MAX_LISTENS_PER_OWNER} open subscriptions, the most one \
+                         caller may hold; close one and open again"
+                    ),
+                    data: Some(serde_json::json!({ "reason": "subscription_quota" })),
+                };
+                unit.pending = Some(Pending::answer(refusal.status, refusal.body(), None, &[]));
+                return Some(true);
+            }
             step(plane, ticket, principal, unit)
         }
     }
@@ -303,12 +340,15 @@ pub(super) fn drive(
     input: Lent<'_, PlaneDriveIn>,
     out: &mut Out<'_, PlaneDriveOut>,
 ) -> Outcome {
-    let due: Vec<u64> = plane.listens.with_all(|m| {
+    let mut due: Vec<u64> = plane.listens.with_all(|m| {
         m.iter()
             .filter(|(_, l)| l.due)
             .map(|(stream, _)| *stream)
             .collect()
     });
+    // The session revisions' held streams owe their collections on the same driver ticket.
+    let streams = super::door_sessions::due_streams(plane);
+    due.extend(&streams);
     let mut buf = input.sessions_buf();
     for stream in &due {
         buf.push(*stream);
@@ -325,6 +365,7 @@ pub(super) fn drive(
             }
         }
     });
+    super::door_sessions::taken(plane, &streams);
     Outcome::Ready
 }
 
@@ -336,7 +377,7 @@ pub(super) fn cancelled(plane: &McpDoor, ticket: Ticket) {
 }
 
 /// Name the instance's driver ticket (as its last tick handed it): a held subscription owes a step.
-fn wake_driver(plane: &McpDoor) {
+pub(super) fn wake_driver(plane: &McpDoor) {
     let driver = plane.driver.get(&()).map(|(ticket, _)| ticket);
     if let (Some(wake), Some(ticket)) = (plane.wake, driver) {
         if ticket != Ticket::NONE {
