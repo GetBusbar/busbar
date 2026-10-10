@@ -196,40 +196,6 @@ impl AuthChain {
         ChainVerdict::Denied
     }
 
-    /// Run the chain and then apply the revocation gate for a NEW unit.
-    ///
-    /// The gate is deliberately not inside the walk: an in-flight unit re-running some part of the
-    /// chain must not be torn down by a revocation that landed after it started. Only the arrival
-    /// of a new unit asks this question.
-    pub fn run_chain_for_new_unit(
-        &self,
-        candidate: Option<&str>,
-        keys: Option<&dyn KeyVerifier>,
-        now: u64,
-        expected_aud: Option<&str>,
-        revocations: Option<&dyn RevocationView>,
-    ) -> ChainVerdict {
-        let verdict = self.run_chain_with(candidate, keys, now, expected_aud);
-        // ONLY AN `Identified` VERDICT ASKS THE REVOCATION QUESTION. A revocation is a statement
-        // about a credential the chain resolved to SOMEBODY; applied to whatever string arrived it
-        // answers two questions nobody asked. An `Open` (anonymous front door) or `Denied` verdict
-        // never authenticated `candidate` in the first place — so on an open-door deployment an
-        // unrelated header value that happened to collide with an unrelated revoked credential
-        // would turn an anonymous admit into a denial, and on a closed one it would tell an
-        // unauthenticated caller WHICH of two refusals they earned, which is a probe for "was this
-        // string ever a real credential", answered before anything authenticated. This is the same
-        // rule `unit::Auth::resolve` states at the seam that has the reason codes to tell the two
-        // refusals apart; here there is only the one `Denied` to spell, and the gate is the same.
-        if matches!(verdict, ChainVerdict::Identified { .. }) {
-            if let (Some(r), Some(cred)) = (revocations, candidate) {
-                if r.is_revoked(cred) {
-                    return ChainVerdict::Denied;
-                }
-            }
-        }
-        verdict
-    }
-
     /// A thin admit-or-deny view over the walk, for callers that do not need the principal.
     pub fn validate_token(&self, token: Option<&str>) -> bool {
         !matches!(self.run_chain(token), ChainVerdict::Denied)

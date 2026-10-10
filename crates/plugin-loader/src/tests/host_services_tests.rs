@@ -52,7 +52,9 @@ impl Provider {
     }
 }
 
-impl HostServices for Provider {
+/// Every service but `trust.sight`, which the contract's shared double refuses as unserved
+/// ([`UNIMPLEMENTED`]), as the loader refuses a slot with no service.
+impl busbar_contract::services::double::ServicesDouble for Provider {
     fn now(&self) -> Reading {
         Reading {
             wall_ns: 1_700_000_000_000_000_000,
@@ -129,11 +131,6 @@ impl HostServices for Provider {
     fn sign(&self, c: &Caller, data: &[u8]) -> Stored {
         self.saw(c, "sign", data);
         Stored::ready(0)
-    }
-
-    /// Not served by the double: refused, as the loader refuses a slot with no service.
-    fn trust_sight(&self, _: &Caller, _: &str, _: &str, _: Later) -> Ran {
-        Ran::Now(Stored::refused(UNIMPLEMENTED))
     }
 
     fn trust_due(&self, c: &Caller) -> Stored {

@@ -552,6 +552,42 @@ fn admission<const I: usize>(slot: &dyn std::any::Any) -> Option<super::PlaneAdm
     })
 }
 
+/// THE NAMES THE DOOR PLANES' GENERATIONS LIST that `key` may see (THE DESIGN section 2:
+/// `/v1/models` appends each plane generation's listed names), read off each folded door's slot in
+/// `slots`, in fold order and then the door's own order. A name is visible as the door's admission
+/// judges a direct route to it: ungoverned (`key` `None`) or a door that states no scope kind scopes
+/// nothing; otherwise the key's grant of the door's first scope kind names it. No door lists any
+/// name: empty.
+pub fn listed<'a>(
+    slots: &'a std::collections::BTreeMap<
+        &'static str,
+        std::sync::Arc<dyn std::any::Any + Send + Sync>,
+    >,
+    key: Option<&busbar_contract::records::VirtualKey>,
+) -> Vec<&'a str> {
+    let mut out = Vec::new();
+    for d in DOORS.iter().filter_map(OnceLock::get) {
+        let Some(slot) = slots
+            .get(d.reg.key)
+            .and_then(|s| s.downcast_ref::<DoorSlot>())
+        else {
+            continue;
+        };
+        let kind = d.reg.scope_kinds.first();
+        out.extend(
+            slot.facing
+                .listed
+                .iter()
+                .map(String::as_str)
+                .filter(|name| match (key, kind) {
+                    (Some(key), Some(kind)) => key.scope_allowed(kind, name),
+                    _ => true,
+                }),
+        );
+    }
+    out
+}
+
 /// The generation's slot of the door at `I`, off the neutral slot seam.
 fn slot_of<const I: usize>(
     slots: &dyn crate::plane_host::PlaneSlots,
@@ -841,7 +877,17 @@ async fn admin_reply(
 ) -> crate::admin_verbs::AdminReply {
     use crate::admin_verbs::{AdminReply, PlaneVerbError};
     let path = filled(target, &ctx.name);
-    match crate::plane_driver::serve::served_at(verb, &path, &ctx.headers, ctx.body).await {
+    // The request as the auth gate admitted it: what it consumed is struck before the plane sees
+    // the head, the query rides the target, and the plane's audit rows name the principal.
+    let req = crate::plane_driver::serve::AdminServe {
+        method: verb,
+        path: &path,
+        query: ctx.query.as_deref(),
+        headers: &ctx.headers,
+        consumed: ctx.consumed.as_ref(),
+        principal: ctx.principal.as_ref(),
+    };
+    match crate::plane_driver::serve::served_at(req, ctx.body).await {
         None => AdminReply::Refused(PlaneVerbError::NotFound),
         Some(Err(unserved)) => AdminReply::Rejected(PlaneVerbError::Internal(format!(
             "the plane did not serve `{verb} {path}`: {unserved:?}"

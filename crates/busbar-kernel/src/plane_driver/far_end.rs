@@ -36,7 +36,8 @@
 //! Deadlines are 1.5.5's: the walk's whole budget is the pool's request timeout, measured from the
 //! unit's start; the first answer is bounded by the member's attempt cap (never beyond what the walk
 //! has left); the whole send by the walk's remaining budget, or the stream ceiling for a streamed
-//! answer.
+//! answer (the plane's stated one, else the deployment's). A plane that states a stream ceiling
+//! also has it stamped as the unit's deadline once the route is known ([`Egress::deadline_ns`]).
 //!
 //! The kernel names no plane here and no plugin: the connection table is the contract's
 //! [`PollConns`], the auth binding the contract's [`OutboundAuth`], and both are handed in by the
@@ -221,8 +222,14 @@ pub struct Egress {
     pub pools: HashMap<String, Pool>,
     /// Every member's route.
     pub routes: HashMap<DestinationId, MemberRoute>,
-    /// The ceiling on a streamed answer's whole send, seconds.
+    /// The ceiling on a streamed answer's whole send, seconds: the deployment's, for a plane that
+    /// states none of its own.
     pub stream_ceiling_secs: u64,
+    /// THE PLANE'S STATED STREAM CEILING, seconds (its tail's `stream_ceiling_secs`; ARCHITECT
+    /// ruling 2026-10-07, STREAM-CEILING): a streamed answer's whole send, and the unit's deadline
+    /// ([`Egress::deadline_ns`]). `0` = the plane states none: no unit deadline, and a streamed
+    /// answer's send runs under [`Egress::stream_ceiling_secs`].
+    pub stated_ceiling_secs: u64,
     /// The most bytes of a relayed non-success answer's body the plane is handed (the operator's
     /// `limits.upstream_error_body_max_bytes`, [`DEFAULT_ERROR_BODY_MAX`] unset). What overruns it
     /// is dropped and the answer ends there, as 1.5.5's capped read did: an error envelope is far
@@ -287,20 +294,28 @@ impl Egress {
         }
     }
 
-    /// THE UNIT'S DEADLINE on the dispatcher's clock (`now_ns`): the pool's request timeout, or the
-    /// stream ceiling when the answer streams — the bound 1.5.5 put on the whole exchange. `0` (none)
-    /// only for a pool with no timeout.
+    /// THE UNIT'S DEADLINE on the dispatcher's clock (`now_ns`), read once its route is known
+    /// (ARCHITECT ruling 2026-10-07, STREAM-CEILING): the plane's stated stream ceiling from now,
+    /// for a unit whose answer streams on a plane that states one. It bounds the whole streamed
+    /// answer and a caller that stops reading it alike. `0` (none) otherwise: a plane that states
+    /// no ceiling keeps the previous release's unbounded stream, and a buffered answer is bounded
+    /// by the walk's own budget.
     #[must_use]
     pub fn deadline_ns(&self, route: &UnitRoute, now_ns: u64) -> u64 {
-        let secs = if route.wants_stream {
-            self.stream_ceiling_secs.max(self.budget_secs(&route.pool))
-        } else {
-            self.budget_secs(&route.pool)
-        };
-        if secs == 0 {
+        if !route.wants_stream || self.stated_ceiling_secs == 0 {
             return 0;
         }
-        now_ns.saturating_add(secs.saturating_mul(1_000_000_000))
+        now_ns.saturating_add(self.stated_ceiling_secs.saturating_mul(1_000_000_000))
+    }
+
+    /// The ceiling on a streamed answer's whole send, seconds: the plane's stated one, else the
+    /// deployment's.
+    fn send_ceiling_secs(&self) -> u64 {
+        if self.stated_ceiling_secs == 0 {
+            self.stream_ceiling_secs
+        } else {
+            self.stated_ceiling_secs
+        }
     }
 
     /// One unit's far end, its walk starting now.
@@ -799,8 +814,16 @@ impl EgressFarEnd<'_> {
         // abandon. A probe moves no money and dispatches nothing a recovery would settle: it
         // writes no record.
         let path = request.target.starts_with(b"/");
-        let unrecorded = path && self.probe_of.is_none() && e.journal.dispatched(&record).is_err();
-        if !path || unrecorded {
+        // A plane field whose name is not an RFC 9110 token is refused the same way: a `:` in a name
+        // (`authorization:x`) is re-read as another field when the framer renders and parses its
+        // head again, which steps around the same-name auth replacement below (whole names).
+        let named = request
+            .fields
+            .iter()
+            .all(|(n, _)| busbar_contract::header::is_header_name_token(n));
+        let unrecorded =
+            path && named && self.probe_of.is_none() && e.journal.dispatched(&record).is_err();
+        if !path || !named || unrecorded {
             let mut w = self.lock();
             if let Some(live) = w.live.as_mut() {
                 live.answered = true;
@@ -964,14 +987,17 @@ impl EgressFarEnd<'_> {
             let now = e.clock.now_millis();
             let remaining = w.walk.ctx().remaining_ms(now);
             let wait = if live.answered {
-                // The whole send: the walk's budget, or the stream ceiling, from the anchor.
-                let budget = if self.route.wants_stream {
-                    e.stream_ceiling_secs.max(1).saturating_mul(1000)
+                // The whole send: the stream ceiling from the anchor, or what is left of the walk's
+                // budget, which is already measured from the unit's start (subtracting the time
+                // since the anchor again cut a buffered answer at half its budget).
+                if self.route.wants_stream {
+                    let ceiling = e.send_ceiling_secs().max(1).saturating_mul(1000);
+                    let spent =
+                        u64::try_from(now.saturating_sub(live.anchor_ms)).unwrap_or(u64::MAX);
+                    ceiling.saturating_sub(spent)
                 } else {
                     remaining.max(1)
-                };
-                let spent = u64::try_from(now.saturating_sub(live.anchor_ms)).unwrap_or(u64::MAX);
-                budget.saturating_sub(spent)
+                }
             } else {
                 live.member
                     .attempt_timeout_ms
@@ -1254,6 +1280,10 @@ impl Drop for EgressFarEnd<'_> {
 }
 
 impl FarEnd for EgressFarEnd<'_> {
+    fn deadline_ns(&self, now_ns: u64) -> u64 {
+        self.egress.deadline_ns(&self.route, now_ns)
+    }
+
     fn member<'a>(
         &'a self,
         token: &'a Pass<Route>,
