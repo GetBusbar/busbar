@@ -117,10 +117,7 @@ fn script(s: &LoadedStore) -> Vec<String> {
 fn a_linked_and_a_dropped_in_store_answer_get_and_put_identically() {
     let door = crate::both_ways::store_fixture::door;
     let linked = script(&store(both::linked::<Store>(door)));
-    let Some(dropped) = both::dropped::<Store>(door, "store_v3_door") else {
-        eprintln!("skip: the store's cdylib is not built in this scoped run");
-        return;
-    };
+    let dropped = both::dropped::<Store>(door, "store_v3_door");
     let dropped = script(&store(dropped));
     same(&linked, &dropped);
     // The script read what it wrote: a comparison of two empty answers proves nothing.
@@ -151,10 +148,7 @@ fn a_store_that_grants_part_of_a_cell_is_refused_through_both_doors() {
         matches!(conforming, Err(StoreFailure::Reserve(_))),
         "the conforming store answers the same reserve within the contract: {conforming:?}"
     );
-    let Some(dropped) = both::dropped::<Store>(broken, "store_broken_door") else {
-        eprintln!("skip: the broken store's cdylib is not built in this scoped run");
-        return;
-    };
+    let dropped = both::dropped::<Store>(broken, "store_broken_door");
     let dropped = reserved(&store(dropped), 4);
     same(&[format!("{linked:?}")], &[format!("{dropped:?}")]);
 }
