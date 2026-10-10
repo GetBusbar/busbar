@@ -1155,14 +1155,17 @@ pub fn compose_egress(
 // ── the members' routes (THE DESIGN §6 steps 2-3) ──────────────────────────────────────────────
 
 /// ONE `providers:` ENTRY as a door plane's member reaches it (THE DESIGN §6 step 2; #50, #51): the
-/// `base_url` it dials, its default `protocol`, its credential reference, the `auth:` style it
-/// states (`None` = its plane's dialect default) and the parameters that style is opened with.
+/// `base_url` it dials, its default `protocol` and `error_map` (the dialect fields its plane is handed
+/// at open), its credential reference, the `auth:` style it states (`None` = its plane's dialect
+/// default) and the parameters that style is opened with.
 #[derive(Debug, Clone)]
 pub struct ProviderRoute {
     /// `base_url`, as the operator (or the catalog) spelled it.
     pub base_url: String,
     /// The default wire protocol (#51).
     pub protocol: String,
+    /// The `error_map`, catalog-merged; empty = none stated.
+    pub error_map: BTreeMap<String, String>,
     /// `api_key`, a reference; resolved once, at the seal.
     pub credential: busbar_contract::secret_ref::SecretRef,
     /// `auth:`, the style it overrides its plane's dialect default with.
@@ -1239,6 +1242,11 @@ pub fn provider_routes(
                 ProviderRoute {
                     base_url: p.base_url.clone(),
                     protocol: p.protocol.clone(),
+                    error_map: p
+                        .error_map
+                        .iter()
+                        .map(|(k, v)| (k.clone(), v.clone()))
+                        .collect(),
                     credential: p.api_key.clone(),
                     style: p.auth.map(|a| style_word(a).to_string()),
                     params: StyleParams {
@@ -1252,6 +1260,20 @@ pub fn provider_routes(
             )
         })
         .collect()
+}
+
+/// THE DIALECT FACTS OF THE PROVIDERS `section` REFERENCES, read off `providers` through the one
+/// builder the probe's open uses too ([`busbar_contract::plane_calls::dialect_facts`]).
+#[must_use]
+pub fn dialect_facts(
+    section: &serde_yaml::Value,
+    providers: &BTreeMap<String, ProviderRoute>,
+) -> Vec<busbar_contract::plane_calls::DialectFacts> {
+    busbar_contract::plane_calls::dialect_facts(section, |name| {
+        providers
+            .get(name)
+            .map(|p| (p.protocol.clone(), p.error_map.clone()))
+    })
 }
 
 /// One auth plugin serving a style: its instance, opened for its outbound styles, and the style as
