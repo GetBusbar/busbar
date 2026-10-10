@@ -292,6 +292,13 @@ impl Out<'_, crate::abi::plane::ArriveOut> {
         self.set(|o| &o.route, crate::abi::plane::ROUTE_LOCAL);
     }
 
+    /// THE PLANE'S OWN ANSWER IS AN ADMITTED CALL ([`crate::abi::plane::ROUTE_COUNTED`], on a
+    /// [`Self::local`] unit): the kernel counts its request against the caller's caps.
+    pub fn counted(&mut self) {
+        let flags = self.get().route_flags | crate::abi::plane::ROUTE_COUNTED;
+        self.set(|o| &o.route_flags, flags);
+    }
+
     /// THE UNIT'S OPERATION IS PERFORMED AT MOST ONCE ([`crate::abi::plane::ROUTE_ONCE`]): a member
     /// that answered with a failure is not retried on another.
     pub fn once(&mut self) {
