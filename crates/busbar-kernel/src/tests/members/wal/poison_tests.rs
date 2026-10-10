@@ -419,6 +419,51 @@ fn a_failed_roll_leaves_no_hole_in_the_chain() {
     );
 }
 
+/// A journal that RETAINS at its bound keeps a failed roll's batch past that bound: the batch a
+/// failed roll keeps and the records a full lane keeps are the one retained batch, and a retaining
+/// journal never forgets from it to make room (H3's `retaining_at_bound`, Q128 kernel-wal 4).
+#[test]
+fn a_retaining_journal_keeps_a_failed_rolls_batch_past_its_bound() {
+    use busbar_kernel_wal::journal::{Entry, Journal, RecordClass};
+
+    let (wal, switch, memory) = wal_with_faults();
+    let _segment_zero = memory.segment_bytes(0);
+    let mut journal = Journal::over(wal, 4)
+        .with_capacity(1)
+        .retaining_at_bound();
+    let token = durability_token();
+    let entry = |tag: u8| [Entry::new(RecordClass::Transaction, vec![tag; 8])];
+
+    journal
+        .append(&token, busbar_contract::caps::StepName::Meter, &entry(1))
+        .expect("a healthy disk");
+    switch.refuse_new_segments(true);
+    switch.arm(Fault::SyncEio);
+    journal
+        .append(&token, busbar_contract::caps::StepName::Meter, &entry(2))
+        .expect_err("the sync was armed to fail");
+    let ack = journal.append(&token, busbar_contract::caps::StepName::Meter, &entry(3));
+    assert!(ack.is_err(), "no segment can be opened to roll to");
+    assert!(journal.at_bound(), "two records owed against a bound of one");
+    assert_eq!(journal.buffered(), 2, "both batches are retained");
+    assert_eq!(journal.dropped_total(), 0, "nothing was forgotten");
+    assert!(journal.overflows().is_empty(), "no break was sealed");
+
+    switch.refuse_new_segments(false);
+    journal
+        .append(&token, busbar_contract::caps::StepName::Meter, &entry(4))
+        .expect("the disk has room again");
+    assert_eq!(journal.buffered(), 0);
+    let chain = journal
+        .replay()
+        .expect("the log reads back")
+        .expect("and the chain verifies");
+    assert_eq!(
+        chain.iter().map(|r| r.node_seq).collect::<Vec<u64>>(),
+        vec![1, 2, 3, 4]
+    );
+}
+
 /// What the store is owed on disk is a QUEUE WITH A BOUND, not a list that grows for as long as the
 /// outage lasts. What it gives up on is counted, and those records are still in the segments.
 #[test]

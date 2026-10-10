@@ -2154,3 +2154,114 @@ fn applying_rates_registers_the_classes_a_unit_may_report() {
         None
     );
 }
+
+/// [`boot_book`] with NO data directory, its journal kept by `slots` — the production boot over the
+/// configured store (ARCHITECT 2026-10-07 H3 ruling).
+fn boot_book_on_store(
+    holder: &'static RootHistory,
+    slots: &crate::root::store_double::RecordSlots,
+) -> Arc<Mutex<crate::root::durability::Durability>> {
+    let lane = crate::root::durability::JournalLane::start(slots.calls(), "test-store")
+        .expect("the lane starts");
+    let book = Arc::new(Mutex::new(
+        crate::root::durability::build_on_store(
+            &crate::root::durability::DurabilityConfig { data_dir: None },
+            7,
+            lane,
+            Box::new(busbar_kernel_ledger::legacy::RecordingRows::new()),
+            Box::new(move || holder.pin()),
+            Some(holder),
+        )
+        .expect("the store reads back"),
+    ));
+    holder.bind_journal(&book);
+    book
+}
+
+/// **A SIGNED BACK-DATED CORRECTION SURVIVES A RESTART ON A NODE WITH NO DATA DIRECTORY**
+/// (ARCHITECT 2026-10-07 H3 ruling (b)): the dated history is rebuilt from the chain the store kept,
+/// so the rebuilt book prices the corrected window at the correction — the same proof as
+/// [`a_back_dated_correction_survives_a_restart`], over the store instead of a disk.
+///
+/// RED before the fix: the rebuild ran only over a disk; the restarted book's history was the boot
+/// card alone and its book was empty.
+#[cfg(feature = "root-admin")]
+#[test]
+fn a_back_dated_correction_survives_a_restart_over_the_store() {
+    use busbar_contract::caps::DurableWrite;
+    const CORRECTED: (u64, u64) = (0, 86_400_000);
+    const SIGNED_AT: u64 = 20_000;
+    let slots = crate::root::store_double::RecordSlots::new();
+    {
+        let holder = process_holder();
+        apply_at(holder, 3.0, BOOT_A);
+        let book = boot_book_on_store(holder, &slots);
+        settle(
+            &book,
+            "inside",
+            FLAT_LANE,
+            1_000_000,
+            3_000_000_000,
+            EARNED_A,
+        );
+        let journal = crate::root::units_admin::AmendmentJournal::new(
+            Arc::clone(&book),
+            busbar_kernel::test_support::tokens::grant::<DurableWrite>(),
+        );
+        holder
+            .amend(
+                &crate::root::kernel::Correction {
+                    effective_from: CORRECTED.0,
+                    effective_until: Some(CORRECTED.1),
+                    appended_at: SIGNED_AT,
+                    author: busbar_kernel_ledger::cost::Author::Amend {
+                        operator_fingerprint: "op".to_string(),
+                        reason_hash: [9; 32],
+                    },
+                    cells: vec![(
+                        busbar_kernel_ledger::cost::LaneClass::new(FLAT_LANE, "input"),
+                        4_000,
+                    )],
+                    fee: None,
+                },
+                |card, base| {
+                    journal.record(
+                        &crate::root::units_admin::AmendmentRecord {
+                            effective_from: CORRECTED.0,
+                            effective_until: Some(CORRECTED.1),
+                            amended_at_ms: SIGNED_AT,
+                            sealed_over: Some(base),
+                            sealed_fee: card.fee(),
+                            rates: vec![(FLAT_LANE.to_string(), "input".to_string(), Some(4_000))],
+                            operator_fingerprint: "op".to_string(),
+                            reason_hash: [9; 32],
+                            principal: "admin".to_string(),
+                            dual_control: "single".to_string(),
+                            signed_payload: b"signed".to_vec(),
+                            signature: "00".to_string(),
+                        },
+                        SIGNED_AT / 1_000,
+                    )
+                },
+            )
+            .expect("a resolved history takes a correction");
+        assert!(
+            book.lock()
+                .expect("the book")
+                .lane()
+                .expect("a lane")
+                .drain(std::time::Duration::from_secs(5)),
+            "the store takes the chain"
+        );
+    }
+
+    let holder = process_holder();
+    apply_at(holder, 3.0, REBOOT);
+    let book = boot_book_on_store(holder, &slots);
+    assert_eq!(
+        settled(&book, "inside"),
+        4_000_000_000,
+        "the correction reprices its window after a restart over the store"
+    );
+    assert_eq!(holder.len(), 2, "the opening card and the correction");
+}

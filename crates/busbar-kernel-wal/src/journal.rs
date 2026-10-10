@@ -68,6 +68,11 @@
 //! - The oldest go, not the newest. What is nearest the head is what a reader is most likely to
 //!   need, and a break at a known old position is easier to reconcile from a backup than a hole
 //!   punched at the tail.
+//!
+//! A caller may instead keep every record at the bound ([`Journal::retaining_at_bound`]) when it
+//! makes the full buffer a decision of its own: the composition root over a store refuses new
+//! money-bearing work while its store cannot keep up, so nothing is dropped and the refusal is the
+//! named decision.
 
 use std::collections::VecDeque;
 
@@ -706,6 +711,9 @@ pub struct Journal {
     overflows_seen: usize,
     /// How many records the bound has cost in total.
     dropped_total: u64,
+    /// What reaching the bound does: drop the oldest and seal a break (the default), or keep every
+    /// record and leave the decision to the caller ([`Journal::retaining_at_bound`]).
+    drop_at_bound: bool,
 }
 
 impl std::fmt::Debug for Journal {
@@ -745,6 +753,28 @@ impl Journal {
         Ok(Journal::over(Wal::in_directory(dir, shipper, clock)?, node))
     }
 
+    /// [`Journal::in_directory`], writing as the node the directory's chain ALREADY names: the
+    /// newest record on the recovered tail decides, and `fallback` is the identity of a directory
+    /// that holds no record yet. A chain on a disk keeps the identity it was written under, whatever
+    /// identity the node would take today, so it is never continued under a second one.
+    ///
+    /// # Errors
+    ///
+    /// As [`Journal::in_directory`].
+    pub fn in_directory_adopting(
+        fallback: u64,
+        dir: impl AsRef<std::path::Path>,
+        shipper: Box<dyn Shipper<Record>>,
+        clock: Clock,
+    ) -> Result<Self, OpenError> {
+        let log = Wal::in_directory(dir, shipper, clock)?;
+        let node = decode_run(log.recovered())
+            .ok()
+            .and_then(|records| records.last().map(|r| r.node))
+            .unwrap_or(fallback);
+        Ok(Journal::over(log, node))
+    }
+
     /// A journal over an already-open log, resuming from the tail the log recovered.
     ///
     /// This is the seam a battery drives, and it is also how the on-disk case resumes: the log's
@@ -765,6 +795,7 @@ impl Journal {
             overflows: VecDeque::new(),
             overflows_seen: 0,
             dropped_total: 0,
+            drop_at_bound: true,
         };
         // A tail that does not decode leaves the chain's HEAD at genesis rather than resuming from
         // bytes this build cannot read. The records are still on the medium; nothing on it is
@@ -785,6 +816,60 @@ impl Journal {
         // and never a lost record.
         journal.floor_seq_to_the_log();
         journal
+    }
+
+    /// A memory-buffered journal RESUMED from the chain the configured store kept: `records` are
+    /// that chain's records as the store returned them, oldest first. They go into the log's buffer
+    /// without being shipped again ([`Wal::memory_seeded`]), so [`Journal::replay`] answers them, and
+    /// the head and the next sequence number continue from this node's newest one among them.
+    ///
+    /// This is the node with no data directory whose durability is its store: without it a restart
+    /// opened an empty chain, and every record the store took was never read again.
+    ///
+    /// # Errors
+    ///
+    /// The records could not be written into the buffer.
+    pub fn memory_resumed(
+        node: u64,
+        records: &[Record],
+        shipper: Box<dyn Shipper<Record>>,
+        clock: Clock,
+    ) -> Result<Self, OpenError> {
+        let log = Wal::memory_seeded(records, shipper, clock)?;
+        // A run that does not decode resumes the HEAD at genesis — a visible link break — and the
+        // numbering still continues past every identity the log took, as `over` does for a tail.
+        let (head, next_seq) = decode_run(records)
+            .ok()
+            .and_then(|decoded| tail_of(&decoded, node))
+            .unwrap_or(([0u8; 32], 1));
+        let mut journal = Journal::over(log, node);
+        journal.head = head;
+        journal.next_seq = next_seq.max(1);
+        // The number is where the store's chain got to, and the seeded log holds that chain, so the
+        // two agree. Where they do not, the store's number would re-use identities the log already
+        // carries, and the log answers a duplicate identity by passing over the record and reporting
+        // success. The floor is what keeps that from being a settlement lost behind an `Ok`.
+        journal.floor_seq_to_the_log();
+        Ok(journal)
+    }
+
+    /// The same journal KEEPING every record at its bound instead of dropping the oldest.
+    ///
+    /// For a caller that decides what a full buffer means itself and has said so: the composition
+    /// root over a store, which refuses new money-bearing work while its store lane is full (ARCHITECT
+    /// 2026-10-07 H3 ruling: records are never dropped). What it costs is that the buffer is then
+    /// bounded by the caller's refusal rather than by this journal, so a caller that keeps admitting
+    /// work while the store refuses grows it.
+    #[must_use]
+    pub fn retaining_at_bound(mut self) -> Self {
+        self.drop_at_bound = false;
+        self
+    }
+
+    /// Whether the store has not acknowledged as many records as the buffer is bounded at.
+    #[must_use]
+    pub fn at_bound(&self) -> bool {
+        self.buffered() >= self.capacity
     }
 
     /// Put every quarantine the log made at open on the chain, as one `ChainBreak` record each —
@@ -1008,7 +1093,7 @@ impl Journal {
     /// which is the one thing a pinned bound exists to make impossible.
     fn make_room(&mut self, incoming: usize) -> Option<Overflow> {
         let held = self.log.owed().len();
-        if held.saturating_add(incoming) <= self.capacity {
+        if !self.drop_at_bound || held.saturating_add(incoming) <= self.capacity {
             return None;
         }
         let wanted = held.saturating_add(incoming).saturating_add(1);
