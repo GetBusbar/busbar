@@ -120,6 +120,8 @@ pub mod secret_ref;
 pub mod section;
 pub mod services;
 pub mod signal;
+// THE LOG'S SHIPPING SEAM: the trait the store adapter implements and the log ships through.
+pub mod ship;
 pub mod slice;
 // THE STORE'S CALLS: the typed store v3 surface the loader implements and the kernel calls.
 pub mod spans;
