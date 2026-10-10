@@ -740,6 +740,10 @@ reviewed_allowlist = ["busbar-api", "serde", "serde_json", "tracing", "async-tra
 # of which wire library a transport links to reach them.
 [rules.manifest-allowlist.reviewed_extra]
 busbar-transport-stdio = ["tokio", "futures"]
+# The webrtc framer (THE DESIGN l.749-757): str0m for ICE/SRTP/SCTP, ring for its primitives, aes for
+# the SRTP key derivation alone (l.753's one exception, confined by its tests/dependency_closure.rs),
+# zeroize for the keying material.
+busbar-transport-webrtc = ["str0m", "ring", "aes", "zeroize"]
 # The MCP plane's outbound wire (fold A5, ARCHITECT 2026-09-29 under the PLUGIN LIBRARIES ruling):
 # the `Mcp-Name` header's `=?base64?...?=` sentinel for a name a header value cannot carry.
 busbar-plane-mcp = ["base64", "indexmap"]
