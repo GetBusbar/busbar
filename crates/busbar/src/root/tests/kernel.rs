@@ -2147,7 +2147,7 @@ fn boot_book_on_store(
     holder: &'static RootHistory,
     slots: &crate::root::store_double::RecordSlots,
 ) -> Arc<Mutex<crate::root::durability::Durability>> {
-    let lane = crate::root::durability::JournalLane::start(slots.calls(), "memory")
+    let lane = crate::root::durability::JournalLane::start(slots.calls(), "test-store")
         .expect("the lane starts");
     let book = Arc::new(Mutex::new(
         crate::root::durability::build_on_store(

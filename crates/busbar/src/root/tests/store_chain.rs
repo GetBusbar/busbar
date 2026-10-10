@@ -21,7 +21,7 @@ fn record(node: u64, seq: u64, len: usize) -> Record {
 #[test]
 fn what_the_store_kept_reads_back_whole_and_in_order() {
     let slots = RecordSlots::new();
-    let lane = JournalLane::start(slots.calls(), "memory").expect("the lane starts");
+    let lane = JournalLane::start(slots.calls(), "test-store").expect("the lane starts");
     let mut shipper = lane.shipper();
     let mine: Vec<Record> = (1..=300)
         .map(|seq| record(9, seq, if seq % 7 == 0 { 3 * PART_BYTES + 5 } else { 40 }))
@@ -47,7 +47,7 @@ fn what_the_store_kept_reads_back_whole_and_in_order() {
 fn a_refused_record_is_retained_and_lands_once_the_store_recovers() {
     let slots = RecordSlots::new();
     slots.refuse(true);
-    let lane = JournalLane::start(slots.calls(), "memory").expect("the lane starts");
+    let lane = JournalLane::start(slots.calls(), "test-store").expect("the lane starts");
     let mut shipper = lane.shipper();
     shipper
         .ship(&[record(3, 1, 10), record(3, 2, 10)])
@@ -83,7 +83,7 @@ fn a_refused_record_is_retained_and_lands_once_the_store_recovers() {
 fn a_full_lane_refuses_money_with_its_reason_and_drops_nothing() {
     let slots = RecordSlots::new();
     slots.refuse(true);
-    let lane = JournalLane::with_capacity(slots.calls(), "memory", 2).expect("the lane starts");
+    let lane = JournalLane::with_capacity(slots.calls(), "test-store", 2).expect("the lane starts");
     let mut shipper = lane.shipper();
     assert!(lane.refuses_money().is_none(), "an empty lane admits");
     shipper
@@ -93,7 +93,7 @@ fn a_full_lane_refuses_money_with_its_reason_and_drops_nothing() {
         .refuses_money()
         .expect("a full lane refuses new money-bearing work");
     assert!(
-        why.contains("`memory`") && why.contains("2 records await"),
+        why.contains("`test-store`") && why.contains("2 records await"),
         "the reason names the store and what waits: {why}"
     );
     assert!(
