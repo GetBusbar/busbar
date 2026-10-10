@@ -2626,7 +2626,7 @@ async fn test_admin_v1_rotate_idempotency_in_flight_is_not_replayed_as_complete(
 /// produce `"rotate:{victim_id}:b:c"`. Because the idempotency cache lookup happens BEFORE the
 /// governance existence check, a caller who names the colliding (nonexistent) id is answered from
 /// the OTHER pair's cache entry — served a stranger's freshly-rotated secret — without ever
-/// holding a valid id of their own. Fixed by routing through `verbs::rotate_replay_key`, which
+/// holding a valid id of their own. Fixed by routing through `idempotency::rotate_replay_key`, which
 /// length-prefixes each half so no two distinct pairs can join to the same string.
 #[tokio::test]
 async fn test_admin_v1_rotate_idempotency_cache_key_does_not_collide_across_colon_joined_ids() {
@@ -5652,7 +5652,7 @@ fn test_create_key_unconfigured_allowed_pool_is_nonfatal_and_quiet() {
                 axum::extract::State(handle.clone()),
                 axum::Extension(busbar_kernel::auth::AuthPrincipal(None)),
                 axum::http::HeaderMap::new(),
-                None,
+                axum::Extension(std::sync::Arc::new(super::KeyReplayCache::new())),
                 body1,
             )
             .await;
@@ -5670,7 +5670,7 @@ fn test_create_key_unconfigured_allowed_pool_is_nonfatal_and_quiet() {
                 axum::extract::State(handle),
                 axum::Extension(busbar_kernel::auth::AuthPrincipal(None)),
                 axum::http::HeaderMap::new(),
-                None,
+                axum::Extension(std::sync::Arc::new(super::KeyReplayCache::new())),
                 body2,
             )
             .await;
@@ -5755,7 +5755,7 @@ async fn proof_role_binding_mode_ceiling_bounds_a_delegated_admin() {
             axum::extract::State(handle),
             axum::Extension(busbar_kernel::auth::AuthPrincipal(Some(principal.clone()))),
             axum::http::HeaderMap::new(),
-            None,
+            axum::Extension(std::sync::Arc::new(super::KeyReplayCache::new())),
             body,
         )
         .await;
@@ -5817,7 +5817,7 @@ async fn proof_max_ttl_ceiling_refuses_overask_and_clamps_default() {
             axum::extract::State(handle),
             axum::Extension(busbar_kernel::auth::AuthPrincipal(None)),
             axum::http::HeaderMap::new(),
-            None,
+            axum::Extension(std::sync::Arc::new(super::KeyReplayCache::new())),
             axum::body::Bytes::from(body.to_string()),
         )
         .await;
@@ -5920,7 +5920,7 @@ async fn proof_role_mint_ceiling_bounds_a_delegated_admin() {
             axum::extract::State(handle),
             axum::Extension(busbar_kernel::auth::AuthPrincipal(Some(principal.clone()))),
             axum::http::HeaderMap::new(),
-            None,
+            axum::Extension(std::sync::Arc::new(super::KeyReplayCache::new())),
             axum::body::Bytes::from(body.to_string()),
         )
         .await;
@@ -7011,6 +7011,74 @@ fn admin_test_tarball_versioned(name: &str, alias: &str, version: &str) -> Vec<u
         former_names: Vec::new(),
     };
     busbar_kernel::plugin_admission::tarball::package(&m, "lib.so", lib).unwrap()
+}
+
+/// THE ONE-VERSION RULE OVER THE WIRE (ARCHITECT C'): `POST /plugins` with a copy of a plugin this
+/// build LINKS, at the version its Statement states, answers exactly as every successful install
+/// has since 1.5.5 — `201 Created` with the install view (v1.5.5 had no "already installed" answer:
+/// `crates/busbar/src/admin/v1/json/handlers.rs:211` is its one success, and
+/// `crates/busbar/src/admin/v1/service.rs:1873` overwrote a same-file upload) — its note saying the
+/// linked build serves it, and NOTHING is written to the plugins directory.
+#[tokio::test]
+async fn test_admin_v1_plugin_install_of_a_linked_copy_is_a_201_no_op() {
+    use base64::Engine as _;
+    busbar_kernel::snapshot::init();
+    let (canonical, key, version, _) = crate::v1::service::tests::linked_store();
+    let tarball = crate::v1::service::tests::unsigned_copy(canonical, key, &version);
+    let file = "linked-copy.tar.gz";
+    let dir = std::env::temp_dir().join(format!(
+        "busbar-admin-plugins-linked-copy-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let (addr, _handle) = serve_with_plugins_dir(dir.clone()).await;
+    // The request and the install view, typed: the view's shape is every one of its fields (both
+    // optional ones present) and nothing else.
+    #[derive(serde::Serialize)]
+    struct Install<'a> {
+        file: &'a str,
+        tarball_b64: String,
+    }
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    #[allow(dead_code)]
+    struct View {
+        file: String,
+        interface_version: u32,
+        name: String,
+        note: String,
+        publisher: String,
+        trust: String,
+        version: String,
+    }
+    let resp = reqwest::Client::new()
+        .post(format!("http://{addr}/api/v1/admin/plugins"))
+        .header("x-admin-token", "admintok")
+        .json(&Install {
+            file,
+            tarball_b64: base64::engine::general_purpose::STANDARD.encode(&tarball),
+        })
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status().as_u16(),
+        201,
+        "the install view, as every success"
+    );
+    let v: serde_json::Value = resp.json().await.unwrap();
+    let view: View = serde_json::from_value(v.clone())
+        .unwrap_or_else(|e| panic!("the install view's shape: {e}: {v}"));
+    assert_eq!((view.file.as_str(), view.name.as_str()), (file, canonical));
+    assert_eq!(
+        view.note,
+        "this build links the plugin at this version and the linked build serves it: nothing \
+         was written"
+    );
+    assert!(!dir.join(file).exists(), "nothing is written");
+    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// FULL LIFECYCLE over the wire: `POST /plugins` installs an (unsigned, allow_unsigned-posture)
@@ -8459,9 +8527,10 @@ async fn test_max_keys_per_principal_cap_trips() {
 
 /// The idempotency RESERVATION frees itself on an AT-CAP refusal specifically — a DIFFERENT exit
 /// than `test_admin_v1_idempotency_reservation_frees_on_failure`'s pre-validation 400: this one
-/// only reserves after the request has been handed to the transaction/mint (`IdemState::InFlight`,
-/// via `IdemReservation::clear()`'s explicit call at the `MintOutcome::AtCap` arm), so Drop alone
-/// (which only clears a still-`Reserved` sentinel) would NOT free it. Prove the reservation is
+/// only reserves after the request has been handed to the transaction/mint
+/// (`Reservation::in_flight`, freed by `Reservation::clear()`'s explicit call at the
+/// `MintOutcome::AtCap` arm), so Drop alone (which only clears a sentinel not yet in flight) would
+/// NOT free it. Prove the reservation is
 /// genuinely released, not merely coincidentally re-tripping the same cap: free capacity between
 /// the two calls and confirm the SAME Idempotency-Key mints on retry.
 #[tokio::test]
@@ -8503,7 +8572,7 @@ async fn test_admin_v1_idempotency_reservation_frees_on_at_cap_refusal() {
         .to_string();
 
     // The reserving mint: the group is already at cap, so this trips `MintOutcome::AtCap` — the
-    // reservation was inserted, promoted to InFlight, and must be freed by `r.clear()` here.
+    // reservation was inserted, marked in flight, and must be freed by `r.clear()` here.
     let at_cap = client
         .post(&keys_url)
         .header("x-admin-token", "admintok")
@@ -8528,8 +8597,8 @@ async fn test_admin_v1_idempotency_reservation_frees_on_at_cap_refusal() {
         .unwrap();
     assert_eq!(deleted.status().as_u16(), 204);
 
-    // The SAME Idempotency-Key now mints successfully. If `IdemReservation::clear()` were a no-op,
-    // this would instead see the stale `Null` sentinel and get the idempotency-in-flight 409
+    // The SAME Idempotency-Key now mints successfully. If `Reservation::clear()` were a no-op,
+    // this would instead see the stale in-flight sentinel and get the idempotency-in-flight 409
     // forever, never a fresh cap check.
     let retry = client
         .post(&keys_url)
@@ -11562,20 +11631,18 @@ async fn test_admin_v1_config_settings_read_redacts_every_settings_bag() {
 }
 
 /// **THE EXIT TEST FOR ITEM 271's PRODUCTION HOOKUP, AT THE LIVE CACHE.** Item 271's writer side
-/// (`RootClaimJournal`, `IdempotencyCache::with_journal`) was fully proven in isolation
+/// (`RootClaimJournal`, `IdempotencyCache::with_journal`) was proven in isolation
 /// (`units_admin.rs`'s `an_idempotency_key_on_a_durable_node_journals_exactly_one_claim`), and the
 /// root's binding of it onto `AdminBinding::claims` was proven too
 /// (`the_admin_listener_binds_its_claim_journal_on_a_data_dir_node_only`) — but NEITHER exercises the
-/// surface a real `POST /keys` actually reaches. `keys::create_key`/`rotate_key` replay against
-/// `App::idempotency_cache` (a bare `HashMap`, not `IdempotencyCache`), which carried no journal hook
-/// at all until this change threaded one through as a request extension (`admin_mount.rs`'s
-/// `ClaimJournalCell`, set from `AdminBinding::claims` before any real request can observe it).
+/// surface a real `POST /keys` actually reaches. `keys::create_key`/`rotate_key` replay against the
+/// node's `KeyReplayCache`, which the composition root builds once with the claim journal bound
+/// (`with_journal`) and inserts as a request extension on every request (`RouterDispatch::call`).
 ///
 /// This is the seam's production shape, reproduced directly: the extension the composition root's
-/// wrap inserts on every request when a claim journal is bound (see `RouterDispatch::call`) is
-/// layered here the identical way — a `POST /keys` with a repeated `Idempotency-Key` journals the
-/// claim exactly once (first sighting only — never on the replay) and the replayed response is
-/// byte-for-byte the first, exactly as v1.5.5.
+/// wrap inserts on every request is layered here the identical way — a `POST /keys` with a repeated
+/// `Idempotency-Key` journals the claim exactly once (first sighting only — never on the replay) and
+/// the replayed response is byte-for-byte the first, exactly as v1.5.5.
 #[tokio::test]
 async fn a_durable_node_journals_exactly_one_claim_for_a_repeated_key_post_keys() {
     busbar_kernel::snapshot::init();
@@ -11599,10 +11666,12 @@ async fn a_durable_node_journals_exactly_one_claim_for_a_repeated_key_post_keys(
         }
     }
     let journal = RecordingJournal::default();
-    let ext: Arc<dyn crate::idempotency::ClaimJournal> = Arc::new(journal.clone());
-    // The SAME wiring `RouterDispatch::call` performs on a durable node: an `Arc<dyn ClaimJournal>`
-    // riding as a request extension, which `create_key`'s `Option<axum::Extension<_>>` parameter
-    // reads. `Router::layer` inserts it on every request the same way `http::Request::builder()
+    let ext: Arc<crate::keys::KeyReplayCache> = Arc::new(
+        crate::keys::KeyReplayCache::with_journal(Arc::new(journal.clone())),
+    );
+    // The SAME wiring `RouterDispatch::call` performs: the node's replay cache, journal bound,
+    // riding as a request extension, which `create_key`'s `Extension<_>` parameter reads.
+    // `Router::layer` inserts it on every request the same way `http::Request::builder()
     // .extension(..)` does at the root — this is not a stand-in for the production seam, it is the
     // same extension slot the production seam fills.
     let router = router.layer(axum::Extension(ext));
@@ -11641,10 +11710,9 @@ async fn a_durable_node_journals_exactly_one_claim_for_a_repeated_key_post_keys(
 
 /// **THE MEMORY-ONLY HALF OF THE SAME EXIT TEST.** A node with no data directory binds no claim
 /// journal (`the_admin_listener_binds_its_claim_journal_on_a_data_dir_node_only`), so
-/// `ClaimJournalCell` is set to `None` and `RouterDispatch::call` never inserts the extension at
-/// all — the exact shape every OTHER admin test in this file already exercises (none of them layers
-/// the extension), and `create_key`'s `Option<axum::Extension<_>>` parameter reads that absence as
-/// `None`. This test pins it explicitly: a repeated-key `POST /keys` through an UNWRAPPED router
+/// `ClaimJournalCell` is set to `None` and the node's replay cache journals nothing — the exact
+/// shape every OTHER admin test in this file already exercises (none of them layers an extension, so
+/// the router supplies its own cache, journal-less). This test pins it explicitly: a repeated-key `POST /keys` through an UNWRAPPED router
 /// still replays correctly (byte-identical, 1.5.5 behaviour is unchanged either way) and journals
 /// nothing, because there is nothing here for it to journal to.
 #[tokio::test]
@@ -11653,7 +11721,7 @@ async fn a_memory_only_node_journals_no_claim_for_a_repeated_key_post_keys() {
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let app = crate::new_test_app().governance(gov).build();
-    // NO `.layer(Extension(..))` here — the memory-buffered-node shape: `create_key` sees `None`.
+    // NO `.layer(Extension(..))` here — the memory-buffered-node shape: the router's own cache.
     let router = crate::build_router(app);
 
     let (addr, handle, client) = spin_up(router).await;
@@ -11676,6 +11744,96 @@ async fn a_memory_only_node_journals_no_claim_for_a_repeated_key_post_keys() {
     assert_eq!(
         first_body, second_body,
         "replay is unaffected by the absent journal — 1.5.5 behaviour, unchanged"
+    );
+
+    handle.abort();
+}
+
+/// **A MINT THAT HAS NOT ANSWERED IS REFUSED TO A RETRY HOWEVER OLD ITS SENTINEL.** The served
+/// handlers used to keep their reservation in a bare map swept by age on every use, sentinel
+/// included, so a mint stuck past the replay window (a slow store, an unreachable signer) was swept
+/// out from under itself and its retry reserved afresh and minted a SECOND credential. The node's
+/// `IdempotencyCache` steps over a sentinel however old it is; this drives that through the served
+/// `POST /keys` and `POST /keys/{id}/rotate`, with sentinels placed at unix second 1 (ten minutes
+/// is far behind it) by a first request that never answered.
+#[tokio::test]
+async fn a_stuck_mint_or_rotate_is_refused_in_flight_however_old_its_sentinel() {
+    busbar_kernel::snapshot::init();
+    let store = Arc::new(MemoryStore::new());
+    let gov = gov_with_signer(store, Some("admintok".to_string()));
+    let app = crate::new_test_app().governance(gov.clone()).build();
+    let cache: Arc<crate::keys::KeyReplayCache> = Arc::new(crate::keys::KeyReplayCache::new());
+    let router = crate::build_router(app).layer(axum::Extension(cache.clone()));
+    let (addr, handle, client) = spin_up(router).await;
+    let keys_url = format!("http://{addr}/api/v1/admin/keys");
+
+    let created: serde_json::Value = client
+        .post(&keys_url)
+        .header("x-admin-token", "admintok")
+        .json(&serde_json::json!({"name": "rotated"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let id = created["id"].as_str().unwrap().to_string();
+    let generation = || {
+        gov.all_keys()
+            .unwrap()
+            .into_iter()
+            .find(|k| k.id == id)
+            .map(|k| k.generation_hash)
+    };
+    let before = generation();
+    for key in [
+        ("admin".to_string(), "stuck-mint".to_string()),
+        (
+            "admin".to_string(),
+            crate::idempotency::rotate_replay_key(&id, "stuck-rotate"),
+        ),
+    ] {
+        match cache.probe(key, 1) {
+            crate::idempotency::Probe::Reserved(r) => r.leak(),
+            _ => panic!("a fresh cache reserves the first sighting"),
+        }
+    }
+
+    let mint = client
+        .post(&keys_url)
+        .header("x-admin-token", "admintok")
+        .header("content-type", "application/json")
+        .header("idempotency-key", "stuck-mint")
+        .body(serde_json::json!({"name": "k"}).to_string())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        mint.status().as_u16(),
+        409,
+        "the retry of a mint still in flight is refused, not minted a second time"
+    );
+    let rotate = client
+        .post(format!("{keys_url}/{id}/rotate"))
+        .header("x-admin-token", "admintok")
+        .header("idempotency-key", "stuck-rotate")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        rotate.status().as_u16(),
+        409,
+        "the retry of a rotate still in flight is refused, not rotated a second time"
+    );
+    assert_eq!(
+        gov.all_keys().unwrap().len(),
+        1,
+        "the retried mint minted nothing"
+    );
+    assert_eq!(
+        generation(),
+        before,
+        "the retried rotate issued no new credential"
     );
 
     handle.abort();
@@ -11707,8 +11865,12 @@ fn free_open_units() -> serde_json::Value {
 /// (`crates/busbar/src/root/tests/linked_auth.rs`), where the outbound plugin is a dependency.
 #[test]
 fn auth_modules_list_inbound_rows_only() {
-    let inbound: busbar_kernel::preflight::LinkedAuth =
-        ("admin-tokens", busbar_auth_admin_tokens_plugin::door::door);
+    // A canonical name apart from the key, so the listing is seen to be by key.
+    let inbound: busbar_kernel::preflight::LinkedAuth = (
+        "admin-tokens",
+        "canonical-name",
+        busbar_auth_admin_tokens_plugin::door::door,
+    );
     assert_eq!(
         busbar_kernel::preflight::inbound_auth_names(&[inbound]),
         vec!["admin-tokens"]

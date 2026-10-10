@@ -204,11 +204,14 @@ command -v cargo >/dev/null 2>&1 || { echo "plane-delete-test: cargo not found" 
 # default plane set (removing voice touches neither mcp nor a2a). A feature that FORWARDS to
 # `plane-streaming` would leave the bin's default build incoherent without the crate until it came out
 # too — which is what neutralise_bin's forwarding closure is for.
-bin_feature() { case "$1" in llm) echo proto-llm ;; mcp) echo plane-mcp ;; a2a) echo plane-a2a ;; voice) echo plane-streaming ;; plane-decisions) echo plane-decisions ;; esac; }
+# `plane-mcp` (P3 DEL-MCP: the engine crate is deleted; the plane is its one plane-kind crate,
+# `crates/busbar-plane-mcp`, plane_ondisk_key) names its `dep:` in its DOOR row, `plane-mcp-door`;
+# `plane-mcp` forwards to that row, so the reaching closure takes both out of `default`.
+bin_feature() { case "$1" in llm) echo proto-llm ;; mcp) echo plane-mcp ;; plane-mcp) echo plane-mcp-door ;; a2a) echo plane-a2a ;; voice) echo plane-streaming ;; plane-decisions) echo plane-decisions ;; esac; }
 neutral_keep() {
   case "$1" in
     llm) echo "plane-mcp,plane-a2a" ;;
-    mcp) echo "plane-a2a" ;;
+    mcp | plane-mcp) echo "plane-a2a" ;;
     a2a) echo "plane-mcp" ;;
     voice) echo "plane-mcp,plane-a2a" ;;
     plane-decisions) echo "plane-mcp,plane-a2a" ;;
@@ -603,7 +606,7 @@ PYEOF
 # reaches its route. Adding a plane is four lines here. Every code these probes produce is measured,
 # never assumed — see the calibration above.
 plane_probe_boot() {   # which boot config mounts this plane: `mcp` (closed chain), `keyed` or `open`
-  case "$1" in mcp) echo mcp ;; plane-decisions) echo keyed ;; *) echo open ;; esac
+  case "$1" in mcp | plane-mcp) echo mcp ;; plane-decisions) echo keyed ;; *) echo open ;; esac
 }
 # plane_unserved <plane> → 0 when the plane is compiled in and configured but MOUNTS NO ROUTE.
 # For such a plane the probe reads exactly what absence reads and the route leg can prove nothing, so
@@ -615,11 +618,11 @@ plane_probe_boot() {   # which boot config mounts this plane: `mcp` (closed chai
 UNSERVED_PLANES="${UNSERVED_PLANES:-}"
 plane_unserved() { case " $UNSERVED_PLANES " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
 # THE LLM PROBE IS A `GET`, AND THAT IS THE WHOLE POINT — see the calibration note below.
-plane_probe_method() { case "$1" in mcp | llm) echo GET ;; *) echo POST ;; esac; }
+plane_probe_method() { case "$1" in mcp | plane-mcp | llm) echo GET ;; *) echo POST ;; esac; }
 plane_probe_path() {
   case "$1" in
     llm)   echo "/v1/chat/completions" ;;
-    mcp)   echo "/.well-known/oauth-protected-resource/mcp" ;;
+    mcp | plane-mcp) echo "/.well-known/oauth-protected-resource/mcp" ;;
     a2a)   echo "/a2a" ;;
     voice) echo "/v1/realtime/client_secrets" ;;
     plane-decisions) echo "/v1/systemone" ;;
@@ -630,7 +633,7 @@ plane_probe_body() {
     a2a)   printf '{"jsonrpc":"2.0","method":"message/send","id":1}' ;;
     voice) printf '{"model":"gpt-realtime"}' ;;
     plane-decisions) printf '{"state":{},"context":{}}' ;;
-    llm | mcp) printf '' ;;
+    llm | mcp | plane-mcp) printf '' ;;
   esac
 }
 # WHICH TOP-LEVEL CONFIG KEYS IN THE BOOT FIXTURE BELONG TO THIS PLANE — the sections a `git rm -r`
@@ -638,7 +641,7 @@ plane_probe_body() {
 # the SUBJECT boot must not carry. Space-separated; empty for a plane the fixture does not configure.
 # This is the same fail-closed pairing the product enforces at resolve: the section exists only while
 # the plane that owns it is compiled in.
-plane_config_sections() { case "$1" in mcp) echo "mcp" ;; a2a) echo "agents" ;; voice) echo "streams" ;; plane-decisions) echo "decisions" ;; *) echo "" ;; esac; }
+plane_config_sections() { case "$1" in mcp | plane-mcp) echo "mcp" ;; a2a) echo "agents" ;; voice) echo "streams" ;; plane-decisions) echo "decisions" ;; *) echo "" ;; esac; }
 # section_omitted <section> <omit-list> → 0 when <section> is in the space-separated <omit-list>.
 section_omitted() { case " ${2:-} " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
 
@@ -1389,8 +1392,11 @@ run_selftest() {
   rm -rf "$s"
 
   # A representative plane for the compile controls (bounded self-test time; the mechanism is identical
-  # for all three, proven above). `mcp` keeps the other two planes' shape intact around it.
-  local rp=mcp
+  # for all three, proven above). The mcp plane keeps the other planes' shape intact around it. Its
+  # on-disk key is `plane-mcp` since P3 DEL-MCP deleted `crates/busbar-mcp`: under the old key `mcp`
+  # the controls removed a directory that no longer exists, so the RED control compiled an
+  # UNMUTATED tree and the GREEN control passed for nothing.
+  local rp=plane-mcp
 
   # (2) RED CONTROL — a genuinely-coupled scratch MUST report FAIL. We remove the crate dir + member but
   #     DELIBERATELY SKIP the bin neutralisation, so the bin still carries `dep:busbar-<rp>` pointing at a

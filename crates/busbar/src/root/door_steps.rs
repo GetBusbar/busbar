@@ -423,6 +423,9 @@ pub struct DoorFacts {
     /// failure below the trip threshold benches a member's cell. `None`: it declares none, and
     /// every cell keeps the host's default.
     pub bench_below_trip_threshold: Option<bool>,
+    /// Its stated stream ceiling, seconds (its tail's `stream_ceiling_secs`): the deadline of a
+    /// unit whose `arrive` states `ROUTE_STREAM`, from the moment its route is known. `0` = none.
+    pub stream_ceiling_secs: u64,
 }
 
 /// What one unit carries between its steps.
@@ -435,6 +438,8 @@ struct DoorUnit {
     expected: Vec<UnitCount>,
     /// Its operation is performed at most once (`ROUTE_ONCE`).
     once: bool,
+    /// Its caller asked for the answer streamed (`ROUTE_STREAM`).
+    stream: bool,
     routed: Option<Routed>,
     /// The governance book's grant: its in-flight holds, released when the unit's steps drop.
     grant: Option<AdmitGrant>,
@@ -558,6 +563,12 @@ impl<'s> DoorSteps<'s> {
     #[must_use]
     pub fn once(&self) -> bool {
         self.lock().once
+    }
+
+    /// Whether the unit's caller asked for its answer streamed (its `arrive`'s `ROUTE_STREAM`).
+    #[must_use]
+    pub fn streamed(&self) -> bool {
+        self.lock().stream
     }
 
     /// The key of the plane the unit is of.
@@ -684,7 +695,9 @@ impl DriverSteps for DoorSteps<'_> {
     }
 
     fn route_flags(&self, _ctx: &UnitCtx, flags: u8) {
-        self.lock().once = flags & busbar_contract::abi::plane::ROUTE_ONCE != 0;
+        let mut u = self.lock();
+        u.once = flags & busbar_contract::abi::plane::ROUTE_ONCE != 0;
+        u.stream = flags & busbar_contract::abi::plane::ROUTE_STREAM != 0;
     }
 }
 
@@ -1005,6 +1018,7 @@ pub fn door_facts(
         audit_kind: OpClassId::new(audit_kind),
         keeps,
         bench_below_trip_threshold: None,
+        stream_ceiling_secs: 0,
     }
 }
 
@@ -1128,6 +1142,7 @@ pub fn compose_egress(
         pools: built,
         routes: sealed,
         stream_ceiling_secs,
+        stated_ceiling_secs: facts.stream_ceiling_secs,
         error_body_max: busbar_kernel::plane_driver::DEFAULT_ERROR_BODY_MAX,
     })
 }
@@ -1251,7 +1266,7 @@ impl std::fmt::Debug for OutboundAuths {
         f.debug_struct("OutboundAuths")
             .field(
                 "linked",
-                &self.linked.iter().map(|(n, _)| *n).collect::<Vec<_>>(),
+                &self.linked.iter().map(|(n, _, _)| *n).collect::<Vec<_>>(),
             )
             .finish_non_exhaustive()
     }
@@ -1345,7 +1360,7 @@ impl OutboundAuths {
             )
         };
         let mut rows = Vec::new();
-        for (name, door) in &self.linked {
+        for (name, _, door) in &self.linked {
             if let Ok(plugin) =
                 LinkedRow::of(*door).and_then(|row| load_linked::<Auth>(&row, bind(name)))
             {

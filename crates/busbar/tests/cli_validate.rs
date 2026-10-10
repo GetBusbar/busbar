@@ -348,17 +348,60 @@ fn validate_trust_gate_matches_boot() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// THE SIGNING GATE'S READING, PINNED (scripts/signing-gate.sh, ARCHITECT ruling (A)): when a
+/// linked row answers the config's reference, `--validate` exits 0 whatever an unsigned tarball's
+/// fate, and the gate judges its refusing arms by these exact lines of the summary instead: the
+/// count `0 validated, 1 skipped` and the skip line `skipped: <manifest name> (<file>) — ... manifest
+/// carries no signature`. A rewording of either reds this test, not the gate silently. The store
+/// the config names is the linked one (`memory`); the unsigned tarball is not referenced at all.
+#[cfg(linked_axis_body_ingress)]
+#[test]
+fn validate_summary_names_an_unsigned_tarball_as_the_signing_gate_reads_it() {
+    let dir = fixture_dir("gate-lines");
+    write_tarball(
+        &dir,
+        "p.tar.gz",
+        "busbar-store-docstore",
+        "docstore",
+        b"lib",
+    );
+    write_configs(&dir, &plugins_block(&dir, true, false));
+    let (code, stdout, stderr) = run_busbar(&dir, &["--validate"]);
+    assert_eq!(
+        code, 0,
+        "the linked store answers the config: stderr={stderr}"
+    );
+    assert!(
+        stdout.contains("0 validated, 1 skipped"),
+        "the summary's count, as the gate matches it: {stdout}"
+    );
+    let line = stdout
+        .lines()
+        .find(|l| {
+            l.trim_start()
+                .starts_with("skipped: busbar-store-docstore (p.tar.gz) ")
+        })
+        .unwrap_or_else(|| panic!("the skip line names the manifest and the file: {stdout}"));
+    assert!(
+        line.contains("manifest carries no signature"),
+        "the skip line names the trust reason the gate matches: {line}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// THE SIGNING GATE'S REFERENCE reaches the dropped-in tarball under test, even when this build links
-/// a plugin answering to the same alias. scripts/signing-gate.sh writes `store: { module: <ref> }`
-/// and expects an UNSIGNED tarball to be refused. busbar links busbar-store-memory (alias `memory`),
-/// and the registry keeps the first row registered for a name or alias (the linked one), so a gate
-/// that spells the reference by ALIAS resolves the linked store: the unsigned tarball validates
-/// clean and the gate's "unsigned refused" case passes nothing. The reference is read from the
-/// gate's own store arm, so this test fails while the gate spells it by alias.
+/// the same plugin (ARCHITECT C': one plugin, one identity whichever door it arrives by).
+/// scripts/signing-gate.sh writes `store: { module: <ref> }`, its reference the tarball's MANIFEST
+/// NAME (`$MANIFEST_NAME`, what its release packs). busbar links busbar-store-memory under that same
+/// canonical name, alias `memory`, so the linked row answers the reference and `--validate` exits
+/// 0: the gate then judges the tarball by the loader's own verdict on it, which must name THAT
+/// tarball skipped for its missing signature with nothing validated beside it. A tarball whose
+/// name no linked row answers is refused outright (exit 1). The reference is read from the gate's
+/// own store arm, so this test fails if the gate spells it by alias or by crate.
 #[cfg(linked_axis_body_ingress)]
 #[test]
 fn the_signing_gate_reference_reaches_the_dropped_in_tarball_past_a_linked_alias() {
-    const CRATE: &str = "busbar-store-memory-plugin";
+    const NAME: &str = "busbar-store-memory";
     const ALIAS: &str = "memory";
     let gate = std::fs::read_to_string(
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/signing-gate.sh"),
@@ -368,35 +411,60 @@ fn the_signing_gate_reference_reaches_the_dropped_in_tarball_past_a_linked_alias
         .lines()
         .find(|l| l.trim_start().starts_with("store)") && l.contains("REF="))
         .expect("the gate has a store arm writing REF");
-    let reference = match (arm.contains("$PLUGIN_CRATE"), arm.contains("$PLUGIN_ALIAS")) {
-        (true, false) => CRATE,
-        (false, true) => ALIAS,
-        _ => panic!("the store arm names neither or both of PLUGIN_CRATE/PLUGIN_ALIAS: {arm}"),
-    };
-
-    let dir = fixture_dir("signing-gate-ref");
-    let mut m = plugins::manifest("store", CRATE, "busbar");
-    m.alias = ALIAS.into();
-    std::fs::write(dir.join("plugins/p.tar.gz"), plugins::seal(m, b"lib")).unwrap();
-    write_configs(
-        &dir,
-        &format!(
-            "{}store:\n  module: {reference}\n",
-            plugins_block(&dir, true, false)
-        ),
-    );
-    let (code, stdout, stderr) = run_busbar(&dir, &["--validate"]);
-    let out = format!("{stdout}{stderr}");
-    assert_eq!(
-        code, 1,
-        "the gate's reference `{reference}` let an unsigned tarball validate: {out}"
-    );
     assert!(
-        out.contains("was not loaded")
-            && (out.contains("manifest carries no signature") || out.contains("allow_unsigned")),
-        "the refusal is the trust verdict on the tarball: {out}"
+        arm.contains("$MANIFEST_NAME")
+            && !arm.contains("$PLUGIN_ALIAS")
+            && !arm.contains("$PLUGIN_CRATE"),
+        "the store arm names the tarball by its manifest name: {arm}"
     );
-    let _ = std::fs::remove_dir_all(&dir);
+
+    for (tag, name, alias, linked) in [
+        ("signing-gate-ref", NAME, ALIAS, true),
+        (
+            "signing-gate-ref-unlinked",
+            "signing-gate-unlinked-memory",
+            "signing-gate-unlinked-memory",
+            false,
+        ),
+    ] {
+        let dir = fixture_dir(tag);
+        let mut m = plugins::manifest("store", name, "busbar");
+        m.alias = alias.into();
+        std::fs::write(dir.join("plugins/p.tar.gz"), plugins::seal(m, b"lib")).unwrap();
+        write_configs(
+            &dir,
+            &format!(
+                "{}store:\n  module: {name}\n",
+                plugins_block(&dir, true, false)
+            ),
+        );
+        let (code, stdout, stderr) = run_busbar(&dir, &["--validate"]);
+        let out = format!("{stdout}{stderr}");
+        if linked {
+            assert_eq!(code, 0, "the linked row answers `{name}`: {out}");
+            assert!(
+                stdout.contains("0 validated, 1 skipped")
+                    && stdout.lines().any(|l| {
+                        l.trim_start()
+                            .starts_with(&format!("skipped: {name} (p.tar.gz) "))
+                            && l.contains("manifest carries no signature")
+                    }),
+                "the loader's verdict names the unsigned tarball under test: {out}"
+            );
+        } else {
+            assert_eq!(
+                code, 1,
+                "no row answers `{name}`: an unsigned tarball refuses: {out}"
+            );
+            assert!(
+                out.contains("was not loaded")
+                    && (out.contains("manifest carries no signature")
+                        || out.contains("allow_unsigned")),
+                "the refusal is the trust verdict on the tarball: {out}"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
 
 /// FAIL-CLOSED (conflict): two plugins claiming the same alias fail --validate naming BOTH.

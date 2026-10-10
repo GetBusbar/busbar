@@ -90,6 +90,21 @@ pub trait EgressTrustHost: Send + Sync {
             reason: format!("host `{host}` was not dialled: no destination guard is installed"),
         })
     }
+    /// The guard's NAME arm for a host the kernel's own pooled client is about to dial under `class`,
+    /// before any resolution: an IP literal is judged as its own answer (a literal never reaches a
+    /// resolver, so this is the only judgement it gets), and a cloud-metadata name, an
+    /// operator-blocked name and a `localhost` name are decided here.
+    ///
+    /// # Errors
+    ///
+    /// The guard's refusal; with no guard behind the capability (the pass-through) every host: FAIL
+    /// CLOSED, never allowed.
+    fn judge_name(&self, host: &str, _: u32) -> Result<(), DestRefusal> {
+        Err(DestRefusal {
+            verdict: busbar_contract::abi::host::service::DEST_NO_HOST,
+            reason: format!("host `{host}` was not dialled: no destination guard is installed"),
+        })
+    }
     /// A config commit: the deployment's destinations are now `d`, raised to the guard behind the
     /// capability ([`DestJudge::destinations_applied`]); the pass-through has none and keeps nothing.
     fn destinations_applied(&self, _: &Destinations) {}
@@ -121,6 +136,9 @@ impl EgressTrustHost for GuardedEgressTrust {
     }
     fn judge_answer(&self, host: &str, addrs: &[IpAddr], class: u32) -> Result<(), DestRefusal> {
         self.0.judge_answer(host, addrs, class)
+    }
+    fn judge_name(&self, host: &str, class: u32) -> Result<(), DestRefusal> {
+        self.0.judge_host(host, class)
     }
     fn destinations_applied(&self, d: &Destinations) {
         self.0.destinations_applied(d);
