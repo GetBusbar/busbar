@@ -1380,4 +1380,4 @@ fn plane_named_def_get(
 
 #[cfg(test)]
 #[path = "tests/service_tests.rs"]
-mod tests;
+pub(crate) mod tests;

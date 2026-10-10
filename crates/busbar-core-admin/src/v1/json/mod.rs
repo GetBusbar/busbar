@@ -177,8 +177,30 @@ impl AdminTransport for JsonV1 {
         // process-wide substrate witness ledger the cross-plane drift audit reads.
         #[cfg(any(test, feature = "test-support"))]
         let router = router.layer(axum::middleware::from_fn(record_declared_error));
-        router
+        // THE KEY MUTATIONS' REPLAY CACHE rides in as a request extension (the composition root
+        // inserts the node's one, built for the life of the process). A mount that inserts none
+        // gets this router's own, so a replayable mutation is never left without one.
+        router.layer(axum::middleware::from_fn_with_state(
+            Arc::new(crate::keys::KeyReplayCache::new()),
+            supply_replay_cache,
+        ))
     }
+}
+
+/// Insert `own` as the request's replay cache unless the mount already supplied the node's.
+async fn supply_replay_cache(
+    State(own): State<Arc<crate::keys::KeyReplayCache>>,
+    mut req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    if req
+        .extensions()
+        .get::<Arc<crate::keys::KeyReplayCache>>()
+        .is_none()
+    {
+        req.extensions_mut().insert(own);
+    }
+    next.run(req).await
 }
 
 /// TEST-ONLY recording layer (see `JsonV1::router`). For every response carrying a taxonomy tag it

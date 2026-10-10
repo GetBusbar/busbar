@@ -77,14 +77,14 @@ enum Way {
     Dropped,
 }
 
-/// The axis over `door`, its one row reached `way`. `None` for a dropped-in row whose example
-/// `cdylib` (`example`) a scoped, non-CI run did not build.
-fn rows(door: DoorFn, example: &str, way: Way) -> Option<HookRows> {
+/// The axis over `door`, its one row reached `way`. A dropped-in row whose example `cdylib`
+/// (`example`) is not built is a hard failure naming the command that builds it, never a skip.
+fn rows(door: DoorFn, example: &str, way: Way) -> HookRows {
     let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
     match way {
-        Way::Linked => Some(HookRows::new(&[door], None, dispatcher).expect("the linked row")),
+        Way::Linked => HookRows::new(&[door], None, dispatcher).expect("the linked row"),
         Way::Dropped => {
-            let path = crate::both_ways::example_cdylib(example)?;
+            let path = crate::both_ways::example_cdylib(example);
             let bytes = std::fs::read(&path).expect("the example cdylib reads");
             let row = Candidate::from_rendering(
                 rendering_of(door).expect("the door renders its Statement"),
@@ -95,7 +95,7 @@ fn rows(door: DoorFn, example: &str, way: Way) -> Option<HookRows> {
                 },
             )
             .expect("the rendering states a candidate");
-            Some(HookRows::of(vec![row], dispatcher))
+            HookRows::of(vec![row], dispatcher)
         }
     }
 }
@@ -160,12 +160,9 @@ async fn script(rows: &HookRows, module: &str) -> Vec<String> {
 #[tokio::test]
 async fn a_linked_and_a_dropped_in_hook_open_through_the_axis_and_decide_identically() {
     let door = hook_door_plugin::conforming::door;
-    let linked_rows = rows(door, "hook_door", Way::Linked).expect("linked");
+    let linked_rows = rows(door, "hook_door", Way::Linked);
     let linked = script(&linked_rows, NAME).await;
-    let Some(dropped_rows) = rows(door, "hook_door", Way::Dropped) else {
-        eprintln!("skip: the hook fixture's cdylib is not built in this scoped run");
-        return;
-    };
+    let dropped_rows = rows(door, "hook_door", Way::Dropped);
     let dropped = script(&dropped_rows, NAME).await;
     assert_eq!(linked, dropped, "the same table, whichever door");
     // The script reached every answer it names: equal empty transcripts would prove nothing.
@@ -217,24 +214,20 @@ async fn a_hook_that_breaks_the_kind_contract_is_broken_through_both_doors() {
         decided(2, &calls.decide(frame(2), BUDGET).await)
     };
     let broken = hook_door_plugin::broken::door;
-    let linked = run(rows(broken, "hook_broken_door", Way::Linked).expect("linked")).await;
+    let linked = run(rows(broken, "hook_broken_door", Way::Linked)).await;
     assert!(
         linked.contains("broken (") && linked.contains("FAULT"),
         "{linked}"
     );
     // The conforming door under the broken door's name is not a row: the axis names the module.
     let refused = rows(hook_door_plugin::conforming::door, "hook_door", Way::Linked)
-        .expect("linked")
         .open(BROKEN_NAME, "hooks.gate", &json!({}), BUDGET)
         .err();
     assert!(
         refused.is_some_and(|e| e.contains(BROKEN_NAME)),
         "an unknown module is refused, named"
     );
-    let Some(dropped_rows) = rows(broken, "hook_broken_door", Way::Dropped) else {
-        eprintln!("skip: the broken hook fixture's cdylib is not built in this scoped run");
-        return;
-    };
+    let dropped_rows = rows(broken, "hook_broken_door", Way::Dropped);
     assert_eq!(
         linked,
         run(dropped_rows).await,
@@ -248,7 +241,7 @@ async fn a_hook_that_breaks_the_kind_contract_is_broken_through_both_doors() {
 /// its `on_error` decides.
 #[tokio::test]
 async fn a_panicking_hook_is_broken_through_the_axis_never_a_verdict() {
-    let axis = rows(hook_door_plugin::panicking::door, "hook_door", Way::Linked).expect("linked");
+    let axis = rows(hook_door_plugin::panicking::door, "hook_door", Way::Linked);
     let calls = axis
         .open(
             PANICKING_NAME,
@@ -272,13 +265,10 @@ async fn a_panicking_hook_is_broken_through_the_axis_never_a_verdict() {
 #[test]
 fn a_linked_row_is_linked_and_first_party_and_a_dropped_in_unsigned_row_is_neither() {
     let door = hook_door_plugin::conforming::door;
-    let linked = rows(door, "hook_door", Way::Linked).expect("linked");
+    let linked = rows(door, "hook_door", Way::Linked);
     assert!(linked.linked(NAME) && linked.first_party(NAME));
     assert!(!linked.linked("nobody") && !linked.first_party("nobody"));
-    let Some(dropped) = rows(door, "hook_door", Way::Dropped) else {
-        eprintln!("skip: the hook fixture's cdylib is not built in this scoped run");
-        return;
-    };
+    let dropped = rows(door, "hook_door", Way::Dropped);
     assert!(!dropped.linked(NAME) && !dropped.first_party(NAME));
 }
 
@@ -286,8 +276,7 @@ fn a_linked_row_is_linked_and_first_party_and_a_dropped_in_unsigned_row_is_neith
 /// a class or grants for it. The conforming door, which states its tail, opens.
 #[test]
 fn a_hook_statement_without_its_kind_tail_is_refused_at_load() {
-    let untailed = rows(hook_door_plugin::untailed::door, "hook_door", Way::Linked)
-        .expect("the row states its name");
+    let untailed = rows(hook_door_plugin::untailed::door, "hook_door", Way::Linked);
     assert_eq!(
         untailed.probe(UNTAILED_NAME, "gate", &json!({"reject_over_messages": 3})),
         Some((None, Vec::new())),
@@ -306,14 +295,12 @@ fn a_hook_statement_without_its_kind_tail_is_refused_at_load() {
         refused.contains(crate::dispatch::kinds::hook::NO_TAIL) && refused.contains(UNTAILED_NAME),
         "{refused}"
     );
-    let tailed = rows(hook_door_plugin::conforming::door, "hook_door", Way::Linked)
-        .expect("linked")
-        .open(
-            NAME,
-            "hooks.gate",
-            &json!({"reject_over_messages": 3}),
-            BUDGET,
-        );
+    let tailed = rows(hook_door_plugin::conforming::door, "hook_door", Way::Linked).open(
+        NAME,
+        "hooks.gate",
+        &json!({"reject_over_messages": 3}),
+        BUDGET,
+    );
     assert!(tailed.is_ok(), "the tailed door opens");
 }
 
@@ -370,7 +357,7 @@ async fn a_hook_reads_the_request_session_through_both_doors() {
         lines
     };
     let door = hook_door_plugin::conforming::door;
-    let linked = run(rows(door, "hook_door", Way::Linked).expect("linked")).await;
+    let linked = run(rows(door, "hook_door", Way::Linked)).await;
     assert!(
         linked[0].contains("verbs=0x14 ")
             && linked[0].contains(&format!("reject_status={REJECT_STATUS}")),
@@ -379,10 +366,7 @@ async fn a_hook_reads_the_request_session_through_both_doors() {
     );
     assert!(linked[1].contains("verbs=0x2 "), "{}", linked[1]);
     assert!(linked[2].contains("verbs=0x2 "), "{}", linked[2]);
-    let Some(dropped_rows) = rows(door, "hook_door", Way::Dropped) else {
-        eprintln!("skip: the hook fixture's cdylib is not built in this scoped run");
-        return;
-    };
+    let dropped_rows = rows(door, "hook_door", Way::Dropped);
     assert_eq!(
         linked,
         run(dropped_rows).await,
@@ -399,7 +383,7 @@ async fn a_hook_reads_the_request_session_through_both_doors() {
 /// the test-hook plugin (OWNER 2026-10-03, no test plugins), whose `sleep_ms` drove both halves.
 #[tokio::test]
 async fn a_slow_hook_is_cut_off_at_its_budget_through_the_axis() {
-    let axis = rows(hook_door_plugin::conforming::door, "hook_door", Way::Linked).expect("linked");
+    let axis = rows(hook_door_plugin::conforming::door, "hook_door", Way::Linked);
     let calls = axis
         .open(
             NAME,
@@ -431,7 +415,7 @@ async fn a_slow_hook_is_cut_off_at_its_budget_through_the_axis() {
 /// every time.
 #[tokio::test]
 async fn a_call_refused_at_the_cap_as_the_watchdog_faults_the_instance_waits_for_its_trial() {
-    let axis = rows(hook_door_plugin::conforming::door, "hook_door", Way::Linked).expect("linked");
+    let axis = rows(hook_door_plugin::conforming::door, "hook_door", Way::Linked);
     // `sleep_ms` past the Call class budget: the watchdog faults the wedged crossings; the odd
     // figure marks this instance's settings for the hold.
     let wedged: Arc<dyn busbar_contract::hook_calls::HookCalls> = axis
@@ -484,7 +468,7 @@ async fn a_call_refused_at_the_cap_as_the_watchdog_faults_the_instance_waits_for
 /// the deleted test-hook plugin) with every assertion kept.
 #[tokio::test]
 async fn the_inflight_cap_saturates_and_fails_on_the_caller_deadline_through_the_axis() {
-    let axis = rows(hook_door_plugin::conforming::door, "hook_door", Way::Linked).expect("linked");
+    let axis = rows(hook_door_plugin::conforming::door, "hook_door", Way::Linked);
     let wedged: Arc<dyn busbar_contract::hook_calls::HookCalls> = axis
         .open(
             NAME,
@@ -569,9 +553,7 @@ fn a_1_5_5_hook_name_opens_the_1_6_0_hook_both_ways() {
     let bare = HookRows::new(&[door], None, dispatcher()).expect("the linked row");
     assert!(!opens(&bare), "RED: a linked row without its former name");
     // DROPPED IN.
-    let Some(path) = crate::both_ways::example_cdylib("hook_door") else {
-        return;
-    };
+    let path = crate::both_ways::example_cdylib("hook_door");
     let lib = std::fs::read(path).expect("the example cdylib reads");
     let abi = crate::supported_abi("hook")[0];
     let stated = hex::encode(rendering_of(door).expect("the door renders its Statement"));
@@ -661,7 +643,7 @@ fn a_linked_hook_and_a_different_dropped_in_hook_claiming_one_word_are_refused()
 /// and nothing else, so `{:?}` in a log line, a `tracing` field or a panic cannot carry them.
 #[test]
 fn an_instance_debug_never_shows_its_settings() {
-    let rows = rows(hook_door_plugin::conforming::door, "hook_door", Way::Linked).expect("linked");
+    let rows = rows(hook_door_plugin::conforming::door, "hook_door", Way::Linked);
     let c = rows.find(NAME).expect("the fixture's row").clone();
     let bind = {
         let (c, dispatcher) = (c.clone(), Arc::clone(&rows.dispatcher));
