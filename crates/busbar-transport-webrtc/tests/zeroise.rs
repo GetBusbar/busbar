@@ -32,9 +32,11 @@ struct Watch;
 fn marked(w: &[u8]) -> Option<usize> {
     let (mark, rest) = w.split_at_checked(MARK.len())?;
     let id = *rest.first()?;
-    (mark == MARK && rest.len() >= KEY_LEN - MARK.len() && rest[..KEY_LEN - MARK.len()].iter().all(|b| *b == id))
-        .then_some(usize::from(id))
-        .filter(|id| *id < IDS)
+    (mark == MARK
+        && rest.len() >= KEY_LEN - MARK.len()
+        && rest[..KEY_LEN - MARK.len()].iter().all(|b| *b == id))
+    .then_some(usize::from(id))
+    .filter(|id| *id < IDS)
 }
 
 // SAFETY: every call is forwarded to `System` with its own arguments; `dealloc` only reads the

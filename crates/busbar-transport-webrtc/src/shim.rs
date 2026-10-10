@@ -55,7 +55,9 @@ impl DtlsProvider for Host {
     ) -> Result<Box<dyn DtlsInstance>, CryptoError> {
         take_pending()
             .map(|s| Box::new(s) as Box<dyn DtlsInstance>)
-            .ok_or_else(|| CryptoError::Other("no host shim is pending for this association".into()))
+            .ok_or_else(|| {
+                CryptoError::Other("no host shim is pending for this association".into())
+            })
     }
 }
 

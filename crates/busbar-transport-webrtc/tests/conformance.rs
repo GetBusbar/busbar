@@ -128,7 +128,10 @@ impl Host {
                     && text.contains("a=fingerprint:sha-256 ")
                     && text.contains("198.51.100.1 40000 typ host")
                     && text.contains("m=application");
-                format!("stream={} flags={} described={described}", p.stream, p.flags)
+                format!(
+                    "stream={} flags={} described={described}",
+                    p.stream, p.flags
+                )
             })
             .collect();
         format!(
@@ -194,19 +197,34 @@ fn fold(s: &Subject, leg: Leg) -> Vec<String> {
         facts.role, facts.claims, facts.composes_over
     )];
     let settings = s.settings();
-    t.push(format!("validate {}", conf::called(&conf::validate(&p, &settings))));
+    t.push(format!(
+        "validate {}",
+        conf::called(&conf::validate(&p, &settings))
+    ));
     t.push(format!("open {}", conf::called(&conf::open(&p, &settings))));
 
     // The role it does not play, and the framer ops it has no use for.
-    t.push(format!("listen {}", go::<ListenIn, ListenOut>(&p, slot::LISTEN, conf::input()).0));
-    t.push(format!("locate {}", go::<LocateIn, LocateOut>(&p, slot::LOCATE, conf::input()).0));
+    t.push(format!(
+        "listen {}",
+        go::<ListenIn, ListenOut>(&p, slot::LISTEN, conf::input()).0
+    ));
+    t.push(format!(
+        "locate {}",
+        go::<LocateIn, LocateOut>(&p, slot::LOCATE, conf::input()).0
+    ));
     let mut host = Host::new();
     let mut e: EncodeIn = conf::input();
     e.sink = host.sink();
-    t.push(format!("encode {}", go::<EncodeIn, FramerOut>(&p, slot::ENCODE, e).0));
+    t.push(format!(
+        "encode {}",
+        go::<EncodeIn, FramerOut>(&p, slot::ENCODE, e).0
+    ));
 
     // A datagram framer reads its lane.
-    t.push(format!("begin without a lane {}", begin(&p, SIDE_DIAL, false).0));
+    t.push(format!(
+        "begin without a lane {}",
+        begin(&p, SIDE_DIAL, false).0
+    ));
 
     // Dialled over a lane: the offer, at once, on stream 0.
     let (line, token) = begin(&p, SIDE_DIAL, true);
@@ -220,7 +238,10 @@ fn fold(s: &Subject, leg: Leg) -> Vec<String> {
         let mut i: IngestIn = conf::input();
         (i.framing, i.bytes, i.len, i.sink, i.lane) =
             (token, junk.as_ptr(), junk.len(), host.sink(), &l);
-        t.push(format!("{step} {}", go::<IngestIn, FramerOut>(&p, slot::INGEST, i).0));
+        t.push(format!(
+            "{step} {}",
+            go::<IngestIn, FramerOut>(&p, slot::INGEST, i).0
+        ));
     }
 
     // Accepted: it waits for the offer; finished, it ends, and is forgotten.

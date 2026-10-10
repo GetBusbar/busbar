@@ -63,7 +63,9 @@ fn graph(lock: &str) -> BTreeMap<String, Vec<String>> {
 fn confined(lock: &str) -> Result<(), String> {
     let g = graph(lock);
     if !g.get(GRANTED).is_some_and(|d| d.iter().any(|x| x == "aes")) {
-        return Err(format!("{GRANTED} does not depend on aes: the lock is not this tree's"));
+        return Err(format!(
+            "{GRANTED} does not depend on aes: the lock is not this tree's"
+        ));
     }
     for (krate, only) in CONFINED {
         for (from, deps) in &g {
@@ -97,7 +99,14 @@ const CRYPTO_AES_LINES: [&str; 3] = [
 fn source_confined(files: &[(String, String)]) -> Result<(), String> {
     let mut rounds = 0;
     for (path, text) in files {
-        for needle in ["aes::", "cipher::", "inout::", "BlockEncrypt", "KeyInit", "ecb_round"] {
+        for needle in [
+            "aes::",
+            "cipher::",
+            "inout::",
+            "BlockEncrypt",
+            "KeyInit",
+            "ecb_round",
+        ] {
             for line in naming(text, needle) {
                 let allowed = path == "crypto.rs"
                     && (CRYPTO_AES_LINES.contains(&line)
@@ -117,7 +126,9 @@ fn source_confined(files: &[(String, String)]) -> Result<(), String> {
         }
     }
     if rounds != 2 {
-        return Err(format!("{rounds} SRTP derivation rounds in src/crypto.rs, expected 2"));
+        return Err(format!(
+            "{rounds} SRTP derivation rounds in src/crypto.rs, expected 2"
+        ));
     }
     Ok(())
 }
@@ -126,7 +137,11 @@ fn sources(dir: &Path) -> Vec<(String, String)> {
     let mut out = Vec::new();
     for e in std::fs::read_dir(dir).expect("src is readable") {
         let p = e.expect("an entry").path();
-        let name = p.file_name().and_then(|n| n.to_str()).unwrap_or_default().to_owned();
+        let name = p
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or_default()
+            .to_owned();
         if p.is_dir() {
             // The crate's own tests (`src/tests/`) name what they test; they never ship.
             if name != "tests" {
@@ -152,7 +167,10 @@ fn aes_cipher_and_inout_are_confined_to_the_srtp_key_derivation_in_the_resolved_
 #[test]
 fn aes_is_named_only_by_the_srtp_key_derivation_in_the_source() {
     let mine = sources(&Path::new(env!("CARGO_MANIFEST_DIR")).join("src"));
-    assert!(mine.iter().any(|(p, _)| p == "crypto.rs"), "src/crypto.rs is read");
+    assert!(
+        mine.iter().any(|(p, _)| p == "crypto.rs"),
+        "src/crypto.rs is read"
+    );
     source_confined(&mine).unwrap_or_else(|e| panic!("{e}"));
 }
 
@@ -168,13 +186,24 @@ fn with_package(extra: &str) -> String {
 fn red_arm_another_crate_taking_aes_or_cipher_is_refused() {
     let aes = with_package("name = \"busbar-kernel-extra\"\nversion = \"1.6.0\"\ndependencies = [\n \"aes\",\n \"ring\",\n]\n");
     let refused = confined(&aes).expect_err("a second crate on aes is refused");
-    assert!(refused.contains("busbar-kernel-extra depends on aes"), "{refused}");
+    assert!(
+        refused.contains("busbar-kernel-extra depends on aes"),
+        "{refused}"
+    );
 
-    let cipher = with_package("name = \"stream-thing\"\nversion = \"0.1.0\"\ndependencies = [\n \"cipher 0.4.4\",\n]\n");
+    let cipher = with_package(
+        "name = \"stream-thing\"\nversion = \"0.1.0\"\ndependencies = [\n \"cipher 0.4.4\",\n]\n",
+    );
     let refused = confined(&cipher).expect_err("a crate on cipher straight is refused");
-    assert!(refused.contains("stream-thing depends on cipher"), "{refused}");
+    assert!(
+        refused.contains("stream-thing depends on cipher"),
+        "{refused}"
+    );
 
-    assert!(confined("").is_err(), "a lock without the grant is not this tree's");
+    assert!(
+        confined("").is_err(),
+        "a lock without the grant is not this tree's"
+    );
 }
 
 #[test]
@@ -185,14 +214,19 @@ fn red_arm_the_framing_naming_aes_is_refused() {
         "fn key(k: &[u8]) { let _ = aes::Aes128::new_from_slice(k); }".to_owned(),
     ));
     let refused = source_confined(&files).expect_err("aes outside the derivation is refused");
-    assert!(refused.contains("src/framing.rs names `aes::`"), "{refused}");
+    assert!(
+        refused.contains("src/framing.rs names `aes::`"),
+        "{refused}"
+    );
 
     // A third caller of the AES block, even inside the crypto file, is refused too.
     let crypto = files
         .iter()
         .position(|(p, _)| p == "crypto.rs")
         .expect("crypto.rs");
-    files[crypto].1.push_str("\nfn more(k: &[u8]) { ecb_round::<aes::Aes192>(k, k, &mut []); }\n");
+    files[crypto]
+        .1
+        .push_str("\nfn more(k: &[u8]) { ecb_round::<aes::Aes192>(k, k, &mut []); }\n");
     files.pop();
     assert!(source_confined(&files).is_err());
 }

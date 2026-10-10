@@ -7,8 +7,8 @@
 //! the secure layer (secured routes arrive as the far side's secured lane) and presents one keying
 //! material to both ends once it marks them verified.
 
-use std::collections::HashMap;
 use core::net::SocketAddr;
+use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use super::*;

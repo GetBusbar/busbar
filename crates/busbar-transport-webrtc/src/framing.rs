@@ -35,8 +35,8 @@
 //!   host's own verified round trip.
 //! * Keys are zeroised: the keying material this framing holds is cleared once handed on.
 
-use std::collections::{HashMap, VecDeque};
 use core::net::SocketAddr;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 

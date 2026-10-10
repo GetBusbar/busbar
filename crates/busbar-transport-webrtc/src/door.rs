@@ -22,9 +22,9 @@
 //! A full host buffer is back-pressure: READY with [`YIELD_MORE`], and the re-call carries no new
 //! bytes. No op pends.
 
+use core::net::SocketAddr;
 use std::collections::HashMap;
 use std::marker::PhantomData;
-use core::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};

@@ -56,11 +56,18 @@ fn findings(path: &str, text: &str) -> Vec<String> {
         let code = code(line, comment);
         for engine in ENGINES {
             if code.contains(engine) {
-                out.push(format!("{path}:{}: names the DTLS engine `{engine}`", n + 1));
+                out.push(format!(
+                    "{path}:{}: names the DTLS engine `{engine}`",
+                    n + 1
+                ));
             }
         }
         if !manifest && file != SHIM && code.contains("dtls") {
-            out.push(format!("{path}:{}: names DTLS outside the shim: {}", n + 1, line.trim()));
+            out.push(format!(
+                "{path}:{}: names DTLS outside the shim: {}",
+                n + 1,
+                line.trim()
+            ));
         }
     }
     out
@@ -122,7 +129,11 @@ fn red_arm_an_engine_in_the_shim_or_the_manifest_is_refused() {
     );
     assert_eq!(found.len(), 1, "{found:?}");
     // A comment that names an engine is not code.
-    assert!(findings("src/framing.rs", "// unlike dimpl, nothing here handshakes\n").is_empty());
+    assert!(findings(
+        "src/framing.rs",
+        "// unlike dimpl, nothing here handshakes\n"
+    )
+    .is_empty());
 }
 
 #[test]

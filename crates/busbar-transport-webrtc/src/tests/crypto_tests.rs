@@ -61,7 +61,12 @@ fn red_arm_the_gcm_ciphers_of_the_same_provider_seal_and_open() {
 #[test]
 fn an_aes_cm_profile_is_refused_at_the_keying_material_and_nothing_is_held() {
     let material = [7_u8; 60];
-    for profile in [PROFILE_AES_CM_SHA1_80, PROFILE_AES_CM_SHA1_32, 0x0003, 0xFFFF] {
+    for profile in [
+        PROFILE_AES_CM_SHA1_80,
+        PROFILE_AES_CM_SHA1_32,
+        0x0003,
+        0xFFFF,
+    ] {
         let shim = Shim::default();
         assert_eq!(shim.keyed(&material, profile), Err(AES_CM_REFUSED));
         assert!(!shim.holds_keying(), "profile {profile:#06x}: nothing held");
