@@ -562,8 +562,7 @@ impl Framing {
                         self.track(txid, path);
                     }
                     Some(Check::Success { txid })
-                        if self.side == Side::Dial
-                            && self.nominating.get(&txid) == Some(&path) =>
+                        if self.side == Side::Dial && self.nominating.get(&txid) == Some(&path) =>
                     {
                         self.nominating.remove(&txid);
                         self.feed(from, bytes, now);
