@@ -85,7 +85,7 @@ fn config_schema_model_entry_is_model_cfg_field_for_field() {
     let accepted = model_cfg_fields();
     assert_eq!(
         accepted.len(),
-        8,
+        9,
         "the probe read ModelCfg's list: {accepted:?}"
     );
     assert_eq!(declared, accepted);
