@@ -3091,7 +3091,8 @@ impl Gate for ReachabilityGate {
             }),
             "the plane-crate population is empty",
         ));
-        // THE ON-DISK SPELLING MAPS: a plane crate declaring `voice` is the streaming plane's.
+        // THE ON-DISK SPELLING MAPS: a plane crate declaring `plane-streaming` is the streaming
+        // plane's.
         report.push(green_over(
             self,
             cx,
@@ -3106,7 +3107,7 @@ impl Gate for ReachabilityGate {
                 ov.set(
                     "crates/busbar-plane-voice/src/lib.rs",
                     "pub struct VoicePlane;\n\nimpl PlaneMeta for VoicePlane {\n    \
-                     const KEY: &'static str = \"voice\";\n}\n",
+                     const KEY: &'static str = \"plane-streaming\";\n}\n",
                 );
                 ov
             }),

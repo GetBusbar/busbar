@@ -321,6 +321,10 @@ pub const TAIL: &PlaneTail = &PlaneTail {
     admin_routes: ptr::null(),
     admin_routes_len: 0,
     admin_openapi: Blob::ABSENT,
+    // No stream ceiling (ARCHITECT STREAM-CEILING, 2026-10-07): a live session runs as long as its
+    // caller keeps it open, so the streaming plane states none; a streamed answer's send runs under
+    // the deployment's ceiling.
+    stream_ceiling_secs: 0,
 };
 
 /// The inbound auth style of a door read without a credential (no door of the plane is, today).
