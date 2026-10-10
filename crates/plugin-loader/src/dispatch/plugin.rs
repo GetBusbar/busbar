@@ -359,9 +359,20 @@ pub(crate) struct Instance {
     ready: Option<Op>,
     families: Box<[FamilyShape]>,
     diag_ids: DiagIds,
+    /// The instance box: set by an `open` that answered READY, and ALSO by one that answered
+    /// PENDING (its half-open box, which its RESUME runs on); nulled when an `open` ends any other
+    /// way (FAULT included) and when `close` answered READY. An `open` the plugin answered READY or
+    /// PENDING but the host judged FAULT leaves the plugin's live box half-open, and the host
+    /// closes it at once ([`Instance::close_half_open`]); so does a pended `open` the host
+    /// cancels (a deadline or a client drop: the worker's `cancel`, then its `close`).
     ptr: AtomicPtr<c_void>,
+    /// `open` answered READY and `close` has not: what [`Instance::is_open`] reads. A half-open box
+    /// (an `open` in flight that pended) is not open.
+    opened: AtomicBool,
     pub(crate) faulted: AtomicBool,
-    /// `close` answered READY or FAULT: every later op answers FAULT without a crossing.
+    /// `close` of an OPEN instance answered READY, or any `close` answered FAULT: every later op
+    /// answers FAULT without a crossing. (Closing a half-open box frees the box; the instance never
+    /// opened, so it is not closed.)
     closed: AtomicBool,
     /// THE CROSSING GATE: the count of crossings in progress, with [`CLOSING`] set while `close`
     /// crosses (and kept once it closed). `close` enters only when nothing else is crossing, and
@@ -440,6 +451,23 @@ struct LogBudget {
 /// The gate bit `close` holds.
 const CLOSING: u32 = 1 << 31;
 
+/// An `open`'s crossing, armed with the instance pointer: dropped armed (the host's judgement did
+/// not end the `open` READY or PENDING), it leaves the pointer at `live`, whichever way the
+/// crossing returned: the box the plugin still holds (it answered READY or PENDING, so it freed
+/// nothing; the host then closes it), else NULL (any other answer frees the box).
+struct OpenEnded<'a> {
+    ptr: Option<&'a AtomicPtr<c_void>>,
+    live: *mut c_void,
+}
+
+impl Drop for OpenEnded<'_> {
+    fn drop(&mut self) {
+        if let Some(ptr) = self.ptr {
+            ptr.store(self.live, Ordering::Release);
+        }
+    }
+}
+
 /// Whether `slot` is one of the five that never overlap on one instance (`ready` among them).
 /// THE FFI CALL of a lifecycle slot (`validate`, `open`, `refresh`, `retire`, `close`, `ready`):
 /// `op` entered, after asserting in debug builds that the thread is a permanent FFI worker
@@ -497,8 +525,15 @@ impl Instance {
         self.slots.len() as u32
     }
 
+    /// Whether `open` answered READY and `close` has not.
     pub(crate) fn is_open(&self) -> bool {
-        !self.ptr.load(Ordering::Acquire).is_null()
+        self.opened.load(Ordering::Acquire)
+    }
+
+    /// Whether the host holds a HALF-OPEN box: an `open` that pended and has not answered READY
+    /// (still in flight, or ended without an answer, e.g. cancelled).
+    pub(crate) fn half_open(&self) -> bool {
+        !self.is_open() && !self.ptr.load(Ordering::Acquire).is_null()
     }
 
     /// Take the `max_inflight` units op `s` needs: one, or for `close` ALL of them and only when
@@ -680,9 +715,10 @@ impl Instance {
     }
 
     /// What the host answers WITHOUT calling the plugin, if anything: a faulted instance, a slot
-    /// the table does not have, an instance-less call before `open`, a second `open`, an `open`
-    /// whose frame cannot hold `OpenIn`/`OpenOut`, or a `validate` whose frame cannot hold
-    /// `ValidateIn`.
+    /// the table does not have, an instance-less call before `open` answered READY (a half-open
+    /// box admits only its `close`, once its `open` is over: the lifecycle exclusion), a second
+    /// `open`, an `open` whose frame cannot hold `OpenIn`/`OpenOut`, or a `validate` whose frame
+    /// cannot hold `ValidateIn`.
     pub(crate) fn refuse(&self, s: u32, in_size: usize, out_size: usize) -> Option<Outcome> {
         if self.faulted.load(Ordering::Acquire) || self.is_closed() {
             return Some(Outcome::Fault);
@@ -697,14 +733,16 @@ impl Instance {
             return Some(Outcome::Refused);
         }
         let open = self.is_open();
+        let half_open = self.half_open();
         match s {
             slot::VALIDATE if in_size < size_of::<ValidateIn>() => Some(Outcome::Refused),
             slot::VALIDATE => None,
-            slot::OPEN if open => Some(Outcome::Refused),
+            slot::OPEN if open || half_open => Some(Outcome::Refused),
             slot::OPEN if in_size < size_of::<OpenIn>() || out_size < size_of::<OpenOut>() => {
                 Some(Outcome::Refused)
             }
             slot::OPEN => None,
+            slot::CLOSE if half_open => None,
             _ if !open => Some(Outcome::Refused),
             _ => None,
         }
@@ -735,14 +773,50 @@ impl Instance {
         let crossed = unsafe { self.cross_gated(s, input, out, out_size) };
         // A `close` that answered FAULT may already have freed the instance (a teardown that
         // failed after its memory went): the host treats it as closed, never crossing into the
-        // pointer again. That can leak a live instance; it never uses a freed one.
-        let shut = s == slot::CLOSE && matches!(crossed.outcome, Outcome::Ready | Outcome::Fault);
-        if shut {
-            self.closed.store(true, Ordering::Release);
+        // pointer again. That can leak a live instance; it never uses a freed one. A READY `close`
+        // of a half-open box frees the box only; the instance never opened, so it is not closed.
+        let mut shut = false;
+        if s == slot::CLOSE && matches!(crossed.outcome, Outcome::Ready | Outcome::Fault) {
+            let was_open = self.opened.swap(false, Ordering::AcqRel);
+            shut = was_open || crossed.outcome == Outcome::Fault;
+            if shut {
+                self.closed.store(true, Ordering::Release);
+            }
             self.ptr.store(std::ptr::null_mut(), Ordering::Release);
         }
         self.leave_gate(s, shut);
+        let ended = !matches!(crossed.outcome, Outcome::Ready | Outcome::Pending);
+        if s == slot::OPEN && ended && self.half_open() && !self.faulted.load(Ordering::Acquire) {
+            self.close_half_open();
+        }
         crossed
+    }
+
+    /// CLOSE THE LIVE BOX OF AN `open` THE HOST JUDGED FAULT: the plugin answered READY or PENDING,
+    /// so it freed nothing and holds a live box, but the op is over (no RESUME will come). The host
+    /// sends it `close` (the `close` a half-open box admits), so nothing dangles and nothing leaks.
+    /// Called with the `open`'s lifecycle exclusion still held, so nothing else crosses meanwhile.
+    fn close_half_open(&self) {
+        let mut input = super::in_head();
+        let mut out = super::out_head();
+        // SAFETY: the host's own head-only `close` frame (`close`'s `in`/`out` are the heads),
+        // live and unaliased for the call.
+        let closed = unsafe {
+            self.cross(
+                slot::CLOSE,
+                &raw mut input,
+                &raw mut out,
+                size_of::<OutHead>() as u32,
+            )
+        };
+        if closed.outcome != Outcome::Ready {
+            tracing::warn!(
+                plugin = %self.name,
+                kind = ?self.kind,
+                outcome = ?closed.outcome,
+                "the close of a FAULTed open's live box did not answer READY"
+            );
+        }
     }
 
     /// [`Instance::cross`] inside the gate.
@@ -757,7 +831,10 @@ impl Instance {
         out_size: u32,
     ) -> Crossed {
         let needs_instance = !matches!(s, slot::VALIDATE | slot::OPEN);
-        if self.is_closed() || (needs_instance && !self.is_open()) {
+        // A half-open box is crossed only by the `cancel` of its pended `open` and its `close`.
+        let crossable =
+            self.is_open() || (matches!(s, slot::CANCEL | slot::CLOSE) && self.half_open());
+        if self.is_closed() || (needs_instance && !crossable) {
             return Crossed::host(Outcome::Fault);
         }
         // SAFETY: the caller's contract.
@@ -831,6 +908,14 @@ impl Instance {
         // The unit this crossing serves, for the host services it calls.
         let unit = (self.unit_of)(s, input.cast_const(), in_size);
         let _unit = super::services::serving(unit);
+        // From here an `open` that does not end READY or PENDING, FAULT included, leaves no
+        // instance published: the SDK frees a half-open box on any answer but READY/PENDING, so a
+        // pointer kept to it would hand a later crossing freed memory; a box the plugin still
+        // holds (it answered READY/PENDING, the host judged FAULT) is closed by the host.
+        let mut open_ended = OpenEnded {
+            ptr: (s == slot::OPEN).then_some(&self.ptr),
+            live: std::ptr::null_mut(),
+        };
         let raw = if s == slot::VALIDATE || is_lifecycle(s) {
             // A LIFECYCLE CROSSING RUNS ON A PERMANENT FFI WORKER (`crate::ffi_thread`), whoever
             // called it: a dispatcher worker that may later exit, or a ticket-less caller thread
@@ -859,6 +944,14 @@ impl Instance {
         } else {
             op(instance, input.cast_const().cast(), out.cast())
         };
+        if s == slot::OPEN
+            && (raw == RawOutcome::of(Outcome::Ready) || raw == RawOutcome::of(Outcome::Pending))
+        {
+            // What the plugin answered READY or PENDING still holds its box, whatever the host
+            // judges below.
+            // SAFETY: `refuse` checked the frame holds an `OpenOut`.
+            open_ended.live = unsafe { (*out.cast::<OpenOut>()).instance };
+        }
         // SAFETY: the plugin wrote at most the host's `out`; read it back.
         let head = unsafe { *out };
         let outcome = judge(raw, &head, ticket, out_size);
@@ -929,26 +1022,25 @@ impl Instance {
                 return Crossed::host(Outcome::Fault);
             }
         }
-        match (s, outcome) {
-            (slot::OPEN, Outcome::Ready | Outcome::Pending) => {
-                // An open that answered READY (done) or PENDING (its connect step pends) hands back
-                // its instance box; the host keeps it so a PENDING open's RESUME runs on the SAME
-                // box — plugin-owned memory carries the half-open state across the pend (no module
-                // static in the contract).
-                // SAFETY: `refuse` checked the frame holds an `OpenOut`.
-                let inst = unsafe { (*out.cast::<OpenOut>()).instance };
-                if inst.is_null() {
-                    return Crossed::host(Outcome::Fault);
-                }
-                self.ptr.store(inst, Ordering::Release);
+        // An open that FAILED or was REFUSED (fresh, or on its RESUME) gets no instance: the
+        // plugin's trampoline freed the box a prior PENDING minted; `open_ended` drops our pointer
+        // to it. `close` (READY or FAULT) shuts the instance in `Instance::cross`.
+        if s == slot::OPEN && matches!(outcome, Outcome::Ready | Outcome::Pending) {
+            // An open that answered READY (done) or PENDING (its connect step pends) hands back
+            // its instance box; the host keeps it so a PENDING open's RESUME runs on the SAME
+            // box — plugin-owned memory carries the half-open state across the pend (no module
+            // static in the contract).
+            // SAFETY: `refuse` checked the frame holds an `OpenOut`.
+            let inst = unsafe { (*out.cast::<OpenOut>()).instance };
+            if inst.is_null() {
+                return Crossed::host(Outcome::Fault);
             }
-            (slot::OPEN, _) => {
-                // An open that FAILED (fresh, or on its RESUME): no instance. The plugin's
-                // trampoline freed the box a prior PENDING minted; drop our pointer to it.
-                self.ptr.store(std::ptr::null_mut(), Ordering::Release);
+            open_ended.ptr = None;
+            self.ptr.store(inst, Ordering::Release);
+            // Only READY opens it; a PENDING open's box is half-open until its RESUME answers.
+            if outcome == Outcome::Ready {
+                self.opened.store(true, Ordering::Release);
             }
-            // `close` (READY or FAULT) shuts the instance in `Instance::cross`.
-            _ => {}
         }
         Crossed {
             outcome,
@@ -1347,6 +1439,7 @@ impl<K: Kind> Plugin<K> {
                     len: st.diag_ids_len,
                 },
                 ptr: AtomicPtr::new(std::ptr::null_mut()),
+                opened: AtomicBool::new(false),
                 faulted: AtomicBool::new(false),
                 closed: AtomicBool::new(false),
                 gate: AtomicU32::new(0),
