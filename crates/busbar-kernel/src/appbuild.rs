@@ -1187,7 +1187,7 @@ pub fn build_app_from_config(
                 a.admin_auth
                     .iter()
                     .chain(a.chain.iter())
-                    .any(|e| e.module == crate::config::operator_provider())
+                    .any(|e| crate::config::names_operator(&e.module))
             });
             // FAIL-CLOSED: a declared ref that no longer resolves ABORTS the apply. The alternative
             // — carry on serving with the old credential — is exactly the defect being fixed.
@@ -1941,10 +1941,6 @@ pub fn build_app_from_config(
         mutation_limiter: prior.map_or_else(
             || Arc::new(ratelimit::MutationLimiter::new()),
             |p| p.mutation_limiter.clone(),
-        ),
-        idempotency_cache: prior.map_or_else(
-            || Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
-            |p| p.idempotency_cache.clone(),
         ),
         base_hook_names,
         admin_chain: cfg.admin_auth.clone(),

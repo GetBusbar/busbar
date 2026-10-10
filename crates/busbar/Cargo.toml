@@ -467,6 +467,12 @@ auth-header = "busbar-auth-header"
 auth-sigv4 = "busbar-auth-sigv4"
 auth-oauth = "busbar-auth-oauth"
 
+# The CANONICAL name of an `auths` row whose key is not its manifest name: the name its signed
+# tarball's manifest states (plugins.yaml `manifest_name`, the repo). Config may name the row by
+# either; the key stays what every surface prints (ARCHITECT C').
+[package.metadata.busbar.linked-canonical]
+auth-admin-tokens = "busbar-auth-admin-tokens"
+
 # The root's own unit modules (the kernel-loop halves of planes that still live in the root), each
 # compiled when its row's cargo feature is on (the node, keyed `node`, in every build) and exporting
 # a `ROOT_UNIT` (`root::linked::RootUnit`). Order is

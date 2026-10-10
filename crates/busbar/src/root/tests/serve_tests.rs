@@ -4114,3 +4114,32 @@ async fn a_decisions_unit_past_its_budget_is_refused_with_a_retry_after() {
     assert!(!reached);
     assert_eq!(wait, None, "a total never rolls: no wait is named");
 }
+
+#[cfg(feature = "plane-decisions")]
+/// THE DECISIONS DOOR LISTS ITS MODELS (THE DESIGN §2, DECISIONS D8): through the one loader, the
+/// door's facing carries every model its section configures, in name order, for the kernel to
+/// scope-filter and `/v1/models` to append; a section that configures none lists nothing. RED: a
+/// generation whose snapshot lists nothing faces the world with no names.
+#[test]
+fn the_decisions_doors_facing_lists_its_configured_models() {
+    let reg = crate::root::loader::dispatch::kinds::plane::registration(
+        crate::root::loader::dispatch::kinds::plane::linked_probe(
+            decisions_door,
+            "decisions-listed",
+        ),
+    )
+    .expect("the linked door binds");
+    let facing = (reg.facing)(
+        br#"{"decisions":{"models":{"b":{"provider":"typesafe"},"a":{"provider":"typesafe"}}}}"#,
+        b"",
+        None,
+    )
+    .expect("the door faces the world");
+    assert_eq!(facing.listed, vec!["a".to_string(), "b".to_string()]);
+    let none = (reg.facing)(b"{}", b"", None).expect("the door faces the world");
+    assert!(
+        none.listed.is_empty(),
+        "no models, no names: {:?}",
+        none.listed
+    );
+}

@@ -309,16 +309,6 @@ pub struct App {
     /// Per-principal ADMIN MUTATION rate limiter. Arc-shared across apply snapshots so the
     /// windows survive every swap.
     pub(crate) mutation_limiter: Arc<crate::ratelimit::MutationLimiter>,
-    /// Idempotency-Key replay cache for key minting (bounded, ~10min TTL): a retried POST with the
-    /// same key returns the FIRST response verbatim instead of double-creating. Arc-shared across
-    /// swaps. Maps (principal id, Idempotency-Key) → (created_at, cached 201 body). The key is
-    /// SCOPED TO THE PRINCIPAL: a different admin presenting the same Idempotency-Key value must
-    /// NOT replay another principal's response (which carries a once-shown secret) — the header is
-    /// a client-chosen string, not a cross-principal handle.
-    #[allow(clippy::type_complexity)]
-    pub idempotency_cache: Arc<
-        std::sync::Mutex<std::collections::HashMap<(String, String), (u64, serde_json::Value)>>,
-    >,
     /// The admin side's state (the config VERSION HISTORY, typed and filled by the admin service),
     /// behind the admin seam's one slot. Arc-shared across apply snapshots (survives every swap).
     pub admin: Arc<crate::admin::seam::AdminSlot>,
