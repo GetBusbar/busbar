@@ -427,8 +427,12 @@ impl Node {
         let Ok(posted) = end.into_posted() else {
             return;
         };
-        // THE UNIT'S RECORD, sealed with its one line: what the line wrote is the record's amount.
-        let lines = exit_lines(outcome, &posted);
+        // THE UNIT'S RECORD, sealed with its one line. Its amount is the unit's counts plus the card
+        // version, never a price (`BUSBAR-1.6.0.md` THE DESIGN §1, #43, #77(3)). The exit's posting
+        // carries only the figure the settlement writer moved, money in nano-units, and no class or
+        // count, so it gives the record no line. A unit whose counts are known has a late arm, and
+        // that arm seals them ([`report_lines`]).
+        let lines = Vec::new();
         // Settle THROUGH the money-book seam rather than a `&mut` on the book itself: the lock is
         // taken and released inside the seam, so this arm settling does not hold the one book across
         // its whole exit the way a `&mut Durability` did. The pass-through settles the identical
@@ -522,6 +526,42 @@ impl Node {
         };
         let mut durability = book.lock().unwrap_or_else(|p| p.into_inner());
         let _dispatched = durability.journal_dispatch(&at);
+    }
+
+    /// Record on the book this unit's ACCRUAL SO FAR: a durability `unit.accrued` checkpoint
+    /// (THE DESIGN §7), counts and the instant they price at, never a figure (#71).
+    ///
+    /// On the balance, window and arrival reading its hold was opened under
+    /// ([`Self::open_on_book`]), as [`Self::dispatch_on_book`] marks it, so a node killed before the
+    /// unit's one line is written recovers the hold at these counts, marked recovered. Called from
+    /// the root's checkpoint flush tick alone, never on a piece's path. A journal that will not take
+    /// it retains and re-offers it; a checkpoint for a hold already closed marks nothing.
+    fn checkpoint_on_book(
+        &self,
+        principal: &PrincipalId,
+        arrived: Arrived,
+        counts: &crate::root::durability::UnitCounts,
+    ) {
+        let Some(book) = self.book.get() else {
+            return;
+        };
+        let key = balance(principal);
+        let at = crate::root::durability::Settling {
+            key: &key,
+            window: busbar_kernel::governance::budget_window(
+                busbar_kernel::governance::WINDOW_DAY,
+                arrived.secs(),
+            ),
+            durability: &self.durability_token,
+            step: busbar_contract::caps::StepName::Meter,
+            stamp: crate::root::durability::PostingStamp {
+                rate_card_version: 0,
+                wall: arrived.secs(),
+                mono: arrived.mono(),
+            },
+        };
+        let mut durability = book.lock().unwrap_or_else(|p| p.into_inner());
+        let _accrued = durability.checkpoint_accrual(&at, counts, arrived.ms());
     }
 
     /// THE SWEEP: the second holder of a key to every unit's hold cell, run over the slots the drop
@@ -658,10 +698,10 @@ impl Node {
         late: Late,
         history: Option<crate::root::kernel::PinnedHistory>,
         parent: Option<&Parent>,
-    ) -> bool {
+    ) -> Option<Outcome> {
         self.sweep(arrived);
         if self.journal_refusal().is_some() {
-            return false;
+            return None;
         }
         post.open(key, principal.clone(), arrived, history.clone());
         let meter = Arc::new(AccrualMeter::new());
@@ -678,7 +718,7 @@ impl Node {
             now: arrived.ms(),
         }) else {
             post.close(key);
-            return false;
+            return None;
         };
         self.open_on_book(principal, arrived);
         let mut occupied = Occupied {
@@ -711,6 +751,12 @@ impl Node {
             &borrowed,
         )
         .await;
+        // How the unit ended, for the caller's close (a framed stream's final status); `None` when
+        // the node's sweep settled it first.
+        let outcome = match &ended {
+            Ended::Settled { end, .. } => Some(end.outcome()),
+            Ended::AlreadySettled => None,
+        };
         // The unit returned: its facts close here, and its record is sealed with its one line.
         let seal = post.take(key).map(|(facts, pass)| UnitSeal {
             facts,
@@ -727,7 +773,7 @@ impl Node {
             None => self.settle_end(principal, arrived, history.as_ref(), ended, seal),
         }
         occupied.reached_end = true;
-        true
+        outcome
     }
 
     /// THE BORROWED SESSION OPEN (K6; ARCHITECT Q-L5B-SESSION-SERVE 2026-10-03): one duplex session
@@ -1323,7 +1369,8 @@ impl LateAccrual {
             // Nothing arrived after all: the one line is the exit's posting as it stood, written
             // where the exit would have written it.
             if let Some(exit) = exit {
-                let lines = outcome.map(|o| exit_lines(o, &exit)).unwrap_or_default();
+                // No counts arrived, and the posting is a figure, not counts: no line.
+                let lines = Vec::new();
                 let _settled = settle(
                     &book,
                     &principal,
@@ -2139,6 +2186,29 @@ impl busbar_kernel_egress::ports::Journal for NodeEndPost {
     fn abandoned(&self, _record: &busbar_kernel_egress::ports::Dispatched) {}
 }
 
+/// THE RUNNING UNIT'S CHECKPOINT, ON THE NODE'S BOOK (THE DESIGN §7): the root's flush tick hands
+/// each driven unit's accrual so far here ([`busbar_kernel::plane_driver::PlaneMoney::flush_checkpoints`]),
+/// and it is journaled as a `unit.accrued` record under the facts the unit was opened with at
+/// admission. A session's turns are the same call with its cumulative counts. A unit with no open
+/// facts was never admitted onto the book: nothing is written.
+impl busbar_kernel::plane_driver::Checkpointer for NodeEndPost {
+    fn checkpoint(&self, key: UnitKey, accrued: &busbar_kernel::plane_driver::Accrued) {
+        let facts = self
+            .lock()
+            .get(&key)
+            .map(|(principal, arrived, _, _)| (principal.clone(), *arrived));
+        let Some((principal, arrived)) = facts else {
+            return;
+        };
+        let counts = crate::root::durability::UnitCounts {
+            lane: accrued.lane.clone(),
+            fee_count: accrued.fee_count,
+            classes: accrued.classes.clone(),
+        };
+        self.node.checkpoint_on_book(&principal, arrived, &counts);
+    }
+}
+
 impl busbar_kernel::plane_driver::EndPost for NodeEndPost {
     /// Post the abandoned end, once. Inside the loop's `Drop` guard: the book's settle is the
     /// node's in-memory posting behind one short lock, and nothing here awaits or crosses a plugin.
@@ -2276,22 +2346,6 @@ fn audit_finish(finish: busbar_contract::FinishClass) -> RecordFinish {
         busbar_contract::FinishClass::Partial => RecordFinish::Partial,
         busbar_contract::FinishClass::Error => RecordFinish::Error,
     }
-}
-
-/// The record's amount for a line the EXIT wrote: the kernel's own accrual, as the exit's usage
-/// line carried it — nothing for a refused unit, which was charged nothing.
-fn exit_lines(outcome: Outcome, posted: &busbar_contract::caps::Posted) -> Vec<RecordLine> {
-    if matches!(outcome, Outcome::Refused(..)) || posted.settled() == 0 {
-        return Vec::new();
-    }
-    vec![RecordLine {
-        class: busbar_kernel::teller::KERNEL_ACCRUAL_CLASS,
-        quantity: posted.settled(),
-        source: busbar_contract::caps::QuantitySource::Count,
-        estimated: posted
-            .flags()
-            .contains(busbar_contract::caps::PostingFlags::ESTIMATED),
-    }]
 }
 
 /// The record's amount for a line the LATE ARM wrote: every class the unit reported, by the

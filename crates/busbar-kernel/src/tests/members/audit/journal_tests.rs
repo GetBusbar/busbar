@@ -22,12 +22,15 @@ fn declared(name: &str) -> Option<MeterClassId> {
         .map(MeterClassId::new)
 }
 
+/// The node the fixture's records are sealed by.
+const SEALING_NODE: u64 = 13;
+
 fn sealed(n: u64) -> Vec<busbar_kernel_audit::record::AuditRecord> {
     let key = AuditSigningKey::from_hex_seed(
         "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60",
     )
     .expect("the test seed is 64 lowercase hex");
-    let mut chain = AuditChain::new().signing_with(key);
+    let mut chain = AuditChain::new().signing_with(key).sealing_as(SEALING_NODE);
     (1..=n)
         .map(|unit| {
             let mut inputs = super::sign_tests::rich_inputs(unit);
@@ -44,6 +47,7 @@ fn a_signed_record_round_trips_through_its_journal_body() {
             .expect("the body decodes")
             .expect("the body is an audit record");
         assert_eq!(back, record, "the journal lost or changed a field");
+        assert_eq!(back.node, SEALING_NODE, "the journal lost the sealing node");
         assert_eq!(AuditChain::digest_of(&back), record.hash);
     }
     let back: Vec<_> = sealed(3)

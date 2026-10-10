@@ -26,10 +26,10 @@ fn manifest(name: &str) -> Manifest {
 }
 
 /// The two registries a sink is reached through: its `door` LINKED, and its `-plugin` crate's
-/// `cdylib` (`crate_snake`) DROPPED IN with its Statement rendering. `None` when the `cdylib` is not
-/// built in this (scoped, non-CI) run.
-fn both(name: &str, door: DoorFn, crate_snake: &str) -> Option<[PluginRegistry; 2]> {
-    let lib = std::fs::read(both_ways::cdylib(crate_snake)?).expect("read the cdylib");
+/// `cdylib` (`crate_snake`) DROPPED IN with its Statement rendering. A `cdylib` not built is a hard
+/// failure naming the command that builds it, never a skip.
+fn both(name: &str, door: DoorFn, crate_snake: &str) -> [PluginRegistry; 2] {
+    let lib = std::fs::read(both_ways::cdylib(crate_snake)).expect("read the cdylib");
     let linked = PluginRegistry::empty()
         .link(vec![crate::LinkedPlugin::door(manifest(name), door)])
         .expect("the linked door admits the sink");
@@ -38,7 +38,7 @@ fn both(name: &str, door: DoorFn, crate_snake: &str) -> Option<[PluginRegistry; 
         rendering_of(door).expect("the door renders its Statement"),
     ));
     let dropped = both_ways::dropped(crate_snake, stated, &lib);
-    Some([linked, dropped])
+    [linked, dropped]
 }
 
 fn dispatcher() -> Arc<Dispatcher> {
@@ -67,14 +67,11 @@ busbar_request_duration_seconds_count 2
 /// whole sentence, and renders the recorder snapshot back byte for byte — the same either way.
 #[test]
 fn the_scrape_sink_answers_the_same_through_either_door() {
-    let Some(doors) = both(
+    let doors = both(
         "busbar-export-prometheus",
         busbar_export_prometheus::door::door,
         "busbar_export_prometheus_plugin",
-    ) else {
-        eprintln!("skip: the prometheus sink's cdylib is not built");
-        return;
-    };
+    );
     let transcripts = doors.map(|registry| {
         let rows = ExportRows::new(&registry, dispatcher());
         let module = "busbar-export-prometheus";
@@ -118,14 +115,11 @@ fn the_scrape_sink_answers_the_same_through_either_door() {
 /// connector; the shipped binary's both-doors proof posts them (`traces_stream_both_doors`).
 #[test]
 fn the_trace_sink_answers_the_same_through_either_door() {
-    let Some(doors) = both(
+    let doors = both(
         "busbar-export-otlp",
         busbar_export_otlp::door::door,
         "busbar_export_otlp_plugin",
-    ) else {
-        eprintln!("skip: the OTLP sink's cdylib is not built");
-        return;
-    };
+    );
     let transcripts = doors.map(|registry| {
         // The OTLP sink declares an http need: opened to deliver, it binds over a table (one that
         // declares it and opens nothing; this row never delivers).
@@ -155,14 +149,11 @@ fn the_trace_sink_answers_the_same_through_either_door() {
 /// same either way. Its POSTs ride the host's connector over the `http` framer.
 #[test]
 fn the_request_log_webhook_sink_answers_the_same_through_either_door() {
-    let Some(doors) = both(
+    let doors = both(
         "busbar-export-webhook",
         busbar_export_webhook::door,
         "busbar_export_webhook_plugin",
-    ) else {
-        eprintln!("skip: the webhook sink's cdylib is not built");
-        return;
-    };
+    );
     let transcripts = doors.map(|registry| {
         // The webhook sink declares an http need: opened to deliver, it binds over a table (one that
         // declares it and opens nothing; this row never delivers).

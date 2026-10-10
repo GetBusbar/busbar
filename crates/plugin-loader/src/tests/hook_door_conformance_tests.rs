@@ -74,10 +74,7 @@ fn script(p: &Plugin<Hook>) -> Vec<String> {
 fn a_linked_and_a_dropped_in_hook_decide_identically() {
     let door = hook_door_plugin::conforming::door;
     let linked = script(&both::linked::<Hook>(door).plugin);
-    let Some(dropped) = both::dropped::<Hook>(door, "hook_door") else {
-        eprintln!("skip: the hook fixture's cdylib is not built in this scoped run");
-        return;
-    };
+    let dropped = both::dropped::<Hook>(door, "hook_door");
     same(&linked, &script(&dropped.plugin));
     // The script reached every answer it names: equal empty transcripts would prove nothing.
     assert!(linked[0].contains("Failed"), "{}", linked[0]);
@@ -108,9 +105,6 @@ fn a_hook_that_answers_two_verbs_is_refused_through_both_doors() {
     assert!(linked[1].contains("Fault"), "{}", linked[1]);
     let conforming = run(&both::linked::<Hook>(hook_door_plugin::conforming::door).plugin);
     assert!(conforming[1].contains("Ready"), "{}", conforming[1]);
-    let Some(dropped) = both::dropped::<Hook>(broken, "hook_broken_door") else {
-        eprintln!("skip: the broken hook fixture's cdylib is not built in this scoped run");
-        return;
-    };
+    let dropped = both::dropped::<Hook>(broken, "hook_broken_door");
     same(&linked, &run(&dropped.plugin));
 }

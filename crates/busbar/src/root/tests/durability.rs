@@ -2950,3 +2950,202 @@ fn every_minted_node_id_is_held_by_its_claim() {
     );
     assert_eq!(node_id(slots.calls().as_ref(), "host-x").expect("again"), a);
 }
+
+/// A RUNNING DRIVEN UNIT'S CHECKPOINT REACHES THE CHAIN, AND A KILL RECOVERS IT THERE (THE DESIGN
+/// §7: "a checkpoint is a durability `unit.accrued` record"; K2-H1, R1-M9).
+///
+/// A unit is admitted onto a node whose book has a data directory (its hold opened, its facts on
+/// the posting site), its egress walk records that it dispatched, and its plane reports 300 input
+/// units on a piece. The piece path only marks the unit; the root's flush tick bumps the epoch and
+/// journals the checkpoint. The process is then killed with the unit running. The next boot
+/// recovers the hold at those 300 units, priced, marked RECOVERED. Before the flush tick journaled
+/// the plane's running counts nothing durable carried them, and the same kill recovered it at 0.
+#[test]
+fn a_driven_unit_killed_mid_stream_is_recovered_at_its_flushed_checkpoint() {
+    use busbar_contract::abi::plane::{UnitCount, UNITS_REPORTED};
+    use busbar_contract::caps::{OriginKind, PrincipalId};
+    use busbar_kernel::plane_driver::{
+        EndPost, FeeRefund, FlushEpoch, MoneySeam, PlaneMoney, UnitMoney,
+    };
+    use busbar_kernel_egress::ports::Journal as _;
+    use std::sync::Arc;
+
+    let scratch = ScratchDir::new("checkpoint-flushed");
+    let cfg = DurabilityConfig {
+        data_dir: Some(scratch.path.clone()),
+    };
+    let principal = PrincipalId::new("vk_streaming");
+    let balance = totals_key("vk_streaming");
+    let unit = busbar_contract::UnitKey::new(9);
+    let arrived = crate::root::plane_node::Arrived::at(ARRIVED_MS, 91);
+    {
+        let book = Arc::new(std::sync::Mutex::new(
+            boot(&cfg, 12).expect("the directory is writable"),
+        ));
+        let node = Arc::new(crate::root::plane_node::Node::new());
+        node.bind_book(Arc::clone(&book));
+        // The unit's hold, opened as the node opens it at admission (`Node::open_on_book`).
+        {
+            let durability_token = token();
+            let at = Settling {
+                key: &balance,
+                window: busbar_kernel::governance::budget_window(
+                    busbar_kernel::governance::WINDOW_DAY,
+                    arrived.secs(),
+                ),
+                durability: &durability_token,
+                step: StepName::Admit,
+                stamp: PostingStamp {
+                    rate_card_version: 0,
+                    wall: arrived.secs(),
+                    mono: arrived.mono(),
+                },
+            };
+            book.lock()
+                .expect("book")
+                .open_hold(&at, &principal, &UnitCounts::default(), arrived.ms())
+                .expect("the hold goes on the chain");
+        }
+        let post = Arc::new(crate::root::plane_node::NodeEndPost::new(Arc::clone(&node)));
+        post.open(unit, principal.clone(), arrived, None);
+        post.dispatched(&busbar_kernel_egress::ports::Dispatched {
+            leg: 0,
+            attempt: 1,
+            pool: String::new(),
+            destination: busbar_contract::DestinationId::new(0),
+            lane: None,
+            unit,
+        })
+        .expect("the dispatch goes on the chain");
+        let gov = Arc::new(
+            busbar_kernel::governance::GovState::new(
+                Arc::new(busbar_kernel::governance::MemoryStore::new()),
+                None,
+            )
+            .expect("gov"),
+        );
+        let epoch = FlushEpoch::new();
+        let money =
+            PlaneMoney::new(gov, Arc::clone(&post) as Arc<dyn EndPost>).with_epoch(epoch.clone());
+        money.open(
+            unit,
+            UnitMoney {
+                key: Arc::new(busbar_contract::records::VirtualKey::default()),
+                cost: Arc::new(busbar_kernel::cost::CostModel::resolve_parts(
+                    None,
+                    0,
+                    &std::collections::BTreeMap::new(),
+                )),
+                pool: String::new(),
+                model: LANE.to_string(),
+                classes: Arc::from(vec!["input".to_string()]),
+                arrived: arrived.secs(),
+                mode: busbar_kernel::config::groups::ExhaustionMode::FinishUnit,
+                fee: FeeRefund::CallerStatus,
+                charge: Default::default(),
+            },
+        );
+        let ctx = busbar_kernel::teller::UnitCtx {
+            key: unit,
+            origin: OriginKind::Client,
+            session: None,
+            generation: busbar_kernel::registry::Generation::FIRST,
+            admin_listener: false,
+            kernel_verb_only: false,
+        };
+        money.checkpoint(
+            &ctx,
+            &[UnitCount {
+                class: 0,
+                source: UNITS_REPORTED,
+                amount: 300,
+            }],
+        );
+        // THE ROOT'S FLUSH TICK: the epoch moves, and the running unit's counts are journaled.
+        epoch.bump();
+        assert_eq!(
+            money.flush_checkpoints(&*post),
+            1,
+            "one checkpoint journaled"
+        );
+        // kill -9 mid-stream: no end, no settle, and the book's destructor never runs.
+        drop((money, post, node));
+        std::mem::forget(book);
+    }
+
+    let restarted = boot(&cfg, 12).expect("the journal reopens");
+    assert_eq!(restarted.recovered_holds, 1);
+    let recovered = restarted
+        .read_back()
+        .into_iter()
+        .find(|p| p.kind == PostingKind::Settlement && p.key == balance)
+        .expect("the recovery posted onto the chain");
+    assert!(
+        recovered.flags.contains(PostingFlags::RECOVERED),
+        "a unit that dispatched is recovered: {:?}",
+        recovered.flags
+    );
+    assert_eq!(
+        recovered.counts,
+        Some(inputs(300)),
+        "the flushed checkpoint's counts, not zero"
+    );
+    assert_eq!(recovered.settled, 300, "priced at its epoch, above zero");
+}
+
+/// A RECOVERED POSTING NAMES THE CARD IN FORCE AT ITS UNIT'S ARRIVAL (#79; R1-L14), as the exit
+/// arm's does — not the opening entry, and not the head of the history.
+#[test]
+fn a_recovered_posting_names_the_card_in_force_at_its_arrival() {
+    use busbar_contract::caps::PrincipalId;
+    let scratch = ScratchDir::new("recovered-card");
+    let cfg = DurabilityConfig {
+        data_dir: Some(scratch.path.clone()),
+    };
+    let mut history = busbar_kernel_ledger::cost::History::new();
+    let entry = |from: u64| busbar_kernel_ledger::cost::CardEntryDraft {
+        effective_from: from,
+        effective_until: None,
+        card: one_nano_card(),
+        appended_at: 0,
+        author: busbar_kernel_ledger::cost::Author::Opening,
+    };
+    history.append(entry(0));
+    let in_force = history.append(entry(ARRIVED_MS - 1_000));
+    let head = history.append(entry(ARRIVED_MS + 60_000));
+    let pinned = crate::root::kernel::PinnedHistory::for_test(std::sync::Arc::new(history), head);
+    let source = || -> HistorySource {
+        let pinned = pinned.clone();
+        Box::new(move || Some(pinned.clone()))
+    };
+    let key = totals_key("vk_carded");
+    {
+        let mut durability = build_priced(&cfg, 13, Box::new(NullShipper::new()), rows(), source())
+            .expect("the directory is writable");
+        let durability_token = token();
+        let mut at = settling(&key, &durability_token);
+        at.stamp.mono = 5;
+        durability
+            .open_hold(&at, &PrincipalId::new("vk_carded"), &inputs(0), ARRIVED_MS)
+            .expect("the hold goes on the chain");
+        durability.journal_dispatch(&at).expect("dispatched");
+        durability
+            .checkpoint_accrual(&at, &inputs(120), ARRIVED_MS)
+            .expect("checkpointed");
+        std::mem::forget(durability);
+    }
+    let restarted = build_priced(&cfg, 13, Box::new(NullShipper::new()), rows(), source())
+        .expect("the journal reopens");
+    let recovered = restarted
+        .read_back()
+        .into_iter()
+        .find(|p| p.kind == PostingKind::Settlement && p.key == key)
+        .expect("the recovery posted onto the chain");
+    assert!(recovered.flags.contains(PostingFlags::RECOVERED));
+    assert_eq!(
+        recovered.rate_card_version,
+        in_force.get(),
+        "the card in force at the unit's arrival, not the opening entry nor the head"
+    );
+    assert_ne!(in_force, busbar_kernel_ledger::cost::HistorySeq::OPENING);
+}

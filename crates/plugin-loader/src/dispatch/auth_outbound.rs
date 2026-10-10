@@ -140,30 +140,11 @@ impl OutboundInstance {
         Ok(Self::new(plugin, dispatcher, worker))
     }
 
-    /// THE INSTANCE'S TICK SCHEDULE, on its driver ticket (THE DESIGN §6.5: a minted credential
-    /// refreshes ahead of expiry on `tick`): `tick` at once, then at each `next_tick_ns` it answers,
-    /// on the dispatcher's clock; it ends when an answer names `0`, is not READY or PENDING, or no
-    /// driver ticket can be minted. It waits on the runtime's timer and holds no `max_inflight`
-    /// slot; what pends inside a tick goes on through `drive`, which its wakes call.
+    /// THE INSTANCE'S TICK SCHEDULE (THE DESIGN §6.5: a minted credential refreshes ahead of
+    /// expiry on `tick`): the one auth schedule, [`super::auth_ticks::ticks`], holding the instance
+    /// for as long as it runs.
     pub async fn ticks(self: Arc<Self>) {
-        let Some(driver) = self.dispatcher.driver(&self.plugin, self.worker) else {
-            return;
-        };
-        let mut at = 0;
-        loop {
-            let now = super::now_ns();
-            if at > now {
-                tokio::time::sleep(std::time::Duration::from_nanos(at - now)).await;
-            }
-            let done = self
-                .dispatcher
-                .tick(&self.plugin, driver, super::now_ns())
-                .await;
-            match (done.outcome, done.frame.map(|f| f.out.next_tick_ns)) {
-                (Outcome::Ready | Outcome::Pending, Some(next)) if next != 0 => at = next,
-                _ => return,
-            }
-        }
+        super::auth_ticks::ticks(&self.plugin, &self.dispatcher, self.worker).await;
     }
 }
 
