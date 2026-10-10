@@ -21,9 +21,11 @@ use busbar_contract::auth_calls::{
     AuthCalls, Replay, Strip, Verified, VerifyAnswer, VerifyRequest,
 };
 
-/// A linked auth row: the key configuration names it by, and its door on the auth kind's memory
-/// ABI — the same door its dropped-in build exports (THE DESIGN: compiled-in = dropped-in).
-pub type LinkedAuth = (&'static str, AuthDoor);
+/// A linked auth row: the key configuration names it by (and the auth catalog, `/info` and every
+/// refusal print), its CANONICAL name (the manifest name its release tarball carries, which config
+/// may name it by too: ARCHITECT C'), and its door on the auth kind's memory ABI — the same door its
+/// dropped-in build exports (THE DESIGN: compiled-in = dropped-in).
+pub type LinkedAuth = (&'static str, &'static str, AuthDoor);
 /// The door a linked auth row is opened through (`abi::auth`, one dispatcher).
 pub type AuthDoor = busbar_contract::abi::mechanism::door::DoorFn;
 
@@ -93,7 +95,19 @@ pub fn linked_names() -> Vec<&'static str> {
 
 /// Whether a linked auth row answers the operator credential's provider `op`.
 pub fn answered(op: &str) -> bool {
-    linked_names().contains(&op)
+    linked()
+        .iter()
+        .any(|&(key, canonical, _)| key == op || canonical == op)
+}
+
+/// Whether `module` names the plugin of the linked auth row keyed `op` by its identity, not its
+/// spelling: the key itself or the row's canonical name (ARCHITECT C': one plugin, one identity,
+/// whichever name config gives it). The kernel adds the names its legacy table gives the key.
+pub fn names(op: &str, module: &str) -> bool {
+    module == op
+        || linked()
+            .iter()
+            .any(|&(key, canonical, _)| key == op && canonical == module)
 }
 
 /// A TEST REGISTRY ROW: link `door` (the door of the auth plugin a test binary links for the
@@ -101,7 +115,10 @@ pub fn answered(op: &str) -> bool {
 /// The first install stands.
 pub fn install_row(words: OperatorWords, door: AuthDoor) {
     static ROW: std::sync::OnceLock<[LinkedAuth; 1]> = std::sync::OnceLock::new();
-    install_linked(ROW.get_or_init(|| [(words.provider, door)]), words);
+    install_linked(
+        ROW.get_or_init(|| [(words.provider, words.provider, door)]),
+        words,
+    );
 }
 
 /// THE OPERATOR CREDENTIAL'S REFUSALS, v1.5.5's text byte for byte with the provider read off the
@@ -306,18 +323,26 @@ impl Operator {
 
     /// THE ONE JUDGEMENT: whether the provider `name`, whose `identity-providers:` definition names
     /// `module` (`None`: it has no definition), is the operator credential of the operator provider
-    /// `op`. By its module; its name counts only when it is `op` referenced bare.
-    pub fn backed(op: &str, name: &str, module: Option<&str>) -> bool {
-        module.map_or(name == op, |m| m == op)
+    /// `op`. By its module — by the plugin `module` RESOLVES to, which `is_op` answers (every name the
+    /// operator plugin answers to: its key, its canonical name, a former name) — and its name counts
+    /// only when it is `op` referenced bare.
+    pub fn backed(
+        op: &str,
+        name: &str,
+        module: Option<&str>,
+        is_op: &dyn Fn(&str) -> bool,
+    ) -> bool {
+        module.map_or(name == op, is_op)
     }
 
     /// The operator credential of `op`, opened as [`OperatorCredential::open`] opens it, answering for
-    /// every provider [`Self::backed`] names among the effective definitions `defs` (each provider's
-    /// name and module) and for `op` referenced bare unless a definition under that name backs it
-    /// with another module.
+    /// every provider [`Self::backed`] names (by `is_op`) among the effective definitions `defs`
+    /// (each provider's name and module) and for `op` referenced bare unless a definition under that
+    /// name backs it with another module.
     pub fn open<'a>(
         op: &str,
         defs: impl Iterator<Item = (&'a str, &'a str)>,
+        is_op: &dyn Fn(&str) -> bool,
         answered: bool,
         digest: Option<String>,
         open: impl FnOnce(&str) -> Result<Arc<dyn AuthCalls>, String>,
@@ -326,7 +351,7 @@ impl Operator {
         let module_of = |name: &str| defs.iter().find(|d| d.0 == name).map(|d| d.1);
         let names = std::iter::once(op)
             .chain(defs.iter().map(|d| d.0))
-            .filter(|name| Self::backed(op, name, module_of(name)))
+            .filter(|name| Self::backed(op, name, module_of(name), is_op))
             .map(str::to_string)
             .collect();
         let cred = OperatorCredential::open(answered, digest.as_deref(), open)?;
