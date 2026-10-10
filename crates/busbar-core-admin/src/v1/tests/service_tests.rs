@@ -952,16 +952,18 @@ fn catalog_cache_future_inserted_at_is_treated_as_stale() {
 
 /// The staleness scenario this guards against.
 /// FIRST, an empty-but-READABLE plugins dir caches fine (unchanged behavior — same as a MISSING
-/// dir, both legitimately mean "no plugins"). THEN the directory becomes UNREADABLE (permission
-/// denied) with its CONTENTS unchanged — the exact case the old `unwrap_or_default()` collapsed
-/// to the SAME fingerprint as the empty dir, serving the stale cached `[]` forever instead of
-/// the real `INVALID` row. The fixed version must never serve that stale cache and must surface
-/// the real `INVALID: ...` row on every read while unreadable, not just the first.
+/// dir, both legitimately mean "no plugins"). THEN the path becomes UNREADABLE as a directory —
+/// the exact case the old `unwrap_or_default()` collapsed to the SAME fingerprint as the empty dir,
+/// serving the stale cached `[]` forever instead of the real `INVALID` row. The fixed version must
+/// never serve that stale cache and must surface the real `INVALID: ...` row on every read while
+/// unreadable, not just the first.
+///
+/// The injection replaces the directory with a regular FILE at the same path: `read_dir` on it
+/// fails ("not a directory") whatever the privileges, so the test runs as root and non-root alike
+/// (a `chmod 000` is ignored by root, and once made this test skip on a root-run container).
 #[cfg(unix)]
 #[test]
 fn catalog_unreadable_dir_does_not_serve_stale_cache() {
-    use std::os::unix::fs::PermissionsExt;
-
     let dir = tmp_plugins_dir("unreadable");
     let svc = svc_with(dir.clone(), unsigned_ok_posture());
 
@@ -976,39 +978,25 @@ fn catalog_unreadable_dir_does_not_serve_stale_cache() {
         "an empty dir's (empty) scan is cached, exactly like a missing dir would be"
     );
 
-    // Restoring permissions with a bare `set_permissions` call at the
-    // END of the test left a window — the two `store_plugin_catalog()` reads below AND the
-    // `read_dir` probe above all run un-guarded, and a panic (e.g. an assertion failure inside
-    // `store_plugin_catalog`, or any future change to it) during that window would leave the
-    // temp dir at `0o000` permanently: nothing later ever restores it, potentially breaking
-    // this test's OWN cleanup or a later test that reuses the same `temp_dir()` infrastructure.
-    // An RAII guard restores the original mode on drop — including on an early return or a
-    // panic unwinding through this scope — so there is no code path that leaves the directory
-    // unreadable.
-    struct RestorePermsOnDrop<'a> {
-        dir: &'a std::path::Path,
-        mode: u32,
-    }
-    impl Drop for RestorePermsOnDrop<'_> {
+    // An RAII guard removes the injected file on drop — including on a panic unwinding through
+    // this scope — so no code path leaves a regular file squatting on the plugins-dir path.
+    struct RemoveFileOnDrop<'a>(&'a std::path::Path);
+    impl Drop for RemoveFileOnDrop<'_> {
         fn drop(&mut self) {
-            let _ = std::fs::set_permissions(self.dir, std::fs::Permissions::from_mode(self.mode));
+            let _ = std::fs::remove_file(self.0);
         }
     }
 
-    let original_mode = std::fs::metadata(&dir).unwrap().permissions().mode();
-    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o000)).unwrap();
-    let _restore = RestorePermsOnDrop {
-        dir: &dir,
-        mode: original_mode,
-    };
+    std::fs::remove_dir(&dir).unwrap();
+    std::fs::write(&dir, b"not a directory").unwrap();
+    let _remove = RemoveFileOnDrop(&dir);
 
-    // Some environments (containers running as root) ignore permission bits entirely — skip
-    // rather than false-fail if `read_dir` still succeeds. `_restore` drops (restoring
-    // permissions) when this early return unwinds the scope.
-    if std::fs::read_dir(&dir).is_ok() {
-        eprintln!("skip: running with privileges that bypass directory permission bits");
-        return;
-    }
+    // The precondition is checked, not assumed: a regular file is never readable as a directory,
+    // for root and non-root alike.
+    assert!(
+        std::fs::read_dir(&dir).is_err(),
+        "a regular file at the plugins-dir path must fail read_dir for every user"
+    );
 
     let cat_after = svc.store_plugin_catalog();
     // And every SUBSEQUENT read while STILL unreadable surfaces the SAME real row again — the

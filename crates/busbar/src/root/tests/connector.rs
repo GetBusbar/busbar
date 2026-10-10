@@ -261,6 +261,23 @@ fn a_provider_without_an_allowlist_entry_is_refused_a_private_address() {
     );
 }
 
+/// RED against busbar-auth-oauth b7d15c7137 and 2a776bd, which declared EGRESS_LOOPBACK_ALLOWED
+/// (lib.rs:137): the pinned plugin's two mint needs (`settings.token_url`, `settings.token_uri`)
+/// are operator infrastructure (BUSBAR-1.6.0.md l.609, ARCHITECT D1 MINT CLASS (B)), so a mint
+/// endpoint on a private host is reached as 1.5.5 reached it, not refused as non-loopback.
+#[test]
+fn the_pinned_mint_needs_are_operator_infrastructure() {
+    let needs = busbar_auth_oauth::NEEDS;
+    assert_eq!(needs.len(), 2, "the plugin declares its two mint needs");
+    for (n, need) in needs.iter().enumerate() {
+        assert_eq!(
+            need.egress_class, EGRESS_OPERATOR_INFRASTRUCTURE,
+            "mint need {n} must be operator-infrastructure (BUSBAR-1.6.0.md l.609): 1.5.5 minted over \
+             plaintext to a private or loopback token endpoint, which loopback-allowed refuses"
+        );
+    }
+}
+
 /// RED (ARCHITECT round 4 (e)): a plane's upstream need whose settings name a PROGRAM is dialled by
 /// the one connector over a linked transport door that frames a program's pipes LINE BY LINE (the
 /// stdio row's door, found by what it does, never by name): the connector spawns the program

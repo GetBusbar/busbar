@@ -390,6 +390,15 @@ async fn a_verify_past_max_inflight_is_overloaded_and_never_queued() {
     let p = load_linked::<crate::dispatch::kinds::auth::Auth>(&row, bind).unwrap();
     let a = AuthInstance::open(p, sink, d.clone(), "judge-1", b"\"ok\"", Vec::new()).unwrap();
     assert_eq!(a.plugin().max_inflight(), 1);
+    // The instance's tick schedule (one tick: the judge asks for no other) holds the one unit
+    // while it crosses; the overload is proven against the verifies alone.
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !a.ticks_ended() {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .expect("the tick schedule ends");
     let slow = a.verify(request(Some("slow"), None));
     let mut over = a.verify(request(Some("good"), None));
     let answer = over.settled().expect("answered before any crossing");

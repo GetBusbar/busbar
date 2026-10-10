@@ -487,6 +487,29 @@ fn test_validate_token_url_ssrf_and_scheme() {
             "{scheme}:// public token_url must be rejected; got: {errs:?}"
         );
     }
+    // The 1.5.5 rule (v1.5.5 config_validate/mod.rs:436-476): plaintext http is permitted for a
+    // PRIVATE or loopback token endpoint, not loopback alone (spec l.609, ARCHITECT D1 MINT CLASS (B)).
+    for tu in [
+        "http://10.0.0.5/oauth2/token",
+        "http://172.16.4.2/token",
+        "http://192.168.1.20:8080/token",
+        "http://127.0.0.1:9000/token",
+        "http://[::1]:9000/token",
+        "http://localhost:9000/token",
+    ] {
+        let errs = build(tu);
+        assert!(
+            !errs.iter().any(|e| e.contains("token_url")),
+            "http token_url to a private/loopback host must be accepted, as 1.5.5 did ({tu}); got: {errs:?}"
+        );
+    }
+    // A public http token_url is refused in 1.5.5's words, byte for byte.
+    let errs = build("http://example.com/token");
+    let want = "provider 'entra' token_url must use https for a public host (got 'http://example.com/token'); it carries the client secret, so plaintext http is permitted only for a private/loopback token endpoint";
+    assert!(
+        errs.iter().any(|e| e == want),
+        "public http token_url must be refused with the 1.5.5 text; got: {errs:?}"
+    );
     // SSRF: an https token_url pointed at cloud metadata is blocked (would leak the client secret).
     for host in ["169.254.169.254", "metadata.google.internal"] {
         let errs = build(&format!("https://{host}/token"));
@@ -501,6 +524,38 @@ fn test_validate_token_url_ssrf_and_scheme() {
     assert!(
         ws.iter().any(|e| e.contains("token_url")),
         "whitespace-only token_url must be rejected as missing; got: {ws:?}"
+    );
+}
+
+#[test]
+fn vet_token_uri_takes_http_to_a_private_host_and_refuses_a_public_one() {
+    // The service account's token_uri gets the same 1.5.5 rule as token_url
+    // (v1.5.5 egress_auth/jwt_bearer.rs:120-149): http only for a private or loopback endpoint.
+    for uri in [
+        "http://10.0.0.5/token",
+        "http://192.168.1.20/token",
+        "http://127.0.0.1:9000/token",
+        "http://[::1]/token",
+        "https://oauth2.googleapis.com/token",
+    ] {
+        assert_eq!(
+            vet_token_uri(uri, &[], false, &[]),
+            Ok(()),
+            "token_uri {uri} must be accepted, as 1.5.5 did"
+        );
+    }
+    let uri = "http://oauth2.example.com/token";
+    assert_eq!(
+        vet_token_uri(uri, &[], false, &[]),
+        Err(format!(
+            "service-account token_uri must use https for a public host (got '{uri}'); it receives the signed JWT assertion, so plaintext http is permitted only for a private/loopback endpoint"
+        )),
+        "a public http token_uri must be refused in 1.5.5's words"
+    );
+    let imds = vet_token_uri("http://169.254.169.254/token", &[], false, &[]);
+    assert!(
+        imds.as_ref().is_err_and(|e| e.contains("cloud-metadata")),
+        "a token_uri at the metadata host must be refused as cloud-metadata; got: {imds:?}"
     );
 }
 
