@@ -1389,3 +1389,49 @@ fn the_idle_purge_puts_each_arena_back_to_its_own_decay() {
         );
     }
 }
+
+/// THE LINE-SERVE FLAG IS THE PLANE'S (audit busbar-src H1): the root serves a plane on the
+/// process's own lines when a flag a linked plane declares is passed, read off the plane's `Flags:`
+/// rows; it names no flag of its own. A planted plane's flag asks for it, and the same word no plane
+/// declares does not.
+#[test]
+fn the_line_serve_flag_is_read_off_the_planes_declared_rows() {
+    let planted: &[crate::root::linked::CliHelpRow] = &[(
+        "flag",
+        "    --planted-serve      serve the planted plane on stdin/stdout",
+    )];
+    let args = |a: &[&str]| {
+        a.iter()
+            .map(|s| (*s).to_string())
+            .collect::<Vec<_>>()
+            .into_iter()
+    };
+    assert!(line_serve_requested(
+        &[planted],
+        args(&["busbar", "--planted-serve"])
+    ));
+    assert!(!line_serve_requested(
+        &[],
+        args(&["busbar", "--planted-serve"])
+    ));
+    assert!(!line_serve_requested(&[planted], args(&["busbar"])));
+}
+
+/// The composition root's own source spells no flag a linked plane declares (its `Flags:` rows,
+/// read here as the root reads them, so this cell names no plane either).
+#[test]
+fn the_root_spells_no_planes_line_serve_flag() {
+    let main = include_str!("../main.rs");
+    let flags: Vec<&str> = crate::root::cli::help_rows()
+        .iter()
+        .flat_map(|rows| rows.iter())
+        .filter(|(slot, _)| *slot == "flag")
+        .filter_map(|(_, lines)| lines.split_whitespace().next())
+        .collect();
+    for flag in flags {
+        assert!(
+            !main.contains(&format!("\"{flag}\"")),
+            "main.rs spells the plane flag {flag} as a literal"
+        );
+    }
+}

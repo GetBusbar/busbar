@@ -28,7 +28,7 @@ it; `-` means the dialect has no form for it.
 | openai_chat | response | 34 | 1 |
 | openai_chat | stream | 4 | 0 |
 | openai_responses | request | 46 | 5 |
-| openai_responses | response | 40 | 3 |
+| openai_responses | response | 38 | 3 |
 | openai_responses | stream | 13 | 0 |
 
 ## request
@@ -162,7 +162,7 @@ it; `-` means the dialect has no form for it.
 | finish_reason | `stop_reason` | `stopReason` | `finish_reason` | `candidates[].finishReason` | `choices[].finish_reason` | - |
 | grounding_metadata | - | - | - | `candidates[].groundingMetadata` | - | - |
 | guardrail | - | `trace.guardrail` | - | - | - | - |
-| id | `id` | - | `id` | - | `id` | `id`<br>`output[].type=message.id`<br>`output[].type=web_search_call.id` |
+| id | `id` | - | `id` | - | `id` | `id`<br>`output[].type=message.id` |
 | incomplete_details | - | - | - | - | - | `incomplete_details` |
 | index | - | - | - | `candidates[].index` | `choices[].index` | - |
 | input_tokens | `usage.input_tokens` | `usage.inputTokens` | `usage.tokens.input_tokens`<br>`usage.billed_units.input_tokens` | `usageMetadata.promptTokenCount` | `usage.prompt_tokens` | `usage.input_tokens` |
@@ -189,7 +189,7 @@ it; `-` means the dialect has no form for it.
 | safety_verdict | - | `trace.guardrail.inputAssessment{}.contentPolicy.filters[].type`<br>`trace.guardrail.inputAssessment{}.contentPolicy.filters[].action`<br>`trace.guardrail.inputAssessment{}.contentPolicy.filters[].detected`<br>`trace.guardrail.outputAssessments{}[].contentPolicy.filters[].type`<br>`trace.guardrail.outputAssessments{}[].contentPolicy.filters[].action`<br>`trace.guardrail.outputAssessments{}[].contentPolicy.filters[].detected` | - | `candidates[].safetyRatings[].category`<br>`candidates[].safetyRatings[].blocked`<br>`promptFeedback.safetyRatings[].category`<br>`promptFeedback.safetyRatings[].blocked` | `moderation.input.type=moderation_results.results[].categories`<br>`moderation.output.type=moderation_results.results[].categories` | `moderation.input.type=moderation_result.categories`<br>`moderation.output.type=moderation_result.categories` |
 | search_units | - | - | `usage.billed_units.search_units` | - | - | - |
 | served_tier | `usage.service_tier` | `serviceTier.type` | - | `usageMetadata.serviceTier` | `service_tier` | `service_tier` |
-| status | - | - | - | - | - | `status`<br>`output[].type=message.status`<br>`output[].type=web_search_call.status` |
+| status | - | - | - | - | - | `status`<br>`output[].type=message.status` |
 | stop_sequence | `stop_sequence` | - | - | - | - | - |
 | summary | - | - | - | - | - | `output[].type=reasoning.summary` |
 | system_fingerprint | - | - | - | - | `system_fingerprint` | - |

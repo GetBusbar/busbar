@@ -46,6 +46,15 @@
 //! continuing where it stopped. A framer that answers any byte or piece twice is wrong. A framer op
 //! never pends.
 //!
+//! A STREAM'S OWN BACKPRESSURE. A framer that queues a stream's emitted bytes until the far end is
+//! ready for them (a multiplexed wire whose peer grants room stream by stream) answers an `emit`
+//! that brings the queue to its high-water mark with [`YIELD_STREAM_FULL`]: the bytes were taken,
+//! and the host emits nothing more on that stream, holding whatever feeds it (not-ready, with a
+//! wake), until the framer hands a [`PIECE_WRITABLE`] piece on the stream (its queue drained below
+//! the low-water mark) or the stream's end or failure piece. A host that keeps emitting past the
+//! mark is the framer's to bound: it may fail the stream. This is the stream's, never the
+//! connection's: [`YIELD_MORE`] still means only that a host buffer filled.
+//!
 //! STREAMS END BY PIECE. A frame is one or more pieces on one stream; the last carries
 //! [`PIECE_END_OF_FRAME`]. A stream's frames END with an EMPTY piece (length `0`) carrying
 //! [`PIECE_END_OF_FRAME`]; a stream that FAILED ends instead with a piece carrying
@@ -129,8 +138,16 @@
 //! ```
 
 pub mod check;
+pub mod datagram;
 pub mod fields;
 pub mod route;
+
+pub use datagram::{
+    DatagramLane, DatagramPath, DatagramRoute, DatagramYield, KeyingMaterial, RendezvousTerms,
+    FINGERPRINT_BYTES, HANDSHAKE_ANSWERS, HANDSHAKE_INITIATES, HANDSHAKE_NONE, LANE_CLEAR,
+    LANE_RENDEZVOUS, LANE_SECURED, MAX_KEYING_BYTES, MAX_ROUTES, PATH_REQUEST_BIND,
+    PATH_REQUEST_NONE, PATH_REQUEST_REBIND,
+};
 
 /// THE AUTH POINTS a transport offers and calls its bound auth at (THE DESIGN, "Auth points
 /// and guest lists", step 1): defined once in `abi::auth`, referred to here, never redefined.
@@ -417,6 +434,11 @@ pub const PIECE_CONTINUED: u16 = 32;
 /// it into `FrameMeta::text`, the bit's one home above the ABI.
 pub const PIECE_TEXT: u16 = 64;
 
+/// [`FramePiece::flags`]: the stream is WRITABLE again: the queue an `emit` answered with
+/// [`YIELD_STREAM_FULL`] drained below the framer's low-water mark, and the host may emit on the
+/// stream again. Always an EMPTY piece, with no other flag: it ends no frame and no stream.
+pub const PIECE_WRITABLE: u16 = 256;
+
 /// [`EmitIn::flags`]: the bytes are a TEXT message, not a binary one, on a wire whose messages are
 /// one or the other (ws sends them under its TEXT opcode); read on the call that completes the
 /// frame. Absent means binary. The outbound twin of [`PIECE_TEXT`].
@@ -428,6 +450,9 @@ pub const YIELD_ENDED: u32 = 1;
 pub const YIELD_MORE: u32 = 2;
 /// [`FramerYield::flags`]: `next_deadline_ns` is set; call [`slot::TIMER`] then.
 pub const YIELD_HAS_DEADLINE: u32 = 4;
+/// [`FramerYield::flags`], on `emit` only: the bytes were taken and the stream's queue is at its
+/// high-water mark; emit nothing more on it until a [`PIECE_WRITABLE`] piece or its last piece.
+pub const YIELD_STREAM_FULL: u32 = 8;
 
 // ── the Statement tail ───────────────────────────────────────────────────────────────────────────
 
@@ -580,6 +605,10 @@ pub struct ConnFacts {
     pub peer_fingerprint: AbiStr,
     /// The claim the connection resolved to (absent = the entry's first claim).
     pub claim: AbiStr,
+    /// The host's own certificate, DER, for a framer that states its fingerprint to the far end in
+    /// a session description; absent when the secure layer presents none. Public: the certificate's
+    /// key never crosses. A tail addition (pre-tag v1).
+    pub local_certificate: AbiStr,
 }
 
 /// One frame piece a framer produced, in [`FramerSink::pieces`]; its bytes are
@@ -924,6 +953,9 @@ pub struct FramerOut {
     pub yielded: FramerYield,
     /// `begin`/`adopt`: the new framing token; other ops leave it.
     pub framing: u64,
+    /// A datagram framer's routes, path request and rendezvous terms ([`datagram`]); all zero from
+    /// a stream framer. A tail addition (pre-tag v1).
+    pub datagram: DatagramYield,
 }
 
 /// `begin`'s `in` (the framer's `open`).
@@ -950,6 +982,8 @@ pub struct BeginIn {
     pub fields: *const Field,
     /// How many.
     pub fields_len: usize,
+    /// The datagram lane ([`datagram`]): NULL for a stream framer. A tail addition (pre-tag v1).
+    pub lane: *const DatagramLane,
 }
 
 /// `ingest`'s `in`.
@@ -970,6 +1004,8 @@ pub struct IngestIn {
     pub _reserved: u32,
     /// The sink.
     pub sink: FramerSink,
+    /// The datagram lane ([`datagram`]): NULL for a stream framer. A tail addition (pre-tag v1).
+    pub lane: *const DatagramLane,
 }
 
 /// `emit`'s `in`.
@@ -999,6 +1035,8 @@ pub struct EmitIn {
     /// starts an attempt) ALWAYS stamps it at attempt start; `0` is only the standalone fallback,
     /// where the framer counts its own configured timeout from that first `emit`.
     pub deadline_ns: u64,
+    /// The datagram lane ([`datagram`]): NULL for a stream framer. A tail addition (pre-tag v1).
+    pub lane: *const DatagramLane,
 }
 
 /// `encode`'s `in`. The rendered bytes go into `sink.wire`.
@@ -1089,6 +1127,8 @@ pub struct FinishIn {
     pub final_bytes: *const u8,
     /// How many.
     pub final_bytes_len: usize,
+    /// The datagram lane ([`datagram`]): NULL for a stream framer. A tail addition (pre-tag v1).
+    pub lane: *const DatagramLane,
 }
 
 /// `detach`'s and `timer`'s `in`.
@@ -1101,6 +1141,8 @@ pub struct FramingIn {
     pub framing: u64,
     /// The sink.
     pub sink: FramerSink,
+    /// The datagram lane ([`datagram`]): NULL for a stream framer. A tail addition (pre-tag v1).
+    pub lane: *const DatagramLane,
 }
 
 /// `adopt`'s `in`.
