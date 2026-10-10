@@ -189,6 +189,7 @@ struct ChainEntry {
 /// A position's `verify` answer as the chain walks it. FAIL-CLOSED: an answer with no verdict
 /// (FAILED, FAULT, REFUSED, a timeout, a second short answer) and an overloaded verifier are a
 /// `Reject`, as 1.5.5 rejected on a module failure and denied on a saturated offload (its 401).
+/// The data-plane walk reads an overloaded verifier apart first ([`position_verdict_of`]).
 fn chain_verdict_of(answer: VerifyAnswer) -> AuthVerdict {
     match answer.verified {
         Verified::Identity(id) => AuthVerdict::Identify(Principal {
@@ -199,6 +200,22 @@ fn chain_verdict_of(answer: VerifyAnswer) -> AuthVerdict {
         }),
         Verified::Pass => AuthVerdict::Pass,
         Verified::Reject | Verified::Failed | Verified::Overloaded => AuthVerdict::Reject,
+    }
+}
+
+/// A data-plane chain position whose `verify` answered `Overloaded`: its instance's `max_inflight`
+/// was full and the call was not queued. The chain stops there, and the data plane answers the
+/// request 503 with `Retry-After` rather than 1.5.5's 401 (owner ruling Q134, 2026-10-07; THE
+/// DESIGN §11.11 R8; accepted difference "Q134 503 when an auth verifier's max_inflight is full").
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VerifierOverloaded;
+
+/// A position's `verify` answer as the data-plane walk reads it: an overloaded verifier apart
+/// ([`VerifierOverloaded`]), every other answer as [`chain_verdict_of`] reads it.
+fn position_verdict_of(answer: VerifyAnswer) -> Result<AuthVerdict, VerifierOverloaded> {
+    match answer.verified {
+        Verified::Overloaded => Err(VerifierOverloaded),
+        _ => Ok(chain_verdict_of(answer)),
     }
 }
 
@@ -712,7 +729,8 @@ impl AuthMiddleware {
     ) -> ChainVerdict {
         // A SYNC caller: every position on this thread (`Reach::Inline`). Nothing the walk awaits
         // is pending unless a door must wait, and then this thread waits for it, as the caller
-        // asked by calling synchronously.
+        // asked by calling synchronously. A sync caller has no 503 to answer: an overloaded
+        // position is a denial here, as 1.5.5 denied a saturated verifier.
         futures::executor::block_on(self.walk(
             &ChainHead::default(),
             candidate,
@@ -721,12 +739,14 @@ impl AuthMiddleware {
             expected_aud,
             Reach::Inline,
         ))
+        .unwrap_or(ChainVerdict::Denied)
     }
 
     /// THE CHAIN WALK, one `verify` per position per request (THE DESIGN 11.6): config order, the
     /// first `Identify` admits, a `Reject` denies, all-`Pass` on a non-empty chain denies, and the
-    /// `keys` engine arm runs after every position. `head` is what each position is lent beside the
-    /// candidate; `reach` how each is called.
+    /// `keys` engine arm runs after every position. A position whose verifier is overloaded stops
+    /// the walk as [`VerifierOverloaded`]; each caller decides what that answers. `head` is what
+    /// each position is lent beside the candidate; `reach` how each is called.
     #[allow(clippy::too_many_arguments)]
     async fn walk(
         &self,
@@ -736,28 +756,28 @@ impl AuthMiddleware {
         now: u64,
         expected_aud: Option<&str>,
         reach: Reach,
-    ) -> ChainVerdict {
+    ) -> Result<ChainVerdict, VerifierOverloaded> {
         // The OPEN front door: no chain position AND no built-in `keys` engine arm → admit
         // anonymously. `keys_in_chain` (an engine arm, not a position) keeps the door CLOSED even
         // though `self.chain` may be empty, so `chain:[keys]` runs the keys arm below rather than
         // short-circuiting to `Open`.
         if self.chain.is_empty() && !self.keys_in_chain {
-            return ChainVerdict::Open;
+            return Ok(ChainVerdict::Open);
         }
         for entry in &self.chain {
-            match judge(entry, head.request(candidate, now), reach).await {
+            match judge(entry, head.request(candidate, now), reach).await? {
                 AuthVerdict::Identify(principal) => {
                     // No per-module role filter: the NESTED role_bindings table IS the allowlist -
                     // a role this module asserts grants nothing unless
                     // `role_bindings.<this module>.<role>` binds it. A PLUGIN module never resolves
                     // a VirtualKey (the ABI can't carry one) → `resolved: None`.
-                    return ChainVerdict::Identified {
+                    return Ok(ChainVerdict::Identified {
                         module: entry.provider.clone(),
                         principal,
                         resolved: None,
-                    };
+                    });
                 }
-                AuthVerdict::Reject => return ChainVerdict::Denied,
+                AuthVerdict::Reject => return Ok(ChainVerdict::Denied),
                 AuthVerdict::Pass => {}
             }
         }
@@ -767,9 +787,9 @@ impl AuthMiddleware {
         // `VirtualKey`, so vkey resolution lives here where it can. Its verdict is never cached
         // (revocation is per-request `verify_token` + a short denylist sync).
         if self.keys_in_chain {
-            return keys_arm_verdict(gov, candidate, now, expected_aud);
+            return Ok(keys_arm_verdict(gov, candidate, now, expected_aud));
         }
-        ChainVerdict::Denied
+        Ok(ChainVerdict::Denied)
     }
 
     /// THE CACHE FLUSH (`POST /admin/auth/cache/flush`): every chain position's instance (or only
@@ -785,8 +805,10 @@ impl AuthMiddleware {
             .sum()
     }
 
-    /// THE REQUEST-PATH ENTRY POINT for the data-plane auth chain — the one place `auth_middleware`
-    /// calls it, and the reason it is not just `run_chain_with`.
+    /// THE REQUEST-PATH ENTRY POINT for the data-plane auth chain, for a caller with no 503 to
+    /// answer (the `/auth/token` exchange, a plane's inbound identity admission): an overloaded
+    /// position is a denial here, the 1.5.5 401. `auth_middleware` calls
+    /// [`Self::judge_chain_on_request_path`], which hands the overloaded verifier back apart.
     ///
     /// Each position is called on the auth kind's memory ABI (AUTH-CHAIN-SWITCH): a door's `verify`
     /// is SUBMITTED on a dispatcher ticket and awaited through its reply's waker, so no thread is
@@ -809,6 +831,21 @@ impl AuthMiddleware {
         gov: Option<std::sync::Arc<crate::governance::GovState>>,
         expected_aud: Option<String>,
     ) -> ChainVerdict {
+        Self::judge_chain_on_request_path(auth, candidate, head, gov, expected_aud)
+            .await
+            .unwrap_or(ChainVerdict::Denied)
+    }
+
+    /// [`Self::run_chain_on_request_path`] with an overloaded verifier handed back apart: the one
+    /// call `auth_middleware` makes, so the data plane answers a full `max_inflight` 503 with
+    /// `Retry-After` (owner ruling Q134, 2026-10-07) and every other refusal as before.
+    pub async fn judge_chain_on_request_path(
+        auth: &std::sync::Arc<AuthMiddleware>,
+        candidate: Option<String>,
+        head: ChainHead,
+        gov: Option<std::sync::Arc<crate::governance::GovState>>,
+        expected_aud: Option<String>,
+    ) -> Result<ChainVerdict, VerifierOverloaded> {
         // Captured once, before the first position: the clock the chain reasons about is the
         // instant the request reached this decision, not whenever a position got scheduled.
         let now = busbar_kernel::store::now();
@@ -884,18 +921,25 @@ impl AuthMiddleware {
     }
 }
 
-/// ONE POSITION'S VERDICT over `request` (its candidate lent), reached as `reach` says.
-async fn judge(entry: &ChainEntry, request: VerifyRequest, reach: Reach) -> AuthVerdict {
+/// ONE POSITION'S VERDICT over `request` (its candidate lent), reached as `reach` says; an
+/// overloaded verifier is handed back apart ([`VerifierOverloaded`]).
+async fn judge(
+    entry: &ChainEntry,
+    request: VerifyRequest,
+    reach: Reach,
+) -> Result<AuthVerdict, VerifierOverloaded> {
     match reach {
         // A sync caller: on the spot; a door that must wait answers REFUSED there, and is
         // submitted and awaited where the caller polls.
         Reach::Inline => match entry.calls.verify_now(&request) {
-            Some(answer) => chain_verdict_of(answer),
-            None => chain_verdict_of(Box::into_pin(entry.calls.verify(request)).await),
+            Some(answer) => position_verdict_of(answer),
+            None => position_verdict_of(Box::into_pin(entry.calls.verify(request)).await),
         },
-        Reach::RequestPath if entry.offload => offload_cold(entry.calls.clone(), request).await,
+        // A cold position's own offload bound is 1.5.5's saturated offload, denied as 1.5.5
+        // denied it (its 401); a cold module never answers `Overloaded`.
+        Reach::RequestPath if entry.offload => Ok(offload_cold(entry.calls.clone(), request).await),
         // A door (or an in-process stand-in): ONE submitted `verify`, awaited.
-        Reach::RequestPath => chain_verdict_of(Box::into_pin(entry.calls.verify(request)).await),
+        Reach::RequestPath => position_verdict_of(Box::into_pin(entry.calls.verify(request)).await),
     }
 }
 
@@ -1749,6 +1793,15 @@ fn unauthorized_with_completion_taps(
     unauthorized_response(app, path, door)
 }
 
+/// THE DATA PLANE'S ANSWER TO AN OVERLOADED VERIFIER (owner ruling Q134, 2026-10-07; THE DESIGN
+/// §11.11 R8): an auth position whose `max_inflight` is full judged nothing, so the request is
+/// answered as the gateway answers any arrival it has no capacity for, the at-capacity 503 with
+/// `Retry-After: 1` the inbound cap sheds with, byte for byte. No new customer string, and never a
+/// bad credential's 401. The admin plane keeps its own answer.
+fn verifier_overloaded_response() -> Response {
+    crate::limits::admission::inbound_overloaded_response()
+}
+
 /// EVERY CREDENTIAL CARRIER THE CONFIGURED GATE READS on one request: the data-plane carriers
 /// (whichever one carried this request's token, and the SigV4 signature on `Authorization`), the
 /// admin carriers when an admin chain is configured, and the DPoP proof — on the data plane once
@@ -2129,9 +2182,12 @@ pub(crate) async fn auth_middleware(
                 // EVERY failure (malformed signature, unknown identifier, expired date, a body whose
                 // bytes don't match the signed hash, a verifier that did not answer) maps to the
                 // identical native auth error: there is no oracle.
-                Verified::Reject | Verified::Failed | Verified::Overloaded => {
+                Verified::Reject | Verified::Failed => {
                     return Err(unauthorized_response(&app, &path, door.as_ref()))
                 }
+                // The verifier's `max_inflight` is full: nothing was judged, so this is no answer
+                // about the credential. 503 with `Retry-After` (owner ruling Q134, 2026-10-07).
+                Verified::Overloaded => return Err(verifier_overloaded_response()),
             }
         }
     };
@@ -2170,7 +2226,7 @@ pub(crate) async fn auth_middleware(
                 }
             }
         }
-        AuthMiddleware::run_chain_on_request_path(
+        match AuthMiddleware::judge_chain_on_request_path(
             &app.auth,
             client_token.clone(),
             ChainHead::of(&req),
@@ -2178,6 +2234,12 @@ pub(crate) async fn auth_middleware(
             admission.as_ref().map(|a| a.audience.clone()),
         )
         .await
+        {
+            Ok(verdict) => verdict,
+            // A position's `max_inflight` is full: 503 with `Retry-After`, never a bad
+            // credential's 401 (owner ruling Q134, 2026-10-07).
+            Err(VerifierOverloaded) => return Err(verifier_overloaded_response()),
+        }
     };
 
     // THE SINGLE DATA-PLANE GATE — one resolution of the chain verdict, with NO branch anywhere on
