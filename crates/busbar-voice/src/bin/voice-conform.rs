@@ -1775,6 +1775,7 @@ fn probe_gemini_live_route() -> (&'static str, String) {
         tool_defs: &unit,
         public_url: Some("https://gw.conform.example.com"),
         prior: None,
+        providers: None,
     };
     let Some(slot) = busbar_voice::mount::voice_build(&ctx) else {
         return ("FAIL", "voice_build produced no dispatch slot".into());
