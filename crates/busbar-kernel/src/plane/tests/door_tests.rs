@@ -377,6 +377,7 @@ fn lane_less_healthz(
             tool_defs: &section,
             public_url: None,
             prior: None,
+            providers: None,
         })
         .expect("a configured door builds its generation's slot");
         fixture.install_plane_runtime(decl.key, slot);
@@ -401,9 +402,14 @@ fn opening_door(key: &'static str, section: &'static str) -> &'static PlaneDecl 
 /// A door whose open REFUSES for the generation (its section passed its `validate`).
 fn refusing_door(key: &'static str, section: &'static str) -> &'static PlaneDecl {
     let mut reg = registration(key, section);
-    reg.facing = Arc::new(|_: &[u8], _: &[u8], _: Option<&str>| {
-        Err("the door refused to open this generation".to_string())
-    });
+    reg.facing = Arc::new(
+        |_: &[u8],
+         _: &[u8],
+         _: Option<&str>,
+         _: &[busbar_contract::plane_calls::DialectFacts]| {
+            Err("the door refused to open this generation".to_string())
+        },
+    );
     fold(reg).expect("folds")
 }
 

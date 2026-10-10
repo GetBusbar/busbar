@@ -591,9 +591,14 @@ fn opening_door() -> &'static busbar_kernel::plane::registry::PlaneDecl {
         trust_keys: Vec::new(),
         caller_credential_refusal: None,
         validate: Arc::new(|_: &[u8]| Ok(())),
-        facing: Arc::new(|_: &[u8], _: &[u8], _: Option<&str>| {
-            Ok(busbar_contract::plane_calls::DoorFacing::default())
-        }),
+        facing: Arc::new(
+            |_: &[u8],
+             _: &[u8],
+             _: Option<&str>,
+             _: &[busbar_contract::plane_calls::DialectFacts]| {
+                Ok(busbar_contract::plane_calls::DoorFacing::default())
+            },
+        ),
     })
     .expect("folds")
 }
@@ -618,6 +623,7 @@ async fn healthz_with_model_lanes_every_cell_open_stays_unready_beside_an_opened
         tool_defs: &section,
         public_url: None,
         prior: None,
+        providers: None,
     })
     .expect("the configured door builds its generation's slot");
     assert!(
