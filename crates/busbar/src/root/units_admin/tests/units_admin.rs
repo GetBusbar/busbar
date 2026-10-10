@@ -5915,7 +5915,7 @@ fn a_signed_record_and_a_signed_checkpoint_verify_against_the_served_audit_keys(
 fn a_book_over_the_store(
     slots: &crate::root::store_double::RecordSlots,
 ) -> Arc<Mutex<crate::root::durability::Durability>> {
-    let lane = crate::root::durability::JournalLane::start(slots.calls(), "memory")
+    let lane = crate::root::durability::JournalLane::start(slots.calls(), "test-store")
         .expect("the lane starts");
     Arc::new(Mutex::new(
         crate::root::durability::build_on_store(

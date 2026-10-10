@@ -2482,7 +2482,7 @@ fn store_book_bounded(
     capacity: usize,
 ) -> Durability {
     let lane =
-        JournalLane::with_capacity(slots.calls(), "memory", capacity).expect("the lane starts");
+        JournalLane::with_capacity(slots.calls(), "test-store", capacity).expect("the lane starts");
     build_on_store(
         &DurabilityConfig { data_dir: None },
         node,

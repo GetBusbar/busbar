@@ -4895,7 +4895,7 @@ async fn a_screened_veto_through_the_node_admits_nothing() {
 async fn a_full_journal_lane_refuses_a_new_unit_503_with_the_reason() {
     let slots = crate::root::store_double::RecordSlots::new();
     slots.refuse(true);
-    let lane = crate::root::durability::JournalLane::with_capacity(slots.calls(), "memory", 1)
+    let lane = crate::root::durability::JournalLane::with_capacity(slots.calls(), "test-store", 1)
         .expect("the lane starts");
     let book = Arc::new(std::sync::Mutex::new(
         crate::root::durability::build_on_store(
@@ -4939,7 +4939,7 @@ async fn a_full_journal_lane_refuses_a_new_unit_503_with_the_reason() {
         .expect("the body");
     let body = String::from_utf8_lossy(&body);
     assert!(
-        body.contains("journal is full") && body.contains("`memory`"),
+        body.contains("journal is full") && body.contains("`test-store`"),
         "the reason names the full journal and the store: {body}"
     );
     assert!(!built.load(std::sync::atomic::Ordering::SeqCst));

@@ -130,7 +130,10 @@ pub use replay::{JournalDisagreement, Recoverable};
 /// The journal kept in the configured store: its schema and keys, the boot's read-back and the
 /// host's write-behind lane. A private child module; its public items are re-exported here.
 mod store_chain;
-pub use store_chain::{read_chain, JournalLane, ACK_DEADLINE, RECORD_SLOTS};
+pub use store_chain::{read_chain, JournalLane, RECORD_SLOTS};
+// Its one caller is the admin append's wait on the store (`units_admin`), compiled with `root-admin`.
+#[cfg(feature = "root-admin")]
+pub use store_chain::ACK_DEADLINE;
 // What the tests read the store's rows back by.
 #[cfg(test)]
 pub use store_chain::{part_key, JOURNAL_SCHEMA};
@@ -138,7 +141,10 @@ pub use store_chain::{part_key, JOURNAL_SCHEMA};
 /// Who a node is and the key it signs with, kept in the configured store: the node registry, the
 /// deployment keyset, and the walk `/admin/verify` makes of every stored chain.
 mod store_identity;
-pub use store_identity::{host_identity, keep_keyset, node_id, stored_keyset, walk_stored_chains};
+pub use store_identity::{host_identity, keep_keyset, node_id, stored_keyset};
+// Its callers are the admin verify (`units_admin`, `root-admin`) and the tests.
+#[cfg(any(test, feature = "root-admin"))]
+pub use store_identity::walk_stored_chains;
 
 /// The node amendment journal bound to the chain: each sealed amendment journalled, and the node
 /// journal rebuilt from the chain at boot. A private child module, as `replay` is.

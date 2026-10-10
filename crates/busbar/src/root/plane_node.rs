@@ -701,7 +701,7 @@ impl Node {
     ) -> Option<Outcome> {
         self.sweep(arrived);
         if self.journal_refusal().is_some() {
-            return false;
+            return None;
         }
         post.open(key, principal.clone(), arrived, history.clone());
         let meter = Arc::new(AccrualMeter::new());
