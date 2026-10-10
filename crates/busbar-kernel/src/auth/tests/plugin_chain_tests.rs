@@ -169,7 +169,7 @@ fn a_v1_auth_plugin_is_refused_at_boot_and_the_current_one_builds_browser_login(
 
     let dir2 = tmp_plugin_dir("auth-login-current-ok");
     let current = auth_manifest("acme-idp", "cap-idp", "acme");
-    std::fs::write(dir2.join("idp.tar.gz"), unsigned_tarball(current, &lib)).unwrap();
+    std::fs::write(dir2.join("idp.tar.gz"), first_party_tarball(current, &lib)).unwrap();
     let plugins2 = plugins_cfg_allow_unsigned(&dir2);
     let registry2 = busbar_plugin_loader::scan_and_validate(
         Path::new(&plugins2.dir),
@@ -183,12 +183,26 @@ fn a_v1_auth_plugin_is_refused_at_boot_and_the_current_one_builds_browser_login(
     let _ = std::fs::remove_dir_all(&dir2);
 }
 
-/// Write an UNSIGNED (structurally valid) auth-oidc tarball into `dir` under `file`. We use the
-/// unsigned+`allow_unsigned` path because the test cannot sign with the embedded first-party release
-/// key; this still exercises the whole load pipeline.
+/// The auth-oidc tarball SIGNED FIRST-PARTY (publisher `busbar`) under the test build's release key
+/// (`test_support::test_release_key`): every need the module states is in the
+/// `operator-infrastructure` egress class, which the host grants to a first-party plugin only
+/// (`BUSBAR-1.6.0.md` §5; ARCHITECT ruling EGRESS-GRANT 2026-10-03), so an unsigned or third-party
+/// copy is skipped at the scan.
+fn first_party_tarball(mut manifest: busbar_plugin_loader::sign::Manifest, lib: &[u8]) -> Vec<u8> {
+    manifest.publisher = busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER.into();
+    let signed = busbar_plugin_loader::sign::sign(
+        &crate::test_support::test_release_key(),
+        manifest,
+        lib,
+    );
+    busbar_plugin_loader::tarball::package(&signed, "lib.so", lib).unwrap()
+}
+
+/// Write the auth-oidc tarball, signed first-party ([`first_party_tarball`]), into `dir` under
+/// `file`; this exercises the whole load pipeline.
 fn write_auth_plugin(dir: &Path, file: &str, name: &str, alias: &str) {
     let lib = std::fs::read(auth_cdylib()).expect("read the auth-oidc cdylib");
-    let tarball = unsigned_tarball(auth_manifest(name, alias, "acme"), &lib);
+    let tarball = first_party_tarball(auth_manifest(name, alias, "acme"), &lib);
     std::fs::write(dir.join(file), tarball).unwrap();
 }
 
@@ -230,11 +244,11 @@ fn auth_manifest_with_root_secret_schema(
     m
 }
 
-/// Write an UNSIGNED auth-oidc tarball whose manifest declares `audience` as a ROOT-LEVEL
-/// `x-busbar-secret` field (see [`auth_manifest_with_root_secret_schema`]).
+/// Write a first-party auth-oidc tarball ([`first_party_tarball`]) whose manifest declares
+/// `audience` as a ROOT-LEVEL `x-busbar-secret` field (see [`auth_manifest_with_root_secret_schema`]).
 fn write_auth_plugin_with_root_secret_schema(dir: &Path, file: &str, name: &str, alias: &str) {
     let lib = std::fs::read(auth_cdylib()).expect("read the auth-oidc cdylib");
-    let tarball = unsigned_tarball(
+    let tarball = first_party_tarball(
         auth_manifest_with_root_secret_schema(name, alias, "acme", "audience"),
         &lib,
     );
