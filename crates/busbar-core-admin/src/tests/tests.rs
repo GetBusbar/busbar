@@ -7013,6 +7013,74 @@ fn admin_test_tarball_versioned(name: &str, alias: &str, version: &str) -> Vec<u
     busbar_kernel::plugin_admission::tarball::package(&m, "lib.so", lib).unwrap()
 }
 
+/// THE ONE-VERSION RULE OVER THE WIRE (ARCHITECT C'): `POST /plugins` with a copy of a plugin this
+/// build LINKS, at the version its Statement states, answers exactly as every successful install
+/// has since 1.5.5 — `201 Created` with the install view (v1.5.5 had no "already installed" answer:
+/// `crates/busbar/src/admin/v1/json/handlers.rs:211` is its one success, and
+/// `crates/busbar/src/admin/v1/service.rs:1873` overwrote a same-file upload) — its note saying the
+/// linked build serves it, and NOTHING is written to the plugins directory.
+#[tokio::test]
+async fn test_admin_v1_plugin_install_of_a_linked_copy_is_a_201_no_op() {
+    use base64::Engine as _;
+    busbar_kernel::snapshot::init();
+    let (canonical, key, version, _) = crate::v1::service::tests::linked_store();
+    let tarball = crate::v1::service::tests::unsigned_copy(canonical, key, &version);
+    let file = "linked-copy.tar.gz";
+    let dir = std::env::temp_dir().join(format!(
+        "busbar-admin-plugins-linked-copy-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let (addr, _handle) = serve_with_plugins_dir(dir.clone()).await;
+    // The request and the install view, typed: the view's shape is every one of its fields (both
+    // optional ones present) and nothing else.
+    #[derive(serde::Serialize)]
+    struct Install<'a> {
+        file: &'a str,
+        tarball_b64: String,
+    }
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    #[allow(dead_code)]
+    struct View {
+        file: String,
+        interface_version: u32,
+        name: String,
+        note: String,
+        publisher: String,
+        trust: String,
+        version: String,
+    }
+    let resp = reqwest::Client::new()
+        .post(format!("http://{addr}/api/v1/admin/plugins"))
+        .header("x-admin-token", "admintok")
+        .json(&Install {
+            file,
+            tarball_b64: base64::engine::general_purpose::STANDARD.encode(&tarball),
+        })
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status().as_u16(),
+        201,
+        "the install view, as every success"
+    );
+    let v: serde_json::Value = resp.json().await.unwrap();
+    let view: View = serde_json::from_value(v.clone())
+        .unwrap_or_else(|e| panic!("the install view's shape: {e}: {v}"));
+    assert_eq!((view.file.as_str(), view.name.as_str()), (file, canonical));
+    assert_eq!(
+        view.note,
+        "this build links the plugin at this version and the linked build serves it: nothing \
+         was written"
+    );
+    assert!(!dir.join(file).exists(), "nothing is written");
+    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// FULL LIFECYCLE over the wire: `POST /plugins` installs an (unsigned, allow_unsigned-posture)
 /// plugin tarball → `GET /plugins?type=store` lists it as a dynamic-library row → `POST
 /// /plugins/reload` reports it → `DELETE /plugins/{file}` removes it (204) → a second DELETE is
@@ -11792,8 +11860,12 @@ fn free_open_units() -> serde_json::Value {
 /// (`crates/busbar/src/root/tests/linked_auth.rs`), where the outbound plugin is a dependency.
 #[test]
 fn auth_modules_list_inbound_rows_only() {
-    let inbound: busbar_kernel::preflight::LinkedAuth =
-        ("admin-tokens", busbar_auth_admin_tokens_plugin::door::door);
+    // A canonical name apart from the key, so the listing is seen to be by key.
+    let inbound: busbar_kernel::preflight::LinkedAuth = (
+        "admin-tokens",
+        "canonical-name",
+        busbar_auth_admin_tokens_plugin::door::door,
+    );
     assert_eq!(
         busbar_kernel::preflight::inbound_auth_names(&[inbound]),
         vec!["admin-tokens"]
