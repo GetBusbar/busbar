@@ -175,7 +175,16 @@ fn every_rule_is_proven_able_to_go_red() {
     crate::gates::verify_report(&gate, &report).expect("every rule proven RED");
 }
 
+const ENGINE_VAR_JOB: &str = "env:\n  SHA: x\njobs:\n  pre:\n    env: { RELEASE_REF: \"${{ vars.ENGINE_REF }}\", ENGINE_SHA256: \"${{ vars.ENGINE_SHA256 }}\" }\n    steps:\n      - name: Engine\n        run: |\n          [[ \"$RELEASE_REF\" =~ ^[0-9a-f]{40}$ ]] || { echo bad; exit 1; }\n          name=\"busbar-release-ci-linux-x86_64-$RELEASE_REF\"\n          echo \"$ENGINE_SHA256  bin\" | sha256sum -c -\n      - { uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1, with: { repository: GetBusbar/busbar-release, ref: \"${{ env.RELEASE_REF }}\", path: busbar-release } } # v7\n";
+
 fn r16(text: &str) -> Vec<String> {
+    engine_pin_findings("w.yml", text)
+        .into_iter()
+        .map(|f| f.message)
+        .collect()
+}
+
+fn r17(text: &str) -> Vec<String> {
     vendor_runs_on(text)
         .into_iter()
         .map(|(_, _, l)| l)
@@ -183,29 +192,101 @@ fn r16(text: &str) -> Vec<String> {
 }
 
 #[test]
+fn r16_accepts_the_variable_pin_with_its_shape_check_and_its_sha256() {
+    assert_eq!(r16(ENGINE_VAR_JOB), Vec::<String>::new());
+}
+
+#[test]
+fn r16_accepts_an_in_file_sha_pin() {
+    let t = "jobs:\n  a:\n    steps:\n      - { uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1, with: { repository: GetBusbar/busbar-release, ref: 7ab21912d664d11c7df6cc98fe78eed6b0119177 } } # v7\n";
+    assert_eq!(r16(t), Vec::<String>::new());
+    // and through a workflow-level env var holding the literal
+    let t = "env:\n  RELEASE_REF: 7ab21912d664d11c7df6cc98fe78eed6b0119177\njobs:\n  a:\n    steps:\n      - { uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1, with: { repository: GetBusbar/busbar-release, ref: \"${{ env.RELEASE_REF }}\" } } # v7\n";
+    assert_eq!(r16(t), Vec::<String>::new());
+}
+
+#[test]
+fn r16_refuses_a_branch_or_a_tag_ref() {
+    // RED: the checkout at a branch.
+    let t = ENGINE_VAR_JOB.replace("ref: \"${{ env.RELEASE_REF }}\"", "ref: dev");
+    assert!(r16(&t).iter().any(|m| m.contains("`dev`")), "{:?}", r16(&t));
+    // RED: the variable is defined as a tag.
+    let t = ENGINE_VAR_JOB.replace(
+        "RELEASE_REF: \"${{ vars.ENGINE_REF }}\"",
+        "RELEASE_REF: v1.6.0",
+    );
+    assert!(
+        r16(&t).iter().any(|m| m.contains("v1.6.0")),
+        "{:?}",
+        r16(&t)
+    );
+    // RED: in-file, but a tag at the workflow level.
+    let t = "env:\n  RELEASE_REF: refs/tags/v1\njobs:\n  a:\n    steps:\n      - { uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1, with: { repository: GetBusbar/busbar-release, ref: \"${{ env.RELEASE_REF }}\" } } # v7\n";
+    assert!(!r16(t).is_empty());
+    // RED: no ref at all (the default branch).
+    let t = "jobs:\n  a:\n    steps:\n      - { uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1, with: { repository: GetBusbar/busbar-release } } # v7\n";
+    assert!(r16(t).iter().any(|m| m.contains("no `ref:`")));
+}
+
+#[test]
+fn r16_refuses_a_variable_pin_without_its_shape_check_or_its_sha256() {
+    let t = ENGINE_VAR_JOB.replace("=~ ^[0-9a-f]{40}$", "!= \"\"");
+    assert!(
+        r16(&t).iter().any(|m| m.contains("default branch")),
+        "{:?}",
+        r16(&t)
+    );
+    let t = ENGINE_VAR_JOB.replace("sha256sum -c -", "cat");
+    let got = r16(&t);
+    assert_eq!(
+        got.len(),
+        2,
+        "the download and the pin both name the missing check: {got:?}"
+    );
+    // The shape check AFTER the checkout guards nothing.
+    let t = "jobs:\n  pre:\n    env: { RELEASE_REF: \"${{ vars.ENGINE_REF }}\" }\n    steps:\n      - { uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1, with: { repository: GetBusbar/busbar-release, ref: \"${{ env.RELEASE_REF }}\" } } # v7\n      - run: |\n          [[ \"$RELEASE_REF\" =~ ^[0-9a-f]{40}$ ]] || exit 1\n          echo \"$ENGINE_SHA256  b\" | sha256sum -c -\n";
+    assert!(r16(t).iter().any(|m| m.contains("default branch")));
+}
+
+#[test]
+fn a_key_value_is_read_whole_from_a_flow_mapping() {
+    assert_eq!(
+        key_value("{ repository: o/r, ref: \"${{ env.X }}\", path: p }", "ref").as_deref(),
+        Some("${{ env.X }}")
+    );
+    assert_eq!(
+        key_value("{ ref: dev, path: p }", "ref").as_deref(),
+        Some("dev")
+    );
+    assert_eq!(key_value("{ prefref: dev }", "ref"), None);
+    assert_eq!(env_ref("${{ env.RELEASE_REF }}"), Some("RELEASE_REF"));
+    assert_eq!(env_ref("${{ vars.ENGINE_REF }}"), None);
+}
+
+#[test]
 fn a_vendor_runs_on_label_is_refused_in_every_spelling() {
     assert_eq!(
-        r16("jobs:\n  a:\n    runs-on: latchkey-large\n"),
+        r17("jobs:\n  a:\n    runs-on: latchkey-large\n"),
         ["latchkey-large"]
     );
     assert_eq!(
-        r16("jobs:\n  a:\n    runs-on: [self-hosted, linux]\n"),
+        r17("jobs:\n  a:\n    runs-on: [self-hosted, linux]\n"),
         ["self-hosted"]
     );
     assert_eq!(
-        r16("jobs:\n  a:\n    runs-on:\n      - Self-Hosted\n      - linux\n"),
+        r17("jobs:\n  a:\n    runs-on:\n      - Self-Hosted\n      - linux\n"),
         ["Self-Hosted"]
     );
     assert_eq!(
-        r16("jobs:\n  a:\n    runs-on:\n      group: g\n      labels: [busbar-ec2-x]\n"),
+        r17("jobs:\n  a:\n    runs-on:\n      group: g\n      labels: [busbar-ec2-x]\n"),
         ["busbar-ec2-x"]
     );
     assert_eq!(
-        r16("jobs:\n  a:\n    runs-on:\n      labels:\n        - busbar-canary\n"),
+        r17("jobs:\n  a:\n    runs-on:\n      labels:\n        - busbar-canary\n"),
         ["busbar-canary"]
     );
     assert_eq!(
-        r16("jobs:\n  a:\n    runs-on: ${{ x || 'latchkey-large' }}\n"),
+        r17("jobs:\n  a:\n    runs-on: ${{ x || 'latchkey-large' }}\n"),
         ["latchkey-large"]
     );
     let found = vendor_runs_on("jobs:\n  a:\n    runs-on: latchkey-small\n");
@@ -227,6 +308,6 @@ fn gateway_expressions_and_github_hosted_images_are_allowed() {
         "[ubuntu-latest, macos-latest]",
     ] {
         let text = format!("jobs:\n  a:\n    runs-on: {ok}\n");
-        assert!(r16(&text).is_empty(), "{ok} must be allowed");
+        assert!(r17(&text).is_empty(), "{ok} must be allowed");
     }
 }
