@@ -78,71 +78,88 @@ impl SettleAdmission for BreakerAdmission {
     }
 }
 
-/// WIN ONE `(pool, lane)` PROBE THROUGH THE HOST SEAM — the SAFE wrapper the failover sync sites drive
-/// per candidate, so the plane never touches the `#[repr(C)]` [`AdmitRefusal`] out-param read or the
-/// raw vtable pointer (busbar-core denies `unsafe` outside this audited module; precedent:
-/// [`govern_admit_reason_over`](super::govern_admit_reason_over)). Materializes a host over `(app,
-/// scope)`, calls the wired [`breaker_admit_reason`] slot for the `(pool, lane)` cell, and — on a live
-/// id — leaves the settle-capable [`BreakerAdmission`] REGISTERED in `scope`'s arena (the leak-safety
-/// keystone: a dropped dispatch releases the probe). The plane holds only the returned POD
-/// [`AdmissionId`]; it NEVER holds a [`PlaneAdmission`].
+/// WIN ONE `(pool, lane)` PROBE ON THE KERNEL'S BREAKER — the function a plane's failover sync sites
+/// call per candidate. The breaker is a core capability every plane gets: the plane hands over the host
+/// it holds and the kernel reaches the shared cell store through it
+/// ([`BreakerHost::breaker_store`](super::BreakerHost::breaker_store)); the plane calls no per-plane
+/// host method. On a win the settle-capable [`BreakerAdmission`] is REGISTERED in `scope`'s arena (the
+/// leak-safety keystone: a dropped dispatch releases the probe) and the plane holds only the returned
+/// POD [`AdmissionId`]; it NEVER holds a [`PlaneAdmission`].
 ///
-/// On a refusal the returned [`AdmissionId`] is [`NONE`](AdmissionId::NONE), reconstructed into the
-/// store's own [`Unavailable`](busbar_kernel::store::Unavailable) taxonomy so [`crate::failover::walk_with`]'s
-/// `admit` closure gets the SAME refusal shape `try_admit_breaker` handed it — the reconstruction is
-/// the inverse of [`classify_unavailable`] (coarse: the ABI carries a fine [`Unavailability`] + a
-/// second-rounded recovery floor, not the exact internal epoch; the sync sites render `Retry-After`
-/// from the store's own `retry_after_secs`, never from this reconstructed value).
-// Driven by BOTH the MCP failover sync site (`mcp::reroute`) and the A2A failover sync sites
-// (`a2a::route::select_member`'s pooled walk and `a2a::relay::prepare`'s un-pooled admit), so it
-// reads dead only when BOTH planes are compiled out.
-#[allow(dead_code)]
-pub fn breaker_admit_over(
-    app: &crate::state::App,
+/// The same admit the wired [`breaker_admit_reason`] slot runs, without the hop through the kernel's
+/// own vtable: the same key validation (a null/empty or non-UTF-8 pool, or a lane past the fixed
+/// [`MAX_POOL_MEMBERS`] table, refuses), the same win-and-register, and a refusal handed back in the
+/// SAME shape that hop produced — the store's own [`Unavailable`](busbar_kernel::store::Unavailable)
+/// folded to the fine [`Unavailability`] + a second-rounded recovery floor ([`classify_unavailable`])
+/// and rebuilt from them ([`reconstruct_unavailable`]), so [`crate::failover::walk_with`]'s `admit`
+/// closure sees exactly the refusal it saw before. A bad key, a caught panic or an arena that hands
+/// back no id refuse as the unspecified reason did (a `ProbeInFlight`). The sync sites render
+/// `Retry-After` from [`retry_after_secs`], never from this reconstructed value.
+pub fn admit<H: super::BreakerHost + ?Sized>(
+    host: &H,
     scope: &super::DispatchScope,
     pool: &[u8],
     lane: u32,
 ) -> Result<AdmissionId, busbar_kernel::store::Unavailable> {
-    let key = Key {
-        size: core::mem::size_of::<Key>() as u32,
-        version: busbar_contract::abi::hot::POD_VERSION,
-        _reserved: 0,
-        scope: lane,
-        _reserved2: 0,
-        key_ptr: pool.as_ptr(),
-        key_len: pool.len(),
-        drift_state: 0,
-    };
-    let mut out = MaybeUninit::<AdmitRefusal>::uninit();
-    let id = super::with_borrowed_host(app, scope, |host, vt| {
-        (vt.breaker_admit_reason
-            .expect("breaker_admit_reason is a wired slot"))(
-            host,
-            &key as *const Key,
-            std::ptr::from_mut(&mut out),
-        )
-    });
-    if !id.is_none() {
-        return Ok(id);
+    let won = catch_unwind(AssertUnwindSafe(|| {
+        let Some((pool, lane)) = pool_lane(pool, lane) else {
+            return Err((Unavailability::Unspecified, 0)); // a bad key is not an availability fact.
+        };
+        let breakers = host.breaker_store();
+        match breakers.admit(&pool, lane) {
+            Ok(admission) => Ok(
+                scope.register_settling_admission(Box::new(BreakerAdmission {
+                    breakers: Arc::clone(breakers),
+                    key: pool,
+                    lane,
+                    _admission: admission,
+                })),
+            ),
+            Err(unavailable) => Err(classify_unavailable(
+                &unavailable,
+                busbar_kernel::store::now(),
+            )),
+        }
+    }));
+    match won {
+        Ok(Ok(id)) if !id.is_none() => Ok(id),
+        Ok(Err((reason, retry))) => Err(reconstruct_unavailable(reason, retry)),
+        // An arena that handed back no id, or a caught panic: the unspecified refusal.
+        Ok(Ok(_)) | Err(_) => Err(reconstruct_unavailable(Unavailability::Unspecified, 0)),
     }
-    // SAFETY: the host ALWAYS initializes `out` up front (see `breaker_admit_reason`), so it is a live
-    // `AdmitRefusal` on every non-live-id return.
-    let refusal = unsafe { out.assume_init() };
-    Err(reconstruct_unavailable(
-        refusal.reason,
-        refusal.retry_after_secs,
-    ))
+}
+
+/// Record a SUCCESS against the `(pool, lane)` cell in place — the fallback a settle leg takes when no
+/// arena owns the probe (or a multi-round leg whose probe was already settled). The kernel breaker's
+/// own [`PlaneBreakers::record_success`], reached through the host the plane holds.
+pub fn record_success<H: super::BreakerHost + ?Sized>(host: &H, pool: &str, lane: usize) {
+    host.breaker_store().record_success(pool, lane);
+}
+
+/// Record a canonical failure signal against the `(pool, lane)` cell in place — the fallback twin of
+/// [`record_success`]. The kernel breaker's own [`PlaneBreakers::record_signal`].
+pub fn record_signal<H: super::BreakerHost + ?Sized>(
+    host: &H,
+    pool: &str,
+    lane: usize,
+    sig: &CanonicalSignal,
+) {
+    host.breaker_store().record_signal(pool, lane, sig);
+}
+
+/// The seconds until the `(pool, lane)` cell's cooldown expires — the honest `Retry-After` for a
+/// refused dispatch, read PER MEMBER so a pool whose members trip independently answers with the
+/// soonest. The kernel breaker's own [`PlaneBreakers::retry_after_secs`]; a pure read.
+pub fn retry_after_secs<H: super::BreakerHost + ?Sized>(host: &H, pool: &str, lane: usize) -> u64 {
+    host.breaker_store().retry_after_secs(pool, lane)
 }
 
 /// The inverse of [`classify_unavailable`]: rebuild the store's own [`Unavailable`](busbar_kernel::store::Unavailable)
-/// from the ABI [`Unavailability`] reason + the second-rounded recovery floor a [`breaker_admit_over`]
-/// refusal carried back. Coarse by construction — the ABI does not carry the exact internal epoch, so
+/// from the fine [`Unavailability`] reason + the second-rounded recovery floor an [`admit`] refusal
+/// was folded to. Coarse by construction — the ABI does not carry the exact internal epoch, so
 /// the `BreakerOpen`/`AtCapacity` payloads are reconstituted from the floor. This feeds
 /// [`crate::failover::walk_with`]'s `passed_over` reasons (an operator-facing LOG on the sync sites),
 /// never a caller-facing `Retry-After` (that is the store's own `retry_after_secs`).
-// Reached only through [`breaker_admit_over`], so it shares that fn's dual-plane liveness: dead only
-// when BOTH planes are compiled out.
-#[allow(dead_code)]
 fn reconstruct_unavailable(
     reason: Unavailability,
     retry_after_secs: u64,
@@ -290,16 +307,23 @@ unsafe fn resolve_key(key: *const Key) -> Option<(String, usize)> {
     }
     // SAFETY: a non-null `key` is a live, initialized `Key` for the call (ABI discipline).
     let k = unsafe { &*key };
-    let lane = k.scope as usize;
-    if lane >= MAX_POOL_MEMBERS {
-        return None;
-    }
     if k.key_ptr.is_null() || k.key_len == 0 {
         return None;
     }
     // SAFETY: `(key_ptr, key_len)` is a live borrowed range for the call (ABI discipline).
     let bytes = unsafe { std::slice::from_raw_parts(k.key_ptr, k.key_len) };
-    match std::str::from_utf8(bytes) {
+    pool_lane(bytes, k.scope)
+}
+
+/// The `(pool, lane)` cell a pool's bytes and a lane name: `None` (→ refuse) on empty or non-UTF-8 pool
+/// bytes, or a lane past the fixed [`MAX_POOL_MEMBERS`] table. The one validation [`admit`] and the
+/// wired slots share.
+fn pool_lane(pool: &[u8], lane: u32) -> Option<(String, usize)> {
+    let lane = lane as usize;
+    if lane >= MAX_POOL_MEMBERS {
+        return None;
+    }
+    match std::str::from_utf8(pool) {
         Ok(pool) if !pool.is_empty() => Some((pool.to_string(), lane)),
         _ => None,
     }

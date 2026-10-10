@@ -502,18 +502,6 @@ fn test_memo_key(set: &[&'static PlaneDecl]) -> Vec<usize> {
         .collect()
 }
 
-/// THE ABI PLANE-KEY (the registration INDEX) for a plane's stable decl `key`, or `u8::MAX` when no
-/// registered plane owns it — the opaque numeric handle the FFI PODs carry across the C-ABI seam,
-/// resolved back to the key string via [`plane_key_at`]. This is the "registration index → key"
-/// assignment the plane ABI keys on, in place of a hard-coded `0`/`1` numbering: core spells no plane
-/// token; the number is only a position in the process registry.
-pub fn plane_key_index(key: &str) -> u8 {
-    plane_decls()
-        .iter()
-        .position(|d| d.key == key)
-        .map_or(u8::MAX, |i| i as u8)
-}
-
 /// THE SCOPE-KIND at ABI scope-kind index `idx`, DERIVED FROM REGISTRY DATA rather than a hard-coded
 /// table. Index `0` is core's neutral admission-pool topology (`"pool"`, the kind every deployment
 /// always has); indices `1..` are each installed plane's declared `PlaneDecl.scope_kinds` in
@@ -573,14 +561,6 @@ pub fn scope_kind_index(kind: &str) -> Option<u32> {
         })
         .position(|k| k == kind)
         .map(|i| i as u32)
-}
-
-/// The stable decl `key` of the plane at ABI registration index `idx`, or `None` when out of range —
-/// the inverse of [`plane_key_index`], so a host vtable slot that received the opaque numeric handle
-/// resolves it back to the key string it looks its gate set / `ingress_protocol` label up by, naming
-/// no plane token.
-pub fn plane_key_at(idx: u8) -> Option<&'static str> {
-    plane_decls().get(idx as usize).map(|d| d.key)
 }
 
 /// RESOLVE A PLANE DECLARATION BY KEY. Allocates nothing.
