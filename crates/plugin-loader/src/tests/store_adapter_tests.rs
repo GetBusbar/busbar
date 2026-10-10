@@ -5,15 +5,14 @@
 //!
 //! Three things are proven here.
 //!
-//! 1. **Every seam method answers.** One test per method across the three seams the composition
-//!    root binds — the kernel's slices, the verbs unit's disaster-recovery verbs and sealed replay
-//!    cache, the log's shipper — with the answer's CONTENT asserted, not merely its `Ok`-ness. A
-//!    seam that returned a plausible-looking nothing would pass an errors-only check.
-//! 2. **The plugin-behaviour appendix's rule for the operations this release adds.** On a store at
-//!    the published schema every one of them answers from the node-local shim: no error, and no log
-//!    line — proven with a `tracing` capture on the calling thread, the thread the adapter and the
-//!    loaded store both log on, and repeated so a warn-once latch that merely happened to be quiet
-//!    on the first pass cannot pass either.
+//! 1. **Every seam method answers.** One test per method across the seams the composition root
+//!    binds — the kernel's slices, the verbs unit's disaster-recovery verbs and sealed replay cache —
+//!    with the answer's CONTENT asserted, not merely its `Ok`-ness. A seam that returned a
+//!    plausible-looking nothing would pass an errors-only check.
+//! 2. **What the adapter answers from node memory answers quietly.** No error, and no log line —
+//!    proven with a `tracing` capture on the calling thread, the thread the adapter and the loaded
+//!    store both log on, and repeated so a warn-once latch that merely happened to be quiet on the
+//!    first pass cannot pass either. The journal is not among them: the adapter is no shipper.
 //! 3. **The published operations still pass through.** The adapter hands the store out untouched,
 //!    so a key written through it is the store's row.
 //!
@@ -25,12 +24,9 @@
 //! `crates/busbar/tests/store_adapter_verb_seam.rs`.
 
 use super::*;
-use crate::store_adapter::{
-    speaks_new_ops, ShimClock, StoreAdapter, REPLAY_TTL_SECS, STORE_ABI_WITH_NEW_OPS,
-};
+use crate::store_adapter::{ShimClock, StoreAdapter, REPLAY_TTL_SECS};
 use busbar_contract::slice::{bucket_all, CapDimension, Epoch, SliceId, SliceRequest, SliceStore};
 use busbar_contract::verb_store::Store as VerbStore;
-use busbar_kernel_wal::Record;
 use std::sync::Arc;
 
 /// The build's store fixture (reached by kind), as the published operations' backing.
@@ -40,8 +36,8 @@ fn backing() -> Arc<dyn busbar_contract::records::RecordStore> {
 
 /// An adapter over a store bound to the PUBLISHED payload schema (2), built through the same
 /// constructor the composition root calls.
-fn adapter_over_published_schema() -> Option<StoreAdapter> {
-    Some(StoreAdapter::new(backing(), PUBLISHED_STORE_SCHEMA))
+fn adapter_over_published_schema() -> StoreAdapter {
+    StoreAdapter::new(backing(), PUBLISHED_STORE_SCHEMA)
 }
 
 /// A slice draw for one bucket's request axis.
@@ -54,39 +50,11 @@ fn slice_request(wanted: u64, epoch: u64) -> SliceRequest {
     }
 }
 
-/// The payload schema at which the added operations gain a wire is ABOVE every schema this binary
-/// can load, so the shim is the answer for every loadable store — which is what makes the appendix
-/// rule a property of the adapter rather than of one test's fixture.
-#[test]
-fn no_payload_schema_this_binary_can_load_speaks_the_added_operations() {
-    let window = crate::registry::supported_abi("store");
-    // One version per kind (C21/ABI-o1): the store window is a single element, so the floor and the
-    // max are the same current `ABI_VERSION`; `window[window.len() - 1]` is max-safe for a 1-element
-    // window where `window[1]` would panic.
-    let (floor, max) = (window[0], window[window.len() - 1]);
-    for abi in floor..=max {
-        assert!(
-            !speaks_new_ops(abi),
-            "payload schema v{abi} is inside this binary's store window, so a store at it can be \
-             loaded; if it claimed the added operations the adapter would try a wire that is not \
-             there"
-        );
-    }
-    assert!(
-        STORE_ABI_WITH_NEW_OPS > max,
-        "the schema carrying the added operations (v{STORE_ABI_WITH_NEW_OPS}) must sit above the \
-         window's top (v{max}); if it ever falls inside, the shim methods need their wire half"
-    );
-    assert!(speaks_new_ops(STORE_ABI_WITH_NEW_OPS));
-}
-
 /// `reserve` grants what was asked for, at the shim's own epoch, and the grant is outstanding until
 /// it is released.
 #[test]
 fn the_slice_seam_reserves_in_full_at_the_shim_epoch() {
-    let Some(adapter) = adapter_over_published_schema() else {
-        return;
-    };
+    let adapter = adapter_over_published_schema();
     let grant = adapter
         .reserve(&slice_request(250, 0))
         .expect("a slice draw on a published store must not fail");
@@ -114,9 +82,7 @@ fn the_slice_seam_reserves_in_full_at_the_shim_epoch() {
 /// stale-epoch refusal is an error, and there is no fleet for the node to be stale against.
 #[test]
 fn the_slice_seam_stamps_a_foreign_epoch_rather_than_refusing_it() {
-    let Some(adapter) = adapter_over_published_schema() else {
-        return;
-    };
+    let adapter = adapter_over_published_schema();
     let grant = adapter
         .reserve(&slice_request(10, 9_999))
         .expect("a draw at a foreign epoch must not fail");
@@ -128,9 +94,7 @@ fn the_slice_seam_stamps_a_foreign_epoch_rather_than_refusing_it() {
 /// refused.
 #[test]
 fn the_slice_seam_releases_and_forgives_an_unknown_id() {
-    let Some(adapter) = adapter_over_published_schema() else {
-        return;
-    };
+    let adapter = adapter_over_published_schema();
     let grant = adapter.reserve(&slice_request(100, 0)).expect("reserve");
     adapter.release(grant.id, 40).expect("release");
     let state = adapter.shim_state();
@@ -146,79 +110,11 @@ fn the_slice_seam_releases_and_forgives_an_unknown_id() {
     );
 }
 
-/// THE SHIPPED COUNT AND THE HEAD ADVANCE TOGETHER OR NOT AT ALL.
-///
-/// The module preamble supports two logs shipping through one adapter. The count and the head are
-/// two halves of one answer — "n records acknowledged, ending at this identity" — and advancing
-/// them in separate critical sections lets a reader see a count from one shipper beside a head from
-/// the other. With both under one lock, whatever the reader sees is a pair that was true together.
-#[test]
-fn concurrent_shippers_never_split_the_count_from_the_head() {
-    let Some(adapter) = adapter_over_published_schema() else {
-        return;
-    };
-    const PER_SHIPPER: u64 = 20_000;
-    let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-
-    // The observer reads the pair while the shippers run. "n acknowledged, ending here" is one
-    // answer: a count above zero with no head at all is that answer torn in half.
-    let observer = {
-        let adapter = adapter.clone();
-        let done = done.clone();
-        std::thread::spawn(move || {
-            let mut torn = 0u64;
-            while !done.load(std::sync::atomic::Ordering::Relaxed) {
-                let count = adapter.shim_state().records_shipped;
-                if count > 0 && adapter.head().is_none() {
-                    torn += 1;
-                }
-            }
-            torn
-        })
-    };
-
-    let mut handles = Vec::new();
-    for lane in 1..=2u64 {
-        let adapter = adapter.clone();
-        handles.push(std::thread::spawn(move || {
-            let mut shipper = adapter.shipper();
-            for seq in 1..=PER_SHIPPER {
-                shipper
-                    .ship(&[Record::new(lane, seq, b"x".to_vec())])
-                    .expect("a batch is acknowledged, never refused");
-            }
-        }));
-    }
-    for h in handles {
-        h.join().expect("shipper thread");
-    }
-    done.store(true, std::sync::atomic::Ordering::Relaxed);
-    let torn = observer.join().expect("observer thread");
-    assert_eq!(
-        torn, 0,
-        "the observer saw a non-zero shipped count beside no head at all {torn} time(s): the count \
-         and the head are advancing in separate critical sections"
-    );
-
-    assert_eq!(
-        adapter.shim_state().records_shipped,
-        2 * PER_SHIPPER,
-        "every acknowledged record is counted exactly once"
-    );
-    let head = adapter.head().expect("head");
-    assert_eq!(
-        head.1, PER_SHIPPER,
-        "the head is the last identity one of the shippers acknowledged"
-    );
-}
-
 /// The sealed cache: a first sighting is `None` and RESERVES the slot, a commit fixes the bytes,
 /// and a replay returns exactly those bytes — the whole point of the seam.
 #[test]
 fn the_verb_seam_replay_cache_reserves_then_replays_the_committed_bytes() {
-    let Some(adapter) = adapter_over_published_schema() else {
-        return;
-    };
+    let adapter = adapter_over_published_schema();
     let key = ("set_operator_key".to_string(), "idem-7".to_string());
     assert_eq!(
         adapter.replay_new_verb(&key).expect("first sighting"),
@@ -275,12 +171,8 @@ impl TestClock {
 }
 
 /// [`adapter_over_published_schema`] whose sealed replay cache ages against `clock`.
-fn adapter_at(clock: &TestClock) -> Option<StoreAdapter> {
-    Some(StoreAdapter::with_clock(
-        backing(),
-        PUBLISHED_STORE_SCHEMA,
-        clock.shim_clock(),
-    ))
+fn adapter_at(clock: &TestClock) -> StoreAdapter {
+    StoreAdapter::with_clock(backing(), PUBLISHED_STORE_SCHEMA, clock.shim_clock())
 }
 
 fn replay_key(name: &str) -> (String, String) {
@@ -291,9 +183,7 @@ fn replay_key(name: &str) -> (String, String) {
 #[test]
 fn a_replay_inside_the_window_returns_the_committed_bytes() {
     let clock = TestClock::default();
-    let Some(adapter) = adapter_at(&clock) else {
-        return;
-    };
+    let adapter = adapter_at(&clock);
     let key = replay_key("idem-a");
     assert_eq!(adapter.replay_new_verb(&key).expect("first sighting"), None);
     adapter
@@ -313,9 +203,7 @@ fn a_replay_inside_the_window_returns_the_committed_bytes() {
 #[test]
 fn a_slot_past_the_window_is_neither_answered_nor_held() {
     let clock = TestClock::default();
-    let Some(adapter) = adapter_at(&clock) else {
-        return;
-    };
+    let adapter = adapter_at(&clock);
     let committed = replay_key("idem-a");
     adapter.replay_new_verb(&committed).expect("first sighting");
     adapter
@@ -353,42 +241,11 @@ fn a_slot_past_the_window_is_neither_answered_nor_held() {
     );
 }
 
-/// The shipper acknowledges a batch, counts it, and remembers the last identity.
-#[test]
-fn the_shipper_seam_acknowledges_a_batch_and_keeps_the_head() {
-    let Some(adapter) = adapter_over_published_schema() else {
-        return;
-    };
-    let mut shipper = adapter.shipper();
-    assert_eq!(adapter.head(), None, "nothing shipped yet");
-    shipper
-        .ship(&[
-            Record::new(7, 1, b"a".to_vec()),
-            Record::new(7, 2, b"b".to_vec()),
-        ])
-        .expect("a batch on a published store is acknowledged, never refused");
-    assert_eq!(adapter.shim_state().records_shipped, 2);
-    assert_eq!(
-        adapter.head(),
-        Some((7, 2)),
-        "the last identity of the batch"
-    );
-    shipper.ship(&[]).expect("an empty batch");
-    assert_eq!(adapter.head(), Some((7, 2)), "an empty batch moves nothing");
-    shipper
-        .ship(&[Record::new(7, 3, b"c".to_vec())])
-        .expect("a later batch");
-    assert_eq!(adapter.shim_state().records_shipped, 3);
-    assert_eq!(adapter.head(), Some((7, 3)));
-}
-
 /// The published operations are not touched by the adapter: the store it hands out is the loaded
 /// plugin, and its rows are the plugin's.
 #[test]
 fn the_published_operations_pass_through_the_adapter_to_the_plugin() {
-    let Some(adapter) = adapter_over_published_schema() else {
-        return;
-    };
+    let adapter = adapter_over_published_schema();
     assert_eq!(
         adapter.abi_version(),
         PUBLISHED_STORE_SCHEMA,

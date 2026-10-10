@@ -433,10 +433,10 @@ pub struct RouterDispatch {
     errands: tokio::sync::mpsc::UnboundedSender<Errand>,
 }
 
-/// The node's claim journal (item 271), handed to [`RouterDispatch`] at construction and set at
+/// The node's claim journal (item 271), read by the node's key replay cache ([`CellJournal`]) and set at
 /// most once, right after `AdminNode`'s own `units.admin.claims` is known (see [`mount`]) — before
 /// the router this dispatch drives is reachable by any real request. A `OnceLock` rather than a
-/// plain field because [`RouterDispatch::new`] runs BEFORE `AdminBinding::claims` is resolved (the
+/// plain field because the replay cache is built BEFORE `AdminBinding::claims` is resolved (the
 /// binding is built from the very `dispatch` this type becomes), so there is one moment between
 /// construction and first use where the answer is not yet known — never a moment where it is asked
 /// twice.
@@ -446,6 +446,24 @@ pub(crate) type ClaimJournalCell =
 
 #[cfg(feature = "root-admin")]
 use busbar_core_admin::idempotency::ClaimJournal;
+#[cfg(feature = "root-admin")]
+use busbar_core_admin::keys::KeyReplayCache;
+
+/// The node's claim journal as the replay cache sees it: the cell, read at the moment a claim is
+/// taken. The cache is built before the journal is known (see [`ClaimJournalCell`]); every claim it
+/// takes comes from a real request, which cannot arrive until the cell is set, so a claim is never
+/// dropped for a cell that was merely early.
+#[cfg(feature = "root-admin")]
+struct CellJournal(ClaimJournalCell);
+
+#[cfg(feature = "root-admin")]
+impl ClaimJournal for CellJournal {
+    fn journal_claim(&self, key: &(String, String), now: u64) {
+        if let Some(journal) = self.0.get().and_then(Option::as_ref) {
+            journal.journal_claim(key, now);
+        }
+    }
+}
 
 #[cfg(feature = "root-admin")]
 impl RouterDispatch {
@@ -463,13 +481,13 @@ impl RouterDispatch {
     pub fn new(
         inner: axum::Router,
         runtime: &tokio::runtime::Handle,
-        claims: ClaimJournalCell,
+        replays: Arc<KeyReplayCache>,
     ) -> Self {
         let (errands, mut inbox) = tokio::sync::mpsc::unbounded_channel::<Errand>();
         runtime.spawn(async move {
             while let Some((request, reply)) = inbox.recv().await {
                 let inner = inner.clone();
-                let claims = claims.clone();
+                let replays = replays.clone();
                 // One task per operation, so a slow verb cannot hold up the one behind it — the
                 // surface was concurrent before the switch and stays concurrent through it.
                 tokio::spawn(async move {
@@ -479,7 +497,7 @@ impl RouterDispatch {
                     // so the composition says, here, which unit the handler's ask belongs to.
                     let unit = request.unit;
                     let answer = busbar_core_admin::restart::UnitDrain::of_unit(unit)
-                        .scoping(call(inner, &request, &claims))
+                        .scoping(call(inner, &request, &replays))
                         .await;
                     let _ = reply.send(answer);
                 });
@@ -491,19 +509,16 @@ impl RouterDispatch {
 
 /// Hand one request to the router and take its whole answer.
 ///
-/// `claims` (item 271) rides on the built [`axum::http::Request`] as an extension — never as a
-/// header, which would put it on the wire this seam otherwise forwards byte-identical to the
-/// mounted surface — so `busbar_core_admin::keys::create_key`/`rotate_key` can read it with the same
-/// `Option<axum::Extension<_>>` pattern this crate already uses for the resolved principal. Absent
-/// (`claims.get()` not yet set, or set to `None`), the extension is simply never inserted, which is
-/// exactly the shape a router built by any OTHER mount (every test/test-support harness) already has
-/// — those requests never carry the extension either, and the handlers' `Option<Extension<_>>`
-/// param already accounts for "not present" as `None`.
+/// `replays` is the node's one key replay cache, built once for the life of the process (see
+/// [`mount`]); it rides on the built [`axum::http::Request`] as an extension — never as a header,
+/// which would put it on the wire this seam otherwise forwards byte-identical to the mounted
+/// surface — so `busbar_core_admin::keys::create_key`/`rotate_key` replay and reserve against it.
+/// It journals each claim it takes (item 271) on the node's journal where one is bound.
 #[cfg(feature = "root-admin")]
 async fn call(
     inner: axum::Router,
     request: &AdminRequest,
-    claims: &ClaimJournalCell,
+    replays: &Arc<KeyReplayCache>,
 ) -> AdminAnswer {
     use tower::ServiceExt;
 
@@ -513,9 +528,7 @@ async fn call(
     for (name, value) in &request.headers {
         builder = builder.header(name.as_str(), value.as_str());
     }
-    if let Some(journal) = claims.get().cloned().flatten() {
-        builder = builder.extension(journal);
-    }
+    builder = builder.extension(Arc::clone(replays));
     let Ok(http) = builder.body(axum::body::Body::from(request.body.clone())) else {
         // A method, path or header the http types themselves will not carry. That is a request
         // this surface cannot make sense of, which is the 400 answer and not the 403 one: nothing
@@ -677,11 +690,14 @@ pub fn mount(
     // every call after, and it is filled exactly once, below, the instant the answer is known — long
     // before the router this dispatch drives can see a real request.
     let claims: ClaimJournalCell = Arc::new(std::sync::OnceLock::new());
-    let dispatch: Arc<dyn AdminDispatch> = Arc::new(RouterDispatch::new(
-        inner.clone(),
-        &runtime,
+    // THE NODE'S KEY REPLAY CACHE, built here once: this function runs once per process, so the
+    // cache lives as long as the node does and a mint's in-flight sentinel outlives every config
+    // reload. Its journal is the cell.
+    let replays = Arc::new(KeyReplayCache::with_journal(Arc::new(CellJournal(
         Arc::clone(&claims),
-    ));
+    ))));
+    let dispatch: Arc<dyn AdminDispatch> =
+        Arc::new(RouterDispatch::new(inner.clone(), &runtime, replays));
     let node = Arc::new(AdminNode::new(kernel, build_units(dispatch)));
     let _ = claims.set(
         node.units

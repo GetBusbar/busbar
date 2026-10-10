@@ -18,9 +18,9 @@ const PUBLISHED_STORE_SCHEMA: u32 = 2;
 /// dropped-in `cdylib`. It is on the auth kind's memory ABI (its row is a door row, and the table names
 /// its logic crate, so its cdylib is `<logic>_plugin`); every SDK-built library still answers the
 /// plugin-ABI handshake these tests drive (`busbar_abi`, `busbar_plugin_kind` and the four
-/// operational symbols), so it is the subject the cold auth cdylib was. Under CI a missing cdylib is
-/// a hard failure ([`super::both_ways::cdylib`] asserts it), never a silent skip.
-fn json_lane_plugin_path() -> Option<std::path::PathBuf> {
+/// operational symbols), so it is the subject the cold auth cdylib was. A missing cdylib is a hard
+/// failure naming the command that builds it ([`super::both_ways::cdylib`]), never a silent skip.
+fn json_lane_plugin_path() -> std::path::PathBuf {
     let (logic, _) = super::both_ways::door_fixture("auth");
     super::both_ways::cdylib(&format!("{logic}_plugin"))
 }
@@ -33,10 +33,7 @@ fn json_lane_plugin_path() -> Option<std::path::PathBuf> {
 /// every proc-macro and dependency dylib cargo put there.
 #[test]
 fn validate_and_inventory() {
-    let Some(path) = json_lane_plugin_path() else {
-        eprintln!("skip: the JSON-lane auth cdylib is not built");
-        return;
-    };
+    let path = json_lane_plugin_path();
     assert_eq!(validate_plugin(&path).expect("validate"), TRANSPORT_VERSION);
 
     let file = path.file_name().unwrap().to_owned();
@@ -201,10 +198,7 @@ fn the_library_extension_match_uses_this_filesystems_case_rule() {
 /// invalid one or crashing on it.
 #[test]
 fn inventory_reports_valid_and_invalid_libraries_in_the_same_directory() {
-    let Some(real_plugin) = json_lane_plugin_path() else {
-        eprintln!("skip: the JSON-lane auth cdylib is not built");
-        return;
-    };
+    let real_plugin = json_lane_plugin_path();
     let dir = std::env::temp_dir().join(format!(
         "busbar-inventory-mixed-{}-{}",
         std::process::id(),
@@ -249,10 +243,7 @@ fn inventory_reports_valid_and_invalid_libraries_in_the_same_directory() {
 /// exports) are two different attacks and must not be conflatable into one check.
 #[test]
 fn wire_up_raw_rejects_a_kind_mismatch_against_the_seam_and_the_manifest() {
-    let Some(auth_plugin) = json_lane_plugin_path() else {
-        eprintln!("skip: the JSON-lane auth cdylib is not built");
-        return;
-    };
+    let auth_plugin = json_lane_plugin_path();
     let bytes = std::fs::read(&auth_plugin).expect("read the JSON-lane fixture cdylib");
     let export = busbar_contract::abi::mechanism::kind::EXPORT;
     let auth = busbar_contract::abi::mechanism::kind::AUTH;
@@ -300,10 +291,7 @@ fn wire_up_raw_rejects_a_kind_mismatch_against_the_seam_and_the_manifest() {
 /// `busbar_open`.
 #[test]
 fn a_door_less_json_contract_library_is_refused_naming_the_rebuild() {
-    let Some(path) = super::both_ways::example_cdylib("json_contract_auth") else {
-        eprintln!("skip: the json_contract_auth example cdylib is not built");
-        return;
-    };
+    let path = super::both_ways::example_cdylib("json_contract_auth");
     let names_the_rebuild = |why: &str| {
         assert!(
             why.contains("busbar_plugin_door"),
@@ -466,10 +454,7 @@ fn transport_error_classification() {
 /// exits.
 #[test]
 fn validate_plugin_unloads_on_a_worker_not_the_callers_thread() {
-    let Some(path) = json_lane_plugin_path() else {
-        eprintln!("skip: the JSON-lane auth cdylib is not built");
-        return;
-    };
+    let path = json_lane_plugin_path();
     let before = UNLOADS_ON_WORKER.with(std::cell::Cell::get);
     validate_plugin(&path).expect("the JSON-lane fixture validates");
     let after = UNLOADS_ON_WORKER.with(std::cell::Cell::get);
@@ -591,5 +576,7 @@ fn a_panicking_close_during_reclaim_does_not_take_the_engine_down() {
 
 #[path = "ffi_guard_tests.rs"]
 mod ffi_guard_tests;
+#[path = "no_silent_skip_tests.rs"]
+mod no_silent_skip_tests;
 #[path = "store_adapter_tests.rs"]
 mod store_adapter_tests;

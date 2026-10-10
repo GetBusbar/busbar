@@ -626,70 +626,6 @@ fn an_admin_unit_settles_at_zero_requests_and_zero_fee() {
     assert_eq!(evidence.fee_units, 0);
 }
 
-/// The nonce is drawn, not derived. Two draws over the same unit must not agree, or a one-time
-/// secret's placeholder would be predictable from the secret it protects.
-#[test]
-fn two_nonces_over_one_unit_do_not_agree() {
-    use busbar_core_admin::NonceSource;
-    let source = ArrivalNonce(1_700_000_000);
-    let mut first = [0u8; 16];
-    let mut second = [0u8; 16];
-    source.fill(&mut first);
-    source.fill(&mut second);
-    assert_ne!(first, second);
-    assert_ne!(first, [0u8; 16]);
-}
-
-/// Both halves of the nonce are drawn, and the second is not the first said again.
-///
-/// The source it replaced hashed a stack address — the same address on every call from the same
-/// frame — and then hashed its own first output to make the second half, so a 128-bit nonce
-/// carried at most 64 bits of source and the back half was a function of the front. This walks
-/// enough draws that either half repeating, or the two halves agreeing, would show.
-///
-/// What this cannot assert is unpredictability, which is a property of the SOURCE and not of any
-/// finite sample: it is held by reaching the substrate's own operating-system draw — the one a
-/// key secret is minted from — rather than by anything checkable here.
-#[test]
-fn both_halves_of_a_nonce_are_drawn_and_neither_repeats() {
-    use busbar_core_admin::NonceSource;
-    use std::collections::HashSet;
-
-    let source = ArrivalNonce(1_700_000_000);
-    let mut fronts = HashSet::new();
-    let mut backs = HashSet::new();
-    for _ in 0..512 {
-        let mut drawn = [0u8; 16];
-        source.fill(&mut drawn);
-        assert_ne!(drawn, [0u8; 16], "the source handed back nothing");
-        assert_ne!(
-            drawn[..8],
-            drawn[8..],
-            "the two halves of one nonce agree, so one of them is the other"
-        );
-        fronts.insert(drawn[..8].to_vec());
-        backs.insert(drawn[8..].to_vec());
-    }
-    assert_eq!(fronts.len(), 512, "a front half repeated across draws");
-    assert_eq!(backs.len(), 512, "a back half repeated across draws");
-}
-
-/// The other half of the nonce, and the half a random draw cannot be asserted about: the arrival
-/// epoch is what makes two units' nonces distinct, so a source that handed two units the same
-/// bytes still cannot make them collide. It touches the first eight bytes and leaves the rest of
-/// the material alone, which is what keeps the entropy the entropy.
-#[test]
-fn the_arrival_epoch_is_what_makes_two_units_nonces_distinct() {
-    let material = [7u8; 16];
-    assert_ne!(
-        mix_arrival(material, 1_700_000_000),
-        mix_arrival(material, 1_700_000_001)
-    );
-    assert_ne!(mix_arrival(material, 1_700_000_000), material);
-    assert_eq!(mix_arrival(material, 0), material);
-    assert_eq!(mix_arrival(material, u64::MAX)[8..], material[8..]);
-}
-
 /// Route is the one place that chooses between the unit's general execution path and its two
 /// dedicated minting methods, and the choice is exactly the two credential-minting verbs. Every
 /// other verb on the keys surface — reading them, revoking one, listing a key's usage — goes
@@ -799,32 +735,6 @@ fn a_replayed_idempotency_key_answers_the_first_answers_bytes() {
         .expect("a committed key replays");
     assert_eq!(replayed, first);
     assert_eq!(AdminAnswer::unpack(&replayed), Some(answer));
-}
-
-/// What the replay encoder writes: an identity, and never the secret beside it. The identity is
-/// enough to key a slot and carries nothing a second holder could present.
-#[test]
-fn the_replay_encoder_carries_an_identity_and_never_a_secret() {
-    use busbar_core_admin::ReplayEncoder;
-
-    let admin = crate::root::kernel::new_kernel().admin_token();
-    let outcome = busbar_core_admin::MintedKeyOutcome {
-        id: "vk_1".to_string(),
-        secret: busbar_core_admin::test_support::secret_once(
-            &admin,
-            42,
-            UnitKey::new(1),
-            "body.secret",
-        ),
-        expires_at: None,
-    };
-    let bytes = PackedReplay.encode(&outcome);
-    assert_eq!(bytes, b"vk_1");
-    assert_eq!(
-        PackedReplay.encode(&outcome),
-        bytes,
-        "two encodings of one outcome are one answer"
-    );
 }
 
 /// The dispatch a test drives the loop against: it answers, and its answer is recognisable, so a
@@ -3059,8 +2969,6 @@ fn a_view_reaches_neither_the_dispatch_nor_the_posture_check() {
                 a_ledger_request("/api/v1/admin/ledger/totals"),
             ),
             None::<Arc<dyn busbar_contract::verb_store::Store + Send + Sync>>,
-            ArrivalNonce(1),
-            PackedReplay,
             CONFIG_CLASS_RULES,
             Arc::new(busbar_core_admin::rate::MutationLimiter::new()),
         );
@@ -3102,8 +3010,6 @@ fn a_view_reaches_neither_the_dispatch_nor_the_posture_check() {
             a_ledger_request("/api/v1/admin/adjust"),
         ),
         None::<Arc<dyn busbar_contract::verb_store::Store + Send + Sync>>,
-        ArrivalNonce(1),
-        PackedReplay,
         CONFIG_CLASS_RULES,
         Arc::new(busbar_core_admin::rate::MutationLimiter::new()),
     );
@@ -5903,6 +5809,156 @@ fn a_signed_record_and_a_signed_checkpoint_verify_against_the_served_audit_keys(
     checkpoint
         .verify_seal(&crate::root::durability::KeySetVerifier::new(keys))
         .expect("the signed checkpoint verifies against the served key");
+}
+
+// ---------------------------------------------------------------------------------------------
+// H3 (ARCHITECT 2026-10-07 ruling (d)): THE DURABLE VERBS OVER A JOURNAL THE STORE KEEPS
+// ---------------------------------------------------------------------------------------------
+
+/// A book with no data directory whose journal is kept by `slots`, as the production boot builds
+/// one over the configured store.
+#[cfg(test)]
+fn a_book_over_the_store(
+    slots: &crate::root::store_double::RecordSlots,
+) -> Arc<Mutex<crate::root::durability::Durability>> {
+    let lane = crate::root::durability::JournalLane::start(slots.calls(), "test-store")
+        .expect("the lane starts");
+    Arc::new(Mutex::new(
+        crate::root::durability::build_on_store(
+            &crate::root::durability::DurabilityConfig { data_dir: None },
+            0,
+            lane,
+            Box::new(busbar_kernel_ledger::legacy::RecordingRows::new()),
+            Box::new(|| None),
+            None,
+        )
+        .expect("the store reads back"),
+    ))
+}
+
+/// The status and body of a packed admin answer.
+#[cfg(test)]
+fn status_and_body(packed: &[u8]) -> (u16, String) {
+    let answer = AdminAnswer::unpack(packed).expect("a packed answer");
+    (
+        answer.status,
+        String::from_utf8_lossy(&answer.body).into_owned(),
+    )
+}
+
+/// **A SIGNED BACK-DATED CORRECTION SURVIVES A RESTART ON A NODE WITH NO DATA DIRECTORY**
+/// (ARCHITECT 2026-10-07 H3 ruling (a), (b), (d)): `amend_rate_history` answers 200 only once the
+/// store acknowledged its record, and a fresh book over the same store reads the amendment back,
+/// figures and all.
+///
+/// RED before the fix: the journal shipped to the store adapter's shim, which acknowledged and kept
+/// a count — the verb answered 200 and the restarted book held no amendment.
+#[test]
+fn a_correction_on_a_node_with_no_data_dir_is_kept_by_the_store_and_survives_a_restart() {
+    let slots = crate::root::store_double::RecordSlots::new();
+    {
+        let book = a_book_over_the_store(&slots);
+        let answered = amend_rate_history_effect(
+            &a_seeded_history(),
+            Some(&a_journal_over(&book)),
+            &a_priced_correction(5, serde_json::json!(1.5)),
+            6,
+            a_sealed_operator(),
+            &an_attribution(),
+        )
+        .expect("the correction applies");
+        let (status, body) = status_and_body(&answered);
+        assert_eq!(status, 200, "{body}");
+    }
+    let restarted = a_book_over_the_store(&slots);
+    let records = replayed_amendments(&restarted.lock().unwrap());
+    assert_eq!(
+        records.len(),
+        1,
+        "the store kept the amendment and the restart read it back"
+    );
+    assert_eq!(records[0].sealed_fee, 5);
+}
+
+/// **A STORE THAT REFUSES THE RECORD REFUSES THE VERB** (ARCHITECT 2026-10-07 H3 ruling (d)):
+/// `amend_rate_history` answers 503 with the store's reason, never 200 over a record nothing kept.
+///
+/// RED before the fix: the verb answered 200.
+#[test]
+fn a_correction_the_store_refuses_answers_503_with_the_reason() {
+    let slots = crate::root::store_double::RecordSlots::new();
+    slots.refuse(true);
+    let book = a_book_over_the_store(&slots);
+    let answered = amend_rate_history_effect(
+        &a_seeded_history(),
+        Some(&a_journal_over(&book)),
+        &a_priced_correction(5, serde_json::json!(1.5)),
+        6,
+        a_sealed_operator(),
+        &an_attribution(),
+    )
+    .expect("an answer, not an error");
+    let (status, body) = status_and_body(&answered);
+    assert_eq!(status, 503, "{body}");
+    assert!(
+        body.contains("the test store refuses writes"),
+        "the store's reason is stated: {body}"
+    );
+    // A second correction while the store still refuses records nothing at all.
+    let before = book.lock().unwrap().journal.next_seq();
+    let again = amend_rate_history_effect(
+        &a_seeded_history(),
+        Some(&a_journal_over(&book)),
+        &a_priced_correction(6, serde_json::json!(2)),
+        7,
+        a_sealed_operator(),
+        &an_attribution(),
+    )
+    .expect("an answer");
+    assert_eq!(status_and_body(&again).0, 503);
+    assert_eq!(
+        book.lock().unwrap().journal.next_seq(),
+        before,
+        "nothing is recorded while the store refuses"
+    );
+}
+
+/// **`commit_upgrade` OVER A STORE THAT REFUSES ANSWERS 503** with the reason ("a commit nothing
+/// recorded did not happen"), and 200 over a store that takes it (ARCHITECT 2026-10-07 H3 ruling
+/// (d)).
+///
+/// RED before the fix: 200 over the refusing store.
+#[test]
+fn commit_upgrade_answers_only_once_the_store_kept_its_record() {
+    let body = serde_json::to_vec(&serde_json::json!({ "version": bound::RUNNING_RELEASE }))
+        .expect("json");
+
+    let refusing = crate::root::store_double::RecordSlots::new();
+    refusing.refuse(true);
+    let book = a_book_over_the_store(&refusing);
+    let answer =
+        bound::commit_upgrade_effect(&body, 1_700_000_000, "admin", Some(&a_journal_over(&book)))
+            .expect("an answer");
+    assert_eq!(
+        answer.status,
+        503,
+        "{}",
+        String::from_utf8_lossy(&answer.body)
+    );
+    assert!(String::from_utf8_lossy(&answer.body).contains("the test store refuses writes"));
+
+    let taking = crate::root::store_double::RecordSlots::new();
+    let book = a_book_over_the_store(&taking);
+    let answer =
+        bound::commit_upgrade_effect(&body, 1_700_000_000, "admin", Some(&a_journal_over(&book)))
+            .expect("an answer");
+    assert_eq!(
+        answer.status,
+        200,
+        "{}",
+        String::from_utf8_lossy(&answer.body)
+    );
+    assert!(taking.rows_under(crate::root::durability::JOURNAL_SCHEMA) >= 1);
 }
 
 /// ROUTE IS FAIL-CLOSED ON AN ABSENT GRANT (audit root-R1 M7).
