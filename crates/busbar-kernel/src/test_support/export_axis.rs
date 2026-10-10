@@ -199,7 +199,7 @@ fn by_double(rows: &ExportRows<'static>, module: &str) -> Option<ScrapeDouble> {
 /// under content types of its own ([`SCRAPE_DOUBLE_CONTENT_TYPE`],
 /// [`SCRAPE_DOUBLE_HOOKS_CONTENT_TYPE`]), so a test can see the kernel passes an answer through
 /// verbatim. What the REAL scrape sink renders and words is proven where it is linked
-/// (`crates/busbar/tests/export_scrape_linked_sink.rs`).
+/// (`crates/busbar/src/root/tests/linked.rs`).
 #[derive(Debug, Clone, Copy)]
 pub struct ScrapeDouble;
 

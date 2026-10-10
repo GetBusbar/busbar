@@ -3,7 +3,7 @@
 //! scrape sink handed the snapshot renders the 1.5.5 exposition from it. The comparison reads both
 //! snapshots through one stable test view ([`rendered`]) rather than through a scrape sink (R-FIX3:
 //! the kernel's tests name no export plugin; the scrape sink's own rendering of a snapshot is proven
-//! where it is linked, `crates/busbar/tests/export_scrape_linked_sink.rs`).
+//! where it is linked, `crates/busbar/src/root/tests/linked.rs`).
 
 use super::*;
 use metrics_exporter_prometheus::formatting as reference;

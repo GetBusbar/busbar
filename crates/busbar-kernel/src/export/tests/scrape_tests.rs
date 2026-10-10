@@ -6,7 +6,7 @@
 //! 2026-09-27; ARCHITECT Q-U2-4); the snapshot is lent only to the crossing granted it; and what the
 //! sink answers reaches the scrape verbatim. The sink here is the stand-in axis's scrape DOUBLE
 //! (`test_support::export_axis::ScrapeDouble`, R-FIX3); the real scrape sink's rendering is proven
-//! where it is linked (`crates/busbar/tests/export_scrape_linked_sink.rs`).
+//! where it is linked (`crates/busbar/src/root/tests/linked.rs`).
 
 use super::*;
 use crate::config::{resolve_export, ExportCfg, ExportDefs};

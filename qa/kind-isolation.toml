@@ -1765,8 +1765,8 @@ cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain 
 [[law0]]
 crate = "busbar-kernel"
 axis  = "export"
-count = "33"
-cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance"
+count = "28"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance. -5 for R-FIX3: the kernel's tests drop the export-prometheus dev-dependency and run on the stand-in axis's scrape double"
 
 [[law0]]
 crate = "busbar-kernel"
@@ -1783,14 +1783,14 @@ cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain 
 [[law0]]
 crate = "busbar-kernel"
 axis  = "instance:export"
-count = "68"
-cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance"
+count = "67"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance. -1 for R-FIX3 (the kernel's export tests run on the scrape double)"
 
 [[law0]]
 crate = "busbar-kernel"
 axis  = "instance:secret"
-count = "117"
-cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance"
+count = "115"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance. -2 for R-FIX3 (the kernel's plugin tests move onto in-crate doubles)"
 
 [[law0]]
 crate = "busbar-kernel"
