@@ -584,6 +584,7 @@ fn built_slots(cfg: &RootCfg) -> BTreeMap<&'static str, Arc<dyn Any + Send + Syn
                 tool_defs: cfg.tool_defs.as_any(),
                 public_url: cfg.public_url.as_deref(),
                 prior: None,
+                providers: None,
             };
             (decl.build)(&ctx).map(|obj| (decl.key, obj))
         })
