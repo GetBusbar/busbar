@@ -421,6 +421,10 @@ slot!(
 /// The most units the instance keeps state for at once; past it, the oldest is dropped first.
 pub const MAX_UNITS: usize = 4096;
 
+/// The open breaker's reason as the kernel spells it (`RefusalCode::BreakerOpen`'s word): the words
+/// this door says a walk's exhaustion in where it repeats them, as predev's door said it.
+const BREAKER_OPEN_WORD: &str = "breaker_open";
+
 /// One unit's state, from its arrival to its end.
 struct CallUnit {
     /// The unit's own key, as the kernel minted it.
@@ -2919,7 +2923,17 @@ slot!(
                 _ => None,
             })
         });
-        let text = input.field(|i| &i.text).bytes();
+        // THE WORDS the refusal is said in: the kernel's text, but for the walk's exhaustion (an open
+        // breaker, a walk out of members or out of time) the reason's own word, as predev's door said
+        // it, wherever this door repeats the words (its generic error, a task's failure): the
+        // kernel's text there is the walk's own sentence, which predev never handed this door.
+        let text: &[u8] = if given.cause != REFUSAL_ARRIVE
+            && given.reason == busbar_contract::abi::plane::RefusalCode::BreakerOpen.code()
+        {
+            BREAKER_OPEN_WORD.as_bytes()
+        } else {
+            input.field(|i| &i.text).bytes()
+        };
         // The tool a refused `tools/call` named, where its arrival read one.
         let called = instance.get().and_then(|plane| {
             plane.units.with(&given.unit, |unit| {

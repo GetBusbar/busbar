@@ -526,7 +526,7 @@ use busbar_kernel::store::{BreakerCfg, TripConfig, TripMode};
 /// back to the ADR-0002 defaults. Was an inherent `config::BreakerCfg::to_runtime` method; now a
 /// free function because BOTH the config type and the runtime type are foreign to this crate
 /// (substrate-owned), which the orphan rule forbids an inherent impl over.
-pub(crate) fn breaker_cfg_to_runtime(cfg: &crate::config::BreakerCfg) -> BreakerCfg {
+pub fn breaker_cfg_to_runtime(cfg: &crate::config::BreakerCfg) -> BreakerCfg {
     let trip = cfg
         .trip
         .as_ref()

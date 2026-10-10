@@ -700,7 +700,7 @@ fn an_audit_record_names_its_outcome_and_action() {
         record_kinds: 0,
         ..bounds()
     };
-    for outcome in [AUDIT_APPLIED, AUDIT_REJECTED] {
+    for outcome in [AUDIT_APPLIED, AUDIT_REJECTED, AUDIT_DEGRADED] {
         r.kind = outcome;
         assert_eq!(
             check_on_piece(Ready, &o, (&[], &[r], &[]), &caps(), &none),
@@ -708,7 +708,7 @@ fn an_audit_record_names_its_outcome_and_action() {
             "outcome {outcome}"
         );
     }
-    for outcome in [AUDIT_NONE, AUDIT_REJECTED + 1, u32::MAX] {
+    for outcome in [AUDIT_NONE, AUDIT_DEGRADED + 1, u32::MAX] {
         r.kind = outcome;
         assert_eq!(
             piece(&o, &[], &[r], &[]),

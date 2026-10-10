@@ -383,6 +383,14 @@ pub trait Clock: Send + Sync {
     /// seconds, and a budget close to a second boundary would collapse to zero.
     fn now_millis(&self) -> u128;
 
+    /// Microseconds since the same fixed point, for a latency sample: 1.5.5 measured an
+    /// attempt's latency in fractional milliseconds, so a sub-millisecond answer still records
+    /// (an integer `0` is the EWMA's "no sample"). A clock without the precision answers its
+    /// milliseconds scaled.
+    fn now_micros(&self) -> u128 {
+        self.now_millis().saturating_mul(1000)
+    }
+
     /// A future that completes no earlier than `ms` milliseconds from now.
     fn sleep(&self, ms: u64) -> BoxFut<'_, ()>;
 }
@@ -394,6 +402,10 @@ pub trait Clock: Send + Sync {
 pub trait Telemetry: Send + Sync {
     /// One upstream attempt was started against this member.
     fn upstream_attempt(&self, pool: &str, destination: DestinationId);
+
+    /// A served attempt's time to the upstream's response head, in milliseconds (the destination's
+    /// latency signal, a bounded proxy that never waits out a streamed body).
+    fn upstream_latency(&self, _destination: DestinationId, _ms: f64) {}
 
     /// One attempt failed, with the disposition label the previous release used.
     fn upstream_failure(&self, pool: &str, destination: DestinationId, disposition: &'static str);

@@ -353,6 +353,9 @@ pub(crate) fn base_data_router(
     crate::core_routes::CoreRouteTable,
 ) {
     use busbar_contract::abi::mechanism::route::{RouteAuth, RouteMethod};
+    // A door plane whose claim is the whole tree (`/` and every path under it) claims the
+    // convenience surfaces' paths too, so the kernel mounts none of its own there.
+    let door_claims_root = doors.iter().any(|d| d.path.starts_with("/{*"));
     // EVERY core route is mounted through `CoreRouter::route`, which takes the handler and the
     // admission bar in ONE act (`core_routes`): a route the auth middleware knows nothing about is
     // not a thing this function can produce.
@@ -405,19 +408,27 @@ pub(crate) fn base_data_router(
             RouteMethod::Get,
             RouteAuth::Key,
             endpoints::list_models_v1beta,
-        )
-        .route(
-            "/{name}/v1/messages",
-            RouteMethod::Post,
-            RouteAuth::Key,
-            ingress::named,
-        )
-        .route(
-            "/{provider}/{model}/v1/messages",
-            RouteMethod::Post,
-            RouteAuth::Key,
-            ingress::adhoc,
         );
+    // THE CONVENIENCE SURFACES hand their unit to a body-model arrival, so they are mounted only
+    // where a plane registered one and no door plane claims the whole tree (a plane served through
+    // its door parses these paths itself).
+    let router = if crate::ingress::arrival::any_body_ingress() && !door_claims_root {
+        router
+            .route(
+                "/{name}/v1/messages",
+                RouteMethod::Post,
+                RouteAuth::Key,
+                ingress::named,
+            )
+            .route(
+                "/{provider}/{model}/v1/messages",
+                RouteMethod::Post,
+                RouteAuth::Key,
+                ingress::adhoc,
+            )
+    } else {
+        router
+    };
     // THE PLANES' DATA ROUTES, contributed through the registry rather than named here. For every
     // registered plane with a `mount` fn AND a runtime object this generation (its slot), the plane's
     // own `mount` mounts its routes from that slot, each door opening only when that plane's own
@@ -447,6 +458,8 @@ pub(crate) fn base_data_router(
     // the protocol fallback, by the same adapter and at the same bar a plane route takes. A claim
     // carries no slot: its handler holds what it serves.
     let unslotted: std::sync::Arc<dyn std::any::Any + Send + Sync> = std::sync::Arc::new(());
+    let door_paths: std::collections::BTreeSet<String> =
+        doors.iter().map(|spec| spec.path.clone()).collect();
     for spec in doors {
         router = mount_plane_route(router, std::sync::Arc::clone(&unslotted), spec);
     }
@@ -464,6 +477,21 @@ pub(crate) fn base_data_router(
             routes = sessions.len(),
             "door session routes are not mounted: this build has no duplex upgrade"
         );
+    }
+    // A verb no route on a door path takes is answered as the previous release answered it on that
+    // path, from its catch-all: the native-envelope 405, after the data-plane bar, and never with
+    // an `Allow` field (a door path is no fixed route of the previous release's, so it named none).
+    for path in door_paths {
+        let claimed = router
+            .methods_at(&path)
+            .into_iter()
+            .map(crate::plugin_routes::method_filter_of)
+            .reduce(axum::routing::MethodFilter::or);
+        if let Some(rest) = claimed.and_then(unclaimed_verbs) {
+            router = router.map_router(|r| {
+                r.route(&path, axum::routing::on(rest, method_not_allowed_handler))
+            });
+        }
     }
     // THE PLANES' INBOUND WS-ACCEPT ARRIVALS, drained from the neutral substrate registry the
     // composition root installed (`install_ws_arrivals`). Behind the neutral `duplex-ws` feature: the
@@ -509,6 +537,47 @@ pub(crate) fn base_data_router(
                 .method_not_allowed_fallback(method_not_allowed_handler)
         })
         .into_parts()
+}
+
+/// Every verb a door path's claims leave unclaimed, as one filter; `None` when they claim them all.
+/// `HEAD` rides `GET` where `GET` is claimed (axum serves it from the `GET` handler).
+fn unclaimed_verbs(claimed: axum::routing::MethodFilter) -> Option<axum::routing::MethodFilter> {
+    use axum::routing::MethodFilter;
+    let all = [
+        (MethodFilter::GET, axum::http::Method::GET),
+        (MethodFilter::POST, axum::http::Method::POST),
+        (MethodFilter::PUT, axum::http::Method::PUT),
+        (MethodFilter::PATCH, axum::http::Method::PATCH),
+        (MethodFilter::DELETE, axum::http::Method::DELETE),
+        (MethodFilter::OPTIONS, axum::http::Method::OPTIONS),
+        (MethodFilter::TRACE, axum::http::Method::TRACE),
+        (MethodFilter::CONNECT, axum::http::Method::CONNECT),
+        (MethodFilter::HEAD, axum::http::Method::HEAD),
+    ];
+    let get_claimed = claimed_has(claimed, &axum::http::Method::GET);
+    all.into_iter()
+        .filter(|(_, m)| !claimed_has(claimed, m))
+        .filter(|(_, m)| !(get_claimed && *m == axum::http::Method::HEAD))
+        .map(|(f, _)| f)
+        .reduce(MethodFilter::or)
+}
+
+/// Whether `filter` takes `method`.
+fn claimed_has(filter: axum::routing::MethodFilter, method: &axum::http::Method) -> bool {
+    use axum::routing::MethodFilter;
+    let one = match *method {
+        axum::http::Method::GET => MethodFilter::GET,
+        axum::http::Method::POST => MethodFilter::POST,
+        axum::http::Method::PUT => MethodFilter::PUT,
+        axum::http::Method::PATCH => MethodFilter::PATCH,
+        axum::http::Method::DELETE => MethodFilter::DELETE,
+        axum::http::Method::OPTIONS => MethodFilter::OPTIONS,
+        axum::http::Method::TRACE => MethodFilter::TRACE,
+        axum::http::Method::CONNECT => MethodFilter::CONNECT,
+        axum::http::Method::HEAD => MethodFilter::HEAD,
+        _ => return false,
+    };
+    filter.or(one) == filter
 }
 
 /// Mount ONE neutral [`busbar_kernel::plane_routes::PlaneRouteSpec`] onto the core router (S4a

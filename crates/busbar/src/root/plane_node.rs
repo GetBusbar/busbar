@@ -180,7 +180,7 @@ impl LaneNames {
 /// One per process. The per-request half is the plane's unit, which a plane's arrival hands this
 /// node ([`Handed`]) and which is thrown away with the unit.
 pub struct Node {
-    kernel: busbar_kernel::teller::Kernel,
+    kernel: Arc<busbar_kernel::teller::Kernel>,
     inflight: busbar_kernel::inflight::InFlight,
     gauge: busbar_kernel::slice::ConcurrencyGauge,
     canary: busbar_contract::caps::Canary,
@@ -193,7 +193,7 @@ pub struct Node {
     /// The names this node has already put through that interner, so the request path does not put
     /// them through it again. Shared with the resolver every unit is lent ([`Node::resolver`]).
     lane_names: Arc<Mutex<LaneNames>>,
-    next_key: busbar_kernel::door::UnitKeyMint,
+    next_key: Arc<busbar_kernel::door::UnitKeyMint>,
     /// How many slots the drop guard has MARKED since the sweep last walked the table.
     ///
     /// A counter rather than a walk on every arrival: a unit whose task went away leaves its slot
@@ -289,7 +289,7 @@ impl Node {
             usage_token: kernel.usage_token(),
             book: std::sync::OnceLock::new(),
             lane: std::sync::OnceLock::new(),
-            kernel,
+            kernel: Arc::new(kernel),
             // The data listener already carries the operator-configured inbound-concurrency layer,
             // which is where this deployment's admission-to-the-node decision is made and has always
             // been made. A second cap here would be a second answer to one question, and the one
@@ -308,7 +308,7 @@ impl Node {
                 resolved: HashMap::new(),
                 consulted: 0,
             })),
-            next_key: busbar_kernel::door::UnitKeyMint::default(),
+            next_key: Arc::default(),
             marked: AtomicU64::new(0),
             lost: Mutex::new(HashMap::new()),
             mono: AtomicU64::new(0),
@@ -317,6 +317,18 @@ impl Node {
             // work, the root names what the work is driven through, and neither names the other's.
             dispatch: Arc::new(crate::root::transports::DrivenOnce::new()),
         }
+    }
+
+    /// The node's kernel and its one unit-key mint, shared with a unit the node does not drive but
+    /// whose key must be unique beside its own (a door plane's health probe, K7).
+    #[must_use]
+    pub fn kernel_and_keys(
+        &self,
+    ) -> (
+        Arc<busbar_kernel::teller::Kernel>,
+        Arc<busbar_kernel::door::UnitKeyMint>,
+    ) {
+        (Arc::clone(&self.kernel), Arc::clone(&self.next_key))
     }
 
     /// How many of this node's units have driven the engine through the Route seam.

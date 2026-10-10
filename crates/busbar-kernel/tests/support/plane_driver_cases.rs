@@ -102,6 +102,7 @@ impl Far {
                 fail_over: false,
                 fields: false,
                 head: Vec::new(),
+                relayed: false,
             })
             .collect();
         Far {
@@ -194,6 +195,7 @@ impl FarEnd for Far {
             None => Pick::Exhausted {
                 status: 503,
                 retry_after: Some(2),
+                detail: "The service is temporarily overloaded. Please retry shortly.",
             },
         };
         async move { pick }
@@ -213,6 +215,7 @@ impl FarEnd for Far {
                 fail_over: true,
                 fields: false,
                 head: Vec::new(),
+                relayed: false,
             }]
         } else if request.member.starts_with("trailers") {
             // The body, then the far end's trailers after it.
@@ -1126,8 +1129,9 @@ async fn exhaustion_answers_the_walks_status_and_retry_after() {
         let rendered = units.take_rendered().expect("the terminal is rendered");
         assert_eq!(rendered.status, 503, "{way:?}");
         assert_eq!(
-            rendered.body, b"refused:503:breaker_open:retry=2",
-            "{way:?}: the plane renders the walk's status and Retry-After"
+            rendered.body,
+            b"refused:503:The service is temporarily overloaded. Please retry shortly.:retry=2",
+            "{way:?}: the plane renders the walk's status, Retry-After and the shed's own words"
         );
         assert_eq!(caller.text(), "", "{way:?}: nothing had streamed");
     }

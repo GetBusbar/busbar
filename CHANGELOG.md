@@ -661,13 +661,14 @@ silently lost every counter. Reaching a recorder is no longer representable from
 host accepts only the current one. A sink that wants the observability back-channel implements one
 defaulted SDK method, `drain_observations`.
 
-**A new `plugins.logs` block is accepted and checked; plugin log lines have not moved.** The block
+**A new `plugins.logs` block is accepted and checked, and plugin log lines move to per-plugin log files.** The block
 names the directory for per-plugin log files (`dir`, default `logs/plugins`), the default level
 (`level`, default `info`), per-instance levels (`levels`), and rotation (`rotate_mb` and `keep`).
-A level word that names no level, or a `rotate_mb` of `0`, refuses the boot and names the key. This
-build writes no per-plugin log file: the plugins it loads do not run through the path that writes
-them, so a plugin's log lines reach the Busbar log exactly as they did in 1.5.5, and setting
-`plugins.logs` changes nothing an operator can observe beyond that check.
+A level word that names no level, or a `rotate_mb` of `0`, refuses the boot and names the key.
+
+- 1.6.0 Changed: a plugin's log lines, the LLM plane's included (it is a plugin in 1.6.0), are written to that plugin's own log file under `plugins.logs.dir` (for example `logs/plugins/llm.log`), not to the Busbar log.
+  In 1.5.5 the plane's warnings (for example `dropping image_url.detail: ...`) were lines of the
+  Busbar log. **Migration:** point log collection at `plugins.logs.dir` as well as the Busbar log.
 
 ### Spec fidelity
 

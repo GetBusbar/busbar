@@ -270,6 +270,9 @@ pub struct PlaneRegistration {
     pub trust_keys: Vec<crate::plane::TrustKeyDecl>,
     /// The tail's sentence refusing a forwarded caller credential; `None` = it states none.
     pub caller_credential_refusal: Option<&'static str>,
+    /// Whether the tail states `TAIL_FALLBACK`: the plane is the catch-all every unclaimed path
+    /// falls through to, and its card is the flat one (at most one registered plane).
+    pub fallback: bool,
     /// The door's own `validate` over a whole section (its settings, JSON): `Ok`, or the door's
     /// words. The kernel runs it where the section is parsed and where an admin write lands.
     pub validate: SectionJudge,

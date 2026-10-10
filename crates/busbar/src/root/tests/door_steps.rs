@@ -364,7 +364,7 @@ fn styled() -> crate::root::loader::dispatch::kinds::plane::ServedFacts {
     crate::root::loader::dispatch::kinds::plane::ServedFacts {
         need_auths: vec![(DIRECTION_OUTBOUND, "bearer")],
         dialects: vec!["d"],
-        dialect_auth: vec![(0, "bearer")],
+        dialect_auth: vec![(0, "bearer", b"")],
         ..Default::default()
     }
 }
@@ -430,6 +430,7 @@ fn resolve_upgrading(
         auths: std::sync::Arc::new(auths),
         conns,
         stream_ceiling_secs: 1,
+        models: None,
         upgrades,
     };
     super::member_routes(&section, &DoorPools::of(&section), served, &reach)
@@ -582,6 +583,65 @@ fn a_member_that_cannot_be_reached_refuses_the_load_naming_it() {
         "{:?}",
         unmatched.err()
     );
+}
+
+/// A MEMBER'S BINDING IS OPENED WITH ITS DIALECT'S PARAMETERS (ARCHITECT RULING 2026-10-03,
+/// Q-L6-AUTHPARAMS): the params object, a host directive resolved from the provider's base URL
+/// (the label after a named one, when it reads as a dashed name ending in a number), the
+/// provider's own settings over it; no params hands the provider's settings as they are.
+#[test]
+fn a_members_binding_is_opened_with_its_dialects_parameters_under_the_providers_own() {
+    use super::sealed_settings;
+    let params = br#"{"service":"svc","content_type":"application/json","region":{"host_label_after":["svc-runtime","svc-runtime-fips","svc"],"default":"us-east-1","unread":"w"}}"#;
+    let region = |base_url: &str| {
+        sealed_settings(params, base_url, &serde_json::json!({})).expect("the parameters seal")
+            ["region"]
+            .clone()
+    };
+    for (base_url, want) in [
+        ("https://svc-runtime.eu-west-1.amazonaws.com", "eu-west-1"),
+        (
+            "https://svc-runtime-fips.us-gov-west-1.amazonaws.com/",
+            "us-gov-west-1",
+        ),
+        (
+            "https://vpce-0abc-1xyz.svc-runtime.ap-southeast-2.vpce.amazonaws.com:443/x",
+            "ap-southeast-2",
+        ),
+        ("https://svc.ca-central-1.amazonaws.com", "ca-central-1"),
+        // No label reads: the default.
+        ("https://svc-runtime.amazonaws.com", "us-east-1"),
+        ("http://127.0.0.1:9000", "us-east-1"),
+        ("https://svc-runtime.eu-west.amazonaws.com", "us-east-1"),
+    ] {
+        assert_eq!(region(base_url), serde_json::json!(want), "{base_url}");
+    }
+    let sealed = sealed_settings(
+        params,
+        "https://svc-runtime.eu-west-1.amazonaws.com",
+        &serde_json::json!({ "service": "own", "scope": "s" }),
+    )
+    .expect("the parameters seal");
+    assert_eq!(
+        sealed["service"], "own",
+        "the provider's own setting stands"
+    );
+    assert_eq!(sealed["scope"], "s");
+    assert_eq!(sealed["content_type"], "application/json");
+    assert!(
+        sealed.get("region_unread").is_none(),
+        "a host whose region reads hands on no warning"
+    );
+    let defaulted = sealed_settings(params, "http://127.0.0.1:9000", &serde_json::json!({}))
+        .expect("the parameters seal");
+    assert_eq!(defaulted["region"], "us-east-1");
+    assert_eq!(
+        defaulted["region_unread"], "w",
+        "the warning travels with the default"
+    );
+    let own = serde_json::json!({ "token_url": "https://t" });
+    assert_eq!(sealed_settings(b"", "https://x", &own), Ok(own));
+    assert!(sealed_settings(b"[1]", "https://x", &serde_json::json!({})).is_err());
 }
 
 // ── the minted credential of a member bound under an OAuth grant (TODO row 22) ─────────────────
@@ -818,6 +878,7 @@ async fn a_member_under_an_oauth_grant_presents_its_minted_then_refreshed_bearer
         auths: std::sync::Arc::new(auths),
         conns: std::sync::Arc::new(busbar_core_connector::Connector::new()),
         stream_ceiling_secs: 1,
+        models: None,
         upgrades: Vec::new(),
     };
     let section: serde_yaml::Value =
@@ -983,6 +1044,12 @@ pub(crate) mod tool_door {
                 (k.trim() == key).then(|| v.trim())
             })
             .unwrap_or_else(|| panic!("fixtures/tool_door_wire.txt has no `{key}` row"))
+    }
+
+    /// A fixture sentence with its `{PLANE}` filled: the plane's own key (`plane_key`), upper-cased,
+    /// as the plane's sentences spell it.
+    pub(crate) fn sentence(key: &str) -> String {
+        surface(key).replace("{PLANE}", &surface("plane_key").to_ascii_uppercase())
     }
 
     /// The section the tool door owns beside its settings: its endpoint block, as the fixture
@@ -1463,6 +1530,7 @@ pub(crate) mod tool_door {
                 secrets: &secrets,
                 auths: Arc::new(auths),
                 conns: Arc::clone(&connector) as Arc<dyn PollConns>,
+                models: None,
                 stream_ceiling_secs: 600,
                 upgrades: Vec::new(),
             };
@@ -3072,8 +3140,12 @@ pub(crate) mod door_boundary {
             door_checked > 0,
             "the door's half of the boundary was asserted"
         );
+        // The kernel's own guarded routes (`/stats`, `/v1/models`, `/v1beta/models`): the convenience
+        // body-ingress routes are a plane's and mount only where a plane installs body ingress (the
+        // kernel owns no route that exists for one plugin, BUSBAR-1.6.0.md l.4093), which this rig
+        // does not; a door claims its own paths and is walked in the door arm above.
         assert!(
-            checked >= 4,
+            checked >= 3,
             "the walk covered only {checked} guarded core routes — it is not seeing the router"
         );
         for path in &boot_plugin_paths {

@@ -404,8 +404,9 @@ fn assert_the_planes_answers(t: &[String]) {
         "a same-dialect answer is the far end's bytes: {all}"
     );
     assert!(
-        far.contains(r#"units=["0:7:true", "1:3:true", "2:0:true", "3:0:true"]"#),
-        "the far end's counts, in the tail's class order: {all}"
+        far.contains(r#"units=["0:7:true", "1:3:true", "2:0:true", "3:0:true", "19:1:true"]"#),
+        "the far end's counts, in the tail's class order, then the per-request fee unit a success \
+         reply incurs, last after the 15 open classes (owner #77, money-B1; LEDGER-100): {all}"
     );
     let narrow = line(t, "far_end narrow ");
     assert!(

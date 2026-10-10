@@ -289,6 +289,7 @@ fn staged_over(
         tokio::runtime::Handle::current(),
         Some(binder),
         (scope, None, "d0".to_string()),
+        0,
     );
     assert!(s.units().staged(unit, Arc::new(stage)));
 }
@@ -558,6 +559,7 @@ async fn the_stage_refuses_every_unit_it_does_not_hold() {
         tokio::runtime::Handle::current(),
         None,
         (RoutedScope::default(), None, String::new()),
+        0,
     );
     assert!(!s.units().staged(3, Arc::new(late)));
 }
@@ -580,6 +582,7 @@ async fn a_unit_no_hook_binds_passes_unchanged() {
             tokio::runtime::Handle::current(),
             None,
             (RoutedScope::default(), None, String::new()),
+            0,
         ))
     ));
     assert_eq!(
@@ -595,6 +598,64 @@ async fn a_unit_no_hook_binds_passes_unchanged() {
         0
     );
     assert_eq!(scan(&s, Some(1), b"secret").await.value, svc::CONTENT_PASS);
+}
+
+/// A binder that records the dialect each unit it binds arrived in.
+struct DialectSeen {
+    hooks: BoundHooks,
+    seen: std::sync::Mutex<Vec<u32>>,
+}
+
+impl HookBinder for DialectSeen {
+    fn bind(&self, bind: &Bind<'_>) -> Option<UnitHooks> {
+        self.seen.lock().unwrap().push(bind.dialect);
+        self.hooks.bind(bind)
+    }
+}
+
+/// A session that arrived in a dialect other than the plane's first binds its hooks THERE: the
+/// stage carries the dialect its unit arrived in, never a default.
+#[tokio::test]
+async fn a_session_on_a_later_dialect_binds_its_hooks_in_that_dialect() {
+    let s = services(&Arc::new(AtomicU64::new(0)));
+    let mut bound = hooks(vec![], vec![], None);
+    bound.dialects = vec!["d0".into(), "d1".into(), "d2".into()];
+    let binder = Arc::new(DialectSeen {
+        hooks: bound,
+        seen: std::sync::Mutex::new(Vec::new()),
+    });
+    s.units().admitted(
+        4,
+        UnitRecord {
+            principal: None,
+            depth: 0,
+        },
+    );
+    let stage = SessionStage::new(
+        Arc::from("inst"),
+        tokio::runtime::Handle::current(),
+        Some(Arc::clone(&binder) as Arc<dyn HookBinder>),
+        (
+            RoutedScope {
+                pool: "pool-z".to_string(),
+                container: "pool-z".to_string(),
+            },
+            None,
+            "d2".to_string(),
+        ),
+        2,
+    );
+    assert!(s.units().staged(4, Arc::new(stage)));
+    let pass = scan(&s, Some(4), b"a tool result").await;
+    assert_eq!(
+        (pass.outcome, pass.value),
+        (Outcome::Ready, svc::CONTENT_PASS)
+    );
+    assert_eq!(
+        *binder.seen.lock().unwrap(),
+        vec![2],
+        "bound in the dialect it arrived in"
+    );
 }
 
 /// A gate-first binder: `screen` is attached to the entry `srv-a` only; the routed order binds a

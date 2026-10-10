@@ -362,8 +362,11 @@ async fn a_keyed_unit_is_admitted_and_its_money_settles_at_its_end() {
     let (status, body) = g.post("/call/direct:m", true).await;
     assert_eq!(
         (status, body.as_str()),
-        (503, "refused:503:breaker_open"),
-        "admitted, then the walk is exhausted"
+        (
+            503,
+            "refused:503:The service is temporarily overloaded. Please retry shortly."
+        ),
+        "admitted, then the walk is exhausted (the shed in 1.5.5's words)"
     );
     assert_eq!(g.requests(), 1, "its request was charged at admission");
     assert_eq!(g.money.open_units(), 0, "its money facts closed at its end");
@@ -415,7 +418,10 @@ async fn an_anonymous_unit_on_an_open_claim_routes_and_opens_no_money() {
     let (status, body) = g.post("/open", false).await;
     assert_eq!(
         (status, body.as_str()),
-        (503, "refused:503:breaker_open"),
+        (
+            503,
+            "refused:503:The service is temporarily overloaded. Please retry shortly."
+        ),
         "admitted, then the walk is exhausted"
     );
     assert_eq!(g.requests(), 0, "nothing charged");
@@ -805,8 +811,12 @@ async fn node_boot_hooks_arm() {
     let (status, body) = g.post("/call/direct:m", true).await;
     assert_eq!(
         (status, body.as_str()),
-        (503, "refused:503:breaker_open"),
-        "admitted, then the walk is exhausted"
+        (
+            503,
+            "refused:503:The service is temporarily overloaded. Please retry shortly."
+        ),
+        "admitted, then the walk is exhausted (the shed in 1.5.5's words, as every plane is handed \
+         them: RefusalIn.text is the kernel's own message for the refusal)"
     );
     assert_eq!(g.requests(), 1, "its request was charged at admission");
     assert_eq!(g.post.open_units(), 0, "its node facts closed at its end");
@@ -874,6 +884,7 @@ async fn the_boot_composition_serves_a_dropped_in_door_plane_in_every_build() {
             crate::root::loader::dispatch::ConnTable::NoNeeds,
         )),
         conns: Arc::new(busbar_core_connector::Connector::new()),
+        models: None,
         stream_ceiling_secs: 1,
         upgrades: Vec::new(),
     };

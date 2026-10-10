@@ -416,6 +416,7 @@ extern "C" {
 #define BB_PLANE_AUDIT_NONE UINT32_C(0) /* [`ServeOut::audit`]: no audit row. */
 #define BB_PLANE_AUDIT_APPLIED UINT32_C(1) /* [`ServeOut::audit`]: the request applied; the row's outcome is `applied`. */
 #define BB_PLANE_AUDIT_REJECTED UINT32_C(2) /* [`ServeOut::audit`]: the request was rejected after it was judged; the row's outcome is */
+#define BB_PLANE_AUDIT_DEGRADED UINT32_C(3) /* A [`RECORD_AUDIT`] write's outcome only (never [`ServeOut::audit`]): the unit was served with */
 #define BB_PLANE_CHAIN_LENGTH_PREFIXED UINT32_C(1) /* [`RecordChain::framing`]: each field of the record's digest is length-prefixed. */
 #define BB_PLANE_CHAIN_PIPE_SEPARATED UINT32_C(2) /* [`RecordChain::framing`]: the fields of the record's digest are joined by `|`. */
 #define BB_PLANE_CHAIN_DIGESTS_SCOPE UINT32_C(1) /* [`RecordChain::flags`]: the record's scope enters its digest. */

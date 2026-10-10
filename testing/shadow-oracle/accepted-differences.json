@@ -2413,6 +2413,53 @@
       }
     },
     {
+      "id": "PLANELOG the llm plane's warnings are written to its own plugin log file",
+      "kind": "improvement",
+      "changelog": "1.6.0 Changed: a plugin's log lines, the LLM plane's included (it is a plugin in 1.6.0), are written to that plugin's own log file under `plugins.logs.dir` (for example `logs/plugins/llm.log`), not to the Busbar log.",
+      "by": "owner (Matthew Jackson), signed 2026-10-04 (PLANELOG, OWNER SIGNED on the p3-flip-llm park); 2026-09-28 PLUGIN LOGGING amendment (\"all plugins should log to their plugin's log file\"), #85",
+      "cells": "^egress\\.image-detail\\|high\\|(anthropic|bedrock|gemini)$",
+      "expected_cells": 3,
+      "classes": [
+        "body"
+      ],
+      "premise": {
+        "all": [
+          {
+            "cell": "egress.image-detail|high|anthropic",
+            "body_contains": "\"status\":200"
+          },
+          {
+            "not": {
+              "cell": "egress.image-detail|high|anthropic",
+              "body_contains": "dropping image_url.detail"
+            }
+          },
+          {
+            "not": {
+              "cell": "egress.image-detail|high|bedrock",
+              "body_contains": "dropping image_url.detail"
+            }
+          },
+          {
+            "not": {
+              "cell": "egress.image-detail|high|gemini",
+              "body_contains": "dropping image_url.detail"
+            }
+          }
+        ]
+      },
+      "signoff": {
+        "who": "owner (Matthew Jackson)",
+        "when": "2026-10-04",
+        "ruling": "OWNER SIGNED 2026-10-04 (PLANELOG): the llm plane's warnings move to its own plugin log file per the 2026-09-28 PLUGIN LOGGING amendment, #85 'log changes from 1.5.5' (BUSBAR-1.6.0.md)"
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      },
+      "rationale": "#85 (OWNER 2026-09-28 PLUGIN LOGGING: one log file per plugin instance, not the host log) moves the llm plane's log lines, as every plugin's, to its own plugin log file. MEASURED 2026-10-03 (lane-dg-llm, door build): the three cells read busbar.log after a request whose image_url.detail the target dialect cannot carry. 1.5.5 wrote the plane's warning `dropping image_url.detail: ... detail=\"high\"` into busbar.log; with the llm plane served through its door the host writes it to the plane's own plugin log file (recorded: work/capture/logs/plugins/llm.log holds `WARN llm plane busbar_plane_llm::codec::chat_handle: dropping image_url.detail: no cross-protocol carrier exists for this cost/latency hint (not even on a same-protocol OpenAI round-trip) detail=\"high\"`), so busbar.log lacks that one line. The upstream request, the status and every money class are unchanged; only the read_file step's body differs."
+    },
+    {
       "id": "Q-STORE migrate names the store",
       "kind": "breaking",
       "changelog": "A config with no `store:` block is refused at boot and by `--validate`; `busbar --migrate-config` inserts `store: {module: memory}`, the in-memory store such a config ran on in 1.5.x.",

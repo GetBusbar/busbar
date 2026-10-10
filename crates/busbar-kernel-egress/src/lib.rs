@@ -74,7 +74,7 @@ pub use pool::{
     Failover, Member, OnExhausted, Pool, DEFAULT_FAILOVER_CAP, DEFAULT_FAILOVER_DEADLINE_SECS,
 };
 pub use select::{RequestCtx, WeightedFloor};
-pub use walk::{Step, Taken, Walk, WalkPorts};
+pub use walk::{Shape, Step, Taken, Walk, WalkPorts};
 pub use wire::Shed;
 
 #[cfg(test)]

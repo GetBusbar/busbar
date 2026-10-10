@@ -15,6 +15,9 @@ mod common;
 #[path = "support/plane_driver_cases.rs"]
 mod cases;
 
+#[path = "support/plane_driver_hook_cases.rs"]
+mod hook_cases;
+
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
@@ -23,6 +26,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::task::{Context, Poll, Waker};
 use std::time::{Duration, Instant};
 
+use busbar_contract::abi::hook::{MessageView, RequestView};
 use busbar_contract::abi::mechanism::call::{AbiStr, Blob, Outcome, Span};
 use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::plane::{
@@ -30,10 +34,10 @@ use busbar_contract::abi::plane::{
     RefusalIn, RefusalOut, UnitCount, AUDIT_APPLIED, CANCEL_ABORTED, CANCEL_FAILED,
     CANCEL_OK_PARTIAL, EMIT_DONE, EMIT_FINAL_STATUS, EMIT_MESSAGE_END, EMIT_TO_FAR_END,
     FROM_CALLER, FROM_FAR_END, FROM_KERNEL, PIECE_FIELDS, PIECE_HAS_STATUS, PIECE_LAST,
-    PIECE_OUT_TEXT, PRINCIPAL_OPTIONAL, RECORD_AUDIT, RECORD_PUT, REFUSAL_ARRIVE, REFUSAL_KERNEL,
-    ROUTE_LOCAL, ROUTE_SESSION, UNITS_ESTIMATED, UNITS_REPORTED, VERDICT_RETRY,
+    PIECE_OUT_TEXT, PRINCIPAL_OPTIONAL, RECORD_AUDIT, RECORD_PUT, REFUSAL_ARRIVE, ROUTE_LOCAL,
+    ROUTE_SESSION, UNITS_ESTIMATED, UNITS_REPORTED, VERDICT_RETRY,
 };
-use busbar_contract::abi::plane::{ServeIn, ServeOut};
+use busbar_contract::abi::plane::{ServeIn, ServeOut, REFUSAL_GATE};
 use busbar_contract::caps::OpClassId;
 use busbar_contract::plane::{TrustKeyDecl, TrustRole};
 use busbar_contract::plane_calls::{
@@ -66,6 +70,11 @@ pub(crate) struct Rig {
 }
 
 impl Rig {
+    /// Every `project` crossing: the body it was handed and the rewrite, when one came.
+    pub(crate) fn projects(&self) -> Vec<(Vec<u8>, Vec<u8>)> {
+        self.plane.projects.lock().unwrap().clone()
+    }
+
     pub(crate) fn stats(&self) -> [u64; stat::COUNT] {
         let mut out = [0; stat::COUNT];
         for (k, v) in out.iter_mut().enumerate() {
@@ -75,7 +84,17 @@ impl Rig {
     }
 }
 
-pub(crate) fn rig(_way: Way, caps: BufferCaps, book: cases::Book) -> Rig {
+pub(crate) fn rig(way: Way, caps: BufferCaps, book: cases::Book) -> Rig {
+    rig_with_hooks(way, caps, book, None)
+}
+
+/// [`rig`], the driver binding `hooks` to each unit.
+pub(crate) fn rig_with_hooks(
+    _way: Way,
+    caps: BufferCaps,
+    book: cases::Book,
+    hooks: Option<busbar_kernel::plane_driver::BoundHooks>,
+) -> Rig {
     let plane = Arc::new(Double::default());
     let book = Arc::new(book);
     let driver = PlaneDriver::new(
@@ -92,6 +111,10 @@ pub(crate) fn rig(_way: Way, caps: BufferCaps, book: cases::Book) -> Rig {
         ("test_plane", &serde_yaml::Value::Null),
     )
     .expect("the instance is admitted");
+    let driver = match hooks {
+        Some(h) => driver.with_hooks(Arc::new(h)),
+        None => driver,
+    };
     Rig {
         plane,
         driver,
@@ -188,6 +211,8 @@ struct Double {
     held: Mutex<HashMap<Ticket, (Arc<Shared>, OnPieceOut)>>,
     next: AtomicU32,
     stats: [AtomicU64; stat::COUNT],
+    /// `project` crossings, and the bodies each was handed (with the rewrite, when one came).
+    projects: Mutex<Vec<(Vec<u8>, Vec<u8>)>>,
     /// The driver tickets minted, and every ticket recycled.
     drivers: Mutex<Vec<Ticket>>,
     recycled: Mutex<Vec<Ticket>>,
@@ -567,17 +592,6 @@ impl PlaneCalls for Double {
         now_ns()
     }
 
-    // The hook stage is dormant in these driver proofs (no plane binds hooks): `project` is the
-    // trait's required op, answered here as the no-projection pure op.
-    fn project(
-        &self,
-        _input: &mut ProjectIn,
-        _out: &mut ProjectOut,
-        _grow: Grow<'_, ProjectIn, ProjectOut>,
-    ) -> Outcome {
-        Outcome::Ready
-    }
-
     fn arrive(
         &self,
         input: &mut ArriveIn,
@@ -693,12 +707,13 @@ impl PlaneCalls for Double {
         out: &mut RefusalOut,
         grow: Grow<'_, RefusalIn, RefusalOut>,
     ) -> Outcome {
-        // The reason crosses beside its text: a refusal whose code names another reason is FAULT
-        // (the plane's own words for an arrival it refused are its text, not the kernel's).
-        let named =
-            busbar_contract::abi::plane::reason_of(input.reason).map(|r| r.as_str().as_bytes());
-        // A gate refusal's text is the vetoing hook's own words.
-        if input.cause == REFUSAL_KERNEL && named != Some(unsafe { text(input.text) }) {
+        // The reason crosses beside its text (`RefusalIn::text`, the kernel's own message: the
+        // reason's spelling, or the walk terminal's own words): a refusal whose code names no reason,
+        // or that carries no text, is FAULT. A gate's refusal carries the hook's own words instead.
+        let named = busbar_contract::abi::plane::reason_of(input.reason);
+        if input.cause != REFUSAL_GATE
+            && (named.is_none() || unsafe { text(input.text) }.is_empty())
+        {
             return Outcome::Fault;
         }
         let mut body = [
@@ -809,6 +824,134 @@ impl PlaneCalls for Double {
             }
             out.reply_written = body.len() as u64;
             out.fields_written = 1;
+            out.arena_written = arena as u64;
+            return Outcome::Ready;
+        }
+        Outcome::Fault
+    }
+
+    /// The view this plane projects: each body line `role:text` is a turn, a `sys=` line the
+    /// system prompt and a `user=` line the end user. A rewrite (1.5.5's `rewrite` object) is
+    /// applied by replacing the turns with its messages' `role:content`, unless the target is
+    /// `/no-rewrite` (a rewrite the plane cannot read); `/unprojectable` refuses to project.
+    fn project(
+        &self,
+        input: &mut ProjectIn,
+        out: &mut ProjectOut,
+        grow: Grow<'_, ProjectIn, ProjectOut>,
+    ) -> Outcome {
+        let target = unsafe { text(input.target) }.to_vec();
+        let body = unsafe { bytes(input.body) }.to_vec();
+        let rewrite = unsafe { bytes(input.rewrite) }.to_vec();
+        self.projects
+            .lock()
+            .unwrap()
+            .push((body.clone(), rewrite.clone()));
+        if target == b"/unprojectable" {
+            return Outcome::Refused;
+        }
+        let rewritten = (!rewrite.is_empty() && target != b"/no-rewrite")
+            .then(|| serde_json::from_slice::<serde_json::Value>(&rewrite).ok())
+            .flatten()
+            .and_then(|v| v.get("messages").and_then(|m| m.as_array()).cloned())
+            .map(|messages| {
+                let lines: Vec<String> = messages
+                    .iter()
+                    .map(|m| {
+                        let field = |k: &str| m.get(k).and_then(|v| v.as_str()).unwrap_or("");
+                        format!("{}:{}", field("role"), field("content"))
+                    })
+                    .collect();
+                lines.join("\n").into_bytes()
+            });
+        let effective = rewritten.clone().unwrap_or(body);
+        let effective = String::from_utf8_lossy(&effective).into_owned();
+        let (mut system, mut user, mut turns) = (None, None, Vec::new());
+        for line in effective.split('\n').filter(|l| !l.is_empty()) {
+            if let Some(v) = line.strip_prefix("sys=") {
+                system = Some(v.to_string());
+            } else if let Some(v) = line.strip_prefix("user=") {
+                user = Some(v.to_string());
+            } else {
+                let (role, text) = line.split_once(':').unwrap_or(("user", line));
+                turns.push((role.to_string(), text.to_string()));
+            }
+        }
+        let mut strings: Vec<&[u8]> = vec![b"pool-a", b"test-dialect"];
+        strings.push(system.as_deref().unwrap_or("").as_bytes());
+        strings.push(user.as_deref().unwrap_or("").as_bytes());
+        for (role, text) in &turns {
+            strings.push(role.as_bytes());
+            strings.push(text.as_bytes());
+        }
+        let rewritten_bytes = rewritten.unwrap_or_default();
+        strings.push(&rewritten_bytes);
+        let arena: usize = strings.iter().map(|b| b.len()).sum();
+        for call in 0..2 {
+            if turns.len() > input.messages_cap || arena > input.arena_cap {
+                if call == 1 {
+                    return Outcome::Fault;
+                }
+                out.messages_needed = turns.len() as u32;
+                out.arena_needed = arena as u64;
+                grow(out, input);
+                *out = busbar_contract::abi::sdk::door::blank_out();
+                continue;
+            }
+            // SAFETY (below): the driver's buffers, of the capacities checked above.
+            let mut at = 0usize;
+            let mut place = |b: &[u8]| -> AbiStr {
+                unsafe {
+                    std::ptr::copy_nonoverlapping(b.as_ptr(), input.arena_buf.add(at), b.len())
+                };
+                let s = AbiStr {
+                    ptr: unsafe { input.arena_buf.add(at) }.cast_const(),
+                    len: b.len(),
+                };
+                at += b.len();
+                s
+            };
+            let pool = place(strings[0]);
+            let dialect = place(strings[1]);
+            let sys = place(strings[2]);
+            let end_user = place(strings[3]);
+            for (k, pair) in strings[4..4 + 2 * turns.len()].chunks(2).enumerate() {
+                let role = place(pair[0]);
+                let text = place(pair[1]);
+                unsafe { *input.messages_buf.add(k) = MessageView { role, text } };
+            }
+            let _ = place(&rewritten_bytes);
+            let start = arena - rewritten_bytes.len();
+            out.view = RequestView {
+                request_id: 0,
+                pool,
+                ingress_dialect: dialect,
+                message_count: turns.len() as u64,
+                total_chars: turns.iter().map(|(_, t)| t.len() as u64).sum(),
+                max_tokens: 0,
+                flags: 0,
+                signals: input.signals_buf.cast_const(),
+                signals_len: 0,
+                session: Blob {
+                    ptr: std::ptr::null(),
+                    len: 0,
+                    fmt: busbar_contract::abi::mechanism::call::BLOB_ABSENT,
+                    flags: 0,
+                },
+            };
+            out.prompt.system = sys;
+            out.prompt.message_count = turns.len() as u64;
+            out.prompt.messages = input.messages_buf.cast_const();
+            out.prompt.messages_len = turns.len();
+            out.end_user = end_user;
+            out.body = Span {
+                offset: busbar_contract::abi::plane::SPAN_ABSENT,
+                len: 0,
+            };
+            out.rewritten = Span {
+                offset: start as u32,
+                len: rewritten_bytes.len() as u32,
+            };
             out.arena_written = arena as u64;
             return Outcome::Ready;
         }
@@ -1961,7 +2104,8 @@ async fn a_gate_first_plane_screens_its_entry_before_the_far_end_and_stops_at_th
             .contains(&busbar_contract::caps::StepName::Admit),
         "a veto admits nothing: the door was never asked"
     );
-    assert_eq!(*binder.asked.lock().unwrap(), vec![String::new()]);
+    // The entry the plane's projection names (this double projects `pool-a`).
+    assert_eq!(*binder.asked.lock().unwrap(), vec!["pool-a".to_string()]);
     assert!(far.sent().is_empty(), "nothing reached the far end");
     let rendered = units.take_rendered().expect("the veto is rendered");
     assert_eq!(rendered.status, 451);

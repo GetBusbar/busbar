@@ -113,6 +113,10 @@ pub struct Units {
     pub cache_write: u64,
     /// Every open class the answer counted beside its tokens, verbatim.
     pub open: BTreeMap<String, u64>,
+    /// The token counts are a FLOOR over the bytes relayed so far, not the far end's report.
+    pub floor: bool,
+    /// The token counts are stated even at zero: they replace a floor the answer stated before.
+    pub stated: bool,
 }
 
 impl Units {
@@ -130,6 +134,8 @@ impl Units {
             cache_read: u.cache_read.unwrap_or(0),
             cache_write: u.cache_creation.unwrap_or(0),
             open,
+            floor: false,
+            stated: false,
         }
     }
 }
@@ -149,6 +155,11 @@ pub struct Piece<'a> {
     pub fault: Option<Fault>,
     /// The caller's answer is complete.
     pub done: bool,
+    /// The wire paths of a delivered TRANSLATE answer that did not cross to the caller's dialect
+    /// (design F3 "Drops"), already warned: the door reports one `egress.control_unrepresentable`
+    /// audit row per path (`<path> from <dialect>`), 1.5.5's row. Empty on a relay of the caller's
+    /// own dialect and on every end that delivers nothing.
+    pub dropped: Vec<String>,
 }
 
 enum State {
@@ -203,17 +214,31 @@ fn json_array(ctx: &ReplyCtx<'_>) -> bool {
         .is_some_and(|p| p.json_array)
 }
 
+/// A WHOLE answer, rendered here in full (a translated answer, a judged failure, a refusal): its head
+/// states its length, so the caller is sent it under that length, as the previous release sent a
+/// buffered answer; a relayed answer states none and is sent as it is relayed.
 fn answered<'a>(r: Rendered, units: Units, verdict: Verdict, fault: Option<Fault>) -> Piece<'a> {
+    let mut fields = r.fields;
+    if !fields
+        .iter()
+        .any(|(n, _)| n.eq_ignore_ascii_case("content-length"))
+    {
+        fields.push((
+            "content-length".to_string(),
+            r.body.len().to_string().into_bytes(),
+        ));
+    }
     Piece {
         head: Some(Head {
             status: r.status,
-            fields: r.fields,
+            fields,
         }),
         bytes: Cow::Owned(r.body),
         units,
         verdict,
         fault,
         done: true,
+        dropped: Vec::new(),
     }
 }
 
@@ -346,6 +371,11 @@ impl Reply {
                 if !last {
                     if let Some(u) = relay.streamed_usage() {
                         *units = Units::of(Some(&u), BTreeMap::new());
+                    } else if let Some(floor) = relay.relayed_floor() {
+                        *units = Units {
+                            floor: true,
+                            ..Units::of(Some(&floor), BTreeMap::new())
+                        };
                     }
                     return Piece {
                         verdict: if head.is_some() {
@@ -358,6 +388,7 @@ impl Reply {
                         units: units.clone(),
                         fault: None,
                         done: false,
+                        dropped: Vec::new(),
                     };
                 }
                 let end = relay.end();
@@ -367,7 +398,11 @@ impl Reply {
                 let fault = end.stream_fault.map(Fault::Transient).or(end
                     .generation_failed
                     .then_some(Fault::Transient("upstream-generation-failed")));
-                let units = Units::of(end.usage.as_ref(), end.open_units);
+                // The end's report replaces a floor stated while relaying, even when it is zero.
+                let units = Units {
+                    stated: units.floor,
+                    ..Units::of(end.usage.as_ref(), end.open_units)
+                };
                 self.state = State::Done;
                 Piece {
                     head,
@@ -380,9 +415,17 @@ impl Reply {
                     },
                     fault,
                     done: true,
+                    dropped: end.dropped,
                 }
             }
         }
+    }
+
+    /// The caller had a usable part of a success answer when it left (see [`relay::Relay::partial`]):
+    /// its cancel bills the units the answer stated so far.
+    #[must_use]
+    pub fn partial(&self) -> bool {
+        matches!(&self.state, State::Relay { relay, .. } if relay.partial())
     }
 
     /// CUT the answer: the far end's transfer failed (`transport`) or the kernel's ceiling for it
@@ -414,6 +457,7 @@ impl Reply {
                     verdict: Verdict::Hard,
                     fault: Some(Fault::Transient(cut.reason)),
                     done: true,
+                    dropped: Vec::new(),
                 }
             }
         }
@@ -492,6 +536,10 @@ fn whole_piece<'a>(
         wire::token_usage_of(&w.usage).as_ref(),
         wire::open_units_of(&w.usage),
     );
+    let dropped = match w.end {
+        whole::WholeEnd::Delivered => std::mem::take(&mut w.dropped),
+        _ => Vec::new(),
+    };
     let (verdict, fault) = match w.end {
         whole::WholeEnd::Delivered => (Verdict::Ok, None),
         whole::WholeEnd::FailedGeneration => (
@@ -504,5 +552,8 @@ fn whole_piece<'a>(
         whole::WholeEnd::Cut => (Verdict::Hard, Some(Fault::Transient("transport"))),
         whole::WholeEnd::IngressUnsupported | whole::WholeEnd::OverCap => (Verdict::Hard, None),
     };
-    answered(w.answer, units, verdict, fault)
+    Piece {
+        dropped,
+        ..answered(w.answer, units, verdict, fault)
+    }
 }

@@ -10,8 +10,8 @@ use busbar_contract::abi::plane::{TAIL_FALLBACK, TAIL_PROBES, UNITS_REPORTED};
 use busbar_plane_llm::dialect::DIALECTS;
 use busbar_plane_llm::exchange::reply::Units;
 use busbar_plane_llm::plane_door::{
-    claims, counts, read_settings, DENY_RESPONSE_HEADERS, EGRESS_SCHEMES, NEEDS, OPEN_CLASSES,
-    STATEMENT, TAIL, VERSION,
+    claims, counts, read_settings, route_of, DENY_RESPONSE_HEADERS, EGRESS_STYLES, NEEDS,
+    OPEN_CLASSES, STATEMENT, TAIL, VERSION,
 };
 
 #[test]
@@ -37,8 +37,8 @@ fn the_tail_is_one_the_contract_accepts() {
     assert_eq!(TAIL.dialects_len, DIALECTS.len());
     assert_eq!(TAIL.op_classes_len, 7);
     assert_eq!(
-        TAIL.billable_classes_len, 19,
-        "tokens in, out, cache read, cache write, then the open classes"
+        TAIL.billable_classes_len, 20,
+        "tokens in, out, cache read, cache write, the open classes, then the per-request fee unit"
     );
     // Every reported count's class (owner LEDGER-100), `search_units` first and in its own family.
     assert_eq!(
@@ -80,24 +80,53 @@ fn the_tail_is_one_the_contract_accepts() {
             4 + k
         );
     }
+    // THE FEE UNIT (owner #77, money-B1): one per billable request, the last billable class.
+    assert_eq!(TAIL.fee_units_len, 1);
+    // SAFETY: the tail's `'static` fee-unit list of `fee_units_len` entries.
+    let fee = unsafe { *TAIL.fee_units };
+    // SAFETY: a `'static` str the door states (abi_str).
+    let fee = unsafe { std::slice::from_raw_parts(fee.ptr, fee.len) };
+    assert_eq!(fee, busbar_contract::plane::PER_REQUEST.as_bytes());
+    assert_eq!(
+        busbar_plane_llm::plane_door::FEE_CLASS_INDEX as usize,
+        TAIL.billable_classes_len - 1
+    );
 }
 
+/// ARCHITECT Q-L1-AUTH (A): every dialect states its default outbound style in the tail, and every
+/// style a member may be bound under (each dialect's default, the provider `auth:` overrides) has
+/// exactly one outbound need naming it.
 #[test]
-fn every_dialects_egress_scheme_has_its_one_outbound_need() {
+fn every_dialects_default_style_is_stated_and_every_style_has_its_one_outbound_need() {
     assert_eq!(check_needs(NEEDS), Ok(()));
     assert_eq!(STATEMENT.needs_len, NEEDS.len());
-    for d in DIALECTS {
+    assert_eq!(TAIL.dialect_auth_len, DIALECTS.len());
+    for (i, d) in DIALECTS.iter().enumerate() {
+        // SAFETY: the tail's `'static` dialect_auth list of `dialect_auth_len` entries.
+        let stated = unsafe { *TAIL.dialect_auth.add(i) };
+        assert_eq!(stated.dialect as usize, i);
+        // SAFETY: a `'static` str the door states (abi_str).
+        let style = unsafe { std::slice::from_raw_parts(stated.style.ptr, stated.style.len) };
+        assert_eq!(style, d.egress_style.as_bytes(), "{}", d.name);
         assert_eq!(
-            EGRESS_SCHEMES
+            EGRESS_STYLES
                 .iter()
-                .filter(|s| **s == d.egress_scheme)
+                .filter(|s| **s == d.egress_style)
                 .count(),
             1,
             "{}",
             d.name
         );
     }
-    assert_eq!(NEEDS.len(), EGRESS_SCHEMES.len());
+    for style in [
+        "api-key",
+        "bearer",
+        "jwt-bearer",
+        "oauth-client-credentials",
+    ] {
+        assert!(EGRESS_STYLES.contains(&style), "{style}");
+    }
+    assert_eq!(NEEDS.len(), EGRESS_STYLES.len());
 }
 
 #[test]
@@ -293,6 +322,66 @@ fn red_no_dialects_governed_response_field_leaks_through_a_need() {
             );
         }
     }
+}
+
+/// THE ROUTE AN ARRIVAL NAMES (ARCHITECT Q-SW6 / Q-FL3, 2026-10-02): its model, verbatim, as a pool
+/// when the plane's `pools` names it, else as a direct entry, the previous release's order (a pool
+/// first, then a configured model). A model that is neither is still named, as a direct entry the
+/// kernel does not hold, so the kernel refuses it (`no_destination`, 1.5.5's 404).
+#[test]
+fn an_arrival_routes_over_its_model_a_pool_first_then_a_direct_entry() {
+    use busbar_contract::abi::plane::{ROUTE_DIRECT, ROUTE_POOL};
+    let shaping = read_settings(
+        br#"{"providers":{"ant":{"protocol":"anthropic","base_url":"https://anthropic.example"}},
+        "models":{"claude":{"provider":"ant"},"both":{"provider":"ant"}},
+        "pools":{"p":{"members":["claude"]},"both":{"members":["claude"]}}}"#,
+    )
+    .expect("a well-formed generation reads");
+    assert_eq!(route_of(&shaping, "p"), (ROUTE_POOL, "p"));
+    assert_eq!(route_of(&shaping, "claude"), (ROUTE_DIRECT, "claude"));
+    assert_eq!(route_of(&shaping, "both"), (ROUTE_POOL, "both"));
+    assert_eq!(route_of(&shaping, "nope"), (ROUTE_DIRECT, "nope"));
+}
+
+/// THE STICKY-ROUTING KEY (ARCHITECT Q1 ArriveOut, 2026-10-05), as 1.5.5 derived it: the pool's
+/// `affinity.header_name` (else `x-session-id`), matched case-blind, wins over chat's non-empty body
+/// `system`; a header value that is not text is no key; neither is no affinity.
+#[test]
+fn the_sticky_key_is_the_pools_header_else_the_chat_bodys_system() {
+    use busbar_plane_llm::plane_door::affinity_key;
+    let shaping = read_settings(
+        br#"{"providers":{"ant":{"protocol":"anthropic","base_url":"https://anthropic.example"}},
+        "models":{"claude":{"provider":"ant"}},
+        "pools":{"p":{"members":["claude"]},
+                 "u":{"members":["claude"],"affinity":{"mode":"session","header_name":"x-user-id"}}}}"#,
+    )
+    .expect("a well-formed generation reads");
+    assert_eq!(shaping.affinity_header("p"), "x-session-id");
+    assert_eq!(shaping.affinity_header("u"), "x-user-id");
+    let chat = busbar_plane_llm::codec::DECLS
+        .iter()
+        .find(|d| d.name == "anthropic")
+        .and_then(|d| d.handler)
+        .and_then(|h| h.operation_handler(busbar_contract::operation::OpVerb::CHAT));
+    let body = serde_json::json!({"model": "p", "system": "be brief", "messages": []});
+    let session: &[(&[u8], &[u8])] = &[(b"X-Session-Id", b"s-1")];
+    assert_eq!(
+        affinity_key("x-session-id", session, chat, Some(&body)),
+        Some("s-1".to_string())
+    );
+    assert_eq!(
+        affinity_key("x-user-id", session, chat, Some(&body)),
+        Some("be brief".to_string()),
+        "another pool's header is not this pool's"
+    );
+    let unreadable: &[(&[u8], &[u8])] = &[(b"x-session-id", b"s\x01")];
+    assert_eq!(
+        affinity_key("x-session-id", unreadable, chat, Some(&body)),
+        Some("be brief".to_string())
+    );
+    let plain = serde_json::json!({"model": "p", "system": "", "messages": []});
+    assert_eq!(affinity_key("x-session-id", &[], chat, Some(&plain)), None);
+    assert_eq!(affinity_key("x-session-id", &[], None, Some(&body)), None);
 }
 
 /// EVERY DECLARED OPEN CLASS REACHES THE DURABLE BOOK (owner LEDGER-100): one count of each open

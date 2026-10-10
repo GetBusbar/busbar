@@ -58,6 +58,10 @@ impl Clock for NodeClock {
         self.origin.elapsed().as_millis()
     }
 
+    fn now_micros(&self) -> u128 {
+        self.origin.elapsed().as_micros()
+    }
+
     fn sleep(&self, ms: u64) -> BoxFut<'_, ()> {
         Box::pin(tokio::time::sleep(std::time::Duration::from_millis(ms)))
     }
@@ -98,6 +102,12 @@ impl MemberPermits {
                 .map(|(d, n)| (d, Arc::new(Semaphore::new(n))))
                 .collect(),
         }
+    }
+
+    /// The free slots of `destination`; `None` for a member with no limit.
+    #[must_use]
+    pub fn available(&self, destination: DestinationId) -> Option<usize> {
+        self.limits.get(&destination).map(|s| s.available_permits())
     }
 
     fn slot(destination: DestinationId, held: Option<OwnedSemaphorePermit>) -> Permit {

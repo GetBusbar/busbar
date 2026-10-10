@@ -328,6 +328,7 @@ async fn a_claimed_request_is_served_through_the_door_and_its_money_posted() {
         auths: Arc::new(auths),
         conns: Arc::clone(&connector) as Arc<dyn PollConns>,
         stream_ceiling_secs: 600,
+        models: None,
         upgrades: Vec::new(),
     };
 
@@ -605,9 +606,9 @@ mod tools_door {
 
     use crate::root::door_steps::tests::hook_parity;
     use crate::root::door_steps::tests::tool_door::{
-        protocol_version, rig_tools, send_as, send_headed, surface, three_tools, tool_digest,
-        tool_listing, tool_server, tool_server_listing, tool_server_replying, Footing, Rig, STALL,
-        TOOL_DESCRIPTION,
+        protocol_version, rig_tools, send_as, send_headed, sentence, surface, three_tools,
+        tool_digest, tool_listing, tool_server, tool_server_listing, tool_server_replying, Footing,
+        Rig, STALL, TOOL_DESCRIPTION,
     };
     use crate::root::serve::planes_tests::{Published, PUBLISHING};
 
@@ -1979,6 +1980,308 @@ mod tools_door {
         let (status, answer) = call(&rig, &reader, "cat_read_file", serde_json::json!({})).await;
         assert_eq!(status, StatusCode::OK, "its own tool is served: {answer}");
     }
+
+    // ── THE WALK'S EXHAUSTION ON THIS DOOR: PREDEV'S BYTES ──────────────────────────────────────
+    //
+    // The kernel hands every plane the walk's own sentence for an exhausted walk
+    // (`RefusalIn.text`); this door's baseline is predev's (spec l.4452), which said the reason's
+    // own word there. Each cell below drives a `tools/call` to an exhausted walk on one path the
+    // door's refusal slot takes, and pins the bytes predev serves on it.
+
+    /// The `tools/call` of `tool` with the tasks extension declared (a call that creates a task
+    /// where its tool supports one).
+    fn task_call_of(tool: &str) -> String {
+        let mut call: serde_json::Value =
+            serde_json::from_str(&call_of(tool, serde_json::json!({}))).expect("the call");
+        call["params"]["_meta"]["io.modelcontextprotocol/clientCapabilities"] =
+            serde_json::json!({ "extensions": { "io.modelcontextprotocol/tasks": {} } });
+        call.to_string()
+    }
+
+    /// `tasks/get` of `task_id` on `rig`, the extension declared: the status and the JSON-RPC body.
+    async fn task_get(rig: &Rig, task_id: &str) -> (u16, serde_json::Value) {
+        let verb = serde_json::json!({
+            "jsonrpc": "2.0", "id": 43, "method": "tasks/get",
+            "params": {
+                "taskId": task_id,
+                "_meta": {
+                    "io.modelcontextprotocol/protocolVersion": protocol_version(),
+                    "io.modelcontextprotocol/clientCapabilities":
+                        { "extensions": { "io.modelcontextprotocol/tasks": {} } },
+                },
+            },
+        })
+        .to_string();
+        let (status, body) = send_as(
+            &rig.router,
+            Some(&rig.token),
+            &verb,
+            "tasks/get",
+            Some(task_id),
+        )
+        .await;
+        (
+            status.as_u16(),
+            serde_json::from_slice(&body).expect("JSON-RPC"),
+        )
+    }
+
+    /// `tasks/get` of `task_id` until the task is terminal (or the test gives up): its body.
+    async fn task_settled(rig: &Rig, task_id: &str) -> serde_json::Value {
+        for _ in 0..600 {
+            let (_, body) = task_get(rig, task_id).await;
+            if ["completed", "failed", "cancelled"]
+                .iter()
+                .any(|s| body["result"]["status"] == *s)
+            {
+                return body;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        panic!("task {task_id} never settled");
+    }
+
+    /// A tool server answering its tool list as approved and holding every `tools/call` unanswered.
+    async fn stalling_calls() -> (u16, Heard) {
+        tool_server_replying(Arc::new(|r: &str| {
+            if r.contains("\"tools/list\"") {
+                let list = serde_json::json!({"jsonrpc": "2.0", "id": 1, "result": {"tools": tool_listing()}});
+                (200, list.to_string())
+            } else {
+                (STALL, String::new())
+            }
+        }))
+        .await
+    }
+
+    /// Wait for the server to hear a `tools/call`.
+    async fn heard_a_call(heard: &mut Heard) {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let r = heard.recv().await.expect("the server hears");
+                if r.contains("\"tools/call\"") {
+                    return;
+                }
+            }
+        })
+        .await
+        .expect("the call reached the server");
+    }
+
+    /// Publish generation 2 of `rig`'s door over the `tools:` section `section` (the operator's
+    /// reload): the plane's catalogue moves; the kernel's sealed egress does not.
+    fn reload(rig: &Rig, section: &serde_yaml::Value) {
+        use crate::root::loader::dispatch::{in_head, out_head, Frame};
+        use busbar_contract::abi::mechanism::call::{Blob, Outcome as AbiOutcome, BLOB_JSON};
+        use busbar_contract::abi::mechanism::lifecycle::RefreshIn;
+        use busbar_contract::abi::plane::PlaneRefreshOut;
+        let settings = serde_json::to_vec(section).expect("json");
+        let mut frame = Frame::new(
+            RefreshIn {
+                head: in_head(),
+                generation: 2,
+                settings: Blob {
+                    ptr: settings.as_ptr(),
+                    len: settings.len(),
+                    fmt: BLOB_JSON,
+                    flags: 0,
+                },
+                secrets: std::ptr::null(),
+                secrets_len: 0,
+            },
+            PlaneRefreshOut {
+                head: out_head(),
+                snapshot: std::ptr::null(),
+            },
+        );
+        let (called, snapshot) = rig.plane.refresh(&mut frame);
+        assert_eq!(called.outcome, AbiOutcome::Ready, "the refresh is taken");
+        assert!(snapshot.is_some(), "generation 2 is published");
+    }
+
+    /// EXHAUSTED, THE SERVER RESOLVED (the control the two cells after it stand beside): a tripped
+    /// server's call is refused as the served engine refused it, `503` / `-32030` /
+    /// `upstream_unavailable` with its sentence and the wait, byte for byte as predev serves it; the
+    /// walk's own sentence never reaches the caller.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_tripped_servers_exhausted_walk_is_refused_in_predevs_bytes() {
+        let _one = PUBLISHING.lock().await;
+        let instance = "serve-door-tools-exhausted-bytes";
+        let _published = Published(instance);
+        let (port, mut heard) = answering_calls_with(503).await;
+        let rig = rig_tools(instance, port, registration("flaky", port, ""), &|app| app);
+        fail_to_the_trip(&rig, "flaky_read_file", &mut heard, 0).await;
+
+        let (status, headers, body) = send_headed(
+            &rig.router,
+            Some(&rig.token),
+            &call_of("flaky_read_file", serde_json::json!({})),
+            "tools/call",
+            Some("flaky_read_file"),
+        )
+        .await;
+        let body = String::from_utf8_lossy(&body).to_string();
+        let wait: u64 = headers
+            .get("retry-after")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.parse().ok())
+            .unwrap_or_else(|| panic!("a Retry-After: {headers:?} {body}"));
+        assert!(wait > 0, "the open cell's wait: {headers:?}");
+        assert_eq!(status.as_u16(), 503, "{headers:?} {body}");
+        assert_eq!(
+            body,
+            format!(
+                "{{\"error\":{{\"code\":-32030,\"data\":{{\"reason\":\"upstream_unavailable\",\
+                 \"retry_after_ms\":{},\"server\":\"flaky\"}},\"message\":\"{}\"}},\"id\":41,\
+                 \"jsonrpc\":\"2.0\"}}",
+                wait * 1000,
+                sentence("tripped_server_message")
+                    .replace("{server}", "flaky")
+                    .replace("{wait}", &wait.to_string())
+            ),
+            "{headers:?}"
+        );
+        assert!(drain(&mut heard).is_empty(), "nothing reached the server");
+        assert!(rig.all_ended(), "every unit ended");
+    }
+
+    /// EXHAUSTED, THE SERVER NO LONGER RESOLVED (the generic arm of the door's refusal slot): a call
+    /// dispatched to a server that never answers, whose tool leaves the catalogue (an operator's
+    /// reload) while the call waits out the server's `timeout:`, is refused when the walk is
+    /// exhausted as predev refused it: the walk's status, `-32000`, and the reason's own word, no
+    /// data and no wait.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_exhausted_walk_whose_tool_left_the_catalogue_is_refused_in_predevs_bytes() {
+        let _one = PUBLISHING.lock().await;
+        let instance = "serve-door-tools-exhausted-unlisted";
+        let _published = Published(instance);
+        let (port, mut heard) = stalling_calls().await;
+        let rig = rig_tools(
+            instance,
+            port,
+            registration("stall", port, "  timeout: 2s\n"),
+            &|app| app,
+        );
+        let (router, token) = (rig.router.clone(), rig.token.clone());
+        let pending = tokio::spawn(async move {
+            send_headed(
+                &router,
+                Some(&token),
+                &call_of("stall_read_file", serde_json::json!({})),
+                "tools/call",
+                Some("stall_read_file"),
+            )
+            .await
+        });
+        heard_a_call(&mut heard).await;
+        // The reload: the server is registered under another name, so the stalled call's tool is no
+        // longer one the catalogue publishes.
+        reload(&rig, &registration("other", port, ""));
+
+        let (status, headers, body) = tokio::time::timeout(Duration::from_secs(20), pending)
+            .await
+            .expect("the stalled call was answered")
+            .expect("the call ran");
+        let body = String::from_utf8_lossy(&body).to_string();
+        assert_eq!(status.as_u16(), 503, "{headers:?} {body}");
+        assert_eq!(
+            body, r#"{"error":{"code":-32000,"message":"breaker_open"},"id":41,"jsonrpc":"2.0"}"#,
+            "{headers:?}"
+        );
+        assert!(
+            headers.get("retry-after").is_none(),
+            "no wait on this arm: {headers:?}"
+        );
+        assert!(rig.all_ended(), "every unit ended");
+    }
+
+    /// EXHAUSTED UNDER A TASK (the continuation's refusal): a task whose call is dispatched to a
+    /// server that never answers fails when its continuation's walk is exhausted, and `tasks/get`
+    /// states the failure as predev stated it: `-32603`, the upstream call failed, and the reason's
+    /// own word.
+    #[cfg(linked_axis_node)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_tasks_exhausted_walk_fails_the_task_in_predevs_bytes() {
+        let _one = PUBLISHING.lock().await;
+        let instance = "serve-door-tools-exhausted-task";
+        let _published = Published(instance);
+        let (port, mut heard) = stalling_calls().await;
+        let tools: serde_yaml::Value = serde_yaml::from_str(&format!(
+            "stall:\n  url: \"http://127.0.0.1:{port}/rpc\"\n  {PIN}\n  timeout: 2s\n  \
+             tools_allow:\n    read_file: {{ schema_hash: \"{}\", task_support: optional }}\n",
+            tool_digest()
+        ))
+        .expect("a section");
+        let rig = rig_tools(instance, port, tools, &|app| app);
+
+        let (status, body) = send_as(
+            &rig.router,
+            Some(&rig.token),
+            &task_call_of("stall_read_file"),
+            "tools/call",
+            Some("stall_read_file"),
+        )
+        .await;
+        let created: serde_json::Value = serde_json::from_slice(&body).expect("JSON-RPC");
+        assert_eq!(status.as_u16(), 200, "{created}");
+        let task_id = created["result"]["taskId"]
+            .as_str()
+            .unwrap_or_else(|| panic!("a task: {created}"))
+            .to_string();
+        heard_a_call(&mut heard).await;
+
+        let settled = task_settled(&rig, &task_id).await;
+        assert_eq!(settled["result"]["status"], "failed", "{settled}");
+        assert_eq!(
+            settled["result"]["error"].to_string(),
+            sentence("continuation_refused_error"),
+            "{settled}"
+        );
+    }
+
+    /// EXHAUSTED UNDER A TASK, THE SERVER TRIPPED: a task created on a tool whose server's cell is
+    /// open fails as predev failed it, its `tasks/get` stating `-32603`, the upstream call failed,
+    /// and the reason's own word.
+    #[cfg(linked_axis_node)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_task_on_a_tripped_server_fails_in_predevs_bytes() {
+        let _one = PUBLISHING.lock().await;
+        let instance = "serve-door-tools-exhausted-task-tripped";
+        let _published = Published(instance);
+        let (port, mut heard) = answering_calls_with(503).await;
+        let tools: serde_yaml::Value = serde_yaml::from_str(&format!(
+            "flaky:\n  url: \"http://127.0.0.1:{port}/rpc\"\n  {PIN}\n  \
+             tools_allow:\n    read_file: {{ schema_hash: \"{}\", task_support: optional }}\n",
+            tool_digest()
+        ))
+        .expect("a section");
+        let rig = rig_tools(instance, port, tools, &|app| app);
+        fail_to_the_trip(&rig, "flaky_read_file", &mut heard, 0).await;
+
+        let (status, headers, body) = send_headed(
+            &rig.router,
+            Some(&rig.token),
+            &task_call_of("flaky_read_file"),
+            "tools/call",
+            Some("flaky_read_file"),
+        )
+        .await;
+        let created: serde_json::Value = serde_json::from_slice(&body).expect("JSON-RPC");
+        assert_eq!(status.as_u16(), 200, "{headers:?} {created}");
+        let task_id = created["result"]["taskId"]
+            .as_str()
+            .unwrap_or_else(|| panic!("a task: {created}"))
+            .to_string();
+
+        let settled = task_settled(&rig, &task_id).await;
+        assert_eq!(settled["result"]["status"], "failed", "{settled}");
+        assert_eq!(
+            settled["result"]["error"].to_string(),
+            sentence("continuation_refused_error"),
+            "{settled}"
+        );
+        assert!(drain(&mut heard).is_empty(), "nothing reached the server");
+    }
 }
 
 #[cfg(feature = "plane-decisions")]
@@ -2260,6 +2563,7 @@ async fn serve_configured(
         auths: Arc::new(auths),
         conns: Arc::clone(&connector) as Arc<dyn PollConns>,
         stream_ceiling_secs: 600,
+        models: None,
         upgrades: Vec::new(),
     };
     let mut sections = BTreeMap::new();
@@ -2454,6 +2758,907 @@ async fn a_plane_stating_no_breaker_fact_keeps_the_default_bench() {
     assert_eq!(
         reached, None,
         "under the default one 503 benches the sole member: the next call never reaches the far end"
+    );
+}
+
+// ── THE DOOR SERVING THE `pools` MAP: ITS CAPABILITY CELLS (Q128 U14) ───────────────────────────
+//
+// The capability-equality matrix's root column for this plane, witnessed on its door path: each
+// cell below drives a keyed caller through the data router built with the door's claims, the
+// kernel's hook stage, the model-serving walk over the kernel's lane cells and the node's book
+// (`super::hook_seat_tests::rig`), and reads the capability where the kernel keeps it.
+#[cfg(linked_fold_on_driver)]
+use super::hook_seat_tests::{
+    chunk, far_end_answering as seat_far_end, far_end_scripted, rig, word as door_word, RigOpts,
+    Script as SeatScript, REWRITTEN,
+};
+#[cfg(linked_fold_on_driver)]
+use super::planes_tests::{Published as Withdrawn, PUBLISHING as ONE_PUBLISHER};
+
+/// A served chat completion, marked by the member that answered it.
+#[cfg(linked_fold_on_driver)]
+const SERVED_BY_TWIN: &str = r#"{"id":"chatcmpl-2","object":"chat.completion","created":0,"model":"m1","choices":[{"index":0,"message":{"role":"assistant","content":"served-by-the-twin"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}"#;
+
+/// A far end that cannot serve now.
+#[cfg(linked_fold_on_driver)]
+const OVERLOADED: &str = r#"{"error":{"message":"overloaded","type":"server_error"}}"#;
+
+/// A far end refusing the request itself.
+#[cfg(linked_fold_on_driver)]
+const MALFORMED: &str = r#"{"error":{"message":"bad request","type":"invalid_request_error"}}"#;
+
+/// BREAKER-TRIP: a member whose far end fails records into the kernel's ONE breaker cell for its
+/// (pool, lane), and the cell opens: the walk's failure benched it.
+#[cfg(linked_fold_on_driver)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_pools_door_trips_a_failing_members_breaker_cell() {
+    let _one = ONE_PUBLISHER.lock().await;
+    let instance = "serve-door-breaker-trip";
+    let _published = Withdrawn(instance);
+    let (down, twin) = (
+        seat_far_end(503, OVERLOADED).await,
+        seat_far_end(200, SERVED_BY_TWIN).await,
+    );
+    let rig = rig(
+        instance,
+        RigOpts {
+            members: &[(down.port, 100), (twin.port, 1)],
+            ..RigOpts::default()
+        },
+    )
+    .await;
+    let ready = || rig.app.store.ready_in("p", 0, busbar_kernel::store::now());
+    assert!(ready(), "the member's cell admits before any failure");
+    let (status, _, _) = rig.chat().await;
+    assert_eq!(status, 200, "the twin serves");
+    assert_eq!(down.served(), 1, "the failing member was dialled once");
+    assert!(
+        !ready(),
+        "the failure recorded into the member's (pool, lane) cell and opened it"
+    );
+}
+
+/// BREAKER-FASTFAIL: a tripped member is refused before dispatch, at once: the next unit never
+/// dials it, and its twin serves.
+#[cfg(linked_fold_on_driver)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_pools_door_refuses_a_tripped_member_before_dispatch() {
+    let _one = ONE_PUBLISHER.lock().await;
+    let instance = "serve-door-breaker-fastfail";
+    let _published = Withdrawn(instance);
+    let (down, twin) = (
+        seat_far_end(503, OVERLOADED).await,
+        seat_far_end(200, SERVED_BY_TWIN).await,
+    );
+    let rig = rig(
+        instance,
+        RigOpts {
+            members: &[(down.port, 100), (twin.port, 1)],
+            ..RigOpts::default()
+        },
+    )
+    .await;
+    assert_eq!(rig.chat().await.0, 200);
+    assert_eq!(down.served(), 1);
+    let started = std::time::Instant::now();
+    assert_eq!(rig.chat().await.0, 200, "the twin serves the next unit");
+    assert_eq!(
+        down.served(),
+        1,
+        "the tripped member is refused before dispatch: never dialled again"
+    );
+    assert_eq!(twin.served(), 2);
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(5),
+        "refused at once, not after a timeout"
+    );
+}
+
+/// FAILOVER-REROUTE: a second interchangeable candidate is tried before the first byte, through
+/// the one walk: the first member fails, the twin's answer is the caller's.
+#[cfg(linked_fold_on_driver)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_pools_door_reroutes_to_the_twin_before_the_first_byte() {
+    let _one = ONE_PUBLISHER.lock().await;
+    let instance = "serve-door-failover";
+    let _published = Withdrawn(instance);
+    let (down, twin) = (
+        seat_far_end(503, OVERLOADED).await,
+        seat_far_end(200, SERVED_BY_TWIN).await,
+    );
+    let rig = rig(
+        instance,
+        RigOpts {
+            members: &[(down.port, 100), (twin.port, 1)],
+            ..RigOpts::default()
+        },
+    )
+    .await;
+    let (status, _, body) = rig.chat().await;
+    assert_eq!(status, 200);
+    assert!(
+        String::from_utf8_lossy(&body).contains("served-by-the-twin"),
+        "the twin's answer reached the caller: {}",
+        String::from_utf8_lossy(&body)
+    );
+    assert_eq!((down.served(), twin.served()), (1, 1));
+}
+
+/// DISPOSITION: the far end's answer is classified before it is relayed: a refusal of the request
+/// itself is the caller's own fault, relayed with its status, never failed over and never charged
+/// to the member's breaker cell.
+#[cfg(linked_fold_on_driver)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_pools_door_classifies_a_refused_request_as_the_callers_fault() {
+    let _one = ONE_PUBLISHER.lock().await;
+    let instance = "serve-door-disposition";
+    let _published = Withdrawn(instance);
+    let (refusing, twin) = (
+        seat_far_end(400, MALFORMED).await,
+        seat_far_end(200, SERVED_BY_TWIN).await,
+    );
+    let rig = rig(
+        instance,
+        RigOpts {
+            members: &[(refusing.port, 100), (twin.port, 1)],
+            ..RigOpts::default()
+        },
+    )
+    .await;
+    let (status, _, _) = rig.chat().await;
+    assert_eq!(status, 400, "the far end's refusal is relayed");
+    assert_eq!(
+        (refusing.served(), twin.served()),
+        (1, 0),
+        "a caller's fault is not failed over"
+    );
+    assert!(
+        rig.app.store.ready_in("p", 0, busbar_kernel::store::now()),
+        "nor charged to the member's cell"
+    );
+}
+
+/// EGRESS-AUTH: the member's credential is the one the egress mechanism binds and injects; the
+/// caller's own token never crosses.
+#[cfg(linked_fold_on_driver)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_pools_door_injects_the_members_credential_not_the_callers() {
+    let _one = ONE_PUBLISHER.lock().await;
+    let instance = "serve-door-egress-auth";
+    let _published = Withdrawn(instance);
+    let far = seat_far_end(200, SERVED_BY_TWIN).await;
+    let rig = rig(
+        instance,
+        RigOpts {
+            members: &[(far.port, 1)],
+            ..RigOpts::default()
+        },
+    )
+    .await;
+    assert_eq!(rig.chat().await.0, 200);
+    let seen = far.authorizations.lock().unwrap().clone();
+    assert_eq!(seen, vec!["Bearer sk-seats".to_string()]);
+    assert!(
+        !seen[0].contains(&rig.token),
+        "the caller's token never crosses"
+    );
+}
+
+/// METRICS: the door's traffic appears on the scrape, under the pool and lane it was served on.
+#[cfg(linked_fold_on_driver)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_pools_doors_traffic_appears_on_the_metrics_scrape() {
+    let _one = ONE_PUBLISHER.lock().await;
+    let instance = "serve-door-metrics";
+    let _published = Withdrawn(instance);
+    let far = seat_far_end(200, SERVED_BY_TWIN).await;
+    let rig = rig(
+        instance,
+        RigOpts {
+            members: &[(far.port, 1)],
+            ..RigOpts::default()
+        },
+    )
+    .await;
+    assert_eq!(rig.chat().await.0, 200);
+    let scrape = busbar_kernel::snapshot::render();
+    assert!(
+        scrape
+            .lines()
+            .any(|l| l.starts_with("busbar_upstream_attempts_total{")
+                && l.contains("pool=\"p\"")
+                && l.contains("lane=\"m0\"")),
+        "the attempt is on the scrape under its pool and lane:\n{scrape}"
+    );
+}
+
+/// GOVERNANCE-BUDGET: the unit's spend is attributed to the presenting key, and a key whose budget
+/// is spent is refused before any far end is dialled.
+#[cfg(linked_fold_on_driver)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_pools_door_attributes_spend_and_a_spent_budget_refuses() {
+    let _one = ONE_PUBLISHER.lock().await;
+    let instance = "serve-door-budget";
+    let _published = Withdrawn(instance);
+    let far = seat_far_end(200, SERVED_BY_TWIN).await;
+    let rig = rig(
+        instance,
+        RigOpts {
+            members: &[(far.port, 1)],
+            budget_cents: Some(1),
+            ..RigOpts::default()
+        },
+    )
+    .await;
+    assert_eq!(rig.chat().await.0, 200);
+    let (requests, spend, _, billable) = rig.ledger_after(1).await;
+    assert_eq!(
+        (requests, spend, billable),
+        (1, 1, 1),
+        "the one fee on the key"
+    );
+    let (status, head, _) = rig.chat().await;
+    assert_eq!(status, 429, "the spent budget refuses");
+    assert!(
+        head.contains_key("retry-after"),
+        "with a Retry-After: {head:?}"
+    );
+    assert_eq!(far.served(), 1, "the refused unit dialled nothing");
+}
+
+/// AUDIT-CHAIN: every unit the door serves seals exactly one record on the node's chain.
+#[cfg(linked_fold_on_driver)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_pools_door_seals_one_audit_record_per_unit() {
+    let _one = ONE_PUBLISHER.lock().await;
+    let instance = "serve-door-audit";
+    let _published = Withdrawn(instance);
+    let far = seat_far_end(200, SERVED_BY_TWIN).await;
+    let rig = rig(
+        instance,
+        RigOpts {
+            members: &[(far.port, 1)],
+            ..RigOpts::default()
+        },
+    )
+    .await;
+    assert_eq!(rig.chat().await.0, 200);
+    let _ = rig.ledger_after(1).await;
+    assert_eq!(rig.audit_records(), 1, "one record for the one unit");
+}
+
+/// HOOKS-GATE: a rejecting gate refuses the door's traffic before dispatch.
+#[cfg(linked_fold_on_driver)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_pools_doors_gate_hook_refuses_before_dispatch() {
+    let _one = ONE_PUBLISHER.lock().await;
+    let instance = "serve-door-gate";
+    let _published = Withdrawn(instance);
+    let far = seat_far_end(200, SERVED_BY_TWIN).await;
+    let rig = rig(
+        instance,
+        RigOpts {
+            members: &[(far.port, 1)],
+            reject_at_gate: true,
+            ..RigOpts::default()
+        },
+    )
+    .await;
+    assert_eq!(rig.chat().await.0, 451, "the gate's own status");
+    assert_eq!(far.served(), 0, "nothing was dispatched");
+}
+
+/// HOOKS-TAP: the rewrite and observe hooks run over the door's payloads: the request-stage tap
+/// sees the request as the global rewrite left it.
+#[cfg(linked_fold_on_driver)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_pools_doors_tap_hooks_observe_the_rewritten_request() {
+    let _one = ONE_PUBLISHER.lock().await;
+    let instance = "serve-door-tap";
+    let _published = Withdrawn(instance);
+    let far = seat_far_end(200, SERVED_BY_TWIN).await;
+    let rig = rig(
+        instance,
+        RigOpts {
+            members: &[(far.port, 1)],
+            ..RigOpts::default()
+        },
+    )
+    .await;
+    assert_eq!(rig.chat().await.0, 200);
+    let payload = rig
+        .request_tap_payload(2_000)
+        .await
+        .expect("the request-stage tap is delivered");
+    let text = String::from_utf8_lossy(&payload);
+    assert!(text.contains(REWRITTEN), "{text}");
+    assert!(!text.contains("the original prompt"), "{text}");
+}
+
+/// CATALOGUE: what a restricted key may SEE is the one catalogue walk's answer: the pool it may
+/// reach and that pool's members, never a model it cannot reach.
+#[cfg(linked_fold_on_driver)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_pools_doors_catalogue_shows_a_restricted_key_only_what_it_reaches() {
+    let _one = ONE_PUBLISHER.lock().await;
+    let instance = "serve-door-catalogue";
+    let _published = Withdrawn(instance);
+    let (a, b) = (
+        seat_far_end(200, SERVED_BY_TWIN).await,
+        seat_far_end(200, SERVED_BY_TWIN).await,
+    );
+    let rig = rig(
+        instance,
+        RigOpts {
+            members: &[(a.port, 1), (b.port, 1)],
+            pooled: Some(1),
+            allowed_pools: Some(&["p"]),
+            ..RigOpts::default()
+        },
+    )
+    .await;
+    let (status, _, body) = rig.send("GET", "/v1/models", None).await;
+    assert_eq!(status, 200);
+    let listed: serde_json::Value = serde_json::from_slice(&body).expect("a JSON list");
+    let ids: Vec<&str> = listed["data"]
+        .as_array()
+        .expect("the list")
+        .iter()
+        .filter_map(|m| m["id"].as_str())
+        .collect();
+    assert_eq!(
+        ids,
+        ["p", "m0"],
+        "the reachable pool and its member, nothing else"
+    );
+}
+
+/// THE DROPPED-CONTROLS AUDIT ROW ON THE DOOR (ARCHITECT, Q128 gap): a TRANSLATE attempt that
+/// cannot carry a control the caller set writes 1.5.5's `egress.control_unrepresentable` row,
+/// outcome `degraded`, `<control> on <dialect>`; an answer member the caller's dialect has no form
+/// for writes `<path> from <dialect>`. Both reach the kernel's audit chain through the plane's
+/// `RECORD_AUDIT` write. RED arm: a request that sets nothing the far dialect drops writes no row.
+#[cfg(linked_fold_on_driver)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_pools_door_audits_a_control_the_far_dialect_cannot_carry() {
+    let _one = ONE_PUBLISHER.lock().await;
+    let instance = "serve-door-dropped-controls";
+    let _published = Withdrawn(instance);
+    // The far dialect is the plane's own door word (`untranslatable_dialect`), and so is its answer:
+    // a message whose usage carries a member the caller's dialect has no form for.
+    let far_dialect = door_word("untranslatable_dialect");
+    let far = seat_far_end(200, door_word("untranslatable_answer")).await;
+    let rig = rig(
+        instance,
+        RigOpts {
+            members: &[(far.port, 1)],
+            dialect: Some(far_dialect),
+            ..RigOpts::default()
+        },
+    )
+    .await;
+    let rows = |resource: &str| {
+        busbar_kernel::audit::auditlog::AUDIT_LOG
+            .list_filtered(
+                0,
+                1000,
+                Some("egress.control_unrepresentable"),
+                Some(resource),
+            )
+            .into_iter()
+            .filter(|e| e.principal == rig.key_id && e.outcome == "degraded")
+            .count()
+    };
+    let (status, _, _) = rig
+        .send(
+            "POST",
+            "/v1/chat/completions",
+            Some(serde_json::json!({"model": "p", "max_tokens": 16,
+                "messages": [{"role": "user", "content": "hi"}]})),
+        )
+        .await;
+    assert_eq!(status, 200);
+    assert_eq!(
+        rows(format!("logit_bias on {far_dialect}").as_str()),
+        0,
+        "nothing set, nothing dropped"
+    );
+    let (status, _, _) = rig
+        .send(
+            "POST",
+            "/v1/chat/completions",
+            Some(serde_json::json!({"model": "p", "max_tokens": 16,
+                "logit_bias": {"50256": -100},
+                "messages": [{"role": "user", "content": "hi"}]})),
+        )
+        .await;
+    assert_eq!(status, 200);
+    assert_eq!(
+        rows(format!("logit_bias on {far_dialect}").as_str()),
+        1,
+        "the dropped control, one row"
+    );
+    assert!(
+        rows(format!("usage.output_tokens_details from {far_dialect}").as_str()) >= 1,
+        "the answer member the caller's dialect cannot carry"
+    );
+}
+
+/// THE RANKING SIGNALS ON THE DOOR (ARCHITECT, Q128 gap): the hooks see each candidate as 1.5.5's
+/// projection fed it: the pool member's tier and tags, the lane's latency signal once a sample is
+/// recorded, its free concurrency, its remaining budget, and, where the generation declares them,
+/// its breaker state, error rate and p95 latency in the routing pool. RED before: every one of them
+/// was empty on the door path.
+#[cfg(linked_fold_on_driver)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_pools_doors_hooks_see_each_candidates_standing() {
+    let _one = ONE_PUBLISHER.lock().await;
+    let instance = "serve-door-signals";
+    let _published = Withdrawn(instance);
+    let (a, b) = (
+        seat_far_end(200, SERVED_BY_TWIN).await,
+        seat_far_end(200, SERVED_BY_TWIN).await,
+    );
+    let rig = rig(
+        instance,
+        RigOpts {
+            members: &[(a.port, 1), (b.port, 1)],
+            described: true,
+            ..RigOpts::default()
+        },
+    )
+    .await;
+    assert_eq!(rig.chat().await.0, 200);
+    let first = rig.gate_saw();
+    assert_eq!(first.len(), 2, "{first:?}");
+    assert!(
+        first[0].starts_with("m0 tier=Some(\"t0\") tags=[\"g0\"] latency=false avail=true"),
+        "{first:?}"
+    );
+    assert!(
+        first[0].contains("CandidateBreakerState=closed"),
+        "the declared breaker state: {first:?}"
+    );
+    assert!(
+        !first[0].contains("CandidateLatencyP95Ms"),
+        "no p95 before a sample: {first:?}"
+    );
+    assert_eq!(rig.chat().await.0, 200);
+    let second = rig.gate_saw();
+    let second: Vec<String> = second
+        .into_iter()
+        .filter(|c| c.contains("latency=true"))
+        .collect();
+    assert!(
+        !second.is_empty(),
+        "the served attempt's latency sample: {second:?}"
+    );
+    assert!(
+        second[0].contains("CandidateLatencyP95Ms=true")
+            && second[0].contains("CandidateErrorRate=true"),
+        "the p95 reservoir and the error rate, once fed: {second:?}"
+    );
+}
+
+// ── what only the plane reads, the kernel routes on (ARCHITECT Q1 ArriveOut, 2026-10-05) ────────
+
+/// A streamed far end's head: chunked, so a far end that closes before its last chunk CUT it.
+#[cfg(linked_fold_on_driver)]
+const STREAM_HEAD: &str = "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\n\
+                           transfer-encoding: chunked\r\nconnection: close\r\n\r\n";
+
+/// The streamed answer's frames, in order: a delta, the stop, the usage, the end.
+#[cfg(linked_fold_on_driver)]
+const FRAMES: [&str; 4] = [
+    r#"{"id":"c1","object":"chat.completion.chunk","created":1,"model":"m0","choices":[{"index":0,"delta":{"role":"assistant","content":"hi"},"finish_reason":null}]}"#,
+    r#"{"id":"c1","object":"chat.completion.chunk","created":1,"model":"m0","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}"#,
+    r#"{"id":"c1","object":"chat.completion.chunk","created":1,"model":"m0","choices":[],"usage":{"prompt_tokens":11,"completion_tokens":7,"total_tokens":18}}"#,
+    "[DONE]",
+];
+
+/// One event-stream frame, as a chunk.
+#[cfg(linked_fold_on_driver)]
+fn frame(data: &str) -> Vec<u8> {
+    chunk(format!("data: {data}\n\n").as_bytes())
+}
+
+/// A stream that pauses `pause_ms` after its first frame, then ends cleanly.
+#[cfg(linked_fold_on_driver)]
+fn stream_pausing(pause_ms: u64) -> SeatScript {
+    SeatScript {
+        head: STREAM_HEAD.to_string(),
+        pieces: vec![
+            (0, frame(FRAMES[0])),
+            (pause_ms, frame(FRAMES[1])),
+            (0, frame(FRAMES[2])),
+            (0, frame(FRAMES[3])),
+        ],
+        finish: Some(b"0\r\n\r\n".to_vec()),
+    }
+}
+
+/// A caller's chat on pool `p` asking for its answer streamed.
+#[cfg(linked_fold_on_driver)]
+fn streamed_chat() -> serde_json::Value {
+    serde_json::json!({"model": "p", "stream": true, "max_tokens": 16,
+        "messages": [{"role": "user", "content": "hi"}]})
+}
+
+/// THE STREAM CEILING, NOT THE POOL'S TIMEOUT, bounds a streamed answer (the plane states
+/// `ROUTE_STREAM`; v1.5.5 bounded a stream's whole send by the stream ceiling): a stream that
+/// outlives its pool's one-second failover timeout is delivered whole. Before the plane stated the
+/// stream, the door cut it at the pool's timeout.
+#[cfg(linked_fold_on_driver)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_pools_door_bounds_a_stream_by_the_stream_ceiling_not_the_pools_timeout() {
+    let _one = ONE_PUBLISHER.lock().await;
+    let instance = "serve-door-stream-outlives-timeout";
+    let _published = Withdrawn(instance);
+    let far = far_end_scripted(stream_pausing(2_000)).await;
+    let rig = rig(
+        instance,
+        RigOpts {
+            members: &[(far.port, 1)],
+            failover_timeout_secs: Some(1),
+            ..RigOpts::default()
+        },
+    )
+    .await;
+    let (status, _, body) = rig
+        .send("POST", "/v1/chat/completions", Some(streamed_chat()))
+        .await;
+    let body = String::from_utf8_lossy(&body);
+    assert_eq!(status, 200, "{body}");
+    assert!(
+        body.contains("[DONE]") && body.contains("\"hi\""),
+        "the stream outlived the pool's timeout whole: {body}"
+    );
+}
+
+/// THE STREAM CEILING CUTS a streamed answer that outlives it, however long its pool's timeout
+/// (RED before the plane stated `ROUTE_STREAM`: the door read the stream as buffered and waited the
+/// pool's timeout out).
+#[cfg(linked_fold_on_driver)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_pools_door_cuts_a_stream_at_the_stream_ceiling() {
+    let _one = ONE_PUBLISHER.lock().await;
+    let instance = "serve-door-stream-ceiling";
+    let _published = Withdrawn(instance);
+    let far = far_end_scripted(stream_pausing(4_000)).await;
+    let rig = rig(
+        instance,
+        RigOpts {
+            members: &[(far.port, 1)],
+            failover_timeout_secs: Some(60),
+            stream_ceiling_secs: Some(1),
+            ..RigOpts::default()
+        },
+    )
+    .await;
+    let started = std::time::Instant::now();
+    let (status, _, body) = rig
+        .send("POST", "/v1/chat/completions", Some(streamed_chat()))
+        .await;
+    let body = String::from_utf8_lossy(&body);
+    assert_eq!(status, 200, "the stream had begun: {body}");
+    assert!(
+        body.contains("\"hi\""),
+        "the first frame reached the caller: {body}"
+    );
+    assert!(!body.contains("[DONE]"), "the ceiling cut it: {body}");
+    assert!(
+        started.elapsed() < std::time::Duration::from_millis(3_500),
+        "cut at the one-second ceiling, not when the far end ended: {:?}",
+        started.elapsed()
+    );
+}
+
+/// A MID-STREAM CUT IS NOT A REFUND (Part 2 #62): a streamed answer the far end cuts after its
+/// first byte reached the caller keeps the member's lifetime budget unit it spent (RED before the
+/// plane stated `ROUTE_STREAM`: the door refunded it as a buffered answer's).
+#[cfg(linked_fold_on_driver)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_pools_door_keeps_the_budget_unit_of_a_stream_cut_after_its_first_byte() {
+    let _one = ONE_PUBLISHER.lock().await;
+    let instance = "serve-door-stream-cut";
+    let _published = Withdrawn(instance);
+    let far = far_end_scripted(SeatScript {
+        head: STREAM_HEAD.to_string(),
+        pieces: vec![(0, frame(FRAMES[0])), (50, frame(FRAMES[1]))],
+        finish: None,
+    })
+    .await;
+    let rig = rig(
+        instance,
+        RigOpts {
+            members: &[(far.port, 1)],
+            lane_budget: Some(5),
+            ..RigOpts::default()
+        },
+    )
+    .await;
+    let (status, _, body) = rig
+        .send("POST", "/v1/chat/completions", Some(streamed_chat()))
+        .await;
+    assert_eq!(status, 200, "{}", String::from_utf8_lossy(&body));
+    assert_eq!(
+        rig.app.store.lane_budget_remaining(0),
+        Some(4),
+        "the streamed bytes were delivered: the unit is spent, not refunded"
+    );
+}
+
+/// THE CONTROL: a buffered answer the far end cuts reaches the caller whole or not at all, so its
+/// budget unit is given back (v1.5.5 `engine/mod.rs:329-353`).
+#[cfg(linked_fold_on_driver)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_pools_door_refunds_the_budget_unit_of_a_buffered_answer_cut() {
+    let _one = ONE_PUBLISHER.lock().await;
+    let instance = "serve-door-buffered-cut";
+    let _published = Withdrawn(instance);
+    let far = far_end_scripted(SeatScript {
+        head: format!(
+            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\
+             connection: close\r\n\r\n",
+            WHOLE.len()
+        ),
+        pieces: vec![(0, WHOLE.as_bytes()[..40].to_vec())],
+        finish: None,
+    })
+    .await;
+    let rig = rig(
+        instance,
+        RigOpts {
+            members: &[(far.port, 1)],
+            lane_budget: Some(5),
+            ..RigOpts::default()
+        },
+    )
+    .await;
+    let _ = rig.chat().await;
+    assert_eq!(rig.app.store.lane_budget_remaining(0), Some(5));
+}
+
+/// A whole same-dialect answer that reports 1500 + 90 tokens.
+#[cfg(linked_fold_on_driver)]
+const WHOLE: &str = r#"{"id":"chatcmpl-9","object":"chat.completion","created":0,"model":"m0","choices":[{"index":0,"message":{"role":"assistant","content":"hello there"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1500,"completion_tokens":90,"total_tokens":1590}}"#;
+
+/// A far end that answers [`WHOLE`] under its full length but writes only `prefix` of it, then
+/// holds the connection `hold_ms` and closes (a cut).
+#[cfg(linked_fold_on_driver)]
+fn whole_cut_after(prefix: usize, hold_ms: u64) -> SeatScript {
+    SeatScript {
+        head: format!(
+            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\
+             connection: close\r\n\r\n",
+            WHOLE.len()
+        ),
+        pieces: vec![
+            (0, WHOLE.as_bytes()[..prefix].to_vec()),
+            (hold_ms, Vec::new()),
+        ],
+        finish: None,
+    }
+}
+
+/// OWNER RULING Q31, oracle cell `route.failover|fo|primary-cut-body` (legacy
+/// `nonstream_drop_billing_tests`, rows 338/342): a same-dialect non-stream answer the far end cuts
+/// AFTER its `usage` bills exactly what the far end reported; one cut BEFORE its `usage` reported
+/// nothing and bills nothing, never a floor over the relayed bytes.
+#[cfg(linked_fold_on_driver)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_pools_door_bills_a_cut_non_stream_answer_only_what_its_far_end_reported() {
+    let _one = ONE_PUBLISHER.lock().await;
+    let instance = "serve-door-nonstream-cut";
+    let _published = Withdrawn(instance);
+    let far = far_end_scripted(whole_cut_after(WHOLE.len() - 1, 0)).await;
+    let late = rig(
+        instance,
+        RigOpts {
+            members: &[(far.port, 1)],
+            ..RigOpts::default()
+        },
+    )
+    .await;
+    let _ = late.chat().await;
+    assert_eq!(late.tokens_after().await, 1590, "the far end's own report");
+    drop(late);
+    drop(_published);
+
+    let instance = "serve-door-nonstream-cut-early";
+    let _published = Withdrawn(instance);
+    let usage_at = WHOLE.find(r#","usage""#).expect("the usage member");
+    let far = far_end_scripted(whole_cut_after(usage_at, 0)).await;
+    let rig = rig(
+        instance,
+        RigOpts {
+            members: &[(far.port, 1)],
+            ..RigOpts::default()
+        },
+    )
+    .await;
+    let _ = rig.chat().await;
+    assert_eq!(rig.tokens_after().await, 0, "no report, no charge");
+}
+
+/// ITEM 367 (Q33 (a), told), legacy row 338: a same-dialect non-stream answer the CALLER drops
+/// mid-relay was generated whole before its first byte, so it bills what it relayed: never 0.
+#[cfg(linked_fold_on_driver)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_pools_door_bills_a_non_stream_answer_the_caller_dropped_mid_relay() {
+    use http_body_util::BodyExt as _;
+    let _one = ONE_PUBLISHER.lock().await;
+    let instance = "serve-door-nonstream-drop";
+    let _published = Withdrawn(instance);
+    let usage_at = WHOLE.find(r#","usage""#).expect("the usage member");
+    let far = far_end_scripted(whole_cut_after(usage_at, 5_000)).await;
+    let rig = rig(
+        instance,
+        RigOpts {
+            members: &[(far.port, 1)],
+            ..RigOpts::default()
+        },
+    )
+    .await;
+    let response = rig
+        .open(
+            "POST",
+            "/v1/chat/completions",
+            Some(serde_json::json!({"model": "p", "max_tokens": 16,
+                "messages": [{"role": "user", "content": "hi"}]})),
+            &[],
+        )
+        .await;
+    assert_eq!(response.status().as_u16(), 200);
+    let mut body = response.into_body();
+    let first = tokio::time::timeout(std::time::Duration::from_secs(5), body.frame())
+        .await
+        .expect("the first bytes arrive before the far end's hold")
+        .expect("a frame")
+        .expect("relayed");
+    assert!(first.data_ref().is_some_and(|b| !b.is_empty()));
+    // THE DISCONNECT: the caller goes before the answer's end.
+    drop(body);
+    // The driver finishes a buried unit at the start of its next one.
+    let rig = std::sync::Arc::new(rig);
+    let next = {
+        let rig = std::sync::Arc::clone(&rig);
+        tokio::spawn(async move { rig.chat().await })
+    };
+    assert_ne!(
+        rig.tokens_after().await,
+        0,
+        "a non-stream answer dropped mid-relay never bills 0"
+    );
+    next.abort();
+}
+
+/// SESSION AFFINITY (legacy rows 2-4; v1.5.5 `affinity_header_for` and the sticky position): the
+/// plane states the session key it reads (the pool's header, `x-session-id` by default, else chat's
+/// body `system`) and the kernel pins every unit with that key to one member; a unit without one
+/// is spread by the weighted floor.
+#[cfg(linked_fold_on_driver)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_pools_door_pins_a_session_to_one_member() {
+    let _one = ONE_PUBLISHER.lock().await;
+    let instance = "serve-door-affinity";
+    let _published = Withdrawn(instance);
+    let fars = [
+        seat_far_end(200, SERVED_BY_TWIN).await,
+        seat_far_end(200, SERVED_BY_TWIN).await,
+        seat_far_end(200, SERVED_BY_TWIN).await,
+    ];
+    let rig = rig(
+        instance,
+        RigOpts {
+            members: &[(fars[0].port, 1), (fars[1].port, 1), (fars[2].port, 1)],
+            ..RigOpts::default()
+        },
+    )
+    .await;
+    let served = || fars.iter().map(|f| f.served()).collect::<Vec<_>>();
+    let chat = serde_json::json!({"model": "p", "max_tokens": 16,
+        "messages": [{"role": "user", "content": "hi"}]});
+    for _ in 0..6 {
+        let r = rig
+            .open(
+                "POST",
+                "/v1/chat/completions",
+                Some(chat.clone()),
+                &[("x-session-id", "session-42")],
+            )
+            .await;
+        assert_eq!(r.status().as_u16(), 200);
+        let _ = axum::body::to_bytes(r.into_body(), 1 << 20).await;
+    }
+    let pinned = served();
+    assert_eq!(
+        pinned.iter().filter(|n| **n == 6).count(),
+        1,
+        "one member served the whole session: {pinned:?}"
+    );
+    // The body's `system` is the key when no header names one.
+    let system = serde_json::json!({"model": "p", "max_tokens": 16, "system": "be brief",
+        "messages": [{"role": "user", "content": "hi"}]});
+    let before = served();
+    for _ in 0..3 {
+        assert_eq!(
+            rig.send("POST", "/v1/chat/completions", Some(system.clone()))
+                .await
+                .0,
+            200
+        );
+    }
+    let after = served();
+    let moved: Vec<usize> = after.iter().zip(&before).map(|(a, b)| a - b).collect();
+    assert_eq!(
+        moved.iter().filter(|n| **n == 3).count(),
+        1,
+        "one member served the system-keyed session: {moved:?}"
+    );
+    // No key: the weighted floor spreads the units.
+    let before = served();
+    for _ in 0..3 {
+        assert_eq!(rig.chat().await.0, 200);
+    }
+    let after = served();
+    let moved = after.iter().zip(&before).filter(|(a, b)| a > b).count();
+    assert!(moved >= 2, "unkeyed units spread: {before:?} -> {after:?}");
+}
+
+/// A POOL'S OWN AFFINITY HEADER (`affinity.header_name`) is the one its sessions are read from; the
+/// default header is then no key.
+#[cfg(linked_fold_on_driver)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_pools_door_reads_a_session_from_the_pools_own_affinity_header() {
+    let _one = ONE_PUBLISHER.lock().await;
+    let instance = "serve-door-affinity-header";
+    let _published = Withdrawn(instance);
+    let fars = [
+        seat_far_end(200, SERVED_BY_TWIN).await,
+        seat_far_end(200, SERVED_BY_TWIN).await,
+        seat_far_end(200, SERVED_BY_TWIN).await,
+    ];
+    let rig = rig(
+        instance,
+        RigOpts {
+            members: &[(fars[0].port, 1), (fars[1].port, 1), (fars[2].port, 1)],
+            affinity_header: Some("x-user-id"),
+            ..RigOpts::default()
+        },
+    )
+    .await;
+    let served = || fars.iter().map(|f| f.served()).collect::<Vec<_>>();
+    let chat = serde_json::json!({"model": "p", "max_tokens": 16,
+        "messages": [{"role": "user", "content": "hi"}]});
+    let send = |name: &'static str, value: &'static str| {
+        let (rig, chat) = (&rig, chat.clone());
+        async move {
+            let r = rig
+                .open("POST", "/v1/chat/completions", Some(chat), &[(name, value)])
+                .await;
+            assert_eq!(r.status().as_u16(), 200);
+            let _ = axum::body::to_bytes(r.into_body(), 1 << 20).await;
+        }
+    };
+    for _ in 0..4 {
+        send("x-user-id", "user-7").await;
+    }
+    assert_eq!(
+        served().iter().filter(|n| **n == 4).count(),
+        1,
+        "the pool's header pins: {:?}",
+        served()
+    );
+    let before = served();
+    for _ in 0..3 {
+        send("x-session-id", "session-42").await;
+    }
+    let after = served();
+    let moved = after.iter().zip(&before).filter(|(a, b)| a > b).count();
+    assert!(
+        moved >= 2,
+        "the default header is not this pool's key: {before:?} -> {after:?}"
     );
 }
 

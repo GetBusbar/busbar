@@ -275,6 +275,19 @@ fn test_body_ingress() -> &'static [BodyIngressEntry] {
     TEST_BODY_INGRESS_HOOK.get().map(|f| f()).unwrap_or(&[])
 }
 
+/// Whether any body-model arrival is installed (a plane registered its arrivals on the body axis):
+/// the convenience surfaces that hand their unit to one (`/{name}/v1/messages`,
+/// `/{provider}/{model}/v1/messages`) are mounted only then; a plane served through its door
+/// claims those paths itself.
+#[must_use]
+pub fn any_body_ingress() -> bool {
+    #[cfg(any(test, feature = "test-support"))]
+    if !test_body_ingress().is_empty() {
+        return true;
+    }
+    INSTALLED_BODY_INGRESS.get().is_some_and(|a| !a.is_empty())
+}
+
 /// RESOLVE A BODY-MODEL DIALECT'S UNIVERSAL ARRIVAL BY NAME — the lookup `protocol_dispatch` performs
 /// for a body-model protocol. Consults the installed table first, then the test hook. `None` when no
 /// LLM plane is linked (core booted plane-agnostic): the caller then answers the honest no-handler
