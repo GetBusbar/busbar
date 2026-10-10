@@ -552,10 +552,7 @@ fn vet_token_uri_takes_http_to_a_private_host_and_refuses_a_public_one() {
         )),
         "a public http token_uri must be refused in 1.5.5's words"
     );
-    let imds = vet_token_uri(
-        "http://169.254.169.254/token",
-        &MetadataPosture::default(),
-    );
+    let imds = vet_token_uri("http://169.254.169.254/token", &MetadataPosture::default());
     assert!(
         imds.as_ref().is_err_and(|e| e.contains("cloud-metadata")),
         "a token_uri at the metadata host must be refused as cloud-metadata; got: {imds:?}"
