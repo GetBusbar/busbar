@@ -130,6 +130,11 @@ pub struct DispatchStats {
     pub live_reapers: u64,
     /// The most service answers one driver ticket kept over one tick cycle (a high-water gauge).
     pub driver_kept_high: u64,
+    /// `bb_deadline_without_wake_total` (THE DESIGN A.4.3): ops that answered PENDING and were
+    /// still owed their wake when their DEADLINE settled them (a Call/Stream/Connection op
+    /// cancelled, a WriteBehind op's caller released), never woken before it. A door whose every
+    /// wait is woken keeps it 0; every conformance script requires 0.
+    pub deadline_without_wake: u64,
 }
 
 #[derive(Debug, Default)]
@@ -138,6 +143,7 @@ pub(crate) struct Stats {
     pub(crate) replacements: AtomicU64,
     write_behind_late: AtomicU64,
     driver_kept_high: AtomicU64,
+    deadline_without_wake: AtomicU64,
 }
 
 /// What a worker thread needs besides its worker.
@@ -475,6 +481,11 @@ pub(crate) struct Current {
 pub(crate) struct Driven {
     names: Mutex<Vec<u64>>,
     told: tokio::sync::Notify,
+    /// How many `drive` crossings answered, and the last one's outcome: what a synchronous host
+    /// that woke the driver waits on ([`Driven::answered_after`]; the published conformance suite
+    /// drives `drive` this way, as a wake, THE DESIGN §11.4).
+    answers: Mutex<(u64, Option<Outcome>)>,
+    answered: Condvar,
 }
 
 impl Driven {
@@ -492,6 +503,45 @@ impl Driven {
         if !names.is_empty() {
             self.told.notify_one();
         }
+    }
+
+    /// A `drive` crossing answered `outcome`.
+    fn answer(&self, outcome: Outcome) {
+        let mut a = self.answers.lock().unwrap_or_else(|e| e.into_inner());
+        *a = (a.0 + 1, Some(outcome));
+        drop(a);
+        self.answered.notify_all();
+    }
+
+    /// How many `drive` crossings have answered so far.
+    #[cfg(feature = "conformance")]
+    pub(crate) fn answers(&self) -> u64 {
+        self.answers.lock().unwrap_or_else(|e| e.into_inner()).0
+    }
+
+    /// The first outcome other than PENDING a `drive` answered after the `seen`th answer, waited
+    /// for up to `timeout` (a synchronous caller; it blocks this thread). `None` past it.
+    #[cfg(feature = "conformance")]
+    pub(crate) fn answered_after(&self, seen: u64, timeout: Duration) -> Option<Outcome> {
+        let until = Instant::now() + timeout;
+        let mut a = self.answers.lock().unwrap_or_else(|e| e.into_inner());
+        loop {
+            if a.0 > seen && a.1 != Some(Outcome::Pending) {
+                return a.1;
+            }
+            let left = until.checked_duration_since(Instant::now())?;
+            a = self
+                .answered
+                .wait_timeout(a, left)
+                .unwrap_or_else(|e| e.into_inner())
+                .0;
+        }
+    }
+
+    /// Every name held now, taken (none when none is); never waits.
+    #[cfg(feature = "conformance")]
+    pub(crate) fn drain(&self) -> Vec<u64> {
+        std::mem::take(&mut *self.names.lock().unwrap_or_else(|e| e.into_inner()))
     }
 
     /// Every name held, once one is; never parks a thread.
@@ -853,14 +903,19 @@ impl Worker {
     }
 
     /// Due deadlines and timers; the wait until the next one.
-    fn timers(&self, st: &mut WorkerState, now: u64) -> Duration {
+    fn timers(&self, st: &mut WorkerState, now: u64, env: &Env) -> Duration {
+        let mut without_wake = 0_u64;
         let mut next = u64::MAX;
         let mut due = Vec::new();
         for (idx, e) in st.entries.iter_mut().enumerate() {
+            // A wake that came is scheduled as the op's resume: it is not owed any more.
+            let owed = !matches!(e.next, Some(Action::Resume));
             if let Some(c) = e.current.as_mut().filter(|c| c.pending) {
                 let (class, deadline) = (c.meta.class, c.meta.deadline_ns);
                 if deadline != 0 && class != DeadlineClass::WriteBehind {
                     if now >= deadline {
+                        // Pending, its wake still owed: the deadline, not a wake, ends it.
+                        without_wake += u64::from(owed);
                         due.push((idx as u32, Action::Cancel));
                         continue;
                     }
@@ -868,7 +923,9 @@ impl Worker {
                 }
                 if deadline != 0 && class == DeadlineClass::WriteBehind && !c.detached {
                     if now >= deadline {
-                        // The caller stops WAITING; the op keeps its ticket and runs on.
+                        // The caller stops WAITING; the op keeps its ticket and runs on. Pending,
+                        // its wake still owed: the deadline, not a wake, settled its caller.
+                        without_wake += u64::from(owed);
                         c.detached = c.meta.reply.settle(c.meta.instance.timeout, true);
                     } else {
                         next = next.min(deadline);
@@ -894,6 +951,11 @@ impl Worker {
         }
         for (idx, a) in due {
             Self::schedule(st, idx, a);
+        }
+        if without_wake > 0 {
+            env.stats
+                .deadline_without_wake
+                .fetch_add(without_wake, Ordering::Relaxed);
         }
         Duration::from_nanos(next.saturating_sub(now)).min(Duration::from_millis(100))
     }
@@ -1106,6 +1168,7 @@ impl Worker {
                 if c.outcome == Outcome::Ready {
                     inst.driven.name(frame.named());
                 }
+                inst.driven.answer(c.outcome);
                 let e = &mut st.entries[idx as usize];
                 if e.generation == generation {
                     if let Some(d) = e.driver.as_mut() {
@@ -1187,7 +1250,7 @@ pub(crate) fn run(w: Arc<Worker>, rx: Receiver<Msg>, env: Arc<Env>) {
             drop(gone);
             return;
         }
-        let wait = w.timers(&mut st, now_ns());
+        let wait = w.timers(&mut st, now_ns(), &env);
         if let Some(idx) = st.runnable.pop_front() {
             match w.run_one(st, idx, &env) {
                 Some(g) => st = g,
@@ -1374,6 +1437,7 @@ impl Dispatcher {
             write_behind_late: s.write_behind_late.load(Ordering::Relaxed),
             live_reapers: super::load::live_reapers(),
             driver_kept_high: s.driver_kept_high.load(Ordering::Relaxed),
+            deadline_without_wake: s.deadline_without_wake.load(Ordering::Relaxed),
         }
     }
 

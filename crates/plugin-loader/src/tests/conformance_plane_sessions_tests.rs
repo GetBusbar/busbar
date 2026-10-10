@@ -79,7 +79,8 @@ fn fold_over(s: &Subject, leg: Leg, url: Option<&str>, all: &Value) -> Fold {
         pool: Some(b"p1".to_vec()),
         caller_ref: Some(b"c0ffee".to_vec()),
     };
-    sessions(&mut r, &p, &d, &Session::all(all), &carried);
+    let driver = d.driver(&p, 0);
+    sessions(&mut r, (&p, &d, driver), &Session::all(all), &carried);
     r.fold()
 }
 
@@ -243,8 +244,115 @@ fn red_inputs_naming_a_step_twice_are_refused() {
     .contains("share a label"));
 }
 
+/// THE PLANE SCRIPT DRIVES A UNIT'S PIECES AS THE KERNEL DOES (THE DESIGN §11.4, §11.12): every
+/// piece SUBMITTED on the unit's ticket, so a piece that waits answers PENDING and is RESUMED.
+mod pieces_on_tickets {
+    use std::sync::atomic::{AtomicPtr, Ordering};
+
+    use busbar_contract::abi::mechanism::call::{
+        InHead, OutHead, Outcome, RawOutcome, FLAG_RESUME,
+    };
+    use busbar_contract::abi::mechanism::door::Door;
+    use busbar_contract::abi::plane::{OnPieceIn, Ops};
+
+    use super::{fold, sessions_contract, SESSIONS};
+    use crate::conformance::{exact, test_door, test_op, Leg, Subject, TestDoor, TestOp};
+    use crate::dispatch::ticket::host_wake;
+
+    static REAL_ON_PIECE: AtomicPtr<()> = AtomicPtr::new(std::ptr::null_mut());
+    static SLOT: AtomicPtr<Door> = AtomicPtr::new(std::ptr::null_mut());
+
+    /// An `on_piece` that WAITS before it answers (as on a may-pend host service, or its own
+    /// upstream): every first invocation wakes its own ticket and answers PENDING; RESUMED, it is
+    /// the real piece (entered afresh). Ticket-less, its PENDING is a FAULT.
+    struct OnPiecePends;
+
+    impl TestOp for OnPiecePends {
+        fn op(
+            instance: *mut std::ffi::c_void,
+            input: *const std::ffi::c_void,
+            out: *mut std::ffi::c_void,
+        ) -> RawOutcome {
+            // SAFETY: the host hands `on_piece` an `OnPieceIn` and an `OnPieceOut`.
+            unsafe {
+                let head = input.cast::<InHead>().read();
+                if head.flags & FLAG_RESUME == 0 {
+                    if head.ticket.generation != 0 {
+                        host_wake(head.host, head.ticket);
+                    }
+                    (*out.cast::<OutHead>()).outcome = RawOutcome::of(Outcome::Pending);
+                    return RawOutcome::of(Outcome::Pending);
+                }
+                let mut fresh: OnPieceIn = input.cast::<OnPieceIn>().read();
+                fresh.head.flags &= !FLAG_RESUME;
+                let real: busbar_contract::abi::mechanism::call::Op =
+                    std::mem::transmute(REAL_ON_PIECE.load(Ordering::SeqCst));
+                real(instance, std::ptr::from_ref(&fresh).cast(), out)
+            }
+        }
+    }
+
+    struct PendingDoor;
+
+    impl TestDoor for PendingDoor {
+        fn door() -> *const Door {
+            let have = SLOT.load(Ordering::SeqCst);
+            if !have.is_null() {
+                return have;
+            }
+            // SAFETY: the fixture's door and its plane table are `'static`.
+            let real: Door = unsafe { crate::plane_door_plugin::door().read_unaligned() };
+            let ops: Ops = unsafe { real.ops.cast::<Ops>().read_unaligned() };
+            REAL_ON_PIECE.store(
+                ops.on_piece.expect("the fixture answers pieces") as *mut (),
+                Ordering::SeqCst,
+            );
+            let ops: &'static Ops = Box::leak(Box::new(Ops {
+                on_piece: Some(test_op::<OnPiecePends>),
+                ..ops
+            }));
+            let door = Box::into_raw(Box::new(Door {
+                ops: std::ptr::from_ref(ops).cast(),
+                ..real
+            }));
+            SLOT.store(door, Ordering::SeqCst);
+            door
+        }
+    }
+
+    /// RED (audit loader-PL1 #9): a plane whose pieces wait passes the sessions leg at its pins,
+    /// every piece RESUMED on its unit's ticket and answering as wanted. Driven ticket-less, as
+    /// the script used to, every waiting piece is FAULT and the plane cannot pass.
+    #[test]
+    fn red_a_piece_that_waits_is_resumed_on_its_units_ticket_never_faulted_ticketless() {
+        let s = Subject::new(
+            test_door::<PendingDoor>,
+            "plane_door_plugin",
+            &format!(r#"{{ "plane": {{ "sessions": {SESSIONS} }} }}"#),
+        );
+        let f = fold(&s, Leg::Linked);
+        exact(&f).unwrap_or_else(|e| panic!("{e}"));
+        sessions_contract(&f, &s.kind_inputs("plane")["sessions"]);
+        for label in [
+            "live uplink",
+            "live collect",
+            "live answer head",
+            "live answer tail",
+            "live answer short",
+            "request attempt",
+            "request answer",
+        ] {
+            let st = f
+                .iter()
+                .find(|st| st.label == label)
+                .unwrap_or_else(|| panic!("the script ran no step '{label}'"));
+            assert!(st.resumes >= 1, "{label} was never resumed: {}", st.answer);
+        }
+    }
+}
+
 /// RED: the cancel ends the session only because it names the ticket the session's pieces crossed
-/// on: a session crossed ticket-less, cancelled naming no ticket, still has output to collect.
+/// on: a session cancelled naming no ticket still has output to collect.
 #[test]
 fn red_a_cancel_naming_no_session_ticket_ends_nothing() {
     let s = subject();
@@ -263,11 +371,15 @@ fn red_a_cancel_naming_no_session_ticket_ends_nothing() {
         pool: None,
         caller_ref: None,
     };
-    sessions(&mut r, &p, &d, &Session::all(&all), &carried);
+    let driver = d.driver(&p, 0);
+    sessions(&mut r, (&p, &d, driver), &Session::all(&all), &carried);
     r.line("cancel", 1, || {
         cancel(&p, busbar_contract::abi::mechanism::ticket::Ticket::NONE)
     });
-    r.line("drive", 1, || drive(&p));
+    r.line("drive", 1, || {
+        let (c, ready) = drive(&p, driver);
+        format!("{} ready={ready:?}", crate::conformance::called(&c))
+    });
     let f = r.fold();
     exact(&f).unwrap_or_else(|e| panic!("{e}"));
     assert!(f[3].answer.ends_with("ready=[50]"), "{}", f[3].answer);
@@ -339,7 +451,8 @@ fn served_fold(leg: Leg, host: &str, all: &Value) -> Fold {
         pool: None,
         caller_ref: None,
     };
-    sessions(&mut r, &p, &d, &Session::all(all), &carried);
+    let driver = d.driver(&p, 0);
+    sessions(&mut r, (&p, &d, driver), &Session::all(all), &carried);
     r.fold()
 }
 

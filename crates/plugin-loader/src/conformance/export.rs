@@ -50,7 +50,7 @@ use busbar_contract::abi::export::{
     SCRAPE_KIND_SUMMARY, SCRAPE_KIND_UNTYPED,
 };
 use busbar_contract::abi::mechanism::call::{
-    AbiStr, Blob, InHead, OutHead, BLOB_JSON, BLOB_JSONL, BLOB_OCTETS,
+    AbiStr, Blob, InHead, OutHead, Outcome, BLOB_JSON, BLOB_JSONL, BLOB_OCTETS,
 };
 
 use super::{
@@ -59,7 +59,7 @@ use super::{
 };
 use crate::dispatch::kinds::export::Export;
 use crate::dispatch::{
-    Bind, Diagnostic, Dispatcher, Dropped, EnvelopeSink, Frame, Metric, Plugin, NO_BLOB,
+    Bind, Called, Diagnostic, Dispatcher, Dropped, EnvelopeSink, Frame, Metric, Plugin, NO_BLOB,
 };
 
 /// This kind's section of the plugin's `conformance.json`, and its instance label: the kind's
@@ -268,10 +268,12 @@ fn snapshot(families: &serde_json::Value) -> Snapshot {
 /// (`export_door`): on a ticket of `d`'s, write-behind, so a delivery that waits on the network
 /// answers PENDING and is RESUMED on its wake.
 fn deliver(p: &Plugin<Export>, d: &Dispatcher, stream: u8, batch: &[u8], n: u8) -> String {
+    // The batch rides with the op (THE DESIGN §2): the lending submit owns it.
+    let batch: std::sync::Arc<Vec<u8>> = std::sync::Arc::new(batch.to_vec());
     let mut f: Frame<DeliverIn, OutHead> = Frame::new(input(), output());
     f.input.op_id = [n; 16];
     f.input.stream = stream;
-    f.input.batch = blob(batch, BLOB_JSONL);
+    f.input.batch = blob(&batch, BLOB_JSONL);
     called(&super::on_ticket(
         p,
         d,
@@ -279,6 +281,7 @@ fn deliver(p: &Plugin<Export>, d: &Dispatcher, stream: u8, batch: &[u8], n: u8) 
         f,
         busbar_contract::abi::mechanism::call::DeadlineClass::WriteBehind,
         0,
+        batch,
     ))
 }
 
@@ -312,10 +315,27 @@ fn scrape(p: &Plugin<Export>, families: &[ScrapeFamily], cap: usize, exposition:
     )
 }
 
+/// Whether the dispatcher JUDGED `c`'s answer, so what its `out` names may be read: every outcome
+/// but FAULT is judged by the kind's check (a FAULT is the answer the check refused, or a crossing
+/// the host cut, and its `out` is the plugin's unjudged words), and PENDING never reaches a
+/// ticket-less caller (THE DESIGN §11.13 M1: a slice is formed only from a length the host judged).
+fn judged(c: &Called) -> bool {
+    matches!(
+        c.outcome,
+        Outcome::Ready | Outcome::Failed | Outcome::Refused
+    )
+}
+
+/// What a line says in place of plugin memory the host never read (an unjudged answer).
+const UNREAD: &str = "<unread>";
+
 /// `status`: its line and its lease, still held.
 fn status(p: &Plugin<Export>) -> (String, u64) {
     let mut f: Frame<InHead, StatusOut> = Frame::new(input(), output());
     let c = p.call(export::slot::STATUS, &mut f);
+    if !judged(&c) {
+        return (format!("{} status={UNREAD}", called(&c)), c.lease);
+    }
     // SAFETY: the plugin's status blob, judged by `check_status`, live under the lease.
     let body = unsafe { copied(f.out.status.ptr, f.out.status.len) };
     (format!("{} status={body:?}", called(&c)), c.lease)
@@ -328,6 +348,9 @@ fn check(p: &Plugin<Export>, phase: u32, instances: &[CheckInstance]) -> (String
     f.input.instances = list(instances);
     f.input.instances_len = instances.len();
     let c = p.call(export::slot::CHECK, &mut f);
+    if !judged(&c) {
+        return (format!("{} findings={UNREAD}", called(&c)), c.lease);
+    }
     // SAFETY: the plugin's findings blob, judged by `check_check`, live under the lease.
     let findings = unsafe { copied(f.out.findings.ptr, f.out.findings.len) };
     (format!("{} findings={findings:?}", called(&c)), c.lease)
@@ -345,6 +368,16 @@ fn serve(p: &Plugin<Export>, r: &serde_json::Value) -> (String, u64) {
     f.input.query = lend(field(r, "query"));
     f.input.body = blob(body.as_bytes(), BLOB_OCTETS);
     let c = p.call(export::slot::SERVE, &mut f);
+    if !judged(&c) {
+        return (
+            format!(
+                "{} code={} headers={UNREAD} body={UNREAD}",
+                called(&c),
+                f.out.status_code
+            ),
+            c.lease,
+        );
+    }
     let headers: Vec<String> = if f.out.headers_out.is_null() || f.out.headers_out_len == 0 {
         Vec::new()
     } else {
@@ -648,3 +681,7 @@ fn contract(fold: &Fold, k: &serde_json::Value) {
         assert!(!at(label).starts_with("Ready"), "{label}: {}", at(label));
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/conformance_export_unjudged_tests.rs"]
+mod unjudged_tests;
