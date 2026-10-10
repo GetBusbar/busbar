@@ -79,6 +79,51 @@ impl Overlay {
         self.files.remove(rel.as_ref());
     }
 
+    /// THE FLOOR PLANT'S CUT: the overlay that takes a walk of `live` files to exactly
+    /// `floor - 1`, however far the tree has grown past `floor`.
+    ///
+    /// A plant that removes ONE file only goes red while the tree sits at its floor. The day the
+    /// tree gains a file, `live - 1 == floor`, the plant stays green, and every open PR running
+    /// the selftest has to re-pin the floor by one. So the cut is computed from the live count —
+    /// `live - floor + 1` files, taken from `removable` in order — and the walk always lands one
+    /// under the floor. The floor still catches a scanner that silently sees fewer files; only the
+    /// plant stopped depending on the tree's exact size.
+    ///
+    /// `live` must be counted by the same walker the gate's floor judges, and `removable` must be
+    /// members of that walk (a caller that must not drain a crate, or must not take the subject
+    /// with it, passes only the files it may cut). `Err` when the walk is already under its floor
+    /// (the cut would be zero files, and a plant that removes nothing proves nothing) or when
+    /// `removable` holds fewer files than the cut needs.
+    pub fn below_floor<P: AsRef<Path>>(
+        live: usize,
+        floor: usize,
+        removable: impl IntoIterator<Item = P>,
+    ) -> Result<Overlay, String> {
+        let cut = (live + 1).saturating_sub(floor);
+        if cut == 0 {
+            return Err(format!(
+                "the walk holds {live} file(s), already under its floor of {floor}: there is no \
+                 cut that takes it to floor - 1"
+            ));
+        }
+        let mut ov = Overlay::new();
+        for rel in removable {
+            if ov.files.len() == cut {
+                break;
+            }
+            ov.remove(rel);
+        }
+        // Counted as DISTINCT paths: a path named twice is one file out of the walk, not two.
+        let taken = ov.files.len();
+        if taken < cut {
+            return Err(format!(
+                "a walk of {live} file(s) needs {cut} removed to land under its floor of {floor}, \
+                 and only {taken} may be removed"
+            ));
+        }
+        Ok(ov)
+    }
+
     /// The path stays in every walk and every read of it fails with `why`.
     pub fn unreadable(&mut self, rel: impl AsRef<Path>, why: impl Into<String>) {
         self.files
@@ -1277,5 +1322,91 @@ mod read_write_memo_tests {
         assert_eq!(after, vec![std::path::PathBuf::from("sub/new.txt")]);
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+}
+
+#[cfg(test)]
+mod below_floor_tests {
+    use super::{Ctx, Overlay, WalkError, WalkSpec};
+    use std::path::PathBuf;
+
+    const FLOOR: usize = 12;
+
+    /// A temp tree of `n` `.rs` files under `crates/`, and a context over it.
+    fn tree(tag: &str, n: usize) -> (PathBuf, Ctx) {
+        let root = std::env::temp_dir().join(format!(
+            "xtask-below-floor-{tag}-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let src = root.join("crates").join("a").join("src");
+        let scratch = root.join(".fix").join("xtask");
+        std::fs::create_dir_all(&src).expect("src dir creates");
+        std::fs::create_dir_all(&scratch).expect("scratch dir creates");
+        for i in 0..n {
+            std::fs::write(src.join(format!("f{i:03}.rs")), "// x\n").expect("seed write");
+        }
+        let cx = Ctx::at(&root, &scratch).expect("ctx opens over the temp root");
+        (root, cx)
+    }
+
+    fn spec() -> WalkSpec {
+        WalkSpec::new(["crates"]).ext("rs")
+    }
+
+    fn plant(cx: &Ctx) -> Overlay {
+        let live = cx.list(&spec()).expect("the base tree lists");
+        Overlay::below_floor(live.len(), FLOOR, live.iter().rev()).expect("the cut plants")
+    }
+
+    /// THE RED ARM: a tree five files past its floor. A one-file cut leaves floor + 4 and the walk
+    /// green; the computed cut removes six and the walk lands at floor - 1, refused.
+    #[test]
+    fn a_tree_grown_past_its_floor_is_still_cut_to_one_under_it() {
+        let (root, cx) = tree("grown", FLOOR + 5);
+        assert!(
+            cx.walk(&spec().min_files(FLOOR)).is_ok(),
+            "the base tree clears its floor"
+        );
+        let ov = plant(&cx);
+        assert_eq!(ov.paths().count(), 6, "live - floor + 1 files are removed");
+        match cx.with_overlay(ov).walk(&spec().min_files(FLOOR)) {
+            Err(WalkError::BelowFloor { found, floor, .. }) => {
+                assert_eq!((found, floor), (FLOOR - 1, FLOOR));
+            }
+            other => panic!("the planted walk must be BelowFloor at floor - 1, got {other:?}"),
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// THE CONTROL: a tree exactly at its floor is green, and the cut there is the one file that
+    /// takes it under.
+    #[test]
+    fn a_tree_at_its_floor_is_green_and_the_cut_is_one_file() {
+        let (root, cx) = tree("at", FLOOR);
+        let walked = cx
+            .walk(&spec().min_files(FLOOR))
+            .expect("a tree at its floor is green");
+        assert_eq!(walked.len(), FLOOR);
+        let ov = plant(&cx);
+        assert_eq!(ov.paths().count(), 1);
+        assert!(matches!(
+            cx.with_overlay(ov).walk(&spec().min_files(FLOOR)),
+            Err(WalkError::BelowFloor { found, .. }) if found == FLOOR - 1
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A walk already under its floor has no cut (removing nothing proves nothing), and a cut
+    /// larger than the removable set is refused rather than planted short.
+    #[test]
+    fn no_cut_under_the_floor_and_no_short_cut() {
+        assert!(Overlay::below_floor(FLOOR - 1, FLOOR, ["a.rs"]).is_err());
+        assert!(Overlay::below_floor(FLOOR + 2, FLOOR, ["a.rs", "b.rs"]).is_err());
+        assert!(Overlay::below_floor(FLOOR + 2, FLOOR, ["a.rs", "a.rs", "b.rs"]).is_err());
+        let ov = Overlay::below_floor(FLOOR + 2, FLOOR, ["a.rs", "b.rs", "c.rs", "d.rs"])
+            .expect("three of four removable files are cut");
+        assert_eq!(ov.paths().count(), 3);
     }
 }
