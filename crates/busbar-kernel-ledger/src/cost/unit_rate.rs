@@ -9,19 +9,18 @@
 /// **ONE OPEN METER CLASS'S CONFIGURED RATE, held the way the rate card holds it: an integer number
 /// of NANO-units per unit** (item 123, #71, #77(4)).
 ///
-/// The four reserved token classes are configured as `*_utok` micro-units per token and cross into
-/// the card through [`RawTierRates`](busbar_contract::billing::RawTierRates) and one float
-/// conversion (#44's card-build exemption). An OPEN class — a rerank's `search_units`, a relay's
-/// `hops`, a live session's `audio-seconds` — is a class string declared with its meter, and its
-/// rate is configured in the SAME unit (micro-units per unit) but is never a float at all: the
+/// The four reserved classes cross into the card through
+/// [`RawTierRates`](busbar_contract::billing::RawTierRates) and one float conversion (#44's
+/// card-build exemption). An OPEN class — any class string a plane declares with its meter, such as
+/// `calls` — has its rate configured in the SAME unit (micro-units per unit) but never as a float: the
 /// configured text is read EXACTLY, by integer arithmetic over its digits
 /// ([`busbar_contract::Count`]), straight into the card's own representation. A rate finer than one
 /// nano-unit, negative, or past a `u64` of nano-units is REFUSED at parse — a card that cannot hold
 /// a configured rate must not claim to (item 22), and a refusal at the config boundary is the boot
 /// refusal #77(5) asks for.
 ///
-/// **THE WIRE FORM.** An integer (`search_units: 2000` — 2000 micro-units per unit) or a decimal
-/// STRING (`search_units: "0.5"`). A bare YAML/JSON float (`0.5` unquoted) is refused: it has already
+/// **THE WIRE FORM.** An integer (`calls: 2000` — 2000 micro-units per unit) or a decimal STRING
+/// (`calls: "0.5"`). A bare YAML/JSON float (`0.5` unquoted) is refused: it has already
 /// transited a binary double by the time it reaches this type, and a double cannot hold `0.1`. It
 /// serializes back to the same two forms, so a config round-trips byte-for-byte exactly.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
