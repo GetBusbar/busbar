@@ -17,7 +17,7 @@
 //!
 //! * [`Population::below_floor`] — the aggregate ratchet. It is not `> 0`: a walk that collapses to
 //!   a handful of files reports no findings and reads exactly like a clean tree. The floor is a
-//!   RATCHET pinned AT the measured count ([`FLOOR`], 941 on predev 39374ec00e), not a margin
+//!   RATCHET pinned AT the measured count ([`FLOOR`], 942 on predev 13546ea762), not a margin
 //!   below it: one file fewer is refused until a reviewed diff re-measures. It is raised as the
 //!   tree grows, never lowered to accommodate a scan that stopped finding things.
 //! * [`Population::drained`] — a crate that has a `src/` and contributed NOTHING. The floor catches
@@ -26,14 +26,16 @@
 
 use crate::ctx::{Ctx, Overlay, SourceFile, WalkSpec};
 
-/// The aggregate floor — A RATCHET. Measured at 941 non-test `.rs` files under `crates/` across 24
-/// crates on predev 39374ec00e, and pinned AT that number (it was 700 against a population of 725,
+/// The aggregate floor — A RATCHET. Measured at 942 non-test `.rs` files under `crates/` across 24
+/// crates on predev 13546ea762, and pinned AT that number (it was 700 against a population of 725,
 /// then left standing while the tree grew, so 241 files could vanish with every row green). It was
 /// first pinned at 948 on predev 5e672d125d; the egress-auth consolidation then removed 11 files
-/// and added 4, and a floor above the count leaves every gate's floor row red on a clean tree. A drop below 941 is refused until a reviewed diff re-measures; the selftest plant
+/// and added 4, and a floor above the count leaves every gate's floor row red on a clean tree. It
+/// was re-pinned from 941 to 942 when predev grew by one file, which the selftest plant caught. A
+/// drop below 942 is refused until a reviewed diff re-measures; the selftest plant
 /// removes one file and fails if the floor sits under the count. Lowering it is how a gate stops
 /// reading the repository without saying so, so a diff that lowers it is the diff to refuse.
-pub const FLOOR: usize = 941;
+pub const FLOOR: usize = 942;
 
 /// The `.rs` under `crates/` that are not test scaffolding, plus the accounting to refuse a
 /// population that cannot support a verdict.
