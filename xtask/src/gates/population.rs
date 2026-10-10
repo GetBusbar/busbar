@@ -208,7 +208,11 @@ mod tests {
         let planted = source_population(&cx.with_overlay(ov)).expect("the planted tree reads");
         assert_eq!(planted.count(), FLOOR - 1);
         assert!(planted.below_floor());
-        assert!(planted.drained.is_empty(), "the cut drained a crate: {:?}", planted.drained);
+        assert!(
+            planted.drained.is_empty(),
+            "the cut drained a crate: {:?}",
+            planted.drained
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 
