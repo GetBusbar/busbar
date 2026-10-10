@@ -413,9 +413,16 @@ impl HostServices for LateServices {
         }
     }
 
-    fn work_settle(&self, caller: &Caller, handle: u64, record: &[u8], later: Later) -> Ran {
+    fn work_settle(
+        &self,
+        caller: &Caller,
+        unit: Option<u64>,
+        handle: u64,
+        record: &[u8],
+        later: Later,
+    ) -> Ran {
         match self.served() {
-            Ok(s) => s.work_settle(caller, handle, record, later),
+            Ok(s) => s.work_settle(caller, unit, handle, record, later),
             Err(r) => Ran::Now(r),
         }
     }
