@@ -130,8 +130,8 @@ fn self_rows(gov: &GovState, sub: &str) -> Vec<crate::governance::VirtualKey> {
 #[test]
 fn first_call_provisions_second_call_reuses_one_row() {
     let gov = gov();
-    let (b1, t1) = gov.issue_self("sam", None, 5000, 1000).unwrap();
-    let (b2, t2) = gov.issue_self("sam", None, 6000, 2000).unwrap();
+    let (b1, t1) = gov.issue_self("sam", "corp", None, 5000, 1000).unwrap();
+    let (b2, t2) = gov.issue_self("sam", "corp", None, 6000, 2000).unwrap();
     // ONE binding row for the principal, reused: same id, same group.
     assert_eq!(
         b1.id, b2.id,
@@ -163,7 +163,13 @@ async fn exchange_provisions_user_leaf_from_child_default_and_key_is_usable() {
         "team",
         "child_default:\n  limits:\n    - { budget: 500, per: month }\n",
     ));
-    let keys = DeterministicEd25519Keys::new(gov.clone(), "team".into(), None, prov.clone());
+    let keys = DeterministicEd25519Keys::new(
+        gov.clone(),
+        "corp".into(),
+        "team".into(),
+        None,
+        prov.clone(),
+    );
 
     // First exchange: mints the key AND auto-provisions the user:sam budget bucket.
     let issued = issue_key(
@@ -230,7 +236,8 @@ async fn exchange_provisions_user_leaf_from_child_default_and_key_is_usable() {
 fn cap_not_tripped_n_logins_one_row() {
     let gov = gov();
     for i in 0..25u64 {
-        gov.issue_self("sam", None, 100_000, 1000 + i).unwrap();
+        gov.issue_self("sam", "corp", None, 100_000, 1000 + i)
+            .unwrap();
     }
     assert_eq!(
         self_rows(&gov, "sam").len(),
@@ -242,13 +249,15 @@ fn cap_not_tripped_n_logins_one_row() {
 #[test]
 fn refresh_invalidates_old_token() {
     let gov = gov();
-    let (_b, old) = gov.issue_self("sam", None, 100_000, 1000).unwrap();
+    let (_b, old) = gov.issue_self("sam", "corp", None, 100_000, 1000).unwrap();
     assert!(
         gov.verify_token(&old, 1000, None).is_some(),
         "old token valid before refresh"
     );
 
-    let (_b2, fresh) = gov.refresh_self("sam", None, 100_000, 2000).unwrap();
+    let (_b2, fresh) = gov
+        .refresh_self("sam", "corp", None, 100_000, 2000)
+        .unwrap();
     // Old token now fails (its binding was tombstoned / rotated away).
     assert!(
         gov.verify_token(&old, 2000, None).is_none(),
@@ -307,7 +316,7 @@ fn issued_token_verifies_through_the_unchanged_path() {
     // The whole point of Model B: `issue_self` returns a STANDARD busbar token that the ordinary
     // verify path accepts — no verify-side change.
     let gov = gov();
-    let (binding, token) = gov.issue_self("sam", None, 5000, 1000).unwrap();
+    let (binding, token) = gov.issue_self("sam", "corp", None, 5000, 1000).unwrap();
     let resolved = gov
         .verify_token(&token, 1000, None)
         .expect("standard token verifies");
@@ -324,12 +333,12 @@ fn re_login_updates_allowed_pools_when_they_change() {
     use busbar_contract::records::ScopeRef;
     let gov = gov();
     let (b1, _t1) = gov
-        .issue_self("sam", Some(vec!["poolA".into()]), 5000, 1000)
+        .issue_self("sam", "corp", Some(vec!["poolA".into()]), 5000, 1000)
         .unwrap();
     assert_eq!(b1.allowed_scopes, Some(vec![ScopeRef::pool("poolA")]));
     // Admin changed the group's pools; the dev logs in again (same sub).
     let (b2, _t2) = gov
-        .issue_self("sam", Some(vec!["poolB".into()]), 6000, 2000)
+        .issue_self("sam", "corp", Some(vec!["poolB".into()]), 6000, 2000)
         .unwrap();
     assert_eq!(
         b2.id, b1.id,
@@ -352,7 +361,7 @@ fn concurrent_issue_self_yields_one_binding() {
     for i in 0..8u64 {
         let g = gov.clone();
         handles.push(std::thread::spawn(move || {
-            g.issue_self("sam", Some(vec!["p".into()]), 5000, 1000 + i)
+            g.issue_self("sam", "corp", Some(vec!["p".into()]), 5000, 1000 + i)
                 .unwrap();
         }));
     }
@@ -569,7 +578,13 @@ async fn resolve_then_issue_via_real_seam() {
     let rb = bindings("test-idp-double", "eng", Some("team"));
     let v = identified("test-idp-double", principal("sam", &["eng"]));
     let (p, team, pools) = resolve_exchange(&v, &rb, None).unwrap();
-    let keys = DeterministicEd25519Keys::new(gov.clone(), team, pools, Arc::new(NoopProvisioner));
+    let keys = DeterministicEd25519Keys::new(
+        gov.clone(),
+        "corp".into(),
+        team,
+        pools,
+        Arc::new(NoopProvisioner),
+    );
     let issued = issue_key(&keys, p, Duration::from_secs(3600), false)
         .await
         .unwrap();
@@ -597,7 +612,13 @@ async fn module_namespaced_sub_is_admitted_and_grouped_under_user() {
     );
     let (p, team, pools) = resolve_exchange(&v, &rb, None)
         .expect("a module-namespaced subject is legitimate + verified");
-    let keys = DeterministicEd25519Keys::new(gov.clone(), team, pools, Arc::new(NoopProvisioner));
+    let keys = DeterministicEd25519Keys::new(
+        gov.clone(),
+        "corp".into(),
+        team,
+        pools,
+        Arc::new(NoopProvisioner),
+    );
     let issued = issue_key(&keys, p, Duration::from_secs(3600), false)
         .await
         .unwrap();
@@ -614,6 +635,164 @@ async fn module_namespaced_sub_is_admitted_and_grouped_under_user() {
         .is_some());
 }
 
+// ── an admin's hold and the minting provider hold across a login (K3 #17, #21) ────────────────
+
+/// One self-serve key scheme for `provider`, over `gov`, charging through `team`.
+fn keys_via(gov: &Arc<GovState>, provider: &str) -> DeterministicEd25519Keys {
+    DeterministicEd25519Keys::new(
+        gov.clone(),
+        provider.into(),
+        "team".into(),
+        None,
+        Arc::new(NoopProvisioner),
+    )
+}
+
+/// The one row with this id, tombstoned or not.
+fn row(gov: &GovState, id: &str) -> crate::governance::VirtualKey {
+    gov.store().get_key(id).unwrap().expect("the row exists")
+}
+
+/// K3 #17 (disable): an admin DISABLE of a self-serve key must hold across the user's next login and
+/// refresh. `current_self_binding` finds only enabled rows, so the next login used to arrive at epoch
+/// 0, re-derive the disabled row's id and write it back `enabled: true` at its old generation: every
+/// pre-disable token verified again. Both doors now refuse with 1.5.5's 403 (`Unbound`) while a
+/// disabled binding stands, and write nothing.
+#[tokio::test]
+async fn an_admin_disable_of_a_self_serve_key_holds_across_the_next_login() {
+    let gov = gov();
+    let keys = keys_via(&gov, "corp");
+    let alice = principal("oidc:alice", &["eng"]);
+    let ttl = Duration::from_secs(3600);
+
+    let t0 = issue_key(&keys, &alice, ttl, false)
+        .await
+        .expect("first login issues");
+    let now = busbar_kernel::store::now();
+    assert!(gov
+        .verify_token(t0.secret.expose_secret(), now, None)
+        .is_some());
+
+    // The admin disables it, exactly as `PATCH /api/v1/admin/keys/{id} {"enabled":false}` would.
+    gov.update_key(&t0.key_id, Some(false), None)
+        .unwrap()
+        .expect("the key exists");
+
+    assert_eq!(
+        issue_key(&keys, &alice, ttl, false).await.unwrap_err(),
+        ExchangeError::Unbound,
+        "a login while the key is disabled is refused, not re-enabled"
+    );
+    assert_eq!(
+        issue_key(&keys, &alice, ttl, true).await.unwrap_err(),
+        ExchangeError::Unbound,
+        "a refresh while the key is disabled is refused too"
+    );
+    assert!(
+        !row(&gov, &t0.key_id).enabled,
+        "the admin's disable still stands"
+    );
+    assert!(
+        gov.verify_token(t0.secret.expose_secret(), now, None)
+            .is_none(),
+        "the pre-disable token must NOT come back to life"
+    );
+    assert!(
+        self_rows(&gov, "oidc:alice").is_empty(),
+        "no fresh key was minted beside the disabled one"
+    );
+}
+
+/// K3 #21: two named providers backed by one module can both assert `oidc:alice`. The binding is
+/// keyed by subject alone, so the second provider used to be handed the first one's key (and could
+/// refresh it away). The binding now records its minting provider; another provider is refused with
+/// the 403 (`Unbound`) and the first provider's key is untouched.
+#[tokio::test]
+async fn a_second_provider_asserting_the_same_subject_is_refused() {
+    let gov = gov();
+    let corp = keys_via(&gov, "corp");
+    let partner = keys_via(&gov, "partner");
+    let alice = principal("oidc:alice", &["eng"]);
+    let ttl = Duration::from_secs(3600);
+
+    let issued = issue_key(&corp, &alice, ttl, false)
+        .await
+        .expect("corp issues");
+    let before = row(&gov, &issued.key_id);
+    assert_eq!(
+        before
+            .labels
+            .get(crate::governance::SELF_KEY_PROVIDER_LABEL)
+            .map(String::as_str),
+        Some("corp"),
+        "the binding records its minting provider"
+    );
+
+    assert_eq!(
+        issue_key(&partner, &alice, ttl, false).await.unwrap_err(),
+        ExchangeError::Unbound,
+        "another provider asserting the subject is refused"
+    );
+    assert_eq!(
+        issue_key(&partner, &alice, ttl, true).await.unwrap_err(),
+        ExchangeError::Unbound,
+        "and cannot refresh corp's key away"
+    );
+
+    let after = row(&gov, &issued.key_id);
+    assert!(after.enabled && after.deleted_at.is_none());
+    assert_eq!(
+        after.generation_hash, before.generation_hash,
+        "corp's key is untouched"
+    );
+    let now = busbar_kernel::store::now();
+    assert!(gov
+        .verify_token(issued.secret.expose_secret(), now, None)
+        .is_some());
+    let again = issue_key(&corp, &alice, ttl, false)
+        .await
+        .expect("corp still logs in");
+    assert_eq!(again.key_id, issued.key_id);
+}
+
+/// K3 #21 (legacy rows): a binding minted before the provider label existed ADOPTS the first
+/// provider that logs in, with no migration; every other provider is refused from then on.
+#[tokio::test]
+async fn a_legacy_self_serve_binding_adopts_the_first_provider_that_logs_in() {
+    let gov = gov();
+    let alice = principal("oidc:alice", &["eng"]);
+    let ttl = Duration::from_secs(3600);
+
+    // A pre-label binding: mint one, then strip the label from the stored row.
+    let issued = issue_key(&keys_via(&gov, "corp"), &alice, ttl, false)
+        .await
+        .expect("issues");
+    let mut legacy = row(&gov, &issued.key_id);
+    legacy.labels.clear();
+    gov.store().put_key(&legacy).unwrap();
+    gov.refresh().unwrap();
+
+    let adopted = issue_key(&keys_via(&gov, "partner"), &alice, ttl, false)
+        .await
+        .expect("the first provider to log in adopts the legacy binding");
+    assert_eq!(adopted.key_id, issued.key_id, "the same key, not a new one");
+    assert_eq!(
+        row(&gov, &issued.key_id)
+            .labels
+            .get(crate::governance::SELF_KEY_PROVIDER_LABEL)
+            .map(String::as_str),
+        Some("partner"),
+        "the adoption is recorded on the row"
+    );
+    assert_eq!(
+        issue_key(&keys_via(&gov, "corp"), &alice, ttl, false)
+            .await
+            .unwrap_err(),
+        ExchangeError::Unbound,
+        "after the adoption, any other provider is refused"
+    );
+}
+
 // ── the endpoint is key-scheme agnostic ──────────────────────────────────────────────────────────
 
 /// A FAKE scheme that issues an opaque string — proving `issue_key`/the handler depend ONLY on the
@@ -621,7 +800,11 @@ async fn module_namespaced_sub_is_admitted_and_grouped_under_user() {
 struct FakeKeys;
 #[async_trait]
 impl SelfServeKeys for FakeKeys {
-    async fn issue(&self, principal: &Principal, _ttl: Duration) -> Result<IssuedKey, String> {
+    async fn issue(
+        &self,
+        principal: &Principal,
+        _ttl: Duration,
+    ) -> Result<IssuedKey, ExchangeError> {
         Ok(IssuedKey {
             secret: busbar_contract::redacted::Redacted::new(format!(
                 "fake-scheme-token:{}",
@@ -632,7 +815,11 @@ impl SelfServeKeys for FakeKeys {
             exp: 9999,
         })
     }
-    async fn refresh(&self, principal: &Principal, ttl: Duration) -> Result<IssuedKey, String> {
+    async fn refresh(
+        &self,
+        principal: &Principal,
+        ttl: Duration,
+    ) -> Result<IssuedKey, ExchangeError> {
         self.issue(principal, ttl).await
     }
 }
@@ -697,8 +884,13 @@ async fn proof_self_mint_disabled_refuses_self_serve() {
     let gov_open = gov();
     let (p, team, pools) =
         resolve_exchange(&v, &rb, Some(true)).expect("self_mint=true admits the eligible identity");
-    let keys =
-        DeterministicEd25519Keys::new(gov_open.clone(), team, pools, Arc::new(NoopProvisioner));
+    let keys = DeterministicEd25519Keys::new(
+        gov_open.clone(),
+        "corp".into(),
+        team,
+        pools,
+        Arc::new(NoopProvisioner),
+    );
     issue_key(&keys, p, Duration::from_secs(3600), false)
         .await
         .expect("self_mint=true mints a key");

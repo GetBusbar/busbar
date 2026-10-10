@@ -160,6 +160,8 @@ pub type NamespaceHook = fn(&str, &[u8]);
 pub struct FoldSettings<'s> {
     subject: &'s Subject,
     namespace: String,
+    // settings-leak-lint: allow — NON-PROJECTION conformance-harness type: one fold's filled
+    // settings, handed to the subject plugin under test; never serialized and never served.
     settings: Vec<u8>,
 }
 

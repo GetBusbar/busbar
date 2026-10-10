@@ -14,9 +14,22 @@
 # EVERY CLAIM ABOVE IS JUDGED, not narrated: `judge_route_failover` below reads the recorded calls
 # and refuses the PASS unless each pre-trip attempt answered 502, at least one attempt was
 # dispatched before the trip, every call from the trip on answered 503, the tripped body carries
-# UNSUPPORTED_OPERATION, and the tripped response carries a `Retry-After` that is a whole number of
-# seconds within the first-trip cooldown (15 s) and EXACTLY the number the body's "Retry after Ns"
-# names. `--selftest` proves that judge bites, with no busbar and no network.
+# UNSUPPORTED_OPERATION, the cell tripped on the trip predicate and nothing less (at least
+# MIN_OUTCOMES failures dispatched first: the agent cells' declared breaker fact is
+# bench-below-trip-threshold = false, ARCHITECT Q4 / FLIP-A2A), and the tripped response carries a
+# `Retry-After` that is a whole number of seconds inside the cooldown the ONE breaker FSM computes
+# for the streak it tripped on and EXACTLY the number the body's "Retry after Ns" names.
+# `--selftest` proves that judge bites, with no busbar and no network.
+#
+# THE COOLDOWN BAND IS THE FSM'S, NOT A FIRST-TRIP 15 s (corrected, FLIP-A2A). The cell is the one
+# breaker the pools plane has always run (#36, busbar-kernel-breaker), and its published contract is
+# v1.5.5's docs/circuit-breaker.md "Cooldown and backoff": target = min(base_cooldown_secs x
+# 2^streak, max_cooldown_secs), cooldown = target +/- 10% jitter clamped to [max(target/2, 1),
+# max_cooldown_secs], base 15 and max 120 by default -- and the streak at a trip after N consecutive
+# failures is N. The old bound read docs/a2a.md's "15 s escalating to 120 s" as "the first trip
+# waits 15 s", which no cell of that FSM does after a multi-failure trip (predev's legacy engine
+# answered 120 on this very leg). v1.5.5 shipped no agent plane, so the spec and the one FSM's
+# published formula decide this leg, not a 1.5.5 run.
 set -uo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 
@@ -26,7 +39,18 @@ here="$(cd "$(dirname "$0")" && pwd)"
 judge_route_failover() {
   python3 - "$1" <<'PY'
 import re, sys
-FIRST_TRIP_COOLDOWN_SECS = 15  # docs/a2a.md: "cooldown 15 s escalating to 120 s"
+BASE_COOLDOWN_SECS = 15  # the one breaker FSM's defaults (busbar-kernel-breaker cfg.rs; v1.5.5
+MAX_COOLDOWN_SECS = 120  # docs/circuit-breaker.md "Cooldown and backoff")
+MIN_OUTCOMES = 5  # the trip predicate: error rate >= 0.5 over at least 5 outcomes (docs/a2a.md)
+
+def cooldown_band(streak):
+    target = min(BASE_COOLDOWN_SECS * (2 ** min(streak, 63)), MAX_COOLDOWN_SECS)
+    jitter = max(target // 10, 1)
+    lo = max(target - jitter, max(target // 2, 1))
+    hi = min(target + jitter, MAX_COOLDOWN_SECS)
+    # A Retry-After is the cooldown REMAINING when the refusal is answered, in whole seconds: the
+    # calls after the trip land a little later, so the low edge allows the leg's own few seconds.
+    return max(lo - 5, 1), hi
 rows = []
 for line in open(sys.argv[1], encoding="utf-8").read().splitlines():
     status, ra, body = (line.split("\t", 2) + ["", ""])[:3]
@@ -40,6 +64,10 @@ else:
     if trip == 0:
         bad.append("the FIRST call already answered 503, so no attempt was ever dispatched and no "
                    "per-attempt 502 was surfaced (statuses: %s)" % statuses)
+    if 0 < trip < MIN_OUTCOMES:
+        bad.append("the cell tripped after %d failure(s), below the trip predicate's %d outcomes: an "
+                   "agent cell refuses on a TRIP and nothing less (statuses: %s)"
+                   % (trip, MIN_OUTCOMES, statuses))
     pre = [r[0] for r in rows[:trip] if r[0] != "502"]
     if pre:
         bad.append("pre-trip attempts must each surface the down agent's 502; got %s (statuses: %s)"
@@ -55,9 +83,10 @@ else:
         bad.append("tripped 503 carries no whole-seconds Retry-After (got %r)" % ra)
     else:
         n = int(ra)
-        if not 1 <= n <= FIRST_TRIP_COOLDOWN_SECS:
-            bad.append("Retry-After %d is outside the first-trip cooldown 1..%d"
-                       % (n, FIRST_TRIP_COOLDOWN_SECS))
+        lo, hi = cooldown_band(trip)
+        if not lo <= n <= hi:
+            bad.append("Retry-After %d is outside the cooldown the breaker FSM computes for a trip "
+                       "on a streak of %d (%d..%d)" % (n, trip, lo, hi))
         m = re.search(r"Retry after ([0-9]+)s", body)
         if m is None or int(m.group(1)) != n:
             bad.append("Retry-After %d is not exactly the body's own figure (%s)"
@@ -68,7 +97,7 @@ PY
 
 if [ "${1:-}" = "--selftest" ]; then
   st_dir="$(mktemp -d)"; st_fail=0
-  tb='{"error":{"data":{"reason":"UNSUPPORTED_OPERATION"},"message":"UNSUPPORTED_OPERATION: agent `probe` is unavailable ... Retry after 12s"}}'
+  tb='{"error":{"data":{"reason":"UNSUPPORTED_OPERATION"},"message":"UNSUPPORTED_OPERATION: agent `probe` is unavailable ... Retry after 115s"}}'
   # case <name> <want PASS|FAIL> <records...>
   st_case() {
     local name="$1" want="$2"; shift 2
@@ -84,21 +113,31 @@ if [ "${1:-}" = "--selftest" ]; then
   T=$'\t'
   st_case "five 502s then a terminal 503 with an exact Retry-After is judged PASS" PASS \
     "502${T}${T}x" "502${T}${T}x" "502${T}${T}x" "502${T}${T}x" "502${T}${T}x" \
-    "503${T}12${T}$tb" "503${T}12${T}$tb" "503${T}11${T}$tb"
+    "503${T}115${T}$tb" "503${T}115${T}$tb" "503${T}114${T}$tb"
+  # Row 125: a trip on a streak of 5 answers the FSM's capped cooldown, 120 (min(15 x 2^5, 120)),
+  # which a "first-trip 15 s" judge refused ("Retry-After 120 is outside the first-trip cooldown
+  # 1..15", PROOF's rig on predev's judge, before ec3d7123f9). The FSM's own figure is PASS.
+  st_case "a streak-5 trip answering the FSM's capped 120 is judged PASS" PASS \
+    "502${T}${T}x" "502${T}${T}x" "502${T}${T}x" "502${T}${T}x" "502${T}${T}x" \
+    "503${T}120${T}${tb/115s/120s}" "503${T}120${T}${tb/115s/120s}" "503${T}119${T}${tb/115s/119s}"
   st_case "503 from the first call (nothing ever dispatched) is RED" FAIL \
-    "503${T}12${T}$tb" "503${T}12${T}$tb" "503${T}12${T}$tb"
+    "503${T}115${T}$tb" "503${T}115${T}$tb" "503${T}115${T}$tb"
   st_case "a pre-trip attempt that is not a 502 is RED" FAIL \
-    "502${T}${T}x" "500${T}${T}x" "503${T}12${T}$tb"
+    "502${T}${T}x" "500${T}${T}x" "502${T}${T}x" "502${T}${T}x" "502${T}${T}x" "503${T}115${T}$tb"
+  st_case "a trip below the trip predicate (one failure, then 503) is RED" FAIL \
+    "502${T}${T}x" "503${T}30${T}${tb/115s/30s}"
   st_case "a tripped 503 with no Retry-After is RED" FAIL \
-    "502${T}${T}x" "503${T}${T}$tb"
+    "502${T}${T}x" "502${T}${T}x" "502${T}${T}x" "502${T}${T}x" "502${T}${T}x" "503${T}${T}$tb"
   st_case "a Retry-After that differs from the body's own figure is RED" FAIL \
-    "502${T}${T}x" "503${T}7${T}$tb"
-  st_case "a Retry-After beyond the first-trip cooldown is RED" FAIL \
-    "502${T}${T}x" "503${T}120${T}${tb/12s/120s}"
+    "502${T}${T}x" "502${T}${T}x" "502${T}${T}x" "502${T}${T}x" "502${T}${T}x" "503${T}110${T}$tb"
+  st_case "a Retry-After below the FSM's cooldown for the streak is RED" FAIL \
+    "502${T}${T}x" "502${T}${T}x" "502${T}${T}x" "502${T}${T}x" "502${T}${T}x" "503${T}15${T}${tb/115s/15s}"
+  st_case "a Retry-After beyond the FSM's max cooldown is RED" FAIL \
+    "502${T}${T}x" "502${T}${T}x" "502${T}${T}x" "502${T}${T}x" "502${T}${T}x" "503${T}121${T}${tb/115s/121s}"
   st_case "a call that answers non-503 after the trip is RED" FAIL \
-    "502${T}${T}x" "503${T}12${T}$tb" "502${T}${T}x"
+    "502${T}${T}x" "502${T}${T}x" "502${T}${T}x" "502${T}${T}x" "502${T}${T}x" "503${T}115${T}$tb" "502${T}${T}x"
   st_case "a tripped body without UNSUPPORTED_OPERATION is RED" FAIL \
-    "502${T}${T}x" "503${T}12${T}Retry after 12s"
+    "502${T}${T}x" "502${T}${T}x" "502${T}${T}x" "502${T}${T}x" "502${T}${T}x" "503${T}115${T}Retry after 115s"
   st_case "a breaker that never trips is RED" FAIL \
     "502${T}${T}x" "502${T}${T}x"
   rm -rf "$st_dir"
