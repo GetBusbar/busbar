@@ -348,7 +348,7 @@ fn t() {
     );
     let quiet = "fn t() {\n    let Some(a) = adapter_over_published_schema() else {\n        return;\n    };\n}\n";
     assert_eq!(rules(quiet), ["(d) a let-else whose else only skips"]);
-    let gate = "fn t() {\n    if !LINKED_TRANSPORTS.iter().any(|w| w.key == \"tcp\") {\n        return;\n    }\n}\n";
+    let gate = "fn t() {\n    if !LINKED_TRANSPORTS.iter().any(|w| w.key == WIRE) {\n        return;\n    }\n}\n";
     assert_eq!(rules(gate), ["(d) an `if` guard whose body only skips"]);
     let stored = "fn t() {\n    let decls = installed_decls();\n    if decls.is_empty() {\n        // vacuous\n        return;\n    }\n}\n";
     assert_eq!(rules(stored), ["(d) an `if` guard whose body only skips"]);
@@ -371,10 +371,10 @@ fn t() {
 #[test]
 fn selftest_a_hard_failure_or_a_gate_is_not_a_skip() {
     let clean = r#"
-#[cfg(feature = "transport-tcp")]
+#[cfg(linked_axis_export_doors)]
 #[test]
 fn t() {
-    assert!(LINKED_TRANSPORTS.iter().any(|w| w.key == "tcp"));
+    assert!(!linked_sinks().is_empty());
     let lib = common::plugins::cdylib(CDYLIB)
         .unwrap_or_else(|| common::plugins::missing(CDYLIB, common::plugins::BUILD_PINNED));
     if std::env::var_os(NODE_HOOKS_ARM).is_none() {

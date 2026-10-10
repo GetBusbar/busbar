@@ -22,6 +22,8 @@
 // The config serves `providers:`/`models:`, so the build must link the plane that takes body
 // ingress: the linked table's answer, never a feature name.
 #![cfg(linked_axis_body_ingress)]
+// The linked door is an export door: the test is that axis's, and its collector proves the sink.
+#![cfg(linked_axis_export_doors)]
 
 mod common;
 
@@ -38,6 +40,9 @@ const CDYLIB: &str = "busbar_export_otlp_plugin";
 
 /// The name the dropped-in tarball's manifest states.
 const DROPPED: &str = "k9e-dropped";
+
+/// The key of the wire the data door rides.
+const WIRE: &str = "tcp";
 
 /// The collector paths each door posts to.
 const LINKED_PATH: &str = "/linked/v1/traces";
@@ -121,15 +126,8 @@ fn request(port: u16, body: &str) -> Option<u16> {
     text.lines().next()?.split_whitespace().nth(1)?.parse().ok()
 }
 
-// The data door rides the tcp wire: a build that does not link it never compiles this test, and
-// one that does asserts its linked table agrees.
-#[cfg(feature = "transport-tcp")]
 #[test]
 fn a_closed_span_reaches_an_otlp_collector_and_a_third_party_collector_is_refused() {
-    assert!(
-        LINKED_TRANSPORTS.iter().any(|w| w.key == "tcp"),
-        "a build with `transport-tcp` links no tcp transport row"
-    );
     // A both-doors proof never skips: the dropped-in door's cdylib is built or the test fails.
     let lib = common::plugins::cdylib(CDYLIB)
         .unwrap_or_else(|| common::plugins::missing(CDYLIB, common::plugins::BUILD_PINNED));
@@ -137,6 +135,15 @@ fn a_closed_span_reaches_an_otlp_collector_and_a_third_party_collector_is_refuse
     std::fs::create_dir_all(dir.join("plugins")).unwrap();
     let tarball = common::plugins::pack_stated("export", DROPPED, &lib, "acme");
     std::fs::write(dir.join("plugins").join("otlp.tar.gz"), tarball).unwrap();
+    // THE WIRE UNDER THE DOOR. A build that does not link the tcp row boots only with it dropped
+    // in; one that links it would refuse the tarball as a second row on the same key.
+    if !LINKED_TRANSPORTS.iter().any(|w| w.key == WIRE) {
+        let (lib, _) = common::plugins::transport_cdylib_under(&[WIRE]).unwrap_or_else(|| {
+            common::plugins::missing(&format!("{WIRE} transport"), common::plugins::BUILD_PINNED)
+        });
+        let bytes = common::plugins::pack("transport", "dropped-wire", &lib, "acme");
+        std::fs::write(dir.join("plugins").join("dropped-wire.tar.gz"), bytes).unwrap();
+    }
     let (collector_port, seen) = common::otlp::collector();
     let busbar = || {
         let mut c = Command::new(common::boot::exe());

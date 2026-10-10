@@ -24,6 +24,9 @@
 // The config serves `providers:`/`models:`, so the build must link the plane that takes body
 // ingress: the linked table's answer, never a feature name.
 #![cfg(linked_axis_body_ingress)]
+// A build that links no export sink has no row to load as the wrong kind: the test is the export
+// door axis's, so it compiles where the build links that axis and asserts the binary agrees.
+#![cfg(linked_axis_export_doors)]
 
 mod common;
 
@@ -173,9 +176,6 @@ fn get(port: u16, path: &str) -> Option<(u16, String, String)> {
     Some((status, head.to_ascii_lowercase(), body.to_string()))
 }
 
-// A build that links no export sink has no row to load as the wrong kind: the test is the export
-// door axis's, so it compiles where the build links that axis and asserts the binary agrees.
-#[cfg(linked_axis_export_doors)]
 #[test]
 fn every_linked_export_sink_loads_as_its_own_kind_in_the_shipped_binary() {
     let sinks = linked_sinks();

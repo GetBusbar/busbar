@@ -26,6 +26,11 @@
 //! ADDING A RELEASE: drop its `config.yaml` in as `v<x.y.z>_config.yaml`. No code change; the test
 //! discovers the directory. `tests/migration-corpus/refresh.sh` regenerates the whole set from tags.
 
+// The helpers that supply the deferred decisions, validate a migrated config and read the 1.5.5
+// warning oracle serve only the two corpus tests, which a build without the admin credential's
+// plugin does not compile (see the first of them).
+#![cfg_attr(not(feature = "auth-admin-tokens"), allow(dead_code))]
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -516,7 +521,7 @@ fn recorded_1_5_5_warning_count(tag: &str) -> Option<usize> {
 /// first: a warning added to a shared boot path shows up on the whole corpus at once, and the set
 /// is the diagnosis.
 // Gated as [`every_shipped_config_migrates_to_a_valid_current_config`] is: a migrated config naming
-// `keys` has a valid admin mint path only where `auth-admin-tokens` is linked.
+// `keys` has a valid admin mint path only where the admin credential's plugin is linked.
 #[cfg(feature = "auth-admin-tokens")]
 #[test]
 fn no_corpus_config_warns_more_at_boot_than_the_published_1_5_5_did() {

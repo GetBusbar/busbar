@@ -38,6 +38,7 @@ mod common;
 
 use busbar_kernel::plane::registry::PlaneDecl;
 use std::collections::{BTreeMap, BTreeSet};
+#[cfg(linked_axis_plane)]
 use std::path::{Path, PathBuf};
 
 /// THE PINNED HOOK-FIELD SET — every `Option<…>` capability hook on the registry `PlaneDecl`, each
@@ -89,6 +90,7 @@ fn plane_ledger_columns() -> Vec<(&'static str, &'static [&'static str])> {
         .collect()
 }
 
+#[cfg(linked_axis_plane)]
 fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
@@ -101,18 +103,21 @@ fn repo_root() -> PathBuf {
 /// so the Some/None this test reasons over is the REAL decl, never a restated copy.
 // Each plane crate is only linked when its feature is on. Under `--no-default-features` no plane
 // is installed, so this yields an empty set and the gate tests below are not compiled
-// (`linked_axis_plane`).
+// (`linked_axis_plane`), nor is this or anything only they read.
+#[cfg(linked_axis_plane)]
 fn installed_decls() -> Vec<(&'static str, &'static PlaneDecl)> {
     LINKED_PLANES.iter().map(|d| (d.key, d)).collect()
 }
 
 // The linked plane rows (build.rs: every enabled `[package.metadata.busbar.linked]` row carrying the
 // `plane` axis, assembled from its crate's own `linked` entry exactly as the root assembles it).
+#[cfg(linked_axis_plane)]
 include!(concat!(env!("OUT_DIR"), "/linked_planes.rs"));
 
 /// The Some/None matrix: `field -> (plane -> is_some)`. Computed from the live decls.
 type Matrix = BTreeMap<String, BTreeMap<String, bool>>;
 
+#[cfg(linked_axis_plane)]
 fn reflect(installed: &[(&'static str, &'static PlaneDecl)]) -> Matrix {
     let mut m: Matrix = BTreeMap::new();
     for (field, extract) in HOOK_FIELDS {
@@ -323,6 +328,7 @@ fn verify_scoped(
     })
 }
 
+#[cfg(linked_axis_plane)]
 fn read_json(path: &Path) -> serde_json::Value {
     serde_json::from_str(
         &std::fs::read_to_string(path)
@@ -331,6 +337,7 @@ fn read_json(path: &Path) -> serde_json::Value {
     .unwrap_or_else(|e| panic!("{} does not parse as JSON: {e}", path.display()))
 }
 
+#[cfg(linked_axis_plane)]
 fn columns_map() -> BTreeMap<&'static str, &'static [&'static str]> {
     plane_ledger_columns().into_iter().collect()
 }
@@ -387,6 +394,7 @@ fn installed_plane_decls_are_behaviourally_isomorphic_or_declared() {
 /// so the only way to ask a build which legs it has is to compile the question in — but the question
 /// must be asked per leg, not as a five-way conjunction, because the planes are switched onto the
 /// root one at a time and every partially-switched build is an ordinary build.
+#[cfg(linked_axis_plane)]
 fn compiled_legs() -> BTreeSet<&'static str> {
     common::compiled_root_legs()
 }
