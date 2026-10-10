@@ -534,20 +534,20 @@ fn a_live_state_reads_back_whole_over_an_earlier_longer_one() {
 /// short of that ceiling.
 #[test]
 fn a_task_is_left_behind_once_its_runs_lease_lapses_or_it_is_abandoned() {
-    let run = Lease {
+    let run = RunLease {
         until_ms: T0 + 10,
         updated_ms: T0,
     };
-    assert_eq!(Lease::read(&run.bytes()), Some(run));
+    assert_eq!(RunLease::read(&run.bytes()), Some(run));
     assert!(!run.left_behind(T0 + 10));
     assert!(run.left_behind(T0 + 11));
-    let parked = Lease {
+    let parked = RunLease {
         until_ms: 0,
         updated_ms: T0,
     };
     assert!(!parked.left_behind(T0 + ACTIVE_TASK_ABANDON_MS));
     assert!(parked.left_behind(T0 + ACTIVE_TASK_ABANDON_MS + 1));
-    assert_eq!(Lease::read(b"l1|1"), None);
+    assert_eq!(RunLease::read(b"l1|1"), None);
     assert!(index_key("k", "t").starts_with(&index_prefix("k")));
     assert_ne!(index_prefix("k"), index_prefix("j"));
 }

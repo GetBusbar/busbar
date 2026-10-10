@@ -1373,15 +1373,9 @@ fn completed(admitted: &AdmittedCall, value: &Value, body: &[u8]) -> Settled {
 /// under the caller's id. The one addition is the dialect's `resultType: complete` on a result
 /// object that carries no `resultType` at all; a `resultType` the upstream sent is its own.
 fn relayed(id: &Value, value: &Value, body: &[u8]) -> Vec<u8> {
-    #[derive(serde::Deserialize)]
-    struct Answer<'a> {
-        #[serde(borrow)]
-        result: &'a serde_json::value::RawValue,
-    }
-    let Ok(answer) = serde_json::from_slice::<Answer<'_>>(body) else {
+    let Some(sent) = result_member(body) else {
         return result(id, value.clone());
     };
-    let sent = answer.result.get();
     let mut out = format!("{{\"id\":{id},\"jsonrpc\":\"2.0\",\"result\":");
     match sent.trim_start().strip_prefix('{') {
         Some(members) if value.get("resultType").is_none() => {
@@ -1397,6 +1391,43 @@ fn relayed(id: &Value, value: &Value, body: &[u8]) -> Vec<u8> {
     }
     out.push('}');
     out.into_bytes()
+}
+
+/// The top-level `result` member of a JSON object, as the bytes it was written in. Each member's
+/// key and value are walked whole by the parser, so nothing inside a value is mistaken for a key.
+fn result_member(body: &[u8]) -> Option<&str> {
+    let text = std::str::from_utf8(body).ok()?;
+    let gap = |at: usize| {
+        at + text[at..].len()
+            - text[at..]
+                .trim_start_matches([' ', '\t', '\n', '\r'])
+                .len()
+    };
+    let value_end = |at: usize| {
+        let mut values =
+            serde_json::Deserializer::from_str(&text[at..]).into_iter::<serde::de::IgnoredAny>();
+        values.next()?.ok()?;
+        Some(at + values.byte_offset())
+    };
+    let mut at = gap(0);
+    text[at..].starts_with('{').then_some(())?;
+    at = gap(at + 1);
+    while !text[at..].starts_with('}') {
+        let end = value_end(at)?;
+        let key: String = serde_json::from_str(&text[at..end]).ok()?;
+        at = gap(end);
+        text[at..].starts_with(':').then_some(())?;
+        at = gap(at + 1);
+        let end = value_end(at)?;
+        if key == "result" {
+            return Some(&text[at..end]);
+        }
+        at = gap(end);
+        if text[at..].starts_with(',') {
+            at = gap(at + 1);
+        }
+    }
+    None
 }
 
 #[cfg(test)]
