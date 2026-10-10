@@ -2869,7 +2869,7 @@ pub static REGISTRY: &[Registration] = &[
         batch: 1,
         tier: Tier::Fast,
         build: || Box::new(workflow_rules::WorkflowRulesGate),
-        summary: "no workflow is tag-triggered or pushes a release branch; every action is a pinned sha; every attestation verify names its signer",
+        summary: "no workflow is tag-triggered or pushes a release branch; every action is a pinned sha; every attestation verify names its signer; the engine runs from a commit sha and a verified sha256",
     },
     Registration {
         name: "service-images",
