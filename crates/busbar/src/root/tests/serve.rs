@@ -577,6 +577,11 @@ async fn the_late_attach_serves_sign_and_writes_trust_changes_down() {
         }
     };
     assert_eq!(late.sign(&caller, b"data").outcome, Outcome::Refused);
+    // A declared fingerprint is pending until the operator approves it (coordinator 2026-10-07,
+    // #555): nothing drifts before the approval.
+    assert_eq!(sight("h1"), (svc::TRUST_NEW, false));
+    k.trust_rule("owner/peer", busbar_kernel::trust::book::Ruling::Approve)
+        .expect("approved");
     assert_eq!(sight("h1"), (svc::TRUST_SAME, false));
     assert_eq!(sight("h2"), (svc::TRUST_DRIFTED, false), "not written down");
     let demotions = Arc::new(DemotionRecord::default());
