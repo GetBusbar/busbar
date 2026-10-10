@@ -2497,6 +2497,177 @@ fn law0_offenders(matrix: &Matrix, crates: &[CrateInfo], enforced: Option<&[&str
     offenders
 }
 
+/// THE LAW 0 ROW (ARCHITECT 2026-10-07, Q128 route). The DoD's hard clause (BUSBAR-1.6.0.md
+/// :1994-1999): every `Family::Neutral` crate (the kernel and its workflow crates, the contract,
+/// the loader, the three cleanliness crates and the composition root) names ZERO plugin-instance
+/// vocabulary. The Law 0 class lived inside the report-only matrix row (owner 2026-10-03: "a
+/// measured to-do list, not a gate"), so it could not fail; this row is its gate.
+///
+/// Armed at TODAY'S NUMBER (Law 9): each neutral crate and axis is held to its `[[law0]]` ceiling in
+/// qa/kind-isolation.toml, exact in both directions. A rise is a landing that grew a leak; a fall
+/// below the row is slack the ledger must give back in the commit that drained it. A neutral leak with no
+/// row is a new one. Both registrations judge the same ceilings; the zero the DoD asks for is read
+/// off the same rows by `scripts/verify-1.6.0-done.sh`.
+pub const ROW_LAW0: &str = "kind-isolation:law0";
+
+/// `(neutral crate, axis) -> count`. Axes: a plugin kind (`plane`, `transport`, …) from the
+/// matrix cells; `instance:<kind>` from the five instance axes; `vendor` and `vendor-pragma` from
+/// the vendor-name scan; `unattributed` (crate `*`) for a module name no rule places.
+pub type Law0Counts = BTreeMap<(String, String), usize>;
+
+fn law0_counts(
+    matrix: &Matrix,
+    inst: &instances::Instances,
+    vendor: &[String],
+    unattributed: &[String],
+    crates: &[CrateInfo],
+) -> Law0Counts {
+    let neutral = |k: &str| crates.iter().any(|c| c.name == k && is_core_neutral(c));
+    let mut out = Law0Counts::new();
+    for ((krate, kind), cell) in matrix {
+        if cell.count > 0 && neutral(krate) && instance_vocab_kinds().contains(kind) {
+            *out.entry((krate.clone(), (*kind).to_string())).or_default() += cell.count;
+        }
+    }
+    for ((krate, kind), cell) in inst {
+        if cell.count > 0 && neutral(krate) {
+            *out.entry((krate.clone(), format!("instance:{kind}")))
+                .or_default() += cell.count;
+        }
+    }
+    for f in vendor {
+        let mut parts = f.split('\t');
+        let (Some(code), Some(krate)) = (parts.next(), parts.next()) else {
+            continue;
+        };
+        if !neutral(krate) {
+            continue;
+        }
+        let axis = match code {
+            "vendor-name" => "vendor",
+            "vendor-frozen-wire" => "vendor-pragma",
+            _ => continue,
+        };
+        *out.entry((krate.to_string(), axis.to_string()))
+            .or_default() += 1;
+    }
+    if !unattributed.is_empty() {
+        *out.entry(("*".to_string(), "unattributed".to_string()))
+            .or_default() += unattributed.len();
+    }
+    out
+}
+
+/// THE DoD's NEUTRAL POPULATION (BUSBAR-1.6.0.md:1994-1999): a `Family::Neutral` crate of a core
+/// kind (kernel, contract, plugin-tooling, cleanliness, root). The plugin kinds with no instance family of their own (store, secret, auth,
+/// hooks, export) are `Family::Neutral` too, but a plugin naming its own kind's vocabulary is
+/// correct (Law 5); the clause is about the kernel, its workflow crates, the contract, the loader,
+/// the cleanliness crates and the composition root.
+fn is_core_neutral(c: &CrateInfo) -> bool {
+    const CORE_KINDS: &[&str] = &[
+        "kernel",
+        "contract",
+        "plugin-tooling",
+        "cleanliness",
+        "root",
+    ];
+    c.family == Family::Neutral && c.kind.is_some_and(|k| CORE_KINDS.contains(&k))
+}
+
+/// [`ROW_LAW0`], judged against the `[[law0]]` ceilings. `None` is a scan that did not run, which
+/// is a refusal, never a pass.
+pub fn rule_law0(
+    crates: &[CrateInfo],
+    registry: &super::KindRegistry,
+    law0: Option<&Law0Counts>,
+) -> Row {
+    let Some(measured) = law0 else {
+        return Row::fail(
+            ROW_LAW0,
+            "the Law 0 scan could not run",
+            "the matrix scan the Law 0 class is read from did not run, and an unrun scan is not a \
+             neutral tree"
+                .to_string(),
+        );
+    };
+    let neutral: Vec<&CrateInfo> = crates.iter().filter(|c| is_core_neutral(c)).collect();
+    if neutral.is_empty() {
+        return Row::fail(
+            ROW_LAW0,
+            "no neutral crate reached the Law 0 rule",
+            "0 Family::Neutral crate(s); zero crates name zero instances, which reads exactly like \
+             a neutral tree"
+                .to_string(),
+        );
+    }
+    let reg = &registry.law0;
+    let mut ceilings: BTreeMap<(String, String), usize> = BTreeMap::new();
+    let mut offenders: Vec<String> = Vec::new();
+    for r in reg {
+        if ceilings
+            .insert((r.krate.clone(), r.axis.clone()), r.count)
+            .is_some()
+        {
+            offenders.push(format!(
+                "law0-duplicate\t{} / {}\ttwo `[[law0]]` rows for one crate and axis",
+                r.krate, r.axis
+            ));
+        }
+    }
+    let keys: BTreeSet<(String, String)> =
+        measured.keys().chain(ceilings.keys()).cloned().collect();
+    for key in &keys {
+        let now = measured.get(key).copied().unwrap_or(0);
+        let ceiling = ceilings.get(key).copied();
+        match ceiling {
+            None if now > 0 => offenders.push(format!(
+                "law0-new\t{} \u{d7} {}\t{now} hit(s) in a NEUTRAL crate with no `[[law0]]` \
+                 ceiling: a new leak of plugin-instance vocabulary into core. Drain it; the \
+                 ceiling is today's number and nothing raises it",
+                key.0, key.1
+            )),
+            Some(c) if now > c => offenders.push(format!(
+                "law0-rise\t{} \u{d7} {}\t{now} hit(s) against a ceiling of {c}: this landing grew \
+                 a neutral crate's instance vocabulary. Ceilings only fall ({})",
+                key.0,
+                key.1,
+                reg.iter()
+                    .find(|r| r.krate == key.0 && r.axis == key.1)
+                    .map_or("", |r| r.cite.as_str())
+            )),
+            Some(c) if now < c => offenders.push(format!(
+                "law0-slack\t{} \u{d7} {}\t{now} hit(s) under a ceiling of {c}: lower the \
+                 `[[law0]]` row to {now} in the commit that drained it",
+                key.0, key.1
+            )),
+            _ => {}
+        }
+    }
+    let total: usize = measured.values().sum();
+    if offenders.is_empty() {
+        return Row::pass(
+            ROW_LAW0,
+            "every neutral crate is at its Law 0 ceiling",
+            format!(
+                "{} neutral crate(s), {} cell(s), {total} hit(s) at ceiling (DoD: 0)",
+                neutral.len(),
+                measured.len()
+            ),
+        );
+    }
+    offenders.sort();
+    Row::fail(
+        ROW_LAW0,
+        "a neutral crate's Law 0 count is not its ceiling",
+        format!(
+            "{} finding(s) over {} neutral crate(s): {}",
+            offenders.len(),
+            neutral.len(),
+            offenders.join(" | ")
+        ),
+    )
+}
+
 /// THE MATRIX ROW, AS THE GATE EMITS IT: a measured to-do list, not a gate (owner 2026-10-03).
 ///
 /// The row is measured on every run and its number is in the row's detail, but it never fails: a
@@ -2505,6 +2676,7 @@ fn law0_offenders(matrix: &Matrix, crates: &[CrateInfo], enforced: Option<&[&str
 /// reading). `gating` is the self-test subject's setting: the proofs of the counting and of the
 /// ledger comparison run the same rule with its findings as FAIL, because a red is the one
 /// observable a planted case has. No production registration sets it.
+#[cfg(test)]
 pub fn rule_matrix(
     cx: &Ctx,
     crates: &[CrateInfo],
@@ -2512,7 +2684,33 @@ pub fn rule_matrix(
     ship: bool,
     gating: bool,
 ) -> Row {
-    let (row, reading) = measured_row(cx, crates, reg, ship);
+    let mut law0 = None;
+    matrix_row(cx, crates, reg, ship, gating, &mut law0)
+}
+
+/// THE MATRIX ROW AND THE LAW 0 ROW, from ONE scan. The matrix stays report-only (owner
+/// 2026-10-03); the Law 0 class it carries is judged by its own gating row ([`ROW_LAW0`]).
+pub fn rule_matrix_rows(
+    cx: &Ctx,
+    crates: &[CrateInfo],
+    reg: &super::KindRegistry,
+    ship: bool,
+    gating: bool,
+) -> Vec<Row> {
+    let mut law0 = None;
+    let matrix_row = matrix_row(cx, crates, reg, ship, gating, &mut law0);
+    vec![matrix_row, rule_law0(crates, reg, law0.as_ref())]
+}
+
+fn matrix_row(
+    cx: &Ctx,
+    crates: &[CrateInfo],
+    reg: &super::KindRegistry,
+    ship: bool,
+    gating: bool,
+    law0: &mut Option<Law0Counts>,
+) -> Row {
+    let (row, reading) = measured_row(cx, crates, reg, ship, law0);
     match reading {
         Some(r) if !gating => {
             let verdict = if row.status == crate::ledger::Status::Fail {
@@ -2600,6 +2798,7 @@ fn measured_row(
     crates: &[CrateInfo],
     reg: &super::KindRegistry,
     ship: bool,
+    law0: &mut Option<Law0Counts>,
 ) -> (Row, Option<Reading>) {
     // THE THREE READINGS OF THE SCAN SET ARE INDEPENDENT — the matrix, the instance axes and the
     // vendor names — so they are taken at once. Their refusals are read back in the order the
@@ -2686,6 +2885,14 @@ fn measured_row(
             )
         }
     };
+
+    *law0 = Some(law0_counts(
+        &matrix,
+        &inst,
+        &vendor,
+        &ivocab.unattributed,
+        crates,
+    ));
 
     // THE SHIP TWIN OWES ZERO EVERYWHERE, and owes it without consulting the ledger.
     if ship {
@@ -3273,6 +3480,24 @@ pub fn selftest<'a>(
     // against it would produce the same red it already produces, and "the gate went red"
     // is the answer this battery exists to refuse. So the ship twin gets one case, and it makes a
     // NAMED, NEW deviation: a cell that measures ZERO today and does not after the plant.
+    // THE LAW 0 ROW GATES ON BOTH TWINS (ARCHITECT 2026-10-07): a plane instance noun written in a
+    // neutral crate at its ceiling is a rise (or a new cell) on `kind-isolation:law0`, while the
+    // matrix row it was measured with stays report-only.
+    {
+        let mut ov = crate::ctx::Overlay::new();
+        ov.set(
+            "crates/busbar-core-oauth2/src/planted_law0.rs",
+            "pub fn mcp_tools_listed() -> usize { 0 }\n",
+        );
+        report.push(prove_rows_red(
+            cx,
+            gate,
+            "a plane instance noun written in a neutral crate fails kind-isolation:law0",
+            &[ROW_LAW0],
+            ov,
+            &["busbar-core-oauth2 \u{d7} plane"],
+        ));
+    }
     if ship {
         report.push(prove_rows_red(
             cx,

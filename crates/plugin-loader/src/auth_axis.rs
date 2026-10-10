@@ -302,6 +302,44 @@ impl AuthRows {
             }
         }
     }
+
+    /// TEST STAND-IN: the auth row serving the outbound `style`, its instance opened for its
+    /// outbound styles over `settings` (as the composition root's `OutboundAuths::serving` opens
+    /// one, without its instance cache or its tick schedule); `None` when no row this build reaches
+    /// states the style. Never shipped: the root serves outbound styles.
+    ///
+    /// # Errors
+    /// The serving row would not open for its outbound styles.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn serving(
+        &self,
+        style: &str,
+        settings: &serde_json::Value,
+    ) -> Result<Option<busbar_contract::auth_calls::OutboundServing>, String> {
+        use crate::dispatch::auth_outbound::{outbound_style, OutboundInstance};
+        let rows = self
+            .registry
+            .linked()
+            .iter()
+            .chain(self.registry.loadable());
+        for row in rows.filter(|p| p.manifest.kind == AUTH) {
+            let Ok(Door::Memory(plugin, _)) = self.load(row, &row.manifest.alias, true) else {
+                continue;
+            };
+            let Some(decl) = outbound_style(&plugin, style) else {
+                continue;
+            };
+            let settings = serde_json::to_vec(settings).map_err(|e| e.to_string())?;
+            let auth =
+                OutboundInstance::open_with(plugin, Arc::clone(&self.dispatcher), 0, &settings)?;
+            return Ok(Some(busbar_contract::auth_calls::OutboundServing {
+                auth: Arc::new(auth),
+                flags: decl.flags,
+                points: decl.points,
+            }));
+        }
+        Ok(None)
+    }
 }
 
 /// The aliases `row`'s Statement states (its [`REWRITE_ALIAS`] rewrites; the design's One

@@ -18,8 +18,10 @@
 //!   its one outbound need, and the tail [`TAIL`] (every list read off [`crate::driven::tail`]).
 //! * `validate`, `open`, `refresh`: the settings blob read as the `decisions:` section
 //!   ([`crate::config::DecisionsSection`]); a generation's snapshot claims
-//!   [`crate::driven::served_claims`] for its model count, and binds no audience (the operation
-//!   is served on the plain data plane to a keyed caller). `retire` drops a generation.
+//!   [`crate::driven::served_claims`] for its model count, lists every model the section
+//!   configures (the kernel filters them by scope and `/v1/models` appends them), and binds no
+//!   audience (the operation is served on the plain data plane to a keyed caller). `retire` drops
+//!   a generation.
 //! * `arrive`: [`crate::driven::arrive`]; an unclaimed request is refused at 404.
 //! * `on_piece`: the ATTEMPT's request head ([`crate::driven::attempt_request`]), the caller's body to the
 //!   far end unchanged ([`crate::driven::caller_piece`]), and the far end's answer relayed unchanged
@@ -208,6 +210,7 @@ pub const TAIL: &PlaneTail = &PlaneTail {
     admin_routes: ptr::null(),
     admin_routes_len: 0,
     admin_openapi: Blob::ABSENT,
+    stream_ceiling_secs: 0,
 };
 
 /// THE STATEMENT: the plane's key and version, its sections, its need and its tail.
@@ -281,6 +284,19 @@ pub fn snapshot_spec(models: usize) -> SnapshotSpec {
             .map(|(verb, target)| ClaimSpec::new(verb, target, claims::TRANSPORT, CLAIM_EXACT))
             .collect(),
         ..SnapshotSpec::default()
+    }
+}
+
+/// ONE GENERATION'S SNAPSHOT for `section`: [`snapshot_spec`]'s claims for its model count, and
+/// every model it configures LISTED (THE DESIGN section 2: all configured decisions models are
+/// listed, scope-filtered by the kernel; `/v1/models` appends them), in ascending name order.
+#[must_use]
+pub fn generation_spec(section: &DecisionsSection) -> SnapshotSpec {
+    let mut listed: Vec<String> = section.models.keys().cloned().collect();
+    listed.sort();
+    SnapshotSpec {
+        listed,
+        ..snapshot_spec(section.models.len())
     }
 }
 
@@ -377,7 +393,7 @@ slot!(
             routed: Keyed::new(),
         };
         plane.route_over(&section);
-        let spec = snapshot_spec(section.models.len());
+        let spec = generation_spec(&section);
         out.publish(|o| &o.snapshot, &plane.generations, open.generation, &spec);
         instance.open(plane);
         Outcome::Ready
@@ -394,7 +410,7 @@ slot!(
             Ok(section) => section,
             Err(words) => return out.fail(Refusal::refused(words)),
         };
-        let spec = snapshot_spec(section.models.len());
+        let spec = generation_spec(&section);
         plane.route_over(&section);
         out.publish(|o| &o.snapshot, &plane.generations, input.generation, &spec);
         Outcome::Ready

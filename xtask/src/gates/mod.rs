@@ -3108,7 +3108,7 @@ pub static REGISTRY: &[Registration] = &[
         tier: Tier::Fast,
         build: || Box::new(plane_abi_neutrality::PlaneAbiNeutralityGate),
         summary:
-            "the plane ABI's hot lane is derived from the taxonomy, not named after a protocol",
+            "the plane ABI (abi/plane, abi/host, and the hot lane while it lasts) is derived from the taxonomy, not named after a protocol",
     },
     Registration {
         name: "instance-noun-neutrality",
