@@ -632,3 +632,128 @@ fn pointer_tokens_are_escaped_so_a_key_cannot_forge_a_location() {
     .expect_err("refused");
     assert_eq!(err.pointer, "/a~1b");
 }
+
+/// An address the connector destination guard refuses is refused in a tool argument too: the
+/// argument check used the 1.5.5 plaintext predicate, which misses these ranges. The zone forms
+/// are spelled `%25lo` as a URL carries them; the host reader percent-decodes to `%lo` and
+/// `host_ip` strips the zone before parsing.
+#[test]
+fn an_address_the_connector_guard_refuses_is_refused_in_an_argument_too() {
+    let urls = [
+        "http://198.18.0.1/x",
+        "http://192.0.0.8/x",
+        "http://0.1.2.3/x",
+        "http://[::ffff:198.18.0.1]/x",
+        "http://[::1%25lo]/x",
+        "http://[fe80::1%25eth0]/x",
+        "http://224.0.0.1/x",
+        "http://255.255.255.255/x",
+        "http://[ff02::1]/x",
+    ];
+    assert_eq!(urls.len(), 9);
+    // ARCHITECT ruling: the transition tunnels are judged by the IPv4 address they deliver to,
+    // in both predicates.
+    for v6 in ["2002:c0a8:101::", "2001:0:4136:e378:8000:63bf:f5ff:fffe"] {
+        let ip: core::net::Ipv6Addr = v6.parse().expect("parses");
+        assert!(
+            busbar_contract::net::host_is_private_or_loopback(v6),
+            "`{v6}` must be private to the plaintext predicate too"
+        );
+        assert!(busbar_contract::net::ipv6_is_internal(&ip), "`{v6}`");
+    }
+    for url in urls {
+        let err = guard(&nested_uri_schema(), &nested_uri_args(url), public())
+            .err()
+            .unwrap_or_else(|| panic!("`{url}` must be refused, but it passed"));
+        assert!(
+            matches!(err.why, ArgWhy::InternalHost(_)),
+            "`{url}` must be refused AS internal, got {err:?}"
+        );
+    }
+}
+
+/// The internal-range table, one representative per range, pinned against `ip_is_internal`, and
+/// every internal row is refused by the argument check as an `http://<addr>/x` URL.
+#[test]
+fn the_internal_range_table_is_pinned() {
+    let internal = [
+        "127.0.0.1",
+        "10.0.0.1",
+        "172.16.0.1",
+        "192.168.0.1",
+        "169.254.0.1",
+        "0.0.0.0",
+        "0.1.2.3",
+        "100.64.0.1",
+        "192.0.0.8",
+        "198.18.0.1",
+        "255.255.255.255",
+        "224.0.0.1",
+        "192.0.2.1",
+        "198.51.100.1",
+        "203.0.113.1",
+        "::1",
+        "::",
+        "fc00::1",
+        "fe80::1",
+        "ff02::1",
+        "::ffff:10.0.0.1",
+        "64:ff9b::a00:1",
+        // 6to4 embedding 192.168.1.1, and Teredo whose (inverted) client address is 10.0.0.1.
+        "2002:c0a8:101::",
+        "2001:0:4136:e378:8000:63bf:f5ff:fffe",
+    ];
+    // A transition address is judged by the IPv4 address it delivers to: a public one is public.
+    let not_internal = [
+        "8.8.8.8",
+        "2606:4700::1111",
+        "2002:808:808::",
+        "2001:0:4136:e378:8000:63bf:f7f7:f7f7",
+    ];
+    for addr in internal {
+        let ip: core::net::IpAddr = addr.parse().expect("table entry parses");
+        assert!(
+            busbar_contract::net::ip_is_internal(&ip),
+            "`{addr}` must be internal"
+        );
+        let url = if ip.is_ipv6() {
+            format!("http://[{addr}]/x")
+        } else {
+            format!("http://{addr}/x")
+        };
+        let err = guard(&nested_uri_schema(), &nested_uri_args(&url), public())
+            .err()
+            .unwrap_or_else(|| panic!("`{url}` must be refused, but it passed"));
+        // 169.254.0.0/16 is judged as cloud metadata before the internal check runs.
+        assert!(
+            matches!(err.why, ArgWhy::InternalHost(_) | ArgWhy::CloudMetadata(_)),
+            "`{url}` must be refused AS internal or metadata, got {err:?}"
+        );
+    }
+    for addr in not_internal {
+        let ip: core::net::IpAddr = addr.parse().expect("table entry parses");
+        assert!(
+            !busbar_contract::net::ip_is_internal(&ip),
+            "`{addr}` must not be internal"
+        );
+    }
+}
+
+/// RED (ARCHITECT ruling on C3 H5): a 6to4 or Teredo address delivers to the IPv4 address it embeds,
+/// so it is judged as that address. 6to4 `2002:c0a8:0101::` is 192.168.1.1; the Teredo address
+/// below inverts to client 10.0.0.1. Both were admitted as public before the decode.
+#[test]
+fn a_transition_address_embedding_a_private_v4_is_refused() {
+    for url in [
+        "http://[2002:c0a8:0101::]/x",
+        "http://[2001:0:4136:e378:8000:63bf:f5ff:fffe]/x",
+    ] {
+        let err = guard(&nested_uri_schema(), &nested_uri_args(url), public())
+            .err()
+            .unwrap_or_else(|| panic!("`{url}` must be refused, but it passed"));
+        assert!(
+            matches!(err.why, ArgWhy::InternalHost(_)),
+            "`{url}`: {err:?}"
+        );
+    }
+}

@@ -3891,7 +3891,7 @@ fn refresh_self_rolls_back_the_new_binding_when_the_old_tombstone_fails() {
     let now = 1_700_000_000u64;
 
     // First issue: mints the one binding at epoch 0.
-    let (first_binding, first_token) = gov.issue_self(sub, None, now + 3600, now).unwrap();
+    let (first_binding, first_token) = gov.issue_self(sub, "corp", None, now + 3600, now).unwrap();
     assert!(gov.verify_token(&first_token, now, None).is_some());
 
     // Arm the failure: the NEXT `delete_key` call errors — that is `refresh_self`'s attempt to
@@ -3901,7 +3901,7 @@ fn refresh_self_rolls_back_the_new_binding_when_the_old_tombstone_fails() {
     // succeeds here — exercising the "rollback succeeded" arm, not the double-failure arm.
     store.arm();
     let err = gov
-        .refresh_self(sub, None, now + 3600, now)
+        .refresh_self(sub, "corp", None, now + 3600, now)
         .expect_err("a failed tombstone must surface as an Err, not a silent partial success");
     let msg = err.to_string();
     assert!(
@@ -3955,7 +3955,7 @@ fn self_serve_key_records_idp_subject_and_user_bound_mode() {
     let sub = "oidc:carol";
     let now = 1_700_000_000u64;
 
-    let (binding, token) = gov.issue_self(sub, None, now + 3600, now).unwrap();
+    let (binding, token) = gov.issue_self(sub, "corp", None, now + 3600, now).unwrap();
     assert_eq!(
         binding.idp_subject.as_deref(),
         Some(sub),
@@ -3970,7 +3970,9 @@ fn self_serve_key_records_idp_subject_and_user_bound_mode() {
     assert!(gov.verify_token(&token, now, None).is_some());
 
     // A refresh carries the same attribution onto the rotated binding.
-    let (rotated, _t) = gov.refresh_self(sub, None, now + 3600, now).unwrap();
+    let (rotated, _t) = gov
+        .refresh_self(sub, "corp", None, now + 3600, now)
+        .unwrap();
     assert_eq!(rotated.idp_subject.as_deref(), Some(sub));
     assert_eq!(rotated.binding_mode.as_deref(), Some("user-bound"));
 }
@@ -3984,8 +3986,10 @@ fn refresh_self_tombstones_the_old_binding_on_success() {
     let sub = "oidc:bob";
     let now = 1_700_000_000u64;
 
-    let (_first_binding, first_token) = gov.issue_self(sub, None, now + 3600, now).unwrap();
-    let (second_binding, second_token) = gov.refresh_self(sub, None, now + 3600, now).unwrap();
+    let (_first_binding, first_token) = gov.issue_self(sub, "corp", None, now + 3600, now).unwrap();
+    let (second_binding, second_token) = gov
+        .refresh_self(sub, "corp", None, now + 3600, now)
+        .unwrap();
 
     assert!(
         gov.verify_token(&first_token, now, None).is_none(),
@@ -4070,12 +4074,12 @@ fn refresh_self_evicts_old_binding_from_cache_when_post_delete_refresh_fails() {
     let sub = "oidc:carol";
     let now = 1_700_000_000u64;
 
-    let (_first_binding, first_token) = gov.issue_self(sub, None, now + 3600, now).unwrap();
+    let (_first_binding, first_token) = gov.issue_self(sub, "corp", None, now + 3600, now).unwrap();
     assert!(gov.verify_token(&first_token, now, None).is_some());
 
     // The tombstone succeeds (store-level), but the subsequent cache-reconcile `refresh()` fails.
     let err = gov
-        .refresh_self(sub, None, now + 3600, now)
+        .refresh_self(sub, "corp", None, now + 3600, now)
         .expect_err("a failed post-delete cache refresh must surface as an Err");
     let msg = err.to_string();
     assert!(
@@ -4106,6 +4110,7 @@ async fn mint_self_offloaded_issues_and_refreshes_through_the_blocking_pool() {
         gov.clone(),
         crate::governance::SelfMintOp::Issue,
         sub.to_string(),
+        "corp".to_string(),
         None,
         now + 3600,
         now,
@@ -4122,6 +4127,7 @@ async fn mint_self_offloaded_issues_and_refreshes_through_the_blocking_pool() {
         gov.clone(),
         crate::governance::SelfMintOp::Refresh,
         sub.to_string(),
+        "corp".to_string(),
         None,
         now + 7200,
         now,
@@ -4191,6 +4197,7 @@ async fn mint_self_offloaded_maps_a_join_panic_to_a_store_error() {
         gov,
         crate::governance::SelfMintOp::Issue,
         sub.to_string(),
+        "corp".to_string(),
         None,
         now + 3600,
         now,
@@ -4753,7 +4760,7 @@ fn an_admin_deletion_of_a_self_serve_key_survives_the_next_login() {
     let sub = "oidc:carol";
     let now = 1_700_000_000u64;
 
-    let (first, first_token) = gov.issue_self(sub, None, now + 3600, now).unwrap();
+    let (first, first_token) = gov.issue_self(sub, "corp", None, now + 3600, now).unwrap();
     assert!(gov.verify_token(&first_token, now, None).is_some());
 
     // The admin revokes it, exactly as `DELETE /api/v1/admin/keys/{id}` would.
@@ -4765,7 +4772,7 @@ fn an_admin_deletion_of_a_self_serve_key_survives_the_next_login() {
 
     // The user logs in again. This is the moment the old code resurrected the row.
     let (second, second_token) = gov
-        .issue_self(sub, None, now + 3600, now)
+        .issue_self(sub, "corp", None, now + 3600, now)
         .expect("a login after an admin deletion must still succeed, with a NEW binding");
 
     assert_ne!(
@@ -4791,6 +4798,53 @@ fn an_admin_deletion_of_a_self_serve_key_survives_the_next_login() {
     );
 }
 
+/// K3 #17 (rotate): an admin ROTATION of a self-serve key must survive that user's next refresh.
+///
+/// `rotate_key` writes a random hex generation, so `refresh_self` cannot read an epoch out of it and
+/// starts from epoch 1. A key at epoch 1 (one prior refresh) is exactly that id, so the probe used to
+/// land on the LIVE rotated row and write it back at generation `"1"`, the pre-rotate value: every
+/// token the rotation killed verified again, and the "new" key had the old id. The probe now treats
+/// any existing row as occupied, so the refresh mints a different id and tombstones the rotated one.
+#[test]
+fn an_admin_rotation_of_a_self_serve_key_survives_the_next_refresh() {
+    let gov = GovState::new_with_signer(
+        Arc::new(MemoryStore::new()),
+        None,
+        Some(self_serve_signer()),
+    )
+    .unwrap();
+    let sub = "oidc:alice";
+    let now = 1_700_000_000u64;
+
+    gov.issue_self(sub, "corp", None, now + 3600, now).unwrap();
+    let (x, t1) = gov
+        .refresh_self(sub, "corp", None, now + 3600, now)
+        .unwrap();
+    assert!(gov.verify_token(&t1, now, None).is_some());
+
+    // The admin rotates it, exactly as `POST /api/v1/admin/keys/{id}/rotate` would.
+    gov.rotate_key(&x.id, now + 3600)
+        .unwrap()
+        .expect("the live key rotates");
+    assert!(
+        gov.verify_token(&t1, now, None).is_none(),
+        "precondition: the rotation kills the pre-rotate token"
+    );
+
+    let (y, t2) = gov
+        .refresh_self(sub, "corp", None, now + 3600, now)
+        .expect("a refresh after an admin rotation still mints");
+    assert!(
+        gov.verify_token(&t1, now, None).is_none(),
+        "the pre-rotate token must NOT come back to life on the next refresh"
+    );
+    assert_ne!(
+        y.id, x.id,
+        "the refresh must mint a new id, never write over the rotated row"
+    );
+    assert!(gov.verify_token(&t2, now, None).is_some());
+}
+
 /// A rolled-back refresh must remain RETRYABLE.
 ///
 /// `refresh_self`'s rollback tombstones the new binding so the client keeps its working token and
@@ -4806,18 +4860,18 @@ fn a_rolled_back_refresh_can_still_be_retried() {
     let sub = "oidc:dave";
     let now = 1_700_000_000u64;
 
-    let (first, first_token) = gov.issue_self(sub, None, now + 3600, now).unwrap();
+    let (first, first_token) = gov.issue_self(sub, "corp", None, now + 3600, now).unwrap();
 
     // Arm one delete failure: the refresh writes the new binding, fails to tombstone the old, and
     // rolls the new one back (tombstoning it).
     store.arm();
-    gov.refresh_self(sub, None, now + 3600, now)
+    gov.refresh_self(sub, "corp", None, now + 3600, now)
         .expect_err("precondition: the armed failure makes this refresh fail");
 
     // The retry, against a healthy store. It must succeed, and must not hand back either the
     // original id or the rolled-back one.
     let (retried, retried_token) = gov
-        .refresh_self(sub, None, now + 3600, now)
+        .refresh_self(sub, "corp", None, now + 3600, now)
         .expect("a refresh that was rolled back must remain retryable");
 
     assert_ne!(
@@ -4869,9 +4923,9 @@ fn a_long_refresh_history_does_not_lock_a_subject_out_after_a_deletion() {
     let sub = "oidc:erin";
     let now = 1_700_000_000u64;
 
-    gov.issue_self(sub, None, now + 3600, now).unwrap();
+    gov.issue_self(sub, "corp", None, now + 3600, now).unwrap();
     for _ in 0..70 {
-        gov.refresh_self(sub, None, now + 3600, now)
+        gov.refresh_self(sub, "corp", None, now + 3600, now)
             .expect("each refresh rotates and tombstones its predecessor");
     }
     let live = self_binding_for(&gov, sub).expect("one live binding after the refresh run");
@@ -4882,7 +4936,7 @@ fn a_long_refresh_history_does_not_lock_a_subject_out_after_a_deletion() {
     // Both doors must still work. Before the fix each returned StoreError -> MintFailed -> HTTP 500,
     // for this subject, forever.
     let (issued, issued_token) = gov
-        .issue_self(sub, None, now + 3600, now)
+        .issue_self(sub, "corp", None, now + 3600, now)
         .expect("a login after a long refresh history plus a deletion must still mint");
     assert!(
         gov.verify_token(&issued_token, now, None).is_some(),
@@ -4894,7 +4948,7 @@ fn a_long_refresh_history_does_not_lock_a_subject_out_after_a_deletion() {
     );
 
     let (_refreshed, refreshed_token) = gov
-        .refresh_self(sub, None, now + 3600, now)
+        .refresh_self(sub, "corp", None, now + 3600, now)
         .expect("refresh must work too, not just issue");
     assert!(gov.verify_token(&refreshed_token, now, None).is_some());
 
@@ -4925,9 +4979,10 @@ fn an_admin_rotate_then_a_pools_change_does_not_fork_the_binding() {
     let sub = "oidc:zed";
     let now = 1_700_000_000u64;
 
-    gov.issue_self(sub, None, now + 3600, now).unwrap();
+    gov.issue_self(sub, "corp", None, now + 3600, now).unwrap();
     for _ in 0..3 {
-        gov.refresh_self(sub, None, now + 3600, now).unwrap();
+        gov.refresh_self(sub, "corp", None, now + 3600, now)
+            .unwrap();
     }
     let live = self_binding_for(&gov, sub).expect("one live binding");
 
@@ -4937,7 +4992,13 @@ fn an_admin_rotate_then_a_pools_change_does_not_fork_the_binding() {
 
     // The user logs in and their pools have changed since the binding was made.
     let (issued, token) = gov
-        .issue_self(sub, Some(vec!["poolA".to_string()]), now + 3600, now)
+        .issue_self(
+            sub,
+            "corp",
+            Some(vec!["poolA".to_string()]),
+            now + 3600,
+            now,
+        )
         .unwrap();
 
     // The SAME row is updated, not a second one written.
@@ -5102,7 +5163,7 @@ fn proof_manual_revoke_kills_a_minted_key() {
     let now = 1_700_000_000u64;
 
     // MINT + USE: a fresh personal token verifies — the dev can call through busbar.
-    let (binding, token) = gov.issue_self(sub, None, now + 3600, now).unwrap();
+    let (binding, token) = gov.issue_self(sub, "corp", None, now + 3600, now).unwrap();
     assert!(
         gov.verify_token(&token, now, None).is_some(),
         "precondition: the freshly minted token MUST verify before revoke, or the \
@@ -5136,7 +5197,9 @@ fn proof_manual_revoke_is_authoritative_across_the_fleet() {
     let now = 1_700_000_000u64;
 
     // Node A mints; the token verifies on A AND on a peer B over the same store + signing key.
-    let (binding, token) = node_a.issue_self(sub, None, now + 3600, now).unwrap();
+    let (binding, token) = node_a
+        .issue_self(sub, "corp", None, now + 3600, now)
+        .unwrap();
     let node_b = GovState::new_with_signer(store.clone(), None, Some(self_serve_signer())).unwrap();
     assert!(
         node_b.verify_token(&token, now, None).is_some(),
@@ -5170,7 +5233,9 @@ fn proof_one_session_mints_a_personal_key_plus_n_independent_app_tokens() {
     let now = 1_700_000_000u64;
 
     // ── 1 PERSONAL token: user-bound, records the IdP subject, no separate minter (self-minted). ──
-    let (personal, personal_tok) = gov.issue_self(admin, None, now + 3600, now).unwrap();
+    let (personal, personal_tok) = gov
+        .issue_self(admin, "corp", None, now + 3600, now)
+        .unwrap();
     assert_eq!(personal.binding_mode.as_deref(), Some("user-bound"));
     assert_eq!(personal.idp_subject.as_deref(), Some(admin));
     assert_eq!(personal.minted_by, None);
