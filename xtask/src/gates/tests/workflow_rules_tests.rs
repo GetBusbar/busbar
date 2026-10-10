@@ -184,6 +184,13 @@ fn r16(text: &str) -> Vec<String> {
         .collect()
 }
 
+fn r17(text: &str) -> Vec<String> {
+    vendor_runs_on(text)
+        .into_iter()
+        .map(|(_, _, l)| l)
+        .collect()
+}
+
 #[test]
 fn r16_accepts_the_variable_pin_with_its_shape_check_and_its_sha256() {
     assert_eq!(r16(ENGINE_VAR_JOB), Vec::<String>::new());
@@ -254,4 +261,53 @@ fn a_key_value_is_read_whole_from_a_flow_mapping() {
     assert_eq!(key_value("{ prefref: dev }", "ref"), None);
     assert_eq!(env_ref("${{ env.RELEASE_REF }}"), Some("RELEASE_REF"));
     assert_eq!(env_ref("${{ vars.ENGINE_REF }}"), None);
+}
+
+#[test]
+fn a_vendor_runs_on_label_is_refused_in_every_spelling() {
+    assert_eq!(
+        r17("jobs:\n  a:\n    runs-on: latchkey-large\n"),
+        ["latchkey-large"]
+    );
+    assert_eq!(
+        r17("jobs:\n  a:\n    runs-on: [self-hosted, linux]\n"),
+        ["self-hosted"]
+    );
+    assert_eq!(
+        r17("jobs:\n  a:\n    runs-on:\n      - Self-Hosted\n      - linux\n"),
+        ["Self-Hosted"]
+    );
+    assert_eq!(
+        r17("jobs:\n  a:\n    runs-on:\n      group: g\n      labels: [busbar-ec2-x]\n"),
+        ["busbar-ec2-x"]
+    );
+    assert_eq!(
+        r17("jobs:\n  a:\n    runs-on:\n      labels:\n        - busbar-canary\n"),
+        ["busbar-canary"]
+    );
+    assert_eq!(
+        r17("jobs:\n  a:\n    runs-on: ${{ x || 'latchkey-large' }}\n"),
+        ["latchkey-large"]
+    );
+    let found = vendor_runs_on("jobs:\n  a:\n    runs-on: latchkey-small\n");
+    assert_eq!(found, [(3, "a".to_string(), "latchkey-small".to_string())]);
+}
+
+#[test]
+fn gateway_expressions_and_github_hosted_images_are_allowed() {
+    for ok in [
+        "${{ fromJSON(vars.RUNNERS).large.label }}",
+        "${{ needs.preflight.outputs.runner }}",
+        "${{ matrix.os }}",
+        "${{ inputs.x }}",
+        "${{ (a == 'b') && needs.p.outputs.runner || 'ubuntu-latest' }}",
+        "ubuntu-latest",
+        "ubuntu-24.04",
+        "macos-latest",
+        "windows-2022",
+        "[ubuntu-latest, macos-latest]",
+    ] {
+        let text = format!("jobs:\n  a:\n    runs-on: {ok}\n");
+        assert!(r17(&text).is_empty(), "{ok} must be allowed");
+    }
 }
