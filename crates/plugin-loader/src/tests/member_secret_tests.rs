@@ -153,7 +153,7 @@ fn a_member_whose_env_secret_does_not_resolve_reaches_the_plugin_as_a_fixed_clas
     let settings: &'static [u8] = Box::leak(
         format!(
             r#"{{"ghost":{{"command":"/usr/bin/ghost","env":{{"TOKEN":{{"env":"{var}"}}}}}},
-                "live":{{"command":"/usr/bin/live","env":{{"PLAIN":"v"}}}}}}"#
+                "live":{{"command":"/usr/bin/live"}}}}"#
         )
         .into_bytes()
         .into_boxed_slice(),
