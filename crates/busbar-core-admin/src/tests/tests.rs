@@ -11323,16 +11323,11 @@ async fn limit_zero_does_not_produce_a_self_referential_cursor() {
 // quietly forked.
 
 /// THE EXPORT AXIS these tests resolve an `export:` block against — once, as the composition root
-/// installs it: the scrape sink (`module: prometheus`) LINKED through the one admission.
+/// installs it: the kernel's stand-in axis, whose scrape double answers `module: prometheus` as a
+/// linked first-party scrape sink (R-FIX3: this crate's tests name no plugin; the real scrape sink's
+/// proofs live with the composition root, which links it).
 fn linked_export_axis() {
-    static ONCE: std::sync::Once = std::sync::Once::new();
-    ONCE.call_once(|| {
-        busbar_kernel::test_support::export_axis::install_first_party_door(
-            busbar_export_prometheus::NAME,
-            busbar_export_prometheus::ALIAS,
-            busbar_export_prometheus::door::door,
-        );
-    });
+    busbar_kernel::test_support::export_axis::install_export_axis();
 }
 
 /// SECRET CONTAINMENT ON THE NAMED-MAP READS. The `settings:` bag is where an

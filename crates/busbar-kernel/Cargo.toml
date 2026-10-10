@@ -287,24 +287,12 @@ busbar-a2a = { path = "../busbar-a2a", features = ["test-support"] }
 # `#[path]` dual-compile of its source. `busbar-llm` normal-depends on `busbar-core`; a dev-dep the
 # other way is not a build cycle (lib built first, then dev-deps, then the test binary).
 busbar-llm = { path = "../busbar-llm", features = ["test-support"] }
-# The export axis this crate's config tests resolve `module: prometheus` against: the scrape sink,
-# LINKED into the test binary exactly as the composition root links it into the shipped one (the
-# kernel names no export module; its tests need one on the axis). Pulled from its own repo at the SAME
-# pinned rev the composition root links.
-busbar-export-prometheus = { workspace = true }
-# 1.5.5's recorder, as the REFERENCE the observation source is proven against byte for byte
-# (`tests/metrics_source_tests.rs`). A test edge only: the kernel ships no exposition renderer.
+# 1.5.5's recorder, as the REFERENCE the observation source is proven against
+# (`src/tests/metrics_source_tests.rs`). A test edge only: the kernel ships no exposition renderer.
+# (No plugin crate is a dev-dependency here, R-FIX3: the export and auth proofs this crate's tests
+# once drew from the real scrape sink and the real token-verifying module run on in-crate test
+# doubles here, and the real-plugin proofs live with the composition root, `crates/busbar/tests`.)
 metrics-exporter-prometheus = { workspace = true }
-# The REAL token-verifying auth module `auth/tests/plugin_chain_tests.rs` loads through the dropped-in
-# door (R-FIX2; the owner's FIXTURES ruling: real plugins are the proofs): GetBusbar/busbar-auth-oidc's cdylib
-# crate at the SAME pinned rev the composition root's tests use. Nothing links it; this edge is what
-# makes `cargo test -p busbar-kernel` build its cdylib (under `deps/`, hashed), which the tests sign
-# into a temp `plugins/` directory and drive with JWTs a local issuer signs.
-busbar-auth-oidc-plugin = { workspace = true }
-# ...and its LOGIC crate at the SAME rev, for the name its door's Statement states (the identity the
-# chain reports). The issuer those tokens come from is the loader's `test_issuer` (`test-support`),
-# reached through the loader's `https_conns` connection table: the module holds no socket and no TLS.
-busbar-auth-oidc = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
 reqwest = { workspace = true, features = ["json"] }
 axum = { workspace = true, features = ["http1"] }

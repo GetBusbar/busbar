@@ -1498,36 +1498,6 @@ reason = "ARCHITECT EXT-PILOT design (owner rulings 2026-09-25: one repo per plu
 # count, its verdict the one the architecture implies, and its drain.
 
 [[dep]]
-from    = "busbar-kernel"
-to      = "busbar-export-prometheus"
-half    = "test"
-count   = "1"
-verdict = "not-allowed"
-cite    = "`kernel -> export` is in neither ARCHITECTURE_ALLOWED nor ARCHITECTURE_TCB, so the verdict is the one the architecture implies; the edge is test-only. ARCHITECT ruling W4B-Q1 (2026-10-03; RUN.md:119 \"read pinned_exemplars, never skip\"): a plugin crate pulled at a pinned rev is a crate of the census, read from its checkout at crates/<package> (xtask/src/gates/kind_isolation/pinned.rs), so this edge, unmeasured while the census read only this tree, is measured."
-why     = "busbar-kernel names busbar-export-prometheus: declared dev in the test graph so the config tests resolve `module: prometheus` against a sink LINKED into the test binary exactly as the composition root links it into the shipped one; the kernel names no export module. 1 declaration(s) at this commit, absent from every release build. The count is TODAY'S MEASUREMENT, exact in both directions."
-drain   = "moves with the plugin-specific tests under BUSBAR-CI-PLUGIN-AGNOSTIC (owner 2026-10-03, \"busbar ci knows nothing of specific plugins\"): the config tests resolve the export axis through a contract-only row, and the dev-dependency is deleted."
-
-[[dep]]
-from    = "busbar-kernel"
-to      = "busbar-auth-oidc"
-half    = "test"
-count   = "1"
-verdict = "not-allowed"
-cite    = "BUSBAR-1.6.0.md #2 / R-FIX2 (owner FIXTURES ruling: real plugins are the proofs): `auth/tests/plugin_chain_tests.rs` drives the REAL token-verifying module through the dropped-in door with JWTs from the module's own test issuer. `kernel -> auth` is in neither ARCHITECTURE_ALLOWED nor ARCHITECTURE_TCB, so the verdict is the one the architecture implies; the edge is test-only. ARCHITECT ruling W4B-Q1 (2026-10-03; RUN.md:119 \"read pinned_exemplars, never skip\"): a plugin crate pulled at a pinned rev is a crate of the census, read from its checkout at crates/<package> (xtask/src/gates/kind_isolation/pinned.rs), so this edge, unmeasured while the census read only this tree, is measured."
-why     = "busbar-kernel names busbar-auth-oidc: declared dev in the test graph with its `testkit` feature (the module's own ES256 issuer and JWKS endpoint), beside the -plugin cdylib edge the dropped-in proof signs; 1 declaration(s) at this commit, absent from every release build. The count is TODAY'S MEASUREMENT, exact in both directions."
-drain   = "moves with the plugin-specific tests under BUSBAR-CI-PLUGIN-AGNOSTIC (owner 2026-10-03): the auth chain is proven against the published conformance suite in GetBusbar/busbar-auth-oidc, and the dev-dependency is deleted."
-
-[[dep]]
-from    = "busbar-core-admin"
-to      = "busbar-export-prometheus"
-half    = "test"
-count   = "1"
-verdict = "not-allowed"
-cite    = "A cleanliness crate's dependency is ONE-WAY onto the kernel (DECISIONS #5; BUSBAR-1.6.0.md:3780, R2/#37): `cleanliness -> export` is in neither ARCHITECTURE_ALLOWED nor ARCHITECTURE_TCB, so the verdict is the one the architecture implies; the edge is test-only. ARCHITECT ruling W4B-Q1 (2026-10-03; RUN.md:119 \"read pinned_exemplars, never skip\"): a plugin crate pulled at a pinned rev is a crate of the census, read from its checkout at crates/<package> (xtask/src/gates/kind_isolation/pinned.rs), so this edge, unmeasured while the census read only this tree, is measured."
-why     = "busbar-core-admin names busbar-export-prometheus: declared dev in the test graph so the named-map tests resolve `module: prometheus` against the scrape sink LINKED into the test binary, as the composition root links it into the shipped one. 1 declaration(s) at this commit, absent from every release build. The count is TODAY'S MEASUREMENT, exact in both directions."
-drain   = "moves with the plugin-specific tests under BUSBAR-CI-PLUGIN-AGNOSTIC (owner 2026-10-03): the named-map tests resolve the export axis through a contract-only row, and the dev-dependency is deleted."
-
-[[dep]]
 from    = "busbar"
 to      = "busbar-auth-oidc"
 half    = "test"

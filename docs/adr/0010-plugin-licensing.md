@@ -120,8 +120,8 @@ touch the wire ABI or the manifest signature format — those stay frozen.
   machinery they already use for every other credential.
 - The core carries no licensing/enforcement code and no new network dependency;
   it stays Apache-2.0 and phone-home-free.
-- The delivery path is proven end-to-end on a real plugin: busbar-kernel's
-  `auth/tests/plugin_chain_tests.rs` delivers a setting of the real OIDC module
+- The delivery path is proven end-to-end on a real plugin: the composition root's
+  `crates/busbar/tests/auth_plugin_chain.rs` delivers a setting of the real OIDC module
   (GetBusbar/busbar-auth-oidc) through a `SecretRef`, the engine resolves it before
   `open`, the module uses it itself, and an unresolvable reference fails the load
   closed. (The 1.5.x demo plugin that read a `licenseKey` this way was deleted in
