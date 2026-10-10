@@ -2519,7 +2519,10 @@ fn the_reconciliation_names_a_row_this_nodes_dual_write_lost() {
 /// reach it. The book does not move: `settled`/`reserved`/`overdraft` are all zero, and the row
 /// lives only in [`crate::root::durability::Durability::refused_rows`].
 #[cfg(feature = "root-admin")]
-fn post_a_refused_counts_row_on(units: &crate::root::kernel::ProductionUnits, bucket: &str) {
+fn post_a_refused_counts_row_on(
+    durability: &std::sync::Mutex<crate::root::durability::Durability>,
+    bucket: &str,
+) {
     use crate::root::durability::{PostingStamp, Settling, UnitCounts};
     use busbar_contract::caps::PrincipalId;
     use busbar_kernel_ledger::totals::{BucketId, BucketScope, CapDimension, TotalsKey};
@@ -2538,7 +2541,7 @@ fn post_a_refused_counts_row_on(units: &crate::root::kernel::ProductionUnits, bu
         classes,
     };
 
-    let mut durability = units.durability.lock().unwrap_or_else(|p| p.into_inner());
+    let mut durability = durability.lock().unwrap_or_else(|p| p.into_inner());
     let posted = durability
         .post_counts(
             &Settling {
@@ -2564,67 +2567,141 @@ fn post_a_refused_counts_row_on(units: &crate::root::kernel::ProductionUnits, bu
     );
 }
 
-/// **THE EXIT TEST for the admin read's blind spot over a refused counts row.**
+/// **A REFUSED COUNTS ROW REFUSES ITS OWN ROW, NEVER THE TOTALS READ** (#42; audit root-R1 #10).
 ///
 /// `15d23bb90` made the Durability ("second") book carry a refused unit's raw counts (#42/#71) and
 /// gave it a refusing read, [`crate::root::durability::Durability::settled_read`] — but
 /// `NodeLedger::rows_of` walked the book's settled balances directly, and a refused row moves no
-/// balance, so `/admin/ledger/totals` and `/admin/ledger/reconciliation` served a figure that
-/// silently omitted the row the unit actually posted. [`LedgerView::has_refused_rows`] closes it:
-/// both reads ask it first and refuse the whole read (`GovernanceError::Store`, served at 503 —
-/// `V::StoreError` maps to `ReasonCode::DurabilityUnavailable`, `admin_mount.rs`'s
-/// `503`/`"unavailable"`) rather than serve a table with a hole in it — a node whose book holds ANY
-/// refused row refuses on this endpoint entirely, the same `Store` path item 28's out-of-range
-/// figure refuses through.
+/// balance, so `/admin/ledger/totals` served a figure that silently omitted the row the unit
+/// actually posted. The first fix refused the WHOLE read (`Store`, 503) for any refused row, which
+/// hid every other row for the life of the journal: a refused row is rebuilt from the chain at every
+/// boot. [`LedgerView::refused_balances`] refuses per balance and window instead: the row a
+/// refused balance folds into is withheld from `rows` and named under `refused` (balance, window,
+/// lane, refusal), and every other row is answered, figure intact.
 ///
-/// The second half of the proof is the one item 28's own test states in its title: "never served
-/// pinned" cuts both ways. A CLEAN book — no refused row — must go on serving the exact bytes it
-/// served before this fix, which is asserted here by settling the SAME two fixture units on two
-/// independently built nodes and diffing the served bodies byte for byte.
+/// Balance A here (`KEPT`) holds BOTH a priced settlement and a refused counts row, so serving its
+/// row would be the priced remainder — the silent zero — and the row must be withheld. Balance B
+/// (`LOST`) holds only its priced settlement and must be served as it was. A clean book serves the
+/// same rows under an empty `refused`.
 #[cfg(feature = "root-admin")]
 #[test]
-fn a_refused_counts_row_fails_the_totals_and_reconciliation_reads_a_clean_book_is_untouched() {
-    // A clean book, built twice, must serve byte-identical figures — the fix touches no path a
-    // node with no refused row takes.
-    let clean_a = a_node_that_settled(None);
-    let node_a = AdminNode::new(crate::root::kernel::new_kernel(), clean_a);
-    let totals_a = node_a.answer(a_ledger_request("/api/v1/admin/ledger/totals"));
-    let recon_a = node_a.answer(a_ledger_request("/api/v1/admin/ledger/reconciliation"));
-    assert_eq!(totals_a.status, 200, "a clean book must still serve totals");
+fn a_refused_counts_row_withholds_its_row_and_totals_answers_every_other_row() {
+    let clean = AdminNode::new(crate::root::kernel::new_kernel(), a_node_that_settled(None));
+    let clean = clean.answer(a_ledger_request("/api/v1/admin/ledger/totals"));
+    assert_eq!(clean.status, 200, "a clean book must still serve totals");
+    let clean: serde_json::Value = serde_json::from_slice(&clean.body).expect("valid JSON");
+    assert_eq!(clean["rows"].as_array().map(Vec::len), Some(2));
+    assert_eq!(clean["refused"], serde_json::json!([]));
+
+    let units = a_node_that_settled(None);
+    post_a_refused_counts_row_on(&units.durability, KEPT.0);
+    let node = AdminNode::new(crate::root::kernel::new_kernel(), units);
+    let totals = node.answer(a_ledger_request("/api/v1/admin/ledger/totals"));
     assert_eq!(
-        recon_a.status, 200,
-        "a clean book must still serve reconciliation"
+        totals.status, 200,
+        "one refused counts row must not take the whole totals read down"
+    );
+    let totals: serde_json::Value = serde_json::from_slice(&totals.body).expect("valid JSON");
+
+    let rows = totals["rows"].as_array().expect("rows");
+    assert_eq!(rows.len(), 1, "only the unrefused row is priced: {totals}");
+    assert_eq!(rows[0]["bucket"], LOST.0);
+    assert_eq!(rows[0]["day"], A_DAY);
+    assert_eq!(rows[0]["priced_nanos"], LOST.1.to_string());
+    assert!(
+        rows.iter().all(|r| r["bucket"] != KEPT.0),
+        "the refused balance's row was served as its priced remainder: {totals}"
     );
 
-    let clean_b = a_node_that_settled(None);
-    let node_b = AdminNode::new(crate::root::kernel::new_kernel(), clean_b);
-    let totals_b = node_b.answer(a_ledger_request("/api/v1/admin/ledger/totals"));
-    let recon_b = node_b.answer(a_ledger_request("/api/v1/admin/ledger/reconciliation"));
+    let refused = totals["refused"].as_array().expect("refused");
     assert_eq!(
-        totals_a.body, totals_b.body,
-        "a clean book's totals figure must stay byte-identical"
+        refused.len(),
+        1,
+        "the refused balance is named once: {totals}"
     );
-    assert_eq!(
-        recon_a.body, recon_b.body,
-        "a clean book's reconciliation figure must stay byte-identical"
-    );
+    assert_eq!(refused[0]["bucket"], KEPT.0);
+    assert_eq!(refused[0]["day"], A_DAY);
+    assert_eq!(refused[0]["lane"], "gpt");
+    assert_eq!(refused[0]["refusal"], "ClassUnpriced(cache_read)");
+}
 
-    // The same node, PLUS one refused counts row: both reads must now refuse rather than silently
-    // omit it.
-    let refused_units = a_node_that_settled(None);
-    post_a_refused_counts_row_on(&refused_units, "vk_refused");
-    let refused_node = AdminNode::new(crate::root::kernel::new_kernel(), refused_units);
-    let totals = refused_node.answer(a_ledger_request("/api/v1/admin/ledger/totals"));
-    let recon = refused_node.answer(a_ledger_request("/api/v1/admin/ledger/reconciliation"));
+/// **AND THE RECONCILIATION MEASURES EVERY OTHER ROW** (#42; audit root-R1 #10): the refused
+/// balance's row is withheld from both sides of the identity and named under `refused`, `holds` is
+/// false (the identity was not measured over that row), and a real discrepancy on another row —
+/// the dual write that lost `LOST` — is still reported, by the amount it is out by.
+#[cfg(feature = "root-admin")]
+#[test]
+fn a_refused_counts_row_withholds_its_row_and_reconciliation_measures_every_other_row() {
+    let units = a_node_that_settled(Some(LOST.0));
+    post_a_refused_counts_row_on(&units.durability, KEPT.0);
+    let node = AdminNode::new(crate::root::kernel::new_kernel(), units);
+    let recon = node.answer(a_ledger_request("/api/v1/admin/ledger/reconciliation"));
     assert_eq!(
-        totals.status, 503,
-        "a refused counts row must fail /admin/ledger/totals, not be silently omitted from it"
+        recon.status, 200,
+        "one refused counts row must not take the whole reconciliation read down"
     );
-    assert_eq!(
-        recon.status, 503,
-        "a refused counts row must fail /admin/ledger/reconciliation, not be silently omitted \
-         from it"
+    let recon: serde_json::Value = serde_json::from_slice(&recon.body).expect("valid JSON");
+
+    assert_eq!(recon["holds"], false, "{recon}");
+    let out = recon["discrepancies"].as_array().expect("discrepancies");
+    assert_eq!(out.len(), 1, "exactly the lost row must be named: {recon}");
+    assert_eq!(out[0]["bucket"], LOST.0);
+    assert_eq!(out[0]["residual"]["amount"], (LOST.1 / 1_000).to_string());
+
+    let refused = recon["refused"].as_array().expect("refused");
+    assert_eq!(refused.len(), 1, "{recon}");
+    assert_eq!(refused[0]["bucket"], KEPT.0);
+    assert_eq!(refused[0]["day"], A_DAY);
+    assert_eq!(refused[0]["lane"], "gpt");
+    assert_eq!(refused[0]["refusal"], "ClassUnpriced(cache_read)");
+}
+
+/// **`GET /admin/verify` NAMES A REFUSED BALANCE AND EVERY OTHER FINDING** (BUSBAR-1.6.0.md §7:
+/// the integrity verifiers are wired into the verify surface; #42; audit root-R1 #10). A refused
+/// counts row is a finding — its balance, window, lane and refusal — and an independent finding
+/// beside it (here, what the boot reconciliation found) is still reported. It used to refuse the
+/// whole verb (`Store`), hiding every finding for the life of the journal.
+#[cfg(feature = "root-admin")]
+#[test]
+fn verify_names_a_refused_balance_and_every_other_finding() {
+    use crate::root::units_admin::{LegacyRowsRead, NodeLedger};
+    let node_book = crate::root::durability::node_book();
+    let legacy: std::sync::Arc<dyn LegacyRowsRead> = node_book.rows.clone();
+    let view = NodeLedger::new(std::sync::Arc::clone(&node_book.durability), legacy);
+    node_book
+        .durability
+        .lock()
+        .expect("unpoisoned")
+        .restart_findings
+        .push(crate::root::durability::JournalDisagreement::Unreadable(
+            "the journal does not verify: a forged record".to_string(),
+        ));
+    post_a_refused_counts_row_on(&node_book.durability, "vk_refused");
+
+    let answer = crate::root::units_admin::bound::verify_effect(&view)
+        .expect("a refused counts row must not take /admin/verify down");
+    let body: serde_json::Value = serde_json::from_slice(&answer.body).expect("valid JSON");
+    let findings: Vec<&str> = body["findings"]
+        .as_array()
+        .expect("findings")
+        .iter()
+        .filter_map(serde_json::Value::as_str)
+        .collect();
+    assert!(
+        findings
+            .iter()
+            .any(|f| f.starts_with("restart: ") && f.contains("a forged record")),
+        "the independent finding must still be reported: {body}"
     );
+    assert!(
+        findings.iter().any(|f| f.starts_with("refused counts: ")
+            && f.contains("vk_refused")
+            && f.contains(&A_DAY.to_string())
+            && f.contains("\"gpt\"")
+            && f.contains("ClassUnpriced(cache_read)")),
+        "the refused balance must be a named finding: {body}"
+    );
+    assert_eq!(body["ok"], false, "{body}");
 }
 
 /// The other two views are this node's too: the seal it made and the marker it sealed.
@@ -3457,8 +3534,9 @@ fn a_configured_name_cannot_break_out_of_the_document() {
             fee_count: 0,
         },
     );
-    let parsed: serde_json::Value = serde_json::from_str(&render_totals(&rows).expect("projects"))
-        .expect("a hostile name still renders JSON");
+    let parsed: serde_json::Value =
+        serde_json::from_str(&render_totals(&rows, &[]).expect("projects"))
+            .expect("a hostile name still renders JSON");
     assert_eq!(parsed["rows"][0]["bucket"], hostile);
     assert_eq!(parsed["rows"][0]["lane"], hostile);
     assert_eq!(parsed["rows"][0]["provider"], hostile);
