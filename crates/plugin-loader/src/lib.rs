@@ -36,6 +36,14 @@ pub mod conformance;
 /// THE ONE DISPATCHER of the memory ABI (`BUSBAR-1.6.0.md` THE DESIGN, §11): one loader path, one
 /// crossing, tickets, wakes, deadlines and the watchdog, generic over the kind.
 pub mod dispatch;
+/// THE ONE DURABLE-WRITE OWNER: the whole-file publish (temp, fsync, rename, fsync the holding
+/// directory) every durable file write in busbar goes through — the loader's own (fetched artifacts,
+/// the high-water marks, plugin log directories) and, through `busbar_kernel::durable`, the
+/// kernel's and the admin surface's. It lives here because the loader is the lowest host-only crate
+/// every writer links (Part 2 #33: the loader names `busbar-contract` alone, so it cannot reach a
+/// kernel crate for it). Host-only: no plugin image links this crate, so its temp-name counter is
+/// one per process.
+pub mod durable;
 pub mod export_axis;
 pub mod export_door;
 pub mod fetch;
@@ -43,9 +51,6 @@ mod ffi_thread;
 pub mod highwater;
 pub mod hook_door;
 mod host;
-/// THE ONE DURABLE-WRITE OWNER, named once for the whole loader: every file or directory the loader
-/// publishes (fetched artifacts, the high-water marks, plugin log directories) goes through it.
-pub(crate) use busbar_kernel_wal::durable;
 mod hostlog;
 /// NEVER SHIPPED: the framed connection-table stand-in with in-process far ends (`test-support`,
 /// and the published conformance suite's `far_ends`), for a build that cannot link the process's

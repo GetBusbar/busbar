@@ -2603,11 +2603,14 @@ pub fn rule_law0(
     let reg = &registry.law0;
     let mut ceilings: BTreeMap<(String, String), usize> = BTreeMap::new();
     let mut offenders: Vec<String> = Vec::new();
+    // THE ROW'S FIGURE: hits off the ledger, summed over every finding (see [`law0_off`]).
+    let mut off = 0usize;
     for r in reg {
         if ceilings
             .insert((r.krate.clone(), r.axis.clone()), r.count)
             .is_some()
         {
+            off += 1;
             offenders.push(format!(
                 "law0-duplicate\t{} / {}\ttwo `[[law0]]` rows for one crate and axis",
                 r.krate, r.axis
@@ -2619,6 +2622,7 @@ pub fn rule_law0(
     for key in &keys {
         let now = measured.get(key).copied().unwrap_or(0);
         let ceiling = ceilings.get(key).copied();
+        off += law0_off(now, ceiling);
         match ceiling {
             None if now > 0 => offenders.push(format!(
                 "law0-new\t{} \u{d7} {}\t{now} hit(s) in a NEUTRAL crate with no `[[law0]]` \
@@ -2660,12 +2664,31 @@ pub fn rule_law0(
         ROW_LAW0,
         "a neutral crate's Law 0 count is not its ceiling",
         format!(
-            "{} finding(s) over {} neutral crate(s): {}",
+            "{off} hit(s) off the [[law0]] ceilings, {} finding(s) over {} neutral crate(s): {}",
             offenders.len(),
             neutral.len(),
             offenders.join(" | ")
         ),
     )
+}
+
+/// How far one cell sits from its `[[law0]]` row, in HITS: above it (a rise), below it (slack the
+/// ledger owes back), or the whole count when no row exists (a new leak). The FAIL row's detail
+/// opens with the sum of these, and that leading number is the figure a base-relative verdict
+/// compares (busbar-release `baseline::figure`).
+///
+/// It was the FINDING COUNT, and a count of cells cannot see a cell grow: once a cell was off its
+/// row, every further hit in it left the figure where it was. The row was armed red on predev
+/// (dc83ff1553, #597: 18 findings), and four landings grew cells that were already off their rows
+/// (#560 `busbar × instance:secret` 35 -> 36, #663 `busbar × vendor` 89 -> 90, #672
+/// `busbar-plugin-loader × transport` 186 -> 190) with the figure flat at 18, while a branch that
+/// drained ONE at-ceiling cell read as 18 -> 19. Law 9 refuses every rise "from that moment"; a
+/// figure in hits is the one that can.
+fn law0_off(now: usize, ceiling: Option<usize>) -> usize {
+    match ceiling {
+        Some(c) => now.abs_diff(c),
+        None => now,
+    }
 }
 
 /// THE MATRIX ROW, AS THE GATE EMITS IT: a measured to-do list, not a gate (owner 2026-10-03).
@@ -4589,6 +4612,155 @@ pub fn selftest<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn neutral_kernel(name: &str) -> CrateInfo {
+        CrateInfo {
+            dir: format!("crates/{name}"),
+            manifest: format!("crates/{name}/Cargo.toml"),
+            name: name.to_string(),
+            kind: Some("kernel"),
+            family: Family::Neutral,
+            remainder: Vec::new(),
+            instance: None,
+            declared_keys: Vec::new(),
+            deps: Vec::new(),
+            dev_deps: Vec::new(),
+            ambiguous: Vec::new(),
+            pinned: None,
+        }
+    }
+
+    fn law0_reg(rows: &[(&str, &str, usize)]) -> super::super::KindRegistry {
+        let mut reg = super::super::KindRegistry::default();
+        for (krate, axis, count) in rows {
+            reg.law0.push(super::super::Law0Ceiling {
+                krate: (*krate).to_string(),
+                axis: (*axis).to_string(),
+                count: *count,
+                cite: "planted".to_string(),
+            });
+        }
+        reg
+    }
+
+    fn law0_counts_of(cells: &[(&str, &str, usize)]) -> Law0Counts {
+        cells
+            .iter()
+            .map(|(k, a, n)| (((*k).to_string(), (*a).to_string()), *n))
+            .collect()
+    }
+
+    /// The number a base-relative verdict reads off a FAIL row: the detail's leading count
+    /// (busbar-release `baseline::figure`; this detail carries no `(ceiling` marker).
+    fn figure_of(row: &Row) -> usize {
+        assert!(
+            !row.detail.contains("(ceiling"),
+            "a `(ceiling` marker would move the figure off the leading count: {}",
+            row.detail
+        );
+        row.detail
+            .split_whitespace()
+            .next()
+            .and_then(|t| t.parse().ok())
+            .unwrap_or_else(|| panic!("no leading figure in {}", row.detail))
+    }
+
+    /// THE LAW 0 FIGURE SEES A CELL GROW. RED with the figure as the finding count: a cell already
+    /// above its row that grows by one hit, and an at-ceiling cell drained to slack, both left the
+    /// count where a standing red put it (the four PRs that grew `busbar` and the loader with the
+    /// figure flat at 18; `busbar-kernel-wal × instance:secret` 1 -> 0 read as 18 -> 19 only
+    /// because it was a fresh cell). In hits, every move off the ledger raises the figure and
+    /// every move back lowers it.
+    #[test]
+    fn the_law0_figure_counts_hits_off_the_ledger_not_findings() {
+        let crates = vec![neutral_kernel("busbar-kernel")];
+        let reg = law0_reg(&[
+            ("busbar-kernel", "plane", 10),
+            ("busbar-kernel", "transport", 5),
+            ("busbar-kernel", "auth", 3),
+        ]);
+        let at =
+            |cells: &[(&str, &str, usize)]| rule_law0(&crates, &reg, Some(&law0_counts_of(cells)));
+
+        // The base: `plane` is 2 over its row, `transport` 1 under it, `auth` at it.
+        let base = at(&[
+            ("busbar-kernel", "plane", 12),
+            ("busbar-kernel", "transport", 4),
+            ("busbar-kernel", "auth", 3),
+        ]);
+        assert_eq!(base.status, crate::ledger::Status::Fail);
+        assert_eq!(figure_of(&base), 3, "{}", base.detail);
+
+        // A cell ALREADY over its row grows by one hit: same two findings, the figure rises.
+        let grown = at(&[
+            ("busbar-kernel", "plane", 13),
+            ("busbar-kernel", "transport", 4),
+            ("busbar-kernel", "auth", 3),
+        ]);
+        assert_eq!(grown.detail.matches("law0-").count(), 2, "{}", grown.detail);
+        assert!(
+            figure_of(&grown) > figure_of(&base),
+            "a rise inside a cell already over its row must raise the figure: {} -> {}",
+            figure_of(&base),
+            figure_of(&grown)
+        );
+
+        // A new leak with no row counts its whole measure.
+        let leaked = at(&[
+            ("busbar-kernel", "plane", 12),
+            ("busbar-kernel", "transport", 4),
+            ("busbar-kernel", "auth", 3),
+            ("busbar-kernel", "export", 2),
+        ]);
+        assert_eq!(
+            figure_of(&leaked),
+            figure_of(&base) + 2,
+            "{}",
+            leaked.detail
+        );
+
+        // A drain the ledger has not given back is slack: off the row, so the figure rises by the
+        // hits drained, and the row lowered to the measure takes them back out.
+        let drained = at(&[
+            ("busbar-kernel", "plane", 12),
+            ("busbar-kernel", "transport", 4),
+            ("busbar-kernel", "auth", 1),
+        ]);
+        assert_eq!(
+            figure_of(&drained),
+            figure_of(&base) + 2,
+            "{}",
+            drained.detail
+        );
+        let given_back = law0_reg(&[
+            ("busbar-kernel", "plane", 10),
+            ("busbar-kernel", "transport", 5),
+            ("busbar-kernel", "auth", 1),
+        ]);
+        let lowered = rule_law0(
+            &crates,
+            &given_back,
+            Some(&law0_counts_of(&[
+                ("busbar-kernel", "plane", 12),
+                ("busbar-kernel", "transport", 4),
+                ("busbar-kernel", "auth", 1),
+            ])),
+        );
+        assert_eq!(figure_of(&lowered), figure_of(&base), "{}", lowered.detail);
+
+        // Every cell at its row is the PASS row.
+        let clean = at(&[
+            ("busbar-kernel", "plane", 10),
+            ("busbar-kernel", "transport", 5),
+            ("busbar-kernel", "auth", 3),
+        ]);
+        assert_eq!(
+            clean.status,
+            crate::ledger::Status::Pass,
+            "{}",
+            clean.detail
+        );
+    }
 
     #[test]
     fn a_nested_name_scores_once() {
