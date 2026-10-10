@@ -37,7 +37,8 @@ use busbar_kernel::egress::duplex_ws::{self, DialCredential, DialError, DialTarg
 use busbar_kernel::net_guard::GuardPolicy;
 use busbar_kernel::plane::handle_engine::HandleEngineError;
 use busbar_kernel::plane_host::{
-    run_gauntlet_session, BreakerHost, DispatchScope, GauntletPlane, GauntletRequest, VerifyOutcome,
+    breaker, run_gauntlet_session, BreakerHost, DispatchScope, GauntletPlane, GauntletRequest,
+    VerifyOutcome,
 };
 use futures::{Sink, Stream};
 use std::sync::Arc;
@@ -114,7 +115,7 @@ fn dial_signal(e: &DialError) -> CanonicalSignal {
 /// [`GuardPolicy::default`]); the guard NEVER opens a socket to a target it did not pin.
 ///
 /// THE BREAKER RIDES BENEATH THE DIAL (the voice-client cell): before any socket, the `(pool, lane)`
-/// cell is probed through `host.breaker_admit` — an OPEN cell fast-fails in microseconds with the
+/// cell is probed through the kernel's `breaker::admit` — an OPEN cell fast-fails in microseconds with the
 /// cell's own `Retry-After` (never waiting out a dial timeout against a target already known down).
 /// Past admission the attempt is counted on `busbar_upstream_attempts_total`, and the dial's outcome
 /// is FOLDED back into the same cell: a clean open records a success (diluting the error window /
@@ -141,15 +142,12 @@ pub async fn dial_provider(
     // FAST-FAIL ADMISSION FIRST: probe the cell through the host seam. An OPEN cell refuses here with
     // its own cooldown as `Retry-After` — no socket, no dial timeout. The probe is scoped so any
     // recovery probe it wins is released the instant this block ends; the in-place record below is the
-    // authoritative fold, the documented `breaker_record_*` fallback disposition.
+    // authoritative fold, the documented `breaker::record_*` fallback disposition.
     {
         let scope = DispatchScope::new();
-        if host
-            .breaker_admit(&scope, pool.as_bytes(), lane as u32)
-            .is_err()
-        {
+        if breaker::admit(host, &scope, pool.as_bytes(), lane as u32).is_err() {
             return Err(DialProviderError::BreakerOpen {
-                retry_after_secs: host.breaker_retry_after_secs(pool, lane),
+                retry_after_secs: breaker::retry_after_secs(host, pool, lane),
             });
         }
     }
@@ -162,13 +160,13 @@ pub async fn dial_provider(
     // closed axis), expressed as a refusal rather than a panic so a mis-selection fails closed.
     let Some(UpstreamWireKind::Duplex) = Transport::WebSocket.upstream_wire() else {
         let e = DialError::Url(DialTarget::new(url));
-        host.breaker_record_signal(pool, lane, &dial_signal(&e));
+        breaker::record_signal(host, pool, lane, &dial_signal(&e));
         return Err(DialProviderError::Dial(e));
     };
 
     match duplex_ws::dial_with_credential(url, policy, credential).await {
         Ok((stream, sink)) => {
-            host.breaker_record_success(pool, lane);
+            breaker::record_success(host, pool, lane);
             // `sink_map_err(|_| ())`: the substrate dialer's own Sink `Error` associated type is an
             // opaque `impl Trait` detail with no `Send` bound of its own (it happens to be `Send` today,
             // but nothing in its signature promises that) — and `TelephonyProxy::run` (the one consumer)
@@ -179,7 +177,7 @@ pub async fn dial_provider(
             Ok((stream, futures::SinkExt::sink_map_err(sink, |_| ())))
         }
         Err(e) => {
-            host.breaker_record_signal(pool, lane, &dial_signal(&e));
+            breaker::record_signal(host, pool, lane, &dial_signal(&e));
             Err(DialProviderError::Dial(e))
         }
     }
