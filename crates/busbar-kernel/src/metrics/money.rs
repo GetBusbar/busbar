@@ -9,6 +9,15 @@
 //!   derived from the ledger x the CURRENT rate card (reprice-on-read).
 //! * `busbar_bucket_tokens` — per (bucket, model, tier), the counts every spend figure is priced from.
 //!
+//! # THE `model` LABEL IS STATED, NEVER AN INTERNAL KEY
+//!
+//! A money row is ledgered under its lane key. The plane serving the `pools` map keys its rows by
+//! the bare model name, which is the label 1.5.5 served. A door plane keys them
+//! `"<plane>\u{1f}<entry>"` (and its fee lane `"<plane>\u{1f}"`), an internal key no scrape may
+//! carry: the plane states the label each of its keys is scraped under, and this file renders that
+//! string as stated ([`model_label`]). A key nobody stated that is not a plain name (a control byte,
+//! or the plane separator) emits no series at all.
+//!
 //! # INTEGERS UP TO ONE NAMED BOUNDARY
 //!
 //! Every figure here is an integer — cents are `i64`, token counts `u64` — from the ledger read to
@@ -33,6 +42,7 @@ use crate::diagnostics::{
     METRICS_SCRAPE_GROUP_LEDGER_READ_FAILED, METRICS_SCRAPE_KEY_USAGE_READ_FAILED,
     METRICS_SCRAPE_LIST_KEYS_FAILED,
 };
+use crate::governance::PLANE_LANE_SEP;
 use crate::state::App;
 
 /// THE MONEY EGRESS BOUNDARY — the one function in this file that may name a float.
@@ -45,11 +55,27 @@ pub(super) fn set_gauge(gauge: metrics::Gauge, value: impl Into<i128>) {
     gauge.set(exact as f64);
 }
 
+/// THE `model` LABEL a money row's ledger lane `key` is scraped under: the label a door plane stated
+/// for it (`stated`, [`crate::metrics::door_cells::DoorCells::model_labels`]), else the key itself
+/// when it is a plain name (1.5.5's bare model name). `None` — no series — for an unstated key that
+/// carries a control byte or the plane separator, and for a stated label that carries one: an
+/// internal key never reaches the exposition.
+pub(super) fn model_label<'k>(
+    stated: &'k std::collections::HashMap<String, String>,
+    key: &'k str,
+) -> Option<&'k str> {
+    let label = stated.get(key).map_or(key, String::as_str);
+    let internal = label.bytes().any(|b| b < 0x20) || label.contains(PLANE_LANE_SEP);
+    (!internal).then_some(label)
+}
+
 /// Refresh every money gauge for this scrape. No-op when governance is disabled. `now` is the
 /// scrape's single clock read, shared with the lane gauges.
 pub(super) fn refresh_money_gauges(app: &App, now: u64) {
     // ── Governance: per-key spend, budget-remaining, tokens ────────────────────────────────────
     if let Some(gov) = &app.governance {
+        // The `model` label every door plane stated for its ledger lane keys, read once.
+        let stated = app.door_cells.model_labels();
         // `all_keys()` lists every VirtualKey from the SQLite store; this is a low-frequency scrape
         // path. On error we skip only the PER-KEY gauge refresh below (by treating the key list as
         // empty) rather than returning a stale/wrong per-key value. This must NOT `return` out of
@@ -142,9 +168,12 @@ pub(super) fn refresh_money_gauges(app: &App, now: u64) {
             // Per-(bucket, model, tier) token gauges from the key bucket's ledger (the raw
             // material any external per-model cost dashboard multiplies by its own catalog). The
             // key's attribution bucket accrues in the all-time window.
-            for (model, tokens) in
+            for (lane, tokens) in
                 gov.bucket_model_tokens(&app.cost, &key.id, crate::governance::WINDOW_TOTAL, now)
             {
+                let Some(model) = model_label(&stated, &lane) else {
+                    continue;
+                };
                 let tier_v = |u: &str| tokens.get(u).copied().unwrap_or(0);
                 for (tier, v) in [
                     ("input", tier_v(busbar_contract::records::UNIT_INPUT)),
@@ -163,7 +192,7 @@ pub(super) fn refresh_money_gauges(app: &App, now: u64) {
                     for (k, val) in &key.labels {
                         labels.push(metrics::Label::new(k.clone(), val.clone()));
                     }
-                    labels.push(metrics::Label::new("model", model.clone()));
+                    labels.push(metrics::Label::new("model", model.to_string()));
                     labels.push(metrics::Label::new("tier", tier));
                     set_gauge(metrics::gauge!(BUCKET_TOKENS, labels), v);
                 }
@@ -215,9 +244,12 @@ pub(super) fn refresh_money_gauges(app: &App, now: u64) {
                         remaining,
                     );
                 }
-                for (model, tokens) in
+                for (lane, tokens) in
                     gov.bucket_model_tokens(&app.cost, &bucket.bucket_id, bucket.window, now)
                 {
+                    let Some(model) = model_label(&stated, &lane) else {
+                        continue;
+                    };
                     let tier_v = |u: &str| tokens.get(u).copied().unwrap_or(0);
                     for (tier, v) in [
                         ("input", tier_v(busbar_contract::records::UNIT_INPUT)),
@@ -234,7 +266,7 @@ pub(super) fn refresh_money_gauges(app: &App, now: u64) {
                         set_gauge(
                             metrics::gauge!(
                                 BUCKET_TOKENS,
-                                dims(&[("model", model.clone()), ("tier", tier.to_string())])
+                                dims(&[("model", model.to_string()), ("tier", tier.to_string())])
                             ),
                             v,
                         );
@@ -244,3 +276,7 @@ pub(super) fn refresh_money_gauges(app: &App, now: u64) {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/money_label_tests.rs"]
+mod tests;

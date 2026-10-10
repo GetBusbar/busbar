@@ -23,6 +23,7 @@ fn tripped(pool: &str, stated: &str) -> DoorBreaker {
         unit,
         pools: HashMap::from([(pool.to_string(), stated.to_string())]),
         lanes: HashMap::from([(d(7), "a".to_string()), (d(9), "b".to_string())]),
+        models: HashMap::new(),
     }
 }
 
@@ -59,6 +60,7 @@ fn a_spent_destination_reads_open_for_good() {
             unit,
             pools: HashMap::from([("solo".to_string(), "sec/solo".to_string())]),
             lanes: HashMap::from([(d(3), "solo".to_string())]),
+            models: HashMap::new(),
         },
     );
     assert_eq!(
@@ -84,6 +86,7 @@ fn a_newer_generation_replaces_the_older() {
             unit: fresh,
             pools: HashMap::from([("key-c".to_string(), "sec/c".to_string())]),
             lanes: HashMap::from([(d(7), "a".to_string())]),
+            models: HashMap::new(),
         },
     );
     assert_eq!(
@@ -110,6 +113,7 @@ fn a_door_planes_tripped_cell_is_on_the_scrape() {
             unit,
             pools: HashMap::from([("k\u{1f}scrape".to_string(), "sec-d/scrape".to_string())]),
             lanes: HashMap::from([(d(7), "ok-m".to_string()), (d(9), "down-m".to_string())]),
+            models: HashMap::new(),
         },
     );
     crate::metrics::refresh_scrape_gauges(&app);

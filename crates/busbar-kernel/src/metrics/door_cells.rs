@@ -15,8 +15,14 @@
 //! when the egress is sealed; this module renders those strings as they were stated and never builds
 //! one.
 //!
+//! THE MONEY GAUGE'S `model` LABEL IS STATED THE SAME WAY. A door plane's money rows are ledgered
+//! under its internal lane keys (`"<plane>\u{1f}<entry>"`, and its fee lane `"<plane>\u{1f}"`); the
+//! egress carries, beside its breaker labels, the `model` label each of those keys is scraped under
+//! ([`DoorBreaker::models`]). Those are kept across generations ([`DoorCells::model_labels`]): the
+//! ledger keeps a key's history after an apply retires the entry, so its label stays known.
+//!
 //! A door plane whose breaker is the kernel's own lane store (the plane serving the `pools` map)
-//! publishes no unit: its cells are scraped from the store.
+//! publishes no unit: its cells are scraped from the store, and its money rows are keyed bare.
 //!
 //! The set is carried across config applies with the `Arc` the `App` holds, and a plane's newer
 //! generation replaces its older one, so a retired generation's cells are never scraped.
@@ -42,12 +48,17 @@ pub struct DoorBreaker {
     pub pools: HashMap<String, String>,
     /// Member → the stated `lane` label.
     pub lanes: HashMap<DestinationId, String>,
+    /// Money ledger lane key → the stated `model` label its `busbar_bucket_tokens` series carry.
+    pub models: HashMap<String, String>,
 }
 
-/// Every served door plane's breaker cells, by plane.
+/// Every served door plane's breaker cells, by plane, and the `model` label every door plane has
+/// stated for a money ledger lane key.
 #[derive(Default)]
 pub struct DoorCells {
     planes: RwLock<BTreeMap<String, DoorBreaker>>,
+    /// Sticky: a newer generation adds or restates labels and never withdraws one.
+    models: RwLock<HashMap<String, String>>,
 }
 
 impl DoorCells {
@@ -60,25 +71,39 @@ impl DoorCells {
     /// Publish `plane`'s current generation: the breaker its egress walk trips, with its stated
     /// labels. Replaces the generation published before it. An egress whose breaker is the kernel's
     /// own lane store (no unit of its own) withdraws the plane.
+    /// The `model` labels the generation states are kept past it ([`Self::model_labels`]).
     pub fn publish(&self, plane: &str, egress: &Egress) {
-        let mut planes = self.planes.write().unwrap_or_else(|e| e.into_inner());
         match &egress.cells {
-            Some(breaker) => {
-                planes.insert(plane.to_string(), breaker.clone());
-            }
+            Some(breaker) => self.publish_breaker(plane, breaker.clone()),
             None => {
-                planes.remove(plane);
+                self.planes
+                    .write()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .remove(plane);
             }
         }
     }
 
     /// Publish `plane`'s breaker directly: what [`Self::publish`] reads off an egress.
-    #[cfg(test)]
     pub(crate) fn publish_breaker(&self, plane: &str, breaker: DoorBreaker) {
+        self.models
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .extend(breaker.models.iter().map(|(k, v)| (k.clone(), v.clone())));
         self.planes
             .write()
             .unwrap_or_else(|e| e.into_inner())
             .insert(plane.to_string(), breaker);
+    }
+
+    /// READ-ONLY: the `model` label every door plane has stated for a money ledger lane key, as
+    /// stated, including a retired generation's (its ledger history is still scraped).
+    #[must_use]
+    pub fn model_labels(&self) -> HashMap<String, String> {
+        self.models
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     /// READ-ONLY: every cell the published units have materialized, with its own state and

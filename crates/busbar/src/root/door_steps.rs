@@ -1241,6 +1241,7 @@ pub fn compose_egress(
         unit: breaker.unit(),
         pools: pool_labels.clone(),
         lanes: names.iter().cloned().collect(),
+        models: door_money_labels(facts, pools.entries()),
     });
     Ok(busbar_kernel::plane_driver::Egress {
         caller,
@@ -1284,6 +1285,36 @@ pub fn door_pool_labels<'e>(
                 .into_iter()
                 .map(|entry| (plane_lane(&facts.plane, entry), stated(entry))),
         )
+        .collect()
+}
+
+/// THE `model` LABEL EACH OF A DOOR PLANE'S MONEY LEDGER LANE KEYS IS SCRAPED UNDER, `(key, label)`
+/// (`busbar_bucket_tokens`): an entry's key (`plane_lane`) is labelled `"<scope>/<entry>"`, and the
+/// plane's fee lane (`busbar_kernel_ledger::cost::plane_fee_lane`, no entry) its scope alone. The
+/// plane serving the `pools` map keys its rows by the bare model name, 1.5.5's own label, and
+/// states nothing; a plane with no stated scope states no fee lane label (its rows are then not
+/// scraped rather than scraped under its internal key).
+pub fn door_money_labels<'e>(
+    facts: &DoorFacts,
+    entries: impl IntoIterator<Item = &'e String>,
+) -> HashMap<String, String> {
+    let scope = facts.metric_scope.as_str();
+    if facts.plane.is_empty() {
+        return HashMap::new();
+    }
+    let stated = |entry: &str| match scope {
+        "" => entry.to_string(),
+        scope => format!("{scope}/{entry}"),
+    };
+    entries
+        .into_iter()
+        .map(|entry| (plane_lane(&facts.plane, entry), stated(entry)))
+        .chain((!scope.is_empty()).then(|| {
+            (
+                busbar_kernel_ledger::cost::plane_fee_lane(&facts.plane),
+                scope.to_string(),
+            )
+        }))
         .collect()
 }
 
