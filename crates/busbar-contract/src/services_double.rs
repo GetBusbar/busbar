@@ -206,7 +206,14 @@ pub trait ServicesDouble: Send + Sync {
     }
 
     /// `work.settle`. Unserved: REFUSED.
-    fn work_settle(&self, _caller: &Caller, _handle: u64, _record: &[u8], _later: Later) -> Ran {
+    fn work_settle(
+        &self,
+        _caller: &Caller,
+        _unit: Option<u64>,
+        _handle: u64,
+        _record: &[u8],
+        _later: Later,
+    ) -> Ran {
         refused()
     }
 
@@ -387,8 +394,15 @@ impl<T: ServicesDouble> HostServices for T {
         ServicesDouble::work_find(self, caller, unit, reference, later)
     }
 
-    fn work_settle(&self, caller: &Caller, handle: u64, record: &[u8], later: Later) -> Ran {
-        ServicesDouble::work_settle(self, caller, handle, record, later)
+    fn work_settle(
+        &self,
+        caller: &Caller,
+        unit: Option<u64>,
+        handle: u64,
+        record: &[u8],
+        later: Later,
+    ) -> Ran {
+        ServicesDouble::work_settle(self, caller, unit, handle, record, later)
     }
 
     fn work_resume(&self, caller: &Caller, unit: Option<u64>, handle: u64, later: Later) -> Ran {

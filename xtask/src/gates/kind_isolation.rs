@@ -7187,6 +7187,7 @@ impl Gate for KindIsolationGate {
             ROW_TRUTHS.to_string(),
             ROW_MATRIX.to_string(),
             matrix::ROW_LAW0.to_string(),
+            matrix::ROW_LAW0_BASE.to_string(),
         ];
         if self.ship {
             owed.push(ROW_DRAIN.to_string());
