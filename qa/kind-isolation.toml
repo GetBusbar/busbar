@@ -1281,6 +1281,41 @@ cite    = "BUSBAR-1.6.0.md THE DESIGN, §8 (BUSBAR-1.6.0.md:1123-1126): \"Exactl
 why     = "busbar-core-admin names busbar-kernel: declared dev in the test graph (features test-support, plane-mcp, plane-a2a), 1 declaration(s) at this commit, beside the shipped edge. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
 drain   = "none: the architecture grants cleanliness -> kernel. What this row holds is the NUMBER."
 
+# THE ADMIN SURFACE'S TEST EDGES WITH THE RETIRING ENGINES. All three are dev-dependencies the
+# merge-base already declared and no row recorded (the `kind-isolation:test-deps` row's three
+# `unlisted-dep-edge` findings on predev d7929b661d); each is written down here with its count, its
+# verdict the one the architecture implies, and its drain. None is introduced here.
+
+[[dep]]
+from    = "busbar-core-admin"
+to      = "busbar-a2a"
+half    = "test"
+count   = "1"
+verdict = "not-allowed"
+cite    = "A cleanliness crate's dependency is ONE-WAY onto the kernel (DECISIONS #5; BUSBAR-1.6.0.md:3780, R2/#37): `cleanliness -> legacy` is in neither ARCHITECTURE_ALLOWED nor ARCHITECTURE_TCB, so the verdict is the one the architecture implies; the edge is test-only and pre-existing at predev d7929b661d."
+why     = "busbar-core-admin names busbar-a2a: declared dev in the test graph (features test-support) so the moved cross-plane drift test drives the A2A plane's trust-verb error surface through its testkit. 1 declaration(s) at this commit, absent from every release build. The count is TODAY'S MEASUREMENT, exact in both directions."
+drain   = "dies with the retiring A2A engine (the legacy drain, `[[transitional]]` busbar-a2a -> busbar-core-admin): the drift test drives the a2a plane crate's surface, and the dev-dependency is deleted."
+
+[[dep]]
+from    = "busbar-core-admin"
+to      = "busbar-llm"
+half    = "test"
+count   = "1"
+verdict = "not-allowed"
+cite    = "A cleanliness crate's dependency is ONE-WAY onto the kernel (DECISIONS #5; BUSBAR-1.6.0.md:3780, R2/#37): `cleanliness -> legacy` is in neither ARCHITECTURE_ALLOWED nor ARCHITECTURE_TCB, so the verdict is the one the architecture implies; the edge is test-only and pre-existing at predev d7929b661d."
+why     = "busbar-core-admin names busbar-llm: declared dev in the test graph (features test-support) so the moved cross-plane drift test registers the plane decls and the self-enveloping admin-verb backing through its testkit. 1 declaration(s) at this commit, absent from every release build. The count is TODAY'S MEASUREMENT, exact in both directions."
+drain   = "dies with the retiring LLM engine: the drift test drives the llm plane crate's surface, and the dev-dependency is deleted."
+
+[[dep]]
+from    = "busbar-a2a"
+to      = "busbar-core-admin"
+half    = "test"
+count   = "1"
+verdict = "not-allowed"
+cite    = "`legacy -> cleanliness` is in neither ARCHITECTURE_ALLOWED nor ARCHITECTURE_TCB, so the verdict is the one the architecture implies; the edge is test-only and pre-existing at predev d7929b661d, and the drain it belongs to is the `[[transitional]]` row busbar-a2a -> busbar-core-admin (legacy drain: the retiring A2A engine's tests drive the admin surface that drained into the cleanliness tier)."
+why     = "busbar-a2a names busbar-core-admin: declared dev in the test graph so the `adminverbs_tests` battery installs the admin seam for this crate's own test binary; a dev-dependency keeps every non-test build one-directional. 1 declaration(s) at this commit, absent from every release build. The count is TODAY'S MEASUREMENT, exact in both directions."
+drain   = "dies with the retiring A2A engine (the legacy drain): the dev-dependency is deleted with busbar-a2a."
+
 [[dep]]
 from    = "busbar-plugin-loader"
 to      = "busbar-contract"
@@ -1774,8 +1809,8 @@ cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain 
 [[law0]]
 crate = "busbar-kernel"
 axis  = "plane"
-count = "1168"
-cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; LOWERED 1193 -> 1175, predev 9c0a394771's measure: the drain landed without giving its row back (Law 9: the ceiling ratchets down); LOWERED 1175 -> 1168, GetBusbar/busbar#570's measure (Law 9: the ceiling ratchets down to today's number)"
+count = "1173"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; LOWERED 1193 -> 1175, predev 9c0a394771's measure: the drain landed without giving its row back (Law 9: the ceiling ratchets down); LOWERED 1175 -> 1173, the merge-base d7929b661d's measure, which GetBusbar/busbar#570 holds (its scrape double spells no plane alias) (Law 9: the ceiling ratchets down to today's number)"
 
 [[law0]]
 crate = "busbar-kernel"

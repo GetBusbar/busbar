@@ -166,16 +166,17 @@ impl busbar_contract::export_calls::ExportAxis for StandIn {
     }
 }
 
-/// THE FROZEN SCRAPE MODULE WORD: the `module:` the root legacy table's `export_module_streams` row
-/// maps onto the `metrics` stream (1.5.5's spelling of the scrape sink, which `--migrate-config`
-/// writes). The double answers to it; the kernel spells no export module.
+/// THE FROZEN SCRAPE MODULE WORD: the `module:` backing the 1.5.x type key whose default instance is
+/// named for the `metrics` stream (the root legacy table's `export_type_keys` row, read through the
+/// migrator's own `config::migrate_export::export_type_keys`: 1.5.5's spelling of the scrape
+/// sink, which `--migrate-config` writes). The double answers to it; the kernel spells no export
+/// module.
 #[must_use]
 pub fn scrape_module() -> &'static str {
-    crate::config::legacy::text("export_module_streams")
-        .split('|')
-        .filter_map(|pair| pair.trim().split_once(':'))
-        .find(|(_, stream)| *stream == ExportStream::Metrics.as_token())
-        .map_or("", |(module, _)| module)
+    crate::config::migrate_export::export_type_keys()
+        .into_iter()
+        .find(|(_, instance, _)| *instance == ExportStream::Metrics.as_token())
+        .map_or("", |(_, _, module)| module)
 }
 
 /// The scrape double, when `module` is the word it answers to and no row of the installed registry
@@ -209,13 +210,13 @@ pub const SCRAPE_DOUBLE_CONTENT_TYPE: &str = "text/plain; scrape-double=metrics"
 /// The content type the double answers `/metrics/hooks` with.
 pub const SCRAPE_DOUBLE_HOOKS_CONTENT_TYPE: &str = "text/plain; scrape-double=hooks";
 
-/// The streams the double carries: `metrics`, alone.
-const SCRAPE_DOUBLE_STREAMS: &[u8] = &[ExportStream::Metrics as u8];
+/// The stream set the double carries: `metrics`, alone.
+const SCRAPE_DOUBLE_STREAM_SET: &[u8] = &[ExportStream::Metrics as u8];
 
 impl ScrapeDouble {
     /// What the axis's `probe` states for the double: the `metrics` stream, and no refusal.
     fn probed() -> busbar_contract::export_calls::Probed {
-        (Some(SCRAPE_DOUBLE_STREAMS.to_vec()), Vec::new())
+        (Some(SCRAPE_DOUBLE_STREAM_SET.to_vec()), Vec::new())
     }
 
     /// The double's own LIMITS check across `instances` (configuration order): one line per
@@ -239,7 +240,7 @@ impl ScrapeDouble {
 
 impl busbar_contract::export_calls::ExportCalls for ScrapeDouble {
     fn streams(&self) -> &[u8] {
-        SCRAPE_DOUBLE_STREAMS
+        SCRAPE_DOUBLE_STREAM_SET
     }
     fn routes(&self) -> &[busbar_contract::abi::mechanism::route::Route] {
         lines_routes()
