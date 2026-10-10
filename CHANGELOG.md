@@ -622,6 +622,8 @@ installed, and a `plugins.fetch` that downloads by asset name must use the new p
 already published keep the names they were published with and keep loading. `busbar --migrate-config`
 now names the Valkey store's manifest as `busbar-store-valkey`.
 
+**A plugin Busbar links also answers to its canonical repo name** (`store.module: busbar-store-memory`, `module: busbar-auth-admin-tokens`), exactly as it answers to its short name.
+
 **The Headroom hook plugin is no longer a first-party Busbar plugin** (owner ruling, 2026-09-30).
 Busbar no longer lists, builds, tests, bundles or release-notifies it; its repository
 (`GetBusbar/busbar-hook-headroom`) stays where it is. A tarball you already installed is an ordinary
