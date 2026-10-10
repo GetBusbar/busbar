@@ -724,8 +724,6 @@ dependencies = [
  "busbar-kernel-wal",
  "busbar-llm",
  "busbar-plugin-loader",
- "busbar-secret-env",
- "busbar-secret-file",
  "busbar-store-memory",
  "bytes",
  "crc32fast",
