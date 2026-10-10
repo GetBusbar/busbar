@@ -363,6 +363,40 @@ impl EgressPolicy {
 }
 
 impl Declares {
+    /// THE ONE READER OF A DECLARES DOCUMENT (a plugin's `declares.json`; ARCHITECT ruling (b),
+    /// 2026-10-07): pack's `--declares-file`, a linked export row's `DECLARES` and a linked plane
+    /// door's `linked-declares` row all read through here, and nothing else deserializes declares
+    /// bytes into [`Declares`] (`declares_reader_tests` scans the tree for one).
+    ///
+    /// A networked plugin's file states `needs` (the transport schemes its Statement's needs name)
+    /// for the conformance suite (`the_declared_needs_are_the_statements`) and the fleet render (its
+    /// conformance host). The needs belong to the Statement, so the section never carries them:
+    /// `needs` is checked to be a list of scheme names and removed, and the rest is read with every
+    /// other unknown key still refused. Which schemes it names is not this reader's to judge: core
+    /// names no transport (Law 1), the suite holds the list to the Statement's, and boot resolves a
+    /// Statement's need against the claims the linked and dropped-in transports make. A SIGNED
+    /// manifest's `declares` is not a declares document: it is read with the manifest and refuses
+    /// `needs`.
+    ///
+    /// # Errors
+    /// The bytes are not JSON, `needs` is not a list of non-empty strings, or the rest is not a
+    /// `declares` section (an unknown key, a malformed declaration).
+    pub fn from_declares_json(bytes: &[u8]) -> Result<Declares, String> {
+        let mut doc: serde_json::Value =
+            serde_json::from_slice(bytes).map_err(|e| format!("not a `declares` section: {e}"))?;
+        if let Some(needs) = doc.as_object_mut().and_then(|m| m.remove("needs")) {
+            let list = needs
+                .as_array()
+                .ok_or_else(|| format!("`needs` is not a list of transport schemes: {needs}"))?;
+            for n in list {
+                if !n.as_str().is_some_and(|s| !s.is_empty()) {
+                    return Err(format!("`needs`: {n} is not a transport scheme"));
+                }
+            }
+        }
+        serde_json::from_value(doc).map_err(|e| format!("not a `declares` section: {e}"))
+    }
+
     /// Nothing declared — the section is left off the wire (and out of the signed bytes).
     pub fn is_empty(&self) -> bool {
         self.metrics.is_empty()
@@ -1197,3 +1231,7 @@ pub fn evaluate(
 #[cfg(test)]
 #[path = "tests/sign_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tests/declares_reader_tests.rs"]
+mod declares_reader_tests;
