@@ -113,7 +113,7 @@ impl LinkedRow {
 ///
 /// The refusal the door or its Statement earns.
 pub fn rendering_of(door_fn: DoorFn) -> Result<Vec<u8>, LoadError> {
-    let (door, _) = read_door(door_fn(), None)?;
+    let (door, _) = read_door(enter_door(door_fn), None)?;
     let st = statement(&door)?;
     // SAFETY: `statement` ran `check_statement`: every list is its stated count of `'static`
     // entries.
@@ -130,7 +130,22 @@ pub fn rendering_of(door_fn: DoorFn) -> Result<Vec<u8>, LoadError> {
 ///
 /// The refusal the door's head earns.
 pub(crate) fn kind_of_door(door_fn: DoorFn) -> Result<KindCode, LoadError> {
-    read_door(door_fn(), None).map(|(_, kind)| kind)
+    read_door(enter_door(door_fn), None).map(|(_, kind)| kind)
+}
+
+/// THE ENTRY: `door_fn` called on a permanent FFI worker ([`crate::ffi_thread`]), for every kind and
+/// both origins. The door function is plugin code like any slot, so it runs where every other
+/// per-load crossing runs; a call already on a worker stays there. A door function that panicked
+/// answers NULL ([`LoadError::NullDoor`]).
+pub(crate) fn enter_door(door_fn: DoorFn) -> *const Door {
+    let call = || {
+        crate::ffi_thread::debug_assert_permanent("the door function");
+        door_fn()
+    };
+    if crate::ffi_thread::on_permanent_worker() {
+        return call();
+    }
+    crate::ffi_thread::on_plugin_thread(call).unwrap_or(std::ptr::null())
 }
 
 /// THE PACK-TIME RENDERING: `path`'s door, if the library exports one, rendered
@@ -580,7 +595,7 @@ fn admitted<K: Kind>(door: DoorFn, stated: &[u8]) -> Result<Validated, LoadError
 
 /// The door checks, in the order the mechanism states them. Shared by both origins.
 pub(crate) fn validate<K: Kind>(door_fn: DoorFn) -> Result<Validated, LoadError> {
-    validate_door::<K>(door_fn())
+    validate_door::<K>(enter_door(door_fn))
 }
 
 /// Where the door's append-only `ready` tail starts: the least size a door states.

@@ -675,13 +675,15 @@ fn red_an_open_reason_longer_than_the_buffer_lent_is_fault() {
     assert!(!p.is_open());
 }
 
-/// The C ABI, spelled once for the restated doors below: each spelling of its literal is a Law 0
-/// hit (the scan reads it as a secret instance's id).
+/// The C ABI, spelled once for the restated doors below and every other test slot in the crate
+/// (`crate::dispatch_tests::c_abi!`): each spelling of its literal is a Law 0 hit (the scan reads
+/// it as a secret instance's id).
 macro_rules! c_abi {
     ($($(#[$m:meta])* fn $name:ident($($arg:ident: $t:ty),* $(,)?) -> $ret:ty $body:block)*) => {
         $($(#[$m])* extern "C" fn $name($($arg: $t),*) -> $ret $body)*
     };
 }
+pub(crate) use c_abi;
 
 /// RED (loader-PL1 #6): an `open` that PENDS and then answers FAULT on its RESUME leaves no
 /// instance published (THE DESIGN §11.13; [`Plugin::is_open`]: "`open` answered READY"). The

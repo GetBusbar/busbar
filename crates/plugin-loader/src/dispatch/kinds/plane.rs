@@ -487,8 +487,11 @@ pub fn linked_probe(
 pub fn linked_cli_help(
     door: busbar_contract::abi::mechanism::door::DoorFn,
 ) -> Result<Option<&'static str>, String> {
-    let (door, _) = crate::dispatch::load::read_door(door(), Some(KindCode::Plane))
-        .map_err(|e| format!("{e:?}"))?;
+    let (door, _) = crate::dispatch::load::read_door(
+        crate::dispatch::load::enter_door(door),
+        Some(KindCode::Plane),
+    )
+    .map_err(|e| format!("{e:?}"))?;
     let st = crate::dispatch::load::statement(&door).map_err(|e| format!("{e:?}"))?;
     // SAFETY: `PlaneTail` is a `#[repr(C)]` kind tail of integers and pointers (all-zero valid); a
     // non-NULL kind tail is `'static` plugin data of its stated size.
@@ -509,8 +512,11 @@ pub fn linked_cli_help(
 pub fn linked_declaring_section(
     door: busbar_contract::abi::mechanism::door::DoorFn,
 ) -> Result<Option<&'static str>, String> {
-    let (door, _) = crate::dispatch::load::read_door(door(), Some(KindCode::Plane))
-        .map_err(|e| format!("{e:?}"))?;
+    let (door, _) = crate::dispatch::load::read_door(
+        crate::dispatch::load::enter_door(door),
+        Some(KindCode::Plane),
+    )
+    .map_err(|e| format!("{e:?}"))?;
     let st = crate::dispatch::load::statement(&door).map_err(|e| format!("{e:?}"))?;
     let sections = if st.sections_len == 0 {
         &[][..]

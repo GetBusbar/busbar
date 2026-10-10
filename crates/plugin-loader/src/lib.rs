@@ -214,7 +214,10 @@ pub fn intern_name(name: &str) -> &'static str {
 pub(crate) fn dlopen_on_worker(path: &std::ffi::OsStr) -> Result<Library, String> {
     // SAFETY (unchanged from the direct call this replaces): loading an operator-placed library runs
     // its init code, which is the same trust as compiling it in. Callers apply the trust gate first.
-    match ffi_thread::on_plugin_thread(|| unsafe { Library::new(path) }) {
+    match ffi_thread::on_plugin_thread(|| {
+        ffi_thread::debug_assert_permanent("dlopen");
+        unsafe { Library::new(path) }
+    }) {
         Ok(r) => r.map_err(|e| e.to_string()),
         // An init constructor that PANICKED into us. Vanishingly rare, but the rendezvous must
         // produce a value rather than resume an unwind on a worker whose thread must not die.
@@ -228,7 +231,10 @@ pub(crate) fn dlopen_on_worker(path: &std::ffi::OsStr) -> Result<Library, String
 pub(crate) fn dlclose_on_worker(lib: Library) {
     #[cfg(test)]
     UNLOADS_ON_WORKER.with(|n| n.set(n.get() + 1));
-    let _ = ffi_thread::on_plugin_thread(move || drop(lib));
+    let _ = ffi_thread::on_plugin_thread(move || {
+        ffi_thread::debug_assert_permanent("dlclose");
+        drop(lib);
+    });
 }
 
 #[cfg(test)]
@@ -313,7 +319,11 @@ pub(crate) fn abi_handshake(
 }
 
 fn ffi_guard_confined<R>(path: &str, op: &str, f: impl FnOnce() -> R) -> Result<R, String> {
-    ffi_thread::on_plugin_thread(f).map_err(|_| {
+    ffi_thread::on_plugin_thread(|| {
+        ffi_thread::debug_assert_permanent(op);
+        f()
+    })
+    .map_err(|_| {
         format!("plugin '{path}' panicked across the ABI boundary in {op} (treated as failure)")
     })
 }
@@ -890,8 +900,9 @@ fn wire_up(
             let sink = set_sink;
             let ctx = hostlog::intern_log_ctx(&display);
             let level = hostlog::host_max_level();
-            let _ = ffi_thread::on_plugin_thread(move || unsafe {
-                sink(hostlog::host_log_sink, ctx, level);
+            let _ = ffi_thread::on_plugin_thread(move || {
+                ffi_thread::debug_assert_permanent("set_log_sink");
+                unsafe { sink(hostlog::host_log_sink, ctx, level) };
             });
         }
     }
