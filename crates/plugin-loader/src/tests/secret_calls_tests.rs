@@ -111,9 +111,7 @@ fn a_dropped_in_secret_plugin_is_the_same_plugin_through_the_axis() {
         .find(|(k, _)| *k == "secret")
         .expect("a `secret` row in Cargo.toml's [package.metadata.busbar.both-ways]");
     // The row names the repo's logic crate; the fleet's twin shape names its cdylib `<logic>_plugin`.
-    let Some(path) = crate::both_ways::cdylib(&format!("{logic}_plugin")) else {
-        return;
-    };
+    let path = crate::both_ways::cdylib(&format!("{logic}_plugin"));
     let stated = rendering_of(door).expect("the door renders its Statement");
     let bytes = std::fs::read(&path).expect("the plugin's cdylib reads");
     let candidate = Candidate::from_rendering(

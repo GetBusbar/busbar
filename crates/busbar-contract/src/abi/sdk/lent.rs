@@ -462,7 +462,8 @@ macro_rules! lend {
 }
 
 use crate::abi::auth::{
-    BeginLoginIn, CompleteLoginIn, IdentityBuf, NamedValue, StripName, VerifyIn,
+    BeginLoginIn, CompleteLoginIn, FieldSpan, FieldsIn, IdentityBuf, NamedValue, StripName,
+    VerifyIn,
 };
 use crate::abi::hook::{
     BudgetBucketState as HookBudgetBucketState, CandidateDynamic as HookCandidateDynamic,
@@ -476,8 +477,9 @@ use crate::abi::plane::{
     ServeIn, UnitCount,
 };
 use crate::abi::transport::{
-    AcceptIn, AdoptIn, ArrivalIn, BeginIn, ConnFacts, EmitIn, EncodeIn, FinishIn, FramePiece,
-    FramerSink, HeadSlots, IngestIn, ListenIn, LocateIn, ReadIn, RefuseIn, WriteIn,
+    AcceptIn, AdoptIn, ArrivalIn, BeginIn, ConnFacts, DatagramLane, DatagramPath, DatagramRoute,
+    EmitIn, EncodeIn, FinishIn, FramePiece, FramerSink, FramingIn, HeadSlots, IngestIn,
+    KeyingMaterial, ListenIn, LocateIn, ReadIn, RefuseIn, WriteIn,
 };
 
 lend! {
@@ -494,6 +496,13 @@ lend! {
     VerifyIn {
         list(lines, lines_len) -> NamedValue;
         buf(strip, strip_cap) -> StripName;
+    }
+    // `fields`' head envelope (NULL unless the style needs it), and the host's field buffer and
+    // field array.
+    FieldsIn {
+        list(headers, headers_len) -> NamedValue;
+        buf(field_buf, field_buf_cap) -> u8;
+        buf(fields, fields_cap) -> FieldSpan;
     }
     BeginLoginIn { list(scopes, scopes_len) -> AbiStr; }
     CompleteLoginIn { list(submitted, submitted_len) -> NamedValue; }
@@ -559,15 +568,34 @@ lend! {
     BeginIn {
         one(facts) -> ConnFacts;
         list(fields, fields_len) -> Field;
+        one(lane) -> DatagramLane;
     }
-    IngestIn { bytes(bytes, len); }
-    EmitIn { bytes(bytes, len); }
+    IngestIn {
+        bytes(bytes, len);
+        one(lane) -> DatagramLane;
+    }
+    EmitIn {
+        bytes(bytes, len);
+        one(lane) -> DatagramLane;
+    }
     EncodeIn {
         list(fields, fields_len) -> Field;
         bytes(body, body_len);
     }
     RefuseIn { bytes(bytes, len); }
-    FinishIn { bytes(final_bytes, final_bytes_len); }
+    FinishIn {
+        bytes(final_bytes, final_bytes_len);
+        one(lane) -> DatagramLane;
+    }
+    FramingIn { one(lane) -> DatagramLane; }
+    // THE DATAGRAM LANE (`abi::transport::datagram`): the keying-material item lent for the call
+    // that presents it, and the host buffer the answer's routes go into.
+    DatagramLane {
+        one(keying) -> KeyingMaterial;
+        buf(routes, routes_cap) -> DatagramRoute;
+        list(paths, paths_len) -> DatagramPath;
+    }
+    KeyingMaterial { bytes(bytes, len); }
     AdoptIn {
         one(facts) -> ConnFacts;
         bytes(leftover, leftover_len);

@@ -1528,8 +1528,8 @@ drain   = "none: BUSBAR-1.6.0.md grants this class. What this row holds is the N
 [[law0]]
 crate = "busbar"
 axis  = "auth"
-count = "42"
-cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance"
+count = "46"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance. +4 for status row 120 (owner task): root/tests/connector.rs `the_pinned_mint_needs_are_operator_infrastructure` reads the pinned plugin's NEEDS by its crate path and its doc names the divergent pins, 2 hits each (package name + kind-qualified id); test-only, over the granted root -> auth dev edge"
 
 [[law0]]
 crate = "busbar"
@@ -1678,7 +1678,7 @@ cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain 
 [[law0]]
 crate = "busbar-core-admin"
 axis  = "instance:secret"
-count = "52"
+count = "50"
 cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance"
 
 [[law0]]
