@@ -578,7 +578,7 @@ async fn dial_refuses_unpinned_and_guard_failing_targets() {
     );
 }
 
-// ── THE INBOUND WS-ACCEPT ARRIVAL SEAM (WsArrival newtype + accept_gauntlet + registry) ──────────
+// ── THE GAUNTLET-GATED WS ACCEPT (accept_gauntlet) ───────────────────────────────────────────────
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -661,46 +661,6 @@ async fn accept_gauntlet_refuse_returns_refusal_and_spawns_zero_socket_tasks() {
     assert!(
         ran,
         "a proceeding accept binds the socket and runs exactly one on_socket task"
-    );
-}
-
-/// THE WS-ARRIVAL SPEC + PROCESS REGISTRY round-trip: a plane declares a `WsArrivalSpec` (the neutral,
-/// single-compiled seam carrying the substrate-owned `WsArrival` newtype BY VALUE — never `Box<dyn
-/// Any>`), the composition root installs it, and the core router drains it VERBATIM. Witnesses the R1
-/// seam shape (spec is constructible with a by-value accept fn) and the install/take registry.
-#[test]
-fn ws_arrival_spec_installs_and_drains_verbatim() {
-    use crate::ingress::duplex_ws::{
-        install_ws_arrivals, take_ws_arrivals, WsArrival, WsArrivalSpec,
-    };
-    use busbar_contract::abi::mechanism::route::RouteAuth;
-
-    let spec = WsArrivalSpec {
-        path: "/v1/duplex/{id}".to_string(),
-        auth: RouteAuth::Key,
-        slot_key: "test-duplex-plane",
-        // The accept fn takes the newtype BY VALUE — the single-compiled `WsArrival`, never a box — and
-        // is ASYNC (returns a `WsAcceptFuture`) so a plane runs its pre-upgrade hooks before the upgrade.
-        accept: std::sync::Arc::new(|_a: WsArrival| {
-            Box::pin(async move {
-                axum::response::Response::builder()
-                    .status(axum::http::StatusCode::NOT_IMPLEMENTED)
-                    .body(axum::body::Body::empty())
-                    .expect("response builds")
-            }) as crate::ingress::duplex_ws::WsAcceptFuture
-        }),
-    };
-    install_ws_arrivals(vec![spec]);
-    let drained = take_ws_arrivals();
-    assert_eq!(drained.len(), 1, "the installed arrival drains verbatim");
-    assert_eq!(drained[0].path, "/v1/duplex/{id}");
-    assert_eq!(drained[0].slot_key, "test-duplex-plane");
-    assert!(matches!(drained[0].auth, RouteAuth::Key));
-    // Read-many: a second drain still yields the same installed set (the router may build twice).
-    assert_eq!(
-        take_ws_arrivals().len(),
-        1,
-        "take is read-many, not destructive"
     );
 }
 

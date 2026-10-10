@@ -32,15 +32,10 @@
 # any row here whose `from` crate STILL EXISTS. A legacy crate that survives to the tag is the
 # retirement having failed, and this row is where that is reported, by name.
 
-# `busbar-voice` is the retiring 1.5.x streams crate and `busbar-plane-streaming` is the plane it
-# is draining into (`busbar-plane-voice` was deleted into it, #18/#83). The rule is written about
-# the drain, not about any one crate, so this edge is named on exactly the same terms — leaving
-# it out would have meant a rule that only sees the drain the ruling happened to mention.
-[[transitional]]
-from = "busbar-voice"
-to = "busbar-plane-streaming"
-reason = "legacy drain"
-
+# `busbar-voice` (the retiring 1.5.x streams crate) is GONE: FLIP-STREAMING deleted it once the
+# streaming plane's door served every route (#18/#83), and its drain row into
+# `busbar-plane-streaming` went with it.
+#
 # The A2A and MCP planes were folded out of busbar-core the same way (W4.a/W4.b, 1.6.0): each
 # retiring plane names the plane-host half it is draining its transport/routing surface into.
 # `busbar-plane-a2a-host` is GONE (folded back into `busbar-a2a`, 858c93966). The drain it named
@@ -503,14 +498,6 @@ kind = "plane"
 crate = "busbar-transport-stdio"
 kind = "plane"
 
-[[cell]]
-crate = "busbar-voice"
-kind = "contract"
-
-[[cell]]
-crate = "busbar-voice"
-kind = "plane"
-
 # ------------------------------------------------------------------------------------------------
 #
 # `kind-isolation:deps` held the manifests to a table of kind-to-kind CLASSES in Rust source, and a
@@ -671,16 +658,6 @@ count   = "1"
 verdict = "allowed"
 cite    = "BUSBAR-1.6.0.md THE DESIGN, §1 / §9 — the composition root is the one thing that names all three axes."
 why     = "busbar names busbar-transport-stdio: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
-drain   = "none: BUSBAR-1.6.0.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
-
-[[dep]]
-from    = "busbar"
-to      = "busbar-voice"
-half    = "shipped"
-count   = "1"
-verdict = "allowed"
-cite    = "BUSBAR-1.6.0.md THE DESIGN, §1 / §9 — the composition root is the one thing that names all three axes."
-why     = "busbar names busbar-voice: declared normal, optional in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
 drain   = "none: BUSBAR-1.6.0.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
 
 [[dep]]
@@ -858,16 +835,6 @@ verdict = "not-allowed"
 cite    = "BUSBAR-1.6.0.md THE DESIGN, §1 / §9 — no clause grants this pair. Measured debt surfaced by the W4.a/W4.b busbar-core -> busbar-kernel and busbar-substrate -> busbar-substrate-values absorption (1.6.0): the edge is real and shipped, and this row holds the number rather than passing it in silence."
 why     = "busbar-llm names busbar-kernel: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
 drain   = "delete the busbar-kernel dependency from busbar-llm's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
-
-[[dep]]
-from    = "busbar-voice"
-to      = "busbar-kernel"
-half    = "shipped"
-count   = "1"
-verdict = "not-allowed"
-cite    = "BUSBAR-1.6.0.md THE DESIGN, §1 / §9 — no clause grants this pair. Measured debt surfaced by the W4.a/W4.b busbar-core -> busbar-kernel and busbar-substrate -> busbar-substrate-values absorption (1.6.0): the edge is real and shipped, and this row holds the number rather than passing it in silence."
-why     = "busbar-voice names busbar-kernel: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
-drain   = "delete the busbar-kernel dependency from busbar-voice's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
 
 
 
@@ -1312,16 +1279,6 @@ why     = "busbar names busbar-contract: declared dev in the test graph (feature
 drain   = "none: BUSBAR-1.6.0.md grants this class. What this row holds is the NUMBER."
 
 [[dep]]
-from    = "busbar-voice"
-to      = "busbar-contract"
-half    = "shipped"
-count   = "1"
-verdict = "allowed"
-cite    = "ARCHITECTURE_ALLOWED legacy -> contract (xtask/src/gates/kind_isolation.rs:594), as its siblings busbar-llm / busbar-a2a / busbar-mcp -> busbar-contract are; BUSBAR-1.6.0.md THE DESIGN, §9 (BUSBAR-1.6.0.md:1140-1141): busbar-contract is \"the shapes and the author SDK\"."
-why     = "busbar-voice names busbar-contract: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
-drain   = "struck when P3 deletes the legacy crate busbar-voice: the edge goes with the crate, and a row naming a crate the tree no longer has is a dead allowance."
-
-[[dep]]
 from    = "busbar"
 to      = "busbar-a2a"
 half    = "test"
@@ -1330,16 +1287,6 @@ verdict = "allowed"
 cite    = "ARCHITECTURE_ALLOWED root -> legacy (xtask/src/gates/kind_isolation.rs:617); BUSBAR-1.6.0.md THE DESIGN, §9 (BUSBAR-1.6.0.md:1140): busbar is \"the binary and composition root\", which names every crate it links."
 why     = "busbar names busbar-a2a: declared dev in the test graph (features test-support), 1 declaration(s) at this commit, beside the shipped edge. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
 drain   = "struck when P3 deletes the legacy crate busbar-a2a: the edge goes with the crate, and a row naming a crate the tree no longer has is a dead allowance."
-
-[[dep]]
-from    = "busbar"
-to      = "busbar-voice"
-half    = "test"
-count   = "1"
-verdict = "allowed"
-cite    = "ARCHITECTURE_ALLOWED root -> legacy (xtask/src/gates/kind_isolation.rs:617); BUSBAR-1.6.0.md THE DESIGN, §9 (BUSBAR-1.6.0.md:1140): busbar is \"the binary and composition root\", which names every crate it links."
-why     = "busbar names busbar-voice: declared dev in the test graph (features test-support), 1 declaration(s) at this commit, beside the shipped edge. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
-drain   = "struck when P3 deletes the legacy crate busbar-voice: the edge goes with the crate, and a row naming a crate the tree no longer has is a dead allowance."
 
 [[dep]]
 from    = "busbar"
@@ -1596,8 +1543,8 @@ cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain 
 [[law0]]
 crate = "busbar"
 axis  = "plane"
-count = "822"
-cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; RE-ARMED 798 -> 822 (Law 9, BUSBAR-1.6.0.md: it pins its ceiling at TODAY'S MEASURED VALUE): the row went live on predev at dc83ff1553 (#597) and measured 826 there; the 798 was f830faa691's, nine hours older than the arming, so the row armed red. 822 is predev 9c0a394771's measure, at or under the arming value"
+count = "805"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; RE-ARMED 798 -> 822 (Law 9, BUSBAR-1.6.0.md: it pins its ceiling at TODAY'S MEASURED VALUE): the row went live on predev at dc83ff1553 (#597) and measured 826 there; the 798 was f830faa691's, nine hours older than the arming, so the row armed red. 822 is predev 9c0a394771's measure, at or under the arming value; LOWERED 822 -> 805 by FLIP-STREAMING (Law 9: the ceiling ratchets down): predev measured 829 (seven over the row), and the flip drained 24 from the root (the deleted plane's rows leave the root's claim fixtures, and its session-door cells, registry pins and test comments name no plane)"
 
 [[law0]]
 crate = "busbar"

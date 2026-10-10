@@ -34,34 +34,29 @@
 #   work before the first real leg depends on it.
 #
 # THE DECLARED LEGS (discovered from `legs/*.sh`, never enumerated here — the same rule
-# `verdict-covers-every-leg.py` applies to the workflow, one level in):
+# `verdict-covers-every-leg.py` applies to the workflow, one level in). Every leg drives the streaming
+# plane's DOOR through the dev-only `voice_conform` harness (testing/voice-conformance/harness), BOTH ways — the
+# linked door and the `streaming_door` cdylib, dlopened through the loader — requires the two to answer
+# identically, and carries a RED arm per assertion (the leg's planted wrong answer must be refused;
+# `VOICE_CONFORM_RED=1` makes the planted answers the subject, and every leg must then go RED). Each
+# leg judges the DOOR'S half of its seam and names the half that is the kernel's (lib/conform-bin.sh):
 #
-#   spec-per-dialect   the voice spec battery, per dialect. MATRIX: openai, gemini.
-#   replay             captured-transcript replay: a recorded session must re-derive identically.
-#   cross-parity       the 4 ORDERED OpenAI<->Gemini pairs (oo, og, go, gg) must agree where the
-#                      cross-dialect mapping says they must.
-#   provider-credential the realtime provider credential the mint / SDP passes dial under, composed
-#                      from the deployment's own provider catalog + secret resolver.
-#   metering-lease     a session's money hop is the HOST's reserve-then-settle lease, capped by the
-#                      presenting principal's own remaining budget.
-#   session-scope      the plane's declared `session` scope kind, enforced at session open.
-#   gemini-live-route  (the second-dialect route) the Gemini Live dialect has a MOUNTED WS-accept route (claim, admission,
-#                      arrival, and the wire handshake itself), not just a codec the spec/cross-parity
-#                      legs exercise off to the side.
-#   provider-dial      (the provider-dial leg) a session actually DIALS the composed provider through a real (loopback)
-#                      socket via `topology::dial_provider`, and its D2 metering lease settles the
-#                      usage that arrived over it — the WS legs' upstream dial is no longer uncomposed.
-#   admit-refusal      a key whose budget is already spent is refused AT THE DOOR
-#                      (`StartError::BudgetRefused`) before any host-side lease is opened and before
-#                      any ledger posting — no provider dial has anything left to reach.
-#   route-failover     a hard-down provider dial trips the breaker cell on its first strike, and the
-#                      tripped cell refuses every FURTHER dial before any socket/URL work — the
-#                      documented terminal outcome, with no repeated egress once the cell is open.
-#   audit-record       one governed session lands EXACTLY ONE new admin-audit entry, carrying the
-#                      plane's own action literal (`streaming.session.open`) and outcome (`applied`).
-#   exit-terminal      one session ends ONCE: a metering lease settles exactly once under a double
-#                      close, and a session's one admin-audit row survives being torn down before it
-#                      ever runs a frame.
+#   spec-per-dialect   every fixture, per dialect (MATRIX: openai, gemini): codec round trip, and the
+#                      door's relay of it by the session rules.
+#   replay             each captured transcript through one session: codec skeleton, and the door's
+#                      relay and skeleton in emitted order.
+#   cross-parity       the 4 ORDERED OpenAI<->Gemini pairs (oo, og, go, gg): the codec bridge per the
+#                      cross-dialect map, and the bridged wire through the destination dialect's door.
+#   provider-credential every far request rides a declared outbound need; none carries a credential.
+#   metering-lease     a session's units, reported per declared class, once per turn; fee once answered.
+#   session-scope      the `session` grant kind; every door asks for a principal; 404 off the guest list.
+#   gemini-live-route  the Gemini Live door: its claim, its arrival, the handshake across it.
+#   provider-dial      a session's far frames ride the dialect's socket need (the host connector dials).
+#   admit-refusal      a refusal is rendered in the dialect's shape and opens nothing, dials nothing.
+#   route-failover     each ATTEMPT answered afresh on the pass need; nothing reaches the caller early.
+#   audit-record       the audit kind and operation the kernel's one row is written under; no door row.
+#   exit-terminal      one session, one end; a stream that ended is refused on every side.
+#   tool-reply         a tool call is relayed to the caller and never answered by busbar (Law 11).
 #   governance         the 5 vision checkpoints (incl. D2 hard-close-on-exhaustion). GOVERNANCE IS
 #                      NOT A CONFORMANCE RESULT — it can never move the conformance verdict, exactly
 #                      as `testing/a2a-governance/` can never contribute to the A2A verdict.
@@ -100,9 +95,9 @@ VOICE_LEGS_DIR="${VOICE_LEGS_DIR:-$HERE/legs}"
 
 # A FLOOR on the declared-leg count, for the same reason the python verdict linter has one: every
 # equality below would hold for a battery that had been gutted to a single leg, so the count is
-# checked first. Thirteen legs ship today (spec-per-dialect, replay, cross-parity,
+# checked first. Fourteen legs ship today (spec-per-dialect, replay, cross-parity,
 # provider-credential, metering-lease, session-scope, gemini-live-route, provider-dial,
-# admit-refusal, route-failover, audit-record, exit-terminal, plus governance).
+# admit-refusal, route-failover, audit-record, exit-terminal, tool-reply, plus governance).
 MIN_LEGS="${VOICE_MIN_LEGS:-3}"
 
 say()  { printf '%s\n' "$*"; }

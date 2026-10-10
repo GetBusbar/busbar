@@ -197,23 +197,23 @@ command -v cargo >/dev/null 2>&1 || { echo "plane-delete-test: cargo not found" 
 # plane-kind name). The NEUTRAL feature set to keep ON for the neutral-crate check (every default plane
 # EXCEPT the one being removed) — llm has no neutral-side feature of its own, so removing it keeps both
 # plane-mcp and plane-a2a. A crate/feature that appears or moves is a one-line edit here.
-# `voice` (busbar-voice, Plane 4) is WIRED into the bin and DEFAULT-ON, on both of its features: it has
-# a `dep:busbar-voice` optional dependency and the `plane-streaming` bin feature, whose forwards to the
-# plane crate are `dep:busbar-voice`, `busbar-voice?/runtime` and `busbar-voice?/openapi-schema` — all
-# three stripped by neutralise_bin. Its bin_feature is `plane-streaming`; its neutral_keep is the full
-# default plane set (removing voice touches neither mcp nor a2a). A feature that FORWARDS to
+# The streaming plane (`plane-streaming`, crates/busbar-plane-streaming since FLIP-STREAMING deleted
+# the legacy busbar-voice crate) is WIRED into the bin and DEFAULT-ON: a `dep:busbar-plane-streaming`
+# optional dependency behind the `plane-streaming` bin feature, stripped by neutralise_bin. Its
+# bin_feature is `plane-streaming`; its neutral_keep is the full default plane set (removing it
+# touches neither mcp nor a2a). A feature that FORWARDS to
 # `plane-streaming` would leave the bin's default build incoherent without the crate until it came out
 # too — which is what neutralise_bin's forwarding closure is for.
 # `plane-mcp` (P3 DEL-MCP: the engine crate is deleted; the plane is its one plane-kind crate,
 # `crates/busbar-plane-mcp`, plane_ondisk_key) names its `dep:` in its DOOR row, `plane-mcp-door`;
 # `plane-mcp` forwards to that row, so the reaching closure takes both out of `default`.
-bin_feature() { case "$1" in llm) echo proto-llm ;; mcp) echo plane-mcp ;; plane-mcp) echo plane-mcp-door ;; a2a) echo plane-a2a ;; voice) echo plane-streaming ;; plane-decisions) echo plane-decisions ;; esac; }
+bin_feature() { case "$1" in llm) echo proto-llm ;; mcp) echo plane-mcp ;; plane-mcp) echo plane-mcp-door ;; a2a) echo plane-a2a ;; plane-streaming) echo plane-streaming ;; plane-decisions) echo plane-decisions ;; esac; }
 neutral_keep() {
   case "$1" in
     llm) echo "plane-mcp,plane-a2a" ;;
     mcp | plane-mcp) echo "plane-a2a" ;;
     a2a) echo "plane-mcp" ;;
-    voice) echo "plane-mcp,plane-a2a" ;;
+    plane-streaming) echo "plane-mcp,plane-a2a" ;;
     plane-decisions) echo "plane-mcp,plane-a2a" ;;
   esac
 }
@@ -624,14 +624,14 @@ plane_probe_path() {
     llm)   echo "/v1/chat/completions" ;;
     mcp | plane-mcp) echo "/.well-known/oauth-protected-resource/mcp" ;;
     a2a)   echo "/a2a" ;;
-    voice) echo "/v1/realtime/client_secrets" ;;
+    plane-streaming) echo "/v1/realtime/client_secrets" ;;
     plane-decisions) echo "/v1/systemone" ;;
   esac
 }
 plane_probe_body() {
   case "$1" in
     a2a)   printf '{"jsonrpc":"2.0","method":"message/send","id":1}' ;;
-    voice) printf '{"model":"gpt-realtime"}' ;;
+    plane-streaming) printf '{"model":"gpt-realtime"}' ;;
     plane-decisions) printf '{"state":{},"context":{}}' ;;
     llm | mcp | plane-mcp) printf '' ;;
   esac
@@ -641,7 +641,7 @@ plane_probe_body() {
 # the SUBJECT boot must not carry. Space-separated; empty for a plane the fixture does not configure.
 # This is the same fail-closed pairing the product enforces at resolve: the section exists only while
 # the plane that owns it is compiled in.
-plane_config_sections() { case "$1" in mcp | plane-mcp) echo "mcp" ;; a2a) echo "agents" ;; voice) echo "streams" ;; plane-decisions) echo "decisions" ;; *) echo "" ;; esac; }
+plane_config_sections() { case "$1" in mcp | plane-mcp) echo "mcp" ;; a2a) echo "agents" ;; plane-streaming) echo "streams" ;; plane-decisions) echo "decisions" ;; *) echo "" ;; esac; }
 # section_omitted <section> <omit-list> → 0 when <section> is in the space-separated <omit-list>.
 section_omitted() { case " ${2:-} " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
 

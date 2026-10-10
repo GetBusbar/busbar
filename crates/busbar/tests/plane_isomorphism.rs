@@ -518,13 +518,14 @@ fn the_reflected_hook_set_and_constants_are_the_doctrine() {
     const {
         assert!(MIN_HOOK_FIELDS >= 15 && MIN_ASYMMETRIES >= 10);
     }
-    // The doctrine's installed-plane axis, verbatim (the same three the composition root installs as
+    // The doctrine's installed-plane axis, verbatim (the same two the composition root installs as
     // a PlaneDecl: P3 DEL-MCP, ARCHITECT 2026-10-05, took mcp off it — the plane is served through its
-    // memory-ABI door alone and installs no PlaneDecl).
+    // memory-ABI door alone and installs no PlaneDecl — and the session plane left it when it too
+    // became door-only).
     let keys: Vec<&str> = plane_ledger_columns().iter().map(|(k, _)| *k).collect();
     assert_eq!(
         keys.len(),
-        3,
+        2,
         "the installed-plane axis is the owner's ruling; changing it is a doctrine change: {keys:?}"
     );
     // With every plane compiled in, the pinned axis is exactly the planes the root installs from

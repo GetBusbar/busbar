@@ -204,13 +204,12 @@ plane-mcp = ["egress-seam", "jsonrpc-ingress", "dispatch"]
 # other relocated `#[cfg(feature = "plane-a2a")]` sites now live in substrate, so this must turn the
 # substrate marker on with it.
 plane-a2a = ["egress-seam", "egress-stream", "card-signing", "jsonrpc-ingress", "relay"]
-# THE NEUTRAL INBOUND WS-ACCEPT CAPABILITY — arms the core-side `mount_ws_arrivals` seam (router.rs)
-# that mounts a plane's gauntlet-gated inbound-WebSocket arrivals. NAMES NO PLANE: any duplex plane
-# (streaming today, a future telephony/stream plane tomorrow) turns on the same capability. Forwards to
-# substrate's neutral `runtime` (which arms `axum/ws` + the `duplex_ws` acceptor and the `WsArrival`
-# newtype/registry). OFF by default and pulled ONLY by the binary's `plane-streaming`, so the default/shipped
-# money-path build carries no `axum/ws` edge (no tokio-tungstenite/sha1/base64) and this seam is
-# compiled out entirely — byte-identical assembly, strong-form deletable.
+# THE NEUTRAL INBOUND WS CAPABILITY — arms the core-side duplex session mount (router.rs,
+# `mount_plane_session`) that answers a door plane's session upgrade. NAMES NO PLANE: any duplex
+# plane turns on the same capability. Forwards to the neutral `runtime` (which arms `axum/ws` and the
+# `duplex_ws` acceptor). OFF by default and pulled ONLY by the binary's `plane-streaming`, so the
+# default/shipped money-path build carries no `axum/ws` edge (no tokio-tungstenite/sha1/base64) and
+# this capability is compiled out entirely — byte-identical assembly, strong-form deletable.
 duplex-ws  = ["runtime"]
 # The neutral capability markers. `dispatch`/`relay` gate the `#[cfg]`/dead-code-allowance sites in
 # this crate's engine source; `runtime` arms the full-duplex WS transport (client handshake +

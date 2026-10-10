@@ -101,10 +101,19 @@ fn main() {
     println!("cargo:rerun-if-changed=Cargo.toml");
     println!("cargo:rerun-if-changed=src/linked_gen.rs");
     let manifest = std::fs::read_to_string("Cargo.toml").expect("read Cargo.toml");
-    let enabled = |feature: &str| {
+    let on = |feature: &str| {
         let var = format!("CARGO_FEATURE_{}", feature.to_uppercase().replace('-', "_"));
         env::var_os(var).is_some()
     };
+    // A fold's development-only switch SWAPS its plane's legacy row out (`linked-swaps`): the row is
+    // not linked while the switch is on, so the folded door is the plane's one claimant.
+    // A build with no switch left has no table: nothing is swapped.
+    let swaps = if manifest.contains(&format!("[{LINKED_SWAPS}]")) {
+        metadata_map(&manifest, LINKED_SWAPS)
+    } else {
+        Vec::new()
+    };
+    let enabled = |feature: &str| swapped_in(&swaps, &on, feature);
     let (source, cfgs) = linked_source(&manifest, &enabled);
     let out = std::path::PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR")).join("linked.rs");
     std::fs::write(out, source).expect("write linked.rs");

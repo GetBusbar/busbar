@@ -365,7 +365,7 @@ static KINDS: &[KindDef] = &[
     KindDef {
         kind: "legacy",
         family: Family::Plane,
-        matchers: &["=busbar-llm", "=busbar-a2a", "=busbar-voice"],
+        matchers: &["=busbar-llm", "=busbar-a2a"],
     },
 ];
 
@@ -427,8 +427,9 @@ const PENDING_EDGES: &[(&str, &str)] = &[
 ];
 
 /// The retiring 1.5.x crates, named so the ratchet can check they still exist. `busbar-mcp` retired
-/// at P3 DEL-MCP (ARCHITECT 2026-10-05) and is struck, as `legacy-retired` requires.
-const LEGACY_CRATES: &[&str] = &["busbar-llm", "busbar-a2a", "busbar-voice"];
+/// at P3 DEL-MCP (ARCHITECT 2026-10-05) and `busbar-voice` at FLIP-STREAMING (the streaming plane's
+/// door serves every route); both are struck, as `legacy-retired` requires.
+const LEGACY_CRATES: &[&str] = &["busbar-llm", "busbar-a2a"];
 
 /// THE MANIFESTS IN THIS REPOSITORY THAT ARE NOT CRATES OF THE TREE, each with the sentence that
 /// says why, and each on the expiry ratchet every allowance in this file lives under: an entry that
@@ -477,6 +478,17 @@ const OFF_TREE_MANIFESTS: &[(&str, &str)] = &[
          it is not a crate of the product tree: it ships in no artifact, `cargo build --bin busbar` \
          never builds it, and it carries no kind and no plane or transport instance of its own. It \
          is an input to the conformance leg, never a crate a rule here is written about.",
+    ),
+    (
+        "testing/voice-conformance/harness/Cargo.toml",
+        "the voice (streaming-plane) conformance HARNESS: a testkit binary the \
+         `testing/voice-conformance/` legs shell out to, which loads the streaming plane's door both \
+         ways through the loader (ARCHITECT Q6). It is a workspace member so \
+         `testing/voice-conformance/lib/conform-bin.sh` can build it with \
+         `-p voice-conformance-harness`, and it is not a crate of the product tree: it ships in no \
+         artifact, `cargo build --bin busbar` never builds it, and it carries no kind. It lives \
+         outside the plane crate so the plane's one user of the loader is its own both-ways witness. \
+         It is an input to the conformance leg, never a crate a rule here is written about.",
     ),
 ];
 
@@ -10178,15 +10190,17 @@ impl Gate for KindIsolationGate {
         // table, so the finding names the step the loop expected. The subject is a plane with the
         // legacy face only: a plane that also serves through its door (the flipped ones) is judged
         // by its door's slots instead, so removing its legacy file leaves the door face standing.
+        // The a2a plane is the one left with the legacy face only (FLIP-STREAMING deleted the
+        // streaming plane's `plane.rs`; it serves through its door alone).
         let mut ov = Overlay::new();
-        ov.remove("crates/busbar-plane-streaming/src/plane.rs");
+        ov.remove("crates/busbar-plane-a2a/src/plane.rs");
         report.push(prove_rows_red(
             cx,
             subject,
             "a data plane that implements none of the strict step list",
             &[ROW_STEPS],
             ov,
-            &["missing-step", "busbar-plane-streaming"],
+            &["missing-step", "busbar-plane-a2a"],
         ));
 
         // A PLANE THAT RUNS THE KERNEL'S DECISION, both ways the ruling names: an `approve` of its
@@ -10619,7 +10633,7 @@ impl Gate for KindIsolationGate {
         //
         // THE SHIPPED GATE, NOT THE DEBT-FREE SUBJECT: this case already brings its own green base
         // (the empty table), and the subject's debt — measured over the REAL table, whose
-        // `busbar-voice` row is exactly this plant's row — would take the planted finding out of
+        // `busbar-a2a` row is exactly this plant's row — would take the planted finding out of
         // view as if it were the tree's. The pair below is the same transition read the other way.
         report.push(prove_rows_red(
             &cx.with_overlay(registry_plant("")),
@@ -11386,13 +11400,13 @@ fn announced_reaching_drain_target(cx: &Ctx) -> Overlay {
 
 /// THE LEGACY CRATE THE DRAIN PAIR IS ABOUT. It must be a `legacy` crate that is really on disk,
 /// or the red case plants a row for nothing and the green case removes a manifest that is not there.
-const DRAIN_PLANT_FROM: &str = "busbar-voice";
+const DRAIN_PLANT_FROM: &str = "busbar-a2a";
 
 /// ONE `[[transitional]]` row for [`DRAIN_PLANT_FROM`], and no other row — the red case's plant
 /// and, with the crate removed, the green case's.
 fn drain_row_plant() -> Overlay {
     registry_plant(&format!(
-        "[[transitional]]\nfrom = \"{DRAIN_PLANT_FROM}\"\nto = \"busbar-plane-streaming\"\nreason = \
+        "[[transitional]]\nfrom = \"{DRAIN_PLANT_FROM}\"\nto = \"busbar-plane-a2a\"\nreason = \
          \"legacy drain\"\n"
     ))
 }

@@ -1,130 +1,93 @@
-# Voice (4th-plane) conformance battery — SCAFFOLD
+# Voice (streaming-plane) conformance battery
 
-A conformance battery for busbar's **voice** plane, at structural parity with the
-sibling MCP (`testing/mcp-conformance/`) and A2A (`testing/a2a-*`) batteries.
+The conformance battery for busbar's **streaming** plane (voice is one dialect inside it, #18), at
+structural parity with the sibling MCP (`testing/mcp-conformance/`) and A2A (`testing/a2a-*`)
+batteries. It is the streaming plane's conformance MUST-set (DEV-GREEN exit #4).
 
-**This is a scaffold.** The voice runtime does not exist yet, so no leg asserts
-real conformance today. What lives here is the **shape** — the runner, the leg
-scaffolds, the verdict emitter, the CI workflow — landed **green** in an honest
-"scaffolded, legs pending" state, so that:
+## What a leg drives: the plane's DOOR, both ways
 
-1. the shape is enforced (and its accounting proven) *before* the first real leg
-   depends on it, and
-2. filling a leg later is a **drop-in**, not a rebuild.
+The plane is served only through its memory-ABI door (`busbar_plane_streaming::door`). Every leg
+shells out to one dev-only harness, the `voice_conform` binary of the testkit crate
+`voice-conformance-harness` (`testing/voice-conformance/harness/`), which loads the door through
+`busbar-plugin-loader` **both ways** (ARCHITECT Q6):
 
-## Why a scaffold is a legitimate green here
+- **linked** — `busbar_plane_streaming::door::door`, through `load_linked`;
+- **dropped** — the `streaming_door` example `cdylib`, dlopened through `load_dropped` against the
+  linked row's own Statement.
 
-The MCP and A2A batteries make `NOT ARMED, SO NOT RUN` a **RED** state, because
-for those planes the runtime exists and a disarmed subject leg renders as the
-identical green tick a leg that judged busbar and passed would produce — the
-false green those batteries exist to refuse.
+Each assertion drives a fresh instance of each door with one script and is PASS only when
 
-Voice has **nothing to arm against yet**. So the honest report is **PENDING** —
-stated per leg, and never dressed up as a conformance pass. Following the MCP
-workflow's own guidance, the transition from PENDING to a real armed-or-red leg
-is **exercised by `voice-conformance.sh --selftest`** rather than asserted by a
-real run that cannot happen. The self-test proves that the moment a leg is marked
-`ready` it is held to the same anti-vacuity discipline the other batteries use: a
-ready leg that executed nothing is **RED**, not green.
+1. the two doors answered **identically** (a dropped door that is not built or does not load is a
+   FAIL, never a skip),
+2. the answer passes the leg's check, and
+3. **the RED arm bit**: the leg's planted wrong answer (the wrong door, restated as the answer it
+   would give) is refused by the same check. `VOICE_CONFORM_RED=1` makes the planted answers the
+   subject; every conformance leg must then go RED.
 
-## The two-leg rule (inherited, enforced the day the legs light up)
+`lib/conform-bin.sh` builds the pair once (`cargo build -p voice-conformance-harness --bin
+voice_conform` and `cargo build -p busbar-plane-streaming --example streaming_door`);
+`VOICE_CONFORM_BIN` names a prebuilt harness (checked for staleness against the plane, loader,
+contract and harness sources), `VOICE_CONFORM_DOOR` a dropped door that is not in the profile's
+`examples/` beside it.
 
-- **CONTROL runs ALWAYS.** A battery that cannot judge a known-good third-party
-  dialect peer cannot be trusted to judge busbar. (Scaffolded today.)
-- **SUBJECT is ARMED OR RED.** Once a leg is `ready`, an armed run that executed
-  nothing is RED. `--selftest` drives that transition in both directions so the
-  rule is one somebody has watched work.
+## The legs — each judges the DOOR'S half of its seam
 
-## The legs
+Legs are **discovered from `legs/*.sh`, never enumerated**. Each leg's header names what it judges at
+the door and which half of the seam is the kernel's (the plane driver's walk, the identity crate, the
+money steps, the transport), which a plane cannot see and the harness therefore cannot judge.
 
-Legs are **discovered from `legs/*.sh`, never enumerated** — the same rule
-`testing/verdict-covers-every-leg.py` applies to the workflow one level out. Each
-`legs/<name>.sh` declares `LEG_KIND`, `LEG_STATUS`, `LEG_SLICES` and a
-`leg_execute` function.
+| leg | slices | what it judges at the door |
+|---|---|---|
+| `spec-per-dialect` | `openai`, `gemini` | every fixture: codec round trip, and the door's relay of it by the session rules |
+| `replay` | `default` | each captured transcript through one session: codec skeleton; the door's relay and skeleton |
+| `cross-parity` | `oo og go gg` | the codec bridge per the cross-dialect map; the bridged wire through the destination door |
+| `provider-credential` | 1 | every far request rides a declared outbound need; none carries a credential |
+| `metering-lease` | 1 | a session's units, reported per declared class, once per turn; the fee once answered |
+| `session-scope` | 1 | the `session` grant kind; every door asks for a principal; 404 off the guest list |
+| `gemini-live-route` | 1 | the Gemini Live door: claim, arrival, and the handshake across it |
+| `provider-dial` | 1 | a session's far frames ride the dialect's socket need; the host connector dials |
+| `admit-refusal` | 1 | a refusal renders in the dialect's shape and opens nothing, dials nothing |
+| `route-failover` | 1 | each ATTEMPT answered afresh on the pass need; nothing reaches the caller early |
+| `audit-record` | 1 | the audit kind and operation the kernel's one row is written under; no door row |
+| `exit-terminal` | 1 | one session, one end; an ended stream is refused on every side |
+| `tool-reply` | 1 | a tool call is relayed to the caller and never answered by busbar (Law 11) |
+| `governance` | 5 checkpoints | the 5 vision checkpoints — **NOT a conformance result** |
 
-| leg | kind | slices | what it will judge |
-|---|---|---|---|
-| `spec-per-dialect` | conformance | `openai`, `gemini` | the voice spec battery, run once **per dialect** (the matrix) |
-| `replay` | conformance | `default` | captured-transcript replay: a recorded session must re-derive identically |
-| `cross-parity` | conformance | `oo og go gg` | the **4 ordered** OpenAI⟷Gemini pairs must agree where the mapping says they must |
-| `governance` | governance | 5 checkpoints | the 5 vision checkpoints — **NOT a conformance result** |
-
-### The dialect matrix
-
-`spec-per-dialect` runs once per dialect in `{openai, gemini}`. In CI it is a job
-matrix; in the runner it is the leg's `LEG_SLICES`. `cross-parity` drives all
-four **ordered** pairs — `oo`, `og`, `go`, `gg` — because a mapping that is not
-identity *within* a dialect (`oo`, `gg`) is already broken and only running the
-cross pairs would never see it.
+**The session rules** the fixture legs hold the door to (`session_pump`): a caller frame reaches the
+far end as sent, except that the caller's session configuration is replaced by the locked one; a
+far-end frame reaches the caller as sent, except that usage and rate-limit reports are consumed (usage
+becomes reported units), a far-end tool result is never relayed, and a barge-in also cancels and
+truncates the far end's response at the audio the caller heard. The expectation is computed from the
+wire by the codec, never by the door.
 
 ### Governance is not a conformance result
 
-The `governance` leg observes voice **product policy**, not the voice
-**protocol** — barge-in preemption, turn-budget enforcement, metering-lease
-settlement (`cost_reserve`/`cost_settle`), dialect down-scope, and the **D2
-hard-close-on-exhaustion** checkpoint. Exactly as `testing/a2a-governance/` can
-never contribute to the A2A verdict, this leg's findings are **observations**:
-the runner enforces the separation in code, and `--selftest` proves a governance
-FAIL cannot move the conformance verdict.
-
-## How a leg gets filled (the drop-in)
-
-Edit `legs/<name>.sh`:
-
-1. flip `LEG_STATUS=pending` → `LEG_STATUS=ready`;
-2. implement `leg_execute <slice>` to print **one `RESULT <slice> <PASS|FAIL>
-   <detail>` line per assertion**.
-
-Nothing in `voice-conformance.sh`, in the verdict emitter, or in
-`.github/workflows/voice-conformance.yml` changes. The runner immediately holds
-the now-ready leg to the anti-vacuity rule: a `ready` leg that emits no `RESULT`
-line for a slice is **RED**.
-
-The inputs later legs consume are authored by another agent and only
-**referenced** here:
-
-- `testing/voice-conformance/fixtures/{openai,gemini}/` — captured transcripts
-  and per-dialect spec fixtures;
-- `qa/evidence/voice-cross-dialect-mapping.*` — the OpenAI⟷Gemini equivalence
-  the `cross-parity` leg is judged against.
+The `governance` leg observes product policy, not protocol. Exactly as `testing/a2a-governance/` can
+never contribute to the A2A verdict, the runner keeps a governance FAIL out of the conformance tally,
+and `--selftest` proves it.
 
 ## The verdict emitter
 
-The runner's verdict **mirrors `verdict-covers-every-leg.py`** one level in: it
-holds the set of legs it *reported on* to equality with the set *discovered*, so
-a leg cannot be added to the tree and then silently dropped from the verdict. It
-also enforces a **floor** on the leg count (a gutted battery satisfies every
-equality) and keeps governance out of the conformance tally. `--selftest` injects
-each of those faults through the real emitter and watches the check bite.
+The runner holds the set of legs it **reported on** to equality with the set **discovered**, enforces
+a floor on the leg count, keeps governance out of the conformance tally, and makes a `ready` leg that
+emitted no `RESULT` line RED. `--selftest` injects each of those faults through the real emitter and
+watches the check bite, then accounts the shipped legs (which runs them: it builds the harness).
 
 ## Usage
 
 ```bash
-# prove the scaffold's own accounting bites, then exit 0
 bash testing/voice-conformance/voice-conformance.sh --selftest
-
-# run everything and emit the honest verdict (the default)
-bash testing/voice-conformance/voice-conformance.sh --verdict
-
-# one leg (what the workflow's per-leg jobs run)
+bash testing/voice-conformance/voice-conformance.sh --verdict          # the default
 bash testing/voice-conformance/voice-conformance.sh --leg spec-per-dialect --slice openai
-bash testing/voice-conformance/voice-conformance.sh --leg governance
-
-# what is declared
+VOICE_CONFORM_RED=1 bash testing/voice-conformance/voice-conformance.sh --verdict   # must be RED
 bash testing/voice-conformance/voice-conformance.sh --list
 ```
 
 ## Layout
 
 ```
-voice-conformance.sh     the runner: --selftest | --verdict | --leg | --list
-legs/spec-per-dialect.sh  per-dialect spec leg      (matrix: openai, gemini)
-legs/replay.sh            captured-transcript replay
-legs/cross-parity.sh      the 4 ordered OpenAI<->Gemini pairs
-legs/governance.sh        the 5 vision checkpoints   (NOT a conformance result)
-fixtures/{openai,gemini}/ INPUTS authored elsewhere; referenced, not created here
+voice-conformance.sh      the runner: --selftest | --verdict | --leg | --list
+lib/conform-bin.sh        builds/locates the voice_conform harness and the dropped-in door
+legs/*.sh                 one leg each (LEG_KIND, LEG_STATUS, LEG_SLICES, leg_execute)
+fixtures/{openai,gemini}/ captured transcripts and per-dialect spec fixtures
 ```
-
-The CI workflow is `.github/workflows/voice-conformance.yml`: `gate-selftest`
-proves the accounting and the coverage lint bite, one job per leg runs the
-scaffolded leg green, and `verdict` asserts every leg executed.

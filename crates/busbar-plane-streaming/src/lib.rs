@@ -3,24 +3,12 @@
 //!
 //! ## What this crate is
 //!
-//! An ADAPTER, in the same sense `busbar-plane-llm` is one: every method of the plane kind here is a
-//! thin wrapper over a codec in this crate's own `codec` module —
-//! the OpenAI Realtime and Gemini Live dialect readers/writers and the four-layer duplex/session IR
-//! they meet in (`docs/design/BUSBAR-1.6.0.md` #18/#45, the four-layer IR section). No wire format
-//! for those two dialects is written twice.
-//!
-//! Two things this crate DOES write itself, because nothing upstream provides them and the task this
-//! crate exists for names them explicitly:
-//!
-//! * A minimal Twilio Media Streams JSON reader/writer ([`twilio`]) — `codec` has no dialect codec
-//!   for Twilio's own wire, and the one Twilio-shaped module in it ([`codec::topology::twilio`]) is
-//!   for the legacy engine's own use, not this crate's — this crate never reaches it (see the
-//!   crate-root dependency note below). So this crate's Twilio reader/writer is written from the
-//!   wire shape alone, independently, and is NOT a copy of that module.
-//! * A standard G.711 µ-law ↔ PCM16 transform ([`ulaw`]) — `codec` only carries the byte-rate
-//!   bookkeeping for the format (`codec::ir::media::AudoFormat`), not an actual sample transcoder;
-//!   its own doc comments call the transcode an unimplemented "seam...armed only when a lane
-//!   declares it." This crate is the lane that declares it.
+//! The plane's door ([`door`]) and everything it answers with: the Statement tail and the
+//! per-generation snapshot, the driver answers for the one-request doors ([`driven`]), and one live
+//! session as the driver serves it ([`session_unit`] over the frame pump [`session_pump`]). The
+//! dialect readers and writers (OpenAI Realtime, Gemini Live) and the four-layer duplex/session IR
+//! they meet in are this crate's own `codec` module (`docs/design/BUSBAR-1.6.0.md` #18/#45); the
+//! Twilio Media Streams envelope is [`codec::topology::twilio`]. No wire format is written twice.
 //!
 //! ## What this crate is not
 //!
@@ -32,30 +20,19 @@
 //!
 //! ## The dependency seam, stated honestly
 //!
-//! THIS CRATE DOES NOT DEPEND ON `busbar-voice`, AND THE EDGE RUNS THE OTHER WAY. Measured with
-//! `cargo tree -p busbar-plane-streaming --edges normal --depth 1`, this crate's whole direct
-//! closure is `busbar-contract` + `serde` + `serde_json` + `bytes` + `async-trait` (a proc-macro) —
-//! the codecs are this crate's own `codec` module, not a named dependency. The legacy engine is the
-//! crate that names THIS one, not the reverse — so there is no `default-features = false` on a line
-//! naming it here, because there is no such line at all.
-//!
-//! `busbar-voice`'s own plane machinery (`PLANE_DECL`, `mount`, `runtime`, `topology`) is built
-//! against a different, older plane architecture (`busbar_kernel::plane::registry::PlaneDecl`,
-//! the same shape `busbar-mcp`/`busbar-a2a` use) and is gated behind busbar-voice's `runtime` cargo
-//! feature. None of that machinery, and none of the async runtime it would pull in (`tokio`,
-//! `futures`, `hyper`), is reachable from here — the closure above measures zero of them.
+//! Measured with `cargo tree -p busbar-plane-streaming --edges normal --depth 1`, this crate's whole
+//! direct closure is `busbar-contract` + `serde` + `serde_json` + `bytes` + `url` — the codecs are
+//! this crate's own `codec` module, not a named dependency, and no async runtime (`tokio`,
+//! `futures`, `hyper`) is reachable from here.
 //!
 //! What this crate DOES use is [`codec::ir`] — the plane-4 duplex/session intermediate
 //! representation and both dialect codecs — which is pure, sync, and free of any async surface.
 //!
 //! ## What it holds across calls
 //!
-//! Nothing of its own. The plane value itself ([`StreamingPlane`]) is immutable and carries only its
-//! configured upstream list. What a session needs across frames — the codec's per-connection state,
-//! the negotiated dialect, the counters this crate derives itself (`audio_seconds_in`, `tool_calls`),
-//! and the one pending IR event a two-step ingress/egress or decode/encode pair needs to hand across
-//! — lives in the kernel-held [`busbar_contract::plane::PlaneSessionState`], via
-//! [`session::VoiceSessionState`].
+//! The plane value ([`StreamingPlane`]) is immutable and carries only its configured upstream list.
+//! A door instance holds its live generations; a live session's state (the codec's decode state, the
+//! open turn's counters, the session's cumulative units and record) is a [`session_unit::SessionUnit`].
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
@@ -68,20 +45,23 @@ pub mod claims;
 pub mod codec;
 pub mod config;
 pub mod diagnostics;
+pub mod door;
+pub mod driven;
 pub mod governed;
 pub mod meta;
-pub mod oneshot;
 pub mod open_calls;
-pub mod plane;
+/// What an `on_piece` answer owes the reply buffer across re-calls, and the one settle of its buffers.
+mod piece;
 pub mod provider;
 pub mod register;
+pub mod request_unit;
 pub mod session;
+pub mod session_door;
 pub mod session_params;
 pub mod session_pump;
 pub mod session_row;
-pub mod tools;
-pub mod twilio;
-pub mod ulaw;
+pub mod session_unit;
+pub mod sessions;
 
 #[cfg(test)]
 mod tests;

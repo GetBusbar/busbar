@@ -10,7 +10,7 @@
 // linked crates' own docs and the README for what a running deployment answers on the wire and the
 // `--help` output above for the CLI surface this binary exposes.
 //
-// See `register_protocols`/`register_planes`/`register_diagnostics`/`register_ws_arrivals` below
+// See `register_protocols`/`register_planes`/`register_diagnostics` below
 // for the composition root's one write into each axis: each linked crate contributes its own
 // declarations here, under its own Cargo feature, and nowhere else.
 
@@ -331,14 +331,6 @@ fn register_diagnostics() {
     root::linked::register_diagnostics(&LINKED);
 }
 
-/// REGISTER THE LINKED DUPLEX PLANES' INBOUND WS-ACCEPT ARRIVALS — the composition root's one write
-/// into the neutral WS-accept registry. Installed BEFORE the router is built (in `run()`), so
-/// `take_ws_arrivals` drains a populated set; a build with no duplex plane installs nothing and the
-/// router mounts no WS-accept route.
-fn register_ws_arrivals() {
-    root::linked::register_ws_arrivals(&LINKED);
-}
-
 /// The data-plane worker count and its warnings, resolved once at the top of `main()`.
 static WORKERS: std::sync::LazyLock<(usize, Vec<String>)> =
     std::sync::LazyLock::new(resolve_worker_threads);
@@ -379,12 +371,6 @@ fn main() {
     // any reader. Each linked entry contributes its owned diagnostics; a no-planes build installs
     // nothing and the catalog is the neutral built-ins alone.
     register_diagnostics();
-    // INBOUND WS-ACCEPT ARRIVAL REGISTRATION, same slot and the same reason as the axes above: the
-    // core router drains the installed arrivals at build (`take_ws_arrivals`), which happens later in
-    // `run()` — so the duplex planes' arrivals must be installed here, before the router is built. Each
-    // duplex entry installs its `WsArrivalSpec`s; a build with no duplex plane installs nothing and
-    // the router mounts no WS-accept route — strong-form deletable.
-    register_ws_arrivals();
     // THE COMPOSITION ROOT'S OWN SEAL is NOT here, and it is the one boot step that is not: it
     // composes the transports a switched-over plane would serve through, and the http one carries
     // the operator's `limits.request_body_max_bytes`, so it cannot run before the configuration it
@@ -887,6 +873,7 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
             busbar_kernel::config::limits::DEFAULT_UPSTREAM_REQUEST_TIMEOUT_SECS,
             |l| l.upstream_request_timeout_secs,
         ),
+        catalog: Some(&deploy.models),
         upgrades: root::serve::upgrade_carriers(LINKED.transports),
     };
     // The kernel's own App through its swap handle once it exists (a config apply replaces the

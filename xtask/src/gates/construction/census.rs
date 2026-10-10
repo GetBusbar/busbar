@@ -175,7 +175,11 @@ pub fn ceiling_census(cx: &Ctx, cfg: &Cfg) -> Vec<CRow> {
                     cx.abs(d).exists()
                 }));
                 let mut moved = moved_out_by_kind(cx, cfg, &doc, &base.sha, &now_deleted, &renamed);
-                if let Some(n) = deleted_plane_crates(cx, cfg, &doc, &now_deleted) {
+                let base_planes = doc.table_or_empty("gate").list_of("plane_crates");
+                let now_planes = cfg.plane_crates().unwrap_or_default();
+                if let Some(n) = deleted_plane_crates(&base_planes, &now_planes, |dir| {
+                    now_deleted.contains(dir) && !cx.abs(dir).exists()
+                }) {
                     moved.insert("plane_crates".to_string(), n as i64);
                 }
                 bad.extend(lowered_floors(&cfg.doc, &doc, base.short(), &moved));
@@ -231,7 +235,8 @@ pub fn ceiling_census(cx: &Ctx, cfg: &Cfg) -> Vec<CRow> {
 /// `plugin_kinds.<kind>` floor may drop by at most `moved[<key>]`, the number of that kind's crate
 /// directories that left the tree as MOVED-OUT plugins or ruled deletions ([`excused_out`]), and
 /// `plane_crates` by the legacy engines deleted under `[gate.census.deleted]`
-/// ([`deleted_plane_crates`], P3 DEL-MCP, ARCHITECT 2026-10-05). Every other drop is RED.
+/// ([`deleted_plane_crates`], P3 DEL-MCP, ARCHITECT 2026-10-05; and `busbar-voice`, FLIP-STREAMING).
+/// Every other drop is RED.
 /// A crate whose package name changed with the move counts only through a rename row ([`renames`],
 /// ARCHITECT 2026-10-03 Q-L7B2-CENSUS).
 fn lowered_floors(
@@ -307,29 +312,21 @@ fn moved_out_by_kind(
 /// THE SAME RULED WAY DOWN FOR `gate.plane_crates` (P3 DEL-MCP, ARCHITECT 2026-10-05: "delete
 /// busbar-mcp, add `crates/busbar-mcp` to [gate.census.deleted]"). The legacy-engine list may lose
 /// an entry only when its crate was DELETED under the ledger: the entries the base listed and this
-/// tree does not, `Some(n)` when EVERY one names a `crates/<entry>` that `[gate.census.deleted]`
-/// lists and that is absent from this tree ([`excused_out`], no move-out arm — a legacy engine is
-/// retired, never pinned back). `None` when nothing left the list or any one left any other way, so
-/// the `plane_crates` floor drop stays RED.
+/// tree does not, `Some(n)` when EVERY one names a `crates/<entry>` that is a ruled deletion
+/// (`is_deleted`: `[gate.census.deleted]` lists it and it is absent from this tree; [`excused_out`],
+/// no move-out arm — a legacy engine is retired, never pinned back). `None` when nothing left the
+/// list or any one left any other way, so the `plane_crates` floor drop stays RED.
 fn deleted_plane_crates(
-    cx: &Ctx,
-    cfg: &Cfg,
-    base_doc: &Document,
-    deleted: &BTreeSet<String>,
+    base: &[String],
+    now: &[String],
+    is_deleted: impl Fn(&str) -> bool,
 ) -> Option<usize> {
-    let now = cfg.plane_crates().unwrap_or_default();
-    let gone: Vec<String> = base_doc
-        .table_or_empty("gate")
-        .list_of("plane_crates")
-        .into_iter()
+    let gone: Vec<String> = base
+        .iter()
         .filter(|c| !now.contains(c))
         .map(|c| format!("crates/{c}"))
         .collect();
-    excused_out(
-        &gone,
-        |_| false,
-        |dir| deleted.contains(dir) && !cx.abs(dir).exists(),
-    )
+    excused_out(&gone, |_| false, is_deleted)
 }
 
 /// A plugin crate MOVED OUT (TODO PATH TO DEV-GREEN P5: filter-repo into its own repo, pinned back

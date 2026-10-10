@@ -17,6 +17,9 @@
 //! The `mcp` module below is the `root-mcp` leg's loop cells (`qa/capability-equality.json`, U14):
 //! the MCP plane's door, composed here the same way, each core capability driven through the data
 //! router and asserted where it lands.
+//!
+//! The `session_door` module below is the session door's root-leg cells (ARCHITECT 2026-10-05 Q1):
+//! the linked plane door that meters audio, served end to end the same way.
 
 #[cfg(feature = "plane-decisions")]
 use std::collections::BTreeMap;
@@ -328,6 +331,7 @@ async fn a_claimed_request_is_served_through_the_door_and_its_money_posted() {
         auths: Arc::new(auths),
         conns: Arc::clone(&connector) as Arc<dyn PollConns>,
         stream_ceiling_secs: 600,
+        catalog: None,
         upgrades: Vec::new(),
     };
 
@@ -584,6 +588,542 @@ async fn a_door_claiming_one_path_over_two_carriers_mounts_it_once() {
         send(&router, CLAIMED, None).await.status().as_u16(),
         refused
     );
+}
+
+/// THE SESSION DOOR'S ROOT-LEG CELLS (ARCHITECT 2026-10-05 Q1): the session door, served as
+/// production composes it — the browser's ephemeral-secret mint, a keyed caller, the door's DIRECT
+/// route to the top-level catalog model its section's `session.model` names, the provider's own
+/// credential presented by the auth plugin, the caller's spend posted against the key that
+/// presented it. The door is found among the linked plane doors by the audio class it meters, so a
+/// build that links none skips. The secret-source scan (`secret_source.rs`) drives the same door.
+pub(super) mod session_door {
+    use std::collections::BTreeMap;
+    use std::sync::Arc;
+
+    use axum::http::StatusCode;
+    use busbar_contract::caps::ReasonCode;
+    use busbar_contract::conn::{DeclaredConns, PollConns};
+    use busbar_kernel::cost::CostModel;
+    use busbar_kernel::governance::signing::{TokenSigner, DEFAULT_KID};
+    use busbar_kernel::governance::{GovState, MemoryStore, NewKeySpec};
+    use busbar_kernel::plane_driver::{refusal_status, EndPost, PlaneMoney};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    use crate::root::door_steps::{provider_routes, DoorReach, OutboundAuths};
+    use crate::root::loader::dispatch::kinds::plane::Plane;
+    use crate::root::loader::dispatch::{
+        load_linked, Bind, DispatchConfig, Dispatcher, LinkedRow, NoSink,
+    };
+    use crate::root::plane_node::{Node, NodeEndPost};
+    use crate::root::serve::planes_tests::{composed_services, Published, PUBLISHING};
+    use crate::root::serve::{compose_planes, door_routes, DoorEgress};
+
+    /// The deployment's dated card history the served unit is pinned to at its door: one entry, no
+    /// price (billing off: the counts are the unit's fact and price at nothing).
+    static CARD: std::sync::LazyLock<crate::root::kernel::RootHistory> =
+        std::sync::LazyLock::new(|| {
+            let holder = crate::root::kernel::RootHistory::default();
+            holder.apply(
+                crate::root::kernel::card_from_config(
+                    std::iter::empty::<(&str, busbar_contract::billing::RawTierRates)>(),
+                    0,
+                    true,
+                ),
+                1_000,
+            );
+            holder
+        });
+
+    /// The provider's credential, as its file holds it.
+    const CREDENTIAL: &str = "sk-door-test";
+
+    /// The session door's mint claim.
+    const MINT: &str = "/v1/realtime/client_secrets";
+
+    /// The provider's answer to the mint: an ephemeral secret and its expiry.
+    const MINTED: &str = r#"{"value":"ek_door_0001","expires_at":1767225600}"#;
+
+    /// The deployment's public base URL the session door fronts.
+    const PUBLIC: &str = "http://gw.test";
+
+    /// The billable class the session door meters a caller's audio under: how the harness finds that
+    /// door among the linked plane doors without spelling the plane.
+    const AUDIO_CLASS: &str = "audio_seconds_in";
+
+    /// A POST of `body` (JSON) to `path` on `router`, with `token` as its bearer or with none.
+    async fn send_body(
+        router: &axum::Router,
+        path: &str,
+        token: Option<&str>,
+        body: &'static str,
+    ) -> axum::response::Response {
+        use tower::ServiceExt as _;
+        let mut req = axum::http::Request::builder()
+            .method("POST")
+            .uri(path)
+            .header("content-type", "application/json");
+        if let Some(token) = token {
+            req = req.header("authorization", format!("Bearer {token}"));
+        }
+        let req = req.body(axum::body::Body::from(body)).expect("a request");
+        router
+            .clone()
+            .oneshot(req)
+            .await
+            .expect("the router answers")
+    }
+
+    /// A far end on loopback answering every request 200 with `answer` (JSON); what it was sent comes
+    /// back on the channel, one request (head and body) per connection.
+    async fn far_end_answering(
+        answer: &'static str,
+    ) -> (u16, tokio::sync::mpsc::UnboundedReceiver<String>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("a loopback port");
+        let port = listener.local_addr().expect("its address").port();
+        let (sent, heard) = tokio::sync::mpsc::unbounded_channel();
+        tokio::spawn(async move {
+            while let Ok((mut socket, _)) = listener.accept().await {
+                let sent = sent.clone();
+                tokio::spawn(async move {
+                    let mut buf = vec![0u8; 16 * 1024];
+                    let mut got = Vec::new();
+                    // The head, then the body its content-length states.
+                    loop {
+                        let Ok(n) = socket.read(&mut buf).await else {
+                            return;
+                        };
+                        if n == 0 {
+                            return;
+                        }
+                        got.extend_from_slice(&buf[..n]);
+                        let text = String::from_utf8_lossy(&got).to_string();
+                        if let Some(at) = text.find("\r\n\r\n") {
+                            let length = text[..at]
+                                .lines()
+                                .find_map(|l| {
+                                    let (name, value) = l.split_once(':')?;
+                                    name.eq_ignore_ascii_case("content-length")
+                                        .then(|| value.trim().parse::<usize>().ok())
+                                        .flatten()
+                                })
+                                .unwrap_or(0);
+                            if got.len() >= at + 4 + length {
+                                let _ = sent.send(text);
+                                break;
+                            }
+                        }
+                    }
+                    let reply = format!(
+                        "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\
+                         connection: close\r\n\r\n{answer}",
+                        answer.len()
+                    );
+                    let _ = socket.write_all(reply.as_bytes()).await;
+                    let _ = socket.shutdown().await;
+                });
+            }
+        });
+        (port, heard)
+    }
+
+    /// The session door, served as production composes it, and what each root-leg cell reads.
+    pub(in crate::root::serve) struct SessionDoor {
+        _published: Published,
+        router: axum::Router,
+        heard: tokio::sync::mpsc::UnboundedReceiver<String>,
+        gov: Arc<GovState>,
+        pub(in crate::root::serve) app: Arc<busbar_kernel::state::App>,
+        key: busbar_contract::records::VirtualKey,
+        /// The key's data-plane token.
+        plain: String,
+        /// What a config apply refreshes the served door onto (`DoorApply::apply`).
+        pub(in crate::root::serve) live: Arc<crate::root::serve::DoorApply>,
+        money: Arc<PlaneMoney>,
+        post: Arc<NodeEndPost>,
+        book: crate::root::durability::NodeBook,
+    }
+
+    /// The linked plane door that meters audio (the session door), bound under `instance`; `None` in
+    /// a build that links none.
+    fn session_door(
+        instance: &'static str,
+        dispatcher: &Arc<Dispatcher>,
+        conns: Arc<dyn DeclaredConns>,
+    ) -> Option<crate::root::loader::dispatch::Plugin<Plane>> {
+        crate::LINKED.plane_doors.iter().find_map(|door| {
+            let row = LinkedRow::of(*door).expect("the door states its Statement");
+            let plane = load_linked::<Plane>(
+                &row,
+                Bind {
+                    instance: Arc::from(instance),
+                    max_inflight_cap: 64,
+                    sink: Arc::new(NoSink),
+                    dispatcher: dispatcher.adopter(),
+                    conns: crate::root::loader::dispatch::ConnTable::Host(Arc::clone(&conns)),
+                },
+            )
+            .expect("the linked door binds");
+            plane
+                .served()
+                .billable_classes
+                .contains(&AUDIO_CLASS)
+                .then_some(plane)
+        })
+    }
+
+    /// The process's connector over every linked transport door, its destination guard letting
+    /// the loopback far end through.
+    fn connector() -> Arc<busbar_core_connector::Connector> {
+        let judge = crate::root::connector::guard_for(&busbar_kernel::config::Destinations {
+            block_private_addresses: false,
+            ..Default::default()
+        })
+        .expect("the guard");
+        busbar_core_connector::process::build(
+            || {
+                crate::root::connector::entries(
+                    crate::LINKED_TRANSPORT_DOORS,
+                    &busbar_contract::transport::TransportSettings::default(),
+                )
+            },
+            judge,
+            &[],
+            Arc::new(|_| {}),
+            busbar_core_connector::pool::PoolPosture::NONE,
+        )
+        .expect("the connector builds")
+    }
+
+    /// The linked session door's Statement name (the plane door that meters audio, bound only to
+    /// read it); `None` in a build that links none. It holds the publishing lock, so it is called
+    /// outside a runtime.
+    pub(in crate::root::serve) fn name() -> Option<String> {
+        let _one = PUBLISHING.blocking_lock();
+        let instance = "session-door-name";
+        let _published = Published(instance);
+        let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
+        session_door(instance, &dispatcher, connector() as Arc<dyn DeclaredConns>)
+            .map(|plane| plane.name().to_owned())
+    }
+
+    /// [`session_keyed`] over a provider credential its file holds; the composition must succeed.
+    async fn session_served(instance: &'static str, budget: Option<u64>) -> Option<SessionDoor> {
+        let key_file = std::env::temp_dir().join(format!(
+            "busbar-serve-door-{instance}-{}",
+            std::process::id()
+        ));
+        std::fs::write(&key_file, CREDENTIAL).expect("the credential file");
+        let api_key = format!("{{file: '{}'}}", key_file.display());
+        let served = session_keyed(instance, budget, &api_key).await;
+        let _ = std::fs::remove_file(&key_file);
+        served.map(|s| {
+            s.unwrap_or_else(|e| panic!("the session door composes, its egress sealed: {e}"))
+        })
+    }
+
+    /// [`SessionDoor`]: the linked session door (the plane door that meters audio) bound through
+    /// the loader's one load, its needs declared on the connector over every linked transport door;
+    /// a signing governance book with one key (in a group whose all-time budget is `budget`, the
+    /// door's per-request fee one, or no group and no fee); a provider on the protocol the door
+    /// states a bearer default for, its credential the secret reference `api_key` (YAML), on a
+    /// loopback far end answering the mint, reached through the catalog model its section's
+    /// `session.model` names; the door composed under [`PUBLIC`] with its egress sealed by the
+    /// composition itself, and its claims mounted on the data router. `None` in a build that links
+    /// no session door; the composition's refusal is answered rather than panicked on: what the
+    /// root's boot dies on.
+    pub(in crate::root::serve) async fn session_keyed(
+        instance: &'static str,
+        budget: Option<u64>,
+        api_key: &str,
+    ) -> Option<Result<SessionDoor, String>> {
+        let published = Published(instance);
+        let (port, heard) = far_end_answering(MINTED).await;
+        let connector = connector();
+        let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
+        let plane = session_door(
+            instance,
+            &dispatcher,
+            Arc::clone(&connector) as Arc<dyn DeclaredConns>,
+        )?;
+        let plane_name = plane.name().to_owned();
+        let section_key = plane.served().section;
+        // THE PROVIDER'S PROTOCOL, read off the door's Statement rather than spelled here: the last
+        // dialect it states a `bearer` default outbound style for (its far-end spellings follow its
+        // arrival dialects), so this harness names no dialect.
+        let protocol = {
+            let served = plane.served();
+            served
+                .dialect_auth
+                .iter()
+                .rev()
+                .filter(|(_, style)| *style == "bearer")
+                .find_map(|(d, _)| {
+                    usize::try_from(*d)
+                        .ok()
+                        .and_then(|i| served.dialects.get(i).copied())
+                })
+                .expect("the session door states a bearer-style dialect")
+        };
+
+        let groups: BTreeMap<String, busbar_kernel::config::GroupCfg> = budget
+            .map(|amount| {
+                let limit = busbar_kernel::config::groups::LimitCfg {
+                    metric: busbar_kernel::config::groups::LimitMetric::Budget,
+                    amount,
+                    per: Some(busbar_kernel::config::groups::LimitWindow::Total),
+                    scope: None,
+                    on_exhaust: None,
+                    downgrade_to: None,
+                    admission: None,
+                    on_exhaustion: None,
+                };
+                let cfg = busbar_kernel::config::GroupCfg {
+                    parent: None,
+                    enabled: true,
+                    limits: vec![limit],
+                    ..Default::default()
+                };
+                (format!("{instance}-group"), cfg)
+            })
+            .into_iter()
+            .collect();
+        let cost = match budget {
+            None => CostModel::flat(1),
+            Some(_) => {
+                let fees: busbar_kernel::config::PlaneFeesMap = [(
+                    plane_name.clone(),
+                    busbar_kernel_ledger::cost::PlaneFees {
+                        per_request: 1,
+                        per_session: 0,
+                    },
+                )]
+                .into_iter()
+                .collect();
+                CostModel::resolve_parts(None, 0, &groups).with_plane_fees(&fees)
+            }
+        };
+        let signer = TokenSigner::from_secret_bytes(&[7u8; 32], DEFAULT_KID);
+        let gov = Arc::new(
+            GovState::new_with_signer(Arc::new(MemoryStore::new()), None, Some(signer))
+                .expect("governance"),
+        );
+        let (key, plain) = gov
+            .mint_signed(
+                NewKeySpec {
+                    name: "browser".to_string(),
+                    group: groups.keys().next().cloned(),
+                    ..Default::default()
+                },
+                4_000_000_000,
+                1_700_000_000,
+            )
+            .expect("mint");
+        gov.hydrate_budgets(&cost, 0).expect("hydrate");
+        let node = Arc::new(Node::new());
+        let book = crate::root::durability::node_book_over(Box::new(|| CARD.pin()));
+        node.bind_book(Arc::clone(&book.durability));
+        let post = Arc::new(NodeEndPost::new(Arc::clone(&node)));
+        let money = Arc::new(PlaneMoney::new(
+            Arc::clone(&gov),
+            Arc::clone(&post) as Arc<dyn EndPost>,
+        ));
+        let one = Arc::clone(&money);
+
+        let provider: busbar_kernel::config::ProviderCfg = serde_yaml::from_str(&format!(
+            "{{protocol: {protocol}, base_url: 'http://127.0.0.1:{port}', api_key: {api_key}, error_map: {{}}}}",
+        ))
+        .expect("a provider entry");
+        let providers = provider_routes(&std::collections::HashMap::from([(
+            "p".to_string(),
+            provider,
+        )]));
+        let catalog: std::collections::HashMap<String, busbar_contract::config::ModelCfg> =
+            serde_yaml::from_str("{m-cap: {provider: p}}").expect("the models catalog");
+        let secrets = busbar_kernel::config::secret::SecretResolver::builtins_only();
+        let auths = OutboundAuths::new(
+            Arc::clone(&dispatcher),
+            crate::LINKED.auths,
+            None,
+            crate::root::loader::dispatch::ConnTable::Host(
+                Arc::clone(&connector) as Arc<dyn DeclaredConns>
+            ),
+        );
+        let reach = DoorReach {
+            providers: &providers,
+            secrets: &secrets,
+            auths: Arc::new(auths),
+            conns: Arc::clone(&connector) as Arc<dyn PollConns>,
+            stream_ceiling_secs: 600,
+            catalog: Some(&catalog),
+            upgrades: Vec::new(),
+        };
+        let mut sections = BTreeMap::new();
+        sections.insert(
+            section_key,
+            serde_yaml::from_str("session: {model: m-cap}").expect("a section"),
+        );
+        let mut served = match compose_planes(
+            &[(instance.to_string(), plane)],
+            &dispatcher,
+            &composed_services(),
+            &sections,
+            Some(PUBLIC),
+            &move || Arc::clone(&one),
+            Some(&DoorEgress {
+                reach: &reach,
+                journal: Arc::clone(&post) as Arc<dyn busbar_kernel_egress::ports::Journal>,
+            }),
+            None,
+        ) {
+            Ok(served) => served,
+            Err(refusal) => return Some(Err(refusal)),
+        };
+        assert!(
+            served.planes[0].live.current().egress.is_some(),
+            "the composition sealed its egress"
+        );
+        let live = Arc::clone(&served.planes[0].live);
+        served.post = Some(Arc::clone(&post));
+        let app = busbar_kernel::test_support::TestApp::new().keys_chain();
+        let app = groups
+            .iter()
+            .fold(app, |app, (name, cfg)| app.group(name, cfg.clone()));
+        let app = app.governance(Arc::clone(&gov)).cost(cost).build();
+        let doors = door_routes(served, || CARD.pin(), &[], &[]).expect("its claims mount");
+        let (router, _admin, _handle) =
+            busbar_kernel::build_split_routers_serving(Arc::clone(&app), doors, 1 << 20, 0, false);
+        Some(Ok(SessionDoor {
+            _published: published,
+            router,
+            heard,
+            gov,
+            app,
+            key,
+            plain: plain.expose_secret().clone(),
+            live,
+            money,
+            post,
+            book,
+        }))
+    }
+
+    impl SessionDoor {
+        /// The keyed caller's mint through the door: its response.
+        pub(in crate::root::serve) async fn mint(&self) -> axum::response::Response {
+            send_body(&self.router, MINT, Some(&self.plain), "{}").await
+        }
+
+        /// The requests the governance book admitted for the key, this window.
+        fn requests(&self) -> u64 {
+            self.gov
+                .usage_for(&self.app.cost, &self.key.id, busbar_kernel::store::now())
+                .expect("a read")
+                .expect("the key exists")
+                .requests
+        }
+
+        /// The node book's lines for the session door's catalog route.
+        fn lines(&self) -> usize {
+            let rows = self.book.durability.lock().expect("unpoisoned").read_back();
+            rows.iter()
+                .filter(|p| p.counts.as_ref().is_some_and(|c| c.lane.ends_with("m-cap")))
+                .count()
+        }
+    }
+
+    /// THE SESSION DOOR'S MINT, SERVED (its root leg, ARCHITECT 2026-10-05 Q1): a keyed caller's
+    /// `POST /v1/realtime/client_secrets` is one unit the door carries (ARRIVAL), admitted for the
+    /// key its token resolves (AUTHENTICATE), dialled to the destination the guard judged (VERIFY)
+    /// on the DIRECT route to the catalog model its section's `session.model` names (ROUTE), sent
+    /// WITH THE PROVIDER'S OWN CREDENTIAL and never the caller's token (EGRESS-AUTH), charged to
+    /// the key that presented it (METER, GOVERNANCE-BUDGET), and closed once with its one line on
+    /// the node's book (AUDIT, EXIT). (The door's audience binding is the deployment's mount
+    /// table's, judged end to end by the oracle's wrong-audience mint cell.)
+    ///
+    /// RED ARM: the same request with no credential is refused before anything is dialled or charged.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_session_door_mint_is_served_under_the_providers_credential() {
+        let _one = PUBLISHING.lock().await;
+        let Some(mut s) = session_served("serve-door-session", None).await else {
+            eprintln!("skip: this build links no session door");
+            return;
+        };
+
+        let refused = send_body(&s.router, MINT, None, "{}").await;
+        assert_eq!(
+            refused.status().as_u16(),
+            u16::try_from(refusal_status(ReasonCode::Unauthenticated)).expect("a status"),
+            "an unkeyed caller is refused at the session door"
+        );
+        assert!(s.heard.try_recv().is_err(), "nothing was dialled for it");
+        assert_eq!(s.requests(), 0, "nor charged");
+
+        let response = send_body(&s.router, MINT, Some(&s.plain), "{}").await;
+        assert_eq!(response.status(), StatusCode::OK, "served through the door");
+        let body = axum::body::to_bytes(response.into_body(), 1 << 16)
+            .await
+            .expect("the body");
+        let body: serde_json::Value = serde_json::from_slice(&body).expect("the door's JSON");
+        assert_eq!(
+            body,
+            serde_json::json!({"value": "ek_door_0001", "expires_at_unix": 1_767_225_600_u64}),
+            "the minted secret and its expiry"
+        );
+
+        let head = s.heard.recv().await.expect("the provider was dialled");
+        assert!(head.starts_with(&format!("POST {MINT} ")), "{head}");
+        assert!(
+            head.lines()
+                .any(|l| l.eq_ignore_ascii_case(&format!("authorization: Bearer {CREDENTIAL}"))),
+            "the provider's own credential: {head}"
+        );
+        assert!(
+            !head.contains(&s.plain),
+            "the caller's token never reaches the provider: {head}"
+        );
+        assert!(
+            head.contains(r#""model":"m-cap""#),
+            "the locked session on the catalog model: {head}"
+        );
+
+        assert_eq!(
+            s.requests(),
+            1,
+            "one admitted request, on the presenting key"
+        );
+        assert_eq!(s.money.open_units(), 0, "its money facts closed");
+        assert_eq!(s.post.open_units(), 0, "its node facts closed");
+        assert_eq!(s.lines(), 1, "its one line on the node's book");
+    }
+
+    /// ADMIT, at the session door (its root leg): a key whose group budget is already spent is
+    /// refused at admission — over budget, before the provider is dialled, charged nothing, no line
+    /// written — while a key with room is served (the mint cell above). RED: a door that dialled
+    /// before admission would have reached the far end.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_spent_key_is_refused_at_the_session_door_before_any_dial() {
+        let _one = PUBLISHING.lock().await;
+        let Some(mut s) = session_served("serve-door-session-spent", Some(0)).await else {
+            eprintln!("skip: this build links no session door");
+            return;
+        };
+        let response = send_body(&s.router, MINT, Some(&s.plain), "{}").await;
+        assert_eq!(
+            response.status().as_u16(),
+            429,
+            "an over-budget caller is refused at admission"
+        );
+        assert!(
+            s.heard.try_recv().is_err(),
+            "the provider was never dialled"
+        );
+        assert_eq!(s.requests(), 0, "the refusal charged nothing");
+        assert_eq!(s.money.open_units(), 0);
+        assert_eq!(s.post.open_units(), 0);
+        assert_eq!(s.lines(), 0, "no line on the node's book");
+    }
 }
 
 /// THE ROOT-MCP LEG'S LOOP CELLS (U14): the MCP plane served through its memory-ABI door, composed by
@@ -2260,6 +2800,7 @@ async fn serve_configured(
         auths: Arc::new(auths),
         conns: Arc::clone(&connector) as Arc<dyn PollConns>,
         stream_ceiling_secs: 600,
+        catalog: None,
         upgrades: Vec::new(),
     };
     let mut sections = BTreeMap::new();

@@ -4,23 +4,14 @@
 # shellcheck shell=bash
 # shellcheck disable=SC2034  # LEG_KIND/LEG_STATUS/LEG_SLICES are read by voice-conformance.sh on source
 #
-# LEG: gemini-live-route (the second-dialect route) — the Gemini Live dialect has a MOUNTED route, not just a codec.
+# LEG: gemini-live-route — the Gemini Live dialect has a door, not just a codec.
 #
-# The spec-per-dialect and cross-parity legs already prove the Gemini Live codec is correct in
-# isolation: wire<->IR round trips, and agreement with OpenAI Realtime where the cross-dialect map
-# says the two must agree. Neither leg drives the MOUNT: `PLANE_DECL.wire_format_names` named
-# `gemini_live` as a dialect the plane speaks, but `voice_claims` / `voice_ws_arrivals` named only the
-# OpenAI base, so a caller had no ingress path to reach it at all — a real second dialect the plane
-# could not actually serve.
-#
-# This leg judges the route, on the plane's own PUBLIC functions (the same ones the composition root
-# and the core router call): the dispatch slot claims a Gemini-labelled base distinct from the OpenAI
-# one, the plane still admits exactly one audience for both, a Gemini WS-accept arrival is declared
-# and keyed to this plane's own slot, and — the wire handshake itself — a provider's `setupComplete`
-# relays to the client verbatim through the EXACT `SessionCore<GeminiLiveCodec>` type the mounted
-# route's `WsArrivalSpec` closure closes over.
-#
-# WAS RED: no ingress route spoke Gemini Live at all.
+# THE DOOR'S HALF (judged, linked AND dropped door): the snapshot claims `GET
+# /v1/realtime/gemini/{call_id}` (an upgrade line whose refusals render in Gemini's dialect) beside the
+# OpenAI doors under the ONE audience; `arrive` on it answers the gemini_live dialect for a principal
+# on the session model's DIRECT route; and the handshake crosses the door — the caller's `setup`
+# reaches the far end as a Gemini setup on the Live socket need, the far end's `setupComplete` reaches
+# the caller verbatim. RED arm: a Gemini claim refused in the OpenAI dialect fails.
 
 # shellcheck source=../lib/conform-bin.sh disable=SC1091
 . "$(dirname "${BASH_SOURCE[0]}")/../lib/conform-bin.sh"

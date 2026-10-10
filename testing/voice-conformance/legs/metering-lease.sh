@@ -4,21 +4,19 @@
 # shellcheck shell=bash
 # shellcheck disable=SC2034  # LEG_KIND/LEG_STATUS/LEG_SLICES are read by voice-conformance.sh on source
 #
-# LEG: metering-lease — a served session's money hop is the HOST's, and its ceiling is the CALLER's.
+# LEG: metering-lease — a session's units, reported per declared class (BUSBAR-1.6.0.md THE DESIGN
+# §1 step "meter"; Part 3 §12: "only far-end-reported units bill").
 #
-# The governance leg proves the D2 lease hard-closes at whatever cap it is handed. This leg judges the
-# question one step earlier, which fails independently: WHERE the lease lives and WHOSE budget sets
-# its cap. A served session must reserve on the host's own reserve-then-settle lease — the one the
-# rest of the deployment's spend flows through — with the ceiling read off the presenting principal's
-# real budget chain: the tightest remaining bucket, widened from the budget projection's micro-units
-# into the lease's nanodollars.
+# THE DOOR'S HALF (judged, linked AND dropped door): the tail declares the six counted classes plus the
+# per-session fee unit; `arrive` admits on no estimate; every session answer reports cumulative
+# REPORTED units — a turn's far-end tokens and its audio seconds once per turn (a short answer's re-call
+# does not count its audio twice), the open turn settled once at the end, and the fee only once the
+# far end answered (a session whose far end never answered reports none). RED arm: a door reporting one
+# token more than the far end sent fails.
 #
-# The two boundaries are judged too: a caller with nothing capped anywhere in its chain has no ceiling
-# to impose and stays uncapped (exactly as an unbudgeted model call does), and a caller whose budget
-# is already spent is denied at the reserve, so it never opens a session at all.
-#
-# WAS RED: every session reserved an uncapped in-process cell, so no caller's budget could reach a
-# live session and the host never saw the lease.
+# THE KERNEL'S HALF: the session account — reserving against the caller's budget chain, capping at its
+# tightest remaining bucket, ledgering the counts (served leg:
+# crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_meters_each_turn_per_declared_class).
 
 # shellcheck source=../lib/conform-bin.sh disable=SC1091
 . "$(dirname "${BASH_SOURCE[0]}")/../lib/conform-bin.sh"

@@ -100,12 +100,12 @@
       "note": "the A2A plane's SERVED root leg: the inbound call driven through the real router and the kernel-loop rider `gauntlet_install::install()` registers for the plane's key (DECISIONS #28), each root cell running the plane's own served witness (`busbar_a2a::testkit::SERVED`) and requiring its `drive` to have run inside the loop"
     },
     "root-voice": {
-      "file": "crates/busbar/src/root/tests/gauntlet_kernel.rs",
+      "file": "crates/busbar/src/root/tests/serve_tests.rs",
       "columns": [
         "streaming-client",
         "streaming-server"
       ],
-      "note": "the voice (streaming) plane's SERVED root leg: a live session opened at the plane's served door through the kernel-loop SESSION rider `gauntlet_install::install()` registers for the plane's key (DECISIONS #28), each root cell running the plane's own served witness (`busbar_voice::testkit::SERVED`) and requiring the session's open to have run through the loop's door; the turns, their metering on the kernel's session account (Q21b), the audit row and the durable chain are the served session the witness then drives"
+      "note": "the streaming plane's SERVED root leg since FLIP-STREAMING: the streaming door, linked and bound through the loader's one load, composed as production seals it (its egress over the connector, its DIRECT route to the catalog model streams.session.model names) and mounted on the data router, driven end to end by root/tests/serve_tests.rs (carried by serve.rs through #[path]); the kernel-loop session rider no longer carries this plane"
     },
     "root-admin": {
       "file": "crates/busbar/src/root/units_admin/tests/units_admin.rs",
@@ -981,12 +981,11 @@
     {
       "capability": "breaker-trip",
       "plane": "streaming-client",
-      "state": "proven",
-      "test": "crates/busbar-voice/src/tests/breaker_tests.rs::a_hard_down_provider_records_into_the_core_cell_and_opens_it",
+      "state": "missing",
       "root": {
         "state": "none",
         "leg": "root-voice",
-        "reason": "the served session witness trips the provider cell with a guard-refused dial only to show the fast-fail after it; no served witness records a failing dial into the breaker cell and asserts the trip itself as its claim"
+        "reason": "no streaming-door cell dials a failing provider and asserts the trip of the core breaker cell; the door's served cells reach a live loopback provider only"
       }
     },
     {
@@ -1002,12 +1001,11 @@
     {
       "capability": "breaker-fastfail",
       "plane": "streaming-client",
-      "state": "proven",
-      "test": "crates/busbar-voice/src/tests/breaker_tests.rs::a_tripped_provider_cell_refuses_before_the_dial",
+      "state": "missing",
       "root": {
-        "state": "proven",
+        "state": "none",
         "leg": "root-voice",
-        "test": "crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_fast_fails_a_tripped_upstream"
+        "reason": "no streaming-door cell trips the provider's breaker cell before the mint; the served mint and the spent-key refusal are the door's two cells, neither drives a tripped upstream"
       }
     },
     {
@@ -1044,88 +1042,82 @@
       "capability": "hooks-tap",
       "plane": "streaming-client",
       "state": "proven",
-      "test": "crates/busbar-voice/src/tests/hook_tap_tests.rs::a_rewrite_hook_edits_the_session_open_params_before_the_provider_dial",
+      "test": "crates/busbar-plane-streaming/tests/conformance.rs::a_session_open_is_projected_for_the_hooks_and_a_rewrite_patches_it",
       "root": {
         "state": "none",
         "leg": "root-voice",
-        "reason": "no served session witness attaches an observe or transform hook; the witnesses open sessions at the served door with no hook attached, so no payload on this leg passes through one"
+        "reason": "no streaming-door cell attaches an observe or transform hook to the mint; the door projects a session open for the hooks (its own conformance cell), but no root cell drives a hook stage over it"
       }
     },
     {
       "capability": "hooks-tap",
       "plane": "streaming-server",
       "state": "proven",
-      "test": "crates/busbar-voice/src/tests/hook_tap_tests.rs::a_rewrite_hook_edits_the_session_open_params_before_the_provider_dial",
+      "test": "crates/busbar-plane-streaming/tests/conformance.rs::a_session_open_is_projected_for_the_hooks_and_a_rewrite_patches_it",
       "root": {
         "state": "none",
         "leg": "root-voice",
-        "reason": "no served session witness attaches an observe or transform hook; the witnesses open sessions at the served door with no hook attached, so no payload on this leg passes through one"
+        "reason": "the streaming door's served cells run with no hook stage composed (compose_planes is handed no HookStage), so no payload on the root leg passes through a tap or a rewrite"
       }
     },
     {
       "capability": "hooks-gate",
       "plane": "streaming-client",
-      "state": "proven",
-      "test": "crates/busbar-voice/src/tests/hook_gate_tests.rs::a_reject_all_operator_gate_refuses_a_ws_accept_before_the_upgrade",
+      "state": "missing",
       "root": {
         "state": "none",
         "leg": "root-voice",
-        "reason": "the refusal a session meets on the served leg's witnesses is the session-scope grant's at the door; no served witness attaches an operator gate, so hooks::gate::decide is reached by no cell on this leg"
+        "reason": "no streaming-door cell composes an operator gate; the refusals the door's root cells meet are the audience check and the spent budget, never hooks::gate::decide"
       }
     },
     {
       "capability": "hooks-gate",
       "plane": "streaming-server",
-      "state": "proven",
-      "test": "crates/busbar-voice/src/tests/hook_gate_tests.rs::a_reject_all_operator_gate_refuses_a_ws_accept_before_the_upgrade",
+      "state": "missing",
       "root": {
         "state": "none",
         "leg": "root-voice",
-        "reason": "the refusal a session meets on the served leg's witnesses is the session-scope grant's at the door; no served witness attaches an operator gate, so hooks::gate::decide is reached by no cell on this leg"
+        "reason": "the served mint and the spent-key refusal reach the door with no gate hook composed, so a gate refusal before dispatch is driven by no root cell on this leg"
       }
     },
     {
       "capability": "audit-chain",
       "plane": "streaming-client",
-      "state": "proven",
-      "test": "crates/busbar-voice/src/tests/audit_chain_tests.rs::an_opened_voice_session_seals_a_genesis_event_and_survives_reattach_on_the_durable_chain",
+      "state": "missing",
       "root": {
-        "state": "proven",
+        "state": "none",
         "leg": "root-voice",
-        "test": "crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_chains_what_it_audits"
+        "reason": "the served mint's one line lands on the node's book, but no streaming-door cell reads the tamper-evident chain back and verifies its link"
       }
     },
     {
       "capability": "audit-chain",
       "plane": "streaming-server",
-      "state": "proven",
-      "test": "crates/busbar-voice/src/tests/audit_chain_tests.rs::an_inbound_session_open_lands_a_sealed_genesis_event_the_front_door_wrote",
+      "state": "missing",
       "root": {
-        "state": "proven",
+        "state": "none",
         "leg": "root-voice",
-        "test": "crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_chains_what_it_audits"
+        "reason": "no root cell on the streaming door verifies the audit record chain across the mint's line or the spent-key refusal; the chain's own cells live on the durability tests"
       }
     },
     {
       "capability": "governance-budget",
       "plane": "streaming-client",
-      "state": "proven",
-      "test": "crates/busbar-voice/src/tests/governance_budget_tests.rs::a_session_lease_settled_past_its_cap_hard_closes_and_refuses_further_spend",
+      "state": "missing",
       "root": {
         "state": "proven",
         "leg": "root-voice",
-        "test": "crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_charges_the_presenting_key"
+        "test": "crates/busbar/src/root/tests/serve_tests.rs::a_session_door_mint_is_served_under_the_providers_credential"
       }
     },
     {
       "capability": "governance-budget",
       "plane": "streaming-server",
-      "state": "proven",
-      "test": "crates/busbar-voice/src/tests/governance_budget_tests.rs::the_session_lease_bills_the_presenting_key_and_refuses_past_the_cap_with_a_hard_close",
+      "state": "missing",
       "root": {
         "state": "proven",
         "leg": "root-voice",
-        "test": "crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_charges_the_presenting_key"
+        "test": "crates/busbar/src/root/tests/serve_tests.rs::a_spent_key_is_refused_at_the_session_door_before_any_dial"
       }
     },
     {
@@ -1151,23 +1143,21 @@
     {
       "capability": "metrics",
       "plane": "streaming-client",
-      "state": "proven",
-      "test": "crates/busbar-voice/src/tests/metrics_tests.rs::a_voice_session_open_increments_the_plane_labelled_counter",
+      "state": "missing",
       "root": {
-        "state": "proven",
+        "state": "none",
         "leg": "root-voice",
-        "test": "crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_reports_each_session_it_opens"
+        "reason": "no streaming-door cell scrapes the metrics registry after the mint; the door's root cells assert the money and the wire, not the plane-labelled counters"
       }
     },
     {
       "capability": "metrics",
       "plane": "streaming-server",
-      "state": "proven",
-      "test": "crates/busbar-voice/src/tests/metrics_tests.rs::a_voice_session_open_increments_the_plane_labelled_counter",
+      "state": "missing",
       "root": {
-        "state": "proven",
+        "state": "none",
         "leg": "root-voice",
-        "test": "crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_reports_each_session_it_opens"
+        "reason": "the door's served cells build no metrics recorder, so no session or mint counter under the plane's label is observed on this leg"
       }
     },
     {
@@ -1213,12 +1203,11 @@
     {
       "capability": "egress-auth",
       "plane": "streaming-client",
-      "state": "proven",
-      "test": "crates/busbar-voice/src/tests/egress_tests.rs::the_provider_dial_carries_the_planned_credential_and_never_a_caller_token",
+      "state": "missing",
       "root": {
-        "state": "none",
+        "state": "proven",
         "leg": "root-voice",
-        "reason": "the served session witnesses compose no provider endpoint; the credential a provider dial is reached with is composed by the plane's compose step and no served witness drives its injection"
+        "test": "crates/busbar/src/root/tests/serve_tests.rs::a_session_door_mint_is_served_under_the_providers_credential"
       }
     },
     {

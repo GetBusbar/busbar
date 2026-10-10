@@ -91,7 +91,7 @@
     },
     "root-voice": {
       "plane": "voice",
-      "file": "crates/busbar/src/root/tests/gauntlet_kernel.rs",
+      "file": "crates/busbar/src/root/tests/serve_tests.rs",
       "feature": "plane-streaming"
     },
     "root-admin": {
@@ -444,8 +444,8 @@
         "root": {
           "state": "proven",
           "leg": "root-voice",
-          "test": "crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_carries_one_unit_per_call",
-          "note": "on the served session leg (the kernel-loop session rider `install()` registers for the streaming plane's key): each call at the voice door is one session open the rider carries and one report, so two calls are two units, never one"
+          "test": "crates/busbar/src/root/tests/serve_tests.rs::a_session_door_mint_is_served_under_the_providers_credential",
+          "note": "on the streaming door's served leg: the browser's mint is one unit the door carries end to end, from the data router's claim to the provider's answer relayed to the caller"
         }
       },
       "decode": {
@@ -453,10 +453,9 @@
         "status": "mapped",
         "note": "testing/voice-conformance/legs/spec-per-dialect.sh; the per-dialect spec battery includes decode-shape checks",
         "root": {
-          "state": "proven",
+          "state": "none",
           "leg": "root-voice",
-          "test": "crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_refuses_a_body_that_does_not_decode",
-          "note": "on the served session leg: a client event the plane reads is carried to the upstream, and a frame the plane cannot read reaches the upstream on no wire at all, on a session the rider opened"
+          "note": "the streaming door's mint takes no caller body (the locked session is the plane's own), so no root cell on this leg can feed it a body that fails to decode"
         }
       },
       "authenticate": {
@@ -466,8 +465,8 @@
         "root": {
           "state": "proven",
           "leg": "root-voice",
-          "test": "crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_attributes_the_session_to_the_resolved_key",
-          "note": "on the served session leg: the session answers for the key the door resolved and for nobody else -- its turns land on that key's own ledger, and a caller the door resolved no key for is attributed nothing"
+          "test": "crates/busbar/src/root/tests/serve_tests.rs::a_session_door_mint_is_served_under_the_providers_credential",
+          "note": "on the streaming door's served leg: the mint is admitted for the key its token resolves, and the same request with no credential is refused before any dial or charge"
         }
       },
       "verify": {
@@ -477,8 +476,8 @@
         "root": {
           "state": "proven",
           "leg": "root-voice",
-          "test": "crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_opens_the_session_on_the_destination_it_judged",
-          "note": "on the served session leg: the destination the open-pass gate judged inside the rider is the destination the session is metered under -- every count lands under that one lane"
+          "test": "crates/busbar/src/root/tests/serve_tests.rs::a_session_door_mint_is_served_under_the_providers_credential",
+          "note": "on the streaming door's served leg: the mint reaches the provider through the connector at the destination its guard judged, the catalog model's provider on loopback"
         }
       },
       "approve": {
@@ -486,10 +485,9 @@
         "status": "mapped",
         "note": "testing/voice-conformance/legs/session-scope.sh; K3 -- the session scope kind is a gate, not vocabulary",
         "root": {
-          "state": "proven",
+          "state": "none",
           "leg": "root-voice",
-          "test": "crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_refuses_a_grant_short_of_the_operation",
-          "note": "on the served session leg: a key valid for the door but granted no session scope is refused with the plane's own answer before the gate and opens nothing; a granted key reaches the governed open"
+          "note": "no streaming-door cell mints a key short of the mint's grant; the door's two root cells drive an admitted key and a spent one"
         }
       },
       "admit": {
@@ -499,8 +497,8 @@
         "root": {
           "state": "proven",
           "leg": "root-voice",
-          "test": "crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_refuses_an_over_budget_caller_before_it_dials",
-          "note": "on the served session leg: a key whose chain already reads dry is refused at the open, past the rider's gate and before any durable row or account exists, while a key with room opens"
+          "test": "crates/busbar/src/root/tests/serve_tests.rs::a_spent_key_is_refused_at_the_session_door_before_any_dial",
+          "note": "on the streaming door's served leg: a key whose group budget is spent is refused 429 at admission, the provider never dialled and nothing charged"
         }
       },
       "route": {
@@ -510,8 +508,8 @@
         "root": {
           "state": "proven",
           "leg": "root-voice",
-          "test": "crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_opens_a_session_that_relays_both_ways",
-          "note": "on the served session leg: the session the rider opened relays the provider's audio down to the client and the client's audio up to the provider"
+          "test": "crates/busbar/src/root/tests/serve_tests.rs::a_session_door_mint_is_served_under_the_providers_credential",
+          "note": "on the streaming door's served leg: the mint is routed DIRECT to the catalog model streams.session.model names, its locked session carrying that model to the provider"
         }
       },
       "meter": {
@@ -521,8 +519,8 @@
         "root": {
           "state": "proven",
           "leg": "root-voice",
-          "test": "crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_meters_each_turn_per_declared_class",
-          "note": "on the served session leg: one turn is ledgered on the presenting key per class the plane declares, the two text halves on their own classes rather than summed (Q21b: the kernel's session account)"
+          "test": "crates/busbar/src/root/tests/serve_tests.rs::a_session_door_mint_is_served_under_the_providers_credential",
+          "note": "on the streaming door's served leg: the served mint is one request on the governance ledger of the key that presented it"
         }
       },
       "audit": {
@@ -532,8 +530,8 @@
         "root": {
           "state": "proven",
           "leg": "root-voice",
-          "test": "crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_audits_each_call_once",
-          "note": "on the served session leg: a served open lands exactly one admin-audit row naming the mutation, the session, its outcome and its principal"
+          "test": "crates/busbar/src/root/tests/serve_tests.rs::a_session_door_mint_is_served_under_the_providers_credential",
+          "note": "on the streaming door's served leg: the served mint writes exactly one line on the node's book, the unit's one record"
         }
       },
       "exit": {
@@ -543,8 +541,8 @@
         "root": {
           "state": "proven",
           "leg": "root-voice",
-          "test": "crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_ends_each_call_once",
-          "note": "on the served session leg: the session ends once -- the turn still open when the carrier ends is ledgered with the session, and the durable row is settled and evicted"
+          "test": "crates/busbar/src/root/tests/serve_tests.rs::a_session_door_mint_is_served_under_the_providers_credential",
+          "note": "on the streaming door's served leg: the mint's money facts and node facts close once at its end, nothing left open on either"
         }
       }
     },

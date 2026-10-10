@@ -208,6 +208,48 @@ fn no_door_plane_composes_nothing_and_needs_no_services() {
     assert!(served.planes.is_empty());
 }
 
+/// THE CATALOG ROUTE (ARCHITECT Q-L5B-ROUTE, 2026-10-03): a section whose `session.model` names a
+/// top-level catalog model has that entry folded into its route table, so the door steps resolve the
+/// door's DIRECT route to it (unchanged); a section with its own `models:`, or naming a model the
+/// catalog lacks, keeps its table as written. The settings the door opens with are never folded.
+#[test]
+fn a_session_model_from_the_top_level_catalog_is_folded_into_the_route_table() {
+    use crate::root::door_steps::DoorPools;
+    use busbar_contract::abi::plane::ROUTE_DIRECT;
+    let catalog: std::collections::HashMap<String, busbar_contract::config::ModelCfg> =
+        serde_yaml::from_str(
+            "gpt-rt: { provider: p, upstream_model: gpt-realtime, attempt_timeout_ms: 900 }\n",
+        )
+        .expect("the catalog");
+    let section: serde_yaml::Value =
+        serde_yaml::from_str("session: { model: gpt-rt }\nsession_max_secs: 60\n").expect("yaml");
+    let routes = super::catalog_routes(&section, &catalog);
+    assert_eq!(
+        routes["models"]["gpt-rt"],
+        serde_yaml::from_str::<serde_yaml::Value>(
+            "{ provider: p, upstream_model: gpt-realtime, attempt_timeout_ms: 900 }"
+        )
+        .expect("yaml"),
+        "the catalog entry's routing facts, folded"
+    );
+    assert_eq!(
+        routes["session"], section["session"],
+        "the section stays as written"
+    );
+    let pools = DoorPools::of(&routes);
+    assert_eq!(
+        pools.resolve(ROUTE_DIRECT, Some(b"gpt-rt")),
+        Some((String::new(), vec!["gpt-rt".to_string()])),
+        "the door's DIRECT route resolves to the folded entry"
+    );
+    let unknown: serde_yaml::Value =
+        serde_yaml::from_str("session: { model: nope }\n").expect("yaml");
+    assert_eq!(super::catalog_routes(&unknown, &catalog), unknown);
+    let own: serde_yaml::Value =
+        serde_yaml::from_str("session: { model: gpt-rt }\nmodels: { mine: {} }\n").expect("yaml");
+    assert_eq!(super::catalog_routes(&own, &catalog), own);
+}
+
 /// RED, THE DIALECT FACTS AT OPEN (THE DESIGN §4: a plane receives, at open, the dialect fields of
 /// the providers it references): the providers its section's `models.<m>.provider` entries name,
 /// once each in the order first referenced, cross `PlaneOpenIn::providers` with their resolved

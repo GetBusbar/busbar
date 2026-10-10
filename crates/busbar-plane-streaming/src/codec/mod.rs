@@ -3,8 +3,9 @@
 
 //! THE VOICE DUPLEX CODECS — the pure half of the voice protocol plugin.
 //!
-//! `busbar-voice` held two things behind one name: these codecs — the plane-4 duplex/session
-//! intermediate representation (media frames, control, events, tools, session config, usage), the
+//! The retired `busbar-voice` crate held two things behind one name: these codecs — the plane-4
+//! duplex/session intermediate representation (media frames, control, events, tools, session
+//! config, usage), the
 //! shared duplex reader/writer over it, the Gemini Live dialect and the Twilio Media Streams
 //! grammar — and the runtime that carries them over a live socket (the axum mount, the WebSocket
 //! accept, the tokio session tasks, the telephony dial, the HTTPS token minter). The plane crate
@@ -14,10 +15,9 @@
 //! earlier spelling and was DELETED into `busbar-plane-streaming` at `fbead1a31`, #18/#83.)
 //!
 //! So the codecs live here, naming only the plugin contract (`busbar-contract`, for the base64 media
-//! transcode, the billing carrier and its reserved unit names) plus serde and `bytes`.
-//! `busbar-voice` depends on this crate and re-exports every module that moved under
-//! its old path, so `busbar_voice::ir::…` and `busbar_voice::topology::twilio::…` resolve exactly
-//! what they always did. The split is a MOVE: no item changed shape crossing it.
+//! transcode, the billing carrier and its reserved unit names) plus serde and `bytes`. The split
+//! was a MOVE: no item changed shape crossing it. The runtime half was deleted at FLIP-STREAMING,
+//! once this plane's door served every route.
 
 /// THE REGISTRY KEY THE STREAMING PLANE IS KNOWN BY — the string the composition root flips
 /// onto the unified kernel loop's session admit
@@ -25,9 +25,7 @@
 /// gauntlet reports from its `GauntletPlane::capability_key`.
 ///
 /// Named ONCE, here, on the pure side of the split, because the plane's `capability_key` and the
-/// composition-root FLIP must reference the SAME literal or a swap could drift onto two. It agrees
-/// with `busbar-voice`'s `PLANE_DECLARATION.key` (`"streaming"`). `busbar-voice` re-exports it as
-/// `busbar_voice::PLANE_KEY`, the one stable path the `busbar` binary names.
+/// composition-root FLIP must reference the SAME literal or a swap could drift onto two.
 pub const PLANE_KEY: &str = "streaming";
 
 pub mod ir;

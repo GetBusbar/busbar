@@ -215,10 +215,8 @@ pub const PLANE_CRATES: &[PlaneCrate] = &[
         dir: "busbar-a2a",
         placement: "#83 SPLIT -> def 16-20",
     },
-    PlaneCrate {
-        dir: "busbar-voice",
-        placement: "#83 SPLIT -> def 16-20",
-    },
+    // `busbar-voice` is struck: FLIP-STREAMING deleted the legacy streams crate, and the streaming
+    // plane is `busbar-plane-streaming`, scanned as a plane crate.
 ];
 
 /// The five CONTRACT planes that must each still declare at least one meter class ([`ROW_DECLARATION`]).

@@ -350,7 +350,6 @@ dependencies = [
  "busbar-transport-tcp",
  "busbar-transport-tcp-plugin",
  "busbar-transport-ws",
- "busbar-voice",
  "bytes",
  "core_affinity",
  "criterion",
@@ -912,11 +911,12 @@ dependencies = [
 name = "busbar-plane-streaming"
 version = "1.6.0"
 dependencies = [
- "async-trait",
  "busbar-contract",
+ "busbar-plugin-loader",
  "bytes",
  "serde",
  "serde_json",
+ "url",
 ]
 
 [[package]]
@@ -1053,29 +1053,6 @@ dependencies = [
  "busbar-contract",
  "serde_json",
  "tokio-tungstenite",
-]
-
-[[package]]
-name = "busbar-voice"
-version = "1.6.0"
-dependencies = [
- "async-trait",
- "axum",
- "busbar-contract",
- "busbar-kernel",
- "busbar-plane-streaming",
- "bytes",
- "futures",
- "http",
- "http-body-util",
- "metrics",
- "serde",
- "serde_json",
- "serde_yaml_ng",
- "tokio",
- "tokio-tungstenite",
- "tracing",
- "url",
 ]
 
 [[package]]
@@ -4237,6 +4214,17 @@ name = "version_check"
 version = "0.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
+
+[[package]]
+name = "voice-conformance-harness"
+version = "0.0.0"
+dependencies = [
+ "busbar-contract",
+ "busbar-plane-streaming",
+ "busbar-plugin-loader",
+ "bytes",
+ "serde_json",
+]
 
 [[package]]
 name = "vsimd"

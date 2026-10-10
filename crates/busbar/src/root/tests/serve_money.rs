@@ -875,6 +875,7 @@ async fn the_boot_composition_serves_a_dropped_in_door_plane_in_every_build() {
         )),
         conns: Arc::new(busbar_core_connector::Connector::new()),
         stream_ceiling_secs: 1,
+        catalog: None,
         upgrades: Vec::new(),
     };
     let mut sections = BTreeMap::new();

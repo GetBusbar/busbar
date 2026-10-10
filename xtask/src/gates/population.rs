@@ -17,7 +17,7 @@
 //!
 //! * [`Population::below_floor`] — the aggregate ratchet. It is not `> 0`: a walk that collapses to
 //!   a handful of files reports no findings and reads exactly like a clean tree. The floor is a
-//!   RATCHET pinned AT the measured count ([`FLOOR`], 941 on predev bd39476618), not a margin
+//!   RATCHET pinned AT the measured count ([`FLOOR`], 926 after FLIP-STREAMING), not a margin
 //!   below it: one file fewer is refused until a reviewed diff re-measures. It is raised as the
 //!   tree grows, never lowered to accommodate a scan that stopped finding things.
 //! * [`Population::drained`] — a crate that has a `src/` and contributed NOTHING. The floor catches
@@ -33,11 +33,14 @@ use crate::ctx::{Ctx, Overlay, SourceFile, WalkSpec};
 /// and added 4, and a floor above the count leaves every gate's floor row red on a clean tree. It
 /// was re-pinned from 941 to 942 when predev grew by one file, which the selftest plant caught,
 /// and back to 941 when #648 (q128-kernel-ledger) deleted `busbar-kernel-ledger/src/usage/series.rs`
-/// — the one non-test file that merge removed, a reviewed removal and not a scan that went blind. A
-/// drop below 941 is refused until a reviewed diff re-measures; the selftest plant
+/// — the one non-test file that merge removed, a reviewed removal and not a scan that went blind.
+/// It was re-pinned from 941 to 926 across 23 crates when FLIP-STREAMING (#503) deleted the
+/// `busbar-voice` crate (its sessions are served through the streaming plane's door): a reviewed
+/// removal of a whole crate, measured by the PR's own CI run. A drop below 926 is refused until a
+/// reviewed diff re-measures; the selftest plant
 /// removes one file and fails if the floor sits under the count. Lowering it is how a gate stops
 /// reading the repository without saying so, so a diff that lowers it is the diff to refuse.
-pub const FLOOR: usize = 941;
+pub const FLOOR: usize = 926;
 
 /// The `.rs` under `crates/` that are not test scaffolding, plus the accounting to refuse a
 /// population that cannot support a verdict.

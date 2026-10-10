@@ -45,9 +45,9 @@ BACKWARDS = 33
 # this file, the scanner's own needle in `xtask/src/gates/plane_purity/scanner.rs` (the `Mode::Reverse`
 # arm). Until then these four figures are ceilings over a needle that cannot match, NOT a measured
 # agreement between two gates.
+# `voice = 0` is struck: FLIP-STREAMING deleted crates/busbar-voice, and xtask::planes no longer names it.
 [test-reach]
 llm = 24
 # `mcp = 1` STRUCK (P3 DEL-MCP, ARCHITECT 2026-10-05): crates/busbar-mcp is deleted and `mcp` left
 # the legacy-engine roster (xtask::planes::PLANE_KEYS), so its test-reach row goes with it.
 a2a = 3
-voice = 0

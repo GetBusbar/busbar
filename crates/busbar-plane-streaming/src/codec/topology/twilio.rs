@@ -30,6 +30,8 @@ use serde::Serialize;
 // nothing bought for it, and this is the primitive that turns bytes on a phone call into audio.
 use busbar_contract::media::{base64_decode, base64_encode};
 
+use crate::codec::ir::codec::WireEvent;
+
 /// Twilio's negotiated µ-law encoding string on the `start` event's media format.
 pub const TWILIO_MULAW_ENCODING: &str = "audio/x-mulaw";
 /// The only sample rate the 8 kHz passthrough carrier accepts.
@@ -256,14 +258,77 @@ impl TwilioEnvelope {
     /// field order is fixed so the serialization is deterministic and byte-stable.
     #[must_use]
     pub fn encode_media(stream_sid: &str, mulaw: &[u8]) -> Vec<u8> {
-        let out = OutboundMedia {
-            event: "media",
-            stream_sid,
-            media: OutboundPayload {
-                payload: base64_encode(mulaw),
-            },
-        };
-        serde_json::to_vec(&out).expect("the outbound media envelope always serializes")
+        let mut out = Vec::new();
+        Self::encode_media_into(&mut out, stream_sid, mulaw);
+        out
+    }
+
+    /// The same envelope, rendered into a buffer the caller already holds.
+    ///
+    /// This is the shape the downlink writes in. The envelope is fixed (three members, in this
+    /// order) and everything about it except the identifier and the payload is known at compile
+    /// time. Building a document, a string for the payload, and then serializing would spend three
+    /// allocations per audio frame, and a call carries fifty frames a second in each direction.
+    /// The buffer is CLEARED, not appended to, so a caller may hand the same one back frame after
+    /// frame and pay for its growth once. An identifier the serializer would have to escape goes
+    /// through the serializer, which is the authority on those bytes.
+    pub fn encode_media_into(out: &mut Vec<u8>, stream_sid: &str, mulaw: &[u8]) {
+        out.clear();
+        if !is_bare_json_string(stream_sid) {
+            let doc = OutboundMedia {
+                event: "media",
+                stream_sid,
+                media: OutboundPayload {
+                    payload: base64_encode(mulaw),
+                },
+            };
+            out.extend_from_slice(
+                &serde_json::to_vec(&doc).expect("the outbound media envelope always serializes"),
+            );
+            return;
+        }
+        const HEAD: &[u8] = br#"{"event":"media","streamSid":""#;
+        const MIDDLE: &[u8] = br#"","media":{"payload":""#;
+        const TAIL: &[u8] = br#""}}"#;
+        out.reserve(
+            HEAD.len() + stream_sid.len() + MIDDLE.len() + mulaw.len().div_ceil(3) * 4 + TAIL.len(),
+        );
+        out.extend_from_slice(HEAD);
+        out.extend_from_slice(stream_sid.as_bytes());
+        out.extend_from_slice(MIDDLE);
+        base64_encode_into(mulaw, out);
+        out.extend_from_slice(TAIL);
+    }
+}
+
+/// Whether a string is its own JSON body: printable ASCII with neither character a JSON string
+/// cannot carry raw. Everything else goes to the serializer.
+fn is_bare_json_string(s: &str) -> bool {
+    s.bytes()
+        .all(|b| (0x20..0x7f).contains(&b) && b != b'"' && b != b'\\')
+}
+
+/// Standard base64 (RFC 4648) with padding, appended to a buffer the caller holds: the same bytes
+/// `busbar_contract::media::base64_encode` produces, without the string it would allocate.
+fn base64_encode_into(data: &[u8], out: &mut Vec<u8>) {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    for chunk in data.chunks(3) {
+        let b0 = u32::from(chunk[0]);
+        let b1 = u32::from(*chunk.get(1).unwrap_or(&0));
+        let b2 = u32::from(*chunk.get(2).unwrap_or(&0));
+        let n = (b0 << 16) | (b1 << 8) | b2;
+        out.push(ALPHABET[((n >> 18) & 63) as usize]);
+        out.push(ALPHABET[((n >> 12) & 63) as usize]);
+        out.push(if chunk.len() > 1 {
+            ALPHABET[((n >> 6) & 63) as usize]
+        } else {
+            b'='
+        });
+        out.push(if chunk.len() > 2 {
+            ALPHABET[(n & 63) as usize]
+        } else {
+            b'='
+        });
     }
 }
 
@@ -384,6 +449,87 @@ fn xml_escape(s: &str) -> String {
         }
     }
     out
+}
+
+/// THE TELEPHONY CARRIER'S ENVELOPE around a session: the caller speaks Twilio Media Streams, the
+/// far end the realtime dialect locked to `g711_ulaw` both ways, so the audio passes through
+/// unchanged and only the envelope is rewritten.
+#[derive(Debug, Default)]
+pub struct TwilioBridge {
+    stream_sid: Option<String>,
+}
+
+/// What one caller frame on the telephony leg is.
+#[derive(Debug, PartialEq, Eq)]
+pub enum CallerStep {
+    /// Caller audio, as the far end's dialect frames an uplink append.
+    Audio(WireEvent),
+    /// The call ended.
+    Stop,
+    /// The call is refused (no stream id, another media format, a frame not in Twilio's shape, a
+    /// payload that is not clean base64): the session ends.
+    Refused,
+    /// Nothing for the far end (the handshake, a start, a mark, a keypress, an event this reader
+    /// does not model, or media for another stream).
+    Nothing,
+}
+
+impl TwilioBridge {
+    /// Read one caller frame. A start with no stream id, or in another media format, is refused; so
+    /// is a frame that is not Twilio's shape or carries a payload that is not clean base64 (data
+    /// resuming after padding is never billed as a longer payload). An event this reader does not
+    /// model is dropped.
+    pub fn from_caller(&mut self, frame: &[u8]) -> CallerStep {
+        match TwilioEnvelope::decode(frame) {
+            Ok(TwilioEvent::Start(start)) => {
+                if start.stream_sid.is_empty() || assert_g711_ulaw(&start.media_format).is_err() {
+                    return CallerStep::Refused;
+                }
+                self.stream_sid = Some(start.stream_sid);
+                CallerStep::Nothing
+            }
+            Ok(TwilioEvent::Media {
+                stream_sid,
+                payload,
+            }) => {
+                if stream_sid.is_empty() || self.stream_sid.as_deref() != Some(stream_sid.as_str())
+                {
+                    return CallerStep::Nothing;
+                }
+                let append = serde_json::json!({
+                    "type": "input_audio_buffer.append",
+                    "audio": base64_encode(&payload),
+                });
+                CallerStep::Audio(WireEvent(bytes::Bytes::from(
+                    serde_json::to_vec(&append).unwrap_or_default(),
+                )))
+            }
+            Ok(TwilioEvent::Stop) => CallerStep::Stop,
+            Ok(_) | Err(TwilioError::UnknownEvent(_)) => CallerStep::Nothing,
+            Err(_) => CallerStep::Refused,
+        }
+    }
+
+    /// Rewrite one frame bound for the caller into the carrier's envelope: model audio becomes a
+    /// `media` frame on the call's stream, and a barge-in clears the audio the carrier has queued.
+    /// `None` for a frame the carrier has no event for.
+    #[must_use]
+    pub fn to_caller(&self, frame: &[u8]) -> Option<Vec<u8>> {
+        let sid = self.stream_sid.as_deref()?;
+        let v: serde_json::Value = serde_json::from_slice(frame).ok()?;
+        match v.get("type").and_then(serde_json::Value::as_str)? {
+            "response.output_audio.delta" | "response.audio.delta" => {
+                let audio = base64_decode(v.get("delta")?.as_str()?)?;
+                Some(TwilioEnvelope::encode_media(sid, &audio))
+            }
+            "input_audio_buffer.speech_started" => serde_json::to_vec(&serde_json::json!({
+                "event": "clear",
+                "streamSid": sid,
+            }))
+            .ok(),
+            _ => None,
+        }
+    }
 }
 
 #[cfg(test)]

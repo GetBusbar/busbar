@@ -12,15 +12,13 @@
 //!
 //! * **Twilio Media Streams rides the WebSocket carrier.** Its wire is one JSON event per WebSocket
 //!   message (`connected`/`start`/`media`/`mark`/`dtmf`/`stop`): the carrier frames the messages and
-//!   the event envelope is this plane's dialect ([`crate::twilio`], [`crate::ulaw`]). The design
+//!   the event envelope is this plane's dialect ([`crate::codec::topology::twilio`]). The design
 //!   lists five transports and no telephony one. Twilio
 //!   cannot present a busbar bearer or API key, so its claim authenticates under the
 //!   `webhook-signature` alternative alone: the `X-Twilio-Signature` HMAC over the request URL,
 //!   verified by the auth kind's inbound verify, never by this plane.
 //! * **`webrtc`** — no codec surface for the RTP media plane exists anywhere in this crate's closure
-//!   (busbar-voice's WebRTC topology is `runtime`-gated and, per its own module documentation, is a
-//!   browser-sideband ferry over the same JSON event vocabulary rather than a distinct wire format —
-//!   but a plane cannot claim a transport it cannot decode frames from without lying about what it
+//!   (a plane cannot claim a transport it cannot decode frames from without lying about what it
 //!   reads). It is unclaimed: a claim is declared independently, and the boot's own overlap check
 //!   is what proves the claims stay disjoint when it is added.
 

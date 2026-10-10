@@ -532,6 +532,8 @@ pub struct ApplyReach {
     conns: Arc<dyn busbar_contract::conn::PollConns>,
     journal: Arc<dyn busbar_kernel_egress::ports::Journal>,
     stream_ceiling_secs: u64,
+    /// The top-level models catalog the deployment booted with ([`catalog_routes`]).
+    catalog: Option<std::collections::HashMap<String, busbar_contract::config::ModelCfg>>,
     upgrades: Vec<&'static str>,
 }
 
@@ -607,7 +609,11 @@ impl DoorApply {
             &settings,
             generation,
         )?;
-        let pools = DoorPools::of(section);
+        let table = routes_of(
+            section,
+            self.reach.as_ref().and_then(|r| r.catalog.as_ref()),
+        );
+        let pools = DoorPools::of(&table);
         let egress = match &self.reach {
             Some(r) => {
                 let reach = crate::root::door_steps::DoorReach {
@@ -616,10 +622,11 @@ impl DoorApply {
                     auths: Arc::clone(&r.auths),
                     conns: Arc::clone(&r.conns),
                     stream_ceiling_secs: r.stream_ceiling_secs,
+                    catalog: r.catalog.as_ref(),
                     upgrades: r.upgrades.clone(),
                 };
                 let routes = crate::root::door_steps::member_routes(
-                    section,
+                    &table,
                     &pools,
                     &self.served_facts,
                     &reach,
@@ -1408,14 +1415,16 @@ pub(crate) fn compose_planes_over(
         // THE PLANE'S STATED STREAM CEILING (ARCHITECT ruling 2026-10-07, STREAM-CEILING), off its
         // tail: the deadline of its streamed units once their route is known; `0` = none.
         facts.stream_ceiling_secs = served_facts.stream_ceiling_secs;
-        let pools = DoorPools::of(section);
+        // The route table: the section, with the catalog model its `session.model` names folded in.
+        let table = routes_of(section, egress.and_then(|e| e.reach.catalog));
+        let pools = DoorPools::of(&table);
         // THE EGRESS, SEALED (THE DESIGN §6 steps 2-3): each member's route resolved and its
         // credential bound by the auth plugin serving its style, over the connector its needs were
         // declared on.
         let egress_sealed = match egress {
             Some(egress) => {
                 let routes = crate::root::door_steps::member_routes(
-                    section,
+                    &table,
                     &pools,
                     &served_facts,
                     egress.reach,
@@ -1453,6 +1462,7 @@ pub(crate) fn compose_planes_over(
             conns: Arc::clone(&e.reach.conns),
             journal: Arc::clone(&e.journal),
             stream_ceiling_secs: e.reach.stream_ceiling_secs,
+            catalog: e.reach.catalog.cloned(),
             upgrades: e.reach.upgrades.clone(),
         });
         let live = Arc::new(DoorApply {
@@ -1479,6 +1489,60 @@ pub(crate) fn compose_planes_over(
         });
     }
     Ok(served)
+}
+
+/// The `session:` block of a section, and the `model:` key inside it that names a top-level catalog
+/// model.
+const SESSION_KEY: &str = "session";
+const MODEL_KEY: &str = "model";
+
+/// THE ROUTE TABLE A SECTION'S DOOR STEPS RESOLVE AGAINST (ARCHITECT Q-L5B-ROUTE, 2026-10-03): the
+/// section as written, plus, where it states no `models:` of its own and its `session.model` names an
+/// entry of the top-level models `catalog`, that one entry folded in as its `models:` map (its
+/// provider, upstream model and attempt cap), so the plane's door names it as a DIRECT route and the
+/// kernel's door steps resolve it as any entry of the plane's own section. The 1.5.5 shape of both
+/// sections is unchanged: only the route table is folded, never the settings the door opens with.
+#[must_use]
+pub fn catalog_routes(
+    section: &serde_yaml::Value,
+    catalog: &std::collections::HashMap<String, busbar_contract::config::ModelCfg>,
+) -> serde_yaml::Value {
+    use serde_yaml::{Mapping, Value};
+    let mut routes = section.clone();
+    let named = section
+        .get(SESSION_KEY)
+        .and_then(|s| s.get(MODEL_KEY))
+        .and_then(Value::as_str);
+    let (Some(map), Some(model)) = (routes.as_mapping_mut(), named) else {
+        return routes;
+    };
+    let models_key = Value::from(busbar_contract::section::RESERVED_MODELS_KEY);
+    let Some(entry) = catalog
+        .get(model)
+        .filter(|_| !map.contains_key(&models_key))
+    else {
+        return routes;
+    };
+    let mut folded = Mapping::new();
+    folded.insert("provider".into(), entry.provider.clone().into());
+    if let Some(upstream) = &entry.upstream_model {
+        folded.insert("upstream_model".into(), upstream.clone().into());
+    }
+    if let Some(ms) = entry.attempt_timeout_ms {
+        folded.insert("attempt_timeout_ms".into(), ms.into());
+    }
+    let mut models = Mapping::new();
+    models.insert(model.into(), Value::Mapping(folded));
+    map.insert(models_key, Value::Mapping(models));
+    routes
+}
+
+/// The route table of `section` under `catalog` ([`catalog_routes`]); the section itself without one.
+fn routes_of(
+    section: &serde_yaml::Value,
+    catalog: Option<&std::collections::HashMap<String, busbar_contract::config::ModelCfg>>,
+) -> serde_yaml::Value {
+    catalog.map_or_else(|| section.clone(), |c| catalog_routes(section, c))
 }
 
 /// `open` the plane, generation 1, its settings `section` as JSON, the deployment's `public_url`
@@ -3403,8 +3467,9 @@ pub(crate) mod planes_tests;
 
 // The doors served end to end through this composition: the decisions plane's (the `root-decisions`
 // leg's own cells, qa/capability-equality.json, under its feature) and the MCP plane's (the
-// `root-mcp` leg's loop cells, under the linked plane-door axis), each gated item by item inside, so
-// either plane's switch alone still compiles its own. Its MCP cells reach the door_steps helpers
+// `root-mcp` leg's loop cells, under the linked plane-door axis), each gated item by item inside,
+// so either plane's switch alone still compiles its own, and the session door's root-leg cells,
+// which find their door among the linked plane doors. Its MCP cells reach the door_steps helpers
 // that need the default build's linked auth rows (gated with the node-axis plane that carries that
 // build).
 #[cfg(all(test, linked_axis_node))]

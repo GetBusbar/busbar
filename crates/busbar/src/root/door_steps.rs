@@ -1625,6 +1625,9 @@ pub struct DoorReach<'a> {
     pub conns: Arc<dyn busbar_contract::conn::PollConns>,
     /// Whole seconds.
     pub stream_ceiling_secs: u64,
+    /// The top-level models catalog a section's `session.model` names an entry of
+    /// (`root::serve::catalog_routes`, ARCHITECT Q-L5B-ROUTE); `None` = the section's own table.
+    pub catalog: Option<&'a std::collections::HashMap<String, busbar_contract::config::ModelCfg>>,
     /// The linked claims that open at an upgrade (`crate::root::serve::upgrade_carriers`):
     /// a need over one dials its member's base URL in its own scheme ([`spelled_for`]).
     pub upgrades: Vec<&'static str>,

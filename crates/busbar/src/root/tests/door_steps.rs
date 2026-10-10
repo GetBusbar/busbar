@@ -430,6 +430,7 @@ fn resolve_upgrading(
         auths: std::sync::Arc::new(auths),
         conns,
         stream_ceiling_secs: 1,
+        catalog: None,
         upgrades,
     };
     super::member_routes(&section, &DoorPools::of(&section), served, &reach)
@@ -818,6 +819,7 @@ async fn a_member_under_an_oauth_grant_presents_its_minted_then_refreshed_bearer
         auths: std::sync::Arc::new(auths),
         conns: std::sync::Arc::new(busbar_core_connector::Connector::new()),
         stream_ceiling_secs: 1,
+        catalog: None,
         upgrades: Vec::new(),
     };
     let section: serde_yaml::Value =
@@ -1464,6 +1466,7 @@ pub(crate) mod tool_door {
                 auths: Arc::new(auths),
                 conns: Arc::clone(&connector) as Arc<dyn PollConns>,
                 stream_ceiling_secs: 600,
+                catalog: None,
                 upgrades: Vec::new(),
             };
             let egress = crate::root::serve::DoorEgress {

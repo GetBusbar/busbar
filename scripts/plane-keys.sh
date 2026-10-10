@@ -45,6 +45,8 @@
 # for their crate/wiring counterpart to land; until then, PLANE_KEYS states what is TRUE ON DISK, and
 # PLANE_KEYS_LOCKED (below) states what is true IN DOCTRINE, so no caller can mistake one for the
 # other by reading only this line.
+# `voice` is struck: FLIP-STREAMING deleted crates/busbar-voice; the streaming plane is
+# crates/busbar-plane-streaming (plane_ondisk_key below), scanned by the plane-kind regime.
 #
 # `mcp` IS STRUCK (P3 DEL-MCP, ARCHITECT 2026-10-05) — the named change this header asks for. Every
 # consumer reads a key here as a literal `crates/busbar-<key>` LEGACY-ENGINE directory, and
@@ -52,7 +54,7 @@
 # `crates/busbar-plane-mcp`, which the plane-kind regime scans whole. It stays on the doctrine roster
 # (`PLANE_KEYS_LOCKED`) and reaches the deletion harness as `plane-mcp` (`plane_ondisk_key`), the way
 # `decisions` does as `plane-decisions`.
-PLANE_KEYS="llm a2a voice"
+PLANE_KEYS="llm a2a"
 
 # PLANE_KEYS_KIND_ONLY — plane keys whose plane has NO legacy-engine crate any more and lives only in
 # its plane-kind crate `crates/busbar-plane-<key>` (P3 DEL-MCP, ARCHITECT 2026-10-05: `mcp`). Never a
@@ -90,7 +92,7 @@ PLANE_KEYS_LOCKED="llm mcp a2a streaming decisions"
 # entry here returns empty: a caller must report that plane as a NAMED GAP, never as a silent pass.
 plane_ondisk_key() {
   case "$1" in
-    streaming) printf 'voice' ;;
+    streaming) printf 'plane-streaming' ;;
     decisions) printf 'plane-decisions' ;;
     # P3 DEL-MCP: the engine is deleted; the plane is its one plane-kind crate.
     mcp) printf 'plane-mcp' ;;

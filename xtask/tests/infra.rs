@@ -488,9 +488,10 @@ fn strip_comment_line_keeps_string_literals_intact() {
 
 #[test]
 fn the_plane_key_contract_matches_plane_keys_sh() {
-    // `mcp` left the legacy-engine roster at P3 DEL-MCP (ARCHITECT 2026-10-05).
-    assert_eq!(planes::PLANE_KEYS, ["llm", "a2a", "voice"]);
-    assert_eq!(planes::plane_keys_protocol(), vec!["a2a", "voice"]);
+    // `mcp` left the legacy-engine roster at P3 DEL-MCP (ARCHITECT 2026-10-05) and `voice` at
+    // FLIP-STREAMING (crates/busbar-voice deleted).
+    assert_eq!(planes::PLANE_KEYS, ["llm", "a2a"]);
+    assert_eq!(planes::plane_keys_protocol(), vec!["a2a"]);
     // READ THE SHELL'S KEYS TOO: the two rosters are one list.
     let keys_line = std::fs::read_to_string(repo_root().join("scripts/plane-keys.sh"))
         .expect("scripts/plane-keys.sh is readable")

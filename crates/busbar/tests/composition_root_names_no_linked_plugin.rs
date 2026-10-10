@@ -418,7 +418,7 @@ fn every_on_driver_switch_links_its_door_and_the_default_build_does_not() {
         let switched = doors_of(&|f: &str| f == switch || default.iter().any(|d| d == f));
         let added: Vec<&str> = switched
             .split(", ")
-            .filter(|d| d.ends_with("::plane_door::door") && !shipped.contains(*d))
+            .filter(|d| d.ends_with("::door") && !shipped.contains(*d))
             .collect();
         assert!(
             !added.is_empty(),

@@ -53,12 +53,13 @@ scan_roots = ["crates/*/src", "crates/*/tests", "crates/*/benches"]
 # two lists share zero members. manifest-allowlist reads THIS one to decide what "a plane names
 # another plane" means. The two collapse into one definition when the legacy engines are deleted;
 # until then a reader must not take either as "the plane kind".
+# `busbar-voice` is struck: FLIP-STREAMING deleted the legacy streams crate (#18).
 #
 # `busbar-mcp` IS STRUCK (P3 DEL-MCP, ARCHITECT 2026-10-05: "delete busbar-mcp, add `crates/busbar-mcp`
 # to [gate.census.deleted]"). The engine is deleted and the mcp plane is its door crate
 # `busbar-plane-mcp`, which `gate.plugin_kinds.plane` already scans; the census floor below drops
-# 4 -> 3 by the one ruled deletion, and `ceiling-census` excuses exactly that one entry.
-plane_crates = ["busbar-llm", "busbar-a2a", "busbar-voice"]
+# 4 -> 2 by the two ruled deletions (mcp, voice), and `ceiling-census` excuses exactly those entries.
+plane_crates = ["busbar-llm", "busbar-a2a"]
 # A file at one of these path fragments is TEST code (same rule the purity lint applies), in
 # addition to any `#[cfg(test)] mod … { … }` block inside a production file.
 # A bare `tests.rs` (Rust's `#[cfg(test)] mod tests;` file convention) is test code too.
@@ -268,7 +269,7 @@ busbar-llm = 226
 # busbar-a2a 233 -> 232 (downward, at the measure): push delivery names the kernel's engine seam once
 # instead of per signature.
 busbar-a2a = 232
-busbar-voice = 88
+# busbar-voice is struck: FLIP-STREAMING deleted the crate, and the row went with it.
 
 [rules.ports-only-tests]
 why = """The same reach from test code. Tests that name core internals pin the plane to core's \
@@ -288,7 +289,7 @@ counts can trend to zero at their own pace."""
 busbar-llm = 1027
 # STRUCK: busbar-mcp = 185 (P3 DEL-MCP, ARCHITECT 2026-10-05 — the crate is deleted).
 busbar-a2a = 98
-busbar-voice = 43
+# busbar-voice is struck: FLIP-STREAMING deleted the crate, and the row went with it.
 
 # ── 4. no-uninstalled-seam ───────────────────────────────────────────────────────────────────────
 [rules.no-uninstalled-seam]
@@ -743,6 +744,8 @@ busbar-transport-stdio = ["tokio", "futures"]
 # The MCP plane's outbound wire (fold A5, ARCHITECT 2026-09-29 under the PLUGIN LIBRARIES ruling):
 # the `Mcp-Name` header's `=?base64?...?=` sentinel for a name a header value cannot carry.
 busbar-plane-mcp = ["base64", "indexmap"]
+# The streaming plane's door reads the deployment's public base URL once (`door::absolute`).
+busbar-plane-streaming = ["url"]
 # Ratchet, NOT a review: each busbar-plane-* adapter names its own dialect's legacy engine crate
 # (busbar-llm/-mcp/-a2a/-voice) for codecs only, read-only, no engine state crossing back — but
 # those engine crates are ALSO named in gate.plane_crates, so this is structurally the exact "a
@@ -762,7 +765,6 @@ busbar-plane-llm = ["busbar-llm"]
 # + three third-party crates, and it names no engine crate in either spelling. The edge that exists
 # now runs the other way — `busbar-mcp` reads the plane's wire dialect — which is the direction a
 # plane's definition asks for and not a coupling this rule is about.
-busbar-plane-streaming = ["busbar-voice"]
 
 # ── 16. source-denylist (BUSBAR-1.6.0.md THE DESIGN, §2) ───────────────────────────────────────────────────────
 [rules.source-denylist]
@@ -1071,15 +1073,18 @@ max_sites = 0
 # kernel-minted Pass (`KernelSeal::acquire_for_kernel()`) instead of the test seal, and egress's
 # test-seal dev-dependency went with it. The rule's pattern matches no file under either crate, so
 # the entry is not repointed (a row on a path with no finding would only excuse a future forgery);
-# it is struck, and both paths are held to the rule. The seal debt that remains is the two below.
+# it is struck, and both paths are held to the rule.
+#
 # STRUCK 2026-10-04: `crates/busbar-transport-stdio/src/tests/battery.rs`. GONE — the stdio row was
 # made door-only (ARCHITECT ruling (A)): its in-process `impl Transport` battery, which forged a
 # `TestKernelSeal` to drive that transport, was deleted and its coverage folded onto the carrier and
 # door batteries, none of which forge a seal. The rule's `impl … KernelSeal for` pattern now matches
 # NO file under `crates/busbar-transport-stdio/`, so the entry is not repointed (a row on a path with
 # no finding would only excuse a future forgery); it is struck, and the crate is held to the rule.
+#
+# STRUCK 2026-10-04: `crates/busbar-plane-streaming/src/tests/harness.rs`, deleted by the streaming
+# fold (its tests drive the door). No seal debt remains.
 known_sites = [
-  "crates/busbar-plane-streaming/src/tests/harness.rs",
 ]
 
 # ── 22. forbid-unsafe ────────────────────────────────────────────────────────────────────────────
@@ -2005,9 +2010,10 @@ because = "a type alias over the rows the loop posted, and a reader of it; the n
 # silent as deleting the table alone was.
 [gate.census]
 legacy_reach_prefixes = 4
-# 4 -> 3: `busbar-mcp` left `gate.plane_crates` as a ruled deletion ([gate.census.deleted]
-# "crates/busbar-mcp", P3 DEL-MCP, ARCHITECT 2026-10-05) — the one drop `ceiling-census` excuses.
-plane_crates = 3
+# 4 -> 2: `busbar-mcp` (P3 DEL-MCP) and `busbar-voice` (P3 streaming flip) left `gate.plane_crates` as
+# ruled deletions, each named in [gate.census.deleted] (ARCHITECT 2026-10-05) — the drops
+# `ceiling-census` excuses.
+plane_crates = 2
 
 # HOW MANY CRATE DIRECTORIES EACH KIND GLOB MATCHES.
 #
@@ -2167,6 +2173,7 @@ abi = 1
 # an unlisted vanished dir stays RED.
 [gate.census.deleted]
 "crates/hook-test-plugin" = "TODO P5: delete hook-test-plugin (ARCHITECT 2026-10-04)"
+"crates/busbar-voice" = "P3 streaming flip: legacy crate deleted (ARCHITECT 2026-10-04)"
 "crates/busbar-mcp" = "P3 DEL-MCP: the mcp plane is served through its door alone; the legacy engine crate is deleted (ARCHITECT 2026-10-05, U11 / Q1)"
 "crates/plane-example" = "TODO P5: delete plane-example (Q128 audit BLOCK 11/12: a fixture plane plugin riding the HOT lane with C-unwind doors)"
 

@@ -7,7 +7,6 @@ members = [
     "crates/busbar-core-oauth2",
     "crates/busbar-llm",
     "crates/busbar-a2a",
-    "crates/busbar-voice",
     "crates/busbar-contract",
     "crates/busbar-kernel",
     "crates/busbar-kernel-identity",
@@ -26,6 +25,7 @@ members = [
     "crates/store-memory",
     "crates/busbar-transport-stdio",
     "testing/ws-conformance/subject",
+    "testing/voice-conformance/harness",
     "xtask",
 ]
 

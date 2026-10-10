@@ -68,13 +68,6 @@ busbar-plane-mcp = { path = "../busbar-plane-mcp", optional = true }
 # — nothing in `main.rs` names it and `plane-a2a` below is not in `default`, so this edge is inert
 # until the plane/codec code that a later step moves actually lands here.
 busbar-a2a = { path = "../busbar-a2a", optional = true }
-# THE VOICE PLANE-KIND CRATE (Plane 4), the analogue of busbar-a2a above. Optional behind
-# `plane-streaming`, now IN `default` (voice ships default-ON + deletable, exactly like plane-mcp/
-# plane-a2a). The LLM money path is unchanged (busbar-core's default carries no voice/duplex-ws
-# edge); the shipped binary gains the voice plane + its WS transport, and `--no-default` proves the
-# whole edge disappears with the crate (strong-form deletable). The `busbar-voice/runtime` edge is
-# carried by the feature (below), not here.
-busbar-voice = { path = "../busbar-voice", optional = true }
 # Boot-time plugin listing (`--plugins`) reads the registry the loader builds.
 busbar-plugin-loader = { path = "../plugin-loader" }
 
@@ -96,9 +89,10 @@ busbar-kernel-breaker = { path = "../busbar-kernel-breaker" }
 busbar-kernel-wal = { path = "../busbar-kernel-wal" }
 busbar-kernel-audit = { path = "../busbar-kernel-audit" }
 # The pure planes reach the boot seal through their host's linked entry (`PLANE` + `CLAIMS` on the
-# `claims` axis), so the root names none of them. The streaming plane's edge stays for the root's own
-# streaming unit, which builds its node over the pure plane.
-busbar-plane-streaming = { path = "../busbar-plane-streaming" }
+# `claims` axis), so the root names none of them. The streaming plane's edge is the crate the
+# `plane-streaming` switch's `plane-door` row names: its memory-ABI door, served through the loader's
+# one load like every dropped-in plane door (FLIP-STREAMING).
+busbar-plane-streaming = { path = "../busbar-plane-streaming", optional = true }
 # THE DECISIONS PLANE (jev), #48's fifth: the edge the `plane-decisions` switch's `plane-door` row
 # names. The plane is served through its memory-ABI door (`busbar_plane_decisions::plane_door::door`),
 # loaded through the loader's one load like every dropped-in plane door (FLIP-DECISIONS), so its
@@ -241,16 +235,16 @@ plane-mcp = ["plane-mcp-door", "busbar-kernel/plane-mcp", "busbar-core-admin/pla
 # section when off, so `--no-default-features` drops the `busbar-a2a` edge and compiles the whole A2A
 # plane out while core still routes LLM + MCP (the plane-split deletion test).
 plane-a2a = ["dep:busbar-a2a", "busbar-kernel/plane-a2a", "busbar-core-admin/plane-a2a"]
-# THE VOICE PLANE, the busbar-voice crate, behind this switch. The analogue of `plane-a2a` — one
-# switch for the crate edge + the core/substrate forwards — and, like it, IN `default` (voice ships
-# default-ON + deletable; `--no-default-features` compiles it out). `dep:busbar-voice` pulls the crate; `busbar-voice?/runtime` turns on its live-session
-# runtime (the same feature it would be under `busbar-voice/runtime`, since `dep:busbar-voice` here
-# enables the crate). The `?/` spelling is deliberate: it makes the forward an OPTIONAL-dep feature
-# reference, so the strong-form deletion gate (scripts/plane-delete-test.sh) strips it with the same
-# rule it strips `busbar-voice?/openapi-schema`, leaving voice byte-for-byte removable. Compiling the
-# runtime here gives the `build_runtime` body; the skeleton build leaves `build_runtime: None`.
-plane-streaming = ["dep:busbar-voice", "transport-ws", "busbar-voice?/runtime", "busbar-kernel/duplex-ws"]
-# THE WS WIRE, the one optional transport: the voice plane's edge and nothing else's, so `plane-streaming`
+# THE STREAMING PLANE, through its memory-ABI door (FLIP-STREAMING; BUSBAR-1.6.0.md Part 3 section 12,
+# "The switch": the fold's development-only switch is deleted when the fold completes, and the
+# plane's one switch carries its door). IN `default`; `--no-default-features` compiles it out. On, the
+# plane's door (`busbar_plane_streaming::door::door`) is a `plane-door` row: the root hands it to the
+# loader beside every dropped-in plane door and binds it through the one load on the one dispatcher,
+# so the compiled-in plane is called through the same table as its dropped-in cdylib (#2, #30; THE
+# DESIGN section 11.4), and the serve row hands it its arrivals. It carries the ws wire its live
+# sessions arrive over and leave on.
+plane-streaming = ["dep:busbar-plane-streaming", "transport-ws", "busbar-kernel/duplex-ws"]
+# THE WS WIRE, the one optional transport: the streaming plane's edge and nothing else's, so `plane-streaming`
 # carries it and `--no-default-features` drops the crate edge and its linked row together.
 transport-ws = ["dep:busbar-transport-ws"]
 # THE TCP WIRE'S LINKED ROW, DEFAULT ON (#3: a transport is swappable, compiled in OR dropped in). Off,
@@ -329,7 +323,7 @@ auth-header = ["dep:busbar-auth-header"]
 auth-sigv4 = ["dep:busbar-auth-sigv4"]
 auth-oauth = ["dep:busbar-auth-oauth"]
 hooks-ranking = ["dep:busbar-hook-ranking", "busbar-kernel/hooks-ranking", "busbar-core-admin/hooks-ranking"]
-openapi-schema = ["busbar-kernel/openapi-schema", "busbar-core-admin/openapi-schema", "busbar-llm?/openapi-schema", "busbar-a2a?/openapi-schema", "busbar-voice?/openapi-schema"]
+openapi-schema = ["busbar-kernel/openapi-schema", "busbar-core-admin/openapi-schema", "busbar-llm?/openapi-schema", "busbar-a2a?/openapi-schema"]
 loom-model = ["busbar-kernel/loom-model"]
 
 # ── THE LINKED PLUGINS (K1, #2 rule (1)) ─────────────────────────────────────────────────────────────
@@ -350,7 +344,6 @@ loom-model = ["busbar-kernel/loom-model"]
 [package.metadata.busbar.linked]
 proto-llm = "busbar-llm"
 plane-a2a = "busbar-a2a"
-plane-streaming = "busbar-voice"
 export-file = "busbar-export-file"
 export-webhook = "busbar-export-webhook"
 export-prometheus = "busbar-export-prometheus"
@@ -382,10 +375,11 @@ transport-stdio = "busbar-transport-stdio"
 plane-decisions = "busbar-plane-decisions"
 llm-on-driver = "busbar-plane-llm"
 plane-mcp-door = "busbar-plane-mcp"
+plane-streaming = "busbar-plane-streaming"
 
 # What each linked feature's crate registers (keyed by the feature, as the linked row is), axis by axis: `plane` (PLANE_DECLARATION + PLANE_HOOKS, joined
 # kernel-side), `protocols`, `path-ingress`, `body-ingress`, `protocol-seams`, `diagnostics`,
-# `ws-arrivals`, `on-host`, `compose`, `exports` — each an item of the crate's entry
+# `on-host`, `compose`, `exports` — each an item of the crate's entry
 # module — and the root-bound seams it drives: `egress`, `plane-sections`, `admin-envelope`.
 # `gauntlet-one-shot` / `gauntlet-session`: the plane rides the unified kernel loop (#28) —
 # `gauntlet_install::install()` flips its `PLANE_DECLARATION.key` onto the one-shot or session runner.
@@ -401,7 +395,6 @@ plane-mcp-door = "busbar-plane-mcp"
 [package.metadata.busbar.linked-axes]
 proto-llm = "plane claims protocols path-ingress body-ingress protocol-seams diagnostics on-host cli-help node gauntlet-one-shot"
 plane-a2a = "plane claims diagnostics egress plane-sections admin-envelope gauntlet-one-shot"
-plane-streaming = "plane claims diagnostics ws-arrivals compose gauntlet-session"
 export-file = "export-doors"
 export-webhook = "export-doors"
 export-prometheus = "export-doors"
@@ -416,9 +409,9 @@ secret-env = "secret-doors"
 secret-file = "secret-doors"
 transport-tcp = "transport transport-door"
 # `connector-door`: the framer's door is opened on the root's one Connector, so an outbound need on
-# its schemes is served compiled-in. Every transport row is a door row (`transport-door`): the seal
-# folds it from its door's Statement, and no transport names another (the carrier is the
-# connector's choice from the target's scheme).
+# its schemes is served compiled-in (the streaming door's ws needs bind on the ws row). Every
+# transport row is a door row (`transport-door`): the seal folds it from its door's Statement, and no
+# transport names another (the carrier is the connector's choice from the target's scheme).
 transport-http = "transport transport-door connector-door"
 transport-ws = "transport transport-door connector-door"
 transport-grpc = "transport transport-door"
@@ -426,6 +419,7 @@ transport-stdio = "transport transport-door"
 plane-decisions = "plane-door"
 llm-on-driver = "plane-door"
 plane-mcp-door = "plane-door"
+plane-streaming = "plane-door"
 
 # A linked crate whose entry module is not `<crate>::linked`.
 [package.metadata.busbar.linked-entry]
@@ -447,6 +441,7 @@ busbar-export-otlp = "busbar_export_otlp::door"
 # The file and webhook sinks' doors are at their logic crates' roots (`pub use table::door`).
 busbar-export-file = "busbar_export_file"
 busbar-export-webhook = "busbar_export_webhook"
+plane-streaming = "busbar_plane_streaming::door"
 
 # Each linked plane door's declared metadata (its manifest `declares` section, as JSON): the item that
 # holds it. A door row with no row here declares nothing.
@@ -484,7 +479,6 @@ auth-admin-tokens = "busbar-auth-admin-tokens"
 # `root/tests/gauntlet_kernel.rs` includes); each crate is linked with `test-support` by the dev-deps.
 [package.metadata.busbar.served-witness]
 plane-a2a = "busbar-a2a"
-plane-streaming = "busbar-voice"
 
 [package.metadata.busbar.root-units]
 # The node's own row, keyed to the node (not a feature): it compiles in every build, so its card
@@ -533,7 +527,6 @@ busbar-a2a = { path = "../busbar-a2a", features = ["test-support"] }
 # The MCP plane's door, a `door:` row of `test-linked` above: linked in every build's tests, whatever
 # plane features the build enables (a single-plane build's tests still install the whole roster).
 busbar-plane-mcp = { path = "../busbar-plane-mcp" }
-busbar-voice = { path = "../busbar-voice", features = ["test-support"] }
 # `root::door_steps` tests: a member bound under an OAuth grant, its credential minted by the real
 # token-style auth plugin through its own need (TODO row 22). The same pin the `auth-oauth` row links.
 busbar-auth-oauth = { workspace = true }

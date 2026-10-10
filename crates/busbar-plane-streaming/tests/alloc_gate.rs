@@ -12,7 +12,7 @@
 //! allowed to fall on the far side of a byte-for-byte comparison against the serializer that used
 //! to produce it.
 
-use busbar_plane_streaming::twilio;
+use busbar_plane_streaming::codec::topology::twilio::TwilioEnvelope;
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 
@@ -61,16 +61,28 @@ fn frame_bytes() -> Vec<u8> {
 
 /// The bytes the serializer produced, restated as the reference the renderer is held to.
 ///
-/// The member ORDER is the serializer's, not a preference: this document's members are written in
-/// the order a JSON object's keys sort in, because that is the order the old renderer emitted and
-/// every recorded conformance answer was taken against it.
+/// The member ORDER is the envelope's own (`event`, `streamSid`, `media`), the order Twilio's Media
+/// Streams documents write it in and the codec's serializer emits.
 fn reference(stream_sid: &str, mulaw: &[u8]) -> Vec<u8> {
-    let doc = serde_json::json!({
-        "event": "media",
-        "streamSid": stream_sid,
-        "media": { "payload": base64(mulaw) },
-    });
-    serde_json::to_vec(&doc).expect("the document serializes")
+    #[derive(serde::Serialize)]
+    struct Payload {
+        payload: String,
+    }
+    #[derive(serde::Serialize)]
+    struct Media<'a> {
+        event: &'static str,
+        #[serde(rename = "streamSid")]
+        stream_sid: &'a str,
+        media: Payload,
+    }
+    serde_json::to_vec(&Media {
+        event: "media",
+        stream_sid,
+        media: Payload {
+            payload: base64(mulaw),
+        },
+    })
+    .expect("the document serializes")
 }
 
 /// Standard base64, spelled out here so the reference owes the renderer nothing.
@@ -113,7 +125,7 @@ fn the_rendered_envelope_is_the_one_the_serializer_produced() {
     for sid in [SID, "", "a\"b\\c", "sid with spaces", "sid-ünïcode"] {
         for payload in &payloads {
             let mut out = Vec::new();
-            twilio::encode_media_into(&mut out, sid, payload);
+            TwilioEnvelope::encode_media_into(&mut out, sid, payload);
             assert_eq!(
                 out,
                 reference(sid, payload),
@@ -121,7 +133,7 @@ fn the_rendered_envelope_is_the_one_the_serializer_produced() {
                 payload.len()
             );
             assert_eq!(
-                twilio::encode_media(sid, payload),
+                TwilioEnvelope::encode_media(sid, payload),
                 out,
                 "the owning form and the rendering form disagree for {sid:?}"
             );
@@ -135,12 +147,8 @@ fn the_rendered_envelope_is_the_one_the_serializer_produced() {
 /// Zero. The envelope is fixed, the buffer is the caller's, and the only two things that vary from
 /// frame to frame — the payload and the identifier — are appended, not built.
 ///
-/// A buffer that has already carried a frame is not an assumption this number makes about a caller
-/// it cannot see: the one caller in this crate — the downlink renderer in `plane.rs` — holds its
-/// buffer on the session (`VoiceSessionState::render_buf`) and hands the same one back frame after
-/// frame. A caller that built a fresh vector per frame would pay an allocation per frame no matter
-/// what this renderer costs, which is what made the earlier form of this number true of the
-/// function and false of the path it was quoted for.
+/// A buffer that has already carried a frame is the caller's to hold: a caller that built a fresh
+/// vector per frame would pay an allocation per frame no matter what this renderer costs.
 const RENDER_ALLOCS: u64 = 0;
 
 #[test]
@@ -150,11 +158,11 @@ fn rendering_a_downlink_frame_into_a_held_buffer_allocates_nothing() {
 
     // One warm call outside the window: the buffer takes its capacity here, which is the whole
     // point of handing the same one back frame after frame.
-    twilio::encode_media_into(&mut out, SID, &mulaw);
+    TwilioEnvelope::encode_media_into(&mut out, SID, &mulaw);
     let expected = out.clone();
 
     let count = allocations_of(|| {
-        twilio::encode_media_into(&mut out, SID, &mulaw);
+        TwilioEnvelope::encode_media_into(&mut out, SID, &mulaw);
     });
 
     // The serializer route, measured rather than remembered. `reference` is the renderer this

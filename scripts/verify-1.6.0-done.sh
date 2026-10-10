@@ -21,7 +21,7 @@
 #                    every filtered step declares its test count so a filter that selects nothing is
 #                    RED rather than vacuously green (see filtered_cargo_test).
 #   config-stability cargo xtask gate config-schema (config-schema.snapshot.json byte-stable).
-#   test             cargo test --workspace  +  cargo test -p busbar-voice --features runtime.
+#   test             cargo test --workspace.
 #   conformance      the conformance rigs' selftests + the voice legs =ready.
 #   teller-steps     the H2 matrix holds on BOTH its columns: every rig cell id still resolves to the
 #                    scenario/script/leg/suite that owns it, and the rigs behind them RUN and pass
@@ -1299,7 +1299,6 @@ end_group
 # ─────────────────────────────────────────────────────────────────────────────────────────────────
 begin_group "TEST — full workspace + voice runtime"
 step "cargo test --workspace"                    cargo test --workspace --quiet
-step "cargo test -p busbar-voice --features runtime" cargo test -p busbar-voice --features runtime --quiet
 end_group
 
 # ─────────────────────────────────────────────────────────────────────────────────────────────────

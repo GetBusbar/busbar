@@ -332,7 +332,7 @@ pub fn run<'a>(gate: &'a StructureLintGate, cx: &'a Ctx) -> Report<'a> {
     // for it, is two homes for one plane.
     let mut ov = Overlay::new();
     ov.set(
-        "crates/busbar-planted/src/voice/mod.rs",
+        "crates/busbar-planted/src/llm/mod.rs",
         format!(
             "{} : busbar_kernel::plane::registry::PlaneDecl = PLANTED;\n",
             crate::planes::PLANE_GRAMMAR
@@ -344,7 +344,7 @@ pub fn run<'a>(gate: &'a StructureLintGate, cx: &'a Ctx) -> Report<'a> {
         "a plane outside the old two-plane constant with two homes is refused",
         &[roots::ROW_PLANE_ROOTS],
         ov,
-        &["PLANE-ROOT-AMBIGUOUS", "voice"],
+        &["PLANE-ROOT-AMBIGUOUS", "llm"],
     ));
 
     // ── the denominator ──────────────────────────────────────────────────────────────────────────
@@ -648,7 +648,9 @@ pub fn run<'a>(gate: &'a StructureLintGate, cx: &'a Ctx) -> Report<'a> {
     // * A THIRD COPY OF A LEDGERED NAME — the ledger's rows were argued for mcp and a2a; a copy in
     //   a plane the claim was never signed for is a file nobody read, and matching the row by name
     //   alone absorbed it.
-    let voice = addresses.plane("voice");
+    // The third plane was voice until FLIP-STREAMING deleted `busbar-voice`; llm is the same
+    // "never loaded beside a2a" pair.
+    let voice = addresses.plane("llm");
     let mut ov = Overlay::new();
     ov.set(
         format!("{voice}/planted_shared_concern.rs"),
@@ -669,11 +671,11 @@ pub fn run<'a>(gate: &'a StructureLintGate, cx: &'a Ctx) -> Report<'a> {
     let signed = t
         .plane_ledger
         .iter()
-        .find(|r| r.planes.iter().all(|p| p != "voice") && !r.name.ends_with(".rs"))
+        .find(|r| r.planes.iter().all(|p| p != "llm") && !r.name.ends_with(".rs"))
         .map(|r| r.name.clone());
     let mut naming: Vec<String> = vec![
         "PLANE-DUPLICATE (symbol): `planted_shared_concern`".to_string(),
-        format!("voice:{voice}/planted_shared_concern.rs"),
+        format!("llm:{voice}/planted_shared_concern.rs"),
         "PLANE-DUPLICATE (symbol): `planted_derived_plane_helper`".to_string(),
         "planted:crates/busbar-planted/src/lib.rs".to_string(),
     ];

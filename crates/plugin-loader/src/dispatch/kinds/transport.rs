@@ -73,6 +73,19 @@ pub struct TransportFacts {
     pub status_rows: Vec<(u32, u32, u32)>,
 }
 
+/// WHAT A COMPILED-IN TRANSPORT DOOR STATES, read off its Statement without binding it (no
+/// `validate` or `open` runs), checked as a bind checks it.
+///
+/// # Errors
+///
+/// The door, its Statement or its transport tail is refused.
+pub fn stated(
+    door_fn: busbar_contract::abi::mechanism::door::DoorFn,
+) -> Result<TransportFacts, String> {
+    let st = crate::dispatch::load::statement_of(door_fn).map_err(|e| e.to_string())?;
+    tail_facts(&st)
+}
+
 /// A plugin string, interned.
 fn owned(s: AbiStr, field: &str) -> Result<&'static str, String> {
     if s.len == 0 {
