@@ -18,9 +18,15 @@ use crate::wal::{Mode, Wal};
 #[test]
 fn the_default_log_is_the_memory_buffered_one() {
     // Stated as a test because "the default is no disk" is a product claim, and a default that
-    // quietly changed would otherwise be found by an operator rather than by the suite.
+    // quietly changed would otherwise be found by an operator rather than by the suite. The
+    // default is the log a node with no data directory is built with: memory-buffered, shipping to
+    // whatever store the composition root binds.
     assert_eq!(
-        Wal::memory_buffered(crate::tests::fixtures::wall_ms).mode(),
+        Wal::memory_buffered_to(
+            Box::new(crate::ship::NullShipper::new()),
+            crate::tests::fixtures::wall_ms
+        )
+        .mode(),
         Mode::MemoryBuffered
     );
 }
