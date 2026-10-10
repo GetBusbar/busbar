@@ -798,7 +798,7 @@ and guest lists".
    §11.6: the framer no longer calls a `decorate` crossing; the kernel makes the one call. The framer
    now calls its bound auth through the host auth handle at its auth points (SUPERSEDED 2026-09-30 by THE DESIGN §6, "Auth points and guest lists").
 5. **Each style caches inside its plugin.** bearer and api-key build the header once, at `open`.
-   jwt-bearer and oauth-client-credentials mint through the plugin's own `open-web` need and refresh
+   jwt-bearer and oauth-client-credentials mint through the plugin's own `operator-infrastructure` need (§5 egress classes, ARCHITECT D1 MINT CLASS (B)) and refresh
    ahead of expiry in the background on `tick`; the plugin holds the service-account file or client
    secret, validates it, and renders 1.5.5's refusal texts. SigV4 signs per request with a daily
    signing key derived ahead of time. caller-credential passes the caller's credential through. The
