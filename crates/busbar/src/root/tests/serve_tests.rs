@@ -2085,25 +2085,14 @@ async fn serve_limited(
     port: u16,
     limits: Vec<busbar_kernel::config::groups::LimitCfg>,
 ) -> Serving {
-    serve_governed(linked, instance, port, limits, 0).await
+    serve_governed(linked, instance, port, limits, 0, None).await
 }
 
 #[cfg(feature = "plane-decisions")]
 /// [`serve_limited`], the plane stating its own per-request fee (its section's reserved
-/// `fees.per_request`, #47), in minor units.
+/// `fees.per_request`, #47), in minor units, and the caller's key minted with `allowed_pools`
+/// (`None` = every pool).
 async fn serve_governed(
-    linked: &crate::root::linked::Linked,
-    instance: &str,
-    port: u16,
-    limits: Vec<busbar_kernel::config::groups::LimitCfg>,
-    fee: i64,
-) -> Serving {
-    serve_keyed(linked, instance, port, limits, fee, None).await
-}
-
-#[cfg(feature = "plane-decisions")]
-/// [`serve_governed`], the caller's key minted with `allowed_pools` (`None` = every pool).
-async fn serve_keyed(
     linked: &crate::root::linked::Linked,
     instance: &str,
     port: u16,
@@ -2843,7 +2832,7 @@ async fn call_through(
 /// GOVERNANCE-BUDGET: a decisions unit's spend (the plane's own per-request fee, its section's
 /// `fees.per_request`) is charged to the presenting key, and the key's group BUDGET refuses the unit
 /// past it before its dial, 429, naming in `Retry-After` the seconds until the budget's window rolls,
-/// as the llm plane names them (1.5.5's governance refusal). A window that never rolls (`per:
+/// as 1.5.5's governance refusal names them. A window that never rolls (`per:
 /// total`) names no wait. RED: a driver that drops the governance refusal's wait, or a decisions
 /// renderer that does not render it, answers the refusal with no `Retry-After`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -2859,6 +2848,7 @@ async fn a_decisions_unit_past_its_budget_is_refused_with_a_retry_after() {
         port,
         vec![budget_of(1, LimitWindow::Hour)],
         1,
+        None,
     )
     .await;
 
@@ -2904,6 +2894,7 @@ async fn a_decisions_unit_past_its_budget_is_refused_with_a_retry_after() {
         port,
         vec![budget_of(1, LimitWindow::Total)],
         1,
+        None,
     )
     .await;
     assert_eq!(call_through(&serving, &mut heard).await.0, StatusCode::OK);
@@ -2917,7 +2908,7 @@ async fn a_decisions_unit_past_its_budget_is_refused_with_a_retry_after() {
 /// VERIFY: a unit presented by a key that names only another pool is refused before Admit draws a
 /// bucket and before its dial, the refusal sealed on the audit chain as the unit's end; the same
 /// door serves the key granted every pool (the control). The served door judges the key's pool
-/// grant at its approve seat (`ScopeDenied`), as the mcp and a2a doors do. RED: with the key granted
+/// grant at its approve seat (`ScopeDenied`), as every served door does. RED: with the key granted
 /// every pool the unit is served and the far end hears it, so the refusal assertions fail.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_decisions_unit_from_a_key_naming_another_pool_is_refused_before_its_dial() {
@@ -2926,7 +2917,7 @@ async fn a_decisions_unit_from_a_key_naming_another_pool_is_refused_before_its_d
     let _published = Published(instance);
     let (port, mut heard) = far_end().await;
     let other = Some(vec!["elsewhere".to_string()]);
-    let serving = serve_keyed(&crate::LINKED, instance, port, Vec::new(), 0, other).await;
+    let serving = serve_governed(&crate::LINKED, instance, port, Vec::new(), 0, other).await;
     let (status, _wait, reached) = call_through(&serving, &mut heard).await;
     assert_ne!(
         status,
@@ -2953,7 +2944,7 @@ async fn a_decisions_unit_from_a_key_naming_another_pool_is_refused_before_its_d
     let instance = "serve-door-verify-control";
     let _published = Published(instance);
     let (port, mut heard) = far_end().await;
-    let serving = serve_keyed(&crate::LINKED, instance, port, Vec::new(), 0, None).await;
+    let serving = serve_governed(&crate::LINKED, instance, port, Vec::new(), 0, None).await;
     let (status, _wait, reached) = call_through(&serving, &mut heard).await;
     assert_eq!(status, StatusCode::OK, "the granted key is served");
     assert!(reached, "and dispatched");
