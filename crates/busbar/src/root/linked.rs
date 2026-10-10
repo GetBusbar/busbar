@@ -1341,7 +1341,7 @@ pub fn declared_diagnostics(
 ) -> Result<Vec<&'static busbar_contract::diagnostic::Diagnostic>, String> {
     let mut declared = Vec::new();
     for p in registry.linked().iter().chain(registry.loadable()) {
-        let (name, decls) = (&p.manifest.name, &p.manifest.declares.diagnostics);
+        let (name, decls) = (p.key(), &p.manifest.declares.diagnostics);
         if !decls.is_empty() && !p.first_party() {
             return Err(format!(
                 "plugin '{name}' declares diagnostics but is not first-party; only a first-party \
@@ -1470,9 +1470,17 @@ pub fn seal(units: &[&RootUnit]) {
 #[path = "tests/linked.rs"]
 mod tests;
 
+#[cfg(test)]
+#[path = "tests/linked_secret_sources.rs"]
+mod secret_source_tests;
+
 #[cfg(all(test, feature = "auth-admin-tokens", linked_axis_body_ingress))]
 #[path = "tests/linked_auth.rs"]
 mod auth_tests;
+
+#[cfg(test)]
+#[path = "tests/linked_canonical.rs"]
+mod linked_canonical;
 
 #[cfg(all(test, linked_every_plane))]
 #[path = "tests/linked_protocols.rs"]
