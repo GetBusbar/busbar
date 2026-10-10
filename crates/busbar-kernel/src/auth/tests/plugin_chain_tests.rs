@@ -190,11 +190,8 @@ fn a_v1_auth_plugin_is_refused_at_boot_and_the_current_one_builds_browser_login(
 /// copy is skipped at the scan.
 fn first_party_tarball(mut manifest: busbar_plugin_loader::sign::Manifest, lib: &[u8]) -> Vec<u8> {
     manifest.publisher = busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER.into();
-    let signed = busbar_plugin_loader::sign::sign(
-        &crate::test_support::test_release_key(),
-        manifest,
-        lib,
-    );
+    let signed =
+        busbar_plugin_loader::sign::sign(&crate::test_support::test_release_key(), manifest, lib);
     busbar_plugin_loader::tarball::package(&signed, "lib.so", lib).unwrap()
 }
 

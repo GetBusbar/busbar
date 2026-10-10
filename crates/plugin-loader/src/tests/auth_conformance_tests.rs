@@ -310,16 +310,19 @@ fn a_third_party_signature_is_a_different_row() {
         dropped_row,
         "a third-party row must not compare equal to the first-party one"
     );
-    assert!(dropped.resolve(NAME).is_none(), "never admitted: {dropped_row}");
+    assert!(
+        dropped.resolve(NAME).is_none(),
+        "never admitted: {dropped_row}"
+    );
     let skipped = dropped
         .unresolved_reason(NAME)
         .expect("the scan names its refusal");
     assert_eq!(skipped.kind, crate::sign::RejectKind::EgressGrant);
     assert!(
-        skipped
-            .reason
-            .contains("in the `operator-infrastructure` egress class, which the host grants to a \
-                       first-party plugin only"),
+        skipped.reason.contains(
+            "in the `operator-infrastructure` egress class, which the host grants to a \
+                       first-party plugin only"
+        ),
         "{}",
         skipped.reason
     );
