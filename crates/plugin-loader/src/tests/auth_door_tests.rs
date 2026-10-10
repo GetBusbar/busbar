@@ -640,7 +640,11 @@ fn a_linked_auth_row_answers_its_canonical_name_and_refuses_in_its_key() {
     let registry = PluginRegistry::empty()
         .link(vec![
             LinkedPlugin::auth_door_named("busbar-auth-judge", "judge", judge::door),
-            LinkedPlugin::auth_door_named("busbar-auth-broken", "broken", crate::dispatch_tests::null_door),
+            LinkedPlugin::auth_door_named(
+                "busbar-auth-broken",
+                "broken",
+                crate::dispatch_tests::null_door,
+            ),
         ])
         .expect("the linked doors register");
     let rows = AuthRows::new(Arc::new(registry), dispatcher());
