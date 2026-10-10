@@ -9,3 +9,4 @@ mod journal_tests;
 mod published_recipe_tests;
 mod record_tests;
 mod sign_tests;
+mod subject_decoder_tests;

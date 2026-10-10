@@ -128,6 +128,34 @@ From the door, after `dlopen`:
 A manifest that states a newer version than the host speaks is refused the same way: the host accepts
 only the current version of each kind.
 
+## Testing against host services
+
+A test that runs your plugin under the loader hands it the host's services as a
+`busbar_contract::services::HostServices`. Don't implement that trait by hand: the host adds services,
+and a hand-written double stops compiling at the next busbar pin. Enable the contract's dev-only
+`services-double` feature, in `[dev-dependencies]` only (a release build never carries it):
+
+```toml
+[dev-dependencies]
+busbar-contract = { workspace = true, features = ["services-double"] }
+```
+
+Then implement `services::double::ServicesDouble` and override only the services your test serves.
+Every other service answers the way a host that does not serve it answers: REFUSED with
+`services::UNSERVED`, at once. The clock reads zero. Any `ServicesDouble` is a `HostServices`:
+
+```rust
+struct Clock;
+impl busbar_contract::services::double::ServicesDouble for Clock {
+    fn now(&self) -> Reading { Reading { wall_ns: 7, mono_ns: 7 } }
+}
+let services: Arc<dyn HostServices> = Arc::new(Clock);
+```
+
+If you need a double that serves nothing, use `services::double::Unserved`. In the `impl`, name the
+trait by its full path rather than importing it next to `HostServices`, because with both traits in
+scope a direct `clock.now()` call is ambiguous.
+
 ## Packaging and signing
 
 Unchanged in shape: one tarball holding the cdylib and a signed `manifest.json`, packed with

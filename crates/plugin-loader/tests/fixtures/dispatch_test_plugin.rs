@@ -67,6 +67,9 @@ pub const PEND_HOLD_DISPOSED: &[u8] = b"pend:hold:";
 pub const DRIVE_HANGS: &[u8] = b"drivehangs";
 /// `tick` mode: READY once a hanging `drive` is inside its crossing, else REFUSED.
 pub const DRIVE_ENTERED: &[u8] = b"driveentered";
+/// `tick` mode: the next `close` frees the instance and still answers FAULT (a state whose
+/// teardown failed after its memory went: the host must treat the instance as closed).
+pub const CLOSE_FAULTS: &[u8] = b"closefaults";
 /// `tick` mode: return READY WITHOUT writing the mirror (a host that did not zero `out` would read
 /// its own garbage as the answer).
 pub const SILENT: &[u8] = b"silent";
@@ -314,6 +317,8 @@ struct Inst {
     drive_hangs: AtomicBool,
     /// A hanging `drive` is inside its crossing.
     drive_entered: AtomicBool,
+    /// [`CLOSE_FAULTS`]: `close` frees the instance and answers FAULT.
+    close_faults: AtomicBool,
 }
 
 /// Write the outcome into the head (the mirror) and return it.
@@ -402,6 +407,7 @@ extern "C" fn open(_: *mut c_void, input: *const c_void, out: *mut c_void) -> Ra
             drives: AtomicU32::new(0),
             drive_hangs: AtomicBool::new(false),
             drive_entered: AtomicBool::new(false),
+            close_faults: AtomicBool::new(false),
         });
         (*out.cast::<OpenOut>()).instance = Arc::into_raw(inst).cast_mut().cast();
         say(out, Outcome::Ready)
@@ -452,10 +458,14 @@ extern "C" fn cancel(instance: *mut c_void, input: *const c_void, out: *mut c_vo
 
 extern "C" fn close(instance: *mut c_void, _: *const c_void, out: *mut c_void) -> RawOutcome {
     unsafe {
+        let mut answer = Outcome::Ready;
         if !instance.is_null() {
+            if inst(instance).close_faults.load(Ordering::SeqCst) {
+                answer = Outcome::Fault;
+            }
             drop(Arc::from_raw(instance.cast::<Inst>().cast_const()));
         }
-        say(out, Outcome::Ready)
+        say(out, answer)
     }
 }
 
@@ -509,6 +519,10 @@ extern "C" fn tick(instance: *mut c_void, input: *const c_void, out: *mut c_void
         }
         if mode == DRIVE_HANGS {
             me.drive_hangs.store(true, Ordering::SeqCst);
+            return say(out, Outcome::Ready);
+        }
+        if mode == CLOSE_FAULTS {
+            me.close_faults.store(true, Ordering::SeqCst);
             return say(out, Outcome::Ready);
         }
         if mode == DRIVE_ENTERED {

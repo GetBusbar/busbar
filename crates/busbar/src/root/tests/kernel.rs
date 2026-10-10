@@ -386,7 +386,6 @@ fn the_units_assemble_from_values_configuration_decided() {
     let kernel = new_kernel();
     let units = ProductionUnits::new(
         &kernel,
-        AuthChain::new(Vec::new(), false),
         durability,
         crate::root::adapters::BreakerPolicy::new(),
         #[cfg(feature = "root-admin")]

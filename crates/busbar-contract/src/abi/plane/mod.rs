@@ -868,6 +868,164 @@ pub const fn reason_of(code: u32) -> Option<ReasonCode> {
     })
 }
 
+// ── the one refusal classification ───────────────────────────────────────────────────────────────
+
+/// THE ONE REFUSAL CLASSIFICATION: which family of answer a refusal reason gets, whatever the
+/// plane. This is the P-item "refusal-reason collapse" (spec DONE item 2; TODO L-ENG9).
+///
+/// A refusal reason is the kernel's own word, and a client never sees it. A client sees the plane's
+/// rendering of it. Before this table there were eight hand-copied reason matches, and they
+/// disagreed: the kernel's default status, three renderers in one plane, one in each of four
+/// others, and the admin surface's. One of them still ended in a catch-all that answered a rate
+/// limit, a spent budget or a frozen group as "internal", which tells a caller the node broke when
+/// it was a policy refusal, so the caller retries the wrong thing. 1.5.5 never did that: on its one
+/// plane each limit reason has its own status and kind (v1.5.5 `crates/busbar/src/ingress/mod.rs:
+/// 237-305`: rate 429 `rate_limit_error`, budget 429 `insufficient_quota`, frozen group 403
+/// `permission_error`), and none becomes a 500.
+///
+/// So the reason-to-class grouping lives ONCE, here, and a plane holds only a class-to-wire table:
+/// its own codes and words. The grouping follows the one plane 1.5.5 shipped (owner correction
+/// 2026-09-28): each class has one kernel default status, and that default plus that plane's stated
+/// per-reason rows reproduce every status it answered, byte for byte, against the 1.5.5 golden
+/// cells.
+///
+/// The match in [`RefusalCode::class`] has no `_` arm, so a code added without a class does not
+/// compile.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RefusalClass {
+    /// The plane could not read the request.
+    Unreadable,
+    /// The request was readable, and this node will not take it as asked: an unbillable name, a
+    /// replayed or superseded idempotency key.
+    Rejected,
+    /// No usable authority: no credential, a revoked one, or an exchange that never produced one.
+    Unauthenticated,
+    /// The caller is known and may not do this.
+    Forbidden,
+    /// The request, or what it needs held, is larger than the node allows.
+    TooLarge,
+    /// The caller is over its arrival rate.
+    Throttled,
+    /// The node's in-flight table, or the idempotency key's unit, is busy.
+    Busy,
+    /// A money cap in the caller's chain has no headroom.
+    QuotaExhausted,
+    /// There is nowhere for the request to go.
+    NotFound,
+    /// A destination exists, and the way to it is shut: unreachable, breaker open, or its budget
+    /// spent.
+    Unreachable,
+    /// The node cannot take the unit now: capacity, drain, journal, or the client left.
+    Unavailable,
+    /// The unit ran out of time.
+    Timeout,
+    /// A plane call panicked.
+    PlaneFault,
+    /// The node got something wrong and says so without saying what.
+    NodeFault,
+}
+
+impl RefusalClass {
+    /// Every class.
+    pub const ALL: &'static [RefusalClass] = &[
+        RefusalClass::Unreadable,
+        RefusalClass::Rejected,
+        RefusalClass::Unauthenticated,
+        RefusalClass::Forbidden,
+        RefusalClass::TooLarge,
+        RefusalClass::Throttled,
+        RefusalClass::Busy,
+        RefusalClass::QuotaExhausted,
+        RefusalClass::NotFound,
+        RefusalClass::Unreachable,
+        RefusalClass::Unavailable,
+        RefusalClass::Timeout,
+        RefusalClass::PlaneFault,
+        RefusalClass::NodeFault,
+    ];
+
+    /// Whether the class is a fault of this node, the one family a plane may render as its
+    /// internal error. Every other class is a refusal the caller is owed by name.
+    #[must_use]
+    pub const fn is_node_fault(self) -> bool {
+        matches!(self, RefusalClass::PlaneFault | RefusalClass::NodeFault)
+    }
+}
+
+impl RefusalCode {
+    /// THE class of this code: the one reason-to-class match in the tree.
+    #[must_use]
+    pub const fn class(self) -> RefusalClass {
+        use RefusalClass as C;
+        match self {
+            RefusalCode::DecodeFailed => C::Unreadable,
+            RefusalCode::NoRate
+            | RefusalCode::Unpriced
+            | RefusalCode::Replayed
+            | RefusalCode::Superseded => C::Rejected,
+            RefusalCode::Unauthenticated
+            | RefusalCode::Revoked
+            | RefusalCode::SessionUnbound
+            | RefusalCode::SchemeNotDeclared
+            | RefusalCode::ChallengeExhausted => C::Unauthenticated,
+            RefusalCode::ScopeDenied
+            | RefusalCode::PoolNotPermitted
+            | RefusalCode::HookVeto
+            | RefusalCode::GroupFrozen
+            | RefusalCode::Untrusted => C::Forbidden,
+            RefusalCode::BodyTooLarge
+            | RefusalCode::CursorBudget
+            | RefusalCode::CredentialBudget => C::TooLarge,
+            RefusalCode::RateLimited => C::Throttled,
+            RefusalCode::InFlightCap | RefusalCode::InFlight => C::Busy,
+            RefusalCode::OverBudget => C::QuotaExhausted,
+            RefusalCode::NoDestination => C::NotFound,
+            RefusalCode::DestinationUnreachable
+            | RefusalCode::BreakerOpen
+            | RefusalCode::DestinationBudgetExhausted => C::Unreachable,
+            RefusalCode::SessionBudget
+            | RefusalCode::SpillBudget
+            | RefusalCode::ScratchExhausted
+            | RefusalCode::OpenSlotBusy
+            | RefusalCode::OverdraftCeiling
+            | RefusalCode::StaleSlice
+            | RefusalCode::DurabilityUnavailable
+            | RefusalCode::TierMismatch
+            | RefusalCode::Drain
+            | RefusalCode::ClientGone => C::Unavailable,
+            RefusalCode::Stalled | RefusalCode::DeadlineExceeded => C::Timeout,
+            RefusalCode::PlanePanic => C::PlaneFault,
+            RefusalCode::MeterDisputed
+            | RefusalCode::HandoffMismatch
+            | RefusalCode::TaskLost
+            | RefusalCode::SecretPlaceholder => C::NodeFault,
+        }
+    }
+}
+
+/// The class of a kernel refusal reason ([`RefusalCode::class`] of its wire code).
+#[must_use]
+pub const fn class_of(reason: ReasonCode) -> RefusalClass {
+    wire_code(reason).class()
+}
+
+/// The class of a refusal as a plane is handed it ([`RefusalCode::class`] of its wire code).
+#[must_use]
+pub fn class_of_refusal(reason: crate::unit::RefusalReason) -> RefusalClass {
+    class_of(ReasonCode::from(reason))
+}
+
+/// The class of a reason by its spelling on the journal and the wire (`ReasonCode::as_str`), for
+/// every reason a plane can be handed ([`reason_of`]); `None` for any other word, the kernel's own
+/// two money verdicts included.
+#[must_use]
+pub fn class_of_word(word: &str) -> Option<RefusalClass> {
+    RefusalCode::ALL
+        .iter()
+        .find(|c| reason_of(c.code()).is_some_and(|r| r.as_str() == word))
+        .map(|c| c.class())
+}
+
 // ── the Statement tail ───────────────────────────────────────────────────────────────────────────
 
 /// A dialect's default auth style (the 1.5.5 dialect defaults), as data.
@@ -1126,6 +1284,15 @@ pub struct PlaneTail {
     /// to the admin mount (the kernel keys it under the mount when it merges the admin document);
     /// absent = none. A tail addition.
     pub admin_openapi: Blob,
+    /// THE PLANE'S STREAM CEILING, seconds (ARCHITECT ruling 2026-10-07, STREAM-CEILING): how long a
+    /// unit whose `arrive` stated [`ROUTE_STREAM`] may run, measured from the moment its route is
+    /// known. The kernel stamps it as the unit's deadline, so it bounds the whole streamed answer
+    /// and a caller that stops reading it alike: when it passes, the unit is cut
+    /// (`DeadlineExceeded`) and bills what it delivered (Part 2 #62). `0` = NO ceiling: the
+    /// streamed answer runs to its own end and a stalled caller holds it until the caller goes, as
+    /// the previous release served it. A tail addition: a tail whose `size` ends before it
+    /// states `0`.
+    pub stream_ceiling_secs: u64,
 }
 
 // ── the generation snapshot ──────────────────────────────────────────────────────────────────────
@@ -1198,6 +1365,13 @@ pub struct PlaneSnapshot {
     /// RFC 9728 document at [`PlaneSnapshot::resource_metadata`] (no unit, no audit row); absent =
     /// none stated. A tail addition.
     pub resource_facts: Blob,
+    /// THE NAMES IT LISTS for this generation (THE DESIGN section 2: `/v1/models` appends each
+    /// plane generation's listed names, filtered by the caller's grant of the plane's scope kind),
+    /// each non-empty UTF-8; NULL/0 = none. A tail addition: a snapshot whose `size` ends before it
+    /// lists none, and the host reads nothing past that `size`.
+    pub listed: *const AbiStr,
+    /// How many.
+    pub listed_len: usize,
 }
 
 /// The plane's `open` `in`: the lifecycle's, plus the deployment's public base URL.

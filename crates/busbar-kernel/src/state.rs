@@ -302,16 +302,6 @@ pub struct App {
     /// Per-principal ADMIN MUTATION rate limiter. Arc-shared across apply snapshots so the
     /// windows survive every swap.
     pub(crate) mutation_limiter: Arc<crate::ratelimit::MutationLimiter>,
-    /// Idempotency-Key replay cache for key minting (bounded, ~10min TTL): a retried POST with the
-    /// same key returns the FIRST response verbatim instead of double-creating. Arc-shared across
-    /// swaps. Maps (principal id, Idempotency-Key) → (created_at, cached 201 body). The key is
-    /// SCOPED TO THE PRINCIPAL: a different admin presenting the same Idempotency-Key value must
-    /// NOT replay another principal's response (which carries a once-shown secret) — the header is
-    /// a client-chosen string, not a cross-principal handle.
-    #[allow(clippy::type_complexity)]
-    pub idempotency_cache: Arc<
-        std::sync::Mutex<std::collections::HashMap<(String, String), (u64, serde_json::Value)>>,
-    >,
     /// The admin side's state (the config VERSION HISTORY, typed and filled by the admin service),
     /// behind the admin seam's one slot. Arc-shared across apply snapshots (survives every swap).
     pub admin: Arc<crate::admin::seam::AdminSlot>,
@@ -393,9 +383,6 @@ pub struct App {
     /// LAW 7 — this generation's configured plane sections (`RootCfg::plane_sections`). `None` only on
     /// a test fixture that states none, where every linked plane counts as configured.
     pub plane_sections: Option<std::collections::BTreeSet<&'static str>>,
-    /// The credential cache — Arc-shared ACROSS config swaps (like the
-    /// mutation limiter): an apply/reload must not silently re-open every cached-allow window.
-    pub credential_cache: Arc<crate::auth_cache::CredentialCache>,
     /// Per-module `max_admin_scope:` ceilings (from the auth chain entries) - consulted at admin
     /// scope resolution.
     pub auth_scope_caps: std::collections::HashMap<String, String>,
@@ -502,6 +489,23 @@ pub struct App {
     /// mutation tell the operator "restart required" instead of silently no-opping
     /// ([`crate::plugin_routes::paths_awaiting_restart`]).
     pub boot_route_paths: Arc<std::collections::HashSet<String>>,
+}
+
+impl App {
+    /// THE ADMIN CACHE FLUSH: every data-chain position and every external admin module (or only
+    /// the one `module` names) refreshed, so each auth plugin drops the verified credentials it
+    /// caches inside itself; the sum of the entries they report (THE DESIGN 11.11 R3). The
+    /// operator credential caches nothing.
+    pub fn flush_verified_credentials(&self, module: Option<&str>) -> u64 {
+        let admin: u64 = self
+            .admin_modules
+            .modules
+            .iter()
+            .filter(|(name, _)| module.is_none_or(|m| m == name.as_str()))
+            .map(|(_, m)| m.calls.refresh().unwrap_or(0))
+            .sum();
+        self.auth.flush_verified(module) + admin
+    }
 }
 
 impl App {
