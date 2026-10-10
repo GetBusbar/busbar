@@ -76,7 +76,8 @@
 # a construction site. That is a NEIGHBOURING shape — "constructed, but with its input hardwired
 # empty" — and a construction-site scanner cannot express it. It is recorded as an OPEN row in the
 # ledger rather than pretended into this file, because a row here would report it GREEN and be worse
-# than no row at all.
+# than no row at all. (Fed 2026-10-07 by H6: `NodeLedger::booked_lines` hands over the counted lines
+# the book keeps and rebuilds from the chain, so the feed is no longer hardwired empty.)
 #
 # ── DECLARATIONS ─────────────────────────────────────────────────────────────────────────────────
 
