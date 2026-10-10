@@ -611,8 +611,8 @@
         "root": {
           "state": "proven",
           "leg": "root-decisions",
-          "note": "a unit presented by a key that names only another pool ends at the verify step before its dial, the refusal sealed on the audit chain as PoolNotPermitted, while the same door serves the key granted every pool",
-          "test": "crates/busbar/src/root/tests/serve_tests.rs::a_decisions_unit_from_a_key_naming_another_pool_ends_at_verify_before_its_dial"
+          "note": "a unit presented by a key that names only another pool is refused before Admit draws a bucket and before its dial, the door judging the pool grant at its approve seat and sealing ScopeDenied on the audit chain, while the same door serves the key granted every pool",
+          "test": "crates/busbar/src/root/tests/serve_tests.rs::a_decisions_unit_from_a_key_naming_another_pool_is_refused_before_its_dial"
         }
       },
       "approve": {

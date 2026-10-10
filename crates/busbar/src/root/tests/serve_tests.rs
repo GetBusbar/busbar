@@ -2914,12 +2914,13 @@ async fn a_decisions_unit_past_its_budget_is_refused_with_a_retry_after() {
 }
 
 #[cfg(feature = "plane-decisions")]
-/// VERIFY: a unit presented by a key that names only another pool is refused at the verify step
-/// before its dial, the refusal sealed on the audit chain as the unit's end; the same door serves
-/// the key granted every pool (the control). RED: with the key granted every pool the unit is
-/// served and the far end hears it, so the refusal assertions fail.
+/// VERIFY: a unit presented by a key that names only another pool is refused before Admit draws a
+/// bucket and before its dial, the refusal sealed on the audit chain as the unit's end; the same
+/// door serves the key granted every pool (the control). The served door judges the key's pool
+/// grant at its approve seat (`ScopeDenied`), as the mcp and a2a doors do. RED: with the key granted
+/// every pool the unit is served and the far end hears it, so the refusal assertions fail.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_decisions_unit_from_a_key_naming_another_pool_ends_at_verify_before_its_dial() {
+async fn a_decisions_unit_from_a_key_naming_another_pool_is_refused_before_its_dial() {
     let _one = PUBLISHING.lock().await;
     let instance = "serve-door-verify";
     let _published = Published(instance);
@@ -2939,11 +2940,11 @@ async fn a_decisions_unit_from_a_key_naming_another_pool_ends_at_verify_before_i
         matches!(
             records[0].outcome.unit_end,
             busbar_contract::caps::Outcome::Refused(
-                busbar_contract::caps::StepName::Verify,
-                ReasonCode::PoolNotPermitted
+                busbar_contract::caps::StepName::Approve,
+                ReasonCode::ScopeDenied
             )
         ),
-        "refused at verify: {:?}",
+        "refused on its pool grant, before admit: {:?}",
         records[0].outcome
     );
     drop(serving);
