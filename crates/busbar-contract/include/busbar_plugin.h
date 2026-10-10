@@ -433,6 +433,18 @@ extern "C" {
 #define BB_TRANSPORT_MAX_CLAIMS UINT64_C(1024) /* The most claims one transport entry may make. */
 #define BB_TRANSPORT_MAX_ALPN_BYTES UINT64_C(65535) /* The most bytes one protocol offer may take (a TLS ProtocolNameList is at most `2^16 - 1`). */
 #define BB_TRANSPORT_MAX_ROUTE_FIELDS UINT64_C(32) /* The most field predicates one route may carry. */
+#define BB_TRANSPORT_LANE_CLEAR UINT32_C(1) /* [`DatagramLane::lane`] / [`DatagramRoute::lane`]: a datagram as the port carried it. */
+#define BB_TRANSPORT_LANE_SECURED UINT32_C(2) /* [`DatagramLane::lane`] / [`DatagramRoute::lane`]: plaintext of the host's secure layer. */
+#define BB_TRANSPORT_LANE_RENDEZVOUS UINT32_C(3) /* [`DatagramLane::lane`]: the far end's session description, from the signalling unit. Never a */
+#define BB_TRANSPORT_PATH_REQUEST_NONE UINT32_C(0) /* [`DatagramYield::request`]: no path request. */
+#define BB_TRANSPORT_PATH_REQUEST_BIND UINT32_C(1) /* [`DatagramYield::request`]: bind `request_to` (nothing is bound yet). */
+#define BB_TRANSPORT_PATH_REQUEST_REBIND UINT32_C(2) /* [`DatagramYield::request`]: move the association from the bound `request_from` to */
+#define BB_TRANSPORT_HANDSHAKE_NONE UINT32_C(0) /* [`RendezvousTerms::role`]: this answer carries no terms. */
+#define BB_TRANSPORT_HANDSHAKE_INITIATES UINT32_C(1) /* [`RendezvousTerms::role`]: the host's secure layer opens the handshake. */
+#define BB_TRANSPORT_HANDSHAKE_ANSWERS UINT32_C(2) /* [`RendezvousTerms::role`]: the host's secure layer answers the far end's handshake. */
+#define BB_TRANSPORT_MAX_ROUTES UINT64_C(4096) /* The most datagram routes one framer answer may produce. */
+#define BB_TRANSPORT_MAX_KEYING_BYTES UINT64_C(256) /* The most keying-material bytes the host presents (two keys and two salts of the widest */
+#define BB_TRANSPORT_FINGERPRINT_BYTES UINT64_C(32) /* The length of [`RendezvousTerms::peer_fingerprint`]: a SHA-256 digest. */
 #define BB_TRANSPORT_SEPARATOR ": " /* Between a field's name and its value. */
 #define BB_TRANSPORT_LINE_END "\x0d\n" /* After a field's value. */
 #define BB_TRANSPORT_ABI_VERSION UINT32_C(1) /* The transport kind's ABI version: new in 1.6.0 (v1.5.5 had no transport kind ABI), so it ships `1`. */
@@ -964,6 +976,12 @@ typedef struct bb_plane_PlaneCancelIn bb_plane_PlaneCancelIn;
 typedef struct bb_plane_PlaneCancelOut bb_plane_PlaneCancelOut;
 typedef struct bb_plane_ProjectIn bb_plane_ProjectIn;
 typedef struct bb_plane_ProjectOut bb_plane_ProjectOut;
+typedef struct bb_transport_KeyingMaterial bb_transport_KeyingMaterial;
+typedef struct bb_transport_DatagramRoute bb_transport_DatagramRoute;
+typedef struct bb_transport_DatagramPath bb_transport_DatagramPath;
+typedef struct bb_transport_DatagramLane bb_transport_DatagramLane;
+typedef struct bb_transport_RendezvousTerms bb_transport_RendezvousTerms;
+typedef struct bb_transport_DatagramYield bb_transport_DatagramYield;
 typedef struct bb_transport_Ops bb_transport_Ops;
 typedef struct bb_transport_Claim bb_transport_Claim;
 typedef struct bb_transport_StatusRow bb_transport_StatusRow;
@@ -2878,6 +2896,73 @@ struct bb_plane_ProjectOut {
     uint32_t _reserved2;
 };
 
+/* THE KEYING-MATERIAL ITEM: what the host's secure layer exported for the framer, host memory */
+struct bb_transport_KeyingMaterial {
+    uint32_t size;
+    uint32_t profile;
+    const uint8_t *bytes;
+    size_t len;
+};
+
+/* One datagram a framer answered: its bytes in the sink's `wire`, where it goes, and its lane. */
+struct bb_transport_DatagramRoute {
+    uint64_t offset;
+    uint64_t len;
+    uint32_t path;
+    uint32_t lane;
+};
+
+/* One path the host knows: its number and its far-end address. On the dialling side these are the */
+struct bb_transport_DatagramPath {
+    uint32_t path;
+    uint32_t _reserved;
+    bb_mech_AbiStr addr;
+};
+
+/* THE LANE A DATAGRAM FRAMER'S CALL CARRIES, host-written: what arrived, from where, the host's */
+struct bb_transport_DatagramLane {
+    uint32_t size;
+    uint32_t lane;
+    uint32_t path;
+    uint32_t bound;
+    bb_mech_AbiStr path_addr;
+    bb_mech_AbiStr local_addr;
+    uint32_t verified;
+    uint32_t _reserved;
+    const bb_transport_KeyingMaterial *keying;
+    bb_transport_DatagramRoute *routes;
+    size_t routes_cap;
+    const bb_transport_DatagramPath *paths;
+    size_t paths_len;
+};
+
+/* A byte range of a host buffer a piece's bytes were written into; `len == 0` = absent. A */
+struct bb_transport_FrameSpan {
+    uint64_t offset;
+    uint64_t len;
+};
+
+/* What the host's secure layer runs under, as the rendezvous settled it. The four credentials and */
+struct bb_transport_RendezvousTerms {
+    uint32_t role;
+    uint32_t _reserved;
+    bb_transport_FrameSpan local_user;
+    bb_transport_FrameSpan local_secret;
+    bb_transport_FrameSpan remote_user;
+    bb_transport_FrameSpan remote_secret;
+    bb_transport_FrameSpan peer_fingerprint;
+    bb_transport_FrameSpan candidates;
+};
+
+/* What a datagram framer's answer adds to [`super::FramerYield`]: its routes, at most one path */
+struct bb_transport_DatagramYield {
+    uint32_t routes_len;
+    uint32_t request;
+    uint32_t request_from;
+    uint32_t request_to;
+    bb_transport_RendezvousTerms terms;
+};
+
 /* The transport kind's ops table: the lifecycle, then the carrier's eight ops, then the framer's */
 struct bb_transport_Ops {
     bb_mech_OpsHead head;
@@ -2976,6 +3061,7 @@ struct bb_transport_ConnFacts {
     bb_mech_AbiStr peer_issuer;
     bb_mech_AbiStr peer_fingerprint;
     bb_mech_AbiStr claim;
+    bb_mech_AbiStr local_certificate;
 };
 
 /* One frame piece a framer produced, in [`FramerSink::pieces`]; its bytes are */
@@ -2988,12 +3074,6 @@ struct bb_transport_FramePiece {
     uint8_t _reserved;
     uint16_t flags;
     uint64_t retry_after_secs;
-};
-
-/* A byte range of a host buffer a piece's bytes were written into; `len == 0` = absent. A */
-struct bb_transport_FrameSpan {
-    uint64_t offset;
-    uint64_t len;
 };
 
 /* The HOST buffers every framer op writes into, and the host's clock at the call. */
@@ -3155,6 +3235,7 @@ struct bb_transport_FramerOut {
     bb_mech_OutHead head;
     bb_transport_FramerYield yielded;
     uint64_t framing;
+    bb_transport_DatagramYield datagram;
 };
 
 /* `begin`'s `in` (the framer's `open`). */
@@ -3167,6 +3248,7 @@ struct bb_transport_BeginIn {
     bb_transport_FramerSink sink;
     const bb_mech_Field *fields;
     size_t fields_len;
+    const bb_transport_DatagramLane *lane;
 };
 
 /* `ingest`'s `in`. */
@@ -3178,6 +3260,7 @@ struct bb_transport_IngestIn {
     uint32_t end;
     uint32_t _reserved;
     bb_transport_FramerSink sink;
+    const bb_transport_DatagramLane *lane;
 };
 
 /* `emit`'s `in`. */
@@ -3191,6 +3274,7 @@ struct bb_transport_EmitIn {
     uint32_t flags;
     bb_transport_FramerSink sink;
     uint64_t deadline_ns;
+    const bb_transport_DatagramLane *lane;
 };
 
 /* `encode`'s `in`. The rendered bytes go into `sink.wire`. */
@@ -3232,6 +3316,7 @@ struct bb_transport_FinishIn {
     bb_mech_Span final_details;
     const uint8_t *final_bytes;
     size_t final_bytes_len;
+    const bb_transport_DatagramLane *lane;
 };
 
 /* `detach`'s and `timer`'s `in`. */
@@ -3239,6 +3324,7 @@ struct bb_transport_FramingIn {
     bb_mech_InHead head;
     uint64_t framing;
     bb_transport_FramerSink sink;
+    const bb_transport_DatagramLane *lane;
 };
 
 /* `adopt`'s `in`. */
@@ -3747,7 +3833,7 @@ struct bb_hsvc_HostSlots {
     bb_hsvc_ServiceFn session_emit;
 };
 
-/* ---- layout proof: 270 of 273 structures are pinned by the golden ---- */
+/* ---- layout proof: 275 of 279 structures are pinned by the golden ---- */
 #if UINTPTR_MAX == UINT64_MAX
 #ifdef __cplusplus
 #define BB_ASSERT(c, m) static_assert(c, m)
@@ -5189,6 +5275,48 @@ BB_ASSERT(offsetof(bb_plane_ProjectOut, end_user) == 296, "bb_plane_ProjectOut.e
 BB_ASSERT(offsetof(bb_plane_ProjectOut, rewritten) == 312, "bb_plane_ProjectOut.rewritten: offset");
 BB_ASSERT(offsetof(bb_plane_ProjectOut, messages_needed) == 320, "bb_plane_ProjectOut.messages_needed: offset");
 BB_ASSERT(offsetof(bb_plane_ProjectOut, _reserved2) == 324, "bb_plane_ProjectOut._reserved2: offset");
+BB_ASSERT(sizeof(bb_transport_KeyingMaterial) == 24, "bb_transport_KeyingMaterial: size");
+BB_ASSERT(BB_ALIGNOF(bb_transport_KeyingMaterial) == 8, "bb_transport_KeyingMaterial: alignment");
+BB_ASSERT(offsetof(bb_transport_KeyingMaterial, size) == 0, "bb_transport_KeyingMaterial.size: offset");
+BB_ASSERT(offsetof(bb_transport_KeyingMaterial, profile) == 4, "bb_transport_KeyingMaterial.profile: offset");
+BB_ASSERT(offsetof(bb_transport_KeyingMaterial, bytes) == 8, "bb_transport_KeyingMaterial.bytes: offset");
+BB_ASSERT(offsetof(bb_transport_KeyingMaterial, len) == 16, "bb_transport_KeyingMaterial.len: offset");
+BB_ASSERT(sizeof(bb_transport_DatagramRoute) == 24, "bb_transport_DatagramRoute: size");
+BB_ASSERT(BB_ALIGNOF(bb_transport_DatagramRoute) == 8, "bb_transport_DatagramRoute: alignment");
+BB_ASSERT(offsetof(bb_transport_DatagramRoute, offset) == 0, "bb_transport_DatagramRoute.offset: offset");
+BB_ASSERT(offsetof(bb_transport_DatagramRoute, len) == 8, "bb_transport_DatagramRoute.len: offset");
+BB_ASSERT(offsetof(bb_transport_DatagramRoute, path) == 16, "bb_transport_DatagramRoute.path: offset");
+BB_ASSERT(offsetof(bb_transport_DatagramRoute, lane) == 20, "bb_transport_DatagramRoute.lane: offset");
+BB_ASSERT(sizeof(bb_transport_DatagramLane) == 96, "bb_transport_DatagramLane: size");
+BB_ASSERT(BB_ALIGNOF(bb_transport_DatagramLane) == 8, "bb_transport_DatagramLane: alignment");
+BB_ASSERT(offsetof(bb_transport_DatagramLane, size) == 0, "bb_transport_DatagramLane.size: offset");
+BB_ASSERT(offsetof(bb_transport_DatagramLane, lane) == 4, "bb_transport_DatagramLane.lane: offset");
+BB_ASSERT(offsetof(bb_transport_DatagramLane, path) == 8, "bb_transport_DatagramLane.path: offset");
+BB_ASSERT(offsetof(bb_transport_DatagramLane, bound) == 12, "bb_transport_DatagramLane.bound: offset");
+BB_ASSERT(offsetof(bb_transport_DatagramLane, path_addr) == 16, "bb_transport_DatagramLane.path_addr: offset");
+BB_ASSERT(offsetof(bb_transport_DatagramLane, local_addr) == 32, "bb_transport_DatagramLane.local_addr: offset");
+BB_ASSERT(offsetof(bb_transport_DatagramLane, verified) == 48, "bb_transport_DatagramLane.verified: offset");
+BB_ASSERT(offsetof(bb_transport_DatagramLane, _reserved) == 52, "bb_transport_DatagramLane._reserved: offset");
+BB_ASSERT(offsetof(bb_transport_DatagramLane, keying) == 56, "bb_transport_DatagramLane.keying: offset");
+BB_ASSERT(offsetof(bb_transport_DatagramLane, routes) == 64, "bb_transport_DatagramLane.routes: offset");
+BB_ASSERT(offsetof(bb_transport_DatagramLane, routes_cap) == 72, "bb_transport_DatagramLane.routes_cap: offset");
+BB_ASSERT(sizeof(bb_transport_RendezvousTerms) == 104, "bb_transport_RendezvousTerms: size");
+BB_ASSERT(BB_ALIGNOF(bb_transport_RendezvousTerms) == 8, "bb_transport_RendezvousTerms: alignment");
+BB_ASSERT(offsetof(bb_transport_RendezvousTerms, role) == 0, "bb_transport_RendezvousTerms.role: offset");
+BB_ASSERT(offsetof(bb_transport_RendezvousTerms, _reserved) == 4, "bb_transport_RendezvousTerms._reserved: offset");
+BB_ASSERT(offsetof(bb_transport_RendezvousTerms, local_user) == 8, "bb_transport_RendezvousTerms.local_user: offset");
+BB_ASSERT(offsetof(bb_transport_RendezvousTerms, local_secret) == 24, "bb_transport_RendezvousTerms.local_secret: offset");
+BB_ASSERT(offsetof(bb_transport_RendezvousTerms, remote_user) == 40, "bb_transport_RendezvousTerms.remote_user: offset");
+BB_ASSERT(offsetof(bb_transport_RendezvousTerms, remote_secret) == 56, "bb_transport_RendezvousTerms.remote_secret: offset");
+BB_ASSERT(offsetof(bb_transport_RendezvousTerms, peer_fingerprint) == 72, "bb_transport_RendezvousTerms.peer_fingerprint: offset");
+BB_ASSERT(offsetof(bb_transport_RendezvousTerms, candidates) == 88, "bb_transport_RendezvousTerms.candidates: offset");
+BB_ASSERT(sizeof(bb_transport_DatagramYield) == 120, "bb_transport_DatagramYield: size");
+BB_ASSERT(BB_ALIGNOF(bb_transport_DatagramYield) == 8, "bb_transport_DatagramYield: alignment");
+BB_ASSERT(offsetof(bb_transport_DatagramYield, routes_len) == 0, "bb_transport_DatagramYield.routes_len: offset");
+BB_ASSERT(offsetof(bb_transport_DatagramYield, request) == 4, "bb_transport_DatagramYield.request: offset");
+BB_ASSERT(offsetof(bb_transport_DatagramYield, request_from) == 8, "bb_transport_DatagramYield.request_from: offset");
+BB_ASSERT(offsetof(bb_transport_DatagramYield, request_to) == 12, "bb_transport_DatagramYield.request_to: offset");
+BB_ASSERT(offsetof(bb_transport_DatagramYield, terms) == 16, "bb_transport_DatagramYield.terms: offset");
 BB_ASSERT(sizeof(bb_transport_Ops) == 224, "bb_transport_Ops: size");
 BB_ASSERT(BB_ALIGNOF(bb_transport_Ops) == 8, "bb_transport_Ops: alignment");
 BB_ASSERT(offsetof(bb_transport_Ops, head) == 0, "bb_transport_Ops.head: offset");
@@ -5265,7 +5393,7 @@ BB_ASSERT(offsetof(bb_transport_Destination, args) == 40, "bb_transport_Destinat
 BB_ASSERT(offsetof(bb_transport_Destination, args_len) == 48, "bb_transport_Destination.args_len: offset");
 BB_ASSERT(offsetof(bb_transport_Destination, env) == 56, "bb_transport_Destination.env: offset");
 BB_ASSERT(offsetof(bb_transport_Destination, env_len) == 64, "bb_transport_Destination.env_len: offset");
-BB_ASSERT(sizeof(bb_transport_ConnFacts) == 104, "bb_transport_ConnFacts: size");
+BB_ASSERT(sizeof(bb_transport_ConnFacts) == 120, "bb_transport_ConnFacts: size");
 BB_ASSERT(BB_ALIGNOF(bb_transport_ConnFacts) == 8, "bb_transport_ConnFacts: alignment");
 BB_ASSERT(offsetof(bb_transport_ConnFacts, size) == 0, "bb_transport_ConnFacts.size: offset");
 BB_ASSERT(offsetof(bb_transport_ConnFacts, _reserved) == 4, "bb_transport_ConnFacts._reserved: offset");
@@ -5275,6 +5403,7 @@ BB_ASSERT(offsetof(bb_transport_ConnFacts, peer_subject) == 40, "bb_transport_Co
 BB_ASSERT(offsetof(bb_transport_ConnFacts, peer_issuer) == 56, "bb_transport_ConnFacts.peer_issuer: offset");
 BB_ASSERT(offsetof(bb_transport_ConnFacts, peer_fingerprint) == 72, "bb_transport_ConnFacts.peer_fingerprint: offset");
 BB_ASSERT(offsetof(bb_transport_ConnFacts, claim) == 88, "bb_transport_ConnFacts.claim: offset");
+BB_ASSERT(offsetof(bb_transport_ConnFacts, local_certificate) == 104, "bb_transport_ConnFacts.local_certificate: offset");
 BB_ASSERT(sizeof(bb_transport_FramePiece) == 40, "bb_transport_FramePiece: size");
 BB_ASSERT(BB_ALIGNOF(bb_transport_FramePiece) == 8, "bb_transport_FramePiece: alignment");
 BB_ASSERT(offsetof(bb_transport_FramePiece, stream) == 0, "bb_transport_FramePiece.stream: offset");
@@ -5407,12 +5536,13 @@ BB_ASSERT(offsetof(bb_transport_LocateOut, secure) == 128, "bb_transport_LocateO
 BB_ASSERT(offsetof(bb_transport_LocateOut, has_name) == 132, "bb_transport_LocateOut.has_name: offset");
 BB_ASSERT(offsetof(bb_transport_LocateOut, alpn_written) == 136, "bb_transport_LocateOut.alpn_written: offset");
 BB_ASSERT(offsetof(bb_transport_LocateOut, alpn_needed) == 144, "bb_transport_LocateOut.alpn_needed: offset");
-BB_ASSERT(sizeof(bb_transport_FramerOut) == 144, "bb_transport_FramerOut: size");
+BB_ASSERT(sizeof(bb_transport_FramerOut) == 264, "bb_transport_FramerOut: size");
 BB_ASSERT(BB_ALIGNOF(bb_transport_FramerOut) == 8, "bb_transport_FramerOut: alignment");
 BB_ASSERT(offsetof(bb_transport_FramerOut, head) == 0, "bb_transport_FramerOut.head: offset");
 BB_ASSERT(offsetof(bb_transport_FramerOut, yielded) == 96, "bb_transport_FramerOut.yielded: offset");
 BB_ASSERT(offsetof(bb_transport_FramerOut, framing) == 136, "bb_transport_FramerOut.framing: offset");
-BB_ASSERT(sizeof(bb_transport_BeginIn) == 216, "bb_transport_BeginIn: size");
+BB_ASSERT(offsetof(bb_transport_FramerOut, datagram) == 144, "bb_transport_FramerOut.datagram: offset");
+BB_ASSERT(sizeof(bb_transport_BeginIn) == 224, "bb_transport_BeginIn: size");
 BB_ASSERT(BB_ALIGNOF(bb_transport_BeginIn) == 8, "bb_transport_BeginIn: alignment");
 BB_ASSERT(offsetof(bb_transport_BeginIn, head) == 0, "bb_transport_BeginIn.head: offset");
 BB_ASSERT(offsetof(bb_transport_BeginIn, side) == 88, "bb_transport_BeginIn.side: offset");
@@ -5422,7 +5552,8 @@ BB_ASSERT(offsetof(bb_transport_BeginIn, facts) == 112, "bb_transport_BeginIn.fa
 BB_ASSERT(offsetof(bb_transport_BeginIn, sink) == 120, "bb_transport_BeginIn.sink: offset");
 BB_ASSERT(offsetof(bb_transport_BeginIn, fields) == 200, "bb_transport_BeginIn.fields: offset");
 BB_ASSERT(offsetof(bb_transport_BeginIn, fields_len) == 208, "bb_transport_BeginIn.fields_len: offset");
-BB_ASSERT(sizeof(bb_transport_IngestIn) == 200, "bb_transport_IngestIn: size");
+BB_ASSERT(offsetof(bb_transport_BeginIn, lane) == 216, "bb_transport_BeginIn.lane: offset");
+BB_ASSERT(sizeof(bb_transport_IngestIn) == 208, "bb_transport_IngestIn: size");
 BB_ASSERT(BB_ALIGNOF(bb_transport_IngestIn) == 8, "bb_transport_IngestIn: alignment");
 BB_ASSERT(offsetof(bb_transport_IngestIn, head) == 0, "bb_transport_IngestIn.head: offset");
 BB_ASSERT(offsetof(bb_transport_IngestIn, framing) == 88, "bb_transport_IngestIn.framing: offset");
@@ -5431,7 +5562,8 @@ BB_ASSERT(offsetof(bb_transport_IngestIn, len) == 104, "bb_transport_IngestIn.le
 BB_ASSERT(offsetof(bb_transport_IngestIn, end) == 112, "bb_transport_IngestIn.end: offset");
 BB_ASSERT(offsetof(bb_transport_IngestIn, _reserved) == 116, "bb_transport_IngestIn._reserved: offset");
 BB_ASSERT(offsetof(bb_transport_IngestIn, sink) == 120, "bb_transport_IngestIn.sink: offset");
-BB_ASSERT(sizeof(bb_transport_EmitIn) == 216, "bb_transport_EmitIn: size");
+BB_ASSERT(offsetof(bb_transport_IngestIn, lane) == 200, "bb_transport_IngestIn.lane: offset");
+BB_ASSERT(sizeof(bb_transport_EmitIn) == 224, "bb_transport_EmitIn: size");
 BB_ASSERT(BB_ALIGNOF(bb_transport_EmitIn) == 8, "bb_transport_EmitIn: alignment");
 BB_ASSERT(offsetof(bb_transport_EmitIn, head) == 0, "bb_transport_EmitIn.head: offset");
 BB_ASSERT(offsetof(bb_transport_EmitIn, framing) == 88, "bb_transport_EmitIn.framing: offset");
@@ -5442,6 +5574,7 @@ BB_ASSERT(offsetof(bb_transport_EmitIn, end_of_frame) == 120, "bb_transport_Emit
 BB_ASSERT(offsetof(bb_transport_EmitIn, flags) == 124, "bb_transport_EmitIn.flags: offset");
 BB_ASSERT(offsetof(bb_transport_EmitIn, sink) == 128, "bb_transport_EmitIn.sink: offset");
 BB_ASSERT(offsetof(bb_transport_EmitIn, deadline_ns) == 208, "bb_transport_EmitIn.deadline_ns: offset");
+BB_ASSERT(offsetof(bb_transport_EmitIn, lane) == 216, "bb_transport_EmitIn.lane: offset");
 BB_ASSERT(sizeof(bb_transport_EncodeIn) == 232, "bb_transport_EncodeIn: size");
 BB_ASSERT(BB_ALIGNOF(bb_transport_EncodeIn) == 8, "bb_transport_EncodeIn: alignment");
 BB_ASSERT(offsetof(bb_transport_EncodeIn, head) == 0, "bb_transport_EncodeIn.head: offset");
@@ -5464,7 +5597,7 @@ BB_ASSERT(offsetof(bb_transport_RefuseIn, len) == 120, "bb_transport_RefuseIn.le
 BB_ASSERT(offsetof(bb_transport_RefuseIn, sink) == 128, "bb_transport_RefuseIn.sink: offset");
 BB_ASSERT(offsetof(bb_transport_RefuseIn, status) == 208, "bb_transport_RefuseIn.status: offset");
 BB_ASSERT(offsetof(bb_transport_RefuseIn, _reserved2) == 212, "bb_transport_RefuseIn._reserved2: offset");
-BB_ASSERT(sizeof(bb_transport_FinishIn) == 224, "bb_transport_FinishIn: size");
+BB_ASSERT(sizeof(bb_transport_FinishIn) == 232, "bb_transport_FinishIn: size");
 BB_ASSERT(BB_ALIGNOF(bb_transport_FinishIn) == 8, "bb_transport_FinishIn: alignment");
 BB_ASSERT(offsetof(bb_transport_FinishIn, head) == 0, "bb_transport_FinishIn.head: offset");
 BB_ASSERT(offsetof(bb_transport_FinishIn, framing) == 88, "bb_transport_FinishIn.framing: offset");
@@ -5477,11 +5610,13 @@ BB_ASSERT(offsetof(bb_transport_FinishIn, final_message) == 192, "bb_transport_F
 BB_ASSERT(offsetof(bb_transport_FinishIn, final_details) == 200, "bb_transport_FinishIn.final_details: offset");
 BB_ASSERT(offsetof(bb_transport_FinishIn, final_bytes) == 208, "bb_transport_FinishIn.final_bytes: offset");
 BB_ASSERT(offsetof(bb_transport_FinishIn, final_bytes_len) == 216, "bb_transport_FinishIn.final_bytes_len: offset");
-BB_ASSERT(sizeof(bb_transport_FramingIn) == 176, "bb_transport_FramingIn: size");
+BB_ASSERT(offsetof(bb_transport_FinishIn, lane) == 224, "bb_transport_FinishIn.lane: offset");
+BB_ASSERT(sizeof(bb_transport_FramingIn) == 184, "bb_transport_FramingIn: size");
 BB_ASSERT(BB_ALIGNOF(bb_transport_FramingIn) == 8, "bb_transport_FramingIn: alignment");
 BB_ASSERT(offsetof(bb_transport_FramingIn, head) == 0, "bb_transport_FramingIn.head: offset");
 BB_ASSERT(offsetof(bb_transport_FramingIn, framing) == 88, "bb_transport_FramingIn.framing: offset");
 BB_ASSERT(offsetof(bb_transport_FramingIn, sink) == 96, "bb_transport_FramingIn.sink: offset");
+BB_ASSERT(offsetof(bb_transport_FramingIn, lane) == 176, "bb_transport_FramingIn.lane: offset");
 BB_ASSERT(sizeof(bb_transport_AdoptIn) == 200, "bb_transport_AdoptIn: size");
 BB_ASSERT(BB_ALIGNOF(bb_transport_AdoptIn) == 8, "bb_transport_AdoptIn: alignment");
 BB_ASSERT(offsetof(bb_transport_AdoptIn, head) == 0, "bb_transport_AdoptIn.head: offset");
