@@ -2017,7 +2017,7 @@ fn a_dropped_instance_leaves_nothing_on_the_connectors_maps() {
     drop(p);
     assert!(
         !super::held_conns().keys().any(|(i, _)| *i == id),
-        "a dropped instance's streams stayed on the connector's map"
+        "a dropped instance's stream entries stayed on the connector's map"
     );
     assert!(
         table.slab.get(id, conn).is_err(),
