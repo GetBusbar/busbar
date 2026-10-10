@@ -202,9 +202,9 @@ pub fn render_refusal(proto: &str, refusal: &RefusalOutcome) -> Response {
 //
 // The plane's two terminal doors are `EngineHost::finish_admitted` / `EngineHost::finish_rejected`,
 // and the construction gate counts a call to either one ANYWHERE in this crate but this file. The
-// step-typed terminal above ([`audit`] / [`audit_refused`]) is the loop's caller; the
-// resolved-completion re-entry in `native_ingress` and the test kit's witness leg reach the same
-// doors through these thin forwards instead. Each is a pure, argument-for-argument forward: the
+// step-typed terminal above ([`audit`] / [`audit_refused`]) is the loop's caller; the gauntlet in
+// `native_ingress` and the test kit's witness leg reach the same doors through these thin forwards
+// instead. Each is a pure, argument-for-argument forward: the
 // bytes, the record, the refund decision and the metric are the host's, exactly as a direct call
 // produced them. They are the reason the doors can be spelled once, here.
 //

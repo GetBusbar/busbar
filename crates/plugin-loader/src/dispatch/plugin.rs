@@ -370,8 +370,9 @@ pub(crate) struct Instance {
     /// (an `open` in flight that pended) is not open.
     opened: AtomicBool,
     pub(crate) faulted: AtomicBool,
-    /// `close` of an OPEN instance answered READY: every later op answers FAULT without a crossing.
-    /// (Closing a half-open box frees the box; the instance never opened, so it is not closed.)
+    /// `close` of an OPEN instance answered READY, or any `close` answered FAULT: every later op
+    /// answers FAULT without a crossing. (Closing a half-open box frees the box; the instance never
+    /// opened, so it is not closed.)
     closed: AtomicBool,
     /// THE CROSSING GATE: the count of crossings in progress, with [`CLOSING`] set while `close`
     /// crosses (and kept once it closed). `close` enters only when nothing else is crossing, and
@@ -568,7 +569,7 @@ impl Instance {
         self.calls.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// Whether `close` answered READY.
+    /// Whether `close` answered READY or FAULT.
     pub(crate) fn is_closed(&self) -> bool {
         self.closed.load(Ordering::Acquire)
     }
@@ -754,7 +755,20 @@ impl Instance {
         }
         // SAFETY: the caller's contract.
         let crossed = unsafe { self.cross_gated(s, input, out, out_size) };
-        self.leave_gate(s, s == slot::CLOSE && self.is_closed());
+        // A `close` that answered FAULT may already have freed the instance (a teardown that
+        // failed after its memory went): the host treats it as closed, never crossing into the
+        // pointer again. That can leak a live instance; it never uses a freed one. A READY `close`
+        // of a half-open box frees the box only; the instance never opened, so it is not closed.
+        let mut shut = false;
+        if s == slot::CLOSE && matches!(crossed.outcome, Outcome::Ready | Outcome::Fault) {
+            let was_open = self.opened.swap(false, Ordering::AcqRel);
+            shut = was_open || crossed.outcome == Outcome::Fault;
+            if shut {
+                self.closed.store(true, Ordering::Release);
+            }
+            self.ptr.store(std::ptr::null_mut(), Ordering::Release);
+        }
+        self.leave_gate(s, shut);
         let ended = !matches!(crossed.outcome, Outcome::Ready | Outcome::Pending);
         if s == slot::OPEN && ended && self.half_open() && !self.faulted.load(Ordering::Acquire) {
             self.close_half_open();
@@ -984,14 +998,7 @@ impl Instance {
             }
             // An open that FAILED or was REFUSED (fresh, or on its RESUME): no instance. The
             // plugin's trampoline freed the box a prior PENDING minted; `open_ended` drops our
-            // pointer to it.
-            (slot::CLOSE, Outcome::Ready) => {
-                // Closing a half-open box frees it; only an OPEN instance is closed for good.
-                if self.opened.swap(false, Ordering::AcqRel) {
-                    self.closed.store(true, Ordering::Release);
-                }
-                self.ptr.store(std::ptr::null_mut(), Ordering::Release);
-            }
+            // pointer to it. `close` (READY or FAULT) shuts the instance in `Instance::cross`.
             _ => {}
         }
         Crossed {

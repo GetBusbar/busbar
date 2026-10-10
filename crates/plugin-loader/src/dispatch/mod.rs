@@ -28,6 +28,7 @@
 
 pub mod answer;
 pub mod auth_outbound;
+pub mod auth_ticks;
 pub mod conn_services;
 pub mod kinds;
 pub mod load;
