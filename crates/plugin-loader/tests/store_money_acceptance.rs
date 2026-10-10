@@ -56,7 +56,7 @@ struct Subject {
 /// A FRESH store on every door: its Rust type, the compiled-in door through the store v3 table,
 /// the root's adapter over that, and the dropped-in door through the same table.
 fn subjects() -> Vec<Subject> {
-    let mut all = vec![
+    vec![
         Subject {
             door: "rust type",
             store: fresh(),
@@ -69,14 +69,11 @@ fn subjects() -> Vec<Subject> {
             door: "adapter",
             store: StoreAdapter::native(Arc::new(v3::compiled_in())).store(),
         },
-    ];
-    if let Some(store) = v3::dropped_in() {
-        all.push(Subject {
+        Subject {
             door: "dropped-in table",
-            store: Arc::new(store),
-        });
-    }
-    all
+            store: Arc::new(v3::dropped_in()),
+        },
+    ]
 }
 
 // ── builders ───────────────────────────────────────────────────────────────────────────────────
@@ -818,28 +815,32 @@ mod v3 {
         LoadedStore::open(p, d, b"{}", mint).expect("open")
     }
 
-    /// The same door dropped in (the `store_v3_door` example cdylib) through the same table;
-    /// `None` in a scoped non-CI run without it.
-    pub fn dropped_in() -> Option<LoadedStore> {
-        let exe = std::env::current_exe().ok()?;
+    /// The same door dropped in (the `store_v3_door` example cdylib) through the same table. Not
+    /// built, a hard failure naming the command that builds it, never a skip.
+    pub fn dropped_in() -> LoadedStore {
+        let exe = std::env::current_exe().expect("the test binary's path");
         let name = format!(
             "{}store_v3_door{}",
             std::env::consts::DLL_PREFIX,
             std::env::consts::DLL_SUFFIX
         );
-        let path = exe.parent()?.parent()?.join("examples").join(name);
+        let path = exe
+            .parent()
+            .and_then(|deps| deps.parent())
+            .expect("the test binary sits in <profile>/deps")
+            .join("examples")
+            .join(name);
         if !path.exists() {
-            assert!(
-                std::env::var_os("CI").is_none(),
-                "the store's door cdylib is not built under CI; refusing to skip the dropped-in table"
+            panic!(
+                "the store_v3_door cdylib is not built: run \
+                 `cargo build -p busbar-plugin-loader --examples` first (a both-ways proof never skips)"
             );
-            return None;
         }
         let d = Arc::new(Dispatcher::new(DispatchConfig::default()));
         // The signed manifest's rendering: the linked rlib's door, the same crate the cdylib is.
         let stated = rendering_of(store_fixture::door).expect("the store renders its Statement");
         let p = load_dropped::<Store>(&path, &stated, bind_to(&d)).expect("dropped door");
-        Some(LoadedStore::open(p, d, b"{}", mint).expect("open"))
+        LoadedStore::open(p, d, b"{}", mint).expect("open")
     }
 
     /// The window every `v3_*` test draws in (ms), and its bucket.

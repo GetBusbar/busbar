@@ -45,7 +45,8 @@ macro_rules! hyper_io {
             use $crate::abi::transport::{
                 FramePiece, FrameSpan, FramerOut, FramerSink, HeadSlots, PIECE_CONTINUED,
                 PIECE_END_OF_FRAME, PIECE_FIELDS, PIECE_HAS_CODE, PIECE_HAS_RETRY_AFTER,
-                PIECE_STREAM_FAILED, YIELD_ENDED, YIELD_HAS_DEADLINE, YIELD_MORE,
+                PIECE_STREAM_FAILED, PIECE_WRITABLE, YIELD_ENDED, YIELD_HAS_DEADLINE, YIELD_MORE,
+                YIELD_STREAM_FULL,
             };
 
             /// The most bytes `hyper` may leave in the pipe's write half before its writes pend.
@@ -446,6 +447,9 @@ macro_rules! hyper_io {
                 pub continued: bool,
                 /// The stream's head words, handed with its head's first piece.
                 pub head: Option<HeadWords>,
+                /// The stream is writable again (`PIECE_WRITABLE`): an empty piece, nothing else
+                /// set, after an `emit` answered the stream full ([`mark_stream_full`]).
+                pub writable: bool,
             }
 
             impl Piece {
@@ -461,6 +465,7 @@ macro_rules! hyper_io {
                         fields: false,
                         continued: false,
                         head: None,
+                        writable: false,
                     }
                 }
                 /// A field block on `stream`.
@@ -479,6 +484,23 @@ macro_rules! hyper_io {
                         ..Self::data(stream, Buf::from(why.to_owned()))
                     }
                 }
+                /// `stream` is writable again: the host may emit on it.
+                #[must_use]
+                pub fn writable(stream: u64) -> Self {
+                    Self {
+                        writable: true,
+                        ..Self::data(stream, Buf::from(String::new()))
+                    }
+                }
+            }
+
+            /// The `emit` just answered left its stream's queue at its high-water mark
+            /// (`YIELD_STREAM_FULL`): the host holds that stream's emits until a
+            /// [`Piece::writable`] or the stream's last piece. Set after [`fill`], on `emit` only.
+            pub fn mark_stream_full(o: &mut Out<'_, FramerOut>) {
+                let mut y = o.get().yielded;
+                y.flags |= YIELD_STREAM_FULL;
+                o.set(|x| &x.yielded, y);
             }
 
             /// What a framing owes the host, as [`fill`] reads it.
@@ -570,7 +592,14 @@ macro_rules! hyper_io {
                         break;
                     }
                     let whole = take == piece.bytes.len();
-                    let mut flags = if whole { PIECE_END_OF_FRAME } else { 0 };
+                    let mut flags = if piece.writable {
+                        // A signal about the stream: it ends no frame.
+                        PIECE_WRITABLE
+                    } else if whole {
+                        PIECE_END_OF_FRAME
+                    } else {
+                        0
+                    };
                     // A failure frame may span pieces like any other; its LAST piece says the
                     // stream failed.
                     if piece.failed && whole {

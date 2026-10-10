@@ -44,6 +44,8 @@ pub(super) struct LineUnit {
     pub(super) preset: Option<Vec<u8>>,
     /// The live round (by its ask number) whose next ask this unit emits.
     pub(super) next_ask: Option<u64>,
+    /// The live round this unit's retry is: `0` for a request the caller sent itself.
+    pub(super) round: u32,
 }
 
 /// One subscription kept on a carrier session.
@@ -96,6 +98,7 @@ pub(super) fn arrive(plane: &McpDoor, session: u64, body: &[u8]) -> Arrival {
                     if let Some(retry) = live.retry() {
                         let dispatch = serde_json::to_vec(&retry).unwrap_or_default();
                         unit.original = Some(retry);
+                        unit.round = live.round.saturating_add(1);
                         return Arrival {
                             unit,
                             dispatch: Some(dispatch),
@@ -124,18 +127,8 @@ pub(super) fn arrive(plane: &McpDoor, session: u64, body: &[u8]) -> Arrival {
     }
     match line::era(&value) {
         Era::Dispatch => {}
-        Era::Answer(answer) | Era::Level(_, answer) | Era::Unsubscribe(_, answer) => {
+        Era::Answer(answer) => {
             unit.preset = Some(serde_json::to_vec(&answer).unwrap_or_default());
-            return Arrival {
-                unit,
-                dispatch: None,
-            };
-        }
-        Era::Subscribe(_) => {
-            let id = value.get("id").cloned().unwrap_or(Value::Null);
-            unit.preset = Some(
-                serde_json::to_vec(&line::result(&id, serde_json::json!({}))).unwrap_or_default(),
-            );
             return Arrival {
                 unit,
                 dispatch: None,
@@ -184,9 +177,12 @@ pub(super) fn preset(plane: &McpDoor, ticket: Ticket, unit: &mut CallUnit) -> Op
     let line_unit = unit.line.as_mut()?;
     let session = line_unit.session;
     if let Some(n) = line_unit.next_ask.take() {
+        let now = door_listen::mono_ns(plane.services, ticket, unit);
+        let line_unit = unit.line.as_mut()?;
         if let Some(mut live) = plane.live_asks.remove(&(session, n)) {
             let fresh = next_ask(plane);
             if let Some(ask) = live.issue(fresh) {
+                live.arm(now);
                 // Kept before it is asked: its answer may arrive before the emit returns.
                 let fallback = live.fallback.clone();
                 plane.live_asks.insert((session, fresh), live);
@@ -214,6 +210,12 @@ pub(super) fn liven(plane: &McpDoor, ticket: Ticket, principal: &str, unit: &mut
         return;
     };
     let session = line_unit.session;
+    let round = line_unit.round;
+    // The round cap: past it the `input_required` result is handed to the caller as it is (its
+    // sealed `requestState` makes that a continuation), never put live again.
+    if !line::may_liven(round) {
+        return;
+    }
     let Some(original) = line_unit.original.clone() else {
         return;
     };
@@ -234,10 +236,12 @@ pub(super) fn liven(plane: &McpDoor, ticket: Ticket, principal: &str, unit: &mut
     {
         return;
     }
-    let Some(mut live) = LiveAsk::of(principal, original, pending.bytes.clone(), result, 0) else {
+    let Some(mut live) = LiveAsk::of(principal, original, pending.bytes.clone(), result, round)
+    else {
         return;
     };
     live.session = session;
+    live.arm(door_listen::mono_ns(plane.services, ticket, unit));
     let n = next_ask(plane);
     let Some(ask) = live.issue(n) else {
         return;
@@ -318,14 +322,36 @@ fn lines(frames: &[Value]) -> Vec<u8> {
     out
 }
 
+/// THE LAPSE of live asks: a round whose ask in flight went [`line::ASK_TIMEOUT_NS`] unanswered is
+/// dropped and the caller is handed the `input_required` result itself, emitted on its session (the
+/// unit that put the ask answered nothing, so the fallback is a line of its own).
+fn lapse_asks(plane: &McpDoor, ticket: Ticket, now_ns: u64, seq: &mut u32) {
+    let lapsed: Vec<(u64, Vec<u8>)> = plane.live_asks.with_all(|m| {
+        let keys: Vec<(u64, u64)> = m
+            .iter()
+            .filter(|(_, live)| live.lapsed(now_ns))
+            .map(|(key, _)| *key)
+            .collect();
+        keys.iter()
+            .filter_map(|key| m.remove(key).map(|live| (key.0, live.fallback)))
+            .collect()
+    });
+    for (session, mut fallback) in lapsed {
+        fallback.push(b'\n');
+        emit(plane, ticket, *seq, session, &fallback);
+        *seq = seq.wrapping_add(1);
+    }
+}
+
 /// THE TICK, for the subscriptions kept on carrier sessions: each stepped over the live catalogue,
 /// what it says emitted on its session (a `ping` when it has been quiet), and a subscription whose
 /// session can take nothing more, or that ended, dropped.
 pub(super) fn tick(plane: &McpDoor, ticket: Ticket, now_ns: u64) {
+    let mut seq: u32 = 0;
+    lapse_asks(plane, ticket, now_ns, &mut seq);
     let Some(held) = plane.current() else {
         return;
     };
-    let mut seq: u32 = 0;
     let gone = plane.line_listens.with_all(|m| {
         let mut gone = Vec::new();
         for ((session, key), kept) in m.iter_mut() {
