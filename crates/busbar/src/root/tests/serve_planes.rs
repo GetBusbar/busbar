@@ -58,7 +58,7 @@ fn dropped_path() -> Option<std::path::PathBuf> {
     let found = path.exists().then_some(path);
     assert!(
         found.is_some() || std::env::var_os("CI").is_none(),
-        "the plane_driver_test_plane example cdylib is not built under CI"
+        "the plane_driver_test_plane example cdylib is not built under CI: run `cargo build --workspace --examples`"
     );
     found
 }
@@ -123,7 +123,7 @@ fn a_configured_door_plane_is_opened_driven_and_its_admin_routes_published() {
     let _one = PUBLISHING.blocking_lock();
     let _published = Published(instance);
     let Some(plane) = bound(instance, &dispatcher) else {
-        eprintln!("skip: the test plane's cdylib is not built in this scoped run");
+        eprintln!("skip: the test plane's cdylib (the plane_driver_test_plane example) is not built; run `cargo build --workspace --examples`");
         return;
     };
     let doors = vec![(instance.to_string(), plane)];
@@ -140,7 +140,7 @@ fn a_configured_door_plane_is_opened_driven_and_its_admin_routes_published() {
         None,
         None,
     )
-    .expect("the door plane composes");
+    .expect("the door plane composes (the plane_driver_test_plane example cdylib, current: run `cargo build --workspace --examples`)");
     assert_eq!(served.planes.len(), 1, "one plane composed");
     let p = &served.planes[0];
     assert_eq!(p.instance, instance);
@@ -172,7 +172,7 @@ fn a_door_plane_whose_section_is_absent_stays_unopened() {
     let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
     let instance = "serve-compose-unconfigured";
     let Some(plane) = bound(instance, &dispatcher) else {
-        eprintln!("skip: the test plane's cdylib is not built in this scoped run");
+        eprintln!("skip: the test plane's cdylib (the plane_driver_test_plane example) is not built; run `cargo build --workspace --examples`");
         return;
     };
     let doors = vec![(instance.to_string(), plane)];

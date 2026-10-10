@@ -286,7 +286,7 @@ fn governed_full(
         None,
         Some(&hooks),
     )
-    .expect("the door plane composes");
+    .expect("the door plane composes (the plane_driver_test_plane example cdylib, current: run `cargo build --workspace --examples`)");
     served.post = Some(Arc::clone(&post));
     let driver = Arc::clone(&served.planes[0].driver);
     // The framer of the test plane's framed claim: the neutral frame door, dropped in (ARCHITECT
@@ -355,7 +355,7 @@ impl Governed {
 async fn a_keyed_unit_is_admitted_and_its_money_settles_at_its_end() {
     let _one = PUBLISHING.lock().await;
     let Some(g) = governed("serve-money-keyed", true) else {
-        eprintln!("skip: the test plane's cdylib is not built in this scoped run");
+        eprintln!("skip: the test plane's cdylib (the plane_driver_test_plane example) is not built; run `cargo build --workspace --examples`");
         return;
     };
     assert_eq!(g.requests(), 0, "nothing admitted yet");
@@ -376,7 +376,7 @@ async fn a_keyed_unit_is_admitted_and_its_money_settles_at_its_end() {
 async fn an_unknown_route_is_admitted_then_refused_and_settles() {
     let _one = PUBLISHING.lock().await;
     let Some(g) = governed("serve-money-unknown", true) else {
-        eprintln!("skip: the test plane's cdylib is not built in this scoped run");
+        eprintln!("skip: the test plane's cdylib (the plane_driver_test_plane example) is not built; run `cargo build --workspace --examples`");
         return;
     };
     let (status, body) = g.post("/call/direct:nowhere", true).await;
@@ -391,7 +391,7 @@ async fn an_unknown_route_is_admitted_then_refused_and_settles() {
 async fn an_unkeyed_unit_on_a_credential_claim_is_refused() {
     let _one = PUBLISHING.lock().await;
     let Some(g) = governed("serve-money-unkeyed", false) else {
-        eprintln!("skip: the test plane's cdylib is not built in this scoped run");
+        eprintln!("skip: the test plane's cdylib (the plane_driver_test_plane example) is not built; run `cargo build --workspace --examples`");
         return;
     };
     let (status, body) = g.post("/call/direct:m", false).await;
@@ -409,7 +409,7 @@ async fn an_unkeyed_unit_on_a_credential_claim_is_refused() {
 async fn an_anonymous_unit_on_an_open_claim_routes_and_opens_no_money() {
     let _one = PUBLISHING.lock().await;
     let Some(g) = governed("serve-money-open", false) else {
-        eprintln!("skip: the test plane's cdylib is not built in this scoped run");
+        eprintln!("skip: the test plane's cdylib (the plane_driver_test_plane example) is not built; run `cargo build --workspace --examples`");
         return;
     };
     let (status, body) = g.post("/open", false).await;
@@ -491,7 +491,7 @@ async fn an_estimated_local_unit_is_still_charged() {
 async fn a_nested_unit_runs_under_its_parents_key_and_answers_it_whole() {
     let _one = PUBLISHING.lock().await;
     let Some(g) = governed("serve-money-nest", true) else {
-        eprintln!("skip: the test plane's cdylib is not built in this scoped run");
+        eprintln!("skip: the test plane's cdylib (the plane_driver_test_plane example) is not built; run `cargo build --workspace --examples`");
         return;
     };
     let (status, body) = g.post("/call/nest:/call/local", true).await;
@@ -540,7 +540,7 @@ async fn a_nested_unit_runs_under_its_parents_key_and_answers_it_whole() {
 async fn a_planes_unit_is_served_content_scan_hook_call_and_verify() {
     let _one = PUBLISHING.lock().await;
     let Some(g) = governed("serve-money-services", true) else {
-        eprintln!("skip: the test plane's cdylib is not built in this scoped run");
+        eprintln!("skip: the test plane's cdylib (the plane_driver_test_plane example) is not built; run `cargo build --workspace --examples`");
         return;
     };
     let (status, body) = g.post("/call/services", true).await;
@@ -646,7 +646,7 @@ async fn a_pool_gate_blocks_the_content_of_a_unit_routed_over_its_pool() {
 async fn a_child_nested_after_the_budget_is_spent_is_refused_and_charged_nothing() {
     let _one = PUBLISHING.lock().await;
     let Some(g) = governed_with("serve-money-nest-budget", true, Some(1)) else {
-        eprintln!("skip: the test plane's cdylib is not built in this scoped run");
+        eprintln!("skip: the test plane's cdylib (the plane_driver_test_plane example) is not built; run `cargo build --workspace --examples`");
         return;
     };
     let (status, body) = g.post("/call/nest:/call/local", true).await;
@@ -666,7 +666,7 @@ async fn a_child_nested_after_the_budget_is_spent_is_refused_and_charged_nothing
 async fn a_nest_past_the_depth_cap_is_refused() {
     let _one = PUBLISHING.lock().await;
     let Some(g) = governed("serve-money-nest-deep", true) else {
-        eprintln!("skip: the test plane's cdylib is not built in this scoped run");
+        eprintln!("skip: the test plane's cdylib (the plane_driver_test_plane example) is not built; run `cargo build --workspace --examples`");
         return;
     };
     let deep = busbar_kernel::host_services::NEST_DEPTH_MAX as usize;
@@ -788,7 +788,7 @@ async fn node_boot_hooks_arm() {
         )),
     ) else {
         // Under CI the cdylib's absence is already a failure (`planes_tests::bound`).
-        eprintln!("skip: the test plane's cdylib is not built in this scoped run");
+        eprintln!("skip: the test plane's cdylib (the plane_driver_test_plane example) is not built; run `cargo build --workspace --examples`");
         return;
     };
     let lines = || {
@@ -841,7 +841,7 @@ async fn the_boot_composition_serves_a_dropped_in_door_plane_in_every_build() {
         Arc::clone(&services) as Arc<dyn busbar_contract::services::HostServices>,
     ));
     let Some(plane) = bound(instance, &dispatcher) else {
-        eprintln!("skip: the test plane's cdylib is not built in this scoped run");
+        eprintln!("skip: the test plane's cdylib (the plane_driver_test_plane example) is not built; run `cargo build --workspace --examples`");
         return;
     };
     let _published = Published(instance);
@@ -952,7 +952,7 @@ pub(super) fn neutral_framers() -> super::StreamFramers {
         .clone();
     assert!(
         door.is_some() || std::env::var_os("CI").is_none(),
-        "the neutral frame door cdylib is built beside the test binary under CI"
+        "the neutral frame door example cdylib is built beside the test binary under CI: run `cargo build --workspace --examples`"
     );
     super::StreamFramers(Arc::new(move |claim: &str| {
         door.as_ref()
