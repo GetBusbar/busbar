@@ -462,7 +462,8 @@ macro_rules! lend {
 }
 
 use crate::abi::auth::{
-    BeginLoginIn, CompleteLoginIn, IdentityBuf, NamedValue, StripName, VerifyIn,
+    BeginLoginIn, CompleteLoginIn, FieldSpan, FieldsIn, IdentityBuf, NamedValue, StripName,
+    VerifyIn,
 };
 use crate::abi::hook::{
     BudgetBucketState as HookBudgetBucketState, CandidateDynamic as HookCandidateDynamic,
@@ -495,6 +496,13 @@ lend! {
     VerifyIn {
         list(lines, lines_len) -> NamedValue;
         buf(strip, strip_cap) -> StripName;
+    }
+    // `fields`' head envelope (NULL unless the style needs it), and the host's field buffer and
+    // field array.
+    FieldsIn {
+        list(headers, headers_len) -> NamedValue;
+        buf(field_buf, field_buf_cap) -> u8;
+        buf(fields, fields_cap) -> FieldSpan;
     }
     BeginLoginIn { list(scopes, scopes_len) -> AbiStr; }
     CompleteLoginIn { list(submitted, submitted_len) -> NamedValue; }

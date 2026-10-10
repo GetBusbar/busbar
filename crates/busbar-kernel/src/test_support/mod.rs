@@ -1972,9 +1972,6 @@ impl TestApp {
             export_defs: self.export_defs,
             admin: std::sync::Arc::new(crate::admin::seam::AdminSlot::default()),
             mutation_limiter: std::sync::Arc::new(crate::ratelimit::MutationLimiter::new()),
-            idempotency_cache: std::sync::Arc::new(std::sync::Mutex::new(
-                std::collections::HashMap::new(),
-            )),
             base_hook_names: self.base_hook_names,
             admin_chain: self
                 .admin_chain
