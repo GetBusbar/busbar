@@ -2118,7 +2118,7 @@ async fn serve_governed(
     serving
 }
 
-#[cfg(feature = "plane-decisions")]
+#[cfg(linked_section_decisions)]
 /// [`serve_over`], the one provider's credential the secret reference `api_key` (YAML), the
 /// composition's refusal answered rather than panicked on: what the root's boot dies on.
 pub(super) async fn serve_keyed(
@@ -2130,7 +2130,7 @@ pub(super) async fn serve_keyed(
     serve_configured(linked, instance, port, Vec::new(), 0, api_key).await
 }
 
-#[cfg(feature = "plane-decisions")]
+#[cfg(linked_section_decisions)]
 /// [`serve_governed`] over the provider credential `api_key`, the composition's refusal answered.
 async fn serve_configured(
     linked: &crate::root::linked::Linked,
