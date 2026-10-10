@@ -50,9 +50,7 @@ use busbar_contract::conn::InstanceId;
 
 use super::plugin::{is_lifecycle, Crossed, Instance, Plugin};
 use super::services::{HostServices, Served, ServiceStore};
-use super::ticket::{
-    decode, encode, recycled_generation, Completions, WakeRoute, MAX_INDEX, MAX_WORKERS,
-};
+use super::ticket::{decode, encode, recycled_generation, WakeRoute, MAX_INDEX, MAX_WORKERS};
 use super::{in_head, now_ns, out_head, watchdog, DriveFrame, Frame, InFrame, Kind, OutFrame};
 
 /// The longest a crossing may take before the watchdog faults it, per class. A crossing never
@@ -146,7 +144,6 @@ pub(crate) struct Stats {
 pub(crate) struct Env {
     pub(crate) budgets: Budgets,
     pub(crate) stats: Arc<Stats>,
-    pub(crate) completions: Arc<Completions<Vec<u8>>>,
     /// The host services' stored results.
     pub(crate) services: Arc<ServiceStore>,
     /// What the host services are served from; `None` = the host bound none, and every service
@@ -823,7 +820,6 @@ impl Worker {
 
     fn recycle_now(&self, st: &mut WorkerState, idx: u32, env: &Env) {
         let e = &mut st.entries[idx as usize];
-        env.completions.forget(self.ticket(idx, e.generation));
         env.services.forget(self.ticket(idx, e.generation));
         let ticket = self.ticket(idx, e.generation);
         for id in e.conns.drain(..) {
@@ -972,7 +968,8 @@ impl Worker {
                     return Some(st);
                 };
                 if e.driver.is_some() {
-                    // A tick starts the driver ticket's next cycle: the last cycle's kept answers go.
+                    // A tick starts the driver ticket's next cycle: the last cycle's kept answers (and
+                    // their epoch) go.
                     let kept = env.services.forget(ticket)
                         + super::conn_services::forget(meta.instance.instance, ticket);
                     env.stats
@@ -984,6 +981,8 @@ impl Worker {
                     // stored result is redeemed only by the op that issued it, on its resume (THE
                     // DESIGN §11.12) — so the last op's kept answers go. Kept, the next op's
                     // `ESTABLISH` (handle 0) would answer the last op's stream without a dial.
+                    // The forget ends the last op's epoch too: a service of its still running
+                    // completes into nothing, never into this op's same-numbered handle.
                     env.services.forget(ticket);
                     super::conn_services::forget(meta.instance.instance, ticket);
                 }
@@ -1054,6 +1053,7 @@ impl Worker {
                 cur.pending = false;
                 let inst = cur.meta.instance.clone();
                 let class = cur.meta.class;
+                let op_slot = cur.meta.slot;
                 let timeout = inst.timeout;
                 if inst.faulted.load(Ordering::Acquire) {
                     self.end(&mut st, idx, Crossed::host(Outcome::Fault), env);
@@ -1065,6 +1065,27 @@ impl Worker {
                 let heads = frame.prepare(ticket, class as u8);
                 let budget = env.budgets.of(slot::CANCEL, class);
                 let (mut st, c) = self.cross(st, &inst, slot::CANCEL, heads, budget)?;
+                // A cancelled `open` that pended will never answer: the plugin still holds its
+                // half-open box, and no caller will close an instance that never opened. The host
+                // closes it here, once, inside the open's own lifecycle exclusion (given back by
+                // `end` below); a later caller's `close` finds nothing and is refused.
+                if op_slot == slot::OPEN
+                    && inst.half_open()
+                    && !inst.faulted.load(Ordering::Acquire)
+                {
+                    let (mut input, mut out) = (in_head(), out_head());
+                    let heads = (&raw mut input, &raw mut out, size_of::<OutHead>() as u32);
+                    let budget = env.budgets.of(slot::CLOSE, class);
+                    let (back, closed) = self.cross(st, &inst, slot::CLOSE, heads, budget)?;
+                    st = back;
+                    if closed.outcome != Outcome::Ready {
+                        tracing::warn!(
+                            plugin = %inst.name(),
+                            outcome = ?closed.outcome,
+                            "the close of a cancelled open's half-open box did not answer READY"
+                        );
+                    }
+                }
                 // The op answers the kind's timeout with `cancel`'s disposition and the writes it
                 // carried; a `cancel` that FAULTed makes the op FAULT.
                 let ended = if c.outcome == Outcome::Fault {
@@ -1324,7 +1345,6 @@ impl Dispatcher {
         let env = Arc::new(Env {
             budgets: config.budgets,
             stats: Arc::default(),
-            completions: Arc::default(),
             services: Arc::default(),
             provider,
             runtime: std::sync::OnceLock::new(),
@@ -1375,11 +1395,6 @@ impl Dispatcher {
             live_reapers: super::load::live_reapers(),
             driver_kept_high: s.driver_kept_high.load(Ordering::Relaxed),
         }
-    }
-
-    /// The completion handles of this dispatcher's tickets.
-    pub fn completions(&self) -> &Completions<Vec<u8>> {
-        &self.pool.env.completions
     }
 
     /// The host services' stored results.
