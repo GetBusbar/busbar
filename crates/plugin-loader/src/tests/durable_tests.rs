@@ -3,15 +3,18 @@
 
 //! Tests for `crates/plugin-loader/src/durable.rs`.
 
-use super::{
-    create_dir_all, fault_arm, fault_parent_fsynced, fault_parents_fsynced, fault_reset,
-    holding_dir, plant_decoy_arm, write, write_with, DurableOpts, FaultStep,
+use crate::durable::hooks::{
+    fault_arm, fault_reset, parent_fsynced as fault_parent_fsynced,
+    parents_fsynced as fault_parents_fsynced, plant_decoy_arm, FaultStep,
 };
+use crate::durable::{create_dir_all, holding_dir, write, write_with, DurableOpts};
 use std::path::{Path, PathBuf};
 
 // Linux ENOSPC=28, EIO=5; macOS shares these values. Injected via `from_raw_os_error`.
 const ENOSPC: i32 = 28;
 const EIO: i32 = 5;
+/// `EINVAL`: what `fsync(2)` answers for a descriptor that does not support synchronization.
+const EINVAL: i32 = 22;
 
 /// Serializes the ONE test in this file that mutates process-global CWD
 /// (`success_relative_path_fsyncs_dot`) against itself. MUST be module-level, not
@@ -282,7 +285,7 @@ fn remove_unlinks_and_fsyncs_the_holding_dir() {
     // -- left `.last()` still `Some(sc.dir)` and the test still green.
     fault_reset();
 
-    super::remove(&target).expect("the unlink succeeds");
+    crate::durable::remove(&target).expect("the unlink succeeds");
     assert!(!target.exists(), "the artifact is gone");
     assert_eq!(
         fault_parent_fsynced().as_deref(),
@@ -293,7 +296,7 @@ fn remove_unlinks_and_fsyncs_the_holding_dir() {
     // A missing target is a real error, not a silent success -- the caller's 404 check is a
     // separate concern and must not be papered over here.
     assert!(
-        super::remove(&target).is_err(),
+        crate::durable::remove(&target).is_err(),
         "removing nothing is an error"
     );
 }
@@ -416,4 +419,61 @@ fn create_dir_all_concurrent_racers_all_succeed_on_the_same_new_path() {
             .expect("every racing caller must observe success, including the race losers");
     }
     assert!(target.is_dir());
+}
+
+/// **A PUBLISH WHOSE DIRECTORY FSYNC FAILS IS AN ERROR.** RED before the fix: the failure was
+/// swallowed and `write` answered `Ok` over a rename a power loss could still undo.
+#[test]
+fn a_publish_whose_directory_fsync_fails_is_an_error() {
+    let scratch = Scratch::new("dirfsync-publish");
+    let target = scratch.path("overlay.json");
+    fault_reset();
+    fault_arm(FaultStep::DirSync, EIO);
+    let err = write(&target, b"new contents")
+        .expect_err("a directory fsync that failed is not a durable publish");
+    assert_eq!(
+        err.raw_os_error(),
+        Some(EIO),
+        "the fsync's own error surfaces"
+    );
+    // The contract says what an error from the last step means: the rename happened, and it is
+    // the entry's durability that was not given.
+    assert_eq!(std::fs::read(&target).unwrap(), b"new contents");
+}
+
+/// **A REMOVAL WHOSE DIRECTORY FSYNC FAILS IS AN ERROR.** RED before the fix: `remove` answered
+/// `Ok` once the unlink succeeded, whatever the fsync after it said.
+#[test]
+fn a_removal_whose_directory_fsync_fails_is_an_error() {
+    let scratch = Scratch::new("dirfsync-remove");
+    let target = scratch.path("plugin.tar.gz");
+    std::fs::write(&target, b"artifact").unwrap();
+    fault_reset();
+    fault_arm(FaultStep::DirSync, EIO);
+    let err = crate::durable::remove(&target).expect_err("the removal was not made durable");
+    assert_eq!(err.raw_os_error(), Some(EIO));
+}
+
+/// **A DIRECTORY CREATED WHOSE PARENT'S FSYNC FAILS IS AN ERROR.** RED before the fix: the walk
+/// fsynced each new directory's parent and ignored the answer.
+#[test]
+fn a_created_directory_whose_parent_fsync_fails_is_an_error() {
+    let scratch = Scratch::new("dirfsync-mkdir");
+    fault_reset();
+    fault_arm(FaultStep::DirSync, EIO);
+    let err = create_dir_all(&scratch.path("plugins"))
+        .expect_err("the new directory's entry was not made durable");
+    assert_eq!(err.raw_os_error(), Some(EIO));
+}
+
+/// A filesystem that does not support fsyncing a directory is not refused: there is nothing more
+/// it can promise, and refusing every publish on it would leave no durability at all.
+#[test]
+fn a_directory_fsync_the_filesystem_does_not_support_is_not_an_error() {
+    let scratch = Scratch::new("dirfsync-unsupported");
+    let target = scratch.path("state.json");
+    fault_reset();
+    fault_arm(FaultStep::DirSync, EINVAL);
+    write(&target, b"contents").expect("an unsupported directory fsync is not a failure");
+    assert_eq!(std::fs::read(&target).unwrap(), b"contents");
 }
