@@ -337,13 +337,13 @@ async fn models_ids(app: Arc<App>, gov: GovCtx) -> Vec<String> {
         .await
         .expect("collect /v1/models body");
     let body: Value = serde_json::from_slice(&bytes).expect("/v1/models body is JSON");
-    assert_eq!(body["object"], "list", "OpenAI list envelope");
+    assert_eq!(body["object"], "list", "default `object: list` envelope");
     body["data"]
         .as_array()
         .expect("data array")
         .iter()
         .map(|m| {
-            assert_eq!(m["object"], "model", "OpenAI model object");
+            assert_eq!(m["object"], "model", "default `object: model` entry");
             m["id"].as_str().expect("model id").to_string()
         })
         .collect()
@@ -402,18 +402,30 @@ async fn models_body(app: Arc<App>, headers: HeaderMap, beta: bool) -> Value {
     serde_json::from_slice(&bytes).expect("JSON body")
 }
 
+/// The models-list fingerprint header dialect `proto` declares, read off its declaration exactly as
+/// `list_models` reads it (`ProtocolDecl::list_models_fingerprint_headers`).
+fn fingerprint_header(proto: &str) -> &'static str {
+    register_planes();
+    busbar_kernel::proto::decl_for(proto)
+        .and_then(|d| d.list_models_fingerprint_headers.first().copied())
+        .unwrap_or_else(|| panic!("the `{proto}` dialect declares a fingerprint header"))
+}
+
 /// The Anthropic SDK always sends `anthropic-version` (their API requires it) — the
 /// same path answers in the Anthropic list envelope for those callers.
 #[tokio::test]
 async fn test_v1_models_anthropic_fingerprint_gets_anthropic_envelope() {
     let mut headers = HeaderMap::new();
-    headers.insert("anthropic-version", "2023-06-01".parse().unwrap());
+    headers.insert(
+        fingerprint_header(busbar_kernel::proto::PROTO_ANTHROPIC),
+        "2023-06-01".parse().unwrap(),
+    );
     let body = models_body(topology_app(), headers, false).await;
-    assert_eq!(body["has_more"], false, "Anthropic list envelope");
+    assert_eq!(body["has_more"], false, "`has_more` list envelope");
     let first = &body["data"][0];
     assert_eq!(first["type"], "model");
     assert_eq!(first["id"], "pool-a");
-    assert!(body.get("object").is_none(), "no OpenAI envelope fields");
+    assert!(body.get("object").is_none(), "no `object` envelope field");
 }
 
 /// Gemini callers (x-goog-api-key header, or the /v1beta path their SDK uses) get the
@@ -428,7 +440,7 @@ async fn test_v1_models_gemini_fingerprint_gets_gemini_envelope() {
     let beta = models_body(topology_app(), HeaderMap::new(), true).await;
     assert_eq!(
         beta["models"][0]["name"], "models/pool-a",
-        "/v1beta path implies Gemini"
+        "the /v1beta path implies the `models/<id>` envelope"
     );
 }
 
@@ -545,7 +557,10 @@ async fn test_v1_models_bytes_unchanged_when_no_plane_lists_a_name() {
     let quiet = with_listing_door("v1-models-quiet", "v1_models_quiet", &[]);
     let mut fingerprints = vec![HeaderMap::new()];
     let mut h = HeaderMap::new();
-    h.insert("anthropic-version", "2023-06-01".parse().unwrap());
+    h.insert(
+        fingerprint_header(busbar_kernel::proto::PROTO_ANTHROPIC),
+        "2023-06-01".parse().unwrap(),
+    );
     fingerprints.push(h);
     let mut h = HeaderMap::new();
     h.insert("x-goog-api-key", "k".parse().unwrap());

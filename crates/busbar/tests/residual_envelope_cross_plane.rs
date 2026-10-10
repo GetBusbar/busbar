@@ -5,7 +5,7 @@
 //! the operator's configuration mounts it.
 //!
 //! MOVED HERE from `crates/busbar-kernel/tests/` (kind-isolation, ARCHITECT: core names zero plane
-//! types, its tests included; the a2a flip's analogue of P3 DEL-MCP's 02bcf8300d): the cell needs a
+//! types, its tests included; the door flip's analogue of 02bcf8300d): the cell needs a
 //! plane that mounts a path, and every such plane is now served through its door, which the
 //! composition root links and the kernel does not.
 //!
