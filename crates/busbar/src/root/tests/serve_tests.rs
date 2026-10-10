@@ -18,8 +18,8 @@
 //! the MCP plane's door, composed here the same way, each core capability driven through the data
 //! router and asserted where it lands.
 //!
-//! The `session_door` module below is the `root-voice` leg's cells (ARCHITECT 2026-10-05 Q1): the
-//! streaming door, served end to end the same way.
+//! The `session_door` module below is the session door's root-leg cells (ARCHITECT 2026-10-05 Q1):
+//! the linked plane door that meters audio, served end to end the same way.
 
 #[cfg(feature = "plane-decisions")]
 use std::collections::BTreeMap;
@@ -586,11 +586,12 @@ async fn a_door_claiming_one_path_over_two_carriers_mounts_it_once() {
     );
 }
 
-/// THE ROOT-VOICE LEG'S CELLS (ARCHITECT 2026-10-05 Q1): the streaming door, served as production
-/// composes it — the browser's ephemeral-secret mint, a keyed caller, the door's DIRECT route to the
-/// top-level catalog model `streams.session.model` names, the provider's own credential presented by
-/// the auth plugin, the caller's spend posted against the key that presented it. The door is found
-/// among the linked plane doors by the audio class it meters, so a build that links none skips.
+/// THE SESSION DOOR'S ROOT-LEG CELLS (ARCHITECT 2026-10-05 Q1): the session door, served as
+/// production composes it — the browser's ephemeral-secret mint, a keyed caller, the door's DIRECT
+/// route to the top-level catalog model its section's `session.model` names, the provider's own
+/// credential presented by the auth plugin, the caller's spend posted against the key that
+/// presented it. The door is found among the linked plane doors by the audio class it meters, so a
+/// build that links none skips.
 mod session_door {
     use std::collections::BTreeMap;
     use std::sync::Arc;
@@ -632,13 +633,13 @@ mod session_door {
     /// The provider's credential, as its file holds it.
     const CREDENTIAL: &str = "sk-door-test";
 
-    /// The streaming door's mint claim.
+    /// The session door's mint claim.
     const MINT: &str = "/v1/realtime/client_secrets";
 
     /// The provider's answer to the mint: an ephemeral secret and its expiry.
     const MINTED: &str = r#"{"value":"ek_door_0001","expires_at":1767225600}"#;
 
-    /// The deployment's public base URL the streaming door fronts.
+    /// The deployment's public base URL the session door fronts.
     const PUBLIC: &str = "http://gw.test";
 
     /// The billable class the session door meters a caller's audio under: how the harness finds that
@@ -723,7 +724,7 @@ mod session_door {
         (port, heard)
     }
 
-    /// The streaming door, served as production composes it, and what each `root-voice` cell reads.
+    /// The session door, served as production composes it, and what each root-leg cell reads.
     struct SessionDoor {
         _published: Published,
         router: axum::Router,
@@ -766,13 +767,13 @@ mod session_door {
         })
     }
 
-    /// [`SessionDoor`]: the linked session door (the plane door that meters audio) bound through the
-    /// loader's one load, its needs declared on the connector over every linked transport door; a
-    /// signing governance book with one key (in a group whose all-time budget is `budget`, the door's
-    /// per-request fee one, or no group and no fee); an OpenAI-protocol provider on a loopback far
-    /// end answering the mint, reached through the catalog model `streams.session.model` names; the
-    /// door composed under [`PUBLIC`] with its egress sealed by the composition itself, and its
-    /// claims mounted on the data router.
+    /// [`SessionDoor`]: the linked session door (the plane door that meters audio) bound through
+    /// the loader's one load, its needs declared on the connector over every linked transport door;
+    /// a signing governance book with one key (in a group whose all-time budget is `budget`, the
+    /// door's per-request fee one, or no group and no fee); a provider on the protocol the door
+    /// states a bearer default for, on a loopback far end answering the mint, reached through the
+    /// catalog model its section's `session.model` names; the door composed under [`PUBLIC`] with
+    /// its egress sealed by the composition itself, and its claims mounted on the data router.
     async fn session_served(instance: &'static str, budget: Option<u64>) -> Option<SessionDoor> {
         let published = Published(instance);
         let (port, heard) = far_end_answering(MINTED).await;
@@ -802,6 +803,23 @@ mod session_door {
         )?;
         let plane_name = plane.name().to_owned();
         let section_key = plane.served().section;
+        // THE PROVIDER'S PROTOCOL, read off the door's Statement rather than spelled here: the last
+        // dialect it states a `bearer` default outbound style for (its far-end spellings follow its
+        // arrival dialects), so this harness names no dialect.
+        let protocol = {
+            let served = plane.served();
+            served
+                .dialect_auth
+                .iter()
+                .rev()
+                .filter(|(_, style)| *style == "bearer")
+                .find_map(|(d, _)| {
+                    usize::try_from(*d)
+                        .ok()
+                        .and_then(|i| served.dialects.get(i).copied())
+                })
+                .expect("the session door states a bearer-style dialect")
+        };
 
         let groups: BTreeMap<String, busbar_kernel::config::GroupCfg> = budget
             .map(|amount| {
@@ -873,7 +891,7 @@ mod session_door {
         ));
         std::fs::write(&key_file, CREDENTIAL).expect("the credential file");
         let provider: busbar_kernel::config::ProviderCfg = serde_yaml::from_str(&format!(
-            "{{protocol: openai, base_url: 'http://127.0.0.1:{port}', api_key: {{file: '{}'}}, error_map: {{}}}}",
+            "{{protocol: {protocol}, base_url: 'http://127.0.0.1:{port}', api_key: {{file: '{}'}}, error_map: {{}}}}",
             key_file.display()
         ))
         .expect("a provider entry");
@@ -958,7 +976,7 @@ mod session_door {
                 .requests
         }
 
-        /// The node book's lines for the streaming door's catalog route.
+        /// The node book's lines for the session door's catalog route.
         fn lines(&self) -> usize {
             let rows = self.book.durability.lock().expect("unpoisoned").read_back();
             rows.iter()
@@ -967,14 +985,14 @@ mod session_door {
         }
     }
 
-    /// THE STREAMING DOOR'S MINT, SERVED (the `root-voice` leg, ARCHITECT 2026-10-05 Q1): a keyed
-    /// caller's `POST /v1/realtime/client_secrets` is one unit the door carries (ARRIVAL), admitted
-    /// for the key its token resolves (AUTHENTICATE), dialled to the destination the guard judged
-    /// (VERIFY) on the DIRECT route to the catalog model `streams.session.model` names (ROUTE), sent
-    /// WITH THE PROVIDER'S OWN CREDENTIAL and never the caller's token (EGRESS-AUTH), charged to the
-    /// key that presented it (METER, GOVERNANCE-BUDGET), and closed once with its one line on the
-    /// node's book (AUDIT, EXIT). (The door's audience binding is the deployment's mount table's,
-    /// judged end to end by the `streams|mint|wrong-audience` oracle cell.)
+    /// THE SESSION DOOR'S MINT, SERVED (its root leg, ARCHITECT 2026-10-05 Q1): a keyed caller's
+    /// `POST /v1/realtime/client_secrets` is one unit the door carries (ARRIVAL), admitted for the
+    /// key its token resolves (AUTHENTICATE), dialled to the destination the guard judged (VERIFY)
+    /// on the DIRECT route to the catalog model its section's `session.model` names (ROUTE), sent
+    /// WITH THE PROVIDER'S OWN CREDENTIAL and never the caller's token (EGRESS-AUTH), charged to
+    /// the key that presented it (METER, GOVERNANCE-BUDGET), and closed once with its one line on
+    /// the node's book (AUDIT, EXIT). (The door's audience binding is the deployment's mount
+    /// table's, judged end to end by the oracle's wrong-audience mint cell.)
     ///
     /// RED ARM: the same request with no credential is refused before anything is dialled or charged.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1032,7 +1050,7 @@ mod session_door {
         assert_eq!(s.lines(), 1, "its one line on the node's book");
     }
 
-    /// ADMIT, at the streaming door (`root-voice`): a key whose group budget is already spent is
+    /// ADMIT, at the session door (its root leg): a key whose group budget is already spent is
     /// refused at admission — over budget, before the provider is dialled, charged nothing, no line
     /// written — while a key with room is served (the mint cell above). RED: a door that dialled
     /// before admission would have reached the far end.

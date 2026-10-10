@@ -520,8 +520,8 @@ fn the_reflected_hook_set_and_constants_are_the_doctrine() {
     }
     // The doctrine's installed-plane axis, verbatim (the same two the composition root installs as
     // a PlaneDecl: P3 DEL-MCP, ARCHITECT 2026-10-05, took mcp off it — the plane is served through its
-    // memory-ABI door alone and installs no PlaneDecl — and the streaming plane left it with
-    // FLIP-STREAMING: door-only).
+    // memory-ABI door alone and installs no PlaneDecl — and the session plane left it when it too
+    // became door-only).
     let keys: Vec<&str> = plane_ledger_columns().iter().map(|(k, _)| *k).collect();
     assert_eq!(
         keys.len(),

@@ -3444,11 +3444,12 @@ mod tests;
 pub(crate) mod planes_tests;
 
 // The doors served end to end through this composition: the decisions plane's (the `root-decisions`
-// leg's own cells, qa/capability-equality.json, under its feature), the MCP plane's (the `root-mcp`
-// leg's loop cells, under the linked plane-door axis) and the streaming plane's (the `root-voice`
-// leg's cells), each gated item by item inside, so either plane's switch alone
-// still compiles its own. Its MCP cells reach the door_steps helpers that need the default build's
-// linked auth rows (gated with the node-axis plane that carries that build).
+// leg's own cells, qa/capability-equality.json, under its feature) and the MCP plane's (the
+// `root-mcp` leg's loop cells, under the linked plane-door axis), each gated item by item inside,
+// so either plane's switch alone still compiles its own, and the session door's root-leg cells,
+// which find their door among the linked plane doors. Its MCP cells reach the door_steps helpers
+// that need the default build's linked auth rows (gated with the node-axis plane that carries that
+// build).
 #[cfg(all(test, linked_axis_node))]
 #[path = "tests/serve_tests.rs"]
 mod door_tests;

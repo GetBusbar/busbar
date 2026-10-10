@@ -218,7 +218,7 @@ fn a_session_model_from_the_top_level_catalog_is_folded_into_the_route_table() {
     use busbar_contract::abi::plane::ROUTE_DIRECT;
     let catalog: std::collections::HashMap<String, busbar_contract::config::ModelCfg> =
         serde_yaml::from_str(
-            "gpt-rt: { provider: openai, upstream_model: gpt-realtime, attempt_timeout_ms: 900 }\n",
+            "gpt-rt: { provider: p, upstream_model: gpt-realtime, attempt_timeout_ms: 900 }\n",
         )
         .expect("the catalog");
     let section: serde_yaml::Value =
@@ -227,7 +227,7 @@ fn a_session_model_from_the_top_level_catalog_is_folded_into_the_route_table() {
     assert_eq!(
         routes["models"]["gpt-rt"],
         serde_yaml::from_str::<serde_yaml::Value>(
-            "{ provider: openai, upstream_model: gpt-realtime, attempt_timeout_ms: 900 }"
+            "{ provider: p, upstream_model: gpt-realtime, attempt_timeout_ms: 900 }"
         )
         .expect("yaml"),
         "the catalog entry's routing facts, folded"
