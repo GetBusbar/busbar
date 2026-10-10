@@ -44,7 +44,7 @@ fn a_module_on_the_axis_resolves_and_an_unregistered_one_is_refused_as_before() 
     assert_eq!(
         errors,
         vec![
-            // The modules this axis serves: it LINKS the scrape sink (and nothing else). A default
+            // The modules this axis serves: it LINKS the scrape double (and nothing else). A default
             // binary links every sink, and its line is 1.5.5's byte for byte
             // (`crates/busbar/tests/export_unknown_module_lists_what_links.rs`).
             "export.audit-tail.module: unknown exporter 'k9-never-registered'; the built-in export \

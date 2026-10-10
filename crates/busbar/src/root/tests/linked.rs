@@ -542,3 +542,57 @@ fn every_linked_section_row_is_a_linked_doors_declaring_section() {
         );
     }
 }
+
+/// THE LINKED SCRAPE SINK RENDERS THE RECORDER'S BYTES BACK. The build's linked export rows,
+/// registered as boot registers them (`linked_exports` through the one admission) and opened on the
+/// process's one dispatcher through the root's export rows, answer the frozen scrape module word
+/// (the kernel's `scrape_module`, never a crate name): handed the snapshot of an exposition carrying
+/// every family type the recorder writes (a HELP-less counter, labels with escapes, a histogram, a
+/// quantile summary), the sink answers exactly those bytes. Moved here from busbar-kernel's
+/// `export/tests/scrape_tests.rs` (R-FIX3: the kernel's own tests run on the stand-in axis's scrape
+/// double). A build that links no scrape sink has no sink to prove.
+#[test]
+fn the_linked_scrape_sink_renders_the_recorder_snapshot_byte_identically() {
+    let module = busbar_kernel::test_support::export_axis::scrape_module();
+    let registry = PluginRegistry::empty()
+        .link(linked_exports(crate::LINKED.export_doors).expect("the linked export rows"))
+        .expect("the linked rows alone");
+    if module.is_empty() || registry.resolve(module).is_none() {
+        return;
+    }
+    let sink = crate::root::loader::export_axis::ExportRows::new(
+        &registry,
+        crate::root::dispatch::dispatcher(),
+    )
+    .open(
+        module,
+        "export.metrics",
+        &serde_json::json!({"buffer_seconds": 60}),
+    )
+    .expect("the scrape sink opens");
+    // Listed in the sink's stable order — every counter, then every gauge, then every
+    // histogram/summary (v1.5.5's own renderer drains its maps in that fixed order), name-sorted
+    // within a kind — so the bytes come back unchanged.
+    let own = "# TYPE busbar_requests_total counter\n\
+               busbar_requests_total{pool=\"a\\\"b\\\\c\\nd\",outcome=\"ok\"} 3\n\
+               \n\
+               # TYPE busbar_plane_request_duration_seconds summary\n\
+               busbar_plane_request_duration_seconds{quantile=\"0.99\"} 0.0125\n\
+               busbar_plane_request_duration_seconds_sum 1e-3\n\
+               busbar_plane_request_duration_seconds_count 4\n\
+               \n\
+               # HELP busbar_request_duration_seconds request latency\n\
+               # TYPE busbar_request_duration_seconds histogram\n\
+               busbar_request_duration_seconds_bucket{le=\"0.5\"} 1\n\
+               busbar_request_duration_seconds_bucket{le=\"+Inf\"} 2\n\
+               busbar_request_duration_seconds_sum 0.75\n\
+               busbar_request_duration_seconds_count 2\n\
+               \n";
+    let families = busbar_contract::export_calls::parse_families(own).expect("the text snapshots");
+    let body = sink.scrape(&families).expect("the sink renders");
+    assert_eq!(
+        body,
+        own.as_bytes(),
+        "the scrape is the recorder's bytes, back"
+    );
+}
