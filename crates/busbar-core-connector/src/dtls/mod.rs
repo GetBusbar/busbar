@@ -11,7 +11,7 @@
 //!
 //! # One UDP port, three protocols (RFC 7983 §7)
 //!
-//! A WebRTC association multiplexes STUN, DTLS and SRTP on one 5-tuple. [`classify`] splits them by
+//! A media association multiplexes STUN, DTLS and SRTP on one 5-tuple. [`classify`] splits them by
 //! the first byte, and [`Association::ingest`] is the record layer's host side:
 //!
 //! * **STUN** goes up the raw lane to the framer's ICE agent — except the answers to core's own
@@ -86,7 +86,7 @@ pub const CONSENT_TIMEOUT: Duration = Duration::from_secs(30);
 /// How long a probe is awaited before a heard path is probed again.
 const PROBE_RETRY: Duration = Duration::from_millis(500);
 
-/// What one datagram on a WebRTC port is (RFC 7983 §7).
+/// What one datagram on a media port is (RFC 7983 §7).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Class {
     /// First byte 0–3: STUN.
@@ -242,7 +242,7 @@ pub enum Up {
     Connected,
     /// The exported SRTP keying material.
     Keyed(SrtpKeying),
-    /// Decrypted DTLS application data (SCTP, for WebRTC).
+    /// Decrypted DTLS application data (SCTP, for the data channels).
     Plaintext(Vec<u8>),
     /// The peer closed the DTLS session.
     Closed,
@@ -284,7 +284,7 @@ pub enum Bind {
     WhenProven,
 }
 
-/// One WebRTC association's DTLS engine and demux.
+/// One media association's DTLS engine and demux.
 pub struct Association {
     cert: Arc<SessionCert>,
     role: Role,
@@ -467,7 +467,7 @@ impl Association {
         self.bound == Some(path)
     }
 
-    /// Seal `plaintext` (SCTP, for WebRTC) as DTLS application data toward the bound path.
+    /// Seal `plaintext` (SCTP, for the data channels) as DTLS application data toward the bound path.
     ///
     /// # Errors
     ///

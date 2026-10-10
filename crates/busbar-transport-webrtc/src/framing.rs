@@ -213,10 +213,11 @@ fn values<'a>(description: &'a str, prefix: &'a str) -> impl Iterator<Item = &'a
         .filter_map(move |l| l.trim_end_matches('\r').strip_prefix(prefix))
 }
 
+/// The far end's half of the terms: check user, check secret, certificate fingerprint, candidates.
+type Remote = (String, Zeroizing<String>, [u8; 32], Vec<SocketAddr>);
+
 /// The terms a description pair settles, read from the far end's description text.
-fn read_remote(
-    description: &str,
-) -> Result<(String, Zeroizing<String>, [u8; 32], Vec<SocketAddr>), Failed> {
+fn read_remote(description: &str) -> Result<Remote, Failed> {
     let user = values(description, "a=ice-ufrag:")
         .next()
         .ok_or("the far end's description has no check user")?
@@ -560,18 +561,19 @@ impl Framing {
                     }) if self.side == Side::Accept => {
                         self.track(txid, path);
                     }
-                    Some(Check::Success { txid }) if self.side == Side::Dial => {
-                        if self.nominating.get(&txid) == Some(&path) {
-                            self.nominating.remove(&txid);
-                            self.feed(from, bytes, now);
-                            if matches!(
-                                self.ice,
-                                IceConnectionState::Connected | IceConnectionState::Completed
-                            ) {
-                                self.nominate(path);
-                            }
-                            return;
+                    Some(Check::Success { txid })
+                        if self.side == Side::Dial
+                            && self.nominating.get(&txid) == Some(&path) =>
+                    {
+                        self.nominating.remove(&txid);
+                        self.feed(from, bytes, now);
+                        if matches!(
+                            self.ice,
+                            IceConnectionState::Connected | IceConnectionState::Completed
+                        ) {
+                            self.nominate(path);
                         }
+                        return;
                     }
                     _ => {}
                 }
@@ -817,10 +819,10 @@ impl Framing {
                 return;
             };
             match stun::read(bytes) {
-                Some(Check::Success { txid }) if self.side == Side::Accept => {
-                    if self.nominating.remove(&txid) == Some(path) {
-                        self.nominate(path);
-                    }
+                Some(Check::Success { txid })
+                    if self.side == Side::Accept && self.nominating.remove(&txid) == Some(path) =>
+                {
+                    self.nominate(path);
                 }
                 Some(Check::Request {
                     txid,
@@ -883,12 +885,12 @@ impl Framing {
                     });
                 }
             }
-            Event::MediaAdded(m) => {
-                if m.kind == MediaKind::Audio && !self.medias.contains_key(&m.mid) {
-                    let n = self.medias.len() as u64;
-                    let s = self.media(m.mid, n);
-                    self.head(s, &[("kind", "audio"), ("codec", "opus")]);
-                }
+            Event::MediaAdded(m)
+                if m.kind == MediaKind::Audio && !self.medias.contains_key(&m.mid) =>
+            {
+                let n = self.medias.len() as u64;
+                let s = self.media(m.mid, n);
+                self.head(s, &[("kind", "audio"), ("codec", "opus")]);
             }
             Event::MediaData(d) => {
                 if !(self.verified && self.keyed) || self.pieces.len() >= MAX_HELD * 4 {

@@ -291,14 +291,11 @@ fn answer(
     }
 
     // Pieces.
-    loop {
-        let Some((mut p, continued)) = h
-            .partial
-            .take()
-            .or_else(|| h.f.next_piece().map(|p| (p, false)))
-        else {
-            break;
-        };
+    while let Some((mut p, continued)) = h
+        .partial
+        .take()
+        .or_else(|| h.f.next_piece().map(|p| (p, false)))
+    {
         let room = frame.cap().saturating_sub(frame.asked());
         if pieces.asked() >= pieces.cap() || (room == 0 && !p.bytes.is_empty()) {
             h.partial = Some((p, continued));

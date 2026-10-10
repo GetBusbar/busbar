@@ -5,7 +5,7 @@
 //! binds one. The stream carriers are a separate path: a datagram has
 //! a peer per read and no connection, so it is never folded into the stream socket types.
 //!
-//! One bound port serves every WebRTC association on it: each read answers the datagram AND the
+//! One bound port serves every media association on it: each read answers the datagram AND the
 //! peer it came from, each write names the peer it goes to, and the dtls engine
 //! ([`crate::dtls`]) demultiplexes by path. Nothing here waits: a read or write that would block
 //! answers `None`, and the caller waits on the socket's read/write readiness — the per-worker

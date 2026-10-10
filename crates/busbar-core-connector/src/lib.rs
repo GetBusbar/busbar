@@ -16,7 +16,7 @@
 //! * [`guard`] is THE DESTINATION GUARD, the one check deciding which addresses any outbound
 //!   connection may be dialled at (private refused unless allowlisted, metadata always).
 //! * [`tls`] is connection security — core-only, never a plugin, never crossing the ABI.
-//! * [`dtls`] is its datagram sibling — the DTLS engine a WebRTC association runs on (the RFC 7983
+//! * [`dtls`] is its datagram sibling — the DTLS engine a media association runs on (the RFC 7983
 //!   demux, the ICE-gated bind, the SRTP exporter), on ring like [`tls`].
 //! * [`udp`] is the host's datagram socket: one bound port, a peer per datagram.
 //!

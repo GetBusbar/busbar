@@ -176,6 +176,10 @@ busbar-transport-grpc = { workspace = true }
 # exact leak `cargo xtask gate duplex-ws-default-edge` exists to catch. `plane-streaming` carries the edge.
 busbar-transport-ws = { workspace = true, optional = true }
 busbar-transport-stdio = { path = "../busbar-transport-stdio" }
+# WebRTC: the datagram framer door (ICE, SRTP, SCTP) over the connector's datagram port and secure
+# layer. Optional and off by default: its linked row is the wire's one registration, and a build
+# that does not turn `transport-webrtc` on carries neither the crate nor its media stack.
+busbar-transport-webrtc = { path = "../busbar-transport-webrtc", optional = true }
 # The root's card is SWAPPED by a live config apply and PINNED by every unit that prices against it,
 # which is one atomic store against many lock-free readers — the same shape, and the same crate, the
 # engine already swaps its config snapshot with.
@@ -253,6 +257,8 @@ plane-streaming = ["dep:busbar-voice", "transport-ws", "busbar-voice?/runtime", 
 # THE WS WIRE, the one optional transport: the voice plane's edge and nothing else's, so `plane-streaming`
 # carries it and `--no-default-features` drops the crate edge and its linked row together.
 transport-ws = ["dep:busbar-transport-ws"]
+# THE WEBRTC WIRE, optional and never in `default`: on, the crate edge and its linked row together.
+transport-webrtc = ["dep:busbar-transport-webrtc"]
 # THE TCP WIRE'S LINKED ROW, DEFAULT ON (#3: a transport is swappable, compiled in OR dropped in). Off,
 # the build links no `tcp` row and the wire is served only when its tarball is dropped into
 # `plugins/`: the boot seal folds it in the same pass as the linked rows, and the data door accepts
@@ -377,6 +383,7 @@ transport-http = "busbar-transport-http"
 transport-ws = "busbar-transport-ws"
 transport-grpc = "busbar-transport-grpc"
 transport-stdio = "busbar-transport-stdio"
+transport-webrtc = "busbar-transport-webrtc"
 # THE PLANE DOOR AXIS (#2, THE DESIGN section 11.4): a plane's memory-ABI `door`, bound through the
 # loader's one load beside the dropped-in plane doors.
 plane-decisions = "busbar-plane-decisions"
@@ -423,6 +430,7 @@ transport-http = "transport transport-door connector-door"
 transport-ws = "transport transport-door connector-door"
 transport-grpc = "transport transport-door"
 transport-stdio = "transport transport-door"
+transport-webrtc = "transport transport-door"
 plane-decisions = "plane-door"
 llm-on-driver = "plane-door"
 plane-mcp-door = "plane-door"

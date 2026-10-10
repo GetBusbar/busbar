@@ -361,6 +361,7 @@ dependencies = [
  "busbar-transport-stdio",
  "busbar-transport-tcp",
  "busbar-transport-tcp-plugin",
+ "busbar-transport-webrtc",
  "busbar-transport-ws",
  "busbar-voice",
  "bytes",
