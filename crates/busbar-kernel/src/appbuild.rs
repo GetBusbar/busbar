@@ -1172,7 +1172,7 @@ pub fn build_app_from_config(
                 a.admin_auth
                     .iter()
                     .chain(a.chain.iter())
-                    .any(|e| e.module == crate::config::operator_provider())
+                    .any(|e| crate::config::names_operator(&e.module))
             });
             // FAIL-CLOSED: a declared ref that no longer resolves ABORTS the apply. The alternative
             // — carry on serving with the old credential — is exactly the defect being fixed.

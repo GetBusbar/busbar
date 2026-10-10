@@ -83,6 +83,11 @@ on:
         description: "The manifest alias (the short config name), used by the signing gate's config fixture."
         required: true
         type: string
+      manifest_name:
+        description: "The signed manifest's `name` (the plugin's identity at load), as its release packs it. Default: the repo's name (plugins.yaml `manifest_name` default)."
+        required: false
+        type: string
+        default: ""
       plugin_lang:
         description: "rust | c. `c`: the plugin is C sources built from busbar_plugin.h alone (THE C PATH above)."
         required: false
@@ -313,7 +318,8 @@ jobs:
           lib="target/debug/lib${CRATE//-/_}.so"
           [ -f "$lib" ] || { echo "::error::no cdylib at $lib"; ls -la target/debug/ >&2; exit 1; }
           bash "$GITHUB_WORKSPACE/busbar/scripts/signing-gate.sh" \
-            "$GITHUB_WORKSPACE/busbar" "$CRATE" "${{ inputs.plugin_kind }}" "${{ inputs.plugin_alias }}" "$lib"
+            "$GITHUB_WORKSPACE/busbar" "$CRATE" "${{ inputs.plugin_kind }}" "${{ inputs.plugin_alias }}" "$lib" \
+            "${{ inputs.manifest_name || github.event.repository.name }}"
       - name: mysql strict sql_mode (a dynamic variable; only root may set it)
         if: inputs.service == 'mysql'
         run: mysql -h 127.0.0.1 -uroot -pbusbar -e "SET GLOBAL sql_mode='STRICT_ALL_TABLES,NO_ENGINE_SUBSTITUTION';"
