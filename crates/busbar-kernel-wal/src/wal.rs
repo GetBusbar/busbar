@@ -74,7 +74,7 @@ use crate::backend::{DirectoryFactory, MemoryFactory, SegmentFactory};
 use crate::record::Record;
 use crate::recover::{recover_and_truncate, Quarantine, Recovered};
 use crate::segment::{Segment, SegmentError, SEGMENT_BYTES};
-use crate::ship::{ShipError, Shipper};
+use crate::ship::{NullShipper, ShipError, Shipper};
 
 /// How many skipped numbers the idempotence check remembers below a node's mark.
 ///
