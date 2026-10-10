@@ -45,7 +45,7 @@ pub(crate) fn hot_cdylib(kind: &str) -> PathBuf {
         .iter()
         .find(|(k, _)| *k == kind)
         .unwrap_or_else(|| panic!("no hot `{kind}` row in the both-ways table"));
-    cdylib(krate).unwrap_or_else(|| panic!("the {krate} cdylib is not built: a both-ways proof"))
+    cdylib(krate)
 }
 
 /// The manifest both doors state for the plugin: a first-party `name`/`alias` of `kind` at payload
@@ -73,28 +73,39 @@ pub(crate) fn statement(kind: &str, name: &str, alias: &str, abi_version: u32) -
     }
 }
 
-/// The example `cdylib` `name` in this target dir (`cargo test` builds examples). Under CI a
-/// missing artifact is a failure, never a skip: this is a both-ways proof.
-pub(crate) fn example_cdylib(name: &str) -> Option<PathBuf> {
-    let exe = std::env::current_exe().ok()?;
+/// The command that builds every example `cdylib` of this crate.
+pub(crate) const BUILD_EXAMPLES: &str = "cargo build -p busbar-plugin-loader --examples";
+
+/// The command that builds every pinned plugin's `cdylib` under `deps/` (the dev-dependency edge).
+pub(crate) const BUILD_DEPS: &str = "cargo test -p busbar-plugin-loader --no-run";
+
+/// A both-ways proof whose `name` cdylib is absent: a hard failure naming the `command` that builds
+/// it, in every run (BUSBAR-1.6.0.md: between a false RED and a false GREEN, a gate takes the RED).
+pub(crate) fn missing(name: &str, command: &str) -> ! {
+    panic!("the {name} cdylib is not built: run `{command}` first (a both-ways proof never skips)")
+}
+
+/// The example `cdylib` `name` in this target dir; absent, the test fails naming the command that
+/// builds it — this is a both-ways proof, and it never skips.
+pub(crate) fn example_cdylib(name: &str) -> PathBuf {
+    let exe = std::env::current_exe().expect("the test binary's path");
     let path = exe
-        .parent()?
-        .parent()?
+        .parent()
+        .and_then(|deps| deps.parent())
+        .expect("the test binary sits in <profile>/deps")
         .join("examples")
         .join(crate::plugin_library_filename(name));
-    let found = path.exists().then_some(path);
-    assert!(
-        found.is_some() || std::env::var_os("CI").is_none(),
-        "the {name} example cdylib is not built under CI; a both-ways proof must not skip"
-    );
-    found
+    if !path.exists() {
+        missing(name, BUILD_EXAMPLES);
+    }
+    path
 }
 
 /// The `cdylib` of `crate_snake` in this target dir, newest wins: uplifted, under `deps` by its
 /// exact name, or under `deps` WITH a metadata hash (`lib<snake>-<hex>.<ext>`) — the only place a
-/// fixture pulled from its own repo as a git dependency is ever built. Under CI a missing artifact
-/// is a failure, never a skip: this is a both-ways proof.
-pub(crate) fn cdylib(crate_snake: &str) -> Option<PathBuf> {
+/// fixture pulled from its own repo as a git dependency is ever built. Absent, the test fails
+/// naming the command that builds it — this is a both-ways proof, and it never skips.
+pub(crate) fn cdylib(crate_snake: &str) -> PathBuf {
     let found = (|| {
         let exe = std::env::current_exe().ok()?;
         let profile = exe.parent()?.parent()?;
@@ -122,11 +133,7 @@ pub(crate) fn cdylib(crate_snake: &str) -> Option<PathBuf> {
             .max()
             .map(|(_, p)| p)
     })();
-    assert!(
-        found.is_some() || std::env::var_os("CI").is_none(),
-        "the {crate_snake} cdylib is not built under CI; a both-ways proof must not skip"
-    );
-    found
+    found.unwrap_or_else(|| missing(crate_snake, BUILD_DEPS))
 }
 
 /// THE DROPPED-IN DOOR: `lib` signed first-party under `manifest` into a fresh `plugins/` directory,

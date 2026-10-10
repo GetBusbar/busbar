@@ -900,8 +900,11 @@ fn the_preflight_warns_about_a_malformed_floor() {
 /// registered through `PluginRegistry::link`, the admission a dropped-in store's row takes, and the
 /// configured name resolves to it there — not a name the kernel matches. With the plugins directory
 /// off the registry holds exactly that row, which states itself ephemeral and opens through
-/// `open_store`; with the directory on, the linked row still holds its name (first registration
-/// wins) and a dropped-in plugin spelling the same name stays the directory's own row.
+/// `open_store`, by its key and by its canonical name alike (ARCHITECT C': one plugin, one identity).
+/// With the directory on, a dropped-in copy of the SAME plugin (its canonical name) at the version
+/// the linked plugin states is admitted once — the linked row serves — and a DIFFERENT plugin
+/// spelling the linked row's key is refused, naming both (Q-P4-12: no door outranks the other; the
+/// silent first-registration win is gone).
 ///
 /// RED by planting the door bypass: `linked_rows()` registering nothing leaves the configured
 /// `store.module` (the stand-in row) unresolved (the preflight then refuses it as a plugin with
@@ -925,32 +928,140 @@ fn the_built_in_store_is_a_linked_row_of_the_store_axis() {
     assert_eq!((stores.count(), reg.loadable().len()), (1, 0));
     reg.store_door(name)
         .expect("the row states its door to boot");
+    let canonical = row.manifest.name.clone();
+    assert_ne!(canonical, name, "the row's canonical name is not its key");
+    assert_eq!(row.key(), name, "the row prints its key");
+    let version = row.plugin_version().expect("the store states its version");
+    let statement = row.statement().expect("the store states itself");
+    reg.store_door(&canonical)
+        .expect("the canonical name opens the same store");
+    let by_canonical = crate::plugins_preflight(
+        Some(&gov_with_store(&canonical)),
+        None,
+        &Default::default(),
+        &Default::default(),
+        &crate::config::PluginsCfg::default(),
+        &Default::default(),
+    )
+    .expect("`store.module: <canonical>` resolves as the key does");
+    assert!(by_canonical.resolve(&canonical).expect("resolves").linked());
 
+    // A dropped-in copy of the same plugin at its version: admitted once, the linked row serves.
     let dir = tmp_plugin_dir("linked-store");
-    let tarball = unsigned_tarball(plugin_manifest(name, "acme-ram", "acme"), b"lib");
-    std::fs::write(dir.join("ram.tar.gz"), tarball).unwrap();
+    let mut m = plugin_manifest(&canonical, name, "acme");
+    m.version = version.clone();
+    m.statement = Some(hex::encode(&statement));
+    std::fs::write(dir.join("copy.tar.gz"), unsigned_tarball(m, b"lib")).unwrap();
     let mut cfg = plugins_cfg(&dir, true);
     cfg.trust.allow_unsigned = true;
+    let scan = || {
+        crate::plugins_preflight(
+            Some(&store),
+            None,
+            &Default::default(),
+            &Default::default(),
+            &cfg,
+            &Default::default(),
+        )
+    };
+    let reg = scan().expect("the directory scans");
+    assert!(
+        reg.resolve(name).expect("resolves").linked(),
+        "the linked row serves"
+    );
+    assert_eq!(reg.loadable().len(), 0, "the copy is no row of its own");
+    assert_eq!(reg.linked_copies().len(), 1);
+
+    // A DIFFERENT plugin spelling the key: refused, naming both.
+    std::fs::remove_file(dir.join("copy.tar.gz")).unwrap();
+    let other = unsigned_tarball(plugin_manifest(name, "acme-ram", "acme"), b"lib");
+    std::fs::write(dir.join("ram.tar.gz"), other).unwrap();
+    let refused = scan().expect_err("two plugins claim the key");
+    assert!(
+        refused.contains("plugin claim conflict")
+            && refused.contains(&format!("'{name}'"))
+            && refused.contains("ram.tar.gz"),
+        "{refused}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// THE PRINTED NAME OF A LINKED ROW IS ITS KEY (ARCHITECT C'): every preflight refusal that names a
+/// linked row prints the key it printed before the row answered to its canonical name too —
+/// reached by its key or by its canonical name. Pinned per surface: `require_plugin` (a hook
+/// referencing the store), the `identity-providers:` refusal, the `secrets:` key and a secret
+/// reference.
+#[test]
+fn a_linked_rows_refusals_print_its_key() {
+    let store = crate::test_support::stand_in_store();
+    let key = store.module.clone();
+    let dir = tmp_plugin_dir("printed-key");
+    let plugins = plugins_cfg(&dir, true);
     let reg = crate::plugins_preflight(
         Some(&store),
         None,
         &Default::default(),
         &Default::default(),
-        &cfg,
+        &plugins,
         &Default::default(),
     )
-    .expect("the directory scans");
-    let row = reg.resolve(name).expect("the name still resolves");
-    assert!(
-        row.ephemeral && row.manifest.publisher == "busbar",
-        "the linked row holds its name"
-    );
-    assert_eq!(
-        reg.loadable().len(),
-        1,
-        "the dropped-in row is still the directory's"
-    );
-    assert_eq!(reg.resolve("acme-ram").map(|p| p.ephemeral), Some(false));
+    .expect("the store resolves");
+    let canonical = reg.resolve(&key).expect("the row").manifest.name.clone();
+    for word in [key.as_str(), canonical.as_str()] {
+        let hooks: std::collections::HashMap<String, crate::config::HookCfg> =
+            serde_json::from_value(serde_json::json!({ "h": { "module": word, "kind": "tap" } }))
+                .expect("hooks");
+        let refused = crate::plugins_preflight(
+            Some(&store),
+            None,
+            &Default::default(),
+            &hooks,
+            &plugins,
+            &Default::default(),
+        )
+        .expect_err("a store is not a hook");
+        assert!(
+            refused.contains(&format!(
+                "resolves to plugin '{key}' of kind 'store', not a `hook` plugin"
+            )),
+            "{word}: {refused}"
+        );
+        let providers: crate::config::IdentityProviders =
+            serde_json::from_value(serde_json::json!({ "x": { "module": word } })).expect("idps");
+        let refused = crate::plugins_preflight(
+            Some(&store),
+            None,
+            &providers,
+            &Default::default(),
+            &plugins,
+            &Default::default(),
+        )
+        .expect_err("a store is not an auth plugin");
+        assert!(
+            refused.contains(&format!(
+                "identity-providers.x.module: '{word}' resolves to plugin '{key}' of kind 'store'"
+            )),
+            "{word}: {refused}"
+        );
+        assert_eq!(
+            crate::preflight::validate_secret_module(&reg, word).unwrap_err(),
+            format!(
+                "secrets.{word}: plugin '{key}' has kind 'store', not 'secret'; only a kind: \
+                 secret plugin can back a `secrets:` block entry"
+            )
+        );
+        let cfg = crate::test_support::cfg_with_provider_api_key(crate::config::SecretRef {
+            module: word.to_string(),
+            ..crate::config::SecretRef::env("K")
+        });
+        let refused = crate::preflight::validate_secret_refs(&reg, &cfg).unwrap_err();
+        assert!(
+            refused.contains(&format!(
+                "references secret module '{word}', but plugin '{key}' has kind 'store'"
+            )),
+            "{word}: {refused}"
+        );
+    }
     let _ = std::fs::remove_dir_all(&dir);
 }
 

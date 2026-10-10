@@ -21,6 +21,11 @@ use super::{
     ROLE_FRAMER, SETTING_FLAG, SETTING_TEXT, STATUS_AT_TERMINAL, STATUS_OTHER, STATUS_SUCCESS,
     UNIT0_HANDSHAKE, YIELD_ENDED, YIELD_HAS_DEADLINE, YIELD_MORE, YIELD_STREAM_FULL,
 };
+use super::{
+    DatagramRoute, KeyingMaterial, RendezvousTerms, FINGERPRINT_BYTES, HANDSHAKE_ANSWERS,
+    HANDSHAKE_NONE, LANE_CLEAR, LANE_SECURED, MAX_KEYING_BYTES, MAX_ROUTES, PATH_REQUEST_BIND,
+    PATH_REQUEST_NONE, PATH_REQUEST_REBIND,
+};
 use crate::abi::mechanism::call::{AbiStr, Outcome};
 use crate::abi::mechanism::check::{
     bits, bounded, code, fault, first, index, listed, range, result, results, text, texts, within,
@@ -268,6 +273,142 @@ pub fn check_framer(
             u64::from(STATUS_OTHER),
             "framer.piece.status_class",
         )?;
+    }
+    Ok(())
+}
+
+/// A datagram framer's answer ([`super::datagram`]), after [`check_framer`] passed: at most
+/// `routes_cap` (and [`MAX_ROUTES`]) routes, each one nonempty datagram inside the wire bytes
+/// written, to a nonzero path, on [`LANE_CLEAR`] or [`LANE_SECURED`] (a rendezvous is never sent);
+/// a FAILED answer routes nothing and asks for nothing; at most one path request, its paths named
+/// exactly as its kind needs; rendezvous terms either absent whole or carrying all four
+/// credentials and a [`FINGERPRINT_BYTES`] fingerprint inside the frame bytes written.
+///
+/// A stream framer's zeroed yield passes.
+///
+/// # Errors
+///
+/// The rule the answer breaks.
+pub fn check_datagram(
+    outcome: Outcome,
+    out: &FramerOut,
+    routes: &[DatagramRoute],
+    routes_cap: u64,
+) -> Result<(), Fault> {
+    let d = &out.datagram;
+    let y = &out.yielded;
+    let n = u64::from(d.routes_len);
+    within(n, routes_cap.min(MAX_ROUTES), "datagram.routes_len")?;
+    if outcome == Outcome::Failed && (n != 0 || d.request != PATH_REQUEST_NONE) {
+        return Err(fault(Rule::Contradiction, "datagram.failed_routed"));
+    }
+    for r in first(routes, n, "datagram.routes")? {
+        if r.len == 0 {
+            return Err(fault(Rule::Missing, "datagram.route.len"));
+        }
+        range(r.offset, r.len, y.wire_len, "datagram.route.bytes")?;
+        if r.path == 0 {
+            return Err(fault(Rule::Missing, "datagram.route.path"));
+        }
+        code(
+            u64::from(r.lane),
+            u64::from(LANE_CLEAR),
+            u64::from(LANE_SECURED),
+            "datagram.route.lane",
+        )?;
+    }
+    code(
+        u64::from(d.request),
+        u64::from(PATH_REQUEST_NONE),
+        u64::from(PATH_REQUEST_REBIND),
+        "datagram.request",
+    )?;
+    let named = match d.request {
+        PATH_REQUEST_BIND => d.request_from == 0 && d.request_to != 0,
+        PATH_REQUEST_REBIND => {
+            d.request_from != 0 && d.request_to != 0 && d.request_from != d.request_to
+        }
+        _ => d.request_from == 0 && d.request_to == 0,
+    };
+    if !named {
+        return Err(fault(Rule::Contradiction, "datagram.request.paths"));
+    }
+    check_terms(&d.terms, y.frame_len)
+}
+
+/// Rendezvous terms: absent whole, or every credential nonempty and the fingerprint exactly
+/// [`FINGERPRINT_BYTES`], each inside the first `frame_len` bytes of the frame.
+///
+/// # Errors
+///
+/// The rule the terms break.
+pub fn check_terms(t: &RendezvousTerms, frame_len: u64) -> Result<(), Fault> {
+    code(
+        u64::from(t.role),
+        u64::from(HANDSHAKE_NONE),
+        u64::from(HANDSHAKE_ANSWERS),
+        "datagram.terms.role",
+    )?;
+    let spans = [
+        (t.local_user, "datagram.terms.local_user"),
+        (t.local_secret, "datagram.terms.local_secret"),
+        (t.remote_user, "datagram.terms.remote_user"),
+        (t.remote_secret, "datagram.terms.remote_secret"),
+        (t.peer_fingerprint, "datagram.terms.peer_fingerprint"),
+    ];
+    if t.role == HANDSHAKE_NONE {
+        for (s, field) in spans
+            .into_iter()
+            .chain([(t.candidates, "datagram.terms.candidates")])
+        {
+            if s != FrameSpan::default() {
+                return Err(fault(Rule::SpanNotAbsent, field));
+            }
+        }
+        return Ok(());
+    }
+    for (s, field) in spans {
+        if s.len == 0 {
+            return Err(fault(Rule::Missing, field));
+        }
+        range(s.offset, s.len, frame_len, field)?;
+    }
+    range(
+        t.candidates.offset,
+        t.candidates.len,
+        frame_len,
+        "datagram.terms.candidates",
+    )?;
+    if t.peer_fingerprint.len != FINGERPRINT_BYTES {
+        return Err(fault(
+            Rule::Contradiction,
+            "datagram.terms.peer_fingerprint.len",
+        ));
+    }
+    Ok(())
+}
+
+/// The keying-material item a host presents: its own size, a nonzero profile, and
+/// `1..=`[`MAX_KEYING_BYTES`] bytes behind a non-NULL pointer.
+///
+/// # Errors
+///
+/// The rule the item breaks.
+pub fn check_keying(k: &KeyingMaterial) -> Result<(), Fault> {
+    if k.size as usize != core::mem::size_of::<KeyingMaterial>() {
+        return Err(fault(Rule::Foreign, "keying.size"));
+    }
+    if k.profile == 0 {
+        return Err(fault(Rule::Missing, "keying.profile"));
+    }
+    if k.len == 0 {
+        return Err(fault(Rule::Missing, "keying.len"));
+    }
+    if k.len as u64 > MAX_KEYING_BYTES {
+        return Err(fault(Rule::OverMax, "keying.len"));
+    }
+    if k.bytes.is_null() {
+        return Err(fault(Rule::NullWithCount, "keying.bytes"));
     }
     Ok(())
 }
