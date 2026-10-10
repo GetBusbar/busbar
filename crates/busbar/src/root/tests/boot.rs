@@ -461,7 +461,7 @@ fn red_3g_deals_a_root_pool_named_after_a_knob_as_a_pool() {
     )
     .expect("parses");
     let pools = vec![busbar_contract::section::RESERVED_POOLS_KEY.to_owned()];
-    let seats = [("p-llm", Seat::of(Kind::Plane, &pools, "p-llm"))];
+    let seats = [("p-pools", Seat::of(Kind::Plane, &pools, "p-pools"))];
     let mut seen = Vec::new();
     validate_dealt(&doc, seats, |instance, blob| {
         seen.push((instance, String::from_utf8(blob.to_vec()).unwrap()));
@@ -471,7 +471,7 @@ fn red_3g_deals_a_root_pool_named_after_a_knob_as_a_pool() {
     assert_eq!(
         seen,
         [(
-            "p-llm",
+            "p-pools",
             r#"{"pools":{"tier":{"members":[{"model":"m"}]},"work":{"members":[{"model":"m"}]}}}"#
                 .to_owned()
         )]
