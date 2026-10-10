@@ -271,7 +271,8 @@ const NONE_HAS_NO_VALUE: &str = "the `none` secret reference declares that there
      so it has no value to resolve; it is accepted only where an absent credential is meaningful (a \
      provider `api_key` for a keyless upstream such as ollama or vLLM)";
 
-/// The secret axis the composition root installed (a test build stands the shipped sources in).
+/// The secret axis the composition root installed (a test build answers it with the in-crate
+/// secret double, `test_support::secrets`).
 /// The kernel names none of the plugins behind it.
 pub(crate) fn axis() -> Option<&'static dyn busbar_contract::secret::SecretAxis> {
     crate::preflight::root_rows().secret_axis
