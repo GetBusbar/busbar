@@ -378,6 +378,25 @@ fn discover(cx: &Ctx) -> Result<Vec<(String, String)>, String> {
     Ok(out)
 }
 
+/// How many files the one-short plant removes from a scan set of `discovered` files: enough to
+/// leave exactly `DISCOVERY_FLOOR - 1`, however far the tree has grown past the pin. A cut of one
+/// from the live count left the set at or above the floor on every tree that had grown past the
+/// pin, and the plant read GREEN in the #627 merge group.
+fn one_short_cut(discovered: usize) -> usize {
+    discovered.saturating_sub(DISCOVERY_FLOOR - 1)
+}
+
+/// THE ONE-SHORT PLANT: an overlay over `cx` that removes shipped source files until discovery
+/// finds one fewer than [`DISCOVERY_FLOOR`]. `None` when discovery cannot read the tree.
+pub fn one_short_of_floor(cx: &Ctx) -> Option<Overlay> {
+    let files = discover(cx).ok()?;
+    let mut ov = Overlay::new();
+    for (rel, _) in files.iter().rev().take(one_short_cut(files.len())) {
+        ov.remove(rel);
+    }
+    Some(ov)
+}
+
 // ── WAIVERS ──────────────────────────────────────────────────────────────────────────────────────
 
 /// Load the committed allowlist, refusing every shape a waiver must not have. A reason says why a
@@ -1098,18 +1117,7 @@ impl Gate for NoDeferralGate {
         //    DISCOVERY_FLOOR, however many files the tree has gained since it was measured (a cut of
         //    one from the live count passed on every tree that grew past the pin, so the case was red
         //    only on the tree it was written against).
-        let one_short = match discover(base) {
-            Ok(files) => {
-                let mut ov = Overlay::new();
-                let cut = files.len().saturating_sub(DISCOVERY_FLOOR - 1);
-                for (rel, _) in files.iter().rev().take(cut) {
-                    ov.remove(rel);
-                }
-                Some(ov)
-            }
-            Err(_) => None,
-        };
-        match one_short {
+        match one_short_of_floor(base) {
             Some(ov) => report.push(prove_red(
                 base,
                 self,
@@ -1381,6 +1389,24 @@ fn decolour(line: &str) -> String {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod one_short_tests {
+    use super::{one_short_cut, DISCOVERY_FLOOR};
+
+    /// THE PLANT LANDS ONE UNDER THE FLOOR AT EVERY TREE SIZE, not only at the size it was written
+    /// against: a tree at the pin, one file past it, and one that has grown by hundreds.
+    #[test]
+    fn the_one_short_cut_leaves_one_file_under_the_floor_however_far_the_tree_grew() {
+        for discovered in [DISCOVERY_FLOOR, DISCOVERY_FLOOR + 1, DISCOVERY_FLOOR + 500] {
+            assert_eq!(
+                discovered - one_short_cut(discovered),
+                DISCOVERY_FLOOR - 1,
+                "a scan set of {discovered} must be cut to one under the floor of {DISCOVERY_FLOOR}"
+            );
+        }
+    }
 }
 
 #[cfg(test)]
