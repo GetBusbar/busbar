@@ -1097,9 +1097,8 @@ fn contract(fold: &Fold, want: &[(String, Want)]) {
 }
 
 #[cfg(test)]
-#[path = "../tests/conformance_role_tests.rs"]
-mod role_tests;
-
-#[cfg(test)]
 #[path = "../tests/conformance_transport_opening_tests.rs"]
 mod opening_tests;
+#[cfg(test)]
+#[path = "../tests/conformance_transport_role_tests.rs"]
+mod role_tests;

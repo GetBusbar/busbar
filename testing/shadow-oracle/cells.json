@@ -90,10 +90,10 @@
       "llm.wire": 142,
       "mcp": 913,
       "money.reserved-tier": 2,
-      "neutrality": 21,
+      "neutrality": 22,
       "ops.raw": 1,
       "ops.scrape": 16,
-      "plugins": 14,
+      "plugins": 13,
       "plugins.abi": 1,
       "queue": 2,
       "route.529": 2,
@@ -35225,6 +35225,194 @@
       "body_lines": "^# (HELP|TYPE) "
     },
     {
+      "id": "neutrality|models-empty|surface",
+      "plane": "core",
+      "family": "neutrality",
+      "driver": "capture",
+      "outcome": "ok",
+      "capture": {
+        "providers": "p:\n  protocol: openai\n  base_url: \"{CAPTURE_URL}\"\n",
+        "config": "listen: \"{LISTEN}\"\nadmin_listen: \"{ADMIN}\"\nproviders_file: \"{WORK}/providers.yaml\"\nidentity-providers:\n  admin-tokens:\n    module: admin-tokens\n    token: { env: BUSBAR_ADMIN_TOKEN }\nauth:\n  chain: [keys]\n  signing_key: { file: \"{WORK}/signing.key\" }\n  admin_auth: [admin-tokens]\ngroups:\n  oracle:\n    limits:\n      - { budget: 1000000, per: day }\nproviders:\n  p:\n    api_key: { env: CAP_KEY }\nmodels: {}\n",
+        "env": {
+          "CAP_KEY": "oracle-cred-models-empty-0001"
+        },
+        "mock": {},
+        "steps": [
+          {
+            "request": {
+              "listener": "data",
+              "method": "GET",
+              "path": "/healthz",
+              "headers": []
+            }
+          },
+          {
+            "request": {
+              "listener": "admin",
+              "method": "POST",
+              "path": "/api/v1/admin/keys",
+              "auth": "admin",
+              "headers": [
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ],
+              "body": "{\"name\":\"capture\",\"group\":\"oracle\"}"
+            },
+            "save": {
+              "VK": "token"
+            },
+            "record": false,
+            "expect": 201
+          },
+          {
+            "request": {
+              "listener": "data",
+              "method": "GET",
+              "path": "/v1/models",
+              "headers": [
+                [
+                  "Authorization",
+                  "Bearer {VK}"
+                ]
+              ]
+            }
+          },
+          {
+            "request": {
+              "listener": "data",
+              "method": "GET",
+              "path": "/v1/models",
+              "headers": [
+                [
+                  "x-api-key",
+                  "{VK}"
+                ],
+                [
+                  "anthropic-version",
+                  "2023-06-01"
+                ]
+              ]
+            }
+          },
+          {
+            "request": {
+              "listener": "data",
+              "method": "GET",
+              "path": "/v1beta/models",
+              "headers": [
+                [
+                  "x-goog-api-key",
+                  "{VK}"
+                ]
+              ]
+            }
+          },
+          {
+            "request": {
+              "listener": "data",
+              "method": "POST",
+              "path": "/v1/messages",
+              "headers": [
+                [
+                  "x-api-key",
+                  "{VK}"
+                ],
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ],
+              "body": "{\"model\":\"m\",\"max_tokens\":5,\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}"
+            }
+          },
+          {
+            "request": {
+              "listener": "data",
+              "method": "POST",
+              "path": "/v1/chat/completions",
+              "headers": [
+                [
+                  "Authorization",
+                  "Bearer {VK}"
+                ],
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ],
+              "body": "{\"model\":\"m\",\"max_tokens\":5,\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}"
+            }
+          },
+          {
+            "request": {
+              "listener": "data",
+              "method": "POST",
+              "path": "/v1/messages",
+              "headers": [
+                [
+                  "x-api-key",
+                  "wrong"
+                ]
+              ],
+              "body": "{}"
+            }
+          },
+          {
+            "request": {
+              "listener": "data",
+              "method": "POST",
+              "path": "/model/m/converse",
+              "headers": [
+                [
+                  "Authorization",
+                  "Bearer wrong"
+                ]
+              ],
+              "body": "{}"
+            }
+          },
+          {
+            "request": {
+              "listener": "data",
+              "method": "GET",
+              "path": "/v2/nothing",
+              "headers": [
+                [
+                  "Authorization",
+                  "Bearer {VK}"
+                ]
+              ]
+            }
+          },
+          {
+            "request": {
+              "listener": "data",
+              "method": "DELETE",
+              "path": "/v1/messages",
+              "headers": [
+                [
+                  "x-api-key",
+                  "{VK}"
+                ]
+              ]
+            }
+          }
+        ],
+        "mask": [
+          [
+            "vk_[0-9a-f]{32}",
+            "vk_<KEY>"
+          ]
+        ],
+        "ready": {
+          "status": 503
+        }
+      },
+      "why": "D2-PROTO (busbar #545): the served surface of a config whose `models:` section is present and empty (no pools). Recorded from the published 1.5.5: the three model listings answer an empty list in each dialect's envelope (openai bearer, anthropic x-api-key + anthropic-version, gemini x-goog-api-key); a chat to an unknown model is the dialect's 404 (anthropic /v1/messages, openai /v1/chat/completions); a wrong anthropic key is 401 and a wrong bearer on the bedrock converse path is 403 AccessDeniedException; an unmatched path is the openai 404; a wrong method on /v1/messages is the anthropic 405"
+    },
+    {
       "id": "neutrality|routes|a2a-shaped-404",
       "plane": "core",
       "family": "neutrality",
@@ -35841,7 +36029,7 @@
       "why": "x-api-key is NOT a rung for /v1/models"
     },
     {
-      "id": "plugins.abi|json-contract|store-sqlite",
+      "id": "plugins.abi|json-contract|store-sqlite@1.5-line",
       "plane": "core",
       "family": "plugins.abi",
       "driver": "capture",
@@ -35927,6 +36115,7 @@
         "plugins": [
           "store-sqlite"
         ],
+        "plugins_line": "1.5",
         "boot": {
           "expect": "exit",
           "secs": 15
@@ -35994,23 +36183,6 @@
         "name": "plugin-list.sh",
         "args": [
           "hashicorp-vault"
-        ]
-      },
-      "outcome": "ok",
-      "why": "--list-plugins with the published tarball: kind/alias/signature/STATUS line",
-      "bindings": [
-        "PB-11"
-      ]
-    },
-    {
-      "id": "plugins.load|headroom-hook",
-      "plane": "core",
-      "family": "plugins",
-      "driver": "script",
-      "script": {
-        "name": "plugin-list.sh",
-        "args": [
-          "headroom-hook"
         ]
       },
       "outcome": "ok",

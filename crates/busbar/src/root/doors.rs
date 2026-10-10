@@ -125,7 +125,8 @@ impl Dispatched {
             .context::<TransportFacts>()
             .cloned()
             .ok_or_else(|| format!("`{}` states no transport tail", plugin.name()))?;
-        let blob = (!stated.settings.is_empty()).then(|| settings_blob(&stated.settings, settings));
+        let blob = (!stated.settings_keys.is_empty())
+            .then(|| settings_blob(&stated.settings_keys, settings));
         let mut i: OpenIn = blank_in();
         i.settings = match &blob {
             Some(b) => Blob {
@@ -160,6 +161,12 @@ impl Dispatched {
             composes_over: stated.composes_over,
             ported: stated.ported,
             status_rows: stated.status_rows,
+            duplex: stated
+                .upgrades
+                .iter()
+                .chain(&stated.sessions)
+                .copied()
+                .collect(),
         };
         // A carrier moves bytes over the host's I/O (`io.*`): the process's one, the connector's.
         let _ = dispatcher().install_io(busbar_core_connector::hostio::process());

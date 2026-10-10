@@ -235,18 +235,29 @@ fn a_dropped_transport_is_selected_by_the_claims_its_rendering_states() {
     assert!(select(&u, &cands).is_empty());
 }
 
-fn example_cdylib(name: &str) -> Option<PathBuf> {
-    let exe = std::env::current_exe().ok()?;
-    let path = exe.parent()?.parent()?.join("examples").join(format!(
-        "{}{name}{}",
-        std::env::consts::DLL_PREFIX,
-        std::env::consts::DLL_SUFFIX
-    ));
-    assert!(
-        path.exists() || std::env::var_os("CI").is_none(),
-        "the {name} example cdylib is not built under CI; a both-ways proof must not skip"
-    );
-    path.exists().then_some(path)
+fn example_cdylib(name: &str) -> PathBuf {
+    let exe = std::env::current_exe().expect("the test binary's path");
+    let path = exe
+        .parent()
+        .and_then(|deps| deps.parent())
+        .expect("the test binary sits in <profile>/deps")
+        .join("examples")
+        .join(format!(
+            "{}{name}{}",
+            std::env::consts::DLL_PREFIX,
+            std::env::consts::DLL_SUFFIX
+        ));
+    if !path.exists() {
+        crate::both_ways::missing(name, crate::both_ways::BUILD_EXAMPLES);
+    }
+    path
+}
+
+/// RED: an absent example is a hard failure naming the command that builds it, never a skip.
+#[test]
+#[should_panic(expected = "is not built: run")]
+fn red_an_absent_example_cdylib_panics_with_its_build_command() {
+    example_cdylib("no_such_example");
 }
 
 /// THE ONE LOAD, both origins: the plane door linked and the same plane dropped in (its verified
@@ -269,15 +280,14 @@ fn the_one_load_binds_each_selected_instance_to_its_own_log_sink() {
     let mut cands = vec![linked.clone()];
     let mut uses = Uses::default();
     uses.roots.insert("door".into());
-    if let Some(path) = example_cdylib("plane_door_plugin") {
-        let mut dropped = linked.clone();
-        dropped.origin = Origin::Dropped {
-            file: "plane-door.tar.gz".into(),
-            bytes: Arc::new(std::fs::read(path).unwrap()),
-        };
-        // A second instance of the same verb is taken by the first candidate: select it by hand.
-        cands.push(dropped);
-    }
+    let path = example_cdylib("plane_door_plugin");
+    let mut dropped = linked.clone();
+    dropped.origin = Origin::Dropped {
+        file: "plane-door.tar.gz".into(),
+        bytes: Arc::new(std::fs::read(path).unwrap()),
+    };
+    // A second instance of the same verb is taken by the first candidate: select it by hand.
+    cands.push(dropped);
     let mut never = cand(
         KindCode::Plane,
         "never-opened",
@@ -295,12 +305,10 @@ fn the_one_load_binds_each_selected_instance_to_its_own_log_sink() {
             instance: "door".into()
         }]
     );
-    if cands.len() == 3 {
-        selected.push(Selected {
-            candidate: 1,
-            instance: "door-dropped".into(),
-        });
-    }
+    selected.push(Selected {
+        candidate: 1,
+        instance: "door-dropped".into(),
+    });
     let loaded = load(&LoadRequest {
         candidates: &cands,
         selected: &selected,
@@ -332,9 +340,7 @@ fn the_one_load_binds_each_selected_instance_to_its_own_log_sink() {
 /// stated Statement is not its door's.
 #[test]
 fn red_an_instance_that_will_not_bind_is_named() {
-    let Some(path) = example_cdylib("plane_door_plugin") else {
-        return;
-    };
+    let path = example_cdylib("plane_door_plugin");
     let mut c = Candidate::linked(plug::door).unwrap();
     c.origin = Origin::Dropped {
         file: "plane-door.tar.gz".into(),
@@ -367,9 +373,7 @@ fn red_an_instance_that_will_not_bind_is_named() {
 /// bytes. A dropped plane with no Statement stays on the HOT lane, never a door candidate.
 #[test]
 fn a_linked_and_a_dropped_plane_door_load_through_the_same_path() {
-    let Some(path) = example_cdylib("plane_door_plugin") else {
-        return;
-    };
+    let path = example_cdylib("plane_door_plugin");
     let lib = std::fs::read(path).unwrap();
     let rendering = crate::dispatch::LinkedRow::of(plug::door)
         .unwrap()
