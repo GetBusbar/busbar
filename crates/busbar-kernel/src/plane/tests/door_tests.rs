@@ -403,10 +403,7 @@ fn opening_door(key: &'static str, section: &'static str) -> &'static PlaneDecl 
 fn refusing_door(key: &'static str, section: &'static str) -> &'static PlaneDecl {
     let mut reg = registration(key, section);
     reg.facing = Arc::new(
-        |_: &[u8],
-         _: &[u8],
-         _: Option<&str>,
-         _: &[busbar_contract::plane_calls::DialectFacts]| {
+        |_: &[u8], _: &[u8], _: Option<&str>, _: &[busbar_contract::plane_calls::DialectFacts]| {
             Err("the door refused to open this generation".to_string())
         },
     );
