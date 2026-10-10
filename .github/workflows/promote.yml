@@ -14,7 +14,7 @@ on: [pull_request, merge_group]
 concurrency: { group: "promote-${{ github.event.pull_request.number || github.event.merge_group.head_ref }}", cancel-in-progress: false }
 permissions: { contents: read }
 env:
-  RELEASE_REF: 65e862fbf808540c0450edf67e95c083364d9b65
+  RELEASE_REF: cbe96f355c62c4013c44dadb83e694f4a8d6473b
   SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
   TO: ${{ github.base_ref || github.event.merge_group.base_ref }}
   BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
@@ -26,7 +26,8 @@ jobs:
     # THE RUN GATE reads GitHub (open pull requests, the merge queue, this head's promote runs) with
     # this job's token. In a merge group it also writes: ORPHANS cancels the merge-group runs a queue
     # rebuild left running (actions: write), and R7 REPEAT turns off the auto-merge of a PR whose
-    # head already failed the queue first in its group (pull-requests: write).
+    # head already failed the queue as its own red: first in its group, or behind a group that went
+    # green (pull-requests: write).
     permissions: { contents: read, actions: write, pull-requests: write }
     outputs: { runner: "${{ steps.pre.outputs.runner }}", one_runner: "${{ steps.pre.outputs.one_runner }}", needs_release_artifact: "${{ steps.pre.outputs.needs_release_artifact }}", run: "${{ steps.pre.outputs.run }}", reason: "${{ steps.pre.outputs.reason }}" }
     steps:
@@ -191,7 +192,8 @@ jobs:
     if: always() && needs.preflight.result != 'skipped' && (needs.preflight.result != 'success' || needs.preflight.outputs.run == '1')
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    # statuses: write: a merge group DENIED with its PR first in the group marks that PR's head red
+    # statuses: write: a merge group DENIED as its PR's own red (first in the group, or behind a green
+    # group) marks that PR's head red
     # ("merge queue" status) beside its sticky verdict, so the watcher's fix agent starts at failure.
     permissions: { contents: read, actions: read, checks: read, pull-requests: write, statuses: write }
     steps:

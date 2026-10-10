@@ -447,7 +447,7 @@ dependencies = [
 [[package]]
 name = "busbar-auth-header"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-auth-header?rev=84b3fc400c2f63fe7bf9ad87dae3ac35d970defe#84b3fc400c2f63fe7bf9ad87dae3ac35d970defe"
+source = "git+https://github.com/GetBusbar/busbar-auth-header?rev=37811aad91caecb2d337a44748bd848f99879e27#37811aad91caecb2d337a44748bd848f99879e27"
 dependencies = [
  "busbar-contract",
  "serde",
@@ -723,8 +723,6 @@ dependencies = [
  "busbar-kernel-wal",
  "busbar-llm",
  "busbar-plugin-loader",
- "busbar-secret-env",
- "busbar-secret-file",
  "busbar-store-memory",
  "bytes",
  "crc32fast",
@@ -936,7 +934,6 @@ dependencies = [
  "busbar-export-prometheus-plugin",
  "busbar-export-webhook",
  "busbar-export-webhook-plugin",
- "busbar-kernel-wal",
  "busbar-secret-env",
  "busbar-store-memory",
  "busbar-transport-tcp",

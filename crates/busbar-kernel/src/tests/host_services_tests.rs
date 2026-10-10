@@ -2121,3 +2121,34 @@ fn an_emit_reaches_only_its_own_open_session() {
         Outcome::Refused
     );
 }
+
+/// A DECLARED CHAIN THE HOST CANNOT KEEP REFUSES THE ADMIT (audit contract-C2 #4): a chained record
+/// kind with a framing word this host does not know, or naming no record kind, is never admitted as
+/// plain records. Nothing is registered for the instance.
+#[test]
+fn a_declared_chain_the_host_cannot_keep_refuses_the_admit() {
+    let r = rig();
+    for (kind, framing) in [
+        (0, 99),
+        (7, busbar_contract::abi::plane::CHAIN_LENGTH_PREFIXED),
+    ] {
+        let refused =
+            r.s.admit(
+                "chained",
+                InstanceFacts {
+                    record_kinds: vec![KIND],
+                    record_chains: vec![busbar_contract::abi::plane::RecordChain {
+                        kind,
+                        framing,
+                        flags: 0,
+                        _reserved: 0,
+                    }],
+                    ..InstanceFacts::default()
+                },
+            )
+            .unwrap_err();
+        assert_eq!(refused, AdmitRefused::ChainUnknown { kind, framing });
+        let s = r.s.sign(&caller("chained"), b"x");
+        assert_eq!((s.outcome, s.error), (Outcome::Refused, NOT_ADMITTED));
+    }
+}
