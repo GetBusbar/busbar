@@ -141,7 +141,10 @@ const ROWS: &[Row] = &[
         )
     }),
     ("work_settle", |s, l| {
-        now("work_settle", s.work_settle(&caller(), 5, b"rec", later(l)))
+        now(
+            "work_settle",
+            s.work_settle(&caller(), None, 5, b"rec", later(l)),
+        )
     }),
     ("work_resume", |s, l| {
         now(

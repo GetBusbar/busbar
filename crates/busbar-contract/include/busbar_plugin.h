@@ -384,6 +384,7 @@ extern "C" {
 #define BB_PLANE_ROUTE_ONCE UINT8_C(1) /* [`ArriveOut::route_flags`]: the unit's operation is performed AT MOST ONCE (ARCHITECT round 4 */
 #define BB_PLANE_ROUTE_SESSION UINT8_C(2) /* [`ArriveOut::route_flags`]: the unit is served as a DUPLEX SESSION (K6; ARCHITECT round 5 */
 #define BB_PLANE_ROUTE_STREAM UINT8_C(4) /* [`ArriveOut::route_flags`]: the caller asked for its answer STREAMED (ARCHITECT Q1 ArriveOut, */
+#define BB_PLANE_ROUTE_COUNTED UINT8_C(8) /* [`ArriveOut::route_flags`], on a unit the plane answers itself ([`ROUTE_LOCAL`]) alone: the plane */
 #define BB_PLANE_FROM_CALLER UINT32_C(0) /* [`OnPieceIn::from`]: the piece is the caller's. */
 #define BB_PLANE_FROM_FAR_END UINT32_C(1) /* [`OnPieceIn::from`]: the piece is the far end's. */
 #define BB_PLANE_FROM_KERNEL UINT32_C(2) /* [`OnPieceIn::from`]: the piece is the kernel's. With [`OnPieceIn::attempt_no`] above `0` it */
@@ -956,6 +957,7 @@ typedef struct bb_plane_PlaneTail bb_plane_PlaneTail;
 typedef struct bb_plane_Claim bb_plane_Claim;
 typedef struct bb_plane_AdminRoute bb_plane_AdminRoute;
 typedef struct bb_plane_PlaneSnapshot bb_plane_PlaneSnapshot;
+typedef struct bb_plane_ProviderFacts bb_plane_ProviderFacts;
 typedef struct bb_plane_PlaneOpenIn bb_plane_PlaneOpenIn;
 typedef struct bb_plane_PlaneOpenOut bb_plane_PlaneOpenOut;
 typedef struct bb_plane_PlaneRefreshOut bb_plane_PlaneRefreshOut;
@@ -2617,11 +2619,20 @@ struct bb_plane_PlaneSnapshot {
     size_t listed_len;
 };
 
+/* ONE PROVIDER'S DIALECT FACTS, as a plane receives them at `open` (THE DESIGN section 4: a */
+struct bb_plane_ProviderFacts {
+    bb_mech_AbiStr name;
+    bb_mech_AbiStr protocol;
+    bb_mech_Blob error_map;
+};
+
 /* The plane's `open` `in`: the lifecycle's, plus the deployment's public base URL. */
 struct bb_plane_PlaneOpenIn {
     bb_mech_OpenIn open;
     bb_mech_AbiStr public_url;
     bb_mech_Blob owned;
+    const bb_plane_ProviderFacts *providers;
+    size_t providers_len;
 };
 
 /* The plane's `open` `out`: the lifecycle's, plus the first generation's snapshot. */
@@ -3833,7 +3844,7 @@ struct bb_hsvc_HostSlots {
     bb_hsvc_ServiceFn session_emit;
 };
 
-/* ---- layout proof: 275 of 279 structures are pinned by the golden ---- */
+/* ---- layout proof: 276 of 280 structures are pinned by the golden ---- */
 #if UINTPTR_MAX == UINT64_MAX
 #ifdef __cplusplus
 #define BB_ASSERT(c, m) static_assert(c, m)
@@ -5036,11 +5047,18 @@ BB_ASSERT(offsetof(bb_plane_PlaneSnapshot, resource_metadata) == 88, "bb_plane_P
 BB_ASSERT(offsetof(bb_plane_PlaneSnapshot, resource_facts) == 104, "bb_plane_PlaneSnapshot.resource_facts: offset");
 BB_ASSERT(offsetof(bb_plane_PlaneSnapshot, listed) == 128, "bb_plane_PlaneSnapshot.listed: offset");
 BB_ASSERT(offsetof(bb_plane_PlaneSnapshot, listed_len) == 136, "bb_plane_PlaneSnapshot.listed_len: offset");
-BB_ASSERT(sizeof(bb_plane_PlaneOpenIn) == 200, "bb_plane_PlaneOpenIn: size");
+BB_ASSERT(sizeof(bb_plane_ProviderFacts) == 56, "bb_plane_ProviderFacts: size");
+BB_ASSERT(BB_ALIGNOF(bb_plane_ProviderFacts) == 8, "bb_plane_ProviderFacts: alignment");
+BB_ASSERT(offsetof(bb_plane_ProviderFacts, name) == 0, "bb_plane_ProviderFacts.name: offset");
+BB_ASSERT(offsetof(bb_plane_ProviderFacts, protocol) == 16, "bb_plane_ProviderFacts.protocol: offset");
+BB_ASSERT(offsetof(bb_plane_ProviderFacts, error_map) == 32, "bb_plane_ProviderFacts.error_map: offset");
+BB_ASSERT(sizeof(bb_plane_PlaneOpenIn) == 216, "bb_plane_PlaneOpenIn: size");
 BB_ASSERT(BB_ALIGNOF(bb_plane_PlaneOpenIn) == 8, "bb_plane_PlaneOpenIn: alignment");
 BB_ASSERT(offsetof(bb_plane_PlaneOpenIn, open) == 0, "bb_plane_PlaneOpenIn.open: offset");
 BB_ASSERT(offsetof(bb_plane_PlaneOpenIn, public_url) == 160, "bb_plane_PlaneOpenIn.public_url: offset");
 BB_ASSERT(offsetof(bb_plane_PlaneOpenIn, owned) == 176, "bb_plane_PlaneOpenIn.owned: offset");
+BB_ASSERT(offsetof(bb_plane_PlaneOpenIn, providers) == 200, "bb_plane_PlaneOpenIn.providers: offset");
+BB_ASSERT(offsetof(bb_plane_PlaneOpenIn, providers_len) == 208, "bb_plane_PlaneOpenIn.providers_len: offset");
 BB_ASSERT(sizeof(bb_plane_PlaneOpenOut) == 120, "bb_plane_PlaneOpenOut: size");
 BB_ASSERT(BB_ALIGNOF(bb_plane_PlaneOpenOut) == 8, "bb_plane_PlaneOpenOut: alignment");
 BB_ASSERT(offsetof(bb_plane_PlaneOpenOut, open) == 0, "bb_plane_PlaneOpenOut.open: offset");

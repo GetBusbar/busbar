@@ -425,6 +425,30 @@ impl Drop for OwedClaim {
     }
 }
 
+/// A settle the book has marked and the store has not yet taken. Dropped unwritten (the pool
+/// refused its job and dropped it unrun, or the store refused the write) it puts the handle back as
+/// it stood, so the book never says settled while the store says live.
+struct Unwritten {
+    book: Arc<WorkBook>,
+    handle: u64,
+    before: Option<Work>,
+}
+
+impl Unwritten {
+    /// The store took the settle: the book's mark stands.
+    fn written(mut self) {
+        self.before = None;
+    }
+}
+
+impl Drop for Unwritten {
+    fn drop(&mut self) {
+        if let Some(before) = self.before.take() {
+            self.book.restore(self.handle, before);
+        }
+    }
+}
+
 /// Run `job` on `pool` and answer what it returns through `later`; FAILED if the pool refuses it.
 fn submit(pool: &dyn Offload, later: Later, job: impl FnOnce() -> Stored + Send + 'static) -> Ran {
     let owed = Owed(Some(later));
@@ -490,6 +514,15 @@ pub enum AdmitRefused {
         /// The instance refused.
         asked_by: String,
     },
+    /// A declared chained record kind this host cannot chain: its kind index names no record kind,
+    /// or its framing is a word this host does not know. A record kind declared chained is
+    /// chained, never silently kept as plain records.
+    ChainUnknown {
+        /// The declaration's kind index.
+        kind: u32,
+        /// The declaration's framing word.
+        framing: u32,
+    },
 }
 
 impl std::fmt::Display for AdmitRefused {
@@ -508,6 +541,11 @@ impl std::fmt::Display for AdmitRefused {
                 f,
                 "instance `{asked_by}` declares the signing domain `{domain}`, which instance \
                  `{held_by}` holds: no instance signs as another"
+            ),
+            Self::ChainUnknown { kind, framing } => write!(
+                f,
+                "the instance declares chained record kind {kind} with framing {framing}, which \
+                 this host cannot chain: a declared chain is kept, never dropped to plain records"
             ),
         }
     }
@@ -878,6 +916,26 @@ impl KernelServices {
                 len: instance.len(),
             });
         }
+        // EVERY DECLARED CHAIN IS ONE THIS HOST CAN KEEP, judged before anything is registered: a
+        // chain it cannot keep refuses the admit rather than leaving the kind unchained (audit
+        // contract-C2 #4).
+        let chained: Vec<(String, crate::host_chains::ChainedKind)> = facts
+            .record_chains
+            .iter()
+            .map(|chain| {
+                let unknown = AdmitRefused::ChainUnknown {
+                    kind: chain.kind,
+                    framing: chain.framing,
+                };
+                let kind = facts
+                    .record_kinds
+                    .get(chain.kind as usize)
+                    .ok_or_else(|| unknown.clone())?;
+                crate::host_chains::ChainedKind::new(kind.as_str(), chain)
+                    .map(|c| (kind.as_str().to_string(), c))
+                    .ok_or(unknown)
+            })
+            .collect::<Result<_, _>>()?;
         let key: Arc<str> = Arc::from(instance);
         let (rows, default) = self.demotions.get().map_or_else(
             || (Vec::new(), false),
@@ -922,17 +980,10 @@ impl KernelServices {
                 .chains
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            for chain in &facts.record_chains {
-                let Some(kind) = facts.record_kinds.get(chain.kind as usize) else {
-                    continue;
-                };
-                let slot = (Arc::clone(&key), kind.as_str().to_string());
-                if chains.contains_key(&slot) {
-                    continue;
-                }
-                if let Some(chained) = crate::host_chains::ChainedKind::new(kind.as_str(), chain) {
-                    chains.insert(slot, Arc::new(chained));
-                }
+            for (kind, chained) in chained {
+                chains
+                    .entry((Arc::clone(&key), kind))
+                    .or_insert_with(|| Arc::new(chained));
             }
         }
         self.trust.admit_decided(instance, &decided);
@@ -1975,6 +2026,7 @@ impl HostServices for KernelServices {
                 settled_ms: 0,
                 record,
                 bound: None,
+                opened_by: unit,
             };
             let Some(row) = work.row() else {
                 return Stored::refused(work_refusal::TOO_LONG);
@@ -2008,9 +2060,10 @@ impl HostServices for KernelServices {
             Ok(s) => s,
             Err(refused) => return Ran::Now(refused),
         };
-        let Some(owner) = self.owner_of_unit(unit) else {
+        let (Some(unit), Some(owner)) = (unit, self.owner_of_unit(unit)) else {
             return Ran::Now(Stored::refused(work_refusal::NO_UNIT));
         };
+        let units = Arc::clone(&self.units);
         // EVERY DENIAL ANSWERS ALIKE: a malformed reference, an unknown one, another instance's,
         // another principal's, and one settled past its retention are each READY absent.
         let absent = || Stored::ready(svc::ABSENT);
@@ -2039,6 +2092,9 @@ impl HostServices for KernelServices {
                     if w.owner == owner
                         && (w.live || w.settled_ms.saturating_add(retain_ms) > wall_ms()) =>
                 {
+                    // The owner's find binds its unit (ARCHITECT 2026-10-07 K4-11 (B)): a handle
+                    // read back from the store is scoped while the finder runs.
+                    book.found(handle, unit, &|u| units.get(u).is_some());
                     work_found(handle, &w)
                 }
                 _ => absent(),
@@ -2046,7 +2102,14 @@ impl HostServices for KernelServices {
         })
     }
 
-    fn work_settle(&self, caller: &Caller, handle: u64, record: &[u8], later: Later) -> Ran {
+    fn work_settle(
+        &self,
+        caller: &Caller,
+        unit: Option<u64>,
+        handle: u64,
+        record: &[u8],
+        later: Later,
+    ) -> Ran {
         let (_, records, pool) = match self.work_scope(caller) {
             Ok(s) => s,
             Err(refused) => return Ran::Now(refused),
@@ -2055,26 +2118,39 @@ impl HostServices for KernelServices {
             return Ran::Now(Stored::refused(work_refusal::TOO_LONG));
         }
         let now_ms = (self.wall_ms)();
-        let (before, settled) =
-            match self
-                .work
-                .settle(&caller.instance, handle, record.to_vec(), now_ms)
-            {
-                Ok(v) => v,
-                Err(why) => return Ran::Now(Stored::refused(why)),
-            };
+        // The kernel's own measure of who may settle: the serving unit's principal, and whether
+        // the handle's units are still in its unit table.
+        let owner = self.owner_of_unit(unit);
+        let in_flight = |u: u64| self.units.get(u).is_some();
+        let (before, settled) = match self.work.settle(
+            &caller.instance,
+            handle,
+            owner.as_ref(),
+            &in_flight,
+            record.to_vec(),
+            now_ms,
+        ) {
+            Ok(v) => v,
+            Err(why) => return Ran::Now(Stored::refused(why)),
+        };
         let Some(row) = settled.row() else {
             self.work.restore(handle, before);
             return Ran::Now(Stored::refused(work_refusal::TOO_LONG));
         };
-        let book = Arc::clone(&self.work);
+        // DURABLE BEFORE ANSWERED, AND THE BOOK AGREES WITH THE STORE: a settle the pool drops
+        // unrun, or the store refuses, puts the handle back live.
+        let unwritten = Unwritten {
+            book: Arc::clone(&self.work),
+            handle,
+            before: Some(before),
+        };
         let rows = Arc::clone(&records.reads);
         let key = work_key(&caller.instance, &settled.reference);
         submit(pool, later, move || {
             if rows.record_put(WORK_SCHEMA, &key, &row).is_err() {
-                book.restore(handle, before);
                 return failed(STORE_FAILED);
             }
+            unwritten.written();
             Stored::ready(0)
         })
     }

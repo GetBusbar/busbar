@@ -691,7 +691,7 @@ async fn a_booted_nodes_recovery_verbs_reach_its_configured_store_through_the_bo
     let booted = busbar_kernel::test_support::TestApp::new()
         .governance(gov)
         .build();
-    let book = crate::root::boot::book(&booted, "memory").expect("the boot book opens");
+    let book = crate::root::boot::book(&booted, "test-store").expect("the boot book opens");
     let store = book
         .verb_store
         .clone()

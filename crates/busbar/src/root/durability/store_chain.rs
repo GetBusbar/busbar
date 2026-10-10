@@ -348,7 +348,7 @@ pub struct JournalLane {
 impl std::fmt::Debug for JournalLane {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("JournalLane")
-            .field("store", &self.lane.store)
+            .field("kept_in", &self.lane.store)
             .field("pending", &self.pending())
             .finish_non_exhaustive()
     }

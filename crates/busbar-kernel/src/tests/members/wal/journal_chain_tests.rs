@@ -15,10 +15,10 @@ use busbar_kernel_wal::journal::{
     decode_run, tail_of, verify, Entry, Journal, JournalBreakKind, JournalRecord, RecordClass,
     JOURNAL_HEADER_BYTES, JOURNAL_MAGIC, JOURNAL_VERSION, OVERFLOW_HISTORY_RECORDS,
 };
-use busbar_kernel_wal::ship::{BufferShipper, NullShipper, ShipError, Shipper};
+use busbar_kernel_wal::ship::{NullShipper, ShipError, Shipper};
 use busbar_kernel_wal::wal::{Mode, Wal};
 
-use super::fixtures::{durability_token, TempDir};
+use super::fixtures::{durability_token, KeepingShipper, TempDir};
 
 /// A store that will not take anything. What a memory-buffered node's durability failure looks like
 /// from the log's side, and the only way to make the buffer grow at all.
@@ -48,7 +48,8 @@ fn the_record_header_is_fixed() {
     assert_eq!(JOURNAL_MAGIC, *b"BJRN");
     assert_eq!(JOURNAL_VERSION, 1);
 
-    let mut journal = Journal::memory_buffered(7, super::fixtures::wall_ms);
+    let mut journal =
+        Journal::memory_buffered_to(7, Box::new(NullShipper::new()), super::fixtures::wall_ms);
     let token = durability_token();
     let ack = journal
         .append(
@@ -87,7 +88,8 @@ fn the_record_header_is_fixed() {
 /// Every unit's records go on ONE chain, in the order they were sealed, and the run verifies.
 #[test]
 fn one_chain_carries_every_unit() {
-    let mut journal = Journal::memory_buffered(1, super::fixtures::wall_ms);
+    let mut journal =
+        Journal::memory_buffered_to(1, Box::new(NullShipper::new()), super::fixtures::wall_ms);
     let token = durability_token();
     for class in [
         RecordClass::Transaction,
@@ -118,7 +120,8 @@ fn one_chain_carries_every_unit() {
 /// The chain catches a record whose BODY was edited, at that record.
 #[test]
 fn chain_verification_catches_a_mutated_body() {
-    let mut journal = Journal::memory_buffered(2, super::fixtures::wall_ms);
+    let mut journal =
+        Journal::memory_buffered_to(2, Box::new(NullShipper::new()), super::fixtures::wall_ms);
     let token = durability_token();
     let ack = journal
         .append(
@@ -140,7 +143,8 @@ fn chain_verification_catches_a_mutated_body() {
 /// and not only the identity and the two digests.
 #[test]
 fn chain_verification_catches_a_mutated_header() {
-    let mut journal = Journal::memory_buffered(2, super::fixtures::wall_ms);
+    let mut journal =
+        Journal::memory_buffered_to(2, Box::new(NullShipper::new()), super::fixtures::wall_ms);
     let token = durability_token();
     let mut run = journal
         .append(
@@ -186,16 +190,17 @@ fn chain_verification_catches_a_mutated_header() {
 /// identity it already holds by passing the record over and reporting success, so the settlements in
 /// the gap are on no medium and every append said `Ok`.
 ///
-/// So the fixture is built the way the defect is: a real journal, sealed properly, resumed from its
-/// own head at a number two past where it stopped. Nothing is edited by hand, which is what makes
+/// So the fixture is built the way the defect is: a real journal, sealed properly, continued from its
+/// own head at a number two past where it stopped — each continuing record sealed exactly as the
+/// journal seals one (body digest, link onto the head, chain hash over the header), so the ONLY
+/// thing wrong with the run is the numbering. Nothing is edited after sealing, which is what makes
 /// this a different failure from the three above.
 #[test]
 fn chain_verification_catches_a_gap_in_the_numbering() {
-    let shipper = BufferShipper::new();
     let token = durability_token();
 
     let mut journal =
-        Journal::memory_buffered_to(5, Box::new(shipper.clone()), super::fixtures::wall_ms);
+        Journal::memory_buffered_to(5, Box::new(NullShipper::new()), super::fixtures::wall_ms);
     let first = journal
         .append(
             &token,
@@ -207,20 +212,29 @@ fn chain_verification_catches_a_gap_in_the_numbering() {
     assert_eq!(journal.next_seq(), 4, "the log ended on three");
 
     // A node coming back up from the right head but at the wrong number: it skips 4 and 5.
-    let mut resumed = Journal::resuming(
-        Wal::memory_buffered_to(Box::new(BufferShipper::new()), super::fixtures::wall_ms),
-        5,
-        journal.head(),
-        6,
-    );
-    let after = resumed
-        .append(
-            &token,
-            StepName::Meter,
-            &entries(RecordClass::Transaction, 2, 2),
-        )
-        .expect("the store takes it")
-        .sealed;
+    let mut head = journal.head();
+    let after: Vec<JournalRecord> = entries(RecordClass::Transaction, 2, 2)
+        .into_iter()
+        .zip(6u64..)
+        .map(|(entry, node_seq)| {
+            let mut record = JournalRecord {
+                class: entry.class,
+                node: 5,
+                node_seq,
+                lease_epoch: entry.lease_epoch,
+                policy_epoch: entry.policy_epoch,
+                wall: entry.wall,
+                mono: entry.mono,
+                body_hash: busbar_kernel_wal::journal::body_digest(&entry.body),
+                body: entry.body,
+                prev_hash: head,
+                hash: [0u8; 32],
+            };
+            record.hash = record.digest_of_chain();
+            head = record.hash;
+            record
+        })
+        .collect();
     assert_eq!(after[0].node_seq, 6, "the fixture really did skip two");
 
     // The run links and digests perfectly, and is still wrong.
@@ -250,7 +264,8 @@ fn chain_verification_catches_a_gap_in_the_numbering() {
 /// A record REMOVED from the middle breaks the link rather than passing as a shorter history.
 #[test]
 fn chain_verification_catches_a_removed_record() {
-    let mut journal = Journal::memory_buffered(2, super::fixtures::wall_ms);
+    let mut journal =
+        Journal::memory_buffered_to(2, Box::new(NullShipper::new()), super::fixtures::wall_ms);
     let token = durability_token();
     let mut run = journal
         .append(
@@ -275,7 +290,7 @@ fn without_a_data_dir_the_journal_creates_no_file() {
     assert!(dir.walk().is_empty());
     let cwd_before = super::fixtures::cwd_segment_names();
 
-    let shipper = BufferShipper::new();
+    let shipper = KeepingShipper::new();
     let mut journal =
         Journal::memory_buffered_to(3, Box::new(shipper.clone()), super::fixtures::wall_ms);
     assert_eq!(journal.mode(), Mode::MemoryBuffered);
@@ -306,11 +321,11 @@ fn without_a_data_dir_the_journal_creates_no_file() {
     assert_eq!(shipper.records().len(), 24);
 }
 
-/// A restart without a data directory loses nothing that was SHIPPED. What the store acknowledged
-/// is what exists, so the chain resumes from the store's own copy and the next record links onto it.
+/// Without a data directory, what the store took IS the chain: the shipped batches decode, verify
+/// end to end, and end at the node's own head and number.
 #[test]
-fn a_restart_without_a_data_dir_loses_nothing_that_was_shipped() {
-    let shipper = BufferShipper::new();
+fn without_a_data_dir_what_the_store_took_is_the_chain_to_the_nodes_head() {
+    let shipper = KeepingShipper::new();
     let token = durability_token();
 
     let (head_before, next_before) = {
@@ -335,27 +350,6 @@ fn a_restart_without_a_data_dir_loses_nothing_that_was_shipped() {
     let (head, next_seq) = tail_of(&shipped, 9).expect("this node's own tail");
     assert_eq!(head, head_before, "the store's head is the node's head");
     assert_eq!(next_seq, next_before);
-
-    // And a node coming back up continues that chain rather than starting a second one.
-    let mut restarted = Journal::resuming(
-        Wal::memory_buffered_to(Box::new(shipper.clone()), super::fixtures::wall_ms),
-        9,
-        head,
-        next_seq,
-    );
-    let ack = restarted
-        .append(
-            &token,
-            StepName::Meter,
-            &entries(RecordClass::Checkpoint, 1, 9),
-        )
-        .expect("the store takes it");
-    assert_eq!(ack.sealed[0].prev_hash, head_before);
-    assert_eq!(ack.sealed[0].node_seq, 10);
-
-    let whole = decode_run(&shipper.records()).expect("still journal records");
-    verify(&whole).expect("the chain across the restart verifies end to end");
-    assert_eq!(whole.len(), 10);
 }
 
 /// With a data directory the journal replays to the same head it had before the restart, off its own

@@ -131,11 +131,13 @@ const MIN_NEEDLE: usize = 4;
 
 /// THE DECLARATION FLOOR: the `[[capability]]` rows live in [`DECLARATIONS`] on predev 5e672d125d,
 /// measured 2026-10-07 (`ledger-dual-write`, `audit-chain-signing`; the third `[[capability]]` in
-/// the file is inside THE ROW SHAPE comment and declares nothing). Fewer reds
+/// the file is inside THE ROW SHAPE comment and declares nothing), raised to six by the
+/// kernel-ledger sweep of 2026-10-07 (Q128: `ledger-recording-rows`, `ledger-history-opening`,
+/// `ledger-is-dual-writing`, `ledger-book-retirement`). Fewer reds
 /// [`ROW_SCAN_FLOOR`]: a struck row is a construction guard that stopped running, and a file
 /// with none used to read `0 capability declaration(s)` and pass. Lowered only in the reviewed
 /// diff that strikes a row.
-pub const DECLARATION_FLOOR: usize = 2;
+pub const DECLARATION_FLOOR: usize = 6;
 
 const GATE: &str = "unconstructed";
 const CLEAN: &str = "clean";
@@ -199,6 +201,14 @@ pub const KNOWN_UNSHIPPED: &[&str] = &[
     // STRUCK. Five 2026-09-25 (owner ruling 2026-09-08) and four 2026-09-26 (#77(9), owner answer
     // Q71(1)) are deleted; four 2026-09-26 (owner answer Q71(2): verify, plane_facts,
     // plane_record_write, commit_upgrade) are bound and served.
+    //
+    // THE KERNEL-LEDGER SURVIVORS, 2026-10-07 (Q128, kernel-ledger audit finding 3; finding 1 for
+    // the retirement row): kept, not wired, each row's `switch` says what retires it. The rest of
+    // that sweep is deleted, not registered (see qa/unconstructed.toml).
+    "ledger-recording-rows",
+    "ledger-history-opening",
+    "ledger-is-dual-writing",
+    "ledger-book-retirement",
 ];
 
 /// The per-capability row id.
@@ -1183,28 +1193,41 @@ impl Gate for UnconstructedGate {
 
         // ── CONTROL 13 — A DELETED DECLARATION IS RED, NOT A SMALLER GREEN. ─────────────────
         // The declarations ARE the gate's denominator: a row struck from the file is a guard that
-        // stopped running, and the file read exactly as clean with one row as with two. Strike the
-        // last declared row and the floor must go RED, naming the count it found.
+        // stopped running, and the file read exactly as clean with one row as with two. Strike rows
+        // from the end until exactly one fewer than the floor is left, and the floor must go RED,
+        // naming the count it found.
+        //
+        // HOW MANY TO STRIKE IS MEASURED, not assumed to be one. The floor is a minimum, and the
+        // file may carry more rows than it: striking only the last row of a file holding more than
+        // [`DECLARATION_FLOOR`] leaves it above the floor, and this control then failed on every
+        // branch that declared a new row without touching the gate.
         let ids: Vec<String> = declarations(cx)
             .unwrap_or_default()
             .into_iter()
             .map(|c| c.id)
             .collect();
-        let one_struck = ids
-            .last()
-            .map(|id| without_declaration(&decls, id))
-            .unwrap_or_default();
+        let strike = (ids.len() + 1).saturating_sub(DECLARATION_FLOOR).max(1);
+        let below_floor = ids
+            .iter()
+            .rev()
+            .take(strike)
+            .fold(decls.clone(), |text, id| without_declaration(&text, id));
+        let left = format!(
+            "{} capability declaration(s)",
+            ids.len().saturating_sub(strike)
+        );
         report.push(prove_rows_red(
             cx,
             self,
-            "a [[capability]] declaration struck from the file reds the declaration floor",
+            "[[capability]] declarations struck from the file to one below the floor red the \
+             declaration floor",
             &[ROW_SCAN_FLOOR],
             {
                 let mut ov = Overlay::new();
-                ov.set(DECLARATIONS, one_struck);
+                ov.set(DECLARATIONS, below_floor);
                 ov
             },
-            &["below the declaration floor"],
+            &["below the declaration floor", &left],
         ));
 
         // ── CONTROL 13b — A FILE WITH NO DECLARATIONS AT ALL IS RED. ────────────────────────

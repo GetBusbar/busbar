@@ -224,3 +224,55 @@ why       = "Every deployed node seals an audit chain and ledger checkpoints; wi
 # `verify_effect(`, `plane_facts_effect(`, `plane_record_write_effect(`, `commit_upgrade_effect(`),
 # so the mount serves it and the generated document describes it. A verb added to `NEW_VERBS`
 # without an `effect_bound` arm is unserved by default and needs a row here.
+
+# ─── THE KERNEL-LEDGER SWEEP OF 2026-10-07 (Q128, kernel-ledger audit finding 3) ───────────────────
+#
+# STRUCK by deletion in the same change, each with no production construction or call site:
+# `usage::MeterCounts` (the kernel's governance `MeterCounts` is the one home of a metering cell),
+# `usage::quantity_from_raw`, `cost::nanos_sum`, `cost::apply_tier`, `cost::apply_tier_signed`,
+# `Posting::cache_diverges`, `identity::attribution_holds`, `migration::NodeLocalRecords`,
+# `checkpoint::AnchorState`, `Ledger::{record_release, record_adjustment,
+# record_cross_window_transfer}` (#77(2), #77(9): no adjusting lines, no adjustment verbs),
+# `Statement::total_nanos`, and the verify closed-window arm (`verify::WindowState`,
+# `AllWindowsOpen`, `identity::closed_window_is_settled`, `ClosedWindowMoved`) whose one production
+# answer was "every window is open". The rows below are the survivors: kept, tracked, not wired.
+
+[[capability]]
+id        = "ledger-recording-rows"
+built     = "crates/busbar-kernel-ledger/src/legacy.rs"
+symbol    = "new"
+construct = ["RecordingRows::new("]
+scope     = ["crates"]
+why       = "A per-posting dual-write recorder that grows by one posting per settlement for the life of the process; production binds SummedRows. It ships only because the root's and the kernel's test batteries, in other crates, record through it, and the root implements its read seam for it."
+unshipped = true
+switch    = "Retired when the root and kernel test batteries record through SummedRows or a test-only double of their own; the type and the root's LegacyRowsRead impl for it are then deleted together."
+
+[[capability]]
+id        = "ledger-history-opening"
+built     = "crates/busbar-kernel-ledger/src/cost/history.rs"
+symbol    = "opening"
+construct = ["History::opening("]
+scope     = ["crates"]
+why       = "A single-entry dated history constructor. The root's first configuration apply appends the same shape itself (effective from zero, authored Config), so nothing in production calls this; test batteries in five crates build their histories through it."
+unshipped = true
+switch    = "Retired when the root's first config apply builds its opening entry through History::opening, or when the test batteries build their histories with History::append and this constructor is deleted."
+
+[[capability]]
+id        = "ledger-is-dual-writing"
+built     = "crates/busbar-kernel-ledger/src/settle.rs"
+symbol    = "is_dual_writing"
+construct = [".is_dual_writing("]
+scope     = ["crates"]
+why       = "A read-only accessor whose doc used to promise a boot-time assertion that the dual write is on. No production code asks it; the root's tests do, and the ledger-dual-write row above is the production guard on the construction itself."
+unshipped = true
+switch    = "Retired when the composition root asserts at boot that its ledger is dual-writing (and refuses to serve otherwise), or when the root's tests assert the construction another way and the accessor is deleted."
+
+[[capability]]
+id        = "ledger-book-retirement"
+built     = "crates/busbar-kernel-ledger/src/totals.rs"
+symbol    = "retain_from"
+construct = [".retain_from("]
+scope     = ["crates"]
+why       = "The book's only bound. Without a production caller the book and the SummedRows dual-write sums grow by one row per principal per day for the life of the process (kernel-ledger audit finding 1, MEDIUM), and so do the counted lines the root's book keeps for the read-time totals, whose bound is the book's (H6). Retiring a sealed window removes rows that GET /admin/ledger/totals and /admin/ledger/reconciliation serve, so it waits on a ruling."
+unshipped = true
+switch    = "Retired when an owner/architect ruling picks how a retired window is served (or not) by the ledger totals, reconciliation and verify reads, and the checkpoint sealer calls retain_from on both the book and SummedRows at the checkpoint boundary, dropping the root book's counted lines for the windows it retires with them."

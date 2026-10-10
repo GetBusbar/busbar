@@ -106,7 +106,7 @@ fn query_param<'t>(target: &'t str, name: &str) -> Option<&'t str> {
 /// other check still runs and every other finding is still reported — one refused row is a hole
 /// in one balance, and a verify that went dark over it would hide everything else it found.
 pub(crate) fn verify_effect(ledger: &dyn LedgerView) -> Result<AdminAnswer, GovernanceError> {
-    use busbar_kernel_ledger::verify::{sequences_are_monotonic, verify, AllWindowsOpen, Finding};
+    use busbar_kernel_ledger::verify::{sequences_are_monotonic, verify, Finding};
 
     let (checkpoints, book, anchored) = ledger.verify_snapshot_anchored();
     let mut findings: Vec<Finding> = Vec::new();
@@ -125,7 +125,7 @@ pub(crate) fn verify_effect(ledger: &dyn LedgerView) -> Result<AdminAnswer, Gove
         (Some(since), Some(now)) => {
             // The checkpoint's own digest was checked above with every other one.
             findings.extend(
-                verify(since, now, &AllWindowsOpen, anchored.as_ref())
+                verify(since, now, anchored.as_ref())
                     .into_iter()
                     .filter(|f| !matches!(f, Finding::CheckpointEdited { .. })),
             );
