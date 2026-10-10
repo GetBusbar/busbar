@@ -18,16 +18,18 @@
 //!
 //! ## The four rules
 //!
-//! **Records are fixed-size frames.** Every frame is 512 bytes on the medium, header and payload
-//! together. A body longer than one frame's payload area continues into further frames carrying the
+//! **Records are fixed-size frames.** Every frame is 512 bytes on the medium, header, payload and
+//! end mark together. A body longer than one frame's payload area continues into further frames carrying the
 //! same writer identity and an increasing part index. Nothing about finding the next frame depends
 //! on a length field a reader might have read out of a half-written region.
 //!
 //! **A torn tail is cut at recovery to the last record that verifies.** Whole records, not whole
-//! frames: a record whose last part was lost is absent, not short. The battery for this truncates a
-//! written segment at every single byte offset, recovers, and asserts the result is the longest
-//! complete prefix — there is no interesting subset of the offsets a crash can stop at, so none is
-//! chosen.
+//! frames: a record whose last part was lost is absent, not short. Torn means what a crash leaves —
+//! the last group commit, no subsequent commit vouching for it, damaged only by writes that never landed
+//! or stopped part way — and nothing else: an acknowledged record that fails a check is quarantined,
+//! never cut. The battery for this truncates a written segment at every single byte offset, and
+//! zeroes it from every byte offset on, recovers, and asserts the result is the longest complete
+//! prefix — there is no interesting subset of the offsets a crash can stop at, so none is chosen.
 //!
 //! **A group commit is one write and one sync.** Records are framed into one buffer and put down
 //! with a single positional write, then made durable with a single data sync. Whatever the batch
@@ -36,14 +38,17 @@
 //! **A failed sync poisons the segment.** Permanently. Every byte after the last good commit is of
 //! unknown state, and the only safe reading of unknown is absent. The caller is handed a
 //! [`busbar_contract::caps::DurabilityLost`] — which only a holder of the durability token can mint, so the
-//! claim "a durable write was lost" is not something any other part of the system can invent — and
-//! the batch that failed is written again, along with the one after it, on a fresh segment.
+//! claim "a durable write was lost" is not something any other part of the system can invent — the
+//! failed batch's bytes are cut off the segment, and the batch is written again, along with the one
+//! after it, on a fresh segment. That fresh segment is opened the moment the sync fails, and its
+//! directory entry is the durable record that the poisoned one is finished: a restart appends to
+//! the newest segment, so a segment that lost a sync is never written to again.
 //!
 //! ## The default is no disk at all
 //!
-//! [`Wal::memory_buffered`] is the default, and it is what a deployment that names no data directory
-//! gets. There is no directory probe, no file, no preallocation and no boot warning. It is not a
-//! degraded mode with the file writing switched off; a memory-buffered log holds no directory
+//! [`Wal::memory_buffered_to`] is the default, and it is what a deployment that names no data
+//! directory gets. There is no directory probe, no file, no preallocation and no boot warning. It is
+//! not a degraded mode with the file writing switched off; a memory-buffered log holds no directory
 //! factory, so there is no code path from it to a file system. The battery for this runs a whole
 //! append-and-recover cycle with a temporary directory in view and asserts the directory is still
 //! empty afterwards.
@@ -91,15 +96,15 @@ pub use journal::{
     JOURNAL_HEADER_BYTES, JOURNAL_MAGIC, JOURNAL_VERSION, MEMORY_BUFFER_RECORDS,
 };
 pub use record::{
-    decode_frame, FrameError, FrameHeader, Record, FRAME_BYTES, FRAME_HEADER_BYTES, FRAME_MAGIC,
-    FRAME_PAYLOAD_BYTES, FRAME_VERSION,
+    decode_frame, FrameError, FrameHeader, Record, FRAME_BYTES, FRAME_END_MARK, FRAME_HEADER_BYTES,
+    FRAME_MAGIC, FRAME_PAYLOAD_BYTES, FRAME_TRAILER_BYTES, FRAME_VERSION,
 };
 pub use recover::{
     recover_and_truncate, scan, Quarantine, QuarantineKept, Recovered, TailVerdict,
     QUARANTINE_BODY_TAG,
 };
 pub use segment::{Segment, SegmentError, GROWTH_STEP_BYTES, SEGMENT_BYTES};
-pub use ship::{BufferShipper, NullShipper, ShipError, Shipper};
+pub use ship::{NullShipper, ShipError, Shipper};
 pub use wal::{BatchAck, Clock, Mode, OpenError, Wal};
 
 /// The largest record the log will carry, header and payload together — the contract's own cap on a
