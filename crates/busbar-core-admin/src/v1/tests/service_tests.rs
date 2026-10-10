@@ -488,6 +488,132 @@ fn install_strict_posture_rejects_unsigned() {
     assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
 }
 
+/// The build's linked store, as `(canonical name, key, the version it states, its Statement)`: what
+/// a copy of it dropped in must carry to be the same plugin at the same version.
+pub(crate) fn linked_store() -> (&'static str, &'static str, String, Vec<u8>) {
+    let &(key, _, _, canonical) = busbar_kernel::preflight::root_rows()
+        .stores
+        .first()
+        .expect("the build links a store");
+    let reg = busbar_kernel::preflight::linked().expect("the linked rows register");
+    let row = reg
+        .resolve(canonical)
+        .expect("the linked store answers its canonical name");
+    let version = row.plugin_version().expect("the store states its version");
+    (
+        canonical,
+        key,
+        version,
+        row.statement().expect("the store states itself"),
+    )
+}
+
+/// `rendering` with its Statement's version restated as `version` (the rendering's head is the
+/// magic, four `u32`s, then the name and the version, each a `u32` length and its bytes).
+fn restated(rendering: &[u8], version: &str) -> Vec<u8> {
+    let head = busbar_contract::abi::mechanism::rendering::RENDERING_MAGIC.len() + 16;
+    let len = |at: usize| u32::from_le_bytes(rendering[at..at + 4].try_into().unwrap()) as usize;
+    let at = head + 4 + len(head);
+    let mut out = rendering[..at].to_vec();
+    out.extend_from_slice(&(version.len() as u32).to_le_bytes());
+    out.extend_from_slice(version.as_bytes());
+    out.extend_from_slice(&rendering[at + 4 + len(at)..]);
+    out
+}
+
+/// A copy of the linked store, `name` aliased `alias`, unsigned over junk library bytes, stating
+/// the store's Statement restated at `version`.
+pub(crate) fn unsigned_copy(name: &str, alias: &str, version: &str) -> Vec<u8> {
+    let (_, _, _, statement) = linked_store();
+    let lib = b"junk lib bytes of a linked plugin";
+    let mut m = test_manifest(name, alias, "acme", "1.0.0");
+    m.statement = Some(hex::encode(restated(&statement, version)));
+    m.sha256 = busbar_kernel::plugin_admission::sign::sha256_hex(lib);
+    busbar_kernel::plugin_admission::tarball::package(&m, "lib.so", lib).unwrap()
+}
+
+/// THE ONE-VERSION RULE AT THE ADMIN INSTALL (ARCHITECT C'), SAME VERSION: uploading a copy of a
+/// plugin this build LINKS, at the version the linked plugin states, is an accepted no-op — the
+/// linked build already serves it, and nothing is written. RED before: it was published, and the
+/// next boot met the same plugin by both doors.
+#[test]
+fn install_of_a_linked_plugin_at_its_version_is_an_accepted_no_op() {
+    let dir = tmp_plugins_dir("linked-same");
+    let svc = svc_with(dir.clone(), unsigned_ok_posture());
+    let (canonical, key, version, _) = linked_store();
+    let view = svc
+        .install_store_plugin("copy.tar.gz", &unsigned_copy(canonical, key, &version))
+        .expect("the same plugin at the same version is accepted");
+    assert_eq!(view.name, canonical);
+    assert!(view.note.contains("nothing was written"), "{}", view.note);
+    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
+}
+
+/// THE ONE-VERSION RULE AT THE ADMIN INSTALL, ANOTHER VERSION: refused before anything is written,
+/// in the words boot refuses the pair with. RED before: published, bricking the next boot.
+#[test]
+fn install_of_a_linked_plugin_at_another_version_is_refused() {
+    let dir = tmp_plugins_dir("linked-other");
+    let svc = svc_with(dir.clone(), unsigned_ok_posture());
+    let (canonical, key, version, _) = linked_store();
+    let err = svc
+        .install_store_plugin("copy.tar.gz", &unsigned_copy(canonical, key, "99.0.0"))
+        .unwrap_err();
+    let want = format!(
+        "plugin '{canonical}' arrives by both doors at two versions: linked v{version}, dropped \
+         in v99.0.0 (copy.tar.gz) - one version per plugin: remove one"
+    );
+    assert!(
+        matches!(&err, AdminError::Conflict(msg) if *msg == want),
+        "got {err:?}"
+    );
+    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
+}
+
+/// THE ONE-VERSION RULE COMPARES STATEMENT VERSIONS ONLY at the admin install: a copy of a linked
+/// plugin stating no Statement is refused, naming it, whatever its manifest `version` says; nothing
+/// is written.
+#[test]
+fn install_of_a_linked_plugin_stating_no_version_is_refused() {
+    let dir = tmp_plugins_dir("linked-unstated");
+    let svc = svc_with(dir.clone(), unsigned_ok_posture());
+    let (canonical, key, version, _) = linked_store();
+    let lib = b"junk lib bytes of a linked plugin";
+    let mut m = test_manifest(canonical, key, "acme", &version);
+    m.sha256 = busbar_kernel::plugin_admission::sign::sha256_hex(lib);
+    let tarball = busbar_kernel::plugin_admission::tarball::package(&m, "lib.so", lib).unwrap();
+    let err = svc
+        .install_store_plugin("copy.tar.gz", &tarball)
+        .unwrap_err();
+    let want = format!(
+        "plugin '{canonical}' states no version in its Statement: the one-version rule cannot \
+         compare it"
+    );
+    assert!(
+        matches!(&err, AdminError::Conflict(msg) if *msg == want),
+        "got {err:?}"
+    );
+    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
+}
+
+/// TRUST BEFORE IDENTITY at the admin install: under the strict posture an UNSIGNED copy of a
+/// linked plugin at another version is refused by the trust policy, never compared.
+#[test]
+fn install_judges_trust_before_the_one_version_rule() {
+    let dir = tmp_plugins_dir("linked-untrusted");
+    let svc = svc_with(dir.clone(), strict_posture());
+    let (canonical, key, _, _) = linked_store();
+    let err = svc
+        .install_store_plugin("copy.tar.gz", &unsigned_copy(canonical, key, "99.0.0"))
+        .unwrap_err();
+    assert!(
+        matches!(&err, AdminError::Conflict(msg) if msg.starts_with("plugin rejected by the trust policy")
+            && !msg.contains("one version per plugin")),
+        "got {err:?}"
+    );
+    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
+}
+
 /// End-to-end install of an unsigned tarball under `allow_unsigned`: installs "unverified",
 /// the catalog reports it, reload reports only the dynamic set, and `remove` deletes it.
 /// (No dlopen anywhere — the lib bytes are junk on purpose.)
@@ -826,16 +952,18 @@ fn catalog_cache_future_inserted_at_is_treated_as_stale() {
 
 /// The staleness scenario this guards against.
 /// FIRST, an empty-but-READABLE plugins dir caches fine (unchanged behavior — same as a MISSING
-/// dir, both legitimately mean "no plugins"). THEN the directory becomes UNREADABLE (permission
-/// denied) with its CONTENTS unchanged — the exact case the old `unwrap_or_default()` collapsed
-/// to the SAME fingerprint as the empty dir, serving the stale cached `[]` forever instead of
-/// the real `INVALID` row. The fixed version must never serve that stale cache and must surface
-/// the real `INVALID: ...` row on every read while unreadable, not just the first.
+/// dir, both legitimately mean "no plugins"). THEN the path becomes UNREADABLE as a directory —
+/// the exact case the old `unwrap_or_default()` collapsed to the SAME fingerprint as the empty dir,
+/// serving the stale cached `[]` forever instead of the real `INVALID` row. The fixed version must
+/// never serve that stale cache and must surface the real `INVALID: ...` row on every read while
+/// unreadable, not just the first.
+///
+/// The injection replaces the directory with a regular FILE at the same path: `read_dir` on it
+/// fails ("not a directory") whatever the privileges, so the test runs as root and non-root alike
+/// (a `chmod 000` is ignored by root, and once made this test skip on a root-run container).
 #[cfg(unix)]
 #[test]
 fn catalog_unreadable_dir_does_not_serve_stale_cache() {
-    use std::os::unix::fs::PermissionsExt;
-
     let dir = tmp_plugins_dir("unreadable");
     let svc = svc_with(dir.clone(), unsigned_ok_posture());
 
@@ -850,39 +978,25 @@ fn catalog_unreadable_dir_does_not_serve_stale_cache() {
         "an empty dir's (empty) scan is cached, exactly like a missing dir would be"
     );
 
-    // Restoring permissions with a bare `set_permissions` call at the
-    // END of the test left a window — the two `store_plugin_catalog()` reads below AND the
-    // `read_dir` probe above all run un-guarded, and a panic (e.g. an assertion failure inside
-    // `store_plugin_catalog`, or any future change to it) during that window would leave the
-    // temp dir at `0o000` permanently: nothing later ever restores it, potentially breaking
-    // this test's OWN cleanup or a later test that reuses the same `temp_dir()` infrastructure.
-    // An RAII guard restores the original mode on drop — including on an early return or a
-    // panic unwinding through this scope — so there is no code path that leaves the directory
-    // unreadable.
-    struct RestorePermsOnDrop<'a> {
-        dir: &'a std::path::Path,
-        mode: u32,
-    }
-    impl Drop for RestorePermsOnDrop<'_> {
+    // An RAII guard removes the injected file on drop — including on a panic unwinding through
+    // this scope — so no code path leaves a regular file squatting on the plugins-dir path.
+    struct RemoveFileOnDrop<'a>(&'a std::path::Path);
+    impl Drop for RemoveFileOnDrop<'_> {
         fn drop(&mut self) {
-            let _ = std::fs::set_permissions(self.dir, std::fs::Permissions::from_mode(self.mode));
+            let _ = std::fs::remove_file(self.0);
         }
     }
 
-    let original_mode = std::fs::metadata(&dir).unwrap().permissions().mode();
-    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o000)).unwrap();
-    let _restore = RestorePermsOnDrop {
-        dir: &dir,
-        mode: original_mode,
-    };
+    std::fs::remove_dir(&dir).unwrap();
+    std::fs::write(&dir, b"not a directory").unwrap();
+    let _remove = RemoveFileOnDrop(&dir);
 
-    // Some environments (containers running as root) ignore permission bits entirely — skip
-    // rather than false-fail if `read_dir` still succeeds. `_restore` drops (restoring
-    // permissions) when this early return unwinds the scope.
-    if std::fs::read_dir(&dir).is_ok() {
-        eprintln!("skip: running with privileges that bypass directory permission bits");
-        return;
-    }
+    // The precondition is checked, not assumed: a regular file is never readable as a directory,
+    // for root and non-root alike.
+    assert!(
+        std::fs::read_dir(&dir).is_err(),
+        "a regular file at the plugins-dir path must fail read_dir for every user"
+    );
 
     let cat_after = svc.store_plugin_catalog();
     // And every SUBSEQUENT read while STILL unreadable surfaces the SAME real row again — the
@@ -2280,6 +2394,60 @@ plugins:
          pinned to the running install dir; got errors: {:?}",
         view.errors
     );
+}
+
+/// FINDING 7: `POST /config/validate` does its plugin-directory scan (and the resolve and
+/// validate passes before it) OFF the async worker, behind the same bounded gate the catalog's own
+/// scan of that directory takes. Inline, a read-only token parked a Tokio worker per request on
+/// the scan, and on a hung plugins mount stalled the runtime the data plane shares.
+///
+/// With the gate held — a scan that has not come back — the call must still be WAITING after the
+/// runtime has had every chance to run it: work that ran inline on the reactor would already be
+/// done. Released, it completes with the very verdict it always gave.
+#[tokio::test]
+async fn validate_config_waits_on_the_plugin_scan_gate_and_runs_off_the_reactor() {
+    let svc = svc_with(tmp_plugins_dir("validate-gated"), unsigned_ok_posture());
+    let deploy: busbar_kernel::config::DeployCfg = serde_yaml::from_str(
+        r#"
+listen: "0.0.0.0:8080"
+providers:
+  upstream:
+    api_key: { env: UPSTREAM_API_KEY }
+models:
+  claude:
+    provider: upstream
+pools:
+  main:
+    members:
+      - model: claude
+store:
+  module: memory
+"#,
+    )
+    .expect("test DeployCfg yaml must parse");
+    let def: busbar_kernel::config::ProviderDef = serde_yaml::from_str(&format!(
+        "protocol: {}\nbase_url: https://upstream.example\nerror_map:\n  \"400\": client_error\n",
+        busbar_kernel::proto::PROTO_ANTHROPIC
+    ))
+    .unwrap();
+    let defs = std::collections::HashMap::from([("upstream".to_string(), def)]);
+
+    let held = CATALOG_SCAN_GATE.lock().await;
+    let call = tokio::spawn(async move { svc.validate_config(deploy, defs).await });
+    for _ in 0..256 {
+        tokio::task::yield_now().await;
+    }
+    assert!(
+        !call.is_finished(),
+        "validate_config finished while the plugin scan gate was held: its scan ran inline on \
+         the async worker instead of behind the gate on a blocking thread"
+    );
+    drop(held);
+    let view = call
+        .await
+        .expect("the caller task must not panic")
+        .expect("validate returns a view");
+    assert!(view.ok, "the verdict is unchanged: {:?}", view.errors);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────

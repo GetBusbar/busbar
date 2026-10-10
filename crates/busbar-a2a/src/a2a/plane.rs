@@ -31,11 +31,15 @@
 //! document that was actually SEEN, and turning a
 //! config value into one at boot would approve a card nobody has fetched. The `connect` verb
 //! captures the fingerprint and a human approves it; that ordering is the trust root, not a
-//! formality.
+//! formality. What a human approved is KEPT through the configured store and reloaded onto the
+//! registration it was made for (`A2aPlane::reload_kept`): that approval was made against a card
+//! somebody saw, so reloading it lifts nothing that was not already approved.
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock, RwLock};
+
+use busbar_kernel::{plane::DemotionRecord, trust::VerifyGate};
 
 use super::config::{AgentPinCfg, AgentsCfg, DEFAULT_RECOVERY_BACKOFF_MS};
 use super::fetch::FetchPolicy;
@@ -102,7 +106,7 @@ pub struct A2aPlane {
     /// accumulated coordination state, not intent. When the `agents:` block is REMOVED there is no
     /// plane this generation, so the gate is dropped whole — the unobservable analogue of the old
     /// `retain(&empty)`, since a deployment fronting no agents runs no delegation to read it.
-    verify: Arc<busbar_kernel::trust::VerifyGate>,
+    verify: Arc<VerifyGate>,
     /// THE A2A CARD-FETCH TRANSPORTS, resolved ONCE at boot (per-agent client identities, the same
     /// object the delegation hop relays through). Verify-on-call reads it on the request path to
     /// re-fetch and re-verify a stale card. Empty until the A2A `start` hook publishes it through
@@ -114,6 +118,14 @@ pub struct A2aPlane {
     /// later apply is verified on the boot-time transport. Concrete type (no erasure) because this
     /// object lives inside the a2a module, which is compiled only under `plane-a2a`.
     cards: Arc<OnceLock<Arc<super::transport::LiveCardFetch>>>,
+    /// THE OPERATOR'S APPROVALS, KEPT: the kernel's trust-decision record over the configured
+    /// store, its sink attached by the `hydrate` hook. `approve` writes the approval it locks here
+    /// before applying it, and every registry this plane lowers reloads what is kept, so an
+    /// approval and the catalogue it pinned outlive a restart and a config apply, and a card that
+    /// moved meanwhile is judged as drift rather than met as a first sighting. Carried across
+    /// applies by the same `Arc`, like [`Self::verify`]. With no store (`store: memory`) it keeps
+    /// nothing and reloads nothing.
+    kept: Arc<DemotionRecord>,
     /// THE RESOLVED `agents:` REGISTRY this generation was lowered from — the raw operator INTENT,
     /// carried on the plane's own runtime object so the admin read/config surface reads it off the
     /// neutral plane slot rather than off the type-erased `App::agent_defs` handle. The exact
@@ -213,8 +225,9 @@ impl A2aPlane {
         Self::from_config_carrying(
             cfg,
             public_url,
-            Arc::new(busbar_kernel::trust::VerifyGate::new()),
+            Arc::new(VerifyGate::new()),
             Arc::new(OnceLock::new()),
+            Arc::default(),
         )
     }
 
@@ -222,12 +235,14 @@ impl A2aPlane {
     /// card transports across from the prior generation's plane — the composition-root entry point
     /// ([`super::PLANE_HOOKS`]' `build`) uses this so the coalescing epochs and the boot-set transports
     /// survive every config apply (fresh defaults on the first build). [`Self::from_config`] is the
-    /// fresh-gate shorthand every test uses.
+    /// fresh-gate shorthand every test uses. `kept` is the prior generation's kept-approval record;
+    /// what it holds is reloaded onto the registrations lowered here ([`Self::reload_kept`]).
     pub(crate) fn from_config_carrying(
         cfg: &AgentsCfg,
         public_url: Option<&str>,
-        verify: Arc<busbar_kernel::trust::VerifyGate>,
+        verify: Arc<VerifyGate>,
         cards: Arc<OnceLock<Arc<super::transport::LiveCardFetch>>>,
+        kept: Arc<DemotionRecord>,
     ) -> Option<Arc<Self>> {
         if cfg.agents.is_empty() {
             return None;
@@ -258,7 +273,7 @@ impl A2aPlane {
             registrations.push(reg);
         }
         let fetch_policy = FetchPolicy::default();
-        Some(Arc::new(Self {
+        let plane = Arc::new(Self {
             relay: RwLock::new(Arc::new(super::transport::LiveCardFetch::new(
                 fetch_policy.clone(),
             ))),
@@ -270,21 +285,57 @@ impl A2aPlane {
             card_issuer: OnceLock::new(),
             verify,
             cards,
+            kept,
             defs: Arc::new(cfg.clone()),
-        }))
+        });
+        plane.reload_kept();
+        Some(plane)
+    }
+
+    /// THE KEPT-APPROVAL RECORD, as the `hydrate` hook attaches its store and `approve` writes it.
+    pub(crate) fn kept(&self) -> &DemotionRecord {
+        &self.kept
+    }
+
+    /// The OWNED-`Arc` twin of [`Self::kept`], carried across a config apply.
+    pub(crate) fn kept_arc(&self) -> Arc<DemotionRecord> {
+        Arc::clone(&self.kept)
+    }
+
+    /// RELOAD EVERY KEPT APPROVAL onto the registration it was made for, before anything sights
+    /// it: at the lowering, and again at the `hydrate` hook once the store is attached. An
+    /// approval kept for a root the operator no longer declares is not reloaded
+    /// ([`super::pin::kept_approval`]), and a registration with nothing kept is left as lowered.
+    /// The approval is the operator's, judged against a card that was seen; the sighting is not
+    /// reloaded, so the next look at the agent is compared against it.
+    pub(crate) fn reload_kept(&self) {
+        let rows = self.kept.decisions();
+        if rows.is_empty() {
+            return;
+        }
+        self.with_registrations_mut(|regs| {
+            for reg in regs.iter_mut() {
+                let Some(pin_cfg) = self.pins.get(&reg.agent_id) else {
+                    continue;
+                };
+                if let Some(approval) = super::pin::kept_approval(pin_cfg, &reg.agent_id, &rows) {
+                    reg.approval = approval;
+                }
+            }
+        });
     }
 
     /// THE VERIFY-ON-CALL GATE this plane re-verifies fronted agents through, as the delegation path
     /// and the `retain_verify_gates` prune read it. Held on the plane, not on `App`, mirroring MCP's
     /// `McpRuntime::verify`.
-    pub fn verify(&self) -> &Arc<busbar_kernel::trust::VerifyGate> {
+    pub fn verify(&self) -> &Arc<VerifyGate> {
         &self.verify
     }
 
     /// The OWNED-`Arc` twin of [`Self::verify`], for the carry across a config apply
     /// ([`Self::from_config_carrying`]) — a refcount bump of the same gate, so the coalescing epochs
     /// persist.
-    pub(crate) fn verify_arc(&self) -> Arc<busbar_kernel::trust::VerifyGate> {
+    pub(crate) fn verify_arc(&self) -> Arc<VerifyGate> {
         Arc::clone(&self.verify)
     }
 

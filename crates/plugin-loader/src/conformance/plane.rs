@@ -25,6 +25,10 @@
 //!     "member": "<the pool member an ATTEMPT names>",
 //!     "pool": "<the pool an ATTEMPT names>",              // optional
 //!     "caller_ref": "<the caller's reference>",           // optional: on every piece
+//!     "host": { "entitled": [...], "trusted": [...] },     // optional: the kernel services served
+//!     "attempt": { "to_far_end": false },                  // optional: the ATTEMPT is taken, the
+//!                                                          // request rides the caller's body
+//!     "arrive_each": true,                                 // optional: every unit arrives first
 //!     "claimed":   { "unit": 7, "method": "POST", "target": "/v1/x",  // arrive: READY
 //!                    "claim": 0,                          // optional: the snapshot claim (0)
 //!                    "fields": [["<name>", "<value>"], ...],          // optional: its head
@@ -70,7 +74,20 @@
 //! (`[[<class>, <amount>], ...]`, reported, exact), `route` (`{ "class", "entry" }`),
 //! `route_flags` (`["once" | "session" | "stream", ...]`), `ready` (the stream ids `drive`
 //! names), `body_has` (substrings of the projected body), `rewritten`, `next` (the tick `tick`
-//! asks for) and `disposition` (`cancel`'s).
+//! asks for), `disposition` (`cancel`'s), `lane` (the ledger lane a piece's answer names; `""` =
+//! none), `records` (its record writes, `[["put" | "audit", <kind>, "<key>", "<value>"], ...]`, a
+//! value that is not printable text as `hex:` and its bytes; `[]` = none) and `turns` (the prompt
+//! turns `project` writes, `[["<role>", "<text>"], ...]`; `[]` = none). A piece's line names its
+//! lane and records, and a project line its turns, only when the answer carries them.
+//!
+//! THE HOST (`plane.host`, `plane_host.rs`): the leg's dispatcher serves `entitlement.check` and
+//! `trust.serves` from the tables the inputs state, `clock.now` at `0`, and refuses every other
+//! service, so a plane that gates what a caller may see and call on the kernel's answers runs its
+//! gating here. Stating none, the dispatcher serves what it serves today.
+//!
+//! `arrive_each`: the narrow, short and empty units arrive (as the claimed one, steps `<leg>
+//! arrive`) and the narrow and short ones send the caller's body after their ATTEMPT (`<leg>
+//! body`, judged as `body`), for a plane that holds a unit's state from its arrival.
 //!
 //! A session that names `ticket` crosses its pieces as the kernel's route pump does: SUBMITTED on
 //! one ticket of the leg's dispatcher, minted for the session and recycled after its last step
@@ -105,8 +122,8 @@ use busbar_contract::abi::plane::{
     PlaneDriveIn, PlaneDriveOut, PlaneOpenIn, PlaneOpenOut, PlaneRefreshOut, ProjectIn, ProjectOut,
     RecordWrite, RefusalIn, RefusalOut, ServeIn, ServeOut, UnitCount, EMIT_DONE, EMIT_TO_FAR_END,
     FROM_CALLER, FROM_FAR_END, FROM_KERNEL, PIECE_HAS_STATUS, PIECE_LAST, PRINCIPAL_REQUIRED,
-    REFUSAL_GATE, ROUTE_DIRECT, ROUTE_LOCAL, ROUTE_ONCE, ROUTE_POOL, ROUTE_SCOPE, ROUTE_SESSION,
-    ROUTE_STREAM, SPAN_ABSENT, UNITS_REPORTED,
+    RECORD_AUDIT, RECORD_PUT, REFUSAL_GATE, ROUTE_DIRECT, ROUTE_LOCAL, ROUTE_ONCE, ROUTE_POOL,
+    ROUTE_SCOPE, ROUTE_SESSION, ROUTE_STREAM, SPAN_ABSENT, UNITS_REPORTED,
 };
 use serde_json::Value;
 
@@ -115,7 +132,12 @@ use super::{
     validate, Fold, Leg, Recorder, Subject,
 };
 use crate::dispatch::kinds::plane::{OwnedSnapshot, Plane};
-use crate::dispatch::{Called, Dispatcher, Frame, InFrame, OutFrame, Plugin, Recall};
+use crate::dispatch::{
+    Called, DispatchConfig, Dispatcher, Frame, InFrame, OutFrame, Plugin, Recall,
+};
+
+#[path = "plane_host.rs"]
+mod host;
 
 /// The capacity of each of the host's per-piece lists (units, record writes, fields).
 const CAP: usize = 8;
@@ -247,6 +269,22 @@ fn at(buf: &[u8], s: Span) -> String {
         || "<OUTSIDE>".into(),
         |b| String::from_utf8_lossy(b).into_owned(),
     )
+}
+
+/// A record write's key or value as the line shows it: its text, when it is printable UTF-8;
+/// else `hex:` and its bytes in lower-case hex.
+fn shown(buf: &[u8], s: Span) -> String {
+    let (from, len) = (s.offset as usize, s.len as usize);
+    let Some(b) = buf.get(from..from + len) else {
+        return "<OUTSIDE>".into();
+    };
+    match std::str::from_utf8(b) {
+        Ok(t) if !t.chars().any(char::is_control) => t.to_string(),
+        _ => format!(
+            "hex:{}",
+            b.iter().map(|x| format!("{x:02x}")).collect::<String>()
+        ),
+    }
 }
 
 /// What `ArriveOut::route` names.
@@ -454,9 +492,38 @@ impl Piece {
     }
 
     /// [`Piece::line`] with the need a far-bound answer rides: a session step's line.
+    /// The ledger lane the answer names and its record writes, each written only when the answer
+    /// carries one (` lane=<lane>`, ` records=[..]`).
+    fn ledger(&self, o: &OnPieceOut) -> String {
+        let mut out = String::new();
+        if o.lane.len != 0 {
+            out.push_str(&format!(" lane={}", at(&self.arena, o.lane)));
+        }
+        let records: Vec<String> = self.records[..(o.records_written as usize).min(CAP)]
+            .iter()
+            .map(|r| {
+                let op = match r.op {
+                    RECORD_PUT => "put".to_string(),
+                    RECORD_AUDIT => "audit".to_string(),
+                    other => other.to_string(),
+                };
+                format!(
+                    "{op}:{}:{}={}",
+                    r.kind,
+                    shown(&self.arena, r.key),
+                    shown(&self.arena, r.value)
+                )
+            })
+            .collect();
+        if !records.is_empty() {
+            out.push_str(&format!(" records={records:?}"));
+        }
+        out
+    }
+
     fn session_line(&self, c: &Called, o: &OnPieceOut) -> String {
         format!(
-            "{} emitted={} more={} to_far_end={} done={} status={} verb={} target={} need={} \
+            "{} emitted={} more={} to_far_end={} done={} status={} verb={} target={} need={}{} \
              fields={:?} units={:?}",
             called(c),
             self.emitted(o),
@@ -467,6 +534,7 @@ impl Piece {
             at(&self.arena, o.verb),
             at(&self.arena, o.target),
             o.need,
+            self.ledger(o),
             self.fields(o),
             self.units(o),
         )
@@ -571,6 +639,18 @@ struct Arrival {
 }
 
 impl Arrival {
+    /// The same arrival for another unit.
+    fn for_unit(&self, unit: u64) -> Self {
+        Self {
+            unit,
+            claim: self.claim,
+            method: self.method.clone(),
+            target: self.target.clone(),
+            fields: self.fields.clone(),
+            route: self.route,
+        }
+    }
+
     fn of(a: &Value, what: &str) -> Self {
         Self {
             unit: num(&a["unit"], what),
@@ -838,8 +918,17 @@ fn project(
     (f.input.arena_buf, f.input.arena_cap) = (arena.as_mut_ptr(), arena.len());
     let c = p.call(slot::PROJECT, &mut f);
     let span = |s: Span| (s.offset != SPAN_ABSENT && s.len != 0).then(|| at(&arena, s));
+    let turns: Vec<String> = turns[..f.out.prompt.messages_len.min(CAP)]
+        .iter()
+        .map(|t| format!("{}:{}", read(t.role), read(t.text)))
+        .collect();
+    let turns = if turns.is_empty() {
+        String::new()
+    } else {
+        format!(" turns={turns:?}")
+    };
     format!(
-        "{} rewritten={} signals={} body={}",
+        "{} rewritten={} signals={}{turns} body={}",
         called(&c),
         span(f.out.rewritten).is_some(),
         f.out.view.signals_len,
@@ -982,6 +1071,9 @@ struct Inputs {
     short: (u64, Buffer),
     empty: Option<u64>,
     sessions: Vec<Session>,
+    /// Every unit of the script arrives (as the claimed one) and sends the caller's body after its
+    /// ATTEMPT, for a plane that holds a unit's state from its arrival.
+    arrive_each: bool,
     refusal: (u32, Vec<u8>),
 }
 
@@ -1027,6 +1119,7 @@ impl Inputs {
                 .is_object()
                 .then(|| num(&k["empty"]["unit"], "empty.unit")),
             sessions: Session::all(&k["sessions"]),
+            arrive_each: k["arrive_each"].as_bool() == Some(true),
             refusal: (
                 small(
                     num(&k["refusal"]["status"], "refusal.status"),
@@ -1100,7 +1193,14 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     let url = k.public_url.as_deref();
     let (c, claim) = (&k.carried, k.claimed.claim);
 
-    let d = dispatcher();
+    // The kernel services the plugin's inputs state (`plane.host`), served on the leg's dispatcher;
+    // stating none, a dispatcher that serves none.
+    let d = host::Host::of(&s.kind_inputs("plane")["host"]).map_or_else(dispatcher, |h| {
+        std::sync::Arc::new(Dispatcher::with_services(
+            DispatchConfig::default(),
+            std::sync::Arc::new(h),
+        ))
+    });
     let p = load::<Plane>(s, leg, s.bind(&d, "plane")).expect("the plane door loads");
     let mut r = Recorder::new(crossings(&p));
     r.line("facts", 0, || {
@@ -1165,10 +1265,36 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     // Another, whose answer is written `reply_cap` bytes at a time, then paid out by `more`.
     let (narrow_unit, cap, more) = k.narrow;
     let mut narrow = Piece::new(cap);
+    // With `arrive_each`, a unit arrives first and its caller's body follows its ATTEMPT (through
+    // the whole unit's buffers).
+    let arrives = |r: &mut Recorder<'_>, what: &str, unit: u64| {
+        if k.arrive_each {
+            r.line(&format!("{what} arrive"), 1, || {
+                arrive(&p, &k.claimed.for_unit(unit), &k.request)
+            });
+        }
+    };
+    let sends = |r: &mut Recorder<'_>, what: &str, unit: u64, piece: &mut Piece| {
+        if k.arrive_each {
+            r.line(&format!("{what} body"), 1, || {
+                let g = Given {
+                    from: FROM_CALLER,
+                    flags: PIECE_LAST,
+                    bytes: &k.request,
+                    attempt_no: 0,
+                    ..attempt(unit, claim)
+                };
+                let (called, f) = on_piece(&p, piece, g, room, c);
+                piece.line(&called, &f.out)
+            });
+        }
+    };
+    arrives(&mut r, "narrow", narrow_unit);
     r.line("narrow attempt", 1, || {
         let (called, f) = on_piece(&p, &mut narrow, attempt(narrow_unit, claim), room, c);
         narrow.line(&called, &f.out)
     });
+    sends(&mut r, "narrow", narrow_unit, &mut piece);
     r.line("narrow far_end", 1, || {
         let g = far_end(narrow_unit, claim, whole, &k.answer, answered);
         let (called, f) = on_piece(&p, &mut narrow, g, room, c);
@@ -1186,10 +1312,12 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     // re-call.
     let (short_unit, buffer) = k.short;
     let mut short = Piece::new(1024);
+    arrives(&mut r, "short", short_unit);
     r.line("short attempt", 1, || {
         let (called, f) = on_piece(&p, &mut short, attempt(short_unit, claim), room, c);
         short.line(&called, &f.out)
     });
+    sends(&mut r, "short", short_unit, &mut piece);
     r.line("far_end short", 2, || {
         let g = far_end(short_unit, claim, whole, &k.answer, answered);
         short_then(&p, Way::Call, &mut short, g, buffer, c, Piece::line)
@@ -1197,6 +1325,7 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
 
     // A caller body that ended empty.
     if let Some(empty) = k.empty {
+        arrives(&mut r, "empty", empty);
         r.line("empty", 1, || {
             let g = Given {
                 from: FROM_CALLER,
@@ -1424,19 +1553,7 @@ fn contract(fold: &Fold, k: &Value) {
         !unclaimed.starts_with("Ready ") && unclaimed.ends_with(&format!(" status={status}")),
         "an unclaimed request is refused at {status}: {unclaimed}"
     );
-    for label in ["attempt", "narrow attempt", "short attempt"] {
-        assert!(
-            at(label).contains(" to_far_end=true "),
-            "{label}: {}",
-            at(label)
-        );
-    }
-    let request_out = str_of(&k["request_out"], "request_out");
-    assert!(
-        at("body").contains(&format!(" emitted={request_out} more=0 to_far_end=true ")),
-        "body: {}",
-        at("body")
-    );
+    attempts_and_bodies(fold, k);
 
     let f = &k["far_end"];
     let answer_out = str_of(&f["answer_out"], "far_end.answer_out");
@@ -1515,6 +1632,38 @@ fn contract(fold: &Fold, k: &Value) {
     }
 }
 
+/// THE ATTEMPTS AND THE CALLER'S BODIES: each ATTEMPT goes to the far end (or, for a plane that
+/// writes the request on the caller's body, `plane.attempt.to_far_end: false`, is taken with nothing
+/// sent); each unit that arrived (`plane.arrive_each`) arrived READY; every caller's body is
+/// relayed as `request_out`.
+fn attempts_and_bodies(fold: &Fold, k: &Value) {
+    let at = |label: &str| answer(fold, label);
+    let str_of = |v: &Value, what: &str| String::from_utf8(text(v, what)).expect("UTF-8 input");
+    let far = k["attempt"]["to_far_end"].as_bool().unwrap_or(true);
+    for label in ["attempt", "narrow attempt", "short attempt"] {
+        assert!(
+            at(label).contains(&format!(" to_far_end={far} ")),
+            "{label}: {}",
+            at(label)
+        );
+    }
+    let request_out = str_of(&k["request_out"], "request_out");
+    let mut bodies = vec!["body"];
+    if k["arrive_each"].as_bool() == Some(true) {
+        bodies.extend(["narrow body", "short body"]);
+        for label in ["narrow arrive", "short arrive"] {
+            assert!(at(label).starts_with("Ready "), "{label}: {}", at(label));
+        }
+    }
+    for label in bodies {
+        assert!(
+            at(label).contains(&format!(" emitted={request_out} more=0 to_far_end=true ")),
+            "{label}: {}",
+            at(label)
+        );
+    }
+}
+
 /// Every session step answered as its `want` states (`plane.sessions[].steps[].want`).
 fn sessions_contract(fold: &Fold, sessions: &Value) {
     for s in sessions.as_array().into_iter().flatten() {
@@ -1548,6 +1697,9 @@ const WANTS: &[&str] = &[
     "route_flags",
     "next",
     "disposition",
+    "lane",
+    "records",
+    "turns",
 ];
 
 /// `line` (step `label`'s answer) answers as `want` states; a step met `short` answered FAILED with
@@ -1601,6 +1753,48 @@ fn judge(label: &str, line: &str, want: &Value, short: Option<&str>) {
                     .map(|(n, v)| format!("{n}={v}"))
                     .collect();
                 has(&format!(" fields={fields:?} "), key);
+            }
+            "lane" | "records" | "turns" => {
+                let shown = match (key.as_str(), v) {
+                    ("lane", _) => scalar(v),
+                    (_, Value::Array(list)) if list.is_empty() => String::new(),
+                    ("records", _) => {
+                        let rows: Vec<String> = v
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .map(|r| match r.as_array().map(Vec::as_slice) {
+                                Some([op, kind, k, val]) => format!(
+                                    "{}:{}:{}={}",
+                                    scalar(op),
+                                    scalar(kind),
+                                    scalar(k),
+                                    scalar(val)
+                                ),
+                                _ => panic!(
+                                    "conformance.json: step '{label}' wants records as \
+                                     [\"<op>\", <kind>, \"<key>\", \"<value>\"] rows"
+                                ),
+                            })
+                            .collect();
+                        format!("{rows:?}")
+                    }
+                    _ => {
+                        let rows: Vec<String> = pairs(v, "sessions[].steps[].want.turns")
+                            .iter()
+                            .map(|(role, text)| format!("{role}:{text}"))
+                            .collect();
+                        format!("{rows:?}")
+                    }
+                };
+                if shown.is_empty() {
+                    assert!(
+                        !line.contains(&format!(" {key}=")),
+                        "{label}: wants no {key}: {line}"
+                    );
+                } else {
+                    has(&format!(" {key}={shown} "), key);
+                }
             }
             "route_flags" => {
                 let flags: Vec<String> = v.as_array().into_iter().flatten().map(scalar).collect();

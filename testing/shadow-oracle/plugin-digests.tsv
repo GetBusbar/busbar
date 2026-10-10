@@ -47,16 +47,17 @@ hashicorp-vault	v1.0.5	busbar-hashicorp-vault-1.0.5-x86_64-unknown-linux-gnu.tar
 # floating builds: every row is an exact commit. auth-oidc is the rev busbar's Cargo.lock links. A store is
 # pinned to the newest dev commit whose declares.json speaks the store contract ABI busbar supports (v3):
 # store-sqlite e46e159 (2026-10-02; its dev moved to v4 at efb3d74), store-valkey 602a44f and store-mysql f8f6a2f
-# (dev heads 2026-10-06), and store-postgres 67e8c8d (its #22, 2026-10-06, the store lane bringing it to ABI v3).
-# The rest
+# (dev heads 2026-10-06), and store-postgres 5e13886 (its #23, 2026-10-07; sans-IO since #20).
+# auth-ldap is 52ff062 (#8/#10/#11, 2026-10-09: the sans-IO LDAP codec over the host's connector, pinned to
+# busbar predev 39374ec00e). The rest
 # are each repo's dev head on 2026-10-05.
 store-sqlite	src:e46e15931e37a59c6c1bbf2ec1cbfa58d9a364c4	build:busbar-store-sqlite	-	1.6
-store-postgres	src:67e8c8da48bb2e26babb9a3d57c59903387ca5a0	build:busbar-store-postgres	-	1.6
+store-postgres	src:5e13886f92567a022ab9a1c875e21f32be7552bebuild:busbar-store-postgres	-	1.6
 store-valkey	src:602a44f13d780104b317dbf0306b888c721d0596	build:busbar-store-valkey	-	1.6
 store-mysql	src:f8f6a2f652f8a320243f98f0ffff720c10f37cdd	build:busbar-store-mysql	-	1.6
 hashicorp-vault	src:4a6316fc2e7fd9d1e9f06aebd650dda7fee9d7f1	build:busbar-secret-vault	-	1.6
 auth-oidc	src:9ff64ff4d74bdd4d043ed7200d8771389810d19b	build:busbar-auth-oidc	-	1.6
 auth-github	src:96cf0d401dc7a70a235d5abdc5eec911cd2696ed	build:busbar-auth-github	-	1.6
-auth-ldap	src:00b2129497e7b07e0172ed466ed3a2802b3d66ea	build:busbar-auth-ldap	-	1.6
+auth-ldap	src:52ff062381f984791e7da2e27b3d80d4c1cec85bbuild:busbar-auth-ldap	-	1.6
 webrequest-hook	src:97c0d9c2ad824bd6d67e9e5336d5d8be3800768d	build:busbar-hook-webrequest	-	1.6
 headroom-hook	src:4385464cbc80509e8cb7254c81e07a07ad319c55	build:busbar-hook-headroom	-	1.6

@@ -1791,6 +1791,7 @@ pub(super) fn operator_app(
     let operator = Operator::open(
         op,
         std::iter::empty(),
+        &|m: &str| crate::config::names_operator(m),
         true,
         Some("digest".to_string()),
         |_| Ok(std::sync::Arc::new(OperatorDouble(verified))),
