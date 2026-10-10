@@ -88,6 +88,12 @@
 //!
 //! The tokens an `out` carries (`listener`, `conn`, `framing`) are names, not results.
 //!
+//! A CARRIER MOVES BYTES OVER THE HOST'S HANDLES. It opens, binds, accepts, reads, writes, shuts
+//! and spawns through the host's I/O table (`abi::host::io`, `io.*`): it never holds a descriptor,
+//! and the host opens only what it admitted for the dial that asked. Its frames: a carrier carried
+//! as ITSELF (a need over its own claim, no framer above it) delimits them with
+//! [`READ_END_OF_FRAME`] and [`WRITE_END_OF_FRAME`]; under a framer, its bytes are a stream.
+//!
 //! WHAT THE HOT-LANE `TransportDecl` BECOMES (a mechanical re-heading):
 //!
 //! | `TransportDecl` / slot table | here |
@@ -443,6 +449,17 @@ pub const PIECE_WRITABLE: u16 = 256;
 /// one or the other (ws sends them under its TEXT opcode); read on the call that completes the
 /// frame. Absent means binary. The outbound twin of [`PIECE_TEXT`].
 pub const EMIT_TEXT: u32 = 1;
+
+/// [`WriteIn::flags`]: the bytes complete a FRAME of the carrier's own wire, for a carrier that
+/// delimits frames itself (a carrier carried as itself, with no framer above it). A carrier that
+/// carries an undelimited byte stream ignores it.
+pub const WRITE_END_OF_FRAME: u32 = 1;
+
+/// [`IoOut::flags`] on a `read`: the bytes complete a FRAME of the carrier's own wire. A carrier
+/// whose wire is an undelimited byte stream sets it on every read: each read is a frame, the
+/// degenerate case. A frame longer than the host's buffer comes in several reads, the last one
+/// carrying it.
+pub const READ_END_OF_FRAME: u32 = 1;
 
 /// [`FramerYield::flags`]: no frame follows on this connection.
 pub const YIELD_ENDED: u32 = 1;
@@ -823,6 +840,10 @@ pub struct WriteIn {
     pub bytes: *const u8,
     /// How many.
     pub len: usize,
+    /// `WRITE_*` bits: [`WRITE_END_OF_FRAME`].
+    pub flags: u32,
+    /// Alignment padding.
+    pub _reserved: u32,
 }
 
 /// `read`'s and `write`'s `out`.
@@ -833,6 +854,10 @@ pub struct IoOut {
     pub head: OutHead,
     /// Bytes read (`0` = the end) or taken.
     pub len: u64,
+    /// `READ_*` bits on a `read`: [`READ_END_OF_FRAME`]. `0` on a `write`.
+    pub flags: u32,
+    /// Alignment padding.
+    pub _reserved: u32,
 }
 
 /// `flush`'s `in`.

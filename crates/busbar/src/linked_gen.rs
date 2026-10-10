@@ -413,7 +413,7 @@ pub(crate) fn linked_source(
                 "fn __door_build_{n}(\n    lower: Option<std::sync::Arc<dyn busbar_contract::Transport>>,\n    \
                  settings: &busbar_contract::transport::TransportSettings,\n\
                  ) -> std::sync::Arc<dyn busbar_contract::Transport> {{\n    \
-                 crate::root::doors::build({e}::KEY, {e}::door, lower, settings)\n}}\n\
+                 crate::root::doors::build({e}::KEY, {e}::door, lower, settings, Some(crate::root::connector::address_carrier()))\n}}\n\
                  fn __door_claims_{n}() -> Vec<&'static str> {{\n    \
                  crate::root::doors::claims_of({e}::door)\n}}\n\
                  fn __door_upgrades_{n}() -> Vec<&'static str> {{\n    \

@@ -846,15 +846,20 @@ fn dropped_doors() -> &'static [DroppedDoor] {
     let doors = DOORS.get_or_init(|| {
         crate::root::test_plugins::neutral_frame_door()
             .into_iter()
-            .map(|(plugin, key)| DroppedDoor {
-                key,
-                claims: vec![key],
-                composes_over: Vec::new(),
-                wire: crate::root::doors::host_wire(
+            .map(|(plugin, key)| {
+                let (door, wire) = crate::root::doors::served(
                     plugin,
                     &busbar_contract::transport::TransportSettings::default(),
+                    Some(crate::root::connector::address_carrier()),
                 )
-                .expect("the door serves"),
+                .expect("the door serves");
+                DroppedDoor {
+                    key,
+                    claims: vec![key],
+                    composes_over: Vec::new(),
+                    wire,
+                    door,
+                }
             })
             .collect()
     });

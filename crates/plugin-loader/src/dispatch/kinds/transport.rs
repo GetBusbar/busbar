@@ -68,6 +68,9 @@ pub struct TransportFacts {
     /// The customer settings it reads, by their 1.5.5 config paths (`TransportTail::settings`), in
     /// its order: the host deals each one's value to its `open`. The KEYS only, never a value.
     pub settings_keys: Vec<&'static str>,
+    /// Its own claim (row `0`) selects on the local PORT a connection arrived on
+    /// (`SelectorForm::Port` among its selector forms): a carrier of network addresses.
+    pub ported: bool,
     /// Its status table, row by row: `(claim, lo, hi)`, the code ranges each claim's numbering
     /// has (`TransportTail::status_rows`); a stream's final status is judged against them.
     pub status_rows: Vec<(u32, u32, u32)>,
@@ -160,6 +163,17 @@ fn tail_facts(st: &Statement) -> Result<TransportFacts, String> {
             .iter()
             .map(|s| owned(s.path, "settings"))
             .collect::<Result<_, _>>()?,
+        ported: rows.first().is_some_and(|row| {
+            let port = busbar_contract::abi::hot::transport::code::selector_form(
+                busbar_contract::SelectorForm::Port,
+            );
+            row.selector_forms.len > 0
+                // SAFETY: `check_claims` refused a NULL list with a count; `'static` plugin data.
+                && unsafe {
+                    std::slice::from_raw_parts(row.selector_forms.ptr, row.selector_forms.len)
+                }
+                .contains(&port)
+        }),
     })
 }
 

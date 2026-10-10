@@ -116,6 +116,7 @@ pub struct Host {
     wake: Option<WakeFn>,
     conns: *const ConnectorSlots,
     services: *const HostSlots,
+    io: *const crate::abi::host::io::IoSlots,
 }
 
 // SAFETY: the context is an opaque handle and the table plain code addresses, both valid for the
@@ -130,12 +131,26 @@ impl Host {
     /// wrapper is not yet in this crate (the auth kind's outbound mint reaches its need through it).
     #[must_use]
     pub const fn of(tables: &HostTables) -> Self {
+        // The I/O table was appended: tables whose `size` ends before it hand none.
+        let io = if tables.size as usize >= std::mem::size_of::<HostTables>() {
+            tables.io
+        } else {
+            std::ptr::null()
+        };
         Self {
             ctx: tables.ctx,
             wake: tables.wake,
             conns: tables.conns,
             services: tables.services,
+            io,
         }
+    }
+
+    /// THE HOST'S I/O (`abi::host::io`, `io.*`) for ONE entry of the op running on `ticket`: what
+    /// a carrier moves bytes with (`abi::sdk::io`).
+    #[must_use]
+    pub fn io(&self, ticket: Ticket) -> super::io::Io<'_> {
+        super::io::Io::new(self.ctx, self.io, ticket)
     }
 
     /// WAKE `ticket` (the host's `wake`, `abi::mechanism::ticket`): from any thread, never blocks,
@@ -158,6 +173,7 @@ impl Host {
             wake: self.wake,
             conns: self.conns,
             services: self.services,
+            io: self.io,
         })
     }
 

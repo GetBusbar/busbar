@@ -55,11 +55,12 @@ pub const ROW_TEST_RATCHET: &str = "plane-abi-neutrality:test-path-ratchet";
 /// read from: a live root the module does not declare is RED, never a narrower scan.
 const ABI_DIR: &str = "crates/busbar-contract/src/abi";
 
-/// THE LIVE PLANE ABI, each with its floor: the `.rs` count measured on predev 5e672d125d. A root
-/// below its floor is RED; a root that grows is fine. `plane` is the per-kind plane ABI (THE
-/// DESIGN's `abi/plane/`), `host` the host tables every kind calls (`abi/host/`: conn, hook,
-/// service). Lower a floor only in a reviewed diff that says which file left and why.
-const LIVE_ROOTS: &[(&str, usize)] = &[("plane", 2), ("host", 5)];
+/// THE LIVE PLANE ABI, each with its floor: the `.rs` count measured on predev 5e672d125d, `host`
+/// raised to 6 when transport stage B added `abi/host/io.rs`. A root below its floor is RED; a
+/// root that grows is fine. `plane` is the per-kind plane ABI (THE DESIGN's `abi/plane/`), `host`
+/// the host tables every kind calls (`abi/host/`: conn, hook, io, service). Lower a floor only in
+/// a reviewed diff that says which file left and why.
+const LIVE_ROOTS: &[(&str, usize)] = &[("plane", 2), ("host", 6)];
 
 /// The RETIRING lane: scanned while it holds Rust, and its deletion (M6-HOT-PLANE) is not red once
 /// the live roots above are read.

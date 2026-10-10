@@ -143,6 +143,7 @@ fn with_seal<R>(
         },
         wake: None,
         conns: std::ptr::null(),
+        io: std::ptr::null(),
         services: table,
     };
     let (mut issued, mut claim) = (0u32, None);

@@ -312,6 +312,28 @@ impl BytesOut for Vec<u8> {
 /// A poll's answer.
 pub type CarrierPoll<T> = Poll<Result<T, TransportError>>;
 
+/// What one carrier read moved (`abi::transport::IoOut`): how many bytes, and whether they complete
+/// a FRAME of the carrier's own wire (`READ_END_OF_FRAME`). A carrier whose wire is an undelimited
+/// byte stream completes a frame with every read.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Chunk {
+    /// The bytes read; `0` is the clean end.
+    pub len: usize,
+    /// They complete a frame.
+    pub end_of_frame: bool,
+}
+
+impl Chunk {
+    /// `len` bytes of an undelimited byte stream: each read is a frame.
+    #[must_use]
+    pub const fn stream(len: usize) -> Self {
+        Self {
+            len,
+            end_of_frame: true,
+        }
+    }
+}
+
 /// THE CARRIER ROLE: opens connections and moves their bytes (module docs). Connections and
 /// listeners are the carrier's own opaque handles. No method blocks: a method that cannot progress
 /// answers `Pending` and wakes `cx`'s waker once it may.
@@ -335,11 +357,20 @@ pub trait Carrier: Plugin + Send + Sync + 'static {
     /// `dest` is not a destination this carrier can reach.
     fn dial(&self, dest: &Dest<'_>) -> Result<u64, TransportError>;
 
-    /// The next bytes of `conn` into `buf` (non-empty); `Ready(Ok(0))` is the clean end.
-    fn poll_read(&self, conn: u64, cx: &mut Context<'_>, buf: &mut [u8]) -> CarrierPoll<usize>;
+    /// The next bytes of `conn` into `buf` (non-empty), and whether they complete a frame of the
+    /// carrier's own wire ([`Chunk`]); a `len` of `0` is the clean end.
+    fn poll_read(&self, conn: u64, cx: &mut Context<'_>, buf: &mut [u8]) -> CarrierPoll<Chunk>;
 
     /// Take some of `bytes` for `conn`: how many (`1..=len` for a non-empty offer).
-    fn poll_write(&self, conn: u64, cx: &mut Context<'_>, bytes: &[u8]) -> CarrierPoll<usize>;
+    /// `end_of_frame` says the bytes complete a frame of the carrier's own wire (a carrier whose
+    /// wire is an undelimited byte stream ignores it).
+    fn poll_write(
+        &self,
+        conn: u64,
+        cx: &mut Context<'_>,
+        bytes: &[u8],
+        end_of_frame: bool,
+    ) -> CarrierPoll<usize>;
 
     /// Every byte `conn` took is on the wire — and, for a dialled connection, it is open.
     fn poll_flush(&self, conn: u64, cx: &mut Context<'_>) -> CarrierPoll<()>;
