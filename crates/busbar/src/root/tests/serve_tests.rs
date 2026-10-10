@@ -2917,10 +2917,11 @@ fn the_decisions_doors_facing_lists_its_configured_models() {
         br#"{"decisions":{"models":{"b":{"provider":"typesafe"},"a":{"provider":"typesafe"}}}}"#,
         b"",
         None,
+        &[],
     )
     .expect("the door faces the world");
     assert_eq!(facing.listed, vec!["a".to_string(), "b".to_string()]);
-    let none = (reg.facing)(b"{}", b"", None).expect("the door faces the world");
+    let none = (reg.facing)(b"{}", b"", None, &[]).expect("the door faces the world");
     assert!(
         none.listed.is_empty(),
         "no models, no names: {:?}",

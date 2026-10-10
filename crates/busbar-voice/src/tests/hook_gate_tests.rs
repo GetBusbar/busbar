@@ -3,12 +3,13 @@
 
 //! THE HOOKS-GATE CELL — `hooks-gate × {voice-client, voice-server}` (one wiring, both directions).
 //! `streams.hooks: [reject-all]` is attached, a session-open is driven through the governed choke
-//! point, and it is REFUSED before any lease / mint / dial. The gate fires through the neutral
-//! `host.gate_decide` seam (the Seam-B inversion — this plane names no core hook symbol): the host is
-//! the substrate's in-memory fixture host carrying a scripted gate under the plane's own decl key and
-//! `streams` container, so the plane's `gate_attached` / `gate_decide` legs run exactly as they do over
-//! a configured deployment. (The same verdict through the kernel's hook port is the engine's own
-//! hook battery to prove; this plane's tests do not link the engine.)
+//! point, and it is REFUSED before any lease / mint / dial. The gate fires through the kernel's
+//! `plane_host::admission_gates_decide` over the hooks seam (the Seam-B inversion — this plane names
+//! no core hook symbol): the host is the plane's in-memory fixture host carrying a scripted gate,
+//! filed as a resolved hook policy under the plane's own decl key and `streams` container, so the
+//! kernel's real gate decision fires it exactly as it fires a configured deployment's. (The same
+//! verdict through the kernel's hook port is the engine's own hook battery to prove; this plane's
+//! tests do not link the engine.)
 //!
 //! The control makes the refusal falsifiable: the identical open with NOTHING attached proceeds past
 //! the gate (the byte-identical-when-unconfigured guarantee, exercised).
@@ -53,8 +54,8 @@ fn ungated_host() -> Arc<dyn EngineHost> {
 }
 
 /// Build a host whose `voice`/`streams` container carries the attached gate, filed under the plane's
-/// own decl key exactly where production's resolved gate map puts it, so `gate_attached` answers true
-/// and `gate_decide` runs the gate. `hook_name` is the operator's name for the hook (it only labels
+/// own decl key exactly where production's resolved gate map puts it, so `admission_gates_attached`
+/// answers true and `admission_gates_decide` runs the gate. `hook_name` is the operator's name for the hook (it only labels
 /// the attachment here).
 fn gated_host(_hook_name: &'static str, script: GateScript) -> Arc<dyn EngineHost> {
     FixtureHost::new()

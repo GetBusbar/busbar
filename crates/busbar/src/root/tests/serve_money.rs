@@ -695,7 +695,7 @@ async fn node_boot_hooks_arm() {
         "the boot build's rates never reached the card holder: its repricer is not installed"
     );
     // THE BOOK STEP, over the real boot book.
-    let book = crate::root::boot::book(&app).expect("the boot book opens");
+    let book = crate::root::boot::book(&app, "test-store").expect("the boot book opens");
     let ctx = crate::root::linked::BookCtx {
         book: &book,
         app: &app,
