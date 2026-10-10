@@ -581,17 +581,24 @@ pub fn registration(
         caller_credential_refusal: (!refusal.is_empty()).then_some(refusal),
         validate: Arc::new(move |settings: &[u8]| validate(&judge, settings)),
         facing: Arc::new(
-            move |settings: &[u8], owned: &[u8], public_url: Option<&str>| {
+            move |settings: &[u8],
+                  owned: &[u8],
+                  public_url: Option<&str>,
+                  facts: &[busbar_contract::plane_calls::DialectFacts]| {
                 let url = public_url.unwrap_or_default().to_string();
                 let mut probes = probes
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
-                let at = match probes.iter().position(|p| p.url == url && p.owned == owned) {
+                let at = match probes
+                    .iter()
+                    .position(|p| p.url == url && p.owned == owned && p.facts == facts)
+                {
                     Some(at) => at,
                     None => {
                         probes.push(Probe {
                             url: url.clone(),
                             owned: owned.to_vec(),
+                            facts: facts.to_vec(),
                             plugin: bind()?,
                             generation: 0,
                         });
@@ -606,25 +613,62 @@ pub fn registration(
                     settings,
                     owned,
                     public_url,
+                    facts,
                 )
             },
         ),
     })
 }
 
-/// One probe instance of a door, opened against one public base URL and one set of owned sections
-/// (both are read at its open; a change of either is a restart).
+/// One probe instance of a door, opened against one public base URL, one set of owned sections and
+/// one list of providers' dialect facts (each read at its open; a change of any is a restart).
 struct Probe {
     url: String,
     owned: Vec<u8>,
+    facts: Vec<busbar_contract::plane_calls::DialectFacts>,
     plugin: crate::dispatch::Plugin<Plane>,
     /// Its current generation; `0` = not opened yet.
     generation: u64,
 }
 
+/// THE PROVIDERS' DIALECT FACTS LOWERED for `PlaneOpenIn::providers`, one per entry of `dialects`,
+/// each pointing into `dialects` (which must outlive the open that lends them).
+#[must_use]
+pub fn provider_facts(
+    dialects: &[busbar_contract::plane_calls::DialectFacts],
+) -> Vec<busbar_contract::abi::plane::ProviderFacts> {
+    use busbar_contract::abi::mechanism::call::{Blob, BLOB_ABSENT, BLOB_JSON};
+    let text = |s: &str| AbiStr {
+        ptr: s.as_ptr(),
+        len: s.len(),
+    };
+    dialects
+        .iter()
+        .map(|d| busbar_contract::abi::plane::ProviderFacts {
+            name: text(&d.name),
+            protocol: text(&d.protocol),
+            error_map: match &d.error_map {
+                Some(json) => Blob {
+                    ptr: json.as_ptr(),
+                    len: json.len(),
+                    fmt: BLOB_JSON,
+                    flags: 0,
+                },
+                None => Blob {
+                    ptr: std::ptr::null(),
+                    len: 0,
+                    fmt: BLOB_ABSENT,
+                    flags: 0,
+                },
+            },
+        })
+        .collect()
+}
+
 /// OPEN `plugin` at generation 1 over `settings` (JSON; empty = absent), its `owned` sections (one
 /// JSON object keyed by section name; empty = none) and `public_url`, as the composition root opens
-/// a door plane: the first generation's snapshot, or why it did not open.
+/// a door plane, with no provider's dialect facts: the first generation's snapshot, or why it did
+/// not open.
 ///
 /// # Errors
 ///
@@ -676,6 +720,8 @@ pub fn open_door(
                 len: url.len(),
             },
             owned: blob(owned),
+            providers: std::ptr::null(),
+            providers_len: 0,
         },
         PlaneOpenOut {
             open: OpenOut {
@@ -768,12 +814,13 @@ pub fn retire_door(plugin: &crate::dispatch::Plugin<Plane>, generation: u64) {
     let _ = plugin.call(life::RETIRE, &mut retire);
 }
 
-/// What `plugin` faces the world with over `settings`, its `owned` sections and `public_url`, as a
-/// snapshot it published: the probe instance is `open`ed on the first call (with `public_url` and
-/// `owned`, which a plane states its audience against) and `refresh`ed onto a new generation on
-/// each later one, the previous generation retired. The probe instance lives for the process beside
-/// the one the composition root serves through; a public base URL and the owned sections are read
-/// at its open (a change of either is a restart).
+/// What `plugin` faces the world with over `settings`, its `owned` sections, `public_url` and the
+/// providers' dialect `facts`, as a snapshot it published: the probe instance is `open`ed on the
+/// first call (with `public_url`, `owned` and `facts`, which a plane states its audience and claims
+/// against) and `refresh`ed onto a new generation on each call after it, the previous generation
+/// retired. The probe instance lives for the process beside the one the composition root serves
+/// through; a public base URL, the owned sections and the providers' dialect facts are read at its
+/// open (a change of any is a restart).
 fn facing(
     plugin: &crate::dispatch::Plugin<Plane>,
     dialects: &[&'static str],
@@ -781,6 +828,7 @@ fn facing(
     settings: &[u8],
     owned: &[u8],
     public_url: Option<&str>,
+    facts: &[busbar_contract::plane_calls::DialectFacts],
 ) -> Result<busbar_contract::plane_calls::DoorFacing, String> {
     use busbar_contract::abi::mechanism::call::{Blob, BLOB_ABSENT, BLOB_JSON};
     use busbar_contract::abi::mechanism::lifecycle::{GenIn, OpenOut, RefreshIn};
@@ -801,6 +849,8 @@ fn facing(
     };
     let snapshot = if *current == 0 {
         let url = public_url.unwrap_or_default();
+        // Each points into `facts`, which outlives the open.
+        let providers = provider_facts(facts);
         let mut frame = Frame::new(
             PlaneOpenIn {
                 open: OpenIn {
@@ -836,6 +886,14 @@ fn facing(
                         flags: 0,
                     }
                 },
+                // The same list the served instance's open is handed: the plane resolves each
+                // model's dialect from it, and its claims follow.
+                providers: if providers.is_empty() {
+                    std::ptr::null()
+                } else {
+                    providers.as_ptr()
+                },
+                providers_len: providers.len(),
             },
             PlaneOpenOut {
                 open: OpenOut {
