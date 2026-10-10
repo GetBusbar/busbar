@@ -74,11 +74,11 @@ pub const ROW_STALE_WAIVER: &str = "no-deferral:stale-waiver";
 pub const ROW_STRICT_DONE: &str = "no-deferral:strict-done";
 
 /// The denominator floor, a `const` in the gate's own module with no environment override. It is
-/// pinned AT the measured count: discovery found 934 shipped source files on predev 39374ec00e (it
-/// was 50, about 5% of the tree), and a drop below 934 is refused as UNPROVEN until a reviewed diff
-/// re-measures. The selftest plant removes one file and fails if the floor sits under the count.
+/// pinned AT the measured count: discovery found 932 shipped source files on predev 6ca8584fc0 (it
+/// was 50, about 5% of the tree), and a drop below 932 is refused as UNPROVEN until a reviewed diff
+/// re-measures. The selftest plant cuts the scan set to one file under the floor and must go red.
 /// The only way to lower one is a reviewable source edit.
-pub const DISCOVERY_FLOOR: usize = 934;
+pub const DISCOVERY_FLOOR: usize = 932;
 
 const WAIVERS: &str = "scripts/no-deferral.waivers";
 /// The plan every waiver's expiry is looked up in. It was `docs/design/1.6.0-TRACKER.md` until
@@ -1094,22 +1094,26 @@ impl Gate for NoDeferralGate {
             ),
         }
 
-        // ── THE FLOOR SITS AT THE MEASURED COUNT. One shipped file fewer than discovery finds today
-        //    is refused; a floor set a margin below the count passes it, so this is red exactly when
-        //    the floor has slipped under the number the tree measures.
+        // ── THE FLOOR BITES AT ITS OWN VALUE. The scan set is cut to exactly one file under
+        //    DISCOVERY_FLOOR, however many files the tree has gained since it was measured (a cut of
+        //    one from the live count passed on every tree that grew past the pin, so the case was red
+        //    only on the tree it was written against).
         let one_short = match discover(base) {
-            Ok(files) => files.last().map(|(rel, _)| {
+            Ok(files) => {
                 let mut ov = Overlay::new();
-                ov.remove(rel);
-                ov
-            }),
+                let cut = files.len().saturating_sub(DISCOVERY_FLOOR - 1);
+                for (rel, _) in files.iter().rev().take(cut) {
+                    ov.remove(rel);
+                }
+                Some(ov)
+            }
             Err(_) => None,
         };
         match one_short {
             Some(ov) => report.push(prove_red(
                 base,
                 self,
-                "a scan set one file short of the measured floor is UNPROVEN, never a clean one",
+                "a scan set one file short of the floor is UNPROVEN, never a clean one",
                 &[ROW_DISCOVERY_FLOOR],
                 ov,
                 &["UNPROVEN, not PASS"],
