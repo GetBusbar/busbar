@@ -131,10 +131,11 @@ fn read_at_least(vt: &PlaneHostVtable, host: HostCtx, pipe: PipeId, want: usize)
 
 #[test]
 fn subprocess_pipe_echoes_bytes_through_cat() {
-    // `/bin/cat` exists on macOS and Linux alike; if a platform lacks it, skip rather than fail.
-    if !std::path::Path::new("/bin/cat").exists() {
-        return;
-    }
+    // `/bin/cat` exists on macOS and Linux alike; a runner without it is broken, so fail.
+    assert!(
+        std::path::Path::new("/bin/cat").exists(),
+        "/bin/cat is required by this test"
+    );
     let command = pack_command(&["/bin/cat"]);
     let desc = subprocess_desc(&command);
     let allowlist = vec!["/bin/cat".to_string()];
@@ -189,9 +190,10 @@ fn subprocess_env_is_cleared_and_selective_never_leaking_the_hosts() {
     // `env_clear()` + selective `envs`, the child must see ONLY the records the plane named — never the
     // host's own environment (which holds provider keys), so the marker is present and the host's
     // always-present `PATH` is not. This is the CONFIRMED regression this carrier closes.
-    if !std::path::Path::new("/usr/bin/env").exists() {
-        return;
-    }
+    assert!(
+        std::path::Path::new("/usr/bin/env").exists(),
+        "/usr/bin/env is required by this test"
+    );
     let command = pack_command(&["/usr/bin/env"]);
     let env = env_record("BUSBAR_ENV_MARKER", 0, b"present");
     let mut desc = subprocess_desc(&command);
@@ -227,15 +229,12 @@ fn subprocess_env_resolves_a_secret_reference_host_side() {
     // plaintext at spawn through the built-in resolver, exactly as the in-process stdio spawn does.
     // The `env` module reads a host environment variable — `HOME` is present in any test environment —
     // so the child ends up with the resolved value the plane never held.
-    if !std::path::Path::new("/usr/bin/env").exists() {
-        return;
-    }
-    let Ok(home) = std::env::var("HOME") else {
-        return; // no HOME to resolve against — skip rather than fail.
-    };
-    if home.is_empty() {
-        return;
-    }
+    assert!(
+        std::path::Path::new("/usr/bin/env").exists(),
+        "/usr/bin/env is required by this test"
+    );
+    let home = std::env::var("HOME").expect("HOME must be set for this test");
+    assert!(!home.is_empty(), "HOME must be non-empty for this test");
     let command = pack_command(&["/usr/bin/env"]);
     // The sugar form the config layer accepts: `{ env: HOME }` ⇒ the `env` secret module, key `HOME`.
     let secret_json = br#"{"env":"HOME"}"#;
@@ -320,9 +319,10 @@ fn the_ffi_slot_refuses_a_plane_driven_subprocess() {
 
 #[test]
 fn arena_drop_reclaims_and_kills_an_unclosed_subprocess() {
-    if !std::path::Path::new("/bin/cat").exists() {
-        return;
-    }
+    assert!(
+        std::path::Path::new("/bin/cat").exists(),
+        "/bin/cat is required by this test"
+    );
     let command = pack_command(&["/bin/cat"]);
     let desc = subprocess_desc(&command);
     let allowlist = vec!["/bin/cat".to_string()];

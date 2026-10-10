@@ -361,7 +361,7 @@ pub(crate) struct Instance {
     diag_ids: DiagIds,
     ptr: AtomicPtr<c_void>,
     pub(crate) faulted: AtomicBool,
-    /// `close` answered READY: every later op answers FAULT without a crossing.
+    /// `close` answered READY or FAULT: every later op answers FAULT without a crossing.
     closed: AtomicBool,
     /// THE CROSSING GATE: the count of crossings in progress, with [`CLOSING`] set while `close`
     /// crosses (and kept once it closed). `close` enters only when nothing else is crossing, and
@@ -544,7 +544,7 @@ impl Instance {
         self.calls.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// Whether `close` answered READY.
+    /// Whether `close` answered READY or FAULT.
     pub(crate) fn is_closed(&self) -> bool {
         self.closed.load(Ordering::Acquire)
     }
@@ -727,7 +727,15 @@ impl Instance {
         }
         // SAFETY: the caller's contract.
         let crossed = unsafe { self.cross_gated(s, input, out, out_size) };
-        self.leave_gate(s, s == slot::CLOSE && crossed.outcome == Outcome::Ready);
+        // A `close` that answered FAULT may already have freed the instance (a teardown that
+        // failed after its memory went): the host treats it as closed, never crossing into the
+        // pointer again. That can leak a live instance; it never uses a freed one.
+        let shut = s == slot::CLOSE && matches!(crossed.outcome, Outcome::Ready | Outcome::Fault);
+        if shut {
+            self.closed.store(true, Ordering::Release);
+            self.ptr.store(std::ptr::null_mut(), Ordering::Release);
+        }
+        self.leave_gate(s, shut);
         crossed
     }
 
@@ -905,10 +913,7 @@ impl Instance {
                 // trampoline freed the box a prior PENDING minted; drop our pointer to it.
                 self.ptr.store(std::ptr::null_mut(), Ordering::Release);
             }
-            (slot::CLOSE, Outcome::Ready) => {
-                self.closed.store(true, Ordering::Release);
-                self.ptr.store(std::ptr::null_mut(), Ordering::Release);
-            }
+            // `close` (READY or FAULT) shuts the instance in `Instance::cross`.
             _ => {}
         }
         Crossed {
