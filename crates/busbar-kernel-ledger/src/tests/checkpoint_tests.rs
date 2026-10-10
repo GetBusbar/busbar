@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Checkpoints: sealing, signing, anchoring, and the verification that closes a window.
+//! Checkpoints: sealing, signing, anchoring, and the verification measured from one.
 
 use std::collections::BTreeMap;
 
 use crate::checkpoint::{AnchorError, Checkpoint, CheckpointSecret, SignError, Signature};
 use crate::totals::{Totals, WindowStart};
-use crate::verify::{verify, AllWindowsOpen};
+use crate::verify::verify;
 
 use super::fixtures::key;
 
@@ -32,36 +32,12 @@ fn a_signer_without_a_key_refuses_rather_than_sealing_something_unsigned() {
     assert!(matches!(err, Err(SignError::KeyUnavailable(_))));
 }
 
-/// The threshold comparison, at the boundary in both directions.
+/// An anchor sink that read back something else is a DISTINCT failure from an unreachable one.
 ///
-/// The COUNTING itself is the caller's: `AnchorState::consecutive_failures` is a plain field with
-/// no incrementing method on this crate's side, so what this crate can be held to is the comparison
-/// and nothing else. Named accordingly rather than claiming the count is checked here.
+/// (A consecutive-failure counter, `AnchorState`, and its threshold check had no production
+/// construction site and are deleted with the half of this test that pinned the threshold.)
 #[test]
-fn the_alarm_threshold_is_reached_at_the_count_and_not_before() {
-    use crate::checkpoint::AnchorState;
-    let fresh = AnchorState::default();
-    assert_eq!(fresh.consecutive_failures, 0);
-    assert!(
-        !fresh.should_alarm(1),
-        "a sink that has not failed does not alarm"
-    );
-    assert!(
-        fresh.should_alarm(0),
-        "a threshold of nothing is reached by nothing"
-    );
-
-    let mut state = AnchorState::default();
-    for _ in 0..3 {
-        state.consecutive_failures += 1;
-    }
-    assert!(
-        !state.should_alarm(4),
-        "one short of the threshold is quiet"
-    );
-    assert!(state.should_alarm(3), "the threshold itself alarms");
-    assert!(state.should_alarm(2), "and anything past it");
-
+fn a_read_back_that_differs_is_its_own_anchor_failure() {
     // The read-back failure is a DISTINCT fact from an unreachable sink, and its text is what an
     // operator is handed. Previously this variant was constructed and discarded, which asserted
     // nothing at all: a sink that silently returned a different checkpoint could be reported with
@@ -89,7 +65,7 @@ fn a_balance_that_appeared_after_the_checkpoint_is_still_checked() {
             ..Totals::zero()
         },
     );
-    let findings = verify(&checkpoint, &now, &AllWindowsOpen, None);
+    let findings = verify(&checkpoint, &now, None);
     assert_eq!(findings.len(), 1, "a new unbalanced key must be found");
 }
 

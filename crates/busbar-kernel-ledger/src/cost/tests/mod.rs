@@ -24,6 +24,7 @@ pub(crate) fn micros_nanos(nanos: u128) -> Result<i64, crate::cost::MoneyError> 
 }
 
 mod derive_tests;
+mod fee_lane_tests;
 mod history_tests;
 mod identity_tests;
 mod posting_tests;
