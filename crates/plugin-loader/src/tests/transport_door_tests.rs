@@ -16,7 +16,7 @@ use crate::sign::validate_structure;
 use busbar_contract::abi::mechanism::call::Outcome;
 use busbar_contract::abi::mechanism::lifecycle::{slot as life, OpenIn, OpenOut};
 use busbar_contract::abi::sdk::door::{blank_in, blank_out};
-use busbar_contract::abi::transport::ROLE_FRAMER;
+use busbar_contract::abi::transport::ROLE_CARRIER;
 
 /// The test-only HOT carrier the conformance and stack witnesses below drive.
 #[path = "mem_carrier.rs"]
@@ -32,38 +32,32 @@ mod adapter;
 
 /// The neutral frame door (`tests/fixtures/neutral_frame_door.rs`): a dropped-in transport door
 /// that frames the host's socket, built beside the test binary as this crate's example `cdylib`.
-/// Under CI a missing artifact is a failure, never a skip.
-fn fixture() -> Option<Vec<u8>> {
-    Some(std::fs::read(fixture_path()?).expect("read the cdylib"))
+/// A missing artifact is a failure naming the command that builds it, never a skip.
+fn fixture() -> Vec<u8> {
+    std::fs::read(fixture_path()).expect("read the cdylib")
 }
 
 /// Where [`fixture`] is: the neutral frame door example, which admits against its own Statement
 /// rendering as a transport composing over nothing.
-fn fixture_path() -> Option<std::path::PathBuf> {
-    let exe = std::env::current_exe().ok()?;
-    let examples = exe.parent()?.parent()?.join("examples");
-    let found = Some(examples.join(crate::plugin_library_filename("neutral_frame_door")))
-        .filter(|p| p.exists())
-        .filter(|p| {
-            crate::dispatch::rendering_of_library(p)
-                .ok()
-                .flatten()
-                .and_then(|stated| {
-                    crate::dispatch::load_dropped::<crate::dispatch::kinds::transport::Transport>(
-                        p,
-                        &stated,
-                        bind(),
-                    )
-                    .ok()
-                })
-                .and_then(|d| d.context::<TransportFacts>().cloned())
-                .is_some_and(|f| f.composes_over.is_empty())
-        });
+fn fixture_path() -> std::path::PathBuf {
+    let p = crate::both_ways::example_cdylib("neutral_frame_door");
     assert!(
-        found.is_some() || std::env::var_os("CI").is_none(),
-        "the neutral frame door example is built beside the test binary under CI"
+        crate::dispatch::rendering_of_library(&p)
+            .ok()
+            .flatten()
+            .and_then(|stated| {
+                crate::dispatch::load_dropped::<crate::dispatch::kinds::transport::Transport>(
+                    &p,
+                    &stated,
+                    bind(),
+                )
+                .ok()
+            })
+            .and_then(|d| d.context::<TransportFacts>().cloned())
+            .is_some_and(|f| f.composes_over.is_empty()),
+        "the neutral frame door example admits as a transport composing over nothing"
     );
-    found
+    p
 }
 
 fn bind() -> Bind {
@@ -79,8 +73,9 @@ fn bind() -> Bind {
 /// The fixture's manifest, stating the door's Statement rendering as its signed manifest does (the
 /// door is admitted against it).
 fn manifest() -> crate::sign::Manifest {
-    let rendering =
-        fixture_path().and_then(|path| crate::dispatch::rendering_of_library(&path).ok().flatten());
+    let rendering = crate::dispatch::rendering_of_library(&fixture_path())
+        .ok()
+        .flatten();
     crate::sign::Manifest {
         statement: rendering.map(hex::encode),
         ..statement(
@@ -102,7 +97,7 @@ fn packed() -> crate::sign::Manifest {
 
 #[test]
 fn a_signed_door_tarball_is_opened_through_the_one_door() {
-    let Some(lib) = fixture() else { return };
+    let lib = fixture();
     let registry = dropped("door-fixture", manifest(), &lib);
     let entries = registry
         .open_transport_entries(&bind())
@@ -111,7 +106,10 @@ fn a_signed_door_tarball_is_opened_through_the_one_door() {
     assert_eq!(entries.doors.len(), 1);
     let door = &entries.doors[0];
     let facts = door.context::<TransportFacts>().expect("its tail");
-    assert_eq!(facts.role, ROLE_FRAMER);
+    assert_eq!(
+        facts.role, ROLE_CARRIER,
+        "the neutral door carries its byte stream as itself"
+    );
     assert_eq!(facts.claims, [door.name()], "one claim: its own");
     assert!(
         facts.composes_over.is_empty(),

@@ -519,13 +519,11 @@ expect_green() {
 }
 
 # AXIS 1's FEATURE SET. `proto-llm`, for the probe methodology (see write_zero_plugin_config), and
-# `transport-tcp`, because a binary with NO wire under its data door is not a zero-plugin binary but
-# an unbootable one. `transport-tcp` is the tcp wire's LINKED ROW behind a default-on switch
-# (9f98bb888, spec #3: a transport is compiled in OR dropped in); with the row off and no tcp
-# tarball in `plugins/`, `http` composes over nothing and the composition root refuses to seal —
-# the DESIGNED refusal, pinned by crates/busbar/tests/transport_dropped_in_serves.rs:258-273. A
-# featureless build with zero plugins is therefore an impossible configuration: every request this
-# gate makes needs a wire, so the wire stays linked and every OTHER plugin capability is compiled out.
+# `transport-tcp`, the tcp wire's LINKED ROW behind a default-on switch (9f98bb888, spec #3: a
+# transport is compiled in OR dropped in), kept so the axis measures every OTHER plugin capability
+# compiled out against the wire the shipped binary carries. (No layer composes over it any more,
+# ARCHITECT ruling Q128 U7: no transport names another and the carrier is the connector's choice, so
+# its absence would no longer refuse the seal; transport_dropped_in_serves.rs pins that.)
 AXIS1_FEATURES="proto-llm,transport-tcp"
 
 build_binaries() {

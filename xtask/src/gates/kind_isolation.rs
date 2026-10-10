@@ -155,6 +155,7 @@ mod closure;
 mod debt_free;
 mod inputs;
 mod matrix;
+mod pinned;
 mod truths;
 
 pub use closure::ROW_CLOSURE;
@@ -359,10 +360,12 @@ static KINDS: &[KindDef] = &[
         family: Family::Neutral,
         matchers: &["busbar-export-"],
     },
+    // `=busbar-mcp` STRUCK (P3 DEL-MCP, ARCHITECT 2026-10-05): the engine is deleted; the mcp plane
+    // is `busbar-plane-mcp`, a `plane` crate (`legacy-retired` asked for exactly this strike).
     KindDef {
         kind: "legacy",
         family: Family::Plane,
-        matchers: &["=busbar-llm", "=busbar-mcp", "=busbar-a2a", "=busbar-voice"],
+        matchers: &["=busbar-llm", "=busbar-a2a", "=busbar-voice"],
     },
 ];
 
@@ -401,32 +404,16 @@ const PLANE_ALIASES: &[(&str, &str, &str)] = &[
     ("decisions", "decision", "busbar-plane-decisions"),
 ];
 
-/// Kinds the target scheme defines that the tree does not carry YET, each with its reason. The
-/// dead-kind rule skips these — and the ratchet runs the other way: the day a crate of one of them
-/// exists, the entry must be struck, or a kind would be both pending and live.
-///
-/// `dialect` was a pending kind and it is not a kind at all (DECISIONS #4). `secret` and `export`
-/// are pending because their instances live OUTSIDE this repo: the owner deleted the in-tree
-/// fixtures ("FIXTURES", docs/design/1.6.0-QUESTIONS.md) and each kind is proven by its real plugin
-/// repos. `auth` is no longer pending (AUTH-SPLIT): busbar-auth-header, busbar-auth-sigv4,
-/// busbar-auth-oauth and busbar-auth-webhook-signature are in-tree, staged auth-kind plugin crates
-/// (ARCHITECT ruling 2026-09-28, placement (B); each extracts to its own repo at KERNEL<>PLUGINS
-/// step 40), so the dead-kind rule watches them like every other kind.
-const PENDING_KINDS: &[(&str, &str)] = &[
-    (
-        "secret",
-        "every plugin lives in its own repo (owner, 1.6.0-QUESTIONS.md \"PLUGIN HOME\"); the in-tree \
-         secret fixture is deleted (\"FIXTURES\") and the kind is proven by GetBusbar/busbar-secret-vault \
-         through crates/plugin-loader/src/tests/plugin_proof_tests.rs",
-    ),
-    (
-        "export",
-        "every plugin lives in its own repo (owner, 1.6.0-QUESTIONS.md \"PLUGIN HOME\"); the in-tree \
-         export fixture is deleted (\"FIXTURES\") and the kind is proven by its real sinks \
-         GetBusbar/busbar-export-file, -webhook, -prometheus and -otlp, pinned git dev-dependencies of \
-         busbar-plugin-loader (export_conformance_tests, both ways) and of busbar",
-    ),
-];
+// THERE IS NO PENDING-KIND LIST, AND THERE IS NO SKIP (ARCHITECT ruling W4B-Q1, 2026-10-03;
+// RUN.md:119 "read pinned_exemplars, never skip"). `secret` and `export` were listed here as
+// kinds the dead-kind rule skipped, because every one of their crates lives in its own repo
+// (BUSBAR-1.6.0.md §9, "Every plugin lives in its own repo"), and each crate of a kind leaving
+// (the memory store, the ranking hooks, the last in-tree transport) would have put that kind on
+// the same list. A skipped kind is a kind no rule reads. A kind whose
+// crates are ALL extracted reads them from the pinned checkouts busbar already pulls them from
+// ([`pinned`]): each is laid over the tree at `crates/<package>`, the census reads it, and the
+// dead-kind rule scores the kind like every other — live while a pinned crate of it resolves, dead
+// the day its last pin goes. `dialect` was a pending kind and it is not a kind at all (DECISIONS #4).
 
 /// Edge classes the TARGET scheme has and the tree does not yet. They are allowed without being
 /// scored as dead — a class that cannot exist until the rename lands cannot be a stale allowance.
@@ -439,8 +426,9 @@ const PENDING_EDGES: &[(&str, &str)] = &[
     // class the design grants ahead of the tree lands here.
 ];
 
-/// The retiring 1.5.x crates, named so the ratchet can check they still exist.
-const LEGACY_CRATES: &[&str] = &["busbar-llm", "busbar-mcp", "busbar-a2a", "busbar-voice"];
+/// The retiring 1.5.x crates, named so the ratchet can check they still exist. `busbar-mcp` retired
+/// at P3 DEL-MCP (ARCHITECT 2026-10-05) and is struck, as `legacy-retired` requires.
+const LEGACY_CRATES: &[&str] = &["busbar-llm", "busbar-a2a", "busbar-voice"];
 
 /// THE MANIFESTS IN THIS REPOSITORY THAT ARE NOT CRATES OF THE TREE, each with the sentence that
 /// says why, and each on the expiry ratchet every allowance in this file lives under: an entry that
@@ -553,7 +541,7 @@ const ARCHITECTURE_ALLOWED: &[(&str, &str)] = &[
     // It is stated here for every kind in `truths::PLUGIN_KINDS`, not kind by kind as each one's
     // first crate happened to reach the contract — `store`, `plane` and `transport` were granted
     // that way and `auth`, `hooks`, `secret` and `export` were not, so the day the dependency-wall
-    // wave repointed `busbar-hooks-ranking` at the contract, the plugin DOING what #40 asks was
+    // wave repointed `busbar-hook-ranking` at the contract, the plugin DOING what #40 asks was
     // scored `new-forbidden-edge`. `the_wall_is_granted_for_every_plugin_kind` holds this block to
     // the seven; [`is_the_wall`] is the same rule where an edge or a vocabulary cell is judged.
     ("auth", "contract"),
@@ -591,9 +579,11 @@ const ARCHITECTURE_ALLOWED: &[(&str, &str)] = &[
     // of each landed; `export` (the built-in sinks, #3 / item 141) and `hooks` (the ranking hooks
     // K5d moved onto the root's linked tables) were left out, so the root doing its job was scored
     // `not-allowed` and the K5d edge `new-forbidden-edge`. `auth` is granted for the root's rows on
-    // the auth axis (ARCHITECT INTEGRATION U17, 2026-09-30). `secret` is absent because the root
-    // links no crate of that kind; a grant with no edge under it is a sentence about a tree that
-    // does not exist. `the_root_is_granted_every_plugin_kind_it_links` measures the
+    // the auth axis (ARCHITECT INTEGRATION U17, 2026-09-30). `secret` is granted for the root's
+    // rows on the secret axis (`secret-env`, `secret-file`, `[package.metadata.busbar.linked]`):
+    // it was absent while those crates sat outside the census, which read only this tree, and the
+    // pinned checkouts entering it (ARCHITECT W4B-Q1) measure the edge it covers.
+    // `the_root_is_granted_every_plugin_kind_it_links` measures the
     // root's shipped edges and refuses a plugin kind the root links without a grant here. The
     // grant is the ROOT's: a non-root crate reaching a plugin crate is still refused (selftest).
     ("root", "auth"),
@@ -605,6 +595,7 @@ const ARCHITECTURE_ALLOWED: &[(&str, &str)] = &[
     ("root", "legacy"),
     ("root", "plane"),
     ("root", "plugin-tooling"),
+    ("root", "secret"),
     ("root", "store"),
     ("root", "transport"),
     // `("transport", "transport")` WAS HERE, AND IT IS STRUCK.
@@ -677,6 +668,7 @@ const SPEC_ALLOWED_MANIFEST: &[(&str, &str)] = &[
     ("root", "export"),
     ("root", "hooks"),
     ("root", "plane"),
+    ("root", "secret"),
     ("root", "store"),
     ("root", "transport"),
 ];
@@ -744,7 +736,18 @@ const ARCHITECTURE_TCB: &[(&str, &str)] = &[
 ];
 
 /// The verdict a `[[dep]]` row must carry, and the whole vocabulary of them.
-const DEP_VERDICTS: &[&str] = &["allowed", "tcb", "not-allowed", "owner-ruling-pending"];
+const DEP_VERDICTS: &[&str] = &[
+    "allowed",
+    "tcb",
+    "not-allowed",
+    "owner-ruling-pending",
+    TEST_LINKED_DOOR_VERDICT,
+];
+
+/// A TEST-LINKED DOOR's verdict ([`test_linked_door_edges`]; ARCHITECT 2026-10-03, L3B-MCP round 4
+/// Q-L3B-GATES (1); ported from lane-dg-mcp dd0d4438ba at P3 DEL-MCP): a row claims it only for such
+/// an edge, and such an edge's row claims nothing else.
+const TEST_LINKED_DOOR_VERDICT: &str = "test-linked-door";
 
 /// The two halves of the build graph a `[[dep]]` or `[[question]]` row can be about.
 const DEP_HALVES: &[&str] = &["shipped", "test"];
@@ -872,6 +875,18 @@ const BATTERY_MARKER: &str = "testkit";
 
 /// A per-crate battery file matches this, under the crate's own `tests/`.
 const CONFORMANCE_MARKER: &str = "conformance";
+
+/// THE PUBLISHED CONFORMANCE SUITE'S INVOCATION. A plugin runs busbar's published suite (OWNER
+/// 2026-10-03: plugins test themselves against busbar's published suite) by invoking
+/// `busbar_plugin_loader::conformance_suite!` in its `tests/conformance.rs`, and the macro expands
+/// to the suite's `#[test]` entries (`crates/plugin-loader/src/conformance/mod.rs`). The file
+/// itself spells no `#[test]`, so a counter that reads only attributes scored a running battery as
+/// one with no entry.
+const PUBLISHED_SUITE_MACRO: &str = "conformance_suite!";
+
+/// The key an invocation of [`PUBLISHED_SUITE_MACRO`] names its subject with. An invocation that
+/// names no `door:` expands to no entry against any subject, so it is not counted.
+const PUBLISHED_SUITE_SUBJECT: &str = "door:";
 
 // ------------------------------------------------------------------------------------------------
 // the vocabulary bans
@@ -1018,6 +1033,17 @@ struct DepQuestion {
     question: String,
 }
 
+/// One `[[law0]]` row: a neutral crate's Law 0 count on one axis, recorded at today's measurement
+/// (Law 9, ARCHITECT 2026-10-07). The count may only fall; the DoD's hard clause (BUSBAR-1.6.0.md
+/// :1994-1999) is every such row at 0, which `scripts/verify-1.6.0-done.sh` reads.
+#[derive(Debug, Clone)]
+pub(super) struct Law0Ceiling {
+    pub krate: String,
+    pub axis: String,
+    pub count: usize,
+    pub cite: String,
+}
+
 /// One `[[face]]` row: a crate that implements ANOTHER kind's entry face today, at the exact number
 /// of implementations, with the sentence that says why it is still here.
 ///
@@ -1048,6 +1074,9 @@ struct KindRegistry {
     dep_questions: Vec<DepQuestion>,
     /// The `:faces` row's table — one row per crate that implements another kind's entry face.
     faces: Vec<FaceDebt>,
+    /// `[[law0]]` rows: today's Law 0 count per neutral crate and axis (Law 9), the ceilings
+    /// `kind-isolation:law0` holds every neutral crate to. See `matrix::rule_law0`.
+    law0: Vec<Law0Ceiling>,
     /// The `:matrix` row's two tables. They live in this reader rather than in a second one
     /// because there is ONE registry file and a file read twice is a file two rules can disagree
     /// about.
@@ -1487,6 +1516,31 @@ fn push_row(reg: &mut KindRegistry, table: &str, fields: &[(String, String)], at
                 drain: v[5].clone(),
             });
         }
+        "law0" => {
+            let Some(v) = take_row(
+                fields,
+                &["crate", "axis", "count", "cite"],
+                table,
+                at,
+                &mut reg.errors,
+            ) else {
+                return;
+            };
+            let Ok(count) = v[2].parse::<usize>() else {
+                reg.errors.push(format!(
+                    "bad-count\t{REGISTRY_FILE}:{at}\t`[[law0]] count = \"{}\"` is not a number. A \
+                     ceiling that cannot be compared to a measurement is not a ceiling",
+                    v[2]
+                ));
+                return;
+            };
+            reg.law0.push(Law0Ceiling {
+                krate: v[0].clone(),
+                axis: v[1].clone(),
+                count,
+                cite: v[3].clone(),
+            });
+        }
         "question" => {
             let Some(v) = take_row(
                 fields,
@@ -1515,8 +1569,8 @@ fn push_row(reg: &mut KindRegistry, table: &str, fields: &[(String, String)], at
         other => reg.errors.push(format!(
             "unknown-table\t{REGISTRY_FILE}:{at}\t`[[{other}]]` is not a table this gate reads; the \
              file holds `[[transitional]]`, `[[registered]]`, `[[announced]]`, `[[dep]]`, \
-             `[[question]]`, `[[face]]`, `[[edge]]`, `[[cell]]`, `[[instance]]`, `[[core-name]]` \
-             and `[[patch]]` rows and nothing else"
+             `[[question]]`, `[[face]]`, `[[law0]]`, `[[edge]]`, `[[cell]]`, `[[instance]]`, \
+             `[[core-name]]` and `[[patch]]` rows and nothing else"
         )),
     }
 }
@@ -1551,7 +1605,7 @@ fn parse_registry(text: &str) -> KindRegistry {
             reg.errors.push(format!(
                 "unknown-table\t{REGISTRY_FILE}:{}\t`{t}` — the file holds `[[transitional]]`, \
                  `[[registered]]`, `[[announced]]`, `[[dep]]`, `[[question]]`, `[[face]]`, \
-                 `[[edge]]`, `[[cell]]`, `[[instance]]`, `[[core-name]]` and `[[patch]]` rows and \
+                 `[[law0]]`, `[[edge]]`, `[[cell]]`, `[[instance]]`, `[[core-name]]` and `[[patch]]` rows and \
                  nothing else",
                 i + 1
             ));
@@ -1617,6 +1671,11 @@ struct CrateInfo {
     dev_deps: Vec<DepDecl>,
     /// Two kinds claimed this name at one precedence — the fusion refusal.
     ambiguous: Vec<&'static str>,
+    /// THE PINNED SOURCE (`git+…`) when this crate is a plugin repo's crate read from its pinned
+    /// checkout rather than a crate of this tree — see [`pinned`]. Such a crate is mounted at
+    /// `crates/<package>` and every rule reads it there; it is off `[workspace.members]` because it
+    /// is a git dependency, not a member, so the census's member arms do not ask it to be one.
+    pinned: Option<String>,
 }
 
 /// Every kind's marker HEAD WORD — `plane`, `transport`, `store`, `kernel`, … — derived from
@@ -1670,6 +1729,15 @@ fn precedence(matcher: &str) -> u8 {
     } else {
         1
     }
+}
+
+/// The PLUGIN kind a package name resolves to — one of the seven ([`truths::PLUGIN_KINDS`]) — or
+/// `None` for an infra crate, an unknown name, or a name two kinds claim at once. The audit ledger
+/// asks this of every `git+` package in `Cargo.lock` to decide which pinned checkouts are a kind's
+/// crates (`crate::audit_pinned`), so it resolves names through this table and never a second one.
+pub fn plugin_kind(name: &str) -> Option<&'static str> {
+    let (kind, _, ambiguous) = resolve_kind(name);
+    kind.filter(|k| ambiguous.is_empty() && truths::PLUGIN_KINDS.contains(k))
 }
 
 /// Resolve a crate name to its kind. THE MOST SPECIFIC BAND WINS, and two kinds in that band is the
@@ -1830,6 +1898,50 @@ pub fn plane_kind_src_roots(cx: &Ctx) -> Result<Vec<String>, String> {
     Ok(out)
 }
 
+/// ONE CRATE OF KIND `plane`, as the census reads it — for a sibling gate that owes something per
+/// plane crate and must not keep its own list of them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlaneKindCrate {
+    /// The package name from `[package] name = …`.
+    pub name: String,
+    /// The manifest's own path, so a finding can name the file.
+    pub manifest: String,
+    /// The keys its `impl PlaneMeta for …` blocks declare (`const KEY: &'static str = "…";`) — the
+    /// plane the crate IS, read off its source rather than its name.
+    pub declared_keys: Vec<String>,
+}
+
+/// THE PLANE-KIND CRATES, DERIVED FROM THE CENSUS: every manifest anywhere in the tree whose crate
+/// resolves to the `plane` kind (the `busbar-plane-` matcher, after any `[[registered]]` override)
+/// and is not an [`OFF_TREE_MANIFESTS`] entry.
+///
+/// The `legacy` kind is NOT in it, although it shares [`Family::Plane`] with `plane` and
+/// [`plane_kind_src_roots`] scans it: a legacy crate is a retiring pre-unification ENGINE matched by
+/// exact name (a closed list no new crate can join), not a plane crate. The plane it serves is
+/// declared by its `busbar-plane-<key>` successor, which is in this population.
+///
+/// `Err` when no crate resolves to `plane`: an empty population is the passing answer to every rule
+/// over it.
+pub fn plane_kind_crates(cx: &Ctx) -> Result<Vec<PlaneKindCrate>, String> {
+    let out: Vec<PlaneKindCrate> = census(cx)?
+        .into_iter()
+        .filter(|c| c.kind == Some("plane"))
+        .map(|c| PlaneKindCrate {
+            name: c.name,
+            manifest: c.manifest,
+            declared_keys: c.declared_keys,
+        })
+        .collect();
+    if out.is_empty() {
+        return Err(
+            "no crate in the tree resolves to the `plane` kind — the plane-crate population is \
+             empty, and an empty population is the passing answer to every rule over it"
+                .to_string(),
+        );
+    }
+    Ok(out)
+}
+
 /// [`REGISTRY_FILE`], read and parsed. A read failure is fatal in [`Gate::run`], which is where it
 /// is reported; the census takes the empty registry so that one failure is reported once.
 fn load_registry(cx: &Ctx) -> Result<KindRegistry, String> {
@@ -1946,6 +2058,7 @@ fn census(cx: &Ctx) -> Result<Vec<CrateInfo>, String> {
             Some("plane") => declared_meta_keys(cx, &dir, "PlaneMeta"),
             _ => Vec::new(),
         };
+        let pinned = pinned::mounted_source(cx, &name, &dir, kind);
         out.push(CrateInfo {
             dir,
             manifest: rel,
@@ -1958,6 +2071,7 @@ fn census(cx: &Ctx) -> Result<Vec<CrateInfo>, String> {
             deps,
             dev_deps,
             ambiguous,
+            pinned,
         });
     }
     out.sort_by(|a, b| a.name.cmp(&b.name).then(a.dir.cmp(&b.dir)));
@@ -2481,10 +2595,21 @@ fn rule_deps(cx: &Ctx, crates: &[CrateInfo], reg: &KindRegistry, half: Half, shi
     let by_name: BTreeMap<&str, &CrateInfo> = crates.iter().map(|c| (c.name.as_str(), c)).collect();
     let drain_targets: BTreeSet<&str> = DRAIN_TARGET_KINDS.iter().copied().collect();
     let granted = match half {
-        Half::Test => conformance_witness_edges(cx, crates),
+        Half::Test => {
+            let mut g = conformance_witness_edges(cx, crates);
+            g.extend(loader_fixture_edges(cx, crates));
+            g
+        }
         Half::Shipped => BTreeSet::new(),
     };
     let measured = measure_edges_granting(crates, half, &granted);
+    // A TEST-LINKED DOOR (`test_linked_door_edges`) is a test edge with its own verdict; the shipped
+    // half excuses nothing.
+    let doors = match half {
+        Half::Test => test_linked_door_edges(cx, crates, reg),
+        Half::Shipped => BTreeSet::new(),
+    };
+    let is_door = |from: &str, to: &str| doors.contains(&(from.to_owned(), to.to_owned()));
     // A ROW REFUSED AT LOAD IS REPORTED, NOT DROPPED. A table that quietly skips what it cannot
     // understand is a table that says yes to it, and the row it skipped is the one somebody wrote
     // to get an edge past this rule. Only the shipped row carries them, so one bad row is one
@@ -2664,6 +2789,21 @@ fn rule_deps(cx: &Ctx, crates: &[CrateInfo], reg: &KindRegistry, half: Half, shi
         Half::Test => cold_witness_edges(cx, crates),
         Half::Shipped => BTreeSet::new(),
     };
+    // A REVIEWED RENAME IS THE EDGE IT RENAMES. A plugin crate that left the tree under a new name
+    // (P5: `busbar-hooks-ranking` -> `busbar-hook-ranking`) is the same crate only through a row of
+    // the construction census's rename ledger (`[[gate.census.renamed]]`, ARCHITECT 2026-10-03
+    // Q-L7B2-CENSUS (A)): a whole row whose commit resolves, which that gate holds. An edge to the
+    // NEW name pre-exists exactly when the base had it under the OLD one. A rename with no row is a
+    // new edge, as before; a broken row renames nothing (the construction gate reds it).
+    let renamed_from: BTreeMap<String, String> = cx
+        .read(crate::gates::construction::CEILINGS)
+        .ok()
+        .and_then(|t| crate::toml_doc::parse_str(&t).ok())
+        .map(|doc| crate::gates::construction::census::renames(cx, &doc).0)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(old, new)| (new, old))
+        .collect();
     match base::read(cx) {
         Ok(base) => {
             for e in &measured {
@@ -2671,10 +2811,16 @@ fn rule_deps(cx: &Ctx, crates: &[CrateInfo], reg: &KindRegistry, half: Half, shi
                 if implied == "allowed" || implied == "tcb" {
                     continue;
                 }
-                if base.has_edge(&e.from, &e.to, half.word()) {
+                if pre_existing(&renamed_from, &e.from, &e.to, |from, to| {
+                    base.has_edge(from, to, half.word())
+                }) {
                     continue;
                 }
                 if witness.contains(&(e.from.clone(), e.to.clone())) {
+                    continue;
+                }
+                // A TEST-LINKED DOOR is excused on the test half only (`doors` is empty shipped).
+                if is_door(&e.from, &e.to) {
                     continue;
                 }
                 // THE DRAIN IS THE ONE EDGE THAT IS SUPPOSED TO BE NEW.
@@ -2817,8 +2963,27 @@ fn rule_deps(cx: &Ctx, crates: &[CrateInfo], reg: &KindRegistry, half: Half, shi
         // A ROW MAY NOT GRANT ITSELF AN EDGE THE ARCHITECTURE DOES NOT. `allowed` and `tcb` are
         // readings of the architecture, not opinions a row is entitled to hold: the class tables
         // are in this file precisely so the ledger cannot edit them.
-        let implied = verdict_for(&e.class);
+        let implied = if is_door(&e.from, &e.to) {
+            TEST_LINKED_DOOR_VERDICT
+        } else {
+            verdict_for(&e.class)
+        };
         match row.verdict.as_str() {
+            v if v == TEST_LINKED_DOOR_VERDICT && implied != TEST_LINKED_DOOR_VERDICT => offenders
+                .push(format!(
+                    "unsupported-verdict\t{} -> {}\tthe row claims `{TEST_LINKED_DOOR_VERDICT}`, \
+                     and the edge is not a test-linked door: a [dev-dependencies] edge on a plane \
+                     crate the crate's `test-linked` list names as `door:<crate>`, never shipped, \
+                     whose row states the drain `{TEST_LINKED_DOOR_DRAIN}` (the architecture \
+                     implies `{implied}`).",
+                    e.from, e.to
+                )),
+            v if v != TEST_LINKED_DOOR_VERDICT && implied == TEST_LINKED_DOOR_VERDICT => offenders
+                .push(format!(
+                    "unsupported-verdict\t{} -> {}\tthe edge is a test-linked door and the row \
+                     calls it `{v}`: its verdict is `{TEST_LINKED_DOOR_VERDICT}`.",
+                    e.from, e.to
+                )),
             "allowed" if implied != "allowed" => offenders.push(format!(
                 "unsupported-verdict\t{} -> {}\tthe row claims `allowed`, and the architecture \
                  grants no {} -> {} edge (it implies `{implied}`). A ledger row cannot grant an \
@@ -3467,7 +3632,10 @@ fn rule_registry(cx: &Ctx, crates: &[CrateInfo], reg: &KindRegistry, ship: bool)
         //    the member line arrives with the rest of it; the announcement's own expiry — struck
         //    when the crate is real, RED on the ship sha — is what stops that from becoming a way
         //    to keep a crate out of `--workspace` indefinitely.
-        if !members.contains(&c.dir) && !announced_names.contains(c.name.as_str()) {
+        if !members.contains(&c.dir)
+            && !announced_names.contains(c.name.as_str())
+            && c.pinned.is_none()
+        {
             let reached: Vec<&str> = crates
                 .iter()
                 .filter(|o| {
@@ -3610,33 +3778,21 @@ fn rule_registry(cx: &Ctx, crates: &[CrateInfo], reg: &KindRegistry, ship: bool)
         }
     }
 
-    // A KIND NOBODY INSTANTIATES IS A DEAD ROW in the table, not a kind — unless it is DECLARED
-    // pending, and then the ratchet runs the other way: the first crate of it retires the pending
-    // entry, so a kind can never be both pending and live.
+    // A KIND NOBODY INSTANTIATES IS A DEAD ROW in the table, not a kind. A kind whose crates all
+    // left for their own repos is NOT that: its pinned checkouts are in the census ([`pinned`]),
+    // so it is live exactly while one of them resolves. Nothing is skipped (ARCHITECT W4B-Q1).
     //
-    // An ANNOUNCED kind is the third case, and it is the one that keeps this rule from biting the
-    // wrong way: the crate is being written right now, so the kind is neither dead nor pending —
-    // it is arriving, and the announcement is the claim that it is. Landing it must be GREEN here.
+    // An ANNOUNCED kind is the other case, and it is the one that keeps this rule from biting the
+    // wrong way: the crate is being written right now, so the kind is not dead — it is arriving,
+    // and the announcement is the claim that it is. Landing it must be GREEN here.
     let live: BTreeSet<&str> = crates.iter().filter_map(|c| c.kind).collect();
-    let pending: BTreeSet<&str> = PENDING_KINDS.iter().map(|(k, _)| *k).collect();
     let announced_kinds = reg.announced_kinds();
     for def in KINDS {
-        if !live.contains(def.kind)
-            && !pending.contains(def.kind)
-            && !announced_kinds.contains(def.kind)
-        {
+        if !live.contains(def.kind) && !announced_kinds.contains(def.kind) {
             offenders.push(format!(
-                "dead-kind\tKINDS\t`{}` is in the kind table and no crate is one; strike it or \
-                 build one",
+                "dead-kind\tKINDS\t`{}` is in the kind table and no crate is one, in this tree \
+                 or at a pinned checkout; strike it or build one",
                 def.kind
-            ));
-        }
-    }
-    for (kind, _) in PENDING_KINDS {
-        if live.contains(kind) {
-            offenders.push(format!(
-                "kind-arrived\tPENDING_KINDS\t`{kind}` now has crates in the tree; strike its \
-                 pending entry so the dead-kind rule watches it like every other kind"
             ));
         }
     }
@@ -3970,7 +4126,7 @@ struct SourceIndex {
     /// dirs that export a door through the SDK door macro (`export_door!(..)` on a production line
     /// of their `src/` or `examples/`). See [`door_carries`].
     door_exports: BTreeSet<String>,
-    /// dirs whose shipped source builds a door with an SDK door builder. See [`builds_door`].
+    /// dirs whose shipped source builds a door with an SDK door builder. See [`door_macro_calls`] and [`door_builders`].
     door_builders: BTreeSet<String>,
     /// dir -> the kinds whose memory ABI its shipped source names. See [`door_kind_marks`].
     door_kinds: BTreeMap<String, BTreeSet<&'static str>>,
@@ -3981,6 +4137,9 @@ struct SourceIndex {
     /// dir -> it carries a battery file whose every entry is `#[ignore]`d, or which has no entry at
     /// all. A file, not a battery: see [`live_battery_entries`].
     conformance_dead: BTreeSet<String>,
+    /// dir -> entry-face label -> how many shipped impls are THAT face, matched by path
+    /// ([`face_label`]). What `:faces` and the `[[face]]` rows read.
+    faces: BTreeMap<String, BTreeMap<String, usize>>,
 }
 
 /// `(live, ignored)` `#[test]` entries in a battery file.
@@ -4003,7 +4162,10 @@ fn live_battery_entries(text: &str) -> (usize, usize) {
     let is_attr = |l: &String| l.trim_start().starts_with("#[");
     let (mut live, mut ignored) = (0usize, 0usize);
     for (i, l) in lines.iter().enumerate() {
-        if !l.trim_start().starts_with("#[test]") {
+        // An async entry is an entry: `#[tokio::test]` (with or without its runtime arguments) is a
+        // test `cargo test` runs exactly as it runs `#[test]`.
+        let t = l.trim_start();
+        if !(t.starts_with("#[test]") || t.starts_with("#[tokio::test")) {
             continue;
         }
         let mut lo = i;
@@ -4020,7 +4182,66 @@ fn live_battery_entries(text: &str) -> (usize, usize) {
             live += 1;
         }
     }
+    live += published_suite_invocations(&lines);
     (live, ignored)
+}
+
+/// How many invocations of the published suite ([`PUBLISHED_SUITE_MACRO`]) a battery file makes
+/// that name a subject — each one is the suite's entries run against that subject.
+///
+/// Read off the BLANKED lines, so the macro's name in prose or in a string is not an invocation.
+/// The invocation runs from the macro's name to the delimiter that closes the one it opened, and it
+/// counts only if that span names [`PUBLISHED_SUITE_SUBJECT`]: `conformance_suite! {}` expands to
+/// nothing and stays a file with no entry. A file that DEFINES its own `macro_rules!
+/// conformance_suite` is not invoking the published suite, whatever its invocation looks like, so
+/// none of its invocations count.
+fn published_suite_invocations(lines: &[String]) -> usize {
+    let shadowed = lines.iter().any(|l| {
+        l.contains("macro_rules!") && l.contains(PUBLISHED_SUITE_MACRO.trim_end_matches('!'))
+    });
+    if shadowed {
+        return 0;
+    }
+    let mut count = 0usize;
+    for (i, l) in lines.iter().enumerate() {
+        let Some(at) = l.find(PUBLISHED_SUITE_MACRO) else {
+            continue;
+        };
+        // The macro's name must be a path's last segment, not the tail of a longer identifier.
+        let before = l[..at].chars().next_back();
+        if before.is_some_and(|c| c.is_ascii_alphanumeric() || c == '_') {
+            continue;
+        }
+        let mut span = String::new();
+        let mut depth = 0i32;
+        let mut opened = false;
+        'walk: for (j, line) in lines[i..].iter().enumerate() {
+            let text = if j == 0 {
+                &line[at + PUBLISHED_SUITE_MACRO.len()..]
+            } else {
+                line.as_str()
+            };
+            for ch in text.chars() {
+                match ch {
+                    '{' | '(' | '[' => {
+                        depth += 1;
+                        opened = true;
+                    }
+                    '}' | ')' | ']' => depth -= 1,
+                    _ => {}
+                }
+                span.push(ch);
+                if opened && depth <= 0 {
+                    break 'walk;
+                }
+            }
+            span.push('\n');
+        }
+        if span.contains(PUBLISHED_SUITE_SUBJECT) {
+            count += 1;
+        }
+    }
+    count
 }
 
 /// The `<…>` immediately after `impl`, skipped as a BALANCED group: `impl<S: CellStore>` and
@@ -4043,38 +4264,122 @@ fn skip_generic_params(s: &str) -> Option<&str> {
     None
 }
 
-/// A `use path::Trait as Alias;` — the RENAME, as `(trait, alias)`.
+/// Every NAME a `use` statement binds, as `(local name, full path)` pairs.
 ///
 /// `use busbar_contract::plane::Plane as Metered; impl Metered for Wire {}` is a transport
-/// implementing the plane entry face, and it went green: `impl_trait_on` answers by the LAST PATH
+/// implementing the plane entry face, and it went green: the face rule answered by the LAST PATH
 /// SEGMENT, by name, and nothing in this gate resolved a rename. One keystroke, and the face rule
 /// is looking at a word the tree does not use.
-fn use_alias(code: &str) -> Option<(String, String)> {
-    let t = code.trim();
-    let t = t.strip_prefix("pub ").map(str::trim_start).unwrap_or(t);
-    let rest = t.strip_prefix("use ")?;
-    let rest = rest.trim_end().strip_suffix(';')?;
-    let (path, alias) = rest.rsplit_once(" as ")?;
-    let alias = alias
-        .trim()
-        .trim_matches(|c| c == '}' || c == ',' || c == ' ');
-    let last = path
-        .trim()
-        .rsplit("::")
-        .next()?
-        .trim()
-        .trim_start_matches('{')
-        .trim();
-    if last.is_empty() || alias.is_empty() {
-        return None;
+///
+/// THE GROUPED SPELLING IS A RENAME TOO, and a NAME IS NOT A THING (Law 8). `use
+/// busbar_contract::verb_store::{Store as VerbStore, StoreError as VerbStoreError};` + `impl
+/// VerbStore for StoreAdapter` sat unseen beside a reader that took a statement's LAST ` as ` only;
+/// and the face rule matched the word `Store`, so the admin verbs' DR seam
+/// (`verb_store::Store`) and the store kind's record face (`records::RecordStore`, which
+/// store-memory imports AS `Store`) were one face to it. So the whole use-tree is expanded — groups,
+/// nested groups, `self`, renames — into the PATH each local name stands for, and the face rule
+/// matches paths ([`face_label`]). A glob binds nothing it can name, so a name it brings in stays
+/// unresolved, and an unresolved name is matched by name (the false RED, Part 1).
+fn use_bindings(stmt: &str) -> Vec<(String, String)> {
+    let t = stmt.trim();
+    let t = match t.strip_prefix("pub") {
+        Some(r) if r.starts_with(' ') || r.starts_with('(') => {
+            let r = r.trim_start();
+            match r.strip_prefix('(') {
+                Some(rest) => rest.split_once(')').map_or(r, |(_, after)| after),
+                None => r,
+            }
+        }
+        _ => t,
+    };
+    let Some(tree) = t.trim_start().strip_prefix("use ") else {
+        return Vec::new();
+    };
+    let tree = tree.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut out = Vec::new();
+    expand_use_tree("", tree.trim(), &mut out);
+    out
+}
+
+/// One use-tree under `prefix`, appended to `out`. A tree is `path`, `path as Alias`,
+/// `path::{tree, tree, …}`, `self`, or a glob.
+fn expand_use_tree(prefix: &str, tree: &str, out: &mut Vec<(String, String)>) {
+    let tree = tree.trim().trim_start_matches("::").trim();
+    if tree.is_empty() || tree.ends_with('*') {
+        return;
     }
-    if !alias.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
-        return None;
+    let join = |a: &str, b: &str| {
+        if a.is_empty() {
+            b.to_string()
+        } else {
+            format!("{a}::{b}")
+        }
+    };
+    if let Some(open) = tree.find('{') {
+        let head = tree[..open].trim().trim_end_matches("::").trim();
+        // A group with no closing brace after its opening one is not a use-tree this reader can
+        // name anything from (the statement was cut by a `;` the blanking left inside it).
+        let Some(close) = tree.rfind('}').filter(|c| *c > open) else {
+            return;
+        };
+        let base = join(prefix, head);
+        let inner = &tree[open + 1..close];
+        let (mut depth, mut from) = (0i32, 0usize);
+        for (i, c) in inner.char_indices() {
+            match c {
+                '{' => depth += 1,
+                '}' => depth -= 1,
+                ',' if depth == 0 => {
+                    expand_use_tree(&base, &inner[from..i], out);
+                    from = i + 1;
+                }
+                _ => {}
+            }
+        }
+        expand_use_tree(&base, &inner[from..], out);
+        return;
     }
-    if !last.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
-        return None;
+    let (path, alias) = match tree.split_once(" as ") {
+        Some((p, a)) => (p.trim(), Some(a.trim())),
+        None => (tree, None),
+    };
+    let (full, last) = if path == "self" {
+        (
+            prefix.to_string(),
+            prefix.rsplit("::").next().unwrap_or(prefix).to_string(),
+        )
+    } else {
+        (
+            join(prefix, path),
+            path.rsplit("::").next().unwrap_or(path).to_string(),
+        )
+    };
+    let local = alias.unwrap_or(&last).to_string();
+    let ident = |w: &str| !w.is_empty() && w.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+    if ident(&local) && local != "_" && !full.is_empty() {
+        out.push((local, full));
     }
-    Some((last.to_string(), alias.to_string()))
+}
+
+/// Every `use … ;` statement in joined production text, so a rename wrapped over several lines
+/// is read whole.
+fn use_statements(joined: &str) -> Vec<&str> {
+    let b = joined.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0usize;
+    while let Some(p) = joined[i..].find("use ") {
+        let at = i + p;
+        i = at + 4;
+        if at > 0 && (b[at - 1].is_ascii_alphanumeric() || b[at - 1] == b'_') {
+            continue;
+        }
+        let Some(end) = joined[at..].find(';') else {
+            break;
+        };
+        out.push(&joined[at..at + end]);
+        i = at + end;
+    }
+    out
 }
 
 /// THE HEAD OF THE TRAIT-IMPL STATEMENT, wherever the tokens fall.
@@ -4093,15 +4398,16 @@ fn use_alias(code: &str) -> Option<(String, String)> {
 /// that is not a single path (it carries a brace, a paren, a semicolon, a comma) is not a trait
 /// impl and is refused, which is what keeps `impl Foo { … for x in y … }` out of the count.
 fn impl_heads(text: &str) -> Vec<String> {
-    let mut aliases: BTreeMap<String, String> = BTreeMap::new();
+    let mut bound: BTreeMap<String, String> = BTreeMap::new();
     let mut joined = String::new();
     for line in production_code(text).iter() {
-        let code = &line.blanked;
-        if let Some((tr, alias)) = use_alias(code) {
-            aliases.insert(alias, tr);
-        }
-        joined.push_str(code);
+        joined.push_str(&line.blanked);
         joined.push(' ');
+    }
+    for stmt in use_statements(&joined) {
+        for (local, path) in use_bindings(stmt) {
+            bound.insert(local, path);
+        }
     }
     let b = joined.as_bytes();
     let mut out = Vec::new();
@@ -4115,9 +4421,261 @@ fn impl_heads(text: &str) -> Vec<String> {
         let Some(head) = head_after_impl(&joined[at + 4..]) else {
             continue;
         };
-        out.push(aliases.get(&head).cloned().unwrap_or(head));
+        out.push(resolve_head(&bound, &head));
     }
     out
+}
+
+/// A head, resolved through the file's own `use` bindings: its FIRST segment is replaced by the
+/// path that name is bound to (`Metered` -> `busbar_contract::plane::Plane`, `bc::Plane` ->
+/// `busbar_contract::Plane`). An unbound head is returned as written.
+fn resolve_head(bound: &BTreeMap<String, String>, head: &str) -> String {
+    let head = head.trim_start_matches("::");
+    let (first, rest) = match head.split_once("::") {
+        Some((f, r)) => (f, Some(r)),
+        None => (head, None),
+    };
+    match (bound.get(first), rest) {
+        (Some(path), Some(rest)) => format!("{path}::{rest}"),
+        (Some(path), None) => path.clone(),
+        (None, _) => head.to_string(),
+    }
+}
+
+/// The ledger's first `[[face]]` row, as `(crate, face, the crate's directory)`.
+fn first_face_row(cx: &Ctx) -> Result<(String, String, String), String> {
+    let text = cx.read(REGISTRY_FILE)?;
+    let at = text
+        .find("\n[[face]]\n")
+        .ok_or_else(|| format!("{REGISTRY_FILE} carries no [[face]] row to plant over"))?;
+    let body = &text[at..];
+    let field = |key: &str| {
+        body.lines()
+            .find_map(|l| l.strip_prefix(&format!("{key} = \"")))
+            .and_then(|v| v.strip_suffix('"'))
+            .map(str::to_string)
+    };
+    let (Some(krate), Some(face)) = (field("crate"), field("face")) else {
+        return Err("the first [[face]] row names no crate or face".to_string());
+    };
+    let dir = census(cx)?
+        .into_iter()
+        .find(|c| c.name == krate)
+        .map(|c| c.dir)
+        .ok_or_else(|| format!("`{krate}` of the first [[face]] row is not in the census"))?;
+    Ok((krate, face, dir))
+}
+
+/// The source paths of every module a crate's `src/lib.rs` declares under a test-only cfg
+/// ([`is_test_only_cfg`]): `<dir>/src/<mod>/` and `<dir>/src/<mod>.rs`.
+fn test_only_modules(files: &[crate::ctx::SourceFile]) -> Vec<String> {
+    let mut out = Vec::new();
+    for f in files {
+        let rel = f.rel_str();
+        let Some(dir) = owning_dir(&rel) else {
+            continue;
+        };
+        if rel != format!("{dir}/src/lib.rs") {
+            continue;
+        }
+        let lines: Vec<&str> = f.text.lines().map(str::trim).collect();
+        for (i, l) in lines.iter().enumerate() {
+            let decl = l.strip_prefix("pub ").unwrap_or(l);
+            let Some(name) = decl
+                .strip_prefix("mod ")
+                .and_then(|r| r.strip_suffix(';'))
+                .map(str::trim)
+            else {
+                continue;
+            };
+            let gated = lines[..i]
+                .iter()
+                .rev()
+                .take_while(|a| a.starts_with("#["))
+                .any(|a| is_test_only_cfg(a));
+            if gated {
+                out.push(format!("{dir}/src/{name}/"));
+                out.push(format!("{dir}/src/{name}.rs"));
+            }
+        }
+    }
+    out
+}
+
+/// `#[cfg(test)]`, `#[cfg(feature = "test-support")]`, `#[cfg(any(test, feature = "test-support"))]`
+/// — a cfg that nothing but a test build or the `test-support` feature can satisfy.
+fn is_test_only_cfg(attr: &str) -> bool {
+    let Some(inner) = attr
+        .strip_prefix("#[cfg(")
+        .and_then(|r| r.strip_suffix(")]"))
+    else {
+        return false;
+    };
+    let rest = inner
+        .replace("\"test-support\"", " ")
+        .replace("feature", " ")
+        .replace("any", " ")
+        .replace("test", " ");
+    rest.chars()
+        .all(|c| c.is_whitespace() || "(),=".contains(c))
+}
+
+/// WHERE `test-support` WOULD SHIP, which is never. The face rule reads a `test-support`-gated
+/// module as unshipped; that premise is checked here on every run rather than assumed (Law 10): a
+/// SHIPPED dependency declaration (`[dependencies]`, `[build-dependencies]`) that turns a crate's
+/// `test-support` on, or a `default` feature set that reaches `test-support` (its own, or a
+/// dependency's `x/test-support`), puts it in a release build, and the finding names it.
+fn test_support_ships(cx: &Ctx, crates: &[CrateInfo]) -> Vec<String> {
+    const TS: &str = "test-support";
+    let mut out = Vec::new();
+    for c in crates {
+        for d in &c.deps {
+            if d.features.iter().any(|f| f == TS) {
+                out.push(format!(
+                    "test-support-ships\t{}\t{} turns on `{}`'s `{TS}` in its shipped \
+                     [{}]: a test-only module is in the release build, so the face rule may not \
+                     read it as unshipped",
+                    c.manifest, c.name, d.pkg, d.section
+                ));
+            }
+        }
+        let Ok(text) = cx.read(&c.manifest) else {
+            continue;
+        };
+        let table = crate::manifest::feature_table(&text);
+        let mut seen: BTreeSet<String> = BTreeSet::new();
+        let mut todo: Vec<String> = table.get("default").cloned().unwrap_or_default();
+        while let Some(item) = todo.pop() {
+            if !seen.insert(item.clone()) {
+                continue;
+            }
+            let tail = item.rsplit('/').next().unwrap_or(&item);
+            if tail == TS {
+                out.push(format!(
+                    "test-support-ships\t{}\t{}'s `default` feature set reaches `{item}`: a \
+                     test-only module is in the release build, so the face rule may not read it \
+                     as unshipped",
+                    c.manifest, c.name
+                ));
+                continue;
+            }
+            if let Some(next) = table.get(&item) {
+                todo.extend(next.iter().cloned());
+            }
+        }
+    }
+    out
+}
+
+/// THE ENTRY FACES, BY PATH: `(kind, face label, the trait's paths in busbar-contract)`.
+///
+/// The label is the kind's face as `[[face]]` rows and findings name it ([`entry_trait`]); the
+/// paths are where the contract DEFINES the trait and the crate-root re-export of it, and
+/// `face_paths_hold` refuses a path whose trait the contract no longer defines. A kind whose face
+/// the contract defines no trait for (its entry is a door) is matched by its label, as a name.
+const FACE_PATHS: &[(&str, &str, &[&str])] = &[
+    (
+        "plane",
+        "Plane",
+        &["busbar_contract::plane::Plane", "busbar_contract::Plane"],
+    ),
+    (
+        "transport",
+        "Transport",
+        &[
+            "busbar_contract::transport::Transport",
+            "busbar_contract::Transport",
+        ],
+    ),
+    // The store kind's face is the RECORD store a store plugin implements (store-memory:
+    // `records::RecordStore as Store`), not `verb_store::Store`, the admin verbs' DR seam that the
+    // loader's store adapter answers on the host side (Part 2 #33).
+    ("store", "Store", &["busbar_contract::records::RecordStore"]),
+    ("auth", "Auth", &[]),
+    ("secret", "Secret", &[]),
+    ("hooks", "Hooks", &[]),
+    ("export", "ExportHandler", &[]),
+];
+
+/// THE FACES THE ARCHITECTURE GRANTS a crate of another kind: `(implementing kind, face's kind)`.
+/// Like [`ARCHITECTURE_ALLOWED`], a read of the design, not a measurement, and the ship twin honours
+/// it. `(plugin-tooling, store)`: Part 2 #33 (`busbar-plugin-loader` = "how core loads plugins",
+/// the host side, "ONE crate atop the ONE contract crate", BUSBAR-1.6.0.md:2212; plugin infra =
+/// busbar-plugin-loader over busbar-contract, :2946) — the loader answers a loaded store's faces on
+/// the host side of the one loading path (ARCHITECT 2026-10-07).
+const FACE_GRANTS: &[(&str, &str)] = &[("plugin-tooling", "store")];
+
+/// The entry face a resolved impl head IS, by its label, or `None`.
+///
+/// A qualified head (resolved through the file's `use` bindings) is that face only if it is one of
+/// the face's paths. An UNRESOLVED bare name — a glob brought it in, or nothing did — is matched by
+/// the trait's own name: the instrument cannot tell, so it takes the false RED (Part 1, "When an
+/// instrument must choose, it false-fails").
+fn face_label(head: &str) -> Option<&'static str> {
+    FACE_PATHS.iter().find_map(|(_, label, paths)| {
+        let hit = match paths.first() {
+            None => head_name(head) == *label,
+            Some(_) if head.contains("::") => paths.contains(&head),
+            Some(canonical) => head == head_name(canonical),
+        };
+        hit.then_some(*label)
+    })
+}
+
+/// Every [`FACE_PATHS`] path's trait, defined where the path says: `busbar_contract::a::b::T` is a
+/// `pub trait T` in `crates/busbar-contract/src/a/b.rs` or `a/b/mod.rs`; a crate-root path is a
+/// `pub use` in `lib.rs` naming `T`. A path that went stale is a face the rule can no longer see,
+/// so it is named, never skipped.
+fn face_paths_hold(cx: &Ctx) -> Vec<String> {
+    let mut gone = Vec::new();
+    for (kind, _, paths) in FACE_PATHS {
+        for path in *paths {
+            let segs: Vec<&str> = path.split("::").skip(1).collect();
+            let Some((name, modpath)) = segs.split_last() else {
+                continue;
+            };
+            let found = if modpath.is_empty() {
+                cx.read("crates/busbar-contract/src/lib.rs").is_ok_and(|t| {
+                    let joined = production_code(&t)
+                        .iter()
+                        .map(|l| l.blanked.clone())
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    use_statements(&joined)
+                        .into_iter()
+                        .flat_map(use_bindings)
+                        .any(|(local, _)| local == *name)
+                })
+            } else {
+                let base = format!("crates/busbar-contract/src/{}", modpath.join("/"));
+                [format!("{base}.rs"), format!("{base}/mod.rs")]
+                    .iter()
+                    .filter_map(|f| cx.read(f).ok())
+                    .any(|t| {
+                        let needle = format!("pub trait {name}");
+                        t.match_indices(&needle).any(|(i, _)| {
+                            !t[i + needle.len()..]
+                                .chars()
+                                .next()
+                                .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_')
+                        })
+                    })
+            };
+            if !found {
+                gone.push(format!(
+                    "face-path-gone\t{path}\tthe `{kind}` face is matched by this path and the \
+                     contract no longer defines it there, so every impl of the moved trait reads \
+                     as no face at all. Point the face at where the trait lives now"
+                ));
+            }
+        }
+    }
+    gone
+}
+
+/// The trait name a resolved head names: its last path segment.
+fn head_name(head: &str) -> &str {
+    head.rsplit("::").next().unwrap_or(head)
 }
 
 /// The trait named between an `impl` and its ` for `, when what sits there really is one.
@@ -4145,21 +4703,23 @@ fn head_after_impl(rest: &str) -> Option<String> {
     // THE QUALIFIED SPELLING IS THE SAME IMPLEMENTATION. `impl busbar_contract::Plane for Wire`
     // begins with a lowercase crate segment, so a head-first check answered `None` and the trait
     // was implemented in plain sight. The trait is the LAST path segment; the qualification says
-    // where it lives.
-    let head = head.rsplit("::").next().unwrap_or(head).trim();
-    if head.is_empty() || head.contains(':') || head.contains(' ') {
+    // where it lives, and it is KEPT: the face rule matches the path ([`face_label`]).
+    let head: String = head.chars().filter(|c| !c.is_whitespace()).collect();
+    let name = head_name(&head);
+    if name.is_empty() || head.split("::").any(str::is_empty) && !head.starts_with("::") {
         return None;
     }
-    head.chars()
+    name.chars()
         .next()
         .is_some_and(|c| c.is_ascii_uppercase())
-        .then(|| head.to_string())
+        .then_some(head)
 }
 
 fn index_sources(cx: &Ctx) -> Result<SourceIndex, String> {
     let files = cx
         .walk(&WalkSpec::new(["crates"]).ext("rs").min_files(MIN_SOURCES))
         .map_err(|e| e.to_string())?;
+    let builders = door_builders(cx)?;
     let mut idx = SourceIndex {
         skeleton: BTreeMap::new(),
         impls: BTreeMap::new(),
@@ -4170,16 +4730,18 @@ fn index_sources(cx: &Ctx) -> Result<SourceIndex, String> {
         has_lib: BTreeSet::new(),
         conformance: BTreeSet::new(),
         conformance_dead: BTreeSet::new(),
+        faces: BTreeMap::new(),
     };
     // Each file's facts are a pure function of its path and bytes (see [`source_facts`]), so they
     // are read across the cores and folded here in walk order, as the serial loop folded them.
+    let test_only = test_only_modules(&files);
     let read = crate::par::par_map(&files, |f| {
         let rel = f.rel_str();
         let dir = owning_dir(&rel)?;
         let facts = source_facts(&rel, &dir, &f.text);
-        Some((dir, facts))
+        Some((dir, rel, facts))
     });
-    for (dir, facts) in read.into_iter().flatten() {
+    for (dir, rel, facts) in read.into_iter().flatten() {
         if let Some(live) = facts.live {
             if live > 0 {
                 idx.conformance.insert(dir.clone());
@@ -4205,10 +4767,20 @@ fn index_sources(cx: &Ctx) -> Result<SourceIndex, String> {
         for t in &facts.heads {
             *counts.entry(t.clone()).or_default() += 1;
         }
+        // A TEST-ONLY MODULE IS NOT A SHIPPED FACE. A module its crate declares under a cfg that
+        // only `test` or the `test-support` feature can turn on is not in a release build, so an
+        // impl in it claims nothing to the compiler that ships. Valid only while `test-support`
+        // is in no ship feature set, which `test_support_ships` checks on every run (Law 10).
+        let faces = idx.faces.entry(dir.clone()).or_default();
+        if !test_only.iter().any(|p| rel.starts_with(p.as_str())) {
+            for f in &facts.faces {
+                *faces.entry((*f).to_string()).or_default() += 1;
+            }
+        }
         if facts.door_tails > 0 {
             *idx.doors.entry(dir.clone()).or_default() += facts.door_tails;
         }
-        if facts.builds_door {
+        if facts.door_macros.iter().any(|m| builders.contains(m)) {
             idx.door_builders.insert(dir.clone());
         }
         if !facts.door_kinds.is_empty() {
@@ -4216,6 +4788,30 @@ fn index_sources(cx: &Ctx) -> Result<SourceIndex, String> {
                 .entry(dir.clone())
                 .or_default()
                 .extend(facts.door_kinds.iter().copied());
+        }
+    }
+    // A PLUGIN REPO IS ITS LOGIC CRATE AND ITS `-plugin` TWIN (spec §9, "Each plugin repo is a
+    // logic crate plus a plugin crate"; #31 topology; the R-FIX1 door per real plugin; ARCHITECT
+    // 2026-10-07). The census reads a pinned repo's logic crate, and the twin is where that repo
+    // EXPORTS its door (`export_door!`) and RUNS its battery (`tests/conformance.rs`). Those two
+    // facts are read off the twin onto the logic crate's entry; nothing else of the twin is, so the
+    // edge, closure and vocabulary rules still read the logic crate alone.
+    for (dir, sub, text) in pinned::twin_files(cx) {
+        if sub.starts_with("tests/") && sub.contains(CONFORMANCE_MARKER) && sub.ends_with(".rs") {
+            if let Some(live) = source_facts(&format!("{dir}/{sub}"), &dir, &text).live {
+                if live > 0 {
+                    idx.conformance.insert(dir.clone());
+                    idx.conformance_dead.remove(&dir);
+                } else if !idx.conformance.contains(&dir) {
+                    idx.conformance_dead.insert(dir.clone());
+                }
+            }
+        }
+        if (sub.starts_with("src/") || sub.starts_with("examples/"))
+            && sub.ends_with(".rs")
+            && (exports_door(&text) || links_door(&text))
+        {
+            idx.door_exports.insert(dir.clone());
         }
     }
     Ok(idx)
@@ -4283,14 +4879,16 @@ struct SourceFacts {
     shipped: bool,
     /// `Some(mod names)` when the file is its crate's `src/lib.rs` (and shipped).
     mods: Option<Vec<String>>,
-    /// Every trait-impl head in it, when shipped; empty otherwise.
+    /// Every trait-impl head in it, by trait NAME, when shipped; empty otherwise.
     heads: Vec<String>,
+    /// The entry face each trait-impl head is, by its resolved PATH ([`face_label`]), when shipped.
+    faces: Vec<&'static str>,
     /// How many door tails it states, when shipped; 0 otherwise. See [`door_tails`].
     door_tails: usize,
     /// Whether it exports a door through the SDK door macro. See [`exports_door`].
     exports_door: bool,
-    /// Whether it builds a door with an SDK door builder, when shipped. See [`builds_door`].
-    builds_door: bool,
+    /// The `*_door!` macros it invokes, when shipped. See [`door_macro_calls`].
+    door_macros: Vec<String>,
     /// The kinds whose memory ABI it names, when shipped. See [`door_kind_marks`].
     door_kinds: Vec<&'static str>,
 }
@@ -4332,11 +4930,12 @@ fn source_facts(rel: &str, dir: &str, text: &str) -> std::sync::Arc<SourceFacts>
         && (exports_door(text) || links_door(text));
     let mut mods = None;
     let mut heads = Vec::new();
+    let mut faces = Vec::new();
     let mut tails = 0;
-    let mut builds = false;
+    let mut builds = Vec::new();
     let mut kinds = Vec::new();
     if shipped {
-        builds = builds_door(text);
+        builds = door_macro_calls(text);
         kinds = door_kind_marks(text);
         if rel == format!("{dir}/src/lib.rs") {
             let mut found = Vec::new();
@@ -4353,7 +4952,9 @@ fn source_facts(rel: &str, dir: &str, text: &str) -> std::sync::Arc<SourceFacts>
             }
             mods = Some(found);
         }
-        heads = impl_heads(text);
+        let resolved = impl_heads(text);
+        faces = resolved.iter().filter_map(|h| face_label(h)).collect();
+        heads = resolved.iter().map(|h| head_name(h).to_string()).collect();
         tails = door_tails(text);
     }
     let facts = std::sync::Arc::new(SourceFacts {
@@ -4361,9 +4962,10 @@ fn source_facts(rel: &str, dir: &str, text: &str) -> std::sync::Arc<SourceFacts>
         shipped,
         mods,
         heads,
+        faces,
         door_tails: tails,
         exports_door: exports,
-        builds_door: builds,
+        door_macros: builds,
         door_kinds: kinds,
     });
     memo.lock()
@@ -4449,6 +5051,10 @@ fn pinned_exemplars(
                     for t in &facts.heads {
                         *counts.entry(t.clone()).or_default() += 1;
                     }
+                    let faces = idx.faces.entry(key.clone()).or_default();
+                    for f in &facts.faces {
+                        *faces.entry((*f).to_string()).or_default() += 1;
+                    }
                     if facts.door_tails > 0 {
                         *idx.doors.entry(key.clone()).or_default() += facts.door_tails;
                     }
@@ -4505,16 +5111,68 @@ fn links_door(text: &str) -> bool {
     })
 }
 
-/// The SDK's door BUILDERS: the macros that build a kind's door table (`plugin_door!` for any kind,
-/// and the kinds' safe-layer builders). `export_door!` only exports a door some builder made.
-const DOOR_BUILDERS: &[&str] = &["plugin_door!", "store_door!(", "auth_verify_door!("];
+/// The `*_door` macros busbar-contract defines that are NOT builders: `export_door!` only exports
+/// a door some builder made, and `__register_door!` is the SDK's internal registration step.
+const NOT_DOOR_BUILDERS: &[&str] = &["export_door", "__register_door"];
 
-/// Whether a file builds a door: a production line invoking one of [`DOOR_BUILDERS`] (a builder's
-/// own `macro_rules!` definition is not an invocation).
-fn builds_door(text: &str) -> bool {
-    scan::production_lines(text).into_iter().any(|(_, code)| {
-        !code.contains("macro_rules!") && DOOR_BUILDERS.iter().any(|b| code.contains(b))
-    })
+/// THE SDK'S DOOR BUILDERS, READ OFF THE CONTRACT (Law 8: a roster is derived from the instances'
+/// own declarations, never kept by hand; ARCHITECT 2026-10-07). Every `macro_rules! <name>` in
+/// busbar-contract's source whose name ends `_door`, minus [`NOT_DOOR_BUILDERS`]. The hand list
+/// this replaced lacked `hook_door!`, so the hook kind's doors read as no door. An empty answer is
+/// a refusal: a gate that knows no builder cannot see any door.
+fn door_builders(cx: &Ctx) -> Result<BTreeSet<String>, String> {
+    let files = cx
+        .walk(&WalkSpec::new(["crates/busbar-contract/src"]).ext("rs"))
+        .map_err(|e| e.to_string())?;
+    let mut out = BTreeSet::new();
+    for f in &files {
+        for (_, code) in scan::production_lines(&f.text) {
+            let Some(rest) = code.trim_start().strip_prefix("macro_rules!") else {
+                continue;
+            };
+            let name: String = rest
+                .trim_start()
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                .collect();
+            if name.ends_with("_door") && !NOT_DOOR_BUILDERS.contains(&name.as_str()) {
+                out.insert(name);
+            }
+        }
+    }
+    if out.is_empty() {
+        return Err(
+            "no door builder (`macro_rules! *_door`) is defined in crates/busbar-contract/src, so \
+             no door could be read as built"
+                .to_string(),
+        );
+    }
+    Ok(out)
+}
+
+/// Every `<name>_door!` macro a file invokes on a production line (a `macro_rules!` definition is
+/// not an invocation). Which of them BUILD a door is [`door_builders`]' answer, read off the
+/// contract, so this reading stays a pure function of the file's bytes.
+fn door_macro_calls(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for (_, code) in scan::production_lines(text) {
+        if code.contains("macro_rules!") {
+            continue;
+        }
+        let mut rest = code.as_str();
+        while let Some(at) = rest.find("_door!") {
+            let head = &rest[..at];
+            let start = head
+                .rfind(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                .map_or(0, |i| i + 1);
+            let name = format!("{}_door", &head[start..]);
+            if !out.contains(&name) {
+                out.push(name);
+            }
+            rest = &rest[at + "_door!".len()..];
+        }
+    }
+    out
 }
 
 /// Each door-bearing kind and the module of `busbar_contract::abi` that is its memory ABI: the
@@ -4557,7 +5215,7 @@ fn door_kind_marks(text: &str) -> Vec<&'static str> {
 /// THE DOOR IS THE KIND'S IMPLEMENTATION (ARCHITECT ruling GRPC-DOOR 2026-10-02, widened to every
 /// kind; spec §11, owner-locked 2026-09-27: a plugin talks to busbar ONLY through its memory-ABI
 /// door table, and compiled in = dropped in = the same table). A crate of kind K whose shipped
-/// source BUILDS a door with an SDK builder ([`builds_door`]) over K's memory ABI
+/// source BUILDS a door with an SDK builder ([`door_builders`]) over K's memory ABI
 /// ([`door_kind_marks`]) AND exports it through the SDK door macro ([`exports_door`], in `src/` or
 /// `examples/`) implements its kind through that door, not through an in-process `impl K`.
 ///
@@ -4798,19 +5456,26 @@ fn rule_shape(
 /// A DIALECT MAY IMPLEMENT ITS PLANE'S FACE, and nothing else may. That is what a dialect IS: the
 /// plane's other half, written against the plane's own face; the split is about where the code
 /// lives, not about which trait it satisfies.
-fn rule_faces(crates: &[CrateInfo], idx: &SourceIndex, reg: &KindRegistry, ship: bool) -> Row {
-    let faces: BTreeMap<String, &'static str> = ENTRY_TRAIT_KINDS
+fn rule_faces(
+    cx: &Ctx,
+    crates: &[CrateInfo],
+    idx: &SourceIndex,
+    reg: &KindRegistry,
+    ship: bool,
+) -> Row {
+    let faces: BTreeMap<String, &'static str> = FACE_PATHS
         .iter()
-        .filter_map(|k| KINDS.iter().find(|d| d.kind == *k).map(|d| d.kind))
-        .map(|k| (entry_trait(k), k))
+        .filter(|(k, _, _)| ENTRY_TRAIT_KINDS.contains(k))
+        .map(|(k, label, _)| ((*label).to_string(), *k))
         .collect();
-    let mut offenders: Vec<String> = Vec::new();
+    let mut offenders: Vec<String> = face_paths_hold(cx);
+    offenders.extend(test_support_ships(cx, crates));
     let mut checked = 0usize;
     let mut seen: BTreeSet<(String, String)> = BTreeSet::new();
 
     for c in crates {
         let Some(mine) = c.kind else { continue };
-        let Some(impls) = idx.impls.get(&c.dir) else {
+        let Some(impls) = idx.faces.get(&c.dir) else {
             continue;
         };
         checked += 1;
@@ -4818,7 +5483,7 @@ fn rule_faces(crates: &[CrateInfo], idx: &SourceIndex, reg: &KindRegistry, ship:
             let Some(owner) = faces.get(trait_name) else {
                 continue;
             };
-            if *owner == mine {
+            if *owner == mine || FACE_GRANTS.contains(&(mine, *owner)) {
                 continue;
             }
             seen.insert((c.name.clone(), trait_name.clone()));
@@ -5097,28 +5762,15 @@ fn plane_owned_steps(cx: &Ctx) -> Result<Vec<String>, String> {
 /// nothing, which is what "unmetered" means when it is a fact rather than a policy.
 const DATA_PATH_STEPS: &[&str] = &["route", "meter"];
 
-/// The UPSTREAM vocabulary a control surface may not name at all — the words that only make sense
-/// when there is something on the other side of the request.
-const UPSTREAM_WORDS: &[&str] = &[
-    "egress", "pool", "routing", "failover", "breaker", "provider",
-];
-
-/// THE ONE CONTROL-TIER CRATE THAT OPENS THE REAL UPSTREAM CONNECTIONS: busbar-core-connector
-/// (CONNECTOR-19 — it dials; W3b — rustls lives only here, by design; Q-L16-4 — the operator
-/// verify-off opt-in). It is cleanliness-tier like admin and oauth2, but unlike them it DOES reach
-/// an upstream, so [`CONNECTOR_INROLE_WORDS`] — the vocabulary of OPENING a connection — is its job,
-/// not control-path debt.
-const EGRESS_HOME: &str = "busbar-core-connector";
-
-/// The connection/TLS vocabulary IN-ROLE for [`EGRESS_HOME`]: how a connection is opened — its
-/// egress class, the pool it is kept in, the TLS/crypto provider it is secured with. Excluded from
-/// the upstream-word finding for THAT crate ALONE; admin and oauth2 are checked on every word.
-///
-/// The DECISION words are deliberately NOT here: `routing`, `failover` and `breaker` are the
-/// kernel's route decision (spec:637 "KERNEL: route (pool walk, member, breaker)"), so the
-/// connector naming one is still a finding — kernel logic in the connector is real debt, not its
-/// in-role vocabulary.
-const CONNECTOR_INROLE_WORDS: &[&str] = &["egress", "pool", "provider"];
+// WHY THERE IS NO WORD LIST HERE. This rule once also refused six "upstream" words (`egress`,
+// `pool`, `routing`, `failover`, `breaker`, `provider`) on every cleanliness line. That list was
+// written for the `control` plugin kind (65542ca51b), which is cancelled (Part 2 #5: "There is no
+// "control" plugin kind"). The cleanliness crates' rule is THE DESIGN §8: each depends one way on
+// the kernel, names no plugin, and gets its listeners through the connector. Those six words name
+// no plugin — they are the kernel's route vocabulary (Part 3: "KERNEL | route (pool walk, member,
+// breaker)"), which the 1.5.5 admin API serves to the operator — so they were struck (ARCHITECT
+// 2026-10-07). "Names no plugin" is `:matrix`'s armed `law0-neutral-instance` class, which holds
+// every `Family::Neutral` crate, these three included, at zero on the ship twin.
 
 /// Every `fn <name>` in a crate's shipped source, with the file, line, its signature's blanked
 /// text (the `fn` line up to the body's opening brace) and the body's.
@@ -5427,36 +6079,6 @@ fn rule_control(cx: &Ctx, crates: &[CrateInfo]) -> Row {
                 }
             }
         }
-        let Ok(files) = cx.walk(&WalkSpec::new([c.dir.as_str()]).ext("rs")) else {
-            continue;
-        };
-        for f in &files {
-            let rel = f.rel_str();
-            if !is_shipped_source(&rel) {
-                continue;
-            }
-            for line in production_code(&f.text).iter() {
-                let lineno = line.lineno;
-                let lower = line.blanked.to_lowercase();
-                for w in UPSTREAM_WORDS {
-                    // busbar-core-connector OPENS the real connections, so its connection/TLS
-                    // vocabulary is in-role, not control-path debt ([`CONNECTOR_INROLE_WORDS`]);
-                    // its DECISION words (routing/failover/breaker) stay a finding. No other
-                    // control surface gets this exclusion.
-                    if c.name == EGRESS_HOME && CONNECTOR_INROLE_WORDS.contains(w) {
-                        continue;
-                    }
-                    if word_ci(&lower, w) {
-                        offenders.push(format!(
-                            "upstream\t{rel}:{lineno}\t{} names `{w}` — a control surface has no \
-                             upstream to reach, so the vocabulary of reaching one has no meaning \
-                             on this path",
-                            c.name
-                        ));
-                    }
-                }
-            }
-        }
     }
     offenders.sort();
     offenders.dedup();
@@ -5469,7 +6091,7 @@ fn rule_control(cx: &Ctx, crates: &[CrateInfo]) -> Row {
     }
     Row::fail(
         ROW_CONTROL,
-        "a control surface runs the data path or names an upstream",
+        "a control surface runs a data-path step",
         format!(
             "{} finding(s) over {} control surface(s): {}",
             offenders.len(),
@@ -5505,8 +6127,12 @@ const WIRE_PERMITTED_KINDS: &[&str] = &["root", "transport"];
 /// makes transport a swappable kind like any other). A `plugin-tooling` crate's `[dev-dependencies]`
 /// edge to EXACTLY the crate its own `[package.metadata.busbar.both-ways]` names for kind `transport`
 /// is the fixture both doors of that witness load — the linked rlib and the dropped-in cdylib — and
-/// not a plugin choosing its wire. Nothing else is excused: a NORMAL edge, a dev-edge to any other
-/// wire, or a crate of any other kind is the finding it always was.
+/// not a plugin choosing its wire. A plugin repo is a logic crate plus the cdylib twin that packages
+/// it (BUSBAR-1.6.0.md §9), and when the row names the twin (`busbar-transport-tcp-plugin`), the
+/// LOGIC crate it packages (`busbar-transport-tcp`, the same name without `-plugin`) is the linked
+/// half of the same witness, read now that the pinned checkouts are crates of the census
+/// (ARCHITECT W4B-Q1). Nothing else is excused: a NORMAL edge, a dev-edge to any other wire, or a
+/// crate of any other kind is the finding it always was.
 const WIRE_FIXTURE_KIND: &str = "plugin-tooling";
 
 /// The crate a manifest's `[package.metadata.busbar.both-ways]` table names for kind `transport`.
@@ -5524,6 +6150,60 @@ const COLD_WITNESS_KINDS: &[(&str, &str)] = &[
     ("hook", "hooks"),
     ("secret", "secret"),
 ];
+
+/// The drain a test-linked door's test edge must state (ARCHITECT 2026-10-03, L3B-MCP round 4
+/// Q-L3B-GATES (1)).
+pub const TEST_LINKED_DOOR_DRAIN: &str =
+    "moves to the plugin repo in W4 (OWNER BUSBAR-CI-PLUGIN-AGNOSTIC)";
+
+/// The `(from, to)` TEST edges that are a TEST-LINKED DOOR (ARCHITECT 2026-10-03, L3B-MCP round 4
+/// Q-L3B-GATES (1)): a crate's harness folds a plane door's Statement into its registry, which links
+/// the door's crate into the test binary and nothing else. Exempt from `new-forbidden-edge` only
+/// when ALL hold: the crate's `[package.metadata.busbar] test-linked` list names `door:<to>`; `to`
+/// is a `[dev-dependencies]` entry and NOT a shipped one; `to` is of kind `plane`; and a `[[dep]]`
+/// row for exactly that edge, half `test`, states the drain [`TEST_LINKED_DOOR_DRAIN`]. The shipped
+/// half excuses nothing: there is no production edge.
+fn test_linked_door_edges(
+    cx: &Ctx,
+    crates: &[CrateInfo],
+    reg: &KindRegistry,
+) -> BTreeSet<(String, String)> {
+    let by_name: BTreeMap<&str, &CrateInfo> = crates.iter().map(|c| (c.name.as_str(), c)).collect();
+    let mut out = BTreeSet::new();
+    for c in crates {
+        let Ok(manifest) = cx.read(&c.manifest) else {
+            continue;
+        };
+        let doors: Vec<String> = manifest
+            .lines()
+            .map(str::trim)
+            .filter(|l| l.starts_with("test-linked") && l.contains('='))
+            .flat_map(|l| {
+                l.split('"')
+                    .skip(1)
+                    .step_by(2)
+                    .filter_map(|e| e.strip_prefix("door:"))
+                    .map(str::to_string)
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        for door in doors {
+            let dev = c.dev_deps.iter().any(|d| d.pkg == door);
+            let shipped = c.deps.iter().any(|d| d.pkg == door);
+            let plane = by_name.get(door.as_str()).and_then(|t| t.kind) == Some("plane");
+            let row = reg.dep_edges.iter().any(|r| {
+                r.from == c.name
+                    && r.to == door
+                    && r.half == "test"
+                    && r.drain.contains(TEST_LINKED_DOOR_DRAIN)
+            });
+            if dev && !shipped && plane && row {
+                out.insert((c.name.clone(), door));
+            }
+        }
+    }
+    out
+}
 
 /// The `(from, to)` TEST edges that are a cold kind's both-ways witness, and so are not a
 /// `new-forbidden-edge`: a `plugin-tooling` crate's `[dev-dependencies]` edge to EXACTLY the crate
@@ -5617,6 +6297,16 @@ fn witness_file(kind: Option<&str>) -> Option<&'static str> {
 /// it always was, and a dev-edge any other file uses (a unit test, a second integration test, a
 /// bench) is a plugin testing against the host, not a witness of its doors.
 fn conformance_witness_edges(cx: &Ctx, crates: &[CrateInfo]) -> BTreeSet<(String, String)> {
+    conformance_witness_edges_with(cx, crates, true)
+}
+
+/// [`conformance_witness_edges`], each file's code read through [`code_only_memo`] when `memo`,
+/// else afresh (the full walk the matrix memo is held equal to).
+fn conformance_witness_edges_with(
+    cx: &Ctx,
+    crates: &[CrateInfo],
+    memo: bool,
+) -> BTreeSet<(String, String)> {
     let loader_is_tooling = crates
         .iter()
         .any(|c| c.name == CONFORMANCE_LOADER && c.kind == Some(WIRE_FIXTURE_KIND));
@@ -5640,7 +6330,13 @@ fn conformance_witness_edges(cx: &Ctx, crates: &[CrateInfo]) -> BTreeSet<(String
         let witness = format!("{}/{file}", c.dir);
         let users: Vec<String> = files
             .iter()
-            .filter(|f| code_only(&f.text).contains(path.as_str()))
+            .filter(|f| {
+                if memo {
+                    code_only_memo(&f.text).contains(path.as_str())
+                } else {
+                    code_only(&f.text).contains(path.as_str())
+                }
+            })
             .map(|f| f.rel_str())
             .collect();
         if users.is_empty() || users.iter().any(|u| *u != witness) {
@@ -5654,6 +6350,59 @@ fn conformance_witness_edges(cx: &Ctx, crates: &[CrateInfo]) -> BTreeSet<(String
     out
 }
 
+/// THE LOADER'S REAL-PLUGIN FIXTURES (spec BUSBAR-1.6.0.md:3870, OWNER RULING 2026-09-25 "PLUGINS
+/// LIVE IN THEIR OWN REPOS", ARCHITECT SEQUENCING step (3): "the in-repo loader conformance tests pin
+/// the real plugin repos as dev-deps"; "Fixtures deleted; real plugins are the both-ways proofs").
+/// The mirror of [`conformance_witness_edges`]: the `(busbar-plugin-loader, plugin)` TEST edges
+/// returned here are ruled architecture, so no rule of this gate measures them (ARCHITECT
+/// 2026-10-07, KI plan C).
+///
+/// Granted exactly when: the loader is `plugin-tooling`; the edge is a `[dev-dependencies]` edge
+/// and NOT a `[dependencies]` one; the target is a crate of one of the seven plugin kinds; and no
+/// SHIPPED source of the loader names the target as code (only its tests do, or none of its files
+/// does and the edge builds the target's door for a test to open). A shipped use is the loader
+/// linking a plugin, and stays the finding it always was. Nothing is granted to any other crate:
+/// the kernel's and the cleanliness crates' tests use in-crate doubles (R-FIX3, :3894).
+fn loader_fixture_edges(cx: &Ctx, crates: &[CrateInfo]) -> BTreeSet<(String, String)> {
+    let mut out = BTreeSet::new();
+    let Some(loader) = crates
+        .iter()
+        .find(|c| c.name == CONFORMANCE_LOADER && c.kind == Some(WIRE_FIXTURE_KIND))
+    else {
+        return out;
+    };
+    let files = cx
+        .walk(&WalkSpec::new([loader.dir.clone()]).ext("rs").allow_empty())
+        .unwrap_or_default();
+    let shipped: Vec<String> = files
+        .iter()
+        .filter(|f| is_shipped_source(&f.rel_str()))
+        .map(|f| code_only(&f.text))
+        .collect();
+    for d in &loader.dev_deps {
+        let is_plugin = crates
+            .iter()
+            .any(|c| c.name == d.pkg && c.kind.is_some_and(|k| truths::PLUGIN_KINDS.contains(&k)));
+        if !is_plugin || loader.deps.iter().any(|s| s.pkg == d.pkg) {
+            continue;
+        }
+        let path = format!("{}::", d.key.replace('-', "_"));
+        if shipped.iter().any(|code| code.contains(path.as_str())) {
+            continue;
+        }
+        out.insert((loader.name.clone(), d.pkg.clone()));
+    }
+    out
+}
+
+/// Whether [`is_witness_hit`] can say yes to a hit of `kind` in `krate` at all: it is a
+/// `plugin-tooling` hit in a crate [`conformance_witness_edges`] grants. Every other hit is counted
+/// without reading its line.
+fn witness_may_apply(granted: &BTreeSet<(String, String)>, krate: &CrateInfo, kind: &str) -> bool {
+    kind == WIRE_FIXTURE_KIND
+        && granted.contains(&(krate.name.clone(), CONFORMANCE_LOADER.to_string()))
+}
+
 /// Whether a vocabulary hit is the granted witness naming its loader: a `plugin-tooling` hit in a
 /// crate [`conformance_witness_edges`] grants, in its witness file ([`witness_file`]), or on the
 /// manifest line that declares the loader. Every other column is still counted in both files.
@@ -5664,9 +6413,7 @@ fn is_witness_hit(
     rel: &str,
     line: &str,
 ) -> bool {
-    if kind != WIRE_FIXTURE_KIND
-        || !granted.contains(&(krate.name.clone(), CONFORMANCE_LOADER.to_string()))
-    {
+    if !witness_may_apply(granted, krate, kind) {
         return false;
     }
     if witness_file(krate.kind).is_some_and(|file| rel == format!("{}/{file}", krate.dir)) {
@@ -5693,6 +6440,32 @@ fn code_only(text: &str) -> String {
         out.push('\n');
     }
     out
+}
+
+/// [`code_only`], memoised on the text: it is a pure function of it, and the witness reading runs it
+/// over every source file of every plugin crate on every measurement of every planted case.
+fn code_only_memo(text: &str) -> std::sync::Arc<String> {
+    type Memo = std::sync::Mutex<BTreeMap<u64, std::sync::Arc<String>>>;
+    static MEMO: std::sync::OnceLock<Memo> = std::sync::OnceLock::new();
+    let key = {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        text.hash(&mut h);
+        h.finish()
+    };
+    let memo = MEMO.get_or_init(Default::default);
+    if let Some(found) = memo
+        .lock()
+        .expect("the code-only memo mutex is never poisoned")
+        .get(&key)
+    {
+        return std::sync::Arc::clone(found);
+    }
+    let code = std::sync::Arc::new(code_only(text));
+    memo.lock()
+        .expect("the code-only memo mutex is never poisoned")
+        .insert(key, std::sync::Arc::clone(&code));
+    code
 }
 
 /// Whether `text` names `ident` as a whole identifier (`use …::hook_fixture as fixture` counts;
@@ -5850,7 +6623,11 @@ fn rule_wires(cx: &Ctx, crates: &[CrateInfo]) -> Row {
             .then(|| cx.read(&c.manifest).ok())
             .flatten()
             .and_then(|m| both_ways_transport_fixture(&m));
-        let witness = |dep: &crate::manifest::DepDecl| fixture.as_deref() == Some(dep.pkg.as_str());
+        let witness = |dep: &crate::manifest::DepDecl| {
+            fixture.as_deref().is_some_and(|f| {
+                f == dep.pkg || f.strip_suffix("-plugin") == Some(dep.pkg.as_str())
+            })
+        };
         for dep in c
             .deps
             .iter()
@@ -6059,7 +6836,7 @@ fn repins(cx: &Ctx, crates: &[CrateInfo], reg: &KindRegistry) -> Result<Vec<Repi
         let now = crates
             .iter()
             .find(|c| c.name == f.krate)
-            .and_then(|c| idx.impls.get(&c.dir))
+            .and_then(|c| idx.faces.get(&c.dir))
             .and_then(|m| m.get(&f.face))
             .copied()
             .unwrap_or(0) as i64;
@@ -6372,6 +7149,7 @@ impl Gate for KindIsolationGate {
             ROW_WIRES.to_string(),
             ROW_TRUTHS.to_string(),
             ROW_MATRIX.to_string(),
+            matrix::ROW_LAW0.to_string(),
         ];
         if self.ship {
             owed.push(ROW_DRAIN.to_string());
@@ -6383,6 +7161,9 @@ impl Gate for KindIsolationGate {
     }
 
     fn run(&self, cx: &Ctx) -> Verdict {
+        // THE PINNED CHECKOUTS ARE CRATES OF THE CENSUS (ARCHITECT W4B-Q1): see [`pinned`].
+        let mounted = pinned::with_pinned(cx);
+        let cx = &mounted;
         let mut crates = match census(cx) {
             Ok(c) => c,
             Err(e) => {
@@ -6459,7 +7240,7 @@ impl Gate for KindIsolationGate {
             &|| vec![rule_steps(cx, crates)],
             &|| vec![rule_wires(cx, crates)],
             &|| vec![truths::rule_truths(cx, &kind_names(), crates)],
-            &|| vec![matrix::rule_matrix(cx, crates, reg, ship, matrix_gating)],
+            &|| matrix::rule_matrix_rows(cx, crates, reg, ship, matrix_gating),
             // THE SOURCE INDEX IS BUILT FOR BOTH REGISTRATIONS NOW. It was the ship twin's private
             // input, because the two rows that read it are ship criteria — but `:faces` is not a
             // ship criterion. A wire that implements `Plane` is a plane at the type level on the
@@ -6467,7 +7248,7 @@ impl Gate for KindIsolationGate {
             // says so too late.
             &|| match index_sources(cx) {
                 Ok(mut idx) => {
-                    let mut rows = vec![rule_faces(crates, &idx, reg, ship)];
+                    let mut rows = vec![rule_faces(cx, crates, &idx, reg, ship)];
                     if ship {
                         let pinned = pinned_exemplars(cx, crates, &mut idx);
                         rows.push(rule_shape(crates, &idx, &pinned));
@@ -6512,6 +7293,13 @@ impl Gate for KindIsolationGate {
     }
 
     fn selftest<'a>(&'a self, cx: &'a Ctx) -> Report<'a> {
+        // THE BATTERY READS THE TREE THE GATE READS: the pinned checkouts mounted beneath it
+        // ([`pinned`]), so a case that edits a pinned crate's manifest reads that manifest, and a
+        // plant into a pinned crate is a plant into a crate of the census. A case's own overlay
+        // REPLACES this one (`Ctx::with_overlay`) and `run` lays the mount back beneath it, so the
+        // mount here is for the battery's own reads. It is leaked because the cases borrow it for
+        // the battery's lifetime; one battery runs once per process.
+        let cx: &'a Ctx = Box::leak(Box::new(pinned::with_pinned(cx)));
         let mut report = Report::new();
 
         // THE WRITE ARM PROVES ITSELF WITHOUT WRITING ANYTHING, and that is not a compromise: the
@@ -7122,6 +7910,62 @@ impl Gate for KindIsolationGate {
                 ],
             ));
 
+            // A TEST-LINKED DOOR (ARCHITECT 2026-10-03, L3B-MCP round 4 Q-L3B-GATES (1)) is exempt
+            // only while its row states the drain and its crate's `test-linked` list names the
+            // door: the kernel's row with its drain struck, or the kernel no longer naming the door,
+            // is the edge's own verdict again, and red. The tree has no test-linked door since the
+            // kernel's plane tests moved to the composition root (ARCHITECT: core names zero plane
+            // types, its tests included), so each case plants the whole shape — the kernel's
+            // `door:` row, its `[dev-dependencies]` edge and its `[[dep]]` row — and then breaks
+            // one part of it.
+            let kernel = "crates/busbar-kernel/Cargo.toml";
+            let door_drain = "test-only: the test-linked door moves to the plugin repo in W4 \
+                              (OWNER BUSBAR-CI-PLUGIN-AGNOSTIC); no production edge";
+            let planted_door = |linked_row: &str, drain: &str| {
+                let manifest = cx.read(kernel).unwrap_or_default();
+                let manifest = manifest
+                    .replacen(
+                        "test-linked = [\"busbar-llm\", \"busbar-a2a\"]",
+                        &format!("test-linked = [\"busbar-llm\", \"{linked_row}\", \"busbar-a2a\"]"),
+                        1,
+                    )
+                    .replacen(
+                        "[dev-dependencies]\n",
+                        "[dev-dependencies]\nbusbar-plane-mcp = { path = \"../busbar-plane-mcp\" }\n",
+                        1,
+                    );
+                let registry = format!(
+                    "{}\n\n[[dep]]\nfrom    = \"busbar-kernel\"\nto      = \"busbar-plane-mcp\"\n\
+                     half    = \"test\"\ncount   = \"1\"\nverdict = \"{TEST_LINKED_DOOR_VERDICT}\"\n\
+                     cite    = \"ARCHITECT 2026-10-03 L3B-MCP round 4 Q-L3B-GATES (1)\"\n\
+                     why     = \"busbar-kernel names busbar-plane-mcp: declared dev in the test \
+                     graph (dev-dependencies), 1 declaration(s) at this commit.\"\n\
+                     drain   = \"{drain}\"\n",
+                    cx.read(REGISTRY_FILE).unwrap_or_default().trim_end()
+                );
+                let mut ov = Overlay::new();
+                ov.set(kernel, manifest);
+                ov.set(REGISTRY_FILE, registry);
+                ov
+            };
+            report.push(prove_rows_red(
+                cx,
+                subject,
+                "a test-linked door's row that states no drain is not a test-linked door",
+                &[ROW_TEST_DEPS],
+                planted_door("door:busbar-plane-mcp", "none"),
+                &["unsupported-verdict", "busbar-kernel -> busbar-plane-mcp"],
+            ));
+            report.push(prove_rows_red(
+                cx,
+                subject,
+                "a plane crate the kernel's `test-linked` list does not name as a door is no \
+                 test-linked door",
+                &[ROW_TEST_DEPS],
+                planted_door("busbar-plane-mcp", door_drain),
+                &["unsupported-verdict", "busbar-kernel -> busbar-plane-mcp"],
+            ));
+
             // THE COLD KINDS' BOTH-WAYS WITNESS (ARCHITECT 2026-09-27, DOOR-STORE queue). The
             // loader re-points its `hook` both-ways row at a real hook crate the base never named,
             // takes it as a `[dev-dependencies]` edge, and records the row: the conformance test is
@@ -7133,11 +7977,11 @@ impl Gate for KindIsolationGate {
             // shape — row, edge and user — however the real `hook` row moves.
             let witness = |dev: bool, extra_user: bool| {
                 let rel = "crates/plugin-loader/Cargo.toml";
-                let fixture = "busbar-hooks-ranking = { path = \"../hooks-ranking\" }\n";
+                let fixture = "busbar-hook-ranking = { workspace = true }\n";
                 let table = "[package.metadata.busbar.both-ways]\n";
                 let mut m = cx.read(rel).unwrap_or_default().replacen(
                     table,
-                    &format!("{table}hook = \"busbar-hooks-ranking\"\n"),
+                    &format!("{table}hook = \"busbar-hook-ranking\"\n"),
                     1,
                 );
                 m = if dev {
@@ -7166,26 +8010,27 @@ impl Gate for KindIsolationGate {
                         "fn planted_witness() {\n    let _ = super::both_ways::hook_fixture::open;\n}\n",
                     ),
                 );
-                ov.set(
-                    REGISTRY_FILE,
-                    format!(
-                        "{}\n\n[[dep]]\nfrom    = \"busbar-plugin-loader\"\nto      = \
-                         \"busbar-hooks-ranking\"\nhalf    = \"{}\"\ncount   = \"1\"\nverdict = \
-                         \"not-allowed\"\ncite    = \"planted by the self-test\"\nwhy     = \"the \
-                         hook kind's both-ways witness\"\ndrain   = \"none\"\n",
-                        cx.read(REGISTRY_FILE).unwrap_or_default().trim_end(),
-                        if dev { "test" } else { "shipped" }
-                    ),
-                );
-                if extra_user {
-                    let t = "crates/plugin-loader/src/tests/hook_door_tests.rs";
+                // A granted test edge carries no row (it is not measured); the shipped half's row
+                // is the one a `[[dep]]` may RECORD and never INTRODUCE.
+                if !dev || extra_user {
                     ov.set(
-                        t,
-                        manifest_plus(
-                            cx,
-                            t,
-                            "fn planted_user() {\n    let _ = super::both_ways::hook_fixture::open;\n}\n",
+                        REGISTRY_FILE,
+                        format!(
+                            "{}\n\n[[dep]]\nfrom    = \"busbar-plugin-loader\"\nto      = \
+                             \"busbar-hook-ranking\"\nhalf    = \"{}\"\ncount   = \"1\"\nverdict = \
+                             \"not-allowed\"\ncite    = \"planted by the self-test\"\nwhy     = \
+                             \"the hook kind's both-ways witness\"\ndrain   = \"none\"\n",
+                            cx.read(REGISTRY_FILE).unwrap_or_default().trim_end(),
+                            if dev { "test" } else { "shipped" }
                         ),
+                    );
+                }
+                // The fixture named from the loader's SHIPPED source: the loader linking the
+                // plugin, which the FIXTURES grant (:3870 (3)) does not cover.
+                if extra_user {
+                    ov.set(
+                        "crates/plugin-loader/src/planted_hook_user.rs",
+                        "pub fn planted_user() {\n    let _ = busbar_hook_ranking::door;\n}\n",
                     );
                 }
                 ov
@@ -7193,8 +8038,8 @@ impl Gate for KindIsolationGate {
             report.push(prove_rows_green(
                 cx,
                 subject,
-                "the loader's dev-edge to its declared cold-kind both-ways fixture, used only by \
-                 its conformance test, is #2's witness and not a new forbidden edge",
+                "the loader's dev-edge to a real plugin its tests alone use is the FIXTURES grant \
+                 (:3870 (3)): no edge, no row, not a new forbidden edge",
                 &[ROW_TEST_DEPS],
                 witness(true, false),
             ));
@@ -7208,20 +8053,20 @@ impl Gate for KindIsolationGate {
                 witness(false, false),
                 &[
                     "new-forbidden-edge",
-                    "busbar-plugin-loader -> busbar-hooks-ranking",
+                    "busbar-plugin-loader -> busbar-hook-ranking",
                 ],
             ));
-            // …and a fixture any test other than a conformance test uses is a plugin the tooling
-            // tests against, not a witness.
+            // …and a fixture the loader's SHIPPED source names is the loader linking a plugin, which
+            // no ruling grants: measured, and new.
             report.push(prove_rows_red(
                 cx,
                 subject,
-                "a cold-kind fixture used outside `*_conformance_tests` is not a witness",
+                "a fixture plugin named from the loader's shipped source is not granted",
                 &[ROW_TEST_DEPS],
                 witness(true, true),
                 &[
                     "new-forbidden-edge",
-                    "busbar-plugin-loader -> busbar-hooks-ranking",
+                    "busbar-plugin-loader -> busbar-hook-ranking",
                 ],
             ));
 
@@ -7299,6 +8144,49 @@ impl Gate for KindIsolationGate {
                     "new-forbidden-edge",
                     "busbar-store-memory -> busbar-plugin-loader",
                 ],
+            ));
+
+            // THE LOADER'S REAL-PLUGIN FIXTURES ARE RULED (spec :3870, step (3); ARCHITECT
+            // 2026-10-07): its dev-edges to plugin crates its tests alone use are not measured.
+            // The grant ends where the ruling does. The loader's SHIPPED source naming the same
+            // plugin is the loader linking it, and the edge is measured again; and the kernel taking
+            // a plugin as a dev-edge is not the loader's conformance test at all (R-FIX3, :3894).
+            let loader_manifest = "crates/plugin-loader/Cargo.toml";
+            if cx
+                .read(loader_manifest)
+                .is_ok_and(|t| t.contains("busbar-export-file = "))
+            {
+                let mut ov = Overlay::new();
+                ov.set(
+                    "crates/plugin-loader/src/planted_link.rs",
+                    "pub use busbar_export_file::door;\n",
+                );
+                report.push(prove_rows_red(
+                    cx,
+                    subject,
+                    "the loader's shipped source naming a fixture plugin ends the fixture grant",
+                    &[ROW_TEST_DEPS],
+                    ov,
+                    &["busbar-plugin-loader -> busbar-export-file"],
+                ));
+            }
+            let kernel_manifest = "crates/busbar-kernel/Cargo.toml";
+            let mut ov = Overlay::new();
+            ov.set(
+                kernel_manifest,
+                cx.read(kernel_manifest).unwrap_or_default().replacen(
+                    "[dev-dependencies]\n",
+                    "[dev-dependencies]\nbusbar-export-file = { workspace = true }\n",
+                    1,
+                ),
+            );
+            report.push(prove_rows_red(
+                cx,
+                subject,
+                "the kernel taking a real plugin as a dev-edge is not the loader's fixture grant",
+                &[ROW_TEST_DEPS],
+                ov,
+                &["busbar-kernel -> busbar-export-file"],
             ));
 
             // THE SAME GRANT FOR A CLEANLINESS CRATE'S UNIVERSAL-NEEDS WITNESS,
@@ -7544,7 +8432,7 @@ impl Gate for KindIsolationGate {
 
             // THE #40 WALL, BOTH WAYS. A plugin-kind crate whose one dependency is busbar-contract
             // IS DECISIONS #40(a) — `hooks -> contract` was scored `new-forbidden-edge` plus an
-            // unlisted `[[dep]]`, `[[cell]]` and `[[edge]]` the day `busbar-hooks-ranking` was
+            // unlisted `[[dep]]`, `[[cell]]` and `[[edge]]` the day `busbar-hook-ranking` was
             // repointed at the contract, for doing exactly what the wall asks. GREEN on the shipped
             // graph, the test graph and the vocabulary matrix alike, with a source file that names
             // the contract the way every plugin does. And the same crate reaching `busbar-kernel` is
@@ -7601,11 +8489,11 @@ impl Gate for KindIsolationGate {
             let mut ov = manifest_plant(
                 "crates/busbar-kernel-planted",
                 "busbar-kernel-planted",
-                &["busbar-hooks-ranking"],
+                &["busbar-hook-ranking"],
             );
             ov.set(
                 REGISTRY_FILE,
-                planted_dep_row(cx, "busbar-kernel-planted", "busbar-hooks-ranking"),
+                planted_dep_row(cx, "busbar-kernel-planted", "busbar-hook-ranking"),
             );
             report.push(prove_rows_red(
                 cx,
@@ -7615,7 +8503,7 @@ impl Gate for KindIsolationGate {
                 ov,
                 &[
                     "unsupported-verdict",
-                    "busbar-kernel-planted -> busbar-hooks-ranking",
+                    "busbar-kernel-planted -> busbar-hook-ranking",
                     "kernel -> hooks",
                 ],
             ));
@@ -7649,12 +8537,12 @@ impl Gate for KindIsolationGate {
                 manifest_plus(
                     cx,
                     "crates/busbar-core-admin/Cargo.toml",
-                    "[dependencies.busbar-hooks-ranking]\npath = \"../hooks-ranking\"\n",
+                    "[dependencies.busbar-hook-ranking]\nworkspace = true\n",
                 ),
             );
             ov.set(
                 REGISTRY_FILE,
-                planted_dep_row(cx, "busbar-core-admin", "busbar-hooks-ranking"),
+                planted_dep_row(cx, "busbar-core-admin", "busbar-hook-ranking"),
             );
             report.push(prove_rows_red(
                 cx,
@@ -7664,7 +8552,7 @@ impl Gate for KindIsolationGate {
                 ov,
                 &[
                     "unsupported-verdict",
-                    "busbar-core-admin -> busbar-hooks-ranking",
+                    "busbar-core-admin -> busbar-hook-ranking",
                     "cleanliness -> hooks",
                 ],
             ));
@@ -7882,22 +8770,42 @@ impl Gate for KindIsolationGate {
             &["dead-kind", "contract"],
         ));
 
-        // THE PENDING-KIND RATCHET: a crate of a pending kind retires the pending entry. `secret`
-        // is pending (its instances live in their own repos), so a planted `busbar-secret-*`
-        // manifest makes the kind live while the entry still says pending — the one state the
-        // ratchet exists to refuse.
+        // A KIND WHOSE CRATES ALL LEFT FOR THEIR OWN REPOS IS READ FROM ITS PINS, NEVER SKIPPED
+        // (ARCHITECT W4B-Q1; RUN.md:119). It replaces the pending-kind ratchet, whose list is gone
+        // with the skip it held. `secret` has no crate in this tree: its env and file sources are
+        // pinned git dependencies, mounted at `crates/<package>`, so the kind is live on the real
+        // tree. A `cargo metadata` that resolves no pin is the tree where those crates are nowhere,
+        // and the dead-kind rule must say so by name: the kind is scored, not excused.
+        let mut ov = Overlay::new();
+        ov.set_command("cargo-metadata:Cargo.toml", "{\"packages\":[]}");
+        report.push(prove_rows_red(
+            cx,
+            subject,
+            "a kind whose crates all left the tree, with its pins gone, is a dead kind",
+            &[ROW_REGISTRY],
+            ov,
+            &["dead-kind", "`secret`", "pinned checkout"],
+        ));
+
+        // …AND A PINNED CRATE IS READ BY EVERY RULE, NOT ONLY COUNTED. A plant into the mounted
+        // checkout of the env secret source is a plant into a crate of the census: naming a plane
+        // crate's path there is the same `undeclared-crate-path` it is anywhere in the tree.
         let mut ov = Overlay::new();
         ov.set(
-            "crates/busbar-secret-planted/Cargo.toml",
-            "[package]\nname = \"busbar-secret-planted\"\nversion = \"0.0.0\"\n",
+            "crates/busbar-secret-env/src/planted_leak.rs",
+            "pub fn leak() { let _ = busbar_plane_llm::VERSION; }\n",
         );
         report.push(prove_rows_red(
             cx,
             subject,
-            "a pending kind that now has a crate",
-            &[ROW_REGISTRY],
+            "a pinned crate naming another kind's crate path is read where it is mounted",
+            &[ROW_VOCAB],
             ov,
-            &["kind-arrived", "secret"],
+            &[
+                "undeclared-crate-path",
+                "busbar_plane_llm",
+                "busbar-secret-env",
+            ],
         ));
 
         // THE RENAME ALIAS EXPIRES WITH THE CRATE IT TRANSLATES.
@@ -8190,6 +9098,113 @@ impl Gate for KindIsolationGate {
             &["foreign-entry", "busbar-transport-stdio", "Plane"],
         ));
 
+        // …AND THE SAME RENAME INSIDE A GROUP, WRAPPED THE WAY RUSTFMT WRAPS IT. The reader took a
+        // statement's LAST ` as ` only, so `{Plane as Metered, PlaneError as MeteredError}` resolved
+        // nothing and the loader's `impl VerbStore for StoreAdapter` sat unseen beside it.
+        let mut ov = Overlay::new();
+        ov.set(
+            "crates/busbar-transport-stdio/src/planted_group_alias.rs",
+            "use busbar_contract::plane::{\n    Plane as Metered,\n    PlaneError as MeteredError,\n};\n\
+             pub struct WireG;\nimpl Metered for WireG {}\n",
+        );
+        report.push(prove_rows_red(
+            cx,
+            subject,
+            "a wire implementing a plane face under a grouped, wrapped `use … as` rename",
+            &[ROW_FACES],
+            ov,
+            &["foreign-entry", "busbar-transport-stdio", "Plane"],
+        ));
+
+        // A NAME IS NOT A THING (Law 8). The store face is the RECORD store
+        // (`busbar_contract::records::RecordStore`), matched by its path: under any local name it
+        // is the store face, and the admin verbs' DR seam `verb_store::Store`, which only shares
+        // its last word, is not.
+        let mut ov = Overlay::new();
+        ov.set(
+            "crates/busbar-transport-stdio/src/planted_record_store.rs",
+            "use busbar_contract::records::{RecordStore as Store, RecordStoreError};\n\
+             pub struct Kept;\nimpl Store for Kept {}\n",
+        );
+        report.push(prove_rows_red(
+            cx,
+            subject,
+            "a wire implementing the record store under the local name `Store` is the store face",
+            &[ROW_FACES],
+            ov,
+            &["foreign-entry", "busbar-transport-stdio", "Store"],
+        ));
+        let mut ov = Overlay::new();
+        ov.set(
+            "crates/busbar-transport-stdio/src/planted_verb_seam.rs",
+            "pub struct Seam;\nimpl busbar_contract::verb_store::Store for Seam {}\n",
+        );
+        report.push(prove_rows_green(
+            cx,
+            subject,
+            "a crate implementing the admin verbs' `verb_store::Store` seam is not the store face",
+            &[ROW_FACES],
+            ov,
+        ));
+
+        // THE FACE PATHS ARE CHECKED AGAINST THE CONTRACT. A trait that moved out from under its
+        // path would leave every impl of it reading as no face at all — a silence that looks
+        // exactly like a clean tree — so the path that no longer resolves is the finding.
+        let records = "crates/busbar-contract/src/records.rs";
+        let mut ov = Overlay::new();
+        ov.set(
+            records,
+            cx.read(records)
+                .unwrap_or_default()
+                .replace("pub trait RecordStore", "pub trait RecordStoreMoved"),
+        );
+        report.push(prove_rows_red(
+            cx,
+            subject,
+            "a face path whose trait the contract no longer defines is refused, not read as no face",
+            &[ROW_FACES],
+            ov,
+            &["face-path-gone", "busbar_contract::records::RecordStore"],
+        ));
+
+        // A TEST-ONLY MODULE IS NOT A SHIPPED FACE. The kernel declares `test_support` under
+        // `#[cfg(any(test, feature = "test-support"))]`; a face implemented in it is not in a
+        // release build, so it is no finding.
+        let mut ov = Overlay::new();
+        ov.set(
+            "crates/busbar-kernel/src/test_support/planted_face.rs",
+            "pub struct Double;\nimpl busbar_contract::plane::Plane for Double {}\n",
+        );
+        report.push(prove_rows_green(
+            cx,
+            subject,
+            "a face implemented in a test-support-only module is not a shipped face",
+            &[ROW_FACES],
+            ov,
+        ));
+
+        // …AND THAT HOLDS ONLY WHILE `test-support` SHIPS NOWHERE. A `default` feature set that
+        // reaches it puts every test-only module in the release build, and the premise the row
+        // above stands on is refused, by name.
+        let kernel_manifest = "crates/busbar-kernel/Cargo.toml";
+        let mut ov = Overlay::new();
+        ov.set(
+            kernel_manifest,
+            cx.read(kernel_manifest).unwrap_or_default().replacen(
+                "default = [",
+                "default = [\"test-support\", ",
+                1,
+            ),
+        );
+        report.push(prove_rows_red(
+            cx,
+            subject,
+            "a default feature set that reaches test-support is refused",
+            &[ROW_FACES],
+            ov,
+            &["test-support-ships", "busbar-kernel"],
+        ));
+
         // …AND WHAT `cargo fmt` ITSELF WRITES. A long header wraps, and no LINE of a wrapped one
         // holds both `impl` and ` for ` — so the line-based reader saw nothing at all. The
         // statement is read as tokens now, and this is the fixture that says so.
@@ -8230,22 +9245,46 @@ impl Gate for KindIsolationGate {
             ));
         }
 
-        // THE RATCHET, BOTH WAYS. The four faces that exist today are held at their exact count:
-        // a SECOND one in the same crate is a landing that grew the coupling.
+        // THE RATCHET, BOTH WAYS. The faces that exist today are held at their exact count: a
+        // SECOND one in the same crate is a landing that grew the coupling. The subject is the
+        // ledger's first `[[face]]` row, read off the ledger rather than named here, so the case
+        // follows the debt as it drains instead of naming a row that has gone.
         if !self.ship {
-            let mut ov = Overlay::new();
-            ov.set(
-                "crates/busbar-a2a/src/planted_second_transport.rs",
-                "pub struct Second;\nimpl Transport for Second {}\n",
-            );
-            report.push(prove_rows_red(
-                cx,
-                subject,
-                "a second implementation of a reviewed foreign face is a landing that grew it",
-                &[ROW_FACES],
-                ov,
-                &["face-ratchet", "busbar-a2a", "Transport"],
-            ));
+            let row = first_face_row(cx);
+            let names = row
+                .as_ref()
+                .map(|(k, f, _)| (k.clone(), f.clone()))
+                .unwrap_or_default();
+            let grown = row.as_ref().map(|(_, face, dir)| {
+                let path = FACE_PATHS
+                    .iter()
+                    .find(|(_, label, _)| label == face)
+                    .and_then(|(_, label, paths)| paths.first().copied().or(Some(*label)))
+                    .unwrap_or(face.as_str())
+                    .to_string();
+                let mut ov = Overlay::new();
+                ov.set(
+                    format!("{dir}/src/planted_second_face.rs"),
+                    format!("pub struct Second;\nimpl {path} for Second {{}}\n"),
+                );
+                ov
+            });
+            match grown {
+                Ok(ov) => report.push(prove_rows_red(
+                    cx,
+                    subject,
+                    "a second implementation of a reviewed foreign face is a landing that grew it",
+                    &[ROW_FACES],
+                    ov,
+                    &["face-ratchet", &names.0, &names.1],
+                )),
+                Err(why) => report.push(unplantable(
+                    "a second implementation of a reviewed foreign face is a landing that grew it",
+                    &[ROW_FACES],
+                    &["face-ratchet"],
+                    why.clone(),
+                )),
+            }
 
             // AND A ROW WHOSE IMPLEMENTATION IS GONE IS A DEAD ALLOWANCE.
             report.push(plant_registry(
@@ -8253,11 +9292,13 @@ impl Gate for KindIsolationGate {
                 subject,
                 "a reviewed face row that covers no implementation any more is struck",
                 &[ROW_FACES],
-                Ok((
-                    "crate = \"busbar-a2a\"\nface = \"Transport\"".to_string(),
-                    "crate = \"busbar-a2a-planted\"\nface = \"Transport\"".to_string(),
-                )),
-                &["dead-face", "busbar-a2a-planted", "Strike the row"],
+                row.map(|(krate, face, _)| {
+                    (
+                        format!("crate = \"{krate}\"\nface = \"{face}\""),
+                        format!("crate = \"{krate}-planted\"\nface = \"{face}\""),
+                    )
+                }),
+                &["dead-face", "-planted", "Strike the row"],
             ));
         }
 
@@ -9114,16 +10155,18 @@ impl Gate for KindIsolationGate {
 
         // A PLANE THAT DOES NOT RUN A STEP. The plant removes one step's implementation from a data
         // plane by replacing the file that holds it; the step list is read off the kernel's own
-        // table, so the finding names the step the loop expected.
+        // table, so the finding names the step the loop expected. The subject is a plane with the
+        // legacy face only: a plane that also serves through its door (the flipped ones) is judged
+        // by its door's slots instead, so removing its legacy file leaves the door face standing.
         let mut ov = Overlay::new();
-        ov.remove("crates/busbar-plane-mcp/src/plane.rs");
+        ov.remove("crates/busbar-plane-streaming/src/plane.rs");
         report.push(prove_rows_red(
             cx,
             subject,
             "a data plane that implements none of the strict step list",
             &[ROW_STEPS],
             ov,
-            &["missing-step", "busbar-plane-mcp"],
+            &["missing-step", "busbar-plane-streaming"],
         ));
 
         // A PLANE THAT RUNS THE KERNEL'S DECISION, both ways the ruling names: an `approve` of its
@@ -9319,10 +10362,24 @@ impl Gate for KindIsolationGate {
                 "busbar-transport-stdio [dependencies]",
             ],
         ));
+        // …the LOGIC crate a named cdylib twin packages is the linked half of the same witness
+        // (BUSBAR-1.6.0.md §9: a plugin repo is a logic crate plus its `-plugin` cdylib; the real
+        // table names `busbar-transport-tcp-plugin` and the loader links `busbar-transport-tcp`)…
+        report.push(prove_rows_green(
+            cx,
+            subject,
+            "the loader's dev-edge to the logic crate of its declared cdylib fixture is the witness",
+            &[ROW_WIRES],
+            loader(
+                "",
+                "busbar-transport-tcp = { workspace = true }",
+                "busbar-transport-tcp-plugin",
+            ),
+        ));
         // …and a dev-edge to a wire the table does NOT name is a wire chosen, not a fixture. The
         // declared both-ways fixture is a wire OTHER than the dev-edge, so the dev-edge is a choice:
-        // `busbar-transport-tcp` is the canonical exemplar the ledger names, a pinned git dep that
-        // `crates/` never held, so the both-ways metadata names it without the dev-edge matching it.
+        // the table names the tcp twin, as the real one does (`busbar-transport-tcp-plugin`, a pinned
+        // git dep `crates/` never held), and the edge is to the stdio wire.
         report.push(prove_rows_red(
             cx,
             subject,
@@ -9331,7 +10388,7 @@ impl Gate for KindIsolationGate {
             loader(
                 "",
                 "busbar-transport-stdio = { path = \"../busbar-transport-stdio\" }",
-                "busbar-transport-tcp",
+                "busbar-transport-tcp-plugin",
             ),
             &[
                 "wire-dependency",
@@ -9494,18 +10551,39 @@ impl Gate for KindIsolationGate {
             ],
         ));
 
+        // THE KERNEL'S ROUTE VOCABULARY IS NOT A FINDING ON A CLEANLINESS SURFACE (ARCHITECT
+        // 2026-10-07). `pool`, `failover`, `routing`, `provider`, `egress` and `breaker` name no
+        // plugin; they are the kernel's route words, and the 1.5.5 admin API serves them to the
+        // operator. A cleanliness crate naming them keeps `:control-path` green.
         let mut ov = Overlay::new();
         ov.set(
             "crates/busbar-core-oauth2/src/planted_pool.rs",
-            "pub fn pick(pool: u8) -> u8 { let failover = pool; failover }\n",
+            "pub fn pick(pool: u8, egress: u8) -> u8 { let failover = pool ^ egress; failover }\n",
+        );
+        report.push(prove_rows_green(
+            cx,
+            subject,
+            "a cleanliness surface naming the kernel's route vocabulary is not a control-path finding",
+            &[ROW_CONTROL],
+            ov,
+        ));
+
+        // A CLEANLINESS SURFACE NAMES NO PLUGIN (THE DESIGN §8). The rule that holds it is
+        // `:matrix`'s armed `law0-neutral-instance` class, at zero on the ship twin: a plane
+        // instance noun written in core-admin's shipped source is RED there, whatever
+        // `:control-path` says.
+        let mut ov = Overlay::new();
+        ov.set(
+            "crates/busbar-core-admin/src/planted_plane_noun.rs",
+            "pub fn mcp_tools_count() -> usize { 0 }\n",
         );
         report.push(prove_rows_red(
             cx,
             subject,
-            "a control surface naming the vocabulary of reaching an upstream",
-            &[ROW_CONTROL],
+            "a cleanliness surface naming a plane instance is refused at the ship ceiling of zero",
+            &[matrix::ROW_MATRIX],
             ov,
-            &["upstream", "busbar-core-oauth2", "pool"],
+            &["law0-neutral-instance", "busbar-core-admin \u{d7} plane"],
         ));
 
         // A TRANSITIONAL ROW WHOSE CRATE IS STILL HERE AT SHIP TIME IS RED. The exemption's expiry
@@ -9874,6 +10952,81 @@ impl Gate for KindIsolationGate {
             &["battery-ignored", "busbar-store-ignored"],
         ));
 
+        // THE PUBLISHED SUITE IS A BATTERY. A plugin's `tests/conformance.rs` that invokes
+        // `busbar_plugin_loader::conformance_suite!` over its door runs the suite's entries — the
+        // macro expands to them — and spells no `#[test]` of its own. It is a live battery, and the
+        // row must not call it ignored.
+        let mut ov = manifest_plant(
+            "crates/busbar-store-suite",
+            "busbar-store-suite",
+            &["busbar-contract"],
+        );
+        ov.set(
+            "crates/busbar-store-suite/src/lib.rs",
+            "pub struct P;\nimpl Store for P {}\n",
+        );
+        ov.set(
+            "crates/busbar-store-suite/tests/conformance.rs",
+            "busbar_plugin_loader::conformance_suite! {\n    door: busbar_store_suite::door,\n    \
+             cdylib: \"store_suite_door\",\n    inputs: include_str!(\"conformance.json\"),\n}\n",
+        );
+        report.push(prove_rows_green(
+            cx,
+            subject,
+            "a battery that invokes the published suite over its door is a live battery",
+            &[ROW_TESTKIT],
+            ov,
+        ));
+
+        // AN INVOCATION THAT EXPANDS TO NOTHING IS NOT A BATTERY. The same file with the subject
+        // taken out names the published macro and runs no entry against anything.
+        let mut ov = manifest_plant(
+            "crates/busbar-store-emptysuite",
+            "busbar-store-emptysuite",
+            &["busbar-contract"],
+        );
+        ov.set(
+            "crates/busbar-store-emptysuite/src/lib.rs",
+            "pub struct P;\nimpl Store for P {}\n",
+        );
+        ov.set(
+            "crates/busbar-store-emptysuite/tests/conformance.rs",
+            "busbar_plugin_loader::conformance_suite! {}\n",
+        );
+        report.push(prove_rows_red(
+            cx,
+            subject,
+            "a published-suite invocation that names no subject is a file with no entry",
+            &[ROW_TESTKIT],
+            ov,
+            &["battery-ignored", "busbar-store-emptysuite"],
+        ));
+
+        // A LOCAL MACRO BY THE SAME NAME IS NOT THE PUBLISHED SUITE. A file that defines its own
+        // `conformance_suite` to expand to nothing, then invokes it with a subject, runs nothing.
+        let mut ov = manifest_plant(
+            "crates/busbar-store-shadowsuite",
+            "busbar-store-shadowsuite",
+            &["busbar-contract"],
+        );
+        ov.set(
+            "crates/busbar-store-shadowsuite/src/lib.rs",
+            "pub struct P;\nimpl Store for P {}\n",
+        );
+        ov.set(
+            "crates/busbar-store-shadowsuite/tests/conformance.rs",
+            "macro_rules! conformance_suite {\n    ($($t:tt)*) => {};\n}\n\
+             conformance_suite! {\n    door: busbar_store_shadowsuite::door,\n}\n",
+        );
+        report.push(prove_rows_red(
+            cx,
+            subject,
+            "a file-local conformance_suite macro is not the published suite",
+            &[ROW_TESTKIT],
+            ov,
+            &["battery-ignored", "busbar-store-shadowsuite"],
+        ));
+
         // A BATTERY WITH NO SUBJECT. The same crate, with a live battery and no implementor of its
         // kind's trait anywhere in shipped source: the file compiles, the battery passes, and it is
         // evidence about nothing this crate ships.
@@ -9897,6 +11050,107 @@ impl Gate for KindIsolationGate {
             &[ROW_TESTKIT],
             ov,
             &["no-implementor", "busbar-store-subjectless", "Store"],
+        ));
+
+        // A PINNED REPO'S DOOR AND BATTERY ARE ITS `-plugin` TWIN'S (spec §9; ARCHITECT
+        // 2026-10-07). The real export-file twin exports the door and runs the published suite,
+        // so the logic crate reads green; each plant below takes one of those two facts away and
+        // the row says so, and a repo with no twin at all reads exactly as it did before twins
+        // were read.
+        let twin = pinned::twin_dir("busbar-export-file");
+        let mut ov = Overlay::new();
+        ov.set(
+            format!("{twin}/tests/conformance.rs"),
+            "#[test]\n#[ignore = \"not yet\"]\nfn the_suite() {}\n",
+        );
+        let mut ov_async = Overlay::new();
+        ov_async.set(
+            format!("{twin}/tests/conformance.rs"),
+            "#[tokio::test(flavor = \"multi_thread\")]\nasync fn the_suite() {}\n",
+        );
+        report.push(prove_rows_green(
+            cx,
+            subject,
+            "a pinned repo whose twin's battery is an async test runs its battery",
+            &[ROW_TESTKIT],
+            ov_async,
+        ));
+        report.push(prove_rows_red(
+            cx,
+            subject,
+            "a pinned repo whose twin's battery is all ignored is battery-ignored",
+            &[ROW_TESTKIT],
+            ov,
+            &["battery-ignored", "busbar-export-file"],
+        ));
+        let mut ov = Overlay::new();
+        ov.set(format!("{twin}/src/lib.rs"), "pub fn nothing() {}\n");
+        report.push(prove_rows_red(
+            cx,
+            subject,
+            "a pinned repo whose twin exports no door has no implementor",
+            &[ROW_TESTKIT],
+            ov,
+            &["no-implementor", "busbar-export-file"],
+        ));
+        let mut ov = Overlay::new();
+        for f in pinned::twin_files(cx)
+            .into_iter()
+            .filter(|(dir, _, _)| dir == "crates/busbar-export-file")
+        {
+            ov.remove(format!("{twin}/{}", f.1));
+        }
+        // THE HOOK KIND BUILDS ITS DOOR WITH `hook_door!`, and the pinned hook-ranking repo's
+        // logic crate does exactly that: with its builder line taken out, the door it exports is
+        // built by nothing and the crate has no implementor again.
+        let hook_door = "crates/busbar-hook-ranking/src/door.rs";
+        if cx.read(hook_door).is_ok_and(|t| t.contains("hook_door!")) {
+            let mut ov_hook = Overlay::new();
+            ov_hook.set(
+                hook_door,
+                cx.read(hook_door)
+                    .unwrap_or_default()
+                    .replace("hook_door!", "hook_door_planted_away!"),
+            );
+            report.push(prove_rows_red(
+                cx,
+                subject,
+                "a hook plugin whose door no builder builds has no implementor",
+                &[ROW_TESTKIT],
+                ov_hook,
+                &["no-implementor", "busbar-hook-ranking"],
+            ));
+        }
+        // …AND A BUILDER THE CONTRACT ADDS IS A BUILDER, WITH NO EDIT TO THIS GATE. The roster is
+        // read off the contract's `macro_rules! *_door` (Law 8): the same pinned door built by a
+        // `widget_door!` the contract newly defines is a built door again.
+        if cx.read(hook_door).is_ok_and(|t| t.contains("hook_door!")) {
+            let mut ov_widget = Overlay::new();
+            ov_widget.set(
+                hook_door,
+                cx.read(hook_door)
+                    .unwrap_or_default()
+                    .replace("hook_door!", "widget_door!"),
+            );
+            ov_widget.set(
+                "crates/busbar-contract/src/planted_widget_door.rs",
+                "#[macro_export]\nmacro_rules! widget_door {\n    ($($t:tt)*) => {};\n}\n",
+            );
+            report.push(prove_rows_green(
+                cx,
+                subject,
+                "a door builder the contract newly defines is read as a builder with no gate edit",
+                &[ROW_TESTKIT],
+                ov_widget,
+            ));
+        }
+        report.push(prove_rows_red(
+            cx,
+            subject,
+            "a pinned repo with no twin carries neither the door nor the battery",
+            &[ROW_TESTKIT],
+            ov,
+            &["no-implementor", "busbar-export-file"],
         ));
 
         // ── THE THREE SHIP FINDINGS WITH NO CASE ─────────────────────────────────────────────────
@@ -10007,8 +11261,7 @@ impl Gate for KindIsolationGate {
         // NO CONTROL SURFACE REACHED `:control-path`. The rule reads the `cleanliness` kind
         // (admin/oauth2, DECISIONS #5), so the honest fixture for "this rule looked at no surface
         // at all" is every crate of THAT kind out of the census. Zero surfaces run zero data-path
-        // steps and name zero upstreams, which reads exactly like a control kind that keeps to its
-        // own path.
+        // steps, which reads exactly like a control kind that keeps to its own path.
         //
         // It asked for `kinds_gone(["control"])`, a kind no crate resolves to: the overlay was
         // empty, the harness refused it, and the floor had no proof. And it cannot be proven from
@@ -10576,6 +11829,82 @@ fn manifest_plus(cx: &Ctx, rel: &str, extra: &str) -> String {
 
 /// A planted `Cargo.toml` for `dir`, declaring `name` and depending on `deps`. `set` rather than an
 /// `Edit::Create` so the same helper serves both a brand-new crate and a rewrite of a real one.
+/// Whether `from -> to` pre-dates this branch: the base declares it, or `to` is the NEW name of a
+/// crate a reviewed rename row (`renamed_from`: new name -> old name, the construction census's
+/// `[[gate.census.renamed]]`) moved, and the base declares `from -> <old name>`. A rename with no
+/// reviewed row is no rename here: the edge under the new name is new.
+fn pre_existing(
+    renamed_from: &BTreeMap<String, String>,
+    from: &str,
+    to: &str,
+    base_has: impl Fn(&str, &str) -> bool,
+) -> bool {
+    base_has(from, to)
+        || renamed_from
+            .get(to)
+            .is_some_and(|old| base_has(from, old.as_str()))
+}
+
+#[cfg(test)]
+mod pre_existing_tests {
+    use super::*;
+
+    fn base(from: &str, to: &str) -> bool {
+        (from, to) == ("busbar-kernel", "busbar-hooks-ranking")
+    }
+
+    fn reviewed() -> BTreeMap<String, String> {
+        [(
+            "busbar-hook-ranking".to_string(),
+            "busbar-hooks-ranking".to_string(),
+        )]
+        .into()
+    }
+
+    #[test]
+    fn an_edge_the_base_declares_pre_exists() {
+        assert!(pre_existing(
+            &BTreeMap::new(),
+            "busbar-kernel",
+            "busbar-hooks-ranking",
+            base
+        ));
+    }
+
+    #[test]
+    fn a_reviewed_rename_is_the_edge_it_renames() {
+        assert!(pre_existing(
+            &reviewed(),
+            "busbar-kernel",
+            "busbar-hook-ranking",
+            base
+        ));
+    }
+
+    /// RED: with no reviewed rename row, the edge under the new name is one this branch introduced.
+    #[test]
+    fn an_unreviewed_rename_is_a_new_edge() {
+        assert!(!pre_existing(
+            &BTreeMap::new(),
+            "busbar-kernel",
+            "busbar-hook-ranking",
+            base
+        ));
+    }
+
+    /// RED: a reviewed row renames one crate, not every edge that lands on the new name from a
+    /// crate the base never reached the old one from.
+    #[test]
+    fn a_reviewed_rename_does_not_excuse_another_crate_s_edge() {
+        assert!(!pre_existing(
+            &reviewed(),
+            "busbar-core-admin",
+            "busbar-hook-ranking",
+            base
+        ));
+    }
+}
+
 fn manifest_plant(dir: &str, name: &str, deps: &[&str]) -> Overlay {
     let mut body = format!("[package]\nname = \"{name}\"\nversion = \"0.0.0\"\n\n[dependencies]\n");
     for d in deps {
@@ -10613,13 +11942,14 @@ mod plant_tests {
     use crate::ctx::Change;
     use crate::ledger::Status;
 
+    /// The workspace as the gate reads it: the pinned checkouts mounted beneath ([`pinned`]).
     fn ws() -> Ctx {
-        Ctx::workspace().expect("the workspace opens")
+        pinned::with_pinned(&Ctx::workspace().expect("the workspace opens"))
     }
 
-    /// The census exactly as [`KindIsolationGate::run`] builds it.
+    /// The census exactly as [`KindIsolationGate::run`] builds it, over the pinned mount.
     fn crates_of(cx: &Ctx) -> (Vec<CrateInfo>, BTreeSet<String>) {
-        let mut crates = census(cx).expect("the census reads");
+        let mut crates = census(&pinned::with_pinned(cx)).expect("the census reads");
         let (planes, ports) = vocabularies(&crates);
         assign_instances(&mut crates, &planes, &ports);
         (crates, planes)
@@ -10666,12 +11996,70 @@ mod plant_tests {
             format!("{host}/src/planted_wire/meta.rs"),
             "impl TransportMeta for PlantedWire {\n    const KEY: &'static str = \"plantedwire\";\n}\n",
         );
-        let planted = cx.with_overlay(ov);
+        // The plant replaces the mounted overlay, so the mount goes back beneath it, as `run` does.
+        let planted = pinned::with_pinned(&cx.with_overlay(ov));
         let (_, ports) = vocabularies(&census(&planted).expect("the planted census reads"));
         assert!(
             ports.contains("plantedwire"),
             "a declared key did not join the transport vocabulary: {ports:?}"
         );
+    }
+
+    /// THE PINNED CHECKOUTS ARE CRATES OF THE CENSUS (ARCHITECT W4B-Q1; RUN.md:119 "never skip").
+    /// A plugin crate busbar pulls at a pinned rev is read from its checkout at `crates/<package>`:
+    /// it carries its `git+` source, its kind is live, and it owes no member line. The cdylib twin
+    /// is not mounted, and a `cargo metadata` that resolves no pin mounts nothing — the kind is
+    /// then a dead kind, never a skipped one.
+    #[test]
+    fn a_pinned_checkout_is_a_crate_of_the_census_and_owes_no_member_line() {
+        let cx = ws();
+        let (crates, _) = crates_of(&cx);
+        for name in [
+            "busbar-secret-env",
+            "busbar-export-otlp",
+            "busbar-transport-tcp",
+        ] {
+            let c = crates
+                .iter()
+                .find(|c| c.name == name)
+                .unwrap_or_else(|| panic!("{name} is pinned by the root and is in the census"));
+            assert_eq!(c.dir, format!("crates/{name}"));
+            assert!(
+                c.pinned.as_deref().is_some_and(|s| s.starts_with("git+")),
+                "{name} carries its pinned source: {:?}",
+                c.pinned
+            );
+        }
+        assert!(
+            !crates
+                .iter()
+                .any(|c| c.pinned.is_some() && c.name.ends_with("-plugin")),
+            "a cdylib twin is not mounted"
+        );
+        let row = rule_registry(&cx, &crates, &reg_of(&cx), false);
+        for kind in ["store", "secret", "export", "transport"] {
+            assert!(
+                !row.detail.contains(&format!("dead-kind\tKINDS\t`{kind}`")),
+                "`{kind}` is live through its pins: {}",
+                row.detail
+            );
+        }
+        assert!(
+            !row.detail.contains("unmembered\tcrates/busbar-secret-env"),
+            "a pinned crate is a git dependency, not a member: {}",
+            row.detail
+        );
+
+        let mut ov = Overlay::new();
+        ov.set_command("cargo-metadata:Cargo.toml", "{\"packages\":[]}");
+        let unpinned = pinned::with_pinned(&Ctx::workspace().expect("ws").with_overlay(ov));
+        let (crates, _) = crates_of(&unpinned);
+        assert!(
+            crates.iter().all(|c| c.pinned.is_none()),
+            "no pin resolves, so nothing is mounted"
+        );
+        let row = rule_registry(&unpinned, &crates, &reg_of(&unpinned), false);
+        assert_red_naming(&row, &["dead-kind", "`secret`", "pinned checkout"]);
     }
 
     /// THE PLANT MUST BITE against the tree it is planted over: no removal of a path that tree has
@@ -11189,6 +12577,7 @@ mod plant_tests {
             deps: Vec::new(),
             dev_deps: Vec::new(),
             ambiguous: Vec::new(),
+            pinned: None,
         }
     }
 
@@ -11352,12 +12741,11 @@ mod plant_tests {
     /// The door's kind is the memory ABI it names, and a builder's definition is not a door.
     #[test]
     fn a_door_is_read_with_its_kind() {
-        assert!(builds_door(
-            "busbar_contract::plugin_door! {\n    ops: Ops,\n}\n"
-        ));
-        assert!(!builds_door(
-            "macro_rules! plugin_door {\n    () => {};\n}\n"
-        ));
+        assert_eq!(
+            door_macro_calls("busbar_contract::plugin_door! {\n    ops: Ops,\n}\n"),
+            vec!["plugin_door".to_string()]
+        );
+        assert!(door_macro_calls("macro_rules! plugin_door {\n    () => {};\n}\n").is_empty());
         assert_eq!(
             door_kind_marks("use busbar_contract::abi::transport::{Ops, TransportTail};\n"),
             vec!["transport"]
@@ -11393,6 +12781,7 @@ mod plant_tests {
             has_lib: BTreeSet::new(),
             conformance: BTreeSet::new(),
             conformance_dead: BTreeSet::new(),
+            faces: BTreeMap::new(),
         }
     }
 
@@ -11754,7 +13143,7 @@ mod spec_allowed_tests {
             assert!(spec_allows_manifest(from, to), "{from} -> {to}");
         }
         // The root's dependency list may name what it links; its Rust source may not.
-        for to in ["plane", "transport", "store", "export", "hooks"] {
+        for to in ["plane", "transport", "store", "export", "hooks", "secret"] {
             assert!(spec_allows_manifest("root", to), "root -> {to}");
             assert!(!spec_allows_source("root", to), "root -> {to} in source");
         }

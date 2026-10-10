@@ -192,9 +192,9 @@ fn the_decode_step_is_deterministic() {
     // Only the methods a CALLER sends. A method an upstream sends back is refused on the ingress
     // side by design, and a test that fed one in would be asserting the refusal rather than the
     // determinism.
-    let bodies: Vec<Vec<u8>> = busbar_plane_mcp::ops::METHODS
+    let bodies: Vec<Vec<u8>> = busbar_plane_mcp::tool_ops::METHODS
         .iter()
-        .filter(|r| r.sender == busbar_plane_mcp::ops::Sender::Client)
+        .filter(|r| r.sender == busbar_plane_mcp::tool_ops::Sender::Client)
         .map(|row| {
             format!(
                 r#"{{"jsonrpc":"2.0","id":5,"method":"{}","params":{{"id":"t1"}}}}"#,
@@ -333,5 +333,35 @@ fn the_plane_names_no_money_and_no_decision() {
     assert!(
         offenders.is_empty(),
         "the plane names money or decisions: {offenders:?}"
+    );
+}
+
+/// The plane satisfies no upstream's ask (Law 11, BUSBAR-1.6.0 lines 2127-2132: busbar "answers
+/// nothing on the caller's behalf"; a code path that answers what a response asks for "is deleted,
+/// never added").
+///
+/// An upstream's sampling, elicitation or roots ask is relayed to the caller, who answers it. The
+/// satisfier vocabulary — a per-dispatch loop that decided whether BUSBAR may satisfy an ask and
+/// counted the rounds it satisfied — is the shape of the other answer, and it does not come back,
+/// in production code or in a test that keeps it alive.
+#[test]
+fn the_plane_satisfies_no_upstream_ask() {
+    let forbidden = ["may_satisfy", "InputRequiredLoop"];
+    let mut offenders = Vec::new();
+    walk(&src_dir(), &mut |path, text| {
+        for (n, line) in text.lines().enumerate() {
+            if is_comment(line) {
+                continue;
+            }
+            for name in forbidden {
+                if line.contains(name) {
+                    offenders.push(format!("{}:{}: {name}", path.display(), n + 1));
+                }
+            }
+        }
+    });
+    assert!(
+        offenders.is_empty(),
+        "the plane carries a satisfier of an upstream's ask: {offenders:?}"
     );
 }

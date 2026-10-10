@@ -50,10 +50,41 @@ fn exactly_one_model_claims_systemone_and_nothing_else_claims_anything() {
 }
 
 #[test]
+fn a_generation_lists_every_configured_model_in_name_order() {
+    let two =
+        read_settings(br#"{"models":{"b":{"provider":"typesafe"},"a":{"provider":"typesafe"}}}"#)
+            .expect("the section reads");
+    let spec = generation_spec(&two);
+    assert_eq!(spec.listed, vec!["a".to_string(), "b".to_string()]);
+    assert_eq!(spec.claims, snapshot_spec(2).claims);
+
+    let one =
+        read_settings(br#"{"models":{"jev":{"provider":"typesafe"}}}"#).expect("the section reads");
+    let spec = generation_spec(&one);
+    assert_eq!(spec.listed, vec!["jev".to_string()]);
+    assert_eq!(spec.claims, snapshot_spec(1).claims);
+
+    let empty = read_settings(b"").expect("an empty blob reads");
+    assert!(generation_spec(&empty).listed.is_empty());
+}
+
+#[test]
 fn the_need_is_the_tails() {
     assert_eq!(NEEDS.len(), tail::NEEDS.len());
     assert_eq!(STATEMENT.needs_len, NEEDS.len());
     assert_eq!(STATEMENT.sections_len, 1 + tail::SECTIONS_CONSUMED.len());
+}
+
+/// `validate` reads the blob stage 3g deals (`{decisions: <section>}`): the section inside it is
+/// judged (a typo refused), a blob that writes no `decisions:` is the empty section, and the bare
+/// section is not the dealt shape.
+#[test]
+fn validate_reads_the_dealt_blob_at_its_section() {
+    assert!(read_dealt(b"").is_ok());
+    assert!(read_dealt(br#"{}"#).is_ok());
+    assert!(read_dealt(br#"{"decisions":{"models":{"jev":{"provider":"typesafe"}}}}"#).is_ok());
+    assert!(read_dealt(br#"{"decisions":{"modles":{}}}"#).is_err());
+    assert!(read_dealt(br#"[]"#).is_err());
 }
 
 /// THE SPEC'S BLOB SHAPE (`BUSBAR-1.6.0.md` section 4): the section under its own verb, `{decisions:

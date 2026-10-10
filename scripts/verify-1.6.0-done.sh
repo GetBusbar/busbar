@@ -54,6 +54,9 @@
 #                    binding is mapped to a check that still exists in the tree (test, oracle cell,
 #                    lint, gate). An unmapped binding is a named gap and is RED here -- "done" means
 #                    nothing we designed is unproven. Existence only; the checks run in their own tiers.
+#   p-items          DONE item 2: every P-item's `p_item_<item>_*` pins pass, each at its declared
+#                    count (refusal-reason collapse, unary/empty terminality, empty reply,
+#                    wrong-provider attribution, voice tool-args).
 #   changelog        cargo xtask gate changelog-register: EVERY entry in
 #                    testing/shadow-oracle/accepted-differences.json -- improvement as well as
 #                    breaking, per BUSBAR-1.6.0.md's owner rule -- has its `changelog` field's exact
@@ -159,7 +162,7 @@ step() {   # $1 = label ; rest = command
 # So: the number of groups this file DEFINES is counted from the file, the declared constant must
 # agree with it (a group added or removed is a two-place edit a reviewer sees), and the environment
 # may only ever RAISE the floor. A count that cannot be taken is RED, never a floor of zero.
-DONE_GROUPS_DECLARED=24
+DONE_GROUPS_DECLARED=25
 # awk, not `grep -c ... || echo 0`: `grep -c` on a file with no matches PRINTS 0 and EXITS 1, so the
 # obvious fallback fires on top of grep's own output and the variable becomes the two-line string
 # "0\n0" — which then fails every numeric comparison below and takes the honest-floor check with it.
@@ -378,7 +381,19 @@ xtask_gates_invoked_are_registered() {  # $1 = file to scan
 # number is part of the assertion: a test deleted out of the set is as red as a test that failed.
 filtered_cargo_test() {  # $1 = expected passing count ; rest = the cargo argv
   local want="$1"; shift
-  local out rc got
+  local out rc got listed
+  if [ "$want" = "auto" ]; then
+    # The expected count is DERIVED, never hard-coded: ask the same cargo argv to LIST the tests its
+    # filter selects (`-- --list`, one "<name>: test" line each) and require the run to pass exactly
+    # that many. A filter that selects nothing lists zero and is still RED (below), so the
+    # vacuity guard keeps its teeth; a test added to the set no longer turns the step red by itself.
+    listed="$("$@" -- --list 2>/dev/null | grep -c ': test$')"
+    if [ "${listed:-0}" -lt 1 ]; then
+      printf 'VACUITY: the filter lists no tests at all, so a green run would prove nothing.\n'
+      return 1
+    fi
+    want="$listed"
+  fi
   out="$("$@" 2>&1)"; rc=$?
   if [ "$rc" -ne 0 ]; then printf '%s\n' "$out"; return "$rc"; fi
   got="$(printf '%s\n' "$out" \
@@ -780,11 +795,31 @@ if not isinstance(rec, int) or rec <= 0 or not passed:
     print("the golden owes NOTHING (meta recorded=%r, %d PASS rows) — every replay against it is vacuously green" % (rec, len(passed))); sys.exit(1)
 if len(passed) != rec:
     print("the golden is NOT WHOLE: ledger.tsv has %d PASS rows, meta.json records %d" % (len(passed), rec)); sys.exit(1)
-missing = [c for c in passed if not os.path.isfile(os.path.join(g, "cells", c.replace("|", "__") + ".json"))]
+# The cell file name is the engine's own `safe_name` (busbar-release differ.rs): `|` -> `__`, then
+# every byte outside [A-Za-z0-9._+-] -> `_`. A variant id's `@` is one of those bytes
+# (`…|ok@hooks-webrequest` lives in `…__ok_hooks-webrequest.json`); reading it as `@` made the 44
+# variant cells look absent from a golden that holds every one.
+import re
+safe = lambda c: re.sub(r"[^A-Za-z0-9._+-]", "_", c.replace("|", "__"))
+missing = [c for c in passed if not os.path.isfile(os.path.join(g, "cells", safe(c) + ".json"))]
 if missing:
     print("the golden is NOT WHOLE: %d PASS row(s) have no recorded cell file, e.g. %s" % (len(missing), missing[0])); sys.exit(1)
 print("golden whole: %d PASS rows = meta recorded %d, every one with its cell file" % (len(passed), rec))
 PY
+}
+
+# The engine every PARITY step judges with: bin/oracle fetches busbar-release at the pinned ref into
+# target/oracle/rust/<ref>/checkout and builds it (`tool-dir` is the cheapest subcommand that resolves
+# it). Fails naming the two ways to provide it, so a missing judge reads as that, not as a red cell.
+parity_resolve_judge() {  # $1 = the pinned busbar-release ref
+  local ref="${1:-}"
+  [ -n "$ref" ] || { echo "testing/shadow-oracle/oracle-rust.pin names no release_ref — there is no judge to build"; return 1; }
+  if ./bin/oracle tool-dir >/dev/null 2>/tmp/done-parity-judge.$$; then rm -f /tmp/done-parity-judge.$$; return 0; fi
+  tail -6 /tmp/done-parity-judge.$$; rm -f /tmp/done-parity-judge.$$
+  echo "the judge could not be fetched or built. busbar-release is private: give the run a token"
+  echo "(BUSBAR_RELEASE_TOKEN, GH_TOKEN or GITHUB_TOKEN; bin/oracle never stores it), or place a git"
+  echo "checkout holding commit $ref at target/oracle/rust/$ref/checkout before running"
+  return 1
 }
 
 parity_install_golden() {  # $1 = committed golden dir ; $2 = destination
@@ -1004,6 +1039,14 @@ if [ "$SELFTEST" -eq 1 ]; then
   st_expect refuse "a TRUNCATED golden (fewer PASS rows than meta recorded)"               assert_golden_whole "$st_tmp/g-short"
   st_expect refuse "a golden whose PASS row has no recorded cell file"                     assert_golden_whole "$st_tmp/g-nocell"
   st_expect refuse "a golden that owes nothing"                                            assert_golden_whole "$st_tmp/g-empty"
+  # A variant cell's file is named as the engine names it (`@` -> `_`), not by its raw id.
+  mkdir -p "$st_tmp/g-variant/cells"
+  printf 'a|x|ok@hooks-w\tPASS\t\t\n' > "$st_tmp/g-variant/ledger.tsv"
+  printf '{"binary_sha256":"%s","recorded":1}\n' "$st_sha" > "$st_tmp/g-variant/meta.json"
+  printf '{}\n' > "$st_tmp/g-variant/cells/a__x__ok_hooks-w.json"
+  st_expect accept "a whole golden holding a variant cell (its file under the engine's safe name)" assert_golden_whole "$st_tmp/g-variant"
+  mv "$st_tmp/g-variant/cells/a__x__ok_hooks-w.json" "$st_tmp/g-variant/cells/a__x__ok@hooks-w.json"
+  st_expect refuse "a variant cell whose file is under its raw id, not the engine's safe name" assert_golden_whole "$st_tmp/g-variant"
   st_expect refuse "installing a committed golden that is not there"                       parity_install_golden "$st_tmp/no-such-golden" "$st_tmp/g-dst"
   st_expect accept "the COMMITTED $PARITY_BASELINE_VERSION golden is whole"                assert_golden_whole "$PARITY_COMMITTED_GOLDEN"
   st_expect accept "the COMMITTED golden names a digest this repository pins"              assert_golden_is_pinned "$PARITY_COMMITTED_GOLDEN" testing/shadow-oracle/golden-digests.tsv "$PARITY_BASELINE_VERSION"
@@ -1116,6 +1159,16 @@ end_group
 begin_group "KIND-ISOLATION — the plugin kinds never cross-contaminate (ship criterion, 0 exemptions)"
 step "kind-isolation --selftest" cargo xtask gate kind-isolation-ship --selftest
 step "kind-isolation --ship"     cargo xtask gate kind-isolation-ship
+# THE DoD HARD CLAUSE (BUSBAR-1.6.0.md:1994-1999): every core-neutral crate names ZERO plugin-
+# instance vocabulary. `kind-isolation:law0` holds each crate at its `[[law0]]` ceiling (Law 9,
+# ARCHITECT 2026-10-07); DONE is every ceiling at 0, read here off the one ledger.
+step "every core-neutral [[law0]] ceiling is 0" python3 -c '
+import re, sys
+rows = re.findall(r"\[\[law0\]\]\s*\ncrate\s*=\s*\"([^\"]+)\"\s*\naxis\s*=\s*\"([^\"]+)\"\s*\ncount\s*=\s*\"([0-9]+)\"", open("qa/kind-isolation.toml").read())
+open_ = [f"{c} x {a} = {n}" for c, a, n in rows if int(n) > 0]
+print(f"{len(rows)} [[law0]] row(s); {len(open_)} above 0" + (": " + "; ".join(open_) if open_ else ""))
+sys.exit(1 if open_ or not rows else 0)
+'
 end_group
 
 # ─────────────────────────────────────────────────────────────────────────────────────────────────
@@ -1202,7 +1255,8 @@ else
       echo "(scripts/plane-delete-test.sh --all reports this same gap as an informational yellow note, never red — see report_coverage)"
       exit 1
     fi
-    echo "all $(printf '%s' "$PLANE_KEYS_LOCKED" | wc -w | tr -d ' ') locked plane(s) are reachable on disk"
+    set -- $PLANE_KEYS_LOCKED
+    echo "all $# locked plane(s) are reachable on disk"
   '
 fi
 end_group
@@ -1218,13 +1272,12 @@ if assert_bless_env_empty >/tmp/done-oracle-step.$$ 2>&1; then
   # with the admin service (1.6.0; W4.a absorbed busbar-core into busbar-kernel, and #37 folded
   # busbar-plane-admin + busbar-admin into busbar-core-admin), so `-p busbar-core-admin` is REQUIRED:
   # `-p busbar -p busbar-kernel` alone selects just 1 test (busbar-kernel's
-  # `a_plane_with_admin_verbs_documents_at_least_one_openapi_path`) against the expected 23 — a
-  # vacuity the count check catches. With busbar-core-admin added the `openapi` filter runs the real
-  # set (22 in busbar-core-admin + 1 in busbar-kernel = 23), so the oracle's byte-identity check is
-  # real. Thread-count-independent: every busbar-core-admin openapi
+  # `a_plane_with_admin_verbs_documents_at_least_one_openapi_path`) against the listed set — a
+  # vacuity the count check catches. The expected count is the number of tests `-- --list` shows
+  # for the filter, and a run that passes fewer, or a filter that lists none, is RED. Thread-count-independent: every busbar-core-admin openapi
   # test installs the plane seam before reading `openapi_doc()` (see `openapi_doc_seamed` in that
   # crate's json tests), so no `--test-threads=1` pin is needed for determinism.
-  step "openapi.json goldens match committed file"  filtered_cargo_test 23 cargo test -p busbar -p busbar-kernel -p busbar-core-admin --features openapi-schema --quiet openapi
+  step "openapi.json goldens match committed file"  filtered_cargo_test auto cargo test -p busbar -p busbar-kernel -p busbar-core-admin --features openapi-schema --quiet openapi
   step "resolved billing+limits config byte-stable" filtered_cargo_test 1  cargo test -p busbar-kernel --quiet resolved_billing_and_limits_config_is_byte_stable
   # The six `*_round_trip_byte_exact` oracles live in busbar-plane-llm's folded-in `codec` module
   # (crates/busbar-plane-llm/src/codec/tests/proto/same_proto_fidelity_tests.rs; owner ruling R7,
@@ -1379,6 +1432,13 @@ if ! assert_bless_env_empty >/tmp/done-parity-env.$$ 2>&1; then
 elif [ -x bin/oracle ]; then
   rm -f /tmp/done-parity-env.$$
   printf '  \033[32m[ok]\033[0m   bless/repoint env is empty — the golden is the pinned 1.5.5 recording, not an operator-chosen path\n'
+  # THE JUDGE FIRST, ONCE. Every oracle step below runs the engine bin/oracle builds from its pinned
+  # source (testing/shadow-oracle/oracle-rust.pin) in target/oracle/rust/<ref>/checkout. When that
+  # cannot be obtained (busbar-release is private: a runner with no token and no checkout of the
+  # pinned commit), say so here, by name, instead of as three unrelated-looking reds below.
+  PARITY_JUDGE_REF="$(awk -F= '$1=="release_ref"{print $2; exit}' testing/shadow-oracle/oracle-rust.pin 2>/dev/null)"
+  step "the pinned judge (busbar-release ${PARITY_JUDGE_REF:-<no pin>}) is fetched and built from its source" \
+    parity_resolve_judge "$PARITY_JUDGE_REF"
   step "replay-selftest (the differ can see a diff)" ./bin/oracle replay-selftest
   # cells.json IS the owed set — the recorder and the replayer both iterate it, and every count in
   # the parity verdict below is a count over it. A hand edit, or a generator change nobody ran
@@ -1499,7 +1559,10 @@ if [ -f qa/audit-ledger.json ]; then
   # The `audit-ledger` GATE was deleted with the old register; what survives, and what
   # judges a restored register, is `cargo xtask ledger`. Its rules' own RED proofs are its unit
   # tests, declared by count so a filter that drifts off them is RED rather than vacuously green.
-  step "audit ledger rules (xtask audit + audit_cmd tests)" filtered_cargo_test 24 cargo test -p xtask --lib audit
+  # 29 = the 24 audit/audit_cmd rule tests + the five pinned-scope tests (xtask/src/audit_pinned/
+  # pinned_tests.rs: a moved pin reads stale, a byte-identical pin carries the record, an
+  # unproducible pin is RED naming it, a twin / non-plugin git dep is not mounted, the tree wins).
+  step "audit ledger rules (xtask audit + audit_cmd + audit_pinned tests)" filtered_cargo_test 29 cargo test -p xtask --lib audit
   step "audit-ledger --check"  cargo xtask ledger --check
 else
   absent_step "audit ledger" "qa/audit-ledger.json"
@@ -1662,6 +1725,11 @@ if [ -f qa/teller-steps.json ]; then
   # row run, a leg that enumerated nothing, and --rebaseline refusing on red / writing on green.
   # The refusals stay refusals: a missing script or a missing release binary is a REFUSAL, not a
   # skip. Nothing ran, so nothing is proven.
+  # The MCP and A2A legs are armed from target/release/busbar, so this arm builds it here rather than
+  # reading its absence as a gap. A symlink is still refused below: it is built over nothing.
+  if [ ! -L target/release/busbar ] && [ ! -x target/release/busbar ]; then
+    step "build target/release/busbar (the rigs' subject)" cargo build --release --locked -p busbar
+  fi
   if [ ! -x testing/shadow-oracle/rigs-ledger.sh ]; then
     absent_step "the rig suites the matrix cites RUN and pass" \
       "testing/shadow-oracle/rigs-ledger.sh — the plane-rigs bridge that folds the MCP / A2A / voice rigs into one ledger. Restore it (git show fa15cd661:testing/shadow-oracle/rigs-ledger.sh); it is NOT coming from busbar-release, which ruled it out of the oracle port by name (PORT-REMAINING.md:67)."
@@ -1735,6 +1803,20 @@ if [ -f testing/fleet-fixtures/store-services.sh ]; then
 else
   absent_step "local store fixtures" "testing/fleet-fixtures/store-services.sh"
 fi
+end_group
+
+# ─────────────────────────────────────────────────────────────────────────────────────────────────
+begin_group "P-ITEMS — every P-item behaviour matches 1.5.5, each pinned by name (DONE item 2)"
+# docs/design/BUSBAR-1.6.0.md DONE item 2: "All P-item behaviours match 1.5.5 — refusal-reason
+# collapse, unary/empty terminality, wrong-provider attribution, voice tool-args — fixed as BUGS, not
+# signed." Each P-item is a set of tests named `p_item_<item>_*`, and each test's doc cites the 1.5.5
+# behaviour it holds. Every step declares its exact count, so a pin renamed, deleted or filtered
+# away is RED (VACUITY), never a green that ran nothing.
+step "refusal-reason collapse (one classification; 11 pins)" filtered_cargo_test 11 cargo test -p busbar-contract -p busbar-plane-a2a -p busbar-plane-mcp -p busbar-plane-streaming -p busbar-llm -p xtask --quiet p_item_refusal_reason_collapse
+step "unary/empty terminality"                               filtered_cargo_test 1  cargo test -p busbar-plane-a2a --quiet p_item_unary_empty_terminality
+step "empty reply"                                           filtered_cargo_test 1  cargo test -p busbar-plane-mcp --quiet p_item_empty_reply
+step "wrong-provider attribution"                            filtered_cargo_test 1  cargo test -p busbar-plane-streaming --quiet p_item_wrong_provider_attribution
+step "voice tool-args"                                       filtered_cargo_test 2  cargo test -p busbar-plane-streaming --quiet p_item_voice_tool_args
 end_group
 
 # ── THE ONE VERDICT ─────────────────────────────────────────────────────────────────────────────

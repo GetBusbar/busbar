@@ -105,7 +105,7 @@
 #               qa are locked by the org ruleset "release branches: main + qa (owner say-so only)"; any
 #               other branch is stale.
 fleet:
-  busbar_ref: "e1d3d8b097201859751d77208e66249d98b50a4b 1.6.0"
+  busbar_ref: "7356bbfb6baeb0e9245a59dc74f8b4bfadb2c5a4 1.6.0"
   name_pattern: "^busbar-(store|secret|auth|hook|export|plane|transport)-[a-z0-9]+(-[a-z0-9]+)*$"
   branches: [dev, qa, main]
 
@@ -576,6 +576,57 @@ plugins:
     # THE DESIGN §9's auth roster; the repo is created by `busbar-release plugin new auth
     # webhook-signature` (PLUGIN-TEMPLATE, ARCHITECT 2026-10-02) with the template's skeleton crates;
     # its door lands in it. First release with the core version that pins it.
+    released: false
+    pending_crate: true
+  - repo: busbar-auth-header
+    kind: auth
+    alias: header
+    crate: busbar-auth-header-plugin
+    version_line: "1.0"
+    service: none
+    release_gate: optional
+    gate: suite
+    description: "First-party signed kind:auth plugin cdylib: the header auth, packaged as a droppable busbar plugin. Drop the signed tarball into plugins/."
+    declares: "auth-header/declares.json"
+    # OWNER QUESTIONS Q99 (2026-10-01): "KEEP THE SPLIT: busbar-auth-header, busbar-auth-sigv4,
+    # busbar-auth-oauth, busbar-auth-webhook-signature" (BUSBAR-1.6.0.md §9: every plugin in its own
+    # repo). Created by `busbar-release plugin new auth header`; busbar's in-tree crate moves in with its
+    # history (P5), and the repo runs busbar's published conformance suite (the outbound auth script).
+    # busbar links the logic crate on its `auths` axis at a pinned rev. First release with the core version that pins it.
+    released: false
+    pending_crate: true
+  - repo: busbar-auth-sigv4
+    kind: auth
+    alias: sigv4
+    crate: busbar-auth-sigv4-plugin
+    version_line: "1.0"
+    service: none
+    release_gate: optional
+    gate: suite
+    description: "First-party signed kind:auth plugin cdylib: the sigv4 auth, packaged as a droppable busbar plugin. Drop the signed tarball into plugins/."
+    declares: "auth-sigv4/declares.json"
+    # OWNER QUESTIONS Q99 (2026-10-01): "KEEP THE SPLIT: busbar-auth-header, busbar-auth-sigv4,
+    # busbar-auth-oauth, busbar-auth-webhook-signature" (BUSBAR-1.6.0.md §9: every plugin in its own
+    # repo). Created by `busbar-release plugin new auth sigv4`; busbar's in-tree crate moves in with its
+    # history (P5), and the repo runs busbar's published conformance suite (the outbound auth script).
+    # busbar links the logic crate on its `auths` axis at a pinned rev (P2 D1: the kernel's own SigV4, outbound and inbound, is deleted). First release with the core version that pins it.
+    released: false
+    pending_crate: true
+  - repo: busbar-auth-oauth
+    kind: auth
+    alias: oauth
+    crate: busbar-auth-oauth-plugin
+    version_line: "1.0"
+    service: none
+    release_gate: optional
+    gate: suite
+    description: "First-party signed kind:auth plugin cdylib: the oauth auth, packaged as a droppable busbar plugin. Drop the signed tarball into plugins/."
+    declares: "auth-oauth/declares.json"
+    # OWNER QUESTIONS Q99 (2026-10-01): "KEEP THE SPLIT: busbar-auth-header, busbar-auth-sigv4,
+    # busbar-auth-oauth, busbar-auth-webhook-signature" (BUSBAR-1.6.0.md §9: every plugin in its own
+    # repo). Created by `busbar-release plugin new auth oauth`; busbar's in-tree crate moves in with its
+    # history (P5), and the repo runs busbar's published conformance suite (the outbound auth script).
+    # busbar links the logic crate on its `auths` axis at a pinned rev (P2 D1: the kernel's own minting copies are deleted). First release with the core version that pins it.
     released: false
     pending_crate: true
   - repo: busbar-secret-c

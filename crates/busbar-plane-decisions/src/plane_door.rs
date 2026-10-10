@@ -18,8 +18,10 @@
 //!   its one outbound need, and the tail [`TAIL`] (every list read off [`crate::driven::tail`]).
 //! * `validate`, `open`, `refresh`: the settings blob read as the `decisions:` section
 //!   ([`crate::config::DecisionsSection`]); a generation's snapshot claims
-//!   [`crate::driven::served_claims`] for its model count, and binds no audience (the operation
-//!   is served on the plain data plane to a keyed caller). `retire` drops a generation.
+//!   [`crate::driven::served_claims`] for its model count, lists every model the section
+//!   configures (the kernel filters them by scope and `/v1/models` appends them), and binds no
+//!   audience (the operation is served on the plain data plane to a keyed caller). `retire` drops
+//!   a generation.
 //! * `arrive`: [`crate::driven::arrive`]; an unclaimed request is refused at 404.
 //! * `on_piece`: the ATTEMPT's request head ([`crate::driven::attempt_request`]), the caller's body to the
 //!   far end unchanged ([`crate::driven::caller_piece`]), and the far end's answer relayed unchanged
@@ -59,7 +61,7 @@ use busbar_contract::abi::sdk::{
 };
 use busbar_contract::plane::PlaneMeta;
 
-use crate::codec::{CONTENT_TYPE_JSON, FIELD_CONTENT_TYPE};
+use crate::codec::{CONTENT_TYPE_JSON, FIELD_CONTENT_TYPE, FIELD_RETRY_AFTER};
 use crate::config::DecisionsSection;
 use crate::driven::{self, tail, CallerAnswer, FarEndReading, PrincipalNeed};
 use crate::{claims, DecisionPlane};
@@ -208,6 +210,7 @@ pub const TAIL: &PlaneTail = &PlaneTail {
     admin_routes: ptr::null(),
     admin_routes_len: 0,
     admin_openapi: Blob::ABSENT,
+    stream_ceiling_secs: 0,
 };
 
 /// THE STATEMENT: the plane's key and version, its sections, its need and its tail.
@@ -248,6 +251,27 @@ pub fn read_settings(settings: &[u8]) -> Result<DecisionsSection, String> {
     serde_json::from_value(section).map_err(|e| e.to_string())
 }
 
+/// `validate`'s blob: what stage 3g deals a plane (`{<verb>: <section>}`; the kernel's own judges hand
+/// the same shape), read at the `decisions:` section. An empty blob, or one that writes no
+/// `decisions:`, is the empty section.
+///
+/// # Errors
+///
+/// A blob that is not a map of sections, or the section's first broken rule.
+pub fn read_dealt(settings: &[u8]) -> Result<DecisionsSection, String> {
+    if settings.is_empty() {
+        return Ok(DecisionsSection::default());
+    }
+    let value: serde_json::Value = serde_json::from_slice(settings).map_err(|e| e.to_string())?;
+    let serde_json::Value::Object(mut verbs) = value else {
+        return Err("the dealt settings are not a map of the plane's sections".to_string());
+    };
+    match verbs.remove(tail::SECTION_DECLARING) {
+        None | Some(serde_json::Value::Null) => Ok(DecisionsSection::default()),
+        Some(section) => serde_json::from_value(section).map_err(|e| e.to_string()),
+    }
+}
+
 /// ONE GENERATION'S SNAPSHOT for a section with `models` configured models: the claims
 /// [`driven::served_claims`] serves, each an exact target over the claim's transport. It binds no
 /// audience: the operation is served on the plain data plane to a keyed caller, as the llm plane's
@@ -260,6 +284,19 @@ pub fn snapshot_spec(models: usize) -> SnapshotSpec {
             .map(|(verb, target)| ClaimSpec::new(verb, target, claims::TRANSPORT, CLAIM_EXACT))
             .collect(),
         ..SnapshotSpec::default()
+    }
+}
+
+/// ONE GENERATION'S SNAPSHOT for `section`: [`snapshot_spec`]'s claims for its model count, and
+/// every model it configures LISTED (THE DESIGN section 2: all configured decisions models are
+/// listed, scope-filtered by the kernel; `/v1/models` appends them), in ascending name order.
+#[must_use]
+pub fn generation_spec(section: &DecisionsSection) -> SnapshotSpec {
+    let mut listed: Vec<String> = section.models.keys().cloned().collect();
+    listed.sort();
+    SnapshotSpec {
+        listed,
+        ..snapshot_spec(section.models.len())
     }
 }
 
@@ -335,7 +372,7 @@ macro_rules! slot {
 slot!(
     /// `validate`: the settings read as the section, or refused in the grammar's words.
     Validate, ValidateIn, OutHead, |_, input, mut out| {
-        match read_settings(input.field(|i| &i.settings).bytes()) {
+        match read_dealt(input.field(|i| &i.settings).bytes()) {
             Ok(_) => Outcome::Ready,
             Err(words) => out.fail(Refusal::refused(words)),
         }
@@ -356,7 +393,7 @@ slot!(
             routed: Keyed::new(),
         };
         plane.route_over(&section);
-        let spec = snapshot_spec(section.models.len());
+        let spec = generation_spec(&section);
         out.publish(|o| &o.snapshot, &plane.generations, open.generation, &spec);
         instance.open(plane);
         Outcome::Ready
@@ -373,7 +410,7 @@ slot!(
             Ok(section) => section,
             Err(words) => return out.fail(Refusal::refused(words)),
         };
-        let spec = snapshot_spec(section.models.len());
+        let spec = generation_spec(&section);
         plane.route_over(&section);
         out.publish(|o| &o.snapshot, &plane.generations, input.generation, &spec);
         Outcome::Ready
@@ -666,7 +703,9 @@ slot!(
 );
 
 slot!(
-    /// `refusal`: the kernel's status and text in this dialect's error shape, as JSON.
+    /// `refusal`: the kernel's status and text in this dialect's error shape, as JSON, and the
+    /// wait the kernel handed beside it (`retry_after_s`, a limit's rolling window or the walk's
+    /// floor) as `Retry-After`, as every plane answers it.
     RefusalSlot, RefusalIn, RefusalOut, |_, input, mut out| {
         let given = input.get();
         let status = u16::try_from(given.status).unwrap_or(0);
@@ -679,6 +718,13 @@ slot!(
             name: arena.span(FIELD_CONTENT_TYPE.as_bytes()),
             value: arena.span(CONTENT_TYPE_JSON),
         });
+        if given.retry_after_s > 0 {
+            let wait = given.retry_after_s.to_string();
+            fields.push(OutField {
+                name: arena.span(FIELD_RETRY_AFTER.as_bytes()),
+                value: arena.span(wait.as_bytes()),
+            });
+        }
         let short = !(reply.fits() && fields.fits() && arena.fits());
         let (rw, rnd) = reply.settle(short);
         let (fw, fnd) = fields.settle(short);

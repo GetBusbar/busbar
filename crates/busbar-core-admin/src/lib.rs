@@ -49,14 +49,14 @@ pub mod admin_codec;
 // naming each other's crate.
 pub mod governance;
 pub mod idempotency;
-pub mod mint;
 // THE PLANE TRUST VERB ENVELOPE (moved from the kernel's `admin::planeverbs`, P2 D4): the core-admin
 // backing [`install`] binds into the kernel's `admin_verbs` seam.
 pub mod planeverbs;
 pub mod posture;
 pub mod rate;
 pub mod refusal;
-/// The verbs unit's test-only `SecretOnce` mint (ARCHITECT ruling B): `cfg(test)` or `test-support` only.
+/// The handles the composition root's admin tests drive this crate through: `cfg(test)` or
+/// `test-support` only.
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
 pub mod verb;
@@ -67,8 +67,7 @@ pub mod versions;
 pub mod witness;
 
 pub use admin_state::{AdminState, AppAdmin};
-pub use governance::{Governance, GovernanceError, MintedKey, RotateOutcome};
-pub use idempotency::ReplayEncoder;
+pub use governance::{Governance, GovernanceError};
 pub use posture::{ApprovalState, DualControl, OperatorState, PostureCtx};
 pub use rate::ConfigClassRule;
 pub use refusal::{ReasonCode, Refusal, RefusalStep};
@@ -76,7 +75,7 @@ pub use verb::{
     verb_name, KernelVerb, VerbScope, AUDIT_VERBS, IRREDUCIBLE_VERBS, LEDGER_VERBS, LEGACY_VERBS,
     NAMED_SURFACES, NEW_VERBS, READ_ONLY_NEW_VERBS,
 };
-pub use verbs::{required_scope, MintOutcome, MintedKeyOutcome, NonceSource, Verbs};
+pub use verbs::{required_scope, Verbs};
 
 #[cfg(test)]
 #[path = "tests/table_matches_openapi.rs"]

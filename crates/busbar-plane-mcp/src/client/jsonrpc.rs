@@ -30,24 +30,22 @@
 //! `super::identity`): stripping a prefix off a rendering would be parsing, and parsing is where the
 //! ambiguity lives.
 //!
-//! ## An upstream's ask terminates at busbar
+//! ## An upstream's ask is relayed to the caller
 //!
 //! Under this revision a server cannot send a request. Sampling, elicitation and roots come back
-//! INLINE as an `InputRequiredResult` in the result of a call busbar made, and busbar decides
-//! whether to satisfy it. Three rules, all here:
+//! INLINE as an `InputRequiredResult` in the result of a call busbar made. busbar answers none of
+//! them: a granted ask is relayed to busbar's caller with its `inputRequests` as the upstream sent
+//! them, and the caller's answer rides the retry (BUSBAR-1.6.0 Law 11: busbar answers nothing on
+//! the caller's behalf and routes no call to another plane on the content's say-so). What this
+//! module decides is only whether the operator lets the ask through:
 //!
-//! 1. **Deny by default, per-server grant.** [`ServerRequestGrants`] is all-false at construction.
-//! 2. **Re-checked on EVERY retry.** There is no handshake to check it once at, so
-//!    [`InputRequiredLoop::may_satisfy`] takes the grants each round rather than capturing them.
-//! 3. **The loop is BOUNDED and every round is metered.** Removing the handshake turned one call
-//!    into a sequence, and a hostile upstream can return `InputRequiredResult` forever to amplify
-//!    cost — every satisfied sampling round is a real LLM call against real budget.
-//!
-//! And the rule this revision creates, which a design written against server-initiated requests had
-//! no reason to anticipate: an upstream's `InputRequiredResult` is NEVER proxied outward to
-//! busbar's own caller. Doing so would launder an upstream's request for authority through the
-//! party the caller actually trusts, and would ask that caller to satisfy, on the upstream's
-//! behalf, an ask busbar itself declined.
+//! 1. **Deny by default, per-server grant.** [`ServerRequestGrants`] is all-false at construction;
+//!    an ungranted ask is refused, not relayed.
+//! 2. **Re-checked on EVERY retry.** There is no handshake to check it once at, so the grant is
+//!    read from the live registration each round rather than captured.
+//! 3. **The relayed rounds are BOUNDED.** Removing the handshake turned one call into a sequence,
+//!    and a hostile upstream can return `InputRequiredResult` forever; the per-server round cap
+//!    (`max_input_required_rounds`) ends it.
 
 use crate::codec::{H_MCP_METHOD, H_MCP_NAME, H_PROTOCOL_VERSION, PROTOCOL_VERSION};
 pub use crate::codec::{META_CLIENT_CAPABILITIES, META_PROTOCOL_VERSION};
@@ -108,10 +106,13 @@ impl OutboundRequest {
 /// swap would advertise an ask busbar then refuses.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct AdvertisedCaps {
-    /// Declare `roots`: the operator granted it AND declared its satisfier.
+    /// Declare `roots`: the operator lets this server put the ask to callers AND this caller
+    /// declared it can answer one (the ask is relayed to it, never answered by busbar).
     pub roots: bool,
-    /// Declare `sampling`: the operator granted it AND declared its satisfier.
+    /// Declare `sampling`: as `roots`.
     pub sampling: bool,
+    /// Declare `elicitation`: as `roots`.
+    pub elicitation: bool,
     /// The CALLER asked for progress, so busbar's own token rides `_meta`. Read by the caller from
     /// its per-request progress slot and handed in, so this builder reads no task state.
     pub progress: bool,
@@ -122,18 +123,18 @@ pub struct AdvertisedCaps {
 /// `authorization` is the ALREADY-PLANNED credential header value (see `super::egress`). It arrives
 /// as a plain `String` rather than as a caller context, which is rule 1 in the type system: this
 /// function has no access to the caller's busbar key and therefore no way to send it.
-/// `continuation` is the answer to an upstream's `InputRequiredResult` that busbar decided to
-/// satisfy: an object carrying `inputResponses` and (when the upstream sealed one) `requestState`,
-/// built by the granted satisfier and echoed here onto the RETRY of the same logical call — which
+/// `continuation` is the CALLER's answer to an upstream's `InputRequiredResult` that busbar relayed
+/// to it: an object carrying the caller's `inputResponses` and (when the upstream sent one) the
+/// upstream's own `requestState`, echoed here onto the RETRY of the same logical call — which
 /// is MRTR's own continuation shape, the one busbar's ingress reads at
 /// the engine's `mcp::method` `inputResponses` sites. `None` is every first round and every call whose
 /// upstream asked nothing, and produces a byte-identical request to what this builder always sent.
 /// `advertise` declares the client capabilities in `_meta`. Each flag is TRUE exactly when the
-/// registration holds the matching grant AND the operator declared its satisfier
-/// (`tools.<server>.roots` / `tools.<server>.sampling`) — the two facts that make busbar genuinely
-/// able to answer, because MRTR forbids a server sending an ask the client has not declared, and
-/// declaring a capability busbar would then refuse invites an upstream to build a call sequence
-/// around a refusal.
+/// registration holds the matching grant (the operator lets this server put that ask to callers) AND
+/// the caller declared the capability — the two facts that make the ask answerable, by the caller
+/// it is relayed to (Law 11: busbar answers none itself). MRTR forbids a server sending an ask the
+/// client has not declared, and declaring one that would then be refused invites an upstream to
+/// build a call sequence around a refusal.
 pub fn tools_call(
     url: &str,
     key: &ToolKey,
@@ -162,6 +163,9 @@ pub fn tools_call(
     if advertise.sampling {
         capabilities.insert("sampling".to_string(), serde_json::json!({}));
     }
+    if advertise.elicitation {
+        capabilities.insert("elicitation".to_string(), serde_json::json!({}));
+    }
     let capabilities = serde_json::Value::Object(capabilities);
     let mut body = serde_json::json!({
         "jsonrpc": "2.0",
@@ -178,9 +182,9 @@ pub fn tools_call(
         },
     });
     if let Some(continuation) = continuation {
-        // EXACTLY TWO members cross, by name. The continuation value is built by busbar's own
-        // satisfier, but copying it wholesale into `params` would still make that builder a second
-        // author of this envelope — and the day it carries a third member, that member ships
+        // EXACTLY TWO members cross, by name. The continuation value is read off the caller's
+        // retry, and copying it wholesale into `params` would make that retry a second author of
+        // this envelope — and the day it carries a third member, that member ships
         // without anyone deciding it should.
         if let (Some(params), Some(responses)) = (
             body["params"].as_object_mut(),
@@ -316,7 +320,7 @@ pub enum RpcOutcome {
 /// a default arm that says yes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ServerAsk {
-    /// `sampling/createMessage`: run an LLM completion on busbar's pools and budget.
+    /// `sampling/createMessage`: an LLM completion, which the caller runs if it answers.
     Sampling,
     /// Ask a human for input.
     Elicitation,
@@ -335,9 +339,10 @@ impl ServerAsk {
     }
 
     /// The ORDER OF DANGER, used to collapse a multi-method `inputRequests` map to the one kind the
-    /// grant gate will test. Ranked by what satisfying the ask would actually SPEND:
+    /// grant gate will test. Ranked by what answering the ask would cost the caller it is
+    /// relayed to:
     ///
-    /// - `sampling` is an LLM completion on busbar's own pools and budget — money, and unbounded;
+    /// - `sampling` is an LLM completion — money, and unbounded;
     /// - `elicitation` interrupts a human;
     /// - `roots` discloses filesystem structure.
     ///
@@ -495,8 +500,8 @@ pub fn parse_response(body: &[u8], sent_id: u64) -> RpcOutcome {
 /// ## Why the MOST PRIVILEGED method in the map decides
 ///
 /// One `inputRequests` map may name several methods at once. Judging against the first key iterated
-/// would let an upstream smuggle a `sampling/createMessage` — a real LLM call on busbar's pools and
-/// budget — behind a `roots/list` it knows the operator granted. The gate downstream tests ONE kind,
+/// would let an upstream smuggle a `sampling/createMessage` — a real LLM call for the caller to
+/// run — behind a `roots/list` it knows the operator granted. The gate downstream tests ONE kind,
 /// so the kind reported here must be the one with the most to lose.
 fn input_required_kind(result: &serde_json::Value) -> Option<ServerAsk> {
     let obj = result.as_object()?;
@@ -534,7 +539,7 @@ fn input_required_kind(result: &serde_json::Value) -> Option<ServerAsk> {
 }
 
 /// The per-server grants, unchanged by the stateless revision. What moved is WHERE they are
-/// consulted: from refusing a server's inbound request to refusing to answer its inline ask.
+/// consulted: from refusing a server's inbound request to refusing to relay its inline ask.
 ///
 /// All false at construction, and there is no `all()` constructor. Deny-by-default is a property of
 /// the type, not of a config default somebody can invert.
@@ -549,117 +554,14 @@ pub struct ServerRequestGrants {
 }
 
 impl ServerRequestGrants {
-    /// Read by the connect-path grant preview; the live gate reads the server plane's grants.
-    #[allow(dead_code)]
+    /// Whether the operator lets this server put `ask` to callers: read by the child-message
+    /// classifier (`super::peer::decide_ask`) and the child exchange's relay.
     pub fn allows(&self, ask: ServerAsk) -> bool {
         match ask {
             ServerAsk::Sampling => self.sampling,
             ServerAsk::Elicitation => self.elicitation,
             ServerAsk::Roots => self.roots,
         }
-    }
-}
-
-/// Why busbar refused to satisfy an upstream's ask.
-#[derive(Clone, Debug, PartialEq, Eq)]
-// Reached only by the connect/refresh path, which has no verb yet.
-#[allow(dead_code)]
-pub enum AskRefusal {
-    /// The server's registry entry carries no grant for this ask.
-    Ungranted {
-        /// The upstream server that asked.
-        server: String,
-        /// The grant key of what it asked for.
-        ask: &'static str,
-    },
-    /// The bounded input-required loop is exhausted.
-    LoopExhausted {
-        /// The upstream server that asked.
-        server: String,
-        /// The cap that was reached.
-        max_rounds: u32,
-    },
-}
-
-impl std::fmt::Display for AskRefusal {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            AskRefusal::Ungranted { server, ask } => write!(
-                f,
-                "upstream `{server}` asked busbar to satisfy `{ask}` and its registry entry carries \
-                 no `{ask}` grant; the call fails here and the ask is not proxied to the caller"
-            ),
-            AskRefusal::LoopExhausted { server, max_rounds } => write!(
-                f,
-                "upstream `{server}` returned an input-required result more than {max_rounds} \
-                 times for one dispatch; the sequence is capped because every satisfied round is a \
-                 real, budgeted request"
-            ),
-        }
-    }
-}
-
-/// THE BOUNDED, METERED INPUT-REQUIRED LOOP.
-///
-/// A hard cap, refused past it, not a warning. Constructed per logical dispatch, so the bound is per
-/// dispatch and not per connection — there is no connection-scoped state under this revision, and a
-/// counter that outlived a dispatch would be a session by another name.
-#[derive(Debug)]
-// Reached only by the connect/refresh path, which has no verb yet.
-#[allow(dead_code)]
-pub struct InputRequiredLoop {
-    server: String,
-    max_rounds: u32,
-    rounds: u32,
-}
-
-impl InputRequiredLoop {
-    // Reached only by the connect/refresh path, which has no verb yet.
-    #[allow(dead_code)]
-    /// A loop for one logical dispatch to `server`, capped at `max_rounds` satisfied asks.
-    pub fn new(server: &str, max_rounds: u32) -> Self {
-        Self {
-            server: server.to_string(),
-            max_rounds,
-            rounds: 0,
-        }
-    }
-
-    /// May busbar satisfy this ask, right now?
-    ///
-    /// `grants` is a PARAMETER rather than a field, and that is the re-check-every-round rule
-    /// written into a signature: the grant is re-derived from the live registry snapshot each time,
-    /// so a revocation bites on the next retry, not at the end of a sequence that has no end.
-    // Reached only by the connect/refresh path, which has no verb yet.
-    #[allow(dead_code)]
-    pub fn may_satisfy(
-        &mut self,
-        ask: ServerAsk,
-        grants: ServerRequestGrants,
-    ) -> Result<(), AskRefusal> {
-        if !grants.allows(ask) {
-            return Err(AskRefusal::Ungranted {
-                server: self.server.clone(),
-                ask: ask.key(),
-            });
-        }
-        if self.rounds >= self.max_rounds {
-            return Err(AskRefusal::LoopExhausted {
-                server: self.server.clone(),
-                max_rounds: self.max_rounds,
-            });
-        }
-        self.rounds += 1;
-        Ok(())
-    }
-
-    /// Rounds actually satisfied. Read by the metering call site, because each round has to be
-    /// attributed and metered like any other request, and a count nobody reads is a count nobody
-    /// meters.
-    // Read by the connect-path preview; the live loop bound lives on the server plane.
-    #[allow(dead_code)]
-    pub fn rounds(&self) -> u32 {
-        self.rounds
     }
 }
 

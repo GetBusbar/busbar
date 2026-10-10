@@ -7,7 +7,6 @@
 //! money evidence, so it lives on the DURABLE per-principal journal stream, survives a restart and
 //! replays, and never touches the bounded in-RAM admin audit ring.
 
-use crate::plane::calllog::CallInput;
 use crate::plane::store::KIND_RESIDUAL;
 use crate::plane_host::{JournalHost, USAGE_RESIDUAL_ACTION};
 use crate::residual_log::{settle, ResidualTestHarness};
@@ -254,10 +253,6 @@ impl JournalHost for Rows {
     ) {
         self.0.lock().expect("rows").push(action.to_string());
     }
-
-    fn call_log_emit(&self, _principal: &str, _input: CallInput) {}
-
-    fn call_log_emit_hostless(&self, _principal: &str, _input: CallInput) {}
 }
 
 /// THE SEAM NEVER WRITES THE ADMIN RING. `JournalHost::settle_residual` routes to the durable

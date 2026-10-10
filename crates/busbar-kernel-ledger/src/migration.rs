@@ -65,8 +65,8 @@
 
 use std::collections::BTreeMap;
 
-use crate::checkpoint::{ChainHead, Checkpoint, CheckpointSecret, SignError};
-use crate::legacy::{opening_balances, LegacyHead, LegacyMigrationSource, OpeningBalance};
+use crate::checkpoint::{ChainHead, Checkpoint, CheckpointSecret};
+use crate::legacy::{opening_balances, LegacyHead, OpeningBalance};
 use crate::totals::{BucketId, BucketScope, CapDimension, Totals, TotalsKey, WindowStart};
 
 /// The sequence number of the opening checkpoint.
@@ -76,40 +76,20 @@ use crate::totals::{BucketId, BucketScope, CapDimension, Totals, TotalsKey, Wind
 /// the marker, the checkpoint and anything reading either agree by construction.
 pub const OPENING_CHECKPOINT_SEQ: u64 = 0;
 
-/// Which of the previous release's two row families a figure was read from.
-///
-/// It is carried on the figure rather than decided by the reader, because the family is what
-/// decides the scope, and the scope is the whole of what keeps two views of one consumption from
-/// being added together.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum LegacyFamily {
-    /// A bucket's token ledger for one window: what the bucket consumed, with no lane on it.
-    Window,
-    /// A metering row: one day, one lane, one provider, under the key that was charged.
-    Meter,
-}
+/// The figures the migration reads, the seams it reads them through and the marker it seals: the
+/// contract's, because the store adapter implements the seams on the other side of it.
+pub use busbar_contract::migration::{
+    LegacyCapDimension, LegacyFamily, LegacyFigure, LegacyFigures, LegacyLedgerRows,
+    MigrationError, MigrationMarker, MigrationRecords,
+};
 
-/// One figure the previous release's rows hold.
-///
-/// Deliberately plain — identifiers as strings, the amount as the integer that was read. Anything
-/// richer would be this crate having an opinion about a row shape it does not own, which is the same
-/// reason the dual write next door is a trait rather than an implementation.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LegacyFigure {
-    /// Which family the figure came from.
-    pub family: LegacyFamily,
-    /// Which bucket it is against.
-    pub bucket: String,
-    /// Which window or day it fell in, as that window's opening instant in whole seconds.
-    pub window: WindowStart,
-    /// Which lane served it. Empty where the row carries no lane.
-    pub lane: String,
-    /// Which provider served it. Empty where the row carries no provider.
-    pub provider: String,
-    /// What is being counted.
-    pub dimension: CapDimension,
-    /// How much, as the previous release's row holds it.
-    pub amount: i128,
+impl From<LegacyCapDimension> for CapDimension {
+    fn from(dimension: LegacyCapDimension) -> Self {
+        match dimension {
+            LegacyCapDimension::Requests => CapDimension::Requests,
+            LegacyCapDimension::Class(class) => CapDimension::Class(class),
+        }
+    }
 }
 
 /// ONE COMPONENT OF A COMPOSITE POOL KEY, FRAMED SO ITS BOUNDARY CANNOT BE FORGED.
@@ -119,8 +99,8 @@ pub struct LegacyFigure {
 /// every boundary is fixed by a number the caller does not write; a decimal length can itself contain
 /// no colon, so there is nothing left for a caller's own bytes to move.
 ///
-/// This is the SAME framing, for the same reason, as the admin crate's `verbs::rotate_replay_key`
-/// (`crates/busbar-core-admin/src/verbs.rs:91`), which joins two caller-controlled halves of a
+/// This is the SAME framing, for the same reason, as the admin crate's
+/// `idempotency::rotate_replay_key` (`crates/busbar-core-admin/src/idempotency.rs:46`), which joins two caller-controlled halves of a
 /// replay key. That helper could not be called from here for two independent reasons: it is
 /// `pub(crate)` to `busbar-core-admin`, and `busbar-core-admin` depends on this crate
 /// (`busbar-core-admin → busbar-kernel-ledger`), so an edge back would be a cycle Cargo
@@ -136,7 +116,7 @@ fn length_framed(component: &str) -> String {
 
 /// THE POOL SCOPE A METERING ROW LANDS ON, given its lane and its provider.
 ///
-/// The single source of truth for the metering pool key: [`LegacyFigure::key`] builds its metering
+/// The single source of truth for the metering pool key: [`figure_key`] builds its metering
 /// scope through this, and any consumer that needs to look a migrated metering balance back up must
 /// build the same scope here rather than re-spelling the framed key by hand — a hand-spelled copy is
 /// how the producer and the reader come to disagree about which balance is which.
@@ -149,151 +129,32 @@ pub fn meter_pool_scope(lane: &str, provider: &str) -> BucketScope {
     ))
 }
 
-impl LegacyFigure {
-    /// The balance this figure opens.
-    ///
-    /// The two families take deliberately different pool prefixes. A metering row whose provider
-    /// happens to be empty would otherwise land on the same key as a window row for the same lane,
-    /// and the two would silently add — which is the one arithmetic error a migration cannot be
-    /// allowed to make, because there is nothing left to compare the result against.
-    ///
-    /// The prefix settles the two FAMILIES, and nothing more. Inside the metering family the key
-    /// joins two caller-controlled components — the lane and the provider, both free text read off
-    /// the previous release's rows — and a bare delimiter between them is not a key: joined on a
-    /// slash, `("lane/4", "vendor")` and `("lane", "4/vendor")` both spell `meter:lane/4/vendor` and land
-    /// on ONE balance, silently adding two providers' opening figures together. That is two
-    /// customers' money in one bucket, and it is the one arithmetic error a migration cannot be
-    /// allowed to make. So each component is LENGTH-FRAMED (see [`length_framed`]), which no
-    /// arrangement of delimiters inside a component's own text can imitate.
-    pub fn key(&self) -> TotalsKey {
-        let scope = match (self.family, self.lane.as_str()) {
-            (LegacyFamily::Window, "") => BucketScope::All,
-            (LegacyFamily::Window, lane) => BucketScope::Pool(format!("lane:{lane}")),
-            (LegacyFamily::Meter, lane) => meter_pool_scope(lane, &self.provider),
-        };
-        TotalsKey::new(
-            BucketId::new(self.bucket.clone()),
-            self.dimension.clone(),
-            scope,
-        )
-    }
-}
-
-/// Everything the previous release's rows hold, plus what could not be read.
+/// The balance `figure` opens.
 ///
-/// The unreadable list is part of the answer rather than an error arm because a migration may not
-/// refuse: a store that could not answer for one bucket must not stop a node booting. What it must
-/// not do is lose the fact, so the names come back and whatever runs the migration can say so.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct LegacyFigures {
-    /// Every figure read, in whatever order the rows came back.
-    pub figures: Vec<LegacyFigure>,
-    /// The rows that could not be read, named.
-    pub unreadable: Vec<String>,
-}
-
-/// Reads the figures behind the previous release's chain head.
+/// The two families take deliberately different pool prefixes. A metering row whose provider
+/// happens to be empty would otherwise land on the same key as a window row for the same lane,
+/// and the two would silently add — which is the one arithmetic error a migration cannot be
+/// allowed to make, because there is nothing left to compare the result against.
 ///
-/// Note what is NOT on this trait: a write. The rows this reads may be on a read-only replica, and
-/// the way to guarantee a migration never writes to them is to give it nothing it could write with.
-///
-/// It extends the head-reading seam rather than replacing it, so the head and the figures come from
-/// one object that read one store, and the two cannot disagree about what was there.
-pub trait LegacyLedgerRows: LegacyMigrationSource {
-    /// The figures. An implementation that cannot answer returns an empty set rather than an error,
-    /// exactly as the head does, and the migration seals a zero opening balance.
-    fn read_figures(&self) -> LegacyFigures;
-}
-
-/// The record that says this deployment has already migrated.
-///
-/// It carries the identity of what was sealed, not merely a flag. A flag can only answer "yes"; this
-/// answers "yes, checkpoint N, body hash H, B balances, C cells read", which is what an operator
-/// asking why a balance looks the way it does actually needs.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MigrationMarker {
-    /// The checkpoint the migration sealed.
-    pub checkpoint_seq: u64,
-    /// Which node sealed it.
-    pub node: u64,
-    /// When, in whole seconds.
-    pub sealed_at: u64,
-    /// The digest of that checkpoint's body.
-    pub body_hash: [u8; 32],
-    /// How many balances the opening carries.
-    pub balances: u64,
-    /// How many of the previous release's cells were read to arrive at them.
-    pub cells_read: u64,
-    /// Which card version the opening entries were priced under.
-    pub rate_card_version: u64,
-}
-
-/// The ledger's own records, which is where the marker lives.
-///
-/// Deliberately NOT the rows the migration read. The rows may be read-only, and a marker written
-/// beside somebody else's data is a migration that has quietly taken ownership of a schema it does
-/// not own. This seam is the ledger's own, and the integrator binds whatever durability the
-/// deployment actually has to it.
-pub trait MigrationRecords {
-    /// The marker, if this deployment has already migrated.
-    ///
-    /// # Errors
-    ///
-    /// The records could not be read. The caller decides what to do about it; this crate will not
-    /// guess, because "unreadable" and "absent" are different facts and treating one as the other is
-    /// how a migration runs twice.
-    fn read_marker(&self) -> Result<Option<MigrationMarker>, MigrationError>;
-
-    /// Seal the marker.
-    ///
-    /// # Errors
-    ///
-    /// The records could not be written.
-    fn write_marker(&mut self, marker: &MigrationMarker) -> Result<(), MigrationError>;
-}
-
-/// Why a migration could not be completed.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum MigrationError {
-    /// The ledger's own records could not be read or written.
-    RecordsUnavailable(String),
-    /// The opening checkpoint could not be signed.
-    NotSealed(SignError),
-    /// Two legacy figures for one balance sum past what a figure can hold.
-    ///
-    /// A ledger figure is a signed 128-bit integer, so reaching this means the rows that were read
-    /// are not a plausible history. Refusing is right: opening at a wrapped figure would seed every
-    /// later reconciliation with a number nobody can explain.
-    FigureOverflow {
-        /// Which balance.
-        key: String,
-        /// Which window.
-        window: WindowStart,
-    },
-}
-
-impl std::fmt::Display for MigrationError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            MigrationError::RecordsUnavailable(why) => {
-                write!(f, "the ledger's own records were not usable: {why}")
-            }
-            MigrationError::NotSealed(e) => write!(f, "the opening checkpoint was not sealed: {e}"),
-            MigrationError::FigureOverflow { key, window } => write!(
-                f,
-                "the legacy figures for {key} in the window opening at {window} do not fit in a \
-                 ledger figure"
-            ),
-        }
-    }
-}
-
-impl std::error::Error for MigrationError {}
-
-impl From<SignError> for MigrationError {
-    fn from(e: SignError) -> Self {
-        MigrationError::NotSealed(e)
-    }
+/// The prefix settles the two FAMILIES, and nothing more. Inside the metering family the key
+/// joins two caller-controlled components — the lane and the provider, both free text read off
+/// the previous release's rows — and a bare delimiter between them is not a key: joined on a
+/// slash, `("lane/4", "vendor")` and `("lane", "4/vendor")` both spell `meter:lane/4/vendor` and land
+/// on ONE balance, silently adding two providers' opening figures together. That is two
+/// customers' money in one bucket, and it is the one arithmetic error a migration cannot be
+/// allowed to make. So each component is LENGTH-FRAMED (see [`length_framed`]), which no
+/// arrangement of delimiters inside a component's own text can imitate.
+pub fn figure_key(figure: &LegacyFigure) -> TotalsKey {
+    let scope = match (figure.family, figure.lane.as_str()) {
+        (LegacyFamily::Window, "") => BucketScope::All,
+        (LegacyFamily::Window, lane) => BucketScope::Pool(format!("lane:{lane}")),
+        (LegacyFamily::Meter, lane) => meter_pool_scope(lane, &figure.provider),
+    };
+    TotalsKey::new(
+        BucketId::new(figure.bucket.clone()),
+        figure.dimension.clone().into(),
+        scope,
+    )
 }
 
 /// What the migration sealed.
@@ -363,7 +224,7 @@ pub fn opening_totals(
 ) -> Result<BTreeMap<(TotalsKey, WindowStart), Totals>, MigrationError> {
     let mut totals: BTreeMap<(TotalsKey, WindowStart), Totals> = BTreeMap::new();
     for figure in figures {
-        let key = figure.key();
+        let key = figure_key(figure);
         let entry = totals.entry((key.clone(), figure.window)).or_default();
         let overflow = || MigrationError::FigureOverflow {
             key: key.to_string(),

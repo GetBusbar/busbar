@@ -34,8 +34,9 @@ use busbar_contract::caps::{
 };
 use busbar_contract::records::VirtualKey;
 use busbar_contract::section::{
-    MODEL_PROTOCOL_KEYS, MODEL_PROVIDER_KEY, POOL_MEMBERS_KEY, RESERVED_MODELS_KEY,
-    RESERVED_POOLS_KEY, RESERVED_SECTION_KEYS, RESERVED_WORK_KEY,
+    MODEL_PROTOCOL_KEYS, MODEL_PROVIDER_KEY, POOL_MEMBERS_KEY, POOL_MEMBER_NAME_KEY,
+    POOL_MEMBER_TIER_KEY, RESERVED_MODELS_KEY, RESERVED_POOLS_KEY, RESERVED_SECTION_KEYS,
+    RESERVED_WORK_KEY,
 };
 use busbar_contract::MeterClassId;
 use busbar_kernel::config::groups::ExhaustionMode;
@@ -63,6 +64,11 @@ pub struct DoorPools {
     /// The pools whose members the plane admits each on its own grant (`member_granted`): the
     /// pool's name is no grant of its own.
     member_granted: std::collections::BTreeSet<String>,
+    /// Each entry's reserved `timeout:`, in milliseconds, where it writes one
+    /// (`busbar_contract::section::ENTRY_TIMEOUT_KEY`): its member's attempt bound.
+    timeouts: BTreeMap<String, u64>,
+    /// Each pool's members' tiers, in member order (`0` where a member states none).
+    tiers: BTreeMap<String, Vec<u32>>,
 }
 
 /// A resolved route: its pool label (empty for a direct route) and its member entries.
@@ -78,10 +84,10 @@ impl DoorPools {
         let key = |k: &serde_yaml::Value| k.as_str().map(str::to_owned);
         // A model-serving section's entries are its `models` map's; any other section's are its own
         // top-level registrations.
-        let entries = match map
+        let models = map
             .get(RESERVED_MODELS_KEY)
-            .and_then(serde_yaml::Value::as_mapping)
-        {
+            .and_then(serde_yaml::Value::as_mapping);
+        let entries: Vec<String> = match models {
             Some(models) => models.keys().filter_map(key).collect(),
             None => map
                 .keys()
@@ -99,7 +105,27 @@ impl DoorPools {
             .map(|pools| {
                 pools
                     .iter()
-                    .filter_map(|(name, pool)| Some((key(name)?, members(pool))))
+                    .filter_map(|(name, pool)| {
+                        Some((
+                            key(name)?,
+                            members(pool).into_iter().map(|(m, _)| m).collect(),
+                        ))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let tiers = map
+            .get(RESERVED_POOLS_KEY)
+            .and_then(serde_yaml::Value::as_mapping)
+            .map(|pools| {
+                pools
+                    .iter()
+                    .filter_map(|(name, pool)| {
+                        Some((
+                            key(name)?,
+                            members(pool).into_iter().map(|(_, t)| t).collect(),
+                        ))
+                    })
                     .collect()
             })
             .unwrap_or_default();
@@ -134,12 +160,35 @@ impl DoorPools {
                     .collect()
             })
             .unwrap_or_default();
+        // THE ENTRY'S ATTEMPT BOUND (ARCHITECT timeout ruling; R2-G "per-member ... timeout"): its
+        // reserved `timeout:`, read the one way the kernel judged it at load, for every plane alike.
+        let timeouts = entries
+            .iter()
+            .filter_map(|entry| {
+                let written = models
+                    .unwrap_or(map)
+                    .get(entry.as_str())?
+                    .get(busbar_contract::section::ENTRY_TIMEOUT_KEY)?
+                    .as_str()?;
+                let ms = busbar_contract::section::entry_timeout_ms(written).ok()?;
+                Some((entry.clone(), ms))
+            })
+            .collect();
         DoorPools {
             entries,
             pools,
             fallbacks,
             member_granted,
+            timeouts,
+            tiers,
         }
+    }
+
+    /// The attempt bound of `entry`'s member, milliseconds: its reserved `timeout:`; `None` = the
+    /// walk's own budget bounds it.
+    #[must_use]
+    pub fn timeout_ms(&self, entry: &str) -> Option<u64> {
+        self.timeouts.get(entry).copied()
     }
 
     /// The route an arrival named (ARCHITECT Q-SW6 amended by Q-FL3): a POOL route walks the named
@@ -172,6 +221,17 @@ impl DoorPools {
     #[must_use]
     pub fn pools(&self) -> &BTreeMap<String, Vec<String>> {
         &self.pools
+    }
+
+    /// The tier of `pool`'s member at `index` (the core-owned per-member `tier`), `0` where it
+    /// states none.
+    #[must_use]
+    pub fn tier(&self, pool: &str, index: usize) -> u32 {
+        self.tiers
+            .get(pool)
+            .and_then(|t| t.get(index))
+            .copied()
+            .unwrap_or(0)
     }
 
     /// The pool `pool` spills into when its members are spent, where its section names one.
@@ -223,16 +283,24 @@ impl DoorPools {
     }
 }
 
-/// A pool's member entries: its `members` list, each an entry name or a member naming one.
-fn members(pool: &serde_yaml::Value) -> Vec<String> {
+/// A pool's member entries: its `members` list, each an entry name or a member naming one, with the
+/// member's tier (`0` where it states none, or states one that is no unsigned integer).
+fn members(pool: &serde_yaml::Value) -> Vec<(String, u32)> {
     pool.get(POOL_MEMBERS_KEY)
         .and_then(serde_yaml::Value::as_sequence)
         .map(|list| {
             list.iter()
                 .filter_map(|m| {
-                    m.as_str()
-                        .or_else(|| m.get("name").and_then(serde_yaml::Value::as_str))
-                        .map(str::to_owned)
+                    let name = m.as_str().or_else(|| {
+                        m.get(POOL_MEMBER_NAME_KEY)
+                            .and_then(serde_yaml::Value::as_str)
+                    })?;
+                    let tier = m
+                        .get(POOL_MEMBER_TIER_KEY)
+                        .and_then(serde_yaml::Value::as_u64)
+                        .and_then(|t| u32::try_from(t).ok())
+                        .unwrap_or(0);
+                    Some((name.to_owned(), tier))
                 })
                 .collect()
         })
@@ -355,6 +423,9 @@ pub struct DoorFacts {
     /// failure below the trip threshold benches a member's cell. `None`: it declares none, and
     /// every cell keeps the host's default.
     pub bench_below_trip_threshold: Option<bool>,
+    /// Its stated stream ceiling, seconds (its tail's `stream_ceiling_secs`): the deadline of a
+    /// unit whose `arrive` states `ROUTE_STREAM`, from the moment its route is known. `0` = none.
+    pub stream_ceiling_secs: u64,
 }
 
 /// What one unit carries between its steps.
@@ -367,6 +438,8 @@ struct DoorUnit {
     expected: Vec<UnitCount>,
     /// Its operation is performed at most once (`ROUTE_ONCE`).
     once: bool,
+    /// Its caller asked for the answer streamed (`ROUTE_STREAM`).
+    stream: bool,
     routed: Option<Routed>,
     /// The governance book's grant: its in-flight holds, released when the unit's steps drop.
     grant: Option<AdmitGrant>,
@@ -490,6 +563,12 @@ impl<'s> DoorSteps<'s> {
     #[must_use]
     pub fn once(&self) -> bool {
         self.lock().once
+    }
+
+    /// Whether the unit's caller asked for its answer streamed (its `arrive`'s `ROUTE_STREAM`).
+    #[must_use]
+    pub fn streamed(&self) -> bool {
+        self.lock().stream
     }
 
     /// The key of the plane the unit is of.
@@ -616,7 +695,9 @@ impl DriverSteps for DoorSteps<'_> {
     }
 
     fn route_flags(&self, _ctx: &UnitCtx, flags: u8) {
-        self.lock().once = flags & busbar_contract::abi::plane::ROUTE_ONCE != 0;
+        let mut u = self.lock();
+        u.once = flags & busbar_contract::abi::plane::ROUTE_ONCE != 0;
+        u.stream = flags & busbar_contract::abi::plane::ROUTE_STREAM != 0;
     }
 }
 
@@ -763,11 +844,18 @@ impl Units for DoorSteps<'_> {
         // A UNIT THE PLANE ANSWERS ITSELF (ROUTE_LOCAL, ARCHITECT Q-L3B-LOCAL): admitted with no
         // route walk; only far-end-reported units bill (§7), so it holds and charges nothing, and
         // is audited as every unit is.
-        let local = self
-            .lock()
-            .named
-            .as_ref()
-            .is_some_and(|(class, _)| *class == ROUTE_LOCAL);
+        // A local unit whose plane EXPECTS units (its admission estimate) is charged as any keyed
+        // unit is: the plane's own round, on the caller's budget (the served engine charged busbar's
+        // own ask round before it was asked; lane-dg-mcp 05e053183a).
+        let (local, estimated) = {
+            let u = self.lock();
+            (
+                u.named
+                    .as_ref()
+                    .is_some_and(|(class, _)| *class == ROUTE_LOCAL),
+                !u.expected.is_empty(),
+            )
+        };
         // A UNIT ROUTED BY SCOPE that no one entry reached (Q-DEL-A2A-SELECT): refused before
         // anything is charged, as 1.5.5 chose the agent before its admission.
         let unrouted_scope = self
@@ -783,7 +871,7 @@ impl Units for DoorSteps<'_> {
             Admission::Refused => {
                 return SeatVerdict::refuse(token, Refusal::new(ReasonCode::Unauthenticated))
             }
-            Admission::Keyed if !local => {
+            Admission::Keyed if !local || estimated => {
                 if let Some(key) = self.key.clone() {
                     if let Err(refusal) = self.charge(ctx, &key) {
                         return SeatVerdict::refuse(token, refusal);
@@ -930,6 +1018,7 @@ pub fn door_facts(
         audit_kind: OpClassId::new(audit_kind),
         keeps,
         bench_below_trip_threshold: None,
+        stream_ceiling_secs: 0,
     }
 }
 
@@ -995,7 +1084,11 @@ pub fn compose_egress(
             .map_err(|e| format!("member '{entry}': its private reach could not be sealed: {e}"))?;
         let destination = busbar_contract::dest::DestinationId::new(id);
         let name = plane_lane(&facts.plane, entry);
-        members.insert(entry.clone(), Member::new(destination, name.clone(), 1));
+        // The member's attempt bound is its entry's `timeout:` (ARCHITECT timeout ruling): every
+        // attempt the walk makes to it, alone or in a pool, is held to it.
+        let mut member = Member::new(destination, name.clone(), 1);
+        member.attempt_timeout_ms = pools.timeout_ms(entry);
+        members.insert(entry.clone(), member);
         sealed.insert(destination, route);
         names.push((destination, name));
     }
@@ -1003,12 +1096,15 @@ pub fn compose_egress(
     for (label, entries) in pools.pools() {
         let list = entries
             .iter()
-            .map(|e| {
-                members.get(e).cloned().ok_or_else(|| {
+            .enumerate()
+            .map(|(index, e)| {
+                let mut member = members.get(e).cloned().ok_or_else(|| {
                     format!("pool '{label}' names entry '{e}', which has no sealed route")
-                })
+                })?;
+                member.tier = pools.tier(label, index);
+                Ok(member)
             })
-            .collect::<Result<Vec<_>, _>>()?;
+            .collect::<Result<Vec<_>, String>>()?;
         let mut pool = Pool::new(label.clone(), list);
         if let Some(fallback) = pools.fallback(label) {
             pool.on_exhausted = OnExhausted::FallbackPool(fallback.to_string());
@@ -1046,6 +1142,7 @@ pub fn compose_egress(
         pools: built,
         routes: sealed,
         stream_ceiling_secs,
+        stated_ceiling_secs: facts.stream_ceiling_secs,
         error_body_max: busbar_kernel::plane_driver::DEFAULT_ERROR_BODY_MAX,
     })
 }
@@ -1197,9 +1294,19 @@ impl OutboundAuths {
     }
 
     /// The bind one auth row is loaded under: its needs on the connection table, its diagnostics
-    /// (a mint that failed and will retry) in its own log file under the configured `plugins.logs`
-    /// (THE DESIGN #85).
+    /// (a mint that failed and will retry, a credential it could not present) in its own log file
+    /// under the configured `plugins.logs` (THE DESIGN #85) AND, each declared one, in the main log
+    /// in the line 1.5.5 wrote there ([`MainLogSink`]).
     fn bind(&self, name: &str) -> crate::root::loader::dispatch::Bind {
+        self.bind_with(name, self.conns.clone())
+    }
+
+    /// [`Self::bind`] with the needs declared on `conns` (`ConnTable::NoNeeds`: no need is granted).
+    fn bind_with(
+        &self,
+        name: &str,
+        conns: crate::root::loader::dispatch::ConnTable,
+    ) -> crate::root::loader::dispatch::Bind {
         use crate::root::loader::dispatch::{EnvelopeSink, NoSink};
         let sink: Arc<dyn EnvelopeSink> = crate::root::boot::plugin_logs()
             .sink(
@@ -1211,12 +1318,13 @@ impl OutboundAuths {
                 |_| Arc::new(NoSink) as Arc<dyn EnvelopeSink>,
                 |s| Arc::new(s) as Arc<dyn EnvelopeSink>,
             );
+        let sink: Arc<dyn EnvelopeSink> = Arc::new(MainLogSink(sink));
         crate::root::loader::dispatch::Bind {
             instance: Arc::from(name),
             max_inflight_cap: 64,
             sink,
             dispatcher: self.dispatcher.adopter(),
-            conns: self.conns.clone(),
+            conns,
         }
     }
 
@@ -1228,12 +1336,33 @@ impl OutboundAuths {
         String,
         crate::root::loader::dispatch::Plugin<crate::root::loader::dispatch::kinds::auth::Auth>,
     )> {
+        self.rows_with(true)
+    }
+
+    /// [`Self::rows`], each loaded with its needs granted (`granted`) or with none.
+    fn rows_with(
+        &self,
+        granted: bool,
+    ) -> Vec<(
+        String,
+        crate::root::loader::dispatch::Plugin<crate::root::loader::dispatch::kinds::auth::Auth>,
+    )> {
         use crate::root::loader::dispatch::kinds::auth::Auth;
         use crate::root::loader::dispatch::{load_dropped_bytes, load_linked, LinkedRow};
+        let bind = |name: &str| {
+            self.bind_with(
+                name,
+                if granted {
+                    self.conns.clone()
+                } else {
+                    crate::root::loader::dispatch::ConnTable::NoNeeds
+                },
+            )
+        };
         let mut rows = Vec::new();
         for (name, door) in &self.linked {
             if let Ok(plugin) =
-                LinkedRow::of(*door).and_then(|row| load_linked::<Auth>(&row, self.bind(name)))
+                LinkedRow::of(*door).and_then(|row| load_linked::<Auth>(&row, bind(name)))
             {
                 rows.push(((*name).to_string(), plugin));
             }
@@ -1245,7 +1374,7 @@ impl OutboundAuths {
                 continue;
             };
             if let Ok(plugin) =
-                load_dropped_bytes::<Auth>(&row.lib_bytes, name, &stated, self.bind(name))
+                load_dropped_bytes::<Auth>(&row.lib_bytes, name, &stated, bind(name))
             {
                 rows.push((name.clone(), plugin));
             }
@@ -1308,6 +1437,152 @@ impl OutboundAuths {
     }
 }
 
+impl OutboundAuths {
+    /// CHECK, NEVER DIAL: `credential` bound under `settings` on a FRESH instance of the plugin
+    /// serving `style`, loaded with no need granted (so it mints nothing), and the refusals it names
+    /// for the credential itself — its `credential:` lines, their text. Empty when it accepts the
+    /// credential or no row states the style.
+    ///
+    /// # Errors
+    ///
+    /// The serving plugin would not open for its outbound styles.
+    pub fn check(
+        &self,
+        style: &str,
+        credential: &[u8],
+        settings: &serde_json::Value,
+    ) -> Result<Vec<String>, String> {
+        use crate::root::loader::dispatch::auth_outbound::{outbound_style, OutboundInstance};
+        for (_, plugin) in self.rows_with(false) {
+            if outbound_style(&plugin, style).is_none() {
+                continue;
+            }
+            let bytes = serde_json::to_vec(settings).map_err(|e| e.to_string())?;
+            let instance =
+                OutboundInstance::open_with(plugin, Arc::clone(&self.dispatcher), 0, &bytes)?;
+            return Ok(
+                match instance.open_outbound_raw(style, credential, settings) {
+                    Ok(_) => Vec::new(),
+                    Err((_, why)) => why
+                        .lines()
+                        .filter_map(|l| l.strip_prefix("credential: "))
+                        .map(str::to_string)
+                        .collect(),
+                },
+            );
+        }
+        Ok(Vec::new())
+    }
+}
+
+/// AN AUTH ROW'S DECLARED DIAGNOSTICS, WRITTEN TO THE MAIN LOG IN 1.5.5'S LINE (ARCHITECT D1
+/// 2026-10-05, LOG LINES; THE DESIGN #85).
+///
+/// 1.5.5 wrote a credential it could not present, and a mint that failed, to the main log; the auth
+/// plugin that now holds the credential reports the same condition as a DECLARED diagnostic on the
+/// #85 envelope of the call that met it, and this sink writes it there again, word for word, before
+/// the row's own log file keeps it too. A plugin's free log records ([`DIAG_LOG`]) stay in its own
+/// file only.
+///
+/// The line: the text up to its first named value is the message; the named values follow as
+/// ` name=value`, in 1.5.5's order — `protocol`, `header`, then `error` (which runs to the end) —
+/// and are written as the fields 1.5.5 wrote them (`protocol` and `header` as text, `error` as
+/// display). A declared id that is a code of the host's catalog (`BUSBAR-NNNN`) is written as the
+/// `diag` field, at the level the catalog's severity sets (benign-recurring: debug); any other at
+/// the plugin's own severity.
+///
+/// [`DIAG_LOG`]: busbar_contract::abi::mechanism::call::DIAG_LOG
+pub(crate) struct MainLogSink(pub(crate) Arc<dyn crate::root::loader::dispatch::EnvelopeSink>);
+
+impl MainLogSink {
+    /// `text` split into its message and the named values 1.5.5's line carried.
+    fn named(text: &str) -> (&str, Option<&str>, Option<&str>, Option<&str>) {
+        let split = |t: &'_ str, name: &str| -> (usize, Option<usize>) {
+            t.find(name)
+                .map_or((t.len(), None), |at| (at, Some(at + name.len())))
+        };
+        let (end, from) = split(text, " error=");
+        let error = from.map(|f| &text[f..]);
+        let rest = &text[..end];
+        let (end, from) = split(rest, " header=");
+        let header = from.map(|f| &rest[f..]);
+        let rest = &rest[..end];
+        let (end, from) = split(rest, " protocol=");
+        let protocol = from.map(|f| &rest[f..]);
+        (&rest[..end], protocol, header, error)
+    }
+
+    /// Write one declared diagnostic to the main log.
+    fn write(d: &crate::root::loader::dispatch::Diagnostic<'_>) {
+        use busbar_contract::diagnostic::Severity;
+        use tracing::Level;
+        let text = String::from_utf8_lossy(d.text);
+        let (message, protocol, header, error) = Self::named(&text);
+        let code = std::str::from_utf8(d.name)
+            .ok()
+            .and_then(|n| n.strip_prefix("BUSBAR-"))
+            .and_then(|n| n.parse::<u16>().ok())
+            .and_then(busbar_kernel::diagnostics::by_code);
+        let level = match (code.map(|c| c.severity), d.severity) {
+            (Some(Severity::BenignRecurring), _) => Level::DEBUG,
+            (Some(Severity::Fatal), _) | (_, 2..) => Level::ERROR,
+            (_, 1) => Level::WARN,
+            _ => Level::INFO,
+        };
+        let diag = code.map(|c| tracing::field::display(c.banner()));
+        let error = error.map(tracing::field::display);
+        macro_rules! line {
+            ($level:expr) => {
+                tracing::event!($level, diag, protocol, header, error, "{message}")
+            };
+        }
+        match level {
+            Level::DEBUG => line!(Level::DEBUG),
+            Level::INFO => line!(Level::INFO),
+            Level::WARN => line!(Level::WARN),
+            _ => line!(Level::ERROR),
+        }
+    }
+}
+
+impl crate::root::loader::dispatch::EnvelopeSink for MainLogSink {
+    fn metric(&self, m: crate::root::loader::dispatch::Metric<'_>) {
+        self.0.metric(m);
+    }
+
+    fn diag(&self, d: crate::root::loader::dispatch::Diagnostic<'_>) {
+        use busbar_contract::abi::mechanism::call::{DIAG_LOG, DIAG_LOG_DROPPED};
+        if d.id != DIAG_LOG && d.id != DIAG_LOG_DROPPED {
+            Self::write(&d);
+        }
+        self.0.diag(d);
+    }
+
+    fn dropped(&self, why: crate::root::loader::dispatch::Dropped) {
+        self.0.dropped(why);
+    }
+}
+
+/// THE PROCESS'S OUTBOUND AUTH INSTANCES: the build's linked `auths` rows, then the plugins
+/// directory's, on the process's dispatcher, their needs declared on the process's one connector.
+/// One set per process, so a style is served by one opened instance (and one tick schedule)
+/// whichever plane's member, or whichever configuration generation, binds it. Read only once the
+/// connector is booted (the first read pins the connector, `root::connector::the`).
+pub fn process_auths() -> Arc<OutboundAuths> {
+    static AUTHS: std::sync::OnceLock<Arc<OutboundAuths>> = std::sync::OnceLock::new();
+    Arc::clone(AUTHS.get_or_init(|| {
+        Arc::new(OutboundAuths::new(
+            crate::root::dispatch::dispatcher(),
+            crate::LINKED.auths,
+            crate::root::boot::dropped_registry(),
+            crate::root::loader::dispatch::ConnTable::Host(
+                Arc::clone(crate::root::connector::the())
+                    as Arc<dyn busbar_contract::conn::DeclaredConns>,
+            ),
+        ))
+    }))
+}
+
 /// WHAT A DOOR PLANE'S MEMBERS ARE REACHED THROUGH, for the process (THE DESIGN §6 steps 2-3, §5):
 /// the deployment's providers, the secret seam their credentials resolve through, the auth plugins
 /// that serve a style, the connector the planes' needs were declared on, and the client-level
@@ -1323,7 +1598,7 @@ pub struct DoorReach<'a> {
     pub conns: Arc<dyn busbar_contract::conn::PollConns>,
     /// Whole seconds.
     pub stream_ceiling_secs: u64,
-    /// The linked wires composed over the data carrier (`crate::root::serve::upgrade_carriers`):
+    /// The linked claims that open at an upgrade (`crate::root::serve::upgrade_carriers`):
     /// a need over one dials its member's base URL in its own scheme ([`spelled_for`]).
     pub upgrades: Vec<&'static str>,
 }
@@ -1754,9 +2029,9 @@ pub fn member_routes(
     Ok(routes)
 }
 
-/// THE BASE URL A NEED'S FRAMER READS: a need over `transport`, a framer composed over the
-/// carrier the operator's `base_url` names (`upgrades`: the linked wires composing over the data
-/// carrier, `crate::root::serve::upgrade_carriers`), dials the same authority and path under the
+/// THE BASE URL A NEED'S FRAMER READS: a need over `transport`, a claim that opens at an upgrade of
+/// the connection the operator's `base_url` names (`upgrades`: the linked claims that open at an
+/// upgrade, `crate::root::serve::upgrade_carriers`), dials the same authority and path under the
 /// framer's own scheme, its secured form for a secured base (`http://h` -> `<key>://h`,
 /// `https://h` -> `<key>s://h`, the pairing every upgrade-over-HTTP scheme keeps, RFC 6455 section
 /// 3). `None` when the need dials the base URL as written.
@@ -1837,4 +2112,4 @@ fn registration_anchors(
 
 #[cfg(test)]
 #[path = "tests/door_steps.rs"]
-mod tests;
+pub(crate) mod tests;

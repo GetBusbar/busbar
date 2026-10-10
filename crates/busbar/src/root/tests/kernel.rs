@@ -386,7 +386,6 @@ fn the_units_assemble_from_values_configuration_decided() {
     let kernel = new_kernel();
     let units = ProductionUnits::new(
         &kernel,
-        AuthChain::new(Vec::new(), false),
         durability,
         crate::root::adapters::BreakerPolicy::new(),
         crate::root::policy::ScopePolicy::new(),
@@ -395,7 +394,7 @@ fn the_units_assemble_from_values_configuration_decided() {
             std::sync::Arc::new(crate::root::units_admin::RefusingDispatch),
             crate::root::units_admin::open_door(),
         ),
-        std::sync::Arc::new(RefusingStore),
+        None,
     );
 
     // Nothing is in flight before anything arrives, which is the machine-checkable half of

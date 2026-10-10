@@ -5,24 +5,21 @@
 //!
 //! Pool/model resolution + governance admission + the-one-engine forward every LLM arrival runs once
 //! its model is known. It reads the LLM routing tables (now in `crate::engine`) so it lives in the
-//! plane; it calls DOWN into core for the neutral accounting -- the allowed plane->core edge. Its
-//! production entry is the resolved-completion re-entry ([`synthesize_completion`](crate::native_ingress::synthesize_completion)), which downcasts
-//! the opaque `ArrivalCtx` to core's `ArrivalPayload`; every body- and path-model arrival is a unit
-//! the composition root's node drives over the step files (`crate::unit::node`). The shell's two
-//! arrival entry points that used to funnel here survive only as the test kit's witness leg
-//! (`crate::testkit::shell`).
+//! plane; it calls DOWN into core for the neutral accounting -- the allowed plane->core edge. Every
+//! body- and path-model arrival is a unit the composition root's node drives over the step files
+//! (`crate::unit::node`). The shell's two arrival entry points that used to funnel here survive only
+//! as the test kit's witness leg (`crate::testkit::shell`). Nothing re-enters it to answer an
+//! upstream's sampling ask: that ask is relayed to the caller, and busbar runs no completion on its
+//! behalf (BUSBAR-1.6.0 Law 11).
 
 use std::sync::Arc;
 use std::time::Instant;
 
 use axum::body::Bytes;
 use axum::http::{HeaderMap, StatusCode};
-use axum::response::{IntoResponse, Response};
+use axum::response::Response;
 
-use busbar_kernel::{
-    handlers::{chat, frame},
-    ingress::arrival::ArrivalCtx,
-};
+use busbar_kernel::handlers::frame;
 // The neutral host seam — the plane holds an `Arc<dyn EngineHost>` (carried on the arrival) and reaches
 // the engine's finish/label/guard/admission capabilities through its typed methods (App-retype WEDGE 3).
 use busbar_kernel::plane_host::EngineHost;
@@ -294,9 +291,9 @@ pub async fn run(
 
 /// The stable ingress name for the resolved-operation gauntlet, retained as a thin delegator to the
 /// canonical [`run`] (surfaced as [`crate::operation::run`]). Signature- and behavior-identical to
-/// `run`: its three callers — `operation_ingress`, the ingress core's chat entry, and the
-/// MCP-sampling veneer in `plane_host` — plus the `pub use dispatch::operation_resolved` re-export
-/// keep their exact call surface while `run` becomes the single entry the plane hooks grow onto.
+/// `run`: its callers — the test kit shell's `operation_ingress` and `ingress_path_model` witness
+/// legs — keep their exact call surface while `run` becomes the single entry the plane hooks grow
+/// onto.
 #[allow(clippy::too_many_arguments)]
 pub async fn operation_resolved(
     host: &Arc<dyn EngineHost>,
@@ -385,84 +382,4 @@ pub(crate) fn affinity_header_for<'a>(rt: &'a Arc<NativeRuntime>, pool: &str) ->
         Some(a) => a.header_name.as_deref().unwrap_or(DEFAULT_AFFINITY_HEADER),
         None => DEFAULT_AFFINITY_HEADER,
     }
-}
-
-pub(crate) fn payload(ctx: &ArrivalCtx) -> &busbar_kernel::ingress::arrival::ArrivalPayload {
-    ctx.downcast_ref::<busbar_kernel::ingress::arrival::ArrivalPayload>()
-        .expect("ArrivalCtx must carry the neutral ArrivalPayload -- a wiring bug otherwise")
-}
-
-/// THE LLM PLANE'S RESOLVED-COMPLETION SYNTHESIZER — installed into the substrate completion seam
-/// (`install_completion_ingress` in production `main.rs`, `set_test_completion_ingress` in a
-/// `test-support` build) and reached by core's `EngineHost::synthesize_completion` (the MCP-sampling
-/// re-entry). Drives ONE non-streaming chat completion (a known `model` + body) through the SAME
-/// resolved-op path (`operation_resolved`) a first-party arrival takes, so governance attribution and
-/// metering are byte-identical to an arrival. The successor to the former core-resident
-/// `synthesize_completion_over` body: the residual-default chat dialect is read by NAME off the
-/// registry (so this spells no dialect), `Transport::Http`, `caller_token` from the arrival, model
-/// explicit, `model_not_found_message = None`. Matches the `CompletionIngress` fn-pointer shape.
-pub fn synthesize_completion(
-    a: busbar_kernel::ingress::arrival::CompletionArrival,
-) -> std::pin::Pin<Box<dyn std::future::Future<Output = Response> + Send>> {
-    Box::pin(async move {
-        let busbar_kernel::ingress::arrival::CompletionArrival {
-            ctx,
-            model,
-            headers,
-            body,
-        } = a;
-        let p = payload(&ctx);
-        // THE DEFAULT CHAT PROTOCOL the synthesized completion is driven as — the registry's
-        // residual-default protocol, read by NAME so no dialect literal appears here. `None` is the
-        // all-planes-off configuration with no chat dialect to drive; the caller reads the non-2xx
-        // body as an unsatisfiable ask, the same honest error the neutral seam returns when unlinked.
-        let Some(proto) = busbar_kernel::proto::residual_default_protocol() else {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "no default chat protocol is installed",
-            )
-                .into_response();
-        };
-        // THE BODY, PARSED — and a malformed one REFUSED, in the dialect the completion is driven
-        // as. `.ok()` swallowed the parse error here and drove on with `parsed = None`, so a body
-        // the arrival path answers with a 400 before the door was instead admitted, charged and
-        // relayed upstream by this entry point. Two ways in, one of them billing for a body it had
-        // already failed to read: the re-entry is meant to be byte-identical to an arrival, and
-        // this is the one place it was not. Refused AFTER the protocol is resolved so the refusal
-        // wears the same envelope the arrival's does.
-        let parsed = match crate::engine::LazyBody::parse(&body) {
-            Ok(v) => Some(v),
-            Err(_) => {
-                tracing::debug!(detail = %busbar_plane_llm::codec::json::parse_err_log(body.len()), "synthesized completion body JSON parse failed");
-                return busbar_kernel::proxy::ingress_error(
-                    proto,
-                    StatusCode::BAD_REQUEST,
-                    crate::engine::KIND_INVALID_REQUEST,
-                    "We could not parse the JSON body of your request.",
-                );
-            }
-        };
-        let op = chat(
-            proto,
-            busbar_contract::transport::transport::Transport::Http,
-        );
-        operation_resolved(
-            &p.host,
-            &p.gov,
-            proto,
-            op.operation,
-            op.op_handler,
-            &model,
-            &headers,
-            body,
-            parsed,
-            p.caller_token.as_ref(),
-            Instant::now(),
-            // C10: the synthesized completion's charge epoch, off the arrival payload's own host
-            // clock port rather than the ambient free function. Same value, one clock.
-            p.host.clock_now_secs(),
-            None,
-        )
-        .await
-    })
 }

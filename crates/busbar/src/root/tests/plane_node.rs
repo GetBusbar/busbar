@@ -281,7 +281,7 @@ async fn rig_with_billing(fixture: Fixture, billed: bool) -> Rig {
     gov.hydrate_budgets(&cost, 0).expect("hydrate");
 
     let app = TestApp::new()
-        // THE CONFIGURED AUTH CHAIN, so `identity_admit` runs the same resolution the HTTP
+        // THE CONFIGURED AUTH CHAIN, so `identity_admit_over` runs the same resolution the HTTP
         // middleware runs rather than falling through an open front door.
         .keys_chain()
         .lane(LaneSpec::new(LANE, PROTO, &server.base_url()).provider("test"))
@@ -1273,6 +1273,85 @@ async fn a_driven_planes_abandoned_end_seals_one_audit_record() {
     site.post(&ctx(52), ended);
     assert_eq!(records(), before, "no pass, no record");
     rig.server.shutdown().await;
+}
+
+/// AUDIT-CHAIN, THE LLM PLANE: every unit the node answers, served (a dispatched completion) or
+/// refused (a body the arrival step cannot read), seals ONE record on the node's audit chain, the
+/// second linked to the first; the chain walks clean, and a record altered after its seal (the
+/// served unit re-told as refused) breaks the walk. RED: a loop whose audit door's pass is never
+/// handed back to the node seals nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn every_unit_the_node_answers_served_or_refused_seals_one_record_on_one_tamper_evident_chain(
+) {
+    let rig = rig(Fixture::BufferedOk).await;
+    let node = Node::new();
+    let book = crate::root::durability::node_book();
+    node.bind_book(Arc::clone(&book.durability));
+    let answer = |fixture: Fixture| {
+        let arrival = plane::WalkArrival {
+            host: rig.host(),
+            gov: rig.gov(),
+            proto: PROTO,
+            operation: busbar_contract::operation::OpVerb::CHAT,
+            caller_token: None,
+            headers: json_headers(),
+            query: None,
+            body: fixture.body(),
+            path: None,
+        };
+        node.answer(plane::handed(arrival, None))
+    };
+
+    let served = answer(Fixture::BufferedOk).await;
+    assert_eq!(served.status(), StatusCode::OK, "the completion is served");
+    let _ = axum::body::to_bytes(served.into_body(), usize::MAX)
+        .await
+        .expect("the served body drains");
+    let refused = answer(Fixture::Malformed).await;
+    assert!(
+        refused.status().is_client_error(),
+        "the unreadable body is refused: {}",
+        refused.status()
+    );
+    let _ = axum::body::to_bytes(refused.into_body(), usize::MAX)
+        .await
+        .expect("the refusal drains");
+    rig.server.shutdown().await;
+
+    let durability = book.durability.lock().expect("unpoisoned");
+    let records = durability.audit_records.clone();
+    assert_eq!(records.len(), 2, "one record per unit: {records:?}");
+    let (served, refused) = (&records[0], &records[1]);
+    assert_eq!(
+        served.outcome.unit_end,
+        busbar_contract::caps::Outcome::Completed,
+        "the dispatch is chained as served"
+    );
+    assert!(
+        matches!(
+            refused.outcome.unit_end,
+            busbar_contract::caps::Outcome::Refused(..)
+        ),
+        "the refusal is chained as one: {:?}",
+        refused.outcome
+    );
+    assert_eq!(refused.seq, served.seq + 1, "contiguous");
+    assert_eq!(
+        refused.prev_hash, served.hash,
+        "linked to the record before"
+    );
+    assert!(busbar_kernel_audit::AuditChain::verify_window(&records).is_ok());
+    assert!(
+        durability.retained_audit_findings().is_empty(),
+        "the node's own verify finds nothing"
+    );
+
+    let mut forged = records.clone();
+    forged[0].outcome.unit_end = refused.outcome.unit_end;
+    assert!(
+        busbar_kernel_audit::AuditChain::verify_window(&forged).is_err(),
+        "a record altered after its seal breaks the chain"
+    );
 }
 
 /// THE FLAT FEE IS A CLIENT'S FEE, and this plane reads which it has off the sealed origin.
@@ -2338,11 +2417,15 @@ async fn admit(
     rig: &Rig,
     cred: Credential,
 ) -> Result<busbar_contract::records::PlaneRequestCtx, String> {
-    rig.host()
-        .identity_admit(Some(cred.present(rig)), String::new(), String::new())
-        .await
-        .map(|(_, gov)| gov)
-        .map_err(|refusal| format!("{refusal:?}"))
+    busbar_kernel::plane_host::identity_admit_over(
+        Arc::clone(&rig.app),
+        Some(cred.present(rig)),
+        String::new(),
+        String::new(),
+    )
+    .await
+    .map(|(_, gov)| gov)
+    .map_err(|refusal| format!("{refusal:?}"))
 }
 
 /// WHO THE LOOP DECIDED THIS UNIT IS, taken from the far end of the loop rather than from the
@@ -2407,11 +2490,11 @@ async fn leg_loop_as(rig: &Rig, gov: busbar_contract::records::PlaneRequestCtx) 
 /// ELSE.**
 ///
 /// The plane's authenticate step is a READ of an outcome the auth middleware already produced —
-/// every 401 this plane could raise is raised upstream of it. A cell that hand-built a context
-/// and handed it to the loop would prove nothing about that, because it would be asserting the
-/// fixture. So every credential here goes through the deployment's OWN door
-/// (`EngineHost::identity_admit`: the configured chain plus the one verdict resolution the HTTP
-/// middleware runs) and the loop is driven with whatever the door left behind.
+/// every 401 this plane could raise is raised upstream of it. A cell that hand-built a context and
+/// handed it to the loop would prove nothing about that, because it would be asserting the fixture.
+/// So every credential here goes through the deployment's OWN door
+/// (`plane_host::identity_admit_over`: the configured chain plus the one verdict resolution the
+/// HTTP middleware runs) and the loop is driven with whatever the door left behind.
 ///
 /// Three credentials, and the door's answer decides which half of the cell runs:
 ///
@@ -2851,7 +2934,7 @@ async fn the_route_seam_is_driven_once_by_a_served_unit_and_never_by_a_refused_o
 //
 // `native_ingress::run` (native_ingress.rs:554) is the resolved-op funnel every native arrival
 // reaches with a model and an operation in hand — `operation_ingress` once the body's model is read,
-// `ingress_path_model` once the URL's is, `synthesize_completion` at the MCP-sampling re-entry — and
+// `ingress_path_model` once the URL's is — and
 // at native_ingress.rs:592 it calls `run_gauntlet`, the LIVE money authority and the exact site #29's
 // flip lands on. LEG 1 drives that funnel through its public door `operation_ingress` (→ `run` →
 // `run_gauntlet`). LEG 2 drives the DORMANT kernel-loop sibling `native_run_via_loop` (the process
@@ -2902,7 +2985,7 @@ async fn leg_native_run(fixture: Fixture) -> Observed {
 /// The shell's resolved-op funnel (`native_ingress::run`, reached through its `operation_ingress`
 /// door) builds a `NativePlane`/`GauntletRequest` and settles per-token billing through
 /// `busbar_kernel::plane_host::run_gauntlet`, late-accruing against the admission-pinned `ROOT_CARD`
-/// snapshot; it stays the MCP-sampling re-entry's (`synthesize_completion`). This is that SAME
+/// snapshot. This is that SAME
 /// resolved-op arrival as a unit handed to the process's ONE node — `answer_arriving_at` →
 /// `busbar_kernel::teller::run_unit_async`, settling onto the same Durability money-book the
 /// composition root binds via [`bind_book`]. The resolved `model` is carried as the unit's routing
@@ -4799,4 +4882,65 @@ async fn a_screened_veto_through_the_node_admits_nothing() {
         .expect("usage read");
     assert_eq!(derived.requests, 0, "a veto admits nothing");
     rig.server.shutdown().await;
+}
+
+/// THE RECORD'S AMOUNT IS COUNTS AND A CARD VERSION, NEVER A PRICE (`BUSBAR-1.6.0.md` THE DESIGN
+/// §1, "The amount is the unit's counts plus the rate-card version, never a price"; §7).
+///
+/// A unit whose exit settles a non-zero figure (the settlement writer's money, in nano-units) seals
+/// its record beside that line. The record names what the unit reported, by class; the exit's
+/// posting carries no class and no count, only the figure it moved, so the record it seals has no
+/// line of it at all.
+#[test]
+fn the_exit_arm_seals_no_money_figure_into_the_record() {
+    use busbar_contract::caps::{Admittance, Hold, Posted, Usage, WriteMoney};
+    use busbar_kernel::test_support::tokens::{end, grant, origin, pass};
+
+    let node = Node::new();
+    let durability = crate::root::durability::build(
+        &crate::root::durability::DurabilityConfig { data_dir: None },
+        Box::new(busbar_kernel_wal::NullShipper::new()),
+        Box::new(busbar_kernel_ledger::legacy::RecordingRows::new()),
+    )
+    .expect("a memory-buffered journal cannot fail to open");
+    let book = Arc::new(std::sync::Mutex::new(durability));
+    node.bind_book(Arc::clone(&book));
+
+    // The figure the settlement writer moved: 150 nano-units against a hold of 100.
+    const MONEY: u64 = 150;
+    let who = PrincipalId::new("acct:h2");
+    let hold = Hold::open(&grant::<Admittance>(), who.clone(), 100);
+    let usage = Usage::report(&grant::<busbar_contract::caps::Consumption>(), Vec::new())
+        .expect("an empty report fits the record");
+    let posted = Posted::settle(hold, u128::from(MONEY), &usage, &grant::<WriteMoney>());
+    assert_eq!(posted.settled(), MONEY, "the posting moved money");
+    let ended = Ended::Settled {
+        end: end(Outcome::Completed, Ok(posted)),
+        requests: 0,
+        fee: 0,
+    };
+    let seal = UnitSeal {
+        facts: busbar_contract::caps::AuditFacts {
+            op_class: busbar_contract::caps::OpClassId::new("call"),
+            finish: busbar_contract::FinishClass::Complete,
+        },
+        pass: pass(),
+        key: UnitKey::new(77),
+        origin: origin(OriginKind::Client),
+        parent: None,
+    };
+    node.settle_end(&who, Arrived::at(EPOCH * 1_000, 0), None, ended, Some(seal));
+
+    let durability = book.lock().unwrap_or_else(|p| p.into_inner());
+    let record = durability
+        .audit_records
+        .last()
+        .expect("the exit arm sealed the unit's record");
+    assert!(
+        record.usage.lines.iter().all(|line| line.class
+            != busbar_kernel::teller::KERNEL_ACCRUAL_CLASS
+            && line.quantity != MONEY),
+        "the record carries counts, never the settled money figure: {:?}",
+        record.usage.lines
+    );
 }

@@ -10,7 +10,7 @@
 //! tables; a neutral fake plane (all hooks `None`/no-op) would leave every gauge here reading the
 //! empty `EMPTY_VIEW` projection — a different, false-negative failure from what these tests exist
 //! to pin. That only type-checks with ONE `busbar_kernel` in the graph, which is exactly what an
-//! integration-test target gives. See `plane_integration.rs`'s header for the same rationale, first
+//! integration-test target gives. See `crates/busbar/tests/plane_integration.rs`'s header for the same rationale, first
 //! written there.
 //!
 //! Every OTHER test in `metrics_tests.rs` (counters, `describe()`, key-spend gauges, the gauge

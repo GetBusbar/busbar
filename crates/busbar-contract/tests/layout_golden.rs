@@ -1495,7 +1495,8 @@ fn compute_layout() -> String {
             peer_subject,
             peer_issuer,
             peer_fingerprint,
-            claim
+            claim,
+            local_certificate
         ]
     );
     record!(
@@ -1593,16 +1594,45 @@ fn compute_layout() -> String {
             alpn_needed
         ]
     );
-    record!(s, tkind::FramerOut, [head, yielded, framing]);
+    record!(s, tkind::FramerOut, [head, yielded, framing, datagram]);
+    record!(s, tkind::KeyingMaterial, [size, profile, bytes, len]);
+    record!(s, tkind::DatagramRoute, [offset, len, path, lane]);
+    record!(
+        s,
+        tkind::DatagramLane,
+        [
+            size, lane, path, bound, path_addr, local_addr, verified, _reserved, keying, routes,
+            routes_cap
+        ]
+    );
+    record!(
+        s,
+        tkind::RendezvousTerms,
+        [
+            role,
+            _reserved,
+            local_user,
+            local_secret,
+            remote_user,
+            remote_secret,
+            peer_fingerprint,
+            candidates
+        ]
+    );
+    record!(
+        s,
+        tkind::DatagramYield,
+        [routes_len, request, request_from, request_to, terms]
+    );
     record!(
         s,
         tkind::BeginIn,
-        [head, side, _reserved, target, facts, sink, fields, fields_len]
+        [head, side, _reserved, target, facts, sink, fields, fields_len, lane]
     );
     record!(
         s,
         tkind::IngestIn,
-        [head, framing, bytes, len, end, _reserved, sink]
+        [head, framing, bytes, len, end, _reserved, sink, lane]
     );
     record!(
         s,
@@ -1616,7 +1646,8 @@ fn compute_layout() -> String {
             end_of_frame,
             flags,
             sink,
-            deadline_ns
+            deadline_ns,
+            lane
         ]
     );
     record!(
@@ -1643,10 +1674,11 @@ fn compute_layout() -> String {
             final_message,
             final_details,
             final_bytes,
-            final_bytes_len
+            final_bytes_len,
+            lane
         ]
     );
-    record!(s, tkind::FramingIn, [head, framing, sink]);
+    record!(s, tkind::FramingIn, [head, framing, sink, lane]);
     record!(
         s,
         tkind::AdoptIn,
@@ -1718,7 +1750,8 @@ fn compute_layout() -> String {
             caller_credential_refusal,
             admin_routes,
             admin_routes_len,
-            admin_openapi
+            admin_openapi,
+            stream_ceiling_secs
         ]
     );
     record!(
@@ -1745,7 +1778,9 @@ fn compute_layout() -> String {
             openapi,
             audience,
             resource_metadata,
-            resource_facts
+            resource_facts,
+            listed,
+            listed_len
         ]
     );
     record!(s, pkind::PlaneOpenIn, [open, public_url, owned]);
@@ -2136,6 +2171,7 @@ fn compute_layout() -> String {
         hsvc::TrustDecideIn,
         [head, counterparty, item, expected, decision, _reserved]
     );
+    record!(s, hsvc::TrustStateIn, [head, counterparty, into]);
     record!(s, hsvc::TrustDueIn, [head, into]);
     record!(s, hsvc::VerifyLookupIn, [head, key, into]);
     record!(s, hsvc::VerifyStoreIn, [head, key, entry, ttl_ms]);
@@ -2175,10 +2211,13 @@ fn compute_layout() -> String {
             snapshot_read,
             trust_sight_item,
             trust_serves,
-            trust_decide
+            trust_decide,
+            trust_state,
+            session_emit
         ]
     );
     record!(s, hsvc::NeedAdmitIn, [head, need, _reserved]);
+    record!(s, hsvc::SessionEmitIn, [head, session, bytes]);
     record!(
         s,
         hsvc::TrustVerifyIn,

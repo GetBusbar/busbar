@@ -428,3 +428,122 @@ fn the_restart_policy_backs_off_and_stops_a_crash_loop() {
     aged.crashed(t0 + Duration::from_secs(120));
     assert!(aged.may_restart(t0 + Duration::from_secs(121)));
 }
+
+/// The bound the connector holds on lease `id` (`None` = spent by the answer, or never set).
+fn due(c: &Connector, id: ConnId) -> Option<std::time::Instant> {
+    c.slab
+        .get(OWNER, id)
+        .expect("a live lease")
+        .1
+        .due
+        .lock()
+        .expect("due")
+        .as_ref()
+        .map(|d| d.at)
+}
+
+/// The test's own hand on lease `id`'s bound: moved to `at`, as the clock would bring it there.
+fn set_due(c: &Connector, id: ConnId, at: std::time::Instant) {
+    *c.slab
+        .get(OWNER, id)
+        .expect("a live lease")
+        .1
+        .due
+        .lock()
+        .expect("due") = Some(crate::Due { at, timer: None });
+}
+
+fn open_bounded(c: &Connector, target: &str) -> ConnId {
+    c.open(
+        OWNER,
+        NEED,
+        &OpenDesc {
+            target,
+            body: b"ask\n",
+            timeout_ms: 300,
+            ..OpenDesc::default()
+        },
+    )
+    .unwrap()
+}
+
+/// RED (ARCHITECT timeout ruling, step 2): a lease's bound runs past its head, which the host serves
+/// the instant the lease opens, to the program's own first bytes: a program that takes the request
+/// and never answers is a timeout once the bound passes.
+///
+/// The bound is moved by the test's own hand, never raced on the wall clock. The earlier form opened
+/// with a live 300ms bound, took its `started` only after `open` returned, and polled the head and
+/// the answer every 5ms: on a loaded runner the head read could land past the bound (the head itself
+/// a timeout), or the timeout could land under 300ms from a `started` taken after the bound began.
+#[test]
+fn a_leases_bound_runs_past_its_head_to_the_programs_answer() {
+    worker().block_on(async {
+        let c = connector();
+        declare(&c, &[("mute", sh("cat >/dev/null", &[]))]).unwrap();
+        let before = std::time::Instant::now();
+        let id = open_bounded(&c, "mute");
+        let after = std::time::Instant::now();
+        // The open's `timeout_ms` is the bound, from the open.
+        let at = due(&c, id).expect("the open is bounded");
+        assert!(
+            at >= before + Duration::from_millis(300) && at <= after + Duration::from_millis(300),
+            "the bound is the open's timeout_ms from the open"
+        );
+        // Held off while the head is read: no load on the runner puts the head past it.
+        set_due(
+            &c,
+            id,
+            std::time::Instant::now() + Duration::from_secs(3600),
+        );
+        assert_eq!(generation(&c, id).await, 1, "the head is served at once");
+        assert!(due(&c, id).is_some(), "the head does not spend the bound");
+        let mut buf = [0_u8; 64];
+        assert_eq!(
+            c.read(OWNER, id, 7, &mut buf),
+            Err(ConnError::Pending),
+            "short of the bound, the mute program's answer pends"
+        );
+        // The bound passes with no answer begun: the read is a timeout.
+        set_due(&c, id, std::time::Instant::now());
+        assert_eq!(c.read(OWNER, id, 7, &mut buf), Err(ConnError::Timeout));
+        c.close(OWNER, id).unwrap();
+    });
+}
+
+/// The RED arm of the bound above, on the same hand: a bound set below the answer's arrival is a
+/// timeout, and a bound held past it ends at the answer (its first bytes spend the bound).
+#[test]
+fn a_leases_bound_below_the_answer_is_a_timeout_and_the_answer_spends_it() {
+    worker().block_on(async {
+        let c = connector();
+        declare(&c, &[("echo", sh(ECHO_PID, &[]))]).unwrap();
+        let mut buf = [0_u8; 64];
+
+        let id = open_bounded(&c, "echo");
+        set_due(
+            &c,
+            id,
+            std::time::Instant::now() + Duration::from_secs(3600),
+        );
+        assert_eq!(generation(&c, id).await, 1);
+        let piece = read(&c, id, &mut buf).await.expect("the answer");
+        assert_eq!(piece.kind, PieceKind::Body);
+        assert!(due(&c, id).is_none(), "the answer spends the bound");
+        c.close(OWNER, id).unwrap();
+
+        let id = open_bounded(&c, "echo");
+        set_due(
+            &c,
+            id,
+            std::time::Instant::now() + Duration::from_secs(3600),
+        );
+        generation(&c, id).await;
+        set_due(&c, id, std::time::Instant::now());
+        assert_eq!(
+            c.read(OWNER, id, 7, &mut buf),
+            Err(ConnError::Timeout),
+            "a bound passed before the answer is read is a timeout"
+        );
+        c.close(OWNER, id).unwrap();
+    });
+}

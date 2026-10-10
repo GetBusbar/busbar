@@ -18,7 +18,7 @@
 //! |---|---|
 //! | `arrival` | none — the kernel's own gate over the configured budgets |
 //! | `decode` | the claimed plane, not a unit |
-//! | `authenticate` | the auth unit |
+//! | `authenticate` | the registered plane's step, through `UnitsRegistry` |
 //! | `verify` | the trust unit, reading the breaker unit's view |
 //! | `approve` | the scope unit |
 //! | `admit` | the admission unit, priced by the cost unit |
@@ -64,7 +64,6 @@ use busbar_kernel::inflight::ArrivalDoor;
 use busbar_kernel::slice::GroupLeaseSlip;
 use busbar_kernel::teller::{Evidence, UnitCtx, Units};
 use busbar_kernel_egress::trust::Trust;
-use busbar_kernel_identity::{Auth, AuthChain};
 
 /// Take the kernel's seal. Boot only, once per process.
 ///
@@ -1647,53 +1646,10 @@ impl ArrivalDoor for AdmissionDoor {
     }
 }
 
-/// The store a node has before one is configured.
-///
-/// Every method answers that there is nothing there, which is what an unconfigured store IS. It is
-/// not the production default — that is the loader's ABI-2 adapter over the configured store, and
-/// the in-tree memory store when a config names none — it is what the composition holds until the
-/// configured one is built.
-#[derive(Debug, Default, Clone, Copy)]
-pub struct RefusingStore;
-
-impl busbar_contract::verb_store::Store for RefusingStore {
-    fn chain_break(
-        &self,
-        _admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
-    ) -> Result<(), busbar_contract::verb_store::StoreError> {
-        Err(busbar_contract::verb_store::StoreError::Failed)
-    }
-
-    fn store_restore(
-        &self,
-        _admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
-        _backup_ref: &str,
-    ) -> Result<(), busbar_contract::verb_store::StoreError> {
-        Err(busbar_contract::verb_store::StoreError::Failed)
-    }
-
-    fn reseal_epoch_floor(
-        &self,
-        _admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
-    ) -> Result<(), busbar_contract::verb_store::StoreError> {
-        Err(busbar_contract::verb_store::StoreError::Failed)
-    }
-
-    fn replay_new_verb(
-        &self,
-        _key: &(String, String),
-    ) -> Result<Option<Vec<u8>>, busbar_contract::verb_store::StoreError> {
-        Ok(None)
-    }
-
-    fn commit_new_verb_replay(
-        &self,
-        _key: &(String, String),
-        _response: &[u8],
-    ) -> Result<(), busbar_contract::verb_store::StoreError> {
-        Ok(())
-    }
-}
+/// The node's store behind the published ABI, as the verbs unit reaches it: the loader's ABI-2 adapter
+/// over the CONFIGURED store (bound at boot, [`crate::root::durability::NodeBook::verb_store`]), or
+/// `None` on a node with no store, where each disaster-recovery verb answers as a store failure.
+pub type VerbStoreHandle = Option<Arc<dyn busbar_contract::verb_store::Store + Send + Sync>>;
 
 /// The long-lived objects the root owns, behind the one trait the loop reaches a unit through.
 ///
@@ -1708,8 +1664,6 @@ pub struct ProductionUnits {
     /// sets of cells: a trip recorded through one would be invisible to the other, and a lane the
     /// walk had benched would still read as ready at Verify.
     pub breaker: crate::root::adapters::BreakerAdapter,
-    /// The authentication chain, resolved from configuration at boot.
-    pub auth: Auth,
     /// The seams the authenticate step is handed beside the request: the signed-key verifier and the
     /// revocation view — and NO credential cache. The node's one flushable cache is the kernel's; a
     /// second one here would be a second answer to "has this credential been seen" that an
@@ -1743,8 +1697,9 @@ pub struct ProductionUnits {
     #[cfg(feature = "root-admin")]
     pub admin: crate::root::units_admin::AdminBinding,
     /// The store, behind the published ABI. The verbs unit's disaster-recovery subset and its
-    /// sealed idempotency cache both reach it, and both reach the same one.
-    pub store: Arc<dyn busbar_contract::verb_store::Store + Send + Sync>,
+    /// sealed idempotency cache both reach it, and both reach the same one. `None` on a node with no
+    /// configured store ([`VerbStoreHandle`]).
+    pub store: VerbStoreHandle,
     /// The credential the kernel lends the verbs unit for the length of an execution.
     ///
     /// Minted once, at boot, from the node's one authority — the second token in the tree minted
@@ -1766,8 +1721,8 @@ pub struct ProductionUnits {
 impl ProductionUnits {
     /// Assemble the units the loop reaches, over what the root already built.
     ///
-    /// Everything expensive — opening a journal, hydrating the ledger cells, resolving the auth
-    /// chain, reading the rate cards — has happened by the time this is called. This is the
+    /// Everything expensive — opening a journal, hydrating the ledger cells, reading the rate
+    /// cards — has happened by the time this is called. This is the
     /// assembly, not the work. Every argument is a value configuration decided, which is the shape
     /// that makes it impossible to construct these units and forget one.
     // The argument list IS the point, and shortening it would cost the property the doc comment
@@ -1781,16 +1736,14 @@ impl ProductionUnits {
     #[must_use]
     pub fn new(
         kernel: &busbar_kernel::teller::Kernel,
-        auth_chain: AuthChain,
         durability: crate::root::durability::Durability,
         breaker_policy: crate::root::adapters::BreakerPolicy,
         scope_policy: crate::root::policy::ScopePolicy,
         #[cfg(feature = "root-admin")] admin: crate::root::units_admin::AdminBinding,
-        store: Arc<dyn busbar_contract::verb_store::Store + Send + Sync>,
+        store: VerbStoreHandle,
     ) -> Self {
         ProductionUnits::new_sharing(
             kernel,
-            auth_chain,
             Arc::new(Mutex::new(durability)),
             breaker_policy,
             scope_policy,
@@ -1810,17 +1763,15 @@ impl ProductionUnits {
     #[must_use]
     pub fn new_sharing(
         kernel: &busbar_kernel::teller::Kernel,
-        auth_chain: AuthChain,
         durability: Arc<Mutex<crate::root::durability::Durability>>,
         breaker_policy: crate::root::adapters::BreakerPolicy,
         scope_policy: crate::root::policy::ScopePolicy,
         #[cfg(feature = "root-admin")] admin: crate::root::units_admin::AdminBinding,
-        store: Arc<dyn busbar_contract::verb_store::Store + Send + Sync>,
+        store: VerbStoreHandle,
     ) -> Self {
         #[cfg_attr(not(feature = "root-admin"), allow(unused_mut))]
         let mut units = ProductionUnits {
             breaker: crate::root::adapters::BreakerAdapter::with_policy(breaker_policy),
-            auth: Auth::new(auth_chain),
             // The unbound posture, which is the one a node has until it is handed a directory:
             // the cache is real, and the two authorities are absent rather than permissive. A
             // deployment whose keys are busbar's own binds them through
@@ -1898,7 +1849,37 @@ impl ProductionUnits {
             write,
         )
         .expect("a memory-buffered journal cannot fail to open");
-        ProductionUnits::admin_only_sharing(dispatch, door, Arc::new(Mutex::new(durability)), read)
+        // An admin-only node over a book of its own has no configured store behind it.
+        ProductionUnits::admin_only_sharing(
+            dispatch,
+            door,
+            Arc::new(Mutex::new(durability)),
+            read,
+            None,
+        )
+    }
+
+    /// THE BOOTED NODE'S ADMIN UNITS: [`ProductionUnits::admin_only_sharing`] over the one book
+    /// boot opened, its legacy rows, and the store boot bound beside them (row 113, ruling (B)).
+    ///
+    /// The book carries the store for the same reason it carries the rows: they are halves of what
+    /// boot composed, and a caller that took the book but not its store would serve the three
+    /// disaster-recovery verbs over nothing — refused as a store failure on a node whose store is
+    /// right there. `None` is a node with no configured store.
+    #[cfg(feature = "root-admin")]
+    #[must_use]
+    pub fn admin_over_book(
+        dispatch: Arc<dyn crate::root::units_admin::AdminDispatch>,
+        door: crate::root::units_admin::AdminDoorFn,
+        book: &crate::root::durability::NodeBook,
+    ) -> Self {
+        ProductionUnits::admin_only_sharing(
+            dispatch,
+            door,
+            Arc::clone(&book.durability),
+            Arc::clone(&book.rows) as Arc<dyn crate::root::units_admin::LegacyRowsRead>,
+            book.verb_store.clone(),
+        )
     }
 
     /// The same composition again, over a book the caller already opened.
@@ -1919,16 +1900,16 @@ impl ProductionUnits {
         door: crate::root::units_admin::AdminDoorFn,
         durability: Arc<Mutex<crate::root::durability::Durability>>,
         read: Arc<dyn crate::root::units_admin::LegacyRowsRead>,
+        store: VerbStoreHandle,
     ) -> Self {
         let kernel = new_kernel();
         let mut units = ProductionUnits::new_sharing(
             &kernel,
-            AuthChain::new(Vec::new(), false),
             Arc::clone(&durability),
             crate::root::adapters::BreakerPolicy::new(),
             crate::root::policy::ScopePolicy::new(),
             crate::root::units_admin::AdminBinding::new(dispatch, door),
-            Arc::new(RefusingStore),
+            store,
         );
         // The views are bound after the units are assembled rather than through the constructor,
         // because what they read is the durability the constructor took ownership of — the handle
@@ -1985,21 +1966,6 @@ impl ProductionUnits {
     #[must_use]
     pub fn with_auth_bindings(mut self, bindings: auth_bindings::AuthBindings) -> Self {
         self.auth_bindings = bindings;
-        self
-    }
-
-    /// Put the deployment's real chain in front of the authenticate step.
-    ///
-    /// Separate from the constructors for the same reason the bindings are: the chain a node runs is
-    /// resolved from live governance state, which does not exist when the units are assembled. What
-    /// it replaces is the OPEN door the assembly starts from — and that door is why this exists.
-    /// With it, the authenticate step admitted every caller anonymously and the only thing deciding
-    /// was the surface mounted underneath, so a credential the node had revoked was admitted at
-    /// Authenticate and refused, if at all, several steps later by something that had never heard of
-    /// the revocation.
-    #[must_use]
-    pub fn with_auth_chain(mut self, chain: AuthChain) -> Self {
-        self.auth = Auth::new(chain);
         self
     }
 

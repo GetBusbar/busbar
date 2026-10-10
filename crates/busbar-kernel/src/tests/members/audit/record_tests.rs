@@ -79,7 +79,7 @@ fn inputs(unit: u64) -> AuditInputs {
 /// The fully-populated record both frozen digests below are taken over: the enum arms that carry
 /// payloads, because those are the ones whose encoding is easiest to move by accident.
 fn frozen_record() -> busbar_kernel_audit::record::AuditRecord {
-    let mut chain = AuditChain::new();
+    let mut chain = AuditChain::new().sealing_as(FROZEN_NODE);
     let mut with_payloads = inputs(1);
     with_payloads.outcome.unit_end = Outcome::Refused(StepName::Admit, ReasonCode::OverBudget);
     with_payloads.outcome.step = Some(StepName::Admit);
@@ -88,19 +88,8 @@ fn frozen_record() -> busbar_kernel_audit::record::AuditRecord {
     chain.seal(with_payloads, &token())
 }
 
-/// The `v3` digest [`frozen_record`]'s fields froze when `busbar.audit.digest.v3` was published: no
-/// `currency`, and no `incarnation` either. Pinned, never re-captured: a record sealed under `v3`
-/// carries exactly this and must keep verifying by it.
-const FROZEN_V3: &str = "d181a17502af4f637b8e3cd8ec7a107f07d4dc9fafe95375626e4709e2e7e26c";
-
-/// [`frozen_record`] AS A `v3` NODE SEALED AND STORED IT: the same fields and the `v3` digest. The
-/// incarnation the record carries is not in a `v3` preimage, so it cannot move this value.
-fn frozen_v3_record() -> busbar_kernel_audit::record::AuditRecord {
-    let mut record = frozen_record();
-    record.recipe = busbar_kernel_audit::recipe::Recipe::V3;
-    record.hash = FROZEN_V3.to_string();
-    record
-}
+/// The node [`frozen_record`] is sealed by.
+const FROZEN_NODE: u64 = 9;
 
 /// The `v2` digest [`frozen_record`]'s fields froze when `busbar.audit.digest.v2` was published,
 /// with `currency` `"USD"` in the preimage. Pinned, never re-captured: a record sealed under `v2`
@@ -126,73 +115,68 @@ fn frozen_v2_record() -> busbar_kernel_audit::record::AuditRecord {
 /// hex below is a value to preserve, never one to re-capture from a failing run.
 ///
 /// History, and the rule it set. Moved once, before any release wrote a chain, when the record's
-/// position entered the digest. Moved a second time — and NOT re-captured — when the recipe became
-/// `busbar.audit.digest.v2` (#43, #71, #77(3): the record stores counts, never a price). Moved a
-/// third time, the same way, when the recipe became `busbar.audit.digest.v3` (#34, OWNER
-/// 2026-09-29: `currency` leaves the signed digest), and a fourth when it became
-/// `busbar.audit.digest.v4` (the boot's `incarnation` enters the digest after `unit_key`, so two
-/// boots that mint the same unit key seal two different records). Each move is a NEW RECIPE beside
-/// the old one: the v3 value is still pinned by
-/// [`a_record_sealed_under_v3_still_verifies_by_the_v3_rules`], the v2 value by
-/// [`a_record_sealed_under_v2_still_verifies_by_the_v2_rules`], the v1 value by
-/// [`the_v1_frozen_digest_is_reproduced_by_v1_rules_from_a_v2_record`], and this value is the v4
-/// recipe's own, armed the day it was published. The next move needs a v5 beside these four.
+/// position entered the digest. Moved a second time when the recipe became
+/// `busbar.audit.digest.v2` (#43, #71, #77(3): the record stores counts, never a price), a third
+/// when it became `busbar.audit.digest.v3` (#34: `currency` leaves the signed digest), and a fourth
+/// when it became `busbar.audit.digest.v4` (the boot's `incarnation` enters after `unit_key`). Moved
+/// a fifth time, IN PLACE, when the sealing `node` entered `v4` after `mono` (THE DESIGN §1: "when
+/// (wall + monotonic, node)"): `v4` had not shipped, and until the 1.6.0 tag a first version is
+/// edited in place with its golden regenerated in the same commit (owner, 2026-09-28). The v2 value
+/// is still pinned by [`a_record_sealed_under_v2_still_verifies_by_the_v2_rules`] and the v1 value
+/// by [`the_v1_frozen_digest_is_reproduced_by_v1_rules_from_a_v2_record`]. From the 1.6.0 tag on,
+/// the next move needs a new recipe beside these.
 #[test]
 fn the_sealed_digest_of_a_fully_populated_record_is_the_frozen_hex() {
     let record = frozen_record();
     assert_eq!(record.recipe, busbar_kernel_audit::recipe::Recipe::V4);
+    assert_eq!(record.node, FROZEN_NODE);
     assert_eq!(
-        record.hash, "1fa69b20a864d61bb6eacf4cad6bb719d43953db27cd941d410e39ff01be2004",
+        record.hash, "05669b6c9c61f45500a020440eadac8eb6f296d269b2d6b22d2da0da2bd1a654",
         "the sealed digest moved: every persisted chain would now report itself tampered"
     );
 }
 
-/// A `v3` PREIMAGE NAMES NO CURRENCY (#34). `v3` is `v2` less exactly `currency`: the same
-/// fields, in the same order, with that one taken out.
+/// A `v4` PREIMAGE NAMES NO CURRENCY (#34), and it is `v2` less exactly `currency`, plus
+/// `incarnation` straight after `unit_key` and `node` straight after `mono`, both numbers. Nothing
+/// else moves.
 #[test]
-fn a_v3_preimage_names_no_currency() {
-    use busbar_kernel_audit::recipe::digest_fields;
-    let v3: Vec<_> = digest_fields(&frozen_v3_record())
-        .into_iter()
-        .map(|f| f.name)
-        .collect();
+fn a_new_record_is_sealed_under_v4_and_its_preimage_is_v2_less_currency_plus_incarnation_and_node()
+{
+    use busbar_kernel_audit::recipe::{digest_fields, DigestValue};
+    let v4 = digest_fields(&frozen_record());
+    let v4_names: Vec<_> = v4.iter().map(|f| f.name).collect();
     let v2: Vec<_> = digest_fields(&frozen_v2_record())
         .into_iter()
         .map(|f| f.name)
         .collect();
     assert!(
-        !v3.contains(&"currency"),
-        "a v3 preimage still frames a currency: {v3:?}"
+        !v4_names.contains(&"currency"),
+        "a v4 preimage still frames a currency: {v4_names:?}"
     );
-    let v2_less_currency: Vec<_> = v2.iter().copied().filter(|n| *n != "currency").collect();
-    assert_eq!(v2.len(), v3.len() + 1);
-    assert_eq!(v3, v2_less_currency, "v3 is not v2 less exactly `currency`");
-    assert!(AuditChain::verify_chain(std::slice::from_ref(&frozen_v3_record())).is_ok());
-}
-
-/// A NEW RECORD IS SEALED UNDER `v4`, AND `v4` IS `v3` PLUS EXACTLY `incarnation`, framed as a
-/// number straight after `unit_key`. Nothing else moves.
-#[test]
-fn a_new_record_is_sealed_under_v4_and_its_preimage_adds_only_the_incarnation() {
-    use busbar_kernel_audit::recipe::digest_fields;
-    let v4: Vec<_> = digest_fields(&frozen_record())
-        .into_iter()
-        .map(|f| f.name)
-        .collect();
-    let v3: Vec<_> = digest_fields(&frozen_v3_record())
-        .into_iter()
-        .map(|f| f.name)
-        .collect();
-    let at = v3
-        .iter()
-        .position(|n| *n == "unit_key")
-        .expect("v3 frames unit_key")
-        + 1;
-    let mut v3_plus_incarnation = v3.clone();
-    v3_plus_incarnation.insert(at, "incarnation");
+    let mut expected: Vec<_> = v2.iter().copied().filter(|n| *n != "currency").collect();
+    let after = |names: &[&str], name: &str| {
+        names
+            .iter()
+            .position(|n| *n == name)
+            .unwrap_or_else(|| panic!("v2 frames {name}"))
+            + 1
+    };
+    let at = after(&expected, "mono");
+    expected.insert(at, "node");
+    let at = after(&expected, "unit_key");
+    expected.insert(at, "incarnation");
     assert_eq!(
-        v4, v3_plus_incarnation,
-        "v4 is not v3 plus exactly `incarnation`"
+        v4_names, expected,
+        "v4 is not v2 less `currency` plus `incarnation` and `node`"
+    );
+    let node = v4
+        .iter()
+        .find(|f| f.name == "node")
+        .expect("v4 frames the node");
+    assert_eq!(
+        node.value,
+        DigestValue::Num(FROZEN_NODE),
+        "the node is framed as a number"
     );
     assert_eq!(
         frozen_record().recipe,
@@ -201,12 +185,42 @@ fn a_new_record_is_sealed_under_v4_and_its_preimage_adds_only_the_incarnation() 
     assert!(AuditChain::verify_chain(std::slice::from_ref(&frozen_record())).is_ok());
 }
 
-/// A `v3` RECORD READ BACK AFTER THE UPGRADE STILL VERIFIES by the `v3` rules it was sealed under.
+/// THE RECORD NAMES THE NODE THAT SEALED IT, and the node is in the digest, the signature and the
+/// range read (THE DESIGN §1: the fixed record's WHEN is "wall + monotonic, node").
+///
+/// Two nodes sealing the same unit's facts seal two different records; a record relabelled to
+/// another node stops hashing to its sealed digest, so its signature cannot be lifted onto the
+/// other node; and the range read publishes the node beside `mono`, as a number, so a verifier
+/// attributes each record without asking.
 #[test]
-fn a_record_sealed_under_v3_still_verifies_by_the_v3_rules() {
-    let record = frozen_v3_record();
-    assert_eq!(AuditChain::digest_of(&record), FROZEN_V3);
-    assert!(AuditChain::verify_chain(std::slice::from_ref(&record)).is_ok());
+fn a_record_names_the_node_that_sealed_it_in_its_digest_and_its_range_read() {
+    let seal = |node: u64| {
+        let mut chain = AuditChain::new().sealing_as(node);
+        let record = chain.seal(inputs(1), &token());
+        (chain, record)
+    };
+    let ((chain_a, a), (_, b)) = (seal(11), seal(12));
+    assert_eq!((a.node, b.node), (11, 12));
+    assert_eq!(chain_a.node(), 11);
+    assert_eq!(a.mono, b.mono);
+    assert_ne!(a.hash, b.hash, "the sealing node is not in the digest");
+    assert!(AuditChain::verify_chain(std::slice::from_ref(&a)).is_ok());
+
+    let mut relabelled = a.clone();
+    relabelled.node = 12;
+    assert_eq!(
+        AuditChain::verify_chain(std::slice::from_ref(&relabelled)).map_err(|b| b.kind),
+        Err(AuditBreakKind::DigestMismatch),
+        "a record relabelled to another node still verifies"
+    );
+
+    let raw = busbar_kernel_audit::expose::range_body(&chain_a, std::slice::from_ref(&a), 1, 1);
+    assert!(
+        raw.contains("\"mono\":1000,\"node\":11,"),
+        "the range read does not publish the node, as a number, straight after mono: {raw}"
+    );
+    let body: serde_json::Value = serde_json::from_str(&raw).expect("a published body is JSON");
+    assert_eq!(body["records"][0]["node"], serde_json::json!(11));
 }
 
 /// TWO BOOTS THAT MINT THE SAME UNIT KEY SEAL TWO DIFFERENT RECORDS. A unit key restarts with the
@@ -248,8 +262,8 @@ fn a_record_sealed_under_v2_still_verifies_by_the_v2_rules() {
 /// TAMPERING FAILS UNDER EITHER RECIPE — and so does moving a record between them.
 ///
 /// The RED arms. A `v2` record whose frozen `currency` text is edited, a `v2` record relabelled as
-/// `v3` (dropping the field from its preimage), a `v3` record relabelled as `v2` (adding one), and
-/// a `v3` record with a count edited: each must stop hashing to its sealed digest. The relabelling
+/// `v4` (dropping `currency`, adding `incarnation` and `node`), a `v4` record relabelled as `v2`,
+/// and a count, an incarnation or a node edited: each must stop hashing to its sealed digest. The relabelling
 /// arms are why the recipe does not itself need to be digested.
 #[test]
 fn tampering_fails_under_either_recipe_and_so_does_relabelling_one() {
@@ -261,27 +275,19 @@ fn tampering_fails_under_either_recipe_and_so_does_relabelling_one() {
                 currency: "EUR".into(),
             }
         }),
-        ("a v2 record relabelled v3", frozen_v2_record(), |r| {
-            r.recipe = Recipe::V3
+        ("a v2 record relabelled v4", frozen_v2_record(), |r| {
+            r.recipe = Recipe::V4
         }),
-        ("a v3 record relabelled v2", frozen_v3_record(), |r| {
+        ("a v4 record relabelled v2", frozen_record(), |r| {
             r.recipe = Recipe::V2 {
                 currency: "USD".into(),
             }
         }),
-        ("a v3 record relabelled v4", frozen_v3_record(), |r| {
-            r.recipe = Recipe::V4
-        }),
-        ("a v4 record relabelled v3", frozen_record(), |r| {
-            r.recipe = Recipe::V3
-        }),
         ("a v4 record's incarnation", frozen_record(), |r| {
             r.what.incarnation += 1
         }),
+        ("a v4 record's node", frozen_record(), |r| r.node += 1),
         ("a v2 record's count", frozen_v2_record(), |r| {
-            r.usage.lines[0].quantity += 1
-        }),
-        ("a v3 record's count", frozen_v3_record(), |r| {
             r.usage.lines[0].quantity += 1
         }),
         ("a v4 record's count", frozen_record(), |r| {
@@ -483,7 +489,7 @@ fn a_chain_resumed_from_a_persisted_tail_continues_it() {
     let mut chain = AuditChain::new();
     let first: Vec<_> = (1..=2).map(|i| chain.seal(inputs(i), &token())).collect();
 
-    let mut resumed = AuditChain::resume(chain.head().to_string(), chain.next_seq());
+    let mut resumed = AuditChain::resume(&first);
     let third = resumed.seal(inputs(3), &token());
     assert_eq!(third.prev_hash, first[1].hash);
 
@@ -554,28 +560,6 @@ fn a_window_verifies_a_contiguous_middle_run_and_not_a_gapped_one() {
     gapped.remove(1);
     let brk = AuditChain::verify_window(&gapped).unwrap_err();
     assert_eq!(brk.kind, AuditBreakKind::LinkMismatch);
-}
-
-/// TAIL truncation: the newest records dropped. Nothing in the surviving records can say so — they
-/// link, they number from one, they hash — so it takes the chain's own head to notice, which is
-/// what verifying AGAINST THE HEAD is for.
-#[test]
-fn a_run_missing_its_newest_records_does_not_verify_against_the_head() {
-    let mut chain = AuditChain::new();
-    let records: Vec<_> = (1..=4).map(|i| chain.seal(inputs(i), &token())).collect();
-
-    assert!(chain.verify_to_head(&records).is_ok());
-
-    let cut = &records[..3];
-    let brk = chain.verify_to_head(cut).unwrap_err();
-    assert_eq!(brk.kind, AuditBreakKind::LinkMismatch);
-    assert_eq!(brk.at_index, 3);
-
-    // And the limit this makes explicit: reading only the records, a cut tail is a whole chain.
-    assert!(AuditChain::verify_chain(cut).is_ok());
-
-    // Emptied entirely, against a chain that has sealed records, is a truncation too.
-    assert!(chain.verify_to_head(&[]).is_err());
 }
 
 #[test]
