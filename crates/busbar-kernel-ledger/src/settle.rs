@@ -31,7 +31,7 @@
 //! rule. The money sweep that found this counted FOUR of them.
 //!
 //! SATURATING RATHER THAN CHECKED, for two reasons and they are not the same reason. First, it is
-//! what the rest of this crate already does (`totals.rs`, `cost::nanos_sum`), and one policy per file is worth more than the marginally better policy
+//! what the book's other file already does (`totals.rs`), and one policy per file is worth more than the marginally better policy
 //! applied to half of it. Second, `post` returns a `Settlement`, not a `Result`, and every caller
 //! of it is a settlement that has ALREADY HAPPENED — the value was delivered, the hold is consumed
 //! by value, and there is no arm left that could decline. A `checked_` here would have to either
@@ -147,12 +147,15 @@ impl Ledger {
 
     /// Whether this ledger also writes onto the previous release's rows.
     ///
-    /// Read-only, and here so the composition root can assert at boot that the dual write is on.
-    /// It is a release requirement rather than a deployment choice — the reconciliation identity
-    /// and rollback both depend on it — and the failure mode is silent: a ledger built with
+    /// Read-only. Nothing in production asks it: the composition root builds the ledger with
+    /// [`Ledger::dual_writing`] and does not check the result at boot. The check is a test's — the
+    /// root's own tests build the node's ledger the way boot does and assert this — and the
+    /// production guard is the `ledger-dual-write` row of `qa/unconstructed.toml`, which reds the
+    /// build if the root's construction stops calling [`Ledger::dual_writing`]. It matters because
+    /// the dual write is a release requirement rather than a deployment choice — the reconciliation
+    /// identity and rollback both depend on it — and the failure mode is silent: a ledger built with
     /// [`Ledger::new`] where [`Ledger::dual_writing`] was meant keeps its own books correctly and
-    /// leaves the previous release unable to read anything this one wrote. Nothing observable goes
-    /// wrong until somebody tries to roll back.
+    /// leaves the previous release unable to read anything this one wrote.
     #[must_use]
     pub fn is_dual_writing(&self) -> bool {
         self.legacy.is_some()
@@ -163,7 +166,8 @@ impl Ledger {
         &self.book
     }
 
-    /// The books, to be adjusted directly by whatever owns draws, releases and corrections.
+    /// The books, to be moved directly. No production caller: the book moves through this type's
+    /// own verbs, and only tests reach in here.
     pub fn book_mut(&mut self) -> &mut Book {
         &mut self.book
     }
@@ -311,7 +315,9 @@ impl Ledger {
         if let Some(rows) = self.legacy.as_mut() {
             // Best effort by design: the previous release's rows are a parity obligation, not the
             // system of record, and failing a settlement because a legacy row would not write would
-            // be a behavioural change in the direction nobody wants.
+            // be a behavioural change in the direction nobody wants. The binding's error is DROPPED
+            // here — not counted, not logged, not returned. The production binding (`SummedRows`)
+            // never returns one; a binding that can fail has to count its own failures.
             let _ = rows.write(&LegacyPosting {
                 principal: principal.to_string(),
                 bucket: key.bucket.as_str().to_string(),
@@ -344,57 +350,15 @@ impl Ledger {
         figures.open_slice_remainders = figures.open_slice_remainders.saturating_sub(amount);
     }
 
-    /// Record a release back to the store.
-    pub fn record_release(&mut self, key: &TotalsKey, window: WindowStart, amount: i128) {
-        let figures = self.book.entry(key.clone(), window);
-        figures.released = figures.released.saturating_add(amount);
-        figures.drawn = figures.drawn.saturating_sub(amount);
-        figures.open_slice_remainders = figures.open_slice_remainders.saturating_sub(amount);
-    }
-
-    /// Record a correction that reverses part of what was settled.
-    ///
-    /// A pure ledger reversal: the amount leaves the settled column and appears in the adjustments
-    /// column, so the value is still accounted for and the identity does not move. `amount` is
-    /// positive to give value back to the payer, negative to take more.
-    pub fn record_adjustment(&mut self, key: &TotalsKey, window: WindowStart, amount: i128) {
-        let figures = self.book.entry(key.clone(), window);
-        figures.adjustments = figures.adjustments.saturating_add(amount);
-        figures.settled = figures.settled.saturating_sub(amount);
-    }
-
-    /// Move value from one window to another, both sides at once.
-    ///
-    /// Both sides, in one call, because a transfer recorded on only one side is precisely the
-    /// imbalance the identity would report — and reporting it would be right, but the defect would
-    /// be here rather than wherever the alarm pointed. The value itself moves between the two
-    /// windows' slice remainders; the transfer column is what keeps each window's own identity
-    /// closed while it does.
-    pub fn record_cross_window_transfer(
-        &mut self,
-        key: &TotalsKey,
-        from_window: WindowStart,
-        to_window: WindowStart,
-        amount: i128,
-    ) {
-        let out = self.book.entry(key.clone(), from_window);
-        out.open_slice_remainders = out.open_slice_remainders.saturating_sub(amount);
-        out.cross_window_transfers = out.cross_window_transfers.saturating_add(amount);
-        let into = self.book.entry(key.clone(), to_window);
-        into.open_slice_remainders = into.open_slice_remainders.saturating_add(amount);
-        into.cross_window_transfers = into.cross_window_transfers.saturating_sub(amount);
-    }
-
-    /// Record that an amount already posted has not yet been agreed with by the recompute.
+    /// Record that an amount already posted has not yet been confirmed by the journal.
     ///
     /// It moves out of the settled column and into the unreconciled one rather than being added
-    /// beside it, so the value is counted once. When the recompute agrees, the caller moves it back
-    /// with a negative amount.
+    /// beside it, so the value is counted once. When the journal confirms the append, the caller
+    /// moves it back with a negative amount.
     ///
-    /// Decided rule (BUSBAR-1.6.0.md THE DESIGN, §7): "an unreconciled amount is a MOVE out of settled, never
-    /// a parallel tally" — booking it is `unreconciled += A; settled -= A` on the same figure, so
-    /// the identity closes with no special case and nothing is reported as settled that the store
-    /// has not confirmed.
+    /// This crate's rule, not a quotation: booking it is `unreconciled += A; settled -= A` on the
+    /// same figure, so the identity closes with no special case and nothing is reported as settled
+    /// that the log has not confirmed.
     pub fn record_unreconciled(&mut self, key: &TotalsKey, window: WindowStart, amount: i128) {
         let figures = self.book.entry(key.clone(), window);
         figures.unreconciled = figures.unreconciled.saturating_add(amount);
