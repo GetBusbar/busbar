@@ -129,11 +129,13 @@ const MIN_NEEDLE: usize = 4;
 
 /// THE DECLARATION FLOOR: the `[[capability]]` rows live in [`DECLARATIONS`] on predev 5e672d125d,
 /// measured 2026-10-07 (`ledger-dual-write`, `audit-chain-signing`; the third `[[capability]]` in
-/// the file is inside THE ROW SHAPE comment and declares nothing). Fewer reds
+/// the file is inside THE ROW SHAPE comment and declares nothing), raised to six by the
+/// kernel-ledger sweep of 2026-10-07 (Q128: `ledger-recording-rows`, `ledger-history-opening`,
+/// `ledger-is-dual-writing`, `ledger-book-retirement`). Fewer reds
 /// [`ROW_SCAN_FLOOR`]: a struck row is a construction guard that stopped running, and a file
 /// with none used to read `0 capability declaration(s)` and pass. Lowered only in the reviewed
 /// diff that strikes a row.
-pub const DECLARATION_FLOOR: usize = 2;
+pub const DECLARATION_FLOOR: usize = 6;
 
 const GATE: &str = "unconstructed";
 const CLEAN: &str = "clean";
@@ -197,6 +199,14 @@ pub const KNOWN_UNSHIPPED: &[&str] = &[
     // STRUCK. Five 2026-09-25 (owner ruling 2026-09-08) and four 2026-09-26 (#77(9), owner answer
     // Q71(1)) are deleted; four 2026-09-26 (owner answer Q71(2): verify, plane_facts,
     // plane_record_write, commit_upgrade) are bound and served.
+    //
+    // THE KERNEL-LEDGER SURVIVORS, 2026-10-07 (Q128, kernel-ledger audit finding 3; finding 1 for
+    // the retirement row): kept, not wired, each row's `switch` says what retires it. The rest of
+    // that sweep is deleted, not registered (see qa/unconstructed.toml).
+    "ledger-recording-rows",
+    "ledger-history-opening",
+    "ledger-is-dual-writing",
+    "ledger-book-retirement",
 ];
 
 /// The per-capability row id.

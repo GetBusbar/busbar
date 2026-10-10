@@ -8,4 +8,3 @@ mod cost;
 mod fixtures;
 mod identity_tests;
 mod settle_tests;
-mod usage;
