@@ -136,7 +136,7 @@ pub type Clock = fn() -> u64;
 pub struct Wal {
     factory: Box<dyn SegmentFactory>,
     clock: Clock,
-    shipper: Box<dyn Shipper>,
+    shipper: Box<dyn Shipper<Record>>,
     mode: Mode,
     segment: Segment,
     ceiling: u64,
@@ -192,7 +192,7 @@ impl Wal {
     /// A memory-buffered log shipping to `shipper`. This is the shape a deployment that names a
     /// store but no data directory runs: the buffer stages, and the shipper decides what, if
     /// anything, is kept (the shipped store adapter keeps a count and the last identity only).
-    pub fn memory_buffered_to(shipper: Box<dyn Shipper>, clock: Clock) -> Self {
+    pub fn memory_buffered_to(shipper: Box<dyn Shipper<Record>>, clock: Clock) -> Self {
         Wal::with_parts(
             Box::new(MemoryFactory::new()),
             shipper,
@@ -203,6 +203,57 @@ impl Wal {
         .expect("a memory segment cannot fail to open")
     }
 
+    /// A memory-buffered log that already HOLDS `records`: the chain the configured store kept for a
+    /// node with no data directory, read back at boot. They are written into the buffer in order and
+    /// marked taken, and they are NOT shipped again — the store they were read from already has them.
+    /// What the log takes from here on ships through `shipper`.
+    ///
+    /// This is what lets a node with no disk resume its own chain rather than start a new one: the
+    /// records [`Wal::read_back`] returns are the ones the store kept, and the next number a writer can
+    /// take ([`Wal::next_free_seq`]) is past them. A memory segment rolled past is released as on any
+    /// memory log, so a chain longer than one segment keeps its newest segment resident and its
+    /// history in the store.
+    ///
+    /// # Errors
+    ///
+    /// The records do not fit even an empty segment one batch at a time.
+    pub fn memory_seeded(
+        records: &[Record],
+        shipper: Box<dyn Shipper<Record>>,
+        clock: Clock,
+    ) -> Result<Self, OpenError> {
+        let mut wal = Wal::with_parts(
+            Box::new(MemoryFactory::new()),
+            Box::new(NullShipper::new()),
+            Mode::MemoryBuffered,
+            SEGMENT_BYTES,
+            clock,
+        )?;
+        wal.seed(records)?;
+        wal.shipper = shipper;
+        Ok(wal)
+    }
+
+    /// Write `records` into the buffer, rolling at a full segment, and mark each one taken. Nothing
+    /// is shipped: the caller read them from where they are kept.
+    fn seed(&mut self, records: &[Record]) -> io::Result<()> {
+        /// How many records one seeding write carries.
+        const SEED_BATCH: usize = 256;
+        for chunk in records.chunks(SEED_BATCH) {
+            loop {
+                match self.segment.append_batch(chunk) {
+                    Ok(_) => break,
+                    Err(SegmentError::Full) if self.segment.write_offset() > 0 => self.roll()?,
+                    Err(e) => return Err(io::Error::other(e.to_string())),
+                }
+            }
+            for record in chunk {
+                self.mark_written(record.node, record.node_seq);
+            }
+        }
+        Ok(())
+    }
+
     /// A log whose segments are files under `dir`, recovering whatever is already there.
     ///
     /// Constructing this IS the decision to write to a disk. Nothing here probes for a directory or
@@ -210,7 +261,7 @@ impl Wal {
     /// [`Wal::memory_buffered`] and never reaches this function.
     pub fn in_directory(
         dir: impl AsRef<std::path::Path>,
-        shipper: Box<dyn Shipper>,
+        shipper: Box<dyn Shipper<Record>>,
         clock: Clock,
     ) -> Result<Self, OpenError> {
         let factory = DirectoryFactory::new(dir.as_ref())?;
@@ -231,7 +282,7 @@ impl Wal {
     /// for which segment that is and what the seeding does and does not cover.
     pub fn with_parts(
         mut factory: Box<dyn SegmentFactory>,
-        shipper: Box<dyn Shipper>,
+        shipper: Box<dyn Shipper<Record>>,
         mode: Mode,
         ceiling: u64,
         clock: Clock,
@@ -414,7 +465,7 @@ impl Wal {
     }
 
     /// The shipper, so a caller can look at what was handed over.
-    pub fn shipper(&self) -> &dyn Shipper {
+    pub fn shipper(&self) -> &dyn Shipper<Record> {
         self.shipper.as_ref()
     }
 
