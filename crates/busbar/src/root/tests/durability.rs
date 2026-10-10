@@ -995,7 +995,7 @@ fn an_overdraft_is_its_own_record_beside_the_posting_it_came_out_of() {
 #[derive(Clone, Default)]
 struct CountingShipper(std::sync::Arc<std::sync::Mutex<Vec<usize>>>);
 
-impl busbar_kernel_wal::Shipper for CountingShipper {
+impl busbar_kernel_wal::Shipper<busbar_kernel_wal::Record> for CountingShipper {
     fn ship(
         &mut self,
         records: &[busbar_kernel_wal::Record],
@@ -1438,7 +1438,7 @@ fn a_hold_survives_a_kill_9() {
 #[test]
 fn a_posting_the_journal_lost_is_unreconciled_until_the_log_confirms_it() {
     struct Flaky(std::sync::Arc<std::sync::atomic::AtomicBool>);
-    impl busbar_kernel_wal::Shipper for Flaky {
+    impl busbar_kernel_wal::Shipper<busbar_kernel_wal::Record> for Flaky {
         fn ship(
             &mut self,
             _records: &[busbar_kernel_wal::Record],
@@ -2464,6 +2464,692 @@ fn every_fallback_open_class_prices_at_the_card_and_replays_idempotently() {
             "{class}: a card silent about the class refuses, never prices it at 0"
         );
     }
+}
+
+// ---------------------------------------------------------------------------------------------
+// H3 (ARCHITECT 2026-10-07): THE JOURNAL KEPT BY THE CONFIGURED STORE
+// ---------------------------------------------------------------------------------------------
+
+/// A book over `slots` with no data directory, as node `node`: the production boot's shape.
+fn store_book(slots: &crate::root::store_double::RecordSlots, node: u64) -> Durability {
+    store_book_bounded(slots, node, busbar_kernel_wal::MEMORY_BUFFER_RECORDS)
+}
+
+/// [`store_book`], its lane to the store bounded at `capacity` records.
+fn store_book_bounded(
+    slots: &crate::root::store_double::RecordSlots,
+    node: u64,
+    capacity: usize,
+) -> Durability {
+    let lane =
+        JournalLane::with_capacity(slots.calls(), "test-store", capacity).expect("the lane starts");
+    build_on_store(
+        &DurabilityConfig { data_dir: None },
+        node,
+        lane,
+        rows(),
+        priced(),
+        None,
+    )
+    .expect("the store reads back")
+}
+
+/// Wait until the store took everything the book's lane holds.
+fn drained(durability: &Durability) {
+    assert!(
+        durability
+            .lane()
+            .expect("a book over the store")
+            .drain(std::time::Duration::from_secs(5)),
+        "the store takes the journal's records"
+    );
+}
+
+/// **A NODE WITH NO DATA DIRECTORY KEEPS ITS CHAIN IN ITS STORE ACROSS A RESTART** (ARCHITECT
+/// 2026-10-07 H3 ruling (a)-(b); THE DESIGN §7). Sealed audit records, an open hold killed with the
+/// node (kill -9) and a settled posting go on the chain; a second book over the SAME store resumes
+/// that chain: the audit cache is rebuilt from it, the hold a predecessor left is recovered, the
+/// settled figure is on the book, and the numbering continues past every stored record.
+///
+/// RED before the fix: the store adapter's shipper acknowledged every batch and kept a count, and a
+/// memory-buffered journal opened empty, so the restarted book had no audit record, no hold and no
+/// money, and numbered from one again.
+#[test]
+fn a_restart_over_the_same_store_keeps_the_chain_the_audit_records_and_the_holds() {
+    let slots = crate::root::store_double::RecordSlots::new();
+    let key = totals_key("vk_store_restart");
+    let held = totals_key("vk_store_held");
+    let (head, next) = {
+        let mut durability = store_book(&slots, 11);
+        for unit in 1..=3 {
+            durability
+                .seal_unit(audit_inputs(unit), audit_pass(), &token())
+                .expect("sealed");
+        }
+        settle_one(&mut durability, &key, 1_000, 600, 1);
+        let durability_token = token();
+        let mut at = settling(&held, &durability_token);
+        at.stamp.mono = 77;
+        durability
+            .open_hold(
+                &at,
+                &busbar_contract::caps::PrincipalId::new("vk_store_held"),
+                &inputs(2_000),
+                ARRIVED_MS,
+            )
+            .expect("the hold goes on the chain");
+        drained(&durability);
+        let out = (durability.journal.head(), durability.journal.next_seq());
+        // kill -9: no settle, no destructor of the book, nothing flushed on the way out.
+        std::mem::forget(durability);
+        out
+    };
+    assert!(
+        slots.rows_under(JOURNAL_SCHEMA) > 0,
+        "the store keeps the records"
+    );
+
+    let restarted = store_book(&slots, 11);
+    assert!(
+        restarted.keeps_chain(),
+        "the chain was resumed from the store"
+    );
+    assert_eq!(
+        restarted.audit_records.len(),
+        3,
+        "the audit records survive the restart"
+    );
+    assert_eq!(
+        restarted.recovered_holds, 1,
+        "the hold a predecessor left open is recovered"
+    );
+    assert_eq!(
+        restarted.ledger.book().get(&key, 86_400).settled,
+        600,
+        "the settled money survives the restart"
+    );
+    assert!(
+        restarted.journal.next_seq() > next,
+        "the numbering continues past the stored chain (and the recovery's own record)"
+    );
+    let replayed = restarted
+        .journal
+        .replay()
+        .expect("reads back")
+        .expect("verifies");
+    assert!(
+        replayed.iter().any(|r| r.hash == head),
+        "the stored chain is the restarted node's chain"
+    );
+    assert!(
+        restarted.restart_findings.is_empty(),
+        "{:?}",
+        restarted.restart_findings
+    );
+}
+
+/// **A STORE THAT REFUSES DOES NOT REFUSE A DATA UNIT** (ARCHITECT 2026-10-07 H3 ruling (c)): the
+/// unit settles, its record waits in the lane and is re-offered, and it lands once the store
+/// recovers — read back by the next boot. Meanwhile the lane is unhealthy, which is what a durable
+/// verb refuses on.
+#[test]
+fn a_data_unit_rides_a_refusing_store_and_its_record_lands_once_it_recovers() {
+    let slots = crate::root::store_double::RecordSlots::new();
+    let key = totals_key("vk_refused");
+    let mut durability = store_book(&slots, 12);
+    slots.refuse(true);
+    settle_one(&mut durability, &key, 1_000, 400, 1);
+    assert_eq!(
+        durability.ledger.book().get(&key, 86_400).settled,
+        400,
+        "the unit is served and settled"
+    );
+    let lane = durability.lane().expect("a lane").clone();
+    assert!(lane.pending() > 0, "its records wait for the store");
+    assert!(
+        lane.wait_acked(
+            12,
+            durability.journal.next_seq() - 1,
+            std::time::Duration::from_secs(5)
+        )
+        .is_err(),
+        "the store refused them"
+    );
+    assert!(lane.healthy().is_err(), "a durable verb refuses meanwhile");
+    assert!(
+        durability.refuses_money().is_none(),
+        "the lane has room: money is admitted"
+    );
+
+    slots.refuse(false);
+    drained(&durability);
+    drop(durability);
+    let restarted = store_book(&slots, 12);
+    assert_eq!(
+        restarted.ledger.book().get(&key, 86_400).settled,
+        400,
+        "the re-offered records landed and read back"
+    );
+}
+
+/// **A FULL LANE FAILS CLOSED AND DROPS NOTHING** (ARCHITECT 2026-10-07 H3 ruling): with the store
+/// refusing, the lane fills; the book then refuses new money-bearing work with its reason, the
+/// journal keeps every record it is handed (no `ChainBreak`, nothing dropped), and once the store
+/// recovers everything lands and the book admits again.
+#[test]
+fn a_full_lane_refuses_new_money_and_drops_no_record() {
+    let slots = crate::root::store_double::RecordSlots::new();
+    let key = totals_key("vk_full");
+    let mut durability = store_book_bounded(&slots, 13, 4);
+    slots.refuse(true);
+    assert!(durability.refuses_money().is_none());
+    // Holds past the lane's bound: each is one record.
+    let mut lost = 0;
+    for mono in 1..=6 {
+        let durability_token = token();
+        let mut at = settling(&key, &durability_token);
+        at.stamp.mono = mono;
+        if durability
+            .open_hold(
+                &at,
+                &busbar_contract::caps::PrincipalId::new("vk_full"),
+                &inputs(10),
+                ARRIVED_MS,
+            )
+            .is_err()
+        {
+            lost += 1;
+        }
+    }
+    assert!(
+        lost > 0,
+        "past the lane's bound the store's answer is a durability loss"
+    );
+    let why = durability
+        .refuses_money()
+        .expect("a full lane refuses new money-bearing work");
+    assert!(why.contains("journal is full"), "{why}");
+    assert_eq!(
+        durability.journal.dropped_total(),
+        0,
+        "no record is dropped"
+    );
+    assert!(
+        durability.journal.overflows().is_empty(),
+        "no ChainBreak: the bound is the caller's refusal"
+    );
+    let written = durability.journal.next_seq() - 1;
+
+    slots.refuse(false);
+    drained(&durability);
+    // The journal's retained batch is re-offered on its next append.
+    durability
+        .journal
+        .append(
+            &token(),
+            StepName::Meter,
+            &[busbar_kernel_wal::Entry::new(RecordClass::Load, Vec::new())],
+        )
+        .expect("the store takes the retained batch and the new record");
+    drained(&durability);
+    assert!(
+        durability.refuses_money().is_none(),
+        "the node admits again"
+    );
+    let kept = read_chain(slots.calls().as_ref(), 13).expect("reads back");
+    assert_eq!(
+        kept.len() as u64,
+        written + 1,
+        "every record the journal sealed is in the store, once"
+    );
+}
+
+// ---------------------------------------------------------------------------------------------
+// H3 follow-up (ARCHITECT 2026-10-07): THE DEPLOYMENT KEYSET AND THE NODE'S IDENTITY IN THE STORE
+// ---------------------------------------------------------------------------------------------
+
+/// A book over `slots` as node `node`, its deployment keyset bound the way the boot binds it.
+fn keyed_store_book(slots: &crate::root::store_double::RecordSlots, node: u64) -> Durability {
+    let mut durability = store_book(slots, node);
+    crate::root::keyset::bind(
+        &mut durability,
+        None,
+        &token(),
+        StepName::Meter,
+        1_700_000_000,
+    )
+    .expect("the keyset binds over the store");
+    durability
+}
+
+/// **A RESTART OVER THE SAME STORE VERIFIES THE PRIOR BOOT'S RECORDS** (ARCHITECT 2026-10-07 H3
+/// ruling, follow-up (1)): with no data directory the deployment keyset is kept in the store and
+/// read back, so the audit records a predecessor signed verify under the key this boot holds, and
+/// `/admin/verify`'s walks find nothing.
+///
+/// RED before the follow-up: the keyset was minted per process, so the resumed records named a key
+/// this boot did not hold and every one was a finding.
+#[test]
+fn a_restart_over_the_same_store_verifies_the_prior_boots_records() {
+    let slots = crate::root::store_double::RecordSlots::new();
+    {
+        let mut durability = keyed_store_book(&slots, 21);
+        for unit in 1..=3 {
+            durability
+                .seal_unit(audit_inputs(unit), audit_pass(), &token())
+                .expect("sealed");
+        }
+        assert!(durability.audit_records.iter().all(|r| r.key_id.is_some()));
+        drained(&durability);
+    }
+    let restarted = keyed_store_book(&slots, 21);
+    assert_eq!(restarted.audit_records.len(), 3, "the prior boot's records");
+    assert_eq!(
+        restarted.retained_audit_findings(),
+        Vec::<String>::new(),
+        "the prior boot's records verify under the key the store kept"
+    );
+    let (calls, own, keys) = restarted
+        .stored_walk_inputs()
+        .expect("a book over the store");
+    let walk = walk_stored_chains(calls.as_ref(), own, &keys);
+    assert_eq!(walk.findings, Vec::<String>::new());
+}
+
+/// **ON A CHAIN THE STORE KEEPS, EVERY RECORD NAMES THE NODE THE STORE ASSIGNED** (THE DESIGN §1:
+/// "when (wall + monotonic, node)"; H3 with #662): an audit record's `node` is the id its chain is
+/// keyed by and `/admin/verify` walks it under, the same before a restart and after it — not the
+/// per-process draw that is the node half of this process's op ids.
+///
+/// RED before the fix: the book sealed as `busbar_kernel::door::node()`, a fresh draw per process,
+/// so the records on one host's stored chain named a node the store never assigned.
+#[test]
+fn a_store_kept_chain_seals_every_record_as_the_store_assigned_node() {
+    let slots = crate::root::store_double::RecordSlots::new();
+    let node = node_id(slots.calls().as_ref(), "host-sealing").expect("an id");
+    {
+        let mut durability = keyed_store_book(&slots, node);
+        assert_eq!(
+            durability.record.node(),
+            node,
+            "the book seals as the store's id"
+        );
+        for unit in 1..=2 {
+            durability
+                .seal_unit(audit_inputs(unit), audit_pass(), &token())
+                .expect("sealed");
+        }
+        assert!(
+            durability.audit_records.iter().all(|r| r.node == node),
+            "{:?}",
+            durability.audit_records
+        );
+        drained(&durability);
+    }
+    let mut restarted = keyed_store_book(&slots, node);
+    assert_eq!(
+        restarted.record.node(),
+        node,
+        "a restart seals as the node the store assigned, not as this process"
+    );
+    restarted
+        .seal_unit(audit_inputs(3), audit_pass(), &token())
+        .expect("sealed");
+    assert_eq!(restarted.audit_records.len(), 3);
+    assert!(
+        restarted.audit_records.iter().all(|r| r.node == node),
+        "one node across the restart: {:?}",
+        restarted.audit_records
+    );
+    drained(&restarted);
+    assert_eq!(restarted.retained_audit_findings(), Vec::<String>::new());
+    let (calls, own, keys) = restarted
+        .stored_walk_inputs()
+        .expect("a book over the store");
+    assert_eq!(own, node);
+    let walk = walk_stored_chains(calls.as_ref(), own, &keys);
+    assert_eq!(walk.chains, vec![node]);
+    assert_eq!(
+        walk.findings,
+        Vec::<String>::new(),
+        "the walk accepts the records under the node the store assigned"
+    );
+}
+
+/// **A RUNNING DRIVEN UNIT'S CHECKPOINT IS KEPT BY THE STORE, AND A KILL RECOVERS IT THERE** (THE
+/// DESIGN §7: "a checkpoint is a durability `unit.accrued` record"; H3 with K2-H1): on a node with
+/// no data directory, the checkpoint the root's flush tick journals for a running unit rides the
+/// lane to the store like every other record, and a boot over the same store recovers the unit's
+/// hold at those counts, priced, marked RECOVERED.
+///
+/// RED with the resume neutralised (a book over the store opening an empty memory journal): the
+/// restarted book has no hold to recover and no posting.
+#[test]
+fn a_driven_unit_killed_mid_stream_over_the_store_is_recovered_at_its_flushed_checkpoint() {
+    use busbar_contract::abi::plane::{UnitCount, UNITS_REPORTED};
+    use busbar_contract::caps::{OriginKind, PrincipalId};
+    use busbar_kernel::plane_driver::{
+        EndPost, FeeRefund, FlushEpoch, MoneySeam, PlaneMoney, UnitMoney,
+    };
+    use busbar_kernel_egress::ports::Journal as _;
+    use std::sync::Arc;
+
+    let slots = crate::root::store_double::RecordSlots::new();
+    let principal = PrincipalId::new("vk_streaming_store");
+    let balance = totals_key("vk_streaming_store");
+    let unit = busbar_contract::UnitKey::new(9);
+    let arrived = crate::root::plane_node::Arrived::at(ARRIVED_MS, 91);
+    {
+        let book = Arc::new(std::sync::Mutex::new(store_book(&slots, 13)));
+        let node = Arc::new(crate::root::plane_node::Node::new());
+        node.bind_book(Arc::clone(&book));
+        // The unit's hold, opened as the node opens it at admission (`Node::open_on_book`).
+        {
+            let durability_token = token();
+            let at = Settling {
+                key: &balance,
+                window: busbar_kernel::governance::budget_window(
+                    busbar_kernel::governance::WINDOW_DAY,
+                    arrived.secs(),
+                ),
+                durability: &durability_token,
+                step: StepName::Admit,
+                stamp: PostingStamp {
+                    rate_card_version: 0,
+                    wall: arrived.secs(),
+                    mono: arrived.mono(),
+                },
+            };
+            book.lock()
+                .expect("book")
+                .open_hold(&at, &principal, &UnitCounts::default(), arrived.ms())
+                .expect("the hold goes on the chain");
+        }
+        let post = Arc::new(crate::root::plane_node::NodeEndPost::new(Arc::clone(&node)));
+        post.open(unit, principal.clone(), arrived, None);
+        post.dispatched(&busbar_kernel_egress::ports::Dispatched {
+            leg: 0,
+            attempt: 1,
+            pool: String::new(),
+            destination: busbar_contract::DestinationId::new(0),
+            lane: None,
+            unit,
+        })
+        .expect("the dispatch goes on the chain");
+        let gov = Arc::new(
+            busbar_kernel::governance::GovState::new(
+                Arc::new(busbar_kernel::governance::MemoryStore::new()),
+                None,
+            )
+            .expect("gov"),
+        );
+        let epoch = FlushEpoch::new();
+        let money =
+            PlaneMoney::new(gov, Arc::clone(&post) as Arc<dyn EndPost>).with_epoch(epoch.clone());
+        money.open(
+            unit,
+            UnitMoney {
+                key: Arc::new(busbar_contract::records::VirtualKey::default()),
+                cost: Arc::new(busbar_kernel::cost::CostModel::resolve_parts(
+                    None,
+                    0,
+                    &std::collections::BTreeMap::new(),
+                )),
+                pool: String::new(),
+                model: LANE.to_string(),
+                classes: Arc::from(vec!["input".to_string()]),
+                arrived: arrived.secs(),
+                mode: busbar_kernel::config::groups::ExhaustionMode::FinishUnit,
+                fee: FeeRefund::CallerStatus,
+                charge: Default::default(),
+            },
+        );
+        let ctx = busbar_kernel::teller::UnitCtx {
+            key: unit,
+            origin: OriginKind::Client,
+            session: None,
+            generation: busbar_kernel::registry::Generation::FIRST,
+            admin_listener: false,
+            kernel_verb_only: false,
+        };
+        money.checkpoint(
+            &ctx,
+            &[UnitCount {
+                class: 0,
+                source: UNITS_REPORTED,
+                amount: 300,
+            }],
+        );
+        // THE ROOT'S FLUSH TICK: the epoch moves, and the running unit's counts are journaled.
+        epoch.bump();
+        assert_eq!(
+            money.flush_checkpoints(&*post),
+            1,
+            "one checkpoint journaled"
+        );
+        drained(&book.lock().expect("book"));
+        // kill -9 mid-stream: no end, no settle, and the book's destructor never runs.
+        drop((money, post, node));
+        std::mem::forget(book);
+    }
+
+    let restarted = store_book(&slots, 13);
+    assert!(
+        restarted.keeps_chain(),
+        "the chain was resumed from the store"
+    );
+    assert_eq!(restarted.recovered_holds, 1);
+    let recovered = restarted
+        .read_back()
+        .into_iter()
+        .find(|p| p.kind == PostingKind::Settlement && p.key == balance)
+        .expect("the recovery posted onto the chain");
+    assert!(
+        recovered.flags.contains(PostingFlags::RECOVERED),
+        "a unit that dispatched is recovered: {:?}",
+        recovered.flags
+    );
+    assert_eq!(
+        recovered.counts,
+        Some(inputs(300)),
+        "the checkpoint the store kept, not zero"
+    );
+    assert_eq!(recovered.settled, 300, "priced at its epoch, above zero");
+}
+
+/// **TWO NODES ON ONE STORE NEVER COLLIDE, AND VERIFY WALKS BOTH CHAINS** (ARCHITECT 2026-10-07 H3
+/// ruling, follow-up (2)): each host takes its own stable id from the store's node registry, a
+/// restart on the same host takes the same one back, each node resumes exactly its own chain, and
+/// the walk `/admin/verify` makes reads and verifies both — and names an edit made to the other
+/// node's chain in the store.
+///
+/// RED before the follow-up: every node wrote as node 0, so the second node's records overwrote the
+/// first's in the store.
+#[test]
+fn two_nodes_on_one_store_never_collide_and_verify_walks_both_chains() {
+    let slots = crate::root::store_double::RecordSlots::new();
+    let a = node_id(slots.calls().as_ref(), "host-a").expect("an id for host-a");
+    let b = node_id(slots.calls().as_ref(), "host-b").expect("an id for host-b");
+    assert_ne!(a, b, "two hosts, two identities");
+    assert_ne!(a, 0);
+    assert_eq!(
+        node_id(slots.calls().as_ref(), "host-a").expect("again"),
+        a,
+        "a restart on the same host takes the same id back"
+    );
+    {
+        let mut first = keyed_store_book(&slots, a);
+        let mut second = keyed_store_book(&slots, b);
+        for unit in 1..=2 {
+            first
+                .seal_unit(audit_inputs(unit), audit_pass(), &token())
+                .expect("sealed");
+        }
+        for unit in 1..=5 {
+            second
+                .seal_unit(audit_inputs(unit), audit_pass(), &token())
+                .expect("sealed");
+        }
+        drained(&first);
+        drained(&second);
+    }
+    let first = keyed_store_book(&slots, a);
+    let second = keyed_store_book(&slots, b);
+    assert_eq!(first.audit_records.len(), 2, "node a resumes its own chain");
+    assert_eq!(
+        second.audit_records.len(),
+        5,
+        "node b resumes its own chain"
+    );
+    assert!(
+        first.restart_findings.is_empty(),
+        "{:?}",
+        first.restart_findings
+    );
+    assert!(
+        second.restart_findings.is_empty(),
+        "{:?}",
+        second.restart_findings
+    );
+
+    let (calls, own, keys) = first.stored_walk_inputs().expect("a book over the store");
+    let walk = walk_stored_chains(calls.as_ref(), own, &keys);
+    let mut both = vec![a, b];
+    both.sort_unstable();
+    assert_eq!(walk.chains, both, "the walk reads both chains");
+    assert_eq!(walk.findings, Vec::<String>::new(), "and both verify");
+
+    slots.corrupt(JOURNAL_SCHEMA, &part_key(b, 2, 0));
+    let walk = walk_stored_chains(calls.as_ref(), own, &keys);
+    assert!(
+        walk.findings
+            .iter()
+            .any(|f| f.starts_with(&format!("node {b}:"))),
+        "an edit to the other node's stored chain is a finding on this node's verify: {:?}",
+        walk.findings
+    );
+}
+
+/// **RACING FIRST BOOTS KEEP ONE DEPLOYMENT KEYSET** (ARCHITECT 2026-10-07 H3 ruling): minting the
+/// keyset redeems the store's single-use claim first, so a boot that lost it takes the key the
+/// winner keeps rather than keeping its own over it.
+///
+/// RED before the claim: the losing boot put its own seed and read its own back, and the two nodes
+/// signed with two keys.
+#[test]
+fn a_first_boot_that_lost_the_keyset_claim_takes_the_winners_key() {
+    use store_identity::{keyset_claim, KEYSET_SCHEMA, MINT_CLAIM_KIND};
+    let slots = crate::root::store_double::RecordSlots::new();
+    let winners = "a".repeat(64);
+    let mine = "b".repeat(64);
+    // The other boot won this period's claim (and the next one's, so the test never straddles a
+    // period boundary) and keeps its key a moment later.
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("after the epoch")
+        .as_secs();
+    for at in [now, now + store_identity::MINT_CLAIM_SECS] {
+        assert!(slots.redeem(MINT_CLAIM_KIND, &keyset_claim(at), u64::MAX, 0));
+    }
+    let writer = {
+        let slots = slots.clone();
+        let winners = winners.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(60));
+            slots.put_row(KEYSET_SCHEMA, b"deployment", winners.as_bytes());
+        })
+    };
+    let kept = keep_keyset(slots.calls().as_ref(), &mine).expect("the winner's keyset");
+    writer.join().expect("the winner kept its key");
+    assert_eq!(
+        kept, winners,
+        "the boot that lost the claim takes the winner's key"
+    );
+    assert_eq!(
+        stored_keyset(slots.calls().as_ref()).expect("read"),
+        Some(winners),
+        "and never keeps its own over it"
+    );
+}
+
+/// A boot that lost the keyset claim and finds nothing kept in time REFUSES rather than mint a
+/// second key; once the claim lapses, a later boot claims it and mints.
+#[test]
+fn a_lost_keyset_claim_with_nothing_kept_refuses_until_the_claim_lapses() {
+    use store_identity::{keyset_claim, MINT_CLAIM_KIND, MINT_CLAIM_SECS};
+    let slots = crate::root::store_double::RecordSlots::new();
+    let secs = || {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("after the epoch")
+            .as_secs()
+    };
+    // Start at the beginning of a period, so the refused boot below runs well inside it.
+    let start = secs();
+    while secs() / MINT_CLAIM_SECS == start / MINT_CLAIM_SECS {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let now = secs();
+    // A winner that died before it kept anything: this period's claim is redeemed, nothing kept.
+    assert!(slots.redeem(MINT_CLAIM_KIND, &keyset_claim(now), u64::MAX, now));
+    let mine = "c".repeat(64);
+    let refused = keep_keyset(slots.calls().as_ref(), &mine).expect_err("no second key");
+    assert!(refused.contains("claim"), "{refused}");
+    assert_eq!(stored_keyset(slots.calls().as_ref()).expect("read"), None);
+    // Retried in the same period, the boot still refuses: its losing redemption bought nothing.
+    keep_keyset(slots.calls().as_ref(), &mine).expect_err("still no second key");
+    // The period ends; the next boot claims the next period's token and mints.
+    while secs() / MINT_CLAIM_SECS == now / MINT_CLAIM_SECS {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert_eq!(
+        keep_keyset(slots.calls().as_ref(), &mine).expect("minted"),
+        mine
+    );
+}
+
+/// **RACING FIRST BOOTS OF ONE HOST TAKE ONE NODE ID** (ARCHITECT 2026-10-07 H3 ruling): minting a
+/// host's id redeems the store's claim on that host first, so the boot that lost it takes the id
+/// the winner keeps.
+///
+/// RED before the claim: the losing boot minted and kept an id of its own over the winner's, and
+/// the two boots wrote two chains for one host.
+#[test]
+fn a_first_boot_that_lost_the_host_claim_takes_the_winners_node_id() {
+    use store_identity::{host_claim, MINT_CLAIM_KIND, NODE_SCHEMA};
+    let slots = crate::root::store_double::RecordSlots::new();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("after the epoch")
+        .as_secs();
+    for at in [now, now + store_identity::MINT_CLAIM_SECS] {
+        assert!(slots.redeem(MINT_CLAIM_KIND, &host_claim("host-r", at), u64::MAX, 0));
+    }
+    let writer = {
+        let slots = slots.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(60));
+            slots.put_row(NODE_SCHEMA, b"host:host-r", &77u64.to_be_bytes());
+        })
+    };
+    let id = node_id(slots.calls().as_ref(), "host-r").expect("the winner's id");
+    writer.join().expect("the winner kept its id");
+    assert_eq!(id, 77, "the boot that lost the claim takes the winner's id");
+    assert_eq!(slots.rows_under(NODE_SCHEMA), 1, "and keeps no second row");
+}
+
+/// A minted node id is claimed for good before it is kept: every id the registry gives a host is
+/// one the store's id claims hold, so no second host can be handed it.
+#[test]
+fn every_minted_node_id_is_held_by_its_claim() {
+    use store_identity::MINT_CLAIM_KIND;
+    let slots = crate::root::store_double::RecordSlots::new();
+    let a = node_id(slots.calls().as_ref(), "host-x").expect("an id");
+    assert!(
+        !slots.redeem(MINT_CLAIM_KIND, &format!("node-id:{a:016x}"), u64::MAX, 0),
+        "the id's claim is already redeemed"
+    );
+    assert_eq!(node_id(slots.calls().as_ref(), "host-x").expect("again"), a);
 }
 
 /// A RUNNING DRIVEN UNIT'S CHECKPOINT REACHES THE CHAIN, AND A KILL RECOVERS IT THERE (THE DESIGN

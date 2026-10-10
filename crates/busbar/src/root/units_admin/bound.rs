@@ -74,6 +74,12 @@ fn refused(status: u16, code: &str, message: &str) -> AdminAnswer {
     }
 }
 
+/// A durable verb the store has not acknowledged: `503` with the reason (ARCHITECT 2026-10-07 H3
+/// ruling (d)). A refusal the previous release never answered: it kept no journal.
+pub(crate) fn journal_unavailable(why: &str) -> AdminAnswer {
+    refused(503, "service_unavailable", why)
+}
+
 /// A `200` carrying `value` as JSON.
 fn answer(value: &serde_json::Value) -> Result<AdminAnswer, GovernanceError> {
     serde_json::to_vec(value)
@@ -97,7 +103,7 @@ fn query_param<'t>(target: &'t str, name: &str) -> Option<&'t str> {
 /// A node whose book holds a refused counts row is refused whole (`Store`), exactly as the ledger
 /// views beside it are: an identity measured over a book with a hole in it is not a measurement.
 pub(crate) fn verify_effect(ledger: &dyn LedgerView) -> Result<AdminAnswer, GovernanceError> {
-    use busbar_kernel_ledger::verify::{sequences_are_monotonic, verify, AllWindowsOpen, Finding};
+    use busbar_kernel_ledger::verify::{sequences_are_monotonic, verify, Finding};
 
     if ledger.has_refused_rows() {
         return Err(GovernanceError::Store);
@@ -119,7 +125,7 @@ pub(crate) fn verify_effect(ledger: &dyn LedgerView) -> Result<AdminAnswer, Gove
         (Some(since), Some(now)) => {
             // The checkpoint's own digest was checked above with every other one.
             findings.extend(
-                verify(since, now, &AllWindowsOpen, anchored.as_ref())
+                verify(since, now, anchored.as_ref())
                     .into_iter()
                     .filter(|f| !matches!(f, Finding::CheckpointEdited { .. })),
             );
@@ -155,6 +161,14 @@ pub(crate) fn verify_effect(ledger: &dyn LedgerView) -> Result<AdminAnswer, Gove
             .retained_audit_findings()
             .into_iter()
             .map(|finding| format!("audit chain: {finding}")),
+    );
+    // EVERY CHAIN THE STORE KEEPS, this node's and its peers', walked and verified against the
+    // deployment keyset: a chain on the store that does not verify is a finding wherever it is.
+    findings.extend(
+        ledger
+            .stored_chain_findings()
+            .into_iter()
+            .map(|finding| format!("stored chain: {finding}")),
     );
     answer(&serde_json::json!({
         "checkpoints": checkpoints.len(),
@@ -320,7 +334,8 @@ pub(crate) fn plane_record_write_effect(
 /// conflict` and seals nothing. The committed release is sealed on the node's journal as a
 /// `Policy` record ([`COMMIT_UPGRADE_RECORD_TAG`], the release, the second, the principal) before
 /// the answer names its position and chain hash. A node with no journal bound refuses (`Store`):
-/// a commit nothing recorded did not happen.
+/// a commit nothing recorded did not happen. Where the store keeps the journal, the commit answers
+/// only once the store acknowledged its record, and `503` with the reason otherwise.
 pub(crate) fn commit_upgrade_effect(
     body: &[u8],
     at: u64,
@@ -345,12 +360,21 @@ pub(crate) fn commit_upgrade_effect(
         ));
     }
     let journal = journal.ok_or(GovernanceError::Store)?;
+    if let Err(why) = journal.admit() {
+        return Ok(journal_unavailable(&why));
+    }
     let mut record = busbar_kernel_wal::BodyWriter::new();
     record.text(COMMIT_UPGRADE_RECORD_TAG);
     record.text(version);
     record.num(at);
     record.text(principal);
     let (node_seq, hash) = journal.seal_policy(record.finish(), at)?;
+    if let Err(why) = journal.acked(node_seq) {
+        return Ok(journal_unavailable(&format!(
+            "the commit is sealed at journal position {node_seq} and not yet kept by the store: \
+             {why}; do not re-submit"
+        )));
+    }
     answer(&serde_json::json!({
         "committed": version,
         "committed_at": at,
