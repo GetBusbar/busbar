@@ -567,14 +567,31 @@ impl PlaneCalls for Double {
         now_ns()
     }
 
-    // The hook stage is dormant in these driver proofs (no plane binds hooks): `project` is the
-    // trait's required op, answered here as the no-projection pure op.
+    // The hook stage's projection: the unit's body, unchanged, over the empty entry (the double's
+    // `arrive` names none). A projection with no body would leave a gate-first unit nothing to
+    // screen, and the kernel would bind no gate for it.
     fn project(
         &self,
-        _input: &mut ProjectIn,
-        _out: &mut ProjectOut,
+        input: &mut ProjectIn,
+        out: &mut ProjectOut,
         _grow: Grow<'_, ProjectIn, ProjectOut>,
     ) -> Outcome {
+        let body: &[u8] = if input.body.ptr.is_null() || input.body.len == 0 {
+            &[]
+        } else {
+            // SAFETY: the driver's body, lent for the call.
+            unsafe { std::slice::from_raw_parts(input.body.ptr, input.body.len) }
+        };
+        if body.is_empty() || body.len() > input.arena_cap {
+            return Outcome::Ready;
+        }
+        // SAFETY: the driver's arena of `arena_cap` bytes.
+        unsafe { std::ptr::copy_nonoverlapping(body.as_ptr(), input.arena_buf, body.len()) };
+        out.body = Span {
+            offset: 0,
+            len: body.len() as u32,
+        };
+        out.arena_written = body.len() as u64;
         Outcome::Ready
     }
 
