@@ -7,7 +7,7 @@
 # b is (node_seq + b) % 251) framed under wal layout version 1 (the layout before the header check, never
 # released; no header check): 4 frames x 512 bytes = 2048 bytes, frame i at offset 512*i, no segment header, no padding.
 # Read by `a_version_1_segment_is_quarantined_never_read` in ../corruption_verdict_tests.rs: this build
-# reads only version 2, so the segment is quarantined whole.
+# reads only version 3, so the segment is quarantined whole.
 #
 # ENCODER REPRODUCED: busbar_kernel_wal::record::encode_legacy (crates/busbar-kernel-wal/src/record.rs,
 # `#[cfg(test)] pub(crate) fn encode_legacy`) at commit 4aa05a13d71ce79bf8e2320c6689e39cb6e03033:
@@ -38,5 +38,6 @@
 #   3 4257414c01000000030000000000000004000000000000000000000001000000c8000000000000000000000000000000000000000000000000000000000000008f436e6d36279edbc78363c382dd4bd546fdd4e085690f9bb05cd914bd470aa7
 #
 # SELF-CHECK: the test asserts, before using the vector, that each frame is version 1, matches the
-# current Record::encode byte for byte outside [4,6) (version) and [34,96) (header check zeroed,
-# digest), has [34,64) zero, and is refused by decode_frame as an unknown layout (version 1).
+# current Record::encode byte for byte outside [4,6) (version), [34,96) (header check zeroed,
+# digest) and [511] (the current layout's end mark, which version 1 did not have), has [34,64)
+# zero, and is refused by decode_frame as an unknown layout (version 1).

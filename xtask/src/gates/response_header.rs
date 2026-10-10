@@ -430,8 +430,15 @@ impl Gate for ResponseHeaderGate {
         ));
 
         // THE SANCTIONED SITE THAT VANISHED: the allowlist then matches nothing.
+        // A pad file is set in the same breath: the floor sits AT the measured count, so removing
+        // the site alone would trip the floor row first and this case would no longer be about the
+        // allowlist.
         let mut ov = Overlay::new();
         ov.remove(HDR_ROUTE_WIRE_FILE);
+        ov.set(
+            format!("{CORE}/planted_pad.rs"),
+            "// pad: holds the population at its floor\n",
+        );
         report.push(prove_red(
             cx,
             self,
@@ -493,6 +500,21 @@ impl Gate for ResponseHeaderGate {
             Err(e) => report.note_infra_failure(format!(
                 "response-header selftest: the plane roots do not resolve ({e})"
             )),
+        }
+
+        // THE FLOOR SITS AT THE MEASURED COUNT: one file fewer than the live population is
+        // refused. A floor set a margin below the count passes this tree, so the plant is red
+        // exactly when the floor has slipped under the number the tree measures.
+        match population::one_file_short(cx) {
+            Ok(ov) => report.push(prove_red(
+                cx,
+                self,
+                "a population one file short of the measured floor is refused",
+                &[ROW_SCAN_FLOOR],
+                ov,
+                &["below its floor"],
+            )),
+            Err(e) => report.note_infra_failure(format!("response-header selftest: {e}")),
         }
 
         // THE PLANE ROOTS, which only this rule catches: a plane that SPLIT away is invisible to
