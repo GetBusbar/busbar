@@ -316,7 +316,6 @@ fn a_plane_opened(app: &crate::state::App) -> bool {
         .any(|slot| crate::plane::door::opened(slot.as_ref()))
 }
 
-<<<<<<< HEAD
 // `tests` (the `/stats`/`/v1/models` topology suite) MOVED to the composition root's
 // `crates/busbar/tests/endpoints_cross_plane.rs` (the "fix the 38" pass after the A6/HostCtx
 // dev-dependency-cycle cleanup, then Q128's kind-isolation move): every test in it builds real
