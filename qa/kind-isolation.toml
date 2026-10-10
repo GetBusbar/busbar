@@ -1544,15 +1544,18 @@ drain   = "none: BUSBAR-1.6.0.md grants this class. What this row holds is the N
 # Every core-neutral crate (BUSBAR-1.6.0.md:1994-1999: the kernel and its workflow crates, the
 # contract, the loader, the cleanliness crates, the composition root) names ZERO plugin-instance
 # vocabulary at DEV-GREEN. `kind-isolation:law0` holds each crate and axis to the count below,
-# measured on predev f830faa691, re-armed at 41f2dc1f78 for the five cells predev grew meanwhile: a rise or a new cell is RED on both twins, a fall must lower the
-# row in the same commit. scripts/verify-1.6.0-done.sh reads these rows: DONE is every count at 0.
-# Sum today: 4463 hit(s) over 62 cell(s).
+# measured on predev f830faa691, re-armed at 41f2dc1f78 for the five cells predev grew meanwhile, and
+# re-armed again at 9c0a394771 to the measure of dc83ff1553, the SHA the row went live on (#597): it had armed
+# RED, 18 findings, because the ceilings were nine hours older than the arming. Three cells grew after
+# arming and are held at the arming measure, RED until drained. A rise or a new cell is RED on both
+# twins, a fall must lower the row in the same commit. scripts/verify-1.6.0-done.sh reads these rows: DONE is every count at 0.
+# Sum today: 4487 hit(s) over 60 cell(s).
 
 [[law0]]
 crate = "busbar"
 axis  = "auth"
-count = "46"
-cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance. +4 for status row 120 (owner task): root/tests/connector.rs `the_pinned_mint_needs_are_operator_infrastructure` reads the pinned plugin's NEEDS by its crate path and its doc names the divergent pins, 2 hits each (package name + kind-qualified id); test-only, over the granted root -> auth dev edge"
+count = "51"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance. +4 for status row 120 (owner task): root/tests/connector.rs `the_pinned_mint_needs_are_operator_infrastructure` reads the pinned plugin's NEEDS by its crate path and its doc names the divergent pins, 2 hits each (package name + kind-qualified id); test-only, over the granted root -> auth dev edge; RE-ARMED 46 -> 51 (Law 9, BUSBAR-1.6.0.md: it pins its ceiling at TODAY'S MEASURED VALUE): the row went live on predev at dc83ff1553 (#597) and measured 49 there; the 46 was f830faa691's, nine hours older than the arming, so the row armed red. 51 is predev 9c0a394771's measure, at or under the arming value (arming measure 49, plus status row 120 (#704, owner task) at its measured +2 of the +4 its cite approved)"
 
 [[law0]]
 crate = "busbar"
@@ -1569,8 +1572,8 @@ cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain 
 [[law0]]
 crate = "busbar"
 axis  = "instance:auth"
-count = "22"
-cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance"
+count = "24"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; RE-ARMED 22 -> 24 (Law 9, BUSBAR-1.6.0.md: it pins its ceiling at TODAY'S MEASURED VALUE): the row went live on predev at dc83ff1553 (#597) and measured 24 there; the 22 was f830faa691's, nine hours older than the arming, so the row armed red. 24 is predev 9c0a394771's measure, at or under the arming value"
 
 [[law0]]
 crate = "busbar"
@@ -1581,8 +1584,8 @@ cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain 
 [[law0]]
 crate = "busbar"
 axis  = "instance:secret"
-count = "34"
-cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance"
+count = "35"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; RE-ARMED 34 -> 35, the measure at the arming SHA dc83ff1553 (#597; Law 9). Predev 9c0a394771 measures 36: #560 (7b5f5d8be4) grew it after the row was live, invisible to a figure that counted findings. That excess is a Law 0 rise, so it stays RED until drained; this row does not raise to cover it"
 
 [[law0]]
 crate = "busbar"
@@ -1593,8 +1596,8 @@ cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain 
 [[law0]]
 crate = "busbar"
 axis  = "plane"
-count = "798"
-cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance"
+count = "822"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; RE-ARMED 798 -> 822 (Law 9, BUSBAR-1.6.0.md: it pins its ceiling at TODAY'S MEASURED VALUE): the row went live on predev at dc83ff1553 (#597) and measured 826 there; the 798 was f830faa691's, nine hours older than the arming, so the row armed red. 822 is predev 9c0a394771's measure, at or under the arming value"
 
 [[law0]]
 crate = "busbar"
@@ -1605,20 +1608,20 @@ cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain 
 [[law0]]
 crate = "busbar"
 axis  = "transport"
-count = "215"
-cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance"
+count = "208"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; LOWERED 215 -> 208, predev 9c0a394771's measure: the drain landed without giving its row back (Law 9: the ceiling ratchets down)"
 
 [[law0]]
 crate = "busbar"
 axis  = "vendor"
-count = "43"
-cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance"
+count = "89"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; RE-ARMED 43 -> 89, the measure at the arming SHA dc83ff1553 (#597; Law 9). Predev 9c0a394771 measures 90: #663 (522ab201d5) grew it after the row was live, invisible to a figure that counted findings. That excess is a Law 0 rise, so it stays RED until drained; this row does not raise to cover it"
 
 [[law0]]
 crate = "busbar-contract"
 axis  = "auth"
-count = "4"
-cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance"
+count = "6"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; RE-ARMED 4 -> 6 (Law 9, BUSBAR-1.6.0.md: it pins its ceiling at TODAY'S MEASURED VALUE): the row went live on predev at dc83ff1553 (#597) and measured 6 there; the 4 was f830faa691's, nine hours older than the arming, so the row armed red. 6 is predev 9c0a394771's measure, at or under the arming value"
 
 [[law0]]
 crate = "busbar-contract"
@@ -1635,14 +1638,14 @@ cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain 
 [[law0]]
 crate = "busbar-contract"
 axis  = "instance:export"
-count = "14"
-cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance"
+count = "15"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; RE-ARMED 14 -> 15 (Law 9, BUSBAR-1.6.0.md: it pins its ceiling at TODAY'S MEASURED VALUE): the row went live on predev at dc83ff1553 (#597) and measured 15 there; the 14 was f830faa691's, nine hours older than the arming, so the row armed red. 15 is predev 9c0a394771's measure, at or under the arming value"
 
 [[law0]]
 crate = "busbar-contract"
 axis  = "instance:secret"
-count = "128"
-cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance"
+count = "133"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; RE-ARMED 128 -> 133 (Law 9, BUSBAR-1.6.0.md: it pins its ceiling at TODAY'S MEASURED VALUE): the row went live on predev at dc83ff1553 (#597) and measured 133 there; the 128 was f830faa691's, nine hours older than the arming, so the row armed red. 133 is predev 9c0a394771's measure, at or under the arming value"
 
 [[law0]]
 crate = "busbar-contract"
@@ -1749,8 +1752,8 @@ cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain 
 [[law0]]
 crate = "busbar-kernel"
 axis  = "auth"
-count = "76"
-cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance"
+count = "61"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; LOWERED 76 -> 61, predev 9c0a394771's measure: the drain landed without giving its row back (Law 9: the ceiling ratchets down)"
 
 [[law0]]
 crate = "busbar-kernel"
@@ -1767,8 +1770,8 @@ cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain 
 [[law0]]
 crate = "busbar-kernel"
 axis  = "instance:auth"
-count = "11"
-cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance"
+count = "8"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; LOWERED 11 -> 8, predev 9c0a394771's measure: the drain landed without giving its row back (Law 9: the ceiling ratchets down)"
 
 [[law0]]
 crate = "busbar-kernel"
@@ -1791,8 +1794,8 @@ cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain 
 [[law0]]
 crate = "busbar-kernel"
 axis  = "plane"
-count = "1193"
-cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance"
+count = "1175"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; LOWERED 1193 -> 1175, predev 9c0a394771's measure: the drain landed without giving its row back (Law 9: the ceiling ratchets down)"
 
 [[law0]]
 crate = "busbar-kernel"
@@ -1809,8 +1812,8 @@ cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain 
 [[law0]]
 crate = "busbar-kernel"
 axis  = "transport"
-count = "288"
-cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance"
+count = "286"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; LOWERED 288 -> 286, predev 9c0a394771's measure: the drain landed without giving its row back (Law 9: the ceiling ratchets down)"
 
 [[law0]]
 crate = "busbar-kernel-breaker"
@@ -1843,18 +1846,6 @@ count = "2"
 cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance"
 
 [[law0]]
-crate = "busbar-kernel-identity"
-axis  = "auth"
-count = "8"
-cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance"
-
-[[law0]]
-crate = "busbar-kernel-identity"
-axis  = "instance:secret"
-count = "2"
-cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance"
-
-[[law0]]
 crate = "busbar-kernel-ledger"
 axis  = "plane"
 count = "1"
@@ -1875,8 +1866,8 @@ cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain 
 [[law0]]
 crate = "busbar-plugin-loader"
 axis  = "export"
-count = "31"
-cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance"
+count = "32"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; RE-ARMED 31 -> 32 (Law 9, BUSBAR-1.6.0.md: it pins its ceiling at TODAY'S MEASURED VALUE): the row went live on predev at dc83ff1553 (#597) and measured 32 there; the 31 was f830faa691's, nine hours older than the arming, so the row armed red. 32 is predev 9c0a394771's measure, at or under the arming value"
 
 [[law0]]
 crate = "busbar-plugin-loader"
@@ -1899,8 +1890,8 @@ cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain 
 [[law0]]
 crate = "busbar-plugin-loader"
 axis  = "plane"
-count = "53"
-cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance"
+count = "47"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; LOWERED 53 -> 47, predev 9c0a394771's measure: the drain landed without giving its row back (Law 9: the ceiling ratchets down)"
 
 [[law0]]
 crate = "busbar-plugin-loader"
@@ -1911,5 +1902,6 @@ cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain 
 [[law0]]
 crate = "busbar-plugin-loader"
 axis  = "transport"
-count = "185"
-cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance"
+count = "186"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; RE-ARMED 185 -> 186, the measure at the arming SHA dc83ff1553 (#597; Law 9). Predev 9c0a394771 measures 190: #672 (757c6bab99) grew it after the row was live, invisible to a figure that counted findings. That excess is a Law 0 rise, so it stays RED until drained; this row does not raise to cover it"
+
