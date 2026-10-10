@@ -111,8 +111,6 @@ pub(crate) const RESPONSE_PATHS: &[&str] = &[
     "output[].type=function_call.call_id",
     "output[].type=function_call.name",
     "output[].type=function_call.arguments",
-    "output[].type=web_search_call.id",
-    "output[].type=web_search_call.status",
     "service_tier",
     "usage.input_tokens_details.cache_write_tokens",
 ];

@@ -16,9 +16,10 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use busbar_kernel::audit::amend;
 use busbar_kernel::diagnostics::{
-    diag_debug, diag_error, diag_warn, ADMIN_STORE_OPERATION_FAILED, GROUP_DELETE_KEY_READ_FAILED,
-    PLUGINS_DIR_FINGERPRINT_FAILED, PLUGIN_CATALOG_BLOCKING_TASK_FAILED,
-    PLUGIN_CATALOG_SCAN_GATE_TIMEOUT, USAGE_BLOCKING_TASK_JOIN_FAILED,
+    diag_debug, diag_error, diag_warn, ADMIN_STORE_OPERATION_FAILED, ADMIN_STORE_TASK_JOIN_FAILED,
+    GROUP_DELETE_KEY_READ_FAILED, PLUGINS_DIR_FINGERPRINT_FAILED,
+    PLUGIN_CATALOG_BLOCKING_TASK_FAILED, PLUGIN_CATALOG_SCAN_GATE_TIMEOUT,
+    USAGE_BLOCKING_TASK_JOIN_FAILED,
 };
 use busbar_kernel::state::App;
 
@@ -1379,4 +1380,4 @@ fn plane_named_def_get(
 
 #[cfg(test)]
 #[path = "tests/service_tests.rs"]
-mod tests;
+pub(crate) mod tests;

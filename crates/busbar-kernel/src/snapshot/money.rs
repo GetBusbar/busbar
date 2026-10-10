@@ -45,6 +45,17 @@ pub(super) fn set_gauge(gauge: metrics::Gauge, value: impl Into<i128>) {
     gauge.set(exact as f64);
 }
 
+/// A key's mint-time labels as its metric series carry them: every operator label, without the
+/// self-serve provider record ([`crate::governance::SELF_KEY_PROVIDER_LABEL`]), which is the
+/// binding's own bookkeeping and never a series dimension.
+fn metric_labels(
+    key: &busbar_contract::records::VirtualKey,
+) -> impl Iterator<Item = (&String, &String)> {
+    key.labels
+        .iter()
+        .filter(|(k, _)| k.as_str() != crate::governance::SELF_KEY_PROVIDER_LABEL)
+}
+
 /// Refresh every money gauge for this scrape. No-op when governance is disabled. `now` is the
 /// scrape's single clock read, shared with the lane gauges.
 pub(super) fn refresh_money_gauges(app: &App, now: u64) {
@@ -121,7 +132,7 @@ pub(super) fn refresh_money_gauges(app: &App, now: u64) {
             let base_labels = |extra: &[(&'static str, String)]| -> Vec<metrics::Label> {
                 let mut labels: Vec<metrics::Label> =
                     vec![metrics::Label::new("key", key.id.clone())];
-                for (k, v) in &key.labels {
+                for (k, v) in metric_labels(key) {
                     labels.push(metrics::Label::new(k.clone(), v.clone()));
                 }
                 for (k, v) in extra {
@@ -160,7 +171,7 @@ pub(super) fn refresh_money_gauges(app: &App, now: u64) {
                 ] {
                     let mut labels: Vec<metrics::Label> =
                         vec![metrics::Label::new("bucket", key.id.clone())];
-                    for (k, val) in &key.labels {
+                    for (k, val) in metric_labels(key) {
                         labels.push(metrics::Label::new(k.clone(), val.clone()));
                     }
                     labels.push(metrics::Label::new("model", model.clone()));

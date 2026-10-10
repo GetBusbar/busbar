@@ -49,7 +49,8 @@ Thumbs.db
 # Staging for a Latchkey run (lk-cached.sh): the history bundle, the pinned oracle engine and the
 # job's env file. Written and removed by every run; never part of the tree.
 .lk/
-.latchkeyignore
+# NOT ignored: it carries the one re-include the runner needs (see the file itself).
+!.latchkeyignore
 
 # Python bytecode (bench harness)
 __pycache__/

@@ -153,6 +153,11 @@ pub struct AdminReqCtx {
     /// impossible open path). A self-auditing verb (`approve`) records with it; the `Audited` shim
     /// audits with it.
     pub principal: Option<busbar_contract::auth::AuthPrincipal>,
+    /// What the auth gate consumed of `headers` (its credential lines): a verb that hands the head
+    /// on to a plane strikes them first. `None` only on a route the gate did not judge.
+    pub consumed: Option<crate::auth::ConsumedCredentials>,
+    /// The request's query, without its `?` (`None` = none), as the auth gate left it.
+    pub query: Option<String>,
 }
 
 /// WHAT A VERB HANDLER ANSWERS WITH, and how the core shim frames it. The variants encode both the wire

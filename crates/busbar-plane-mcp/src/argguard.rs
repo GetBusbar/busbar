@@ -74,7 +74,7 @@
 use busbar_contract::abi::host::service::{
     DEST_ALLOWED, DEST_INTERNAL, DEST_METADATA, DEST_NO_HOST, DEST_OBFUSCATED,
 };
-use busbar_contract::net::{extract_normalized_host, scheme_is};
+use busbar_contract::net::{extract_normalized_host, host_ip, scheme_is};
 use serde_json::Value;
 
 /// THE HOST'S JUDGE, as the walk asks it: one host an argument names (an IPv6 literal bracketed,
@@ -428,7 +428,7 @@ fn normalize_host(raw: &str) -> Option<String> {
 }
 
 fn probe_url(host: &str) -> String {
-    if busbar_contract::net::host_ip(host).is_some_and(|ip| ip.is_ipv6()) {
+    if host_ip(host).is_some_and(|ip| ip.is_ipv6()) {
         format!("https://[{host}]/")
     } else {
         format!("https://{host}/")
