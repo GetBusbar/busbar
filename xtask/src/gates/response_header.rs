@@ -502,9 +502,9 @@ impl Gate for ResponseHeaderGate {
             )),
         }
 
-        // THE FLOOR SITS AT THE MEASURED COUNT: one file fewer than the live population is
-        // refused. A floor set a margin below the count passes this tree, so the plant is red
-        // exactly when the floor has slipped under the number the tree measures.
+        // THE FLOOR REFUSES A POPULATION UNDER IT: the plant cuts the live tree to FLOOR - 1
+        // whatever its size (`Overlay::below_floor`), so predev growing a file never turns this
+        // plant green and never forces a re-pin for its sake.
         match population::one_file_short(cx) {
             Ok(ov) => report.push(prove_red(
                 cx,

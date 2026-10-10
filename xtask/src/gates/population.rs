@@ -34,9 +34,10 @@ use crate::ctx::{Ctx, Overlay, SourceFile, WalkSpec};
 /// was re-pinned from 941 to 942 when predev grew by one file, which the selftest plant caught,
 /// and back to 941 when #648 (q128-kernel-ledger) deleted `busbar-kernel-ledger/src/usage/series.rs`
 /// — the one non-test file that merge removed, a reviewed removal and not a scan that went blind. A
-/// drop below 941 is refused until a reviewed diff re-measures; the selftest plant
-/// removes one file and fails if the floor sits under the count. Lowering it is how a gate stops
-/// reading the repository without saying so, so a diff that lowers it is the diff to refuse.
+/// drop below 941 is refused until a reviewed diff re-measures. The selftest plant
+/// ([`one_file_short`]) cuts the live population to `FLOOR - 1` whatever its size, so predev
+/// growing a file no longer forces a re-pin for the plant's sake. Lowering the floor is how a gate
+/// stops reading the repository without saying so, so a diff that lowers it is the diff to refuse.
 pub const FLOOR: usize = 941;
 
 /// The `.rs` under `crates/` that are not test scaffolding, plus the accounting to refuse a
@@ -145,23 +146,87 @@ pub fn source_population(cx: &Ctx) -> Result<Population, String> {
     })
 }
 
-/// THE SELFTEST PLANT FOR THE FLOOR'S POSITION: the live population with exactly ONE file removed
-/// (from a crate that keeps at least one other, so no crate drains). A floor that sits AT the
-/// measured count refuses this; a floor set a margin below the count passes it, which is the defect
-/// the plant exists to catch. `Err` when the population cannot be read or holds no removable file.
+/// THE SELFTEST PLANT FOR THE FLOOR: the live population cut to exactly `FLOOR - 1`, however far
+/// the tree has grown past [`FLOOR`] (see [`Overlay::below_floor`]). A fixed one-file cut went
+/// green the day predev gained a file, and every open PR running the selftest had to re-pin the
+/// floor by one; the computed cut lands one under the floor at any tree size. Each crate keeps its
+/// first file out of the removable set, so no cut drains a crate and the plant stays a floor
+/// case, never a [`Population::drained`] one. `Err` when the population cannot be read, already
+/// sits under the floor, or holds too few removable files for the cut.
 pub fn one_file_short(cx: &Ctx) -> Result<Overlay, String> {
     let pop = source_population(cx)?;
     let crate_of = |rel: &str| rel.split('/').nth(1).unwrap_or_default().to_string();
-    let victim = pop.files.iter().rev().find(|f| {
-        let c = crate_of(&f.rel_str());
-        pop.files
-            .iter()
-            .filter(|g| crate_of(&g.rel_str()) == c)
-            .count()
-            > 1
-    });
-    let victim = victim.ok_or_else(|| "no crate holds a second file to remove".to_string())?;
-    let mut ov = Overlay::new();
-    ov.remove(&victim.rel);
-    Ok(ov)
+    let mut kept = std::collections::BTreeSet::new();
+    let removable: Vec<&SourceFile> = pop
+        .files
+        .iter()
+        .filter(|f| !kept.insert(crate_of(&f.rel_str())))
+        .collect();
+    Overlay::below_floor(pop.count(), FLOOR, removable.iter().rev().map(|f| &f.rel))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{one_file_short, source_population, FLOOR};
+    use crate::ctx::Ctx;
+    use std::path::PathBuf;
+
+    /// A temp tree of two crates: `a` with `a_files` non-test `.rs` and `z` with ONE, which sorts
+    /// last and so is the first file a reverse cut would reach.
+    fn tree(tag: &str, a_files: usize) -> (PathBuf, Ctx) {
+        let root = std::env::temp_dir().join(format!(
+            "xtask-population-{tag}-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        for (name, n) in [("a", a_files), ("z", 1)] {
+            let krate = root.join("crates").join(name);
+            std::fs::create_dir_all(krate.join("src")).expect("src dir creates");
+            std::fs::write(krate.join("Cargo.toml"), "[package]\n").expect("manifest write");
+            for i in 0..n {
+                std::fs::write(krate.join("src").join(format!("f{i:04}.rs")), "// x\n")
+                    .expect("seed write");
+            }
+        }
+        let scratch = root.join(".fix").join("xtask");
+        let cx = Ctx::at(&root, &scratch).expect("ctx opens over the temp root");
+        (root, cx)
+    }
+
+    /// THE RED ARM: a population five files past its floor. A one-file cut leaves FLOOR + 4 and
+    /// the floor row green; the plant lands at FLOOR - 1, refused, with no crate drained.
+    #[test]
+    fn a_population_grown_past_its_floor_is_cut_to_one_under_it() {
+        let (root, cx) = tree("grown", FLOOR + 4);
+        let live = source_population(&cx).expect("the base tree reads");
+        assert_eq!(live.count(), FLOOR + 5);
+        assert!(!live.below_floor() && live.drained.is_empty());
+
+        let ov = one_file_short(&cx).expect("the cut plants");
+        assert_eq!(ov.paths().count(), 6, "live - floor + 1 files are removed");
+        let planted = source_population(&cx.with_overlay(ov)).expect("the planted tree reads");
+        assert_eq!(planted.count(), FLOOR - 1);
+        assert!(planted.below_floor());
+        assert!(planted.drained.is_empty(), "the cut drained a crate: {:?}", planted.drained);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// THE CONTROL: a population exactly at its floor is green, and the cut there is one file —
+    /// never the single-file crate `z`.
+    #[test]
+    fn a_population_at_its_floor_loses_one_file_and_drains_no_crate() {
+        let (root, cx) = tree("at", FLOOR - 1);
+        let live = source_population(&cx).expect("the base tree reads");
+        assert_eq!(live.count(), FLOOR);
+        assert!(!live.below_floor());
+
+        let ov = one_file_short(&cx).expect("the cut plants");
+        assert_eq!(ov.paths().count(), 1);
+        assert!(ov.paths().all(|p| p.starts_with("crates/a")));
+        let planted = source_population(&cx.with_overlay(ov)).expect("the planted tree reads");
+        assert_eq!(planted.count(), FLOOR - 1);
+        assert!(planted.drained.is_empty());
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }
