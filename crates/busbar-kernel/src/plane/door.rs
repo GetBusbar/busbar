@@ -509,8 +509,21 @@ fn build<const I: usize>(
         .and_then(|slot| slot.downcast_ref::<DoorOwned>())
         .map(DoorOwned::bytes)
         .unwrap_or_default();
+    // The dialect facts of the providers its section references, through the one builder the
+    // served instance's open uses (THE DESIGN section 4): the plane resolves model to dialect itself.
+    let dialects = busbar_contract::plane_calls::dialect_facts(&section.value, |name| {
+        ctx.providers?.get(name).map(|p| {
+            (
+                p.protocol.clone(),
+                p.error_map
+                    .iter()
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect(),
+            )
+        })
+    });
     let (facing, opened) = match settings_of(section.section, &section.value)
-        .and_then(|bytes| (d.reg.facing)(&bytes, &owned, ctx.public_url))
+        .and_then(|bytes| (d.reg.facing)(&bytes, &owned, ctx.public_url, &dialects))
     {
         Ok(f) => (f, true),
         Err(refusal) => {

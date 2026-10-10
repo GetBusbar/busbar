@@ -1697,3 +1697,8 @@ fn an_establish_names_its_registration_and_a_shorter_head_names_none() {
         "the named registration, then none"
     );
 }
+
+// A member program's `env` secret that does not resolve, at the request-time hand-off (coordinator
+// ruling 2026-10-07).
+#[path = "member_secret_tests.rs"]
+mod member_secret_tests;
