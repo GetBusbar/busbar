@@ -1481,8 +1481,8 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
         format!("{} signals={}", called(&c), f.out.view.signals_len)
     });
     r.line("drive", 1, || {
-        let (c, streams) = drive(&p, driver);
-        format!("{} sessions={}", called(&c), streams.len())
+        let (c, named) = drive(&p, driver);
+        format!("{} sessions={}", called(&c), named.len())
     });
     // A plane answers under no lease: the release of none.
     r.line("release none", 1, || called(&release(&p, 0)));
