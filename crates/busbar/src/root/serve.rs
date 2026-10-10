@@ -3348,7 +3348,7 @@ impl http_body::Body for ReplyBody {
 /// THE FRAMER THAT FRAMES A CLAIM'S STREAM, when another framer than the data listener's own
 /// answers its carrier (ARCHITECT 4l). The root's own line carrier (a process's stdin/stdout,
 /// [`lines`]) frames its lines itself: each arrives already one unit, so it is never handed to a
-/// framer, even one that claims its carrier's name (the stdio transport's). Handing it over stalled
+/// framer, even one that claims its carrier's name (the line transport's). Handing it over stalled
 /// every line served on the carrier.
 fn framed_by(
     carrier: &str,

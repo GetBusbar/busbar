@@ -8,7 +8,7 @@
 //! learn a protocol's TRANSPORT vocabulary. plane-purity-lint bans the plane KEYS (mcp/a2a/llm/voice)
 //! and the LLM dialects; the Plane-4 (busbar-voice) duplex/live-voice plane drags in a SECOND
 //! vocabulary that plane-purity does not name — the transport/media nouns
-//! `rtc / sdp / webrtc / twilio / dtmf / rtp / sideband / realtime / audio / mulaw / g711 / barge`.
+//! of `tests/fixtures/session_transport_nouns.txt` (`rtc / sdp / dtmf / rtp / audio / mulaw / …`).
 //! A leak of any of them into a neutral crate is the forward-edge regression the plane ABI exists to
 //! prevent.
 //!
@@ -98,7 +98,7 @@ const NOUN_EXEMPTIONS: &[(&str, &str, &str)] = &[(
      usage object reports, modelled since 1.2 and a release older than the fourth plane. It names a \
      UNIT OF BILLABLE WORK, exactly as its two siblings do; nothing about a carrier, a codec or a \
      session reaches this type. The vocabulary this gate exists to keep out is the one a duplex \
-     session drags in (rtc/sdp/webrtc/dtmf/rtp/mulaw/g711/barge) — spelling the third modality \
+     session drags in (rtc/sdp/dtmf/rtp/mulaw/g711/barge) — spelling the third modality \
      obliquely while `input_text` and `input_image` stay plain would cost a reader the meaning of \
      the field and buy no neutrality at all.",
 )];
@@ -177,7 +177,7 @@ fn strip_comments(line: &str, in_block: &mut bool) -> String {
 }
 
 /// Capitalize a noun for the CamelCase rule: first byte upper, the rest lower (`sdp`→`Sdp`,
-/// `webrtc`→`Webrtc`, `g711`→`G711`).
+/// `mulaw`→`Mulaw`, `g711`→`G711`).
 fn capitalized(noun: &str) -> String {
     let mut cs = noun.chars();
     match cs.next() {
@@ -191,7 +191,7 @@ fn capitalized(noun: &str) -> String {
 fn hit_in_code(code: &str) -> Option<&'static str> {
     // WORD rule: tokenize into maximal identifier runs, then split each run on `_` and compare every
     // SEGMENT case-insensitively. `_` is a boundary because snake_case is how Rust spells a compound
-    // name: `sdp_offer`, `rtp_stream`, `webrtc_session` and `input_audio` all carry the banned noun
+    // name: `sdp_offer`, `rtp_stream`, `dtmf_digit` and `input_audio` all carry the banned noun
     // just as plainly as the bare word does. Treating `_` as part of the identifier would let the
     // entire snake_case half of the language through a gate whose whole subject is Rust source.
     for run in code.split(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '_')) {
@@ -306,20 +306,20 @@ fn neutral_crates_name_no_session_transport_noun() {
 }
 
 /// SELF-TEST (the detector is not vacuous): the SAME detector must fire on a planted CamelCase
-/// `SdpOffer`, a bare `webrtc` word AND an underscore-joined `input_audio`, while still ignoring
+/// `SdpOffer`, a bare `mulaw` word AND an underscore-joined `input_audio`, while still ignoring
 /// comments. A green real witness means nothing if the detector cannot see a leak.
 #[test]
 fn detector_fires_on_planted_transport_nouns_and_ignores_comments() {
     // RED: real code — a CamelCase type, a bare word in a string, a lowercase word.
-    let red = "pub struct SdpOffer;\nfn f() { let k = \"webrtc\"; }\nlet realtime = true;";
+    let red = "pub struct SdpOffer;\nfn f() { let k = \"mulaw\"; }\nlet realtime = true;";
     let red_hits = scan_source(red);
     assert!(
         red_hits.iter().any(|(_, n, _)| *n == "sdp"),
         "detector missed the CamelCase SdpOffer: {red_hits:?}"
     );
     assert!(
-        red_hits.iter().any(|(_, n, _)| *n == "webrtc"),
-        "detector missed the bare `webrtc` word: {red_hits:?}"
+        red_hits.iter().any(|(_, n, _)| *n == "mulaw"),
+        "detector missed the bare `mulaw` word: {red_hits:?}"
     );
     assert!(
         red_hits.iter().any(|(_, n, _)| *n == "realtime"),
@@ -332,7 +332,7 @@ fn detector_fires_on_planted_transport_nouns_and_ignores_comments() {
         ("pub struct S { pub sdp_offer: u8 }", "sdp"),
         ("fn f(rtp_stream: u8) {}", "rtp"),
         ("pub input_audio: Option<u64>,", "audio"),
-        ("let n = webrtc_session_id;", "webrtc"),
+        ("let n = dtmf_digit_count;", "dtmf"),
     ] {
         let hits = scan_source(src);
         assert!(
@@ -342,7 +342,7 @@ fn detector_fires_on_planted_transport_nouns_and_ignores_comments() {
     }
 
     // GREEN: comments only — a doc-comment that discusses the vocabulary is not a leak.
-    let green = "// a comment naming sdp webrtc audio and SdpOffer and sdp_offer\n\
+    let green = "// a comment naming sdp mulaw audio and SdpOffer and sdp_offer\n\
                  /* block naming rtp and barge and input_audio */\n\
                  pub struct PlaneRecord;";
     let green_hits = scan_source(green);
