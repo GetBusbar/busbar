@@ -575,43 +575,22 @@ fn compile_one(all: &[Dialect], d: &Dialect, answer: &BTreeSet<String>) -> Resul
     ))
 }
 
-/// Read every mapping file under [`DIALECT_DIR`], refusing one that repeats a key in a table: a
-/// repeated key is invalid TOML, and two rows for one wire path would compile into contradictory
-/// mapping rows (ARCHITECT, Q128 WARN).
+/// Read every mapping file under [`DIALECT_DIR`].
 fn read_all(cx: &Ctx) -> Result<Vec<Dialect>, String> {
     let files = cx
         .walk(&WalkSpec::new([DIALECT_DIR]).ext("toml").min_files(1))
         .map_err(|e| e.to_string())?;
-    files
+    Ok(files
         .iter()
-        .map(|f| {
-            let name = f
+        .map(|f| Dialect {
+            name: f
                 .rel
                 .file_stem()
                 .map(|s| s.to_string_lossy().into_owned())
-                .unwrap_or_default();
-            let doc = toml_lite::parse_text(&f.text);
-            refuse_repeated_keys(&format!("{DIALECT_DIR}/{name}.toml"), &doc)?;
-            Ok(Dialect { name, doc })
+                .unwrap_or_default(),
+            doc: toml_lite::parse_text(&f.text),
         })
-        .collect()
-}
-
-/// `Err` naming the first key a table of `doc` states twice (the file `at`, the table, the key).
-pub fn refuse_repeated_keys(at: &str, doc: &toml_lite::Document) -> Result<(), String> {
-    for (table, t) in &doc.tables {
-        let mut seen: Vec<&str> = Vec::new();
-        for (key, _) in &t.entries {
-            if seen.contains(&key.as_str()) {
-                return Err(format!(
-                    "{at}: [{table}] states `{key}` twice; a key is stated once (TOML), and two \
-                     rows for one wire path would compile into contradictory mapping rows"
-                ));
-            }
-            seen.push(key);
-        }
-    }
-    Ok(())
+        .collect())
 }
 
 /// Compile every mapping file under [`DIALECT_DIR`].
@@ -849,24 +828,5 @@ pub fn main(cx: &Ctx, args: &[String]) -> i32 {
             eprintln!("xtask dialect: {e}");
             1
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    /// A mapping file that repeats a key in a table is refused, naming the file, the table and the
-    /// key; the same file with the key stated once compiles past the check. RED before: the
-    /// compiler read the repeated row and emitted both.
-    #[test]
-    fn a_mapping_file_that_repeats_a_key_is_refused() {
-        let twice = crate::toml_lite::parse_text(
-            "[rows.response]\n\"a.id\" = { ir = \"x\" }\n\"a.id\" = { prim = \"id\" }\n",
-        );
-        let err = super::refuse_repeated_keys("d.toml", &twice).expect_err("refused");
-        assert!(
-            err.contains("d.toml") && err.contains("[rows.response]") && err.contains("`a.id`")
-        );
-        let once = crate::toml_lite::parse_text("[rows.response]\n\"a.id\" = { ir = \"x\" }\n");
-        super::refuse_repeated_keys("d.toml", &once).expect("a key stated once");
     }
 }

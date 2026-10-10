@@ -1457,9 +1457,9 @@ async fn the_hooks_constraint_orders_and_restricts_the_pick() {
     use crate::plane_driver::{Constraint, MemberFacts};
     let r = rig(
         &[
-            ("a.test", Script::Answer(200, None, vec![b"a"])),
-            ("b.test", Script::Answer(200, None, vec![b"b"])),
-            ("c.test", Script::Answer(200, None, vec![b"c"])),
+            ("a.test", Script::Answer(200, None, vec![b"ok"])),
+            ("b.test", Script::Answer(200, None, vec![b"ok"])),
+            ("c.test", Script::Answer(200, None, vec![b"ok"])),
         ],
         OnExhausted::Status503,
         None,

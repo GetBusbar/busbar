@@ -461,6 +461,7 @@ fn with_listing_door(
         record_kinds: Vec::new(),
         trust_keys: Vec::new(),
         caller_credential_refusal: None,
+        fallback: false,
         validate: Arc::new(|_: &[u8]| Ok(())),
         facing: Arc::new(move |_: &[u8], _: &[u8], _: Option<&str>| {
             Ok(DoorFacing {
