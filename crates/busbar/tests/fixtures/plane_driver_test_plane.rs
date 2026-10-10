@@ -8,7 +8,9 @@
 //! with a unit is chosen by the member name the kernel hands its ATTEMPT piece (`ok`, `retry`,
 //! `retry-late`, `pend`, `hang`, `wedge`, `fault`, `cancel-fault`, `short`, `short-twice`), and `arrive`
 //! reacts to the request target (`/short`, `/short-twice`, `/refuse`, `/stats`, `/clock`). A unit
-//! on `/call/local` answers its caller itself (an echo of the body); a unit on `/call/nest:<target>`
+//! on `/call/local` answers its caller itself (an echo of the body), as does one on
+//! `/call/local-counted`, `/call/local-quiet` and `/call/local-estimated` (routed `ROUTE_LOCAL`:
+//! counted as an admitted call, not, and stating expected units); a unit on `/call/nest:<target>`
 //! runs `POST <target>` as a NESTED unit through the host's `unit.nest` and answers its caller
 //! `nested:<status>:<the child's body>` (`nest-refused:<reason>` when the host refused it); a unit on
 //! `/call/services` (or `/call/services-pool:<pool>`, routed over that pool) passes its body
@@ -72,8 +74,9 @@ use busbar_contract::abi::plane::{
     CANCEL_OK_PARTIAL, CLAIM_EXACT, CLAIM_OPEN, EMIT_DONE, EMIT_FINAL_STATUS, EMIT_MESSAGE_END,
     EMIT_TO_FAR_END, FROM_CALLER, FROM_FAR_END, FROM_KERNEL, INGRESS_DUPLEX_SESSION,
     INGRESS_REQUEST_RESPONSE, INGRESS_RESPONSE_STREAM, PIECE_FIELDS, PIECE_HAS_STATUS, PIECE_LAST,
-    PIECE_OUT_TEXT, PRINCIPAL_OPTIONAL, REFUSAL_ANY_DIALECT, ROUTE_DIRECT, ROUTE_POOL,
-    ROUTE_PUBLIC, SHAPE_WHOLE, SPAN_ABSENT, UNITS_ESTIMATED, UNITS_REPORTED, VERDICT_RETRY,
+    PIECE_OUT_TEXT, PRINCIPAL_OPTIONAL, REFUSAL_ANY_DIALECT, ROUTE_COUNTED, ROUTE_DIRECT,
+    ROUTE_LOCAL, ROUTE_POOL, ROUTE_PUBLIC, SHAPE_WHOLE, SPAN_ABSENT, UNITS_ESTIMATED,
+    UNITS_REPORTED, VERDICT_RETRY,
 };
 
 /// The plane's own refusal code and the status `/clock` refuses with when the host will not read
@@ -823,6 +826,21 @@ extern "C" fn arrive(instance: *mut c_void, input: *const c_void, out: *mut c_vo
                 me.tick_every_ms.store(ms, Ordering::SeqCst);
                 vec![estimate(0, ms)]
             }
+            // UNITS THE PLANE ANSWERS ITSELF (`ROUTE_LOCAL`), stating no expected units: counted as an
+            // admitted call (`ROUTE_COUNTED`), or not; and one stating expected units.
+            b"/call/local-counted" => {
+                o.route = ROUTE_LOCAL;
+                o.route_flags = ROUTE_COUNTED;
+                vec![]
+            }
+            b"/call/local-quiet" => {
+                o.route = ROUTE_LOCAL;
+                vec![]
+            }
+            b"/call/local-estimated" => {
+                o.route = ROUTE_LOCAL;
+                vec![estimate(0, i.body.len as u64)]
+            }
             t if t.starts_with(b"/call/services-pool:") => {
                 // The in-session services on a unit routed over the pool the target names.
                 let name: &'static [u8] = Box::leak(t[20..].to_vec().into_boxed_slice());
@@ -1025,7 +1043,7 @@ extern "C" fn on_piece(
                     o.flags = EMIT_DONE;
                     return say(out, Outcome::Ready);
                 }
-                if head.as_slice() == b"/local" || head.as_slice() == b"/call/local" {
+                if head.as_slice() == b"/local" || head.starts_with(b"/call/local") {
                     // A LOCAL ANSWER: the plane answers the caller itself (an echo of the body),
                     // with nothing for the far end.
                     o.reply_status = 200;
