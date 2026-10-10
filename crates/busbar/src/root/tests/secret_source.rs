@@ -220,6 +220,7 @@ fn driven() -> Vec<String> {
     )];
     #[cfg(linked_section_decisions)]
     names.push(super::door_tests::decisions_name());
+    names.extend(super::door_tests::session_door::name());
     names
 }
 
@@ -421,6 +422,75 @@ async fn decisions_a_provider_key_gone_by_an_apply_reaches_the_caller_without_it
         Some(&serving.token),
     )
     .await;
+    let status = response.status();
+    let headers = response.headers().clone();
+    let body = axum::body::to_bytes(response.into_body(), 1 << 20)
+        .await
+        .expect("the body reads");
+    assert_clean(instance, status, &headers, &body, &secret);
+}
+
+/// THE SESSION DOOR, COMPOSE TIME: a provider whose `api_key` does not resolve refuses the boot
+/// with the operator's text, which names the source; nothing is served to a caller.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn session_door_an_unresolved_provider_key_refuses_the_boot_naming_its_source() {
+    let _one = PUBLISHING.lock().await;
+    let instance = "session-key-compose";
+    let path = missing(instance);
+    let secret = SecretRef::file(path.clone());
+    refused_naming_its_source(&secret);
+    let Some(composed) = super::door_tests::session_door::session_keyed(
+        instance,
+        None,
+        &format!("{{file: '{path}'}}"),
+    )
+    .await
+    else {
+        eprintln!("skip: this build links no session door");
+        return;
+    };
+    let Err(refusal) = composed else {
+        panic!("a provider key that does not resolve refuses the composition");
+    };
+    println!("SECRET-SOURCE {instance}: compose refused (operator): {refusal}");
+    assert!(
+        !source_in(&refusal, &secret).is_empty(),
+        "the operator's refusal names the source: {refusal}"
+    );
+}
+
+/// THE SESSION DOOR, ACROSS AN APPLY: a provider served while its `api_key` file was there, the
+/// file then gone and the configuration applied: the door keeps the generation it serves, and the
+/// caller's mint is served by it, its render clean of the source.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn session_door_a_provider_key_gone_by_an_apply_reaches_the_caller_without_its_source() {
+    let _one = PUBLISHING.lock().await;
+    let instance = "session-key-apply";
+    let path = missing(instance);
+    std::fs::write(&path, "sk-secret-source-test").expect("the credential file");
+    let secret = SecretRef::file(path.clone());
+    let Some(composed) = super::door_tests::session_door::session_keyed(
+        instance,
+        None,
+        &format!("{{file: '{path}'}}"),
+    )
+    .await
+    else {
+        let _ = std::fs::remove_file(&path);
+        eprintln!("skip: this build links no session door");
+        return;
+    };
+    let serving = composed.expect("the door composes");
+    std::fs::remove_file(&path).expect("the credential file goes");
+    refused_naming_its_source(&secret);
+    let before = serving.live.current().generation;
+    serving.live.apply(&serving.app);
+    assert_eq!(
+        serving.live.current().generation,
+        before,
+        "the door keeps the generation it serves"
+    );
+    let response = serving.mint().await;
     let status = response.status();
     let headers = response.headers().clone();
     let body = axum::body::to_bytes(response.into_body(), 1 << 20)
