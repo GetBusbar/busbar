@@ -842,7 +842,8 @@ impl Instance {
             // runtime that thread is inside.
             let acting = super::worker::worker_mark();
             let runtime = tokio::runtime::Handle::try_current().ok();
-            let (input, output) = (input.cast_const().cast(), out.cast());
+            let (input, output): (*const c_void, *mut c_void) =
+                (input.cast_const().cast(), out.cast());
             let routed = crate::ffi_thread::on_plugin_thread(|| {
                 let _runtime = runtime.as_ref().map(tokio::runtime::Handle::enter);
                 let _acting = super::worker::acting_for(acting);

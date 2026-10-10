@@ -131,14 +131,21 @@ struct Pool {
     idle: Vec<usize>,
 }
 
-fn pool() -> &'static Mutex<Pool> {
-    static POOL: OnceLock<Mutex<Pool>> = OnceLock::new();
-    POOL.get_or_init(|| {
-        Mutex::new(Pool {
+impl Pool {
+    /// A pool with no workers yet.
+    const fn empty() -> Self {
+        Self {
             all: Vec::new(),
             idle: Vec::new(),
-        })
-    })
+        }
+    }
+}
+
+/// THE process's pool. (The tests that assert which worker runs a job use pools of their own, so
+/// no other test's crossing can take that worker between their two calls.)
+fn pool() -> &'static Mutex<Pool> {
+    static POOL: OnceLock<Mutex<Pool>> = OnceLock::new();
+    POOL.get_or_init(|| Mutex::new(Pool::empty()))
 }
 
 std::thread_local! {
@@ -175,15 +182,16 @@ fn worker(rx: Receiver<Job>) {
     }
 }
 
-/// A borrowed worker, returned to the idle list on drop (including on unwind).
+/// A borrowed worker, returned to its pool's idle list on drop (including on unwind).
 struct Lease {
+    pool: &'static Mutex<Pool>,
     idx: usize,
     tx: SyncSender<Job>,
 }
 
 impl Drop for Lease {
     fn drop(&mut self) {
-        pool()
+        self.pool
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .idle
@@ -194,11 +202,12 @@ impl Drop for Lease {
 /// Borrow an idle worker, or create a new permanent one. Growing on demand (rather than capping) is
 /// what makes re-entrancy deadlock-free: plugin code that calls back into the loader takes a fresh
 /// worker instead of waiting for the one its own caller is occupying.
-fn acquire() -> Lease {
+fn acquire(pool: &'static Mutex<Pool>) -> Lease {
     {
-        let mut p = pool().lock().unwrap_or_else(|p| p.into_inner());
+        let mut p = pool.lock().unwrap_or_else(|p| p.into_inner());
         if let Some(idx) = p.idle.pop() {
             return Lease {
+                pool,
                 tx: p.all[idx].clone(),
                 idx,
             };
@@ -209,9 +218,10 @@ fn acquire() -> Lease {
         .name("busbar-plugin-ffi".to_string())
         .spawn(move || worker(rx))
         .expect("spawn a plugin FFI worker thread");
-    let mut p = pool().lock().unwrap_or_else(|p| p.into_inner());
+    let mut p = pool.lock().unwrap_or_else(|p| p.into_inner());
     p.all.push(tx.clone());
     Lease {
+        pool,
         idx: p.all.len() - 1,
         tx,
     }
@@ -229,6 +239,14 @@ fn acquire() -> Lease {
 /// returns include raw pointers. Soundness comes from the caller blocking for the entire window (see
 /// the `unsafe impl Send for Job` note), not from the types.
 pub(crate) fn on_plugin_thread<F: FnOnce() -> R, R>(f: F) -> std::thread::Result<R> {
+    on_plugin_thread_in(pool(), f)
+}
+
+/// [`on_plugin_thread`] on a worker of `pool`.
+fn on_plugin_thread_in<F: FnOnce() -> R, R>(
+    pool: &'static Mutex<Pool>,
+    f: F,
+) -> std::thread::Result<R> {
     struct Slot<F, R> {
         f: Option<F>,
         r: Option<std::thread::Result<R>>,
@@ -251,7 +269,7 @@ pub(crate) fn on_plugin_thread<F: FnOnce() -> R, R>(f: F) -> std::thread::Result
     };
     // Capacity 1: the worker must be able to report completion without blocking.
     let (done_tx, done_rx) = sync_channel::<()>(1);
-    let lease = acquire();
+    let lease = acquire(pool);
     let job = Job {
         run: trampoline::<F, R>,
         data: (&raw mut slot) as *mut (),
