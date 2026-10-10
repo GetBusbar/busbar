@@ -82,7 +82,12 @@
 //!    known home a red that names the area.
 //!
 //! The surviving sites are named, one by one, in [`ALLOWED_COUNT_READS`] with the reason each is
-//! there. Two classes: [`AllowClass::NotACount`] (a frame index, an audio timing, a media sample
+//! there. AN ALLOWANCE IS ANCHORED TO THE `fn` ITEM THE READ SITS IN, and states exactly how many
+//! defaulted reads that item holds: a new read in the same item, or an allowance that no longer
+//! matches its count (including one that matches nothing), FAILS the row. It used to be a needle
+//! found anywhere in the 200 bytes before a read, so a new billed read written just after an
+//! allowed timing read rode its allowance, and a dead allowance was a note on a passing row (audit
+//! xtask-X3 finding 7). Two classes: [`AllowClass::NotACount`] (a frame index, an audio timing, a media sample
 //! rate, the #44 config boundary — permanent) and [`AllowClass::PendingConversion`] (a real count
 //! still owed a fix). The gate's job is that the list never GROWS: a defaulted count read that is
 //! not on it is a finding.
@@ -109,8 +114,18 @@
 //! fixes the form: one `#[serde(default)]` scale field per record, ABSENT meaning the v1.5.5 whole
 //! units and PRESENT meaning scale 6, with the branch at the read and NO rescale of stored bytes. So
 //! a record struct that holds a `Count` and no scale discriminator is a row nobody can read back,
-//! and this row refuses it. It is armed and currently vacuous — no persisted record holds a `Count`
-//! yet — which is the point: it arms the instant the conversion wave lands.
+//! and this row refuses it. THE HOMES ARE DERIVED, NOT LISTED: every production file in `crates/`
+//! that names `Serialize` in code is a persisted-record home, and the census is held to a floor so
+//! an emptied census is refused rather than read as "no record holds a `Count`" (audit xtask-X3
+//! finding 12: the one listed home held no `Count` and persisted rows lived in other crates).
+//!
+//! # TEST SCOPE IS DECIDED BY DECLARATION, NOT BY NAME
+//!
+//! A file is left out of a scan as a test only when [`scan::cfg_test_module_files`] says its module
+//! is declared under a test-only `cfg` (or by a file that is). A `tests.rs`, a `*_tests.rs` or a
+//! file under a `tests/` directory that is declared WITHOUT the gate is compiled into the shipped
+//! crate and is scanned like any other (audit xtask-X3 finding 8). Every walk is rooted in a
+//! crate's `src/`, so a crate's top-level `tests/` integration targets are never in it.
 //!
 //! Four rows:
 //!
@@ -128,6 +143,10 @@ use crate::ctx::{Ctx, Edit, Overlay, WalkSpec};
 use crate::gates::{prove_green, prove_red, Case, Gate, Report};
 use crate::ledger::{Row, Status, Verdict};
 use crate::scan;
+
+#[cfg(test)]
+#[path = "tests/no_float_money_scope_tests.rs"]
+mod no_float_money_scope_tests;
 
 pub const ROW_SCAN_FLOOR: &str = "no-float-money:scan-floor";
 pub const ROW_NO_FLOAT: &str = "no-float-money:no-float";
@@ -268,12 +287,44 @@ pub const MONEY_EGRESS: &[MoneyEgress] = &[MoneyEgress {
           into the same gauge (item 24).",
 }];
 
-/// The `*_tests.rs` sibling, the `tests.rs` module and the `/tests/` tree are fixtures: a float in a
-/// test is a test's number, not the money path's, and a wire value a fixture spells any way it likes
-/// is the fixture's business.
-const EXCLUDE_TESTS_DIR: &str = "/tests/";
-const EXCLUDE_TESTS_FILE: &str = "_tests.rs";
-const EXCLUDE_TESTS_MOD: &str = "/tests.rs";
+/// A WALK OF PRODUCTION SOURCE: `spec`'s files less the ones whose module is declared under a
+/// test-only `cfg` ([`production_only`]), held to `floor` AFTER the test files are gone. A float in
+/// a test is a test's number, not the money path's; a file is a test because it is DECLARED as one,
+/// never because of what it is called.
+fn walk_production(
+    cx: &Ctx,
+    spec: &WalkSpec,
+    floor: usize,
+) -> Result<Vec<crate::ctx::SourceFile>, crate::ctx::WalkError> {
+    let kept = production_only(cx, cx.walk(spec)?);
+    if kept.len() < floor {
+        return Err(crate::ctx::WalkError::BelowFloor {
+            found: kept.len(),
+            floor,
+            roots: spec.roots().to_vec(),
+        });
+    }
+    Ok(kept)
+}
+
+/// `files` less every file [`scan::cfg_test_module_files`] puts in test scope. A file the overlay
+/// does not touch is read from disk, so its declarations are keyed stably (its absolute path) and
+/// read once per process; a planted file is read fresh.
+fn production_only(cx: &Ctx, files: Vec<crate::ctx::SourceFile>) -> Vec<crate::ctx::SourceFile> {
+    let planted: std::collections::BTreeSet<&std::path::Path> = cx
+        .overlay()
+        .map(|ov| ov.paths().map(std::path::PathBuf::as_path).collect())
+        .unwrap_or_default();
+    let test = scan::cfg_test_module_files(files.iter().map(|f| {
+        let stable =
+            (!planted.contains(f.rel.as_path())).then(|| f.abs.to_string_lossy().into_owned());
+        (f.rel_str(), f.text.as_str(), stable)
+    }));
+    files
+        .into_iter()
+        .filter(|f| !test.contains(&f.rel_str()))
+        .collect()
+}
 
 /// The denominator floor for the ledger scan. Twenty-three production files (then excluding the
 /// card-build file, which is walked now) when this was written; the floor tracks the real tree rather than `> 0`, because one
@@ -309,7 +360,7 @@ const BINARY_ROOT: &str = "crates/busbar/src/root";
 /// THE THIRD ENTRY IS THE MONEY-PATH DURABLE RECORD SHAPES, ADDED 2026-09-23. `records.rs`'s own
 /// first line is "The MONEY-PATH DURABLE RECORD SHAPES — the data types a `db` plugin … reads and
 /// writes"; it is the file `money-invariants:no-plugin-keyed-money` and `:no-stored-price` scan for
-/// #77(1) and #77(3), and it is the FIRST home in [`PERSISTED_RECORD_HOMES`] below. It was in this
+/// #77(1) and #77(3), and it is a home in the [`persisted_record_homes`] census below. It was in this
 /// gate's float set through none of those. A float in a persisted money record is the failure #77(8)
 /// is about, written down and read back by every store plugin. MEASURED at the time of the widening:
 /// zero `f64`/`f32` in it today.
@@ -592,10 +643,11 @@ pub const COUNT_READ_ROOTS: &[CountRoot] = &[
     },
 ];
 
-/// THE SEAM BEING REPLACED. Its own body is a list of the needle strings it hunts, so scanning it
-/// finds its own patterns rather than a defect. It is excluded for the same reason its in-crate
-/// ancestor excluded itself, and it goes away with the conversion wave.
-const SUPERSEDED_SEAM: &str = "crates/busbar-plane-llm/src/codec/usage_count.rs";
+/// THE LLM CODEC'S COUNT SEAM (`usage_count.rs`) IS SCANNED LIKE EVERY OTHER FILE. It used to be
+/// skipped by name as "the seam being replaced", while it is the live reader the handlers call
+/// (`billed_count_opt`); its needle strings sit in comments, which the scan strips (audit xtask-X3
+/// finding 11). Named here so the selftest can plant into it.
+const COUNT_SEAM: &str = "crates/busbar-plane-llm/src/codec/usage_count.rs";
 
 /// The JSON-number accessors a count could be read through. `as_f64` is here as well as the integer
 /// pair because a count that arrives through a double has already lost the exactness #81 requires.
@@ -613,34 +665,101 @@ pub const NUMBER_ACCESSORS: &[&str] = &["as_u64", "as_i64", "as_f64", "as_u128",
 /// points at `billed_count`, which keeps absent-is-zero and makes unreadable a refusal.
 pub const COUNT_HELPERS: &[&str] = &["read_count_u64"];
 
-/// A default's argument, whitespace removed, that silently substitutes NOTHING for a count. A
-/// NON-zero default (`unwrap_or(idx as u64)`) is deliberately out of scope: it substitutes a value
-/// the author chose and named, which is a different act from recording that no work happened.
-const ZERO_DEFAULT_ARGS: &[&str] = &[
-    "",
-    "0",
-    "0.0",
-    "0u8",
-    "0u32",
-    "0u64",
-    "0u128",
-    "0i32",
-    "0i64",
-    "0i128",
-    "0f32",
-    "0f64",
-    "0usize",
-    "0_u32",
-    "0_u64",
-    "0_i64",
-    "0_usize",
-    "Default::default()",
-    "||0",
-    "||0.0",
-    "||0u64",
-    "||0i64",
-    "||Default::default()",
+/// The numeric type suffixes a literal (or an `as` cast) can carry.
+const NUMERIC_TYPES: &[&str] = &[
+    "u128", "i128", "usize", "isize", "u16", "u32", "u64", "i16", "i32", "i64", "f32", "f64", "u8",
+    "i8",
 ];
+
+/// The unsigned types whose `MIN` is zero.
+const UNSIGNED_TYPES: &[&str] = &["u8", "u16", "u32", "u64", "u128", "usize"];
+
+/// DOES THIS DEFAULT EVALUATE TO ZERO? Decided by VALUE, not by a list of spellings (audit xtask-X3
+/// finding 11): any integer or float literal whose value is zero, in any radix and with any suffix
+/// or `as` cast (`0`, `0u16`, `0_i16`, `0.0`, `0e0`, `0x0`, `0 as u64`); an unsigned type's `MIN`;
+/// any `…::default()` (the receiver is a JSON number, so its `Default` is zero); a closure or a
+/// block whose value is one of those (`|| 0`, `{ 0 }`); and the function path `Default::default` /
+/// `u64::default` handed to `unwrap_or_else`. A NON-zero default (`unwrap_or(idx as u64)`) is out
+/// of scope on purpose: it substitutes a value the author chose and named, which is a different act
+/// from recording that no work happened.
+fn is_zero_value(arg: &str) -> bool {
+    let squeezed: String = arg.chars().filter(|c| !c.is_whitespace()).collect();
+    let mut a = squeezed.as_str();
+    // Wrapping parens, a block, and a no-argument closure all hand back what is inside them.
+    loop {
+        let wrapped = |open: u8, close: u8| {
+            a.len() >= 2
+                && a.as_bytes()[0] == open
+                && balanced(a.as_bytes(), 0, open, close) == Some(a.len())
+        };
+        if wrapped(b'(', b')') || wrapped(b'{', b'}') {
+            a = &a[1..a.len() - 1];
+        } else if let Some(body) = a.strip_prefix("||") {
+            a = body;
+        } else if let Some(body) = a.strip_prefix("|_|") {
+            a = body;
+        } else {
+            break;
+        }
+    }
+    if a.ends_with("::default()") || a.ends_with("::default") || a == "Default::default" {
+        return true;
+    }
+    if let Some(ty) = a.strip_suffix("::MIN") {
+        let ty = ty.trim_start_matches('<').trim_end_matches('>');
+        return UNSIGNED_TYPES.contains(&ty);
+    }
+    // `0 as u64` squeezes to `0asu64`.
+    let mut lit = a;
+    if let Some(at) = lit.rfind("as") {
+        if NUMERIC_TYPES.contains(&&lit[at + 2..]) {
+            lit = &lit[..at];
+        }
+    }
+    let lit: String = lit.chars().filter(|c| *c != '_').collect();
+    let mut lit = lit.as_str();
+    for ty in NUMERIC_TYPES {
+        if let Some(head) = lit.strip_suffix(ty) {
+            if !head.is_empty() {
+                lit = head;
+                break;
+            }
+        }
+    }
+    let lower = lit.to_ascii_lowercase();
+    for radix in ["0x", "0o", "0b"] {
+        if let Some(digits) = lower.strip_prefix(radix) {
+            return !digits.is_empty() && digits.chars().all(|c| c == '0');
+        }
+    }
+    let mantissa = lower.split('e').next().unwrap_or_default();
+    let exponent_ok = match lower.split_once('e') {
+        None => true,
+        Some((_, e)) => {
+            let e = e.trim_start_matches(['+', '-']);
+            !e.is_empty() && e.chars().all(|c| c.is_ascii_digit())
+        }
+    };
+    !mantissa.is_empty()
+        && mantissa.starts_with('0')
+        && mantissa.chars().all(|c| c == '0' || c == '.')
+        && mantissa.matches('.').count() <= 1
+        && exponent_ok
+}
+
+/// The first top-level argument of an argument list (whitespace kept), for `map_or(default, f)`.
+fn first_arg(args: &str) -> &str {
+    let mut depth = 0i32;
+    for (i, c) in args.char_indices() {
+        match c {
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => depth -= 1,
+            ',' if depth == 0 => return &args[..i],
+            _ => {}
+        }
+    }
+    args
+}
 
 /// Why a surviving defaulted read is on the list.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -652,22 +771,23 @@ pub enum AllowClass {
     PendingConversion,
 }
 
-/// One named, reasoned survivor.
+/// One named, reasoned survivor: every defaulted read in ONE `fn` item.
 pub struct Allow {
     /// The repo-relative file it lives in.
     pub file: &'static str,
-    /// Text that appears in the expression, within [`ALLOW_WINDOW`] bytes before the match's end.
-    /// A needle rather than a line number, so a reformat or an edit elsewhere in the file does not
-    /// turn a reasoned allowance into a spurious red.
-    pub needle: &'static str,
+    /// The `fn` the reads sit in — the INNERMOST `fn` item enclosing each read. An item rather than
+    /// a line number, so a reformat or an edit elsewhere in the file does not turn a reasoned
+    /// allowance into a spurious red; an item rather than a text window, so a read in a NEIGHBOURING
+    /// item never rides it.
+    pub item: &'static str,
+    /// EXACTLY how many defaulted reads the item holds. One more is a new read riding the allowance;
+    /// one fewer (or none) is an allowance that no longer says what is there. Both fail the row.
+    pub reads: usize,
     /// Permanent, or owed to the conversion wave.
     pub class: AllowClass,
     /// Why.
     pub why: &'static str,
 }
-
-/// How far back from a match the allowance needle is looked for.
-const ALLOW_WINDOW: usize = 200;
 
 /// THE MOST [`AllowClass::PendingConversion`] HITS THE ROW WILL CARRY. Armed 2026-09-23 at the
 /// number measured the day [`COUNT_HELPERS`] made the codec's 32 helper reads visible: 5 in the
@@ -679,78 +799,95 @@ const ALLOW_WINDOW: usize = 200;
 /// `billed_count`, and `u64_at` was measured to read no billed count at all.
 pub const PENDING_CEILING: usize = 0;
 
-/// THE SURVIVING SITES, EVERY ONE NAMED AND REASONED. Measured 2026-09-22 against this tree.
+/// THE SURVIVING SITES, EVERY ONE NAMED AND REASONED. Measured 2026-09-22 against this tree; re-keyed
+/// 2026-10-07 from text needles to the enclosing `fn` item (audit xtask-X3 finding 7).
 ///
-/// This list may SHRINK freely and must never grow without a reviewed diff that says why. A
-/// [`AllowClass::PendingConversion`] entry whose site is gone is retired debt, reported in the
-/// passing row's detail rather than failed, because the agents converting these sites are live in
-/// the tree right now and a gate that reds the moment they succeed is a gate that punishes the fix.
+/// This list may SHRINK and must never grow without a reviewed diff that says why. An entry whose
+/// reads are gone FAILS the row until it is deleted: a standing permission nobody uses is a
+/// permission the next read takes. RETIRED AT THE RE-KEY, each measured matching nothing on predev
+/// `5e672d125d` (the row's own "now match nothing" note): `openai_chat/handler.rs` `get(keys::END)`
+/// and the two `get("channels")` rows (`topology/twilio.rs`, `twilio.rs`) — their reads were already
+/// inside the window of the `get(keys::START)` / `get("sampleRate")` rows, and they are counted by
+/// those items' rows now. `audio::Segment`, `get(keys::START)` and `get(keys::END)` fold into the one
+/// `read_transcription_response` row.
 pub const ALLOWED_COUNT_READS: &[Allow] = &[
     // ── Not a count, permanently ──────────────────────────────────────────────────────────────
     Allow {
         file: "crates/busbar-plane-llm/src/codec/bedrock/mod.rs",
-        needle: "CONTENT_BLOCK_INDEX",
+        item: "clamp_content_block_index",
+        reads: 1,
         class: AllowClass::NotACount,
-        why: "a frame's position in a sequence, not a quantity anybody is billed for",
+        why: "a frame's position in a sequence (`contentBlockIndex`), not a quantity anybody is \
+              billed for",
     },
     Allow {
         file: "crates/busbar-plane-llm/src/codec/cohere/mod.rs",
-        needle: "clamp_frame_index",
+        item: "clamp_frame_index",
+        reads: 1,
         class: AllowClass::NotACount,
         why: "a frame's position in a sequence, not a quantity anybody is billed for",
     },
+    // NEWLY SEEN 2026-10-07 by the value-decided zero (`map_or(0, …)`, audit X3 #11), ruled NotACount
+    // by the coordinator (Rule A) on three conditions: each value traced to every use and none
+    // reaches a usage, token or billed field; v1.5.5 carried the same default; an exact-count plant.
     Allow {
-        file: "crates/busbar-plane-llm/src/codec/openai_chat/handler.rs",
-        needle: "audio::Segment",
+        file: "crates/busbar-plane-llm/src/codec/openai_chat/reader.rs",
+        item: "read_response_events",
+        reads: 1,
         class: AllowClass::NotACount,
-        why: "a transcription segment's own id — metadata echoed back, never metered",
+        why: "the stream tool-call `index` (:1026), clamped to MAX_TOOL_INDEX; it is only the \
+              `open_tools` key (:1063, :1073, :1164), the LEGACY_FUNCTION_CALL_KEY compare (:1067) \
+              and the `tool_ir_index` key (:1078, :1098, :1165) — block bookkeeping, never a usage \
+              field. v1.5.5 `crates/busbar/src/proto/openai_chat/reader.rs:611` has the same \
+              `map_or(0, …min(MAX_TOOL_INDEX))`",
+    },
+    Allow {
+        file: "crates/busbar-plane-llm/src/codec/openai_responses/reader.rs",
+        item: "read_response_events",
+        reads: 3,
+        class: AllowClass::NotACount,
+        why: "the stream `output_index` of the reasoning delta (:890), the text delta (:949) and \
+              the #305 annotation arm (:1021, `34a06f2500`), which mirrors :949 so a citation lands \
+              on the block its text did (an index-less annotation goes with index-less text, at 0); \
+              clamped to MAX_OUTPUT_INDEX; it is only the `open_tools` key (raw or + \
+              TEXT_INDEX_KEY_OFFSET) and the IrStreamEvent BlockStart/BlockDelta `index` — block \
+              position, never a usage field. v1.5.5 `crates/busbar/src/proto/openai_responses/\
+              reader.rs:679` and `:718` have the same default; 1.5.5 had no annotation arm",
     },
     Allow {
         file: "crates/busbar-plane-llm/src/codec/openai_chat/handler.rs",
-        needle: "get(keys::START)",
+        item: "read_transcription_response",
+        reads: 5,
         class: AllowClass::NotACount,
-        why: "a transcription timing offset — metadata echoed back, never metered",
-    },
-    Allow {
-        file: "crates/busbar-plane-llm/src/codec/openai_chat/handler.rs",
-        needle: "get(keys::END)",
-        class: AllowClass::NotACount,
-        why: "a transcription timing offset — metadata echoed back, never metered",
+        why: "a transcription segment's own id and the segment and word timing offsets \
+              (`start`/`end`) — metadata echoed back, never metered",
     },
     Allow {
         file: "crates/busbar-plane-streaming/src/codec/topology/twilio.rs",
-        needle: "get(\"sampleRate\")",
+        item: "decode",
+        reads: 2,
         class: AllowClass::NotACount,
-        why: "a media format's sample rate, not a metered quantity",
-    },
-    Allow {
-        file: "crates/busbar-plane-streaming/src/codec/topology/twilio.rs",
-        needle: "get(\"channels\")",
-        class: AllowClass::NotACount,
-        why: "a media format's channel count, not a metered quantity",
+        why: "a media format's sample rate and channel count, not metered quantities",
     },
     Allow {
         file: "crates/busbar-plane-streaming/src/twilio.rs",
-        needle: "get(\"sampleRate\")",
+        item: "decode",
+        reads: 2,
         class: AllowClass::NotACount,
-        why: "a media format's sample rate, not a metered quantity",
-    },
-    Allow {
-        file: "crates/busbar-plane-streaming/src/twilio.rs",
-        needle: "get(\"channels\")",
-        class: AllowClass::NotACount,
-        why: "a media format's channel count, not a metered quantity",
+        why: "a media format's sample rate and channel count, not metered quantities",
     },
     Allow {
         file: "crates/busbar-kernel/src/config/migrate.rs",
-        needle: "price_per_1k_tokens_cents",
+        item: "migrate_governance",
+        reads: 1,
         class: AllowClass::NotACount,
-        why:
-            "the #44 config boundary: a configured decimal read once at parse, not a runtime count",
+        why: "the #44 config boundary: `price_per_1k_tokens_cents`, a configured decimal read once \
+              at parse, not a runtime count",
     },
     Allow {
         file: "crates/busbar-plane-streaming/src/codec/ir/codec/mod.rs",
-        needle: "fn u64_at",
+        item: "u64_at",
+        reads: 1,
         class: AllowClass::NotACount,
         why: "measured 2026-09-24: its only callers are a truncate's content_index and three audio \
               timings (audio_end_ms, audio_start_ms) — an index and timing metadata, never metered; \
@@ -762,33 +899,49 @@ pub const ALLOWED_COUNT_READS: &[Allow] = &[
 // The persisted-record scan set (#81a)
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
 
-/// Where a persisted money record can live. A struct in one of these that holds a `Count` without a
-/// scale discriminator is a row nobody can read back.
+/// WHERE A PERSISTED MONEY RECORD CAN LIVE: DERIVED, NOT LISTED (audit xtask-X3 finding 12). Every
+/// production `.rs` file under a crate's `src/` that names `Serialize` in CODE (a derive, an `impl`,
+/// an import — comments and literals do not count) is a home, and every `struct` in a home that
+/// holds a `Count` must name its scale. A record is persisted by being serialised, wherever it
+/// lives, so the census follows the derive rather than a path.
 ///
-/// EVERY HOME IS NAMED, AND ONLY AN EMPTY SET IS A FAILURE. The record shapes have already moved
-/// twice — out of `busbar-api`, into the ledger, and out again into the contract under #83/#84 — so
-/// pinning one path would red the gate for a relocation and pinning none would let the ban follow
-/// the file out of the tree. The rule is: scan every home that is there, and refuse only when none
-/// of them is.
-///
-/// AND THAT TOLERANCE IS WHY THE SECOND MOVE LEFT A DEAD ENTRY BEHIND FOR FREE. `cx.read` on a home
-/// that is not there is a `continue`, so `crates/busbar-kernel-ledger/src/records.rs` sat in this
-/// list naming nothing and cost the row no verdict at all. The move is on the record, not inferred:
-///
-/// ```text
-/// $ git log --diff-filter=R --name-status -- crates/busbar-kernel-ledger/src/records.rs
-/// 1059d3c36  R100  crates/busbar-kernel-ledger/src/records.rs -> crates/busbar-contract/src/records.rs
-/// ```
-///
-/// `R100` — a byte-identical rename, into the home that is already first on this list. So the entry
-/// is struck rather than repointed: its destination is enumerated, and the ledger crate is not a
-/// persisted-record home any more by a second measure as well — it derives `Serialize` on nothing
-/// (`grep -rn 'derive(.*Serialize' crates/busbar-kernel-ledger/src` is empty against a control of 19
-/// hits in the contract's `records.rs`). Nothing this list used to see is unseen now.
-///
-/// The loader's `legacy_usage.rs` (the 1.5.5 store wire's four-tier usage row) went with the JSON
-/// store lane (THE DESIGN §11.1, the P2 switch-over): struck with its file.
-const PERSISTED_RECORD_HOMES: &[&str] = &["crates/busbar-contract/src/records.rs"];
+/// THE LIST THIS REPLACES named one file, `crates/busbar-contract/src/records.rs`, which holds no
+/// `Count` at all — the row was vacuous by construction, and persisted rows in other crates (the mcp
+/// plane's `record.rs` rows derive `Serialize`) were in no home. The record shapes have moved twice
+/// (`busbar-api` → the ledger → the contract, `1059d3c36` R100), which is why a path list goes stale.
+const PERSISTED_CENSUS_ROOT: &str = "crates";
+
+/// THE FLOOR UNDER THE DERIVED CENSUS. An empty census is "no record holds a `Count`" for a reason
+/// nobody can see, so it is refused; the floor sits below the measured count (MEASURED 2026-10-07 on
+/// predev `5e672d125d`: see the census test) so ordinary churn does not trip it and a census that
+/// went blind does.
+const PERSISTED_CENSUS_FLOOR: usize = 60;
+
+/// Every persisted-record home among `files`: production files under a crate's `src/` that name
+/// `Serialize` in code.
+fn persisted_record_homes(
+    cx: &Ctx,
+    files: Vec<crate::ctx::SourceFile>,
+) -> Vec<crate::ctx::SourceFile> {
+    production_only(
+        cx,
+        files
+            .into_iter()
+            .filter(|f| f.rel_str().contains("/src/"))
+            .collect(),
+    )
+    .into_iter()
+    .filter(|f| {
+        if !f.text.contains("Serialize") {
+            return false;
+        }
+        let mut st = scan::LexState::default();
+        f.text
+            .lines()
+            .any(|l| word_hit(&scan::blank_code(l, &mut st), "Serialize"))
+    })
+    .collect()
+}
 
 /// What a record must name beside a `Count` for the mantissa to mean anything. Any of them: the
 /// constant, the serde default function, or a field whose name is the discriminator itself.
@@ -1190,13 +1343,19 @@ fn flatten(src: &str) -> Flat {
 struct CountHit {
     line: usize,
     accessor: &'static str,
-    /// The text leading up to the read, which is what an allowance needle is matched against.
-    window: String,
 }
 
 /// Step past whitespace, the accessor's own parens, a closing paren that ends an `and_then(…)`, and
 /// a turbofish — everything that can sit between the accessor's name and the `.` that follows it.
-fn skip_to_dot(bytes: &[u8], text: &str, mut i: usize) -> Option<usize> {
+fn skip_to_dot(bytes: &[u8], text: &str, i: usize) -> Option<usize> {
+    let i = skip_call(bytes, text, i)?;
+    (i < bytes.len() && bytes[i] == b'.').then_some(i + 1)
+}
+
+/// The index of the first byte after the accessor's call that is not whitespace, a paren group or a
+/// turbofish: a `.` (a method follows) or a `{` (the body of an `if let` the read is the scrutinee
+/// of).
+fn skip_call(bytes: &[u8], text: &str, mut i: usize) -> Option<usize> {
     let mut budget = 64usize;
     while i < bytes.len() && budget > 0 {
         budget -= 1;
@@ -1212,7 +1371,7 @@ fn skip_to_dot(bytes: &[u8], text: &str, mut i: usize) -> Option<usize> {
             _ => break,
         }
     }
-    (i < bytes.len() && bytes[i] == b'.').then_some(i + 1)
+    Some(i)
 }
 
 /// The index just past the group that opens at `i`, or `None` if it never closes.
@@ -1263,18 +1422,52 @@ fn read_args(bytes: &[u8], text: &str, mut i: usize) -> Option<(String, usize)> 
     Some((arg, end))
 }
 
-/// Does a silent zero default follow the accessor that ends at `i`? Returns the index past it.
-fn zero_default_after(flat: &Flat, i: usize) -> Option<usize> {
+/// Does a silent zero default follow the accessor that starts at `start` and ends at `i`? Returns
+/// the index past it. The default is judged by VALUE ([`is_zero_value`]), in every shape that
+/// substitutes it: `unwrap_or_default()`, `unwrap_or(Z)`, `unwrap_or_else(Z)`, `map_or(Z, f)`,
+/// `map_or_else(Z, f)`, and `if let Some(n) = <read> { … } else { Z }`.
+fn zero_default_after(flat: &Flat, start: usize, i: usize) -> Option<usize> {
     let bytes = flat.text.as_bytes();
+    let next = skip_call(bytes, &flat.text, i)?;
+    if bytes.get(next) == Some(&b'{') {
+        return if_let_else_zero(flat, start, next);
+    }
     let dot = skip_to_dot(bytes, &flat.text, i)?;
     let (name, after) = read_ident(bytes, &flat.text, dot);
     match name.as_str() {
-        "unwrap_or_default" | "unwrap_or" | "unwrap_or_else" => {
+        "unwrap_or_default" => read_args(bytes, &flat.text, after).map(|(_, end)| end),
+        "unwrap_or" | "unwrap_or_else" => {
             let (arg, end) = read_args(bytes, &flat.text, after)?;
-            ZERO_DEFAULT_ARGS.contains(&arg.as_str()).then_some(end)
+            is_zero_value(&arg).then_some(end)
+        }
+        "map_or" | "map_or_else" => {
+            let open = flat.text[after..].find('(')? + after;
+            let end = balanced(bytes, open, b'(', b')')?;
+            is_zero_value(first_arg(&flat.text[open + 1..end - 1])).then_some(end)
         }
         _ => None,
     }
+}
+
+/// `if let Some(n) = <read> { … } else { Z }` with `Z` zero: the `{` at `body` opens the `if let`
+/// body, and the read starting at `start` must be that `if let`'s scrutinee (no `{`, `}` or `;`
+/// between the `if let` and the read).
+fn if_let_else_zero(flat: &Flat, start: usize, body: usize) -> Option<usize> {
+    let bytes = flat.text.as_bytes();
+    let head = &flat.text[..start];
+    let at = head.rfind("if let ")?;
+    if head[at..].contains(['{', '}', ';']) {
+        return None;
+    }
+    let after_body = balanced(bytes, body, b'{', b'}')?;
+    let rest = flat.text[after_body..].trim_start();
+    let rest = rest.strip_prefix("else")?.trim_start();
+    if !rest.starts_with('{') {
+        return None;
+    }
+    let open = flat.text.len() - rest.len();
+    let close = balanced(bytes, open, b'{', b'}')?;
+    is_zero_value(&flat.text[open..close]).then_some(close)
 }
 
 /// Every defaulted JSON-number read in one file, by shape — MEMOISED on the file's bytes.
@@ -1309,17 +1502,12 @@ fn read_count_hits(text: &str) -> Vec<CountHit> {
     let mut hits = Vec::new();
     for &accessor in NUMBER_ACCESSORS.iter().chain(COUNT_HELPERS) {
         for start in word_positions(&flat.text, accessor) {
-            let Some(end) = zero_default_after(&flat, start + accessor.len()) else {
+            if zero_default_after(&flat, start, start + accessor.len()).is_none() {
                 continue;
-            };
-            let mut back = start.saturating_sub(ALLOW_WINDOW);
-            while back > 0 && !flat.text.is_char_boundary(back) {
-                back -= 1;
             }
             hits.push(CountHit {
                 line: flat.line_of.get(start).copied().unwrap_or(0),
                 accessor,
-                window: flat.text[back..end.min(flat.text.len())].to_string(),
             });
         }
     }
@@ -1327,14 +1515,132 @@ fn read_count_hits(text: &str) -> Vec<CountHit> {
     hits
 }
 
-/// The rows the count-read scan produces, and the allowances it actually used.
+/// Every `fn` item in `text` as (name, first line, last line), 1-based and inclusive, measured over
+/// blanked literals and comments. A body-less `fn` (a trait method's declaration) is not an item a
+/// read can sit in and is left out.
+fn fn_items(text: &str) -> Vec<(String, usize, usize)> {
+    let mut st = scan::LexState::default();
+    let lines: Vec<String> = text.lines().map(|l| scan::blank_code(l, &mut st)).collect();
+    let mut out = Vec::new();
+    for (i, code) in lines.iter().enumerate() {
+        for at in word_positions(code, "fn") {
+            let rest = code[at + 2..].trim_start();
+            let name: String = rest
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                .collect();
+            if name.is_empty() || !rest[name.len()..].trim_start().starts_with(['(', '<']) {
+                continue;
+            }
+            if let Some(last) = item_last_line(&lines, i, at) {
+                out.push((name, i + 1, last));
+            }
+        }
+    }
+    out
+}
+
+/// The 1-based line the item declared at `lines[start][col..]` closes on: its header runs to the
+/// `{` at paren depth zero, its body to the brace that balances it. `None` for a declaration that
+/// ends in `;` first.
+fn item_last_line(lines: &[String], start: usize, col: usize) -> Option<usize> {
+    let mut depth = 0i32;
+    let mut brace = 0i32;
+    let mut opened = false;
+    for (i, code) in lines.iter().enumerate().skip(start) {
+        let from = if i == start { col } else { 0 };
+        for ch in code[from..].chars() {
+            match ch {
+                '(' | '[' if !opened => depth += 1,
+                ')' | ']' if !opened => depth -= 1,
+                ';' if !opened && depth <= 0 => return None,
+                '{' => {
+                    if opened || depth <= 0 {
+                        opened = true;
+                        brace += 1;
+                    }
+                }
+                '}' if opened => {
+                    brace -= 1;
+                    if brace == 0 {
+                        return Some(i + 1);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    None
+}
+
+/// The innermost `fn` item enclosing 1-based `line`, or `""` for a read in no `fn` at all (which
+/// no allowance can name).
+fn enclosing_fn(items: &[(String, usize, usize)], line: usize) -> &str {
+    items
+        .iter()
+        .filter(|(_, first, last)| *first <= line && line <= *last)
+        .max_by_key(|(_, first, _)| *first)
+        .map_or("", |(name, _, _)| name.as_str())
+}
+
+/// The rows the count-read scan produces, and how many reads each allowance matched.
 struct CountReadScan {
     offenders: Vec<String>,
-    used: std::collections::BTreeSet<usize>,
+    /// Reads matched, per [`ALLOWED_COUNT_READS`] index.
+    used: std::collections::BTreeMap<usize, usize>,
     pending: usize,
 }
 
+/// EVERY ALLOWANCE THAT DOES NOT SAY WHAT IS THERE: one that matched no read, and one whose item
+/// holds more or fewer defaulted reads than it states. Each is a finding, never a note.
+fn allowance_drift(used: &std::collections::BTreeMap<usize, usize>) -> Vec<String> {
+    ALLOWED_COUNT_READS
+        .iter()
+        .enumerate()
+        .filter_map(|(i, a)| {
+            let got = used.get(&i).copied().unwrap_or(0);
+            if got == a.reads {
+                return None;
+            }
+            Some(if got == 0 {
+                format!(
+                    "{} `fn {}`: the allowance matched NO defaulted read — delete it (a standing \
+                     permission nobody uses is a permission the next read takes)",
+                    a.file, a.item
+                )
+            } else {
+                format!(
+                    "{} `fn {}`: {got} defaulted read(s) where the allowance states {} — a new read \
+                     is riding it, or one left and the count was not lowered",
+                    a.file, a.item, a.reads
+                )
+            })
+        })
+        .collect()
+}
+
 fn row_count_read(scan: &CountReadScan) -> Row {
+    let drift = allowance_drift(&scan.used);
+    if !drift.is_empty() {
+        return Row::fail(
+            ROW_COUNT_READ,
+            "a count-read allowance does not match the reads it names",
+            format!(
+                "{} allowance(s) out of step: {}{}",
+                drift.len(),
+                drift.join(" | "),
+                if scan.offenders.is_empty() {
+                    String::new()
+                } else {
+                    format!(
+                        " — and {} unallowed defaulted read(s): {}",
+                        scan.offenders.len(),
+                        scan.offenders.join(" | ")
+                    )
+                }
+            ),
+        );
+    }
     if !scan.offenders.is_empty() {
         return Row::fail(
             ROW_COUNT_READ,
@@ -1360,24 +1666,11 @@ fn row_count_read(scan: &CountReadScan) -> Row {
             ),
         );
     }
-    let retired: Vec<&str> = ALLOWED_COUNT_READS
-        .iter()
-        .enumerate()
-        .filter(|(i, _)| !scan.used.contains(i))
-        .map(|(_, a)| a.needle)
-        .collect();
-    let mut detail = format!(
-        "every defaulted number read on the money path is a named, reasoned allowance; {} still \
-         owed to the #81 conversion wave",
+    let detail = format!(
+        "every defaulted number read on the money path is a named, reasoned allowance on its own \
+         `fn`, each matching exactly the reads it states; {} still owed to the #81 conversion wave",
         scan.pending
     );
-    if !retired.is_empty() {
-        detail.push_str(&format!(
-            " — {} allowance(s) now match nothing and can be deleted: {}",
-            retired.len(),
-            retired.join(", ")
-        ));
-    }
     Row::pass(
         ROW_COUNT_READ,
         "no count is read with a silent zero default",
@@ -1457,17 +1750,15 @@ fn walk_area(cx: &Ctx, area: &CountRoot) -> Result<Vec<crate::ctx::SourceFile>, 
     let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     let mut files = Vec::new();
     for home in area.homes {
-        let spec = WalkSpec::new([*home]).ext("rs").exclude([
-            EXCLUDE_TESTS_DIR,
-            EXCLUDE_TESTS_FILE,
-            EXCLUDE_TESTS_MOD,
-        ]);
+        let spec = WalkSpec::new([*home]).ext("rs");
         // A home that is not there is a home the fold has already emptied; the floor over the union
         // is what says whether the AREA is still being scanned.
         if let Ok(found) = cx.walk(&spec) {
             files.extend(found.into_iter().filter(|f| seen.insert(f.rel_str())));
         }
     }
+    // Test scope over the UNION, so a module declared in one home and living in another resolves.
+    let files = production_only(cx, files);
     if files.len() < area.floor {
         return Err(format!(
             "{}: {} distinct production file(s) across {}, below the floor of {}",
@@ -1495,13 +1786,10 @@ impl Gate for NoFloatMoneyGate {
     }
 
     fn run(&self, cx: &Ctx) -> Verdict {
-        // The ledger crate WHOLE, card-build file included, minus the fixtures, held to its floor.
+        // The ledger crate WHOLE, card-build file included, minus the test-scope files, held to its floor.
         // The card build's conversion is exempt by named item ([`MONEY_INTAKE`]), never by file.
-        let ledger_spec = WalkSpec::new([LEDGER_SRC])
-            .ext("rs")
-            .exclude([EXCLUDE_TESTS_DIR, EXCLUDE_TESTS_FILE])
-            .min_files(SCAN_FLOOR);
-        let ledger_files = match cx.walk(&ledger_spec) {
+        let ledger_spec = WalkSpec::new([LEDGER_SRC]).ext("rs");
+        let ledger_files = match walk_production(cx, &ledger_spec, SCAN_FLOOR) {
             Ok(f) => f,
             Err(e) => {
                 // The scan could not be taken. It is NOT a clean money path; every owed row says so
@@ -1543,11 +1831,10 @@ impl Gate for NoFloatMoneyGate {
 
         // THE ADMISSION DECISION, held to its own floor, the same treatment the ledger gets. A
         // money scope that reads as empty is REFUSED, never scanned as zero hits and printed green.
-        let governance_files = match cx.walk(
-            &WalkSpec::new([GOVERNANCE_SRC])
-                .ext("rs")
-                .exclude([EXCLUDE_TESTS_DIR, EXCLUDE_TESTS_FILE, EXCLUDE_TESTS_MOD])
-                .min_files(GOVERNANCE_FLOOR),
+        let governance_files = match walk_production(
+            cx,
+            &WalkSpec::new([GOVERNANCE_SRC]).ext("rs"),
+            GOVERNANCE_FLOOR,
         ) {
             Ok(f) => f,
             Err(e) => {
@@ -1591,12 +1878,7 @@ impl Gate for NoFloatMoneyGate {
             (AUDIT_SRC, AUDIT_FLOOR, "the sealed money-facts crate"),
             (WAL_SRC, WAL_FLOOR, "the money-record durability crate"),
         ] {
-            match cx.walk(
-                &WalkSpec::new([root])
-                    .ext("rs")
-                    .exclude([EXCLUDE_TESTS_DIR, EXCLUDE_TESTS_FILE, EXCLUDE_TESTS_MOD])
-                    .min_files(floor),
-            ) {
+            match walk_production(cx, &WalkSpec::new([root]).ext("rs"), floor) {
                 Ok(f) => whole_crate_files.extend(f),
                 Err(e) => float_scan_problems.push(format!(
                     "{e} {root} is {what}. If it legitimately moved, point the root at its new home \
@@ -1800,10 +2082,13 @@ impl Gate for NoFloatMoneyGate {
         offenders.dedup();
         set_problems.extend(float_scan_problems.iter().cloned());
 
-        // THE COUNT-READ SHAPE, over every enumerated money root.
+        // THE COUNT-READ SHAPE, over every enumerated money root. A file two areas share (the
+        // contract's neutral carriers are inside the contract area) is read once, so its reads are
+        // counted against an allowance once.
+        let mut scanned: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
         let mut count_scan = CountReadScan {
             offenders: Vec::new(),
-            used: std::collections::BTreeSet::new(),
+            used: std::collections::BTreeMap::new(),
             pending: 0,
         };
         for area in COUNT_READ_ROOTS {
@@ -1819,24 +2104,32 @@ impl Gate for NoFloatMoneyGate {
             };
             for f in &files {
                 let rel = f.rel_str();
-                if rel == SUPERSEDED_SEAM {
+                if !scanned.insert(rel.clone()) {
                     continue;
                 }
-                for hit in scan_count_reads(&f.text).iter() {
+                let hits = scan_count_reads(&f.text);
+                if hits.is_empty() {
+                    continue;
+                }
+                let items = fn_items(&f.text);
+                for hit in hits.iter() {
+                    let item = enclosing_fn(&items, hit.line);
                     let allowed = ALLOWED_COUNT_READS
                         .iter()
                         .enumerate()
-                        .find(|(_, a)| a.file == rel && hit.window.contains(a.needle));
+                        .find(|(_, a)| a.file == rel && !item.is_empty() && a.item == item);
                     match allowed {
                         Some((i, a)) => {
-                            count_scan.used.insert(i);
+                            *count_scan.used.entry(i).or_default() += 1;
                             if a.class == AllowClass::PendingConversion {
                                 count_scan.pending += 1;
                             }
                         }
                         None => count_scan.offenders.push(format!(
-                            "{rel}:{}: `{}` defaulted to zero instead of refusing (#81)",
-                            hit.line, hit.accessor
+                            "{rel}:{}: `{}` defaulted to zero instead of refusing (#81), in `fn {}`",
+                            hit.line,
+                            hit.accessor,
+                            if item.is_empty() { "<none>" } else { item }
                         )),
                     }
                 }
@@ -1845,15 +2138,39 @@ impl Gate for NoFloatMoneyGate {
         count_scan.offenders.sort();
         count_scan.offenders.dedup();
 
-        // THE PERSISTED-COUNT DISCRIMINATOR (#81a).
+        // THE PERSISTED-COUNT DISCRIMINATOR (#81a), over the DERIVED homes.
         let mut scale_offenders = Vec::new();
-        let mut homes_read = 0usize;
-        for rel in PERSISTED_RECORD_HOMES {
-            let Ok(text) = cx.read(*rel) else {
-                continue;
-            };
-            homes_read += 1;
-            for (line, body) in struct_bodies(&text) {
+        // LISTED, THEN READ ONLY UNDER `src/`: a crate's integration tests, benches and fixtures
+        // are never a home, so they are never read.
+        let homes = match cx.list(&WalkSpec::new([PERSISTED_CENSUS_ROOT]).ext("rs")) {
+            Ok(rels) => {
+                let mut files = Vec::new();
+                for rel in rels
+                    .into_iter()
+                    .filter(|r| r.to_string_lossy().contains("/src/"))
+                {
+                    match cx.read(&rel) {
+                        Ok(text) => files.push(crate::ctx::SourceFile {
+                            abs: cx.abs(&rel),
+                            rel,
+                            text,
+                        }),
+                        Err(e) => set_problems.push(format!(
+                            "the persisted-record census could not read {}: {e}",
+                            rel.display()
+                        )),
+                    }
+                }
+                persisted_record_homes(cx, files)
+            }
+            Err(e) => {
+                set_problems.push(format!("the persisted-record census could not walk: {e}"));
+                Vec::new()
+            }
+        };
+        for home in &homes {
+            let rel = home.rel_str();
+            for (line, body) in struct_bodies(&home.text) {
                 if !word_hit(&body, "Count") {
                     continue;
                 }
@@ -1867,12 +2184,13 @@ impl Gate for NoFloatMoneyGate {
         }
         scale_offenders.sort();
         scale_offenders.dedup();
-        if homes_read == 0 {
+        if homes.len() < PERSISTED_CENSUS_FLOOR {
             set_problems.push(format!(
-                "not one of the {} named persisted-record homes could be read — the record shapes \
-                 moved somewhere this gate does not know about, and a ban that scans nothing is not \
-                 a ban",
-                PERSISTED_RECORD_HOMES.len()
+                "the persisted-record census found {} production file(s) naming `Serialize` under \
+                 {PERSISTED_CENSUS_ROOT}/*/src, below the floor of {PERSISTED_CENSUS_FLOOR} — a census \
+                 that went blind reads exactly like a tree with no persisted `Count`, and a ban that \
+                 scans nothing is not a ban",
+                homes.len()
             ));
         }
 
@@ -2331,18 +2649,58 @@ impl Gate for NoFloatMoneyGate {
             &["snapshot/money.rs"],
         ));
 
-        // A FLOAT UNDER A `/tests/` DIRECTORY IS A FIXTURE'S NUMBER, not the money path's.
-        let mut ov = Overlay::new();
-        ov.set(
-            format!("{LEDGER_SRC}/tests/planted_fixture.rs"),
-            format!("fn f() {{ let _: {float_ty} = 1.0; }}\n"),
-        );
-        report.push(Case {
-            name: "a float under a /tests/ directory is excluded".to_string(),
-            covers: vec![ROW_NO_FLOAT.to_string()],
-            expected: crate::gates::Expect::Green,
-            got: verdict_expect(self, &cx.with_overlay(ov)),
-        });
+        // ── TEST SCOPE IS THE DECLARING `mod`'S CFG GATE, NOT THE FILE'S NAME (audit X3 #8) ────
+        //
+        // A test-shaped name declared WITHOUT the gate is compiled into the crate and is scanned;
+        // the same file declared under `#[cfg(test)]` is a fixture's number and is not.
+        let ledger_lib = format!("{LEDGER_SRC}/lib.rs");
+        let fixture = format!("fn f() {{ let _: {float_ty} = 1.0; }}\n");
+        for (what, file, decl, red) in [
+            (
+                "an un-gated `*_tests.rs` module in the ledger",
+                format!("{LEDGER_SRC}/planted_tests.rs"),
+                "\npub mod planted_tests;\n",
+                true,
+            ),
+            (
+                "an un-gated module under the ledger's `tests/` directory",
+                format!("{LEDGER_SRC}/tests/planted_fixture.rs"),
+                "\n#[path = \"tests/planted_fixture.rs\"]\npub mod planted_fixture;\n",
+                true,
+            ),
+            (
+                "a `#[cfg(test)]`-declared module under the ledger's `tests/` directory",
+                format!("{LEDGER_SRC}/tests/planted_fixture.rs"),
+                "\n#[cfg(test)]\n#[path = \"tests/planted_fixture.rs\"]\nmod planted_fixture;\n",
+                false,
+            ),
+        ] {
+            let mut ov = Overlay::new();
+            ov.set(&file, fixture.clone());
+            if let Err(e) = Edit::Append(decl.to_string()).apply(cx, &ledger_lib, &mut ov) {
+                report.note_infra_failure(format!(
+                    "no-float-money selftest: could not declare a planted module in {ledger_lib} ({e})"
+                ));
+                continue;
+            }
+            if red {
+                report.push(prove_red(
+                    cx,
+                    self,
+                    format!("a float in {what} is scanned (compiled into the crate)"),
+                    &[ROW_NO_FLOAT],
+                    ov,
+                    &[&float_ty, "planted_"],
+                ));
+            } else {
+                report.push(Case {
+                    name: format!("a float in {what} is test scope and stays green"),
+                    covers: vec![ROW_NO_FLOAT.to_string()],
+                    expected: crate::gates::Expect::Green,
+                    got: verdict_expect(self, &cx.with_overlay(ov)),
+                });
+            }
+        }
 
         // A COMMENT-ONLY MENTION IS PROSE. The rule that exempts it is the rule that lets the money
         // path document the ban.
@@ -2414,6 +2772,19 @@ impl Gate for NoFloatMoneyGate {
                 "a line break inside the chain",
                 "v\n        .as_u64()\n        .unwrap_or(0)",
             ),
+            // AUDIT X3 #11: THE ZERO IS DECIDED BY VALUE, NOT BY A LIST OF SPELLINGS.
+            ("a 0u16 literal", "v.as_u64().unwrap_or(0u16 as u64)"),
+            ("a 0i16 literal", "v.as_i64().unwrap_or(0i16 as i64) as u64"),
+            ("u64::MIN", "v.as_u64().unwrap_or(u64::MIN)"),
+            (
+                "unwrap_or_else(Default::default)",
+                "v.as_u64().unwrap_or_else(Default::default)",
+            ),
+            ("a map_or zero", "v.as_u64().map_or(0, |n| n)"),
+            (
+                "an if-let with a zero else",
+                "if let Some(n) = v.as_u64() { n } else { 0 }",
+            ),
         ] {
             report.push(plant(
                 cx,
@@ -2426,6 +2797,143 @@ impl Gate for NoFloatMoneyGate {
                 )),
                 &["planted_spelling"],
             ));
+        }
+
+        // AUDIT X3 #11: THE COUNT SEAM ITSELF IS SCANNED. It was skipped by name as "the seam being
+        // replaced" while it is the live reader the handlers call.
+        report.push(plant(
+            cx,
+            self,
+            "a defaulted count read in the LLM codec's count seam (`usage_count.rs`) is flagged",
+            &[ROW_COUNT_READ],
+            COUNT_SEAM,
+            Edit::Append(
+                "\npub fn planted_seam(v: &serde_json::Value) -> u64 {\n    v.as_u64().unwrap_or(0)\n}\n"
+                    .to_string(),
+            ),
+            &["usage_count.rs", "planted_seam"],
+        ));
+
+        // AUDIT X3 #8, the count-read half: an un-gated `*_tests.rs` module is production.
+        let mut ov = Overlay::new();
+        ov.set(
+            "crates/busbar-plane-llm/src/planted_census_tests.rs",
+            "pub fn planted(v: &serde_json::Value) -> u64 {\n    v.as_u64().unwrap_or(0)\n}\n",
+        );
+        match Edit::Append("\npub mod planted_census_tests;\n".to_string()).apply(
+            cx,
+            "crates/busbar-plane-llm/src/lib.rs",
+            &mut ov,
+        ) {
+            Ok(()) => report.push(prove_red(
+                cx,
+                self,
+                "a defaulted count read in an un-gated `*_tests.rs` module is flagged",
+                &[ROW_COUNT_READ],
+                ov,
+                &["planted_census_tests"],
+            )),
+            Err(e) => report.note_infra_failure(format!(
+                "no-float-money selftest: could not declare a planted module in the llm plane ({e})"
+            )),
+        }
+
+        // ── AUDIT X3 #7: AN ALLOWANCE IS ITS `fn` AND ITS EXACT COUNT ──────────────────────────
+        //
+        // 1. A NEW defaulted read placed right after two allowed media-format reads, in the same
+        //    item, is a finding: it used to sit inside the allowance's 200-byte window and ride it.
+        let twilio = "crates/busbar-plane-streaming/src/twilio.rs";
+        match cx.read(twilio) {
+            Ok(text) => {
+                let at = "            if encoding != ASSUMED_ENCODING";
+                if text.contains(at) {
+                    let mut ov = Overlay::new();
+                    ov.set(
+                        twilio,
+                        text.replacen(
+                            at,
+                            &format!(
+                                "            let _planted_billed = mf.get(\"usage\").and_then(serde_json::Value::as_u64).unwrap_or(0);\n{at}"
+                            ),
+                            1,
+                        ),
+                    );
+                    report.push(prove_red(
+                        cx,
+                        self,
+                        "a new defaulted read beside allowed ones in the same `fn` is a finding",
+                        &[ROW_COUNT_READ],
+                        ov,
+                        &["twilio.rs", "decode", "3 defaulted read(s)"],
+                    ));
+                } else {
+                    report.note_infra_failure(format!(
+                        "no-float-money selftest: {twilio} no longer spells `{at}`"
+                    ));
+                }
+            }
+            Err(e) => report.note_infra_failure(format!(
+                "no-float-money selftest: could not read {twilio} ({e})"
+            )),
+        }
+
+        // 1b. THE EXACT COUNT HOLDS FOR THE RULED INDEX ROWS TOO: one more defaulted read inside
+        //     `read_response_events` (a fifth across the two ruled rows) is a finding.
+        let responses = "crates/busbar-plane-llm/src/codec/openai_responses/reader.rs";
+        match body_plant(
+            cx,
+            responses,
+            "read_response_events",
+            "let _planted_tokens = data.get(\"usage\").and_then(|u| u.as_u64()).map_or(0, |v| v);",
+        ) {
+            Ok(ov) => report.push(prove_red(
+                cx,
+                self,
+                "a fifth defaulted read in a ruled `read_response_events` is a finding",
+                &[ROW_COUNT_READ],
+                ov,
+                &[
+                    "openai_responses/reader.rs",
+                    "read_response_events",
+                    "4 defaulted read(s)",
+                ],
+            )),
+            Err(e) => report.note_infra_failure(format!(
+                "no-float-money selftest: could not plant inside {responses} ({e})"
+            )),
+        }
+
+        // 2. AN ALLOWANCE WHOSE READ IS GONE FAILS THE ROW. It used to be a note on a PASS.
+        let u64_at = ALLOWED_COUNT_READS
+            .iter()
+            .find(|a| a.item == "u64_at")
+            .map_or("", |a| a.file);
+        match cx.read(u64_at) {
+            Ok(text) => {
+                let from = "and_then(Value::as_u64).unwrap_or_default()";
+                if text.contains(from) {
+                    let mut ov = Overlay::new();
+                    ov.set(
+                        u64_at,
+                        text.replacen(from, "and_then(Value::as_u64).unwrap_or(7)", 1),
+                    );
+                    report.push(prove_red(
+                        cx,
+                        self,
+                        "an allowance that matches no defaulted read fails the row",
+                        &[ROW_COUNT_READ],
+                        ov,
+                        &["u64_at", "matched NO"],
+                    ));
+                } else {
+                    report.note_infra_failure(format!(
+                        "no-float-money selftest: {u64_at} no longer spells `{from}`"
+                    ));
+                }
+            }
+            Err(e) => report.note_infra_failure(format!(
+                "no-float-money selftest: could not read the u64_at allowance's file ({e})"
+            )),
         }
 
         // A NON-ZERO DEFAULT IS OUT OF SCOPE, on purpose: it substitutes a value the author chose
@@ -2484,11 +2992,22 @@ impl Gate for NoFloatMoneyGate {
         }
 
         // ── THE PERSISTED-COUNT DISCRIMINATOR ─────────────────────────────────────────────────
-        let record_home = PERSISTED_RECORD_HOMES
-            .iter()
-            .copied()
-            .find(|p| cx.exists(p))
-            .unwrap_or(PERSISTED_RECORD_HOMES[0]);
+        //
+        // AUDIT X3 #12: THE HOMES ARE DERIVED. A serialised record holding a `Count` OUTSIDE the
+        // contract's `records.rs` — the mcp plane's persisted rows — is a home too.
+        report.push(plant(
+            cx,
+            self,
+            "a Serialize record holding a Count with no scale, outside records.rs, is flagged",
+            &[ROW_COUNT_SCALE],
+            "crates/busbar-plane-mcp/src/record.rs",
+            Edit::Append(
+                "\n#[derive(serde::Serialize)]\npub struct PlantedMcpRow {\n    pub tokens: Count,\n}\n"
+                    .to_string(),
+            ),
+            &["plane-mcp/src/record.rs", "names no scale"],
+        ));
+        let record_home = "crates/busbar-contract/src/records.rs";
         report.push(plant(
             cx,
             self,
@@ -2525,11 +3044,9 @@ impl Gate for NoFloatMoneyGate {
         // THE INSTRUMENT: the root that reads as empty. A ledger crate that moved or was renamed must
         // be REFUSED, not scanned as zero hits and printed green.
         let mut ov = Overlay::new();
-        match cx.walk(
-            &WalkSpec::new([LEDGER_SRC])
-                .ext("rs")
-                .exclude([EXCLUDE_TESTS_DIR, EXCLUDE_TESTS_FILE]),
-        ) {
+        // EVERY file goes, test files included: a test file whose declaring parent is gone has no
+        // gate over it any more and reads as production.
+        match cx.walk(&WalkSpec::new([LEDGER_SRC]).ext("rs")) {
             Ok(files) => {
                 for f in &files {
                     ov.remove(&f.rel);
@@ -3003,7 +3520,11 @@ mod tests {
     fn pending_conversions_above_the_ceiling_are_a_finding() {
         let at = CountReadScan {
             offenders: Vec::new(),
-            used: std::collections::BTreeSet::new(),
+            used: ALLOWED_COUNT_READS
+                .iter()
+                .enumerate()
+                .map(|(i, a)| (i, a.reads))
+                .collect(),
             pending: PENDING_CEILING,
         };
         assert_eq!(row_count_read(&at).status, Status::Pass);

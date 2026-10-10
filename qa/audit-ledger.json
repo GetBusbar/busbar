@@ -287,6 +287,42 @@
    ]
   },
   {
+   "id": "crates/busbar-auth-admin-tokens/src",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-auth-admin-tokens/src"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null,
+   "exclude": [
+    "crates/busbar-auth-admin-tokens/src/tests"
+   ]
+  },
+  {
+   "id": "crates/busbar-auth-header/src",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-auth-header/src"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null,
+   "exclude": [
+    "crates/busbar-auth-header/src/tests"
+   ]
+  },
+  {
    "id": "crates/busbar-contract/src",
    "kind": "production",
    "paths": [
@@ -499,6 +535,96 @@
      },
      "report": "The authorization server now fetches client metadata documents through the root connector, and its consent return check refuses control characters. Three serious defects remain. The consent screen stakes an approval under the raw scope text, but the library spends it under a sorted, defaulted scope set, so unsorted or omitted scopes loop forever. All server state is in-memory per node. Every config reload rebuilds the server, wiping tokens, clients and replay ledgers. Metadata fetches are uncached and unbounded, and refresh tokens never expire. Read fully."
     }
+   ]
+  },
+  {
+   "id": "crates/busbar-export-file/src",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-export-file/src"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null,
+   "exclude": [
+    "crates/busbar-export-file/src/tests"
+   ]
+  },
+  {
+   "id": "crates/busbar-export-otlp/src",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-export-otlp/src"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null,
+   "exclude": [
+    "crates/busbar-export-otlp/src/tests"
+   ]
+  },
+  {
+   "id": "crates/busbar-export-prometheus/src",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-export-prometheus/src"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null,
+   "exclude": [
+    "crates/busbar-export-prometheus/src/tests"
+   ]
+  },
+  {
+   "id": "crates/busbar-export-webhook/src",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-export-webhook/src"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null,
+   "exclude": [
+    "crates/busbar-export-webhook/src/tests"
+   ]
+  },
+  {
+   "id": "crates/busbar-hook-ranking/src",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-hook-ranking/src"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null,
+   "exclude": [
+    "crates/busbar-hook-ranking/src/tests"
    ]
   },
   {
@@ -1111,10 +1237,10 @@
    ]
   },
   {
-   "id": "crates/busbar-transport-stdio/src",
+   "id": "crates/busbar-secret-env/src",
    "kind": "production",
    "paths": [
-    "crates/busbar-transport-stdio/src"
+    "crates/busbar-secret-env/src"
    ],
    "tree_hash": null,
    "audited_at": null,
@@ -1125,7 +1251,136 @@
    "auditor": null,
    "fixed_at": null,
    "exclude": [
+    "crates/busbar-secret-env/src/tests"
+   ]
+  },
+  {
+   "id": "crates/busbar-secret-file/src",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-secret-file/src"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null,
+   "exclude": [
+    "crates/busbar-secret-file/src/tests"
+   ]
+  },
+  {
+   "id": "crates/busbar-transport-grpc/src",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-transport-grpc/src"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null,
+   "exclude": [
+    "crates/busbar-transport-grpc/src/tests"
+   ]
+  },
+  {
+   "id": "crates/busbar-transport-http/src",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-transport-http/src"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null,
+   "exclude": [
+    "crates/busbar-transport-http/src/tests"
+   ]
+  },
+  {
+   "id": "crates/busbar-transport-stdio/src",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-transport-stdio/src"
+   ],
+   "tree_hash": "6699e15269902b6d0e9ebccb658906ae98d31c568d2066fda023edabf7d75f76",
+   "audited_at": "f830faa691149288ddbaeda4b2efa444ce44d4b0",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "HIGH": 2,
+    "MEDIUM": 3,
+    "LOW": 3,
+    "NIT": 0
+   },
+   "report": "In the shipped build, the stdio transport is a line framer, not a carrier. Its door refuses dial, accept, read and write, and spawning, environment handling and kill-on-close live in core. The linked and dropped-in doors differ. The linked row is the memory-ABI framer. The dropped-in image exports a separate carrier that spawns children itself and runs its own runtime thread. Lines over 64 KiB fail the framing. No Peer auth point is offered. Framing allocates on every line. Read fully.",
+   "auditor": "opus-ledger-transport-stdio",
+   "fixed_at": null,
+   "exclude": [
     "crates/busbar-transport-stdio/src/tests"
+   ],
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-ledger-transport-stdio",
+     "audited_at": "f830faa691149288ddbaeda4b2efa444ce44d4b0",
+     "tree_hash": "6699e15269902b6d0e9ebccb658906ae98d31c568d2066fda023edabf7d75f76",
+     "counts": {
+      "HIGH": 2,
+      "MEDIUM": 3,
+      "LOW": 3,
+      "NIT": 0
+     },
+     "report": "In the shipped build, the stdio transport is a line framer, not a carrier. Its door refuses dial, accept, read and write, and spawning, environment handling and kill-on-close live in core. The linked and dropped-in doors differ. The linked row is the memory-ABI framer. The dropped-in image exports a separate carrier that spawns children itself and runs its own runtime thread. Lines over 64 KiB fail the framing. No Peer auth point is offered. Framing allocates on every line. Read fully."
+    }
+   ]
+  },
+  {
+   "id": "crates/busbar-transport-tcp/src",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-transport-tcp/src"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null,
+   "exclude": [
+    "crates/busbar-transport-tcp/src/tests"
+   ]
+  },
+  {
+   "id": "crates/busbar-transport-ws/src",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-transport-ws/src"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null,
+   "exclude": [
+    "crates/busbar-transport-ws/src/tests"
    ]
   },
   {
@@ -1241,15 +1496,15 @@
    ],
    "tree_hash": "2972d7c32e7ae6d03a96a571e30a0fd078b37352cd4bc14cc44544d19696138e",
    "audited_at": "f830faa691149288ddbaeda4b2efa444ce44d4b0",
-   "round": 1,
+   "round": 2,
    "result": "findings",
    "counts": {
     "HIGH": 0,
     "MEDIUM": 3,
-    "LOW": 4,
+    "LOW": 6,
     "NIT": 0
    },
-   "report": "draft",
+   "report": "The memory store's money slots follow the store rules: reserve is all-or-nothing, cap pushes are atomic, releases are clamped, and dedupe records only applied ops for a day. Records are never evicted by age, and a forked append is refused. Three defects remain. The dedupe log holds the full text of every write for a day, and every production write mints an op id, so memory grows with traffic. Fully spent slices, window counters and journal rows are never freed. The plane-record purge keeps live rows only for one hard-coded record kind. Read fully.",
    "auditor": "opus-ledger-store-memory",
    "fixed_at": null,
    "exclude": [
@@ -1269,6 +1524,20 @@
       "NIT": 0
      },
      "report": "draft"
+    },
+    {
+     "round": 2,
+     "result": "findings",
+     "auditor": "opus-ledger-store-memory",
+     "audited_at": "f830faa691149288ddbaeda4b2efa444ce44d4b0",
+     "tree_hash": "2972d7c32e7ae6d03a96a571e30a0fd078b37352cd4bc14cc44544d19696138e",
+     "counts": {
+      "HIGH": 0,
+      "MEDIUM": 3,
+      "LOW": 6,
+      "NIT": 0
+     },
+     "report": "The memory store's money slots follow the store rules: reserve is all-or-nothing, cap pushes are atomic, releases are clamped, and dedupe records only applied ops for a day. Records are never evicted by age, and a forked append is refused. Three defects remain. The dedupe log holds the full text of every write for a day, and every production write mints an op id, so memory grows with traffic. Fully spent slices, window counters and journal rows are never freed. The plane-record purge keeps live rows only for one hard-coded record kind. Read fully."
     }
    ]
   },
@@ -1289,6 +1558,36 @@
    "exclude": [
     "xtask/src/tests"
    ]
+  },
+  {
+   "id": "crates/busbar-auth-admin-tokens/declares.json",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-auth-admin-tokens/declares.json"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-auth-header/declares.json",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-auth-header/declares.json"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
   },
   {
    "id": "crates/busbar-contract/include",
@@ -1327,6 +1626,81 @@
    ]
   },
   {
+   "id": "crates/busbar-export-file/declares.json",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-export-file/declares.json"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-export-otlp/declares.json",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-export-otlp/declares.json"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-export-prometheus/declares.json",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-export-prometheus/declares.json"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-export-webhook/declares.json",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-export-webhook/declares.json"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-hook-ranking/declares.json",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-hook-ranking/declares.json"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
    "id": "crates/busbar-plane-llm/dialects",
    "kind": "production",
    "paths": [
@@ -1355,6 +1729,81 @@
      "report": "The dialect tables sit inside the plane crate and compile into const tables under a registered drift gate, so Law 5 holds; but the Responses table repeats two keys, which is invalid TOML that the compiler accepts and emits as contradictory rows unchecked, and the Anthropic drop warning carries a run of stray spaces into the log. Read fully."
     }
    ]
+  },
+  {
+   "id": "crates/busbar-secret-env/declares.json",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-secret-env/declares.json"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-secret-file/declares.json",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-secret-file/declares.json"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-transport-grpc/declares.json",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-transport-grpc/declares.json"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-transport-tcp/declares.json",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-transport-tcp/declares.json"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-transport-ws/declares.json",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-transport-ws/declares.json"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
   },
   {
    "id": "crates/busbar/src/tests",
@@ -1445,6 +1894,51 @@
      "report": "The SSE reader tests are sound, but exist because the legacy plane carries its own SSE framer duplicating the transport's; the diagnostics-page gate imports the plane plugin sideways and vanishes with the legacy crate. Read fully."
     }
    ]
+  },
+  {
+   "id": "crates/busbar-auth-admin-tokens/src/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-auth-admin-tokens/src/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-auth-admin-tokens/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-auth-admin-tokens/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-auth-header/src/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-auth-header/src/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
   },
   {
    "id": "crates/busbar-contract/src/tests",
@@ -1556,6 +2050,51 @@
    "kind": "test",
    "paths": [
     "crates/busbar-core-oauth2/src/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-export-prometheus/src/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-export-prometheus/src/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-hook-ranking/src/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-hook-ranking/src/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-hook-ranking/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-hook-ranking/tests"
    ],
    "tree_hash": null,
    "audited_at": null,
@@ -2142,6 +2681,111 @@
    "fixed_at": null
   },
   {
+   "id": "crates/busbar-secret-env/src/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-secret-env/src/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-secret-file/src/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-secret-file/src/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-transport-grpc/src/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-transport-grpc/src/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-transport-grpc/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-transport-grpc/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-transport-grpc/examples",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-transport-grpc/examples"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-transport-http/src/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-transport-http/src/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-transport-http/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-transport-http/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
    "id": "crates/busbar-transport-stdio/src/tests",
    "kind": "test",
    "paths": [
@@ -2161,6 +2805,51 @@
    "kind": "test",
    "paths": [
     "crates/busbar-transport-stdio/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-transport-tcp/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-transport-tcp/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-transport-ws/src/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-transport-ws/src/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-transport-ws/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-transport-ws/tests"
    ],
    "tree_hash": null,
    "audited_at": null,
