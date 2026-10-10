@@ -292,6 +292,7 @@ static TAIL: Shared<PlaneTail> = Shared(PlaneTail {
     admin_routes: std::ptr::null(),
     admin_routes_len: 0,
     admin_openapi: NO_BLOB,
+    stream_ceiling_secs: 0,
 });
 
 static FAMILIES: Shared<[MetricFamily; 1]> = Shared([MetricFamily {
@@ -587,6 +588,8 @@ extern "C" fn open(_: *mut c_void, input: *const c_void, out: *mut c_void) -> Ra
             audience: NO_STR,
             resource_metadata: NO_STR,
             resource_facts: NO_BLOB,
+            listed: std::ptr::null(),
+            listed_len: 0,
         });
         let me = Box::new(Inst {
             wake,
@@ -907,6 +910,16 @@ extern "C" fn on_piece(
             if i.from != from || !piece.is_empty() || i.flags != 0 {
                 return RawOutcome::of(Outcome::Fault);
             }
+            if head.as_slice() == b"/framed/fail" {
+                // `/framed/fail` FAILS ITS UNIT AFTER ITS HEAD: the re-call for the rest of a
+                // reply whose head and first message already reached the caller.
+                return say(out, Outcome::Failed);
+            }
+            if head.as_slice() == b"/framed/drain" {
+                // `/framed/drain` PENDS its re-call and never wakes it: the unit, its head and
+                // first message already with the caller, waits there until the kernel cuts it.
+                return say(out, Outcome::Pending);
+            }
         }
         match i.from {
             FROM_KERNEL if i.attempt_no > 0 => {
@@ -949,6 +962,15 @@ extern "C" fn on_piece(
                     std::ptr::copy_nonoverlapping(u.body.as_ptr(), i.reply_buf, n);
                     o.emitted = n as u64;
                     o.flags = EMIT_DONE | EMIT_MESSAGE_END;
+                    if head.as_slice() == b"/framed/fail" || head.as_slice() == b"/framed/drain" {
+                        // `/framed/fail` and `/framed/drain`: the head and the one message, the
+                        // reply not done; each asks to be re-called for more, and that re-call
+                        // fails the unit (`/framed/fail`) or pends until the kernel cuts it.
+                        o.flags = EMIT_MESSAGE_END;
+                        o.more = 1;
+                        u.more_from = Some(i.from);
+                        return say(out, Outcome::Ready);
+                    }
                     if head.as_slice() == b"/framed/status" || head.as_slice() == b"/framed/wild" {
                         // `/framed/wild` states a status the claim's numbering does not have.
                         let mut at = 0;

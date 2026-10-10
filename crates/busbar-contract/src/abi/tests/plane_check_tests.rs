@@ -1022,6 +1022,36 @@ fn a_snapshot_list_counted_with_a_null_pointer_or_too_long_is_fault() {
     );
 }
 
+/// THE APPEND RULE ON THE SNAPSHOT: a snapshot published before `listed` was appended states the
+/// size its fields end at and is judged as one that lists nothing; any other size is foreign. The
+/// list itself is bounded and never counted over NULL, and each name is non-empty text.
+#[test]
+fn a_snapshot_from_before_listed_is_read_and_its_list_is_judged() {
+    let mut sn = snapshot();
+    sn.size = std::mem::offset_of!(PlaneSnapshot, listed) as u32;
+    assert_eq!(
+        check_snapshot(&sn, 7),
+        Ok(()),
+        "the pre-append size is accepted"
+    );
+    sn.size += 8;
+    assert_eq!(check_snapshot(&sn, 7), f(Rule::Foreign, "snapshot.size"));
+    let mut sn = snapshot();
+    sn.listed_len = 1;
+    assert_eq!(
+        check_snapshot(&sn, 7),
+        f(Rule::NullWithCount, "snapshot.listed")
+    );
+    sn.listed_len = MAX_ROUTES as usize + 1;
+    assert_eq!(check_snapshot(&sn, 7), f(Rule::OverMax, "snapshot.listed"));
+    use crate::abi::plane::check::check_listed;
+    assert_eq!(check_listed(&[s("a"), s("b")]), Ok(()));
+    assert_eq!(
+        check_listed(&[s("a"), s("")]),
+        f(Rule::Missing, "snapshot.listed")
+    );
+}
+
 fn claim(verb: &'static str, target: &'static str, flags: u32) -> Claim {
     Claim {
         verb: s(verb),

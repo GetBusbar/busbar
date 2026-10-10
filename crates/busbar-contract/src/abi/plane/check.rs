@@ -896,13 +896,20 @@ pub fn check_cancel_records(
 
 /// A generation snapshot (`open`/`refresh`): its own size, the generation asked for, lists within
 /// [`MAX_ROUTES`] and never counted with a NULL pointer. Its elements: [`check_claims`],
-/// [`check_admin_routes`].
+/// [`check_admin_routes`], [`check_listed`].
+///
+/// The size is this build's, or that of a snapshot published before [`PlaneSnapshot::listed`]
+/// was appended (data structs grow by append under `honoured_size`): `s` is then the host's copy
+/// of the publisher's own bytes over zeros, so its appended fields read as none.
 ///
 /// # Errors
 ///
 /// The rule the snapshot breaks.
 pub fn check_snapshot(s: &PlaneSnapshot, generation: u64) -> Result<(), Fault> {
-    if s.size as usize != core::mem::size_of::<PlaneSnapshot>() {
+    let size = s.size as usize;
+    if size != core::mem::size_of::<PlaneSnapshot>()
+        && size != core::mem::offset_of!(PlaneSnapshot, listed)
+    {
         return Err(fault(Rule::Foreign, "snapshot.size"));
     }
     if s.generation != generation {
@@ -923,7 +930,23 @@ pub fn check_snapshot(s: &PlaneSnapshot, generation: u64) -> Result<(), Fault> {
         s.resource_facts.ptr,
         s.resource_facts.len,
         "snapshot.resource_facts",
-    )
+    )?;
+    if s.listed_len as u64 > MAX_ROUTES {
+        return Err(fault(Rule::OverMax, "snapshot.listed"));
+    }
+    listed(s.listed, s.listed_len, "snapshot.listed")
+}
+
+/// Every name a snapshot lists: non-empty text. Its UTF-8 is judged by the host when it copies it.
+///
+/// # Errors
+///
+/// The rule a name breaks.
+pub fn check_listed(names: &[AbiStr]) -> Result<(), Fault> {
+    for n in names {
+        named(*n, "snapshot.listed")?;
+    }
+    Ok(())
 }
 
 /// Every snapshot claim: a verb, a target, a carrier, known flags, never EXACT with PATTERN, and a
