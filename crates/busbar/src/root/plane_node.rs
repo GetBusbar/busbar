@@ -220,6 +220,10 @@ pub struct Node {
     ///
     /// [`bind_book`]: Node::bind_book
     book: std::sync::OnceLock<Arc<Mutex<crate::root::durability::Durability>>>,
+    /// THE BOOK'S LANE TO THE CONFIGURED STORE, when the store is where the book's journal is kept
+    /// (no data directory). Read at every arrival, without the book's lock: while it is full a new
+    /// money-bearing unit is refused 503 with the reason (ARCHITECT 2026-10-07 H3 ruling).
+    lane: std::sync::OnceLock<crate::root::durability::JournalLane>,
     /// The journal's token, minted from this node's own kernel at construction and lent to the exit
     /// arm for the length of one settlement.
     ///
@@ -284,6 +288,7 @@ impl Node {
             durability_token: kernel.durability_token(),
             usage_token: kernel.usage_token(),
             book: std::sync::OnceLock::new(),
+            lane: std::sync::OnceLock::new(),
             kernel: Arc::new(kernel),
             // The data listener already carries the operator-configured inbound-concurrency layer,
             // which is where this deployment's admission-to-the-node decision is made and has always
@@ -378,8 +383,32 @@ impl Node {
     ///
     /// Unbound, the exit arm below does nothing and the unit ends as it always has. That is the
     /// honest answer for a build with no root ledger in it, not a settlement quietly dropped.
+    ///
+    /// When the book's journal is kept by the configured store, the store's lane is bound with it:
+    /// the node FAILS CLOSED while that lane is full ([`Node::journal_refusal`]).
     pub fn bind_book(&self, book: Arc<Mutex<crate::root::durability::Durability>>) {
+        let lane = {
+            let durability = book.lock().unwrap_or_else(|p| p.into_inner());
+            durability
+                .durable_in_store()
+                .then(|| durability.lane().cloned())
+                .flatten()
+        };
+        if let Some(lane) = lane {
+            let _ = self.lane.set(lane);
+        }
         let _ = self.book.set(book);
+    }
+
+    /// WHY THIS NODE REFUSES A NEW MONEY-BEARING UNIT NOW, or `None` — one atomic read while the
+    /// store keeps up. The book's journal is kept by the configured store and the lane to it is
+    /// full: admitting the unit would put records on the chain nothing has room to hold, and a record
+    /// is never dropped, so the unit is refused instead (ARCHITECT 2026-10-07 H3 ruling).
+    #[must_use]
+    pub fn journal_refusal(&self) -> Option<String> {
+        self.lane
+            .get()
+            .and_then(crate::root::durability::JournalLane::refuses_money)
     }
 
     /// Put what the loop posted onto the book, if this node has one.
@@ -683,6 +712,9 @@ impl Node {
         parent: Option<&Parent>,
     ) -> Option<Outcome> {
         self.sweep(arrived);
+        if self.journal_refusal().is_some() {
+            return None;
+        }
         post.open(key, principal.clone(), arrived, history.clone());
         let meter = Arc::new(AccrualMeter::new());
         let origin = parent.map_or(OriginKind::Client, |p| OriginKind::Nested { parent: p.key });
@@ -775,6 +807,9 @@ impl Node {
         history: Option<crate::root::kernel::PinnedHistory>,
     ) -> Option<(busbar_kernel::teller::SessionOpen, UnitCtx, SessionSlot<'_>)> {
         self.sweep(arrived);
+        if self.journal_refusal().is_some() {
+            return None;
+        }
         post.open(key, principal.clone(), arrived, history);
         let meter = Arc::new(AccrualMeter::new());
         let hold =
@@ -865,6 +900,11 @@ impl Node {
         // Whose unit, what class, and the dialect a refusal this node renders is written in — the
         // plane's statements about what arrived, read off it before any step runs.
         let (principal, op_class, proto, build) = handed;
+        // FAIL CLOSED while the book's journal cannot reach its store: nothing is built, held or
+        // journalled for a unit that is refused here, and the reason is the answer.
+        if let Some(why) = self.journal_refusal() {
+            return journal_unavailable(proto, &why);
+        }
         let key = self.next_key.mint();
         // ONE METER, on both sides of the loop: the unit accrues onto it at the Meter step and the
         // kernel reads it at the exit. It is lent to the unit at the build.
@@ -1682,6 +1722,17 @@ impl Drop for Occupied<'_> {
             self.node.marked.fetch_add(1, Ordering::AcqRel);
         }
     }
+}
+
+/// What a node whose journal cannot reach its store answers a new unit with, in the caller's own
+/// dialect: 503 and the reason. A state the previous release never reached (it kept no journal).
+fn journal_unavailable(proto: &str, why: &str) -> Response {
+    busbar_kernel::proxy::ingress_error(
+        proto,
+        StatusCode::SERVICE_UNAVAILABLE,
+        busbar_contract::protocol::KIND_OVERLOADED,
+        why,
+    )
 }
 
 /// What a node that cannot take the unit at all answers with, in the caller's own dialect.

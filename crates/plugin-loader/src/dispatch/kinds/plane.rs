@@ -43,10 +43,10 @@ use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::mechanism::KindCode;
 use busbar_contract::abi::plane::check::{
     check_arrive, check_billable_classes, check_cancel, check_cancel_records, check_drive,
-    check_fee_units, check_on_piece, check_pin_mechanisms, check_project, check_refusal,
-    check_refusal_records, check_refusal_statuses, check_sections, check_serve,
-    check_serve_records, check_snapshot, check_tail, check_trust_keys, Bounds, Caps, ProjectHost,
-    MAX_SESSIONS,
+    check_fee_units, check_on_piece, check_pin_mechanisms, check_project, check_record_chains,
+    check_refusal, check_refusal_records, check_refusal_statuses, check_route_cost, check_sections,
+    check_serve, check_serve_records, check_snapshot, check_tail, check_trust_keys, Bounds, Caps,
+    ProjectHost, MAX_SESSIONS,
 };
 use busbar_contract::abi::plane::{
     self, slot, ArriveIn, ArriveOut, BillableClass, OnPieceIn, OnPieceOut, PinMechanism,
@@ -216,6 +216,19 @@ fn tail_facts(st: &Statement) -> Result<PlaneFacts, String> {
         .map_err(|f| format!("the plane tail breaks {:?} at {}", f.rule, f.field))?;
     check_tail_fee_units(&tail)
         .map_err(|f| format!("the plane tail breaks {:?} at {}", f.rule, f.field))?;
+    // EVERY ELEMENT THE TAIL LISTS IS JUDGED, not only its counts (audit contract-C2 #4): a chain
+    // of an unknown framing or kind, or a route cost naming no billable class, refuses the plane at
+    // load rather than reaching the host as a declaration it cannot keep.
+    check_record_chains(
+        &listed(tail.record_chains, tail.record_chains_len),
+        tail.record_kinds_len as u64,
+    )
+    .map_err(|f| format!("the plane tail breaks {:?} at {}", f.rule, f.field))?;
+    check_route_cost(
+        &listed(tail.route_cost, tail.route_cost_len),
+        tail.billable_classes_len as u64,
+    )
+    .map_err(|f| format!("the plane tail breaks {:?} at {}", f.rule, f.field))?;
     // A plane declares exactly one section: its verb. The loader's Statement check already
     // refused a NULL list with a count.
     let sections = if st.sections_len == 0 {

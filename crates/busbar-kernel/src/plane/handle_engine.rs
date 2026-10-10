@@ -22,7 +22,7 @@
 //!   same `TypeId`), so byte-identity is preserved with no re-encode round-trip.
 //! - **Driven by small plane callbacks.** The plane supplies its record SHAPE, its terminal STATUSES
 //!   (as the `terminal` flag on [`HandleMeta`]), its event VOCAB, and its provenance DIGEST through
-//!   the closures the lifecycle/sweep/rehydrate entry points take. This is the same boxed-callback
+//!   the closures the lifecycle/rehydrate entry points take. This is the same boxed-callback
 //!   idiom [`crate::plane_host::scope`] uses to hold reclaim/settle resources without naming a plane
 //!   type. No plane noun appears in this module.
 //!
@@ -54,10 +54,10 @@
 //!   no cross-writer serialization. It takes the outer lock only to insert, and to run the retention
 //!   sweep on the submits that CLAIM it (see [`claim_sweep`](DurableHandleEngine::claim_sweep) — the
 //!   sweep is amortised over the submits inside one second, and it is still a submit that triggers it).
-//! - The sweep in [`sweep`](DurableHandleEngine::sweep) does its abandon writes with the outer lock
-//!   RELEASED: it collects the candidate shards under the lock, drops it, applies each abandon mutation
-//!   under that handle's own inner lock (re-reading `meta` first, because a concurrent `mutate` may have
-//!   settled the handle in the gap), and only then re-takes the outer lock for the two eviction rules.
+//! - The sweep in [`sweep`](DurableHandleEngine::sweep) writes nothing durable: it touches only
+//!   TERMINAL handles, and only to drop them from the working set, so it runs its two eviction rules
+//!   under the outer lock with no store round-trip inside it. An ACTIVE handle is never transitioned
+//!   or evicted by it — only the plane ends live work (`BUSBAR-1.6.0.md` THE DESIGN §1).
 //!   NO PATH HOLDS THE OUTER LOCK ACROSS A STORE ROUND-TRIP. The boot
 //!   [`rehydrate`](DurableHandleEngine::rehydrate) still runs under the outer lock across `classify`'s
 //!   per-row I/O, which is harmless there (single-threaded boot, no concurrency).
@@ -125,12 +125,12 @@ impl ChainPosition {
     }
 }
 
-/// The retention knobs the sweep enforces — a plane supplies its own values.
+/// The retention knobs the sweep enforces — a plane supplies its own values. Both bound only
+/// SETTLED (terminal) handles: retention never reaches live work (`BUSBAR-1.6.0.md` THE DESIGN §1,
+/// "Admission bounds live work; nothing evicts it"). An ACTIVE handle stays, however long it idles,
+/// until the plane settles it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SweepBounds {
-    /// An ACTIVE handle idle longer than this (seconds) is transitioned toward settlement by the
-    /// plane's abandon callback.
-    pub abandon_secs: u64,
     /// A TERMINAL handle stays in the working set this long (seconds) after settling, then is evicted.
     pub terminal_ttl_secs: u64,
     /// The ceiling on the TERMINAL population — NOT on the working set, and the difference is
@@ -138,7 +138,8 @@ pub struct SweepBounds {
     /// to make room, so when nothing is terminal the cap rule has nothing it may evict and the
     /// working set goes past this number and stays there. That is the designed answer (dropping a
     /// live handle is forgetting work that is still running), but it means a burst of concurrent
-    /// active handles is bounded by ADMISSION or by nothing — see
+    /// active handles is bounded by ADMISSION or by nothing, and this engine admits every submit —
+    /// the bound on live handles is the caller's to enforce before it submits. See
     /// `docs/design/BUSBAR-1.6.0.md` THE DESIGN, §1.
     pub max_retained: usize,
 }
@@ -312,22 +313,19 @@ struct HandleSlot {
 /// `updated_at` first, ties broken by the id.
 type ExpiryKey = (u64, String);
 
-/// The shards rule (0) took from the index and will abandon with the outer lock released.
-type AbandonCandidates = Vec<(ExpiryKey, Arc<Mutex<HandleSlot>>)>;
-
 /// THE TIME-ORDERED EXPIRY INDEX — the sweep's ordering, kept instead of recomputed.
 ///
 /// `by_age` is keyed `(updated_at, id)` and valued by the handle's `terminal` flag. That key is
 /// DELIBERATELY the total order the sweep's eviction used to produce by sorting a
 /// `Vec<(u64, String)>`: oldest `updated_at` first, ties broken by the id. Every rule then reads a
-/// PREFIX of it — rule (0) the entries below `now - abandon_secs`, rule (1) the terminal entries
-/// below `now - terminal_ttl_secs`, rule (2) the terminal entries from the front — instead of
-/// scanning the whole working set three times.
+/// PREFIX of it — rule (1) the terminal entries below `now - terminal_ttl_secs`, rule (2) the
+/// terminal entries from the front — instead of scanning the whole working set twice.
 ///
 /// The index is a HINT, never the truth: the truth is the slot's own `meta`, and every rule
-/// re-reads it under that handle's inner lock before acting (which it must do anyway — the abandon
-/// writes run with the outer lock released). A key that disagrees with its slot is HEALED where it
-/// is found, and a key whose id has left the working set is dropped there. `terminal` is the count
+/// re-reads it under that handle's inner lock before acting (a concurrent `mutate` re-keys a handle
+/// under its inner lock alone, so the outer lock does not freeze the index). A key that disagrees
+/// with its slot is HEALED where it is found, and a key whose id has left the working set is
+/// dropped there. `terminal` is the count
 /// of terminal-valued keys, which is what lets rule (2) stop walking: a working set with no
 /// terminal handle has nothing the cap rule may evict, and that is the case the cliff was made of.
 #[derive(Default)]
@@ -580,10 +578,10 @@ impl DurableHandleEngine {
     /// racing in the same second produce one sweep, not two — and every other submit that second
     /// still INSERTS, so the working set is never stale in the direction that matters.
     ///
-    /// Nothing here sweeps on a TIMER, and nothing needs to: the claim is what makes the TRIGGER
-    /// cheap to add to. A submit claims it, and so does any other caller that reaches
-    /// [`sweep_now`](Self::sweep_now) — which is how a deadline here stops depending on new work
-    /// arriving without a thread being spawned to watch a clock.
+    /// Nothing here sweeps on a TIMER or on a READ: a submit is the only trigger
+    /// (`BUSBAR-1.6.0.md` THE DESIGN §1, "the sweep runs from a submit, never from a read or a
+    /// timer"). Retention bounds only settled handles, so a quiet node that stops submitting holds
+    /// its settled handles a little longer and loses nothing it was promised.
     fn claim_sweep(&self, now: u64) -> bool {
         let mut last = self.last_swept.load(Ordering::Relaxed);
         loop {
@@ -602,34 +600,6 @@ impl DurableHandleEngine {
         }
     }
 
-    /// **RUN THE RETENTION SWEEP WITHOUT A SUBMIT.** The same sweep, the same bounds and the same
-    /// once-a-second claim — only the trigger is different.
-    ///
-    /// [`submit`](Self::submit) was the ONLY trigger, and that made every deadline this engine
-    /// enforces conditional on new work arriving. On a busy node it is invisible; on a node that has
-    /// stopped taking submissions it means an idle ACTIVE handle is never abandoned, however long it
-    /// idles, because the one thing that would have noticed is the thing that is not happening. That
-    /// is not a slow deadline, it is an absent one, and anything a plane hangs off the terminal
-    /// transition — a capability retired when its handle ends, for instance — silently outlives its
-    /// bound with it.
-    ///
-    /// So a caller that has a REASON to believe time has passed can say so. It costs nothing to be
-    /// wrong: [`claim_sweep`](Self::claim_sweep) still hands the work to the first caller of each
-    /// second and every other one returns having done no scan, so a hot path may call this on every
-    /// request without paying for more than an atomic load. It returns whether this call was the one
-    /// that swept, which is what a test asserts on.
-    pub fn sweep_now<A, R>(&self, now: u64, bounds: SweepBounds, abandon: A, report_fail: R) -> bool
-    where
-        A: Fn(&str, &(dyn Any + Send + Sync), &ChainPosition, u64) -> Option<Mutation>,
-        R: Fn(&str, &RecordStoreError),
-    {
-        if !self.claim_sweep(now) {
-            return false;
-        }
-        self.sweep(now, bounds, &abandon, &report_fail);
-        true
-    }
-
     /// SUBMIT a new handle: `plan` builds its row + records + genesis event from the genesis position
     /// (the plane computes the digest); the engine persists row-then-event, runs the retention sweep,
     /// and inserts. The durable writes happen BEFORE the working-set lock is taken, exactly as the
@@ -640,20 +610,21 @@ impl DurableHandleEngine {
     /// the row alone. A row with no chain is rehydrated ACTIVE at the next boot — a handle nobody
     /// ever accepted, holding a working-set slot and answering reads, whose provenance chain starts
     /// at an event that was never written. So the row is deleted before the failure is returned. If
-    /// the delete fails too there is nothing left to try: it is reported through `report_fail`, the
-    /// same channel a sweep's failed abandon uses, and the append's error is still what the caller
-    /// gets, because that is the failure that happened first.
-    pub fn submit<P, A, R>(
+    /// the delete fails too there is nothing left to try: it is reported through `report_fail`, and
+    /// the append's error is still what the caller gets, because that is the failure that happened
+    /// first.
+    ///
+    /// EVERY SUBMIT IS ADMITTED. The engine holds no bound on live handles; a caller that must bound
+    /// concurrent live work refuses before it submits (`BUSBAR-1.6.0.md` THE DESIGN §1).
+    pub fn submit<P, R>(
         &self,
         now: u64,
         bounds: SweepBounds,
         plan: P,
-        abandon: A,
         report_fail: R,
     ) -> Result<Arc<dyn Any + Send + Sync>, HandleEngineError>
     where
         P: FnOnce(&ChainPosition) -> Result<SubmitRecord, RecordStoreError>,
-        A: Fn(&str, &(dyn Any + Send + Sync), &ChainPosition, u64) -> Option<Mutation>,
         R: Fn(&str, &RecordStoreError),
     {
         let genesis = ChainPosition::genesis();
@@ -679,7 +650,7 @@ impl DurableHandleEngine {
             None => genesis,
         };
         if self.claim_sweep(now) {
-            self.sweep(now, bounds, &abandon, &report_fail);
+            self.sweep(now, bounds);
         }
         let mut handles = self.lock();
         let row = sr.row.clone();
@@ -808,20 +779,12 @@ impl DurableHandleEngine {
         (slot.meta.owner == owner).then(|| f(&mut slot))
     }
 
-    /// THE RETENTION SWEEP. Three rules, IN ORDER, and the order is part of the outcome: (0)
-    /// transition an ACTIVE handle idle past `abandon_secs` via the plane's `abandon` callback (a
-    /// durable-write failure leaves it active and is reported through `report_fail`); (1) evict
+    /// THE RETENTION SWEEP. Two rules, IN ORDER, and both touch only TERMINAL handles: (1) evict
     /// TERMINAL handles past `terminal_ttl_secs`; (2) if still over `max_retained`, evict oldest
-    /// TERMINAL first — never an active one. Because rule (0) settles a handle, a handle can be
-    /// abandoned by rule (0) and evicted by rule (2) within ONE sweep.
-    ///
-    /// RULE (0)'S DURABLE WRITES DO NOT RUN UNDER THE OUTER LOCK. The candidate slots are collected
-    /// under it (a meta read each) and the lock is RELEASED; the abandon mutations then apply against
-    /// the per-handle inner locks — the same discipline `mutate` follows — so a slow store no longer
-    /// blocks every other submit in the process. Re-entry re-reads each slot's `meta` under its inner
-    /// lock rather than trusting the values read before the gap: a concurrent `mutate` may have
-    /// settled or touched the handle in the meantime, and that is exactly the case where the abandon
-    /// must NOT fire. Rules (1) and (2) then re-take the outer lock.
+    /// TERMINAL first. An ACTIVE handle is never evicted and never transitioned, however long it has
+    /// idled: live work is bounded at admission and ended by the plane, never by retention
+    /// (`BUSBAR-1.6.0.md` THE DESIGN §1, "Admission bounds live work; nothing evicts it"; ARCHITECT
+    /// 2026-10-07 K2-H5 (ii)). The sweep calls no plane code and writes nothing durable.
     ///
     /// NOT EVERY SUBMIT RUNS IT — [`claim_sweep`](Self::claim_sweep) hands it to the first submit of
     /// each second, because every bound here is in whole seconds and a second sweep inside one second
@@ -830,71 +793,15 @@ impl DurableHandleEngine {
     /// NO RULE SCANS THE WORKING SET. Each reads a PREFIX of the [`ExpiryIndex`] — whose key
     /// `(updated_at, id)` is the same total order the eviction used to reconstruct by sorting — and
     /// stops at the first entry that is not due, so a sweep costs O(handles it acts on) rather than
-    /// three O(n) passes. What a redesign may not change is pinned by
+    /// two O(n) passes. What a redesign may not change is pinned by
     /// `the_sweep_keeps_every_active_handle_and_evicts_terminal_ones_oldest_first`, and the shape is
     /// written down in `docs/design/BUSBAR-1.6.0.md` THE DESIGN, §1.
-    fn sweep<A, R>(&self, now: u64, bounds: SweepBounds, abandon: &A, report_fail: &R)
-    where
-        A: Fn(&str, &(dyn Any + Send + Sync), &ChainPosition, u64) -> Option<Mutation>,
-        R: Fn(&str, &RecordStoreError),
-    {
-        // Rule (0), phase one: the ACTIVE entries aged past `abandon_secs` are a prefix of the index.
-        // The outer lock is held for the shard clones only — no slot is read here, because phase two
-        // has to re-read every one of them anyway.
-        let candidates: AbandonCandidates = {
-            let handles = self.lock();
-            let mut expiry = self.expiry();
-            Self::take_due(&handles, &mut expiry, now, bounds.abandon_secs, false)
-                .into_iter()
-                .filter_map(|key| handles.get(&key.1).map(|s| (key, s.clone())))
-                .collect()
-        };
-        // Rule (0), phase two: the durable writes, with the outer lock NOT held. The re-read is the
-        // whole point of the gap — a handle another writer settled or touched while the lock was down
-        // is no longer idle and must not be abandoned, and neither may an index key be believed over
-        // the slot it points at.
-        for (key, slot_arc) in &candidates {
-            let id = key.1.as_str();
-            let mut slot = Self::lock_slot(slot_arc);
-            if slot.meta.terminal || now.saturating_sub(slot.meta.updated_at) <= bounds.abandon_secs
-            {
-                self.heal(key, &slot.meta);
-                continue;
-            }
-            // THE PLANE'S CALLBACK RUNS INSIDE AN UNWIND BOUNDARY. It is plane code, reached from a
-            // sweep that some OTHER caller's `submit` happened to claim, and that submit is in the
-            // middle of its own lifecycle: its row and its genesis event are already durable and its
-            // handle is not yet installed. A panic escaping here would unwind straight out through
-            // that submit, leaving a row on disk that no live handle answers for — and the next boot
-            // rehydrates it ACTIVE, installing a handle nobody ever accepted. The panicking candidate
-            // is skipped and reported; every other candidate, and the caller whose submit is midway
-            // through, carry on. `AssertUnwindSafe` because nothing the closure can see survives the
-            // boundary: the slot guard is held here rather than inside it, and a `None` verdict and a
-            // panicking one both mean the same thing — this handle was not abandoned.
-            let verdict = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                abandon(id, slot.row.as_ref(), &slot.pos, now)
-            }));
-            let Ok(verdict) = verdict else {
-                tracing::error!(
-                    handle = %id,
-                    "the plane's abandon callback panicked during the retention sweep; the handle is left active and the sweep continues"
-                );
-                continue;
-            };
-            let Some(m) = verdict else {
-                continue;
-            };
-            // A failed compensating write leaves the handle ACTIVE (the mutation applies nothing on
-            // a durable failure) and is reported, never swallowed.
-            if let Err(e) = self.apply_mutation_to_slot(id, &mut slot, m) {
-                report_fail(id, &e);
-            }
-        }
+    fn sweep(&self, now: u64, bounds: SweepBounds) {
         let handles = &mut *self.lock();
-        // Rule (1): the TERMINAL entries aged past `terminal_ttl_secs`, likewise a prefix.
+        // Rule (1): the TERMINAL entries aged past `terminal_ttl_secs`, a prefix of the index.
         let expired = {
             let mut expiry = self.expiry();
-            Self::take_due(handles, &mut expiry, now, bounds.terminal_ttl_secs, true)
+            Self::take_due(handles, &mut expiry, now, bounds.terminal_ttl_secs)
         };
         for key in &expired {
             self.evict_verified(handles, key, now, Some(bounds.terminal_ttl_secs));
@@ -930,15 +837,14 @@ impl DurableHandleEngine {
         }
     }
 
-    /// The index keys aged past `secs` whose `terminal` flag matches `terminal`, oldest first,
-    /// dropping any key whose id has left the working set on the way past. `handles` and the index
-    /// are both already held by the caller.
+    /// The TERMINAL index keys aged past `secs`, oldest first, dropping any key whose id has left
+    /// the working set on the way past. `handles` and the index are both already held by the
+    /// caller.
     fn take_due(
         handles: &HashMap<String, Arc<Mutex<HandleSlot>>>,
         expiry: &mut ExpiryIndex,
         now: u64,
         secs: u64,
-        terminal: bool,
     ) -> Vec<ExpiryKey> {
         // Due means `now - updated_at > secs`, i.e. `updated_at < now - secs`. With `now` inside the
         // bound nothing is due at all, and the range is empty rather than saturated to zero.
@@ -950,7 +856,7 @@ impl DurableHandleEngine {
         for (key, flag) in expiry.by_age.range(..(cutoff, String::new())) {
             if !handles.contains_key(&key.1) {
                 orphaned.push(key.clone());
-            } else if *flag == terminal {
+            } else if *flag {
                 due.push(key.clone());
             }
         }

@@ -809,6 +809,12 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // (`root::door_steps::door_config`), so a config apply refreshes them onto the new generation.
     busbar_kernel::appbuild::set_config_projection(root::door_steps::door_config);
 
+    // The configured store's name, captured before `cfg` is consumed: the boot book's journal is
+    // kept in that store, and a store that cannot keep it is refused by name.
+    let store_module = cfg
+        .store
+        .as_ref()
+        .map_or_else(String::new, |store| store.module.clone());
     // The secret resolver the listeners resolve TLS cert/key/CA references through - the SAME seam
     // (built-in env/file + kind:secret plugins) that resolved provider keys at build time.
     // Boot has no `prior` App, so `build_app_from_config` never resolves a credential rotation here
@@ -1019,7 +1025,7 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     let book = (cfg!(feature = "root-admin")
         || ROOT_UNITS.iter().any(|u| u.opens_book)
         || !served.planes.is_empty())
-    .then(|| root::boot::book(&app).unwrap_or_else(|e| die(e)));
+    .then(|| root::boot::book(&app, &store_module).unwrap_or_else(|e| die(e)));
     // THE DOOR PLANES' DATA ROUTES (`root::serve::data_routes`): each served plane's claims, as its
     // guest-list lines beside the kernel's own, onto the data router at its construction.
     // Every config apply refreshes each served door plane onto the generation it installed
@@ -1467,6 +1473,22 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // THE PLANE RECORD WRITE-BEHIND, drained before the store closes (`root::serve::drain_records`).
     if !root::serve::drain_records(&late_services).await {
         tracing::warn!("plane record writes were still queued at shutdown");
+    }
+    // THE JOURNAL'S LANE TO THE STORE, drained the same way and under the same deadline: on a node
+    // with no data directory the store is where the chain is kept.
+    if let Some(lane) = book.as_ref().and_then(|book| {
+        book.durability
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .lane()
+            .cloned()
+    }) {
+        let drained = tokio::task::spawn_blocking(move || lane.drain(root::serve::RECORD_DRAIN))
+            .await
+            .unwrap_or(false);
+        if !drained {
+            tracing::warn!("journal records were still queued for the store at shutdown");
+        }
     }
     // No state snapshot on shutdown: reliability state is RAM-only (re-learned on boot) and the
     // audit log is written through to the durable store as it happens (store-or-RAM rule — there is

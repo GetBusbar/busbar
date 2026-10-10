@@ -428,6 +428,67 @@ async fn an_anonymous_unit_on_an_open_claim_routes_and_opens_no_money() {
     assert_eq!(g.money.open_units(), 0);
 }
 
+/// A UNIT THE PLANE ANSWERS ITSELF AS AN ADMITTED CALL (`ROUTE_COUNTED` on a `ROUTE_LOCAL` unit,
+/// stating no expected units): a keyed one is admitted through the one check-then-charge on the
+/// plane's pool, so its request is counted, and its money settles at its end. RED with the charge
+/// rule reverted to `!local || estimated`: the counted unit charges nothing.
+#[tokio::test]
+async fn a_counted_local_unit_is_charged_as_an_admitted_call() {
+    let _one = PUBLISHING.lock().await;
+    let Some(g) = governed("serve-money-local-counted", true) else {
+        eprintln!("skip: the test plane's cdylib is not built in this scoped run");
+        return;
+    };
+    let (status, body) = g.post("/call/local-counted", true).await;
+    assert_eq!(
+        (status, body.as_str()),
+        (200, "ping"),
+        "answered by the plane"
+    );
+    assert_eq!(g.requests(), 1, "its request was counted at admission");
+    assert_eq!(g.money.open_units(), 0, "its money facts closed at its end");
+    assert_eq!(g.post.open_units(), 0, "its node facts closed at its end");
+}
+
+/// A UNIT THE PLANE ANSWERS ITSELF, NOT COUNTED and stating no expected units (a notification, a
+/// public document): admitted with nothing charged, and nothing opened on the money steps.
+#[tokio::test]
+async fn an_uncounted_local_unit_is_charged_nothing() {
+    let _one = PUBLISHING.lock().await;
+    let Some(g) = governed("serve-money-local-quiet", true) else {
+        eprintln!("skip: the test plane's cdylib is not built in this scoped run");
+        return;
+    };
+    let (status, body) = g.post("/call/local-quiet", true).await;
+    assert_eq!(
+        (status, body.as_str()),
+        (200, "ping"),
+        "answered by the plane"
+    );
+    assert_eq!(g.requests(), 0, "nothing charged");
+    assert_eq!(g.money.open_units(), 0);
+    assert_eq!(g.post.open_units(), 0);
+}
+
+/// A LOCAL UNIT WHOSE PLANE EXPECTS UNITS (its admission estimate), not counted: charged as any
+/// keyed unit is, as before `ROUTE_COUNTED` existed (the estimated path is unchanged).
+#[tokio::test]
+async fn an_estimated_local_unit_is_still_charged() {
+    let _one = PUBLISHING.lock().await;
+    let Some(g) = governed("serve-money-local-estimated", true) else {
+        eprintln!("skip: the test plane's cdylib is not built in this scoped run");
+        return;
+    };
+    let (status, body) = g.post("/call/local-estimated", true).await;
+    assert_eq!(
+        (status, body.as_str()),
+        (200, "ping"),
+        "answered by the plane"
+    );
+    assert_eq!(g.requests(), 1, "its request was charged at admission");
+    assert_eq!(g.money.open_units(), 0, "its money facts closed at its end");
+}
+
 /// A NESTED UNIT (`unit.nest`, ARCHITECT round 4 (c)): the parent's plane runs a child on the claim
 /// it names, under the parent's key (the child is admitted and charged on the same key's chain: one
 /// admission chain), and hands the parent the child's whole reply; both units' money and node facts
@@ -701,7 +762,7 @@ async fn node_boot_hooks_arm() {
         "the boot build's rates never reached the card holder: its repricer is not installed"
     );
     // THE BOOK STEP, over the real boot book.
-    let book = crate::root::boot::book(&app).expect("the boot book opens");
+    let book = crate::root::boot::book(&app, "test-store").expect("the boot book opens");
     let ctx = crate::root::linked::BookCtx {
         book: &book,
         app: &app,
