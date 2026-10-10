@@ -216,7 +216,8 @@ fn record_skip(reason: &str) {
 /// a skip locally, a hard failure under CI, the same posture `tests/auth_plugin_chain.rs` takes
 /// for the same artifact.
 fn install_auth_plugin(dir: &Path) -> bool {
-    let Some(lib) = common::plugins::cdylib("busbar_auth_oidc_plugin") else {
+    let lib = common::plugins::token_verifier_cdylib_path().and_then(|p| std::fs::read(p).ok());
+    let Some(lib) = lib else {
         record_skip("auth-oidc plugin cdylib not built (cargo test -p busbar builds it)");
         return false;
     };

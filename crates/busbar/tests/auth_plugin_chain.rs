@@ -3,7 +3,7 @@
 
 //! FULL-CHAIN auth-plugin seam tests: the engine's `AuthMiddleware` loading a REAL signed
 //! `kind: auth` plugin cdylib over the loader, exactly as boot does. The plugin is the REAL
-//! token-verifying OIDC module, GetBusbar/busbar-auth-oidc (the owner's FIXTURES ruling: real plugins are the
+//! token-verifying OIDC module (the owner's FIXTURES ruling: real plugins are the
 //! proofs; R-FIX2), pulled at a pinned rev as a dev-dependency of this crate — the composition root,
 //! the one crate that may name every kind — so its test build carries the cdylib. (These proofs
 //! moved here from busbar-kernel's `auth/tests/plugin_chain_tests.rs`, R-FIX3: the kernel's own
@@ -13,8 +13,8 @@
 //! `plugins_preflight` + `AuthMiddleware::new` against a LOCAL issuer (the loader's `test_issuer`: an
 //! ES256 key whose JWKS is served only to a need trusting the issuer's certificate, the module's
 //! `ca_cert_pem` setting) reached through a connection table (the loader's `https_conns`, standing in
-//! for the process's connector; the real connector's fetch over real TLS is `mcp_stdio_serve`'s
-//! proof), present SIGNED JWTs, and prove:
+//! for the process's connector; the real connector's fetch over real TLS is the served
+//! node's proof), present SIGNED JWTs, and prove:
 //!
 //! * a valid token → `Identify` → a mapped `Principal` under the PROVIDER name, with its roles;
 //! * an invalid/absent credential → the chain fail-closed-denies (all-`Pass`), and a token signed by
@@ -26,18 +26,19 @@
 
 mod common;
 
+use busbar_contract::secret_ref::SECRET_MODULE_ENV;
 use busbar_kernel::auth::{AuthMiddleware, ChainVerdict};
 use busbar_kernel::config::{AuthCfg, AuthChainEntry, PluginsCfg};
 use std::path::{Path, PathBuf};
 
-/// The auth-oidc module's cdylib, built by this crate's test build as a git dev-dependency — so it
-/// lives under `deps/` WITH a metadata hash. A missing cdylib is a HARD failure in every run, never
-/// a skip.
+/// The token-verifying module's cdylib ([`common::plugins::token_verifier_cdylib_path`]), built by
+/// this crate's test build as a git dev-dependency — so it lives under `deps/` WITH a metadata hash.
+/// A missing cdylib is a HARD failure in every run, never a skip.
 fn auth_cdylib() -> PathBuf {
-    common::plugins::cdylib_path("busbar_auth_oidc_plugin").unwrap_or_else(|| {
+    common::plugins::token_verifier_cdylib_path().unwrap_or_else(|| {
         panic!(
-            "the busbar_auth_oidc_plugin cdylib is not built: run `cargo test -p busbar --no-run` \
-             first (its dev-dependency edge builds it; this test never skips)"
+            "the token-verifying auth plugin's cdylib is not built: run `cargo test -p busbar \
+             --no-run` first (its dev-dependency edge builds it; this test never skips)"
         )
     })
 }
@@ -86,7 +87,15 @@ fn alice_token() -> String {
 /// The runtime identity the module reports for itself — the name its door's Statement states. The
 /// chain must report this, never the config alias.
 fn module_name() -> &'static str {
-    busbar_auth_oidc::door::NAME
+    static ONE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    ONE.get_or_init(|| {
+        let stated = busbar_plugin_loader::dispatch::rendering_of_library(&auth_cdylib())
+            .expect("the auth module's cdylib states its door")
+            .expect("the auth module's cdylib exports a door");
+        busbar_contract::abi::mechanism::rendering::read(&stated)
+            .expect("its Statement reads")
+            .name
+    })
 }
 
 /// A `kind: auth` manifest for the given name/alias, stating the door's Statement as the packer
@@ -97,16 +106,16 @@ fn auth_manifest(name: &str, alias: &str, publisher: &str) -> busbar_plugin_load
     m.alias = alias.into();
     m.version = "1.5.0".into();
     m.statement = busbar_plugin_loader::dispatch::rendering_of_library(&auth_cdylib())
-        .expect("the auth-oidc cdylib states its door")
+        .expect("the auth module's cdylib states its door")
         .map(hex::encode);
     m
 }
 
-/// Write an UNSIGNED (structurally valid) auth-oidc tarball into `dir` under `file`. We use the
+/// Write an UNSIGNED (structurally valid) auth-module tarball into `dir` under `file`. We use the
 /// unsigned+`allow_unsigned` path because the test cannot sign with the embedded first-party release
 /// key; this still exercises the whole load pipeline.
 fn write_auth_plugin(dir: &Path, file: &str, name: &str, alias: &str) {
-    let lib = std::fs::read(auth_cdylib()).expect("read the auth-oidc cdylib");
+    let lib = std::fs::read(auth_cdylib()).expect("read the auth module's cdylib");
     let tarball = unsigned_tarball(auth_manifest(name, alias, "acme"), &lib);
     std::fs::write(dir.join(file), tarball).unwrap();
 }
@@ -149,10 +158,10 @@ fn auth_manifest_with_root_secret_schema(
     m
 }
 
-/// Write an UNSIGNED auth-oidc tarball whose manifest declares `audience` as a ROOT-LEVEL
+/// Write an UNSIGNED auth-module tarball whose manifest declares `audience` as a ROOT-LEVEL
 /// `x-busbar-secret` field (see [`auth_manifest_with_root_secret_schema`]).
 fn write_auth_plugin_with_root_secret_schema(dir: &Path, file: &str, name: &str, alias: &str) {
-    let lib = std::fs::read(auth_cdylib()).expect("read the auth-oidc cdylib");
+    let lib = std::fs::read(auth_cdylib()).expect("read the auth module's cdylib");
     let tarball = unsigned_tarball(
         auth_manifest_with_root_secret_schema(name, alias, "acme", "audience"),
         &lib,
@@ -187,7 +196,10 @@ fn auth_plugin_setting_secret_ref_is_resolved_and_delivered() {
     let var = format!("BUSBAR_PLUGIN_CA_PEM_{}", std::process::id());
     std::env::set_var(&var, issuer().cert_pem());
     let mut settings = settings();
-    settings.insert("ca_cert_pem".into(), serde_json::json!({ "env": var }));
+    settings.insert(
+        "ca_cert_pem".into(),
+        serde_json::json!({ SECRET_MODULE_ENV: var }),
+    );
     let cfg = chain_with("ref-auth", settings);
     let registry = busbar_kernel::plugins_preflight(
         None,
@@ -260,7 +272,10 @@ fn auth_plugin_root_level_secret_marked_setting_resolves_and_authenticates() {
     std::env::set_var(&var, raw_audience);
 
     let mut settings = settings();
-    settings.insert("audience".to_string(), serde_json::json!({ "env": var }));
+    settings.insert(
+        "audience".to_string(),
+        serde_json::json!({ SECRET_MODULE_ENV: var }),
+    );
     let cfg = chain_with("sec-auth", settings);
 
     let registry = busbar_kernel::plugins_preflight(
@@ -319,7 +334,7 @@ fn auth_plugin_root_level_secret_marked_setting_resolves_and_authenticates() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// FULL CHAIN, REAL CDYLIB: `auth.chain: [my-auth]` loads the auth-oidc plugin over the loader; a
+/// FULL CHAIN, REAL CDYLIB: `auth.chain: [my-auth]` loads the auth module over the loader; a
 /// token the issuer signed identifies as `oidc:alice/platform`, and a token with a forged signature,
 /// a non-token and an absent credential fail-closed-deny.
 #[test]
@@ -453,7 +468,7 @@ fn admin_modules_rebuilt_on_reload() {
 #[test]
 fn a_v1_auth_plugin_is_refused_at_boot_and_the_current_one_builds_browser_login() {
     let dir = tmp_plugin_dir("auth-login-v1-gate");
-    let lib = std::fs::read(auth_cdylib()).expect("read the auth-oidc cdylib");
+    let lib = std::fs::read(auth_cdylib()).expect("read the auth module's cdylib");
     let mut manifest = auth_manifest("acme-idp", "cap-idp", "acme");
     manifest.abi_version = 1;
     std::fs::write(dir.join("idp.tar.gz"), unsigned_tarball(manifest, &lib)).unwrap();
