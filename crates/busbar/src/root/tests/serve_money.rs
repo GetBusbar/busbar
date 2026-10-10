@@ -413,10 +413,7 @@ async fn an_anonymous_unit_on_an_open_claim_routes_and_opens_no_money() {
 #[tokio::test]
 async fn a_counted_local_unit_is_charged_as_an_admitted_call() {
     let _one = PUBLISHING.lock().await;
-    let Some(g) = governed("serve-money-local-counted", true) else {
-        eprintln!("skip: the test plane's cdylib is not built in this scoped run");
-        return;
-    };
+    let g = governed("serve-money-local-counted", true);
     let (status, body) = g.post("/call/local-counted", true).await;
     assert_eq!(
         (status, body.as_str()),
@@ -433,10 +430,7 @@ async fn a_counted_local_unit_is_charged_as_an_admitted_call() {
 #[tokio::test]
 async fn an_uncounted_local_unit_is_charged_nothing() {
     let _one = PUBLISHING.lock().await;
-    let Some(g) = governed("serve-money-local-quiet", true) else {
-        eprintln!("skip: the test plane's cdylib is not built in this scoped run");
-        return;
-    };
+    let g = governed("serve-money-local-quiet", true);
     let (status, body) = g.post("/call/local-quiet", true).await;
     assert_eq!(
         (status, body.as_str()),
@@ -453,10 +447,7 @@ async fn an_uncounted_local_unit_is_charged_nothing() {
 #[tokio::test]
 async fn an_estimated_local_unit_is_still_charged() {
     let _one = PUBLISHING.lock().await;
-    let Some(g) = governed("serve-money-local-estimated", true) else {
-        eprintln!("skip: the test plane's cdylib is not built in this scoped run");
-        return;
-    };
+    let g = governed("serve-money-local-estimated", true);
     let (status, body) = g.post("/call/local-estimated", true).await;
     assert_eq!(
         (status, body.as_str()),

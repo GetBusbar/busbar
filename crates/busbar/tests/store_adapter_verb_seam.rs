@@ -288,9 +288,10 @@ fn sweep_every_seam_method(adapter: &StoreAdapter, failures: &mut Vec<String>) {
 #[test]
 fn every_added_operation_on_a_published_schema_store_is_silent_and_never_errors() {
     let adapter = adapter_over_published_schema();
-    assert!(
-        !adapter.speaks_new_ops(),
-        "the fixture must be a store that predates the added operations"
+    assert_eq!(
+        adapter.abi_version(),
+        PUBLISHED_STORE_SCHEMA,
+        "the fixture must be a store at the published payload schema"
     );
     let log = EventLog::default();
     let mut failures: Vec<String> = Vec::new();
