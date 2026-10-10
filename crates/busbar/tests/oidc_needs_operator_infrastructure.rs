@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
-//! THE PINNED OIDC PLUGIN'S EGRESS CLASS: every outbound need the linked busbar-auth-oidc door
-//! states (discovery, the JWKS, the token exchange) declares `operator-infrastructure`, the class
-//! the oauth mint needs use (architect ruling 2026-10-09). Under it the connector admits http to a
+//! THE PINNED OIDC PLUGIN'S EGRESS CLASS: every outbound need the linked OIDC door states
+//! (discovery, the JWKS, the token exchange) declares `operator-infrastructure`, the class the
+//! oauth mint needs use (architect ruling 2026-10-09). Under it the connector admits plaintext to a
 //! private or loopback IdP's token endpoint, as 1.5.5's `vet_hop_url` did; the plugin keeps
 //! discovery and the JWKS https-only itself. Under `open-web` (the pin before 4d9e8f4) the token
 //! exchange to a plaintext private IdP is refused, which 1.5.5 never did.

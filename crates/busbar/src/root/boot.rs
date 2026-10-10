@@ -97,8 +97,8 @@ pub fn trust_policy(
 /// `test-harness` build of the binary takes its first-party key from this variable when it is set,
 /// in place of the embedded release key, whose private half no test holds. That is how a child
 /// `busbar` process under test admits a plugin a test signed first-party: a plugin whose needs sit
-/// in a first-party egress class (`BUSBAR-1.6.0.md` §5), such as the dropped-in OIDC module
-/// `tests/mcp_stdio_serve.rs` drives. The seam exists only under `cfg(feature = "test-harness")`,
+/// in a first-party egress class (`BUSBAR-1.6.0.md` §5), such as the dropped-in OIDC module this
+/// crate's end-to-end battery drives. The seam exists only under `cfg(feature = "test-harness")`,
 /// which no release build enables (`crates/busbar/Cargo.toml`, `test-harness`; asserted by
 /// `root::tests::boot::the_release_feature_set_excludes_test_harness`). Without the feature, no code
 /// path reads the variable, and the embedded key stays the only first-party key.

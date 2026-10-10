@@ -254,7 +254,7 @@ fn install_auth_plugin(dir: &Path) -> bool {
     ));
     std::fs::write(&path, &lib).expect("stage the library");
     m.statement = busbar_plugin_loader::dispatch::rendering_of_library(&path)
-        .expect("the auth-oidc cdylib states its door")
+        .expect("the OIDC cdylib states its door")
         .map(hex::encode);
     let _ = std::fs::remove_file(&path);
     let bytes = common::plugins::signed(&harness_release_key(), m, &lib);

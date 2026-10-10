@@ -183,7 +183,7 @@ fn a_v1_auth_plugin_is_refused_at_boot_and_the_current_one_builds_browser_login(
     let _ = std::fs::remove_dir_all(&dir2);
 }
 
-/// The auth-oidc tarball SIGNED FIRST-PARTY (publisher `busbar`) under the test build's release key
+/// The plugin's tarball SIGNED FIRST-PARTY (publisher `busbar`) under the test build's release key
 /// (`test_support::test_release_key`): every need the module states is in the
 /// `operator-infrastructure` egress class, which the host grants to a first-party plugin only
 /// (`BUSBAR-1.6.0.md` §5; ARCHITECT ruling EGRESS-GRANT 2026-10-03), so an unsigned or third-party
