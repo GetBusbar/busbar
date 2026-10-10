@@ -36,7 +36,9 @@ pub struct DeclaredPin {
     pub peer_key: bool,
     /// The operator's out-of-band material, verbatim; `None` when absent or blank.
     pub key: Option<String>,
-    /// The approved fingerprint, where the declaration allows one and the operator wrote it.
+    /// The fingerprint the operator declared, where the declaration allows one and the operator
+    /// wrote it. Intent, never an approval: the counterparty stays pending, and nothing drifts,
+    /// until the operator approves it.
     pub fingerprint: Option<String>,
 }
 
