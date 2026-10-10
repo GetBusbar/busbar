@@ -27,7 +27,10 @@ fn a_memory_buffered_log_creates_no_file_anywhere() {
     );
     let cwd_before = cwd_segment_names();
 
-    let mut wal = Wal::memory_buffered(super::fixtures::wall_ms);
+    let mut wal = Wal::memory_buffered_to(
+        Box::new(busbar_kernel_wal::ship::NullShipper::new()),
+        super::fixtures::wall_ms,
+    );
     assert_eq!(wal.mode(), Mode::MemoryBuffered);
     let token = durability_token();
     // Enough records, and enough of them large enough to continue across frames, that any
@@ -58,7 +61,7 @@ fn a_memory_buffered_log_creates_no_file_anywhere() {
 
 #[test]
 fn a_memory_buffered_log_ships_every_committed_batch_synchronously() {
-    let shipper = busbar_kernel_wal::ship::BufferShipper::new();
+    let shipper = super::fixtures::KeepingShipper::new();
     let mut wal = Wal::memory_buffered_to(Box::new(shipper.clone()), super::fixtures::wall_ms);
     let token = durability_token();
     let first = records(4, 1, 3, 30);
