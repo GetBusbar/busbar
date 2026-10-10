@@ -274,7 +274,7 @@ impl Subject {
     /// When the door is NULL or names no kind.
     #[must_use]
     pub fn kind(&self) -> KindCode {
-        let p = (self.door)();
+        let p = crate::dispatch::load::enter_door(self.door);
         assert!(!p.is_null(), "the door function answered NULL");
         // SAFETY: a door function answers a `'static` door; only its `kind` word is read.
         let raw = unsafe { std::ptr::addr_of!((*p).kind).read_unaligned() };

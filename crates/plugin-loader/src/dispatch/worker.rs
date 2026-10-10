@@ -1199,6 +1199,29 @@ std::thread_local! {
     static ON_WORKER: std::cell::Cell<Option<(usize, u32)>> = const { std::cell::Cell::new(None) };
 }
 
+/// The dispatcher worker the calling thread is, or acts for ([`acting_for`]); `None` on any other
+/// thread.
+pub(crate) fn worker_mark() -> Option<(usize, u32)> {
+    ON_WORKER.with(std::cell::Cell::get)
+}
+
+/// A crossing handed from a dispatcher worker to a permanent FFI worker acts for that dispatcher
+/// worker until the returned guard drops: a host service the plugin calls on the FFI worker then
+/// sees the worker it serves ([`Dispatcher::current_worker`]), so a synchronous waiter never
+/// submits to the worker blocked on this very crossing.
+pub(crate) fn acting_for(mark: Option<(usize, u32)>) -> ActingFor {
+    ActingFor(ON_WORKER.with(|c| c.replace(mark)))
+}
+
+/// [`acting_for`]'s guard: restores the thread's own mark.
+pub(crate) struct ActingFor(Option<(usize, u32)>);
+
+impl Drop for ActingFor {
+    fn drop(&mut self) {
+        ON_WORKER.with(|c| c.set(self.0));
+    }
+}
+
 pub(crate) fn spawn_worker(w: Arc<Worker>, rx: Receiver<Msg>, env: Arc<Env>) {
     let name = format!("busbar-dispatch-{}", w.index);
     let me = (Arc::as_ptr(&env) as usize, w.index);

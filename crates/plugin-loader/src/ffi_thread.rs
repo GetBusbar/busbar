@@ -63,8 +63,19 @@
 //! | `busbar_set_log_sink` (installs a `tracing` dispatcher INSIDE the plugin) | per load | yes |
 //! | `busbar_close` (the plugin's `Drop`) | per unload | yes |
 //! | `dlclose` (runs `.fini_array`) | per unload | yes |
+//! | `busbar_plugin_door` (the memory-ABI entry, every kind, linked or dropped) | per load | yes |
+//! | a door table's `validate`, `open`, `refresh`, `retire`, `close`, `ready` | per load / reload / unload | yes |
+//! | a plane's `hydrate`, `start`, `claims`, `admission` | per load | yes |
 //! | `busbar_call` | **per request** | no — inline |
 //! | `busbar_free` | **per request** | no — inline |
+//! | a door table's request ops, `tick`, `drive`, `cancel` | **per request** | no — inline |
+//!
+//! Every routed crossing asserts, in debug builds, that it is on a permanent worker
+//! ([`debug_assert_permanent`]) at the point it enters plugin code. The door table's lifecycle
+//! slots are routed in `dispatch::plugin::Instance::cross_gated`, the one place every crossing of
+//! every kind passes, whether the caller is a dispatcher worker or a ticket-less caller thread, and
+//! whether the plugin is compiled in or dropped in (THE DESIGN §11.4). The request ops stay inline
+//! because THE DESIGN §11.9 holds a crossing under 1 µs.
 //!
 //! # THE RESIDUAL, stated plainly
 //!
@@ -130,9 +141,32 @@ fn pool() -> &'static Mutex<Pool> {
     })
 }
 
+std::thread_local! {
+    /// `true` on a permanent worker ([`worker`]), `false` on every other thread.
+    static PERMANENT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Whether the calling thread is one of this module's permanent workers.
+pub(crate) fn on_permanent_worker() -> bool {
+    PERMANENT.with(std::cell::Cell::get)
+}
+
+/// THE ASSERTION every routed crossing makes just before it enters plugin code: the calling thread
+/// is a permanent worker. `what` names the crossing. Debug builds only; a release build relies on
+/// the routing it checks.
+#[track_caller]
+pub(crate) fn debug_assert_permanent(what: &str) {
+    debug_assert!(
+        on_permanent_worker(),
+        "{what} entered plugin code on thread {:?}, which is not a permanent FFI worker",
+        std::thread::current().name()
+    );
+}
+
 /// A worker's receive loop. NEVER returns: `pool().all` holds a sender for this receiver for the
 /// life of the process, so `recv` can never see a disconnect. That is the whole invariant.
 fn worker(rx: Receiver<Job>) {
+    PERMANENT.with(|p| p.set(true));
     while let Ok(job) = rx.recv() {
         // SAFETY: `run`/`data` come from the same `Job`, and the caller is blocked on `done`.
         unsafe { (job.run)(job.data) };

@@ -169,7 +169,7 @@ impl Stated {
 /// # Panics
 /// When the door states no auth tail.
 fn stated(s: &Subject) -> Stated {
-    let door = (s.door)();
+    let door = crate::dispatch::load::enter_door(s.door);
     assert!(!door.is_null(), "the door function answered NULL");
     // SAFETY: a door function answers a `'static` door whose Statement, kind tail and word marks
     // are `'static` plain data (`abi/mechanism/door.rs`); an auth door's kind tail is an
