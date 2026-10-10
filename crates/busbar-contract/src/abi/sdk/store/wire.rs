@@ -35,7 +35,7 @@ use std::task::{Context, Poll, Waker};
 
 use super::op::{Checkout, Op, Step};
 use crate::abi::mechanism::ticket::Ticket;
-use crate::abi::sdk::conn::{ConnFailure, Host};
+use crate::abi::sdk::conn::{ConnFailure, Host, ProcessId};
 
 /// How much one read asks the connector for.
 pub const READ_CHUNK: usize = 16 * 1024;
@@ -56,6 +56,8 @@ enum Ask {
         timeout_ms: u32,
     },
     Reconnect,
+    Close,
+    Identity,
     Write,
     Read,
     Upgrade {
@@ -85,6 +87,8 @@ struct State {
     out: Vec<u8>,
     /// Bytes read that the body has not consumed yet.
     input: Vec<u8>,
+    /// What [`Wire::os_user`] read off the host.
+    identity: Option<ProcessId>,
 }
 
 /// THE BODY'S WIRE: its one connection's services, each an `async` call [`drive`] answers.
@@ -147,6 +151,30 @@ impl Wire {
     /// The connector's failure.
     pub async fn reconnect(&self) -> Result<(), ConnFailure> {
         self.ask(Ask::Reconnect).await.map(|_| ())
+    }
+
+    /// CLOSE the op's connection now: it is never kept, and its unread input and unsent output go.
+    /// The op keeps its claim on the kept set, so its next [`Wire::connect`] establishes a new
+    /// connection, to any target: a store tries its endpoint list in order, "open; on reject close
+    /// and try the next" (the design, the store plugin section on endpoint lists). No connection: nothing to close.
+    pub async fn close(&self) {
+        let _ = self.ask(Ask::Close).await;
+    }
+
+    /// THE OS USER the process runs as, off the host's IDENTITY service: what a store presents
+    /// when its configuration names no user (1.5.5's driver took the OS user). Needs no
+    /// connection. Empty = the host could not name one.
+    ///
+    /// # Errors
+    /// The connector's failure (no host tables, no ticket).
+    pub async fn os_user(&self) -> Result<String, ConnFailure> {
+        self.ask(Ask::Identity).await?;
+        Ok(self
+            .state()
+            .identity
+            .as_ref()
+            .map(|i| i.os_user.clone())
+            .unwrap_or_default())
     }
 
     /// BOUND every wire call from the next one on by `ms` milliseconds in all (`0` = unbound): once
@@ -725,6 +753,33 @@ fn serve<T>(cx: &mut Op<'_>, running: &Running<T>, ask: &Ask, buf: &mut [u8]) ->
                 Poll::Pending => Served::Pending { wake_at_ns: 0 },
             };
         }
+        Ask::Close => {
+            if wire.state().conn.take().is_some() {
+                cx.close_checkout();
+            }
+            let mut w = wire.state();
+            w.input.clear();
+            w.out.clear();
+            w.session = None;
+            w.reused = false;
+            w.unfit = false;
+            w.last = None;
+            return Served::Answer(Ok(0));
+        }
+        Ask::Identity => {
+            let mut services = match cx.connector() {
+                Ok(s) => s,
+                Err(e) => return Served::Answer(Err(e)),
+            };
+            return match services.identity() {
+                Poll::Ready(Ok(id)) => {
+                    wire.state().identity = Some(id);
+                    Served::Answer(Ok(0))
+                }
+                Poll::Ready(Err(e)) => Served::Answer(Err(e)),
+                Poll::Pending => Served::Pending { wake_at_ns: 0 },
+            };
+        }
         _ => {}
     }
     let Some(stream) = wire.state().conn.as_ref().map(|c| c.stream) else {
@@ -737,7 +792,9 @@ fn serve<T>(cx: &mut Op<'_>, running: &Running<T>, ask: &Ask, buf: &mut [u8]) ->
         Err(e) => return Served::Answer(Err(e)),
     };
     match ask {
-        Ask::Connect { .. } | Ask::Reconnect => unreachable!("answered above"),
+        Ask::Connect { .. } | Ask::Reconnect | Ask::Close | Ask::Identity => {
+            unreachable!("answered above")
+        }
         Ask::Write => loop {
             let out = std::mem::take(&mut wire.state().out);
             let answer = services.write(stream, &out);

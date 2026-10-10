@@ -33,7 +33,7 @@ use crate::runtime::session::SessionCore;
 use crate::runtime::VoiceRuntime;
 use busbar_contract::transport::transport::{Transport, UpstreamWireKind};
 use busbar_contract::upstream::{CanonicalSignal, StatusClass};
-use busbar_kernel::egress::duplex_ws::{self, DialError};
+use busbar_kernel::egress::duplex_ws::{self, DialCredential, DialError, DialTarget};
 use busbar_kernel::net_guard::GuardPolicy;
 use busbar_kernel::plane::handle_engine::HandleEngineError;
 use busbar_kernel::plane_host::{
@@ -122,12 +122,16 @@ fn dial_signal(e: &DialError) -> CanonicalSignal {
 /// closing a recovery probe), a failure records its canonical signal (a guard/URL refusal opens the
 /// cell hard-down; a connect/TLS/handshake blip is transient). `pool` is the plane's breaker-cell key
 /// (see [`stream_breaker_key`]); `lane` is the member position (0 for a degenerate cell).
+///
+/// `url` is the KEYLESS provider target and `credential` the provider key with its placement; the
+/// substrate dialer adds the key to the upgrade request only, so no error this returns carries it.
 pub async fn dial_provider(
     host: &dyn BreakerHost,
     pool: &str,
     lane: usize,
     url: &str,
     policy: GuardPolicy,
+    credential: Option<DialCredential<'_>>,
 ) -> Result<
     (
         impl Stream<Item = Vec<u8>> + Unpin,
@@ -155,12 +159,12 @@ pub async fn dial_provider(
     // The axis pins `WebSocket` to the full-duplex wire; the `else` is unreachable by construction (a
     // closed axis), expressed as a refusal rather than a panic so a mis-selection fails closed.
     let Some(UpstreamWireKind::Duplex) = Transport::WebSocket.upstream_wire() else {
-        let e = DialError::Url(url.to_string());
+        let e = DialError::Url(DialTarget::new(url));
         breaker::record_signal(host, pool, lane, &dial_signal(&e));
         return Err(DialProviderError::Dial(e));
     };
 
-    match duplex_ws::dial(url, policy).await {
+    match duplex_ws::dial_with_credential(url, policy, credential).await {
         Ok((stream, sink)) => {
             breaker::record_success(host, pool, lane);
             // `sink_map_err(|_| ())`: the substrate dialer's own Sink `Error` associated type is an

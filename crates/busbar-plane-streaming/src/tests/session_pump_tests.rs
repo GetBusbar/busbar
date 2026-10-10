@@ -160,6 +160,51 @@ fn a_tool_call_is_run_once_on_its_close_with_its_accumulated_arguments() {
     );
 }
 
+/// P-ITEM: VOICE TOOL-ARGS (spec DONE item 2, "All P-item behaviours match 1.5.5"; the drive log's
+/// P5, commit 470351a480: "streamed tool-call arguments are discarded"). The model streams a call's
+/// arguments as several partial-JSON fragments; they reach the executor CONCATENATED, as one call,
+/// run once, on the call's close and not before.
+///
+/// Voice is new in 1.6.0; the 1.5.5 behaviour it matches is the llm surface's own streamed tool
+/// call (owner correction 2026-09-28): 1.5.5 accumulated every `InputJsonDelta` fragment of an open
+/// tool block and emitted the call ONCE on its block stop with the fully reassembled arguments,
+/// because parsing each fragment alone lost the arguments and split one call into many (v1.5.5
+/// `crates/busbar/src/proto/gemini/writer.rs:734-780`).
+#[test]
+fn p_item_voice_tool_args_streamed_fragments_reach_the_executor_whole_and_once() {
+    let mut p = pump();
+    let mut sink = Turns::default();
+    let mut runs = Vec::new();
+    let open = wire(serde_json::json!({"type":"response.output_item.added",
+        "item":{"type":"function_call","call_id":"cw","name":"weather"}}));
+    let (_, r) = p.on_server_frame(open, 0, &mut sink, &serves_all);
+    assert!(r.is_empty(), "an announced call is not run");
+    for fragment in ["{\"lo", "c\":\"S", "F\"}"] {
+        let delta = wire(
+            serde_json::json!({"type":"response.function_call_arguments.delta",
+            "call_id":"cw","delta":fragment}),
+        );
+        let (_, r) = p.on_server_frame(delta, 0, &mut sink, &serves_all);
+        assert!(
+            r.is_empty(),
+            "a call is not run on a fragment of its arguments"
+        );
+    }
+    let done = wire(
+        serde_json::json!({"type":"response.function_call_arguments.done",
+        "call_id":"cw"}),
+    );
+    let (_, r) = p.on_server_frame(done, 0, &mut sink, &serves_all);
+    runs.extend(r);
+    assert_eq!(runs.len(), 1, "one call, run once on its close");
+    assert_eq!(runs[0].name, "weather");
+    assert_eq!(runs[0].call_id, "cw");
+    assert_eq!(
+        runs[0].args, b"{\"loc\":\"SF\"}",
+        "the fragments reach the executor whole, in order"
+    );
+}
+
 /// A table that records what the pump asked of it.
 #[derive(Default)]
 struct Table {
@@ -320,4 +365,42 @@ fn the_part_of_a_millisecond_a_frame_leaves_over_is_carried_not_floored() {
     assert_eq!(sink.closed.len(), 1);
     assert_eq!(sink.closed[0].1.audio_ms_in, 1000);
     assert_eq!(billed_audio_seconds(&sink), 1);
+}
+
+/// A Gemini Live uplink blob of `bytes` zero bytes, its mime stating `rate`.
+fn gemini_uplink(rate: u32, bytes: usize) -> WireEvent {
+    wire(serde_json::json!({"realtimeInput":{"audio":{
+        "mimeType": format!("audio/pcm;rate={rate}"),
+        "data": busbar_contract::media::base64_encode(&vec![0u8; bytes])
+    }}}))
+}
+
+/// RED-BEFORE-GREEN (plane-streaming audit HIGH 9; THE DESIGN section 7, "a plane that
+/// under-reports is that plugin's bug"): Gemini Live's uplink is 16 kHz PCM, 32 bytes a
+/// millisecond. Counted at the 24 kHz rate (48 bytes a millisecond), one second of it was 666 ms.
+#[test]
+fn a_second_of_gemini_16k_uplink_counts_one_second_not_two_thirds() {
+    let mut p = SessionPump::new(crate::codec::ir::GeminiLiveCodec, None);
+    let mut sink = Turns::default();
+    let _ = p.on_client_frame(gemini_uplink(16_000, 32_000));
+    p.settle_open_turn(&mut sink);
+    assert_eq!(sink.closed.len(), 1);
+    assert_eq!(sink.closed[0].1.audio_ms_in, 1000);
+}
+
+/// RED-BEFORE-GREEN (audit HIGH 9): each frame is counted at the rate its own wire states, and the
+/// part of a millisecond one frame leaves over carries exactly onto a frame at another rate. Half a
+/// millisecond at 16 kHz (16 bytes) and half at 24 kHz (24 bytes), a thousand times each, is one
+/// second.
+#[test]
+fn gemini_uplink_frames_at_two_rates_each_count_at_their_own() {
+    let mut p = SessionPump::new(crate::codec::ir::GeminiLiveCodec, None);
+    let mut sink = Turns::default();
+    for _ in 0..1000 {
+        let _ = p.on_client_frame(gemini_uplink(16_000, 16));
+        let _ = p.on_client_frame(gemini_uplink(24_000, 24));
+    }
+    p.settle_open_turn(&mut sink);
+    assert_eq!(sink.closed.len(), 1);
+    assert_eq!(sink.closed[0].1.audio_ms_in, 1000);
 }

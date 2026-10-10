@@ -32,7 +32,7 @@
 use crate::ir::codec::gemini::GeminiLiveCodec;
 use crate::ir::codec::{DuplexReader, DuplexWriter, OpenAiRealtimeCodec};
 use crate::ir::config::SessionConfig;
-use crate::plane_provider::{provider_ws_url, redact_url_credentials};
+use crate::plane_provider::{credential_placement, provider_ws_url, CredentialPlacement};
 use crate::runtime::carrier::Carrier;
 use crate::runtime::scope::SessionHandle;
 use crate::runtime::session::{serve_to_teardown, serve_with_sweep, UplinkForwarder, VoiceSession};
@@ -45,7 +45,10 @@ use crate::topology::{
     StartError,
 };
 use busbar_kernel::config::RootCfg;
-use busbar_kernel::egress::engine::{send_bounded, EngineClient};
+use busbar_kernel::egress::{
+    duplex_ws::{CredentialPlacement as WsPlacement, DialCredential},
+    engine::{send_bounded, EngineClient},
+};
 use busbar_kernel::ingress::byte_duplex::serve_messages;
 use busbar_kernel::ingress::duplex_ws::{
     accept_gauntlet, install_ws_arrivals, WsAcceptFuture, WsArrival, WsArrivalSpec,
@@ -124,16 +127,28 @@ fn session_scope_refusal() -> axum::response::Response {
 pub(crate) struct ProviderEndpoint {
     /// The provider origin (scheme + authority, e.g. `https://api.openai.com`).
     pub base_url: String,
-    /// The REAL provider key, held server-side and `Redacted`: exposed only at the three sites that
-    /// put it on the provider hop (the mint minter, the SDP bearer, the WebSocket dial URL).
+    /// The REAL provider key, held server-side and `Redacted`: exposed only at the two sites that
+    /// put it on the provider hop (the mint minter, the SDP bearer). The WebSocket dial hands it,
+    /// still `Redacted`, to the substrate dialer, which writes it into the upgrade request only.
     pub api_key: busbar_contract::Redacted<String>,
 }
 
 impl ProviderEndpoint {
-    /// The provider WebSocket URL for `dialect`, carrying the key the dialect's dial authenticates
-    /// with. Its own fn so the exposure is one named site, outside any statement that also logs.
-    fn ws_url(&self, dialect: &str) -> String {
-        provider_ws_url(&self.base_url, dialect, self.api_key.expose_secret())
+    /// The KEYLESS provider WebSocket URL for `dialect`.
+    pub(crate) fn ws_url(&self, dialect: &str) -> String {
+        provider_ws_url(&self.base_url, dialect)
+    }
+
+    /// The provider key and where `dialect` presents it on the WebSocket dial.
+    pub(crate) fn ws_credential(&self, dialect: &str) -> DialCredential<'_> {
+        let placement = match credential_placement(dialect) {
+            CredentialPlacement::Query(name) => WsPlacement::Query(name),
+            CredentialPlacement::Header { name, prefix } => WsPlacement::Header { name, prefix },
+        };
+        DialCredential {
+            placement,
+            secret: &self.api_key,
+        }
     }
 }
 
@@ -366,8 +381,8 @@ pub fn served_governed_session() -> Option<crate::runtime::GovernedSession> {
 }
 
 /// Gemini Live's native provider auth HEADER NAME — `x-goog-api-key`, never `Authorization`. Named
-/// once, publicly, so a conformance probe and the live dial (once header-carrying WS dial lands; see
-/// [`provider_ws_url`]'s doc for today's honest limit) name the SAME literal.
+/// once, publicly, so a conformance probe names the literal. The Live WebSocket dial presents the key
+/// as the `key` query parameter instead (see [`credential_placement`]), the bytes it has always sent.
 pub const GEMINI_API_KEY_HEADER: &str = "x-goog-api-key";
 
 /// THE VOICE PLANE'S RFC 8707 RESOURCE PATH — the segment the plane's canonical audience carries and
@@ -1529,6 +1544,7 @@ where
                                 0,
                                 &url,
                                 GuardPolicy::default(),
+                                Some(p.ws_credential(dialect)),
                             )
                             .await
                             {
@@ -1544,7 +1560,7 @@ where
                                     // The dial failed: nothing to relay client frames to.
                                     settle_undialed(proxy, unix_secs(&*teardown_clock));
                                     tracing::warn!(
-                                        error = %redact_url_credentials(&e.to_string()),
+                                        error = %e,
                                         dialect,
                                         "streaming: provider dial failed; the just-admitted session is \
                                          dropped rather than served with no upstream"

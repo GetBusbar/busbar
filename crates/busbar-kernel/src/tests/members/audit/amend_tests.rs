@@ -524,7 +524,6 @@ fn an_amendment_names_the_audit_record_it_amends() {
     // The one place the two chains touch: an amendment carries the digest of the entry it concerns,
     // so a reader can go from one to the other without the two chains sharing a buffer.
     use busbar_contract::caps::{Origin, OriginKind, Outcome, UnitKey};
-    use busbar_kernel_audit::amend::amends;
     use busbar_kernel_audit::record::{
         Audit, AuditChain, AuditInputs, Controls, FinishClass, OutcomeFacts, Usage, What,
     };
@@ -569,7 +568,7 @@ fn an_amendment_names_the_audit_record_it_amends() {
     let mut chain = AmendChain::new();
     let amendment = chain.append(
         correction(
-            &amends(&record),
+            &record.hash,
             Subject::PrincipalId("p".into()),
             "lane",
             1,

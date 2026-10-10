@@ -47,9 +47,16 @@ async fn a_hard_down_provider_records_into_the_core_cell_and_opens_it() {
     // A dial busbar's OWN net-guard refuses (a public loopback under the fail-closed default is an
     // internal target) is a DEFINITIVE failure: `dial_provider` records the hard-down signal into the
     // ONE host cell through the host seam, and the cell OPENS on this first failure.
-    let refused = dial_provider(&host, &pool, 0, "wss://127.0.0.1/", GuardPolicy::default())
-        .await
-        .err();
+    let refused = dial_provider(
+        &host,
+        &pool,
+        0,
+        "wss://127.0.0.1/",
+        GuardPolicy::default(),
+        None,
+    )
+    .await
+    .err();
     assert!(
         matches!(refused, Some(DialProviderError::Dial(_))),
         "the guard-refused dial fails: {refused:?}"
@@ -86,6 +93,7 @@ async fn a_tripped_provider_cell_refuses_before_the_dial() {
             allow_plaintext: true,
             ..GuardPolicy::default()
         },
+        None,
     )
     .await
     .err();
