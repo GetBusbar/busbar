@@ -761,6 +761,25 @@ fn presented(answer: Option<&busbar_contract::auth_calls::Fields>) -> Option<Str
     }
 }
 
+/// The linked auth plugin that serves both mint styles (`oauth-client-credentials`, `jwt-bearer`),
+/// its mint connections declared and opened over `table`.
+fn linked_mint_plugin(table: &std::sync::Arc<TokenEndpoint>) -> super::OutboundAuths {
+    let dispatcher = std::sync::Arc::new(crate::root::loader::dispatch::Dispatcher::new(
+        crate::root::loader::dispatch::DispatchConfig::default(),
+    ));
+    crate::root::connector::install_io(&dispatcher);
+    // The row's canonical name is its key.
+    let name = "busbar-auth-oauth";
+    let linked: [busbar_kernel::preflight::LinkedAuth; 1] = [(name, name, busbar_auth_oauth::door)];
+    super::OutboundAuths::new(
+        dispatcher,
+        &linked,
+        None,
+        crate::root::loader::dispatch::ConnTable::Host(std::sync::Arc::clone(table)
+            as std::sync::Arc<dyn busbar_contract::conn::DeclaredConns>),
+    )
+}
+
 /// THE MEMBER UNDER `auth: oauth-client-credentials`, BOUND BY THE COMPOSITION (THE DESIGN §6 steps
 /// 2-3, §5, §6.5): the auth plugin serving the style is opened over the provider's own settings,
 /// so its `loopback-allowed` mint need is declared pinned to the provider's `token_url`; its tick schedule runs
@@ -797,25 +816,11 @@ async fn a_member_under_an_oauth_grant_presents_its_minted_then_refreshed_bearer
     )]
     .into();
     let table = std::sync::Arc::new(TokenEndpoint::default());
-    let dispatcher = std::sync::Arc::new(crate::root::loader::dispatch::Dispatcher::new(
-        crate::root::loader::dispatch::DispatchConfig::default(),
-    ));
-    crate::root::connector::install_io(&dispatcher);
-    // The row's canonical name is its key.
-    let name = "busbar-auth-oauth";
-    let linked: [busbar_kernel::preflight::LinkedAuth; 1] = [(name, name, busbar_auth_oauth::door)];
-    let auths = super::OutboundAuths::new(
-        dispatcher,
-        &linked,
-        None,
-        crate::root::loader::dispatch::ConnTable::Host(std::sync::Arc::clone(&table)
-            as std::sync::Arc<dyn busbar_contract::conn::DeclaredConns>),
-    );
     let secrets = busbar_kernel::config::secret::SecretResolver::builtins_only();
     let reach = super::DoorReach {
         providers: &providers,
         secrets: &secrets,
-        auths: std::sync::Arc::new(auths),
+        auths: std::sync::Arc::new(linked_mint_plugin(&table)),
         conns: std::sync::Arc::new(busbar_core_connector::Connector::new()),
         stream_ceiling_secs: 1,
         upgrades: Vec::new(),
@@ -946,25 +951,11 @@ fn jwt_bearer_routes(
         },
     )]
     .into();
-    let dispatcher = std::sync::Arc::new(crate::root::loader::dispatch::Dispatcher::new(
-        crate::root::loader::dispatch::DispatchConfig::default(),
-    ));
-    crate::root::connector::install_io(&dispatcher);
-    // The row's canonical name is its key.
-    let name = "busbar-auth-oauth";
-    let linked: [busbar_kernel::preflight::LinkedAuth; 1] = [(name, name, busbar_auth_oauth::door)];
-    let auths = super::OutboundAuths::new(
-        dispatcher,
-        &linked,
-        None,
-        crate::root::loader::dispatch::ConnTable::Host(std::sync::Arc::clone(table)
-            as std::sync::Arc<dyn busbar_contract::conn::DeclaredConns>),
-    );
     let secrets = busbar_kernel::config::secret::SecretResolver::builtins_only();
     let reach = super::DoorReach {
         providers: &providers,
         secrets: &secrets,
-        auths: std::sync::Arc::new(auths),
+        auths: std::sync::Arc::new(linked_mint_plugin(table)),
         conns: std::sync::Arc::new(busbar_core_connector::Connector::new()),
         stream_ceiling_secs: 1,
         upgrades: Vec::new(),
