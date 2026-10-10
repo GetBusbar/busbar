@@ -44,15 +44,20 @@ pub const ROW_CLOSES: &str = "tracing:attribute-closes";
 const SCAN_ROOT: &str = "crates";
 const EXCLUDE_TESTS_DIR: &str = "/tests/";
 
-/// The denominator floor, tracking the real workspace (160 files when the shell was written, 738
-/// today). It is a `const` here and has no environment override: the only way to lower one is a
-/// reviewable source edit.
-const SCAN_FLOOR: usize = 130;
+/// The denominator floor, pinned AT the measured count: the crates walk reads 971 files on this
+/// branch merged with predev bd39476618, after busbar-kernel-ledger's usage/series.rs left (972 on
+/// predev 3bc48823df; 971 on predev 39374ec00e; 980 on 5e672d125d, before the egress_auth /
+/// auth_cache / ingress_sigv4 files left the kernel crates; it was 130 against a tree that had
+/// grown past 700). A drop below 971 is refused until a reviewed diff re-measures;
+/// the selftest plant removes one file and fails if the floor sits under the count. It is a
+/// `const` here and has no environment override: the only way to lower one is a reviewable
+/// source edit.
+const SCAN_FLOOR: usize = 971;
 
 /// THE SUBJECT FLOOR (item 228). The file floor above proves the walk opened the crates; it says
 /// nothing about whether the thing this gate judges is still there. "Every `#[instrument]` has a
 /// level" is as vacuous over zero SPANS as over zero files, and the files-to-spans ratio is ~150:1
-/// (777 production files, 5 attributes), so every span could leave the tree with the file floor
+/// (971 files, 5 attributes), so every span could leave the tree with the file floor
 /// untouched. Armed at the measured count (arrival.rs 3, ingress/mod.rs 2); like the file floor it
 /// has no override, and lowering it is a reviewable source edit that says which span went where.
 const SPAN_FLOOR: usize = 5;
@@ -513,6 +518,43 @@ impl Gate for TracingGate {
                 ov,
                 &["span floor", "NOT a pass"],
             ));
+        }
+
+        // THE FLOOR SITS AT THE MEASURED COUNT. One crate file fewer than the walk finds today
+        // (one that carries no span, so the subject floor stays out of it) is refused; a floor set
+        // a margin below the count passes it, so this is red exactly when the floor has slipped
+        // under the number the tree measures.
+        match cx.walk(
+            &WalkSpec::new([SCAN_ROOT])
+                .ext("rs")
+                .exclude([EXCLUDE_TESTS_DIR]),
+        ) {
+            Ok(files) => match files
+                .iter()
+                .rev()
+                .find(|f| !f.text.contains("#[instrument"))
+            {
+                Some(f) => {
+                    let mut ov = Overlay::new();
+                    ov.remove(&f.rel);
+                    report.push(prove_red(
+                        cx,
+                        self,
+                        "a crates walk one file short of the measured floor is refused",
+                        &[ROW_SCAN_FLOOR],
+                        ov,
+                        &["floor"],
+                    ));
+                }
+                None => report.note_infra_failure(
+                    "tracing selftest: every crate file carries a span, so no file can be removed \
+                     without also moving the subject floor"
+                        .to_string(),
+                ),
+            },
+            Err(e) => report.note_infra_failure(format!(
+                "tracing selftest: the base tree's crates walk is unreadable ({e})"
+            )),
         }
 
         // THE FLOOR, on the RUN path. Every candidate file is removed from the overlay's view,
