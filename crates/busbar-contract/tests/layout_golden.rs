@@ -1749,7 +1749,12 @@ fn compute_layout() -> String {
             listed_len
         ]
     );
-    record!(s, pkind::PlaneOpenIn, [open, public_url, owned]);
+    record!(s, pkind::ProviderFacts, [name, protocol, error_map]);
+    record!(
+        s,
+        pkind::PlaneOpenIn,
+        [open, public_url, owned, providers, providers_len]
+    );
     record!(s, pkind::PlaneOpenOut, [open, snapshot]);
     record!(s, pkind::PlaneRefreshOut, [head, snapshot]);
     record!(s, pkind::UnitCount, [class, source, amount]);

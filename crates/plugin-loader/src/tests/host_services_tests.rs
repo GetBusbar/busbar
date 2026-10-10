@@ -291,9 +291,9 @@ impl busbar_contract::services::double::ServicesDouble for Provider {
         Ran::Now(Stored::ready(svc::ABSENT))
     }
 
-    /// Records `<handle> <record>`.
-    fn work_settle(&self, c: &Caller, handle: u64, rec: &[u8], _: Later) -> Ran {
-        let arg = [format!("{handle} ").as_bytes(), rec].concat();
+    /// Records `<unit> <handle> <record>`.
+    fn work_settle(&self, c: &Caller, unit: Option<u64>, handle: u64, rec: &[u8], _: Later) -> Ran {
+        let arg = [format!("{unit:?} {handle} ").as_bytes(), rec].concat();
         self.saw(c, "work.settle", &arg);
         Ran::Now(Stored::ready(0))
     }
@@ -1723,7 +1723,10 @@ fn the_work_family_reaches_the_kernel_with_the_unit_its_crossing_serves() {
         record: blob(b"done"),
     };
     let mut o = blank();
-    let ret = HOST_SLOTS.work_settle.unwrap()(d.ctx, std::ptr::from_ref(&settle).cast(), &mut o);
+    let ret = {
+        let _unit = serving(Some(6));
+        HOST_SLOTS.work_settle.unwrap()(d.ctx, std::ptr::from_ref(&settle).cast(), &mut o)
+    };
     assert_eq!(ret.outcome(), Outcome::Ready);
 
     let resume = svc::WorkResumeIn {
@@ -1755,7 +1758,7 @@ fn the_work_family_reaches_the_kernel_with_the_unit_its_crossing_serves() {
         vec![
             ("work.open", "Some(7) job rec".to_string()),
             ("work.find", "Some(8) ref".to_string()),
-            ("work.settle", "5 done".to_string()),
+            ("work.settle", "Some(6) 5 done".to_string()),
             ("work.resume", "Some(9) 5".to_string()),
         ]
     );
