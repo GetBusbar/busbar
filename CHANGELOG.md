@@ -146,12 +146,10 @@ signed by the owner (spec: `docs/design/BUSBAR-1.6.0.md`).
   task's durable provenance chain. Both planes now ask one predicate of one fact — is this token's
   task still non-terminal — at mint time and at present time.
 
-  The task TTL behind it is now enforced on **presentation**, not only on submission. The retention
-  sweep that ends a task idle past the 24h abandonment ceiling ran only as a side effect of a new
-  task being submitted, so on a deployment that had stopped submitting the ceiling was not a
-  deadline at all and a silent task's token stayed live indefinitely. The callback endpoint runs the
-  sweep itself, after the MAC verifies and before it reads the task; the sweep is claimed once per
-  second, so a busy backend pays an atomic load rather than a scan.
+  A token retires when its task ends, and at no idle deadline: the retention sweep touches only
+  settled tasks, so an idle ACTIVE task is never cancelled or evicted and keeps its token until it
+  ends. The 24h abandonment ceiling is gone (THE DESIGN §1, "an active work handle is never
+  evicted").
 
 - **An A2A hop refusal no longer names the backend to the caller.** Nine refusal arms rendered
   operator-facing detail into the JSON-RPC error body a client reads: the backend's URL, the address
@@ -409,7 +407,7 @@ Each of these is an owner-accepted difference from 1.5.5: additive, or strictly 
   the order served is one 1.5.5 could already print.
 - **A wedged hook comes back.** A hook that wedged is no longer lost until restart: it is
   quarantined, backed off from 1 s doubling to 30 s, and then given one trial call on a fresh
-  instance, and a successful trial returns it to service.
+  instance, and a successful trial returns it to service. 1.5.5 had no quarantine to exit.
 
 ### Breaking
 
@@ -589,6 +587,14 @@ is now a `400` naming the field; and the always-`null` `at` field on the hook vi
   target with no such setting instead of sent as the `medium` effort; each drop is warned and
   audited by its wire path. A wrong-typed Gemini `thinkingBudget` or Anthropic image `media_type` is
   answered with the caller's own 400 error instead of being translated.
+- 1.6.0 Breaking: when an auth plugin's `max_inflight` is full, a data-plane request is answered `503` with `Retry-After: 1` instead of 1.5.5's `401`.
+  The body is the gateway's at-capacity answer, the one `limits.max_inbound_concurrent` sheds
+  with. A bad credential is still answered `401`, and the admin API keeps 1.5.5's answer. **Migration:** a
+  client that retries a `503` after its `Retry-After` needs no change.
+- 1.6.0 Breaking: the destination guard now also judges an A2A peer's fetches, a streaming upstream and a duplex or WebSocket dial, so a private, loopback or cloud-metadata destination there is refused unless the configuration allows it, as a private provider host is.
+  **Migration:** name an internal peer or upstream in `advanced.allow_destinations` (an A2A
+  registration may also set its own `allow_private: true`), as a provider on an internal DNS name
+  already needs.
 
 ### Deprecated env vars still honoured
 
@@ -760,6 +766,10 @@ each dialect translates, field by field, is listed in the generated
   on an Anthropic or Bedrock upstream instead of sending `{type: disabled}`); the shipped catalog sets
   them for GPT-5.1 / GPT-5.2 and for Claude Opus 5.5 / Fable 5. See
   [Lane capabilities](docs/providers.md#lane-capabilities). **Migration:** none.
+- 1.6.0 Added: a model entry takes `protocol`, an optional override of the dialect its provider's `protocol` sets.
+  Omitted, the model speaks its provider's protocol, as in 1.5.5. A model key busbar does not know
+  is still refused in 1.5.5's sentence, with `protocol` now among the expected fields.
+  **Migration:** none.
 - 1.6.0 Added: `GET /api/v1/admin/audit/keys` publishes the node's ed25519 public verifying key.
   The key set was empty before this release, because nothing was signed. With `data_dir` set, the
   keyset is minted at the first boot and kept in a `0600` file under `data_dir`, so the published
