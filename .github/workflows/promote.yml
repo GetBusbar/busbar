@@ -1,8 +1,9 @@
 name: Promote
 # Every same-repo PR is one hop up the branch ladder. The hop is GetBusbar/busbar-release's
-# ci/promote scripts at RELEASE_REF (private, so no `uses:`); these jobs only check out both repos
-# and run them. No job here runs BOARD (board.sh needs the train's write token, and the job that
-# runs the candidate's code holds none): a PR lands by merge, predev's through its merge queue.
+# `busbar-release ci hop|verdict|publish|fallback` at RELEASE_REF (private, so no `uses:`); these
+# jobs only check out both repos and run it. No job here runs BOARD (`ci train promote` needs the
+# train's write token, and the job that runs the candidate's code holds none): a PR lands by merge,
+# predev's through its merge queue.
 # predev lands through GitHub's merge queue (OWNER 2026-10-02): `merge_group` runs the same two
 # required jobs on the queue's merge commit, judged no worse than the base the queue built it on.
 on: [pull_request, merge_group]
@@ -14,7 +15,10 @@ on: [pull_request, merge_group]
 concurrency: { group: "promote-${{ github.event.pull_request.number || github.event.merge_group.head_ref }}", cancel-in-progress: false }
 permissions: { contents: read }
 env:
-  RELEASE_REF: cbe96f355c62c4013c44dadb83e694f4a8d6473b
+  RELEASE_REF: 7ab21912d664d11c7df6cc98fe78eed6b0119177
+  # The sha256 of busbar-release-ci-linux-x86_64-<RELEASE_REF> on the dev-bin release; the bump
+  # (`busbar-release bump`) writes it beside RELEASE_REF.
+  ENGINE_SHA256: 67ca4fdd48c799d5cd7a8ff5c78a38a454834f18afbda6b1df6c19e85d9ed787
   SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
   TO: ${{ github.base_ref || github.event.merge_group.base_ref }}
   BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
@@ -34,6 +38,19 @@ jobs:
       # Full history: the pre-flight reads the pull request's diff against BASE_SHA to choose one runner or the matrix.
       - { uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1, with: { ref: "${{ env.SHA }}", path: busbar, fetch-depth: 0 } } # v7
       - { uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1, with: { repository: GetBusbar/busbar-release, ref: "${{ env.RELEASE_REF }}", token: "${{ secrets.TURNSTILE_DISPATCH_TOKEN }}", path: busbar-release, persist-credentials: false } } # v7
+      # THE ENGINE, downloaded, never compiled: CI's --no-default-features binary of RELEASE_REF from
+      # busbar-release's dev-bin release (dev-bin.yml), run only when its sha256 is ENGINE_SHA256.
+      - name: Engine (busbar-release at RELEASE_REF, sha256-pinned)
+        env: { GH_TOKEN: "${{ secrets.TURNSTILE_DISPATCH_TOKEN }}" }
+        run: |
+          set -euo pipefail
+          api=https://api.github.com/repos/GetBusbar/busbar-release/releases
+          name="busbar-release-ci-linux-x86_64-$RELEASE_REF"
+          id=$(curl -fsSL -H "Authorization: Bearer $GH_TOKEN" "$api/tags/dev-bin" | jq -r --arg n "$name" '.assets[] | select(.name == $n) | .id')
+          [ -n "$id" ] || { echo "::error::dev-bin has no $name"; exit 1; }
+          curl -fsSL -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/octet-stream" -o "$RUNNER_TEMP/busbar-release" "$api/assets/$id"
+          echo "$ENGINE_SHA256  $RUNNER_TEMP/busbar-release" | sha256sum -c -
+          chmod +x "$RUNNER_TEMP/busbar-release"
       # The pre-flight is busbar-release's Rust CLI (preflight.json is the one list): it sizes the hop
       # (runner= to $GITHUB_OUTPUT), chooses how a pull request into predev runs (one_runner=: ONE runner
       # when the crates its diff affects are estimated within 20 min, else the shard matrix; OWNER-LOCKED
@@ -43,11 +60,10 @@ jobs:
       # RUN GATE (OWNER 2026-10-08): run=1|0 and reason= from facts only (R1 STACK, R2 queued, R3
       # superseded, R4 duplicate head, R5/R6 this file's wiring); run=0 means nothing in this run
       # builds, and a RED rule fails here.
-      # package-selector: busbar-release-cli -- .github/workflows/promote.yml -- the package lives in the busbar-release checkout at RELEASE_REF (working-directory busbar-release), not in this workspace
       - id: pre
         working-directory: busbar-release
         env: { GITHUB_TOKEN: "${{ github.token }}" }
-        run: cargo run --locked --release --no-default-features -p busbar-release-cli --bin busbar-release -- ci preflight
+        run: $RUNNER_TEMP/busbar-release ci preflight
   # The release artifact the slsa-verifier conformance rig judges, built ONCE, in the merge group: the
   # commit it judges is the commit the queue lands, and the ladder fast-forwards that sha to dev, where
   # the turnstile fetches what this run stored for it (ARCHITECT 2026-10-02). Its SLSA provenance is
@@ -128,6 +144,19 @@ jobs:
     steps:
       - { uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1, with: { ref: "${{ env.SHA }}", path: busbar, fetch-depth: 0, persist-credentials: false } } # v7
       - { uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1, with: { repository: GetBusbar/busbar-release, ref: "${{ env.RELEASE_REF }}", token: "${{ secrets.TURNSTILE_DISPATCH_TOKEN }}", path: busbar-release, persist-credentials: false } } # v7
+      # THE ENGINE, downloaded, never compiled: CI's --no-default-features binary of RELEASE_REF from
+      # busbar-release's dev-bin release (dev-bin.yml), run only when its sha256 is ENGINE_SHA256.
+      - name: Engine (busbar-release at RELEASE_REF, sha256-pinned)
+        env: { GH_TOKEN: "${{ secrets.TURNSTILE_DISPATCH_TOKEN }}" }
+        run: |
+          set -euo pipefail
+          api=https://api.github.com/repos/GetBusbar/busbar-release/releases
+          name="busbar-release-ci-linux-x86_64-$RELEASE_REF"
+          id=$(curl -fsSL -H "Authorization: Bearer $GH_TOKEN" "$api/tags/dev-bin" | jq -r --arg n "$name" '.assets[] | select(.name == $n) | .id')
+          [ -n "$id" ] || { echo "::error::dev-bin has no $name"; exit 1; }
+          curl -fsSL -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/octet-stream" -o "$RUNNER_TEMP/busbar-release" "$api/assets/$id"
+          echo "$ENGINE_SHA256  $RUNNER_TEMP/busbar-release" | sha256sum -c -
+          chmod +x "$RUNNER_TEMP/busbar-release"
       # The conformance rigs `conformance record` runs in the full plan need node 22 and pnpm 10 (the mcp
       # suite's official runner, and rolldown's native binding built under it); the Latchkey large image
       # carries node 20, so mcp read not-run (CONFORMANCE-RIGS, 2026-10-02).
@@ -137,17 +166,18 @@ jobs:
       - if: needs.preflight.outputs.needs_release_artifact == 'true'
         working-directory: busbar-release
         env: { GITHUB_TOKEN: "${{ github.token }}" }
-        run: cargo run --locked --release --no-default-features -p busbar-release-cli --bin busbar-release -- ci turnstile await-job --job slsa-build
+        run: $RUNNER_TEMP/busbar-release ci turnstile await-job --job slsa-build
       - if: needs.preflight.outputs.needs_release_artifact == 'true'
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with: { name: "slsa-artifact-${{ env.SHA }}", path: slsa }
       # No debuginfo in the dev/test builds: build_test's all-features, feature-matrix and test builds plus
       # the oracle's release build filled the runner's ~41 GiB free disk with debuginfo (ENOSPC, no log).
       # Base and candidate build alike, so the no-worse-than-base verdict is unchanged.
-      # GITHUB_TOKEN (contents read) is for hop.sh's R3 re-check alone (`ci preflight --recheck`: is this
-      # merge group still a current queue entry's head?), which runs before any candidate code and
-      # unsets it; a superseded group's shard builds nothing.
-      - run: bash "$GITHUB_WORKSPACE/busbar-release/ci/promote/hop.sh"
+      # GITHUB_TOKEN (contents read) is for `ci hop`'s R3 re-check alone (is this merge group still a
+      # current queue entry's head?), which runs before any candidate code; the judge that runs the
+      # candidate never holds it. A superseded group's shard builds nothing.
+      - working-directory: busbar-release
+        run: $RUNNER_TEMP/busbar-release ci hop
         env: { GITHUB_TOKEN: "${{ github.token }}", R2_KEY_ID: "${{ secrets.R2_CACHE_ACCESS_KEY_ID }}", R2_KEY_SECRET: "${{ secrets.R2_CACHE_SECRET_ACCESS_KEY }}", CARGO_PROFILE_DEV_DEBUG: "0", SHARD: "${{ matrix.shard }}/4" }
       - { if: always(), uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a, with: { name: "turnstile-report-${{ env.SHA }}-shard${{ matrix.shard }}", path: "artifacts/", if-no-files-found: warn } } # v7.0.1
   # `hop` (the required check) is the hop's ONE verdict. In a merge group and on the predev->dev pull
@@ -180,9 +210,23 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with: { ref: "${{ env.SHA }}", path: busbar, fetch-depth: 0, persist-credentials: false }
       - { uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1, with: { repository: GetBusbar/busbar-release, ref: "${{ env.RELEASE_REF }}", token: "${{ secrets.TURNSTILE_DISPATCH_TOKEN }}", path: busbar-release, persist-credentials: false } } # v7
+      # THE ENGINE, downloaded, never compiled: CI's --no-default-features binary of RELEASE_REF from
+      # busbar-release's dev-bin release (dev-bin.yml), run only when its sha256 is ENGINE_SHA256.
+      - name: Engine (busbar-release at RELEASE_REF, sha256-pinned)
+        env: { GH_TOKEN: "${{ secrets.TURNSTILE_DISPATCH_TOKEN }}" }
+        run: |
+          set -euo pipefail
+          api=https://api.github.com/repos/GetBusbar/busbar-release/releases
+          name="busbar-release-ci-linux-x86_64-$RELEASE_REF"
+          id=$(curl -fsSL -H "Authorization: Bearer $GH_TOKEN" "$api/tags/dev-bin" | jq -r --arg n "$name" '.assets[] | select(.name == $n) | .id')
+          [ -n "$id" ] || { echo "::error::dev-bin has no $name"; exit 1; }
+          curl -fsSL -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/octet-stream" -o "$RUNNER_TEMP/busbar-release" "$api/assets/$id"
+          echo "$ENGINE_SHA256  $RUNNER_TEMP/busbar-release" | sha256sum -c -
+          chmod +x "$RUNNER_TEMP/busbar-release"
       # No debuginfo in the dev/test builds (as in the shards: the runner's disk).
       - if: env.ONE_RUNNER == 'true'
-        run: bash "$GITHUB_WORKSPACE/busbar-release/ci/promote/hop.sh"
+        working-directory: busbar-release
+        run: $RUNNER_TEMP/busbar-release ci hop
         env: { R2_KEY_ID: "${{ secrets.R2_CACHE_ACCESS_KEY_ID }}", R2_KEY_SECRET: "${{ secrets.R2_CACHE_SECRET_ACCESS_KEY }}", CARGO_PROFILE_DEV_DEBUG: "0", BASE_SHARDS: "4" }
       - if: always() && env.ONE_RUNNER == 'true'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -208,15 +252,17 @@ jobs:
             [ -d "$d" ] && cp -r "$d/." "artifacts/shard-$k/"
           done
           cd busbar-release
-          cargo run --locked --release --no-default-features -p busbar-release-cli --bin busbar-release -- \
+          "$RUNNER_TEMP/busbar-release" \
             ci turnstile merge --sha "$SHA" --shards 4 --dir "$GITHUB_WORKSPACE/merge" --out "$GITHUB_WORKSPACE/artifacts/turnstile-report.json" \
             --shard-jobs "$GITHUB_WORKSPACE/shard-jobs.json" --needs "slsa-build=$SLSA_BUILD" --needs "soak=$SOAK"
       # The durable verdict (verdict/), from the folded report and every shard's step logs: the artifact publish reads.
-      - { if: "always() && needs.preflight.outputs.run == '1'", run: bash "$GITHUB_WORKSPACE/busbar-release/ci/promote/verdict.sh" }
+      - if: always() && needs.preflight.outputs.run == '1'
+        working-directory: busbar-release
+        run: $RUNNER_TEMP/busbar-release ci verdict
       - { if: "always() && needs.preflight.outputs.run == '1'", uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a, with: { name: "verdict-${{ env.SHA }}", path: "verdict/", retention-days: 90, if-no-files-found: warn } } # v7.0.1
   # The only job with a write token. It never checks out the candidate: busbar-release at RELEASE_REF,
-  # and the hop's verdict artifact. The sticky PR comment and the branch health issue (publish.sh); a
-  # hop whose runner was lost or timed out wrote no verdict, so fallback.sh records the job and step
+  # and the hop's verdict artifact. The sticky PR comment and the branch health issue (`ci publish`); a
+  # hop whose runner was lost or timed out wrote no verdict, so `ci fallback` records the job and step
   # conclusions the API keeps after the logs are purged, and the run gate's reason when it refused the
   # run (STACK, wiring drift). A run the gate held neutral (run=0, preflight green) posts nothing: the
   # queue or another run judges that head.
@@ -231,10 +277,25 @@ jobs:
     permissions: { contents: read, actions: read, checks: read, pull-requests: write, statuses: write }
     steps:
       - { uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1, with: { repository: GetBusbar/busbar-release, ref: "${{ env.RELEASE_REF }}", token: "${{ secrets.TURNSTILE_DISPATCH_TOKEN }}", path: busbar-release, persist-credentials: false } } # v7
+      # THE ENGINE, downloaded, never compiled: CI's --no-default-features binary of RELEASE_REF from
+      # busbar-release's dev-bin release (dev-bin.yml), run only when its sha256 is ENGINE_SHA256.
+      - name: Engine (busbar-release at RELEASE_REF, sha256-pinned)
+        env: { GH_TOKEN: "${{ secrets.TURNSTILE_DISPATCH_TOKEN }}" }
+        run: |
+          set -euo pipefail
+          api=https://api.github.com/repos/GetBusbar/busbar-release/releases
+          name="busbar-release-ci-linux-x86_64-$RELEASE_REF"
+          id=$(curl -fsSL -H "Authorization: Bearer $GH_TOKEN" "$api/tags/dev-bin" | jq -r --arg n "$name" '.assets[] | select(.name == $n) | .id')
+          [ -n "$id" ] || { echo "::error::dev-bin has no $name"; exit 1; }
+          curl -fsSL -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/octet-stream" -o "$RUNNER_TEMP/busbar-release" "$api/assets/$id"
+          echo "$ENGINE_SHA256  $RUNNER_TEMP/busbar-release" | sha256sum -c -
+          chmod +x "$RUNNER_TEMP/busbar-release"
       - { id: verdict, continue-on-error: true, uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c, with: { name: "verdict-${{ env.SHA }}", path: verdict } } # v8.0.1
       - if: steps.verdict.outcome == 'success'
-        run: bash "$GITHUB_WORKSPACE/busbar-release/ci/promote/publish.sh"
+        working-directory: busbar-release
+        run: $RUNNER_TEMP/busbar-release ci publish
         env: { GH_TOKEN: "${{ github.token }}", HEALTH_BRANCHES: none }
       - if: needs.preflight.result != 'success' || needs.hop.result != 'success'
-        run: bash "$GITHUB_WORKSPACE/busbar-release/ci/promote/fallback.sh"
+        working-directory: busbar-release
+        run: $RUNNER_TEMP/busbar-release ci fallback
         env: { GH_TOKEN: "${{ github.token }}", PR_NUMBER: "${{ github.event.pull_request.number }}", PREFLIGHT_RESULT: "${{ needs.preflight.result }}", PREFLIGHT_REASON: "${{ needs.preflight.outputs.reason }}", HOP_RESULT: "${{ needs.hop.result }}", HEALTH_BRANCHES: none }
