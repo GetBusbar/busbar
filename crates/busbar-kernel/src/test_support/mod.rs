@@ -2133,6 +2133,10 @@ pub fn hook_axis_stand_in(
 /// process. See [`hook_double`].
 pub mod hook_double;
 
+/// The ranking hook double (R-FIX3): the door that stands in for the root's linked ranking row in a
+/// test build. Linked only.
+pub mod ranking_double;
+
 /// A [`crate::hooks::HookEnv`] whose registry holds one `kind: hook` row per alias (each stating the
 /// given manifest `needs`, as a dropped-in plugin's signed manifest does) and whose hook axis is the
 /// [`hook_double::HookAxisDouble`] answering those aliases, beside the build's linked rows. The
