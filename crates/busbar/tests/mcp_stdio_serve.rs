@@ -36,7 +36,12 @@
 // The plane under test is the door `plane-mcp` carries, served on the root's line carrier (SEAM-S1)
 // through the stdio claim its door states; gated on `linked_section_tools`, set exactly when the
 // linked door declaring `tools:` is in the build.
-#![cfg(linked_section_tools)]
+// It also needs the `test-harness` build (ARCHITECT ruling, busbar #700): the dropped-in OIDC module
+// states every need in the `operator-infrastructure` egress class, which the host grants to a
+// first-party plugin only (`BUSBAR-1.6.0.md` §5), and only a `test-harness` child takes the
+// first-party key a test holds (`root::boot::HARNESS_FIRST_PARTY_KEY_ENV`). So this battery runs in
+// the root test-harness row and no longer in the single-plane or plain workspace rows.
+#![cfg(all(linked_section_tools, feature = "test-harness"))]
 
 mod common;
 
@@ -209,10 +214,21 @@ fn record_skip(reason: &str) {
     );
 }
 
+/// The variable a `test-harness` child reads its first-party key from: the binary's
+/// `root::boot::HARNESS_FIRST_PARTY_KEY_ENV`, whose unit tests pin this spelling.
+const HARNESS_FIRST_PARTY_KEY_ENV: &str = "BUSBAR_TEST_HARNESS_FIRST_PARTY_KEY";
+
+/// The first-party key this battery signs the dropped-in module with and hands the child through
+/// the harness seam ([`HARNESS_FIRST_PARTY_KEY_ENV`]).
+fn harness_release_key() -> busbar_plugin_loader::sign::SigningKey {
+    common::plugins::key(0x5a)
+}
+
 /// Package the REAL `busbar-auth-oidc-plugin` cdylib (GetBusbar/busbar-auth-oidc, a pinned git
-/// dev-dependency of this crate, so the build leaves it under `deps/` with a metadata hash) into an
-/// unsigned `kind: auth` tarball in the fixture's plugins dir, its manifest stating the door's
-/// Statement as the pack tool renders it. `false` when the cdylib is not built —
+/// dev-dependency of this crate, so the build leaves it under `deps/` with a metadata hash) into a
+/// `kind: auth` tarball SIGNED FIRST-PARTY under [`harness_release_key`] in the fixture's plugins
+/// dir, its manifest stating the door's Statement as the pack tool renders it: its needs are in the
+/// `operator-infrastructure` egress class, which the host grants to a first-party plugin only. `false` when the cdylib is not built —
 /// a skip locally, a hard failure under CI, the same posture busbar-kernel's
 /// `auth/tests/plugin_chain_tests.rs` takes for the same artifact.
 fn install_auth_plugin(dir: &Path) -> bool {
@@ -220,7 +236,11 @@ fn install_auth_plugin(dir: &Path) -> bool {
         record_skip("auth-oidc plugin cdylib not built (cargo test -p busbar builds it)");
         return false;
     };
-    let mut m = common::plugins::manifest("auth", "e2e-idp-module", "e2e");
+    let mut m = common::plugins::manifest(
+        "auth",
+        "e2e-idp-module",
+        busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
+    );
     m.alias = "e2e-idp".into();
     // One staging file PER CALL: the scenarios run as threads of one process, and rewriting a
     // library another thread still has mapped (dlopened for its Statement) truncates it under
@@ -237,7 +257,7 @@ fn install_auth_plugin(dir: &Path) -> bool {
         .expect("the auth-oidc cdylib states its door")
         .map(hex::encode);
     let _ = std::fs::remove_file(&path);
-    let bytes = common::plugins::seal(m, &lib);
+    let bytes = common::plugins::signed(&harness_release_key(), m, &lib);
     std::fs::write(dir.join("plugins").join("e2e-idp-module.tar.gz"), bytes).unwrap();
     true
 }
@@ -326,6 +346,10 @@ fn spawn(dir: &Path, credential: Option<&str>) -> StdioChild {
         )
         .env("BUSBAR_CONFIG", dir.join("config.yaml"))
         .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))
+        .env(
+            HARNESS_FIRST_PARTY_KEY_ENV,
+            hex::encode(harness_release_key().verifying_key().as_bytes()),
+        )
         .env_remove(surface("credential_env"))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
