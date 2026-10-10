@@ -100,21 +100,10 @@ fn panics(f: impl FnOnce()) -> String {
         .unwrap_or_default()
 }
 
-/// Whether the fixture's example `cdylib` is built in this target dir (`cargo test` builds
-/// examples; `--lib` alone does not). Under CI a missing artifact is a failure, never a skip.
-fn dropped_built() -> bool {
-    let built = std::env::current_exe()
-        .ok()
-        .and_then(|exe| Some(exe.parent()?.parent()?.join("examples")))
-        .is_some_and(|dir| {
-            dir.join(crate::plugin_library_filename("plane_door_plugin"))
-                .exists()
-        });
-    assert!(
-        built || std::env::var_os("CI").is_none(),
-        "the plane_door_plugin example cdylib is not built under CI; a both-ways proof must not skip"
-    );
-    built
+/// The fixture's example `cdylib` in this target dir (`--lib` alone does not build it). A missing
+/// artifact is a failure naming the command that builds it, never a skip.
+fn dropped_built() -> std::path::PathBuf {
+    crate::both_ways::example_cdylib("plane_door_plugin")
 }
 
 /// GREEN: both ways, every session step at its pin, the folds equal, every want met; the open
@@ -123,17 +112,13 @@ fn dropped_built() -> bool {
 fn the_sessions_leg_runs_both_ways_at_its_pins_and_answers_as_wanted() {
     let s = subject();
     let linked = fold(&s, Leg::Linked);
-    let mut folds = vec![&linked];
-    let dropped = dropped_built().then(|| fold(&s, Leg::Dropped));
-    folds.extend(dropped.as_ref());
-    for f in &folds {
+    dropped_built();
+    let dropped = fold(&s, Leg::Dropped);
+    for f in [&linked, &dropped] {
         exact(f).unwrap_or_else(|e| panic!("{e}"));
         sessions_contract(f, &s.kind_inputs("plane")["sessions"]);
     }
-    match &dropped {
-        Some(dropped) => same(&linked, dropped).unwrap_or_else(|e| panic!("{e}")),
-        None => eprintln!("skip: the plane_door_plugin example cdylib is not built"),
-    }
+    same(&linked, &dropped).unwrap_or_else(|e| panic!("{e}"));
     assert!(
         linked[0]
             .answer
@@ -365,16 +350,13 @@ fn served_fold(leg: Leg, host: &str, all: &Value) -> Fold {
 fn the_host_tables_gate_the_unit_and_the_lane_records_and_turns_are_judged() {
     let all: Value = serde_json::from_str(SERVED).expect("JSON");
     let linked = served_fold(Leg::Linked, HOST, &all);
-    let mut folds = vec![&linked];
-    let dropped = dropped_built().then(|| served_fold(Leg::Dropped, HOST, &all));
-    folds.extend(dropped.as_ref());
-    for f in &folds {
+    dropped_built();
+    let dropped = served_fold(Leg::Dropped, HOST, &all);
+    for f in [&linked, &dropped] {
         exact(f).unwrap_or_else(|e| panic!("{e}"));
         sessions_contract(f, &all);
     }
-    if let Some(dropped) = &dropped {
-        same(&linked, dropped).unwrap_or_else(|e| panic!("{e}"));
-    }
+    same(&linked, &dropped).unwrap_or_else(|e| panic!("{e}"));
 }
 
 /// RED: the gate is the host's answer: the member's `echo` not approved, the granted unit's

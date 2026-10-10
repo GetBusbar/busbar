@@ -233,12 +233,17 @@ unsafe impl Scalar for crate::abi::mechanism::call::RawOutcome {}
 unsafe impl Scalar for crate::abi::mechanism::ticket::Ticket {}
 unsafe impl Scalar for crate::abi::mechanism::call::Span {}
 unsafe impl Scalar for crate::abi::auth::StripName {}
+unsafe impl Scalar for crate::abi::auth::FieldSpan {}
 unsafe impl Scalar for crate::abi::plane::UnitCount {}
 unsafe impl Scalar for crate::abi::plane::RecordWrite {}
 unsafe impl Scalar for crate::abi::plane::OutField {}
 unsafe impl Scalar for crate::abi::transport::FramePiece {}
 unsafe impl Scalar for crate::abi::transport::FramerYield {}
 unsafe impl Scalar for crate::abi::transport::HeadSlots {}
+unsafe impl Scalar for crate::abi::transport::FrameSpan {}
+unsafe impl Scalar for crate::abi::transport::DatagramRoute {}
+unsafe impl Scalar for crate::abi::transport::RendezvousTerms {}
+unsafe impl Scalar for crate::abi::transport::DatagramYield {}
 unsafe impl Scalar for crate::abi::store::CellGrant {}
 
 /// A slot's `out`, as a safe body is handed it: read anything, set scalars, and hand pointers to
@@ -285,6 +290,13 @@ impl Out<'_, crate::abi::plane::ArriveOut> {
     /// Q-L3B-LOCAL): it names no entry, and the kernel admits it with no route walk.
     pub fn local(&mut self) {
         self.set(|o| &o.route, crate::abi::plane::ROUTE_LOCAL);
+    }
+
+    /// THE PLANE'S OWN ANSWER IS AN ADMITTED CALL ([`crate::abi::plane::ROUTE_COUNTED`], on a
+    /// [`Self::local`] unit): the kernel counts its request against the caller's caps.
+    pub fn counted(&mut self) {
+        let flags = self.get().route_flags | crate::abi::plane::ROUTE_COUNTED;
+        self.set(|o| &o.route_flags, flags);
     }
 
     /// THE UNIT'S OPERATION IS PERFORMED AT MOST ONCE ([`crate::abi::plane::ROUTE_ONCE`]): a member
