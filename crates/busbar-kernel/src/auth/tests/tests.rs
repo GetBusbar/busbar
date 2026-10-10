@@ -1904,9 +1904,10 @@ fn the_admin_head_hands_the_request_through_as_presented() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
-// L2-AUTH-1 (ARCHITECT ruling 2026-10-03): a data-plane door that answers no verdict, or whose
-// `max_inflight` is full, is a REJECT on the data plane — 1.5.5's 401, never a pass to the next
-// position and never a new status. (The admin chain keeps its ruled 503.)
+// L2-AUTH-1 (ARCHITECT ruling 2026-10-03): a data-plane door that answers no verdict is a REJECT
+// on the data plane — 1.5.5's 401, never a pass to the next position. A door whose `max_inflight`
+// is full stops the chain too, never a pass; the data plane answers it 503 with `Retry-After`
+// (owner ruling Q134, 2026-10-07, which supersedes L2-AUTH-1 for that one answer).
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 
 /// A kind-neutral double of one opened auth instance that answers every `verify` with `verified`
@@ -1995,10 +1996,43 @@ async fn a_data_plane_door_overloaded_or_without_a_verdict_denies_the_chain() {
     }
 }
 
-/// On the wire: the request an overloaded (or verdict-less) data-plane door refuses is answered
-/// with 1.5.5's 401, byte for byte the refusal an all-pass chain earns — no 503, no new body.
+/// Q134 (owner ruling 2026-10-07): the walk the data-plane middleware runs hands an overloaded
+/// door back APART, so the middleware can answer it 503; a door with no verdict is still the
+/// denial, and in neither case is the identifier behind it reached. RED: were `Overloaded` folded
+/// into a reject (as before Q134), the first assertion would read `Ok(Denied)`.
 #[tokio::test]
-async fn a_data_plane_door_overloaded_or_without_a_verdict_answers_the_1_5_5_401() {
+async fn the_data_plane_walk_hands_an_overloaded_door_back_apart() {
+    use busbar_contract::auth_calls::Verified;
+    let judged = |verified: Verified| async move {
+        let auth = std::sync::Arc::new(door_then_identifier(verified));
+        AuthMiddleware::judge_chain_on_request_path(
+            &auth,
+            Some("grp:admins".into()),
+            ChainHead::default(),
+            None,
+            None,
+        )
+        .await
+    };
+    assert_eq!(
+        judged(Verified::Overloaded).await,
+        Err(VerifierOverloaded),
+        "an overloaded door is handed back apart, never a reject or a pass"
+    );
+    assert_eq!(
+        judged(Verified::Failed).await,
+        Ok(ChainVerdict::Denied),
+        "a door with no verdict is still the denial"
+    );
+}
+
+/// On the wire: the request a verdict-less data-plane door refuses is answered with 1.5.5's 401,
+/// byte for byte the refusal an all-pass chain earns. An OVERLOADED door (its `max_inflight` full)
+/// is answered 503 with `Retry-After: 1` and the gateway's at-capacity body, the bytes the inbound
+/// cap sheds with: no new customer string (owner ruling Q134, 2026-10-07). RED before Q134: the
+/// overloaded door answered the 401.
+#[tokio::test]
+async fn a_data_plane_door_without_a_verdict_answers_the_1_5_5_401_and_an_overloaded_one_503() {
     use crate::test_support::{LaneSpec, MockServer, TestApp};
     use busbar_contract::auth_calls::Verified;
     crate::snapshot::init();
@@ -2022,13 +2056,15 @@ async fn a_data_plane_door_overloaded_or_without_a_verdict_answers_the_1_5_5_401
                 .await
                 .unwrap();
             let status = r.status().as_u16();
-            let content_type = r
-                .headers()
-                .get("content-type")
-                .map(|v| v.to_str().unwrap_or_default().to_string());
+            let header = |name: &str| {
+                r.headers()
+                    .get(name)
+                    .map(|v| v.to_str().unwrap_or_default().to_string())
+            };
+            let (content_type, retry_after) = (header("content-type"), header("retry-after"));
             let text = r.text().await.unwrap();
             handle.abort();
-            (status, content_type, text)
+            (status, content_type, retry_after, text)
         }
     };
     // The 1.5.5 refusal: a configured chain whose every position passed.
@@ -2037,13 +2073,24 @@ async fn a_data_plane_door_overloaded_or_without_a_verdict_answers_the_1_5_5_401
     ])))
     .await;
     assert_eq!(all_pass.0, 401, "the all-pass refusal: {all_pass:?}");
-    for verified in [Verified::Overloaded, Verified::Failed] {
-        let refused = ask(door_then_identifier(verified.clone())).await;
-        assert_eq!(
-            refused, all_pass,
-            "{verified:?}: the 1.5.5 401, byte for byte"
-        );
-    }
+    let no_verdict = ask(door_then_identifier(Verified::Failed)).await;
+    assert_eq!(
+        no_verdict, all_pass,
+        "a door with no verdict: the 1.5.5 401, byte for byte"
+    );
+    // The at-capacity 503 the inbound cap sheds with, byte for byte (`limits::admission`).
+    let overloaded = ask(door_then_identifier(Verified::Overloaded)).await;
+    assert_eq!(
+        overloaded,
+        (
+            503,
+            Some(crate::proxy::APPLICATION_JSON.to_string()),
+            Some("1".to_string()),
+            r#"{"error":{"type":"overloaded","message":"The gateway is at capacity. Please retry shortly."}}"#
+                .to_string(),
+        ),
+        "an overloaded door: 503, Retry-After, the at-capacity body (Q134)"
+    );
     server.shutdown().await;
 }
 
