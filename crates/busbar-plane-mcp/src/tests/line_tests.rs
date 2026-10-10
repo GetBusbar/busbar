@@ -134,3 +134,21 @@ fn a_live_ask_lapses_at_its_timeout_and_a_request_is_livened_a_bounded_number_of
     assert!(may_liven(MAX_LIVE_ASK_ROUNDS - 1));
     assert!(!may_liven(MAX_LIVE_ASK_ROUNDS));
 }
+
+/// `initialize` naming a session revision this plane carries is answered in it (THE DESIGN section 2,
+/// the mcp bullet: revision by negotiation), and the carrier still declares neither `subscribe` nor
+/// `logging` in it; naming none, or the stateless one, keeps the stateless answer.
+#[test]
+fn initialize_negotiates_a_session_revision() {
+    let init = json!({ "jsonrpc": "2.0", "id": 1, "method": "initialize", "params": { "protocolVersion": "2025-06-18" } });
+    let Era::Opened(revision, answer) = era(&init) else {
+        panic!("a session revision is opened");
+    };
+    assert_eq!(revision, crate::revision::Revision::R2025_06_18);
+    assert_eq!(answer["result"]["protocolVersion"], "2025-06-18");
+    let caps = &answer["result"]["capabilities"];
+    assert!(caps["resources"].get("subscribe").is_none());
+    assert!(caps.get("logging").is_none());
+    let stateless = json!({ "jsonrpc": "2.0", "id": 2, "method": "initialize", "params": { "protocolVersion": "2026-07-28" } });
+    assert_eq!(era(&stateless), Era::Answer(initialize_result(&json!(2))));
+}

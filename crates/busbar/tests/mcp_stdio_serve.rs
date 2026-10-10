@@ -677,7 +677,8 @@ fn a_bound_session_serves_and_eof_with_a_live_subscription_exits_promptly() {
     );
     let mut child = spawn(&dir, Some(&token));
 
-    // A LEGACY-era opening: `initialize`, no `_meta` — the stdio dual-era negotiation.
+    // A LEGACY-era opening: `initialize`, no `_meta`, naming a session revision busbar carries —
+    // answered in that revision (revision by negotiation, THE DESIGN section 2).
     child.send(&serde_json::json!({
         "jsonrpc": "2.0", "id": 1, "method": "initialize",
         "params": { "protocolVersion": "2025-06-18", "capabilities": {},
@@ -687,7 +688,7 @@ fn a_bound_session_serves_and_eof_with_a_live_subscription_exits_promptly() {
     assert_eq!(
         init.pointer("/result/protocolVersion")
             .and_then(|v| v.as_str()),
-        Some("2026-07-28"),
+        Some("2025-06-18"),
         "{init}"
     );
     child.send(&serde_json::json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }));

@@ -46,6 +46,9 @@ pub(super) struct LineUnit {
     pub(super) next_ask: Option<u64>,
     /// The live round this unit's retry is: `0` for a request the caller sent itself.
     pub(super) round: u32,
+    /// Its line was raised from the session revision its carrier session negotiated
+    /// ([`crate::adapt::raise`]): its answer is lowered back into it.
+    pub(super) raised: bool,
 }
 
 /// One subscription kept on a carrier session.
@@ -127,11 +130,38 @@ pub(super) fn arrive(plane: &McpDoor, session: u64, body: &[u8]) -> Arrival {
     }
     match line::era(&value) {
         Era::Dispatch => {}
+        Era::Opened(revision, answer) => {
+            // THE CARRIER SESSION NOW SPEAKS `revision` (revision by negotiation, THE DESIGN section 2).
+            super::keep(&plane.line_revisions, super::MAX_UNITS, session, revision);
+            unit.preset = Some(serde_json::to_vec(&answer).unwrap_or_default());
+            return Arrival {
+                unit,
+                dispatch: None,
+            };
+        }
         Era::Answer(answer) => {
             unit.preset = Some(serde_json::to_vec(&answer).unwrap_or_default());
             return Arrival {
                 unit,
                 dispatch: None,
+            };
+        }
+    }
+    // A LINE OF A SESSION REVISION carries no stateless `_meta`: it is raised into the one
+    // dispatch's shape, and its answer lowered back ([`crate::adapt`]).
+    let stateless = value
+        .pointer("/params/_meta")
+        .and_then(|m| m.get(crate::codec::META_PROTOCOL_VERSION))
+        .is_some();
+    if !stateless && plane.line_revisions.get(&session).is_some() {
+        let mut raised = value.clone();
+        if crate::adapt::raise(&mut raised).is_some() {
+            unit.raised = true;
+            let dispatch = serde_json::to_vec(&raised).unwrap_or_default();
+            unit.original = Some(raised);
+            return Arrival {
+                unit,
+                dispatch: Some(dispatch),
             };
         }
     }

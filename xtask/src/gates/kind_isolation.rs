@@ -10252,10 +10252,11 @@ impl Gate for KindIsolationGate {
         ));
 
         // A STEP THAT IS DECLARED AND NOT RUN. The compiler is satisfied and the loop stops there,
-        // which is the case the presence check alone cannot see.
+        // which is the case the presence check alone cannot see. Planted in a plane that still has
+        // its legacy face: a door-only plane (mcp) owes slots, not step bodies.
         let mut ov = Overlay::new();
         ov.set(
-            "crates/busbar-plane-mcp/src/planted_step.rs",
+            "crates/busbar-plane-decisions/src/planted_step.rs",
             "impl Foo {\n    fn route(&self) -> RoutePlan {\n        todo!()\n    }\n}\n",
         );
         report.push(prove_rows_red(
