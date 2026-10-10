@@ -950,8 +950,9 @@ fn jwt_bearer_routes(
         crate::root::loader::dispatch::DispatchConfig::default(),
     ));
     crate::root::connector::install_io(&dispatcher);
-    let linked: [busbar_kernel::preflight::LinkedAuth; 1] =
-        [("busbar-auth-oauth", busbar_auth_oauth::door)];
+    // The row's canonical name is its key.
+    let name = "busbar-auth-oauth";
+    let linked: [busbar_kernel::preflight::LinkedAuth; 1] = [(name, name, busbar_auth_oauth::door)];
     let auths = super::OutboundAuths::new(
         dispatcher,
         &linked,
