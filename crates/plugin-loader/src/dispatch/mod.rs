@@ -25,13 +25,19 @@
 //! per kind. A kind is a [`Kind`] marker naming its code, its table (`abi/<kind>/Ops`) and its
 //! timeout outcome.
 
-/// THE HOST'S C ENTRY POINTS, ONE SPELLING OF THE ABI: every `fn` inside is that function with the
-/// C ABI its table's slot type names (`abi::host::io::IoSlots`, `abi::mechanism::ticket::WakeFn`).
-/// Defined before the modules so each of them can use it.
+/// THE HOST'S SERVICE ENTRY POINTS, ONE SPELLING OF THE ABI: every `fn` inside is a host service
+/// (`abi::host::service::ServiceFn`, the slot type of `abi::host::io::IoSlots`). The expansion
+/// spells that signature whole, so it reads as an implementation of the ABI's type, never a new
+/// shape. Defined before the modules so each of them can use it.
 macro_rules! c_entry {
     () => {};
-    ($(#[$m:meta])* $vis:vis fn $name:ident ($($args:tt)*) $(-> $ret:ty)? $body:block $($more:tt)*) => {
-        $(#[$m])* $vis extern "C" fn $name($($args)*) $(-> $ret)? $body
+    (
+        $(#[$m:meta])* $vis:vis fn $name:ident(
+            $ctx:ident: HostCtx, $input:ident: *const c_void, $out:ident: *mut ServiceOut $(,)?
+        ) -> RawOutcome { $($body:tt)* }
+        $($more:tt)*
+    ) => {
+        $(#[$m])* $vis extern "C" fn $name($ctx: HostCtx, $input: *const c_void, $out: *mut ServiceOut) -> RawOutcome { $($body)* }
         c_entry! { $($more)* }
     };
 }

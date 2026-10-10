@@ -660,7 +660,7 @@ impl Drop for RawPlugin {
     fn drop(&mut self) {
         // Guard `busbar_close` against a panicking plugin destructor. This runs on the hot-reload
         // path (the OLD instance drops as its last in-flight request drains) and at clean shutdown; a
-        // panic here in a plain `extern "C"` `drop` would double-panic → unconditional abort. With the
+        // panic here in a plain C-ABI `drop` would double-panic → unconditional abort. With the
         // `extern "C-unwind"` ABI the unwind is defined and caught here, so a bad backend `Drop`
         // degrades to a logged warning + leaked handle instead of tearing down the whole gateway.
         let close = self.close;
