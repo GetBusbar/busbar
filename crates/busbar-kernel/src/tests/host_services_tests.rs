@@ -578,12 +578,16 @@ fn trust_state_answers_the_counterparty_and_its_items_as_the_admin_list_does() {
     use crate::trust::book::Ruling;
     let r = rig();
     let me = caller("inst");
+    // A declared fingerprint is pending, and listed NEW, until the operator approves it
+    // (coordinator 2026-10-07, #555).
     assert_eq!(
         r.s.trust_state(&me, "cp").value,
-        svc::KEY_APPROVED,
+        svc::KEY_NEW,
         "declared pin"
     );
     run(|l| r.s.trust_sight(&me, "cp", "fp", l));
+    assert_eq!(r.s.trust_state(&me, "cp").value, svc::KEY_NEW, "sighted");
+    r.s.trust_rule("inst/cp", Ruling::Approve).unwrap();
     assert_eq!(
         r.s.trust_sight_item(&me, "cp", "t", "d1").value,
         svc::TRUST_NEW
