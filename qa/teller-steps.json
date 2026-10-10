@@ -603,7 +603,7 @@
         "root": {
           "state": "proven",
           "leg": "root-decisions",
-          "test": "crates/busbar/src/root/tests/serve_tests.rs::a_decisions_unit_granted_only_another_pool_is_refused_before_admit",
+          "test": "crates/busbar/src/root/tests/serve_tests.rs::a_unit_granted_only_another_pool_is_refused_before_admit",
           "note": "a keyed caller whose pool grant names only another pool is refused 403 through the composed door before Admit draws: the far end never dialled, no request counted on the key, nothing posted on the lane"
         }
       },
