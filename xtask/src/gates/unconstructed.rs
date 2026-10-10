@@ -1181,28 +1181,41 @@ impl Gate for UnconstructedGate {
 
         // ── CONTROL 13 — A DELETED DECLARATION IS RED, NOT A SMALLER GREEN. ─────────────────
         // The declarations ARE the gate's denominator: a row struck from the file is a guard that
-        // stopped running, and the file read exactly as clean with one row as with two. Strike the
-        // last declared row and the floor must go RED, naming the count it found.
+        // stopped running, and the file read exactly as clean with one row as with two. Strike rows
+        // from the end until exactly one fewer than the floor is left, and the floor must go RED,
+        // naming the count it found.
+        //
+        // HOW MANY TO STRIKE IS MEASURED, not assumed to be one. The floor is a minimum, and the
+        // file may carry more rows than it: striking only the last row of a file holding more than
+        // [`DECLARATION_FLOOR`] leaves it above the floor, and this control then failed on every
+        // branch that declared a new row without touching the gate.
         let ids: Vec<String> = declarations(cx)
             .unwrap_or_default()
             .into_iter()
             .map(|c| c.id)
             .collect();
-        let one_struck = ids
-            .last()
-            .map(|id| without_declaration(&decls, id))
-            .unwrap_or_default();
+        let strike = (ids.len() + 1).saturating_sub(DECLARATION_FLOOR).max(1);
+        let below_floor = ids
+            .iter()
+            .rev()
+            .take(strike)
+            .fold(decls.clone(), |text, id| without_declaration(&text, id));
+        let left = format!(
+            "{} capability declaration(s)",
+            ids.len().saturating_sub(strike)
+        );
         report.push(prove_rows_red(
             cx,
             self,
-            "a [[capability]] declaration struck from the file reds the declaration floor",
+            "[[capability]] declarations struck from the file to one below the floor red the \
+             declaration floor",
             &[ROW_SCAN_FLOOR],
             {
                 let mut ov = Overlay::new();
-                ov.set(DECLARATIONS, one_struck);
+                ov.set(DECLARATIONS, below_floor);
                 ov
             },
-            &["below the declaration floor"],
+            &["below the declaration floor", &left],
         ));
 
         // ── CONTROL 13b — A FILE WITH NO DECLARATIONS AT ALL IS RED. ────────────────────────
