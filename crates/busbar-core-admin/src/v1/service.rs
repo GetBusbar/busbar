@@ -16,9 +16,10 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use busbar_kernel::audit::amend;
 use busbar_kernel::diagnostics::{
-    diag_debug, diag_error, diag_warn, ADMIN_STORE_OPERATION_FAILED, GROUP_DELETE_KEY_READ_FAILED,
-    PLUGINS_DIR_FINGERPRINT_FAILED, PLUGIN_CATALOG_BLOCKING_TASK_FAILED,
-    PLUGIN_CATALOG_SCAN_GATE_TIMEOUT, USAGE_BLOCKING_TASK_JOIN_FAILED,
+    diag_debug, diag_error, diag_warn, ADMIN_STORE_OPERATION_FAILED, ADMIN_STORE_TASK_JOIN_FAILED,
+    GROUP_DELETE_KEY_READ_FAILED, PLUGINS_DIR_FINGERPRINT_FAILED,
+    PLUGIN_CATALOG_BLOCKING_TASK_FAILED, PLUGIN_CATALOG_SCAN_GATE_TIMEOUT,
+    USAGE_BLOCKING_TASK_JOIN_FAILED,
 };
 use busbar_kernel::state::App;
 
@@ -153,6 +154,20 @@ fn metered_row<'a>(
             .collect(),
         b.requests,
         classes,
+    )
+}
+
+/// **WHETHER A METERING ROW'S USAGE VIEW CARRIES `classes`.** Only a row a non-pools plane metered
+/// (its `provider` column is that plane's registry key, as [`row_lane`] reads it): the classes that
+/// plane declares are new 1.6.0 surface (the FLIP-A2A ruling). A pools-plane row keeps 1.5.5's
+/// usage shape, the token split alone, though the budget book holds an open class for it (a
+/// rerank's `search_units`, a provider-stated total's `unitemized_tokens`, LEDGER-100): that count
+/// stays ledgered and priced into the row's `spend_micros`, and the read does not itemize it. The
+/// signed LEDGER-SIMPLE entry pins that read byte for byte, and 1.5.5's usage rows had no such field.
+pub(crate) fn row_carries_classes(provider: &str) -> bool {
+    matches!(
+        busbar_kernel::plane::registry::plane_decl_for(provider),
+        Some(decl) if !decl.fallback
     )
 }
 
@@ -684,10 +699,13 @@ mod catalog_scan_test_hooks {
 /// for both `info`'s build proof and the `plugins?type=auth` catalog. `keys` (the built-in
 /// signed-key verifier) is engine-handled and always present; every other entry is an auth row the
 /// build LINKS onto the auth axis (the operator credential's, in the default build — its packaging
-/// feature is the composition root's).
-fn auth_modules_compiled_in() -> Vec<&'static str> {
+/// feature is the composition root's). Public so the composition root's tests can hold the shipped
+/// build to 1.5.5's answer over the rows it really links.
+pub fn auth_modules_compiled_in() -> Vec<&'static str> {
     let mut modules = vec![busbar_kernel::config::KEYS_MODULE];
-    modules.extend(busbar_kernel::preflight::linked_auth_names());
+    modules.extend(busbar_kernel::preflight::inbound_auth_names(
+        busbar_kernel::preflight::linked_auth_rows(),
+    ));
     modules
 }
 

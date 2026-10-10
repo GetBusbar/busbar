@@ -53,7 +53,7 @@ use busbar_contract::abi::plane::{CLAIM_EXACT, CLAIM_OPEN, CLAIM_PATTERN};
 use busbar_contract::auth::AuthPrincipal;
 use busbar_contract::caps::{Pass, PrincipalId, Route};
 use busbar_kernel::plane_driver::{
-    Arrival, EgressFarEnd, FarEnd, FarPiece, OutboundRequest, Pick, UnitRoute,
+    Arrival, EgressFarEnd, FarEnd, FarPiece, OutboundRequest, Pick, RoutedScope, UnitRoute,
 };
 use busbar_kernel::plane_routes::{
     PlaneRefusalSpec, PlaneReqCtx, PlaneRouteFuture, PlaneRouteSpec,
@@ -559,11 +559,10 @@ impl DoorApply {
     /// A plane that will not refresh keeps serving its current generation, logged.
     pub fn apply(&self, app: &busbar_kernel::state::App) {
         let now = self.current();
-        let section = app
-            .plane_slots
-            .get(self.facts.plane.as_str())
-            .and_then(|s| s.downcast_ref::<busbar_kernel::plane::door::DoorSlot>())
-            .map_or_else(|| now.section.clone(), |s| s.section.value.clone());
+        // THE SECTION AS BOOT BUILDS IT (audit root-R1 leftover C1): the slot's section as written,
+        // with the generation's unified pools at its reserved `pools` key ([`with_pools`]); the plane
+        // is handed it with the core-owned `work:` struck ([`handed_settings`]).
+        let section = applied_section(app, &self.facts.plane, self.served_facts.section, &now);
         match self.refreshed(&section, now.generation + 1, &*app.secret_resolver) {
             Ok(next) => {
                 *self
@@ -594,7 +593,7 @@ impl DoorApply {
         let settings = if section.is_null() {
             Vec::new()
         } else {
-            serde_json::to_vec(section).map_err(|e| format!("its section: {e}"))?
+            handed_settings(section)?
         };
         crate::root::loader::dispatch::kinds::plane::refresh_door(
             &self.plugin,
@@ -637,6 +636,29 @@ impl DoorApply {
             egress,
         })
     }
+}
+
+/// THE SECTION A CONFIG APPLY REFRESHES A DOOR PLANE ONTO: the plane's slot in the generation `app`
+/// installed (its section as written), carrying the unified pools that generation resolved for the
+/// plane's section `section_key` ([`installed_door_pools`]: the `tools` pools off `App::tool_pools`,
+/// the `agents` pools off the generic per-plane pool map `App::plane_pools`), as the boot
+/// composition carries them ([`with_pools`]); a generation with no slot for the plane keeps the
+/// section it serves now.
+#[must_use]
+pub fn applied_section(
+    app: &busbar_kernel::state::App,
+    plane: &str,
+    section_key: &str,
+    now: &DoorLive,
+) -> serde_yaml::Value {
+    let Some(slot) = app
+        .plane_slots
+        .get(plane)
+        .and_then(|s| s.downcast_ref::<busbar_kernel::plane::door::DoorSlot>())
+    else {
+        return now.section.clone();
+    };
+    section_with_pools(section_key, &slot.section.value, &installed_door_pools(app))
 }
 
 /// EVERY SERVED DOOR PLANE'S APPLY, kept when the planes move into the data routes, for the
@@ -693,6 +715,9 @@ pub struct Served {
     /// another framer than the data listener's own answers (ARCHITECT 4l). `None` = the process's
     /// one connector's.
     pub framers: Option<StreamFramers>,
+    /// THE FLUSH EPOCH every served plane's money steps pace their checkpoints by: bumped once per
+    /// checkpoint flush tick ([`Served::spawn_ticks`]).
+    pub epoch: busbar_kernel::plane_driver::FlushEpoch,
 }
 
 /// The framer that answers a claim, by its name (`Connector::framer_for`).
@@ -728,6 +753,51 @@ impl Served {
             tokio::spawn(async move { driver.ticks().await });
             let driver = Arc::clone(&p.driver);
             tokio::spawn(async move { driver.drives().await });
+        }
+        // THE CHECKPOINT FLUSH TICK (THE DESIGN §7: "a checkpoint is a durability `unit.accrued`
+        // record"), on the kernel's flush interval: the piece path only marks a running unit, and
+        // this tick journals each marked unit's counts, once per epoch, off the runtime's workers.
+        if let Some(post) = &self.post {
+            let checkpoints = Checkpoints {
+                epoch: self.epoch.clone(),
+                money: self.planes.iter().map(|p| Arc::clone(&p.money)).collect(),
+                post: Arc::clone(post),
+            };
+            tokio::spawn(checkpoints.ticks());
+        }
+    }
+}
+
+/// What the checkpoint flush tick runs over: the flush epoch, every served plane's money steps,
+/// and the node's posting site their checkpoints are journaled through.
+struct Checkpoints {
+    epoch: busbar_kernel::plane_driver::FlushEpoch,
+    money: Vec<Arc<PlaneMoney>>,
+    post: Arc<crate::root::plane_node::NodeEndPost>,
+}
+
+impl Checkpoints {
+    /// One tick: bump the epoch, then hand each running unit's checkpoint to the node's book
+    /// ([`PlaneMoney::flush_checkpoints`]). Answers how many were journaled.
+    fn tick(&self) -> usize {
+        self.epoch.bump();
+        self.money
+            .iter()
+            .map(|m| m.flush_checkpoints(&*self.post))
+            .sum()
+    }
+
+    /// Every [`busbar_kernel::host_records::FLUSH_INTERVAL`], for the process's life; each tick's
+    /// journal writes run on the blocking pool, never on a runtime worker.
+    async fn ticks(self) {
+        let every = busbar_kernel::host_records::FLUSH_INTERVAL;
+        let mut at = tokio::time::interval_at(tokio::time::Instant::now() + every, every);
+        at.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let this = Arc::new(self);
+        loop {
+            at.tick().await;
+            let tick = Arc::clone(&this);
+            let _journaled = tokio::task::spawn_blocking(move || tick.tick()).await;
         }
     }
 }
@@ -766,11 +836,18 @@ pub fn compose_served(
         gov: Arc::clone(&gov),
     });
     let site = Arc::clone(&post);
+    // THE ONE FLUSH EPOCH every plane's checkpoints are paced by, bumped by the served planes'
+    // checkpoint flush tick (`Served::spawn_ticks`).
+    let epoch = busbar_kernel::plane_driver::FlushEpoch::new();
+    let paced = epoch.clone();
     let money = move || {
-        Arc::new(PlaneMoney::new(
-            Arc::clone(&gov),
-            Arc::clone(&site) as Arc<dyn busbar_kernel::plane_driver::EndPost>,
-        ))
+        Arc::new(
+            PlaneMoney::new(
+                Arc::clone(&gov),
+                Arc::clone(&site) as Arc<dyn busbar_kernel::plane_driver::EndPost>,
+            )
+            .with_epoch(paced.clone()),
+        )
     };
     let egress = DoorEgress {
         reach,
@@ -787,6 +864,7 @@ pub fn compose_served(
         stage.as_ref(),
     )?;
     served.post = Some(post);
+    served.epoch = epoch;
     Ok(served)
 }
 
@@ -800,7 +878,116 @@ pub struct HookStage {
     pub gov: Arc<busbar_kernel::governance::GovState>,
 }
 
+/// What the hooks may know of a verified caller (the principal is its key's id), over the
+/// generation a unit binds: its key, its group (a tap's `groups:` scope), its rate headroom and its
+/// budget chain (the generation's card, through its meter pin); a hook handed the prompt leaves its
+/// access amendment through the engine host.
+struct GovCaller {
+    host: Arc<dyn busbar_kernel::plane_host::EngineHost>,
+    gov: Arc<busbar_kernel::governance::GovState>,
+}
+
+impl GovCaller {
+    fn key(&self, principal: &str) -> Option<Arc<busbar_contract::records::VirtualKey>> {
+        self.gov.lookup_by_sub(principal)
+    }
+}
+
+impl busbar_kernel::plane_driver::CallerFacts for GovCaller {
+    fn key(&self, principal: &str) -> Option<busbar_kernel::plane_driver::CallerKey> {
+        self.key(principal)
+            .map(|k| busbar_kernel::plane_driver::CallerKey {
+                id: k.id.clone(),
+                name: k.name.clone(),
+            })
+    }
+
+    fn in_groups(&self, principal: Option<&str>, groups: &[String]) -> bool {
+        let group = principal
+            .and_then(|p| self.key(p))
+            .and_then(|k| k.group.clone());
+        self.host.caller_in_hook_groups(group.as_deref(), groups)
+    }
+
+    fn rate_headroom(&self, principal: &str, pool: &str) -> Option<f64> {
+        let key = self.key(principal)?;
+        let pin = self.host.meter_pin()?;
+        self.host
+            .rate_headroom(&pin, &key, Some(pool), busbar_kernel::store::now())
+    }
+
+    fn budget(&self, principal: &str) -> Vec<busbar_contract::hooks::BudgetBucketState> {
+        match (self.key(principal), self.host.meter_pin()) {
+            (Some(key), Some(pin)) => {
+                self.host
+                    .budget_state(&pin, &key, busbar_kernel::store::now())
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    fn hook_read(&self, hook: &str, principal: Option<&str>, dialect: &str, identity: bool) {
+        self.host.hook_read(hook, principal, dialect, identity);
+    }
+}
+
+/// ONE ROUTED-ORDER DOOR PLANE'S BINDER: each bind reads the generation current at that moment
+/// ([`HookStage::host`]) and binds its hooks as [`busbar_kernel::plane_driver::HostHooks`] binds a
+/// fixed one, so a config apply reaches every unit that binds after it; a unit keeps the generation
+/// it bound (1.5.5 behaviour, frozen).
+struct LiveHooks {
+    host: busbar_kernel::plane_driver::GenerationHost,
+    gov: Arc<busbar_kernel::governance::GovState>,
+    dialects: Vec<String>,
+}
+
+impl LiveHooks {
+    /// The binder of the generation current now.
+    fn current(&self) -> busbar_kernel::plane_driver::HostHooks {
+        let host = (self.host)();
+        busbar_kernel::plane_driver::HostHooks {
+            host: Arc::clone(&host),
+            caller: Arc::new(GovCaller {
+                host,
+                gov: Arc::clone(&self.gov),
+            }),
+            dialects: self.dialects.clone(),
+        }
+    }
+}
+
+impl busbar_kernel::plane_driver::HookBinder for LiveHooks {
+    fn bind(
+        &self,
+        bind: &busbar_kernel::plane_driver::Bind<'_>,
+    ) -> Option<busbar_kernel::plane_driver::UnitHooks> {
+        self.current().bind(bind)
+    }
+
+    fn denied(&self, dialect: u32, status: u16) {
+        self.current().denied(dialect, status);
+    }
+
+    fn dialect(&self, dialect: u32) -> String {
+        self.dialects
+            .get(dialect as usize)
+            .cloned()
+            .unwrap_or_default()
+    }
+}
+
 impl HookStage {
+    /// The ROUTED-ORDER binder of a plane whose dialects are `dialects`, in its tail's order: the
+    /// deployment's global and per-pool hooks, bound per unit off the current generation (U22,
+    /// ARCHITECT rulings 2026-10-05).
+    fn routed(&self, dialects: &[&str]) -> Arc<dyn busbar_kernel::plane_driver::HookBinder> {
+        Arc::new(LiveHooks {
+            host: Arc::clone(&self.host),
+            gov: Arc::clone(&self.gov),
+            dialects: dialects.iter().map(|d| (*d).to_string()).collect(),
+        })
+    }
+
     /// The GATE-FIRST binder of the plane registered under `plane_key` (its tail states
     /// `abi::plane::TAIL_HOOKS_GATED`): the gates and rewrites the deployment attached to the
     /// entry the plane's projection names, filed under the plane's registry key.
@@ -827,40 +1014,164 @@ pub fn with_pools(
         BTreeMap<String, busbar_kernel::failover::CandidatePoolCfg>,
     )],
 ) -> BTreeMap<&'static str, serde_yaml::Value> {
-    use busbar_contract::section::{
-        POOL_MEMBERS_KEY, POOL_MEMBER_GRANTED_KEY, POOL_REPEATABLE_KEY, RESERVED_POOLS_KEY,
-    };
     for (key, stated) in pools {
-        if stated.is_empty() {
-            continue;
+        if let Some(section) = sections.get_mut(key) {
+            pools_into(section, stated);
         }
-        let Some(serde_yaml::Value::Mapping(section)) = sections.get_mut(key) else {
-            continue;
-        };
-        let mut map = serde_yaml::Mapping::new();
-        for (name, pool) in stated {
-            let mut entry = serde_yaml::Mapping::new();
-            entry.insert(
-                POOL_MEMBERS_KEY.into(),
-                serde_yaml::Value::Sequence(
-                    pool.members.iter().map(|m| m.as_str().into()).collect(),
-                ),
-            );
-            entry.insert(
-                POOL_REPEATABLE_KEY.into(),
-                serde_yaml::Value::Sequence(
-                    pool.repeatable.iter().map(|m| m.as_str().into()).collect(),
-                ),
-            );
-            entry.insert(
-                POOL_MEMBER_GRANTED_KEY.into(),
-                serde_yaml::Value::Bool(true),
-            );
-            map.insert(name.as_str().into(), serde_yaml::Value::Mapping(entry));
-        }
-        section.insert(RESERVED_POOLS_KEY.into(), serde_yaml::Value::Mapping(map));
     }
     sections
+}
+
+/// The unified pools each door section carries at its reserved `pools` key, by section key.
+pub type DoorPoolsByKey = [(
+    &'static str,
+    BTreeMap<String, busbar_kernel::failover::CandidatePoolCfg>,
+); 2];
+
+/// The door sections' unified pools as the generation `tools`/`agents` resolved them, by section
+/// key: the one table boot ([`with_pools`]) and a config apply ([`applied_section`]) both inject
+/// from, so a door plane's section is built the same way on both paths (audit root-R1 leftover C1).
+#[must_use]
+pub fn door_pools(
+    tools: &BTreeMap<String, busbar_kernel::failover::CandidatePoolCfg>,
+    agents: &BTreeMap<String, busbar_kernel::failover::CandidatePoolCfg>,
+) -> DoorPoolsByKey {
+    [
+        (
+            busbar_kernel::plane::config::NAMED_MAP_SECTIONS[2],
+            tools.clone(),
+        ),
+        (
+            busbar_kernel::plane::config::NAMED_MAP_SECTIONS[3],
+            agents.clone(),
+        ),
+    ]
+}
+
+/// [`door_pools`] read off an installed generation: the pools a config apply resolved.
+#[must_use]
+pub fn installed_door_pools(app: &busbar_kernel::state::App) -> DoorPoolsByKey {
+    let none = BTreeMap::new();
+    let agents = busbar_kernel::plane::registry::plane_decl_for_config_section(
+        busbar_kernel::plane::config::NAMED_MAP_SECTIONS[3],
+    )
+    .and_then(|decl| app.plane_pools(decl.key))
+    .unwrap_or(&none);
+    door_pools(&app.tool_pools, agents)
+}
+
+/// The section a config apply refreshes the door plane serving `key` onto: the section as
+/// written, with the generation's unified pools injected exactly as boot injects them
+/// ([`with_pools`]).
+fn section_with_pools(
+    key: &str,
+    written: &serde_yaml::Value,
+    pools: &[(
+        &'static str,
+        BTreeMap<String, busbar_kernel::failover::CandidatePoolCfg>,
+    )],
+) -> serde_yaml::Value {
+    let mut section = written.clone();
+    for (owner, stated) in pools {
+        if *owner == key {
+            pools_into(&mut section, stated);
+        }
+    }
+    section
+}
+
+/// THE BYTES A DOOR PLANE IS HANDED for its section: [`plane_settings`] as JSON, with the
+/// core-owned `work:` bounds struck (the kernel reads them; the plane never sees them). The one
+/// rule `open` and a config apply's refresh both apply (audit root-R1 leftover C1).
+fn handed_settings(section: &serde_yaml::Value) -> Result<Vec<u8>, String> {
+    let mut section = plane_settings(section);
+    if let Some(map) = section.as_mapping_mut() {
+        map.remove(busbar_contract::section::RESERVED_WORK_KEY);
+    }
+    serde_json::to_vec(&section).map_err(|e| format!("its section: {e}"))
+}
+
+/// `stated`, a named-definition section's unified pools, written into `section` at its reserved
+/// `pools` key (a section that is no mapping, or a set of none, is left as it is). Each member is
+/// written `{name, tier}`, its tier its index in the pool's `members` as declared: a named
+/// definition's pool is ORDERED, its first member the primary (`CandidatePoolCfg::members`), and the
+/// walk takes the lowest tier that can take the request (the core-owned per-member `tier`,
+/// `BUSBAR-1.6.0.md` l.4196 (b), l.4202, R2-G l.4285). The tier is core-owned: [`plane_settings`]
+/// hands a plane each member's bare name.
+pub fn pools_into(
+    section: &mut serde_yaml::Value,
+    stated: &BTreeMap<String, busbar_kernel::failover::CandidatePoolCfg>,
+) {
+    use busbar_contract::section::{
+        POOL_MEMBERS_KEY, POOL_MEMBER_GRANTED_KEY, POOL_MEMBER_NAME_KEY, POOL_MEMBER_TIER_KEY,
+        POOL_REPEATABLE_KEY, RESERVED_POOLS_KEY,
+    };
+    if stated.is_empty() {
+        return;
+    }
+    let serde_yaml::Value::Mapping(section) = section else {
+        return;
+    };
+    let mut map = serde_yaml::Mapping::new();
+    for (name, pool) in stated {
+        let mut entry = serde_yaml::Mapping::new();
+        entry.insert(
+            POOL_MEMBERS_KEY.into(),
+            serde_yaml::Value::Sequence(
+                pool.members
+                    .iter()
+                    .zip(0u64..)
+                    .map(|(m, tier)| {
+                        let mut member = serde_yaml::Mapping::new();
+                        member.insert(POOL_MEMBER_NAME_KEY.into(), m.as_str().into());
+                        member.insert(POOL_MEMBER_TIER_KEY.into(), tier.into());
+                        serde_yaml::Value::Mapping(member)
+                    })
+                    .collect(),
+            ),
+        );
+        entry.insert(
+            POOL_REPEATABLE_KEY.into(),
+            serde_yaml::Value::Sequence(
+                pool.repeatable.iter().map(|m| m.as_str().into()).collect(),
+            ),
+        );
+        entry.insert(
+            POOL_MEMBER_GRANTED_KEY.into(),
+            serde_yaml::Value::Bool(true),
+        );
+        map.insert(name.as_str().into(), serde_yaml::Value::Mapping(entry));
+    }
+    section.insert(RESERVED_POOLS_KEY.into(), serde_yaml::Value::Mapping(map));
+}
+
+/// THE SETTINGS A DOOR PLANE IS HANDED for `section`: the section with each pool member written
+/// `{name, tier}` handed as its bare name (the tier is core-owned, [`pools_into`]); every other key
+/// as written.
+#[must_use]
+pub fn plane_settings(section: &serde_yaml::Value) -> serde_yaml::Value {
+    use busbar_contract::section::{POOL_MEMBERS_KEY, POOL_MEMBER_NAME_KEY, RESERVED_POOLS_KEY};
+    let mut section = section.clone();
+    let pools = section
+        .as_mapping_mut()
+        .and_then(|m| m.get_mut(RESERVED_POOLS_KEY))
+        .and_then(serde_yaml::Value::as_mapping_mut);
+    for (_, pool) in pools.into_iter().flat_map(|p| p.iter_mut()) {
+        let members = pool
+            .as_mapping_mut()
+            .and_then(|p| p.get_mut(POOL_MEMBERS_KEY))
+            .and_then(serde_yaml::Value::as_sequence_mut);
+        for member in members.into_iter().flat_map(|m| m.iter_mut()) {
+            if let Some(name) = member
+                .get(POOL_MEMBER_NAME_KEY)
+                .and_then(serde_yaml::Value::as_str)
+                .map(str::to_owned)
+            {
+                *member = serde_yaml::Value::String(name);
+            }
+        }
+    }
+    section
 }
 
 /// WHAT A DOOR PLANE'S EGRESS IS SEALED OVER: how its members are reached ([`DoorReach`]) and the
@@ -881,7 +1192,10 @@ pub struct DoorEgress<'a> {
 /// routes published on the admin router's table (`plane_driver::serve`, K-SERVE). A plane whose
 /// section is absent stays bound and unopened, as before. With `egress`, each plane's egress is
 /// sealed over it ([`crate::root::door_steps::member_routes`]); without, none is (every walk is
-/// exhausted at once). The data routes are the data router's construction ([`data_routes`]).
+/// exhausted at once). With `hooks`, each driver binds a unit's hooks over the deployment's hook
+/// configuration ([`HookStage`]: a gate-first plane its entries' gates, every other its routed
+/// hooks); without, no hook binds. The data routes are the data router's
+/// construction ([`data_routes`]).
 ///
 /// # Errors
 ///
@@ -1008,7 +1322,11 @@ pub(crate) fn compose_planes_over(
             {
                 driver.with_hooks(stage.gated(plugin.name()))
             }
-            _ => driver,
+            // Every other plane runs the routed order (U22): the deployment's global and per-pool
+            // hooks, bound per unit off the live generation, reach its request stage and its
+            // in-session stage (`hook.call`, `content.scan`).
+            Some(stage) => driver.with_hooks(stage.routed(&served_facts.dialects)),
+            None => driver,
         };
         let routes = snapshot
             .admin_routes
@@ -1075,6 +1393,9 @@ pub(crate) fn compose_planes_over(
         )
         .map_err(|e| format!("{instance}: {e}"))?
         .map(|b| b.bench_below_trip_threshold);
+        // THE PLANE'S STATED STREAM CEILING (ARCHITECT ruling 2026-10-07, STREAM-CEILING), off its
+        // tail: the deadline of its streamed units once their route is known; `0` = none.
+        facts.stream_ceiling_secs = served_facts.stream_ceiling_secs;
         let pools = DoorPools::of(section);
         // THE EGRESS, SEALED (THE DESIGN §6 steps 2-3): each member's route resolved and its
         // credential bound by the auth plugin serving its style, over the connector its needs were
@@ -1157,11 +1478,7 @@ fn open(
     owned: &serde_json::Map<String, serde_json::Value>,
 ) -> Result<OwnedSnapshot, String> {
     // The reserved `work:` bounds are core-owned: the kernel reads them; the plane never sees them.
-    let mut section = section.clone();
-    if let Some(map) = section.as_mapping_mut() {
-        map.remove(busbar_contract::section::RESERVED_WORK_KEY);
-    }
-    let settings = serde_json::to_vec(&section).map_err(|e| format!("its section: {e}"))?;
+    let settings = handed_settings(section)?;
     let owned = if owned.is_empty() {
         Vec::new()
     } else {
@@ -1425,18 +1742,13 @@ fn line_auth(flags: u32, data_chain: &[String]) -> busbar_kernel::guest::LineAut
 /// The claimant the kernel's own data routes are lines of.
 const CORE_CLAIMANT: &str = "core";
 
-/// The data listener's own framer: a claim over a carrier that composes over it is an upgrade line.
-const DATA_CARRIER: &str = "http";
-
-/// THE UPGRADE CARRIERS: the linked wires that compose over the data listener's own framer, whose
-/// claims are upgrade lines (their connection handed over after the head) and served as sessions.
+/// THE UPGRADE CARRIERS: every linked claim whose unit 0 opens at an UPGRADE, read off the door
+/// Statements (ARCHITECT ruling Q128 U7; never a layer list: no transport names another). Their
+/// lines are handed over after the head and served as sessions; the handoff target on an upgrade
+/// is the claim that owns the requested scheme.
 #[must_use]
 pub fn upgrade_carriers(transports: &[crate::root::linked::LinkedTransport]) -> Vec<&'static str> {
-    transports
-        .iter()
-        .filter(|t| t.composes_over.contains(&DATA_CARRIER))
-        .map(|t| t.key)
-        .collect()
+    transports.iter().flat_map(|t| (t.upgrades)()).collect()
 }
 
 /// How many messages a session route's pipe queues each way before the sender waits.
@@ -2206,7 +2518,8 @@ impl DataRoutes {
             .is_some_and(|c| c.flags & CLAIM_OPEN != 0);
         let key = gov.key.clone();
         // A STREAM ANOTHER FRAMER FRAMES (ARCHITECT 4l): the claim's carrier is answered by a
-        // framer that is not the data listener's own; that framer frames this stream alone.
+        // framer whose claim rows state it rides a stream (an upgrade or a session, Q128 U7); that
+        // framer frames this stream alone. A claim stating neither is the data listener's own.
         let carrier = self.served.planes[plane]
             .snapshot
             .claims
@@ -2239,12 +2552,8 @@ impl DataRoutes {
                     };
                 }
             };
-            let arrival = Arrival {
-                body: Arc::from(messages.concat()),
-                ..arrival
-            };
+            let (arrival, inner, reply) = deframed_arrival(arrival, &messages);
             let stream: serve_framed::Shared = Arc::new(Mutex::new(Some(stream)));
-            let (inner, reply) = IngressCaller::arriving(body);
             let (trailers, trailed) = oneshot::channel();
             let caller = serve_framed::FramedCaller::new(inner, Arc::clone(&stream), trailers);
             let unit = async move {
@@ -2457,7 +2766,7 @@ impl DataRoutes {
         let facts = served.facts.clone();
         let late: crate::root::linked::node::Late =
             Box::new(move || report_of(&money, unit, &facts));
-        let _taken = node
+        let ended = node
             .drive_borrowed(
                 unit,
                 arrived,
@@ -2469,6 +2778,9 @@ impl DataRoutes {
                 nesting.as_ref().map(|n| &n.parent),
             )
             .await;
+        // The caller hears how the unit ended (a framed stream closes a cut or failed unit with a
+        // refusal, never as whole).
+        caller.ended(ended);
         let rendered = units.take_rendered();
         let status = rendered
             .as_ref()
@@ -2539,6 +2851,9 @@ impl<'d> DoorFar<'d, '_> {
                     pool: egress_pool(self.steps.plane(), &routed),
                     caller_credential: self.credential.clone(),
                     once: self.steps.once(),
+                    // The plane's `ROUTE_STREAM`: the stream ceiling bounds the send, and the
+                    // plane's stated one, if any, is the unit's deadline.
+                    wants_stream: self.steps.streamed(),
                     ..UnitRoute::default()
                 }))
             })
@@ -2555,6 +2870,25 @@ fn spent() -> Pick {
 }
 
 impl FarEnd for DoorFar<'_, '_> {
+    fn deadline_ns(&self, now_ns: u64) -> u64 {
+        self.far().map_or(0, |far| far.deadline_ns(now_ns))
+    }
+
+    /// The route the unit named, as its in-session hooks are scoped: the pool the walk is keyed by
+    /// (its label, or a direct route's lane) and the entry its hooks are filed under (the label, or
+    /// the direct route's member).
+    fn scope(&self, _token: &Pass<Route>) -> Option<RoutedScope> {
+        let routed = self.steps.routed()?;
+        let container = match &routed {
+            (label, _) if !label.is_empty() => label.clone(),
+            (_, members) => members.first().cloned().unwrap_or_default(),
+        };
+        Some(RoutedScope {
+            pool: egress_pool(self.steps.plane(), &routed),
+            container,
+        })
+    }
+
     async fn member(&self, token: &Pass<Route>, attempt_no: u32) -> Pick {
         match self.far() {
             Some(far) => far.member(token, attempt_no).await,
@@ -2639,6 +2973,23 @@ impl busbar_kernel::plane_driver::SessionCaller for PipeCaller {
     }
 }
 
+/// A FRAMED CLAIM'S ARRIVAL AND CALLER, over the messages its framer read out of the request body:
+/// the unit arrives with the messages and its caller leg reads the same messages, never the framing
+/// bytes the host strips (audit root-R1 L15; `serve_framed`: "the request body goes in and comes
+/// back as the messages the unit arrives with").
+fn deframed_arrival(
+    arrival: Arrival,
+    messages: &[Vec<u8>],
+) -> (Arrival, IngressCaller, IngressReply) {
+    let deframed = Bytes::from(messages.concat());
+    let arrival = Arrival {
+        body: Arc::from(&deframed[..]),
+        ..arrival
+    };
+    let (caller, reply) = IngressCaller::arriving(deframed);
+    (arrival, caller, reply)
+}
+
 // ── the driver's caller side over today's ingress ────────────────────────────────────────────────
 
 /// THE CALLER'S SIDE OF A DRIVEN UNIT over today's hyper ingress (TRANSITIONAL: deleted when
@@ -2713,6 +3064,10 @@ impl IngressCaller {
 pub(crate) trait Stated {
     /// The status, once the unit stated its head.
     fn stated(&self) -> Option<u32>;
+
+    /// How the unit ended, once it ended (`None`: the node's sweep settled it first, or the node
+    /// never admitted it). A caller with nothing to close ignores it.
+    fn ended(&self, _outcome: Option<busbar_contract::caps::Outcome>) {}
 }
 
 impl Stated for IngressCaller {
@@ -2818,7 +3173,12 @@ impl IngressReply {
                 let whole = collect(body, unit).await;
                 return stated(unlengthed(h), Body::from(whole));
             }
-            Ok(Some(h)) => return stated(h, Body::new(ReplyBody(body, Some(unit), trailers))),
+            // A STREAMED ANSWER: the unit runs on, on its own task, once its head is stated
+            // (ARCHITECT ruling 2026-10-07, STREAM-CEILING); the body only drains what it writes.
+            Ok(Some(h)) => {
+                let running = Running(tokio::spawn(unit));
+                return stated(h, Body::new(ReplyBody(body, Some(running), trailers)));
+            }
             Ok(None) => unit.await,
             Err(rendered) => match head.try_recv() {
                 // The unit ended in the poll that stated its head: a whole answer is every piece it
@@ -2919,12 +3279,26 @@ fn stated((status, fields): Head, body: Body) -> Response {
     response
 }
 
+/// A UNIT RUNNING ON ITS OWN TASK after its head (ARCHITECT ruling 2026-10-07, STREAM-CEILING): it
+/// is driven whether or not its body is read, so a caller that stops reading with its socket open
+/// leaves the unit's own deadline able to fire (a plane's stated stream ceiling) instead of freezing
+/// it until the socket closes. Dropping it aborts the task, which drops the unit there: the reply's
+/// body was dropped, so its caller is gone, and the unit ends on the driver's client-drop path as
+/// it did when the body owned it.
+struct Running(tokio::task::JoinHandle<Option<Rendered>>);
+
+impl Drop for Running {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
 /// The response body: the pieces the unit writes, in order, until its caller side is dropped; the
-/// unit itself, driven as the body is read, while it runs; and the trailers a framer's close
-/// rendered, after the last piece, where the answer has them.
+/// unit's task, which the body outlives no further than the unit's own end; and the trailers a
+/// framer's close rendered, after the last piece, where the answer has them.
 struct ReplyBody(
     mpsc::Receiver<Bytes>,
-    Option<DrivenUnit>,
+    Option<Running>,
     Option<oneshot::Receiver<axum::http::HeaderMap>>,
 );
 
@@ -2937,17 +3311,23 @@ impl http_body::Body for ReplyBody {
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Option<Result<http_body::Frame<Bytes>, Self::Error>>> {
         let this = self.get_mut();
-        if let Some(unit) = &mut this.1 {
-            if unit.as_mut().poll(cx).is_ready() {
-                this.1 = None;
-            }
-        }
         match this.0.poll_recv(cx) {
             std::task::Poll::Ready(Some(bytes)) => {
                 std::task::Poll::Ready(Some(Ok(http_body::Frame::data(bytes))))
             }
             std::task::Poll::Pending => std::task::Poll::Pending,
             std::task::Poll::Ready(None) => {
+                // The caller side is gone with the unit: the body ends once the unit's task has,
+                // and a unit that panicked panics here, where the body that drove it used to.
+                if let Some(running) = &mut this.1 {
+                    match std::future::Future::poll(std::pin::Pin::new(&mut running.0), cx) {
+                        std::task::Poll::Pending => return std::task::Poll::Pending,
+                        std::task::Poll::Ready(Err(e)) if e.is_panic() => {
+                            std::panic::resume_unwind(e.into_panic())
+                        }
+                        std::task::Poll::Ready(_) => this.1 = None,
+                    }
+                }
                 let Some(trailers) = &mut this.2 else {
                     return std::task::Poll::Ready(None);
                 };
@@ -2977,7 +3357,7 @@ fn framed_by(
     if carrier == lines::LINE_CARRIER {
         return None;
     }
-    serve_framed::stream_framer(carrier, DATA_CARRIER, framer_for)
+    serve_framed::stream_framer(carrier, framer_for)
 }
 
 /// THE LINE CARRIER: a process's own stdin/stdout, one carrier session, one unit per line (SEAM-S1).

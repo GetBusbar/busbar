@@ -27,16 +27,17 @@ use tokio::sync::oneshot;
 
 use super::{refusal_status, stated, IngressCaller, Stated};
 
-/// The framer that frames a stream on `carrier`, where one does: the framer answering it, unless
-/// that framer is the data listener's own (it answers `data_carrier` too), which frames the
-/// connection already.
+/// The framer that frames a stream on `carrier`, where one does: the framer answering it, when its
+/// own claim rows state that `carrier` rides a stream (an upgrade or a session, `DoorFacts::duplex`;
+/// ARCHITECT ruling Q128 U7). A claim stating neither is a request and its answer, served on the
+/// data listener's own route, which frames the connection already. Judged per claim from the
+/// Statement, never by a transport's name.
 pub(super) fn stream_framer(
     carrier: &str,
-    data_carrier: &str,
     framer_for: impl Fn(&str) -> Option<Arc<dyn FramerDoor>>,
 ) -> Option<Arc<dyn FramerDoor>> {
     let door = framer_for(carrier)?;
-    (!door.facts().claims.contains(&data_carrier)).then_some(door)
+    door.facts().duplex.contains(&carrier).then_some(door)
 }
 
 /// The stream, shared by the unit's caller side and the answer that may refuse it; `None` once
@@ -187,6 +188,47 @@ impl SessionCaller for FramedCaller {
 impl Stated for FramedCaller {
     fn stated(&self) -> Option<u32> {
         self.inner.stated()
+    }
+
+    /// A UNIT CUT OR FAILED AFTER ITS HEAD is told to the client (`BUSBAR-1.6.0.md` §7, "a cut is
+    /// told to the client"): its stream closes as a refusal in its claim's own numbering, the
+    /// framer mapping the refusal's status ([`refusal_status`] of the unit's reason), never as a
+    /// stream that ended whole. A unit that stated its own final status has already closed it.
+    fn ended(&self, outcome: Option<busbar_contract::caps::Outcome>) {
+        let Some(reason) = outcome.and_then(cut_reason) else {
+            return;
+        };
+        if self.inner.stated().is_none() {
+            return;
+        }
+        let Some(mut s) = lock(&self.stream).take() else {
+            return;
+        };
+        let Ok(block) = s.refuse(&[], refusal_status(reason)) else {
+            return;
+        };
+        let sender = self
+            .trailers
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take();
+        if let Some(sender) = sender {
+            let _gone = sender.send(block_head(&block).1);
+        }
+    }
+}
+
+/// The reason a unit that did not complete was cut for: a refused or failed step's own reason,
+/// the node's named reason for a cut, a deadline for a step that ran past it, and the plane's
+/// fault for a unit another took over. `None` for a unit that completed.
+fn cut_reason(outcome: busbar_contract::caps::Outcome) -> Option<ReasonCode> {
+    use busbar_contract::caps::{Abort, Outcome};
+    match outcome {
+        Outcome::Completed => None,
+        Outcome::Refused(_, reason) | Outcome::Failed(_, reason) => Some(reason),
+        Outcome::Aborted(Abort::Kernel { reason }) => Some(reason),
+        Outcome::Aborted(_) => Some(ReasonCode::PlanePanic),
+        Outcome::TimedOut(_) => Some(ReasonCode::DeadlineExceeded),
     }
 }
 

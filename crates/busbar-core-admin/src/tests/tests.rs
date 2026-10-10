@@ -1463,10 +1463,11 @@ async fn test_admin_v1_idempotency_key_is_principal_scoped() {
     handle.abort();
 }
 
-/// The credential cache end-to-end: an external-module identify is CACHED (the second
-/// request is served from the cache — observable via the flush count), `POST
-/// /api/v1/admin/auth/cache/flush` drops it (full scope; read-only principals get 403), and the
-/// built-in operator token is NEVER cached (flush finds nothing after operator calls).
+/// The cache flush end-to-end: `POST /api/v1/admin/auth/cache/flush` is a full-scope mutation
+/// (read-only principals get 403), and it answers the count the auth plugins report dropping when
+/// they `refresh` (THE DESIGN 11.11 R3): the kernel caches no verdict, so after two reads by an
+/// external module's principal, a module that caches nothing inside itself (the in-process
+/// stand-in) reports nothing to drop.
 #[tokio::test]
 async fn test_admin_v1_credential_cache_and_flush_endpoint() {
     busbar_kernel::snapshot::init();
@@ -1511,8 +1512,7 @@ async fn test_admin_v1_credential_cache_and_flush_endpoint() {
         .unwrap();
     assert_eq!(r.status().as_u16(), 403, "flush is a full-scope mutation");
 
-    // Operator flushes the module partition: exactly ONE entry (the cached viewers identify;
-    // operator-token authentications are never cached).
+    // Operator flushes the module: the kernel holds nothing, and the stand-in caches nothing.
     let r = client
         .post(format!("http://{addr}/api/v1/admin/auth/cache/flush"))
         .header("x-admin-token", "admintok")
@@ -1523,13 +1523,9 @@ async fn test_admin_v1_credential_cache_and_flush_endpoint() {
         .unwrap();
     assert_eq!(r.status().as_u16(), 200);
     let body: serde_json::Value = r.json().await.unwrap();
-    // TWO entries in the module's partition: the viewers Identify, plus the PASS the module
-    // returned for the operator token (Pass IS cached, short-TTL —; only the built-in
-    // admin-tokens module's own verdicts are exempt). The flushing request's own Pass was
-    // inserted by its chain run before the handler flushed.
     assert_eq!(
-        body["flushed"], 2,
-        "the viewers Identify + the operator credential's cached Pass"
+        body["flushed"], 0,
+        "the kernel caches no verdict; the stand-in module caches none inside itself"
     );
 
     // Flush-all with an empty body: nothing left.
@@ -1540,12 +1536,7 @@ async fn test_admin_v1_credential_cache_and_flush_endpoint() {
         .await
         .unwrap();
     let body: serde_json::Value = r.json().await.unwrap();
-    // Exactly ONE: this very request's chain run re-cached a Pass for the operator credential
-    // under the external module before the handler flushed. Nothing else survived.
-    assert_eq!(
-        body["flushed"], 1,
-        "only this request's own cached Pass remained"
-    );
+    assert_eq!(body["flushed"], 0, "nothing is cached kernel-side");
 
     // Malformed body: invalid_request.
     let r = client
@@ -2635,7 +2626,7 @@ async fn test_admin_v1_rotate_idempotency_in_flight_is_not_replayed_as_complete(
 /// produce `"rotate:{victim_id}:b:c"`. Because the idempotency cache lookup happens BEFORE the
 /// governance existence check, a caller who names the colliding (nonexistent) id is answered from
 /// the OTHER pair's cache entry — served a stranger's freshly-rotated secret — without ever
-/// holding a valid id of their own. Fixed by routing through `verbs::rotate_replay_key`, which
+/// holding a valid id of their own. Fixed by routing through `idempotency::rotate_replay_key`, which
 /// length-prefixes each half so no two distinct pairs can join to the same string.
 #[tokio::test]
 async fn test_admin_v1_rotate_idempotency_cache_key_does_not_collide_across_colon_joined_ids() {
@@ -5661,7 +5652,7 @@ fn test_create_key_unconfigured_allowed_pool_is_nonfatal_and_quiet() {
                 axum::extract::State(handle.clone()),
                 axum::Extension(busbar_kernel::auth::AuthPrincipal(None)),
                 axum::http::HeaderMap::new(),
-                None,
+                axum::Extension(std::sync::Arc::new(super::KeyReplayCache::new())),
                 body1,
             )
             .await;
@@ -5679,7 +5670,7 @@ fn test_create_key_unconfigured_allowed_pool_is_nonfatal_and_quiet() {
                 axum::extract::State(handle),
                 axum::Extension(busbar_kernel::auth::AuthPrincipal(None)),
                 axum::http::HeaderMap::new(),
-                None,
+                axum::Extension(std::sync::Arc::new(super::KeyReplayCache::new())),
                 body2,
             )
             .await;
@@ -5764,7 +5755,7 @@ async fn proof_role_binding_mode_ceiling_bounds_a_delegated_admin() {
             axum::extract::State(handle),
             axum::Extension(busbar_kernel::auth::AuthPrincipal(Some(principal.clone()))),
             axum::http::HeaderMap::new(),
-            None,
+            axum::Extension(std::sync::Arc::new(super::KeyReplayCache::new())),
             body,
         )
         .await;
@@ -5826,7 +5817,7 @@ async fn proof_max_ttl_ceiling_refuses_overask_and_clamps_default() {
             axum::extract::State(handle),
             axum::Extension(busbar_kernel::auth::AuthPrincipal(None)),
             axum::http::HeaderMap::new(),
-            None,
+            axum::Extension(std::sync::Arc::new(super::KeyReplayCache::new())),
             axum::body::Bytes::from(body.to_string()),
         )
         .await;
@@ -5929,7 +5920,7 @@ async fn proof_role_mint_ceiling_bounds_a_delegated_admin() {
             axum::extract::State(handle),
             axum::Extension(busbar_kernel::auth::AuthPrincipal(Some(principal.clone()))),
             axum::http::HeaderMap::new(),
-            None,
+            axum::Extension(std::sync::Arc::new(super::KeyReplayCache::new())),
             axum::body::Bytes::from(body.to_string()),
         )
         .await;
@@ -8468,9 +8459,10 @@ async fn test_max_keys_per_principal_cap_trips() {
 
 /// The idempotency RESERVATION frees itself on an AT-CAP refusal specifically — a DIFFERENT exit
 /// than `test_admin_v1_idempotency_reservation_frees_on_failure`'s pre-validation 400: this one
-/// only reserves after the request has been handed to the transaction/mint (`IdemState::InFlight`,
-/// via `IdemReservation::clear()`'s explicit call at the `MintOutcome::AtCap` arm), so Drop alone
-/// (which only clears a still-`Reserved` sentinel) would NOT free it. Prove the reservation is
+/// only reserves after the request has been handed to the transaction/mint
+/// (`Reservation::in_flight`, freed by `Reservation::clear()`'s explicit call at the
+/// `MintOutcome::AtCap` arm), so Drop alone (which only clears a sentinel not yet in flight) would
+/// NOT free it. Prove the reservation is
 /// genuinely released, not merely coincidentally re-tripping the same cap: free capacity between
 /// the two calls and confirm the SAME Idempotency-Key mints on retry.
 #[tokio::test]
@@ -8512,7 +8504,7 @@ async fn test_admin_v1_idempotency_reservation_frees_on_at_cap_refusal() {
         .to_string();
 
     // The reserving mint: the group is already at cap, so this trips `MintOutcome::AtCap` — the
-    // reservation was inserted, promoted to InFlight, and must be freed by `r.clear()` here.
+    // reservation was inserted, marked in flight, and must be freed by `r.clear()` here.
     let at_cap = client
         .post(&keys_url)
         .header("x-admin-token", "admintok")
@@ -8537,8 +8529,8 @@ async fn test_admin_v1_idempotency_reservation_frees_on_at_cap_refusal() {
         .unwrap();
     assert_eq!(deleted.status().as_u16(), 204);
 
-    // The SAME Idempotency-Key now mints successfully. If `IdemReservation::clear()` were a no-op,
-    // this would instead see the stale `Null` sentinel and get the idempotency-in-flight 409
+    // The SAME Idempotency-Key now mints successfully. If `Reservation::clear()` were a no-op,
+    // this would instead see the stale in-flight sentinel and get the idempotency-in-flight 409
     // forever, never a fresh cap check.
     let retry = client
         .post(&keys_url)
@@ -11571,20 +11563,18 @@ async fn test_admin_v1_config_settings_read_redacts_every_settings_bag() {
 }
 
 /// **THE EXIT TEST FOR ITEM 271's PRODUCTION HOOKUP, AT THE LIVE CACHE.** Item 271's writer side
-/// (`RootClaimJournal`, `IdempotencyCache::with_journal`) was fully proven in isolation
+/// (`RootClaimJournal`, `IdempotencyCache::with_journal`) was proven in isolation
 /// (`units_admin.rs`'s `an_idempotency_key_on_a_durable_node_journals_exactly_one_claim`), and the
 /// root's binding of it onto `AdminBinding::claims` was proven too
 /// (`the_admin_listener_binds_its_claim_journal_on_a_data_dir_node_only`) — but NEITHER exercises the
-/// surface a real `POST /keys` actually reaches. `keys::create_key`/`rotate_key` replay against
-/// `App::idempotency_cache` (a bare `HashMap`, not `IdempotencyCache`), which carried no journal hook
-/// at all until this change threaded one through as a request extension (`admin_mount.rs`'s
-/// `ClaimJournalCell`, set from `AdminBinding::claims` before any real request can observe it).
+/// surface a real `POST /keys` actually reaches. `keys::create_key`/`rotate_key` replay against the
+/// node's `KeyReplayCache`, which the composition root builds once with the claim journal bound
+/// (`with_journal`) and inserts as a request extension on every request (`RouterDispatch::call`).
 ///
 /// This is the seam's production shape, reproduced directly: the extension the composition root's
-/// wrap inserts on every request when a claim journal is bound (see `RouterDispatch::call`) is
-/// layered here the identical way — a `POST /keys` with a repeated `Idempotency-Key` journals the
-/// claim exactly once (first sighting only — never on the replay) and the replayed response is
-/// byte-for-byte the first, exactly as v1.5.5.
+/// wrap inserts on every request is layered here the identical way — a `POST /keys` with a repeated
+/// `Idempotency-Key` journals the claim exactly once (first sighting only — never on the replay) and
+/// the replayed response is byte-for-byte the first, exactly as v1.5.5.
 #[tokio::test]
 async fn a_durable_node_journals_exactly_one_claim_for_a_repeated_key_post_keys() {
     busbar_kernel::snapshot::init();
@@ -11608,10 +11598,12 @@ async fn a_durable_node_journals_exactly_one_claim_for_a_repeated_key_post_keys(
         }
     }
     let journal = RecordingJournal::default();
-    let ext: Arc<dyn crate::idempotency::ClaimJournal> = Arc::new(journal.clone());
-    // The SAME wiring `RouterDispatch::call` performs on a durable node: an `Arc<dyn ClaimJournal>`
-    // riding as a request extension, which `create_key`'s `Option<axum::Extension<_>>` parameter
-    // reads. `Router::layer` inserts it on every request the same way `http::Request::builder()
+    let ext: Arc<crate::keys::KeyReplayCache> = Arc::new(
+        crate::keys::KeyReplayCache::with_journal(Arc::new(journal.clone())),
+    );
+    // The SAME wiring `RouterDispatch::call` performs: the node's replay cache, journal bound,
+    // riding as a request extension, which `create_key`'s `Extension<_>` parameter reads.
+    // `Router::layer` inserts it on every request the same way `http::Request::builder()
     // .extension(..)` does at the root — this is not a stand-in for the production seam, it is the
     // same extension slot the production seam fills.
     let router = router.layer(axum::Extension(ext));
@@ -11650,10 +11642,9 @@ async fn a_durable_node_journals_exactly_one_claim_for_a_repeated_key_post_keys(
 
 /// **THE MEMORY-ONLY HALF OF THE SAME EXIT TEST.** A node with no data directory binds no claim
 /// journal (`the_admin_listener_binds_its_claim_journal_on_a_data_dir_node_only`), so
-/// `ClaimJournalCell` is set to `None` and `RouterDispatch::call` never inserts the extension at
-/// all — the exact shape every OTHER admin test in this file already exercises (none of them layers
-/// the extension), and `create_key`'s `Option<axum::Extension<_>>` parameter reads that absence as
-/// `None`. This test pins it explicitly: a repeated-key `POST /keys` through an UNWRAPPED router
+/// `ClaimJournalCell` is set to `None` and the node's replay cache journals nothing — the exact
+/// shape every OTHER admin test in this file already exercises (none of them layers an extension, so
+/// the router supplies its own cache, journal-less). This test pins it explicitly: a repeated-key `POST /keys` through an UNWRAPPED router
 /// still replays correctly (byte-identical, 1.5.5 behaviour is unchanged either way) and journals
 /// nothing, because there is nothing here for it to journal to.
 #[tokio::test]
@@ -11662,7 +11653,7 @@ async fn a_memory_only_node_journals_no_claim_for_a_repeated_key_post_keys() {
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let app = crate::new_test_app().governance(gov).build();
-    // NO `.layer(Extension(..))` here — the memory-buffered-node shape: `create_key` sees `None`.
+    // NO `.layer(Extension(..))` here — the memory-buffered-node shape: the router's own cache.
     let router = crate::build_router(app);
 
     let (addr, handle, client) = spin_up(router).await;
@@ -11690,6 +11681,96 @@ async fn a_memory_only_node_journals_no_claim_for_a_repeated_key_post_keys() {
     handle.abort();
 }
 
+/// **A MINT THAT HAS NOT ANSWERED IS REFUSED TO A RETRY HOWEVER OLD ITS SENTINEL.** The served
+/// handlers used to keep their reservation in a bare map swept by age on every use, sentinel
+/// included, so a mint stuck past the replay window (a slow store, an unreachable signer) was swept
+/// out from under itself and its retry reserved afresh and minted a SECOND credential. The node's
+/// `IdempotencyCache` steps over a sentinel however old it is; this drives that through the served
+/// `POST /keys` and `POST /keys/{id}/rotate`, with sentinels placed at unix second 1 (ten minutes
+/// is far behind it) by a first request that never answered.
+#[tokio::test]
+async fn a_stuck_mint_or_rotate_is_refused_in_flight_however_old_its_sentinel() {
+    busbar_kernel::snapshot::init();
+    let store = Arc::new(MemoryStore::new());
+    let gov = gov_with_signer(store, Some("admintok".to_string()));
+    let app = crate::new_test_app().governance(gov.clone()).build();
+    let cache: Arc<crate::keys::KeyReplayCache> = Arc::new(crate::keys::KeyReplayCache::new());
+    let router = crate::build_router(app).layer(axum::Extension(cache.clone()));
+    let (addr, handle, client) = spin_up(router).await;
+    let keys_url = format!("http://{addr}/api/v1/admin/keys");
+
+    let created: serde_json::Value = client
+        .post(&keys_url)
+        .header("x-admin-token", "admintok")
+        .json(&serde_json::json!({"name": "rotated"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let id = created["id"].as_str().unwrap().to_string();
+    let generation = || {
+        gov.all_keys()
+            .unwrap()
+            .into_iter()
+            .find(|k| k.id == id)
+            .map(|k| k.generation_hash)
+    };
+    let before = generation();
+    for key in [
+        ("admin".to_string(), "stuck-mint".to_string()),
+        (
+            "admin".to_string(),
+            crate::idempotency::rotate_replay_key(&id, "stuck-rotate"),
+        ),
+    ] {
+        match cache.probe(key, 1) {
+            crate::idempotency::Probe::Reserved(r) => r.leak(),
+            _ => panic!("a fresh cache reserves the first sighting"),
+        }
+    }
+
+    let mint = client
+        .post(&keys_url)
+        .header("x-admin-token", "admintok")
+        .header("content-type", "application/json")
+        .header("idempotency-key", "stuck-mint")
+        .body(serde_json::json!({"name": "k"}).to_string())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        mint.status().as_u16(),
+        409,
+        "the retry of a mint still in flight is refused, not minted a second time"
+    );
+    let rotate = client
+        .post(format!("{keys_url}/{id}/rotate"))
+        .header("x-admin-token", "admintok")
+        .header("idempotency-key", "stuck-rotate")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        rotate.status().as_u16(),
+        409,
+        "the retry of a rotate still in flight is refused, not rotated a second time"
+    );
+    assert_eq!(
+        gov.all_keys().unwrap().len(),
+        1,
+        "the retried mint minted nothing"
+    );
+    assert_eq!(
+        generation(),
+        before,
+        "the retried rotate issued no new credential"
+    );
+
+    handle.abort();
+}
+
 /// Every open class the fallback plane (the pools plane a `rate_card` lane falls through to)
 /// declares, at 0 (owner LEDGER-100: each reported count is a declared class, and a present card
 /// configures every one, Q29/Q35), read off the plane's own declaration; the plane is found among the
@@ -11707,4 +11788,19 @@ fn free_open_units() -> serde_json::Value {
         .map(|c| (c.to_string(), serde_json::json!(0)))
         .collect::<serde_json::Map<_, _>>()
         .into()
+}
+
+/// `build.auth_modules` (and the `plugins?type=auth` catalog behind it) lists the INBOUND auth-chain
+/// modules only, by their linked alias, as 1.5.5 did: an inbound row is listed under its key. The
+/// outbound-only half (a linked row that declares no inbound capability is NOT listed) is proven in
+/// the composition root over the rows the shipped build links
+/// (`crates/busbar/src/root/tests/linked_auth.rs`), where the outbound plugin is a dependency.
+#[test]
+fn auth_modules_list_inbound_rows_only() {
+    let inbound: busbar_kernel::preflight::LinkedAuth =
+        ("admin-tokens", busbar_auth_admin_tokens_plugin::door::door);
+    assert_eq!(
+        busbar_kernel::preflight::inbound_auth_names(&[inbound]),
+        vec!["admin-tokens"]
+    );
 }

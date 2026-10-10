@@ -105,7 +105,8 @@ pub(super) fn plain_connector(
     let mut http = hyper_util::client::legacy::connect::HttpConnector::new_with_resolver(resolver);
     http.enforce_http(false);
     http.set_nodelay(true);
-    let http = tunnel::TunnelConnector::new(http, None, dial_bound);
+    let http =
+        tunnel::TunnelConnector::new(http, None, dial_bound, tunnel::loopback_listed_for_tests());
     let https = https::HttpsConnector::new(
         http,
         client_tls(&EngineSpec::pooled_webpki(4, 300, false, false), &[]).expect("tls"),
@@ -123,7 +124,8 @@ pub(super) fn tls_connector_all_versions(
     let mut http = hyper_util::client::legacy::connect::HttpConnector::new_with_resolver(resolver);
     http.enforce_http(false);
     http.set_nodelay(true);
-    let http = tunnel::TunnelConnector::new(http, None, dial_bound);
+    let http =
+        tunnel::TunnelConnector::new(http, None, dial_bound, tunnel::loopback_listed_for_tests());
     let client = crate::egress::fixtures::TlsDouble::default()
         .layer()
         .client(&crate::secure::ClientTlsSpec {
