@@ -102,7 +102,8 @@ fn a_key_row_whose_expires_at_is_in_the_past_still_verifies() {
 }
 
 // `a_key_row_whose_expires_at_is_in_the_past_is_admitted_on_the_data_plane` MOVED to
-// `tests/key_expires_at_cross_plane.rs`: it drives a real HTTP round trip through `build_router`,
+// the composition root's `crates/busbar/tests/key_expires_at_cross_plane.rs`: it drives a real HTTP
+// round trip through `build_router`,
 // which only routes `/pa/v1/messages` through the REAL `busbar_llm` plane's `build_runtime`/`viewer`
 // — an integration-test target, never this `#[cfg(test)]` unit module (see
 // `endpoints_cross_plane.rs`'s header for the same reason). This file's own seam-only test above

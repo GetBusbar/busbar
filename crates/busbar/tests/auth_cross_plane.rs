@@ -13,6 +13,11 @@
 //! knob) is core's own auth behaviour, not anything about the LLM dialect.
 //!
 //! Every other test in `auth/tests/tests.rs` builds no lane/pool topology and stays there.
+//!
+//! MOVED HERE from `crates/busbar-kernel/tests/`, assertions unchanged (kind-isolation, ARCHITECT:
+//! core names zero plane types, its tests included; Q128 audit HIGH on the kernel's test-linked
+//! build.rs): the cell reads `upstream_creds()` through the fallback plane's runtime view, which
+//! only a real plane builds, and the composition root is where a plane may be linked.
 
 mod linked;
 

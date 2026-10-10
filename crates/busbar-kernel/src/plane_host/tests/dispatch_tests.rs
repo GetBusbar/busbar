@@ -254,8 +254,8 @@ fn entitlement_check_denies_a_target_outside_the_grant() {
 }
 
 // `entitlement_check_mcp_server_grant_does_not_cover_a_pool` MOVED to
-// `tests/plane_host_dispatch_cross_plane.rs`: its opening sanity assertion needs `scope_kind_at(1)`
-// to genuinely resolve to `"mcp_server"`, which only the REAL `busbar_mcp` plane's registered decl
+// the composition root's `crates/busbar/tests/plane_host_dispatch_cross_plane.rs`: its opening
+// sanity assertion needs `scope_kind_at(1)` to genuinely resolve to `"mcp_server"`, which only the REAL `busbar_mcp` plane's registered decl
 // can answer — naming that real vocabulary here (even via a synthetic `#[cfg(test)]` decl) is
 // exactly what `cargo xtask gate construction`'s `neutral-no-dialect` rule (ceiling 0) forbids. See
 // that file for the relocated test.
