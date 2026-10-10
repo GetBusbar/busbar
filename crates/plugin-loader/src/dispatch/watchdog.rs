@@ -102,7 +102,6 @@ fn replace(pool: &Pool, i: usize, old: &Arc<Worker>, started: Instant) {
             .collect();
         (Worker::fault_all(&mut st), gens)
     };
-    pool.env.completions.forget_worker(old.index);
     pool.env.services.forget_worker(old.index);
     let conns: Vec<_> = gone.iter().flat_map(|e| e.conns.iter().copied()).collect();
     super::conn_services::forget_worker(&conns, old.index);
