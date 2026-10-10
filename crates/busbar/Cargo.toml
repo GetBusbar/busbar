@@ -467,6 +467,7 @@ plane-mcp-door = "busbar_plane_mcp::DECLARES"
 # plugin. Held to each door's own Statement by `root::linked`'s tests.
 [package.metadata.busbar.linked-section]
 plane-mcp-door = "tools"
+plane-decisions = "decisions"
 
 # The key an `auths` row answers on the auth axis — the name its signed tarball's manifest states.
 [package.metadata.busbar.linked-name]
