@@ -1309,13 +1309,15 @@ impl busbar_kernel_wal::SegmentFactory for BreakableDisk {
     }
 }
 
-/// **A CARD THE LOG DROPPED OUTRIGHT IS NEVER PUBLISHED** (REV-293 #1, REV-309 #1: the truly
-/// dropped path fails closed). A poisoned segment that no fresh one can replace refuses the batch
-/// BEFORE the log retains it (`Wal::append_batch`), so that record can never land: the apply is
-/// refused as `Dropped`, nothing goes on the live history — neither the card nor a put-back — and
-/// the card in force prices on. Answering it as in doubt would publish an entry no chain will hold.
+/// **A CARD THE LOG COULD NOT ROLL FOR IS OWED, UNCONFIRMED, AND NEVER PUBLISHED WHILE IT IS**
+/// (REV-293 #1, REV-309 #1; ARCHITECT 2026-10-07 ruling on kernel-wal finding 4). A poisoned
+/// segment that no fresh one can replace keeps the batch it was handed (`Wal::append_batch`), as
+/// every other arm of the log does, so the chain has no hole once the volume recovers: the card is
+/// OWED. The root answers the apply as in doubt (`Lost`): the card is not confirmed, so it is never
+/// put in force — the card in force prices every instant, the refused card's era included, and the
+/// log owes the card for its retry.
 #[test]
-fn a_rate_card_the_log_drops_outright_is_never_published() {
+fn a_rate_card_the_log_owes_after_a_failed_roll_is_not_published_while_unconfirmed() {
     use busbar_contract::caps::DurableWrite;
     let dir = journal_dir("dropped-apply");
     let holder = process_holder();
@@ -1336,7 +1338,7 @@ fn a_rate_card_the_log_drops_outright_is_never_published() {
     book.lock().expect("the book").journal = busbar_kernel_wal::Journal::over(log, 7);
     failing.store(true, std::sync::atomic::Ordering::SeqCst);
     // The disk goes: the write in flight poisons the segment (retained, owed), and from here no
-    // fresh segment opens.
+    // fresh segment opens; the log keeps every batch it is handed.
     let token = busbar_kernel::test_support::tokens::grant::<DurableWrite>();
     assert!(book
         .lock()
@@ -1354,12 +1356,20 @@ fn a_rate_card_the_log_drops_outright_is_never_published() {
     assert!(
         matches!(
             try_apply_at(holder, 5.0, APPLIED_B),
-            Err(CardRefused::Dropped(_))
+            Err(CardRefused::Lost(_))
         ),
-        "a card the log could not retain is answered as dropped"
+        "a card the log retained but could not write is answered as in doubt, not confirmed"
     );
-    assert_eq!(holder.len(), 1, "nothing is published for a dropped card");
-    assert_eq!(flat_price_at(holder, EARNED_B), Some(3_000));
+    assert_eq!(
+        flat_price_at(holder, APPLIED_B),
+        Some(3_000),
+        "the unconfirmed card is not in force from the instant it was applied at"
+    );
+    assert_eq!(
+        flat_price_at(holder, EARNED_B),
+        Some(3_000),
+        "nor at any instant after it: the card in force prices on"
+    );
     let owed_cards = book
         .lock()
         .expect("the book")
@@ -1370,7 +1380,11 @@ fn a_rate_card_the_log_drops_outright_is_never_published() {
         .filter_map(|r| busbar_kernel_wal::JournalRecord::decode(&r.body).ok())
         .filter(|r| super::CardApplied::from_body(&r.body).is_some())
         .count();
-    assert_eq!(owed_cards, 0, "and the log owes no card");
+    assert_eq!(
+        owed_cards, 2,
+        "the log owes the card, and the card in force put back behind it: both retained for their \
+         retry, neither dropped"
+    );
     drop(book);
     let _ = std::fs::remove_dir_all(&dir);
 }

@@ -237,10 +237,10 @@ pub enum CardRefused {
     /// `Journal::append`, `Wal::append_batch`). So the record may yet land, and the holder put the
     /// card in force back on the journal behind it at the same instant ([`RootHistory::withdraw`]).
     Lost(busbar_contract::caps::DurabilityLost),
-    /// The log did not even retain the card: its segment was poisoned and a fresh one could not be
-    /// opened, so the batch was refused before it was held (`Wal::append_batch`). The record can
-    /// never land, so nothing is published and nothing is put back — the node fails closed, and
-    /// every later append on that log is refused at the same check until a segment opens.
+    /// The log neither holds nor owes the card, so the record can never land: nothing is published
+    /// and nothing is put back — the node fails closed. Every arm of `Wal::append_batch` retains
+    /// the batch it was handed, a failed roll onto a fresh segment included (kernel-wal finding 4),
+    /// so a log that keeps that rule never answers this; it is the answer should one not.
     Dropped(busbar_contract::caps::DurabilityLost),
     /// The boot's book has rebuilt the history but its handle is not bound yet: there is no journal
     /// the card could go on.
@@ -1267,8 +1267,8 @@ fn journal_card(
 
 /// What a `DurabilityLost` from [`journal_card`] leaves the card as. The journal sealed the card
 /// last, so it is the number just below the journal's next; the log either holds it or owes it
-/// (retained, offered again on the next append: IN DOUBT) — or neither, which is the one path that
-/// refuses a batch before retaining it: a poisoned segment no fresh one could replace (DROPPED).
+/// (retained, offered again on the next append: IN DOUBT, a failed roll onto a fresh segment
+/// included) — or neither (DROPPED), which a log that retains on every arm never answers.
 fn refusal_of(
     durability: &crate::root::durability::Durability,
     lost: busbar_contract::caps::DurabilityLost,
