@@ -155,8 +155,9 @@ pub fn plane_src_roots() -> Vec<String> {
 /// ── WIDENED 2026-09-23: "THE NEUTRAL CRATES" WAS THREE OF FORTY-NINE ────────────────────────────
 ///
 /// This list read `busbar-kernel`, `busbar-substrate-values`, `api` — and it is the denominator for
-/// `plane-purity` (9 rows), `plane-transport-neutrality` (3 rows) and `plane-purity-strict`'s
-/// ceilings. Two gates print the words "the neutral crates" and read three directories.
+/// `plane-purity` (9 rows) and `plane-purity-strict`'s ceilings (`plane-transport-neutrality`, 3
+/// rows, read it too until it moved to the census). Two gates printed the words "the neutral
+/// crates" and read three directories.
 ///
 /// The 1.6.0 gate blind-spot census planted the identical line
 /// `let _ = busbar_mcp::Thing;` in six crates and only the one in `busbar-kernel` was found; it then
@@ -182,14 +183,17 @@ pub fn plane_src_roots() -> Vec<String> {
 /// * `crates/busbar` — the composition root constructs planes BY NAME (`root/plane_decisions.rs`),
 ///   which is the one place in the tree where naming one is the job.
 ///
-/// STILL AN EXPLICIT LIST, AND THAT IS STILL A GAP. Deriving this by exclusion from the directories
-/// on disk would close the enrolment hole for good — a new neutral crate would be in the gate on the
-/// day it is created rather than on the day somebody remembers this function. It is not done here
-/// because the [`crate::gates::plane_purity`] and [`crate::gates::plane_transport_neutrality`]
-/// `:roots` rows are built on this list being a LIST: they refuse a listed root that is not on disk,
-/// and a list derived from disk can never fail that way, which would trade one blind spot for a row
-/// that cannot go red. PARK for the owner: derive-by-exclusion plus a separate census row that every
-/// `crates/*/src` is either neutral or named non-neutral, so neither property is lost.
+/// STILL AN EXPLICIT LIST FOR `plane-purity`, `plane-purity-strict` and the vendor matrix; DERIVED
+/// FOR `plane-transport-neutrality`. Deriving by exclusion from the directories on disk closes the
+/// enrolment hole — a new neutral crate is in the gate on the day it is created rather than on the
+/// day somebody remembers this function. [`crate::gates::plane_transport_neutrality`] no longer
+/// reads this list: it scans [`crate::gates::kind_isolation::neutral_census`], kind-isolation's
+/// crate census, and its `:neutral-roots` row is the census row this comment used to park — every
+/// `crates/*/src` is census-neutral (present and scanned) or named non-neutral by its family, and a
+/// crate the census cannot classify is RED — with a measured file-count floor in place of the
+/// empty check. The census is wider than this list (it classes `crates/busbar` and
+/// `crates/store-memory` neutral). The [`crate::gates::plane_purity`] `:roots` row is still built on
+/// this being a LIST that refuses a listed root not on disk.
 ///
 /// REMOVING A ROOT IS A NAMED CHANGE, NEVER A SILENT ONE. A root that is listed but absent means
 /// the gate scans zero files of it and reports the passing answer to every ban, which is why the

@@ -587,11 +587,24 @@ struct Scan {
     test_mints: Vec<String>,
 }
 
-fn scan_tree(cx: &Ctx) -> Result<Scan, String> {
-    let spec = WalkSpec::new(ROOTS.iter().copied())
+/// The walk the gate judges, without its floor — the one place the scan set is spelled, so the
+/// floor plant counts exactly the files [`scan_tree`] does.
+fn scan_spec() -> WalkSpec {
+    WalkSpec::new(ROOTS.iter().copied())
         .ext("rs")
         .exclude(EXCLUDE.iter().copied())
-        .min_files(SCAN_FLOOR);
+}
+
+/// THE FLOOR PLANT: the live walk cut to exactly `SCAN_FLOOR - 1` files, however far the tree has
+/// grown past the floor (see [`Overlay::below_floor`]). A fixed one-file cut went green the day
+/// the tree gained a file.
+fn floor_plant(cx: &Ctx) -> Result<Overlay, String> {
+    let rels = cx.list(&scan_spec()).map_err(|e| e.to_string())?;
+    Overlay::below_floor(rels.len(), SCAN_FLOOR, rels.iter().rev())
+}
+
+fn scan_tree(cx: &Ctx) -> Result<Scan, String> {
+    let spec = scan_spec().min_files(SCAN_FLOOR);
     let files = cx.walk(&spec).map_err(|e| format!("{e:?}"))?;
 
     let aliases = seal_aliases(&files);
@@ -937,18 +950,12 @@ impl Gate for SealWitnessGate {
         }
 
         // RED 12 (X5 finding 1): THE FLOOR IS THE MEASURED POPULATION. A walk that comes back one
-        // file short of it is refused, though it still holds ten times the old floor of 200.
-        let all = WalkSpec::new(ROOTS.iter().copied())
-            .ext("rs")
-            .exclude(EXCLUDE.iter().copied());
-        match cx.list(&all) {
-            Ok(rels) => {
-                let keep = SCAN_FLOOR - 1;
-                let mut ov7 = Overlay::new();
-                for rel in rels.iter().skip(keep) {
-                    ov7.remove(rel);
-                }
-                let found = format!("found: {keep}");
+        // file short of it is refused, though it still holds ten times the old floor of 200. The
+        // cut is computed from the live count, so a tree grown past the floor still lands at
+        // exactly floor - 1.
+        match floor_plant(cx) {
+            Ok(ov7) => {
+                let found = format!("found: {}", SCAN_FLOOR - 1);
                 report.push(prove_red(
                     cx,
                     self,
@@ -1172,5 +1179,57 @@ mod tests {
         let minter = rows.iter().find(|r| r.id == ROW_SINGLE_MINTER).unwrap();
         assert_eq!(minter.status, Status::Fail, "{}", minter.detail);
         assert!(minter.detail.contains("(via `S`)"), "{}", minter.detail);
+    }
+
+    /// A temp tree of `n` `.rs` files under `crates/`, and a context over it.
+    fn floor_tree(tag: &str, n: usize) -> (std::path::PathBuf, Ctx) {
+        let root = std::env::temp_dir().join(format!(
+            "xtask-seal-witness-floor-{tag}-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let src = root.join("crates").join("a").join("src");
+        let scratch = root.join(".fix").join("xtask");
+        std::fs::create_dir_all(&src).expect("src dir creates");
+        std::fs::create_dir_all(&scratch).expect("scratch dir creates");
+        for i in 0..n {
+            std::fs::write(src.join(format!("f{i:05}.rs")), "pub fn f() {}\n").expect("seed");
+        }
+        let cx = Ctx::at(&root, &scratch).expect("ctx opens over the temp root");
+        (root, cx)
+    }
+
+    /// THE RED ARM: the tree five files past `SCAN_FLOOR`. The old one-file cut left floor + 4 and
+    /// the scan green; the computed cut lands the gate's own scan at exactly floor - 1, refused.
+    #[test]
+    fn the_floor_plant_lands_one_under_the_floor_on_a_grown_tree() {
+        let (root, cx) = floor_tree("grown", SCAN_FLOOR + 5);
+        let base = scan_tree(&cx).expect("the grown tree clears the floor");
+        assert_eq!(base.files, SCAN_FLOOR + 5);
+        let ov = floor_plant(&cx).expect("the floor plant plants");
+        assert_eq!(ov.paths().count(), 6, "live - floor + 1 files are removed");
+        let Err(err) = scan_tree(&cx.with_overlay(ov)) else {
+            panic!("the planted scan must be refused");
+        };
+        let found = format!("found: {}", SCAN_FLOOR - 1);
+        assert!(err.contains("BelowFloor") && err.contains(&found), "{err}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// THE CONTROL: a tree exactly at `SCAN_FLOOR` scans green, and the plant still takes it to
+    /// floor - 1.
+    #[test]
+    fn a_tree_at_the_floor_scans_green_and_the_plant_takes_one_file() {
+        let (root, cx) = floor_tree("at", SCAN_FLOOR);
+        let base = scan_tree(&cx).expect("a tree at the floor is green");
+        assert_eq!(base.files, SCAN_FLOOR);
+        let ov = floor_plant(&cx).expect("the floor plant plants");
+        assert_eq!(ov.paths().count(), 1);
+        let Err(err) = scan_tree(&cx.with_overlay(ov)) else {
+            panic!("the planted scan must be refused");
+        };
+        assert!(err.contains(&format!("found: {}", SCAN_FLOOR - 1)), "{err}");
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

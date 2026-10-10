@@ -1193,6 +1193,10 @@
           "optional": true,
           "type": "bool"
         },
+        "protocol": {
+          "optional": true,
+          "type": "String"
+        },
         "provider": {
           "optional": false,
           "type": "String"

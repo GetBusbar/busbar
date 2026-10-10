@@ -183,17 +183,25 @@ fn a_group_commit_costs_one_sync_however_many_records_are_in_it() {
 fn a_poisoned_segment_never_takes_another_write() {
     let (mut wal, switch, memory) = wal_with_faults();
     let token = durability_token();
-    switch.arm(Fault::SyncEio);
+    // A batch that lands first, so the poisoned segment holds bytes once the failed batch is cut
+    // off it: the region the claim is about.
     wal.append_batch(
         &token,
         busbar_contract::caps::StepName::Meter,
         &records(1, 1, 1, 10),
     )
+    .unwrap();
+    switch.arm(Fault::SyncEio);
+    wal.append_batch(
+        &token,
+        busbar_contract::caps::StepName::Meter,
+        &records(1, 2, 1, 10),
+    )
     .expect_err("armed");
 
     // The poisoned segment's own bytes, held by a strong reference so they survive the roll that
-    // follows. A fresh segment NUMBER is not the claim: the claim is that the region of unknown
-    // state receives no further writes, and only the bytes can say that. Reading them back through
+    // follows. A fresh segment NUMBER is not the claim: the claim is that the segment that lost a
+    // sync receives no further writes, and only the bytes can say that. Reading them back through
     // `wal.read_back()` afterwards would read the NEW segment, which is why the factory is asked.
     let poisoned_bytes = memory.segment_bytes(0);
     let before = poisoned_bytes.lock().unwrap().clone();
@@ -203,12 +211,12 @@ fn a_poisoned_segment_never_takes_another_write() {
     );
 
     // The switch is one-shot, so the disk is healthy again — but the segment stays closed and the
-    // log moves on rather than writing more bytes into a region of unknown state.
+    // log moves on rather than writing more bytes into a segment that lost a sync.
     let ack = wal
         .append_batch(
             &token,
             busbar_contract::caps::StepName::Meter,
-            &records(1, 2, 1, 10),
+            &records(1, 3, 1, 10),
         )
         .unwrap();
     assert!(ack.segment > 0, "the write went to a fresh segment");
@@ -216,6 +224,244 @@ fn a_poisoned_segment_never_takes_another_write() {
         *poisoned_bytes.lock().unwrap(),
         before,
         "the poisoned segment took another write"
+    );
+}
+
+/// A log over memory that keeps every segment, as a data directory keeps its files, so a second log
+/// opened over the same memory is a restart.
+fn restartable_wal_with_faults() -> (
+    Wal,
+    super::fixtures::FaultSwitch,
+    busbar_kernel_wal::backend::MemoryFactory,
+) {
+    let (factory, switch, memory) = FaultyFactory::retaining();
+    let wal = Wal::with_parts(
+        Box::new(factory),
+        Box::new(busbar_kernel_wal::ship::NullShipper::new()),
+        Mode::OnDisk,
+        CEILING,
+        super::fixtures::wall_ms,
+    )
+    .unwrap();
+    (wal, switch, memory)
+}
+
+fn restart(memory: &busbar_kernel_wal::backend::MemoryFactory) -> Wal {
+    Wal::with_parts(
+        Box::new(memory.clone()),
+        Box::new(busbar_kernel_wal::ship::NullShipper::new()),
+        Mode::OnDisk,
+        CEILING,
+        super::fixtures::wall_ms,
+    )
+    .unwrap()
+}
+
+/// **A BATCH THE CALLER WAS TOLD WAS LOST DOES NOT COME BACK AT A RESTART** (Q128 kernel-wal 3).
+///
+/// After a write error the failed batch's pages can still be readable — here they are, in the
+/// memory the failing disk wrote them to — without ever having reached the medium. A restart that
+/// read them would put on the book records the caller was told were lost, and chain the next ones
+/// onto records that are on no disk. So the failed batch is cut off its segment when it is lost.
+/// RED before the fix: the poison was an in-memory flag, the bytes stayed, and the restart
+/// recovered the lost batch as the tail of the log.
+#[test]
+fn a_batch_reported_lost_does_not_come_back_at_a_restart() {
+    let (mut wal, switch, memory) = restartable_wal_with_faults();
+    let token = durability_token();
+
+    let landed = records(1, 1, 2, 40);
+    wal.append_batch(&token, busbar_contract::caps::StepName::Meter, &landed)
+        .unwrap();
+    switch.arm(Fault::SyncEio);
+    let lost = records(1, 3, 2, 40);
+    wal.append_batch(&token, busbar_contract::caps::StepName::Meter, &lost)
+        .expect_err("the sync was armed to fail");
+    drop(wal);
+
+    let restarted = restart(&memory);
+    assert_eq!(
+        restarted.recovered(),
+        landed.as_slice(),
+        "the restart's tail is what was acknowledged, not the batch reported lost"
+    );
+    assert!(
+        !restarted.holds(1, 3),
+        "the lost batch's identities are free"
+    );
+}
+
+/// **A RESTART NEVER APPENDS TO THE SEGMENT THAT LOST A SYNC** (Q128 kernel-wal 3).
+///
+/// Poison was a flag in the process that saw the sync fail, and the roll away from the poisoned
+/// segment waited for the next append; a restart before it opened the same segment unpoisoned and
+/// appended to it. Now the next segment is opened the moment the sync fails, and a restart appends
+/// to the newest segment even when its tail is read from the one below. RED before the fix: the
+/// restart appended into segment zero.
+#[test]
+fn a_restart_never_appends_to_the_segment_that_lost_a_sync() {
+    let (mut wal, switch, memory) = restartable_wal_with_faults();
+    let token = durability_token();
+    let segment_zero = memory.segment_bytes(0);
+
+    let landed = records(1, 1, 2, 40);
+    wal.append_batch(&token, busbar_contract::caps::StepName::Meter, &landed)
+        .unwrap();
+    switch.arm(Fault::SyncEio);
+    wal.append_batch(
+        &token,
+        busbar_contract::caps::StepName::Meter,
+        &records(1, 3, 2, 40),
+    )
+    .expect_err("the sync was armed to fail");
+    drop(wal);
+
+    let mut restarted = restart(&memory);
+    let before = segment_zero.lock().unwrap().clone();
+    let after_restart = records(1, 3, 2, 40);
+    let ack = restarted
+        .append_batch(
+            &token,
+            busbar_contract::caps::StepName::Meter,
+            &after_restart,
+        )
+        .expect("a healthy disk takes the append");
+    assert_eq!(ack.segment, 1, "the append went to the segment after it");
+    assert_eq!(
+        *segment_zero.lock().unwrap(),
+        before,
+        "the segment that lost a sync took a write after the restart"
+    );
+    let mut expected = landed;
+    expected.extend(after_restart);
+    assert_eq!(restarted.read_back().unwrap().records, expected);
+}
+
+/// **A ROLL THAT CANNOT OPEN THE NEXT SEGMENT KEEPS THE BATCH IT WAS HANDED** (Q128 kernel-wal 4).
+///
+/// The journal chains a batch before the log takes it. When the segment that lost a sync cannot be
+/// replaced — a full volume, no descriptors left — every other failure arm retains the batch for
+/// the retry; this one returned before it, so the records were on no medium and in no queue, and
+/// once the disk recovered the next record linked onto a head that was never written. RED before
+/// the fix: `owed()` held only the earlier lost batch.
+#[test]
+fn a_roll_that_cannot_open_the_next_segment_keeps_the_batch_it_was_handed() {
+    let (mut wal, switch, _memory) = wal_with_faults();
+    let token = durability_token();
+
+    // The volume is full: the sync fails, and no segment can be opened to move to.
+    switch.refuse_new_segments(true);
+    switch.arm(Fault::SyncEio);
+    let n = records(1, 1, 2, 40);
+    wal.append_batch(&token, busbar_contract::caps::StepName::Meter, &n)
+        .expect_err("the sync was armed to fail");
+
+    let n_plus_one = records(1, 3, 2, 40);
+    wal.append_batch(&token, busbar_contract::caps::StepName::Meter, &n_plus_one)
+        .expect_err("no segment can be opened to roll to");
+    let mut owed = n.clone();
+    owed.extend(n_plus_one.clone());
+    assert_eq!(
+        wal.owed(),
+        owed.as_slice(),
+        "both batches are retained, in order"
+    );
+
+    switch.refuse_new_segments(false);
+    let n_plus_two = records(1, 5, 1, 40);
+    let ack = wal
+        .append_batch(&token, busbar_contract::caps::StepName::Meter, &n_plus_two)
+        .expect("the disk has room again");
+    assert_eq!(ack.appended, 5, "all three batches, each once");
+    assert!(wal.owed().is_empty());
+    owed.extend(n_plus_two);
+    assert_eq!(wal.read_back().unwrap().records, owed);
+}
+
+/// The same, at the journal: a failed roll leaves no hole in the chain. RED before the fix: the
+/// record sealed into the refused batch was never written, and the chain read back broke at the
+/// record after it.
+#[test]
+fn a_failed_roll_leaves_no_hole_in_the_chain() {
+    use busbar_kernel_wal::journal::{Entry, Journal, RecordClass};
+
+    let (wal, switch, memory) = wal_with_faults();
+    // The first segment stays resident, the way a data directory keeps its file, so the chain read
+    // back is the whole log.
+    let _segment_zero = memory.segment_bytes(0);
+    let mut journal = Journal::over(wal, 4);
+    let token = durability_token();
+    let entry = |tag: u8| [Entry::new(RecordClass::Transaction, vec![tag; 8])];
+
+    journal
+        .append(&token, busbar_contract::caps::StepName::Meter, &entry(1))
+        .expect("a healthy disk");
+    switch.refuse_new_segments(true);
+    switch.arm(Fault::SyncEio);
+    journal
+        .append(&token, busbar_contract::caps::StepName::Meter, &entry(2))
+        .expect_err("the sync was armed to fail");
+    journal
+        .append(&token, busbar_contract::caps::StepName::Meter, &entry(3))
+        .expect_err("no segment can be opened to roll to");
+    switch.refuse_new_segments(false);
+    journal
+        .append(&token, busbar_contract::caps::StepName::Meter, &entry(4))
+        .expect("the disk has room again");
+
+    let chain = journal
+        .replay()
+        .expect("the log reads back")
+        .expect("and the chain verifies: nothing sealed was dropped");
+    assert_eq!(
+        chain.iter().map(|r| r.node_seq).collect::<Vec<u64>>(),
+        vec![1, 2, 3, 4]
+    );
+}
+
+/// A journal that RETAINS at its bound keeps a failed roll's batch past that bound: the batch a
+/// failed roll keeps and the records a full lane keeps are the one retained batch, and a retaining
+/// journal never forgets from it to make room (H3's `retaining_at_bound`, Q128 kernel-wal 4).
+#[test]
+fn a_retaining_journal_keeps_a_failed_rolls_batch_past_its_bound() {
+    use busbar_kernel_wal::journal::{Entry, Journal, RecordClass};
+
+    let (wal, switch, memory) = wal_with_faults();
+    let _segment_zero = memory.segment_bytes(0);
+    let mut journal = Journal::over(wal, 4).with_capacity(1).retaining_at_bound();
+    let token = durability_token();
+    let entry = |tag: u8| [Entry::new(RecordClass::Transaction, vec![tag; 8])];
+
+    journal
+        .append(&token, busbar_contract::caps::StepName::Meter, &entry(1))
+        .expect("a healthy disk");
+    switch.refuse_new_segments(true);
+    switch.arm(Fault::SyncEio);
+    journal
+        .append(&token, busbar_contract::caps::StepName::Meter, &entry(2))
+        .expect_err("the sync was armed to fail");
+    let ack = journal.append(&token, busbar_contract::caps::StepName::Meter, &entry(3));
+    assert!(ack.is_err(), "no segment can be opened to roll to");
+    assert!(
+        journal.at_bound(),
+        "two records owed against a bound of one"
+    );
+    assert_eq!(journal.buffered(), 2, "both batches are retained");
+    assert_eq!(journal.dropped_total(), 0, "nothing was forgotten");
+    assert!(journal.overflows().is_empty(), "no break was sealed");
+
+    switch.refuse_new_segments(false);
+    journal
+        .append(&token, busbar_contract::caps::StepName::Meter, &entry(4))
+        .expect("the disk has room again");
+    assert_eq!(journal.buffered(), 0);
+    let chain = journal
+        .replay()
+        .expect("the log reads back")
+        .expect("and the chain verifies");
+    assert_eq!(
+        chain.iter().map(|r| r.node_seq).collect::<Vec<u64>>(),
+        vec![1, 2, 3, 4]
     );
 }
 

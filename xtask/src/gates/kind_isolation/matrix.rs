@@ -2691,6 +2691,227 @@ fn law0_off(now: usize, ceiling: Option<usize>) -> usize {
     }
 }
 
+/// THE LAW 0 ROW'S PER-CELL TWIN: every neutral cell judged against THE SAME CELL AT THE MERGE-BASE,
+/// never against the slack under its `[[law0]]` row.
+///
+/// [`ROW_LAW0`] is red on predev on purpose (cells held at the arming measure stay RED until
+/// drained, #725), so the turnstile judges it by its FIGURE alone, and a figure is a sum over
+/// cells: what one cell grows another can pay for. Under `|now - ceiling|` a hit written into a
+/// cell that sits under its row LOWERS the figure — slack read as a drain — and a hit drained out of
+/// a cell over its row pays for a hit grown in another. So the verdict on one branch depended on what
+/// the base happened to carry: on predev 4f36b97390 `busbar-kernel × plane` measured 1173 under a
+/// row of 1175, so two hits written there read 11 -> 9 ("improvement"), and the same two hits on a
+/// base that had already filled that slack read as a rise. Ceilings only bound; they never license.
+///
+/// This row asks the one question that does not depend on the base's slack: DID THIS BRANCH GROW A
+/// NEUTRAL CELL? Its subject is the base every provenance rule of this gate reads (`base_ref`; in CI
+/// the turnstile hands it over as `XTASK_CEILING_BASE`: a pull-request check's merge-base, a
+/// merge-group entry's entry ahead), measured by THIS tree's code over the base's bytes. So the PR
+/// check and the merge group judge the same thing, the branch's own per-cell delta, and not
+/// whatever slack the base carried. It is PASS on a base that grew nothing, so a grown cell is a
+/// NEW red in the turnstile, never a figure another cell can offset.
+///
+/// * A cell that grew is RED, however much slack its `[[law0]]` row has (BUSBAR-1.6.0.md: the
+///   neutral ceiling is 0, ARMED, and no ratchet row raises it).
+/// * A cell that fell is not this row's subject: a drain is never red here. (Giving the row back
+///   is [`ROW_LAW0`]'s business, as #725 made it.)
+/// * The one thing that covers a rise is a `[[law0]]` row THIS branch raised over the base's own
+///   row: an approved delta (a hit moved from one ratcheting axis to another under a ruling lowers
+///   one row and raises the other), written in the diff a reviewer reads. A row minted on this
+///   branch, and slack the base already carried, cover nothing.
+pub const ROW_LAW0_BASE: &str = "kind-isolation:law0-base";
+
+/// The merge-base's Law 0 reading: its per-cell counts (THIS tree's code over the base's bytes) and
+/// its own `[[law0]]` rows.
+#[derive(Debug, Clone)]
+pub struct Law0Base {
+    pub commit: String,
+    pub counts: Law0Counts,
+    pub rows: BTreeMap<(String, String), usize>,
+}
+
+type Law0BaseCache = std::sync::Mutex<BTreeMap<String, Result<std::sync::Arc<Law0Base>, String>>>;
+
+fn law0_base_cache() -> &'static Law0BaseCache {
+    static C: std::sync::OnceLock<Law0BaseCache> = std::sync::OnceLock::new();
+    C.get_or_init(Default::default)
+}
+
+/// THE MERGE-BASE'S LAW 0 READING, once per (root, base commit) and process: like the base's own
+/// tree, the working tree under judgement does not change while one gate process runs.
+///
+/// The base is THIS tree with every path the diff names laid back to the base's bytes (a path the
+/// base had: its bytes; a path it had not: absent; an untracked file: absent), the pinned
+/// checkouts mounted beneath as the gate itself mounts them. A self-test case's plant is the
+/// "head" side and is not in the base, so the battery's ninety cases share one reading. A base that
+/// cannot be established is RED, never a silent pass (as in `base.rs`).
+pub fn law0_base(cx: &Ctx) -> Result<std::sync::Arc<Law0Base>, String> {
+    let commit = crate::gates::construction::ceilings::base_ref(cx)?.sha;
+    let meta = cx.overlay_command(super::pinned::METADATA_KEY);
+    let key = format!(
+        "{}\u{0}{commit}\u{0}{}",
+        cx.root().display(),
+        meta.as_deref().unwrap_or("")
+    );
+    if let Some(hit) = law0_base_cache()
+        .lock()
+        .ok()
+        .and_then(|m| m.get(&key).cloned())
+    {
+        return hit;
+    }
+    let built = read_law0_base(cx, &commit, meta).map(std::sync::Arc::new);
+    if let Ok(mut m) = law0_base_cache().lock() {
+        m.insert(key, built.clone());
+    }
+    built
+}
+
+fn read_law0_base(cx: &Ctx, commit: &str, meta: Option<String>) -> Result<Law0Base, String> {
+    let changed = cx.git_lines(&["diff", "--no-renames", "--name-status", commit, "--"])?;
+    let untracked = cx.git_lines(&["ls-files", "--others", "--exclude-standard"])?;
+    let mut ov = crate::ctx::Overlay::new();
+    for line in &changed {
+        let Some((status, path)) = line.split_once('\t') else {
+            continue;
+        };
+        if status.starts_with('A') {
+            ov.remove(path);
+            continue;
+        }
+        match cx.git_show(commit, path) {
+            Ok(text) => ov.set(path, text),
+            Err(why) => ov.unreadable(path, why),
+        }
+    }
+    for path in &untracked {
+        ov.remove(path);
+    }
+    if let Some(meta) = meta {
+        ov.set_command(super::pinned::METADATA_KEY, meta);
+    }
+    let bcx = super::pinned::with_pinned(&cx.with_overlay(ov));
+    let short = &commit[..8.min(commit.len())];
+    let mut crates =
+        super::census(&bcx).map_err(|e| format!("the census of the merge-base {short}: {e}"))?;
+    let (planes, ports) = super::vocabularies(&crates);
+    super::assign_instances(&mut crates, &planes, &ports);
+    let reg = super::load_registry(&bcx)
+        .map_err(|e| format!("the ledger of the merge-base {short}: {e}"))?;
+    let mut law0 = None;
+    let (row, _) = measured_row(&bcx, &crates, &reg, false, &mut law0);
+    let counts = law0.ok_or_else(|| {
+        format!(
+            "the Law 0 scan of the merge-base {short} did not run: {}",
+            row.detail
+        )
+    })?;
+    Ok(Law0Base {
+        commit: commit.to_string(),
+        counts,
+        rows: reg
+            .law0
+            .iter()
+            .map(|r| ((r.krate.clone(), r.axis.clone()), r.count))
+            .collect(),
+    })
+}
+
+/// [`ROW_LAW0_BASE`]: this tree's Law 0 cells against the merge-base's. `law0` `None` is a scan
+/// that did not run and `base` `Err` a base that could not be read; both are refusals.
+pub fn rule_law0_base(
+    registry: &super::KindRegistry,
+    law0: Option<&Law0Counts>,
+    base: Result<&Law0Base, &String>,
+) -> Row {
+    let Some(now) = law0 else {
+        return Row::fail(
+            ROW_LAW0_BASE,
+            "the Law 0 scan could not run",
+            "the matrix scan the Law 0 cells are read from did not run, and an unrun scan is not \
+             a branch that grew nothing"
+                .to_string(),
+        );
+    };
+    let base = match base {
+        Ok(b) => b,
+        Err(why) => {
+            return Row::fail(
+                ROW_LAW0_BASE,
+                "the merge-base's Law 0 cells could not be read",
+                format!(
+                    "no-base\t{why}. A base that cannot be established is RED, never a silent \
+                     pass: a branch nobody measured against is not a branch that grew nothing"
+                ),
+            )
+        }
+    };
+    let short = &base.commit[..8.min(base.commit.len())];
+    let mut here: BTreeMap<(String, String), usize> = BTreeMap::new();
+    for r in &registry.law0 {
+        here.entry((r.krate.clone(), r.axis.clone()))
+            .or_insert(r.count);
+    }
+    let keys: BTreeSet<&(String, String)> = now.keys().chain(base.counts.keys()).collect();
+    let (mut grown_total, mut drained, mut moved) = (0usize, 0usize, 0usize);
+    let mut findings = Vec::new();
+    for key in keys {
+        let n = now.get(key).copied().unwrap_or(0);
+        let was = base.counts.get(key).copied().unwrap_or(0);
+        if n <= was {
+            drained += was - n;
+            continue;
+        }
+        // THE ONE COVER: a row this branch RAISED over the base's own row. Slack the base carried
+        // (its row above its measure) and a row minted here are no cover at all.
+        let raised = match (here.get(key), base.rows.get(key)) {
+            (Some(h), Some(b)) => h.saturating_sub(*b),
+            _ => 0,
+        };
+        let grown = n - was;
+        let uncovered = grown.saturating_sub(raised);
+        moved += grown - uncovered;
+        if uncovered == 0 {
+            continue;
+        }
+        grown_total += uncovered;
+        let row = base.rows.get(key).map_or_else(
+            || "no `[[law0]]` row".to_string(),
+            |c| format!("its `[[law0]]` row {c}"),
+        );
+        findings.push(format!(
+            "law0-grown\t{} \u{d7} {}\t{was} -> {n} hit(s) over the same cell at the merge-base \
+             {short} ({row} there): this branch wrote {uncovered} instance-vocabulary hit(s) into a \
+             neutral crate. Slack under a row licenses nothing (BUSBAR-1.6.0.md: ceiling 0, ARMED; \
+             no ratchet row raises it). Drain them; only a row this branch raises over the base's \
+             own, as an approved delta, covers a moved hit",
+            key.0, key.1
+        ));
+    }
+    if findings.is_empty() {
+        return Row::pass(
+            ROW_LAW0_BASE,
+            "no neutral Law 0 cell grew over the merge-base",
+            format!(
+                "against {short}: {} cell(s), {} hit(s) here and {} at the base; {drained} \
+                 drained, {moved} moved under a row this branch raised",
+                now.len(),
+                now.values().sum::<usize>(),
+                base.counts.values().sum::<usize>()
+            ),
+        );
+    }
+    Row::fail(
+        ROW_LAW0_BASE,
+        "a neutral crate's Law 0 cell grew over the merge-base",
+        format!(
+            "{grown_total} hit(s) grown over the merge-base {short}, {} cell(s): {}",
+            findings.len(),
+            findings.join(" | ")
+        ),
+    )
+}
+
 /// THE MATRIX ROW, AS THE GATE EMITS IT: a measured to-do list, not a gate (owner 2026-10-03).
 ///
 /// The row is measured on every run and its number is in the row's detail, but it never fails: a
@@ -2721,8 +2942,25 @@ pub fn rule_matrix_rows(
     gating: bool,
 ) -> Vec<Row> {
     let mut law0 = None;
-    let matrix_row = matrix_row(cx, crates, reg, ship, gating, &mut law0);
-    vec![matrix_row, rule_law0(crates, reg, law0.as_ref())]
+    // THE MERGE-BASE IS READ BESIDE THE TREE: an independent second scan of the same code over the
+    // base's bytes, so it costs the wall time of the slower of the two, not their sum.
+    let (matrix_row, base) = std::thread::scope(|scope| {
+        let base = std::thread::Builder::new()
+            .stack_size(16 * 1024 * 1024)
+            .spawn_scoped(scope, || law0_base(cx))
+            .expect("spawn the merge-base Law 0 reading thread");
+        let row = matrix_row(cx, crates, reg, ship, gating, &mut law0);
+        (
+            row,
+            base.join()
+                .unwrap_or_else(|panic| std::panic::resume_unwind(panic)),
+        )
+    });
+    vec![
+        matrix_row,
+        rule_law0(crates, reg, law0.as_ref()),
+        rule_law0_base(reg, law0.as_ref(), base.as_deref()),
+    ]
 }
 
 fn matrix_row(
@@ -3517,8 +3755,19 @@ pub fn selftest<'a>(
             gate,
             "a plane instance noun written in a neutral crate fails kind-isolation:law0",
             &[ROW_LAW0],
-            ov,
+            ov.clone(),
             &["busbar-core-oauth2 \u{d7} plane"],
+        ));
+        // THE SAME HIT, JUDGED AGAINST THE MERGE-BASE: the plant is not in the base, so its cell
+        // grew there, whatever the `[[law0]]` row says.
+        report.push(prove_rows_red(
+            cx,
+            gate,
+            "a plane instance noun written in a neutral crate grows its cell over the merge-base \
+             (kind-isolation:law0-base)",
+            &[ROW_LAW0_BASE],
+            ov,
+            &["law0-grown", "busbar-core-oauth2 \u{d7} plane"],
         ));
     }
     if ship {
@@ -4760,6 +5009,262 @@ mod tests {
             "{}",
             clean.detail
         );
+    }
+
+    fn law0_base_of(
+        commit: &str,
+        cells: &[(&str, &str, usize)],
+        rows: &[(&str, &str, usize)],
+    ) -> Law0Base {
+        Law0Base {
+            commit: commit.to_string(),
+            counts: law0_counts_of(cells),
+            rows: rows
+                .iter()
+                .map(|(k, a, n)| (((*k).to_string(), (*a).to_string()), *n))
+                .collect(),
+        }
+    }
+
+    /// The ledger the merge-base carried in these cases: `plane` 2 under its row (predev
+    /// 4f36b97390's `busbar-kernel × plane`, 1173 under 1175), `transport` at its row, `auth` 1
+    /// over it (a cell held RED at the arming measure).
+    const BASE_ROWS: &[(&str, &str, usize)] = &[
+        ("busbar-kernel", "plane", 12),
+        ("busbar-kernel", "transport", 5),
+        ("busbar-kernel", "auth", 3),
+    ];
+    const BASE_CELLS: &[(&str, &str, usize)] = &[
+        ("busbar-kernel", "plane", 10),
+        ("busbar-kernel", "transport", 5),
+        ("busbar-kernel", "auth", 4),
+    ];
+
+    /// RED ARM 1, THE MERGE-QUEUE SKEW. One hit written into a cell with slack under its row: the
+    /// #725 figure FALLS (slack read as a drain), so the PR check reads "improvement"; on a base
+    /// whose slack the entries ahead already filled, the same hit is a rise and the merge group
+    /// DENYs. The per-cell row is red on BOTH bases, because its subject is the branch's own delta.
+    #[test]
+    fn one_hit_into_slack_is_red_against_any_base() {
+        let crates = vec![neutral_kernel("busbar-kernel")];
+        let reg = law0_reg(BASE_ROWS);
+        let base = law0_base_of("4f36b97390", BASE_CELLS, BASE_ROWS);
+        let base_row = rule_law0(&crates, &reg, Some(&law0_counts_of(BASE_CELLS)));
+        let head = law0_counts_of(&[
+            ("busbar-kernel", "plane", 11),
+            ("busbar-kernel", "transport", 5),
+            ("busbar-kernel", "auth", 4),
+        ]);
+        let head_row = rule_law0(&crates, &reg, Some(&head));
+        // TODAY: the figure the turnstile compares fell, 3 -> 2, so the hit was admitted.
+        assert!(
+            figure_of(&head_row) < figure_of(&base_row),
+            "{} -> {}",
+            figure_of(&base_row),
+            figure_of(&head_row)
+        );
+        let judged = rule_law0_base(&reg, Some(&head), Ok(&base));
+        assert_eq!(
+            judged.status,
+            crate::ledger::Status::Fail,
+            "{}",
+            judged.detail
+        );
+        assert!(
+            judged.detail.starts_with("1 hit(s) grown"),
+            "{}",
+            judged.detail
+        );
+        assert!(
+            judged
+                .detail
+                .contains("law0-grown\tbusbar-kernel \u{d7} plane\t10 -> 11"),
+            "{}",
+            judged.detail
+        );
+        assert!(!judged.detail.contains("(ceiling"), "{}", judged.detail);
+
+        // THE MERGE GROUP: the entry ahead filled the slack (plane 12, at its row). The branch's
+        // own hit is the same hit, and the per-cell row says the same thing about it.
+        let ahead = law0_base_of(
+            "855e5f151f",
+            &[
+                ("busbar-kernel", "plane", 12),
+                ("busbar-kernel", "transport", 5),
+                ("busbar-kernel", "auth", 4),
+            ],
+            BASE_ROWS,
+        );
+        let head_mg = law0_counts_of(&[
+            ("busbar-kernel", "plane", 13),
+            ("busbar-kernel", "transport", 5),
+            ("busbar-kernel", "auth", 4),
+        ]);
+        let judged_mg = rule_law0_base(&reg, Some(&head_mg), Ok(&ahead));
+        assert_eq!(judged_mg.status, judged.status, "{}", judged_mg.detail);
+        assert_eq!(figure_of(&judged_mg), figure_of(&judged));
+    }
+
+    /// RED ARM 2: a branch that removes a hit is never red on the per-cell row, given back or not
+    /// (giving the row back stays [`ROW_LAW0`]'s business, as #725 made it).
+    #[test]
+    fn a_drain_is_green_on_the_per_cell_row() {
+        let crates = vec![neutral_kernel("busbar-kernel")];
+        let base = law0_base_of("4f36b97390", BASE_CELLS, BASE_ROWS);
+        let head = law0_counts_of(&[
+            ("busbar-kernel", "plane", 10),
+            ("busbar-kernel", "transport", 4),
+            ("busbar-kernel", "auth", 3),
+        ]);
+        let reg = law0_reg(BASE_ROWS);
+        let judged = rule_law0_base(&reg, Some(&head), Ok(&base));
+        assert_eq!(
+            judged.status,
+            crate::ledger::Status::Pass,
+            "{}",
+            judged.detail
+        );
+        assert!(judged.detail.contains("2 drained"), "{}", judged.detail);
+        // Given back in the same commit (`transport` 5 -> 4): the #725 figure falls by the auth
+        // drain and the per-cell row stays green.
+        let lowered = law0_reg(&[
+            ("busbar-kernel", "plane", 12),
+            ("busbar-kernel", "transport", 4),
+            ("busbar-kernel", "auth", 3),
+        ]);
+        assert_eq!(
+            rule_law0_base(&lowered, Some(&head), Ok(&base)).status,
+            crate::ledger::Status::Pass
+        );
+        let was = rule_law0(
+            &crates,
+            &law0_reg(BASE_ROWS),
+            Some(&law0_counts_of(BASE_CELLS)),
+        );
+        let now = rule_law0(&crates, &lowered, Some(&head));
+        assert!(
+            figure_of(&now) <= figure_of(&was),
+            "{} -> {}",
+            figure_of(&was),
+            figure_of(&now)
+        );
+    }
+
+    /// RED ARM 3: a hit moved from one ratcheting axis to another under a ruling (`transport` row
+    /// lowered by one, `auth` row raised by one in the same diff) is judged as it was: the #725
+    /// figure is unchanged, and the per-cell row covers the moved hit by the raise THIS branch
+    /// wrote. The base's own slack and a row minted here cover nothing.
+    #[test]
+    fn a_ruled_move_between_axes_is_unchanged() {
+        let crates = vec![neutral_kernel("busbar-kernel")];
+        let at_rows: &[(&str, &str, usize)] = &[
+            ("busbar-kernel", "plane", 12),
+            ("busbar-kernel", "transport", 5),
+            ("busbar-kernel", "auth", 3),
+        ];
+        let base = law0_base_of("4f36b97390", at_rows, at_rows);
+        let base_row = rule_law0(&crates, &law0_reg(at_rows), Some(&law0_counts_of(at_rows)));
+        let moved_cells = law0_counts_of(&[
+            ("busbar-kernel", "plane", 12),
+            ("busbar-kernel", "transport", 4),
+            ("busbar-kernel", "auth", 4),
+        ]);
+        let ruled = law0_reg(&[
+            ("busbar-kernel", "plane", 12),
+            ("busbar-kernel", "transport", 4),
+            ("busbar-kernel", "auth", 4),
+        ]);
+        let moved_row = rule_law0(&crates, &ruled, Some(&moved_cells));
+        assert_eq!(moved_row.status, base_row.status, "{}", moved_row.detail);
+        let judged = rule_law0_base(&ruled, Some(&moved_cells), Ok(&base));
+        assert_eq!(
+            judged.status,
+            crate::ledger::Status::Pass,
+            "{}",
+            judged.detail
+        );
+        assert!(judged.detail.contains("1 moved"), "{}", judged.detail);
+
+        // The same move with NO raise written: the grown cell is red.
+        let unruled = rule_law0_base(&law0_reg(at_rows), Some(&moved_cells), Ok(&base));
+        assert_eq!(
+            unruled.status,
+            crate::ledger::Status::Fail,
+            "{}",
+            unruled.detail
+        );
+
+        // A row MINTED on this branch for a new cell covers nothing.
+        let mut minted_rows = at_rows.to_vec();
+        minted_rows.push(("busbar-kernel", "export", 1));
+        let mut leaked = at_rows.to_vec();
+        leaked.push(("busbar-kernel", "export", 1));
+        let minted = rule_law0_base(
+            &law0_reg(&minted_rows),
+            Some(&law0_counts_of(&leaked)),
+            Ok(&base),
+        );
+        assert_eq!(
+            minted.status,
+            crate::ledger::Status::Fail,
+            "{}",
+            minted.detail
+        );
+        assert!(
+            minted
+                .detail
+                .contains("busbar-kernel \u{d7} export\t0 -> 1"),
+            "{}",
+            minted.detail
+        );
+    }
+
+    /// A rise in one cell held over its row, paid for by a drain in another: the #725 figure is
+    /// flat, so the turnstile admits it. The per-cell row does not.
+    #[test]
+    fn a_drain_elsewhere_does_not_pay_for_a_rise() {
+        let crates = vec![neutral_kernel("busbar-kernel")];
+        let rows: &[(&str, &str, usize)] = &[
+            ("busbar-kernel", "plane", 10),
+            ("busbar-kernel", "transport", 5),
+        ];
+        let base_cells: &[(&str, &str, usize)] = &[
+            ("busbar-kernel", "plane", 12),
+            ("busbar-kernel", "transport", 7),
+        ];
+        let head = law0_counts_of(&[
+            ("busbar-kernel", "plane", 13),
+            ("busbar-kernel", "transport", 6),
+        ]);
+        let reg = law0_reg(rows);
+        assert_eq!(
+            figure_of(&rule_law0(&crates, &reg, Some(&head))),
+            figure_of(&rule_law0(&crates, &reg, Some(&law0_counts_of(base_cells))))
+        );
+        let judged = rule_law0_base(&reg, Some(&head), Ok(&law0_base_of("b", base_cells, rows)));
+        assert_eq!(
+            judged.status,
+            crate::ledger::Status::Fail,
+            "{}",
+            judged.detail
+        );
+        assert!(
+            judged.detail.contains("plane\t12 -> 13"),
+            "{}",
+            judged.detail
+        );
+    }
+
+    /// No base, no verdict: an unreadable merge-base is RED, never a pass.
+    #[test]
+    fn an_unreadable_base_is_red() {
+        let reg = law0_reg(BASE_ROWS);
+        let why = "the base ref 'origin/predev' does not resolve".to_string();
+        let row = rule_law0_base(&reg, Some(&law0_counts_of(BASE_CELLS)), Err(&why));
+        assert_eq!(row.status, crate::ledger::Status::Fail, "{}", row.detail);
+        assert!(row.detail.starts_with("no-base"), "{}", row.detail);
+        let unrun = rule_law0_base(&reg, None, Ok(&law0_base_of("b", BASE_CELLS, BASE_ROWS)));
+        assert_eq!(unrun.status, crate::ledger::Status::Fail);
     }
 
     #[test]

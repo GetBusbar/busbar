@@ -53,7 +53,7 @@ pub(super) const PLUGIN_KINDS: &[&str] = &[
 const CDYLIB_SUFFIX: &str = "-plugin";
 
 /// The planted `cargo metadata` answer's overlay key ([`Ctx::cargo_metadata`]).
-const METADATA_KEY: &str = "cargo-metadata:Cargo.toml";
+pub(super) const METADATA_KEY: &str = "cargo-metadata:Cargo.toml";
 
 /// One pinned package: its name, the directory its manifest governs in the checkout, and the
 /// `git+` source `cargo metadata` resolved it from.
