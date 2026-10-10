@@ -1156,46 +1156,6 @@ impl CoreGovernance {
 }
 
 impl busbar_core_admin::Governance for CoreGovernance {
-    fn group_exists(&self, _name: &str) -> bool {
-        // The surface that owns groups is the one that answers whether a group exists, and it
-        // answers it inside the operation rather than as a question the root may ask beforehand.
-        // Answering `true` here is not a claim that the group exists: it is the statement that this
-        // root does not adjudicate group existence, and that the operation's own 404 is the answer.
-        true
-    }
-
-    fn actual_parent(&self, _name: &str) -> Option<String> {
-        None
-    }
-
-    fn provision_group(
-        &self,
-        _admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
-        _group: &str,
-        _parent: &str,
-    ) -> Result<(), busbar_core_admin::GovernanceError> {
-        Ok(())
-    }
-
-    fn mint_key(
-        &self,
-        _admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
-        _group: Option<&str>,
-    ) -> Result<busbar_core_admin::MintedKey, busbar_core_admin::GovernanceError> {
-        // A minted secret is revealed by the operation's own response and by nothing else. The root
-        // does not hold one, does not copy one out of a body and does not re-render one: the answer
-        // the dispatch produced is what leaves, byte for byte.
-        Err(busbar_core_admin::GovernanceError::Validation)
-    }
-
-    fn rotate_key(
-        &self,
-        _admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
-        _id: &str,
-    ) -> Result<busbar_core_admin::RotateOutcome, busbar_core_admin::GovernanceError> {
-        Err(busbar_core_admin::GovernanceError::Validation)
-    }
-
     fn execute_legacy(
         &self,
         _verb: KernelVerb,
@@ -3319,18 +3279,8 @@ pub(crate) fn route(
                 })
             }))),
             store,
-            ArrivalNonce(request.at),
-            PackedReplay,
             CONFIG_CLASS_RULES,
             Arc::clone(&binding.mutations),
-        )
-        // Item 271: the claims the create-key and rotate-key caches take go on the node's journal
-        // where a root bound one; `None` (no data directory) is exactly the unbound executor.
-        .with_claim_journal(
-            binding
-                .claims
-                .clone()
-                .map(|j| j as Arc<dyn busbar_core_admin::idempotency::ClaimJournal>),
         );
 
     // THE THREE DISASTER-RECOVERY VERBS REACH THE STORE, not the governance seam. They are new
@@ -3944,85 +3894,6 @@ trait TapAdmin: Sized {
 }
 
 impl<S: busbar_contract::caps::Step> TapAdmin for SeatVerdict<S> {}
-
-/// The nonce a one-time secret is bound to.
-///
-/// Drawn from the operating system's own source, not derived from the secret it protects. The
-/// arrival epoch is mixed in so that two nonces drawn in one process cannot collide through a source
-/// that returned the same bytes twice; the entropy is what makes it unpredictable and the epoch is
-/// only what makes it distinct.
-struct ArrivalNonce(u64);
-
-impl busbar_core_admin::NonceSource for ArrivalNonce {
-    fn fill(&self, buf: &mut [u8; 16]) {
-        let mut material = [0u8; 16];
-        getrandom_into(&mut material);
-        *buf = mix_arrival(material, self.0);
-    }
-}
-
-/// The epoch half of the draw, separated from the source so it can be stated rather than sampled.
-///
-/// Unpredictability comes from the material and cannot be asserted about a random draw; DISTINCTNESS
-/// comes from the arrival epoch and can be, which is why the two are split here: two units that
-/// arrived at different moments cannot collide even if the source handed them the same bytes twice.
-fn mix_arrival(material: [u8; 16], at: u64) -> [u8; 16] {
-    let mut out = material;
-    for (slot, byte) in out.iter_mut().zip(at.to_be_bytes().iter()) {
-        *slot ^= *byte;
-    }
-    out
-}
-
-/// Draw unpredictable bytes from the node's own source.
-///
-/// The source is the substrate's, which is the operating system's: the same fail-closed draw a key
-/// secret and a plane's replay nonce are minted from. Reaching it rather than re-deriving one here
-/// is the whole point — a composition root that mints its own entropy has a second entropy source to
-/// get wrong, and this one had.
-///
-/// What it had been was a keyed hash of a STACK ADDRESS. That is not entropy: the address is the
-/// same on every call from the same frame, so the only thing varying was the hasher's key, and the
-/// second half was the first half hashed again — 64 bits of source, presented as 128.
-///
-/// The material arrives hex-encoded and is read back a byte at a time rather than through a decoder,
-/// because the one thing wanted from it is 16 bytes and adding a crate edge to a composition root to
-/// halve a string is a poor trade. A pair of digits that does not parse cannot happen — the encoder
-/// on the other side of the call writes hex — and if it ever did, the byte is left as the source's
-/// own zero rather than silently substituted.
-fn getrandom_into(buf: &mut [u8; 16]) {
-    let Ok(drawn) = busbar_kernel::plane::approvals::nonce() else {
-        // The OS source refusing is not survivable for a secret this binds, and it is also not
-        // something this root can refuse from: the seam it fills is infallible. So the buffer is
-        // left as the caller's zeroes and the epoch below is what still distinguishes it — an
-        // unmistakably degraded nonce rather than a plausible-looking one that is not random.
-        return;
-    };
-    let (pairs, _) = drawn.as_bytes().as_chunks::<2>();
-    for (slot, pair) in buf.iter_mut().zip(pairs) {
-        let hi = (pair[0] as char).to_digit(16);
-        let lo = (pair[1] as char).to_digit(16);
-        if let (Some(hi), Some(lo)) = (hi, lo) {
-            *slot = ((hi << 4) | lo) as u8;
-        }
-    }
-}
-
-/// The replay encoder.
-///
-/// A replayed answer is the bytes the first answer sent, not a fresh rendering of the same facts. A
-/// re-render would mint a second one-time secret over the same identity, which is exactly the defect
-/// the register named; this returns what was written and nothing else.
-struct PackedReplay;
-
-impl busbar_core_admin::ReplayEncoder<busbar_core_admin::MintedKeyOutcome> for PackedReplay {
-    fn encode(&self, value: &busbar_core_admin::MintedKeyOutcome) -> Vec<u8> {
-        // Reached only on the unit's own key-minting path, which this root does not take: the
-        // operation's own surface mints and renders, so there is no second rendering here to get
-        // wrong. The identity is enough to key a replay slot and carries no secret.
-        value.id.as_bytes().to_vec()
-    }
-}
 
 // ── the mount: one HTTP surface, one loop, one answer ───────────────────────────────────────────
 //
