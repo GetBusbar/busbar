@@ -2934,7 +2934,7 @@ async fn the_route_seam_is_driven_once_by_a_served_unit_and_never_by_a_refused_o
 //
 // `native_ingress::run` (native_ingress.rs:554) is the resolved-op funnel every native arrival
 // reaches with a model and an operation in hand — `operation_ingress` once the body's model is read,
-// `ingress_path_model` once the URL's is, `synthesize_completion` at the MCP-sampling re-entry — and
+// `ingress_path_model` once the URL's is — and
 // at native_ingress.rs:592 it calls `run_gauntlet`, the LIVE money authority and the exact site #29's
 // flip lands on. LEG 1 drives that funnel through its public door `operation_ingress` (→ `run` →
 // `run_gauntlet`). LEG 2 drives the DORMANT kernel-loop sibling `native_run_via_loop` (the process
@@ -2985,7 +2985,7 @@ async fn leg_native_run(fixture: Fixture) -> Observed {
 /// The shell's resolved-op funnel (`native_ingress::run`, reached through its `operation_ingress`
 /// door) builds a `NativePlane`/`GauntletRequest` and settles per-token billing through
 /// `busbar_kernel::plane_host::run_gauntlet`, late-accruing against the admission-pinned `ROOT_CARD`
-/// snapshot; it stays the MCP-sampling re-entry's (`synthesize_completion`). This is that SAME
+/// snapshot. This is that SAME
 /// resolved-op arrival as a unit handed to the process's ONE node — `answer_arriving_at` →
 /// `busbar_kernel::teller::run_unit_async`, settling onto the same Durability money-book the
 /// composition root binds via [`bind_book`]. The resolved `model` is carried as the unit's routing
@@ -4882,4 +4882,65 @@ async fn a_screened_veto_through_the_node_admits_nothing() {
         .expect("usage read");
     assert_eq!(derived.requests, 0, "a veto admits nothing");
     rig.server.shutdown().await;
+}
+
+/// THE RECORD'S AMOUNT IS COUNTS AND A CARD VERSION, NEVER A PRICE (`BUSBAR-1.6.0.md` THE DESIGN
+/// §1, "The amount is the unit's counts plus the rate-card version, never a price"; §7).
+///
+/// A unit whose exit settles a non-zero figure (the settlement writer's money, in nano-units) seals
+/// its record beside that line. The record names what the unit reported, by class; the exit's
+/// posting carries no class and no count, only the figure it moved, so the record it seals has no
+/// line of it at all.
+#[test]
+fn the_exit_arm_seals_no_money_figure_into_the_record() {
+    use busbar_contract::caps::{Admittance, Hold, Posted, Usage, WriteMoney};
+    use busbar_kernel::test_support::tokens::{end, grant, origin, pass};
+
+    let node = Node::new();
+    let durability = crate::root::durability::build(
+        &crate::root::durability::DurabilityConfig { data_dir: None },
+        Box::new(busbar_kernel_wal::NullShipper::new()),
+        Box::new(busbar_kernel_ledger::legacy::RecordingRows::new()),
+    )
+    .expect("a memory-buffered journal cannot fail to open");
+    let book = Arc::new(std::sync::Mutex::new(durability));
+    node.bind_book(Arc::clone(&book));
+
+    // The figure the settlement writer moved: 150 nano-units against a hold of 100.
+    const MONEY: u64 = 150;
+    let who = PrincipalId::new("acct:h2");
+    let hold = Hold::open(&grant::<Admittance>(), who.clone(), 100);
+    let usage = Usage::report(&grant::<busbar_contract::caps::Consumption>(), Vec::new())
+        .expect("an empty report fits the record");
+    let posted = Posted::settle(hold, u128::from(MONEY), &usage, &grant::<WriteMoney>());
+    assert_eq!(posted.settled(), MONEY, "the posting moved money");
+    let ended = Ended::Settled {
+        end: end(Outcome::Completed, Ok(posted)),
+        requests: 0,
+        fee: 0,
+    };
+    let seal = UnitSeal {
+        facts: busbar_contract::caps::AuditFacts {
+            op_class: busbar_contract::caps::OpClassId::new("call"),
+            finish: busbar_contract::FinishClass::Complete,
+        },
+        pass: pass(),
+        key: UnitKey::new(77),
+        origin: origin(OriginKind::Client),
+        parent: None,
+    };
+    node.settle_end(&who, Arrived::at(EPOCH * 1_000, 0), None, ended, Some(seal));
+
+    let durability = book.lock().unwrap_or_else(|p| p.into_inner());
+    let record = durability
+        .audit_records
+        .last()
+        .expect("the exit arm sealed the unit's record");
+    assert!(
+        record.usage.lines.iter().all(|line| line.class
+            != busbar_kernel::teller::KERNEL_ACCRUAL_CLASS
+            && line.quantity != MONEY),
+        "the record carries counts, never the settled money figure: {:?}",
+        record.usage.lines
+    );
 }

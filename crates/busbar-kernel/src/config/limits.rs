@@ -637,8 +637,8 @@ impl Drop for InstallGuard {
     }
 }
 
-/// Mirror the upstream-error-body cap AND the egress translate-body cap into the `proxy` process
-/// globals, so a reader that has no `App` in hand (the proxy paths, and the plane crates that read
+/// Mirror the upstream-error-body cap, the egress translate-body cap AND the hook content ceiling
+/// into the `proxy` process globals, so a reader that has no `App` in hand (the proxy paths, and the plane crates that read
 /// the translate cap) sees the SAME value busbar-core's own accessors return. Called after EVERY
 /// mutation of `INSTALLED` (install, reload, and the [`InstallGuard`] rollback) with that same
 /// slot's value, resolving the `None`/uninstalled case to the historical default exactly as each
@@ -654,4 +654,10 @@ fn mirror_derived_caps(slot: Option<&LimitsResolved>) {
         .map(|l| l.request_body_max_bytes)
         .unwrap_or(DEFAULT_REQUEST_BODY_MAX_BYTES);
     crate::proxy::set_max_translate_body_bytes(translate_cap);
+    // The hook CONTENT ceiling, with the uninstalled fallback the proxy global starts at, so a
+    // rejected apply's ceiling goes back with the rest of its limits (audit kernel-K1 #5).
+    let hook_content = slot
+        .map(|l| l.hook_content_max_bytes)
+        .unwrap_or(crate::proxy::DEFAULT_HOOK_CONTENT_MAX_BYTES);
+    crate::proxy::set_hook_content_max_bytes(hook_content);
 }

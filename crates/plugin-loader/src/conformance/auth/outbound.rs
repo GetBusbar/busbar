@@ -217,6 +217,8 @@ struct OnDemand {
 struct Style {
     style: String,
     credential: Option<Vec<u8>>,
+    // settings-leak-lint: allow — NON-PROJECTION conformance-harness type: one `auth.outbound`
+    // entry's settings, handed to the plugin under test; never serialized and never served.
     settings: Vec<u8>,
     head: Head,
     expect: String,

@@ -564,3 +564,58 @@ fn a_tasks_relayed_state_opens_once_for_its_caller_and_call() {
         "busbar's own ask is not a relayed one"
     );
 }
+
+/// THE LAST ROUND'S ANSWER (BUSBAR-1.6.0 spec lines 379-390, the ask's gate; ask.rs's promise that a
+/// caller cannot strip the operator's confirmation gate): the state minted for the final round,
+/// re-sent with no `inputResponses` (or an empty map), is refused as unanswered and does not
+/// proceed; the same state with its answer proceeds once.
+#[test]
+fn the_final_rounds_state_re_sent_without_answers_does_not_proceed() {
+    for answers in [None, Some(json!({}))] {
+        let mut seal = Plain::default();
+        let AskDecision::Ask { request_state, .. } = decide(
+            &confirm(),
+            3,
+            &caps(),
+            Retry::default(),
+            bind("k"),
+            "d",
+            Some(&mut seal),
+        ) else {
+            panic!("asks");
+        };
+        let retry = Retry {
+            responses: answers.as_ref(),
+            state: Some(&request_state),
+        };
+        let d = decide(
+            &confirm(),
+            3,
+            &caps(),
+            retry,
+            bind("k"),
+            "d",
+            Some(&mut seal),
+        );
+        let AskDecision::Refuse(r) = d else {
+            panic!("the unanswered final round must refuse, got {d:?}");
+        };
+        assert_eq!(r.audit_reason(), "ask_unanswered");
+        // The refusal spent nothing: the caller can still answer.
+        let answered = json!({ "ok": true });
+        let retry = Retry {
+            responses: Some(&answered),
+            state: Some(&request_state),
+        };
+        let d = decide(
+            &confirm(),
+            3,
+            &caps(),
+            retry,
+            bind("k"),
+            "d",
+            Some(&mut seal),
+        );
+        assert_eq!(d, AskDecision::Proceed);
+    }
+}

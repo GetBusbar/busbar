@@ -176,16 +176,28 @@ pub fn is_cgnat_shared_v4(v4: &Ipv4Addr) -> bool {
 /// still routes to an IPv4 destination: IPv4-mapped (`::ffff:a.b.c.d`), IPv4-compatible
 /// (`::a.b.c.d`), and the NAT64 `/96` embeddings (RFC 6052 well-known `64:ff9b::/96`, and any `/96`
 /// under the RFC 8215 local-use `64:ff9b:1::/48`), which a DNS64 resolver synthesizes and
-/// `to_ipv4()` does not recognise.
+/// `to_ipv4()` does not recognise, and the two transition tunnels a relay delivers to an IPv4 host:
+/// 6to4 (`2002::/16`, RFC 3056: the IPv4 address is bits 16-47) and Teredo (`2001::/32`, RFC 4380:
+/// the client's IPv4 address is bits 96-127, every bit inverted).
 pub fn embedded_ipv4(v6: &Ipv6Addr) -> Option<Ipv4Addr> {
     if let Some(v4) = v6.to_ipv4() {
         return Some(v4);
+    }
+    let seg = v6.segments();
+    if seg[0] == 0x2002 {
+        let [a, b] = seg[1].to_be_bytes();
+        let [c, d] = seg[2].to_be_bytes();
+        return Some(Ipv4Addr::new(a, b, c, d));
+    }
+    if seg[0] == 0x2001 && seg[1] == 0 {
+        let [a, b] = (!seg[6]).to_be_bytes();
+        let [c, d] = (!seg[7]).to_be_bytes();
+        return Some(Ipv4Addr::new(a, b, c, d));
     }
     // Well-known: the whole 96-bit prefix is fixed. Local-use: only the top 48 bits are, and an
     // operator picks the rest of the /96 (RFC 8215 section 6's own example has a non-zero seg[3]).
     const NAT64_WELL_KNOWN: u16 = 0;
     const NAT64_LOCAL_USE: u16 = 1;
-    let seg = v6.segments();
     if seg[0] == 0x0064 && seg[1] == 0xff9b {
         let embeds_v4 = match seg[2] {
             NAT64_WELL_KNOWN => seg[3] == 0 && seg[4] == 0 && seg[5] == 0,

@@ -24,10 +24,12 @@ use busbar_contract::abi::sdk::door::Entry;
 use busbar_contract::abi::sdk::{Instance, Lent, Out, Safe, SafeSlot};
 use busbar_contract::abi::transport::{
     slot, FramePiece, FramerOut, FramingIn, HeadSlots, PIECE_CONTINUED, PIECE_END,
-    PIECE_END_OF_FRAME, PIECE_FIELDS, PIECE_HAS_CODE, PIECE_STREAM_FAILED, YIELD_ENDED,
-    YIELD_HAS_DEADLINE, YIELD_MORE,
+    PIECE_END_OF_FRAME, PIECE_FIELDS, PIECE_HAS_CODE, PIECE_STREAM_FAILED, PIECE_WRITABLE,
+    YIELD_ENDED, YIELD_HAS_DEADLINE, YIELD_MORE, YIELD_STREAM_FULL,
 };
-use hyper_io::{field_cut, fill, HeadWords, HostIo, Owed, Piece, WRITE_HIGH_WATER};
+use hyper_io::{
+    field_cut, fill, mark_stream_full, HeadWords, HostIo, Owed, Piece, WRITE_HIGH_WATER,
+};
 
 fn noop_cx<R>(f: impl FnOnce(&mut Context<'_>) -> R) -> R {
     let waker = std::task::Waker::noop();
@@ -147,6 +149,8 @@ impl Owed for Owes {
 thread_local! {
     /// The framing `FillSlot` fills from, for the one call `run_fill` makes.
     static OWES: RefCell<Option<Owes>> = const { RefCell::new(None) };
+    /// The call is an `emit` that left its stream full.
+    static FULL: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// `fill` as a framer calls it: from a slot body on the SDK's safe surface, over the sink the host
@@ -169,6 +173,9 @@ impl SafeSlot for FillSlot {
                 |c| if c == 0 { 0 } else { 2 },
             );
         });
+        if FULL.with(std::cell::Cell::get) {
+            mark_stream_full(&mut o);
+        }
         Outcome::Ready
     }
 }
@@ -283,6 +290,35 @@ fn fill_says_the_stream_end_and_an_empty_frame_is_not_it() {
         (pieces[1].len, pieces[1].flags),
         (0, PIECE_END | PIECE_END_OF_FRAME)
     );
+}
+
+/// A STREAM'S OWN BACKPRESSURE through the SDK: an `emit` that left its stream full says so beside
+/// whatever else the answer says, and a writable piece goes out empty, flagged writable and nothing
+/// else (it ends no frame), between the stream's other pieces in order.
+#[test]
+fn an_emit_says_its_stream_is_full_and_a_writable_piece_ends_nothing() {
+    let mut o = Owes {
+        io: HostIo::new(0),
+        pieces: VecDeque::from([
+            Piece::data(3, Bytes::from_static(b"ab")),
+            Piece::writable(3),
+            Piece::data(3, Bytes::from_static(b"cd")),
+        ]),
+        ended: false,
+    };
+    FULL.with(|f| f.set(true));
+    let (out, _, frame, pieces, _) = run_fill(&mut o, (8, 8, 8));
+    FULL.with(|f| f.set(false));
+    assert_eq!(out.yielded.flags, YIELD_STREAM_FULL);
+    assert_eq!(frame, b"abcd");
+    let flags: Vec<u16> = pieces.iter().map(|p| p.flags).collect();
+    assert_eq!(
+        flags,
+        vec![PIECE_END_OF_FRAME, PIECE_WRITABLE, PIECE_END_OF_FRAME]
+    );
+    assert_eq!((pieces[1].stream, pieces[1].len), (3, 0));
+    let (out, ..) = run_fill(&mut o, (8, 8, 8));
+    assert_eq!(out.yielded.flags & YIELD_STREAM_FULL, 0, "only when marked");
 }
 
 #[test]

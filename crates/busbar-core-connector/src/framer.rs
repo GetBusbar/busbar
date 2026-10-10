@@ -601,6 +601,7 @@ impl Established {
             peer_issuer: NO_TEXT,
             peer_fingerprint: NO_TEXT,
             claim: text(self.claim.as_deref().map(str::as_bytes)),
+            local_certificate: NO_TEXT,
         }
     }
 }
