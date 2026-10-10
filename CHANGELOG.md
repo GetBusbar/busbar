@@ -409,7 +409,7 @@ Each of these is an owner-accepted difference from 1.5.5: additive, or strictly 
   the order served is one 1.5.5 could already print.
 - **A wedged hook comes back.** A hook that wedged is no longer lost until restart: it is
   quarantined, backed off from 1 s doubling to 30 s, and then given one trial call on a fresh
-  instance, and a successful trial returns it to service.
+  instance, and a successful trial returns it to service. 1.5.5 had no quarantine to exit.
 
 ### Breaking
 
@@ -589,6 +589,14 @@ is now a `400` naming the field; and the always-`null` `at` field on the hook vi
   target with no such setting instead of sent as the `medium` effort; each drop is warned and
   audited by its wire path. A wrong-typed Gemini `thinkingBudget` or Anthropic image `media_type` is
   answered with the caller's own 400 error instead of being translated.
+- 1.6.0 Breaking: when an auth plugin's `max_inflight` is full, a data-plane request is answered `503` with `Retry-After: 1` instead of 1.5.5's `401`.
+  The body is the gateway's at-capacity answer, the one `limits.max_inbound_concurrent` sheds
+  with. A bad credential is still answered `401`, and the admin API keeps 1.5.5's answer. **Migration:** a
+  client that retries a `503` after its `Retry-After` needs no change.
+- 1.6.0 Breaking: the destination guard now also judges an A2A peer's fetches, a streaming upstream and a duplex or WebSocket dial, so a private, loopback or cloud-metadata destination there is refused unless the configuration allows it, as a private provider host is.
+  **Migration:** name an internal peer or upstream in `advanced.allow_destinations` (an A2A
+  registration may also set its own `allow_private: true`), as a provider on an internal DNS name
+  already needs.
 
 ### Deprecated env vars still honoured
 
@@ -621,6 +629,8 @@ plugin by its old manifest name must use the alias or the new name once the new 
 installed, and a `plugins.fetch` that downloads by asset name must use the new prefix. Tarballs
 already published keep the names they were published with and keep loading. `busbar --migrate-config`
 now names the Valkey store's manifest as `busbar-store-valkey`.
+
+**A plugin Busbar links also answers to its canonical repo name** (`store.module: busbar-store-memory`, `module: busbar-auth-admin-tokens`), exactly as it answers to its short name.
 
 **The Headroom hook plugin is no longer a first-party Busbar plugin** (owner ruling, 2026-09-30).
 Busbar no longer lists, builds, tests, bundles or release-notifies it; its repository
@@ -758,6 +768,10 @@ each dialect translates, field by field, is listed in the generated
   on an Anthropic or Bedrock upstream instead of sending `{type: disabled}`); the shipped catalog sets
   them for GPT-5.1 / GPT-5.2 and for Claude Opus 5.5 / Fable 5. See
   [Lane capabilities](docs/providers.md#lane-capabilities). **Migration:** none.
+- 1.6.0 Added: a model entry takes `protocol`, an optional override of the dialect its provider's `protocol` sets.
+  Omitted, the model speaks its provider's protocol, as in 1.5.5. A model key busbar does not know
+  is still refused in 1.5.5's sentence, with `protocol` now among the expected fields.
+  **Migration:** none.
 - 1.6.0 Added: `GET /api/v1/admin/audit/keys` publishes the node's ed25519 public verifying key.
   The key set was empty before this release, because nothing was signed. With `data_dir` set, the
   keyset is minted at the first boot and kept in a `0600` file under `data_dir`, so the published

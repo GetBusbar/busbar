@@ -360,6 +360,9 @@ impl SecretRows {
             .chain(secrets.iter().cloned())
             .collect();
         crate::boot::one_owner(&all)?;
+        for line in crate::boot::both_doors(&all) {
+            tracing::info!("{line}");
+        }
         self.set_dropped(secrets);
         Ok(())
     }
