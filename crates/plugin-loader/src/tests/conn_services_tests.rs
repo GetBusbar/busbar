@@ -721,14 +721,19 @@ fn an_instance_without_a_need_is_handed_no_table_and_its_open_is_undeclared() {
 
 use std::collections::VecDeque;
 
+use busbar_contract::abi::auth::AuthPoints;
 use busbar_contract::abi::host::conn::connector::{
     IoIn, ReplyIn, ReplyPiece, RequestIn, RequestPiece, REPLY_ACK, REPLY_BODY, REPLY_END,
     REPLY_HEAD, REQUEST_BODY, REQUEST_END, REQUEST_HEAD,
 };
 use busbar_contract::abi::host::service::ServiceFn;
 use busbar_contract::abi::transport::FrameSpan;
+use busbar_contract::auth_calls::{AuthField, Fielding, Fields, FieldsRequest, OutboundAuth};
+use busbar_contract::conn::ConnAuth;
 use busbar_contract::conn::PieceKind;
 use busbar_contract::ids::StreamId;
+use busbar_contract::redacted::Redacted;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering as AtomicOrdering};
 
 /// What one open carried: the need, target, head words, fields and body.
 type Opened = (
@@ -762,6 +767,10 @@ struct Scripted {
     facts: Mutex<Option<ConnFacts>>,
     /// Every read fails with this, the table naming this cause.
     failing: Option<(ConnError, ConnCause)>,
+    /// The member binding every request this table carries is authed by (none = no binding).
+    auth: Option<Arc<dyn OutboundAuth>>,
+    /// An open reached the table while the calling thread held the connector's lock.
+    opened_under_lock: AtomicBool,
 }
 
 /// One upgrade call as it reached the table: the stream, the name offered, the trust reference.
@@ -815,6 +824,17 @@ impl DeclaredConns for Scripted {
     fn cause(&self, _: InstanceId, _: ConnId) -> Option<ConnCause> {
         self.failing.as_ref().map(|(_, c)| c.clone())
     }
+
+    fn auth_of(&self, _: InstanceId, _: NeedId, _: &str) -> Option<ConnAuth> {
+        self.auth.as_ref().map(|auth| ConnAuth {
+            auth: Arc::clone(auth),
+            handle: 1,
+            style_flags: 0,
+            points: AuthPoints::EMPTY,
+            passthrough: false,
+            lender: None,
+        })
+    }
 }
 
 impl Conns for Scripted {
@@ -825,6 +845,9 @@ impl Conns for Scripted {
         desc: &OpenDesc<'_>,
     ) -> Result<ConnId, ConnError> {
         self.slab.check_need(caller, need)?;
+        if held_here() {
+            self.opened_under_lock.store(true, AtomicOrdering::SeqCst);
+        }
         self.opened.lock().unwrap().push((
             need,
             desc.target.to_owned(),
@@ -905,6 +928,11 @@ const T: Ticket = Ticket {
 };
 
 fn bound_over(table: &Arc<Scripted>) -> Plugin<TestKind> {
+    bound_over_by(table, Adopter::unwatched())
+}
+
+/// [`bound_over`], adopted by `adopter` (a dispatcher's: its wakes route, so a read may pend).
+fn bound_over_by(table: &Arc<Scripted>, adopter: Adopter) -> Plugin<TestKind> {
     // SAFETY: the real door and its Statement are `'static`.
     let real: Door = unsafe { *plug::busbar_plugin_door() };
     let st: Statement = unsafe { *real.statement };
@@ -926,7 +954,7 @@ fn bound_over(table: &Arc<Scripted>) -> Plugin<TestKind> {
             instance: Arc::from("the-instance"),
             max_inflight_cap: 8,
             sink: Arc::new(NoSink),
-            dispatcher: Adopter::unwatched(),
+            dispatcher: adopter,
             conns: crate::dispatch::ConnTable::Host(conns),
         },
     )
@@ -1706,6 +1734,298 @@ fn an_establish_names_its_registration_and_a_shorter_head_names_none() {
         table.named.lock().unwrap().as_slice(),
         &["inside".to_owned(), String::new()],
         "the named registration, then none"
+    );
+}
+
+/// Whether THIS thread holds the connector's lock: a lock another thread holds (a test running
+/// beside this one) is let go within the bound; one this thread holds never is.
+fn held_here() -> bool {
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while std::time::Instant::now() < until {
+        match super::held_conns_lock().try_lock() {
+            Ok(_) | Err(std::sync::TryLockError::Poisoned(_)) => return false,
+            Err(std::sync::TryLockError::WouldBlock) => {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+        }
+    }
+    true
+}
+
+/// A member binding's auth instance that answers one bearer field, recording whether any of its
+/// calls ran while the calling thread held the connector's lock: answered on the spot (`now`), or
+/// from a submitted call polled by the read.
+#[derive(Default)]
+struct LockProbe {
+    now: bool,
+    seen: Arc<Seen>,
+}
+
+/// What a [`LockProbe`]'s calls saw.
+#[derive(Default)]
+struct Seen {
+    calls: AtomicU32,
+    under_lock: AtomicBool,
+}
+
+impl Seen {
+    fn call(&self) {
+        self.calls.fetch_add(1, AtomicOrdering::SeqCst);
+        if held_here() {
+            self.under_lock.store(true, AtomicOrdering::SeqCst);
+        }
+    }
+}
+
+fn bearer() -> Fields {
+    Fields::Ready(vec![AuthField {
+        name: b"authorization".to_vec(),
+        value: Redacted::new(b"Bearer member".to_vec()),
+        sensitive: true,
+    }])
+}
+
+impl OutboundAuth for LockProbe {
+    fn open_outbound(&self, _: &str, _: &[u8], _: &serde_json::Value) -> Result<u64, String> {
+        Ok(1)
+    }
+    fn fields_now(&self, _: u64, _: &FieldsRequest) -> Option<Fields> {
+        self.seen.call();
+        self.now.then(bearer)
+    }
+    fn fields(&self, _: u64, _: FieldsRequest, _: u64) -> Box<dyn Fielding> {
+        Box::new(Polled(Arc::clone(&self.seen)))
+    }
+}
+
+/// The submitted call: answers on its first poll, which is where the probe looks.
+struct Polled(Arc<Seen>);
+
+impl std::future::Future for Polled {
+    type Output = Fields;
+    fn poll(
+        self: std::pin::Pin<&mut Self>,
+        _: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Fields> {
+        self.0.call();
+        std::task::Poll::Ready(bearer())
+    }
+}
+
+impl Fielding for Polled {
+    fn settled(&mut self) -> Option<Fields> {
+        None
+    }
+}
+
+/// A whole framed request to a member with a binding: `ESTABLISH`, its head and its end.
+fn whole_request(p: &Plugin<TestKind>, seq: u32) -> u64 {
+    let est = opened_stream(p, seq);
+    assert!(ready(&est));
+    let stream = est.value;
+    assert!(ready(&request(
+        p,
+        seq + 1,
+        stream,
+        &head_piece(),
+        HEAD_BYTES
+    )));
+    assert!(ready(&request(
+        p,
+        seq + 2,
+        stream,
+        &kind_piece(REQUEST_END),
+        b""
+    )));
+    stream
+}
+
+/// RED (THE DESIGN §11.13 M1, "no plugin code runs under a host lock"): the member's auth call
+/// answered on the spot, and the open it leads, run with the connector's lock let go. The request
+/// still goes out once, its member's field first.
+#[test]
+fn a_members_auth_call_and_its_open_run_outside_the_connectors_lock() {
+    let probe = Arc::new(LockProbe {
+        now: true,
+        ..LockProbe::default()
+    });
+    let table = Arc::new(Scripted {
+        framed: true,
+        auth: Some(probe.clone()),
+        ..Scripted::default()
+    });
+    let p = bound_over(&table);
+    whole_request(&p, 0);
+    assert_eq!(
+        probe.seen.calls.load(AtomicOrdering::SeqCst),
+        1,
+        "one auth call"
+    );
+    assert!(
+        !probe.seen.under_lock.load(AtomicOrdering::SeqCst),
+        "the auth plugin's fields ran under the connector's lock"
+    );
+    assert!(
+        !table.opened_under_lock.load(AtomicOrdering::SeqCst),
+        "the open ran under the connector's lock"
+    );
+    let opened = table.opened.lock().unwrap();
+    assert_eq!(opened.len(), 1, "one open");
+    assert_eq!(
+        opened[0].4[0].0, "authorization",
+        "the member's field leads"
+    );
+}
+
+/// RED (§11.13 M1): an auth call that could not answer on the spot is polled by the reply's read,
+/// and that poll and the open it leads run with the connector's lock let go too.
+#[test]
+fn a_members_pending_auth_call_is_polled_and_opened_outside_the_connectors_lock() {
+    let probe = Arc::new(LockProbe::default());
+    let table = Arc::new(Scripted {
+        framed: true,
+        auth: Some(probe.clone()),
+        ..Scripted::default()
+    });
+    table
+        .script
+        .lock()
+        .unwrap()
+        .push_back((piece(PieceKind::Fields, Some(200), None, 0), Vec::new()));
+    // Adopted by a dispatcher, so the pending auth call's read has a wake to route.
+    let dispatcher = crate::dispatch::Dispatcher::new(crate::dispatch::DispatchConfig::default());
+    let p = bound_over_by(&table, dispatcher.adopter());
+    let stream = whole_request(&p, 0);
+    assert!(
+        table.opened.lock().unwrap().is_empty(),
+        "not opened before the call answers"
+    );
+    let mut buf = [0u8; 64];
+    let (out, got) = read_reply(&p, 3, stream, &mut buf);
+    assert!(ready(&out), "{}", error_text(&out));
+    assert_eq!(got.kind, REPLY_HEAD);
+    assert_eq!(
+        probe.seen.calls.load(AtomicOrdering::SeqCst),
+        2,
+        "on the spot, then polled"
+    );
+    assert!(
+        !probe.seen.under_lock.load(AtomicOrdering::SeqCst),
+        "the auth call was polled under the connector's lock"
+    );
+    assert!(
+        !table.opened_under_lock.load(AtomicOrdering::SeqCst),
+        "the open ran under the connector's lock"
+    );
+    assert_eq!(table.opened.lock().unwrap().len(), 1, "one open");
+}
+
+/// RED (§11.13 M1): a framed stream written raw opens as it was named, outside the lock.
+#[test]
+fn a_framed_stream_written_raw_opens_outside_the_connectors_lock() {
+    let table = Arc::new(Scripted {
+        framed: true,
+        ..Scripted::default()
+    });
+    let p = bound_over(&table);
+    let est = opened_stream(&p, 0);
+    let w = IoIn {
+        head: head_of::<IoIn>(service::WRITE, 1),
+        stream: est.value,
+        buf: b"raw".as_ptr().cast_mut(),
+        len: 3,
+    };
+    assert!(ready(&call(&p, CONN_SLOTS.write, &w)));
+    assert_eq!(table.opened.lock().unwrap().len(), 1, "opened once");
+    assert!(
+        !table.opened_under_lock.load(AtomicOrdering::SeqCst),
+        "the open ran under the connector's lock"
+    );
+}
+
+/// A stream closed while its open was being made outside the lock keeps nothing open: what was
+/// opened for it is closed on the table when the opening call comes to install it.
+#[test]
+fn a_stream_closed_while_it_opens_leaves_nothing_open() {
+    let id = InstanceId(u64::MAX - 7);
+    let stream = super::HELD | 0x00ff_ffff_0000;
+    let recorded = Arc::new(Scripted::default());
+    recorded.slab.declare(id, NeedId(0));
+    let conn = recorded.slab.insert(id, NeedId(0), ()).expect("a slot");
+    let table: Arc<dyn DeclaredConns> = recorded.clone();
+    // The stream is gone (its close ran while the open was being made).
+    super::install(id, stream, &table, super::Conn::Open(conn));
+    assert!(
+        recorded.slab.get(id, conn).is_err(),
+        "the orphaned open is closed on the table"
+    );
+    assert!(
+        super::held_conns().get(&(id, stream)).is_none(),
+        "nothing is held"
+    );
+}
+
+/// RED (THE DESIGN §11.12 "on resume the plugin re-issues the SAME handle and receives the stored
+/// result"): `IDENTITY` writes the caller's memory and never pends, so a replayed handle is
+/// answered by writing the identity again into the memory this call hands, never by a kept READY
+/// over memory nothing touched.
+#[test]
+fn a_replayed_identity_writes_the_callers_memory_again() {
+    use busbar_contract::abi::host::conn::connector::{IdentityIn, ProcessIdentity};
+    let p = bound_over(&Arc::new(Scripted::default()));
+    let ask = |into: &mut ProcessIdentity| {
+        let i = IdentityIn {
+            head: head_of::<IdentityIn>(service::IDENTITY, 5),
+            identity: std::ptr::from_mut(into),
+        };
+        call(&p, CONN_SLOTS.identity, &i)
+    };
+    // SAFETY: an all-zero `ProcessIdentity` is a valid value the service overwrites.
+    let mut first: ProcessIdentity = unsafe { std::mem::zeroed() };
+    assert!(ready(&ask(&mut first)));
+    assert_eq!(first.pid, u64::from(std::process::id()));
+    // SAFETY: as above.
+    let mut replayed: ProcessIdentity = unsafe { std::mem::zeroed() };
+    assert!(ready(&ask(&mut replayed)), "the same handle, again");
+    assert_eq!(
+        replayed.pid,
+        u64::from(std::process::id()),
+        "a replay answered READY without writing the identity"
+    );
+}
+
+/// The connector's `RANDOM` slot is RETIRED and served by no host: `random.fill`, a host service,
+/// is the one random service.
+#[test]
+fn the_connector_serves_no_random_of_its_own() {
+    assert!(CONN_SLOTS.random.is_none());
+}
+
+/// RED (bounded memory): an instance that is dropped takes what it held on the connector's
+/// process-wide maps with it, and a connection one of its held streams had open is closed on the
+/// table.
+#[test]
+fn a_dropped_instance_leaves_nothing_on_the_connectors_maps() {
+    let table = Arc::new(Scripted {
+        framed: true,
+        ..Scripted::default()
+    });
+    let p = bound_over(&table);
+    let id = p.instance();
+    let stream = whole_request(&p, 0);
+    let conn = match super::held_conns().get(&(id, stream)).map(|s| &s.conn) {
+        Some(super::Conn::Open(c)) => *c,
+        other => panic!("the whole request is open on the table: {other:?}"),
+    };
+    assert!(table.slab.get(id, conn).is_ok());
+    drop(p);
+    assert!(
+        !super::held_conns().keys().any(|(i, _)| *i == id),
+        "a dropped instance's stream entries stayed on the connector's map"
+    );
+    assert!(
+        table.slab.get(id, conn).is_err(),
+        "a dropped instance's open connection stayed open"
     );
 }
 

@@ -566,7 +566,7 @@ extern "C" {
 #define BB_HCONN_SERVICE_CHECKOUT UINT32_C(7) /* Check a pooled stream out for one op. */
 #define BB_HCONN_SERVICE_CHECKIN UINT32_C(8) /* Check it back in. */
 #define BB_HCONN_SERVICE_CLOSE UINT32_C(9) /* Close a stream. */
-#define BB_HCONN_SERVICE_RANDOM UINT32_C(10) /* Random bytes. */
+#define BB_HCONN_SERVICE_RANDOM UINT32_C(10) /* RETIRED: random bytes come from the one random service, the host service `random.fill` */
 #define BB_HCONN_SERVICE_IDENTITY UINT32_C(11) /* The process identity. */
 #define BB_HCONN_SERVICE_READ_REPLY UINT32_C(12) /* Read the next piece of the far end's reply to what the plugin sent, with its descriptor. */
 #define BB_HCONN_SERVICE_WRITE_REQUEST UINT32_C(13) /* Write one piece of a request on a FRAMED stream, with its descriptor: the framer builds its */
@@ -3461,7 +3461,7 @@ struct bb_hconn_CheckinIn {
     uint32_t _reserved;
 };
 
-/* [`service::RANDOM`]'s `in`: fill the buffer. Never pends. */
+/* [`service::RANDOM`]'s `in` (RETIRED with its slot: `random.fill` is the one random service). */
 struct bb_hconn_RandomIn {
     bb_hsvc_ServiceHead head;
     uint8_t *buf;

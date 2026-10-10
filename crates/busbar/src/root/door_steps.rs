@@ -1284,8 +1284,32 @@ pub struct OutboundAuths {
     linked: Vec<busbar_kernel::preflight::LinkedAuth>,
     dropped: Option<&'static crate::root::loader::PluginRegistry>,
     conns: crate::root::loader::dispatch::ConnTable,
-    opened:
-        Mutex<HashMap<String, Arc<crate::root::loader::dispatch::auth_outbound::OutboundInstance>>>,
+    /// Every auth row's outbound facts, read once at the first serving (each row bound once to
+    /// read them), so a serving binds only the row it opens.
+    facts: std::sync::OnceLock<Vec<AuthRowFacts>>,
+    /// The opened instances, by key: opened OUTSIDE the map's lock (THE DESIGN §11.13 M1: the
+    /// plugin's validate and open crossings never run under a host lock).
+    opened: crate::root::loader::open_once::OpenOnce<
+        String,
+        crate::root::loader::dispatch::auth_outbound::OutboundInstance,
+    >,
+}
+
+/// One auth row's outbound facts: where its door is, the styles its Statement states, and whether
+/// its needs take their target from its settings (one instance per binding's settings).
+struct AuthRowFacts {
+    name: String,
+    door: AuthRowDoor,
+    styles: Vec<crate::root::loader::dispatch::kinds::auth::OutboundStyle>,
+    per_binding: bool,
+}
+
+/// Where an auth row's door is: the build's linked row, or the plugins directory's loadable row,
+/// by index.
+#[derive(Clone, Copy)]
+enum AuthRowDoor {
+    Linked(usize),
+    Dropped(usize),
 }
 
 impl std::fmt::Debug for OutboundAuths {
@@ -1316,19 +1340,16 @@ impl OutboundAuths {
             linked: linked.to_vec(),
             dropped,
             conns,
-            opened: Mutex::new(HashMap::new()),
+            facts: std::sync::OnceLock::new(),
+            opened: crate::root::loader::open_once::OpenOnce::new(),
         }
     }
 
     /// The bind one auth row is loaded under: its needs on the connection table, its diagnostics
     /// (a mint that failed and will retry, a credential it could not present) in its own log file
     /// under the configured `plugins.logs` (THE DESIGN #85) AND, each declared one, in the main log
-    /// in the line 1.5.5 wrote there ([`MainLogSink`]).
-    fn bind(&self, name: &str) -> crate::root::loader::dispatch::Bind {
-        self.bind_with(name, self.conns.clone())
-    }
-
-    /// [`Self::bind`] with the needs declared on `conns` (`ConnTable::NoNeeds`: no need is granted).
+    /// in the line 1.5.5 wrote there ([`MainLogSink`]). Its needs are declared on `conns`
+    /// (`ConnTable::NoNeeds`: no need is granted).
     fn bind_with(
         &self,
         name: &str,
@@ -1355,63 +1376,89 @@ impl OutboundAuths {
         }
     }
 
-    /// Every auth row's loaded door, linked first, then dropped in. A row that will not load is
-    /// passed over (its own open names why where it is configured).
-    fn rows(
+    /// One auth row's door, loaded (bound) afresh. `None` when it will not load (its own open names
+    /// why where it is configured).
+    fn load(
         &self,
-    ) -> Vec<(
-        String,
+        name: &str,
+        door: AuthRowDoor,
+    ) -> Option<
         crate::root::loader::dispatch::Plugin<crate::root::loader::dispatch::kinds::auth::Auth>,
-    )> {
-        self.rows_with(true)
+    > {
+        self.load_with(name, door, self.conns.clone())
     }
 
-    /// [`Self::rows`], each loaded with its needs granted (`granted`) or with none.
-    fn rows_with(
+    /// [`Self::load`] with the needs declared on `conns` (`ConnTable::NoNeeds`: no need is granted,
+    /// so a row that declares one will not load).
+    fn load_with(
         &self,
-        granted: bool,
-    ) -> Vec<(
-        String,
+        name: &str,
+        door: AuthRowDoor,
+        conns: crate::root::loader::dispatch::ConnTable,
+    ) -> Option<
         crate::root::loader::dispatch::Plugin<crate::root::loader::dispatch::kinds::auth::Auth>,
-    )> {
+    > {
         use crate::root::loader::dispatch::kinds::auth::Auth;
         use crate::root::loader::dispatch::{load_dropped_bytes, load_linked, LinkedRow};
-        let bind = |name: &str| {
-            self.bind_with(
-                name,
-                if granted {
-                    self.conns.clone()
-                } else {
-                    crate::root::loader::dispatch::ConnTable::NoNeeds
-                },
-            )
-        };
-        let mut rows = Vec::new();
-        for (name, _, door) in &self.linked {
-            if let Ok(plugin) =
-                LinkedRow::of(*door).and_then(|row| load_linked::<Auth>(&row, bind(name)))
-            {
-                rows.push(((*name).to_string(), plugin));
+        match door {
+            AuthRowDoor::Linked(i) => {
+                let (_, _, door) = self.linked.get(i)?;
+                LinkedRow::of(*door)
+                    .and_then(|row| load_linked::<Auth>(&row, self.bind_with(name, conns)))
+                    .ok()
+            }
+            AuthRowDoor::Dropped(i) => {
+                let row = self.dropped?.loadable().get(i)?;
+                let Ok(Some(stated)) = row.manifest.stated_rendering() else {
+                    return None;
+                };
+                load_dropped_bytes::<Auth>(
+                    &row.lib_bytes,
+                    name,
+                    &stated,
+                    self.bind_with(name, conns),
+                )
+                .ok()
             }
         }
-        let dropped = self.dropped.map_or(&[][..], |r| r.loadable());
-        for row in dropped.iter().filter(|r| r.manifest.kind == "auth") {
-            let name = &row.manifest.name;
-            let Ok(Some(stated)) = row.manifest.stated_rendering() else {
-                continue;
-            };
-            if let Ok(plugin) =
-                load_dropped_bytes::<Auth>(&row.lib_bytes, name, &stated, bind(name))
-            {
-                rows.push((name.clone(), plugin));
-            }
-        }
-        rows
+    }
+
+    /// Every auth row's outbound facts, linked first, then dropped in, read once: each row is bound
+    /// once to read them, then let go. A row that will not load is passed over.
+    fn facts(&self) -> &[AuthRowFacts] {
+        use crate::root::loader::dispatch::auth_outbound::outbound_styles;
+        self.facts.get_or_init(|| {
+            let linked = self
+                .linked
+                .iter()
+                .enumerate()
+                .map(|(i, (name, _, _))| ((*name).to_string(), AuthRowDoor::Linked(i)));
+            let dropped = self
+                .dropped
+                .map_or(&[][..], |r| r.loadable())
+                .iter()
+                .enumerate()
+                .filter(|(_, r)| r.manifest.kind == "auth")
+                .map(|(i, r)| (r.manifest.name.clone(), AuthRowDoor::Dropped(i)));
+            linked
+                .chain(dropped)
+                .filter_map(|(name, door)| {
+                    let plugin = self.load(&name, door)?;
+                    Some(AuthRowFacts {
+                        styles: outbound_styles(&plugin),
+                        per_binding: plugin.targets_from_settings(),
+                        name,
+                        door,
+                    })
+                })
+                .collect()
+        })
     }
 
     /// The auth plugin serving `style` for a binding under `settings`, its instance opened (once
     /// per plugin, or once per binding's settings for a plugin whose needs take their target from
-    /// them) and its tick schedule running; `None` when no row states it.
+    /// them) and its tick schedule running; `None` when no row states it. Only the serving row is
+    /// bound, and only when its instance is not open yet; its open runs with no lock held.
     ///
     /// # Errors
     ///
@@ -1421,37 +1468,41 @@ impl OutboundAuths {
         style: &str,
         settings: &serde_json::Value,
     ) -> Result<Option<Serving>, String> {
-        use crate::root::loader::dispatch::auth_outbound::{outbound_style, OutboundInstance};
-        for (name, plugin) in self.rows() {
-            let Some(decl) = outbound_style(&plugin, style) else {
+        use crate::root::loader::dispatch::auth_outbound::OutboundInstance;
+        for row in self.facts() {
+            let Some(decl) = row.styles.iter().find(|s| s.name == style).cloned() else {
                 continue;
             };
-            let per_binding = plugin.targets_from_settings();
-            let settings = if per_binding {
+            let settings = if row.per_binding {
                 serde_json::to_vec(settings).map_err(|e| e.to_string())?
             } else {
                 b"{}".to_vec()
             };
-            let key = if per_binding {
-                format!("{name}\0{}", String::from_utf8_lossy(&settings))
+            let key = if row.per_binding {
+                format!("{}\0{}", row.name, String::from_utf8_lossy(&settings))
             } else {
-                name
+                row.name.clone()
             };
-            let mut opened = self.opened.lock().unwrap_or_else(|p| p.into_inner());
-            let instance = match opened.get(&key) {
-                Some(instance) => Arc::clone(instance),
+            let instance = match self.opened.get(&key) {
+                Some(instance) => instance,
                 None => {
-                    let instance = Arc::new(OutboundInstance::open_with(
-                        plugin,
-                        Arc::clone(&self.dispatcher),
-                        0,
-                        &settings,
-                    )?);
-                    // ITS TICK SCHEDULE, on the runtime the composition runs on.
-                    if let Ok(runtime) = tokio::runtime::Handle::try_current() {
-                        runtime.spawn(Arc::clone(&instance).ticks());
+                    let Some(plugin) = self.load(&row.name, row.door) else {
+                        continue;
+                    };
+                    let (instance, installed) = self.opened.get_or_open(&key, || {
+                        OutboundInstance::open_with(
+                            plugin,
+                            Arc::clone(&self.dispatcher),
+                            0,
+                            &settings,
+                        )
+                    })?;
+                    // ITS TICK SCHEDULE, once per instance, on the runtime the composition runs on.
+                    if installed {
+                        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+                            runtime.spawn(Arc::clone(&instance).ticks());
+                        }
                     }
-                    opened.insert(key, Arc::clone(&instance));
                     instance
                 }
             };
@@ -1479,11 +1530,15 @@ impl OutboundAuths {
         credential: &[u8],
         settings: &serde_json::Value,
     ) -> Result<Vec<String>, String> {
-        use crate::root::loader::dispatch::auth_outbound::{outbound_style, OutboundInstance};
-        for (_, plugin) in self.rows_with(false) {
-            if outbound_style(&plugin, style).is_none() {
+        use crate::root::loader::dispatch::auth_outbound::OutboundInstance;
+        use crate::root::loader::dispatch::ConnTable;
+        for row in self.facts() {
+            if !row.styles.iter().any(|s| s.name == style) {
                 continue;
             }
+            let Some(plugin) = self.load_with(&row.name, row.door, ConnTable::NoNeeds) else {
+                continue;
+            };
             let bytes = serde_json::to_vec(settings).map_err(|e| e.to_string())?;
             let instance =
                 OutboundInstance::open_with(plugin, Arc::clone(&self.dispatcher), 0, &bytes)?;

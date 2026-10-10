@@ -419,6 +419,16 @@ pub(crate) struct Instance {
     _lib: Option<Lib>,
 }
 
+impl Drop for Instance {
+    /// The instance is gone (closed and let go, or replaced by a reload): what it held on the
+    /// connector's process-wide maps goes with it.
+    fn drop(&mut self) {
+        if let Some((id, table)) = self.wake.conn.get() {
+            super::conn_services::purge(*id, table);
+        }
+    }
+}
+
 /// The Statement's declared diagnostic ids: `'static` door data, alive while the instance holds its
 /// library, read when a diagnostic names one.
 struct DiagIds {

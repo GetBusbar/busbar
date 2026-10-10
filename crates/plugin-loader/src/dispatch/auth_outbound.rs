@@ -42,19 +42,15 @@ pub struct OutboundInstance {
     worker: u32,
 }
 
-/// THE OUTBOUND STYLE `style` as `plugin`'s tail states it, if it serves it (THE DESIGN §6 step 3:
-/// the auth plugin that serves the style opens the binding). Named `serves_style`, not `serves`, so
-/// it is not a second spelling of the kernel's one trust-serve decision
-/// (`busbar-kernel/src/trust/mod.rs` `Approval::serves`, the dispatch gate) -- a different concept
-/// (auth-style serving, not trust dispatch); the neutrality census keeps `fn serves(` kernel-only.
+/// THE OUTBOUND STYLES `plugin`'s tail states (THE DESIGN §6 step 3: the auth plugin that serves
+/// a style opens the binding). Read once per row by the host, which then binds only the row that
+/// serves the style it is asked for.
 #[must_use]
-pub fn outbound_style(plugin: &Plugin<Auth>, style: &str) -> Option<OutboundStyle> {
+pub fn outbound_styles(plugin: &Plugin<Auth>) -> Vec<OutboundStyle> {
     plugin
-        .context::<AuthFacts>()?
-        .styles
-        .iter()
-        .find(|s| s.name == style)
-        .cloned()
+        .context::<AuthFacts>()
+        .map(|f| f.styles.clone())
+        .unwrap_or_default()
 }
 
 impl OutboundInstance {
