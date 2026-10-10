@@ -582,21 +582,26 @@ impl Gate for PlaneTransportNeutralityGate {
         ));
 
         // ONE FILE UNDER THE FLOOR. `files.is_empty()` passed a scan set that had collapsed to a
-        // single surviving file; the floor is the count measured on predev, so losing any one file
-        // of the neutral sources is refused rather than read as a cleaner tree.
-        match cx.walk(&WalkSpec::new(neutral.clone()).ext("rs")) {
-            Ok(files) => {
+        // single surviving file; the floor is the count measured on predev, so a scan set of
+        // `MIN_FILES - 1` is refused rather than read as a cleaner tree. The plant KEEPS exactly
+        // that many files and removes the rest: removing one file proved the floor only on a tree
+        // that held exactly `MIN_FILES`, and a tree that grows keeps this floor (as `seal-witness`).
+        match cx.list(&WalkSpec::new(neutral.clone()).ext("rs")) {
+            Ok(rels) => {
+                let twin = std::path::Path::new(TWIN_FILE);
+                let keep = MIN_FILES - 1 - usize::from(rels.iter().any(|r| r == twin));
                 let mut ov = Overlay::new();
-                if let Some(f) = files.iter().rev().find(|f| f.rel_str() != TWIN_FILE) {
-                    ov.remove(&f.rel);
+                for rel in rels.iter().filter(|r| *r != twin).skip(keep) {
+                    ov.remove(rel);
                 }
+                let found = format!("{} file(s) across", MIN_FILES - 1);
                 report.push(prove_red(
                     cx,
                     self,
                     "a neutral scan set one file under the measured floor is refused",
                     &[ROW_ZERO_FILES],
                     ov,
-                    &["under the floor"],
+                    &["under the floor", found.as_str()],
                 ));
             }
             Err(e) => report.note_infra_failure(format!(
@@ -736,4 +741,22 @@ fn decolour(line: &str) -> String {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// THE FLOOR PLANT ON A TREE THAT HAS GROWN PAST THE FLOOR. Removing one file proved the floor
+    /// only while the census-neutral roots held exactly [`MIN_FILES`]; the merge group of #605 ran
+    /// it over a predev that held more, and the case came back green. Every owed row is proven RED
+    /// over the real tree, whatever it has grown to.
+    #[test]
+    fn the_selftest_proves_every_owed_row_over_the_real_tree() {
+        let cx = Ctx::workspace().expect("workspace context");
+        let report = PlaneTransportNeutralityGate.selftest(&cx);
+        crate::gates::verify_report(&PlaneTransportNeutralityGate, &report)
+            .unwrap_or_else(|errs| panic!("plane-transport-neutrality selftest: {errs:#?}"));
+        assert_eq!(report.skipped(), 0, "a case had nothing to plant");
+    }
 }
