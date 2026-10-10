@@ -281,24 +281,35 @@ impl<T: VerifyPlugin> SafeSlot for Verify<T> {
         let Some(h) = instance.get() else {
             return Outcome::Fault;
         };
-        let answer = h.life().plugin().verify(&VerifyView { input });
-        let (id, verdict) = match &answer.verdict {
-            Verdict::Identity(id) => (Some(id), VERDICT_IDENTITY),
-            Verdict::Reject => (None, VERDICT_REJECT),
-            Verdict::Pass => (None, VERDICT_PASS),
-        };
-        let decision = match answer.decision {
-            Decision::Continue => DECISION_CONTINUE,
-            Decision::Stop => DECISION_STOP,
-        };
-        write(
-            id,
-            Some((answer.strips.as_slice(), input.strip(), decision)),
-            input.field(|i| &i.out_buf),
-            out,
-            verdict,
-        )
+        verify_answer(h.life().plugin(), input, out)
     }
+}
+
+/// `verify` over `plugin`: [`VerifyPlugin::verify`], its identity written into the host's buffer.
+/// THE ONE COPY: the verify door and the combined verify-and-outbound door
+/// (`abi::sdk::auth_outbound::Both`) answer `verify` through it.
+pub(crate) fn verify_answer<T: VerifyPlugin>(
+    plugin: &T,
+    input: Lent<'_, VerifyIn>,
+    out: Out<'_, IdentifyOut>,
+) -> Outcome {
+    let answer = plugin.verify(&VerifyView { input });
+    let (id, verdict) = match &answer.verdict {
+        Verdict::Identity(id) => (Some(id), VERDICT_IDENTITY),
+        Verdict::Reject => (None, VERDICT_REJECT),
+        Verdict::Pass => (None, VERDICT_PASS),
+    };
+    let decision = match answer.decision {
+        Decision::Continue => DECISION_CONTINUE,
+        Decision::Stop => DECISION_STOP,
+    };
+    write(
+        id,
+        Some((answer.strips.as_slice(), input.strip(), decision)),
+        input.field(|i| &i.out_buf),
+        out,
+        verdict,
+    )
 }
 
 /// Write `id` into the host's identity buffer under `verdict` (`VERDICT_IDENTITY` for `verify`,
