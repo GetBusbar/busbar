@@ -58,7 +58,8 @@ fn a_linked_export_row_and_a_different_dropped_in_plugin_spelling_its_module_ref
 /// root reads a linked export row's `DECLARES` through the one reader of a declares document, which
 /// checks and drops it. Over the real linked export rows, each restated with `needs` (as a
 /// networked sink's own repo states it) reads to the same manifest section as without and links
-/// into the registry. RED ARM: a malformed `needs` (not a list) refuses the rows, naming the plugin.
+/// into the registry. RED ARM: a malformed `needs` (not a list) refuses the rows, naming the
+/// plugin.
 ///
 /// Compiled only where an export door is linked (`linked_axis_export_doors`, read off the
 /// linked-axes table rather than a feature that spells one sink): a build without one has no row
