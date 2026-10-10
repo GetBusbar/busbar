@@ -3396,3 +3396,9 @@ mod money_tests;
 #[cfg(all(test, linked_axis_node))]
 #[path = "tests/serve_framed.rs"]
 mod framed_tests;
+
+// A secret reference that does not resolve, scanned for its source across every linked door plane's
+// caller-facing renders (coordinator ruling 2026-10-07).
+#[cfg(all(test, linked_axis_node, linked_axis_plane_door))]
+#[path = "tests/secret_source.rs"]
+mod secret_source_tests;
