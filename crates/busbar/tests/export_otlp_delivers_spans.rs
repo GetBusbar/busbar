@@ -20,6 +20,8 @@
 // The config serves `providers:`/`models:`, so the build must link the plane that takes body
 // ingress: the linked table's answer, never a feature name.
 #![cfg(linked_axis_body_ingress)]
+// The sink is a linked export door: the test is that axis's, and asserts the binary links this one.
+#![cfg(linked_axis_export_doors)]
 
 mod common;
 
@@ -33,6 +35,9 @@ use std::process::{Child, Command};
 use std::time::{Duration, Instant};
 
 include!(concat!(env!("OUT_DIR"), "/linked_transports.rs"));
+
+/// The key of the wire the data door rides.
+const WIRE: &str = "tcp";
 
 fn fixture_dir() -> PathBuf {
     let d = std::env::temp_dir().join(format!(
@@ -70,6 +75,8 @@ auth:
 plugins:
   enabled: true
   dir: '{plugins}'
+  trust:
+    allow_unsigned: true
   logs: {{ dir: '{logs}' }}
 export:
   trace: {{ module: otlp, settings: {{ url: "http://127.0.0.1:{collector}/v1/traces" }} }}
@@ -134,17 +141,23 @@ fn otlp_linked(dir: &Path) -> bool {
 
 #[test]
 fn the_shipped_binary_posts_its_spans_to_an_otlp_collector() {
-    // The data door rides the tcp wire; a build that does not link it is out of this test's reach.
-    if !LINKED_TRANSPORTS.iter().any(|w| w.key == "tcp") {
-        return;
-    }
     let dir = fixture_dir();
     let (data_port, admin_port) = (free_port(), free_port());
     let (collector_port, seen) = common::otlp::collector();
     write_configs(&dir, data_port, admin_port, collector_port);
-    if !otlp_linked(&dir) {
-        return;
+    // THE WIRE UNDER THE DOOR. A build that does not link the tcp row boots only with it dropped
+    // in; one that links it would refuse the tarball as a second row on the same key.
+    if !LINKED_TRANSPORTS.iter().any(|w| w.key == WIRE) {
+        let (lib, _) = common::plugins::transport_cdylib_under(&[WIRE]).unwrap_or_else(|| {
+            common::plugins::missing(&format!("{WIRE} transport"), common::plugins::BUILD_PINNED)
+        });
+        let bytes = common::plugins::pack("transport", "dropped-wire", &lib, "acme");
+        std::fs::write(dir.join("plugins").join("dropped-wire.tar.gz"), bytes).unwrap();
     }
+    assert!(
+        otlp_linked(&dir),
+        "a build on the export door axis refuses `module: otlp` as an unknown exporter"
+    );
 
     let log_path = dir.join("out.log");
     let log = std::fs::File::create(&log_path).unwrap();

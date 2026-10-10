@@ -15,6 +15,7 @@ use busbar_kernel::host_services::KernelServices;
 use busbar_kernel::plane_driver::{EndPost, PlaneMoney};
 
 use crate::root::plane_node::NodeEndPost;
+use crate::root::test_plugins::{missing, BUILD_BUSBAR_EXAMPLES};
 
 use super::{compose_planes, LateServices};
 use crate::root::loader::dispatch::{
@@ -46,34 +47,34 @@ impl Drop for Published {
     }
 }
 
-/// The test plane's example `cdylib` beside this test binary; `None` where a scoped run did not
-/// build it. Under CI a missing artifact is a failure.
-fn dropped_path() -> Option<std::path::PathBuf> {
-    let exe = std::env::current_exe().ok()?;
-    let path = exe.parent()?.parent()?.join("examples").join(format!(
-        "{}plane_driver_test_plane{}",
-        std::env::consts::DLL_PREFIX,
-        std::env::consts::DLL_SUFFIX
-    ));
-    let found = path.exists().then_some(path);
-    assert!(
-        found.is_some() || std::env::var_os("CI").is_none(),
-        "the plane_driver_test_plane example cdylib is not built under CI: run `cargo build --workspace --examples`"
-    );
-    found
+/// The test plane's example `cdylib` beside this test binary. Not built is a failure in every run,
+/// never a skip: a composition proof without its plane proves nothing.
+fn dropped_path() -> std::path::PathBuf {
+    let name = "plane_driver_test_plane";
+    let exe = std::env::current_exe().expect("the test binary's path");
+    let path = exe
+        .parent()
+        .and_then(|deps| deps.parent())
+        .expect("the test binary sits in target/<profile>/deps")
+        .join("examples")
+        .join(format!(
+            "{}{name}{}",
+            std::env::consts::DLL_PREFIX,
+            std::env::consts::DLL_SUFFIX
+        ));
+    if !path.exists() {
+        missing(name, BUILD_BUSBAR_EXAMPLES);
+    }
+    path
 }
 
-/// The test plane, dropped in and bound on `dispatcher` as `instance`; `None` where its `cdylib`
-/// is not built.
-pub(super) fn bound(
-    instance: &str,
-    dispatcher: &Arc<Dispatcher>,
-) -> Option<crate::root::boot::DoorPlane> {
-    let path = dropped_path()?;
+/// The test plane, dropped in and bound on `dispatcher` as `instance`.
+pub(super) fn bound(instance: &str, dispatcher: &Arc<Dispatcher>) -> crate::root::boot::DoorPlane {
+    let path = dropped_path();
     let stated = rendering_of_library(&path)
         .expect("the test plane's library reads")
         .expect("the test plane states its Statement");
-    let plane = load_dropped(
+    load_dropped(
         &path,
         &stated,
         Bind {
@@ -86,8 +87,7 @@ pub(super) fn bound(
             conns: crate::root::loader::dispatch::ConnTable::Probe,
         },
     )
-    .expect("the dropped-in door binds");
-    Some(plane)
+    .expect("the dropped-in door binds")
 }
 
 pub(crate) fn composed_services() -> Arc<LateServices> {
@@ -122,10 +122,7 @@ fn a_configured_door_plane_is_opened_driven_and_its_admin_routes_published() {
     let instance = "serve-compose-configured";
     let _one = PUBLISHING.blocking_lock();
     let _published = Published(instance);
-    let Some(plane) = bound(instance, &dispatcher) else {
-        eprintln!("skip: the test plane's cdylib (the plane_driver_test_plane example) is not built; run `cargo build --workspace --examples`");
-        return;
-    };
+    let plane = bound(instance, &dispatcher);
     let doors = vec![(instance.to_string(), plane)];
     let mut sections = BTreeMap::new();
     sections.insert("test_plane", serde_yaml::Value::Mapping(Default::default()));
@@ -171,10 +168,7 @@ fn a_configured_door_plane_is_opened_driven_and_its_admin_routes_published() {
 fn a_door_plane_whose_section_is_absent_stays_unopened() {
     let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
     let instance = "serve-compose-unconfigured";
-    let Some(plane) = bound(instance, &dispatcher) else {
-        eprintln!("skip: the test plane's cdylib (the plane_driver_test_plane example) is not built; run `cargo build --workspace --examples`");
-        return;
-    };
+    let plane = bound(instance, &dispatcher);
     let doors = vec![(instance.to_string(), plane)];
     let late = composed_services();
     let served = compose_planes(
@@ -217,10 +211,7 @@ fn no_door_plane_composes_nothing_and_needs_no_services() {
 fn a_door_plane_is_handed_its_referenced_providers_dialect_facts_at_open() {
     use crate::root::door_steps::{dialect_facts, ProviderRoute, StyleParams};
     let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
-    let Some(plane) = bound("serve-open-dialect-facts", &dispatcher) else {
-        eprintln!("skip: the test plane's cdylib is not built in this scoped run");
-        return;
-    };
+    let plane = bound("serve-open-dialect-facts", &dispatcher);
     // The kernel's host services the plane's open is handed, as a composition installs them.
     let _late = composed_services();
     let route = |protocol: &str, error_map: &[(&str, &str)]| ProviderRoute {
@@ -270,9 +261,7 @@ fn a_door_plane_is_handed_its_referenced_providers_dialect_facts_at_open() {
     let none = dialect_facts(&serde_yaml::Value::Null, &providers);
     assert!(none.is_empty(), "a section that references none hands none");
     // A second instance (an instance opens once): a section that references none is handed none.
-    let Some(plane) = bound("serve-open-dialect-none", &dispatcher) else {
-        return;
-    };
+    let plane = bound("serve-open-dialect-none", &dispatcher);
     let snapshot = super::open(
         &plane,
         &serde_yaml::Value::Null,
@@ -282,4 +271,11 @@ fn a_door_plane_is_handed_its_referenced_providers_dialect_facts_at_open() {
     )
     .expect("the door opens");
     assert_eq!(snapshot.resource_facts, None);
+}
+
+/// THE RED ARM OF "NEVER SKIPS": a fixture that is not built fails the test, naming what builds it.
+#[test]
+#[should_panic(expected = "is not built: run")]
+fn a_missing_fixture_cdylib_fails_the_test_and_names_its_build() {
+    missing("no_such_fixture", BUILD_BUSBAR_EXAMPLES);
 }

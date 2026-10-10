@@ -27,6 +27,10 @@
 #[allow(dead_code)]
 mod plane;
 
+// This crate's one plugin fixture: the panic a missing `cdylib` raises.
+#[path = "common/plugins.rs"]
+mod fixture_plugins;
+
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -49,28 +53,29 @@ enum Way {
     Dropped,
 }
 
-/// The test plane's `cdylib`, built as the busbar `plane_driver_test_plane` example.
-fn dropped_path() -> Option<std::path::PathBuf> {
-    let exe = std::env::current_exe().ok()?;
-    let path = exe.parent()?.parent()?.join("examples").join(format!(
-        "{}plane_driver_test_plane{}",
-        std::env::consts::DLL_PREFIX,
-        std::env::consts::DLL_SUFFIX
-    ));
-    let found = path.exists().then_some(path);
-    assert!(
-        found.is_some() || std::env::var_os("CI").is_none(),
-        "the plane_driver_test_plane example cdylib is not built under CI: run `cargo build --workspace --examples`"
-    );
-    found
+/// The test plane's `cdylib`, built as the busbar `plane_driver_test_plane` example. A missing
+/// artifact is a failure in every run, never a skip of the dropped door.
+fn dropped_path() -> std::path::PathBuf {
+    let name = "plane_driver_test_plane";
+    let exe = std::env::current_exe().expect("the test binary's path");
+    let path = exe
+        .parent()
+        .and_then(|deps| deps.parent())
+        .expect("the test binary sits in target/<profile>/deps")
+        .join("examples")
+        .join(format!(
+            "{}{name}{}",
+            std::env::consts::DLL_PREFIX,
+            std::env::consts::DLL_SUFFIX
+        ));
+    if !path.exists() {
+        fixture_plugins::missing(name, fixture_plugins::BUILD_BUSBAR_EXAMPLES);
+    }
+    path
 }
 
 fn ways() -> Vec<Way> {
-    let mut ways = vec![Way::Linked];
-    if dropped_path().is_some() {
-        ways.push(Way::Dropped);
-    }
-    ways
+    vec![Way::Linked, Way::Dropped]
 }
 
 /// Load and open the test plane through `way` on `dispatcher`.
@@ -90,7 +95,7 @@ fn opened(way: Way, dispatcher: &Dispatcher) -> Plugin<Plane> {
         }
         Way::Dropped => {
             let stated = rendering_of(plane::door).expect("the plane renders its Statement");
-            let path = dropped_path().expect("the example is built");
+            let path = dropped_path();
             load_dropped::<Plane>(&path, &stated, bind).expect("the dropped door loads")
         }
     };

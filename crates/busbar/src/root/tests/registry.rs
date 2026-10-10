@@ -839,30 +839,25 @@ fn the_boot_path_seals_the_composition_in_every_build() {
 /// The dropped-in wire these proofs serve: the neutral frame door (the plugin loader's
 /// `neutral_frame_door` example, an identity framer under a neutral claim), served over the host's
 /// sockets as the boot serves a dropped-in door, once for the process. It names no transport, so the
-/// root names none and no transport leaving this repo takes the fixture with it. Under CI a missing
-/// artifact is a hard failure, never a silent skip.
+/// root names none and no transport leaving this repo takes the fixture with it. A missing artifact
+/// is a hard failure in every run, never a silent skip.
 fn dropped_doors() -> &'static [DroppedDoor] {
+    use crate::root::test_plugins::{missing, neutral_frame_door, BUILD_LOADER_EXAMPLES};
     static DOORS: std::sync::OnceLock<Vec<DroppedDoor>> = std::sync::OnceLock::new();
-    let doors = DOORS.get_or_init(|| {
-        crate::root::test_plugins::neutral_frame_door()
-            .into_iter()
-            .map(|(plugin, key)| DroppedDoor {
-                key,
-                claims: vec![key],
-                composes_over: Vec::new(),
-                wire: crate::root::doors::host_wire(
-                    plugin,
-                    &busbar_contract::transport::TransportSettings::default(),
-                )
-                .expect("the door serves"),
-            })
-            .collect()
-    });
-    assert!(
-        !doors.is_empty() || std::env::var_os("CI").is_none(),
-        "the neutral frame door example cdylib is built beside the test binary under CI: run `cargo build --workspace --examples`"
-    );
-    doors
+    DOORS.get_or_init(|| {
+        let (plugin, key) = neutral_frame_door()
+            .unwrap_or_else(|| missing("neutral_frame_door", BUILD_LOADER_EXAMPLES));
+        vec![DroppedDoor {
+            key,
+            claims: vec![key],
+            composes_over: Vec::new(),
+            wire: crate::root::doors::host_wire(
+                plugin,
+                &busbar_contract::transport::TransportSettings::default(),
+            )
+            .expect("the door serves"),
+        }]
+    })
 }
 
 /// The linked row the dropped-in wire stands in for: its key, composing over nothing, built in
@@ -926,10 +921,7 @@ fn rows_of(
 #[cfg(linked_axis_transport_door)]
 #[test]
 fn a_dropped_in_wire_rides_the_one_fold_in_place_of_its_linked_row() {
-    let Some(wire) = dropped_doors().first() else {
-        eprintln!("skip: the neutral frame door example cdylib is not built beside the test binary; run `cargo build --workspace --examples`");
-        return;
-    };
+    let wire = &dropped_doors()[0];
     static ROWS: std::sync::OnceLock<Vec<LinkedTransport>> = std::sync::OnceLock::new();
     let with = crate::root::linked::Linked {
         transports: rows_of(&ROWS, || {
@@ -962,10 +954,7 @@ fn a_dropped_in_wire_rides_the_one_fold_in_place_of_its_linked_row() {
 /// refusal, from the same registration, naming the same key.
 #[test]
 fn a_dropped_in_wire_on_a_linked_key_is_refused_as_a_second_linked_row_is() {
-    let Some(wire) = dropped_doors().first() else {
-        eprintln!("skip: the neutral frame door example cdylib is not built beside the test binary; run `cargo build --workspace --examples`");
-        return;
-    };
+    let wire = &dropped_doors()[0];
     let row = the_wires_linked_row(wire);
     static ONCE: std::sync::OnceLock<Vec<LinkedTransport>> = std::sync::OnceLock::new();
     let with = crate::root::linked::Linked {

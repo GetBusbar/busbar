@@ -149,77 +149,16 @@ fn token_for(aud: &str) -> String {
     issuer().mint("e2e", &["tester"], aud)
 }
 
-/// RECORD A SKIP, LOUDLY AND DURABLY — never a silent pass.
-///
-/// `libtest` has no "skipped" outcome: a test that returns early reports the same green as a test
-/// that asserted everything it claims to. `eprintln!` does not close that gap, because libtest
-/// captures a passing test's output and never shows it — so the operator sees a green suite and no
-/// indication that four end-to-end coverages did not run.
-///
-/// So a missing prerequisite does two things here. Under CI it PANICS: coverage that CI is supposed
-/// to be providing must not be quietly absent. Everywhere else it appends a row to a skip ledger and
-/// writes the banner to the process's real stderr, bypassing libtest's capture — so the skip is
-/// visible in the moment AND readable afterwards by whatever collates the run.
-///
-/// The ledger path comes from `BUSBAR_TEST_SKIP_LEDGER`, defaulting beside the test binary; a
-/// ledger that cannot be written is itself reported rather than swallowed.
-fn record_skip(reason: &str) {
-    let test = std::thread::current()
-        .name()
-        .unwrap_or(env!("CARGO_CRATE_NAME"))
-        .to_string();
-
-    if std::env::var_os("CI").is_some() {
-        panic!(
-            "SKIP REFUSED UNDER CI: {test} cannot run because {reason}. CI is where this coverage \
-             is supposed to exist, so an absent prerequisite is a failure, not a skip."
-        );
-    }
-
-    let ledger = std::env::var_os("BUSBAR_TEST_SKIP_LEDGER")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            std::env::current_exe()
-                .ok()
-                .and_then(|e| e.parent().map(Path::to_path_buf))
-                .unwrap_or_else(std::env::temp_dir)
-                .join("busbar-test-skips.ledger")
-        });
-
-    let row = format!("{}\t{test}\t{reason}\n", env!("CARGO_CRATE_NAME"));
-    let wrote = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&ledger)
-        .and_then(|mut f| std::io::Write::write_all(&mut f, row.as_bytes()));
-
-    // Straight to the process's stderr, not through libtest's captured `eprintln!`.
-    let mut err = std::io::stderr().lock();
-    let _ = std::io::Write::write_all(
-        &mut err,
-        format!(
-            "\n=== SKIPPED (NOT PASSED): {test} ===\n  reason: {reason}\n  ledger: {}\n{}\n",
-            ledger.display(),
-            match &wrote {
-                Ok(()) => "  this skip is recorded; the assertions below did NOT run".to_string(),
-                Err(e) => format!("  WARNING: the skip ledger could not be written ({e})"),
-            }
-        )
-        .as_bytes(),
-    );
-}
-
 /// Package the REAL `busbar-auth-oidc-plugin` cdylib (GetBusbar/busbar-auth-oidc, a pinned git
 /// dev-dependency of this crate, so the build leaves it under `deps/` with a metadata hash) into an
 /// unsigned `kind: auth` tarball in the fixture's plugins dir, its manifest stating the door's
-/// Statement as the pack tool renders it. `false` when the cdylib is not built —
-/// a skip locally, a hard failure under CI, the same posture busbar-kernel's
-/// `auth/tests/plugin_chain_tests.rs` takes for the same artifact.
-fn install_auth_plugin(dir: &Path) -> bool {
-    let Some(lib) = common::plugins::cdylib("busbar_auth_oidc_plugin") else {
-        record_skip("auth-oidc plugin cdylib not built (cargo test -p busbar builds it)");
-        return false;
-    };
+/// Statement as the pack tool renders it. A cdylib that is not built fails the test in every run:
+/// `libtest` has no "skipped" outcome, and an early return would report these end-to-end
+/// coverages green without running them.
+fn install_auth_plugin(dir: &Path) {
+    const CDYLIB: &str = "busbar_auth_oidc_plugin";
+    let lib = common::plugins::cdylib(CDYLIB)
+        .unwrap_or_else(|| common::plugins::missing(CDYLIB, common::plugins::BUILD_PINNED));
     let mut m = common::plugins::manifest("auth", "e2e-idp-module", "e2e");
     m.alias = "e2e-idp".into();
     // One staging file PER CALL: the scenarios run as threads of one process, and rewriting a
@@ -239,7 +178,6 @@ fn install_auth_plugin(dir: &Path) -> bool {
     let _ = std::fs::remove_file(&path);
     let bytes = common::plugins::seal(m, &lib);
     std::fs::write(dir.join("plugins").join("e2e-idp-module.tar.gz"), bytes).unwrap();
-    true
 }
 
 /// The config skeleton every scenario shares: the MCP resource, `extra` verbatim, and the minimal
@@ -497,9 +435,7 @@ fn a_door_deployment_with_an_empty_chain_refuses_to_boot() {
 #[test]
 fn a_governed_deployment_refuses_an_uncredentialed_stdio_session() {
     let dir = fixture_dir("denied-absent");
-    if !install_auth_plugin(&dir) {
-        return;
-    }
+    install_auth_plugin(&dir);
     write_configs(&dir, &governed_config(&dir, ""));
     let mut child = spawn(&dir, None);
     let code = wait_bounded(&mut child.child, Duration::from_secs(120));
@@ -521,9 +457,7 @@ fn a_governed_deployment_refuses_an_uncredentialed_stdio_session() {
 #[test]
 fn a_governed_deployment_refuses_a_wrong_audience_credential() {
     let dir = fixture_dir("denied-aud");
-    if !install_auth_plugin(&dir) {
-        return;
-    }
+    install_auth_plugin(&dir);
     write_configs(&dir, &governed_config(&dir, ""));
     // Signed by the SAME issuer the module trusts — only the audience is wrong, so the refusal can
     // only be the audience rule's.
@@ -546,9 +480,7 @@ fn a_governed_deployment_refuses_a_wrong_audience_credential() {
 #[test]
 fn a_budgeted_stdio_session_serves_within_budget_and_refuses_over_it() {
     let dir = fixture_dir("budget");
-    if !install_auth_plugin(&dir) {
-        return;
-    }
+    install_auth_plugin(&dir);
     let token = token_for(canonical());
     write_configs(
         &dir,
@@ -628,9 +560,7 @@ fn a_budgeted_stdio_session_serves_within_budget_and_refuses_over_it() {
 #[test]
 fn a_roleless_admitted_credential_is_refused_without_serving_a_frame() {
     let dir = fixture_dir("roleless");
-    if !install_auth_plugin(&dir) {
-        return;
-    }
+    install_auth_plugin(&dir);
     let token = token_for(canonical());
     write_configs(&dir, &governed_config(&dir, ""));
     let mut child = spawn(&dir, Some(&token));
@@ -661,9 +591,7 @@ fn a_roleless_admitted_credential_is_refused_without_serving_a_frame() {
 #[test]
 fn a_bound_session_serves_and_eof_with_a_live_subscription_exits_promptly() {
     let dir = fixture_dir("bound");
-    if !install_auth_plugin(&dir) {
-        return;
-    }
+    install_auth_plugin(&dir);
     let token = token_for(canonical());
     write_configs(
         &dir,
@@ -731,9 +659,7 @@ fn a_bound_session_serves_and_eof_with_a_live_subscription_exits_promptly() {
 #[test]
 fn an_ungranted_tool_is_refused_per_call_on_the_line() {
     let dir = fixture_dir("ungranted");
-    if !install_auth_plugin(&dir) {
-        return;
-    }
+    install_auth_plugin(&dir);
     let token = token_for(canonical());
     write_configs(
         &dir,
