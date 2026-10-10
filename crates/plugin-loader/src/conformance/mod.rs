@@ -64,7 +64,11 @@
 //!
 //! THE RED ARMS, run in the plugin's own run: a perturbed pinned count is refused by the same
 //! comparator; the door restated at its kind ABI ± 1 is refused, linked (`KindAbi`) and dropped in
-//! (`ManifestKindAbi`, before `dlopen`); the door with a `ready` that fails refuses the boot with the
+//! (`ManifestKindAbi`, before `dlopen`); the door under a Statement other than the stated one is
+//! refused, both ways (`StatementMismatch`); the door asked for as every other kind is refused,
+//! linked (`WrongKind`) and dropped in (`ManifestKind`); its instance's connection over a need it
+//! never declared is refused (`UndeclaredNeed`), and one instance's use of another's connection is
+//! refused (`NotOwner`) (`red.rs`); the door with a `ready` that fails refuses the boot with the
 //! plugin's text; a networked door (the real one, or restated with a `tcp` need) bound to serve with
 //! no connection table is refused at bind, naming the plugin. And `BUSBAR_CONFORMANCE_RED=count` perturbs the both-ways arm itself, so the CI
 //! step can require that the suite FAILS when a count moves.
@@ -1150,6 +1154,9 @@ static ABI_UP: Restated = Restated::new();
 static ABI_DOWN: Restated = Restated::new();
 static READY_FAILS: Restated = Restated::new();
 static NETWORKED: Restated = Restated::new();
+/// `red.rs`'s doors: the Statement arm's other version, the connection arms' outbound need.
+static VERSIONED: Restated = Restated::new();
+static CONNECTED: Restated = Restated::new();
 
 extern "C" fn abi_up_door() -> *const Door {
     ABI_UP.get()
@@ -1157,8 +1164,11 @@ extern "C" fn abi_up_door() -> *const Door {
 extern "C" fn abi_down_door() -> *const Door {
     ABI_DOWN.get()
 }
-extern "C" fn networked_door() -> *const Door {
-    NETWORKED.get()
+/// The door function of restated door `I`: [`NETWORKED`] (0), [`VERSIONED`] (1), [`CONNECTED`]
+/// (2). One generic entry rather than one `extern` per door: `kind-isolation:law0` reads each ABI
+/// string literal as the secret instance `c`.
+extern "C" fn restated_door<const I: usize>() -> *const Door {
+    [&NETWORKED, &VERSIONED, &CONNECTED][I].get()
 }
 extern "C" fn ready_fails_door() -> *const Door {
     READY_FAILS.get()
@@ -1254,6 +1264,10 @@ macro_rules! by_kind {
         }
     };
 }
+
+// The admission and connection arms every kind's run carries (`red.rs`), after `by_kind!`.
+mod red;
+pub use red::{red_cross_instance_conn, red_statement, red_undeclared_need, red_wrong_kind};
 
 /// **RED: a door at another kind ABI is refused, both ways.** The real door restated at its kind
 /// ABI + 1 and − 1 is refused by the linked row (`KindAbi`, naming the rebuild); the dropped-in
@@ -1362,7 +1376,7 @@ pub fn red_ready(s: &Subject) {
 
 /// The real door restated with one outbound `tcp` need, its target its own (the RED arm's subject
 /// for a door that declares none).
-fn with_a_tcp_need(real: Door) -> Door {
+fn with_an_outbound_need(real: Door) -> Door {
     use busbar_contract::abi::host::conn::connector::{Need, DIRECTION_OUTBOUND, KEEP_NAMED};
     use busbar_contract::abi::mechanism::door::Statement;
     const NONE: AbiStr = AbiStr {
@@ -1402,6 +1416,22 @@ fn with_a_tcp_need(real: Door) -> Door {
     }
 }
 
+/// THE CONNECTION ARMS' FIXTURE (`red.rs`): `door` (the real door restated with one outbound need,
+/// [`with_an_outbound_need`]), the connection table the suite builds for it (the loader's test
+/// table, as [`Subject::conns`] builds any leg's), a loopback listener the need dials (held while the
+/// arm runs) and its address.
+fn connection_fixture(
+    s: &Subject,
+    door: DoorFn,
+) -> (Arc<dyn DeclaredConns>, Box<dyn std::any::Any>, String) {
+    let table = Subject::new(door, s.cdylib_crate, "{}")
+        .conns(&dispatcher())
+        .expect("the suite's test table serves the restated need");
+    let listening = std::net::TcpListener::bind("127.0.0.1:0").expect("a loopback listener");
+    let at = listening.local_addr().expect("its address").to_string();
+    (table, Box::new(listening), at)
+}
+
 /// **RED: a networked door bound to serve with NO connection table is refused, naming the plugin**
 /// (Q-P4-3). A door that declares a need is bound as the kernel serves it but with no table
 /// ([`bind`]: [`ConnTable::NoNeeds`]), linked and dropped in, and refused at bind with
@@ -1419,8 +1449,8 @@ pub fn red_no_table(s: &Subject) {
         load::<K>(s, Leg::Linked, s.bind(&d, "honest")).expect("the honest door binds over the suite's table");
         let restated = needs == 0;
         let (door, needs): (DoorFn, usize) = if restated {
-            NETWORKED.set(with_a_tcp_need(real));
-            (networked_door, 1)
+            NETWORKED.set(with_an_outbound_need(real));
+            (restated_door::<0>, 1)
         } else {
             (s.door, needs)
         };
@@ -1609,6 +1639,30 @@ macro_rules! conformance_suite {
         #[test]
         fn red_a_door_at_another_kind_abi_is_refused() {
             $crate::conformance::red_kind_abi(&__busbar_conformance_subject());
+        }
+
+        /// RED: the door under a row or manifest stating another Statement is refused, both ways.
+        #[test]
+        fn red_a_statement_other_than_the_stated_one_is_refused() {
+            $crate::conformance::red_statement(&__busbar_conformance_subject());
+        }
+
+        /// RED: the door asked for as every other kind is refused, linked and dropped in.
+        #[test]
+        fn red_a_door_asked_for_as_another_kind_is_refused() {
+            $crate::conformance::red_wrong_kind(&__busbar_conformance_subject());
+        }
+
+        /// RED: a connection over a need the plugin never declared is refused.
+        #[test]
+        fn red_a_connection_over_an_undeclared_need_is_refused() {
+            $crate::conformance::red_undeclared_need(&__busbar_conformance_subject());
+        }
+
+        /// RED: an instance using another instance's connection is refused.
+        #[test]
+        fn red_another_instances_connection_is_refused() {
+            $crate::conformance::red_cross_instance_conn(&__busbar_conformance_subject());
         }
 
         /// RED: a `ready` that fails refuses the boot with the plugin's text.
