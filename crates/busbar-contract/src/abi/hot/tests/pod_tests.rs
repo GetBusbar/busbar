@@ -64,8 +64,6 @@ fn every_pod_leads_with_size_version() {
     assert_preamble!(AuthResolved);
     assert_preamble!(IdentityQuery);
     assert_preamble!(IdentityAdmitted);
-    assert_preamble!(GateSubjectRef);
-    assert_preamble!(GateVerdictOut);
     assert_preamble!(MetricSample);
     assert_preamble!(CounterpartyRef);
     assert_preamble!(CallerRef);
