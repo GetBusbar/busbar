@@ -19,9 +19,7 @@
 //! router and asserted where it lands.
 
 #[cfg(feature = "plane-decisions")]
-use std::collections::BTreeMap;
-#[cfg(feature = "plane-decisions")]
-use std::sync::Arc;
+use std::{collections::BTreeMap, sync::Arc};
 
 #[cfg(feature = "plane-decisions")]
 use axum::http::StatusCode;
