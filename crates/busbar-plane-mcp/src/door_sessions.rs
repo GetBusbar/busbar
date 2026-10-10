@@ -163,7 +163,7 @@ pub(super) struct Arrival {
 }
 
 /// What `arrive` makes of an arrival on the endpoint.
-pub(super) enum Arrived {
+pub(super) enum SessionArrived {
     /// The stateless path, untouched.
     Stateless,
     /// `405`.
@@ -193,7 +193,7 @@ pub(super) fn arrive(
     target: &str,
     body: &[u8],
     field: &dyn Fn(&str) -> Option<String>,
-) -> Arrived {
+) -> SessionArrived {
     let session = field(adapt::H_SESSION_ID).filter(|s| !s.is_empty());
     let (mount, query) = target
         .split_once('?')
@@ -202,15 +202,15 @@ pub(super) fn arrive(
         "GET" => {
             let streams = field("accept").is_some_and(|a| a.contains(EVENT_STREAM));
             if !streams {
-                return Arrived::NotAllowed;
+                return SessionArrived::NotAllowed;
             }
             let opens = session.is_some()
                 || revision::sessionless_get(field(H_PROTOCOL_VERSION).as_deref())
                     == SessionlessGet::EventStream;
             if !opens {
-                return Arrived::NotAllowed;
+                return SessionArrived::NotAllowed;
             }
-            Arrived::Session(Box::new(Arrival {
+            SessionArrived::Session(Box::new(Arrival {
                 unit: SessionUnit::Stream {
                     session,
                     last_event_id: field(adapt::H_LAST_EVENT_ID),
@@ -221,12 +221,12 @@ pub(super) fn arrive(
             }))
         }
         "DELETE" => match session {
-            Some(session) => Arrived::Session(Box::new(Arrival {
+            Some(session) => SessionArrived::Session(Box::new(Arrival {
                 unit: SessionUnit::Delete { session },
                 dispatch: None,
                 mirror: Vec::new(),
             })),
-            None => Arrived::NotAllowed,
+            None => SessionArrived::NotAllowed,
         },
         "POST" => {
             let value = serde_json::from_slice::<Value>(body).ok();
@@ -238,7 +238,7 @@ pub(super) fn arrive(
                 None => adapt::PostKind::Stateless,
             };
             match (kind, value) {
-                (adapt::PostKind::Initialize, Some(v)) => Arrived::Session(Box::new(Arrival {
+                (adapt::PostKind::Initialize, Some(v)) => SessionArrived::Session(Box::new(Arrival {
                     unit: SessionUnit::Open {
                         id: v.get("id").cloned().unwrap_or(Value::Null),
                         requested: v
@@ -249,24 +249,24 @@ pub(super) fn arrive(
                     dispatch: None,
                     mirror: Vec::new(),
                 })),
-                (adapt::PostKind::InSession, value) => Arrived::Session(message(
+                (adapt::PostKind::InSession, value) => SessionArrived::Session(message(
                     held,
                     session.unwrap_or_default(),
                     Carriage::Endpoint,
                     field(H_PROTOCOL_VERSION),
                     value,
                 )),
-                (adapt::PostKind::EventStreamMessage, value) => Arrived::Session(message(
+                (adapt::PostKind::EventStreamMessage, value) => SessionArrived::Session(message(
                     held,
                     message_session.unwrap_or_default(),
                     Carriage::EventStream,
                     None,
                     value,
                 )),
-                _ => Arrived::Stateless,
+                _ => SessionArrived::Stateless,
             }
         }
-        _ => Arrived::NotAllowed,
+        _ => SessionArrived::NotAllowed,
     }
 }
 
@@ -416,7 +416,7 @@ pub(super) fn wall_ms(services: Option<Services>, ticket: Ticket, issued: &mut u
 }
 
 /// The session table.
-fn table<R>(plane: &McpDoor, f: impl FnOnce(&mut SessionTable) -> R) -> Option<R> {
+fn with_sessions<R>(plane: &McpDoor, f: impl FnOnce(&mut SessionTable) -> R) -> Option<R> {
     plane.sessions.with(&(), |t| t.map(f))
 }
 
@@ -439,7 +439,7 @@ fn open_session(
         if !drawn {
             return Err("the host's random source did not answer, so no session id can be minted");
         }
-        let opened = table(plane, |t| {
+        let opened = with_sessions(plane, |t| {
             t.open(entropy, owner.clone(), revision, carriage, now)
         });
         match opened {
@@ -457,7 +457,7 @@ fn open_session(
 }
 
 /// A JSON-RPC error envelope.
-fn error_body(id: &Value, code: i64, message: &str) -> Vec<u8> {
+fn rpc_error(id: &Value, code: i64, message: &str) -> Vec<u8> {
     serde_json::to_vec(&busbar_contract::jsonrpc::error_body(
         id.clone(),
         code,
@@ -476,7 +476,7 @@ fn answer_of(status: u32, body: Vec<u8>) -> Pending {
 fn not_found(id: &Value) -> Pending {
     answer_of(
         STATUS_NOT_FOUND,
-        error_body(
+        rpc_error(
             id,
             CODE_REFUSED,
             "Session not found: it ended, expired, or is not this caller's. Send `initialize` \
@@ -513,7 +513,7 @@ pub(super) fn answer(
             open_endpoint(plane, ticket, unit, &owner, &id, requested.as_deref(), now)
         }
         SessionUnit::Delete { session } => {
-            if table(plane, |t| t.close(&session, &owner, now)) == Some(true) {
+            if with_sessions(plane, |t| t.close(&session, &owner, now)) == Some(true) {
                 plane.session_state.remove(&session);
                 // Each of its streams ends at its next collection.
                 due(plane, &session);
@@ -529,7 +529,7 @@ pub(super) fn answer(
             kind,
             ..
         } => {
-            let held = table(plane, |t| {
+            let held = with_sessions(plane, |t| {
                 let revision = t.revision(&session, &owner, now)?;
                 (t.carriage(&session, &owner, now)? == carriage).then_some(revision)
             })
@@ -540,7 +540,7 @@ pub(super) fn answer(
             if carriage == Carriage::Endpoint
                 && revision::check_header(revision, header.as_deref()) == HeaderCheck::Disagrees
             {
-                let body = error_body(
+                let body = rpc_error(
                     &id_of(&kind),
                     CODE_INVALID_REQUEST,
                     "The MCP-Protocol-Version header names another revision than this session's.",
@@ -554,7 +554,7 @@ pub(super) fn answer(
                 Kind::Dispatch => return None,
                 Kind::Accept(v) => {
                     if v.get("method").and_then(Value::as_str) == Some(adapt::METHOD_INITIALIZED) {
-                        table(plane, |t| t.mark_initialized(&session, &owner, now));
+                        with_sessions(plane, |t| t.mark_initialized(&session, &owner, now));
                     }
                     answer_of(STATUS_ACCEPTED, Vec::new())
                 }
@@ -619,7 +619,7 @@ fn open_endpoint(
     let Some(discovered) = discovery(plane, ticket, unit, id) else {
         return answer_of(
             STATUS_UNAVAILABLE,
-            error_body(
+            rpc_error(
                 id,
                 CODE_INTERNAL,
                 "this node publishes no MCP catalogue yet",
@@ -636,7 +636,7 @@ fn open_endpoint(
         now,
     ) {
         Ok(session) => session,
-        Err(why) => return answer_of(STATUS_UNAVAILABLE, error_body(id, CODE_INTERNAL, why)),
+        Err(why) => return answer_of(STATUS_UNAVAILABLE, rpc_error(id, CODE_INTERNAL, why)),
     };
     let result = adapt::initialize_result(&discovered, revision, false);
     let body = serde_json::to_vec(&crate::line::result(id, result)).unwrap_or_default();
@@ -661,7 +661,7 @@ fn here(
     let method = value.get("method").and_then(Value::as_str).unwrap_or("");
     let ok =
         |result: Value| serde_json::to_vec(&crate::line::result(&id, result)).unwrap_or_default();
-    let invalid = |message: &str| error_body(&id, CODE_INVALID_PARAMS, message);
+    let invalid = |message: &str| rpc_error(&id, CODE_INVALID_PARAMS, message);
     let uri = value.pointer("/params/uri").and_then(Value::as_str);
     match method {
         adapt::METHOD_PING => ok(json!({})),
@@ -669,14 +669,14 @@ fn here(
         adapt::METHOD_INITIALIZE if carriage == Carriage::EventStream => {
             match discovery(plane, ticket, unit, &id) {
                 Some(d) => ok(adapt::initialize_result(&d, revision, false)),
-                None => error_body(
+                None => rpc_error(
                     &id,
                     CODE_INTERNAL,
                     "this node publishes no MCP catalogue yet",
                 ),
             }
         }
-        adapt::METHOD_INITIALIZE => error_body(
+        adapt::METHOD_INITIALIZE => rpc_error(
             &id,
             CODE_INVALID_REQUEST,
             "this session is already open: send `initialize` without Mcp-Session-Id to open \
@@ -739,7 +739,7 @@ fn here(
                 ),
             }
         }
-        _ => error_body(
+        _ => rpc_error(
             &id,
             CODE_METHOD_NOT_FOUND,
             &format!("Method `{method}` is not implemented by this server for this revision."),
@@ -852,7 +852,7 @@ pub(super) fn heard(
                     (None, _) => true,
                 };
                 if passes {
-                    deliver(plane, id, owner, &frame.to_string(), now);
+                    deliver_frame(plane, id, owner, &frame.to_string(), now);
                 }
             }
             _ => {}
@@ -929,7 +929,7 @@ pub(super) fn lower(plane: &McpDoor, ticket: Ticket, caller: &str, unit: &mut Ca
     }
     match legacy {
         Some(session) => {
-            deliver(
+            deliver_frame(
                 plane,
                 &session,
                 &owner_of(caller),
@@ -983,12 +983,12 @@ pub(super) fn holds(plane: &McpDoor, unit: u64) -> bool {
 }
 
 /// `data` buffered on `session`'s stream, and the stream named due.
-fn deliver(plane: &McpDoor, session: &str, owner: &Owner, data: &str, now: u64) {
+fn deliver_frame(plane: &McpDoor, session: &str, owner: &Owner, data: &str, now: u64) {
     let target = plane
         .streams
         .with_all(|m| m.values().find(|s| s.session == session).map(|s| s.stream));
     if let Some(stream) = target {
-        table(plane, |t| t.push(session, owner, stream, data, now));
+        with_sessions(plane, |t| t.push(session, owner, stream, data, now));
         due(plane, session);
     }
 }
@@ -1040,7 +1040,7 @@ pub(super) fn tick(plane: &McpDoor) {
         .with_all(|m| m.keys().cloned().collect());
     let gone: Vec<String> = gone
         .into_iter()
-        .filter(|id| table(plane, |t| !t.holds(id)).unwrap_or(true))
+        .filter(|id| with_sessions(plane, |t| !t.holds(id)).unwrap_or(true))
         .collect();
     plane.session_state.with_all(|m| {
         for id in &gone {
@@ -1180,23 +1180,23 @@ fn open_stream(
             let session = match opened {
                 Ok(session) => session,
                 Err(why) => {
-                    let body = error_body(&Value::Null, CODE_INTERNAL, why);
+                    let body = rpc_error(&Value::Null, CODE_INTERNAL, why);
                     unit.pending = Some(answer_of(STATUS_UNAVAILABLE, body));
                     return Some((true, false));
                 }
             };
-            let stream = table(plane, |t| t.open_stream(&session, owner, now)).flatten()?;
+            let stream = with_sessions(plane, |t| t.open_stream(&session, owner, now)).flatten()?;
             let endpoint = adapt::endpoint_event(&mount, &session);
             (session, stream, 0, true, endpoint.into_bytes())
         }
         Some(session) => {
-            let carriage = table(plane, |t| t.carriage(&session, owner, now)).flatten();
+            let carriage = with_sessions(plane, |t| t.carriage(&session, owner, now)).flatten();
             if carriage != Some(Carriage::Endpoint) {
                 unit.pending = Some(not_found(&Value::Null));
                 return Some((true, false));
             }
             let resumed = last_event_id
-                .and_then(|cursor| table(plane, |t| t.replay(&session, owner, &cursor, now)))
+                .and_then(|cursor| with_sessions(plane, |t| t.replay(&session, owner, &cursor, now)))
                 .flatten();
             match resumed {
                 Some(replay) => {
@@ -1210,7 +1210,7 @@ fn open_stream(
                     (session, replay.stream, delivered, false, bytes)
                 }
                 None => {
-                    let stream = table(plane, |t| t.open_stream(&session, owner, now)).flatten()?;
+                    let stream = with_sessions(plane, |t| t.open_stream(&session, owner, now)).flatten()?;
                     (session, stream, 0, false, KEEPALIVE.to_vec())
                 }
             }
@@ -1269,7 +1269,7 @@ fn step_stream(plane: &McpDoor, ticket: Ticket, unit: &mut CallUnit) -> Option<b
                         "method": "notifications/resources/updated",
                         "params": { "uri": uri },
                     });
-                    table(plane, |t| {
+                    with_sessions(plane, |t| {
                         t.push(
                             &held_stream.session,
                             &held_stream.owner,
@@ -1283,7 +1283,7 @@ fn step_stream(plane: &McpDoor, ticket: Ticket, unit: &mut CallUnit) -> Option<b
         }
     }
     let cursor = format!("{}-{}", held_stream.stream, held_stream.delivered);
-    let replay = table(plane, |t| {
+    let replay = with_sessions(plane, |t| {
         t.replay(&held_stream.session, &held_stream.owner, &cursor, now)
     })
     .flatten();

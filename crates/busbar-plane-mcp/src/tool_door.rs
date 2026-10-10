@@ -963,20 +963,20 @@ slot!(
                 &head_field,
             )
         } else if claim.is_some_and(|r| r.verb != "POST") {
-            door_sessions::Arrived::NotAllowed
+            door_sessions::SessionArrived::NotAllowed
         } else {
-            door_sessions::Arrived::Stateless
+            door_sessions::SessionArrived::Stateless
         };
         let (mut session_unit, session_body, session_mirror) = match arrived {
-            door_sessions::Arrived::NotAllowed => {
+            door_sessions::SessionArrived::NotAllowed => {
                 return refused_arrival(
                     &mut out,
                     door::STATUS_METHOD_NOT_ALLOWED,
                     NOT_ALLOWED_TEXT.to_string(),
                 )
             }
-            door_sessions::Arrived::Stateless => (None, None, Vec::new()),
-            door_sessions::Arrived::Session(a) => {
+            door_sessions::SessionArrived::Stateless => (None, None, Vec::new()),
+            door_sessions::SessionArrived::Session(a) => {
                 let a = *a;
                 (Some(a.unit), a.dispatch, a.mirror)
             }

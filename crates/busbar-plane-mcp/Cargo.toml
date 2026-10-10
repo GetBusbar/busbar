@@ -53,8 +53,7 @@ bytes = { workspace = true }
 serde = { workspace = true }
 # The object notation the codec speaks. The adapter hands values across the seam and never invents
 # a second parser.
-# `raw_value`: a tool result is relayed as the bytes the upstream sent (Law 11).
-serde_json = { workspace = true, features = ["raw_value"] }
+serde_json = { workspace = true }
 
 [dev-dependencies]
 # The TEST-ONLY seal (#65). `busbar_contract::plugin::TestKernelSeal` is the one blessed

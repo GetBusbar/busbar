@@ -240,7 +240,7 @@ fn a_frame_reaches_every_open_lease_and_an_opens_body_is_its_first_message() {
 }
 
 /// RED (finding 13): a lease opened while the program is part way through one frame does not read
-/// that frame's rest as though it began there (on a shared stdio child, another exchange's answer
+/// that frame's rest as though it began there (on one shared child, another exchange's answer
 /// taken as its own): its first body bytes begin a frame. The lease already reading the frame reads
 /// it whole.
 #[test]

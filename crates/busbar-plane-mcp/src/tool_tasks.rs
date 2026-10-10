@@ -45,7 +45,7 @@
 //! halves only its own process has (the run it took, the unit running it).
 //!
 //! Every live task is indexed under its caller in the plane's records with its run's LEASE
-//! ([`Lease`]). A task-creating call settles, `cancelled`, every live task of its caller no process
+//! ([`TaskLease`]). A task-creating call settles, `cancelled`, every live task of its caller no process
 //! holds whose lease lapsed or that nothing moved past the abandonment ceiling: the handles a
 //! process that is gone left behind never exhaust the bound of live work (THE DESIGN, "Admission bounds
 //! live work; nothing evicts it").
@@ -282,7 +282,7 @@ impl Task {
         self.principal == principal
     }
 
-    /// The key of its index row ([`Lease`]) in the plane's records.
+    /// The key of its index row ([`TaskLease`]) in the plane's records.
     #[must_use]
     pub fn index_key(&self) -> Vec<u8> {
         index_key(&self.principal, &self.id)
@@ -855,7 +855,7 @@ pub fn index_key(principal: &str, id: &str) -> Vec<u8> {
 /// A LIVE TASK'S INDEX ROW: until when a run holds it, and when it last moved. What a create reads
 /// to find the tasks of its caller a process that is gone left behind.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Lease {
+pub struct TaskLease {
     /// Until when its run holds it (Unix ms); `0`: no run does (it is parked on its caller).
     pub until_ms: u64,
     /// When it last moved (Unix ms).
@@ -865,7 +865,7 @@ pub struct Lease {
 /// The index row's version word.
 const LEASE_V1: &str = "l1";
 
-impl Lease {
+impl TaskLease {
     /// The row's bytes: `l1|<until>|<updated>`.
     #[must_use]
     pub fn bytes(&self) -> Vec<u8> {
@@ -885,7 +885,7 @@ impl Lease {
         if parts.next().is_some() {
             return None;
         }
-        Some(Lease {
+        Some(TaskLease {
             until_ms,
             updated_ms,
         })

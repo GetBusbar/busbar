@@ -35,7 +35,7 @@
 //!   continuation observes when it settles.
 //! * A SETTLE THAT DOES NOT LAND is owed: its task is held unsettled and the next create's sweep
 //!   settles it again, until it lands. The same sweep settles the live tasks of its caller a process
-//!   that is gone left behind ([`tasks::Lease`]), so they never exhaust the bound
+//!   that is gone left behind ([`tasks::TaskLease`]), so they never exhaust the bound
 //!   of live work (THE DESIGN: admission bounds live work; nothing evicts it).
 
 use std::task::Poll;
@@ -432,7 +432,7 @@ fn live_records(plane: &McpDoor, task: &Task, until: Option<u64>) -> Vec<(Vec<u8
     });
     out.extend((wrote..before).map(|n| (tasks::live_key(&task.id, n), Vec::new())));
     if let Some(until) = until {
-        let lease = tasks::Lease {
+        let lease = tasks::TaskLease {
             until_ms: until,
             updated_ms: task.stamps().1,
         };
@@ -460,7 +460,7 @@ fn ride(unit: &mut CallUnit, records: Vec<(Vec<u8>, Vec<u8>)>) {
 
 /// THE TASK KIND'S RECORDS under `prefix`, read page by page into `l.rows` in key order (one page
 /// only when `once`). `Ready(false)`: the host could not list them.
-fn list(
+fn list_records(
     services: Services,
     ticket: Ticket,
     issued: &mut u32,
@@ -658,7 +658,7 @@ fn creating(
     // `work.open`. From a submit, never a read or a timer.
     if !st.indexed {
         let prefix = tasks::index_prefix(principal);
-        if list(
+        if list_records(
             services,
             ticket,
             &mut unit.issued,
@@ -678,7 +678,7 @@ fn creating(
             else {
                 continue;
             };
-            let left = tasks::Lease::read(&value).is_some_and(|l| l.left_behind(now));
+            let left = tasks::TaskLease::read(&value).is_some_and(|l| l.left_behind(now));
             let running = plane
                 .tasks
                 .get(&id.to_string())
@@ -824,7 +824,7 @@ fn creating(
     );
     pending.records.extend(strikes);
     // ITS INDEX ROW, the run's lease taken: the continuation is nested at once.
-    let lease = tasks::Lease {
+    let lease = tasks::TaskLease {
         until_ms: now.saturating_add(tasks::RUN_LEASE_MS),
         updated_ms: now,
     };
@@ -1813,7 +1813,7 @@ fn resolve(
     let mut task = if state == WORK_LIVE {
         // ITS LIVE STATE, read back from its chunks.
         let prefix = tasks::live_prefix(task_id);
-        match list(
+        match list_records(
             services,
             ticket,
             &mut unit.issued,
@@ -1836,7 +1836,7 @@ fn resolve(
             Status::Completed | Status::Failed => {
                 // THE RESULT, read back from its chunks.
                 let prefix = tasks::chunk_prefix(task_id);
-                match list(
+                match list_records(
                     services,
                     ticket,
                     &mut unit.issued,
