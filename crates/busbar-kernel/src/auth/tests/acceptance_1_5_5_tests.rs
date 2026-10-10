@@ -329,18 +329,29 @@ const ADMIN_SATURATED_TEXT: &str = "admin auth chain offload could not be starte
 const ADMIN_STALLED_TEXT: &str =
     "admin auth chain did not complete within 5s (or panicked); denying (fail-closed).";
 
-/// 4005: a data-plane door whose own `max_inflight` is full, and a data-plane admission budget with
-/// no slot free within the wait, each deny with 1.5.5's saturation text. RED: a door that refused
-/// denies too, and says nothing of saturation.
+/// 4005: a data-plane admission budget with no slot free within the wait denies with 1.5.5's
+/// saturation text. A door whose own `max_inflight` is full is not 4005: the walk hands it back
+/// apart for the data plane's 503 (owner ruling Q134). RED: a door that refused denies too, and
+/// says nothing of saturation.
 #[test]
 fn a_saturated_data_plane_verifier_says_4005_in_1_5_5_words_and_denies() {
     use busbar_contract::auth_calls::Verified;
-    let (verdict, said) =
-        captured_on_paused_clock(data_door(DoorAnswer::verdict(Verified::Overloaded)));
-    assert_eq!(verdict, ChainVerdict::Denied);
-    let text = said.text();
-    assert!(text.contains("diag=BUSBAR-4005"), "{text:?}");
-    assert!(text.contains(AUTH_SATURATED_TEXT), "1.5.5's text: {text:?}");
+    let (judged, said) = captured_on_paused_clock(async {
+        let auth = Arc::new(AuthMiddleware::from_doors_for_test(vec![(
+            "door".to_string(),
+            Arc::new(FakeDoor(DoorAnswer::verdict(Verified::Overloaded))) as Arc<dyn AuthCalls>,
+        )]));
+        AuthMiddleware::judge_chain_on_request_path(
+            &auth,
+            Some("cred".into()),
+            ChainHead::default(),
+            None,
+            None,
+        )
+        .await
+    });
+    assert_eq!(judged, Err(VerifierOverloaded), "Q134: handed back apart");
+    assert!(!said.text().contains("BUSBAR-4005"), "{:?}", said.text());
 
     // The budget itself: every slot held, the wait elapses, the request is denied unverified.
     let (verdict, said) = captured_on_paused_clock(async {
