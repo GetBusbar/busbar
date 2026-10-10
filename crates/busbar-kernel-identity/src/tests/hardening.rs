@@ -10,11 +10,10 @@
 
 use super::{entry, Canned};
 use crate::chain::AuthChain;
-use crate::challenge::{Challenge, ChallengeBounds};
 use crate::module::AuthOutcome;
 
 // ---------------------------------------------------------------------------------------------
-// The chain's own accessors.
+// The chain's own accessors and its cacheability gate.
 // ---------------------------------------------------------------------------------------------
 
 /// The two chain-shape accessors answer about the chain they were built over, in BOTH directions.
@@ -74,46 +73,4 @@ fn the_chains_debug_rendering_carries_the_shape_it_promises() {
     assert!(rendered.contains("true"), "{rendered}");
     assert!(rendered.contains("chain_len"), "{rendered}");
     assert!(rendered.contains('2'), "{rendered}");
-}
-
-// ---------------------------------------------------------------------------------------------
-// The challenge budget.
-// ---------------------------------------------------------------------------------------------
-
-/// Each round of an exchange spends exactly the bytes it carried, and exactly one round.
-///
-/// The byte budget is the bound on how much an unauthenticated party may be talked to. The suite
-/// watched the refusals at the edges — no rounds left, a round too large — but never that a round
-/// that IS accepted debits the budget by what it actually cost, so any accounting that leaves more
-/// budget than it should went unnoticed, and with it the unbounded conversation the bound exists to
-/// prevent.
-#[test]
-fn every_accepted_round_spends_its_own_bytes_and_one_round() {
-    let bounds = ChallengeBounds {
-        max_rounds: 4,
-        max_bytes: 100,
-    };
-    let c = Challenge::open(vec![0u8; 10], bounds);
-    assert_eq!(c.rounds_left, 3, "opening spent one round");
-    assert_eq!(c.bytes_left, 90, "opening spent its own ten bytes");
-
-    let c = c.advance(vec![0u8; 30]).expect("within budget");
-    assert_eq!(c.rounds_left, 2);
-    assert_eq!(c.bytes_left, 60, "90 - 30, not 90 divided by anything");
-    assert_eq!(c.bytes.len(), 30, "the round's bytes are what is carried");
-
-    let c = c.advance(vec![0u8; 55]).expect("within budget");
-    assert_eq!(c.rounds_left, 1);
-    assert_eq!(c.bytes_left, 5);
-    assert!(!c.exhausted(), "one round and five bytes still left");
-
-    // The next round is refused on BYTES with a round still in hand, which is only reachable
-    // because the byte budget was debited honestly above.
-    assert!(
-        c.clone().advance(vec![0u8; 6]).is_none(),
-        "six bytes do not fit in five"
-    );
-    let c = c.advance(vec![0u8; 5]).expect("five exactly fit");
-    assert_eq!(c.bytes_left, 0);
-    assert!(c.exhausted(), "the byte budget is spent");
 }

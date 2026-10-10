@@ -45,26 +45,25 @@ fn bind(d: &Dispatcher) -> Bind {
     }
 }
 
-/// The DROPPED door's `cdylib`, when built (`None` only in a scoped non-CI run).
-fn dropped_path(example: &str) -> Option<PathBuf> {
+/// The DROPPED door's `cdylib`; not built, a hard failure naming the command that builds it.
+fn dropped_path(example: &str) -> PathBuf {
     crate::both_ways::example_cdylib(example)
 }
 
-/// The store witness's text through the store host ([`LoadedStore::open`]), LINKED and (when
-/// built) DROPPED; both must agree.
+/// The store witness's text through the store host ([`LoadedStore::open`]), LINKED and DROPPED;
+/// both must agree.
 fn store_text(settings: &[u8]) -> String {
     let d = dispatcher();
     let door: DoorFn = witness::store::door;
     let row = LinkedRow::of(door).expect("the store door states its Statement");
     let linked = load_linked::<Store>(&row, bind(&d)).expect("the linked store door loads");
     let text = LoadedStore::open(linked, d.clone(), settings, mint).expect_err("it never opens");
-    if let Some(path) = dropped_path("open_reason_store_door") {
-        let dropped = load_dropped::<Store>(&path, &row.statement, bind(&d))
-            .expect("the dropped store door loads");
-        let dropped_text =
-            LoadedStore::open(dropped, d.clone(), settings, mint).expect_err("it never opens");
-        assert_eq!(dropped_text, text, "linked and dropped in read differently");
-    }
+    let path = dropped_path("open_reason_store_door");
+    let dropped = load_dropped::<Store>(&path, &row.statement, bind(&d))
+        .expect("the dropped store door loads");
+    let dropped_text =
+        LoadedStore::open(dropped, d.clone(), settings, mint).expect_err("it never opens");
+    assert_eq!(dropped_text, text, "linked and dropped in read differently");
     text
 }
 

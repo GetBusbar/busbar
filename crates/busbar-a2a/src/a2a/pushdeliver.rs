@@ -473,7 +473,19 @@ fn attempt(seam: &dyn RelaySeam, task: &Task) -> Result<(), PushRefusal> {
     let body = notification_body(task);
     let resp = seam
         .transport()
-        .send("POST", &parsed, addr, &headers, &body)
+        .send(
+            "POST",
+            &parsed,
+            // A push callback is public https and nothing else (`pushnotify::validate`), so the host
+            // judges the pin with no private and no plaintext reach.
+            super::fetch::Pin {
+                addr,
+                allow_private: false,
+                allow_plaintext: false,
+            },
+            &headers,
+            &body,
+        )
         .map_err(|f| PushRefusal::Transport(f.err))?;
 
     // Remember what this delivery pinned, so the next one can require an overlap with it.

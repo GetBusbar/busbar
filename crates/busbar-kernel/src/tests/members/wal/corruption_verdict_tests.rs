@@ -13,9 +13,7 @@
 use std::path::{Path, PathBuf};
 
 use busbar_kernel_wal::backend::{DirectoryFactory, MemoryFactory, SegmentBackend, SegmentFactory};
-use busbar_kernel_wal::record::{
-    decode_frame, frame_version, Record, FRAME_BYTES, FRAME_VERSION_LEGACY,
-};
+use busbar_kernel_wal::record::{decode_frame, frame_version, FrameError, Record, FRAME_BYTES};
 use busbar_kernel_wal::recover::{QuarantineKept, TailVerdict};
 use busbar_kernel_wal::ship::NullShipper;
 use busbar_kernel_wal::wal::{Mode, OpenError, Wal};
@@ -197,53 +195,91 @@ fn a_flipped_byte_in_the_final_record_is_quarantined_not_cut() {
     assert_eq!(quarantine_files(dir.path()).len(), 1);
 }
 
-/// The four records of [`four`], framed under the LEGACY layout (version 1, no header check), as a
-/// build before the check wrote them: 4 x [`FRAME_BYTES`] = 2048 bytes, no padding.
+/// The four records of [`four`], framed under layout VERSION 1 (the layout before the header check,
+/// never released: 1.5.5 had no log), as a dev build before the check wrote them: 4 x
+/// [`FRAME_BYTES`] = 2048 bytes, no padding.
 ///
-/// PROVENANCE. A checked-in test vector, not produced by any encoder at test time (no legacy
-/// encoder is exposed outside busbar-kernel-wal). Generated once by reproducing
-/// `busbar_kernel_wal::record::encode_legacy` (crates/busbar-kernel-wal/src/record.rs, the
+/// PROVENANCE. A checked-in test vector, not produced by any encoder at test time. Generated once by
+/// reproducing the version-1 encoder (crates/busbar-kernel-wal/src/record.rs, the
 /// `#[cfg(test)] pub(crate) fn encode_legacy`, at commit 4aa05a13d71ce79bf8e2320c6689e39cb6e03033)
 /// in a throwaway python3 script using `hashlib.sha256`. Per frame `i` (node 3, node_seq `i + 1`,
 /// body byte `b` = `(node_seq + b) % 251` for `b` in `0..200`): `[0,4)` "BWAL"; `[4,6)` version 1
 /// LE; `[6]` flags 0 (single part); `[7]` 0; `[8,16)` node LE; `[16,24)` node_seq LE; `[24,28)`
 /// part index 0 LE; `[28,32)` part count 1 LE; `[32,34)` payload length 200 LE; `[34,64)` zero
-/// (the header check is zero-filled under the legacy layout); `[64,96)` SHA-256 over `[0,64)` then
-/// `[96,512)`; `[96,296)` the body; `[296,512)` zero. SHA-256 of the whole file:
+/// (no header check under version 1); `[64,96)` SHA-256 over `[0,64)` then `[96,512)`; `[96,296)`
+/// the body; `[296,512)` zero. SHA-256 of the whole file:
 /// 29d9b3e634b4bf1d278445d7fdb862e5ee3c694e5a6d164dca9888a65eccc286. The full procedure is in
 /// `vectors/legacy_segment.bin.provenance`. The test below checks the vector against the current
-/// encoder and decoder before it relies on it.
-const LEGACY_SEGMENT: &[u8] = include_bytes!("vectors/legacy_segment.bin");
+/// encoder before it relies on it.
+const VERSION_1_SEGMENT: &[u8] = include_bytes!("vectors/legacy_segment.bin");
 
-/// THE MIGRATION PATH: a segment written BEFORE the header check (layout version 1) is still read,
-/// under the rule it was written under — its flipped final record is a torn tail, cut silently, as
-/// that build would have cut it; the frames it already holds are never reinterpreted.
+/// A VERSION-1 SEGMENT IS A LAYOUT THIS BUILD DOES NOT READ: quarantined whole, never read and never
+/// cut. Version 1 was never released, so no segment in the field holds it; reading it under its old
+/// rule (no header check, a digest failure cut as a torn tail) was a downgrade path and nothing else.
+/// Every record it holds is set aside with its identity taken, so no acknowledged number is handed
+/// out again.
 #[test]
-fn a_legacy_segment_keeps_the_rule_it_was_written_under() {
-    let dir = TempDir::new("legacy-flip");
+fn a_version_1_segment_is_quarantined_never_read() {
+    let dir = TempDir::new("v1-segment");
     let written = four();
     lay_down(dir.path(), &written);
-    // Rewrite every frame of the segment under the legacy layout, byte for byte otherwise.
     let path = segment_path(dir.path());
-    let mut legacy: Vec<u8> = LEGACY_SEGMENT.to_vec();
-    // The vector is the legacy framing of exactly `written`: version 1, the header check zeroed, a
-    // digest that verifies, and every other byte the current encoder's.
-    assert_eq!(legacy.len(), written.len() * FRAME_BYTES);
-    for (record, frame) in written.iter().zip(legacy.as_chunks::<FRAME_BYTES>().0) {
-        assert_eq!(frame_version(frame), FRAME_VERSION_LEGACY);
+    let mut v1: Vec<u8> = VERSION_1_SEGMENT.to_vec();
+    // The vector is the version-1 framing of exactly `written`: version 1, no header check, a digest
+    // that verifies, and every other byte the current encoder's.
+    assert_eq!(v1.len(), written.len() * FRAME_BYTES);
+    for (record, frame) in written.iter().zip(v1.as_chunks::<FRAME_BYTES>().0) {
+        assert_eq!(frame_version(frame), 1);
         let current = record.encode().remove(0);
         assert_eq!(frame[0..4], current[0..4]);
         assert_eq!(frame[6..34], current[6..34]);
         assert_eq!(frame[34..64], [0u8; 30]);
         assert_eq!(frame[96..], current[96..]);
-        let (header, payload) = decode_frame(frame).unwrap();
-        assert_eq!((header.node, header.node_seq), record.identity());
-        assert_eq!(payload, &record.body[..]);
+        assert_eq!(
+            decode_frame(frame),
+            Err(FrameError::UnknownVersion { found: 1 })
+        );
     }
     let len = std::fs::read(&path).unwrap().len();
-    legacy.resize(len, 0);
-    std::fs::write(&path, legacy).unwrap();
-    flip(dir.path(), 3 * FRAME_BYTES + 200);
+    v1.resize(len, 0);
+    std::fs::write(&path, v1).unwrap();
+    let wal = Wal::in_directory(
+        dir.path(),
+        Box::new(NullShipper::new()),
+        super::fixtures::wall_ms,
+    )
+    .unwrap();
+    assert!(
+        wal.recovered().is_empty(),
+        "a version-1 frame is never read"
+    );
+    let q = wal.quarantined();
+    assert_eq!(q.len(), 1, "the unreadable segment is set aside, loudly");
+    assert_eq!(q[0].damage_at, 0);
+    let mut ids = q[0].identities.clone();
+    ids.sort_unstable();
+    assert_eq!(ids, vec![(3, 1), (3, 2), (3, 3), (3, 4)]);
+    assert_eq!(quarantine_files(dir.path()).len(), 1);
+    assert_eq!(
+        wal.next_free_seq(3),
+        5,
+        "no acknowledged number is handed out again"
+    );
+}
+
+/// A WHOLE final frame RELABELLED to version 1 is quarantined, never cut as a torn tail (Q128
+/// kernel-wal). Under a reader that still took version 1, the relabel skipped the header check and
+/// the digest failure it caused read as a torn write, so an acknowledged record was cut silently.
+#[test]
+fn a_final_frame_relabelled_to_version_1_is_quarantined_not_cut() {
+    let dir = TempDir::new("relabel-v1");
+    let written = four();
+    lay_down(dir.path(), &written);
+    let path = segment_path(dir.path());
+    let mut bytes = std::fs::read(&path).unwrap();
+    // `[4,6)` is the layout version, little-endian: 2 becomes 1.
+    bytes[3 * FRAME_BYTES + 4..3 * FRAME_BYTES + 6].copy_from_slice(&1u16.to_le_bytes());
+    std::fs::write(&path, bytes).unwrap();
     let wal = Wal::in_directory(
         dir.path(),
         Box::new(NullShipper::new()),
@@ -251,8 +287,16 @@ fn a_legacy_segment_keeps_the_rule_it_was_written_under() {
     )
     .unwrap();
     assert_eq!(wal.recovered(), &written[..3]);
-    assert!(wal.quarantined().is_empty());
-    assert!(quarantine_files(dir.path()).is_empty());
+    let q = wal.quarantined();
+    assert_eq!(
+        q.len(),
+        1,
+        "the relabelled final record is set aside, loudly"
+    );
+    assert_eq!(q[0].damage_at, 3 * FRAME_BYTES as u64);
+    assert_eq!(q[0].identities, vec![(3, 4)]);
+    assert_eq!(quarantine_files(dir.path()).len(), 1);
+    assert_eq!(wal.next_free_seq(3), 5);
 }
 
 /// A WHOLE final frame whose HEADER was altered after it was written is quarantined, never cut as a

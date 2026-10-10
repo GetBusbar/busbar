@@ -390,6 +390,15 @@ async fn a_verify_past_max_inflight_is_overloaded_and_never_queued() {
     let p = load_linked::<crate::dispatch::kinds::auth::Auth>(&row, bind).unwrap();
     let a = AuthInstance::open(p, sink, d.clone(), "judge-1", b"\"ok\"", Vec::new()).unwrap();
     assert_eq!(a.plugin().max_inflight(), 1);
+    // The instance's tick schedule (one tick: the judge asks for no other) holds the one unit
+    // while it crosses; the overload is proven against the verifies alone.
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !a.ticks_ended() {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .expect("the tick schedule ends");
     let slow = a.verify(request(Some("slow"), None));
     let mut over = a.verify(request(Some("good"), None));
     let answer = over.settled().expect("answered before any crossing");
@@ -463,6 +472,44 @@ fn a_statement_secret_ref_is_handed_to_open_as_a_secret_not_a_setting() {
         .err()
         .expect("refused");
     assert!(err.contains("no service credential"), "{err}");
+}
+
+/// THE SETTINGS AND THE SECRETS NEVER PRINT. An instance holds the settings bytes it was opened
+/// over (a resolved bag: a DSN with its password) and its service credentials, and re-sends both on
+/// `refresh`; its `Debug` names the plugin and the label and nothing else, so `{:?}` of an instance
+/// in a log line, a `tracing` field or a panic cannot carry them.
+#[test]
+fn an_instance_debug_never_shows_its_settings_or_secrets() {
+    use crate::auth_door::{AuthInstance, AuthSink};
+    use crate::dispatch::{load_linked, Bind, LinkedRow};
+    let d = dispatcher();
+    let sink = AuthSink::new("keyed");
+    let bind = Bind {
+        instance: Arc::from("keyed-a"),
+        max_inflight_cap: 8,
+        sink: sink.bind(),
+        dispatcher: d.adopter(),
+        conns: crate::dispatch::ConnTable::NoNeeds,
+    };
+    let row = LinkedRow::of(keyed::door).unwrap();
+    let p = load_linked::<crate::dispatch::kinds::auth::Auth>(&row, bind).unwrap();
+    let a = AuthInstance::open(
+        p,
+        sink,
+        d.clone(),
+        "keyed-a",
+        br#"{"dsn":"db://svc:pw-in-the-settings@db/auth"}"#,
+        vec![b"s3cret".to_vec()],
+    )
+    .expect("the keyed plugin opens over its credential");
+    let shown = format!("{a:?}");
+    assert!(
+        shown.contains("keyed-a"),
+        "the label names the instance: {shown}"
+    );
+    for leak in ["pw-in-the-settings", "db://", "dsn", "s3cret"] {
+        assert!(!shown.contains(leak), "`{leak}` printed: {shown}");
+    }
 }
 
 /// A linked auth plugin whose Statement states one alias rewrite.
@@ -620,4 +667,106 @@ fn a_networked_auth_door_opened_to_serve_declares_its_need_on_the_hosts_table() 
         1,
         "its one tcp need is declared on the host's table"
     );
+}
+
+/// THE OUTBOUND KIT ON THE LOADER'S ROWS: a door built by `auth_outbound_door!` (no `unsafe` in the
+/// plugin) is served for its style, binds a credential and answers its field, as the host drives
+/// the auth ABI.
+mod outbound {
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+    use std::task::Poll;
+
+    use busbar_contract::abi::sdk::auth_outbound::{
+        outbound_tail, style, FieldsAnswer, FieldsView, FieldsWriter, OpenRefusal, OutboundPlugin,
+    };
+    use busbar_contract::abi::sdk::exchange::Op;
+    use busbar_contract::auth_calls::{AuthField, Fields, FieldsRequest};
+
+    use super::*;
+
+    /// Serves style `bearer-test`: `fields` answers `authorization: Bearer <credential>`.
+    #[derive(Default)]
+    struct Echo {
+        bindings: Mutex<HashMap<u64, Vec<u8>>>,
+    }
+
+    impl OutboundPlugin for Echo {
+        fn open(_: &[u8], _: &[&[u8]]) -> Result<Self, &'static str> {
+            Ok(Echo::default())
+        }
+
+        fn open_outbound(
+            &self,
+            style: &str,
+            credential: Option<&[u8]>,
+            _: Option<&[u8]>,
+        ) -> Result<u64, OpenRefusal> {
+            if style != "bearer-test" {
+                return Err(OpenRefusal::new("style: not served"));
+            }
+            let mut bindings = self.bindings.lock().unwrap();
+            let handle = bindings.len() as u64 + 1;
+            bindings.insert(handle, credential.unwrap_or_default().to_vec());
+            Ok(handle)
+        }
+
+        fn fields(
+            &self,
+            r: &FieldsView<'_>,
+            out: &mut FieldsWriter<'_>,
+            _: &Op<'_>,
+        ) -> Poll<FieldsAnswer> {
+            let bindings = self.bindings.lock().unwrap();
+            let Some(credential) = bindings.get(&r.handle()) else {
+                return Poll::Ready(FieldsAnswer::Refused);
+            };
+            let mut value = b"Bearer ".to_vec();
+            value.extend_from_slice(credential);
+            out.push(b"authorization", &value, 0);
+            Poll::Ready(FieldsAnswer::Ready)
+        }
+
+        fn outbound_ready(&self, handle: u64) -> bool {
+            self.bindings.lock().unwrap().contains_key(&handle)
+        }
+    }
+
+    mod echo {
+        use super::*;
+
+        const STYLES: &[busbar_contract::abi::auth::StyleDecl] =
+            &[style("bearer-test", 0, AuthPoints::HEAD)];
+        const TAIL: &AuthTail = &outbound_tail(0, STYLES);
+
+        busbar_contract::auth_outbound_door!(Echo, with_tail(statement("echo", "1.0.0", 8), TAIL));
+    }
+
+    #[test]
+    fn an_outbound_kit_door_answers_its_field_through_the_auth_rows() {
+        let registry = PluginRegistry::empty()
+            .link(vec![LinkedPlugin::auth_door("echo", echo::door)])
+            .expect("the linked door registers");
+        let auth_rows = AuthRows::new(Arc::new(registry), dispatcher());
+        let serving = auth_rows
+            .serving("bearer-test", &serde_json::json!({}))
+            .expect("the serving row opens")
+            .expect("a row states the style");
+        assert_eq!(serving.points, AuthPoints::HEAD.bits());
+        let handle = serving
+            .auth
+            .open_outbound("bearer-test", b"k", &serde_json::json!({}))
+            .expect("the binding opens");
+        assert!(serving.auth.ready(handle));
+        assert_eq!(
+            serving.auth.fields_now(handle, &FieldsRequest::default()),
+            Some(Fields::Ready(vec![AuthField {
+                name: b"authorization".to_vec(),
+                value: Redacted::new(b"Bearer k".to_vec()),
+                sensitive: false,
+            }]))
+        );
+        let other = auth_rows.serving("other", &serde_json::json!({}));
+        assert!(matches!(other, Ok(None)), "no row states another style");
+    }
 }

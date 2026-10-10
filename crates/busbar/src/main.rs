@@ -104,12 +104,22 @@ fn safe_mode_requested(mut args: impl Iterator<Item = String>) -> bool {
     args.any(|a| a == "--safe-mode")
 }
 
-/// Whether `--mcp-stdio` was passed: boot everything, bind NOTHING, and serve the plane claiming
-/// the stdio transport on the process's own stdin/stdout (see `root::serve::lines`). A scanner like
+/// Whether a flag a linked plane declares was passed (its `Flags:` rows, `root::cli::help_rows`):
+/// boot everything, bind NOTHING, and serve the plane claiming the line carrier on the process's own
+/// stdin/stdout (see `root::serve::lines`). The root names no flag of its own here: the plane states
+/// its spelling, and the root reads it off the plane's declared rows. A scanner like
 /// `safe_mode_requested` rather than a `handle_cli_flags` exit arm, because it modifies how `run()`
 /// serves rather than replacing the run.
-fn stdio_serve_requested(mut args: impl Iterator<Item = String>) -> bool {
-    args.any(|a| a == "--mcp-stdio") // noun-neutrality: frozen-literal pinned-by=crates/busbar/tests/mcp_stdio_serve.rs operator CLI flag (CHANGELOG 1.6.0)
+fn stdio_serve_requested(args: impl Iterator<Item = String>) -> bool {
+    line_serve_requested(&root::cli::help_rows(), args)
+}
+
+/// [`stdio_serve_requested`] over the `Flags:` rows `planes` declare.
+fn line_serve_requested(
+    planes: &[&[root::linked::CliHelpRow]],
+    mut args: impl Iterator<Item = String>,
+) -> bool {
+    args.any(|a| root::cli::is_plane_flag(planes, &a))
 }
 
 /// Cap on `advanced.worker_threads`/`TOKIO_WORKER_THREADS` (see the `.min(MAX_WORKER_THREADS)` call in
@@ -622,8 +632,8 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // Install the tracing subscriber now (stderr fmt always; the `traces` record producer for the
     // export sinks subscribed to it, the `otlp` module's among them) so all subsequent startup and
     // request-path logging is captured.
-    // `--mcp-stdio` reserves stdout for the MCP channel, so its logs move to stderr — see
-    // `init_logging`'s `stdout_reserved`.
+    // A plane's line-serve flag reserves stdout for the plane's channel, so its logs move to
+    // stderr — see `init_logging`'s `stdout_reserved`.
     if let Err(e) =
         busbar_kernel::observability::init_logging(stdio_serve_requested(std::env::args()))
     {
@@ -783,16 +793,7 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // The unified `pools:` a named-definition carrier's members resolved to, by the carrier's
     // section key: each door plane's section carries its own pools (DoorPools), captured before
     // `cfg` is consumed.
-    let door_pools = [
-        (
-            busbar_kernel::plane::config::NAMED_MAP_SECTIONS[2],
-            cfg.tool_pools.clone(),
-        ),
-        (
-            busbar_kernel::plane::config::NAMED_MAP_SECTIONS[3],
-            cfg.agent_pools.clone(),
-        ),
-    ];
+    let door_pools = root::serve::door_pools(&cfg.tool_pools, &cfg.agent_pools);
     // The root breaker's per-pool ladders, read off the same `pools:` the build resolves each pool's
     // own dispatch cfg from, before `cfg` is consumed.
     #[cfg(feature = "root-admin")]
@@ -870,18 +871,11 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // their money posted onto the process's one node, each member's egress sealed over the
     // deployment's providers, the auth plugins that serve its style (the build's own rows, then
     // the plugins directory's) and the one connector their needs were declared on.
-    let door_auths = root::door_steps::OutboundAuths::new(
-        root::dispatch::dispatcher(),
-        LINKED.auths,
-        root::boot::dropped_registry(),
-        root::loader::dispatch::ConnTable::Host(
-            Arc::clone(root::connector::the()) as Arc<dyn busbar_contract::conn::DeclaredConns>
-        ),
-    );
+    let door_auths = root::door_steps::process_auths();
     let door_reach = root::door_steps::DoorReach {
         providers: &door_providers,
         secrets: &*app.secret_resolver,
-        auths: Arc::new(door_auths),
+        auths: door_auths,
         conns: Arc::clone(root::connector::the()) as Arc<dyn busbar_contract::conn::PollConns>,
         stream_ceiling_secs: busbar_kernel::config::limits::installed().map_or(
             busbar_kernel::config::limits::DEFAULT_UPSTREAM_REQUEST_TIMEOUT_SECS,
@@ -1008,6 +1002,10 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     credential_handle.set(std::sync::Arc::clone(&app_handle));
     let _ = door_live_handle.set(std::sync::Arc::clone(&app_handle));
     app_handle.on_apply(Box::new(move |app| door_appliers.apply(app)));
+    // Every opened plugin instance's log sink follows the applied `plugins.logs` (THE DESIGN §11.2).
+    app_handle.on_apply(Box::new(|app| {
+        root::boot::follow_plugin_logs(root::boot::plugin_logs(), &app.plugins_cfg);
+    }));
     // A door unit's entitlement is judged against its principal AS IT STANDS (re-resolved over the
     // live snapshot per ask): a long-lived response re-asks per frame.
     if let Some(kernel) = late_services.kernel() {
@@ -1092,12 +1090,12 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
             |dispatch| {
                 // THE ADMIN DOOR: the deployment's live `admin_auth` chain, read per unit off the same
                 // snapshot the kernel middleware reads and `PUT /api/v1/admin/admin-auth` swaps.
-                let mut units = root::kernel::ProductionUnits::admin_only_sharing(
+                // Over the book boot opened AND the store boot bound beside it, so the three
+                // disaster-recovery verbs reach the configured store (row 113).
+                let mut units = root::kernel::ProductionUnits::admin_over_book(
                     dispatch,
                     root::units_admin::live_admin_door(std::sync::Arc::clone(&app_handle)),
-                    std::sync::Arc::clone(&book.durability),
-                    std::sync::Arc::clone(&book.rows)
-                        as std::sync::Arc<dyn root::units_admin::LegacyRowsRead>,
+                    book,
                 );
                 // D38 PRODUCTION SEALING (composition-root, binding-only). Replace the assembly's
                 // `UnsealedPosture` default with the posture THIS fleet sealed: `SealedPosture` carries
@@ -1206,7 +1204,7 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // is the plane hook's, propagated through `start_planes`.
     busbar_kernel::boot::start_planes(&app_handle).unwrap_or_else(|e| die(e));
 
-    // THE STDIO SERVE MODE (`--mcp-stdio`). The SAME boot ran above — config load, plugin
+    // THE STDIO SERVE MODE (a plane's declared line-serve flag). The SAME boot ran above — config load, plugin
     // preflight, governance, the flusher and the refresh jobs — and the SAME dispatch will serve
     // every frame; what changes is only the transport: busbar is somebody's CHILD PROCESS here, so
     // it binds no listener at all (a child that opened ports would be a network server its

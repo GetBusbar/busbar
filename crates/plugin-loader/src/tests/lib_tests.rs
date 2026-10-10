@@ -11,12 +11,16 @@ use busbar_contract::abi::cold::TRANSPORT_VERSION;
 /// at it to pin the schema-keyed shim rule.
 const PUBLISHED_STORE_SCHEMA: u32 = 2;
 
-/// The REAL plugin the loader-MECHANISM tests below dlopen (validation, inventory): the example
-/// plane's `cdylib` (`export_plane!`), which answers the frozen handshake symbols
-/// [`validate_plugin`] reads (HOT-lane residue). Under CI a missing cdylib is a hard failure
-/// ([`super::both_ways::cdylib`] asserts it), never a silent skip.
-fn handshake_plugin_path() -> Option<std::path::PathBuf> {
-    super::both_ways::cdylib("busbar_plugin_example_plane")
+/// The REAL plugin the loader-MECHANISM tests below dlopen (validation, inventory): the `auth` row
+/// of `[package.metadata.busbar.both-ways]`, the token-verifying OIDC module's dropped-in `cdylib`.
+/// It is on the auth kind's memory ABI (its row is a door row, and the table names its logic crate,
+/// so its cdylib is `<logic>_plugin`); every SDK-built library answers the plugin-ABI handshake
+/// these tests drive (`busbar_abi`, `busbar_plugin_kind` and the operational symbols). A missing
+/// cdylib is a hard failure naming the command that builds it ([`super::both_ways::cdylib`]), never
+/// a silent skip.
+fn handshake_plugin_path() -> std::path::PathBuf {
+    let (logic, _) = super::both_ways::door_fixture("auth");
+    super::both_ways::cdylib(&format!("{logic}_plugin"))
 }
 
 /// `validate_plugin` accepts the real handshake fixture cdylib (transport version 1) without constructing an
@@ -27,10 +31,7 @@ fn handshake_plugin_path() -> Option<std::path::PathBuf> {
 /// every proc-macro and dependency dylib cargo put there.
 #[test]
 fn validate_and_inventory() {
-    let Some(path) = handshake_plugin_path() else {
-        eprintln!("skip: the example plane cdylib is not built");
-        return;
-    };
+    let path = handshake_plugin_path();
     assert_eq!(validate_plugin(&path).expect("validate"), TRANSPORT_VERSION);
 
     let file = path.file_name().unwrap().to_owned();
@@ -195,10 +196,7 @@ fn the_library_extension_match_uses_this_filesystems_case_rule() {
 /// invalid one or crashing on it.
 #[test]
 fn inventory_reports_valid_and_invalid_libraries_in_the_same_directory() {
-    let Some(real_plugin) = handshake_plugin_path() else {
-        eprintln!("skip: the example plane cdylib is not built");
-        return;
-    };
+    let real_plugin = handshake_plugin_path();
     let dir = std::env::temp_dir().join(format!(
         "busbar-inventory-mixed-{}-{}",
         std::process::id(),
@@ -247,10 +245,7 @@ fn inventory_reports_valid_and_invalid_libraries_in_the_same_directory() {
 /// passes, so the vet answers `Ok` and the inventory lists it valid.
 #[test]
 fn a_door_less_json_contract_library_is_refused_naming_the_rebuild() {
-    let Some(path) = super::both_ways::example_cdylib("json_contract_auth") else {
-        eprintln!("skip: the json_contract_auth example cdylib is not built");
-        return;
-    };
+    let path = super::both_ways::example_cdylib("json_contract_auth");
     let names_the_rebuild = |why: &str| {
         assert!(
             why.contains("busbar_plugin_door"),
@@ -318,10 +313,7 @@ fn plugin_library_filename_matches_this_platforms_naming_convention() {
 /// exits.
 #[test]
 fn validate_plugin_unloads_on_a_worker_not_the_callers_thread() {
-    let Some(path) = handshake_plugin_path() else {
-        eprintln!("skip: the example plane cdylib is not built");
-        return;
-    };
+    let path = handshake_plugin_path();
     let before = UNLOADS_ON_WORKER.with(std::cell::Cell::get);
     validate_plugin(&path).expect("the handshake fixture validates");
     let after = UNLOADS_ON_WORKER.with(std::cell::Cell::get);
@@ -334,5 +326,7 @@ fn validate_plugin_unloads_on_a_worker_not_the_callers_thread() {
 
 #[path = "ffi_guard_tests.rs"]
 mod ffi_guard_tests;
+#[path = "no_silent_skip_tests.rs"]
+mod no_silent_skip_tests;
 #[path = "store_adapter_tests.rs"]
 mod store_adapter_tests;

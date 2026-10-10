@@ -33,6 +33,11 @@
 //! [`AuthBindings::without_directory`] is a real posture and not a placeholder: a node that resolves
 //! no busbar-minted keys has no verifier to bind, and the chain's own answer for that is already the
 //! right one — the signed-key arm denies, because a signed key cannot be verified without a verifier.
+//!
+//! ## No credential cache
+//!
+//! The kernel holds no verified-credential cache (THE DESIGN 11.11 R3): an auth plugin that caches
+//! its verdicts does so inside itself, and the admin cache flush reaches it through its `refresh`.
 
 use busbar_kernel_identity::chain::{KeyVerifier, ResolvedKey, RevocationView};
 use std::sync::Arc;

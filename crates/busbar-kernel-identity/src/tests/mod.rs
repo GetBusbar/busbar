@@ -5,11 +5,9 @@
 
 mod caller_ref_tests;
 mod chain_tests;
-mod exchange_tests;
 mod hardening;
 mod invariants;
 mod operator_tests;
-mod unit_tests;
 
 use crate::chain::{ChainEntry, ResolvedKey};
 use crate::module::{AuthModule, AuthOutcome};

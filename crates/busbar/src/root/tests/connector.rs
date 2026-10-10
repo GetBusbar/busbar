@@ -191,9 +191,13 @@ fn a_reload_that_removes_a_carve_out_refuses_the_next_dial() {
     let _registry = busbar_kernel::plane::registry::TestRegistryIsolation::seeded(&[
         busbar_kernel::test_support::neutral_fallback_plane(),
     ]);
+    // The loopback every fixture in this binary binds is listed, as an operator lists a loopback
+    // upstream: the guard installed here is process-wide (first install wins), and every other
+    // test's mock upstream is dialled through it by its loopback literal.
     let boot = deployment(
         &[],
-        "security:\n  allow_metadata_hosts: [169.254.169.254]\n",
+        "security:\n  allow_metadata_hosts: [169.254.169.254]\n\
+         advanced:\n  allow_destinations: [\"127.0.0.1\", \"::1\"]\n",
     );
     let judge = dest_judge(&boot);
     // The boot path's own step: the guard goes behind the egress-trust capability, which is what
@@ -255,6 +259,23 @@ fn a_provider_without_an_allowlist_entry_is_refused_a_private_address() {
         Some(DEST_METADATA),
         "operator infrastructure refuses metadata whatever is carved"
     );
+}
+
+/// RED against busbar-auth-oauth b7d15c7137 and 2a776bd, which declared EGRESS_LOOPBACK_ALLOWED
+/// (lib.rs:137): the pinned plugin's two mint needs (`settings.token_url`, `settings.token_uri`)
+/// are operator infrastructure (BUSBAR-1.6.0.md l.609, ARCHITECT D1 MINT CLASS (B)), so a mint
+/// endpoint on a private host is reached as 1.5.5 reached it, not refused as non-loopback.
+#[test]
+fn the_pinned_mint_needs_are_operator_infrastructure() {
+    let needs = busbar_auth_oauth::NEEDS;
+    assert_eq!(needs.len(), 2, "the plugin declares its two mint needs");
+    for (n, need) in needs.iter().enumerate() {
+        assert_eq!(
+            need.egress_class, EGRESS_OPERATOR_INFRASTRUCTURE,
+            "mint need {n} must be operator-infrastructure (BUSBAR-1.6.0.md l.609): 1.5.5 minted over \
+             plaintext to a private or loopback token endpoint, which loopback-allowed refuses"
+        );
+    }
 }
 
 /// RED (ARCHITECT round 4 (e)): a plane's upstream need whose settings name a PROGRAM is dialled by

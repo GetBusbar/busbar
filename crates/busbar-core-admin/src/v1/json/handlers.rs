@@ -2153,10 +2153,10 @@ pub(crate) async fn put_auth(
     )
 }
 
-/// `POST /api/v1/admin/auth/cache/flush` — INSTANT REVOCATION of the credential cache's
-/// cached-allow window (each auth plugin's own, [`busbar_kernel::auth::flush_inbound_caches`]).
-/// Body `{"module": "<name>"}` flushes one module's partition; no/empty body flushes everything. The deny path never needed this (`Reject` is
-/// never cached); this closes the Identify window when a directory changes NOW.
+/// `POST /api/v1/admin/auth/cache/flush` — INSTANT REVOCATION of every auth plugin's cached-allow
+/// window: each one `refresh`es and drops the verified credentials it caches inside itself (THE
+/// DESIGN 11.11 R3). Body `{"module": "<name>"}` flushes one module; no/empty body flushes
+/// everything. The answer is the sum of the entries they dropped (1.5.5's `{"flushed": N}`).
 pub(crate) async fn flush_credential_cache(
     State(handle): State<Arc<AppHandle>>,
     axum::Extension(principal): axum::Extension<busbar_kernel::auth::AuthPrincipal>,
@@ -2176,7 +2176,7 @@ pub(crate) async fn flush_credential_cache(
                 )),
             }
         };
-    let flushed = busbar_kernel::auth::flush_inbound_caches(&app, module.as_deref());
+    let flushed = app.flush_verified_credentials(module.as_deref());
     audit::AUDIT.record_by(
         "auth.cache_flush",
         module.as_deref().unwrap_or("*"),

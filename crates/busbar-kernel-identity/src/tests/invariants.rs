@@ -9,38 +9,9 @@
 //! case working and breaks a neighbouring one has nowhere to land.
 
 use super::{entry, Canned, OneKey};
-use crate::chain::{AuthChain, ChainEntry, ChainVerdict, RevocationView};
+use crate::chain::{AuthChain, ChainEntry, ChainVerdict};
 use crate::module::{AuthModule, AuthOutcome};
 use crate::principal::Principal;
-
-/// A revocation set that records every credential it was asked about, so a test can assert on what
-/// was NOT asked as easily as on what was.
-struct Recording {
-    revoked: Vec<String>,
-    asked: std::sync::Mutex<Vec<String>>,
-}
-
-impl Recording {
-    fn new(revoked: &[&str]) -> Self {
-        Recording {
-            revoked: revoked.iter().map(|s| (*s).to_string()).collect(),
-            asked: std::sync::Mutex::new(Vec::new()),
-        }
-    }
-    fn asked(&self) -> Vec<String> {
-        self.asked.lock().expect("not poisoned").clone()
-    }
-}
-
-impl RevocationView for Recording {
-    fn is_revoked(&self, credential: &str) -> bool {
-        self.asked
-            .lock()
-            .expect("not poisoned")
-            .push(credential.to_string());
-        self.revoked.iter().any(|r| r == credential)
-    }
-}
 
 /// A module that identifies, for the positions after the rejecting one.
 fn identifies(name: &'static str) -> Box<dyn AuthModule> {
@@ -92,7 +63,7 @@ fn a_reject_at_any_position_denies_whatever_would_have_admitted_behind_it() {
                     token: TOKEN,
                     aud: None,
                 };
-                let verdict = c.run_chain_cached(Some(TOKEN), Some(&keys), 1000, None);
+                let verdict = c.run_chain_with(Some(TOKEN), Some(&keys), 1000, None);
                 assert_eq!(
                     verdict,
                     ChainVerdict::Denied,
@@ -117,7 +88,7 @@ fn a_rejection_is_re_asked_every_time() {
 
     for i in 1..=5 {
         assert_eq!(
-            c.run_chain_cached(Some("bad"), None, 1000, None),
+            c.run_chain_with(Some("bad"), None, 1000, None),
             ChainVerdict::Denied
         );
         assert_eq!(
@@ -146,7 +117,7 @@ fn an_all_pass_chain_denies_and_only_an_unconfigured_chain_opens() {
         let c = AuthChain::new(chain, false);
         assert!(!c.is_open(), "len={len}");
         assert_eq!(
-            c.run_chain_cached(Some("cred"), None, 1000, None),
+            c.run_chain_with(Some("cred"), None, 1000, None),
             ChainVerdict::Denied,
             "len={len}: every module said 'not mine', which is not an admission"
         );
@@ -155,136 +126,88 @@ fn an_all_pass_chain_denies_and_only_an_unconfigured_chain_opens() {
     let arm_only = AuthChain::new(Vec::new(), true);
     assert!(!arm_only.is_open());
     assert_eq!(
-        arm_only.run_chain_cached(Some("cred"), None, 1000, None),
+        arm_only.run_chain_with(Some("cred"), None, 1000, None),
         ChainVerdict::Denied
     );
     // And the one shape that opens.
     let unconfigured = AuthChain::new(Vec::new(), false);
     assert!(unconfigured.is_open());
     assert_eq!(
-        unconfigured.run_chain_cached(Some("cred"), None, 1000, None),
+        unconfigured.run_chain_with(Some("cred"), None, 1000, None),
         ChainVerdict::Open
     );
 }
 
 // ---------------------------------------------------------------------------------------------
-// The revocation gate.
+// One authenticate path.
 // ---------------------------------------------------------------------------------------------
 
-/// A revoked credential's identification is WITHDRAWN at the arrival of a new unit, and a unit
-/// already in flight is not asked.
-///
-/// The gate sits outside the walk on purpose: revoking mid-unit would tear down work already paid
-/// for and observed, and the next unit is refused a fraction of a second later anyway.
-#[test]
-fn a_revoked_identification_is_withdrawn_for_a_new_unit_and_not_for_one_in_flight() {
-    let c = AuthChain::new(
-        vec![entry(
-            "idp",
-            Box::new(Canned::new(
-                "idp",
-                AuthOutcome::Identify(Principal::from_id("alice")),
-            )),
-        )],
-        false,
-    );
-    let revocations = Recording::new(&["alice-cred"]);
-
-    // In flight: the walk answers, and the gate is never consulted at all.
-    assert!(matches!(
-        c.run_chain_cached(Some("alice-cred"), None, 1000, None),
-        ChainVerdict::Identified { .. }
-    ));
-    assert!(
-        revocations.asked().is_empty(),
-        "the walk itself never consults the revocation set"
-    );
-
-    // A NEW unit: the identification is withdrawn.
-    assert_eq!(
-        c.run_chain_for_new_unit(Some("alice-cred"), None, 1000, None, Some(&revocations)),
-        ChainVerdict::Denied,
-        "a revoked credential's identification is withdrawn at the door of a new unit"
-    );
-    assert_eq!(revocations.asked(), ["alice-cred"]);
-
-    // A credential that is not revoked keeps its identification.
-    let other = Recording::new(&["someone-else"]);
-    assert!(matches!(
-        c.run_chain_for_new_unit(Some("alice-cred"), None, 1000, None, Some(&other)),
-        ChainVerdict::Identified { .. }
-    ));
+/// The `.rs` files under `dir`, skipping the `tests` directory.
+fn non_test_sources(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+    for e in std::fs::read_dir(dir).expect("source dir reads") {
+        let path = e.expect("dir entry").path();
+        if path.is_dir() {
+            if path.file_name().is_some_and(|n| n != "tests") {
+                non_test_sources(&path, out);
+            }
+        } else if path.extension().is_some_and(|x| x == "rs") {
+            out.push(path);
+        }
+    }
 }
 
-/// The revocation set is asked about a credential AT MOST ONCE per unit, and never when no
-/// credential was presented at all.
-///
-/// The set is derived from the journal tail and is the kernel's, not this crate's; asking it more
-/// than once per unit would let one unit's answer differ from itself between the two asks, and
-/// asking with nothing presented is a lookup on a credential that does not exist.
-#[test]
-fn the_revocation_set_is_asked_once_per_unit_and_never_without_a_credential() {
-    let c = AuthChain::new(
-        vec![entry(
-            "idp",
-            Box::new(Canned::new(
-                "idp",
-                AuthOutcome::Identify(Principal::from_id("alice")),
-            )),
-        )],
-        false,
-    );
-
-    let r = Recording::new(&[]);
-    c.run_chain_for_new_unit(Some("cred"), None, 1000, None, Some(&r));
-    assert_eq!(
-        r.asked().len(),
-        1,
-        "one unit, one question — the answer cannot change under itself"
-    );
-
-    let none_presented = Recording::new(&[]);
-    let verdict = c.run_chain_for_new_unit(None, None, 1000, None, Some(&none_presented));
-    assert!(
-        none_presented.asked().is_empty(),
-        "no credential was presented, so there is nothing to look up"
-    );
-    // And the walk's own answer for that unit stands unchanged.
-    assert!(matches!(verdict, ChainVerdict::Identified { .. }));
+fn is_ident(c: Option<char>) -> bool {
+    c.is_some_and(|c| c.is_alphanumeric() || c == '_')
 }
 
-// THE CELL THAT DID ITS JOB AND IS THEREFORE GONE. The branch this file was ported from carried a
-// seventh cell here, `the_gate_is_currently_consulted_even_for_a_string_nobody_identified`. It was
-// written as a CHARACTERIZATION, not an invariant: it recorded that `run_chain_for_new_unit` asked
-// the revocation set about whatever string arrived — including on the open front door, where
-// nothing had identified anybody — and its own doc said the point was that "a change to it is
-// deliberate and shows up as this test failing, rather than being made silently in either
-// direction."
-//
-// The change was made, and it was made in the safe direction: `AuthChain::run_chain_for_new_unit`
-// now guards the lookup with `matches!(verdict, ChainVerdict::Identified { .. })`, so an `Open` or
-// `Denied` verdict never reaches the set at all. That closes exactly the two costs the old doc
-// named — the probe that learns whether a caller-chosen string is in the revocation set by watching
-// an anonymous admission disappear, and the per-request lookup on the deny path that scaled with
-// unauthenticated traffic.
-//
-// So the cell is NOT ported: landing it verbatim would pin the weaker behaviour as required, which
-// is the opposite of what the rest of this file is for. The cells below and above still hold, and
-// `the_revocation_gate_can_refuse_but_never_admit` is the half of it that was ever an invariant.
-
-/// A chain that DENIED stays denied through the gate, whatever the revocation set says.
+/// The kernel's one chain is the only authenticate path (BUSBAR-1.6.0.md R3; l.1932-1935, "a built
+/// type or verb with no production construction site is either wired or deleted").
 ///
-/// The two refusals are different reasons for the same answer and the gate must not be able to turn
-/// either into an admission — a revocation view that answered "not revoked" for everything is the
-/// shape a misconfigured or empty journal tail produces, and it must be incapable of promoting a
-/// denial.
+/// `Auth::resolve` and its satellites — the new-unit revocation walk, the bounded challenge, the
+/// admin-grant lattice, the browser exchange dispatch — had no production caller, and the root's
+/// `ProductionUnits` only built an `Auth` nobody read. A second authenticate implementation that
+/// never runs still ships, and drifts from the one that does.
 #[test]
-fn the_revocation_gate_can_refuse_but_never_admit() {
-    let denying = AuthChain::new(vec![entry("m", answering("m", AuthOutcome::Reject))], false);
-    let r = Recording::new(&[]); // nothing is revoked
-    assert_eq!(
-        denying.run_chain_for_new_unit(Some("cred"), None, 1000, None, Some(&r)),
-        ChainVerdict::Denied,
-        "an empty revocation set cannot promote a denial into an admission"
+fn the_unreached_authenticate_unit_is_gone() {
+    const GONE: &[&str] = &[
+        "pub fn resolve(",
+        "pub struct AuthRequest",
+        "fn run_chain_for_new_unit",
+        "pub mod challenge",
+        "pub mod admin",
+        "pub mod exchange",
+        "Auth::new(",
+        "with_auth_chain",
+    ];
+    let crate_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut files = Vec::new();
+    non_test_sources(&crate_dir.join("src"), &mut files);
+    files.push(crate_dir.join("../busbar/src/root/kernel.rs"));
+    files.sort();
+
+    let mut hits = Vec::new();
+    for file in &files {
+        let text = std::fs::read_to_string(file).expect("source reads");
+        for (n, line) in text.lines().enumerate() {
+            for needle in GONE {
+                for (at, _) in line.match_indices(needle) {
+                    // A whole token only: `InProcessAuth::new(` is not `Auth::new(`, and
+                    // `pub mod admin_verbs` is not `pub mod admin`.
+                    let before = line[..at].chars().next_back();
+                    let after = line[at + needle.len()..].chars().next();
+                    if is_ident(before)
+                        || (needle.ends_with(char::is_alphanumeric) && is_ident(after))
+                    {
+                        continue;
+                    }
+                    hits.push(format!("{}:{}: {needle}", file.display(), n + 1));
+                }
+            }
+        }
+    }
+    assert!(
+        hits.is_empty(),
+        "the unreached authenticate unit is still in non-test source:\n{}",
+        hits.join("\n")
     );
 }
