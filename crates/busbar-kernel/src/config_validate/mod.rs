@@ -1018,7 +1018,7 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
             }
             // `token:` is the operator credential; on any other module it is inert and almost
             // certainly a misplaced secret. Fail loud.
-            if entry.token.is_some() && entry.module != operator_provider() {
+            if entry.token.is_some() && !crate::config::names_operator(&entry.module) {
                 errors.push(operator::misplaced_token(
                     operator_provider(),
                     &entry.module,
@@ -2413,9 +2413,13 @@ fn validate_providers_with(
             let cred = crate::config::secret::resolve_linked_string(&provider_cfg.api_key)
                 .unwrap_or_default();
             if !cred.trim().is_empty() {
-                if let Err(e) =
-                    crate::egress_auth::oauth_client_credentials::validate_credential(&cred)
-                {
+                // The credential's shape is the serving auth plugin's to judge, in its own words,
+                // through the same `open_outbound` the build binds it with (never dialing).
+                let params = serde_json::json!({
+                    "token_url": provider_cfg.token_url.clone().unwrap_or_default(),
+                    "scope": provider_cfg.scope.clone().unwrap_or_default(),
+                });
+                for e in outbound_credential_refusals("oauth-client-credentials", &cred, &params) {
                     errors.push(format!(
                         "provider '{provider_name}' oauth-client-credentials credential (from {}) is invalid: {e}",
                         provider_cfg.api_key.describe()
@@ -2444,14 +2448,36 @@ fn validate_providers_with(
             let cred = crate::config::secret::resolve_linked_string(&provider_cfg.api_key)
                 .unwrap_or_default();
             if !cred.trim().is_empty() {
-                // Pass the SAME operator metadata posture the boot path threads into jwt_bearer::build,
-                // so the token_uri SSRF check is identical at validate and apply time.
-                let ssrf = crate::egress_auth::MetadataSsrfPolicy {
-                    allow_overrides: &allow_overrides,
-                    allow_all: cfg.allow_all_metadata,
-                    blocked_hosts: &cfg.blocked_metadata_hosts,
+                // THE NEED'S TARGET IS THE KERNEL'S TO JUDGE (THE DESIGN §5; ARCHITECT ruling
+                // 2026-09-28, Q2 (a)): the service account's `token_uri`, under the SAME operator
+                // metadata posture as every other destination, before the key material is judged —
+                // 1.5.5's order. The service account's own shape (its JSON, its key) is the serving
+                // auth plugin's to judge, in its own words.
+                let vetted = service_account_token_uri(&cred).map_or(Ok(()), |uri| {
+                    vet_token_uri(
+                        &uri,
+                        &MetadataPosture {
+                            allow_overrides: allow_overrides.clone(),
+                            allow_all: cfg.allow_all_metadata,
+                            blocked_hosts: cfg.blocked_metadata_hosts.clone(),
+                        },
+                    )
+                });
+                let refusals = match vetted {
+                    Err(e) => vec![e],
+                    Ok(()) => {
+                        let mut params = serde_json::Map::new();
+                        if let Some(scope) = &provider_cfg.scope {
+                            params.insert("scope".into(), serde_json::Value::String(scope.clone()));
+                        }
+                        outbound_credential_refusals(
+                            "jwt-bearer",
+                            &cred,
+                            &serde_json::Value::Object(params),
+                        )
+                    }
                 };
-                if let Err(e) = crate::egress_auth::jwt_bearer::validate_credential(&cred, &ssrf) {
+                for e in refusals {
                     errors.push(format!(
                         "provider '{provider_name}' jwt-bearer credential (from {}) is invalid: {e}",
                         provider_cfg.api_key.describe()
@@ -2505,6 +2531,21 @@ impl MetadataPosture {
     }
 }
 
+/// THE CREDENTIAL REFUSALS the auth plugin serving `style` names for `credential` under `params`,
+/// through the dry `open_outbound` the build binds with (the plugin's `credential:` lines, their
+/// text only). None when no plugin this build reaches serves the style.
+fn outbound_credential_refusals(
+    style: &str,
+    credential: &str,
+    params: &serde_json::Value,
+) -> Vec<String> {
+    let Some(axis) = crate::preflight::linked_auth_axis() else {
+        return Vec::new();
+    };
+    axis.check_outbound(style, credential.as_bytes(), params)
+        .unwrap_or_default()
+}
+
 /// THE SERVICE ACCOUNT'S TOKEN ENDPOINT: the `token_uri` of the service-account JSON a `jwt-bearer`
 /// credential carries inline (it starts with `{`) or names as a key file, else Google's default
 /// endpoint — 1.5.5's `ServiceAccount` (`egress_auth/jwt_bearer.rs`, v1.5.5: `token_uri` defaults to
@@ -2547,6 +2588,7 @@ pub fn service_account_token_uri(credential: &str) -> Result<String, String> {
 ///
 /// The endpoint breaks either rule; the text is 1.5.5's.
 pub fn vet_token_uri(token_uri: &str, posture: &MetadataPosture) -> Result<(), String> {
+    use crate::net_guard::{extract_normalized_host, host_is_private_or_loopback, scheme_is};
     let host_private = extract_normalized_host(token_uri)
         .as_deref()
         .map(host_is_private_or_loopback)

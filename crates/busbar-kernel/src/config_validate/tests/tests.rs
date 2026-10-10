@@ -487,6 +487,29 @@ fn test_validate_token_url_ssrf_and_scheme() {
             "{scheme}:// public token_url must be rejected; got: {errs:?}"
         );
     }
+    // The 1.5.5 rule (v1.5.5 config_validate/mod.rs:436-476): plaintext http is permitted for a
+    // PRIVATE or loopback token endpoint, not loopback alone (spec l.609, ARCHITECT D1 MINT CLASS (B)).
+    for tu in [
+        "http://10.0.0.5/oauth2/token",
+        "http://172.16.4.2/token",
+        "http://192.168.1.20:8080/token",
+        "http://127.0.0.1:9000/token",
+        "http://[::1]:9000/token",
+        "http://localhost:9000/token",
+    ] {
+        let errs = build(tu);
+        assert!(
+            !errs.iter().any(|e| e.contains("token_url")),
+            "http token_url to a private/loopback host must be accepted, as 1.5.5 did ({tu}); got: {errs:?}"
+        );
+    }
+    // A public http token_url is refused in 1.5.5's words, byte for byte.
+    let errs = build("http://example.com/token");
+    let want = "provider 'entra' token_url must use https for a public host (got 'http://example.com/token'); it carries the client secret, so plaintext http is permitted only for a private/loopback token endpoint";
+    assert!(
+        errs.iter().any(|e| e == want),
+        "public http token_url must be refused with the 1.5.5 text; got: {errs:?}"
+    );
     // SSRF: an https token_url pointed at cloud metadata is blocked (would leak the client secret).
     for host in ["169.254.169.254", "metadata.google.internal"] {
         let errs = build(&format!("https://{host}/token"));
@@ -501,6 +524,41 @@ fn test_validate_token_url_ssrf_and_scheme() {
     assert!(
         ws.iter().any(|e| e.contains("token_url")),
         "whitespace-only token_url must be rejected as missing; got: {ws:?}"
+    );
+}
+
+#[test]
+fn vet_token_uri_takes_http_to_a_private_host_and_refuses_a_public_one() {
+    // The service account's token_uri gets the same 1.5.5 rule as token_url
+    // (v1.5.5 egress_auth/jwt_bearer.rs:120-149): http only for a private or loopback endpoint.
+    for uri in [
+        "http://10.0.0.5/token",
+        "http://192.168.1.20/token",
+        "http://127.0.0.1:9000/token",
+        "http://[::1]/token",
+        "https://oauth2.googleapis.com/token",
+    ] {
+        assert_eq!(
+            vet_token_uri(uri, &MetadataPosture::default()),
+            Ok(()),
+            "token_uri {uri} must be accepted, as 1.5.5 did"
+        );
+    }
+    let uri = "http://oauth2.example.com/token";
+    assert_eq!(
+        vet_token_uri(uri, &MetadataPosture::default()),
+        Err(format!(
+            "service-account token_uri must use https for a public host (got '{uri}'); it receives the signed JWT assertion, so plaintext http is permitted only for a private/loopback endpoint"
+        )),
+        "a public http token_uri must be refused in 1.5.5's words"
+    );
+    let imds = vet_token_uri(
+        "http://169.254.169.254/token",
+        &MetadataPosture::default(),
+    );
+    assert!(
+        imds.as_ref().is_err_and(|e| e.contains("cloud-metadata")),
+        "a token_uri at the metadata host must be refused as cloud-metadata; got: {imds:?}"
     );
 }
 
@@ -786,6 +844,45 @@ fn test_validate_rejects_non_https_base_url() {
             .any(|e| e.contains("blocked cloud-metadata host") && e.contains("169.254.169.254")),
         "expected a metadata-host error for the http IMDS literal; got: {errs:?}"
     );
+}
+
+/// E1 PARITY: `--validate` accepts a provider at a private or loopback LITERAL, as 1.5.5 did. The
+/// destination guard refuses such a dial at the dial (the connector's name arm, unless
+/// `advanced.allow_destinations` names it); the configuration check does not move with it.
+#[test]
+fn test_validate_accepts_a_private_or_loopback_literal_base_url() {
+    for url in [
+        "http://127.0.0.1:11434",
+        "http://10.1.2.3/",
+        "http://192.168.1.5:8080/v1",
+        "http://[::1]:8080",
+        "https://172.16.0.9",
+    ] {
+        let mut providers = HashMap::new();
+        providers.insert("p".to_string(), make_provider(proto_a(), url, "API_KEY"));
+        let cfg = make_root_cfg(providers, HashMap::new(), HashMap::new());
+        assert!(
+            validate(&cfg).is_ok(),
+            "a private or loopback literal base_url validates, as in 1.5.5: {url}"
+        );
+    }
+}
+
+/// E1 PARITY: the metadata denylist DISPLAYS 1.5.5's eleven entries (`--print-metadata-blocklist`
+/// and the boot line's count), and the guard ENFORCES twelve: the EC2 task-metadata endpoint
+/// `fd00:ec2::23` is refused beside the eleven, though it is not listed.
+#[test]
+fn test_the_metadata_denylist_displays_eleven_and_enforces_twelve() {
+    let shown = crate::config_validate::metadata_denylist_entries();
+    assert_eq!(shown.len(), 11, "1.5.5's displayed list: {shown:?}");
+    assert!(!shown.iter().any(|e| e == "fd00:ec2::23"), "{shown:?}");
+    let task: std::net::IpAddr = "fd00:ec2::23".parse().expect("an address");
+    assert!(
+        busbar_contract::net::ip_is_cloud_metadata(&task),
+        "the twelfth entry is enforced"
+    );
+    let imds: std::net::IpAddr = "fd00:ec2::254".parse().expect("an address");
+    assert!(busbar_contract::net::ip_is_cloud_metadata(&imds));
 }
 
 #[test]

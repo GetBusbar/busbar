@@ -606,9 +606,11 @@ deregister}` on the per-worker reactor.
 | Class | Used by | Rule |
 |---|---|---|
 | `provider` | plane upstreams | allow-list + `allow_metadata_hosts` |
-| `operator-infrastructure` | databases, vault, ldap | private, loopback and plaintext allowed; pinned; cloud metadata hosts refused (accepted difference, owner 2026-09-27) |
-| `open-web` | webhook | public https only |
-| `loopback-allowed` | otlp, webrequest; auth mint endpoints (`token_url`, `token_uri`: ARCHITECT 2026-10-04 parity ruling, https or loopback plaintext exactly as 1.5.5 validated them, the destination guard still applying) | https, or loopback plaintext; the node's own ports refused |
+| `operator-infrastructure` | databases, vault, ldap; auth mint endpoints (`token_url`, `token_uri`) | private, loopback and plaintext allowed; pinned; cloud metadata hosts refused (accepted difference, owner 2026-09-27) |
+| `open-web` | webhook; ~~auth mint endpoints (`token_url`, `token_uri`)~~ | public https only |
+
+~~auth mint endpoints in `open-web`~~ STRUCK 2026-10-05 by ARCHITECT (D1, MINT CLASS (B)): the mint need takes operator-infrastructure semantics. Law beats table: customer-visible behaviour stays 1.5.5 unless the owner signs (Part 1), and 1.5.5 minted over plaintext to a private or loopback token endpoint; the owner signed only the destination guard change below. `--validate` keeps refusing an http mint endpoint on a public host, as 1.5.5 did, and the ONE destination guard in the connector still applies on top. Proven byte-identical by the oracle cells `egress.auth|oauth-cc|mint-refresh` and `egress.auth|jwt-bearer|mint-refresh`.
+| `loopback-allowed` | otlp, webrequest | https, or loopback plaintext; the node's own ports refused |
 
 **Destination guard — ONE check for every outbound connection (OWNER ruling, DESTINATION GUARD,
 2026-10-02; supersedes the Q130/Q131 detail).** Every outbound connection of any kind (providers,
@@ -796,7 +798,7 @@ and guest lists".
    §11.6: the framer no longer calls a `decorate` crossing; the kernel makes the one call. The framer
    now calls its bound auth through the host auth handle at its auth points (SUPERSEDED 2026-09-30 by THE DESIGN §6, "Auth points and guest lists").
 5. **Each style caches inside its plugin.** bearer and api-key build the header once, at `open`.
-   jwt-bearer and oauth-client-credentials mint through the plugin's own `open-web` need and refresh
+   jwt-bearer and oauth-client-credentials mint through the plugin's own `operator-infrastructure` need (§5 egress classes, ARCHITECT D1 MINT CLASS (B)) and refresh
    ahead of expiry in the background on `tick`; the plugin holds the service-account file or client
    secret, validates it, and renders 1.5.5's refusal texts. SigV4 signs per request with a daily
    signing key derived ahead of time. caller-credential passes the caller's credential through. The
@@ -1771,7 +1773,7 @@ bears on none of them, it is reporting a defect in itself.
 
 Dev-green on **one SHA**, with nothing outstanding or niggling:
 
-1. `scripts/verify-1.6.0-done.sh` exits 0 across all of its groups (`DONE_GROUPS_DECLARED`, 24 today) — full run, never `--fast`
+1. `scripts/verify-1.6.0-done.sh` exits 0 across all of its groups (`DONE_GROUPS_DECLARED`, 25 today) — full run, never `--fast`
    (exit 3 is PROVISIONAL, not spendable), every bless/repoint env var empty.
 2. Construction standing-reds **empty** — `ship-ready` green, not merely `--posture`-tolerated.
    Hard clause: every `Family::Neutral` crate names **ZERO** plane/control/transport/dialect instance
@@ -2247,7 +2249,7 @@ are IN this file — nothing outside it does.
 | 60 | **"2× fresh audit" = loop the full audit to zero-found on a RE-RUN, never trust one 'done'. OWNER-LOCKED 2026-09-20.** Done means: run the full `/codeaudit` over all code → fix to 0 issues → run the full audit AGAIN → still 0. Repeat until a fresh pass finds nothing; a single pass that says "done" is not trusted (the skill already fans sonnet+opus but does not catch everything first time). Convergence = two consecutive clean full passes. "All code" means the code that ships: code being deleted or folded is not audited (owner, ~2026-09-19: *"don't audit what we delete"*); it is audited in its folded home. | ship/done gate requires two consecutive clean full-audit passes (re-run finds zero), not a single pass |
 | 61 | **Force-push rule: own working branches only, `--force-with-lease`, never a shared branch. OWNER-LOCKED 2026-09-20.** An agent may force-push ONLY its own `land-*`/`keep-*` working branches, always with `--force-with-lease`, and NEVER a shared branch (`dev`/`qa`/`main`) or a repo the owner doesn't own. | force-push limited to own land-*/keep-* branches with --force-with-lease; shared branches never force-pushed |
 
-| 62 | **A mid-stream cut is NOT a refund — the customer pays for what actually streamed. OWNER-LOCKED 2026-09-20 ("LOCKED AGREED").** If a live/streaming request is cut off mid-answer (breaker, disconnect, auth revoked, timeout), busbar bills for what was actually delivered up to the cut — it does not refund or zero the charge. Consistent with #43/#45: the plane reports the units actually streamed; the ledger records them; the money view prices them. A cut is an interruption, not a reversal of incurred cost. A stream served on a fallback lane bills like a primary-lane stream (owner, 2026-09-04: `stream_options.include_usage` on the degraded/fallback path, registered `improvement`, money-affecting). | mid-stream cut bills streamed units to the cut point; no refund/zeroing on cut; plane reports actual streamed units |
+| 62 | **A mid-stream cut is NOT a refund — the customer pays for what actually streamed. OWNER-LOCKED 2026-09-20 ("LOCKED AGREED").** If a live/streaming request is cut off mid-answer (breaker, disconnect, auth revoked, timeout — including a plane's stated stream ceiling passing on a streamed unit, whether its far end is still sending or its caller stopped reading (ARCHITECT ruling 2026-10-07, STREAM-CEILING, Appendix B)), busbar bills for what was actually delivered up to the cut — it does not refund or zero the charge. Consistent with #43/#45: the plane reports the units actually streamed; the ledger records them; the money view prices them. A cut is an interruption, not a reversal of incurred cost. A stream served on a fallback lane bills like a primary-lane stream (owner, 2026-09-04: `stream_options.include_usage` on the degraded/fallback path, registered `improvement`, money-affecting). | mid-stream cut bills streamed units to the cut point; no refund/zeroing on cut; plane reports actual streamed units |
 
 | 63 | **Hook behaviour is BYTE/BEHAVIOUR-IDENTICAL to 1.5.5 — 1.6.0 changes only the crate home. OWNER-LOCKED 2026-09-20 (owner-reviewed).** No change to WHERE hooks fire (the four points: request/inbound-rewrite, candidate, routing/decide, response/read-only tap), to fire-once semantics (per request — per gate on rewrite, per hop on decide — NEVER per token), to fail-closed handling (a broken/unparseable reply REJECTS the request; strictest wins: reject > restrict > abstain > allow), or to the grant model (two dials defaulting to nothing: `argument` none/ro/rw + `identity` none/ro; never sees secrets/tokens/price tables). The ONLY 1.6.0 change is relocation to a plugin `busbar-hook-<name>` in its own repo (`busbar-hook-ranking`, #34/#39) computing no money (#43); a plane calls hooks through the completion-style `hook.call` host service (THE DESIGN §2). Oracle proves hook behaviour unchanged. As in 1.5.5 (owner, 2026-09-04): a pre-forward auth refusal (401) on a hooked pool fires the completion tap once, with the synthetic outcome `rejected_by_auth` and the protocol-native status; every other pre-forward refusal (403/429/413/404) never taps. | hook fire-points/fire-once/fail-closed/grants identical to 1.5.5 (oracle byte-green); only the crate home moves to busbar-hook-<name> |
 
@@ -2581,7 +2583,13 @@ allow-list, pin, failover and exhaustion terminals; the driver builds no second 
   reaches the caller; a retry verdict after the first byte is treated as hard.
 - One attempt is live per unit; there is no hedging.
 - Backpressure is `emitted`/`more`: a full reply buffer answers `more = 1`, the kernel flushes, waits
-  for the caller's side to be writable and calls again.
+  for the caller's side to be writable and calls again. That wait is bounded by the unit's deadline
+  alone (ARCHITECT ruling 2026-10-07, STREAM-CEILING, Appendix B): once a streamed unit's head is stated it runs on its own task, the
+  response body only drains what it writes, and dropping the body is how the unit learns its caller
+  is gone. A plane that states a stream ceiling (`PlaneTail::stream_ceiling_secs`) and marks the unit
+  `ROUTE_STREAM` has that ceiling stamped as the unit's deadline once its route is known, so a caller
+  that stops reading with its socket open releases the unit at the ceiling; a plane that states `0`
+  has no ceiling, and a stalled caller holds its unit until it goes, as the previous release did.
 - Every answer carries cumulative units: they feed the budget check (which may use estimates) and the
   checkpoint cadence (§7); a checkpoint that dries the budget under `cut-stream` cuts the unit, the
   plane renders the error frame through `refusal`, and one Abort line settles (§7).
@@ -2591,7 +2599,10 @@ allow-list, pin, failover and exhaustion terminals; the driver builds no second 
   and the boot-verify golden over deployed chains stands. This applies to plane record chains only:
   the kernel's own audit chain is the fixed record of THE DESIGN §1.
 
-**Cancel** (client drop, deadline, reload). The driver keeps its own facts — whether the far end
+**Cancel** (client drop, deadline, reload). A deadline is the unit's own, or the stream ceiling its
+plane states, stamped once the route is known; it fires on the far end's reads and on the caller's
+writes alike, so a stalled caller of a ceiling-stating plane is cut there (`DeadlineExceeded`, billed
+as #62) (ARCHITECT ruling 2026-10-07, STREAM-CEILING, Appendix B). The driver keeps its own facts — whether the far end
 answered, whether the reply streamed, the last reported units. On every path it controls (deadline,
 cut, reload) the driver makes the ticketless `cancel` call itself before the loop future ends; a caller
 that goes away drops the future, and then the ticket goes to the dispatcher's client-drop path, which
@@ -3504,7 +3515,7 @@ typedef uint8_t (*bb_op)(void* instance, const void* in, void* out);   /* extern
    | Class | Deadline | On expiry |
    |---|---|---|
    | `call` | per-call budget | `cancel`, then the kind's timeout outcome (hooks go to `on_error`) |
-   | `stream` | configured idle/overall timeout | |
+   | `stream` | the plane's stated stream ceiling (`PlaneTail::stream_ceiling_secs`) on a unit its `arrive` marks `ROUTE_STREAM`, overall from the moment its route is known; `0` = none (ARCHITECT ruling 2026-10-07, STREAM-CEILING, Appendix B) | the driver's `cancel` (`DeadlineExceeded`), on the far end's reads and the caller's writes alike; the delivered units bill (#62) |
    | `connection` | carrier idle timeout | |
    | `write_behind` | long | never cancelled on client drop or reload; retried with the same `op_id` |
 
@@ -3694,7 +3705,7 @@ The loader checks in this order:
   | Slot | Contract |
   |---|---|
   | `arrive` (P) | Returns `op_class`, `principal_need`, `dialect_id`, `expected_units` (`bb_units`). |
-  | `on_piece` (P, may_pend) | Writes into the host `reply_buf`. Out: `emitted`, `more` (backpressure: the kernel flushes, waits for the socket to be writable, and re-invokes); **cumulative `bb_units[]`**; destination facts (record writes); envelope. Zero host calls per chunk. |
+  | `on_piece` (P, may_pend) | Writes into the host `reply_buf`. Out: `emitted`, `more` (backpressure: the kernel flushes, waits for the socket to be writable — within the unit's deadline, a ceiling-stating plane's stream ceiling for a streamed unit (ARCHITECT ruling 2026-10-07, STREAM-CEILING, Appendix B) — and re-invokes); **cumulative `bb_units[]`**; destination facts (record writes); envelope. Zero host calls per chunk. |
   | `cancel` | Out disposition `ok_partial`, `failed` or `aborted`. The kernel bills the last cumulative units unless failed, and releases the budget hold (1.5.5 `FirstByteBody::drop` parity; oracle cell). |
   | `refusal` | Keeps the `GateRejected` marker. |
   | `serve`, `tick`, `hydrate`, `start` | as in the first draft |
@@ -5006,6 +5017,23 @@ Other rulings:
   held by `kind-isolation:matrix`'s armed `law0-neutral-instance` class, at zero for every `Family::Neutral`
   crate on the ship twin, with a red plant of a plane instance noun in core-admin.
 
+### 2026-10-07 — ARCHITECT RULING STREAM-CEILING: a stalled caller is bounded by the plane's stated stream ceiling
+- ARCHITECT (STREAM-CEILING; found by the A2A-FLIP audit, predev `crates/busbar-a2a/src/a2a/receive.rs`
+  `send_or_expire`, `transport.rs` `RELAY_STREAM_TIMEOUT` 600 s): (1) STRUCTURAL, generic: once a
+  streamed unit states its head it runs on its own task; the response body only drains the channel,
+  and dropping the body tells the unit its caller is gone (the driver's client-drop path). No
+  well-behaved client sees a difference. (2) THE BOUND IS THE PLANE'S STATEMENT ONLY: `PlaneTail`
+  gains `stream_ceiling_secs` (a tail addition; a tail ending before it states `0`), `0` = NO
+  ceiling, which keeps 1.5.5's llm and predev's mcp behaviour (neither bounded a stalled consumer).
+  The root records `ROUTE_STREAM` and passes `wants_stream` to the walk; the unit's deadline comes
+  from `Egress::deadline_ns` once the route is known (`FarEnd::deadline_ns`), and a streamed send's
+  ceiling is the plane's stated one, else the deployment's. With (1) in place the ceiling also fires
+  on a stalled caller of a ceiling-stating plane. The a2a plane states 600 s and marks
+  `message/stream` and `tasks/resubscribe` `ROUTE_STREAM`. (3) The far end's wait for a buffered
+  answer's next piece is what is left of the walk's budget, measured once from the unit's start (it
+  subtracted the time since the attempt opened a second time, cutting at about half the budget).
+  Kernel, contract, loader and root stay kind-neutral.
+
 # APPENDIX C — THE PLANE DRIVER AND HOST SERVICES (design, owner-ruled 2026-09-28)
 
 
@@ -5050,7 +5078,7 @@ This is a design only. I committed nothing and pushed nothing, and the driver-de
    - The breaker disposition comes from the walk's status table (TD step 24).
    - The plane can also give a body-level verdict in `OnPieceOut.verdict`, which is the renamed `_reserved` field (B.10).
    - The walk fails over only before the first byte reaches the caller (the rule in its own module doc). Exhaustion goes to its existing terminals (shed, spill, wait).
-4. **Backpressure.** READY with `more = 1` means flush, await writable, then call again with an empty piece (abi/plane doc; P4: `more = 1` with `emitted = 0` is FAULT).
+4. **Backpressure.** READY with `more = 1` means flush, await writable, then call again with an empty piece (abi/plane doc; P4: `more = 1` with `emitted = 0` is FAULT). The await is bounded by the unit's deadline: after its head a streamed unit runs on its own task, so a ceiling-stating plane's stream ceiling fires on a caller that stopped reading; with no ceiling stated it waits until the caller goes (ARCHITECT ruling 2026-10-07, STREAM-CEILING, Appendix B).
 5. **Units.** Every READY answer carries cumulative units, which become a running checkpoint (crash-safe, never a ledger line; §7, TD step 15). If a checkpoint dries the budget:
    - `on_exhaustion: cut-stream` means the driver calls `refusal` for the in-stream error frame, then settles one Abort line (§7 "A cut is told", BB:576).
    - `finish-unit` means the unit runs to its end.

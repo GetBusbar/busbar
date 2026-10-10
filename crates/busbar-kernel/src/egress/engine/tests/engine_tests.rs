@@ -313,8 +313,12 @@ async fn connect_tunnel_end_to_end_through_scripted_proxy() {
         EgressResolver::system(),
     );
     http.enforce_http(false);
-    let connector =
-        tunnel::TunnelConnector::new(http, Some(config), tunnel::connects_per_shard_for_tests());
+    let connector = tunnel::TunnelConnector::new(
+        http,
+        Some(config),
+        tunnel::connects_per_shard_for_tests(),
+        tunnel::loopback_listed_for_tests(),
+    );
     let https = super::https::HttpsConnector::new(
         connector,
         super::client_tls(&EngineSpec::pooled_webpki(4, 300, true, false), &[])

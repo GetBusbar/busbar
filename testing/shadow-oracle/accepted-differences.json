@@ -23,7 +23,7 @@
       "kind": "improvement",
       "changelog": "Every error and warning line carries a diagnostic code.",
       "by": "owner (Matthew Jackson), 2026-09-04 parity triage",
-      "rationale": "SCOPE (added 2026-09-06, shadow-oracle round-5): this entry carried no `cells`, so it defaulted to `.` and ran over all 2299 cells -- and a fired transform used to hand the cell's whole raw class list to the accepted column, so any cell where this rewrite happened to fire could have a `status` forgiven by it. The lines it rewrites live in a process's stderr or its stdout, which only the exec- and script-driven cells have; the scope is those families and nothing else. ORIGINAL RATIONALE: 1.6.0 prefixes every [error]/[warn]/warning: stderr line with a diagnostic code (BUSBAR-NNNN:) and every boot log line with diag=BUSBAR-NNNN; the text after the code is byte-identical to 1.5.5. SCOPE COUNT 461 -> 462 (2026-09-07): the new boot.refusal|BOOT-152b|boot cell — the boot-mode twin of BOOT-152, which records the provider-credential refusal that replaced the 1.5.5 degrade (register entry F-016) — is an exec-driven boot cell, so it falls inside this family scope like every other one. The transform's REACH is unchanged; one more cell exists for it to reach. SCOPE COUNT 462 -> 480 (2026-09-24, owner ruling Q53): the 18 config.migrate cells for the configs v1.5.3, v1.5.4 and v1.5.5 shipped (TODO item 48) joined the corpus with their 1.5.5 golden reference; they are exec-driven cells of a family this scope already names, so they fall inside it like the 138 config.migrate cells before them. The regex, the transform and its REACH are unchanged; eighteen more cells exist for it to reach. SCOPE COUNT 480 -> 481 (owner ruling 2026-09-28): BOOT-MCP-01 (the fixed /mcp mount refusing any other path at boot) is new 1.6.0 surface with no 1.5.5 golden; an exec-driven boot cell of a family this scope already names, counted in exactly as BOOT-152b was (461 -> 462). The regex, the transform and its REACH are unchanged. WIDENED 2026-10-02 (owner R2, ORACLE batch, escalate.q 04:20Z): the five boot.deprecated-env cells (582) and the four egress.image-detail cells (585) recorded from the published 1.5.5 join the scope; each differs from 1.5.5 only by the `diag=BUSBAR-NNNN` suffix on a boot log line (the DEPRECATED text and every override's behaviour are 1.5.5's). Scope count 481 -> 490. SCOPE COUNT 490 -> 492 (2026-10-05, busbar Q128 U2, ARCHITECT Q-U2-1 \"prove it with oracle cells for both refusals\"): boot.refusal|BOOT-102|validate and boot.refusal|BOOT-103|validate (a second prometheus / a second otlp instance) joined the corpus with their 1.5.5 golden recorded from the published binary; they are exec-driven cells of a family this scope already names, and each differs from 1.5.5 only by the `BUSBAR-NNNN:` code on its `[error]` line (the refusal text is 1.5.5's byte for byte). The regex, the transform and its REACH are unchanged; two more cells exist for it to reach. COUNT 2026-10-06 (P6 ORACLE-STRICT): 492 -> 495, the three neutrality|routes|{decisions,ws,oauth-as}-shaped-404 cells the corpus generator holds join cells.json and fall under the existing `neutrality` family of the regex; regex, transform and reach unchanged.",
+      "rationale": "SCOPE (added 2026-09-06, shadow-oracle round-5): this entry carried no `cells`, so it defaulted to `.` and ran over all 2299 cells -- and a fired transform used to hand the cell's whole raw class list to the accepted column, so any cell where this rewrite happened to fire could have a `status` forgiven by it. The lines it rewrites live in a process's stderr or its stdout, which only the exec- and script-driven cells have; the scope is those families and nothing else. ORIGINAL RATIONALE: 1.6.0 prefixes every [error]/[warn]/warning: stderr line with a diagnostic code (BUSBAR-NNNN:) and every boot log line with diag=BUSBAR-NNNN; the text after the code is byte-identical to 1.5.5. SCOPE COUNT 461 -> 462 (2026-09-07): the new boot.refusal|BOOT-152b|boot cell — the boot-mode twin of BOOT-152, which records the provider-credential refusal that replaced the 1.5.5 degrade (register entry F-016) — is an exec-driven boot cell, so it falls inside this family scope like every other one. The transform's REACH is unchanged; one more cell exists for it to reach. SCOPE COUNT 462 -> 480 (2026-09-24, owner ruling Q53): the 18 config.migrate cells for the configs v1.5.3, v1.5.4 and v1.5.5 shipped (TODO item 48) joined the corpus with their 1.5.5 golden reference; they are exec-driven cells of a family this scope already names, so they fall inside it like the 138 config.migrate cells before them. The regex, the transform and its REACH are unchanged; eighteen more cells exist for it to reach. SCOPE COUNT 480 -> 481 (owner ruling 2026-09-28): BOOT-MCP-01 (the fixed /mcp mount refusing any other path at boot) is new 1.6.0 surface with no 1.5.5 golden; an exec-driven boot cell of a family this scope already names, counted in exactly as BOOT-152b was (461 -> 462). The regex, the transform and its REACH are unchanged. WIDENED 2026-10-02 (owner R2, ORACLE batch, escalate.q 04:20Z): the five boot.deprecated-env cells (582) and the four egress.image-detail cells (585) recorded from the published 1.5.5 join the scope; each differs from 1.5.5 only by the `diag=BUSBAR-NNNN` suffix on a boot log line (the DEPRECATED text and every override's behaviour are 1.5.5's). Scope count 481 -> 490. SCOPE COUNT 490 -> 492 (2026-10-05, busbar Q128 U2, ARCHITECT Q-U2-1 \"prove it with oracle cells for both refusals\"): boot.refusal|BOOT-102|validate and boot.refusal|BOOT-103|validate (a second prometheus / a second otlp instance) joined the corpus with their 1.5.5 golden recorded from the published binary; they are exec-driven cells of a family this scope already names, and each differs from 1.5.5 only by the `BUSBAR-NNNN:` code on its `[error]` line (the refusal text is 1.5.5's byte for byte). The regex, the transform and its REACH are unchanged; two more cells exist for it to reach. COUNT 2026-10-06 (P6 ORACLE-STRICT): 492 -> 495, the three neutrality|routes|{decisions,ws,oauth-as}-shaped-404 cells the corpus generator holds join cells.json and fall under the existing `neutrality` family of the regex; regex, transform and reach unchanged. COUNT 2026-10-07 (ARCHITECT ruling, option A restricted; D2-PROTO busbar #545): 495 -> 496, the NEW cell neutrality|models-empty|surface joins cells.json and falls under the existing `neutrality` family of the regex; regex, transform and reach unchanged. COUNT 2026-10-07 (OWNER 2026-09-30 headroom removal, HEADROOM-REMOVE): 496 -> 495, plugins.load|headroom-hook is retired whole (golden/1.5.5/retired.tsv) because the plugin it lists is out of the product; it leaves the corpus and so this scope. Regex, transform and reach unchanged.",
       "transform": {
         "candidate": [
           [
@@ -2129,7 +2129,7 @@
       "kind": "breaking",
       "changelog": "1.6.0 Breaking: a published 1.5.5 JSON-contract plugin no longer loads; boot refuses it with a message naming the rebuild against the 1.6.0 SDK (see the SDK migration note).",
       "by": "owner (Matthew Jackson), spec section 11.8 (owner-locked \"No legacy loading\") + ARCHITECT ruling 2026-10-02T04:00Z (escalate.q:111)",
-      "cells": "^plugins\\.abi\\|json-contract\\|store-sqlite$",
+      "cells": "^plugins\\.abi\\|json-contract\\|store-sqlite@1\\.5-line$",
       "expected_cells": 1,
       "classes": [
         "body"
@@ -2139,20 +2139,20 @@
         "all": [
           {
             "not": {
-              "cell": "plugins.abi|json-contract|store-sqlite",
+              "cell": "plugins.abi|json-contract|store-sqlite@1.5-line",
               "pointer": "/exit",
               "equals": null
             }
           },
           {
             "not": {
-              "cell": "plugins.abi|json-contract|store-sqlite",
+              "cell": "plugins.abi|json-contract|store-sqlite@1.5-line",
               "pointer": "/exit",
               "equals": 0
             }
           },
           {
-            "cell": "plugins.abi|json-contract|store-sqlite",
+            "cell": "plugins.abi|json-contract|store-sqlite@1.5-line",
             "body_contains": "rebuild"
           }
         ]
@@ -2489,6 +2489,300 @@
         "by": "2026-12-31"
       },
       "rationale": "OWNER RULED Q-STORE = (B) (2026-09-27, docs/design/BUSBAR-1.6.0.md): 1.6.0 refuses a config with no `store:` block, and `busbar --migrate-config` inserts `store: {module: memory}`, the store 1.5.5 ran such a config on (v1.5.5 GOVERNANCE_STORE_MEMORY via default_governance_store, config/mod.rs:3026/3061). Q-STEP7-a (1.6.0-QUESTIONS.md, answered by the owner 2026-10-04): D1, approved, makes the oracle's run-time inputs name that store (busbar-release recorder/store_baseline.rs: the configs the engine writes and boots, each capture cell's config, the admin config-apply/validate bodies and every script cell's config via `upgrade-config`; no stored cell definition is edited, no golden re-recorded), so every other 1.5.5 golden stays the 1.5.5 answer. D2, signed as #46, is this entry: the cells that move BECAUSE of the ruling are exactly the 78 `config.migrate|<tag>|migrate` cells, since every corpus config lacks `store:` and none carries a 1.4.x `governance:`. The migrated document (body) gains `store:\\n  module: memory` as its last root key, and stderr gains `  - store: inserted `store: {module: memory}` (1.6.0 requires a `store:` block; ...)` under CHANGES: the header appears on the 9 cells whose 1.5.5 golden printed none, and the count is +1 on the other 69 (goldens print 1,2,3,4,6,9,29,31,32). The transform removes exactly that block and that line and decrements the count (ascending, so no count is rewritten twice); the cell then scores ACCEPTED, never PASS, and anything else that moved stays red. The 78 `validate-migrated` cells do not move (the migrated config validates). PREMISE (evaluated): the v1.5.5 corpus config's migrated body names the memory store, so a build that does not insert the block withholds the entry. kind=breaking: a 1.5.5 config with no store block no longer boots unchanged. COUNT RULES BOUND TO THE STORE LINE (2026-10-06, relayed ARCHITECT/oracle-strict ruling): the engine applies a `transform` to BOTH sides, so a bare `CHANGES (N)` -> `(N-1)` rule also decremented the GOLDEN's count and 45 cells could never match. Each count rule now matches only a `CHANGES (N):` header followed, in the same text, by the inserted `store:` bullet (`CHANGES \\\\(N\\\\):((?s:.*?)<store bullet>)` -> `CHANGES (N-1):\\\\1`), so the golden, which has no such bullet, is never rewritten; the bullet itself is removed after the counts. The regex scope, the cells and the reach are unchanged."
+    },
+    {
+      "id": "N34-BOOT-135 plugin name busbar-webrequest -> busbar-hook-webrequest",
+      "kind": "breaking",
+      "cells": "^boot\\.refusal\\|BOOT-135\\|boot$",
+      "expected_cells": 1,
+      "classes": [
+        "effects.stderr"
+      ],
+      "transform": {
+        "candidate": [
+          [
+            "invalid plugin '<WORK>/plugins/busbar-hook-webrequest-",
+            "invalid plugin '<WORK>/plugins/busbar-webrequest-"
+          ]
+        ]
+      },
+      "premise": {
+        "cell": "boot.refusal|BOOT-135|boot",
+        "status": 1
+      },
+      "changelog": "Breaking, signed off by the owner (plugin fleet naming, 2026-09-27): every first-party plugin is named `busbar-<kind>-<name>`, and the repo, the crate, the signed manifest name and the release asset prefix are that one name.",
+      "by": "owner (Matthew Jackson), BUSBAR-1.6.0.md Part 2 #34 (OWNER-RATIFIED 2026-09-18)",
+      "signoff": {
+        "who": "owner (Matthew Jackson)",
+        "when": "2026-09-18",
+        "ruling": "docs/design/BUSBAR-1.6.0.md Part 2 #34 (line 2213): 'Universal crate naming ... OWNER-RATIFIED 2026-09-18 (scheme A)'; 'ALL plugin instances = busbar-<kind>-<name> (owner-confirmed 2026-09-18)'; with the 2026-09-27 OWNER plugin-fleet ruling (5) NAMING (line 4018: 'every plugin repo is renamed to busbar-<kind>-<name> NOW (repo = crate = artifact prefix)') and the plugin-declared legacy-name/alias mapping (line 4070)"
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      },
+      "rationale": "DECISION: Part 2 #34, every plugin instance is named busbar-<kind>-<name>, so `busbar-webrequest` ships as `busbar-hook-webrequest`. CELL: boot.refusal|BOOT-135|boot. BYTES MOVED (golden -> candidate): effects.stderr, the staged file STEM in the `invalid plugin '<WORK>/plugins/...'` line: `busbar-webrequest-` -> `busbar-hook-webrequest-`. The transform rewrites only those name bytes back to the 1.5.5 name."
+    },
+    {
+      "id": "N34-BOOT-137b plugin name busbar-auth-oidc-plugin -> busbar-auth-oidc",
+      "kind": "breaking",
+      "cells": "^boot\\.refusal\\|BOOT-137b\\|boot$",
+      "expected_cells": 1,
+      "classes": [
+        "body",
+        "effects.stderr"
+      ],
+      "transform": {
+        "candidate": [
+          [
+            "matches plugin 'busbar-auth-oidc' \\(busbar-auth-oidc-",
+            "matches plugin 'busbar-auth-oidc-plugin' (busbar-auth-oidc-plugin-"
+          ],
+          [
+            " plugin=busbar-auth-oidc file=busbar-auth-oidc-",
+            " plugin=busbar-auth-oidc-plugin file=busbar-auth-oidc-plugin-"
+          ]
+        ]
+      },
+      "premise": {
+        "all": [
+          {
+            "cell": "boot.refusal|BOOT-137b|boot",
+            "status": 1
+          },
+          {
+            "cell": "boot.refusal|BOOT-137b|boot",
+            "body_contains": "WARN plugin present but NOT loaded (trust policy)"
+          },
+          {
+            "cell": "boot.refusal|BOOT-137b|boot",
+            "body_contains": "plugin=busbar-auth-oidc file=busbar-auth-oidc-"
+          }
+        ]
+      },
+      "changelog": "Breaking, signed off by the owner (plugin fleet naming, 2026-09-27): every first-party plugin is named `busbar-<kind>-<name>`, and the repo, the crate, the signed manifest name and the release asset prefix are that one name.",
+      "by": "owner (Matthew Jackson), BUSBAR-1.6.0.md Part 2 #34 (OWNER-RATIFIED 2026-09-18)",
+      "signoff": {
+        "who": "owner (Matthew Jackson)",
+        "when": "2026-09-18",
+        "ruling": "docs/design/BUSBAR-1.6.0.md Part 2 #34 (line 2213): 'Universal crate naming ... OWNER-RATIFIED 2026-09-18 (scheme A)'; 'ALL plugin instances = busbar-<kind>-<name> (owner-confirmed 2026-09-18)'; with the 2026-09-27 OWNER plugin-fleet ruling (5) NAMING (line 4018: 'every plugin repo is renamed to busbar-<kind>-<name> NOW (repo = crate = artifact prefix)') and the plugin-declared legacy-name/alias mapping (line 4070)"
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      },
+      "rationale": "DECISION: Part 2 #34, every plugin instance is named busbar-<kind>-<name>, so `busbar-auth-oidc-plugin` ships as `busbar-auth-oidc`. CELL: boot.refusal|BOOT-137b|boot. BYTES MOVED (golden -> candidate): effects.stderr `matches plugin 'busbar-auth-oidc-plugin' (busbar-auth-oidc-plugin-` -> `matches plugin 'busbar-auth-oidc' (busbar-auth-oidc-`; body.text trust WARN line `plugin=busbar-auth-oidc-plugin file=busbar-auth-oidc-plugin-` -> `plugin=busbar-auth-oidc file=busbar-auth-oidc-`. The transform rewrites only those name bytes back to the 1.5.5 name."
+    },
+    {
+      "id": "N34-BOOT-138a plugin name busbar-auth-oidc-plugin -> busbar-auth-oidc",
+      "kind": "breaking",
+      "cells": "^boot\\.refusal\\|BOOT-138a\\|boot$",
+      "expected_cells": 1,
+      "classes": [
+        "effects.stderr"
+      ],
+      "transform": {
+        "candidate": [
+          [
+            "which resolves to plugin 'busbar-auth-oidc' of kind 'auth', not a `hook` plugin",
+            "which resolves to plugin 'busbar-auth-oidc-plugin' of kind 'auth', not a `hook` plugin"
+          ]
+        ]
+      },
+      "premise": {
+        "cell": "boot.refusal|BOOT-138a|boot",
+        "status": 1
+      },
+      "changelog": "Breaking, signed off by the owner (plugin fleet naming, 2026-09-27): every first-party plugin is named `busbar-<kind>-<name>`, and the repo, the crate, the signed manifest name and the release asset prefix are that one name.",
+      "by": "owner (Matthew Jackson), BUSBAR-1.6.0.md Part 2 #34 (OWNER-RATIFIED 2026-09-18)",
+      "signoff": {
+        "who": "owner (Matthew Jackson)",
+        "when": "2026-09-18",
+        "ruling": "docs/design/BUSBAR-1.6.0.md Part 2 #34 (line 2213): 'Universal crate naming ... OWNER-RATIFIED 2026-09-18 (scheme A)'; 'ALL plugin instances = busbar-<kind>-<name> (owner-confirmed 2026-09-18)'; with the 2026-09-27 OWNER plugin-fleet ruling (5) NAMING (line 4018: 'every plugin repo is renamed to busbar-<kind>-<name> NOW (repo = crate = artifact prefix)') and the plugin-declared legacy-name/alias mapping (line 4070)"
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      },
+      "rationale": "DECISION: Part 2 #34, every plugin instance is named busbar-<kind>-<name>, so `busbar-auth-oidc-plugin` ships as `busbar-auth-oidc`. CELL: boot.refusal|BOOT-138a|boot. BYTES MOVED (golden -> candidate): effects.stderr `which resolves to plugin 'busbar-auth-oidc-plugin' of kind 'auth'` -> `which resolves to plugin 'busbar-auth-oidc' of kind 'auth'`. The transform rewrites only those name bytes back to the 1.5.5 name."
+    },
+    {
+      "id": "N34-BOOT-138b plugin name busbar-webrequest -> busbar-hook-webrequest",
+      "kind": "breaking",
+      "cells": "^boot\\.refusal\\|BOOT-138b\\|boot$",
+      "expected_cells": 1,
+      "classes": [
+        "body",
+        "effects.stderr"
+      ],
+      "transform": {
+        "candidate": [
+          [
+            "matching plugin 'busbar-hook-webrequest' \\(busbar-hook-webrequest-",
+            "matching plugin 'busbar-webrequest' (busbar-webrequest-"
+          ],
+          [
+            " plugin=busbar-hook-webrequest file=busbar-hook-webrequest-",
+            " plugin=busbar-webrequest file=busbar-webrequest-"
+          ]
+        ]
+      },
+      "premise": {
+        "all": [
+          {
+            "cell": "boot.refusal|BOOT-138b|boot",
+            "status": 1
+          },
+          {
+            "cell": "boot.refusal|BOOT-138b|boot",
+            "body_contains": "WARN plugin present but NOT loaded (trust policy)"
+          },
+          {
+            "cell": "boot.refusal|BOOT-138b|boot",
+            "body_contains": "plugin=busbar-hook-webrequest file=busbar-hook-webrequest-"
+          }
+        ]
+      },
+      "changelog": "Breaking, signed off by the owner (plugin fleet naming, 2026-09-27): every first-party plugin is named `busbar-<kind>-<name>`, and the repo, the crate, the signed manifest name and the release asset prefix are that one name.",
+      "by": "owner (Matthew Jackson), BUSBAR-1.6.0.md Part 2 #34 (OWNER-RATIFIED 2026-09-18)",
+      "signoff": {
+        "who": "owner (Matthew Jackson)",
+        "when": "2026-09-18",
+        "ruling": "docs/design/BUSBAR-1.6.0.md Part 2 #34 (line 2213): 'Universal crate naming ... OWNER-RATIFIED 2026-09-18 (scheme A)'; 'ALL plugin instances = busbar-<kind>-<name> (owner-confirmed 2026-09-18)'; with the 2026-09-27 OWNER plugin-fleet ruling (5) NAMING (line 4018: 'every plugin repo is renamed to busbar-<kind>-<name> NOW (repo = crate = artifact prefix)') and the plugin-declared legacy-name/alias mapping (line 4070)"
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      },
+      "rationale": "DECISION: Part 2 #34, every plugin instance is named busbar-<kind>-<name>, so `busbar-webrequest` ships as `busbar-hook-webrequest`. CELL: boot.refusal|BOOT-138b|boot. BYTES MOVED (golden -> candidate): effects.stderr `matching plugin 'busbar-webrequest' (busbar-webrequest-` -> `matching plugin 'busbar-hook-webrequest' (busbar-hook-webrequest-`; body.text trust WARN line `plugin=busbar-webrequest file=busbar-webrequest-` -> `plugin=busbar-hook-webrequest file=busbar-hook-webrequest-`. The transform rewrites only those name bytes back to the 1.5.5 name."
+    },
+    {
+      "id": "N34-BOOT-139b plugin name busbar-auth-oidc-plugin -> busbar-auth-oidc",
+      "kind": "breaking",
+      "cells": "^boot\\.refusal\\|BOOT-139b\\|boot$",
+      "expected_cells": 1,
+      "classes": [
+        "body",
+        "effects.stderr"
+      ],
+      "transform": {
+        "candidate": [
+          [
+            "matches plugin 'busbar-auth-oidc' \\(busbar-auth-oidc-",
+            "matches plugin 'busbar-auth-oidc-plugin' (busbar-auth-oidc-plugin-"
+          ],
+          [
+            " plugin=busbar-auth-oidc file=busbar-auth-oidc-",
+            " plugin=busbar-auth-oidc-plugin file=busbar-auth-oidc-plugin-"
+          ]
+        ]
+      },
+      "premise": {
+        "all": [
+          {
+            "cell": "boot.refusal|BOOT-139b|boot",
+            "status": 1
+          },
+          {
+            "cell": "boot.refusal|BOOT-139b|boot",
+            "body_contains": "WARN plugin present but NOT loaded (trust policy)"
+          },
+          {
+            "cell": "boot.refusal|BOOT-139b|boot",
+            "body_contains": "plugin=busbar-auth-oidc file=busbar-auth-oidc-"
+          }
+        ]
+      },
+      "changelog": "Breaking, signed off by the owner (plugin fleet naming, 2026-09-27): every first-party plugin is named `busbar-<kind>-<name>`, and the repo, the crate, the signed manifest name and the release asset prefix are that one name.",
+      "by": "owner (Matthew Jackson), BUSBAR-1.6.0.md Part 2 #34 (OWNER-RATIFIED 2026-09-18)",
+      "signoff": {
+        "who": "owner (Matthew Jackson)",
+        "when": "2026-09-18",
+        "ruling": "docs/design/BUSBAR-1.6.0.md Part 2 #34 (line 2213): 'Universal crate naming ... OWNER-RATIFIED 2026-09-18 (scheme A)'; 'ALL plugin instances = busbar-<kind>-<name> (owner-confirmed 2026-09-18)'; with the 2026-09-27 OWNER plugin-fleet ruling (5) NAMING (line 4018: 'every plugin repo is renamed to busbar-<kind>-<name> NOW (repo = crate = artifact prefix)') and the plugin-declared legacy-name/alias mapping (line 4070)"
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      },
+      "rationale": "DECISION: Part 2 #34, every plugin instance is named busbar-<kind>-<name>, so `busbar-auth-oidc-plugin` ships as `busbar-auth-oidc`. CELL: boot.refusal|BOOT-139b|boot. BYTES MOVED (golden -> candidate): effects.stderr `matches plugin 'busbar-auth-oidc-plugin' (busbar-auth-oidc-plugin-` -> `matches plugin 'busbar-auth-oidc' (busbar-auth-oidc-`; body.text trust WARN line `plugin=busbar-auth-oidc-plugin file=busbar-auth-oidc-plugin-` -> `plugin=busbar-auth-oidc file=busbar-auth-oidc-`. The transform rewrites only those name bytes back to the 1.5.5 name."
+    },
+    {
+      "id": "N34-BOOT-171 plugin name busbar-store-sqlite-plugin -> busbar-store-sqlite",
+      "kind": "breaking",
+      "cells": "^boot\\.refusal\\|BOOT-171\\|boot$",
+      "expected_cells": 1,
+      "classes": [
+        "effects.stderr"
+      ],
+      "transform": {
+        "candidate": [
+          [
+            "plugin load failed: plugin 'busbar-store-sqlite' open failed: ",
+            "plugin load failed: plugin 'busbar-store-sqlite-plugin' open failed: "
+          ]
+        ]
+      },
+      "premise": {
+        "cell": "boot.refusal|BOOT-171|boot",
+        "status": 1
+      },
+      "changelog": "Breaking, signed off by the owner (plugin fleet naming, 2026-09-27): every first-party plugin is named `busbar-<kind>-<name>`, and the repo, the crate, the signed manifest name and the release asset prefix are that one name.",
+      "by": "owner (Matthew Jackson), BUSBAR-1.6.0.md Part 2 #34 (OWNER-RATIFIED 2026-09-18)",
+      "signoff": {
+        "who": "owner (Matthew Jackson)",
+        "when": "2026-09-18",
+        "ruling": "docs/design/BUSBAR-1.6.0.md Part 2 #34 (line 2213): 'Universal crate naming ... OWNER-RATIFIED 2026-09-18 (scheme A)'; 'ALL plugin instances = busbar-<kind>-<name> (owner-confirmed 2026-09-18)'; with the 2026-09-27 OWNER plugin-fleet ruling (5) NAMING (line 4018: 'every plugin repo is renamed to busbar-<kind>-<name> NOW (repo = crate = artifact prefix)') and the plugin-declared legacy-name/alias mapping (line 4070)"
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      },
+      "rationale": "DECISION: Part 2 #34, every plugin instance is named busbar-<kind>-<name>, so `busbar-store-sqlite-plugin` ships as `busbar-store-sqlite`. CELL: boot.refusal|BOOT-171|boot. BYTES MOVED (golden -> candidate): effects.stderr `plugin load failed: plugin 'busbar-store-sqlite-plugin' open failed:` -> `plugin load failed: plugin 'busbar-store-sqlite' open failed:`. The transform rewrites only those name bytes back to the 1.5.5 name."
+    },
+    {
+      "id": "N34-BOOT-W22 plugin name busbar-webrequest -> busbar-hook-webrequest",
+      "kind": "breaking",
+      "cells": "^boot\\.warning\\|BOOT-W22\\|boot$",
+      "expected_cells": 1,
+      "classes": [
+        "body"
+      ],
+      "transform": {
+        "candidate": [
+          [
+            " plugin=busbar-hook-webrequest file=busbar-hook-webrequest-",
+            " plugin=busbar-webrequest file=busbar-webrequest-"
+          ]
+        ]
+      },
+      "premise": {
+        "all": [
+          {
+            "cell": "boot.warning|BOOT-W22|boot",
+            "status": 0
+          },
+          {
+            "cell": "boot.warning|BOOT-W22|boot",
+            "body_contains": "WARN plugin present but NOT loaded (trust policy)"
+          },
+          {
+            "cell": "boot.warning|BOOT-W22|boot",
+            "body_contains": "plugin=busbar-hook-webrequest file=busbar-hook-webrequest-"
+          }
+        ]
+      },
+      "changelog": "Breaking, signed off by the owner (plugin fleet naming, 2026-09-27): every first-party plugin is named `busbar-<kind>-<name>`, and the repo, the crate, the signed manifest name and the release asset prefix are that one name.",
+      "by": "owner (Matthew Jackson), BUSBAR-1.6.0.md Part 2 #34 (OWNER-RATIFIED 2026-09-18)",
+      "signoff": {
+        "who": "owner (Matthew Jackson)",
+        "when": "2026-09-18",
+        "ruling": "docs/design/BUSBAR-1.6.0.md Part 2 #34 (line 2213): 'Universal crate naming ... OWNER-RATIFIED 2026-09-18 (scheme A)'; 'ALL plugin instances = busbar-<kind>-<name> (owner-confirmed 2026-09-18)'; with the 2026-09-27 OWNER plugin-fleet ruling (5) NAMING (line 4018: 'every plugin repo is renamed to busbar-<kind>-<name> NOW (repo = crate = artifact prefix)') and the plugin-declared legacy-name/alias mapping (line 4070)"
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      },
+      "rationale": "DECISION: Part 2 #34, every plugin instance is named busbar-<kind>-<name>, so `busbar-webrequest` ships as `busbar-hook-webrequest`. CELL: boot.warning|BOOT-W22|boot. BYTES MOVED (golden -> candidate): body.text trust WARN line `plugin=busbar-webrequest file=busbar-webrequest-` -> `plugin=busbar-hook-webrequest file=busbar-hook-webrequest-`. The transform rewrites only those name bytes back to the 1.5.5 name."
     }
   ]
 }

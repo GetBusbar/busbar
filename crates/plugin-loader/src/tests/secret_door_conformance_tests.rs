@@ -138,8 +138,7 @@ fn dropped() -> Loaded<Secret> {
         .expect("a `secret` row in Cargo.toml's [package.metadata.busbar.both-ways]");
     // The row names the repo's logic crate; the fleet's twin shape names its cdylib `<logic>_plugin`.
     let krate = format!("{logic}_plugin");
-    let path = crate::both_ways::cdylib(&krate)
-        .unwrap_or_else(|| panic!("the secret plugin's cdylib ({krate}) is not built"));
+    let path = crate::both_ways::cdylib(&krate);
     both::dropped_from::<Secret>(secret_fixture::door::door, &path)
 }
 
@@ -196,8 +195,7 @@ fn a_secret_plugin_that_breaks_resolve_is_refused_through_both_doors() {
     let linked = run(&both::linked::<Secret>(broken).plugin);
     assert!(linked[0].contains("Ready"), "{}", linked[0]);
     assert!(linked[1].contains("Fault"), "{}", linked[1]);
-    let dropped = both::dropped::<Secret>(broken, "secret_broken_door")
-        .expect("the broken secret door's cdylib is built beside the test binary");
+    let dropped = both::dropped::<Secret>(broken, "secret_broken_door");
     same(&linked, &run(&dropped.plugin));
 }
 
