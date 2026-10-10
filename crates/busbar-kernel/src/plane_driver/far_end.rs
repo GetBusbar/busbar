@@ -67,8 +67,7 @@ use busbar_contract::conn::{
     ConnError, ConnId, InstanceId, NeedId, OpenDesc, PieceKind, PollConns,
 };
 use busbar_contract::redacted::Redacted;
-use busbar_contract::transport::registry::status_ns;
-use busbar_contract::transport::wire::{WireStatus, WireStatusClass};
+use busbar_contract::transport::wire::WireStatusClass;
 
 use super::route::{FarEnd, FarPiece, OutboundRequest, Pick};
 
@@ -1155,16 +1154,11 @@ impl EgressFarEnd<'_> {
     ) -> FarPiece {
         let e = self.egress;
         let now = e.clock.now_secs();
-        // The numbering the far end's status is in, when it is one the kernel reserves; the
-        // first reserved numbering otherwise (the one a response head carries).
-        let namespace = piece
-            .status_namespace
-            .as_deref()
-            .and_then(|ns| status_ns::RESERVED.iter().copied().find(|r| *r == ns))
-            .unwrap_or(status_ns::RESERVED[0]);
+        // The transport's readings of the answer, never its number: the class (the fee leg, and
+        // success or not), the fault reading for the breaker, the wait it asked for.
         let status = UpstreamStatus {
             class: piece.status,
-            code: piece.status_code.map(|c| WireStatus::new(namespace, c)),
+            fault: piece.fault,
             retry_after: piece.retry_after_secs,
         };
         let far_status = Some((piece.status_code.unwrap_or(0), class_code(piece.status)));

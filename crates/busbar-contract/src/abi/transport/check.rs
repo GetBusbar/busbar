@@ -13,13 +13,14 @@
 pub use crate::abi::mechanism::check::{Fault, Rule};
 
 use super::{
-    AcceptOut, ArrivalOut, Claim, ConnFacts, FinishIn, FramePiece, FrameSpan, FramerOut, HeadSlots,
-    IoOut, ListenOut, LocateOut, SettingDecl, StatusRow, TransportTail, CANCEL_COMPLETED,
-    CANCEL_NOTHING_MOVED, FACT_DECODES_PAYLOAD, FACT_SIGNS_NOTHING_AFTER_AUTH, FRAMING_DATAGRAM,
-    FRAMING_STREAM, MAX_ADDR, PIECE_CONTINUED, PIECE_END_OF_FRAME, PIECE_FIELDS, PIECE_HAS_CODE,
-    PIECE_HAS_RETRY_AFTER, PIECE_STREAM_FAILED, PIECE_TEXT, PIECE_WRITABLE, ROLE_CARRIER,
-    ROLE_FRAMER, SETTING_FLAG, SETTING_TEXT, STATUS_AT_TERMINAL, STATUS_OTHER, STATUS_SUCCESS,
-    UNIT0_HANDSHAKE, YIELD_ENDED, YIELD_HAS_DEADLINE, YIELD_MORE, YIELD_STREAM_FULL,
+    AcceptOut, ArrivalOut, Claim, ConnFacts, FaultRow, FinishIn, FramePiece, FrameSpan, FramerOut,
+    HeadSlots, IoOut, ListenOut, LocateOut, SettingDecl, StatusRow, TransportTail,
+    CANCEL_COMPLETED, CANCEL_NOTHING_MOVED, FACT_DECODES_PAYLOAD, FACT_SIGNS_NOTHING_AFTER_AUTH,
+    FAULT_CALLER, FAULT_HARD, FRAMING_DATAGRAM, FRAMING_STREAM, MAX_ADDR, PIECE_CONTINUED,
+    PIECE_END, PIECE_END_OF_FRAME, PIECE_FIELDS, PIECE_HAS_CODE, PIECE_HAS_RETRY_AFTER,
+    PIECE_STREAM_FAILED, PIECE_TEXT, PIECE_WRITABLE, ROLE_CARRIER, ROLE_FRAMER, SETTING_FLAG,
+    SETTING_TEXT, STATUS_AT_TERMINAL, STATUS_OTHER, STATUS_SUCCESS, UNIT0_HANDSHAKE, YIELD_ENDED,
+    YIELD_HAS_DEADLINE, YIELD_MORE, YIELD_STREAM_FULL,
 };
 use super::{
     DatagramRoute, KeyingMaterial, RendezvousTerms, FINGERPRINT_BYTES, HANDSHAKE_ANSWERS,
@@ -82,6 +83,9 @@ pub const fn check_arrival(outcome: Outcome, out: &ArrivalOut, peer_cap: u64) ->
 ///
 /// The rule the answer breaks.
 pub const fn check_io(out: &IoOut, cap: u64) -> Result<(), Fault> {
+    if out.flags & !super::READ_END_OF_FRAME != 0 {
+        return Err(fault(Rule::UnknownCode, "io.flags"));
+    }
     within(out.len, cap, "io.len")
 }
 
@@ -230,6 +234,7 @@ pub fn check_framer(
                     | PIECE_FIELDS
                     | PIECE_CONTINUED
                     | PIECE_TEXT
+                    | PIECE_END
                     | PIECE_WRITABLE,
             ),
             "framer.piece.flags",
@@ -241,12 +246,22 @@ pub fn check_framer(
                 "framer.piece.writable_not_alone",
             ));
         }
-        // Text is a fact about a message's bytes: an empty piece, a field block and a failed
-        // stream's reason carry none.
+        // Text is a fact about a message, an empty one too: a field block, a failed stream's
+        // reason and a stream's end are none.
         if p.flags & PIECE_TEXT != 0
-            && (p.len == 0 || p.flags & (PIECE_FIELDS | PIECE_STREAM_FAILED) != 0)
+            && p.flags & (PIECE_FIELDS | PIECE_STREAM_FAILED | PIECE_END) != 0
         {
             return Err(fault(Rule::Contradiction, "framer.piece.text_not_message"));
+        }
+        // A stream's end is its own empty piece: bytes on it would be a message the end swallows,
+        // and a failed stream or a field block is never the whole end.
+        if p.flags & PIECE_END != 0 {
+            if p.len != 0 {
+                return Err(fault(Rule::Contradiction, "framer.piece.end_with_bytes"));
+            }
+            if p.flags & (PIECE_FIELDS | PIECE_STREAM_FAILED | PIECE_CONTINUED) != 0 {
+                return Err(fault(Rule::Contradiction, "framer.piece.end_not_payload"));
+            }
         }
         if p.flags & PIECE_CONTINUED != 0 && p.flags & PIECE_FIELDS == 0 {
             return Err(fault(
@@ -258,10 +273,11 @@ pub fn check_framer(
         if p.flags & PIECE_FIELDS != 0 && p.flags & PIECE_STREAM_FAILED != 0 {
             return Err(fault(Rule::Contradiction, "framer.piece.fields_failed"));
         }
-        // An empty piece is a stream's end (a writable piece aside), so it completes its frame; a
-        // failed stream's piece is its last, so it does too.
-        let ends = p.len == 0 && p.flags != PIECE_WRITABLE;
-        if (ends || p.flags & PIECE_STREAM_FAILED != 0) && p.flags & PIECE_END_OF_FRAME == 0 {
+        // An empty piece is a whole frame (an empty message, or the stream's end; a writable
+        // piece aside), so it completes its frame; a failed stream's piece is its last, so it
+        // does too.
+        let whole = p.len == 0 && p.flags != PIECE_WRITABLE;
+        if (whole || p.flags & PIECE_STREAM_FAILED != 0) && p.flags & PIECE_END_OF_FRAME == 0 {
             return Err(fault(
                 Rule::Contradiction,
                 "framer.piece.end_without_end_of_frame",
@@ -273,6 +289,19 @@ pub fn check_framer(
             u64::from(STATUS_OTHER),
             "framer.piece.status_class",
         )?;
+        code(
+            u64::from(p.fault),
+            0,
+            u64::from(FAULT_HARD),
+            "framer.piece.fault",
+        )?;
+        // The fault reading is a reading OF the piece's code: a piece with no code reads none.
+        if p.fault != 0 && p.flags & PIECE_HAS_CODE == 0 {
+            return Err(fault(
+                Rule::Contradiction,
+                "framer.piece.fault_without_code",
+            ));
+        }
     }
     Ok(())
 }
@@ -511,7 +540,7 @@ pub const fn check_facts(facts: &ConnFacts) -> Result<(), Fault> {
 /// over nothing (a framer with an empty `composes_over` frames directly over the host's socket);
 /// framing and fact bits are known; one to [`MAX_CLAIMS`]
 /// claim rows; no list is counted with a NULL pointer. The lists' elements: [`check_claims`],
-/// [`check_status_rows`], [`check_settings`].
+/// [`check_status_rows`], [`check_fault_rows`], [`check_fault_cover`], [`check_settings`].
 ///
 /// # Errors
 ///
@@ -545,12 +574,14 @@ pub fn check_tail(t: &TransportTail) -> Result<(), Fault> {
     listed(t.upgrades_to, t.upgrades_to_len, "tail.upgrades_to")?;
     listed(t.status_rows, t.status_rows_len, "tail.status_rows")?;
     listed(t.settings, t.settings_len, "tail.settings")?;
+    listed(t.fault_rows, t.fault_rows_len, "tail.fault_rows")?;
     // Every tail list is bounded and aligned before a reader builds a slice over it.
     bounded(t.composes_over, t.composes_over_len, "tail.composes_over")?;
     bounded(t.claim_rows, t.claim_rows_len, "tail.claim_rows")?;
     bounded(t.upgrades_to, t.upgrades_to_len, "tail.upgrades_to")?;
     bounded(t.status_rows, t.status_rows_len, "tail.status_rows")?;
     bounded(t.settings, t.settings_len, "tail.settings")?;
+    bounded(t.fault_rows, t.fault_rows_len, "tail.fault_rows")?;
     text(t.handoff_from, "tail.handoff_from")?;
     text(t.handoff_to, "tail.handoff_to")?;
     text(t.handoff_binding_fact, "tail.handoff_binding_fact")?;
@@ -680,6 +711,45 @@ pub fn check_final_status(i: &FinishIn, rows: &[StatusRow], claim: u32) -> Resul
             continue;
         }
         range(u64::from(s.offset), u64::from(s.len), bound, field)?;
+    }
+    Ok(())
+}
+
+/// Every fault row: names a claim, `lo <= hi`, and a fault reading that is stated (never
+/// `FAULT_NONE`: a code the table does not cover already reads none).
+///
+/// # Errors
+///
+/// The rule a row breaks.
+pub fn check_fault_rows(rows: &[FaultRow], claims_len: u64) -> Result<(), Fault> {
+    for r in rows {
+        index(r.claim, claims_len, "fault_row.claim")?;
+        if r.lo > r.hi {
+            return Err(fault(Rule::Contradiction, "fault_row.lo_hi"));
+        }
+        code(
+            u64::from(r.fault),
+            u64::from(FAULT_CALLER),
+            u64::from(FAULT_HARD),
+            "fault_row.fault",
+        )?;
+    }
+    Ok(())
+}
+
+/// A claim that classes its answers classes them for the breaker too: every claim named by a status
+/// row is named by at least one fault row. A framer that states status rows and no fault table
+/// would have every failure it reports read as the caller's, and the destination behind it would
+/// never trip, so the load is refused rather than served blind.
+///
+/// # Errors
+///
+/// [`Rule::Missing`] at `tail.fault_rows` for the first claim with status rows and no fault row.
+pub fn check_fault_cover(status: &[StatusRow], faults: &[FaultRow]) -> Result<(), Fault> {
+    for r in status {
+        if !faults.iter().any(|f| f.claim == r.claim) {
+            return Err(fault(Rule::Missing, "tail.fault_rows"));
+        }
     }
     Ok(())
 }

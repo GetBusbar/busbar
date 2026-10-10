@@ -131,6 +131,7 @@ fn host(conns: *const ConnectorSlots) -> Host {
         wake: None,
         conns,
         services: services(),
+        io: std::ptr::null(),
     })
 }
 
@@ -247,6 +248,7 @@ fn open_learns_the_hosts_verdict_on_a_need() {
         wake: None,
         conns: &SLOTS,
         services: std::ptr::null(),
+        io: std::ptr::null(),
     });
     assert_eq!(bare.connector(TICKET).admit(0), Err(ConnFailure::Unarmed));
 }

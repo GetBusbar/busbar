@@ -1062,6 +1062,7 @@ fn piece(
         status_code: code,
         status_namespace: None,
         retry_after_secs: None,
+        fault: None,
         reason,
     }
 }
@@ -1422,6 +1423,7 @@ fn sdk_host(p: &Plugin<TestKind>) -> busbar_contract::abi::sdk::conn::Host {
         wake: None,
         conns: &CONN_SLOTS,
         services: std::ptr::null(),
+        io: std::ptr::null(),
     })
 }
 

@@ -28,7 +28,7 @@ use busbar_contract::conn::{
     ConnError, ConnId, Conns, InstanceId, NeedId, OpenDesc, Piece, PieceKind, PollConns, Ticket,
 };
 use busbar_contract::ids::StreamId;
-use busbar_contract::transport::wire::WireStatusClass;
+use busbar_contract::transport::wire::{WireFault, WireStatusClass};
 use busbar_contract::transport::ConnFacts;
 
 use super::*;
@@ -85,6 +85,14 @@ fn piece(kind: PieceKind, len: usize, status: Option<(u32, Option<u64>)>) -> Pie
         status_code: status.map(|(c, _)| c),
         status_namespace: None,
         retry_after_secs: status.and_then(|(_, r)| r),
+        // The fault reading a framer states from its own table (1.5.5's): the kernel reads this,
+        // never the number.
+        fault: status.and_then(|(c, _)| match c {
+            401 | 403 => Some(WireFault::Hard),
+            408 | 429 | 500..=599 => Some(WireFault::Transient),
+            400..=499 => Some(WireFault::Caller),
+            _ => None,
+        }),
         reason: None,
     }
 }
@@ -210,9 +218,12 @@ impl PollConns for Table {
     }
 }
 
-/// A breaker that classifies by 1.5.5's status table and records every outcome it is told.
+/// A breaker that classifies by the transport's fault reading and records every outcome it is told.
 #[derive(Default)]
 struct Book {
+    /// The members whose caller-fault answer the plane read as a request too large for the
+    /// window: the fixture's stand-in for the plane's context-length verdict.
+    too_long: Mutex<Vec<DestinationId>>,
     observed: Mutex<Vec<(DestinationId, Outcome)>>,
     /// Every health probe's answer, as the far end told it; a success ends a cooldown.
     probed: Mutex<Vec<(DestinationId, Outcome)>>,
@@ -237,26 +248,23 @@ impl Breaker for Book {
     fn cooldown_remaining(&self, _: &str, d: DestinationId, _: u64, _: &Pass<Route>) -> u64 {
         self.cooldown.lock().unwrap().get(&d).copied().unwrap_or(0)
     }
-    fn classify(&self, _: DestinationId, s: UpstreamStatus) -> Classified {
-        let code = s
-            .code
-            .and_then(|c| c.in_namespace(status_ns::RESERVED[0]))
-            .unwrap_or(500);
-        let (disposition, outcome, label) = match code {
-            401 | 403 => (Disposition::HardDown, Outcome::HardDown, "hard_down"),
-            413 => (
+    fn classify(&self, d: DestinationId, s: UpstreamStatus) -> Classified {
+        let too_long = self.too_long.lock().unwrap().contains(&d);
+        let (disposition, outcome, label) = match s.fault {
+            Some(WireFault::Hard) => (Disposition::HardDown, Outcome::HardDown, "hard_down"),
+            Some(WireFault::Caller) if too_long => (
                 Disposition::ContextLength,
                 Outcome::RecordNothing,
                 "context_length",
             ),
-            408 | 429 | 500..=599 => (
+            Some(WireFault::Transient) => (
                 Disposition::TransientUpstream,
                 Outcome::Transient {
                     retry_after: s.retry_after,
                 },
                 "transient",
             ),
-            _ => (
+            Some(WireFault::Caller) | None => (
                 Disposition::ClientFault,
                 Outcome::RecordNothing,
                 "client_fault",
@@ -1383,6 +1391,8 @@ async fn a_context_length_refusal_excludes_only_admissible_smaller_windows() {
         OnExhausted::Status503,
         None,
     );
+    // The plane reads a.test's refusal as too large for its window (m0 is destination 1).
+    r.book.too_long.lock().unwrap().push(DestinationId::new(1));
     let pool = r.egress.pools.get_mut(POOL).expect("the pool");
     for (member, window) in pool.members.iter_mut().zip([8_000, 4_000, 16_000]) {
         member.context_max = Some(window);

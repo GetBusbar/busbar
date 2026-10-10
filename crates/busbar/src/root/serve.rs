@@ -1742,6 +1742,11 @@ fn line_auth(flags: u32, data_chain: &[String]) -> busbar_kernel::guest::LineAut
 /// The claimant the kernel's own data routes are lines of.
 const CORE_CLAIMANT: &str = "core";
 
+/// The data listener's own framer: a stream whose claim's carrier another framer answers is framed
+/// by that framer alone (ARCHITECT 4l, `serve_framed::stream_framer`). Upgrade lines are read off the
+/// door Statements, not off this name ([`upgrade_carriers`]).
+const DATA_CARRIER: &str = "http";
+
 /// THE UPGRADE CARRIERS: every linked claim whose unit 0 opens at an UPGRADE, read off the door
 /// Statements (ARCHITECT ruling Q128 U7; never a layer list: no transport names another). Their
 /// lines are handed over after the head and served as sessions; the handoff target on an upgrade

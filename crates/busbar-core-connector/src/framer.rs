@@ -24,9 +24,9 @@ use busbar_contract::abi::transport::{check::check_final_status, StatusRow, CLOS
 use busbar_contract::abi::transport::{
     AdoptIn, BeginIn, ConnFacts, EmitIn, EncodeIn, FinishIn, FramePiece, FrameSpan, FramerOut,
     FramerSink, FramingIn, HeadSlots, IngestIn, LocateIn, LocateOut, RefuseIn, EMIT_TEXT,
-    PIECE_CONTINUED, PIECE_END_OF_FRAME, PIECE_FIELDS, PIECE_HAS_CODE, PIECE_HAS_RETRY_AFTER,
-    PIECE_STREAM_FAILED, PIECE_TEXT, SIDE_ACCEPT, SIDE_DIAL, YIELD_ENDED, YIELD_HAS_DEADLINE,
-    YIELD_MORE,
+    PIECE_CONTINUED, PIECE_END, PIECE_END_OF_FRAME, PIECE_FIELDS, PIECE_HAS_CODE,
+    PIECE_HAS_RETRY_AFTER, PIECE_STREAM_FAILED, PIECE_TEXT, SIDE_ACCEPT, SIDE_DIAL, YIELD_ENDED,
+    YIELD_HAS_DEADLINE, YIELD_MORE,
 };
 
 /// One framer op, its `in` and its `out`, as the connector hands it to a [`FramerDoor`].
@@ -69,6 +69,12 @@ pub struct DoorFacts {
     /// The claims it composes over: always empty now (no transport names another); an entry that
     /// states one is refused where it would be served.
     pub composes_over: Vec<&'static str>,
+    /// A CARRIER whose own claim selects on the local PORT a connection arrived on (its claim row's
+    /// selector forms hold `SelectorForm::Port`): it listens on, and dials, network addresses. The
+    /// connector carries a framer's connection over the first such carrier
+    /// ([`crate::registry::Transports::address_carrier`]): the carrier under a framer is the
+    /// connector's choice from the target, and no transport names another.
+    pub ported: bool,
     /// Its status table, row by row: `(claim, lo, hi)`, the code ranges each claim's numbering
     /// has; a stream's final status is judged against its claim's ([`crate::framed_stream`]).
     pub status_rows: Vec<(u32, u32, u32)>,
@@ -79,12 +85,32 @@ pub struct DoorFacts {
     pub duplex: Vec<&'static str>,
 }
 
-/// A transport entry's framer table, as the host reaches it.
+/// A transport entry's table, as the host reaches it: a framer's ops ([`FramerDoor::cross`]) and a
+/// carrier's ([`FramerDoor::carry`]).
 pub trait FramerDoor: Send + Sync {
     /// What the entry states.
     fn facts(&self) -> &DoorFacts;
     /// One crossing: the op, answered into its `out`.
     fn cross(&self, call: Call<'_>) -> Crossed;
+    /// A new side of a carried connection: a ticket the entry's carrier ops are driven on inline
+    /// (`crate::carrier`). `None` = the entry is no carrier the host can drive.
+    fn side(&self) -> Option<Box<dyn crate::carrier::Side>> {
+        None
+    }
+    /// One CARRIER crossing on `side` (a RESUME of the op that pended on it when `resume`). An entry
+    /// that carries nothing answers REFUSED.
+    fn carry(
+        &self,
+        side: &dyn crate::carrier::Side,
+        resume: bool,
+        call: crate::carrier::Carry<'_>,
+    ) -> Crossed {
+        let _ = (side, resume, call);
+        Crossed {
+            outcome: Outcome::Refused,
+            error: None,
+        }
+    }
 }
 
 /// Why a framer op did not answer READY.
@@ -124,6 +150,8 @@ pub struct Got {
     pub status_code: Option<u32>,
     /// The status class (`STATUS_*`).
     pub status_class: u8,
+    /// The fault reading (`FAULT_*`), the breaker's leg.
+    pub fault: u8,
     /// The far side's `Retry-After`, in seconds, where it asked.
     pub retry_after_secs: Option<u64>,
     /// The bytes are a field block (`PIECE_FIELDS`): the far end's head, or its trailers.
@@ -136,15 +164,18 @@ pub struct Got {
     /// The stream FAILED (`PIECE_STREAM_FAILED`): this is its last piece and the bytes are the
     /// reason; its siblings on the connection carry on.
     pub failed: bool,
+    /// The stream ENDS whole here (`PIECE_END`): no piece of it follows.
+    pub end: bool,
 }
 
 impl Got {
-    /// Whether this piece ENDS its stream whole: the EMPTY payload piece that closes a stream's
-    /// frames (`busbar_contract::abi::transport`, "streams end by piece"). An empty fields piece is
-    /// an empty head, never the end, and a failed stream's piece ends it failed.
+    /// Whether this piece ENDS its stream whole: the framer said so (`PIECE_END`,
+    /// `busbar_contract::abi::transport`, "streams end by flag"), and nothing else says it. An
+    /// EMPTY piece without it is an empty message, text or binary, and is relayed as one; an empty
+    /// fields piece is an empty head; a failed stream's piece ends it failed.
     #[must_use]
-    pub fn ends_stream(&self) -> bool {
-        self.end_of_frame && self.bytes.is_empty() && !self.fields && !self.failed
+    pub const fn ends_stream(&self) -> bool {
+        self.end
     }
 }
 
@@ -329,7 +360,7 @@ const EMPTY_PIECE: FramePiece = FramePiece {
     code: 0,
     status_class: 0,
     flags: 0,
-    _reserved: 0,
+    fault: 0,
     retry_after_secs: 0,
 };
 
@@ -417,12 +448,14 @@ impl Buffers {
                 end_of_frame: p.flags & PIECE_END_OF_FRAME != 0,
                 status_code: (p.flags & PIECE_HAS_CODE != 0).then_some(p.code),
                 status_class: p.status_class,
+                fault: p.fault,
                 retry_after_secs: (p.flags & PIECE_HAS_RETRY_AFTER != 0)
                     .then_some(p.retry_after_secs),
                 fields: p.flags & PIECE_FIELDS != 0,
                 text: p.flags & PIECE_TEXT != 0,
                 reason: None,
                 failed: p.flags & PIECE_STREAM_FAILED != 0,
+                end: p.flags & PIECE_END != 0,
             });
         }
         let heads = self

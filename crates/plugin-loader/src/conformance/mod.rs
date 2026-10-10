@@ -107,10 +107,12 @@ use crate::dispatch::{
 use crate::tcp_conns::TcpConns;
 
 mod auth;
+mod carrier;
 mod export;
 
 pub use auth::{red_outbound_double_fetch, red_outbound_writes_nothing, red_outbound_wrong_byte};
 mod hook;
+pub mod host_io;
 mod plane;
 mod secret;
 mod store;

@@ -13049,6 +13049,28 @@ mod plant_tests {
 mod cold_witness_tests {
     use super::*;
 
+    /// THE PUBLISHED SUITE IS A LIVE BATTERY: a battery file that invokes the suite's macro runs its
+    /// entries; the same words in a comment or a string run nothing (RED), and an ignored entry
+    /// stays ignored beside it.
+    #[test]
+    fn a_published_suite_invocation_is_a_live_battery_entry() {
+        let suite = "busbar_plugin_loader::conformance_suite! {\n    door: d::door,\n    \
+                     cdylib: \"c\",\n    inputs: include_str!(\"conformance.json\"),\n}\n";
+        assert_eq!(live_battery_entries(suite), (1, 0));
+        assert_eq!(
+            live_battery_entries("// busbar_plugin_loader::conformance_suite! { }\n"),
+            (0, 0)
+        );
+        assert_eq!(
+            live_battery_entries("const S: &str = \"conformance_suite! {}\";\n"),
+            (0, 0)
+        );
+        assert_eq!(
+            live_battery_entries(&format!("{suite}#[test]\n#[ignore]\nfn owed() {{}}\n")),
+            (1, 1)
+        );
+    }
+
     /// A USER is code: a doc comment naming the crate path and a string spelling its artifact are
     /// not, and `resolve_store_fixture` does not name `store_fixture` — while an aliased `use` does.
     #[test]

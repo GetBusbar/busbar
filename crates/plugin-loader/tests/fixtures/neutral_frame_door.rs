@@ -14,7 +14,8 @@
 //! handed to `emit`/`refuse` are the wire bytes, `encode` renders an envelope as its body alone
 //! (fields are refused), `detach`/`adopt` hand unconsumed bytes across, and `locate` reads
 //! `host:port` (or `frame://host:port`). No op pends or asks for a deadline; a full sink is
-//! back-pressure (`YIELD_MORE`). Every carrier op is refused: the socket is the host's.
+//! back-pressure (`YIELD_MORE`). It states the FRAMER role and every carrier op is refused: it
+//! rides whatever carrier the connector dials or accepts with, and is never one.
 //!
 //! ONE STREAM (`SIDE_ACCEPT_STREAM`, ARCHITECT 4l): a framing begun on that side frames one stream
 //! whose head the host's own framer carries. Its messages are one length byte and that many bytes:
@@ -41,10 +42,11 @@ use busbar_contract::abi::sdk::door::{abi_str, statement, Slot};
 use busbar_contract::abi::sdk::transport::form_codes;
 use busbar_contract::abi::transport::{
     AcceptIn, AcceptOut, AdoptIn, ArrivalIn, ArrivalOut, BeginIn, Claim, ConnIn, ConnOut, DialIn,
-    EmitIn, EncodeIn, FinishIn, FramePiece, FramerOut, FramerSink, FramingIn, IngestIn, IoOut,
-    ListenIn, ListenOut, LocateIn, LocateOut, Ops, ReadIn, RefuseIn, ShutIn, StatusRow,
-    TransportTail, WriteIn, CANCEL_NOTHING_MOVED, FRAMING_STREAM, PIECE_END_OF_FRAME, ROLE_CARRIER,
-    SIDE_ACCEPT_STREAM, STATUS_OTHER, STATUS_SUCCESS, UNIT0_FIRST_BYTES, YIELD_ENDED, YIELD_MORE,
+    EmitIn, EncodeIn, FaultRow, FinishIn, FramePiece, FramerOut, FramerSink, FramingIn, IngestIn,
+    IoOut, ListenIn, ListenOut, LocateIn, LocateOut, Ops, ReadIn, RefuseIn, ShutIn, StatusRow,
+    TransportTail, WriteIn, CANCEL_NOTHING_MOVED, FAULT_CALLER, FRAMING_STREAM, PIECE_END_OF_FRAME,
+    ROLE_FRAMER, SIDE_ACCEPT_STREAM, STATUS_OTHER, STATUS_SUCCESS, UNIT0_FIRST_BYTES, YIELD_ENDED,
+    YIELD_MORE,
 };
 use busbar_contract::transport::registry::facts as tfacts;
 use busbar_contract::SelectorForm;
@@ -101,14 +103,25 @@ const STATUS_ROWS: &[StatusRow] = &[
     },
 ];
 
+/// What the numbering means to the breaker: a classed claim states a fault table
+/// (`check_fault_cover`). Every end but the whole one is the caller's, so this neutral door trips
+/// nothing, as it read before the table was appended.
+const FAULT_ROWS: &[FaultRow] = &[FaultRow {
+    claim: 0,
+    lo: 1,
+    hi: 9,
+    fault: FAULT_CALLER as u32,
+}];
+
 const TAIL: TransportTail = TransportTail {
     head: KindTailHead {
         size: std::mem::size_of::<TransportTail>() as u32,
         _reserved: 0,
     },
-    // A byte stream carried as itself: the CARRIER role, as the tcp twin states it (ARCHITECT ruling
-    // Q128 U7: the role is stated, never derived from composes_over).
-    role: ROLE_CARRIER,
+    // An identity FRAMER (ARCHITECT ruling Q128 U7: the role is stated, never derived from
+    // composes_over). It answers no carrier op, so it states no carrier: a door stated a carrier is
+    // one the connector may pick as its address carrier, and this one would refuse every dial.
+    role: ROLE_FRAMER,
     framing: FRAMING_STREAM,
     facts: 0,
     handshake_max_steps: 0,
@@ -126,6 +139,8 @@ const TAIL: TransportTail = TransportTail {
     status_rows_len: STATUS_ROWS.len(),
     settings: std::ptr::null(),
     settings_len: 0,
+    fault_rows: FAULT_ROWS.as_ptr(),
+    fault_rows_len: FAULT_ROWS.len(),
 };
 
 /// The door's Statement: the identity framer.
@@ -562,7 +577,7 @@ impl Framing {
                     code: 0,
                     status_class: 0,
                     flags: PIECE_END_OF_FRAME,
-                    _reserved: 0,
+                    fault: 0,
                     retry_after_secs: 0,
                 });
             }
@@ -599,7 +614,7 @@ impl Framing {
                     code: 0,
                     status_class: 0,
                     flags,
-                    _reserved: 0,
+                    fault: 0,
                     retry_after_secs: 0,
                 });
             }

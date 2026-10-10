@@ -1358,6 +1358,7 @@ impl<K: Kind> Plugin<K> {
             wake: Some(host_wake),
             conns,
             services: &super::services::HOST_SLOTS,
+            io: &super::io_slots::IO_SLOTS,
         }));
         let name = str_bytes(st.name)
             .ok_or_else(|| LoadError::BadStatement("the name is NULL or over-long".into()))?;
@@ -1531,6 +1532,22 @@ impl<K: Kind> Plugin<K> {
         self.call_once(s, frame, true)
     }
 
+    /// AN INLINE CALL on `ticket` (an inline ticket's, `super::inline::InlineTicket::ticket`): on the caller's thread, like [`Plugin::call`],
+    /// but on a REAL ticket, so the op may answer PENDING — the op's wake (an `io.*` slot's, or the
+    /// plugin's own) wakes the task `ticket` registered, which calls again with `resume` (the
+    /// mechanism's `FLAG_RESUME`: the same op on the same ticket). The caller serializes the ops on
+    /// one ticket. A carrier's connection is driven so, one inline ticket per side, with no thread
+    /// handoff (#30).
+    pub fn call_inline<I: InFrame, O: OutFrame>(
+        &self,
+        ticket: Ticket,
+        resume: bool,
+        s: u32,
+        frame: &mut Frame<I, O>,
+    ) -> Called {
+        self.call_ticketed(s, frame, ticket, resume)
+    }
+
     fn instance_id(&self) -> usize {
         Arc::as_ptr(&self.inner) as usize
     }
@@ -1540,6 +1557,20 @@ impl<K: Kind> Plugin<K> {
         s: u32,
         frame: &mut Frame<I, O>,
         recall: bool,
+    ) -> Called {
+        let called = self.call_ticketed(s, frame, Ticket::NONE, false);
+        if recall && called.recall.is_some() {
+            return Called::from(Crossed::host(Outcome::Fault));
+        }
+        called
+    }
+
+    fn call_ticketed<I: InFrame, O: OutFrame>(
+        &self,
+        s: u32,
+        frame: &mut Frame<I, O>,
+        ticket: Ticket,
+        resume: bool,
     ) -> Called {
         let inst = &*self.inner;
         if let Some(o) = inst.refuse(s, size_of::<I>(), size_of::<O>()) {
@@ -1564,18 +1595,19 @@ impl<K: Kind> Plugin<K> {
             head.size = size_of::<I>() as u32;
             // The dispatcher owns only the mechanism's own bit; a kind's bit the caller set on the
             // head (the export scrape's `SCRAPE_FLAG_HOOK_FAMILIES`) rides through untouched.
-            head.flags &= !FLAG_RESUME;
-            head.deadline_class = DeadlineClass::Call as u8;
-            head.ticket = Ticket::NONE;
+            head.flags = (head.flags & !FLAG_RESUME) | if resume { FLAG_RESUME } else { 0 };
+            head.deadline_class = if ticket.is_none() {
+                DeadlineClass::Call as u8
+            } else {
+                DeadlineClass::Connection as u8
+            };
+            head.ticket = ticket;
             inst.cross(s, i, o, out_size)
         };
         inst.lock_calls().retain(|c| c.0 != id);
         inst.release(units);
         if lifecycle {
             inst.leave_lifecycle();
-        }
-        if recall && crossed.short {
-            return Called::from(Crossed::host(Outcome::Fault));
         }
         let token = crossed.short.then(|| Recall {
             instance: self.instance_id(),

@@ -10,22 +10,15 @@
 //! two units' real APIs actually meet, and it lives under `tests/` so it can never be reached from
 //! `busbar_kernel_egress`'s own `src/`.
 //!
-//! One shape mismatch is left for the adapter to fold. The other one — the destination locator —
-//! is gone: both units now name `busbar_contract::DestinationId`, so there is nothing to narrow and
-//! no width at which a locator could be truncated on the way between them.
-//! - The upstream status: this crate's `UpstreamStatus` carries the transport's own COARSE
-//!   `busbar_contract::transport::wire::WireStatusClass` (`Success` / `CallerFault` / `FarEndFault` / `Other`) as a
-//!   fallback leg for when no numeric `code` is known; the breaker unit takes no dependency on
-//!   `busbar-contract` at all (its `Cargo.toml` allows only `busbar-caps`), so its own
-//!   `port::UpstreamStatus` carries its own `port::UpstreamCode`. Both sides carry the NUMBERING
-//!   with the number — the adapter maps one namespaced code onto the other, and folds the coarse
-//!   class down to a representative HTTP-shaped code only when no number was reported at all.
+//! The destination locator needs no narrowing: both units name `busbar_contract::DestinationId`.
+//! The upstream status needs one small step: this crate's `UpstreamStatus` carries the transport's
+//! class (the fee leg) and its fault reading (the breaker's leg); the breaker unit reads the fault
+//! reading alone, or, when neither was stated, the fact that no answer came. No number crosses.
 
 use busbar_contract::caps::{KernelSeal, Pass, Route};
-use busbar_contract::transport::registry::status_ns;
-use busbar_contract::transport::wire::WireStatus;
-use busbar_contract::transport::wire::WireStatusClass;
+use busbar_contract::transport::wire::{WireFault, WireStatusClass};
 use busbar_kernel_breaker::cfg::BreakerCfg;
+use busbar_kernel_breaker::classify::Reading;
 use busbar_kernel_breaker::{Breaker as BreakerUnitTrait, BreakerUnit};
 use busbar_kernel_egress::ports::{
     Admit, Breaker, Classified, DestinationId, Disposition, Outcome, Unavailable, UpstreamStatus,
@@ -54,17 +47,12 @@ impl BreakerAdapter {
         Self(BreakerUnit::new(), cfg)
     }
 
-    /// Fold the transport's coarse status-class reading down to a representative HTTP-shaped code,
-    /// for when no numeric `code` was reported. `Success`/`Other` fold to `None` — there is no
-    /// non-arbitrary HTTP number for either, and the breaker's own `code: None` fallback (record
-    /// nothing, relay as-is) is the same answer 1.5.5 gave an unexpected 2xx/3xx reaching the error
-    /// path.
-    fn fold_class(class: Option<WireStatusClass>) -> Option<u16> {
-        match class {
-            Some(WireStatusClass::CallerFault) => Some(400),
-            Some(WireStatusClass::FarEndFault) => Some(500),
-            Some(WireStatusClass::Success) | Some(WireStatusClass::Other) | None => None,
+    /// The breaker unit's reading: the fault reading, or no answer when neither leg was stated.
+    fn reading(status: UpstreamStatus) -> Reading {
+        if status.class.is_none() && status.fault.is_none() {
+            return Reading::NoAnswer;
         }
+        Reading::Answered(status.fault)
     }
 }
 
@@ -144,34 +132,11 @@ impl Breaker for BreakerAdapter {
     }
 
     fn classify(&self, _destination: DestinationId, status: UpstreamStatus) -> Classified {
-        // The namespace crosses with the number: each numbering is read against its own table on
-        // the far side, and the class fold is the fallback for an answer that carried no number.
-        // Asked by NAMESPACE, not by arm: the breaker's own enum is closed and names the two
-        // numberings it keeps tables for, so the narrowing lives here and a numbering it has no
-        // table for is simply not one of these two.
-        let code = match status.code {
-            None => {
-                Self::fold_class(status.class).map(busbar_kernel_breaker::port::UpstreamCode::Http)
-            }
-            Some(w) => w
-                .http()
-                .and_then(|c| u16::try_from(c).ok())
-                .map(busbar_kernel_breaker::port::UpstreamCode::Http)
-                .or_else(|| {
-                    w.grpc()
-                        .and_then(|c| u8::try_from(c).ok())
-                        .map(busbar_kernel_breaker::port::UpstreamCode::Grpc)
-                }),
-        };
-        // The status alone: the breaker keeps no operator `error_map` (that is the plane's
-        // classifier's to read), so the pure fold runs against none.
         let classified = busbar_kernel_breaker::port::classify_upstream(
-            &std::collections::HashMap::new(),
             busbar_kernel_breaker::port::UpstreamStatus {
-                code,
+                reading: Self::reading(status),
                 retry_after: status.retry_after,
             },
-            &busbar_kernel_breaker::classify::NoopDiagnostics,
         );
         Classified {
             disposition: classified.disposition,
@@ -242,15 +207,14 @@ fn a_fresh_destination_is_ready_and_admits() {
 }
 
 #[test]
-fn classify_reads_the_status_alone_through_the_adapter() {
-    // No per-destination map exists on the breaker to fold through: a provider code an operator
-    // might map reaches the port as the bare HTTP-shaped number it is.
+fn classify_reads_the_callers_fault_reading_as_nothing_recorded() {
+    // No number crosses the port: the transport read the answer as the caller's fault.
     let breaker = BreakerAdapter::new();
     let out = breaker.classify(
         DestinationId::new(9),
         UpstreamStatus {
-            class: None,
-            code: Some(WireStatus::new(status_ns::HTTP, 1113)),
+            class: Some(WireStatusClass::CallerFault),
+            fault: Some(WireFault::Caller),
             retry_after: None,
         },
     );
@@ -259,25 +223,23 @@ fn classify_reads_the_status_alone_through_the_adapter() {
 }
 
 #[test]
-fn classify_falls_back_to_the_coarse_transport_class_when_no_code_is_known() {
-    // A transport whose wire puts no number on an answer reports none, and the coarse reading is
-    // then the only leg there is. The walk carries the number when the transport read one.
+fn classify_never_reads_the_class_in_place_of_a_fault_reading() {
+    // THE RED ARM'S RUNTIME HALF: a framer with no fault table states a class and no reading.
+    // The class is the fee leg, never the breaker's: the answer is read as the caller's.
     let breaker = BreakerAdapter::new();
     let out = breaker.classify(
         DestinationId::new(1),
         UpstreamStatus {
             class: Some(WireStatusClass::FarEndFault),
-            code: None,
+            fault: None,
             retry_after: Some(5),
         },
     );
-    assert_eq!(out.disposition, Disposition::TransientUpstream);
-    assert_eq!(
-        out.outcome,
-        Outcome::Transient {
-            retry_after: Some(5)
-        }
-    );
+    assert_eq!(out.disposition, Disposition::ClientFault);
+    assert_eq!(out.outcome, Outcome::RecordNothing);
+    // And with neither leg stated, no answer came: a transient failure of the destination.
+    let none = breaker.classify(DestinationId::new(1), UpstreamStatus::default());
+    assert_eq!(none.disposition, Disposition::TransientUpstream);
 }
 
 #[test]
@@ -306,12 +268,12 @@ fn a_hard_down_trip_suppresses_a_later_admit_with_the_cooldown_the_port_expects(
     );
 }
 
-/// A 403 is a 4xx, so the coarse class says `CallerFault` and the coarse class alone would record
-/// nothing at all. The number says the credential was refused, which is a fact about the SHARED
-/// destination — so the disposition is hard-down and the trip fans out to every pool cell that
+/// A refused credential is a caller-fault CLASS (the fee leg), and the class alone would record
+/// nothing at all. The transport's fault reading says the credential was refused, which is a fact
+/// about the SHARED destination — so the disposition is hard-down and the trip fans out to every pool cell that
 /// names the destination, not just the pool the failing attempt ran through.
 #[test]
-fn a_403_is_hard_down_and_takes_every_sibling_pool_cell_for_the_destination_with_it() {
+fn a_hard_reading_is_hard_down_and_takes_every_sibling_pool_cell_for_the_destination_with_it() {
     let breaker = BreakerAdapter::new();
     let destination = DestinationId::new(41);
 
@@ -319,14 +281,14 @@ fn a_403_is_hard_down_and_takes_every_sibling_pool_cell_for_the_destination_with
         destination,
         UpstreamStatus {
             class: Some(WireStatusClass::CallerFault),
-            code: Some(WireStatus::new(status_ns::HTTP, 403)),
+            fault: Some(WireFault::Hard),
             retry_after: None,
         },
     );
     assert_eq!(
         out.disposition,
         Disposition::HardDown,
-        "the number is what tells a withdrawn credential from a malformed request"
+        "the fault reading is what tells a withdrawn credential from a malformed request"
     );
     assert_eq!(out.outcome, Outcome::HardDown);
 
@@ -348,7 +310,7 @@ fn a_403_is_hard_down_and_takes_every_sibling_pool_cell_for_the_destination_with
 /// shorter, here) cooldown is raised to the upstream's floor rather than the two being added or
 /// the upstream's being ignored.
 #[test]
-fn a_429_with_a_retry_after_of_seven_sets_a_seven_second_cooldown() {
+fn a_transient_reading_with_a_stated_wait_of_seven_sets_a_seven_second_cooldown() {
     let breaker = BreakerAdapter::with_cfg(BreakerCfg {
         base_cooldown_secs: 1,
         ..BreakerCfg::default()
@@ -359,7 +321,7 @@ fn a_429_with_a_retry_after_of_seven_sets_a_seven_second_cooldown() {
         destination,
         UpstreamStatus {
             class: Some(WireStatusClass::CallerFault),
-            code: Some(WireStatus::new(status_ns::HTTP, 429)),
+            fault: Some(WireFault::Transient),
             retry_after: Some(7),
         },
     );
@@ -382,7 +344,7 @@ fn a_429_with_a_retry_after_of_seven_sets_a_seven_second_cooldown() {
 /// And an upstream that asked for nothing gets the ladder, untouched. The default is a decision,
 /// not a fallback for a wait that went missing on the way here.
 #[test]
-fn a_server_error_with_no_retry_after_keeps_the_ladders_own_cooldown() {
+fn a_transient_reading_with_no_stated_wait_keeps_the_ladders_own_cooldown() {
     let breaker = BreakerAdapter::with_cfg(BreakerCfg {
         base_cooldown_secs: 20,
         ..BreakerCfg::default()
@@ -393,7 +355,7 @@ fn a_server_error_with_no_retry_after_keeps_the_ladders_own_cooldown() {
         destination,
         UpstreamStatus {
             class: Some(WireStatusClass::FarEndFault),
-            code: Some(WireStatus::new(status_ns::HTTP, 503)),
+            fault: Some(WireFault::Transient),
             retry_after: None,
         },
     );

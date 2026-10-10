@@ -66,10 +66,10 @@ impl Carrier for Echo {
             Dest::Program { .. } => Err(TransportError::AddressRefused),
         }
     }
-    fn poll_read(&self, _: u64, _: &mut Context<'_>, _: &mut [u8]) -> CarrierPoll<usize> {
-        Poll::Ready(Ok(0))
+    fn poll_read(&self, _: u64, _: &mut Context<'_>, _: &mut [u8]) -> CarrierPoll<Chunk> {
+        Poll::Ready(Ok(Chunk::stream(0)))
     }
-    fn poll_write(&self, _: u64, _: &mut Context<'_>, bytes: &[u8]) -> CarrierPoll<usize> {
+    fn poll_write(&self, _: u64, _: &mut Context<'_>, bytes: &[u8], _: bool) -> CarrierPoll<usize> {
         Poll::Ready(Ok(bytes.len()))
     }
     fn poll_flush(&self, _: u64, _: &mut Context<'_>) -> CarrierPoll<()> {
@@ -228,7 +228,10 @@ fn a_carrier_is_driven_through_its_trait_object() {
     );
     let waker = std::task::Waker::noop();
     let mut cx = Context::from_waker(waker);
-    assert_eq!(carrier.poll_write(7, &mut cx, b"abc"), Poll::Ready(Ok(3)));
+    assert_eq!(
+        carrier.poll_write(7, &mut cx, b"abc", true),
+        Poll::Ready(Ok(3))
+    );
     assert!(carrier.poll_accept(1, &mut cx).is_pending());
     assert_eq!(carrier.arrival(7).unwrap().peer, "far");
     assert_eq!(carrier.arrival(8), None);

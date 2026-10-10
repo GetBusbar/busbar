@@ -103,6 +103,42 @@ pub fn entries(
         .collect()
 }
 
+/// THE CONNECTOR'S ENTRIES IN DECLARED ORDER (ARCHITECT, p2-transport-carrier): the build's linked
+/// rows in the order the build declares them, then every door dropped into `plugins.dir` in the
+/// directory's sorted order (the loader's plugin file listing), each the one instance the
+/// legacy seam serves too. The order is the declaration's, never the order things loaded in, so the
+/// ADDRESS carrier (`Transports::address_carrier`: the first carrier whose claim serves a port) is
+/// the same carrier on every boot of one deployment.
+///
+/// # Errors
+///
+/// Never; the shape is the boot step's.
+pub fn declared(
+    mut linked: Vec<Entry>,
+    dropped: &[crate::root::registry::DroppedDoor],
+) -> Result<Vec<Entry>, String> {
+    linked.extend(dropped.iter().map(|d| Entry {
+        door: Arc::clone(&d.door),
+        alpn: Vec::new(),
+    }));
+    Ok(linked)
+}
+
+/// WHERE THE ROOT'S WIRES FIND THEIR CARRIER: the process's one connector's address carrier, asked at
+/// each dial (none before the connector is built, or when it serves no carrier).
+#[must_use]
+pub fn address_carrier() -> busbar_core_connector::carrier::AddressCarrier {
+    Arc::new(|| ONE.get().and_then(|c| c.address_via()).map(|via| via.door))
+}
+
+/// The claim of the carrier a root listener accepts through, for its boot line; `host` when the
+/// connector serves no address carrier (the host's own listener).
+#[must_use]
+pub fn carrier_name(via: Option<&busbar_core_connector::compose::Via>) -> &'static str {
+    via.and_then(|v| v.door.facts().claims.first().copied())
+        .unwrap_or("host")
+}
+
 /// THE DEPLOYMENT'S ONE DESTINATION GUARD (OWNER ruling DESTINATION GUARD), built at boot from
 /// `cfg`'s `advanced` keys and the 1.5.5 keys that still load. Once [`install_egress_trust`] puts
 /// it behind the egress-trust capability it hears every config commit: its metadata lists
@@ -170,7 +206,12 @@ pub fn boot(
     // whose thread then waits synchronously on worker ops (the boot's `ready`).
     crate::root::dispatch::dispatcher().install_runtime(io_reactor());
     let built = process::build(
-        || entries(doors, settings),
+        || {
+            declared(
+                entries(doors, settings)?,
+                crate::root::boot::dropped_transports(settings).doors,
+            )
+        },
         dest,
         &process::own_ports(listens),
         // A plugin reading a connection through a ticket (an export sink's delivery parked on its
@@ -184,10 +225,11 @@ pub fn boot(
         eprintln!("busbar: the connector did not build: {refusal}");
         std::process::exit(2);
     });
-    install(connector).unwrap_or_else(|_| {
+    let one = install(connector).unwrap_or_else(|_| {
         eprintln!("busbar: a second connector was built; the process has one");
         std::process::exit(2);
-    })
+    });
+    one
 }
 
 // TRANSITIONAL: the connector's own I/O thread exists because synchronous governance callers wait

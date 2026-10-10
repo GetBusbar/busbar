@@ -420,10 +420,6 @@ crate = "busbar-kernel"
 kind = "transport"
 
 [[cell]]
-crate = "busbar-kernel-breaker"
-kind = "plane"
-
-[[cell]]
 crate = "busbar-kernel-egress"
 kind = "kernel"
 

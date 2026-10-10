@@ -25,8 +25,8 @@ pub mod trust;
 pub mod wire;
 
 pub use stack::{
-    role_of, BytesOut, Carrier, CarrierFacts, CarrierPoll, Claim, ConnFacts, Dest, Framed, Framer,
-    FramerOut, HostTime, Located, Role, Side, TransportRow,
+    role_of, BytesOut, Carrier, CarrierFacts, CarrierPoll, Chunk, Claim, ConnFacts, Dest, Framed,
+    Framer, FramerOut, HostTime, Located, Role, Side, TransportRow,
 };
 
 use crate::bounded::ScratchBytes;
@@ -103,7 +103,7 @@ pub use trust::{ClientIdentity, EgressTrust};
 pub use wire::{
     ArrivalRecord, CertFacts, CloseReason, Conn, ConnHandle, Decode, Direction, DiscardCode,
     Encode, FrameMeta, Framing, Handoff, HandshakeTrigger, Listener, ListenerHandle, RawIo,
-    RawStream, StatusAt, TransportError, Unit0Trigger, WireStatus, WireStatusClass,
+    RawStream, StatusAt, TransportError, Unit0Trigger, WireFault, WireStatus, WireStatusClass,
 };
 
 /// Everything a transport declares about itself.

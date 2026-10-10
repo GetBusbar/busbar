@@ -35,8 +35,7 @@ use busbar_contract::ids::StreamId;
 use busbar_contract::transport::wire::WireStatusClass;
 use busbar_contract::transport::ConnFacts;
 
-use crate::compose::{Connection, Dial, Failure, DEFAULT_OPEN_TIMEOUT};
-use crate::framer::FramerDoor;
+use crate::compose::{Connection, Dial, Failure, Via, DEFAULT_OPEN_TIMEOUT};
 
 /// The first restart's backoff after a program ended (the previous release's crash-loop policy).
 const BASE_BACKOFF: Duration = Duration::from_millis(100);
@@ -157,7 +156,8 @@ struct State {
 /// lease on it shares.
 pub(crate) struct Member {
     program: Program,
-    door: Arc<dyn FramerDoor>,
+    /// The carrier the member's program rides.
+    via: Via,
     alpn: Vec<Vec<u8>>,
     state: Mutex<State>,
     fan: Arc<Fan>,
@@ -183,6 +183,7 @@ fn piece(kind: PieceKind, len: usize, end: bool) -> Piece {
         status_code: None,
         status_namespace: None,
         retry_after_secs: None,
+        fault: None,
         reason: None,
     }
 }
@@ -236,12 +237,12 @@ impl State {
 }
 
 impl Member {
-    /// The member running `program`, its pipes framed by `door`; nothing is spawned until the
+    /// The member running `program` over the carrier `via`; nothing is spawned until the
     /// first lease.
-    pub(crate) fn new(program: Program, door: Arc<dyn FramerDoor>, alpn: Vec<Vec<u8>>) -> Self {
+    pub(crate) fn new(program: Program, via: Via, alpn: Vec<Vec<u8>>) -> Self {
         Self {
             program,
-            door,
+            via,
             alpn,
             state: Mutex::new(State {
                 live: None,
@@ -300,7 +301,7 @@ impl Member {
                 head_words: (Vec::new(), Vec::new()),
                 anchors: None,
             };
-            match Connection::spawn(Arc::clone(&self.door), &self.program, dial) {
+            match Connection::spawn(&self.via, &self.program, dial) {
                 Ok(conn) => {
                     st.generation += 1;
                     let generation = st.generation;
@@ -484,7 +485,13 @@ impl Member {
             // A program is no network peer: no key is pinned, no client identity presented.
             peer_key_pin: None,
             client_identity: false,
-            claim: self.door.facts().claims.first().map(|c| (*c).to_owned()),
+            claim: self
+                .via
+                .door
+                .facts()
+                .claims
+                .first()
+                .map(|c| (*c).to_owned()),
         })
     }
 

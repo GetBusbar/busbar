@@ -76,6 +76,8 @@ pub mod hook_wire;
 #[allow(missing_docs)]
 pub mod hooks;
 pub mod ids;
+// THE HOST'S I/O, as the connector implements it and the loader's `io` slots reach it.
+pub mod io_host;
 #[allow(missing_docs, missing_debug_implementations)]
 pub mod ir;
 pub(crate) mod json_grammar;
@@ -208,7 +210,7 @@ pub use wire::{
     ArrivalRecord, CertFacts, CloseReason, Conn, ConnHandle, Decode, Direction, DiscardCode,
     Encode, EnvelopeField, Frame, FrameCursor, FrameMeta, Framing, Handoff, HandshakeTrigger,
     Listener, ListenerHandle, RawIo, RawStream, StatusAt, TransportEnvelope, TransportError,
-    Unit0Trigger, WireStatus, WireStatusClass,
+    Unit0Trigger, WireFault, WireStatus, WireStatusClass,
 };
 
 /// The default admin-scope CEILING for an identity provider that names none (`read-only`). Relocated

@@ -44,7 +44,7 @@ macro_rules! hyper_io {
             use $crate::abi::sdk::{HostBuf, Lent, Out};
             use $crate::abi::transport::{
                 FramePiece, FrameSpan, FramerOut, FramerSink, HeadSlots, PIECE_CONTINUED,
-                PIECE_END_OF_FRAME, PIECE_FIELDS, PIECE_HAS_CODE, PIECE_HAS_RETRY_AFTER,
+                PIECE_END, PIECE_END_OF_FRAME, PIECE_FIELDS, PIECE_HAS_CODE, PIECE_HAS_RETRY_AFTER,
                 PIECE_STREAM_FAILED, PIECE_WRITABLE, YIELD_ENDED, YIELD_HAS_DEADLINE, YIELD_MORE,
                 YIELD_STREAM_FULL,
             };
@@ -433,7 +433,7 @@ macro_rules! hyper_io {
             pub struct Piece {
                 /// The stream.
                 pub stream: u64,
-                /// The frame bytes (empty with nothing else set: the stream's frames are over).
+                /// The frame bytes (empty: an empty frame, unless `end` says the stream is over).
                 pub bytes: Buf,
                 /// The status code the piece states, in the claim's own numbering.
                 pub status: Option<u16>,
@@ -447,6 +447,8 @@ macro_rules! hyper_io {
                 pub continued: bool,
                 /// The stream's head words, handed with its head's first piece.
                 pub head: Option<HeadWords>,
+                /// The stream's frames are over (`PIECE_END`): its last piece, with no bytes.
+                pub end: bool,
                 /// The stream is writable again (`PIECE_WRITABLE`): an empty piece, nothing else
                 /// set, after an `emit` answered the stream full ([`mark_stream_full`]).
                 pub writable: bool,
@@ -465,7 +467,16 @@ macro_rules! hyper_io {
                         fields: false,
                         continued: false,
                         head: None,
+                        end: false,
                         writable: false,
+                    }
+                }
+                /// `stream`'s frames are over: it ends whole (`PIECE_END`).
+                #[must_use]
+                pub fn end(stream: u64) -> Self {
+                    Self {
+                        end: true,
+                        ..Self::data(stream, Buf::default())
                     }
                 }
                 /// A field block on `stream`.
@@ -521,12 +532,14 @@ macro_rules! hyper_io {
             /// piece that does not fit whole is split, its end-of-frame on its last part; a field
             /// block only where a continuation extends a value), each stream's head words in its
             /// head slots ahead of its head's first piece, then the yield flags. `class_of` maps a
-            /// piece's status code to its class.
+            /// piece's status code to its class (the framer's status table); `fault_of` maps it to
+            /// the breaker's fault reading (the framer's fault table, `FAULT_NONE` off it).
             pub fn fill(
                 f: &mut impl Owed,
                 sink: Lent<'_, FramerSink>,
                 o: &mut Out<'_, FramerOut>,
                 class_of: impl Fn(u16) -> u8,
+                fault_of: impl Fn(u16) -> u8,
             ) {
                 let mut wire_buf = sink.wire();
                 let wire = f.take_wire(wire_buf.cap());
@@ -605,6 +618,10 @@ macro_rules! hyper_io {
                     if piece.failed && whole {
                         flags |= PIECE_STREAM_FAILED;
                     }
+                    // The stream's end is said, never inferred from an empty piece.
+                    if piece.end {
+                        flags |= PIECE_END;
+                    }
                     if piece.fields {
                         flags |= PIECE_FIELDS;
                         if piece.continued {
@@ -618,13 +635,14 @@ macro_rules! hyper_io {
                         code: 0,
                         status_class: 0,
                         flags: 0,
-                        _reserved: 0,
+                        fault: 0,
                         retry_after_secs: 0,
                     };
                     if let Some(code) = piece.status {
                         flags |= PIECE_HAS_CODE;
                         fp.code = u32::from(code);
                         fp.status_class = class_of(code);
+                        fp.fault = fault_of(code);
                     }
                     if let Some(secs) = piece.retry_after_secs {
                         flags |= PIECE_HAS_RETRY_AFTER;

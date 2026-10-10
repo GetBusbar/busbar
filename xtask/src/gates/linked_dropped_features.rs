@@ -337,14 +337,27 @@ impl Gate for LinkedDroppedFeaturesGate {
             ov.set(plugin, p);
             ov
         };
+        // The plugin is given a registry dep of its own first (a carrier over the host's I/O has
+        // none to share), so the planted feature has a shared crate to unify into.
         let unified = {
             let b = cx.read(bin).unwrap_or_default().replacen(
                 "[dependencies]\n",
                 "[dependencies]\nfutures = { workspace = true, features = [\"planted-unified\"] }\n",
                 1,
             );
+            let p = cx.read(plugin).unwrap_or_default();
+            let p = if p.contains("[dependencies]\n") {
+                p.replacen(
+                    "[dependencies]\n",
+                    "[dependencies]\nfutures = { workspace = true }\n",
+                    1,
+                )
+            } else {
+                format!("{p}\n[dependencies]\nfutures = {{ workspace = true }}\n")
+            };
             let mut ov = Overlay::new();
             ov.set(bin, b);
+            ov.set(plugin, p);
             ov
         };
         one_abi::selftest(

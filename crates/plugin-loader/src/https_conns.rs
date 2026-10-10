@@ -163,6 +163,7 @@ fn piece(kind: PieceKind, len: usize) -> Piece {
         status_code: None,
         status_namespace: None,
         retry_after_secs: None,
+        fault: None,
         reason: None,
     }
 }

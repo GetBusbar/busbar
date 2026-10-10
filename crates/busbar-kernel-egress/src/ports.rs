@@ -113,18 +113,17 @@ pub enum Outcome {
 
 /// What the upstream said, as the classifier reads it.
 ///
-/// The unit reads no body: the transport's own status reading and the plane's finish class are the
-/// two legs, and the wait the upstream asked for is the third input. Everything else about what a
-/// given code means to a given destination is configuration, and it lives on the other side of the
-/// classify call.
+/// Facts, never a number: the transport's own class of the frame (the fee leg, which also tells a
+/// success from a failure), its fault reading of the answer for the breaker, and the wait the
+/// upstream asked for. What a given code means is the transport's own declared table, read on the
+/// transport's side of the frame; no code crosses this port.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct UpstreamStatus {
-    /// The transport's own reading of the frame, where it carries one.
+    /// The transport's own class of the frame, where it carries one.
     pub class: Option<busbar_contract::transport::wire::WireStatusClass>,
-    /// The upstream's numeric status AND the numbering that spelled it, where the transport
-    /// reports one — carried across from the frame exactly as the transport named it, never
-    /// flattened to a bare number on the way.
-    pub code: Option<busbar_contract::transport::wire::WireStatus>,
+    /// The transport's fault reading of the answer, where it states one (`None` is read as the
+    /// caller's). With no class and no reading at all, no answer came.
+    pub fault: Option<busbar_contract::transport::wire::WireFault>,
     /// The wait the upstream asked for, in seconds.
     pub retry_after: Option<u64>,
 }
@@ -198,10 +197,10 @@ pub trait Breaker: Send + Sync {
 
     /// Turn one upstream answer into a disposition and a breaker outcome.
     ///
-    /// The table behind this — which code from which destination means transient, which means the
-    /// key is bad, which means the request was simply too big — is the breaker unit's own data,
-    /// including the operator's per-destination overrides. This unit passes the answer through and
-    /// acts on what comes back; it holds no copy of the table and no literal from it.
+    /// What a code means — transient, a refused key, the caller's own mistake — is the transport's
+    /// declared fault table, read into [`UpstreamStatus::fault`] before this port is reached; the
+    /// breaker unit maps that reading to a disposition. This unit passes the answer through and
+    /// acts on what comes back; it holds no table and no literal from one.
     fn classify(&self, destination: DestinationId, status: UpstreamStatus) -> Classified;
 
     /// Record what one attempt meant. Returns true only on a fresh logical trip — the one signal a

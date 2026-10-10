@@ -26,13 +26,8 @@ use busbar_contract::conn::{
     ConnError, ConnId, Conns, InstanceId, OpenDesc, Piece, PieceKind, PollConns, Ticket,
 };
 use busbar_contract::ids::StreamId;
-use busbar_contract::transport::registry::status_ns;
-use busbar_contract::transport::wire::{WireStatus, WireStatusClass};
+use busbar_contract::transport::wire::{WireFault, WireStatus, WireStatusClass};
 use busbar_contract::transport::ConnFacts;
-use busbar_kernel_breaker::classify::{
-    GRPC_ABORTED, GRPC_DATA_LOSS, GRPC_DEADLINE_EXCEEDED, GRPC_INTERNAL, GRPC_PERMISSION_DENIED,
-    GRPC_RESOURCE_EXHAUSTED, GRPC_UNAUTHENTICATED, GRPC_UNAVAILABLE, GRPC_UNKNOWN,
-};
 
 use busbar_kernel_egress::ports::{
     disposition, Admit, BoxFut, Breaker, Capacity, Classified, Clock, DestinationId, Dispatched,
@@ -147,8 +142,8 @@ pub enum Recorded {
 #[derive(Debug, Default)]
 pub struct TestBreaker {
     health: Mutex<HashMap<DestinationId, Health>>,
-    /// What the classifier answers, by upstream status class.
-    verdicts: Mutex<HashMap<WireStatus, Classified>>,
+    /// What the classifier answers, by the transport's fault reading.
+    verdicts: Mutex<HashMap<Option<WireFault>, Classified>>,
     pub log: Mutex<Vec<Recorded>>,
     /// Cells that were admitted, in order, so a test can read the pick order off the breaker.
     pub admitted: Mutex<Vec<(String, DestinationId)>>,
@@ -169,11 +164,11 @@ impl TestBreaker {
             .insert(destination, health);
     }
 
-    pub fn set_verdict(&self, code: WireStatus, verdict: Classified) {
+    pub fn set_verdict(&self, fault: Option<WireFault>, verdict: Classified) {
         self.verdicts
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .insert(code, verdict);
+            .insert(fault, verdict);
     }
 
     fn health_of(&self, destination: DestinationId) -> Health {
@@ -319,75 +314,34 @@ impl Breaker for TestBreaker {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .push(status);
-        // A test states a verdict per NAMESPACED code; a frame with no numeric status on it
-        // reports none, so a verdict set under HTTP zero stands for "whatever this upstream
-        // answered".
-        let key = status.code.unwrap_or(WireStatus::new(status_ns::HTTP, 0));
+        // A test states a verdict per fault reading.
         if let Some(v) = self
             .verdicts
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .get(&key)
+            .get(&status.fault)
         {
             return *v;
         }
-        // No verdict was stated for this number. When there IS a number, the fallback follows the
-        // spec split every real classifier makes on it — a withdrawn credential and a rate limit
-        // are not the caller's fault, and folding them in with the rest of the 4xx would let this
-        // fixture agree with a walk that dropped the number on the floor. Only a frame carrying no
-        // number at all falls through to the coarse class below.
-        // Each numbering against its own table, exactly as the real adapter does it: a gRPC code
-        // never meets HTTP's bands here either, or this fixture would agree with the very fold the
-        // walk must not make.
-        // Each numbering is asked for BY NAME, through the keyed accessor, and answers `None` to
-        // the other's question because the namespaces differ. A numbering this fixture keeps no
-        // table for answers `None` to both and falls through to the coarse class, which is the
-        // honest reading and cost this match nothing to acquire.
-        let http = status.code.and_then(WireStatus::http);
-        let grpc = status
-            .code
-            .and_then(WireStatus::grpc)
-            .and_then(|code| u8::try_from(code).ok());
-        match (http, grpc, status.class) {
-            (Some(401 | 403), _, _)
-            | (_, Some(GRPC_PERMISSION_DENIED | GRPC_UNAUTHENTICATED), _) => Classified {
+        // No verdict was stated: the reading decides, exactly as the real adapter reads it — never
+        // the class, which is the fee leg. Neither a class nor a reading is no answer at all.
+        let transient = Classified {
+            disposition: Disposition::TransientUpstream,
+            outcome: Outcome::Transient {
+                retry_after: status.retry_after,
+            },
+            label: disposition::TRANSIENT,
+        };
+        match (status.fault, status.class) {
+            (Some(WireFault::Hard), _) => Classified {
                 disposition: Disposition::HardDown,
                 outcome: Outcome::HardDown,
                 label: disposition::HARD_DOWN,
             },
-            (Some(408 | 429), _, _)
-            | (Some(500..=599), _, _)
-            | (
-                _,
-                Some(
-                    GRPC_UNKNOWN
-                    | GRPC_DEADLINE_EXCEEDED
-                    | GRPC_RESOURCE_EXHAUSTED
-                    | GRPC_ABORTED
-                    | GRPC_INTERNAL
-                    | GRPC_UNAVAILABLE
-                    | GRPC_DATA_LOSS,
-                ),
-                _,
-            ) => Classified {
-                disposition: Disposition::TransientUpstream,
-                outcome: Outcome::Transient {
-                    retry_after: status.retry_after,
-                },
-                label: disposition::TRANSIENT,
-            },
-            (Some(400..=499), _, _)
-            | (_, Some(_), _)
-            | (None, None, Some(WireStatusClass::CallerFault)) => Classified {
+            (Some(WireFault::Transient), _) | (None, None) => transient,
+            (Some(WireFault::Caller), _) | (None, Some(_)) => Classified {
                 disposition: Disposition::ClientFault,
                 outcome: Outcome::RecordNothing,
-                label: disposition::TRANSIENT,
-            },
-            _ => Classified {
-                disposition: Disposition::TransientUpstream,
-                outcome: Outcome::Transient {
-                    retry_after: status.retry_after,
-                },
                 label: disposition::TRANSIENT,
             },
         }
@@ -659,6 +613,7 @@ impl Telemetry for TestTelemetry {
 pub struct Reply {
     pub status: Option<WireStatusClass>,
     pub code: Option<WireStatus>,
+    pub fault: Option<WireFault>,
     pub retry_after: Option<u64>,
     pub body: &'static str,
 }
@@ -684,9 +639,15 @@ pub enum Script {
     },
 }
 
-/// An answering piece with the far end's status class on it.
+/// An answering piece with the far end's status class on it, and the fault reading a framer whose
+/// table follows its class would state (a far-end fault transient, a caller fault the caller's).
 pub fn frame(status: Option<WireStatusClass>, body: &'static str) -> Reply {
-    frame_with_upstream(status, None, None, body)
+    let fault = match status {
+        Some(WireStatusClass::FarEndFault) => Some(WireFault::Transient),
+        Some(WireStatusClass::CallerFault) => Some(WireFault::Caller),
+        _ => None,
+    };
+    frame_with_upstream(status, None, fault, None, body)
 }
 
 /// An answering piece carrying the whole status leg a connector reads off an answer: the coarse
@@ -694,12 +655,14 @@ pub fn frame(status: Option<WireStatusClass>, body: &'static str) -> Reply {
 pub fn frame_with_upstream(
     status: Option<WireStatusClass>,
     code: Option<WireStatus>,
+    fault: Option<WireFault>,
     retry_after: Option<u64>,
     body: &'static str,
 ) -> Reply {
     Reply {
         status,
         code,
+        fault,
         retry_after,
         body,
     }
@@ -742,6 +705,7 @@ fn body_piece(reply: &Reply) -> (Piece, Vec<u8>) {
             status_code: reply.code.map(|c| c.code),
             status_namespace: reply.code.map(|c| c.namespace.to_string()),
             retry_after_secs: reply.retry_after,
+            fault: reply.fault,
             reason: None,
         },
         reply.body.as_bytes().to_vec(),
@@ -759,6 +723,7 @@ fn completion() -> (Piece, Vec<u8>) {
             status_code: None,
             status_namespace: None,
             retry_after_secs: None,
+            fault: None,
             reason: None,
         },
         Vec::new(),
