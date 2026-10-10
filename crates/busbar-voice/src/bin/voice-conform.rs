@@ -15,7 +15,8 @@
 //! Non-`RESULT` lines (`NOTE:` / `SUBITEM`) are ignored by the runner and used to record documented
 //! sub-item gaps that must stay HONESTLY PENDING rather than be dressed as a green.
 
-use busbar_kernel::plane_host::EngineHost;
+use busbar_kernel::plane_host::{BreakerHost, DispatchScope, EngineHost};
+use busbar_kernel::store::PlaneBreakers;
 use busbar_plane_streaming::session::TurnCounters;
 use busbar_voice::ir::usage::IrDuplexUsage;
 use busbar_voice::ir::{
@@ -1890,40 +1891,30 @@ fn probe_gemini_live_route() -> (&'static str, String) {
 
 /// A minimal [`busbar_kernel::plane_host::BreakerHost`] — `dial_provider` reads only the breaker
 /// slice of the host seam (never the rest of `EngineHost`), so the loopback leg needs only this much:
-/// admit always, record nothing, no cooldown. Not a plane-private breaker implementation — it lives
-/// only in this dev-only conformance binary.
-#[derive(Default)]
-struct AlwaysAdmitBreakerHost;
+/// a fresh kernel breaker store (every cell Closed, so the one dial below is admitted) that the
+/// kernel's breaker functions drive. Not a plane-private breaker implementation — it lives only in
+/// this dev-only conformance binary.
+struct FreshBreakerHost(std::sync::Arc<PlaneBreakers>);
 
-impl busbar_kernel::plane_host::BreakerHost for AlwaysAdmitBreakerHost {
-    fn breaker_admit(
-        &self,
-        scope: &busbar_kernel::plane_host::DispatchScope,
-        _pool: &[u8],
-        _lane: u32,
-    ) -> Result<busbar_contract::abi::hot::AdmissionId, busbar_kernel::store::Unavailable> {
-        Ok(scope.register_admission(Box::new(())))
+impl Default for FreshBreakerHost {
+    fn default() -> Self {
+        FreshBreakerHost(std::sync::Arc::new(PlaneBreakers::provisioned()))
+    }
+}
+
+impl BreakerHost for FreshBreakerHost {
+    fn breaker_store(&self) -> &std::sync::Arc<PlaneBreakers> {
+        &self.0
     }
     fn breaker_settle(
         &self,
-        scope: &busbar_kernel::plane_host::DispatchScope,
+        scope: &DispatchScope,
         admission: busbar_contract::abi::hot::AdmissionId,
         signal: &busbar_contract::abi::hot::Signal,
     ) -> busbar_contract::abi::hot::StatusClass {
         scope
             .settle_admission(admission, signal)
             .unwrap_or(busbar_contract::abi::hot::StatusClass::Refused)
-    }
-    fn breaker_record_success(&self, _pool: &str, _lane: usize) {}
-    fn breaker_record_signal(
-        &self,
-        _pool: &str,
-        _lane: usize,
-        _sig: &busbar_contract::upstream::CanonicalSignal,
-    ) {
-    }
-    fn breaker_retry_after_secs(&self, _pool: &str, _lane: usize) -> u64 {
-        0
     }
 }
 
@@ -1956,7 +1947,7 @@ fn probe_provider_dial() -> (&'static str, String) {
             let _ = futures::SinkExt::close(&mut ws).await;
         });
 
-        let host = AlwaysAdmitBreakerHost;
+        let host = FreshBreakerHost::default();
         let url = format!("ws://{addr}");
         let policy = busbar_kernel::net_guard::GuardPolicy {
             allow_private: true,

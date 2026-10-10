@@ -74,3 +74,73 @@ fn a_body_reads_back_what_was_written() {
     let mut lying = crate::BodyReader::new(&claim);
     assert_eq!(lying.text(), None);
 }
+
+/// A run of `n` chained journal records for `node`, numbered from one, as a store hands them back.
+fn chained_run(node: u64, n: u64) -> Vec<crate::Record> {
+    let mut head = [0u8; 32];
+    (1..=n)
+        .map(|seq| {
+            let body = format!("record {seq}").into_bytes();
+            let mut record = crate::JournalRecord {
+                class: RecordClass::Transaction,
+                node,
+                node_seq: seq,
+                lease_epoch: 0,
+                policy_epoch: 0,
+                wall: seq,
+                mono: seq,
+                body_hash: crate::body_digest(&body),
+                body,
+                prev_hash: head,
+                hash: [0u8; 32],
+            };
+            record.hash = record.digest_of_chain();
+            head = record.hash;
+            crate::Record::new(node, seq, record.encode())
+        })
+        .collect()
+}
+
+/// A MEMORY JOURNAL RESUMED FROM THE STORE'S CHAIN reads that chain back and continues it: the
+/// replay is the run the store kept, the head is its newest record's and the next number is past
+/// it — and nothing it was seeded with is shipped again.
+#[test]
+fn a_resumed_memory_journal_reads_back_and_continues_the_stored_chain() {
+    let run = chained_run(5, 40);
+    let shipper = crate::BufferShipper::new();
+    let journal = Journal::memory_resumed(
+        5,
+        &run,
+        Box::new(shipper.clone()),
+        crate::tests::fixtures::wall_ms,
+    )
+    .expect("a run that fits a segment seeds");
+    let replayed = journal
+        .replay()
+        .expect("reads back")
+        .expect("the seeded run verifies");
+    assert_eq!(replayed.len(), 40, "every stored record is on the chain");
+    assert_eq!(journal.next_seq(), 41, "the numbering continues past them");
+    assert_eq!(
+        journal.head(),
+        replayed.last().expect("a record").hash,
+        "the chain continues from the newest stored record"
+    );
+    assert!(
+        shipper.records().is_empty(),
+        "a seeded record is never shipped back to the store it came from"
+    );
+    assert_eq!(journal.mode(), crate::Mode::MemoryBuffered);
+}
+
+/// A journal that KEEPS records at its bound reports the bound and never seals a break: the caller
+/// that asked for it refuses new work instead.
+#[test]
+fn a_retaining_journal_reports_its_bound_and_drops_nothing() {
+    let journal = Journal::memory_buffered(1, crate::tests::fixtures::wall_ms)
+        .with_capacity(1)
+        .retaining_at_bound();
+    assert!(!journal.at_bound(), "an empty buffer is not at its bound");
+    assert_eq!(journal.dropped_total(), 0);
+    assert!(journal.overflows().is_empty());
+}
