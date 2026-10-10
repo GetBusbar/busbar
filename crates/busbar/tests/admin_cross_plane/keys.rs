@@ -3034,6 +3034,7 @@ async fn named_map_app_opts(
                     tool_defs: cfg.as_any(),
                     public_url: Some("https://busbar.example"),
                     prior: None,
+                    providers: None,
                 };
                 if let Some(slot) = (decl.build)(&ctx) {
                     builder.install_plane_runtime(decl.key, slot);
@@ -3054,6 +3055,7 @@ async fn named_map_app_opts(
             tool_defs: &(),
             public_url: Some("https://busbar.example"),
             prior: None,
+            providers: None,
         };
         if let Some(plane) = (decl.build)(&ctx) {
             builder.install_plane_runtime(decl.key, plane);
