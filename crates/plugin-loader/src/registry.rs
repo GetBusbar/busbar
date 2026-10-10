@@ -69,9 +69,56 @@ pub struct LoadablePlugin {
     pub ephemeral: bool,
     /// A linked row's door; `None` for a dropped-in row, whose image is `lib_bytes`.
     entry: Option<LinkedEntry>,
+    /// [`LinkedPlugin::keyed_by_alias`]: this row's surfaces print its alias ([`Self::key`]).
+    keyed_by_alias: bool,
 }
 
 impl LoadablePlugin {
+    /// THE WORD THIS ROW'S SURFACES PRINT AND KEY IT BY: a dropped-in row's manifest name; a linked
+    /// built-in's KEY, its alias (the short word the composition root's table names it by, and every
+    /// refusal, log field and `secrets:` key printed before the row also answered to its canonical
+    /// name: ARCHITECT C'), when the root gave it a canonical name beside that key; any other linked
+    /// row's manifest name. Identity is the manifest name; this is only the word printed.
+    pub fn key(&self) -> &str {
+        match self.keyed_by_alias {
+            true => &self.manifest.alias,
+            false => &self.manifest.name,
+        }
+    }
+
+    /// THE PLUGIN'S VERSION, as the one-version rule compares it ([`one_version`]): the version its
+    /// STATEMENT states (the plugin's own `CARGO_PKG_VERSION`: what its door says for a linked row,
+    /// what its signed manifest's `statement` says for a dropped-in one), and nothing else — never a
+    /// manifest's `version` (a linked row's is the loader's, which says nothing about the plugin;
+    /// ARCHITECT C', 2026-10-07).
+    ///
+    /// # Errors
+    /// The plugin states no version in a Statement ([`unversioned`]).
+    pub fn plugin_version(&self) -> Result<String, String> {
+        if self.entry.is_none() {
+            return stated_version(&self.manifest);
+        }
+        self.statement()
+            .and_then(|s| busbar_contract::abi::mechanism::rendering::read(&s).ok())
+            .map(|r| r.version)
+            .filter(|v| !v.is_empty())
+            .ok_or_else(|| unversioned(&self.manifest.name))
+    }
+
+    /// The Statement rendering this row states: a linked door's own, a dropped-in manifest's signed
+    /// one; `None` when it states none (a cold row, a door that will not state itself).
+    pub fn statement(&self) -> Option<Vec<u8>> {
+        match self.entry {
+            Some(LinkedEntry::Door(door)) | Some(LinkedEntry::Store { door }) => {
+                crate::dispatch::LinkedRow::of(door)
+                    .ok()
+                    .map(|row| row.statement)
+            }
+            Some(LinkedEntry::Boundary(_)) => None,
+            None => self.manifest.stated_rendering().ok().flatten(),
+        }
+    }
+
     /// Whether this row is the build's in-process STORE ([`LinkedEntry::Store`]) — such a row is
     /// handed no configuration, so there is none to resolve for it.
     pub fn in_process(&self) -> bool {
@@ -144,6 +191,10 @@ pub struct LinkedPlugin {
     pub entry: LinkedEntry,
     /// [`LoadablePlugin::ephemeral`]: the plugin states that what it holds is lost on restart.
     pub ephemeral: bool,
+    /// Whether this row's surfaces print its ALIAS rather than its canonical name
+    /// ([`LoadablePlugin::key`]): a built-in the root named canonically beside its key
+    /// ([`Self::built_in`] with an alias).
+    keyed_by_alias: bool,
 }
 
 /// A linked plugin's door.
@@ -187,6 +238,7 @@ impl LinkedPlugin {
             manifest,
             entry: LinkedEntry::Boundary(entry),
             ephemeral: false,
+            keyed_by_alias: false,
         }
     }
 
@@ -197,6 +249,7 @@ impl LinkedPlugin {
             manifest,
             entry: LinkedEntry::Door(door),
             ephemeral: false,
+            keyed_by_alias: false,
         }
     }
 
@@ -207,20 +260,48 @@ impl LinkedPlugin {
         door: busbar_contract::abi::mechanism::door::DoorFn,
         ephemeral: bool,
     ) -> Self {
+        Self::store_named(name, name, door, ephemeral)
+    }
+
+    /// The build's in-process STORE under its CANONICAL `name` (the manifest name its release
+    /// tarball carries, plugins.yaml `manifest_name`), answering also to `alias`, the key the
+    /// composition root's table names it by and every surface prints ([`LoadablePlugin::key`]).
+    pub fn store_named(
+        name: &str,
+        alias: &str,
+        door: busbar_contract::abi::mechanism::door::DoorFn,
+        ephemeral: bool,
+    ) -> Self {
         let abi = busbar_contract::abi::store::ABI_VERSION;
-        Self::built_in(
-            name,
-            kind::STORE,
-            abi,
-            LinkedEntry::Store { door },
-            ephemeral,
-        )
+        let entry = LinkedEntry::Store { door };
+        Self::built_in(name, &[alias], kind::STORE, abi, entry, ephemeral)
     }
 
     /// A linked AUTH plugin named `name` (its own alias) on the auth kind's MEMORY ABI: the logic
     /// crate's `plugin_door!` door, the same door its dropped-in build exports.
     pub fn auth_door(name: &str, door: busbar_contract::abi::mechanism::door::DoorFn) -> Self {
-        Self::door_of_kind(kind::AUTH, name, door)
+        Self::auth_door_named(name, name, door)
+    }
+
+    /// A linked AUTH plugin under its CANONICAL `name`, answering also to `alias`, its key
+    /// ([`Self::store_named`]'s rule), on the auth kind's MEMORY ABI.
+    pub fn auth_door_named(
+        name: &str,
+        alias: &str,
+        door: busbar_contract::abi::mechanism::door::DoorFn,
+    ) -> Self {
+        let abi = supported_abi(kind::AUTH)
+            .first()
+            .copied()
+            .unwrap_or_default();
+        Self::built_in(
+            name,
+            &[alias],
+            kind::AUTH,
+            abi,
+            LinkedEntry::Door(door),
+            false,
+        )
     }
 
     /// A linked memory-ABI plugin of `kind` named `name` (its own alias), at the kind's one version.
@@ -230,21 +311,26 @@ impl LinkedPlugin {
         door: busbar_contract::abi::mechanism::door::DoorFn,
     ) -> Self {
         let abi = supported_abi(kind).first().copied().unwrap_or_default();
-        Self::built_in(name, kind, abi, LinkedEntry::Door(door), false)
+        Self::built_in(name, &[], kind, abi, LinkedEntry::Door(door), false)
     }
 
-    /// The row a built-in states: the manifest a first-party tarball of `kind` would carry.
-    fn built_in(
+    /// The row a built-in states: the manifest a first-party tarball of `kind` would carry, named
+    /// `name` (its canonical name) and answering also to `aliases` — the first is its alias, any
+    /// further one a former name ([`Manifest::former_names`]); none: it is its own alias. A row given
+    /// an alias other than its name is keyed and printed by that alias ([`LoadablePlugin::key`]).
+    pub fn built_in(
         name: &str,
+        aliases: &[&str],
         kind: &str,
         abi_version: u32,
         entry: LinkedEntry,
         ephemeral: bool,
     ) -> Self {
-        LinkedPlugin {
+        let alias = aliases.first().copied().unwrap_or(name);
+        let row = LinkedPlugin {
             manifest: Manifest {
                 name: name.into(),
-                alias: name.into(),
+                alias: alias.into(),
                 kind: kind.into(),
                 version: env!("CARGO_PKG_VERSION").into(),
                 publisher: crate::sign::FIRST_PARTY_PUBLISHER.into(),
@@ -264,7 +350,9 @@ impl LinkedPlugin {
             },
             entry,
             ephemeral,
-        }
+            keyed_by_alias: alias != name,
+        };
+        row.with_former_names(aliases.iter().skip(1))
     }
 }
 
@@ -288,6 +376,9 @@ pub struct PluginRegistry {
     /// How many of `rows` are linked (they lead).
     linked: usize,
     skipped: Vec<SkippedPlugin>,
+    /// The dropped-in copies of plugins this build links at the same version ([`one_version`]):
+    /// validated, admitted once — the linked row serves — so never a row.
+    copies: Vec<LinkedCopy>,
     /// name -> index into `rows`; alias or former name -> index (aliases equal to the own name are
     /// fine).
     by_name: HashMap<String, usize>,
@@ -327,6 +418,7 @@ impl PluginRegistry {
             rows: Vec::new(),
             linked,
             skipped,
+            copies: Vec::new(),
             by_name: HashMap::new(),
             by_alias: HashMap::new(),
         };
@@ -362,6 +454,7 @@ impl PluginRegistry {
             manifest,
             entry,
             ephemeral,
+            keyed_by_alias,
         } in linked
         {
             crate::sign::validate_identity(&manifest, crate::sign::HOST_IDENTITY)
@@ -384,15 +477,62 @@ impl PluginRegistry {
                 lib_bytes: Vec::new(),
                 ephemeral,
                 entry: Some(entry),
+                keyed_by_alias,
             });
         }
         let new = rows.len();
         let n = new + self.linked;
         rows.extend(self.rows);
-        if let Some(refusal) = cross_claim(&rows, new) {
-            return Err(refusal);
+        let copies = cross_claim(&rows, new)?;
+        let mut kept = Vec::with_capacity(rows.len());
+        let mut found = self.copies;
+        for (i, row) in rows.into_iter().enumerate() {
+            match copies.iter().find(|(j, _)| *j == i) {
+                Some((_, version)) => found.push(LinkedCopy {
+                    name: row.manifest.name,
+                    version: version.clone(),
+                    file: row.file,
+                }),
+                None => kept.push(row),
+            }
         }
-        Ok(Self::of(rows, n, self.skipped))
+        let mut registry = Self::of(kept, n, self.skipped);
+        registry.copies = found;
+        Ok(registry)
+    }
+
+    /// The dropped-in tarballs that are copies of plugins this build LINKS, at the same version
+    /// ([`one_version`]): validated, and served by the linked row.
+    pub fn linked_copies(&self) -> &[LinkedCopy] {
+        &self.copies
+    }
+
+    /// THE ONE-VERSION RULE for a tarball not yet in the directory (the admin install path):
+    /// `manifest`, to be published as `file`, against the row this build links under the same
+    /// canonical name. `Ok(None)`: no linked row has its name. `Ok(Some(copy))`: the same plugin at
+    /// the same version, which the linked build already serves. `Err`: another version of it,
+    /// refused in the words boot refuses it with ([`one_version`]).
+    ///
+    /// # Errors
+    /// A linked row of the same name at another version.
+    pub fn linked_copy(
+        &self,
+        manifest: &Manifest,
+        file: &str,
+    ) -> Result<Option<LinkedCopy>, String> {
+        let Some(linked) = self
+            .linked()
+            .iter()
+            .find(|p| p.manifest.name == manifest.name)
+        else {
+            return Ok(None);
+        };
+        let version = one_version(linked, file, &stated_version(manifest)?)?;
+        Ok(Some(LinkedCopy {
+            name: manifest.name.clone(),
+            version,
+            file: file.to_string(),
+        }))
     }
 
     /// Resolve `name_or_alias` (canonical name first, then alias or former name) to a loadable
@@ -472,7 +612,8 @@ impl PluginRegistry {
         if p.manifest.kind != kind {
             return Err(format!(
                 "plugin '{}' has kind '{}', not '{kind}' - it cannot {role}",
-                p.manifest.name, p.manifest.kind
+                p.key(),
+                p.manifest.kind
             ));
         }
         Ok(p)
@@ -500,7 +641,7 @@ impl PluginRegistry {
         let no_door = || {
             format!(
                 "plugin '{}' states no store door: rebuild the plugin against the 1.6.0 SDK",
-                p.manifest.name
+                p.key()
             )
         };
         if let Some(entry) = p.entry {
@@ -509,7 +650,7 @@ impl PluginRegistry {
                 LinkedEntry::Door(_) | LinkedEntry::Boundary(_) => Err(no_door()),
             };
         }
-        let named = |e: String| format!("plugin '{}': {e}", p.manifest.name);
+        let named = |e: String| format!("plugin '{}': {e}", p.key());
         match p.manifest.stated_rendering().map_err(named)? {
             Some(stated) => Ok(StoreDoor::Dropped {
                 file: p.file.clone(),
@@ -551,7 +692,7 @@ impl PluginRegistry {
                  axis, not the cold lane"
             ));
         }
-        crate::auth::load_auth_image(p.image(), cfg_json, &p.manifest.name, &p.manifest.kind)
+        crate::auth::load_auth_image(p.image(), cfg_json, p.key(), &p.manifest.kind)
     }
 
     /// M6-COLD-DELETE RESIDUE (deleted when the hosted login moves onto the auth door): open an AUTH
@@ -566,8 +707,7 @@ impl PluginRegistry {
     ) -> Result<(Box<dyn busbar_contract::auth::AuthPlugin>, u32), String> {
         let p = self.resolve_kind(name_or_alias, "auth", "serve as a login module")?;
         let abi_version = p.manifest.abi_version;
-        let module =
-            crate::auth::load_login_image(p.image(), cfg_json, &p.manifest.name, &p.manifest.kind)?;
+        let module = crate::auth::load_login_image(p.image(), cfg_json, p.key(), &p.manifest.kind)?;
         Ok((module, abi_version))
     }
 
@@ -578,7 +718,7 @@ impl PluginRegistry {
     pub fn secret_refusal(&self, name_or_alias: &str) -> String {
         match self.resolve_kind(name_or_alias, kind::SECRET, "resolve config secrets") {
             Err(e) => e,
-            Ok(p) => format!("plugin '{}': {JSON_SECRET_REFUSED}", p.manifest.name),
+            Ok(p) => format!("plugin '{}': {JSON_SECRET_REFUSED}", p.key()),
         }
     }
 
@@ -708,23 +848,104 @@ impl PluginRegistry {
 /// linked rows and every row already admitted: the plugins directory's). Two DIFFERENT plugins
 /// (different canonical names) claiming one word refuse the boot, naming both and the word. Two
 /// DROPPED-IN rows were already held to this by phase 3 ([`conflicts`]). The SAME plugin arriving by
-/// both doors (one canonical name) is not a claim conflict: the one-version-per-kind rule governs it.
-fn cross_claim(rows: &[LoadablePlugin], new: usize) -> Option<String> {
+/// both doors (one canonical name) is one plugin, held to the ONE-VERSION RULE ([`one_version`],
+/// ARCHITECT C'): at the same version the dropped-in copy is returned (its index and the version),
+/// to be admitted once; at another version the boot is refused.
+fn cross_claim(rows: &[LoadablePlugin], new: usize) -> Result<Vec<(usize, String)>, String> {
+    let mut copies = Vec::new();
     for (i, a) in rows.iter().enumerate().take(new) {
-        for b in &rows[i + 1..] {
+        for (j, b) in rows.iter().enumerate().skip(i + 1) {
             if a.manifest.name == b.manifest.name {
+                if !b.linked() && !copies.iter().any(|(k, _)| *k == j) {
+                    copies.push((j, one_version(a, &b.file, &b.plugin_version()?)?));
+                }
                 continue;
             }
             if let Some(word) = a.manifest.identities().find(|w| b.manifest.answers_to(w)) {
-                return Some(format!(
+                return Err(format!(
                     "plugin claim conflict: '{word}' is claimed by both {} ({}) and {} ({}) - \
                      a name, alias or former name must resolve to one plugin; remove one",
-                    a.file, a.manifest.name, b.file, b.manifest.name
+                    a.file,
+                    a.key(),
+                    b.file,
+                    b.key()
                 ));
             }
         }
     }
-    None
+    Ok(copies)
+}
+
+/// A dropped-in tarball that is a COPY of a plugin this build links, at the same version: one
+/// plugin, arriving by both doors, admitted once (the linked row serves it).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LinkedCopy {
+    /// The plugin's canonical name.
+    pub name: String,
+    /// The one version both doors carry ([`LoadablePlugin::plugin_version`]).
+    pub version: String,
+    /// The tarball's file name.
+    pub file: String,
+}
+
+impl LinkedCopy {
+    /// The ONE INFO line boot logs for it: the plugin, both doors and the version.
+    pub fn line(&self) -> String {
+        both_doors(&self.name, &self.version, &self.file)
+    }
+}
+
+/// [`LinkedCopy::line`]'s words, for any axis whose rows meet both doors (`crate::boot::one_owner`).
+pub fn both_doors(name: &str, version: &str, file: &str) -> String {
+    format!("plugin '{name}' v{version} is linked and also dropped in ({file}); the linked build serves it")
+}
+
+/// THE ONE-VERSION RULE (ARCHITECT C'): one plugin has one identity whichever door it arrives by,
+/// so the SAME plugin (one canonical name) linked into this build and dropped in as `file` at
+/// `dropped` (its [`LoadablePlugin::plugin_version`]) is one plugin at ONE version. The same version
+/// answers it; another refuses, naming the plugin, both doors and both versions.
+///
+/// # Errors
+/// The two versions differ, or the linked plugin states no version ([`unversioned`]).
+pub fn one_version(linked: &LoadablePlugin, file: &str, dropped: &str) -> Result<String, String> {
+    two_versions(
+        &linked.manifest.name,
+        &linked.plugin_version()?,
+        file,
+        dropped,
+    )
+}
+
+/// The refusal of a plugin that reaches the one-version compare stating no version in a Statement:
+/// there is nothing to compare, and a manifest's `version` is never read in its place.
+pub fn unversioned(name: &str) -> String {
+    format!("plugin '{name}' states no version in its Statement: the one-version rule cannot compare it")
+}
+
+/// [`one_version`] over the two versions as read: `Ok(version)` when they are one.
+///
+/// # Errors
+/// The two versions differ, in the refusal's words.
+pub fn two_versions(name: &str, linked: &str, file: &str, dropped: &str) -> Result<String, String> {
+    match linked == dropped {
+        true => Ok(linked.to_string()),
+        false => Err(format!(
+            "plugin '{name}' arrives by both doors at two versions: linked v{linked}, dropped in \
+             v{dropped} ({file}) - one version per plugin: remove one"
+        )),
+    }
+}
+
+/// The version a signed manifest's plugin states ([`LoadablePlugin::plugin_version`]): its
+/// Statement's, and only its Statement's.
+///
+/// # Errors
+/// The manifest states no Statement, or one stating no version ([`unversioned`]).
+pub fn stated_version(manifest: &Manifest) -> Result<String, String> {
+    match manifest.stated() {
+        Ok(Some(read)) if !read.version.is_empty() => Ok(read.version),
+        _ => Err(unversioned(&manifest.name)),
+    }
 }
 
 /// The transports a plugins directory contributes, by the lane each image speaks
@@ -861,6 +1082,7 @@ fn examine(path: &Path, policy: &TrustPolicy) -> FileOutcome {
                 lib_bytes: unpacked.lib_bytes,
                 ephemeral: false,
                 entry: None,
+                keyed_by_alias: false,
             };
             // Phase 2b: the egress-class grant (§5): a plugin that is not first-party declaring a
             // need in a first-party class is never admitted.

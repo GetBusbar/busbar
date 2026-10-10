@@ -626,70 +626,6 @@ fn an_admin_unit_settles_at_zero_requests_and_zero_fee() {
     assert_eq!(evidence.fee_units, 0);
 }
 
-/// The nonce is drawn, not derived. Two draws over the same unit must not agree, or a one-time
-/// secret's placeholder would be predictable from the secret it protects.
-#[test]
-fn two_nonces_over_one_unit_do_not_agree() {
-    use busbar_core_admin::NonceSource;
-    let source = ArrivalNonce(1_700_000_000);
-    let mut first = [0u8; 16];
-    let mut second = [0u8; 16];
-    source.fill(&mut first);
-    source.fill(&mut second);
-    assert_ne!(first, second);
-    assert_ne!(first, [0u8; 16]);
-}
-
-/// Both halves of the nonce are drawn, and the second is not the first said again.
-///
-/// The source it replaced hashed a stack address — the same address on every call from the same
-/// frame — and then hashed its own first output to make the second half, so a 128-bit nonce
-/// carried at most 64 bits of source and the back half was a function of the front. This walks
-/// enough draws that either half repeating, or the two halves agreeing, would show.
-///
-/// What this cannot assert is unpredictability, which is a property of the SOURCE and not of any
-/// finite sample: it is held by reaching the substrate's own operating-system draw — the one a
-/// key secret is minted from — rather than by anything checkable here.
-#[test]
-fn both_halves_of_a_nonce_are_drawn_and_neither_repeats() {
-    use busbar_core_admin::NonceSource;
-    use std::collections::HashSet;
-
-    let source = ArrivalNonce(1_700_000_000);
-    let mut fronts = HashSet::new();
-    let mut backs = HashSet::new();
-    for _ in 0..512 {
-        let mut drawn = [0u8; 16];
-        source.fill(&mut drawn);
-        assert_ne!(drawn, [0u8; 16], "the source handed back nothing");
-        assert_ne!(
-            drawn[..8],
-            drawn[8..],
-            "the two halves of one nonce agree, so one of them is the other"
-        );
-        fronts.insert(drawn[..8].to_vec());
-        backs.insert(drawn[8..].to_vec());
-    }
-    assert_eq!(fronts.len(), 512, "a front half repeated across draws");
-    assert_eq!(backs.len(), 512, "a back half repeated across draws");
-}
-
-/// The other half of the nonce, and the half a random draw cannot be asserted about: the arrival
-/// epoch is what makes two units' nonces distinct, so a source that handed two units the same
-/// bytes still cannot make them collide. It touches the first eight bytes and leaves the rest of
-/// the material alone, which is what keeps the entropy the entropy.
-#[test]
-fn the_arrival_epoch_is_what_makes_two_units_nonces_distinct() {
-    let material = [7u8; 16];
-    assert_ne!(
-        mix_arrival(material, 1_700_000_000),
-        mix_arrival(material, 1_700_000_001)
-    );
-    assert_ne!(mix_arrival(material, 1_700_000_000), material);
-    assert_eq!(mix_arrival(material, 0), material);
-    assert_eq!(mix_arrival(material, u64::MAX)[8..], material[8..]);
-}
-
 /// Route is the one place that chooses between the unit's general execution path and its two
 /// dedicated minting methods, and the choice is exactly the two credential-minting verbs. Every
 /// other verb on the keys surface — reading them, revoking one, listing a key's usage — goes
@@ -799,32 +735,6 @@ fn a_replayed_idempotency_key_answers_the_first_answers_bytes() {
         .expect("a committed key replays");
     assert_eq!(replayed, first);
     assert_eq!(AdminAnswer::unpack(&replayed), Some(answer));
-}
-
-/// What the replay encoder writes: an identity, and never the secret beside it. The identity is
-/// enough to key a slot and carries nothing a second holder could present.
-#[test]
-fn the_replay_encoder_carries_an_identity_and_never_a_secret() {
-    use busbar_core_admin::ReplayEncoder;
-
-    let admin = crate::root::kernel::new_kernel().admin_token();
-    let outcome = busbar_core_admin::MintedKeyOutcome {
-        id: "vk_1".to_string(),
-        secret: busbar_core_admin::test_support::secret_once(
-            &admin,
-            42,
-            UnitKey::new(1),
-            "body.secret",
-        ),
-        expires_at: None,
-    };
-    let bytes = PackedReplay.encode(&outcome);
-    assert_eq!(bytes, b"vk_1");
-    assert_eq!(
-        PackedReplay.encode(&outcome),
-        bytes,
-        "two encodings of one outcome are one answer"
-    );
 }
 
 /// The dispatch a test drives the loop against: it answers, and its answer is recognisable, so a
@@ -3059,8 +2969,6 @@ fn a_view_reaches_neither_the_dispatch_nor_the_posture_check() {
                 a_ledger_request("/api/v1/admin/ledger/totals"),
             ),
             None::<Arc<dyn busbar_contract::verb_store::Store + Send + Sync>>,
-            ArrivalNonce(1),
-            PackedReplay,
             CONFIG_CLASS_RULES,
             Arc::new(busbar_core_admin::rate::MutationLimiter::new()),
         );
@@ -3102,8 +3010,6 @@ fn a_view_reaches_neither_the_dispatch_nor_the_posture_check() {
             a_ledger_request("/api/v1/admin/adjust"),
         ),
         None::<Arc<dyn busbar_contract::verb_store::Store + Send + Sync>>,
-        ArrivalNonce(1),
-        PackedReplay,
         CONFIG_CLASS_RULES,
         Arc::new(busbar_core_admin::rate::MutationLimiter::new()),
     );
