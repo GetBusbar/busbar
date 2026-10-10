@@ -14,8 +14,9 @@
 //! carried to the architecture's inventory row for this plane, and **ratified there** — so what
 //! follows restates a decision rather than declaring one, and a change to any of the three is a
 //! change to that row first and to this file second. They are: only the first decoded IR event per
-//! wire frame is acted on; uplink audio is assumed PCM16 for the `audio_seconds_in` estimate on the
-//! two WS dialects; and model-emitted text in a duplex turn prices under `text_tokens_out`, an
+//! wire frame is acted on; uplink audio on the two WS dialects is metered for `audio_seconds_in` at
+//! the rate its frame's wire states, else PCM16 (audit HIGH 9 moved this from "assumed PCM16"); and
+//! model-emitted text in a duplex turn prices under `text_tokens_out`, an
 //! output class, never the input one.
 //!
 //! - **HTTP/WS path arrives as a transport fact**, under the kernel's own reserved key
@@ -30,13 +31,14 @@
 //!   `…arguments.done` frame carries the complete arguments and the close together — so acting on
 //!   only the first dropped the `CallClose` that dispatches the call. Every other reference-dialect
 //!   frame emits at most one non-state event, so the fold is identical to first-only for them.
-//! - **The uplink audio format is assumed PCM16 for the `audio_seconds_in` estimate on the two WS
-//!   dialects.** `DecodeState` only tracks the NEGOTIATED OUTPUT format (for the downlink barge-in
-//!   truncate math); there is no equivalent uplink format tracked anywhere in this plane's closure,
-//!   so the ms-estimate this plane derives for its own `audio_ms_in` counter assumes the Realtime
-//!   default. Twilio's own uplink is unambiguous (G.711 µ-law, priced from the raw payload before this
-//!   plane's `encode_ingress_frame` transforms it), so this assumption is scoped to the two WS
-//!   dialects only.
+//! - **Uplink audio on the two WS dialects is metered at the format its frame's own wire states.**
+//!   A Gemini Live blob states its rate in its `mimeType` (16 kHz, the rate Gemini requires on its
+//!   uplink, or 24 kHz), and the reader carries it on the frame ([`IrAudioFrame::format`]); a frame
+//!   whose wire states none (a Realtime `input_audio_buffer.append`) is metered at the Realtime
+//!   default, PCM16 at 24 kHz. Counting a 16 kHz uplink at the 24 kHz rate billed two-thirds of the
+//!   audio the caller spoke (audit HIGH 9; THE DESIGN section 7: a plane that under-reports is that
+//!   plugin's bug). Twilio's own uplink is unambiguous (G.711 µ-law, priced from the raw payload
+//!   before this plane's `encode_ingress_frame` transforms it).
 //! - **A provider tool call is dispatched with its ACCUMULATED ARGUMENTS, on `CallClose`.**
 //!   `CallOpen` announces the call (and increments [`crate::session::TurnCounters::tool_calls`]) but
 //!   mints nothing on its own — a tool call dispatched with no arguments is a different call. The
@@ -159,6 +161,8 @@ fn client_event_from_wire(
                         seq: state.codec.next_up_seq(),
                         media: bytes::Bytes::from(pcm),
                         origin: IrAudioRef::default(),
+                        // Metered from the carrier payload (µ-law) before the transform widens it.
+                        format: None,
                     })))
                 }
                 _ => Ok(None),
@@ -335,6 +339,8 @@ impl Plane for StreamingPlane {
                             media: bytes::Bytes::from(pcm),
                             // A carrier media frame names no conversation item.
                             origin: IrAudioRef::default(),
+                            // Counted above from the carrier payload, at G.711 µ-law.
+                            format: None,
                         })
                     }
                     // Lifecycle events (`connected`/`start`/`mark`/`stop`) carry no audio and are
@@ -369,8 +375,10 @@ impl Plane for StreamingPlane {
         // Twilio's own uplink was counted from its carrier payload above, before the transform.
         if client_dialect != Dialect::TwilioMediaStreams {
             if let IrClientEvent::AudioFrame(f) = &client_event {
-                // See the module doc comment: the uplink format is assumed PCM16 for this estimate.
-                state.turn.admit_audio(AudioFormat::Pcm16, f.media.len());
+                // See the module doc comment: the format the frame's wire states, else PCM16.
+                state
+                    .turn
+                    .admit_audio(f.format.unwrap_or(AudioFormat::Pcm16), f.media.len());
             }
         }
 
