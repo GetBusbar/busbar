@@ -61,10 +61,10 @@ pub const OP_TASK_CANCEL: OpClassId = OpClassId::new("task_cancel");
 /// Hold open a stream of catalogue changes.
 pub const OP_SUBSCRIPTIONS_LISTEN: OpClassId = OpClassId::new("subscriptions_listen");
 
-/// An upstream asking for a completion, mid-call.
+/// An upstream asking the caller for a completion, mid-call.
 ///
-/// This is provider-initiated: the upstream sends it, it opens a unit of its own, and what answers
-/// it costs money on this node's own budget rather than the upstream's.
+/// This is provider-initiated: the upstream sends it and busbar relays it to the caller, who answers
+/// it or not. busbar runs no completion for it and opens no unit of another plane (Law 11).
 pub const OP_SAMPLING: OpClassId = OpClassId::new("sampling");
 
 /// An upstream asking which roots it may work under, mid-call.

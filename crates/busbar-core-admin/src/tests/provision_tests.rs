@@ -138,7 +138,7 @@ async fn mint_as(
         State(handle.clone()),
         axum::Extension(principal),
         HeaderMap::new(),
-        None,
+        axum::Extension(std::sync::Arc::new(crate::keys::KeyReplayCache::new())),
         axum::body::Bytes::from(
             json!({ "name": name, "group": group, "parent": parent }).to_string(),
         ),

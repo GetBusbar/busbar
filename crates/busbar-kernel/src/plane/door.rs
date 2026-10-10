@@ -874,7 +874,17 @@ async fn admin_reply(
 ) -> crate::admin_verbs::AdminReply {
     use crate::admin_verbs::{AdminReply, PlaneVerbError};
     let path = filled(target, &ctx.name);
-    match crate::plane_driver::serve::served_at(verb, &path, &ctx.headers, ctx.body).await {
+    // The request as the auth gate admitted it: what it consumed is struck before the plane sees
+    // the head, the query rides the target, and the plane's audit rows name the principal.
+    let req = crate::plane_driver::serve::AdminServe {
+        method: verb,
+        path: &path,
+        query: ctx.query.as_deref(),
+        headers: &ctx.headers,
+        consumed: ctx.consumed.as_ref(),
+        principal: ctx.principal.as_ref(),
+    };
+    match crate::plane_driver::serve::served_at(req, ctx.body).await {
         None => AdminReply::Refused(PlaneVerbError::NotFound),
         Some(Err(unserved)) => AdminReply::Rejected(PlaneVerbError::Internal(format!(
             "the plane did not serve `{verb} {path}`: {unserved:?}"

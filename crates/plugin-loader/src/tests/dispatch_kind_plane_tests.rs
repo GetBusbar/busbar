@@ -907,3 +907,54 @@ fn red_a_tail_whose_fee_unit_is_no_billable_class_does_not_bind() {
     let refused = bind(familyless, fee).expect_err("a class with no family refuses the load");
     assert!(refused.contains("billable_class.family"), "{refused}");
 }
+
+/// THE STREAM CEILING IS A TAIL ADDITION (ARCHITECT ruling 2026-10-07, STREAM-CEILING): a tail of
+/// the whole size states its ceiling and the root is handed it; a tail whose `size` ends before the
+/// field still loads and states none (`0`), even when the memory past its size holds a value. RED:
+/// a frozen size equal to the grown tail refused the shorter tail, and no fact carried the ceiling.
+#[test]
+fn a_tail_states_its_stream_ceiling_and_a_tail_ending_before_it_states_none() {
+    use busbar_contract::abi::mechanism::door::{
+        KindTailHead, Section, Statement, SECTION_DECLARING,
+    };
+    use busbar_contract::abi::plane::{PlaneTail, INGRESS_REQUEST_RESPONSE};
+    let bind = |size: usize| {
+        let mut tail: PlaneTail = z();
+        tail.head = KindTailHead {
+            size: size as u32,
+            _reserved: 0,
+        };
+        tail.ingress = INGRESS_REQUEST_RESPONSE;
+        tail.stream_ceiling_secs = 600;
+        let tail: &'static PlaneTail = Box::leak(Box::new(tail));
+        let sections: &'static [Section] = Box::leak(Box::new([Section {
+            name: AbiStr {
+                ptr: b"door".as_ptr(),
+                len: 4,
+            },
+            flags: SECTION_DECLARING,
+            _reserved: 0,
+        }]));
+        let mut st: Statement = z();
+        st.kind_tail = &tail.head;
+        st.sections = sections.as_ptr();
+        st.sections_len = sections.len();
+        Plane::context(&st)
+            .expect("the tail binds")
+            .expect("a plane has a context")
+            .downcast::<PlaneFacts>()
+            .expect("the plane's facts")
+            .served
+            .stream_ceiling_secs
+    };
+    assert_eq!(
+        bind(size_of::<PlaneTail>()),
+        600,
+        "the whole tail states it"
+    );
+    assert_eq!(
+        bind(std::mem::offset_of!(PlaneTail, stream_ceiling_secs)),
+        0,
+        "a tail ending before the field loads and states no ceiling"
+    );
+}

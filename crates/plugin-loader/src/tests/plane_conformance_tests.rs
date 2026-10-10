@@ -262,24 +262,13 @@ mod door {
         load_linked::<Plane>(&row, bind()).expect("the linked plane door loads")
     }
 
-    /// The example `cdylib` in this target dir (`cargo test` builds examples). Under CI a missing
-    /// artifact is a failure, never a skip.
-    fn dropped() -> Option<Plugin<Plane>> {
-        let exe = std::env::current_exe().ok()?;
-        let path = exe.parent()?.parent()?.join("examples").join(format!(
-            "{}plane_door_plugin{}",
-            std::env::consts::DLL_PREFIX,
-            std::env::consts::DLL_SUFFIX
-        ));
-        assert!(
-            path.exists() || std::env::var_os("CI").is_none(),
-            "the plane_door_plugin example cdylib is not built under CI; a both-ways proof must not skip"
-        );
+    /// The example `cdylib` in this target dir. A missing artifact is a failure naming the command
+    /// that builds it, never a skip.
+    fn dropped() -> Plugin<Plane> {
+        let path = crate::both_ways::example_cdylib("plane_door_plugin");
         // The signed manifest's rendering: the linked rlib's door, the same crate.
         let stated = rendering_of(plug::door).expect("the plane renders its Statement");
-        path.exists().then(|| {
-            load_dropped::<Plane>(&path, &stated, bind()).expect("the dropped plane door loads")
-        })
+        load_dropped::<Plane>(&path, &stated, bind()).expect("the dropped plane door loads")
     }
 
     fn open_frame(generation: u64) -> Frame<PlaneOpenIn, PlaneOpenOut> {
@@ -567,9 +556,7 @@ mod door {
     fn a_macro_built_plane_answers_every_op_the_same_linked_and_dropped() {
         let linked = script(&linked());
         assert_eq!(linked, EXPECTED, "the linked plane door");
-        if let Some(p) = dropped() {
-            assert_eq!(script(&p), linked, "the dropped plane door");
-        }
+        assert_eq!(script(&dropped()), linked, "the dropped plane door");
     }
 
     /// The lifecycle's own `open`: an `OpenOut` with an instance and nowhere to put a snapshot.
@@ -635,7 +622,7 @@ mod door {
     /// dropped generation 1's memory, the host still reads generation 1 exactly as it was published.
     #[test]
     fn red_the_hosts_snapshot_copy_survives_the_plugins_next_refresh() {
-        for p in [Some(linked()), dropped()].into_iter().flatten() {
+        for p in [linked(), dropped()] {
             let mut o = open_frame(1);
             let (c, first) = p.open(&mut o);
             assert_eq!(c.outcome, Outcome::Ready);
@@ -704,12 +691,7 @@ mod door {
             format!("{reg:?}")
         };
         let linked = check(Arc::new(|| Ok(linked())));
-        if dropped().is_none() {
-            return;
-        }
-        let dropped = check(Arc::new(|| {
-            dropped().ok_or_else(|| "no example".to_string())
-        }));
+        let dropped = check(Arc::new(|| Ok(dropped())));
         assert_eq!(linked, dropped, "the same facts, whichever door");
     }
 }

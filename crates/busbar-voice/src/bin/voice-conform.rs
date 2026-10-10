@@ -1970,6 +1970,7 @@ fn probe_provider_dial() -> (&'static str, String) {
             0,
             &url,
             policy,
+            None,
         )
         .await
         {
@@ -2128,7 +2129,7 @@ fn probe_route_failover() -> (&'static str, String) {
         // ATTEMPT 1 — breaker CLOSED: a real dial to a target the default fail-closed guard refuses (a
         // plaintext `ws://` loopback address, `allow_plaintext: false` by default) genuinely fails,
         // and the guard refusal's canonical signal (Auth-class => HardDown) trips the cell.
-        match dial_provider(&host, pool, 0, "ws://127.0.0.1:1/", policy).await {
+        match dial_provider(&host, pool, 0, "ws://127.0.0.1:1/", policy, None).await {
             Err(DialProviderError::Dial(_)) => {}
             Ok(_) => {
                 return (
@@ -2152,7 +2153,7 @@ fn probe_route_failover() -> (&'static str, String) {
         // fail differently on, `DialProviderError::Dial(Url(_))`) must instead come back
         // `BreakerOpen` -- proving the breaker check runs STRICTLY BEFORE any further dial, not merely
         // that a retried dial fails again for a different reason.
-        match dial_provider(&host, pool, 0, "not a url at all", policy).await {
+        match dial_provider(&host, pool, 0, "not a url at all", policy, None).await {
             Err(DialProviderError::BreakerOpen { retry_after_secs }) if retry_after_secs > 0 => {}
             Ok(_) => return ("FAIL", "a tripped breaker still dialed".into()),
             Err(e) => {

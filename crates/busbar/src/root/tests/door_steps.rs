@@ -801,8 +801,9 @@ async fn a_member_under_an_oauth_grant_presents_its_minted_then_refreshed_bearer
         crate::root::loader::dispatch::DispatchConfig::default(),
     ));
     crate::root::connector::install_io(&dispatcher);
-    let linked: [busbar_kernel::preflight::LinkedAuth; 1] =
-        [("busbar-auth-oauth", busbar_auth_oauth::door)];
+    // The row's canonical name is its key.
+    let name = "busbar-auth-oauth";
+    let linked: [busbar_kernel::preflight::LinkedAuth; 1] = [(name, name, busbar_auth_oauth::door)];
     let auths = super::OutboundAuths::new(
         dispatcher,
         &linked,
@@ -1410,7 +1411,8 @@ pub(crate) mod tool_door {
             // `open-web` token endpoint, connection security only) reaches a table standing in for
             // the authorization server.
             let mut linked = crate::LINKED.auths.to_vec();
-            linked.push(("busbar-auth-oauth", busbar_auth_oauth::door));
+            let name = "busbar-auth-oauth";
+            linked.push((name, name, busbar_auth_oauth::door));
             let tokens = Arc::new(super::TokenEndpoint {
                 answer: Some(|body: &str| {
                     let scope = body

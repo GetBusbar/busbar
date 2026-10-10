@@ -380,7 +380,8 @@ pub fn open_operator(
     let axis = crate::preflight::auth_axis(registry.clone());
     let answered = axis.as_ref().is_some_and(|axis| axis.answers(op));
     let defs = providers.iter().map(|(n, d)| (n.as_str(), d.module.trim()));
-    Operator::open(op, defs, answered, digest, |d| {
+    let is_op = |m: &str| crate::config::names_operator(m);
+    Operator::open(op, defs, &is_op, answered, digest, |d| {
         let axis = axis.ok_or_else(|| format!("no `kind: auth` plugin answers to '{op}'"))?;
         axis.open(op, op, &serde_json::Value::String(d.to_string()))
     })
@@ -422,11 +423,12 @@ impl AdminAuthChain {
         let mut modules: std::collections::HashMap<String, AdminModule> =
             std::collections::HashMap::new();
         let op = crate::config::operator_provider();
+        let is_op = |m: &str| crate::config::names_operator(m);
         let mut axis: Option<std::sync::Arc<dyn busbar_contract::auth_calls::AuthAxis>> = None;
         for entry in &cfg.admin_auth {
             match entry.module.as_str() {
                 // The operator credential is opened beside the chain ([`open_operator`]).
-                module if Operator::backed(op, &entry.name, Some(module)) => {}
+                module if Operator::backed(op, &entry.name, Some(module), &is_op) => {}
                 // TEST-ONLY inline admin stand-ins (dispatched by name in `run_admin_chain`); never
                 // resolved as plugins. Compiled out of release binaries.
                 #[cfg(any(test, feature = "test-support"))]
@@ -1747,6 +1749,22 @@ fn unauthorized_with_completion_taps(
     unauthorized_response(app, path, door)
 }
 
+/// EVERY CREDENTIAL CARRIER THE CONFIGURED GATE READS on one request: the data-plane carriers
+/// (whichever one carried this request's token, and the SigV4 signature on `Authorization`), the
+/// admin carriers when an admin chain is configured, and the DPoP proof — on the data plane once
+/// it was proven, and always on the admin plane, whose door judges none and whose routes' planes
+/// have no use for one. The host strips all of them before any plane sees the request.
+pub(crate) fn gate_consumed(app: &App, is_admin: bool, dpop_proven: bool) -> ConsumedCredentials {
+    let mut consumed = ConsumedCredentials::carrying(&CLIENT_TOKEN_CARRIERS);
+    if !app.admin_chain.is_empty() {
+        consumed.carry(&ADMIN_TOKEN_CARRIERS);
+    }
+    if dpop_proven || is_admin {
+        consumed.carry(&[dpop::DPOP_HEADER]);
+    }
+    consumed
+}
+
 /// Axum middleware layer that validates auth before routing.
 // Both arms are `Response` (axum requires the Err arm to be an IntoResponse we can return
 // directly); `Response` exceeds clippy's result_large_err threshold but boxing it would break the
@@ -1871,17 +1889,10 @@ pub(crate) async fn auth_middleware(
             }
         }
     };
-    // EVERY CREDENTIAL CARRIER THE CONFIGURED GATE READS — the data-plane carriers (whichever one
-    // carried this request's token, and the SigV4 signature on `Authorization`), and the admin
-    // carriers when an admin chain is configured — with the caller's token as a ref. Handed on with
-    // the request so the host strips all of them before any plane sees it (`caller_credential`).
-    let mut consumed = ConsumedCredentials::carrying(&CLIENT_TOKEN_CARRIERS);
-    if !app.admin_chain.is_empty() {
-        consumed.carry(&ADMIN_TOKEN_CARRIERS);
-    }
-    if dpop_proven {
-        consumed.carry(&[dpop::DPOP_HEADER]);
-    }
+    // EVERY CREDENTIAL CARRIER THE CONFIGURED GATE READS ([`gate_consumed`]), with the caller's
+    // token as a ref. Handed on with the request so the host strips all of them before any plane
+    // sees it (`caller_credential`).
+    let mut consumed = gate_consumed(&app, is_admin, dpop_proven);
     consumed.caller = client_token.clone().map(CallerCredential);
 
     // Thread the caller's token into request extensions for passthrough forwarding, using the same

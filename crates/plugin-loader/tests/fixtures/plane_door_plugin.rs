@@ -11,8 +11,11 @@
 //! `serve` and `project` write only into the host's buffers (an arrival on the session door, claim
 //! 1, states `ROUTE_SESSION`), `drive` names the session with unsolicited output, `cancel` answers a
 //! disposition (one naming the ticket the session's caller piece crossed on ends the session) and
-//! `tick` its next tick. The request-path ops never allocate and never block: the only shared
-//! state they touch is two atomics.
+//! `tick` its next tick. Opened on a host that serves them, an ATTEMPT is sent only when the
+//! kernel entitles the unit to `door:echo` and approves the member's `echo`; the far end's answer names
+//! the ledger lane `lane` beside its record write; and `project` writes one `user` turn of the
+//! body into a turns buffer the host lends. The request-path ops never allocate and never block:
+//! the only shared state they touch is two atomics.
 //!
 //! It is written on the SDK's SAFE surface (`abi::sdk::safe`, `abi::sdk::lent`): every slot is a
 //! `SafeSlot`, the instance is the SDK's typed `Instance<Plane>`, host-lent bytes and host buffers
@@ -25,12 +28,13 @@ use std::ptr;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use busbar_contract::abi::hook::signal;
+use busbar_contract::abi::host::service::DISTRUST_NONE;
 use busbar_contract::abi::mechanism::call::{AbiStr, InHead, OutHead, Outcome};
 use busbar_contract::abi::mechanism::door::{KindTailHead, Section, Statement, SECTION_DECLARING};
 use busbar_contract::abi::mechanism::lifecycle::{
     GenIn, RefreshIn, ReleaseIn, TickIn, TickOut, ValidateIn,
 };
-use busbar_contract::abi::mechanism::ticket::Ticket;
+use busbar_contract::abi::mechanism::ticket::{CompletionHandle, Ticket};
 use busbar_contract::abi::plane::{
     ArriveIn, ArriveOut, BillableClass, OnPieceIn, OnPieceOut, OpClass, OutField, PlaneDriveIn,
     PlaneDriveOut, PlaneOpenIn, PlaneOpenOut, PlaneRefreshOut, PlaneSnapshot, PlaneTail, ProjectIn,
@@ -42,6 +46,7 @@ use busbar_contract::abi::plane::{
 use busbar_contract::abi::plane::{PlaneCancelIn, PlaneCancelOut};
 use busbar_contract::abi::sdk::door::{abi_str, statement};
 use busbar_contract::abi::sdk::publish::{AdminRouteSpec, ClaimSpec, SnapshotSpec};
+use busbar_contract::abi::sdk::services::Services;
 use busbar_contract::abi::sdk::{Generations, Instance, Lent, Out, Safe, SafeSlot, SignalScalar};
 
 /// An absent string.
@@ -118,6 +123,7 @@ const TAIL: &PlaneTail = &PlaneTail {
         fmt: busbar_contract::abi::mechanism::call::BLOB_ABSENT,
         flags: 0,
     },
+    stream_ceiling_secs: 0,
 };
 
 /// Every generation's claims: the request door, and with a public URL the session door.
@@ -148,6 +154,10 @@ struct Plane {
     session_ticket: AtomicU64,
     /// Opened under a public URL.
     public: bool,
+    /// The host's services, when the host offers them: an ATTEMPT is then sent only when the
+    /// kernel entitles the unit to `door:echo` and approves the member's `echo` (a service the
+    /// host does not serve gates nothing).
+    services: Option<Services>,
 }
 
 impl Plane {
@@ -197,6 +207,10 @@ slot!(Open, PlaneOpenIn, PlaneOpenOut, |instance, input, out| {
         ready: AtomicU64::new(0),
         session_ticket: AtomicU64::new(0),
         public: !input.field(|i| &i.public_url).bytes().is_empty(),
+        services: input
+            .field(|i| &i.open)
+            .host()
+            .and_then(|h| Services::of(&h)),
     };
     out.publish(
         |o| &o.snapshot,
@@ -321,6 +335,21 @@ slot!(OnPiece, OnPieceIn, OnPieceOut, |instance, input, out| {
     match (input.from, input.attempt_no) {
         // An ATTEMPT: the request bound for the member the kernel picked.
         (FROM_KERNEL, 1..) => {
+            if let Some(s) = instance.get().and_then(|p| p.services) {
+                let handle = |seq| CompletionHandle {
+                    ticket: input.head.ticket,
+                    seq,
+                    _reserved: 0,
+                };
+                let member = input.field(|i| &i.member).as_str().unwrap_or_default();
+                // A service the host does not serve gates nothing.
+                let refused = s.entitled(handle(0), "door:echo") == Ok(false)
+                    || s.trust_serves(handle(1), member, Some("echo"), None)
+                        .is_ok_and(|v| v != DISTRUST_NONE);
+                if refused {
+                    return Outcome::Refused;
+                }
+            }
             let (verb, target) = (arena.span(b"POST"), arena.span(b"/up"));
             if !arena.fits() {
                 out.set(|o| &o.arena_needed, arena.needed() as u64);
@@ -360,6 +389,7 @@ slot!(OnPiece, OnPieceIn, OnPieceOut, |instance, input, out| {
                 key: arena.span(b"k"),
                 value: arena.span(b"v"),
             });
+            let lane = arena.span(b"lane");
             units.push(UnitCount {
                 class: 0,
                 source: UNITS_REPORTED,
@@ -382,6 +412,7 @@ slot!(OnPiece, OnPieceIn, OnPieceOut, |instance, input, out| {
             if short {
                 return Outcome::Failed;
             }
+            out.set(|o| &o.lane, lane);
             let n = reply.stream(piece);
             out.set(|o| &o.emitted, n as u64);
             out.set(|o| &o.reply_status, 200);
@@ -437,17 +468,26 @@ slot!(Hydrate, GenIn, OutHead, |_, _, _out| { Outcome::Ready });
 
 slot!(Start, GenIn, OutHead, |_, _, _out| { Outcome::Ready });
 
+// `project`: the body, its length as a signal and, when the host lends a turns buffer, one `user`
+// turn of the body.
 slot!(Project, ProjectIn, ProjectOut, |_, input, out| {
     let body = input.field(|i| &i.body).bytes();
-    let (mut signals, mut arena) = (input.signals_buf(), input.arena_buf());
+    let (mut signals, mut arena, mut turns) =
+        (input.signals_buf(), input.arena_buf(), input.messages_buf());
     let (pool, projected) = (arena.span(b"door"), arena.span(body));
+    if input.messages_cap > 0 {
+        let role = arena.span(b"user");
+        turns.push_turn(&arena, role, projected);
+    }
     signals.push_signal(
         signal::REQUEST_TOTAL_CHARS,
         SignalScalar::U64(body.len() as u64),
     );
-    let short = !(signals.fits() && arena.fits());
+    let short = !(signals.fits() && arena.fits() && turns.fits());
     let (sw, snd) = signals.settle(short);
     let (aw, and) = arena.settle(short);
+    let (tw, tnd) = turns.settle(short);
+    out.set(|o| &o.messages_needed, tnd as u32);
     out.set(|o| &o.signals_needed, snd as u32);
     out.set(|o| &o.arena_written, aw as u64);
     out.set(|o| &o.arena_needed, and as u64);
@@ -458,6 +498,11 @@ slot!(Project, ProjectIn, ProjectOut, |_, input, out| {
     out.host_list(|o| &o.view.signals, |o| &o.view.signals_len, &signals);
     debug_assert_eq!(out.get().view.signals_len, sw);
     out.host_str(|o| &o.view.pool, &arena, pool);
+    if tw > 0 {
+        out.host_rows(|o| &o.prompt.messages, &turns);
+        out.set(|o| &o.prompt.messages_len, tw);
+        out.set(|o| &o.prompt.message_count, tw as u64);
+    }
     Outcome::Ready
 });
 

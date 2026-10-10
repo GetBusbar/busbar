@@ -177,8 +177,30 @@ impl AdminTransport for JsonV1 {
         // process-wide substrate witness ledger the cross-plane drift audit reads.
         #[cfg(any(test, feature = "test-support"))]
         let router = router.layer(axum::middleware::from_fn(record_declared_error));
-        router
+        // THE KEY MUTATIONS' REPLAY CACHE rides in as a request extension (the composition root
+        // inserts the node's one, built for the life of the process). A mount that inserts none
+        // gets this router's own, so a replayable mutation is never left without one.
+        router.layer(axum::middleware::from_fn_with_state(
+            Arc::new(crate::keys::KeyReplayCache::new()),
+            supply_replay_cache,
+        ))
     }
+}
+
+/// Insert `own` as the request's replay cache unless the mount already supplied the node's.
+async fn supply_replay_cache(
+    State(own): State<Arc<crate::keys::KeyReplayCache>>,
+    mut req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    if req
+        .extensions()
+        .get::<Arc<crate::keys::KeyReplayCache>>()
+        .is_none()
+    {
+        req.extensions_mut().insert(own);
+    }
+    next.run(req).await
 }
 
 /// TEST-ONLY recording layer (see `JsonV1::router`). For every response carrying a taxonomy tag it
@@ -351,31 +373,38 @@ fn mount_one_admin_spec(
         handler,
     } = spec;
     let method_filter = busbar_kernel::plugin_routes::method_filter_of(method);
-    let shim = move |State(handle): State<Arc<AppHandle>>,
-                     Path(name): Path<String>,
-                     principal: Option<axum::Extension<busbar_kernel::auth::AuthPrincipal>>,
-                     headers: axum::http::HeaderMap,
-                     body: axum::body::Bytes| {
-        let handler = handler.clone();
-        async move {
-            if let Some(resp) = unconfigured_plane(&handle, Some(decl)) {
-                return resp;
+    let shim =
+        move |State(handle): State<Arc<AppHandle>>,
+              Path(name): Path<String>,
+              principal: Option<axum::Extension<busbar_kernel::auth::AuthPrincipal>>,
+              consumed: Option<axum::Extension<busbar_kernel::auth::ConsumedCredentials>>,
+              axum::extract::RawQuery(query): axum::extract::RawQuery,
+              headers: axum::http::HeaderMap,
+              body: axum::body::Bytes| {
+            let handler = handler.clone();
+            async move {
+                if let Some(resp) = unconfigured_plane(&handle, Some(decl)) {
+                    return resp;
+                }
+                let principal = principal.map(|axum::Extension(p)| p);
+                // LOAD + MINT stays 100% core-side (the plane names neither `AppHandle` nor the host
+                // factory). `from_handle` mirrors the data-plane adapter; the verbs here read only the BOUND
+                // slot, so it is byte-identical to the pre-seam `engine_host(&handle.load())` mint.
+                let host = busbar_kernel::plane_host::engine_host_from_handle(&handle);
+                let ctx = AdminReqCtx {
+                    host,
+                    name: name.clone(),
+                    body,
+                    headers,
+                    principal: principal.clone(),
+                    // What the auth gate consumed of the head and the query it left: a verb that hands
+                    // the request on to a plane strikes the one and keeps the other.
+                    consumed: consumed.map(|axum::Extension(c)| c),
+                    query,
+                };
+                finish_admin_reply(plane, &name, kind, principal, handler(ctx).await)
             }
-            let principal = principal.map(|axum::Extension(p)| p);
-            // LOAD + MINT stays 100% core-side (the plane names neither `AppHandle` nor the host
-            // factory). `from_handle` mirrors the data-plane adapter; the verbs here read only the BOUND
-            // slot, so it is byte-identical to the pre-seam `engine_host(&handle.load())` mint.
-            let host = busbar_kernel::plane_host::engine_host_from_handle(&handle);
-            let ctx = AdminReqCtx {
-                host,
-                name: name.clone(),
-                body,
-                headers,
-                principal: principal.clone(),
-            };
-            finish_admin_reply(plane, &name, kind, principal, handler(ctx).await)
-        }
-    };
+        };
     // Wrong method: the router's `405`, or — plane unconfigured (Law 7) — the unmounted path's `404`.
     let wrong_method = move |State(handle): State<Arc<AppHandle>>| async move {
         unconfigured_plane(&handle, Some(decl))
