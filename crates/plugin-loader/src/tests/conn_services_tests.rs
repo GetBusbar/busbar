@@ -652,6 +652,7 @@ fn a_config_program_is_declared_as_a_program() {
                 command: "/usr/bin/server".into(),
                 args: vec!["--serve".into()],
                 env: vec![("T".into(), "v".into())],
+                env_refs: Vec::new(),
             }
         )]
     );
@@ -1585,19 +1586,6 @@ fn an_upgrades_verify_off_reaches_the_table_and_a_v1_in_reads_none() {
     assert_eq!(*table.verify_offs.lock().unwrap(), vec![true, false, false]);
 }
 
-/// An `env` secret reference's value, as the linked `env` secret plugin (the kind's both-ways
-/// fixture, the real source) resolves it, its refusal the source's own text; any other module does
-/// not resolve.
-/// Every test of this binary installs this one ([`crate::dispatch::install_member_secrets`]: the
-/// first install holds).
-fn env_reference(r: &busbar_contract::secret_ref::SecretRef) -> Result<String, String> {
-    if r.module != busbar_contract::secret_ref::SECRET_MODULE_ENV {
-        return Err(format!("{} does not resolve", r.describe()));
-    }
-    let bytes = crate::both_ways::secret_fixture::resolve(&r.settings).map_err(|e| e.message)?;
-    String::from_utf8(bytes).map_err(|_| format!("{} is not UTF-8", r.describe()))
-}
-
 /// The member-program need (`settings.*`): each registration that names a program is a member.
 const MEMBER_NEEDS: [Need; 1] = [Need {
     target_from: abi_str("settings.*"),
@@ -1606,16 +1594,13 @@ const MEMBER_NEEDS: [Need; 1] = [Need {
 
 /// RED (ARCHITECT round 5 Q-L3B-STDIO-UPSTREAM (A)): a need whose `target_from` is the
 /// member-program path is declared with ONE program per registration that names a `command` —
-/// its `command`, `args` and `env`, every other key ignored, an `env` secret reference resolved —
-/// at `open` and again at every `refresh` (so the table can retire a changed or removed member); a
+/// its `command`, `args` and `env`, every other key ignored, an `env` secret reference kept as the
+/// reference (the host resolves it at the spawn, never at the declare) — at `open` and again at
+/// every `refresh` (so the table can retire a changed or removed member); a
 /// registration naming no program is no member, and one whose program does not read is left out.
 #[test]
 fn a_member_program_need_is_declared_with_each_registrations_program() {
     use busbar_contract::conn::Program;
-    // The variable one member's `env` reference names; set for this test alone.
-    std::env::set_var("BUSBAR_LOADER_MEMBER_PROGRAM_SECRET", "resolved-value");
-    // The root installs the linked secret plugins' resolver; this one reads `env` references alone.
-    let _ = crate::dispatch::install_member_secrets(env_reference);
     let table = Arc::new(Recording::default());
     let p = bound(Box::leak(Box::new(MEMBER_NEEDS)), &table);
     assert_eq!(
@@ -1641,10 +1626,13 @@ fn a_member_program_need_is_declared_with_each_registrations_program() {
                 Program {
                     command: "/usr/bin/one".into(),
                     args: vec!["--serve".into()],
-                    env: vec![
-                        ("KEY".into(), "resolved-value".into()),
-                        ("PLAIN".into(), "v".into()),
-                    ],
+                    env: vec![("PLAIN".into(), "v".into())],
+                    env_refs: vec![(
+                        "KEY".into(),
+                        busbar_contract::secret_ref::SecretRef::env(
+                            "BUSBAR_LOADER_MEMBER_PROGRAM_SECRET"
+                        ),
+                    )],
                 }
             )]
         )]
@@ -1668,6 +1656,7 @@ fn a_member_program_need_is_declared_with_each_registrations_program() {
                 command: "/usr/bin/two".into(),
                 args: Vec::new(),
                 env: Vec::new(),
+                env_refs: Vec::new(),
             }
         )]
     );

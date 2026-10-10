@@ -1627,28 +1627,14 @@ pub(crate) fn resolve_setting(settings: &serde_json::Value, path: &str) -> Optio
         .map(str::to_owned)
 }
 
-/// How a member program's `env` secret REFERENCE turns into its value: a string secret resolved
-/// through the secret plugins the build links (the root installs it once, at boot). `Err` names
-/// the reference's source, never a byte of the secret.
-pub type MemberSecretFn = fn(&busbar_contract::secret_ref::SecretRef) -> Result<String, String>;
-
-/// The installed [`MemberSecretFn`]; until one is installed no reference resolves (fail-closed: a
-/// member whose program needs one is no member).
-static MEMBER_SECRETS: std::sync::OnceLock<MemberSecretFn> = std::sync::OnceLock::new();
-
-/// Install how a member program's `env` secret references resolve ([`member_programs`]); the first
-/// install holds. Answers whether this one was installed.
-pub fn install_member_secrets(resolve: MemberSecretFn) -> bool {
-    MEMBER_SECRETS.set(resolve).is_ok()
-}
-
 /// EVERY MEMBER'S PROGRAM a member-program need reaches (`busbar_contract::section::MEMBER_PROGRAM`):
 /// each registration of the settings that names a `command`, read by
 /// [`busbar_contract::conn::Program::of_member`] (its other keys ignored), in the settings' order.
-/// An `env` value written as a secret REFERENCE (`{ env: X }`, `{ file: P }`) is resolved here, by
-/// the installed [`MemberSecretFn`], as the previous release resolved it at the spawn: the program is handed
-/// the value, the settings keep the reference. A registration whose program does not read (a
-/// relative command, a reference that does not resolve) is no member: an open naming it is refused.
+/// An `env` value written as a secret REFERENCE (`{ env: X }`, `{ file: P }`, a template) stays the
+/// reference in the program (`Program::env_refs`): the host resolves it at the SPAWN, never here,
+/// so the value exists only in the child's environment. A registration whose program does not read
+/// (a relative command, an `env` value that is neither a string nor a reference) is no member: an
+/// open naming it is refused.
 pub(crate) fn member_programs(
     settings: &serde_json::Value,
 ) -> Vec<(String, busbar_contract::conn::Program)> {
@@ -1657,24 +1643,7 @@ pub(crate) fn member_programs(
     };
     map.iter()
         .filter_map(|(name, registration)| {
-            let mut registration = registration.clone();
-            if let Some(env) = registration
-                .get_mut("env")
-                .and_then(serde_json::Value::as_object_mut)
-            {
-                for value in env.values_mut() {
-                    if value.is_string() {
-                        continue;
-                    }
-                    let reference =
-                        serde_json::from_value::<busbar_contract::secret_ref::SecretRef>(
-                            value.clone(),
-                        )
-                        .ok()?;
-                    *value = serde_json::Value::String(MEMBER_SECRETS.get()?(&reference).ok()?);
-                }
-            }
-            let program = busbar_contract::conn::Program::of_member(&registration)?.ok()?;
+            let program = busbar_contract::conn::Program::of_member(registration)?.ok()?;
             Some((name.clone(), program))
         })
         .collect()

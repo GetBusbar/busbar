@@ -63,6 +63,7 @@ fn sh(script: &str, env: &[(&str, &str)]) -> Program {
             .iter()
             .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
             .collect(),
+        env_refs: Vec::new(),
     }
 }
 
@@ -332,6 +333,7 @@ fn a_members_program_inherits_only_its_stated_environment() {
             command: "/usr/bin/env".to_owned(),
             args: Vec::new(),
             env: vec![("DECLARED".to_owned(), "yes".to_owned())],
+            env_refs: Vec::new(),
         };
         declare(&c, &[("shown", env)]).unwrap();
         let id = open(&c, "shown", b"").unwrap();
@@ -343,6 +345,83 @@ fn a_members_program_inherits_only_its_stated_environment() {
         }
         assert_eq!(lines, vec!["DECLARED=yes".to_owned()]);
         c.close(OWNER, id).unwrap();
+    });
+}
+
+/// The spawn's resolver in these cells: an `env` reference reads its variable, nothing else resolves.
+fn env_only(r: &busbar_contract::secret_ref::SecretRef) -> Result<String, String> {
+    r.env_var()
+        .and_then(|v| std::env::var(v).ok())
+        .ok_or_else(|| format!("{} does not resolve", r.describe()))
+}
+
+/// RED (SECURITY ruling 2026-10-07: a member's env resolves at spawn): an `env` entry written as a
+/// secret reference stays the reference in the declared program, and only the spawn resolves it:
+/// the child's environment carries the value, a template's `${VAR}` filled in place.
+#[test]
+fn a_members_env_refsironment_resolves_at_the_spawn() {
+    const VAR: &str = "BUSBAR_CONNECTOR_SPAWN_SECRET";
+    std::env::set_var(VAR, "spawn-value");
+    let _ = crate::compose::install_spawn_secrets(env_only);
+    worker().block_on(async {
+        let c = connector();
+        let env = Program {
+            command: "/usr/bin/env".to_owned(),
+            args: Vec::new(),
+            env: vec![("DECLARED".to_owned(), "yes".to_owned())],
+            env_refs: vec![
+                (
+                    "WHOLE".to_owned(),
+                    busbar_contract::secret_ref::SecretRef::env(VAR),
+                ),
+                (
+                    "TEMPLATED".to_owned(),
+                    busbar_contract::secret_ref::SecretRef::template(format!("Bearer ${{{VAR}}}")),
+                ),
+            ],
+        };
+        assert!(
+            !format!("{env:?}").contains("spawn-value"),
+            "the declared program holds no value"
+        );
+        declare(&c, &[("shown", env)]).unwrap();
+        let id = open(&c, "shown", b"").unwrap();
+        generation(&c, id).await;
+        let mut held = Vec::new();
+        let mut lines = Vec::new();
+        while let Some(l) = line(&c, id, &mut held).await {
+            lines.push(l);
+        }
+        lines.sort();
+        assert_eq!(
+            lines,
+            vec![
+                "DECLARED=yes".to_owned(),
+                "TEMPLATED=Bearer spawn-value".to_owned(),
+                "WHOLE=spawn-value".to_owned(),
+            ]
+        );
+        c.close(OWNER, id).unwrap();
+    });
+}
+
+/// A member whose environment reference does not resolve is not spawned (fail-closed).
+#[test]
+fn a_member_whose_env_refsironment_does_not_resolve_is_not_spawned() {
+    let _ = crate::compose::install_spawn_secrets(env_only);
+    worker().block_on(async {
+        let c = connector();
+        let env = Program {
+            command: "/usr/bin/env".to_owned(),
+            args: Vec::new(),
+            env: Vec::new(),
+            env_refs: vec![(
+                "MISSING".to_owned(),
+                busbar_contract::secret_ref::SecretRef::env("BUSBAR_CONNECTOR_SPAWN_UNSET_VAR"),
+            )],
+        };
+        declare(&c, &[("unresolved", env)]).unwrap();
+        assert!(open(&c, "unresolved", b"").is_err());
     });
 }
 
@@ -376,6 +455,7 @@ fn a_member_program_need_is_refused_unless_declared_as_written() {
                 command: "sh".into(),
                 args: Vec::new(),
                 env: Vec::new(),
+                env_refs: Vec::new(),
             },
         )];
         assert_eq!(

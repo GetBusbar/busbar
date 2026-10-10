@@ -362,8 +362,10 @@ pub fn register_stores(linked: &Linked) {
         }
     }
     // A member program's `env` secret references resolve through the same linked secret plugins
-    // (ARCHITECT round 5 Q-L3B-STDIO-UPSTREAM (A): as the previous release resolved them).
-    crate::root::loader::dispatch::install_member_secrets(
+    // (ARCHITECT round 5 Q-L3B-STDIO-UPSTREAM (A): as the previous release resolved them), at the
+    // SPAWN, by the connector that spawns it (SECURITY ruling 2026-10-07: a member's env resolves
+    // at spawn).
+    busbar_core_connector::compose::install_spawn_secrets(
         busbar_kernel::config::secret::resolve_linked_string,
     );
 }

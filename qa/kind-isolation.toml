@@ -1884,8 +1884,8 @@ cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain 
 [[law0]]
 crate = "busbar-plugin-loader"
 axis  = "instance:secret"
-count = "111"
-cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance"
+count = "110"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance. -1: dispatch/plugin.rs no longer edits a member's `env` map in place (a member's env references resolve at the spawn)"
 
 [[law0]]
 crate = "busbar-plugin-loader"

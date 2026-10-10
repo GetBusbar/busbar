@@ -2707,6 +2707,10 @@
       "kind": "alias",
       "target": "Mutex<HashMap<PoolKey, Vec<Entry>>>"
     },
+    "type SpawnSecretFn": {
+      "kind": "alias",
+      "target": "fn(&busbar_contract::secret_ref::SecretRef) -> Result<String, String>"
+    },
     "type Verdict": {
       "kind": "alias",
       "target": "u64"

@@ -510,6 +510,49 @@ impl Connection {
     }
 }
 
+/// How a program's environment REFERENCE (`Program::env_refs`) turns into its value at the
+/// spawn: a string secret resolved through the secret plugins the build links. `Err` names the
+/// reference's source, never a byte of the secret.
+pub type SpawnSecretFn = fn(&busbar_contract::secret_ref::SecretRef) -> Result<String, String>;
+
+/// The installed [`SpawnSecretFn`]; until one is installed no reference resolves, and a program
+/// that states one is not spawned (fail-closed).
+static SPAWN_SECRETS: std::sync::OnceLock<SpawnSecretFn> = std::sync::OnceLock::new();
+
+/// Install how a program's environment references resolve at the spawn ([`Connection::spawn`]);
+/// the first install holds. Answers whether this one was installed.
+pub fn install_spawn_secrets(resolve: SpawnSecretFn) -> bool {
+    SPAWN_SECRETS.set(resolve).is_ok()
+}
+
+/// `program`'s whole environment, its references resolved NOW, at the spawn (a template's every
+/// `${VAR}` through the `env` module): the value exists only in the child's environment, never in
+/// the table that holds the program.
+///
+/// # Errors
+///
+/// [`Failure::Refused`] naming the variable and the reference's source (never a value) when a
+/// reference does not resolve or no resolver is installed.
+fn spawn_env(program: &busbar_contract::conn::Program) -> Result<Vec<(String, String)>, Failure> {
+    let mut env = program.env.clone();
+    for (name, reference) in &program.env_refs {
+        let resolve = SPAWN_SECRETS.get().ok_or_else(|| {
+            Failure::Refused(format!(
+                "the program's environment `{name}` is a secret reference and no secret \
+                 resolver is installed"
+            ))
+        })?;
+        let value = reference.resolve_template(&|r| resolve(r)).map_err(|e| {
+            Failure::Refused(format!(
+                "the program's environment `{name}` ({}) did not resolve: {e}",
+                reference.describe()
+            ))
+        })?;
+        env.push((name.clone(), value));
+    }
+    Ok(env)
+}
+
 impl Connection {
     /// SPAWN `program` and frame its pipes through `door` (a byte-stream framer): no shell, its
     /// absolute path executed with its arguments and ONLY the environment it states, its input and
@@ -534,6 +577,8 @@ impl Connection {
         if tokio::runtime::Handle::try_current().is_err() {
             return Err(Failure::Failed(reactor::NOT_ON_A_WORKER.into()));
         }
+        // The environment's references resolve here, at the spawn, and nowhere earlier.
+        let env = spawn_env(program)?;
         // Two OS pipes: the child reads one and writes the other; the host keeps the far ends.
         // The child's error output is the host's own (a spawned command inherits it).
         let (child_reads, host_writes) = std::io::pipe().map_err(failed)?;
@@ -543,7 +588,7 @@ impl Connection {
         let child = tokio::process::Command::new(&program.command)
             .args(&program.args)
             .env_clear()
-            .envs(program.env.iter().map(|(k, v)| (k, v)))
+            .envs(env.iter().map(|(k, v)| (k, v)))
             .stdin(child_reads)
             .stdout(child_writes)
             .kill_on_drop(true)

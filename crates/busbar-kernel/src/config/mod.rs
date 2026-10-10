@@ -8,6 +8,10 @@ use serde::{Deserialize, Serialize};
 /// The busbar-owned config overlay (persistence substrate for API-applied hook changes).
 pub mod overlay;
 
+/// The credential positions `${VAR}` filled, and the settings a plane is handed over them: a secret
+/// reference at each, never the bytes (THE DESIGN §6); every other position as interpolated.
+pub mod filled;
+
 /// The top-level `groups:` limit tree: GroupCfg + the generic limit shape.
 pub mod groups;
 /// The root legacy table the composition root hands in, and the one rewrite over it.
@@ -292,6 +296,16 @@ fn assert_interpolation_preserves_structure(
     };
 
     if structural_shapes_match(&real_value, &placeholder_value, 0) {
+        // The two trees match in shape, so walking them in step finds the scalar each `${VAR}`
+        // filled: the kernel records those positions, and every blob a plane is handed carries a
+        // secret reference at the credential ones instead of the bytes (`filled::plane_bound`).
+        let vars: Vec<&str> = occurrences.iter().map(|o| o.var_name.as_str()).collect();
+        filled::record(
+            &real_value,
+            &placeholder_value,
+            &vars,
+            &structural_placeholder,
+        );
         return Ok(());
     }
 

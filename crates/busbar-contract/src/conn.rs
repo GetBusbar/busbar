@@ -451,8 +451,11 @@ impl std::fmt::Debug for ConnAuth {
 /// reach the same running program.
 pub const PROGRAM_GENERATION_FIELD: &str = "generation";
 
+/// The registration key a member's program environment is read from ([`Program::from_settings`]).
+pub const PROGRAM_ENV_KEY: &str = "env";
+
 /// The registration keys a member's program is read from ([`Program::of_member`]).
-pub const PROGRAM_KEYS: [&str; 3] = ["command", "args", "env"];
+pub const PROGRAM_KEYS: [&str; 3] = ["command", "args", PROGRAM_ENV_KEY];
 
 /// A PROGRAM a need dials (its `transport` a byte-stream framer the program's pipes carry): the
 /// three things a spawn needs that one target string cannot spell — the absolute path
@@ -465,8 +468,13 @@ pub struct Program {
     pub command: String,
     /// Its arguments, in order (not including the command).
     pub args: Vec<String>,
-    /// Its whole environment, name and value, in the settings' order.
+    /// Its environment entries written as values, name and value, in the settings' order.
     pub env: Vec<(String, String)>,
+    /// Its environment entries written as SECRET REFERENCES (`{ env: X }`, `{ file: P }`, a
+    /// template), name and reference, in the settings' order. The host resolves each at the SPAWN,
+    /// never earlier: the reference is what a plane is handed and what the table holds, and the
+    /// value exists only in the child's environment.
+    pub env_refs: Vec<(String, crate::secret_ref::SecretRef)>,
 }
 
 impl std::fmt::Debug for Program {
@@ -476,10 +484,16 @@ impl std::fmt::Debug for Program {
             .iter()
             .map(|(name, value)| format!("{name} = <{} bytes>", value.len()))
             .collect();
+        let env_refs: Vec<String> = self
+            .env_refs
+            .iter()
+            .map(|(name, reference)| format!("{name} = {}", reference.describe()))
+            .collect();
         f.debug_struct("Program")
             .field("command", &self.command)
             .field("args", &self.args)
             .field("env", &env)
+            .field("env_refs", &env_refs)
             .finish()
     }
 }
@@ -493,7 +507,7 @@ pub enum ProgramRefused {
     NotAbsolute,
     /// `args` is not a list of strings.
     Args,
-    /// `env` is not a map of strings.
+    /// `env` is not a map of strings and secret references.
     Env,
     /// A key other than `command`, `args` and `env`.
     UnknownKey,
@@ -523,7 +537,7 @@ impl Program {
     }
 
     /// The settings' spelling of a program: `{command, args?, env?}` — `command` an absolute path,
-    /// `args` a list of strings, `env` a map of string to string; any other key, type or a NUL byte
+    /// `args` a list of strings, `env` a map of string to a string or a secret reference; any other key, type or a NUL byte
     /// is refused.
     ///
     /// # Errors
@@ -553,25 +567,31 @@ impl Program {
                 .map(|a| a.as_str().map(str::to_owned).ok_or(ProgramRefused::Args))
                 .collect::<Result<Vec<_>, _>>()?,
         };
-        let env = match map.get("env") {
-            None => Vec::new(),
-            Some(v) => v
-                .as_object()
-                .ok_or(ProgramRefused::Env)?
-                .iter()
-                .map(|(k, v)| {
-                    v.as_str()
-                        .map(|v| (k.clone(), v.to_owned()))
-                        .ok_or(ProgramRefused::Env)
-                })
-                .collect::<Result<Vec<_>, _>>()?,
-        };
+        // An environment value is a string, or a secret REFERENCE the host resolves at the spawn.
+        let mut env = Vec::new();
+        let mut env_refs = Vec::new();
+        if let Some(v) = map.get(PROGRAM_ENV_KEY) {
+            for (k, v) in v.as_object().ok_or(ProgramRefused::Env)? {
+                match v {
+                    serde_json::Value::String(text) => env.push((k.clone(), text.clone())),
+                    serde_json::Value::Object(_) => env_refs.push((
+                        k.clone(),
+                        serde_json::from_value::<crate::secret_ref::SecretRef>(v.clone())
+                            .map_err(|_| ProgramRefused::Env)?,
+                    )),
+                    _ => return Err(ProgramRefused::Env),
+                }
+            }
+        }
         let nul = |s: &str| s.contains('\0');
         if nul(command)
             || args.iter().any(|a| nul(a))
             || env
                 .iter()
                 .any(|(k, v)| nul(k) || nul(v) || k.is_empty() || k.contains('='))
+            || env_refs
+                .iter()
+                .any(|(k, _)| nul(k) || k.is_empty() || k.contains('='))
         {
             return Err(ProgramRefused::Nul);
         }
@@ -579,6 +599,7 @@ impl Program {
             command: command.to_owned(),
             args,
             env,
+            env_refs,
         })
     }
 }
