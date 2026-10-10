@@ -14,7 +14,7 @@ on: [pull_request, merge_group]
 concurrency: { group: "promote-${{ github.event.pull_request.number || github.event.merge_group.head_ref }}", cancel-in-progress: false }
 permissions: { contents: read }
 env:
-  RELEASE_REF: 65e862fbf808540c0450edf67e95c083364d9b65
+  RELEASE_REF: 756dc8113541d78dbd84a81771f3de5482c4fbc0
   SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
   TO: ${{ github.base_ref || github.event.merge_group.base_ref }}
   BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
