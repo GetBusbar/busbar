@@ -129,11 +129,13 @@ const MIN_NEEDLE: usize = 4;
 
 /// THE DECLARATION FLOOR: the `[[capability]]` rows live in [`DECLARATIONS`] on predev 5e672d125d,
 /// measured 2026-10-07 (`ledger-dual-write`, `audit-chain-signing`; the third `[[capability]]` in
-/// the file is inside THE ROW SHAPE comment and declares nothing). Fewer reds
+/// the file is inside THE ROW SHAPE comment and declares nothing), raised to six by the
+/// kernel-ledger sweep of 2026-10-07 (Q128: `ledger-recording-rows`, `ledger-history-opening`,
+/// `ledger-is-dual-writing`, `ledger-book-retirement`). Fewer reds
 /// [`ROW_SCAN_FLOOR`]: a struck row is a construction guard that stopped running, and a file
 /// with none used to read `0 capability declaration(s)` and pass. Lowered only in the reviewed
 /// diff that strikes a row.
-pub const DECLARATION_FLOOR: usize = 2;
+pub const DECLARATION_FLOOR: usize = 6;
 
 const GATE: &str = "unconstructed";
 const CLEAN: &str = "clean";
