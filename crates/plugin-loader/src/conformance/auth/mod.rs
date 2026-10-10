@@ -617,7 +617,7 @@ impl HostServices for CredentialHost {
     fn work_find(&self, _: &Caller, _: Option<u64>, _: &[u8], _: Later) -> Ran {
         unserved()
     }
-    fn work_settle(&self, _: &Caller, _: u64, _: &[u8], _: Later) -> Ran {
+    fn work_settle(&self, _: &Caller, _: Option<u64>, _: u64, _: &[u8], _: Later) -> Ran {
         unserved()
     }
     fn work_resume(&self, _: &Caller, _: Option<u64>, _: u64, _: Later) -> Ran {
