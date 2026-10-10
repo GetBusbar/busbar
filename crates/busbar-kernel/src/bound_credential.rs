@@ -136,10 +136,14 @@ impl BoundCredential {
 }
 
 impl BoundCredential {
-    /// The one `fields` request for `ctx`: a POST of the body to its canonical path (the request a
-    /// lane's writer signs), at the style's request point, with the sent head fields a style that
+    /// The one `fields` request for `ctx`: a POST of the body to the path the lane sends (the request
+    /// a lane's writer signs), at the style's request point, with the sent head fields a style that
     /// needs them reads, and the caller's credential for a passthrough request on a style that
     /// presents the key.
+    ///
+    /// `ctx.canonical_uri` is the SigV4 canonical path, the sent path URI-encoded once more (non-S3
+    /// SigV4); the call's `path` is the path as sent, so it is the canonical path decoded once, and
+    /// a signing style's own re-encode yields the canonical path 1.5.5 signed.
     fn request(&self, key: &str, ctx: &SigningContext) -> FieldsRequest {
         let point = if self.points.has(AuthPoint::HeadBody) {
             AuthPoint::HeadBody
@@ -152,7 +156,7 @@ impl BoundCredential {
             body: (point == AuthPoint::HeadBody).then(|| ctx.body.to_vec()),
             method: b"POST".to_vec(),
             authority: ctx.host.to_string(),
-            path: ctx.canonical_uri.as_bytes().to_vec(),
+            path: crate::observability::percent_decode(ctx.canonical_uri).into_bytes(),
             query: None,
             timestamp: ctx.timestamp_epoch,
             headers: self.headers.clone(),
