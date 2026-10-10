@@ -127,6 +127,7 @@ fn a_slot() -> Arc<dyn std::any::Any + Send + Sync> {
         tool_defs: &unit,
         public_url: Some("https://voice.example"),
         prior: None,
+        providers: None,
     };
     crate::mount::voice_build(&ctx).expect("voice_build yields a slot for a public_url")
 }

@@ -1093,6 +1093,7 @@ mod both_ways {
         fn work_settle(
             &self,
             _: &Caller,
+            _: Option<u64>,
             _: u64,
             _: &[u8],
             _: busbar_contract::services::Later,

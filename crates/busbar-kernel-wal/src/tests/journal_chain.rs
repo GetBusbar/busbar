@@ -34,7 +34,12 @@ fn every_class_is_pinned_to_its_byte() {
 fn the_bound_is_pinned() {
     assert_eq!(MEMORY_BUFFER_RECORDS, 8192);
     assert_eq!(
-        Journal::memory_buffered(1, crate::tests::fixtures::wall_ms).capacity(),
+        Journal::memory_buffered_to(
+            1,
+            Box::new(crate::ship::NullShipper::new()),
+            crate::tests::fixtures::wall_ms
+        )
+        .capacity(),
         MEMORY_BUFFER_RECORDS
     );
 }
@@ -75,6 +80,25 @@ fn a_body_reads_back_what_was_written() {
     assert_eq!(lying.text(), None);
 }
 
+/// A shipper that acknowledges everything and counts what it was offered, readable after the log
+/// has taken ownership of it.
+#[derive(Clone, Default)]
+struct CountingShipper(std::sync::Arc<std::sync::atomic::AtomicU64>);
+
+impl CountingShipper {
+    fn shipped(&self) -> u64 {
+        self.0.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+impl crate::ship::Shipper<crate::Record> for CountingShipper {
+    fn ship(&mut self, records: &[crate::Record]) -> Result<(), crate::ship::ShipError> {
+        self.0
+            .fetch_add(records.len() as u64, std::sync::atomic::Ordering::SeqCst);
+        Ok(())
+    }
+}
+
 /// A run of `n` chained journal records for `node`, numbered from one, as a store hands them back.
 fn chained_run(node: u64, n: u64) -> Vec<crate::Record> {
     let mut head = [0u8; 32];
@@ -107,7 +131,7 @@ fn chained_run(node: u64, n: u64) -> Vec<crate::Record> {
 #[test]
 fn a_resumed_memory_journal_reads_back_and_continues_the_stored_chain() {
     let run = chained_run(5, 40);
-    let shipper = crate::BufferShipper::new();
+    let shipper = CountingShipper::default();
     let journal = Journal::memory_resumed(
         5,
         &run,
@@ -127,7 +151,7 @@ fn a_resumed_memory_journal_reads_back_and_continues_the_stored_chain() {
         "the chain continues from the newest stored record"
     );
     assert!(
-        shipper.records().is_empty(),
+        shipper.shipped() == 0,
         "a seeded record is never shipped back to the store it came from"
     );
     assert_eq!(journal.mode(), crate::Mode::MemoryBuffered);
@@ -137,9 +161,13 @@ fn a_resumed_memory_journal_reads_back_and_continues_the_stored_chain() {
 /// that asked for it refuses new work instead.
 #[test]
 fn a_retaining_journal_reports_its_bound_and_drops_nothing() {
-    let journal = Journal::memory_buffered(1, crate::tests::fixtures::wall_ms)
-        .with_capacity(1)
-        .retaining_at_bound();
+    let journal = Journal::memory_buffered_to(
+        1,
+        Box::new(crate::ship::NullShipper::new()),
+        crate::tests::fixtures::wall_ms,
+    )
+    .with_capacity(1)
+    .retaining_at_bound();
     assert!(!journal.at_bound(), "an empty buffer is not at its bound");
     assert_eq!(journal.dropped_total(), 0);
     assert!(journal.overflows().is_empty());
