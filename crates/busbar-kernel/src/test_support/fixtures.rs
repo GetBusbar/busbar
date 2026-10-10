@@ -181,6 +181,17 @@ pub fn build_once(
     cfg: crate::config::RootCfg,
     prior: Option<&crate::state::App>,
 ) -> Result<crate::state::App, String> {
+    // The build installs `cfg.limits` process-wide and KEEPS them (below), so it is a writer of the
+    // slot `LIMITS_TEST_LOCK` serializes: without the lock, a build in a sibling test lands mid-way
+    // through a test that holds it (e.g. the root listener's total-deadline test, which installs a
+    // 2 KiB cap and reads it live for seconds) and swaps the value it is asserting on. Spun on
+    // `try_lock`, not `blocking_lock`, because callers run inside a tokio runtime as often as not.
+    let _limits_lock = loop {
+        if let Ok(guard) = crate::config::limits::LIMITS_TEST_LOCK.try_lock() {
+            break guard;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    };
     // Test-only direct call: there is no outer admin transaction / persist step here, so firing any
     // resolved governance-credential rotation immediately is correct
     // and keeps this helper's callers (which assert on rotation taking effect) unchanged.

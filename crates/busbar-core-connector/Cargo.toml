@@ -38,8 +38,8 @@ rustls-pki-types = { workspace = true }
 tokio-rustls = { workspace = true }
 futures = { workspace = true }
 # Bridges the contract's rustls-free, futures-io-based `RawIo` (the wrap's parameter/return type)
-# to the tokio-io types `tokio_rustls::TlsAcceptor` requires — the same compat seam the kernel's
-# accept loop (`busbar_kernel::tls::serve_one`) crosses on the other side of `wrap`.
+# to the tokio-io types `tokio_rustls::TlsAcceptor` requires — the same compat seam the root's
+# accept loop (`busbar::root::listener`) crosses on the other side of `wrap`.
 tokio-util = { workspace = true }
 # The OUTBOUND half (`tls::client`): the platform trust anchors every dialled connection starts from, and
 # the SHA-256 an SPKI pin is compared under. Both moved here with the outbound trust itself, which a

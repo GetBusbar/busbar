@@ -293,7 +293,7 @@ fn accept_errors_back_off_as_1_5_5s_did() {
 /// the kernel holds frees when the served connection ends.
 #[test]
 fn a_stream_listener_hands_up_the_socket_as_it_arrived_under_the_cap() {
-    use busbar_kernel::tls::Admits;
+    use crate::listen::Admits;
     worker().block_on(async {
         let mut l = Listening::bind_stream(
             "127.0.0.1:0",
