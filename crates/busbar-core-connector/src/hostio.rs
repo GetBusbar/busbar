@@ -4,7 +4,7 @@
 //! THE HOST'S I/O, `io.*` (`busbar_contract::abi::host::io`; `BUSBAR-1.6.0.md` THE DESIGN §5: "No
 //! plugin opens a socket, dials, binds or does TLS"; TRANSPORT-STACK (2): a carrier writes "with
 //! readiness via core `io.*`"): the ONE place in this crate that holds an OS handle — a stream
-//! socket (TCP or unix-domain), a listener, a spawned program's two pipes — and moves bytes over it.
+//! socket (IP or unix-domain), a listener, a spawned program's two pipes — and moves bytes over it.
 //! Every other module reaches the wire through a carrier's slots ([`crate::carrier`]), and the
 //! carrier reaches it through here.
 //!
@@ -18,7 +18,7 @@
 //!   refused before any system call.
 //! * Readiness is the calling worker's reactor's ([`crate::io`]): a call that cannot progress
 //!   answers `Pending` with the ticket's waker registered, never a block, never a thread.
-//! * A stream is non-blocking, `TCP_NODELAY`, probed after 60 s idle (1.5.5's `tcp_keepalive`); a
+//! * A stream is non-blocking, no-delay, probed after 60 s idle (1.5.5's keepalive); a
 //!   listener reuses its address and port (one per acceptor); a program is spawned with no shell, an
 //!   absolute path and only the environment its settings state, its error output the host's, and
 //!   killed when its handle is closed or dropped.

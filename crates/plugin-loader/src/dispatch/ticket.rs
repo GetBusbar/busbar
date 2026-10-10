@@ -103,19 +103,21 @@ impl std::fmt::Debug for InstanceWake {
     }
 }
 
-/// THE HOST'S WAKE (`abi::mechanism::ticket::WakeFn`). Any thread; never blocks on the plugin;
-/// never fails. A wake for an unknown worker or a stale generation is dropped (the latter by the
-/// worker, which alone knows the generation).
-pub(crate) extern "C" fn host_wake(ctx: HostCtx, ticket: Ticket) {
-    // A generation-0 ticket (NONE) is a stale wake like any other: routed, and dropped and
-    // counted by the worker, never silently lost here.
-    if ctx.ptr.is_null() {
-        return;
-    }
-    // SAFETY: every `HostCtx` the host hands out points to a leaked `InstanceWake`.
-    let target = unsafe { &*ctx.ptr.cast_const().cast::<InstanceWake>() };
-    if let Some(route) = target.route.get().and_then(Weak::upgrade) {
-        route.wake(ticket);
+c_entry! {
+    /// THE HOST'S WAKE (`abi::mechanism::ticket::WakeFn`). Any thread; never blocks on the plugin;
+    /// never fails. A wake for an unknown worker or a stale generation is dropped (the latter by the
+    /// worker, which alone knows the generation).
+    pub(crate) fn host_wake(ctx: HostCtx, ticket: Ticket) {
+        // A generation-0 ticket (NONE) is a stale wake like any other: routed, and dropped and
+        // counted by the worker, never silently lost here.
+        if ctx.ptr.is_null() {
+            return;
+        }
+        // SAFETY: every `HostCtx` the host hands out points to a leaked `InstanceWake`.
+        let target = unsafe { &*ctx.ptr.cast_const().cast::<InstanceWake>() };
+        if let Some(route) = target.route.get().and_then(Weak::upgrade) {
+            route.wake(ticket);
+        }
     }
 }
 

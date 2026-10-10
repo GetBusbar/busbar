@@ -510,7 +510,7 @@ impl Planned {
 impl Connection {
     /// Dial the UNIX-DOMAIN socket at `path` (the target `unix:<path>`, [`socket::unix_path`]) as a
     /// raw stream through `door`: no name, no address to judge, no connection security at the dial
-    /// (a later [`Connection::upgrade_secure`] secures it as it would a TCP stream). The caller
+    /// (a later [`Connection::upgrade_secure`] secures it as it would an IP stream). The caller
     /// admits the target first (operator-infrastructure needs only); the endpoint check and the
     /// entry's `locate`, which read hosts, are not asked. The connection comes back at once, its
     /// open in flight.
