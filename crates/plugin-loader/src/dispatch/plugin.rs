@@ -921,10 +921,10 @@ impl Instance {
             // called it: a dispatcher worker that may later exit, or a ticket-less caller thread
             // (a libtest thread, a reload's thread) that will. `open` is where a plugin first
             // touches its thread-locals and `close` runs its `Drop`; either on a thread that
-            // exits after the library is unmapped runs the plugin's TLS destructor out of
-            // unmapped memory. What the crossing's thread states for the host services the plugin
-            // calls goes with it: the unit it serves, the dispatcher worker it acts for and the
-            // runtime that thread is inside.
+            // exits after the library is unmapped runs the plugin's thread-local destructor out
+            // of unmapped memory. What the crossing's thread states for the host services the
+            // plugin calls goes with it: the unit it serves, the dispatcher worker it acts for and
+            // the runtime that thread is inside.
             let acting = super::worker::worker_mark();
             let runtime = tokio::runtime::Handle::try_current().ok();
             let (input, output): (*const c_void, *mut c_void) =
