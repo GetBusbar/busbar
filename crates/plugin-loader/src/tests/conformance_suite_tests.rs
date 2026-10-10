@@ -904,7 +904,7 @@ mod hook_on_tickets {
     use busbar_contract::abi::mechanism::door::Door;
 
     use super::super::hook::{ask, Request};
-    use super::super::{bind, crossings, open};
+    use super::super::{bind, crossings, open, test_door, test_op, TestDoor, TestOp};
     use crate::dispatch::kinds::hook::Hook;
     use crate::dispatch::ticket::host_wake;
     use crate::dispatch::{load_linked, LinkedRow};
@@ -916,49 +916,57 @@ mod hook_on_tickets {
     /// A `decide` that WAITS before it answers (as on a may-pend host service): its first
     /// invocation wakes its own ticket and answers PENDING; RESUMED, it answers as the real gate.
     /// Ticket-less, its PENDING is a FAULT (a ticket-less op may not pend).
-    extern "C" fn decide_pends(
-        instance: *mut std::ffi::c_void,
-        input: *const std::ffi::c_void,
-        out: *mut std::ffi::c_void,
-    ) -> RawOutcome {
-        // SAFETY: every `in` leads with its `InHead`, every `out` with its `OutHead`.
-        unsafe {
-            let head = input.cast::<InHead>().read();
-            if head.flags & FLAG_RESUME == 0 {
-                if head.ticket.generation != 0 {
-                    host_wake(head.host, head.ticket);
+    struct DecidePends;
+
+    impl TestOp for DecidePends {
+        fn op(
+            instance: *mut std::ffi::c_void,
+            input: *const std::ffi::c_void,
+            out: *mut std::ffi::c_void,
+        ) -> RawOutcome {
+            // SAFETY: every `in` leads with its `InHead`, every `out` with its `OutHead`.
+            unsafe {
+                let head = input.cast::<InHead>().read();
+                if head.flags & FLAG_RESUME == 0 {
+                    if head.ticket.generation != 0 {
+                        host_wake(head.host, head.ticket);
+                    }
+                    (*out.cast::<OutHead>()).outcome = RawOutcome::of(Outcome::Pending);
+                    return RawOutcome::of(Outcome::Pending);
                 }
-                (*out.cast::<OutHead>()).outcome = RawOutcome::of(Outcome::Pending);
-                return RawOutcome::of(Outcome::Pending);
+                let real: busbar_contract::abi::mechanism::call::Op =
+                    std::mem::transmute(REAL_DECIDE.load(Ordering::SeqCst));
+                real(instance, input, out)
             }
-            let real: busbar_contract::abi::mechanism::call::Op =
-                std::mem::transmute(REAL_DECIDE.load(Ordering::SeqCst));
-            real(instance, input, out)
         }
     }
 
-    extern "C" fn pending_door() -> *const Door {
-        let have = SLOT.load(Ordering::SeqCst);
-        if !have.is_null() {
-            return have;
+    struct PendingDoor;
+
+    impl TestDoor for PendingDoor {
+        fn door() -> *const Door {
+            let have = SLOT.load(Ordering::SeqCst);
+            if !have.is_null() {
+                return have;
+            }
+            // SAFETY: the fixture's door and its hook table are `'static`.
+            let real: Door = unsafe { conforming::door().read_unaligned() };
+            let ops: Ops = unsafe { real.ops.cast::<Ops>().read_unaligned() };
+            REAL_DECIDE.store(
+                ops.decide.expect("the fixture decides") as *mut (),
+                Ordering::SeqCst,
+            );
+            let ops: &'static Ops = Box::leak(Box::new(Ops {
+                decide: Some(test_op::<DecidePends>),
+                ..ops
+            }));
+            let door = Box::into_raw(Box::new(Door {
+                ops: std::ptr::from_ref(ops).cast(),
+                ..real
+            }));
+            SLOT.store(door, Ordering::SeqCst);
+            door
         }
-        // SAFETY: the fixture's door and its hook table are `'static`.
-        let real: Door = unsafe { conforming::door().read_unaligned() };
-        let ops: Ops = unsafe { real.ops.cast::<Ops>().read_unaligned() };
-        REAL_DECIDE.store(
-            ops.decide.expect("the fixture decides") as *mut (),
-            Ordering::SeqCst,
-        );
-        let ops: &'static Ops = Box::leak(Box::new(Ops {
-            decide: Some(decide_pends),
-            ..ops
-        }));
-        let door = Box::into_raw(Box::new(Door {
-            ops: std::ptr::from_ref(ops).cast(),
-            ..real
-        }));
-        SLOT.store(door, Ordering::SeqCst);
-        door
     }
 
     /// RED (audit loader-PL1 #9): a gate whose `decide` waits is driven on a ticket, as the host
@@ -967,7 +975,7 @@ mod hook_on_tickets {
     #[test]
     fn red_a_gate_that_waits_is_resumed_on_its_ticket_never_faulted_ticketless() {
         let d = super::super::dispatcher();
-        let row = LinkedRow::of(pending_door).expect("the restated door states itself");
+        let row = LinkedRow::of(test_door::<PendingDoor>).expect("the restated door states itself");
         let p = load_linked::<Hook>(&row, bind(&d, "hook")).expect("it loads");
         assert_eq!(
             open(&p, br#"{"reject_over_messages": 5}"#).outcome,
@@ -1079,7 +1087,7 @@ mod dropped_image {
 
     use busbar_contract::abi::mechanism::door::{Door, DoorFn};
 
-    use super::super::{cdylib_of, choose_cdylib, distinct, CDYLIB_ENV};
+    use super::super::{cdylib_of, choose_cdylib, distinct, test_door, TestDoor, CDYLIB_ENV};
 
     /// A fresh `target/<profile>` of this test's own, with `deps/` and `examples/`.
     struct Profile(PathBuf);
@@ -1152,29 +1160,20 @@ mod dropped_image {
     static DROPPED_DOOR: AtomicPtr<Door> = AtomicPtr::new(std::ptr::null_mut());
 
     /// A "linked" door that is in truth the dropped image's own.
-    extern "C" fn the_dropped_images_door() -> *const Door {
-        DROPPED_DOOR.load(Ordering::SeqCst)
+    struct TheDroppedImagesDoor;
+
+    impl TestDoor for TheDroppedImagesDoor {
+        fn door() -> *const Door {
+            DROPPED_DOOR.load(Ordering::SeqCst)
+        }
     }
 
     /// RED: a dropped image that answers the LINKED door (its door resolved into the test binary's,
     /// or the binary itself picked) is refused; the real dropped image is an image of its own.
     #[test]
     fn red_a_dropped_image_answering_the_linked_door_is_refused() {
-        let built = std::env::current_exe()
-            .ok()
-            .and_then(|exe| Some(exe.parent()?.parent()?.join("examples")))
-            .is_some_and(|d| {
-                d.join(crate::plugin_library_filename("plane_door_plugin"))
-                    .exists()
-            });
-        if !built {
-            assert!(
-                std::env::var_os("CI").is_none(),
-                "the plane_door_plugin example cdylib is not built under CI"
-            );
-            eprintln!("skip: the plane_door_plugin example cdylib is not built");
-            return;
-        }
+        // Absent, the example cdylib fails the test naming its build command; never a skip.
+        crate::both_ways::example_cdylib("plane_door_plugin");
         let path = cdylib_of("plane_door_plugin");
         distinct(crate::plane_door_plugin::door, &path).unwrap_or_else(|e| panic!("{e}"));
         // SAFETY: the fixture's image; held open (leaked) so its door stays valid.
@@ -1183,7 +1182,7 @@ mod dropped_image {
             .expect("the image exports its door");
         std::mem::forget(lib);
         DROPPED_DOOR.store(door().cast_mut(), Ordering::SeqCst);
-        let e = distinct(the_dropped_images_door, &path).expect_err("one image twice");
+        let e = distinct(test_door::<TheDroppedImagesDoor>, &path).expect_err("one image twice");
         assert!(e.contains("answers the LINKED door"), "{e}");
     }
 }

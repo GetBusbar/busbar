@@ -644,6 +644,38 @@ pub fn dispatcher() -> Arc<Dispatcher> {
     d
 }
 
+/// A test's restated door, written in plain Rust; [`test_door`] is its [`DoorFn`].
+#[cfg(test)]
+pub(crate) trait TestDoor {
+    fn door() -> *const Door;
+}
+
+/// The C-ABI door of `T`: one shim per restated door, so no test spells the ABI of its own.
+#[cfg(test)]
+pub(crate) extern "C" fn test_door<T: TestDoor>() -> *const Door {
+    T::door()
+}
+
+/// A test's restated op, written in plain Rust; [`test_op`] is its door-table entry.
+#[cfg(test)]
+pub(crate) trait TestOp {
+    fn op(
+        instance: *mut std::ffi::c_void,
+        input: *const std::ffi::c_void,
+        out: *mut std::ffi::c_void,
+    ) -> RawOutcome;
+}
+
+/// The C-ABI op of `T`, as a door table holds it.
+#[cfg(test)]
+pub(crate) extern "C" fn test_op<T: TestOp>(
+    instance: *mut std::ffi::c_void,
+    input: *const std::ffi::c_void,
+    out: *mut std::ffi::c_void,
+) -> RawOutcome {
+    T::op(instance, input, out)
+}
+
 thread_local! {
     /// The dispatchers made on this thread since the last [`woken`]: a fold's.
     static FOLD_DISPATCHERS: std::cell::RefCell<Vec<Arc<Dispatcher>>> =
@@ -1067,6 +1099,8 @@ pub fn open_resumed<K: Kind>(p: &Plugin<K>, d: &Dispatcher, settings: &[u8]) -> 
 /// The memory a resumed `open` lends the plugin: its settings, the secret material and the blobs
 /// over it.
 struct OpenLend {
+    // settings-leak-lint: allow — NON-PROJECTION conformance-harness type: the settings bytes a
+    // resumed `open` lends the plugin under test; never serialized and never served.
     settings: Vec<u8>,
     _secrets: Vec<Vec<u8>>,
     blobs: Vec<Blob>,

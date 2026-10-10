@@ -1,7 +1,7 @@
 {
   "settings": {},
   "store": {
-    "credential_kind": "sigv4",
+    "credential_kind": "conformance",
     "node": 1,
     "caps": {
       "bucket": "g",
