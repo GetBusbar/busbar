@@ -232,7 +232,7 @@ fn an_interpolated_credential_reaches_a_door_plane_as_its_reference_never_its_by
 test_plane:
   capture_to: "{dir}"
   reg1:
-    url: "http://${{{host_var}}}/mcp"
+    url: "http://${{{host_var}}}/v1"
     api_key: {{env: {ref_var}}}
     token: "${{{plain_var}}}"
     args: ["--flag", "${{{host_var}}}"]
@@ -286,10 +286,10 @@ test_plane_owned:
         String::from_utf8_lossy(&std::fs::read(dir.join(name)).unwrap_or_default()).into_owned()
     };
     let whole = serde_json::json!({ "env": plain_var });
-    let part = serde_json::json!({
-        "module": "template",
-        "settings": {"text": format!("Bearer ${{{plain_var}}}")}
-    });
+    let part = serde_json::to_value(busbar_contract::secret_ref::SecretRef::template(format!(
+        "Bearer ${{{plain_var}}}"
+    )))
+    .expect("a reference");
     let written_reference = serde_json::json!({ "env": ref_var });
     for name in ["open.settings", "open.owned", "refresh.settings"] {
         let text = read(name);
@@ -315,7 +315,7 @@ test_plane_owned:
         );
         // Not a credential field: the load-time interpolation, as 1.5.5 handed it on.
         assert_eq!(
-            settings["reg1"]["url"], "http://upstream.invalid/mcp",
+            settings["reg1"]["url"], "http://upstream.invalid/v1",
             "{name}: {text}"
         );
         assert_eq!(

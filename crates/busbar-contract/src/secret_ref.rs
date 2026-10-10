@@ -66,7 +66,9 @@ pub const SECRET_FILE_SETTING_PATH: &str = "path";
 /// reference the host resolves where it reads the value ([`SecretRef::resolve_template`]); the
 /// text itself holds no secret byte. It names no secret module: only a host reader that resolves
 /// templates accepts it, and every other resolver refuses it as an unknown module (fail-closed).
-pub const SECRET_MODULE_TEMPLATE: &str = "template";
+/// Not the bare word `template`: the config grammar already spells that word (a prompt's
+/// `template`), and a module name is one no other config word shares.
+pub const SECRET_MODULE_TEMPLATE: &str = "env-template";
 /// The template module's settings key holding the value as written.
 pub const SECRET_TEMPLATE_SETTING_TEXT: &str = "text";
 

@@ -652,7 +652,7 @@ fn a_config_program_is_declared_as_a_program() {
                 command: "/usr/bin/server".into(),
                 args: vec!["--serve".into()],
                 env: vec![("T".into(), "v".into())],
-                secret_env: Vec::new(),
+                env_refs: Vec::new(),
             }
         )]
     );
@@ -1627,7 +1627,7 @@ fn a_member_program_need_is_declared_with_each_registrations_program() {
                     command: "/usr/bin/one".into(),
                     args: vec!["--serve".into()],
                     env: vec![("PLAIN".into(), "v".into())],
-                    secret_env: vec![(
+                    env_refs: vec![(
                         "KEY".into(),
                         busbar_contract::secret_ref::SecretRef::env(
                             "BUSBAR_LOADER_MEMBER_PROGRAM_SECRET"
@@ -1656,7 +1656,7 @@ fn a_member_program_need_is_declared_with_each_registrations_program() {
                 command: "/usr/bin/two".into(),
                 args: Vec::new(),
                 env: Vec::new(),
-                secret_env: Vec::new(),
+                env_refs: Vec::new(),
             }
         )]
     );

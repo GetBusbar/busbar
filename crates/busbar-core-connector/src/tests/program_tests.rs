@@ -63,7 +63,7 @@ fn sh(script: &str, env: &[(&str, &str)]) -> Program {
             .iter()
             .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
             .collect(),
-        secret_env: Vec::new(),
+        env_refs: Vec::new(),
     }
 }
 
@@ -333,7 +333,7 @@ fn a_members_program_inherits_only_its_stated_environment() {
             command: "/usr/bin/env".to_owned(),
             args: Vec::new(),
             env: vec![("DECLARED".to_owned(), "yes".to_owned())],
-            secret_env: Vec::new(),
+            env_refs: Vec::new(),
         };
         declare(&c, &[("shown", env)]).unwrap();
         let id = open(&c, "shown", b"").unwrap();
@@ -359,7 +359,7 @@ fn env_only(r: &busbar_contract::secret_ref::SecretRef) -> Result<String, String
 /// secret reference stays the reference in the declared program, and only the spawn resolves it:
 /// the child's environment carries the value, a template's `${VAR}` filled in place.
 #[test]
-fn a_members_secret_environment_resolves_at_the_spawn() {
+fn a_members_env_refsironment_resolves_at_the_spawn() {
     const VAR: &str = "BUSBAR_CONNECTOR_SPAWN_SECRET";
     std::env::set_var(VAR, "spawn-value");
     let _ = crate::compose::install_spawn_secrets(env_only);
@@ -369,7 +369,7 @@ fn a_members_secret_environment_resolves_at_the_spawn() {
             command: "/usr/bin/env".to_owned(),
             args: Vec::new(),
             env: vec![("DECLARED".to_owned(), "yes".to_owned())],
-            secret_env: vec![
+            env_refs: vec![
                 (
                     "WHOLE".to_owned(),
                     busbar_contract::secret_ref::SecretRef::env(VAR),
@@ -407,7 +407,7 @@ fn a_members_secret_environment_resolves_at_the_spawn() {
 
 /// A member whose environment reference does not resolve is not spawned (fail-closed).
 #[test]
-fn a_member_whose_secret_environment_does_not_resolve_is_not_spawned() {
+fn a_member_whose_env_refsironment_does_not_resolve_is_not_spawned() {
     let _ = crate::compose::install_spawn_secrets(env_only);
     worker().block_on(async {
         let c = connector();
@@ -415,7 +415,7 @@ fn a_member_whose_secret_environment_does_not_resolve_is_not_spawned() {
             command: "/usr/bin/env".to_owned(),
             args: Vec::new(),
             env: Vec::new(),
-            secret_env: vec![(
+            env_refs: vec![(
                 "MISSING".to_owned(),
                 busbar_contract::secret_ref::SecretRef::env("BUSBAR_CONNECTOR_SPAWN_UNSET_VAR"),
             )],
@@ -455,7 +455,7 @@ fn a_member_program_need_is_refused_unless_declared_as_written() {
                 command: "sh".into(),
                 args: Vec::new(),
                 env: Vec::new(),
-                secret_env: Vec::new(),
+                env_refs: Vec::new(),
             },
         )];
         assert_eq!(

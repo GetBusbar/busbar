@@ -471,7 +471,7 @@ pub struct Program {
     /// template), name and reference, in the settings' order. The host resolves each at the SPAWN,
     /// never earlier: the reference is what a plane is handed and what the table holds, and the
     /// value exists only in the child's environment.
-    pub secret_env: Vec<(String, crate::secret_ref::SecretRef)>,
+    pub env_refs: Vec<(String, crate::secret_ref::SecretRef)>,
 }
 
 impl std::fmt::Debug for Program {
@@ -481,8 +481,8 @@ impl std::fmt::Debug for Program {
             .iter()
             .map(|(name, value)| format!("{name} = <{} bytes>", value.len()))
             .collect();
-        let secret_env: Vec<String> = self
-            .secret_env
+        let env_refs: Vec<String> = self
+            .env_refs
             .iter()
             .map(|(name, reference)| format!("{name} = {}", reference.describe()))
             .collect();
@@ -490,7 +490,7 @@ impl std::fmt::Debug for Program {
             .field("command", &self.command)
             .field("args", &self.args)
             .field("env", &env)
-            .field("secret_env", &secret_env)
+            .field("env_refs", &env_refs)
             .finish()
     }
 }
@@ -566,12 +566,12 @@ impl Program {
         };
         // An environment value is a string, or a secret REFERENCE the host resolves at the spawn.
         let mut env = Vec::new();
-        let mut secret_env = Vec::new();
+        let mut env_refs = Vec::new();
         if let Some(v) = map.get("env") {
             for (k, v) in v.as_object().ok_or(ProgramRefused::Env)? {
                 match v {
                     serde_json::Value::String(text) => env.push((k.clone(), text.clone())),
-                    serde_json::Value::Object(_) => secret_env.push((
+                    serde_json::Value::Object(_) => env_refs.push((
                         k.clone(),
                         serde_json::from_value::<crate::secret_ref::SecretRef>(v.clone())
                             .map_err(|_| ProgramRefused::Env)?,
@@ -586,7 +586,7 @@ impl Program {
             || env
                 .iter()
                 .any(|(k, v)| nul(k) || nul(v) || k.is_empty() || k.contains('='))
-            || secret_env
+            || env_refs
                 .iter()
                 .any(|(k, _)| nul(k) || k.is_empty() || k.contains('='))
         {
@@ -596,7 +596,7 @@ impl Program {
             command: command.to_owned(),
             args,
             env,
-            secret_env,
+            env_refs,
         })
     }
 }

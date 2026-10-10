@@ -458,7 +458,7 @@ pub(crate) const SECRET_BEARING_TYPES: &[(&str, SecretBearing)] = &[
         "Program",
         SecretBearing::NotInResolvedConfig(
             "a member PROGRAM the host reads off a plane's settings at open and refresh \
-             (`busbar_contract::conn::Program`), never a `RootCfg` type: its `secret_env` \
+             (`busbar_contract::conn::Program`), never a `RootCfg` type: its `env_refs` \
              references are resolved by the connector at the spawn, as the previous release \
              resolved a member's environment, and one that does not resolve refuses the spawn, \
              naming the variable.",

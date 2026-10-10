@@ -5,10 +5,19 @@
 //! ([`super::plane_bound`]). Every test interpolates under its own section key and its own variable,
 //! so the process-wide ledger other tests write into never decides one of these.
 
+use busbar_contract::secret_ref::{SecretRef, SECRET_MODULE_ENV};
 use serde_json::json;
 
 use super::{plane_bound, plane_bound_bytes};
 use crate::config::{interpolate_env_with, EnvSubst};
+
+/// A member program's environment key (`busbar_contract::conn::PROGRAM_KEYS`).
+const ENV: &str = busbar_contract::conn::PROGRAM_KEYS[2];
+
+/// `{ env: VAR }`: the reference a plane is handed where `${VAR}` filled a whole credential value.
+fn env_ref(var: &str) -> serde_json::Value {
+    json!({ SECRET_MODULE_ENV: var })
+}
 
 /// Interpolate `template` with `vars` set, as boot does, and parse it.
 fn interpolated(template: &str, vars: &[(&str, &str)]) -> serde_yaml::Value {
@@ -33,7 +42,7 @@ fn a_credential_field_reaches_a_plane_as_its_reference_and_every_other_field_as_
     const HOST: &str = "BUSBAR_FILLED_WHOLE_HOST";
     let doc = interpolated(
         "filled_whole:\n  reg:\n    token: \"${BUSBAR_FILLED_WHOLE_SECRET}\"\n    \
-         url: \"https://${BUSBAR_FILLED_WHOLE_HOST}/mcp\"\n    \
+         url: \"https://${BUSBAR_FILLED_WHOLE_HOST}/v1\"\n    \
          command: \"/opt/${BUSBAR_FILLED_WHOLE_HOST}/bin\"\n    \
          args: [\"--x\", \"${BUSBAR_FILLED_WHOLE_SECRET}\"]\n    \
          cwd: \"/srv/${BUSBAR_FILLED_WHOLE_HOST}\"\n    \
@@ -45,13 +54,13 @@ fn a_credential_field_reaches_a_plane_as_its_reference_and_every_other_field_as_
     assert_eq!(
         bound,
         json!({"reg": {
-            "token": {"env": VAR},
-            "url": "https://upstream.example/mcp",
+            "token": env_ref(VAR),
+            "url": "https://upstream.example/v1",
             "command": "/opt/upstream.example/bin",
             "args": ["--x", PLAIN],
             "cwd": "/srv/upstream.example",
             "token_url": "https://upstream.example/token",
-            "env": {"API": {"env": VAR}},
+            ENV: {"API": env_ref(VAR)},
             "kept": "literal",
         }})
     );
@@ -71,15 +80,15 @@ fn a_credential_field_filled_in_part_reaches_a_plane_as_a_template_reference() {
     );
     let bound = plane_bound(&["filled_part"], section(&doc, "filled_part"));
     assert!(!bound.to_string().contains(PLAIN), "no byte: {bound}");
-    let template =
-        json!({"module": "template", "settings": {"text": "Bearer ${BUSBAR_FILLED_PART_SECRET}"}});
-    assert_eq!(bound["reg"]["env"]["AUTH"], template, "{bound}");
+    let template = serde_json::to_value(SecretRef::template("Bearer ${BUSBAR_FILLED_PART_SECRET}"))
+        .expect("a reference");
+    assert_eq!(bound["reg"][ENV]["AUTH"], template, "{bound}");
     assert_eq!(
         bound["reg"]["headers"]["Authorization"], template,
         "{bound}"
     );
-    let reference: busbar_contract::secret_ref::SecretRef =
-        serde_json::from_value(bound["reg"]["env"]["AUTH"].clone()).expect("a reference");
+    let reference: SecretRef =
+        serde_json::from_value(bound["reg"][ENV]["AUTH"].clone()).expect("a reference");
     let resolved = reference
         .resolve_template(&|r| {
             r.env_var()
@@ -101,7 +110,7 @@ fn the_upstream_credentials_block_is_credential_material_at_every_depth() {
     let bound = plane_bound(&["filled_upstream"], section(&doc, "filled_upstream"));
     assert_eq!(
         bound,
-        json!({"upstream_credentials": {"style": "bearer", "value": {"env": VAR}}})
+        json!({"upstream_credentials": {"style": "bearer", "value": env_ref(VAR)}})
     );
 }
 
@@ -115,7 +124,7 @@ fn a_section_keyed_by_its_top_level_name_is_bound_at_the_root() {
     let keyed = json!({"filled_keyed": section(&doc, "filled_keyed")});
     assert_eq!(
         plane_bound(&[], keyed),
-        json!({"filled_keyed": {"api_key": {"env": VAR}}})
+        json!({"filled_keyed": {"api_key": env_ref(VAR)}})
     );
 }
 
@@ -134,7 +143,7 @@ fn a_number_interpolated_into_a_credential_field_is_a_position_too() {
     let bound: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
     assert_eq!(
         bound,
-        json!({"password": {"env": VAR}, "port": 483920175534_u64})
+        json!({"password": env_ref(VAR), "port": 483920175534_u64})
     );
 }
 
@@ -149,7 +158,7 @@ fn a_literal_equal_to_the_secret_elsewhere_and_a_changed_value_are_left_as_writt
     let bound = plane_bound(&["filled_literal"], section(&doc, "filled_literal"));
     assert_eq!(
         bound,
-        json!({"token": {"env": VAR}, "secret": PLAIN}),
+        json!({"token": env_ref(VAR), "secret": PLAIN}),
         "only the position"
     );
     // The same path holding a value `${VAR}` did not fill (an admin write since) is not one.
@@ -162,6 +171,6 @@ fn a_literal_equal_to_the_secret_elsewhere_and_a_changed_value_are_left_as_writt
 
 #[test]
 fn a_section_with_nothing_interpolated_is_handed_as_written() {
-    let written = json!({"reg": {"url": "http://u.invalid", "api_key": {"env": "X"}}});
+    let written = json!({"reg": {"url": "http://u.invalid", "api_key": env_ref("X")}});
     assert_eq!(plane_bound(&["filled_nothing"], written.clone()), written);
 }

@@ -510,7 +510,7 @@ impl Connection {
     }
 }
 
-/// How a program's environment REFERENCE (`Program::secret_env`) turns into its value at the
+/// How a program's environment REFERENCE (`Program::env_refs`) turns into its value at the
 /// spawn: a string secret resolved through the secret plugins the build links. `Err` names the
 /// reference's source, never a byte of the secret.
 pub type SpawnSecretFn = fn(&busbar_contract::secret_ref::SecretRef) -> Result<String, String>;
@@ -535,7 +535,7 @@ pub fn install_spawn_secrets(resolve: SpawnSecretFn) -> bool {
 /// reference does not resolve or no resolver is installed.
 fn spawn_env(program: &busbar_contract::conn::Program) -> Result<Vec<(String, String)>, Failure> {
     let mut env = program.env.clone();
-    for (name, reference) in &program.secret_env {
+    for (name, reference) in &program.env_refs {
         let resolve = SPAWN_SECRETS.get().ok_or_else(|| {
             Failure::Refused(format!(
                 "the program's environment `{name}` is a secret reference and no secret \

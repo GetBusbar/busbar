@@ -1538,7 +1538,7 @@ pub(crate) fn resolve_setting(settings: &serde_json::Value, path: &str) -> Optio
 /// each registration of the settings that names a `command`, read by
 /// [`busbar_contract::conn::Program::of_member`] (its other keys ignored), in the settings' order.
 /// An `env` value written as a secret REFERENCE (`{ env: X }`, `{ file: P }`, a template) stays the
-/// reference in the program (`Program::secret_env`): the host resolves it at the SPAWN, never here,
+/// reference in the program (`Program::env_refs`): the host resolves it at the SPAWN, never here,
 /// so the value exists only in the child's environment. A registration whose program does not read
 /// (a relative command, an `env` value that is neither a string nor a reference) is no member: an
 /// open naming it is refused.

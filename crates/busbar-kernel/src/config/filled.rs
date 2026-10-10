@@ -217,8 +217,8 @@ const CREDENTIAL_KEYS: &[&str] = &[
 ];
 
 /// The map whose every entry is a credential: a program's environment (a member's `env`, resolved
-/// at its spawn).
-const CREDENTIAL_MAPS: &[&str] = &["env"];
+/// at its spawn), named by the contract's program keys (`command`, `args`, `env`).
+const CREDENTIAL_MAPS: &[&str] = &[busbar_contract::conn::PROGRAM_KEYS[2]];
 
 /// The block whose whole subtree is credential material: the kernel-owned upstream credential.
 const CREDENTIAL_BLOCK: &str = "upstream_credentials";
