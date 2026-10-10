@@ -4710,7 +4710,7 @@ mod task_continuation {
         assert!(failed["result"].get("inputRequests").is_none(), "{failed}");
     }
 
-    // ── THE TASK STORE IS HOST RECORDS (BUSBAR-1.6.0.md §2, the mcp bullet; §1 "Admission bounds
+    // ── THE TASK STORE IS HOST RECORDS (BUSBAR-1.6.0.md §2 "Homes"; §1 "Admission bounds
     // live work; nothing evicts it") ────────────────────────────────────────────────────────────
 
     /// One node of a deployment of `instance` on `port`, standing on the typed rows `rows` its
