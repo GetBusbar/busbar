@@ -2626,7 +2626,7 @@ async fn test_admin_v1_rotate_idempotency_in_flight_is_not_replayed_as_complete(
 /// produce `"rotate:{victim_id}:b:c"`. Because the idempotency cache lookup happens BEFORE the
 /// governance existence check, a caller who names the colliding (nonexistent) id is answered from
 /// the OTHER pair's cache entry — served a stranger's freshly-rotated secret — without ever
-/// holding a valid id of their own. Fixed by routing through `verbs::rotate_replay_key`, which
+/// holding a valid id of their own. Fixed by routing through `idempotency::rotate_replay_key`, which
 /// length-prefixes each half so no two distinct pairs can join to the same string.
 #[tokio::test]
 async fn test_admin_v1_rotate_idempotency_cache_key_does_not_collide_across_colon_joined_ids() {
@@ -8459,9 +8459,10 @@ async fn test_max_keys_per_principal_cap_trips() {
 
 /// The idempotency RESERVATION frees itself on an AT-CAP refusal specifically — a DIFFERENT exit
 /// than `test_admin_v1_idempotency_reservation_frees_on_failure`'s pre-validation 400: this one
-/// only reserves after the request has been handed to the transaction/mint (`IdemState::InFlight`,
-/// via `IdemReservation::clear()`'s explicit call at the `MintOutcome::AtCap` arm), so Drop alone
-/// (which only clears a still-`Reserved` sentinel) would NOT free it. Prove the reservation is
+/// only reserves after the request has been handed to the transaction/mint
+/// (`Reservation::in_flight`, freed by `Reservation::clear()`'s explicit call at the
+/// `MintOutcome::AtCap` arm), so Drop alone (which only clears a sentinel not yet in flight) would
+/// NOT free it. Prove the reservation is
 /// genuinely released, not merely coincidentally re-tripping the same cap: free capacity between
 /// the two calls and confirm the SAME Idempotency-Key mints on retry.
 #[tokio::test]
@@ -8503,7 +8504,7 @@ async fn test_admin_v1_idempotency_reservation_frees_on_at_cap_refusal() {
         .to_string();
 
     // The reserving mint: the group is already at cap, so this trips `MintOutcome::AtCap` — the
-    // reservation was inserted, promoted to InFlight, and must be freed by `r.clear()` here.
+    // reservation was inserted, marked in flight, and must be freed by `r.clear()` here.
     let at_cap = client
         .post(&keys_url)
         .header("x-admin-token", "admintok")
@@ -8528,8 +8529,8 @@ async fn test_admin_v1_idempotency_reservation_frees_on_at_cap_refusal() {
         .unwrap();
     assert_eq!(deleted.status().as_u16(), 204);
 
-    // The SAME Idempotency-Key now mints successfully. If `IdemReservation::clear()` were a no-op,
-    // this would instead see the stale `Null` sentinel and get the idempotency-in-flight 409
+    // The SAME Idempotency-Key now mints successfully. If `Reservation::clear()` were a no-op,
+    // this would instead see the stale in-flight sentinel and get the idempotency-in-flight 409
     // forever, never a fresh cap check.
     let retry = client
         .post(&keys_url)
@@ -11685,7 +11686,7 @@ async fn a_memory_only_node_journals_no_claim_for_a_repeated_key_post_keys() {
 /// included, so a mint stuck past the replay window (a slow store, an unreachable signer) was swept
 /// out from under itself and its retry reserved afresh and minted a SECOND credential. The node's
 /// `IdempotencyCache` steps over a sentinel however old it is; this drives that through the served
-/// `POST /keys` and `POST /keys/{id}/rotate`, with a sentinel placed at unix second 1 (ten minutes
+/// `POST /keys` and `POST /keys/{id}/rotate`, with sentinels placed at unix second 1 (ten minutes
 /// is far behind it) by a first request that never answered.
 #[tokio::test]
 async fn a_stuck_mint_or_rotate_is_refused_in_flight_however_old_its_sentinel() {
@@ -11694,11 +11695,34 @@ async fn a_stuck_mint_or_rotate_is_refused_in_flight_however_old_its_sentinel() 
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let app = crate::new_test_app().governance(gov.clone()).build();
     let cache: Arc<crate::keys::KeyReplayCache> = Arc::new(crate::keys::KeyReplayCache::new());
+    let router = crate::build_router(app).layer(axum::Extension(cache.clone()));
+    let (addr, handle, client) = spin_up(router).await;
+    let keys_url = format!("http://{addr}/api/v1/admin/keys");
+
+    let created: serde_json::Value = client
+        .post(&keys_url)
+        .header("x-admin-token", "admintok")
+        .json(&serde_json::json!({"name": "rotated"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let id = created["id"].as_str().unwrap().to_string();
+    let generation = || {
+        gov.all_keys()
+            .unwrap()
+            .into_iter()
+            .find(|k| k.id == id)
+            .map(|k| k.generation_hash)
+    };
+    let before = generation();
     for key in [
         ("admin".to_string(), "stuck-mint".to_string()),
         (
             "admin".to_string(),
-            crate::idempotency::rotate_replay_key("some-key", "stuck-rotate"),
+            crate::idempotency::rotate_replay_key(&id, "stuck-rotate"),
         ),
     ] {
         match cache.probe(key, 1) {
@@ -11706,11 +11730,9 @@ async fn a_stuck_mint_or_rotate_is_refused_in_flight_however_old_its_sentinel() 
             _ => panic!("a fresh cache reserves the first sighting"),
         }
     }
-    let router = crate::build_router(app).layer(axum::Extension(cache));
-    let (addr, handle, client) = spin_up(router).await;
 
     let mint = client
-        .post(format!("http://{addr}/api/v1/admin/keys"))
+        .post(&keys_url)
         .header("x-admin-token", "admintok")
         .header("content-type", "application/json")
         .header("idempotency-key", "stuck-mint")
@@ -11724,16 +11746,26 @@ async fn a_stuck_mint_or_rotate_is_refused_in_flight_however_old_its_sentinel() 
         "the retry of a mint still in flight is refused, not minted a second time"
     );
     let rotate = client
-        .post(format!("http://{addr}/api/v1/admin/keys/some-key/rotate"))
+        .post(format!("{keys_url}/{id}/rotate"))
         .header("x-admin-token", "admintok")
         .header("idempotency-key", "stuck-rotate")
         .send()
         .await
         .unwrap();
-    assert_eq!(rotate.status().as_u16(), 409);
-    assert!(
-        gov.all_keys().unwrap().is_empty(),
-        "neither retry minted anything"
+    assert_eq!(
+        rotate.status().as_u16(),
+        409,
+        "the retry of a rotate still in flight is refused, not rotated a second time"
+    );
+    assert_eq!(
+        gov.all_keys().unwrap().len(),
+        1,
+        "the retried mint minted nothing"
+    );
+    assert_eq!(
+        generation(),
+        before,
+        "the retried rotate issued no new credential"
     );
 
     handle.abort();

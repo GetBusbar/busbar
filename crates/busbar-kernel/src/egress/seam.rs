@@ -481,8 +481,9 @@ pub fn hostless() -> Option<&'static dyn HostlessEgress> {
 // second lookup" posture of an already-judged hop is expressed in exactly one place.
 
 /// One ALREADY-PINNED outbound hop, as neutral data. The plane resolved-then-pinned and judged `addr`
-/// plane-side, so the host re-judges nothing: the pinned address is handed straight through (Design A)
-/// and the allowlist stances are moot. The generic input both planes build AFTER their own pin — it
+/// plane-side; the host connects there and resolves nothing (Design A), and re-judges the address and
+/// the scheme under the reach the plane judged them with (`allow_private`, `allow_plaintext`), never
+/// more. The generic input both planes build AFTER their own pin — it
 /// carries only what an outbound request IS plus the opaque host-side refs, and names no protocol.
 #[cfg(any(feature = "dispatch", feature = "relay"))]
 pub struct PinnedHop<'a> {
@@ -499,21 +500,27 @@ pub struct PinnedHop<'a> {
     /// The plane's ALREADY-JUDGED pinned address (Design A): the host connects HERE and resolves
     /// nothing. The URL host is still used for SNI / cert-name / mTLS.
     pub addr: std::net::IpAddr,
+    /// The private reach the plane's guard judged `addr` under: the host refuses a private or
+    /// loopback `addr` unless this is set.
+    pub allow_private: bool,
+    /// The plaintext reach the plane's guard judged the scheme under: the host refuses an `http://`
+    /// hop to a host that is not private unless this is set.
+    pub allow_plaintext: bool,
 }
 
 #[cfg(any(feature = "dispatch", feature = "relay"))]
 impl PinnedHop<'_> {
-    /// Lower to the neutral [`HopSpec`] the driver consumes. The pin is expressed HERE, once: a
-    /// supplied `resolved_addr` means the host re-judges nothing, so `allow_private`/`allow_plaintext`
-    /// are moot and set open — the plane's own pre-pin guard already judged this hop.
+    /// Lower to the neutral [`HopSpec`] the driver consumes. The pin is expressed HERE, once: the host
+    /// resolves nothing for a supplied `resolved_addr`, and judges it under the reach the plane's own
+    /// guard admitted it with, so a hop never carries more reach to the host than it was judged with.
     fn spec(&self) -> HopSpec<'_> {
         HopSpec {
             verb: self.verb,
             url: self.url,
             headers: self.headers,
             body: self.body,
-            allow_private: true,
-            allow_plaintext: true,
+            allow_private: self.allow_private,
+            allow_plaintext: self.allow_plaintext,
             client_identity_ref: self.client_identity_ref,
             trust_anchor_ref: self.trust_anchor_ref,
             timeout: self.timeout,
