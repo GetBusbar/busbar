@@ -22,7 +22,7 @@ version = "0.12"
 default-features = false
 features = ["sync"]
 repos = ["busbar-auth-ldap"]
-reason = "the LDAP client of the ldap auth module. 0.12 is on rustls 0.23 / ring 0.17 (DEPS-AUDIT cut #7, busbar-auth-ldap#7). Its TLS features are a plugin-side TLS stack and are net-banned."
+reason = "TESTS ONLY: the LDAP client the ldap auth module's live end-to-end test seeds its directory with, plaintext and no TLS feature. Never in the shipped image: the module speaks LDAP through its own sans-IO codec over the host's connector (busbar-auth-ldap#11), and [net-ban] refuses ldap3 in the shipped closure."
 
 [plugin-deps.mysql]
 version = "28"
@@ -45,14 +45,29 @@ reason = "the mysql store's reading of its `mysql://` URL (the 1.5.5 driver's UR
 [plugin-deps.postgres]
 version = "0.19"
 repos = ["busbar-store-postgres"]
-reason = "the Postgres driver of the postgres store (tokio-postgres underneath)."
+reason = "TESTS ONLY: the upstream Postgres driver (tokio-postgres underneath) the postgres store's live tests verify what landed with, independently of the store. Never in the shipped image: the store reaches its server only over the host's connector (busbar-store-postgres#20), and [net-ban] refuses postgres and tokio-postgres in the shipped closure."
+
+[plugin-deps.postgres-protocol]
+version = "0.6.11"
+repos = ["busbar-store-postgres"]
+reason = "the sans-IO Postgres frontend protocol (the messages, SCRAM-SHA-256 and md5) the postgres store speaks over the host's connector, the codec the 1.5.5 `postgres` driver encoded with; no socket of its own. 0.6.11 is the floor: 0.6.10 carries RUSTSEC-2026-0179/0180."
+
+[plugin-deps.postgres-types]
+version = "0.2"
+repos = ["busbar-store-postgres"]
+reason = "the Postgres binary value encodings (`ToSql`/`FromSql`) the 1.5.5 `postgres` driver read and wrote every parameter and column with; pure encoding, no socket."
+
+[plugin-deps.fallible-iterator]
+version = "0.2"
+repos = ["busbar-store-postgres"]
+reason = "the iterator type `postgres-protocol`'s message bodies hand back (the postgres store walks DataRow and RowDescription fields with it); pure."
 
 [plugin-deps.redis]
 version = "1"
 default-features = false
 features = ["script"]
 repos = ["busbar-store-valkey"]
-reason = "the Valkey client of the valkey store (wire-compatible upstream crate). Its tls-rustls feature is a plugin-side TLS stack and is net-banned."
+reason = "TESTS ONLY: the upstream Valkey client the valkey store's live tests verify what landed with, independently of the store. Never in the shipped image: the store speaks RESP itself over the host's connector (busbar-store-valkey#19), and [net-ban] refuses redis in the shipped closure."
 
 [plugin-deps.rusqlite]
 version = "0.40"
@@ -113,9 +128,17 @@ skip = []
 # any crate below, on any feature below, and on any import below in the built cdylib (the post-LTO
 # import scan). `carriers` lists plugin repos exempt from the SOCKET half only (Part 2 #40 names the
 # carrier transports as the one exception); it is empty because no carrier opens a socket today.
+# The crates list holds the socket/TLS stacks AND the database and directory drivers that dial their
+# own socket (mysql, postgres, tokio-postgres, redis, ldap3): a store or auth plugin speaks its wire
+# protocol as a sans-IO codec over the host's stream (THE DESIGN §5, "a driver is a sans-IO codec over
+# the host stream, never a blocking driver"), so each driver may be a plugin's TESTS-ONLY dependency
+# (its [plugin-deps] row says so) and never a shipped one.
 [net-ban]
 spec = "BUSBAR-1.6.0.md line 3980: NO plugin opens its own socket, dials, binds, or does TLS"
-crates = ["rustls", "native-tls", "openssl", "openssl-sys", "socket2", "tokio-rustls", "hyper-rustls", "tokio-native-tls"]
+crates = [
+    "rustls", "native-tls", "openssl", "openssl-sys", "socket2", "tokio-rustls", "hyper-rustls", "tokio-native-tls",
+    "mysql", "postgres", "tokio-postgres", "redis", "ldap3",
+]
 features = ["tokio/net", "mio/net"]
 imports = [
     "socket", "socketpair", "connect", "bind", "listen", "accept", "accept4",
