@@ -14,7 +14,7 @@ use busbar_kernel::hooks::{FallbackHook, ResolvedPolicy};
 use busbar_kernel::plane_driver::{CallerKey, Constraint, Restrict};
 use serde_json::{json, Value};
 
-use crate::policies::{
+use super::policies::{
     canned_gate, capturing, rewriting, wait_for_tap_body, webhook_tap, Canned, CannedGate,
     ErroringPolicy,
 };
@@ -65,7 +65,7 @@ async fn run(
     send_user: bool,
     reject: Option<(u16, String)>,
     v: Value,
-) -> (crate::rig::Answered, Option<crate::policies::CapturedReq>) {
+) -> (crate::rig::Answered, Option<super::policies::CapturedReq>) {
     let (seen, policy) = capturing(send_prompt, send_user, reject);
     let rig = Rig::new(
         one(),
@@ -672,7 +672,7 @@ async fn max_tokens_saturates_not_wraps() {
 }
 
 /// A rig whose verified caller has `key`, and whose base policy is a `send_user` capture.
-async fn identity_seen(key: Option<CallerKey>) -> crate::policies::CapturedReq {
+async fn identity_seen(key: Option<CallerKey>) -> super::policies::CapturedReq {
     let (seen, policy) = capturing(false, true, None);
     let mut callers = Callers::default();
     if let Some(key) = key {

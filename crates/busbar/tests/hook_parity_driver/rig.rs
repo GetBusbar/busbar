@@ -1,12 +1,16 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE RIG the hook parity suite runs on: the REAL llm plane door (linked, loaded through the one
-//! loader and driven through the one dispatcher), the kernel's plane driver with the hook stage
-//! bound ([`BoundHooks`]), the kernel's passing steps, a far end that walks the configured pools
-//! the way the egress walk does (its candidates, the hooks' constraint, a fallback pool holding the
-//! restricts), and a caller that records what it was answered. No fixture plugin: the plane is the
-//! real one, the hooks are the 1.5.5 tests' own in-process policies.
+//! THE RIG the hook parity suite runs on: the REAL plane door serving the `pools` map (linked, loaded
+//! through the one loader and driven through the one dispatcher), the kernel's plane driver with the
+//! hook stage bound ([`BoundHooks`]), the kernel's passing steps, a far end that walks the configured
+//! pools the way the egress walk does (its candidates, the hooks' constraint, a fallback pool holding
+//! the restricts), and a caller that records what it was answered. No fixture plugin: the plane is
+//! the real one, the hooks are the 1.5.5 tests' own in-process policies.
+//!
+//! The rig names no plane and no dialect. What it speaks to the plane under proof (the settings its
+//! pools become, each far end's answer, the request a plain unit posts) is that plane's own, in the
+//! plane's crate beside its cases (`crate::proofs::wire`).
 
 use std::collections::{HashMap, VecDeque};
 use std::future::Future;
@@ -31,7 +35,7 @@ use busbar_plugin_loader::dispatch::{
     in_head, kinds::plane::Plane, load_linked, out_head, plane_calls::PlaneInstance, Bind,
     DispatchConfig, Dispatcher, Frame, LinkedRow, NoSink, Plugin,
 };
-use serde_json::{json, Value};
+use serde_json::Value;
 
 use super::common::{cell, ctx, TestUnits};
 
@@ -48,12 +52,12 @@ pub struct Member {
     pub dead: bool,
 }
 
-/// A member served by the anthropic far end.
+/// A member served by the plane's default far end (`wire::DEFAULT_PROVIDER`).
 pub fn member(model: &'static str, label: &'static str) -> Member {
     Member {
         model,
         label,
-        provider: "ant",
+        provider: crate::proofs::wire::DEFAULT_PROVIDER,
         tags: Vec::new(),
         dead: false,
     }
@@ -81,49 +85,16 @@ pub struct Pool {
     pub members: Vec<Member>,
 }
 
-/// The plane's settings for these pools: one far end per protocol, every member a model.
+/// The plane's settings for these pools, in the plane's own words.
 fn settings(pools: &[&Pool]) -> Vec<u8> {
-    let mut models = serde_json::Map::new();
-    let mut sections = serde_json::Map::new();
-    for p in pools {
-        let names: Vec<Value> = p.members.iter().map(|m| json!(m.model)).collect();
-        sections.insert(p.name.to_string(), json!({ "members": names }));
-        for m in &p.members {
-            models.insert(m.model.to_string(), json!({ "provider": m.provider }));
-        }
-    }
-    serde_json::to_vec(&json!({
-        "providers": {
-            "ant": { "protocol": "anthropic", "base_url": "https://anthropic.example" },
-            "oai": { "protocol": "openai", "base_url": "https://openai.example" },
-            "brk": { "protocol": "bedrock", "base_url": "https://bedrock.example" },
-            "goo": { "protocol": "gemini", "base_url": "https://gemini.example" },
-            "coh": { "protocol": "cohere", "base_url": "https://cohere.example" },
-        },
-        "models": models,
-        "pools": sections,
-    }))
-    .expect("settings serialize")
+    crate::proofs::wire::settings(pools)
 }
 
 // ── the far end ─────────────────────────────────────────────────────────────────────────────────
 
-/// What a far end answers one attempt.
+/// What a far end answers one attempt: the plane's own answer for that member's far end, whole.
 fn answer_of(m: &Member) -> Vec<FarPiece> {
-    let body = match m.provider {
-        "oai" => json!({
-            "id": "chatcmpl-1", "object": "chat.completion", "model": m.label,
-            "choices": [{"index": 0, "message": {"role": "assistant", "content": "hi"},
-                         "finish_reason": "stop"}],
-            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
-        }),
-        _ => json!({
-            "id": "msg_1", "type": "message", "role": "assistant", "model": m.label,
-            "content": [{"type": "text", "text": "hi"}],
-            "stop_reason": "end_turn",
-            "usage": {"input_tokens": 1, "output_tokens": 1}
-        }),
-    };
+    let body = crate::proofs::wire::answer_of(m);
     vec![FarPiece {
         bytes: serde_json::to_vec(&body).expect("answer serializes"),
         status: Some((200, u32::from(STATUS_SUCCESS))),
@@ -540,6 +511,8 @@ fn door(dispatcher: &Dispatcher, settings: &[u8]) -> Plugin<Plane> {
                 fmt: busbar_contract::abi::mechanism::call::BLOB_ABSENT,
                 flags: 0,
             },
+            providers: std::ptr::null(),
+            providers_len: 0,
         },
         PlaneOpenOut {
             open: OpenOut {
@@ -673,15 +646,13 @@ impl Rig {
         }
     }
 
-    /// One Anthropic Messages unit with every kernel step passing.
+    /// One plain unit (the plane's own plain request, `wire::FIRE_TARGET` with `wire::FIRE_FIELDS`)
+    /// with every kernel step passing.
     pub async fn fire(&self, body: &Value) -> Answered {
         self.fire_with(
             &TestUnits::passing(),
-            "/v1/messages",
-            &[
-                ("content-type", "application/json"),
-                ("anthropic-version", "2023-06-01"),
-            ],
+            crate::proofs::wire::FIRE_TARGET,
+            crate::proofs::wire::FIRE_FIELDS,
             &serde_json::to_vec(body).expect("body serializes"),
         )
         .await

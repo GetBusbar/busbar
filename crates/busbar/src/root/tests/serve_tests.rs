@@ -60,7 +60,6 @@ use crate::root::plane_node::{Node, NodeEndPost};
 #[cfg(feature = "plane-decisions")]
 /// The deployment's dated card history the served unit is pinned to at its door: one entry, no
 /// price (billing off: the counts are the unit's fact and price at nothing).
-#[cfg(feature = "plane-decisions")]
 static CARD: std::sync::LazyLock<crate::root::kernel::RootHistory> =
     std::sync::LazyLock::new(|| {
         let holder = crate::root::kernel::RootHistory::default();
@@ -77,28 +76,23 @@ static CARD: std::sync::LazyLock<crate::root::kernel::RootHistory> =
 
 #[cfg(feature = "plane-decisions")]
 /// The decisions plane's one claim, with one model configured.
-#[cfg(feature = "plane-decisions")]
 pub(super) const CLAIMED: &str = "/v1/systemone";
 
 #[cfg(feature = "plane-decisions")]
 /// The provider's credential, as its file holds it.
-#[cfg(feature = "plane-decisions")]
 const CREDENTIAL: &str = "sk-door-test";
 
 #[cfg(feature = "plane-decisions")]
 /// The far end's answer: a decision, and the one unit it reports using.
-#[cfg(feature = "plane-decisions")]
 const ANSWER: &str = r#"{"id":"d-1","decision":"approve","usage":{"units":1}}"#;
 
 #[cfg(feature = "plane-decisions")]
 /// A far end's transient failure, as [`far_end_failing_first`] answers it.
-#[cfg(feature = "plane-decisions")]
 const UNAVAILABLE: &str = r#"{"error":"unavailable"}"#;
 
 #[cfg(feature = "plane-decisions")]
 /// A POST of the caller's decision state to `path` on `router`, with `token` as its bearer or with
 /// none: the response.
-#[cfg(feature = "plane-decisions")]
 pub(super) async fn send(
     router: &axum::Router,
     path: &str,
@@ -122,7 +116,6 @@ pub(super) async fn send(
 #[cfg(feature = "plane-decisions")]
 /// A far end on loopback answering every request with [`ANSWER`]; what it was sent comes back on
 /// the channel, one request head per connection.
-#[cfg(feature = "plane-decisions")]
 pub(super) async fn far_end() -> (u16, tokio::sync::mpsc::UnboundedReceiver<String>) {
     far_end_failing_first(0).await
 }
@@ -130,7 +123,6 @@ pub(super) async fn far_end() -> (u16, tokio::sync::mpsc::UnboundedReceiver<Stri
 #[cfg(feature = "plane-decisions")]
 /// [`far_end`], but its first `failures` connections are answered with a bare transient failure
 /// (503, no `Retry-After`) instead of [`ANSWER`].
-#[cfg(feature = "plane-decisions")]
 async fn far_end_failing_first(
     failures: usize,
 ) -> (u16, tokio::sync::mpsc::UnboundedReceiver<String>) {
@@ -227,7 +219,6 @@ async fn far_end_answering(script: Script) -> (u16, tokio::sync::mpsc::Unbounded
 /// THE EXIT TEST: a keyed caller's claimed request is SERVED through the decisions door, 200, the
 /// far end's answer relayed as it came, and the unit's money posted on both books.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[cfg(feature = "plane-decisions")]
 async fn a_claimed_request_is_served_through_the_door_and_its_money_posted() {
     let _one = PUBLISHING.lock().await;
     let instance = "serve-door-served";
@@ -448,7 +439,6 @@ async fn a_claimed_request_is_served_through_the_door_and_its_money_posted() {
 /// it; a path the door does not claim is the router's own. An unkeyed caller on the door's claim (it
 /// takes a credential) is refused before anything is charged, rendered by the plane.
 #[tokio::test]
-#[cfg(feature = "plane-decisions")]
 async fn the_data_router_built_with_the_door_serves_only_its_claims() {
     let _one = PUBLISHING.lock().await;
     let instance = "serve-door";
@@ -616,9 +606,9 @@ mod tools_door {
 
     use crate::root::door_steps::tests::hook_parity;
     use crate::root::door_steps::tests::tool_door::{
-        protocol_version, rig_tools, send_as, send_headed, surface, three_tools, tool_digest,
-        tool_listing, tool_server, tool_server_listing, tool_server_replying, Footing, Rig, STALL,
-        TOOL_DESCRIPTION,
+        protocol_version, rig_tools, send_as, send_headed, sentence, surface, three_tools,
+        tool_digest, tool_listing, tool_server, tool_server_listing, tool_server_replying, Footing,
+        Rig, STALL, TOOL_DESCRIPTION,
     };
     use crate::root::serve::planes_tests::{Published, PUBLISHING};
 
@@ -2145,7 +2135,7 @@ mod tools_door {
                  \"retry_after_ms\":{},\"server\":\"flaky\"}},\"message\":\"{}\"}},\"id\":41,\
                  \"jsonrpc\":\"2.0\"}}",
                 wait * 1000,
-                surface("tripped_server_message")
+                sentence("tripped_server_message")
                     .replace("{server}", "flaky")
                     .replace("{wait}", &wait.to_string())
             ),
@@ -2244,7 +2234,7 @@ mod tools_door {
         assert_eq!(settled["result"]["status"], "failed", "{settled}");
         assert_eq!(
             settled["result"]["error"].to_string(),
-            surface("continuation_refused_error"),
+            sentence("continuation_refused_error"),
             "{settled}"
         );
     }
@@ -2287,7 +2277,7 @@ mod tools_door {
         assert_eq!(settled["result"]["status"], "failed", "{settled}");
         assert_eq!(
             settled["result"]["error"].to_string(),
-            surface("continuation_refused_error"),
+            sentence("continuation_refused_error"),
             "{settled}"
         );
         assert!(drain(&mut heard).is_empty(), "nothing reached the server");
@@ -2779,8 +2769,8 @@ async fn a_plane_stating_no_breaker_fact_keeps_the_default_bench() {
 // (`super::hook_seat_tests::rig`), and reads the capability where the kernel keeps it.
 #[cfg(linked_fold_on_driver)]
 use super::hook_seat_tests::{
-    chunk, far_end_answering as seat_far_end, far_end_scripted, rig, RigOpts, Script as SeatScript,
-    REWRITTEN,
+    chunk, far_end_answering as seat_far_end, far_end_scripted, rig, word as door_word, RigOpts,
+    Script as SeatScript, REWRITTEN,
 };
 #[cfg(linked_fold_on_driver)]
 use super::planes_tests::{Published as Withdrawn, PUBLISHING as ONE_PUBLISHER};
@@ -3037,7 +3027,7 @@ async fn the_pools_door_seals_one_audit_record_per_unit() {
     assert_eq!(rig.audit_records(), 1, "one record for the one unit");
 }
 
-/// HOOKS-GATE: a decision gate refuses the door's traffic before dispatch.
+/// HOOKS-GATE: a rejecting gate refuses the door's traffic before dispatch.
 #[cfg(linked_fold_on_driver)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_pools_doors_gate_hook_refuses_before_dispatch() {
@@ -3123,10 +3113,6 @@ async fn the_pools_doors_catalogue_shows_a_restricted_key_only_what_it_reaches()
     );
 }
 
-/// An anthropic message whose usage carries a member the openai caller's dialect has no form for.
-#[cfg(linked_fold_on_driver)]
-const ANTHROPIC_ANSWER: &str = r#"{"id":"msg_1","type":"message","role":"assistant","model":"m0","content":[{"type":"text","text":"hi"}],"stop_reason":"end_turn","stop_sequence":null,"usage":{"input_tokens":1,"output_tokens":1,"output_tokens_details":{"reasoning_tokens":0}}}"#;
-
 /// THE DROPPED-CONTROLS AUDIT ROW ON THE DOOR (ARCHITECT, Q128 gap): a TRANSLATE attempt that
 /// cannot carry a control the caller set writes 1.5.5's `egress.control_unrepresentable` row,
 /// outcome `degraded`, `<control> on <dialect>`; an answer member the caller's dialect has no form
@@ -3138,12 +3124,15 @@ async fn the_pools_door_audits_a_control_the_far_dialect_cannot_carry() {
     let _one = ONE_PUBLISHER.lock().await;
     let instance = "serve-door-dropped-controls";
     let _published = Withdrawn(instance);
-    let far = seat_far_end(200, ANTHROPIC_ANSWER).await;
+    // The far dialect is the plane's own door word (`untranslatable_dialect`), and so is its answer:
+    // a message whose usage carries a member the caller's dialect has no form for.
+    let far_dialect = door_word("untranslatable_dialect");
+    let far = seat_far_end(200, door_word("untranslatable_answer")).await;
     let rig = rig(
         instance,
         RigOpts {
             members: &[(far.port, 1)],
-            dialect: Some("anthropic"),
+            dialect: Some(far_dialect),
             ..RigOpts::default()
         },
     )
@@ -3170,7 +3159,7 @@ async fn the_pools_door_audits_a_control_the_far_dialect_cannot_carry() {
         .await;
     assert_eq!(status, 200);
     assert_eq!(
-        rows("logit_bias on anthropic"),
+        rows(format!("logit_bias on {far_dialect}").as_str()),
         0,
         "nothing set, nothing dropped"
     );
@@ -3185,12 +3174,12 @@ async fn the_pools_door_audits_a_control_the_far_dialect_cannot_carry() {
         .await;
     assert_eq!(status, 200);
     assert_eq!(
-        rows("logit_bias on anthropic"),
+        rows(format!("logit_bias on {far_dialect}").as_str()),
         1,
         "the dropped control, one row"
     );
     assert!(
-        rows("usage.output_tokens_details from anthropic") >= 1,
+        rows(format!("usage.output_tokens_details from {far_dialect}").as_str()) >= 1,
         "the answer member the caller's dialect cannot carry"
     );
 }

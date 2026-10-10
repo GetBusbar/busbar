@@ -2442,7 +2442,7 @@ fn base_url_host(base_url: &str) -> &str {
 
 /// The dotted label of `host` right after the first of `after`, when it reads as a dashed name
 /// ending in a number (three parts or more, every part before the last alphabetic, the last all
-/// digits: the shape the dialect's own rule accepted, 1.5.5 `derive_sigv4_region`).
+/// digits: the shape the dialect's own rule accepted, 1.5.5's region derivation).
 fn host_label<'h>(host: &'h str, after: &[&str]) -> Option<&'h str> {
     let shaped = |label: &str| {
         let parts: Vec<&str> = label.split('-').collect();

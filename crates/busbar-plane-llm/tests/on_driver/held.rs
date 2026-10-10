@@ -19,7 +19,7 @@ use busbar_kernel::config::PolicyOnError;
 use busbar_kernel::hooks::{FallbackHook, ResolvedPolicy};
 use serde_json::{json, Value};
 
-use crate::policies::capturing;
+use super::policies::capturing;
 use crate::rig::{member, Answered, Hooks, Pool, Rig};
 
 // ── the access amendment ─────────────────────────────────────────────────────────────────────────

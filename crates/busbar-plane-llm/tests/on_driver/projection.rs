@@ -13,7 +13,7 @@
 
 use serde_json::{json, Value};
 
-use crate::policies::{capturing, CapturedReq};
+use super::policies::{capturing, CapturedReq};
 use crate::rig::{member, Hooks, Pool, Rig};
 
 /// The fixed non-content marker shown in place of opaque provider-encrypted reasoning.
@@ -735,7 +735,7 @@ async fn apply_rewrite_to_body_echoes_redacted_marker_as_visible_text() {
     assert_eq!(prompt(&c).1[0].1, MARKER);
 
     // A hook that echoes exactly what it was projected (the common "pass through" rewrite shape).
-    let echo = std::sync::Arc::new(crate::policies::RewritingGate(vec![json!({
+    let echo = std::sync::Arc::new(super::policies::RewritingGate(vec![json!({
         "role": "assistant",
         "content": MARKER,
     })]));

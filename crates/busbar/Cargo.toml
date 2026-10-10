@@ -486,6 +486,16 @@ auth-admin-tokens = "busbar-auth-admin-tokens"
 plane-a2a = "busbar-a2a"
 plane-streaming = "busbar-voice"
 
+# THE DRIVER PROOFS of a development-only fold switch (a `<plane>-on-driver` feature, BUSBAR-1.6.0.md
+# Part 3 section 12 "The switch"): cargo feature -> the plane crate whose `tests/on_driver/` holds the
+# plane-origin hook cases (`mod.rs`) and the words the root's door cells read as data (`words.txt`).
+# Test builds only: `build.rs` emits `$OUT_DIR/driver_proofs.rs` (the `#[path]` that
+# `tests/hook_parity_driver` compiles beside its rig) and `$OUT_DIR/driver_words.rs`
+# (`DRIVER_WORDS`), so the composition root's sources name neither the plane nor its dialects: the
+# cases are written in the plane's own words and live in the plane's crate (ARCHITECT ruling, #464).
+[package.metadata.busbar.driver-proofs]
+llm-on-driver = "busbar-plane-llm"
+
 [package.metadata.busbar.root-units]
 # The node's own row, keyed to the node (not a feature): it compiles in every build, so its card
 # repricer and book binding run in every build (ARCHITECT Q1).

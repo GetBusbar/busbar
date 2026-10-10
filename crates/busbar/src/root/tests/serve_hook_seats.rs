@@ -1,16 +1,19 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE SEAT ORDER OF THE REQUEST-STAGE HOOKS, ON THE DOOR (ported from the predev-only `busbar-llm`
-//! test `hook_seat_order_tests`, BUSBAR-1.6.0.md Part 5 F25: before any engine deletion every test
-//! names its new home). The llm plane served through its door, end to end: a keyed caller behind
-//! the data listener's auth gate, admitted and charged by the door's money steps, its unit's hooks
-//! bound by the kernel's hook stage (the global rewrite, the request-stage tap, a decision gate and
-//! the candidate tap), its far end a real loopback upstream through the process connector. The
+//! THE SEAT ORDER OF THE REQUEST-STAGE HOOKS, ON THE DOOR (ported from the predev-only engine test
+//! `hook_seat_order_tests`, BUSBAR-1.6.0.md Part 5 F25: before any engine deletion every test names
+//! its new home). The plane serving the `pools` map, served through its door end to end: a keyed
+//! caller behind the data listener's auth gate, admitted and charged by the door's money steps, its
+//! unit's hooks bound by the kernel's hook stage (the global rewrite, the request-stage tap, a gate
+//! and the candidate tap), its far end a real loopback upstream through the process connector. The
 //! admission door charges the request first, then the global rewrite runs, then the request-stage
-//! tap observes the REWRITTEN request, then the decision gate decides, and only after the gate does
-//! the candidate tap fire. A gate reject refunds the billable request (the fee base) but keeps the
+//! tap observes the REWRITTEN request, then the gate decides, and only after the gate does the
+//! candidate tap fire. A gate reject refunds the billable request (the fee base) but keeps the
 //! admission count.
+//!
+//! The root names no plane and no dialect: the dialects these cells speak are the plane's own door
+//! words (`DRIVER_WORDS`, its `tests/on_driver/words.txt`), read as data through [`word`].
 //!
 //! Every seat is proven structurally rather than by wall-clock order where the seat is a detached
 //! task (taps are fire-and-forget): the rewrite hook reads the ledger AT the moment it runs, the
@@ -45,6 +48,24 @@ use crate::root::plane_node::{Node, NodeEndPost};
 // The plane the node is handed, as the manifest's linked table names it (the `node` axis): the
 // legacy row's test seams the registry rows that own the `pools:`/`models:` sections come from.
 include!(concat!(env!("OUT_DIR"), "/node_plane.rs"));
+
+// The words of the plane under proof that these cells read as data (`DRIVER_WORDS`: the plane's own
+// `tests/on_driver/words.txt`, from the manifest's driver-proofs row).
+include!(concat!(env!("OUT_DIR"), "/driver_words.rs"));
+
+/// One of the plane's door words (`key = value` per line, `#` a comment): what the root's cells
+/// would otherwise have to spell, a dialect of the plane under proof.
+pub(super) fn word(key: &str) -> &'static str {
+    DRIVER_WORDS
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .find_map(|l| {
+            let (k, v) = l.split_once('=')?;
+            (k.trim() == key).then(|| v.trim())
+        })
+        .unwrap_or_else(|| panic!("the plane's door words have no `{key}` row"))
+}
 
 /// THE LINKED DOOR THAT SERVES THE `pools` MAP, found by what its Statement declares (the composition
 /// root names no plane): every linked plane door bound on a probe dispatcher of its own, the one
@@ -93,7 +114,7 @@ static CARD: std::sync::LazyLock<crate::root::kernel::RootHistory> =
 /// The marker the rewrite hook plants in the prompt; a tap payload carrying it saw the rewrite.
 pub(super) const REWRITTEN: &str = "rewritten-by-the-global-rewrite-seat";
 
-/// The far end's answer: an openai chat completion.
+/// The far end's answer: a chat completion in the door words' `dialect`.
 const ANSWER: &str = r#"{"id":"chatcmpl-1","object":"chat.completion","created":0,"model":"m0","choices":[{"index":0,"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}"#;
 
 /// One probe policy playing one seat: it appends its seat name to the shared log when it runs and
@@ -427,8 +448,8 @@ pub(super) struct RigOpts<'a> {
     pub pooled: Option<usize>,
     /// The pools the key may reach (`None`: every pool).
     pub allowed_pools: Option<&'a [&'a str]>,
-    /// The members' dialect (`None`: `openai`).
-    pub dialect: Option<&'a str>,
+    /// The members' dialect (`None`: the door words' `dialect`).
+    pub dialect: Option<&'static str>,
     /// Each pool member states a tier `t<i>` and a tag `g<i>`, and the generation declares the
     /// three candidate catalog signals (breaker state, error rate, p95 latency).
     pub described: bool,
@@ -442,7 +463,7 @@ pub(super) struct RigOpts<'a> {
     pub lane_budget: Option<i64>,
 }
 
-/// THE LLM DOOR, SERVED END TO END, as production composes it: the data router built with the
+/// THE POOLS DOOR, SERVED END TO END, as production composes it: the data router built with the
 /// door's claims, a keyed caller's token, the generation's App and the node's book.
 pub(super) struct DoorRig {
     /// The data router.
@@ -593,7 +614,7 @@ pub(super) async fn rig(instance: &'static str, opts: RigOpts<'_>) -> DoorRig {
     )
     .expect("the connector builds");
 
-    // THE LLM DOOR, linked, bound through the loader's one load, its needs declared on the
+    // THE POOLS DOOR, linked, bound through the loader's one load, its needs declared on the
     // connector.
     let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
     let row = LinkedRow::of(pools_door()).expect("the door states itself");
@@ -611,7 +632,8 @@ pub(super) async fn rig(instance: &'static str, opts: RigOpts<'_>) -> DoorRig {
     )
     .expect("the linked door binds");
 
-    // THE DEPLOYMENT: one openai provider per member, one model per provider, pool `p` over them.
+    // THE DEPLOYMENT: one provider per member (in the members' dialect), one model per provider,
+    // pool `p` over them.
     let key_file = std::env::temp_dir().join(format!(
         "busbar-hook-seats-{}-{instance}",
         std::process::id()
@@ -649,7 +671,7 @@ pub(super) async fn rig(instance: &'static str, opts: RigOpts<'_>) -> DoorRig {
     for (i, (port, _)) in opts.members.iter().enumerate() {
         defs_yaml.push_str(&format!(
             "oai{i}:\n  protocol: {}\n  base_url: 'http://127.0.0.1:{port}'\n",
-            opts.dialect.unwrap_or("openai")
+            opts.dialect.unwrap_or(word("dialect"))
         ));
     }
     let defs: HashMap<String, busbar_kernel::config::ProviderDef> =
@@ -732,10 +754,7 @@ pub(super) async fn rig(instance: &'static str, opts: RigOpts<'_>) -> DoorRig {
     for (i, (port, _)) in opts.members.iter().enumerate() {
         let lane = busbar_kernel::test_support::LaneSpec::new(
             &format!("m{i}"),
-            match opts.dialect {
-                Some("anthropic") => "anthropic",
-                _ => "openai",
-            },
+            opts.dialect.unwrap_or(word("dialect")),
             &format!("http://127.0.0.1:{port}"),
         );
         builder = builder.lane(match opts.lane_budget {
@@ -889,7 +908,7 @@ pub(super) async fn rig(instance: &'static str, opts: RigOpts<'_>) -> DoorRig {
     }
 }
 
-/// ONE KEYED REQUEST through the llm door with the four probed seats installed, a rejecting gate
+/// ONE KEYED REQUEST through the pools door with the four probed seats installed, a rejecting gate
 /// when `reject_at_gate`.
 async fn run(instance: &'static str, reject_at_gate: bool) -> Ran {
     let port = far_end().await;
@@ -924,7 +943,7 @@ impl DoorRig {
     }
 }
 
-/// A rejecting decision gate: the admission charge, the rewrite and the request tap all happened
+/// A rejecting gate: the admission charge, the rewrite and the request tap all happened
 /// before it; the candidate tap never fires; the billable request is refunded and the admission
 /// count is kept.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

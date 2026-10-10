@@ -462,10 +462,11 @@ impl Breaker for DirectCells {
         token: &Pass<Route>,
     ) -> (Classified, bool) {
         let classified = self.classify(destination, status);
-        let code = status
-            .code
-            .filter(|c| c.namespace == busbar_contract::transport::registry::status_ns::HTTP)
-            .map(|c| c.code);
+        // The far end's number in the kernel's first reserved numbering (the one the previous
+        // release's ladder reads its 429 and 4xx in), read as the kernel's far end reads it.
+        let code = status.code.and_then(|c| {
+            c.in_namespace(busbar_contract::transport::registry::status_ns::RESERVED[0])
+        });
         let cell = self.cell(pool);
         let lane = lane_of(destination);
         let tripped = match (classified.outcome, code) {

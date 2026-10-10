@@ -6,8 +6,8 @@
 //! rewrite goes back to the plane (`ProjectIn::rewrite`), which applies it and answers the body the
 //! kernel keeps and re-pushes on every attempt; a veto wears the hook's own status and words,
 //! rendered by the plane (`REFUSAL_GATE`), before any attempt; a request the plane cannot project
-//! is refused before any attempt. The 1.5.5 hook tests themselves run over the real llm plane in
-//! the composition root's `hook_parity_driver` suite.
+//! is refused before any attempt. The 1.5.5 hook tests themselves run over the real plane serving
+//! the `pools` map in the composition root's `hook_parity_driver` suite.
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;

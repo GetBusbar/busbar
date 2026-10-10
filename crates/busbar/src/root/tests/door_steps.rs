@@ -1046,6 +1046,12 @@ pub(crate) mod tool_door {
             .unwrap_or_else(|| panic!("fixtures/tool_door_wire.txt has no `{key}` row"))
     }
 
+    /// A fixture sentence with its `{PLANE}` filled: the plane's own key (`plane_key`), upper-cased,
+    /// as the plane's sentences spell it.
+    pub(crate) fn sentence(key: &str) -> String {
+        surface(key).replace("{PLANE}", &surface("plane_key").to_ascii_uppercase())
+    }
+
     /// The section the tool door owns beside its settings: its endpoint block, as the fixture
     /// states it (the root spells no plane's section).
     pub(crate) fn endpoint_section() -> &'static str {
