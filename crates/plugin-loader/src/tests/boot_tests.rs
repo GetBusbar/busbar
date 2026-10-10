@@ -26,6 +26,7 @@ fn cand(kind: KindCode, name: &str, aliases: &[&str], sugar: &[&str], verbs: &[&
     Candidate {
         kind,
         name: name.into(),
+        version: "1.0.0".into(),
         aliases: aliases.iter().map(|s| s.to_string()).collect(),
         sugar: sugar.iter().map(|s| s.to_string()).collect(),
         verbs: verbs.iter().map(|s| s.to_string()).collect(),
@@ -235,18 +236,29 @@ fn a_dropped_transport_is_selected_by_the_claims_its_rendering_states() {
     assert!(select(&u, &cands).is_empty());
 }
 
-fn example_cdylib(name: &str) -> Option<PathBuf> {
-    let exe = std::env::current_exe().ok()?;
-    let path = exe.parent()?.parent()?.join("examples").join(format!(
-        "{}{name}{}",
-        std::env::consts::DLL_PREFIX,
-        std::env::consts::DLL_SUFFIX
-    ));
-    assert!(
-        path.exists() || std::env::var_os("CI").is_none(),
-        "the {name} example cdylib is not built under CI; a both-ways proof must not skip"
-    );
-    path.exists().then_some(path)
+fn example_cdylib(name: &str) -> PathBuf {
+    let exe = std::env::current_exe().expect("the test binary's path");
+    let path = exe
+        .parent()
+        .and_then(|deps| deps.parent())
+        .expect("the test binary sits in <profile>/deps")
+        .join("examples")
+        .join(format!(
+            "{}{name}{}",
+            std::env::consts::DLL_PREFIX,
+            std::env::consts::DLL_SUFFIX
+        ));
+    if !path.exists() {
+        crate::both_ways::missing(name, crate::both_ways::BUILD_EXAMPLES);
+    }
+    path
+}
+
+/// RED: an absent example is a hard failure naming the command that builds it, never a skip.
+#[test]
+#[should_panic(expected = "is not built: run")]
+fn red_an_absent_example_cdylib_panics_with_its_build_command() {
+    example_cdylib("no_such_example");
 }
 
 /// THE ONE LOAD, both origins: the plane door linked and the same plane dropped in (its verified
@@ -269,15 +281,14 @@ fn the_one_load_binds_each_selected_instance_to_its_own_log_sink() {
     let mut cands = vec![linked.clone()];
     let mut uses = Uses::default();
     uses.roots.insert("door".into());
-    if let Some(path) = example_cdylib("plane_door_plugin") {
-        let mut dropped = linked.clone();
-        dropped.origin = Origin::Dropped {
-            file: "plane-door.tar.gz".into(),
-            bytes: Arc::new(std::fs::read(path).unwrap()),
-        };
-        // A second instance of the same verb is taken by the first candidate: select it by hand.
-        cands.push(dropped);
-    }
+    let path = example_cdylib("plane_door_plugin");
+    let mut dropped = linked.clone();
+    dropped.origin = Origin::Dropped {
+        file: "plane-door.tar.gz".into(),
+        bytes: Arc::new(std::fs::read(path).unwrap()),
+    };
+    // A second instance of the same verb is taken by the first candidate: select it by hand.
+    cands.push(dropped);
     let mut never = cand(
         KindCode::Plane,
         "never-opened",
@@ -295,12 +306,10 @@ fn the_one_load_binds_each_selected_instance_to_its_own_log_sink() {
             instance: "door".into()
         }]
     );
-    if cands.len() == 3 {
-        selected.push(Selected {
-            candidate: 1,
-            instance: "door-dropped".into(),
-        });
-    }
+    selected.push(Selected {
+        candidate: 1,
+        instance: "door-dropped".into(),
+    });
     let loaded = load(&LoadRequest {
         candidates: &cands,
         selected: &selected,
@@ -332,9 +341,7 @@ fn the_one_load_binds_each_selected_instance_to_its_own_log_sink() {
 /// stated Statement is not its door's.
 #[test]
 fn red_an_instance_that_will_not_bind_is_named() {
-    let Some(path) = example_cdylib("plane_door_plugin") else {
-        return;
-    };
+    let path = example_cdylib("plane_door_plugin");
     let mut c = Candidate::linked(plug::door).unwrap();
     c.origin = Origin::Dropped {
         file: "plane-door.tar.gz".into(),
@@ -367,9 +374,7 @@ fn red_an_instance_that_will_not_bind_is_named() {
 /// bytes. A dropped plane with no Statement stays on the HOT lane, never a door candidate.
 #[test]
 fn a_linked_and_a_dropped_plane_door_load_through_the_same_path() {
-    let Some(path) = example_cdylib("plane_door_plugin") else {
-        return;
-    };
+    let path = example_cdylib("plane_door_plugin");
     let lib = std::fs::read(path).unwrap();
     let rendering = crate::dispatch::LinkedRow::of(plug::door)
         .unwrap()
@@ -885,4 +890,92 @@ fn red_an_auth_door_declaring_a_secret_ref_is_handed_it_resolved_at_open() {
         "oidc: plugin 'secret-auth-witness' open failed: 1 secret(s) handed, not the resolved \
          client_secret"
     );
+}
+
+/// `cand` at `version`, LINKED (its door states nothing: the linked origin of a candidate built by
+/// hand).
+fn linked_cand(name: &str, version: &str) -> Candidate {
+    Candidate {
+        version: version.into(),
+        origin: Origin::Linked(crate::dispatch::LinkedRow {
+            statement: Vec::new(),
+            door: crate::dispatch_tests::null_door,
+        }),
+        ..cand(KindCode::Hook, name, &["short"], &[], &[])
+    }
+}
+
+/// `cand` at `version`, DROPPED IN as `<name>.tar.gz`.
+fn dropped_cand(name: &str, version: &str) -> Candidate {
+    Candidate {
+        version: version.into(),
+        ..cand(KindCode::Hook, name, &["short"], &[], &[])
+    }
+}
+
+/// THE ONE-VERSION RULE ON AN AXIS'S CANDIDATES (ARCHITECT C'): one plugin (one Statement name)
+/// linked and dropped in at ONE version is one plugin — admitted, the linked row first (it serves),
+/// and named once for the log; at TWO versions the boot is refused, naming the plugin, both doors
+/// and both versions. RED before: every same-name pair was skipped whatever its versions, so the
+/// linked row silently won over a dropped-in copy of another version.
+#[test]
+fn one_plugin_by_both_doors_is_one_version_or_refused() {
+    let same = [
+        linked_cand("busbar-hook-x", "1.2.3"),
+        dropped_cand("busbar-hook-x", "1.2.3"),
+    ];
+    one_owner(&same).expect("one plugin at one version");
+    assert_eq!(
+        both_doors(&same),
+        vec![
+            "plugin 'busbar-hook-x' v1.2.3 is linked and also dropped in (busbar-hook-x.tar.gz); \
+             the linked build serves it"
+                .to_string()
+        ]
+    );
+    let uses = Uses {
+        modules: vec![(KindCode::Hook, "h".into(), "short".into())],
+        ..Uses::default()
+    };
+    assert_eq!(
+        select(&uses, &same),
+        vec![sel(0, "h")],
+        "the linked row serves"
+    );
+    for pair in [
+        [
+            linked_cand("busbar-hook-x", "1.2.3"),
+            dropped_cand("busbar-hook-x", "1.2.4"),
+        ],
+        [
+            dropped_cand("busbar-hook-x", "1.2.4"),
+            linked_cand("busbar-hook-x", "1.2.3"),
+        ],
+    ] {
+        let refused = one_owner(&pair).expect_err("two versions of one plugin");
+        assert_eq!(
+            refused,
+            "plugin 'busbar-hook-x' arrives by both doors at two versions: linked v1.2.3, dropped \
+             in v1.2.4 (busbar-hook-x.tar.gz) - one version per plugin: remove one"
+        );
+        assert!(both_doors(&pair).is_empty());
+    }
+    // A Statement stating no version cannot be compared: refused, naming the plugin.
+    assert_eq!(
+        one_owner(&[
+            linked_cand("busbar-hook-x", "1.2.3"),
+            dropped_cand("busbar-hook-x", ""),
+        ]),
+        Err(
+            "plugin 'busbar-hook-x' states no version in its Statement: the one-version rule \
+             cannot compare it"
+                .to_string()
+        )
+    );
+    // Two DROPPED-IN candidates of one name are not two doors: phase 3 holds those.
+    let dropped = [
+        dropped_cand("busbar-hook-x", "1.2.3"),
+        dropped_cand("busbar-hook-x", "1.2.4"),
+    ];
+    one_owner(&dropped).expect("not the one-version rule's pair");
 }

@@ -3,13 +3,16 @@
 
 # The busbar audit chain, `busbar.audit.digest.v4`
 
-**`v4` is `v3` plus `incarnation`, and `v3` is still published.** A unit's key restarts at every
-boot of a node, so `unit_key` alone named two different units across two boots; `incarnation` — which
-boot of the node the unit ran in — follows `unit_key` directly, and the pair is unique. `v4` adds that
-one number field and changes nothing else: no field is renamed, reordered or re-framed, and the
-signature domain is unchanged. A record sealed under `v3` is NOT rewritten and is checked by
-[`audit-chain-digest-v3.md`](audit-chain-digest-v3.md), kept exactly as it was published (and `v2`
-by [`audit-chain-digest-v2.md`](audit-chain-digest-v2.md), `v1` by
+**`v4` is `v3` plus `incarnation` and `node`, and `v3` is still published.** A unit's key restarts
+at every boot of a node, so `unit_key` alone named two different units across two boots;
+`incarnation` — which boot of the node the unit ran in — follows `unit_key` directly, and the pair is
+unique. Nodes share one store, and a monotonic reading compares only against readings of the node
+that took it, so `node` — which node sealed the record — follows `mono` directly (the fixed record's
+WHEN is "wall + monotonic, node"). `v4` adds those two number fields and changes nothing else: no
+field is renamed, reordered or re-framed, and the signature domain is unchanged. `v3` never shipped,
+so no node holds a `v3` record; its page,
+[`audit-chain-digest-v3.md`](audit-chain-digest-v3.md), stays published as it was (and `v2` by
+[`audit-chain-digest-v2.md`](audit-chain-digest-v2.md), `v1` by
 [`audit-chain-digest-v1.md`](audit-chain-digest-v1.md)). Every record in a range body names the
 recipe it was sealed under in its own `recipe` member, so a window that straddles the change says
 which page checks which record.
@@ -78,7 +81,7 @@ A range whose window runs off either end of what the node holds is **shorter**, 
 ## 3. The digest
 
 ```
-hash = SHA-256( framed(field₁) ‖ framed(field₂) ‖ … ‖ framed(field₄₀) )
+hash = SHA-256( framed(field₁) ‖ framed(field₂) ‖ … ‖ framed(field₄₂) )
 ```
 
 rendered as **64 lowercase hexadecimal characters**.
@@ -148,39 +151,42 @@ identically. Elements are framed in order, each element's members in the order b
 | 11 | `post_hook_head` | text |
 | 12 | `wall` | number |
 | 13 | `mono` | number |
-| 14 | `origin_kind` | text |
-| 15 | `outcome` | text |
-| 16 | `step` | text |
-| 17 | `finish` | text |
-| 18 | `hook_failed` | number |
-| 19 | `emission_delta` | text |
-| 20 | `stale_policy` | number |
-| 21 | `lines_count` | number |
-| 22 | `lines[].class` | text |
-| 23 | `lines[].quantity` | number |
-| 24 | `lines[].source` | text |
-| 25 | `lines[].estimated` | number |
-| 26 | `tier_bp` | number |
-| 27 | `fee_count` | number |
-| 28 | `rate_card_version` | number |
-| 29 | `bucket_chain_ref` | text |
-| 30 | `hold_ref` | text |
-| 31 | `settle_ref` | text |
-| 32 | `slice_ref` | text |
-| 33 | `lease_ref` | text |
-| 34 | `lease_epoch` | number |
-| 35 | `policy_epoch` | number |
-| 36 | `hooks_count` | number |
-| 37 | `hooks[].hook` | text |
-| 38 | `replayed` | number |
-| 39 | `children_count` | number |
-| 40 | `children[]` | number |
-| 41 | `correlation_hash` | text |
+| 14 | `node` | number |
+| 15 | `origin_kind` | text |
+| 16 | `outcome` | text |
+| 17 | `step` | text |
+| 18 | `finish` | text |
+| 19 | `hook_failed` | number |
+| 20 | `emission_delta` | text |
+| 21 | `stale_policy` | number |
+| 22 | `lines_count` | number |
+| 23 | `lines[].class` | text |
+| 24 | `lines[].quantity` | number |
+| 25 | `lines[].source` | text |
+| 26 | `lines[].estimated` | number |
+| 27 | `tier_bp` | number |
+| 28 | `fee_count` | number |
+| 29 | `rate_card_version` | number |
+| 30 | `bucket_chain_ref` | text |
+| 31 | `hold_ref` | text |
+| 32 | `settle_ref` | text |
+| 33 | `slice_ref` | text |
+| 34 | `lease_ref` | text |
+| 35 | `lease_epoch` | number |
+| 36 | `policy_epoch` | number |
+| 37 | `hooks_count` | number |
+| 38 | `hooks[].hook` | text |
+| 39 | `replayed` | number |
+| 40 | `children_count` | number |
+| 41 | `children[]` | number |
+| 42 | `correlation_hash` | text |
 
-Fields 21–24 repeat once per usage line, 36 once per hook, 39 once per child unit.
+Fields 22–25 repeat once per usage line, 37 once per hook, 40 once per child unit.
 
 `subject_tag` is one of `principal`, `arrival`, `node`, `aggregate`; `subject_value` is the
-pseudonym for a principal, the node's number for a node, and empty otherwise. `outcome`, `step`,
+principal identifier for a principal, the node's number for a node, and empty otherwise. `node` (field
+14) is the node that SEALED the record, whoever the subject is: the node half of every store `op_id`
+the sealing process mints. `outcome`, `step`,
 `finish` and `lines[].source` are frozen text spellings the node publishes verbatim — you never need
 to derive them, only to frame what you were given.
 
@@ -243,17 +249,16 @@ can provide.
 
 ---
 
-## 6. Head history outlives record retention
-
-Records age out; an operator is entitled to a retention window. Heads do not age out at all.
+## 6. Head history survives a restart
 
 A head is about a hundred bytes. Sampled hourly, that is 8 760 a year — under a megabyte. A node
-that cannot afford a megabyte a year cannot afford an audit chain either.
+that cannot afford a megabyte a year cannot afford an audit chain either, so nothing ages a head out.
 
-So a puller that was offline while a window's records were pruned has lost the records, which was
-the deal, and **still has the anchor for that window**, which was never on the table. The retention
-pass cannot reach the head history: `AuditChain::prune_records_before` takes `&self`, so it cannot
-borrow the anchors mutably at all, and that is a compile error rather than a request.
+The heads are rebuilt from the records at every boot: a head is a pure function of the record it was
+taken after and of the sampling rule, and the node's journal keeps every record, so after a restart
+the head read answers with the tip the chain really has and a window's `anchor` is the one it was
+before. A chain that has sealed nothing answers `"head": null` with `"next_seq": 1`; a non-empty
+chain never answers a null head.
 
 The genesis head is always kept, whatever the sampling rate.
 
@@ -261,11 +266,11 @@ The genesis head is always kept, whatever the sampling rate.
 
 ## 7. A worked example
 
-A single-record chain, sealed with the RFC 8032 test key
+A single-record chain, sealed by node `5` with the RFC 8032 test key
 `9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60` (public half
 `d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a`, key id `21fe31dfa154a261`). Its
-preimage is 473 bytes; the digest is
-`70d6839724bea5507356bf6c6b358146c196b03a5486b423767a70830f1d4109`.
+preimage is 489 bytes; the digest is
+`823fc6aa2108c9a8a3490d5c27f799eee1e0678cb3928c66e53c374a50eeea1c`.
 
 `GET /api/v1/admin/audit/range?from=1&to=1`:
 
@@ -278,8 +283,8 @@ preimage is 473 bytes; the digest is
   "to": 1,
   "anchor": {
     "seq": 1,
-    "hash": "70d6839724bea5507356bf6c6b358146c196b03a5486b423767a70830f1d4109",
-    "signature": "44dd352e3f2ab3cccd9c442fe2ed4967bbc31c51bd536da94183f9c04a36394d6c3cb11388a1e0145ad2e45022efbc23d0a7a3cfeaa887d3b9a35f51f70e160e",
+    "hash": "823fc6aa2108c9a8a3490d5c27f799eee1e0678cb3928c66e53c374a50eeea1c",
+    "signature": "5130255432a8e50196fda054ca72bf34a1104b8eb1308e1da1e3fd82ecc1aec092229a6d9a6c017d5543a5b8dd30343f5d1f5452b075fe3bfb7117a35ce9a506",
     "key_id": "21fe31dfa154a261",
     "wall": 1700000000
   },
@@ -298,6 +303,7 @@ preimage is 473 bytes; the digest is
       "post_hook_head": "",
       "wall": 1700000000,
       "mono": 42,
+      "node": 5,
       "origin_kind": "client",
       "outcome": "Completed",
       "step": "",
@@ -323,8 +329,8 @@ preimage is 473 bytes; the digest is
       "children_count": 0,
       "children": [],
       "correlation_hash": "",
-      "hash": "70d6839724bea5507356bf6c6b358146c196b03a5486b423767a70830f1d4109",
-      "signature": "44dd352e3f2ab3cccd9c442fe2ed4967bbc31c51bd536da94183f9c04a36394d6c3cb11388a1e0145ad2e45022efbc23d0a7a3cfeaa887d3b9a35f51f70e160e",
+      "hash": "823fc6aa2108c9a8a3490d5c27f799eee1e0678cb3928c66e53c374a50eeea1c",
+      "signature": "5130255432a8e50196fda054ca72bf34a1104b8eb1308e1da1e3fd82ecc1aec092229a6d9a6c017d5543a5b8dd30343f5d1f5452b075fe3bfb7117a35ce9a506",
       "key_id": "21fe31dfa154a261",
       "recipe": "busbar.audit.digest.v4"
     }
@@ -342,8 +348,8 @@ preimage is 473 bytes; the digest is
   "next_seq": 2,
   "head": {
     "seq": 1,
-    "hash": "70d6839724bea5507356bf6c6b358146c196b03a5486b423767a70830f1d4109",
-    "signature": "44dd352e3f2ab3cccd9c442fe2ed4967bbc31c51bd536da94183f9c04a36394d6c3cb11388a1e0145ad2e45022efbc23d0a7a3cfeaa887d3b9a35f51f70e160e",
+    "hash": "823fc6aa2108c9a8a3490d5c27f799eee1e0678cb3928c66e53c374a50eeea1c",
+    "signature": "5130255432a8e50196fda054ca72bf34a1104b8eb1308e1da1e3fd82ecc1aec092229a6d9a6c017d5543a5b8dd30343f5d1f5452b075fe3bfb7117a35ce9a506",
     "key_id": "21fe31dfa154a261",
     "wall": 1700000000
   }
@@ -370,7 +376,7 @@ preimage is 473 bytes; the digest is
 Checking it, with nothing but this page: walk the field table in section 3.6, take each member
 named there out of the record above, frame it (`be_u64(len) ‖ bytes` for a text, `be_u64(8) ‖
 be_u64(v)` for a number), concatenate with nothing between, and SHA-256 the result. You get
-`70d6839724bea5507356bf6c6b358146c196b03a5486b423767a70830f1d4109`, which is the `hash` the record
+`823fc6aa2108c9a8a3490d5c27f799eee1e0678cb3928c66e53c374a50eeea1c`, which is the `hash` the record
 carries. Then prepend `busbar.audit.record.v1` and one `0x00` byte to those 64 hex characters and
 check the `signature` against the `public_key` above with any ed25519 implementation you already
 trust.
@@ -401,16 +407,20 @@ now — and `"signature_domain": "busbar.audit.record.v1"`. Every record in a ra
 the recipe IT was sealed under, in its own `recipe` member, which is not a digest input. A verifier
 should refuse a recipe it does not know rather than guess.
 
-`v4` lives **beside** `v3`, `v2` and `v1`, not in place of them. A record sealed under `v3` is checked
-by the `v3` page, whose field order has not changed and never will; a node does not rewrite it. The
-signature domain did not move, because what is signed did not change — the digest's hex text — only
-which fields the digest is taken over. Moving a record between recipes is itself caught: a `v3`
-record relabelled `v4` gains a field in its preimage, a `v4` record relabelled `v3` loses one, and
-either no longer hashes to its sealed digest. `crates/busbar-kernel/src/tests/members/audit/record_tests.rs`
-pins the `v3` and `v4` digests a fully populated record froze and the relabelling arms;
-`published_recipe_tests.rs` proves off the two pages alone that `v4` is `v3` plus exactly
-`incarnation` (`the_v3_page_is_kept_and_v4_is_v3_plus_incarnation`).
+`v4` lives **beside** `v2`, and the `v3` and `v1` pages stay published as the history of the field
+list. A record sealed under `v2` is checked by the `v2` page, whose field order has not changed and
+never will; a node does not rewrite it. The signature domain did not move, because what is signed did
+not change — the digest's hex text — only which fields the digest is taken over. Moving a record
+between recipes is itself caught: a `v2` record relabelled `v4` loses `currency` and gains
+`incarnation` and `node` in its preimage, and no longer hashes to its sealed digest.
+`crates/busbar-kernel/src/tests/members/audit/record_tests.rs` pins the `v2` and `v4` digests a fully
+populated record froze and the relabelling arms; `published_recipe_tests.rs` proves off the two pages
+alone that `v4` is `v3` plus exactly `incarnation` and `node`
+(`the_v3_page_is_kept_and_v4_is_v3_plus_incarnation_and_node`).
 
-A future recipe gets a new name and lives **beside** these four. The field order here never
-changes: moving it would make every chain already on disk report its own history as tampered at the
-next boot, which is the one migration this contract may never make quietly.
+`node` entered `v4` before the 1.6.0 tag, while `v4` was still being defined and before any release
+sealed a `v4` record (the owner's 2026-09-28 rule for a layout's first version: it is edited in place,
+with its golden regenerated in the same commit, until the tag). From the 1.6.0 tag on, a future recipe
+gets a new name and lives **beside** these. The field order here then never changes: moving it would
+make every chain already on disk report its own history as tampered at the next boot, which is the
+one migration this contract may never make quietly.

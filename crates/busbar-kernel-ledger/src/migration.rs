@@ -99,8 +99,8 @@ impl From<LegacyCapDimension> for CapDimension {
 /// every boundary is fixed by a number the caller does not write; a decimal length can itself contain
 /// no colon, so there is nothing left for a caller's own bytes to move.
 ///
-/// This is the SAME framing, for the same reason, as the admin crate's `verbs::rotate_replay_key`
-/// (`crates/busbar-core-admin/src/verbs.rs:91`), which joins two caller-controlled halves of a
+/// This is the SAME framing, for the same reason, as the admin crate's
+/// `idempotency::rotate_replay_key` (`crates/busbar-core-admin/src/idempotency.rs:46`), which joins two caller-controlled halves of a
 /// replay key. That helper could not be called from here for two independent reasons: it is
 /// `pub(crate)` to `busbar-core-admin`, and `busbar-core-admin` depends on this crate
 /// (`busbar-core-admin → busbar-kernel-ledger`), so an edge back would be a cycle Cargo
