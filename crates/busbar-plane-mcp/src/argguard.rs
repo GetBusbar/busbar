@@ -66,7 +66,7 @@
 //!   argument, so the rule does not transfer and is not applied.
 
 use busbar_contract::net::{
-    extract_normalized_host, host_is_cloud_metadata, host_is_private_or_loopback,
+    dns_name_is_internal, extract_normalized_host, host_ip, host_is_cloud_metadata, ip_is_internal,
     is_alternate_ipv4_encoding, scheme_is,
 };
 use serde_json::Value;
@@ -395,7 +395,11 @@ fn judge_host(raw: &str, policy: SsrfPolicy) -> Result<(), ArgWhy> {
     if is_alternate_ipv4_encoding(&host) {
         return Err(ArgWhy::ObfuscatedHost(host));
     }
-    if !policy.allow_private && host_is_private_or_loopback(&host) {
+    // The destination guard's predicate, not the 1.5.5 plaintext one: it also covers benchmarking,
+    // IETF-protocol, "this network", broadcast, multicast and documentation ranges.
+    if !policy.allow_private
+        && (dns_name_is_internal(&host) || host_ip(&host).is_some_and(|ip| ip_is_internal(&ip)))
+    {
         return Err(ArgWhy::InternalHost(host));
     }
     Ok(())
@@ -409,7 +413,7 @@ fn normalize_host(raw: &str) -> Option<String> {
 }
 
 fn probe_url(host: &str) -> String {
-    if busbar_contract::net::host_ip(host).is_some_and(|ip| ip.is_ipv6()) {
+    if host_ip(host).is_some_and(|ip| ip.is_ipv6()) {
         format!("https://[{host}]/")
     } else {
         format!("https://{host}/")

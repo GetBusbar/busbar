@@ -46,9 +46,43 @@ impl GovState {
             .cloned()
     }
 
-    /// The first epoch at or after `from` whose derived id is not a tombstoned row, with that id.
-    /// See [`GovState::write_self_binding`] for why a tombstoned epoch must be skipped rather than
-    /// written over.
+    /// Whether this subject's self-serve mint must be refused, checked under `self_mint_lock`
+    /// before either door writes anything. The subject's rows are every non-tombstoned row in the
+    /// self group `user:<sub>` OR recording `idp_subject == sub`, so an admin group rebind does not
+    /// hide a row from the check.
+    ///
+    /// - [`SelfMintRefusal::Disabled`]: one of those rows is disabled. An admin disable or revoke
+    ///   holds until the admin re-enables or deletes the key; a login must neither re-enable the row
+    ///   nor mint a fresh key beside it.
+    /// - [`SelfMintRefusal::OtherProvider`]: one of those rows records a minting provider
+    ///   ([`SELF_KEY_PROVIDER_LABEL`]) other than `provider`. The subject alone keys the binding,
+    ///   so a second provider asserting the same subject would otherwise be handed this key.
+    fn self_mint_refusal(&self, user_sub: &str, provider: &str) -> Option<SelfMintRefusal> {
+        let group = format!("{SELF_KEY_GROUP_PREFIX}{user_sub}");
+        let caches = self.caches_read();
+        let rows = caches.by_id.values().filter(|k| {
+            k.deleted_at.is_none()
+                && (k.group.as_deref() == Some(group.as_str())
+                    || k.idp_subject.as_deref() == Some(user_sub))
+        });
+        let mut refusal = None;
+        for k in rows {
+            if !k.enabled {
+                return Some(SelfMintRefusal::Disabled);
+            }
+            if k.labels
+                .get(SELF_KEY_PROVIDER_LABEL)
+                .is_some_and(|p| p != provider)
+            {
+                refusal = Some(SelfMintRefusal::OtherProvider);
+            }
+        }
+        refusal
+    }
+
+    /// The first epoch at or after `from` whose derived id has NO row at all, with that id. See
+    /// [`GovState::write_self_binding`] for why an existing row, live, disabled or tombstoned, must
+    /// be skipped rather than written over.
     ///
     /// The stride GROWS (0, +1, +2, +4, +8, …) rather than stepping one at a time, and that is
     /// load-bearing rather than an optimization.
@@ -80,11 +114,7 @@ impl GovState {
         for _ in 0..MAX_PROBES {
             let epoch = from.saturating_add(stride);
             let id = Self::derive_self_subject(seed, user_sub, epoch);
-            let tombstoned = self
-                .store
-                .get_key(&id)?
-                .is_some_and(|k| k.deleted_at.is_some());
-            if !tombstoned {
+            if self.store.get_key(&id)?.is_none() {
                 return Ok((id, epoch));
             }
             stride = if stride == 0 {
@@ -94,16 +124,23 @@ impl GovState {
             };
         }
         Err(RecordStoreError(format!(
-            "self-serve binding: {MAX_PROBES} probes from epoch {from} all landed on tombstoned \
-             rows; refusing to reissue a deleted key id"
+            "self-serve binding: {MAX_PROBES} probes from epoch {from} all landed on existing \
+             rows; refusing to write over a key id already in use"
         )))
     }
 
     /// Write (upsert) a self-serve binding at `epoch` and issue the signed token over it. The id is
     /// derived (not random), so `put_key` at the same `(sub, epoch)` is idempotent by id.
     ///
-    /// A derived id whose row is TOMBSTONED is skipped, and the epoch advances until one is free.
-    /// Two distinct paths land on a tombstoned derived id, and reusing it would be wrong in both:
+    /// A derived id that already has a row is skipped, and the epoch advances until one is free.
+    /// Writing over an existing row is wrong whatever state it is in. A DISABLED row was frozen by an
+    /// admin, and writing `enabled: true` at its old generation would revive every token minted
+    /// before the disable. A LIVE row the probe lands on is one `current_self_binding` did not return:
+    /// one an admin rotated (its generation is random hex, so `refresh_self` reads epoch 0 and
+    /// probes from 1), where writing over it would restore the pre-rotate generation and revive the
+    /// tokens the rotation killed, or one an admin moved to another group, where writing over it
+    /// would undo the move. Two distinct paths land
+    /// on a TOMBSTONED derived id, and reusing it would be wrong in both:
     ///
     /// - An admin deleted this user's self-serve key. The next login finds no live binding, so it
     ///   arrives here at epoch 0 — the same epoch, therefore the same id, therefore the tombstoned
@@ -117,10 +154,12 @@ impl GovState {
     ///
     /// Skipping is also the semantically honest move: an epoch whose binding was tombstoned had its
     /// tokens deliberately invalidated, and re-deriving that id would put them back in play.
+    #[allow(clippy::too_many_arguments)]
     fn write_self_binding(
         &self,
         material: &SigningMaterial,
         user_sub: &str,
+        provider: &str,
         allowed_pools: Option<Vec<String>>,
         epoch: u64,
         exp: u64,
@@ -138,7 +177,11 @@ impl GovState {
             enabled: true,
             created_at: now,
             group: Some(format!("{SELF_KEY_GROUP_PREFIX}{user_sub}")),
-            labels: std::collections::BTreeMap::new(),
+            // The minting identity provider, so another provider asserting this subject is refused.
+            labels: std::collections::BTreeMap::from([(
+                SELF_KEY_PROVIDER_LABEL.to_string(),
+                provider.to_string(),
+            )]),
             expires_at: None,
             deleted_at: None,
             revision: 0,
@@ -161,29 +204,40 @@ impl GovState {
     /// ISSUE the (single, idempotent) self-serve key for `user_sub`. If a binding already exists it
     /// is REUSED verbatim (same id + generation) and only a fresh-`exp` token is re-minted over it —
     /// so N logins produce exactly ONE binding row. Otherwise a fresh binding is minted at epoch 0.
-    /// `exp` is the token expiry (Unix secs); `now` the mint time.
+    /// `provider` is the identity-provider instance that asserted `user_sub`; the mint is refused
+    /// ([`SelfMintError::Refused`]) when the subject's binding is disabled or was minted by another
+    /// provider (see `self_mint_refusal`). `exp` is the token expiry (Unix secs); `now`
+    /// the mint time.
     pub fn issue_self(
         &self,
         user_sub: &str,
+        provider: &str,
         allowed_pools: Option<Vec<String>>,
         exp: u64,
         now: u64,
-    ) -> RecordStoreResult<(VirtualKey, String)> {
+    ) -> Result<(VirtualKey, String), SelfMintError> {
         let Some(material) = self.signing_material() else {
             return Err(RecordStoreError(
                 "signed-token minting is unavailable: no signing key is configured".to_string(),
-            ));
+            )
+            .into());
         };
         // Serialize the check→write against a concurrent issue/refresh for the same sub.
         let _mint = self
             .self_mint_lock
             .lock()
             .unwrap_or_else(|e| e.into_inner());
+        if let Some(refusal) = self.self_mint_refusal(user_sub, provider) {
+            return Err(SelfMintError::Refused(refusal));
+        }
         match self.current_self_binding(user_sub) {
             Some(existing) => {
                 // The pools the caller resolved THIS login (from the possibly-changed binding).
                 let new_scopes = crate::governance::pool_scopes(allowed_pools.clone());
-                if new_scopes != existing.allowed_scopes {
+                // A binding minted before the provider label existed ADOPTS the first provider that
+                // logs in, recorded on the row so every other provider is refused from now on.
+                let adopt = !existing.labels.contains_key(SELF_KEY_PROVIDER_LABEL);
+                if new_scopes != existing.allowed_scopes || adopt {
                     // allowed_pools CHANGED since the binding was created (an admin narrowed or
                     // widened the group) — update THE EXISTING ROW in place with the fresh pools,
                     // keeping its id and generation, and re-issue a token over them.
@@ -203,6 +257,9 @@ impl GovState {
                     // the row that already existed.
                     let mut updated = (*existing).clone();
                     updated.allowed_scopes = new_scopes;
+                    updated
+                        .labels
+                        .insert(SELF_KEY_PROVIDER_LABEL.to_string(), provider.to_string());
                     self.store.put_key(&updated)?;
                     self.refresh()?;
                     let generation = binding_generation(&updated.generation_hash);
@@ -216,7 +273,15 @@ impl GovState {
                     Ok(((*existing).clone(), token))
                 }
             }
-            None => self.write_self_binding(&material, user_sub, allowed_pools, 0, exp, now),
+            None => Ok(self.write_self_binding(
+                &material,
+                user_sub,
+                provider,
+                allowed_pools,
+                0,
+                exp,
+                now,
+            )?),
         }
     }
 
@@ -224,23 +289,30 @@ impl GovState {
     /// TOMBSTONE the prior one. The prior id no longer re-derives and its binding is disabled, so
     /// every token minted before the refresh stops verifying (`verify_token` → `None`) — the
     /// existing generation gate, reached through a normal delete. Returns the new (binding, token).
+    /// Refused exactly as [`GovState::issue_self`] is: a disabled binding, or one minted by another
+    /// provider, is never rotated away from.
     pub fn refresh_self(
         &self,
         user_sub: &str,
+        provider: &str,
         allowed_pools: Option<Vec<String>>,
         exp: u64,
         now: u64,
-    ) -> RecordStoreResult<(VirtualKey, String)> {
+    ) -> Result<(VirtualKey, String), SelfMintError> {
         let Some(material) = self.signing_material() else {
             return Err(RecordStoreError(
                 "signed-token minting is unavailable: no signing key is configured".to_string(),
-            ));
+            )
+            .into());
         };
         // Serialize against a concurrent issue/refresh for the same sub (see `self_mint_lock`).
         let _mint = self
             .self_mint_lock
             .lock()
             .unwrap_or_else(|e| e.into_inner());
+        if let Some(refusal) = self.self_mint_refusal(user_sub, provider) {
+            return Err(SelfMintError::Refused(refusal));
+        }
         let (new_epoch, old_id) = match self.current_self_binding(user_sub) {
             Some(existing) => {
                 let cur = binding_generation(&existing.generation_hash)
@@ -250,8 +322,15 @@ impl GovState {
             }
             None => (0, None),
         };
-        let out =
-            self.write_self_binding(&material, user_sub, allowed_pools, new_epoch, exp, now)?;
+        let out = self.write_self_binding(
+            &material,
+            user_sub,
+            provider,
+            allowed_pools,
+            new_epoch,
+            exp,
+            now,
+        )?;
         if let Some(old) = old_id {
             if old != out.0.id {
                 // Tombstone the prior epoch's binding — its token now fails verify (disabled).
@@ -262,7 +341,7 @@ impl GovState {
                     // happened. ROLL BACK the just-written new binding (delete it + refresh the
                     // in-memory cache) so a failed refresh leaves EXACTLY the old binding valid: the
                     // client keeps its working token and can retry the refresh.
-                    return Err(match self.delete_key(&out.0.id) {
+                    return Err(SelfMintError::Store(match self.delete_key(&out.0.id) {
                         Ok(()) => RecordStoreError(format!(
                             "self-serve refresh for '{user_sub}' failed to tombstone the prior \
                              binding '{old}' ({delete_err}); rolled back the newly-minted binding \
@@ -293,7 +372,7 @@ impl GovState {
                                 out.0.id
                             ))
                         }
-                    });
+                    }));
                 }
                 if let Err(refresh_err) = self.refresh() {
                     // The STORE already reflects the tombstone (`delete_key` above succeeded) —
@@ -321,7 +400,7 @@ impl GovState {
                          so its token stops verifying immediately"
                     );
                     self.evict_key_from_caches(&old);
-                    return Err(RecordStoreError(format!(
+                    return Err(SelfMintError::Store(RecordStoreError(format!(
                         "self-serve refresh for '{user_sub}' rotated the store successfully (the \
                          prior binding '{old}' is tombstoned, the new binding '{}' is live) but \
                          the cache reconcile failed ({refresh_err}); the prior binding was evicted \
@@ -329,7 +408,7 @@ impl GovState {
                          verifies, but the cache may be stale for OTHER entries until the next \
                          successful refresh — retry is safe",
                         out.0.id
-                    )));
+                    ))));
                 }
             }
         }
