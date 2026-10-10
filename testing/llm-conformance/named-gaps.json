@@ -100,9 +100,15 @@
     "Every entry today is a cell testing/shadow-oracle/record.sh could not record at all (its own",
     "ledger says UNSUPPORTED), so there is no wire for this gate to judge. They are the recorder's",
     "to close, not this rig's; when a fixture lands, the cell records, the rows go PASS or FAIL on",
-    "their merits, and the entry and the count come off."
+    "their merits, and the entry and the count come off.",
+    "",
+    "The count also holds the SKIP rows the `gaps` section above produces: a vendor-schema gap",
+    "forgives its violation into a SKIP, and that SKIP is counted here like any other. 21 = the 16",
+    "recorder rows `accepted` names + 5 judged rows `gaps` names (anthropic-ping-event x4,",
+    "bedrock-service-quota-exceeded x1); measured on busbar predev 5e672d125d against the oracle",
+    "engine with raw wire bytes (busbar-release #181). OWNER-SIGNED: <pending>."
   ],
-  "expected": 16,
+  "expected": 21,
   "accepted": [
     {
       "cells": "^llm\\|[a-z]+\\|[a-z]+\\|request\\|stream_upstream_error#(request|response)$",
