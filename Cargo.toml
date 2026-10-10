@@ -68,16 +68,13 @@ busbar-export-otlp-plugin = { git = "https://github.com/GetBusbar/busbar-export-
 busbar-export-prometheus = { git = "https://github.com/GetBusbar/busbar-export-prometheus", rev = "049592be7a06945cd35bfc32d72ac0fb21197a57" }
 busbar-export-prometheus-plugin = { git = "https://github.com/GetBusbar/busbar-export-prometheus", rev = "049592be7a06945cd35bfc32d72ac0fb21197a57" }
 # THE SECRET SOURCES (THE DESIGN, "Plugins"; ARCHITECT 2026-10-02 WIRE-SECRET): `busbar` links each logic
-# crate's door on the secret axis; the kernel's test build stands their `resolve` in. One rev each.
+# crate's door on the secret axis; the kernel's test build answers the axis with its own in-crate
+# double (`busbar_kernel::test_support::secrets`), naming neither. One rev each.
 # The env source's logic crate is also the door the loader's secret conformance suite links; its cdylib
 # crate (`busbar-secret-env-plugin`, same repo) is NOT a dependency: it is built from this pinned
 # checkout by the build:dlopen-cdylibs step and dlopened.
 busbar-secret-env = { git = "https://github.com/GetBusbar/busbar-secret-env", rev = "495318c9fa50c42b28705208fd02e83e3f363312" }
 busbar-secret-file = { git = "https://github.com/GetBusbar/busbar-secret-file", rev = "479c833a108bc5d94e03f754b0a1b5f9ea97c0e3" }
-# The same two crates at the same revs, under the role the kernel's test build gives them (its
-# stand-in secret axis; a kernel source names no plugin). A rev bump moves both lines of its pair.
-fixture-secret-env = { package = "busbar-secret-env", git = "https://github.com/GetBusbar/busbar-secret-env", rev = "495318c9fa50c42b28705208fd02e83e3f363312" }
-fixture-secret-file = { package = "busbar-secret-file", git = "https://github.com/GetBusbar/busbar-secret-file", rev = "479c833a108bc5d94e03f754b0a1b5f9ea97c0e3" }
 # THE REQUEST-LOG WEBHOOK SINK: the one home of its pinned rev (a rev bump is this one edit). `busbar`
 # links the logic crate; `busbar-plugin-loader`'s conformance test builds the cdylib crate. Same repo,
 # same rev, one resolved copy in Cargo.lock.
@@ -97,7 +94,7 @@ busbar-transport-tcp = { git = "https://github.com/GetBusbar/busbar-transport-tc
 busbar-transport-tcp-plugin = { git = "https://github.com/GetBusbar/busbar-transport-tcp", rev = "4af9e2ca8bc164d0066e6d107024ba416192a4ba" }
 # THE OUTBOUND HEADER STYLES (kind: auth): the logic crate the root links on its `auths` axis
 # (feature `auth-header`), pulled at a pinned rev (P5; OWNER Q99 keep the split).
-busbar-auth-header = { git = "https://github.com/GetBusbar/busbar-auth-header", rev = "84b3fc400c2f63fe7bf9ad87dae3ac35d970defe" }
+busbar-auth-header = { git = "https://github.com/GetBusbar/busbar-auth-header", rev = "37811aad91caecb2d337a44748bd848f99879e27" }
 # THE OAUTH MINTING STYLES (kind: auth): the logic crate the root links on its `auths` axis (feature
 # `auth-oauth`; P2 D1: the kernel's own minting copies are deleted). One pin.
 busbar-auth-oauth = { git = "https://github.com/GetBusbar/busbar-auth-oauth", rev = "98fb861d14914982fdba6f8666681fb62ba1d6b1" }
