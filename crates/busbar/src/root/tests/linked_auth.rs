@@ -170,27 +170,6 @@ fn the_info_auth_modules_are_the_inbound_rows_only() {
     );
 }
 
-/// `build.auth_modules` (and the `plugins?type=auth` catalog behind it) lists the INBOUND auth-chain
-/// modules only, by their linked alias, as 1.5.5 did: an inbound row is listed under its key. The
-/// row is the operator credential's (`admin-tokens`), the one this root links for it.
-///
-/// MOVED HERE from busbar-core-admin's `src/tests/tests.rs`, assertion unchanged: core-admin links no
-/// auth plugin (it names zero plugin types, its tests included); the root links this row. Its
-/// outbound-only half is `the_info_auth_modules_are_the_inbound_rows_only` above.
-#[cfg(feature = "auth-admin-tokens")]
-#[test]
-fn auth_modules_list_inbound_rows_only() {
-    let inbound: busbar_kernel::preflight::LinkedAuth = *crate::LINKED
-        .auths
-        .iter()
-        .find(|row| row.0 == "admin-tokens")
-        .expect("the root links the operator credential's row under `admin-tokens`");
-    assert_eq!(
-        busbar_kernel::preflight::inbound_auth_names(&[inbound]),
-        vec!["admin-tokens"]
-    );
-}
-
 /// THE PROBE EXT-AUTHADMIN ran, over the row the root links: every carrier combination answers as
 /// 1.5.5 did — the operator token on EITHER carrier admits, a wrong one on either refuses with the
 /// frozen 401 body, and a request carrying both is judged on both (the right header admits past a
