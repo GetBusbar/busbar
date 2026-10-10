@@ -3,7 +3,9 @@
 The branch ladder is **predev → dev → qa → main**. busbar has ONE pipeline workflow,
 [`.github/workflows/promote.yml`](.github/workflows/promote.yml): every same-repo pull request is one
 hop up the ladder. The release engine lives in the private `GetBusbar/busbar-release` repository
-(pinned by `RELEASE_REF` in `promote.yml`); busbar-release's `crates/busbar-release-train/ladder.json`
+(pinned outside this repo by the org variables `ENGINE_REF` and `ENGINE_SHA256`, set with
+`busbar-release engine pin <sha>`; `workflow-rules` R16 holds promote.yml to a 40-hex check and a
+sha256 verify of the engine at run time); busbar-release's `crates/busbar-release-train/ladder.json`
 says what entering each rung needs.
 
 | Rung entered (the PR's base) | What the hop runs | Consent |
