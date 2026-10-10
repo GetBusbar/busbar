@@ -734,9 +734,9 @@ fn the_real_pipeline_workflow_parses_and_its_gate_call_sites_are_discoverable() 
     // EVERY GATE THE PIPELINE CALLS BY NAME IS ONE THE REGISTRY ANSWERS TO: a `cargo xtask gate
     // <typo>` is a step that exits 2 on every hop, and the registry is what can say so here rather
     // than in a red run.
-    // promote.yml is a thin bootstrap: it runs busbar-release's `ci/promote/*.sh` at RELEASE_REF,
-    // and the gate calls (the C header's `abi-header`, the registry's `--list`) live in those
-    // scripts, not in this file. So the file names no gate today; the loop below keeps holding
+    // promote.yml is a thin bootstrap: it runs busbar-release's `busbar-release ci hop` at
+    // RELEASE_REF, and the gate calls (the C header's `abi-header`, the registry's `--list`) live in
+    // that engine, not in this file. So the file names no gate today; the loop below keeps holding
     // anything it ever does name to the registry.
     let called = yaml_lite::xtask_gate_invocations(&text);
     for name in &called {
