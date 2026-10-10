@@ -410,7 +410,16 @@ fn trust_sight_judges_from_the_admitted_entries_and_writes_the_demotion() {
     let r = rig();
     let me = caller("inst");
     let sight = |h: &str| run(|l| r.s.trust_sight(&me, "cp", h, l));
-    assert_eq!(sight("fp").value, svc::TRUST_SAME);
+    // Before any approval every sighting reports pending, the declared fingerprint (coordinator
+    // 2026-10-07, #555 point ii) or another hash, which drifts nothing and writes no demotion
+    // (#555 round 3; predev crates/busbar-kernel/src/trust/mod.rs:289-290, no pin is Pending;
+    // crates/busbar-a2a/src/a2a/registry.rs:123 lowers every registration unpinned).
+    assert_eq!(sight("moved").value, svc::TRUST_NEW);
+    assert!(r.s.demotions.get().unwrap().record.list().is_empty());
+    assert_eq!(sight("fp").value, svc::TRUST_NEW);
+    r.s.trust_rule("inst/cp", crate::trust::book::Ruling::Approve)
+        .unwrap();
+    assert_eq!(sight("fp").value, svc::TRUST_SAME, "approved");
     assert_eq!(sight("moved").value, svc::TRUST_DRIFTED);
     let demoted = r.s.demotions.get().unwrap().record.list();
     assert_eq!(demoted.len(), 1);
@@ -431,6 +440,13 @@ fn the_operators_trust_decisions_are_kept_and_replayed_at_a_restart() {
     use crate::trust::book::Ruling;
     let r = rig();
     let me = caller("inst");
+    // Unreached before any approval, a declared fingerprint is pending (coordinator 2026-10-07,
+    // #555 round 3; predev crates/busbar-kernel/src/trust/mod.rs:289-290, no pin is Pending).
+    assert_eq!(r.s.trust_unreached(&me, "cp").value, svc::TRUST_NEW);
+    // Approved first: before an approval a declared fingerprint drifts nothing (coordinator
+    // 2026-10-07, #555 round 3; predev crates/busbar-kernel/src/trust/mod.rs:289-290, no pin is
+    // Pending, and :312, only a pin can change; crates/busbar-a2a/src/a2a/registry.rs:123).
+    r.s.trust_rule("inst/cp", Ruling::Approve).unwrap();
     assert_eq!(
         run(|l| r.s.trust_sight(&me, "cp", "moved", l)).value,
         svc::TRUST_DRIFTED
@@ -487,8 +503,25 @@ fn trust_decide_is_the_one_decide_path_for_a_planes_own_verb() {
         svc::UNDECIDED_STALE,
         "approve what you saw"
     );
+    // An item at a counterparty whose declared fingerprint was never approved waits on that
+    // approval (coordinator 2026-10-07, #555 point iii; predev
+    // crates/busbar-kernel/src/trust/mod.rs:336-337, `serves` is false while nothing is pinned).
     assert_eq!(
         r.s.trust_decide(&me, tool, Some("d1"), true).value,
+        svc::TRUST_DECIDED_PENDING
+    );
+    assert_eq!(
+        serves("t"),
+        svc::DISTRUST_NOT_APPROVED,
+        "the counterparty is pending"
+    );
+    let whole = TrustKeyRef {
+        counterparty: "cp",
+        item: None,
+    };
+    run(|l| r.s.trust_sight(&me, "cp", "fp", l));
+    assert_eq!(
+        r.s.trust_decide(&me, whole, Some("fp"), true).value,
         svc::TRUST_DECIDED_SERVING
     );
     assert_eq!(serves("t"), svc::DISTRUST_NONE, "approved, it serves");
@@ -516,10 +549,6 @@ fn trust_decide_is_the_one_decide_path_for_a_planes_own_verb() {
         "revoked, it is refused"
     );
     // The counterparty: a changed catalogue quarantines it; its own verb sees it.
-    let whole = TrustKeyRef {
-        counterparty: "cp",
-        item: None,
-    };
     run(|l| r.s.trust_sight(&me, "cp", "moved", l));
     assert_eq!(
         r.s.trust_decide(&me, tool, None, false).value,
@@ -549,12 +578,16 @@ fn trust_state_answers_the_counterparty_and_its_items_as_the_admin_list_does() {
     use crate::trust::book::Ruling;
     let r = rig();
     let me = caller("inst");
+    // A declared fingerprint is pending, and listed NEW, until the operator approves it
+    // (coordinator 2026-10-07, #555).
     assert_eq!(
         r.s.trust_state(&me, "cp").value,
-        svc::KEY_APPROVED,
+        svc::KEY_NEW,
         "declared pin"
     );
     run(|l| r.s.trust_sight(&me, "cp", "fp", l));
+    assert_eq!(r.s.trust_state(&me, "cp").value, svc::KEY_NEW, "sighted");
+    r.s.trust_rule("inst/cp", Ruling::Approve).unwrap();
     assert_eq!(
         r.s.trust_sight_item(&me, "cp", "t", "d1").value,
         svc::TRUST_NEW
@@ -596,6 +629,11 @@ fn trust_state_answers_the_counterparty_and_its_items_as_the_admin_list_does() {
 fn a_durable_demotion_is_replayed_at_admit() {
     let r = rig();
     let me = caller("inst");
+    // Approved first: before an approval a declared fingerprint drifts nothing (coordinator
+    // 2026-10-07, #555 round 3; predev crates/busbar-kernel/src/trust/mod.rs:289-290, no pin is
+    // Pending, and :312, only a pin can change; crates/busbar-a2a/src/a2a/registry.rs:123).
+    r.s.trust_rule("inst/cp", crate::trust::book::Ruling::Approve)
+        .unwrap();
     assert_eq!(
         run(|l| r.s.trust_sight(&me, "cp", "moved", l)).value,
         svc::TRUST_DRIFTED
@@ -721,6 +759,11 @@ fn trusting(pin: Option<&str>) -> InstanceFacts {
 #[test]
 fn a_demotion_in_one_instance_is_never_replayed_into_another_with_the_same_counterparty() {
     let r = rig();
+    // Approved first: before an approval a declared fingerprint drifts nothing (coordinator
+    // 2026-10-07, #555 round 3; predev crates/busbar-kernel/src/trust/mod.rs:289-290, no pin is
+    // Pending, and :312, only a pin can change; crates/busbar-a2a/src/a2a/registry.rs:123).
+    r.s.trust_rule("inst/cp", crate::trust::book::Ruling::Approve)
+        .unwrap();
     assert_eq!(
         run(|l| r.s.trust_sight(&caller("inst"), "cp", "moved", l)).value,
         svc::TRUST_DRIFTED
@@ -761,9 +804,12 @@ fn an_unprefixed_row_replays_into_the_default_instance_only_and_it_clears_it() {
     // Re-admitted with a pin, the default instance's clean sighting clears the unprefixed row.
     let pinned = restarted(&r);
     pinned.admit(SECTION_KEY, trusting(Some("fp"))).unwrap();
+    // A sighting of the declared fingerprint before any approval reports pending (coordinator
+    // 2026-10-07, #555 point ii; predev crates/busbar-kernel/src/trust/mod.rs:289-290, no pin is
+    // Pending; crates/busbar-a2a/src/a2a/registry.rs:123 lowers every registration unpinned).
     assert_eq!(
         run(|l| pinned.trust_sight(&caller(SECTION_KEY), "cp", "fp", l)).value,
-        svc::TRUST_SAME
+        svc::TRUST_NEW
     );
     assert!(r.s.demotions.get().unwrap().record.list().is_empty());
 }
@@ -938,6 +984,11 @@ fn a_demotion_is_written_on_the_pool_and_the_sighting_answers_after_it() {
     let held = Arc::new(Held::default());
     let s = restarted(&r).with_pool(Arc::new(Arc::clone(&held)));
     s.admit("inst", trusting(Some("fp"))).unwrap();
+    // Approved first: before an approval a declared fingerprint drifts nothing (coordinator
+    // 2026-10-07, #555 round 3; predev crates/busbar-kernel/src/trust/mod.rs:289-290, no pin is
+    // Pending, and :312, only a pin can change; crates/busbar-a2a/src/a2a/registry.rs:123).
+    s.trust_rule("inst/cp", crate::trust::book::Ruling::Approve)
+        .unwrap();
     let (slot, later) = recorder();
     let ran = s.trust_sight(&caller("inst"), "cp", "moved", later);
     // Nothing is written, nor answered, on the calling thread.
@@ -2120,4 +2171,35 @@ fn an_emit_reaches_only_its_own_open_session() {
         services.session_emit(&caller("door"), gone, b"x").outcome,
         Outcome::Refused
     );
+}
+
+/// A DECLARED CHAIN THE HOST CANNOT KEEP REFUSES THE ADMIT (audit contract-C2 #4): a chained record
+/// kind with a framing word this host does not know, or naming no record kind, is never admitted as
+/// plain records. Nothing is registered for the instance.
+#[test]
+fn a_declared_chain_the_host_cannot_keep_refuses_the_admit() {
+    let r = rig();
+    for (kind, framing) in [
+        (0, 99),
+        (7, busbar_contract::abi::plane::CHAIN_LENGTH_PREFIXED),
+    ] {
+        let refused =
+            r.s.admit(
+                "chained",
+                InstanceFacts {
+                    record_kinds: vec![KIND],
+                    record_chains: vec![busbar_contract::abi::plane::RecordChain {
+                        kind,
+                        framing,
+                        flags: 0,
+                        _reserved: 0,
+                    }],
+                    ..InstanceFacts::default()
+                },
+            )
+            .unwrap_err();
+        assert_eq!(refused, AdmitRefused::ChainUnknown { kind, framing });
+        let s = r.s.sign(&caller("chained"), b"x");
+        assert_eq!((s.outcome, s.error), (Outcome::Refused, NOT_ADMITTED));
+    }
 }
