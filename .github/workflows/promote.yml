@@ -14,11 +14,13 @@ on: [pull_request, merge_group]
 # busbar-release: any drift is RED.
 concurrency: { group: "promote-${{ github.event.pull_request.number || github.event.merge_group.head_ref }}", cancel-in-progress: false }
 permissions: { contents: read }
+# THE ENGINE PIN IS NOT IN THIS FILE (OWNER 2026-10-10): the org variables ENGINE_REF (a full
+# busbar-release commit) and ENGINE_SHA256 (the sha256 of that commit's dev-bin ci asset), set by
+# hand with `busbar-release engine pin <sha>`, so an engine update never waits in predev's merge
+# queue. The preflight reads them ONCE and hands them to every later job as outputs: one run is one
+# engine even if the variables move mid-run. Unset or malformed is a hard FAIL (ENGINE-PIN), never
+# an older pin; the bytes run only when their sha256 is ENGINE_SHA256 (workflow-rules R16).
 env:
-  RELEASE_REF: 7ab21912d664d11c7df6cc98fe78eed6b0119177
-  # The sha256 of busbar-release-ci-linux-x86_64-<RELEASE_REF> on the dev-bin release; the bump
-  # (`busbar-release bump`) writes it beside RELEASE_REF.
-  ENGINE_SHA256: 67ca4fdd48c799d5cd7a8ff5c78a38a454834f18afbda6b1df6c19e85d9ed787
   SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
   TO: ${{ github.base_ref || github.event.merge_group.base_ref }}
   BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
@@ -33,17 +35,22 @@ jobs:
     # head already failed the queue as its own red: first in its group, or behind a group that went
     # green (pull-requests: write).
     permissions: { contents: read, actions: write, pull-requests: write }
-    outputs: { runner: "${{ steps.pre.outputs.runner }}", soak: "${{ steps.pre.outputs.soak }}", one_runner: "${{ steps.pre.outputs.one_runner }}", needs_release_artifact: "${{ steps.pre.outputs.needs_release_artifact }}", run: "${{ steps.pre.outputs.run }}", reason: "${{ steps.pre.outputs.reason }}" }
+    # RUNNERS: the runner gateway's table (vars.RUNNERS), from which the preflight sizes `runner=`.
+    env: { RELEASE_REF: "${{ vars.ENGINE_REF }}", ENGINE_SHA256: "${{ vars.ENGINE_SHA256 }}", RUNNERS: "${{ vars.RUNNERS }}" }
+    outputs: { engine_ref: "${{ steps.engine.outputs.engine_ref }}", engine_sha256: "${{ steps.engine.outputs.engine_sha256 }}", runner: "${{ steps.pre.outputs.runner }}", soak: "${{ steps.pre.outputs.soak }}", one_runner: "${{ steps.pre.outputs.one_runner }}", needs_release_artifact: "${{ steps.pre.outputs.needs_release_artifact }}", run: "${{ steps.pre.outputs.run }}", reason: "${{ steps.pre.outputs.reason }}" }
     steps:
       # Full history: the pre-flight reads the pull request's diff against BASE_SHA to choose one runner or the matrix.
       - { uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1, with: { ref: "${{ env.SHA }}", path: busbar, fetch-depth: 0 } } # v7
-      - { uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1, with: { repository: GetBusbar/busbar-release, ref: "${{ env.RELEASE_REF }}", token: "${{ secrets.TURNSTILE_DISPATCH_TOKEN }}", path: busbar-release, persist-credentials: false } } # v7
       # THE ENGINE, downloaded, never compiled: CI's --no-default-features binary of RELEASE_REF from
       # busbar-release's dev-bin release (dev-bin.yml), run only when its sha256 is ENGINE_SHA256.
+      # First the pin's shape: a full 40-hex commit and a 64-hex digest, or FAIL.
       - name: Engine (busbar-release at RELEASE_REF, sha256-pinned)
+        id: engine
         env: { GH_TOKEN: "${{ secrets.TURNSTILE_DISPATCH_TOKEN }}" }
         run: |
           set -euo pipefail
+          [[ "$RELEASE_REF" =~ ^[0-9a-f]{40}$ ]] || { echo "::error title=ENGINE-PIN FAIL::vars.ENGINE_REF is unset or not a full 40-hex busbar-release commit (busbar-release engine pin <sha>)"; exit 1; }
+          [[ "$ENGINE_SHA256" =~ ^[0-9a-f]{64}$ ]] || { echo "::error title=ENGINE-PIN FAIL::vars.ENGINE_SHA256 is unset or not a 64-hex sha256 (busbar-release engine pin <sha>)"; exit 1; }
           api=https://api.github.com/repos/GetBusbar/busbar-release/releases
           name="busbar-release-ci-linux-x86_64-$RELEASE_REF"
           id=$(curl -fsSL -H "Authorization: Bearer $GH_TOKEN" "$api/tags/dev-bin" | jq -r --arg n "$name" '.assets[] | select(.name == $n) | .id')
@@ -51,6 +58,8 @@ jobs:
           curl -fsSL -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/octet-stream" -o "$RUNNER_TEMP/busbar-release" "$api/assets/$id"
           echo "$ENGINE_SHA256  $RUNNER_TEMP/busbar-release" | sha256sum -c -
           chmod +x "$RUNNER_TEMP/busbar-release"
+          { echo "engine_ref=$RELEASE_REF"; echo "engine_sha256=$ENGINE_SHA256"; } >> "$GITHUB_OUTPUT"
+      - { uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1, with: { repository: GetBusbar/busbar-release, ref: "${{ env.RELEASE_REF }}", token: "${{ secrets.TURNSTILE_DISPATCH_TOKEN }}", path: busbar-release, persist-credentials: false } } # v7
       # The pre-flight is busbar-release's Rust CLI (preflight.json is the one list): it sizes the hop
       # (runner= to $GITHUB_OUTPUT), chooses how a pull request into predev runs (one_runner=: ONE runner
       # when the crates its diff affects are estimated within 20 min, else the shard matrix; OWNER-LOCKED
@@ -71,7 +80,7 @@ jobs:
   # fast-forwarding a merge group's sha (ARCHITECT 2026-10-02, superseded), so the run that judges a
   # promotion builds the artifact of exactly the commit it promotes: its shards download
   # `slsa-artifact-<sha>` from THIS run, which a merge-group-only build never produced (#740 failed
-  # every run at that download). workflow-rules R16 holds this wiring. Its SLSA provenance is minted
+  # every run at that download). workflow-rules R17 holds this wiring. Its SLSA provenance is minted
   # from `base64-subjects` by the pinned slsa-github-generator once the owner rules on R14 (the
   # generator must be referenced by tag); until then the suite is not-run, a standing red here.
   slsa-build:
@@ -95,22 +104,41 @@ jobs:
           sha256sum busbar > busbar.sha256
           echo "base64-subjects=$(base64 -w0 busbar.sha256)" >> "$GITHUB_OUTPUT"
       - { uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a, with: { name: "slsa-artifact-${{ env.SHA }}", path: "slsa/", retention-days: 7, if-no-files-found: error } } # v7.0.1
-  # THE QA SOAK (OWNER 2026-10-10): the soak stays, as a 1-hour stability gate on each qa promotion.
-  # `busbar-release soak <candidate binary>` (profile.rs's full profile: 3600 s, 50 rps, 16
-  # concurrent) soaks THIS candidate's release binary on the runner the preflight chose, wherever the
-  # ladder's entry asks for it (`soak=true`: qa). The hop folds this job's result like slsa-build's
-  # (`ci turnstile merge --needs soak=...`): a failed soak row DENIES the promotion. CI=false selects
-  # the full hour (the CI context would pick the two-minute smoke). It runs the candidate, so it holds
-  # no write token. The candidate binary is this run's slsa-build artifact (a rung with the soak
-  # reads the artifact, so slsa-build runs); a run without it builds it here.
+  # THE QA SOAK (OWNER 2026-10-10; busbar #734): the soak stays, as a 1-hour stability gate on each
+  # qa promotion. `busbar-release soak <candidate binary>` (profile.rs's full profile: 3600 s, 50 rps,
+  # 16 concurrent) soaks THIS candidate's release binary on the runner the preflight chose, wherever
+  # the ladder's entry asks for it (`soak=true`: qa). The hop folds this job's result like
+  # slsa-build's (`ci turnstile merge --needs soak=...`): a failed soak DENIES the promotion. CI=false
+  # selects the full hour (the CI context would pick the two-minute smoke). It runs the candidate, so
+  # it holds no write token. The candidate binary is this run's slsa-build artifact (a rung with the
+  # soak reads the artifact, so slsa-build runs); a run without it builds it here. The engine is the
+  # downloaded ci binary (built with `--features soak`, dev-bin.yml), sha256-pinned like every other
+  # job's.
   soak:
     needs: [preflight, slsa-build]
     if: ${{ !cancelled() && needs.preflight.result == 'success' && needs.preflight.outputs.run == '1' && needs.preflight.outputs.soak == 'true' }}
     permissions: { contents: read }
     runs-on: ${{ needs.preflight.outputs.runner }}
     timeout-minutes: 180
+    env: { RELEASE_REF: "${{ needs.preflight.outputs.engine_ref }}", ENGINE_SHA256: "${{ needs.preflight.outputs.engine_sha256 }}" }
     steps:
       - { uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1, with: { ref: "${{ env.SHA }}", path: busbar, persist-credentials: false } } # v7
+      # THE ENGINE, downloaded, never compiled: CI's --no-default-features binary of RELEASE_REF from
+      # busbar-release's dev-bin release (dev-bin.yml), run only when its sha256 is ENGINE_SHA256.
+      # First the pin's shape: a full 40-hex commit and a 64-hex digest, or FAIL.
+      - name: Engine (busbar-release at RELEASE_REF, sha256-pinned)
+        env: { GH_TOKEN: "${{ secrets.TURNSTILE_DISPATCH_TOKEN }}" }
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_REF" =~ ^[0-9a-f]{40}$ ]] || { echo "::error title=ENGINE-PIN FAIL::vars.ENGINE_REF is unset or not a full 40-hex busbar-release commit (busbar-release engine pin <sha>)"; exit 1; }
+          [[ "$ENGINE_SHA256" =~ ^[0-9a-f]{64}$ ]] || { echo "::error title=ENGINE-PIN FAIL::vars.ENGINE_SHA256 is unset or not a 64-hex sha256 (busbar-release engine pin <sha>)"; exit 1; }
+          api=https://api.github.com/repos/GetBusbar/busbar-release/releases
+          name="busbar-release-ci-linux-x86_64-$RELEASE_REF"
+          id=$(curl -fsSL -H "Authorization: Bearer $GH_TOKEN" "$api/tags/dev-bin" | jq -r --arg n "$name" '.assets[] | select(.name == $n) | .id')
+          [ -n "$id" ] || { echo "::error::dev-bin has no $name"; exit 1; }
+          curl -fsSL -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/octet-stream" -o "$RUNNER_TEMP/busbar-release" "$api/assets/$id"
+          echo "$ENGINE_SHA256  $RUNNER_TEMP/busbar-release" | sha256sum -c -
+          chmod +x "$RUNNER_TEMP/busbar-release"
       - { uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1, with: { repository: GetBusbar/busbar-release, ref: "${{ env.RELEASE_REF }}", token: "${{ secrets.TURNSTILE_DISPATCH_TOKEN }}", path: busbar-release, persist-credentials: false } } # v7
       - if: needs.slsa-build.result == 'success'
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -120,13 +148,12 @@ jobs:
         run: |
           cargo build --locked --release -p busbar --bin busbar
           mkdir -p ../slsa && cp target/release/busbar ../slsa/busbar
-      # package-selector: busbar-release-cli -- .github/workflows/promote.yml -- the package lives in the busbar-release checkout at RELEASE_REF (working-directory busbar-release), not in this workspace
       - name: Soak the candidate (the full profile)
         working-directory: busbar-release
         env: { CI: "false", GH_TOKEN: "${{ github.token }}", TMPDIR: "${{ runner.temp }}" }
         run: |
           chmod +x "$GITHUB_WORKSPACE/slsa/busbar"
-          cargo run --locked --release --no-default-features --features soak -p busbar-release-cli --bin busbar-release -- soak "$GITHUB_WORKSPACE/slsa/busbar"
+          "$RUNNER_TEMP/busbar-release" soak "$GITHUB_WORKSPACE/slsa/busbar"
       - { if: always(), uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a, with: { name: "soak-${{ env.SHA }}", path: "${{ runner.temp }}/busbar-soak-*/", retention-days: 30, if-no-files-found: warn } } # v7.0.1
   # The merge group's hop, and the predev->dev pull request's, is SHARDED (ARCHITECT 2026-10-02): four
   # runners each judge one part (`--shard K/4`: test:workspace's hash partition K, plus the unsplit steps
@@ -146,15 +173,18 @@ jobs:
     permissions: { contents: read, actions: read }
     runs-on: ${{ needs.preflight.outputs.runner }}
     timeout-minutes: 330
+    env: { RELEASE_REF: "${{ needs.preflight.outputs.engine_ref }}", ENGINE_SHA256: "${{ needs.preflight.outputs.engine_sha256 }}", RUNNERS: "${{ vars.RUNNERS }}" }
     steps:
       - { uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1, with: { ref: "${{ env.SHA }}", path: busbar, fetch-depth: 0, persist-credentials: false } } # v7
-      - { uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1, with: { repository: GetBusbar/busbar-release, ref: "${{ env.RELEASE_REF }}", token: "${{ secrets.TURNSTILE_DISPATCH_TOKEN }}", path: busbar-release, persist-credentials: false } } # v7
       # THE ENGINE, downloaded, never compiled: CI's --no-default-features binary of RELEASE_REF from
       # busbar-release's dev-bin release (dev-bin.yml), run only when its sha256 is ENGINE_SHA256.
+      # First the pin's shape: a full 40-hex commit and a 64-hex digest, or FAIL.
       - name: Engine (busbar-release at RELEASE_REF, sha256-pinned)
         env: { GH_TOKEN: "${{ secrets.TURNSTILE_DISPATCH_TOKEN }}" }
         run: |
           set -euo pipefail
+          [[ "$RELEASE_REF" =~ ^[0-9a-f]{40}$ ]] || { echo "::error title=ENGINE-PIN FAIL::vars.ENGINE_REF is unset or not a full 40-hex busbar-release commit (busbar-release engine pin <sha>)"; exit 1; }
+          [[ "$ENGINE_SHA256" =~ ^[0-9a-f]{64}$ ]] || { echo "::error title=ENGINE-PIN FAIL::vars.ENGINE_SHA256 is unset or not a 64-hex sha256 (busbar-release engine pin <sha>)"; exit 1; }
           api=https://api.github.com/repos/GetBusbar/busbar-release/releases
           name="busbar-release-ci-linux-x86_64-$RELEASE_REF"
           id=$(curl -fsSL -H "Authorization: Bearer $GH_TOKEN" "$api/tags/dev-bin" | jq -r --arg n "$name" '.assets[] | select(.name == $n) | .id')
@@ -162,6 +192,7 @@ jobs:
           curl -fsSL -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/octet-stream" -o "$RUNNER_TEMP/busbar-release" "$api/assets/$id"
           echo "$ENGINE_SHA256  $RUNNER_TEMP/busbar-release" | sha256sum -c -
           chmod +x "$RUNNER_TEMP/busbar-release"
+      - { uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1, with: { repository: GetBusbar/busbar-release, ref: "${{ env.RELEASE_REF }}", token: "${{ secrets.TURNSTILE_DISPATCH_TOKEN }}", path: busbar-release, persist-credentials: false } } # v7
       # The conformance rigs `conformance record` runs in the full plan need node 22 and pnpm 10 (the mcp
       # suite's official runner, and rolldown's native binding built under it); the Latchkey large image
       # carries node 20, so mcp read not-run (CONFORMANCE-RIGS, 2026-10-02).
@@ -201,7 +232,7 @@ jobs:
     permissions: { contents: read, actions: read }
     runs-on: ${{ (github.event_name == 'pull_request' && github.base_ref != 'dev' && needs.preflight.outputs.one_runner == 'true') && needs.preflight.outputs.runner || 'ubuntu-latest' }}
     timeout-minutes: ${{ (github.event_name == 'pull_request' && github.base_ref != 'dev' && needs.preflight.outputs.one_runner == 'true') && 330 || 30 }}
-    env: { ONE_RUNNER: "${{ github.event_name == 'pull_request' && github.base_ref != 'dev' && needs.preflight.outputs.one_runner == 'true' }}" }
+    env: { ONE_RUNNER: "${{ github.event_name == 'pull_request' && github.base_ref != 'dev' && needs.preflight.outputs.one_runner == 'true' }}", RELEASE_REF: "${{ needs.preflight.outputs.engine_ref }}", ENGINE_SHA256: "${{ needs.preflight.outputs.engine_sha256 }}", RUNNERS: "${{ vars.RUNNERS }}" }
     steps:
       # THE RUN GATE said run=0 (neutral: the merge queue, or another run of this head, judges it).
       # Nothing was built, so this run does NOT JUDGE the head: the required check fails here, never
@@ -215,13 +246,15 @@ jobs:
       - if: env.ONE_RUNNER == 'true'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with: { ref: "${{ env.SHA }}", path: busbar, fetch-depth: 0, persist-credentials: false }
-      - { uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1, with: { repository: GetBusbar/busbar-release, ref: "${{ env.RELEASE_REF }}", token: "${{ secrets.TURNSTILE_DISPATCH_TOKEN }}", path: busbar-release, persist-credentials: false } } # v7
       # THE ENGINE, downloaded, never compiled: CI's --no-default-features binary of RELEASE_REF from
       # busbar-release's dev-bin release (dev-bin.yml), run only when its sha256 is ENGINE_SHA256.
+      # First the pin's shape: a full 40-hex commit and a 64-hex digest, or FAIL.
       - name: Engine (busbar-release at RELEASE_REF, sha256-pinned)
         env: { GH_TOKEN: "${{ secrets.TURNSTILE_DISPATCH_TOKEN }}" }
         run: |
           set -euo pipefail
+          [[ "$RELEASE_REF" =~ ^[0-9a-f]{40}$ ]] || { echo "::error title=ENGINE-PIN FAIL::vars.ENGINE_REF is unset or not a full 40-hex busbar-release commit (busbar-release engine pin <sha>)"; exit 1; }
+          [[ "$ENGINE_SHA256" =~ ^[0-9a-f]{64}$ ]] || { echo "::error title=ENGINE-PIN FAIL::vars.ENGINE_SHA256 is unset or not a 64-hex sha256 (busbar-release engine pin <sha>)"; exit 1; }
           api=https://api.github.com/repos/GetBusbar/busbar-release/releases
           name="busbar-release-ci-linux-x86_64-$RELEASE_REF"
           id=$(curl -fsSL -H "Authorization: Bearer $GH_TOKEN" "$api/tags/dev-bin" | jq -r --arg n "$name" '.assets[] | select(.name == $n) | .id')
@@ -229,6 +262,7 @@ jobs:
           curl -fsSL -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/octet-stream" -o "$RUNNER_TEMP/busbar-release" "$api/assets/$id"
           echo "$ENGINE_SHA256  $RUNNER_TEMP/busbar-release" | sha256sum -c -
           chmod +x "$RUNNER_TEMP/busbar-release"
+      - { uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1, with: { repository: GetBusbar/busbar-release, ref: "${{ env.RELEASE_REF }}", token: "${{ secrets.TURNSTILE_DISPATCH_TOKEN }}", path: busbar-release, persist-credentials: false } } # v7
       # No debuginfo in the dev/test builds (as in the shards: the runner's disk).
       - if: env.ONE_RUNNER == 'true'
         working-directory: busbar-release
@@ -281,14 +315,17 @@ jobs:
     # group) marks that PR's head red
     # ("merge queue" status) beside its sticky verdict, so the watcher's fix agent starts at failure.
     permissions: { contents: read, actions: read, checks: read, pull-requests: write, statuses: write }
+    env: { RELEASE_REF: "${{ needs.preflight.outputs.engine_ref }}", ENGINE_SHA256: "${{ needs.preflight.outputs.engine_sha256 }}" }
     steps:
-      - { uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1, with: { repository: GetBusbar/busbar-release, ref: "${{ env.RELEASE_REF }}", token: "${{ secrets.TURNSTILE_DISPATCH_TOKEN }}", path: busbar-release, persist-credentials: false } } # v7
       # THE ENGINE, downloaded, never compiled: CI's --no-default-features binary of RELEASE_REF from
       # busbar-release's dev-bin release (dev-bin.yml), run only when its sha256 is ENGINE_SHA256.
+      # First the pin's shape: a full 40-hex commit and a 64-hex digest, or FAIL.
       - name: Engine (busbar-release at RELEASE_REF, sha256-pinned)
         env: { GH_TOKEN: "${{ secrets.TURNSTILE_DISPATCH_TOKEN }}" }
         run: |
           set -euo pipefail
+          [[ "$RELEASE_REF" =~ ^[0-9a-f]{40}$ ]] || { echo "::error title=ENGINE-PIN FAIL::vars.ENGINE_REF is unset or not a full 40-hex busbar-release commit (busbar-release engine pin <sha>)"; exit 1; }
+          [[ "$ENGINE_SHA256" =~ ^[0-9a-f]{64}$ ]] || { echo "::error title=ENGINE-PIN FAIL::vars.ENGINE_SHA256 is unset or not a 64-hex sha256 (busbar-release engine pin <sha>)"; exit 1; }
           api=https://api.github.com/repos/GetBusbar/busbar-release/releases
           name="busbar-release-ci-linux-x86_64-$RELEASE_REF"
           id=$(curl -fsSL -H "Authorization: Bearer $GH_TOKEN" "$api/tags/dev-bin" | jq -r --arg n "$name" '.assets[] | select(.name == $n) | .id')
@@ -296,6 +333,7 @@ jobs:
           curl -fsSL -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/octet-stream" -o "$RUNNER_TEMP/busbar-release" "$api/assets/$id"
           echo "$ENGINE_SHA256  $RUNNER_TEMP/busbar-release" | sha256sum -c -
           chmod +x "$RUNNER_TEMP/busbar-release"
+      - { uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1, with: { repository: GetBusbar/busbar-release, ref: "${{ env.RELEASE_REF }}", token: "${{ secrets.TURNSTILE_DISPATCH_TOKEN }}", path: busbar-release, persist-credentials: false } } # v7
       - { id: verdict, continue-on-error: true, uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c, with: { name: "verdict-${{ env.SHA }}", path: verdict } } # v8.0.1
       - if: steps.verdict.outcome == 'success'
         working-directory: busbar-release

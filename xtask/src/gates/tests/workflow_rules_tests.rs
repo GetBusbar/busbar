@@ -177,7 +177,7 @@ fn every_rule_is_proven_able_to_go_red() {
 
 /// A two-job workflow: `slsa-build` (under `BUILDER_IF`) uploads the release artifact, and a shard
 /// downloads it from its own run under `STEP_IF`, in the block spelling promote.yml uses.
-const R16_FIXTURE: &str = "on: [pull_request, merge_group]
+const R17_FIXTURE: &str = "on: [pull_request, merge_group]
 jobs:
   slsa-build:
     if: BUILDER_IF
@@ -192,14 +192,14 @@ jobs:
       - run: ci hop
 ";
 
-fn r16(builder_if: &str, step_if: &str) -> Vec<String> {
-    let text = R16_FIXTURE
+fn r17(builder_if: &str, step_if: &str) -> Vec<String> {
+    let text = R17_FIXTURE
         .replace("BUILDER_IF", builder_if)
         .replace("STEP_IF", step_if);
     release_artifact_findings("promote.yml", &text)
         .into_iter()
         .map(|f| {
-            assert_eq!(f.rule, "R16");
+            assert_eq!(f.rule, "R17");
             f.message
         })
         .collect()
@@ -208,9 +208,9 @@ fn r16(builder_if: &str, step_if: &str) -> Vec<String> {
 const NEEDS_ARTIFACT: &str = "needs.preflight.outputs.needs_release_artifact == 'true'";
 
 #[test]
-fn r16_a_merge_group_only_build_under_a_pull_request_download_is_red() {
+fn r17_a_merge_group_only_build_under_a_pull_request_download_is_red() {
     // #740 exactly: the builder runs only in a merge group, the download whenever the rung reads it.
-    let got = r16(
+    let got = r17(
         "github.event_name == 'merge_group' && needs.preflight.outputs.run == '1'",
         NEEDS_ARTIFACT,
     );
@@ -220,25 +220,25 @@ fn r16_a_merge_group_only_build_under_a_pull_request_download_is_red() {
         "{got:?}"
     );
     // The same narrowing written as a base-branch test is the same red.
-    assert_eq!(r16("github.base_ref == 'qa'", NEEDS_ARTIFACT).len(), 1);
+    assert_eq!(r17("github.base_ref == 'qa'", NEEDS_ARTIFACT).len(), 1);
 }
 
 #[test]
-fn r16_a_builder_that_admits_the_download_condition_is_green() {
+fn r17_a_builder_that_admits_the_download_condition_is_green() {
     let fixed = format!(
         "needs.preflight.outputs.run == '1' && (github.event_name == 'merge_group' || {NEEDS_ARTIFACT})"
     );
-    assert!(r16(&fixed, NEEDS_ARTIFACT).is_empty());
+    assert!(r17(&fixed, NEEDS_ARTIFACT).is_empty());
     // Wrapped in `${{ }}` the same.
-    assert!(r16(&format!("${{{{ {fixed} }}}}"), NEEDS_ARTIFACT).is_empty());
+    assert!(r17(&format!("${{{{ {fixed} }}}}"), NEEDS_ARTIFACT).is_empty());
     // A builder narrowed only by the run gate, not by event, runs wherever the run runs.
-    assert!(r16("needs.preflight.outputs.run == '1'", NEEDS_ARTIFACT).is_empty());
+    assert!(r17("needs.preflight.outputs.run == '1'", NEEDS_ARTIFACT).is_empty());
 }
 
 #[test]
-fn r16_a_download_that_waits_on_the_builders_success_is_green() {
+fn r17_a_download_that_waits_on_the_builders_success_is_green() {
     // The soak's spelling: it downloads only after slsa-build succeeded, else builds its own.
-    assert!(r16(
+    assert!(r17(
         "github.event_name == 'merge_group'",
         "needs.slsa-build.result == 'success'"
     )
@@ -246,16 +246,16 @@ fn r16_a_download_that_waits_on_the_builders_success_is_green() {
 }
 
 #[test]
-fn r16_an_unconditional_download_under_an_event_narrowed_builder_is_red() {
-    let text = R16_FIXTURE
+fn r17_an_unconditional_download_under_an_event_narrowed_builder_is_red() {
+    let text = R17_FIXTURE
         .replace("BUILDER_IF", "github.event_name == 'merge_group'")
         .replace("      - if: STEP_IF\n        uses:", "      - uses:");
     assert_eq!(release_artifact_findings("promote.yml", &text).len(), 1);
 }
 
 #[test]
-fn r16_a_download_with_no_builder_in_the_run_is_red_and_a_run_id_download_is_not_judged() {
-    let orphan = R16_FIXTURE
+fn r17_a_download_with_no_builder_in_the_run_is_red_and_a_run_id_download_is_not_judged() {
+    let orphan = R17_FIXTURE
         .replace("BUILDER_IF", "github.event_name == 'merge_group'")
         .replace("actions/upload-artifact@abc", "actions/cache@abc")
         .replace("STEP_IF", NEEDS_ARTIFACT);
@@ -273,7 +273,7 @@ fn r16_a_download_with_no_builder_in_the_run_is_red_and_a_run_id_download_is_not
 }
 
 #[test]
-fn r16_a_flow_step_condition_is_read_up_to_the_next_key() {
+fn r17_a_flow_step_condition_is_read_up_to_the_next_key() {
     assert_eq!(
         step_condition(&["      - { if: always(), uses: actions/upload-artifact@abc }"]).as_deref(),
         Some("always()")
@@ -287,11 +287,92 @@ fn r16_a_flow_step_condition_is_read_up_to_the_next_key() {
 }
 
 #[test]
-fn r16_the_mutation_anchor_rewrites_only_the_named_jobs_if() {
+fn r17_the_mutation_anchor_rewrites_only_the_named_jobs_if() {
     let t = "jobs:\n  a:\n    if: one\n  slsa-build:\n    if: two\n    needs: a\n";
     assert_eq!(
         reif_job(t, "slsa-build", "three"),
         "jobs:\n  a:\n    if: one\n  slsa-build:\n    if: three\n    needs: a\n"
     );
     assert_eq!(reif_job(t, "absent", "three"), t);
+}
+
+const ENGINE_VAR_JOB: &str = "env:\n  SHA: x\njobs:\n  pre:\n    env: { RELEASE_REF: \"${{ vars.ENGINE_REF }}\", ENGINE_SHA256: \"${{ vars.ENGINE_SHA256 }}\" }\n    steps:\n      - name: Engine\n        run: |\n          [[ \"$RELEASE_REF\" =~ ^[0-9a-f]{40}$ ]] || { echo bad; exit 1; }\n          name=\"busbar-release-ci-linux-x86_64-$RELEASE_REF\"\n          echo \"$ENGINE_SHA256  bin\" | sha256sum -c -\n      - { uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1, with: { repository: GetBusbar/busbar-release, ref: \"${{ env.RELEASE_REF }}\", path: busbar-release } } # v7\n";
+
+fn r16(text: &str) -> Vec<String> {
+    engine_pin_findings("w.yml", text)
+        .into_iter()
+        .map(|f| f.message)
+        .collect()
+}
+
+#[test]
+fn r16_accepts_the_variable_pin_with_its_shape_check_and_its_sha256() {
+    assert_eq!(r16(ENGINE_VAR_JOB), Vec::<String>::new());
+}
+
+#[test]
+fn r16_accepts_an_in_file_sha_pin() {
+    let t = "jobs:\n  a:\n    steps:\n      - { uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1, with: { repository: GetBusbar/busbar-release, ref: 7ab21912d664d11c7df6cc98fe78eed6b0119177 } } # v7\n";
+    assert_eq!(r16(t), Vec::<String>::new());
+    // and through a workflow-level env var holding the literal
+    let t = "env:\n  RELEASE_REF: 7ab21912d664d11c7df6cc98fe78eed6b0119177\njobs:\n  a:\n    steps:\n      - { uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1, with: { repository: GetBusbar/busbar-release, ref: \"${{ env.RELEASE_REF }}\" } } # v7\n";
+    assert_eq!(r16(t), Vec::<String>::new());
+}
+
+#[test]
+fn r16_refuses_a_branch_or_a_tag_ref() {
+    // RED: the checkout at a branch.
+    let t = ENGINE_VAR_JOB.replace("ref: \"${{ env.RELEASE_REF }}\"", "ref: dev");
+    assert!(r16(&t).iter().any(|m| m.contains("`dev`")), "{:?}", r16(&t));
+    // RED: the variable is defined as a tag.
+    let t = ENGINE_VAR_JOB.replace(
+        "RELEASE_REF: \"${{ vars.ENGINE_REF }}\"",
+        "RELEASE_REF: v1.6.0",
+    );
+    assert!(
+        r16(&t).iter().any(|m| m.contains("v1.6.0")),
+        "{:?}",
+        r16(&t)
+    );
+    // RED: in-file, but a tag at the workflow level.
+    let t = "env:\n  RELEASE_REF: refs/tags/v1\njobs:\n  a:\n    steps:\n      - { uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1, with: { repository: GetBusbar/busbar-release, ref: \"${{ env.RELEASE_REF }}\" } } # v7\n";
+    assert!(!r16(t).is_empty());
+    // RED: no ref at all (the default branch).
+    let t = "jobs:\n  a:\n    steps:\n      - { uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1, with: { repository: GetBusbar/busbar-release } } # v7\n";
+    assert!(r16(t).iter().any(|m| m.contains("no `ref:`")));
+}
+
+#[test]
+fn r16_refuses_a_variable_pin_without_its_shape_check_or_its_sha256() {
+    let t = ENGINE_VAR_JOB.replace("=~ ^[0-9a-f]{40}$", "!= \"\"");
+    assert!(
+        r16(&t).iter().any(|m| m.contains("default branch")),
+        "{:?}",
+        r16(&t)
+    );
+    let t = ENGINE_VAR_JOB.replace("sha256sum -c -", "cat");
+    let got = r16(&t);
+    assert_eq!(
+        got.len(),
+        2,
+        "the download and the pin both name the missing check: {got:?}"
+    );
+    // The shape check AFTER the checkout guards nothing.
+    let t = "jobs:\n  pre:\n    env: { RELEASE_REF: \"${{ vars.ENGINE_REF }}\" }\n    steps:\n      - { uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1, with: { repository: GetBusbar/busbar-release, ref: \"${{ env.RELEASE_REF }}\" } } # v7\n      - run: |\n          [[ \"$RELEASE_REF\" =~ ^[0-9a-f]{40}$ ]] || exit 1\n          echo \"$ENGINE_SHA256  b\" | sha256sum -c -\n";
+    assert!(r16(t).iter().any(|m| m.contains("default branch")));
+}
+
+#[test]
+fn a_key_value_is_read_whole_from_a_flow_mapping() {
+    assert_eq!(
+        key_value("{ repository: o/r, ref: \"${{ env.X }}\", path: p }", "ref").as_deref(),
+        Some("${{ env.X }}")
+    );
+    assert_eq!(
+        key_value("{ ref: dev, path: p }", "ref").as_deref(),
+        Some("dev")
+    );
+    assert_eq!(key_value("{ prefref: dev }", "ref"), None);
+    assert_eq!(env_ref("${{ env.RELEASE_REF }}"), Some("RELEASE_REF"));
+    assert_eq!(env_ref("${{ vars.ENGINE_REF }}"), None);
 }
