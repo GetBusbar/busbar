@@ -183,6 +183,9 @@ pub struct Work {
     pub record: Vec<u8>,
     /// The unit it was last resumed by.
     pub bound: Option<u64>,
+    /// The unit that opened it, in this process; `None` for a handle read from the store (no
+    /// unit outlives the process that admitted it). Not part of the row.
+    pub opened_by: Option<u64>,
 }
 
 impl Work {
@@ -254,6 +257,7 @@ impl Work {
             settled_ms,
             record: record.to_vec(),
             bound: None,
+            opened_by: None,
         })
     }
 }
@@ -423,6 +427,13 @@ impl WorkBook {
     /// Mark `instance`'s live handle `handle` settled with `record` at `now_ms`, answering the
     /// handle as it stood (to restore if the store refuses), or the refusal.
     ///
+    /// THE SETTLE IS SCOPED WHILE THE HANDLE'S UNIT RUNS (ARCHITECT 2026-10-07 K4-11 (B)): while
+    /// the unit that opened the handle, or the unit that last resumed it, is in flight by the
+    /// kernel's unit table (`in_flight`), only `owner` (the principal of the unit the settling
+    /// crossing serves) settles it when it is the handle's; anyone else is refused as a handle
+    /// nobody holds is. Once those units have ended (a lapse ends a unit too), the instance
+    /// settles it from any unit (the plane's sweeps). Nothing the plane says decides which.
+    ///
     /// # Errors
     ///
     /// [`refusal::NOT_A_HANDLE`] or [`refusal::SETTLED`].
@@ -430,6 +441,8 @@ impl WorkBook {
         &self,
         instance: &str,
         handle: u64,
+        owner: Option<&Owner>,
+        in_flight: &dyn Fn(u64) -> bool,
         record: Vec<u8>,
         now_ms: u64,
     ) -> Result<(Work, Work), &'static str> {
@@ -439,6 +452,10 @@ impl WorkBook {
             .get_mut(&handle)
             .filter(|w| *w.instance == *instance)
             .ok_or(refusal::NOT_A_HANDLE)?;
+        let unit_runs = w.opened_by.into_iter().chain(w.bound).any(in_flight);
+        if unit_runs && owner != Some(&w.owner) {
+            return Err(refusal::NOT_A_HANDLE);
+        }
         if !w.live {
             return Err(refusal::SETTLED);
         }
@@ -449,10 +466,13 @@ impl WorkBook {
         Ok((before, w.clone()))
     }
 
-    /// Put `work` back as it stood before a settle the store refused.
+    /// Put `work`'s settle back as it stood before a settle the store refused (its state, its
+    /// settle stamp and its record; a unit that resumed it meanwhile stays bound).
     pub fn restore(&self, handle: u64, work: Work) {
         if let Some(w) = self.lock().handles.get_mut(&handle) {
-            *w = work;
+            w.live = work.live;
+            w.settled_ms = work.settled_ms;
+            w.record = work.record;
         }
     }
 
@@ -477,6 +497,18 @@ impl WorkBook {
             .ok_or(refusal::NOT_A_HANDLE)?;
         w.bound = Some(unit);
         Ok(w.clone())
+    }
+
+    /// The owner found live `handle` from `unit`: `unit` becomes the unit it is bound to, so a
+    /// handle read back from the store (no unit of this process) is scoped while its finder runs.
+    /// A unit bound to it and still in flight (`in_flight`) is not displaced; a settled handle is
+    /// left as it is.
+    pub fn found(&self, handle: u64, unit: u64, in_flight: &dyn Fn(u64) -> bool) {
+        if let Some(w) = self.lock().handles.get_mut(&handle) {
+            if w.live && !w.bound.is_some_and(in_flight) {
+                w.bound = Some(unit);
+            }
+        }
     }
 
     /// How many handles the book holds, live and settled.

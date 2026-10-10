@@ -240,14 +240,15 @@ fn read_and_validate_settings_schema(path: &str) -> Result<String, String> {
     Ok(text)
 }
 
-/// Read `--declares-file`: the manifest's `declares` section as a JSON object, parsed into the very
-/// type the loader verifies — so a file busbar would refuse to read (an unknown key, a malformed
-/// declaration) is refused here, at PACK time, rather than shipped.
+/// Read `--declares-file`: the manifest's `declares` section, read by the one reader of a declares
+/// document ([`Declares::from_declares_json`]) — so a file busbar would refuse to read (an unknown
+/// key, a malformed declaration or `needs`) is refused here, at PACK time, rather than shipped, and
+/// the file's `needs` (the conformance suite's and the fleet render's) never reaches the signed
+/// manifest.
 fn read_declares(path: &str) -> Result<Declares, String> {
-    let text = std::fs::read_to_string(path)
-        .map_err(|e| format!("cannot read --declares-file '{path}': {e}"))?;
-    serde_json::from_str(&text)
-        .map_err(|e| format!("--declares-file '{path}' is not a `declares` section: {e}"))
+    let bytes =
+        std::fs::read(path).map_err(|e| format!("cannot read --declares-file '{path}': {e}"))?;
+    Declares::from_declares_json(&bytes).map_err(|e| format!("--declares-file '{path}': {e}"))
 }
 
 /// Resolve `$ref`/`allOf` into an effective (locally merged) schema object, so field-depth and

@@ -413,9 +413,16 @@ impl HostServices for LateServices {
         }
     }
 
-    fn work_settle(&self, caller: &Caller, handle: u64, record: &[u8], later: Later) -> Ran {
+    fn work_settle(
+        &self,
+        caller: &Caller,
+        unit: Option<u64>,
+        handle: u64,
+        record: &[u8],
+        later: Later,
+    ) -> Ran {
         match self.served() {
-            Ok(s) => s.work_settle(caller, handle, record, later),
+            Ok(s) => s.work_settle(caller, unit, handle, record, later),
             Err(r) => Ran::Now(r),
         }
     }
@@ -1278,8 +1285,13 @@ pub(crate) fn compose_planes_over(
                 Some(((*name).to_string(), value))
             })
             .collect();
-        let snapshot =
-            open(plugin, section, public_url, &owned).map_err(|e| format!("{instance}: {e}"))?;
+        // The dialect facts of the providers its section references (THE DESIGN §4): it resolves
+        // model to dialect itself. Read off the providers its egress is sealed over.
+        let dialects = egress
+            .map(|e| crate::root::door_steps::dialect_facts(section, e.reach.providers))
+            .unwrap_or_default();
+        let snapshot = open(plugin, section, public_url, &owned, &dialects)
+            .map_err(|e| format!("{instance}: {e}"))?;
         let calls = Arc::new(PlaneInstance::new(
             plugin.clone(),
             Arc::clone(dispatcher),
@@ -1470,12 +1482,14 @@ pub(crate) fn compose_planes_over(
 }
 
 /// `open` the plane, generation 1, its settings `section` as JSON, the deployment's `public_url`
-/// (absent = none stated) and its `owned` sections; the snapshot it published.
+/// (absent = none stated), its `owned` sections and the `dialects` of the providers its section
+/// references; the snapshot it published.
 fn open(
     plugin: &DoorPlane,
     section: &serde_yaml::Value,
     public_url: Option<&str>,
     owned: &serde_json::Map<String, serde_json::Value>,
+    dialects: &[busbar_contract::plane_calls::DialectFacts],
 ) -> Result<OwnedSnapshot, String> {
     // The reserved `work:` bounds are core-owned: the kernel reads them; the plane never sees them.
     let settings = handed_settings(section)?;
@@ -1485,6 +1499,8 @@ fn open(
         serde_json::to_vec(owned).map_err(|e| format!("its owned sections: {e}"))?
     };
     let url = public_url.unwrap_or_default();
+    // Each points into `dialects`, which outlives the call.
+    let providers = crate::root::loader::dispatch::kinds::plane::provider_facts(dialects);
     let mut frame = Frame::new(
         PlaneOpenIn {
             open: OpenIn {
@@ -1526,6 +1542,12 @@ fn open(
                 },
                 flags: 0,
             },
+            providers: if providers.is_empty() {
+                std::ptr::null()
+            } else {
+                providers.as_ptr()
+            },
+            providers_len: providers.len(),
         },
         PlaneOpenOut {
             open: OpenOut {
