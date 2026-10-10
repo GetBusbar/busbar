@@ -41,8 +41,8 @@ const RENDERERS: &[(&str, &[&str])] = &[
         &["refusal_words"],
     ),
     (
-        "crates/busbar-plane-streaming/src/plane.rs",
-        &["refusal_render"],
+        "crates/busbar-plane-streaming/src/door.rs",
+        &["refusal_body"],
     ),
     (
         "crates/busbar/src/root/units_admin/admin_mount.rs",
@@ -215,7 +215,7 @@ fn p_item_refusal_reason_collapse_the_classifier_names_every_reason() {
 #[test]
 fn p_item_refusal_reason_collapse_the_scan_catches_a_reason_match() {
     let reasons = vocabulary();
-    let old = r#"fn refusal_render(reason: busbar_contract::unit::RefusalReason) -> (&'static str, &'static str) {
+    let old = r#"fn refusal_body(reason: busbar_contract::unit::RefusalReason) -> (&'static str, &'static str) {
     use busbar_contract::unit::RefusalReason as R;
     match reason {
         R::RateLimited | R::InFlightCap => ("rate_limited", "too many"),
@@ -224,7 +224,7 @@ fn p_item_refusal_reason_collapse_the_scan_catches_a_reason_match() {
 }
 "#;
     let planted = findings(&reasons, &|f| {
-        if f == "crates/busbar-plane-streaming/src/plane.rs" {
+        if f == "crates/busbar-plane-streaming/src/door.rs" {
             old.to_string()
         } else {
             read(f)
@@ -233,8 +233,8 @@ fn p_item_refusal_reason_collapse_the_scan_catches_a_reason_match() {
     assert_eq!(
         planted,
         [
-            "crates/busbar-plane-streaming/src/plane.rs fn refusal_render names the reason R::InFlightCap",
-            "crates/busbar-plane-streaming/src/plane.rs fn refusal_render names the reason R::RateLimited",
+            "crates/busbar-plane-streaming/src/door.rs fn refusal_body names the reason R::InFlightCap",
+            "crates/busbar-plane-streaming/src/door.rs fn refusal_body names the reason R::RateLimited",
         ]
     );
     let spelled = r#"fn kind_of(reason: &str, status: u16) -> &'static str {
