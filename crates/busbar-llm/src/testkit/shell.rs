@@ -64,6 +64,12 @@ pub static BODY_INGRESS: &[(&str, BodyIngress)] = &[
 
 // ── THE TWO ENTRY POINTS THE SHELL FUNNELLED THROUGH ──────────────────────────────────────────────
 
+/// The neutral `ArrivalPayload` the opaque context carries, downcast for the two entry points below.
+fn payload(ctx: &ArrivalCtx) -> &busbar_kernel::ingress::arrival::ArrivalPayload {
+    ctx.downcast_ref::<busbar_kernel::ingress::arrival::ArrivalPayload>()
+        .expect("ArrivalCtx must carry the neutral ArrivalPayload -- a wiring bug otherwise")
+}
+
 /// BODY-MODEL UNIVERSAL INGRESS -- every operation whose model rides IN THE BODY.
 pub async fn operation_ingress(
     ctx: &ArrivalCtx,
@@ -73,7 +79,7 @@ pub async fn operation_ingress(
     operation: busbar_contract::operation::OpVerb,
     model_hint: Option<String>,
 ) -> Response {
-    let p = crate::native_ingress::payload(ctx);
+    let p = payload(ctx);
     operation_ingress_inner(
         &p.host,
         &p.gov,
@@ -244,7 +250,7 @@ pub async fn ingress_path_model(
     proto: &'static str,
     model_not_found_message: Option<String>,
 ) -> Response {
-    let p = crate::native_ingress::payload(ctx);
+    let p = payload(ctx);
     ingress_path_model_inner(
         &p.host,
         &p.gov,

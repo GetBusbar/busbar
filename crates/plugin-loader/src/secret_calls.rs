@@ -35,8 +35,8 @@ use busbar_contract::secret_ref::SecretRef;
 use crate::boot::{Candidate, Origin};
 use crate::dispatch::kinds::secret::Secret;
 use crate::dispatch::{
-    in_head, load_dropped_bytes, load_linked, now_ns, out_head, Bind, ConnTable, Dispatcher, Frame,
-    NoSink, Plugin, NO_BLOB,
+    in_head, load_dropped_bytes, load_linked, now_ns, out_head, Bind, ConnTable, Dispatcher,
+    EnvelopeSink, Frame, NoSink, Plugin, PluginLogConfig, NO_BLOB,
 };
 
 /// How long a `resolve` may pend before the dispatcher cancels it (the Call budget).
@@ -244,6 +244,9 @@ pub struct SecretRows {
     /// The host's one connection table, asked for at each load: a plugin that declares a need (a
     /// dropped-in vault's http exchange) is declared on it and lent its connector.
     conns: fn() -> Option<Arc<dyn DeclaredConns>>,
+    /// `plugins.logs`, asked for at each load: every opened instance logs to its own
+    /// `<dir>/<label>.log`. `None` = no log configuration is wired (records are discarded).
+    logs: Option<fn() -> PluginLogConfig>,
     linked: Vec<Candidate>,
     dropped: RwLock<Vec<Candidate>>,
     shared: Mutex<BTreeMap<String, Arc<LoadedSecret>>>,
@@ -278,10 +281,25 @@ impl SecretRows {
         Self {
             dispatcher,
             conns,
+            logs: None,
             linked: Vec::new(),
             dropped: RwLock::new(Vec::new()),
             shared: Mutex::new(BTreeMap::new()),
         }
+    }
+
+    /// Every opened instance logs to its own file under the `plugins.logs` configuration `logs`
+    /// answers (THE DESIGN §11.2 Plugin logging: no logs for plugins is not an option).
+    #[must_use]
+    pub fn with_logs(mut self, logs: fn() -> PluginLogConfig) -> Self {
+        self.logs = Some(logs);
+        self
+    }
+
+    /// The instance label of a secret instance opened for the configured `module` word (the key of
+    /// its `secrets:` entry), as the export kind labels its own (`export.<name>`).
+    fn label(module: &str) -> String {
+        format!("secrets.{module}")
     }
 
     /// Add a COMPILED-IN secret plugin by its door: its Statement is rendered and read here (the
@@ -342,6 +360,9 @@ impl SecretRows {
             .chain(secrets.iter().cloned())
             .collect();
         crate::boot::one_owner(&all)?;
+        for line in crate::boot::both_doors(&all) {
+            tracing::info!("{line}");
+        }
         self.set_dropped(secrets);
         Ok(())
     }
@@ -372,12 +393,21 @@ impl SecretRows {
             })
     }
 
-    /// Load `c` through the one loader, bound under its own name.
-    fn load(&self, c: &Candidate) -> Result<Plugin<Secret>, String> {
+    /// Load `c` through the one loader, bound under the configured instance `label`, its log
+    /// records and diagnostics going to that instance's own file.
+    fn load(&self, c: &Candidate, label: &str) -> Result<Plugin<Secret>, String> {
+        let sink: Arc<dyn EnvelopeSink> = match self.logs {
+            Some(logs) => Arc::new(
+                logs()
+                    .sink(label, KindCode::Secret, Arc::new(NoSink))
+                    .map_err(|e| format!("secret module '{}' could not be loaded: {e}", c.name))?,
+            ),
+            None => Arc::new(NoSink),
+        };
         let bind = Bind {
-            instance: Arc::from(c.name.as_str()),
+            instance: Arc::from(label),
             max_inflight_cap: MAX_INFLIGHT_CAP,
-            sink: Arc::new(NoSink),
+            sink,
             dispatcher: (self.dispatcher)().adopter(),
             // Opened to resolve: the host's table, or a door that declares no need.
             conns: ConnTable::serving((self.conns)()),
@@ -419,12 +449,13 @@ impl SecretAxis for SecretRows {
             .iter()
             .find(|c| answers(c, module))
             .ok_or_else(|| format!("no linked secret module answers to '{module}'"))?;
+        let label = Self::label(module);
         let mut shared = self.shared.lock().unwrap_or_else(PoisonError::into_inner);
         if let Some(s) = shared.get(&c.name) {
             return Ok(s.clone());
         }
         let s = Arc::new(LoadedSecret::open(
-            self.load(c)?,
+            self.load(c, &label)?,
             (self.dispatcher)(),
             &[],
             &[],
@@ -462,7 +493,7 @@ impl SecretAxis for SecretRows {
             settings.to_string().into_bytes()
         };
         Ok(Arc::new(LoadedSecret::open(
-            self.load(&c)?,
+            self.load(&c, &Self::label(module))?,
             (self.dispatcher)(),
             &bytes,
             &secrets,

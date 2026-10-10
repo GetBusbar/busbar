@@ -49,8 +49,8 @@ fn backing() -> Arc<dyn busbar_contract::records::RecordStore> {
 
 /// An adapter over a store bound to the PUBLISHED payload schema (2), built through the same
 /// constructor the composition root calls.
-fn adapter_over_published_schema() -> Option<StoreAdapter> {
-    Some(StoreAdapter::new(backing(), PUBLISHED_STORE_SCHEMA))
+fn adapter_over_published_schema() -> StoreAdapter {
+    StoreAdapter::new(backing(), PUBLISHED_STORE_SCHEMA)
 }
 
 /// A slice draw for one bucket's request axis.
@@ -93,9 +93,7 @@ fn no_payload_schema_this_binary_can_load_speaks_the_added_operations() {
 /// it is released.
 #[test]
 fn the_slice_seam_reserves_in_full_at_the_shim_epoch() {
-    let Some(adapter) = adapter_over_published_schema() else {
-        return;
-    };
+    let adapter = adapter_over_published_schema();
     let grant = adapter
         .reserve(&slice_request(250, 0))
         .expect("a slice draw on a published store must not fail");
@@ -123,9 +121,7 @@ fn the_slice_seam_reserves_in_full_at_the_shim_epoch() {
 /// stale-epoch refusal is an error, and there is no fleet for the node to be stale against.
 #[test]
 fn the_slice_seam_stamps_a_foreign_epoch_rather_than_refusing_it() {
-    let Some(adapter) = adapter_over_published_schema() else {
-        return;
-    };
+    let adapter = adapter_over_published_schema();
     let grant = adapter
         .reserve(&slice_request(10, 9_999))
         .expect("a draw at a foreign epoch must not fail");
@@ -137,9 +133,7 @@ fn the_slice_seam_stamps_a_foreign_epoch_rather_than_refusing_it() {
 /// refused.
 #[test]
 fn the_slice_seam_releases_and_forgives_an_unknown_id() {
-    let Some(adapter) = adapter_over_published_schema() else {
-        return;
-    };
+    let adapter = adapter_over_published_schema();
     let grant = adapter.reserve(&slice_request(100, 0)).expect("reserve");
     adapter.release(grant.id, 40).expect("release");
     let state = adapter.shim_state();
@@ -163,9 +157,7 @@ fn the_slice_seam_releases_and_forgives_an_unknown_id() {
 /// the other. With both under one lock, whatever the reader sees is a pair that was true together.
 #[test]
 fn concurrent_shippers_never_split_the_count_from_the_head() {
-    let Some(adapter) = adapter_over_published_schema() else {
-        return;
-    };
+    let adapter = adapter_over_published_schema();
     const PER_SHIPPER: u64 = 20_000;
     let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
 
@@ -225,9 +217,7 @@ fn concurrent_shippers_never_split_the_count_from_the_head() {
 /// and a replay returns exactly those bytes — the whole point of the seam.
 #[test]
 fn the_verb_seam_replay_cache_reserves_then_replays_the_committed_bytes() {
-    let Some(adapter) = adapter_over_published_schema() else {
-        return;
-    };
+    let adapter = adapter_over_published_schema();
     let key = ("set_operator_key".to_string(), "idem-7".to_string());
     assert_eq!(
         adapter.replay_new_verb(&key).expect("first sighting"),
@@ -284,12 +274,8 @@ impl TestClock {
 }
 
 /// [`adapter_over_published_schema`] whose sealed replay cache ages against `clock`.
-fn adapter_at(clock: &TestClock) -> Option<StoreAdapter> {
-    Some(StoreAdapter::with_clock(
-        backing(),
-        PUBLISHED_STORE_SCHEMA,
-        clock.shim_clock(),
-    ))
+fn adapter_at(clock: &TestClock) -> StoreAdapter {
+    StoreAdapter::with_clock(backing(), PUBLISHED_STORE_SCHEMA, clock.shim_clock())
 }
 
 fn replay_key(name: &str) -> (String, String) {
@@ -300,9 +286,7 @@ fn replay_key(name: &str) -> (String, String) {
 #[test]
 fn a_replay_inside_the_window_returns_the_committed_bytes() {
     let clock = TestClock::default();
-    let Some(adapter) = adapter_at(&clock) else {
-        return;
-    };
+    let adapter = adapter_at(&clock);
     let key = replay_key("idem-a");
     assert_eq!(adapter.replay_new_verb(&key).expect("first sighting"), None);
     adapter
@@ -322,9 +306,7 @@ fn a_replay_inside_the_window_returns_the_committed_bytes() {
 #[test]
 fn a_slot_past_the_window_is_neither_answered_nor_held() {
     let clock = TestClock::default();
-    let Some(adapter) = adapter_at(&clock) else {
-        return;
-    };
+    let adapter = adapter_at(&clock);
     let committed = replay_key("idem-a");
     adapter.replay_new_verb(&committed).expect("first sighting");
     adapter
@@ -365,9 +347,7 @@ fn a_slot_past_the_window_is_neither_answered_nor_held() {
 /// The shipper acknowledges a batch, counts it, and remembers the last identity.
 #[test]
 fn the_shipper_seam_acknowledges_a_batch_and_keeps_the_head() {
-    let Some(adapter) = adapter_over_published_schema() else {
-        return;
-    };
+    let adapter = adapter_over_published_schema();
     let mut shipper = adapter.shipper();
     assert_eq!(adapter.head(), None, "nothing shipped yet");
     shipper
@@ -390,9 +370,7 @@ fn the_shipper_seam_acknowledges_a_batch_and_keeps_the_head() {
 /// plugin, and its rows are the plugin's.
 #[test]
 fn the_published_operations_pass_through_the_adapter_to_the_plugin() {
-    let Some(adapter) = adapter_over_published_schema() else {
-        return;
-    };
+    let adapter = adapter_over_published_schema();
     assert_eq!(
         adapter.abi_version(),
         PUBLISHED_STORE_SCHEMA,
