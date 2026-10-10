@@ -95,6 +95,18 @@ fn lifecycle_on_permanent_workers_open_and_close_from_a_throwaway_thread() {
     assert_eq!(outcomes, (Outcome::Ready, Outcome::Ready));
 }
 
+crate::dispatch_tests::c_abi! {
+    /// A slot that answers READY without reading its pointers.
+    #[cfg(debug_assertions)]
+    fn a_slot(
+        _instance: *mut std::os::raw::c_void,
+        _input: *const std::os::raw::c_void,
+        _out: *mut std::os::raw::c_void,
+    ) -> busbar_contract::abi::mechanism::call::RawOutcome {
+        busbar_contract::abi::mechanism::call::RawOutcome(Outcome::Ready as u8)
+    }
+}
+
 /// The assertion at the FFI call is real: a lifecycle slot entered on a thread that is not a
 /// permanent worker panics it, naming the slot; the same slot entered on a worker does not.
 #[cfg(debug_assertions)]
@@ -104,13 +116,6 @@ fn lifecycle_on_permanent_workers_the_assertion_trips_off_the_workers() {
 
     use super::enter_lifecycle;
 
-    extern "C" fn a_slot(
-        _: *mut std::os::raw::c_void,
-        _: *const std::os::raw::c_void,
-        _: *mut std::os::raw::c_void,
-    ) -> RawOutcome {
-        RawOutcome(Outcome::Ready as u8)
-    }
     /// `a_slot` entered as lifecycle slot `open`, on the calling thread.
     fn enter_a_slot() -> RawOutcome {
         enter_lifecycle(
