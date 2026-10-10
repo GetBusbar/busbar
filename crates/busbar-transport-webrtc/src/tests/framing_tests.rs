@@ -8,7 +8,7 @@
 //! material to both ends once it marks them verified.
 
 use std::collections::HashMap;
-use std::net::SocketAddr;
+use core::net::SocketAddr;
 use std::time::{Duration, Instant};
 
 use super::*;

@@ -36,19 +36,17 @@
 //! * Keys are zeroised: the keying material this framing holds is cleared once handed on.
 
 use std::collections::{HashMap, VecDeque};
-use std::net::SocketAddr;
+use core::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use str0m::change::{SdpAnswer, SdpOffer, SdpPendingOffer};
 use str0m::channel::ChannelId;
-use str0m::config::DtlsCert;
-use str0m::crypto::dtls::SrtpProfile;
 use str0m::format::Codec;
 use str0m::media::{Direction, Frequency, MediaKind, MediaTime, Mid, Pt};
 use str0m::net::{Protocol, Receive};
 use str0m::{Candidate, Event, IceConnectionState, IceCreds, Input, Output, Rtc};
-use zeroize::Zeroizing;
+use zeroize::{Zeroize as _, Zeroizing};
 
 use crate::shim::{self, Shim};
 use crate::stun::{self, Check};
@@ -174,11 +172,11 @@ pub struct Framing {
     routes: VecDeque<Route>,
     pieces: VecDeque<Piece>,
     channels: HashMap<ChannelId, u64>,
-    channel_streams: HashMap<u64, ChannelId>,
+    channel_by_stream: HashMap<u64, ChannelId>,
     held: HashMap<u64, VecDeque<(bool, Vec<u8>)>>,
     next_channel: u64,
     medias: HashMap<Mid, u64>,
-    media_streams: HashMap<u64, Mid>,
+    media_by_stream: HashMap<u64, Mid>,
     media_clock: HashMap<u64, u64>,
     next_timeout: Option<Instant>,
     failed: Option<Failed>,
@@ -193,6 +191,14 @@ impl std::fmt::Debug for Framing {
             .field("verified", &self.verified)
             .field("keyed", &self.keyed)
             .finish_non_exhaustive()
+    }
+}
+
+impl Drop for Framing {
+    /// This framing's own copy of its check secret is cleared with it (the keying material is the
+    /// shim's, held zeroising).
+    fn drop(&mut self) {
+        self.local_creds.pass.zeroize();
     }
 }
 
@@ -248,7 +254,7 @@ fn read_remote(
                 .parse::<SocketAddr>()
                 .ok()
                 .or_else(|| {
-                    let ip: std::net::IpAddr = ip.parse().ok()?;
+                    let ip: core::net::IpAddr = ip.parse().ok()?;
                     Some(SocketAddr::new(ip, port.parse().ok()?))
                 })
         })
@@ -305,15 +311,8 @@ impl Framing {
         };
         let shim = Shim::default();
         shim::arm(shim.clone());
-        let mut config = Rtc::builder()
-            .set_crypto_provider(Arc::new(crate::crypto::provider()))
-            .set_dtls_cert(DtlsCert {
-                certificate: certificate.to_vec(),
-                private_key: Vec::new(),
-            })
-            // The host's secure layer verified the far end's certificate; the media stack never
-            // sees one.
-            .set_fingerprint_verification(false)
+        let config = Rtc::builder().set_crypto_provider(Arc::new(crate::crypto::provider()));
+        let mut config = shim::present(config, certificate)
             .set_local_ice_credentials(local_creds.clone())
             .set_ice_lite(side == Side::Accept)
             .clear_codecs()
@@ -343,11 +342,11 @@ impl Framing {
             routes: VecDeque::new(),
             pieces: VecDeque::new(),
             channels: HashMap::new(),
-            channel_streams: HashMap::new(),
+            channel_by_stream: HashMap::new(),
             held: HashMap::new(),
             next_channel: 1,
             medias: HashMap::new(),
-            media_streams: HashMap::new(),
+            media_by_stream: HashMap::new(),
             media_clock: HashMap::new(),
             next_timeout: None,
             failed: None,
@@ -519,12 +518,7 @@ impl Framing {
             if self.keyed {
                 return Err("keying material twice".into());
             }
-            let profile = match profile {
-                PROFILE_AEAD_AES_128_GCM => SrtpProfile::AEAD_AES_128_GCM,
-                PROFILE_AEAD_AES_256_GCM => SrtpProfile::AEAD_AES_256_GCM,
-                _ => return Err(crate::crypto::AES_CM_REFUSED.into()),
-            };
-            self.shim.keyed(&material, profile);
+            self.shim.keyed(&material, profile)?;
             self.keyed = true;
         }
         if self.verified && self.keyed {
@@ -642,7 +636,7 @@ impl Framing {
         text: bool,
         now: Instant,
     ) -> Result<(), Failed> {
-        if let Some(mid) = self.media_streams.get(&stream).copied() {
+        if let Some(mid) = self.media_by_stream.get(&stream).copied() {
             if !(self.verified && self.keyed) {
                 return Ok(());
             }
@@ -670,7 +664,7 @@ impl Framing {
             self.drain(now);
             return Ok(());
         }
-        let Some(id) = self.channel_streams.get(&stream).copied() else {
+        let Some(id) = self.channel_by_stream.get(&stream).copied() else {
             return Err(format!("no stream {stream} on this association"));
         };
         let sent = match self.rtc.channel(id) {
@@ -722,14 +716,14 @@ impl Framing {
         let s = self.next_channel;
         self.next_channel += 1;
         self.channels.insert(id, s);
-        self.channel_streams.insert(s, id);
+        self.channel_by_stream.insert(s, id);
         s
     }
 
     fn media(&mut self, mid: Mid, n: u64) -> u64 {
         let s = MEDIA_BASE + n;
         self.medias.insert(mid, s);
-        self.media_streams.insert(s, mid);
+        self.media_by_stream.insert(s, mid);
         s
     }
 
@@ -754,7 +748,7 @@ impl Framing {
         // Messages held for channels that have since opened.
         let open: Vec<u64> = self.held.keys().copied().collect();
         for stream in open {
-            let Some(id) = self.channel_streams.get(&stream).copied() else {
+            let Some(id) = self.channel_by_stream.get(&stream).copied() else {
                 continue;
             };
             while let Some((text, bytes)) = self.held.get_mut(&stream).and_then(VecDeque::pop_front)
@@ -779,14 +773,22 @@ impl Framing {
                     return;
                 }
             };
-            match out {
+            // What the stack handed the shim to seal during this poll (an SCTP packet is queued
+            // there, never transmitted), routed whatever the poll answered.
+            let waits = match out {
                 Output::Timeout(t) => {
                     self.next_timeout = Some(t.max(now));
-                    break;
+                    true
                 }
-                Output::Transmit(t) => self.transmit(t.destination, &t.contents),
-                Output::Event(e) => self.event(e),
-            }
+                Output::Transmit(t) => {
+                    self.transmit(t.destination, &t.contents);
+                    false
+                }
+                Output::Event(e) => {
+                    self.event(e);
+                    false
+                }
+            };
             while let Some(plain) = self.shim.take_to_seal() {
                 if self.bound != 0 && self.routes.len() < MAX_HELD * 4 {
                     self.routes.push_back(Route {
@@ -795,6 +797,9 @@ impl Framing {
                         lane: Lane::Secured,
                     });
                 }
+            }
+            if waits {
+                break;
             }
         }
         if !self.rtc.is_alive() && self.failed.is_none() {
@@ -892,7 +897,7 @@ impl Framing {
                 if let Some(s) = self.medias.get(&d.mid).copied() {
                     self.pieces.push_back(Piece {
                         stream: s,
-                        bytes: d.data,
+                        bytes: d.data.to_vec(),
                         fields: false,
                         text: false,
                     });

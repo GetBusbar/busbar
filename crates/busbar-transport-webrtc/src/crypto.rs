@@ -19,7 +19,6 @@ use std::fmt;
 
 use aes::cipher::{generic_array::GenericArray, BlockEncrypt, KeyInit};
 use ring::aead::{Aad, LessSafeKey, Nonce, UnboundKey, AES_128_GCM, AES_256_GCM};
-use str0m::crypto::dtls::{DtlsCert, DtlsInstance, DtlsProvider, DtlsVersion};
 use str0m::crypto::{
     AeadAes128GcmCipher, AeadAes256GcmCipher, Aes128CmSha1_80Cipher, CryptoError, CryptoProvider,
     Sha1HmacProvider, Sha256Provider, SrtpProvider, SupportedAeadAes128Gcm, SupportedAeadAes256Gcm,
@@ -33,15 +32,11 @@ pub struct Ring;
 
 static RING: Ring = Ring;
 
-/// The crypto provider every framing's media stack runs on.
+/// The crypto provider every framing's media stack runs on (its handshake slot is the host shim's,
+/// [`crate::shim::provider`]).
 #[must_use]
 pub fn provider() -> CryptoProvider {
-    CryptoProvider {
-        srtp_provider: &RING,
-        sha1_hmac_provider: &RING,
-        sha256_provider: &RING,
-        dtls_provider: &crate::shim::HOST,
-    }
+    crate::shim::provider(&RING)
 }
 
 fn refused(why: &str) -> CryptoError {
@@ -326,21 +321,6 @@ pub fn random<const N: usize>() -> Option<[u8; N]> {
     Some(out)
 }
 
-// The DTLS factory is the shim's; these satisfy the provider's shape for it.
-impl DtlsProvider for crate::shim::Host {
-    fn generate_certificate(&self) -> Option<DtlsCert> {
-        None
-    }
-
-    fn new_dtls(
-        &self,
-        _cert: &DtlsCert,
-        _now: std::time::Instant,
-        _version: DtlsVersion,
-        _mtu: Option<usize>,
-    ) -> Result<Box<dyn DtlsInstance>, CryptoError> {
-        crate::shim::take_pending()
-            .map(|s| Box::new(s) as Box<dyn DtlsInstance>)
-            .ok_or_else(|| refused("no host shim is pending for this association"))
-    }
-}
+#[cfg(test)]
+#[path = "tests/crypto_tests.rs"]
+mod tests;

@@ -14,9 +14,12 @@
 //! ## One entry: the door
 //!
 //! [`door::door`] is the memory-ABI door, the same table compiled in (the `linked` row) and dropped
-//! in (the `busbar-transport-webrtc-plugin` cdylib).
+//! in (this crate's cdylib, built with the `dropped-in` feature).
+//!
+//! This crate is `deny`, not `forbid`: the export macro's `#[unsafe(no_mangle)]` is the one
+//! reviewed exemption, compiled only into the dropped-in image. No other `unsafe` exists here.
 
-#![forbid(unsafe_code)]
+#![deny(unsafe_code)]
 #![deny(missing_docs)]
 
 pub mod crypto;
@@ -28,4 +31,11 @@ pub mod stun;
 /// THE TRANSPORT AXIS ENTRY: the row's key and its door.
 pub mod linked {
     pub use crate::door::{door, KEY};
+}
+
+/// THE DROPPED-IN DOOR: the macro's `#[no_mangle]` symbol is the one exemption.
+#[cfg(feature = "dropped-in")]
+#[allow(unsafe_code)]
+mod exported {
+    busbar_contract::export_door!(crate::door::door);
 }

@@ -24,7 +24,7 @@
 
 use std::collections::HashMap;
 use std::marker::PhantomData;
-use std::net::SocketAddr;
+use core::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
