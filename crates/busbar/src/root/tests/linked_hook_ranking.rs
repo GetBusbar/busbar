@@ -272,7 +272,7 @@ async fn each_strategy_word_ranks_as_1_5_5_did_through_the_door_and_never_reache
             "`{word}`'s deadline is the dispatcher's Call class budget, not the gate default"
         );
         match decide(&axis, word, &rows, budget).await {
-            Ok(decision) => assert_eq!(decision, want, "`{word}` over {rows:?}"),
+            Ok(got) => assert_eq!(got, want, "`{word}` over {rows:?}"),
             Err(e) => panic!("`{word}` reached on_error ({e}); 1.5.5's ranking never did"),
         }
     }
