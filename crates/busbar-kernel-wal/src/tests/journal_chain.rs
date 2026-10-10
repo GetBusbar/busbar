@@ -167,7 +167,7 @@ fn a_retaining_journal_reports_its_bound_and_drops_nothing() {
         crate::tests::fixtures::wall_ms,
     )
     .with_capacity(1)
-        .retaining_at_bound();
+    .retaining_at_bound();
     assert!(!journal.at_bound(), "an empty buffer is not at its bound");
     assert_eq!(journal.dropped_total(), 0);
     assert!(journal.overflows().is_empty());

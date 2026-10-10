@@ -428,9 +428,7 @@ fn a_retaining_journal_keeps_a_failed_rolls_batch_past_its_bound() {
 
     let (wal, switch, memory) = wal_with_faults();
     let _segment_zero = memory.segment_bytes(0);
-    let mut journal = Journal::over(wal, 4)
-        .with_capacity(1)
-        .retaining_at_bound();
+    let mut journal = Journal::over(wal, 4).with_capacity(1).retaining_at_bound();
     let token = durability_token();
     let entry = |tag: u8| [Entry::new(RecordClass::Transaction, vec![tag; 8])];
 
@@ -444,7 +442,10 @@ fn a_retaining_journal_keeps_a_failed_rolls_batch_past_its_bound() {
         .expect_err("the sync was armed to fail");
     let ack = journal.append(&token, busbar_contract::caps::StepName::Meter, &entry(3));
     assert!(ack.is_err(), "no segment can be opened to roll to");
-    assert!(journal.at_bound(), "two records owed against a bound of one");
+    assert!(
+        journal.at_bound(),
+        "two records owed against a bound of one"
+    );
     assert_eq!(journal.buffered(), 2, "both batches are retained");
     assert_eq!(journal.dropped_total(), 0, "nothing was forgotten");
     assert!(journal.overflows().is_empty(), "no break was sealed");
