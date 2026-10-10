@@ -2098,6 +2098,20 @@ async fn serve_governed(
     limits: Vec<busbar_kernel::config::groups::LimitCfg>,
     fee: i64,
 ) -> Serving {
+    serve_granted(linked, instance, port, limits, fee, None).await
+}
+
+#[cfg(feature = "plane-decisions")]
+/// [`serve_governed`], the caller's key minted with the pool grant `allowed_pools` (`None` = every
+/// pool).
+async fn serve_granted(
+    linked: &crate::root::linked::Linked,
+    instance: &str,
+    port: u16,
+    limits: Vec<busbar_kernel::config::groups::LimitCfg>,
+    fee: i64,
+    allowed_pools: Option<Vec<String>>,
+) -> Serving {
     // The scrape sink's `/metrics` is mounted on a test app built with the recorder installed.
     busbar_kernel::snapshot::init();
     let judge = crate::root::connector::guard_for(&busbar_kernel::config::Destinations {
@@ -2174,6 +2188,7 @@ async fn serve_governed(
             NewKeySpec {
                 name: "decider".to_string(),
                 group: (!groups.is_empty()).then(|| group.clone()),
+                allowed_pools,
                 ..Default::default()
             },
             4_000_000_000,
@@ -2897,6 +2912,51 @@ async fn a_decisions_unit_past_its_budget_is_refused_with_a_retry_after() {
     assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
     assert!(!reached);
     assert_eq!(wait, None, "a total never rolls: no wait is named");
+}
+
+#[cfg(feature = "plane-decisions")]
+/// VERIFY, OVER THE SERVE PATH (the `root-decisions` leg's verify cell): a keyed caller whose pool
+/// grant names only another pool holds no grant over the destination Verify sealed for the unit, so
+/// the unit is refused 403 before Admit draws: the far end is never dialled, the key's usage counts
+/// no request and the node's book carries no line on the lane. RED: a composition that judged the
+/// grant after the dial (or never) reaches the far end, or charges the key.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_decisions_unit_granted_only_another_pool_is_refused_before_admit() {
+    let _one = PUBLISHING.lock().await;
+    let instance = "serve-door-elsewhere";
+    let _published = Published(instance);
+    let (port, mut heard) = far_end().await;
+    let serving = serve_granted(
+        &crate::LINKED,
+        instance,
+        port,
+        Vec::new(),
+        0,
+        Some(vec!["elsewhere".to_string()]),
+    )
+    .await;
+
+    let (status, _, reached) = call_through(&serving, &mut heard).await;
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "a grant short of the destination is refused"
+    );
+    assert!(!reached, "before its dial");
+    let usage = serving
+        .gov
+        .usage_for(&serving.app.cost, &serving.key, busbar_kernel::store::now())
+        .expect("a read")
+        .expect("the key exists");
+    assert_eq!(usage.requests, 0, "before Admit draws: no request counted");
+    let lane = serving.lane();
+    let rows = serving.book.lock().expect("unpoisoned").read_back();
+    assert!(
+        !rows
+            .iter()
+            .any(|p| p.counts.as_ref().is_some_and(|c| c.lane == lane)),
+        "nothing is posted on the lane: {rows:?}"
+    );
 }
 
 #[cfg(feature = "plane-decisions")]

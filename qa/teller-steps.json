@@ -601,9 +601,10 @@
         "status": "new",
         "note": "xtask/src/conformance_record/jev.rs check h2-verify-refusal (`cargo xtask conformance record --suite jev`, served leg): a key minted with allowed_pools naming only another pool is answered 403 in jev's shape with zero hops, nothing on the ledger and no request counted on the key's usage, so the provider it may not reach is refused before Admit draws (the grant is judged over Verify's sealed set, door_steps.rs approve)",
         "root": {
-          "state": "none",
+          "state": "proven",
           "leg": "root-decisions",
-          "note": "the leg's one keyed caller may reach its one configured provider, so no unit is refused a destination at verify before the door opens a hold"
+          "test": "crates/busbar/src/root/tests/serve_tests.rs::a_decisions_unit_granted_only_another_pool_is_refused_before_admit",
+          "note": "a keyed caller whose pool grant names only another pool is refused 403 through the composed door before Admit draws: the far end never dialled, no request counted on the key, nothing posted on the lane"
         }
       },
       "approve": {
