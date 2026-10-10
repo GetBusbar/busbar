@@ -51,14 +51,15 @@ pub(crate) mod sse;
 /// service (`busbar_contract::codec::wall_clock_now`) — the one clock a plane reads. The composition
 /// root arms that service with the host's clock at boot; a process that armed none (a unit-test
 /// binary) reads the system clock the host would have installed, so the reading is the same either way.
-/// Read by the crate's tests only, since the sweep that read it is gone (audit kernel-K2 H5).
-#[cfg(test)]
+/// Read by the crate's tests and the `test-support` harness only, since the sweep that read it is
+/// gone (audit kernel-K2 H5).
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) fn host_now() -> u64 {
     busbar_contract::codec::wall_clock_now().unwrap_or_else(system_clock_secs)
 }
 
 /// The system clock the host installs: whole seconds since the Unix epoch.
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 fn system_clock_secs() -> u64 {
     use std::time::{SystemTime, UNIX_EPOCH};
     SystemTime::now()
