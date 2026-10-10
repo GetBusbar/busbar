@@ -107,3 +107,28 @@ fn the_engine_clone_stores_no_token_and_builds_locked() {
         String::from_utf8_lossy(&out.stderr)
     );
 }
+
+/// NO ARM EXECS AN ENGINE SUBCOMMAND THE PIN NO LONGER HAS: busbar-release #272 deleted the
+/// engine's `owed-baseline` and `replay` subcommands, so `bin/oracle owed-baseline` and the generated
+/// `$BUSBAR_ORACLE_TOOL_DIR/replay.sh` (`exec busbar-oracle replay`) could only end in clap's
+/// "unrecognized subcommand". Nothing called either; both are gone, and neither may come back.
+#[test]
+fn bin_oracle_has_no_owed_baseline_arm_and_no_replay_sh_shim() {
+    let text = std::fs::read_to_string(repo_root().join("bin/oracle")).expect("bin/oracle");
+    assert!(
+        !text.contains("owed-baseline)"),
+        "bin/oracle dispatches `owed-baseline` again; the engine has no such subcommand since busbar-release #272"
+    );
+    assert!(
+        !text.contains("owed-baseline --baseline"),
+        "bin/oracle execs the engine's removed `owed-baseline` subcommand again"
+    );
+    assert!(
+        !text.contains("replay.sh"),
+        "bin/oracle generates a replay.sh shim again; it execs the engine's removed `replay` subcommand"
+    );
+    assert!(
+        !text.contains("\" replay \""),
+        "bin/oracle execs the engine's removed `replay` subcommand again"
+    );
+}
