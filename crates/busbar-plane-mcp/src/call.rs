@@ -1398,10 +1398,7 @@ fn relayed(id: &Value, value: &Value, body: &[u8]) -> Vec<u8> {
 fn result_member(body: &[u8]) -> Option<&str> {
     let text = std::str::from_utf8(body).ok()?;
     let gap = |at: usize| {
-        at + text[at..].len()
-            - text[at..]
-                .trim_start_matches([' ', '\t', '\n', '\r'])
-                .len()
+        at + text[at..].len() - text[at..].trim_start_matches([' ', '\t', '\n', '\r']).len()
     };
     let value_end = |at: usize| {
         let mut values =
