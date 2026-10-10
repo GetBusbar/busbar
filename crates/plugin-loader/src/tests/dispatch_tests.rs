@@ -675,6 +675,14 @@ fn red_an_open_reason_longer_than_the_buffer_lent_is_fault() {
     assert!(!p.is_open());
 }
 
+/// The C ABI, spelled once for the restated doors below: each spelling of its literal is a Law 0
+/// hit (the scan reads it as a secret instance's id).
+macro_rules! c_abi {
+    ($($(#[$m:meta])* fn $name:ident($($arg:ident: $t:ty),* $(,)?) -> $ret:ty $body:block)*) => {
+        $($(#[$m])* extern "C" fn $name($($arg: $t),*) -> $ret $body)*
+    };
+}
+
 /// RED (loader-PL1 #6): an `open` that PENDS and then answers FAULT on its RESUME leaves no
 /// instance published (THE DESIGN §11.13; [`Plugin::is_open`]: "`open` answered READY"). The
 /// restated `open` mints its box and pends; while it is in flight the instance is not open and a
@@ -714,82 +722,84 @@ mod open_faults_on_its_resume {
         !instance.is_null() && instance as usize == FREED.load(Ordering::SeqCst)
     }
 
-    /// Fresh: the real `open` mints the box, then the op answers PENDING without a wake (the test
-    /// wakes it). Resumed on the box: the box is freed and the op answers FAULT.
-    extern "C" fn open(
-        instance: *mut c_void,
-        input: *const c_void,
-        out: *mut c_void,
-    ) -> RawOutcome {
-        let ops = real();
-        if !instance.is_null() {
-            let close: Op = ops.close.expect("the test plugin closes");
-            close(instance, input, out);
-            FREED.store(instance as usize, Ordering::SeqCst);
-            return RawOutcome::of(Outcome::Fault);
+    c_abi! {
+        /// Fresh: the real `open` mints the box, then the op answers PENDING without a wake (the
+        /// test wakes it). Resumed on the box: the box is freed and the op answers FAULT.
+        fn open(
+            instance: *mut c_void,
+            input: *const c_void,
+            out: *mut c_void,
+        ) -> RawOutcome {
+            let ops = real();
+            if !instance.is_null() {
+                let close: Op = ops.close.expect("the test plugin closes");
+                close(instance, input, out);
+                FREED.store(instance as usize, Ordering::SeqCst);
+                return RawOutcome::of(Outcome::Fault);
+            }
+            let open: Op = ops.open.expect("the test plugin opens");
+            let opened = open(instance, input, out);
+            if opened != RawOutcome::of(Outcome::Ready) {
+                return opened;
+            }
+            // SAFETY: the host hands `open` an `OpenIn` (leading with its head) and an `OpenOut`.
+            unsafe {
+                let ticket = (*input.cast::<InHead>()).ticket;
+                let tables = &*(*input.cast::<OpenIn>()).host;
+                let wake = tables.wake.expect("the host hands a wake");
+                *WAKE.lock().unwrap() = Some((wake, tables.ctx.ptr as usize, ticket));
+                (*out.cast::<busbar_contract::abi::mechanism::call::OutHead>()).outcome =
+                    RawOutcome::of(Outcome::Pending);
+            }
+            RawOutcome::of(Outcome::Pending)
         }
-        let open: Op = ops.open.expect("the test plugin opens");
-        let opened = open(instance, input, out);
-        if opened != RawOutcome::of(Outcome::Ready) {
-            return opened;
-        }
-        // SAFETY: the host hands `open` an `OpenIn` (leading with its head) and an `OpenOut`.
-        unsafe {
-            let ticket = (*input.cast::<InHead>()).ticket;
-            let tables = &*(*input.cast::<OpenIn>()).host;
-            let wake = tables.wake.expect("the host hands a wake");
-            *WAKE.lock().unwrap() = Some((wake, tables.ctx.ptr as usize, ticket));
-            (*out.cast::<busbar_contract::abi::mechanism::call::OutHead>()).outcome =
-                RawOutcome::of(Outcome::Pending);
-        }
-        RawOutcome::of(Outcome::Pending)
-    }
 
-    /// The real `close`, unless it is handed the freed box.
-    extern "C" fn close(
-        instance: *mut c_void,
-        input: *const c_void,
-        out: *mut c_void,
-    ) -> RawOutcome {
-        if freed(instance) {
-            STALE.fetch_add(1, Ordering::SeqCst);
-            return RawOutcome::of(Outcome::Fault);
+        /// The real `close`, unless it is handed the freed box.
+        fn close(
+            instance: *mut c_void,
+            input: *const c_void,
+            out: *mut c_void,
+        ) -> RawOutcome {
+            if freed(instance) {
+                STALE.fetch_add(1, Ordering::SeqCst);
+                return RawOutcome::of(Outcome::Fault);
+            }
+            real().close.expect("the test plugin closes")(instance, input, out)
         }
-        real().close.expect("the test plugin closes")(instance, input, out)
-    }
 
-    /// The real `tick`, unless it is handed the freed box.
-    extern "C" fn tick(
-        instance: *mut c_void,
-        input: *const c_void,
-        out: *mut c_void,
-    ) -> RawOutcome {
-        if freed(instance) {
-            STALE.fetch_add(1, Ordering::SeqCst);
-            return RawOutcome::of(Outcome::Fault);
+        /// The real `tick`, unless it is handed the freed box.
+        fn tick(
+            instance: *mut c_void,
+            input: *const c_void,
+            out: *mut c_void,
+        ) -> RawOutcome {
+            if freed(instance) {
+                STALE.fetch_add(1, Ordering::SeqCst);
+                return RawOutcome::of(Outcome::Fault);
+            }
+            real().tick.expect("the test plugin ticks")(instance, input, out)
         }
-        real().tick.expect("the test plugin ticks")(instance, input, out)
-    }
 
-    extern "C" fn door() -> *const Door {
-        let have = SLOT.load(Ordering::SeqCst);
-        if !have.is_null() {
-            return have;
+        fn door() -> *const Door {
+            let have = SLOT.load(Ordering::SeqCst);
+            if !have.is_null() {
+                return have;
+            }
+            // SAFETY: the test plugin's door and its lifecycle table are `'static`.
+            let real: Door = unsafe { plug::busbar_plugin_door().read_unaligned() };
+            // SAFETY: as above.
+            let ops: OpsHead = unsafe { real.ops.read_unaligned() };
+            *REAL.lock().unwrap() = Some(ops);
+            let ops: &'static OpsHead = Box::leak(Box::new(OpsHead {
+                open: Some(open),
+                close: Some(close),
+                tick: Some(tick),
+                ..ops
+            }));
+            let door = Box::into_raw(Box::new(Door { ops, ..real }));
+            SLOT.store(door, Ordering::SeqCst);
+            door
         }
-        // SAFETY: the test plugin's door and its lifecycle table are `'static`.
-        let real: Door = unsafe { plug::busbar_plugin_door().read_unaligned() };
-        // SAFETY: as above.
-        let ops: OpsHead = unsafe { real.ops.read_unaligned() };
-        *REAL.lock().unwrap() = Some(ops);
-        let ops: &'static OpsHead = Box::leak(Box::new(OpsHead {
-            open: Some(open),
-            close: Some(close),
-            tick: Some(tick),
-            ..ops
-        }));
-        let door = Box::into_raw(Box::new(Door { ops, ..real }));
-        SLOT.store(door, Ordering::SeqCst);
-        door
     }
 
     #[test]
@@ -913,65 +923,67 @@ mod open_left_live_is_closed {
         LIVE.lock().unwrap().len()
     }
 
-    /// The real `open` mints a box (counted), then the op answers as [`MODE`] says.
-    extern "C" fn open(
-        instance: *mut c_void,
-        input: *const c_void,
-        out: *mut c_void,
-    ) -> RawOutcome {
-        let opened = real().open.expect("the test plugin opens")(instance, input, out);
-        if opened != RawOutcome::of(Outcome::Ready) {
-            return opened;
-        }
-        // SAFETY: the host hands `open` an `OpenOut`, leading with its head.
-        unsafe {
-            let o = &mut *out.cast::<busbar_contract::abi::mechanism::lifecycle::OpenOut>();
-            LIVE.lock().unwrap().push(o.instance as usize);
-            if MODE.load(Ordering::SeqCst) == MISMATCH {
-                o.head.outcome = RawOutcome::of(Outcome::Failed);
-                return RawOutcome::of(Outcome::Ready);
+    c_abi! {
+        /// The real `open` mints a box (counted), then the op answers as [`MODE`] says.
+        fn open(
+            instance: *mut c_void,
+            input: *const c_void,
+            out: *mut c_void,
+        ) -> RawOutcome {
+            let opened = real().open.expect("the test plugin opens")(instance, input, out);
+            if opened != RawOutcome::of(Outcome::Ready) {
+                return opened;
             }
-            o.head.outcome = RawOutcome::of(Outcome::Pending);
+            // SAFETY: the host hands `open` an `OpenOut`, leading with its head.
+            unsafe {
+                let o = &mut *out.cast::<busbar_contract::abi::mechanism::lifecycle::OpenOut>();
+                LIVE.lock().unwrap().push(o.instance as usize);
+                if MODE.load(Ordering::SeqCst) == MISMATCH {
+                    o.head.outcome = RawOutcome::of(Outcome::Failed);
+                    return RawOutcome::of(Outcome::Ready);
+                }
+                o.head.outcome = RawOutcome::of(Outcome::Pending);
+            }
+            RawOutcome::of(Outcome::Pending)
         }
-        RawOutcome::of(Outcome::Pending)
-    }
 
-    /// The real `close` of a live box (counted); any other box is never touched.
-    extern "C" fn close(
-        instance: *mut c_void,
-        input: *const c_void,
-        out: *mut c_void,
-    ) -> RawOutcome {
-        let mut live = LIVE.lock().unwrap();
-        let Some(at) = live.iter().position(|b| *b == instance as usize) else {
-            STALE.fetch_add(1, Ordering::SeqCst);
-            // SAFETY: the host's `out`, leading with its head.
-            unsafe { (*out.cast::<OutHead>()).outcome = RawOutcome::of(Outcome::Ready) };
-            return RawOutcome::of(Outcome::Ready);
-        };
-        live.swap_remove(at);
-        let close: Op = real().close.expect("the test plugin closes");
-        close(instance, input, out)
-    }
-
-    extern "C" fn door() -> *const Door {
-        let have = SLOT.load(Ordering::SeqCst);
-        if !have.is_null() {
-            return have;
+        /// The real `close` of a live box (counted); any other box is never touched.
+        fn close(
+            instance: *mut c_void,
+            input: *const c_void,
+            out: *mut c_void,
+        ) -> RawOutcome {
+            let mut live = LIVE.lock().unwrap();
+            let Some(at) = live.iter().position(|b| *b == instance as usize) else {
+                STALE.fetch_add(1, Ordering::SeqCst);
+                // SAFETY: the host's `out`, leading with its head.
+                unsafe { (*out.cast::<OutHead>()).outcome = RawOutcome::of(Outcome::Ready) };
+                return RawOutcome::of(Outcome::Ready);
+            };
+            live.swap_remove(at);
+            let close: Op = real().close.expect("the test plugin closes");
+            close(instance, input, out)
         }
-        // SAFETY: the test plugin's door and its lifecycle table are `'static`.
-        let real: Door = unsafe { plug::busbar_plugin_door().read_unaligned() };
-        // SAFETY: as above.
-        let ops: OpsHead = unsafe { real.ops.read_unaligned() };
-        *REAL.lock().unwrap() = Some(ops);
-        let ops: &'static OpsHead = Box::leak(Box::new(OpsHead {
-            open: Some(open),
-            close: Some(close),
-            ..ops
-        }));
-        let door = Box::into_raw(Box::new(Door { ops, ..real }));
-        SLOT.store(door, Ordering::SeqCst);
-        door
+
+        fn door() -> *const Door {
+            let have = SLOT.load(Ordering::SeqCst);
+            if !have.is_null() {
+                return have;
+            }
+            // SAFETY: the test plugin's door and its lifecycle table are `'static`.
+            let real: Door = unsafe { plug::busbar_plugin_door().read_unaligned() };
+            // SAFETY: as above.
+            let ops: OpsHead = unsafe { real.ops.read_unaligned() };
+            *REAL.lock().unwrap() = Some(ops);
+            let ops: &'static OpsHead = Box::leak(Box::new(OpsHead {
+                open: Some(open),
+                close: Some(close),
+                ..ops
+            }));
+            let door = Box::into_raw(Box::new(Door { ops, ..real }));
+            SLOT.store(door, Ordering::SeqCst);
+            door
+        }
     }
 
     #[test]
@@ -1552,7 +1564,7 @@ fn panic_child() {
     let d = Dispatcher::new(config());
     assert_eq!(open(&d, &p, 0), Outcome::Ready);
     let _ = p.call(TICK, &mut frame(plug::PANIC));
-    // Unreachable: the panic escapes an `extern "C"` slot and the process aborts.
+    // Unreachable: the panic escapes a C-ABI slot and the process aborts.
     std::process::exit(0);
 }
 

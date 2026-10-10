@@ -978,28 +978,25 @@ impl Instance {
                 return Crossed::host(Outcome::Fault);
             }
         }
-        match (s, outcome) {
-            (slot::OPEN, Outcome::Ready | Outcome::Pending) => {
-                // An open that answered READY (done) or PENDING (its connect step pends) hands back
-                // its instance box; the host keeps it so a PENDING open's RESUME runs on the SAME
-                // box — plugin-owned memory carries the half-open state across the pend (no module
-                // static in the contract).
-                // SAFETY: `refuse` checked the frame holds an `OpenOut`.
-                let inst = unsafe { (*out.cast::<OpenOut>()).instance };
-                if inst.is_null() {
-                    return Crossed::host(Outcome::Fault);
-                }
-                open_ended.ptr = None;
-                self.ptr.store(inst, Ordering::Release);
-                // Only READY opens it; a PENDING open's box is half-open until its RESUME answers.
-                if outcome == Outcome::Ready {
-                    self.opened.store(true, Ordering::Release);
-                }
+        // An open that FAILED or was REFUSED (fresh, or on its RESUME) gets no instance: the
+        // plugin's trampoline freed the box a prior PENDING minted; `open_ended` drops our pointer
+        // to it. `close` (READY or FAULT) shuts the instance in `Instance::cross`.
+        if s == slot::OPEN && matches!(outcome, Outcome::Ready | Outcome::Pending) {
+            // An open that answered READY (done) or PENDING (its connect step pends) hands back
+            // its instance box; the host keeps it so a PENDING open's RESUME runs on the SAME
+            // box — plugin-owned memory carries the half-open state across the pend (no module
+            // static in the contract).
+            // SAFETY: `refuse` checked the frame holds an `OpenOut`.
+            let inst = unsafe { (*out.cast::<OpenOut>()).instance };
+            if inst.is_null() {
+                return Crossed::host(Outcome::Fault);
             }
-            // An open that FAILED or was REFUSED (fresh, or on its RESUME): no instance. The
-            // plugin's trampoline freed the box a prior PENDING minted; `open_ended` drops our
-            // pointer to it. `close` (READY or FAULT) shuts the instance in `Instance::cross`.
-            _ => {}
+            open_ended.ptr = None;
+            self.ptr.store(inst, Ordering::Release);
+            // Only READY opens it; a PENDING open's box is half-open until its RESUME answers.
+            if outcome == Outcome::Ready {
+                self.opened.store(true, Ordering::Release);
+            }
         }
         Crossed {
             outcome,
