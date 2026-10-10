@@ -405,11 +405,12 @@ fn a_fips_host_signs_for_its_region_and_an_unnamed_one_for_the_default() {
 // expected signature is recomputed here from the request facts with plain AWS SigV4 steps; the
 // plugin's signer is never called for it.
 
-/// RED ARM (on `busbar-auth-sigv4` c22578a, which signs `POST`, an empty query and an unsent
+/// RED ARM (on the sigv4 plugin's pin c22578a, which signs `POST`, an empty query and an unsent
 /// `content-type`): a `GET` with a query, signed through the linked sigv4 style, verifies under the
 /// secret over that method, the double-encoded path, the sorted query and the headers it names,
-/// and names no `content-type`, since the request carries none.
-#[cfg(feature = "auth-sigv4")]
+/// and names no `content-type`, since the request carries none. The binding is the fixture's one
+/// signing row (the one whose parameters name a service); the suite is built only where the
+/// sigv4 plugin is linked (`dispatch.rs`).
 #[test]
 fn the_linked_sigv4_style_signs_the_walked_requests_method_and_query() {
     use busbar_contract::abi::auth::AuthPoint;
@@ -417,22 +418,31 @@ fn the_linked_sigv4_style_signs_the_walked_requests_method_and_query() {
 
     const SECRET: &str = "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY";
     const AUTHORITY: &str = "runtime.example.com";
-    let params = binding_of("bedrock", SIGNING_HOST, &[]).params;
+    let dialect = fixture()["bindings"]
+        .as_object()
+        .expect("bindings")
+        .iter()
+        .find(|(_, row)| row["params"].get("service").is_some())
+        .map(|(dialect, _)| dialect.as_str())
+        .expect("a signing binding");
+    let binding = binding_of(dialect, SIGNING_HOST, &[]);
+    let (style, params) = (binding.style.as_str(), &binding.params);
+    let service = params["service"].as_str().expect("service");
     assert_eq!(
-        params,
+        *params,
         serde_json::json!({
-            "service": "bedrock",
+            "service": service,
             "region": "us-east-1",
             "content_type": "application/json"
         })
     );
     let serving = axis()
-        .serving("sigv4", &params)
-        .expect("the sigv4 plugin opens")
-        .expect("a linked plugin serves sigv4");
+        .serving(style, params)
+        .expect("the signing plugin opens")
+        .expect("a linked plugin serves the signing style");
     let handle = serving
         .auth
-        .open_outbound("sigv4", format!("AKIDEXAMPLE:{SECRET}").as_bytes(), &params)
+        .open_outbound(style, format!("AKIDEXAMPLE:{SECRET}").as_bytes(), params)
         .expect("the binding opens");
     // The shape the door-plane walk builds (`far_end.rs`): the real method, path and query.
     let request = FieldsRequest {
@@ -458,10 +468,11 @@ fn the_linked_sigv4_style_signs_the_walked_requests_method_and_query() {
     let auth = field("authorization").expect("an authorization field");
     let amzdate = field("x-amz-date").expect("an x-amz-date field");
     assert_eq!(amzdate, "20150830T123600Z");
+    let scope = format!(
+        "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/20150830/us-east-1/{service}/aws4_request, "
+    );
     let rest = auth
-        .strip_prefix(
-            "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/20150830/us-east-1/bedrock/aws4_request, ",
-        )
+        .strip_prefix(scope.as_str())
         .unwrap_or_else(|| panic!("the scope is the request's day, region and service: {auth}"));
     let (signed_headers, signature) = rest
         .strip_prefix("SignedHeaders=")
@@ -493,7 +504,7 @@ fn the_linked_sigv4_style_signs_the_walked_requests_method_and_query() {
             &amzdate,
             "20150830",
             "us-east-1",
-            "bedrock",
+            service,
             &canonical_request
         ),
         "the signature verifies over the walked request:\n{canonical_request}"
@@ -505,7 +516,6 @@ fn the_linked_sigv4_style_signs_the_walked_requests_method_and_query() {
 }
 
 /// The SigV4 steps the cell above recomputes with, ported from `tests/sigv4_both_ways.rs`.
-#[cfg(feature = "auth-sigv4")]
 mod sigv4 {
     use sha2::{Digest, Sha256};
 
