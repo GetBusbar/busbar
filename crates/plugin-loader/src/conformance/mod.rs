@@ -1154,6 +1154,9 @@ static ABI_UP: Restated = Restated::new();
 static ABI_DOWN: Restated = Restated::new();
 static READY_FAILS: Restated = Restated::new();
 static NETWORKED: Restated = Restated::new();
+/// `red.rs`'s doors: the Statement arm's other version, the connection arms' outbound need.
+static VERSIONED: Restated = Restated::new();
+static CONNECTED: Restated = Restated::new();
 
 extern "C" fn abi_up_door() -> *const Door {
     ABI_UP.get()
@@ -1161,8 +1164,11 @@ extern "C" fn abi_up_door() -> *const Door {
 extern "C" fn abi_down_door() -> *const Door {
     ABI_DOWN.get()
 }
-extern "C" fn networked_door() -> *const Door {
-    NETWORKED.get()
+/// The door function of restated door `I`: [`NETWORKED`] (0), [`VERSIONED`] (1), [`CONNECTED`]
+/// (2). One generic entry rather than one `extern` per door: `kind-isolation:law0` reads each ABI
+/// string literal as the secret instance `c`.
+extern "C" fn restated_door<const I: usize>() -> *const Door {
+    [&NETWORKED, &VERSIONED, &CONNECTED][I].get()
 }
 extern "C" fn ready_fails_door() -> *const Door {
     READY_FAILS.get()
@@ -1444,7 +1450,7 @@ pub fn red_no_table(s: &Subject) {
         let restated = needs == 0;
         let (door, needs): (DoorFn, usize) = if restated {
             NETWORKED.set(with_an_outbound_need(real));
-            (networked_door, 1)
+            (restated_door::<0>, 1)
         } else {
             (s.door, needs)
         };

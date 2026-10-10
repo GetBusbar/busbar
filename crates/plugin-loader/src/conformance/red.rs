@@ -35,23 +35,17 @@ use busbar_contract::abi::mechanism::KindCode;
 use busbar_contract::conn::{ConnError, DeclaredConns};
 
 use super::{
-    bind, connection_fixture, dispatcher, load, real_door, with_an_outbound_need, Auth, Export,
-    Hook, Leg, Plane, Restated, Secret, Store, Subject, Transport,
+    bind, connection_fixture, dispatcher, load, real_door, restated_door, with_an_outbound_need,
+    Auth, Export, Hook, Leg, Plane, Secret, Store, Subject, Transport, CONNECTED, VERSIONED,
 };
 use crate::dispatch::conn_services::CONN_SLOTS;
 use crate::dispatch::{
     load_dropped, load_linked, Bind, ConnTable, Kind, LinkedRow, LoadError, Plugin,
 };
 
-static VERSIONED: Restated = Restated::new();
-static CONNECTED: Restated = Restated::new();
-
-extern "C" fn versioned_door() -> *const Door {
-    VERSIONED.get()
-}
-extern "C" fn connected_door() -> *const Door {
-    CONNECTED.get()
-}
+/// The door functions of [`VERSIONED`] and [`CONNECTED`] (`super::restated_door`).
+const VERSIONED_DOOR: DoorFn = restated_door::<1>;
+const CONNECTED_DOOR: DoorFn = restated_door::<2>;
 
 /// Every kind the host has.
 const KINDS: [KindCode; 7] = [
@@ -113,7 +107,7 @@ pub fn red_statement(s: &Subject) {
             Some(LoadError::StatementMismatch),
             "a signed manifest stating another Statement is refused"
         );
-        let row = LinkedRow { statement: stated.clone(), door: versioned_door as DoorFn };
+        let row = LinkedRow { statement: stated.clone(), door: VERSIONED_DOOR };
         assert_eq!(
             load_linked::<K>(&row, s.bind(&d, "red-restated")).map(|_| ()).err(),
             Some(LoadError::StatementMismatch),
@@ -259,7 +253,7 @@ fn close_stream<K: Kind>(p: &Plugin<K>, stream: u64) -> (Outcome, u64, String) {
 /// The door restated with one outbound need, bound linked as `instance` over `table`.
 fn connected<K: Kind>(table: &Arc<dyn DeclaredConns>, instance: &str) -> Plugin<K> {
     let d = dispatcher();
-    let row = LinkedRow::of(connected_door).expect("the restated door states its Statement");
+    let row = LinkedRow::of(CONNECTED_DOOR).expect("the restated door states its Statement");
     load_linked::<K>(
         &row,
         Bind {
@@ -279,7 +273,7 @@ fn connected<K: Kind>(table: &Arc<dyn DeclaredConns>, instance: &str) -> Plugin<
 /// When an undeclared need opens, or the declared one does not.
 pub fn red_undeclared_need(s: &Subject) {
     CONNECTED.set(with_an_outbound_need(real_door(s)));
-    let (table, _listening, at) = connection_fixture(s, connected_door);
+    let (table, _listening, at) = connection_fixture(s, CONNECTED_DOOR);
     let undeclared = ConnError::UndeclaredNeed.text();
     by_kind!(s.kind(), K => {
         let p = connected::<K>(&table, "red-need");
@@ -307,7 +301,7 @@ pub fn red_undeclared_need(s: &Subject) {
 /// When an instance reaches another's connection, or the owner cannot use its own.
 pub fn red_cross_instance_conn(s: &Subject) {
     CONNECTED.set(with_an_outbound_need(real_door(s)));
-    let (table, _listening, at) = connection_fixture(s, connected_door);
+    let (table, _listening, at) = connection_fixture(s, CONNECTED_DOOR);
     let not_owner = ConnError::NotOwner.text();
     by_kind!(s.kind(), K => {
         let owner = connected::<K>(&table, "red-conn-owner");
