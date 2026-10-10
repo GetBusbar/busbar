@@ -1018,7 +1018,7 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
             }
             // `token:` is the operator credential; on any other module it is inert and almost
             // certainly a misplaced secret. Fail loud.
-            if entry.token.is_some() && entry.module != operator_provider() {
+            if entry.token.is_some() && !crate::config::names_operator(&entry.module) {
                 errors.push(operator::misplaced_token(
                     operator_provider(),
                     &entry.module,
