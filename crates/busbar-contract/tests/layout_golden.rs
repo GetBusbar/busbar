@@ -440,44 +440,6 @@ fn compute_layout() -> String {
     );
     record!(
         s,
-        GateSubjectRef,
-        [
-            size,
-            version,
-            plane_key,
-            key_present,
-            incremental,
-            _reserved,
-            request_id,
-            container_ptr,
-            container_len,
-            method_ptr,
-            method_len,
-            args_ptr,
-            args_len,
-            key_id_ptr,
-            key_id_len,
-            key_name_ptr,
-            key_name_len,
-            session_id_ptr,
-            session_id_len
-        ]
-    );
-    record!(
-        s,
-        GateVerdictOut,
-        [
-            size,
-            version,
-            proceed,
-            _reserved,
-            status,
-            message_len,
-            hook_len
-        ]
-    );
-    record!(
-        s,
         MetricSample,
         [
             size, version, _reserved, _reserved2, value_bits, name_ptr, name_len, labels_ptr,
@@ -628,7 +590,6 @@ fn compute_layout() -> String {
             subkey_sign,
             guard_url,
             identity_admit,
-            gate_decide,
             counter_add,
             // The host services (minor 30).
             entropy_fill,
@@ -1495,7 +1456,8 @@ fn compute_layout() -> String {
             peer_subject,
             peer_issuer,
             peer_fingerprint,
-            claim
+            claim,
+            local_certificate
         ]
     );
     record!(
@@ -1593,16 +1555,45 @@ fn compute_layout() -> String {
             alpn_needed
         ]
     );
-    record!(s, tkind::FramerOut, [head, yielded, framing]);
+    record!(s, tkind::FramerOut, [head, yielded, framing, datagram]);
+    record!(s, tkind::KeyingMaterial, [size, profile, bytes, len]);
+    record!(s, tkind::DatagramRoute, [offset, len, path, lane]);
+    record!(
+        s,
+        tkind::DatagramLane,
+        [
+            size, lane, path, bound, path_addr, local_addr, verified, _reserved, keying, routes,
+            routes_cap
+        ]
+    );
+    record!(
+        s,
+        tkind::RendezvousTerms,
+        [
+            role,
+            _reserved,
+            local_user,
+            local_secret,
+            remote_user,
+            remote_secret,
+            peer_fingerprint,
+            candidates
+        ]
+    );
+    record!(
+        s,
+        tkind::DatagramYield,
+        [routes_len, request, request_from, request_to, terms]
+    );
     record!(
         s,
         tkind::BeginIn,
-        [head, side, _reserved, target, facts, sink, fields, fields_len]
+        [head, side, _reserved, target, facts, sink, fields, fields_len, lane]
     );
     record!(
         s,
         tkind::IngestIn,
-        [head, framing, bytes, len, end, _reserved, sink]
+        [head, framing, bytes, len, end, _reserved, sink, lane]
     );
     record!(
         s,
@@ -1616,7 +1607,8 @@ fn compute_layout() -> String {
             end_of_frame,
             flags,
             sink,
-            deadline_ns
+            deadline_ns,
+            lane
         ]
     );
     record!(
@@ -1643,10 +1635,11 @@ fn compute_layout() -> String {
             final_message,
             final_details,
             final_bytes,
-            final_bytes_len
+            final_bytes_len,
+            lane
         ]
     );
-    record!(s, tkind::FramingIn, [head, framing, sink]);
+    record!(s, tkind::FramingIn, [head, framing, sink, lane]);
     record!(
         s,
         tkind::AdoptIn,

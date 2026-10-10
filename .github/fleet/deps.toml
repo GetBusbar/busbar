@@ -22,7 +22,7 @@ version = "0.12"
 default-features = false
 features = ["sync"]
 repos = ["busbar-auth-ldap"]
-reason = "TESTS ONLY: the LDAP client the ldap auth module's live end-to-end test seeds its directory with, plaintext and no TLS feature. Never in the shipped image: the module speaks LDAP through its own sans-IO codec over the host's connector (busbar-auth-ldap#11), and [net-ban] refuses ldap3 in the shipped closure."
+reason = "TESTS ONLY: the LDAP client the ldap auth module's live end-to-end test seeds its directory with, plaintext and no TLS feature. Never in the shipped image: the module speaks LDAP through its own sans-IO codec over the host's connector (busbar-auth-ldap#8; StartTLS through the host, #11), and [net-ban] refuses ldap3 in the shipped closure."
 
 [plugin-deps.mysql]
 version = "28"
@@ -67,7 +67,7 @@ version = "1"
 default-features = false
 features = ["script"]
 repos = ["busbar-store-valkey"]
-reason = "TESTS ONLY: the upstream Valkey client the valkey store's live tests verify what landed with, independently of the store. Never in the shipped image: the store speaks RESP itself over the host's connector (busbar-store-valkey#19), and [net-ban] refuses redis in the shipped closure."
+reason = "TESTS ONLY: the upstream Valkey client the valkey store's live tests verify what landed with, independently of the store (the plugin crate's live tests add the `tls-rustls` feature to verify the store's TLS through the host's connector; tests only). Never in the shipped image: the store speaks RESP itself over the host's connector (busbar-store-valkey#19), and [net-ban] refuses redis in the shipped closure."
 
 [plugin-deps.rusqlite]
 version = "0.40"
