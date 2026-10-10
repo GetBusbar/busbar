@@ -103,7 +103,7 @@ fn query_param<'t>(target: &'t str, name: &str) -> Option<&'t str> {
 /// A node whose book holds a refused counts row is refused whole (`Store`), exactly as the ledger
 /// views beside it are: an identity measured over a book with a hole in it is not a measurement.
 pub(crate) fn verify_effect(ledger: &dyn LedgerView) -> Result<AdminAnswer, GovernanceError> {
-    use busbar_kernel_ledger::verify::{sequences_are_monotonic, verify, AllWindowsOpen, Finding};
+    use busbar_kernel_ledger::verify::{sequences_are_monotonic, verify, Finding};
 
     if ledger.has_refused_rows() {
         return Err(GovernanceError::Store);
@@ -125,7 +125,7 @@ pub(crate) fn verify_effect(ledger: &dyn LedgerView) -> Result<AdminAnswer, Gove
         (Some(since), Some(now)) => {
             // The checkpoint's own digest was checked above with every other one.
             findings.extend(
-                verify(since, now, &AllWindowsOpen, anchored.as_ref())
+                verify(since, now, anchored.as_ref())
                     .into_iter()
                     .filter(|f| !matches!(f, Finding::CheckpointEdited { .. })),
             );
