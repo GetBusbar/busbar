@@ -803,20 +803,6 @@ mod red_arms {
         red_cross_instance_conn, red_statement, red_undeclared_need, red_wrong_kind, Subject,
     };
 
-    /// Whether `krate`'s example `cdylib` is built in this target dir (`cargo test` builds the
-    /// examples; `--lib` alone does not). Under CI a missing one is a failure, never a skip.
-    fn built(krate: &str) -> bool {
-        let built = std::env::current_exe()
-            .ok()
-            .and_then(|exe| Some(exe.parent()?.parent()?.join("examples")))
-            .is_some_and(|dir| dir.join(crate::plugin_library_filename(krate)).exists());
-        assert!(
-            built || std::env::var_os("CI").is_none(),
-            "the {krate} example cdylib is not built under CI; a both-ways proof must not skip"
-        );
-        built
-    }
-
     /// The fixtures of two kinds: the plane door and the hook door, each its linked door and the
     /// example `cdylib` that is its dropped-in image.
     fn fixtures() -> Vec<(DoorFn, &'static str)> {
@@ -846,13 +832,13 @@ mod red_arms {
     #[test]
     fn an_honest_door_of_each_kind_passes_the_four_arms() {
         for (door, krate) in fixtures() {
+            // Absent, the example `cdylib` fails the test naming its build command: never a skip.
+            crate::both_ways::example_cdylib(krate);
             let s = Subject::new(door, krate, "{}");
             red_undeclared_need(&s);
             red_cross_instance_conn(&s);
-            if built(krate) {
-                red_statement(&s);
-                red_wrong_kind(&s);
-            }
+            red_statement(&s);
+            red_wrong_kind(&s);
         }
     }
 
@@ -860,9 +846,8 @@ mod red_arms {
     /// the hook library) fails the Statement arm and the kind arm, on their honest twins.
     #[test]
     fn red_a_plugin_whose_library_is_not_its_door_fails_the_arms() {
-        if !(built("plane_door_plugin") && built("hook_door")) {
-            return;
-        }
+        crate::both_ways::example_cdylib("plane_door_plugin");
+        crate::both_ways::example_cdylib("hook_door");
         let s = Subject::new(crate::plane_door_plugin::door, "hook_door", "{}");
         let text = panics(|| red_statement(&s));
         assert!(text.contains("honest library"), "{text}");
