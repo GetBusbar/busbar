@@ -273,6 +273,28 @@ pub struct Durability {
     /// window one of these sits on REFUSES rather than answering the priced remainder, which would
     /// be a silent zero for the class the card was silent about. Rebuilt from the chain at boot.
     refused: Vec<Posting>,
+    /// THE COUNTED LINES THE BOOK HOLDS, in chain order (ARCHITECT 2026-10-07 H6 retention ruling):
+    /// every posting that carried a unit's counts, kept as the counts and the instant they price
+    /// at, so `GET /api/v1/admin/ledger/totals` prices them at READ TIME (BUSBAR-1.6.0.md §7) and a
+    /// signed back-dated correction moves the next read without a restart. Appended as each one is
+    /// journalled and REBUILT FROM THE CHAIN at boot, so the read never replays the journal (M11)
+    /// and answers the same set either side of a restart.
+    ///
+    /// THE BOUND IS THE BOOK'S: a line is held for exactly as long as the book holds its window.
+    /// The book retires no window today — `Book::retain_from` has no production caller, and the
+    /// boot rebuilds every window the chain carries — so neither does this; the lines grow with the
+    /// counted units this node's chain holds, as the chain itself does.
+    counted: Vec<CountedLine>,
+    /// THE BALANCES A FIGURE MOVED WITH NO COUNTS BEHIND IT: a settlement whose writer knew no
+    /// counts and posted a figure anyway, or a record of the era that carried figures. Such a
+    /// figure has nothing to price at read time, so while any is held the counted lines are not
+    /// the whole of the book's money and the totals read answers the book's balance instead.
+    ///
+    /// A settlement of the counts era with no counts is held here only by the process that posted
+    /// it: its record carries no figure (#71), so a replay rebuilds its balance without one, and
+    /// the restart reconciliation names that difference. A figures-era record is held either side
+    /// of a restart, because its figure is what the record carries.
+    uncounted: std::collections::BTreeSet<(TotalsKey, WindowStart)>,
     /// Settled figures the book moved whose journal record the log has not confirmed yet.
     ///
     /// Each was moved out of `settled` into `unreconciled` when its append came back as a
@@ -994,9 +1016,49 @@ impl Durability {
         }
         let entry =
             Entry::new(RecordClass::Transaction, posting.body()).at(posting.wall, posting.mono);
+        let offered_at = self.journal.next_seq();
         let appended = self.journal.append(at.durability, at.step, &[entry]);
+        self.book_line(&posting, sealed_at(appended.as_ref().ok(), offered_at));
         self.confirm(appended.as_ref().ok());
         appended.map(|_| posting)
+    }
+
+    /// KEEP WHAT A JOURNALLED POSTING LEAVES FOR THE READ-TIME TOTALS (H6): its counted line, or
+    /// the balance it moved by a figure with no counts behind it. The same rule a replay applies to
+    /// the same record ([`booked_of`]), so the lines this process builds live are the lines the
+    /// next boot rebuilds from the chain. Kept whether or not the append succeeded: the log retains
+    /// a batch it could not hand over and offers it again, and the book has moved either way.
+    fn book_line(&mut self, posting: &Posting, node_seq: u64) {
+        booked_of(posting, node_seq).keep(&mut self.counted, &mut self.uncounted);
+    }
+
+    /// THE COUNTED LINES THE TOTALS READ PRICES, as the ledger's booked lines
+    /// ([`busbar_kernel_ledger::Posting`]): each one's counts, its balance and window, its fee
+    /// count, and ITS OWN `arrived_ms` — the instant [`busbar_kernel_ledger::totals_as_of`]
+    /// resolves its card at (#79). No price is on any of them (BUSBAR-1.6.0.md §7).
+    ///
+    /// `None` when the lines are not the whole of the book's money, and the read must then answer
+    /// the book's balance rather than a derivation with a figure missing from it:
+    ///
+    /// - a balance holds a figure no counts stand behind (the `uncounted` set);
+    /// - a line reported a class nobody declared — refused for good, whatever the card says;
+    /// - a line names a class this image's vocabulary does not hold, so no booked line can name it.
+    ///
+    /// Read off what the book holds: the journal is not replayed (audit M11).
+    #[must_use]
+    pub fn booked_lines(&self) -> Option<Vec<busbar_kernel_ledger::Posting>> {
+        if !self.uncounted.is_empty() {
+            return None;
+        }
+        let node = self.journal.node();
+        self.counted.iter().map(|line| line.booked(node)).collect()
+    }
+
+    /// The dated history this book prices against, pinned for one read: the source its chain is
+    /// rebuilt against at boot, which on a production node is the root's (`ROOT_CARD`).
+    #[must_use]
+    pub fn pinned_history(&self) -> Option<PinnedHistory> {
+        (self.history)()
     }
 
     /// The counts rows whose pricing refused, oldest first.
@@ -1151,7 +1213,10 @@ impl Durability {
                 Entry::new(RecordClass::Transaction, record.body()).at(record.wall, record.mono)
             })
             .collect();
-        match self.journal.append(at.durability, at.step, &entries) {
+        let offered_at = self.journal.next_seq();
+        let appended = self.journal.append(at.durability, at.step, &entries);
+        self.book_line(&posting, sealed_at(appended.as_ref().ok(), offered_at));
+        match appended {
             Ok(ack) => {
                 self.confirm(Some(&ack));
                 Ok(Settled {
@@ -1306,6 +1371,135 @@ impl UnitCounts {
     pub fn is_empty(&self) -> bool {
         self.fee_count == 0 && self.classes.is_empty()
     }
+}
+
+/// ONE COUNTED LINE THE BOOK HOLDS FOR THE READ-TIME TOTALS (ARCHITECT 2026-10-07 H6 retention
+/// ruling): a journalled posting's counts and the instant they price at, on its balance and window.
+/// The amount is counts plus the card in force at `arrived_ms`, never a price (BUSBAR-1.6.0.md THE
+/// DESIGN §1, §7).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CountedLine {
+    /// Which balance the posting is on.
+    pub key: TotalsKey,
+    /// Which window.
+    pub window: WindowStart,
+    /// The posting's position on this node's chain.
+    pub node_seq: u64,
+    /// The unit's raw counts: lane, fee count and per-class counts.
+    pub counts: UnitCounts,
+    /// THE INSTANT THE COUNTS PRICE AT, and the only resolution key a read uses (#79).
+    pub arrived_ms: u64,
+    /// The plane reported a class nobody declared: refused for good, whatever any card says.
+    pub undeclared: bool,
+}
+
+impl CountedLine {
+    /// The line as the ledger's booked line, written by `node`. `None` for a line no booked line
+    /// can carry: a class nobody declared, or one this image's vocabulary does not hold. The tier
+    /// is the standard one and the origin a client, which is what every counted posting is priced
+    /// at when it settles ([`price_counts`]), so the read prices the same quantities the same way.
+    #[must_use]
+    pub fn booked(&self, node: u64) -> Option<busbar_kernel_ledger::Posting> {
+        if self.undeclared {
+            return None;
+        }
+        let lines = self
+            .counts
+            .classes
+            .iter()
+            .map(|(class, quantity)| {
+                Some(busbar_kernel_ledger::PricedLine {
+                    class: meter_class_of(class)?,
+                    quantity: *quantity,
+                })
+            })
+            .collect::<Option<Vec<_>>>()?;
+        Some(busbar_kernel_ledger::Posting {
+            node,
+            node_seq: self.node_seq,
+            key: self.key.clone(),
+            window_start: self.window,
+            lane: self.counts.lane.clone(),
+            lines,
+            fee_count: self.counts.fee_count,
+            tier_bp: busbar_kernel_ledger::cost::STANDARD_TIER_BP,
+            arrived_ms: self.arrived_ms,
+            origin: busbar_kernel_ledger::PostingOrigin::Client,
+        })
+    }
+}
+
+/// The static class id a booked line names a counted class by: the reserved four by their own
+/// names, any other class by the name this image's vocabulary registered for it. `None` for a class
+/// the vocabulary does not hold.
+fn meter_class_of(class: &str) -> Option<busbar_contract::caps::MeterClassId> {
+    busbar_contract::records::RESERVED_UNITS
+        .into_iter()
+        .find(|reserved| *reserved == class)
+        .map(busbar_contract::caps::MeterClassId::new)
+        .or_else(|| busbar_contract::Registration::meter_class(class))
+}
+
+/// What one journalled posting leaves for the read-time totals.
+enum Booked {
+    /// Its counted line.
+    Line(CountedLine),
+    /// A figure on this balance and window with no counts behind it.
+    Figure((TotalsKey, WindowStart)),
+    /// Nothing: a carry, counts that say nothing, or a posting that moved no figure.
+    Nothing,
+}
+
+impl Booked {
+    /// Put it where the book keeps it: a line on the counted lines, a figure's balance on the set
+    /// of balances with figures no counts stand behind.
+    fn keep(
+        self,
+        counted: &mut Vec<CountedLine>,
+        uncounted: &mut std::collections::BTreeSet<(TotalsKey, WindowStart)>,
+    ) {
+        match self {
+            Booked::Line(line) => counted.push(line),
+            Booked::Figure(at) => {
+                uncounted.insert(at);
+            }
+            Booked::Nothing => {}
+        }
+    }
+}
+
+/// THE ONE RULE, live and on replay alike (H6): a posting carrying counts that say something is a
+/// counted line; a settlement whose figure has no counts behind it marks its balance; anything else
+/// leaves nothing. `node_seq` is the posting's position on the chain.
+fn booked_of(posting: &Posting, node_seq: u64) -> Booked {
+    if posting.kind == PostingKind::Carry {
+        return Booked::Nothing;
+    }
+    match &posting.counts {
+        Some(counts) if !counts.is_empty() => Booked::Line(CountedLine {
+            key: posting.key.clone(),
+            window: posting.window,
+            node_seq,
+            counts: counts.clone(),
+            arrived_ms: posting.arrived_ms,
+            undeclared: posting.flags.contains(PostingFlags::UNDECLARED),
+        }),
+        Some(_) => Booked::Nothing,
+        None if posting.settled > 0 => Booked::Figure((posting.key.clone(), posting.window)),
+        None => Booked::Nothing,
+    }
+}
+
+/// Where an append put its first transaction record: off the acknowledgement where there is one,
+/// else the position the batch was offered at (the log retains it there and offers it again).
+fn sealed_at(ack: Option<&JournalAck>, offered_at: u64) -> u64 {
+    ack.and_then(|ack| {
+        ack.sealed
+            .iter()
+            .find(|record| record.class == RecordClass::Transaction)
+            .map(|record| record.node_seq)
+    })
+    .unwrap_or(offered_at)
 }
 
 /// **THE BOOK'S MONEY, AS A VIEW** (#71): what `counts` cost at the card in force at `arrived_ms`
@@ -2471,6 +2665,8 @@ fn build_inner(
         cadence: None,
         lane: None,
         resumed,
+        counted: Vec::new(),
+        uncounted: std::collections::BTreeSet::new(),
     };
 
     // A CORRUPT JOURNAL DOES NOT STOP THE BOOT, AND IT IS NEVER SILENT. The log has already kept
@@ -2560,6 +2756,10 @@ fn build_inner(
         .unwrap_or(0);
     durability.incarnation = replayed.incarnation.max(audited).saturating_add(1);
     durability.refused = replayed.refused;
+    // The counted lines the totals read prices, rebuilt from the same chain as the book (H6): the
+    // read prices these and never replays the journal itself.
+    durability.counted = replayed.counted;
+    durability.uncounted = replayed.uncounted;
 
     // THE HOLDS A PREDECESSOR LEFT OPEN ARE RECOVERED HERE, before anything can settle onto this
     // book (item 127): `recovery::recover_all` had no production caller, so a hold whose node died
