@@ -291,7 +291,7 @@ pub fn snapshot_spec(models: usize) -> SnapshotSpec {
 /// every model it configures LISTED (THE DESIGN section 2: all configured decisions models are
 /// listed, scope-filtered by the kernel; `/v1/models` appends them), in ascending name order.
 #[must_use]
-pub fn generation_spec(section: &DecisionsSection) -> SnapshotSpec {
+pub fn generation_snapshot(section: &DecisionsSection) -> SnapshotSpec {
     let mut listed: Vec<String> = section.models.keys().cloned().collect();
     listed.sort();
     SnapshotSpec {
@@ -393,7 +393,7 @@ slot!(
             routed: Keyed::new(),
         };
         plane.route_over(&section);
-        let spec = generation_spec(&section);
+        let spec = generation_snapshot(&section);
         out.publish(|o| &o.snapshot, &plane.generations, open.generation, &spec);
         instance.open(plane);
         Outcome::Ready
@@ -410,7 +410,7 @@ slot!(
             Ok(section) => section,
             Err(words) => return out.fail(Refusal::refused(words)),
         };
-        let spec = generation_spec(&section);
+        let spec = generation_snapshot(&section);
         plane.route_over(&section);
         out.publish(|o| &o.snapshot, &plane.generations, input.generation, &spec);
         Outcome::Ready
