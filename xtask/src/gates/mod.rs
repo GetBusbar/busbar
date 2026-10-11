@@ -706,7 +706,7 @@ const MEASURED_KIND_ISOLATION_SHIP: f64 = 536_090.0; // 141 cases, 539.4 s (opt 
 const MEASURED_SHIP_READY: f64 = 23_918.0; // 17 cases, 23.6 s (opt 0: under the default)
 const MEASURED_DESIGN_BINDINGS: f64 = 15_089.0; // 22 cases, 15.0 s (opt 0: under the default)
 const MEASURED_PLANE_TRANSPORT_NEUTRALITY: f64 = 12_959.0; // 9 cases, 12.9 s (opt 0: under the default)
-const MEASURED_TELLER_STEPS: f64 = 12_382.0; // 15 cases, 12.5 s (opt 0: under the default)
+const MEASURED_TELLER_STEPS: f64 = 19_850.0; // 21 cases, 19.9 s serial on the CI hop (was 15 cases, 12_382; the new `jev.rig` resolver case and the derived-roster cases, ruling Q12(a)); opt 0: under the default
 const MEASURED_CONFIG_SCHEMA: f64 = 11_917.0; // 69 cases, 11.9 s (opt 0: under the default)
 const MEASURED_SEAL_WITNESS: f64 = 11_332.0; // 6 cases, 14.2 s (opt 0: under the default)
 const MEASURED_NO_DEFERRAL_STRICT_DONE: f64 = 10_704.0; // 16 cases, 10.6 s (opt 0: under the default)
@@ -891,7 +891,7 @@ const SELFTEST_BUDGETS: &[Budget] = &[
         measured: MEASURED_TELLER_STEPS,
         allowed: MEASURED_TELLER_STEPS * BUDGET_SLACK,
         taken: TAKEN,
-        why: "Fifteen cases over the teller-step table and the root's legs. Not analysed here; the entry is the measurement, written down so that a doubling is a red row rather than minutes nobody attributes.",
+        why: "Twenty-one cases over the teller-step table and the root's legs. Not analysed here; the entry is the measurement, written down so that a doubling is a red row rather than minutes nobody attributes.",
     },
     Budget {
         gate: "config-schema",

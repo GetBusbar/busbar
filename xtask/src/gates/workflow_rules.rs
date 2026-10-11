@@ -7,7 +7,7 @@
 //! that were ABOUT those files (the staged-verification graph, the draft flag, the red-branch gate,
 //! the first gate's run list) went with them, rows and code together.
 //!
-//! Four rules were never about one file. They are bans over EVERY workflow and composite action
+//! Five rules were never about one file. They are bans over EVERY workflow and composite action
 //! that remains (`promote.yml` and the reusable `plugin-*.yml` workflows the plugin repos call),
 //! and each has a specific observed failure behind it:
 //!
@@ -23,11 +23,13 @@
 //!   shape-checks as 40 hex before the checkout (the org variable `vars.ENGINE_REF`, OWNER
 //!   2026-10-10: the engine pin lives outside this repo), and every job that downloads the engine
 //!   binary runs it only after `sha256sum -c` against `ENGINE_SHA256`.
-//! * **R17 — a step that downloads the release artifact from its own run runs only where the job
+//! * **R17 — no job hard-codes a vendor runner label.** Every job asks the runner gateway for a
+//!   logical size and `vars.RUNNERS` names the label, so a workflow never spells a vendor.
+//! * **R18 — a step that downloads the release artifact from its own run runs only where the job
 //!   that builds it runs.** `slsa-build` was merge-group-only while the predev->dev pull request's
 //!   shards (its rung runs the oracle and conformance) downloaded `slsa-artifact-<sha>` from their
 //!   own run: the artifact could never exist there, and #740 failed every run at that download.
-//! * **R18 — no job that runs candidate code holds the R2 cache write keys.** The hop judges the
+//! * **R19 — no job that runs candidate code holds the R2 cache write keys.** The hop judges the
 //!   candidate's build scripts, tests and xtask in-process, and every process of a job can read
 //!   another's environment: the shards held `secrets.R2_CACHE_ACCESS_KEY_ID` /
 //!   `secrets.R2_CACHE_SECRET_ACCESS_KEY` until busbar-release 069f032, which refuses to start a
@@ -64,10 +66,10 @@ const ACTIONS_DIR: &str = ".github/actions";
 const MIN_WORKFLOWS: usize = 5;
 
 /// The rule ids, which are also the ledger row ids.
-const RULES: &[&str] = &["R1", "R11", "R14", "R15", "R16", "R17", "R18"];
+const RULES: &[&str] = &["R1", "R11", "R14", "R15", "R16", "R17", "R18", "R19"];
 
 /// The release artifact's name prefix: `promote.yml`'s `slsa-build` uploads `slsa-artifact-<sha>`,
-/// and the steps that read the release binary download it by that name (R17).
+/// and the steps that read the release binary download it by that name (R18).
 const RELEASE_ARTIFACT: &str = "slsa-artifact-";
 /// R16's subject: the release engine's repository, and the name prefix of its CI binary on the
 /// `dev-bin` release.
@@ -386,32 +388,6 @@ fn opens_key_at(line: &str, indent: usize) -> bool {
         && !matches!(b[indent], b' ' | b'\t' | b'#' | b'-')
 }
 
-/// The jobs of a workflow, in file order: (job id, the job's lines). A job opens at exactly two
-/// spaces under the top-level `jobs:` key and runs to the next job or top-level key.
-fn jobs_of(text: &str) -> Vec<(String, Vec<&str>)> {
-    let mut out: Vec<(String, Vec<&str>)> = Vec::new();
-    let mut in_jobs = false;
-    for line in text.lines() {
-        if opens_key_at(line, 0) {
-            in_jobs = line.trim_end() == "jobs:";
-            continue;
-        }
-        if !in_jobs {
-            continue;
-        }
-        if opens_key_at(line, 2) {
-            if let Some((id, _)) = line.trim().split_once(':') {
-                out.push((id.trim().to_string(), Vec::new()));
-                continue;
-            }
-        }
-        if let Some((_, lines)) = out.last_mut() {
-            lines.push(line);
-        }
-    }
-    out
-}
-
 /// An `if:` condition as written, without its `${{ }}` wrapper or the double quotes around the
 /// whole of it (a single quote that ends the condition, `== 'true'`, is the condition's own).
 fn bare_condition(raw: &str) -> String {
@@ -500,7 +476,7 @@ fn step_condition(step: &[&str]) -> Option<String> {
         .map(bare_condition)
 }
 
-/// R17 over one workflow's comment-stripped text. Every step that downloads the release artifact
+/// R18 over one workflow's comment-stripped text. Every step that downloads the release artifact
 /// from its OWN run (no `run-id:`) must run only where a job of this run uploads it. The step is
 /// safe when it waits on the builder's success (`needs.<builder>.result == 'success'`), or when
 /// the builder's `if:` does not narrow it by event; a builder narrowed by event
@@ -536,7 +512,7 @@ fn release_artifact_findings(name: &str, text: &str) -> Vec<Finding> {
             };
             if builders.is_empty() {
                 bad.push(Finding::new(
-                    "R17",
+                    "R18",
                     format!(
                         "{name}: job `{job}` downloads the release artifact \
                          (`{RELEASE_ARTIFACT}*`) from its own run, and no job of this workflow \
@@ -555,7 +531,7 @@ fn release_artifact_findings(name: &str, text: &str) -> Vec<Finding> {
                     cond.contains("github.event_name") || cond.contains("github.base_ref");
                 if by_event && (gate.is_empty() || !cond.contains(gate.as_str())) {
                     bad.push(Finding::new(
-                        "R17",
+                        "R18",
                         format!(
                             "{name}: job `{job}` downloads the release artifact \
                              (`{RELEASE_ARTIFACT}*`) from its own run when `{when}`, but \
@@ -573,7 +549,7 @@ fn release_artifact_findings(name: &str, text: &str) -> Vec<Finding> {
     bad
 }
 
-/// R18's subject: the R2 cache's WRITE keys, as this repository's secrets name them. The read-only
+/// R19's subject: the R2 cache's WRITE keys, as this repository's secrets name them. The read-only
 /// pair (`secrets.R2_CACHE_RO_*`) is another name, not a longer spelling of these.
 const R2_WRITE_SECRETS: [&str; 2] = [
     "secrets.R2_CACHE_ACCESS_KEY_ID",
@@ -616,7 +592,7 @@ fn candidate_code(lines: &[&str]) -> Option<&'static str> {
     None
 }
 
-/// R18 over one workflow's comment-stripped text. A job that runs candidate code names no R2 cache
+/// R19 over one workflow's comment-stripped text. A job that runs candidate code names no R2 cache
 /// write key: not in its own lines (job env, step env, `with:`), and not through the workflow's
 /// top-level `env:`, which every job inherits.
 fn r2_write_key_findings(name: &str, text: &str) -> Vec<Finding> {
@@ -641,7 +617,7 @@ fn r2_write_key_findings(name: &str, text: &str) -> Vec<Finding> {
             .collect::<Vec<_>>()
             .join(", ");
         bad.push(Finding::new(
-            "R18",
+            "R19",
             format!(
                 "{name}: job `{job}` {how} and names the R2 cache write key(s) {named}: every \
                  candidate process the job starts can read them from its environment, and `ci hop` \
@@ -703,6 +679,33 @@ fn action_manifests(cx: &Ctx) -> Result<Vec<(String, String)>, String> {
         ));
     }
     Ok(out)
+}
+
+/// The jobs of a workflow (comments already stripped): each job's name and its lines, from its
+/// header (a key at exactly two spaces under the top-level `jobs:`) to the next job or top-level key.
+fn jobs_of(text: &str) -> Vec<(String, Vec<&str>)> {
+    let mut out: Vec<(String, Vec<&str>)> = Vec::new();
+    let mut in_jobs = false;
+    for line in text.lines() {
+        if !line.starts_with(' ') && !line.trim().is_empty() {
+            in_jobs = line.trim_end() == "jobs:";
+            continue;
+        }
+        if !in_jobs {
+            continue;
+        }
+        let b = line.as_bytes();
+        if b.len() > 2 && b[0] == b' ' && b[1] == b' ' && b[2] != b' ' {
+            if let Some(name) = line.trim().strip_suffix(':') {
+                out.push((name.to_string(), Vec::new()));
+                continue;
+            }
+        }
+        if let Some((_, lines)) = out.last_mut() {
+            lines.push(line);
+        }
+    }
+    out
 }
 
 /// The value of `key:` in `text` (a flow mapping or a block line), the first time `key` appears as
@@ -906,6 +909,109 @@ impl Finding {
 
 #[derive(Debug, Default)]
 pub struct WorkflowRulesGate;
+
+/// Is this label one of the runner vendors' own? `self-hosted` and `busbar-canary` exactly, and
+/// anything under the `latchkey-` or `busbar-ec2-` families. GitHub-hosted images are the
+/// platform floor and are not vendor labels.
+fn is_vendor_label(label: &str) -> bool {
+    let l = label.trim().trim_matches(['\'', '"']).to_ascii_lowercase();
+    l == "self-hosted"
+        || l == "busbar-canary"
+        || l.starts_with("latchkey-")
+        || l.starts_with("busbar-ec2-")
+}
+
+/// The vendor labels one `runs-on` value spells. Text outside `${{ }}` is split into its list and
+/// mapping pieces; inside an expression only the quoted string literals count, so
+/// `${{ x || 'latchkey-large' }}` is refused while `${{ fromJSON(vars.RUNNERS).large.label }}` and
+/// `${{ matrix.os }}` have nothing to refuse.
+fn vendor_labels_in(value: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut rest = value;
+    let mut outside = String::new();
+    while let Some(i) = rest.find("${{") {
+        outside.push_str(&rest[..i]);
+        outside.push(',');
+        let after = &rest[i + 3..];
+        let end = after.find("}}").unwrap_or(after.len());
+        let expr = &after[..end];
+        let mut q: Option<char> = None;
+        let mut cur = String::new();
+        for c in expr.chars() {
+            match q {
+                None if c == '\'' || c == '"' => q = Some(c),
+                Some(d) if c == d => {
+                    if is_vendor_label(&cur) {
+                        out.push(cur.trim().to_string());
+                    }
+                    cur.clear();
+                    q = None;
+                }
+                Some(_) => cur.push(c),
+                None => {}
+            }
+        }
+        rest = &after[(end + 2).min(after.len())..];
+    }
+    outside.push_str(rest);
+    for piece in outside.split(['[', ']', ',', '{', '}']) {
+        let piece = piece.trim();
+        let piece = piece.strip_prefix("labels:").unwrap_or(piece).trim();
+        if !piece.is_empty() && is_vendor_label(piece) {
+            out.push(piece.trim_matches(['\'', '"']).to_string());
+        }
+    }
+    out
+}
+
+/// Every vendor label a `runs-on` in this workflow spells, as (line, job, label). A `runs-on` is a
+/// scalar, a flow or block list, or the group form whose `labels:` is either of those.
+fn vendor_runs_on(text: &str) -> Vec<(usize, String, String)> {
+    let lines: Vec<&str> = text.lines().collect();
+    let indent = |l: &str| l.len() - l.trim_start().len();
+    let mut out = Vec::new();
+    let mut in_jobs = false;
+    let mut job = String::new();
+    let mut i = 0;
+    while i < lines.len() {
+        let line = lines[i];
+        let t = line.trim();
+        if indent(line) == 0 && !t.is_empty() {
+            in_jobs = t == "jobs:";
+        }
+        if in_jobs && indent(line) == 2 && t.ends_with(':') {
+            job = t.trim_end_matches(':').to_string();
+        }
+        let Some(inline) = t.strip_prefix("runs-on:") else {
+            i += 1;
+            continue;
+        };
+        let base = indent(line);
+        let mut values = vec![(i + 1, inline.to_string())];
+        let mut j = i + 1;
+        while j < lines.len() && (lines[j].trim().is_empty() || indent(lines[j]) > base) {
+            let b = lines[j].trim();
+            let b = b.strip_prefix("- ").unwrap_or(b);
+            if !b.starts_with("group:") && !b.is_empty() {
+                values.push((j + 1, b.to_string()));
+            }
+            j += 1;
+        }
+        for (n, v) in values {
+            let v = v.trim();
+            let v = v.strip_prefix("labels:").unwrap_or(v);
+            let v = match v.find(" #") {
+                Some(k) if !v.contains("${{") => &v[..k],
+                _ => v,
+            };
+            for label in vendor_labels_in(v) {
+                out.push((n, job.clone(), label));
+            }
+        }
+        i = j;
+    }
+    out
+}
 
 /// The workflow file names, sorted, with the discovery floor applied. A directory listing that
 /// silently drops a missing root is what makes "scanned nothing" indistinguishable from "found
@@ -1167,7 +1273,30 @@ pub fn check(cx: &Ctx) -> Result<Vec<Finding>, String> {
         bad.extend(engine_pin_findings(name, &text));
     }
 
-    // R17. A STEP THAT DOWNLOADS THE RELEASE ARTIFACT FROM ITS OWN RUN RUNS ONLY WHERE IT IS BUILT.
+    // R17. NO JOB HARD-CODES A VENDOR RUNNER LABEL.
+    //
+    // Every job asks the runner gateway for a logical size (small, medium, large, xlarge) and the
+    // org Actions variable `vars.RUNNERS` names the `runs-on` label that size maps to. A workflow
+    // that spells `latchkey-large` or `self-hosted` has pinned itself to one vendor: moving the
+    // fleet then means editing every workflow, and the one that was missed sits queued forever on
+    // a label no runner carries. Expressions are fine, including `matrix.os` and `inputs.x`; a
+    // quoted vendor literal inside an expression is the same pin and is refused too.
+    for name in &names {
+        let text = strip_comments(&read(name).unwrap_or_default());
+        for (line, job, label) in vendor_runs_on(&text) {
+            bad.push(Finding::new(
+                "R17",
+                format!(
+                    "{name}:{line}: job '{job}' runs on the vendor label '{label}'. A workflow \
+                     never names a runner vendor: use `fromJSON(vars.RUNNERS).<size>.label` \
+                     (size is small, medium, large or xlarge) or the preflight output \
+                     `needs.preflight.outputs.runner`."
+                ),
+            ));
+        }
+    }
+
+    // R18. A STEP THAT DOWNLOADS THE RELEASE ARTIFACT FROM ITS OWN RUN RUNS ONLY WHERE IT IS BUILT.
     //
     // The shards of a rung that runs the oracle or conformance (`needs_release_artifact=true`: the
     // predev->dev pull request and up) download `slsa-artifact-<sha>` from their own run, after
@@ -1180,7 +1309,7 @@ pub fn check(cx: &Ctx) -> Result<Vec<Finding>, String> {
         bad.extend(release_artifact_findings(name, &text));
     }
 
-    // R18. NO JOB THAT RUNS CANDIDATE CODE HOLDS THE R2 CACHE WRITE KEYS ([`r2_write_key_findings`]).
+    // R19. NO JOB THAT RUNS CANDIDATE CODE HOLDS THE R2 CACHE WRITE KEYS ([`r2_write_key_findings`]).
     //
     // The shards and the one-runner hop passed `R2_KEY_ID` / `R2_KEY_SECRET` (the write keys) to
     // `ci hop`, whose judge runs the candidate's build scripts, tests and xtask: any of them could
@@ -1207,8 +1336,9 @@ fn rule_title(rule: &str) -> &'static str {
         "R14" => "every third-party action runs from a commit sha",
         "R15" => "every attestation verify names the workflow that signed",
         "R16" => "the engine runs from a commit sha, its bytes from a sha256",
-        "R17" => "a same-run download of the release artifact runs only where it is built",
-        "R18" => "no job that runs candidate code holds the R2 cache write keys",
+        "R17" => "no job hard-codes a vendor runner label",
+        "R18" => "a same-run download of the release artifact runs only where it is built",
+        "R19" => "no job that runs candidate code holds the R2 cache write keys",
         _ => "workflow rule",
     }
 }
@@ -1402,6 +1532,35 @@ fn mutations() -> Vec<Mutation> {
             creates: true,
         },
         Mutation {
+            label: "R17 a job hard-codes a vendor runs-on label",
+            file: "zz-planted-runs-on.yml",
+            rule: "R17",
+            apply: |_| {
+                "jobs:\n  j:\n    runs-on: latchkey-large\n    steps:\n      - run: true\n"
+                    .to_string()
+            },
+            creates: true,
+        },
+        Mutation {
+            label: "R17 a runs-on list names self-hosted",
+            file: "zz-planted-runs-on.yml",
+            rule: "R17",
+            apply: |_| {
+                "jobs:\n  j:\n    runs-on: [self-hosted, linux]\n    steps:\n      - run: true\n"
+                    .to_string()
+            },
+            creates: true,
+        },
+        Mutation {
+            label: "R17 an expression falls back to a vendor literal",
+            file: "zz-planted-runs-on.yml",
+            rule: "R17",
+            apply: |_| {
+                "jobs:\n  j:\n    runs-on: ${{ inputs.runner || 'latchkey-large' }}\n    steps:\n      - run: true\n".to_string()
+            },
+            creates: true,
+        },
+        Mutation {
             // THE REGRESSION AS IT WOULD ACTUALLY ARRIVE: someone copies a snippet out of an
             // action's README, which is always written with the tag, and nothing anywhere notices.
             label: "R14 an action reverts from a sha to a force-movable tag",
@@ -1528,9 +1687,9 @@ fn mutations() -> Vec<Mutation> {
         Mutation {
             // THE REGRESSION AS IT ARRIVED (#740): the release build gated to merge groups while
             // the predev->dev pull request's shards still download its artifact from their run.
-            label: "R17 slsa-build goes back to merge-group-only under a pull request's download",
+            label: "R18 slsa-build goes back to merge-group-only under a pull request's download",
             file: "promote.yml",
-            rule: "R17",
+            rule: "R18",
             apply: |t| {
                 reif_job(
                     t,
@@ -1543,9 +1702,9 @@ fn mutations() -> Vec<Mutation> {
         Mutation {
             // THE REGRESSION AS IT STOOD BEFORE busbar-release 069f032: a hop shard's `ci hop` holds
             // the R2 write key again, where every candidate process it starts can read it.
-            label: "R18 a hop shard's `ci hop` holds the R2 cache write key",
+            label: "R19 a hop shard's `ci hop` holds the R2 cache write key",
             file: "promote.yml",
-            rule: "R18",
+            rule: "R19",
             apply: |t| {
                 replace_once(
                     t,
@@ -1559,7 +1718,7 @@ fn mutations() -> Vec<Mutation> {
 }
 
 /// Replace job `job`'s own `if:` line with `if: <cond>`. The anchor is the job id and its
-/// four-space `if:` key, not today's condition, so rewording the condition cannot unprove R17; a
+/// four-space `if:` key, not today's condition, so rewording the condition cannot unprove R18; a
 /// renamed or unconditional job edits nothing, which the selftest reports as unproven.
 fn reif_job(t: &str, job: &str, cond: &str) -> String {
     let head = format!("  {job}:");

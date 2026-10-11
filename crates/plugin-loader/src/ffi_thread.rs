@@ -63,8 +63,19 @@
 //! | `busbar_set_log_sink` (installs a `tracing` dispatcher INSIDE the plugin) | per load | yes |
 //! | `busbar_close` (the plugin's `Drop`) | per unload | yes |
 //! | `dlclose` (runs `.fini_array`) | per unload | yes |
+//! | `busbar_plugin_door` (the memory-ABI entry, every kind, linked or dropped) | per load | yes |
+//! | a door table's `validate`, `open`, `refresh`, `retire`, `close`, `ready` | per load / reload / unload | yes |
+//! | a plane's `hydrate`, `start`, `claims`, `admission` | per load | yes |
 //! | `busbar_call` | **per request** | no — inline |
 //! | `busbar_free` | **per request** | no — inline |
+//! | a door table's request ops, `tick`, `drive`, `cancel` | **per request** | no — inline |
+//!
+//! Every routed crossing asserts, in debug builds, that it is on a permanent worker
+//! ([`debug_assert_permanent`]) at the point it enters plugin code. The door table's lifecycle
+//! slots are routed in `dispatch::plugin::Instance::cross_gated`, the one place every crossing of
+//! every kind passes, whether the caller is a dispatcher worker or a ticket-less caller thread, and
+//! whether the plugin is compiled in or dropped in (THE DESIGN §11.4). The request ops stay inline
+//! because THE DESIGN §11.9 holds a crossing under 1 µs.
 //!
 //! # THE RESIDUAL, stated plainly
 //!
@@ -120,19 +131,49 @@ struct Pool {
     idle: Vec<usize>,
 }
 
-fn pool() -> &'static Mutex<Pool> {
-    static POOL: OnceLock<Mutex<Pool>> = OnceLock::new();
-    POOL.get_or_init(|| {
-        Mutex::new(Pool {
+impl Pool {
+    /// A pool with no workers yet.
+    const fn empty() -> Self {
+        Self {
             all: Vec::new(),
             idle: Vec::new(),
-        })
-    })
+        }
+    }
+}
+
+/// THE process's pool. (The tests that assert which worker runs a job use pools of their own, so
+/// no other test's crossing can take that worker between their two calls.)
+fn pool() -> &'static Mutex<Pool> {
+    static POOL: OnceLock<Mutex<Pool>> = OnceLock::new();
+    POOL.get_or_init(|| Mutex::new(Pool::empty()))
+}
+
+std::thread_local! {
+    /// `true` on a permanent worker ([`worker`]), `false` on every other thread.
+    static PERMANENT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Whether the calling thread is one of this module's permanent workers.
+pub(crate) fn on_permanent_worker() -> bool {
+    PERMANENT.with(std::cell::Cell::get)
+}
+
+/// THE ASSERTION every routed crossing makes just before it enters plugin code: the calling thread
+/// is a permanent worker. `what` names the crossing. Debug builds only; a release build relies on
+/// the routing it checks.
+#[track_caller]
+pub(crate) fn debug_assert_permanent(what: &str) {
+    debug_assert!(
+        on_permanent_worker(),
+        "{what} entered plugin code on thread {:?}, which is not a permanent FFI worker",
+        std::thread::current().name()
+    );
 }
 
 /// A worker's receive loop. NEVER returns: `pool().all` holds a sender for this receiver for the
 /// life of the process, so `recv` can never see a disconnect. That is the whole invariant.
 fn worker(rx: Receiver<Job>) {
+    PERMANENT.with(|p| p.set(true));
     while let Ok(job) = rx.recv() {
         // SAFETY: `run`/`data` come from the same `Job`, and the caller is blocked on `done`.
         unsafe { (job.run)(job.data) };
@@ -141,15 +182,16 @@ fn worker(rx: Receiver<Job>) {
     }
 }
 
-/// A borrowed worker, returned to the idle list on drop (including on unwind).
+/// A borrowed worker, returned to its pool's idle list on drop (including on unwind).
 struct Lease {
+    pool: &'static Mutex<Pool>,
     idx: usize,
     tx: SyncSender<Job>,
 }
 
 impl Drop for Lease {
     fn drop(&mut self) {
-        pool()
+        self.pool
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .idle
@@ -160,11 +202,12 @@ impl Drop for Lease {
 /// Borrow an idle worker, or create a new permanent one. Growing on demand (rather than capping) is
 /// what makes re-entrancy deadlock-free: plugin code that calls back into the loader takes a fresh
 /// worker instead of waiting for the one its own caller is occupying.
-fn acquire() -> Lease {
+fn acquire(pool: &'static Mutex<Pool>) -> Lease {
     {
-        let mut p = pool().lock().unwrap_or_else(|p| p.into_inner());
+        let mut p = pool.lock().unwrap_or_else(|p| p.into_inner());
         if let Some(idx) = p.idle.pop() {
             return Lease {
+                pool,
                 tx: p.all[idx].clone(),
                 idx,
             };
@@ -175,9 +218,10 @@ fn acquire() -> Lease {
         .name("busbar-plugin-ffi".to_string())
         .spawn(move || worker(rx))
         .expect("spawn a plugin FFI worker thread");
-    let mut p = pool().lock().unwrap_or_else(|p| p.into_inner());
+    let mut p = pool.lock().unwrap_or_else(|p| p.into_inner());
     p.all.push(tx.clone());
     Lease {
+        pool,
         idx: p.all.len() - 1,
         tx,
     }
@@ -195,6 +239,14 @@ fn acquire() -> Lease {
 /// returns include raw pointers. Soundness comes from the caller blocking for the entire window (see
 /// the `unsafe impl Send for Job` note), not from the types.
 pub(crate) fn on_plugin_thread<F: FnOnce() -> R, R>(f: F) -> std::thread::Result<R> {
+    on_plugin_thread_in(pool(), f)
+}
+
+/// [`on_plugin_thread`] on a worker of `pool`.
+fn on_plugin_thread_in<F: FnOnce() -> R, R>(
+    pool: &'static Mutex<Pool>,
+    f: F,
+) -> std::thread::Result<R> {
     struct Slot<F, R> {
         f: Option<F>,
         r: Option<std::thread::Result<R>>,
@@ -217,7 +269,7 @@ pub(crate) fn on_plugin_thread<F: FnOnce() -> R, R>(f: F) -> std::thread::Result
     };
     // Capacity 1: the worker must be able to report completion without blocking.
     let (done_tx, done_rx) = sync_channel::<()>(1);
-    let lease = acquire();
+    let lease = acquire(pool);
     let job = Job {
         run: trampoline::<F, R>,
         data: (&raw mut slot) as *mut (),
