@@ -104,3 +104,10 @@ fn the_section_under_its_verb_reads_as_the_section() {
     // RED ARM: the verb beside another member is no wrapper; it is an unknown member.
     assert!(read_settings(br#"{"decisions":{},"models":{}}"#).is_err());
 }
+
+#[test]
+fn a_generation_of_a_one_model_section_lists_that_model() {
+    let one = read_settings(br#"{"models":{"jev":{"provider":"typesafe"}}}"#)
+        .expect("a well-formed section reads");
+    assert_eq!(generation_spec(&one).listed, vec!["jev".to_string()]);
+}
