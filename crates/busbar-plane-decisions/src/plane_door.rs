@@ -289,7 +289,7 @@ pub fn snapshot_spec(models: usize) -> SnapshotSpec {
 
 /// ONE GENERATION'S SNAPSHOT for `section`: [`snapshot_spec`]'s claims for its model count, and
 /// every model it configures LISTED (THE DESIGN section 2: all configured decisions models are
-/// listed, scope-filtered by the kernel; `/v1/models` appends them), in ascending name order.
+/// listed, scope-filtered by the kernel; `/v1/models` appends them), sorted ascending by name.
 #[must_use]
 pub fn generation_spec(section: &DecisionsSection) -> SnapshotSpec {
     let mut listed: Vec<String> = section.models.keys().cloned().collect();
