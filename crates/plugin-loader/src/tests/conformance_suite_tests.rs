@@ -791,3 +791,459 @@ fn regex_lite_meter(script: &str) -> Vec<String> {
         })
         .collect()
 }
+
+/// THE SUITE'S SUBMITTED OPS LEND THROUGH THE DISPATCHER (THE DESIGN §2: "The memory a call lends a
+/// plugin lives until that call completes, abandoned or not (a submit that the watchdog can abandon
+/// uses the lending submit)"). Every op the suite submits on a ticket (`open` resumed, `resolve`,
+/// `deliver`, `verify` and `complete_login` submitted, a plane's `serve`) goes through
+/// `on_ticket_frame`, which hands the dispatcher the OWNER of the memory the frame names.
+mod lent_ops {
+    use std::sync::{Arc, Weak};
+    use std::time::{Duration, Instant};
+
+    use busbar_contract::abi::mechanism::call::{Blob, DeadlineClass, Outcome, BLOB_OCTETS};
+    use busbar_contract::abi::mechanism::lifecycle::{slot, TickIn, TickOut};
+
+    use super::super::{bind, on_ticket_frame, open};
+    use crate::dispatch::{
+        in_head, load_linked, now_ns, out_head, Budgets, DispatchConfig, Dispatcher, Frame,
+        LinkedRow,
+    };
+    use crate::dispatch_test_plugin as plug;
+    use crate::dispatch_tests::TestKind;
+
+    /// A `tick` frame whose extensions blob names the test plugin's op.
+    fn frame(mode: &'static [u8]) -> Frame<TickIn, TickOut> {
+        let mut head = in_head();
+        head.extensions = Blob {
+            ptr: mode.as_ptr(),
+            len: mode.len(),
+            fmt: BLOB_OCTETS,
+            flags: 0,
+        };
+        Frame::new(
+            TickIn {
+                head,
+                now_ns: now_ns(),
+            },
+            TickOut {
+                head: out_head(),
+                next_tick_ns: 0,
+            },
+        )
+    }
+
+    /// RED (audit loader-PL1 #7): an op the watchdog abandons. Its crossing hangs past the Call
+    /// budget, the watchdog answers FAULT and the suite's wait returns; the memory the op was lent
+    /// is STILL ALIVE, held by the dispatcher with the hung crossing, and goes only when that
+    /// crossing returns. A non-lending submit frees it the moment the suite's call returns, while
+    /// the plugin may still read it.
+    #[test]
+    fn red_an_abandoned_op_keeps_the_memory_it_was_lent_until_its_crossing_returns() {
+        let d = Dispatcher::new(DispatchConfig {
+            workers: 2,
+            budgets: Budgets {
+                call: Duration::from_millis(300),
+                ..Budgets::default()
+            },
+            watchdog_period: Duration::from_millis(20),
+        });
+        let row = LinkedRow::of(plug::busbar_plugin_door).expect("the test door states itself");
+        let p = load_linked::<TestKind>(&row, bind(&d, "abandoned")).expect("it loads");
+        assert_eq!(open(&p, b"{}").outcome, Outcome::Ready);
+        let lent: Arc<Vec<u8>> = Arc::new(b"the memory the op is lent".to_vec());
+        let held: Weak<Vec<u8>> = Arc::downgrade(&lent);
+        let (c, f) = on_ticket_frame(
+            &p,
+            &d,
+            slot::TICK,
+            frame(b"hang:conformance-lent"),
+            DeadlineClass::Call,
+            0,
+            lent,
+        );
+        assert_eq!(
+            c.outcome,
+            Outcome::Fault,
+            "the watchdog abandoned the hung op"
+        );
+        assert!(f.is_none(), "an abandoned op hands no frame back");
+        assert!(
+            held.upgrade().is_some(),
+            "the suite returned while the crossing still runs: the lent memory must still be alive"
+        );
+        // Release the hang through a second instance of the same image (the first is faulted).
+        let q = load_linked::<TestKind>(&row, bind(&d, "release")).expect("it loads");
+        assert_eq!(open(&q, b"{}").outcome, Outcome::Ready);
+        assert_eq!(
+            q.call(slot::TICK, &mut frame(b"unhang:conformance-lent"))
+                .outcome,
+            Outcome::Ready
+        );
+        let until = Instant::now() + Duration::from_secs(10);
+        while held.upgrade().is_some() {
+            assert!(
+                Instant::now() < until,
+                "the lent memory outlived the crossing that held it"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+}
+
+/// THE HOOK SCRIPT DRIVES `decide`/`transform` AS THE HOST DOES (THE DESIGN §11.4, §11.12): watched
+/// on a ticket, so a gate that waits answers PENDING and is RESUMED, never FAULTed.
+mod hook_on_tickets {
+    use std::sync::atomic::{AtomicPtr, Ordering};
+    use std::sync::Arc;
+
+    use busbar_contract::abi::hook::Ops;
+    use busbar_contract::abi::mechanism::call::{
+        InHead, OutHead, Outcome, RawOutcome, FLAG_RESUME,
+    };
+    use busbar_contract::abi::mechanism::door::Door;
+
+    use super::super::hook::{ask, Request};
+    use super::super::{bind, crossings, open, test_door, test_op, TestDoor, TestOp};
+    use crate::dispatch::kinds::hook::Hook;
+    use crate::dispatch::ticket::host_wake;
+    use crate::dispatch::{load_linked, LinkedRow};
+    use crate::hook_door_conformance_tests::hook_door_plugin::conforming;
+
+    static REAL_DECIDE: AtomicPtr<()> = AtomicPtr::new(std::ptr::null_mut());
+    static SLOT: AtomicPtr<Door> = AtomicPtr::new(std::ptr::null_mut());
+
+    /// A `decide` that WAITS before it answers (as on a may-pend host service): its first
+    /// invocation wakes its own ticket and answers PENDING; RESUMED, it answers as the real gate.
+    /// Ticket-less, its PENDING is a FAULT (a ticket-less op may not pend).
+    struct DecidePends;
+
+    impl TestOp for DecidePends {
+        fn op(
+            instance: *mut std::ffi::c_void,
+            input: *const std::ffi::c_void,
+            out: *mut std::ffi::c_void,
+        ) -> RawOutcome {
+            // SAFETY: every `in` leads with its `InHead`, every `out` with its `OutHead`.
+            unsafe {
+                let head = input.cast::<InHead>().read();
+                if head.flags & FLAG_RESUME == 0 {
+                    if head.ticket.generation != 0 {
+                        host_wake(head.host, head.ticket);
+                    }
+                    (*out.cast::<OutHead>()).outcome = RawOutcome::of(Outcome::Pending);
+                    return RawOutcome::of(Outcome::Pending);
+                }
+                let real: busbar_contract::abi::mechanism::call::Op =
+                    std::mem::transmute(REAL_DECIDE.load(Ordering::SeqCst));
+                real(instance, input, out)
+            }
+        }
+    }
+
+    struct PendingDoor;
+
+    impl TestDoor for PendingDoor {
+        fn door() -> *const Door {
+            let have = SLOT.load(Ordering::SeqCst);
+            if !have.is_null() {
+                return have;
+            }
+            // SAFETY: the fixture's door and its hook table are `'static`.
+            let real: Door = unsafe { conforming::door().read_unaligned() };
+            let ops: Ops = unsafe { real.ops.cast::<Ops>().read_unaligned() };
+            REAL_DECIDE.store(
+                ops.decide.expect("the fixture decides") as *mut (),
+                Ordering::SeqCst,
+            );
+            let ops: &'static Ops = Box::leak(Box::new(Ops {
+                decide: Some(test_op::<DecidePends>),
+                ..ops
+            }));
+            let door = Box::into_raw(Box::new(Door {
+                ops: std::ptr::from_ref(ops).cast(),
+                ..real
+            }));
+            SLOT.store(door, Ordering::SeqCst);
+            door
+        }
+    }
+
+    /// RED (audit loader-PL1 #9): a gate whose `decide` waits is driven on a ticket, as the host
+    /// drives it: one first invocation, RESUMED once, answering its verdict. Driven ticket-less,
+    /// as the script used to, its PENDING is FAULT and the request has no verdict.
+    #[test]
+    fn red_a_gate_that_waits_is_resumed_on_its_ticket_never_faulted_ticketless() {
+        let d = super::super::dispatcher();
+        let row = LinkedRow::of(test_door::<PendingDoor>).expect("the restated door states itself");
+        let p = load_linked::<Hook>(&row, bind(&d, "hook")).expect("it loads");
+        assert_eq!(
+            open(&p, br#"{"reject_over_messages": 5}"#).outcome,
+            Outcome::Ready
+        );
+        let r = Arc::new(Request::of(
+            &serde_json::json!({
+                "label": "waits", "op": "decide", "candidates": [{ "idx": 1 }],
+                "expect": { "verb": "abstain" }
+            }),
+            4,
+        ));
+        let (first, resumes) = crossings(&p).read();
+        let line = ask(&p, &d, &r, 4);
+        assert_eq!(line, "Ready lease=false | verb=abstain recalled=false");
+        let (first_after, resumes_after) = crossings(&p).read();
+        assert_eq!((first_after - first, resumes_after - resumes), (1, 1));
+    }
+}
+
+/// EVERY WAIT WAS WOKEN (THE DESIGN A.4.3, audit loader-conformance #10): the fold's end requires
+/// `bb_deadline_without_wake_total` = 0 on every dispatcher the fold made.
+mod deadline_without_wake {
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use busbar_contract::abi::mechanism::call::{Blob, DeadlineClass, Outcome, BLOB_OCTETS};
+    use busbar_contract::abi::mechanism::lifecycle::{slot, TickIn, TickOut};
+
+    use super::super::{bind, dispatcher, on_ticket, open, woken};
+    use crate::dispatch::{in_head, load_linked, now_ns, out_head, Frame, LinkedRow};
+    use crate::dispatch_test_plugin as plug;
+    use crate::dispatch_tests::TestKind;
+
+    fn frame(mode: &'static [u8]) -> Frame<TickIn, TickOut> {
+        let mut head = in_head();
+        head.extensions = Blob {
+            ptr: mode.as_ptr(),
+            len: mode.len(),
+            fmt: BLOB_OCTETS,
+            flags: 0,
+        };
+        Frame::new(
+            TickIn {
+                head,
+                now_ns: now_ns(),
+            },
+            TickOut {
+                head: out_head(),
+                next_tick_ns: 0,
+            },
+        )
+    }
+
+    fn after(d: Duration) -> u64 {
+        now_ns().saturating_add(u64::try_from(d.as_nanos()).unwrap_or(u64::MAX))
+    }
+
+    /// GREEN: an op that pends and is woken ends by its wake; the fold's check passes.
+    #[test]
+    fn a_wait_that_is_woken_passes() {
+        let _ = woken();
+        let d = dispatcher();
+        let row = LinkedRow::of(plug::busbar_plugin_door).expect("the test door states itself");
+        let p = load_linked::<TestKind>(&row, bind(&d, "woken")).expect("it loads");
+        assert_eq!(open(&p, b"{}").outcome, Outcome::Ready);
+        let c = on_ticket(
+            &p,
+            &d,
+            slot::TICK,
+            frame(plug::PEND_AFTER),
+            DeadlineClass::Call,
+            after(Duration::from_secs(10)),
+            Arc::new(()),
+        );
+        assert_eq!(c.outcome, Outcome::Ready);
+        woken().unwrap_or_else(|e| panic!("{e}"));
+    }
+
+    /// RED: a door that misses its wake and is rescued by its deadline fails the fold's check,
+    /// though the op itself answered (its deadline's `cancel`).
+    #[test]
+    fn red_a_wait_a_deadline_ended_is_refused() {
+        let _ = woken();
+        let d = dispatcher();
+        let row = LinkedRow::of(plug::busbar_plugin_door).expect("the test door states itself");
+        let p = load_linked::<TestKind>(&row, bind(&d, "unwoken")).expect("it loads");
+        assert_eq!(open(&p, b"{}").outcome, Outcome::Ready);
+        let c = on_ticket(
+            &p,
+            &d,
+            slot::TICK,
+            frame(plug::PEND_HOLD),
+            DeadlineClass::Call,
+            after(Duration::from_millis(50)),
+            Arc::new(()),
+        );
+        assert_ne!(c.outcome, Outcome::Ready, "the deadline ended it");
+        let e = woken().expect_err("a deadline, not a wake, ended an op");
+        assert!(e.contains("bb_deadline_without_wake_total = 1"), "{e}");
+    }
+}
+
+/// THE DROPPED IMAGE, CHOSEN EXPLICITLY (audit loader-conformance #13): never the newest file by
+/// age, and never the linked door itself.
+mod dropped_image {
+    use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicPtr, AtomicU64, Ordering};
+
+    use busbar_contract::abi::mechanism::door::{Door, DoorFn};
+
+    use super::super::{cdylib_of, choose_cdylib, distinct, test_door, TestDoor, CDYLIB_ENV};
+
+    /// A fresh `target/<profile>` of this test's own, with `deps/` and `examples/`.
+    struct Profile(PathBuf);
+
+    impl Profile {
+        fn new(tag: &str) -> Self {
+            static NEXT: AtomicU64 = AtomicU64::new(0);
+            let dir = std::env::temp_dir().join(format!(
+                "bbconf-cdylib-{}-{tag}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::SeqCst)
+            ));
+            for sub in ["deps", "examples"] {
+                std::fs::create_dir_all(dir.join(sub)).expect("a profile dir");
+            }
+            Self(dir)
+        }
+
+        /// `<lib>` of `krate`, in `sub` (`""` for the profile root), `-hash` when given.
+        fn put(&self, sub: &str, krate: &str, hash: Option<&str>, bytes: &[u8]) -> PathBuf {
+            let name = crate::plugin_library_filename(krate);
+            let name = match hash {
+                Some(h) => name.replacen(krate, &format!("{krate}-{h}"), 1),
+                None => name,
+            };
+            let at = self.0.join(sub).join(name);
+            std::fs::write(&at, bytes).expect("an image");
+            at
+        }
+
+        fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for Profile {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// RED: two different builds of the crate under `deps/` (a stale one, another feature set's)
+    /// are refused, naming the explicit choice — never the newer file picked by its age.
+    #[test]
+    fn red_two_different_builds_are_refused_never_the_newest_picked() {
+        let p = Profile::new("two");
+        p.put("deps", "plug", Some("aaaa"), b"the stale build");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        let newest = p.put("deps", "plug", Some("bbbb"), b"another build");
+        let e = choose_cdylib(p.path(), "plug").expect_err("ambiguous");
+        assert!(e.contains(CDYLIB_ENV), "{e}");
+        assert_ne!(choose_cdylib(p.path(), "plug").ok(), Some(newest));
+    }
+
+    /// One image under two names (cargo's hard link) is one image; the image cargo UPLIFTED for
+    /// the crate's latest build wins over every hashed one; none is a failure.
+    #[test]
+    fn one_image_is_found_and_the_uplifted_build_wins() {
+        let p = Profile::new("one");
+        assert!(choose_cdylib(p.path(), "plug").is_err(), "none built");
+        let only = p.put("deps", "plug", Some("aaaa"), b"one build");
+        p.put("examples", "plug", Some("cccc"), b"one build");
+        let chosen = choose_cdylib(p.path(), "plug").expect("one image");
+        assert_eq!(std::fs::read(chosen).ok(), std::fs::read(&only).ok());
+        p.put("deps", "plug", Some("bbbb"), b"another build");
+        let up = p.put("examples", "plug", None, b"the latest build");
+        assert_eq!(choose_cdylib(p.path(), "plug").ok(), Some(up));
+    }
+
+    static DROPPED_DOOR: AtomicPtr<Door> = AtomicPtr::new(std::ptr::null_mut());
+
+    /// A "linked" door that is in truth the dropped image's own.
+    struct TheDroppedImagesDoor;
+
+    impl TestDoor for TheDroppedImagesDoor {
+        fn door() -> *const Door {
+            DROPPED_DOOR.load(Ordering::SeqCst)
+        }
+    }
+
+    /// RED: a dropped image that answers the LINKED door (its door resolved into the test binary's,
+    /// or the binary itself picked) is refused; the real dropped image is an image of its own.
+    #[test]
+    fn red_a_dropped_image_answering_the_linked_door_is_refused() {
+        // Absent, the example cdylib fails the test naming its build command; never a skip.
+        crate::both_ways::example_cdylib("plane_door_plugin");
+        let path = cdylib_of("plane_door_plugin");
+        distinct(crate::plane_door_plugin::door, &path).unwrap_or_else(|e| panic!("{e}"));
+        // SAFETY: the fixture's image; held open (leaked) so its door stays valid.
+        let lib = unsafe { libloading::Library::new(&path) }.expect("the image loads");
+        let door: DoorFn = *unsafe { lib.get::<DoorFn>(b"busbar_plugin_door\0") }
+            .expect("the image exports its door");
+        std::mem::forget(lib);
+        DROPPED_DOOR.store(door().cast_mut(), Ordering::SeqCst);
+        let e = distinct(test_door::<TheDroppedImagesDoor>, &path).expect_err("one image twice");
+        assert!(e.contains("answers the LINKED door"), "{e}");
+    }
+}
+
+/// THE SUITE MUTATES NO PROCESS STATE UNDER A RUNNING FOLD (audit loader-conformance #5).
+mod no_shared_state {
+    use super::super::store::LegMint;
+    use super::super::Subject;
+
+    /// RED: a fold's op ids never restart under it when another fold opens (the shared counter
+    /// reset at each open re-minted ids the running fold had already used).
+    #[test]
+    fn red_a_second_fold_opening_never_restarts_the_first_folds_op_ids() {
+        let a = LegMint::take(7);
+        let used: Vec<_> = (0..3).map(|_| (a.mint())()).collect();
+        // Another fold opens (and mints nothing yet): the running fold counts on.
+        let b = LegMint::take(7);
+        let next = (a.mint())();
+        assert!(
+            !used.contains(&next),
+            "the running fold re-minted an op id it had used: {next:?}"
+        );
+        assert_eq!(
+            (next.node(), next.counter()),
+            (7, 4),
+            "a fold counts on, whatever other fold opens"
+        );
+        let other = (b.mint())();
+        assert_eq!(
+            (other.node(), other.counter()),
+            (7, 1),
+            "each fold counts from 1 on its node's half"
+        );
+    }
+
+    /// The environment `conformance.json` names is set ONCE, before any fold (every subject is
+    /// made through `Subject::new`); RED: a second, different environment is refused, never set
+    /// under folds already running.
+    #[test]
+    fn red_the_environment_is_set_once_and_another_is_refused() {
+        const VAR: &str = "BBCONF_SUITE_ENV_PROBE";
+        let named = |v: &str| format!(r#"{{ "env": {{ "{VAR}": "{v}" }} }}"#);
+        let _first = Subject::new(
+            crate::dispatch_test_plugin::busbar_plugin_door,
+            "unused",
+            &named("one"),
+        );
+        assert_eq!(std::env::var(VAR).as_deref(), Ok("one"));
+        let _again = Subject::new(
+            crate::dispatch_test_plugin::busbar_plugin_door,
+            "unused",
+            &named("one"),
+        );
+        let refused = std::panic::catch_unwind(|| {
+            Subject::new(
+                crate::dispatch_test_plugin::busbar_plugin_door,
+                "unused",
+                &named("two"),
+            )
+        });
+        assert!(refused.is_err(), "a second environment was accepted");
+        assert_eq!(std::env::var(VAR).as_deref(), Ok("one"), "and never set");
+    }
+}
