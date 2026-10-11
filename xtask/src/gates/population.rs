@@ -33,11 +33,14 @@ use crate::ctx::{Ctx, Overlay, SourceFile, WalkSpec};
 /// and added 4, and a floor above the count leaves every gate's floor row red on a clean tree. It
 /// was re-pinned from 941 to 942 when predev grew by one file, which the selftest plant caught,
 /// and back to 941 when #648 (q128-kernel-ledger) deleted `busbar-kernel-ledger/src/usage/series.rs`
-/// — the one non-test file that merge removed, a reviewed removal and not a scan that went blind. A
-/// drop below 941 is refused until a reviewed diff re-measures; the selftest plant
-/// removes one file and fails if the floor sits under the count. Lowering it is how a gate stops
-/// reading the repository without saying so, so a diff that lowers it is the diff to refuse.
-pub const FLOOR: usize = 941;
+/// — the one non-test file that merge removed, a reviewed removal and not a scan that went blind. It
+/// was raised from 941 to 942 when #710 moved the inbound listener's serve loop out of
+/// `busbar-kernel/src/tls.rs` into the new `busbar/src/root/listener.rs` (the kernel file stays, so
+/// the tree grew by that one file). A drop below 942 is refused until a reviewed diff re-measures;
+/// the selftest plant removes one file and fails if the floor sits under the count. Lowering it is
+/// how a gate stops reading the repository without saying so, so a diff that lowers it is the diff
+/// to refuse.
+pub const FLOOR: usize = 942;
 
 /// The `.rs` under `crates/` that are not test scaffolding, plus the accounting to refuse a
 /// population that cannot support a verdict.
