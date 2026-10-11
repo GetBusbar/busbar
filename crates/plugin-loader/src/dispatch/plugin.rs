@@ -469,6 +469,22 @@ impl Drop for OpenEnded<'_> {
 }
 
 /// Whether `slot` is one of the five that never overlap on one instance (`ready` among them).
+/// THE FFI CALL of a lifecycle slot (`validate`, `open`, `refresh`, `retire`, `close`, `ready`):
+/// `op` entered, after asserting in debug builds that the thread is a permanent FFI worker
+/// ([`crate::ffi_thread`]). [`Instance::cross_gated`] calls it only from inside
+/// [`crate::ffi_thread::on_plugin_thread`]; a lifecycle slot entered on any other thread trips the
+/// assertion.
+pub(crate) fn enter_lifecycle(
+    what: &str,
+    op: Op,
+    instance: *mut c_void,
+    input: *const c_void,
+    output: *mut c_void,
+) -> RawOutcome {
+    crate::ffi_thread::debug_assert_permanent(what);
+    op(instance, input, output)
+}
+
 pub(crate) fn is_lifecycle(s: u32) -> bool {
     matches!(
         s,
@@ -890,7 +906,8 @@ impl Instance {
         // SAFETY: the host wrote `in.size` itself.
         let in_size = unsafe { (*input).size } as usize;
         // The unit this crossing serves, for the host services it calls.
-        let _unit = super::services::serving((self.unit_of)(s, input.cast_const(), in_size));
+        let unit = (self.unit_of)(s, input.cast_const(), in_size);
+        let _unit = super::services::serving(unit);
         // From here an `open` that does not end READY or PENDING, FAULT included, leaves no
         // instance published: the SDK frees a half-open box on any answer but READY/PENDING, so a
         // pointer kept to it would hand a later crossing freed memory; a box the plugin still
@@ -899,7 +916,34 @@ impl Instance {
             ptr: (s == slot::OPEN).then_some(&self.ptr),
             live: std::ptr::null_mut(),
         };
-        let raw = op(instance, input.cast_const().cast(), out.cast());
+        let raw = if s == slot::VALIDATE || is_lifecycle(s) {
+            // A LIFECYCLE CROSSING RUNS ON A PERMANENT FFI WORKER (`crate::ffi_thread`), whoever
+            // called it: a dispatcher worker that may later exit, or a ticket-less caller thread
+            // (a libtest thread, a reload's thread) that will. `open` is where a plugin first
+            // touches its thread-locals and `close` runs its `Drop`; either on a thread that
+            // exits after the library is unmapped runs the plugin's thread-local destructor out
+            // of unmapped memory. What the crossing's thread states for the host services the
+            // plugin calls goes with it: the unit it serves, the dispatcher worker it acts for and
+            // the runtime that thread is inside.
+            let acting = super::worker::worker_mark();
+            let runtime = tokio::runtime::Handle::try_current().ok();
+            let (input, output): (*const c_void, *mut c_void) =
+                (input.cast_const().cast(), out.cast());
+            let routed = crate::ffi_thread::on_plugin_thread(|| {
+                let _runtime = runtime.as_ref().map(tokio::runtime::Handle::enter);
+                let _acting = super::worker::acting_for(acting);
+                let _unit = super::services::serving(unit);
+                enter_lifecycle((self.op_name)(s), op, instance, input, output)
+            });
+            match routed {
+                Ok(raw) => raw,
+                // Only a host-side panic on the worker reaches here (an escaping slot panic
+                // aborts): the crossing answers FAULT.
+                Err(_) => return Crossed::host(Outcome::Fault),
+            }
+        } else {
+            op(instance, input.cast_const().cast(), out.cast())
+        };
         if s == slot::OPEN
             && (raw == RawOutcome::of(Outcome::Ready) || raw == RawOutcome::of(Outcome::Pending))
         {
@@ -1608,6 +1652,10 @@ mod open_reason_plugins;
 #[cfg(test)]
 #[path = "../tests/open_reason_tests.rs"]
 mod open_reason_tests;
+
+#[cfg(test)]
+#[path = "../tests/lifecycle_worker_tests.rs"]
+mod lifecycle_worker_tests;
 
 /// Whether a need takes a value from its instance's settings (`target_from` or `trust_from`), so it
 /// is declared at `open` and `refresh` rather than at bind.
