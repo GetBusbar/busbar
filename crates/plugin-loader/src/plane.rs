@@ -522,7 +522,8 @@ impl DynPlane {
         let (buf_ptr, cap) = (buf.as_mut_ptr(), buf.len());
         let written_ptr: *mut usize = &mut written;
         let status =
-            crate::ffi_guard(&self.path, op, || f(state, buf_ptr, cap, written_ptr))?.class();
+            crate::ffi_guard_confined(&self.path, op, || f(state, buf_ptr, cap, written_ptr))?
+                .class();
         let path = &self.path;
         if status != StatusClass::Ok {
             return Err(format!("plane '{path}' {op} answered {status:?}"));
@@ -546,7 +547,7 @@ impl DynPlane {
         let Some(f) = pick(self) else {
             return StatusClass::Unsupported;
         };
-        match crate::ffi_guard(&self.path, op, || f(state)) {
+        match crate::ffi_guard_confined(&self.path, op, || f(state)) {
             Ok(status) => status.class(),
             Err(_) => StatusClass::Fault,
         }
