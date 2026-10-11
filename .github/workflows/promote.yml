@@ -6,12 +6,28 @@ name: Promote
 # predev's through its merge queue.
 # predev lands through GitHub's merge queue (OWNER 2026-10-02): `merge_group` runs the same two
 # required jobs on the queue's merge commit, judged no worse than the base the queue built it on.
-on: [pull_request, merge_group]
+# THE AUTO-PIN'S CANARY (busbar-release autopin.rs, ARCHITECT 2026-10-10): before it moves the engine
+# pin, busbar-release dispatches this file on predev with the engine it would pin (`engine_ref`, a
+# full busbar-release commit, and `engine_sha256`, its dev-bin ci asset's digest) and pins only when
+# the run concludes success. The run re-judges predev's tip exactly as the merge group that landed
+# it did (TO=predev, the tip's first parent as its base, the four shards and their fold) on that
+# engine instead of the pinned one. It judges and writes nothing else: it publishes nothing
+# (`publish` does not run), merges nothing, moves no branch, and holds no R2 key, so not even the
+# cache or the landed base report a merge group stores is written.
+on:
+  pull_request:
+  merge_group:
+  workflow_dispatch:
+    inputs:
+      engine_ref: { description: "The busbar-release commit to run (40 hex)", required: true, type: string }
+      engine_sha256: { description: "The sha256 of its dev-bin ci asset (64 hex)", required: true, type: string }
 # R5 (busbar-release gate.rs, OWNER 2026-10-08): no run is ever cancelled in progress. A pull request
 # has at most one run running and one pending, and each newer push replaces the pending one, so the
 # pending run is always the newest head. A merge-queue run is its own group (a cancelled queue run
 # re-runs whole, owner money 2026-10-03). The preflight holds this line to the one compiled into
-# busbar-release: any drift is RED.
+# busbar-release: any drift is RED. A canary (workflow_dispatch) names neither a pull request nor a
+# merge group, so its group is `promote-` alone: it never queues behind or replaces a pull request's
+# or a merge group's run, and the auto-pin keeps one canary in flight at a time.
 concurrency: { group: "promote-${{ github.event.pull_request.number || github.event.merge_group.head_ref }}", cancel-in-progress: false }
 permissions: { contents: read }
 # THE ENGINE PIN IS NOT IN THIS FILE (OWNER 2026-10-10): the org variables ENGINE_REF (a full
@@ -19,14 +35,22 @@ permissions: { contents: read }
 # hand with `busbar-release engine pin <sha>`, so an engine update never waits in predev's merge
 # queue. The preflight reads them ONCE and hands them to every later job as outputs: one run is one
 # engine even if the variables move mid-run. Unset or malformed is a hard FAIL (ENGINE-PIN), never
-# an older pin; the bytes run only when their sha256 is ENGINE_SHA256 (workflow-rules R16).
+# an older pin; the bytes run only when their sha256 is ENGINE_SHA256 (workflow-rules R16). A canary
+# runs its `engine_ref` / `engine_sha256` inputs instead, held to the same shape checks and the same
+# sha256 check, and hands them on the same way.
+# A canary's candidate is predev's tip (github.sha on predev) and its target predev; its base, the
+# tip's first parent, is read from the checkout by the preflight (`base_sha`).
 env:
-  SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
-  TO: ${{ github.base_ref || github.event.merge_group.base_ref }}
+  # THE ENGINE CONTRACT (busbar-release contract.rs): the shape in which this file calls the engine.
+  # 1: the hop holds the R2 write keys and writes the cache itself. An engine refuses a contract it
+  # does not support, and the auto-pin pins only an engine that supports this number.
+  BUSBAR_RELEASE_CONTRACT: 1
+  SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha || github.sha }}
+  TO: ${{ github.base_ref || github.event.merge_group.base_ref || github.ref_name }}
   BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
 jobs:
   preflight:
-    if: github.event_name == 'merge_group' || github.event.pull_request.head.repo.full_name == github.repository
+    if: github.event_name == 'merge_group' || github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     timeout-minutes: 15
     # THE RUN GATE reads GitHub (open pull requests, the merge queue, this head's promote runs) with
@@ -37,20 +61,28 @@ jobs:
     permissions: { contents: read, actions: write, pull-requests: write }
     # RUNNERS: the runner gateway's table (vars.RUNNERS), from which the preflight sizes `runner=`.
     env: { RELEASE_REF: "${{ vars.ENGINE_REF }}", ENGINE_SHA256: "${{ vars.ENGINE_SHA256 }}", RUNNERS: "${{ vars.RUNNERS }}" }
-    outputs: { engine_ref: "${{ steps.engine.outputs.engine_ref }}", engine_sha256: "${{ steps.engine.outputs.engine_sha256 }}", runner: "${{ steps.pre.outputs.runner }}", soak: "${{ steps.pre.outputs.soak }}", one_runner: "${{ steps.pre.outputs.one_runner }}", needs_release_artifact: "${{ steps.pre.outputs.needs_release_artifact }}", run: "${{ steps.pre.outputs.run }}", reason: "${{ steps.pre.outputs.reason }}" }
+    outputs: { engine_ref: "${{ steps.engine.outputs.engine_ref }}", engine_sha256: "${{ steps.engine.outputs.engine_sha256 }}", base_sha: "${{ steps.base.outputs.base_sha }}", runner: "${{ steps.pre.outputs.runner }}", soak: "${{ steps.pre.outputs.soak }}", one_runner: "${{ steps.pre.outputs.one_runner }}", needs_release_artifact: "${{ steps.pre.outputs.needs_release_artifact }}", run: "${{ steps.pre.outputs.run }}", reason: "${{ steps.pre.outputs.reason }}" }
     steps:
       # Full history: the pre-flight reads the pull request's diff against BASE_SHA to choose one runner or the matrix.
       - { uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1, with: { ref: "${{ env.SHA }}", path: busbar, fetch-depth: 0 } } # v7
       # THE ENGINE, downloaded, never compiled: CI's --no-default-features binary of RELEASE_REF from
       # busbar-release's dev-bin release (dev-bin.yml), run only when its sha256 is ENGINE_SHA256.
       # First the pin's shape: a full 40-hex commit and a 64-hex digest, or FAIL.
+      # A CANARY (workflow_dispatch) runs on predev alone, and its inputs replace the pin before
+      # anything reads them: they arrive as env, never in the script's text, and pass the same two
+      # shape checks and the same sha256 check, or FAIL. $GITHUB_ENV then carries them to this
+      # job's later steps (the busbar-release checkout, the pre-flight); the outputs, to every job.
       - name: Engine (busbar-release at RELEASE_REF, sha256-pinned)
         id: engine
-        env: { GH_TOKEN: "${{ secrets.TURNSTILE_DISPATCH_TOKEN }}" }
+        env: { GH_TOKEN: "${{ secrets.TURNSTILE_DISPATCH_TOKEN }}", CANARY_ENGINE_REF: "${{ inputs.engine_ref }}", CANARY_ENGINE_SHA256: "${{ inputs.engine_sha256 }}" }
         run: |
           set -euo pipefail
-          [[ "$RELEASE_REF" =~ ^[0-9a-f]{40}$ ]] || { echo "::error title=ENGINE-PIN FAIL::vars.ENGINE_REF is unset or not a full 40-hex busbar-release commit (busbar-release engine pin <sha>)"; exit 1; }
-          [[ "$ENGINE_SHA256" =~ ^[0-9a-f]{64}$ ]] || { echo "::error title=ENGINE-PIN FAIL::vars.ENGINE_SHA256 is unset or not a 64-hex sha256 (busbar-release engine pin <sha>)"; exit 1; }
+          if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ]; then
+            [ "$GITHUB_REF" = refs/heads/predev ] || { echo "::error title=CANARY::a canary runs on predev, not $GITHUB_REF"; exit 1; }
+            RELEASE_REF="$CANARY_ENGINE_REF" ENGINE_SHA256="$CANARY_ENGINE_SHA256"
+          fi
+          [[ "$RELEASE_REF" =~ ^[0-9a-f]{40}$ ]] || { echo "::error title=ENGINE-PIN FAIL::vars.ENGINE_REF (a canary: its engine_ref) is unset or not a full 40-hex busbar-release commit (busbar-release engine pin <sha>)"; exit 1; }
+          [[ "$ENGINE_SHA256" =~ ^[0-9a-f]{64}$ ]] || { echo "::error title=ENGINE-PIN FAIL::vars.ENGINE_SHA256 (a canary: its engine_sha256) is unset or not a 64-hex sha256 (busbar-release engine pin <sha>)"; exit 1; }
           api=https://api.github.com/repos/GetBusbar/busbar-release/releases
           name="busbar-release-ci-linux-x86_64-$RELEASE_REF"
           id=$(curl -fsSL -H "Authorization: Bearer $GH_TOKEN" "$api/tags/dev-bin" | jq -r --arg n "$name" '.assets[] | select(.name == $n) | .id')
@@ -59,6 +91,12 @@ jobs:
           echo "$ENGINE_SHA256  $RUNNER_TEMP/busbar-release" | sha256sum -c -
           chmod +x "$RUNNER_TEMP/busbar-release"
           { echo "engine_ref=$RELEASE_REF"; echo "engine_sha256=$ENGINE_SHA256"; } >> "$GITHUB_OUTPUT"
+          { echo "RELEASE_REF=$RELEASE_REF"; echo "ENGINE_SHA256=$ENGINE_SHA256"; } >> "$GITHUB_ENV"
+      # A CANARY'S BASE: no pull request or merge group names one, so it is the tip's first parent,
+      # the base the merge group that landed the tip was judged against (its standing reds included).
+      - id: base
+        if: github.event_name == 'workflow_dispatch'
+        run: echo "base_sha=$(git -C busbar rev-parse --verify "$SHA^1")" >> "$GITHUB_OUTPUT"
       - { uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1, with: { repository: GetBusbar/busbar-release, ref: "${{ env.RELEASE_REF }}", token: "${{ secrets.TURNSTILE_DISPATCH_TOKEN }}", path: busbar-release, persist-credentials: false } } # v7
       # The pre-flight is busbar-release's Rust CLI (preflight.json is the one list): it sizes the hop
       # (runner= to $GITHUB_OUTPUT), chooses how a pull request into predev runs (one_runner=: ONE runner
@@ -158,7 +196,8 @@ jobs:
   # artifact (needs_release_artifact) waits for it, at the step that downloads it. Every shard runs to
   # the bottom (FULLY SEEN, busbar-release #152). A pull request into predev runs the shards only when the
   # pre-flight chose the matrix (one_runner=false: every crate affected, or over 20 min on one runner);
-  # otherwise its hop is ONE runner, in the `hop` job below.
+  # otherwise its hop is ONE runner, in the `hop` job below. A canary runs the shards as the merge group
+# did (its pre-flight writes one_runner=false: not a pull request), on the preflight's base_sha.
   hop-shard:
     name: "hop shard ${{ matrix.shard }}"
     strategy: { fail-fast: false, matrix: { shard: [1, 2, 3, 4] } }
@@ -167,7 +206,7 @@ jobs:
     permissions: { contents: read, actions: read }
     runs-on: ${{ needs.preflight.outputs.runner }}
     timeout-minutes: 330
-    env: { RELEASE_REF: "${{ needs.preflight.outputs.engine_ref }}", ENGINE_SHA256: "${{ needs.preflight.outputs.engine_sha256 }}", RUNNERS: "${{ vars.RUNNERS }}" }
+    env: { RELEASE_REF: "${{ needs.preflight.outputs.engine_ref }}", ENGINE_SHA256: "${{ needs.preflight.outputs.engine_sha256 }}", RUNNERS: "${{ vars.RUNNERS }}", BASE_SHA: "${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || needs.preflight.outputs.base_sha }}" }
     steps:
       - { uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1, with: { ref: "${{ env.SHA }}", path: busbar, fetch-depth: 0, persist-credentials: false } } # v7
       # THE ENGINE, downloaded, never compiled: CI's --no-default-features binary of RELEASE_REF from
@@ -230,9 +269,12 @@ jobs:
       # GITHUB_TOKEN (contents read) is for `ci hop`'s R3 re-check alone (is this merge group still a
       # current queue entry's head?), which runs before any candidate code; the judge that runs the
       # candidate never holds it. A superseded group's shard builds nothing.
+      # A canary holds no R2 key: predev's merge-group plan stores its report as the landed base of
+      # the commit it judged (`--store-as-base`), a write no pull request makes, and the keys are the
+      # only switch this file has over it. It builds uncached and judges its base's red steps itself.
       - working-directory: busbar-release
         run: $RUNNER_TEMP/busbar-release ci hop
-        env: { GITHUB_TOKEN: "${{ github.token }}", R2_KEY_ID: "${{ secrets.R2_CACHE_ACCESS_KEY_ID }}", R2_KEY_SECRET: "${{ secrets.R2_CACHE_SECRET_ACCESS_KEY }}", CARGO_PROFILE_DEV_DEBUG: "0", SHARD: "${{ matrix.shard }}/4" }
+        env: { GITHUB_TOKEN: "${{ github.token }}", R2_KEY_ID: "${{ github.event_name != 'workflow_dispatch' && secrets.R2_CACHE_ACCESS_KEY_ID || '' }}", R2_KEY_SECRET: "${{ github.event_name != 'workflow_dispatch' && secrets.R2_CACHE_SECRET_ACCESS_KEY || '' }}", CARGO_PROFILE_DEV_DEBUG: "0", SHARD: "${{ matrix.shard }}/4" }
       - { if: always(), uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a, with: { name: "turnstile-report-${{ env.SHA }}-shard${{ matrix.shard }}", path: "artifacts/", if-no-files-found: warn } } # v7.0.1
   # `hop` (the required check) is the hop's ONE verdict. In a merge group and on the predev->dev pull
   # request it folds the shards: BOARD only when every shard reported and boarded and slsa-build is
@@ -242,14 +284,15 @@ jobs:
   # runs it as ONE runner: no shard, no slsa-build; the ladder's predev `enter_pr`, the merge group's
   # gates and steps scoped to the crates the PR changes plus their reverse dependencies, on the PR merged
   # onto the base tip, judged no worse than the base the merge group landed in its 4 shards
-  # (BASE_SHARDS). It runs the candidate's code, so it holds no write token either.
+  # (BASE_SHARDS). It runs the candidate's code, so it holds no write token either. A canary folds its
+# shards like a merge group; its conclusion is the canary's answer.
   hop:
     needs: [preflight, slsa-build, hop-shard, soak]
     if: ${{ !cancelled() && needs.preflight.result == 'success' }}
     permissions: { contents: read, actions: read }
     runs-on: ${{ (github.event_name == 'pull_request' && github.base_ref != 'dev' && needs.preflight.outputs.one_runner == 'true') && needs.preflight.outputs.runner || 'ubuntu-latest' }}
     timeout-minutes: ${{ (github.event_name == 'pull_request' && github.base_ref != 'dev' && needs.preflight.outputs.one_runner == 'true') && 330 || 30 }}
-    env: { ONE_RUNNER: "${{ github.event_name == 'pull_request' && github.base_ref != 'dev' && needs.preflight.outputs.one_runner == 'true' }}", RELEASE_REF: "${{ needs.preflight.outputs.engine_ref }}", ENGINE_SHA256: "${{ needs.preflight.outputs.engine_sha256 }}", RUNNERS: "${{ vars.RUNNERS }}" }
+    env: { ONE_RUNNER: "${{ github.event_name == 'pull_request' && github.base_ref != 'dev' && needs.preflight.outputs.one_runner == 'true' }}", RELEASE_REF: "${{ needs.preflight.outputs.engine_ref }}", ENGINE_SHA256: "${{ needs.preflight.outputs.engine_sha256 }}", RUNNERS: "${{ vars.RUNNERS }}", BASE_SHA: "${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || needs.preflight.outputs.base_sha }}" }
     steps:
       # THE RUN GATE said run=0 (neutral: the merge queue, or another run of this head, judges it).
       # Nothing was built, so this run does NOT JUDGE the head: the required check fails here, never
@@ -322,10 +365,11 @@ jobs:
   # hop whose runner was lost or timed out wrote no verdict, so `ci fallback` records the job and step
   # conclusions the API keeps after the logs are purged, and the run gate's reason when it refused the
   # run (STACK, wiring drift). A run the gate held neutral (run=0, preflight green) posts nothing: the
-  # queue or another run judges that head.
+  # queue or another run judges that head. A canary posts nothing either: its run's conclusion is read
+# by the auto-pin, and it has no pull request or branch health of its own to write.
   publish:
     needs: [preflight, hop]
-    if: always() && needs.preflight.result != 'skipped' && (needs.preflight.result != 'success' || needs.preflight.outputs.run == '1')
+    if: always() && github.event_name != 'workflow_dispatch' && needs.preflight.result != 'skipped' && (needs.preflight.result != 'success' || needs.preflight.outputs.run == '1')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     # statuses: write: a merge group DENIED as its PR's own red (first in the group, or behind a green
