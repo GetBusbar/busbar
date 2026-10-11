@@ -3344,6 +3344,27 @@ cache), Latchkey as overflow; tomorrow any mix of M3, Latchkey, EC2. The conduct
 prover with a free slot. A proof is a filter, never the verdict: the verdict stays CI's, on Linux
 x86_64, so a rare arm64/x86_64 difference costs at most one CI run.
 
+**The conductor IS the workflow; GitHub is one forge driver (OWNER 2026-10-11).** *"Conductor is the
+master workflow: what could be a GitHub Actions workflow is the Rust conductor with pluggable
+infra."* *"We shouldn't be tightly coupled to GitHub; it is a code repo, and if I want to go to
+Forgejo I could, mid-work."* So:
+- The conductor executes every job of every station itself, on INFRA DRIVERS (the M3's per-job
+  Linux VMs, the Latchkey CLI, EC2 boxes, GitHub-hosted runners), chosen by one owner command
+  (`busbar-release infra use <backends>`, canaried, effective on the next job). Every job asks for a
+  size, including the light orchestration jobs; nothing names a vendor. It stores logs and links
+  them in the PR's one verdict comment, and posts ONE verdict status per PR head that branch
+  protection requires.
+- The code host is a FORGE DRIVER: git push/fetch, pull requests, comments, the verdict status, branch
+  protection. GitHub is the driver today; Forgejo is the same interface. Nothing in the pipeline
+  depends on a forge-only feature: Actions workflows (replaced by the conductor), the merge queue
+  (replaced by the train), forge-only APIs. Switching forge is configuration and a mirror push.
+- Platform of record: busbar's VERDICT jobs run on x86_64 Linux (the 1.5.5 golden was recorded
+  there) unless a measured run proves arm64 byte-identical; the M3's arm64 VMs take proofs and
+  busbar-release's own CI. The M3 runs untrusted-safe: one throwaway VM per job.
+- OPEN (owner, before step 7 of 1.6.0): release signing without a forge-specific identity (SLSA
+  provenance today assumes GitHub's OIDC token, which exists only inside Actions): our own signing
+  key, or the chosen forge's CI.
+
 **What the conductor replaces** (deleted as each station lands): GitHub's merge queue on predev,
 `jump`, the merge-group re-check and orphan machinery, the STALE/UPDATE rule, `ship` and `dev` as
 author tools, and every agent the pipeline spawns (fix, stuck, rebase, shared). The turnstile, the
