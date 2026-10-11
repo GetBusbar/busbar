@@ -77,6 +77,10 @@ const ENGINE_ASSET: &str = "busbar-release-ci-";
 const SHA40_TEST: &str = "=~ ^[0-9a-f]{40}$";
 const SHA256_CHECK: &str = "sha256sum -c";
 const SHA256_VAR: &str = "ENGINE_SHA256";
+/// The pinned judge's binary on the `dev-bin` release, and the digest its job checks it against
+/// (`sha256_linux_x86_64=` of testing/shadow-oracle/oracle-rust.pin).
+const ORACLE_ASSET: &str = "busbar-oracle-linux-x86_64-";
+const ORACLE_SHA256_VAR: &str = "ORACLE_SHA256";
 
 // -------------------------------------------------------------------------------------------
 // THE SMALL PARSER
@@ -777,6 +781,22 @@ fn engine_pin_findings(name: &str, text: &str) -> Vec<Finding> {
         let verifies = lines
             .iter()
             .any(|l| l.contains(SHA256_CHECK) && l.contains(SHA256_VAR));
+        // THE JUDGE'S BYTES TOO: a job that downloads the pinned oracle runs it only after
+        // `sha256sum -c` against the pin's digest.
+        if job_text.contains(ORACLE_ASSET)
+            && !lines
+                .iter()
+                .any(|l| l.contains(SHA256_CHECK) && l.contains(ORACLE_SHA256_VAR))
+        {
+            bad.push(Finding::new(
+                "R16",
+                format!(
+                    "{name}: job `{job}` downloads the pinned oracle ({ORACLE_ASSET}*) without \
+                     `{SHA256_CHECK}` against ${ORACLE_SHA256_VAR} (oracle-rust.pin's \
+                     sha256_linux_x86_64): the judge would be whatever the release holds."
+                ),
+            ));
+        }
         if downloads && !verifies {
             bad.push(Finding::new(
                 "R16",
@@ -1474,6 +1494,19 @@ fn mutations() -> Vec<Mutation> {
             file: "promote.yml",
             rule: "R16",
             apply: |t| drop_first_line_with(t, SHA256_CHECK),
+            creates: false,
+        },
+        Mutation {
+            label: "R16 the pinned oracle runs without its sha256 check",
+            file: "promote.yml",
+            rule: "R16",
+            apply: |t| {
+                replace_once(
+                    t,
+                    "echo \"$ORACLE_SHA256  $RUNNER_TEMP/busbar-oracle\" | sha256sum -c -\n",
+                    "",
+                )
+            },
             creates: false,
         },
         Mutation {
