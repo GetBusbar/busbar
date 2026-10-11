@@ -54,18 +54,18 @@ fn a_generation_lists_every_configured_model_in_name_order() {
     let two =
         read_settings(br#"{"models":{"b":{"provider":"typesafe"},"a":{"provider":"typesafe"}}}"#)
             .expect("the section reads");
-    let spec = generation_snapshot(&two);
+    let spec = generation_spec(&two);
     assert_eq!(spec.listed, vec!["a".to_string(), "b".to_string()]);
     assert_eq!(spec.claims, snapshot_spec(2).claims);
 
     let one =
         read_settings(br#"{"models":{"jev":{"provider":"typesafe"}}}"#).expect("the section reads");
-    let spec = generation_snapshot(&one);
+    let spec = generation_spec(&one);
     assert_eq!(spec.listed, vec!["jev".to_string()]);
     assert_eq!(spec.claims, snapshot_spec(1).claims);
 
     let empty = read_settings(b"").expect("an empty blob reads");
-    assert!(generation_snapshot(&empty).listed.is_empty());
+    assert!(generation_spec(&empty).listed.is_empty());
 }
 
 #[test]
