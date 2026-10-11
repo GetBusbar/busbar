@@ -3295,6 +3295,63 @@ is narrow.) Deleting `pr/*` auto-closes those PRs, which also fires nothing, bec
 in the default `pull_request` types.
 
 
+## THE CONDUCTOR (OWNER 2026-10-11) — one deterministic driver; authors write code, nothing else
+
+> **OWNER 2026-10-11.** *"We have the pieces, not a thing pushing things through the pieces, and
+> that can't be an agent."* *"I wake up one day, never use agents again, replace them with human Bob,
+> and the system still works. Bob codes, runs one command, and it does its thing and tells Bob (or
+> the agent) if they need to do something else."* *"Every second of waste is $ burnt — money and
+> time."* *"The workflow is the workflow"* (no run cap). Supersedes, where they disagree: "How work
+> lands" item 3 (GitHub's merge queue, OWNER 2026-10-02), "Ship and stop", and every rule that has
+> an agent push, prove, retry, land, promote, or be spawned by the pipeline.
+
+**Why (measured 2026-10-10/11, busbar-release's 2-hour audit ledger, 9 windows):** Latchkey $442,
+of which $254 (57%) bought nothing: 166 of 264 merge-group runs were cascades thrown away behind a
+red group, 211 of 419 PR runs were red (fixes nobody had run), and the proof that would have caught
+them cheaply was refused by a run cap.
+
+**The rule.** One program decides; authors only write code. An AUTHOR is whoever writes code — a
+person or an agent, interchangeably; the pipeline never knows or cares which, and never spawns one.
+The CONDUCTOR is `busbar-release conductor`, one always-on service (today on the build server, the
+M3 at `10.1.7.14`; it runs anywhere from one config directory). It is deterministic code: every
+decision is a rule over measured facts. It updates itself from each green `main` release of
+busbar-release; nothing about running it is agent-driven.
+
+**The author's whole interface is one command:** `busbar-release submit` from a branch (it replaces
+`ship`). The conductor takes it from there and tells the author only when they must act — what is
+red, with the output, and the one thing to do next (fix and `submit` again; resolve a conflict;
+owner sign-off needed) — on the terminal, as the PR's one verdict comment, and in `busbar-release
+status`.
+
+**The stations after `submit`.** The conductor owns every move.
+
+| Station | What happens | Junk it refuses |
+|---|---|---|
+| PROVE | The conductor runs the tests and gates the change reaches, on a PROVER (below). Red: back to the author with the output; nothing is pushed to CI. No run cap. | A full CI hop used as a compiler; any unproven change reaching CI. |
+| PR CHECK | The conductor pushes and opens or updates the PR; one PR check per head (the merge-group plan minus the rows the diff cannot reach, "Verification runs once per input"). A run on a superseded head is cancelled. | Runs on superseded heads; re-runs because predev moved (the train verifies on the tip). |
+| TRAIN | The conductor batches the PRs whose PR check is green onto the predev tip (`train/<n>`, one merge per PR, a conflicting PR goes back to its author) and runs the full plan ONCE on the batch. Green: predev takes the batch and every PR in it lands. Red: the failing rows are attributed to the PRs whose changes reach them and those go back to their authors; the rest re-batch (unattributable: split in half). Only the conductor moves predev. | Speculative per-PR merge groups and their cascades (impossible by construction); a batch rebuilt for PRs that did not change. |
+| PROMOTE | predev -> dev -> qa -> main on the same engine, each rung judged once, absolutely where the ladder says so. | A promotion run that cannot pass (a rung whose required suite is registered not-run). |
+
+**METER** runs under every station: each proof and CI run records backend, minutes, dollars and
+outcome in one ledger; the waste over any window is a `health` row that fails above 10%.
+
+**PROVERS are registered backends, like runners.** A prover is a drop-in driver beside the runner
+gateway's (`Driver`): its name, slots, price per minute, readiness, canary, its own idempotent
+`up`/`down` (the M3 prover's `up` builds its Linux VM from nothing), and `prove(commit, commands) ->
+verdict`. Which provers are live, in what order and with how many slots is one table (`PROVERS`),
+switched with one command after a canary, never by code: today the M3 (an arm64 Linux VM, warm
+cache), Latchkey as overflow; tomorrow any mix of M3, Latchkey, EC2. The conductor fills the first
+prover with a free slot. A proof is a filter, never the verdict: the verdict stays CI's, on Linux
+x86_64, so a rare arm64/x86_64 difference costs at most one CI run.
+
+**What the conductor replaces** (deleted as each station lands): GitHub's merge queue on predev,
+`jump`, the merge-group re-check and orphan machinery, the STALE/UPDATE rule, `ship` and `dev` as
+author tools, and every agent the pipeline spawns (fix, stuck, rebase, shared). The turnstile, the
+hop, the ladder, the step cache, autopin and the EC2 runner backend stay as its internals.
+
+**Interim, until the train is live:** predev's merge queue builds at most 2 groups at once (OWNER
+2026-10-11, was 10).
+
 ## How work lands: the PR flow and the rules every contributor follows
 
 These are the binding process rules, moved here from the laptop-side `agent-rules.md` (lane R7,
