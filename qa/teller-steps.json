@@ -1,8 +1,8 @@
 {
   "_comment": [
     "H2 (docs/design/BUSBAR-1.6.0.md THE DESIGN, §1): 'conformance rigs carry one cell per Teller step per plane'.",
-    "Steps are BUSBAR-1.6.0.md THE DESIGN, §1 (arrival, decode, authenticate, verify, approve, admit, route,",
-    "meter, audit, exit). This is the plane x step MATRIX: for every cell, either an id that names a",
+    "Steps are the kernel's own StepName::ALL (crates/busbar-contract/src/caps/step.rs; spec #72, BUSBAR-1.6.0.md:2266): arrival, decode,",
+    "authenticate, verify, approve, admit, route, meter, audit, encode (THE DESIGN §1, :154, spells the last one exit). This is the plane x step MATRIX: for every cell, either an id that names a",
     "real, run scenario in one of the conformance rigs (or the shadow oracle, for the llm plane), or",
     "the literal string \"none\" naming a genuine gap. 'gating' marks the 7 steps whose contract H2",
     "spells out explicitly (a refusal/outcome that must never leak past its step); the other 3",
@@ -11,10 +11,20 @@
     "Checked by: cargo xtask gate teller-steps. Wired into scripts/verify-1.6.0-done.sh",
     "beside the ISOMORPHISM group.",
     "",
+    "THE ROSTER IS DERIVED, NOT WRITTEN: 'steps' must be the kernel's own StepName::ALL",
+    "(crates/busbar-contract/src/caps/step.rs, which the kernel's teller imports), as a set AND in loop",
+    "order, and the matrix rows must be every PlaneMeta KEY a plane-kind crate (busbar-plane-*) states,",
+    "plus any row another crate's own PlaneMeta declares (admin: busbar-core-admin). A plane with no row,",
+    "a kernel step the matrix lacks, and a step or row the tree does not declare are each RED.",
+    "",
+    "OWED GAPS: a gating cell that is \"none\" is RED unless 'owed_gaps' names it (\"<plane>.<step>\": \"<owner>\").",
+    "The list must be EXACTLY the measured gaps: a gap nobody owes is RED, and an owed entry whose cell",
+    "is no longer a gap is RED until it is struck. The list only shrinks; the gate prints it on every run.",
+    "",
     "THE ROOT COLUMN (`root_legs` + every cell's `root`). The `cell` above is the SHIPPED path: the",
     "step proven where a conformance rig drives the plane as an operator would. Every plane now",
-    "also runs through the composition root -- root-llm (the root's node, behind proto-llm) / root-voice / root-admin behind their",
-    "features, root-mcp / root-a2a on the kernel-loop rider every linked one-shot plane is served through -- and a step proven on the rig and unwitnessed over the loop is the same half-answer.",
+    "also runs through the composition root -- root-llm (the root's node, behind proto-llm) / root-streaming / root-admin behind their",
+    "features, root-mcp / root-a2a on the kernel-loop rider every linked one-shot plane is served through, root-decisions on the decision plane's door served by the root's serve path -- and a step proven on the rig and unwitnessed over the loop is the same half-answer.",
     "So every cell carries a SECOND verdict over its plane's root leg:",
     "  proven -- with `test`: a `<the leg's own file under crates/busbar/src/root/>::<test fn>` cell that drives the",
     "            step through the loop. The check verifies the file is the leg's own and the fn is in",
@@ -68,10 +78,19 @@
       "gating": true,
       "note": "the audit chain gains exactly one entry, right action/outcome"
     },
-    "exit": {
+    "encode": {
       "gating": true,
-      "note": "one terminal, no double-post"
+      "note": "one terminal, no double-post: the loop's last step, StepName::Encode in the kernel's own roster (THE DESIGN §1, BUSBAR-1.6.0.md:154, spells it exit)"
     }
+  },
+  "owed_gaps": {
+    "decision.authenticate": "DECISIONS-FIX",
+    "decision.verify": "DECISIONS-FIX",
+    "decision.admit": "DECISIONS-FIX",
+    "decision.route": "DECISIONS-FIX",
+    "decision.meter": "DECISIONS-FIX",
+    "decision.audit": "DECISIONS-FIX",
+    "decision.encode": "DECISIONS-FIX"
   },
   "root_legs": {
     "root-llm": {
@@ -89,10 +108,15 @@
       "file": "crates/busbar/src/root/tests/gauntlet_kernel.rs",
       "feature": "plane-a2a"
     },
-    "root-voice": {
-      "plane": "voice",
+    "root-streaming": {
+      "plane": "streaming",
       "file": "crates/busbar/src/root/tests/gauntlet_kernel.rs",
       "feature": "plane-streaming"
+    },
+    "root-decisions": {
+      "plane": "decision",
+      "file": "crates/busbar/src/root/tests/serve_tests.rs",
+      "feature": "plane-decisions"
     },
     "root-admin": {
       "plane": "admin",
@@ -200,7 +224,7 @@
           "note": "a driven unit's end seals exactly one audit record from the facts and pass its audit door handed back, and an unanswered audit door seals none (the in-memory request chain this cell named is deleted by the P2 ruling)"
         }
       },
-      "exit": {
+      "encode": {
         "cell": "teller|exit-terminal",
         "status": "new",
         "note": "shadow-oracle family teller; recorded PASS on the 1.5.5 golden",
@@ -312,7 +336,7 @@
           "note": "one served tools/call lands exactly ONE mcp_tool.call row in the admin audit ring, naming the tool and the calling principal"
         }
       },
-      "exit": {
+      "encode": {
         "cell": "mcp.rig|h2-exit-terminal",
         "status": "new",
         "note": "scripts/mcp-subject/h2-exit-terminal.sh; two served tools/call units settle to exactly two usage deltas and exactly two audit rows -- one terminal per unit, never doubled, never dropped",
@@ -424,7 +448,7 @@
           "note": "one served hop lands exactly ONE agent.call row, applied, in the admin audit ring for the calling principal"
         }
       },
-      "exit": {
+      "encode": {
         "cell": "a2a.battery|h2-exit-terminal",
         "status": "new",
         "note": "scripts/a2a-subject/h2-exit-terminal.sh; two served message/send units settle to exactly two usage deltas and exactly two audit rows -- one terminal per unit, never doubled, never dropped",
@@ -436,16 +460,16 @@
         }
       }
     },
-    "voice": {
+    "streaming": {
       "arrival": {
         "cell": "concurrency|inbound-shed|n8",
         "status": "mapped",
         "note": "shared kernel gate; plane-agnostic",
         "root": {
           "state": "proven",
-          "leg": "root-voice",
+          "leg": "root-streaming",
           "test": "crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_carries_one_unit_per_call",
-          "note": "on the served session leg (the kernel-loop session rider `install()` registers for the streaming plane's key): each call at the voice door is one session open the rider carries and one report, so two calls are two units, never one"
+          "note": "on the served session leg (the kernel-loop session rider `install()` registers for the streaming plane's key): each call at the streaming door is one session open the rider carries and one report, so two calls are two units, never one"
         }
       },
       "decode": {
@@ -454,7 +478,7 @@
         "note": "testing/voice-conformance/legs/spec-per-dialect.sh; the per-dialect spec battery includes decode-shape checks",
         "root": {
           "state": "proven",
-          "leg": "root-voice",
+          "leg": "root-streaming",
           "test": "crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_refuses_a_body_that_does_not_decode",
           "note": "on the served session leg: a client event the plane reads is carried to the upstream, and a frame the plane cannot read reaches the upstream on no wire at all, on a session the rider opened"
         }
@@ -465,7 +489,7 @@
         "note": "testing/voice-conformance/legs/provider-credential.sh; K1 -- credential threaded from the composition root before a session opens",
         "root": {
           "state": "proven",
-          "leg": "root-voice",
+          "leg": "root-streaming",
           "test": "crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_attributes_the_session_to_the_resolved_key",
           "note": "on the served session leg: the session answers for the key the door resolved and for nobody else -- its turns land on that key's own ledger, and a caller the door resolved no key for is attributed nothing"
         }
@@ -473,10 +497,10 @@
       "verify": {
         "cell": "voice.rig|provider-credential",
         "status": "mapped",
-        "note": "same leg also proves the mounted door can reach a real realtime provider -- VerifiedDestination in voice terms",
+        "note": "same leg also proves the mounted door can reach a real realtime provider -- VerifiedDestination in streaming terms",
         "root": {
           "state": "proven",
-          "leg": "root-voice",
+          "leg": "root-streaming",
           "test": "crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_opens_the_session_on_the_destination_it_judged",
           "note": "on the served session leg: the destination the open-pass gate judged inside the rider is the destination the session is metered under -- every count lands under that one lane"
         }
@@ -487,7 +511,7 @@
         "note": "testing/voice-conformance/legs/session-scope.sh; K3 -- the session scope kind is a gate, not vocabulary",
         "root": {
           "state": "proven",
-          "leg": "root-voice",
+          "leg": "root-streaming",
           "test": "crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_refuses_a_grant_short_of_the_operation",
           "note": "on the served session leg: a key valid for the door but granted no session scope is refused with the plane's own answer before the gate and opens nothing; a granted key reaches the governed open"
         }
@@ -498,7 +522,7 @@
         "note": "testing/voice-conformance/legs/admit-refusal.sh; a key whose budget is already spent is refused AT THE DOOR (StartError::BudgetRefused, topology::open_admitted_session) before any host-side lease opens and before any ledger posting -- no provider dial has anything left to reach; a negative control (the same destination, uncapped) opens cleanly",
         "root": {
           "state": "proven",
-          "leg": "root-voice",
+          "leg": "root-streaming",
           "test": "crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_refuses_an_over_budget_caller_before_it_dials",
           "note": "on the served session leg: a key whose chain already reads dry is refused at the open, past the rider's gate and before any durable row or account exists, while a key with room opens"
         }
@@ -509,7 +533,7 @@
         "note": "testing/voice-conformance/legs/route-failover.sh; a hard-down provider dial trips the breaker cell on its first strike (topology::dial_provider), and the tripped cell refuses every FURTHER dial before any socket/URL work -- the documented terminal outcome, with no repeated egress once the cell is open",
         "root": {
           "state": "proven",
-          "leg": "root-voice",
+          "leg": "root-streaming",
           "test": "crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_opens_a_session_that_relays_both_ways",
           "note": "on the served session leg: the session the rider opened relays the provider's audio down to the client and the client's audio up to the provider"
         }
@@ -520,7 +544,7 @@
         "note": "testing/voice-conformance/legs/metering-lease.sh; K2 -- the session's money hop is the host's reserve-then-settle lease, capped by the caller's own budget",
         "root": {
           "state": "proven",
-          "leg": "root-voice",
+          "leg": "root-streaming",
           "test": "crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_meters_each_turn_per_declared_class",
           "note": "on the served session leg: one turn is ledgered on the presenting key per class the plane declares, the two text halves on their own classes rather than summed (Q21b: the kernel's session account)"
         }
@@ -531,20 +555,129 @@
         "note": "testing/voice-conformance/legs/audit-record.sh; one governed session lands exactly one new admin-audit entry (topology::open_admitted_session -> VoiceRuntime::audit_session -> JournalHost::audit_record), carrying the streaming.session.open action literal and the applied outcome; two sessions land exactly two rows",
         "root": {
           "state": "proven",
-          "leg": "root-voice",
+          "leg": "root-streaming",
           "test": "crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_audits_each_call_once",
           "note": "on the served session leg: a served open lands exactly one admin-audit row naming the mutation, the session, its outcome and its principal"
         }
       },
-      "exit": {
+      "encode": {
         "cell": "voice.rig|exit-terminal",
         "status": "new",
         "note": "testing/voice-conformance/legs/exit-terminal.sh; one session ends once -- a metering lease settles exactly once under a double close (LeaseCloseGuard's own idempotent cost_close contract), and a session's one admin-audit row survives being torn down before it ever runs a frame",
         "root": {
           "state": "proven",
-          "leg": "root-voice",
+          "leg": "root-streaming",
           "test": "crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_ends_each_call_once",
           "note": "on the served session leg: the session ends once -- the turn still open when the carrier ends is ledgered with the session, and the durable row is settled and evicted"
+        }
+      }
+    },
+    "decision": {
+      "arrival": {
+        "cell": "concurrency|inbound-shed|n8",
+        "status": "mapped",
+        "note": "shared kernel gate, judged before any plane is known; the same cell covers the decision plane",
+        "root": {
+          "state": "none",
+          "leg": "root-decisions",
+          "note": "no cell on this leg fills the in-flight table or sends an oversized body at the decisions claim, so the arrival gate is never seen refusing a decision unit through the serve path"
+        }
+      },
+      "decode": {
+        "cell": "none",
+        "status": "none",
+        "note": "no conformance rig drives the jev wire: no oracle cell, rig script or suite scenario sends the decisions door a body it cannot decode",
+        "root": {
+          "state": "none",
+          "leg": "root-decisions",
+          "note": "every request this leg sends carries a well-formed jev body, so the door's arrive is never handed bytes it must discard and the decode refusal goes unwitnessed over the driver"
+        }
+      },
+      "authenticate": {
+        "cell": "none",
+        "status": "none",
+        "note": "no rig scenario presents the decisions claim a bad credential; the refusal is proven only by the root leg beside this cell",
+        "root": {
+          "state": "proven",
+          "leg": "root-decisions",
+          "test": "crates/busbar/src/root/tests/serve_tests.rs::the_data_router_built_with_the_door_serves_only_its_claims",
+          "note": "an unkeyed caller at the door's claim is refused Unauthenticated before anything is charged, the kernel writing the reason and the plane rendering it, while a router built without the door hands that path to nobody"
+        }
+      },
+      "verify": {
+        "cell": "none",
+        "status": "none",
+        "note": "no rig scenario asks the decision plane for a provider the caller's credential may not reach",
+        "root": {
+          "state": "proven",
+          "leg": "root-decisions",
+          "note": "a unit presented by a key that names only another pool is refused before Admit draws a bucket and before its dial, the door judging the pool grant at its approve seat and sealing ScopeDenied on the audit chain, while the same door serves the key granted every pool",
+          "test": "crates/busbar/src/root/tests/serve_tests.rs::a_decisions_unit_from_a_key_naming_another_pool_is_refused_before_its_dial"
+        }
+      },
+      "approve": {
+        "cell": "none",
+        "status": "none",
+        "note": "no rig scenario holds a decisions caller to a scope short of the systemone operation",
+        "root": {
+          "state": "none",
+          "leg": "root-decisions",
+          "note": "the minted key carries every scope, so no decision unit is held short of its operation and the approve refusal is never driven through the serve path"
+        }
+      },
+      "admit": {
+        "cell": "none",
+        "status": "none",
+        "note": "no rig scenario spends a decisions caller's budget and watches the next request refused before its dial",
+        "root": {
+          "state": "proven",
+          "leg": "root-decisions",
+          "note": "a keyed caller within its group budget is served and charged, the next unit past the budget is refused 429 before its dial naming the seconds until the window rolls, and a never-rolling window names none",
+          "test": "crates/busbar/src/root/tests/serve_tests.rs::a_decisions_unit_past_its_budget_is_refused_with_a_retry_after"
+        }
+      },
+      "route": {
+        "cell": "none",
+        "status": "none",
+        "note": "no rig scenario takes the decision provider down; the jev rig owes the failover or terminal outcome",
+        "root": {
+          "state": "proven",
+          "leg": "root-decisions",
+          "test": "crates/busbar/src/root/tests/serve_tests.rs::a_plane_stating_no_breaker_fact_keeps_the_default_bench",
+          "note": "the sole member's transient 503 benches it under the host's default breaker cell, and the next call through the composed door is refused without its dial ever reaching the far end: the documented terminal outcome"
+        }
+      },
+      "meter": {
+        "cell": "none",
+        "status": "none",
+        "note": "no rig scenario reads a decisions usage delta; the plane's own battery proves only the metering surface",
+        "root": {
+          "state": "proven",
+          "leg": "root-decisions",
+          "test": "crates/busbar/src/root/tests/serve_tests.rs::a_claimed_request_is_served_through_the_door_and_its_money_posted",
+          "note": "one served systemone request posts exactly one line on the node's book under the (plane, model) lane, its decision class counted once from what the far end reported, and the governance ledger counts one request"
+        }
+      },
+      "audit": {
+        "cell": "none",
+        "status": "none",
+        "note": "no rig scenario reads the audit chain after a decisions unit; the plane declares no record kinds",
+        "root": {
+          "state": "proven",
+          "leg": "root-decisions",
+          "note": "a served unit and a rate-limited unit each seal one record on the node's audit chain under the plane's operation class, linked in sequence, the walk clean and a record altered after its seal breaking it",
+          "test": "crates/busbar/src/root/tests/serve_tests.rs::every_decisions_unit_served_or_refused_seals_one_record_on_one_tamper_evident_chain"
+        }
+      },
+      "encode": {
+        "cell": "none",
+        "status": "none",
+        "note": "no rig scenario drives two decisions units and counts their terminals",
+        "root": {
+          "state": "proven",
+          "leg": "root-decisions",
+          "test": "crates/busbar/src/root/tests/serve_tests.rs::a_claimed_request_is_served_through_the_door_and_its_money_posted",
+          "note": "after the served unit ends, both the money steps and the node hold zero open units and the book carries its single line: the unit left through one terminal and was posted once"
         }
       }
     },
@@ -648,7 +781,7 @@
           "note": "the same chain the rig column reads from outside, read from the step that writes it: a mutating verb appends exactly one entry under its own name and the applied outcome, a read appends none because the chain records what changed, and a unit refused before Admit still appends one under the rejected outcome. The chain is verified after each, so the entries are linked and not merely counted"
         }
       },
-      "exit": {
+      "encode": {
         "cell": "admin.ops|PostKeys|idempotent-replay",
         "status": "mapped",
         "note": "the same Idempotency-Key replayed returns the first response verbatim -- one terminal per mutation, never doubled",
