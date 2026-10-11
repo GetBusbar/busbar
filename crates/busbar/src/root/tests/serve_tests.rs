@@ -309,10 +309,10 @@ async fn a_claimed_request_is_served_through_the_door_and_its_money_posted() {
         key_file.display()
     ))
     .expect("a provider entry");
-    let providers = provider_routes(&std::collections::HashMap::from([(
-        "typesafe".to_string(),
-        provider,
-    )]));
+    let providers = provider_routes(
+        &std::collections::HashMap::from([("typesafe".to_string(), provider)]),
+        &busbar_kernel::config_validate::MetadataPosture::default(),
+    );
     let secrets = busbar_kernel::config::secret::SecretResolver::builtins_only();
     let auths = OutboundAuths::new(
         Arc::clone(&dispatcher),
@@ -2395,18 +2395,20 @@ async fn serve_limited(
     port: u16,
     limits: Vec<busbar_kernel::config::groups::LimitCfg>,
 ) -> Serving {
-    serve_governed(linked, instance, port, limits, 0).await
+    serve_governed(linked, instance, port, limits, 0, None).await
 }
 
 #[cfg(feature = "plane-decisions")]
 /// [`serve_limited`], the plane stating its own per-request fee (its section's reserved
-/// `fees.per_request`, #47), in minor units.
+/// `fees.per_request`, #47), in minor units, and the caller's key minted with `allowed_pools`
+/// (`None` = every pool).
 async fn serve_governed(
     linked: &crate::root::linked::Linked,
     instance: &str,
     port: u16,
     limits: Vec<busbar_kernel::config::groups::LimitCfg>,
     fee: i64,
+    allowed_pools: Option<Vec<String>>,
 ) -> Serving {
     let key_file = std::env::temp_dir().join(format!(
         "busbar-serve-door-{instance}-{}",
@@ -2414,7 +2416,7 @@ async fn serve_governed(
     ));
     std::fs::write(&key_file, CREDENTIAL).expect("the credential file");
     let api_key = format!("{{file: '{}'}}", key_file.display());
-    let serving = serve_configured(linked, instance, port, limits, fee, &api_key)
+    let serving = serve_configured(linked, instance, port, limits, fee, allowed_pools, &api_key)
         .await
         .unwrap_or_else(|e| panic!("the door plane composes, its egress sealed: {e}"));
     let _ = std::fs::remove_file(&key_file);
@@ -2430,7 +2432,7 @@ pub(super) async fn serve_keyed(
     port: u16,
     api_key: &str,
 ) -> Result<Serving, String> {
-    serve_configured(linked, instance, port, Vec::new(), 0, api_key).await
+    serve_configured(linked, instance, port, Vec::new(), 0, None, api_key).await
 }
 
 #[cfg(linked_section_decisions)]
@@ -2441,6 +2443,7 @@ async fn serve_configured(
     port: u16,
     limits: Vec<busbar_kernel::config::groups::LimitCfg>,
     fee: i64,
+    allowed_pools: Option<Vec<String>>,
     api_key: &str,
 ) -> Result<Serving, String> {
     // The scrape sink's `/metrics` is mounted on a test app built with the recorder installed.
@@ -2518,6 +2521,7 @@ async fn serve_configured(
         .mint_signed(
             NewKeySpec {
                 name: "decider".to_string(),
+                allowed_pools,
                 group: (!groups.is_empty()).then(|| group.clone()),
                 ..Default::default()
             },
@@ -2544,10 +2548,10 @@ async fn serve_configured(
         busbar_plane_decisions::config::PROTOCOL,
     ))
     .expect("a provider entry");
-    let providers = provider_routes(&std::collections::HashMap::from([(
-        "typesafe".to_string(),
-        provider,
-    )]));
+    let providers = provider_routes(
+        &std::collections::HashMap::from([("typesafe".to_string(), provider)]),
+        &busbar_kernel::config_validate::MetadataPosture::default(),
+    );
     let secrets = busbar_kernel::config::secret::SecretResolver::builtins_only();
     let auths = OutboundAuths::new(
         Arc::clone(&dispatcher),
@@ -4088,7 +4092,7 @@ async fn call_through(
 /// GOVERNANCE-BUDGET: a decisions unit's spend (the plane's own per-request fee, its section's
 /// `fees.per_request`) is charged to the presenting key, and the key's group BUDGET refuses the unit
 /// past it before its dial, 429, naming in `Retry-After` the seconds until the budget's window rolls,
-/// as the llm plane names them (1.5.5's governance refusal). A window that never rolls (`per:
+/// as 1.5.5's governance refusal names them. A window that never rolls (`per:
 /// total`) names no wait. RED: a driver that drops the governance refusal's wait, or a decisions
 /// renderer that does not render it, answers the refusal with no `Retry-After`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -4104,6 +4108,7 @@ async fn a_decisions_unit_past_its_budget_is_refused_with_a_retry_after() {
         port,
         vec![budget_of(1, LimitWindow::Hour)],
         1,
+        None,
     )
     .await;
 
@@ -4149,6 +4154,7 @@ async fn a_decisions_unit_past_its_budget_is_refused_with_a_retry_after() {
         port,
         vec![budget_of(1, LimitWindow::Total)],
         1,
+        None,
     )
     .await;
     assert_eq!(call_through(&serving, &mut heard).await.0, StatusCode::OK);
@@ -4156,6 +4162,52 @@ async fn a_decisions_unit_past_its_budget_is_refused_with_a_retry_after() {
     assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
     assert!(!reached);
     assert_eq!(wait, None, "a total never rolls: no wait is named");
+}
+
+#[cfg(feature = "plane-decisions")]
+/// VERIFY: a unit presented by a key that names only another pool is refused before Admit draws a
+/// bucket and before its dial, the refusal sealed on the audit chain as the unit's end; the same
+/// door serves the key granted every pool (the control). The served door judges the key's pool
+/// grant at its approve seat (`ScopeDenied`), as every served door does. RED: with the key granted
+/// every pool the unit is served and the far end hears it, so the refusal assertions fail.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_decisions_unit_from_a_key_naming_another_pool_is_refused_before_its_dial() {
+    let _one = PUBLISHING.lock().await;
+    let instance = "serve-door-verify";
+    let _published = Published(instance);
+    let (port, mut heard) = far_end().await;
+    let other = Some(vec!["elsewhere".to_string()]);
+    let serving = serve_governed(&crate::LINKED, instance, port, Vec::new(), 0, other).await;
+    let (status, _wait, reached) = call_through(&serving, &mut heard).await;
+    assert_ne!(
+        status,
+        StatusCode::OK,
+        "a pool the key does not name is not served"
+    );
+    assert!(!reached, "the far end is never dialled");
+    let records = serving.audit_records();
+    assert_eq!(records.len(), 1, "the refusal is sealed: {records:?}");
+    assert!(
+        matches!(
+            records[0].outcome.unit_end,
+            busbar_contract::caps::Outcome::Refused(
+                busbar_contract::caps::StepName::Approve,
+                ReasonCode::ScopeDenied
+            )
+        ),
+        "refused on its pool grant, before admit: {:?}",
+        records[0].outcome
+    );
+    drop(serving);
+
+    // THE CONTROL: the same door, the key granted every pool, is served and dials.
+    let instance = "serve-door-verify-control";
+    let _published = Published(instance);
+    let (port, mut heard) = far_end().await;
+    let serving = serve_governed(&crate::LINKED, instance, port, Vec::new(), 0, None).await;
+    let (status, _wait, reached) = call_through(&serving, &mut heard).await;
+    assert_eq!(status, StatusCode::OK, "the granted key is served");
+    assert!(reached, "and dispatched");
 }
 
 #[cfg(feature = "plane-decisions")]

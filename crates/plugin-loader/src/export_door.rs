@@ -716,4 +716,4 @@ fn fold_shed(name: &str) {
 
 #[cfg(test)]
 #[path = "tests/export_door_tests.rs"]
-mod tests;
+pub(crate) mod tests;

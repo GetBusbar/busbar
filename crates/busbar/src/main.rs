@@ -789,7 +789,10 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
         .unwrap_or_default();
     // The resolved `providers:` (catalog-merged), as the door planes' members reach them (THE
     // DESIGN §6 step 2), captured before `cfg` is consumed.
-    let door_providers = root::door_steps::provider_routes(&cfg.providers);
+    let door_providers = root::door_steps::provider_routes(
+        &cfg.providers,
+        &config_validate::MetadataPosture::global(&cfg),
+    );
     // The kernel-owned sections a door plane's Statement may name beside its own (spec Part 1 §4),
     // as the configuration resolved them, captured before `cfg` is consumed.
     let door_kernel_sections = root::door_steps::kernel_sections(&cfg);

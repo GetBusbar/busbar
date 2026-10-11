@@ -7,7 +7,7 @@
 //! that were ABOUT those files (the staged-verification graph, the draft flag, the red-branch gate,
 //! the first gate's run list) went with them, rows and code together.
 //!
-//! Four rules were never about one file. They are bans over EVERY workflow and composite action
+//! Five rules were never about one file. They are bans over EVERY workflow and composite action
 //! that remains (`promote.yml` and the reusable `plugin-*.yml` workflows the plugin repos call),
 //! and each has a specific observed failure behind it:
 //!
@@ -23,6 +23,8 @@
 //!   shape-checks as 40 hex before the checkout (the org variable `vars.ENGINE_REF`, OWNER
 //!   2026-10-10: the engine pin lives outside this repo), and every job that downloads the engine
 //!   binary runs it only after `sha256sum -c` against `ENGINE_SHA256`.
+//! * **R17 — no job hard-codes a vendor runner label.** Every job asks the runner gateway for a
+//!   logical size and `vars.RUNNERS` names the label, so a workflow never spells a vendor.
 //!
 //! **The parser stays deliberately small, and here that is a correctness argument rather than a
 //! dependency one.** The rules are assertions about what a human WROTE (a trailing `# tag` comment
@@ -55,7 +57,7 @@ const ACTIONS_DIR: &str = ".github/actions";
 const MIN_WORKFLOWS: usize = 5;
 
 /// The rule ids, which are also the ledger row ids.
-const RULES: &[&str] = &["R1", "R11", "R14", "R15", "R16"];
+const RULES: &[&str] = &["R1", "R11", "R14", "R15", "R16", "R17"];
 
 /// R16's subject: the release engine's repository, and the name prefix of its CI binary on the
 /// `dev-bin` release.
@@ -65,6 +67,10 @@ const ENGINE_ASSET: &str = "busbar-release-ci-";
 const SHA40_TEST: &str = "=~ ^[0-9a-f]{40}$";
 const SHA256_CHECK: &str = "sha256sum -c";
 const SHA256_VAR: &str = "ENGINE_SHA256";
+/// The pinned judge's binary on the `dev-bin` release, and the digest its job checks it against
+/// (`sha256_linux_x86_64=` of testing/shadow-oracle/oracle-rust.pin).
+const ORACLE_ASSET: &str = "busbar-oracle-linux-x86_64-";
+const ORACLE_SHA256_VAR: &str = "ORACLE_SHA256";
 
 // -------------------------------------------------------------------------------------------
 // THE SMALL PARSER
@@ -515,6 +521,22 @@ fn engine_pin_findings(name: &str, text: &str) -> Vec<Finding> {
         let verifies = lines
             .iter()
             .any(|l| l.contains(SHA256_CHECK) && l.contains(SHA256_VAR));
+        // THE JUDGE'S BYTES TOO: a job that downloads the pinned oracle runs it only after
+        // `sha256sum -c` against the pin's digest.
+        if job_text.contains(ORACLE_ASSET)
+            && !lines
+                .iter()
+                .any(|l| l.contains(SHA256_CHECK) && l.contains(ORACLE_SHA256_VAR))
+        {
+            bad.push(Finding::new(
+                "R16",
+                format!(
+                    "{name}: job `{job}` downloads the pinned oracle ({ORACLE_ASSET}*) without \
+                     `{SHA256_CHECK}` against ${ORACLE_SHA256_VAR} (oracle-rust.pin's \
+                     sha256_linux_x86_64): the judge would be whatever the release holds."
+                ),
+            ));
+        }
         if downloads && !verifies {
             bad.push(Finding::new(
                 "R16",
@@ -624,6 +646,109 @@ impl Finding {
 
 #[derive(Debug, Default)]
 pub struct WorkflowRulesGate;
+
+/// Is this label one of the runner vendors' own? `self-hosted` and `busbar-canary` exactly, and
+/// anything under the `latchkey-` or `busbar-ec2-` families. GitHub-hosted images are the
+/// platform floor and are not vendor labels.
+fn is_vendor_label(label: &str) -> bool {
+    let l = label.trim().trim_matches(['\'', '"']).to_ascii_lowercase();
+    l == "self-hosted"
+        || l == "busbar-canary"
+        || l.starts_with("latchkey-")
+        || l.starts_with("busbar-ec2-")
+}
+
+/// The vendor labels one `runs-on` value spells. Text outside `${{ }}` is split into its list and
+/// mapping pieces; inside an expression only the quoted string literals count, so
+/// `${{ x || 'latchkey-large' }}` is refused while `${{ fromJSON(vars.RUNNERS).large.label }}` and
+/// `${{ matrix.os }}` have nothing to refuse.
+fn vendor_labels_in(value: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut rest = value;
+    let mut outside = String::new();
+    while let Some(i) = rest.find("${{") {
+        outside.push_str(&rest[..i]);
+        outside.push(',');
+        let after = &rest[i + 3..];
+        let end = after.find("}}").unwrap_or(after.len());
+        let expr = &after[..end];
+        let mut q: Option<char> = None;
+        let mut cur = String::new();
+        for c in expr.chars() {
+            match q {
+                None if c == '\'' || c == '"' => q = Some(c),
+                Some(d) if c == d => {
+                    if is_vendor_label(&cur) {
+                        out.push(cur.trim().to_string());
+                    }
+                    cur.clear();
+                    q = None;
+                }
+                Some(_) => cur.push(c),
+                None => {}
+            }
+        }
+        rest = &after[(end + 2).min(after.len())..];
+    }
+    outside.push_str(rest);
+    for piece in outside.split(['[', ']', ',', '{', '}']) {
+        let piece = piece.trim();
+        let piece = piece.strip_prefix("labels:").unwrap_or(piece).trim();
+        if !piece.is_empty() && is_vendor_label(piece) {
+            out.push(piece.trim_matches(['\'', '"']).to_string());
+        }
+    }
+    out
+}
+
+/// Every vendor label a `runs-on` in this workflow spells, as (line, job, label). A `runs-on` is a
+/// scalar, a flow or block list, or the group form whose `labels:` is either of those.
+fn vendor_runs_on(text: &str) -> Vec<(usize, String, String)> {
+    let lines: Vec<&str> = text.lines().collect();
+    let indent = |l: &str| l.len() - l.trim_start().len();
+    let mut out = Vec::new();
+    let mut in_jobs = false;
+    let mut job = String::new();
+    let mut i = 0;
+    while i < lines.len() {
+        let line = lines[i];
+        let t = line.trim();
+        if indent(line) == 0 && !t.is_empty() {
+            in_jobs = t == "jobs:";
+        }
+        if in_jobs && indent(line) == 2 && t.ends_with(':') {
+            job = t.trim_end_matches(':').to_string();
+        }
+        let Some(inline) = t.strip_prefix("runs-on:") else {
+            i += 1;
+            continue;
+        };
+        let base = indent(line);
+        let mut values = vec![(i + 1, inline.to_string())];
+        let mut j = i + 1;
+        while j < lines.len() && (lines[j].trim().is_empty() || indent(lines[j]) > base) {
+            let b = lines[j].trim();
+            let b = b.strip_prefix("- ").unwrap_or(b);
+            if !b.starts_with("group:") && !b.is_empty() {
+                values.push((j + 1, b.to_string()));
+            }
+            j += 1;
+        }
+        for (n, v) in values {
+            let v = v.trim();
+            let v = v.strip_prefix("labels:").unwrap_or(v);
+            let v = match v.find(" #") {
+                Some(k) if !v.contains("${{") => &v[..k],
+                _ => v,
+            };
+            for label in vendor_labels_in(v) {
+                out.push((n, job.clone(), label));
+            }
+        }
+        i = j;
+    }
+    out
+}
 
 /// The workflow file names, sorted, with the discovery floor applied. A directory listing that
 /// silently drops a missing root is what makes "scanned nothing" indistinguishable from "found
@@ -885,6 +1010,29 @@ pub fn check(cx: &Ctx) -> Result<Vec<Finding>, String> {
         bad.extend(engine_pin_findings(name, &text));
     }
 
+    // R17. NO JOB HARD-CODES A VENDOR RUNNER LABEL.
+    //
+    // Every job asks the runner gateway for a logical size (small, medium, large, xlarge) and the
+    // org Actions variable `vars.RUNNERS` names the `runs-on` label that size maps to. A workflow
+    // that spells `latchkey-large` or `self-hosted` has pinned itself to one vendor: moving the
+    // fleet then means editing every workflow, and the one that was missed sits queued forever on
+    // a label no runner carries. Expressions are fine, including `matrix.os` and `inputs.x`; a
+    // quoted vendor literal inside an expression is the same pin and is refused too.
+    for name in &names {
+        let text = strip_comments(&read(name).unwrap_or_default());
+        for (line, job, label) in vendor_runs_on(&text) {
+            bad.push(Finding::new(
+                "R17",
+                format!(
+                    "{name}:{line}: job '{job}' runs on the vendor label '{label}'. A workflow \
+                     never names a runner vendor: use `fromJSON(vars.RUNNERS).<size>.label` \
+                     (size is small, medium, large or xlarge) or the preflight output \
+                     `needs.preflight.outputs.runner`."
+                ),
+            ));
+        }
+    }
+
     Ok(bad)
 }
 
@@ -900,6 +1048,7 @@ fn rule_title(rule: &str) -> &'static str {
         "R14" => "every third-party action runs from a commit sha",
         "R15" => "every attestation verify names the workflow that signed",
         "R16" => "the engine runs from a commit sha, its bytes from a sha256",
+        "R17" => "no job hard-codes a vendor runner label",
         _ => "workflow rule",
     }
 }
@@ -1093,6 +1242,35 @@ fn mutations() -> Vec<Mutation> {
             creates: true,
         },
         Mutation {
+            label: "R17 a job hard-codes a vendor runs-on label",
+            file: "zz-planted-runs-on.yml",
+            rule: "R17",
+            apply: |_| {
+                "jobs:\n  j:\n    runs-on: latchkey-large\n    steps:\n      - run: true\n"
+                    .to_string()
+            },
+            creates: true,
+        },
+        Mutation {
+            label: "R17 a runs-on list names self-hosted",
+            file: "zz-planted-runs-on.yml",
+            rule: "R17",
+            apply: |_| {
+                "jobs:\n  j:\n    runs-on: [self-hosted, linux]\n    steps:\n      - run: true\n"
+                    .to_string()
+            },
+            creates: true,
+        },
+        Mutation {
+            label: "R17 an expression falls back to a vendor literal",
+            file: "zz-planted-runs-on.yml",
+            rule: "R17",
+            apply: |_| {
+                "jobs:\n  j:\n    runs-on: ${{ inputs.runner || 'latchkey-large' }}\n    steps:\n      - run: true\n".to_string()
+            },
+            creates: true,
+        },
+        Mutation {
             // THE REGRESSION AS IT WOULD ACTUALLY ARRIVE: someone copies a snippet out of an
             // action's README, which is always written with the tag, and nothing anywhere notices.
             label: "R14 an action reverts from a sha to a force-movable tag",
@@ -1185,6 +1363,19 @@ fn mutations() -> Vec<Mutation> {
             file: "promote.yml",
             rule: "R16",
             apply: |t| drop_first_line_with(t, SHA256_CHECK),
+            creates: false,
+        },
+        Mutation {
+            label: "R16 the pinned oracle runs without its sha256 check",
+            file: "promote.yml",
+            rule: "R16",
+            apply: |t| {
+                replace_once(
+                    t,
+                    "echo \"$ORACLE_SHA256  $RUNNER_TEMP/busbar-oracle\" | sha256sum -c -\n",
+                    "",
+                )
+            },
             creates: false,
         },
         Mutation {
