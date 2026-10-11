@@ -11,7 +11,7 @@
 
 Plugins are the extension surface of busbar (`kind: store` / `auth` / `hook` /
 `secret`, loaded over the signed hybrid ABI). A plugin author may want to
-**license** their plugin — gate it behind a purchased key, an expiry, an
+**license** their plugin: gate it behind a purchased key, an expiry, an
 entitlement. The question: *how does busbar license a plugin?*
 
 busbar itself is **Apache-2.0** and does **no phone-home** at all. Building license
