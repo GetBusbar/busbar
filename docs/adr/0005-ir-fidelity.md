@@ -9,7 +9,7 @@ Busbar's thesis is *protocols, not providers*: a client speaking one wire
 protocol can reach a backend speaking another. That requires an intermediate
 representation (IR) every protocol can read into and write out of. The IR's whole
 reason to exist is **fidelity**: if translating a request silently mutates the
-caller's intent, the gateway has failed at its one job. Two specific hazards:
+caller's intent, the gateway has failed at its only job. Two specific hazards:
 
 1. **Numeric drift.** JSON numbers are IEEE-754 doubles. If `temperature` were
    held as `f32`, a caller's `0.7` round-trips to `0.699999988…`, a silent
