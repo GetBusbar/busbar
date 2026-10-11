@@ -1894,11 +1894,12 @@ pub(crate) mod tool_door {
         fn work_settle(
             &self,
             caller: &busbar_contract::services::Caller,
+            unit: Option<u64>,
             handle: u64,
             record: &[u8],
             later: busbar_contract::services::Later,
         ) -> busbar_contract::services::Ran {
-            self.inner.work_settle(caller, handle, record, later)
+            self.inner.work_settle(caller, unit, handle, record, later)
         }
         fn work_resume(
             &self,
