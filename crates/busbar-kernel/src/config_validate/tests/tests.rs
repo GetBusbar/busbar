@@ -540,20 +540,20 @@ fn vet_token_uri_takes_http_to_a_private_host_and_refuses_a_public_one() {
         "https://oauth2.googleapis.com/token",
     ] {
         assert_eq!(
-            vet_token_uri(uri, &[], false, &[]),
+            vet_token_uri(uri, &MetadataPosture::default()),
             Ok(()),
             "token_uri {uri} must be accepted, as 1.5.5 did"
         );
     }
     let uri = "http://oauth2.example.com/token";
     assert_eq!(
-        vet_token_uri(uri, &[], false, &[]),
+        vet_token_uri(uri, &MetadataPosture::default()),
         Err(format!(
             "service-account token_uri must use https for a public host (got '{uri}'); it receives the signed JWT assertion, so plaintext http is permitted only for a private/loopback endpoint"
         )),
         "a public http token_uri must be refused in 1.5.5's words"
     );
-    let imds = vet_token_uri("http://169.254.169.254/token", &[], false, &[]);
+    let imds = vet_token_uri("http://169.254.169.254/token", &MetadataPosture::default());
     assert!(
         imds.as_ref().is_err_and(|e| e.contains("cloud-metadata")),
         "a token_uri at the metadata host must be refused as cloud-metadata; got: {imds:?}"

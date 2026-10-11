@@ -39,8 +39,10 @@ fn text(v: &serde_json::Value) -> Vec<u8> {
 /// answers PENDING and is RESUMED on its wake. Its line (outcome, error kind, whether the material
 /// is the expected one and flagged secret) and its lease, still held.
 fn resolve(p: &Plugin<Secret>, d: &Dispatcher, settings: &[u8], material: &[u8]) -> (String, u64) {
+    // The settings ride with the op (THE DESIGN §2): the lending submit owns them.
+    let settings: std::sync::Arc<Vec<u8>> = std::sync::Arc::new(settings.to_vec());
     let mut f: Frame<ResolveIn, ResolveOut> = Frame::new(input(), output());
-    f.input.settings = json(settings);
+    f.input.settings = json(&settings);
     let deadline = crate::dispatch::now_ns().saturating_add(RESOLVE_DEADLINE.as_nanos() as u64);
     let (c, f) = super::on_ticket_frame(
         p,
@@ -49,6 +51,7 @@ fn resolve(p: &Plugin<Secret>, d: &Dispatcher, settings: &[u8], material: &[u8])
         f,
         busbar_contract::abi::mechanism::call::DeadlineClass::Call,
         deadline,
+        settings,
     );
     let (blob, error_kind) = f.map_or((crate::dispatch::NO_BLOB, 0), |f| {
         (f.out.secret, f.out.error_kind)
