@@ -71,7 +71,7 @@ jobs:
       # builds, and a RED rule fails here.
       - id: pre
         working-directory: busbar-release
-        env: { GITHUB_TOKEN: "${{ github.token }}" }
+        env: { GITHUB_TOKEN: "${{ github.token }}", RUNNERS: "${{ vars.RUNNERS }}" }
         run: $RUNNER_TEMP/busbar-release ci preflight
   # The release artifact the slsa-verifier conformance rig judges, built ONCE, in the merge group: the
   # commit it judges is the commit the queue lands, and the ladder fast-forwards that sha to dev, where
