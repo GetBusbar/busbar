@@ -13,9 +13,14 @@ use busbar_contract::export_calls::{parse_families, ServeRequest};
 use super::*;
 use crate::dispatch::{load_linked, Bind, DispatchConfig, LinkedRow, NoSink};
 
+/// The real prometheus sink's door, LINKED: the one place the loader's export tests name it
+/// (`conformance::export`'s unjudged test restates it).
+pub(crate) const SCRAPE_DOOR: busbar_contract::abi::mechanism::door::DoorFn =
+    busbar_export_prometheus::door::door;
+
 fn linked() -> (Plugin<Export>, Arc<Dispatcher>) {
     let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
-    let row = LinkedRow::of(busbar_export_prometheus::door::door).expect("the door states itself");
+    let row = LinkedRow::of(SCRAPE_DOOR).expect("the door states itself");
     let bind = Bind {
         instance: Arc::from("export.metrics"),
         max_inflight_cap: 64,

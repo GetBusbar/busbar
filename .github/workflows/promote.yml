@@ -71,7 +71,7 @@ jobs:
       # builds, and a RED rule fails here.
       - id: pre
         working-directory: busbar-release
-        env: { GITHUB_TOKEN: "${{ github.token }}" }
+        env: { GITHUB_TOKEN: "${{ github.token }}", RUNNERS: "${{ vars.RUNNERS }}" }
         run: $RUNNER_TEMP/busbar-release ci preflight
   # The release artifact the slsa-verifier conformance rig judges, built ONCE, in the merge group: the
   # commit it judges is the commit the queue lands, and the ladder fast-forwards that sha to dev, where
@@ -186,6 +186,30 @@ jobs:
           curl -fsSL -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/octet-stream" -o "$RUNNER_TEMP/busbar-release" "$api/assets/$id"
           echo "$ENGINE_SHA256  $RUNNER_TEMP/busbar-release" | sha256sum -c -
           chmod +x "$RUNNER_TEMP/busbar-release"
+      # THE JUDGE, pinned in busbar (OWNER 2026-10-10): the busbar-oracle testing/shadow-oracle/oracle-rust.pin
+      # names, read at the BASE (a candidate never picks its own judge), downloaded from busbar-release's
+      # dev-bin release and run only when its sha256 is the pin's sha256_linux_x86_64. The engine pin
+      # never moves it. Only the last shard runs the oracle; `ci hop` and bin/oracle both take the binary
+      # from BUSBAR_ORACLE_RUST_BIN, so nothing builds a judge.
+      - name: Oracle (pinned at the base, sha256-checked)
+        if: matrix.shard == 4
+        env: { GH_TOKEN: "${{ secrets.TURNSTILE_DISPATCH_TOKEN }}" }
+        run: |
+          set -euo pipefail
+          pin="$(git -C busbar show "$BASE_SHA:testing/shadow-oracle/oracle-rust.pin")"
+          # A base from before the pinned binary (no sha256 line): the oracle is built as before.
+          grep -q '^sha256_linux_x86_64=' <<<"$pin" || { echo "::notice::oracle-rust.pin at $BASE_SHA pins no binary: bin/oracle builds the judge"; exit 0; }
+          ref="$(printf '%s\n' "$pin" | sed -n 's/^release_ref=//p')"
+          ORACLE_SHA256="$(printf '%s\n' "$pin" | sed -n 's/^sha256_linux_x86_64=//p')"
+          [[ "$ref" =~ ^[0-9a-f]{40}$ && "$ORACLE_SHA256" =~ ^[0-9a-f]{64}$ ]] || { echo "::error title=ORACLE-PIN FAIL::oracle-rust.pin at $BASE_SHA needs a 40-hex release_ref and a 64-hex sha256_linux_x86_64"; exit 1; }
+          api=https://api.github.com/repos/GetBusbar/busbar-release/releases
+          name="busbar-oracle-linux-x86_64-$ref"
+          id=$(curl -fsSL -H "Authorization: Bearer $GH_TOKEN" "$api/tags/dev-bin" | jq -r --arg n "$name" '.assets[] | select(.name == $n) | .id')
+          [ -n "$id" ] || { echo "::error title=ORACLE-PIN FAIL::dev-bin has no $name"; exit 1; }
+          curl -fsSL -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/octet-stream" -o "$RUNNER_TEMP/busbar-oracle" "$api/assets/$id"
+          echo "$ORACLE_SHA256  $RUNNER_TEMP/busbar-oracle" | sha256sum -c -
+          chmod +x "$RUNNER_TEMP/busbar-oracle"
+          echo "BUSBAR_ORACLE_RUST_BIN=$RUNNER_TEMP/busbar-oracle" >> "$GITHUB_ENV"
       - { uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1, with: { repository: GetBusbar/busbar-release, ref: "${{ env.RELEASE_REF }}", token: "${{ secrets.TURNSTILE_DISPATCH_TOKEN }}", path: busbar-release, persist-credentials: false } } # v7
       # The conformance rigs `conformance record` runs in the full plan need node 22 and pnpm 10 (the mcp
       # suite's official runner, and rolldown's native binding built under it); the Latchkey large image
