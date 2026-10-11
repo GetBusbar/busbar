@@ -5,7 +5,7 @@
 ## Context
 
 A pool fans one ingress request out across several member lanes. We want
-distribution proportional to per-member `weight` (so an 8:2 pool sends ~80% of
+distribution proportional to per-member `weight` (so an 8:2 pool sends about 80% of
 traffic to the first member), but plain weighted random produces bursty,
 clumped output, and naive "repeat each member N times in a list" round-robin
 produces long runs of the same member. We also need selection to operate only
