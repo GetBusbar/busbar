@@ -83,7 +83,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicPtr, AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use busbar_contract::abi::mechanism::call::{
@@ -1131,18 +1131,30 @@ pub fn red_count(s: &Subject) {
 /// The real door restated, served by a door function of its own.
 struct Restated {
     door: AtomicPtr<Door>,
+    /// Held by an arm for as long as it calls the restated door ([`Self::hold`]): the tests of one
+    /// binary run at once, and an arm over another subject must not restate it under this one.
+    held: Mutex<()>,
 }
 
 impl Restated {
     const fn new() -> Self {
         Self {
             door: AtomicPtr::new(std::ptr::null_mut()),
+            held: Mutex::new(()),
         }
     }
 
     fn set(&self, d: Door) {
         self.door
             .store(Box::into_raw(Box::new(d)), Ordering::SeqCst);
+    }
+
+    /// [`Self::set`], held: the door stays `d` until the guard drops. A lock poisoned by an arm
+    /// that panicked holding it (a RED twin's expected failure) is taken as is: `d` restates anew.
+    fn hold(&'static self, d: Door) -> MutexGuard<'static, ()> {
+        let held = self.held.lock().unwrap_or_else(PoisonError::into_inner);
+        self.set(d);
+        held
     }
 
     fn get(&self) -> *const Door {

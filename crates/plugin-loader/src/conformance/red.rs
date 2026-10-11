@@ -90,7 +90,7 @@ pub fn red_statement(s: &Subject) {
     let mut lying = stated.clone();
     let last = lying.len() - 1;
     lying[last] ^= 1;
-    VERSIONED.set(with_another_version(real_door(s)));
+    let _held = VERSIONED.hold(with_another_version(real_door(s)));
     by_kind!(s.kind(), K => {
         let d = dispatcher();
         load::<K>(s, Leg::Linked, s.bind(&d, "honest-linked")).expect("the honest door loads linked");
@@ -272,7 +272,7 @@ fn connected<K: Kind>(table: &Arc<dyn DeclaredConns>, instance: &str) -> Plugin<
 /// # Panics
 /// When an undeclared need opens, or the declared one does not.
 pub fn red_undeclared_need(s: &Subject) {
-    CONNECTED.set(with_an_outbound_need(real_door(s)));
+    let _held = CONNECTED.hold(with_an_outbound_need(real_door(s)));
     let (table, _listening, at) = connection_fixture(s, CONNECTED_DOOR);
     let undeclared = ConnError::UndeclaredNeed.text();
     by_kind!(s.kind(), K => {
@@ -300,7 +300,7 @@ pub fn red_undeclared_need(s: &Subject) {
 /// # Panics
 /// When an instance reaches another's connection, or the owner cannot use its own.
 pub fn red_cross_instance_conn(s: &Subject) {
-    CONNECTED.set(with_an_outbound_need(real_door(s)));
+    let _held = CONNECTED.hold(with_an_outbound_need(real_door(s)));
     let (table, _listening, at) = connection_fixture(s, CONNECTED_DOOR);
     let not_owner = ConnError::NotOwner.text();
     by_kind!(s.kind(), K => {
