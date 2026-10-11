@@ -40,7 +40,7 @@ jobs:
     # this job's token stays contents read only.
     permissions: { contents: read } # actions: read is public on this repo; the writes are preflight-act's
     # RUNNERS: the runner gateway's table (vars.RUNNERS), from which the preflight sizes `runner=`.
-    env: { RELEASE_REF: "${{ vars.ENGINE_REF }}", ENGINE_SHA256: "${{ vars.ENGINE_SHA256 }}", RUNNERS: "${{ vars.RUNNERS }}" }
+    env: { RELEASE_REF: "4e91a2e02c87349965411fc77dcd5af43c7df1ac", ENGINE_SHA256: "67f2af6015aacb5dd1a2cebae8397f7990b28067d4f746cb47899d76c0f9414e", RUNNERS: "${{ vars.RUNNERS }}" }
     outputs: { engine_ref: "${{ steps.engine.outputs.engine_ref }}", engine_sha256: "${{ steps.engine.outputs.engine_sha256 }}", runner: "${{ steps.pre.outputs.runner }}", soak: "${{ steps.pre.outputs.soak }}", one_runner: "${{ steps.pre.outputs.one_runner }}", needs_release_artifact: "${{ steps.pre.outputs.needs_release_artifact }}", run: "${{ steps.pre.outputs.run }}", reason: "${{ steps.pre.outputs.reason }}" }
     steps:
       # Full history: the pre-flight reads the pull request's diff against BASE_SHA to choose one runner or the matrix.
