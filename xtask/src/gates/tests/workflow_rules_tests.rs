@@ -296,6 +296,80 @@ fn r17_the_mutation_anchor_rewrites_only_the_named_jobs_if() {
     assert_eq!(reif_job(t, "absent", "three"), t);
 }
 
+/// R18: a shard that runs the hop on the candidate with the read-only keys, and the publisher that
+/// runs no candidate code with the write keys.
+const R18_FIXTURE: &str = "on: [pull_request, merge_group]
+jobs:
+  hop-shard:
+    steps:
+      - { uses: actions/checkout@abc, with: { ref: x, path: busbar } } # v7
+      - { uses: actions/checkout@abc, with: { repository: GetBusbar/busbar-release, ref: x, path: busbar-release } } # v7
+      - run: ci hop
+        env: { R2_RO_KEY_ID: \"${{ secrets.R2_CACHE_RO_ACCESS_KEY_ID }}\", R2_RO_KEY_SECRET: \"${{ secrets.R2_CACHE_RO_SECRET_ACCESS_KEY }}\" }
+  cache-publish:
+    needs: [hop-shard]
+    steps:
+      - run: echo the engine
+      - run: ci cache-publish
+        env: { R2_KEY_ID: \"${{ secrets.R2_CACHE_ACCESS_KEY_ID }}\", R2_KEY_SECRET: \"${{ secrets.R2_CACHE_SECRET_ACCESS_KEY }}\" }
+";
+
+fn r18(text: &str) -> Vec<String> {
+    r2_write_key_findings("promote.yml", text)
+        .into_iter()
+        .map(|f| {
+            assert_eq!(f.rule, "R18");
+            f.message
+        })
+        .collect()
+}
+
+#[test]
+fn r18_read_only_keys_on_the_candidate_and_write_keys_on_the_publisher_are_green() {
+    let got = r18(R18_FIXTURE);
+    assert!(got.is_empty(), "{got:?}");
+}
+
+#[test]
+fn r18_a_write_key_on_a_job_that_runs_candidate_code_is_red() {
+    // The shard as it stood before busbar-release 069f032.
+    let shard = R18_FIXTURE.replacen(
+        "R2_RO_KEY_ID: \"${{ secrets.R2_CACHE_RO_ACCESS_KEY_ID }}\"",
+        "R2_KEY_ID: \"${{ secrets.R2_CACHE_ACCESS_KEY_ID }}\"",
+        1,
+    );
+    let got = r18(&shard);
+    assert_eq!(got.len(), 1, "{got:?}");
+    assert!(
+        got[0].contains("`hop-shard`") && got[0].contains("secrets.R2_CACHE_ACCESS_KEY_ID"),
+        "{got:?}"
+    );
+    // A job that only builds (cargo, no checkout step of its own) runs candidate code too.
+    let build = "jobs:\n  b:\n    steps:\n      - run: cargo build\n        env: { K: \"${{ secrets.R2_CACHE_SECRET_ACCESS_KEY }}\" }\n";
+    assert_eq!(r18(build).len(), 1);
+}
+
+#[test]
+fn r18_a_workflow_level_write_key_reaches_every_candidate_job() {
+    let text = String::from("env:\n  K: \"${{ secrets.R2_CACHE_ACCESS_KEY_ID }}\"\n") + R18_FIXTURE;
+    let got = r18(&text);
+    assert_eq!(got.len(), 1, "{got:?}");
+    assert!(got[0].contains("`hop-shard`"), "{got:?}");
+}
+
+#[test]
+fn r18_reads_a_secret_whole_and_another_repositorys_checkout_as_no_candidate() {
+    assert!(r2_write_secrets_in("${{ secrets.R2_CACHE_ACCESS_KEY_ID2 }}").is_empty());
+    assert!(r2_write_secrets_in("${{ secrets.R2_CACHE_RO_ACCESS_KEY_ID }}").is_empty());
+    assert!(r2_write_secrets_in("${{ secrets.R2_CACHE_RO_SECRET_ACCESS_KEY }}").is_empty());
+    assert_eq!(
+        r2_write_secrets_in("${{ secrets.R2_CACHE_SECRET_ACCESS_KEY }}"),
+        vec!["secrets.R2_CACHE_SECRET_ACCESS_KEY"]
+    );
+    let other = "jobs:\n  p:\n    steps:\n      - { uses: actions/checkout@abc, with: { repository: GetBusbar/busbar-release, ref: x } } # v7\n      - run: ci cache-publish\n        env: { K: \"${{ secrets.R2_CACHE_ACCESS_KEY_ID }}\" }\n";
+    assert!(r18(other).is_empty());
+}
+
 const ENGINE_VAR_JOB: &str = "env:\n  SHA: x\njobs:\n  pre:\n    env: { RELEASE_REF: \"${{ vars.ENGINE_REF }}\", ENGINE_SHA256: \"${{ vars.ENGINE_SHA256 }}\" }\n    steps:\n      - name: Engine\n        run: |\n          [[ \"$RELEASE_REF\" =~ ^[0-9a-f]{40}$ ]] || { echo bad; exit 1; }\n          name=\"busbar-release-ci-linux-x86_64-$RELEASE_REF\"\n          echo \"$ENGINE_SHA256  bin\" | sha256sum -c -\n      - { uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1, with: { repository: GetBusbar/busbar-release, ref: \"${{ env.RELEASE_REF }}\", path: busbar-release } } # v7\n";
 
 fn r16(text: &str) -> Vec<String> {

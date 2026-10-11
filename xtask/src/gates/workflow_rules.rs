@@ -27,6 +27,11 @@
 //!   that builds it runs.** `slsa-build` was merge-group-only while the predev->dev pull request's
 //!   shards (its rung runs the oracle and conformance) downloaded `slsa-artifact-<sha>` from their
 //!   own run: the artifact could never exist there, and #740 failed every run at that download.
+//! * **R18 — no job that runs candidate code holds the R2 cache write keys.** The hop judges the
+//!   candidate's build scripts, tests and xtask in-process, and every process of a job can read
+//!   another's environment: the shards held `secrets.R2_CACHE_ACCESS_KEY_ID` /
+//!   `secrets.R2_CACHE_SECRET_ACCESS_KEY` until busbar-release 069f032, which refuses to start a
+//!   hop that holds them. They belong to `cache-publish` alone, a job that runs no candidate code.
 //!
 //! **The parser stays deliberately small, and here that is a correctness argument rather than a
 //! dependency one.** The rules are assertions about what a human WROTE (a trailing `# tag` comment
@@ -59,7 +64,7 @@ const ACTIONS_DIR: &str = ".github/actions";
 const MIN_WORKFLOWS: usize = 5;
 
 /// The rule ids, which are also the ledger row ids.
-const RULES: &[&str] = &["R1", "R11", "R14", "R15", "R16", "R17"];
+const RULES: &[&str] = &["R1", "R11", "R14", "R15", "R16", "R17", "R18"];
 
 /// The release artifact's name prefix: `promote.yml`'s `slsa-build` uploads `slsa-artifact-<sha>`,
 /// and the steps that read the release binary download it by that name (R17).
@@ -564,6 +569,87 @@ fn release_artifact_findings(name: &str, text: &str) -> Vec<Finding> {
     bad
 }
 
+/// R18's subject: the R2 cache's WRITE keys, as this repository's secrets name them. The read-only
+/// pair (`secrets.R2_CACHE_RO_*`) is another name, not a longer spelling of these.
+const R2_WRITE_SECRETS: [&str; 2] = [
+    "secrets.R2_CACHE_ACCESS_KEY_ID",
+    "secrets.R2_CACHE_SECRET_ACCESS_KEY",
+];
+
+/// The R2 write-key secrets `text` names, each as a whole name (`secrets.R2_CACHE_ACCESS_KEY_ID2`
+/// is not `secrets.R2_CACHE_ACCESS_KEY_ID`).
+fn r2_write_secrets_in(text: &str) -> Vec<&'static str> {
+    R2_WRITE_SECRETS
+        .into_iter()
+        .filter(|s| {
+            text.match_indices(*s).any(|(at, m)| {
+                !text[at + m.len()..]
+                    .chars()
+                    .next()
+                    .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_')
+            })
+        })
+        .collect()
+}
+
+/// How job `lines` runs candidate code, when it does: a step checks out this repository (an
+/// `actions/checkout` with no `repository:` is the candidate), runs cargo, or runs the hop (`ci
+/// hop` judges the candidate in-process). A job that only downloads the engine, checks out another
+/// repository or downloads artifacts runs none.
+fn candidate_code(lines: &[&str]) -> Option<&'static str> {
+    for step in steps_of(lines) {
+        let body = step.join("\n");
+        if body.contains("actions/checkout@") && key_value(&body, "repository").is_none() {
+            return Some("checks out the candidate");
+        }
+        if body.contains("cargo ") {
+            return Some("runs cargo");
+        }
+        if body.contains("ci hop") {
+            return Some("runs `ci hop` on the candidate");
+        }
+    }
+    None
+}
+
+/// R18 over one workflow's comment-stripped text. A job that runs candidate code names no R2 cache
+/// write key: not in its own lines (job env, step env, `with:`), and not through the workflow's
+/// top-level `env:`, which every job inherits.
+fn r2_write_key_findings(name: &str, text: &str) -> Vec<Finding> {
+    let top = r2_write_secrets_in(&top_level_block(text, "env"));
+    let mut bad = Vec::new();
+    for (job, lines) in jobs_of(text) {
+        let Some(how) = candidate_code(&lines) else {
+            continue;
+        };
+        let mut held = r2_write_secrets_in(&lines.join("\n"));
+        for s in &top {
+            if !held.contains(s) {
+                held.push(*s);
+            }
+        }
+        if held.is_empty() {
+            continue;
+        }
+        let named = held
+            .iter()
+            .map(|s| format!("`{s}`"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        bad.push(Finding::new(
+            "R18",
+            format!(
+                "{name}: job `{job}` {how} and names the R2 cache write key(s) {named}: every \
+                 candidate process the job starts can read them from its environment, and `ci hop` \
+                 refuses to start with them (INFRA). Give it the read-only `secrets.R2_CACHE_RO_*` \
+                 keys; the write keys belong to `cache-publish` alone, a job that runs no candidate \
+                 code."
+            ),
+        ));
+    }
+    bad
+}
+
 /// True when there is an actual composite-action manifest to scan, either on disk or planted by a
 /// selftest overlay. Mirrors `Ctx::list`'s own `overlay_adds_it` test: `.github/actions` need not
 /// exist in the real tree today (it does not) for a plant UNDER it to be a legitimate root, exactly
@@ -613,33 +699,6 @@ fn action_manifests(cx: &Ctx) -> Result<Vec<(String, String)>, String> {
         ));
     }
     Ok(out)
-}
-
-/// The jobs of a workflow (comments already stripped): each job's name and its lines, from its
-/// header (a key at exactly two spaces under the top-level `jobs:`) to the next job or top-level key.
-fn jobs_of(text: &str) -> Vec<(String, Vec<&str>)> {
-    let mut out: Vec<(String, Vec<&str>)> = Vec::new();
-    let mut in_jobs = false;
-    for line in text.lines() {
-        if !line.starts_with(' ') && !line.trim().is_empty() {
-            in_jobs = line.trim_end() == "jobs:";
-            continue;
-        }
-        if !in_jobs {
-            continue;
-        }
-        let b = line.as_bytes();
-        if b.len() > 2 && b[0] == b' ' && b[1] == b' ' && b[2] != b' ' {
-            if let Some(name) = line.trim().strip_suffix(':') {
-                out.push((name.to_string(), Vec::new()));
-                continue;
-            }
-        }
-        if let Some((_, lines)) = out.last_mut() {
-            lines.push(line);
-        }
-    }
-    out
 }
 
 /// The value of `key:` in `text` (a flow mapping or a block line), the first time `key` appears as
@@ -1101,6 +1160,18 @@ pub fn check(cx: &Ctx) -> Result<Vec<Finding>, String> {
         bad.extend(release_artifact_findings(name, &text));
     }
 
+    // R18. NO JOB THAT RUNS CANDIDATE CODE HOLDS THE R2 CACHE WRITE KEYS ([`r2_write_key_findings`]).
+    //
+    // The shards and the one-runner hop passed `R2_KEY_ID` / `R2_KEY_SECRET` (the write keys) to
+    // `ci hop`, whose judge runs the candidate's build scripts, tests and xtask: any of them could
+    // read the keys and write the bucket every later hop reads its base reports and step PASSes
+    // from. busbar-release 069f032 refuses (INFRA) a hop that holds them; this rule keeps the keys
+    // from coming back to any job that runs candidate code, where the hop's refusal is not there.
+    for name in &names {
+        let text = strip_comments(&read(name).unwrap_or_default());
+        bad.extend(r2_write_key_findings(name, &text));
+    }
+
     Ok(bad)
 }
 
@@ -1117,6 +1188,7 @@ fn rule_title(rule: &str) -> &'static str {
         "R15" => "every attestation verify names the workflow that signed",
         "R16" => "the engine runs from a commit sha, its bytes from a sha256",
         "R17" => "a same-run download of the release artifact runs only where it is built",
+        "R18" => "no job that runs candidate code holds the R2 cache write keys",
         _ => "workflow rule",
     }
 }
@@ -1431,6 +1503,21 @@ fn mutations() -> Vec<Mutation> {
                     t,
                     "slsa-build",
                     "github.event_name == 'merge_group' && needs.preflight.outputs.run == '1'",
+                )
+            },
+            creates: false,
+        },
+        Mutation {
+            // THE REGRESSION AS IT STOOD BEFORE busbar-release 069f032: a hop shard's `ci hop` holds
+            // the R2 write key again, where every candidate process it starts can read it.
+            label: "R18 a hop shard's `ci hop` holds the R2 cache write key",
+            file: "promote.yml",
+            rule: "R18",
+            apply: |t| {
+                replace_once(
+                    t,
+                    r#"R2_RO_KEY_ID: "${{ secrets.R2_CACHE_RO_ACCESS_KEY_ID }}""#,
+                    r#"R2_KEY_ID: "${{ secrets.R2_CACHE_ACCESS_KEY_ID }}""#,
                 )
             },
             creates: false,
