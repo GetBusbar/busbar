@@ -177,7 +177,7 @@ fn every_rule_is_proven_able_to_go_red() {
 
 /// A two-job workflow: `slsa-build` (under `BUILDER_IF`) uploads the release artifact, and a shard
 /// downloads it from its own run under `STEP_IF`, in the block spelling promote.yml uses.
-const R17_FIXTURE: &str = "on: [pull_request, merge_group]
+const R18_FIXTURE: &str = "on: [pull_request, merge_group]
 jobs:
   slsa-build:
     if: BUILDER_IF
@@ -192,14 +192,14 @@ jobs:
       - run: ci hop
 ";
 
-fn r17(builder_if: &str, step_if: &str) -> Vec<String> {
-    let text = R17_FIXTURE
+fn r18(builder_if: &str, step_if: &str) -> Vec<String> {
+    let text = R18_FIXTURE
         .replace("BUILDER_IF", builder_if)
         .replace("STEP_IF", step_if);
     release_artifact_findings("promote.yml", &text)
         .into_iter()
         .map(|f| {
-            assert_eq!(f.rule, "R17");
+            assert_eq!(f.rule, "R18");
             f.message
         })
         .collect()
@@ -208,9 +208,9 @@ fn r17(builder_if: &str, step_if: &str) -> Vec<String> {
 const NEEDS_ARTIFACT: &str = "needs.preflight.outputs.needs_release_artifact == 'true'";
 
 #[test]
-fn r17_a_merge_group_only_build_under_a_pull_request_download_is_red() {
+fn r18_a_merge_group_only_build_under_a_pull_request_download_is_red() {
     // #740 exactly: the builder runs only in a merge group, the download whenever the rung reads it.
-    let got = r17(
+    let got = r18(
         "github.event_name == 'merge_group' && needs.preflight.outputs.run == '1'",
         NEEDS_ARTIFACT,
     );
@@ -220,25 +220,25 @@ fn r17_a_merge_group_only_build_under_a_pull_request_download_is_red() {
         "{got:?}"
     );
     // The same narrowing written as a base-branch test is the same red.
-    assert_eq!(r17("github.base_ref == 'qa'", NEEDS_ARTIFACT).len(), 1);
+    assert_eq!(r18("github.base_ref == 'qa'", NEEDS_ARTIFACT).len(), 1);
 }
 
 #[test]
-fn r17_a_builder_that_admits_the_download_condition_is_green() {
+fn r18_a_builder_that_admits_the_download_condition_is_green() {
     let fixed = format!(
         "needs.preflight.outputs.run == '1' && (github.event_name == 'merge_group' || {NEEDS_ARTIFACT})"
     );
-    assert!(r17(&fixed, NEEDS_ARTIFACT).is_empty());
+    assert!(r18(&fixed, NEEDS_ARTIFACT).is_empty());
     // Wrapped in `${{ }}` the same.
-    assert!(r17(&format!("${{{{ {fixed} }}}}"), NEEDS_ARTIFACT).is_empty());
+    assert!(r18(&format!("${{{{ {fixed} }}}}"), NEEDS_ARTIFACT).is_empty());
     // A builder narrowed only by the run gate, not by event, runs wherever the run runs.
-    assert!(r17("needs.preflight.outputs.run == '1'", NEEDS_ARTIFACT).is_empty());
+    assert!(r18("needs.preflight.outputs.run == '1'", NEEDS_ARTIFACT).is_empty());
 }
 
 #[test]
-fn r17_a_download_that_waits_on_the_builders_success_is_green() {
+fn r18_a_download_that_waits_on_the_builders_success_is_green() {
     // The soak's spelling: it downloads only after slsa-build succeeded, else builds its own.
-    assert!(r17(
+    assert!(r18(
         "github.event_name == 'merge_group'",
         "needs.slsa-build.result == 'success'"
     )
@@ -246,16 +246,16 @@ fn r17_a_download_that_waits_on_the_builders_success_is_green() {
 }
 
 #[test]
-fn r17_an_unconditional_download_under_an_event_narrowed_builder_is_red() {
-    let text = R17_FIXTURE
+fn r18_an_unconditional_download_under_an_event_narrowed_builder_is_red() {
+    let text = R18_FIXTURE
         .replace("BUILDER_IF", "github.event_name == 'merge_group'")
         .replace("      - if: STEP_IF\n        uses:", "      - uses:");
     assert_eq!(release_artifact_findings("promote.yml", &text).len(), 1);
 }
 
 #[test]
-fn r17_a_download_with_no_builder_in_the_run_is_red_and_a_run_id_download_is_not_judged() {
-    let orphan = R17_FIXTURE
+fn r18_a_download_with_no_builder_in_the_run_is_red_and_a_run_id_download_is_not_judged() {
+    let orphan = R18_FIXTURE
         .replace("BUILDER_IF", "github.event_name == 'merge_group'")
         .replace("actions/upload-artifact@abc", "actions/cache@abc")
         .replace("STEP_IF", NEEDS_ARTIFACT);
@@ -273,7 +273,7 @@ fn r17_a_download_with_no_builder_in_the_run_is_red_and_a_run_id_download_is_not
 }
 
 #[test]
-fn r17_a_flow_step_condition_is_read_up_to_the_next_key() {
+fn r18_a_flow_step_condition_is_read_up_to_the_next_key() {
     assert_eq!(
         step_condition(&["      - { if: always(), uses: actions/upload-artifact@abc }"]).as_deref(),
         Some("always()")
@@ -287,7 +287,7 @@ fn r17_a_flow_step_condition_is_read_up_to_the_next_key() {
 }
 
 #[test]
-fn r17_the_mutation_anchor_rewrites_only_the_named_jobs_if() {
+fn r18_the_mutation_anchor_rewrites_only_the_named_jobs_if() {
     let t = "jobs:\n  a:\n    if: one\n  slsa-build:\n    if: two\n    needs: a\n";
     assert_eq!(
         reif_job(t, "slsa-build", "three"),
@@ -302,6 +302,13 @@ fn r16(text: &str) -> Vec<String> {
     engine_pin_findings("w.yml", text)
         .into_iter()
         .map(|f| f.message)
+        .collect()
+}
+
+fn r18(text: &str) -> Vec<String> {
+    vendor_runs_on(text)
+        .into_iter()
+        .map(|(_, _, l)| l)
         .collect()
 }
 
@@ -375,4 +382,53 @@ fn a_key_value_is_read_whole_from_a_flow_mapping() {
     assert_eq!(key_value("{ prefref: dev }", "ref"), None);
     assert_eq!(env_ref("${{ env.RELEASE_REF }}"), Some("RELEASE_REF"));
     assert_eq!(env_ref("${{ vars.ENGINE_REF }}"), None);
+}
+
+#[test]
+fn a_vendor_runs_on_label_is_refused_in_every_spelling() {
+    assert_eq!(
+        r18("jobs:\n  a:\n    runs-on: latchkey-large\n"),
+        ["latchkey-large"]
+    );
+    assert_eq!(
+        r18("jobs:\n  a:\n    runs-on: [self-hosted, linux]\n"),
+        ["self-hosted"]
+    );
+    assert_eq!(
+        r18("jobs:\n  a:\n    runs-on:\n      - Self-Hosted\n      - linux\n"),
+        ["Self-Hosted"]
+    );
+    assert_eq!(
+        r18("jobs:\n  a:\n    runs-on:\n      group: g\n      labels: [busbar-ec2-x]\n"),
+        ["busbar-ec2-x"]
+    );
+    assert_eq!(
+        r18("jobs:\n  a:\n    runs-on:\n      labels:\n        - busbar-canary\n"),
+        ["busbar-canary"]
+    );
+    assert_eq!(
+        r18("jobs:\n  a:\n    runs-on: ${{ x || 'latchkey-large' }}\n"),
+        ["latchkey-large"]
+    );
+    let found = vendor_runs_on("jobs:\n  a:\n    runs-on: latchkey-small\n");
+    assert_eq!(found, [(3, "a".to_string(), "latchkey-small".to_string())]);
+}
+
+#[test]
+fn gateway_expressions_and_github_hosted_images_are_allowed() {
+    for ok in [
+        "${{ fromJSON(vars.RUNNERS).large.label }}",
+        "${{ needs.preflight.outputs.runner }}",
+        "${{ matrix.os }}",
+        "${{ inputs.x }}",
+        "${{ (a == 'b') && needs.p.outputs.runner || 'ubuntu-latest' }}",
+        "ubuntu-latest",
+        "ubuntu-24.04",
+        "macos-latest",
+        "windows-2022",
+        "[ubuntu-latest, macos-latest]",
+    ] {
+        let text = format!("jobs:\n  a:\n    runs-on: {ok}\n");
+        assert!(r18(&text).is_empty(), "{ok} must be allowed");
+    }
 }
