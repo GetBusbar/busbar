@@ -10,7 +10,7 @@
 //! (`busbar_transport_ws::door::door`) admitted and opened by the root's own doors module
 //! (`crates/busbar/src/root/doors.rs`, mounted here), bound with `Listening::bind`, each connection
 //! taken with `poll_accept` — and echoes every message back on the stream it came on. The
-//! fuzzingclient sends each case's frames and grades the echo, the handshake, the pings and the
+//! fuzzingclient (the Autobahn client) sends each case's frames and grades the echo, the handshake, the pings and the
 //! close the framer answers with, so what Autobahn grades is busbar's own RFC 6455 framer.
 //!
 //! Prints `WS_SUBJECT_PORT=<port>` on its own line once bound, then serves until killed. No plane
