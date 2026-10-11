@@ -383,32 +383,6 @@ fn opens_key_at(line: &str, indent: usize) -> bool {
         && !matches!(b[indent], b' ' | b'\t' | b'#' | b'-')
 }
 
-/// The jobs of a workflow, in file order: (job id, the job's lines). A job opens at exactly two
-/// spaces under the top-level `jobs:` key and runs to the next job or top-level key.
-fn jobs_of(text: &str) -> Vec<(String, Vec<&str>)> {
-    let mut out: Vec<(String, Vec<&str>)> = Vec::new();
-    let mut in_jobs = false;
-    for line in text.lines() {
-        if opens_key_at(line, 0) {
-            in_jobs = line.trim_end() == "jobs:";
-            continue;
-        }
-        if !in_jobs {
-            continue;
-        }
-        if opens_key_at(line, 2) {
-            if let Some((id, _)) = line.trim().split_once(':') {
-                out.push((id.trim().to_string(), Vec::new()));
-                continue;
-            }
-        }
-        if let Some((_, lines)) = out.last_mut() {
-            lines.push(line);
-        }
-    }
-    out
-}
-
 /// An `if:` condition as written, without its `${{ }}` wrapper or the double quotes around the
 /// whole of it (a single quote that ends the condition, `== 'true'`, is the condition's own).
 fn bare_condition(raw: &str) -> String {
