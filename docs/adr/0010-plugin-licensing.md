@@ -14,7 +14,7 @@ Plugins are the extension surface of busbar (`kind: store` / `auth` / `hook` /
 **license** their plugin — gate it behind a purchased key, an expiry, an
 entitlement. The question: *how does busbar license a plugin?*
 
-busbar itself is **Apache-2.0** and does **no phone-home**. Building license
+busbar itself is **Apache-2.0** and does **no phone-home** at all. Building license
 enforcement — key validation, entitlement checks, expiry, a call to a licensing
 server — into the gateway would be wrong on three counts:
 
