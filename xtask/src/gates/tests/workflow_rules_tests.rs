@@ -305,7 +305,7 @@ fn r16(text: &str) -> Vec<String> {
         .collect()
 }
 
-fn r18(text: &str) -> Vec<String> {
+fn r17(text: &str) -> Vec<String> {
     vendor_runs_on(text)
         .into_iter()
         .map(|(_, _, l)| l)
@@ -387,27 +387,27 @@ fn a_key_value_is_read_whole_from_a_flow_mapping() {
 #[test]
 fn a_vendor_runs_on_label_is_refused_in_every_spelling() {
     assert_eq!(
-        r18("jobs:\n  a:\n    runs-on: latchkey-large\n"),
+        r17("jobs:\n  a:\n    runs-on: latchkey-large\n"),
         ["latchkey-large"]
     );
     assert_eq!(
-        r18("jobs:\n  a:\n    runs-on: [self-hosted, linux]\n"),
+        r17("jobs:\n  a:\n    runs-on: [self-hosted, linux]\n"),
         ["self-hosted"]
     );
     assert_eq!(
-        r18("jobs:\n  a:\n    runs-on:\n      - Self-Hosted\n      - linux\n"),
+        r17("jobs:\n  a:\n    runs-on:\n      - Self-Hosted\n      - linux\n"),
         ["Self-Hosted"]
     );
     assert_eq!(
-        r18("jobs:\n  a:\n    runs-on:\n      group: g\n      labels: [busbar-ec2-x]\n"),
+        r17("jobs:\n  a:\n    runs-on:\n      group: g\n      labels: [busbar-ec2-x]\n"),
         ["busbar-ec2-x"]
     );
     assert_eq!(
-        r18("jobs:\n  a:\n    runs-on:\n      labels:\n        - busbar-canary\n"),
+        r17("jobs:\n  a:\n    runs-on:\n      labels:\n        - busbar-canary\n"),
         ["busbar-canary"]
     );
     assert_eq!(
-        r18("jobs:\n  a:\n    runs-on: ${{ x || 'latchkey-large' }}\n"),
+        r17("jobs:\n  a:\n    runs-on: ${{ x || 'latchkey-large' }}\n"),
         ["latchkey-large"]
     );
     let found = vendor_runs_on("jobs:\n  a:\n    runs-on: latchkey-small\n");
@@ -429,6 +429,6 @@ fn gateway_expressions_and_github_hosted_images_are_allowed() {
         "[ubuntu-latest, macos-latest]",
     ] {
         let text = format!("jobs:\n  a:\n    runs-on: {ok}\n");
-        assert!(r18(&text).is_empty(), "{ok} must be allowed");
+        assert!(r17(&text).is_empty(), "{ok} must be allowed");
     }
 }
