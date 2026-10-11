@@ -364,6 +364,7 @@ fn a_door_plane_is_handed_its_referenced_providers_dialect_facts_at_open() {
         credential: busbar_contract::secret_ref::SecretRef::none(),
         style: None,
         params: StyleParams::default(),
+        metadata: busbar_kernel::config_validate::MetadataPosture::default(),
     };
     let providers: BTreeMap<String, ProviderRoute> = [
         ("eng-b".to_string(), route("dial-two", &[])),

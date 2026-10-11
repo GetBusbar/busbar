@@ -20,6 +20,8 @@
 //!    returns `None` on empty. That empty answer is DELIBERATE and well argued — fabricating lines
 //!    would invent the stored price `#77(3)` forbids — so it is UNFINISHED WIRING, not a
 //!    mispricing. **This gate does NOT see it** and does not pretend to: see the limits below.
+//!    (Fed 2026-10-07 by H6: `NodeLedger::booked_lines` hands over the counted lines the book keeps
+//!    and rebuilds from the chain.)
 //! 3. Neither auth crate carries `#![forbid(unsafe_code)]`; both sit on a `known_missing_forbid`
 //!    list. The INVISIBILITY was closed. The debt was not.
 //!
@@ -107,7 +109,7 @@
 //!   is a non-empty FEED, not a construction site. That is a neighbouring shape — *constructed,
 //!   but with its input hardwired empty* — which a construction-site scanner cannot express. A row
 //!   for it here would report GREEN and be worse than no row at all, so it is an OPEN ledger row
-//!   instead.
+//!   instead. (H6 fed it on 2026-10-07; the limit stands for the next such shape.)
 
 use std::collections::{BTreeMap, BTreeSet};
 
