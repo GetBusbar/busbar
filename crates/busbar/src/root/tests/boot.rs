@@ -449,6 +449,200 @@ fn an_applied_plugins_logs_level_reaches_a_live_sink() {
     assert!(!text.contains("under warn"), "{text}");
 }
 
+/// The variable the `test-harness` build's first-party key seam reads
+/// (`boot::HARNESS_FIRST_PARTY_KEY_ENV`), spelled out here because a build without the feature has
+/// no such constant.
+const HARNESS_KEY_VAR: &str = "BUSBAR_TEST_HARNESS_FIRST_PARTY_KEY";
+
+/// A first-party (`publisher: busbar`) manifest for `artifact`, signed by `key`.
+fn first_party_signed_by(
+    key: &crate::root::loader::sign::SigningKey,
+    artifact: &[u8],
+) -> crate::root::loader::sign::Manifest {
+    use crate::root::loader::sign::{sign, Manifest, FIRST_PARTY_PUBLISHER};
+    sign(
+        key,
+        Manifest {
+            name: "busbar-harness-seam-plugin".into(),
+            alias: "harness-seam".into(),
+            kind: "store".into(),
+            version: env!("CARGO_PKG_VERSION").into(),
+            publisher: FIRST_PARTY_PUBLISHER.into(),
+            abi_version: crate::root::loader::supported_abi("store")[0],
+            ..Default::default()
+        },
+        artifact,
+    )
+}
+
+/// **THE RED ARM OF THE HARNESS KEY SEAM (ARCHITECT ruling, busbar #700).** In a build WITHOUT
+/// `test-harness`, which is every release build, setting the harness variable to a test key changes
+/// nothing: the root's trust resolution keeps the embedded release key, so a plugin the test key
+/// signed first-party is refused, and so is an unsigned one.
+#[cfg(not(feature = "test-harness"))]
+#[test]
+fn a_build_without_test_harness_ignores_the_harness_key_and_refuses_a_test_signed_first_party_plugin(
+) {
+    use crate::root::loader::sign::{embedded_release_pubkey, evaluate, SigningKey};
+    let test_key = SigningKey::from_bytes(&[0x5a; 32]);
+    let artifact = b"\x7fELF harness seam red arm";
+    let signed = first_party_signed_by(&test_key, artifact);
+    let mut unsigned = signed.clone();
+    unsigned.signature.clear();
+
+    std::env::set_var(
+        HARNESS_KEY_VAR,
+        hex::encode(test_key.verifying_key().as_bytes()),
+    );
+    let policy = trust_policy(&PluginsCfg::default(), env!("CARGO_PKG_VERSION"));
+    std::env::remove_var(HARNESS_KEY_VAR);
+    let policy = policy.expect("the default trust resolves");
+
+    assert_eq!(
+        policy.first_party_key,
+        embedded_release_pubkey(),
+        "a build without test-harness must keep the embedded release key as its only first-party key"
+    );
+    assert!(
+        evaluate(artifact, &signed, &policy).is_err(),
+        "a plugin signed first-party by a test key must be refused without test-harness"
+    );
+    assert!(
+        evaluate(artifact, &unsigned, &policy).is_err(),
+        "an unsigned first-party plugin must be refused under the default trust"
+    );
+}
+
+/// The seam itself, in a `test-harness` build: a set variable names the first-party key, under which
+/// a plugin that key signed first-party is trusted as first-party; unset or empty leaves the
+/// embedded key standing; a malformed value is refused, never ignored.
+#[cfg(feature = "test-harness")]
+#[test]
+fn a_test_harness_build_takes_its_first_party_key_from_the_harness_variable() {
+    use crate::root::loader::sign::{evaluate, SigningKey, Verdict};
+    let test_key = SigningKey::from_bytes(&[0x5a; 32]);
+    let hex_key = hex::encode(test_key.verifying_key().as_bytes());
+    assert_eq!(HARNESS_FIRST_PARTY_KEY_ENV, HARNESS_KEY_VAR);
+    assert_eq!(
+        harness_first_party_key(Some(&hex_key)).expect("a well-formed key"),
+        Some(test_key.verifying_key())
+    );
+    assert_eq!(harness_first_party_key(None).unwrap(), None);
+    assert_eq!(harness_first_party_key(Some("  ")).unwrap(), None);
+    assert!(harness_first_party_key(Some("not-a-key")).is_err());
+
+    let artifact = b"\x7fELF harness seam green arm";
+    let policy = crate::root::loader::sign::TrustPolicy {
+        first_party_key: harness_first_party_key(Some(&hex_key)).unwrap(),
+        ..Default::default()
+    };
+    assert!(matches!(
+        evaluate(
+            artifact,
+            &first_party_signed_by(&test_key, artifact),
+            &policy
+        ),
+        Ok(Verdict::Trusted {
+            first_party: true,
+            ..
+        })
+    ));
+}
+
+/// The features a `[features]` table turns on from `root`, transitively: only the package's own
+/// features (a `dep:` or `crate/feature` entry enables nothing of this package's own).
+fn features_reached(manifest: &str, root: &str) -> std::collections::BTreeSet<String> {
+    let mut table = std::collections::BTreeMap::<String, Vec<String>>::new();
+    let mut in_features = false;
+    let mut pending: Option<(String, String)> = None;
+    for raw in manifest.lines() {
+        let line = raw.split('#').next().unwrap_or("").trim();
+        if let Some((name, mut body)) = pending.take() {
+            body.push_str(line);
+            match body.contains(']') {
+                true => {
+                    table.insert(name, entries(&body));
+                }
+                false => pending = Some((name, body)),
+            }
+            continue;
+        }
+        if line.starts_with('[') {
+            in_features = line == "[features]";
+            continue;
+        }
+        let Some((name, body)) = line.split_once('=').filter(|_| in_features) else {
+            continue;
+        };
+        let (name, body) = (
+            name.trim().trim_matches('"').to_string(),
+            body.trim().to_string(),
+        );
+        match body.contains(']') {
+            true => {
+                table.insert(name, entries(&body));
+            }
+            false => pending = Some((name, body)),
+        }
+    }
+    fn entries(body: &str) -> Vec<String> {
+        body.trim_matches(|c| c == '[' || c == ']' || c == ' ')
+            .split(',')
+            .map(|e| e.trim().trim_matches('"').to_string())
+            .filter(|e| !e.is_empty())
+            .collect()
+    }
+    let mut reached = std::collections::BTreeSet::new();
+    let mut stack = vec![root.to_string()];
+    while let Some(f) = stack.pop() {
+        if f.contains(':') || f.contains('/') || !reached.insert(f.clone()) {
+            continue;
+        }
+        stack.extend(table.get(&f).cloned().unwrap_or_default());
+    }
+    reached
+}
+
+/// THE RELEASE ARTIFACT NEVER CARRIES THE HARNESS SEAM (ARCHITECT ruling, busbar #700, condition b):
+/// the release builds (`scripts/release-build.sh`, both `scripts/pgo-build.sh` builds) compile
+/// `-p busbar` with its default features and name no `--features` or `--all-features`, and the
+/// default feature set does not reach `test-harness`. RED arm: a manifest whose default reaches it
+/// through another feature is caught, so the walk is not vacuous.
+#[test]
+fn the_release_feature_set_excludes_test_harness() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let manifest = std::fs::read_to_string(dir.join("Cargo.toml")).expect("read busbar's manifest");
+    let default = features_reached(&manifest, "default");
+    assert!(
+        default.contains("root-admin"),
+        "the walk reads the default set: {default:?}"
+    );
+    assert!(
+        !default.contains("test-harness"),
+        "the default feature set must not reach test-harness: {default:?}"
+    );
+    let planted = "[features]\ndefault = [\"a\"]\na = [\n  \"dep:x\",\n  \"test-harness\",\n]\ntest-harness = []\n";
+    assert!(features_reached(planted, "default").contains("test-harness"));
+
+    let root = dir.join("../..");
+    for script in ["scripts/release-build.sh", "scripts/pgo-build.sh"] {
+        let text = std::fs::read_to_string(root.join(script)).expect("read the release script");
+        let builds: Vec<&str> = text
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.starts_with('#') && l.contains("cargo build --release"))
+            .collect();
+        assert!(!builds.is_empty(), "{script} names its release build");
+        for b in builds {
+            assert!(b.contains("-p busbar"), "{script}: {b}");
+            assert!(
+                !b.contains("--features") && !b.contains("--all-features"),
+                "{script}'s release build must take busbar's default features: {b}"
+            );
+        }
+    }
+}
+
 /// RED (Q-STEP9-a, ARCHITECT 2026-10-07; base: a root pool named after a reserved sub-key was
 /// stripped from the dealt blob as if it were that knob): the plane whose verb is the root `pools:`
 /// section is dealt a pool named `tier` or `work` as the pool it is, its own knobs and its members'
