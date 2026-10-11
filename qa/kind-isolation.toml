@@ -41,6 +41,15 @@ from = "busbar-voice"
 to = "busbar-plane-streaming"
 reason = "legacy drain"
 
+# `busbar-llm` is the retiring 1.5.x LLM engine and `busbar-plane-llm` is the plane it is draining
+# into. The codec fold (#39) dissolved `busbar-llm-codec` into the plane crate's own `codec` module,
+# so the engine's old `busbar-llm -> busbar-llm-codec` edge became this one: the engine hosts the
+# pure plane and reads its dialect rather than restating it. Same terms as the voice and A2A rows.
+[[transitional]]
+from = "busbar-llm"
+to = "busbar-plane-llm"
+reason = "legacy drain: the LLM codecs folded into the plane crate and the retiring engine hosts the plane and reads its dialect"
+
 # The A2A and MCP planes were folded out of busbar-core the same way (W4.a/W4.b, 1.6.0): each
 # retiring plane names the plane-host half it is draining its transport/routing surface into.
 # `busbar-plane-a2a-host` is GONE (folded back into `busbar-a2a`, 858c93966). The drain it named
@@ -724,6 +733,26 @@ verdict = "not-allowed"
 cite    = "BUSBAR-1.6.0.md THE DESIGN, §2 \"Core -> plugin. Never plugin -> core.\" / BUSBAR-1.6.0.md THE DESIGN, §1 the three axes are blind to each other. The retiring 1.5.x crates fuse plane+core+transport in one name."
 why     = "busbar-a2a names busbar-plane-a2a: declared normal in the shipped graph, 1 declaration(s) at this commit. The codec fold (#39) moved the A2A wire dialect into the plane crate, which is where definition 16-20 puts a protocol's dialect, and the retiring engine now READS it rather than restating it. The edge is permitted by the `[[transitional]]` drain row above and by nothing else; this row holds the NUMBER."
 drain   = "delete the busbar-plane-a2a dependency from busbar-a2a's Cargo.toml — which happens when busbar-a2a itself is deleted into busbar-kernel (#19), because the dialect is already where it belongs and it is the ENGINE that is still in the wrong crate."
+
+[[dep]]
+from    = "busbar-llm"
+to      = "busbar-plane-llm"
+half    = "shipped"
+count   = "1"
+verdict = "not-allowed"
+cite    = "BUSBAR-1.6.0.md THE DESIGN, §2 \"Core -> plugin. Never plugin -> core.\" / BUSBAR-1.6.0.md THE DESIGN, §1 the three axes are blind to each other. The retiring 1.5.x crates fuse plane+core+transport in one name."
+why     = "busbar-llm names busbar-plane-llm: declared normal in the shipped graph, 1 declaration(s) at this commit. The codec fold (#39) moved the LLM codecs into the plane crate's `codec` module, and the retiring engine hosts the pure plane and re-exports those modules rather than restating them. The edge is permitted by the `[[transitional]]` drain row above and by nothing else; this row holds the NUMBER."
+drain   = "delete the busbar-plane-llm dependency from busbar-llm's Cargo.toml — which happens when busbar-llm itself is deleted (P3), because the codecs are already where they belong and it is the ENGINE that is still in the wrong crate."
+
+[[dep]]
+from    = "busbar-voice"
+to      = "busbar-plane-streaming"
+half    = "shipped"
+count   = "1"
+verdict = "not-allowed"
+cite    = "BUSBAR-1.6.0.md THE DESIGN, §2 \"Core -> plugin. Never plugin -> core.\" / BUSBAR-1.6.0.md THE DESIGN, §1 the three axes are blind to each other. The retiring 1.5.x crates fuse plane+core+transport in one name."
+why     = "busbar-voice names busbar-plane-streaming: declared normal in the shipped graph, 1 declaration(s) at this commit. The fold (#18/#83) moved the governed-call port and the duplex codecs into the streaming plane, and the retiring streams crate re-exports them under their old paths. The edge is permitted by the `[[transitional]]` drain row above and by nothing else; this row holds the NUMBER."
+drain   = "delete the busbar-plane-streaming dependency from busbar-voice's Cargo.toml — which happens when busbar-voice itself is deleted, because the plane surface is already where it belongs and it is the retiring crate that is still in the tree."
 
 [[dep]]
 from    = "busbar"
