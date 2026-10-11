@@ -7,7 +7,7 @@
 ## Context
 
 Busbar fronts upstreams of varying reliability. A naive breaker that trips a lane
-on *any* non-2xx is wrong in two directions:
+on *any* non-2xx response is wrong in two directions:
 
 - It would **eject a healthy backend** when a caller sends a malformed/oversized
   request (the fault is the caller's, not the upstream's).
