@@ -6,7 +6,7 @@
 
 ## Context
 
-Busbar fronts upstreams of varying reliability. A naive breaker that trips a lane
+Busbar fronts upstreams of differing reliability. A naive breaker that trips a lane
 on *any* non-2xx is wrong in two directions:
 
 - It would **eject a healthy backend** when a caller sends a malformed/oversized
