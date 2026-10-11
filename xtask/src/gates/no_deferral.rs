@@ -75,10 +75,11 @@ pub const ROW_STRICT_DONE: &str = "no-deferral:strict-done";
 
 /// The denominator floor, a `const` in the gate's own module with no environment override. It is
 /// pinned AT the measured count: discovery found 932 shipped source files on predev 6ca8584fc0 (it
-/// was 50, about 5% of the tree), and a drop below 932 is refused as UNPROVEN until a reviewed diff
+/// was 50, about 5% of the tree), and 931 after #532 (p2-cold-auth) deleted the cold auth lane's
+/// files; a drop below 931 is refused as UNPROVEN until a reviewed diff
 /// re-measures. The selftest plant cuts the scan set to one file under the floor and must go red.
 /// The only way to lower one is a reviewable source edit.
-pub const DISCOVERY_FLOOR: usize = 932;
+pub const DISCOVERY_FLOOR: usize = 931;
 
 const WAIVERS: &str = "scripts/no-deferral.waivers";
 /// The plan every waiver's expiry is looked up in. It was `docs/design/1.6.0-TRACKER.md` until
