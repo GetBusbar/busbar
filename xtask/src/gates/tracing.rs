@@ -44,15 +44,16 @@ pub const ROW_CLOSES: &str = "tracing:attribute-closes";
 const SCAN_ROOT: &str = "crates";
 const EXCLUDE_TESTS_DIR: &str = "/tests/";
 
-/// The denominator floor, pinned AT the measured count: the crates walk reads 971 files on this
-/// branch merged with predev bd39476618, after busbar-kernel-ledger's usage/series.rs left (972 on
+/// The denominator floor, pinned AT the measured count: the crates walk reads 972 files once the
+/// plugin-loader conformance suite's RED arms landed in `conformance/red.rs` (971 on predev
+/// c000db6ff5, after busbar-kernel-ledger's usage/series.rs left; 972 on
 /// predev 3bc48823df; 971 on predev 39374ec00e; 980 on 5e672d125d, before the egress_auth /
 /// auth_cache / ingress_sigv4 files left the kernel crates; it was 130 against a tree that had
-/// grown past 700). A drop below 971 is refused until a reviewed diff re-measures;
+/// grown past 700). A drop below 972 is refused until a reviewed diff re-measures;
 /// the selftest plant removes one file and fails if the floor sits under the count. It is a
 /// `const` here and has no environment override: the only way to lower one is a reviewable
 /// source edit.
-const SCAN_FLOOR: usize = 971;
+const SCAN_FLOOR: usize = 972;
 
 /// THE SUBJECT FLOOR (item 228). The file floor above proves the walk opened the crates; it says
 /// nothing about whether the thing this gate judges is still there. "Every `#[instrument]` has a
