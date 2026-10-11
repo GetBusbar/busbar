@@ -944,6 +944,7 @@ fn jwt_bearer_routes(
         super::ProviderRoute {
             base_url: "http://127.0.0.1:9".to_string(),
             protocol: "d".to_string(),
+            error_map: Default::default(),
             credential: busbar_contract::secret_ref::SecretRef::file(
                 key_file.display().to_string(),
             ),
