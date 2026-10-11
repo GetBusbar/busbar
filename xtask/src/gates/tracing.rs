@@ -49,9 +49,9 @@ const EXCLUDE_TESTS_DIR: &str = "/tests/";
 /// predev 3bc48823df; 971 on predev 39374ec00e; 980 on 5e672d125d, before the egress_auth /
 /// auth_cache / ingress_sigv4 files left the kernel crates; it was 130 against a tree that had
 /// grown past 700). A drop below 971 is refused until a reviewed diff re-measures;
-/// the selftest plant removes one file and fails if the floor sits under the count. It is a
-/// `const` here and has no environment override: the only way to lower one is a reviewable
-/// source edit.
+/// the selftest plant cuts the walk to one file under the floor (see [`floor_plant`]), so the
+/// tree growing past it needs no re-pin. It is a `const` here and has no environment override:
+/// the only way to lower one is a reviewable source edit.
 const SCAN_FLOOR: usize = 971;
 
 /// THE SUBJECT FLOOR (item 228). The file floor above proves the walk opened the crates; it says
@@ -243,6 +243,34 @@ fn row_closes(offenders: &[String]) -> Row {
     )
 }
 
+/// The walk the gate judges, without its floor — the one place the scan set is spelled, so the
+/// floor plant counts exactly the files `run` does.
+fn scan_spec() -> WalkSpec {
+    WalkSpec::new([SCAN_ROOT])
+        .ext("rs")
+        .exclude([EXCLUDE_TESTS_DIR])
+}
+
+/// THE FLOOR PLANT: the live walk cut to exactly `SCAN_FLOOR - 1` files, however far the tree has
+/// grown past the floor (see [`Overlay::below_floor`]). Only files that carry no span are cut, so
+/// the subject floor stays out of it. A fixed one-file cut went green the day the tree gained a
+/// file, and every open PR had to re-pin the floor by one.
+fn floor_plant(cx: &Ctx) -> Result<Overlay, String> {
+    let files = cx
+        .walk(&scan_spec())
+        .map_err(|e| format!("the base tree's crates walk is unreadable ({e})"))?;
+    Overlay::below_floor(
+        files.len(),
+        SCAN_FLOOR,
+        files
+            .iter()
+            .rev()
+            .filter(|f| !f.text.contains("#[instrument"))
+            .map(|f| &f.rel),
+    )
+    .map_err(|why| format!("the floor plant cannot cut the crates walk ({why})"))
+}
+
 pub struct TracingGate;
 
 impl Gate for TracingGate {
@@ -259,11 +287,7 @@ impl Gate for TracingGate {
     }
 
     fn run(&self, cx: &Ctx) -> Verdict {
-        let spec = WalkSpec::new([SCAN_ROOT])
-            .ext("rs")
-            .exclude([EXCLUDE_TESTS_DIR])
-            .min_files(SCAN_FLOOR);
-        let files = match cx.walk(&spec) {
+        let files = match cx.walk(&scan_spec().min_files(SCAN_FLOOR)) {
             Ok(f) => f,
             Err(e) => {
                 return Verdict::of(vec![
@@ -520,50 +544,22 @@ impl Gate for TracingGate {
             ));
         }
 
-        // THE FLOOR SITS AT THE MEASURED COUNT. One crate file fewer than the walk finds today
-        // (one that carries no span, so the subject floor stays out of it) is refused; a floor set
-        // a margin below the count passes it, so this is red exactly when the floor has slipped
-        // under the number the tree measures.
-        match cx.walk(
-            &WalkSpec::new([SCAN_ROOT])
-                .ext("rs")
-                .exclude([EXCLUDE_TESTS_DIR]),
-        ) {
-            Ok(files) => match files
-                .iter()
-                .rev()
-                .find(|f| !f.text.contains("#[instrument"))
-            {
-                Some(f) => {
-                    let mut ov = Overlay::new();
-                    ov.remove(&f.rel);
-                    report.push(prove_red(
-                        cx,
-                        self,
-                        "a crates walk one file short of the measured floor is refused",
-                        &[ROW_SCAN_FLOOR],
-                        ov,
-                        &["floor"],
-                    ));
-                }
-                None => report.note_infra_failure(
-                    "tracing selftest: every crate file carries a span, so no file can be removed \
-                     without also moving the subject floor"
-                        .to_string(),
-                ),
-            },
-            Err(e) => report.note_infra_failure(format!(
-                "tracing selftest: the base tree's crates walk is unreadable ({e})"
+        // THE FLOOR SITS AT THE MEASURED COUNT: the walk cut to one file under it is refused.
+        match floor_plant(cx) {
+            Ok(ov) => report.push(prove_red(
+                cx,
+                self,
+                "a crates walk one file under its floor is refused",
+                &[ROW_SCAN_FLOOR],
+                ov,
+                &["floor"],
             )),
+            Err(why) => report.note_infra_failure(format!("tracing selftest: {why}")),
         }
 
         // THE FLOOR, on the RUN path. Every candidate file is removed from the overlay's view,
         // which is what a workspace restructure looks like from the scan's side.
-        match cx.walk(
-            &WalkSpec::new([SCAN_ROOT])
-                .ext("rs")
-                .exclude([EXCLUDE_TESTS_DIR]),
-        ) {
+        match cx.walk(&scan_spec()) {
             Ok(files) => {
                 let mut ov = Overlay::new();
                 for f in &files {
@@ -664,4 +660,87 @@ fn translate(run: &LegacyRun) -> Result<Vec<Row>, String> {
         row_level(&level),
         row_closes(&unclosed),
     ])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ledger::Status;
+
+    /// A temp tree of `n` `.rs` files under `crates/`, the first `SPAN_FLOOR` of them carrying a
+    /// levelled span so the subject floor is met, and a context over it.
+    fn floor_tree(tag: &str, n: usize) -> (std::path::PathBuf, Ctx) {
+        let root = std::env::temp_dir().join(format!(
+            "xtask-tracing-floor-{tag}-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let src = root.join("crates").join("a").join("src");
+        let scratch = root.join(".fix").join("xtask");
+        std::fs::create_dir_all(&src).expect("src dir creates");
+        std::fs::create_dir_all(&scratch).expect("scratch dir creates");
+        for i in 0..n {
+            let text = if i < SPAN_FLOOR {
+                "#[instrument(level = \"debug\")]\npub fn f() {}\n"
+            } else {
+                "pub fn f() {}\n"
+            };
+            std::fs::write(src.join(format!("f{i:05}.rs")), text).expect("seed");
+        }
+        let cx = Ctx::at(&root, &scratch).expect("ctx opens over the temp root");
+        (root, cx)
+    }
+
+    fn floor_row(cx: &Ctx) -> Row {
+        TracingGate
+            .run(cx)
+            .rows
+            .into_iter()
+            .find(|r| r.id == ROW_SCAN_FLOOR)
+            .expect("the scan-floor row is reported")
+    }
+
+    /// THE RED ARM: the tree five files past `SCAN_FLOOR`. The old one-file cut left floor + 4 and
+    /// the row green; the computed cut lands the gate's own walk at exactly floor - 1, refused by
+    /// the file floor and not the span floor.
+    #[test]
+    fn the_floor_plant_lands_one_under_the_floor_on_a_grown_tree() {
+        let (root, cx) = floor_tree("grown", SCAN_FLOOR + 5);
+        let base = floor_row(&cx);
+        assert_eq!(base.status, Status::Pass, "{}", base.detail);
+        let ov = floor_plant(&cx).expect("the floor plant plants");
+        assert_eq!(ov.paths().count(), 6, "live - floor + 1 files are removed");
+        let planted = floor_row(&cx.with_overlay(ov));
+        assert_eq!(planted.status, Status::Fail, "{}", planted.detail);
+        let found = format!("yielded {} file(s)", SCAN_FLOOR - 1);
+        assert!(planted.detail.contains(&found), "{}", planted.detail);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// THE CONTROL: a tree exactly at `SCAN_FLOOR` is green, and the plant still takes it to
+    /// floor - 1 with a single file.
+    #[test]
+    fn a_tree_at_the_floor_is_green_and_the_plant_takes_one_file() {
+        let (root, cx) = floor_tree("at", SCAN_FLOOR);
+        let base = floor_row(&cx);
+        assert_eq!(base.status, Status::Pass, "{}", base.detail);
+        let ov = floor_plant(&cx).expect("the floor plant plants");
+        assert_eq!(ov.paths().count(), 1);
+        let planted = floor_row(&cx.with_overlay(ov));
+        assert_eq!(planted.status, Status::Fail, "{}", planted.detail);
+        let found = format!("yielded {} file(s)", SCAN_FLOOR - 1);
+        assert!(planted.detail.contains(&found), "{}", planted.detail);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The gate's whole selftest over the real tree: every case holds, the floor plant among them.
+    #[test]
+    fn the_tracing_selftest_holds_on_the_workspace() {
+        let cx = Ctx::workspace().expect("workspace context");
+        let report = TracingGate.selftest(&cx);
+        if let Err(why) = crate::gates::verify_report(&TracingGate, &report) {
+            panic!("tracing selftest failed:\n{}", why.join("\n"));
+        }
+    }
 }
