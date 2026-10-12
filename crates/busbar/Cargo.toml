@@ -455,6 +455,7 @@ plane-mcp-door = "busbar_plane_mcp::DECLARES"
 [package.metadata.busbar.linked-section]
 plane-mcp-door = "tools"
 plane-decisions = "decisions"
+plane-streaming = "streams"
 
 # The key an `auths` row answers on the auth axis — the name its signed tarball's manifest states.
 [package.metadata.busbar.linked-name]

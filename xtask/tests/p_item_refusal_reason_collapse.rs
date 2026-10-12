@@ -223,11 +223,19 @@ fn p_item_refusal_reason_collapse_the_scan_catches_a_reason_match() {
     }
 }
 "#;
+    // The plant puts `refusal_body` back the old way inside the door's real source, so every other
+    // renderer the scan names in that file (`refusal_render`) is still read, and still clean.
     let planted = findings(&reasons, &|f| {
+        let real = read(f);
         if f == "crates/busbar-plane-streaming/src/door.rs" {
-            old.to_string()
+            let start = real
+                .find("fn refusal_body(")
+                .expect("the door's refusal_body");
+            let body = body_of(&real[start..], "refusal_body").expect("its body");
+            let end = start + real[start..].find(body).expect("the body in place") + body.len();
+            format!("{}{old}{}", &real[..start], &real[end..])
         } else {
-            read(f)
+            real
         }
     });
     assert_eq!(

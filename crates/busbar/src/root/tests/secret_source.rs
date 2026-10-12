@@ -215,11 +215,16 @@ fn statement_name(door: busbar_contract::abi::mechanism::door::DoorFn) -> String
 
 /// The doors this file drives, by Statement name.
 fn driven() -> Vec<String> {
+    #[cfg_attr(
+        not(any(linked_section_decisions, linked_section_streams)),
+        allow(unused_mut)
+    )]
     let mut names = vec![statement_name(
         crate::root::door_steps::tests::tool_door::line_door(),
     )];
     #[cfg(linked_section_decisions)]
     names.push(super::door_tests::decisions_name());
+    #[cfg(linked_section_streams)]
     names.extend(super::door_tests::session_door::name());
     names
 }
@@ -432,6 +437,7 @@ async fn decisions_a_provider_key_gone_by_an_apply_reaches_the_caller_without_it
 
 /// THE SESSION DOOR, COMPOSE TIME: a provider whose `api_key` does not resolve refuses the boot
 /// with the operator's text, which names the source; nothing is served to a caller.
+#[cfg(linked_section_streams)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn session_door_an_unresolved_provider_key_refuses_the_boot_naming_its_source() {
     let _one = PUBLISHING.lock().await;
@@ -439,16 +445,13 @@ async fn session_door_an_unresolved_provider_key_refuses_the_boot_naming_its_sou
     let path = missing(instance);
     let secret = SecretRef::file(path.clone());
     refused_naming_its_source(&secret);
-    let Some(composed) = super::door_tests::session_door::session_keyed(
+    let composed = super::door_tests::session_door::session_keyed(
         instance,
         None,
         &format!("{{file: '{path}'}}"),
     )
     .await
-    else {
-        eprintln!("skip: this build links no session door");
-        return;
-    };
+    .expect("the build links the session door");
     let Err(refusal) = composed else {
         panic!("a provider key that does not resolve refuses the composition");
     };
@@ -462,6 +465,7 @@ async fn session_door_an_unresolved_provider_key_refuses_the_boot_naming_its_sou
 /// THE SESSION DOOR, ACROSS AN APPLY: a provider served while its `api_key` file was there, the
 /// file then gone and the configuration applied: the door keeps the generation it serves, and the
 /// caller's mint is served by it, its render clean of the source.
+#[cfg(linked_section_streams)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn session_door_a_provider_key_gone_by_an_apply_reaches_the_caller_without_its_source() {
     let _one = PUBLISHING.lock().await;
@@ -469,16 +473,15 @@ async fn session_door_a_provider_key_gone_by_an_apply_reaches_the_caller_without
     let path = missing(instance);
     std::fs::write(&path, "sk-secret-source-test").expect("the credential file");
     let secret = SecretRef::file(path.clone());
-    let Some(composed) = super::door_tests::session_door::session_keyed(
+    let composed = super::door_tests::session_door::session_keyed(
         instance,
         None,
         &format!("{{file: '{path}'}}"),
     )
-    .await
-    else {
+    .await;
+    let Some(composed) = composed else {
         let _ = std::fs::remove_file(&path);
-        eprintln!("skip: this build links no session door");
-        return;
+        panic!("the build links the session door");
     };
     let serving = composed.expect("the door composes");
     std::fs::remove_file(&path).expect("the credential file goes");

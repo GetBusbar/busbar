@@ -594,8 +594,11 @@ async fn a_door_claiming_one_path_over_two_carriers_mounts_it_once() {
 /// production composes it — the browser's ephemeral-secret mint, a keyed caller, the door's DIRECT
 /// route to the top-level catalog model its section's `session.model` names, the provider's own
 /// credential presented by the auth plugin, the caller's spend posted against the key that
-/// presented it. The door is found among the linked plane doors by the audio class it meters, so a
-/// build that links none skips. The secret-source scan (`secret_source.rs`) drives the same door.
+/// presented it. The door is found among the linked plane doors by the audio class it meters; the
+/// module is compiled where the build links the door that declares `streams`
+/// (`linked_section_streams`), and there a door not found is a failure, never a skip. The
+/// secret-source scan (`secret_source.rs`) drives the same door.
+#[cfg(linked_section_streams)]
 pub(super) mod session_door {
     use std::collections::BTreeMap;
     use std::sync::Arc;
@@ -1046,10 +1049,9 @@ pub(super) mod session_door {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_session_door_mint_is_served_under_the_providers_credential() {
         let _one = PUBLISHING.lock().await;
-        let Some(mut s) = session_served("serve-door-session", None).await else {
-            eprintln!("skip: this build links no session door");
-            return;
-        };
+        let mut s = session_served("serve-door-session", None)
+            .await
+            .expect("the build links the session door");
 
         let refused = send_body(&s.router, MINT, None, "{}").await;
         assert_eq!(
@@ -1105,10 +1107,9 @@ pub(super) mod session_door {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_spent_key_is_refused_at_the_session_door_before_any_dial() {
         let _one = PUBLISHING.lock().await;
-        let Some(mut s) = session_served("serve-door-session-spent", Some(0)).await else {
-            eprintln!("skip: this build links no session door");
-            return;
-        };
+        let mut s = session_served("serve-door-session-spent", Some(0))
+            .await
+            .expect("the build links the session door");
         let response = send_body(&s.router, MINT, Some(&s.plain), "{}").await;
         assert_eq!(
             response.status().as_u16(),
