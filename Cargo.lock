@@ -473,7 +473,7 @@ dependencies = [
 [[package]]
 name = "busbar-auth-oidc"
 version = "1.0.0"
-source = "git+https://github.com/GetBusbar/busbar-auth-oidc?rev=0a7b7a5c59593e4e5a9b742b5c5a9f0147dc17cb#0a7b7a5c59593e4e5a9b742b5c5a9f0147dc17cb"
+source = "git+https://github.com/GetBusbar/busbar-auth-oidc?rev=4d9e8f4cec149d6142854ef2b63c1e639b85f87d#4d9e8f4cec149d6142854ef2b63c1e639b85f87d"
 dependencies = [
  "base64 0.22.1",
  "busbar-contract",
@@ -489,7 +489,7 @@ dependencies = [
 [[package]]
 name = "busbar-auth-oidc-plugin"
 version = "1.0.0"
-source = "git+https://github.com/GetBusbar/busbar-auth-oidc?rev=0a7b7a5c59593e4e5a9b742b5c5a9f0147dc17cb#0a7b7a5c59593e4e5a9b742b5c5a9f0147dc17cb"
+source = "git+https://github.com/GetBusbar/busbar-auth-oidc?rev=4d9e8f4cec149d6142854ef2b63c1e639b85f87d#4d9e8f4cec149d6142854ef2b63c1e639b85f87d"
 dependencies = [
  "busbar-auth-oidc",
  "busbar-contract",
@@ -710,10 +710,7 @@ dependencies = [
  "base64 0.22.1",
  "bumpalo",
  "busbar-a2a",
- "busbar-auth-oidc",
- "busbar-auth-oidc-plugin",
  "busbar-contract",
- "busbar-export-prometheus",
  "busbar-kernel-audit",
  "busbar-kernel-breaker",
  "busbar-kernel-egress",
@@ -1023,14 +1020,12 @@ dependencies = [
  "busbar-contract",
  "busbar-plugin-loader",
  "busbar-transport-stdio",
- "futures",
- "tokio",
 ]
 
 [[package]]
 name = "busbar-transport-tcp"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-transport-tcp?rev=4af9e2ca8bc164d0066e6d107024ba416192a4ba#4af9e2ca8bc164d0066e6d107024ba416192a4ba"
+source = "git+https://github.com/GetBusbar/busbar-transport-tcp?rev=eb334dd6e9d3dcd62ae1616f77a5ed56311b255a#eb334dd6e9d3dcd62ae1616f77a5ed56311b255a"
 dependencies = [
  "busbar-contract",
 ]
@@ -1038,7 +1033,7 @@ dependencies = [
 [[package]]
 name = "busbar-transport-tcp-plugin"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-transport-tcp?rev=4af9e2ca8bc164d0066e6d107024ba416192a4ba#4af9e2ca8bc164d0066e6d107024ba416192a4ba"
+source = "git+https://github.com/GetBusbar/busbar-transport-tcp?rev=eb334dd6e9d3dcd62ae1616f77a5ed56311b255a#eb334dd6e9d3dcd62ae1616f77a5ed56311b255a"
 dependencies = [
  "busbar-contract",
  "busbar-transport-tcp",
@@ -1463,7 +1458,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3281,7 +3276,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3719,7 +3714,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4405,7 +4400,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4568,6 +4563,7 @@ dependencies = [
  "busbar-contract",
  "busbar-core-connector",
  "busbar-plugin-loader",
+ "busbar-transport-tcp",
  "busbar-transport-ws",
  "futures",
  "serde_json",

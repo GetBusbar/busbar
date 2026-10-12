@@ -29,8 +29,9 @@ pub mod boot;
 pub mod carrier;
 /// THE PUBLISHED CONFORMANCE SUITE (TODO ABI-b4): what every real plugin repo runs against the busbar
 /// commit it pins, linked and dropped in, through the one loader. Behind `conformance`: a plugin's
-/// dev-dependency turns it on; no busbar build ships it.
-#[cfg(feature = "conformance")]
+/// dev-dependency turns it on; no busbar build ships it. This crate's own tests drive the shipped
+/// transport row through it too (`transport_door_conformance_tests`).
+#[cfg(any(test, feature = "conformance"))]
 pub mod conformance;
 /// THE ONE DISPATCHER of the memory ABI (`BUSBAR-1.6.0.md` THE DESIGN, §11): one loader path, one
 /// crossing, tickets, wakes, deadlines and the watchdog, generic over the kind.
@@ -214,7 +215,10 @@ pub fn intern_name(name: &str) -> &'static str {
 pub(crate) fn dlopen_on_worker(path: &std::ffi::OsStr) -> Result<Library, String> {
     // SAFETY (unchanged from the direct call this replaces): loading an operator-placed library runs
     // its init code, which is the same trust as compiling it in. Callers apply the trust gate first.
-    match ffi_thread::on_plugin_thread(|| unsafe { Library::new(path) }) {
+    match ffi_thread::on_plugin_thread(|| {
+        ffi_thread::debug_assert_permanent("dlopen");
+        unsafe { Library::new(path) }
+    }) {
         Ok(r) => r.map_err(|e| e.to_string()),
         // An init constructor that PANICKED into us. Vanishingly rare, but the rendezvous must
         // produce a value rather than resume an unwind on a worker whose thread must not die.
@@ -228,7 +232,10 @@ pub(crate) fn dlopen_on_worker(path: &std::ffi::OsStr) -> Result<Library, String
 pub(crate) fn dlclose_on_worker(lib: Library) {
     #[cfg(test)]
     UNLOADS_ON_WORKER.with(|n| n.set(n.get() + 1));
-    let _ = ffi_thread::on_plugin_thread(move || drop(lib));
+    let _ = ffi_thread::on_plugin_thread(move || {
+        ffi_thread::debug_assert_permanent("dlclose");
+        drop(lib);
+    });
 }
 
 #[cfg(test)]
@@ -313,7 +320,11 @@ pub(crate) fn abi_handshake(
 }
 
 fn ffi_guard_confined<R>(path: &str, op: &str, f: impl FnOnce() -> R) -> Result<R, String> {
-    ffi_thread::on_plugin_thread(f).map_err(|_| {
+    ffi_thread::on_plugin_thread(|| {
+        ffi_thread::debug_assert_permanent(op);
+        f()
+    })
+    .map_err(|_| {
         format!("plugin '{path}' panicked across the ABI boundary in {op} (treated as failure)")
     })
 }
@@ -664,7 +675,7 @@ impl Drop for RawPlugin {
     fn drop(&mut self) {
         // Guard `busbar_close` against a panicking plugin destructor. This runs on the hot-reload
         // path (the OLD instance drops as its last in-flight request drains) and at clean shutdown; a
-        // panic here in a plain `extern "C"` `drop` would double-panic → unconditional abort. With the
+        // panic here in a plain C-ABI `drop` would double-panic → unconditional abort. With the
         // `extern "C-unwind"` ABI the unwind is defined and caught here, so a bad backend `Drop`
         // degrades to a logged warning + leaked handle instead of tearing down the whole gateway.
         let close = self.close;
@@ -890,8 +901,9 @@ fn wire_up(
             let sink = set_sink;
             let ctx = hostlog::intern_log_ctx(&display);
             let level = hostlog::host_max_level();
-            let _ = ffi_thread::on_plugin_thread(move || unsafe {
-                sink(hostlog::host_log_sink, ctx, level);
+            let _ = ffi_thread::on_plugin_thread(move || {
+                ffi_thread::debug_assert_permanent("set_log_sink");
+                unsafe { sink(hostlog::host_log_sink, ctx, level) };
             });
         }
     }
@@ -1371,8 +1383,8 @@ mod store_door_conformance_tests;
 #[path = "tests/secret_door_conformance_tests.rs"]
 mod secret_door_conformance_tests;
 
-/// `kind: transport` over the REAL `tcp` door, both ways: the shipped linked door against the pinned
-/// cdylib, one script, equal transcripts and exact crossing counts.
+/// `kind: transport` over the REAL shipped carrier, both ways: the linked door against the pinned
+/// cdylib, through the published suite's carrier script, equal folds and exact crossing counts.
 #[cfg(test)]
 #[path = "tests/transport_door_conformance_tests.rs"]
 mod transport_door_conformance_tests;

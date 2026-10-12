@@ -1898,6 +1898,43 @@ pub fn plane_kind_src_roots(cx: &Ctx) -> Result<Vec<String>, String> {
     Ok(out)
 }
 
+/// One crate's `impl PlaneMeta for …` declarations, as the census reads them.
+pub struct PlaneMetaDecl {
+    /// The package name.
+    pub krate: String,
+    /// Whether the kind table resolves the crate to the `plane` kind (`busbar-plane-*`) — a PLANE
+    /// CRATE, as opposed to a crate of another kind that states a plane surface's grammar (the
+    /// admin surface in the `cleanliness` crate `busbar-core-admin`).
+    pub plane_kind: bool,
+    /// Every `const KEY` its `impl PlaneMeta for …` blocks state, sorted.
+    pub keys: Vec<String>,
+}
+
+/// THE PLANE KEYS THE TREE DECLARES, read off the declarations themselves: for every crate of the
+/// census, the `const KEY` of each `impl PlaneMeta for …` under its `src/` — the same reading
+/// [`CrateInfo::declared_keys`] gives a plane-kind crate. Every plane-kind crate is returned, even
+/// one that declares no key (a plane the caller cannot name is a finding, not a skip); a crate of
+/// any other kind is returned only when it declares a key.
+pub fn plane_meta_declarations(cx: &Ctx) -> Result<Vec<PlaneMetaDecl>, String> {
+    let mut out = Vec::new();
+    for c in census(cx)? {
+        let plane_kind = c.kind == Some("plane");
+        let keys = if plane_kind {
+            c.declared_keys
+        } else {
+            declared_meta_keys(cx, &c.dir, "PlaneMeta")
+        };
+        if plane_kind || !keys.is_empty() {
+            out.push(PlaneMetaDecl {
+                krate: c.name,
+                plane_kind,
+                keys,
+            });
+        }
+    }
+    Ok(out)
+}
+
 /// ONE CRATE OF KIND `plane`, as the census reads it — for a sibling gate that owes something per
 /// plane crate and must not keep its own list of them.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -10252,10 +10289,11 @@ impl Gate for KindIsolationGate {
         ));
 
         // A STEP THAT IS DECLARED AND NOT RUN. The compiler is satisfied and the loop stops there,
-        // which is the case the presence check alone cannot see.
+        // which is the case the presence check alone cannot see. Planted in a plane that still has
+        // a legacy face (the mcp plane is a door plane only: its unserved `Plane` impl is deleted).
         let mut ov = Overlay::new();
         ov.set(
-            "crates/busbar-plane-mcp/src/planted_step.rs",
+            "crates/busbar-plane-a2a/src/planted_step.rs",
             "impl Foo {\n    fn route(&self) -> RoutePlan {\n        todo!()\n    }\n}\n",
         );
         report.push(prove_rows_red(

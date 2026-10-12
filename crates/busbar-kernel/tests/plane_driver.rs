@@ -15,6 +15,9 @@ mod common;
 #[path = "support/plane_driver_cases.rs"]
 mod cases;
 
+#[path = "support/plane_driver_hook_cases.rs"]
+mod hook_cases;
+
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
@@ -23,6 +26,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::task::{Context, Poll, Waker};
 use std::time::{Duration, Instant};
 
+use busbar_contract::abi::hook::{MessageView, RequestView};
 use busbar_contract::abi::mechanism::call::{AbiStr, Blob, Outcome, Span};
 use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::plane::{
@@ -30,10 +34,10 @@ use busbar_contract::abi::plane::{
     RefusalIn, RefusalOut, UnitCount, AUDIT_APPLIED, CANCEL_ABORTED, CANCEL_FAILED,
     CANCEL_OK_PARTIAL, EMIT_DONE, EMIT_FINAL_STATUS, EMIT_MESSAGE_END, EMIT_TO_FAR_END,
     FROM_CALLER, FROM_FAR_END, FROM_KERNEL, PIECE_FIELDS, PIECE_HAS_STATUS, PIECE_LAST,
-    PIECE_OUT_TEXT, PRINCIPAL_OPTIONAL, RECORD_AUDIT, RECORD_PUT, REFUSAL_ARRIVE, REFUSAL_KERNEL,
-    ROUTE_LOCAL, ROUTE_SESSION, UNITS_ESTIMATED, UNITS_REPORTED, VERDICT_RETRY,
+    PIECE_OUT_TEXT, PRINCIPAL_OPTIONAL, RECORD_AUDIT, RECORD_PUT, REFUSAL_ARRIVE, ROUTE_LOCAL,
+    ROUTE_SESSION, UNITS_ESTIMATED, UNITS_REPORTED, VERDICT_RETRY,
 };
-use busbar_contract::abi::plane::{ServeIn, ServeOut};
+use busbar_contract::abi::plane::{ServeIn, ServeOut, REFUSAL_GATE};
 use busbar_contract::caps::OpClassId;
 use busbar_contract::plane::{TrustKeyDecl, TrustRole};
 use busbar_contract::plane_calls::{
@@ -66,6 +70,11 @@ pub(crate) struct Rig {
 }
 
 impl Rig {
+    /// Every `project` crossing: the body it was handed and the rewrite, when one came.
+    pub(crate) fn projects(&self) -> Vec<(Vec<u8>, Vec<u8>)> {
+        self.plane.projects.lock().unwrap().clone()
+    }
+
     pub(crate) fn stats(&self) -> [u64; stat::COUNT] {
         let mut out = [0; stat::COUNT];
         for (k, v) in out.iter_mut().enumerate() {
@@ -75,7 +84,17 @@ impl Rig {
     }
 }
 
-pub(crate) fn rig(_way: Way, caps: BufferCaps, book: cases::Book) -> Rig {
+pub(crate) fn rig(way: Way, caps: BufferCaps, book: cases::Book) -> Rig {
+    rig_with_hooks(way, caps, book, None)
+}
+
+/// [`rig`], the driver binding `hooks` to each unit.
+pub(crate) fn rig_with_hooks(
+    _way: Way,
+    caps: BufferCaps,
+    book: cases::Book,
+    hooks: Option<busbar_kernel::plane_driver::BoundHooks>,
+) -> Rig {
     let plane = Arc::new(Double::default());
     let book = Arc::new(book);
     let driver = PlaneDriver::new(
@@ -92,6 +111,10 @@ pub(crate) fn rig(_way: Way, caps: BufferCaps, book: cases::Book) -> Rig {
         ("test_plane", &serde_yaml::Value::Null),
     )
     .expect("the instance is admitted");
+    let driver = match hooks {
+        Some(h) => driver.with_hooks(Arc::new(h)),
+        None => driver,
+    };
     Rig {
         plane,
         driver,
@@ -188,6 +211,8 @@ struct Double {
     held: Mutex<HashMap<Ticket, (Arc<Shared>, OnPieceOut)>>,
     next: AtomicU32,
     stats: [AtomicU64; stat::COUNT],
+    /// `project` crossings, and the bodies each was handed (with the rewrite, when one came).
+    projects: Mutex<Vec<(Vec<u8>, Vec<u8>)>>,
     /// The driver tickets minted, and every ticket recycled.
     drivers: Mutex<Vec<Ticket>>,
     recycled: Mutex<Vec<Ticket>>,
@@ -567,17 +592,6 @@ impl PlaneCalls for Double {
         now_ns()
     }
 
-    // The hook stage is dormant in these driver proofs (no plane binds hooks): `project` is the
-    // trait's required op, answered here as the no-projection pure op.
-    fn project(
-        &self,
-        _input: &mut ProjectIn,
-        _out: &mut ProjectOut,
-        _grow: Grow<'_, ProjectIn, ProjectOut>,
-    ) -> Outcome {
-        Outcome::Ready
-    }
-
     fn arrive(
         &self,
         input: &mut ArriveIn,
@@ -693,12 +707,13 @@ impl PlaneCalls for Double {
         out: &mut RefusalOut,
         grow: Grow<'_, RefusalIn, RefusalOut>,
     ) -> Outcome {
-        // The reason crosses beside its text: a refusal whose code names another reason is FAULT
-        // (the plane's own words for an arrival it refused are its text, not the kernel's).
-        let named =
-            busbar_contract::abi::plane::reason_of(input.reason).map(|r| r.as_str().as_bytes());
-        // A gate refusal's text is the vetoing hook's own words.
-        if input.cause == REFUSAL_KERNEL && named != Some(unsafe { text(input.text) }) {
+        // The reason crosses beside its text (`RefusalIn::text`, the kernel's own message: the
+        // reason's spelling, or the walk terminal's own words): a refusal whose code names no reason,
+        // or that carries no text, is FAULT. A gate's refusal carries the hook's own words instead.
+        let named = busbar_contract::abi::plane::reason_of(input.reason);
+        if input.cause != REFUSAL_GATE
+            && (named.is_none() || unsafe { text(input.text) }.is_empty())
+        {
             return Outcome::Fault;
         }
         let mut body = [
@@ -809,6 +824,148 @@ impl PlaneCalls for Double {
             }
             out.reply_written = body.len() as u64;
             out.fields_written = 1;
+            out.arena_written = arena as u64;
+            return Outcome::Ready;
+        }
+        Outcome::Fault
+    }
+
+    /// The view this plane projects: each body line `role:text` is a turn, a `sys=` line the
+    /// system prompt and a `user=` line the end user. A rewrite (1.5.5's `rewrite` object) is
+    /// applied by replacing the turns with its messages' `role:content`, unless the target is
+    /// `/no-rewrite` (a rewrite the plane cannot read); `/unprojectable` refuses to project. The
+    /// view names the entry its `arrive` recorded (none) and states the unit's body: a projection
+    /// with no body would leave a gate-first unit nothing to screen, and the kernel would bind no
+    /// gate for it.
+    fn project(
+        &self,
+        input: &mut ProjectIn,
+        out: &mut ProjectOut,
+        grow: Grow<'_, ProjectIn, ProjectOut>,
+    ) -> Outcome {
+        let target = unsafe { text(input.target) }.to_vec();
+        let body = unsafe { bytes(input.body) }.to_vec();
+        let rewrite = unsafe { bytes(input.rewrite) }.to_vec();
+        self.projects
+            .lock()
+            .unwrap()
+            .push((body.clone(), rewrite.clone()));
+        if target == b"/unprojectable" {
+            return Outcome::Refused;
+        }
+        let rewritten = (!rewrite.is_empty() && target != b"/no-rewrite")
+            .then(|| serde_json::from_slice::<serde_json::Value>(&rewrite).ok())
+            .flatten()
+            .and_then(|v| v.get("messages").and_then(|m| m.as_array()).cloned())
+            .map(|messages| {
+                let lines: Vec<String> = messages
+                    .iter()
+                    .map(|m| {
+                        let field = |k: &str| m.get(k).and_then(|v| v.as_str()).unwrap_or("");
+                        format!("{}:{}", field("role"), field("content"))
+                    })
+                    .collect();
+                lines.join("\n").into_bytes()
+            });
+        let unit_body = body.clone();
+        let effective = rewritten.clone().unwrap_or(body);
+        let effective = String::from_utf8_lossy(&effective).into_owned();
+        let (mut system, mut user, mut turns) = (None, None, Vec::new());
+        for line in effective.split('\n').filter(|l| !l.is_empty()) {
+            if let Some(v) = line.strip_prefix("sys=") {
+                system = Some(v.to_string());
+            } else if let Some(v) = line.strip_prefix("user=") {
+                user = Some(v.to_string());
+            } else {
+                let (role, text) = line.split_once(':').unwrap_or(("user", line));
+                turns.push((role.to_string(), text.to_string()));
+            }
+        }
+        let mut strings: Vec<&[u8]> = vec![b"", b"test-dialect"];
+        strings.push(system.as_deref().unwrap_or("").as_bytes());
+        strings.push(user.as_deref().unwrap_or("").as_bytes());
+        for (role, text) in &turns {
+            strings.push(role.as_bytes());
+            strings.push(text.as_bytes());
+        }
+        let rewritten_bytes = rewritten.unwrap_or_default();
+        strings.push(&unit_body);
+        strings.push(&rewritten_bytes);
+        let arena: usize = strings.iter().map(|b| b.len()).sum();
+        for call in 0..2 {
+            if turns.len() > input.messages_cap || arena > input.arena_cap {
+                if call == 1 {
+                    return Outcome::Fault;
+                }
+                out.messages_needed = turns.len() as u32;
+                out.arena_needed = arena as u64;
+                grow(out, input);
+                *out = busbar_contract::abi::sdk::door::blank_out();
+                continue;
+            }
+            // SAFETY (below): the driver's buffers, of the capacities checked above.
+            let mut at = 0usize;
+            let mut place = |b: &[u8]| -> AbiStr {
+                unsafe {
+                    std::ptr::copy_nonoverlapping(b.as_ptr(), input.arena_buf.add(at), b.len())
+                };
+                let s = AbiStr {
+                    ptr: unsafe { input.arena_buf.add(at) }.cast_const(),
+                    len: b.len(),
+                };
+                at += b.len();
+                s
+            };
+            let pool = place(strings[0]);
+            let dialect = place(strings[1]);
+            let sys = place(strings[2]);
+            let end_user = place(strings[3]);
+            for (k, pair) in strings[4..4 + 2 * turns.len()].chunks(2).enumerate() {
+                let role = place(pair[0]);
+                let text = place(pair[1]);
+                unsafe { *input.messages_buf.add(k) = MessageView { role, text } };
+            }
+            let _ = place(&unit_body);
+            let _ = place(&rewritten_bytes);
+            let start = arena - rewritten_bytes.len();
+            let body_start = start - unit_body.len();
+            out.view = RequestView {
+                request_id: 0,
+                pool,
+                ingress_dialect: dialect,
+                message_count: turns.len() as u64,
+                total_chars: turns.iter().map(|(_, t)| t.len() as u64).sum(),
+                max_tokens: 0,
+                flags: 0,
+                signals: input.signals_buf.cast_const(),
+                signals_len: 0,
+                session: Blob {
+                    ptr: std::ptr::null(),
+                    len: 0,
+                    fmt: busbar_contract::abi::mechanism::call::BLOB_ABSENT,
+                    flags: 0,
+                },
+            };
+            out.prompt.system = sys;
+            out.prompt.message_count = turns.len() as u64;
+            out.prompt.messages = input.messages_buf.cast_const();
+            out.prompt.messages_len = turns.len();
+            out.end_user = end_user;
+            out.body = if unit_body.is_empty() {
+                Span {
+                    offset: busbar_contract::abi::plane::SPAN_ABSENT,
+                    len: 0,
+                }
+            } else {
+                Span {
+                    offset: body_start as u32,
+                    len: unit_body.len() as u32,
+                }
+            };
+            out.rewritten = Span {
+                offset: start as u32,
+                len: rewritten_bytes.len() as u32,
+            };
             out.arena_written = arena as u64;
             return Outcome::Ready;
         }
@@ -1961,6 +2118,8 @@ async fn a_gate_first_plane_screens_its_entry_before_the_far_end_and_stops_at_th
             .contains(&busbar_contract::caps::StepName::Admit),
         "a veto admits nothing: the door was never asked"
     );
+    // The entry the kernel recorded at decode (this double's `arrive` names none, and its
+    // projection names the same).
     assert_eq!(*binder.asked.lock().unwrap(), vec![String::new()]);
     assert!(far.sent().is_empty(), "nothing reached the far end");
     let rendered = units.take_rendered().expect("the veto is rendered");
@@ -2120,5 +2279,233 @@ async fn a_vetoed_units_refusal_names_the_hook_and_writes_its_rejected_row() {
             busbar_contract::vocab::OUTCOME_REJECTED,
             common::principal().as_str().to_string(),
         )]
+    );
+}
+
+// ── a credential that cannot be presented ───────────────────────────────────────────────────────
+
+/// What one failing secret leaves behind: the reference, and every string of it a caller must never
+/// be handed (the variable, the path, the module, the reference as written).
+struct Failing {
+    secret: busbar_contract::secret_ref::SecretRef,
+    markers: Vec<String>,
+}
+
+/// THE FAILING SECRETS this cell plants, one per source shape, each with its own markers: an unset
+/// variable, a file that is not there, and a module no secret plugin answers.
+fn failing_secrets() -> Vec<Failing> {
+    use busbar_contract::secret_ref::SecretRef;
+    let pid = std::process::id();
+    let var = format!("BUSBAR_KERNEL_SECRET_MARKER_{pid}");
+    std::env::remove_var(&var);
+    let path = std::env::temp_dir()
+        .join(format!("busbar-kernel-secret-marker-{pid}"))
+        .display()
+        .to_string();
+    let _ = std::fs::remove_file(&path);
+    let module = format!("secret-marker-module-{pid}");
+    let opaque = format!("secret-marker-setting-{pid}");
+    let plugin: SecretRef = serde_json::from_value(
+        serde_json::json!({ "module": module, "settings": { "at": opaque } }),
+    )
+    .expect("a module reference");
+    [
+        (SecretRef::env(&var), vec![var.clone()]),
+        (SecretRef::file(&path), vec![path.clone()]),
+        (plugin, vec![module.clone()]),
+    ]
+    .into_iter()
+    .map(|(secret, mut markers)| {
+        markers.push(secret.describe());
+        Failing { secret, markers }
+    })
+    .collect()
+}
+
+/// The markers `text` carries, without case.
+fn markers_in(text: &str, failing: &Failing) -> Vec<String> {
+    let lower = text.to_ascii_lowercase();
+    failing
+        .markers
+        .iter()
+        .filter(|m| lower.contains(&m.to_ascii_lowercase()))
+        .cloned()
+        .collect()
+}
+
+/// A FAR END WHOSE MEMBERS' CREDENTIALS CANNOT BE PRESENTED, the two ways production's far end meets
+/// a secret that did not resolve: the member's one auth call is refused (its auth plugin holds no
+/// credential), so nothing is sent; and the member's program is never spawned (the connector refuses
+/// the open), so its attempt fails over before any byte reaches the plane. Each member's operator
+/// text, naming the source, is held here, where the plugin and the connector hold theirs: nothing on
+/// the far end's seam can carry it to the kernel.
+struct Unpresentable {
+    /// The refusal the secret source gave the operator.
+    operator_text: String,
+}
+
+/// The member whose auth call is refused.
+const UNBOUND: &str = "unbound";
+/// The member whose program is never spawned.
+const UNSPAWNED: &str = "unspawned";
+
+impl busbar_kernel::plane_driver::FarEnd for Unpresentable {
+    fn member<'a>(
+        &'a self,
+        _: &'a busbar_contract::caps::Pass<busbar_contract::caps::Route>,
+        attempt_no: u32,
+    ) -> impl Future<Output = busbar_kernel::plane_driver::Pick> + Send + 'a {
+        use busbar_kernel::plane_driver::Pick;
+        let pick = match [UNBOUND, UNSPAWNED].get(attempt_no as usize - 1) {
+            Some(m) => Pick::Member {
+                name: (*m).to_string(),
+                pool: "pool-a".to_string(),
+                passthrough: false,
+                provider: "acme".to_string(),
+            },
+            None => Pick::Exhausted {
+                status: 503,
+                retry_after: Some(2),
+                detail: "The service is temporarily overloaded. Please retry shortly.",
+            },
+        };
+        async move { pick }
+    }
+
+    async fn send(
+        &self,
+        _: &busbar_contract::caps::Pass<busbar_contract::caps::Route>,
+        request: busbar_kernel::plane_driver::OutboundRequest,
+    ) -> bool {
+        request.member != UNBOUND
+    }
+
+    async fn next(
+        &self,
+        _: &busbar_contract::caps::Pass<busbar_contract::caps::Route>,
+    ) -> Option<busbar_kernel::plane_driver::FarPiece> {
+        Some(busbar_kernel::plane_driver::FarPiece {
+            last: true,
+            fail_over: true,
+            ..busbar_kernel::plane_driver::FarPiece::default()
+        })
+    }
+
+    fn failure(
+        &self,
+        _: &busbar_contract::caps::Pass<busbar_contract::caps::Route>,
+    ) -> Option<&'static str> {
+        Some("credential_unavailable")
+    }
+
+    async fn write(
+        &self,
+        _: &busbar_contract::caps::Pass<busbar_contract::caps::Route>,
+        _: busbar_kernel::plane_driver::OutboundRequest,
+    ) -> bool {
+        false
+    }
+}
+
+/// Run one unit through the one loop over any far end; its outcome.
+async fn drive_over<F: busbar_kernel::plane_driver::FarEnd>(
+    units: &busbar_kernel::plane_driver::PlaneUnits<'_, common::TestUnits, F, cases::Caller>,
+) -> busbar_contract::caps::Outcome {
+    use busbar_kernel::teller::{run_unit_async, AccrualMeter, Ended, Kernel, Run};
+    let kernel = Kernel::new();
+    let (gauge, canary, leases, meter) = (
+        busbar_kernel::slice::ConcurrencyGauge::new(),
+        busbar_contract::caps::Canary::new(),
+        busbar_kernel::slice::LeaseCell::new(),
+        AccrualMeter::new(),
+    );
+    let cell = common::cell(&kernel);
+    let run = Run {
+        cell: &cell,
+        parent: None,
+        leases: &leases,
+        gauge: &gauge,
+        canary: &canary,
+        meter: &meter,
+    };
+    match run_unit_async(&kernel, units, &common::ctx(7), run, units).await {
+        Ended::Settled { end, .. } => end.outcome(),
+        Ended::AlreadySettled => panic!("nothing else holds this unit's cell"),
+    }
+}
+
+/// A SECRET THAT DOES NOT RESOLVE REACHES THE CALLER AS A FIXED-CLASS REFUSAL NAMING NO SOURCE
+/// (status row 127; the cell the retired tool-plane crate's `SetupRefusal::client_message` redaction
+/// was until #511). For each failing source (an unset variable, a missing file, a module nothing
+/// answers) the kernel's own resolver refuses with the operator's text, which names the source (the
+/// control: the markers are there to be found). A unit whose every member's credential cannot be
+/// presented (the auth call refused; the program never spawned) ends at the walk's terminal: the
+/// plane's `refusal` is handed the one reason (`breaker_open`, class `Unreachable`) and the walk
+/// terminal's own words (the exhausted pool's 1.5.5 sentence, a `&'static str` the far end's seam
+/// carries: no operator text fits it), and the caller's render is byte-identical whichever source
+/// failed and carries none of its markers. RED: a kernel that handed the plane any operator text
+/// would fail the exact render, the byte-identity across sources, and the marker scan.
+#[tokio::test]
+async fn a_credential_that_cannot_be_presented_reaches_the_caller_as_a_fixed_class_refusal() {
+    use busbar_contract::abi::plane::{class_of, RefusalClass};
+    use busbar_contract::caps::{Outcome as UnitOutcome, ReasonCode, StepName};
+    assert_eq!(class_of(ReasonCode::BreakerOpen), RefusalClass::Unreachable);
+    let mut renders = Vec::new();
+    for failing in failing_secrets() {
+        let operator_text = busbar_kernel::config::secret::resolve_linked_string(&failing.secret)
+            .expect_err("the reference does not resolve");
+        assert!(
+            !markers_in(&operator_text, &failing).is_empty(),
+            "the control: the operator's text names the source: {operator_text}"
+        );
+        let r = rig(Way::Double, BufferCaps::default(), cases::Book::default());
+        let (steps, far, caller) = (
+            common::TestUnits::passing(),
+            Unpresentable { operator_text },
+            cases::Caller::default(),
+        );
+        assert!(!markers_in(&far.operator_text, &failing).is_empty());
+        let units = r
+            .driver
+            .unit(&steps, &far, &caller, cases::arrival("/call", b"p"), 0);
+        let outcome = drive_over(&units).await;
+        assert!(
+            matches!(
+                outcome,
+                UnitOutcome::Refused(StepName::Route, ReasonCode::BreakerOpen)
+                    | UnitOutcome::Failed(StepName::Route, ReasonCode::BreakerOpen)
+            ),
+            "{}: {outcome:?}",
+            failing.secret.describe()
+        );
+        let rendered = units.take_rendered().expect("the terminal is rendered");
+        let render = format!(
+            "{} {:?} {}",
+            rendered.status,
+            rendered.fields,
+            String::from_utf8_lossy(&rendered.body)
+        );
+        assert_eq!(
+            rendered.body,
+            b"refused:503:The service is temporarily overloaded. Please retry shortly.:retry=2",
+            "the plane is handed the fixed reason and the walk terminal's own words: {render}"
+        );
+        let found = markers_in(&render, &failing);
+        assert!(
+            found.is_empty(),
+            "the caller was handed {found:?}: {render}"
+        );
+        assert_eq!(
+            caller.text(),
+            "",
+            "nothing reached the caller but the refusal"
+        );
+        renders.push((rendered.status, rendered.fields, rendered.body));
+    }
+    renders.dedup();
+    assert_eq!(
+        renders.len(),
+        1,
+        "one fixed class: the caller cannot tell which source failed"
     );
 }

@@ -469,6 +469,22 @@ impl Drop for OpenEnded<'_> {
 }
 
 /// Whether `slot` is one of the five that never overlap on one instance (`ready` among them).
+/// THE FFI CALL of a lifecycle slot (`validate`, `open`, `refresh`, `retire`, `close`, `ready`):
+/// `op` entered, after asserting in debug builds that the thread is a permanent FFI worker
+/// ([`crate::ffi_thread`]). [`Instance::cross_gated`] calls it only from inside
+/// [`crate::ffi_thread::on_plugin_thread`]; a lifecycle slot entered on any other thread trips the
+/// assertion.
+pub(crate) fn enter_lifecycle(
+    what: &str,
+    op: Op,
+    instance: *mut c_void,
+    input: *const c_void,
+    output: *mut c_void,
+) -> RawOutcome {
+    crate::ffi_thread::debug_assert_permanent(what);
+    op(instance, input, output)
+}
+
 pub(crate) fn is_lifecycle(s: u32) -> bool {
     matches!(
         s,
@@ -890,7 +906,8 @@ impl Instance {
         // SAFETY: the host wrote `in.size` itself.
         let in_size = unsafe { (*input).size } as usize;
         // The unit this crossing serves, for the host services it calls.
-        let _unit = super::services::serving((self.unit_of)(s, input.cast_const(), in_size));
+        let unit = (self.unit_of)(s, input.cast_const(), in_size);
+        let _unit = super::services::serving(unit);
         // From here an `open` that does not end READY or PENDING, FAULT included, leaves no
         // instance published: the SDK frees a half-open box on any answer but READY/PENDING, so a
         // pointer kept to it would hand a later crossing freed memory; a box the plugin still
@@ -899,7 +916,34 @@ impl Instance {
             ptr: (s == slot::OPEN).then_some(&self.ptr),
             live: std::ptr::null_mut(),
         };
-        let raw = op(instance, input.cast_const().cast(), out.cast());
+        let raw = if s == slot::VALIDATE || is_lifecycle(s) {
+            // A LIFECYCLE CROSSING RUNS ON A PERMANENT FFI WORKER (`crate::ffi_thread`), whoever
+            // called it: a dispatcher worker that may later exit, or a ticket-less caller thread
+            // (a libtest thread, a reload's thread) that will. `open` is where a plugin first
+            // touches its thread-locals and `close` runs its `Drop`; either on a thread that
+            // exits after the library is unmapped runs the plugin's thread-local destructor out
+            // of unmapped memory. What the crossing's thread states for the host services the
+            // plugin calls goes with it: the unit it serves, the dispatcher worker it acts for and
+            // the runtime that thread is inside.
+            let acting = super::worker::worker_mark();
+            let runtime = tokio::runtime::Handle::try_current().ok();
+            let (input, output): (*const c_void, *mut c_void) =
+                (input.cast_const().cast(), out.cast());
+            let routed = crate::ffi_thread::on_plugin_thread(|| {
+                let _runtime = runtime.as_ref().map(tokio::runtime::Handle::enter);
+                let _acting = super::worker::acting_for(acting);
+                let _unit = super::services::serving(unit);
+                enter_lifecycle((self.op_name)(s), op, instance, input, output)
+            });
+            match routed {
+                Ok(raw) => raw,
+                // Only a host-side panic on the worker reaches here (an escaping slot panic
+                // aborts): the crossing answers FAULT.
+                Err(_) => return Crossed::host(Outcome::Fault),
+            }
+        } else {
+            op(instance, input.cast_const().cast(), out.cast())
+        };
         if s == slot::OPEN
             && (raw == RawOutcome::of(Outcome::Ready) || raw == RawOutcome::of(Outcome::Pending))
         {
@@ -1358,6 +1402,7 @@ impl<K: Kind> Plugin<K> {
             wake: Some(host_wake),
             conns,
             services: &super::services::HOST_SLOTS,
+            io: &super::io_slots::IO_SLOTS,
         }));
         let name = str_bytes(st.name)
             .ok_or_else(|| LoadError::BadStatement("the name is NULL or over-long".into()))?;
@@ -1531,6 +1576,22 @@ impl<K: Kind> Plugin<K> {
         self.call_once(s, frame, true)
     }
 
+    /// AN INLINE CALL on `ticket` (an inline ticket's, `super::inline::InlineTicket::ticket`): on the caller's thread, like [`Plugin::call`],
+    /// but on a REAL ticket, so the op may answer PENDING — the op's wake (an `io.*` slot's, or the
+    /// plugin's own) wakes the task `ticket` registered, which calls again with `resume` (the
+    /// mechanism's `FLAG_RESUME`: the same op on the same ticket). The caller serializes the ops on
+    /// one ticket. A carrier's connection is driven so, one inline ticket per side, with no thread
+    /// handoff (#30).
+    pub fn call_inline<I: InFrame, O: OutFrame>(
+        &self,
+        ticket: Ticket,
+        resume: bool,
+        s: u32,
+        frame: &mut Frame<I, O>,
+    ) -> Called {
+        self.call_ticketed(s, frame, ticket, resume)
+    }
+
     fn instance_id(&self) -> usize {
         Arc::as_ptr(&self.inner) as usize
     }
@@ -1540,6 +1601,20 @@ impl<K: Kind> Plugin<K> {
         s: u32,
         frame: &mut Frame<I, O>,
         recall: bool,
+    ) -> Called {
+        let called = self.call_ticketed(s, frame, Ticket::NONE, false);
+        if recall && called.recall.is_some() {
+            return Called::from(Crossed::host(Outcome::Fault));
+        }
+        called
+    }
+
+    fn call_ticketed<I: InFrame, O: OutFrame>(
+        &self,
+        s: u32,
+        frame: &mut Frame<I, O>,
+        ticket: Ticket,
+        resume: bool,
     ) -> Called {
         let inst = &*self.inner;
         if let Some(o) = inst.refuse(s, size_of::<I>(), size_of::<O>()) {
@@ -1564,18 +1639,19 @@ impl<K: Kind> Plugin<K> {
             head.size = size_of::<I>() as u32;
             // The dispatcher owns only the mechanism's own bit; a kind's bit the caller set on the
             // head (the export scrape's `SCRAPE_FLAG_HOOK_FAMILIES`) rides through untouched.
-            head.flags &= !FLAG_RESUME;
-            head.deadline_class = DeadlineClass::Call as u8;
-            head.ticket = Ticket::NONE;
+            head.flags = (head.flags & !FLAG_RESUME) | if resume { FLAG_RESUME } else { 0 };
+            head.deadline_class = if ticket.is_none() {
+                DeadlineClass::Call as u8
+            } else {
+                DeadlineClass::Connection as u8
+            };
+            head.ticket = ticket;
             inst.cross(s, i, o, out_size)
         };
         inst.lock_calls().retain(|c| c.0 != id);
         inst.release(units);
         if lifecycle {
             inst.leave_lifecycle();
-        }
-        if recall && crossed.short {
-            return Called::from(Crossed::host(Outcome::Fault));
         }
         let token = crossed.short.then(|| Recall {
             instance: self.instance_id(),
@@ -1608,6 +1684,10 @@ mod open_reason_plugins;
 #[cfg(test)]
 #[path = "../tests/open_reason_tests.rs"]
 mod open_reason_tests;
+
+#[cfg(test)]
+#[path = "../tests/lifecycle_worker_tests.rs"]
+mod lifecycle_worker_tests;
 
 /// Whether a need takes a value from its instance's settings (`target_from` or `trust_from`), so it
 /// is declared at `open` and `refresh` rather than at bind.
