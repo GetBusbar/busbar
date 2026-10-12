@@ -6185,7 +6185,17 @@ async fn a_grpc_hop_ledgers_predevs_bytes_and_a_record_served_answer_none() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "answered from the records: {body}");
-    assert!(agent.heard.try_recv().is_err(), "the list never dialled");
+    // The answer is busbar's own rows. Busbar may first refresh them from the agent with a
+    // `ListTasks` of its own (predev's `originate::refresh_listed_tasks`, over the card's gRPC
+    // binding: the relayed task is live and its agent id is learnt); that hop is busbar's, never the
+    // caller's, so it is the only call the agent may hear and it bills the caller nothing.
+    while let Ok((path, sent)) = agent.heard.try_recv() {
+        assert!(
+            path.ends_with("/ListTasks"),
+            "the list relayed {path}: {:?} (answer {body})",
+            String::from_utf8_lossy(&sent)
+        );
+    }
     let lines = agent_counts(&s, "planner");
     assert_eq!(lines.len(), 2, "one more line, the list's: {lines:?}");
     assert_eq!(
@@ -8503,4 +8513,66 @@ async fn a_pinned_refusal_answers_the_pinned_members_own_wait() {
     let mut log = Vec::new();
     hear(&mut agent, &mut log);
     assert!(log.is_empty(), "nothing dialled: {log:?}");
+}
+
+/// THIS PLANE'S OWN DIAGNOSTICS PAGE (`docs/diagnostics-a2a.{md,json}`). The plane's catalogue lives
+/// in this crate (`src/diagnostics.rs`), which cannot name the kernel's renderers; the two snapshots
+/// are held to a fresh render here, compiled into the composition root's test binary where the
+/// renderers are (the composition root names no plane, so the cell is the plane's).
+mod diagnostics_page {
+    use busbar_contract::diagnostic::Diagnostic;
+    use busbar_kernel::diagnostics::{render_json_for, render_markdown_for};
+    use busbar_plane_a2a::diagnostics::DIAGNOSTICS;
+
+    /// The committed per-plane markdown snapshot.
+    const COMMITTED_MD: &str =
+        concat!(env!("CARGO_MANIFEST_DIR"), "/../../docs/diagnostics-a2a.md");
+    /// The committed per-plane machine-readable snapshot.
+    const COMMITTED_JSON: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../docs/diagnostics-a2a.json"
+    );
+
+    /// THIS PLANE'S OWN PAGE: every code of [`DIAGNOSTICS`] except those the HOST page publishes (the
+    /// codes the plane took out of the host registry together with the code that emits them, whose
+    /// page and number are frozen there). One code, one page.
+    fn own_page() -> Vec<&'static Diagnostic> {
+        let host = concat!(env!("CARGO_MANIFEST_DIR"), "/../../docs/diagnostics.json");
+        let text = std::fs::read_to_string(host).expect("docs/diagnostics.json is readable");
+        let entries: Vec<serde_json::Value> =
+            serde_json::from_str(&text).expect("docs/diagnostics.json is a JSON array");
+        DIAGNOSTICS
+            .iter()
+            .copied()
+            .filter(|d| !entries.iter().any(|e| e["number"] == u64::from(d.code)))
+            .collect()
+    }
+
+    /// Compare `fresh` with the committed file at `path`, or write it under `UPDATE_DIAGNOSTICS=1`.
+    fn committed_matches(path: &str, fresh: &str) {
+        if std::env::var("UPDATE_DIAGNOSTICS").is_ok_and(|v| v == "1") {
+            std::fs::write(path, fresh).unwrap_or_else(|e| panic!("write {path}: {e}"));
+            return;
+        }
+        let committed = std::fs::read_to_string(path)
+            .unwrap_or_else(|e| panic!("read {path}: {e}; generate it with UPDATE_DIAGNOSTICS=1"));
+        assert_eq!(
+            committed, fresh,
+            "{path} is stale: regenerate with `UPDATE_DIAGNOSTICS=1 cargo test -p busbar catalogue_tests`"
+        );
+    }
+
+    /// The committed per-plane markdown equals a fresh render of this plane's own page.
+    /// Ported from busbar-a2a tests/diagnostics_page_tests.rs::committed_markdown_matches_diagnostics.
+    #[test]
+    fn committed_markdown_matches_diagnostics() {
+        committed_matches(COMMITTED_MD, &render_markdown_for(&own_page()));
+    }
+
+    /// The committed per-plane JSON equals a fresh render of this plane's own page.
+    /// Ported from busbar-a2a tests/diagnostics_page_tests.rs::committed_json_matches_diagnostics.
+    #[test]
+    fn committed_json_matches_diagnostics() {
+        committed_matches(COMMITTED_JSON, &render_json_for(&own_page()));
+    }
 }

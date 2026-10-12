@@ -1930,9 +1930,10 @@ pub(crate) mod tool_door {
                 busbar_kernel::host_records::QUEUE_CAP,
             )));
         let kernel = Arc::new(match ledger {
-            Ledger::Memory => {
-                kernel.with_records(Arc::new(Rows::default()), Arc::clone(&store) as _)
-            }
+            Ledger::Memory => kernel.with_records(
+                Arc::new(StoreRows(Arc::clone(&store))),
+                Arc::clone(&store) as _,
+            ),
             Ledger::Store(claims) => kernel.with_records(Arc::new(Rows::default()), claims),
             Ledger::Unbound => kernel,
         });
@@ -1972,6 +1973,42 @@ pub(crate) mod tool_door {
         Store(Arc<dyn busbar_contract::records::RecordStore>),
         /// None: the host binds no store.
         Unbound,
+    }
+
+    /// The rig's in-memory store's own typed record rows, for the records services: what a door
+    /// writes through them (a chained kind's sealed records included) is read back off the store.
+    struct StoreRows(Arc<busbar_kernel::governance::MemoryStore>);
+
+    impl busbar_kernel::host_records::RecordRows for StoreRows {
+        fn record_put(
+            &self,
+            schema: busbar_contract::ids::RecordSchemaId,
+            key: &[u8],
+            value: &busbar_contract::kinds::RecordBytes,
+        ) -> Result<(), busbar_contract::kinds::StoreError> {
+            self.0.record_put(schema, key, value)
+        }
+
+        fn record_get(
+            &self,
+            schema: busbar_contract::ids::RecordSchemaId,
+            key: &[u8],
+        ) -> Result<Option<busbar_contract::kinds::RecordBytes>, busbar_contract::kinds::StoreError>
+        {
+            self.0.record_get(schema, key)
+        }
+
+        fn record_scan(
+            &self,
+            schema: busbar_contract::ids::RecordSchemaId,
+            prefix: &[u8],
+            limit: u32,
+        ) -> Result<
+            Vec<(Vec<u8>, busbar_contract::kinds::RecordBytes)>,
+            busbar_contract::kinds::StoreError,
+        > {
+            self.0.record_scan(schema, prefix, limit)
+        }
     }
 
     /// Typed record rows in memory: the store kind's record slots, for the records services.

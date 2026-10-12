@@ -1319,7 +1319,7 @@ mod tools_door {
     /// The call log's chained records on `rig`, oldest first: each record's sequence, read back
     /// through the host's verified read (a broken link fails the read).
     fn call_chain(rig: &Rig, want: usize) -> Vec<u64> {
-        let (_, records) = super::planes_tests::chained_records(
+        let (_, records) = crate::root::serve::planes_tests::chained_records(
             &rig.store,
             surface("record_kind_call"),
             busbar_contract::abi::plane::RecordChain {

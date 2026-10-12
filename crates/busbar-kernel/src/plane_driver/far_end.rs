@@ -1394,6 +1394,7 @@ impl EgressFarEnd<'_> {
                     classified: e.breaker.classify(destination, status),
                     class: status.class,
                     retry_after: status.retry_after,
+                    after_success: false,
                 });
             }
             return FarPiece {

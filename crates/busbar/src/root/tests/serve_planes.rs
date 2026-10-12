@@ -292,12 +292,15 @@ fn a_door_plane_is_handed_its_referenced_providers_dialect_facts_at_open() {
 /// key order. A chain that does not verify is announced by a span keyed by its bare scope, which
 /// this refuses, so a broken link fails the read. The flush is write-behind: the read waits up to
 /// five seconds for at least `want` records to land.
+/// One instance's chained records: its label, and each record's `(scope, sequence)`.
+pub(crate) type ChainedRecords = (String, Vec<(Vec<u8>, u64)>);
+
 pub(crate) fn chained_records(
     store: &MemoryStore,
     kind: &'static str,
     framing: busbar_contract::abi::plane::RecordChain,
     want: usize,
-) -> (String, Vec<(Vec<u8>, u64)>) {
+) -> ChainedRecords {
     use busbar_contract::services::chain_key_parts;
     let schema = busbar_contract::ids::RecordSchemaId::new(kind);
     let framing =
@@ -310,7 +313,8 @@ pub(crate) fn chained_records(
         }
         std::thread::sleep(std::time::Duration::from_millis(20));
     };
-    let mut by_instance: BTreeMap<String, Vec<(Vec<u8>, Vec<u8>)>> = BTreeMap::new();
+    type Rows = Vec<(Vec<u8>, Vec<u8>)>;
+    let mut by_instance: BTreeMap<String, Rows> = BTreeMap::new();
     for (key, value) in rows {
         let len = usize::from(u16::from_be_bytes([key[0], key[1]]));
         let label = String::from_utf8(key[2..2 + len].to_vec()).expect("a label");

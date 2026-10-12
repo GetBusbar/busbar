@@ -633,10 +633,14 @@ fn a_flapping_upstream_gets_one_persistent_quarantine_and_every_flap_is_still_co
         item: None,
         digest: None,
     };
+    // A declared fingerprint is intent, not an approval (coordinator ruling 2026-10-07, the
+    // predev baseline): the first sighting is new until the operator approves what was seen.
     assert_eq!(
         b.sight(&i, "cp", "good", 1_000),
-        Ok((Sight::Same, Effect::None))
+        Ok((Sight::New, Effect::None))
     );
+    b.decide(&i, "cp", None, Ruling::Approve, None)
+        .expect("a key");
     let mut now = 1_000;
     let mut demotions = 0;
     for flap in 0..4 {
