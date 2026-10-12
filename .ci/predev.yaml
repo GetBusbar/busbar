@@ -1,0 +1,54 @@
+# What predev must pass to move into dev: busbar-release's `dev` rung (crates/busbar-release-cli/
+# ladder.json: gates inherit, oracle, conformance; verdict absolute), the 1.6.0 done-oracle, and the
+# Q128 audit sign-off. ModernCI names a branch file for the branch being moved, so the move
+# predev -> dev reads this file. Shadow while busbar-release still decides.
+to: dev
+on_green: merge
+# The Q128 sign-off holds the merge: until a manual check's green can gate a move, the owner's
+# approval on the pull request stands for it (given once q128-audit is green on the commit).
+approve: true
+deadline: 6h
+env:
+  RUSTFLAGS: "-D warnings"
+  CARGO_TERM_COLOR: never
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_INCREMENTAL: "0"
+on:
+  move: [gates, oracle, conformance, verify-done]
+  manual: [q128-audit]
+checks:
+  gates:
+    # The rung inherits predev's boarded gates; here they are re-run on the commit, no worse than
+    # dev, as the predev file runs them.
+    run: |
+      export XTASK_CEILING_BASE="$MODERNCI_TO_SHA" XTASK_SHIP_TARGET="$MODERNCI_TO"
+      cargo xtask gate --all --format=tsv
+    baseline: target
+    rules: ["qa/*.toml"]
+  oracle:
+    # The candidate's release binary recorded over the corpus by the pinned judge (the backend's
+    # busbar-oracle tool sets BUSBAR_ORACLE_RUST_BIN) and replayed against the committed 1.5.5
+    # golden, strict: green is every cell byte-green or forgiven by a signed accepted difference.
+    run: |
+      cargo build --locked --release -p busbar --bin busbar
+      ./bin/oracle fetch-golden
+      rm -rf target/oracle/recordings/candidate target/oracle/reports/dev
+      ./bin/oracle record --bin target/release/busbar --plane all --out target/oracle/recordings/candidate
+      ./bin/oracle replay --golden testing/shadow-oracle/golden/1.5.5 --candidate target/oracle/recordings/candidate --out target/oracle/reports/dev --strict
+    needs: [gates]
+  conformance:
+    # Every registered suite recorded on this commit (the llm rigs judge the oracle's candidate
+    # recording), then every MUST a fresh pass for it. A not-run suite denies.
+    run: |
+      cargo xtask conformance record --all --recording target/oracle/recordings/candidate
+      cargo xtask conformance check --musts --sha "$MODERNCI_COMMIT" --format=tsv
+    needs: [oracle]
+  verify-done:
+    # The done-oracle, full run: exit 0 only (3 is a --fast, provisional answer).
+    run: bash scripts/verify-1.6.0-done.sh
+    needs: [gates]
+  q128-audit:
+    # Run by hand (on: manual) by the auditor once the independent architecture audit of this
+    # commit has no open BLOCK finding: the run is the sign-off, recorded against the commit.
+    run: |
+      echo "Q128 architecture audit: signed off on $MODERNCI_COMMIT (no open BLOCK findings)"
