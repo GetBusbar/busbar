@@ -253,10 +253,7 @@ test_plane_owned:
     let instance = "serve-compose-plane-bound";
     let _one = PUBLISHING.blocking_lock();
     let _published = Published(instance);
-    let Some(plane) = bound(instance, &dispatcher) else {
-        eprintln!("skip: the test plane's cdylib is not built in this scoped run");
-        return;
-    };
+    let plane = bound(instance, &dispatcher);
     let doors = vec![(instance.to_string(), plane)];
     let late = composed_services();
     let served = compose_planes(
