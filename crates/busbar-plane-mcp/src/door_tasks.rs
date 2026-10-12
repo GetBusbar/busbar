@@ -35,7 +35,7 @@
 //!   continuation observes when it settles.
 //! * A SETTLE THAT DOES NOT LAND is owed: its task is held unsettled and the next create's sweep
 //!   settles it again, until it lands. The same sweep settles the live tasks of its caller a process
-//!   that is gone left behind ([`tasks::RunLease`]), so they never exhaust the bound
+//!   that is gone left behind ([`tasks::TaskLease`]), so they never exhaust the bound
 //!   of live work (THE DESIGN: admission bounds live work; nothing evicts it).
 
 use std::task::Poll;
@@ -432,7 +432,7 @@ fn live_records(plane: &McpDoor, task: &Task, until: Option<u64>) -> Vec<(Vec<u8
     });
     out.extend((wrote..before).map(|n| (tasks::live_key(&task.id, n), Vec::new())));
     if let Some(until) = until {
-        let lease = tasks::RunLease {
+        let lease = tasks::TaskLease {
             until_ms: until,
             updated_ms: task.stamps().1,
         };
@@ -678,7 +678,7 @@ fn creating(
             else {
                 continue;
             };
-            let left = tasks::RunLease::read(&value).is_some_and(|l| l.left_behind(now));
+            let left = tasks::TaskLease::read(&value).is_some_and(|l| l.left_behind(now));
             let running = plane
                 .tasks
                 .get(&id.to_string())
@@ -824,7 +824,7 @@ fn creating(
     );
     pending.records.extend(strikes);
     // ITS INDEX ROW, the run's lease taken: the continuation is nested at once.
-    let lease = tasks::RunLease {
+    let lease = tasks::TaskLease {
         until_ms: now.saturating_add(tasks::RUN_LEASE_MS),
         updated_ms: now,
     };

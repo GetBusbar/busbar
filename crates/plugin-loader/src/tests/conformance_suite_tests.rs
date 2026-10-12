@@ -792,6 +792,70 @@ fn regex_lite_meter(script: &str) -> Vec<String> {
         .collect()
 }
 
+// ── THE ADMISSION AND CONNECTION RED ARMS (`red.rs`), over the loader's own fixtures ─────────────
+
+mod red_arms {
+    use std::panic::{catch_unwind, AssertUnwindSafe};
+
+    use busbar_contract::abi::mechanism::door::DoorFn;
+
+    use super::super::{
+        red_cross_instance_conn, red_statement, red_undeclared_need, red_wrong_kind, Subject,
+    };
+
+    /// The fixtures of two kinds: the plane door and the hook door, each its linked door and the
+    /// example `cdylib` that is its dropped-in image.
+    fn fixtures() -> Vec<(DoorFn, &'static str)> {
+        vec![
+            (
+                crate::plane_door_plugin::door as DoorFn,
+                "plane_door_plugin",
+            ),
+            (
+                crate::hook_door_conformance_tests::hook_door_plugin::conforming::door,
+                "hook_door",
+            ),
+        ]
+    }
+
+    fn panics(f: impl FnOnce()) -> String {
+        let e = catch_unwind(AssertUnwindSafe(f)).expect_err("the arm fails");
+        e.downcast_ref::<String>()
+            .cloned()
+            .or_else(|| e.downcast_ref::<&str>().map(|s| (*s).to_string()))
+            .unwrap_or_default()
+    }
+
+    /// GREEN: an honest door of each kind passes all four arms (its mismatched Statement, every
+    /// other kind, an undeclared need and another instance's connection all refused; its honest
+    /// twin admitted and connected).
+    #[test]
+    fn an_honest_door_of_each_kind_passes_the_four_arms() {
+        for (door, krate) in fixtures() {
+            // Absent, the example `cdylib` fails the test naming its build command: never a skip.
+            crate::both_ways::example_cdylib(krate);
+            let s = Subject::new(door, krate, "{}");
+            red_undeclared_need(&s);
+            red_cross_instance_conn(&s);
+            red_statement(&s);
+            red_wrong_kind(&s);
+        }
+    }
+
+    /// RED: a plugin whose dropped-in library is not its linked door (the plane door shipped with
+    /// the hook library) fails the Statement arm and the kind arm, on their honest twins.
+    #[test]
+    fn red_a_plugin_whose_library_is_not_its_door_fails_the_arms() {
+        crate::both_ways::example_cdylib("plane_door_plugin");
+        crate::both_ways::example_cdylib("hook_door");
+        let s = Subject::new(crate::plane_door_plugin::door, "hook_door", "{}");
+        let text = panics(|| red_statement(&s));
+        assert!(text.contains("honest library"), "{text}");
+        let text = panics(|| red_wrong_kind(&s));
+        assert!(text.contains("honest library"), "{text}");
+    }
+}
+
 /// THE SUITE'S SUBMITTED OPS LEND THROUGH THE DISPATCHER (THE DESIGN §2: "The memory a call lends a
 /// plugin lives until that call completes, abandoned or not (a submit that the watchdog can abandon
 /// uses the lending submit)"). Every op the suite submits on a ticket (`open` resumed, `resolve`,
@@ -1087,7 +1151,14 @@ mod dropped_image {
 
     use busbar_contract::abi::mechanism::door::{Door, DoorFn};
 
-    use super::super::{cdylib_of, choose_cdylib, distinct, test_door, TestDoor, CDYLIB_ENV};
+    use super::super::{cdylib_of, choose_cdylib_by, distinct, test_door, TestDoor, CDYLIB_ENV};
+
+    /// The fake images below export the door unless their bytes say they were built without it.
+    fn choose_cdylib(profile: &Path, krate: &str) -> Result<PathBuf, String> {
+        choose_cdylib_by(profile, krate, &|p: &Path| {
+            !std::fs::read(p).unwrap_or_default().starts_with(b"no door")
+        })
+    }
 
     /// A fresh `target/<profile>` of this test's own, with `deps/` and `examples/`.
     struct Profile(PathBuf);
@@ -1155,6 +1226,59 @@ mod dropped_image {
         p.put("deps", "plug", Some("bbbb"), b"another build");
         let up = p.put("examples", "plug", None, b"the latest build");
         assert_eq!(choose_cdylib(p.path(), "plug").ok(), Some(up));
+    }
+
+    /// RED (#721): an earlier plain build of the crate (no `dropped-in` feature) left an uplifted
+    /// image with no door, and the test build's own image sits under `deps/` with no hash: the
+    /// image with the door is chosen, whichever was built last; only doorless images built is a
+    /// failure naming them, never a leg run on a library with no door.
+    #[test]
+    fn red_an_image_without_the_door_is_never_the_dropped_in_leg() {
+        let p = Profile::new("doorless");
+        let plain = p.put("", "plug", None, b"no door: a plain build");
+        let e = choose_cdylib(p.path(), "plug").expect_err("only a doorless image");
+        assert!(e.contains("only without its dropped-in door"), "{e}");
+        assert!(e.contains(&plain.display().to_string()), "{e}");
+        let test_build = p.put("deps", "plug", None, b"the dropped-in door");
+        assert_eq!(
+            choose_cdylib(p.path(), "plug").ok(),
+            Some(test_build.clone())
+        );
+        // The plain build again, after: its image still has no door, and is still passed over.
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        p.put("", "plug", None, b"no door: a plain build, again");
+        assert_eq!(choose_cdylib(p.path(), "plug").ok(), Some(test_build));
+        // A plain build that overwrote the lib unit's own image leaves no door anywhere: refused.
+        p.put(
+            "deps",
+            "plug",
+            None,
+            b"no door: the plain build overwrote it",
+        );
+        let e = choose_cdylib(p.path(), "plug").expect_err("no image with the door");
+        assert!(e.contains("only without its dropped-in door"), "{e}");
+    }
+
+    /// The real probe: the example cdylib exports its door and is chosen; this test binary (a
+    /// library image with no `busbar_plugin_door`) is passed over.
+    #[test]
+    fn the_real_probe_tells_an_image_with_the_door_from_one_without() {
+        let path = crate::both_ways::example_cdylib("plane_door_plugin");
+        let p = Profile::new("probe");
+        let with = p.put(
+            "deps",
+            "plug",
+            None,
+            &std::fs::read(&path).expect("the example cdylib"),
+        );
+        assert_eq!(
+            super::super::choose_cdylib(p.path(), "plug").ok(),
+            Some(with)
+        );
+        let q = Profile::new("probe-none");
+        let doorless = q.put("", "plug", None, b"not a library at all");
+        let e = super::super::choose_cdylib(q.path(), "plug").expect_err("no door");
+        assert!(e.contains(&doorless.display().to_string()), "{e}");
     }
 
     static DROPPED_DOOR: AtomicPtr<Door> = AtomicPtr::new(std::ptr::null_mut());

@@ -132,7 +132,20 @@ pub(super) fn arrive(plane: &McpDoor, session: u64, body: &[u8]) -> Arrival {
         Era::Dispatch => {}
         Era::Opened(revision, answer) => {
             // THE CARRIER SESSION NOW SPEAKS `revision` (revision by negotiation, THE DESIGN section 2).
-            super::keep(&plane.line_revisions, super::MAX_UNITS, session, revision);
+            // The table is bounded and evicts nothing (admission bounds live work): a full one
+            // answers the stateless revision, which needs no entry.
+            let kept = plane.line_revisions.with_all(|m| {
+                let full = m.len() >= super::MAX_UNITS && !m.contains_key(&session);
+                if !full {
+                    m.insert(session, revision);
+                }
+                !full
+            });
+            let answer = if kept {
+                answer
+            } else {
+                line::initialize_result(value.get("id").unwrap_or(&Value::Null))
+            };
             unit.preset = Some(serde_json::to_vec(&answer).unwrap_or_default());
             return Arrival {
                 unit,

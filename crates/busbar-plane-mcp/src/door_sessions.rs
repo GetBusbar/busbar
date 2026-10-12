@@ -41,8 +41,8 @@ use std::task::Poll;
 use serde_json::{json, Value};
 
 use super::{
-    ask_entitlements, door_listen, exchange_at, keep, write, CallUnit, Held, McpDoor, Pending,
-    Step, Written, MAX_UNITS,
+    ask_entitlements, door_listen, exchange_at, write, CallUnit, Held, McpDoor, Pending, Step,
+    Written,
 };
 use crate::adapt::{self, SessionMethod};
 use crate::catalogue::Lookup;
@@ -163,7 +163,7 @@ pub(super) struct Arrival {
 }
 
 /// What `arrive` makes of an arrival on the endpoint.
-pub(super) enum Landed {
+pub(super) enum SessionArrived {
     /// The stateless path, untouched.
     Stateless,
     /// `405`.
@@ -193,7 +193,7 @@ pub(super) fn arrive(
     target: &str,
     body: &[u8],
     field: &dyn Fn(&str) -> Option<String>,
-) -> Landed {
+) -> SessionArrived {
     let session = field(adapt::H_SESSION_ID).filter(|s| !s.is_empty());
     let (mount, query) = target
         .split_once('?')
@@ -202,15 +202,15 @@ pub(super) fn arrive(
         "GET" => {
             let streams = field("accept").is_some_and(|a| a.contains(EVENT_STREAM));
             if !streams {
-                return Landed::NotAllowed;
+                return SessionArrived::NotAllowed;
             }
             let opens = session.is_some()
                 || revision::sessionless_get(field(H_PROTOCOL_VERSION).as_deref())
                     == SessionlessGet::EventStream;
             if !opens {
-                return Landed::NotAllowed;
+                return SessionArrived::NotAllowed;
             }
-            Landed::Session(Box::new(Arrival {
+            SessionArrived::Session(Box::new(Arrival {
                 unit: SessionUnit::Stream {
                     session,
                     last_event_id: field(adapt::H_LAST_EVENT_ID),
@@ -221,12 +221,12 @@ pub(super) fn arrive(
             }))
         }
         "DELETE" => match session {
-            Some(session) => Landed::Session(Box::new(Arrival {
+            Some(session) => SessionArrived::Session(Box::new(Arrival {
                 unit: SessionUnit::Delete { session },
                 dispatch: None,
                 mirror: Vec::new(),
             })),
-            None => Landed::NotAllowed,
+            None => SessionArrived::NotAllowed,
         },
         "POST" => {
             let value = serde_json::from_slice::<Value>(body).ok();
@@ -238,35 +238,37 @@ pub(super) fn arrive(
                 None => adapt::PostKind::Stateless,
             };
             match (kind, value) {
-                (adapt::PostKind::Initialize, Some(v)) => Landed::Session(Box::new(Arrival {
-                    unit: SessionUnit::Open {
-                        id: v.get("id").cloned().unwrap_or(Value::Null),
-                        requested: v
-                            .pointer("/params/protocolVersion")
-                            .and_then(Value::as_str)
-                            .map(str::to_string),
-                    },
-                    dispatch: None,
-                    mirror: Vec::new(),
-                })),
-                (adapt::PostKind::InSession, value) => Landed::Session(message(
+                (adapt::PostKind::Initialize, Some(v)) => {
+                    SessionArrived::Session(Box::new(Arrival {
+                        unit: SessionUnit::Open {
+                            id: v.get("id").cloned().unwrap_or(Value::Null),
+                            requested: v
+                                .pointer("/params/protocolVersion")
+                                .and_then(Value::as_str)
+                                .map(str::to_string),
+                        },
+                        dispatch: None,
+                        mirror: Vec::new(),
+                    }))
+                }
+                (adapt::PostKind::InSession, value) => SessionArrived::Session(message(
                     held,
                     session.unwrap_or_default(),
                     Carriage::Endpoint,
                     field(H_PROTOCOL_VERSION),
                     value,
                 )),
-                (adapt::PostKind::EventStreamMessage, value) => Landed::Session(message(
+                (adapt::PostKind::EventStreamMessage, value) => SessionArrived::Session(message(
                     held,
                     message_session.unwrap_or_default(),
                     Carriage::EventStream,
                     None,
                     value,
                 )),
-                _ => Landed::Stateless,
+                _ => SessionArrived::Stateless,
             }
         }
-        _ => Landed::NotAllowed,
+        _ => SessionArrived::NotAllowed,
     }
 }
 
@@ -416,7 +418,7 @@ pub(super) fn wall_ms(services: Option<Services>, ticket: Ticket, issued: &mut u
 }
 
 /// The session table.
-fn book<R>(plane: &McpDoor, f: impl FnOnce(&mut SessionTable) -> R) -> Option<R> {
+fn with_sessions<R>(plane: &McpDoor, f: impl FnOnce(&mut SessionTable) -> R) -> Option<R> {
     plane.sessions.with(&(), |t| t.map(f))
 }
 
@@ -439,7 +441,7 @@ fn open_session(
         if !drawn {
             return Err("the host's random source did not answer, so no session id can be minted");
         }
-        let opened = book(plane, |t| {
+        let opened = with_sessions(plane, |t| {
             t.open(entropy, owner.clone(), revision, carriage, now)
         });
         match opened {
@@ -513,7 +515,7 @@ pub(super) fn answer(
             open_endpoint(plane, ticket, unit, &owner, &id, requested.as_deref(), now)
         }
         SessionUnit::Delete { session } => {
-            if book(plane, |t| t.close(&session, &owner, now)) == Some(true) {
+            if with_sessions(plane, |t| t.close(&session, &owner, now)) == Some(true) {
                 plane.session_state.remove(&session);
                 // Each of its streams ends at its next collection.
                 due(plane, &session);
@@ -529,7 +531,7 @@ pub(super) fn answer(
             kind,
             ..
         } => {
-            let held = book(plane, |t| {
+            let held = with_sessions(plane, |t| {
                 let revision = t.revision(&session, &owner, now)?;
                 (t.carriage(&session, &owner, now)? == carriage).then_some(revision)
             })
@@ -554,7 +556,7 @@ pub(super) fn answer(
                 Kind::Dispatch => return None,
                 Kind::Accept(v) => {
                     if v.get("method").and_then(Value::as_str) == Some(adapt::METHOD_INITIALIZED) {
-                        book(plane, |t| t.mark_initialized(&session, &owner, now));
+                        with_sessions(plane, |t| t.mark_initialized(&session, &owner, now));
                     }
                     answer_of(STATUS_ACCEPTED, Vec::new())
                 }
@@ -852,7 +854,7 @@ pub(super) fn heard(
                     (None, _) => true,
                 };
                 if passes {
-                    deliver(plane, id, owner, &frame.to_string(), now);
+                    deliver_frame(plane, id, owner, &frame.to_string(), now);
                 }
             }
             _ => {}
@@ -929,7 +931,7 @@ pub(super) fn lower(plane: &McpDoor, ticket: Ticket, caller: &str, unit: &mut Ca
     }
     match legacy {
         Some(session) => {
-            deliver(
+            deliver_frame(
                 plane,
                 &session,
                 &owner_of(caller),
@@ -983,12 +985,12 @@ pub(super) fn holds(plane: &McpDoor, unit: u64) -> bool {
 }
 
 /// `data` buffered on `session`'s stream, and the stream named due.
-fn deliver(plane: &McpDoor, session: &str, owner: &Owner, data: &str, now: u64) {
+fn deliver_frame(plane: &McpDoor, session: &str, owner: &Owner, data: &str, now: u64) {
     let target = plane
         .streams
         .with_all(|m| m.values().find(|s| s.session == session).map(|s| s.stream));
     if let Some(stream) = target {
-        book(plane, |t| t.push(session, owner, stream, data, now));
+        with_sessions(plane, |t| t.push(session, owner, stream, data, now));
         due(plane, session);
     }
 }
@@ -1040,7 +1042,7 @@ pub(super) fn tick(plane: &McpDoor) {
         .with_all(|m| m.keys().cloned().collect());
     let gone: Vec<String> = gone
         .into_iter()
-        .filter(|id| book(plane, |t| !t.holds(id)).unwrap_or(true))
+        .filter(|id| with_sessions(plane, |t| !t.holds(id)).unwrap_or(true))
         .collect();
     plane.session_state.with_all(|m| {
         for id in &gone {
@@ -1185,18 +1187,20 @@ fn open_stream(
                     return Some((true, false));
                 }
             };
-            let stream = book(plane, |t| t.open_stream(&session, owner, now)).flatten()?;
+            let stream = with_sessions(plane, |t| t.open_stream(&session, owner, now)).flatten()?;
             let endpoint = adapt::endpoint_event(&mount, &session);
             (session, stream, 0, true, endpoint.into_bytes())
         }
         Some(session) => {
-            let carriage = book(plane, |t| t.carriage(&session, owner, now)).flatten();
+            let carriage = with_sessions(plane, |t| t.carriage(&session, owner, now)).flatten();
             if carriage != Some(Carriage::Endpoint) {
                 unit.pending = Some(not_found(&Value::Null));
                 return Some((true, false));
             }
             let resumed = last_event_id
-                .and_then(|cursor| book(plane, |t| t.replay(&session, owner, &cursor, now)))
+                .and_then(|cursor| {
+                    with_sessions(plane, |t| t.replay(&session, owner, &cursor, now))
+                })
                 .flatten();
             match resumed {
                 Some(replay) => {
@@ -1210,15 +1214,16 @@ fn open_stream(
                     (session, replay.stream, delivered, false, bytes)
                 }
                 None => {
-                    let stream = book(plane, |t| t.open_stream(&session, owner, now)).flatten()?;
+                    let stream =
+                        with_sessions(plane, |t| t.open_stream(&session, owner, now)).flatten()?;
                     (session, stream, 0, false, KEEPALIVE.to_vec())
                 }
             }
         }
     };
-    keep(
-        &plane.streams,
-        MAX_UNITS,
+    // One stream per live unit, so the unit table's admission bound (it refuses past `MAX_UNITS`,
+    // and evicts nothing) bounds this table too.
+    plane.streams.insert(
         unit.key,
         Stream {
             session,
@@ -1269,7 +1274,7 @@ fn step_stream(plane: &McpDoor, ticket: Ticket, unit: &mut CallUnit) -> Option<b
                         "method": "notifications/resources/updated",
                         "params": { "uri": uri },
                     });
-                    book(plane, |t| {
+                    with_sessions(plane, |t| {
                         t.push(
                             &held_stream.session,
                             &held_stream.owner,
@@ -1283,7 +1288,7 @@ fn step_stream(plane: &McpDoor, ticket: Ticket, unit: &mut CallUnit) -> Option<b
         }
     }
     let cursor = format!("{}-{}", held_stream.stream, held_stream.delivered);
-    let replay = book(plane, |t| {
+    let replay = with_sessions(plane, |t| {
         t.replay(&held_stream.session, &held_stream.owner, &cursor, now)
     })
     .flatten();

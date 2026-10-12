@@ -1373,7 +1373,7 @@ fn completed(admitted: &AdmittedCall, value: &Value, body: &[u8]) -> Settled {
 /// under the caller's id. The one addition is the dialect's `resultType: complete` on a result
 /// object that carries no `resultType` at all; a `resultType` the upstream sent is its own.
 fn relayed(id: &Value, value: &Value, body: &[u8]) -> Vec<u8> {
-    let Some(sent) = result_member(body) else {
+    let Some(sent) = result_bytes(body) else {
         return result(id, value.clone());
     };
     let mut out = format!("{{\"id\":{id},\"jsonrpc\":\"2.0\",\"result\":");
@@ -1393,38 +1393,47 @@ fn relayed(id: &Value, value: &Value, body: &[u8]) -> Vec<u8> {
     out.into_bytes()
 }
 
-/// The top-level `result` member of a JSON object, as the bytes it was written in. Each member's
-/// key and value are walked whole by the parser, so nothing inside a value is mistaken for a key.
-fn result_member(body: &[u8]) -> Option<&str> {
+/// The upstream's `result` member as it sits in `body`: its value's own bytes, found by reading
+/// the answer's top-level members in turn (each value read and its extent taken, never re-written,
+/// so serde_json's `raw_value` feature is not asked for: the binary would unify it into every
+/// linked plugin). `None` for an answer that is not one JSON object with exactly one `result`.
+fn result_bytes(body: &[u8]) -> Option<&str> {
     let text = std::str::from_utf8(body).ok()?;
-    let gap = |at: usize| {
-        at + text[at..].len() - text[at..].trim_start_matches([' ', '\t', '\n', '\r']).len()
-    };
-    let value_end = |at: usize| {
-        let mut values =
-            serde_json::Deserializer::from_str(&text[at..]).into_iter::<serde::de::IgnoredAny>();
-        values.next()?.ok()?;
-        Some(at + values.byte_offset())
-    };
-    let mut at = gap(0);
-    text[at..].starts_with('{').then_some(())?;
-    at = gap(at + 1);
-    while !text[at..].starts_with('}') {
-        let end = value_end(at)?;
-        let key: String = serde_json::from_str(&text[at..end]).ok()?;
-        at = gap(end);
-        text[at..].starts_with(':').then_some(())?;
-        at = gap(at + 1);
-        let end = value_end(at)?;
-        if key == "result" {
-            return Some(&text[at..end]);
-        }
-        at = gap(end);
-        if text[at..].starts_with(',') {
-            at = gap(at + 1);
+    let ws = |at: usize| text.len() - text[at..].trim_start_matches([' ', '\t', '\n', '\r']).len();
+    let mut at = ws(0);
+    if text.as_bytes().get(at) != Some(&b'{') {
+        return None;
+    }
+    at = ws(at + 1);
+    let mut found = None;
+    if text.as_bytes().get(at) != Some(&b'}') {
+        loop {
+            let mut keys = serde_json::Deserializer::from_str(&text[at..]).into_iter::<String>();
+            let key = keys.next()?.ok()?;
+            at = ws(at + keys.byte_offset());
+            if text.as_bytes().get(at) != Some(&b':') {
+                return None;
+            }
+            let start = ws(at + 1);
+            let mut values = serde_json::Deserializer::from_str(&text[start..])
+                .into_iter::<serde::de::IgnoredAny>();
+            values.next()?.ok()?;
+            let end = start + values.byte_offset();
+            if key == "result" && found.replace(&text[start..end]).is_some() {
+                return None;
+            }
+            at = ws(end);
+            match text.as_bytes().get(at)? {
+                b',' => at = ws(at + 1),
+                b'}' => break,
+                _ => return None,
+            }
         }
     }
-    None
+    if ws(at + 1) != text.len() {
+        return None;
+    }
+    found
 }
 
 #[cfg(test)]

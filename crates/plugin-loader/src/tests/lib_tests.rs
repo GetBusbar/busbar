@@ -40,10 +40,17 @@ fn validate_and_inventory() {
     let dir = std::env::temp_dir().join(format!(
         "busbar-validate-inventory-{}-{}",
         std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
+        {
+            static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            format!(
+                "{}-{}-{}",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |d| d.as_nanos()),
+                line!(),
+                NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            )
+        }
     ));
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::copy(&path, dir.join(&file)).unwrap();
@@ -123,10 +130,17 @@ fn list_plugin_files_filters_to_libraries_only_and_sorts() {
     let dir = std::env::temp_dir().join(format!(
         "busbar-list-plugin-files-{}-{}",
         std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
+        {
+            static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            format!(
+                "{}-{}-{}",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |d| d.as_nanos()),
+                line!(),
+                NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            )
+        }
     ));
     std::fs::create_dir_all(&dir).unwrap();
     let ext = if cfg!(target_os = "windows") {
@@ -159,14 +173,17 @@ fn list_plugin_files_filters_to_libraries_only_and_sorts() {
 /// rather than one shared expectation, because the correct answers genuinely differ.
 #[test]
 fn the_library_extension_match_uses_this_filesystems_case_rule() {
-    let dir = std::env::temp_dir().join(format!(
-        "busbar-libext-case-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
+    let dir = std::env::temp_dir().join(format!("busbar-libext-case-{}-{}", std::process::id(), {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        format!(
+            "{}-{}-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_nanos()),
+            line!(),
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        )
+    }));
     std::fs::create_dir_all(&dir).unwrap();
     let upper = if cfg!(target_os = "windows") {
         "shouty.DLL"
@@ -202,10 +219,17 @@ fn inventory_reports_valid_and_invalid_libraries_in_the_same_directory() {
     let dir = std::env::temp_dir().join(format!(
         "busbar-inventory-mixed-{}-{}",
         std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
+        {
+            static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            format!(
+                "{}-{}-{}",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |d| d.as_nanos()),
+                line!(),
+                NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            )
+        }
     ));
     std::fs::create_dir_all(&dir).unwrap();
     let ext = if cfg!(target_os = "windows") {
@@ -313,10 +337,17 @@ fn a_door_less_json_contract_library_is_refused_naming_the_rebuild() {
     let dir = std::env::temp_dir().join(format!(
         "busbar-inventory-json-contract-{}-{}",
         std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
+        {
+            static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            format!(
+                "{}-{}-{}",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |d| d.as_nanos()),
+                line!(),
+                NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            )
+        }
     ));
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::copy(&path, dir.join(&file)).unwrap();

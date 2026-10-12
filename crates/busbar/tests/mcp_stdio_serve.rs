@@ -73,10 +73,17 @@ fn fixture_dir(tag: &str) -> PathBuf {
     let d = std::env::temp_dir().join(format!(
         "busbar-stdio-serve-{}-{tag}-{}",
         std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
+        {
+            static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            format!(
+                "{}-{}-{}",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |d| d.as_nanos()),
+                line!(),
+                NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            )
+        }
     ));
     std::fs::create_dir_all(d.join("plugins")).unwrap();
     d
@@ -228,11 +235,12 @@ fn harness_release_key() -> busbar_plugin_loader::sign::SigningKey {
 /// dev-dependency of this crate, so the build leaves it under `deps/` with a metadata hash) into a
 /// `kind: auth` tarball SIGNED FIRST-PARTY under [`harness_release_key`] in the fixture's plugins
 /// dir, its manifest stating the door's Statement as the pack tool renders it: its needs are in the
-/// `operator-infrastructure` egress class, which the host grants to a first-party plugin only. `false` when the cdylib is not built —
-/// a skip locally, a hard failure under CI, the same posture busbar-kernel's
-/// `auth/tests/plugin_chain_tests.rs` takes for the same artifact.
+/// `operator-infrastructure` egress class, which the host grants to a first-party plugin only.
+/// `false` when the cdylib is not built — a skip locally, a hard failure under CI, the same posture
+/// `tests/auth_plugin_chain.rs` takes for the same artifact.
 fn install_auth_plugin(dir: &Path) -> bool {
-    let Some(lib) = common::plugins::cdylib("busbar_auth_oidc_plugin") else {
+    let lib = common::plugins::token_verifier_cdylib_path().and_then(|p| std::fs::read(p).ok());
+    let Some(lib) = lib else {
         record_skip("auth-oidc plugin cdylib not built (cargo test -p busbar builds it)");
         return false;
     };
@@ -701,8 +709,9 @@ fn a_bound_session_serves_and_eof_with_a_live_subscription_exits_promptly() {
     );
     let mut child = spawn(&dir, Some(&token));
 
-    // A LEGACY-era opening: `initialize`, no `_meta`, naming a session revision busbar carries —
-    // answered in that revision (revision by negotiation, THE DESIGN section 2).
+    // A SESSION-era opening over stdio: `initialize`, no `_meta`. The carrier answers in the session
+    // revision the client asked for (revision by negotiation, THE DESIGN section 2); a line that
+    // states the stateless `_meta` after it is still served as it is.
     child.send(&serde_json::json!({
         "jsonrpc": "2.0", "id": 1, "method": "initialize",
         "params": { "protocolVersion": "2025-06-18", "capabilities": {},

@@ -53,6 +53,7 @@ use busbar_contract::abi::plane::{
     VERDICT_RETRY,
 };
 use busbar_contract::abi::sdk::door::statement;
+use busbar_contract::abi::sdk::exchange::{REPLY_MAX, REPLY_OVER_BOUND};
 use busbar_contract::abi::sdk::life::Refusal;
 use busbar_contract::abi::sdk::publish::{Generations, Keyed};
 use busbar_contract::abi::sdk::services::ServiceError;
@@ -459,7 +460,7 @@ slot!(
 
 // ── the request path ──────────────────────────────────────────────────────────────────────────
 
-/// The most units the instance keeps state for at once; past it, the oldest is dropped first.
+/// The most units the instance keeps state for at once; past it, a new arrival is refused.
 pub const MAX_UNITS: usize = 4096;
 
 /// The most upstreams busbar remembers a negotiated revision for, and their bytes: forgetting one
@@ -801,18 +802,6 @@ const CLASS_TOOL_CALLS_INDEX: u32 = 0;
 /// The tail index of the byte class (the second of [`door::TAIL`]'s billable classes).
 const CLASS_BYTES_INDEX: u32 = 1;
 
-/// Keep `value` under `key` in `map`, dropping the smallest keys first past `cap`.
-fn keep<V>(map: &Keyed<u64, V>, cap: usize, key: u64, value: V) {
-    map.with_all(|m| {
-        while m.len() >= cap && !m.contains_key(&key) {
-            if m.pop_first().is_none() {
-                break;
-            }
-        }
-        m.insert(key, value);
-    });
-}
-
 /// The operation class a disposition is counted under: its row's, or the notification class. A
 /// refused arrival is counted under none.
 fn op_class(disposition: &Disposition) -> Option<u32> {
@@ -859,6 +848,9 @@ const NOT_ALLOWED_TEXT: &str = r#"{"allow":"POST"}"#;
 
 /// The status a line naming no carrier session is refused with.
 const STATUS_BAD_REQUEST: u32 = 400;
+
+/// The status an arrival is refused with when the unit table is full.
+const STATUS_BUSY: u32 = 429;
 
 /// A line that names no carrier session: the host states one on every line it opens a unit for.
 const NO_SESSION_TEXT: &str = r#"{"status":400,"id":null,"code":-32600,"message":"a line of the line carrier names no carrier session"}"#;
@@ -971,20 +963,20 @@ slot!(
                 &head_field,
             )
         } else if claim.is_some_and(|r| r.verb != "POST") {
-            door_sessions::Landed::NotAllowed
+            door_sessions::SessionArrived::NotAllowed
         } else {
-            door_sessions::Landed::Stateless
+            door_sessions::SessionArrived::Stateless
         };
         let (mut session_unit, session_body, session_mirror) = match arrived {
-            door_sessions::Landed::NotAllowed => {
+            door_sessions::SessionArrived::NotAllowed => {
                 return refused_arrival(
                     &mut out,
                     door::STATUS_METHOD_NOT_ALLOWED,
                     NOT_ALLOWED_TEXT.to_string(),
                 )
             }
-            door_sessions::Landed::Stateless => (None, None, Vec::new()),
-            door_sessions::Landed::Session(a) => {
+            door_sessions::SessionArrived::Stateless => (None, None, Vec::new()),
+            door_sessions::SessionArrived::Session(a) => {
                 let a = *a;
                 (Some(a.unit), a.dispatch, a.mirror)
             }
@@ -1103,6 +1095,25 @@ slot!(
         }
         if let Disposition::Refused(refusal) = &disposition {
             return refused_arrival(&mut out, refusal.status, refusal_text(refusal));
+        }
+        // ADMISSION BOUNDS LIVE WORK; NOTHING EVICTS IT: a full table refuses the new arrival, before
+        // anything else is stated of it, and every unit it holds goes on. Arrivals racing the last
+        // free places overshoot by no more than the instance's in-flight bound.
+        let at_cap = plane
+            .units
+            .with_all(|held| held.len() >= MAX_UNITS && !held.contains_key(&input.get().unit));
+        if at_cap {
+            let refusal = crate::tool_arrival::Refusal {
+                status: STATUS_BUSY,
+                id: None,
+                code: crate::codec::CODE_REFUSED,
+                message: format!(
+                    "this server holds {MAX_UNITS} requests in flight, the most it will; retry \
+                     when some have finished"
+                ),
+                data: Some(serde_json::json!({ "reason": "capacity" })),
+            };
+            return refused_arrival(&mut out, refusal.status, refusal_text(&refusal));
         }
         let Some(op_class) = op_class(&disposition) else {
             return Outcome::Failed;
@@ -1233,7 +1244,7 @@ slot!(
             session: session_unit,
             negotiating: None,
         };
-        keep(&plane.units, MAX_UNITS, input.get().unit, unit);
+        plane.units.insert(input.get().unit, unit);
         Outcome::Ready
     }
 );
@@ -2893,6 +2904,7 @@ slot!(
                             // A negotiation under way is entered again with the piece it began
                             // on: the far end's answer is already whole.
                             let resumed = unit.negotiating.as_ref().is_some_and(|n| n.fed);
+                            let mut over = None;
                             if !resumed {
                                 if piece.flags & PIECE_HAS_STATUS != 0 {
                                     relay.status = piece.status_code;
@@ -2903,55 +2915,73 @@ slot!(
                                         n.walk_session = far_session.clone();
                                     }
                                 }
-                                relay.far.extend_from_slice(bytes);
-                                if piece.flags & PIECE_LAST == 0 {
-                                    return Some(Step::Taken);
-                                }
-                            }
-                            // THE CLIENT LADDER (THE DESIGN section 2, the mcp bullet): an upstream that
-                            // refuses the stateless request is negotiated with over the door's
-                            // connector; one that answered is handed on as it answered.
-                            let mut failed = None;
-                            if let (Some(n), Some(def)) = (unit.negotiating.as_mut(), def) {
-                                let base = NEGOTIATE_SEQ
-                                    .saturating_add(unit.attempt.saturating_mul(ROUND_SEQ_SPAN));
-                                let member = unit.member.as_deref().unwrap_or_default();
-                                let polled = door_sessions::far_answer(
-                                    &instance,
-                                    plane,
-                                    n,
-                                    (base, member, def.timeout_ms()),
-                                    (relay.status, relay.sse, &relay.far),
-                                );
-                                let std::task::Poll::Ready(done) = polled else {
-                                    return Some(Step::Pending);
-                                };
-                                match done {
-                                    None => {}
-                                    Some(door_sessions::Negotiated::Answer(status, raw, sse)) => {
-                                        relay.status = u32::from(status);
-                                        relay.far = raw;
-                                        relay.sse = sse;
-                                    }
-                                    Some(door_sessions::Negotiated::Failed(reason)) => {
-                                        relay.status = 0;
-                                        failed = Some(reason);
+                                // AN UPSTREAM'S ANSWER IS BOUNDED as the SDK bounds a reply: one
+                                // past the ceiling fails the call as any bad upstream answer does,
+                                // and nothing more of it is kept.
+                                if relay.far.len().saturating_add(bytes.len()) > REPLY_MAX {
+                                    relay.far = Vec::new();
+                                    (relay.status, relay.sse) = (0, false);
+                                    over = Some(crate::call::upstream_failed(
+                                        &relay.admitted,
+                                        REPLY_OVER_BOUND,
+                                    ));
+                                } else {
+                                    relay.far.extend_from_slice(bytes);
+                                    if piece.flags & PIECE_LAST == 0 {
+                                        return Some(Step::Taken);
                                     }
                                 }
                             }
-                            unit.negotiating = None;
-                            match failed {
-                                Some(reason) => {
-                                    crate::call::upstream_failed(&relay.admitted, &reason)
+                            if let Some(settled) = over {
+                                unit.negotiating = None;
+                                settled
+                            } else {
+                                // THE CLIENT LADDER (THE DESIGN section 2, the mcp bullet): an
+                                // upstream that refuses the stateless request is negotiated with
+                                // over the door's connector; one that answered is handed on as it
+                                // answered.
+                                let mut failed = None;
+                                if let (Some(n), Some(def)) = (unit.negotiating.as_mut(), def) {
+                                    let base = NEGOTIATE_SEQ
+                                        .saturating_add(unit.attempt.saturating_mul(ROUND_SEQ_SPAN));
+                                    let member = unit.member.as_deref().unwrap_or_default();
+                                    let polled = door_sessions::far_answer(
+                                        &instance,
+                                        plane,
+                                        n,
+                                        (base, member, def.timeout_ms()),
+                                        (relay.status, relay.sse, &relay.far),
+                                    );
+                                    let std::task::Poll::Ready(done) = polled else {
+                                        return Some(Step::Pending);
+                                    };
+                                    match done {
+                                        None => {}
+                                        Some(door_sessions::Negotiated::Answer(status, raw, sse)) => {
+                                            relay.status = u32::from(status);
+                                            relay.far = raw;
+                                            relay.sse = sse;
+                                        }
+                                        Some(door_sessions::Negotiated::Failed(reason)) => {
+                                            relay.status = 0;
+                                            failed = Some(reason);
+                                        }
+                                    }
                                 }
-                                None => crate::call::settle_call(
-                                    &relay.admitted,
-                                    def,
-                                    relay.status,
-                                    &relay.far,
-                                    relay.sse,
-                                    relay.round,
-                                ),
+                                unit.negotiating = None;
+                                match failed {
+                                    Some(reason) => {
+                                        crate::call::upstream_failed(&relay.admitted, &reason)
+                                    }
+                                    None => crate::call::settle_call(
+                                        &relay.admitted,
+                                        def,
+                                        relay.status,
+                                        &relay.far,
+                                        relay.sse,
+                                        relay.round,
+                                    ),
+                                }
                             }
                         }
                     };
@@ -3068,7 +3098,11 @@ slot!(
             }
         });
         match step {
-            None | Some(Step::Declined) => Outcome::Refused,
+            // A piece the plane refuses ends the unit: its state is dropped with it.
+            None | Some(Step::Declined) => {
+                plane.units.remove(&key);
+                Outcome::Refused
+            }
             Some(Step::Taken) => Outcome::Ready,
             Some(Step::Pending) => Outcome::Pending,
             Some(Step::Decline) => {
@@ -3464,6 +3498,11 @@ slot!(
             return Outcome::Failed;
         }
         out.set(|o| &o.status, status);
+        // THE REFUSED UNIT IS OVER: the kernel ends a unit it refuses, and nothing else would ever
+        // name it again, so its state (its request's params among it) goes with the refusal.
+        if let Some(plane) = instance.get() {
+            plane.units.remove(&given.unit);
+        }
         Outcome::Ready
     }
 );
