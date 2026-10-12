@@ -9,12 +9,16 @@ fn systemone_arrives_as_the_first_op_class_with_a_principal() {
     assert_eq!(tail::OP_CLASSES[a.op_class as usize], ops::OP_SYSTEMONE);
     assert_eq!(a.principal, PrincipalNeed::Required);
     assert_eq!(tail::DIALECTS[a.dialect as usize], "jev");
+    let e = arrive("POST", ops::PATH_EVALUATE).expect("evaluate is claimed");
+    assert_eq!(e.op, ops::OP_EVALUATE);
+    assert_eq!(tail::OP_CLASSES[e.op_class as usize], ops::OP_EVALUATE);
+    assert_eq!(tail::DIALECTS[e.dialect as usize], "nanojev");
 }
 
 #[test]
 fn models_is_not_claimed() {
     assert_eq!(arrive("GET", ops::PATH_MODELS), None);
-    assert!(!tail::CLAIMS.iter().any(|(_, t)| *t == ops::PATH_MODELS));
+    assert!(!tail::CLAIMS.iter().any(|(_, t, _)| *t == ops::PATH_MODELS));
     assert!(!tail::OP_CLASSES.contains(&ops::OP_MODELS));
 }
 
@@ -26,8 +30,10 @@ fn an_unknown_request_is_not_claimed() {
 
 #[test]
 fn every_claim_arrives() {
-    for (verb, target) in tail::CLAIMS {
-        assert!(arrive(verb, target).is_some(), "{verb} {target}");
+    for (verb, target, dialect) in tail::CLAIMS {
+        let a = arrive(verb, target).unwrap_or_else(|| panic!("{verb} {target}"));
+        assert_eq!(a.dialect, *dialect, "{verb} {target}");
+        assert_eq!(attempt_request(*dialect, b"{}").target, *target);
     }
 }
 
@@ -53,7 +59,8 @@ fn the_tail_names_the_decision_class_at_its_index() {
     assert_eq!(fee_family, tail::FEE_FAMILY);
     assert_eq!(tail::SECTION_DECLARING, crate::config::SECTION);
     assert_eq!(tail::NEEDS, &[(crate::claims::TRANSPORT, "bearer")]);
-    assert_eq!(tail::DIALECT_AUTH, &[(0, "bearer")]);
+    assert_eq!(tail::DIALECT_AUTH, &[(0, "bearer"), (1, "bearer")]);
+    assert_eq!(tail::DIALECTS, &["jev", "nanojev"]);
 }
 
 #[test]
@@ -66,7 +73,7 @@ fn the_caller_body_is_kept_and_an_empty_one_is_refused() {
 #[test]
 fn an_attempt_forwards_the_caller_body_unchanged() {
     let body = br#"{"state":{"session":"s"},"context":{}}"#;
-    let r = attempt_request(body);
+    let r = attempt_request(tail::DIALECT_JEV, body);
     assert_eq!(r.verb, "POST");
     assert_eq!(r.target, "/v1/systemone");
     assert_eq!(r.fields, [("content-type", &b"application/json"[..])]);
@@ -253,10 +260,15 @@ fn a_refusal_carries_the_kernel_text_in_the_dialect_shape() {
 /// nothing, and the kernel's unclaimed-route bytes stand.
 #[test]
 fn one_or_more_models_mount_the_claim() {
-    assert!(served_claims(0).is_empty());
-    assert_eq!(served_claims(1), tail::CLAIMS);
-    assert_eq!(served_claims(2), tail::CLAIMS);
-    assert_eq!(served_claims(7), tail::CLAIMS);
+    let systemone = ("POST", ops::PATH_SYSTEMONE, tail::DIALECT_JEV);
+    let evaluate = ("POST", ops::PATH_EVALUATE, tail::DIALECT_NANOJEV);
+    assert!(served_claims(&[]).is_empty());
+    assert_eq!(served_claims(&[0]), vec![systemone]);
+    assert_eq!(served_claims(&[0, 0]), vec![systemone]);
+    assert_eq!(served_claims(&[1]), vec![evaluate]);
+    assert_eq!(served_claims(&[1, 0, 1]), vec![systemone, evaluate]);
+    assert_eq!(dialect_of("nanojev"), Some(tail::DIALECT_NANOJEV));
+    assert_eq!(dialect_of("anthropic"), None);
 }
 
 fn models(names: &[&str]) -> std::collections::BTreeMap<String, ()> {
@@ -268,45 +280,54 @@ fn models(names: &[&str]) -> std::collections::BTreeMap<String, ()> {
 #[test]
 fn a_request_routes_over_the_model_it_names() {
     let two = models(&["a", "b"]);
-    assert_eq!(route_model(br#"{"model":"b"}"#, &two).map(|r| r.0), Ok("b"));
     assert_eq!(
-        route_model(br#"{"model":"\u0061"}"#, &two).map(|r| r.0),
+        route_model(br#"{"model":"b"}"#, &two, |_| true).map(|r| r.0),
+        Ok("b")
+    );
+    assert_eq!(
+        route_model(br#"{"model":"\u0061"}"#, &two, |_| true).map(|r| r.0),
         Ok("a"),
         "an escaped name is the name it spells"
     );
     assert_eq!(
-        route_model(br#"{"state":{}}"#, &two),
+        route_model(br#"{"state":{}}"#, &two, |_| true),
         Err(Unrouted::Unnamed)
     );
     assert_eq!(
-        route_model(br#"{"model":"zz"}"#, &two),
+        route_model(br#"{"model":"zz"}"#, &two, |_| true),
         Err(Unrouted::Unknown("zz".to_string()))
     );
     assert_eq!(
-        route_model(br#"{"model":null}"#, &two),
+        route_model(br#"{"model":null}"#, &two, |_| true),
         Err(Unrouted::NotAName)
     );
     assert_eq!(
-        route_model(br#"{"model":["a"]}"#, &two),
+        route_model(br#"{"model":["a"]}"#, &two, |_| true),
         Err(Unrouted::NotAName)
     );
     // A nested `model` is not the request's.
     assert_eq!(
-        route_model(br#"{"state":{"model":"a"}}"#, &two),
+        route_model(br#"{"state":{"model":"a"}}"#, &two, |_| true),
         Err(Unrouted::Unnamed)
     );
 
     let one = models(&["jev"]);
     assert_eq!(
-        route_model(br#"{"state":{}}"#, &one).map(|r| r.0),
+        route_model(br#"{"state":{}}"#, &one, |_| true).map(|r| r.0),
         Ok("jev")
     );
-    assert_eq!(route_model(b"not json", &one).map(|r| r.0), Ok("jev"));
     assert_eq!(
-        route_model(br#"{"model":"other"}"#, &one),
+        route_model(b"not json", &one, |_| true).map(|r| r.0),
+        Ok("jev")
+    );
+    assert_eq!(
+        route_model(br#"{"model":"other"}"#, &one, |_| true),
         Err(Unrouted::Unknown("other".to_string()))
     );
-    assert_eq!(route_model(br#"{}"#, &models(&[])), Err(Unrouted::Unnamed));
+    assert_eq!(
+        route_model(br#"{}"#, &models(&[]), |_| true),
+        Err(Unrouted::Unnamed)
+    );
 
     assert_eq!(
         (Unrouted::Unnamed.status(), Unrouted::NotAName.status()),
@@ -475,4 +496,88 @@ fn a_large_answer_is_read_without_keeping_it() {
         reading.counts(Some(200)).map(|c| c[0].map(|u| u.amount)),
         Ok(Some(4))
     );
+}
+
+/// The counts of a `nanojev` answer, `(class, amount)`.
+fn nanojev_billed(status: u32, body: &[u8]) -> Result<Vec<(u32, u64)>, Unreadable> {
+    let mut reading = FarEndReading::for_dialect(tail::DIALECT_NANOJEV);
+    reading.piece(body);
+    reading.counts(Some(status)).map(|c| {
+        c.into_iter()
+            .flatten()
+            .map(|u| (u.class, u.amount))
+            .collect()
+    })
+}
+
+/// RED (audit plane-decisions#3): THE DESIGN section 2, NanoJev "meters the upstream's own billing
+/// unit, counted from the answer already read (`execution.states`; an answer with no count refuses
+/// loudly". Its answer is read by its own pointer, never jev's.
+#[test]
+fn a_nanojev_answer_bills_its_execution_states() {
+    assert_eq!(
+        nanojev_billed(200, br#"{"execution":{"states":3},"result":{}}"#),
+        Ok(vec![(DECISION, 3), (FEE, 1)])
+    );
+    assert_eq!(
+        nanojev_billed(
+            200,
+            br#"{"usage":{"units":9,"input_tokens":4},"execution":{"states":1}}"#
+        ),
+        Ok(vec![(DECISION, 1), (FEE, 1)]),
+        "jev's usage members are not nanojev's"
+    );
+    for missing in [
+        &br#"{"result":{}}"#[..],
+        br#"{"execution":{}}"#,
+        br#"{"usage":{"units":2}}"#,
+    ] {
+        assert_eq!(
+            nanojev_billed(200, missing),
+            Err(Unreadable(crate::codec::PTR_EXECUTION_STATES)),
+            "{}",
+            String::from_utf8_lossy(missing)
+        );
+    }
+    assert_eq!(
+        nanojev_billed(200, br#"{"execution":{"states":2.5}}"#),
+        Err(Unreadable(crate::codec::PTR_EXECUTION_STATES))
+    );
+    assert_eq!(
+        nanojev_billed(500, br#"{"result":{}}"#),
+        Ok(vec![]),
+        "a failure bills nothing"
+    );
+    // Wherever the pieces split it.
+    let body = br#"{"execution" : {"trace":[{"states":99}], "states" : 12}}"#;
+    for at in 0..=body.len() {
+        let mut reading = FarEndReading::for_dialect(tail::DIALECT_NANOJEV);
+        reading.piece(&body[..at]);
+        reading.piece(&body[at..]);
+        assert_eq!(
+            reading.counts(Some(200)).map(|c| c[0].map(|u| u.amount)),
+            Ok(Some(12)),
+            "split at {at}"
+        );
+    }
+}
+
+/// RED (audit plane-decisions#3): a request routes among its claim's dialect's models; a model of
+/// the other dialect is this dialect's unknown model, and one model of the dialect is its default.
+#[test]
+fn a_model_of_the_other_dialect_is_this_dialects_unknown_model() {
+    let models: std::collections::BTreeMap<String, u32> =
+        [("j".to_string(), 0), ("n".to_string(), 1)].into();
+    let jev = |d: &u32| *d == tail::DIALECT_JEV;
+    let nano = |d: &u32| *d == tail::DIALECT_NANOJEV;
+    assert_eq!(
+        route_model(br#"{"model":"n"}"#, &models, jev),
+        Err(Unrouted::Unknown("n".to_string()))
+    );
+    assert_eq!(
+        route_model(br#"{"model":"n"}"#, &models, nano).map(|r| r.0),
+        Ok("n")
+    );
+    assert_eq!(route_model(br#"{}"#, &models, jev).map(|r| r.0), Ok("j"));
+    assert_eq!(route_model(br#"{}"#, &models, nano).map(|r| r.0), Ok("n"));
 }

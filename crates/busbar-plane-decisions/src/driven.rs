@@ -36,6 +36,16 @@
 //! byte for byte as before. The top-level `model` ([`codec::PTR_MODEL`]) is the one request member
 //! this plane reads, and only to route ([`route_model`]) and splice ([`spliced`]).
 //!
+//! THE SECOND DIALECT (THE DESIGN section 2): "NanoJev is the one, dialect `nanojev`: `/api/evaluate`
+//! is its second exact claim; a model's dialect is its override or its provider's protocol; a model
+//! of the wrong dialect gets that dialect's existing unknown-model refusal; it meters the upstream's
+//! own billing unit, counted from the answer already read (`execution.states`; an answer with no
+//! count refuses loudly ...), with no extra egress". Each dialect's claim is published when the
+//! generation configures a model of that dialect ([`served_claims`]); a request routes among the
+//! models of the dialect its claim is ([`route_model`]), so a model of the other dialect is that
+//! dialect's unknown model (`404`). Its answer is read by its dialect's count
+//! ([`FarEndReading::for_dialect`]): `/execution/states`, required.
+//!
 //! WHAT THIS PLANE DOES NOT CLAIM: `GET /v1/models`. That path keeps its 1.5.5 bytes (the model
 //! list busbar already serves there), so [`tail::CLAIMS`] and [`tail::OP_CLASSES`] carry `systemone` alone and
 //! [`arrive`] answers the models operation as unclaimed.
@@ -49,8 +59,8 @@
 use busbar_contract::ids::{MeterClassId, OpClassId};
 
 use crate::codec::{
-    self, error_body, CONTENT_TYPE_JSON, EGRESS_SCHEME, FIELD_CONTENT_TYPE, PTR_USAGE_INPUT_TOKENS,
-    PTR_USAGE_OUTPUT_TOKENS, PTR_USAGE_UNITS,
+    self, error_body, CONTENT_TYPE_JSON, EGRESS_SCHEME, FIELD_CONTENT_TYPE, PTR_EXECUTION_STATES,
+    PTR_USAGE_INPUT_TOKENS, PTR_USAGE_OUTPUT_TOKENS, PTR_USAGE_UNITS,
 };
 use crate::ops;
 
@@ -65,8 +75,15 @@ pub mod tail {
     /// The sections this plane reads and does not own: every model names its provider there.
     pub const SECTIONS_CONSUMED: &[&str] = &["providers"];
 
-    /// The one dialect this plane speaks. Dialect index 0 everywhere below.
-    pub const DIALECTS: &[&str] = &[config::PROTOCOL];
+    /// The dialects this plane speaks, in index order: `jev` ([`DIALECT_JEV`]) and `nanojev`
+    /// ([`DIALECT_NANOJEV`]).
+    pub const DIALECTS: &[&str] = config::PROTOCOLS;
+
+    /// The index of `jev` in [`DIALECTS`].
+    pub const DIALECT_JEV: u32 = 0;
+
+    /// The index of `nanojev` in [`DIALECTS`].
+    pub const DIALECT_NANOJEV: u32 = 1;
 
     /// The outbound auth style a jev far end is reached under: the operator's credential as a
     /// bearer (the signed design: "auth = core gateway credential, plane returns a
@@ -75,7 +92,10 @@ pub mod tail {
 
     /// Each dialect's default outbound auth style, `(dialect index, style)` (the design, "Outbound auth", step 2:
     /// a provider entry's `auth:`, else this; ARCHITECT Q-L1-AUTH (A), 2026-10-03).
-    pub const DIALECT_AUTH: &[(u32, &str)] = &[(0, OUTBOUND_STYLE)];
+    pub const DIALECT_AUTH: &[(u32, &str)] = &[
+        (DIALECT_JEV, OUTBOUND_STYLE),
+        (DIALECT_NANOJEV, OUTBOUND_STYLE),
+    ];
 
     /// The resource granularity a grant names: a configured decision provider.
     pub const SCOPE_KINDS: &[&str] = &["decision_provider"];
@@ -89,8 +109,9 @@ pub mod tail {
     /// The record resource kind a registration is audited under: the scope kind.
     pub const AUDIT_KIND: &str = SCOPE_KINDS[0];
 
-    /// The op classes this plane serves, in index order. `systemone` alone (see the module doc).
-    pub const OP_CLASSES: &[OpClassId] = &[ops::OP_SYSTEMONE];
+    /// The op classes this plane serves, in index order: each dialect's decision call (see the
+    /// module doc).
+    pub const OP_CLASSES: &[OpClassId] = &[ops::OP_SYSTEMONE, ops::OP_EVALUATE];
 
     /// The billable classes, in index order, each with its family: the decision count, the fee
     /// unit (also a class: the tail check holds `fee_units ⊆ billable_classes`), and the far end's
@@ -142,19 +163,32 @@ pub mod tail {
     /// The plane names the style and never holds what is behind it.
     pub const NEEDS: &[(&str, &str)] = &[(claims::TRANSPORT, OUTBOUND_STYLE)];
 
-    /// The claims the generation snapshot publishes, `(verb, target)`.
-    pub const CLAIMS: &[(&str, &str)] = &[("POST", ops::PATH_SYSTEMONE)];
+    /// The claims a generation snapshot may publish, `(verb, target, dialect)`: each dialect's one
+    /// exact claim.
+    pub const CLAIMS: &[(&str, &str, u32)] = &[
+        ("POST", ops::PATH_SYSTEMONE, DIALECT_JEV),
+        ("POST", ops::PATH_EVALUATE, DIALECT_NANOJEV),
+    ];
 }
 
-/// The claims a generation's snapshot publishes, given how many `decisions.models` it configures:
-/// [`tail::CLAIMS`] for one or more, none for none (see the module doc's table).
+/// The claims a generation's snapshot publishes, given the dialect of each model it configures:
+/// each dialect's claim when at least one model is of it, none for none (see the module doc).
 #[must_use]
-pub fn served_claims(models: usize) -> &'static [(&'static str, &'static str)] {
-    if models == 0 {
-        &[]
-    } else {
-        tail::CLAIMS
-    }
+pub fn served_claims(dialects: &[u32]) -> Vec<(&'static str, &'static str, u32)> {
+    tail::CLAIMS
+        .iter()
+        .filter(|(_, _, dialect)| dialects.contains(dialect))
+        .copied()
+        .collect()
+}
+
+/// A protocol's index in [`tail::DIALECTS`], where this plane speaks it.
+#[must_use]
+pub fn dialect_of(protocol: &str) -> Option<u32> {
+    tail::DIALECTS
+        .iter()
+        .position(|d| *d == protocol)
+        .and_then(|i| u32::try_from(i).ok())
 }
 
 /// Why a claimed request routes over no configured model (THE DESIGN section 2: "more than one and
@@ -212,25 +246,29 @@ pub fn requested_model(body: &[u8]) -> Result<Option<std::borrow::Cow<'_, str>>,
         .map_err(|_| Unrouted::NotAName)
 }
 
-/// THE MODEL A CLAIMED REQUEST ROUTES OVER among `models` (the generation's configured names, each
-/// with what this plane keeps of it): the one it names, else the only one configured. Answers the
-/// configured name and its entry.
+/// THE MODEL A CLAIMED REQUEST ROUTES OVER among the `models` its claim's dialect `serves` (the
+/// generation's configured names, each with what this plane keeps of it): the one it names, else
+/// the only one of that dialect configured. Answers the configured name and its entry. A model of
+/// another dialect is this dialect's unknown model (THE DESIGN section 2: "a model of the wrong
+/// dialect gets that dialect's existing unknown-model refusal").
 ///
 /// # Errors
 ///
 /// [`Unrouted`]: several configured and none named, a `model` that is not a string, or a name none
-/// of `models` has.
+/// of the dialect's models has.
 pub fn route_model<'m, V>(
     body: &[u8],
     models: &'m std::collections::BTreeMap<String, V>,
+    serves: impl Fn(&V) -> bool,
 ) -> Result<(&'m str, &'m V), Unrouted> {
     match requested_model(body)? {
         Some(name) => models
             .get_key_value(name.as_ref())
+            .filter(|(_, v)| serves(v))
             .map(|(k, v)| (k.as_str(), v))
             .ok_or_else(|| Unrouted::Unknown(name.into_owned())),
         None => {
-            let mut all = models.iter();
+            let mut all = models.iter().filter(|(_, v)| serves(v));
             match (all.next(), all.next()) {
                 (Some((k, v)), None) => Ok((k.as_str(), v)),
                 _ => Err(Unrouted::Unnamed),
@@ -286,19 +324,23 @@ pub struct Arrived {
     pub dialect: u32,
 }
 
-/// Classify an arriving request by its verb and target. `None` for anything this plane does not
-/// claim, including `GET /v1/models`.
+/// Classify an arriving request by its verb and target: its operation, and the dialect its claim
+/// is. `None` for anything this plane does not claim, including `GET /v1/models`.
 #[must_use]
 pub fn arrive(verb: &str, target: &str) -> Option<Arrived> {
     let row = ops::row_for(verb, target)?;
     let op_class = tail::OP_CLASSES.iter().position(|op| *op == row.op)?;
+    let dialect = tail::CLAIMS
+        .iter()
+        .find(|(v, t, _)| *t == target && v.eq_ignore_ascii_case(verb))?
+        .2;
     Some(Arrived {
         op: row.op,
         op_class: u32::try_from(op_class).ok()?,
         // A decision is billed to someone: the provider account is the deployment's, and the unit
         // is the caller's.
         principal: PrincipalNeed::Required,
-        dialect: 0,
+        dialect,
     })
 }
 
@@ -337,15 +379,20 @@ pub struct FarEndRequest<'a> {
     pub body: &'a [u8],
 }
 
-/// Answer an ATTEMPT piece: the same request on every attempt, whichever member the kernel picked.
-/// jev names no provider on the wire, so the member changes nothing in the request. Named
-/// `attempt_request`, not `attempt`, so it is not a cross-plane re-spelling of llm/a2a's `attempt`
-/// (structure-lint plane-dup; ARCHITECT ruling 2b 2026-10-04).
+/// Answer an ATTEMPT piece of a unit of `dialect`: the same request on every attempt, whichever
+/// member the kernel picked, at the dialect's own path. Neither dialect names a provider on the
+/// wire, so the member changes nothing in the request. Named `attempt_request`, not `attempt`, so
+/// it is not a cross-plane re-spelling of llm/a2a's `attempt` (structure-lint plane-dup; ARCHITECT
+/// ruling 2b 2026-10-04).
 #[must_use]
-pub fn attempt_request(caller_body: &[u8]) -> FarEndRequest<'_> {
+pub fn attempt_request(dialect: u32, caller_body: &[u8]) -> FarEndRequest<'_> {
+    let target = tail::CLAIMS
+        .iter()
+        .find(|(_, _, d)| *d == dialect)
+        .map_or(ops::PATH_SYSTEMONE, |(_, t, _)| t);
     FarEndRequest {
         verb: "POST",
-        target: ops::PATH_SYSTEMONE,
+        target,
         fields: [(FIELD_CONTENT_TYPE, CONTENT_TYPE_JSON)],
         auth: EGRESS_SCHEME,
         body: caller_body,
@@ -386,7 +433,7 @@ enum Member {
 }
 
 /// What a member of the answer is to the reading: `/error`, `/usage`, one of the three usage
-/// counts (by its index in [`COUNTED`]), or none of them.
+/// counts (by its index in its dialect's [`Usage::counted`]), or none of them.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum Slot {
     #[default]
@@ -396,11 +443,34 @@ enum Slot {
     Count(usize),
 }
 
-/// The usage members read, `(member name under /usage, its pointer)`, in [`Counts`]' order.
-const COUNTED: [(&[u8], &str); 3] = [
-    (b"units", PTR_USAGE_UNITS),
-    (b"input_tokens", PTR_USAGE_INPUT_TOKENS),
-    (b"output_tokens", PTR_USAGE_OUTPUT_TOKENS),
+/// Where a dialect's answer states its counts: the top-level member holding them, and the members
+/// under it, `(name, pointer)`, in [`Counts`]' order (decision, input tokens, output tokens).
+/// Usage pointers are dialect data (THE DESIGN section 2).
+struct Usage {
+    parent: &'static [u8],
+    counted: &'static [(&'static [u8], &'static str)],
+    /// The decision count is required: an answer with none refuses loudly.
+    required: bool,
+}
+
+/// Each dialect's [`Usage`], in [`tail::DIALECTS`]' order: `jev` reads `/usage/units` (one decision
+/// when absent) and its tokens; `nanojev` reads the upstream's own billing unit,
+/// `/execution/states`, and an answer with no count refuses loudly.
+const USAGE: [Usage; 2] = [
+    Usage {
+        parent: b"usage",
+        counted: &[
+            (b"units", PTR_USAGE_UNITS),
+            (b"input_tokens", PTR_USAGE_INPUT_TOKENS),
+            (b"output_tokens", PTR_USAGE_OUTPUT_TOKENS),
+        ],
+        required: false,
+    },
+    Usage {
+        parent: b"execution",
+        counted: &[(b"states", PTR_EXECUTION_STATES)],
+        required: true,
+    },
 ];
 
 /// The longest member name compared ("output_tokens"), with room.
@@ -412,7 +482,7 @@ const SCALAR_CAP: usize = 24;
 ///
 /// Every piece is relayed to the caller unchanged, as it arrives, and read as it passes: a scan of
 /// the JSON structure that keeps only what the money rule reads (whether `/error` is there and not
-/// `null`, and the three `/usage/*` counts), in fixed space. No byte of the answer is kept, so an
+/// `null`, and the dialect's counts: `/usage/*`, or `/execution/states`), in fixed space. No byte of the answer is kept, so an
 /// answer of any size is read in the same few bytes (THE DESIGN section 11.2: "no allocation and no
 /// blocking on the hot path"), and the pieces may split the answer anywhere.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -438,15 +508,31 @@ pub struct FarEndReading {
     scalar_of: Option<Slot>,
     /// `/error`: absent (`None`), `null` (`Some(false)`), or there (`Some(true)`).
     error: Option<bool>,
-    /// The three usage counts, in [`COUNTED`]' order.
+    /// The counts, in the dialect's [`Usage::counted`] order.
     members: [Member; 3],
+    /// The dialect the answer is in ([`USAGE`]'s index).
+    dialect: u32,
 }
 
 impl FarEndReading {
-    /// A reading with nothing received.
+    /// A `jev` reading with nothing received.
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// A reading of an answer in `dialect` ([`tail::DIALECTS`]' index), nothing received.
+    #[must_use]
+    pub fn for_dialect(dialect: u32) -> Self {
+        Self {
+            dialect,
+            ..Self::default()
+        }
+    }
+
+    /// The dialect's [`Usage`].
+    fn usage(&self) -> &'static Usage {
+        USAGE.get(self.dialect as usize).unwrap_or(&USAGE[0])
     }
 
     /// Take one far-end piece and return the bytes to relay to the caller: the piece itself.
@@ -513,11 +599,12 @@ impl FarEndReading {
         } else if self.depth == 1 {
             match key {
                 b"error" => Slot::Error,
-                b"usage" => Slot::Usage,
+                k if k == self.usage().parent => Slot::Usage,
                 _ => Slot::Other,
             }
         } else {
-            COUNTED
+            self.usage()
+                .counted
                 .iter()
                 .position(|(name, _)| *name == key)
                 .map_or(Slot::Other, Slot::Count)
@@ -622,12 +709,14 @@ impl FarEndReading {
             return Ok([None; 4]);
         }
         let (_, members) = self.settled();
+        let usage = self.usage();
         let mut whole = [None; 3];
-        for (i, member) in members.iter().enumerate() {
-            whole[i] = match member {
+        for (i, (_, pointer)) in usage.counted.iter().enumerate() {
+            whole[i] = match members[i] {
+                Member::Absent if i == 0 && usage.required => return Err(Unreadable(pointer)),
                 Member::Absent => None,
-                Member::Whole(n) => Some(*n),
-                Member::Unreadable => return Err(Unreadable(COUNTED[i].1)),
+                Member::Whole(n) => Some(n),
+                Member::Unreadable => return Err(Unreadable(pointer)),
             };
         }
         let reported = |class: u32, amount: u64| Units {

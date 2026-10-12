@@ -304,6 +304,69 @@ fn the_upstream_model_is_spliced_into_what_the_far_end_receives() {
         .contains("\"model\""));
 }
 
+/// THE `nanojev` BOOT (THE DESIGN §2, the decisions bullet): a NanoJev model on a `nanojev`
+/// provider beside the jev one, each priced.
+#[test]
+fn the_nanojev_subject_configures_a_nanojev_provider_and_model() {
+    use xtask::conformance_record::{
+        jev_nanojev_config, nanojev_providers, NANOJEV_MODEL, NANOJEV_PROVIDER,
+    };
+    let text = jev_nanojev_config(41000, 41001, std::path::Path::new("/tmp/signing.key"));
+    let doc: serde_yaml::Value = serde_yaml::from_str(&text).expect("the config is YAML");
+    assert_eq!(
+        doc["decisions"]["models"][NANOJEV_MODEL]["provider"].as_str(),
+        Some(NANOJEV_PROVIDER)
+    );
+    assert_eq!(
+        doc["decisions"]["models"]["jev-1"]["provider"].as_str(),
+        Some("typesafe")
+    );
+    assert!(!doc["providers"][NANOJEV_PROVIDER].is_null());
+    for m in ["jev-1", NANOJEV_MODEL] {
+        assert_eq!(
+            doc["decisions"]["rate_card"][m]["units"]["decision"].as_u64(),
+            Some(1),
+            "{m}"
+        );
+    }
+    let providers: serde_yaml::Value =
+        serde_yaml::from_str(&nanojev_providers(9)).expect("the providers are YAML");
+    assert_eq!(
+        providers[NANOJEV_PROVIDER]["protocol"].as_str(),
+        Some("nanojev")
+    );
+    assert_eq!(providers["typesafe"]["protocol"].as_str(), Some("jev"));
+}
+
+/// `nanojev.served` and `nanojev.no-count-refused`.
+#[test]
+fn a_nanojev_unit_is_served_at_evaluate_and_a_missing_count_refused() {
+    use xtask::conformance_record::{
+        judge_nanojev_no_count, judge_nanojev_served, NANOJEV_NO_COUNT, NANOJEV_REQUEST,
+        NANOJEV_SUCCESS, PATH_EVALUATE,
+    };
+    let ok = call(200, NANOJEV_SUCCESS, 1);
+    assert!(judge_nanojev_served(&ok, PATH_EVALUATE, NANOJEV_REQUEST).is_ok());
+    // RED ARMS: another path, other bytes, another answer, no dial.
+    assert!(judge_nanojev_served(&ok, "/v1/systemone", NANOJEV_REQUEST).is_err());
+    assert!(judge_nanojev_served(&ok, PATH_EVALUATE, b"{}").is_err());
+    assert!(judge_nanojev_served(&call(200, b"{}", 1), PATH_EVALUATE, NANOJEV_REQUEST).is_err());
+    assert!(judge_nanojev_served(
+        &call(200, NANOJEV_SUCCESS, 0),
+        PATH_EVALUATE,
+        NANOJEV_REQUEST
+    )
+    .is_err());
+
+    let refused = br#"{"error":{"code":"internal","message":"plane fault"}}"#;
+    assert!(judge_nanojev_no_count(&call(502, refused, 1)).is_ok());
+    // RED ARMS: the far end's bytes relayed, a success, an extra dial, another shape.
+    assert!(judge_nanojev_no_count(&call(200, NANOJEV_NO_COUNT, 1)).is_err());
+    assert!(judge_nanojev_no_count(&call(502, NANOJEV_NO_COUNT, 1)).is_err());
+    assert!(judge_nanojev_no_count(&call(502, refused, 2)).is_err());
+    assert!(judge_nanojev_no_count(&call(502, b"oops", 1)).is_err());
+}
+
 // ── a2a ───────────────────────────────────────────────────────────────────────────────────────
 
 fn report(rows: &[(&str, &str)]) -> String {

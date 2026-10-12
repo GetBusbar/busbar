@@ -1,6 +1,61 @@
 use super::*;
 use crate::ops;
 
+/// `section`'s routes with no provider facts stated.
+fn routed(section: &DecisionsSection) -> BTreeMap<String, Routed> {
+    routes(section, &BTreeMap::new()).expect("every model's dialect is spoken")
+}
+
+/// RED (audit plane-decisions#3): each dialect's claim is published when a model of it is
+/// configured, and wears its dialect for a refusal before `arrive`.
+#[test]
+fn each_dialects_claim_is_published_with_a_model_of_it() {
+    let jev = ClaimSpec::new("POST", ops::PATH_SYSTEMONE, claims::TRANSPORT, CLAIM_EXACT);
+    let evaluate = ClaimSpec {
+        refusal_dialect: 1,
+        ..ClaimSpec::new("POST", ops::PATH_EVALUATE, claims::TRANSPORT, CLAIM_EXACT)
+    };
+    assert_eq!(
+        snapshot_spec(&[tail::DIALECT_NANOJEV]).claims,
+        vec![evaluate.clone()]
+    );
+    assert_eq!(
+        snapshot_spec(&[tail::DIALECT_NANOJEV, tail::DIALECT_JEV]).claims,
+        vec![jev.clone(), evaluate]
+    );
+    assert_eq!(snapshot_spec(&[tail::DIALECT_JEV]).claims, vec![jev]);
+}
+
+/// RED (audit plane-decisions#3): THE DESIGN section 2, "a model's dialect is its override or its
+/// provider's protocol"; a dialect the plane does not speak fails closed, naming those it does.
+#[test]
+fn a_models_dialect_is_its_override_or_its_providers_protocol() {
+    let section = read_settings(
+        br#"{"models":{"o":{"provider":"p","protocol":"nanojev"},"f":{"provider":"nano"},"j":{"provider":"p"}}}"#,
+    )
+    .expect("the section reads");
+    let facts = BTreeMap::from([
+        ("nano".to_string(), "nanojev".to_string()),
+        ("p".to_string(), "jev".to_string()),
+    ]);
+    let r = routes(&section, &facts).expect("every dialect is spoken");
+    assert_eq!(
+        (r["o"].dialect, r["f"].dialect, r["j"].dialect),
+        (
+            tail::DIALECT_NANOJEV,
+            tail::DIALECT_NANOJEV,
+            tail::DIALECT_JEV
+        )
+    );
+    let bogus = read_settings(br#"{"models":{"m":{"provider":"p","protocol":"bogus"}}}"#)
+        .expect("the section reads");
+    let words = routes(&bogus, &facts).expect_err("an unspoken dialect fails closed");
+    assert!(
+        words.contains("bogus") && words.contains("jev, nanojev"),
+        "{words}"
+    );
+}
+
 #[test]
 fn the_statement_names_the_crate_version() {
     let manifest = include_str!("../../Cargo.toml");
@@ -31,7 +86,7 @@ fn a_member_the_section_does_not_declare_is_refused_in_the_grammars_words() {
 
 #[test]
 fn one_or_more_models_claim_systemone_and_none_claims_nothing() {
-    let one = snapshot_spec(1);
+    let one = snapshot_spec(&[tail::DIALECT_JEV]);
     assert_eq!(
         one.claims,
         vec![ClaimSpec::new(
@@ -45,11 +100,12 @@ fn one_or_more_models_claim_systemone_and_none_claims_nothing() {
     // Served on the plain data plane to a keyed caller: no audience, no protected-resource document.
     assert!(one.audience.is_none() && one.resource_metadata.is_none());
     assert!(
-        snapshot_spec(0).claims.is_empty(),
+        snapshot_spec(&[]).claims.is_empty(),
         "no model claims nothing"
     );
     for models in [2, 3] {
-        assert_eq!(snapshot_spec(models).claims, one.claims, "{models} models");
+        let jev = vec![tail::DIALECT_JEV; models];
+        assert_eq!(snapshot_spec(&jev).claims, one.claims, "{models} models");
     }
 }
 
@@ -58,18 +114,18 @@ fn a_generation_lists_every_configured_model_in_name_order() {
     let two =
         read_settings(br#"{"models":{"b":{"provider":"typesafe"},"a":{"provider":"typesafe"}}}"#)
             .expect("the section reads");
-    let spec = generation_spec(&two);
+    let spec = generation_spec(&routed(&two));
     assert_eq!(spec.listed, vec!["a".to_string(), "b".to_string()]);
-    assert_eq!(spec.claims, snapshot_spec(2).claims);
+    assert_eq!(spec.claims, snapshot_spec(&[0, 0]).claims);
 
     let one =
         read_settings(br#"{"models":{"jev":{"provider":"typesafe"}}}"#).expect("the section reads");
-    let spec = generation_spec(&one);
+    let spec = generation_spec(&routed(&one));
     assert_eq!(spec.listed, vec!["jev".to_string()]);
-    assert_eq!(spec.claims, snapshot_spec(1).claims);
+    assert_eq!(spec.claims, snapshot_spec(&[0]).claims);
 
     let empty = read_settings(b"").expect("an empty blob reads");
-    assert!(generation_spec(&empty).listed.is_empty());
+    assert!(generation_spec(&routed(&empty)).listed.is_empty());
 }
 
 #[test]

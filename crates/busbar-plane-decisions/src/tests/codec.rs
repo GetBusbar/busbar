@@ -32,11 +32,15 @@ fn request_ptrs_is_the_model_alone() {
     );
 }
 
+/// No declared pointer passes through a `state` or `answers` member (a member merely spelled with
+/// those letters, as NanoJev's `/execution/states`, is another member).
 #[test]
 fn response_ptrs_never_names_state_or_answers() {
     for p in RESPONSE_PTRS {
-        assert!(!p.contains("state"));
-        assert!(!p.contains("answers"));
+        assert!(
+            !p.split('/').any(|seg| seg == "state" || seg == "answers"),
+            "{p}"
+        );
     }
 }
 

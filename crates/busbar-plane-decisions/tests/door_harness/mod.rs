@@ -13,14 +13,14 @@ use busbar_contract::abi::mechanism::call::{
     AbiStr, Blob, Field, InHead, OutHead, Outcome, Span, BLOB_OCTETS,
 };
 use busbar_contract::abi::mechanism::lifecycle::{
-    slot as life, CancelIn, CancelOut, OpenIn, OpenOut, OpsHead, RefreshIn,
+    slot as life, CancelIn, CancelOut, OpenIn, OpenOut, OpsHead, RefreshIn, ValidateIn,
 };
 use busbar_contract::abi::mechanism::ticket::{HostCtx, HostTables, Ticket};
 use busbar_contract::abi::plane::{
     slot, ArriveIn, ArriveOut, OnPieceIn, OnPieceOut, Ops, OutField, PlaneCancelIn, PlaneCancelOut,
-    PlaneOpenIn, PlaneOpenOut, PlaneRefreshOut, PlaneSnapshot, RecordWrite, RefusalIn, RefusalOut,
-    UnitCount, EMIT_DONE, EMIT_TO_FAR_END, FROM_CALLER, FROM_FAR_END, FROM_KERNEL,
-    PIECE_HAS_STATUS, PIECE_LAST, REFUSAL_ARRIVE, REFUSAL_KERNEL,
+    PlaneOpenIn, PlaneOpenOut, PlaneRefreshOut, PlaneSnapshot, ProviderFacts, RecordWrite,
+    RefusalIn, RefusalOut, UnitCount, EMIT_DONE, EMIT_TO_FAR_END, FROM_CALLER, FROM_FAR_END,
+    FROM_KERNEL, PIECE_HAS_STATUS, PIECE_LAST, REFUSAL_ARRIVE, REFUSAL_KERNEL,
 };
 use busbar_plane_decisions::plane_door::door;
 
@@ -128,6 +128,19 @@ pub struct Door {
 
 /// Open the door over `settings` (the `decisions:` section, as written).
 pub fn open(settings: &str) -> Door {
+    open_with(settings, &[])
+}
+
+/// Open the door over `settings`, the host stating each referenced provider's `(name, protocol)`.
+pub fn open_with(settings: &str, providers: &[(&str, &str)]) -> Door {
+    let facts: Vec<ProviderFacts> = providers
+        .iter()
+        .map(|(name, protocol)| ProviderFacts {
+            name: str_of(name.as_bytes()),
+            protocol: str_of(protocol.as_bytes()),
+            error_map: Blob::ABSENT,
+        })
+        .collect();
     let mut err = [0_u8; 1024];
     let mut i: PlaneOpenIn = z();
     i.open = OpenIn {
@@ -139,6 +152,7 @@ pub fn open(settings: &str) -> Door {
         err_cap: err.len(),
         ..z()
     };
+    (i.providers, i.providers_len) = (facts.as_ptr(), facts.len());
     let mut o: PlaneOpenOut = z();
     o.open = OpenOut {
         head: out_head::<PlaneOpenOut>(),
@@ -159,6 +173,24 @@ pub fn open(settings: &str) -> Door {
         instance: o.open.instance,
         claims: claims_of(o.snapshot),
     }
+}
+
+/// `validate` of the dealt blob `{decisions: <settings>}`: the outcome and its words.
+pub fn validate(settings: &str) -> (Outcome, String) {
+    let dealt = format!("{{\"decisions\":{settings}}}");
+    let mut err = [0_u8; 1024];
+    let mut i: ValidateIn = z();
+    i.head = head::<ValidateIn>(life::VALIDATE, Ticket::NONE);
+    i.settings = octets(dealt.as_bytes());
+    (i.err_buf, i.err_cap) = (err.as_mut_ptr(), err.len());
+    let mut o: OutHead = out_head::<OutHead>();
+    let f = lifecycle().validate.expect("validate");
+    let ret = f(
+        std::ptr::null_mut(),
+        std::ptr::from_ref(&i).cast(),
+        std::ptr::from_mut(&mut o).cast(),
+    );
+    (ret.outcome(), read(o.error))
 }
 
 /// What `arrive` answered.
@@ -206,6 +238,8 @@ pub struct Given<'a> {
     pub status: u32,
     pub attempt: u32,
     pub bytes: &'a [u8],
+    /// The dialect `arrive` answered, carried on every piece.
+    pub dialect: u32,
 }
 
 impl<'a> Given<'a> {
@@ -217,6 +251,7 @@ impl<'a> Given<'a> {
             status: 0,
             attempt: n,
             bytes: b"",
+            dialect: 0,
         }
     }
 
@@ -228,6 +263,7 @@ impl<'a> Given<'a> {
             status: 0,
             attempt: 0,
             bytes,
+            dialect: 0,
         }
     }
 
@@ -239,6 +275,7 @@ impl<'a> Given<'a> {
             status,
             attempt: 0,
             bytes,
+            dialect: 0,
         }
     }
 
@@ -259,6 +296,7 @@ impl<'a> Given<'a> {
             status,
             attempt: 0,
             bytes,
+            dialect: 0,
         }
     }
 }
@@ -362,6 +400,7 @@ impl Door {
             i.head = head::<OnPieceIn>(slot::ON_PIECE, ticket);
             i.unit = unit;
             i.from = given.from;
+            i.dialect = given.dialect;
             if first {
                 i.flags = given.flags;
                 i.bytes = octets(given.bytes);
@@ -427,6 +466,7 @@ impl Door {
         i.head = head::<OnPieceIn>(slot::ON_PIECE, ticket_of(unit));
         i.unit = unit;
         i.from = given.from;
+        i.dialect = given.dialect;
         i.flags = given.flags;
         i.bytes = octets(given.bytes);
         i.status_code = given.status;

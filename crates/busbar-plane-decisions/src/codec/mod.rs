@@ -48,7 +48,12 @@ pub const PTR_USAGE_INPUT_TOKENS: &str = "/usage/input_tokens";
 /// See [`PTR_USAGE_INPUT_TOKENS`].
 pub const PTR_USAGE_OUTPUT_TOKENS: &str = "/usage/output_tokens";
 
-/// Every pointer this plane resolves in a RESPONSE body (`systemone` or `models`). Declared here
+/// The pointer a SUCCESSFUL `nanojev` answer states the upstream's own billing unit at: the states
+/// its evaluation ran (THE DESIGN section 2: "it meters the upstream's own billing unit, counted
+/// from the answer already read (`execution.states`; an answer with no count refuses loudly").
+pub const PTR_EXECUTION_STATES: &str = "/execution/states";
+
+/// Every pointer this plane resolves in a RESPONSE body (`systemone`, `evaluate` or `models`). Declared here
 /// once, so the "never resolves `/state` or `/answers`" claim is checkable by reading one list
 /// rather than auditing every call site.
 pub const RESPONSE_PTRS: &[&str] = &[
@@ -58,6 +63,7 @@ pub const RESPONSE_PTRS: &[&str] = &[
     PTR_USAGE_UNITS,
     PTR_USAGE_INPUT_TOKENS,
     PTR_USAGE_OUTPUT_TOKENS,
+    PTR_EXECUTION_STATES,
 ];
 
 /// The pointer a request names the model it is routed over at: its top-level `model` (THE DESIGN
