@@ -420,6 +420,7 @@ static TABLES: Tables = Tables(HostTables {
     },
     wake: None,
     conns: &CONN_SLOTS,
+    io: std::ptr::null(),
     services: &HOST_SLOTS,
 });
 

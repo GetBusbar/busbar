@@ -1691,8 +1691,16 @@ fn mutations() -> Vec<Mutation> {
             file: "promote.yml",
             rule: "R18",
             apply: |t| {
-                reif_job(
+                // The shards no longer download the artifact (nothing they run reads it), so the
+                // pull request's same-run download is planted back into hop-shard, gated on the
+                // rung as it was, with slsa-build narrowed to merge groups.
+                let t = plant_step_in_job(
                     t,
+                    "hop-shard",
+                    "      - if: needs.preflight.outputs.needs_release_artifact == 'true'\n        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with: { name: \"slsa-artifact-${{ env.SHA }}\", path: slsa }\n",
+                );
+                reif_job(
+                    &t,
                     "slsa-build",
                     "github.event_name == 'merge_group' && needs.preflight.outputs.run == '1'",
                 )
@@ -1715,6 +1723,27 @@ fn mutations() -> Vec<Mutation> {
             creates: false,
         },
     ]
+}
+
+/// Insert `step` (a whole `      - ...\n` step) as the first step of job `job`. A renamed job or one
+/// without `steps:` edits nothing, which the selftest reports as unproven.
+fn plant_step_in_job(t: &str, job: &str, step: &str) -> String {
+    let head = format!("  {job}:");
+    let mut in_job = false;
+    let mut done = false;
+    let mut out = String::with_capacity(t.len() + step.len());
+    for line in t.split_inclusive('\n') {
+        let bare = line.trim_end_matches('\n');
+        if opens_key_at(bare, 2) {
+            in_job = bare.trim_end() == head;
+        }
+        out.push_str(line);
+        if !done && in_job && bare == "    steps:" {
+            out.push_str(step);
+            done = true;
+        }
+    }
+    out
 }
 
 /// Replace job `job`'s own `if:` line with `if: <cond>`. The anchor is the job id and its
