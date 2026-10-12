@@ -73,8 +73,8 @@ fn admin() -> Grant<AdminVerb> {
 
 /// An adapter over a store bound to the PUBLISHED payload schema (2), built through the same
 /// constructor the composition root calls.
-fn adapter_over_published_schema() -> Option<StoreAdapter> {
-    Some(StoreAdapter::new(backing(), PUBLISHED_STORE_SCHEMA))
+fn adapter_over_published_schema() -> StoreAdapter {
+    StoreAdapter::new(backing(), PUBLISHED_STORE_SCHEMA)
 }
 
 /// The kernel's universal test double (the build's default store), as the published operations'
@@ -109,12 +109,8 @@ impl TestClock {
 }
 
 /// [`adapter_over_published_schema`] whose sealed replay cache ages against `clock`.
-fn adapter_at(clock: &TestClock) -> Option<StoreAdapter> {
-    Some(StoreAdapter::with_clock(
-        backing(),
-        PUBLISHED_STORE_SCHEMA,
-        clock.shim_clock(),
-    ))
+fn adapter_at(clock: &TestClock) -> StoreAdapter {
+    StoreAdapter::with_clock(backing(), PUBLISHED_STORE_SCHEMA, clock.shim_clock())
 }
 
 fn replay_key(name: &str) -> (String, String) {
@@ -124,9 +120,7 @@ fn replay_key(name: &str) -> (String, String) {
 /// `epoch` is the one generation a node-local shim has, and it stays put.
 #[test]
 fn the_slice_seam_epoch_is_constant() {
-    let Some(adapter) = adapter_over_published_schema() else {
-        return;
-    };
+    let adapter = adapter_over_published_schema();
     assert_eq!(adapter.epoch(), Epoch(0));
     adapter.reserve(&slice_request(1, 0)).expect("reserve");
     adapter
@@ -143,9 +137,7 @@ fn the_slice_seam_epoch_is_constant() {
 /// a node-local fact and the seam says it happened.
 #[test]
 fn the_verb_seam_records_a_chain_break() {
-    let Some(adapter) = adapter_over_published_schema() else {
-        return;
-    };
+    let adapter = adapter_over_published_schema();
     assert_eq!(adapter.shim_state().chain_breaks, 0);
     adapter.chain_break(&admin()).expect("chain_break");
     adapter.chain_break(&admin()).expect("chain_break again");
@@ -156,9 +148,7 @@ fn the_verb_seam_records_a_chain_break() {
 /// does NOT drop a committed replay slot — that is how a credential-minting verb would re-mint.
 #[test]
 fn the_verb_seam_records_a_restore_and_keeps_the_sealed_replay_slots() {
-    let Some(adapter) = adapter_over_published_schema() else {
-        return;
-    };
+    let adapter = adapter_over_published_schema();
     let key = ("export_keyset".to_string(), "idem-1".to_string());
     adapter.replay_new_verb(&key).expect("first sighting");
     adapter
@@ -197,9 +187,7 @@ fn the_verb_seam_records_a_restore_and_keeps_the_sealed_replay_slots() {
 /// landing mid-restore cannot be half-erased: either it is in both figures or in neither.
 #[test]
 fn a_restore_reseals_both_slice_figures_together() {
-    let Some(adapter) = adapter_over_published_schema() else {
-        return;
-    };
+    let adapter = adapter_over_published_schema();
     adapter.reserve(&slice_request(100, 0)).expect("reserve");
     assert_eq!(adapter.shim_state().slices_granted, 100);
 
@@ -225,9 +213,7 @@ fn a_restore_reseals_both_slice_figures_together() {
 /// `reseal_epoch_floor` moves the floor to the shim's epoch.
 #[test]
 fn the_verb_seam_reseals_the_epoch_floor() {
-    let Some(adapter) = adapter_over_published_schema() else {
-        return;
-    };
+    let adapter = adapter_over_published_schema();
     adapter
         .reseal_epoch_floor(&admin())
         .expect("reseal_epoch_floor");
@@ -239,9 +225,7 @@ fn the_verb_seam_reseals_the_epoch_floor() {
 #[test]
 fn a_slot_that_survives_a_restore_still_expires() {
     let clock = TestClock::default();
-    let Some(adapter) = adapter_at(&clock) else {
-        return;
-    };
+    let adapter = adapter_at(&clock);
     let key = replay_key("idem-a");
     adapter.replay_new_verb(&key).expect("first sighting");
     adapter
@@ -303,9 +287,12 @@ fn sweep_every_seam_method(adapter: &StoreAdapter, failures: &mut Vec<String>) {
 /// shipper; the node's journal is kept by the store's record slots.)
 #[test]
 fn every_added_operation_on_a_published_schema_store_is_silent_and_never_errors() {
-    let Some(adapter) = adapter_over_published_schema() else {
-        return;
-    };
+    let adapter = adapter_over_published_schema();
+    assert_eq!(
+        adapter.abi_version(),
+        PUBLISHED_STORE_SCHEMA,
+        "the fixture must be a store at the published payload schema"
+    );
     let log = EventLog::default();
     let mut failures: Vec<String> = Vec::new();
     tracing::subscriber::with_default(log.clone(), || {
@@ -331,9 +318,7 @@ fn every_added_operation_on_a_published_schema_store_is_silent_and_never_errors(
 /// see each other, because the root binds both seams to the SAME store.
 #[test]
 fn the_seams_share_one_shim() {
-    let Some(adapter) = adapter_over_published_schema() else {
-        return;
-    };
+    let adapter = adapter_over_published_schema();
     let slices: Arc<dyn SliceStore> = adapter.slice_store();
     let verbs: Arc<dyn VerbStore + Send + Sync> = adapter.verb_store();
 

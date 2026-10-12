@@ -73,6 +73,14 @@ impl FarEnd {
         }
     }
 
+    /// Drop every reply still queued, so a step whose expected dial never came cannot hand its
+    /// reply to the next step's request.
+    pub fn clear_replies(&self) {
+        if let Ok(mut s) = self.shared.lock() {
+            s.replies.clear();
+        }
+    }
+
     /// Every request received so far.
     pub fn seen(&self) -> Vec<Seen> {
         self.shared

@@ -220,6 +220,8 @@ fn driven() -> Vec<String> {
     )];
     #[cfg(linked_section_decisions)]
     names.push(super::door_tests::decisions_name());
+    #[cfg(linked_fold_on_driver)]
+    names.push(statement_name(super::hook_seat_tests::pools_door()));
     names
 }
 
@@ -428,3 +430,91 @@ async fn decisions_a_provider_key_gone_by_an_apply_reaches_the_caller_without_it
         .expect("the body reads");
     assert_clean(instance, status, &headers, &body, &secret);
 }
+
+/// THE POOLS DOOR, COMPOSE TIME: a provider whose `api_key` does not resolve refuses the boot with the
+/// operator's text, which names the source; nothing is served to a caller.
+#[cfg(linked_fold_on_driver)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pools_door_an_unresolved_provider_key_refuses_the_boot_naming_its_source() {
+    use super::hook_seat_tests::{far_end_answering, try_rig, RigOpts, ANSWER};
+    let _one = PUBLISHING.lock().await;
+    let instance = "pools-key-compose";
+    let _published = Published(instance);
+    let path = missing(instance);
+    let secret = SecretRef::file(path.clone());
+    refused_naming_its_source(&secret);
+    let far = far_end_answering(200, ANSWER).await;
+    let api_key = format!("{{ file: '{path}' }}");
+    let Err(refusal) = try_rig(
+        instance,
+        RigOpts {
+            members: &[(far.port, 1)],
+            api_key: Some(&api_key),
+            ..RigOpts::default()
+        },
+    )
+    .await
+    else {
+        panic!("a provider key that does not resolve refuses the composition");
+    };
+    println!("SECRET-SOURCE {instance}: compose refused (operator): {refusal}");
+    assert!(
+        !source_in(&refusal, &secret).is_empty(),
+        "the operator's refusal names the source: {refusal}"
+    );
+    assert_eq!(
+        far.hits.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "nothing reached the far end"
+    );
+}
+
+/// THE POOLS DOOR, ACROSS AN APPLY: a provider served while its `api_key` file was there, the file then
+/// gone and the configuration applied: the door keeps the generation it serves, and the caller is
+/// served by it, its render clean of the source.
+#[cfg(linked_fold_on_driver)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pools_door_a_provider_key_gone_by_an_apply_reaches_the_caller_without_its_source() {
+    use super::hook_seat_tests::{far_end_answering, rig, RigOpts, ANSWER};
+    let _one = PUBLISHING.lock().await;
+    let instance = "pools-key-apply";
+    let _published = Published(instance);
+    let path = missing(instance);
+    std::fs::write(&path, "sk-secret-source-test").expect("the credential file");
+    let secret = SecretRef::file(path.clone());
+    let far = far_end_answering(200, ANSWER).await;
+    let api_key = format!("{{ file: '{path}' }}");
+    let rig = rig(
+        instance,
+        RigOpts {
+            members: &[(far.port, 1)],
+            api_key: Some(&api_key),
+            ..RigOpts::default()
+        },
+    )
+    .await;
+    let (status, _, body) = rig.chat().await;
+    assert_eq!(
+        status,
+        200,
+        "served while it resolves: {}",
+        String::from_utf8_lossy(&body)
+    );
+    std::fs::remove_file(&path).expect("the credential file goes");
+    refused_naming_its_source(&secret);
+    let before = rig.generation();
+    rig.apply();
+    assert_eq!(
+        rig.generation(),
+        before,
+        "the door keeps the generation it serves"
+    );
+    let (status, headers, body) = rig.chat().await;
+    let status = StatusCode::from_u16(status).expect("a status");
+    assert_clean(instance, status, &headers, &body, &secret);
+    assert_eq!(status, StatusCode::OK, "the kept generation serves");
+}
+
+// The scan's fixed-class half and its kept RED arm (status row 127).
+#[path = "secret_source_class.rs"]
+mod class;

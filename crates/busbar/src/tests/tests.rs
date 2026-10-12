@@ -272,7 +272,7 @@ async fn shutdown_signal_blocks_when_no_signal_is_delivered() {
 #[cfg(unix)]
 #[tokio::test]
 async fn serve_listener_actually_serves_real_http_traffic() {
-    let listener = Listening::bind_stream("127.0.0.1:0", ROOT_BIND_LIMITS).unwrap();
+    let listener = Listening::bind_stream(None, "127.0.0.1:0", ROOT_BIND_LIMITS).unwrap();
     let addr = listener.local_addr();
     let router = Router::new().route("/probe", axum::routing::get(|| async { "ok" }));
     let secret_resolver = Arc::new(busbar_kernel::test_support::builtins_only_secret_resolver());
@@ -747,10 +747,17 @@ impl BookDir {
         let path = std::env::temp_dir().join(format!(
             "busbar-boot-book-{tag}-{}-{}",
             std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("a clock after the epoch")
-                .as_nanos()
+            {
+                static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+                format!(
+                    "{}-{}-{}",
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map_or(0, |d| d.as_nanos()),
+                    line!(),
+                    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                )
+            }
         ));
         std::fs::create_dir_all(&path).expect("the fixture directory is creatable");
         BookDir(path)

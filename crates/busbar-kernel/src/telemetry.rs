@@ -303,6 +303,44 @@ pub(crate) fn request_finished(
     }
 }
 
+/// `busbar_requests_total` + `busbar_request_duration_seconds` for one finished request of the
+/// plane that serves the `pools` map (the fallback plane's 1.5.5 families, `{ingress_protocol,
+/// pool, outcome}` and no `plane` label), its outcome classified from the caller's `status`
+/// ([`outcome_of`]): the request families a unit served through that plane's door emits at its end,
+/// as the previous release's `ingress::finish_inner` emitted them.
+pub fn model_request_finished(
+    app: &App,
+    ingress_protocol: &str,
+    pool: &str,
+    status: u16,
+    seconds: f64,
+) {
+    let outcome = outcome_of(status);
+    request_finished(
+        app,
+        crate::plane::fallback_key(),
+        ingress_protocol,
+        pool,
+        outcome,
+        seconds,
+    );
+    // The best-effort request log, under the same compute gate the previous release's request path
+    // read (`ingress::finish_inner`): produced only when a configured export subscribes to it.
+    if app
+        .export_projections
+        .wants_stream(busbar_contract::abi::export::ExportStream::Logs)
+    {
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        crate::export::deliver_request_log(&crate::export::RequestLogFacts {
+            ts: busbar_kernel::store::now(),
+            ingress_protocol,
+            pool,
+            outcome,
+            latency_ms: (seconds * 1000.0) as u64,
+        });
+    }
+}
+
 // `upstream_attempt_on` / `upstream_failure_on` — THE EMIT for this family, on EVERY plane — MOVED
 // DOWN to the neutral substrate (`busbar_kernel::telemetry`) so a plane's own synchronous client
 // leg can name them without reaching into core. They take NO `&App` and
