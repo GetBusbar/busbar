@@ -23,8 +23,11 @@ fn reads_the_declared_pointers_off_a_failure_body() {
 }
 
 #[test]
-fn request_ptrs_is_empty() {
-    assert!(REQUEST_PTRS.is_empty());
+fn request_ptrs_is_the_model_alone() {
+    assert_eq!(REQUEST_PTRS, &[PTR_MODEL]);
+    for p in REQUEST_PTRS {
+        assert!(!p.contains("state") && !p.contains("answers"));
+    }
 }
 
 #[test]

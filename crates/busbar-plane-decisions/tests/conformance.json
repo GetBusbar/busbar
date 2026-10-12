@@ -1,12 +1,12 @@
 {
-  "settings": { "models": { "jev": { "provider": "typesafe" } } },
+  "settings": { "models": { "jev": { "provider": "typesafe", "protocol": "jev" } } },
   "plane": {
     "bad_settings": [{ "modles": {} }],
     "refresh_settings": {
-      "models": { "a": { "provider": "typesafe" }, "b": { "provider": "typesafe" } }
+      "models": { "a": { "provider": "typesafe", "protocol": "jev" }, "b": { "provider": "typesafe", "protocol": "jev" } }
     },
     "open_claims": [["POST", "/v1/systemone"]],
-    "refresh_claims": [],
+    "refresh_claims": [["POST", "/v1/systemone"]],
     "member": "jev",
     "claimed": { "unit": 7, "method": "POST", "target": "/v1/systemone" },
     "unclaimed": { "unit": 8, "method": "GET", "target": "/v1/models", "status": 404 },
@@ -17,7 +17,7 @@
       "fields": [["content-type", "application/json"]],
       "answer": "{\"request_id\":\"req_1\",\"usage\":{\"units\":42},\"answers\":{}}",
       "answer_out": "{\"request_id\":\"req_1\",\"usage\":{\"units\":42},\"answers\":{}}",
-      "units": [[0, 42], [1, 1]]
+      "units": [[0, 42], [1, 1], [2, 0], [3, 0]]
     },
     "narrow": { "unit": 9, "reply_cap": 16, "more": 3 },
     "short": { "unit": 11 },

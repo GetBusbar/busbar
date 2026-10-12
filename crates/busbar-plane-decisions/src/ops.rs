@@ -17,14 +17,21 @@ pub const OP_SYSTEMONE: OpClassId = OpClassId::new("systemone");
 /// catalogue synthesis: this is typesafe's list, and only this plane may serve it.
 pub const OP_MODELS: OpClassId = OpClassId::new("models");
 
+/// `POST /api/evaluate` — the `nanojev` dialect's decision call (THE DESIGN section 2: its second
+/// exact claim), metered on the billing unit its answer states (`execution.states`).
+pub const OP_EVALUATE: OpClassId = OpClassId::new("evaluate");
+
 /// Every operation class this plane's units can be, in declaration order.
-pub const OP_CLASSES: &[OpClassId] = &[OP_SYSTEMONE, OP_MODELS];
+pub const OP_CLASSES: &[OpClassId] = &[OP_SYSTEMONE, OP_MODELS, OP_EVALUATE];
 
 /// The path jev's decision call is mounted on.
 pub const PATH_SYSTEMONE: &str = "/v1/systemone";
 
 /// The path jev's model catalogue is mounted on.
 pub const PATH_MODELS: &str = "/v1/models";
+
+/// The path the `nanojev` dialect's decision call is mounted on.
+pub const PATH_EVALUATE: &str = "/api/evaluate";
 
 /// One row of the method table: which `(verb, path)` is which operation, and whether the request
 /// carries a body this plane must wait for.
@@ -54,6 +61,12 @@ pub const METHODS: &[MethodRow] = &[
         verb: "GET",
         path: PATH_MODELS,
         has_request_body: false,
+    },
+    MethodRow {
+        op: OP_EVALUATE,
+        verb: "POST",
+        path: PATH_EVALUATE,
+        has_request_body: true,
     },
 ];
 

@@ -20,10 +20,13 @@ fn the_plane_key_stays_the_durable_string() {
     assert_eq!(<DecisionPlane as PlaneMeta>::KEY, "decision");
 }
 
+/// The decision class keeps its durable string and leads the plane's classes; every class the plane
+/// declares is in the `decision` family (the card's three: `decision`, `input_tokens`,
+/// `output_tokens`, THE DESIGN section 7 owner money rulings).
 #[test]
 fn the_meter_class_stays_the_durable_string() {
     assert_eq!(CLASS_DECISION.as_str(), "decision");
     let classes = <DecisionPlane as PlaneMeta>::METER_CLASSES;
-    assert!(!classes.is_empty());
-    assert!(classes.iter().all(|c| c.key.as_str() == "decision"));
+    assert_eq!(classes.first().map(|c| c.key.as_str()), Some("decision"));
+    assert!(classes.iter().all(|c| c.family == "decision"));
 }

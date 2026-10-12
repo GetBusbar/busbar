@@ -30,14 +30,31 @@ const DECISION_FAMILY: &str = "decision";
 /// `plane.rs::meter` and the `billable_success_only` test.
 pub const CLASS_DECISION: MeterClassId = MeterClassId::new("decision");
 
-/// The meter classes this plane declares.
-const METER_CLASSES: &[MeterClassDecl] = &[MeterClassDecl {
-    key: CLASS_DECISION,
-    family: DECISION_FAMILY,
-    direction: ClassDirection::Response,
-    // The provider's own usage unit is the quantity; nothing here divides it further.
-    default_divisor: 1,
-}];
+/// The input tokens a decision consumed, as its far end reports them (family `decision`; the
+/// owner's decisions card prices it, 0 = free: THE DESIGN section 7, owner money rulings).
+pub const CLASS_INPUT_TOKENS: MeterClassId = MeterClassId::new("input_tokens");
+
+/// The output tokens a decision produced, as its far end reports them (family `decision`).
+pub const CLASS_OUTPUT_TOKENS: MeterClassId = MeterClassId::new("output_tokens");
+
+/// One class of the `decision` family, read off the far end's answer.
+const fn decision_class(key: MeterClassId) -> MeterClassDecl {
+    MeterClassDecl {
+        key,
+        family: DECISION_FAMILY,
+        direction: ClassDirection::Response,
+        // The provider's own usage unit is the quantity; nothing here divides it further.
+        default_divisor: 1,
+    }
+}
+
+/// The meter classes this plane declares: the card's three (DECISIONS Q1-5: `decision`,
+/// `input_tokens`, `output_tokens`, family `decision`, all three required).
+const METER_CLASSES: &[MeterClassDecl] = &[
+    decision_class(CLASS_DECISION),
+    decision_class(CLASS_INPUT_TOKENS),
+    decision_class(CLASS_OUTPUT_TOKENS),
+];
 
 /// The schema of this plane's own configuration block.
 ///

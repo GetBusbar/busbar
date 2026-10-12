@@ -7,15 +7,18 @@ fn key_matches_the_plugin_key() {
 }
 
 #[test]
-fn one_meter_class_declared_for_billable_decisions() {
+fn the_cards_three_classes_are_declared_in_the_decision_family() {
     let classes = <DecisionPlane as PlaneMeta>::METER_CLASSES;
-    assert_eq!(classes.len(), 1);
-    assert_eq!(classes[0].key, CLASS_DECISION);
+    let keys: Vec<_> = classes.iter().map(|c| c.key).collect();
     assert_eq!(
-        classes[0].direction,
-        busbar_contract::ids::ClassDirection::Response
+        keys,
+        [CLASS_DECISION, CLASS_INPUT_TOKENS, CLASS_OUTPUT_TOKENS]
     );
-    assert_eq!(classes[0].default_divisor, 1);
+    for c in classes {
+        assert_eq!(c.family, "decision");
+        assert_eq!(c.direction, busbar_contract::ids::ClassDirection::Response);
+        assert_eq!(c.default_divisor, 1);
+    }
 }
 
 #[test]

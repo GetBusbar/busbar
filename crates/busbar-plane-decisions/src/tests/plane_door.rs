@@ -29,9 +29,22 @@ fn a_member_the_section_does_not_declare_is_refused_in_the_grammars_words() {
     assert!(words.contains("modles"), "{words}");
 }
 
+/// The models of `json`, over a `typesafe` provider speaking jev and a `nano` one speaking nanojev.
+fn models(json: &str) -> Models {
+    let providers = [("typesafe", "jev"), ("nano", "nanojev")]
+        .into_iter()
+        .map(|(p, d)| (p.to_string(), d.to_string()))
+        .collect();
+    models_of(
+        &read_settings(json.as_bytes()).expect("a section"),
+        &providers,
+    )
+    .expect("the models resolve")
+}
+
 #[test]
-fn exactly_one_model_claims_systemone_and_nothing_else_claims_anything() {
-    let one = snapshot_spec(1);
+fn each_dialect_with_a_model_claims_its_path_and_none_claims_nothing() {
+    let one = snapshot_spec(&models(r#"{"models":{"jev":{"provider":"typesafe"}}}"#));
     assert_eq!(
         one.claims,
         vec![ClaimSpec::new(
@@ -44,28 +57,22 @@ fn exactly_one_model_claims_systemone_and_nothing_else_claims_anything() {
     assert!(one.admin_routes.is_empty());
     // Served on the plain data plane to a keyed caller: no audience, no protected-resource document.
     assert!(one.audience.is_none() && one.resource_metadata.is_none());
-    for models in [0, 2, 3] {
-        assert!(snapshot_spec(models).claims.is_empty(), "{models} models");
-    }
-}
-
-#[test]
-fn a_generation_lists_every_configured_model_in_name_order() {
-    let two =
-        read_settings(br#"{"models":{"b":{"provider":"typesafe"},"a":{"provider":"typesafe"}}}"#)
-            .expect("the section reads");
-    let spec = generation_spec(&two);
-    assert_eq!(spec.listed, vec!["a".to_string(), "b".to_string()]);
-    assert_eq!(spec.claims, snapshot_spec(2).claims);
-
-    let one =
-        read_settings(br#"{"models":{"jev":{"provider":"typesafe"}}}"#).expect("the section reads");
-    let spec = generation_spec(&one);
-    assert_eq!(spec.listed, vec!["jev".to_string()]);
-    assert_eq!(spec.claims, snapshot_spec(1).claims);
-
-    let empty = read_settings(b"").expect("an empty blob reads");
-    assert!(generation_spec(&empty).listed.is_empty());
+    assert!(
+        snapshot_spec(&models(r#"{"models":{}}"#)).claims.is_empty(),
+        "no model claims nothing"
+    );
+    let two = models(r#"{"models":{"a":{"provider":"typesafe"},"b":{"provider":"typesafe"}}}"#);
+    assert_eq!(snapshot_spec(&two).claims, one.claims);
+    // A nanojev model mounts `/api/evaluate`, whose refusals before `arrive` wear its dialect.
+    let mixed = snapshot_spec(&models(
+        r#"{"models":{"a":{"provider":"typesafe"},"n":{"provider":"nano"}}}"#,
+    ));
+    let paths: Vec<_> = mixed
+        .claims
+        .iter()
+        .map(|c| (c.target.as_str(), c.refusal_dialect))
+        .collect();
+    assert_eq!(paths, [(ops::PATH_SYSTEMONE, 0), (ops::PATH_EVALUATE, 1)]);
 }
 
 #[test]
@@ -103,4 +110,15 @@ fn the_section_under_its_verb_reads_as_the_section() {
     assert!(words.contains("modles"), "{words}");
     // RED ARM: the verb beside another member is no wrapper; it is an unknown member.
     assert!(read_settings(br#"{"decisions":{},"models":{}}"#).is_err());
+}
+
+/// RED (finding 7, DECISIONS D8): every configured decisions model is listed in its generation's
+/// snapshot, in name order; a generation with none lists none.
+#[test]
+fn every_configured_model_is_listed() {
+    let spec = snapshot_spec(&models(
+        r#"{"models":{"zeta":{"provider":"typesafe"},"alpha":{"provider":"nano"}}}"#,
+    ));
+    assert_eq!(spec.listed, ["alpha", "zeta"]);
+    assert!(snapshot_spec(&models(r#"{"models":{}}"#)).listed.is_empty());
 }

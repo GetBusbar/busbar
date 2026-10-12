@@ -41,19 +41,33 @@ pub const PTR_ID: &str = "/id";
 /// without this plane growing a second top-level member to ignore.
 pub const PTR_USAGE_UNITS: &str = "/usage/units";
 
+/// The pointer a successful `systemone` response reports the input tokens it consumed at
+/// (dialect data, DECISIONS Q1-5: the jev dialect's usage pointers). Absent = `0`.
+pub const PTR_USAGE_INPUT_TOKENS: &str = "/usage/input_tokens";
+
+/// The pointer a successful `systemone` response reports the output tokens it produced at
+/// (dialect data, as [`PTR_USAGE_INPUT_TOKENS`]). Absent = `0`.
+pub const PTR_USAGE_OUTPUT_TOKENS: &str = "/usage/output_tokens";
+
 /// Every pointer this plane resolves in a RESPONSE body (`systemone` or `models`). Declared here
 /// once, so the "never resolves `/state` or `/answers`" claim is checkable by reading one list
 /// rather than auditing every call site.
-pub const RESPONSE_PTRS: &[&str] = &[PTR_ERROR, PTR_REQUEST_ID, PTR_ID, PTR_USAGE_UNITS];
+pub const RESPONSE_PTRS: &[&str] = &[
+    PTR_ERROR,
+    PTR_REQUEST_ID,
+    PTR_ID,
+    PTR_USAGE_UNITS,
+    PTR_USAGE_INPUT_TOKENS,
+    PTR_USAGE_OUTPUT_TOKENS,
+];
 
-/// Every pointer this plane resolves in a REQUEST body.
-///
-/// Empty. A `systemone` request carries the caller's `state` and nothing else this plane has a use
-/// for — there is no safe member to declare a pointer at, so none is declared. This is not an
-/// oversight the way an empty ingress pointer list would be for MCP/A2A (which read a method name
-/// and an id out of every request): jev names its operation in the path, not the body, so the
-/// REQUEST body genuinely carries nothing this plane reads.
-pub const REQUEST_PTRS: &[&str] = &[];
+/// The pointer a request names its model at: top-level metadata, read to route the request and
+/// rewritten only by the `upstream_model` splice (DECISIONS D8b). Never `state`, never `answers`.
+pub const PTR_MODEL: &str = "/model";
+
+/// Every pointer this plane resolves in a REQUEST body: the model it routes by (DECISIONS D8b,
+/// `REQUEST_PTRS += /model`). jev names its operation in the path, so nothing else is read.
+pub const REQUEST_PTRS: &[&str] = &[PTR_MODEL];
 
 /// The span view of a body, built from one of the two declared pointer lists above.
 ///
@@ -87,8 +101,16 @@ pub fn has(body: &[u8], pointer: &str) -> bool {
 /// The raw bytes at one declared pointer of a body.
 #[must_use]
 pub fn read_raw<'u>(body: &'u [u8], pointer: &str) -> Option<&'u [u8]> {
+    body.get(span_of(body, pointer)?)
+}
+
+/// Where the value at one declared pointer of a body lies, its quotes included for a string.
+#[must_use]
+pub fn span_of(body: &[u8], pointer: &str) -> Option<core::ops::Range<usize>> {
     match busbar_contract::spans::resolve_pointer(body, pointer) {
-        busbar_contract::spans::Resolved::Found(span) => body.get(span.start..span.end),
+        busbar_contract::spans::Resolved::Found(span) if span.end <= body.len() => {
+            Some(span.start..span.end)
+        }
         _ => None,
     }
 }
