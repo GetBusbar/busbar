@@ -196,6 +196,13 @@ pub fn cdylib(snake: &str) -> Option<Vec<u8>> {
     std::fs::read(cdylib_path(snake)?).ok()
 }
 
+/// The pinned token-verifying `kind: auth` plugin's built `cdylib` (a git dev-dependency of this
+/// crate, so the build leaves it under `deps/` with a metadata hash): the ONE place the root's auth
+/// proofs name it.
+pub fn token_verifier_cdylib_path() -> Option<PathBuf> {
+    cdylib_path("busbar_auth_oidc_plugin")
+}
+
 /// Every loadable plugin library in the target directory (uplifted, under `deps/`, or an example
 /// `cdylib` under `examples/`), newest first.
 fn libraries() -> Vec<PathBuf> {
@@ -254,7 +261,7 @@ pub fn transport_cdylib() -> Option<(Vec<u8>, &'static str)> {
     transport_cdylib_under(&[])
 }
 
-/// [`transport_cdylib`] PINNED TO THE WIRE A PROOF NEEDS: the floor door whose key is one of
+/// [`transport_cdylib`] PINNED TO THE WIRE A PROOF NEEDS: the floor CARRIER whose key is one of
 /// `keys` (the keys the build's linked layers compose over, read off its linked table); every key
 /// when `keys` is empty.
 ///
@@ -273,7 +280,13 @@ pub fn transport_cdylib_under(keys: &[&str]) -> Option<(Vec<u8>, &'static str)> 
             return None;
         }
         let (plugin, key) = transport_door(&p)?;
-        if !plugin.context::<TransportFacts>()?.composes_over.is_empty() {
+        let facts = plugin.context::<TransportFacts>()?;
+        // The floor wire is a CARRIER whose claim serves a port: the one that can listen under the
+        // data door (a carrier reached by a program serves no port).
+        if !facts.composes_over.is_empty()
+            || facts.role != busbar_contract::abi::transport::ROLE_CARRIER
+            || !facts.ported
+        {
             return None;
         }
         if !keys.is_empty() && !keys.contains(&key) {
@@ -281,6 +294,15 @@ pub fn transport_cdylib_under(keys: &[&str]) -> Option<(Vec<u8>, &'static str)> 
         }
         Some((std::fs::read(&p).ok()?, key))
     })
+}
+
+/// The neutral frame door's library bytes ([`neutral_frame_door`]), for a proof that drops it in.
+pub fn neutral_frame_door_bytes() -> Option<Vec<u8>> {
+    let file = plugin_library_filename("neutral_frame_door");
+    libraries()
+        .into_iter()
+        .find(|p| p.file_name().is_some_and(|n| n == file.as_str()))
+        .and_then(|p| std::fs::read(p).ok())
 }
 
 /// An in-tree export door `cdylib` that loads as a sink carrying exactly the `metrics` stream,

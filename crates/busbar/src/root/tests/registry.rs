@@ -847,15 +847,18 @@ fn dropped_doors() -> &'static [DroppedDoor] {
     DOORS.get_or_init(|| {
         let (plugin, key) = neutral_frame_door()
             .unwrap_or_else(|| missing("neutral_frame_door", BUILD_LOADER_EXAMPLES));
+        let (door, wire) = crate::root::doors::served(
+            plugin,
+            &busbar_contract::transport::TransportSettings::default(),
+            Some(crate::root::connector::address_carrier()),
+        )
+        .expect("the door serves");
         vec![DroppedDoor {
             key,
             claims: vec![key],
             composes_over: Vec::new(),
-            wire: crate::root::doors::host_wire(
-                plugin,
-                &busbar_contract::transport::TransportSettings::default(),
-            )
-            .expect("the door serves"),
+            wire,
+            door,
         }]
     })
 }

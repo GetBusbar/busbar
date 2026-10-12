@@ -172,9 +172,11 @@ fn harness_release_key() -> busbar_plugin_loader::sign::SigningKey {
 /// cdylib that is not built fails the test in every run: `libtest` has no "skipped" outcome, and an
 /// early return would report these end-to-end coverages green without running them.
 fn install_auth_plugin(dir: &Path) {
-    const CDYLIB: &str = "busbar_auth_oidc_plugin";
-    let lib = common::plugins::cdylib(CDYLIB)
-        .unwrap_or_else(|| common::plugins::missing(CDYLIB, common::plugins::BUILD_PINNED));
+    let lib = common::plugins::token_verifier_cdylib_path()
+        .and_then(|p| std::fs::read(p).ok())
+        .unwrap_or_else(|| {
+            common::plugins::missing("busbar_auth_oidc_plugin", common::plugins::BUILD_PINNED)
+        });
     let mut m = common::plugins::manifest(
         "auth",
         "e2e-idp-module",
