@@ -2638,3 +2638,229 @@ async fn a_wake_re_arms_the_sleeping_timer_to_the_earlier_deadline() {
     .await
     .expect("the wake brought the timer in from 2 s to 20 ms");
 }
+
+// ── a credential that cannot be presented ───────────────────────────────────────────────────────
+
+/// What one failing secret leaves behind: the reference, and every string of it a caller must never
+/// be handed (the variable, the path, the module, the reference as written).
+struct Failing {
+    secret: busbar_contract::secret_ref::SecretRef,
+    markers: Vec<String>,
+}
+
+/// THE FAILING SECRETS this cell plants, one per source shape, each with its own markers: an unset
+/// variable, a file that is not there, and a module no secret plugin answers.
+fn failing_secrets() -> Vec<Failing> {
+    use busbar_contract::secret_ref::SecretRef;
+    let pid = std::process::id();
+    let var = format!("BUSBAR_KERNEL_SECRET_MARKER_{pid}");
+    std::env::remove_var(&var);
+    let path = std::env::temp_dir()
+        .join(format!("busbar-kernel-secret-marker-{pid}"))
+        .display()
+        .to_string();
+    let _ = std::fs::remove_file(&path);
+    let module = format!("secret-marker-module-{pid}");
+    let opaque = format!("secret-marker-setting-{pid}");
+    let plugin: SecretRef = serde_json::from_value(
+        serde_json::json!({ "module": module, "settings": { "at": opaque } }),
+    )
+    .expect("a module reference");
+    [
+        (SecretRef::env(&var), vec![var.clone()]),
+        (SecretRef::file(&path), vec![path.clone()]),
+        (plugin, vec![module.clone()]),
+    ]
+    .into_iter()
+    .map(|(secret, mut markers)| {
+        markers.push(secret.describe());
+        Failing { secret, markers }
+    })
+    .collect()
+}
+
+/// The markers `text` carries, without case.
+fn markers_in(text: &str, failing: &Failing) -> Vec<String> {
+    let lower = text.to_ascii_lowercase();
+    failing
+        .markers
+        .iter()
+        .filter(|m| lower.contains(&m.to_ascii_lowercase()))
+        .cloned()
+        .collect()
+}
+
+/// A FAR END WHOSE MEMBERS' CREDENTIALS CANNOT BE PRESENTED, the two ways production's far end meets
+/// a secret that did not resolve: the member's one auth call is refused (its auth plugin holds no
+/// credential), so nothing is sent; and the member's program is never spawned (the connector refuses
+/// the open), so its attempt fails over before any byte reaches the plane. Each member's operator
+/// text, naming the source, is held here, where the plugin and the connector hold theirs: nothing on
+/// the far end's seam can carry it to the kernel.
+struct Unpresentable {
+    /// The refusal the secret source gave the operator.
+    operator_text: String,
+}
+
+/// The member whose auth call is refused.
+const UNBOUND: &str = "unbound";
+/// The member whose program is never spawned.
+const UNSPAWNED: &str = "unspawned";
+
+impl busbar_kernel::plane_driver::FarEnd for Unpresentable {
+    fn member<'a>(
+        &'a self,
+        _: &'a busbar_contract::caps::Pass<busbar_contract::caps::Route>,
+        attempt_no: u32,
+    ) -> impl Future<Output = busbar_kernel::plane_driver::Pick> + Send + 'a {
+        use busbar_kernel::plane_driver::Pick;
+        let pick = match [UNBOUND, UNSPAWNED].get(attempt_no as usize - 1) {
+            Some(m) => Pick::Member {
+                name: (*m).to_string(),
+                pool: "pool-a".to_string(),
+                passthrough: false,
+                provider: "acme".to_string(),
+            },
+            None => Pick::Exhausted {
+                status: 503,
+                retry_after: Some(2),
+            },
+        };
+        async move { pick }
+    }
+
+    async fn send(
+        &self,
+        _: &busbar_contract::caps::Pass<busbar_contract::caps::Route>,
+        request: busbar_kernel::plane_driver::OutboundRequest,
+    ) -> bool {
+        request.member != UNBOUND
+    }
+
+    async fn next(
+        &self,
+        _: &busbar_contract::caps::Pass<busbar_contract::caps::Route>,
+    ) -> Option<busbar_kernel::plane_driver::FarPiece> {
+        Some(busbar_kernel::plane_driver::FarPiece {
+            last: true,
+            fail_over: true,
+            ..busbar_kernel::plane_driver::FarPiece::default()
+        })
+    }
+
+    fn failure(
+        &self,
+        _: &busbar_contract::caps::Pass<busbar_contract::caps::Route>,
+    ) -> Option<&'static str> {
+        Some("credential_unavailable")
+    }
+
+    async fn write(
+        &self,
+        _: &busbar_contract::caps::Pass<busbar_contract::caps::Route>,
+        _: busbar_kernel::plane_driver::OutboundRequest,
+    ) -> bool {
+        false
+    }
+}
+
+/// Run one unit through the one loop over any far end; its outcome.
+async fn drive_over<F: busbar_kernel::plane_driver::FarEnd>(
+    units: &busbar_kernel::plane_driver::PlaneUnits<'_, common::TestUnits, F, cases::Caller>,
+) -> busbar_contract::caps::Outcome {
+    use busbar_kernel::teller::{run_unit_async, AccrualMeter, Ended, Kernel, Run};
+    let kernel = Kernel::new();
+    let (gauge, canary, leases, meter) = (
+        busbar_kernel::slice::ConcurrencyGauge::new(),
+        busbar_contract::caps::Canary::new(),
+        busbar_kernel::slice::LeaseCell::new(),
+        AccrualMeter::new(),
+    );
+    let cell = common::cell(&kernel);
+    let run = Run {
+        cell: &cell,
+        parent: None,
+        leases: &leases,
+        gauge: &gauge,
+        canary: &canary,
+        meter: &meter,
+    };
+    match run_unit_async(&kernel, units, &common::ctx(7), run, units).await {
+        Ended::Settled { end, .. } => end.outcome(),
+        Ended::AlreadySettled => panic!("nothing else holds this unit's cell"),
+    }
+}
+
+/// A SECRET THAT DOES NOT RESOLVE REACHES THE CALLER AS A FIXED-CLASS REFUSAL NAMING NO SOURCE
+/// (status row 127; the cell the retired tool-plane crate's `SetupRefusal::client_message` redaction
+/// was until #511). For each failing source (an unset variable, a missing file, a module nothing
+/// answers) the kernel's own resolver refuses with the operator's text, which names the source (the
+/// control: the markers are there to be found). A unit whose every member's credential cannot be
+/// presented (the auth call refused; the program never spawned) ends at the walk's terminal: the
+/// plane's `refusal` is handed the one reason (`breaker_open`, class `Unreachable`) and that
+/// reason's own word, and the caller's render is byte-identical whichever source failed and carries
+/// none of its markers. RED: a kernel that handed the plane any operator text would fail the
+/// double's own rule (a kernel refusal's text is its reason's word, else FAULT and an empty body),
+/// the byte-identity across sources, and the marker scan.
+#[tokio::test]
+async fn a_credential_that_cannot_be_presented_reaches_the_caller_as_a_fixed_class_refusal() {
+    use busbar_contract::abi::plane::{class_of, RefusalClass};
+    use busbar_contract::caps::{Outcome as UnitOutcome, ReasonCode, StepName};
+    assert_eq!(class_of(ReasonCode::BreakerOpen), RefusalClass::Unreachable);
+    let mut renders = Vec::new();
+    for failing in failing_secrets() {
+        let operator_text = busbar_kernel::config::secret::resolve_linked_string(&failing.secret)
+            .expect_err("the reference does not resolve");
+        assert!(
+            !markers_in(&operator_text, &failing).is_empty(),
+            "the control: the operator's text names the source: {operator_text}"
+        );
+        let r = rig(Way::Double, BufferCaps::default(), cases::Book::default());
+        let (steps, far, caller) = (
+            common::TestUnits::passing(),
+            Unpresentable { operator_text },
+            cases::Caller::default(),
+        );
+        assert!(!markers_in(&far.operator_text, &failing).is_empty());
+        let units = r
+            .driver
+            .unit(&steps, &far, &caller, cases::arrival("/call", b"p"), 0);
+        let outcome = drive_over(&units).await;
+        assert!(
+            matches!(
+                outcome,
+                UnitOutcome::Refused(StepName::Route, ReasonCode::BreakerOpen)
+                    | UnitOutcome::Failed(StepName::Route, ReasonCode::BreakerOpen)
+            ),
+            "{}: {outcome:?}",
+            failing.secret.describe()
+        );
+        let rendered = units.take_rendered().expect("the terminal is rendered");
+        let render = format!(
+            "{} {:?} {}",
+            rendered.status,
+            rendered.fields,
+            String::from_utf8_lossy(&rendered.body)
+        );
+        assert_eq!(
+            rendered.body, b"refused:503:breaker_open:retry=2",
+            "the plane is handed the fixed reason and its own word: {render}"
+        );
+        let found = markers_in(&render, &failing);
+        assert!(
+            found.is_empty(),
+            "the caller was handed {found:?}: {render}"
+        );
+        assert_eq!(
+            caller.text(),
+            "",
+            "nothing reached the caller but the refusal"
+        );
+        renders.push((rendered.status, rendered.fields, rendered.body));
+    }
+    renders.dedup();
+    assert_eq!(
+        renders.len(),
+        1,
+        "one fixed class: the caller cannot tell which source failed"
+    );
+}

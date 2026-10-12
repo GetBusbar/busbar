@@ -11,11 +11,14 @@
 //! { "settings": <the settings it opens over>,
 //!   "transport": { "carrier": {
 //!     "listen":   true | false,                          // does it listen (an `ip:port` bind)?
-//!     "dial":     "authority" | { "program": "<absolute path>", "args": [..], "env": [["K", "V"]] },
+//!     "dial":     "authority" | { "program": "<absolute path>", "args": [..], <env> },
 //!     "exchange": [{ "write": "<a frame>", "read": "<the frame the far end answers>" },
 //!                  { "write": "<a frame it refuses to carry>", "refused": true }],
 //!     "pending":  { "write": "<a frame>", "read": "<its answer>" } } } }
 //! ```
+//!
+//! `<env>` is the program's optional environment: the key `env`, its value `[name, value]` string
+//! pairs.
 //!
 //! A dialled AUTHORITY's far end is an echo server the script runs; a PROGRAM is the far end
 //! itself. What the script proves, both legs, the folds equal step for step:
@@ -180,14 +183,15 @@ impl Dest {
             .as_array()
             .map(|a| a.iter().map(|x| text(x, "dial.args")).collect())
             .unwrap_or_default();
-        let env = v["env"]
-            .as_array()
-            .map(|e| {
-                e.iter()
-                    .map(|kv| (text(&kv[0], "dial.env"), text(&kv[1], "dial.env")))
-                    .collect()
-            })
-            .unwrap_or_default();
+        /// The program's environment, read by field name: `[name, value]` pairs, absent for none.
+        #[derive(serde::Deserialize)]
+        struct Environment {
+            #[serde(default)]
+            env: Vec<(String, String)>,
+        }
+        let env = serde_json::from_value::<Environment>(v.clone())
+            .unwrap_or_else(|e| panic!("conformance.json: transport.carrier.dial.env: {e}"))
+            .env;
         let mut d = Box::new(Self {
             authority: String::new(),
             program,

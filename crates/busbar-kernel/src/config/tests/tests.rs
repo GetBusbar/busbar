@@ -3449,9 +3449,10 @@ fn export_named_map_allows_two_instances_of_one_module() {
 
     // A second instance of a module whose row states the `one_instance` mark is that module's own
     // refusal, asked of its limits check while the configuration is resolved and rendered verbatim:
-    // the scrape sink linked into this binary words it as 1.5.5 did. The extra instance is not
-    // resolved. (The trace sink's line is pinned against the 1.5.5 golden by the shipped binary,
-    // `crates/busbar/tests/validate_matches_the_1_5_5_golden.rs`.)
+    // here the stand-in axis's scrape double, in its own words. The extra instance is not resolved.
+    // (The linked scrape sink words it as 1.5.5 did, pinned by the shipped binary in
+    // `crates/busbar/tests/export_settings_refusal_1_5_5.rs`; the trace sink's line against the 1.5.5
+    // golden in `crates/busbar/tests/validate_matches_the_1_5_5_golden.rs`.)
     let defs: crate::config::ExportDefs = serde_yaml::from_str(
         "one: { module: prometheus, settings: { buffer_seconds: 60 } }\n\
          two: { module: prometheus, settings: { buffer_seconds: 60 } }\n",
@@ -3461,12 +3462,8 @@ fn export_named_map_allows_two_instances_of_one_module() {
     let export = crate::config::resolve_export(&defs, &mut errors);
     assert_eq!(
         errors,
-        vec![
-            "export.two: a second `module: prometheus` instance (already defined as 'one'). \
-             Prometheus serves the ONE well-known /metrics route, so a second instance could only \
-             be silently ignored — keep a single instance."
-                .to_string()
-        ]
+        vec!["export.two: the scrape double takes one instance, and 'one' is it".to_string()],
+        "the module's own words, verbatim"
     );
     assert_eq!(
         export.plugins.len(),
