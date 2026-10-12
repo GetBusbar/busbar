@@ -148,6 +148,10 @@ legacy:
   export_trace_module: "otlp"
   # v1.5.5:crates/busbar/src/config/migrate_export.rs:31 (`EXPORT_TYPE_KEY_TO_INSTANCE_NAME`: type key, instance name, module)
   export_type_keys: "prometheus:metrics:prometheus | request-log-webhook:req-log:request-log-webhook | request-log-file:req-log-file:request-log-file | generic-webhook:req-log-audit:request-log-webhook"
+  # The operator credential's provider, as configuration spells it (the `auth.admin_auth:` default, the
+  # one `module:` whose definition may carry `token:`, and a reserved hook name).
+  # v1.5.5:crates/busbar/src/config/mod.rs:795 (ADMIN_TOKENS_MODULE); :1874,1891 (the hook-name reservation)
+  operator_auth_module: admin-tokens
   # THE 1.5.5 MANIFEST NAMES (`name_1_5_5.<repo>`): the signed manifest `name` each plugin repo's
   # release beside busbar v1.5.5 carried, read off that release's published tarball (manifest.json
   # `name`; every asset is digest-pinned in testing/shadow-oracle/plugin-digests.tsv). An entry whose

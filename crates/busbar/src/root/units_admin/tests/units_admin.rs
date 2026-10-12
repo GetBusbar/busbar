@@ -1132,7 +1132,10 @@ fn the_admin_listener_is_exempt_from_the_cap_the_data_listener_is_refused_at() {
     let record = arrival(&binding, &busbar_kernel::test_support::tokens::pass(), &ctx)
         .into_result(&seal)
         .expect("an admin unit is never refused at the gate");
-    assert_eq!(record.transport_chain, vec![ADMIN_TRANSPORT]);
+    assert!(
+        record.transport_chain.is_empty(),
+        "the root names no transport: the admin arrival carries no chain the connector did not state"
+    );
 }
 
 /// Where an admin unit may go, and what that costs it.

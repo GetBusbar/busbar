@@ -561,3 +561,64 @@ fn an_upgrade_line_is_a_claim_whose_unit_zero_opens_at_the_upgrade() {
         "RED: a claim that does not open at the upgrade is no upgrade line"
     );
 }
+
+/// THE LINE CARRIERS ARE READ OFF THE CLAIM ROWS, as the upgrade lines are (Law 1: the root names no
+/// transport): a claim whose row states `unit0_trigger = UNIT0_FIRST_LINE` is a line carrier, and a
+/// claim that states anything else is not. RED: the same scheme with the trigger at the upgrade
+/// yields an EMPTY line set, so the root serves no line on it.
+#[test]
+fn a_line_carrier_is_a_claim_whose_unit_zero_opens_at_the_first_line() {
+    use busbar_contract::abi::mechanism::door::{KindTailHead, Statement};
+    use busbar_contract::abi::sdk::door::{abi_str, statement};
+    use busbar_contract::abi::transport::{
+        Claim, TransportTail, ROLE_FRAMER, UNIT0_FIRST_LINE, UNIT0_UPGRADE,
+    };
+
+    use crate::dispatch::kinds::transport::TransportFacts;
+
+    let lines_of = |trigger: u8| -> Vec<&'static str> {
+        let claims: [Claim; 1] = [Claim {
+            selector_forms: abi_str(""),
+            egress_selector_forms: abi_str(""),
+            facts: std::ptr::null(),
+            facts_len: 0,
+            status_namespace: abi_str(""),
+            session: 1,
+            session_bound: 0,
+            unit0_trigger: trigger,
+            status_at: 0,
+            _reserved: 0,
+        }];
+        let mut tail: TransportTail = z();
+        tail.head = KindTailHead {
+            size: size_of::<TransportTail>() as u32,
+            _reserved: 0,
+        };
+        tail.role = ROLE_FRAMER;
+        tail.claim_rows = claims.as_ptr();
+        tail.claim_rows_len = 1;
+        let names = [abi_str("up")];
+        let st = Statement {
+            kind_tail: std::ptr::from_ref(&tail).cast::<KindTailHead>(),
+            claims: names.as_ptr(),
+            claims_len: names.len(),
+            ..statement("t", "0", 1)
+        };
+        let ctx = Transport::context(&st)
+            .expect("a framer tail binds")
+            .expect("a context");
+        ctx.downcast_ref::<TransportFacts>()
+            .expect("the transport facts")
+            .lines
+            .clone()
+    };
+    assert_eq!(
+        lines_of(UNIT0_FIRST_LINE),
+        ["up"],
+        "the first-line claim is a line carrier"
+    );
+    assert!(
+        lines_of(UNIT0_UPGRADE).is_empty() && lines_of(0).is_empty(),
+        "RED: a claim that does not open at its first line is no line carrier"
+    );
+}

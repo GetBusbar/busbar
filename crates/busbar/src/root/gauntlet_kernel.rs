@@ -37,11 +37,6 @@ use busbar_kernel::plane_host::{
 use busbar_kernel::slice::GroupLeaseSlip;
 use busbar_kernel::teller::{AccrualMeter, Evidence, RouteAwait, RouteLeg, UnitCtx, Units};
 
-/// The transport stack every gauntlet request arrives over — one HTTP layer, named rather than
-/// empty (mirrors the LLM plane's arrival record). The value only reaches the audit/record surface,
-/// which this rider posts nothing onto.
-const TRANSPORT_CHAIN: [&str; 1] = ["http"];
-
 /// The neutral per-request counter for the rider's `ctx.key`. Each call takes the next value;
 /// nothing outside this file reads it, so a process-global monotonic is enough.
 static NEXT_KEY: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
@@ -113,7 +108,10 @@ impl Units for GauntletKernelUnit<'_> {
                 alpn: None,
                 sni: None,
                 peer_cert: None,
-                transport_chain: TRANSPORT_CHAIN.to_vec(),
+                // The root names no transport (Law 1): the stack is the connector's to state, and
+                // this rider is handed none, as a door plane's unit is not (`door_steps.rs`). The
+                // value reaches only the audit/record surface, which this rider posts nothing onto.
+                transport_chain: Vec::new(),
             },
         )
     }

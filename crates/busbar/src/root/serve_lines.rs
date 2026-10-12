@@ -31,9 +31,6 @@ use tokio::sync::{mpsc, Mutex as AsyncMutex};
 
 use super::{DoorRequest, Served};
 
-/// The stdio transport's claim key: the claims made over it are the line carrier's.
-pub const LINE_CARRIER: &str = "stdio";
-
 /// The environment variable carrying the session credential for the plane keyed `plane` (its
 /// instance's key, never a literal here): argv is world-readable, and the launching client's `env`
 /// block has exactly this shape.
@@ -42,7 +39,8 @@ pub fn env_credential(plane: &str) -> String {
     format!("BUSBAR_{}_STDIO_CREDENTIAL", plane.to_ascii_uppercase())
 }
 
-/// The `(plane, claim)` a served plane claims over the line carrier, the first in binding order.
+/// The `(plane, claim)` a served plane claims over a line carrier ([`Served::lines`], the claims
+/// whose transport states unit 0 opens at the first line), the first in binding order.
 #[must_use]
 pub fn line_claim(served: &Served) -> Option<(usize, u32)> {
     served.planes.iter().enumerate().find_map(|(p, plane)| {
@@ -50,7 +48,7 @@ pub fn line_claim(served: &Served) -> Option<(usize, u32)> {
             .snapshot
             .claims
             .iter()
-            .position(|c| c.carrier == LINE_CARRIER)
+            .position(|c| served.on_line(&c.carrier))
             .and_then(|i| u32::try_from(i).ok())
             .map(|claim| (p, claim))
     })

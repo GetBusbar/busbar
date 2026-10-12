@@ -135,7 +135,13 @@ fn member_secrets_installed() {
 /// `program_member::script` serves, its environment's `TOKEN` the reference `secret`.
 fn program_section(secret: &SecretRef) -> serde_yaml::Value {
     let mut fs = serde_yaml::Mapping::new();
-    fs.insert("transport".into(), super::lines::LINE_CARRIER.into());
+    // The member's transport, as an operator's `tools:` section writes it: the claim a linked
+    // transport states its unit 0 opens at the first line.
+    let line = super::line_carriers(crate::LINKED.transports)
+        .first()
+        .copied()
+        .expect("the build links a line carrier");
+    fs.insert("transport".into(), line.into());
     fs.insert("command".into(), "/bin/sh".into());
     fs.insert(
         "args".into(),

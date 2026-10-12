@@ -498,6 +498,20 @@ pub fn claims_of(door: DoorFn) -> Vec<&'static str> {
         .unwrap_or_else(|e| panic!("a linked transport door is refused: {e}"))
 }
 
+/// The claims a linked row's door opens at the FIRST LINE (their row's `unit0_trigger`), read off
+/// the door's Statement: the root's line carriers, served on the process's own stdin/stdout
+/// (`crate::root::serve::lines`), never a transport named in root source (Law 1).
+///
+/// # Panics
+///
+/// The build's own door is refused, as [`build`] panics for it.
+#[must_use]
+pub fn lines_of(door: DoorFn) -> Vec<&'static str> {
+    super::loader::dispatch::kinds::transport::linked_facts(door)
+        .map(|facts| facts.lines)
+        .unwrap_or_else(|e| panic!("a linked transport door is refused: {e}"))
+}
+
 /// The claims a linked row's door opens at an UPGRADE (their row's `unit0_trigger`), read off the
 /// door's Statement: the data door's upgrade lines (ARCHITECT ruling Q128 U7).
 ///

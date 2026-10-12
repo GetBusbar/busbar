@@ -14,13 +14,17 @@ pub fn install() {
     busbar_kernel::config::legacy::install(LEGACY_ROWS);
 }
 
+/// The value of the table's row `key`, where it has one.
+#[must_use]
+pub fn row(key: &str) -> Option<&'static str> {
+    LEGACY_ROWS.iter().find(|(k, _)| *k == key).map(|(_, v)| *v)
+}
+
 /// The `module:` words of 1.5.5's built-in exporters, in the order 1.5.5 listed them (the table's
 /// `export_modules` row): the order the root registers its linked export rows in.
 pub fn export_order() -> Vec<&'static str> {
-    LEGACY_ROWS
-        .iter()
-        .find(|(k, _)| *k == "export_modules")
-        .map(|(_, v)| v.split(" | ").collect())
+    row("export_modules")
+        .map(|v| v.split(" | ").collect())
         .unwrap_or_default()
 }
 

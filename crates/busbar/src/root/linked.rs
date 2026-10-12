@@ -185,6 +185,9 @@ pub struct LinkedTransport {
     /// The claims whose unit 0 opens at an UPGRADE, read off the door's Statement: the data door's
     /// upgrade lines (`crate::root::serve::upgrade_carriers`; ARCHITECT ruling Q128 U7).
     pub upgrades: ClaimsOf,
+    /// The claims whose unit 0 opens at the FIRST LINE, read off the door's Statement: the root's
+    /// line carriers (`crate::root::serve::line_carriers`).
+    pub lines: ClaimsOf,
 }
 
 /// A row's claims, read when the seal runs.

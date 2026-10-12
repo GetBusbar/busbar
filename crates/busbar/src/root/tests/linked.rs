@@ -596,3 +596,72 @@ fn the_linked_scrape_sink_renders_the_recorder_snapshot_byte_identically() {
         "the scrape is the recorder's bytes, back"
     );
 }
+
+/// ROOT SOURCE NAMES NO LINKED TRANSPORT OR AUTH PLUGIN (Law 1, "No plugin-instance name ever
+/// appears in core logic"; BUSBAR-1.6.0.md §1, "The one place a plugin name appears is the
+/// composition root's manifest: its `Cargo.toml` dependency, its feature and its linked row"). The
+/// words are read off the build, never typed here: every scheme a linked transport's door claims,
+/// every linked auth row's name and canonical name, and the operator credential's provider off the
+/// root legacy table. No production file under `src/root` spells one as a string literal; a fact a
+/// row states (the line carrier, the upgrade lines) is read off the row, and the operator's provider
+/// off the legacy table. POSITIVE CONTROL (Law 8): the same scan finds the words in this module's
+/// own test files, so a zero is a zero over a scan that can see them.
+#[test]
+fn root_source_spells_no_linked_transport_or_auth_name() {
+    let mut words: Vec<&'static str> = crate::LINKED
+        .transports
+        .iter()
+        .flat_map(|t| (t.claims)())
+        .collect();
+    words.extend(crate::LINKED.auths.iter().flat_map(|a| [a.0, a.1]));
+    words.push(crate::root::auth_bindings::operator_auth_module());
+    words.sort_unstable();
+    words.dedup();
+    assert!(
+        words.len() >= 3,
+        "the build states its transports and auths: {words:?}"
+    );
+
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/root");
+    let mut stack = vec![root.clone()];
+    let (mut production, mut tests) = (Vec::new(), 0usize);
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir).expect("src/root reads") {
+            let path = entry.expect("an entry").path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+                continue;
+            }
+            let rel = path.strip_prefix(&root).expect("under src/root");
+            let is_test = rel.components().any(|c| c.as_os_str() == "tests")
+                || rel.to_string_lossy().ends_with("_tests.rs");
+            let text = std::fs::read_to_string(&path).expect("a source file reads");
+            for (n, line) in text.lines().enumerate() {
+                if line.trim_start().starts_with("//") {
+                    continue;
+                }
+                for w in &words {
+                    if line.contains(&format!("\"{w}\"")) {
+                        if is_test {
+                            tests += 1;
+                        } else {
+                            production.push(format!("{}:{}: \"{w}\"", rel.display(), n + 1));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    assert!(
+        tests > 0,
+        "positive control: the scan sees the linked words where tests spell them"
+    );
+    assert!(
+        production.is_empty(),
+        "root source spells a linked plugin's name; read it off the row that states it:\n{}",
+        production.join("\n")
+    );
+}

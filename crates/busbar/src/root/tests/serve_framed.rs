@@ -294,7 +294,8 @@ fn the_line_carrier_is_never_handed_to_a_framer_that_claims_its_name() {
             unreachable!("never crossed: only the choice is judged")
         }
     }
-    let line = super::lines::LINE_CARRIER;
+    // A carrier the build states unit 0 opens at its first line (`Served::lines`), by a neutral name.
+    let line = "a-line";
     let door: Arc<dyn FramerDoor> = Arc::new(Claims(DoorFacts {
         name: "claims-the-line".into(),
         claims: vec![line, "framed"],
@@ -311,11 +312,11 @@ fn the_line_carrier_is_never_handed_to_a_framer_that_claims_its_name() {
         "the hazard exists: a framer claims the line carrier's name"
     );
     assert!(
-        super::framed_by(line, any).is_none(),
+        super::framed_by(line, &[line], any).is_none(),
         "a line is served as it arrived, never framed"
     );
     assert!(
-        super::framed_by("framed", any).is_some(),
+        super::framed_by("framed", &[line], any).is_some(),
         "another carrier such a framer answers is still framed by it"
     );
 }

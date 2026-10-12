@@ -63,10 +63,6 @@ use busbar_kernel_ledger::{
     cost::{Money, MoneyError},
 };
 
-/// The transport an admin claim is declared over, and therefore the one a sealed destination for an
-/// admin verb carries.
-const ADMIN_TRANSPORT: &str = "http";
-
 /// One admin request, exactly as it arrived.
 ///
 /// Owned rather than borrowed because it outlives the call that built it: the kernel's step seam
@@ -3085,7 +3081,11 @@ pub(crate) fn arrival(
             alpn: None,
             sni: None,
             peer_cert: None,
-            transport_chain: vec![ADMIN_TRANSPORT],
+            // The root names no transport (Law 1; BUSBAR-1.6.0.md §1 "It names no plugin"): the
+            // accepting listener's stack is the connector's to state, and the admin surface is
+            // handed no arrival record by it, exactly as a door plane's unit is not
+            // (`door_steps.rs`). An empty chain says that, where a literal would guess it.
+            transport_chain: Vec::new(),
         },
     )
     .tap_admin(ctx)

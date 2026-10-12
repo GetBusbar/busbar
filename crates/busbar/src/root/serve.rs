@@ -725,6 +725,18 @@ pub struct Served {
     /// THE FLUSH EPOCH every served plane's money steps pace their checkpoints by: bumped once per
     /// checkpoint flush tick ([`Served::spawn_ticks`]).
     pub epoch: busbar_kernel::plane_driver::FlushEpoch,
+    /// THE LINE CARRIERS: every linked claim whose unit 0 opens at the first line ([`line_carriers`]).
+    /// A served claim over one is served on the process's own stdin/stdout ([`lines`]), never on the
+    /// data listener.
+    pub lines: Vec<&'static str>,
+}
+
+impl Served {
+    /// The served claim is over a line carrier ([`Served::lines`]).
+    #[must_use]
+    pub fn on_line(&self, carrier: &str) -> bool {
+        self.lines.iter().any(|l| *l == carrier)
+    }
 }
 
 /// The framer that answers a claim, by its name (`Connector::framer_for`).
@@ -1250,7 +1262,10 @@ pub(crate) fn compose_planes_over(
     egress: Option<&DoorEgress<'_>>,
     hooks: Option<&HookStage>,
 ) -> Result<Served, String> {
-    let mut served = Served::default();
+    let mut served = Served {
+        lines: line_carriers(linked.transports),
+        ..Served::default()
+    };
     if doors.is_empty() {
         return Ok(served);
     }
@@ -1773,6 +1788,15 @@ pub fn upgrade_carriers(transports: &[crate::root::linked::LinkedTransport]) -> 
     transports.iter().flat_map(|t| (t.upgrades)()).collect()
 }
 
+/// THE LINE CARRIERS: every linked claim whose unit 0 opens at the first line, read off the door
+/// Statements (the claim row's `unit0_trigger`), as the upgrade carriers are. Root source names no
+/// transport (Law 1; BUSBAR-1.6.0.md §1 "It names no plugin"): which carrier is the process's own
+/// stdin/stdout is a fact its transport states.
+#[must_use]
+pub fn line_carriers(transports: &[crate::root::linked::LinkedTransport]) -> Vec<&'static str> {
+    transports.iter().flat_map(|t| (t.lines)()).collect()
+}
+
 /// How many messages a session route's pipe queues each way before the sender waits.
 const SESSION_QUEUE: usize = 64;
 
@@ -1915,7 +1939,7 @@ pub fn door_mounts(
         for (i, claim) in plane.snapshot.claims.iter().enumerate() {
             // A claim over the line carrier is served on the process's own stdin/stdout
             // ([`lines`]), never on the data listener.
-            if claim.carrier == lines::LINE_CARRIER {
+            if served.on_line(&claim.carrier) {
                 continue;
             }
             let rung =
@@ -2182,7 +2206,7 @@ pub(crate) fn line_routes(
     let mut of_line = std::collections::HashMap::new();
     for (p, plane) in served.planes.iter().enumerate() {
         for (i, claim) in plane.snapshot.claims.iter().enumerate() {
-            if claim.carrier == lines::LINE_CARRIER {
+            if served.on_line(&claim.carrier) {
                 continue;
             }
             let rung =
@@ -2547,8 +2571,8 @@ impl DataRoutes {
             .claims
             .get(claim as usize)
             .map(|c| c.carrier.clone());
-        if let Some((door, carrier)) =
-            carrier.and_then(|c| framed_by(&c, |s| self.framer_for(s)).map(|d| (d, c)))
+        if let Some((door, carrier)) = carrier
+            .and_then(|c| framed_by(&c, &self.served.lines, |s| self.framer_for(s)).map(|d| (d, c)))
         {
             let head: Vec<(String, Vec<u8>)> = arrival
                 .fields
@@ -3369,14 +3393,15 @@ impl http_body::Body for ReplyBody {
 
 /// THE FRAMER THAT FRAMES A CLAIM'S STREAM, when another framer than the data listener's own
 /// answers its carrier (ARCHITECT 4l). The root's own line carrier (a process's stdin/stdout,
-/// [`lines`]) frames its lines itself: each arrives already one unit, so it is never handed to a
-/// framer, even one that claims its carrier's name (the stdio transport's). Handing it over stalled
-/// every line served on the carrier.
+/// [`lines`], one of `line_carriers`) frames its lines itself: each arrives already one unit, so it
+/// is never handed to a framer, even one that claims its carrier's name (its own transport's).
+/// Handing it over stalled every line served on the carrier.
 fn framed_by(
     carrier: &str,
+    line_carriers: &[&str],
     framer_for: impl Fn(&str) -> Option<Arc<dyn busbar_core_connector::framer::FramerDoor>>,
 ) -> Option<Arc<dyn busbar_core_connector::framer::FramerDoor>> {
-    if carrier == lines::LINE_CARRIER {
+    if line_carriers.contains(&carrier) {
         return None;
     }
     serve_framed::stream_framer(carrier, framer_for)

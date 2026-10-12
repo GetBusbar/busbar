@@ -697,6 +697,7 @@ required-features = ["auth-admin-tokens"]
 "name_1_5_5.busbar-store-postgres" = "busbar-store-postgres-plugin"
 "name_1_5_5.busbar-store-sqlite" = "busbar-store-sqlite-plugin"
 "name_1_5_5.busbar-store-valkey" = "busbar-store-valkey-plugin"
+"operator_auth_module" = "admin-tokens"
 "renamed_display" = "Valkey"
 "retired_url_scheme" = "redis"
 "former.mysql" = "busbar-store-mysql-plugin"
