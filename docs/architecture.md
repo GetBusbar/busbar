@@ -7,30 +7,55 @@ pipeline**.
 
 ## A thin core that hosts plugins
 
-Core is a thin engine. It knows nothing about any specific protocol: everything that
-knows about a protocol is a **plugin**, and core knows only what *kind* each plugin is
-and talks to it only over that kind's ABI.
+Core is a thin engine, and the 1.6.0 design (`docs/design/BUSBAR-1.6.0.md`, Part 0 and
+THE DESIGN section 1) pins what it owns: the token stamp, the per-office mint ceiling and
+auth verify on the hot path, plus the valves (admission, the egress allow-list and pin, the
+breaker, the budget), the meters, and one clock. Core is a byte pump. It names zero plane
+types, holds no list of plugin instances, and finds plugins only by enumerating the linked
+rows and the `plugins/` directory. It asks each plugin what it claims and refuses to boot
+when two plugins claim the same thing.
 
-There are seven plugin kinds: **store, secret, auth, hook, export, plane and
-transport**. A *plane* is how to speak a family of protocols; a *transport* is how
-to move the bytes. A *dialect* (OpenAI's wire format against Anthropic's, say)
-lives inside a plane, and adding one changes that plane's crate, not core. See
-[Plugins](plugins.md) for the kinds, the artifact and the trust model.
+Everything that knows about a protocol is a **plugin**, and core knows only what *kind* each
+plugin is. There are seven plugin kinds: **store, secret, auth, hook, export, plane and
+transport**.
+
+- A *plane* is how to speak a family of protocols. Core asks each plane for its config verb
+  and hands it the matching config section.
+- A *transport* is how to move the bytes, and it works in both directions: a plane asks core
+  for a scheme, and the transport that claims it serves the inbound side and the outbound
+  side alike.
+- *auth* is one kind. Verifying an inbound credential and signing an outbound one are two
+  operations of that one kind, not two kinds.
+- A *dialect* (OpenAI's wire format against Anthropic's, say) lives inside a plane. It is
+  not a plugin and not a kind, and adding one changes that plane's crate, not core.
+
+Two rules govern every plugin. It is compiled into the binary or dropped into the
+`plugins/` directory, through the same contract and the same loading path. And it speaks to
+core only over the memory ABI, a `repr(C)` table of function pointers; every ABI shape lives
+under `crates/busbar-contract/src/abi/`, and one loader (`crates/plugin-loader`) serves all
+seven kinds.
+
+The operator surface (`crates/busbar-core-admin`) and the authorization server and hosted
+login flow (`crates/busbar-core-oauth2`) are not plugins. They are always-compiled-in crates
+that sit off the hot path. See [Plugins](plugins.md) for the kinds, the artifact and the
+trust model.
 
 ## The planes
 
-Busbar carries five kinds of traffic, and the point of the architecture is that
-they are five *ingresses onto one core* rather than five products sharing a
-process. Each plane is a plugin of kind `plane`, compiled into the binary or
-dropped into the plugins directory on the same contract, and each talks to core
-only over the ABI.
+Busbar carries five planes of traffic, and the point of the architecture is that they are
+five *ingresses onto one core* rather than five products sharing a process. By crate, they
+are `busbar-plane-llm`, `busbar-plane-mcp`, `busbar-plane-a2a`, `busbar-plane-streaming`
+and `busbar-plane-decisions` (`crates/busbar-plane-llm`, `crates/busbar-plane-mcp`,
+`crates/busbar-plane-a2a`, `crates/busbar-plane-streaming`,
+`crates/busbar-plane-decisions`). Each is a plugin of kind `plane`, compiled in or dropped
+into the plugins directory on the same contract, and each talks to core only over the ABI.
 
 | plane | inbound: Busbar is the server | outbound: Busbar is the client |
 |---|---|---|
 | **LLM** | six wire protocols on `/v1/*` and friends | every provider or pool you configure |
 | **MCP** | `/mcp`, an MCP server your agents log in to | the MCP tool servers you register |
 | **A2A** | `/a2a/agents/{id}`, the agents you front | the backend agent a task is relayed to |
-| **Streaming** | live, full-duplex voice sessions under `/v1/realtime`, declared by `streams:` | the realtime provider a session is brokered or proxied to |
+| **Streaming** | live, full-duplex sessions under `/v1/realtime`, declared by `streams:` | the realtime provider a session is brokered or proxied to |
 | **Decisions** | the decision endpoints a `decisions:` block declares | the decision service it is configured against |
 
 Each plane has its own operator reference: this page for the LLM plane's request path,
