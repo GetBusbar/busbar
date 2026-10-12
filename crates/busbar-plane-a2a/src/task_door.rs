@@ -485,6 +485,7 @@ pub fn on_piece(
             fields: &[],
             length: true,
             message: false,
+            close: None,
         };
         return Some(window_core(
             plane,
@@ -1043,6 +1044,7 @@ fn window_with(
     head: &[(&str, &str)],
 ) -> Outcome {
     let first = (status != 0).then_some(Head {
+        close: None,
         fields: head,
         length: true,
         message: false,
@@ -1061,23 +1063,23 @@ fn framed_window(
     reply: &crate::framed::Reply,
     writes: &[Write],
 ) -> Outcome {
-    let details: Vec<(&str, &str)> = reply
-        .details
-        .as_deref()
-        .map(|d| (crate::framed::DETAILS_FIELD, d))
-        .into_iter()
-        .collect();
+    // THE gRPC LINE'S ANSWER (SEAM-4l): the head is the listener's `200`; an `OK` reply is its one
+    // message, and any other status is no message but the call's final status (its message and
+    // details), which the stream's framer renders on its close.
+    let ok = reply.code == crate::framed::Code::Ok as u32;
+    let body: &[u8] = if ok { &reply.body } else { &[] };
     window_core(
         plane,
         unit,
         input,
         out,
-        (reply.code, &reply.body),
+        (crate::relay::STATUS_OK, body),
         writes,
         Some(Head {
-            fields: &details,
+            fields: &[],
             length: false,
-            message: reply.code == crate::framed::Code::Ok as u32,
+            message: ok,
+            close: (!ok).then_some(reply),
         }),
     )
 }
@@ -1088,6 +1090,8 @@ struct Head<'h> {
     fields: &'h [(&'h str, &'h str)],
     length: bool,
     message: bool,
+    /// The gRPC line's final status the answer closes with (no message went out).
+    close: Option<&'h crate::framed::Reply>,
 }
 
 /// One window: on the first (`first`), its head; then as many bytes as the reply buffer holds.
@@ -1155,6 +1159,14 @@ fn window_core(
     let lane = audit
         .as_ref()
         .map(|(resource, _)| arena.span(resource.as_bytes()));
+    // THE CALL'S FINAL STATUS (the gRPC line), its message and details in the arena.
+    let close = first.as_ref().and_then(|h| h.close).map(|r| {
+        (
+            r.code,
+            arena.span(&r.body),
+            arena.span(r.details.as_deref().unwrap_or_default().as_bytes()),
+        )
+    });
     let short = !(fields.fits() && records.fits() && arena.fits() && units.fits());
     let (fw, fnd) = fields.settle(short);
     let (rw, rnd) = records.settle(short);
@@ -1197,6 +1209,12 @@ fn window_core(
         let mut flags = EMIT_DONE;
         if message {
             flags |= busbar_contract::abi::plane::EMIT_MESSAGE_END;
+        }
+        if let Some((code, message, details)) = close {
+            flags |= busbar_contract::abi::plane::EMIT_FINAL_STATUS;
+            out.set(|o| &o.final_status, code);
+            out.set(|o| &o.final_message, message);
+            out.set(|o| &o.final_details, details);
         }
         out.set(|o| &o.flags, flags);
     } else {

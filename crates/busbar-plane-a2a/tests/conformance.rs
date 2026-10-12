@@ -773,8 +773,10 @@ mod both_ways {
         );
         // THE gRPC LINE: a call arrives on the framed dialect; a method the service does not have
         // is UNIMPLEMENTED with no message, a message that does not read INTERNAL, a kernel
-        // refusal the status the engine's bridge read off its envelope (`-32004`, UNIMPLEMENTED),
-        // each with no media type.
+        // refusal the status the engine's bridge read off its envelope (`-32004`, UNIMPLEMENTED)
+        // with its words. Each is the call's closing block (`grpc-status`, then the percent-encoded
+        // `grpc-message` where there is one) at the refusal's neutral status, with no media type:
+        // the stream's framer sends the block as the whole answer (SEAM-4l).
         let sent = line(&t, "arrive 8 ");
         assert!(
             sent.contains(&format!("{:?}", Outcome::Ready))
@@ -790,20 +792,27 @@ mod both_ways {
             .collect();
         assert_eq!(framed.len(), 3, "{framed:#?}");
         assert!(
-            framed[0].contains(" status=12 ") && framed[0].ends_with("[] "),
+            framed[0].contains("[] grpc-status: 12\r\n") && !framed[0].contains("grpc-message"),
             "{}",
             framed[0]
         );
         assert!(
-            framed[1].contains(" status=13 ") && framed[1].contains("[] "),
+            framed[1].contains("[] grpc-status: 13\r\n"),
             "{}",
             framed[1]
         );
         assert!(
-            framed[2].contains(" status=12 ") && framed[2].ends_with("this key is over its budget"),
+            framed[2].contains("[] grpc-status: 12\r\n")
+                && framed[2].contains("grpc-message: this%20key%20is%20over%20its%20budget\r\n"),
             "{}",
             framed[2]
         );
+        for l in &framed {
+            assert!(
+                !l.contains(" status=12 ") && !l.contains(" status=13 "),
+                "the status beside the block is the refusal's neutral one: {l}"
+            );
+        }
     }
 
     /// `project` on the gRPC line: the view of the JSON-RPC request the call's message composed.

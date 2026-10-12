@@ -395,7 +395,7 @@ fn the_framed_line_answers_messages_and_statuses() {
         json!({ "id": "t-1", "contextId": "c-1", "status": { "state": "TASK_STATE_COMPLETED" } });
     let ok = json!({ "jsonrpc": "2.0", "id": 1, "result": task });
     let ob = Outbox::framed(reply(200, &ok), Rpc::GetTask).expect("an outbox");
-    assert!(matches!(ob.head, Some(Head::Framed(0, None))));
+    assert!(matches!(ob.head, Some(Head::Framed)) && ob.final_status.is_none());
     assert!(ob.done && ob.queue.is_empty());
     let decoded = crate::proto::pb::Task::decode(ob.bytes.as_slice()).expect("a Task");
     assert_eq!(decoded.id, "t-1");
@@ -407,12 +407,19 @@ fn the_framed_line_answers_messages_and_statuses() {
             "reason": "TASK_NOT_FOUND" }] },
     });
     let ob = Outbox::framed(reply(404, &refused), Rpc::GetTask).expect("an outbox");
-    let Some(Head::Framed(code, Some(details))) = &ob.head else {
-        panic!("a status with details: {:?}", ob.head);
-    };
-    assert_eq!(*code, crate::framed::Code::NotFound as u32);
+    assert!(matches!(ob.head, Some(Head::Framed)), "{:?}", ob.head);
+    assert!(
+        ob.bytes.is_empty() && !ob.messages,
+        "a status's text is no message"
+    );
+    let end = ob
+        .final_status
+        .as_ref()
+        .expect("the call ends with its status");
+    assert_eq!(end.code, crate::framed::Code::NotFound as u32);
+    assert_eq!(end.body, b"no task");
+    let details = end.details.as_deref().expect("a status with details");
     assert!(!details.is_empty() && !details.ends_with('='));
-    assert_eq!(ob.bytes, b"no task");
     assert_eq!(DETAILS_FIELD, "grpc-status-details-bin");
 
     let event = |state: &str| {
@@ -433,7 +440,7 @@ fn the_framed_line_answers_messages_and_statuses() {
         last: true,
     });
     let ob = Outbox::framed(part, Rpc::SubscribeToTask).expect("an outbox");
-    assert!(matches!(ob.head, Some(Head::Framed(0, None))));
+    assert!(matches!(ob.head, Some(Head::Framed)) && ob.final_status.is_none());
     assert_eq!(
         ob.queue.len(),
         1,
@@ -453,10 +460,47 @@ fn the_framed_line_answers_messages_and_statuses() {
     });
     let ob = Outbox::framed(part, Rpc::SubscribeToTask).expect("an outbox");
     assert!(
-        matches!(ob.head, Some(Head::Framed(5, _))) && ob.done,
+        matches!(ob.head, Some(Head::Framed))
+            && ob.done
+            && ob.final_status.as_ref().map(|f| f.code) == Some(5),
         "an error before any message ends the call with its status: {:?}",
-        ob.head
+        ob.final_status
     );
+}
+
+/// A STATUS ON THE gRPC LINE CLOSES AS ITS BLOCK, in the bytes and order predev's gRPC line closed a
+/// call with: `grpc-status`, the percent-encoded `grpc-message` where there is a message, the
+/// details field where there are details. A refusal before any message is that block alone.
+#[test]
+fn a_framed_status_closes_as_its_block() {
+    use crate::framed::{status_block, Reply};
+    let reply = Reply {
+        code: 5,
+        body: b"no task {x}%".to_vec(),
+        details: Some("CAE".to_string()),
+    };
+    assert_eq!(
+        status_block(&reply),
+        b"grpc-status: 5\r\ngrpc-message: no%20task%20%7Bx%7D%25\r\ngrpc-status-details-bin: CAE\r\n"
+            .to_vec()
+    );
+    let bare = Reply {
+        code: 13,
+        body: Vec::new(),
+        details: None,
+    };
+    assert_eq!(status_block(&bare), b"grpc-status: 13\r\n".to_vec());
+    // A refusal before `arrive` read its line is on the gRPC line when its target is the service's,
+    // a method the service does not have included.
+    let service = crate::framed::SERVICE_PATH;
+    assert!(crate::framed::on_service(&format!("{service}/SendMessage")));
+    assert!(crate::framed::on_service(&format!(
+        "{service}/NoSuchMethod?x=1"
+    )));
+    assert!(!crate::framed::on_service(&format!(
+        "{service}Extra/SendMessage"
+    )));
+    assert!(!crate::framed::on_service("/a2a/agents/planner"));
 }
 
 /// THE gRPC LINE'S BOUNDARIES (SEAM-4l): a whole OK answer is one message, a status's text is no

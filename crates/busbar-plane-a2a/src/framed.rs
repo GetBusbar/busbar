@@ -446,6 +446,17 @@ pub fn event(frame: &str) -> Option<Result<Vec<u8>, Status>> {
 /// (ARCHITECT ruling Q2, 2026-10-04).
 pub const DETAILS_FIELD: &str = "grpc-status-details-bin";
 
+/// Whether `target` (a request target, its query ignored) is a call on the gRPC service: a path
+/// under [`SERVICE_PATH`], whether or not the service has the method it names.
+#[must_use]
+pub fn on_service(target: &str) -> bool {
+    target
+        .split('?')
+        .next()
+        .and_then(|path| path.strip_prefix(SERVICE_PATH))
+        .is_some_and(|rest| rest.starts_with('/'))
+}
+
 /// ONE REPLY ON THE gRPC LINE, as the plane states it to the grpc transport: the status in the
 /// line's own numbering (`0` = `OK`), the bytes (the response message on `OK`; the status message
 /// otherwise), and the details field's value when the status carries details.
@@ -504,6 +515,31 @@ pub fn refusal(envelope: &[u8], status: u32) -> Reply {
         Some(error) => status_for_error(&error, status).into(),
         None => status_for_http(status).into(),
     }
+}
+
+/// A reply's status as a CLOSING BLOCK (field lines, `name: value` CRLF each): `grpc-status`, then
+/// `grpc-message` where there is a message, then [`DETAILS_FIELD`] where there are details — the
+/// order and bytes 1.5.5's gRPC line closed a call with (tonic 0.14's `Status::add_header`). The
+/// message is percent-encoded as tonic encoded it: every control byte, every byte past ASCII, the
+/// space and each of `` "#%<>`?{}``, upper-case hex.
+#[must_use]
+pub fn status_block(reply: &Reply) -> Vec<u8> {
+    let mut out = format!("grpc-status: {}\r\n", reply.code).into_bytes();
+    if !reply.body.is_empty() {
+        out.extend_from_slice(b"grpc-message: ");
+        for &b in &reply.body {
+            if (0x21..=0x7e).contains(&b) && !b"\"#%<>`?{}".contains(&b) {
+                out.push(b);
+            } else {
+                out.extend_from_slice(format!("%{b:02X}").as_bytes());
+            }
+        }
+        out.extend_from_slice(b"\r\n");
+    }
+    if let Some(details) = &reply.details {
+        out.extend_from_slice(format!("{DETAILS_FIELD}: {details}\r\n").as_bytes());
+    }
+    out
 }
 
 /// AN ANSWER IN EVENTS, as the messages it carries: every whole event-stream frame of `buf` that

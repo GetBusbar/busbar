@@ -863,6 +863,12 @@ fn served_core(
     )
     .expect("the agent door composes");
     composed.post = Some(post);
+    // THE FRAMER THAT FRAMES A STREAM ANOTHER FRAMER ANSWERS (the gRPC line's calls, ARCHITECT
+    // 4l): this cell's connector's, as boot's is the process's one connector's.
+    let framing = Arc::clone(&connector);
+    composed.framers = Some(super::StreamFramers(Arc::new(move |claim: &str| {
+        framing.framer_for(claim)
+    })));
     if ticking {
         composed.spawn_ticks();
     }
@@ -6045,6 +6051,111 @@ async fn an_agent_whose_card_names_only_grpc_is_dialled_over_grpc() {
         doc["result"]["task"]["id"], "far-task",
         "the answer leaves under busbar's task identity: {body}"
     );
+}
+
+/// A gRPC CALLER IS ANSWERED THROUGH ITS STREAM'S FRAMER (SEAM-4l): `SendMessage` over the gRPC
+/// binding goes out under the listener's `200`, its one message length-prefixed, and the call
+/// closes with `grpc-status: 0` in the trailers, as predev's gRPC line answered it. RED before the
+/// fix: the door stated its answer's head in the line's own numbering (`0` = `OK`), a status no
+/// HTTP head carries, so the call went out as the plane-fault `502` with no `grpc-status` at all
+/// (the a2a TCK's subject leg: every gRPC requirement failed on it).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_grpc_callers_send_message_is_answered_ok_with_its_status_in_the_trailers() {
+    use busbar_plane_a2a::framed::{request_message, response_result, Rpc};
+    use http_body_util::BodyExt as _;
+    use tower::ServiceExt as _;
+    let _one = PUBLISHING.lock().await;
+    let instance = "serve-agent-door-grpc-inbound";
+    let _published = Published(instance);
+    // The agent answers in the protocol's current shape, the one the gRPC line's messages carry.
+    let mut agent = Agent::start(
+        200,
+        r#"{"jsonrpc":"2.0","id":1,"result":{"task":{"id":"far-task","contextId":"far-ctx","status":{"state":"TASK_STATE_WORKING"}}}}"#,
+    )
+    .await;
+    let s = served(instance, &agent.entry("planner", "1h"), false, None);
+    approve(&s, "planner").await;
+    let params = serde_json::json!({ "message": {
+        "messageId": "m-1", "role": "ROLE_USER", "parts": [{ "text": "PLAN THE MIGRATION" }] } });
+    let message = request_message(Rpc::SendMessage, &params).expect("a SendMessageRequest");
+    let mut body = vec![0u8];
+    body.extend_from_slice(&u32::try_from(message.len()).expect("small").to_be_bytes());
+    body.extend_from_slice(&message);
+    let req = axum::http::Request::builder()
+        .method("POST")
+        .uri(format!("{}/SendMessage", surface("grpc_service")))
+        .header("content-type", "application/grpc")
+        .header("te", "trailers")
+        .header("authorization", format!("Bearer {}", s.token))
+        .body(axum::body::Body::from(body))
+        .expect("a request");
+    let response = s.router.clone().oneshot(req).await.expect("the router answers");
+    let (parts, body) = response.into_parts();
+    let collected = body.collect().await.expect("the answer");
+    let trailers = collected.trailers().cloned();
+    let bytes = collected.to_bytes();
+    assert_eq!(parts.status, StatusCode::OK, "{:?} {bytes:?}", parts.headers);
+    let trailers = trailers.expect("the call closes in its trailers");
+    assert_eq!(
+        trailers.get("grpc-status").and_then(|v| v.to_str().ok()),
+        Some("0"),
+        "{trailers:?}"
+    );
+    assert!(bytes.len() > 5 && bytes[0] == 0, "one length-prefixed message: {bytes:?}");
+    let len = u32::from_be_bytes([bytes[1], bytes[2], bytes[3], bytes[4]]) as usize;
+    assert_eq!(bytes.len(), 5 + len, "exactly one message");
+    let result = response_result(Rpc::SendMessage, &bytes[5..]).expect("a SendMessageResponse");
+    assert_eq!(
+        result["task"]["status"]["state"], "TASK_STATE_WORKING",
+        "the agent's answer reaches the caller: {result}"
+    );
+    assert!(agent.relayed(), "the agent was reached");
+}
+
+/// A gRPC CALL REFUSED BEFORE ITS LINE WAS READ IS REFUSED ON THE gRPC LINE: a `SendMessage`
+/// naming an `a2a-version` this endpoint does not speak is `UNIMPLEMENTED` (the version error's
+/// status), trailers-only under the listener's `200`, as predev's gRPC line refused it; the agent
+/// is never dialled. RED before the fix: the refusal was rendered as a JSON-RPC envelope (the
+/// kernel states no dialect for an arrival it did not decode), which the stream's framer closed as
+/// `INTERNAL` "busbar answered HTTP 400".
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_grpc_call_naming_a_version_this_endpoint_does_not_speak_is_unimplemented() {
+    use busbar_plane_a2a::framed::{request_message, Rpc};
+    use http_body_util::BodyExt as _;
+    use tower::ServiceExt as _;
+    let _one = PUBLISHING.lock().await;
+    let instance = "serve-agent-door-grpc-version";
+    let _published = Published(instance);
+    let mut agent = Agent::start(200, ANSWER).await;
+    let s = served(instance, &agent.entry("planner", "1h"), false, None);
+    approve(&s, "planner").await;
+    let params = serde_json::json!({ "message": {
+        "messageId": "m-1", "role": "ROLE_USER", "parts": [{ "text": "PLAN THE MIGRATION" }] } });
+    let message = request_message(Rpc::SendMessage, &params).expect("a SendMessageRequest");
+    let mut body = vec![0u8];
+    body.extend_from_slice(&u32::try_from(message.len()).expect("small").to_be_bytes());
+    body.extend_from_slice(&message);
+    let req = axum::http::Request::builder()
+        .method("POST")
+        .uri(format!("{}/SendMessage", surface("grpc_service")))
+        .header("content-type", "application/grpc")
+        .header("te", "trailers")
+        .header("a2a-version", "99.0")
+        .header("authorization", format!("Bearer {}", s.token))
+        .body(axum::body::Body::from(body))
+        .expect("a request");
+    let response = s.router.clone().oneshot(req).await.expect("the router answers");
+    let (parts, body) = response.into_parts();
+    let bytes = body.collect().await.expect("the answer").to_bytes();
+    assert_eq!(parts.status, StatusCode::OK, "{:?} {bytes:?}", parts.headers);
+    assert_eq!(
+        parts.headers.get("grpc-status").and_then(|v| v.to_str().ok()),
+        Some("12"),
+        "trailers-only, the version error's status: {:?}",
+        parts.headers
+    );
+    assert!(bytes.is_empty(), "no message: {bytes:?}");
+    assert!(!agent.relayed(), "a refused call dials no agent");
 }
 
 /// MONEY (this cell touches money: it reads the units' lines on the node's book). A RELAYED

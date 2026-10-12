@@ -288,8 +288,9 @@ struct Outbox {
     /// On the gRPC line: `bytes` (and each queued one) is a message, its last byte a message
     /// boundary (`EMIT_MESSAGE_END`); `false` for a status's message text.
     messages: bool,
-    /// On the gRPC line: the status a stream that already sent messages ends with, stated on its
-    /// closing answer (`EMIT_FINAL_STATUS`).
+    /// On the gRPC line: the status the call ends with when it is not a whole `OK` answer (a
+    /// stream's last status, or a whole answer's error), stated on its closing answer
+    /// (`EMIT_FINAL_STATUS`).
     final_status: Option<crate::framed::Reply>,
     /// The breaker's reading of the far end's answer this piece read (`FAULT_NONE` = none yet),
     /// stated on the answer that writes it ([`relay::Reading`]).
@@ -305,9 +306,10 @@ enum Head {
     Reply(u32, &'static str),
     /// The caller's reply in events: `200`, an event stream nothing may cache.
     Events,
-    /// The caller's reply on the gRPC line: its status in the line's own numbering (`0` = `OK`) and
-    /// the status details' field value ([`crate::framed::Reply`]).
-    Framed(u32, Option<String>),
+    /// The caller's reply on the gRPC line: the listener's `200`, no media type and no length. The
+    /// call's status is its final status ([`Outbox::final_status`], `OK` when none is stated),
+    /// which the stream's framer renders on its close (SEAM-4l).
+    Framed,
 }
 
 /// The head field a whole answer states its length in.
@@ -381,7 +383,7 @@ impl Outbox {
                     recall: false,
                     to_far: false,
                     done: part.last || terminal.is_some(),
-                    head: part.head.then_some(Head::Framed(0, None)),
+                    head: part.head.then_some(Head::Framed),
                     bytes,
                     at: 0,
                     writes: Vec::new(),
@@ -395,20 +397,28 @@ impl Outbox {
         }
     }
 
-    /// A whole reply on the gRPC line.
+    /// A whole reply on the gRPC line: an `OK` answer is its one message, the stream closing as
+    /// one that ended whole; any other status is no message, and the call ends with it as its
+    /// final status (its message and details), rendered by the stream's framer (SEAM-4l).
     fn framed_whole(reply: crate::framed::Reply) -> Self {
+        let ok = reply.code == crate::framed::Code::Ok as u32;
+        let (bytes, final_status) = if ok {
+            (reply.body, None)
+        } else {
+            (Vec::new(), Some(reply))
+        };
         Outbox {
             live: true,
             recall: false,
             to_far: false,
             done: true,
-            messages: reply.code == crate::framed::Code::Ok as u32,
-            head: Some(Head::Framed(reply.code, reply.details)),
-            bytes: reply.body,
+            messages: ok,
+            head: Some(Head::Framed),
+            bytes,
             at: 0,
             writes: Vec::new(),
             queue: std::collections::VecDeque::new(),
-            final_status: None,
+            final_status,
             fault: FAULT_NONE,
         }
     }
@@ -2251,13 +2261,12 @@ fn piece(
             head_fields(&EVENTS_HEAD.map(|(name, value)| (name, value.to_string())));
             status = relay::STATUS_OK;
         }
-        // The gRPC line's head carries no media type and no length (the grpc transport frames):
-        // its status, and the status details when there are any.
-        Some(Head::Framed(code, details)) => {
-            if let Some(details) = details {
-                head_fields(&[(crate::framed::DETAILS_FIELD, details.clone())]);
-            }
-            status = *code;
+        // The gRPC line's head is the listener's `200` with no media type and no length: the
+        // stream's framer frames its messages and renders the call's status on its close, from
+        // the final status this answer or the stream's last one states (SEAM-4l: the unit states
+        // its head, the framer its close).
+        Some(Head::Framed) => {
+            status = relay::STATUS_OK;
         }
         None => {}
     }
@@ -2272,10 +2281,7 @@ fn piece(
     // THE UNIT'S AUDIT ROW, with the head of the caller's answer, for a unit its admission passed:
     // served when its hop left the plane, rejected when it was refused before it did (the engine's
     // hop charge: `settle` applied, `refused` rejected).
-    let caller_head = matches!(
-        ob.head,
-        Some(Head::Reply(..) | Head::Events | Head::Framed(..))
-    );
+    let caller_head = matches!(ob.head, Some(Head::Reply(..) | Head::Events | Head::Framed));
     if caller_head && admitted && !member.is_empty() {
         records.push(door::audit_write(
             &mut arena,
@@ -2527,7 +2533,12 @@ slot!(
                 .units
                 .with(&given.unit, |u| u.is_some_and(|u| u.agent.is_none()))
         });
+        // A REFUSAL BEFORE `arrive` READ ITS LINE (the kernel decoded none, so it states the first
+        // dialect): the plane chooses its envelope from the target by its own rule (abi/plane
+        // `RefusalIn::target`), and a call on the gRPC service is refused on the gRPC line.
+        let asked = input.field(|i| &i.target).as_str().unwrap_or_default();
         let dialect = match given.dialect {
+            door::DIALECT_DOCUMENT if crate::framed::on_service(asked) => Dialect::Framed,
             door::DIALECT_DOCUMENT => Dialect::JsonRpc,
             door::DIALECT_TARGET => Dialect::RestJson,
             door::DIALECT_FRAMED => Dialect::Framed,
@@ -2717,7 +2728,9 @@ slot!(
         };
         // ON THE gRPC LINE the rendered envelope is the status the call ends with, as the engine's
         // bridge read its ingress's envelope: the status in the line's own numbering, its message
-        // as the reply's bytes, its details as the details field.
+        // and its details, stated as the closing block the stream's framer sends as the whole
+        // answer, at the refusal's neutral status (SEAM-4l: a block stating `grpc-status` is the
+        // close; the neutral status is what a framer maps when the block states none).
         let (body, head, status) = if dialect == Dialect::Framed {
             let neutral = if rendered.status == 0 {
                 given.status
@@ -2725,12 +2738,7 @@ slot!(
                 rendered.status
             };
             let reply = crate::framed::refusal(&rendered.body, neutral);
-            let head = reply
-                .details
-                .map(|d| (crate::framed::DETAILS_FIELD, d))
-                .into_iter()
-                .collect::<Vec<_>>();
-            (reply.body, head, reply.code)
+            (crate::framed::status_block(&reply), Vec::new(), neutral)
         } else {
             let mut head = vec![("content-type", rendered.content_type.to_string())];
             // AN OPEN BREAKER'S WAIT rides every line's refusal, whatever words it carries (the
