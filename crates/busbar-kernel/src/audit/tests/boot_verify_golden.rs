@@ -17,8 +17,9 @@
 //! the verbatim `serde_json` bodies a store holds on disk — captured from the code at the moment the
 //! cleave began and FROZEN as literals. Each carries its own `hash`, computed by that past build.
 //! The test hands these frozen bytes to the SAME boot-verify runtime path a real restart runs
-//! (`PlaneCallLog::restore_from_store`, `TaskRegistry::restore_from_store`, and the shared
-//! `verify_chain` the admin ring restore walks), which decodes each body and RECOMPUTES the digest
+//! (the generic scope-keyed journal's `restore_scoped`, which a plane's declared chained record
+//! kind resumes through, `TaskRegistry::restore_from_store`, and the shared `verify_chain` the admin
+//! ring restore walks), which decodes each body and RECOMPUTES the digest
 //! from the record's own fields. If the recompute no longer equals the frozen `hash`, the chain
 //! fails to verify and this test goes RED — before a single deployed store does. The expected hash is
 //! a constant produced by a past build, not a value this build recomputes, so it cannot drift with
@@ -26,7 +27,8 @@
 //!
 //! ## Coverage — two framings, plus the genesis landmine
 //!
-//! - **MCP per-call** (`LengthPrefixed`, scope in the digest) — the CLEAN cleave-first target.
+//! - **Per-call** (`LengthPrefixed`, scope in the digest) — the chained record kind the mcp plane
+//!   declares in its tail, appended and resumed by the host's generic journal.
 //! - **Admin audit** (`PipeSeparated`, NO scope in the digest) — the `digests_scope = false` shape,
 //!   proving the generic prelude framing omits the scope for exactly the streams that omit it. This
 //!   fixture also carries the PipeSeparated GENESIS LANDMINE: the first record's `prev_hash` is
@@ -166,30 +168,51 @@ impl PlaneStore for FrozenStore {
     }
 }
 
-/// MCP per-call chain (LengthPrefixed, scope-in-digest): the frozen opaque bodies restore through the
-/// REAL boot path and verify byte-identically — zero chain breaks — with the tail hash intact.
+/// The frozen per-call chain, handed to the generic journal's boot rehydrate under the framing the
+/// mcp plane declares for its call kind (`LengthPrefixed`, scope in the digest), must verify
+/// byte-identically — zero chain breaks — with the tail hash intact. This is the path a plane's
+/// chained record kind resumes through (`host_chains::ChainedKind`), so a drift in the generic
+/// prelude framing goes RED here before a deployed chain reports TAMPERED.
 #[test]
 fn per_call_chain_boot_verifies_from_frozen_bytes() {
+    use crate::audit::journal::{Journal, NeutralBody};
+    use crate::audit::Framing;
+    use crate::plane_host::journal::PlaneJournalRecord;
+
     let mut store = FrozenStore::new();
     store.put(KIND_CALL, Some("vk_alice"), CALL_1);
     store.put(KIND_CALL, Some("vk_alice"), CALL_2);
 
-    // The chain position cache is host-side now: register a fresh isolated stream and host-drive the
-    // rehydrate. The FROZEN BYTES/HASHES above are unchanged — only the scaffolding that replays them
-    // through the durable seam changed. The rehydrate SEEDS positions from the store passed here (the
-    // frozen bytes), so the throwaway app the harness registers against is immaterial to the digests.
-    let h = crate::calllog::CallTestHarness::over(std::sync::Arc::new(
-        crate::governance::MemoryStore::new(),
-    ));
-    let restored = h.restore_from_store(&store).expect("store read");
+    let journal: Journal<PlaneJournalRecord> = Journal::new(16);
+    let reframe = |scope: &str, body: &[u8]| -> RecordStoreResult<PlaneJournalRecord> {
+        let b: NeutralBody = decode(body)?;
+        Ok(PlaneJournalRecord::from_parts(
+            scope.to_string(),
+            b.seq,
+            b.prev_hash,
+            b.hash,
+            b.content,
+            Framing::LengthPrefixed,
+            true,
+        ))
+    };
+    let restored = journal
+        .restore_scoped(KIND_CALL, &store, &reframe)
+        .expect("store read");
     assert!(
         restored.chain_breaks.is_empty(),
         "a persisted length-prefixed per-call chain reported TAMPERED means the digest drifted: {:?}",
         restored.chain_breaks
     );
-    assert_eq!(restored.principals, 1);
+    assert_eq!(restored.scopes, 1);
     assert_eq!(restored.records, 2, "both frozen records restored");
-    assert_eq!(restored.empty_chains, 0);
+    assert!(restored.empty_scopes.is_empty());
+    assert_eq!(restored.unreadable, 0);
+    assert_eq!(
+        journal.next_seq("vk_alice"),
+        3,
+        "the chain resumes after its frozen tail"
+    );
 
     // And the tail hash the pre-cleave build wrote is exactly what the frozen bytes still carry.
     let tail: FrozenTailDigest = decode(CALL_2).unwrap();

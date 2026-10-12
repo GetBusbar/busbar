@@ -130,15 +130,15 @@ A persisted plane task's provenance events were read at boot but do NOT verify a
 **What to do:** Treat the durable governance store as compromised until explained: capture it for forensic review before it is overwritten, then restore from a trusted backup once the cause is understood.
 
 <a id="plane-calllog-chain-verify-failed"></a>
-### BUSBAR-2042 — Plane per-call records failed hash-chain verification on restore (tamper evidence)
+### BUSBAR-2042 — Plane per-call records failed hash-chain verification on restore (tamper evidence) — RETIRED *(retired)*
 
 - **Severity:** actionable
 - **Since:** 1.6.0
 - **Slug:** `plane-calllog-chain-verify-failed`
 
-A principal's persisted plane per-call records were read at boot but do NOT verify against their own hash chain, which is tamper evidence. They are still restored and the chain resumes from the broken tail, because refusing here would convert a detection control into a deletion primitive — anyone able to write to the store could delete a caller's history by corrupting one record.
+RETIRED. A principal's persisted plane per-call records were read at boot but do NOT verify against their own hash chain, which is tamper evidence. They are still restored and the chain resumes from the broken tail, because refusing here would convert a detection control into a deletion primitive — anyone able to write to the store could delete a caller's history by corrupting one record.
 
-**What to do:** Treat the durable governance store as compromised until explained: capture it for forensic review before it is overwritten, then restore from a trusted backup once the cause is understood.
+**What to do:** Nothing emits this code. The per-call log is the mcp plane's chained record kind, appended and resumed by the host's generic journal; a chain that does not verify from its stored tail is BUSBAR-2048.
 
 <a id="plane-auditlog-chain-verify-failed"></a>
 ### BUSBAR-2043 — Admin audit records failed hash-chain verification on restore (tamper evidence)
@@ -163,15 +163,15 @@ The admin audit record could NOT be written through the durable journal seam, so
 **What to do:** Restore the durable governance store's write path. Once writes succeed again the latch resets and a future outage re-warns.
 
 <a id="plane-calllog-row-unreadable"></a>
-### BUSBAR-2045 — Persisted plane per-call record could not be decoded on restore (skipped, not dropped)
+### BUSBAR-2045 — Persisted plane per-call record could not be decoded on restore (skipped, not dropped) — RETIRED *(retired)*
 
 - **Severity:** actionable
 - **Since:** 1.6.0
 - **Slug:** `plane-calllog-row-unreadable`
 
-A principal's persisted plane per-call record could not be decoded at boot — a body from a store format no released build wrote, or a corrupt row. It is COUNTED and SKIPPED per-record rather than allowed to abort the whole rehydrate (which would drop every OTHER principal's working set), but the skip is reported here so a silently lost evidence row is never invisible. Usually an engine-version mismatch or a corrupt store.
+RETIRED. A principal's persisted plane per-call record could not be decoded at boot — a body from a store format no released build wrote, or a corrupt row. It is COUNTED and SKIPPED per-record rather than allowed to abort the whole rehydrate (which would drop every OTHER principal's working set), but the skip is reported here so a silently lost evidence row is never invisible. Usually an engine-version mismatch or a corrupt store.
 
-**What to do:** Note the principal. If many rows are unreadable, suspect a store format mismatch after an upgrade or downgrade; capture the durable governance store for review.
+**What to do:** Nothing emits this code. The per-call log is the mcp plane's chained record kind, appended and resumed by the host's generic journal; a chain that does not verify from its stored tail is BUSBAR-2048.
 
 <a id="plane-journal-row-unreadable"></a>
 ### BUSBAR-2046 — Persisted journal record could not be reframed on restore (skipped, not dropped)
@@ -1669,26 +1669,26 @@ The shared spent-approval ledger could not be reached, so an approval redemption
 **What to do:** Restore connectivity to the shared spent-approval ledger's durable store. Until then, approval redemptions fail closed by design.
 
 <a id="plane-calllog-empty-chain"></a>
-### BUSBAR-7092 — Durable plane call log enumerates a principal with NO records
+### BUSBAR-7092 — Durable plane call log enumerates a principal with NO records — RETIRED *(retired)*
 
 - **Severity:** actionable
 - **Since:** 1.6.0
 - **Slug:** `plane-calllog-empty-chain`
 
-The durable plane call log named a principal and then produced no records for it, so its chain is reopened at seq 1 and the discrepancy is reported rather than skipped. The verifier alone cannot distinguish this from a caller's evidence being deleted wholesale.
+RETIRED. The durable plane call log named a principal and then produced no records for it, so its chain is reopened at seq 1 and the discrepancy is reported rather than skipped. The verifier alone cannot distinguish this from a caller's evidence being deleted wholesale.
 
-**What to do:** Confirm whether this principal was expected to have call history. If it was, treat the store as possibly tampered and capture it for review before it is overwritten.
+**What to do:** Nothing emits this code. The per-call log is the mcp plane's chained record kind, appended and resumed by the host's generic journal; a chain that does not verify from its stored tail is BUSBAR-2048.
 
 <a id="plane-calllog-write-failed"></a>
-### BUSBAR-7093 — Durable plane per-call record could not be written (evidence lost)
+### BUSBAR-7093 — Durable plane per-call record could not be written (evidence lost) — RETIRED *(retired)*
 
 - **Severity:** actionable
 - **Since:** 1.6.0
 - **Slug:** `plane-calllog-write-failed`
 
-The durable plane per-call record could NOT be written, so this call is being served but its evidence is being lost. The chain position is unchanged, so the chain stays contiguous — what is missing is this one record, not the ones after it. This can recur per request during a store outage, so it warns on the transition into the failing state and holds subsequent occurrences at debug.
+RETIRED. The durable plane per-call record could NOT be written, so this call is being served but its evidence is being lost. The chain position is unchanged, so the chain stays contiguous — what is missing is this one record, not the ones after it. This can recur per request during a store outage, so it warns on the transition into the failing state and holds subsequent occurrences at debug.
 
-**What to do:** Restore the durable governance store's write path. Once writes succeed again the latch resets and a future outage re-warns.
+**What to do:** Nothing emits this code. The per-call log is the mcp plane's chained record kind, appended and resumed by the host's generic journal; a chain that does not verify from its stored tail is BUSBAR-2048.
 
 <a id="plane-demotion-write-failed"></a>
 ### BUSBAR-7094 — Durable plane demotion record could not be written
