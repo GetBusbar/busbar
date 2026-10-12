@@ -44,9 +44,11 @@ pub const ROW_CLOSES: &str = "tracing:attribute-closes";
 const SCAN_ROOT: &str = "crates";
 const EXCLUDE_TESTS_DIR: &str = "/tests/";
 
-/// The denominator floor, pinned AT the measured count: the crates walk reads 977 files with
-/// transport stage B (#502) merged with predev 13a9ecbfb2, which adds the host's I/O table and the
-/// carriers (nine files outside `/tests/`) and removes three (`busbar-core-connector` stream.rs,
+/// The denominator floor, pinned AT the measured count: the crates walk reads 977 files after #703
+/// (the MCP-FIX stack) deleted busbar-plane-mcp's tool_plane.rs and outputschema.rs and added
+/// door_sessions.rs, merged with predev 1c586876f8 (978 there); 977 with transport stage B (#502)
+/// merged with predev 13a9ecbfb2, which adds the host's I/O table and the carriers (nine files
+/// outside `/tests/`) and removes three (`busbar-core-connector` stream.rs,
 /// `busbar-transport-stdio` carrier.rs and conn.rs) — 971 on predev d7929b661d, after
 /// busbar-kernel-ledger's usage/series.rs left (972 on predev 3bc48823df; 971 on predev
 /// 39374ec00e; 980 on 5e672d125d, before the egress_auth / auth_cache / ingress_sigv4 files left
@@ -59,7 +61,7 @@ const SCAN_FLOOR: usize = 977;
 /// THE SUBJECT FLOOR (item 228). The file floor above proves the walk opened the crates; it says
 /// nothing about whether the thing this gate judges is still there. "Every `#[instrument]` has a
 /// level" is as vacuous over zero SPANS as over zero files, and the files-to-spans ratio is ~150:1
-/// (971 files, 5 attributes), so every span could leave the tree with the file floor
+/// (977 files, 5 attributes), so every span could leave the tree with the file floor
 /// untouched. Armed at the measured count (arrival.rs 3, ingress/mod.rs 2); like the file floor it
 /// has no override, and lowering it is a reviewable source edit that says which span went where.
 const SPAN_FLOOR: usize = 5;
