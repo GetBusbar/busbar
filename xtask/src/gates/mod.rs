@@ -3326,10 +3326,10 @@ pub fn print_verdict(name: &str, verdict: &Verdict) {
     );
 }
 
+/// The `--format=tsv` printer: each row's line, then one indented line per cell of a row whose
+/// detail is a list of coded findings (see [`crate::cells`] for the columns).
 pub fn print_rows_tsv(rows: &[Row]) {
-    for row in rows {
-        println!("{}", row.tsv());
-    }
+    print!("{}", crate::cells::render(rows));
 }
 
 /// THE FALSIFICATION OF THE FALSIFIER — the three outcomes `prove_red` must be able to produce on
