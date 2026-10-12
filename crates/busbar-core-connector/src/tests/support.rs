@@ -48,6 +48,9 @@ pub struct Knobs {
     /// binary message, `t` an empty text message, `e` the stream's end (`PIECE_END`), any other
     /// byte a one-byte binary message.
     pub messages: Option<u64>,
+    /// Every frame piece the framing yields holds at most this many bytes, so one frame arrives
+    /// in several pieces (the last ends it), as a line framer cuts a line its sink cannot hold.
+    pub piece: Option<usize>,
 }
 
 #[derive(Default)]
@@ -59,6 +62,7 @@ struct State {
     deadline_ns: u64,
     text: bool,
     messages: Option<u64>,
+    piece: Option<usize>,
 }
 
 /// One `begin` crossing's opening head fields, name and value.
@@ -229,7 +233,11 @@ fn answer(st: &mut State, sink: &FramerSink, o: &mut FramerOut, silence: Option<
         y.frame_len = frame_len as u64;
         y.pieces_len = n as u32;
     } else if !st.inbound.is_empty() && sink.pieces_cap > 0 {
-        let n = st.inbound.len().min(sink.frame_cap);
+        let n = st
+            .inbound
+            .len()
+            .min(sink.frame_cap)
+            .min(st.piece.unwrap_or(usize::MAX));
         put(sink.frame, &mut st.inbound, n);
         let flags = if st.inbound.is_empty() {
             PIECE_END_OF_FRAME
@@ -368,6 +376,7 @@ impl FramerDoor for TestDoor {
                 let mut st = State {
                     text: self.knobs.text,
                     messages: self.knobs.messages,
+                    piece: self.knobs.piece,
                     ..State::default()
                 };
                 answer(&mut st, &i.sink, o, silence);

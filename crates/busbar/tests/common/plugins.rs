@@ -150,8 +150,8 @@ fn profile_dir() -> Option<PathBuf> {
 
 /// The built `cdylib` of the crate `snake` (its snake-cased crate name): uplifted, or under `deps/`
 /// with cargo's metadata hash (`lib<name>-<hash>.<ext>`, how a git dependency's library is left),
-/// the newest wins. `None` when it is not built; whether that is a skip or a failure is the
-/// caller's to say.
+/// the newest wins. `None` when it is not built; a test whose subject it is fails through
+/// [`missing`], never skips.
 pub fn cdylib_path(snake: &str) -> Option<PathBuf> {
     let profile = profile_dir()?;
     let exact = plugin_library_filename(snake);
@@ -173,6 +173,23 @@ pub fn cdylib_path(snake: &str) -> Option<PathBuf> {
         .max()
         .map(|(_, p)| p)
 }
+
+/// A FIXTURE THAT IS NOT BUILT IS A FAILURE, NEVER A SKIP: the panic every fixture probe of this
+/// crate's tests (integration and the composition root's unit tests, which mount this file) raises
+/// when the `cdylib` named `name` is absent, naming the `command` that builds it. A test whose
+/// subject is absent has proved nothing, so it must not report "ok".
+pub fn missing(name: &str, command: &str) -> ! {
+    panic!("the {name} cdylib is not built: run `{command}` first (this test never skips)")
+}
+
+/// What builds a pinned plugin's `cdylib`: the dev-dependency edge of this crate's tests.
+pub const BUILD_PINNED: &str = "cargo test -p busbar --no-run";
+
+/// What builds the plugin loader's example `cdylib`s (the neutral frame door).
+pub const BUILD_LOADER_EXAMPLES: &str = "cargo build -p busbar-plugin-loader --examples";
+
+/// What builds this crate's example `cdylib`s (the test plane).
+pub const BUILD_BUSBAR_EXAMPLES: &str = "cargo build -p busbar --examples";
 
 /// The bytes of [`cdylib_path`].
 pub fn cdylib(snake: &str) -> Option<Vec<u8>> {

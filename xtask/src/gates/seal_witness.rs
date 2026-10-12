@@ -125,19 +125,22 @@ const ROOTS: &[&str] = &["crates"];
 const EXCLUDE: &[&str] = &["/target/"];
 /// The denominator floor: a walk that finds fewer files than this is broken, not clean.
 ///
-/// ARMED AT THE MEASURED POPULATION (Law 9), not a margin below it: 2174 `.rs` files under
-/// `crates/` on predev 39374ec00e (the gate prints the count in both judging rows' detail). It
-/// read 200 — about a tenth of the tree — so a walk that silently dropped nine files in ten still
-/// scanned "clean". It was first armed at 2181 on predev 0fd08ee75d; predev then retired the
-/// kernel-identity and kernel `egress_auth` modules (24 files out, 15 in), and a floor above the
-/// tree it guards refuses every walk. FLIP-A2A (#787) then deleted the `busbar-a2a` crate (all 97
-/// of its files, the retired engine), and in `busbar-plane-a2a` the in-process `Plane` impl the
-/// engine served (`src/plane.rs`, its tests, alloc gate and test scaffold) and the anomaly breaker
-/// predev never wired (`src/a2a/anomaly.rs` and its tests): 2199 measured at #778's head e846df4e85, 2162 after,
-/// the door crate's fold having added 63 files (the kernel's two moved cross-plane tests are counted
-/// at their new home in the root). A tree that grows keeps this floor; a walk that comes back short
-/// of it is refused.
-const SCAN_FLOOR: usize = 2162;
+/// ARMED AT THE MEASURED POPULATION (Law 9), not a margin below it: 2173 `.rs` files under
+/// `crates/` once the MCP-FIX stack lands on predev bd39476618 (the gate prints the count in both
+/// judging rows' detail). It read 200 — about a tenth of the tree — so a walk that silently
+/// dropped nine files in ten still scanned "clean". It was first armed at 2181 on predev
+/// 0fd08ee75d; predev then retired the kernel-identity and kernel `egress_auth` modules (24 files
+/// out, 15 in), re-armed at 2174 on predev 39374ec00e; predev grew to 2176, and the MCP-FIX stack
+/// retired the plane-mcp `outputschema` and `tool_plane` modules with their tests (5 files out, 2
+/// in). FLIP-A2A (#787) then deleted the `busbar-a2a` crate (all 97 of its files, the retired
+/// engine), and in `busbar-plane-a2a` the in-process `Plane` impl the engine served
+/// (`src/plane.rs`, its tests, alloc gate and test scaffold) and the anomaly breaker predev never
+/// wired (`src/a2a/anomaly.rs` and its tests): 2197 measured at #778 merged with predev
+/// 8777b2bd1f, 2161 after, the door crate's fold having added 64 files (the restored door alloc
+/// gate among them; the kernel's two moved cross-plane tests are counted at their new home in the
+/// root). A floor above the tree it guards refuses every walk. A tree that grows keeps this floor;
+/// a walk that comes back short of it is refused.
+const SCAN_FLOOR: usize = 2161;
 
 /// Is `rel` a file that compiles only into a TEST, BENCH or EXAMPLE target — never into a shipped
 /// lib/bin? A `tests/` directory anywhere on the path (which covers `src/tests/`), a `benches/` or

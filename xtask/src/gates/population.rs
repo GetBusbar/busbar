@@ -17,9 +17,10 @@
 //!
 //! * [`Population::below_floor`] — the aggregate ratchet. It is not `> 0`: a walk that collapses to
 //!   a handful of files reports no findings and reads exactly like a clean tree. The floor is a
-//!   RATCHET pinned AT the measured count ([`FLOOR`], 938 after FLIP-A2A), not a margin
-//!   below it: one file fewer is refused until a reviewed diff re-measures. It is raised as the
-//!   tree grows, never lowered to accommodate a scan that stopped finding things.
+//!   RATCHET pinned AT the measured count ([`FLOOR`], 937 after FLIP-A2A merged with predev
+//!   8777b2bd1f), not a margin below it: one file fewer is refused until a reviewed diff
+//!   re-measures. It is raised as the tree grows, never lowered to accommodate a scan that stopped
+//!   finding things.
 //! * [`Population::drained`] — a crate that has a `src/` and contributed NOTHING. The floor catches
 //!   a tree that shrank; only this catches one crate quietly leaving the scan while the other files
 //!   keep the total above the floor.
@@ -40,18 +41,20 @@ use crate::ctx::{Ctx, Overlay, SourceFile, WalkSpec};
 /// (`busbar-contract` abi/host/io.rs, abi/sdk/io.rs, io_host.rs; `busbar-core-connector`
 /// carrier.rs, hostio.rs; `busbar-plugin-loader` conformance/carrier.rs, conformance/host_io.rs,
 /// dispatch/inline.rs, dispatch/io_slots.rs) and remove three (`busbar-core-connector` stream.rs,
-/// `busbar-transport-stdio` carrier.rs and conn.rs, whose work moved to the host's I/O). Re-pinned
-/// from 948 to 938, across 23 crates, by FLIP-A2A (#787), which deleted the `busbar-a2a` crate
+/// `busbar-transport-stdio` carrier.rs and conn.rs, whose work moved to the host's I/O). Lowered
+/// from 948 to 947 when #703 (the MCP-FIX stack) deleted `busbar-plane-mcp/src/tool_plane.rs` and
+/// `outputschema.rs` and added `door_sessions.rs`, a reviewed net removal of one file. Re-pinned
+/// from 947 to 937, across 23 crates, by FLIP-A2A (#787), which deleted the `busbar-a2a` crate
 /// (the retired engine, 39 non-test source files of its 97), and in `busbar-plane-a2a` the
 /// in-process `Plane` impl the engine served (`src/plane.rs`) and the anomaly breaker predev never
-/// wired (`src/a2a/anomaly.rs`): 948 measured at #778's head e846df4e85, 938 after, the door
-/// crate's fold having added 30 non-test files. Every file that left is deleted legacy, no scan that
-/// went blind and no check that was lost. A drop below 938 is refused until a reviewed diff
-/// re-measures. The selftest plant ([`one_file_short`]) cuts the live population to `FLOOR - 1`
-/// whatever its size, so predev growing a file no longer forces a re-pin for the plant's sake.
-/// Lowering the floor is how a gate stops reading the repository without saying so, so a diff that
-/// lowers it is the diff to refuse.
-pub const FLOOR: usize = 938;
+/// wired (`src/a2a/anomaly.rs`): 947 measured at #778 merged with predev 8777b2bd1f, 937 after, the
+/// door crate's fold having added 30 non-test files. Every file that left is deleted legacy, no
+/// scan that went blind and no check that was lost. A drop below 937 is refused until a reviewed
+/// diff re-measures. The selftest plant ([`one_file_short`]) cuts the live population to
+/// `FLOOR - 1` whatever its size, so predev growing a file no longer forces a re-pin for the
+/// plant's sake. Lowering the floor is how a gate stops reading the repository without saying so,
+/// so a diff that lowers it is the diff to refuse.
+pub const FLOOR: usize = 937;
 
 /// The `.rs` under `crates/` that are not test scaffolding, plus the accounting to refuse a
 /// population that cannot support a verdict.
