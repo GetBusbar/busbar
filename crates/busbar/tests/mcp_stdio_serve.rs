@@ -175,7 +175,10 @@ fn install_auth_plugin(dir: &Path) {
     let lib = common::plugins::token_verifier_cdylib_path()
         .and_then(|p| std::fs::read(p).ok())
         .unwrap_or_else(|| {
-            common::plugins::missing("busbar_auth_oidc_plugin", common::plugins::BUILD_PINNED)
+            common::plugins::missing(
+                "pinned token-verifying `kind: auth` plugin's",
+                common::plugins::BUILD_PINNED,
+            )
         });
     let mut m = common::plugins::manifest(
         "auth",
