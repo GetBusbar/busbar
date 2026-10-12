@@ -2100,7 +2100,7 @@ pub const PLANE_CALLLOG_CHAIN_VERIFY_FAILED: Diagnostic = Diagnostic {
               the chain resumes from the broken tail, because refusing here would convert a \
               detection control into a deletion primitive — anyone able to write to the store could \
               delete a caller's history by corrupting one record.",
-    action: "Nothing emits this code. The per-call log is the mcp plane's chained record kind, \
+    action: "Nothing emits this code. The per-call log is a plane's declared chained record kind, \
              appended and resumed by the host's generic journal; a chain that does not verify \
              from its stored tail is BUSBAR-2048.",
     since: "1.6.0",
@@ -2155,7 +2155,7 @@ pub const PLANE_CALLLOG_ROW_UNREADABLE: Diagnostic = Diagnostic {
               every OTHER principal's working set), but the skip is reported here so a silently \
               lost evidence row is never invisible. Usually an engine-version mismatch or a corrupt \
               store.",
-    action: "Nothing emits this code. The per-call log is the mcp plane's chained record kind, \
+    action: "Nothing emits this code. The per-call log is a plane's declared chained record kind, \
              appended and resumed by the host's generic journal; a chain that does not verify \
              from its stored tail is BUSBAR-2048.",
     since: "1.6.0",
@@ -2295,7 +2295,7 @@ pub const PLANE_CALLLOG_EMPTY_CHAIN: Diagnostic = Diagnostic {
               chain is reopened at seq 1 and the discrepancy is reported rather than skipped. The \
               verifier alone cannot distinguish this from a caller's evidence being deleted \
               wholesale.",
-    action: "Nothing emits this code. The per-call log is the mcp plane's chained record kind, \
+    action: "Nothing emits this code. The per-call log is a plane's declared chained record kind, \
              appended and resumed by the host's generic journal; a chain that does not verify \
              from its stored tail is BUSBAR-2048.",
     since: "1.6.0",
@@ -2313,7 +2313,7 @@ pub const PLANE_CALLLOG_WRITE_FAILED: Diagnostic = Diagnostic {
               contiguous — what is missing is this one record, not the ones after it. This can recur \
               per request during a store outage, so it warns on the transition into the failing \
               state and holds subsequent occurrences at debug.",
-    action: "Nothing emits this code. The per-call log is the mcp plane's chained record kind, \
+    action: "Nothing emits this code. The per-call log is a plane's declared chained record kind, \
              appended and resumed by the host's generic journal; a chain that does not verify \
              from its stored tail is BUSBAR-2048.",
     since: "1.6.0",

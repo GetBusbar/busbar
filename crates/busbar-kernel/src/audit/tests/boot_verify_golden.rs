@@ -27,7 +27,7 @@
 //!
 //! ## Coverage — two framings, plus the genesis landmine
 //!
-//! - **Per-call** (`LengthPrefixed`, scope in the digest) — the chained record kind the mcp plane
+//! - **Per-call** (`LengthPrefixed`, scope in the digest) — the chained record kind a plane
 //!   declares in its tail, appended and resumed by the host's generic journal.
 //! - **Admin audit** (`PipeSeparated`, NO scope in the digest) — the `digests_scope = false` shape,
 //!   proving the generic prelude framing omits the scope for exactly the streams that omit it. This
@@ -169,7 +169,7 @@ impl PlaneStore for FrozenStore {
 }
 
 /// The frozen per-call chain, handed to the generic journal's boot rehydrate under the framing the
-/// mcp plane declares for its call kind (`LengthPrefixed`, scope in the digest), must verify
+/// call kind is declared with (`LengthPrefixed`, scope in the digest), must verify
 /// byte-identically — zero chain breaks — with the tail hash intact. This is the path a plane's
 /// chained record kind resumes through (`host_chains::ChainedKind`), so a drift in the generic
 /// prelude framing goes RED here before a deployed chain reports TAMPERED.

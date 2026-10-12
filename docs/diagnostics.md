@@ -138,7 +138,7 @@ A persisted plane task's provenance events were read at boot but do NOT verify a
 
 RETIRED. A principal's persisted plane per-call records were read at boot but do NOT verify against their own hash chain, which is tamper evidence. They are still restored and the chain resumes from the broken tail, because refusing here would convert a detection control into a deletion primitive — anyone able to write to the store could delete a caller's history by corrupting one record.
 
-**What to do:** Nothing emits this code. The per-call log is the mcp plane's chained record kind, appended and resumed by the host's generic journal; a chain that does not verify from its stored tail is BUSBAR-2048.
+**What to do:** Nothing emits this code. The per-call log is a plane's declared chained record kind, appended and resumed by the host's generic journal; a chain that does not verify from its stored tail is BUSBAR-2048.
 
 <a id="plane-auditlog-chain-verify-failed"></a>
 ### BUSBAR-2043 — Admin audit records failed hash-chain verification on restore (tamper evidence)
@@ -171,7 +171,7 @@ The admin audit record could NOT be written through the durable journal seam, so
 
 RETIRED. A principal's persisted plane per-call record could not be decoded at boot — a body from a store format no released build wrote, or a corrupt row. It is COUNTED and SKIPPED per-record rather than allowed to abort the whole rehydrate (which would drop every OTHER principal's working set), but the skip is reported here so a silently lost evidence row is never invisible. Usually an engine-version mismatch or a corrupt store.
 
-**What to do:** Nothing emits this code. The per-call log is the mcp plane's chained record kind, appended and resumed by the host's generic journal; a chain that does not verify from its stored tail is BUSBAR-2048.
+**What to do:** Nothing emits this code. The per-call log is a plane's declared chained record kind, appended and resumed by the host's generic journal; a chain that does not verify from its stored tail is BUSBAR-2048.
 
 <a id="plane-journal-row-unreadable"></a>
 ### BUSBAR-2046 — Persisted journal record could not be reframed on restore (skipped, not dropped)
@@ -1677,7 +1677,7 @@ The shared spent-approval ledger could not be reached, so an approval redemption
 
 RETIRED. The durable plane call log named a principal and then produced no records for it, so its chain is reopened at seq 1 and the discrepancy is reported rather than skipped. The verifier alone cannot distinguish this from a caller's evidence being deleted wholesale.
 
-**What to do:** Nothing emits this code. The per-call log is the mcp plane's chained record kind, appended and resumed by the host's generic journal; a chain that does not verify from its stored tail is BUSBAR-2048.
+**What to do:** Nothing emits this code. The per-call log is a plane's declared chained record kind, appended and resumed by the host's generic journal; a chain that does not verify from its stored tail is BUSBAR-2048.
 
 <a id="plane-calllog-write-failed"></a>
 ### BUSBAR-7093 — Durable plane per-call record could not be written (evidence lost) — RETIRED *(retired)*
@@ -1688,7 +1688,7 @@ RETIRED. The durable plane call log named a principal and then produced no recor
 
 RETIRED. The durable plane per-call record could NOT be written, so this call is being served but its evidence is being lost. The chain position is unchanged, so the chain stays contiguous — what is missing is this one record, not the ones after it. This can recur per request during a store outage, so it warns on the transition into the failing state and holds subsequent occurrences at debug.
 
-**What to do:** Nothing emits this code. The per-call log is the mcp plane's chained record kind, appended and resumed by the host's generic journal; a chain that does not verify from its stored tail is BUSBAR-2048.
+**What to do:** Nothing emits this code. The per-call log is a plane's declared chained record kind, appended and resumed by the host's generic journal; a chain that does not verify from its stored tail is BUSBAR-2048.
 
 <a id="plane-demotion-write-failed"></a>
 ### BUSBAR-7094 — Durable plane demotion record could not be written
