@@ -3233,7 +3233,7 @@ impl IngressReply {
     ) -> Response {
         let IngressReply {
             mut head,
-            mut body,
+            body,
             mut trailers,
         } = self;
         let first = tokio::select! {
