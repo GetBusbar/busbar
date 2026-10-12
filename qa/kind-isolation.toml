@@ -1558,8 +1558,8 @@ cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain 
 [[law0]]
 crate = "busbar"
 axis  = "plane"
-count = "805"
-cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; RE-ARMED 798 -> 822 (Law 9, BUSBAR-1.6.0.md: it pins its ceiling at TODAY'S MEASURED VALUE): the row went live on predev at dc83ff1553 (#597) and measured 826 there; the 798 was f830faa691's, nine hours older than the arming, so the row armed red. 822 is predev 9c0a394771's measure, at or under the arming value; LOWERED 822 -> 805 by FLIP-STREAMING (Law 9: the ceiling ratchets down): predev measured 829 (seven over the row), and the flip drained 24 from the root (the deleted plane's rows leave the root's claim fixtures, and its session-door cells, registry pins and test comments name no plane)"
+count = "808"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; RE-ARMED 798 -> 822 (Law 9, BUSBAR-1.6.0.md: it pins its ceiling at TODAY'S MEASURED VALUE): the row went live on predev at dc83ff1553 (#597) and measured 826 there; the 798 was f830faa691's, nine hours older than the arming, so the row armed red. 822 is predev 9c0a394771's measure, at or under the arming value; LOWERED 822 -> 805 by FLIP-STREAMING (Law 9: the ceiling ratchets down): predev measured 829 (seven over the row), and the flip drained 24 from the root (the deleted plane's rows leave the root's claim fixtures, and its session-door cells, registry pins and test comments name no plane); RE-MEASURED 805 -> 808 on FLIP-STREAMING merged with predev 62fdbdf3bc, still a lowering of the 822 row and under predev's own 824: the root-crate no-silent-skip rule (#712) makes the session door's root cells a cfg naming the subject, never a skip, and `linked_section_streams` is that cfg at its three sites (serve_tests' session_door module, secret_source's session_door_cells module and its driven() roster), as `linked_section_decisions` is the decisions door's"
 
 [[law0]]
 crate = "busbar"
