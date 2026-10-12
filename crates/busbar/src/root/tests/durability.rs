@@ -2858,8 +2858,8 @@ fn a_driven_unit_killed_mid_stream_over_the_store_is_recovered_at_its_flushed_ch
     use std::sync::Arc;
 
     let slots = crate::root::store_double::RecordSlots::new();
-    let principal = PrincipalId::new("vk_streaming_store");
-    let balance = totals_key("vk_streaming_store");
+    let principal = PrincipalId::new("vk_driven_unit_store");
+    let balance = totals_key("vk_driven_unit_store");
     let unit = busbar_contract::UnitKey::new(9);
     let arrived = crate::root::plane_node::Arrived::at(ARRIVED_MS, 91);
     {
