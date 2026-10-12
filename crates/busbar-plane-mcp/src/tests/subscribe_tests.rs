@@ -218,3 +218,24 @@ fn the_long_lived_response_holds_no_principal_it_resolved_at_open() {
         "an ended stream writes nothing more, whatever a later frame would say"
     );
 }
+
+/// A request naming more distinct uris than the ceiling is refused as soon as the distinct count
+/// passes it, never after reading the rest of the array; duplicates are folded without a scan of
+/// what was kept, so many copies of a few uris are accepted.
+#[test]
+fn the_distinct_uris_are_counted_through_a_set_and_the_ceiling_refuses_at_once() {
+    let many: Vec<String> = (0..200).map(|n| format!("file:///r{n}")).collect();
+    let params = json!({ "notifications": { "resourceSubscriptions": many } });
+    let refused = Listen::open(Some(&params), json!("sub"), 0, |_| true).expect_err("over the cap");
+    let message = refused["error"]["message"].as_str().expect("a sentence");
+    assert!(
+        message.contains(&format!("names {} distinct uris", MAX_SUBSCRIBED_URIS + 1)),
+        "the refusal came at the first uri past the ceiling: {message}"
+    );
+    let copies: Vec<&str> = (0..100_000)
+        .map(|n| ["file:///a", "file:///b", "file:///c"][n % 3])
+        .collect();
+    let params = json!({ "notifications": { "resourceSubscriptions": copies } });
+    let l = Listen::open(Some(&params), json!("sub"), 0, |_| true).expect("duplicates fold");
+    assert_eq!(l.accepted().resources.as_ref().map(Vec::len), Some(3));
+}

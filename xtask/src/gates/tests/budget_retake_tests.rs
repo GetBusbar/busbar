@@ -126,3 +126,28 @@ fn a_test_still_refuses_a_wrong_verdict() {
         "{errs:?}"
     );
 }
+
+/// RULING (a), THE DISPATCHER SIDE. `cargo test -p xtask` reaches `run_selftest` through
+/// `cli::main` in-process (`gate segregation --selftest` in `cli::tests` and `tests/cli.rs`), so
+/// the budget is off unless the binary turned it on — and a test process never does. RED arm: the
+/// same judge, with a budget handed to it, still refuses a battery that cannot meet it.
+#[test]
+fn the_dispatcher_judges_the_budget_only_in_the_binary() {
+    assert!(
+        !selftest_budget_enabled(),
+        "a test process must not read the work-unit budget: only xtask's main enables it"
+    );
+    let cx = crate::ctx::Ctx::workspace().expect("the workspace opens");
+    let gate = (find("design-docs-allowlist").expect("registered").build)();
+    let report = gate.selftest(&cx);
+    let _ = report.cases();
+    verify_selftest(gate.as_ref(), &report, &cx).expect("in a test process: verdict and coverage");
+    verify_selftest_within(gate.as_ref(), &report, &cx, None).expect("no budget is read");
+    let errs = verify_selftest_within(gate.as_ref(), &report, &cx, Some(0.0))
+        .expect_err("with a budget, an over-budget battery is red");
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("work units against a budget")),
+        "{errs:?}"
+    );
+}
