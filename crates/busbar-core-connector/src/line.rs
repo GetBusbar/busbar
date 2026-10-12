@@ -312,19 +312,29 @@ impl Line {
     }
 
     /// Upgrade this line's connection to connection security (a secure upgrade on an open dialled
-    /// line), offering `name` (see [`Connection::upgrade_secure`]).
+    /// line), offering `name` (see [`Connection::upgrade_secure`]). `unread_above` = the holder
+    /// still keeps clear bytes it took off the line. Those, and a piece parked here unread, would
+    /// be read after the upgrade as the verified far end's, so the upgrade is refused and the
+    /// connection fails ([`crate::compose::UPGRADE_OVER_CLEAR_BYTES`]); what was parked is never
+    /// read, the failure is.
     pub(crate) fn upgrade_secure(
         &self,
         config: &Arc<rustls::ClientConfig>,
         name: &str,
         timeout: std::time::Duration,
+        unread_above: bool,
         cx: &mut Context<'_>,
     ) -> Poll<Result<(), Failure>> {
         let mut s = self.state.lock().expect("line");
+        let parked = s.parked.values().any(|q| !q.is_empty());
         let Some(conn) = s.conn.as_mut() else {
             return Poll::Ready(Err(Failure::Closed));
         };
-        conn.upgrade_secure(config, name, timeout, cx)
+        let answer = conn.upgrade_secure_over(config, name, timeout, unread_above || parked, cx);
+        if matches!(&answer, Poll::Ready(Err(_))) && !conn.live() {
+            s.parked.clear();
+        }
+        answer
     }
 
     /// The SHA-256 of the far end's certificate, once a handshake completed (see

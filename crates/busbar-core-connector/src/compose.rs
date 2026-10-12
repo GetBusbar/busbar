@@ -224,6 +224,13 @@ pub struct Connection {
 pub const PIN_REFUSED: &str =
     "tls: the far end's key is not the one its trust anchors pin; refused before any request byte";
 
+/// THE REFUSAL OF AN UPGRADE OVER UNREAD CLEAR BYTES (STARTTLS response injection, the class of
+/// CVE-2021-23214): the far end sent bytes in the clear that the caller has not read when it asked
+/// for connection security. Read after the upgrade they would pass as the verified far end's, so
+/// the upgrade is refused and the connection fails, closed.
+pub const UPGRADE_OVER_CLEAR_BYTES: &str =
+    "tls: bytes the far end sent in the clear are still unread; the upgrade is refused";
+
 /// One of a listener's connection slots, held by the connection it admitted and freed on drop.
 #[derive(Debug)]
 pub struct Slot(Arc<std::sync::atomic::AtomicUsize>);
@@ -983,7 +990,9 @@ impl Connection {
     /// # Errors
     ///
     /// [`Failure::Refused`]: the connection is an accepted one, was secured at its dial, the name
-    /// is not a server name, or the far end's certificate or handshake was refused.
+    /// is not a server name, the far end's certificate or handshake was refused, or a piece the
+    /// far end sent in the clear is still unread in the connection's inbox when the upgrade
+    /// starts ([`UPGRADE_OVER_CLEAR_BYTES`]; the connection fails with it).
     pub fn upgrade_secure(
         &mut self,
         config: &Arc<rustls::ClientConfig>,
@@ -991,11 +1000,32 @@ impl Connection {
         timeout: Duration,
         cx: &mut Context<'_>,
     ) -> Poll<Result<(), Failure>> {
+        self.upgrade_secure_over(config, name, timeout, false, cx)
+    }
+
+    /// [`Self::upgrade_secure`] for a connection whose reader above (`unread_above`) still keeps
+    /// clear bytes it took off it: refused like a piece unread in the inbox.
+    pub(crate) fn upgrade_secure_over(
+        &mut self,
+        config: &Arc<rustls::ClientConfig>,
+        name: &str,
+        timeout: Duration,
+        unread_above: bool,
+        cx: &mut Context<'_>,
+    ) -> Poll<Result<(), Failure>> {
         if !self.upgraded {
             if self.side != SIDE_DIAL || self.tls.is_some() {
                 return Poll::Ready(Err(Failure::Refused(
                     "the stream is already secure, or is not a dialled one".into(),
                 )));
+            }
+            if unread_above || !self.inbox.is_empty() {
+                // Read after the upgrade, the far end's clear bytes would pass as the verified far
+                // end's (STARTTLS response injection): the connection fails, closed.
+                let f = Failure::Refused(UPGRADE_OVER_CLEAR_BYTES.into());
+                self.inbox.clear();
+                self.fail(f.clone());
+                return Poll::Ready(Err(f));
             }
             let mut config = (**config).clone();
             config.alpn_protocols.clear();

@@ -610,6 +610,78 @@ fn a_tls_upgrade_without_trust_is_refused() {
     assert!(e.0.contains("wire-store: "), "{e:?}");
 }
 
+/// A store that negotiates TLS in the clear (`STARTTLS`, answered `OK`), then upgrades and pings.
+struct StartTls;
+
+static STARTTLS_TARGET: Mutex<String> = Mutex::new(String::new());
+
+impl Hooks for StartTls {
+    fn list_denylist(_: &MemoryStore, cx: &mut Op<'_>) -> Step<RecordStoreResult<Vec<String>>> {
+        static POOL: LazyLock<Arc<Pool>> = LazyLock::new(|| Pool::new(1));
+        let target = STARTTLS_TARGET
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        drive_kept(cx, &POOL, move |w| {
+            Box::pin(async move {
+                w.connect(0, Some(&target)).await.map_err(|e| failed(&e))?;
+                let answer = line(&w, "STARTTLS").await?;
+                if answer != "OK" {
+                    return Err(RecordStoreError(format!("wire-store: answered {answer}")));
+                }
+                w.upgrade_secure(None).await.map_err(|e| failed(&e))?;
+                line(&w, "ping").await.map(|l| vec![l])
+            })
+        })
+    }
+}
+
+mod start_tls {
+    busbar_contract::store_door!(
+        crate::store_v3::wrap::Wrapped<super::StartTls>,
+        "wire-store",
+        "0",
+        64,
+        needs: super::TCP
+    );
+}
+
+/// RED (audit core-connector#3, STARTTLS response injection, the store SDK's own layer): the far
+/// end's clear `OK` arrives with a forged line behind it in ONE segment. The store reads its
+/// answer line and leaves the forged one in the wire's input; the upgrade over it is refused
+/// before any handshake, so the forged line is never parsed as the secured far end's.
+#[test]
+fn an_upgrade_over_unread_input_is_refused_before_any_handshake() {
+    let l = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = l.local_addr().expect("addr").port();
+    *STARTTLS_TARGET.lock().expect("target") = format!("localhost:{port}");
+    std::thread::spawn(move || {
+        let Ok((s, _)) = l.accept() else { return };
+        let mut r = std::io::BufReader::new(s.try_clone().expect("clone"));
+        let mut w = s;
+        let mut asked = String::new();
+        if r.read_line(&mut asked).is_ok_and(|n| n > 0) && asked.trim_end() == "STARTTLS" {
+            let _ = w.write_all(b"OK\necho FORGED\n");
+            let _ = w.flush();
+        }
+        // Then a line backend, as if TLS were up.
+        serve_lines(r, w, Behaviour::default());
+    });
+    let tls = Arc::new(TlsDouble::default());
+    let table_tls = Arc::clone(&tls);
+    let s = open_over(start_tls::door, move |d| {
+        Arc::new(TcpConns::with_tls(d.conn_waker(), table_tls))
+    });
+    let answered = ping_of(&s);
+    assert!(
+        answered
+            .as_ref()
+            .is_err_and(|e| e.0.contains("the upgrade is refused")),
+        "the forged line is never read after the upgrade; it answered {answered:?}"
+    );
+    assert!(tls.asked().is_empty(), "no handshake over unread input");
+}
+
 // ── a bound over the dial AND the handshake (VALKEY-TIMEOUT: 1.5.5 bounded both) ───────────────
 
 /// Host services offering the clock alone (the dispatcher's own timebase), refusing the rest as

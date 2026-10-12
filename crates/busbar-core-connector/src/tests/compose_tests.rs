@@ -563,3 +563,47 @@ fn a_failed_connection_names_its_stage_and_the_underlying_error() {
         );
     });
 }
+
+/// RED (audit core-connector#3, STARTTLS response injection), the connection's own layer: a raw
+/// stream whose far end answered `OK\n` with forged bytes behind it, the piece taken off the socket
+/// into the connection's inbox and not read. The upgrade is refused and the connection fails: the
+/// forged bytes are never read, least of all as a verified far end's.
+#[test]
+fn an_upgrade_over_a_piece_still_in_the_inbox_is_refused_and_the_connection_fails() {
+    worker().block_on(async {
+        let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let far = l.local_addr().unwrap().to_string();
+        tokio::spawn(async move {
+            let (mut s, _) = l.accept().await.unwrap();
+            let _ = s.write_all(b"OK\nFORGED-PLAINTEXT").await;
+            let mut sink = [0_u8; 1024];
+            while matches!(s.read(&mut sink).await, Ok(n) if n > 0) {}
+        });
+        let mut c = Planned::carried(crate::support::via(), dial(&far))
+            .and_then(|p| p.dial_at(far.parse().unwrap()))
+            .expect("dials");
+        tokio::time::timeout(
+            Duration::from_secs(10),
+            futures::future::poll_fn(|cx| c.poll_ready(cx)),
+        )
+        .await
+        .expect("the far end's clear answer arrives");
+        crate::tls::install_crypto_provider();
+        let config = Arc::new(
+            crate::tls::client::build_client_config(&Default::default())
+                .expect("the default config"),
+        );
+        let answer = futures::future::poll_fn(|cx| {
+            c.upgrade_secure(&config, "localhost", Duration::from_secs(5), cx)
+        })
+        .await;
+        assert!(
+            matches!(answer, Err(Failure::Refused(_))),
+            "a clear piece is still unread: no upgrade over it; it answered {answer:?}"
+        );
+        assert!(
+            next(&mut c).await.is_err(),
+            "the connection failed, closed: the clear piece is never read"
+        );
+    });
+}

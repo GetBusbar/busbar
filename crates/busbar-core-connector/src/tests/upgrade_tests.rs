@@ -339,3 +339,121 @@ fn verify_off_accepts_a_self_signed_far_end_for_operator_infrastructure_only() {
         );
     });
 }
+
+/// What an on-path attacker appends to the far end's clear "begin TLS" answer.
+const FORGED: &[u8] = b"FORGED-PLAINTEXT";
+
+/// A far end that reads `STARTTLS\n` in the clear and answers `OK\n` with [`FORGED`] behind it: in
+/// the same segment (`gap` = `None`), or as a segment of its own `gap` later; then the TLS
+/// handshake, and an echo of the first five bytes. Answers its address.
+async fn injecting_far_end(leaf: Vec<u8>, key: Vec<u8>, gap: Option<Duration>) -> String {
+    let acceptor = acceptor(leaf, key);
+    let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let far = l.local_addr().unwrap().to_string();
+    tokio::spawn(async move {
+        let (mut s, _) = l.accept().await.unwrap();
+        let mut asked = [0_u8; 9];
+        if s.read_exact(&mut asked).await.is_err() || &asked != b"STARTTLS\n" {
+            return;
+        }
+        let wrote = match gap {
+            None => s.write_all(&[&b"OK\n"[..], FORGED].concat()).await,
+            Some(gap) => {
+                let _ = s.write_all(b"OK\n").await;
+                let _ = s.flush().await;
+                tokio::time::sleep(gap).await;
+                s.write_all(FORGED).await
+            }
+        };
+        if wrote.is_err() || s.flush().await.is_err() {
+            return;
+        }
+        if let Ok(mut s) = acceptor.accept(s).await {
+            let mut buf = [0_u8; 5];
+            if s.read_exact(&mut buf).await.is_ok() {
+                let _ = s.write_all(&buf).await;
+                let _ = s.flush().await;
+            }
+        }
+    });
+    far
+}
+
+/// Read exactly `want` bytes with a caller buffer no longer than what is still wanted (a plugin
+/// reading a one-line answer), leaving whatever else the piece carried unread.
+async fn read_short(c: &Connector, id: ConnId, want: usize) -> Vec<u8> {
+    let mut got = Vec::new();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while got.len() < want {
+            let mut buf = vec![0_u8; want - got.len()];
+            let piece = std::future::poll_fn(|cx| c.poll_read(OWNER, id, cx, &mut buf))
+                .await
+                .expect("the clear answer reads");
+            got.extend_from_slice(&buf[..piece.len]);
+        }
+    })
+    .await
+    .expect("the read settles");
+    got
+}
+
+/// RED (audit core-connector#3, STARTTLS response injection): the far end's clear `OK\n` arrives
+/// with forged bytes behind it in ONE segment. The plugin reads its three-byte answer with a
+/// three-byte buffer, so the forged bytes are a short read's rest when it asks for the upgrade.
+/// The upgrade is refused and the stream fails: the forged bytes are never read, least of all as
+/// the verified far end's.
+#[test]
+fn an_upgrade_over_a_short_reads_unread_rest_is_refused_and_the_stream_fails() {
+    let (ca, leaf, key) = private_ca();
+    worker().block_on(async move {
+        let far = injecting_far_end(leaf, key, None).await;
+        let c = raw_connector();
+        declare(&c, "settings.ca", Some(&ca));
+        let id = open(&c, &far);
+        send(&c, id, b"STARTTLS\n").await;
+        assert_eq!(read_short(&c, id, 3).await, b"OK\n");
+        assert_eq!(
+            upgrade(&c, id, None).await,
+            Err(ConnError::Refused),
+            "clear bytes are still unread: no upgrade over them"
+        );
+        let after = gather(&c, id, FORGED.len()).await;
+        assert!(
+            after.is_err(),
+            "the stream failed, closed; it answered {after:?}"
+        );
+    });
+}
+
+/// RED (audit core-connector#3): the forged bytes come as a segment of their own after the clear
+/// `OK\n`, and a readiness wait takes them off the socket onto the line before the plugin asks for
+/// the upgrade. Parked and unread, they refuse the upgrade and fail the stream.
+#[test]
+fn an_upgrade_over_a_piece_parked_on_the_line_is_refused_and_the_stream_fails() {
+    let (ca, leaf, key) = private_ca();
+    worker().block_on(async move {
+        let far = injecting_far_end(leaf, key, Some(Duration::from_millis(200))).await;
+        let c = raw_connector();
+        declare(&c, "settings.ca", Some(&ca));
+        let id = open(&c, &far);
+        send(&c, id, b"STARTTLS\n").await;
+        assert_eq!(gather(&c, id, 3).await.as_deref(), Ok(&b"OK\n"[..]));
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while Conns::wait(&c, OWNER, &[id], NO_TICKET) != Ok(0) {
+                tokio::time::sleep(Duration::from_millis(2)).await;
+            }
+        })
+        .await
+        .expect("the forged segment arrives");
+        assert_eq!(
+            upgrade(&c, id, None).await,
+            Err(ConnError::Refused),
+            "a parked clear piece is still unread: no upgrade over it"
+        );
+        let after = gather(&c, id, FORGED.len()).await;
+        assert!(
+            after.is_err(),
+            "the stream failed, closed; it answered {after:?}"
+        );
+    });
+}
