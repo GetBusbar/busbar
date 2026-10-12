@@ -463,10 +463,18 @@ fn file_literals(rel: &str, text: &str) -> std::sync::Arc<Vec<(usize, String)>> 
         return std::sync::Arc::clone(found);
     }
     let mut out = Vec::new();
-    for (i, raw) in text.lines().enumerate() {
-        if !raw.contains('"') {
+    let rust = rel.ends_with(".rs");
+    for (i, line) in text.lines().enumerate() {
+        if !line.contains('"') {
             continue;
         }
+        // An `extern "…"` ABI string is Rust syntax, not vocabulary (ARCHITECT ruling on #787).
+        let unabi = if rust {
+            without_abi_strings(line)
+        } else {
+            std::borrow::Cow::Borrowed(line)
+        };
+        let raw: &str = &unabi;
         // Every literal on its own, and then any string the JOINED reading adds — a name split
         // across `concat!("ot", "lp")` is one name to the compiler and one hit here.
         let own: Vec<String> = decoded_literals(raw)
@@ -491,6 +499,74 @@ fn file_literals(rel: &str, text: &str) -> std::sync::Arc<Vec<(usize, String)>> 
         .expect("never poisoned")
         .insert(key, std::sync::Arc::clone(&out));
     out
+}
+
+/// `line` without the string of an ABI POSITION: the literal right after the keyword `extern`
+/// (`extern "C" fn`, `extern "C-unwind" {`, `unsafe extern "C"`) and the value of an `abi = "…"`
+/// argument (an attribute's ABI form). That string names a calling convention: it is Rust syntax,
+/// not instance vocabulary, so the instance axes do not read it (ARCHITECT ruling on #787: a
+/// scanner precision fix, not a Law 0 drain). Exactly that position: the same word in any other
+/// literal, the next one on the line included, is still read.
+fn without_abi_strings(line: &str) -> std::borrow::Cow<'_, str> {
+    if !line.contains("extern") && !line.contains("abi") {
+        return std::borrow::Cow::Borrowed(line);
+    }
+    let bytes = line.as_bytes();
+    let word_at = |at: usize, word: &str| {
+        bytes[at..].starts_with(word.as_bytes())
+            && (at == 0 || !(bytes[at - 1].is_ascii_alphanumeric() || bytes[at - 1] == b'_'))
+            && bytes
+                .get(at + word.len())
+                .is_none_or(|b| !(b.is_ascii_alphanumeric() || *b == b'_'))
+    };
+    let skip_ws = |mut at: usize| {
+        while bytes.get(at).is_some_and(u8::is_ascii_whitespace) {
+            at += 1;
+        }
+        at
+    };
+    // Bytes are walked for the syntax (a quote and a backslash are one byte in UTF-8 and never a
+    // continuation byte); the text is copied in slices, so a multi-byte character is never split.
+    let mut out = String::with_capacity(line.len());
+    let mut copied = 0usize;
+    let mut at = 0usize;
+    let mut in_str = false;
+    while at < bytes.len() {
+        let b = bytes[at];
+        if in_str {
+            if b == b'\\' {
+                at += 2;
+                continue;
+            }
+            if b == b'"' {
+                in_str = false;
+            }
+            at += 1;
+            continue;
+        }
+        let abi_after = if word_at(at, "extern") {
+            Some(skip_ws(at + "extern".len()))
+        } else if word_at(at, "abi") {
+            let eq = skip_ws(at + "abi".len());
+            (bytes.get(eq) == Some(&b'=')).then(|| skip_ws(eq + 1))
+        } else {
+            None
+        };
+        if let Some(open) = abi_after.filter(|o| bytes.get(*o) == Some(&b'"')) {
+            if let Some(len) = line[open + 1..].find('"') {
+                out.push_str(&line[copied..open]);
+                at = open + 1 + len + 1;
+                copied = at;
+                continue;
+            }
+        }
+        if b == b'"' {
+            in_str = true;
+        }
+        at += 1;
+    }
+    out.push_str(&line[copied.min(line.len())..]);
+    std::borrow::Cow::Owned(out)
 }
 
 /// THE INSTANCE NAMES THAT ARE ALSO AN HTTP WORD (TODO: "a word collision never raises a cell: it
@@ -1176,6 +1252,52 @@ pub fn selftest<'a>(
             "unlisted-instance",
             &super::fixture_subject("auth"),
             "planted_header_pick.rs",
+        ],
+    ));
+
+    // AN `extern "…"` ABI STRING IS SYNTAX, NOT VOCABULARY (ARCHITECT ruling on #787): the `c`
+    // secret plugin's name (plugins.yaml `busbar-secret-c`) is the lower-cased string of every
+    // `extern "C"`, and that position is not read. GREEN: a neutral crate's `extern "C" fn` and an
+    // attribute's `abi = "C"` name no instance. RED: the same plugin named as a value, alone or on
+    // the very line of an `extern "C"`, still counts.
+    report.push(prove_rows_green(
+        cx,
+        gate,
+        "an `extern \"C\"` ABI string names no secret instance",
+        &[ROW_MATRIX],
+        super::fixture_files(&[(
+            "planted_abi.rs",
+            "pub extern \"C\" fn planted_abi() {}\npub unsafe extern \"C-unwind\" fn planted_unwind() {}\n#[planted(abi = \"C\")]\npub struct PlantedAbi;\n",
+        )]),
+    ));
+    report.push(prove_rows_red(
+        cx,
+        gate,
+        "a `\"c\"` literal naming the secret plugin in a neutral crate still counts",
+        &[ROW_MATRIX],
+        super::fixture_files(&[(
+            "planted_secret_c.rs",
+            "pub fn pick(module: &str) -> bool {\n    module == \"c\"\n}\n",
+        )]),
+        &[
+            "unlisted-instance",
+            &super::fixture_subject("secret"),
+            "planted_secret_c.rs",
+        ],
+    ));
+    report.push(prove_rows_red(
+        cx,
+        gate,
+        "the secret plugin's name on the line of an `extern \"C\"` still counts",
+        &[ROW_MATRIX],
+        super::fixture_files(&[(
+            "planted_abi_and_name.rs",
+            "pub extern \"C\" fn planted_module() -> *const u8 { \"C\".as_ptr() }\n",
+        )]),
+        &[
+            "unlisted-instance",
+            &super::fixture_subject("secret"),
+            "planted_abi_and_name.rs",
         ],
     ));
 
