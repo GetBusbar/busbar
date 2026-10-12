@@ -143,8 +143,8 @@ fn with_seal<R>(
         },
         wake: None,
         conns: std::ptr::null(),
-        services: table,
         io: std::ptr::null(),
+        services: table,
     };
     let (mut issued, mut claim) = (0u32, None);
     let mut seal = DoorSeal {

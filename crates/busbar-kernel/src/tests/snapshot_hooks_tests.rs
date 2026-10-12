@@ -1,34 +1,15 @@
 //! Tests for the hook-metrics exposition (v1.5.5's `hooks/tests/scrape_tests.rs`, verbatim). The
-//! fold is the snapshot service's ([`families_of`]); the text is the prometheus export plugin's hook
-//! rendering, the one `/metrics/hooks` is served by, so `render_text` runs that chain and every
-//! assertion is on the bytes an operator scrapes — without a live hook or socket.
+//! fold is the snapshot service's ([`families_of`]); the text is the test view of the folded
+//! families (`test_support::export_axis::lines`, the scrape double's rendering, R-FIX3), so
+//! `render_text` runs the fold and every assertion is on the families it hands a scrape sink —
+//! without a live hook or socket. The real scrape sink's hook rendering is proven in its own repo.
 
 use super::*;
 use std::collections::BTreeMap;
 
-/// The `/metrics/hooks` exposition of `hooks`: the fold, then the scrape sink's hook rendering.
+/// The `/metrics/hooks` families of `hooks` (the fold), in the test view.
 fn render_text(hooks: &[(String, Vec<HookMetric>)]) -> String {
-    use busbar_contract::abi::sdk::{MetricFamily, MetricSample};
-    let families: Vec<MetricFamily> = families_of(hooks)
-        .into_iter()
-        .map(|f| MetricFamily {
-            name: f.name,
-            kind: busbar_contract::export_calls::type_word(f.kind)
-                .expect("a kind in the vocabulary")
-                .to_string(),
-            help: f.help,
-            samples: f
-                .samples
-                .into_iter()
-                .map(|s| MetricSample {
-                    name: s.name,
-                    labels: s.labels,
-                    value: s.value,
-                })
-                .collect(),
-        })
-        .collect();
-    busbar_export_prometheus::render_hooks(&families)
+    crate::test_support::export_axis::lines(&families_of(hooks))
 }
 
 fn metric(name: &str, kind: &str, value: f64) -> HookMetric {

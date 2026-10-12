@@ -179,6 +179,13 @@ pub fn cdylib(snake: &str) -> Option<Vec<u8>> {
     std::fs::read(cdylib_path(snake)?).ok()
 }
 
+/// The pinned token-verifying `kind: auth` plugin's built `cdylib` (a git dev-dependency of this
+/// crate, so the build leaves it under `deps/` with a metadata hash): the ONE place the root's auth
+/// proofs name it.
+pub fn token_verifier_cdylib_path() -> Option<PathBuf> {
+    cdylib_path("busbar_auth_oidc_plugin")
+}
+
 /// Every loadable plugin library in the target directory (uplifted, under `deps/`, or an example
 /// `cdylib` under `examples/`), newest first.
 fn libraries() -> Vec<PathBuf> {
