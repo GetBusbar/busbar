@@ -64,7 +64,7 @@ pub mod tls;
 pub mod udp;
 pub mod wire;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::future::Future as _;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -257,16 +257,23 @@ fn pended_verdict(v: Verdict) -> ConnError {
 /// value, or a field that states the message's own framing (`content-length`,
 /// `transfer-encoding`, any case), refuses the whole open before anything is dialled or sent. The
 /// framer writes the framing for the bytes it sends; a plugin's own would describe another wire.
-fn head_is_refused(desc: &OpenDesc<'_>) -> bool {
+/// Where the host writes the opener's authority (`authority_held`,
+/// [`DeclaredConns::hold_authority`]: every instance of the auth kind), a `host` field of the
+/// plugin's own refuses the open too, as 1.5.5 refused it on an auth module's request; every other
+/// opener (a plane's upstream, which may sign its `host`) keeps the field it wrote.
+fn head_is_refused(desc: &OpenDesc<'_>, authority_held: bool) -> bool {
     const FRAMING: [&str; 2] = ["content-length", "transfer-encoding"];
+    const AUTHORITY: &str = "host";
     let breaks = |b: &[u8]| b.iter().any(|c| matches!(c, b'\r' | b'\n' | b'\0'));
     breaks(desc.target.as_bytes())
         || breaks(desc.method)
         || breaks(desc.head_target)
         || desc.fields.iter().any(|(name, value)| {
+            let name_is = |f: &str| name.trim().eq_ignore_ascii_case(f);
             breaks(name.as_bytes())
                 || breaks(value)
-                || FRAMING.iter().any(|f| name.trim().eq_ignore_ascii_case(f))
+                || FRAMING.iter().any(|f| name_is(f))
+                || (authority_held && name_is(AUTHORITY))
         })
 }
 
@@ -482,6 +489,9 @@ pub struct Connector {
     /// Each member's auth binding, by (instance, need, target origin): what a plugin's own request
     /// to that member is authenticated with ([`DeclaredConns::bind_auth`]).
     auths: Mutex<HashMap<(InstanceId, NeedId, String), busbar_contract::conn::ConnAuth>>,
+    /// The instances whose connections' authority the host writes
+    /// ([`DeclaredConns::hold_authority`]): their opens are refused a `host` field of their own.
+    authority_held: Mutex<HashSet<InstanceId>>,
 }
 
 impl std::fmt::Debug for Connector {
@@ -505,6 +515,7 @@ impl Default for Connector {
             anchored: Mutex::new(HashMap::new()),
             reaching: Mutex::new(HashMap::new()),
             auths: Mutex::new(HashMap::new()),
+            authority_held: Mutex::new(HashSet::new()),
         }
     }
 }
@@ -1340,6 +1351,13 @@ fn carries_userinfo(target: &str) -> bool {
 }
 
 impl DeclaredConns for Connector {
+    fn hold_authority(&self, owner: InstanceId) {
+        self.authority_held
+            .lock()
+            .expect("authority held")
+            .insert(owner);
+    }
+
     fn declare(
         &self,
         owner: InstanceId,
@@ -1561,7 +1579,12 @@ impl Conns for Connector {
         desc: &OpenDesc<'_>,
     ) -> Result<ConnId, ConnError> {
         self.slab.check_need(caller, need)?;
-        if head_is_refused(desc) {
+        let authority_held = self
+            .authority_held
+            .lock()
+            .expect("authority held")
+            .contains(&caller);
+        if head_is_refused(desc, authority_held) {
             return Err(ConnError::Refused);
         }
         // A need declared without a transport (an inbound need) dials nothing.

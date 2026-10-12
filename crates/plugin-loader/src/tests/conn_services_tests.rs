@@ -50,6 +50,9 @@ struct Recording {
     programs: Mutex<Vec<(InstanceId, NeedId, busbar_contract::conn::Program)>>,
     /// Every member-program declaration: owner, need and the members' programs.
     members: Mutex<Vec<MemberDeclared>>,
+    /// Every instance whose authority the host was asked to hold, and how many of its needs had
+    /// been declared by then.
+    held: Mutex<Vec<(InstanceId, usize)>>,
 }
 
 /// One member-program declaration as it reached the table.
@@ -60,6 +63,16 @@ type MemberDeclared = (
 );
 
 impl DeclaredConns for Recording {
+    fn hold_authority(&self, owner: InstanceId) {
+        let before = self
+            .declared
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|d| d.0 == owner)
+            .count();
+        self.held.lock().unwrap().push((owner, before));
+    }
     fn declare(
         &self,
         owner: InstanceId,
@@ -1713,3 +1726,77 @@ fn an_establish_names_its_registration_and_a_shorter_head_names_none() {
 // ruling 2026-10-07).
 #[path = "member_secret_tests.rs"]
 mod member_secret_tests;
+
+/// The test plugin's door bound as an AUTH-kind instance: the same lifecycle skeleton as
+/// [`TestKind`], under the auth kind's code.
+struct AuthShaped;
+impl crate::dispatch::Kind for AuthShaped {
+    const CODE: busbar_contract::abi::mechanism::KindCode =
+        busbar_contract::abi::mechanism::KindCode::Auth;
+    type Ops = busbar_contract::abi::mechanism::lifecycle::OpsHead;
+    const TIMEOUT: Outcome = Outcome::Failed;
+}
+
+/// RED (ARCHITECT ruling on #780, Part 1 Law 0 and Part 2 #3: auth is one kind): the loader asks
+/// the host's connection table to hold the AUTHORITY of every auth-kind instance
+/// ([`DeclaredConns::hold_authority`]) before it declares any of the instance's needs, so every
+/// connection the instance opens through its own needs (token exchange, key set, login) is refused
+/// a `host` field of its own, as 1.5.5 refused it on an auth module's request. An instance of any
+/// other kind (here the test plugin's own, export) is never held: a plane's upstream keeps the
+/// `host` it signs. RED on the loader that held no instance's authority.
+#[test]
+fn an_auth_instances_authority_is_held_before_its_needs_are_declared() {
+    use busbar_contract::abi::mechanism::KindCode;
+    let table = Arc::new(Recording::default());
+    let unpinned: &'static [Need] = Box::leak(Box::new([Need {
+        target_from: NONE,
+        ..NEEDS[0]
+    }]));
+    // SAFETY: the real door and its Statement are `'static`.
+    let real: Door = unsafe { *plug::busbar_plugin_door() };
+    let st: Statement = unsafe { *real.statement };
+    let auth = KindCode::Auth;
+    let st: &'static Statement = Box::leak(Box::new(Statement {
+        kind: auth as u32,
+        kind_abi: auth.abi_version(),
+        needs: unpinned.as_ptr(),
+        needs_len: unpinned.len(),
+        ..st
+    }));
+    let door: &'static Door = Box::leak(Box::new(Door {
+        kind: auth as u32,
+        kind_abi: auth.abi_version(),
+        statement: st,
+        ..real
+    }));
+    let v = validate_door::<AuthShaped>(door).expect("the auth-kind door validates");
+    let conns: Arc<dyn DeclaredConns> = table.clone();
+    let p = Plugin::<AuthShaped>::bind(
+        v,
+        None,
+        Bind {
+            instance: Arc::from("the-auth-instance"),
+            max_inflight_cap: 8,
+            sink: Arc::new(NoSink),
+            dispatcher: Adopter::unwatched(),
+            conns: crate::dispatch::ConnTable::Host(conns),
+        },
+    )
+    .expect("the auth-kind instance binds");
+    let declared: Vec<InstanceId> = table.declared.lock().unwrap().iter().map(|d| d.0).collect();
+    assert_eq!(declared.len(), 1, "its one need is declared at bind");
+    assert_eq!(
+        *table.held.lock().unwrap(),
+        vec![(declared[0], 0)],
+        "the auth instance is held, before any of its needs is declared"
+    );
+    drop(p);
+    // An instance of another kind is never held.
+    let other = Arc::new(Recording::default());
+    let _p = bound(unpinned, &other);
+    assert_eq!(other.declared.lock().unwrap().len(), 1);
+    assert!(
+        other.held.lock().unwrap().is_empty(),
+        "a non-auth instance keeps the host field it writes"
+    );
+}
