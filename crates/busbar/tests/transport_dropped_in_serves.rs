@@ -56,19 +56,16 @@ const EXCHANGE: &str = include_str!("fixtures/transport_dropped_in_exchange.txt"
 /// (`common::plugins::transport_cdylib_under`). No linked layer composes over another (ARCHITECT
 /// ruling Q128 U7: no transport names another), so no key is needed under them and any transport
 /// door beside the binary is the proof's subject: a linked key's tarball is refused as a second
-/// plugin with that key, an unlinked key's registers through the one fold. Under CI a missing
-/// artifact is a hard failure, never a silent skip.
-fn transport_cdylib() -> Option<(Vec<u8>, &'static str)> {
+/// plugin with that key, an unlinked key's registers through the one fold. A missing artifact is a
+/// hard failure in every run, never a silent skip.
+fn transport_cdylib() -> (Vec<u8>, &'static str) {
     let under: Vec<&str> = LINKED_TRANSPORTS
         .iter()
         .flat_map(|w| w.composes_over.iter().copied())
         .collect();
-    let found = common::plugins::transport_cdylib_under(&under);
-    assert!(
-        found.is_some() || std::env::var_os("CI").is_none(),
-        "no in-tree kind: transport cdylib is built beside the binary under CI"
-    );
-    found
+    common::plugins::transport_cdylib_under(&under).unwrap_or_else(|| {
+        common::plugins::missing("kind: transport floor door", common::plugins::BUILD_PINNED)
+    })
 }
 
 fn fixture_dir(tag: &str) -> PathBuf {
@@ -316,10 +313,7 @@ fn pinned() -> String {
 
 #[test]
 fn a_dropped_in_transport_registers_through_the_one_fold_and_serves() {
-    let Some((lib, key)) = transport_cdylib() else {
-        eprintln!("skip: no in-tree kind: transport cdylib is built (run under --workspace)");
-        return;
-    };
+    let (lib, key) = transport_cdylib();
     let linked = LINKED_TRANSPORTS.iter().any(|w| w.key == key);
     let dir = fixture_dir("serve");
     let (data_port, admin_port) = (free_port(), free_port());
@@ -382,27 +376,23 @@ fn a_dropped_in_transport_registers_through_the_one_fold_and_serves() {
             vec![key.to_owned(); WORKERS],
             "every data worker accepts through the dropped-in carrier"
         );
-        if let Some(neutral) = common::plugins::neutral_frame_door_bytes() {
-            drop_in_as(&dir, &neutral, "a-neutral-framer");
-            let (served, _, through) = serve_once(&dir, data_port, WORKERS);
-            assert_eq!(
-                served,
-                pinned(),
-                "a framer beside the carrier moves no byte"
-            );
-            assert_eq!(through, WORKERS);
-            assert_eq!(
-                carriers(&dir),
-                vec![key.to_owned(); WORKERS],
-                "the neutral framer, declared first, is never the address carrier"
-            );
-            std::fs::remove_file(dir.join("plugins").join("a-neutral-framer.tar.gz")).unwrap();
-        } else {
-            assert!(
-                std::env::var_os("CI").is_none(),
-                "the neutral frame door is built beside the binary under CI"
-            );
-        }
+        let neutral = common::plugins::neutral_frame_door_bytes().unwrap_or_else(|| {
+            common::plugins::missing("neutral_frame_door", common::plugins::BUILD_LOADER_EXAMPLES)
+        });
+        drop_in_as(&dir, &neutral, "a-neutral-framer");
+        let (served, _, through) = serve_once(&dir, data_port, WORKERS);
+        assert_eq!(
+            served,
+            pinned(),
+            "a framer beside the carrier moves no byte"
+        );
+        assert_eq!(through, WORKERS);
+        assert_eq!(
+            carriers(&dir),
+            vec![key.to_owned(); WORKERS],
+            "the neutral framer, declared first, is never the address carrier"
+        );
+        std::fs::remove_file(dir.join("plugins").join("a-neutral-framer.tar.gz")).unwrap();
         // RED: and it DID register — a second copy of the same wire is a second transport plugin
         // declaring one key, refused at boot exactly as the linked build refuses the first.
         drop_in_as(&dir, &lib, "dropped-wire-again");
