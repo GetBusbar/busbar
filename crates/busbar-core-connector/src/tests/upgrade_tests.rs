@@ -40,6 +40,22 @@ fn private_ca() -> (String, Vec<u8>, Vec<u8>) {
     (ca.pem(), leaf.der().to_vec(), kp.serialize_der())
 }
 
+/// [`private_ca`] whose CA key is P-384, so the leaf it signs is signed `ecdsa-with-SHA384`.
+fn private_p384_ca() -> (String, Vec<u8>, Vec<u8>) {
+    use rcgen::{CertificateParams, IsCa, Issuer, KeyPair};
+    let ca_kp = KeyPair::generate_for(&rcgen::PKCS_ECDSA_P384_SHA384).unwrap();
+    let mut ca_params = CertificateParams::new(Vec::new()).unwrap();
+    ca_params.is_ca = IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+    let ca = ca_params.self_signed(&ca_kp).unwrap();
+    let issuer = Issuer::from_params(&ca_params, ca_kp);
+    let kp = KeyPair::generate().unwrap();
+    let leaf = CertificateParams::new(vec!["localhost".to_owned()])
+        .unwrap()
+        .signed_by(&kp, &issuer)
+        .unwrap();
+    (ca.pem(), leaf.der().to_vec(), kp.serialize_der())
+}
+
 fn acceptor(leaf: Vec<u8>, key: Vec<u8>) -> tokio_rustls::TlsAcceptor {
     crate::tls::install_crypto_provider();
     let server = rustls::ServerConfig::builder()
@@ -455,5 +471,37 @@ fn an_upgrade_over_a_piece_parked_on_the_line_is_refused_and_the_stream_fails() 
             after.is_err(),
             "the stream failed, closed; it answered {after:?}"
         );
+    });
+}
+
+/// RED (audit core-connector#10): the channel-binding input is the far end's certificate hashed
+/// as RFC 5929 section 4.1 `tls-server-end-point` says: with the certificate's signature hash. A
+/// leaf signed `ecdsa-with-SHA384` binds with SHA-384 (a SCRAM-*-PLUS server computes the same).
+#[test]
+fn a_sha384_signed_far_end_binds_with_sha384() {
+    use sha2::Digest as _;
+    let (ca, leaf, key) = private_p384_ca();
+    let expected: String = sha2::Sha384::digest(&leaf)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    worker().block_on(async move {
+        let far = far_end(leaf, key, b"STARTTLS\n").await;
+        let c = raw_connector();
+        declare(&c, "settings.ca", Some(&ca));
+        let id = open(&c, &far);
+        send(&c, id, b"STARTTLS\n").await;
+        assert_eq!(gather(&c, id, 3).await.as_deref(), Ok(&b"OK\n"[..]));
+        assert_eq!(upgrade(&c, id, Some("settings.ca")).await, Ok(()));
+        assert_eq!(
+            c.facts(OWNER, id)
+                .unwrap()
+                .peer_cert
+                .map(|p| p.fingerprint)
+                .as_deref(),
+            Some(expected.as_str()),
+            "the binding hashes with the certificate's signature hash"
+        );
+        c.close(OWNER, id).unwrap();
     });
 }

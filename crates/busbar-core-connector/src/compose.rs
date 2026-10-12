@@ -1078,14 +1078,19 @@ impl Connection {
         self.tls.as_ref().is_some_and(|t| t.is_handshaking())
     }
 
-    /// The SHA-256 of the far end's certificate (the channel-binding input), lower-case hex, once a
-    /// handshake completed; `None` on a connection in the clear or still handshaking.
+    /// The far end's certificate hashed as RFC 5929 section 4.1 `tls-server-end-point` hashes it
+    /// (the channel-binding input; SHA-256 unless the certificate is signed with SHA-384 or
+    /// SHA-512, [`crate::tls::client::end_point_digest`]), lower-case hex, once a handshake
+    /// completed; `None` on a connection in the clear or still handshaking.
     #[must_use]
     pub fn peer_cert_hash(&self) -> Option<String> {
         use std::fmt::Write as _;
         let tls = self.tls.as_ref().filter(|t| !t.is_handshaking())?;
         let leaf = tls.peer_certificates()?.first()?;
-        let digest = ring::digest::digest(&ring::digest::SHA256, leaf.as_ref());
+        let digest = ring::digest::digest(
+            crate::tls::client::end_point_digest(leaf.as_ref()),
+            leaf.as_ref(),
+        );
         Some(
             digest
                 .as_ref()

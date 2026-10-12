@@ -337,7 +337,7 @@ impl Line {
         answer
     }
 
-    /// The SHA-256 of the far end's certificate, once a handshake completed (see
+    /// The far end's certificate hash (the channel-binding input), once a handshake completed (see
     /// [`Connection::peer_cert_hash`]).
     pub(crate) fn peer_cert_hash(&self) -> Option<String> {
         let s = self.state.lock().expect("line");
