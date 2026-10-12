@@ -607,3 +607,43 @@ fn an_upgrade_over_a_piece_still_in_the_inbox_is_refused_and_the_connection_fail
         );
     });
 }
+
+/// RED (audit core-connector#6): a far end that sends far more than its holder reads (64 MiB, the
+/// holder only waiting on readiness) is held back by the receive cap: the line stops reading, so
+/// the far end's own flow control stops it, short of what it meant to send.
+#[test]
+fn a_holder_that_does_not_read_holds_the_far_end_back() {
+    const SENT: usize = 64 * 1024 * 1024;
+    worker().block_on(async {
+        let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let far = l.local_addr().unwrap().to_string();
+        let written = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = Arc::clone(&written);
+        tokio::spawn(async move {
+            let (mut s, _) = l.accept().await.unwrap();
+            let chunk = vec![7_u8; 64 * 1024];
+            for _ in 0..SENT / chunk.len() {
+                if s.write_all(&chunk).await.is_err() {
+                    return;
+                }
+                counted.fetch_add(chunk.len(), std::sync::atomic::Ordering::SeqCst);
+            }
+        });
+        let conn = Planned::carried(crate::support::via(), dial(&far))
+            .and_then(|p| p.dial_at(far.parse().unwrap()))
+            .expect("dials");
+        let line = crate::line::Line::new(conn);
+        let waker = std::task::Waker::noop();
+        let started = Instant::now();
+        while started.elapsed() < Duration::from_secs(2) {
+            let _ = line.poll_ready(EXCHANGE_STREAM, &mut std::task::Context::from_waker(waker));
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+        let written = written.load(std::sync::atomic::Ordering::SeqCst);
+        assert!(
+            written < SENT / 2,
+            "the far end wrote {written} of {SENT} bytes to a holder that never read: the line took \
+             them all"
+        );
+    });
+}

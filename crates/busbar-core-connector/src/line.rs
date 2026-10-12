@@ -23,7 +23,9 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, Wake, Waker};
 
-use crate::compose::{Connection, Failure, HeadWords, Opening, EXCHANGE_STREAM};
+use crate::compose::{
+    Connection, Failure, HeadWords, Opening, EXCHANGE_STREAM, RECEIVE_BUFFER_BYTES,
+};
 use crate::framer::{Established, Got};
 
 /// The key an accepted connection's one holder reads under: every stream.
@@ -85,6 +87,13 @@ struct State {
     held: HashSet<u64>,
     /// The next stream an exchange opened on this line rides.
     next: u64,
+}
+
+impl State {
+    /// The bytes of every piece parked and not yet taken.
+    fn parked_bytes(&self) -> usize {
+        self.parked.values().flatten().map(|g| g.bytes.len()).sum()
+    }
 }
 
 /// One connection, held by the exchanges riding it.
@@ -208,7 +217,9 @@ impl Line {
     }
 
     /// Read what the connection answered into the parked pieces, waking each holder a piece came
-    /// for. `Some` = the connection ended (`Ok`) or failed.
+    /// for, until [`RECEIVE_BUFFER_BYTES`] are parked: past it the connection is not read until a
+    /// holder takes some ([`Self::poll_piece`] wakes the others then). `Some` = the connection
+    /// ended (`Ok`) or failed.
     fn park_pieces(&self, s: &mut State) -> Option<Result<(), Failure>> {
         let waker = self.fan_waker();
         let mut cx = Context::from_waker(&waker);
@@ -219,7 +230,12 @@ impl Line {
         let sole = (!every && !conn.multiplexes())
             .then(|| s.held.iter().next().copied())
             .flatten();
+        let mut parked = s.parked_bytes();
         loop {
+            if parked >= RECEIVE_BUFFER_BYTES {
+                return None;
+            }
+            let conn = s.conn.as_mut()?;
             match conn.poll_piece(&mut cx) {
                 Poll::Pending => return None,
                 Poll::Ready(Ok(None)) => return Some(Ok(())),
@@ -231,6 +247,7 @@ impl Line {
                         sole.unwrap_or(got.stream)
                     };
                     if s.held.contains(&key) {
+                        parked += got.bytes.len();
                         s.parked.entry(key).or_default().push_back(got);
                         self.fan.wake_one(key);
                     }
@@ -248,7 +265,12 @@ impl Line {
     ) -> Poll<Result<Option<Got>, Failure>> {
         self.fan.wait(stream, cx.waker());
         let mut s = self.state.lock().expect("line");
+        let full = s.parked_bytes() >= RECEIVE_BUFFER_BYTES;
         if let Some(got) = s.parked.get_mut(&stream).and_then(VecDeque::pop_front) {
+            if full && s.parked_bytes() < RECEIVE_BUFFER_BYTES {
+                // Under the cap again: the connection is read again, for whoever waits on it.
+                self.fan.wake_by_ref();
+            }
             return Poll::Ready(Ok(Some(got)));
         }
         let end = self.park_pieces(&mut s);
@@ -347,12 +369,17 @@ impl Line {
     /// `stream`'s holder leaves (`whole` = its answer was read to its end); answers how many
     /// holders are left.
     pub(crate) fn leave(&self, stream: u64, whole: bool) -> usize {
-        {
+        let unparked = {
             let mut s = self.state.lock().expect("line");
             s.held.remove(&stream);
-            s.parked.remove(&stream);
-        }
+            s.parked.remove(&stream).is_some_and(|q| !q.is_empty())
+        };
         self.fan.forget(stream);
+        if unparked {
+            // What it left parked is dropped: under the cap, the connection is read again for
+            // whoever waits on it.
+            self.fan.wake_by_ref();
+        }
         if !whole {
             self.tainted.store(true, Ordering::Release);
         }

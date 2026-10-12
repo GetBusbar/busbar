@@ -60,6 +60,13 @@ pub const EXCHANGE_STREAM: u64 = 1;
 /// faster than its far end reads cannot grow the host's memory.
 pub const WRITE_BUFFER_BYTES: usize = 256 * 1024;
 
+/// THE RECEIVE BUFFER CAP: the most bytes the far end sent that one connection holds read off its
+/// socket and not yet taken by its holders (the connection's unread pieces; on a line, the pieces
+/// parked for its holders). At the cap the socket is not read until a holder takes some, so a far
+/// end that sends faster than its holder reads is held back by the transport's own flow control
+/// instead of growing the host's memory.
+pub const RECEIVE_BUFFER_BYTES: usize = 1024 * 1024;
+
 /// Why a connection did not answer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Failure {
@@ -1275,10 +1282,18 @@ impl Connection {
         }
         if !matches!(self.phase, Phase::Connecting) {
             moved |= self.flush(cx)?;
-            moved |= self.read(cx)?;
+            // At the receive cap the socket waits for the holder to take what was read.
+            if self.unread_bytes() < RECEIVE_BUFFER_BYTES {
+                moved |= self.read(cx)?;
+            }
         }
         moved |= self.keep_deadlines(cx)?;
         Ok(moved)
+    }
+
+    /// The bytes of the pieces read and not yet taken.
+    fn unread_bytes(&self) -> usize {
+        self.inbox.iter().map(|g| g.bytes.len()).sum()
     }
 
     /// Write what the carrier owes, as far as it takes it; once it took everything, its `flush`.
