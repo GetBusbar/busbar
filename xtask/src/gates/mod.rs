@@ -631,10 +631,14 @@ impl Registration {
 ///
 /// THE SELF-TEST BUDGET, AND WHY IT IS NOT MEASURED IN SECONDS.
 ///
-/// `cargo test -p xtask` runs `xtask selftest`, which drives EVERY registered gate's cases. That is
-/// the only place several of these gates are ever proven RED-able, so the shard cannot simply be
-/// made smaller -- and it grew past fifty-one minutes, on a runner whose ssh session dies at about
-/// fifty and whose gate job was cancelled at twenty-five. Nothing measured it. A rule that grew a
+/// The `test:xtask-selftest` check runs `xtask selftest <gate>` for every registered gate, split
+/// across the hop's shards (`cargo xtask gate --list` names the parts), and that is the ONE place
+/// every gate's cases are driven: `cargo test -p xtask` pins the dispatcher's arms with one gate's
+/// self-test, never all of them (verification runs once per input). That check is the only place
+/// several of these gates are ever proven RED-able, so the shard cannot simply be made smaller --
+/// and, when `cargo test -p xtask` still ran the whole registry, it grew past fifty-one minutes,
+/// on a runner whose ssh session dies at about fifty and whose gate job was cancelled at
+/// twenty-five. Nothing measured it. A rule that grew a
 /// whole-tree scan per plant looked exactly like one that did not, right up to the point where the
 /// job was killed and the verdict was "cancelled", which is neither green nor red.
 ///
@@ -2200,11 +2204,52 @@ pub fn budget_reading_within(
     reading
 }
 
-/// THE `cargo xtask selftest` JUDGE: [`verify_report`]'s verdict and coverage, AND the work-unit
-/// budget read through [`budget_reading`], so an over-budget contended reading is re-taken serially
-/// before it counts. The one place the budget is judged.
+/// THE BUDGET IS THE BINARY'S, and only the binary's — the same split as
+/// [`enable_process_watchdog`], for the same reason. `cargo test -p xtask` drives
+/// [`crate::cli::main`] in-process, so `gate <name> --selftest` and `selftest <gate>` reached from
+/// a test used to read the work-unit budget on cores shared with every other test process: under a
+/// full-workspace nextest run the ruler read 2.5ms a unit, `segregation` came in at 10 744 units
+/// serially against 9 448, and an argument-parsing test went red on a budget it never asked about
+/// (ruling (a), Law 8). `xtask`'s `main` calls [`enable_selftest_budget`]; nothing else does.
+static SELFTEST_BUDGET: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Let [`verify_selftest`] read the work-unit budget. Called by the `xtask` BINARY and by nothing
+/// else.
+pub fn enable_selftest_budget() {
+    SELFTEST_BUDGET.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// Whether this process judges the work-unit budget: the binary does, a test process never does.
+#[must_use]
+pub fn selftest_budget_enabled() -> bool {
+    SELFTEST_BUDGET.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+/// THE `cargo xtask selftest` JUDGE: [`verify_report`]'s verdict and coverage, AND — in the binary,
+/// [`enable_selftest_budget`] — the work-unit budget read through [`budget_reading`], so an
+/// over-budget contended reading is re-taken serially before it counts. The one place the budget
+/// is judged.
 pub fn verify_selftest(gate: &dyn Gate, report: &Report<'_>, cx: &Ctx) -> Result<(), Vec<String>> {
-    verify_report_with(gate, report, &budget_reading(gate, report, cx))
+    let budget = selftest_budget_enabled().then(|| selftest_budget(gate.name()));
+    verify_selftest_within(gate, report, cx, budget)
+}
+
+/// [`verify_selftest`] against `budget` rather than the table's; `None` is a process that does not
+/// judge the budget, which is [`verify_report`] exactly.
+pub fn verify_selftest_within(
+    gate: &dyn Gate,
+    report: &Report<'_>,
+    cx: &Ctx,
+    budget: Option<f64>,
+) -> Result<(), Vec<String>> {
+    match budget {
+        Some(budget) => verify_report_with(
+            gate,
+            report,
+            &budget_reading_within(gate, report, cx, budget),
+        ),
+        None => verify_report(gate, report),
+    }
 }
 
 /// [`verify_report`] with the budget judged by `reading` ([`budget_verdict`]).
