@@ -64,10 +64,7 @@ fn closing(a: &Answered) -> (Option<&str>, Option<&str>, Option<&str>) {
 #[tokio::test]
 async fn a_framed_streams_messages_and_its_final_status_are_its_framers() {
     let _one = PUBLISHING.lock().await;
-    let Some(g) = governed("serve-framed-status", false) else {
-        eprintln!("skip: the test plane's cdylib (the plane_driver_test_plane example) is not built; run `cargo build --workspace --examples`");
-        return;
-    };
+    let g = governed("serve-framed-status", false);
     // Two messages in; the plane echoes what it arrived with as one message.
     let a = framed(&g, "/framed/status", b"\x02hi\x03abc").await;
     assert_eq!(a.status, 200);
@@ -89,10 +86,7 @@ async fn a_framed_streams_messages_and_its_final_status_are_its_framers() {
 #[tokio::test]
 async fn a_framed_stream_that_ends_whole_is_closed_by_its_framer_as_whole() {
     let _one = PUBLISHING.lock().await;
-    let Some(g) = governed("serve-framed-whole", false) else {
-        eprintln!("skip: the test plane's cdylib (the plane_driver_test_plane example) is not built; run `cargo build --workspace --examples`");
-        return;
-    };
+    let g = governed("serve-framed-whole", false);
     let a = framed(&g, "/framed/ok", b"\x01x").await;
     assert_eq!((a.status, a.body.as_slice()), (200, b"\x01x".as_slice()));
     assert_eq!(closing(&a), (Some("0"), Some(""), Some("")));
@@ -107,10 +101,7 @@ async fn a_framed_stream_that_ends_whole_is_closed_by_its_framer_as_whole() {
 #[tokio::test]
 async fn a_framed_unit_that_fails_after_its_head_closes_as_a_refusal_never_as_whole() {
     let _one = PUBLISHING.lock().await;
-    let Some(g) = governed("serve-framed-fail", false) else {
-        eprintln!("skip: the test plane's cdylib is not built in this scoped run");
-        return;
-    };
+    let g = governed("serve-framed-fail", false);
     let a = framed(&g, "/framed/fail", b"\x01x").await;
     assert_eq!(
         (a.status, a.body.as_slice()),
@@ -145,10 +136,7 @@ async fn a_framed_unit_that_fails_after_its_head_closes_as_a_refusal_never_as_wh
 #[tokio::test]
 async fn a_framed_unit_the_kernel_cuts_after_its_head_closes_as_the_cuts_refusal() {
     let _one = PUBLISHING.lock().await;
-    let Some(g) = governed("serve-framed-drain", false) else {
-        eprintln!("skip: the test plane's cdylib is not built in this scoped run");
-        return;
-    };
+    let g = governed("serve-framed-drain", false);
     let req = axum::http::Request::builder()
         .method("POST")
         .uri("/framed/drain")
@@ -198,10 +186,7 @@ async fn a_framed_unit_the_kernel_cuts_after_its_head_closes_as_the_cuts_refusal
 #[tokio::test]
 async fn a_refused_framed_stream_is_answered_by_its_framers_closing_block_alone() {
     let _one = PUBLISHING.lock().await;
-    let Some(g) = governed("serve-framed-refused", false) else {
-        eprintln!("skip: the test plane's cdylib (the plane_driver_test_plane example) is not built; run `cargo build --workspace --examples`");
-        return;
-    };
+    let g = governed("serve-framed-refused", false);
     let a = framed(&g, "/framed/refuse", b"\x01x").await;
     assert_eq!(
         a.status, 200,
@@ -217,10 +202,7 @@ async fn a_refused_framed_stream_is_answered_by_its_framers_closing_block_alone(
 #[tokio::test]
 async fn a_final_status_the_claims_numbering_does_not_have_never_reaches_the_framer() {
     let _one = PUBLISHING.lock().await;
-    let Some(g) = governed("serve-framed-wild", false) else {
-        eprintln!("skip: the test plane's cdylib (the plane_driver_test_plane example) is not built; run `cargo build --workspace --examples`");
-        return;
-    };
+    let g = governed("serve-framed-wild", false);
     let a = framed(&g, "/framed/wild", b"\x01x").await;
     let t = a.trailers.as_ref().expect("the stream is still closed");
     assert_eq!(
