@@ -3010,6 +3010,11 @@ async fn a_decisions_unit_from_a_key_naming_another_pool_is_refused_before_its_d
 /// door's facing carries every model its section configures, in name order, for the kernel to
 /// scope-filter and `/v1/models` to append; a section that configures none lists nothing. RED: a
 /// generation whose snapshot lists nothing faces the world with no names.
+///
+/// Each model's dialect is its provider's protocol, handed at open as the kernel hands it
+/// (`plane_calls::dialect_facts`, THE DESIGN section 4); handed none, a model with no override
+/// resolves to no dialect and the door fails closed, naming it (THE DESIGN section 2: a model's
+/// dialect is its override or its provider's protocol).
 #[test]
 fn the_decisions_doors_facing_lists_its_configured_models() {
     let reg = crate::root::loader::dispatch::kinds::plane::registration(
@@ -3019,14 +3024,21 @@ fn the_decisions_doors_facing_lists_its_configured_models() {
         ),
     )
     .expect("the linked door binds");
-    let facing = (reg.facing)(
-        br#"{"decisions":{"models":{"b":{"provider":"typesafe"},"a":{"provider":"typesafe"}}}}"#,
-        b"",
-        None,
-        &[],
-    )
-    .expect("the door faces the world");
+    let typesafe = [busbar_contract::plane_calls::DialectFacts {
+        name: "typesafe".to_string(),
+        protocol: busbar_plane_decisions::config::PROTOCOL.to_string(),
+        error_map: None,
+    }];
+    let section =
+        br#"{"decisions":{"models":{"b":{"provider":"typesafe"},"a":{"provider":"typesafe"}}}}"#;
+    let facing = (reg.facing)(section, b"", None, &typesafe).expect("the door faces the world");
     assert_eq!(facing.listed, vec!["a".to_string(), "b".to_string()]);
+    let unresolved =
+        (reg.facing)(section, b"", None, &[]).expect_err("a model in no dialect fails closed");
+    assert!(
+        unresolved.contains("resolves to no dialect"),
+        "{unresolved}"
+    );
     let none = (reg.facing)(b"{}", b"", None, &[]).expect("the door faces the world");
     assert!(
         none.listed.is_empty(),
