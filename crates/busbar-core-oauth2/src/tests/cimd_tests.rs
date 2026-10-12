@@ -641,3 +641,100 @@ async fn redirects_failures_and_oversized_documents_are_refused() {
         MAX_DOCUMENT_BYTES
     );
 }
+
+/// A document host that counts its fetches: it answers a valid document for whichever URL it is
+/// asked, or, `held`, never answers at all.
+struct Counting {
+    fetches: std::sync::atomic::AtomicUsize,
+    held: bool,
+}
+
+impl CimdFetch for Counting {
+    fn fetch<'a>(
+        &'a self,
+        url: &'a str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<u8>, String>> + Send + 'a>>
+    {
+        self.fetches.fetch_add(1, Ordering::SeqCst);
+        let mut doc = document();
+        doc["client_id"] = serde_json::json!(url);
+        let body = serde_json::to_vec(&doc).expect("serialises");
+        let held = self.held;
+        Box::pin(async move {
+            if held {
+                std::future::pending::<()>().await;
+            }
+            Ok(body)
+        })
+    }
+}
+
+/// RED (audit core-oauth2#4): a validated document answers for its client a while: two requests
+/// naming one metadata-document client fetch it once (before the fix, every request fetched).
+#[tokio::test]
+async fn a_validated_document_is_fetched_once_for_the_requests_naming_it() {
+    let fetch = Arc::new(Counting {
+        fetches: std::sync::atomic::AtomicUsize::new(0),
+        held: false,
+    });
+    let handle: Arc<Counting> = Arc::clone(&fetch);
+    let store = CimdStore::new(MemoryStorage::new(), ceiling(), handle, Vec::new());
+    for _ in 0..2 {
+        let found = store
+            .get_client(&ClientId::new(URL))
+            .await
+            .expect("not an error");
+        assert!(found.is_some(), "the document's client");
+    }
+    assert_eq!(
+        fetch.fetches.load(Ordering::SeqCst),
+        1,
+        "one fetch for both requests"
+    );
+}
+
+/// RED (audit core-oauth2#4): at most a fixed number of document fetches run at once, whoever
+/// names them; past it a request naming an uncached document is an unknown client at once, and
+/// no fetch is made for it (before the fix, every request started one more).
+#[tokio::test]
+async fn document_fetches_in_flight_are_bounded() {
+    const IN_FLIGHT: usize = 16;
+    let fetch = Arc::new(Counting {
+        fetches: std::sync::atomic::AtomicUsize::new(0),
+        held: true,
+    });
+    let handle: Arc<Counting> = Arc::clone(&fetch);
+    let store = Arc::new(CimdStore::new(
+        MemoryStorage::new(),
+        ceiling(),
+        handle,
+        Vec::new(),
+    ));
+    for i in 0..IN_FLIGHT {
+        let store = Arc::clone(&store);
+        tokio::spawn(async move {
+            let _ = store
+                .get_client(&ClientId::new(format!("https://client{i}.example/doc")))
+                .await;
+        });
+    }
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while fetch.fetches.load(Ordering::SeqCst) < IN_FLIGHT {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the first fetches start");
+    let past = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        store.get_client(&ClientId::new("https://one-more.example/doc")),
+    )
+    .await
+    .expect("past the bound the answer is at once");
+    assert!(matches!(past, Ok(None)), "an unknown client past the bound");
+    assert_eq!(
+        fetch.fetches.load(Ordering::SeqCst),
+        IN_FLIGHT,
+        "no fetch past the bound"
+    );
+}

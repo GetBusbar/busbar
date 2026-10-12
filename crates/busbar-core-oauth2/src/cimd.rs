@@ -11,8 +11,15 @@
 //! `oauth-as` against the request), and materialised as an EPHEMERAL
 //! [`oauth_as::client::Client`] under the SAME [`super::policy::default_grant_scopes`] ceiling
 //! registration uses. Ephemeral means ephemeral: the materialised client is never written to the
-//! store, so there is nothing to revoke, nothing to sweep, and nothing a restart resurrects — the
-//! document is re-fetched and re-judged on every request that names it.
+//! store, so there is nothing to revoke, nothing to sweep, and nothing a restart resurrects.
+//!
+//! ## Fetched once, held a while, never more than a few at a time
+//!
+//! The URL is a stranger's, and `/authorize` and `/token` take no credential, so the fetch is
+//! bounded ([`Documents`]): a validated document answers for its client for [`DOCUMENT_TTL`] (at
+//! most [`MAX_CACHED_DOCUMENTS`] held), concurrent requests naming one uncached document wait on
+//! ONE fetch, and at most [`MAX_CONCURRENT_FETCHES`] fetches run at once. Past that a request
+//! naming an uncached document reads as an unknown client, as every other fetch failure does.
 //!
 //! ## Every failure is an UNKNOWN CLIENT, not an error
 //!
@@ -80,6 +87,79 @@ pub(crate) trait CimdFetch: Send + Sync {
         &'a self,
         url: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>, String>> + Send + 'a>>;
+}
+
+/// How long a validated document answers for its client before it is fetched again.
+pub(crate) const DOCUMENT_TTL: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// The most validated documents held at once.
+pub(crate) const MAX_CACHED_DOCUMENTS: usize = 1024;
+
+/// The most document fetches in flight at once.
+pub(crate) const MAX_CONCURRENT_FETCHES: usize = 16;
+
+/// THE DOCUMENTS ONE SERVER HOLDS AND FETCHES: the validated ones by URL, each until it expires;
+/// the fetch in flight for each URL, which every concurrent request naming it waits on; and the
+/// permits that bound how many fetches run at once.
+pub(crate) struct Documents {
+    held: Mutex<HashMap<String, (Arc<Client>, std::time::Instant)>>,
+    flights: Mutex<HashMap<String, Flight>>,
+    permits: tokio::sync::Semaphore,
+}
+
+/// One URL's fetch in flight: the client its document validated to, or `None`, once it lands.
+type Flight = Arc<tokio::sync::OnceCell<Option<Arc<Client>>>>;
+
+impl Default for Documents {
+    fn default() -> Self {
+        Self {
+            held: Mutex::new(HashMap::new()),
+            flights: Mutex::new(HashMap::new()),
+            permits: tokio::sync::Semaphore::new(MAX_CONCURRENT_FETCHES),
+        }
+    }
+}
+
+impl Documents {
+    /// The validated document's client for `url`, while it has not expired.
+    fn held(&self, url: &str) -> Option<Arc<Client>> {
+        let held = self.held.lock().unwrap_or_else(|p| p.into_inner());
+        held.get(url)
+            .filter(|(_, until)| *until > std::time::Instant::now())
+            .map(|(client, _)| Arc::clone(client))
+    }
+
+    /// The fetch in flight for `url`, joined, or a new one.
+    fn flight(&self, url: &str) -> Flight {
+        let mut flights = self.flights.lock().unwrap_or_else(|p| p.into_inner());
+        Arc::clone(flights.entry(url.to_string()).or_default())
+    }
+
+    /// The flight for `url` landed with `answer`: it is over, and a client it validated is held.
+    fn land(&self, url: &str, flight: &Flight, answer: Option<&Arc<Client>>) {
+        {
+            let mut flights = self.flights.lock().unwrap_or_else(|p| p.into_inner());
+            if flights.get(url).is_some_and(|f| Arc::ptr_eq(f, flight)) {
+                flights.remove(url);
+            }
+        }
+        let Some(client) = answer else { return };
+        let now = std::time::Instant::now();
+        let mut held = self.held.lock().unwrap_or_else(|p| p.into_inner());
+        if held.len() >= MAX_CACHED_DOCUMENTS {
+            held.retain(|_, (_, until)| *until > now);
+        }
+        if held.len() >= MAX_CACHED_DOCUMENTS {
+            if let Some(oldest) = held
+                .iter()
+                .min_by_key(|(_, (_, until))| *until)
+                .map(|(k, _)| k.clone())
+            {
+                held.remove(&oldest);
+            }
+        }
+        held.insert(url.to_string(), (Arc::clone(client), now + DOCUMENT_TTL));
+    }
 }
 
 /// The one need this crate declares on the root Connector: the document fetch's.
@@ -493,6 +573,8 @@ pub(crate) struct CimdStore {
     /// The operator's `oauth_as.clients:`, by `client_id`. Answered before anything else: the
     /// config is the operator's own word on who these clients are.
     provisioned: HashMap<String, Arc<Client>>,
+    /// The metadata documents held and in flight ([`Documents`]).
+    documents: Documents,
 }
 
 /// WHAT THE SERVER HOLDS: its records (clients registered, codes, tokens, refresh tokens, consents,
@@ -564,6 +646,7 @@ impl CimdStore {
                 .into_iter()
                 .map(|c| (c.client_id.as_str().to_string(), Arc::new(c)))
                 .collect(),
+            documents: Documents::default(),
         }
     }
 
@@ -615,6 +698,51 @@ impl CimdStore {
     }
 }
 
+impl CimdStore {
+    /// One fetch of the document at `url`, validated: its client, or `None` (an unknown client)
+    /// when the fetch is refused or fails, the document fails validation, or
+    /// [`MAX_CONCURRENT_FETCHES`] are already in flight.
+    async fn fetch_document(&self, url: &str) -> Option<Arc<Client>> {
+        let Ok(_permit) = self.documents.permits.try_acquire() else {
+            tracing::debug!(
+                client_id = url,
+                "oauth_as: every client metadata document fetch is in flight; the client is \
+                 unknown"
+            );
+            return None;
+        };
+        let body = match self.fetcher().fetch(url).await {
+            Ok(body) => body,
+            Err(why) => {
+                // A routine authz denial, one per request for an unknown/unreachable client id — not
+                // an operator-actionable fault, so `debug!` (a `warn!` here spams on every probe for a
+                // client id that isn't a valid CIMD document).
+                tracing::debug!(
+                    client_id = url,
+                    %why,
+                    "oauth_as: the client metadata document fetch was refused or failed; the \
+                     client is unknown"
+                );
+                return None;
+            }
+        };
+        match materialize(url, &body, &self.ceiling) {
+            Ok(client) => Some(Arc::new(client)),
+            Err(why) => {
+                // Routine authz denial (a fetched document that fails validation), one per request —
+                // `debug!`, not `warn!`, for the same reason as the fetch-failure arm above.
+                tracing::debug!(
+                    client_id = url,
+                    %why,
+                    "oauth_as: the client metadata document failed validation; the client is \
+                     unknown"
+                );
+                None
+            }
+        }
+    }
+}
+
 impl Storage for CimdStore {
     async fn get_client(&self, client_id: &ClientId) -> Result<Option<Arc<Client>>, StorageError> {
         // A PROVISIONED client first: `oauth_as.clients:` is the operator's config.
@@ -630,35 +758,16 @@ impl Storage for CimdStore {
         if !is_cimd_client_id(url) {
             return Ok(None);
         }
-        let body = match self.fetcher().fetch(url).await {
-            Ok(body) => body,
-            Err(why) => {
-                // A routine authz denial, one per request for an unknown/unreachable client id — not
-                // an operator-actionable fault, so `debug!` (a `warn!` here spams on every probe for a
-                // client id that isn't a valid CIMD document).
-                tracing::debug!(
-                    client_id = url,
-                    %why,
-                    "oauth_as: the client metadata document fetch was refused or failed; the \
-                     client is unknown"
-                );
-                return Ok(None);
-            }
-        };
-        match materialize(url, &body, &self.ceiling) {
-            Ok(client) => Ok(Some(Arc::new(client))),
-            Err(why) => {
-                // Routine authz denial (a fetched document that fails validation), one per request —
-                // `debug!`, not `warn!`, for the same reason as the fetch-failure arm above.
-                tracing::debug!(
-                    client_id = url,
-                    %why,
-                    "oauth_as: the client metadata document failed validation; the client is \
-                     unknown"
-                );
-                Ok(None)
-            }
+        if let Some(held) = self.documents.held(url) {
+            return Ok(Some(held));
         }
+        let flight = self.documents.flight(url);
+        let answer = flight
+            .get_or_init(|| self.fetch_document(url))
+            .await
+            .clone();
+        self.documents.land(url, &flight, answer.as_ref());
+        Ok(answer)
     }
 
     // ── EVERYTHING BELOW DELEGATES VERBATIM. No logic, no logging, no reordering: the wrapper
