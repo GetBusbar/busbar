@@ -46,7 +46,45 @@ checks:
   conformance:
     # Every registered suite recorded on this commit (the llm rigs judge the oracle's candidate
     # recording), then every MUST a fresh pass for it. A not-run suite denies.
+    # The instruments the rigs call from PATH are provided here, each fetched once per pin (sha256
+    # checked) into a cache that outlives the run: Go (h2spec publishes no linux/arm64 binary, so it
+    # is built from its tagged source), h2spec v2.6.0, testssl.sh v3.2.0, slsa-verifier v2.7.1. The self-hosted OIDF suite (oidf-oauth2, fapi2) runs in the backend's docker. A suite
+    # whose instrument cannot be provided stays not-run and denies; nothing here marks one optional.
     run: |
+      set -euo pipefail
+      T="${XDG_CACHE_HOME:-$HOME/.cache}/busbar-conformance-tools"
+      mkdir -p "$T/bin"
+      case "$(uname -m)" in
+        aarch64|arm64) GOARCH=arm64; GO_SHA=4a97373d49fcacdcf3694fea368a500b00ee3e963974f3e7514132717632f052; SLSA_SHA=5d3b2349ede7bfec19e7a21569f18b9f7410145ad12e9584b175370669e14061 ;;
+        x86_64) GOARCH=amd64; GO_SHA=42d158b4d8f7b61ac0a830567c940a86098fb7aac52e467a5ebec03ef5cc2f8d; SLSA_SHA=946dbec729094195e88ef78e1734324a27869f03e2c6bd2f61cbc06bd5350339 ;;
+        *) echo "conformance tools: no pins for $(uname -m)"; exit 1 ;;
+      esac
+      fetch() { # url sha256 dest
+        if [ -f "$3" ] && echo "$2  $3" | sha256sum -c - >/dev/null 2>&1; then return 0; fi
+        curl -fsSL --retry 3 -o "$3.part" "$1" && echo "$2  $3.part" | sha256sum -c - >/dev/null && mv "$3.part" "$3"
+      }
+      if [ ! -x "$T/go/bin/go" ]; then
+        fetch "https://go.dev/dl/go1.26.9.linux-$GOARCH.tar.gz" "$GO_SHA" "$T/go.tgz"
+        rm -rf "$T/go"; tar -C "$T" -xzf "$T/go.tgz"
+      fi
+      if [ ! -x "$T/bin/h2spec" ]; then
+        rm -rf "$T/h2spec-src"; git clone -q --depth 1 --branch v2.6.0 https://github.com/summerwind/h2spec "$T/h2spec-src"
+        [ "$(git -C "$T/h2spec-src" rev-parse HEAD)" = 70ac2294010887f48b18e2d64f5cccd48421fad1 ] || { echo "h2spec v2.6.0 is not the pinned commit"; exit 1; }
+        (cd "$T/h2spec-src" && GOPATH="$T/gopath" GOFLAGS=-mod=mod "$T/go/bin/go" build -o "$T/bin/h2spec" ./cmd/h2spec)
+      fi
+      fetch "https://github.com/slsa-framework/slsa-verifier/releases/download/v2.7.1/slsa-verifier-linux-$GOARCH" "$SLSA_SHA" "$T/bin/slsa-verifier"
+      chmod +x "$T/bin/slsa-verifier"
+      if [ ! -x "$T/bin/testssl.sh" ]; then
+        fetch "https://github.com/testssl/testssl.sh/archive/refs/tags/v3.2.0.tar.gz" f3969c152c0fe99a2a90e8c8675ab677d77608ac77c957a95497387c36363c32 "$T/testssl.tgz"
+        rm -rf "$T/testssl"; mkdir "$T/testssl"; tar -C "$T/testssl" --strip-components=1 -xzf "$T/testssl.tgz"
+        ln -sf "$T/testssl/testssl.sh" "$T/bin/testssl.sh"
+      fi
+      export PATH="$T/bin:$PATH"
+      # docker, compose and python3-venv are the backend's, not this job's to install: a missing one
+      # fails the check here, by name.
+      docker info >/dev/null || { echo "conformance: the backend has no usable docker"; exit 1; }
+      docker compose version >/dev/null || { echo "conformance: the backend has no docker compose"; exit 1; }
+      python3 -c "import venv, ensurepip" || { echo "conformance: the backend has no python3-venv"; exit 1; }
       cargo xtask conformance record --all --recording target/oracle/recordings/candidate
       cargo xtask conformance check --musts --sha "$MODERNCI_COMMIT" --format=tsv
     needs: [oracle]
