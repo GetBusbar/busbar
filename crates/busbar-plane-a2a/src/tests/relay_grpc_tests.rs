@@ -155,9 +155,9 @@ fn grpc_client_issues_send_message() {
     assert_eq!(
         attempt.fields,
         vec![
-            ("content-type", "application/grpc+proto".to_string()),
-            ("accept", "application/grpc+proto".to_string()),
-            ("a2a-version", "1.0".to_string()),
+            ("content-type", "application/grpc+proto".into()),
+            ("accept", "application/grpc+proto".into()),
+            ("a2a-version", "1.0".into()),
         ]
     );
     let req = pb::SendMessageRequest::decode(message.as_slice())

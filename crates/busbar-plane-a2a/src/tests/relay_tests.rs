@@ -42,7 +42,7 @@ fn far(status: Option<u32>, bytes: &[u8], last: bool) -> Piece<'_> {
 fn sent() -> Relay {
     let mut r = Relay::new(json!(7), "1.0");
     assert!(matches!(r.on_piece(kernel(Some(URL))), Answer::Attempt(_)));
-    assert_eq!(r.on_piece(caller(ASK)), Answer::ToFarEnd(ASK.to_vec()));
+    assert_eq!(r.on_piece(caller(ASK)), Answer::ToFarEndLent);
     r
 }
 
@@ -80,9 +80,9 @@ fn an_attempt_posts_to_the_agents_own_path_with_the_engines_three_fields_in_orde
             verb: "POST",
             target: "/a2a/v1?tenant=t1".to_string(),
             fields: vec![
-                ("content-type", "application/json".to_string()),
-                ("accept", "application/json".to_string()),
-                ("a2a-version", "1.0".to_string()),
+                ("content-type", "application/json".into()),
+                ("accept", "application/json".into()),
+                ("a2a-version", "1.0".into()),
             ],
         })
     );
@@ -92,6 +92,45 @@ fn an_attempt_posts_to_the_agents_own_path_with_the_engines_three_fields_in_orde
 fn an_agent_url_with_no_path_is_posted_to_at_its_root() {
     assert_eq!(target_of("https://vendor.example").as_deref(), Some("/"));
     assert_eq!(target_of("not a url"), None);
+}
+
+/// The target read off a url's own bytes is the one a parse serializes, for every url the fast
+/// read takes, and a url it does not take is parsed: the answer never depends on which ran.
+#[test]
+fn a_target_read_without_a_parse_is_the_parsed_target() {
+    let parsed = |url: &str| {
+        let u = url::Url::parse(url).ok()?;
+        let mut t = u.path().to_string();
+        if let Some(q) = u.query() {
+            t.push('?');
+            t.push_str(q);
+        }
+        Some(t)
+    };
+    for url in [
+        "https://vendor.example",
+        "https://vendor.example/",
+        "https://vendor.example?x=1",
+        "https://agent.example/a2a",
+        "http://agent.example/a2a/v1?tenant=t1&x=a%20b",
+        "https://agent.example//double/slash",
+        "https://Agent.Example/Path/Case",
+        "https://agent.example/a/./b",
+        "https://agent.example/a/../b",
+        "https://agent.example/a/%2E%2E/b",
+        "https://agent.example/a b",
+        "https://agent.example/a#frag",
+        "https://agent.example:8443/a",
+        "https://user@agent.example/a",
+        "https://10.0.0.1/a",
+        "https://1.2.3.999/a",
+        "https://[::1]/a",
+        "https://agent.example/ü",
+        "https://agent.example/q?a='b'",
+        "not a url",
+    ] {
+        assert_eq!(target_of(url), parsed(url), "{url}");
+    }
 }
 
 #[test]
@@ -105,7 +144,7 @@ fn the_callers_body_reaches_the_far_end_verbatim() {
     let odd = br#"{ "jsonrpc" : "2.0", "id":7, "method":"GetExtendedAgentCard", "x":[1,2] }"#;
     let mut r = Relay::new(json!(7), "0.3");
     let _ = r.on_piece(kernel(Some(URL)));
-    assert_eq!(r.on_piece(caller(odd)), Answer::ToFarEnd(odd.to_vec()));
+    assert_eq!(r.on_piece(caller(odd)), Answer::ToFarEndLent);
 }
 
 #[test]
@@ -258,7 +297,7 @@ fn task_sent(addressed: bool) -> Relay {
     let mut r = Relay::new(json!(7), "1.0");
     r.for_task(task(addressed));
     assert!(matches!(r.on_piece(kernel(Some(URL))), Answer::Attempt(_)));
-    assert_eq!(r.on_piece(caller(SEND)), Answer::ToFarEnd(SEND.to_vec()));
+    assert_eq!(r.on_piece(caller(SEND)), Answer::ToFarEndLent);
     r
 }
 
@@ -510,10 +549,7 @@ fn events_sent() -> (Relay, Attempt) {
     let Answer::Attempt(attempt) = r.on_piece(kernel(Some(URL))) else {
         panic!("no attempt");
     };
-    assert_eq!(
-        r.on_piece(caller(STREAM)),
-        Answer::ToFarEnd(STREAM.to_vec())
-    );
+    assert_eq!(r.on_piece(caller(STREAM)), Answer::ToFarEndLent);
     (r, attempt)
 }
 
@@ -549,7 +585,7 @@ fn an_events_attempt_accepts_an_event_stream_or_one_document() {
     let (_, attempt) = events_sent();
     assert!(attempt
         .fields
-        .contains(&(H_ACCEPT, "text/event-stream, application/json".to_string())));
+        .contains(&(H_ACCEPT, "text/event-stream, application/json".into())));
 }
 
 /// Each event goes out as it is framed, under busbar's identity: the first starts the caller's

@@ -274,6 +274,10 @@ impl Hop {
 /// the same piece and must not apply it twice.
 #[derive(Debug, Default)]
 struct Outbox {
+    /// The bytes to write are the caller's piece itself, lent by the host for this call
+    /// ([`Answer::ToFarEndLent`]): written straight from it, and only what the host's buffer could
+    /// not take is kept in `bytes`.
+    lent: bool,
     live: bool,
     recall: bool,
     to_far: bool,
@@ -324,11 +328,13 @@ const EVENTS_HEAD: [(&str, &str); 2] = [
 impl Outbox {
     /// The outbox for `answer`; `None` for a piece the hop refuses.
     fn of(answer: Answer) -> Option<Self> {
+        let lent = matches!(answer, Answer::ToFarEndLent);
         let (to_far, done, head, bytes) = match answer {
             Answer::Nothing => (false, false, None, Vec::new()),
             Answer::Refused => return None,
             Answer::Attempt(a) => (true, false, Some(Head::Attempt(a)), Vec::new()),
             Answer::ToFarEnd(bytes) => (true, false, None, bytes),
+            Answer::ToFarEndLent => (true, false, None, Vec::new()),
             Answer::ToCaller(r) => (
                 false,
                 true,
@@ -343,6 +349,7 @@ impl Outbox {
             ),
         };
         Some(Outbox {
+            lent,
             live: true,
             recall: false,
             to_far,
@@ -379,6 +386,7 @@ impl Outbox {
                 let mut queue: std::collections::VecDeque<Vec<u8>> = messages.into();
                 let bytes = queue.pop_front().unwrap_or_default();
                 Some(Outbox {
+                    lent: false,
                     live: true,
                     recall: false,
                     to_far: false,
@@ -408,6 +416,7 @@ impl Outbox {
             (Vec::new(), Some(reply))
         };
         Outbox {
+            lent: false,
             live: true,
             recall: false,
             to_far: false,
@@ -2190,6 +2199,12 @@ fn piece(
     }
     if !hop.settle.is_empty() {
         if let Err(outcome) = settle_task(reach, hop, pass, caller) {
+            // The piece's lent body outlives no call: what is owed is kept.
+            if hop.outbox.lent {
+                hop.outbox.lent = false;
+                hop.outbox.bytes = bytes.to_vec();
+                hop.outbox.at = 0;
+            }
             return (outcome, false);
         }
     }
@@ -2233,7 +2248,7 @@ fn piece(
             amount: 1,
         });
     }
-    let mut head_fields = |list: &[(&'static str, String)]| {
+    let mut head_fields = |list: &[(&'static str, std::borrow::Cow<'static, str>)]| {
         for (name, value) in list {
             fields.push(OutField {
                 name: arena.span(name.as_bytes()),
@@ -2252,13 +2267,13 @@ fn piece(
             // A WHOLE answer states its length, so it is sent under it as the engine sent its
             // buffered JSON answer (never chunked).
             head_fields(&[
-                (relay::H_CONTENT_TYPE, (*content_type).to_string()),
-                (H_CONTENT_LENGTH, ob.bytes.len().to_string()),
+                (relay::H_CONTENT_TYPE, (*content_type).into()),
+                (H_CONTENT_LENGTH, ob.bytes.len().to_string().into()),
             ]);
             status = *s;
         }
         Some(Head::Events) => {
-            head_fields(&EVENTS_HEAD.map(|(name, value)| (name, value.to_string())));
+            head_fields(&EVENTS_HEAD.map(|(name, value)| (name, value.into())));
             status = relay::STATUS_OK;
         }
         // The gRPC line's head is the listener's `200` and the line's media type, with no length:
@@ -2268,7 +2283,7 @@ fn piece(
         Some(Head::Framed) => {
             head_fields(&[(
                 relay::H_CONTENT_TYPE,
-                crate::framed::REPLY_CONTENT_TYPE.to_string(),
+                crate::framed::REPLY_CONTENT_TYPE.into(),
             )]);
             status = relay::STATUS_OK;
         }
@@ -2334,11 +2349,28 @@ fn piece(
     out.set(|o| &o.units_written, uw as u32);
     out.set(|o| &o.units_needed, und as u32);
     if short {
+        // A short answer is re-called with no bytes: the lent body it has not written is kept.
+        if ob.lent {
+            ob.lent = false;
+            ob.bytes = bytes.to_vec();
+            ob.at = 0;
+        }
         ob.recall = true;
         return (Outcome::Failed, false);
     }
-    let n = reply.stream(&ob.bytes[ob.at..]);
-    ob.at += n;
+    let n = if ob.lent {
+        // THE CALLER'S BODY, LENT: written straight from the piece the host lent this call. Only
+        // what the host's buffer could not take is kept, the one copy a short buffer costs.
+        ob.lent = false;
+        let n = reply.stream(bytes);
+        ob.bytes = bytes[n..].to_vec();
+        ob.at = 0;
+        n
+    } else {
+        let n = reply.stream(&ob.bytes[ob.at..]);
+        ob.at += n;
+        n
+    };
     // A message's last byte is written: the boundary that frames it (the gRPC line).
     let message_end = ob.messages && ob.at >= ob.bytes.len();
     // The gRPC line's next message, once this one is written: emitted on an answer of its own.

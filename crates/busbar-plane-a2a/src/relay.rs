@@ -114,8 +114,10 @@ pub struct Attempt {
     pub verb: &'static str,
     /// The target: the agent URL's path and query.
     pub target: String,
-    /// The head fields, in order.
-    pub fields: Vec<(&'static str, String)>,
+    /// The head fields, in order. A field this plane spells is borrowed from its constant, so an
+    /// attempt's head allocates its field list and nothing per field (the allocation pin,
+    /// `tests/alloc_gate.rs`).
+    pub fields: Vec<(&'static str, std::borrow::Cow<'static, str>)>,
 }
 
 /// What the caller is answered.
@@ -148,8 +150,13 @@ pub enum Answer {
     Nothing,
     /// The request this attempt sends the far end; its body follows as [`Answer::ToFarEnd`].
     Attempt(Attempt),
-    /// The request's body, bound for the far end.
+    /// The request's body, bound for the far end: bytes the relay made (a translated or framed
+    /// request).
     ToFarEnd(Vec<u8>),
+    /// The request's body, bound for the far end: the caller's piece itself, unchanged. The door
+    /// writes it from the piece the host lent, so relaying an envelope it changes nothing about
+    /// copies nothing (the allocation pin, `tests/alloc_gate.rs`).
+    ToFarEndLent,
     /// The caller's whole answer: the unit is done.
     ToCaller(Reply),
     /// Part of the caller's answer in events.
@@ -323,6 +330,9 @@ pub fn relayed(id: &Value, result: Value) -> Reply {
 /// binding appends nothing). `None` for a URL that does not parse.
 #[must_use]
 pub fn target_of(url: &str) -> Option<String> {
+    if let Some(target) = verbatim_target(url) {
+        return Some(target);
+    }
     let parsed = url::Url::parse(url).ok()?;
     let mut target = parsed.path().to_string();
     if let Some(query) = parsed.query() {
@@ -330,6 +340,55 @@ pub fn target_of(url: &str) -> Option<String> {
         target.push_str(query);
     }
     Some(target)
+}
+
+/// [`target_of`] for the common url, read off its own bytes with no parse: an `http`/`https` url
+/// whose host is a plain name or address and whose path and query hold only characters the URL
+/// standard serializes as they are, with no dot segment to resolve and no fragment. Its target is
+/// then exactly the one a parse serializes, and reading it costs the target's one allocation, not
+/// a parse's (the allocation pin, `tests/alloc_gate.rs`). Any other url answers `None`, and the
+/// parse decides.
+fn verbatim_target(url: &str) -> Option<String> {
+    let rest = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))?;
+    let split = rest.find(['/', '?']).unwrap_or(rest.len());
+    let (host, tail) = rest.split_at(split);
+    // A plain DNS name: no port, no userinfo, no address form the standard parses its own way
+    // (a last label of digits is an IPv4 address to it).
+    let plain_host = !host.is_empty()
+        && host
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-')
+        && !host
+            .rsplit('.')
+            .next()
+            .is_some_and(|label| label.bytes().all(|b| b.is_ascii_digit()))
+        && !host.starts_with(['.', '-'])
+        && !host.contains("..");
+    let plain_tail = tail
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || b"-._~!$&()*+,;=:@/?%".contains(&b));
+    let (path, _) = tail.split_once('?').unwrap_or((tail, ""));
+    let dot_segment = path.split('/').any(|seg| {
+        seg == "."
+            || seg == ".."
+            || seg
+                .as_bytes()
+                .windows(3)
+                .any(|w| w.eq_ignore_ascii_case(b"%2e"))
+    });
+    if !plain_host || !plain_tail || dot_segment {
+        return None;
+    }
+    Some(if path.is_empty() {
+        let mut target = String::with_capacity(1 + tail.len());
+        target.push('/');
+        target.push_str(tail);
+        target
+    } else {
+        tail.to_owned()
+    })
 }
 
 /// WHAT THE FAR END'S ANSWER SAYS ABOUT THE FAR END (the breaker's reading; the engine's
@@ -757,15 +816,18 @@ impl Relay {
 
     /// The request one attempt sends on the hop's binding, to the agent at `url`.
     fn attempt(&mut self, url: &str) -> Answer {
-        let version = (crate::arrival::H_VERSION, self.version.to_string());
+        let version = (
+            crate::arrival::H_VERSION,
+            std::borrow::Cow::Borrowed(self.version),
+        );
         match self.binding {
             Binding::JsonRpc => match target_of(url) {
                 Some(target) => Answer::Attempt(Attempt {
                     verb: VERB,
                     target,
                     fields: vec![
-                        (H_CONTENT_TYPE, JSON_MEDIA_TYPE.to_string()),
-                        (H_ACCEPT, self.accept().to_string()),
+                        (H_CONTENT_TYPE, JSON_MEDIA_TYPE.into()),
+                        (H_ACCEPT, self.accept().into()),
                         version,
                     ],
                 }),
@@ -775,9 +837,9 @@ impl Relay {
                 Ok(framed) => {
                     let mut fields = Vec::new();
                     if framed.has_body {
-                        fields.push((H_CONTENT_TYPE, JSON_MEDIA_TYPE.to_string()));
+                        fields.push((H_CONTENT_TYPE, JSON_MEDIA_TYPE.into()));
                     }
-                    fields.push((H_ACCEPT, self.accept().to_string()));
+                    fields.push((H_ACCEPT, self.accept().into()));
                     fields.push(version);
                     self.instead = Some(framed.body);
                     Answer::Attempt(Attempt {
@@ -799,13 +861,13 @@ impl Relay {
                 match framed {
                     Some((rpc, body)) => {
                         self.instead = Some(body);
-                        let media = crate::framed::DIAL_CONTENT_TYPE.to_string();
+                        let media = crate::framed::DIAL_CONTENT_TYPE;
                         Answer::Attempt(Attempt {
                             verb: VERB,
                             target: rpc.target(),
                             fields: vec![
-                                (H_CONTENT_TYPE, media.clone()),
-                                (H_ACCEPT, media),
+                                (H_CONTENT_TYPE, media.into()),
+                                (H_ACCEPT, media.into()),
                                 version,
                             ],
                         })
@@ -886,21 +948,36 @@ impl Relay {
                 self.grpc = GrpcRead::default();
                 match url {
                     Some(url) => {
-                        self.url = url.to_string();
+                        // The url the operator's journal names, kept in place: the same url the
+                        // backend was named with costs nothing.
+                        if self.url != url {
+                            self.url.clear();
+                            self.url.push_str(url);
+                        }
                         self.attempt(url)
                     }
                     None => Answer::Refused,
                 }
             }
             From::Caller => {
+                // THE CALLER'S OWN BYTES go out as lent: the door writes them from the piece, so
+                // an envelope this relay changes nothing about is never copied.
                 let (bytes, message) = match &self.instead {
-                    Some(_) if self.instead_sent => (Vec::new(), false),
+                    Some(_) if self.instead_sent => (None, false),
                     Some(instead) => {
                         self.instead_sent = true;
-                        (instead.clone(), true)
+                        (Some(instead.clone()), true)
                     }
-                    None => (piece.bytes.to_vec(), false),
+                    None => (None, false),
                 };
+                let len = bytes.as_ref().map_or(
+                    if self.instead.is_some() {
+                        0
+                    } else {
+                        piece.bytes.len()
+                    },
+                    Vec::len,
+                );
                 // THE BILLED REQUEST BYTES are the body on the hop's wire (predev
                 // `relay_billing.rs:15-18`: "the framed body ... gRPC length-prefixed message",
                 // counted at `relay.rs:1800` `add_sent(request.body.len())`). On the gRPC binding
@@ -911,13 +988,11 @@ impl Relay {
                 } else {
                     0
                 };
-                self.sent = self
-                    .sent
-                    .saturating_add(bytes.len().saturating_add(prefix) as u64);
-                if bytes.is_empty() {
-                    Answer::Nothing
-                } else {
-                    Answer::ToFarEnd(bytes)
+                self.sent = self.sent.saturating_add(len.saturating_add(prefix) as u64);
+                match bytes {
+                    _ if len == 0 => Answer::Nothing,
+                    Some(bytes) => Answer::ToFarEnd(bytes),
+                    None => Answer::ToFarEndLent,
                 }
             }
             From::FarEnd => self.far_end_piece(piece),

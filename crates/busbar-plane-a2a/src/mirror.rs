@@ -122,6 +122,7 @@ pub fn request(
     };
     let body = match relay.on_piece(piece(From::Caller)) {
         Answer::ToFarEnd(bytes) => bytes,
+        Answer::ToFarEndLent => body.clone(),
         _ => Vec::new(),
     };
     Some(busbar_contract::abi::sdk::exchange::Request {
@@ -130,7 +131,7 @@ pub fn request(
         fields: attempt
             .fields
             .into_iter()
-            .map(|(n, v)| (n.as_bytes().to_vec(), v.into_bytes()))
+            .map(|(n, v)| (n.as_bytes().to_vec(), v.into_owned().into_bytes()))
             .collect(),
         body,
         timeout_ms: 0,

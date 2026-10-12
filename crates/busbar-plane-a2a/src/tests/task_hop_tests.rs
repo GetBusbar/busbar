@@ -737,7 +737,7 @@ fn an_interrupt_from_the_backend_is_relayed_transparently_and_pauses_the_task() 
     let ask = br#"{"jsonrpc":"2.0","id":7,"method":"SendMessage","params":{}}"#;
     assert!(matches!(
         r.on_piece(piece(Side::Caller, ask, None, true)),
-        Answer::ToFarEnd(_)
+        Answer::ToFarEnd(_) | Answer::ToFarEndLent
     ));
     let far = json!({
         "jsonrpc": "2.0", "id": 7,

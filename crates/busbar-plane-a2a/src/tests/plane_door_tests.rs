@@ -784,7 +784,7 @@ fn an_addressed_extended_card_read_is_relayed_as_a_task_less_hop() {
             status: None,
             last: true,
         }),
-        Answer::ToFarEnd(bytes.clone()),
-        "the caller's envelope, verbatim"
+        Answer::ToFarEndLent,
+        "the caller's envelope, verbatim: the piece itself, lent"
     );
 }
