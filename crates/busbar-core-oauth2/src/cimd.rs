@@ -244,13 +244,80 @@ async fn read_document(
     Ok(body)
 }
 
-/// Does this `client_id` name a metadata document at all? HTTPS, a parseable authority, and no
-/// fragment. Anything else is an ordinary opaque identifier and gets the ordinary answer:
-/// unknown unless registered.
+/// The longest client identifier this server fetches (the draft's bound, as `oauth-as` holds it).
+pub(crate) const MAX_CLIENT_ID_URL_BYTES: usize = 2048;
+
+/// Does this `client_id` name a metadata document at all? Section 3 of the client-ID metadata
+/// document draft, every clause: printable ASCII and at most [`MAX_CLIENT_ID_URL_BYTES`], `https`
+/// in lower case, a host, a PATH (`https://client.example` has none), no `.` or `..` path segment
+/// (two strings would name one client while section 4.1 compares them byte for byte), no query,
+/// no fragment, no userinfo. As `oauth-as`'s own validator holds it, the authority carries no
+/// backslash and no percent-escape, and a host that ends in a number is a canonical dotted-quad:
+/// a WHATWG reader of the URL would otherwise reach another host than the one read here. Anything
+/// else is an ordinary opaque identifier and gets the ordinary answer: unknown unless registered.
 fn is_cimd_client_id(client_id: &str) -> bool {
-    client_id.starts_with("https://")
-        && !client_id.contains('#')
-        && busbar_contract::net::parse_url(client_id).is_ok_and(|p| !p.userinfo)
+    if client_id.len() > MAX_CLIENT_ID_URL_BYTES
+        || !client_id.bytes().all(|b| (0x21..=0x7e).contains(&b))
+        || client_id.contains('#')
+    {
+        return false;
+    }
+    let Some(rest) = client_id.strip_prefix("https://") else {
+        return false;
+    };
+    let authority_end = rest.find(['/', '?']).unwrap_or(rest.len());
+    let (authority, path) = rest.split_at(authority_end);
+    if authority.is_empty()
+        || authority.contains(['@', '\\', '%'])
+        || !path.starts_with('/')
+        || path.contains('?')
+        || path
+            .split('/')
+            .any(|segment| segment == "." || segment == "..")
+    {
+        return false;
+    }
+    let host = match authority.strip_prefix('[') {
+        Some(v6) => v6.split(']').next().unwrap_or_default(),
+        None => authority.split(':').next().unwrap_or_default(),
+    };
+    if host.is_empty()
+        || (!host.contains(':')
+            && ends_in_a_number(host)
+            && host.parse::<std::net::Ipv4Addr>().is_err())
+    {
+        return false;
+    }
+    busbar_contract::net::parse_url(client_id).is_ok_and(|p| !p.userinfo)
+}
+
+/// Whether a host's last label is all digits or `0x` hex: a WHATWG reader takes it for an IPv4
+/// address however it is spelled (`2130706433`, `0x7f000001`, `127.1`).
+fn ends_in_a_number(host: &str) -> bool {
+    let host = host.strip_suffix('.').unwrap_or(host);
+    match host.rsplit('.').next() {
+        None | Some("") => false,
+        Some(last) => match last.strip_prefix("0x").or_else(|| last.strip_prefix("0X")) {
+            Some(hex) => hex.chars().all(|c| c.is_ascii_hexdigit()),
+            None => last.chars().all(|c| c.is_ascii_digit()),
+        },
+    }
+}
+
+/// Whether a redirect URI is one the server can ever match (RFC 6749 section 3.1.2): ABSOLUTE (a
+/// scheme, its first character a letter, then letters, digits, `+`, `-` or `.`, then `:`), no
+/// fragment, nothing outside printable ASCII.
+fn is_absolute_uri(value: &str) -> bool {
+    let Some((scheme, _)) = value.split_once(':') else {
+        return false;
+    };
+    scheme.starts_with(|c: char| c.is_ascii_alphabetic())
+        && scheme
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'-' | b'.'))
+        && value
+            .bytes()
+            .all(|b| b != b'#' && (0x21..=0x7e).contains(&b))
 }
 
 /// VALIDATE THE DOCUMENT AND MATERIALISE THE CLIENT, under the operator's ceiling.
@@ -281,10 +348,33 @@ fn materialize(url: &str, body: &[u8], ceiling: &ScopeSet) -> Result<Client, Str
         None => return Err("the document carries no client_id member".to_string()),
     }
 
+    // Section 4.1: the document is world-readable, so it carries no shared secret; and a key
+    // (`jwks`, `jwks_uri`) this server cannot register would leave a client its author believes
+    // confidential registered as a public one. Refused, not dropped.
+    for member in [
+        "client_secret",
+        "client_secret_expires_at",
+        "jwks",
+        "jwks_uri",
+    ] {
+        if doc.contains_key(member) {
+            return Err(format!(
+                "the document carries `{member}`; a metadata-document client is public by \
+                 construction"
+            ));
+        }
+    }
+
     // The redirect URIs come from the DOCUMENT, never from the request: `oauth-as` exact-matches
     // the request's `redirect_uri` against this list, which is what makes a stolen `client_id`
     // useless for sending a code anywhere the document's owner did not name.
     let redirect_uris: Vec<String> = match doc.get("redirect_uris").and_then(|v| v.as_array()) {
+        Some(list) if list.len() > oauth_as::registration::MAX_REGISTERED_REDIRECT_URIS => {
+            return Err(format!(
+                "the document carries more than {} redirect_uris",
+                oauth_as::registration::MAX_REGISTERED_REDIRECT_URIS
+            ))
+        }
         Some(list) if !list.is_empty() => list
             .iter()
             .map(|v| match v.as_str() {
@@ -297,12 +387,8 @@ fn materialize(url: &str, body: &[u8], ceiling: &ScopeSet) -> Result<Client, Str
                 {
                     Err("redirect_uris entries carry no backslash and no userinfo".to_string())
                 }
-                Some(s)
-                    if !s.is_empty() && !s.contains('#') && !s.contains(char::is_whitespace) =>
-                {
-                    Ok(s.to_string())
-                }
-                _ => Err("redirect_uris entries must be fragment-free URI strings".to_string()),
+                Some(s) if is_absolute_uri(s) => Ok(s.to_string()),
+                _ => Err("redirect_uris entries must be absolute, fragment-free URIs".to_string()),
             })
             .collect::<Result<_, _>>()?,
         _ => return Err("the document carries no redirect_uris".to_string()),

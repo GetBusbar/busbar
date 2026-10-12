@@ -166,6 +166,65 @@ fn only_a_fragment_free_https_url_names_a_document() {
     assert!(!is_cimd_client_id("https://"), "no host");
 }
 
+/// RED (audit core-oauth2#5): the draft's section 3 MUSTs on the identifier. No path, a dot
+/// segment, a query, an over-long URL, and an authority a WHATWG reader resolves elsewhere (a
+/// backslash, a percent-escape, an IPv4 address spelled as one number) name no document, so they
+/// never reach the fetch.
+#[test]
+fn an_identifier_the_draft_forbids_names_no_document() {
+    for id in [
+        "https://client.example",
+        "https://client.example?x=1",
+        "https://client.example/a/../b",
+        "https://client.example/./b",
+        "https://client.example/doc?v=1",
+        "https://good.example\\.evil.com/doc",
+        "https://127.0.0.1%2e/doc",
+        "https://2130706433/doc",
+        "https://0x7f000001/doc",
+        "https://client.example/doc with space",
+    ] {
+        assert!(!is_cimd_client_id(id), "{id} names no metadata document");
+    }
+    let long = format!("https://client.example/{}", "a".repeat(2048));
+    assert!(
+        !is_cimd_client_id(&long),
+        "an identifier over the URL bound"
+    );
+    assert!(
+        is_cimd_client_id("https://client.example/"),
+        "the path `/` is a path"
+    );
+    assert!(is_cimd_client_id("https://client.example:8443/v1.2/doc"));
+}
+
+/// RED (audit core-oauth2#5): the draft's section 4.1 MUSTs on the document. A shared secret or a
+/// key the server cannot register is refused, not dropped; a redirect URI must be absolute; and
+/// the list is bounded.
+#[test]
+fn a_document_the_draft_forbids_is_refused() {
+    for (member, value) in [
+        ("client_secret", serde_json::json!("s3cret")),
+        ("client_secret_expires_at", serde_json::json!(0)),
+        ("jwks", serde_json::json!({"keys": []})),
+        ("jwks_uri", serde_json::json!("https://client.example/jwks")),
+    ] {
+        let mut doc = document();
+        doc[member] = value;
+        materialized(&doc).expect_err(member);
+    }
+    for uri in ["/cb", "cb", "127.0.0.1:9999/cb", "//client.example/cb"] {
+        let mut doc = document();
+        doc["redirect_uris"] = serde_json::json!([uri]);
+        materialized(&doc).expect_err(uri);
+    }
+    let mut doc = document();
+    doc["redirect_uris"] = serde_json::json!((0..17)
+        .map(|i| format!("http://127.0.0.1:9999/cb{i}"))
+        .collect::<Vec<_>>());
+    materialized(&doc).expect_err("more redirect_uris than a registration may hold");
+}
+
 /// A fetch stub that records whether it was consulted at all.
 struct Recording {
     called: AtomicBool,
