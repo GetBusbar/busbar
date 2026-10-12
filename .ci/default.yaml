@@ -22,6 +22,8 @@ checks:
       export XTASK_CEILING_BASE="$MODERNCI_TO_SHA" XTASK_SHIP_TARGET=predev
       cargo xtask gate --all --format=tsv
     baseline: target
+    # The ledgers and ceilings are rules: a row this move arms is judged on its own.
+    rules: ["qa/*.toml"]
     needs: [preflight]
   clippy:
     run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
