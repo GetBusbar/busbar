@@ -5,14 +5,14 @@
 //!
 //! ## What this does
 //!
-//! It strips instruction-injection MARKUP — `<IMPORTANT>`, `<system>`, HTML-like tags — from three
-//! places. All three are named explicitly, and the third is the one that gets forgotten: it is easy
-//! to reach for the two surfaces a caller READS and to miss the ones an upstream SERVES back, even
-//! though they carry the same text by the same route:
+//! It strips instruction-injection MARKUP — `<IMPORTANT>`, `<system>`, HTML-like tags — from the
+//! text busbar composes and serves itself:
 //!
-//! - tool and prompt DESCRIPTIONS, before they are shown or fed as context;
-//! - tool OUTPUTS, before results re-enter model context;
-//! - `resources/read` CONTENT and `prompts` TEMPLATES, which are equally injectable.
+//! - tool, prompt and resource DESCRIPTIONS and names in the catalogue;
+//! - `resources/read` CONTENT and `prompts` TEMPLATES answered from the section.
+//!
+//! An upstream's tool RESULT and its error message are not among them: they are the upstream's
+//! data and reach the caller as the upstream sent them (Law 11).
 //!
 //! ## What this does NOT do, stated here rather than in a footnote
 //!
@@ -116,28 +116,6 @@ pub fn normalise(input: &str) -> String {
 /// [`normalise`] applied to an optional string, which is the shape every catalogue field has.
 pub fn normalise_opt(input: Option<&str>) -> Option<String> {
     input.map(normalise)
-}
-
-/// Recursively normalise every STRING VALUE in a JSON document, leaving keys, numbers, booleans and
-/// structure untouched.
-///
-/// Tool OUTPUT is arbitrary JSON, and the injection rides in its string leaves. Keys are left alone
-/// deliberately: a key is a schema element the caller's own code indexes by, and rewriting one turns
-/// a sanitiser into a data-corruption bug — whereas a key containing markup is not a channel into a
-/// model's instruction stream in the way a value is.
-pub fn normalise_json(value: &serde_json::Value) -> serde_json::Value {
-    match value {
-        serde_json::Value::String(s) => serde_json::Value::String(normalise(s)),
-        serde_json::Value::Array(items) => {
-            serde_json::Value::Array(items.iter().map(normalise_json).collect())
-        }
-        serde_json::Value::Object(map) => serde_json::Value::Object(
-            map.iter()
-                .map(|(k, v)| (k.clone(), normalise_json(v)))
-                .collect(),
-        ),
-        other => other.clone(),
-    }
 }
 
 /// Remove the tag that the just-completed deletion may have reconstituted across the seam between
