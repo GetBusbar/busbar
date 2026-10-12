@@ -2796,8 +2796,7 @@ fn read_law0_base(cx: &Ctx, commit: &str, meta: Option<String>) -> Result<Law0Ba
         super::census(&bcx).map_err(|e| format!("the census of the merge-base {short}: {e}"))?;
     let (planes, ports) = super::vocabularies(&crates);
     super::assign_instances(&mut crates, &planes, &ports);
-    let reg = super::load_registry(&bcx)
-        .map_err(|e| format!("the ledger of the merge-base {short}: {e}"))?;
+    let reg = base_ledger(&bcx, short)?;
     let mut law0 = None;
     let (row, _) = measured_row(&bcx, &crates, &reg, false, &mut law0);
     let counts = law0.ok_or_else(|| {
@@ -2815,6 +2814,27 @@ fn read_law0_base(cx: &Ctx, commit: &str, meta: Option<String>) -> Result<Law0Ba
             .map(|r| ((r.krate.clone(), r.axis.clone()), r.count))
             .collect(),
     })
+}
+
+/// THE MERGE-BASE'S LEDGER, AS THE BASE HAD IT: `bcx` is this tree laid back to the base's bytes.
+///
+/// A BASE THAT PREDATES THE LEDGER IS A BASE WITH NO ROWS, NOT A BASE THAT CANNOT BE READ. The
+/// predev -> dev hop measures against `dev`, and `dev` is 1.5.5 (a71b21e9), which never carried
+/// `qa/kind-isolation.toml`. This used to refuse there ("the merge-base's Law 0 cells could not be
+/// read"), so the row named no cell at all on the one hop DEV-GREEN is judged on (BUSBAR-1.6.0.md
+/// Part 5, DONE = DEV-GREEN item 3). The base's cells ARE readable: its bytes are in history and
+/// they are measured by this tree's code, exactly as on any other base. Only its `[[law0]]` rows
+/// are missing, and a base with no rows covers no rise, which is already this row's rule for a row
+/// minted on the branch. So an absent ledger reads as the empty ledger, the same reading the census
+/// gives it (`census`) and the provenance rules give it (`base.rs`: "the state a branch
+/// that ADDS the ledger is in"). It is the strict reading: nothing at the base can cover a cell.
+///
+/// A ledger the base HAS and that will not read is still a refusal: that base is not established.
+fn base_ledger(bcx: &Ctx, short: &str) -> Result<super::KindRegistry, String> {
+    if !bcx.exists(super::REGISTRY_FILE) {
+        return Ok(super::KindRegistry::default());
+    }
+    super::load_registry(bcx).map_err(|e| format!("the ledger of the merge-base {short}: {e}"))
 }
 
 /// [`ROW_LAW0_BASE`]: this tree's Law 0 cells against the merge-base's. `law0` `None` is a scan
@@ -5265,6 +5285,98 @@ mod tests {
         assert!(row.detail.starts_with("no-base"), "{}", row.detail);
         let unrun = rule_law0_base(&reg, None, Ok(&law0_base_of("b", BASE_CELLS, BASE_ROWS)));
         assert_eq!(unrun.status, crate::ledger::Status::Fail);
+    }
+
+    /// A context over an empty fixture root carrying `ov`: the merge-base's tree as
+    /// [`read_law0_base`] lays it down.
+    fn base_cx_with(ov: crate::ctx::Overlay, tag: &str) -> (Ctx, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join(format!(
+            "xtask-law0-base-{tag}-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let cx = Ctx::at(&dir, dir.join("scratch")).expect("a fixture context");
+        (cx.with_overlay(ov), dir)
+    }
+
+    /// RED ARM, THE PREDEV -> DEV HOP. The merge-base with `dev` is 1.5.5 (a71b21e9), which never
+    /// carried `qa/kind-isolation.toml`. Its cells are read and judged, not refused: a neutral cell
+    /// the branch grew from nothing is RED as `law0-grown` over "no `[[law0]]` row there", and the
+    /// rows this tree carries for it cover none of it (each is minted on the branch).
+    #[test]
+    fn a_base_that_predates_the_ledger_is_judged_not_refused() {
+        let mut ov = crate::ctx::Overlay::new();
+        ov.remove(super::super::REGISTRY_FILE);
+        let (bcx, dir) = base_cx_with(ov, "absent");
+        let ledger = base_ledger(&bcx, "a71b21e9");
+        let _ = std::fs::remove_dir_all(&dir);
+        let ledger = ledger.expect("a base without the ledger is a base with no rows");
+        assert!(ledger.law0.is_empty());
+
+        let base = Law0Base {
+            commit: "a71b21e9fa".to_string(),
+            counts: law0_counts_of(&[("busbar", "plane", 900)]),
+            rows: ledger
+                .law0
+                .iter()
+                .map(|r| ((r.krate.clone(), r.axis.clone()), r.count))
+                .collect(),
+        };
+        let head = law0_counts_of(&[("busbar", "plane", 824), ("busbar-kernel", "plane", 12)]);
+        let reg = law0_reg(&[("busbar", "plane", 824), ("busbar-kernel", "plane", 12)]);
+        let judged = rule_law0_base(&reg, Some(&head), Ok(&base));
+        assert_eq!(
+            judged.status,
+            crate::ledger::Status::Fail,
+            "{}",
+            judged.detail
+        );
+        assert!(!judged.detail.contains("no-base"), "{}", judged.detail);
+        assert!(
+            judged.detail.contains(
+                "law0-grown\tbusbar-kernel \u{d7} plane\t0 -> 12 hit(s) over the same cell at the \
+                 merge-base a71b21e9 (no `[[law0]]` row there)"
+            ),
+            "{}",
+            judged.detail
+        );
+        // The cell the monolith carried at the base and the branch drained is not this row's red.
+        assert!(
+            !judged.detail.contains("busbar \u{d7} plane"),
+            "{}",
+            judged.detail
+        );
+    }
+
+    /// The other half of the same rule: a base that HAS the ledger and cannot read it is not
+    /// established, and stays a refusal; a base's ledger that reads is the ledger used.
+    #[test]
+    fn a_base_ledger_that_will_not_read_is_still_refused() {
+        let mut ov = crate::ctx::Overlay::new();
+        ov.unreadable(
+            super::super::REGISTRY_FILE,
+            "planted: the object is corrupt",
+        );
+        let (bcx, dir) = base_cx_with(ov, "unreadable");
+        let refused = base_ledger(&bcx, "4f36b973");
+        let _ = std::fs::remove_dir_all(&dir);
+        let why = refused.expect_err("an unreadable base ledger is not an empty one");
+        assert!(
+            why.contains("the ledger of the merge-base 4f36b973"),
+            "{why}"
+        );
+
+        let mut ov = crate::ctx::Overlay::new();
+        ov.set(
+            super::super::REGISTRY_FILE,
+            "[[law0]]\ncrate = \"busbar-kernel\"\naxis = \"plane\"\ncount = \"12\"\ncite = \"planted\"\n",
+        );
+        let (bcx, dir) = base_cx_with(ov, "present");
+        let read = base_ledger(&bcx, "4f36b973");
+        let _ = std::fs::remove_dir_all(&dir);
+        let read = read.expect("a ledger that reads");
+        assert_eq!(read.law0.len(), 1, "{:?}", read.law0);
+        assert_eq!(read.law0[0].count, 12);
     }
 
     #[test]
