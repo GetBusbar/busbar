@@ -27,8 +27,8 @@ path = "src/lib.rs"
 # THE LINKED TEST-SEAM LIST: the dev-dependency crates whose `testkit::TEST_SEAM` entry this crate's
 # unit tests register and loop (build.rs emits the table; the sources name none of these crates).
 # The list is the install order. A plane served through its memory-ABI door only is no row here:
-# this crate links no loader (P2 D4), so its tests fold a door double's registration instead
-# (src/tests/door_double.rs), whose facts the composition root's tests pin to the linked door.
+# this crate links no loader (P2 D4); the admin tests that need a door plane's section run in the
+# composition root's tests, where the loader links the door.
 [package.metadata.busbar]
 test-linked = ["busbar-llm"]
 # THE TEST REGISTRY ROW for the operator credential: the auth plugin dev-dependency whose SDK boundary

@@ -1506,8 +1506,8 @@ cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain 
 [[law0]]
 crate = "busbar"
 axis  = "plane"
-count = "822"
-cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; RE-ARMED 798 -> 822 (Law 9, BUSBAR-1.6.0.md: it pins its ceiling at TODAY'S MEASURED VALUE): the row went live on predev at dc83ff1553 (#597) and measured 826 there; the 798 was f830faa691's, nine hours older than the arming, so the row armed red. 822 is predev 9c0a394771's measure, at or under the arming value"
+count = "773"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; RE-ARMED 798 -> 822 (Law 9, BUSBAR-1.6.0.md: it pins its ceiling at TODAY'S MEASURED VALUE): the row went live on predev at dc83ff1553 (#597) and measured 826 there; the 798 was f830faa691's, nine hours older than the arming, so the row armed red. 822 is predev 9c0a394771's measure, at or under the arming value; LOWERED 822 -> 773, FLIP-A2A's measure: busbar-a2a is deleted, the a2a door's root cells live in its own crate and the stale mentions of the deleted engine are gone (Law 9: the ceiling ratchets down)"
 
 [[law0]]
 crate = "busbar"
@@ -1518,8 +1518,8 @@ cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain 
 [[law0]]
 crate = "busbar"
 axis  = "transport"
-count = "208"
-cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; LOWERED 215 -> 208, predev 9c0a394771's measure: the drain landed without giving its row back (Law 9: the ceiling ratchets down)"
+count = "185"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; LOWERED 215 -> 208, predev 9c0a394771's measure: the drain landed without giving its row back (Law 9: the ceiling ratchets down); LOWERED 208 -> 185, FLIP-A2A's measure: busbar-a2a is deleted, the a2a door's root cells live in its own crate and the stale mentions of the deleted engine are gone (Law 9: the ceiling ratchets down)"
 
 [[law0]]
 crate = "busbar"
@@ -1626,8 +1626,8 @@ cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain 
 [[law0]]
 crate = "busbar-core-admin"
 axis  = "plane"
-count = "51"
-cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance"
+count = "47"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; LOWERED 51 -> 47, FLIP-A2A's measure: busbar-a2a is deleted, the a2a door's root cells live in its own crate and the stale mentions of the deleted engine are gone (Law 9: the ceiling ratchets down)"
 
 [[law0]]
 crate = "busbar-core-admin"
@@ -1704,8 +1704,8 @@ cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain 
 [[law0]]
 crate = "busbar-kernel"
 axis  = "plane"
-count = "1175"
-cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; LOWERED 1193 -> 1175, predev 9c0a394771's measure: the drain landed without giving its row back (Law 9: the ceiling ratchets down)"
+count = "1149"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; LOWERED 1193 -> 1175, predev 9c0a394771's measure: the drain landed without giving its row back (Law 9: the ceiling ratchets down); LOWERED 1175 -> 1149, FLIP-A2A's measure: busbar-a2a is deleted, the a2a door's root cells live in its own crate and the stale mentions of the deleted engine are gone (Law 9: the ceiling ratchets down)"
 
 [[law0]]
 crate = "busbar-kernel"

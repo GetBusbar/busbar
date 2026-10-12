@@ -2037,7 +2037,7 @@ impl std::fmt::Debug for PerHop {
         f.debug_struct("PerHop")
             .field("secret", &"<redacted; re-resolved per hop>")
             .field("style", &self.style)
-            .field("header", &self.header)
+            .field("carried_in", &self.header)
             .field("handle", &handle)
             .finish_non_exhaustive()
     }

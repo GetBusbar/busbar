@@ -638,7 +638,6 @@ dependencies = [
  "busbar-kernel-scope",
  "busbar-kernel-wal",
  "busbar-llm",
- "busbar-plane-a2a",
  "busbar-plugin-loader",
  "busbar-store-memory",
  "bytes",

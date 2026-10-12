@@ -12,12 +12,12 @@ use super::*;
 use crate::trust::{Approval, Sighting};
 use std::collections::BTreeMap;
 
-/// A LOCAL, TEST-ONLY STAND-IN for `busbar_a2a::a2a::pin::CardPin`.
+/// A LOCAL, TEST-ONLY STAND-IN for the retired agent engine's `CardPin`.
 ///
 /// This mirrors the precedent set by `genericity_tests.rs`'s `CardPin`/`SpkiPin` fixtures rather
-/// than importing the real `busbar-a2a` type: `busbar-kernel` depends on `busbar-a2a`, and
-/// `busbar-a2a`'s dev-dependency on `busbar-kernel` (for its own tests) means a `busbar-kernel`
-/// unit test that imports `busbar_a2a::a2a::pin::CardPin` pulls in a SECOND, non-unified instance
+/// than importing the real engine type: `busbar-kernel` depended on the retired agent engine, and
+/// that engine's dev-dependency on `busbar-kernel` (for its own tests) means a `busbar-kernel`
+/// unit test that imported its `CardPin` pulled in a SECOND, non-unified instance
 /// of the `busbar_kernel` crate graph. `CardPin`'s `PinnedArtifact` impl is then compiled against
 /// that other instance's `PinnedArtifact` trait, which is not the same trait item as the one
 /// `Approval<A>` here is generic over, so every call through it fails to typecheck. A local fixture

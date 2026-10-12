@@ -3,7 +3,7 @@
 
 //! BYTE-IDENTITY CONFORMANCE for the hostless egress seam adapter (`egress::seam`).
 //!
-//! Ported from the deleted busbar-a2a `egress_seam_tests`. The adapter drives the host egress poll seam
+//! Ported from the deleted agent engine's `egress_seam_tests`. The adapter drives the host egress poll seam
 //! (`drive_open` + `drive_poll`); the comparator is a direct pinned reqwest hop (`build_pinned_client`,
 //! the codec every plane's own transport used). Against the SAME loopback fixture the two MUST agree,
 //! field for field: status, location, body, the capped-read `ReadEnd`, and, over a stream, the
@@ -151,7 +151,7 @@ fn seam_buffered(url: &str, cap: usize) -> super::Buffered {
 
 /// THE CORE EQUALITY. Pins that the hostless seam's `buffered` and a direct pinned reqwest hop agree
 /// field for field against the same fixture: status, location, body, peer key pin and
-/// `client_identity_offered`, with a body under the cap reading `Complete`. Ported from busbar-a2a
+/// `client_identity_offered`, with a body under the cap reading `Complete`. Ported from the retired agent engine's
 /// `egress_seam_tests` (`buffered_adapter_matches_the_..._transport_get_byte_for_byte`, renamed: the
 /// kernel names no plane), with the old `ReqwestTransport::get` comparator replaced by the direct hop.
 #[test]
@@ -189,7 +189,7 @@ fn buffered_adapter_matches_a_direct_pinned_get_byte_for_byte() {
 
 /// THE REDIRECT HEAD. Pins that a 302 with a `Location` is surfaced (never followed) with the location
 /// verbatim, exactly as a direct pinned hop reads it, so a plane's redirect loop can consume it. Ported
-/// from busbar-a2a `egress_seam_tests`.
+/// from the retired agent engine's `egress_seam_tests`.
 #[test]
 fn buffered_adapter_surfaces_a_redirect_location_like_the_transport() {
     let port = spawn_mock(
@@ -217,7 +217,7 @@ fn buffered_adapter_surfaces_a_redirect_location_like_the_transport() {
 /// ALL THREE `ReadEnd` STATES. Pins that the seam's cap loop (`read_capped_over`, reached through
 /// `buffered`) reproduces `proxy::read_capped` exactly: `Complete` for a body under the cap,
 /// `Truncated` (a cap-length prefix) for an over-cap body, `TransportError` for a mid-body failure.
-/// Ported from busbar-a2a `egress_seam_tests`.
+/// Ported from the retired agent engine's `egress_seam_tests`.
 #[test]
 fn capped_read_reproduces_all_three_readend_states() {
     // (1) COMPLETE: a body under the cap.
@@ -278,7 +278,7 @@ fn capped_read_reproduces_all_three_readend_states() {
 /// THE STREAM RELAY. Pins that the seam's `stream_head` + `pump` deliver a byte-identical CONCATENATED
 /// body for an event-stream reply versus a direct streamed pinned hop, and agree on the head (status,
 /// lower-cased content-type). Per the adapter's documented nuance the per-chunk boundaries may differ;
-/// the concatenation may not. Ported from busbar-a2a `egress_seam_tests`, with the old
+/// the concatenation may not. Ported from the retired agent engine's `egress_seam_tests`, with the old
 /// `ReqwestTransport::post_stream` comparator replaced by the direct hop.
 #[cfg(feature = "egress-stream")]
 #[test]

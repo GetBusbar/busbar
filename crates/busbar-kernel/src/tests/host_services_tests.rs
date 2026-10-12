@@ -413,7 +413,7 @@ fn trust_sight_judges_from_the_admitted_entries_and_writes_the_demotion() {
     // Before any approval every sighting reports pending, the declared fingerprint (coordinator
     // 2026-10-07, #555 point ii) or another hash, which drifts nothing and writes no demotion
     // (#555 round 3; predev crates/busbar-kernel/src/trust/mod.rs:289-290, no pin is Pending;
-    // crates/busbar-a2a/src/a2a/registry.rs:123 lowers every registration unpinned).
+    // the retired agent engine's registry lowers every registration unpinned).
     assert_eq!(sight("moved").value, svc::TRUST_NEW);
     assert!(r.s.demotions.get().unwrap().record.list().is_empty());
     assert_eq!(sight("fp").value, svc::TRUST_NEW);
@@ -445,7 +445,7 @@ fn the_operators_trust_decisions_are_kept_and_replayed_at_a_restart() {
     assert_eq!(r.s.trust_unreached(&me, "cp").value, svc::TRUST_NEW);
     // Approved first: before an approval a declared fingerprint drifts nothing (coordinator
     // 2026-10-07, #555 round 3; predev crates/busbar-kernel/src/trust/mod.rs:289-290, no pin is
-    // Pending, and :312, only a pin can change; crates/busbar-a2a/src/a2a/registry.rs:123).
+    // Pending, and :312, only a pin can change; the retired agent engine's registry).
     r.s.trust_rule("inst/cp", Ruling::Approve).unwrap();
     assert_eq!(
         run(|l| r.s.trust_sight(&me, "cp", "moved", l)).value,
@@ -663,7 +663,7 @@ fn a_durable_demotion_is_replayed_at_admit() {
     let me = caller("inst");
     // Approved first: before an approval a declared fingerprint drifts nothing (coordinator
     // 2026-10-07, #555 round 3; predev crates/busbar-kernel/src/trust/mod.rs:289-290, no pin is
-    // Pending, and :312, only a pin can change; crates/busbar-a2a/src/a2a/registry.rs:123).
+    // Pending, and :312, only a pin can change; the retired agent engine's registry).
     r.s.trust_rule("inst/cp", crate::trust::book::Ruling::Approve)
         .unwrap();
     assert_eq!(
@@ -793,7 +793,7 @@ fn a_demotion_in_one_instance_is_never_replayed_into_another_with_the_same_count
     let r = rig();
     // Approved first: before an approval a declared fingerprint drifts nothing (coordinator
     // 2026-10-07, #555 round 3; predev crates/busbar-kernel/src/trust/mod.rs:289-290, no pin is
-    // Pending, and :312, only a pin can change; crates/busbar-a2a/src/a2a/registry.rs:123).
+    // Pending, and :312, only a pin can change; the retired agent engine's registry).
     r.s.trust_rule("inst/cp", crate::trust::book::Ruling::Approve)
         .unwrap();
     assert_eq!(
@@ -838,7 +838,7 @@ fn an_unprefixed_row_replays_into_the_default_instance_only_and_it_clears_it() {
     pinned.admit(SECTION_KEY, trusting(Some("fp"))).unwrap();
     // A sighting of the declared fingerprint before any approval reports pending (coordinator
     // 2026-10-07, #555 point ii; predev crates/busbar-kernel/src/trust/mod.rs:289-290, no pin is
-    // Pending; crates/busbar-a2a/src/a2a/registry.rs:123 lowers every registration unpinned).
+    // Pending; the retired agent engine's registry lowers every registration unpinned).
     assert_eq!(
         run(|l| pinned.trust_sight(&caller(SECTION_KEY), "cp", "fp", l)).value,
         svc::TRUST_NEW
@@ -1018,7 +1018,7 @@ fn a_demotion_is_written_on_the_pool_and_the_sighting_answers_after_it() {
     s.admit("inst", trusting(Some("fp"))).unwrap();
     // Approved first: before an approval a declared fingerprint drifts nothing (coordinator
     // 2026-10-07, #555 round 3; predev crates/busbar-kernel/src/trust/mod.rs:289-290, no pin is
-    // Pending, and :312, only a pin can change; crates/busbar-a2a/src/a2a/registry.rs:123).
+    // Pending, and :312, only a pin can change; the retired agent engine's registry).
     s.trust_rule("inst/cp", crate::trust::book::Ruling::Approve)
         .unwrap();
     let (slot, later) = recorder();

@@ -927,7 +927,7 @@ pub struct TestApp {
     /// per-generation runtime under [`crate::state::runtime_slot_key`]). Filled from OUTSIDE core by
     /// each plane's test-kit through [`TestApp::install_plane_runtime`], so `build()` names no plane
     /// runtime type — the whole point of the B2/B3 relocation: core's fixture is plane-AGNOSTIC and
-    /// the `busbar-mcp` / `busbar-a2a` test-kits own their own construction.
+    /// the `busbar-mcp` and agent-engine test-kits own their own construction.
     installed_plane_runtimes:
         std::collections::BTreeMap<&'static str, std::sync::Arc<dyn std::any::Any + Send + Sync>>,
     /// THE NEUTRAL DISPATCH TABLE the built App mounts. A plane's test-kit describes its mounts and

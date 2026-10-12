@@ -643,7 +643,7 @@ pub fn build_dispatch(
 }
 
 // `registry_tests` MOVED to `crates/busbar/tests/registry_cross_plane.rs` (the A6/HostCtx dev-dependency-cycle
-// cleanup): most of it drove the REAL `busbar_llm`/`busbar_mcp`/`busbar_a2a` `PLANE_DECL`s and their
+// cleanup): most of it drove the REAL `busbar_llm`/`busbar_mcp` and agent-engine `PLANE_DECL`s and their
 // real runtime objects, which only type-checks with ONE `busbar_kernel` in the graph — an
 // integration-test target, never this `#[cfg(test)]` unit module. See that file's header. The two
 // `#[cfg(test)]` seams it used to reach through (`builtin_plane_decls`, `default_section_plane_test_runtime`

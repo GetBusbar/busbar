@@ -70,7 +70,7 @@ use std::net::IpAddr;
 /// and every one of the four callers reaches it from a different posture — a foreign thread already
 /// inside `Runtime::block_on`, a boxed future on a shared worker, a plain `async fn`. A thread with
 /// its own current-thread runtime has no such precondition and cannot panic on the caller's behalf.
-/// This is the shape `busbar-a2a`'s card-fetch resolver already uses in production, stated once
+/// This is the shape the retired agent engine's card-fetch resolver already uses in production, stated once
 /// more here rather than reached across a plane boundary for it.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct SystemResolver;

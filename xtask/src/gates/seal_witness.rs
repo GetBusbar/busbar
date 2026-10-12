@@ -130,9 +130,10 @@ const EXCLUDE: &[&str] = &["/target/"];
 /// read 200 — about a tenth of the tree — so a walk that silently dropped nine files in ten still
 /// scanned "clean". It was first armed at 2181 on predev 0fd08ee75d; predev then retired the
 /// kernel-identity and kernel `egress_auth` modules (24 files out, 15 in), and a floor above the
-/// tree it guards refuses every walk. A tree that grows keeps this floor; a walk that comes back
-/// short of it is refused.
-const SCAN_FLOOR: usize = 2174;
+/// tree it guards refuses every walk. FLIP-A2A then deleted the `busbar-a2a` crate, folding its
+/// engine into the plane's door crate, and with it the admin crate's door double: 2159. A tree
+/// that grows keeps this floor; a walk that comes back short of it is refused.
+const SCAN_FLOOR: usize = 2159;
 
 /// Is `rel` a file that compiles only into a TEST, BENCH or EXAMPLE target — never into a shipped
 /// lib/bin? A `tests/` directory anywhere on the path (which covers `src/tests/`), a `benches/` or

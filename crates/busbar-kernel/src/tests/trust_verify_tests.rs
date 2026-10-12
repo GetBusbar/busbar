@@ -94,7 +94,7 @@ fn verdict(st: &Stored) -> (Outcome, u64, &[u8]) {
     (st.outcome, st.value, st.bytes.as_slice())
 }
 
-/// Ported from busbar-a2a inbound_jws_tests.rs::the_seam_verifies_a_good_card_byte_identically_to_the_free_function,
+/// Ported from the retired agent engine's inbound_jws_tests.rs::the_seam_verifies_a_good_card_byte_identically_to_the_free_function,
 /// ::the_capability_verifies_byte_identically_to_the_free_function and
 /// ::verify_document_over_the_process_seam_matches_the_free_function: a card's signature is judged
 /// on this one path (the door hands its payload and signatures here), so there is no second
@@ -128,7 +128,7 @@ fn a_tampered_signature_is_not_by_the_root() {
     );
 }
 
-/// Ported from busbar-a2a inbound_jws_tests.rs::the_seam_refuses_a_wrong_key_and_a_malformed_key_exactly_as_the_free_function
+/// Ported from the retired agent engine's inbound_jws_tests.rs::the_seam_refuses_a_wrong_key_and_a_malformed_key_exactly_as_the_free_function
 /// (its wrong-key half).
 ///
 /// RED: a payload changed after signing, and a signature by another key, are never accepted.
@@ -245,7 +245,7 @@ fn no_signature_too_many_and_malformed_parts_each_answer_their_verdict() {
     );
 }
 
-/// Ported from busbar-a2a inbound_jws_tests.rs::the_seam_refuses_a_wrong_key_and_a_malformed_key_exactly_as_the_free_function
+/// Ported from the retired agent engine's inbound_jws_tests.rs::the_seam_refuses_a_wrong_key_and_a_malformed_key_exactly_as_the_free_function
 /// (its malformed-key half).
 ///
 /// The root key is checked first: a key that does not read refuses before any signature is read.
@@ -289,7 +289,7 @@ fn only_a_declared_root_key_verifies() {
 
 /// A protected header that is not base64url, not JSON, or not an object is refused: a verifier that
 /// treated an unparseable header as an empty one would then read no `alg` from it.
-/// Ported from busbar-a2a a2a/tests/jws_tests.rs::a_malformed_protected_header_is_refused.
+/// Ported from the retired agent engine's jws_tests.rs::a_malformed_protected_header_is_refused.
 #[test]
 fn a_malformed_protected_header_is_refused() {
     let s = host();
@@ -311,7 +311,7 @@ fn a_malformed_protected_header_is_refused() {
 /// The protected header is used EXACTLY AS RECEIVED. Re-encoding it would change the bytes that
 /// were signed, so a genuine signature whose producer spelled the header differently than a
 /// serializer here would must still verify.
-/// Ported from busbar-a2a a2a/tests/jws_tests.rs::the_protected_header_is_verified_as_received_not_as_we_would_spell_it.
+/// Ported from the retired agent engine's jws_tests.rs::the_protected_header_is_verified_as_received_not_as_we_would_spell_it.
 #[test]
 fn the_protected_header_is_verified_as_received_not_as_we_would_spell_it() {
     let s = host();
@@ -332,7 +332,7 @@ fn the_protected_header_is_verified_as_received_not_as_we_would_spell_it() {
 /// The root key is parsed at the boundary: only the base64 SPKI form of an Ed25519 key is a root
 /// key. A raw 32-byte key, a wrong prefix and a wrong length are refused, so an operator pasting
 /// the wrong thing does not silently get it as the trust root; surrounding whitespace is trimmed.
-/// Ported from busbar-a2a a2a/tests/jws_tests.rs::only_a_well_formed_ed25519_key_info_becomes_an_issuer_key.
+/// Ported from the retired agent engine's jws_tests.rs::only_a_well_formed_ed25519_key_info_becomes_an_issuer_key.
 #[test]
 fn only_a_well_formed_ed25519_key_info_becomes_an_issuer_key() {
     use crate::trust::signed::root_key;
@@ -359,7 +359,7 @@ fn only_a_well_formed_ed25519_key_info_becomes_an_issuer_key() {
     }
 }
 
-/// Ported from busbar-a2a jws_tests.rs::a_rotation_carrying_two_signatures_reports_which_one_verified
+/// Ported from the retired agent engine's jws_tests.rs::a_rotation_carrying_two_signatures_reports_which_one_verified
 /// (its verdict: which of the signatures verified, by index and key id, is no longer reported;
 /// `trust.verify` answers a verdict code alone).
 ///
@@ -461,7 +461,7 @@ fn busbar_signed(deployment: &crate::governance::GovState, payload: &[u8]) -> Va
     json!({ "protected": protected, "signature": URL_SAFE_NO_PAD.encode(sig) })
 }
 
-/// Ported from busbar-a2a sign_tests.rs::a_card_signed_by_a_different_busbar_deployment_does_not_verify_here.
+/// Ported from the retired agent engine's sign_tests.rs::a_card_signed_by_a_different_busbar_deployment_does_not_verify_here.
 ///
 /// Two deployments, two token secrets, two derived card keys. A caller that pinned one must not
 /// accept the other, or the pin identifies "some busbar" rather than "this busbar". The control:
@@ -481,7 +481,7 @@ fn a_card_signed_by_a_different_busbar_deployment_does_not_verify_here() {
     );
 }
 
-/// Ported from busbar-a2a sign_tests.rs::the_card_key_is_not_the_token_key_and_cannot_be_walked_back_to_it.
+/// Ported from the retired agent engine's sign_tests.rs::the_card_key_is_not_the_token_key_and_cannot_be_walked_back_to_it.
 ///
 /// A served card is a counterparty's document with busbar's endpoints substituted in; signing it
 /// with the credential-minting key would make the card path a signing oracle over
@@ -513,7 +513,7 @@ fn the_card_key_is_not_the_token_key_and_cannot_be_walked_back_to_it() {
     );
 }
 
-/// Ported from busbar-a2a sign_tests.rs::rotating_the_token_key_rotates_the_card_key_with_it.
+/// Ported from the retired agent engine's sign_tests.rs::rotating_the_token_key_rotates_the_card_key_with_it.
 ///
 /// An operator rotating the signing key is also rotating what external callers pinned: the card
 /// key moves with it, and a caller pinned to the key before sees the card after as not signed by

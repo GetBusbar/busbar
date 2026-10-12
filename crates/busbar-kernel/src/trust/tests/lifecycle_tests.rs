@@ -44,7 +44,7 @@ fn a_registered_record_is_pending_and_serves_nothing() {
     assert!(!a.serves("read_file", "h1"));
 }
 
-/// Ported from busbar-a2a a2a/tests/verbs_tests.rs::resuming_an_unpinned_registration_still_serves_nothing.
+/// Ported from the retired agent engine's verbs_tests.rs::resuming_an_unpinned_registration_still_serves_nothing.
 /// RESUMING cannot make an UNVERIFIED record serve: the evidence that matters is the trust state the
 /// machine still holds, so resume needs no ceremony.
 #[test]

@@ -44,15 +44,16 @@ pub const ROW_CLOSES: &str = "tracing:attribute-closes";
 const SCAN_ROOT: &str = "crates";
 const EXCLUDE_TESTS_DIR: &str = "/tests/";
 
-/// The denominator floor, pinned AT the measured count: the crates walk reads 971 files on this
-/// branch merged with predev bd39476618, after busbar-kernel-ledger's usage/series.rs left (972 on
-/// predev 3bc48823df; 971 on predev 39374ec00e; 980 on 5e672d125d, before the egress_auth /
+/// The denominator floor, pinned AT the measured count: the crates walk reads 967 files after
+/// FLIP-A2A deleted the `busbar-a2a` crate and folded its engine into the plane's door crate
+/// (971 on a branch merged with predev bd39476618, after busbar-kernel-ledger's usage/series.rs
+/// left; 972 on predev 3bc48823df; 971 on predev 39374ec00e; 980 on 5e672d125d, before the egress_auth /
 /// auth_cache / ingress_sigv4 files left the kernel crates; it was 130 against a tree that had
-/// grown past 700). A drop below 971 is refused until a reviewed diff re-measures;
+/// grown past 700). A drop below 967 is refused until a reviewed diff re-measures;
 /// the selftest plant cuts the walk to one file under the floor (see [`floor_plant`]), so the
 /// tree growing past it needs no re-pin. It is a `const` here and has no environment override:
 /// the only way to lower one is a reviewable source edit.
-const SCAN_FLOOR: usize = 971;
+const SCAN_FLOOR: usize = 967;
 
 /// THE SUBJECT FLOOR (item 228). The file floor above proves the walk opened the crates; it says
 /// nothing about whether the thing this gate judges is still there. "Every `#[instrument]` has a

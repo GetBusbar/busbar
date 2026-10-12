@@ -180,7 +180,7 @@ fn drift_answers_drifted_once_then_quarantined() {
     b.sight("inst", "cp", "h1", 1).unwrap();
     // Approved first: before an approval a declared fingerprint drifts nothing (coordinator
     // 2026-10-07, #555 round 3; predev crates/busbar-kernel/src/trust/mod.rs:289-290, no pin is
-    // Pending, and :312, only a pin can change; crates/busbar-a2a/src/a2a/registry.rs:123).
+    // Pending, and :312, only a pin can change; the retired agent engine's registry).
     b.decide(&i, "cp", None, Ruling::Approve, None).unwrap();
     assert_eq!(
         b.sight("inst", "cp", "h2", 2),
@@ -198,7 +198,7 @@ fn a_resighting_of_the_pin_clears_the_quarantine() {
     b.sight("inst", "cp", "h1", 1).unwrap();
     // Approved first: before an approval a declared fingerprint drifts nothing (coordinator
     // 2026-10-07, #555 round 3; predev crates/busbar-kernel/src/trust/mod.rs:289-290, no pin is
-    // Pending, and :312, only a pin can change; crates/busbar-a2a/src/a2a/registry.rs:123).
+    // Pending, and :312, only a pin can change; the retired agent engine's registry).
     b.decide(&i, "cp", None, Ruling::Approve, None).unwrap();
     b.sight("inst", "cp", "h2", 2).unwrap();
     assert_eq!(
@@ -217,7 +217,7 @@ fn a_clean_sighting_inside_the_recovery_backoff_is_held() {
     b.sight("inst", "cp", "h1", 1).unwrap();
     // Approved first: before an approval a declared fingerprint drifts nothing (coordinator
     // 2026-10-07, #555 round 3; predev crates/busbar-kernel/src/trust/mod.rs:289-290, no pin is
-    // Pending, and :312, only a pin can change; crates/busbar-a2a/src/a2a/registry.rs:123).
+    // Pending, and :312, only a pin can change; the retired agent engine's registry).
     b.decide(&i, "cp", None, Ruling::Approve, None).unwrap();
     b.sight("inst", "cp", "h2", 10).unwrap();
     assert_eq!(
@@ -261,7 +261,7 @@ fn a_readmit_keeps_state_unless_the_declared_pin_changed() {
     let (b, i) = book(entry(Some("fp"), 0, 0));
     // Approved first: before an approval a declared fingerprint drifts nothing (coordinator
     // 2026-10-07, #555 round 3; predev crates/busbar-kernel/src/trust/mod.rs:289-290, no pin is
-    // Pending, and :312, only a pin can change; crates/busbar-a2a/src/a2a/registry.rs:123).
+    // Pending, and :312, only a pin can change; the retired agent engine's registry).
     b.decide(&i, "cp", None, Ruling::Approve, None).unwrap();
     b.sight("inst", "cp", "other", 1).unwrap();
     b.admit(&i, [("cp".to_string(), entry(Some("fp"), 0, 0))], []);

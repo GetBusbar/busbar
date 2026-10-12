@@ -600,7 +600,7 @@ const G_CALL_1: &[u8] = br#"{"principal":"vk_alice","seq":1,"ts":1700000000,"ser
 const G_CALL_2: &[u8] = br#"{"principal":"vk_alice","seq":2,"ts":1700000060,"server":"srv","tool":"srv_other","outcome":"refused","reason":"not_granted","tool_digest":"","pin_generation":7,"request_id":"req-2","prev_hash":"f1e8c2ec47e8199499663f3e08272d67b96ed4d56bddc8fa9e9371352e5ba718","hash":"721c70456695c90b0085e3ef0170d413a6fa3a1e0ebb65eb02730ab6597ef47a"}"#;
 // The A2A task-event fixture was RELOCATED with the task subsystem: the A2A plane computes its chain
 // plane-side over its own `TaskEventRow` now (no host-side journal stream), and its byte-layout golden
-// lives in `busbar_a2a::taskstore`. This neutral seam golden keeps the MCP `call` (LengthPrefixed) and
+// lives in the retired agent engine's `taskstore`. This neutral seam golden keeps the MCP `call` (LengthPrefixed) and
 // admin `audit` (PipeSeparated, no scope) fixtures.
 const G_AD_1: &[u8] = br#"{"seq":1,"ts":1700000000,"action":"hook.register","resource":"hook:compress","outcome":"applied","principal":"admin","prev_hash":"","hash":"52258f59f0ccf11e717462b0cbd040e6bfa7f576624c77a9e332e483553f56aa"}"#;
 const G_AD_2: &[u8] = br#"{"seq":2,"ts":1700000060,"action":"hook.delete","resource":"hook:compress","outcome":"applied","principal":"admin","prev_hash":"52258f59f0ccf11e717462b0cbd040e6bfa7f576624c77a9e332e483553f56aa","hash":"33a3906258375ea69278797ddd446d4f2d3f24e91eee181e1f26e0fef19a5264"}"#;

@@ -1893,7 +1893,7 @@ impl PlaneInFlight {
 /// already resolved and threaded via `req.gov`) and the stage-2→drive ORDER — verify strictly before
 /// any charge, so nothing can reject an already-charged request. The sequence pulls NOTHING out of
 /// `drive`: the plane's admission/route/metering/finish stay inside it, byte-identical. Names are
-/// neutral; a plane implements this in its own crate (`busbar-mcp`/`busbar-a2a`) or in core (the LLM
+/// neutral; a plane implements this in its own crate (`busbar-mcp` and agent-engine) or in core (the LLM
 /// native plane) identically — they are siblings on this one seam.
 #[async_trait::async_trait]
 pub trait GauntletPlane: Send + Sync {

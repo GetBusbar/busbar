@@ -6131,16 +6131,16 @@ fn a_registration_members_anchors_reach_and_binding_hold_on_every_need_it_rides(
 /// THE MODEL-SHAPED GUARD on the counter label rule: a section shaped as the model plane's is (a
 /// `models` map, a named pool over two of its entries) yields, when its plane STATES its attempts'
 /// labels, exactly the `(pool, lane)` pairs 1.5.5 counted (the golden cells
-/// `llm__openai__responses__request__ok`: a direct route, `pool` and `lane` both the model entry;
+/// its direct-route request cell: a direct route, `pool` and `lane` both the model entry;
 /// `route.529__failover__primary`: the pool `cap-fo`, each member entry its `lane`;
-/// `llm__responses__openai__request__upstream_down`: the failures family, the same pair). Stating
+/// its upstream-down request cell: the failures family, the same pair). Stating
 /// nothing keeps the kernel's qualified default, which is what a plane that states no label (and
 /// predev's door) counts under.
 #[test]
 fn a_model_shaped_section_takes_the_stated_labels_the_previous_release_counted() {
     use busbar_kernel_egress::ports::StatedLabels;
     let p = pools(
-        "models:\n  m-openai-responses: {}\n  m-first: {}\n  m-second: {}\npools:\n  cap-fo:\n    members: [m-first, m-second]\n",
+        "models:\n  m-direct: {}\n  m-first: {}\n  m-second: {}\npools:\n  cap-fo:\n    members: [m-first, m-second]\n",
     );
     let bound = super::label_bound("p", &p, &[]);
     let stated = |pool: &str, lane: &str| StatedLabels {
@@ -6150,21 +6150,17 @@ fn a_model_shaped_section_takes_the_stated_labels_the_previous_release_counted()
     // A DIRECT route: the walk keys it by the entry's own (qualified) pool.
     let direct = super::egress_pool(
         "p",
-        &routed(&p, ROUTE_DIRECT, Some("m-openai-responses")).expect("a direct route"),
+        &routed(&p, ROUTE_DIRECT, Some("m-direct")).expect("a direct route"),
     );
-    let own = super::plane_lane("p", "m-openai-responses");
+    let own = super::plane_lane("p", "m-direct");
     assert_eq!(
         bound.labels(
             &direct,
             (&direct, &own),
-            Some(&stated("m-openai-responses", "m-openai-responses"))
+            Some(&stated("m-direct", "m-direct"))
         ),
-        (
-            "m-openai-responses".to_string(),
-            "m-openai-responses".to_string(),
-            false
-        ),
-        "llm__openai__responses__request__ok"
+        ("m-direct".to_string(), "m-direct".to_string(), false),
+        "the golden direct-route request cell"
     );
     // A POOL route: the pool's label, each member entry its lane.
     let pooled = super::egress_pool(
