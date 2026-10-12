@@ -5,11 +5,11 @@
 //! loader, opened by the kernel's own host adapter ([`LoadedStore::open`]: the `open` crossing,
 //! then the door's `ready` awaited), and called through the two surfaces the kernel calls — the
 //! synchronous [`RecordStore`] bridge (ticket-less crossings) and the typed [`StoreCalls`]
-//! (submitted on a ticket and awaited). Ported from busbar's own store proofs: the store v3 script
-//! (every kind slot of the table, `store_v3_conformance_tests`), its per-op crossing sequence and
-//! replay arm (`store_v3_crossing_conformance_tests`), the both-ways key fold
-//! (`store_conformance_tests`, `store_door_conformance_tests`) and the scope-kind round trip
-//! (`store_scope_kind_conformance_tests`), and the plugin's own wrong-kind arm.
+//! (submitted on a ticket and awaited). THE STORE KIND'S ONE SUITE: busbar's own store proofs were
+//! ported here and the in-tree copies deleted (the store v3 script over every kind slot of the
+//! table, its per-op crossing sequence and replay arm, the both-ways key fold, the scope-kind round
+//! trip) and the plugin's own wrong-kind arm. busbar runs it over the build's store, linked and
+//! dropped in (`conformance_store_runs_tests`), as every store repo runs it over its own.
 //!
 //! Inputs (`conformance.json`):
 //!
@@ -45,7 +45,7 @@
 //! * the facts and the wrong-kind load make no crossing (0).
 
 use std::fmt::{Debug, Display};
-use std::sync::Arc;
+use std::sync::{Arc, PoisonError};
 
 use busbar_contract::abi::sdk::store::{Cap, Cell, CellKey, Dimension, Grant};
 use busbar_contract::abi::store::OpId;
@@ -105,16 +105,94 @@ fn block<T>(rt: &tokio::runtime::Runtime, f: impl std::future::Future<Output = T
     rt.block_on(f)
 }
 
-/// The node half of the op ids the bridge mints for the leg running (`node` in the inputs).
-static MINT_NODE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-/// The counter half: reset at each leg's open, so both legs mint the same ids.
-static MINT_NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// THE TABLE THIS SCRIPT DRIVES: 47 kind slots, every one of them stepped below. A slot added to
+/// the store table fails the build here until the script drives it.
+const _: () = assert!(busbar_contract::abi::store::KIND_SLOTS == 47);
 
-/// The host's `op_id` allocator for one leg (`LoadedStore::open`'s mint): `node`'s half, counted
-/// from 1.
-pub(super) fn leg_mint() -> OpId {
+/// THE HOST'S OP-ID ALLOCATORS, ONE PER FOLD RUNNING. The bridge's mint is a plain `fn() -> OpId`
+/// (`OpIdMint`), so a fold's allocator is one of [`FOLDS`] static slots, each with its own node
+/// half and counter, held by the fold for as long as it runs ([`LegMint`]). Two folds of one test
+/// binary (libtest runs the emitted tests in parallel) never share a counter, so neither re-mints
+/// an op id the other already used, and each leg counts from 1 on its node's half, as before.
+const FOLDS: usize = 16;
+
+struct MintSlot {
+    node: std::sync::atomic::AtomicU64,
+    next: std::sync::atomic::AtomicU64,
+}
+
+#[allow(clippy::declare_interior_mutable_const)] // the array's initializer, never read itself
+const FREE_SLOT: MintSlot = MintSlot {
+    node: std::sync::atomic::AtomicU64::new(0),
+    next: std::sync::atomic::AtomicU64::new(0),
+};
+static MINT_SLOTS: [MintSlot; FOLDS] = [FREE_SLOT; FOLDS];
+/// Which slots a running fold holds.
+static MINT_HELD: std::sync::Mutex<[bool; FOLDS]> = std::sync::Mutex::new([false; FOLDS]);
+static MINT_FREED: std::sync::Condvar = std::sync::Condvar::new();
+
+/// Slot `N`'s allocator: its node's half, counted from 1.
+fn mint_at<const N: usize>() -> OpId {
     use std::sync::atomic::Ordering::Relaxed;
-    OpId::from_parts(MINT_NODE.load(Relaxed), MINT_NEXT.fetch_add(1, Relaxed) + 1)
+    let slot = &MINT_SLOTS[N];
+    OpId::from_parts(slot.node.load(Relaxed), slot.next.fetch_add(1, Relaxed) + 1)
+}
+
+const MINTS: [busbar_contract::store_calls::OpIdMint; FOLDS] = [
+    mint_at::<0>,
+    mint_at::<1>,
+    mint_at::<2>,
+    mint_at::<3>,
+    mint_at::<4>,
+    mint_at::<5>,
+    mint_at::<6>,
+    mint_at::<7>,
+    mint_at::<8>,
+    mint_at::<9>,
+    mint_at::<10>,
+    mint_at::<11>,
+    mint_at::<12>,
+    mint_at::<13>,
+    mint_at::<14>,
+    mint_at::<15>,
+];
+
+/// ONE FOLD'S OP-ID ALLOCATOR (`LoadedStore::open`'s mint), held until it drops: keep it alive
+/// for as long as the store it minted for.
+pub(super) struct LegMint {
+    at: usize,
+}
+
+impl LegMint {
+    /// A free allocator on `node`'s half, counting from 1 (waits for one while all are held).
+    pub(super) fn take(node: u64) -> Self {
+        use std::sync::atomic::Ordering::Relaxed;
+        let mut held = MINT_HELD.lock().unwrap_or_else(PoisonError::into_inner);
+        let at = loop {
+            if let Some(at) = held.iter().position(|h| !h) {
+                break at;
+            }
+            held = MINT_FREED
+                .wait(held)
+                .unwrap_or_else(PoisonError::into_inner);
+        };
+        held[at] = true;
+        MINT_SLOTS[at].node.store(node, Relaxed);
+        MINT_SLOTS[at].next.store(0, Relaxed);
+        Self { at }
+    }
+
+    /// The allocator, as the bridge takes it.
+    pub(super) fn mint(&self) -> busbar_contract::store_calls::OpIdMint {
+        MINTS[self.at]
+    }
+}
+
+impl Drop for LegMint {
+    fn drop(&mut self) {
+        MINT_HELD.lock().unwrap_or_else(PoisonError::into_inner)[self.at] = false;
+        MINT_FREED.notify_one();
+    }
 }
 
 fn op(n: u64) -> OpId {
@@ -351,11 +429,11 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     // ONE first invocation for `open`, and one for the `ready` the kernel awaits inside it; their
     // resumes are reported (Q-P4-5).
     let open_pin = 1 + u64::from(p.has_ready());
+    // The bridge mints its writes' op ids from this fold's own allocator, on this node's half;
+    // held until the fold ends (declared before the store, so it outlives it).
+    let minted = LegMint::take(i.node);
     let st = r.step("open", open_pin, || {
-        // The bridge mints its writes' op ids from this leg's allocator, on this node's half.
-        MINT_NODE.store(i.node, std::sync::atomic::Ordering::Relaxed);
-        MINT_NEXT.store(0, std::sync::atomic::Ordering::Relaxed);
-        match LoadedStore::open(p, Arc::clone(&d), &settings, leg_mint) {
+        match LoadedStore::open(p, Arc::clone(&d), &settings, minted.mint()) {
             Ok(st) => (format!("Ready {:?}", st.facts()), st),
             Err(e) => panic!("the store does not open: {e}"),
         }
@@ -954,3 +1032,7 @@ fn contract(fold: &Fold, i: &Inputs<'_>) {
     assert_eq!(at("scope-kind get"), "identical=true plane_grants=true");
     assert_eq!(at("scope-kind list"), "identical=true");
 }
+
+#[cfg(test)]
+#[path = "../tests/conformance_store_runs_tests.rs"]
+mod runs_tests;
