@@ -63,21 +63,21 @@
    "checks": [
     {
      "kind": "test",
-     "ref": "enforce_restricts_reapplies_compliance_tags_across_pools",
+     "ref": "crates/busbar-llm/src/engine/tests/hook_seam_tests.rs::enforce_restricts_reapplies_compliance_tags_across_pools",
      "proves": "a Reject restrict with no eligible lane fails closed; the Weighted arm passes candidates unchanged",
      "source": "curated",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "multi_restrict_disjoint_intersection_fails_closed",
+     "ref": "crates/busbar-llm/src/engine/tests/hook_seam_tests.rs::multi_restrict_disjoint_intersection_fails_closed",
      "proves": "two restricts intersecting to empty produce a 503 (status only, not the literal body)",
      "source": "curated",
      "status": "mapped"
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "test:enforce_restricts_reapplies_compliance_tags_across_pools, test:multi_restrict_disjoint_intersection_fails_closed"
+   "verdict_detail": "test:crates/busbar-llm/src/engine/tests/hook_seam_tests.rs::enforce_restricts_reapplies_compliance_tags_across_pools, test:crates/busbar-llm/src/engine/tests/hook_seam_tests.rs::multi_restrict_disjoint_intersection_fails_closed"
   },
   {
    "id": "PB-2",
@@ -363,28 +363,28 @@
    "checks": [
     {
      "kind": "test",
-     "ref": "global_gate_reject_short_circuits_the_request",
+     "ref": "crates/busbar-llm/src/engine/tests/hook_seam_tests.rs::global_gate_reject_short_circuits_the_request",
      "proves": "a decision-gate reject ends the request",
      "source": "curated",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "global_request_stage_tap_fires_on_a_real_dispatched_request",
+     "ref": "crates/busbar-llm/src/engine/tests/hook_seam_tests.rs::global_request_stage_tap_fires_on_a_real_dispatched_request",
      "proves": "request-stage taps fire through fire_global_taps",
      "source": "curated",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "migrated_request_hook_seats_after_admit_before_candidate",
+     "ref": "crates/busbar-llm/src/engine/tests/hook_seat_order_tests.rs::migrated_request_hook_seats_after_admit_before_candidate",
      "proves": "a decision-gate reject consumes the requests slot and refunds the billable request; rewrite, request taps and gates all run after the admission charge",
      "source": "hand",
      "status": "mapped"
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "test:global_gate_reject_short_circuits_the_request, test:global_request_stage_tap_fires_on_a_real_dispatched_request, test:migrated_request_hook_seats_after_admit_before_candidate"
+   "verdict_detail": "test:crates/busbar-llm/src/engine/tests/hook_seam_tests.rs::global_gate_reject_short_circuits_the_request, test:crates/busbar-llm/src/engine/tests/hook_seam_tests.rs::global_request_stage_tap_fires_on_a_real_dispatched_request, test:crates/busbar-llm/src/engine/tests/hook_seat_order_tests.rs::migrated_request_hook_seats_after_admit_before_candidate"
   },
   {
    "id": "PB-7",
@@ -1351,14 +1351,14 @@
    "checks": [
     {
      "kind": "test",
-     "ref": "enforce_restricts_reapplies_compliance_tags_across_pools",
+     "ref": "crates/busbar-llm/src/engine/tests/hook_seam_tests.rs::enforce_restricts_reapplies_compliance_tags_across_pools",
      "proves": "for a gate, Weighted leaves the candidate set unchanged",
      "source": "curated",
      "status": "mapped"
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "test:enforce_restricts_reapplies_compliance_tags_across_pools"
+   "verdict_detail": "test:crates/busbar-llm/src/engine/tests/hook_seam_tests.rs::enforce_restricts_reapplies_compliance_tags_across_pools"
   },
   {
    "id": "PB-29",
@@ -2276,21 +2276,21 @@
    "checks": [
     {
      "kind": "test",
-     "ref": "migrated_request_hook_seats_after_admit_before_candidate",
+     "ref": "crates/busbar-llm/src/engine/tests/hook_seat_order_tests.rs::migrated_request_hook_seats_after_admit_before_candidate",
      "proves": "a migrated request-stage chain seats after the admission door and ahead of the candidate tap: admission → rewrite → request taps → gates → candidate tap",
      "source": "hand",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "candidate_tap_fires_after_an_abstaining_gate_and_a_served_request_bills_once",
+     "ref": "crates/busbar-llm/src/engine/tests/hook_seat_order_tests.rs::candidate_tap_fires_after_an_abstaining_gate_and_a_served_request_bills_once",
      "proves": "the candidate tap fires only after the gates decided, on a served request",
      "source": "hand",
      "status": "mapped"
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "test:migrated_request_hook_seats_after_admit_before_candidate, test:candidate_tap_fires_after_an_abstaining_gate_and_a_served_request_bills_once"
+   "verdict_detail": "test:crates/busbar-llm/src/engine/tests/hook_seat_order_tests.rs::migrated_request_hook_seats_after_admit_before_candidate, test:crates/busbar-llm/src/engine/tests/hook_seat_order_tests.rs::candidate_tap_fires_after_an_abstaining_gate_and_a_served_request_bills_once"
   },
   {
    "id": "PB-47",
@@ -3976,21 +3976,21 @@
    "checks": [
     {
      "kind": "test",
-     "ref": "completion_tap_reports_ok_outcome",
+     "ref": "crates/busbar-llm/src/engine/tests/hook_seam_tests.rs::completion_tap_reports_ok_outcome",
      "proves": "the response stage reports ok",
      "source": "curated",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "completion_tap_fires_synthetic_rejected_by_gate",
+     "ref": "crates/busbar-llm/src/engine/tests/hook_seam_tests.rs::completion_tap_fires_synthetic_rejected_by_gate",
      "proves": "the synthetic outcome rejected_by_gate",
      "source": "curated",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "completion_tap_fires_synthetic_rejected_by_auth",
+     "ref": "crates/busbar-llm/src/engine/tests/hook_seam_tests.rs::completion_tap_fires_synthetic_rejected_by_auth",
      "proves": "OWNER DECISION: an auth refusal on a hooked pool fires the completion tap with outcome rejected_by_auth and the protocol-native status (binding amended)",
      "source": "hand",
      "status": "mapped"
@@ -4004,7 +4004,7 @@
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "test:completion_tap_reports_ok_outcome, test:completion_tap_fires_synthetic_rejected_by_gate, test:completion_tap_fires_synthetic_rejected_by_auth, oracle-cell:hooks|hooked-pool|unauth@hooks-webrequest"
+   "verdict_detail": "test:crates/busbar-llm/src/engine/tests/hook_seam_tests.rs::completion_tap_reports_ok_outcome, test:crates/busbar-llm/src/engine/tests/hook_seam_tests.rs::completion_tap_fires_synthetic_rejected_by_gate, test:crates/busbar-llm/src/engine/tests/hook_seam_tests.rs::completion_tap_fires_synthetic_rejected_by_auth, oracle-cell:hooks|hooked-pool|unauth@hooks-webrequest"
   },
   {
    "id": "PB-85",
@@ -4344,21 +4344,21 @@
    "checks": [
     {
      "kind": "test",
-     "ref": "attempt_tap_carries_attempt_story",
+     "ref": "crates/busbar-llm/src/engine/tests/hook_seam_tests.rs::attempt_tap_carries_attempt_story",
      "proves": "the routing-stage payload carries a 1-based attempt_number",
      "source": "curated",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "route_tap_reports_surviving_candidates",
+     "ref": "crates/busbar-llm/src/engine/tests/hook_seam_tests.rs::route_tap_reports_surviving_candidates",
      "proves": "remaining_candidates on the candidate stage",
      "source": "curated",
      "status": "mapped"
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "test:attempt_tap_carries_attempt_story, test:route_tap_reports_surviving_candidates"
+   "verdict_detail": "test:crates/busbar-llm/src/engine/tests/hook_seam_tests.rs::attempt_tap_carries_attempt_story, test:crates/busbar-llm/src/engine/tests/hook_seam_tests.rs::route_tap_reports_surviving_candidates"
   },
   {
    "id": "PB-96",

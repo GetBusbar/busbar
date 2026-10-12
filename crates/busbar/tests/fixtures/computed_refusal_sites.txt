@@ -8,5 +8,10 @@ busbar-llm/src/unit/verify.rs	refusal.reason()
 busbar/src/root/units_admin/mod.rs	verbs_reason(refusal.reason)
 busbar/src/root/units_admin/mod.rs	verbs_reason(refusal.reason)
 busbar-kernel/src/plane_driver/mod.rs	reason
-busbar-kernel/src/plane_driver/mod.rs	reason
 busbar-kernel/src/plane_driver/mod.rs	cause
+# Reviewed (lane-dg): the hook stage's refusal at the head of the route leg (HookVeto or
+# DecodeFailed, the unit's money finished first; K5 de3ea6acc4) and the door's destination guard at
+# verify, before admission (PoolNotPermitted or NoRate; the door flip b26be1ca6d). Neither is an
+# overdraft ceiling or a stale slice.
+busbar-kernel/src/plane_driver/mod.rs	reason
+busbar/src/root/door_steps.rs	refusal.reason()
