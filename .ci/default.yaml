@@ -44,6 +44,8 @@ checks:
         man=$(echo "$meta" | jq -r --arg p "$1" 'first(.packages[] | select(.name == $p) | .manifest_path) // empty')
         if [ -z "$man" ]; then [ "$3" = optional ] && return 0; echo "busbar resolves no $1"; return 1; fi
         ws="$(dirname "$man")/Cargo.toml"
+        pkgs=$(cargo metadata --format-version 1 --no-deps --manifest-path "$ws" | jq -r '.packages[].name')
+        if ! printf '%s\n' $pkgs | grep -qx "$2"; then [ "$3" = optional ] && return 0; echo "$1 has no $2"; return 1; fi
         if [ "$3" = dropped-in ] && cargo metadata --format-version 1 --no-deps --manifest-path "$ws" | jq -e --arg p "$2" '.packages[] | select(.name == $p) | .features | has("dropped-in")' >/dev/null; then
           cargo build --locked --manifest-path "$ws" -p "$2" --features dropped-in --target-dir "$PWD/target"
         else
@@ -58,7 +60,8 @@ checks:
       # The hop's nextest limits (busbar-release build_test.rs NEXTEST_TOOL_CONFIG): the two
       # whole-battery selftests get twelve minutes and start first.
       cfg=$(mktemp); printf '%s\n' '[profile.default]' 'slow-timeout = { period = "60s", terminate-after = 5 }' '' '[[profile.default.overrides]]' 'filter = "test(selftest_runs_every_registered_gates_red_proof) | test(list_and_a_named_gate_run_and_all_reaches_a_verdict_over_the_real_tree)"' 'slow-timeout = { period = "60s", terminate-after = 12 }' 'priority = 100' > "$cfg"
-      cargo nextest run --workspace --locked --no-fail-fast --tool-config-file "modernci:$cfg"
+      # $MODERNCI_ONLY: ModernCI re-runs one suspect test alone (a flake check).
+      cargo nextest run --workspace --locked --no-fail-fast --tool-config-file "modernci:$cfg" ${MODERNCI_ONLY:+-E "$MODERNCI_ONLY"}
     scope: affected
     baseline: target
     needs: [gates]
