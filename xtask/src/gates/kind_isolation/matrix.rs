@@ -2746,6 +2746,9 @@ pub struct Law0Base {
     pub commit: String,
     pub counts: Law0Counts,
     pub rows: BTreeMap<(String, String), usize>,
+    /// What the base's cells were measured over, in words (Law 8): its file denominator and whose
+    /// vocabulary. Printed in the row's detail, pass or fail.
+    pub how: String,
 }
 
 type Law0BaseCache = std::sync::Mutex<BTreeMap<String, Result<std::sync::Arc<Law0Base>, String>>>;
@@ -2788,26 +2791,6 @@ pub fn law0_base(cx: &Ctx) -> Result<std::sync::Arc<Law0Base>, String> {
 fn read_law0_base(cx: &Ctx, commit: &str, meta: Option<String>) -> Result<Law0Base, String> {
     let changed = cx.git_lines(&["diff", "--no-renames", "--name-status", commit, "--"])?;
     let untracked = cx.git_lines(&["ls-files", "--others", "--exclude-standard"])?;
-    let mut ov = crate::ctx::Overlay::new();
-    for line in &changed {
-        let Some((status, path)) = line.split_once('\t') else {
-            continue;
-        };
-        if status.starts_with('A') {
-            ov.remove(path);
-            continue;
-        }
-        match cx.git_show(commit, path) {
-            Ok(text) => ov.set(path, text),
-            Err(why) => ov.unreadable(path, why),
-        }
-    }
-    for path in &untracked {
-        ov.remove(path);
-    }
-    if let Some(meta) = meta {
-        ov.set_command(super::pinned::METADATA_KEY, meta);
-    }
     let short = &commit[..8.min(commit.len())];
     // THE BASE IS HELD TO ITS OWN DENOMINATOR, not to the floor of the tree under judgement: the
     // text files the base commit tracks under `crates/`, every one of which the walk must reach.
@@ -2822,45 +2805,183 @@ fn read_law0_base(cx: &Ctx, commit: &str, meta: Option<String>) -> Result<Law0Ba
              names no coupling, which is indistinguishable from a base that has none"
         ));
     }
-    ov.set_command(BASE_SCAN_FLOOR_KEY, tracked.len().to_string());
-    let bcx = super::pinned::with_pinned(&cx.with_overlay(ov));
-    let walked: BTreeSet<String> = bcx
-        .list(&crate::ctx::WalkSpec::new(["crates"]))
-        .map_err(|e| format!("the walk of the merge-base {short}: {e}"))?
-        .iter()
-        .map(|p| p.to_string_lossy().replace('\\', "/"))
-        .collect();
-    let unwalked: Vec<&String> = tracked.iter().filter(|p| !walked.contains(*p)).collect();
-    if let Some(first) = unwalked.first() {
-        return Err(format!(
-            "the walk of the merge-base {short} misses {} of the {} text file(s) it tracks under \
-             crates/ (first: {first}): a scan that does not cover its base is not a reading of it",
-            unwalked.len(),
-            tracked.len()
-        ));
+    let tree = BaseTree {
+        cx,
+        commit,
+        short,
+        changed: &changed,
+        untracked: &untracked,
+        meta: meta.as_deref(),
+        tracked: &tracked,
+    };
+    let (mut bcx, mut crates) = tree.open(&[])?;
+    // The base's own ledger: its `[[law0]]` rows are the only cover a rise can have.
+    let base_reg = base_ledger(&bcx, short)?;
+    let mut vocab_reg = None;
+    let mut how = format!(
+        "{} text file(s) the base tracks under crates/, every one walked; the base's own \
+         vocabulary ({} plane-kind crate(s))",
+        tracked.len(),
+        crates.iter().filter(|c| c.family == Family::Plane).count()
+    );
+    // A BASE OLDER THAN THE PLUGIN KINDS IS MEASURED WITH TODAY'S VOCABULARY, NEVER EXEMPTED
+    // (ARCHITECT 2026-10-12; BUSBAR-1.6.0.md:1929 "when an instrument must choose, it false-fails",
+    // :1936-1940 the ship criterion "is not 'no worse than the last commit'"). 1.5.5 carried its
+    // planes inside one crate, so a census of its bytes holds no plane-kind crate and the
+    // vocabulary every scan here derives from the census is empty: the vendor scan refuses, and a
+    // row that cannot run cannot produce a NO (Law 0 of the instruments, :2038). The plugin crates
+    // THIS tree added since the base are read at this tree's bytes, with this tree's instance
+    // registry and ledger names, and supply the vocabulary; every other path is the base's. They
+    // are plugin crates, never neutral, so no Law 0 cell is read from them. Names the base can
+    // only lack (the contract's declared module names) read as absent there: the base reads
+    // lower, so the error runs toward a false RED.
+    if !crates.iter().any(|c| c.family == Family::Plane) {
+        let added: BTreeSet<&str> = changed
+            .iter()
+            .filter_map(|l| l.split_once('\t'))
+            .filter(|(status, _)| status.starts_with('A'))
+            .map(|(_, path)| path)
+            .collect();
+        let head = super::census(cx).map_err(|e| format!("the census of this tree: {e}"))?;
+        let kept: Vec<String> = head
+            .iter()
+            .filter(|c| {
+                c.kind
+                    .is_some_and(|k| super::pinned::PLUGIN_KINDS.contains(&k))
+            })
+            .filter(|c| added.contains(c.manifest.as_str()))
+            .map(|c| c.dir.clone())
+            .collect();
+        if kept.is_empty() {
+            return Err(format!(
+                "the merge-base {short} holds no plane-kind crate and this tree added none since \
+                 it, so there is no vocabulary to measure the base with"
+            ));
+        }
+        (bcx, crates) = tree.open(&kept)?;
+        vocab_reg =
+            Some(super::load_registry(cx).map_err(|e| format!("the ledger of this tree: {e}"))?);
+        how = format!(
+            "{} text file(s) the base tracks under crates/, every one walked; TODAY'S vocabulary, \
+             because the base predates the plugin kinds (no plane-kind crate): the {} plugin \
+             crate(s) this tree added since it ({}) and {} read at this tree's bytes, every \
+             other path at the base's (ARCHITECT 2026-10-12)",
+            tracked.len(),
+            kept.len(),
+            kept.join(", "),
+            instances::REGISTRY
+        );
     }
-    let mut crates =
-        super::census(&bcx).map_err(|e| format!("the census of the merge-base {short}: {e}"))?;
-    let (planes, ports) = super::vocabularies(&crates);
-    super::assign_instances(&mut crates, &planes, &ports);
-    let reg = base_ledger(&bcx, short)?;
     let mut law0 = None;
-    let (row, _) = measured_row(&bcx, &crates, &reg, false, &mut law0);
+    let (row, _) = measured_row(
+        &bcx,
+        &crates,
+        vocab_reg.as_ref().unwrap_or(&base_reg),
+        false,
+        &mut law0,
+    );
     let counts = law0.ok_or_else(|| {
         format!(
-            "the Law 0 scan of the merge-base {short} did not run: {}",
+            "the Law 0 scan of the merge-base {short} did not run ({how}): {}",
             row.detail
         )
     })?;
     Ok(Law0Base {
         commit: commit.to_string(),
         counts,
-        rows: reg
+        rows: base_reg
             .law0
             .iter()
             .map(|r| ((r.krate.clone(), r.axis.clone()), r.count))
             .collect(),
+        how,
     })
+}
+
+/// Does the merge-base reading lay `path` back to the base's bytes? Every path the diff names is,
+/// except when the base predates the plugin kinds: then the plugin crates this tree added since it
+/// (`kept`, crate directories) and the instance registry stay at this tree's bytes, as TODAY'S
+/// VOCABULARY ([`read_law0_base`]). `kept` empty is the ordinary base, laid back whole.
+fn lays_back(path: &str, kept: &[String]) -> bool {
+    if kept.is_empty() {
+        return true;
+    }
+    if path == instances::REGISTRY {
+        return false;
+    }
+    !kept.iter().any(|dir| {
+        path.strip_prefix(dir.as_str())
+            .is_some_and(|r| r.starts_with('/'))
+    })
+}
+
+/// The inputs of one merge-base tree: this tree with the paths the diff names laid back.
+struct BaseTree<'a> {
+    cx: &'a Ctx,
+    commit: &'a str,
+    short: &'a str,
+    changed: &'a [String],
+    untracked: &'a [String],
+    meta: Option<&'a str>,
+    tracked: &'a [String],
+}
+
+impl BaseTree<'_> {
+    /// The base's context and census, with `kept` at this tree's bytes ([`lays_back`]). Every text
+    /// file the base tracks under `crates/` must be in the walk, and the scan is held to that count.
+    fn open(&self, kept: &[String]) -> Result<(Ctx, Vec<CrateInfo>), String> {
+        let (cx, short) = (self.cx, self.short);
+        let mut ov = crate::ctx::Overlay::new();
+        for line in self.changed {
+            let Some((status, path)) = line.split_once('\t') else {
+                continue;
+            };
+            if !lays_back(path, kept) {
+                continue;
+            }
+            if status.starts_with('A') {
+                ov.remove(path);
+                continue;
+            }
+            match cx.git_show(self.commit, path) {
+                Ok(text) => ov.set(path, text),
+                Err(why) => ov.unreadable(path, why),
+            }
+        }
+        for path in self.untracked {
+            ov.remove(path);
+        }
+        if let Some(meta) = self.meta {
+            ov.set_command(super::pinned::METADATA_KEY, meta);
+        }
+        ov.set_command(BASE_SCAN_FLOOR_KEY, self.tracked.len().to_string());
+        let bcx = super::pinned::with_pinned(&cx.with_overlay(ov));
+        let walked: BTreeSet<String> = bcx
+            .list(&crate::ctx::WalkSpec::new(["crates"]))
+            .map_err(|e| format!("the walk of the merge-base {short}: {e}"))?
+            .iter()
+            .map(|p| p.to_string_lossy().replace('\\', "/"))
+            .collect();
+        let unwalked: Vec<&String> = self
+            .tracked
+            .iter()
+            .filter(|p| !walked.contains(*p))
+            .collect();
+        if let Some(first) = unwalked.first() {
+            return Err(format!(
+                "the walk of the merge-base {short} misses {} of the {} text file(s) it tracks \
+                 under crates/ (first: {first}): a scan that does not cover its base is not a \
+                 reading of it",
+                unwalked.len(),
+                self.tracked.len()
+            ));
+        }
+        let mut crates = super::census(&bcx)
+            .map_err(|e| format!("the census of the merge-base {short}: {e}"))?;
+        let (planes, ports) = super::vocabularies(&crates);
+        super::assign_instances(&mut crates, &planes, &ports);
+        Ok((bcx, crates))
+    }
 }
 
 /// THE MERGE-BASE'S LEDGER, AS THE BASE HAD IT: `bcx` is this tree laid back to the base's bytes.
@@ -2960,11 +3081,14 @@ pub fn rule_law0_base(
             ROW_LAW0_BASE,
             "no neutral Law 0 cell grew over the merge-base",
             format!(
-                "against {short}: {} cell(s), {} hit(s) here and {} at the base; {drained} \
-                 drained, {moved} moved under a row this branch raised",
+                "against {short}: {} cell(s), {} hit(s) here and {} cell(s), {} hit(s) at the \
+                 base; {drained} drained, {moved} moved under a row this branch raised. The base \
+                 was measured over {}",
                 now.len(),
                 now.values().sum::<usize>(),
-                base.counts.values().sum::<usize>()
+                base.counts.len(),
+                base.counts.values().sum::<usize>(),
+                base.how
             ),
         );
     }
@@ -2972,9 +3096,15 @@ pub fn rule_law0_base(
         ROW_LAW0_BASE,
         "a neutral crate's Law 0 cell grew over the merge-base",
         format!(
-            "{grown_total} hit(s) grown over the merge-base {short}, {} cell(s): {}",
+            "{grown_total} hit(s) grown over the merge-base {short}, {} cell(s): {}. Here {} \
+             cell(s), {} hit(s); at the base {} cell(s), {} hit(s), measured over {}",
             findings.len(),
-            findings.join(" | ")
+            findings.join(" | "),
+            now.len(),
+            now.values().sum::<usize>(),
+            base.counts.len(),
+            base.counts.values().sum::<usize>(),
+            base.how
         ),
     )
 }
@@ -5090,6 +5220,7 @@ mod tests {
                 .iter()
                 .map(|(k, a, n)| (((*k).to_string(), (*a).to_string()), *n))
                 .collect(),
+            how: "the planted base's files; its own vocabulary".to_string(),
         }
     }
 
@@ -5368,6 +5499,7 @@ mod tests {
                 .iter()
                 .map(|r| ((r.krate.clone(), r.axis.clone()), r.count))
                 .collect(),
+            how: ONE_FIVE_FIVE_HOW.to_string(),
         };
         let head = law0_counts_of(&[("busbar", "plane", 824), ("busbar-kernel", "plane", 12)]);
         let reg = law0_reg(&[("busbar", "plane", 824), ("busbar-kernel", "plane", 12)]);
@@ -5393,6 +5525,88 @@ mod tests {
             "{}",
             judged.detail
         );
+    }
+
+    /// How a 1.5.5 base reading states its denominators (the shape [`read_law0_base`] writes).
+    const ONE_FIVE_FIVE_HOW: &str = "502 text file(s) the base tracks under crates/, every one \
+        walked; TODAY'S vocabulary, because the base predates the plugin kinds (no plane-kind \
+        crate)";
+
+    /// RED ARM, ARCHITECT 2026-10-12 (a): A BASE OLDER THAN THE PLUGIN KINDS IS MEASURED WITH
+    /// TODAY'S VOCABULARY, NEVER EXEMPTED. A neutral cell that grew over the 1.5.5 measure is RED,
+    /// the monolith's own cell included, and the row states both sides with their denominators.
+    #[test]
+    fn a_cell_grown_over_the_one_five_five_measure_is_red() {
+        let base = Law0Base {
+            commit: "a71b21e9fa".to_string(),
+            counts: law0_counts_of(&[("busbar", "plane", 820), ("busbar", "transport", 300)]),
+            rows: BTreeMap::new(),
+            how: ONE_FIVE_FIVE_HOW.to_string(),
+        };
+        let head = law0_counts_of(&[("busbar", "plane", 824), ("busbar", "transport", 208)]);
+        let reg = law0_reg(&[("busbar", "plane", 824), ("busbar", "transport", 208)]);
+        let judged = rule_law0_base(&reg, Some(&head), Ok(&base));
+        assert_eq!(
+            judged.status,
+            crate::ledger::Status::Fail,
+            "{}",
+            judged.detail
+        );
+        assert!(
+            judged
+                .detail
+                .starts_with("4 hit(s) grown over the merge-base a71b21e9"),
+            "{}",
+            judged.detail
+        );
+        assert!(
+            judged
+                .detail
+                .contains("law0-grown\tbusbar \u{d7} plane\t820 -> 824"),
+            "{}",
+            judged.detail
+        );
+        assert!(
+            !judged.detail.contains("transport\t300"),
+            "{}",
+            judged.detail
+        );
+        assert!(
+            judged.detail.contains(
+                "Here 2 cell(s), 1032 hit(s); at the base 2 cell(s), 1120 hit(s), measured over \
+                 502 text file(s)"
+            ),
+            "{}",
+            judged.detail
+        );
+        assert!(
+            judged.detail.contains("TODAY'S vocabulary"),
+            "{}",
+            judged.detail
+        );
+        // Drained to the 1.5.5 measure, the same cell is not this row's red.
+        let drained = law0_counts_of(&[("busbar", "plane", 820), ("busbar", "transport", 208)]);
+        assert_eq!(
+            rule_law0_base(&reg, Some(&drained), Ok(&base)).status,
+            crate::ledger::Status::Pass
+        );
+    }
+
+    /// Which paths the 1.5.5 reading keeps at this tree's bytes: the plugin crates this tree added
+    /// (by directory, never a prefix of another crate's name) and the instance registry, and
+    /// nothing at all on an ordinary base.
+    #[test]
+    fn only_the_added_plugin_crates_and_the_registry_keep_todays_bytes() {
+        let kept = vec!["crates/busbar-plane-llm".to_string()];
+        assert!(lays_back("crates/busbar-plane-llm/src/lib.rs", &[]));
+        assert!(lays_back(instances::REGISTRY, &[]));
+        assert!(!lays_back("crates/busbar-plane-llm/src/lib.rs", &kept));
+        assert!(!lays_back("crates/busbar-plane-llm/Cargo.toml", &kept));
+        assert!(!lays_back(instances::REGISTRY, &kept));
+        assert!(lays_back("crates/busbar-plane-llm-extra/src/lib.rs", &kept));
+        assert!(lays_back("crates/busbar-kernel/src/lib.rs", &kept));
+        assert!(lays_back("crates/busbar/src/main.rs", &kept));
+        assert!(lays_back("qa/kind-isolation.toml", &kept));
     }
 
     /// RED ARM, THE BASE'S OWN DENOMINATOR. 1.5.5 tracks 502 text files under `crates/`, under the
