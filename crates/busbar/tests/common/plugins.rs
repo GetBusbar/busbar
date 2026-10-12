@@ -150,8 +150,8 @@ fn profile_dir() -> Option<PathBuf> {
 
 /// The built `cdylib` of the crate `snake` (its snake-cased crate name): uplifted, or under `deps/`
 /// with cargo's metadata hash (`lib<name>-<hash>.<ext>`, how a git dependency's library is left),
-/// the newest wins. `None` when it is not built; whether that is a skip or a failure is the
-/// caller's to say.
+/// the newest wins. `None` when it is not built; a test whose subject it is fails through
+/// [`missing`], never skips.
 pub fn cdylib_path(snake: &str) -> Option<PathBuf> {
     let profile = profile_dir()?;
     let exact = plugin_library_filename(snake);
@@ -174,9 +174,33 @@ pub fn cdylib_path(snake: &str) -> Option<PathBuf> {
         .map(|(_, p)| p)
 }
 
+/// A FIXTURE THAT IS NOT BUILT IS A FAILURE, NEVER A SKIP: the panic every fixture probe of this
+/// crate's tests (integration and the composition root's unit tests, which mount this file) raises
+/// when the `cdylib` named `name` is absent, naming the `command` that builds it. A test whose
+/// subject is absent has proved nothing, so it must not report "ok".
+pub fn missing(name: &str, command: &str) -> ! {
+    panic!("the {name} cdylib is not built: run `{command}` first (this test never skips)")
+}
+
+/// What builds a pinned plugin's `cdylib`: the dev-dependency edge of this crate's tests.
+pub const BUILD_PINNED: &str = "cargo test -p busbar --no-run";
+
+/// What builds the plugin loader's example `cdylib`s (the neutral frame door).
+pub const BUILD_LOADER_EXAMPLES: &str = "cargo build -p busbar-plugin-loader --examples";
+
+/// What builds this crate's example `cdylib`s (the test plane).
+pub const BUILD_BUSBAR_EXAMPLES: &str = "cargo build -p busbar --examples";
+
 /// The bytes of [`cdylib_path`].
 pub fn cdylib(snake: &str) -> Option<Vec<u8>> {
     std::fs::read(cdylib_path(snake)?).ok()
+}
+
+/// The pinned token-verifying `kind: auth` plugin's built `cdylib` (a git dev-dependency of this
+/// crate, so the build leaves it under `deps/` with a metadata hash): the ONE place the root's auth
+/// proofs name it.
+pub fn token_verifier_cdylib_path() -> Option<PathBuf> {
+    cdylib_path("busbar_auth_oidc_plugin")
 }
 
 /// Every loadable plugin library in the target directory (uplifted, under `deps/`, or an example
@@ -237,7 +261,7 @@ pub fn transport_cdylib() -> Option<(Vec<u8>, &'static str)> {
     transport_cdylib_under(&[])
 }
 
-/// [`transport_cdylib`] PINNED TO THE WIRE A PROOF NEEDS: the floor door whose key is one of
+/// [`transport_cdylib`] PINNED TO THE WIRE A PROOF NEEDS: the floor CARRIER whose key is one of
 /// `keys` (the keys the build's linked layers compose over, read off its linked table); every key
 /// when `keys` is empty.
 ///
@@ -256,7 +280,13 @@ pub fn transport_cdylib_under(keys: &[&str]) -> Option<(Vec<u8>, &'static str)> 
             return None;
         }
         let (plugin, key) = transport_door(&p)?;
-        if !plugin.context::<TransportFacts>()?.composes_over.is_empty() {
+        let facts = plugin.context::<TransportFacts>()?;
+        // The floor wire is a CARRIER whose claim serves a port: the one that can listen under the
+        // data door (a carrier reached by a program serves no port).
+        if !facts.composes_over.is_empty()
+            || facts.role != busbar_contract::abi::transport::ROLE_CARRIER
+            || !facts.ported
+        {
             return None;
         }
         if !keys.is_empty() && !keys.contains(&key) {
@@ -264,6 +294,15 @@ pub fn transport_cdylib_under(keys: &[&str]) -> Option<(Vec<u8>, &'static str)> 
         }
         Some((std::fs::read(&p).ok()?, key))
     })
+}
+
+/// The neutral frame door's library bytes ([`neutral_frame_door`]), for a proof that drops it in.
+pub fn neutral_frame_door_bytes() -> Option<Vec<u8>> {
+    let file = plugin_library_filename("neutral_frame_door");
+    libraries()
+        .into_iter()
+        .find(|p| p.file_name().is_some_and(|n| n == file.as_str()))
+        .and_then(|p| std::fs::read(p).ok())
 }
 
 /// An in-tree export door `cdylib` that loads as a sink carrying exactly the `metrics` stream,

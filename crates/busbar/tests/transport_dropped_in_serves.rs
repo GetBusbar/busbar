@@ -56,29 +56,33 @@ const EXCHANGE: &str = include_str!("fixtures/transport_dropped_in_exchange.txt"
 /// (`common::plugins::transport_cdylib_under`). No linked layer composes over another (ARCHITECT
 /// ruling Q128 U7: no transport names another), so no key is needed under them and any transport
 /// door beside the binary is the proof's subject: a linked key's tarball is refused as a second
-/// plugin with that key, an unlinked key's registers through the one fold. Under CI a missing
-/// artifact is a hard failure, never a silent skip.
-fn transport_cdylib() -> Option<(Vec<u8>, &'static str)> {
+/// plugin with that key, an unlinked key's registers through the one fold. A missing artifact is a
+/// hard failure in every run, never a silent skip.
+fn transport_cdylib() -> (Vec<u8>, &'static str) {
     let under: Vec<&str> = LINKED_TRANSPORTS
         .iter()
         .flat_map(|w| w.composes_over.iter().copied())
         .collect();
-    let found = common::plugins::transport_cdylib_under(&under);
-    assert!(
-        found.is_some() || std::env::var_os("CI").is_none(),
-        "no in-tree kind: transport cdylib is built beside the binary under CI"
-    );
-    found
+    common::plugins::transport_cdylib_under(&under).unwrap_or_else(|| {
+        common::plugins::missing("kind: transport floor door", common::plugins::BUILD_PINNED)
+    })
 }
 
 fn fixture_dir(tag: &str) -> PathBuf {
     let d = std::env::temp_dir().join(format!(
         "busbar-transport-dropped-in-{tag}-{}-{}",
         std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
+        {
+            static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            format!(
+                "{}-{}-{}",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |d| d.as_nanos()),
+                line!(),
+                NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            )
+        }
     ));
     std::fs::create_dir_all(d.join("plugins")).unwrap();
     d
@@ -268,6 +272,40 @@ fn masked(raw: &[u8]) -> String {
         .join("\r\n")
 }
 
+/// The carrier each data worker's listener accepts through, read off the node's last log
+/// (`carrier=<claim>` on [`THROUGH_THE_CONNECTOR`]; `host` when the connector serves none).
+fn carriers(dir: &Path) -> Vec<String> {
+    std::fs::read_to_string(dir.join("out.log"))
+        .unwrap_or_default()
+        .lines()
+        .filter(|l| l.contains(THROUGH_THE_CONNECTOR))
+        .filter_map(|l| {
+            plain(l)
+                .split_whitespace()
+                .find_map(|w| w.strip_prefix("carrier="))
+                .map(|c| c.trim_matches('"').to_owned())
+        })
+        .collect()
+}
+
+/// `line` with its terminal colour sequences (`ESC [ ... m`) taken out.
+fn plain(line: &str) -> String {
+    let mut out = String::with_capacity(line.len());
+    let mut chars = line.chars();
+    while let Some(c) = chars.next() {
+        if c == '\u{1b}' {
+            for c in chars.by_ref() {
+                if c == 'm' {
+                    break;
+                }
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
 /// The pinned exchange, in the wire's own line endings.
 fn pinned() -> String {
     EXCHANGE.trim_end_matches('\n').replace('\n', "\r\n")
@@ -275,10 +313,7 @@ fn pinned() -> String {
 
 #[test]
 fn a_dropped_in_transport_registers_through_the_one_fold_and_serves() {
-    let Some((lib, key)) = transport_cdylib() else {
-        eprintln!("skip: no in-tree kind: transport cdylib is built (run under --workspace)");
-        return;
-    };
+    let (lib, key) = transport_cdylib();
     let linked = LINKED_TRANSPORTS.iter().any(|w| w.key == key);
     let dir = fixture_dir("serve");
     let (data_port, admin_port) = (free_port(), free_port());
@@ -295,6 +330,11 @@ fn a_dropped_in_transport_registers_through_the_one_fold_and_serves() {
         assert_eq!(
             through, WORKERS,
             "each of the {WORKERS} data workers listens through the connector"
+        );
+        assert_eq!(
+            carriers(&dir),
+            vec![key.to_owned(); WORKERS],
+            "every data worker accepts through the linked carrier"
         );
         // RED: the same wire dropped in on a key this build links is refused at boot, as a second
         // linked row with that key is — two transport plugins declaring one key.
@@ -327,6 +367,32 @@ fn a_dropped_in_transport_registers_through_the_one_fold_and_serves() {
             through, WORKERS,
             "each of the {WORKERS} data workers listens through the connector"
         );
+        // THE ADDRESS CARRIER IS THE DECLARATION'S, NEVER A FRAMER: the data door accepts through
+        // the dropped-in carrier, by its claim — and still does with the neutral frame door dropped
+        // in beside it and declared FIRST (the plugins directory's sorted order): a framer is never
+        // an address carrier, whatever its claim reads.
+        assert_eq!(
+            carriers(&dir),
+            vec![key.to_owned(); WORKERS],
+            "every data worker accepts through the dropped-in carrier"
+        );
+        let neutral = common::plugins::neutral_frame_door_bytes().unwrap_or_else(|| {
+            common::plugins::missing("neutral_frame_door", common::plugins::BUILD_LOADER_EXAMPLES)
+        });
+        drop_in_as(&dir, &neutral, "a-neutral-framer");
+        let (served, _, through) = serve_once(&dir, data_port, WORKERS);
+        assert_eq!(
+            served,
+            pinned(),
+            "a framer beside the carrier moves no byte"
+        );
+        assert_eq!(through, WORKERS);
+        assert_eq!(
+            carriers(&dir),
+            vec![key.to_owned(); WORKERS],
+            "the neutral framer, declared first, is never the address carrier"
+        );
+        std::fs::remove_file(dir.join("plugins").join("a-neutral-framer.tar.gz")).unwrap();
         // RED: and it DID register — a second copy of the same wire is a second transport plugin
         // declaring one key, refused at boot exactly as the linked build refuses the first.
         drop_in_as(&dir, &lib, "dropped-wire-again");
