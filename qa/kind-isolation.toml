@@ -52,16 +52,6 @@ from = "busbar-a2a"
 to = "busbar-plane-a2a"
 reason = "legacy drain: the A2A wire dialect folded into the plane crate and the retiring engine reads it"
 
-# `busbar-llm` is the retiring 1.5.x LLM engine and `busbar-plane-llm` the pure plane it hosts and is
-# draining into (K2e TRANSPORT-AXIS, 0ba019cd81: the root dropped its plane edges and the engine took
-# this one, as `busbar-mcp -> busbar-plane-mcp` had). The dialect codecs folded into the plane crate's
-# own `codec` module (R7) and the engine re-exports them, so the edge is the drain, named on the same
-# terms as the voice and A2A rows above.
-[[transitional]]
-from = "busbar-llm"
-to = "busbar-plane-llm"
-reason = "legacy drain: the retiring LLM engine hosts the pure plane and reads the codecs that folded into it"
-
 # The MCP rows (`busbar-mcp -> busbar-plane-mcp`, `busbar-mcp -> busbar-core-admin`) are STRUCK: the
 # drain completed (P3 DEL-MCP, ARCHITECT 2026-10-05) — busbar-mcp is deleted and the mcp plane is its
 # door crate alone, so neither edge can be taken.
@@ -744,26 +734,6 @@ verdict = "not-allowed"
 cite    = "BUSBAR-1.6.0.md THE DESIGN, §2 \"Core -> plugin. Never plugin -> core.\" / BUSBAR-1.6.0.md THE DESIGN, §1 the three axes are blind to each other. The retiring 1.5.x crates fuse plane+core+transport in one name."
 why     = "busbar-a2a names busbar-plane-a2a: declared normal in the shipped graph, 1 declaration(s) at this commit. The codec fold (#39) moved the A2A wire dialect into the plane crate, which is where definition 16-20 puts a protocol's dialect, and the retiring engine now READS it rather than restating it. The edge is permitted by the `[[transitional]]` drain row above and by nothing else; this row holds the NUMBER."
 drain   = "delete the busbar-plane-a2a dependency from busbar-a2a's Cargo.toml — which happens when busbar-a2a itself is deleted into busbar-kernel (#19), because the dialect is already where it belongs and it is the ENGINE that is still in the wrong crate."
-
-[[dep]]
-from    = "busbar-llm"
-to      = "busbar-plane-llm"
-half    = "shipped"
-count   = "1"
-verdict = "not-allowed"
-cite    = "BUSBAR-1.6.0.md THE DESIGN, §2 \"Core -> plugin. Never plugin -> core.\" / BUSBAR-1.6.0.md THE DESIGN, §1 the three axes are blind to each other. The retiring 1.5.x crates fuse plane+core+transport in one name."
-why     = "busbar-llm names busbar-plane-llm: declared normal in the shipped graph, 1 declaration(s) at this commit. K2e (0ba019cd81) moved the edge off the root onto the engine, whose entry hands the boot seal the plane and its claims; the codec fold (R7) put the dialect readers/writers in the plane crate's `codec` module, which the engine re-exports. The edge is permitted by the `[[transitional]]` drain row above and by nothing else; this row holds the NUMBER."
-drain   = "delete the busbar-plane-llm dependency from busbar-llm's Cargo.toml — which happens when busbar-llm itself is retired, because the plane and its codecs are already where they belong and it is the ENGINE that is still in the wrong crate."
-
-[[dep]]
-from    = "busbar-voice"
-to      = "busbar-plane-streaming"
-half    = "shipped"
-count   = "1"
-verdict = "not-allowed"
-cite    = "BUSBAR-1.6.0.md THE DESIGN, §2 \"Core -> plugin. Never plugin -> core.\" / BUSBAR-1.6.0.md THE DESIGN, §1 the three axes are blind to each other. The retiring 1.5.x crates fuse plane+core+transport in one name."
-why     = "busbar-voice names busbar-plane-streaming: declared normal in the shipped graph, 1 declaration(s) at this commit. The streaming plane carries the session constants the root's own leg is built from, the governed-call port (`busbar_plane_streaming::governed`) and the duplex IR and dialect grammars as its `codec` module, all of which the retiring engine re-exports under their old paths. The edge is permitted by the `[[transitional]]` drain row above and by nothing else; this row holds the NUMBER."
-drain   = "delete the busbar-plane-streaming dependency from busbar-voice's Cargo.toml — which happens when busbar-voice itself is retired, because the plane is already where it belongs and it is the ENGINE that is still in the wrong crate."
 
 [[dep]]
 from    = "busbar"
