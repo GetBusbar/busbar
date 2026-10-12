@@ -588,11 +588,6 @@ fn placement_variant(lines: &[&str], at: usize) -> bool {
     name.trim_start_matches('"').ends_with("Placement")
 }
 
-/// THE FIVE AXES, MEASURED over every `Family::Neutral` crate.
-pub fn measure(crates: &[CrateInfo], files: &[(String, String)], vocab: &Vocab) -> Instances {
-    measure_reserved(crates, files, vocab, &[]).0
-}
-
 /// Whether line `at` (0-based) of `lines`, a file at `rel`, is the line a `[[shape-word]]` row's
 /// `holder` names: in a `.rs` file the line declaring `const <holder>:`; in a `.json` file a line
 /// inside the object keyed `"<holder>"` (the nearest enclosing `"<key>": {` at a lower indent).
@@ -622,7 +617,8 @@ fn holds(rel: &str, lines: &[&str], at: usize, holder: &str) -> bool {
     false
 }
 
-/// [`measure`], with the `[[shape-word]]` rows' NAMED RESERVATIONS (ARCHITECT ruling on #787):
+/// THE FIVE AXES, MEASURED over every `Family::Neutral` crate, with the `[[shape-word]]` rows'
+/// NAMED RESERVATIONS (ARCHITECT ruling on #787):
 /// each row reserves exactly one literal hit, its word in its file on the line its holder names,
 /// and nothing else. Also answers a finding per row that reserved nothing: a reservation over no
 /// spelling is a dead allowance.
