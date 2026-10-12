@@ -601,18 +601,36 @@ fn big_line(n: u32) -> serde_json::Value {
     line(n, 1_100_000)
 }
 
-/// `path`'s JSON lines as their `n` fields — what one door left on disk, independent of the pad.
+/// `text`'s JSON lines as their `n` fields, or `None` while it is not yet whole: the host appends a
+/// line in more than one write, so a reader racing it sees text that does not end in a newline, or
+/// a last line that does not parse yet.
+fn ns_of(text: &str) -> Option<Vec<u64>> {
+    if !text.is_empty() && !text.ends_with('\n') {
+        return None;
+    }
+    text.lines()
+        .map(|l| serde_json::from_str::<serde_json::Value>(l).ok()?["n"].as_u64())
+        .collect()
+}
+
+/// `path`'s JSON lines as their `n` fields — what one door left on disk, independent of the pad —
+/// for a POLL: `None` while the file is absent or the host is still writing a line, so [`until`]
+/// keeps waiting instead of panicking on a half-written line.
 fn ns(path: &Path) -> Option<Vec<u64>> {
+    ns_of(&std::fs::read_to_string(path).ok()?)
+}
+
+/// [`ns`] once the writes are settled: `None` only when the file is absent; a file present but not
+/// whole JSON lines is a failure, never read as absent.
+fn ns_settled(path: &Path) -> Option<Vec<u64>> {
     let text = std::fs::read_to_string(path).ok()?;
-    Some(
-        text.lines()
-            .map(|l| {
-                serde_json::from_str::<serde_json::Value>(l).expect("a JSON line")["n"]
-                    .as_u64()
-                    .expect("n")
-            })
-            .collect(),
-    )
+    Some(ns_of(&text).unwrap_or_else(|| {
+        panic!(
+            "{} holds {} bytes that are not whole JSON lines with an `n`",
+            path.display(),
+            text.len()
+        )
+    }))
 }
 
 /// `path`'s `n`-th archive.
@@ -1318,8 +1336,8 @@ fn a_sink_writes_its_declared_destination_through_the_host_the_same_through_eith
         until("the four deliveries answered", || landed(&tape));
         drop(sink);
         serde_json::json!({
-            "live": ns(&path),
-            "archive": ns(&archive(&path, 1)),
+            "live": ns_settled(&path),
+            "archive": ns_settled(&archive(&path, 1)),
             "folds": tape.seen(),
         })
         .to_string()
