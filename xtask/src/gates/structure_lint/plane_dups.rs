@@ -364,8 +364,11 @@ pub fn scan(cx: &Ctx, a: &Addresses, corpus: Option<&Corpus>, t: &Tables, f: &mu
 /// row holds the COUNT: above it is a new plane-local copy, below it is a drain that did not give its
 /// number back. DRAIN: the shared door scaffolding moves to busbar-plugin-sdk (planes never depend
 /// on each other, Law 0), the duplicates that encode a security or money property first (DoD item
-/// 5); lower this count in the commit that drains each one.
-pub const UNLEDGERED_ARMED: usize = 94;
+/// 5); lower this count in the commit that drains each one. Re-armed 94 -> 96 at the measure of this
+/// branch merged with predev 62fdbdf3bc: predev's #703 added plane-mcp's `door_sessions.rs`, whose
+/// `session_of` and `state_of` share their names with the a2a door's `plane_door.rs` and
+/// `trust.rs`. Neither is new code on this branch.
+pub const UNLEDGERED_ARMED: usize = 96;
 
 /// [`ROW_UNLEDGERED`], judged against [`UNLEDGERED_ARMED`]. A tree with none is clean.
 fn unledgered_row(unledgered: &[String]) -> Row {
