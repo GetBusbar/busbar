@@ -1724,8 +1724,8 @@ cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain 
 [[law0]]
 crate = "busbar-kernel"
 axis  = "plane"
-count = "1149"
-cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; LOWERED 1193 -> 1175, predev 9c0a394771's measure: the drain landed without giving its row back (Law 9: the ceiling ratchets down); LOWERED 1175 -> 1149, FLIP-A2A's measure: busbar-a2a is deleted, the a2a door's root cells live in its own crate and the stale mentions of the deleted engine are gone (Law 9: the ceiling ratchets down)"
+count = "1148"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; LOWERED 1193 -> 1175, predev 9c0a394771's measure: the drain landed without giving its row back (Law 9: the ceiling ratchets down); LOWERED 1175 -> 1173, the merge-base d7929b661d's measure, which GetBusbar/busbar#570 holds (its scrape double spells no plane alias) (Law 9: the ceiling ratchets down to today's number); LOWERED 1173 -> 1172, the gate's measure on this branch merged with predev 1617e9f019: Q128 A4's plane_driver/gated.rs drain; LOWERED 1172 -> 1148, FLIP-A2A's measure merged with predev 62fdbdf3bc: busbar-a2a is deleted, the a2a door's root cells live in its own crate and the stale mentions of the deleted engine are gone (Law 9: the ceiling ratchets down)"
 
 [[law0]]
 crate = "busbar-kernel"
