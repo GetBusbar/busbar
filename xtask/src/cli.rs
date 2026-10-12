@@ -844,19 +844,29 @@ fn run_selftest(gate: &dyn gates::Gate, cx: &Ctx) -> i32 {
         gate.owed(),
         gates::selftest_ceiling_from_env(gate.name()),
     );
-    let report = gate.selftest(cx);
+    // ONE MEASURED BATTERY: built and every case taken inside one CPU-time window (ARCHITECT
+    // 2026-10-12, Law 8; see `gates::take_battery`). TAKEN UNDER THE WATCHDOG, NOT AFTER IT. A case
+    // is a plan, and a plan is taken on the first read of the report — so reading the cases after
+    // the watchdog was dropped would have disarmed the ceiling over exactly the work it exists to
+    // bound. `take_battery` is that read.
+    let report = gates::take_battery(gate, cx);
     let jobs = report.jobs();
-    // TAKEN UNDER THE WATCHDOG, NOT AFTER IT. A case is a plan now, and a plan is taken on the
-    // first read of the report — so reading the cases after the watchdog was dropped would have
-    // disarmed the ceiling over exactly the work it exists to bound. This is that read.
-    let _ = report.cases();
     drop(watchdog);
     if std::env::var("XTASK_SELFTEST_TIMING").is_ok() {
         let mut rows = report.timings();
-        rows.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal));
-        for (name, took, units, prepaid) in &rows {
+        rows.sort_by_key(|row| std::cmp::Reverse(row.1));
+        eprintln!(
+            "TIMING per case: the WORKER THREAD's own wall clock and CPU, for diagnosis only. They \
+             do not sum to the battery's cost, which is the whole process's CPU (every thread and \
+             reaped child) and is the only figure the budget judges: {}",
+            report.cost()
+        );
+        for (name, took, worker_cpu, prepaid) in &rows {
+            let worker_cpu = worker_cpu
+                .map(|c| format!("{:7.2}s", c.as_secs_f64()))
+                .unwrap_or_else(|| "      -".to_string());
             eprintln!(
-                "TIMING {units:8.1}u {:7.2}s (prepaid {:6.2}s)  {name}",
+                "TIMING {:7.2}s wall {worker_cpu} worker CPU (prepaid {:6.2}s)  {name}",
                 took.as_secs_f64(),
                 prepaid.as_secs_f64()
             );
@@ -884,11 +894,11 @@ fn run_selftest(gate: &dyn gates::Gate, cx: &Ctx) -> i32 {
                 .map(|(n, t)| format!(", slowest {:.1}s ({n})", t.as_secs_f64()))
                 .unwrap_or_default();
             println!(
-                "  {} case(s), {} skipped, {:.1}s / {:.0} work units{slowest}{} — the gate is proven RED-able",
+                "  {} case(s), {} skipped, {:.1}s / {}{slowest}{} — the gate is proven RED-able",
                 report.cases().len(),
                 report.skipped(),
                 report.total().as_secs_f64(),
-                report.units(),
+                report.cost(),
                 planting(&report),
             );
             0
@@ -898,11 +908,11 @@ fn run_selftest(gate: &dyn gates::Gate, cx: &Ctx) -> i32 {
             // path, so the one run a reader most needs to attribute — the slow one that also
             // failed — was the one that said nothing about where its minutes went.
             println!(
-                "  {} case(s), {} skipped, {:.1}s / {:.0} work units{} at --jobs {jobs}",
+                "  {} case(s), {} skipped, {:.1}s / {}{} at --jobs {jobs}",
                 report.cases().len(),
                 report.skipped(),
                 report.total().as_secs_f64(),
-                report.units(),
+                report.cost(),
                 report
                     .slowest()
                     .map(|(n, t)| format!(", slowest {:.1}s ({n})", t.as_secs_f64()))
