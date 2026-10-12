@@ -346,3 +346,22 @@ fn red_an_owners_byte_pressure_never_costs_another_owner_a_stream() {
     assert!(r.complete, "none of bob's events was trimmed for alice");
     assert_eq!(r.events[0].0, first);
 }
+
+/// Finding 18: a push whose trim frees more than the pushed event cost (one older large event
+/// gives way to a small one) charges the owner the difference back, never a negative amount.
+#[test]
+fn red_a_trim_that_frees_more_than_the_push_cost_gives_the_difference_back() {
+    let mut t = small(10, 100, 1 << 30);
+    let id = open(&mut t, 1, "p", 0);
+    let s = t.open_stream(&id, &owner("p"), 0).unwrap();
+    let base = t.owner_bytes(&owner("p"));
+    t.push(&id, &owner("p"), s, &"a".repeat(60), 0).unwrap();
+    assert_eq!(t.owner_bytes(&owner("p")), base + 60 + EVENT_OVERHEAD);
+    t.push(&id, &owner("p"), s, &"b".repeat(10), 0).unwrap();
+    assert_eq!(
+        t.owner_bytes(&owner("p")),
+        base + 10 + EVENT_OVERHEAD,
+        "the large event was trimmed and only the small one is charged"
+    );
+    assert_eq!(t.total_bytes(), t.owner_bytes(&owner("p")));
+}

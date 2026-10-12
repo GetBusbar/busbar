@@ -17,9 +17,10 @@
 //!
 //! * [`Population::below_floor`] — the aggregate ratchet. It is not `> 0`: a walk that collapses to
 //!   a handful of files reports no findings and reads exactly like a clean tree. The floor is a
-//!   RATCHET pinned AT the measured count ([`FLOOR`], 941 on predev bd39476618), not a margin
-//!   below it: one file fewer is refused until a reviewed diff re-measures. It is raised as the
-//!   tree grows, never lowered to accommodate a scan that stopped finding things.
+//!   RATCHET pinned AT the measured count ([`FLOOR`], 947 after #703 merged with predev
+//!   1c586876f8), not a margin below it: one file fewer is refused until a reviewed diff
+//!   re-measures. It is raised as the tree grows, never lowered to accommodate a scan that stopped
+//!   finding things.
 //! * [`Population::drained`] — a crate that has a `src/` and contributed NOTHING. The floor catches
 //!   a tree that shrank; only this catches one crate quietly leaving the scan while the other files
 //!   keep the total above the floor.
@@ -34,13 +35,22 @@ use crate::ctx::{Ctx, Overlay, SourceFile, WalkSpec};
 /// was re-pinned from 941 to 942 when predev grew by one file, which the selftest plant caught,
 /// and back to 941 when #648 (q128-kernel-ledger) deleted `busbar-kernel-ledger/src/usage/series.rs`
 /// — the one non-test file that merge removed, a reviewed removal and not a scan that went blind. It
-/// was raised from 941 to 943 when FLIP-LLM (#464) added `busbar/src/root/model_egress.rs` and
-/// `busbar-plane-llm/src/exchange/project.rs` over predev d7929b661d. A drop below 943 is refused
-/// until a reviewed diff re-measures. The selftest plant ([`one_file_short`]) cuts the live
-/// population to `FLOOR - 1` whatever its size, so predev growing a file no longer forces a re-pin
-/// for the plant's sake. Lowering the floor is how a gate stops reading the repository without
-/// saying so, so a diff that lowers it is the diff to refuse.
-pub const FLOOR: usize = 943;
+/// was raised to 942 when the plugin-loader conformance suite's admission and connection RED arms
+/// landed in their own file (`plugin-loader/src/conformance/red.rs`). Raised from 942 to 948 by
+/// transport stage B (#502): the host's I/O table and the carriers add nine non-test files
+/// (`busbar-contract` abi/host/io.rs, abi/sdk/io.rs, io_host.rs; `busbar-core-connector`
+/// carrier.rs, hostio.rs; `busbar-plugin-loader` conformance/carrier.rs, conformance/host_io.rs,
+/// dispatch/inline.rs, dispatch/io_slots.rs) and remove three (`busbar-core-connector` stream.rs,
+/// `busbar-transport-stdio` carrier.rs and conn.rs, whose work moved to the host's I/O). Lowered
+/// from 948 to 947 when #703 (the MCP-FIX stack) deleted `busbar-plane-mcp/src/tool_plane.rs` and
+/// `outputschema.rs` and added `door_sessions.rs`, a reviewed net removal of one file. Raised from
+/// 947 to 949 when FLIP-LLM (#464) added `busbar/src/root/model_egress.rs` and
+/// `busbar-plane-llm/src/exchange/project.rs` (it had raised 941 to 943 over predev d7929b661d). A
+/// drop below 949 is refused until a reviewed diff re-measures. The selftest plant
+/// ([`one_file_short`]) cuts the live population to `FLOOR - 1` whatever its size, so predev
+/// growing a file no longer forces a re-pin for the plant's sake. Lowering the floor is how a gate
+/// stops reading the repository without saying so, so a diff that lowers it is the diff to refuse.
+pub const FLOOR: usize = 949;
 
 /// The `.rs` under `crates/` that are not test scaffolding, plus the accounting to refuse a
 /// population that cannot support a verdict.
