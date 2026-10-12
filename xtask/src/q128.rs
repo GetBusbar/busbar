@@ -405,7 +405,7 @@ pub fn judge(inp: &Inputs<'_>) -> Report {
             }
             for line in &l.opens {
                 let scope = line.split_whitespace().next().unwrap_or(line);
-                let high = line.split(|c: char| c == ' ' || c == ',').any(|t| {
+                let high = line.split([' ', ',']).any(|t| {
                     t.strip_prefix("HIGH=")
                         .and_then(|n| n.parse::<i64>().ok())
                         .is_some_and(|n| n != 0)
