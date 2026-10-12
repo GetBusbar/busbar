@@ -13,8 +13,10 @@
 //!   spawns from `1`. Two leases reading one generation reach one running program; a plugin that
 //!   must greet each program once (a handshake) greets each generation once.
 //! * Every frame the program writes is handed to EVERY lease of its generation that is open when
-//!   it is read, in order; a lease reads only what arrived after it opened. Whichever lease reads
-//!   drives the program's pipes for all, and a frame read wakes every lease waiting on one.
+//!   it is read, in order; a lease reads only what arrived after it opened, and only WHOLE frames:
+//!   one opened while a frame is part way through skips that frame's rest (another lease's
+//!   message, never the start of its own). Whichever lease reads drives the program's pipes for
+//!   all, and a frame read wakes every lease waiting on one.
 //! * A write is ONE WHOLE MESSAGE ([`Connection::write_whole`]): leases sharing the program never
 //!   interleave part of one message with another's.
 //! * Closing a lease leaves the program running. A program that ends (its output closed, a failed
@@ -35,8 +37,7 @@ use busbar_contract::ids::StreamId;
 use busbar_contract::transport::wire::WireStatusClass;
 use busbar_contract::transport::ConnFacts;
 
-use crate::compose::{Connection, Dial, Failure, DEFAULT_OPEN_TIMEOUT};
-use crate::framer::FramerDoor;
+use crate::compose::{Connection, Dial, Failure, Via, DEFAULT_OPEN_TIMEOUT};
 
 /// The first restart's backoff after a program ended (the previous release's crash-loop policy).
 const BASE_BACKOFF: Duration = Duration::from_millis(100);
@@ -136,6 +137,8 @@ struct Inbox {
     end_read: bool,
     /// The message its open carried, while the program's queue had no room for it.
     unsent: Option<Vec<u8>>,
+    /// It opened part way through a frame: that frame's rest is skipped.
+    mid_frame: bool,
 }
 
 /// The program as it runs.
@@ -147,6 +150,8 @@ struct Live {
 struct State {
     live: Option<Live>,
     generation: u64,
+    /// The last piece handed to the leases did not end its frame.
+    mid_frame: bool,
     retired: bool,
     next_lease: u64,
     leases: HashMap<u64, Inbox>,
@@ -157,7 +162,8 @@ struct State {
 /// lease on it shares.
 pub(crate) struct Member {
     program: Program,
-    door: Arc<dyn FramerDoor>,
+    /// The carrier the member's program rides.
+    via: Via,
     alpn: Vec<Vec<u8>>,
     state: Mutex<State>,
     fan: Arc<Fan>,
@@ -236,16 +242,17 @@ impl State {
 }
 
 impl Member {
-    /// The member running `program`, its pipes framed by `door`; nothing is spawned until the
+    /// The member running `program` over the carrier `via`; nothing is spawned until the
     /// first lease.
-    pub(crate) fn new(program: Program, door: Arc<dyn FramerDoor>, alpn: Vec<Vec<u8>>) -> Self {
+    pub(crate) fn new(program: Program, via: Via, alpn: Vec<Vec<u8>>) -> Self {
         Self {
             program,
-            door,
+            via,
             alpn,
             state: Mutex::new(State {
                 live: None,
                 generation: 0,
+                mid_frame: false,
                 retired: false,
                 next_lease: 1,
                 leases: HashMap::new(),
@@ -300,11 +307,12 @@ impl Member {
                 head_words: (Vec::new(), Vec::new()),
                 anchors: None,
             };
-            match Connection::spawn(Arc::clone(&self.door), &self.program, dial) {
+            match Connection::spawn(&self.via, &self.program, dial) {
                 Ok(conn) => {
                     st.generation += 1;
                     let generation = st.generation;
                     st.live = Some(Live { conn, generation });
+                    st.mid_frame = false;
                 }
                 Err(f) => {
                     // A spawn that fails repeats on every attempt: it is counted like any end.
@@ -314,6 +322,7 @@ impl Member {
             }
         }
         let generation = st.generation;
+        let mid_frame = st.mid_frame;
         let lease = st.next_lease;
         st.next_lease += 1;
         let mut head = Vec::new();
@@ -330,6 +339,7 @@ impl Member {
                 ended: None,
                 end_read: false,
                 unsent: (!first.is_empty()).then(|| first.to_vec()),
+                mid_frame,
             },
         );
         let waker = self.fan_waker();
@@ -404,12 +414,18 @@ impl Member {
                         continue;
                     }
                     for inbox in st.leases.values_mut() {
-                        if inbox.generation == generation && inbox.ended.is_none() {
-                            inbox
-                                .pieces
-                                .push_back((got.bytes.clone(), got.end_of_frame));
+                        if inbox.generation != generation || inbox.ended.is_some() {
+                            continue;
                         }
+                        if inbox.mid_frame {
+                            inbox.mid_frame = !got.end_of_frame;
+                            continue;
+                        }
+                        inbox
+                            .pieces
+                            .push_back((got.bytes.clone(), got.end_of_frame));
                     }
+                    st.mid_frame = !got.end_of_frame;
                     self.fan.wake_all();
                 }
                 Poll::Ready(Ok(None)) => st.ended(generation, None, &self.fan),
@@ -484,7 +500,13 @@ impl Member {
             // A program is no network peer: no key is pinned, no client identity presented.
             peer_key_pin: None,
             client_identity: false,
-            claim: self.door.facts().claims.first().map(|c| (*c).to_owned()),
+            claim: self
+                .via
+                .door
+                .facts()
+                .claims
+                .first()
+                .map(|c| (*c).to_owned()),
         })
     }
 

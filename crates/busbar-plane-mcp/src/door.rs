@@ -329,16 +329,21 @@ pub fn op_class_index(op: busbar_contract::ids::OpClassId) -> Option<u32> {
         .map(|i| i as u32)
 }
 
-/// The status of a verb the endpoint does not serve.
+/// The status of a verb the endpoint does not serve for the request as it came: a GET or DELETE
+/// that names no session (a GET naming no revision and accepting an event stream is the
+/// `2024-11-05` stream instead), THE DESIGN section 2, the mcp bullet.
 pub const STATUS_METHOD_NOT_ALLOWED: u32 = 405;
 
-/// The served engine's body for a verb the endpoint does not serve.
+/// The body of a GET or DELETE the endpoint does not serve: what each revision opens instead.
 #[must_use]
 pub fn method_not_allowed_body() -> Vec<u8> {
     serde_json::to_vec(&serde_json::json!({
         "error": "method_not_allowed",
         "error_description":
-            "MCP revision 2026-07-28 has no GET stream and no sessions; the endpoint accepts POST only.",
+            "A GET or DELETE here must name an MCP session (Mcp-Session-Id). MCP 2026-07-28 is \
+             POST only; 2025-11-25 and 2025-06-18 open a session with a POSTed `initialize`; a \
+             2024-11-05 client opens its event stream with a GET that accepts text/event-stream \
+             and names no MCP-Protocol-Version.",
     }))
     .unwrap_or_default()
 }

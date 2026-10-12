@@ -17,9 +17,10 @@
 //!
 //! * [`Population::below_floor`] — the aggregate ratchet. It is not `> 0`: a walk that collapses to
 //!   a handful of files reports no findings and reads exactly like a clean tree. The floor is a
-//!   RATCHET pinned AT the measured count ([`FLOOR`], 939 on predev e1694a8ca1), not a margin
-//!   below it: one file fewer is refused until a reviewed diff re-measures. It is raised as the
-//!   tree grows, never lowered to accommodate a scan that stopped finding things.
+//!   RATCHET pinned AT the measured count ([`FLOOR`], 945 after P5 extracted store-memory, merged
+//!   with predev 1617e9f019), not a margin below it: one file fewer is refused until a reviewed diff
+//!   re-measures. It is raised as the tree grows, never lowered to accommodate a scan that stopped
+//!   finding things.
 //! * [`Population::drained`] — a crate that has a `src/` and contributed NOTHING. The floor catches
 //!   a tree that shrank; only this catches one crate quietly leaving the scan while the other files
 //!   keep the total above the floor.
@@ -33,15 +34,24 @@ use crate::ctx::{Ctx, Overlay, SourceFile, WalkSpec};
 /// and added 4, and a floor above the count leaves every gate's floor row red on a clean tree. It
 /// was re-pinned from 941 to 942 when predev grew by one file, which the selftest plant caught,
 /// and back to 941 when #648 (q128-kernel-ledger) deleted `busbar-kernel-ledger/src/usage/series.rs`
-/// — the one non-test file that merge removed, a reviewed removal and not a scan that went blind.
-/// It was re-pinned from 941 to 939 when P5 extracted `crates/store-memory` to
-/// GetBusbar/busbar-store-memory (its two non-test files, `src/lib.rs` and `src/v3.rs`, left with
-/// the crate: a reviewed removal, measured 939 across 23 crates on predev e1694a8ca1 with the crate
-/// gone). A drop below 939 is refused until a reviewed diff re-measures. The selftest plant
-/// ([`one_file_short`]) cuts the live population to `FLOOR - 1` whatever its size, so predev
-/// growing a file no longer forces a re-pin for the plant's sake. Lowering the floor is how a gate
-/// stops reading the repository without saying so, so a diff that lowers it is the diff to refuse.
-pub const FLOOR: usize = 939;
+/// — the one non-test file that merge removed, a reviewed removal and not a scan that went blind. It
+/// was raised to 942 when the plugin-loader conformance suite's admission and connection RED arms
+/// landed in their own file (`plugin-loader/src/conformance/red.rs`). Raised from 942 to 948 by
+/// transport stage B (#502): the host's I/O table and the carriers add nine non-test files
+/// (`busbar-contract` abi/host/io.rs, abi/sdk/io.rs, io_host.rs; `busbar-core-connector`
+/// carrier.rs, hostio.rs; `busbar-plugin-loader` conformance/carrier.rs, conformance/host_io.rs,
+/// dispatch/inline.rs, dispatch/io_slots.rs) and remove three (`busbar-core-connector` stream.rs,
+/// `busbar-transport-stdio` carrier.rs and conn.rs, whose work moved to the host's I/O). Lowered
+/// from 948 to 947 when #703 (the MCP-FIX stack) deleted `busbar-plane-mcp/src/tool_plane.rs` and
+/// `outputschema.rs` and added `door_sessions.rs`, a reviewed net removal of one file. Lowered
+/// from 947 to 945 when P5 extracted `crates/store-memory` to GetBusbar/busbar-store-memory (its
+/// two non-test files, `src/lib.rs` and `src/v3.rs`, left with the crate: a reviewed removal,
+/// measured 945 on the branch merged with predev 1617e9f019). A drop below 945 is refused until a
+/// reviewed diff re-measures. The selftest plant ([`one_file_short`]) cuts the live population to
+/// `FLOOR - 1` whatever its size, so predev growing a file no longer forces a re-pin for the
+/// plant's sake. Lowering the floor is how a gate stops reading the repository without saying so,
+/// so a diff that lowers it is the diff to refuse.
+pub const FLOOR: usize = 945;
 
 /// The `.rs` under `crates/` that are not test scaffolding, plus the accounting to refuse a
 /// population that cannot support a verdict.

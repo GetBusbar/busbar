@@ -16,15 +16,20 @@ use busbar_contract::conn::{
 };
 
 use crate::registry::{Entry, Transports};
-use crate::support::{worker, TestDoor};
+use crate::support::{worker, Knobs, TestDoor};
 use crate::Connector;
 
 const OWNER: InstanceId = InstanceId(1);
 const NEED: NeedId = NeedId(1);
 
 fn connector() -> Connector {
+    connector_over(TestDoor::identity("bytes"))
+}
+
+/// A connector whose `bytes` entry is `door`.
+fn connector_over(door: TestDoor) -> Connector {
     let view = Transports::new(vec![Entry {
-        door: Arc::new(TestDoor::identity("bytes")),
+        door: Arc::new(door),
         alpn: Vec::new(),
     }])
     .unwrap();
@@ -229,6 +234,52 @@ fn a_frame_reaches_every_open_lease_and_an_opens_body_is_its_first_message() {
         let at_b = line(&c, b, &mut hb).await.expect("b reads its own answer");
         assert_eq!(at_a, at_b);
         assert!(at_a.ends_with(" from-b"), "{at_a}");
+        c.close(OWNER, a).unwrap();
+        c.close(OWNER, b).unwrap();
+    });
+}
+
+/// RED (finding 13): a lease opened while the program is part way through one frame does not read
+/// that frame's rest as though it began there (on one shared child, another exchange's answer
+/// taken as its own): its first body bytes begin a frame. The lease already reading the frame reads
+/// it whole.
+#[test]
+fn a_lease_opened_mid_frame_reads_from_the_next_frame() {
+    worker().block_on(async {
+        let c = connector_over(TestDoor::new(
+            "bytes",
+            &["bytes"],
+            &[],
+            Knobs {
+                piece: Some(16),
+                ..Knobs::default()
+            },
+        ));
+        let long = "A".repeat(100);
+        let script = format!("read x; echo {long}; read y; echo second; cat >/dev/null");
+        declare(&c, &[("one", sh(&script, &[]))]).unwrap();
+        let a = open(&c, "one", b"go\n").unwrap();
+        assert_eq!(generation(&c, a).await, 1);
+        let mut buf = [0_u8; 64];
+        let first = read(&c, a, &mut buf)
+            .await
+            .expect("the long frame's first piece");
+        assert_eq!(first.kind, PieceKind::Body);
+        assert!(!first.end, "the long frame arrives in pieces");
+        let mut ha = buf[..first.len].to_vec();
+        let b = open(&c, "one", b"next\n").unwrap();
+        assert_eq!(generation(&c, b).await, 1);
+        let mut hb = Vec::new();
+        assert_eq!(
+            line(&c, b, &mut hb).await.as_deref(),
+            Some("second"),
+            "the lease opened mid-frame took the rest of a frame it never saw begin"
+        );
+        assert_eq!(
+            line(&c, a, &mut ha).await,
+            Some(long),
+            "a reads its frame whole"
+        );
         c.close(OWNER, a).unwrap();
         c.close(OWNER, b).unwrap();
     });

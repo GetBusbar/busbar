@@ -1422,6 +1422,7 @@ fn sdk_host(p: &Plugin<TestKind>) -> busbar_contract::abi::sdk::conn::Host {
         wake: None,
         conns: &CONN_SLOTS,
         services: std::ptr::null(),
+        io: std::ptr::null(),
     })
 }
 
