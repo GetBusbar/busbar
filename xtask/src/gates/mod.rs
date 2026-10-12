@@ -631,10 +631,14 @@ impl Registration {
 ///
 /// THE SELF-TEST BUDGET, AND WHY IT IS NOT MEASURED IN SECONDS.
 ///
-/// `cargo test -p xtask` runs `xtask selftest`, which drives EVERY registered gate's cases. That is
-/// the only place several of these gates are ever proven RED-able, so the shard cannot simply be
-/// made smaller -- and it grew past fifty-one minutes, on a runner whose ssh session dies at about
-/// fifty and whose gate job was cancelled at twenty-five. Nothing measured it. A rule that grew a
+/// The `test:xtask-selftest` check runs `xtask selftest <gate>` for every registered gate, split
+/// across the hop's shards (`cargo xtask gate --list` names the parts), and that is the ONE place
+/// every gate's cases are driven: `cargo test -p xtask` pins the dispatcher's arms with one gate's
+/// self-test, never all of them (verification runs once per input). That check is the only place
+/// several of these gates are ever proven RED-able, so the shard cannot simply be made smaller --
+/// and, when `cargo test -p xtask` still ran the whole registry, it grew past fifty-one minutes,
+/// on a runner whose ssh session dies at about fifty and whose gate job was cancelled at
+/// twenty-five. Nothing measured it. A rule that grew a
 /// whole-tree scan per plant looked exactly like one that did not, right up to the point where the
 /// job was killed and the verdict was "cancelled", which is neither green nor red.
 ///
