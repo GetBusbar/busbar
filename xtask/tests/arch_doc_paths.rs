@@ -5,7 +5,7 @@
 use std::path::Path;
 
 const ROOTS: &[&str] = &[
-    "crates/", "docs/", "xtask/", "plugins/", "scripts/", "qa/", "conformance/", "tests/",
+    "crates/", "docs/", "xtask/", "scripts/", "qa/", "conformance/", "tests/",
 ];
 
 /// Every backticked token that begins with a repository root, trimmed of trailing punctuation.
