@@ -586,6 +586,7 @@ fn the_answer_walk_names_the_shallowest_uncarried_member() {
         ],
         code: &["type=ping"],
         drops: &[],
+        defaults: &[],
     };
     let answer = json!({"id": "m", "content": [{"type": "x", "deep": 1}], "container": {"id": "c"},
         "usage": {"input_tokens": 1, "output_tokens_details": {"t": 1}}, "stop_details": null});
@@ -612,6 +613,7 @@ fn the_answer_walk_names_the_shallowest_uncarried_member() {
         map: &["contentBlockDelta.delta.text"],
         code: &[],
         drops: &[],
+        defaults: &[],
     };
     assert_eq!(
         keyed.unmapped(
@@ -620,6 +622,33 @@ fn the_answer_walk_names_the_shallowest_uncarried_member() {
         ),
         vec!["contentBlockDelta.delta.zz"]
     );
+}
+
+/// AN ECHOED DEFAULT IS NO UNREPRESENTABLE CONTROL (ARCHITECT RULING 2026-10-04): a Responses
+/// answer restates the request's `tools`, `tool_choice` and `parallel_tool_calls`, at their
+/// defaults when the caller set none; a TRANSLATE answer drops them, and the walk names none, so
+/// no `egress.control_unrepresentable` row is written for them (the 1.5.5 rows for
+/// `llm|*|responses|request|ok`). RED arm: a value the caller actually set (a real tool, a
+/// directed choice, parallel calls off) is still named, so its drop is still audited.
+#[test]
+fn an_echoed_request_default_names_no_drop_and_a_caller_set_value_still_does() {
+    let carried = crate::codec::proto_codec::with_reader("responses", |r| r.response_carried())
+        .flatten()
+        .expect("the Responses answer is walked");
+    let echoed = json!({"id": "resp_1", "object": "response", "status": "completed",
+        "output": [], "tools": [], "tool_choice": "auto", "parallel_tool_calls": true});
+    assert!(
+        carried.unmapped("", &echoed).is_empty(),
+        "an echoed default is no control the caller set: {:?}",
+        carried.unmapped("", &echoed)
+    );
+    let set = json!({"id": "resp_1", "object": "response", "status": "completed",
+        "output": [],
+        "tools": [{"type": "function", "name": "lookup", "parameters": {"type": "object"}}],
+        "tool_choice": "required", "parallel_tool_calls": false});
+    let mut named = carried.unmapped("", &set);
+    named.sort();
+    assert_eq!(named, vec!["parallel_tool_calls", "tool_choice", "tools"]);
 }
 
 /// DF-MAP-IR-GAPS SECTION E (ruled: every unmapped response/stream path is named, no extra
@@ -708,7 +737,17 @@ fn the_answer_walk_names_only_true_drops_over_the_golden_corpus() {
             .copied()
             .filter(|p| {
                 let pointer = format!("/{}", p.replace('.', "/"));
-                body.pointer(&pointer).is_some_and(|v| !v.is_null())
+                // An echoed request default is no drop (ARCHITECT RULING 2026-10-04).
+                let echoed = |v: &Value| {
+                    far == "responses"
+                        && crate::codec::openai_responses::ANSWER_DEFAULTS
+                            .iter()
+                            .any(|(k, d)| {
+                                *k == *p && serde_json::from_str::<Value>(d).is_ok_and(|d| d == *v)
+                            })
+                };
+                body.pointer(&pointer)
+                    .is_some_and(|v| !v.is_null() && !echoed(v))
             })
             .collect();
         assert_eq!(named, expected, "{name}");
