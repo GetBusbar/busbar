@@ -8133,7 +8133,7 @@ impl Gate for KindIsolationGate {
             // and its `tests/conformance.rs` is the loader's only user: no edge, closure or cell is
             // scored for it…
             let conformance = |normal: bool, extra_user: bool| {
-                let dir = "crates/store-memory";
+                let dir = "crates/busbar-store-memory";
                 let rel = format!("{dir}/Cargo.toml");
                 let table = if normal {
                     "dependencies"
@@ -8777,7 +8777,7 @@ impl Gate for KindIsolationGate {
         // could name any other kind freely — and this row scanned ZERO files of them.
         let mut ov = Overlay::new();
         ov.set(
-            "crates/store-memory/src/planted_leak.rs",
+            "crates/busbar-store-memory/src/planted_leak.rs",
             "pub fn leak() { let _ = busbar_plane_llm::VERSION; let _ = \
              busbar_transport_http::Client::default(); }\n",
         );
@@ -8979,7 +8979,7 @@ impl Gate for KindIsolationGate {
             "the crate census missed the workspace's members",
             &[ROW_REGISTRY],
             move || all_but(cx, "toml", 4),
-            &["missed-member", "crates/store-memory"],
+            &["missed-member", "crates/plugin-loader"],
         ));
         report.push(prove_rows_red(
             cx,
@@ -9747,14 +9747,14 @@ impl Gate for KindIsolationGate {
         // bare `target/`, so the file was invisible twice over. The plant is that file.
         let mut ov = Overlay::new();
         ov.set(
-            "crates/store-memory/src/target/leak.rs",
+            "crates/busbar-store-memory/src/target/leak.rs",
             "pub const P: &str = \"busbar-plane-llm\";\npub fn mcp_hook() {}\n",
         );
         ov.set(
-            "crates/store-memory/src/lib.rs",
+            "crates/busbar-store-memory/src/lib.rs",
             format!(
                 "{}\n#[path = \"target/leak.rs\"]\npub mod leak;\n",
-                cx.read("crates/store-memory/src/lib.rs")
+                cx.read("crates/busbar-store-memory/src/lib.rs")
                     .unwrap_or_default()
                     .trim_end()
             ),
@@ -9767,7 +9767,7 @@ impl Gate for KindIsolationGate {
             ov,
             &[
                 "hidden-source",
-                "crates/store-memory/src/target/leak.rs",
+                "crates/busbar-store-memory/src/target/leak.rs",
                 "git check-ignore",
             ],
         ));
@@ -9777,10 +9777,10 @@ impl Gate for KindIsolationGate {
         // that would go quiet the day the walker gains one more skipped directory name.
         let mut ov = Overlay::new();
         ov.set(
-            "crates/store-memory/src/lib.rs",
+            "crates/busbar-store-memory/src/lib.rs",
             format!(
                 "{}\npub mod planted_ghost;\n",
-                cx.read("crates/store-memory/src/lib.rs")
+                cx.read("crates/busbar-store-memory/src/lib.rs")
                     .unwrap_or_default()
                     .trim_end()
             ),
@@ -9794,7 +9794,7 @@ impl Gate for KindIsolationGate {
             &[
                 "hidden-source",
                 "planted_ghost",
-                "crates/store-memory/src/planted_ghost.rs",
+                "crates/busbar-store-memory/src/planted_ghost.rs",
             ],
         ));
 
@@ -10347,7 +10347,7 @@ impl Gate for KindIsolationGate {
             "a STORE plugin depending on a wire crate — every kind but root and transport",
             &[ROW_WIRES],
             manifest_plant(
-                "crates/store-memory",
+                "crates/busbar-store-memory",
                 "busbar-store-memory",
                 &["busbar-contract", "busbar-transport-stdio"],
             ),
@@ -10362,7 +10362,7 @@ impl Gate for KindIsolationGate {
         // test binary picks a wire has already decided which wire it is for.
         let mut ov = Overlay::new();
         ov.set(
-            "crates/store-memory/Cargo.toml",
+            "crates/busbar-store-memory/Cargo.toml",
             "[package]\nname = \"busbar-store-memory\"\nversion = \"0.0.0\"\n\n[dependencies]\n\
              busbar-contract = { workspace = true }\n\n[dev-dependencies]\n\
              busbar-transport-stdio = { path = \"../busbar-transport-stdio\" }\n",

@@ -23,7 +23,6 @@ members = [
     "crates/busbar-plane-streaming",
     "crates/busbar-plane-decisions",
     "crates/plugin-loader",
-    "crates/store-memory",
     "crates/busbar-transport-stdio",
     "testing/ws-conformance/subject",
     "xtask",
@@ -106,6 +105,12 @@ busbar-auth-sigv4 = { git = "https://github.com/GetBusbar/busbar-auth-sigv4", re
 # build gives it (`fixture-hook`: a kernel source names no plugin). A rev bump moves both lines.
 busbar-hook-ranking = { git = "https://github.com/GetBusbar/busbar-hook-ranking", rev = "7e1285e2e3293627723ab2754b9ddbfddeba9c46" }
 fixture-hook = { package = "busbar-hook-ranking", git = "https://github.com/GetBusbar/busbar-hook-ranking", rev = "7e1285e2e3293627723ab2754b9ddbfddeba9c46" }
+# THE MEMORY STORE (kind: store), pulled at a pinned rev: the logic crate the root links on its store
+# axis in every build (`[package.metadata.busbar.linked] store-memory`) and the plugin loader's `store`
+# both-ways fixture. The same package at the same rev, under the role the kernel's test build gives it
+# (`fixture-store`: a kernel source names no plugin). A rev bump moves both lines.
+busbar-store-memory = { git = "https://github.com/GetBusbar/busbar-store-memory", rev = "848851e63ac7a454eb3d5daf9e11d739c48d738b" }
+fixture-store = { package = "busbar-store-memory", git = "https://github.com/GetBusbar/busbar-store-memory", rev = "848851e63ac7a454eb3d5daf9e11d739c48d738b" }
 # ── A2A, from the a2aproject's OWN crates ──────────────────────────────────────────────────────
 # THE OBVIOUS NAME IS THE WRONG ONE. `a2a-rs` on crates.io is `emillindfors/a2a-rs` (MIT, v0.5.0) —
 # a different author entirely. The a2aproject family is the `a2a-*-lf` / `a2a-pb` set, all
