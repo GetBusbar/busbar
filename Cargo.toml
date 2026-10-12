@@ -90,8 +90,8 @@ busbar-transport-ws = { git = "https://github.com/GetBusbar/busbar-transport-ws"
 busbar-export-webhook-plugin = { git = "https://github.com/GetBusbar/busbar-export-webhook", rev = "46cd95ba78f6639b28d14067bc7c6876e00c5458" }
 # THE TCP TRANSPORT: the identity framer door (kind: transport), one pin for the logic crate the root
 # links and the cdylib crate the loader's both-ways proof builds. Same repo, same rev, one resolved copy.
-busbar-transport-tcp = { git = "https://github.com/GetBusbar/busbar-transport-tcp", rev = "4af9e2ca8bc164d0066e6d107024ba416192a4ba" }
-busbar-transport-tcp-plugin = { git = "https://github.com/GetBusbar/busbar-transport-tcp", rev = "4af9e2ca8bc164d0066e6d107024ba416192a4ba" }
+busbar-transport-tcp = { git = "https://github.com/GetBusbar/busbar-transport-tcp", rev = "eb334dd6e9d3dcd62ae1616f77a5ed56311b255a" }
+busbar-transport-tcp-plugin = { git = "https://github.com/GetBusbar/busbar-transport-tcp", rev = "eb334dd6e9d3dcd62ae1616f77a5ed56311b255a" }
 # THE OUTBOUND HEADER STYLES (kind: auth): the logic crate the root links on its `auths` axis
 # (feature `auth-header`), pulled at a pinned rev (P5; OWNER Q99 keep the split).
 busbar-auth-header = { git = "https://github.com/GetBusbar/busbar-auth-header", rev = "70f356722c37b7efe9e8fc5f23d3f30e606556f0" }

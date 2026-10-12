@@ -112,10 +112,12 @@ use crate::tcp_conns::TcpConns;
 use busbar_contract::abi::mechanism::ticket::Ticket;
 
 mod auth;
+mod carrier;
 mod export;
 
 pub use auth::{red_outbound_double_fetch, red_outbound_writes_nothing, red_outbound_wrong_byte};
 mod hook;
+pub mod host_io;
 mod plane;
 mod secret;
 mod store;
@@ -288,9 +290,9 @@ impl Subject {
         KindCode::from_raw(raw).unwrap_or_else(|| panic!("the door names kind {raw}"))
     }
 
-    /// The dropped-in library: this crate's cdylib in the test binary's target directory, uplifted
-    /// or under `deps` with its metadata hash, newest wins. A missing one is a FAILURE: this suite
-    /// IS the dropped-in door's proof, and never skips.
+    /// The dropped-in library: this crate's cdylib in the test binary's target directory, the one
+    /// image that exports the dropped-in door, chosen by rank, never by age ([`cdylib_of`]). A
+    /// missing one is a FAILURE: this suite IS the dropped-in door's proof, and never skips.
     ///
     /// # Panics
     /// When the cdylib is not built.
@@ -469,15 +471,23 @@ impl Subject {
 /// `plugin-ci.yml`'s conformance step sets it). It wins over every other image.
 pub const CDYLIB_ENV: &str = "BUSBAR_CONFORMANCE_CDYLIB";
 
-/// `crate_snake`'s cdylib, CHOSEN EXPLICITLY, never by age (audit loader-conformance #13):
+/// `crate_snake`'s cdylib, CHOSEN EXPLICITLY, never by age (audit loader-conformance #13), and only
+/// ever an image that EXPORTS the dropped-in door (`busbar_plugin_door`):
 ///
 /// 1. the path [`CDYLIB_ENV`] names (this run's cargo build output);
-/// 2. else the image cargo UPLIFTED for the crate's latest build (`target/<profile>/<lib>` or
-///    `target/<profile>/examples/<lib>`, unhashed: cargo's own pointer to that unit's newest
-///    output);
-/// 3. else the ONE hashed image under `deps/` (or `examples/`); several images with different
+/// 2. else the image of the crate's own lib unit, `target/<profile>/deps/<lib>`: cargo names a
+///    workspace cdylib with no metadata hash, and a TEST build never uplifts it (the lib is not a
+///    root of `cargo test`), so this is where the test build that turned on the crate's
+///    `dropped-in` feature put its image;
+/// 3. else the image cargo UPLIFTED (`target/<profile>/<lib>` or `target/<profile>/examples/<lib>`,
+///    unhashed: a root unit's newest output, an example's under `cargo test`);
+/// 4. else the ONE hashed image under `deps/` (or `examples/`); several images with different
 ///    bytes (stale builds, another feature set's hash) are refused, naming them and
 ///    [`CDYLIB_ENV`], since nothing says which one this run built.
+///
+/// A candidate that exports no door is passed over at every rank: an earlier plain build of the
+/// crate (no `dropped-in` feature) leaves an uplifted image with no door, and it is never the
+/// dropped-in leg. When only such images are built the choice fails, naming them.
 ///
 /// # Panics
 /// When none is built, the named one does not exist, or the choice is ambiguous.
@@ -499,16 +509,30 @@ pub fn cdylib_of(crate_snake: &str) -> PathBuf {
     choose_cdylib(profile, crate_snake).unwrap_or_else(|e| panic!("{e}"))
 }
 
-/// [`cdylib_of`]'s choice under `profile` (`target/<profile>`), [`CDYLIB_ENV`] aside.
+/// [`cdylib_of`]'s choice under `profile` (`target/<profile>`), [`CDYLIB_ENV`] aside: an image
+/// exports the door when it loads and its `busbar_plugin_door` resolves.
 ///
 /// # Errors
-/// None is built, or several different images are and none is uplifted.
+/// None is built, none built exports the door, or several different images rank first.
 pub(crate) fn choose_cdylib(profile: &Path, crate_snake: &str) -> Result<PathBuf, String> {
+    choose_cdylib_by(profile, crate_snake, &|p: &Path| {
+        matches!(
+            crate::dispatch::load::door_addresses_of_library(p),
+            Ok(Some(_))
+        )
+    })
+}
+
+/// [`choose_cdylib`] with `exports_door` deciding which images export the dropped-in door.
+///
+/// # Errors
+/// As [`choose_cdylib`].
+pub(crate) fn choose_cdylib_by(
+    profile: &Path,
+    crate_snake: &str,
+    exports_door: &dyn Fn(&Path) -> bool,
+) -> Result<PathBuf, String> {
     let name = crate::plugin_library_filename(crate_snake);
-    let uplifted = [profile.join(&name), profile.join("examples").join(&name)];
-    if let Some(up) = uplifted.iter().find(|p| p.is_file()) {
-        return Ok(up.clone());
-    }
     let (prefix, suffix) = name
         .split_once(crate_snake)
         .expect("the library name carries the crate's");
@@ -528,24 +552,49 @@ pub(crate) fn choose_cdylib(profile: &Path, crate_snake: &str) -> Result<PathBuf
         })
         .collect();
     hashed.sort();
-    // One image under two names (a hard link, a copy) is one image.
-    let mut images: Vec<(Vec<u8>, PathBuf)> = Vec::new();
-    for p in hashed {
-        let bytes = std::fs::read(&p).unwrap_or_default();
-        if !images.iter().any(|(b, _)| *b == bytes) {
-            images.push((bytes, p));
+    let ranks = [
+        vec![profile.join("deps").join(&name)],
+        vec![profile.join(&name), profile.join("examples").join(&name)],
+        hashed,
+    ];
+    let mut doorless: Vec<PathBuf> = Vec::new();
+    for rank in ranks {
+        // One image under two names (a hard link, a copy) is one image.
+        let mut images: Vec<(Vec<u8>, PathBuf)> = Vec::new();
+        for p in rank.into_iter().filter(|p| p.is_file()) {
+            let bytes = std::fs::read(&p).unwrap_or_default();
+            if images.iter().any(|(b, _)| *b == bytes) {
+                continue;
+            }
+            if exports_door(&p) {
+                images.push((bytes, p));
+            } else {
+                doorless.push(p);
+            }
+        }
+        match images.len() {
+            0 => {}
+            1 => return Ok(images.remove(0).1),
+            _ => {
+                return Err(format!(
+                    "the plugin's cdylib ({name}) is built more than once under {profile:?} \
+                     ({:?}); name this run's image in {CDYLIB_ENV}",
+                    images.iter().map(|(_, p)| p).collect::<Vec<_>>()
+                ))
+            }
         }
     }
-    match images.len() {
-        0 => Err(format!(
+    if doorless.is_empty() {
+        Err(format!(
             "the plugin's cdylib ({name}) is not built under {profile:?}"
-        )),
-        1 => Ok(images.remove(0).1),
-        _ => Err(format!(
-            "the plugin's cdylib ({name}) is built more than once under {profile:?} ({:?}); \
-             name this run's image in {CDYLIB_ENV}",
-            images.iter().map(|(_, p)| p).collect::<Vec<_>>()
-        )),
+        ))
+    } else {
+        Err(format!(
+            "the plugin's cdylib ({name}) is built under {profile:?} only without its dropped-in \
+             door ({doorless:?} do not load or export no busbar_plugin_door): build it with \
+             the crate's `dropped-in` feature (its dev-dependency on itself turns it on for \
+             `cargo test`), or name the image in {CDYLIB_ENV}"
+        ))
     }
 }
 
