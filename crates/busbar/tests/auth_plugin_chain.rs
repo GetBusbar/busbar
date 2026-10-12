@@ -111,12 +111,21 @@ fn auth_manifest(name: &str, alias: &str, publisher: &str) -> busbar_plugin_load
     m
 }
 
-/// Write an UNSIGNED (structurally valid) auth-module tarball into `dir` under `file`. We use the
-/// unsigned+`allow_unsigned` path because the test cannot sign with the embedded first-party release
-/// key; this still exercises the whole load pipeline.
+/// The module's tarball SIGNED FIRST-PARTY (publisher `busbar`) under the test build's release key
+/// (`busbar_kernel::test_support::test_release_key`): every need the module states is in the
+/// `operator-infrastructure` egress class, which the host grants to a first-party plugin only
+/// (`BUSBAR-1.6.0.md` §5; ARCHITECT ruling EGRESS-GRANT 2026-10-03), so an unsigned or third-party
+/// copy is skipped at the scan.
+fn first_party_tarball(mut m: busbar_plugin_loader::sign::Manifest, lib: &[u8]) -> Vec<u8> {
+    m.publisher = busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER.into();
+    common::plugins::signed(&busbar_kernel::test_support::test_release_key(), m, lib)
+}
+
+/// Write the auth module's tarball, signed first-party ([`first_party_tarball`]), into `dir` under
+/// `file`; this exercises the whole load pipeline.
 fn write_auth_plugin(dir: &Path, file: &str, name: &str, alias: &str) {
     let lib = std::fs::read(auth_cdylib()).expect("read the auth module's cdylib");
-    let tarball = unsigned_tarball(auth_manifest(name, alias, "acme"), &lib);
+    let tarball = first_party_tarball(auth_manifest(name, alias, "acme"), &lib);
     std::fs::write(dir.join(file), tarball).unwrap();
 }
 
@@ -158,11 +167,11 @@ fn auth_manifest_with_root_secret_schema(
     m
 }
 
-/// Write an UNSIGNED auth-module tarball whose manifest declares `audience` as a ROOT-LEVEL
-/// `x-busbar-secret` field (see [`auth_manifest_with_root_secret_schema`]).
+/// Write a first-party auth-module tarball ([`first_party_tarball`]) whose manifest declares
+/// `audience` as a ROOT-LEVEL `x-busbar-secret` field (see [`auth_manifest_with_root_secret_schema`]).
 fn write_auth_plugin_with_root_secret_schema(dir: &Path, file: &str, name: &str, alias: &str) {
     let lib = std::fs::read(auth_cdylib()).expect("read the auth module's cdylib");
-    let tarball = unsigned_tarball(
+    let tarball = first_party_tarball(
         auth_manifest_with_root_secret_schema(name, alias, "acme", "audience"),
         &lib,
     );
@@ -488,7 +497,7 @@ fn a_v1_auth_plugin_is_refused_at_boot_and_the_current_one_builds_browser_login(
     // PROVIDER's `module:` is the plugin it opens; the map key is the provider NAME).
     let dir2 = tmp_plugin_dir("auth-login-current-ok");
     let current = auth_manifest("acme-idp", "cap-idp", "acme");
-    std::fs::write(dir2.join("idp.tar.gz"), unsigned_tarball(current, &lib)).unwrap();
+    std::fs::write(dir2.join("idp.tar.gz"), first_party_tarball(current, &lib)).unwrap();
     std::env::set_var("BUSBAR_TEST_CLIENT_SECRET", "the-confidential-secret");
     let settings = serde_json::Value::Object(settings()).to_string();
     let config = dir2.join("config.yaml");
