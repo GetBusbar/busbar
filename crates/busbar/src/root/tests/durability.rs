@@ -3115,7 +3115,7 @@ fn a_lost_keyset_claim_with_nothing_kept_refuses_until_the_claim_lapses() {
     let now = secs();
     // A winner that died before it kept anything: this period's claim is redeemed, nothing kept.
     assert!(slots.redeem(MINT_CLAIM_KIND, &keyset_claim(now), u64::MAX, now));
-    let mine = "c".repeat(64);
+    let mine = "d".repeat(64);
     let refused = keep_keyset(slots.calls().as_ref(), &mine).expect_err("no second key");
     assert!(refused.contains("claim"), "{refused}");
     assert_eq!(stored_keyset(slots.calls().as_ref()).expect("read"), None);
