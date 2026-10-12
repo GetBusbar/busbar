@@ -237,11 +237,24 @@ pub fn mint_key(
     admin_token: &str,
     name: &str,
 ) -> Result<(String, String), String> {
+    mint_key_with(
+        scratch,
+        admin,
+        admin_token,
+        &serde_json::json!({ "name": name }),
+    )
+}
+
+/// [`mint_key`] with the whole `POST /api/v1/admin/keys` body: a key bound to a group, or granted a
+/// named set of pools, as an operator mints one.
+pub fn mint_key_with(
+    scratch: &Path,
+    admin: u16,
+    admin_token: &str,
+    body: &Value,
+) -> Result<(String, String), String> {
     let bearer = format!("Bearer {admin_token}");
-    let body = format!(
-        "{{\"name\":{}}}",
-        serde_json::to_string(name).unwrap_or_default()
-    );
+    let body = body.to_string();
     let r = curl(
         scratch,
         "POST",

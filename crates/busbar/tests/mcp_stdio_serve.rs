@@ -73,10 +73,17 @@ fn fixture_dir(tag: &str) -> PathBuf {
     let d = std::env::temp_dir().join(format!(
         "busbar-stdio-serve-{}-{tag}-{}",
         std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
+        {
+            static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            format!(
+                "{}-{}-{}",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |d| d.as_nanos()),
+                line!(),
+                NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            )
+        }
     ));
     std::fs::create_dir_all(d.join("plugins")).unwrap();
     d
@@ -702,7 +709,9 @@ fn a_bound_session_serves_and_eof_with_a_live_subscription_exits_promptly() {
     );
     let mut child = spawn(&dir, Some(&token));
 
-    // A LEGACY-era opening: `initialize`, no `_meta` — the stdio dual-era negotiation.
+    // A SESSION-era opening over stdio: `initialize`, no `_meta`. The carrier answers in the session
+    // revision the client asked for (revision by negotiation, THE DESIGN section 2); a line that
+    // states the stateless `_meta` after it is still served as it is.
     child.send(&serde_json::json!({
         "jsonrpc": "2.0", "id": 1, "method": "initialize",
         "params": { "protocolVersion": "2025-06-18", "capabilities": {},
@@ -712,7 +721,7 @@ fn a_bound_session_serves_and_eof_with_a_live_subscription_exits_promptly() {
     assert_eq!(
         init.pointer("/result/protocolVersion")
             .and_then(|v| v.as_str()),
-        Some("2026-07-28"),
+        Some("2025-06-18"),
         "{init}"
     );
     child.send(&serde_json::json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }));
