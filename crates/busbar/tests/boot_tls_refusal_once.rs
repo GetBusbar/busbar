@@ -22,14 +22,17 @@ use std::path::PathBuf;
 use std::process::Command;
 
 fn fixture_dir() -> PathBuf {
-    let d = std::env::temp_dir().join(format!(
-        "busbar-boot-tls-once-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
+    let d = std::env::temp_dir().join(format!("busbar-boot-tls-once-{}-{}", std::process::id(), {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        format!(
+            "{}-{}-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_nanos()),
+            line!(),
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        )
+    }));
     std::fs::create_dir_all(&d).unwrap();
     d
 }

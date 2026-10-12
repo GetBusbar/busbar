@@ -27,6 +27,14 @@ use serde_json::Value;
 
 use crate::codec::DECLS;
 
+/// The provider `auth:` overrides that present under a scheme of their own, not the dialect's, so
+/// carry none of its static fields (the previous release's `egress_auth::resolve`).
+const AUTH_API_KEY: &str = "api-key";
+/// See [`AUTH_API_KEY`].
+const AUTH_JWT_BEARER: &str = "jwt-bearer";
+/// See [`AUTH_API_KEY`].
+const AUTH_OAUTH_CLIENT_CREDENTIALS: &str = "oauth-client-credentials";
+
 /// The dialect a provider speaks when it names none.
 pub const DEFAULT_PROTOCOL: &str = "anthropic";
 /// The global output-token default when `limits` names none.
@@ -65,6 +73,12 @@ pub struct Lane {
     pub caps: LaneCaps,
     /// The provider's error-code map.
     pub error_map: HashMap<String, String>,
+    /// The far end's dialect's declared static fields (`ProtocolDecl::static_headers`, ARCHITECT
+    /// SD-3 (1) "anthropic S2-a"), written on every far request of a lane presented under the
+    /// dialect's own credential scheme; none under an operator's `auth:` override that is not the
+    /// dialect's scheme (`api-key`, `jwt-bearer`, `oauth-client-credentials`), whose declaration
+    /// carries none, as the previous release wrote them.
+    pub statics: &'static [(&'static str, &'static str)],
 }
 
 impl Lane {
@@ -122,6 +136,9 @@ pub struct Shaping {
     pub lanes: BTreeMap<String, Lane>,
     /// Every pool's members, in the pool's order, by pool name.
     pub pools: BTreeMap<String, Vec<Member>>,
+    /// The session-affinity header a pool's `affinity.header_name` names, by pool name; a pool that
+    /// names none reads [`DEFAULT_AFFINITY_HEADER`].
+    pub affinity_headers: BTreeMap<String, String>,
     /// The global output-token default.
     pub default_max_tokens: u32,
     /// The effort → thinking-budget table.
@@ -174,6 +191,8 @@ struct ProviderCfg {
     project: Option<String>,
     #[serde(default)]
     error_map: HashMap<String, String>,
+    #[serde(default)]
+    auth: Option<String>,
     #[serde(default)]
     max_output_key: Option<MaxOutputKeyCfg>,
     #[serde(default)]
@@ -322,7 +341,20 @@ pub mod sections {
     pub const LIMITS: &str = "limits";
 }
 
+/// The header a pool's session affinity reads when its `affinity` names none (1.5.5's).
+pub const DEFAULT_AFFINITY_HEADER: &str = "x-session-id";
+
 impl Shaping {
+    /// The header the session affinity of the unit routed over `pool` reads: the pool's own
+    /// `affinity.header_name`, else [`DEFAULT_AFFINITY_HEADER`] (v1.5.5
+    /// `crates/busbar/src/ingress/mod.rs` `affinity_header_for`).
+    #[must_use]
+    pub fn affinity_header(&self, pool: &str) -> &str {
+        self.affinity_headers
+            .get(pool)
+            .map_or(DEFAULT_AFFINITY_HEADER, String::as_str)
+    }
+
     /// READ THE TABLES from the settings object.
     ///
     /// # Errors
@@ -337,6 +369,7 @@ impl Shaping {
             section(settings, sections::MODELS)?.unwrap_or_default();
         let limits: Option<LimitsCfg> = section(settings, sections::LIMITS)?;
         let mut pools: BTreeMap<String, Vec<Member>> = BTreeMap::new();
+        let mut affinity_headers: BTreeMap<String, String> = BTreeMap::new();
         let mut context: HashMap<String, Option<usize>> = HashMap::new();
         if let Some(Value::Object(sec)) = settings.get(sections::POOLS) {
             for (name, pool) in sec {
@@ -366,6 +399,12 @@ impl Shaping {
                     members.push(m);
                 }
                 pools.insert(name.clone(), members);
+                if let Some(h) = pool
+                    .pointer("/affinity/header_name")
+                    .and_then(Value::as_str)
+                {
+                    affinity_headers.insert(name.clone(), h.to_string());
+                }
             }
         }
         let mut lanes = BTreeMap::new();
@@ -377,13 +416,17 @@ impl Shaping {
                 )
             })?;
             let asked = p.protocol.as_deref().unwrap_or(DEFAULT_PROTOCOL);
-            let dialect = DECLS
+            let decl = DECLS
                 .iter()
                 .find(|d| d.name == asked && d.codec.is_some())
-                .map(|d| d.name)
                 .ok_or_else(|| {
                     format!("provider '{}' uses unknown protocol '{asked}'", m.provider)
                 })?;
+            let dialect = decl.name;
+            let statics = match p.auth.as_deref() {
+                Some(AUTH_API_KEY | AUTH_JWT_BEARER | AUTH_OAUTH_CLIENT_CREDENTIALS) => &[][..],
+                _ => decl.static_headers,
+            };
             let wire = m.upstream_model.as_deref().unwrap_or(&name);
             let lane = Lane {
                 model: name.clone(),
@@ -400,6 +443,7 @@ impl Shaping {
                 prompt_caching: m.prompt_caching.unwrap_or(false),
                 caps: lane_caps(p, wire),
                 error_map: p.error_map.clone(),
+                statics,
             };
             lanes.insert(name, lane);
         }
@@ -422,6 +466,7 @@ impl Shaping {
         Ok(Shaping {
             lanes,
             pools,
+            affinity_headers,
             default_max_tokens: limits
                 .as_ref()
                 .and_then(|l| l.default_max_tokens)

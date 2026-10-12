@@ -608,12 +608,23 @@ fn legal_field_value(v: &[u8]) -> bool {
     v.iter().all(|b| *b == b'\t' || (0x20..0x7f).contains(b))
 }
 
+/// The `accept` field: busbar's own, the answer framing it reads the far end's reply in (the
+/// operation's single answer or its dialect's stream framing), written on every far request exactly
+/// as 1.5.5 wrote it (its reqwest client sent its own `accept` and never fell back to a transport
+/// default), and never replaced by a same-dialect caller's value (1.5.5's bytes: the oracle's
+/// same-dialect cells carry busbar's `application/json`, not the caller's `*/*`).
+const ACCEPT: &str = "accept";
+
 /// The head fields a native client of `lane`'s dialect sends,
 /// then, when the caller speaks that dialect, every field the caller sent but the ones busbar
 /// governs ([`governed`]):
 /// busbar is invisible to upstreams (OWNER HARD RULE 2026-10-02). The caller's value of a name
 /// replaces busbar's native default; the per-connection mechanics are the kernel's to drop as it
 /// writes the head. A translated route forwards no caller field: none maps between dialects.
+///
+/// `user-agent` (OWNER RULING Q10, LLM-UA): a translated route writes the far dialect's declared
+/// `egress_user_agent`. A same-dialect route carries the caller's own unchanged, and a caller that
+/// sent none gets the far dialect's declared fingerprint, as 1.5.5 sent.
 fn head_fields(
     lane: &Lane,
     handler: &dyn OperationHandler,
@@ -644,7 +655,7 @@ fn head_fields(
         d.egress_stream_accept
     });
     let accept = (
-        "accept".to_string(),
+        ACCEPT.to_string(),
         handler
             .egress_accept(stream_accept, wants_stream)
             .as_bytes()
@@ -662,7 +673,14 @@ fn head_fields(
     // A native client's user-agent, never a UA-less request (1.5.5's bytes); a same-dialect
     // caller's own replaces it below.
     let user_agent = ("user-agent".to_string(), user_agent.as_bytes().to_vec());
-    let mut fields = vec![content_type, user_agent, accept];
+    // The dialect's declared static fields first, as the previous release's credential map led
+    // with them (SD-3 (1)); a same-dialect caller's own value replaces one below.
+    let mut fields: Vec<(String, Vec<u8>)> = lane
+        .statics
+        .iter()
+        .map(|(n, v)| ((*n).to_string(), v.as_bytes().to_vec()))
+        .collect();
+    fields.extend([content_type, user_agent, accept]);
     if arrived.dialect != egress {
         fields.extend(tenant);
         return Ok(fields);
@@ -672,13 +690,48 @@ fn head_fields(
         .iter()
         .filter_map(|(name, value)| {
             let name = std::str::from_utf8(name).ok()?.to_ascii_lowercase();
-            (!governed(&name)).then(|| (name, value.to_vec()))
+            (!governed(&name) && name != ACCEPT).then(|| (name, value.to_vec()))
         })
         .collect();
-    fields.retain(|(own, _)| !forwarded.iter().any(|(name, _)| name == own));
-    fields.extend(forwarded);
+    fields = forward_over(fields, forwarded);
     fields.extend(tenant);
     Ok(fields)
+}
+
+/// The caller's forwarded fields laid over busbar's own as the previous release's header map laid
+/// them (an `http::HeaderMap`, which keeps one position per name, the position the name was first
+/// inserted at): a name busbar already writes keeps busbar's position and takes the caller's values;
+/// a name it does not is appended, in the caller's order; every value of a repeated name is kept,
+/// together at its name's position.
+fn forward_over(
+    own: Vec<(String, Vec<u8>)>,
+    forwarded: Vec<(String, Vec<u8>)>,
+) -> Vec<(String, Vec<u8>)> {
+    let mut named: Vec<(String, Vec<Vec<u8>>)> = Vec::new();
+    let put = |named: &mut Vec<(String, Vec<Vec<u8>>)>, name: String, value: Vec<u8>| match named
+        .iter_mut()
+        .find(|(n, _)| *n == name)
+    {
+        Some((_, values)) => values.push(value),
+        None => named.push((name, vec![value])),
+    };
+    for (name, value) in own {
+        put(&mut named, name, value);
+    }
+    let mut replaced: Vec<String> = Vec::new();
+    for (name, value) in forwarded {
+        if !replaced.contains(&name) {
+            if let Some((_, values)) = named.iter_mut().find(|(n, _)| *n == name) {
+                values.clear();
+            }
+            replaced.push(name.clone());
+        }
+        put(&mut named, name, value);
+    }
+    named
+        .into_iter()
+        .flat_map(|(name, values)| values.into_iter().map(move |v| (name.clone(), v)))
+        .collect()
 }
 
 /// BUILD ONE ATTEMPT'S FAR-END REQUEST for `member` of `pool`.
