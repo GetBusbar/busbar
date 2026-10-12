@@ -359,7 +359,8 @@ bridges! {
             }
             let into = std::slice::from_raw_parts_mut(buf, buf_cap);
             let waker = t.waker(conn, READ, token);
-            let n = polled(t.inner.poll_read(conn, &mut Context::from_waker(&waker), into))?;
+            // This lane carries no frame bit: the frame a read completes stays the carrier's.
+            let n = polled(t.inner.poll_read(conn, &mut Context::from_waker(&waker), into))?.len;
             if n > buf_cap {
                 return Err(WireOutcome::Fault);
             }
@@ -368,7 +369,8 @@ bridges! {
         fn poll_write(t; conn: u64, token: u64, buf: *const u8, len: usize,
             out_written: *mut usize) {
             let (offered, waker) = (bytes(buf, len)?, t.waker(conn, WRITE, token));
-            let n = polled(t.inner.poll_write(conn, &mut Context::from_waker(&waker), offered))?;
+            // This lane carries no frame bit: every offer is a stretch of an undelimited stream.
+            let n = polled(t.inner.poll_write(conn, &mut Context::from_waker(&waker), offered, false))?;
             set(out_written, n)
         }
         fn poll_flush(t; conn: u64, token: u64) {
