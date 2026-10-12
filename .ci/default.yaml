@@ -35,8 +35,25 @@ checks:
     baseline: target
     needs: [gates]
   test:
+    # As the hop's build:dlopen-cdylibs and test:workspace: the workspace's cdylibs and the four
+    # dropped-in plugins the tests dlopen, then one build and one nextest run.
     run: |
-      cargo build --locked $(cargo metadata --format-version 1 --no-deps | jq -r '.packages[] | select(any(.targets[]; .kind | index("cdylib"))) | "-p " + .name')
+      meta=$(cargo metadata --format-version 1 --locked)
+      cargo build --locked $(echo "$meta" | jq -r '.workspace_members as $m | .packages[] | select(.id as $i | $m | index($i)) | select(any(.targets[]; .kind | index("cdylib"))) | "-p " + .name')
+      plugin() {
+        man=$(echo "$meta" | jq -r --arg p "$1" 'first(.packages[] | select(.name == $p) | .manifest_path) // empty')
+        if [ -z "$man" ]; then [ "$3" = optional ] && return 0; echo "busbar resolves no $1"; return 1; fi
+        ws="$(dirname "$man")/Cargo.toml"
+        if [ "$3" = dropped-in ] && cargo metadata --format-version 1 --no-deps --manifest-path "$ws" | jq -e --arg p "$2" '.packages[] | select(.name == $p) | .features | has("dropped-in")' >/dev/null; then
+          cargo build --locked --manifest-path "$ws" -p "$2" --features dropped-in --target-dir "$PWD/target"
+        else
+          cargo build --locked --manifest-path "$ws" -p "$2" --target-dir "$PWD/target"
+        fi
+      }
+      plugin busbar-transport-tcp-plugin busbar-transport-tcp-plugin dropped-in
+      plugin busbar-transport-http busbar-transport-http-plugin dropped-in
+      plugin busbar-secret-env busbar-secret-env-plugin optional
+      plugin busbar-plane-decisions busbar-plane-decisions-plugin optional
       cargo build --workspace --locked
       cargo nextest run --workspace --locked --no-fail-fast
     scope: affected
