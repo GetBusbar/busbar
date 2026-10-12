@@ -70,7 +70,7 @@ pub(super) fn word(key: &str) -> &'static str {
 /// THE LINKED DOOR THAT SERVES THE `pools` MAP, found by what its Statement declares (the composition
 /// root names no plane): every linked plane door bound on a probe dispatcher of its own, the one
 /// whose declaring section is `pools` kept.
-fn pools_door() -> busbar_contract::abi::mechanism::door::DoorFn {
+pub(super) fn pools_door() -> busbar_contract::abi::mechanism::door::DoorFn {
     crate::LINKED
         .plane_doors
         .iter()
@@ -115,7 +115,7 @@ static CARD: std::sync::LazyLock<crate::root::kernel::RootHistory> =
 pub(super) const REWRITTEN: &str = "rewritten-by-the-global-rewrite-seat";
 
 /// The far end's answer: a chat completion in the door words' `dialect`.
-const ANSWER: &str = r#"{"id":"chatcmpl-1","object":"chat.completion","created":0,"model":"m0","choices":[{"index":0,"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}"#;
+pub(super) const ANSWER: &str = r#"{"id":"chatcmpl-1","object":"chat.completion","created":0,"model":"m0","choices":[{"index":0,"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}"#;
 
 /// One probe policy playing one seat: it appends its seat name to the shared log when it runs and
 /// (for the rewrite seat) samples the key's admission count at that instant.
@@ -461,6 +461,9 @@ pub(super) struct RigOpts<'a> {
     pub affinity_header: Option<&'a str>,
     /// Each member's lifetime request budget (`None`: unlimited).
     pub lane_budget: Option<i64>,
+    /// Every provider's `api_key`, a secret reference as written (YAML) (`None`: a credential file
+    /// of the rig's own, gone once the door composed).
+    pub api_key: Option<&'a str>,
 }
 
 /// THE POOLS DOOR, SERVED END TO END, as production composes it: the data router built with the
@@ -476,6 +479,11 @@ pub(super) struct DoorRig {
     pub book: Arc<std::sync::Mutex<crate::root::durability::Durability>>,
     /// The key's id.
     pub key_id: String,
+    /// The served door's generations, as a config apply refreshes them.
+    appliers: super::DoorAppliers,
+    /// A config apply of the same deployment onto the door ([`DoorAppliers::refresh_models`], as
+    /// the root's apply hook runs it), its secrets resolved anew.
+    reapply: Arc<dyn Fn() + Send + Sync>,
     log: Arc<Mutex<Vec<String>>>,
     request_tap: Arc<SeatProbe>,
     candidate_tap: Arc<SeatProbe>,
@@ -485,6 +493,22 @@ pub(super) struct DoorRig {
 }
 
 impl DoorRig {
+    /// Apply the deployment again, as an operator's config apply does: the door refreshes onto it,
+    /// or keeps the generation it serves.
+    pub fn apply(&self) {
+        (self.reapply)();
+    }
+
+    /// The generation the door serves.
+    pub fn generation(&self) -> u64 {
+        self.appliers
+            .0
+            .first()
+            .expect("one door")
+            .current()
+            .generation
+    }
+
     /// Each candidate the pool's ranking policy was last shown, one line each.
     pub fn gate_saw(&self) -> Vec<String> {
         self.gate_seat.candidates.lock().unwrap().clone()
@@ -592,6 +616,14 @@ impl DoorRig {
 /// on the process connector, over `opts`' far ends, its egress the model-serving walk over the
 /// kernel's lane cells, its hooks the kernel's stage with the four probed seats installed.
 pub(super) async fn rig(instance: &'static str, opts: RigOpts<'_>) -> DoorRig {
+    try_rig(instance, opts)
+        .await
+        .unwrap_or_else(|e| panic!("the door serving the pools map composes: {e}"))
+}
+
+/// [`rig`], the composition's refusal answered rather than panicked on: what the root's boot dies
+/// on.
+pub(super) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result<DoorRig, String> {
     // The registry rows that own the `pools:`/`models:` sections the deployment writes.
     node_plane::testkit::install_test_seams();
     busbar_kernel::snapshot::init();
@@ -638,12 +670,15 @@ pub(super) async fn rig(instance: &'static str, opts: RigOpts<'_>) -> DoorRig {
         "busbar-hook-seats-{}-{instance}",
         std::process::id()
     ));
-    std::fs::write(&key_file, "sk-seats").expect("the credential file");
+    let own_key = format!("{{ file: '{}' }}", key_file.display());
+    if opts.api_key.is_none() {
+        std::fs::write(&key_file, "sk-seats").expect("the credential file");
+    }
     let mut yaml = String::from("providers:\n");
     for (i, _) in opts.members.iter().enumerate() {
         yaml.push_str(&format!(
-            "  oai{i}:\n    api_key: {{ file: '{}' }}\n",
-            key_file.display()
+            "  oai{i}:\n    api_key: {}\n",
+            opts.api_key.unwrap_or(&own_key)
         ));
     }
     yaml.push_str("models:\n");
@@ -666,7 +701,7 @@ pub(super) async fn rig(instance: &'static str, opts: RigOpts<'_>) -> DoorRig {
             "    affinity:\n      mode: session\n      header_name: {header}\n"
         ));
     }
-    let deploy = busbar_kernel::config::deploy_from_yaml_str(&yaml).expect("a deployment");
+    let deploy = busbar_kernel::config::deploy_from_yaml_str(&yaml).map_err(|e| e.to_string())?;
     let mut defs_yaml = String::new();
     for (i, (port, _)) in opts.members.iter().enumerate() {
         defs_yaml.push_str(&format!(
@@ -676,7 +711,7 @@ pub(super) async fn rig(instance: &'static str, opts: RigOpts<'_>) -> DoorRig {
     }
     let defs: HashMap<String, busbar_kernel::config::ProviderDef> =
         serde_yaml::from_str(&defs_yaml).expect("the providers");
-    let cfg = busbar_kernel::config::resolve(&deploy, &defs).expect("resolves");
+    let cfg = busbar_kernel::config::resolve(&deploy, &defs).map_err(|e| e.join("; "))?;
     let providers = provider_routes(
         &cfg.providers,
         &busbar_kernel::config_validate::MetadataPosture::default(),
@@ -845,7 +880,7 @@ pub(super) async fn rig(instance: &'static str, opts: RigOpts<'_>) -> DoorRig {
         crate::root::loader::dispatch::ConnTable::NoNeeds,
     ));
     let models = crate::root::model_egress::ModelServing {
-        pools: model_pools,
+        pools: model_pools.clone(),
         lanes: (0..opts.members.len())
             .map(|i| (format!("m{i}"), i))
             .collect(),
@@ -857,7 +892,7 @@ pub(super) async fn rig(instance: &'static str, opts: RigOpts<'_>) -> DoorRig {
     let reach = DoorReach {
         providers: &providers,
         secrets: &secrets,
-        auths,
+        auths: Arc::clone(&auths),
         conns: Arc::clone(&connector) as Arc<dyn PollConns>,
         stream_ceiling_secs: opts.stream_ceiling_secs.unwrap_or(600),
         models: Some(&models),
@@ -871,7 +906,7 @@ pub(super) async fn rig(instance: &'static str, opts: RigOpts<'_>) -> DoorRig {
         gov: Arc::clone(&gov),
     };
     let sections: BTreeMap<&'static str, serde_yaml::Value> = sections;
-    let mut served = compose_planes(
+    let served = compose_planes(
         &[(instance.to_string(), plane)],
         &dispatcher,
         &composed_services(),
@@ -883,10 +918,47 @@ pub(super) async fn rig(instance: &'static str, opts: RigOpts<'_>) -> DoorRig {
             journal: Arc::clone(&post) as Arc<dyn busbar_kernel_egress::ports::Journal>,
         }),
         Some(&stage),
-    )
-    .expect("the door serving the pools map composes");
+    );
     let _ = std::fs::remove_file(&key_file);
+    let mut served = served?;
     served.post = Some(Arc::clone(&post));
+    let appliers = served.appliers();
+    // THE APPLY, as the root's apply hook runs it: the same deployment's sections, the pools and
+    // lanes, the door's egress resealed over the providers with their secrets resolved anew.
+    let reapply: Arc<dyn Fn() + Send + Sync> = {
+        let (appliers, app, post) = (appliers.clone(), Arc::clone(&app), Arc::clone(&post));
+        let (connector, auths) = (Arc::clone(&connector), Arc::clone(&auths));
+        let lanes = opts.members.len();
+        let stream_ceiling_secs = opts.stream_ceiling_secs.unwrap_or(600);
+        let (sections, providers) = (sections.clone(), providers.clone());
+        Arc::new(move || {
+            let secrets = busbar_kernel::config::secret::SecretResolver::builtins_only();
+            let models = crate::root::model_egress::ModelServing {
+                pools: model_pools.clone(),
+                lanes: (0..lanes).map(|i| (format!("m{i}"), i)).collect(),
+                app: {
+                    let app = Arc::clone(&app);
+                    Arc::new(move || Arc::clone(&app))
+                },
+            };
+            let reach = DoorReach {
+                providers: &providers,
+                secrets: &secrets,
+                auths: Arc::clone(&auths),
+                conns: Arc::clone(&connector) as Arc<dyn PollConns>,
+                stream_ceiling_secs,
+                models: Some(&models),
+                upgrades: Vec::new(),
+            };
+            appliers.refresh_models(
+                &sections,
+                &DoorEgress {
+                    reach: &reach,
+                    journal: Arc::clone(&post) as Arc<dyn busbar_kernel_egress::ports::Journal>,
+                },
+            );
+        })
+    };
     let doors = door_routes(
         served,
         || CARD.pin(),
@@ -896,19 +968,21 @@ pub(super) async fn rig(instance: &'static str, opts: RigOpts<'_>) -> DoorRig {
     .expect("its claims mount");
     let (router, _admin, _handle) =
         busbar_kernel::build_split_routers_serving(Arc::clone(&app), doors, 1 << 20, 0, false);
-    DoorRig {
+    Ok(DoorRig {
         router,
         token: token.expose_secret().to_string(),
         app,
         book: Arc::clone(&book.durability),
         key_id: key.id.to_string(),
+        appliers,
+        reapply,
         log,
         request_tap,
         candidate_tap,
         gate_seat: ranker,
         read,
         tokens,
-    }
+    })
 }
 
 /// ONE KEYED REQUEST through the pools door with the four probed seats installed, a rejecting gate
