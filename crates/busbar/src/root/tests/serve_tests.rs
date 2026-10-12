@@ -595,9 +595,8 @@ async fn a_door_claiming_one_path_over_two_carriers_mounts_it_once() {
 /// route to the top-level catalog model its section's `session.model` names, the provider's own
 /// credential presented by the auth plugin, the caller's spend posted against the key that
 /// presented it. The door is found among the linked plane doors by the audio class it meters; the
-/// module is compiled where the build links the door that declares `streams`
-/// (`linked_section_streams`), and there a door not found is a failure, never a skip. The
-/// secret-source scan (`secret_source.rs`) drives the same door.
+/// module is compiled where the build links that door, and there a door not found is a failure,
+/// never a skip. The secret-source scan (`secret_source.rs`) drives the same door.
 #[cfg(linked_section_streams)]
 pub(super) mod session_door {
     use std::collections::BTreeMap;
