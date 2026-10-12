@@ -357,14 +357,58 @@ pub fn scan(cx: &Ctx, a: &Addresses, corpus: Option<&Corpus>, t: &Tables, f: &mu
     }
 }
 
-pub fn rows(f: &Findings) -> Vec<Row> {
-    vec![
-        row(
+/// THE UNLEDGERED ROW'S ARMED COUNT (Law 9: armed at today's number; ARCHITECT ruling on #787).
+/// Deleting the a2a engine (#787) moved pre-existing door code into its plane's home,
+/// `busbar-plane-a2a`, where this scan sees it for the first time: 22 findings became 94, and none
+/// of the 72 new pairs is new code. A row per duplicate stays refused (it would be evasion), so the
+/// row holds the COUNT: above it is a new plane-local copy, below it is a drain that did not give its
+/// number back. DRAIN: the shared door scaffolding moves to busbar-plugin-sdk (planes never depend
+/// on each other, Law 0), the duplicates that encode a security or money property first (DoD item
+/// 5); lower this count in the commit that drains each one.
+pub const UNLEDGERED_ARMED: usize = 94;
+
+/// [`ROW_UNLEDGERED`], judged against [`UNLEDGERED_ARMED`]. A tree with none is clean.
+fn unledgered_row(unledgered: &[String]) -> Row {
+    let n = unledgered.len();
+    if n == 0 {
+        return Row::pass(
             ROW_UNLEDGERED,
             "no name is declared in two planes without a signed claim about why",
-            "a shared concern grew a second, plane-local implementation",
-            &f.unledgered,
-        ),
+            super::CLEAN,
+        );
+    }
+    if n == UNLEDGERED_ARMED {
+        return Row::pass(
+            ROW_UNLEDGERED,
+            "the plane-local duplicates are the armed count and no more",
+            format!(
+                "{n} finding(s), armed at {UNLEDGERED_ARMED} (a2a engine deletion (#787) moved \
+                 pre-existing door code into busbar-plane-a2a; drain: shared door scaffolding to \
+                 busbar-plugin-sdk): {}",
+                unledgered.join(" | ")
+            ),
+        );
+    }
+    let why = if n > UNLEDGERED_ARMED {
+        format!(
+            "{n} finding(s) against an armed count of {UNLEDGERED_ARMED}: a new plane-local copy"
+        )
+    } else {
+        format!(
+            "{n} finding(s) under an armed count of {UNLEDGERED_ARMED}: lower UNLEDGERED_ARMED to \
+             {n} in the commit that drained it (Law 9: the count ratchets down)"
+        )
+    };
+    Row::fail(
+        ROW_UNLEDGERED,
+        "a shared concern grew a second, plane-local implementation",
+        format!("{why}: {}", unledgered.join(" | ")),
+    )
+}
+
+pub fn rows(f: &Findings) -> Vec<Row> {
+    vec![
+        unledgered_row(&f.unledgered),
         row(
             ROW_LEDGER_INTEGRITY,
             "every ledger row is a complete, single, well-classed claim",

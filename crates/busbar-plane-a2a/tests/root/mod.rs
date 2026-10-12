@@ -6095,6 +6095,12 @@ async fn a_grpc_callers_send_message_is_answered_ok_with_its_status_in_the_trail
     let trailers = collected.trailers().cloned();
     let bytes = collected.to_bytes();
     assert_eq!(parts.status, StatusCode::OK, "{:?} {bytes:?}", parts.headers);
+    assert_eq!(
+        parts.headers.get("content-type").and_then(|v| v.to_str().ok()),
+        Some("application/grpc"),
+        "the head states the gRPC media type, as predev's gRPC line did: {:?}",
+        parts.headers
+    );
     let trailers = trailers.expect("the call closes in its trailers");
     assert_eq!(
         trailers.get("grpc-status").and_then(|v| v.to_str().ok()),
@@ -6156,6 +6162,74 @@ async fn a_grpc_call_naming_a_version_this_endpoint_does_not_speak_is_unimplemen
     );
     assert!(bytes.is_empty(), "no message: {bytes:?}");
     assert!(!agent.relayed(), "a refused call dials no agent");
+}
+
+/// A gRPC CALL THAT ENDS IN AN ERROR BEFORE ANY MESSAGE CLOSES TRAILERS-ONLY, in predev's bytes:
+/// `GetTask` naming a task its agent refuses (`TaskNotFoundError`) is answered as predev's gRPC line
+/// (tonic) answered it, ONE header block — `:status: 200`, `content-type: application/grpc`, then
+/// `grpc-status: 5` (`NOT_FOUND`), its `grpc-message` and its `grpc-status-details-bin` — no body and
+/// no trailers. Recorded off predev's subject on M3 (#778's head beabb16758, `GetTask` with id
+/// `no-such-task`): `HTTP/2 200`, `content-type: application/grpc`, `grpc-status: 5`,
+/// `grpc-message: the%20backend%20agent%20refused%20this%20task`, `grpc-status-details-bin: …`,
+/// `content-length: 0`, in one block. RED before the fix: the head went out alone (with no media
+/// type) and the status followed in a trailer block.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_grpc_call_refused_before_any_message_closes_trailers_only_as_predev() {
+    use busbar_plane_a2a::framed::{request_message, Rpc};
+    use http_body_util::BodyExt as _;
+    use tower::ServiceExt as _;
+    let _one = PUBLISHING.lock().await;
+    let instance = "serve-agent-door-grpc-trailers-only";
+    let _published = Published(instance);
+    // The agent refuses the task in A2A's own words (`TaskNotFoundError`), which the caller's
+    // answer carries as its status.
+    let agent = Agent::start(
+        200,
+        r#"{"jsonrpc":"2.0","id":1,"error":{"code":-32001,"message":"no task"}}"#,
+    )
+    .await;
+    let s = served(instance, &agent.entry("planner", "1h"), false, None);
+    approve(&s, "planner").await;
+    let message = request_message(Rpc::GetTask, &serde_json::json!({ "id": "no-such-task" }))
+        .expect("a GetTaskRequest");
+    let mut body = vec![0u8];
+    body.extend_from_slice(&u32::try_from(message.len()).expect("small").to_be_bytes());
+    body.extend_from_slice(&message);
+    let req = axum::http::Request::builder()
+        .method("POST")
+        .uri(format!("{}/GetTask", surface("grpc_service")))
+        .header("content-type", "application/grpc")
+        .header("te", "trailers")
+        .header("authorization", format!("Bearer {}", s.token))
+        .body(axum::body::Body::from(body))
+        .expect("a request");
+    let response = s.router.clone().oneshot(req).await.expect("the router answers");
+    let (parts, body) = response.into_parts();
+    let collected = body.collect().await.expect("the answer");
+    let trailers = collected.trailers().cloned();
+    let bytes = collected.to_bytes();
+    assert_eq!(parts.status, StatusCode::OK, "{:?} {bytes:?}", parts.headers);
+    let head: Vec<(String, String)> = parts
+        .headers
+        .iter()
+        .filter(|(n, _)| n.as_str() != "date")
+        .map(|(n, v)| (n.to_string(), v.to_str().unwrap_or_default().to_string()))
+        .collect();
+    let names: Vec<&str> = head.iter().map(|(n, _)| n.as_str()).collect();
+    assert_eq!(
+        &names[..4],
+        &[
+            "content-type",
+            "grpc-status",
+            "grpc-message",
+            "grpc-status-details-bin"
+        ],
+        "ONE header block, in predev's order: {head:?}"
+    );
+    assert_eq!(head[0].1, "application/grpc", "{head:?}");
+    assert_eq!(head[1].1, "5", "NOT_FOUND: {head:?}");
+    assert!(bytes.is_empty(), "no message: {bytes:?}");
+    assert!(trailers.is_none(), "trailers-only, no trailer block: {trailers:?}");
 }
 
 /// MONEY (this cell touches money: it reads the units' lines on the node's book). A RELAYED

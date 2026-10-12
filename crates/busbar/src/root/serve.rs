@@ -17,7 +17,7 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use axum::body::{Body, Bytes};
-use axum::http::{HeaderName, HeaderValue, StatusCode};
+use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
 use axum::response::Response;
 use busbar_contract::abi::mechanism::call::{AbiStr, Blob, Outcome as AbiOutcome, BLOB_JSON};
 use busbar_contract::abi::mechanism::lifecycle::{OpenIn, OpenOut};
@@ -3238,8 +3238,8 @@ impl IngressReply {
     ) -> Response {
         let IngressReply {
             mut head,
-            body,
-            trailers,
+            mut body,
+            mut trailers,
         } = self;
         let first = tokio::select! {
             biased;
@@ -3257,7 +3257,13 @@ impl IngressReply {
             }
             // A STREAMED ANSWER: the unit runs on, on its own task, once its head is stated
             // (ARCHITECT ruling 2026-10-07, STREAM-CEILING); the body only drains what it writes.
+            // A stream already closed before its first body byte goes out whole instead, the unit
+            // run to its end.
             Ok(Some(h)) => {
+                if let Some(block) = closed_before_body(&body, trailers.as_mut()) {
+                    let _ = unit.await;
+                    return closed_whole(h, block);
+                }
                 let running = Running(tokio::spawn(unit));
                 return stated(h, Body::new(ReplyBody(body, Some(running), trailers)));
             }
@@ -3273,7 +3279,12 @@ impl IngressReply {
                     }
                     return stated(unlengthed(h), Body::from(whole));
                 }
-                Ok(h) => return stated(h, Body::new(ReplyBody(body, None, trailers))),
+                Ok(h) => {
+                    if let Some(block) = closed_before_body(&body, trailers.as_mut()) {
+                        return closed_whole(h, block);
+                    }
+                    return stated(h, Body::new(ReplyBody(body, None, trailers)));
+                }
                 Err(_) => rendered,
             },
         };
@@ -3288,6 +3299,31 @@ type UnitCaller = (
     Option<Arc<busbar_contract::records::VirtualKey>>,
     Option<busbar_contract::redacted::Redacted<Vec<u8>>>,
 );
+
+/// A FRAMED STREAM THAT CLOSED BEFORE ITS FIRST BODY BYTE (ARCHITECT ruling on #787): its close is
+/// already rendered and nothing of its body was written. The closing block, taken; `None` when the
+/// body holds bytes or the stream is still open.
+///
+/// The probe takes the trailers only when they are ready (`try_recv` leaves an open stream's where
+/// it is), and a body with bytes is never asked for its close.
+fn closed_before_body(
+    body: &mpsc::Receiver<Bytes>,
+    trailers: Option<&mut oneshot::Receiver<HeaderMap>>,
+) -> Option<HeaderMap> {
+    if !body.is_empty() {
+        return None;
+    }
+    trailers?.try_recv().ok()
+}
+
+/// [`closed_before_body`]'s answer, WHOLE: the head and the closing block as ONE header block and no
+/// body, as the previous release closed a call that ended before its first message (the line's
+/// trailers-only answer). The host renders none of the claim's wire: the block is the framer's.
+fn closed_whole(h: Head, block: HeaderMap) -> Response {
+    let mut response = stated(h, Body::empty());
+    response.headers_mut().extend(block);
+    response
+}
 
 /// Whether a reply head is a WHOLE answer's: it states its length and is no event stream (SSE, or
 /// the AWS event-stream framing, which the previous release relayed piece by piece).

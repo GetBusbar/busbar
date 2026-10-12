@@ -590,6 +590,49 @@ fn placement_variant(lines: &[&str], at: usize) -> bool {
 
 /// THE FIVE AXES, MEASURED over every `Family::Neutral` crate.
 pub fn measure(crates: &[CrateInfo], files: &[(String, String)], vocab: &Vocab) -> Instances {
+    measure_reserved(crates, files, vocab, &[]).0
+}
+
+/// Whether line `at` (0-based) of `lines`, a file at `rel`, is the line a `[[shape-word]]` row's
+/// `holder` names: in a `.rs` file the line declaring `const <holder>:`; in a `.json` file a line
+/// inside the object keyed `"<holder>"` (the nearest enclosing `"<key>": {` at a lower indent).
+fn holds(rel: &str, lines: &[&str], at: usize, holder: &str) -> bool {
+    let Some(line) = lines.get(at) else {
+        return false;
+    };
+    if rel.ends_with(".rs") {
+        return line.contains(&format!("const {holder}:"));
+    }
+    if !rel.ends_with(".json") {
+        return false;
+    }
+    let indent = |l: &str| l.len() - l.trim_start().len();
+    let mut depth = indent(line);
+    for l in lines[..at].iter().rev() {
+        if l.trim().is_empty() || indent(l) >= depth {
+            continue;
+        }
+        depth = indent(l);
+        let t = l.trim();
+        if t.ends_with('{') {
+            return t.trim_end_matches('{').trim().trim_end_matches(':').trim()
+                == format!("\"{holder}\"");
+        }
+    }
+    false
+}
+
+/// [`measure`], with the `[[shape-word]]` rows' NAMED RESERVATIONS (ARCHITECT ruling on #787):
+/// each row reserves exactly one literal hit, its word in its file on the line its holder names,
+/// and nothing else. Also answers a finding per row that reserved nothing: a reservation over no
+/// spelling is a dead allowance.
+pub fn measure_reserved(
+    crates: &[CrateInfo],
+    files: &[(String, String)],
+    vocab: &Vocab,
+    shapes: &[super::super::ShapeWord],
+) -> (Instances, Vec<String>) {
+    let mut spent: BTreeSet<usize> = BTreeSet::new();
     let by_dir: BTreeMap<&str, &CrateInfo> = crates
         .iter()
         .filter(|c| c.family == Family::Neutral)
@@ -617,6 +660,17 @@ pub fn measure(crates: &[CrateInfo], files: &[(String, String)], vocab: &Vocab) 
             continue;
         };
         let lits = file_literals(rel, text);
+        let reserving: Vec<usize> = shapes
+            .iter()
+            .enumerate()
+            .filter(|(_, row)| row.file == *rel)
+            .map(|(i, _)| i)
+            .collect();
+        let all_lines: Vec<&str> = if reserving.is_empty() {
+            Vec::new()
+        } else {
+            text.lines().collect()
+        };
         let collides = |l: &String| COLLIDING_LITERALS.contains(&l.as_str());
         let lines: Vec<&str> = if lits.iter().any(|(_, l)| collides(l)) {
             text.lines().collect()
@@ -629,6 +683,16 @@ pub fn measure(crates: &[CrateInfo], files: &[(String, String)], vocab: &Vocab) 
             let Some(kinds) = lookup.get(lit) else {
                 continue;
             };
+            // A NAMED SHAPE RESERVATION takes this one hit, and only it.
+            let reserved = reserving.iter().copied().find(|i| {
+                !spent.contains(i)
+                    && shapes[*i].word == *lit
+                    && holds(rel, &all_lines, line - 1, &shapes[*i].holder)
+            });
+            if let Some(i) = reserved {
+                spent.insert(i);
+                continue;
+            }
             if let Some(w) = COLLIDING_LITERALS.iter().find(|w| **w == lit.as_str()) {
                 let left = words_left
                     .entry((*line, *w))
@@ -649,7 +713,20 @@ pub fn measure(crates: &[CrateInfo], files: &[(String, String)], vocab: &Vocab) 
             }
         }
     }
-    out
+    let stale = shapes
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| !spent.contains(i))
+        .map(|(_, row)| {
+            format!(
+                "shape-word-unused\t{} in {} at {}\tthe `[[shape-word]]` row ({}) reserves a \
+                 spelling that is not there. A reservation over nothing is a dead allowance: strike \
+                 the row",
+                row.word, row.file, row.holder, row.cite
+            )
+        })
+        .collect();
+    (out, stale)
 }
 
 /// The files a cell's number is made of, heaviest first.
@@ -1104,6 +1181,57 @@ pub fn selftest<'a>(
             &super::fixture_subject("auth"),
             "planted_header_pick.rs",
         ],
+    ));
+
+    // A NAMED SHAPE RESERVATION (ARCHITECT ruling on #787). A `[[shape-word]]` row reserves ONE
+    // spelling of a word that is a shape (the 1.5.5 placement key `header`): the constant its
+    // holder names, in the file it names. GREEN with the row; the same row beside a second spelling
+    // of the word in that file is RED (the reservation is never word-wide); a row whose holder
+    // spells nothing is RED as a dead allowance.
+    let ledger = cx.read(super::LEDGER).unwrap_or_default();
+    let shape_file = format!("{FIXTURE_DIR}/src/planted_shape.rs");
+    let reserved = |source: &str, holder: &str| {
+        let mut ov = super::fixture_files(&[("planted_shape.rs", source)]);
+        ov.set(
+            super::LEDGER,
+            format!(
+                "{}\n\n[[shape-word]]\nword = \"header\"\nfile = \"{shape_file}\"\nholder = \
+                 \"{holder}\"\ncite = \"BUSBAR-1.6.0.md:2284\"\n",
+                ledger.trim_end()
+            ),
+        );
+        ov
+    };
+    let shape = "pub const PLANTED_PLACEMENT_KEY: &str = \"header\";\n";
+    report.push(prove_rows_green(
+        cx,
+        gate,
+        "a `[[shape-word]]` row reserves the one constant it names",
+        &[ROW_MATRIX],
+        reserved(shape, "PLANTED_PLACEMENT_KEY"),
+    ));
+    report.push(prove_rows_red(
+        cx,
+        gate,
+        "a second spelling of a reserved word in the same file still counts",
+        &[ROW_MATRIX],
+        reserved(
+            &format!("{shape}pub fn pick(module: &str) -> bool {{\n    module == \"header\"\n}}\n"),
+            "PLANTED_PLACEMENT_KEY",
+        ),
+        &[
+            "unlisted-instance",
+            &super::fixture_subject("auth"),
+            "planted_shape.rs",
+        ],
+    ));
+    report.push(prove_rows_red(
+        cx,
+        gate,
+        "a `[[shape-word]]` row whose holder spells nothing is a dead allowance",
+        &[ROW_MATRIX],
+        reserved(shape, "NO_SUCH_CONSTANT"),
+        &["shape-word-unused", "NO_SUCH_CONSTANT"],
     ));
 
     // A CRATE IS NEVER MEASURED AGAINST ITS OWN NAME — the store instance writing its own id is

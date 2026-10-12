@@ -31,16 +31,19 @@ use crate::ctx::{Ctx, Overlay, SourceFile, WalkSpec};
 /// then left standing while the tree grew, so 241 files could vanish with every row green). It was
 /// first pinned at 948 on predev 5e672d125d; the egress-auth consolidation then removed 11 files
 /// and added 4, and a floor above the count leaves every gate's floor row red on a clean tree. It
-/// was re-pinned from 941 to 942 when predev grew by one file, which the selftest plant caught,
-/// and back to 941 when #648 (q128-kernel-ledger) deleted `busbar-kernel-ledger/src/usage/series.rs`
-/// — the one non-test file that merge removed, a reviewed removal and not a scan that went blind.
-/// It was re-pinned from 941 to 937, across 23 crates, when FLIP-A2A deleted the `busbar-a2a` crate
-/// and folded its engine into the plane's door crate (`busbar-plane-a2a`): a reviewed deletion of
-/// a whole crate, not a scan that went blind. A drop below 937 is refused until a reviewed diff
-/// re-measures. The selftest plant
-/// ([`one_file_short`]) cuts the live population to `FLOOR - 1` whatever its size, so predev
-/// growing a file no longer forces a re-pin for the plant's sake. Lowering the floor is how a gate
-/// stops reading the repository without saying so, so a diff that lowers it is the diff to refuse.
+/// was re-pinned from 941 to 942 when predev grew by one file, which the selftest plant caught, and
+/// back to 941 when #648 (q128-kernel-ledger) deleted `busbar-kernel-ledger/src/usage/series.rs` —
+/// the one non-test file that merge removed, a reviewed removal and not a scan that went blind. It
+/// was re-pinned from 941 to 937, across 23 crates, by FLIP-A2A (#787), which deleted the
+/// `busbar-a2a` crate (the retired engine, 39 non-test source files of its 97), and in
+/// `busbar-plane-a2a` the in-process `Plane` impl the engine served (`src/plane.rs`) and the
+/// anomaly breaker predev never wired (`src/a2a/anomaly.rs`): 947 measured at #778's head, 937
+/// after, the door crate's fold having added 30 non-test files. Every file that left is deleted
+/// legacy, no scan that went blind and no check that was lost. A drop below 937 is refused until a
+/// reviewed diff re-measures. The selftest plant ([`one_file_short`]) cuts the live population to
+/// `FLOOR - 1` whatever its size, so predev growing a file no longer forces a re-pin for the
+/// plant's sake. Lowering the floor is how a gate stops reading the repository without saying so,
+/// so a diff that lowers it is the diff to refuse.
 pub const FLOOR: usize = 937;
 
 /// The `.rs` under `crates/` that are not test scaffolding, plus the accounting to refuse a

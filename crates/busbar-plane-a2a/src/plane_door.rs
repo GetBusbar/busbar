@@ -306,7 +306,7 @@ enum Head {
     Reply(u32, &'static str),
     /// The caller's reply in events: `200`, an event stream nothing may cache.
     Events,
-    /// The caller's reply on the gRPC line: the listener's `200`, no media type and no length. The
+    /// The caller's reply on the gRPC line: the listener's `200` and the line's media type, no length. The
     /// call's status is its final status ([`Outbox::final_status`], `OK` when none is stated),
     /// which the stream's framer renders on its close (SEAM-4l).
     Framed,
@@ -2261,11 +2261,15 @@ fn piece(
             head_fields(&EVENTS_HEAD.map(|(name, value)| (name, value.to_string())));
             status = relay::STATUS_OK;
         }
-        // The gRPC line's head is the listener's `200` with no media type and no length: the
-        // stream's framer frames its messages and renders the call's status on its close, from
+        // The gRPC line's head is the listener's `200` and the line's media type, with no length:
+        // the stream's framer frames its messages and renders the call's status on its close, from
         // the final status this answer or the stream's last one states (SEAM-4l: the unit states
         // its head, the framer its close).
         Some(Head::Framed) => {
+            head_fields(&[(
+                relay::H_CONTENT_TYPE,
+                crate::framed::REPLY_CONTENT_TYPE.to_string(),
+            )]);
             status = relay::STATUS_OK;
         }
         None => {}

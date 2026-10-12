@@ -711,6 +711,11 @@ fn narrowed_to_the_proto(mut card: Value) -> Value {
 /// The `content-type` a dialled call carries, and the `accept` it declares (the engine's).
 pub const DIAL_CONTENT_TYPE: &str = "application/grpc+proto";
 
+/// The media type the gRPC line's answers carry, as the previous release's gRPC line (tonic)
+/// stated it on every answer's head: an answer's messages under it, and an answer that closes
+/// before its first message (trailers-only) beside its status.
+pub const REPLY_CONTENT_TYPE: &str = "application/grpc";
+
 /// The length prefix every message on the wire carries: one compression flag byte and a four-byte
 /// big-endian length.
 pub const MESSAGE_PREFIX: usize = 5;

@@ -73,9 +73,15 @@ const HOOK_FIELDS: &[(&str, fn(&PlaneDecl) -> bool)] = &[
 const MIN_HOOK_FIELDS: usize = 15;
 
 /// Floor on the allowlist: an empty allowlist against a decl set that HAS asymmetries could only be a
-/// file that was gutted. Re-armed at today's measured count (Law 9) when FLIP-A2A left two planes on
-/// the installed axis (llm, streaming): the mcp and a2a planes are door-only and install no
-/// PlaneDecl, so the asymmetries among the installed decls are the four the allowlist states.
+/// file that was gutted. Re-armed at today's measured count (Law 9) by FLIP-A2A (#787), which
+/// deleted the retired agent engine and with it its plane's installed PlaneDecl (that plane is
+/// door-only now and installs none). That decl was the one installed decl stating `admin_routes`,
+/// `openapi`, `config_validate`, `registry_contains`, `reresolve_gates`, `retain_verify_gates`,
+/// `card_signing_domain` and `card_kid_prefix` (eight hooks, a row each against the two other
+/// installed planes) and the one without `build_runtime` (a row against itself): those 17 rows left
+/// with the decl they described, 21 measured at #778's head, 4 after. The four left are the hooks
+/// one installed plane states and the other does not (`routes`, `hydrate`, `start`,
+/// `default_section`), each still judged.
 const MIN_ASYMMETRIES: usize = 4;
 
 /// The doctrine map: each INSTALLED plane crate key → the directional ledger column(s) it answers to

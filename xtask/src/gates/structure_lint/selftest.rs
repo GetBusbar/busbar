@@ -277,8 +277,9 @@ pub fn run<'a>(gate: &'a StructureLintGate, cx: &'a Ctx) -> Report<'a> {
 
     // A plane whose grammar left its `mod.rs` is a plane nothing can locate — and every rule that
     // names it would then scan zero files, which is the passing answer to a ban. Planted against
-    // a2a: mcp is a DOOR-ONLY plane since P3 DEL-MCP (ARCHITECT 2026-10-05) and declares no grammar.
-    match plane_grammar_file(cx, "a2a") {
+    // the voice plane: mcp and a2a are DOOR-ONLY planes since P3 DEL-MCP (ARCHITECT 2026-10-05) and
+    // FLIP-A2A (#787) and declare no grammar.
+    match plane_grammar_file(cx, "busbar-voice") {
         Some((rel, text)) => {
             let mut ov = Overlay::new();
             ov.set(
@@ -291,11 +292,11 @@ pub fn run<'a>(gate: &'a StructureLintGate, cx: &'a Ctx) -> Report<'a> {
                 "a plane whose declaration moved is refused, not silently unscanned",
                 &[roots::ROW_PLANE_ROOTS],
                 ov,
-                &["PLANE-ROOT-MISSING", "a2a"],
+                &["PLANE-ROOT-MISSING", "voice"],
             ));
         }
         None => report.note_infra_failure(
-            "structure-lint selftest: no file declares the a2a plane's grammar, so the plane-root \
+            "structure-lint selftest: no file declares the voice plane's grammar, so the plane-root \
              rule has nothing to plant against",
         ),
     }

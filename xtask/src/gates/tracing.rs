@@ -45,14 +45,16 @@ const SCAN_ROOT: &str = "crates";
 const EXCLUDE_TESTS_DIR: &str = "/tests/";
 
 /// The denominator floor, pinned AT the measured count: the crates walk reads 967 files after
-/// FLIP-A2A deleted the `busbar-a2a` crate and folded its engine into the plane's door crate
-/// (971 on a branch merged with predev bd39476618, after busbar-kernel-ledger's usage/series.rs
-/// left; 972 on predev 3bc48823df; 971 on predev 39374ec00e; 980 on 5e672d125d, before the egress_auth /
-/// auth_cache / ingress_sigv4 files left the kernel crates; it was 130 against a tree that had
-/// grown past 700). A drop below 967 is refused until a reviewed diff re-measures;
-/// the selftest plant cuts the walk to one file under the floor (see [`floor_plant`]), so the
-/// tree growing past it needs no re-pin. It is a `const` here and has no environment override:
-/// the only way to lower one is a reviewable source edit.
+/// FLIP-A2A (#787) deleted the `busbar-a2a` crate (the retired engine, 39 non-test source files of
+/// its 97), and in `busbar-plane-a2a` the in-process `Plane` impl the engine served
+/// (`src/plane.rs`) and the anomaly breaker predev never wired (`src/a2a/anomaly.rs`) (977 at
+/// #778's head; the door crate's fold added 30) (971 on a branch merged with predev bd39476618,
+/// after busbar-kernel-ledger's usage/series.rs left; 972 on predev 3bc48823df; 971 on predev
+/// 39374ec00e; 980 on 5e672d125d, before the egress_auth / auth_cache / ingress_sigv4 files left
+/// the kernel crates; it was 130 against a tree that had grown past 700). A drop below 967 is
+/// refused until a reviewed diff re-measures; the selftest plant cuts the walk to one file under
+/// the floor (see [`floor_plant`]), so the tree growing past it needs no re-pin. It is a `const`
+/// here and has no environment override: the only way to lower one is a reviewable source edit.
 const SCAN_FLOOR: usize = 967;
 
 /// THE SUBJECT FLOOR (item 228). The file floor above proves the walk opened the crates; it says

@@ -223,7 +223,10 @@ pub const REPORT_ONLY: &[Posture] = &[
     },
     Posture {
         name: "structure-lint",
-        why: "RED ON TWO NAMED ROWS (axis:purity, plane-dup:unledgered), AND THEY ARE TRUE FINDINGS. be9c473f5 derived the plane set, \
+        why: "NO STANDING RED LEFT. Both named rows drained: `axis:purity` went green, and \
+              `plane-dup:unledgered` is ARMED at its measured count (`plane_dups::UNLEDGERED_ARMED`, \
+              Law 9; ARCHITECT ruling on #787), green at it, red above it (a new plane-local copy) \
+              and below it (a drain that did not lower the count). The history: be9c473f5 derived the plane set, \
               the protocol crates and the tree-wide scope from the tree instead of from lists that \
               had gone stale, and the lint then saw what it had been blind to: \
               `plane-dup:unledgered` (24 plane-local reimplementations of a shared concern), \
@@ -412,7 +415,9 @@ pub const STRUCTURE_LINT_STANDING_REDS: &[&str] = &[
     // and collapse each second spelling. Strike each line in the commit that turns its row green.
     // `structure-lint:axis:purity` STRUCK 2026-10-02 (GATE-GREEN, ee06655df0): the contract asks no
     // claim its transport and the ABI handshake has one home, so the row is green.
-    "structure-lint:plane-dup:unledgered",
+    // `structure-lint:plane-dup:unledgered` STRUCK at #787 (ARCHITECT ruling): the a2a engine's
+    // deletion moved pre-existing door code into busbar-plane-a2a, and the row is ARMED at the
+    // measured count (`plane_dups::UNLEDGERED_ARMED`, Law 9), green at it and red above or below.
 ];
 
 /// One entry of [`REPORT_ONLY`].

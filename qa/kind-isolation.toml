@@ -1325,6 +1325,29 @@ kind = "secret"
 name = "none"
 cite = "BUSBAR-1.6.0.md:175 — THE DESIGN, the kernel: `literal` and `none` are core secret grammar"
 
+# [[shape-word]] — NAMED RESERVATIONS of a word that is a SHAPE, not a plugin instance (ARCHITECT
+# ruling on #787). One row reserves ONE spelling: its `word`, in its `file`, on the line its `holder`
+# names (a `.rs` file: the line declaring `const <holder>:`; a `.json` file: a line inside the object
+# keyed `"<holder>"`). Never word-wide (ARCHITECT 2026-09-26: named reservations, never a word-wide
+# excuse): a second spelling of the word, in the same file or any other, still counts, and a row
+# that reserves nothing is RED (`shape-word-unused`).
+#
+# `header` here is the 1.5.5 credential placement key (`upstream_credential.placement: {header:
+# <name>}`), a config word, not the `header` auth plugin. Its spelling is a shape, held as ONE
+# constant in busbar-contract; the config-schema snapshot records the grammar that reads it.
+
+[[shape-word]]
+word = "header"
+file = "crates/busbar-contract/src/section.rs"
+holder = "PLACEMENT_HEADER_KEY"
+cite = "BUSBAR-1.6.0.md:2284 — Part 2 #83, contract = shapes: the credential placement key is a config shape, so its spelling lives as ONE constant in busbar-contract; and BUSBAR-1.6.0.md:2020 — DoD item 6, zero config changes beyond the signed ones, so the key stays byte-identical to 1.5.5"
+
+[[shape-word]]
+word = "header"
+file = "crates/busbar-kernel/src/config/config-schema.snapshot.json"
+holder = "manual-de CredentialPlacement"
+cite = "BUSBAR-1.6.0.md:2284 — Part 2 #83, the same shape as busbar-contract's PLACEMENT_HEADER_KEY, recorded by the config-schema snapshot of the grammar that reads it; and BUSBAR-1.6.0.md:2020 — DoD item 6, the snapshot is what holds that grammar byte-identical"
+
 [[instance]]
 crate = "busbar"
 kind = "auth"

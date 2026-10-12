@@ -1063,9 +1063,9 @@ fn framed_window(
     reply: &crate::framed::Reply,
     writes: &[Write],
 ) -> Outcome {
-    // THE gRPC LINE'S ANSWER (SEAM-4l): the head is the listener's `200`; an `OK` reply is its one
-    // message, and any other status is no message but the call's final status (its message and
-    // details), which the stream's framer renders on its close.
+    // THE gRPC LINE'S ANSWER (SEAM-4l): the head is the listener's `200` and the line's media type;
+    // an `OK` reply is its one message, and any other status is no message but the call's final
+    // status (its message and details), which the stream's framer renders on its close.
     let ok = reply.code == crate::framed::Code::Ok as u32;
     let body: &[u8] = if ok { &reply.body } else { &[] };
     window_core(
@@ -1076,7 +1076,10 @@ fn framed_window(
         (crate::relay::STATUS_OK, body),
         writes,
         Some(Head {
-            fields: &[],
+            fields: &[(
+                crate::relay::H_CONTENT_TYPE,
+                crate::framed::REPLY_CONTENT_TYPE,
+            )],
             length: false,
             message: ok,
             close: (!ok).then_some(reply),

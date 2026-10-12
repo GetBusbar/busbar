@@ -3078,7 +3078,7 @@ fn measured_row(
                     .stack_size(16 * 1024 * 1024)
                     .spawn_scoped(scope, || vendors::offenders(cx, crates, &files))
                     .expect("spawn the vendor-name scan thread");
-                let inst = instances::measure(crates, &files, &ivocab);
+                let inst = instances::measure_reserved(crates, &files, &ivocab, &reg.shape_words);
                 (
                     inst,
                     vendor
@@ -3086,7 +3086,8 @@ fn measured_row(
                         .unwrap_or_else(|panic| std::panic::resume_unwind(panic)),
                 )
             });
-            (ivocab, inst, vendor)
+            let ((inst, unreserved), vendor) = (inst, vendor);
+            (ivocab, inst, unreserved, vendor)
         });
         (
             measured
@@ -3117,7 +3118,7 @@ fn measured_row(
     // THE FIVE INSTANCE AXES (item 118). Same scan set, read a second way — see [`instances`].
     // LAW 1 OVER THE NEUTRAL CENSUS (item 203) — a vendor name in a neutral crate plane-purity does
     // not list. Ceiling 0 in both twins; see [`vendors`].
-    let (ivocab, inst, vendor) = match rest {
+    let (ivocab, inst, unreserved, vendor) = match rest {
         Ok(r) => r,
         Err(e) => {
             return (
@@ -3201,6 +3202,7 @@ fn measured_row(
     let mut offenders: Vec<String> = duplicates(reg);
     offenders.extend(minted_rows(cx));
     offenders.extend(instances::offenders(&inst, &ivocab, reg));
+    offenders.extend(unreserved);
     offenders.extend(instances::law0(&inst, Some(LAW0_ENFORCED_NEUTRAL_CRATES)));
     // Law 1 is armed at 0 on the everyday gate too: no ledger row exists that could raise it.
     offenders.extend(vendor.iter().cloned());

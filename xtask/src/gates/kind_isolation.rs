@@ -995,6 +995,22 @@ struct CoreName {
     cite: String,
 }
 
+/// One `[[shape-word]]` row: ONE NAMED RESERVATION of a word the instance vocabulary counts, for a
+/// spelling that is a SHAPE and not a plugin instance (ARCHITECT ruling on #787: the 1.5.5
+/// credential placement key `header`, a config word, is a shape under BUSBAR-1.6.0.md Part 2 #83 and
+/// stays byte-identical under DoD item 6). It reserves exactly ONE literal `word` in exactly ONE
+/// `file`, on the line `holder` names: in a `.rs` file the line that declares `const <holder>:`, in
+/// a `.json` file a line inside the object keyed `"<holder>"`. It is never a word-wide excuse (the
+/// 2026-09-26 ruling: named reservations, never a word-wide mask): a second spelling of the word, in
+/// the same file or any other, still counts, and a row that reserves nothing is RED.
+#[derive(Debug, Clone)]
+struct ShapeWord {
+    word: String,
+    file: String,
+    holder: String,
+    cite: String,
+}
+
 /// One `[[dep]]` row: one crate's dependency on one other crate, in one half of the build graph,
 /// at the EXACT number of declarations that state it today.
 ///
@@ -1091,6 +1107,9 @@ struct KindRegistry {
     /// The `[[core-name]]` table: core's own words the instance vocabulary must not count. See
     /// [`CoreName`] and `matrix::instances::vocabulary`.
     core_names: Vec<CoreName>,
+    /// The `[[shape-word]]` table: the named reservations of a word that is a shape. See
+    /// [`ShapeWord`] and `matrix::instances::measure_reserved`.
+    shape_words: Vec<ShapeWord>,
     /// Every named `[patch]`/`[replace]`/`[source]` allowance. See [`PatchAllow`].
     patch_allows: Vec<PatchAllow>,
     /// Rows REFUSED AT LOAD. A malformed or over-broad row is not skipped and it is not tolerated:
@@ -1440,6 +1459,48 @@ fn push_row(reg: &mut KindRegistry, table: &str, fields: &[(String, String)], at
                 cite: v[2].clone(),
             });
         }
+        // A NAMED RESERVATION OF A SHAPE'S WORD (ARCHITECT ruling on #787). Every field is
+        // required, the cite must be a spec line, and one (file, word, holder) is one row.
+        "shape-word" => {
+            let Some(v) = take_row(
+                fields,
+                &["word", "file", "holder", "cite"],
+                table,
+                at,
+                &mut reg.errors,
+            ) else {
+                return;
+            };
+            let line = v[3].strip_prefix("BUSBAR-1.6.0.md:").unwrap_or("");
+            if !line.chars().next().is_some_and(|c| c.is_ascii_digit()) {
+                reg.errors.push(format!(
+                    "bad-shape-word-cite\t{REGISTRY_FILE}:{at}\t`[[shape-word]] {} in {}`: cite = \
+                     \"{}\" does not open with `BUSBAR-1.6.0.md:<line>`. A reservation no clause \
+                     grants is an exemption",
+                    v[0], v[1], v[3]
+                ));
+                return;
+            }
+            let word = v[0].trim().to_ascii_lowercase();
+            if reg
+                .shape_words
+                .iter()
+                .any(|r| r.word == word && r.file == v[1] && r.holder == v[2])
+            {
+                reg.errors.push(format!(
+                    "duplicate-shape-word\t{REGISTRY_FILE}:{at}\t`[[shape-word]] {word} in {} at \
+                     {}` is already a row. Two rows for one reservation are two answers",
+                    v[1], v[2]
+                ));
+                return;
+            }
+            reg.shape_words.push(ShapeWord {
+                word,
+                file: v[1].clone(),
+                holder: v[2].clone(),
+                cite: v[3].clone(),
+            });
+        }
         // THE `:deps` AND `:test-deps` ROWS' TWO TABLES. Same reader, same refusals — and two more
         // of its own, because a row whose `half` or whose `verdict` is a word this gate has no
         // meaning for is a row that would be silently scored against nothing.
@@ -1573,7 +1634,7 @@ fn push_row(reg: &mut KindRegistry, table: &str, fields: &[(String, String)], at
             "unknown-table\t{REGISTRY_FILE}:{at}\t`[[{other}]]` is not a table this gate reads; the \
              file holds `[[transitional]]`, `[[registered]]`, `[[announced]]`, `[[dep]]`, \
              `[[question]]`, `[[face]]`, `[[law0]]`, `[[edge]]`, `[[cell]]`, `[[instance]]`, \
-             `[[core-name]]` and `[[patch]]` rows and nothing else"
+             `[[core-name]]`, `[[shape-word]]` and `[[patch]]` rows and nothing else"
         )),
     }
 }
@@ -1608,7 +1669,7 @@ fn parse_registry(text: &str) -> KindRegistry {
             reg.errors.push(format!(
                 "unknown-table\t{REGISTRY_FILE}:{}\t`{t}` — the file holds `[[transitional]]`, \
                  `[[registered]]`, `[[announced]]`, `[[dep]]`, `[[question]]`, `[[face]]`, \
-                 `[[law0]]`, `[[edge]]`, `[[cell]]`, `[[instance]]`, `[[core-name]]` and `[[patch]]` rows and \
+                 `[[law0]]`, `[[edge]]`, `[[cell]]`, `[[instance]]`, `[[core-name]]`, `[[shape-word]]` and `[[patch]]` rows and \
                  nothing else",
                 i + 1
             ));
