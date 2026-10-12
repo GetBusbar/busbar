@@ -198,6 +198,7 @@ fn host() -> Host {
         wake: None,
         conns: &SLOTS,
         services: std::ptr::null(),
+        io: std::ptr::null(),
     })
 }
 
