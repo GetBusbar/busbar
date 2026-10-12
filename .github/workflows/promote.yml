@@ -1,12 +1,14 @@
 name: Promote
-# Every same-repo PR is one hop up the branch ladder. The hop is GetBusbar/busbar-release's
-# `busbar-release ci hop|verdict|publish|fallback` at RELEASE_REF (private, so no `uses:`); these
-# jobs only check out both repos and run it. No job here runs BOARD (`ci train promote` needs the
-# train's write token, and the job that runs the candidate's code holds none): a PR lands by merge,
-# predev's through its merge queue.
-# predev lands through GitHub's merge queue (OWNER 2026-10-02): `merge_group` runs the same two
-# required jobs on the queue's merge commit, judged no worse than the base the queue built it on.
-on: [pull_request, merge_group]
+# This workflow serves the predev->dev promotion pull request (and any base other than predev). The
+# hop is GetBusbar/busbar-release's `busbar-release ci hop|verdict|publish|fallback` at RELEASE_REF
+# (private, so no `uses:`); these jobs only check out both repos and run it. No job here runs BOARD
+# (`ci train promote` needs the train's write token, and the job that runs the candidate's code holds
+# none): a PR lands by merge.
+# Pull requests into predev are not judged here: ModernCI judges them (required check `ci`) and lands
+# them with its own merge train, so predev has no merge queue and this workflow no longer runs for a
+# pull request whose base is predev, nor for `merge_group`. The `merge_group` handling in the jobs below
+# is left in place, dormant: it is job logic, and the concurrency and env lines the preflight holds to busbar-release's compiled copy read it.
+on: { pull_request: { branches-ignore: [predev] } }
 # R5 (busbar-release gate.rs, OWNER 2026-10-08): no run is ever cancelled in progress. A pull request
 # has at most one run running and one pending, and each newer push replaces the pending one, so the
 # pending run is always the newest head. A merge-queue run is its own group (a cancelled queue run
