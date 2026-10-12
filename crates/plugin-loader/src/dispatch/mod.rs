@@ -26,10 +26,29 @@
 //! per kind. A kind is a [`Kind`] marker naming its code, its table (`abi/<kind>/Ops`) and its
 //! timeout outcome.
 
+/// THE HOST'S SERVICE ENTRY POINTS, ONE SPELLING OF THE ABI: every `fn` inside is a host service
+/// (`abi::host::service::ServiceFn`, the slot type of `abi::host::io::IoSlots`). The expansion
+/// spells that signature whole, so it reads as an implementation of the ABI's type, never a new
+/// shape. Defined before the modules so each of them can use it.
+macro_rules! c_entry {
+    () => {};
+    (
+        $(#[$m:meta])* $vis:vis fn $name:ident(
+            $ctx:ident: HostCtx, $input:ident: *const c_void, $out:ident: *mut ServiceOut $(,)?
+        ) -> RawOutcome { $($body:tt)* }
+        $($more:tt)*
+    ) => {
+        $(#[$m])* $vis extern "C" fn $name($ctx: HostCtx, $input: *const c_void, $out: *mut ServiceOut) -> RawOutcome { $($body)* }
+        c_entry! { $($more)* }
+    };
+}
+
 pub mod answer;
 pub mod auth_outbound;
 pub mod auth_ticks;
 pub mod conn_services;
+pub mod inline;
+pub mod io_slots;
 pub mod kinds;
 pub mod load;
 pub mod log_file;
@@ -60,6 +79,7 @@ use busbar_contract::abi::mechanism::ticket::{HostCtx, Ticket};
 use busbar_contract::abi::mechanism::KindCode;
 
 pub use answer::{Answer, Context};
+pub use inline::{InlineTicket, InlineTickets};
 pub use kinds::plane::PlaneCancel;
 pub use load::{
     load_dropped, load_dropped_bytes, load_linked, rendering_of, rendering_of_library, LinkedRow,

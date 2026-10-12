@@ -75,15 +75,15 @@ An upstream MCP tool returned an input-required result that reached the terminal
 **What to do:** Report the named tool and field: the ask-recognition path has a gap that let an input-required shape through. This is a code-level fix, not an operator misconfig.
 
 <a id="mcp-output-schema-violation"></a>
-### BUSBAR-7065 — MCP upstream structuredContent violates the published outputSchema
+### BUSBAR-7065 — MCP upstream structuredContent violated the published outputSchema — RETIRED *(retired)*
 
 - **Severity:** benign_recurring
 - **Since:** 1.6.0
 - **Slug:** `mcp-output-schema-violation`
 
-An upstream MCP tool returned `structuredContent` that does not validate against the tool's own published `outputSchema`, so the result is refused. This is an upstream contract violation that can recur per request, so it is logged at debug to avoid spam.
+RETIRED. An upstream MCP tool's `structuredContent` that did not validate against the tool's published `outputSchema` was once refused and replaced by busbar's own tool error. 1.6.0 removed that check: busbar relays an upstream's tool result unchanged (THE DESIGN Law 11), and the caller judges it against the published schema.
 
-**What to do:** If a specific tool trips this repeatedly, report the schema mismatch to that MCP server's operator. No local action is needed.
+**What to do:** Nothing emits this code.
 
 <a id="mcp-toolcall-refused"></a>
 ### BUSBAR-7066 — MCP tools/call refused by policy
