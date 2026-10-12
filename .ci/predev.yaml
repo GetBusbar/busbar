@@ -1,11 +1,11 @@
 # What predev must pass to move into dev: busbar-release's `dev` rung (crates/busbar-release-cli/
 # ladder.json: gates inherit, oracle, conformance; verdict absolute), the 1.6.0 done-oracle, and the
-# Q128 audit sign-off. ModernCI names a branch file for the branch being moved, so the move
-# predev -> dev reads this file. Shadow while busbar-release still decides.
+# Q128 architecture audit (`cargo xtask q128 audit`). ModernCI names a branch file for the branch
+# being moved, so the move predev -> dev reads this file. Shadow while busbar-release still decides.
 to: dev
 on_green: merge
-# The Q128 sign-off holds the merge: until a manual check's green can gate a move, the owner's
-# approval on the pull request stands for it (given once q128-audit is green on the commit).
+# The owner's approval on the pull request holds the merge too; q128-audit gates the move on the
+# audit's record for the commit (no open BLOCK).
 approve: true
 deadline: 6h
 env:
@@ -14,8 +14,7 @@ env:
   CARGO_PROFILE_DEV_DEBUG: "0"
   CARGO_INCREMENTAL: "0"
 on:
-  move: [gates, oracle, conformance, verify-done]
-  manual: [q128-audit]
+  move: [gates, oracle, conformance, verify-done, q128-audit]
 checks:
   gates:
     # The rung inherits predev's boarded gates; here they are re-run on the commit, no worse than
@@ -56,7 +55,11 @@ checks:
     run: bash scripts/verify-1.6.0-done.sh
     needs: [gates]
   q128-audit:
-    # Run by hand (on: manual) by the auditor once the independent architecture audit of this
-    # commit has no open BLOCK finding: the run is the sign-off, recorded against the commit.
-    run: |
-      echo "Q128 architecture audit: signed off on $MODERNCI_COMMIT (no open BLOCK findings)"
+    # DEV-GREEN item 5 (docs/design/BUSBAR-1.6.0.md l.2910-2912; 1.6.0-QUESTIONS.md Q128, option
+    # A): one fresh, independent architecture audit on this commit with no open BLOCK, and a clean
+    # audit ledger. The auditor records the audit in qa/q128-audit.json; this judges that record and
+    # the ledger on the commit, writes target/q128-audit.json (every finding, severity
+    # BLOCK/HIGH/MEDIUM/LOW, scope, evidence) and exits 1 on any open BLOCK. An audit of another
+    # tree, or none, is a BLOCK.
+    run: cargo xtask q128 audit
+    needs: [gates]
