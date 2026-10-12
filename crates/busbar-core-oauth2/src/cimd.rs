@@ -398,7 +398,8 @@ fn materialize(url: &str, body: &[u8], ceiling: &ScopeSet) -> Result<Client, Str
 /// admissibility, scope) it decides against that materialised record, exactly as it would against
 /// a stored one.
 pub(crate) struct CimdStore {
-    inner: MemoryStorage,
+    /// What the server holds, carried from generation to generation ([`Records`]).
+    records: Arc<Records>,
     /// The operator's `default_grant`, as the ceiling every materialised client lands under.
     ceiling: ScopeSet,
     /// Swappable so the flow tests can stand in a stub document host; production never swaps it.
@@ -406,9 +407,31 @@ pub(crate) struct CimdStore {
     /// The operator's `oauth_as.clients:`, by `client_id`. Answered before anything else: the
     /// config is the operator's own word on who these clients are.
     provisioned: HashMap<String, Arc<Client>>,
+}
+
+/// WHAT THE SERVER HOLDS: its records (clients registered, codes, tokens, refresh tokens, consents,
+/// pushed requests, the replay ledger) and the consent screen's notes of the pushed requests. A
+/// config reload builds a new server over the SAME records, so a reload voids none of them.
+pub(crate) struct Records {
+    inner: MemoryStorage,
     /// What the consent screen needs to show of each RFC 9126 pushed request that has not been
     /// redeemed, keyed by `request_uri`. See [`Pushed`].
     pushed: Mutex<HashMap<String, Pushed>>,
+}
+
+impl Records {
+    pub(crate) fn new(inner: MemoryStorage) -> Self {
+        Self {
+            inner,
+            pushed: Mutex::new(HashMap::new()),
+        }
+    }
+}
+
+impl Default for Records {
+    fn default() -> Self {
+        Self::new(MemoryStorage::new())
+    }
 }
 
 /// WHAT A PUSHED REQUEST ASKS FOR, kept for the consent screen alone.
@@ -430,27 +453,41 @@ pub(crate) struct Pushed {
 }
 
 impl CimdStore {
+    #[cfg(test)]
     pub(crate) fn new(
         inner: MemoryStorage,
         ceiling: ScopeSet,
         fetcher: Arc<dyn CimdFetch>,
         provisioned: Vec<Client>,
     ) -> Self {
+        Self::over(Arc::new(Records::new(inner)), ceiling, fetcher, provisioned)
+    }
+
+    /// The store over `records` an earlier generation may already hold.
+    pub(crate) fn over(
+        records: Arc<Records>,
+        ceiling: ScopeSet,
+        fetcher: Arc<dyn CimdFetch>,
+        provisioned: Vec<Client>,
+    ) -> Self {
         Self {
-            inner,
+            records,
             ceiling,
             fetcher: RwLock::new(fetcher),
             provisioned: provisioned
                 .into_iter()
                 .map(|c| (c.client_id.as_str().to_string(), Arc::new(c)))
                 .collect(),
-            pushed: Mutex::new(HashMap::new()),
         }
     }
 
     /// The summary of a pushed request that is still live, or `None`.
     pub(crate) fn pushed(&self, request_uri: &str) -> Option<Pushed> {
-        let pushed = self.pushed.lock().unwrap_or_else(|p| p.into_inner());
+        let pushed = self
+            .records
+            .pushed
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         pushed
             .get(request_uri)
             .filter(|p| p.expires_at > std::time::SystemTime::now())
@@ -459,7 +496,11 @@ impl CimdStore {
 
     /// Mark a live pushed request as shown, answering whether it already had been.
     pub(crate) fn mark_pushed_shown(&self, request_uri: &str) -> bool {
-        let mut pushed = self.pushed.lock().unwrap_or_else(|p| p.into_inner());
+        let mut pushed = self
+            .records
+            .pushed
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         pushed
             .get_mut(request_uri)
             .map(|p| std::mem::replace(&mut p.shown, true))
@@ -496,7 +537,7 @@ impl Storage for CimdStore {
         }
         // A STORED client wins, whatever its id looks like: the store is what the operator
         // and the registration endpoint wrote, and a fetch cannot override either.
-        if let Some(found) = self.inner.get_client(client_id).await? {
+        if let Some(found) = self.records.inner.get_client(client_id).await? {
             return Ok(Some(found));
         }
         let url = client_id.as_str();
@@ -540,7 +581,7 @@ impl Storage for CimdStore {
     //    would silently stop being this store's. ──
 
     fn put_client(&self, client: Client) -> impl Future<Output = Result<(), StorageError>> + Send {
-        self.inner.put_client(client)
+        self.records.inner.put_client(client)
     }
 
     fn compare_and_swap_client(
@@ -548,7 +589,9 @@ impl Storage for CimdStore {
         expected: &Client,
         updated: Client,
     ) -> impl Future<Output = Result<bool, StorageError>> + Send {
-        self.inner.compare_and_swap_client(expected, updated)
+        self.records
+            .inner
+            .compare_and_swap_client(expected, updated)
     }
 
     fn delete_client(
@@ -556,28 +599,29 @@ impl Storage for CimdStore {
         client_id: &ClientId,
         window: RevocationWindow,
     ) -> impl Future<Output = Result<bool, StorageError>> + Send {
-        self.inner.delete_client(client_id, window)
+        self.records.inner.delete_client(client_id, window)
     }
 
     fn put_device_grant(
         &self,
         grant: DeviceGrant,
     ) -> impl Future<Output = Result<(), StorageError>> + Send {
-        self.inner.put_device_grant(grant)
+        self.records.inner.put_device_grant(grant)
     }
 
     fn get_device_grant(
         &self,
         device_code: &str,
     ) -> impl Future<Output = Result<Option<DeviceGrant>, StorageError>> + Send {
-        self.inner.get_device_grant(device_code)
+        self.records.inner.get_device_grant(device_code)
     }
 
     fn find_device_grant_by_user_code(
         &self,
         normalized_user_code: &str,
     ) -> impl Future<Output = Result<Option<DeviceGrant>, StorageError>> + Send {
-        self.inner
+        self.records
+            .inner
             .find_device_grant_by_user_code(normalized_user_code)
     }
 
@@ -585,7 +629,7 @@ impl Storage for CimdStore {
         &self,
         device_code: &str,
     ) -> impl Future<Output = Result<Option<DeviceGrant>, StorageError>> + Send {
-        self.inner.take_device_grant(device_code)
+        self.records.inner.take_device_grant(device_code)
     }
 
     fn compare_and_swap_device_grant(
@@ -593,14 +637,16 @@ impl Storage for CimdStore {
         expected: &DeviceGrantState,
         updated: DeviceGrant,
     ) -> impl Future<Output = Result<bool, StorageError>> + Send {
-        self.inner.compare_and_swap_device_grant(expected, updated)
+        self.records
+            .inner
+            .compare_and_swap_device_grant(expected, updated)
     }
 
     fn put_authorization_code(
         &self,
         record: AuthorizationCodeRecord,
     ) -> impl Future<Output = Result<(), StorageError>> + Send {
-        self.inner.put_authorization_code(record)
+        self.records.inner.put_authorization_code(record)
     }
 
     fn compare_and_swap_authorization_code(
@@ -608,7 +654,8 @@ impl Storage for CimdStore {
         expected: &AuthorizationCodeState,
         updated: AuthorizationCodeRecord,
     ) -> impl Future<Output = Result<bool, StorageError>> + Send {
-        self.inner
+        self.records
+            .inner
             .compare_and_swap_authorization_code(expected, updated)
     }
 
@@ -616,49 +663,49 @@ impl Storage for CimdStore {
         &self,
         code: &str,
     ) -> impl Future<Output = Result<Option<AuthorizationCodeRecord>, StorageError>> + Send {
-        self.inner.take_authorization_code(code)
+        self.records.inner.take_authorization_code(code)
     }
 
     fn put_token(
         &self,
         token: IssuedToken,
     ) -> impl Future<Output = Result<WriteOutcome, StorageError>> + Send {
-        self.inner.put_token(token)
+        self.records.inner.put_token(token)
     }
 
     fn get_token(
         &self,
         access_token: &str,
     ) -> impl Future<Output = Result<Option<Arc<IssuedToken>>, StorageError>> + Send {
-        self.inner.get_token(access_token)
+        self.records.inner.get_token(access_token)
     }
 
     fn delete_token(
         &self,
         access_token: &str,
     ) -> impl Future<Output = Result<(), StorageError>> + Send {
-        self.inner.delete_token(access_token)
+        self.records.inner.delete_token(access_token)
     }
 
     fn put_refresh_token(
         &self,
         record: RefreshTokenRecord,
     ) -> impl Future<Output = Result<WriteOutcome, StorageError>> + Send {
-        self.inner.put_refresh_token(record)
+        self.records.inner.put_refresh_token(record)
     }
 
     fn get_refresh_token(
         &self,
         refresh_token: &str,
     ) -> impl Future<Output = Result<Option<Arc<RefreshTokenRecord>>, StorageError>> + Send {
-        self.inner.get_refresh_token(refresh_token)
+        self.records.inner.get_refresh_token(refresh_token)
     }
 
     fn take_refresh_token(
         &self,
         refresh_token: &str,
     ) -> impl Future<Output = Result<Option<RefreshTokenRecord>, StorageError>> + Send {
-        self.inner.take_refresh_token(refresh_token)
+        self.records.inner.take_refresh_token(refresh_token)
     }
 
     fn revoke_token_family(
@@ -666,14 +713,14 @@ impl Storage for CimdStore {
         family_id: &str,
         window: RevocationWindow,
     ) -> impl Future<Output = Result<u64, StorageError>> + Send {
-        self.inner.revoke_token_family(family_id, window)
+        self.records.inner.revoke_token_family(family_id, window)
     }
 
     fn put_consent(
         &self,
         record: ConsentRecord,
     ) -> impl Future<Output = Result<(), StorageError>> + Send {
-        self.inner.put_consent(record)
+        self.records.inner.put_consent(record)
     }
 
     fn compare_and_swap_consent(
@@ -681,14 +728,16 @@ impl Storage for CimdStore {
         expected: Option<&ConsentRecord>,
         updated: ConsentRecord,
     ) -> impl Future<Output = Result<bool, StorageError>> + Send {
-        self.inner.compare_and_swap_consent(expected, updated)
+        self.records
+            .inner
+            .compare_and_swap_consent(expected, updated)
     }
 
     fn get_consent(
         &self,
         consent_id: &str,
     ) -> impl Future<Output = Result<Option<Arc<ConsentRecord>>, StorageError>> + Send {
-        self.inner.get_consent(consent_id)
+        self.records.inner.get_consent(consent_id)
     }
 
     fn find_consent(
@@ -696,14 +745,14 @@ impl Storage for CimdStore {
         client_id: &ClientId,
         subject: &str,
     ) -> impl Future<Output = Result<Option<Arc<ConsentRecord>>, StorageError>> + Send {
-        self.inner.find_consent(client_id, subject)
+        self.records.inner.find_consent(client_id, subject)
     }
 
     fn consents_for_subject(
         &self,
         subject: &str,
     ) -> impl Future<Output = Result<Vec<Arc<ConsentRecord>>, StorageError>> + Send {
-        self.inner.consents_for_subject(subject)
+        self.records.inner.consents_for_subject(subject)
     }
 
     fn revoke_consent(
@@ -711,7 +760,7 @@ impl Storage for CimdStore {
         consent_id: &str,
         window: RevocationWindow,
     ) -> impl Future<Output = Result<u64, StorageError>> + Send {
-        self.inner.revoke_consent(consent_id, window)
+        self.records.inner.revoke_consent(consent_id, window)
     }
 
     // RFC 9126 PAR and the RFC 7523 / RFC 9449 replay ledger: delegated, so the atomic single use
@@ -730,11 +779,12 @@ impl Storage for CimdStore {
             expires_at: record.expires_at,
             shown: false,
         };
-        let put = self.inner.put_pushed_authorization_request(record);
+        let put = self.records.inner.put_pushed_authorization_request(record);
         async move {
             let outcome = put.await?;
             if matches!(outcome, WriteOutcome::Applied) {
-                self.pushed
+                self.records
+                    .pushed
                     .lock()
                     .unwrap_or_else(|p| p.into_inner())
                     .insert(request_uri, summary);
@@ -748,12 +798,16 @@ impl Storage for CimdStore {
         request_uri: &str,
     ) -> impl Future<Output = Result<Option<oauth_as::par::PushedAuthorizationRequest>, StorageError>>
            + Send {
-        let take = self.inner.take_pushed_authorization_request(request_uri);
+        let take = self
+            .records
+            .inner
+            .take_pushed_authorization_request(request_uri);
         let request_uri = request_uri.to_string();
         async move {
             let taken = take.await?;
             if taken.is_some() {
-                self.pushed
+                self.records
+                    .pushed
                     .lock()
                     .unwrap_or_else(|p| p.into_inner())
                     .remove(&request_uri);
@@ -767,18 +821,19 @@ impl Storage for CimdStore {
         id: &str,
         expires_at: std::time::SystemTime,
     ) -> impl Future<Output = Result<bool, StorageError>> + Send {
-        self.inner.claim_replay_id(id, expires_at)
+        self.records.inner.claim_replay_id(id, expires_at)
     }
 
     fn sweep_expired(
         &self,
         now: std::time::SystemTime,
     ) -> impl Future<Output = Result<u64, StorageError>> + Send {
-        self.pushed
+        self.records
+            .pushed
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .retain(|_, p| p.expires_at > now);
-        self.inner.sweep_expired(now)
+        self.records.inner.sweep_expired(now)
     }
 }
 
