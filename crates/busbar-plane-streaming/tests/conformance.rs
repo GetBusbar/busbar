@@ -911,3 +911,96 @@ fn a_refusal_is_rendered_in_the_dialects_error_shape() {
         assert_eq!(body["error"]["message"], "no sessions today");
     }
 }
+
+/// The kernel's refusal of `reason` at `status`, worded `words`, for a unit-less request on
+/// `target`, rendered by the door's `refusal`: the outcome and the body it wrote.
+fn refused(
+    p: &Plugin<Plane>,
+    status: u32,
+    reason: busbar_contract::caps::ReasonCode,
+    words: &'static str,
+    target: &'static str,
+) -> (Outcome, String) {
+    use busbar_contract::abi::plane::{reason_code, RefusalIn, RefusalOut, REFUSAL_KERNEL};
+    let mut reply = vec![0u8; 1024];
+    let mut fields: Vec<OutField> = vec![z(); 4];
+    let mut arena = vec![0u8; 256];
+    let mut f: Frame<RefusalIn, RefusalOut> = Frame::new(z(), z());
+    (f.input.head, f.out.head) = (in_head(), out_head());
+    f.input.cause = REFUSAL_KERNEL;
+    f.input.status = status;
+    f.input.reason = reason_code(reason);
+    f.input.text = text(words);
+    f.input.target = text(target);
+    (f.input.reply_buf, f.input.reply_cap) = (reply.as_mut_ptr(), reply.len());
+    (f.input.fields_buf, f.input.fields_cap) = (fields.as_mut_ptr(), fields.len());
+    (f.input.arena_buf, f.input.arena_cap) = (arena.as_mut_ptr(), arena.len());
+    let c = p.call(slot::REFUSAL, &mut f);
+    let written = usize::try_from(f.out.reply_written).expect("a length");
+    (
+        c.outcome,
+        String::from_utf8_lossy(&reply[..written.min(reply.len())]).into_owned(),
+    )
+}
+
+/// AN AUTHENTICATION REFUSAL READS IN THE DIALECTS' OWN VENDOR TERMS (spec Part 3, "Refusals": a
+/// refusal with no unit is rendered by the plane's path rule, the 1.5.5 residual's answer; oracle
+/// cell `streams|mint|no-provider`): the kernel's `Unauthenticated` on the mint door answers as a bad
+/// key does at the vendor, never with the kernel's own word, which is a busbar tell. Every other
+/// reason keeps the kernel's text, a 401 included (a hook's veto states its own). Both ways.
+///
+/// RED ARM: the kernel's word rendered as the message (the door before this rule) is not the
+/// vendor's answer.
+#[test]
+fn an_authentication_refusal_reads_in_the_dialects_vendor_terms() {
+    use busbar_contract::caps::ReasonCode;
+    let vendor = serde_json::json!({"error": {
+        "message": door::AUTH_FAILURE_MESSAGE,
+        "type": "authentication_error",
+        "param": null,
+        "code": door::AUTH_FAILURE_CODE,
+    }});
+    assert_eq!(door::AUTH_FAILURE_MESSAGE, "Incorrect API key provided.");
+    assert_eq!(door::AUTH_FAILURE_CODE, "invalid_api_key");
+    let kernel_word: serde_json::Value =
+        serde_json::from_slice(&door::refusal_body(401, "unauthenticated")).expect("JSON");
+    assert_ne!(
+        kernel_word, vendor,
+        "RED ARM: the kernel's word is not the vendor's answer"
+    );
+
+    let d = Dispatcher::new(DispatchConfig::default());
+    let mut doors = vec![linked(&d)];
+    doors.extend(dropped(&d));
+    for p in &doors {
+        assert_eq!(open(p, 1, b"{}", Some(PUBLIC)).0, Outcome::Ready);
+        let (outcome, body) = refused(
+            p,
+            401,
+            ReasonCode::Unauthenticated,
+            "unauthenticated",
+            "/v1/realtime/client_secrets",
+        );
+        assert_eq!(outcome, Outcome::Ready, "{body}");
+        let body: serde_json::Value = serde_json::from_str(&body).expect("JSON");
+        assert_eq!(
+            body, vendor,
+            "the mint door's 401 is the vendor's bad-key answer"
+        );
+
+        let (outcome, body) = refused(
+            p,
+            401,
+            ReasonCode::HookVeto,
+            "the hook says no",
+            "/v1/realtime/client_secrets",
+        );
+        assert_eq!(outcome, Outcome::Ready, "{body}");
+        let body: serde_json::Value = serde_json::from_str(&body).expect("JSON");
+        assert_eq!(
+            body["error"]["message"], "the hook says no",
+            "a veto keeps its words"
+        );
+        assert_eq!(body["error"]["code"], serde_json::Value::Null);
+    }
+}

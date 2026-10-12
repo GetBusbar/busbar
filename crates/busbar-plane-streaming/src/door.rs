@@ -61,11 +61,11 @@ use busbar_contract::abi::mechanism::lifecycle::{
 };
 use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::plane::{
-    ArriveIn, ArriveOut, BillableClass, DialectAuth, OnPieceIn, OnPieceOut, OpClass, OutField,
-    PlaneCancelIn, PlaneCancelOut, PlaneDriveIn, PlaneDriveOut, PlaneOpenIn, PlaneOpenOut,
-    PlaneRefreshOut, PlaneSnapshot, PlaneTail, ProjectIn, ProjectOut, RefusalIn, RefusalOut,
-    ServeIn, ServeOut, UnitCount, CANCEL_FAILED, CLAIM_EXACT, CLAIM_OPEN, EMIT_DONE,
-    EMIT_TO_FAR_END, FROM_CALLER, FROM_FAR_END, FROM_KERNEL, INGRESS_DUPLEX_SESSION,
+    class_of, reason_of, ArriveIn, ArriveOut, BillableClass, DialectAuth, OnPieceIn, OnPieceOut,
+    OpClass, OutField, PlaneCancelIn, PlaneCancelOut, PlaneDriveIn, PlaneDriveOut, PlaneOpenIn,
+    PlaneOpenOut, PlaneRefreshOut, PlaneSnapshot, PlaneTail, ProjectIn, ProjectOut, RefusalClass,
+    RefusalIn, RefusalOut, ServeIn, ServeOut, UnitCount, CANCEL_FAILED, CLAIM_EXACT, CLAIM_OPEN,
+    EMIT_DONE, EMIT_TO_FAR_END, FROM_CALLER, FROM_FAR_END, FROM_KERNEL, INGRESS_DUPLEX_SESSION,
     INGRESS_REQUEST_RESPONSE, PIECE_HAS_STATUS, PIECE_LAST, PIECE_OUT_TEXT, ROUTE_DIRECT,
     SHAPE_PIECEWISE, SPAN_ABSENT, UNITS_ESTIMATED, UNITS_REPORTED,
 };
@@ -1109,6 +1109,35 @@ slot!(OnPiece, OnPieceIn, OnPieceOut, |instance, input, out| {
 /// as the error's type, its text as the message.
 #[must_use]
 pub fn refusal_body(status: u16, text: &str) -> Vec<u8> {
+    error_envelope(status, text, None)
+}
+
+/// The message the realtime dialects answer a bad or missing credential with: the vendor's own copy,
+/// as 1.5.5's residual answered a refused credential on these targets.
+pub const AUTH_FAILURE_MESSAGE: &str = "Incorrect API key provided.";
+
+/// The error code the realtime dialects answer a bad or missing credential with, beside
+/// [`AUTH_FAILURE_MESSAGE`].
+pub const AUTH_FAILURE_CODE: &str = "invalid_api_key";
+
+/// A refusal the kernel hands the door, rendered by its reason's class (the one classification,
+/// `busbar_contract::abi::plane`): an authentication refusal reads in the dialects' own vendor terms
+/// ([`AUTH_FAILURE_MESSAGE`], [`AUTH_FAILURE_CODE`]), never the kernel's word, which would be a
+/// busbar tell; every other refusal is [`refusal_body`], the kernel's status and text. A refusal with
+/// no unit (the kernel authenticates before `arrive`) is the 1.5.5 residual's answer for the target.
+#[must_use]
+pub fn refusal_render(status: u16, reason: u32, text: &str) -> Vec<u8> {
+    let authentication =
+        reason_of(reason).is_some_and(|r| class_of(r) == RefusalClass::Unauthenticated);
+    if authentication {
+        error_envelope(status, AUTH_FAILURE_MESSAGE, Some(AUTH_FAILURE_CODE))
+    } else {
+        refusal_body(status, text)
+    }
+}
+
+/// The OpenAI REST error envelope: `status` read as the error's type, `message` and `code` as given.
+fn error_envelope(status: u16, message: &str, code: Option<&str>) -> Vec<u8> {
     let kind = match status {
         401 => "authentication_error",
         403 => "permission_error",
@@ -1118,7 +1147,7 @@ pub fn refusal_body(status: u16, text: &str) -> Vec<u8> {
         _ => "server_error",
     };
     serde_json::to_vec(&serde_json::json!({
-        "error": {"message": text, "type": kind, "param": null, "code": null}
+        "error": {"message": message, "type": kind, "param": null, "code": code}
     }))
     .unwrap_or_default()
 }
@@ -1134,7 +1163,7 @@ slot!(Refusal, RefusalIn, RefusalOut, |_, input, out| {
     let given = input.get();
     let status = u16::try_from(given.status).unwrap_or(0);
     let text = input.field(|i| &i.text).as_str().unwrap_or_default();
-    let body = refusal_body(status, text);
+    let body = refusal_render(status, given.reason, text);
     let (mut reply, mut fields, mut arena) =
         (input.reply_buf(), input.fields_buf(), input.arena_buf());
     reply.extend(&body);

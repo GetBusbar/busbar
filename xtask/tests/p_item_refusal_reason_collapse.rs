@@ -42,7 +42,7 @@ const RENDERERS: &[(&str, &[&str])] = &[
     ("crates/busbar-plane-a2a/src/plane.rs", &["refusal_render"]),
     (
         "crates/busbar-plane-streaming/src/door.rs",
-        &["refusal_body"],
+        &["refusal_body", "refusal_render"],
     ),
     (
         "crates/busbar/src/root/units_admin/admin_mount.rs",
