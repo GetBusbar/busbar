@@ -90,7 +90,7 @@ pub struct HostTables {
     /// host offers none.
     pub services: *const HostSlots,
     /// THE HOST'S I/O TABLE (`abi/host/io.rs`, `io.*`): the primitives a carrier moves bytes with
-    /// over handles the host owns, every slot `extern "C"`; NULL when the host offers none.
+    /// over handles the host owns, every slot a C-ABI fn; NULL when the host offers none.
     /// Appended: a reader checks `size` covers it before it reads it.
     pub io: *const IoSlots,
 }

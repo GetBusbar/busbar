@@ -32,20 +32,30 @@
 //! the verb its request expects, with exactly the order, status, message, tags or rewrite expected;
 //! an answer too big for the host's first buffer is FAILED naming what it needs, and the host makes
 //! THE ONE RE-CALL with bigger buffers, which answers READY; a re-call that answers short again is
-//! FAULT; a re-call token spent on another op is REFUSED without a crossing. At least one `decide`
-//! must expect an order longer than `order_cap`, so the set walks the re-call.
+//! FAULT. At least one `decide` must expect an order longer than `order_cap`, so the set walks the
+//! re-call. (The ticket-less re-call TOKEN, and its refusal when spent on another op, is
+//! `Plugin::recall`'s: no hook call is ticket-less, so the dispatcher's own tests prove it.)
 //!
-//! Every step is one ticket-less crossing of the hook table, but: a request whose expected answer
-//! overflows the host's first buffer is 2 (the ONE short-buffer re-call is +1); `decide` before
-//! `open` and after `close` is 0 (the dispatcher refuses an unopened instance, and a closed one
-//! answers FAULT, without a crossing); the token-on-another-op step is 1 (its short `decide`; the
-//! misdirected re-call does not cross); and `ready` ([`super::ready_step`]).
+//! THE CROSSINGS ARE THE KERNEL'S (THE DESIGN §11.4: one table, as production drives it): every
+//! `decide` and `transform` is SUBMITTED WATCHED on a ticket of its own, as the host's hook door
+//! submits it (`hook_door`: `submit_watched`, the watch budget the hook's `timeout_ms`, here
+//! [`BUDGET`]), its view and buffers lent to the op through the dispatcher's lending submit (§2).
+//! So a gate that waits on a may-pend host service answers PENDING and is RESUMED on its wake
+//! (a may-pend service on a ticket-less op is REFUSED, §11.12). A short answer is re-submitted
+//! ONCE on the same ticket with the buffers it named. The lifecycle is ticket-less, as the host
+//! makes it.
+//!
+//! Every step is one crossing of the hook table (its resumes reported, never pinned), but: a
+//! request whose expected answer overflows the host's first buffer is 2 (the ONE short-buffer
+//! re-call is +1); `decide` before `open` and after `close` is 0 (the dispatcher refuses an
+//! unopened instance, and a closed one answers FAULT, without a crossing); and `ready`
+//! ([`super::ready_step`]).
 //!
 //! THE RED ARM, in the script: the honest fold with every PREFER order reversed (a door that ranks
 //! the other way) must be refused by the same contract.
 //!
-//! No `timeout` step: the dispatcher's ticket-less `decide` budget is the watchdog's, and a step
-//! needs a plugin-controlled slow answer, which the script's inputs do not name.
+//! No `timeout` step: a step needs a plugin-controlled slow answer, which the script's inputs do
+//! not name.
 
 use busbar_contract::abi::hook::{
     slot, CandidateDynamic, CandidateStatic, DecideIn, DecideOut, TransformOut,
@@ -53,16 +63,24 @@ use busbar_contract::abi::hook::{
     CANDIDATE_HAS_RATE_HEADROOM, VERB_ABSTAIN, VERB_HAS_REJECT_STATUS, VERB_PREFER, VERB_REJECT,
     VERB_RESTRICT, VERB_REWRITE,
 };
-use busbar_contract::abi::mechanism::call::{AbiStr, Outcome};
+use std::sync::Arc;
+use std::time::Duration;
+
+use busbar_contract::abi::mechanism::call::{AbiStr, DeadlineClass, Outcome};
+use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::sdk::door::abi_str;
 use serde_json::Value;
 
 use super::{
-    called, close, crossings, dispatcher, input, load, open, output, ready_step, refresh, tick,
-    validate, Fold, Leg, Recorder, Subject,
+    answered, called, close, crossings, dispatcher, input, load, open, output, ready_step, refresh,
+    submit_on, tick, validate, Fold, Leg, Recorder, Subject,
 };
 use crate::dispatch::kinds::hook::Hook;
-use crate::dispatch::{Called, Frame, Plugin, Recall};
+use crate::dispatch::{now_ns, Called, Dispatcher, Frame, Lent, Plugin};
+
+/// THE WATCH BUDGET every `decide`/`transform` is submitted under, and its deadline: the hook's
+/// `timeout_ms` as the host's hook door rides it on the op (THE DESIGN §11.7), generously.
+const BUDGET: Duration = Duration::from_secs(10);
 
 /// The host's first reject-message buffer, in bytes.
 const MESSAGE_CAP: usize = 4096;
@@ -83,7 +101,7 @@ fn text(v: &Value) -> Vec<u8> {
 }
 
 /// One request of the set: the host's view, the op, and the line its answer must read.
-struct Request {
+pub(super) struct Request {
     label: String,
     op: u32,
     /// The candidates' model and provider names, which `statics` point into.
@@ -103,8 +121,14 @@ fn str_of(s: &str) -> AbiStr {
     }
 }
 
+// SAFETY: the raw pointers in `statics` point into `_names`, owned by the same `Request` (their heap
+// buffers never move); a `Request` lent to an op is never mutated.
+unsafe impl Send for Request {}
+// SAFETY: as above.
+unsafe impl Sync for Request {}
+
 impl Request {
-    fn of(v: &Value, order_cap: usize) -> Self {
+    pub(super) fn of(v: &Value, order_cap: usize) -> Self {
         let label = v["label"]
             .as_str()
             .expect("conformance.json: a hook request has no `label`")
@@ -250,7 +274,7 @@ fn expected(label: &str, op: u32, e: &Value, order_cap: usize) -> (String, bool)
     }
 }
 
-/// The host's buffers for one crossing.
+/// The host's buffers for one op.
 struct Bufs {
     order: Vec<u32>,
     message: Vec<u8>,
@@ -271,9 +295,25 @@ impl Bufs {
     fn first(order_cap: usize) -> Self {
         Self::of(order_cap, MESSAGE_CAP, TAGS_CAP, REWRITE_CAP)
     }
+}
 
-    /// The `in` of `r` over these buffers.
-    fn input(&mut self, r: &Request) -> DecideIn {
+/// THE MEMORY ONE `decide`/`transform` LENDS THE HOOK: the request's view and the host's buffers,
+/// built in place in the `Arc` lent to the op (THE DESIGN §2).
+struct Lend {
+    request: Arc<Request>,
+    bufs: Bufs,
+}
+
+impl Lend {
+    /// `r` over `bufs`: the memory lent, and the `in` over it.
+    fn of(r: &Arc<Request>, bufs: Bufs) -> (Arc<Self>, DecideIn) {
+        let mut lend = Arc::new(Self {
+            request: Arc::clone(r),
+            bufs,
+        });
+        let me = Arc::get_mut(&mut lend).expect("a lend not yet lent is unshared");
+        let r = &me.request;
+        let b = &mut me.bufs;
         let mut i: DecideIn = input();
         i.request.request_id = 1;
         i.request.pool = abi_str(POOL);
@@ -282,15 +322,15 @@ impl Bufs {
         i.candidates = r.statics.as_ptr();
         i.candidate_dynamics = r.dynamics.as_ptr();
         i.candidates_len = r.statics.len();
-        i.order_buf = self.order.as_mut_ptr();
-        i.order_cap = self.order.len();
-        i.reject_message_buf = self.message.as_mut_ptr();
-        i.reject_message_cap = self.message.len();
-        i.restrict_tags_buf = self.tags.as_mut_ptr();
-        i.restrict_tags_cap = self.tags.len();
-        i.rewrite_buf = self.rewrite.as_mut_ptr();
-        i.rewrite_cap = self.rewrite.len();
-        i
+        i.order_buf = b.order.as_mut_ptr();
+        i.order_cap = b.order.len();
+        i.reject_message_buf = b.message.as_mut_ptr();
+        i.reject_message_cap = b.message.len();
+        i.restrict_tags_buf = b.tags.as_mut_ptr();
+        i.restrict_tags_cap = b.tags.len();
+        i.rewrite_buf = b.rewrite.as_mut_ptr();
+        i.rewrite_cap = b.rewrite.len();
+        (lend, i)
     }
 }
 
@@ -311,56 +351,83 @@ fn head<T: Copy>(buf: &[T], n: usize) -> Vec<T> {
     buf[..n.min(buf.len())].to_vec()
 }
 
-/// One crossing of `r`'s op over `b`: a call, or THE re-call when `token` is given (spent on
-/// `op`, which may be another op than the one that answered short).
+/// One op's answer: as the host reads it, whether it was SHORT, and what it said.
+struct Crossed {
+    called: Called,
+    short: bool,
+    said: Said,
+}
+
+/// ONE SUBMISSION of `r`'s op `op` on `ticket`, WATCHED (the hook door's way: the watch budget and
+/// the deadline the hook's `timeout_ms`), over `bufs`, lent to the op.
 fn cross(
     p: &Plugin<Hook>,
+    d: &Dispatcher,
+    ticket: Ticket,
     op: u32,
-    r: &Request,
-    b: &mut Bufs,
-    token: Option<Recall>,
-) -> (Called, Said) {
-    let i = b.input(r);
+    r: &Arc<Request>,
+    bufs: Bufs,
+) -> Crossed {
+    let (lend, i) = Lend::of(r, bufs);
+    let when = (
+        DeadlineClass::Call,
+        now_ns().saturating_add(u64::try_from(BUDGET.as_nanos()).unwrap_or(u64::MAX)),
+    );
+    let lent = Arc::clone(&lend) as Lent;
+    let b = &lend.bufs;
     if op == slot::DECIDE {
-        let mut f: Frame<DecideIn, DecideOut> = Frame::new(i, output());
-        let c = match token {
-            Some(t) => p.recall(t, op, &mut f),
-            None => p.call(op, &mut f),
-        };
-        let o = f.out;
-        let said = Said {
-            verbs: o.verbs,
-            status: o.reject_status,
-            order: head(&b.order, o.order_written),
-            message: head(&b.message, o.reject_message_written),
-            tags: head(&b.tags, o.restrict_tags_written),
-            rewrite: Vec::new(),
-            needed: [
-                o.order_needed,
-                o.reject_message_needed,
-                o.restrict_tags_needed,
-                0,
-            ],
-        };
-        (c, said)
+        let f: Frame<DecideIn, DecideOut> = Frame::new(i, output());
+        let done = submit_on(p, d, ticket, op, f, when, lent, BUDGET);
+        let said = done.frame.as_ref().map_or_else(Said::default, |f| {
+            let o = f.out;
+            Said {
+                verbs: o.verbs,
+                status: o.reject_status,
+                order: head(&b.order, o.order_written),
+                message: head(&b.message, o.reject_message_written),
+                tags: head(&b.tags, o.restrict_tags_written),
+                rewrite: Vec::new(),
+                needed: [
+                    o.order_needed,
+                    o.reject_message_needed,
+                    o.restrict_tags_needed,
+                    0,
+                ],
+            }
+        });
+        Crossed {
+            called: answered(&done),
+            short: done.short,
+            said,
+        }
     } else {
-        let mut f: Frame<DecideIn, TransformOut> = Frame::new(i, output());
-        let c = match token {
-            Some(t) => p.recall(t, op, &mut f),
-            None => p.call(op, &mut f),
-        };
-        let o = f.out;
-        let said = Said {
-            verbs: o.verbs,
-            status: o.reject_status,
-            message: head(&b.message, o.reject_message_written),
-            rewrite: head(&b.rewrite, o.rewrite_written),
-            needed: [0, o.reject_message_needed, 0, o.rewrite_needed],
-            ..Said::default()
-        };
-        (c, said)
+        let f: Frame<DecideIn, TransformOut> = Frame::new(i, output());
+        let done = submit_on(p, d, ticket, op, f, when, lent, BUDGET);
+        let said = done.frame.as_ref().map_or_else(Said::default, |f| {
+            let o = f.out;
+            Said {
+                verbs: o.verbs,
+                status: o.reject_status,
+                message: head(&b.message, o.reject_message_written),
+                rewrite: head(&b.rewrite, o.rewrite_written),
+                needed: [0, o.reject_message_needed, 0, o.rewrite_needed],
+                ..Said::default()
+            }
+        });
+        Crossed {
+            called: answered(&done),
+            short: done.short,
+            said,
+        }
     }
 }
+
+/// A ticket of `d`'s for one request (`None` when none is free: the step answers REFUSED).
+fn ticket(d: &Dispatcher) -> Option<Ticket> {
+    d.mint(0)
+}
+
+const NO_TICKET: &str = "Refused lease=false no ticket";
 
 /// The verdict a READY answer of `op` names; `verb=none` for any other outcome.
 fn verdict(op: u32, c: &Called, s: &Said) -> String {
@@ -391,45 +458,53 @@ fn verdict(op: u32, c: &Called, s: &Said) -> String {
     }
 }
 
-/// THE HOST'S WAY WITH ONE REQUEST: the call over the first buffers, and on a short answer THE
-/// ONE re-call over buffers of the size it named. Its line: the outcome the host acts on, the
-/// verdict, and whether it took the re-call.
-fn ask(p: &Plugin<Hook>, r: &Request, order_cap: usize) -> String {
-    let (mut c, said) = cross(p, r.op, r, &mut Bufs::first(order_cap), None);
-    let (c, said, recalled) = match c.recall.take() {
-        Some(token) => {
-            let [order, message, tags, rewrite] = said.needed;
-            let mut big = Bufs::of(
-                order.max(order_cap),
-                message.max(MESSAGE_CAP),
-                tags.max(TAGS_CAP),
-                rewrite.max(REWRITE_CAP),
-            );
-            let (c, said) = cross(p, r.op, r, &mut big, Some(token));
-            (c, said, true)
-        }
-        None => (c, said, false),
+/// THE HOST'S WAY WITH ONE REQUEST (`hook_door`'s): the op submitted watched on a ticket of its
+/// own over the first buffers, and on a short answer THE ONE re-call, re-submitted on that ticket
+/// over buffers of the size it named. Its line: the outcome the host acts on, the verdict, and
+/// whether it took the re-call.
+pub(super) fn ask(p: &Plugin<Hook>, d: &Dispatcher, r: &Arc<Request>, order_cap: usize) -> String {
+    let Some(t) = ticket(d) else {
+        return NO_TICKET.to_string();
     };
+    let first = cross(p, d, t, r.op, r, Bufs::first(order_cap));
+    let (c, recalled) = if first.short {
+        let [order, message, tags, rewrite] = first.said.needed;
+        let big = Bufs::of(
+            order.max(order_cap),
+            message.max(MESSAGE_CAP),
+            tags.max(TAGS_CAP),
+            rewrite.max(REWRITE_CAP),
+        );
+        (cross(p, d, t, r.op, r, big), true)
+    } else {
+        (first, false)
+    };
+    d.recycle(t);
     format!(
         "{} | {} recalled={recalled}",
-        called(&c).trim_end(),
-        verdict(r.op, &c, &said)
+        called(&c.called).trim_end(),
+        verdict(r.op, &c.called, &c.said)
     )
 }
 
-/// The first answer of `r`, short, then its token spent over `op` with the SAME short buffers.
-fn recall_again(p: &Plugin<Hook>, r: &Request, op: u32, order_cap: usize) -> String {
-    let mut b = Bufs::first(order_cap);
-    let (mut first, _) = cross(p, r.op, r, &mut b, None);
-    let Some(token) = first.recall.take() else {
-        return format!("{} (no re-call token)", called(&first).trim_end());
+/// The first answer of `r`, short, then re-submitted on its ticket over the SAME short buffers.
+fn recall_again(p: &Plugin<Hook>, d: &Dispatcher, r: &Arc<Request>, order_cap: usize) -> String {
+    let Some(t) = ticket(d) else {
+        return NO_TICKET.to_string();
     };
-    let (again, _) = cross(p, op, r, &mut b, Some(token));
-    format!(
-        "{} then {}",
-        called(&first).trim_end(),
-        called(&again).trim_end()
-    )
+    let first = cross(p, d, t, r.op, r, Bufs::first(order_cap));
+    let line = if first.short {
+        let again = cross(p, d, t, r.op, r, Bufs::first(order_cap));
+        format!(
+            "{} then {}",
+            called(&first.called).trim_end(),
+            called(&again.called).trim_end()
+        )
+    } else {
+        format!("{} (not short)", called(&first.called).trim_end())
+    };
+    d.recycle(t);
+    line
 }
 
 pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
@@ -450,11 +525,11 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
         .as_u64()
         .and_then(|n| usize::try_from(n).ok())
         .expect("conformance.json: hook.order_cap must be a number");
-    let requests: Vec<Request> = k["requests"]
+    let requests: Vec<Arc<Request>> = k["requests"]
         .as_array()
         .expect("conformance.json: hook.requests must be an array")
         .iter()
-        .map(|r| Request::of(r, order_cap))
+        .map(|r| Arc::new(Request::of(r, order_cap)))
         .collect();
     assert!(
         !requests.is_empty(),
@@ -467,7 +542,7 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
         "conformance.json: no `decide` expects an order longer than hook.order_cap (the re-call)",
     );
     let refreshed = text(&k["refresh"]["settings"]);
-    let after = Request::of(&k["refresh"]["request"], order_cap);
+    let after = Arc::new(Request::of(&k["refresh"]["request"], order_cap));
 
     let d = dispatcher();
     let p = load::<Hook>(s, leg, s.bind(&d, "hook")).expect("the hook door loads");
@@ -486,20 +561,19 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
         });
     }
     r.line("validate", 1, || called(&validate(&p, &settings)));
-    r.line("decide unopened", 0, || ask(&p, &requests[0], order_cap));
+    r.line("decide unopened", 0, || {
+        ask(&p, &d, &requests[0], order_cap)
+    });
     r.line("open bad", 1, || called(&open(&p, &bad[0])));
     r.line("open", 1, || called(&open(&p, &settings)));
     ready_step(&mut r, s, &p, &d);
     for q in &requests {
-        r.line(&q.label, q.pinned(), || ask(&p, q, order_cap));
+        r.line(&q.label, q.pinned(), || ask(&p, &d, q, order_cap));
     }
-    // The short answer re-called over the same short buffers: one crossing each, then FAULT.
+    // The short answer re-submitted on its ticket over the same short buffers: one crossing
+    // each, then FAULT.
     r.line("re-call short again", 2, || {
-        recall_again(&p, short, short.op, order_cap)
-    });
-    // The token spent on another op: the short answer's crossing; the re-call is refused.
-    r.line("re-call as another op", 1, || {
-        recall_again(&p, short, slot::TRANSFORM, order_cap)
+        recall_again(&p, &d, short, order_cap)
     });
     r.line("tick", 1, || {
         let (c, next) = tick(&p, 1);
@@ -508,9 +582,13 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     r.line("refresh bad", 1, || called(&refresh(&p, &bad[0])));
     r.line("refresh", 1, || called(&refresh(&p, &refreshed)));
     let after_label = format!("after refresh: {}", after.label);
-    r.line(&after_label, after.pinned(), || ask(&p, &after, order_cap));
+    r.line(&after_label, after.pinned(), || {
+        ask(&p, &d, &after, order_cap)
+    });
     r.line("close", 1, || called(&close(&p)));
-    r.line("decide after close", 0, || ask(&p, &requests[0], order_cap));
+    r.line("decide after close", 0, || {
+        ask(&p, &d, &requests[0], order_cap)
+    });
     let fold = r.fold();
 
     let mut expect: Vec<(String, String)> = requests
@@ -550,8 +628,7 @@ fn reversed(fold: &Fold) -> Fold {
 /// THE KIND'S CONTRACT over the fold, so two equal folds of failures prove nothing: the lifecycle
 /// answers READY where it must and FAILED with its reason where it must; every request answers
 /// exactly its expected line (verb, order, status, message, the re-call taken or not); a re-call
-/// that is short again is FAULT and a token spent on another op REFUSED; an unopened or closed
-/// instance serves nothing.
+/// that is short again is FAULT; an unopened or closed instance serves nothing.
 fn contract(fold: &Fold, expect: &[(String, String)]) -> Result<(), String> {
     let at = |label: &str| {
         fold.iter()
@@ -589,12 +666,6 @@ fn contract(fold: &Fold, expect: &[(String, String)]) -> Result<(), String> {
         again.starts_with("Failed ") && again.ends_with(" then Fault lease=false"),
         "a re-call answering short again is FAULT",
         again,
-    )?;
-    let other = at("re-call as another op")?;
-    need(
-        other.starts_with("Failed ") && other.ends_with(" then Refused lease=false"),
-        "a re-call token spent on another op is REFUSED",
-        other,
     )?;
     for label in ["decide unopened", "decide after close"] {
         let line = at(label)?;

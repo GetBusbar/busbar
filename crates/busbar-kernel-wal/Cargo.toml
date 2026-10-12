@@ -6,9 +6,11 @@
 # to end. Folding it into the ledger would mix "what the money is" with "how the bytes landed".
 #
 # DEPENDENCIES. `busbar-contract`, because the one thing the log hands back on a failure is a
-# `DurabilityLost`, and only a holder of the durability token may mint one. `sha2`, because a torn
-# tail is truncated at recovery to the last record whose digest verifies, and a digest is not a
-# thing to hand-roll. Nothing else: no async runtime, no serializer, no allocator opinion.
+# `DurabilityLost`, and only a holder of the durability token may mint one. `ring`, for SHA-256:
+# a torn tail is truncated at recovery to the last record whose digest verifies, the journal chains
+# on the same digest, and a digest is not a thing to hand-roll; ring is the workspace's one crypto
+# backend. Nothing else: no async runtime, no serializer, no allocator opinion. `sha2` is a
+# dev-dependency only, the independent witness the tests check ring's digests against.
 [package]
 name = "busbar-kernel-wal"
 version = "1.6.0"

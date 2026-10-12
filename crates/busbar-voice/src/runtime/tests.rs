@@ -858,34 +858,30 @@ async fn a_close_racing_the_supervisors_arrival_still_wakes_it() {
 
 // ── Item 137: a voice session's durable row is settled, never leaked ACTIVE ─────────────────────
 
-/// The retention sweep ABANDONS an idle ACTIVE session terminal, and a later sweep evicts it.
-///
-/// The session's own `open` opted OUT of the sweep (`|_, _, _, _| None`), and the cap rule evicts
-/// only terminal rows, so a session whose teardown never ran stayed ACTIVE in the working set for
-/// ever. Any later session's open is what claims the sweep.
+/// The retention sweep never retires an idle ACTIVE session (`BUSBAR-1.6.0.md` THE DESIGN §1, "an
+/// active work handle is never evicted"; ARCHITECT 2026-10-07 K2-H5 (ii)): another session's open
+/// claims the sweep, and the idle session is still resident and ACTIVE after it. Its teardown
+/// ([`SessionHandle::finish`]) is what ends it.
 #[test]
-fn an_idle_voice_session_is_abandoned_terminal_then_evicted() {
+fn an_idle_voice_session_stays_active_until_its_teardown() {
     let engine = Arc::new(DurableHandleEngine::new());
     let idle = SessionHandle::bind(Arc::clone(&engine), "alice", "call-idle");
     idle.open(1).expect("the idle session opens");
 
-    // An hour and a bit later another session opens, which claims the retention sweep.
-    let later = SessionHandle::bind(Arc::clone(&engine), "bob", "call-later");
-    later.open(1 + 3_600 + 2).expect("a later session opens");
+    // Three days on another session opens, which claims the retention sweep.
+    let next = SessionHandle::bind(Arc::clone(&engine), "bob", "call-next");
+    next.open(1 + 3 * 86_400).expect("the next session opens");
     assert_eq!(
         idle.get().map(|row| row.terminal),
-        Some(true),
-        "a session idle past the abandon bound is settled terminal by the sweep"
+        Some(false),
+        "the sweep retired an idle ACTIVE session"
     );
 
-    // And a terminal-TTL later still, a third open evicts it.
-    let third = SessionHandle::bind(Arc::clone(&engine), "carol", "call-third");
-    third
-        .open(1 + 3_600 + 2 + 3_600 + 2)
-        .expect("a third session opens");
+    // Its own teardown settles and evicts it.
+    assert!(idle.finish(2 + 3 * 86_400), "the teardown ends the session");
     assert!(
         idle.get().is_none(),
-        "the abandoned session leaves the working set"
+        "the finished session leaves the working set"
     );
 }
 

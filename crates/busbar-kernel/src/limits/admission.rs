@@ -71,8 +71,9 @@ impl AdmissionGate {
 /// bytes, fixed `Retry-After: 1` — no per-request formatting and no protocol sniffing, because a
 /// shed happens BEFORE any routing or body work and must stay the cheapest possible response to
 /// produce. Callers depend on these exact bytes (the shed body is part of the gateway's observable
-/// contract), so change it only alongside the tests that pin it.
-fn inbound_overloaded_response() -> axum::response::Response {
+/// contract), so change it only alongside the tests that pin it. The data-plane auth middleware
+/// answers the same bytes when an auth verifier's `max_inflight` is full (owner ruling Q134).
+pub(crate) fn inbound_overloaded_response() -> axum::response::Response {
     use axum::response::IntoResponse;
     let mut resp = (
         axum::http::StatusCode::SERVICE_UNAVAILABLE,

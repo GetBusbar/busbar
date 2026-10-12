@@ -30,9 +30,9 @@
 //! ## The branch, and why it is the only place the data directory is read
 //!
 //! A deployment that configures no data directory needs none: without one the journal is
-//! memory-buffered and shipped to the configured store, and durability is the store's durability.
-//! That is not a degraded mode — it is the previous release's shape, and the great majority of
-//! deployments run it.
+//! memory-buffered and its records are kept by the configured store, and durability is the store's
+//! durability. That is not a degraded mode — the great majority of deployments run it — but it is
+//! only true because the store KEEPS the records and the boot READS THEM BACK; see the next section.
 //!
 //! The journal unit states the rule as a type, and says so in its own words: *constructing an
 //! on-disk log IS the decision to write to a disk; nothing probes for a directory or guesses at
@@ -42,32 +42,38 @@
 //! asked for none is the failure this shape exists to make impossible, and the tests below assert
 //! it by listing the directory rather than by trusting the code.
 //!
-//! ## The shipper is part of the answer, not an optimisation, and it has a name
+//! ## Where the records go, and how a restart gets them back
 //!
-//! Without a data directory, the journal is *shipped to the configured store synchronously*, which
-//! is why the unset branch takes the store's shipper rather than the null one. That shipper is the
-//! store adapter's, and the verb behind it is the contract's `append_batch(stream, records)` —
-//! segment-level batched, idempotent on the `(node, node_seq)` pair the journal's records carry,
-//! which is what makes a re-offered batch after a store hiccup append what is new and pass over what
-//! is already there. Reading one record of the chain back by key is the other three the contract
-//! adds for a kernel-held durable record, `record_put`, `record_get` and `record_scan`.
+//! The production boot builds the book over the configured store ([`build_on_store`], ARCHITECT
+//! 2026-10-07 H3 ruling (a)-(c)). Each journal record is written through the store's v3
+//! `record_put` slot under the journal schema, keyed `(node, node_seq)` big-endian so `record_scan`
+//! returns chain order ([`store_chain`]). The write is WRITE-BEHIND on the host's one bounded lane
+//! ([`JournalLane`]): the journal appends under the book's lock on the request path and hands the
+//! batch to the lane, which never calls the store there; its own worker puts the records in order,
+//! off every runtime worker, and keeps a refused record and offers it again.
 //!
-//! On every store this binary can load, all four are answered by the adapter's NODE-LOCAL SHIM: the
-//! binary's store window tops out below the payload schema at which those operations gain a wire, so
-//! there is no published store that speaks them and the shim is the answer rather than a fallback.
-//! It acknowledges and never fails, which is why a memory-buffered journal on such a deployment
-//! never sees a durability loss it did not deserve. A node with no store configured and no directory
-//! keeps nothing, which is again the previous release's behaviour and not a silent data loss: there
-//! was nowhere it was ever going.
+//! With no data directory the boot RESUMES the chain from the store: `record_scan` reads it back,
+//! the journal is seeded with it (so `replay` answers it and `node_seq` continues), and everything a
+//! chain rebuilds is rebuilt from it exactly as from a disk — the book, the open holds a predecessor
+//! left, the audit records and their cache, the checkpoints' anchor, the dated rate-card history
+//! with its signed corrections, and the node amendment journal ([`Durability::keeps_chain`]).
+//! Before this, the store adapter's shipper acknowledged every batch and kept a count, so a node
+//! with no data directory lost all of it on every restart.
 //!
-//! **One constraint this places on the caller, and it is load-bearing.** In the memory-buffered
-//! mode the shipper's answer is part of the commit: a failed ship comes back as a durability loss
-//! with the batch retained. On a node with no configured peers — which is every previous-release
-//! deployment — a store hiccup must still be write-behind. The retained batch is re-appended, and
-//! that is write-behind by another name; what must not happen is the caller turning that answer
-//! into a refusal at the door. The previous release served through a store hiccup, and a refusal
-//! there would be a deployment that started refusing requests it used to serve. The retention is
-//! bounded and the bound's behaviour is the journal unit's named decision, not this module's.
+//! **What a full lane means, and why it is the caller's decision.** While the lane has room a store
+//! that refuses costs nothing a client sees: the units are served and their records wait in the
+//! lane. When it is full the journal's next batch is turned away and retained by the log, which
+//! re-offers it on the next append, and the node FAILS CLOSED: a new money-bearing unit is refused
+//! 503 with the reason ([`Durability::refuses_money`]) until the store takes what waits. The journal
+//! is built to keep every record at its bound for this ([`Journal::retaining_at_bound`]); no record
+//! is dropped. The durable admin verbs go further and answer only once the store has acknowledged
+//! their own record (`units_admin`).
+//!
+//! With a data directory the disk is the record and the store is catch-up work: the same lane ships
+//! to it, and a full lane refuses nothing.
+//!
+//! A configured store that does not offer the record slots at all cannot keep a journal, and the
+//! boot refuses it, naming the store and the slots (`root::boot::book`).
 //!
 //! ## Dual writing is the default, not an option
 //!
@@ -120,6 +126,25 @@ use busbar_kernel_wal::{
 mod replay;
 use replay::{apply_opened, replay_into, same_movement, Replayed};
 pub use replay::{JournalDisagreement, Recoverable};
+
+/// The journal kept in the configured store: its schema and keys, the boot's read-back and the
+/// host's write-behind lane. A private child module; its public items are re-exported here.
+mod store_chain;
+pub use store_chain::{read_chain, JournalLane, RECORD_SLOTS};
+// Its one caller is the admin append's wait on the store (`units_admin`), compiled with `root-admin`.
+#[cfg(feature = "root-admin")]
+pub use store_chain::ACK_DEADLINE;
+// What the tests read the store's rows back by.
+#[cfg(test)]
+pub use store_chain::{part_key, JOURNAL_SCHEMA};
+
+/// Who a node is and the key it signs with, kept in the configured store: the node registry, the
+/// deployment keyset, and the walk `/admin/verify` makes of every stored chain.
+mod store_identity;
+pub use store_identity::{host_identity, keep_keyset, node_id, stored_keyset};
+// Its callers are the admin verify (`units_admin`, `root-admin`) and the tests.
+#[cfg(any(test, feature = "root-admin"))]
+pub use store_identity::walk_stored_chains;
 
 /// The node amendment journal bound to the chain: each sealed amendment journalled, and the node
 /// journal rebuilt from the chain at boot. A private child module, as `replay` is.
@@ -175,7 +200,7 @@ pub struct DurabilityConfig {
 /// The durability stack the root owns: the journal, the ledger and the audit record chain.
 pub struct Durability {
     /// The one journal. On disk only where a data directory was configured; otherwise
-    /// memory-buffered and shipped through the store adapter's plane-record verbs.
+    /// memory-buffered, its records kept by the configured store through [`Durability::lane`].
     pub journal: Journal,
     /// The ledger, dual-writing onto the previous release's rows.
     pub ledger: Ledger,
@@ -248,6 +273,28 @@ pub struct Durability {
     /// window one of these sits on REFUSES rather than answering the priced remainder, which would
     /// be a silent zero for the class the card was silent about. Rebuilt from the chain at boot.
     refused: Vec<Posting>,
+    /// THE COUNTED LINES THE BOOK HOLDS, in chain order (ARCHITECT 2026-10-07 H6 retention ruling):
+    /// every posting that carried a unit's counts, kept as the counts and the instant they price
+    /// at, so `GET /api/v1/admin/ledger/totals` prices them at READ TIME (BUSBAR-1.6.0.md §7) and a
+    /// signed back-dated correction moves the next read without a restart. Appended as each one is
+    /// journalled and REBUILT FROM THE CHAIN at boot, so the read never replays the journal (M11)
+    /// and answers the same set either side of a restart.
+    ///
+    /// THE BOUND IS THE BOOK'S: a line is held for exactly as long as the book holds its window.
+    /// The book retires no window today — `Book::retain_from` has no production caller, and the
+    /// boot rebuilds every window the chain carries — so neither does this; the lines grow with the
+    /// counted units this node's chain holds, as the chain itself does.
+    counted: Vec<CountedLine>,
+    /// THE BALANCES A FIGURE MOVED WITH NO COUNTS BEHIND IT: a settlement whose writer knew no
+    /// counts and posted a figure anyway, or a record of the era that carried figures. Such a
+    /// figure has nothing to price at read time, so while any is held the counted lines are not
+    /// the whole of the book's money and the totals read answers the book's balance instead.
+    ///
+    /// A settlement of the counts era with no counts is held here only by the process that posted
+    /// it: its record carries no figure (#71), so a replay rebuilds its balance without one, and
+    /// the restart reconciliation names that difference. A figures-era record is held either side
+    /// of a restart, because its figure is what the record carries.
+    uncounted: std::collections::BTreeSet<(TotalsKey, WindowStart)>,
     /// Settled figures the book moved whose journal record the log has not confirmed yet.
     ///
     /// Each was moved out of `settled` into `unreconciled` when its append came back as a
@@ -279,6 +326,12 @@ pub struct Durability {
     /// THE CHECKPOINT CADENCE (BUSBAR-1.6.0.md THE DESIGN, §7), once [`Durability::arm_checkpoints`] armed
     /// it. `None` on a book nobody armed, which seals nothing on its own.
     cadence: Option<Cadence>,
+    /// THE HOST'S LANE TO THE CONFIGURED STORE the journal ships through, on a book built over one
+    /// ([`build_on_store`]). `None` on a book built over a bare shipper.
+    lane: Option<JournalLane>,
+    /// The memory-buffered journal was RESUMED from the chain the configured store kept, so the
+    /// chain has a durable source as a disk would be one.
+    resumed: bool,
 }
 
 /// Where the book reads the dated rate-card history a replay prices against: a snapshot pinned
@@ -304,6 +357,58 @@ impl Durability {
     #[must_use]
     pub fn on_disk(&self) -> bool {
         matches!(self.journal.mode(), Mode::OnDisk)
+    }
+
+    /// WHETHER THE CHAIN HAS A DURABLE SOURCE: on a disk, or resumed from the configured store. The
+    /// chain-rebuilt state — the dated history, the amendment journal, an audit window older than
+    /// the cache — is rebuilt from it then, and only then.
+    #[must_use]
+    pub fn keeps_chain(&self) -> bool {
+        self.on_disk() || self.resumed
+    }
+
+    /// The host's lane to the configured store, on a book built over one.
+    #[must_use]
+    pub fn lane(&self) -> Option<&JournalLane> {
+        self.lane.as_ref()
+    }
+
+    /// What `/admin/verify` needs to walk every chain the store keeps, taken under the book's lock
+    /// so the walk itself runs without it: the store's calls, this node's id and the keys this
+    /// node signs with. `None` on a book with no store behind it.
+    #[must_use]
+    pub fn stored_walk_inputs(
+        &self,
+    ) -> Option<(
+        std::sync::Arc<dyn busbar_contract::store_calls::StoreCalls>,
+        u64,
+        busbar_kernel_audit::AuditKeySet,
+    )> {
+        let lane = self.lane.as_ref()?;
+        Some((
+            lane.calls(),
+            self.journal.node(),
+            seal::keyset_of(&self.record),
+        ))
+    }
+
+    /// Whether the store is where this journal's durability is: no disk, and a lane to the store.
+    /// A durable verb then answers only once the store acknowledged its record.
+    #[must_use]
+    pub fn durable_in_store(&self) -> bool {
+        !self.on_disk() && self.lane.is_some()
+    }
+
+    /// WHY A NEW MONEY-BEARING UNIT IS REFUSED (ARCHITECT 2026-10-07 H3 ruling): the store is where
+    /// this journal is kept and the lane to it is full, so admitting more work would grow what the
+    /// node holds for the store without bound. `None` otherwise — always on a disk, where the store
+    /// is catch-up work.
+    #[must_use]
+    pub fn refuses_money(&self) -> Option<String> {
+        if self.on_disk() {
+            return None;
+        }
+        self.lane.as_ref().and_then(JournalLane::refuses_money)
     }
 
     /// Put a durable `ChainBreak` record on the journal for every segment remainder boot recovery
@@ -911,15 +1016,74 @@ impl Durability {
         }
         let entry =
             Entry::new(RecordClass::Transaction, posting.body()).at(posting.wall, posting.mono);
+        let offered_at = self.journal.next_seq();
         let appended = self.journal.append(at.durability, at.step, &[entry]);
+        self.book_line(&posting, sealed_at(appended.as_ref().ok(), offered_at));
         self.confirm(appended.as_ref().ok());
         appended.map(|_| posting)
+    }
+
+    /// KEEP WHAT A JOURNALLED POSTING LEAVES FOR THE READ-TIME TOTALS (H6): its counted line, or
+    /// the balance it moved by a figure with no counts behind it. The same rule a replay applies to
+    /// the same record ([`booked_of`]), so the lines this process builds live are the lines the
+    /// next boot rebuilds from the chain. Kept whether or not the append succeeded: the log retains
+    /// a batch it could not hand over and offers it again, and the book has moved either way.
+    fn book_line(&mut self, posting: &Posting, node_seq: u64) {
+        booked_of(posting, node_seq).keep(&mut self.counted, &mut self.uncounted);
+    }
+
+    /// THE COUNTED LINES THE TOTALS READ PRICES, as the ledger's booked lines
+    /// ([`busbar_kernel_ledger::Posting`]): each one's counts, its balance and window, its fee
+    /// count, and ITS OWN `arrived_ms` — the instant [`busbar_kernel_ledger::totals_as_of`]
+    /// resolves its card at (#79). No price is on any of them (BUSBAR-1.6.0.md §7).
+    ///
+    /// `None` when the lines are not the whole of the book's money, and the read must then answer
+    /// the book's balance rather than a derivation with a figure missing from it:
+    ///
+    /// - a balance holds a figure no counts stand behind (the `uncounted` set);
+    /// - a line reported a class nobody declared — refused for good, whatever the card says;
+    /// - a line names a class this image's vocabulary does not hold, so no booked line can name it.
+    ///
+    /// Read off what the book holds: the journal is not replayed (audit M11).
+    #[must_use]
+    pub fn booked_lines(&self) -> Option<Vec<busbar_kernel_ledger::Posting>> {
+        if !self.uncounted.is_empty() {
+            return None;
+        }
+        let node = self.journal.node();
+        self.counted.iter().map(|line| line.booked(node)).collect()
+    }
+
+    /// The dated history this book prices against, pinned for one read: the source its chain is
+    /// rebuilt against at boot, which on a production node is the root's (`ROOT_CARD`).
+    #[must_use]
+    pub fn pinned_history(&self) -> Option<PinnedHistory> {
+        (self.history)()
     }
 
     /// The counts rows whose pricing refused, oldest first.
     #[must_use]
     pub fn refused_rows(&self) -> &[Posting] {
         &self.refused
+    }
+
+    /// **THE BALANCES THAT HAVE NO FIGURE (#42)**, each named once: one entry per balance, window,
+    /// lane and refusal among the refused rows, in that order.
+    ///
+    /// The refusal is per balance and window, and so is this list. A read that serves many balances
+    /// (the ledger views, `GET /admin/verify`) answers every other balance and names each of these
+    /// rather than refusing whole: one refused row is a hole in ONE balance, and a read that went
+    /// dark over it would hide every other figure and finding for the life of the journal, since a
+    /// refused row is rebuilt from the chain at every boot. The same entry is what
+    /// [`Durability::settled_read`] refuses with for that balance.
+    #[must_use]
+    pub fn refused_balances(&self) -> Vec<RefusedCounts> {
+        self.refused
+            .iter()
+            .map(RefusedCounts::of)
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect()
     }
 
     /// **THE BOOK'S SETTLED FIGURE FOR ONE BALANCE AND WINDOW — or the refusal (#42).**
@@ -942,16 +1106,7 @@ impl Durability {
             .iter()
             .find(|row| row.key == *key && row.window == window)
         {
-            return Err(Box::new(RefusedCounts {
-                key: row.key.clone(),
-                window: row.window,
-                lane: row
-                    .counts
-                    .as_ref()
-                    .map(|c| c.lane.clone())
-                    .unwrap_or_default(),
-                refusal: row.refusal.clone().unwrap_or_default(),
-            }));
+            return Err(Box::new(RefusedCounts::of(row)));
         }
         let figures = self.ledger.book().get(key, window);
         Ok(figures.settled.saturating_add(figures.unreconciled))
@@ -1058,7 +1213,10 @@ impl Durability {
                 Entry::new(RecordClass::Transaction, record.body()).at(record.wall, record.mono)
             })
             .collect();
-        match self.journal.append(at.durability, at.step, &entries) {
+        let offered_at = self.journal.next_seq();
+        let appended = self.journal.append(at.durability, at.step, &entries);
+        self.book_line(&posting, sealed_at(appended.as_ref().ok(), offered_at));
+        match appended {
             Ok(ack) => {
                 self.confirm(Some(&ack));
                 Ok(Settled {
@@ -1215,6 +1373,135 @@ impl UnitCounts {
     }
 }
 
+/// ONE COUNTED LINE THE BOOK HOLDS FOR THE READ-TIME TOTALS (ARCHITECT 2026-10-07 H6 retention
+/// ruling): a journalled posting's counts and the instant they price at, on its balance and window.
+/// The amount is counts plus the card in force at `arrived_ms`, never a price (BUSBAR-1.6.0.md THE
+/// DESIGN §1, §7).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CountedLine {
+    /// Which balance the posting is on.
+    pub key: TotalsKey,
+    /// Which window.
+    pub window: WindowStart,
+    /// The posting's position on this node's chain.
+    pub node_seq: u64,
+    /// The unit's raw counts: lane, fee count and per-class counts.
+    pub counts: UnitCounts,
+    /// THE INSTANT THE COUNTS PRICE AT, and the only resolution key a read uses (#79).
+    pub arrived_ms: u64,
+    /// The plane reported a class nobody declared: refused for good, whatever any card says.
+    pub undeclared: bool,
+}
+
+impl CountedLine {
+    /// The line as the ledger's booked line, written by `node`. `None` for a line no booked line
+    /// can carry: a class nobody declared, or one this image's vocabulary does not hold. The tier
+    /// is the standard one and the origin a client, which is what every counted posting is priced
+    /// at when it settles ([`price_counts`]), so the read prices the same quantities the same way.
+    #[must_use]
+    pub fn booked(&self, node: u64) -> Option<busbar_kernel_ledger::Posting> {
+        if self.undeclared {
+            return None;
+        }
+        let lines = self
+            .counts
+            .classes
+            .iter()
+            .map(|(class, quantity)| {
+                Some(busbar_kernel_ledger::PricedLine {
+                    class: meter_class_of(class)?,
+                    quantity: *quantity,
+                })
+            })
+            .collect::<Option<Vec<_>>>()?;
+        Some(busbar_kernel_ledger::Posting {
+            node,
+            node_seq: self.node_seq,
+            key: self.key.clone(),
+            window_start: self.window,
+            lane: self.counts.lane.clone(),
+            lines,
+            fee_count: self.counts.fee_count,
+            tier_bp: busbar_kernel_ledger::cost::STANDARD_TIER_BP,
+            arrived_ms: self.arrived_ms,
+            origin: busbar_kernel_ledger::PostingOrigin::Client,
+        })
+    }
+}
+
+/// The static class id a booked line names a counted class by: the reserved four by their own
+/// names, any other class by the name this image's vocabulary registered for it. `None` for a class
+/// the vocabulary does not hold.
+fn meter_class_of(class: &str) -> Option<busbar_contract::caps::MeterClassId> {
+    busbar_contract::records::RESERVED_UNITS
+        .into_iter()
+        .find(|reserved| *reserved == class)
+        .map(busbar_contract::caps::MeterClassId::new)
+        .or_else(|| busbar_contract::Registration::meter_class(class))
+}
+
+/// What one journalled posting leaves for the read-time totals.
+enum Booked {
+    /// Its counted line.
+    Line(CountedLine),
+    /// A figure on this balance and window with no counts behind it.
+    Figure((TotalsKey, WindowStart)),
+    /// Nothing: a carry, counts that say nothing, or a posting that moved no figure.
+    Nothing,
+}
+
+impl Booked {
+    /// Put it where the book keeps it: a line on the counted lines, a figure's balance on the set
+    /// of balances with figures no counts stand behind.
+    fn keep(
+        self,
+        counted: &mut Vec<CountedLine>,
+        uncounted: &mut std::collections::BTreeSet<(TotalsKey, WindowStart)>,
+    ) {
+        match self {
+            Booked::Line(line) => counted.push(line),
+            Booked::Figure(at) => {
+                uncounted.insert(at);
+            }
+            Booked::Nothing => {}
+        }
+    }
+}
+
+/// THE ONE RULE, live and on replay alike (H6): a posting carrying counts that say something is a
+/// counted line; a settlement whose figure has no counts behind it marks its balance; anything else
+/// leaves nothing. `node_seq` is the posting's position on the chain.
+fn booked_of(posting: &Posting, node_seq: u64) -> Booked {
+    if posting.kind == PostingKind::Carry {
+        return Booked::Nothing;
+    }
+    match &posting.counts {
+        Some(counts) if !counts.is_empty() => Booked::Line(CountedLine {
+            key: posting.key.clone(),
+            window: posting.window,
+            node_seq,
+            counts: counts.clone(),
+            arrived_ms: posting.arrived_ms,
+            undeclared: posting.flags.contains(PostingFlags::UNDECLARED),
+        }),
+        Some(_) => Booked::Nothing,
+        None if posting.settled > 0 => Booked::Figure((posting.key.clone(), posting.window)),
+        None => Booked::Nothing,
+    }
+}
+
+/// Where an append put its first transaction record: off the acknowledgement where there is one,
+/// else the position the batch was offered at (the log retains it there and offers it again).
+fn sealed_at(ack: Option<&JournalAck>, offered_at: u64) -> u64 {
+    ack.and_then(|ack| {
+        ack.sealed
+            .iter()
+            .find(|record| record.class == RecordClass::Transaction)
+            .map(|record| record.node_seq)
+    })
+    .unwrap_or(offered_at)
+}
+
 /// **THE BOOK'S MONEY, AS A VIEW** (#71): what `counts` cost at the card in force at `arrived_ms`
 /// (#79), in nano-units, through the one spend function.
 ///
@@ -1239,7 +1526,7 @@ pub fn price_counts(
 }
 
 /// A read that met a counts row the card refused to price (#42). Never a figure.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct RefusedCounts {
     /// The balance the row sits on.
     pub key: TotalsKey,
@@ -1249,6 +1536,23 @@ pub struct RefusedCounts {
     pub lane: String,
     /// Why the pricing refused.
     pub refusal: String,
+}
+
+impl RefusedCounts {
+    /// What one refused row says about its balance: where it sits, the lane that served the unit,
+    /// and why the pricing refused.
+    fn of(row: &Posting) -> Self {
+        Self {
+            key: row.key.clone(),
+            window: row.window,
+            lane: row
+                .counts
+                .as_ref()
+                .map(|c| c.lane.clone())
+                .unwrap_or_default(),
+            refusal: row.refusal.clone().unwrap_or_default(),
+        }
+    }
 }
 
 impl std::fmt::Display for RefusedCounts {
@@ -2122,7 +2426,7 @@ impl MigrationRecords for JournalMigrationRecords<'_> {
 /// As [`build_for_node`].
 pub fn build(
     cfg: &DurabilityConfig,
-    shipper: Box<dyn Shipper>,
+    shipper: Box<dyn Shipper<busbar_kernel_wal::Record>>,
     legacy_rows: Box<dyn LegacyRows>,
 ) -> Result<Durability, OpenError> {
     build_for_node(cfg, 0, shipper, legacy_rows)
@@ -2157,16 +2461,14 @@ pub struct NodeBook {
 /// dual write is keeping up — would answer over a book nothing settles into. That is not a
 /// hypothetical shape; it is what a node has when each mount builds its own.
 ///
-/// THE NO-STORE FALLBACK, and it is that rather than the boot path. Memory-buffered, keeping
-/// nothing: a node with no configured store has nowhere to ship a batch to, so it takes the null
-/// shipper and reads no data directory, which is the previous release's behaviour for that
-/// deployment and not a silent data loss — there was nowhere the records were ever going.
+/// A BOOK WITH NO STORE BEHIND IT: memory-buffered over the null shipper, reading no data
+/// directory, keeping its chain for the life of the process and no longer. The boot never builds
+/// one — a 1.6.0 configuration names its store (Q-STORE = (B)) and `root::boot::book` refuses one
+/// that does not — so this is for a caller with no store to ship to by construction: a tool, a test.
 ///
-/// **A DEPLOYMENT WITH A STORE DOES NOT COME THROUGH HERE.** It is composed by the binary's
-/// `root::boot::compose_book`, which takes the CONFIGURED data directory and the configured store's
-/// shipper and seals the opening before it hands the book back. This constructor hard-codes both
-/// answers, which is correct only because the one caller that reaches it has already established
-/// that there is no store to make either decision against.
+/// **A DEPLOYMENT DOES NOT COME THROUGH HERE.** It is composed by the binary's
+/// `root::boot::compose_book` over the configured store ([`build_on_store`]), which takes the
+/// CONFIGURED data directory and seals the opening before it hands the book back.
 #[must_use]
 pub fn node_book() -> NodeBook {
     node_book_over(root_history())
@@ -2209,7 +2511,7 @@ pub fn node_book_over(history: HistorySource) -> NodeBook {
 pub fn build_for_node(
     cfg: &DurabilityConfig,
     node: u64,
-    shipper: Box<dyn Shipper>,
+    shipper: Box<dyn Shipper<busbar_kernel_wal::Record>>,
     legacy_rows: Box<dyn LegacyRows>,
 ) -> Result<Durability, OpenError> {
     build_with_cards(
@@ -2232,7 +2534,7 @@ pub fn build_for_node(
 pub fn build_priced(
     cfg: &DurabilityConfig,
     node: u64,
-    shipper: Box<dyn Shipper>,
+    shipper: Box<dyn Shipper<busbar_kernel_wal::Record>>,
     legacy_rows: Box<dyn LegacyRows>,
     history: HistorySource,
 ) -> Result<Durability, OpenError> {
@@ -2249,19 +2551,82 @@ pub fn build_priced(
 pub fn build_with_cards(
     cfg: &DurabilityConfig,
     node: u64,
-    shipper: Box<dyn Shipper>,
+    shipper: Box<dyn Shipper<busbar_kernel_wal::Record>>,
+    legacy_rows: Box<dyn LegacyRows>,
+    history: HistorySource,
+    cards: Option<&'static crate::root::kernel::RootHistory>,
+) -> Result<Durability, OpenError> {
+    build_inner(cfg, node, shipper, None, legacy_rows, history, cards)
+}
+
+/// THE BOOK OVER THE CONFIGURED STORE — the production boot's (ARCHITECT 2026-10-07 H3 ruling
+/// (a)-(c)): the journal ships through `lane` to the store's record slots, and with no data
+/// directory it RESUMES from the chain the store kept ([`read_chain`]), keeping every record at its
+/// bound so a full lane refuses new money-bearing work rather than dropping anything. With a data
+/// directory the disk is the record and the store is catch-up work, read nothing back from.
+///
+/// # Errors
+///
+/// As [`build_for_node`], and: the store would not read its journal back, or the chain it holds
+/// could not be seeded.
+pub fn build_on_store(
+    cfg: &DurabilityConfig,
+    node: u64,
+    lane: JournalLane,
+    legacy_rows: Box<dyn LegacyRows>,
+    history: HistorySource,
+    cards: Option<&'static crate::root::kernel::RootHistory>,
+) -> Result<Durability, OpenError> {
+    let resume = match cfg.data_dir {
+        Some(_) => None,
+        None => Some(read_chain(lane.calls().as_ref(), node).map_err(|why| {
+            OpenError::Io(std::io::Error::other(format!(
+                "the journal could not be read back from the store `{}`: {why}",
+                lane.store()
+            )))
+        })?),
+    };
+    let mut durability = build_inner(
+        cfg,
+        node,
+        lane.shipper(),
+        Some(resume.unwrap_or_default()),
+        legacy_rows,
+        history,
+        cards,
+    )?;
+    durability.lane = Some(lane);
+    Ok(durability)
+}
+
+/// The one construction every builder above shares. `resume` is `Some` on a book over the
+/// configured store: with no data directory its journal is seeded with those records (the chain
+/// the store kept, possibly none) and keeps every record at its bound.
+fn build_inner(
+    cfg: &DurabilityConfig,
+    node: u64,
+    shipper: Box<dyn Shipper<busbar_kernel_wal::Record>>,
+    resume: Option<Vec<busbar_kernel_wal::Record>>,
     legacy_rows: Box<dyn LegacyRows>,
     history: HistorySource,
     cards: Option<&'static crate::root::kernel::RootHistory>,
 ) -> Result<Durability, OpenError> {
     // The journal is handed the root's wall clock: the log unit reads none of its own.
     let clock = busbar_kernel::store::now_ms;
-    let journal = match cfg.data_dir.as_deref() {
-        // The previous release's shape: nothing is opened, nothing is probed, and durability is
-        // whatever the store the batches are shipped to provides.
-        None => Journal::memory_buffered_to(node, shipper, clock),
+    let resumed = cfg.data_dir.is_none() && resume.is_some();
+    let journal = match (cfg.data_dir.as_deref(), &resume) {
+        // No disk, and the store is where the chain is kept: resume it. Nothing is opened and
+        // nothing is probed; the records come back from the store.
+        (None, Some(records)) => {
+            Journal::memory_resumed(node, records, shipper, clock)?.retaining_at_bound()
+        }
+        // No disk and no store behind the shipper: the chain lives as long as the process.
+        (None, None) => Journal::memory_buffered_to(node, shipper, clock),
         // The operator asked for a journal on this node's own disk. This call is that decision.
-        Some(dir) => Journal::in_directory(node, dir, shipper, clock)?,
+        // Over the store, a directory that already holds a chain keeps the identity it was
+        // written under.
+        (Some(dir), Some(_)) => Journal::in_directory_adopting(node, dir, shipper, clock)?,
+        (Some(dir), None) => Journal::in_directory(node, dir, shipper, clock)?,
     };
 
     let mut durability = Durability {
@@ -2270,8 +2635,14 @@ pub fn build_with_cards(
         // write, and both are release requirements rather than deployment choices.
         ledger: Ledger::dual_writing(legacy_rows),
         // Every record this book seals names this node (THE DESIGN §1: "when (wall + monotonic,
-        // node)"): the node half of every op id the kernel mints in this process.
-        record: AuditChain::new().sealing_as(busbar_kernel::door::node()),
+        // node)"). On a chain the store keeps, that is the id the store assigned this host, the one
+        // the chain is keyed by and walked under, which every boot of the host shares; otherwise it
+        // is the node half of every op id the kernel mints in this process.
+        record: AuditChain::new().sealing_as(if resumed {
+            node
+        } else {
+            busbar_kernel::door::node()
+        }),
         checkpoints: Vec::new(),
         audit_records: Vec::new(),
         audit_findings: Vec::new(),
@@ -2292,6 +2663,10 @@ pub fn build_with_cards(
         cards_from: None,
         amendments_through: None,
         cadence: None,
+        lane: None,
+        resumed,
+        counted: Vec::new(),
+        uncounted: std::collections::BTreeSet::new(),
     };
 
     // A CORRUPT JOURNAL DOES NOT STOP THE BOOT, AND IT IS NEVER SILENT. The log has already kept
@@ -2317,15 +2692,23 @@ pub fn build_with_cards(
     // money view resetting to zero on every restart — and the reconciliation passing, because both
     // sides were zero. Every hold opened and every settlement posted is replayed through the
     // ledger's own arithmetic, the dual write included, so the book and the rows it feeds are what
-    // they were when the node stopped. A memory-buffered journal replays nothing: it starts empty.
+    // they were when the node stopped. A memory-buffered journal resumed from the store replays
+    // what the store kept; one with no store behind it starts empty.
     //
     // AND THE DATED RATE-CARD HISTORY IS REBUILT FROM THE CHAIN FIRST (#79, OWNER RULING Q14), so a
     // replayed posting prices at the card in force when it arrived — never at the boot card.
-    let chain = durability.journal.replay();
+    //
+    // A RESUMED chain is read from what the store returned rather than off the seeded buffer: the
+    // buffer keeps its newest memory segment resident, the store keeps all of it.
+    let chain = match resume.filter(|_| resumed) {
+        Some(records) => Ok(busbar_kernel_wal::decode_run(&records)
+            .and_then(|decoded| busbar_kernel_wal::verify_journal(&decoded).map(|()| decoded))),
+        None => durability.journal.replay(),
+    };
     let mut refused_corrections = Vec::new();
     if let Some(cards) = cards {
-        let records = match (&cfg.data_dir, &chain) {
-            (Some(_), Ok(Ok(records))) => Some(records.as_slice()),
+        let records = match (durability.keeps_chain(), &chain) {
+            (true, Ok(Ok(records))) => Some(records.as_slice()),
             _ => None,
         };
         // A boot card the journal will not take refuses the boot (MONEY-AUDIT D-6).
@@ -2373,6 +2756,10 @@ pub fn build_with_cards(
         .unwrap_or(0);
     durability.incarnation = replayed.incarnation.max(audited).saturating_add(1);
     durability.refused = replayed.refused;
+    // The counted lines the totals read prices, rebuilt from the same chain as the book (H6): the
+    // read prices these and never replays the journal itself.
+    durability.counted = replayed.counted;
+    durability.uncounted = replayed.uncounted;
 
     // THE HOLDS A PREDECESSOR LEFT OPEN ARE RECOVERED HERE, before anything can settle onto this
     // book (item 127): `recovery::recover_all` had no production caller, so a hold whose node died

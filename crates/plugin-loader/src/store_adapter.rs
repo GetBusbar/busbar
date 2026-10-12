@@ -1,67 +1,54 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The store adapter: the three unit-side store seams over ONE loaded store plugin.
+//! The store adapter: the unit-side store seams over ONE loaded store plugin.
 //!
-//! Three crates bind to a store and none of them may name one — `busbar-kernel` (slices),
-//! the admin verb-execution unit (the disaster-recovery verbs and the sealed new-verb replay
-//! cache, reached here through the `busbar_contract::verb_store::Store` face) and `busbar-unit-wal`
-//! (shipping). The composition root binds all three to a single adapter over the
-//! store this crate loaded, so there is exactly one store handle in the process and exactly one
-//! place that knows what the loaded plugin can and cannot do.
+//! Two crates bind to a store and neither may name one — `busbar-kernel` (slices) and the admin
+//! verb-execution unit (the disaster-recovery verbs and the sealed new-verb replay cache, reached
+//! here through the `busbar_contract::verb_store::Store` face). The composition root binds both to
+//! a single adapter over the store this crate loaded, so there is exactly one store handle in the
+//! process and one place that says what this adapter answers itself.
 //!
-//! # What passes through and what is shimmed
+//! # The journal is not here
 //!
-//! The architecture document's store row types the trait after the PUBLISHED store protocol and
-//! extends it: twelve operations are the shapes the shadow oracle already proves against the
-//! released stores, and ten are additions this release invents (`append_batch`, `reserve`,
-//! `release`, `heads`, `session_put`, `session_remove`, `sessions_for`, `record_put`, `record_get`,
-//! `record_scan`).
+//! The node's journal is kept by the configured store through its store v3 record slots
+//! (`record_put` / `record_get` / `record_scan`), written by the composition root's own bounded lane
+//! and read back at boot (the root's `durability::store_chain`; ARCHITECT 2026-10-07 H3 ruling).
+//! This adapter used to stand in as the journal's shipper and acknowledge every batch while keeping
+//! only a count, which is how a node with no data directory lost its whole chain on every restart.
+//! That shim is gone: nothing here acknowledges a record a store did not take.
 //!
-//! - **The published operations pass through unchanged.** They are [`busbar_contract::records::RecordStore`] calls on
-//!   the loaded plugin, reached through [`StoreAdapter::store`] — the same handle the ledger's
-//!   legacy-rows dual write uses. Nothing in this module touches their wire; the oracle's
-//!   store-persist cell is what proves it (`testing/shadow-oracle/scripts/store-persist.sh`: mint,
-//!   spend, kill, boot again on the same store, read the money back).
-//! - **The additions are answered by a node-local shim.** Every one of them, on a store that
-//!   predates them, answers from memory: never an error, never a log line, never a boot refusal, so
-//!   a deployment on a published sqlite/postgres/mysql/valkey store boots and serves exactly as it
-//!   did. That is the rule in the plugin-behaviour appendix, and it is consistent with the same
-//!   appendix's journal rule — with no data directory the journal is memory-buffered, and durability
-//!   is the legacy rows' durability.
+//! # What passes through and what this adapter answers itself
 //!
-//! # Why the shim answers on every store this binary can load
+//! - **The published operations pass through unchanged.** They are
+//!   [`busbar_contract::records::RecordStore`] calls on the loaded plugin, reached through
+//!   [`StoreAdapter::store`] — the same handle the ledger's legacy-rows dual write uses. Nothing in
+//!   this module touches their wire; the oracle's store-persist cell is what proves it
+//!   (`testing/shadow-oracle/scripts/store-persist.sh`: mint, spend, kill, boot again on the same
+//!   store, read the money back).
+//! - **Slices, the verb seam's recovery records, the sealed replay cache and the migration marker
+//!   are answered from this node's memory.** The store v3 table carries slots for the ledger
+//!   operations behind them (`reserve`, `slice_release`, `heads`, `append_batch`), and every store
+//!   this binary loads speaks store ABI v3, which has no table without them; routing these seams to
+//!   those slots is separate work, and until it lands what is said below is what they answer.
 //!
-//! The ten additions have no request variant on any payload schema in this binary's store window
-//! ([`crate::registry::supported_abi`] pins the store kind's one version, 3). They gain
-//! one at [`STORE_ABI_WITH_NEW_OPS`], which is above that window's top. So for every store this
-//! binary can actually load the shim IS the answer, and
-//! [`StoreAdapter::speaks_new_ops`] says so out loud rather than leaving it implied. When the wire
-//! lands, it lands in the shim methods below and nowhere else: the seam impls, the constructor and
-//! the root's call all stay as they are.
+//! # Those answers, stated rather than implied
 //!
-//! # The shim's semantics, stated rather than implied
-//!
-//! - **Slices.** A node whose store cannot hold a fleet-wide window has exactly one generation of
-//!   leases and nothing that can advance it, so [`epoch`](busbar_contract::slice::SliceStore::epoch)
-//!   is constant and a reservation is granted in full, stamped with that epoch — a request carrying
+//! - **Slices.** A node whose slices are answered here has exactly one generation of leases and
+//!   nothing that can advance it, so [`epoch`](busbar_contract::slice::SliceStore::epoch) is
+//!   constant and a reservation is granted in full, stamped with that epoch — a request carrying
 //!   some other epoch is stamped, not refused, because a stale-epoch refusal would be an error and
 //!   there is no fleet for it to be stale against. The grant never expires for the same reason.
-//! - **The sealed replay cache.** Node-local, which is exactly the durability the journal has on
-//!   such a deployment. A restore does NOT clear it: dropping a committed replay slot is precisely
-//!   how a credential-minting verb re-mints, which is the one thing the sealed cache exists to
-//!   prevent. It is not process-lifetime, though: a slot answers for [`REPLAY_TTL_SECS`] — the same
-//!   window the in-process sibling keeps — and is swept after, or the map would grow forever with
-//!   every minted response the node ever served.
-//! - **Shipping.** The shim ACKNOWLEDGES and keeps nothing but a count and the last identity. It
-//!   does not retain the records: the log's own memory buffer is already the record on such a
-//!   deployment, and a second copy here would be an unbounded leak on a long-running node. It never
-//!   fails, because a shipping failure is a durability failure and durability here is the legacy
-//!   rows', not this seam's.
-//! - **The migration's marker.** The record that says this deployment has already sealed its opening
-//!   balances goes where every other addition goes: the node-local shim. There is nowhere else it
-//!   COULD go — the rows the migration read may be on a read-only replica, and writing a marker
-//!   beside somebody else's data is a migration taking ownership of a schema it does not own.
+//! - **The sealed replay cache.** Node-local. A restore does NOT clear it: dropping a committed
+//!   replay slot is precisely how a credential-minting verb re-mints, which is the one thing the
+//!   sealed cache exists to prevent. It is not process-lifetime, though: a slot answers for
+//!   [`REPLAY_TTL_SECS`] — the same window the in-process sibling keeps — and is swept after, or
+//!   the map would grow forever with every minted response the node ever served. It does not
+//!   survive a restart.
+//! - **The migration's marker, through this adapter.** [`StoreAdapter::migration_records`] keeps it
+//!   in node memory. The boot does not use it: the boot's marker goes on the node's journal, which
+//!   the store keeps. It must never go into the rows the migration read — those may be on a
+//!   read-only replica, and they are not this release's to write.
 //!
 //! # The migration's read, and why it is on this side of the seam
 //!
@@ -87,25 +74,8 @@ use busbar_contract::records::{
 };
 use busbar_contract::slice::{Epoch, SliceError, SliceGrant, SliceId, SliceRequest, SliceStore};
 use busbar_contract::verb_store::{Store as VerbStore, StoreError as VerbStoreError};
-use busbar_kernel_wal::{Record, ShipError, Shipper};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
-
-/// The store payload schema at which the ten operations this release adds gain a wire.
-///
-/// The architecture document's store row calls the extended shape the store kind's native schema.
-/// It is deliberately ABOVE the top of this binary's store window, which is the whole point: no
-/// store this binary can load speaks these operations, so the shim answers for all of them. This is
-/// the one constant to move when the wire lands.
-pub const STORE_ABI_WITH_NEW_OPS: u32 = 5;
-
-/// Does a store at this payload schema carry the ten added operations on its own wire?
-///
-/// Free function so the rule is testable without a loaded plugin, and so the answer is a property
-/// of the schema number rather than of whichever adapter happens to be asking.
-pub fn speaks_new_ops(abi_version: u32) -> bool {
-    abi_version >= STORE_ABI_WITH_NEW_OPS
-}
 
 /// A snapshot of everything the node-local shim is holding.
 ///
@@ -124,8 +94,6 @@ pub struct ShimState {
     pub replay_slots: usize,
     /// Of those, the ones with a committed response.
     pub replay_committed: usize,
-    /// Records the shipper acknowledged.
-    pub records_shipped: u64,
     /// How many times the journal chain was broken through the verb seam.
     pub chain_breaks: u64,
     /// How many restores were requested through the verb seam.
@@ -134,10 +102,10 @@ pub struct ShimState {
     pub epoch_floor: u64,
 }
 
-/// The three unit-side store seams over one loaded store.
+/// The unit-side store seams over one loaded store.
 ///
 /// Cheap to clone — every clone is the same store and the same shim — so the root can hand one
-/// handle to the kernel, one to the verbs unit and one to the log without threading lifetimes.
+/// handle to the kernel and one to the verbs unit without threading lifetimes.
 #[derive(Clone)]
 pub struct StoreAdapter {
     inner: Arc<Inner>,
@@ -189,10 +157,10 @@ fn system_clock() -> ShimClock {
 ///
 /// # The lock order, stated once
 ///
-/// The five mutexes below are independent, and every one of them is on the request path: a slice
+/// The four mutexes below are independent, and every one of them is on the request path: a slice
 /// draw takes `slices` on every reserve and release. A thread that needs more than one takes them
-/// in the order they are declared here — recovery, then slices, then replay, then shipped, then
-/// migration — and no thread takes them in any other order. Two orders is a deadlock that wedges
+/// in the order they are declared here — recovery, then slices, then replay, then migration — and
+/// no thread takes them in any other order. Two orders is a deadlock that wedges
 /// the slice seam for the whole process, because the pair a restore holds is the pair a slice draw
 /// waits on.
 ///
@@ -204,23 +172,8 @@ struct Shim {
     recovery: Mutex<Recovery>,
     slices: Mutex<Slices>,
     replay: Mutex<ReplaySlots>,
-    /// What the shipper acknowledged. Records are counted, not copied — see the module preamble —
-    /// and the count travels WITH the identity it ends at, under one lock: "n acknowledged, ending
-    /// here" is one answer, and the preamble supports two logs shipping through one adapter, so
-    /// advancing the halves separately would let a reader pair one shipper's count with the other's
-    /// head.
-    shipped: Mutex<Shipped>,
     /// The migration's marker: the record that this deployment has sealed its opening balances.
     migration: Mutex<Option<MigrationMarker>>,
-}
-
-/// The shipper's two-part answer, kept as one value so it moves as one.
-#[derive(Default)]
-struct Shipped {
-    /// Records acknowledged.
-    count: u64,
-    /// The identity of the last record acknowledged, which is what a `heads` read would want.
-    head: Option<(u64, u64)>,
 }
 
 #[derive(Default)]
@@ -243,8 +196,7 @@ struct Recovery {
 const SHIM_EPOCH: Epoch = Epoch(0);
 
 impl StoreAdapter {
-    /// Bind the three seams to `store`, whose signed manifest declares payload schema
-    /// `abi_version`.
+    /// Bind the seams to `store`, whose signed manifest declares payload schema `abi_version`.
     ///
     /// **This is the constructor the composition root calls.** It takes the store the plugin
     /// registry loaded (or the in-tree memory store, which is the default when a config names none)
@@ -289,12 +241,6 @@ impl StoreAdapter {
         self.inner.abi_version
     }
 
-    /// Does the loaded store carry the ten added operations on its own wire, or does the shim
-    /// answer them? False for every store this binary can load — see the module preamble.
-    pub fn speaks_new_ops(&self) -> bool {
-        speaks_new_ops(self.inner.abi_version)
-    }
-
     /// What the node-local shim is holding.
     ///
     /// One lock at a time, each taken, copied out and dropped before the next — see the lock order
@@ -319,7 +265,6 @@ impl StoreAdapter {
                 replay.values().filter(|(_, v)| v.is_some()).count(),
             )
         };
-        let records_shipped = self.inner.shim.shipped().count;
         let (chain_breaks, restores, epoch_floor) = {
             let recovery = self.inner.shim.recovery();
             (
@@ -333,16 +278,10 @@ impl StoreAdapter {
             slices_granted,
             replay_slots,
             replay_committed,
-            records_shipped,
             chain_breaks,
             restores,
             epoch_floor,
         }
-    }
-
-    /// The identity of the last record the shipper acknowledged, or `None` if none has been.
-    pub fn head(&self) -> Option<(u64, u64)> {
-        self.inner.shim.shipped().head
     }
 
     /// The backup reference the last restore named, if one was asked for.
@@ -358,12 +297,6 @@ impl StoreAdapter {
     /// The verbs unit's store seam.
     pub fn verb_store(&self) -> Arc<dyn VerbStore + Send + Sync> {
         Arc::new(self.clone())
-    }
-
-    /// The log's shipping seam. Boxed by value because the log owns its shipper; every box is the
-    /// same shim, so two logs shipping through one adapter share a count rather than forking one.
-    pub fn shipper(&self) -> Box<dyn Shipper> {
-        Box::new(self.clone())
     }
 
     /// The previous release's chain head: its last administrative sequence number and the hash at
@@ -695,12 +628,12 @@ impl LegacyLedgerRows for LegacyStoreRows {
     }
 }
 
-/// The migration marker, in the node-local shim.
+/// The migration marker, in node memory.
 ///
-/// The honest place for it on every store this binary can load, and labelled as one: the marker does
-/// not survive a restart, so the next boot re-reads the previous release's rows and seals a
-/// checkpoint with the same body hash from the same figures. What it must never do is go into the
-/// rows it read — those may be read-only, and they are not this release's to write.
+/// Labelled as what it is: a marker kept here does not survive a restart. The boot does not keep its
+/// marker here — it goes on the node's journal, which the configured store keeps — and what it must
+/// never do is go into the rows it read: those may be read-only, and they are not this release's to
+/// write.
 #[derive(Debug, Clone)]
 pub struct ShimMigrationRecords {
     adapter: StoreAdapter,
@@ -730,10 +663,6 @@ impl Shim {
 
     fn recovery(&self) -> MutexGuard<'_, Recovery> {
         self.recovery.lock().unwrap_or_else(|p| p.into_inner())
-    }
-
-    fn shipped(&self) -> MutexGuard<'_, Shipped> {
-        self.shipped.lock().unwrap_or_else(|p| p.into_inner())
     }
 
     fn migration(&self) -> MutexGuard<'_, Option<MigrationMarker>> {
@@ -877,31 +806,10 @@ impl VerbStore for StoreAdapter {
     }
 }
 
-impl Shipper for StoreAdapter {
-    /// Acknowledge a batch. Always `Ok`: the store has nowhere to put it and a refusal here is a
-    /// durability failure the deployment does not actually have — its durability is the legacy
-    /// rows'. The records are not retained (the log's own buffer already holds them); the count and
-    /// the last identity are.
-    fn ship(&mut self, records: &[Record]) -> Result<(), ShipError> {
-        if records.is_empty() {
-            return Ok(());
-        }
-        // One critical section for both halves: a reader must never see a count that has moved
-        // beside a head that has not.
-        let mut shipped = self.inner.shim.shipped();
-        shipped.count = shipped.count.saturating_add(records.len() as u64);
-        if let Some(last) = records.last() {
-            shipped.head = Some(last.identity());
-        }
-        Ok(())
-    }
-}
-
 impl std::fmt::Debug for StoreAdapter {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("StoreAdapter")
             .field("abi_version", &self.inner.abi_version)
-            .field("speaks_new_ops", &self.speaks_new_ops())
             .field("shim", &self.shim_state())
             .finish()
     }

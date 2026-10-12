@@ -186,14 +186,15 @@ fn linked_run(records: &[JournalRecord]) -> (Vec<Amendment>, usize) {
 impl Durability {
     /// **THE BOOT'S REBUILD OF THE NODE AMENDMENT JOURNAL**, before anything can seal onto it: the
     /// node journal becomes exactly the run this book's chain holds, so a count a root correction
-    /// amended reads as corrected after a restart, and so does its money. A node with no data
-    /// directory rebuilds nothing and keeps the previous release's memory-only journal.
+    /// amended reads as corrected after a restart, and so does its money. It runs whenever the chain
+    /// has a durable source ([`Durability::keeps_chain`]): a disk, or the configured store the
+    /// chain was resumed from. A book with neither rebuilds nothing.
     ///
     /// An amendment record the walk cannot link is REPORTED on
     /// [`Durability::restart_findings`], never spliced in. Once rebuilt, the book is the one
     /// [`bind_amendments`] binds.
     pub fn restore_amendments(&mut self) {
-        if !self.on_disk() {
+        if !self.keeps_chain() {
             return;
         }
         let (run, set_aside) = match self.journal.replay() {
@@ -250,8 +251,8 @@ impl AmendSink for BookAmendments {
 
 /// **BIND THE BOOK THE NODE AMENDMENT JOURNAL WAS REBUILT FROM**: every amendment sealed from here
 /// on — and any sealed since the rebuild — goes on its journal as it is sealed. A no-op for a book
-/// that rebuilt nothing ([`Durability::restore_amendments`] never ran, or the node keeps no data
-/// directory), which leaves the node journal memory-only.
+/// that rebuilt nothing ([`Durability::restore_amendments`] never ran, or the chain has no durable
+/// source), which leaves the node journal memory-only.
 pub fn bind_amendments(book: &Arc<Mutex<Durability>>) {
     let Some(through) = book
         .lock()

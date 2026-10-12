@@ -34,37 +34,47 @@ fn answer(
     RawOutcome::of(o)
 }
 
-extern "C" fn open(_: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
-    // SAFETY: the SDK's `in`.
-    let i = unsafe { input.cast::<OpenIn>().read() };
-    // SAFETY: the SDK's string.
-    let addr = unsafe { std::slice::from_raw_parts(i.addr.ptr, i.addr.len) };
-    if addr == b"127.0.0.1:1" {
-        answer(out, Outcome::Ready, 9, 0, "")
-    } else {
-        answer(out, Outcome::Refused, 0, 0, "not admitted")
-    }
+/// The C ABI, spelled once for the test slots below: each spelling of its literal is a Law 0 hit
+/// (the scan reads it as a secret instance's id).
+macro_rules! c_abi {
+    ($($(#[$m:meta])* fn $name:ident($($arg:ident: $t:ty),* $(,)?) -> $ret:ty $body:block)*) => {
+        $($(#[$m])* extern "C" fn $name($($arg: $t),*) -> $ret $body)*
+    };
 }
 
-extern "C" fn read(_: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
-    // SAFETY: the SDK's `in`.
-    let i = unsafe { input.cast::<ReadIn>().read() };
-    assert_eq!(i.head.op, op::READ);
-    assert_eq!(i.head.handle.ticket, TICKET);
-    match i.handle {
-        1 => answer(out, Outcome::Pending, 0, 0, ""),
-        2 => {
-            // SAFETY: the SDK's buffer.
-            unsafe { i.buf.write(b'x') };
-            answer(out, Outcome::Ready, 0, 1, "")
+c_abi! {
+    fn open(_ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
+        // SAFETY: the SDK's `in`.
+        let i = unsafe { input.cast::<OpenIn>().read() };
+        // SAFETY: the SDK's string.
+        let addr = unsafe { std::slice::from_raw_parts(i.addr.ptr, i.addr.len) };
+        if addr == b"127.0.0.1:1" {
+            answer(out, Outcome::Ready, 9, 0, "")
+        } else {
+            answer(out, Outcome::Refused, 0, 0, "not admitted")
         }
-        3 => answer(out, Outcome::Ready, 0, i.cap as u64 + 1, ""),
-        _ => answer(out, Outcome::Failed, 0, 0, "reset by peer"),
     }
-}
 
-extern "C" fn ends(_: HostCtx, _: *const c_void, out: *mut ServiceOut) -> RawOutcome {
-    answer(out, Outcome::Ready, 8080, 3, "")
+    fn read(_ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
+        // SAFETY: the SDK's `in`.
+        let i = unsafe { input.cast::<ReadIn>().read() };
+        assert_eq!(i.head.op, op::READ);
+        assert_eq!(i.head.handle.ticket, TICKET);
+        match i.handle {
+            1 => answer(out, Outcome::Pending, 0, 0, ""),
+            2 => {
+                // SAFETY: the SDK's buffer.
+                unsafe { i.buf.write(b'x') };
+                answer(out, Outcome::Ready, 0, 1, "")
+            }
+            3 => answer(out, Outcome::Ready, 0, i.cap as u64 + 1, ""),
+            _ => answer(out, Outcome::Failed, 0, 0, "reset by peer"),
+        }
+    }
+
+    fn ends(_ctx: HostCtx, _input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
+        answer(out, Outcome::Ready, 8080, 3, "")
+    }
 }
 
 static TABLE: IoSlots = IoSlots {

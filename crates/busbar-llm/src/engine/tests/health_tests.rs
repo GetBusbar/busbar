@@ -602,6 +602,7 @@ async fn a_shortened_interval_takes_effect_on_the_inherited_schedule() {
             busbar_kernel::config::providers::ModelCfg {
                 reasoning: None,
                 prompt_caching: None,
+                protocol: None,
                 max_requests: -1,
                 provider: "acme".into(),
                 max_concurrent: Some(1),

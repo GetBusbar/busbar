@@ -40,12 +40,8 @@ file = "crates/busbar-contract/src/transport/registry.rs"
 shape = "version-const"
 item = "TRANSPORT_ABI"
 
-# ── THE PLUGIN LOADER — a slot fn-pointer type, and a store ABI version number (2)
+# ── THE PLUGIN LOADER — a slot fn-pointer type (1)
 [[offender]]
 file = "crates/plugin-loader/src/plane.rs"
 shape = "fn-ptr"
 item = "fn-ptr-1"
-[[offender]]
-file = "crates/plugin-loader/src/store_adapter.rs"
-shape = "version-const"
-item = "STORE_ABI_WITH_NEW_OPS"

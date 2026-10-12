@@ -490,7 +490,7 @@ pub fn resolve_pool_rewrites(
 /// `reject` refuses the unit, anything else proceeds with the ORIGINAL body.
 ///
 /// A DECORATOR rather than a branch at each firing site: the rewrite chain fires from four places
-/// (the model plane's global + per-pool passes and the neutral `transform_over` seam the MCP, A2A
+/// (the model plane's global + per-pool passes and the kernel's `admission_transform` the MCP, A2A
 /// and voice planes share), and a per-site branch would have to be written — and kept correct —
 /// four times. Wrapping at RESOLUTION means every firing site, present and future, gets the
 /// operator's disposition for free, and the sites keep their fail-safe shape.

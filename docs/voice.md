@@ -383,7 +383,7 @@ that is an audit tap, not the ceiling.
 
 Every governed session-open fires the operator's `streams`-container gate and tap, exactly as
 described in [The one choke point](#the-one-choke-point-every-route-runs-through) above — the same
-seam every other plane's hooks fire through (`host.gate_decide` / `host.transform_over`), attached by
+seam every other plane's hooks fire through (`plane_host::admission_gates_decide` / `plane_host::admission_transform`), attached by
 container name `streams` since the plane has no per-registration noun to key a hook on
 (`crates/busbar-voice/src/mount.rs:75-79`). A rejecting gate is byte-identical in cost to an
 unattached one when no hook is configured.

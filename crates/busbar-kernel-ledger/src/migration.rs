@@ -6,11 +6,17 @@
 //! ## What it is for
 //!
 //! A checkpoint is the point the identity is measured FROM, and on the first boot of a deployment
-//! that has been serving for a year there is no such point. Without one, every figure the previous
-//! release accumulated is either invisible to this release's books or — worse — looks like value
-//! that appeared out of nowhere the first time anything is checked. So the first boot reads what the
-//! previous release's rows hold, seals it as an OPENING checkpoint, and measures everything
-//! afterwards from there.
+//! that has been serving for a year there is no such point. So the first boot reads what the
+//! previous release's rows hold and seals it as an OPENING checkpoint: the legacy figures, digested
+//! and signed, with a marker that names the seal.
+//!
+//! **What the caller keeps is the marker.** [`migrate`] hands the sealed [`Opening`] back, and the
+//! composition root writes only the [`MigrationMarker`] (sequence, node, instant, body hash, balance
+//! count, cells read, card version) onto its journal; the opening checkpoint itself and its
+//! balances are not journaled, not held, and not the `since` of any verify. Nothing in the node's
+//! running books is measured from the opening figures: the node's own checkpoints number on from
+//! [`OPENING_CHECKPOINT_SEQ`] and seal the node's own book. The opening is the record that the
+//! previous release's totals were read, and what they hashed to, and that is all it is used for.
 //!
 //! ## The three rules, and why each is a rule rather than an intention
 //!
@@ -33,9 +39,9 @@
 //! Value that the previous release consumed was taken out of the store and posted, so the opening
 //! sets DRAWN and SETTLED to the same amount and everything else to zero. That is not a
 //! presentational choice: it is what makes the opening checkpoint satisfy the identity by
-//! construction — everything drawn is accounted for, in the settled column — so the very first
-//! reconciliation after an upgrade measures this release's own postings and not the previous
-//! release's history.
+//! construction — everything drawn is accounted for, in the settled column — so a verify measured
+//! from it would see this release's own postings and not the previous release's history. (No verify
+//! is measured from it today; see the preamble above.)
 //!
 //! ## Why the two row families stay apart
 //!
@@ -169,11 +175,11 @@ pub struct Opening {
     ///
     /// False exactly when the read was degraded — see [`Opening::unreadable`]. The marker is a
     /// run-once record, so committing it over a short read would make the short read permanent:
-    /// every later boot would return [`Outcome::AlreadySealed`] and the buckets the store could not
-    /// answer for would be missing from the opening forever, leaving the reconciliation identity
-    /// quietly short by their whole history. Leaving it unwritten costs a re-read on the next boot
-    /// and nothing else, because the seal is a pure function of what was read: once the store
-    /// answers for everything, the same rows seal the same checkpoint and the marker goes down then.
+    /// every boot after it would return [`Outcome::AlreadySealed`] and the buckets the store could
+    /// not answer for would be missing from the opening forever. Leaving it unwritten costs a re-read on
+    /// the next boot and nothing else, because the sealed figures are a pure function of what was
+    /// read: once the store answers for everything, the same rows seal the same totals (under that
+    /// boot's instant, so a new body hash) and the marker goes down then.
     pub marker_written: bool,
     /// The opening entry per bucket, at the named card version.
     pub balances: Vec<OpeningBalance>,
@@ -263,18 +269,21 @@ fn opening_heads(head: &LegacyHead, node: u64) -> Vec<ChainHead> {
 /// Run the migration: read what the previous release holds, seal it as the opening, and mark it
 /// done IF the read was complete.
 ///
-/// Idempotent by the marker AND by the figures. The marker is what makes a second boot cost
-/// nothing; but a deployment whose records do not survive a restart re-reads the same read-only rows
-/// and seals a checkpoint with the same body hash, so even there running again is indistinguishable
-/// from not having run. That is the property to lean on, because it does not depend on where the
-/// marker was kept.
+/// Idempotent by the marker, and by the FIGURES — not by the bytes. The marker is what makes a
+/// second boot cost nothing. A boot that finds no marker (its records did not survive, or the last
+/// read was degraded) re-reads the same read-only rows and seals the same TOTALS, the same heads and
+/// the same balances; the body it seals differs only by `wall`, the instant it is sealed at, which
+/// the body digests, so a re-run at another instant has a different body hash. Running again
+/// therefore opens the same figures under a new seal; it never doubles or drops one, because the
+/// opening is computed from what was read and nothing is added to it.
 ///
-/// It is also what makes withholding the marker after a degraded read safe, and withholding it
+/// That is what makes withholding the marker after a degraded read safe, and withholding it
 /// necessary: the marker is run-once, so writing it over a read that could not answer for some
-/// buckets would seal those buckets out of the opening forever and leave the reconciliation
-/// identity short by their whole history, with every later boot short-circuiting on the marker
-/// before it could notice. So a degraded read seals the opening the node needs to boot and leaves
-/// the marker for a boot that can read everything ([`Opening::marker_written`] says which happened).
+/// buckets would seal those buckets out of the opening forever, with every boot after it
+/// short-circuiting on the marker before it could notice. So a degraded read seals an opening over
+/// what it could read, and leaves the marker for a boot that can read everything
+/// ([`Opening::marker_written`] says which happened); the marker that boot writes carries ITS seal's
+/// body hash.
 ///
 /// # Errors
 ///
@@ -325,9 +334,9 @@ pub fn migrate(
     // The marker goes down only over a COMPLETE read. It is the run-once record: written over a
     // degraded read it makes the degradation permanent, because every later boot then returns
     // `AlreadySealed` and never looks at the rows the store could not answer for. Withholding it
-    // costs the next boot a re-read and nothing else — the seal is a pure function of what was read,
-    // so a clean re-read seals the identical checkpoint and writes the marker then. The opening is
-    // still returned either way: a node must boot over what could be read.
+    // costs the next boot a re-read and nothing else — the sealed figures are a pure function of what
+    // was read, so a clean re-read seals the same totals (at its own instant) and writes the marker
+    // then. The opening is still returned either way: a node must boot over what could be read.
     let marker_written = read.unreadable.is_empty();
     if marker_written {
         records.write_marker(&marker)?;
@@ -340,45 +349,4 @@ pub fn migrate(
         balances,
         unreadable: read.unreadable,
     })))
-}
-
-/// Records that keep the marker in this node's own memory.
-///
-/// The honest default, and labelled as one: on a deployment whose store predates the ledger's own
-/// record wire there is nowhere durable for a marker to go, so it goes here and does not survive a
-/// restart. That costs a re-read of the previous release's rows on the next boot and nothing else —
-/// the seal is a pure function of what was read, so the same rows seal the same checkpoint.
-#[derive(Debug, Default, Clone)]
-pub struct NodeLocalRecords {
-    marker: std::sync::Arc<std::sync::Mutex<Option<MigrationMarker>>>,
-}
-
-impl NodeLocalRecords {
-    /// A fresh one.
-    pub fn new() -> Self {
-        NodeLocalRecords::default()
-    }
-
-    /// Whether this node has sealed a migration in this process.
-    pub fn is_sealed(&self) -> bool {
-        self.marker
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .is_some()
-    }
-}
-
-impl MigrationRecords for NodeLocalRecords {
-    fn read_marker(&self) -> Result<Option<MigrationMarker>, MigrationError> {
-        Ok(self
-            .marker
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone())
-    }
-
-    fn write_marker(&mut self, marker: &MigrationMarker) -> Result<(), MigrationError> {
-        *self.marker.lock().unwrap_or_else(|e| e.into_inner()) = Some(marker.clone());
-        Ok(())
-    }
 }

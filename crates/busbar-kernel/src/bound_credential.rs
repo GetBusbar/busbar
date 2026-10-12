@@ -20,7 +20,7 @@
 
 use std::sync::Arc;
 
-use busbar_contract::abi::auth::{AuthPoint, AuthPoints};
+use busbar_contract::abi::auth::{AuthPoint, AuthPoints, STYLE_NEEDS_HEADERS};
 use busbar_contract::auth_calls::{AuthAxis, Fields, FieldsRequest, OutboundAuth};
 use busbar_contract::config::UpstreamCreds;
 use busbar_contract::protocol::EgressAuthHeaders;
@@ -108,16 +108,21 @@ pub struct StyleBinding {
     pub uses_key: bool,
     /// The dialect's own non-credential fields, written after the plugin's, in order.
     pub statics: &'static [(&'static str, &'static str)],
+    /// The head fields the lane's writer sends that a style declaring `STYLE_NEEDS_HEADERS` reads
+    /// (a signing dialect's `content-type`, which its signature covers), lent on every request.
+    pub sent: Vec<(String, String)>,
 }
 
 /// One lane's credential, bound on the auth plugin serving its style: the handle `open_outbound`
-/// answered, and the points the style is called at.
+/// answered, the points the style is called at, and the sent head fields it reads.
 pub struct BoundCredential {
     auth: Arc<dyn OutboundAuth>,
     handle: u64,
     points: AuthPoints,
     uses_key: bool,
     statics: &'static [(&'static str, &'static str)],
+    /// The binding's `sent` fields when the style declares `STYLE_NEEDS_HEADERS`; empty otherwise.
+    headers: Vec<(Vec<u8>, Vec<u8>)>,
 }
 
 impl BoundCredential {
@@ -131,9 +136,14 @@ impl BoundCredential {
 }
 
 impl BoundCredential {
-    /// The one `fields` request for `ctx`: a POST of the body to its canonical path (the request a
-    /// lane's writer signs), at the style's request point, with the caller's credential for a
-    /// passthrough request on a style that presents the key.
+    /// The one `fields` request for `ctx`: a POST of the body to the path the lane sends (the request
+    /// a lane's writer signs), at the style's request point, with the sent head fields a style that
+    /// needs them reads, and the caller's credential for a passthrough request on a style that
+    /// presents the key.
+    ///
+    /// `ctx.canonical_uri` is the SigV4 canonical path, the sent path URI-encoded once more (non-S3
+    /// SigV4); the call's `path` is the path as sent, so it is the canonical path decoded once, and
+    /// a signing style's own re-encode yields the canonical path 1.5.5 signed.
     fn request(&self, key: &str, ctx: &SigningContext) -> FieldsRequest {
         let point = if self.points.has(AuthPoint::HeadBody) {
             AuthPoint::HeadBody
@@ -146,9 +156,10 @@ impl BoundCredential {
             body: (point == AuthPoint::HeadBody).then(|| ctx.body.to_vec()),
             method: b"POST".to_vec(),
             authority: ctx.host.to_string(),
-            path: ctx.canonical_uri.as_bytes().to_vec(),
+            path: crate::observability::percent_decode(ctx.canonical_uri).into_bytes(),
             query: None,
             timestamp: ctx.timestamp_epoch,
+            headers: self.headers.clone(),
             caller_credential: passthrough.then(|| Redacted::new(key.as_bytes().to_vec())),
             ..FieldsRequest::default()
         }
@@ -217,12 +228,22 @@ pub fn bind(
     let handle = serving
         .auth
         .open_outbound(&binding.style, credential, &binding.params)?;
+    let headers = if serving.flags & STYLE_NEEDS_HEADERS != 0 {
+        binding
+            .sent
+            .iter()
+            .map(|(n, v)| (n.as_bytes().to_vec(), v.as_bytes().to_vec()))
+            .collect()
+    } else {
+        Vec::new()
+    };
     Ok(Arc::new(BoundCredential {
         auth: serving.auth,
         handle,
         points: AuthPoints(serving.points),
         uses_key: binding.uses_key,
         statics: binding.statics,
+        headers,
     }))
 }
 

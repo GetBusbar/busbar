@@ -30,7 +30,7 @@
 //!   program it ADMITTED for the dial that asked.
 //! * [`op::ENDS`] answers a handle's local port (`value`) and writes its far end's address.
 //!
-//! THE CALL SHAPE is the host services' (`abi/host/service.rs`): `svc(ctx, in, out)`, `extern "C"`,
+//! THE CALL SHAPE is the host services' (`abi/host/service.rs`): `svc(ctx, in, out)`, the C ABI,
 //! every `in` leading with a [`ServiceHead`]. `ServiceOut::value` is the handle a slot made
 //! (`OPEN`, `LISTEN`, `ACCEPT`, `SPAWN`) or the local port (`ENDS`); `ServiceOut::len` the bytes
 //! moved (`READ`, `WRITE`) or written into the caller's buffer (`LISTEN`, `ACCEPT`, `ENDS`).

@@ -110,3 +110,9 @@ mod percall_meter_shadow;
 #[cfg(test)]
 #[path = "../../tests/common/plugins.rs"]
 pub(crate) mod test_plugins;
+
+// A configured store's record slots over a map the test holds: the store a node with no data
+// directory keeps its journal in, restarted over and made to refuse.
+#[cfg(test)]
+#[path = "tests/store_double.rs"]
+pub(crate) mod store_double;

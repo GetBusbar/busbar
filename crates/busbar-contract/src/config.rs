@@ -73,6 +73,12 @@ pub struct ModelCfg {
     /// does same-protocol passthrough (byte-exact).
     #[serde(default)]
     pub prompt_caching: Option<bool>,
+    /// THE MODEL'S DIALECT OVERRIDE (#51): the wire protocol this model is spoken in when it
+    /// differs from its provider's `protocol`; absent = the provider's. The plane that serves the
+    /// model resolves model to dialect itself (THE DESIGN section 4); the kernel checks no dialect.
+    /// Appended last, so the refusal of an unknown member lists it last.
+    #[serde(default)]
+    pub protocol: Option<String>,
 }
 
 /// The serde default for `ModelCfg::max_requests` (`-1` = unlimited).

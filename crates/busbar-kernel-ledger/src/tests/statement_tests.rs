@@ -130,7 +130,7 @@ fn a_statement_is_cut_as_of_a_snapshot_and_two_snapshots_differ_by_the_lines_the
     assert_eq!(before.history_seq, HistorySeq::OPENING);
     assert_eq!(after.history_seq, HistorySeq(1));
     assert!(
-        after.total_nanos() > before.total_nanos(),
+        after.row(&key("b")).priced_nanos > before.row(&key("b")).priced_nanos,
         "the amendment doubled the rate on the early line"
     );
     assert_eq!(

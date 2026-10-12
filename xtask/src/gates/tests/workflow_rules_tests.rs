@@ -174,3 +174,335 @@ fn every_rule_is_proven_able_to_go_red() {
     let report = gate.selftest(&cx);
     crate::gates::verify_report(&gate, &report).expect("every rule proven RED");
 }
+
+/// A two-job workflow: `slsa-build` (under `BUILDER_IF`) uploads the release artifact, and a shard
+/// downloads it from its own run under `STEP_IF`, in the block spelling promote.yml uses.
+const R18_FIXTURE: &str = "on: [pull_request, merge_group]
+jobs:
+  slsa-build:
+    if: BUILDER_IF
+    steps:
+      - run: cargo build --release
+      - { uses: actions/upload-artifact@abc, with: { name: \"slsa-artifact-x\", path: slsa/ } } # v7
+  hop-shard:
+    steps:
+      - if: STEP_IF
+        uses: actions/download-artifact@abc # v8
+        with: { name: \"slsa-artifact-x\", path: slsa }
+      - run: ci hop
+";
+
+fn r18(builder_if: &str, step_if: &str) -> Vec<String> {
+    let text = R18_FIXTURE
+        .replace("BUILDER_IF", builder_if)
+        .replace("STEP_IF", step_if);
+    release_artifact_findings("promote.yml", &text)
+        .into_iter()
+        .map(|f| {
+            assert_eq!(f.rule, "R18");
+            f.message
+        })
+        .collect()
+}
+
+const NEEDS_ARTIFACT: &str = "needs.preflight.outputs.needs_release_artifact == 'true'";
+
+#[test]
+fn r18_a_merge_group_only_build_under_a_pull_request_download_is_red() {
+    // #740 exactly: the builder runs only in a merge group, the download whenever the rung reads it.
+    let got = r18(
+        "github.event_name == 'merge_group' && needs.preflight.outputs.run == '1'",
+        NEEDS_ARTIFACT,
+    );
+    assert_eq!(got.len(), 1, "{got:?}");
+    assert!(
+        got[0].contains("`hop-shard`") && got[0].contains("`slsa-build`"),
+        "{got:?}"
+    );
+    // The same narrowing written as a base-branch test is the same red.
+    assert_eq!(r18("github.base_ref == 'qa'", NEEDS_ARTIFACT).len(), 1);
+}
+
+#[test]
+fn r18_a_builder_that_admits_the_download_condition_is_green() {
+    let fixed = format!(
+        "needs.preflight.outputs.run == '1' && (github.event_name == 'merge_group' || {NEEDS_ARTIFACT})"
+    );
+    assert!(r18(&fixed, NEEDS_ARTIFACT).is_empty());
+    // Wrapped in `${{ }}` the same.
+    assert!(r18(&format!("${{{{ {fixed} }}}}"), NEEDS_ARTIFACT).is_empty());
+    // A builder narrowed only by the run gate, not by event, runs wherever the run runs.
+    assert!(r18("needs.preflight.outputs.run == '1'", NEEDS_ARTIFACT).is_empty());
+}
+
+#[test]
+fn r18_a_download_that_waits_on_the_builders_success_is_green() {
+    // The soak's spelling: it downloads only after slsa-build succeeded, else builds its own.
+    assert!(r18(
+        "github.event_name == 'merge_group'",
+        "needs.slsa-build.result == 'success'"
+    )
+    .is_empty());
+}
+
+#[test]
+fn r18_an_unconditional_download_under_an_event_narrowed_builder_is_red() {
+    let text = R18_FIXTURE
+        .replace("BUILDER_IF", "github.event_name == 'merge_group'")
+        .replace("      - if: STEP_IF\n        uses:", "      - uses:");
+    assert_eq!(release_artifact_findings("promote.yml", &text).len(), 1);
+}
+
+#[test]
+fn r18_a_download_with_no_builder_in_the_run_is_red_and_a_run_id_download_is_not_judged() {
+    let orphan = R18_FIXTURE
+        .replace("BUILDER_IF", "github.event_name == 'merge_group'")
+        .replace("actions/upload-artifact@abc", "actions/cache@abc")
+        .replace("STEP_IF", NEEDS_ARTIFACT);
+    let got = release_artifact_findings("promote.yml", &orphan);
+    assert_eq!(got.len(), 1);
+    assert!(got[0]
+        .message
+        .contains("no job of this workflow uploads it"));
+    // Another run's artifact (by run-id) is not this run's to build.
+    let other = orphan.replace(
+        "with: { name: \"slsa-artifact-x\", path: slsa }",
+        "with: { name: \"slsa-artifact-x\", path: slsa, run-id: \"${{ env.RUN }}\" }",
+    );
+    assert!(release_artifact_findings("promote.yml", &other).is_empty());
+}
+
+#[test]
+fn r18_a_flow_step_condition_is_read_up_to_the_next_key() {
+    assert_eq!(
+        step_condition(&["      - { if: always(), uses: actions/upload-artifact@abc }"]).as_deref(),
+        Some("always()")
+    );
+    assert_eq!(
+        step_condition(&["      - { uses: a@b, if: \"${{ x == 'y' }}\", with: { n: 1 } }"])
+            .as_deref(),
+        Some("x == 'y'")
+    );
+    assert_eq!(step_condition(&["      - run: true"]), None);
+}
+
+#[test]
+fn r18_the_mutation_anchor_rewrites_only_the_named_jobs_if() {
+    let t = "jobs:\n  a:\n    if: one\n  slsa-build:\n    if: two\n    needs: a\n";
+    assert_eq!(
+        reif_job(t, "slsa-build", "three"),
+        "jobs:\n  a:\n    if: one\n  slsa-build:\n    if: three\n    needs: a\n"
+    );
+    assert_eq!(reif_job(t, "absent", "three"), t);
+}
+
+/// R19: a shard that runs the hop on the candidate with the read-only keys, and the publisher that
+/// runs no candidate code with the write keys.
+const R19_FIXTURE: &str = "on: [pull_request, merge_group]
+jobs:
+  hop-shard:
+    steps:
+      - { uses: actions/checkout@abc, with: { ref: x, path: busbar } } # v7
+      - { uses: actions/checkout@abc, with: { repository: GetBusbar/busbar-release, ref: x, path: busbar-release } } # v7
+      - run: ci hop
+        env: { R2_RO_KEY_ID: \"${{ secrets.R2_CACHE_RO_ACCESS_KEY_ID }}\", R2_RO_KEY_SECRET: \"${{ secrets.R2_CACHE_RO_SECRET_ACCESS_KEY }}\" }
+  cache-publish:
+    needs: [hop-shard]
+    steps:
+      - run: echo the engine
+      - run: ci cache-publish
+        env: { R2_KEY_ID: \"${{ secrets.R2_CACHE_ACCESS_KEY_ID }}\", R2_KEY_SECRET: \"${{ secrets.R2_CACHE_SECRET_ACCESS_KEY }}\" }
+";
+
+fn r19(text: &str) -> Vec<String> {
+    r2_write_key_findings("promote.yml", text)
+        .into_iter()
+        .map(|f| {
+            assert_eq!(f.rule, "R19");
+            f.message
+        })
+        .collect()
+}
+
+#[test]
+fn r19_read_only_keys_on_the_candidate_and_write_keys_on_the_publisher_are_green() {
+    let got = r19(R19_FIXTURE);
+    assert!(got.is_empty(), "{got:?}");
+}
+
+#[test]
+fn r19_a_write_key_on_a_job_that_runs_candidate_code_is_red() {
+    // The shard as it stood before busbar-release 069f032.
+    let shard = R19_FIXTURE.replacen(
+        "R2_RO_KEY_ID: \"${{ secrets.R2_CACHE_RO_ACCESS_KEY_ID }}\"",
+        "R2_KEY_ID: \"${{ secrets.R2_CACHE_ACCESS_KEY_ID }}\"",
+        1,
+    );
+    let got = r19(&shard);
+    assert_eq!(got.len(), 1, "{got:?}");
+    assert!(
+        got[0].contains("`hop-shard`") && got[0].contains("secrets.R2_CACHE_ACCESS_KEY_ID"),
+        "{got:?}"
+    );
+    // A job that only builds (cargo, no checkout step of its own) runs candidate code too.
+    let build = "jobs:\n  b:\n    steps:\n      - run: cargo build\n        env: { K: \"${{ secrets.R2_CACHE_SECRET_ACCESS_KEY }}\" }\n";
+    assert_eq!(r19(build).len(), 1);
+}
+
+#[test]
+fn r19_a_workflow_level_write_key_reaches_every_candidate_job() {
+    let text = String::from("env:\n  K: \"${{ secrets.R2_CACHE_ACCESS_KEY_ID }}\"\n") + R19_FIXTURE;
+    let got = r19(&text);
+    assert_eq!(got.len(), 1, "{got:?}");
+    assert!(got[0].contains("`hop-shard`"), "{got:?}");
+}
+
+#[test]
+fn r19_reads_a_secret_whole_and_another_repositorys_checkout_as_no_candidate() {
+    assert!(r2_write_secrets_in("${{ secrets.R2_CACHE_ACCESS_KEY_ID2 }}").is_empty());
+    assert!(r2_write_secrets_in("${{ secrets.R2_CACHE_RO_ACCESS_KEY_ID }}").is_empty());
+    assert!(r2_write_secrets_in("${{ secrets.R2_CACHE_RO_SECRET_ACCESS_KEY }}").is_empty());
+    assert_eq!(
+        r2_write_secrets_in("${{ secrets.R2_CACHE_SECRET_ACCESS_KEY }}"),
+        vec!["secrets.R2_CACHE_SECRET_ACCESS_KEY"]
+    );
+    let other = "jobs:\n  p:\n    steps:\n      - { uses: actions/checkout@abc, with: { repository: GetBusbar/busbar-release, ref: x } } # v7\n      - run: ci cache-publish\n        env: { K: \"${{ secrets.R2_CACHE_ACCESS_KEY_ID }}\" }\n";
+    assert!(r19(other).is_empty());
+}
+
+const ENGINE_VAR_JOB: &str = "env:\n  SHA: x\njobs:\n  pre:\n    env: { RELEASE_REF: \"${{ vars.ENGINE_REF }}\", ENGINE_SHA256: \"${{ vars.ENGINE_SHA256 }}\" }\n    steps:\n      - name: Engine\n        run: |\n          [[ \"$RELEASE_REF\" =~ ^[0-9a-f]{40}$ ]] || { echo bad; exit 1; }\n          name=\"busbar-release-ci-linux-x86_64-$RELEASE_REF\"\n          echo \"$ENGINE_SHA256  bin\" | sha256sum -c -\n      - { uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1, with: { repository: GetBusbar/busbar-release, ref: \"${{ env.RELEASE_REF }}\", path: busbar-release } } # v7\n";
+
+fn r16(text: &str) -> Vec<String> {
+    engine_pin_findings("w.yml", text)
+        .into_iter()
+        .map(|f| f.message)
+        .collect()
+}
+
+fn r17(text: &str) -> Vec<String> {
+    vendor_runs_on(text)
+        .into_iter()
+        .map(|(_, _, l)| l)
+        .collect()
+}
+
+#[test]
+fn r16_accepts_the_variable_pin_with_its_shape_check_and_its_sha256() {
+    assert_eq!(r16(ENGINE_VAR_JOB), Vec::<String>::new());
+}
+
+#[test]
+fn r16_accepts_an_in_file_sha_pin() {
+    let t = "jobs:\n  a:\n    steps:\n      - { uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1, with: { repository: GetBusbar/busbar-release, ref: 7ab21912d664d11c7df6cc98fe78eed6b0119177 } } # v7\n";
+    assert_eq!(r16(t), Vec::<String>::new());
+    // and through a workflow-level env var holding the literal
+    let t = "env:\n  RELEASE_REF: 7ab21912d664d11c7df6cc98fe78eed6b0119177\njobs:\n  a:\n    steps:\n      - { uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1, with: { repository: GetBusbar/busbar-release, ref: \"${{ env.RELEASE_REF }}\" } } # v7\n";
+    assert_eq!(r16(t), Vec::<String>::new());
+}
+
+#[test]
+fn r16_refuses_a_branch_or_a_tag_ref() {
+    // RED: the checkout at a branch.
+    let t = ENGINE_VAR_JOB.replace("ref: \"${{ env.RELEASE_REF }}\"", "ref: dev");
+    assert!(r16(&t).iter().any(|m| m.contains("`dev`")), "{:?}", r16(&t));
+    // RED: the variable is defined as a tag.
+    let t = ENGINE_VAR_JOB.replace(
+        "RELEASE_REF: \"${{ vars.ENGINE_REF }}\"",
+        "RELEASE_REF: v1.6.0",
+    );
+    assert!(
+        r16(&t).iter().any(|m| m.contains("v1.6.0")),
+        "{:?}",
+        r16(&t)
+    );
+    // RED: in-file, but a tag at the workflow level.
+    let t = "env:\n  RELEASE_REF: refs/tags/v1\njobs:\n  a:\n    steps:\n      - { uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1, with: { repository: GetBusbar/busbar-release, ref: \"${{ env.RELEASE_REF }}\" } } # v7\n";
+    assert!(!r16(t).is_empty());
+    // RED: no ref at all (the default branch).
+    let t = "jobs:\n  a:\n    steps:\n      - { uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1, with: { repository: GetBusbar/busbar-release } } # v7\n";
+    assert!(r16(t).iter().any(|m| m.contains("no `ref:`")));
+}
+
+#[test]
+fn r16_refuses_a_variable_pin_without_its_shape_check_or_its_sha256() {
+    let t = ENGINE_VAR_JOB.replace("=~ ^[0-9a-f]{40}$", "!= \"\"");
+    assert!(
+        r16(&t).iter().any(|m| m.contains("default branch")),
+        "{:?}",
+        r16(&t)
+    );
+    let t = ENGINE_VAR_JOB.replace("sha256sum -c -", "cat");
+    let got = r16(&t);
+    assert_eq!(
+        got.len(),
+        2,
+        "the download and the pin both name the missing check: {got:?}"
+    );
+    // The shape check AFTER the checkout guards nothing.
+    let t = "jobs:\n  pre:\n    env: { RELEASE_REF: \"${{ vars.ENGINE_REF }}\" }\n    steps:\n      - { uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1, with: { repository: GetBusbar/busbar-release, ref: \"${{ env.RELEASE_REF }}\" } } # v7\n      - run: |\n          [[ \"$RELEASE_REF\" =~ ^[0-9a-f]{40}$ ]] || exit 1\n          echo \"$ENGINE_SHA256  b\" | sha256sum -c -\n";
+    assert!(r16(t).iter().any(|m| m.contains("default branch")));
+}
+
+#[test]
+fn a_key_value_is_read_whole_from_a_flow_mapping() {
+    assert_eq!(
+        key_value("{ repository: o/r, ref: \"${{ env.X }}\", path: p }", "ref").as_deref(),
+        Some("${{ env.X }}")
+    );
+    assert_eq!(
+        key_value("{ ref: dev, path: p }", "ref").as_deref(),
+        Some("dev")
+    );
+    assert_eq!(key_value("{ prefref: dev }", "ref"), None);
+    assert_eq!(env_ref("${{ env.RELEASE_REF }}"), Some("RELEASE_REF"));
+    assert_eq!(env_ref("${{ vars.ENGINE_REF }}"), None);
+}
+
+#[test]
+fn a_vendor_runs_on_label_is_refused_in_every_spelling() {
+    assert_eq!(
+        r17("jobs:\n  a:\n    runs-on: latchkey-large\n"),
+        ["latchkey-large"]
+    );
+    assert_eq!(
+        r17("jobs:\n  a:\n    runs-on: [self-hosted, linux]\n"),
+        ["self-hosted"]
+    );
+    assert_eq!(
+        r17("jobs:\n  a:\n    runs-on:\n      - Self-Hosted\n      - linux\n"),
+        ["Self-Hosted"]
+    );
+    assert_eq!(
+        r17("jobs:\n  a:\n    runs-on:\n      group: g\n      labels: [busbar-ec2-x]\n"),
+        ["busbar-ec2-x"]
+    );
+    assert_eq!(
+        r17("jobs:\n  a:\n    runs-on:\n      labels:\n        - busbar-canary\n"),
+        ["busbar-canary"]
+    );
+    assert_eq!(
+        r17("jobs:\n  a:\n    runs-on: ${{ x || 'latchkey-large' }}\n"),
+        ["latchkey-large"]
+    );
+    let found = vendor_runs_on("jobs:\n  a:\n    runs-on: latchkey-small\n");
+    assert_eq!(found, [(3, "a".to_string(), "latchkey-small".to_string())]);
+}
+
+#[test]
+fn gateway_expressions_and_github_hosted_images_are_allowed() {
+    for ok in [
+        "${{ fromJSON(vars.RUNNERS).large.label }}",
+        "${{ needs.preflight.outputs.runner }}",
+        "${{ matrix.os }}",
+        "${{ inputs.x }}",
+        "${{ (a == 'b') && needs.p.outputs.runner || 'ubuntu-latest' }}",
+        "ubuntu-latest",
+        "ubuntu-24.04",
+        "macos-latest",
+        "windows-2022",
+        "[ubuntu-latest, macos-latest]",
+    ] {
+        let text = format!("jobs:\n  a:\n    runs-on: {ok}\n");
+        assert!(r17(&text).is_empty(), "{ok} must be allowed");
+    }
+}

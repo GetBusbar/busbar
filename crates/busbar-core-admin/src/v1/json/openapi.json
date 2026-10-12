@@ -2379,13 +2379,61 @@
             "type": "array"
           },
           "holds": {
-            "description": "True when every row reconciles. `discrepancies` is then empty.",
+            "description": "True when every row reconciles. `discrepancies` and `refused` are then empty.",
             "type": "boolean"
+          },
+          "refused": {
+            "description": "Every balance whose counts a present rate card refused to price: its row is withheld from\nboth sides of the identity, which was not measured over it. Empty is the good answer.",
+            "items": {
+              "$ref": "#/components/schemas/LedgerRefusedBalance"
+            },
+            "type": "array"
           }
         },
         "required": [
           "holds",
-          "discrepancies"
+          "discrepancies",
+          "refused"
+        ],
+        "type": "object"
+      },
+      "LedgerRefusedBalance": {
+        "description": "A balance with no figure: a unit's counts on it that the rate card in force refused to price\n(a present card silent about the lane or a class). The row the balance folds into — the same\n`bucket` and `day` — is withheld from the view that names this.",
+        "properties": {
+          "bucket": {
+            "description": "The balance's bucket.",
+            "type": "string"
+          },
+          "day": {
+            "description": "The balance's window, as the unix second it opens at: the `day` of the withheld row.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "dimension": {
+            "description": "The balance's dimension.",
+            "type": "string"
+          },
+          "lane": {
+            "description": "The lane that served the unit whose counts refused.",
+            "type": "string"
+          },
+          "refusal": {
+            "description": "Why the pricing refused, in its own words.",
+            "type": "string"
+          },
+          "scope": {
+            "description": "The balance's scope.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "bucket",
+          "dimension",
+          "scope",
+          "day",
+          "lane",
+          "refusal"
         ],
         "type": "object"
       },
@@ -2415,8 +2463,15 @@
       "LedgerTotals": {
         "description": "`GET /ledger/totals`: what the ledger's lines come to, per bucket, day, lane and provider.",
         "properties": {
+          "refused": {
+            "description": "Every balance whose counts a present rate card refused to price: its row has no figure, so\nit is withheld from `rows` rather than served as the priced remainder. Empty is the good\nanswer.",
+            "items": {
+              "$ref": "#/components/schemas/LedgerRefusedBalance"
+            },
+            "type": "array"
+          },
           "rows": {
-            "description": "The rows, in bucket, day, lane and provider order.",
+            "description": "The rows, in bucket, day, lane and provider order. A row a `refused` entry names is absent.",
             "items": {
               "$ref": "#/components/schemas/LedgerTotalsRow"
             },
@@ -2424,7 +2479,8 @@
           }
         },
         "required": [
-          "rows"
+          "rows",
+          "refused"
         ],
         "type": "object"
       },
@@ -4279,7 +4335,7 @@
             "type": "integer"
           },
           "findings": {
-            "description": "Each thing verification found, in words: a checkpoint edited after it was sealed, a node\nsequence that went backwards, a balance out of identity, a sealed balance no longer in the\nbook, a closed window that moved.",
+            "description": "Each thing verification found, in words: a checkpoint edited after it was sealed, a node\nsequence that went backwards, a balance out of identity, a sealed balance no longer in the\nbook, a closed window that moved, a balance whose counts the rate card refused to price.",
             "items": {
               "type": "string"
             },
@@ -10911,7 +10967,7 @@
                 }
               }
             },
-            "description": "`unavailable`: the node could not take the unit, or the book holds a refused counts row the read cannot price (the read is refused whole rather than served without it). The body is the admin error envelope with code `unavailable`"
+            "description": "`unavailable`: the node could not take the unit, or a figure the read serves is past the range it is served in (refused, never pinned). The body is the admin error envelope with code `unavailable`"
           }
         },
         "security": [
@@ -10960,7 +11016,7 @@
                 }
               }
             },
-            "description": "`unavailable`: the node could not take the unit, or the book holds a refused counts row the read cannot price (the read is refused whole rather than served without it). The body is the admin error envelope with code `unavailable`"
+            "description": "`unavailable`: the node could not take the unit, or a figure the read serves is past the range it is served in (refused, never pinned). The body is the admin error envelope with code `unavailable`"
           }
         },
         "security": [
@@ -11028,7 +11084,7 @@
     },
     "/api/v1/admin/ledger/reconciliation": {
       "get": {
-        "description": "An empty `discrepancies` list with `holds: true` is the good answer; a residual names its row and the amount it is out by. A read: it mutates nothing, is never posture-gated, and needs no more authority than `GET /usage`.",
+        "description": "An empty `discrepancies` list with `holds: true` is the good answer; a residual names its row and the amount it is out by, and a row whose balance holds counts the rate card refused to price is withheld from the identity and named under `refused`. A read: it mutates nothing, is never posture-gated, and needs no more authority than `GET /usage`.",
         "operationId": "GetLedgerReconciliation",
         "responses": {
           "200": {
@@ -11059,7 +11115,7 @@
                 }
               }
             },
-            "description": "`unavailable`: the node could not take the unit, or the book holds a refused counts row the read cannot price (the read is refused whole rather than served without it). The body is the admin error envelope with code `unavailable`"
+            "description": "`unavailable`: the node could not take the unit, or a figure the read serves is past the range it is served in (refused, never pinned). The body is the admin error envelope with code `unavailable`"
           }
         },
         "security": [
@@ -11077,7 +11133,7 @@
     },
     "/api/v1/admin/ledger/totals": {
       "get": {
-        "description": "Each line is priced against the rate card in force at its own arrival instant, and the row's micro-unit figure is one divide over its summed nano-units. A read: it mutates nothing, is never posture-gated, and needs no more authority than `GET /usage`.",
+        "description": "Each line is priced against the rate card in force at its own arrival instant, and the row's micro-unit figure is one divide over its summed nano-units. A row whose balance holds counts the rate card refused to price is withheld and named under `refused`; every other row is served. A read: it mutates nothing, is never posture-gated, and needs no more authority than `GET /usage`.",
         "operationId": "GetLedgerTotals",
         "responses": {
           "200": {
@@ -11108,7 +11164,7 @@
                 }
               }
             },
-            "description": "`unavailable`: the node could not take the unit, or the book holds a refused counts row the read cannot price (the read is refused whole rather than served without it). The body is the admin error envelope with code `unavailable`"
+            "description": "`unavailable`: the node could not take the unit, or a figure the read serves is past the range it is served in (refused, never pinned). The body is the admin error envelope with code `unavailable`"
           }
         },
         "security": [
@@ -13946,7 +14002,7 @@
                 }
               }
             },
-            "description": "`unavailable`: the node could not take the unit, or the book holds a refused counts row the identity cannot be measured over. The body is the admin error envelope with code `unavailable`"
+            "description": "`unavailable`: the node could not take the unit, or a figure the identity is measured over is past the range it is served in. The body is the admin error envelope with code `unavailable`"
           }
         },
         "security": [

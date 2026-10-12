@@ -2803,6 +2803,8 @@ fn an_arrivals_route_flags_are_once_and_session() {
         ROUTE_ONCE | ROUTE_SESSION,
         ROUTE_ONCE | ROUTE_STREAM,
         ROUTE_ONCE | ROUTE_SESSION | ROUTE_STREAM,
+        ROUTE_COUNTED,
+        ROUTE_ONCE | ROUTE_COUNTED,
     ] {
         let mut o: ArriveOut = z();
         o.route = ROUTE_LOCAL;
@@ -2815,11 +2817,22 @@ fn an_arrivals_route_flags_are_once_and_session() {
     }
     let mut o: ArriveOut = z();
     o.route = ROUTE_LOCAL;
-    o.route_flags = ROUTE_STREAM << 1;
+    o.route_flags = ROUTE_COUNTED << 1;
     assert_eq!(
         check_arrive(Ready, &o, &[], 4, &bounds()),
         f(Rule::UnknownCode, "arrive.route_flags")
     );
+    // ROUTE_COUNTED counts a unit the plane answers itself; on a routed unit it contradicts.
+    for route in [ROUTE_POOL, ROUTE_DIRECT, ROUTE_SCOPE] {
+        let mut o: ArriveOut = z();
+        o.route = route;
+        o.route_flags = ROUTE_COUNTED;
+        assert_eq!(
+            check_arrive(Ready, &o, &[], 4, &bounds()),
+            f(Rule::Contradiction, "arrive.route_flags"),
+            "route {route}"
+        );
+    }
     let mut o: ArriveOut = z();
     o.refusal = 3;
     o.refusal_status = 404;

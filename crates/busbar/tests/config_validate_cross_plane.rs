@@ -69,6 +69,7 @@ fn make_model_unbounded(provider: &str) -> config::ModelCfg {
     config::ModelCfg {
         reasoning: None,
         prompt_caching: None,
+        protocol: None,
         max_requests: -1,
         provider: provider.into(),
         max_concurrent: None,

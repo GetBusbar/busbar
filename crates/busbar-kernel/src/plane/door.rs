@@ -452,6 +452,18 @@ pub struct DoorSlot {
     pub section: DoorSection,
     /// Its claims (mounted by their literal prefix) and its audience.
     pub facing: busbar_contract::plane_calls::DoorFacing,
+    /// Whether the door's open for this generation answered: `false` when it refused, its refusal
+    /// logged and `facing` the empty default. `/healthz` on a deployment with no model lanes reads
+    /// it ([`opened`]).
+    pub opened: bool,
+}
+
+/// THE GENERATION'S OPEN OUTCOME, off a configured plane's runtime slot: a door plane's slot answers
+/// whether its open for this generation succeeded; any other plane's slot was built only when the
+/// plane opened (a plane that will not open builds none), so its presence is the outcome.
+#[must_use]
+pub fn opened(slot: &dyn std::any::Any) -> bool {
+    slot.downcast_ref::<DoorSlot>().is_none_or(|s| s.opened)
 }
 
 fn build<const I: usize>(
@@ -494,16 +506,33 @@ fn build<const I: usize>(
         .and_then(|slot| slot.downcast_ref::<DoorOwned>())
         .map(DoorOwned::bytes)
         .unwrap_or_default();
-    let facing = match settings_of(&section.value)
-        .and_then(|bytes| (d.reg.facing)(&bytes, &owned, ctx.public_url))
+    // The dialect facts of the providers its section references, through the one builder the
+    // served instance's open uses (THE DESIGN section 4): the plane resolves model to dialect itself.
+    let dialects = busbar_contract::plane_calls::dialect_facts(&section.value, |name| {
+        ctx.providers?.get(name).map(|p| {
+            (
+                p.protocol.clone(),
+                p.error_map
+                    .iter()
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect(),
+            )
+        })
+    });
+    let (facing, opened) = match settings_of(&section.value)
+        .and_then(|bytes| (d.reg.facing)(&bytes, &owned, ctx.public_url, &dialects))
     {
-        Ok(f) => f,
+        Ok(f) => (f, true),
         Err(refusal) => {
             tracing::error!(plane = d.reg.key, "{refusal}");
-            busbar_contract::plane_calls::DoorFacing::default()
+            (busbar_contract::plane_calls::DoorFacing::default(), false)
         }
     };
-    Some(std::sync::Arc::new(DoorSlot { section, facing }))
+    Some(std::sync::Arc::new(DoorSlot {
+        section,
+        facing,
+        opened,
+    }))
 }
 
 /// The path a claim mounts at: the target up to its first `{name}` segment (a pattern answers under

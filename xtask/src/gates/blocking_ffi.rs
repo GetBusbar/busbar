@@ -953,6 +953,21 @@ impl Gate for BlockingFfiGate {
             &["never closed", "planted_unclosed.rs"],
         ));
 
+        // THE FLOOR REFUSES A POPULATION UNDER IT: the plant cuts the live tree to FLOOR - 1
+        // whatever its size (`Overlay::below_floor`), so predev growing a file never turns this
+        // plant green and never forces a re-pin for its sake.
+        match population::one_file_short(cx) {
+            Ok(ov) => report.push(prove_red(
+                cx,
+                self,
+                "a population one file short of the measured floor is refused",
+                &[ROW_SCAN_FLOOR],
+                ov,
+                &["below its floor"],
+            )),
+            Err(e) => report.note_infra_failure(format!("blocking-ffi selftest: {e}")),
+        }
+
         // THE FLOOR, on the run path.
         match scan_roots(cx) {
             Ok(roots) => match candidates(cx, &roots) {

@@ -5,14 +5,15 @@
 
 use std::path::PathBuf;
 
-use crate::backend::{DirectoryFactory, SegmentFactory, DIR_SYNCS};
+use crate::backend::{DirectoryFactory, SegmentFactory};
+use crate::tests::hooks::{fault_reset, parents_fsynced};
 
 fn syncs() -> Vec<PathBuf> {
-    DIR_SYNCS.with(|c| c.borrow().clone())
+    parents_fsynced()
 }
 
 fn reset() {
-    DIR_SYNCS.with(|c| c.borrow_mut().clear());
+    fault_reset();
 }
 
 /// A scratch data directory, removed on drop.

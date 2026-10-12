@@ -8,24 +8,20 @@
 //! ## The rule, as ruled
 //!
 //! - The keyset is MINTED at the first boot's `Bootstrap`: a fresh ed25519 seed from the OS CSPRNG.
-//! - It is SEALED IN THE STORE where the store's ABI can hold it. **No store this binary can load
-//!   can hold it today**: the native store verbs that would carry it (`record_put` / `record_get`
-//!   on `busbar_contract::abi::sdk::store::StoreSlots`) have no wire below [`STORE_ABI_WITH_NEW_OPS`], which is
-//!   above the top of this binary's store window, so the store adapter's node-local shim answers
-//!   them and nothing survives the process. The store half therefore has no carrier yet, and this
-//!   module implements only the two halves that do.
-//! - On a store that cannot hold it — the 1.5.5 ABI-2 store and the memory store, i.e. every store
-//!   today — and with no `data_dir`, the keyset is NODE-LOCAL AND EPHEMERAL (PB-13): minted per
-//!   process, never written anywhere, and NOTHING depends on it — no fingerprint check, no
-//!   `KeysetMissing`, no ceremony. A node verifies the signatures of its own boot against it.
+//! - It is SEALED IN THE STORE: the configured store's v3 record slots keep it once for the
+//!   deployment (`durability::KEYSET_SCHEMA`; ARCHITECT 2026-10-07 H3 ruling, follow-up). With no
+//!   `data_dir` the first boot mints it, keeps it in the store, and seals its fingerprint in a
+//!   `Bootstrap` record; every later boot, and every other node on that store, reads it back, so
+//!   `/admin/verify` verifies a chain a predecessor signed. A chain whose `Bootstrap` names a
+//!   fingerprint the store does not yield refuses [`KeysetError::StoreMissing`].
+//! - With no store and no `data_dir` (no deployment boots so: a configuration names its store), the
+//!   keyset is NODE-LOCAL AND EPHEMERAL (PB-13): minted per process, never written anywhere.
 //! - With `data_dir` written, [`KEYSET_FILE`] under it (mode 0600) is a LOCAL CACHE of the
 //!   deployment keyset, and the first boot journals a `Bootstrap` record sealing its fingerprint.
 //!   [`KeysetMissing`] fires ONLY when `data_dir` is set, a `Bootstrap` is on the chain, and
 //!   neither the file nor the store yields the fingerprint that `Bootstrap` sealed.
 //! - There is NO off-node import/export CLI: the owner cut `export_keyset`, so an import would have
 //!   no source.
-//!
-//! [`STORE_ABI_WITH_NEW_OPS`]: crate::root::loader::store_adapter::STORE_ABI_WITH_NEW_OPS
 
 use std::path::{Path, PathBuf};
 
@@ -71,6 +67,9 @@ pub enum KeysetSource {
         /// The keyset cache file read.
         file: PathBuf,
     },
+    /// No `data_dir`: the deployment keyset the configured store keeps (minted into it on the
+    /// first boot of the deployment).
+    Stored,
 }
 
 /// Why a boot could not bind the deployment keyset.
@@ -93,6 +92,14 @@ pub enum KeysetError {
     },
     /// The OS CSPRNG gave no bytes, so no key could be minted.
     NoEntropy,
+    /// No `data_dir`: a `Bootstrap` is on the chain the store kept, and the store does not yield
+    /// the keyset whose fingerprint it sealed.
+    StoreMissing {
+        /// The fingerprint the `Bootstrap` record sealed.
+        fingerprint: [u8; 32],
+    },
+    /// The configured store would not read or keep the deployment keyset.
+    Store(String),
 }
 
 /// THE REFUSAL: this deployment was bootstrapped with a keyset this node cannot produce.
@@ -137,6 +144,14 @@ impl std::fmt::Display for KeysetError {
                 "the operating system's random source gave no bytes, so the deployment keyset \
                  could not be minted",
             ),
+            KeysetError::StoreMissing { fingerprint } => write!(
+                f,
+                "KeysetMissing: the journal the configured store keeps holds a Bootstrap sealing \
+                 keyset fingerprint {}, and the store does not yield that fingerprint. Restore \
+                 the store's deployment keyset, or boot against a store that holds it",
+                hex::encode(fingerprint)
+            ),
+            KeysetError::Store(why) => write!(f, "the deployment keyset: {why}"),
         }
     }
 }
@@ -217,7 +232,13 @@ pub fn bind(
     at: StepName,
     now: u64,
 ) -> Result<KeysetSource, KeysetError> {
+    let store = durability
+        .lane()
+        .map(crate::root::durability::JournalLane::calls);
     let Some(dir) = data_dir else {
+        if let Some(calls) = store {
+            return bind_in_store(durability, calls.as_ref(), token, at, now);
+        }
         let key = AuditSigningKey::from_hex_seed(&mint_seed_hex()?)
             .expect("a freshly minted seed is 64 hex characters");
         sign_with(durability, key);
@@ -256,11 +277,30 @@ pub fn bind(
             let key = match cached {
                 Some(key) => key,
                 None => {
-                    let seed = mint_seed_hex()?;
-                    busbar_kernel_wal::durable::write_with(
+                    // One key per deployment: a store that already keeps one is where it comes
+                    // from; otherwise mint it, and keep it there too.
+                    let held = match &store {
+                        Some(calls) => crate::root::durability::stored_keyset(calls.as_ref())
+                            .map_err(KeysetError::Store)?,
+                        None => None,
+                    };
+                    let seed = match held {
+                        Some(seed) => seed,
+                        None => {
+                            let seed = mint_seed_hex()?;
+                            match &store {
+                                Some(calls) => {
+                                    crate::root::durability::keep_keyset(calls.as_ref(), &seed)
+                                        .map_err(KeysetError::Store)?
+                                }
+                                None => seed,
+                            }
+                        }
+                    };
+                    busbar_kernel::durable::write_with(
                         &file,
                         format!("{seed}\n").as_bytes(),
-                        busbar_kernel_wal::durable::DurableOpts {
+                        busbar_kernel::durable::DurableOpts {
                             mode: Some(0o600),
                             exclusive: true,
                         },
@@ -269,8 +309,9 @@ pub fn bind(
                         file: file.clone(),
                         why: e.to_string(),
                     })?;
-                    AuditSigningKey::from_hex_seed(&seed)
-                        .expect("a freshly minted seed is 64 hex characters")
+                    AuditSigningKey::from_hex_seed(&seed).map_err(|e| {
+                        KeysetError::Store(format!("the deployment keyset is not one: {e}"))
+                    })?
                 }
             };
             let entry = Entry::new(
@@ -286,6 +327,67 @@ pub fn bind(
                 })?;
             sign_with(durability, key);
             Ok(KeysetSource::Minted { file })
+        }
+    }
+}
+
+/// [`bind`] with no data directory, over the configured store: the deployment keyset the store
+/// keeps, minted into it by the deployment's first boot, and a `Bootstrap` sealing its fingerprint
+/// on this node's chain the first time this chain is bound.
+fn bind_in_store(
+    durability: &mut Durability,
+    calls: &dyn busbar_contract::store_calls::StoreCalls,
+    token: &Grant<DurableWrite>,
+    at: StepName,
+    now: u64,
+) -> Result<KeysetSource, KeysetError> {
+    let prior = sealed_fingerprint(durability);
+    let held = crate::root::durability::stored_keyset(calls).map_err(KeysetError::Store)?;
+    let held = held
+        .map(|seed| {
+            AuditSigningKey::from_hex_seed(&seed).map_err(|e| {
+                KeysetError::Store(format!("the store's deployment keyset is not one: {e}"))
+            })
+        })
+        .transpose()?;
+    let ours = held.as_ref().map(fingerprint_of_signer);
+    match bootstrap(prior, ours) {
+        BootstrapVerdict::AlreadyOurs => {
+            sign_with(
+                durability,
+                held.expect("AlreadyOurs is answered only for a key the store holds"),
+            );
+            Ok(KeysetSource::Stored)
+        }
+        BootstrapVerdict::KeysetMissing => Err(KeysetError::StoreMissing {
+            fingerprint: prior.expect("KeysetMissing is answered only over a sealed Bootstrap"),
+        }),
+        BootstrapVerdict::Mint => {
+            // This chain has not sealed the deployment's key yet: the key another node (or a
+            // predecessor whose chain the store did not keep) put in the store, or one minted now.
+            let key = match held {
+                Some(key) => key,
+                None => {
+                    let seed = crate::root::durability::keep_keyset(calls, &mint_seed_hex()?)
+                        .map_err(KeysetError::Store)?;
+                    AuditSigningKey::from_hex_seed(&seed).map_err(|e| {
+                        KeysetError::Store(format!("the store's deployment keyset is not one: {e}"))
+                    })?
+                }
+            };
+            let entry = Entry::new(
+                RecordClass::Bootstrap,
+                bootstrap_body(&fingerprint_of_signer(&key), key.key_id()),
+            )
+            .at(now, 0);
+            durability
+                .journal
+                .append(token, at, &[entry])
+                .map_err(|lost| KeysetError::Unsealed {
+                    step: lost.step().as_str(),
+                })?;
+            sign_with(durability, key);
+            Ok(KeysetSource::Stored)
         }
     }
 }

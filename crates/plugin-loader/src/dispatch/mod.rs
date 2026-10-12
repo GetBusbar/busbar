@@ -10,8 +10,9 @@
 //! * [`plugin`] — [`plugin::Plugin`]`<K>`: the instance handle, the one crossing and its outcome
 //!   authority (the return value decides; a mirror that disagrees, or an unknown byte, is FAULT),
 //!   the #85 envelope ingest, and `max_inflight`.
-//! * [`ticket`] — tickets `(slot, generation)` unique per instance across all workers, the host's
-//!   `wake`, and completion handles `(ticket, seq)`.
+//! * [`ticket`] — tickets `(slot, generation)` unique per instance across all workers, and the
+//!   host's `wake`. A service's result under its completion handle `(ticket, seq)` is held by
+//!   [`services::ServiceStore`].
 //! * [`answer`] — one answer as a kind's validator reads it ([`Kind::check`]).
 //! * [`validate`] — the mechanism's own checks of every `out` head before it is read (its size,
 //!   the error text, the #85 arrays); a violation is FAULT. A kind's reply fields are checked by
@@ -24,6 +25,23 @@
 //! Nothing here names a kernel type, and nothing existing is rewired to it: the kernel adopts it
 //! per kind. A kind is a [`Kind`] marker naming its code, its table (`abi/<kind>/Ops`) and its
 //! timeout outcome.
+
+/// THE HOST'S SERVICE ENTRY POINTS, ONE SPELLING OF THE ABI: every `fn` inside is a host service
+/// (`abi::host::service::ServiceFn`, the slot type of `abi::host::io::IoSlots`). The expansion
+/// spells that signature whole, so it reads as an implementation of the ABI's type, never a new
+/// shape. Defined before the modules so each of them can use it.
+macro_rules! c_entry {
+    () => {};
+    (
+        $(#[$m:meta])* $vis:vis fn $name:ident(
+            $ctx:ident: HostCtx, $input:ident: *const c_void, $out:ident: *mut ServiceOut $(,)?
+        ) -> RawOutcome { $($body:tt)* }
+        $($more:tt)*
+    ) => {
+        $(#[$m])* $vis extern "C" fn $name($ctx: HostCtx, $input: *const c_void, $out: *mut ServiceOut) -> RawOutcome { $($body)* }
+        c_entry! { $($more)* }
+    };
+}
 
 pub mod answer;
 pub mod auth_outbound;
@@ -73,7 +91,6 @@ pub use plugin::{
     MemberSecretFn, Metric, NoSink, Plugin, Recall, MAX_LOG_BYTES, MAX_LOG_RECORDS,
 };
 pub use services::{HostServices, Later, Ran, Reading, Stored};
-pub use ticket::{Completions, Redeem};
 pub use validate::Violation;
 pub use worker::{Adopter, Budgets, DispatchConfig, DispatchStats, Dispatcher, Done, Lent, Reply};
 

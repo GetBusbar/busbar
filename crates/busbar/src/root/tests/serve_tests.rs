@@ -76,7 +76,7 @@ static CARD: std::sync::LazyLock<crate::root::kernel::RootHistory> =
 
 #[cfg(feature = "plane-decisions")]
 /// The decisions plane's one claim, with one model configured.
-const CLAIMED: &str = "/v1/systemone";
+pub(super) const CLAIMED: &str = "/v1/systemone";
 
 #[cfg(feature = "plane-decisions")]
 /// The provider's credential, as its file holds it.
@@ -93,7 +93,11 @@ const UNAVAILABLE: &str = r#"{"error":"unavailable"}"#;
 #[cfg(feature = "plane-decisions")]
 /// A POST of the caller's decision state to `path` on `router`, with `token` as its bearer or with
 /// none: the response.
-async fn send(router: &axum::Router, path: &str, token: Option<&str>) -> axum::response::Response {
+pub(super) async fn send(
+    router: &axum::Router,
+    path: &str,
+    token: Option<&str>,
+) -> axum::response::Response {
     use tower::ServiceExt as _;
     let mut req = axum::http::Request::builder().method("POST").uri(path);
     if let Some(token) = token {
@@ -112,7 +116,7 @@ async fn send(router: &axum::Router, path: &str, token: Option<&str>) -> axum::r
 #[cfg(feature = "plane-decisions")]
 /// A far end on loopback answering every request with [`ANSWER`]; what it was sent comes back on
 /// the channel, one request head per connection.
-async fn far_end() -> (u16, tokio::sync::mpsc::UnboundedReceiver<String>) {
+pub(super) async fn far_end() -> (u16, tokio::sync::mpsc::UnboundedReceiver<String>) {
     far_end_failing_first(0).await
 }
 
@@ -305,10 +309,10 @@ async fn a_claimed_request_is_served_through_the_door_and_its_money_posted() {
         key_file.display()
     ))
     .expect("a provider entry");
-    let providers = provider_routes(&std::collections::HashMap::from([(
-        "typesafe".to_string(),
-        provider,
-    )]));
+    let providers = provider_routes(
+        &std::collections::HashMap::from([("typesafe".to_string(), provider)]),
+        &busbar_kernel::config_validate::MetadataPosture::default(),
+    );
     let secrets = busbar_kernel::config::secret::SecretResolver::builtins_only();
     let auths = OutboundAuths::new(
         Arc::clone(&dispatcher),
@@ -1980,10 +1984,13 @@ mod tools_door {
 #[cfg(feature = "plane-decisions")]
 /// What a served door's data router needs kept alive beside it, and what a test reads back off
 /// the composition it served through.
-struct Serving {
-    router: axum::Router,
-    token: String,
-    _handle: Arc<busbar_kernel::state::AppHandle>,
+pub(super) struct Serving {
+    pub(super) router: axum::Router,
+    pub(super) token: String,
+    /// The kernel's swap handle: the generation a config apply refreshes the door onto.
+    pub(super) handle: Arc<busbar_kernel::state::AppHandle>,
+    /// What a config apply refreshes the served door onto (`DoorApply::apply`).
+    pub(super) live: Arc<super::DoorApply>,
     /// The door plane's egress as the composition sealed it: its members' breaker cells.
     egress: Arc<busbar_kernel::plane_driver::Egress>,
     /// The plane's key, which its lanes are named under.
@@ -2085,19 +2092,57 @@ async fn serve_limited(
     port: u16,
     limits: Vec<busbar_kernel::config::groups::LimitCfg>,
 ) -> Serving {
-    serve_governed(linked, instance, port, limits, 0).await
+    serve_governed(linked, instance, port, limits, 0, None).await
 }
 
 #[cfg(feature = "plane-decisions")]
 /// [`serve_limited`], the plane stating its own per-request fee (its section's reserved
-/// `fees.per_request`, #47), in minor units.
+/// `fees.per_request`, #47), in minor units, and the caller's key minted with `allowed_pools`
+/// (`None` = every pool).
 async fn serve_governed(
     linked: &crate::root::linked::Linked,
     instance: &str,
     port: u16,
     limits: Vec<busbar_kernel::config::groups::LimitCfg>,
     fee: i64,
+    allowed_pools: Option<Vec<String>>,
 ) -> Serving {
+    let key_file = std::env::temp_dir().join(format!(
+        "busbar-serve-door-{instance}-{}",
+        std::process::id()
+    ));
+    std::fs::write(&key_file, CREDENTIAL).expect("the credential file");
+    let api_key = format!("{{file: '{}'}}", key_file.display());
+    let serving = serve_configured(linked, instance, port, limits, fee, allowed_pools, &api_key)
+        .await
+        .unwrap_or_else(|e| panic!("the door plane composes, its egress sealed: {e}"));
+    let _ = std::fs::remove_file(&key_file);
+    serving
+}
+
+#[cfg(linked_section_decisions)]
+/// [`serve_over`], the one provider's credential the secret reference `api_key` (YAML), the
+/// composition's refusal answered rather than panicked on: what the root's boot dies on.
+pub(super) async fn serve_keyed(
+    linked: &crate::root::linked::Linked,
+    instance: &str,
+    port: u16,
+    api_key: &str,
+) -> Result<Serving, String> {
+    serve_configured(linked, instance, port, Vec::new(), 0, None, api_key).await
+}
+
+#[cfg(linked_section_decisions)]
+/// [`serve_governed`] over the provider credential `api_key`, the composition's refusal answered.
+async fn serve_configured(
+    linked: &crate::root::linked::Linked,
+    instance: &str,
+    port: u16,
+    limits: Vec<busbar_kernel::config::groups::LimitCfg>,
+    fee: i64,
+    allowed_pools: Option<Vec<String>>,
+    api_key: &str,
+) -> Result<Serving, String> {
     // The scrape sink's `/metrics` is mounted on a test app built with the recorder installed.
     busbar_kernel::snapshot::init();
     let judge = crate::root::connector::guard_for(&busbar_kernel::config::Destinations {
@@ -2173,6 +2218,7 @@ async fn serve_governed(
         .mint_signed(
             NewKeySpec {
                 name: "decider".to_string(),
+                allowed_pools,
                 group: (!groups.is_empty()).then(|| group.clone()),
                 ..Default::default()
             },
@@ -2194,21 +2240,15 @@ async fn serve_governed(
         ))
     };
 
-    let key_file = std::env::temp_dir().join(format!(
-        "busbar-serve-door-{instance}-{}",
-        std::process::id()
-    ));
-    std::fs::write(&key_file, CREDENTIAL).expect("the credential file");
     let provider: busbar_kernel::config::ProviderCfg = serde_yaml::from_str(&format!(
-        "{{protocol: {}, base_url: 'http://127.0.0.1:{port}', api_key: {{file: '{}'}}, error_map: {{}}}}",
+        "{{protocol: {}, base_url: 'http://127.0.0.1:{port}', api_key: {api_key}, error_map: {{}}}}",
         busbar_plane_decisions::config::PROTOCOL,
-        key_file.display()
     ))
     .expect("a provider entry");
-    let providers = provider_routes(&std::collections::HashMap::from([(
-        "typesafe".to_string(),
-        provider,
-    )]));
+    let providers = provider_routes(
+        &std::collections::HashMap::from([("typesafe".to_string(), provider)]),
+        &busbar_kernel::config_validate::MetadataPosture::default(),
+    );
     let secrets = busbar_kernel::config::secret::SecretResolver::builtins_only();
     let auths = OutboundAuths::new(
         Arc::clone(&dispatcher),
@@ -2244,9 +2284,8 @@ async fn serve_governed(
             journal: Arc::clone(&post) as Arc<dyn busbar_kernel_egress::ports::Journal>,
         }),
         None,
-    )
-    .expect("the door plane composes, its egress sealed");
-    let _ = std::fs::remove_file(&key_file);
+    )?;
+    let live = Arc::clone(&served.planes[0].live);
     served.post = Some(Arc::clone(&post));
     let composed = &served.planes[0];
     let egress = composed
@@ -2265,17 +2304,18 @@ async fn serve_governed(
     let doors = door_routes(served, || CARD.pin(), &[], &[]).expect("its claims mount");
     let (router, _admin, handle) =
         busbar_kernel::build_split_routers_serving(Arc::clone(&app), doors, 1 << 20, 0, false);
-    Serving {
+    Ok(Serving {
         router,
         token: token.expose_secret().to_string(),
-        _handle: handle,
+        handle,
+        live,
         egress,
         plane,
         book: Arc::clone(&book.durability),
         gov,
         key: key.id.to_string(),
         app,
-    }
+    })
 }
 
 #[cfg(feature = "plane-decisions")]
@@ -2299,7 +2339,7 @@ fn declaring(declares: &'static str) -> crate::root::linked::Linked {
 
 #[cfg(feature = "plane-decisions")]
 /// The decisions door's Statement name: the name the root finds its declared facts by.
-fn decisions_name() -> String {
+pub(super) fn decisions_name() -> String {
     let row = LinkedRow::of(decisions_door).expect("the door states its Statement");
     busbar_contract::abi::mechanism::rendering::read(&row.statement)
         .expect("its Statement reads")
@@ -2324,6 +2364,10 @@ async fn call_once(
 /// transient failure below the trip threshold — the 503 reaches the caller, and the NEXT call
 /// reaches the far end and is served. The root names no plane: it finds the fact by the door's
 /// Statement name. RED with the fact absent (the arm below).
+///
+/// A row that also states `needs` (the conformance suite's and the fleet render's) reads the same
+/// fact: the root reads the row through the one reader of a declares document, which checks and
+/// drops `needs` (ARCHITECT ruling (b)). RED ARM: a malformed `needs` is refused, naming the row.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_plane_stating_no_bench_below_the_trip_keeps_its_sole_member_through_one_503() {
     let _one = PUBLISHING.lock().await;
@@ -2338,6 +2382,20 @@ async fn a_plane_stating_no_bench_below_the_trip_keeps_its_sole_member_through_o
         }),
         "the root reads the fact off the door's declares, by its Statement name"
     );
+    let with_needs =
+        declaring(r#"{"needs":["scheme-a"],"breaker":{"bench_below_trip_threshold":false}}"#);
+    assert_eq!(
+        crate::root::linked::door_breaker(&with_needs, None, &decisions_name())
+            .expect("the fact reads beside `needs`"),
+        Some(crate::root::loader::sign::BreakerDecl {
+            bench_below_trip_threshold: false
+        })
+    );
+    let malformed = declaring(r#"{"needs":"scheme-a"}"#);
+    let refused = crate::root::linked::door_breaker(&malformed, None, &decisions_name())
+        .expect_err("a `needs` that is not a list");
+    let row = malformed.plane_door_declares[0].0;
+    assert!(refused.contains(row), "{refused}");
     let (port, mut heard) = far_end_failing_first(1).await;
     let serving = serve_over(&linked, instance, port).await;
 
@@ -2829,7 +2887,7 @@ async fn call_through(
 /// GOVERNANCE-BUDGET: a decisions unit's spend (the plane's own per-request fee, its section's
 /// `fees.per_request`) is charged to the presenting key, and the key's group BUDGET refuses the unit
 /// past it before its dial, 429, naming in `Retry-After` the seconds until the budget's window rolls,
-/// as the llm plane names them (1.5.5's governance refusal). A window that never rolls (`per:
+/// as 1.5.5's governance refusal names them. A window that never rolls (`per:
 /// total`) names no wait. RED: a driver that drops the governance refusal's wait, or a decisions
 /// renderer that does not render it, answers the refusal with no `Retry-After`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -2845,6 +2903,7 @@ async fn a_decisions_unit_past_its_budget_is_refused_with_a_retry_after() {
         port,
         vec![budget_of(1, LimitWindow::Hour)],
         1,
+        None,
     )
     .await;
 
@@ -2890,6 +2949,7 @@ async fn a_decisions_unit_past_its_budget_is_refused_with_a_retry_after() {
         port,
         vec![budget_of(1, LimitWindow::Total)],
         1,
+        None,
     )
     .await;
     assert_eq!(call_through(&serving, &mut heard).await.0, StatusCode::OK);
@@ -2897,6 +2957,52 @@ async fn a_decisions_unit_past_its_budget_is_refused_with_a_retry_after() {
     assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
     assert!(!reached);
     assert_eq!(wait, None, "a total never rolls: no wait is named");
+}
+
+#[cfg(feature = "plane-decisions")]
+/// VERIFY: a unit presented by a key that names only another pool is refused before Admit draws a
+/// bucket and before its dial, the refusal sealed on the audit chain as the unit's end; the same
+/// door serves the key granted every pool (the control). The served door judges the key's pool
+/// grant at its approve seat (`ScopeDenied`), as every served door does. RED: with the key granted
+/// every pool the unit is served and the far end hears it, so the refusal assertions fail.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_decisions_unit_from_a_key_naming_another_pool_is_refused_before_its_dial() {
+    let _one = PUBLISHING.lock().await;
+    let instance = "serve-door-verify";
+    let _published = Published(instance);
+    let (port, mut heard) = far_end().await;
+    let other = Some(vec!["elsewhere".to_string()]);
+    let serving = serve_governed(&crate::LINKED, instance, port, Vec::new(), 0, other).await;
+    let (status, _wait, reached) = call_through(&serving, &mut heard).await;
+    assert_ne!(
+        status,
+        StatusCode::OK,
+        "a pool the key does not name is not served"
+    );
+    assert!(!reached, "the far end is never dialled");
+    let records = serving.audit_records();
+    assert_eq!(records.len(), 1, "the refusal is sealed: {records:?}");
+    assert!(
+        matches!(
+            records[0].outcome.unit_end,
+            busbar_contract::caps::Outcome::Refused(
+                busbar_contract::caps::StepName::Approve,
+                ReasonCode::ScopeDenied
+            )
+        ),
+        "refused on its pool grant, before admit: {:?}",
+        records[0].outcome
+    );
+    drop(serving);
+
+    // THE CONTROL: the same door, the key granted every pool, is served and dials.
+    let instance = "serve-door-verify-control";
+    let _published = Published(instance);
+    let (port, mut heard) = far_end().await;
+    let serving = serve_governed(&crate::LINKED, instance, port, Vec::new(), 0, None).await;
+    let (status, _wait, reached) = call_through(&serving, &mut heard).await;
+    assert_eq!(status, StatusCode::OK, "the granted key is served");
+    assert!(reached, "and dispatched");
 }
 
 #[cfg(feature = "plane-decisions")]
@@ -2917,10 +3023,11 @@ fn the_decisions_doors_facing_lists_its_configured_models() {
         br#"{"decisions":{"models":{"b":{"provider":"typesafe"},"a":{"provider":"typesafe"}}}}"#,
         b"",
         None,
+        &[],
     )
     .expect("the door faces the world");
     assert_eq!(facing.listed, vec!["a".to_string(), "b".to_string()]);
-    let none = (reg.facing)(b"{}", b"", None).expect("the door faces the world");
+    let none = (reg.facing)(b"{}", b"", None, &[]).expect("the door faces the world");
     assert!(
         none.listed.is_empty(),
         "no models, no names: {:?}",

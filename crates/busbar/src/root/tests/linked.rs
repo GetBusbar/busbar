@@ -53,6 +53,66 @@ fn a_linked_export_row_and_a_different_dropped_in_plugin_spelling_its_module_ref
     }
 }
 
+/// A LINKED DECLARES THAT STATES `needs` BOOTS (ARCHITECT ruling (b), 2026-10-07): a networked
+/// plugin's `declares.json` states `needs` for the conformance suite and the fleet render, and the
+/// root reads a linked export row's `DECLARES` through the one reader of a declares document, which
+/// checks and drops it. Over the real linked export rows, each restated with `needs` (as a
+/// networked sink's own repo states it) reads to the same manifest section as without and links
+/// into the registry. RED ARM: a malformed `needs` (not a list) refuses the rows, naming the
+/// plugin.
+///
+/// Compiled only where an export door is linked (`linked_axis_export_doors`, read off the
+/// linked-axes table rather than a feature that spells one sink): a build without one has no row
+/// to restate, and runs no vacuous pass.
+#[cfg(linked_axis_export_doors)]
+#[test]
+fn a_linked_export_declares_stating_needs_boots() {
+    let doors = crate::LINKED.export_doors;
+    let first = doors
+        .first()
+        .expect("an export door is linked under the axis");
+    // Every row as linked, restated with `needs`.
+    let restated = |needs: &str| -> Vec<crate::root::linked::LinkedDoorExport> {
+        doors
+            .iter()
+            .map(|d| {
+                let mut doc: serde_json::Value =
+                    serde_json::from_str(d.declares).expect("the linked row's declares is JSON");
+                doc["needs"] = serde_json::from_str(needs).expect("a needs value");
+                crate::root::linked::LinkedDoorExport {
+                    declares: Box::leak(doc.to_string().into_boxed_str()),
+                    ..*d
+                }
+            })
+            .collect()
+    };
+    let plain = linked_exports(doors).expect("the linked export rows");
+    let networked = linked_exports(&restated(r#"["scheme-a", "scheme-b"]"#))
+        .expect("a linked declares stating `needs` reads");
+    assert_eq!(
+        networked
+            .iter()
+            .map(|p| &p.manifest.declares)
+            .collect::<Vec<_>>(),
+        plain
+            .iter()
+            .map(|p| &p.manifest.declares)
+            .collect::<Vec<_>>(),
+        "the manifest section carries no needs"
+    );
+    PluginRegistry::empty()
+        .link(networked)
+        .expect("the rows link: the boot proceeds");
+    // RED ARM: a malformed `needs` refuses the rows, naming the first row read.
+    let Err(refused) = linked_exports(&restated(r#""scheme-a""#)) else {
+        panic!("a `needs` that is not a list must refuse the rows");
+    };
+    assert!(
+        refused.contains(first.name) && refused.contains("`needs`"),
+        "{refused}"
+    );
+}
+
 /// THE HOST'S METRIC CATALOG CANNOT DRIFT (K9a S1). Every `busbar_*` series constant the host's
 /// metric modules define is in [`HOST_SERIES`], so a first-party plugin's claim on one is refused;
 /// and a derived histogram series is the host's too. RED: drop an entry from the list and the
@@ -481,4 +541,58 @@ fn every_linked_section_row_is_a_linked_doors_declaring_section() {
             "the `linked-section` row `{section}` is no linked door's declaring section: {stated:?}"
         );
     }
+}
+
+/// THE LINKED SCRAPE SINK RENDERS THE RECORDER'S BYTES BACK. The build's linked export rows,
+/// registered as boot registers them (`linked_exports` through the one admission) and opened on the
+/// process's one dispatcher through the root's export rows, answer the frozen scrape module word
+/// (the kernel's `scrape_module`, never a crate name): handed the snapshot of an exposition carrying
+/// every family type the recorder writes (a HELP-less counter, labels with escapes, a histogram, a
+/// quantile summary), the sink answers exactly those bytes. Moved here from busbar-kernel's
+/// `export/tests/scrape_tests.rs` (R-FIX3: the kernel's own tests run on the stand-in axis's scrape
+/// double). A build that links no scrape sink has no sink to prove.
+#[test]
+fn the_linked_scrape_sink_renders_the_recorder_snapshot_byte_identically() {
+    let module = busbar_kernel::test_support::export_axis::scrape_module();
+    let registry = PluginRegistry::empty()
+        .link(linked_exports(crate::LINKED.export_doors).expect("the linked export rows"))
+        .expect("the linked rows alone");
+    if module.is_empty() || registry.resolve(module).is_none() {
+        return;
+    }
+    let sink = crate::root::loader::export_axis::ExportRows::new(
+        &registry,
+        crate::root::dispatch::dispatcher(),
+    )
+    .open(
+        module,
+        "export.metrics",
+        &serde_json::json!({"buffer_seconds": 60}),
+    )
+    .expect("the scrape sink opens");
+    // Listed in the sink's stable order — every counter, then every gauge, then every
+    // histogram/summary (v1.5.5's own renderer drains its maps in that fixed order), name-sorted
+    // within a kind — so the bytes come back unchanged.
+    let own = "# TYPE busbar_requests_total counter\n\
+               busbar_requests_total{pool=\"a\\\"b\\\\c\\nd\",outcome=\"ok\"} 3\n\
+               \n\
+               # TYPE busbar_plane_request_duration_seconds summary\n\
+               busbar_plane_request_duration_seconds{quantile=\"0.99\"} 0.0125\n\
+               busbar_plane_request_duration_seconds_sum 1e-3\n\
+               busbar_plane_request_duration_seconds_count 4\n\
+               \n\
+               # HELP busbar_request_duration_seconds request latency\n\
+               # TYPE busbar_request_duration_seconds histogram\n\
+               busbar_request_duration_seconds_bucket{le=\"0.5\"} 1\n\
+               busbar_request_duration_seconds_bucket{le=\"+Inf\"} 2\n\
+               busbar_request_duration_seconds_sum 0.75\n\
+               busbar_request_duration_seconds_count 2\n\
+               \n";
+    let families = busbar_contract::export_calls::parse_families(own).expect("the text snapshots");
+    let body = sink.scrape(&families).expect("the sink renders");
+    assert_eq!(
+        body,
+        own.as_bytes(),
+        "the scrape is the recorder's bytes, back"
+    );
 }

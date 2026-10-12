@@ -1031,7 +1031,7 @@ fn a_restart_after_a_roll_prices_every_posting_at_the_card_in_force_when_it_arri
 /// A store that takes nothing: a memory-buffered journal over it refuses every append.
 struct RefusingShipper;
 
-impl busbar_kernel_wal::Shipper for RefusingShipper {
+impl busbar_kernel_wal::Shipper<busbar_kernel_wal::Record> for RefusingShipper {
     fn ship(
         &mut self,
         _records: &[busbar_kernel_wal::Record],
@@ -1090,7 +1090,7 @@ fn a_rate_apply_the_journal_refuses_leaves_the_card_in_force_unchanged() {
 /// batch and re-offers it on the next append; answering, the retained batch lands.
 struct SwitchShipper(Arc<std::sync::atomic::AtomicBool>);
 
-impl busbar_kernel_wal::Shipper for SwitchShipper {
+impl busbar_kernel_wal::Shipper<busbar_kernel_wal::Record> for SwitchShipper {
     fn ship(
         &mut self,
         _records: &[busbar_kernel_wal::Record],
@@ -1312,13 +1312,15 @@ impl busbar_kernel_wal::SegmentFactory for BreakableDisk {
     }
 }
 
-/// **A CARD THE LOG DROPPED OUTRIGHT IS NEVER PUBLISHED** (REV-293 #1, REV-309 #1: the truly
-/// dropped path fails closed). A poisoned segment that no fresh one can replace refuses the batch
-/// BEFORE the log retains it (`Wal::append_batch`), so that record can never land: the apply is
-/// refused as `Dropped`, nothing goes on the live history — neither the card nor a put-back — and
-/// the card in force prices on. Answering it as in doubt would publish an entry no chain will hold.
+/// **A CARD THE LOG COULD NOT ROLL FOR IS OWED, UNCONFIRMED, AND NEVER PUBLISHED WHILE IT IS**
+/// (REV-293 #1, REV-309 #1; ARCHITECT 2026-10-07 ruling on kernel-wal finding 4). A poisoned
+/// segment that no fresh one can replace keeps the batch it was handed (`Wal::append_batch`), as
+/// every other arm of the log does, so the chain has no hole once the volume recovers: the card is
+/// OWED. The root answers the apply as in doubt (`Lost`): the card is not confirmed, so it is never
+/// put in force — the card in force prices every instant, the refused card's era included, and the
+/// log owes the card for its retry.
 #[test]
-fn a_rate_card_the_log_drops_outright_is_never_published() {
+fn a_rate_card_the_log_owes_after_a_failed_roll_is_not_published_while_unconfirmed() {
     use busbar_contract::caps::DurableWrite;
     let dir = journal_dir("dropped-apply");
     let holder = process_holder();
@@ -1339,7 +1341,7 @@ fn a_rate_card_the_log_drops_outright_is_never_published() {
     book.lock().expect("the book").journal = busbar_kernel_wal::Journal::over(log, 7);
     failing.store(true, std::sync::atomic::Ordering::SeqCst);
     // The disk goes: the write in flight poisons the segment (retained, owed), and from here no
-    // fresh segment opens.
+    // fresh segment opens; the log keeps every batch it is handed.
     let token = busbar_kernel::test_support::tokens::grant::<DurableWrite>();
     assert!(book
         .lock()
@@ -1357,12 +1359,20 @@ fn a_rate_card_the_log_drops_outright_is_never_published() {
     assert!(
         matches!(
             try_apply_at(holder, 5.0, APPLIED_B),
-            Err(CardRefused::Dropped(_))
+            Err(CardRefused::Lost(_))
         ),
-        "a card the log could not retain is answered as dropped"
+        "a card the log retained but could not write is answered as in doubt, not confirmed"
     );
-    assert_eq!(holder.len(), 1, "nothing is published for a dropped card");
-    assert_eq!(flat_price_at(holder, EARNED_B), Some(3_000));
+    assert_eq!(
+        flat_price_at(holder, APPLIED_B),
+        Some(3_000),
+        "the unconfirmed card is not in force from the instant it was applied at"
+    );
+    assert_eq!(
+        flat_price_at(holder, EARNED_B),
+        Some(3_000),
+        "nor at any instant after it: the card in force prices on"
+    );
     let owed_cards = book
         .lock()
         .expect("the book")
@@ -1373,7 +1383,11 @@ fn a_rate_card_the_log_drops_outright_is_never_published() {
         .filter_map(|r| busbar_kernel_wal::JournalRecord::decode(&r.body).ok())
         .filter(|r| super::CardApplied::from_body(&r.body).is_some())
         .count();
-    assert_eq!(owed_cards, 0, "and the log owes no card");
+    assert_eq!(
+        owed_cards, 2,
+        "the log owes the card, and the card in force put back behind it: both retained for their \
+         retry, neither dropped"
+    );
     drop(book);
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -2139,4 +2153,115 @@ fn applying_rates_registers_the_classes_a_unit_may_report() {
         busbar_contract::Registration::resolve("a_class_nobody_declared_or_configured"),
         None
     );
+}
+
+/// [`boot_book`] with NO data directory, its journal kept by `slots` — the production boot over the
+/// configured store (ARCHITECT 2026-10-07 H3 ruling).
+fn boot_book_on_store(
+    holder: &'static RootHistory,
+    slots: &crate::root::store_double::RecordSlots,
+) -> Arc<Mutex<crate::root::durability::Durability>> {
+    let lane = crate::root::durability::JournalLane::start(slots.calls(), "test-store")
+        .expect("the lane starts");
+    let book = Arc::new(Mutex::new(
+        crate::root::durability::build_on_store(
+            &crate::root::durability::DurabilityConfig { data_dir: None },
+            7,
+            lane,
+            Box::new(busbar_kernel_ledger::legacy::RecordingRows::new()),
+            Box::new(move || holder.pin()),
+            Some(holder),
+        )
+        .expect("the store reads back"),
+    ));
+    holder.bind_journal(&book);
+    book
+}
+
+/// **A SIGNED BACK-DATED CORRECTION SURVIVES A RESTART ON A NODE WITH NO DATA DIRECTORY**
+/// (ARCHITECT 2026-10-07 H3 ruling (b)): the dated history is rebuilt from the chain the store kept,
+/// so the rebuilt book prices the corrected window at the correction — the same proof as
+/// [`a_back_dated_correction_survives_a_restart`], over the store instead of a disk.
+///
+/// RED before the fix: the rebuild ran only over a disk; the restarted book's history was the boot
+/// card alone and its book was empty.
+#[cfg(feature = "root-admin")]
+#[test]
+fn a_back_dated_correction_survives_a_restart_over_the_store() {
+    use busbar_contract::caps::DurableWrite;
+    const CORRECTED: (u64, u64) = (0, 86_400_000);
+    const SIGNED_AT: u64 = 20_000;
+    let slots = crate::root::store_double::RecordSlots::new();
+    {
+        let holder = process_holder();
+        apply_at(holder, 3.0, BOOT_A);
+        let book = boot_book_on_store(holder, &slots);
+        settle(
+            &book,
+            "inside",
+            FLAT_LANE,
+            1_000_000,
+            3_000_000_000,
+            EARNED_A,
+        );
+        let journal = crate::root::units_admin::AmendmentJournal::new(
+            Arc::clone(&book),
+            busbar_kernel::test_support::tokens::grant::<DurableWrite>(),
+        );
+        holder
+            .amend(
+                &crate::root::kernel::Correction {
+                    effective_from: CORRECTED.0,
+                    effective_until: Some(CORRECTED.1),
+                    appended_at: SIGNED_AT,
+                    author: busbar_kernel_ledger::cost::Author::Amend {
+                        operator_fingerprint: "op".to_string(),
+                        reason_hash: [9; 32],
+                    },
+                    cells: vec![(
+                        busbar_kernel_ledger::cost::LaneClass::new(FLAT_LANE, "input"),
+                        4_000,
+                    )],
+                    fee: None,
+                },
+                |card, base| {
+                    journal.record(
+                        &crate::root::units_admin::AmendmentRecord {
+                            effective_from: CORRECTED.0,
+                            effective_until: Some(CORRECTED.1),
+                            amended_at_ms: SIGNED_AT,
+                            sealed_over: Some(base),
+                            sealed_fee: card.fee(),
+                            rates: vec![(FLAT_LANE.to_string(), "input".to_string(), Some(4_000))],
+                            operator_fingerprint: "op".to_string(),
+                            reason_hash: [9; 32],
+                            principal: "admin".to_string(),
+                            dual_control: "single".to_string(),
+                            signed_payload: b"signed".to_vec(),
+                            signature: "00".to_string(),
+                        },
+                        SIGNED_AT / 1_000,
+                    )
+                },
+            )
+            .expect("a resolved history takes a correction");
+        assert!(
+            book.lock()
+                .expect("the book")
+                .lane()
+                .expect("a lane")
+                .drain(std::time::Duration::from_secs(5)),
+            "the store takes the chain"
+        );
+    }
+
+    let holder = process_holder();
+    apply_at(holder, 3.0, REBOOT);
+    let book = boot_book_on_store(holder, &slots);
+    assert_eq!(
+        settled(&book, "inside"),
+        4_000_000_000,
+        "the correction reprices its window after a restart over the store"
+    );
+    assert_eq!(holder.len(), 2, "the opening card and the correction");
 }

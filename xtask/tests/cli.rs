@@ -25,33 +25,29 @@ fn an_unknown_gate_is_an_argument_error_and_never_falls_through_into_running_som
 }
 
 #[test]
-fn list_and_a_named_gate_run_and_all_reaches_a_verdict_over_the_real_tree() {
+fn list_and_a_named_gate_run_over_the_real_tree() {
     assert_eq!(run(&["gate", "--list"]), 0);
     assert_eq!(run(&["gate", "segregation"]), 0);
     assert_eq!(run(&["gate", "segregation", "--format=tsv"]), 0);
 
-    // `--all` IS ASSERTED TO HAVE REACHED A VERDICT, not to have liked the tree.
-    //
-    // This case's subject is the DISPATCHER, and the two facts worth pinning about `--all` are that
-    // every registered gate ran and that the runner distinguished its four outcomes. Requiring 0
-    // would make it a second, quieter assertion that the branch carries no debt in any gate —
-    // which is a claim about the tree, not about the runner, and it is a claim that goes false the
-    // first time a gate is converted whose subject the branch is genuinely red on. A case that
-    // fails for a reason it is not about is a case somebody deletes.
-    //
-    // 1 is "a gate failed" and 0 is "none did"; 2 (bad arguments) and 3 (could not run) are the
-    // two answers that would mean `--all` never judged the tree at all, and they stay refused.
-    let all = run(&["gate", "--all"]);
-    assert!(
-        all == 0 || all == 1,
-        "`gate --all` must reach a verdict, not report an argument error (2) or a gate that could \
-         not run (3); got {all}"
-    );
+    // `--all` IS NOT RUN HERE. Every registered gate is run over the real tree by the gates check
+    // (`xtask gate <name> --format=tsv`, one per gate, in the hop's gate battery), so running them
+    // all again from this file paid for the same verdicts twice in one hop (verification runs
+    // once per input). The arm's argument handling stays pinned, cheaply, in `cli::tests`
+    // (`gate --all --frobnicate` is 2).
 }
 
 #[test]
-fn selftest_runs_every_registered_gates_red_proof() {
-    assert_eq!(run(&["selftest"]), 0);
+fn selftest_proves_a_named_gates_red_proof() {
+    // ONE GATE'S SELF-TEST, NOT EVERY GATE'S. This file's subject is the DISPATCHER, and its arms
+    // are pinned by a single gate: the named `selftest <gate>` arm and the `gate <name> --selftest`
+    // spelling both reach that gate's red proof and exit 0. The all-gates `selftest` arm is the
+    // same loop over the registry, and every gate's proof is judged by itself, gate by gate, in
+    // the `test:xtask-selftest` check, which runs `xtask selftest <gate>` for each registered
+    // gate. Running the whole registry from here as well cost about five minutes of runner time
+    // per hop for verdicts that check already holds, and it is the only reason this case ever
+    // went red on a branch that reds some OTHER gate. An unknown gate name is refused with 2 in
+    // `an_unknown_gate_is_an_argument_error_and_never_falls_through_into_running_something`.
     assert_eq!(run(&["selftest", "segregation"]), 0);
     assert_eq!(run(&["gate", "segregation", "--selftest"]), 0);
 }
