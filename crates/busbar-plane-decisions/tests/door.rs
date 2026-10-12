@@ -261,3 +261,107 @@ fn the_tokens_a_success_reports_are_billed_in_family_decision() {
         assert!(got.contains(&want), "{want:?} in {got:?}");
     }
 }
+
+const MAX_UNITS: u64 = busbar_plane_decisions::plane_door::MAX_UNITS as u64;
+
+/// A live unit over [`ONE`]: arrived, its ATTEMPT crossed.
+fn live(door: &door_harness::Door, unit: u64, bufs: &mut Bufs) {
+    let arrived = door.arrive(unit, br#"{"state":{}}"#);
+    assert_eq!(arrived.outcome, Outcome::Ready, "unit {unit}: {arrived:?}");
+    let attempt = door.piece(unit, Given::attempt(1), bufs);
+    assert_eq!(attempt.request, "POST /v1/systemone", "unit {unit}");
+}
+
+/// Whether `unit`'s body still reaches the far end: its ATTEMPT's state is still held.
+fn still_live(door: &door_harness::Door, unit: u64, bufs: &mut Bufs) -> bool {
+    door.piece(unit, Given::caller(br#"{"state":{}}"#), bufs)
+        .far
+}
+
+/// RED (audit plane-decisions#6): a refusal ends its unit and drops its state, so refused traffic
+/// never crowds out a live unit.
+#[test]
+fn a_refused_unit_is_dropped_and_a_live_unit_kept() {
+    let door = open(ONE);
+    let mut bufs = Bufs::new(1 << 16);
+    live(&door, 1, &mut bufs);
+    for unit in 2..2 + MAX_UNITS {
+        assert_eq!(
+            door.arrive(unit, br#"{}"#).outcome,
+            Outcome::Ready,
+            "unit {unit}"
+        );
+        door.refusal(unit, 429, "the key's limit is spent", false);
+    }
+    assert!(still_live(&door, 1, &mut bufs), "the live unit was dropped");
+}
+
+/// RED (audit plane-decisions#6): a cancel ends the unit on its ticket and drops its state.
+#[test]
+fn a_cancelled_unit_is_dropped_and_a_live_unit_kept() {
+    let door = open(ONE);
+    let mut bufs = Bufs::new(1 << 16);
+    live(&door, 1, &mut bufs);
+    for unit in 2..2 + MAX_UNITS {
+        live(&door, unit, &mut bufs);
+        let (outcome, disposition) = door.cancel(door_harness::ticket_of(unit));
+        assert_eq!(
+            (outcome, disposition),
+            (Outcome::Ready, busbar_contract::abi::plane::CANCEL_ABORTED),
+            "unit {unit}"
+        );
+    }
+    assert!(still_live(&door, 1, &mut bufs), "the live unit was dropped");
+}
+
+/// RED (audit plane-decisions#6): a unit cut after its far end answered was not aborted before it.
+#[test]
+fn a_unit_cancelled_after_its_far_end_answered_is_cut_partway() {
+    let door = open(ONE);
+    let mut bufs = Bufs::new(1 << 16);
+    live(&door, 1, &mut bufs);
+    assert!(still_live(&door, 1, &mut bufs));
+    let first = door.piece(1, Given::far(Some(200), false, br#"{"usage":"#), &mut bufs);
+    assert_eq!(first.outcome, Some(Outcome::Ready));
+    assert_eq!(
+        door.cancel(door_harness::ticket_of(1)),
+        (
+            Outcome::Ready,
+            busbar_contract::abi::plane::CANCEL_OK_PARTIAL
+        )
+    );
+}
+
+/// RED (audit plane-decisions#6): past [`MAX_UNITS`] live units a new arrival is refused, about
+/// the entry it routed over, and no live unit is dropped to make room.
+#[test]
+fn past_the_cap_an_arrival_is_refused_and_no_live_unit_dropped() {
+    let door = open(ONE);
+    let mut bufs = Bufs::new(1 << 16);
+    for unit in 1..=MAX_UNITS {
+        live(&door, unit, &mut bufs);
+    }
+    let over = door.arrive(MAX_UNITS + 1, br#"{"state":{}}"#);
+    assert_eq!(
+        (over.outcome, over.status, over.route, over.entry.as_str()),
+        (Outcome::Refused, 503, ROUTE_DIRECT, "jev"),
+        "{over:?}"
+    );
+    assert!(
+        still_live(&door, 1, &mut bufs),
+        "the first live unit was dropped"
+    );
+    assert!(still_live(&door, MAX_UNITS, &mut bufs));
+}
+
+/// A unit that arrived and never crossed a piece while [`MAX_UNITS`] arrivals followed is
+/// reclaimed, so the instance never refuses every arrival for good.
+#[test]
+fn an_arrival_never_started_is_reclaimed_once_the_cap_is_reached() {
+    let door = open(ONE);
+    for unit in 1..=MAX_UNITS {
+        assert_eq!(door.arrive(unit, br#"{}"#).outcome, Outcome::Ready);
+    }
+    let next = door.arrive(MAX_UNITS + 1, br#"{}"#);
+    assert_eq!(next.outcome, Outcome::Ready, "{next:?}");
+}

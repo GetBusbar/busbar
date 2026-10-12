@@ -374,8 +374,11 @@ fn every_caller_field_but_the_governed_set_is_relayed() {
         (b"Proxy-Authorization", b"Basic x"),
         (b"accept-language", b"en"),
     ];
+    let kept = relayed_fields(caller);
     assert_eq!(
-        relayed_fields(caller),
+        kept.iter()
+            .map(|(n, v)| (n.to_vec(), v.to_vec()))
+            .collect::<Vec<_>>(),
         vec![
             (b"x-trace".to_vec(), b"a".to_vec()),
             (b"x-trace".to_vec(), b"b".to_vec()),
@@ -383,4 +386,93 @@ fn every_caller_field_but_the_governed_set_is_relayed() {
         ]
     );
     assert!(relayed_fields(std::iter::empty()).is_empty());
+}
+
+/// The money rule's reading of a whole answer by its declared pointers, as the body would be read
+/// kept whole: the reference the piece-by-piece reading is held to.
+fn by_pointer(status: u32, body: &[u8]) -> Result<Vec<(u32, u64)>, Unreadable> {
+    use crate::codec::{read_raw, PTR_ERROR};
+    let ok = (200..300).contains(&status) && read_raw(body, PTR_ERROR).is_none_or(|e| e == b"null");
+    if !ok {
+        return Ok(vec![]);
+    }
+    let count = |p: &'static str| match read_raw(body, p) {
+        None => Ok(None),
+        Some(raw) => whole(raw).map(Some).ok_or(Unreadable(p)),
+    };
+    let mut out = vec![(DECISION, count(crate::codec::PTR_USAGE_UNITS)?.unwrap_or(1))];
+    if let Some(n) = count(crate::codec::PTR_USAGE_INPUT_TOKENS)? {
+        out.push((INPUT, n));
+    }
+    if let Some(n) = count(crate::codec::PTR_USAGE_OUTPUT_TOKENS)? {
+        out.push((OUTPUT, n));
+    }
+    out.push((FEE, 1));
+    Ok(out)
+}
+
+/// The answer read in two pieces split at `at`.
+fn split_billed(status: u32, body: &[u8], at: usize) -> Result<Vec<(u32, u64)>, Unreadable> {
+    let mut reading = FarEndReading::new();
+    reading.piece(&body[..at]);
+    reading.piece(&body[at..]);
+    reading.counts(Some(status)).map(|c| {
+        c.into_iter()
+            .flatten()
+            .map(|u| (u.class, u.amount))
+            .collect()
+    })
+}
+
+/// RED (audit plane-decisions#8): the answer is read as it passes, in fixed space, wherever the
+/// pieces split it, and reads exactly what the declared pointers read over the whole answer.
+#[test]
+fn the_reading_is_the_pointers_reading_wherever_the_pieces_split() {
+    let answers: [&[u8]; 14] = [
+        br#"{"request_id":"req_1","usage":{"units":42},"answers":{"decision":"approve"}}"#,
+        br#" { "usage" : { "input_tokens" : 12 , "units" : 3, "output_tokens":5 } } "#,
+        br#"{"answers":{"usage":{"units":9}},"usage":{"units":2}}"#,
+        br#"{"state":{"error":"x","usage":{"units":"q"}},"usage":{}}"#,
+        br#"{"error":null,"usage":{"units":7}}"#,
+        br#"{"error":{"code":"x","message":"y"},"usage":{"units":3}}"#,
+        br#"{"error":"down"}"#,
+        br#"{"usage":{"units":7.5}}"#,
+        br#"{"usage":{"units":"7"}}"#,
+        br#"{"usage":{"units":[1]}}"#,
+        br#"{"usage":{"units":99999999999999999999999999}}"#,
+        br#"{"a\"usage":{"units":"no"},"usage":{"output_tokens":-1}}"#,
+        br#"{"usage":"n/a","x":[{"usage":{"units":1}}]}"#,
+        br#"[{"usage":{"units":5}}]"#,
+    ];
+    for body in answers {
+        for status in [200, 500] {
+            let want = by_pointer(status, body);
+            for at in 0..=body.len() {
+                assert_eq!(
+                    split_billed(status, body, at),
+                    want,
+                    "{status} {} split at {at}",
+                    String::from_utf8_lossy(body)
+                );
+            }
+        }
+    }
+}
+
+/// An answer of any size is read in the reading's own fixed space.
+#[test]
+fn a_large_answer_is_read_without_keeping_it() {
+    let mut reading = FarEndReading::new();
+    let before = std::mem::size_of_val(&reading);
+    reading.piece(br#"{"answers":{"blob":""#);
+    let filler = [b'x'; 4096];
+    for _ in 0..256 {
+        reading.piece(&filler);
+    }
+    reading.piece(br#""},"usage":{"units":4}}"#);
+    assert_eq!(std::mem::size_of_val(&reading), before);
+    assert_eq!(
+        reading.counts(Some(200)).map(|c| c[0].map(|u| u.amount)),
+        Ok(Some(4))
+    );
 }

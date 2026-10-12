@@ -13,7 +13,8 @@
 //! | `refusal` | [`refusal_body`]: the kernel's status and text, in this dialect's error shape |
 //!
 //! Every answer is plain data. Nothing here holds a byte across calls: [`FarEndReading`] is a value
-//! the caller owns for the length of one unit, and it is the only accumulating thing in the module.
+//! the caller owns for the length of one unit, in fixed space, and it is the only accumulating
+//! thing in the module.
 //! Writing these answers into the host buffers of the plane ABI (`busbar_contract::abi::plane`) is
 //! the plane door's job, one generic adapter for every plane; it is not this plane's.
 //!
@@ -48,8 +49,8 @@
 use busbar_contract::ids::{MeterClassId, OpClassId};
 
 use crate::codec::{
-    self, error_body, CONTENT_TYPE_JSON, EGRESS_SCHEME, FIELD_CONTENT_TYPE, PTR_ERROR,
-    PTR_USAGE_INPUT_TOKENS, PTR_USAGE_OUTPUT_TOKENS, PTR_USAGE_UNITS,
+    self, error_body, CONTENT_TYPE_JSON, EGRESS_SCHEME, FIELD_CONTENT_TYPE, PTR_USAGE_INPUT_TOKENS,
+    PTR_USAGE_OUTPUT_TOKENS, PTR_USAGE_UNITS,
 };
 use crate::ops;
 
@@ -372,14 +373,73 @@ pub struct Unreadable(pub &'static str);
 /// the input and output tokens, and the request fee. `None` = nothing in that class.
 pub type Counts = [Option<Units>; 4];
 
+/// A usage member as the answer states it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum Member {
+    /// The answer has no such member.
+    #[default]
+    Absent,
+    /// A whole count.
+    Whole(u64),
+    /// Present, and not a whole count.
+    Unreadable,
+}
+
+/// What a member of the answer is to the reading: `/error`, `/usage`, one of the three usage
+/// counts (by its index in [`COUNTED`]), or none of them.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum Slot {
+    #[default]
+    Other,
+    Error,
+    Usage,
+    Count(usize),
+}
+
+/// The usage members read, `(member name under /usage, its pointer)`, in [`Counts`]' order.
+const COUNTED: [(&[u8], &str); 3] = [
+    (b"units", PTR_USAGE_UNITS),
+    (b"input_tokens", PTR_USAGE_INPUT_TOKENS),
+    (b"output_tokens", PTR_USAGE_OUTPUT_TOKENS),
+];
+
+/// The longest member name compared ("output_tokens"), with room.
+const KEY_CAP: usize = 16;
+/// The longest scalar a whole count is spelled in (`u64::MAX` is 20 digits), with room.
+const SCALAR_CAP: usize = 24;
+
 /// The far end's answer, read as it is relayed.
 ///
-/// Every piece is relayed to the caller unchanged, as it arrives. The counts live inside the body
-/// (`/usage/*`), so the bytes are also kept until the last piece, and the counts are read once,
-/// over the whole answer.
+/// Every piece is relayed to the caller unchanged, as it arrives, and read as it passes: a scan of
+/// the JSON structure that keeps only what the money rule reads (whether `/error` is there and not
+/// `null`, and the three `/usage/*` counts), in fixed space. No byte of the answer is kept, so an
+/// answer of any size is read in the same few bytes (THE DESIGN section 11.2: "no allocation and no
+/// blocking on the hot path"), and the pieces may split the answer anywhere.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct FarEndReading {
-    body: Vec<u8>,
+    /// The nesting depth: `1` inside the top-level value.
+    depth: u32,
+    /// Whether the container at depth 1 and at depth 2 is an object.
+    object: [bool; 3],
+    /// In an object at depth 1 or 2: the next string is a member name.
+    want_key: bool,
+    /// Inside a string; the string is a member name; the last byte was its escape.
+    in_str: bool,
+    str_key: bool,
+    escaped: bool,
+    /// The member name being read (cut at [`KEY_CAP`]: a longer one is none compared).
+    key: [u8; KEY_CAP],
+    key_len: usize,
+    /// The member a value at depth 1, and at depth 2, belongs to.
+    at: [Slot; 3],
+    /// The scalar being read for `scalar_of` (cut at [`SCALAR_CAP`]: a longer one is no count).
+    scalar: [u8; SCALAR_CAP],
+    scalar_len: usize,
+    scalar_of: Option<Slot>,
+    /// `/error`: absent (`None`), `null` (`Some(false)`), or there (`Some(true)`).
+    error: Option<bool>,
+    /// The three usage counts, in [`COUNTED`]' order.
+    members: [Member; 3],
 }
 
 impl FarEndReading {
@@ -391,16 +451,160 @@ impl FarEndReading {
 
     /// Take one far-end piece and return the bytes to relay to the caller: the piece itself.
     pub fn piece<'p>(&mut self, bytes: &'p [u8]) -> &'p [u8] {
-        self.body.extend_from_slice(bytes);
+        for &b in bytes {
+            self.byte(b);
+        }
         bytes
+    }
+
+    /// The member at the current depth a value starting now belongs to.
+    fn slot(&self) -> Slot {
+        match self.depth {
+            1 if self.object[1] => self.at[1],
+            2 if self.object[2] && self.at[1] == Slot::Usage => self.at[2],
+            _ => Slot::Other,
+        }
+    }
+
+    /// Whether the container the reading is in is an object it reads member names of.
+    fn in_object(&self) -> bool {
+        matches!(self.depth, 1 | 2) && self.object[self.depth as usize]
+    }
+
+    /// A value starts: `scalar` = it is a bare scalar (a number, `true`, `false`, `null`).
+    fn value(&mut self, scalar: Option<u8>) {
+        let slot = self.slot();
+        match (slot, scalar) {
+            (Slot::Error, None) => self.error = Some(true),
+            (Slot::Count(i), None) => self.members[i] = Member::Unreadable,
+            (Slot::Error | Slot::Count(_), Some(b)) => {
+                self.scalar[0] = b;
+                self.scalar_len = 1;
+                self.scalar_of = Some(slot);
+            }
+            _ => {}
+        }
+    }
+
+    /// The scalar being read, ended.
+    fn end_scalar(&mut self) {
+        let Some(slot) = self.scalar_of.take() else {
+            return;
+        };
+        let raw = &self.scalar[..self.scalar_len];
+        match slot {
+            Slot::Error => self.error = Some(raw != b"null"),
+            Slot::Count(i) => {
+                self.members[i] = if self.scalar_len > SCALAR_CAP - 1 {
+                    Member::Unreadable
+                } else {
+                    whole(raw).map_or(Member::Unreadable, Member::Whole)
+                };
+            }
+            _ => {}
+        }
+    }
+
+    /// A member name, read whole.
+    fn end_key(&mut self) {
+        let key = &self.key[..self.key_len.min(KEY_CAP)];
+        let named = if self.key_len > KEY_CAP {
+            Slot::Other
+        } else if self.depth == 1 {
+            match key {
+                b"error" => Slot::Error,
+                b"usage" => Slot::Usage,
+                _ => Slot::Other,
+            }
+        } else {
+            COUNTED
+                .iter()
+                .position(|(name, _)| *name == key)
+                .map_or(Slot::Other, Slot::Count)
+        };
+        if let 1 | 2 = self.depth {
+            self.at[self.depth as usize] = named;
+        }
+    }
+
+    /// One byte of the answer.
+    fn byte(&mut self, b: u8) {
+        if self.in_str {
+            if self.escaped {
+                self.escaped = false;
+            } else if b == b'"' {
+                self.in_str = false;
+                if self.str_key {
+                    self.end_key();
+                }
+                return;
+            } else if b == b'\\' {
+                self.escaped = true;
+            }
+            if self.str_key {
+                if self.key_len < KEY_CAP {
+                    self.key[self.key_len] = b;
+                }
+                self.key_len = self.key_len.saturating_add(1);
+            }
+            return;
+        }
+        if self.scalar_of.is_some() {
+            if !matches!(
+                b,
+                b' ' | b'\t' | b'\n' | b'\r' | b',' | b'}' | b']' | b':' | b'"' | b'{' | b'['
+            ) {
+                if self.scalar_len < SCALAR_CAP {
+                    self.scalar[self.scalar_len] = b;
+                    self.scalar_len += 1;
+                }
+                return;
+            }
+            self.end_scalar();
+        }
+        match b {
+            b' ' | b'\t' | b'\n' | b'\r' | b':' => {}
+            b'"' => {
+                self.in_str = true;
+                self.escaped = false;
+                self.str_key = self.in_object() && self.want_key;
+                if self.str_key {
+                    self.key_len = 0;
+                    self.want_key = false;
+                } else {
+                    self.value(None);
+                }
+            }
+            b'{' | b'[' => {
+                self.value(None);
+                self.depth = self.depth.saturating_add(1);
+                if let 1 | 2 = self.depth {
+                    self.object[self.depth as usize] = b == b'{';
+                    self.at[self.depth as usize] = Slot::Other;
+                }
+                self.want_key = b == b'{';
+            }
+            b'}' | b']' => {
+                self.depth = self.depth.saturating_sub(1);
+                self.want_key = false;
+            }
+            b',' => self.want_key = self.in_object(),
+            _ => self.value(Some(b)),
+        }
+    }
+
+    /// The reading as the answer stands: a scalar the answer ended in is read as it is.
+    fn settled(&self) -> (Option<bool>, [Member; 3]) {
+        let mut done = self.clone();
+        done.end_scalar();
+        (done.error, done.members)
     }
 
     /// Whether the answer, with the far end's `status`, is a SUCCESS: a `2xx` status and no
     /// `/error` member (a `null` one is none). The one success rule every count below reads.
     #[must_use]
     pub fn success(&self, status: Option<u32>) -> bool {
-        status.is_some_and(|s| (200..300).contains(&s))
-            && codec::read_raw(&self.body, PTR_ERROR).is_none_or(|e| e == b"null")
+        status.is_some_and(|s| (200..300).contains(&s)) && self.settled().0 != Some(true)
     }
 
     /// WHAT THE ANSWER BILLS, read at the last piece (THE DESIGN section 7, the owner money rulings):
@@ -417,28 +621,26 @@ impl FarEndReading {
         if !self.success(status) {
             return Ok([None; 4]);
         }
-        let decisions = self.count(PTR_USAGE_UNITS)?.unwrap_or(1);
+        let (_, members) = self.settled();
+        let mut whole = [None; 3];
+        for (i, member) in members.iter().enumerate() {
+            whole[i] = match member {
+                Member::Absent => None,
+                Member::Whole(n) => Some(*n),
+                Member::Unreadable => return Err(Unreadable(COUNTED[i].1)),
+            };
+        }
         let reported = |class: u32, amount: u64| Units {
             class,
             reported: true,
             amount,
         };
         Ok([
-            Some(reported(tail::CLASS_DECISION_INDEX, decisions)),
-            self.count(PTR_USAGE_INPUT_TOKENS)?
-                .map(|n| reported(tail::CLASS_INPUT_TOKENS_INDEX, n)),
-            self.count(PTR_USAGE_OUTPUT_TOKENS)?
-                .map(|n| reported(tail::CLASS_OUTPUT_TOKENS_INDEX, n)),
+            Some(reported(tail::CLASS_DECISION_INDEX, whole[0].unwrap_or(1))),
+            whole[1].map(|n| reported(tail::CLASS_INPUT_TOKENS_INDEX, n)),
+            whole[2].map(|n| reported(tail::CLASS_OUTPUT_TOKENS_INDEX, n)),
             Some(reported(tail::CLASS_FEE_INDEX, 1)),
         ])
-    }
-
-    /// The whole count at `pointer`: `None` when the answer has no such member.
-    fn count(&self, pointer: &'static str) -> Result<Option<u64>, Unreadable> {
-        let Some(raw) = codec::read_raw(&self.body, pointer) else {
-            return Ok(None);
-        };
-        whole(raw).map(Some).ok_or(Unreadable(pointer))
     }
 }
 
@@ -467,23 +669,67 @@ pub const NOT_RELAYED: &[&str] = &[
     "proxy-authorization",
 ];
 
+/// The caller's fields the far end receives, held in one buffer per unit: each field's name
+/// (lowercased) and value, back to back, and where each ends.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Relayed {
+    bytes: Vec<u8>,
+    /// Per field, `(end of its name, end of its value)` in `bytes`.
+    ends: Vec<(usize, usize)>,
+}
+
+impl Relayed {
+    /// Every field, `(name, value)`, in the caller's order.
+    pub fn iter(&self) -> impl Iterator<Item = (&[u8], &[u8])> + '_ {
+        let mut from = 0;
+        self.ends.iter().map(move |&(name, value)| {
+            let field = (&self.bytes[from..name], &self.bytes[name..value]);
+            from = value;
+            field
+        })
+    }
+
+    /// Whether no field is relayed.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.ends.is_empty()
+    }
+}
+
+/// Whether the caller's field `name` reaches the far end.
+fn relayed(name: &[u8]) -> bool {
+    !NOT_RELAYED
+        .iter()
+        .any(|n| name.eq_ignore_ascii_case(n.as_bytes()))
+}
+
 /// THE CALLER'S FIELDS THE FAR END RECEIVES, in the order the caller sent them, a repeated name
 /// keeping every value: every field the caller sent but [`NOT_RELAYED`]'s (a same-dialect relay
 /// passes every header but the governed set; ARCHITECT DEC-SERVE Q2, the OWNER's DIALECT-FIDELITY
-/// F2). Names are lowercased, as the wire compares them.
+/// F2). Names are lowercased, as the wire compares them. Kept in one buffer sized once.
 #[must_use]
-pub fn relayed_fields<'f>(
-    caller: impl IntoIterator<Item = (&'f [u8], &'f [u8])>,
-) -> Vec<(Vec<u8>, Vec<u8>)> {
-    caller
-        .into_iter()
-        .filter(|(name, _)| {
-            !NOT_RELAYED
-                .iter()
-                .any(|n| name.eq_ignore_ascii_case(n.as_bytes()))
-        })
-        .map(|(name, value)| (name.to_ascii_lowercase(), value.to_vec()))
-        .collect()
+pub fn relayed_fields<'f, I>(caller: I) -> Relayed
+where
+    I: IntoIterator<Item = (&'f [u8], &'f [u8])>,
+    I::IntoIter: Clone,
+{
+    let fields = caller.into_iter();
+    let (mut size, mut count) = (0, 0);
+    for (name, value) in fields.clone().filter(|(name, _)| relayed(name)) {
+        size += name.len() + value.len();
+        count += 1;
+    }
+    let mut kept = Relayed {
+        bytes: Vec::with_capacity(size),
+        ends: Vec::with_capacity(count),
+    };
+    for (name, value) in fields.filter(|(name, _)| relayed(name)) {
+        kept.bytes.extend(name.iter().map(u8::to_ascii_lowercase));
+        let name_end = kept.bytes.len();
+        kept.bytes.extend_from_slice(value);
+        kept.ends.push((name_end, kept.bytes.len()));
+    }
+    kept
 }
 
 /// Render a refusal the kernel decided, in this dialect's error shape: `{"error": {"code", "message"}}`.
