@@ -33,7 +33,6 @@ use crate::config::sections::RateEntryCfg;
 use crate::governance::signing::TokenSigner;
 use crate::governance::{DerivedUsage, NewKeySpec};
 use crate::plane::calllog::CallRecorded;
-use crate::plane::registry::CardIssuer;
 use crate::plane::store::PlaneStore;
 use crate::plane::PlaneAdmission;
 use crate::plane_host::{EngineHost, LiveHostFactory, PlaneSlots};
@@ -348,12 +347,6 @@ impl TestAppSeam for Box<dyn TestAppKit> {
     }
     fn register_plane_finalizer(&mut self, f: Box<dyn FnOnce(&mut dyn TestAppSeam)>) {
         (**self).register_plane_finalizer(f)
-    }
-    fn configured_public_url(&self) -> Option<&str> {
-        (**self).configured_public_url()
-    }
-    fn card_issuer(&self, plane_key: &'static str) -> Option<CardIssuer> {
-        (**self).card_issuer(plane_key)
     }
     fn install_plane_runtime(&mut self, key: &'static str, rt: Arc<dyn Any + Send + Sync>) {
         (**self).install_plane_runtime(key, rt)

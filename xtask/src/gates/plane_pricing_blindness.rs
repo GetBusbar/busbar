@@ -212,10 +212,6 @@ pub const PLANE_CRATES: &[PlaneCrate] = &[
     // is its door crate, `busbar-plane-mcp`, scanned by the CLEAN row above — so its entry is struck
     // in this reviewed diff, as the `plane-roots` row asks of a folded crate.
     PlaneCrate {
-        dir: "busbar-a2a",
-        placement: "#83 SPLIT -> def 16-20",
-    },
-    PlaneCrate {
         dir: "busbar-voice",
         placement: "#83 SPLIT -> def 16-20",
     },

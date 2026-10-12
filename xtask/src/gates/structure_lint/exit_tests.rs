@@ -108,7 +108,8 @@ fn item_184_a_duplicate_between_llm_and_voice_is_seen() {
 /// The signed name is `config.rs`, the ledger's one surviving row: its fn-name siblings (`judge`
 /// among them) were struck at P3 DEL-MCP with the engine whose half they signed for. The tree
 /// already carries the stretch case — voice's own `config.rs` beside a2a's — so the refusal is read
-/// off the real files.
+/// off the real files. Since FLIP-A2A the a2a plane's home is its door crate `busbar-plane-a2a`
+/// (the engine `busbar-a2a` is deleted), so the a2a copy is planted there.
 #[test]
 fn item_223_a_voice_copy_of_a_plane_helper_is_seen_and_a_signed_claim_does_not_stretch() {
     let signed = plane_dups::ledger()
@@ -121,7 +122,7 @@ fn item_223_a_voice_copy_of_a_plane_helper_is_seen_and_a_signed_claim_does_not_s
         "pub fn planted_voice_a2a_copy() {}\n",
     );
     ov.set(
-        "crates/busbar-a2a/src/a2a/planted_voice_a2a_copy.rs",
+        "crates/busbar-plane-a2a/src/a2a/planted_voice_a2a_copy.rs",
         "pub fn planted_voice_a2a_copy() {}\n",
     );
     names(
@@ -148,7 +149,7 @@ fn item_224_the_plane_set_is_derived_not_spelled() {
          pub fn planted_derived_plane_helper() {}\n",
     );
     ov.set(
-        "crates/busbar-a2a/src/a2a/planted_derived_plane_helper.rs",
+        "crates/busbar-plane-a2a/src/a2a/planted_derived_plane_helper.rs",
         "pub fn planted_derived_plane_helper() {}\n",
     );
     ov.set(

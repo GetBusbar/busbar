@@ -78,7 +78,7 @@ fn source_in(render: &str, secret: &SecretRef) -> Vec<String> {
 
 /// THE CONTROL: `secret` does not resolve, and the text its source refuses with names it (the
 /// operator's text), so a clean render is a render that withheld it, not one that never had it.
-fn refused_naming_its_source(secret: &SecretRef) -> String {
+pub(super) fn refused_naming_its_source(secret: &SecretRef) -> String {
     let text = busbar_kernel::config::secret::resolve_linked_string(secret)
         .expect_err("the reference does not resolve");
     assert!(
@@ -89,7 +89,7 @@ fn refused_naming_its_source(secret: &SecretRef) -> String {
 }
 
 /// The caller's render is clean of `secret`'s source; the measurement row is printed.
-fn assert_clean(
+pub(super) fn assert_clean(
     case: &str,
     status: StatusCode,
     headers: &HeaderMap,
@@ -106,14 +106,14 @@ fn assert_clean(
 }
 
 /// A variable name no environment sets: one per case (the tests of one binary share a process).
-fn unset(case: &str) -> String {
+pub(super) fn unset(case: &str) -> String {
     let var = format!("BUSBAR_SECRET_SOURCE_{case}_{}", std::process::id());
     std::env::remove_var(&var);
     var
 }
 
 /// A path no file is at.
-fn missing(case: &str) -> String {
+pub(super) fn missing(case: &str) -> String {
     std::env::temp_dir()
         .join(format!(
             "busbar-secret-source-{case}-{}",
@@ -220,6 +220,8 @@ fn driven() -> Vec<String> {
     )];
     #[cfg(linked_section_decisions)]
     names.push(super::door_tests::decisions_name());
+    // The door planes whose own root cells drive the scan (each plane crate's `tests/root/`).
+    names.extend(super::door_cells_secret_driven());
     names
 }
 

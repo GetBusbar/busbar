@@ -186,3 +186,40 @@ fn the_tools_section_enumerates_every_secret_reference_its_plane_declares() {
         "every reference at the plane's declared paths, and the plain value beside one is not one"
     );
 }
+
+/// THE `agents:` SECTION'S SECRET REFERENCES ARE ENUMERATED, so `--validate` and boot resolve each
+/// one (the section is a door plane's, carried as written). Its owning plane's declaration names
+/// where references live — the leased outbound delegation credential, and busbar's own client
+/// certificate and key for a mutual handshake — and the section the registry lifted answers every
+/// reference at those paths, with its full config path, and nothing that is not a reference.
+#[test]
+fn the_agents_section_enumerates_every_secret_reference_its_plane_declares() {
+    linked::install();
+    let text = "providers: {}\nmodels: {}\nagents:\n  \
+        leased:\n    url: \"https://a.example/rpc\"\n    pin: { mechanism: unpinned }\n    \
+        upstream_credential:\n      secret: { env: BUSBAR_TEST_AGENT_LEASE }\n      \
+        lease_ttl_ms: 60000\n  \
+        mutual:\n    url: \"https://b.example/rpc\"\n    pin: { mechanism: unpinned }\n    \
+        client_identity:\n      cert: { env: BUSBAR_TEST_AGENT_CERT }\n      \
+        key: { env: BUSBAR_TEST_AGENT_KEY }\n  \
+        plain:\n    url: \"https://c.example/rpc\"\n    pin: { mechanism: unpinned }\n";
+    let deploy = config::deploy_from_yaml_str(text)
+        .unwrap_or_else(|e| panic!("the section parses: {e}\n{text}"));
+    let mut found: Vec<String> = deploy
+        .agents
+        .0
+        .secret_refs()
+        .into_iter()
+        .map(|(at, _)| at)
+        .collect();
+    found.sort();
+    assert_eq!(
+        found,
+        [
+            "agents.leased.upstream_credential.secret",
+            "agents.mutual.client_identity.cert",
+            "agents.mutual.client_identity.key",
+        ],
+        "every reference at the plane's declared paths, and a registration holding none adds none"
+    );
+}

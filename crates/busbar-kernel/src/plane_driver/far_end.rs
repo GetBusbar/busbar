@@ -52,7 +52,7 @@ use crate::proxy::egress_unit::{
     attempt::attempt_cap_ms,
     ports::{
         disposition, net, Breaker, Capacity, Classified, Clock, DestinationId, Dispatched,
-        Disposition, Journal, Outcome, Permit, Telemetry, UpstreamStatus,
+        Disposition, Journal, Outcome, Permit, StatedLabels, Telemetry, UpstreamStatus,
     },
     walk::budget_secs,
     Member, Pool, Shed, Step, Taken, Walk, WalkPorts, WeightedFloor,
@@ -62,7 +62,7 @@ use busbar_contract::abi::transport::{
     FAULT_NONE, STATUS_CALLER_FAULT, STATUS_FAR_END_FAULT, STATUS_OTHER, STATUS_SUCCESS,
 };
 use busbar_contract::auth_calls::{AuthField, Fields, FieldsRequest, OutboundAuth};
-use busbar_contract::caps::{KernelSeal, Pass, Route};
+use busbar_contract::caps::{KernelSeal, Pass, ReasonCode, Route};
 use busbar_contract::conn::{
     ConnError, ConnId, InstanceId, NeedId, OpenDesc, PieceKind, PollConns,
 };
@@ -196,6 +196,10 @@ pub struct AuthBinding {
     /// the caller's own verified credential (THE DESIGN, section 6.6, style `caller-credential`). No other
     /// binding is ever handed it.
     pub passthrough: bool,
+    /// A binding re-resolved on every request (`auth_calls::PerRequestHandle`): its current
+    /// handle is asked for each attempt, in place of `handle`; one that answers none refuses the
+    /// unit `credential_unavailable`. `None` = the handle stands for the generation.
+    pub per_request: Option<Arc<dyn busbar_contract::auth_calls::PerRequestHandle>>,
 }
 
 /// THE EGRESS OF ONE PLANE INSTANCE, sealed per generation by the composition root: its connection
@@ -328,6 +332,7 @@ impl Egress {
                 walk,
                 live: None,
                 probe: None,
+                refused: None,
             }),
             probe_of: None,
         }
@@ -359,6 +364,7 @@ impl Egress {
                 walk,
                 live: None,
                 probe: Some(member),
+                refused: None,
             }),
             probe_of: Some(destination),
         })
@@ -400,6 +406,9 @@ struct Live {
     /// transport's reading when the plane has read the answer's last piece and stated none, or
     /// when the attempt settles first.
     unjudged: Option<Unjudged>,
+    /// The counter labels the plane stated for this attempt ([`FarEnd::stated`]): its counters
+    /// take them within their bound.
+    stated: Option<StatedLabels>,
 }
 
 /// The transport's reading of a relayed answer, held for the plane's.
@@ -411,6 +420,9 @@ struct Unjudged {
     class: Option<WireStatusClass>,
     /// The wait the answer stated.
     retry_after: Option<u64>,
+    /// The answer's head was already recorded as a success: a reading of the answer that is a
+    /// success again records nothing more (one answer, one success).
+    after_success: bool,
 }
 
 /// One unit's state: the egress unit's walk, the attempt in flight, and a health probe's one
@@ -419,6 +431,9 @@ struct State {
     walk: Walk,
     live: Option<Live>,
     probe: Option<Member>,
+    /// The unit is refused for this before its next member: an attempt's re-resolved credential
+    /// was unavailable.
+    refused: Option<ReasonCode>,
 }
 
 /// ONE UNIT'S FAR END over its [`Egress`].
@@ -614,6 +629,9 @@ impl EgressFarEnd<'_> {
             ),
             None => held.classified,
         };
+        if held.after_success && matches!(classified.outcome, Outcome::Success) {
+            return;
+        }
         let now = e.clock.now_secs();
         // Settling with the answer unread: the kernel records it on its own pass.
         let own;
@@ -636,8 +654,12 @@ impl EgressFarEnd<'_> {
         let client_fault = matches!(classified.disposition, Disposition::ClientFault);
         if !client_fault && !(hard && live.passthrough) {
             let pool = Self::metric_pool(&live.pool, &live.member).to_string();
-            e.telemetry
-                .upstream_failure(&pool, destination, classified.label);
+            e.telemetry.upstream_failure_stated(
+                &pool,
+                destination,
+                classified.label,
+                live.stated.as_ref(),
+            );
         }
     }
 
@@ -707,6 +729,7 @@ impl EgressFarEnd<'_> {
             error_left: None,
             keep: ResponseKeep::default(),
             unjudged: None,
+            stated: None,
         });
         Pick::Member {
             name,
@@ -723,6 +746,9 @@ impl EgressFarEnd<'_> {
         let wait = {
             let mut w = self.lock();
             self.settle(&mut w);
+            if let Some(reason) = w.refused.take() {
+                return Pick::Refused(reason);
+            }
             if !w.walk.ctx().expired(self.egress.clock.now_secs()) {
                 if let Some(member) = w.probe.take() {
                     // ONE member: a probe that brings no answer has nowhere to fail over to, so
@@ -779,7 +805,12 @@ impl EgressFarEnd<'_> {
                 {
                     e.telemetry.breaker_trip(&pool, destination);
                 }
-                e.telemetry.upstream_failure(&pool, destination, failure);
+                e.telemetry.upstream_failure_stated(
+                    &pool,
+                    destination,
+                    failure,
+                    live.stated.as_ref(),
+                );
                 e.telemetry.failover(&pool, failover);
             }
         }
@@ -810,6 +841,7 @@ impl EgressFarEnd<'_> {
     async fn auth_fields(
         &self,
         binding: &AuthBinding,
+        handle: u64,
         request: &OutboundRequest,
         url: &str,
         extensions: Vec<u8>,
@@ -857,13 +889,13 @@ impl EgressFarEnd<'_> {
             extensions,
             ..FieldsRequest::default()
         };
-        let answer = match binding.auth.fields_now(binding.handle, &facts) {
+        let answer = match binding.auth.fields_now(handle, &facts) {
             Some(answer) => answer,
             // A plugin that must wait (a token refreshing) is awaited no longer than the attempt
             // may still take: its cap, never beyond what the walk has left (1.5.5's bound).
             None => tokio::time::timeout(
                 Duration::from_millis(self.attempt_cap()),
-                binding.auth.fields(binding.handle, facts, 0),
+                binding.auth.fields(handle, facts, 0),
             )
             .await
             .unwrap_or(Fields::Failed),
@@ -883,9 +915,15 @@ impl EgressFarEnd<'_> {
         // (`abi::auth::SCOPE_REQUEST_FIELD`): taken out here, before anything is encoded, and lent
         // to the member's auth call in its extensions blob. No wire carries it.
         let mut scope = None;
+        // THE PLANE'S WAIVER of its member's binding for this request
+        // (`abi::auth::NO_MEMBER_AUTH_FIELD`): the host's own field, taken out here too.
+        let mut waived = false;
         request.fields.retain(|(name, value)| {
             if busbar_contract::abi::auth::is_scope_field(name) {
                 scope.get_or_insert_with(|| value.clone());
+                false
+            } else if busbar_contract::abi::auth::is_no_member_auth_field(name) {
+                waived = true;
                 false
             } else {
                 true
@@ -947,8 +985,25 @@ impl EgressFarEnd<'_> {
         let url = join(&base_url, &request.target);
         // 2. The one auth call; its fields lead the head (1.5.5's order).
         let mut auth = Vec::new();
-        if let Some(binding) = &route.auth {
-            match self.auth_fields(binding, &request, &url, extensions).await {
+        if let Some(binding) = route.auth.as_ref().filter(|_| !waived) {
+            // A binding re-resolved per request answers this attempt's handle; one whose
+            // credential is unavailable refuses the unit before anything is dialled.
+            let handle = match &binding.per_request {
+                Some(per) => per.handle_now(),
+                None => Some(binding.handle),
+            };
+            let Some(handle) = handle else {
+                // Nothing was sent: the dispatch record is abandoned, nothing is recorded
+                // against the destination, and the unit is refused before its next member.
+                let mut w = self.lock();
+                self.settle(&mut w);
+                w.refused = Some(ReasonCode::CredentialUnavailable);
+                return false;
+            };
+            match self
+                .auth_fields(binding, handle, &request, &url, extensions)
+                .await
+            {
                 Some(fields) => auth = fields,
                 None => {
                     // Not the destination's fault: nothing recorded against it; the next member.
@@ -987,15 +1042,18 @@ impl EgressFarEnd<'_> {
             .map(|(n, v)| (n.as_str(), v.as_slice()))
             .collect();
         let cap_ms = self.attempt_cap();
-        let pool = {
+        let (pool, stated) = {
             let w = self.lock();
-            w.live
-                .as_ref()
-                .map(|l| Self::metric_pool(&l.pool, &l.member).to_string())
-                .unwrap_or_default()
+            w.live.as_ref().map_or_else(Default::default, |l| {
+                (
+                    Self::metric_pool(&l.pool, &l.member).to_string(),
+                    l.stated.clone(),
+                )
+            })
         };
         if self.probe_of.is_none() {
-            e.telemetry.upstream_attempt(&pool, destination);
+            e.telemetry
+                .upstream_attempt_stated(&pool, destination, stated.as_ref());
         }
         // 3. The connector: the judged, pinned dial and the framer's encode.
         let opened = e.conns.open(
@@ -1135,17 +1193,9 @@ impl EgressFarEnd<'_> {
             // Fields piece, always): the answer's status, and the head fields its need keeps.
             PieceKind::Fields if !answered => Some(self.head(token, &piece, &buf[..piece.len])),
             // The far end's fields after its body (trailers): handed to the plane, which decides
-            // what they mean (one that reads a trailer status reads it; any other ignores them).
+            // what they mean, with the status the transport read off them.
             PieceKind::Fields | PieceKind::HookReply => {
-                let piece = FarPiece {
-                    bytes: buf[..piece.len].to_vec(),
-                    fields: true,
-                    ..FarPiece::default()
-                };
-                if let Some(live) = self.lock().live.as_mut() {
-                    delivered(live, &piece, self.route.wants_stream);
-                }
-                Some(piece)
+                Some(self.trailers(&piece, buf[..piece.len].to_vec()))
             }
             PieceKind::Body if answered => Some(self.capped(FarPiece {
                 bytes: buf[..piece.len].to_vec(),
@@ -1184,6 +1234,59 @@ impl EgressFarEnd<'_> {
             answer.head = head;
         }
         answer
+    }
+
+    /// THE FAR END'S FIELDS AFTER ITS BODY (trailers): handed to the plane, which decides what they
+    /// mean. Where the transport read a status off them (a transport that states its answer's
+    /// status at the end, `abi::transport::STATUS_AT_TERMINAL`: the trailers' fields piece carries
+    /// it), that status goes with them, its number and its class (`BUSBAR-1.6.0.md` l.394, l.747:
+    /// the trailers carry the status, and a binding that reads it reads it there). A success's
+    /// trailers leave the answer to end as it ends. Any other status, after a head the walk took
+    /// for a success, IS the answer's outcome: an ANSWER, never a connection fault. The trailers
+    /// are its last piece (the failed end the transport reports after them is never read, so it is
+    /// no cut and records no compensating transient, and the budget unit the head spent stays
+    /// spent, as any answer's does), and the transport's reading of the status (its fault table)
+    /// is held for the plane's own reading of the same answer ([`FarEnd::judged`]), as a relayed
+    /// failure's head is.
+    fn trailers(&self, piece: &busbar_contract::conn::Piece, bytes: Vec<u8>) -> FarPiece {
+        let mut out = FarPiece {
+            bytes,
+            fields: true,
+            ..FarPiece::default()
+        };
+        let mut w = self.lock();
+        let Some(live) = w.live.as_mut() else {
+            return out;
+        };
+        if let Some(code) = piece.status_code {
+            out.status = Some((code, class_code(piece.status)));
+            let success = matches!(piece.status, Some(WireStatusClass::Success) | None);
+            // Only after a head the walk recorded as a success: a relayed failure's head already
+            // holds its own reading.
+            if !success && live.error_left.is_none() && live.unjudged.is_none() {
+                let status = UpstreamStatus {
+                    class: piece.status,
+                    fault: piece.fault,
+                    retry_after: piece.retry_after_secs,
+                };
+                live.unjudged = Some(Unjudged {
+                    classified: self
+                        .egress
+                        .breaker
+                        .classify(live.member.destination, status),
+                    class: piece.status,
+                    retry_after: piece.retry_after_secs,
+                    after_success: true,
+                });
+                live.ended = true;
+                out.last = true;
+            }
+        }
+        delivered(live, &out, self.route.wants_stream);
+        if out.last {
+            self.settle_read(&mut w);
+        }
+        out
     }
 
     /// A body piece of the answer, under the error-body cap when the answer is a relayed failure.
@@ -1332,6 +1435,7 @@ impl EgressFarEnd<'_> {
                 classified,
                 class: status.class,
                 retry_after: status.retry_after,
+                after_success: false,
             });
             live.error_left = Some(e.error_body_max);
             let piece = cap(
@@ -1352,8 +1456,12 @@ impl EgressFarEnd<'_> {
         }
         // A failure failed over: the plane never reads it, so the transport's reading is the one.
         self.record(live, token, classified, now);
-        e.telemetry
-            .upstream_failure(&pool, destination, classified.label);
+        e.telemetry.upstream_failure_stated(
+            &pool,
+            destination,
+            classified.label,
+            live.stated.as_ref(),
+        );
         e.telemetry.failover(&pool, classified.label);
         if matches!(classified.disposition, Disposition::ContextLength) {
             // Every ADMISSIBLE member whose window is at or below the one that refused would refuse
@@ -1376,6 +1484,29 @@ impl Drop for EgressFarEnd<'_> {
 }
 
 impl FarEnd for EgressFarEnd<'_> {
+    /// `member`'s cell in the pool the unit's walk routes over: the whole seconds of cooldown it
+    /// has left (at least 1); `None` when `member` is no member of that pool.
+    fn member_wait(&self, token: &Pass<Route>, member: &str) -> Option<u32> {
+        let pool = self.egress.pools.get(&self.route.pool)?;
+        let at = pool
+            .members
+            .iter()
+            .find(|m| super::route::operator_name(m.name.as_bytes()) == member.as_bytes())?;
+        let left = self.egress.breaker.cooldown_remaining(
+            &pool.name,
+            at.destination,
+            self.egress.clock.now_secs(),
+            token,
+        );
+        Some(u32::try_from(left.max(1)).unwrap_or(u32::MAX))
+    }
+
+    fn stated(&self, _token: &Pass<Route>, labels: StatedLabels) {
+        if let Some(live) = self.lock().live.as_mut() {
+            live.stated = Some(labels);
+        }
+    }
+
     fn judged(&self, token: &Pass<Route>, fault: u8) {
         let mut w = self.lock();
         let Some(live) = w.live.as_mut() else {

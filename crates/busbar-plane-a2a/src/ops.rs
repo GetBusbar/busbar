@@ -260,6 +260,23 @@ pub fn row_for(method: &str) -> Option<&'static MethodRow> {
     METHODS.iter().find(|r| r.method == method)
 }
 
+/// The suffix a method the vocabulary does not list reads as a stream by: the engine relays such a
+/// method on its streaming hop (`receive::reads_as_stream`), every other one on its unary hop.
+pub const STREAM_SUFFIX: &str = "/stream";
+
+/// THE CLASS A METHOD IS RELAYED AS: its row's, or for a method the vocabulary does not list, the
+/// class of the hop the engine relays it on verbatim ([`OP_MESSAGE_STREAM`] when it reads as a
+/// stream, [`OP_MESSAGE_SEND`] otherwise), which is how the engine admitted, audited and billed it
+/// (spec ruling log 2026-09-30, new-plane refusals follow predev bytes: never refused).
+#[must_use]
+pub fn relay_class(method: &str) -> OpClassId {
+    match row_for(method) {
+        Some(row) => row.op,
+        None if method.ends_with(STREAM_SUFFIX) => OP_MESSAGE_STREAM,
+        None => OP_MESSAGE_SEND,
+    }
+}
+
 #[cfg(test)]
 #[path = "tests/ops.rs"]
 mod tests;

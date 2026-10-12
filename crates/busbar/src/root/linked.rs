@@ -1274,6 +1274,7 @@ pub const HOST_SERIES: &[&str] = &[
     busbar_kernel::snapshot::METERING_PENDING_COALESCED_TOTAL,
     busbar_kernel::snapshot::PLUGIN_REQUEST_HEADERS_TRUNCATED_TOTAL,
     busbar_kernel::snapshot::PLUGIN_RESPONSE_HEADERS_REJECTED_TOTAL,
+    busbar_kernel::snapshot::PLUGIN_LABEL_REFUSED_TOTAL,
     busbar_kernel::snapshot::KEY_SPEND_CENTS,
     busbar_kernel::snapshot::KEY_TOKENS_TOTAL,
     busbar_kernel::snapshot::BUCKET_TOKENS,
@@ -1445,12 +1446,10 @@ pub fn register_ws_arrivals(linked: &Linked) {
 }
 
 /// THE ROOT-BOUND SEAMS an enabled entry drives, each bound once and only when some entry drives it
-/// (the manifest's `egress` / `plane-sections` / `admin-envelope` axes, emitted by the build script as
-/// `linked_*` cfgs): the hostless-egress driver and the egress-trust host and the parse-time section
-/// list a cross-plane hook refusal reads. The envelope a self-enveloping admin verb replies through
-/// is the admin crate's, bound by its `install()`. Each backing is a ZST unit struct, so it promotes
-/// to `'static`. The egress-trust host is installed by `run` once the configuration loads, over the
-/// destination guard.
+/// (the manifest's `egress` / `plane-sections` axes, emitted by the build script as
+/// `linked_*` cfgs): the hostless-egress driver and the egress-trust host, the parse-time section
+/// list a cross-plane hook refusal reads. Each backing is a ZST unit struct, so it promotes to `'static`. The egress-trust host
+/// is installed by `run` once the configuration loads, over the destination guard.
 pub fn register_seams() {
     #[cfg(linked_egress)]
     {
@@ -1462,8 +1461,6 @@ pub fn register_seams() {
     busbar_kernel::plane::config::install_plane_sections(
         busbar_kernel::plane::config::config_sections,
     );
-    // `admin-envelope`: the self-enveloping plane-verb backing is the admin crate's own, bound by
-    // its `install()` (main.rs), which the composition root calls unconditionally.
 }
 
 /// THE ROOT UNITS' SEALS, in table order. A composition that disagrees with itself must not bind a

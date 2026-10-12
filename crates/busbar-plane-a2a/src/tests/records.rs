@@ -53,3 +53,12 @@ fn no_schema_is_declared_twice() {
         );
     }
 }
+
+/// The kind the door declares chained is the task-event kind, at its index in the tail's kinds.
+#[test]
+fn the_chained_kind_is_the_task_event_kind() {
+    assert_eq!(
+        crate::records::HELD_KINDS[crate::records::TASK_EVENT_INDEX as usize],
+        crate::records::KIND_TASK_EVENT
+    );
+}

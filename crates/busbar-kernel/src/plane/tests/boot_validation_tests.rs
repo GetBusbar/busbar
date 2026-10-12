@@ -68,6 +68,10 @@ static BAYS_PLANE: crate::plane::registry::PlaneDecl = crate::plane::registry::P
 const PIN_REFUSAL: &str = "`bays.dock`: `anchor.mechanism: sealed_key` needs `anchor.key:` — the \
      out-of-band material this registration is verified against. A pin with nothing to verify with \
      is not a pin.";
+const NO_ROOT_KEY_REFUSAL: &str = "`bays.dock`: `anchor.mechanism: open` must not carry \
+     `anchor.key:`. `open` means there is no authenticity root; key material that is never \
+     verified against reads to an operator as protection that does not exist. Name the real \
+     mechanism, or drop the key.";
 const CADENCE_REFUSAL: &str =
     "`bays.dock`: `recheck_after:` invalid duration 'soon': expected <number><s|m|h|d>";
 const CROSS_PLANE_REFUSAL: &str = "`bays.dock`: `hooks:` may only name hooks from the top-level \
@@ -152,6 +156,10 @@ fn boot_and_the_admin_write_path_judge_an_entrys_timeout() {
     );
 }
 
+/// Ported from the deleted engine crate's config tests
+/// (`the_admin_write_path_and_the_file_share_one_grammar`): the case that test held beside these, a
+/// mechanism with no authenticity root carrying key material, is refused on the write path in the
+/// kernel's one sentence.
 #[test]
 fn the_admin_write_path_refuses_what_boot_refuses() {
     let _isolation = crate::plane::registry::TestRegistryIsolation::seeded(&[&BAYS_PLANE]);
@@ -164,6 +172,10 @@ fn the_admin_write_path_refuses_what_boot_refuses() {
         (
             serde_json::json!({ "anchor": { "mechanism": "sealed_key" } }),
             PIN_REFUSAL,
+        ),
+        (
+            serde_json::json!({ "anchor": { "mechanism": "open", "key": "k" } }),
+            NO_ROOT_KEY_REFUSAL,
         ),
         (
             serde_json::json!({ "recheck_after": "soon" }),

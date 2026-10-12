@@ -488,9 +488,10 @@ fn strip_comment_line_keeps_string_literals_intact() {
 
 #[test]
 fn the_plane_key_contract_matches_plane_keys_sh() {
-    // `mcp` left the legacy-engine roster at P3 DEL-MCP (ARCHITECT 2026-10-05).
-    assert_eq!(planes::PLANE_KEYS, ["llm", "a2a", "voice"]);
-    assert_eq!(planes::plane_keys_protocol(), vec!["a2a", "voice"]);
+    // `mcp` left the legacy-engine roster at P3 DEL-MCP (ARCHITECT 2026-10-05), `a2a` at FLIP-A2A.
+    assert_eq!(planes::PLANE_KEYS, ["llm", "voice"]);
+    assert_eq!(planes::plane_keys_protocol(), vec!["voice"]);
+    assert_eq!(planes::PLANE_KEYS_KIND_ONLY, ["mcp", "a2a"]);
     // READ THE SHELL'S KEYS TOO: the two rosters are one list.
     let keys_line = std::fs::read_to_string(repo_root().join("scripts/plane-keys.sh"))
         .expect("scripts/plane-keys.sh is readable")
@@ -624,12 +625,16 @@ fn plane_root_resolution_ports_the_four_shell_selftest_cases() {
         Err(PlaneRootError::Missing { .. })
     ));
 
-    // 4. the real tree's a2a resolves to the owner, not the codec crate.
+    // 4. the real tree's same-named wire directory is not a home: `busbar-plane-a2a/src/a2a/` holds
+    //    the A2A wire and declares nothing, so with the engine deleted (FLIP-A2A) `a2a` resolves
+    //    through its DOOR ROW (`plane-a2a-door`) to the door crate's `src`, never to the directory
+    //    that merely shares its name.
+    assert!(repo_root().join("crates/busbar-plane-a2a/src/a2a").is_dir());
     let real = PlaneRoots::at(repo_root().join("crates"))
         .resolve("a2a")
         .unwrap();
     assert!(
-        real.ends_with("busbar-a2a/src/a2a"),
+        real.ends_with("busbar-plane-a2a/src"),
         "resolved to {}",
         real.display()
     );

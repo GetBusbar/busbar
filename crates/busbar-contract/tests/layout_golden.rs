@@ -1720,7 +1720,9 @@ fn compute_layout() -> String {
             admin_routes,
             admin_routes_len,
             admin_openapi,
-            stream_ceiling_secs
+            stream_ceiling_secs,
+            metric_lanes,
+            metric_lanes_len
         ]
     );
     record!(
@@ -1828,7 +1830,7 @@ fn compute_layout() -> String {
             head_fields,
             head_fields_len,
             passthrough,
-            _reserved_tail
+            reason
         ]
     );
     record!(
@@ -1858,7 +1860,10 @@ fn compute_layout() -> String {
             final_status,
             _final_reserved,
             final_message,
-            final_details
+            final_details,
+            metric_pool,
+            metric_lane,
+            wait_member
         ]
     );
     record!(

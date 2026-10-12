@@ -12,7 +12,9 @@
 //! pins the classification itself.
 //!
 //! The decisions plane is not scanned: it leaves this tree for its own repository
-//! (GetBusbar/busbar-plane-decisions), which carries its class-to-wire table there.
+//! (GetBusbar/busbar-plane-decisions), which carries its class-to-wire table there. Nor is the a2a
+//! plane's old trait adapter (`busbar-plane-a2a/src/plane.rs`): FLIP-A2A deleted it with the
+//! engine crate it adapted, and the door renders each refusal in the engine's own bytes.
 //!
 //! This file reads the renderers' source and proves none of them holds a reason match of its own,
 //! so no renderer can drift from the others again. It lives here, beside the gates, because it
@@ -35,7 +37,6 @@ const RENDERERS: &[(&str, &[&str])] = &[
         "crates/busbar-plane-llm/src/plane.rs",
         &["refusal_shape", "refusal_message"],
     ),
-    ("crates/busbar-plane-a2a/src/plane.rs", &["refusal_render"]),
     (
         "crates/busbar-plane-mcp/src/tool_plane.rs",
         &["refusal_words"],

@@ -365,7 +365,9 @@ static KINDS: &[KindDef] = &[
     KindDef {
         kind: "legacy",
         family: Family::Plane,
-        matchers: &["=busbar-llm", "=busbar-a2a", "=busbar-voice"],
+        // `=busbar-a2a` STRUCK (FLIP-A2A): the engine is deleted; the a2a plane is
+        // `busbar-plane-a2a`, a `plane` crate (`legacy-retired` asks for exactly this strike).
+        matchers: &["=busbar-llm", "=busbar-voice"],
     },
 ];
 
@@ -427,8 +429,9 @@ const PENDING_EDGES: &[(&str, &str)] = &[
 ];
 
 /// The retiring 1.5.x crates, named so the ratchet can check they still exist. `busbar-mcp` retired
-/// at P3 DEL-MCP (ARCHITECT 2026-10-05) and is struck, as `legacy-retired` requires.
-const LEGACY_CRATES: &[&str] = &["busbar-llm", "busbar-a2a", "busbar-voice"];
+/// at P3 DEL-MCP (ARCHITECT 2026-10-05) and `busbar-a2a` at FLIP-A2A; both are struck, as
+/// `legacy-retired` requires.
+const LEGACY_CRATES: &[&str] = &["busbar-llm", "busbar-voice"];
 
 /// THE MANIFESTS IN THIS REPOSITORY THAT ARE NOT CRATES OF THE TREE, each with the sentence that
 /// says why, and each on the expiry ratchet every allowance in this file lives under: an entry that
@@ -7981,9 +7984,11 @@ impl Gate for KindIsolationGate {
             let planted_door = |linked_row: &str, drain: &str| {
                 let manifest = cx.read(kernel).unwrap_or_default();
                 let manifest = manifest
+                    // Anchored on the list's head, which every shape of the kernel's list keeps
+                    // (`busbar-a2a` left it at FLIP-A2A), so the plant does not go quietly inert.
                     .replacen(
-                        "test-linked = [\"busbar-llm\", \"busbar-a2a\"]",
-                        &format!("test-linked = [\"busbar-llm\", \"{linked_row}\", \"busbar-a2a\"]"),
+                        "test-linked = [\"busbar-llm\"",
+                        &format!("test-linked = [\"busbar-llm\", \"{linked_row}\""),
                         1,
                     )
                     .replacen(
@@ -9994,14 +9999,14 @@ impl Gate for KindIsolationGate {
 
         // THE LEGACY RATCHET, proven by retiring one.
         let mut ov = Overlay::new();
-        ov.remove("crates/busbar-a2a/Cargo.toml");
+        ov.remove("crates/busbar-llm/Cargo.toml");
         report.push(prove_rows_red(
             cx,
             subject,
             "a legacy exemption that outlived its crate is refused",
             &[ROW_REGISTRY],
             ov,
-            &["legacy-retired", "busbar-a2a"],
+            &["legacy-retired", "busbar-llm"],
         ));
 
         // THE THREE TRUTHS, each planted in the file that carries it.
@@ -11248,15 +11253,17 @@ impl Gate for KindIsolationGate {
             &["no-exemplar", "busbar-plane-a2a"],
         ));
 
-        // THE EXEMPLAR STATES NO SINGLE ENTRY. A second `impl Plane for …` in the canonical plane
-        // makes the kind's entry count TWO, and `entry-count` — the rule that holds every other
+        // THE EXEMPLAR STATES NO SINGLE ENTRY. Two `impl Plane for …` blocks in the canonical
+        // plane make the kind's entry count TWO, and `entry-count` — the rule that holds every other
         // plane to exactly one — is guarded on the exemplar stating exactly one, so it goes quiet
         // for the whole kind. The finding is that the spec stopped saying anything, and it is a
-        // finding rather than a silence.
+        // finding rather than a silence. TWO impls, not one: a plane's door is built over its own
+        // impl and the two read as ONE entry ([`door_or_impls`]), and since FLIP-A2A the exemplar is
+        // a door with no `impl` of its own, so a single planted impl is that same one entry.
         let mut ov = Overlay::new();
         ov.set(
             "crates/busbar-plane-a2a/src/planted_second_entry.rs",
-            "pub struct Second;\nimpl Plane for Second {}\n",
+            "pub struct First;\nimpl Plane for First {}\npub struct Second;\nimpl Plane for Second {}\n",
         );
         report.push(prove_rows_red(
             cx,

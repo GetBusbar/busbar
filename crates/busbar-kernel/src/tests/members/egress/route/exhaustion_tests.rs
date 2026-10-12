@@ -616,3 +616,39 @@ fn the_wait_is_bounded_by_what_is_left_of_the_walk_and_not_only_by_its_own_setti
     );
     drop(held);
 }
+
+/// THE STATED MEMBER'S OWN WAIT (`OnPieceOut::wait_member`, read through `FarEnd::member_wait`): a
+/// member of the unit's pool reads its own cell's cooldown, not the soonest across the pool; a
+/// name that is no member of the pool reads none (the pump then refuses the plane's statement).
+#[test]
+fn a_stated_member_reads_its_own_wait_and_a_stranger_reads_none() {
+    use crate::plane_driver::FarEnd as _;
+    let mut node = Node::with_lanes(&["a", "b"]);
+    node.pool(
+        "p",
+        vec![
+            member(DestinationId::new(0), "a"),
+            member(DestinationId::new(1), "b"),
+        ],
+    );
+    node.breaker.set(
+        DestinationId::new(0),
+        Health {
+            cooldown: 30,
+            ..Health::default()
+        },
+    );
+    node.breaker.set(
+        DestinationId::new(1),
+        Health {
+            cooldown: 110,
+            ..Health::default()
+        },
+    );
+    let egress = node.egress();
+    let far = egress.unit(node.unit_route("p"));
+    let token = super::route_token();
+    assert_eq!(far.member_wait(&token, "b"), Some(110));
+    assert_eq!(far.member_wait(&token, "a"), Some(30));
+    assert_eq!(far.member_wait(&token, "stranger"), None);
+}

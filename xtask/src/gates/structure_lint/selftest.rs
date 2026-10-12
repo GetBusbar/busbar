@@ -648,14 +648,18 @@ pub fn run<'a>(gate: &'a StructureLintGate, cx: &'a Ctx) -> Report<'a> {
     // * A THIRD COPY OF A LEDGERED NAME — the ledger's rows were argued for mcp and a2a; a copy in
     //   a plane the claim was never signed for is a file nobody read, and matching the row by name
     //   alone absorbed it.
+    //
+    // Since FLIP-A2A the a2a plane is door-only: its home is its door crate's `src`
+    // (`busbar-plane-a2a`, read off the composition root's door row), not the deleted engine's.
     let voice = addresses.plane("voice");
+    let a2a = addresses.plane("a2a");
     let mut ov = Overlay::new();
     ov.set(
         format!("{voice}/planted_shared_concern.rs"),
         "pub fn planted_shared_concern() {}\n",
     );
     ov.set(
-        format!("{}/planted_shared_concern.rs", addresses.a2a),
+        format!("{a2a}/planted_shared_concern.rs"),
         "pub fn planted_shared_concern() {}\npub fn planted_derived_plane_helper() {}\n",
     );
     ov.set(
@@ -694,10 +698,7 @@ pub fn run<'a>(gate: &'a StructureLintGate, cx: &'a Ctx) -> Report<'a> {
         naming.push(format!("PLANE-DUPLICATE (symbol): `{name}`"));
         naming.push("signs for".to_string());
     } else if let Some(name) = &signed_module {
-        ov.set(
-            format!("{}/{name}", addresses.a2a),
-            "pub fn a2a_grammar() {}\n",
-        );
+        ov.set(format!("{a2a}/{name}"), "pub fn a2a_grammar() {}\n");
         ov.set(format!("{voice}/{name}"), "pub fn voice_grammar() {}\n");
         naming.push(format!("PLANE-DUPLICATE (module): `{name}`"));
         naming.push("signs for".to_string());

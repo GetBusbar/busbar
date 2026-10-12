@@ -1,0 +1,286 @@
+{
+  "key": "a2a",
+  "section": "agents",
+  "owns": [],
+  "consumes": [],
+  "secret_refs": [
+    "settings.*.upstream_credential.secret",
+    "settings.*.client_identity.cert",
+    "settings.*.client_identity.key"
+  ],
+  "admin_routes": [
+    {
+      "verb": "POST",
+      "target": "/agents/{name}/connect",
+      "flags": 0,
+      "audit_verb": "connect"
+    },
+    {
+      "verb": "POST",
+      "target": "/agents/{name}/approve",
+      "flags": 0,
+      "audit_verb": "approve"
+    },
+    {
+      "verb": "POST",
+      "target": "/a2a/push",
+      "flags": 3,
+      "audit_verb": ""
+    }
+  ],
+  "admin_openapi": {
+    "/agents/{name}/connect": {
+      "post": {
+        "summary": "Fetch a registered agent's card, verify it against the operator's out-of-band root, and report the fingerprint. Approves nothing and writes nothing",
+        "security": [
+          {
+            "adminToken": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK (the derived trust state and the fingerprint a human is being asked to approve; a card that could not be authenticated is still a 200 — the reason is in `failure` and the state is `error`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/A2aTrustView"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/agents/{name}/approve": {
+      "post": {
+        "summary": "Lock a registered agent to the card fingerprint the operator has SEEN. The card is re-fetched and re-verified, and an approval naming any other fingerprint is refused",
+        "security": [
+          {
+            "adminToken": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ApproveReq"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK (the registration's state AFTER the approval, read off the live registry)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/A2aTrustView"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "components": {
+      "schemas": {
+        "A2aTrustView": {
+          "description": "THE TRUST VIEW of one registered agent — what both verbs answer with.\n\nThe sibling of the tool-serving plane's trust view and shaped like it on purpose: an\noperator console rendering both planes should be rendering one component. It is NOT the same\ntype, because the two planes' capability vocabularies differ (a `tools:` entry has an approved\ndigest per tool; an `agents:` entry has a skill set on a card) and merging them would mean one\nof the planes filling in fields that mean nothing to it.",
+          "properties": {
+            "added": {
+              "description": "Offered now, never ruled on.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "changed": {
+              "description": "Approved, but offered at a DIFFERENT digest. THIS IS THE RUG-PULL ROW.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "failure": {
+              "description": "Why the contact failed, when it did.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "fingerprint": {
+              "description": "THE CANONICAL CARD FINGERPRINT AN OPERATOR IS BEING ASKED TO APPROVE. Surfaced explicitly\nrather than left for a caller to dig out, because this is the one string that goes in front\nof the human and `approve` refuses anything else.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "name": {
+              "type": "string"
+            },
+            "observed_skills": {
+              "description": "How many skills the observation carried.",
+              "format": "uint",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "pin_changed": {
+              "description": "The presented identity is not the locked one. Its own axis: adopting a new identity is a\ndifferent act from adopting new content.",
+              "type": "boolean"
+            },
+            "pin_mechanism": {
+              "description": "The operator's word for the authenticity root, as the OBSERVED pin names it. Never\ninterpreted by the machine.",
+              "type": "string"
+            },
+            "removed": {
+              "description": "Approved, and no longer offered.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "state": {
+              "description": "`pending`, `approved`, `quarantined`, `suspended` or `error`. DERIVED on every read from the\nstanding approval and the sighting, so there is no stored state to go stale.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "name",
+            "state",
+            "pin_mechanism",
+            "fingerprint",
+            "pin_changed",
+            "added",
+            "changed",
+            "removed",
+            "observed_skills",
+            "failure"
+          ],
+          "type": "object"
+        },
+        "ApproveReq": {
+          "additionalProperties": false,
+          "description": "The `approve` request body. ONE required field, and it is required because it is the operator's\nevidence that they looked.",
+          "properties": {
+            "fingerprint": {
+              "description": "The canonical card fingerprint EXACTLY as `connect` reported it.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "fingerprint"
+          ],
+          "type": "object"
+        }
+      }
+    }
+  },
+  "label": "A2A",
+  "subject_noun": "fronted agent",
+  "admin_noun": "agent",
+  "audit_kind": "a2a_agent",
+  "signing": [
+    "a2a/agent-card-signing/v1",
+    "busbar-a2a-card-"
+  ],
+  "dialects": [
+    "jsonrpc",
+    "http+json",
+    "grpc"
+  ],
+  "scope_kinds": [
+    "agent"
+  ],
+  "billable_classes": [
+    [
+      "bytes",
+      "byte"
+    ],
+    [
+      "per_request",
+      "count"
+    ]
+  ],
+  "fee_units": [
+    "per_request"
+  ],
+  "record_kinds": [
+    "task",
+    "task_event",
+    "push_config",
+    "card"
+  ],
+  "trust_keys": [
+    {
+      "key": "pin",
+      "role": "Pin",
+      "fingerprint": true,
+      "default": null,
+      "mechanisms": [
+        {
+          "token": "jws_issuer_key",
+          "root": true,
+          "peer_key": false
+        },
+        {
+          "token": "cert_spki",
+          "root": true,
+          "peer_key": true
+        },
+        {
+          "token": "mtls",
+          "root": true,
+          "peer_key": true
+        },
+        {
+          "token": "unpinned",
+          "root": false,
+          "peer_key": false
+        }
+      ]
+    },
+    {
+      "key": "reverify_ttl",
+      "role": "ReverifyTtl",
+      "fingerprint": false,
+      "default": "5s",
+      "mechanisms": []
+    },
+    {
+      "key": "recovery_backoff",
+      "role": "RecoveryBackoff",
+      "fingerprint": false,
+      "default": "15m",
+      "mechanisms": []
+    },
+    {
+      "key": "allow_private",
+      "role": "PrivateReach",
+      "fingerprint": false,
+      "default": null,
+      "mechanisms": []
+    }
+  ],
+  "caller_credential_refusal": "`upstream_credentials: passthrough` is refused on the `agents:` plane. busbar delegates AS ITSELF: the caller's key authenticated them to busbar and means nothing to a third-party agent, so forwarding it would hand that agent a working busbar credential belonging to someone else. Use `own` with an `upstream_credential:` handle."
+}

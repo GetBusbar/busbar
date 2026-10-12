@@ -6,46 +6,6 @@
 
 [[finding]]
 rule = "door-only:plugin-path"
-file = "crates/busbar-a2a/src/a2a/card.rs"
-item = "busbar_plane_a2a"
-
-[[finding]]
-rule = "door-only:plugin-path"
-file = "crates/busbar-a2a/src/a2a/mod.rs"
-item = "busbar_plane_a2a"
-
-[[finding]]
-rule = "door-only:plugin-path"
-file = "crates/busbar-a2a/src/a2a/pushback.rs"
-item = "busbar_plane_a2a"
-
-[[finding]]
-rule = "door-only:plugin-path"
-file = "crates/busbar-a2a/src/a2a/receive.rs"
-item = "busbar_plane_a2a"
-
-[[finding]]
-rule = "door-only:plugin-path"
-file = "crates/busbar-a2a/src/a2a/rest.rs"
-item = "busbar_plane_a2a"
-
-[[finding]]
-rule = "door-only:plugin-path"
-file = "crates/busbar-a2a/src/a2a/rpcerror.rs"
-item = "busbar_plane_a2a"
-
-[[finding]]
-rule = "door-only:plugin-path"
-file = "crates/busbar-a2a/src/a2a/serve.rs"
-item = "busbar_plane_a2a"
-
-[[finding]]
-rule = "door-only:plugin-path"
-file = "crates/busbar-a2a/src/lib.rs"
-item = "busbar_plane_a2a"
-
-[[finding]]
-rule = "door-only:plugin-path"
 file = "crates/busbar-llm/src/engine/attempt/respond.rs"
 item = "busbar_plane_llm"
 
@@ -153,11 +113,6 @@ item = "USAGE_RATE_HISTORY"
 rule = "door-only:static-seam"
 file = "crates/busbar-kernel-audit/src/amend.rs"
 item = "SINK"
-
-[[finding]]
-rule = "door-only:static-seam"
-file = "crates/busbar-kernel/src/admin_verbs.rs"
-item = "PLANE_ADMIN_ENVELOPE"
 
 [[finding]]
 rule = "door-only:static-seam"

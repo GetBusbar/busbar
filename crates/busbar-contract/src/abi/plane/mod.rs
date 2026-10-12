@@ -329,6 +329,17 @@ pub const TAIL_PROBES: u32 = 1 << 1;
 /// then the entry's rewrite chain runs; no stage tap and no route policy fires. Without it the
 /// hooks run in the routed order: the rewrite chain, the request taps, then the route decision.
 pub const TAIL_HOOKS_GATED: u32 = 1 << 2;
+/// [`PlaneTail::flags`]: the plane takes a unit's refusal as a piece first where the unit's hop
+/// may hold state the plane must end: when the walk refuses the unit
+/// [`crate::caps::ReasonCode::CredentialUnavailable`] (the member's credential, re-resolved for the
+/// attempt, no longer resolves, and nothing was dialled), or ends it with no member left, whether or
+/// not an attempt's request went out (the walk's exhaustion terminal, refused
+/// [`crate::caps::ReasonCode::BreakerOpen`]), the kernel hands `on_piece` a [`FROM_KERNEL`] piece
+/// flagged [`PIECE_REFUSED`] and [`PIECE_LAST`], carrying that reason in [`OnPieceIn::reason`], on
+/// the unit's own ticket: the plane's record writes on that answer are written, as any piece's are,
+/// and nothing it emits reaches the caller. Then the unit is refused as it is without the bit:
+/// `refusal` renders it. Without the bit no such piece is sent.
+pub const TAIL_REFUSED_PIECE: u32 = 1 << 3;
 
 /// [`Claim::flags`]: the route takes no inbound credential; the kernel admits an arrival on it
 /// without verifying a caller. Without it, the route takes one.
@@ -411,6 +422,13 @@ pub const ROUTE_LOCAL: u8 = 2;
 pub const ROUTE_SCOPE: u8 = 3;
 /// What joins the reachable entries a [`ROUTE_SCOPE`] refusal's [`RefusalIn::text`] names.
 pub const ROUTE_SCOPE_SEPARATOR: &str = ", ";
+/// [`ArriveOut::route`]: the plane ANSWERS THIS UNIT ITSELF at the ONE entry the principal's grant
+/// reaches. The kernel resolves the entry exactly as ROUTE_SCOPE does ([`ArriveOut::pool`] may
+/// name the candidates; zero or several reachable entries refuse `no_destination`, rendered through
+/// `refusal` as ROUTE_SCOPE's), then admits it with NO route walk: no pool, no breaker, no egress.
+/// It bills nothing when only far-end-reported units bill, as ROUTE_LOCAL does, and it is audited
+/// under the resolved entry.
+pub const ROUTE_SCOPE_LOCAL: u8 = 4;
 
 /// [`ArriveOut::route_flags`]: the unit's operation is performed AT MOST ONCE (ARCHITECT round 4
 /// Q-L3B-SURFACES (h): the walk does repeatable). A walk over a pool still moves to another member
@@ -434,14 +452,14 @@ pub const ROUTE_SESSION: u8 = 2;
 /// not a refund (Part 2 #62). Unset, the answer is the caller's whole or not at all.
 pub const ROUTE_STREAM: u8 = 4;
 
-/// [`ArriveOut::route_flags`], on a unit the plane answers itself ([`ROUTE_LOCAL`]) alone: the plane
-/// answers it AS AN ADMITTED CALL. The kernel admits a keyed unit through its one check-then-charge
-/// on the plane's own pool, so the call counts its request against the caller's caps and is refused
-/// when they are spent (1.5.5's rule, R2: a verb answered out of busbar's own state is still
-/// admitted, metered and audited); it bills only what the plane reports, a fee unit it does not
-/// report given back. Unset, a local unit stating no expected units is admitted with nothing
-/// charged or counted (a notification, a public document). Set on a unit routed to any member, it
-/// contradicts its route.
+/// [`ArriveOut::route_flags`], on a unit the plane answers itself ([`ROUTE_LOCAL`] or
+/// [`ROUTE_SCOPE_LOCAL`]) alone: the plane answers it AS AN ADMITTED CALL. The kernel admits a keyed
+/// unit through its one check-then-charge on the plane's own pool, so the call counts its request
+/// against the caller's caps and is refused when they are spent (1.5.5's rule, R2: a verb answered
+/// out of busbar's own state is still admitted, metered and audited); it bills only what the plane
+/// reports, a fee unit it does not report given back. Unset, a local unit stating no expected units
+/// is admitted with nothing charged or counted (a notification, a public document). Set on a unit
+/// routed to any member, it contradicts its route.
 pub const ROUTE_COUNTED: u8 = 8;
 
 /// [`OnPieceIn::from`]: the piece is the caller's.
@@ -463,7 +481,9 @@ pub const PIECE_HAS_STATUS: u32 = 1 << 2;
 /// [`OnPieceIn::flags`], [`FROM_FAR_END`]: the bytes are a head of the far end's fields that
 /// follows its body (trailers), as the transport rendered them. The plane decides: one whose far
 /// end reports its outcome there (a trailer status) reads it, any other ignores the piece. The
-/// kernel never drops or reads it.
+/// kernel never drops or reads it. With [`PIECE_HAS_STATUS`]: `status_code`/`status_class` are the
+/// status the transport read off the trailers (a transport that states its answer's status at the
+/// end); a non-success one ends the answer, and this is its [`PIECE_LAST`] piece.
 pub const PIECE_FIELDS: u32 = 1 << 3;
 /// [`OnPieceIn::flags`]: the CATALOGUE-MOVED TICK. With [`FROM_KERNEL`], `attempt_no == 0` and no
 /// bytes, on a session's [`OnPieceIn::stream`], it says the catalogue generation that session
@@ -471,6 +491,10 @@ pub const PIECE_FIELDS: u32 = 1 << 3;
 /// with whatever it tells the session about the move, or with nothing. See
 /// the catalogue-moved tick in this module's documentation.
 pub const PIECE_CATALOGUE_MOVED: u32 = 1 << 4;
+/// [`OnPieceIn::flags`]: the REFUSED PIECE. With [`FROM_KERNEL`], [`PIECE_LAST`],
+/// `attempt_no == 0` and no bytes, the unit is about to be refused for [`OnPieceIn::reason`]. Sent
+/// only to a plane whose tail states [`TAIL_REFUSED_PIECE`]; see it for when.
+pub const PIECE_REFUSED: u32 = 1 << 5;
 
 /// [`OnPieceOut::flags`]: the emitted bytes go to the far end (else to the caller).
 pub const EMIT_TO_FAR_END: u32 = 1;
@@ -583,6 +607,14 @@ pub const RECORD_AUDIT: u32 = 3;
 /// the arrival gate and the audit still run, it meters nothing, and a signature it carries is
 /// verified by an auth plugin under the style the plane's inbound need declares.
 pub const ROUTE_PUBLIC: u32 = 1;
+/// [`AdminRoute::flags`], on a [`ROUTE_PUBLIC`] route only: the route is addressed by the plane's
+/// OWN correlation token, carried in the request's `authorization` field, so that one field crosses
+/// to [`slot::SERVE`] (every other credential field stays struck). The token is busbar's own value,
+/// minted and re-verified only through the host's signing service: it is not a caller principal
+/// and the plane holds no key (`BUSBAR-1.6.0.md` l.4882: a callback route "is auth `none`; the
+/// plane checks its own callback correlation token (never logged/audited)"). Without
+/// [`ROUTE_PUBLIC`] the snapshot is refused.
+pub const ROUTE_CARRIES_OWN_TOKEN: u32 = 1 << 1;
 
 /// [`ServeOut::audit`]: no audit row.
 pub const AUDIT_NONE: u32 = 0;
@@ -696,6 +728,8 @@ pub enum RefusalCode {
     DeadlineExceeded = 41,
     /// `Untrusted`.
     Untrusted = 42,
+    /// `CredentialUnavailable`.
+    CredentialUnavailable = 43,
 }
 
 impl RefusalCode {
@@ -744,6 +778,7 @@ impl RefusalCode {
         RefusalCode::ClientGone,
         RefusalCode::DeadlineExceeded,
         RefusalCode::Untrusted,
+        RefusalCode::CredentialUnavailable,
     ];
 
     /// The number on the wire.
@@ -820,6 +855,7 @@ pub const fn wire_code(reason: ReasonCode) -> RefusalCode {
         ReasonCode::ClientGone => RefusalCode::ClientGone,
         ReasonCode::DeadlineExceeded => RefusalCode::DeadlineExceeded,
         ReasonCode::Untrusted => RefusalCode::Untrusted,
+        ReasonCode::CredentialUnavailable => RefusalCode::CredentialUnavailable,
     }
 }
 
@@ -875,6 +911,7 @@ pub const fn reason_of(code: u32) -> Option<ReasonCode> {
         RefusalCode::ClientGone => ReasonCode::ClientGone,
         RefusalCode::DeadlineExceeded => ReasonCode::DeadlineExceeded,
         RefusalCode::Untrusted => ReasonCode::Untrusted,
+        RefusalCode::CredentialUnavailable => ReasonCode::CredentialUnavailable,
     })
 }
 
@@ -992,7 +1029,8 @@ impl RefusalCode {
             RefusalCode::NoDestination => C::NotFound,
             RefusalCode::DestinationUnreachable
             | RefusalCode::BreakerOpen
-            | RefusalCode::DestinationBudgetExhausted => C::Unreachable,
+            | RefusalCode::DestinationBudgetExhausted
+            | RefusalCode::CredentialUnavailable => C::Unreachable,
             RefusalCode::SessionBudget
             | RefusalCode::SpillBudget
             | RefusalCode::ScratchExhausted
@@ -1097,6 +1135,21 @@ pub struct RouteCost {
 /// verifies the chain, so a chain written before this ABI still verifies. A record kind no entry
 /// names is not chained. This framing is the plane's record chains' only: the kernel's own audit
 /// chain is the one fixed record.
+///
+/// ON A CHAINED KIND:
+/// * A [`RECORD_PUT`] APPENDS: its `key` is the chain's SCOPE (UTF-8, never empty, never ending in
+///   what a listed key ends in) and its `value` the record's own fields, already in the framing
+///   (pipe-separated: each field after a `|`, the first included). The host is the chain's
+///   authority: it takes the scope's next sequence and its tail's digest, frames the prelude, seals
+///   the record and keeps it once the store took it. A put of an EMPTY value drops the whole chain
+///   (the tombstone of each record), and its next append starts again at sequence `1`.
+/// * `records.list` answers each record as `(chain_key(scope, seq), the plane's own bytes)`
+///   (`crate::services::chain_key`), every chain VERIFIED first: a chain that does not verify is
+///   announced by one more span, keyed by the bare scope (it sorts ahead of the chain's records),
+///   whose value is the break in words; its records are still answered (a detection never
+///   deletes). An append is read back once the store took it, never from the write queue.
+/// * `records.get` is refused: a chain is read whole, through `records.list`.
+/// * `records.claim` is the kind's as any other's: its claims never touch the chain.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct RecordChain {
@@ -1206,7 +1259,8 @@ pub struct TrustKey {
 pub struct PlaneTail {
     /// The tail head.
     pub head: KindTailHead,
-    /// [`TAIL_FALLBACK`] | [`TAIL_PROBES`]; any other bit refuses the load.
+    /// [`TAIL_FALLBACK`] | [`TAIL_PROBES`] | [`TAIL_HOOKS_GATED`] | [`TAIL_REFUSED_PIECE`]; any
+    /// other bit refuses the load.
     pub flags: u32,
     /// `INGRESS_*` bits.
     pub ingress: u32,
@@ -1303,7 +1357,17 @@ pub struct PlaneTail {
     /// the previous release served it. A tail addition: a tail whose `size` ends before it
     /// states `0`.
     pub stream_ceiling_secs: u64,
+    /// THE LANE WORDS THE PLANE MAY STATE ON ITS ATTEMPTS' COUNTERS, declared once (beside the
+    /// operator's entry names, the only other words [`OnPieceOut::metric_lane`] may carry): a
+    /// closed vocabulary of its own, so a plane can never mint a time series per distinct string.
+    /// At most [`MAX_METRIC_LANES`] words, each named, none twice. NULL/0 = none. A tail addition.
+    pub metric_lanes: *const AbiStr,
+    /// How many.
+    pub metric_lanes_len: usize,
 }
+
+/// The most lane words a plane's tail may declare ([`PlaneTail::metric_lanes`]).
+pub const MAX_METRIC_LANES: usize = 16;
 
 // ── the generation snapshot ──────────────────────────────────────────────────────────────────────
 
@@ -1337,7 +1401,7 @@ pub struct AdminRoute {
     pub verb: AbiStr,
     /// The target path.
     pub target: AbiStr,
-    /// [`ROUTE_PUBLIC`] or `0`.
+    /// [`ROUTE_PUBLIC`], with [`ROUTE_CARRIES_OWN_TOKEN`] beside it where it is set, or `0`.
     pub flags: u32,
     /// Alignment padding.
     pub _reserved: u32,
@@ -1622,7 +1686,8 @@ pub struct ArriveOut {
     /// valid until the instance's next call. A tail addition; absent on every other outcome.
     pub pool: AbiStr,
     /// On READY: [`ROUTE_POOL`] or [`ROUTE_DIRECT`], what [`ArriveOut::pool`] names (ARCHITECT Q-FL3,
-    /// 2026-10-02), or [`ROUTE_LOCAL`] or [`ROUTE_SCOPE`] with no pool named. A tail addition;
+    /// 2026-10-02), or [`ROUTE_LOCAL`], [`ROUTE_SCOPE`] or [`ROUTE_SCOPE_LOCAL`] with no pool named
+    /// (the scope's two naming their candidates there). A tail addition;
     /// [`ROUTE_POOL`] on every
     /// other outcome.
     pub route: u8,
@@ -1695,8 +1760,9 @@ pub struct OnPieceIn {
     pub arena_buf: *mut u8,
     /// Its capacity.
     pub arena_cap: usize,
-    /// On an ATTEMPT piece: the operator's name for the member the kernel picked; absent
-    /// otherwise.
+    /// On an ATTEMPT piece: the operator's name for the member the kernel picked. On every piece
+    /// with `attempt_no` `0` of a [`ROUTE_SCOPE_LOCAL`] unit: the entry its scope resolved to (it
+    /// is walked to no member). Absent otherwise.
     pub member: AbiStr,
     /// On an ATTEMPT piece: the attempt's number, from `1`; `0` on every other piece.
     pub attempt_no: u32,
@@ -1723,8 +1789,9 @@ pub struct OnPieceIn {
     /// caller's own credential to the far end (the operator configured its upstream credentials as
     /// passthrough), `0` otherwise and before any attempt.
     pub passthrough: u32,
-    /// Alignment padding.
-    pub _reserved_tail: u32,
+    /// With [`PIECE_REFUSED`]: the code of the reason the unit was refused for ([`reason_code`]);
+    /// `0` on every other piece. Laid in what was the struct's tail padding.
+    pub reason: u32,
 }
 
 /// `on_piece`'s `out`.
@@ -1801,6 +1868,26 @@ pub struct OnPieceOut {
     /// With [`EMIT_FINAL_STATUS`]: the final status's details, opaque bytes the carrier hands on
     /// verbatim, in the arena; a zero length = none.
     pub final_details: Span,
+    /// THE ATTEMPT'S COUNTER LABELS, stated on the answer to an ATTEMPT piece: the `pool` label
+    /// the kernel's upstream-attempt and upstream-failure counters carry for it, in the arena; a
+    /// zero length = none, and the kernel keeps its own (the walk's pool). The kernel takes it only
+    /// from a bounded set — a pool label or an entry name the unit's route can reach — and a word
+    /// outside it falls back to its own and is counted refused. UTF-8. A tail addition.
+    pub metric_pool: Span,
+    /// The same for the `lane` label: an entry name the unit's route can reach, or a word of the
+    /// plane's declared [`PlaneTail::metric_lanes`]; anything else falls back to the kernel's own
+    /// (the member's qualified entry) and is counted refused. A tail addition.
+    pub metric_lane: Span,
+    /// THE MEMBER WHOSE WAIT THE REFUSAL ANSWERS, stated on the answer to the [`PIECE_REFUSED`]
+    /// piece the walk's exhaustion hands ([`TAIL_REFUSED_PIECE`], reason `BreakerOpen`): the ONE
+    /// member of the unit's pool the plane may send this unit to (an entry name, as
+    /// [`OnPieceIn::member`] lends it), in the arena; the refusal's `Retry-After` is then that
+    /// member's own cooldown in the pool, never the soonest across the pool's members (the walk's
+    /// figure, which a zero length keeps). Stated on any other answer, or naming no member of the
+    /// unit's pool, it is refused: the unit ends as the plane's fault. UTF-8. A tail addition: a
+    /// plane whose answer stops short of it states none (the host reads an absent tail field as
+    /// zero, `abi::mechanism::call` SIZES).
+    pub wait_member: Span,
 }
 
 /// `refusal`'s `in`.

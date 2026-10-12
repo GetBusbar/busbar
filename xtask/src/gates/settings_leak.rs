@@ -13,8 +13,8 @@
 //!
 //! Four rows, because the shell had four distinct ways to stop:
 //!
-//! * `settings-leak:plane-roots` — the mcp and a2a planes RESOLVE. 1.6.0's R-E makes them plugin
-//!   crates; they are 71 of the 238 files scanned, so if they leave `busbar-core` the count falls to
+//! * `settings-leak:plane-roots` — the mcp plane RESOLVES (and a2a did, until FLIP-A2A deleted its
+//!   engine). 1.6.0's R-E makes them plugin crates; they are 71 of the 238 files scanned, so if they leave `busbar-core` the count falls to
 //!   167, CLEARS the floor of 100, and the lint goes on printing `ok` over a tree it no longer
 //!   reads. The floor catches a root that MOVED; only this catches a root that SPLIT.
 //! * `settings-leak:scan-roots` — EACH root is on disk and holds a non-test `.rs`, checked ON ITS
@@ -87,7 +87,10 @@ const FIXED_ROOTS: &[&str] = &[
 ];
 
 /// The planes whose source must be in the scan whatever crate they end up in.
-const PLANE_KEYS: &[&str] = &["mcp", "a2a"];
+// `a2a` is struck: FLIP-A2A deleted crates/busbar-a2a, and the A2A plane is crates/busbar-plane-a2a,
+// a memory-ABI door that declares no `PLANE_DECL` (so no root resolves for it). Its source is still
+// read: the scan population is every crate under `crates/` (`population::source_population`).
+const PLANE_KEYS: &[&str] = &["mcp"];
 
 const EXCLUDE_TESTS_DIR: &str = "/tests/";
 

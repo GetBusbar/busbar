@@ -106,7 +106,10 @@ pub fn concerns(_a: &Addresses) -> Vec<Concern> {
 /// with nothing owed is a heading somebody adds a row under.
 pub fn ledger() -> Vec<LedgerRow> {
     // Every row below was argued for the MCP and A2A planes — the only pair the scan could see
-    // when each was written — and signs for exactly that pair.
+    // when each was written — and signs for exactly that pair. FLIP-A2A deleted the a2a engine
+    // (`busbar-a2a`); the a2a plane's home is its door crate `busbar-plane-a2a`, which still declares
+    // `a2a/config.rs`, so `config.rs` stays: the filename is still declared in more than one plane,
+    // and the row is still read.
     let d = |name: &str, note: &str| LedgerRow {
         name: name.to_string(),
         class: Class::Distinct,

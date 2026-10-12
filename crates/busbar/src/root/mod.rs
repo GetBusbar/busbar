@@ -105,6 +105,12 @@ pub mod units_admin;
 #[path = "tests/percall_meter_shadow.rs"]
 mod percall_meter_shadow;
 
+/// THE PROCESS-WIDE ADMIN SURFACES' ONE TEST LOCK: the admin route table and the operator audit
+/// ring are the process's one each, so a test that publishes a plane's admin routes, or that
+/// counts the audit rows its own admin writes sealed, holds this for as long as either is in play.
+#[cfg(test)]
+pub(crate) static PUBLISHING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 // The crate's one plugin fixture (`tests/common/plugins.rs`), shared with the integration tests:
 // how a unit test packs a plugin, drops it in and reads what the boot's scan makes of it.
 #[cfg(test)]

@@ -37,8 +37,8 @@ const SCANNED: &[&str] = &[
     "crates/busbar-plane-decisions/src",
     "crates/busbar-llm/src",
     // `crates/busbar-mcp/src` STRUCK (P3 DEL-MCP, ARCHITECT 2026-10-05): the engine is deleted; the
-    // mcp plane is `crates/busbar-plane-mcp/src`, scanned above.
-    "crates/busbar-a2a/src",
+    // mcp plane is `crates/busbar-plane-mcp/src`, scanned above. `crates/busbar-a2a/src` STRUCK the
+    // same way (FLIP-A2A): the a2a plane is `crates/busbar-plane-a2a/src`, scanned above.
     "crates/busbar-voice/src",
 ];
 
@@ -54,7 +54,7 @@ const SHAPES: &[&str] = &[
 /// Where a plane's `PlaneDeclaration` (and so its `billable_classes`) is written.
 const DECLARATIONS: &[(&str, &str)] = &[
     ("llm", "crates/busbar-llm/src/lib.rs"),
-    ("a2a", "crates/busbar-a2a/src/a2a/mod.rs"),
+    // mcp and a2a carry no row: each is door-only (P3 DEL-MCP; FLIP-A2A) and lists no site below.
     ("streaming", "crates/busbar-voice/src/lib.rs"),
 ];
 
@@ -108,14 +108,12 @@ const SITES: &[Site] = &[
     // ARCHITECT 2026-10-05). The mcp door reports through none of the SHAPES above (a door plane
     // bills through the plane driver's money seam), so it lists no site here; were it to grow one,
     // COMPLETENESS reds until it is listed, with a declaration row for its plane.
-    Site {
-        plane: "a2a",
-        file: "crates/busbar-a2a/src/a2a/receive.rs",
-        shape: "usage_units: std::collections::BTreeMap::from(",
-        occurrences: 1,
-        emits: &["busbar_plane_a2a::meta::CLASS_BYTES"],
-        dead: None,
-    },
+    //
+    // a2a has no site here since FLIP-A2A deleted `busbar-a2a` (its one was the engine's
+    // `a2a/receive.rs`): the plane's door reports its usage by INDEX into its own declared
+    // `BILLABLE_CLASSES` (`busbar-plane-a2a/src/door.rs`), through no shape above, so no
+    // undeclared class can be named there. A shape appearing under `busbar-plane-a2a/src` is
+    // still RED here until it is listed.
     // `class_counts` (busbar-plane-streaming's session.rs) names these six.
     Site {
         plane: "streaming",
@@ -458,18 +456,18 @@ fn every_class_an_in_tree_plane_reports_is_one_it_declares() {
 fn an_undeclared_class_and_an_unlisted_site_are_both_red() {
     let root = root();
     let undeclared = [Site {
-        plane: "a2a",
-        file: "crates/busbar-a2a/src/a2a/receive.rs",
-        shape: "usage_units: std::collections::BTreeMap::from(",
+        plane: "llm",
+        file: "crates/busbar-plane-llm/src/codec/wire_shim.rs",
+        shape: "usage_units.insert(",
         occurrences: 1,
-        // mcp's tool calls, reported by a2a — which declares only bytes.
+        // mcp's tool calls, reported by llm — which declares only the token tiers.
         emits: &["busbar_plane_mcp::tool_meta::CLASS_TOOL_CALLS"],
         dead: None,
     }];
     let found = vec![
         (
-            "crates/busbar-a2a/src/a2a/receive.rs".to_string(),
-            "usage_units: std::collections::BTreeMap::from(",
+            "crates/busbar-plane-llm/src/codec/wire_shim.rs".to_string(),
+            "usage_units.insert(",
             1,
         ),
         (

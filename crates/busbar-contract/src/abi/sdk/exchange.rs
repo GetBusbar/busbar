@@ -110,6 +110,9 @@ pub struct Exchange {
     observe: bool,
     /// What they said, once read: kept across replays, which answer without writing them again.
     observed: Option<Observed>,
+    /// The stream the exchange established, once it has: what a caller that gives the exchange up
+    /// closes on the host ([`Exchange::stream`]).
+    stream: Option<u64>,
 }
 
 fn piece(kind: u32) -> Box<RequestPiece> {
@@ -140,7 +143,15 @@ impl Exchange {
             member: None,
             observe: false,
             observed: None,
+            stream: None,
         }
+    }
+
+    /// The stream this exchange established, once it has: a caller that abandons the exchange
+    /// closes it (`Connector::close`), so the host's connection does not outlive the attempt.
+    #[must_use]
+    pub const fn stream(&self) -> Option<u64> {
+        self.stream
     }
 
     /// Read the stream's facts ([`Connector::facts`]) once its reply has ended — or once the reply
@@ -305,6 +316,7 @@ fn send_and_read(
     target: Option<&str>,
 ) -> Answer<()> {
     let stream = ready!(c.establish_as(need, target, &state.within, 0, state.member.as_deref()));
+    state.stream = Some(stream);
     ready!(send(c, state, stream));
     loop {
         let this = c.issued();

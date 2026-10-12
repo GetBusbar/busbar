@@ -12,8 +12,8 @@
 //!
 //! Nine rows: four about whether the scan is worth reading, five about what it found.
 //!
-//! * `response-header:plane-roots` — mcp and a2a resolve. Both planes emit headers on their own
-//!   front doors, which is precisely the population this gate counts, and 1.6.0 makes them plugin
+//! * `response-header:plane-roots` — mcp resolves (and a2a did, until FLIP-A2A deleted its
+//!   engine). Both planes emit headers on their own front doors, which is precisely the population this gate counts, and 1.6.0 makes them plugin
 //!   crates: 71 of 238 files, against a floor of 100, so their departure leaves the floor cleared.
 //! * `response-header:scan-roots` — EACH root on its own. Three of the five happen to be covered by
 //!   something else (two rules name a file inside `$SRC_DIR` and `$LLM`; the plane roots are
@@ -47,7 +47,10 @@ const BIN: &str = "crates/busbar/src";
 /// `engine/`, `arrival.rs`, …), so it is named by path rather than resolved like mcp and a2a.
 const LLM: &str = "crates/busbar-llm/src";
 const FIXED_ROOTS: &[&str] = &[CORE, BIN, LLM];
-const PLANE_KEYS: &[&str] = &["mcp", "a2a"];
+// `a2a` is struck: FLIP-A2A deleted crates/busbar-a2a, and the A2A plane is crates/busbar-plane-a2a,
+// a memory-ABI door that declares no `PLANE_DECL` (so no root resolves for it). Its source is still
+// read: the scan population is every crate under `crates/` (`population::source_population`).
+const PLANE_KEYS: &[&str] = &["mcp"];
 const EXCLUDE_TESTS_DIR: &str = "/tests/";
 // THE FLOOR MOVED TO `gates::population`, along with the scan set it is a floor on.
 

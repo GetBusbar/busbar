@@ -269,6 +269,89 @@ fn a_client_identity_that_does_not_parse_refuses_the_boot_naming_the_need() {
     );
 }
 
+// ── the key pin walk, against a certificate somebody else built ────────────────────────────────
+
+/// A self-signed certificate over `kp` naming `names`.
+fn cert_over(kp: &rcgen::KeyPair, names: &[&str]) -> Vec<u8> {
+    rcgen::CertificateParams::new(names.iter().map(|n| (*n).to_string()).collect::<Vec<_>>())
+        .expect("params")
+        .self_signed(kp)
+        .expect("self-signed")
+        .der()
+        .to_vec()
+}
+
+/// WHY THE PIN IS ON THE KEY AND NOT ON THE CERTIFICATE: a renewal re-issues the certificate and
+/// keeps the key, so it must keep the pin; a different key must be a different pin.
+/// Ported from the retired agent engine's `key_info_tests.rs::two_certificates_over_the_same_key_pin_identically_and_a_new_key_does_not` (predev).
+#[test]
+fn two_certificates_over_the_same_key_pin_identically_and_a_new_key_does_not() {
+    let kp = rcgen::KeyPair::generate().expect("key");
+    let first = cert_over(&kp, &["agent.vendor.test"]);
+    let second = cert_over(&kp, &["agent.vendor.test", "other.test"]);
+    assert_ne!(first, second, "the two certificates must genuinely differ");
+    let pin = peer_key_pin(&first).expect("a pin");
+    assert_eq!(
+        peer_key_pin(&second).expect("a pin"),
+        pin,
+        "a renewal keeps the key, so it must keep the pin"
+    );
+    let other = cert_over(
+        &rcgen::KeyPair::generate().expect("key"),
+        &["agent.vendor.test"],
+    );
+    assert_ne!(
+        peer_key_pin(&other).expect("a pin"),
+        pin,
+        "a different key must be a different pin"
+    );
+}
+
+/// A truncated certificate refuses rather than hashing whatever the walk reached: every proper
+/// prefix of a real certificate yields no pin.
+/// Ported from the retired agent engine's `key_info_tests.rs::a_truncated_certificate_refuses_rather_than_hashing_whatever_it_reached` (predev).
+#[test]
+fn a_truncated_certificate_refuses_rather_than_hashing_whatever_it_reached() {
+    let cert = cert_over(
+        &rcgen::KeyPair::generate().expect("key"),
+        &["agent.vendor.test"],
+    );
+    assert!(peer_key_pin(&cert).is_some(), "the whole certificate pins");
+    for cut in 0..cert.len() {
+        assert_eq!(
+            peer_key_pin(&cert[..cut]),
+            None,
+            "{cut} bytes of a certificate is not a certificate"
+        );
+    }
+}
+
+/// BER admits several spellings of one length. A parser that accepted them would let an upstream
+/// re-encode its certificate and give one key more than one pin, and a pin with more than one value
+/// for one key is not a pin: every such spelling is refused.
+/// Ported from the retired agent engine's `key_info_tests.rs::every_ber_length_form_that_gives_one_certificate_a_second_encoding_is_refused` (predev).
+#[test]
+fn every_ber_length_form_that_gives_one_certificate_a_second_encoding_is_refused() {
+    for (bytes, why) in [
+        (vec![0x30u8, 0x80, 0x00, 0x00], "an indefinite length"),
+        (
+            vec![0x30, 0x82, 0x00, 0x04, 0x30, 0x02, 0x05, 0x00],
+            "a length with a leading zero octet",
+        ),
+        (
+            vec![0x30, 0x81, 0x02, 0x30, 0x00],
+            "a long-form length that the short form would have carried",
+        ),
+        (
+            vec![0x30, 0x85, 0x01, 0x02, 0x03, 0x04, 0x05],
+            "a length wider than four octets",
+        ),
+    ] {
+        assert_eq!(peer_key_pin(&bytes), None, "{why} must be refused");
+        assert!(subject_public_key_info(&bytes).is_none(), "{why}");
+    }
+}
+
 /// A destination's client identity crosses the seam with its key REDACTED: the identity prints the
 /// key as `<redacted>`, never its bytes, and [`seal`] reads the bytes at the one point that hands
 /// them to rustls, so the sealed identity presents. A redacted key that does not parse refuses the

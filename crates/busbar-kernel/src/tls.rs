@@ -122,9 +122,9 @@ use tokio_util::compat::{FuturesAsyncReadCompatExt, TokioAsyncReadCompatExt};
 // verbatim to `busbar-core-connector` (DECISIONS #40, the core-side connection-security seam):
 // this crate's own inbound listener now names no rustls/cert type of its own for that job — it is
 // handed an already-built, opaque `ConnectionSecurity` wrap (`serve`'s `security` parameter, below)
-// and calls nothing on it but `wrap`. `read_pem` (below) stays here: `busbar-a2a`'s OUTBOUND client
-// identity resolver still reads PEM bytes through it directly, an egress concern this move does not
-// touch, so the one turn-a-`SecretRef`-into-PEM function keeps its historical home.
+// and calls nothing on it but `wrap`. `read_pem` (below) stays here: the connector's certificate,
+// key and client-CA readers call it, so the one turn-a-`SecretRef`-into-PEM function keeps its
+// historical home.
 
 /// THE ONE ACCEPT-ERROR POLICY, shared by both listener loops below.
 ///

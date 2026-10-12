@@ -22,7 +22,15 @@
     "P3 DEL-MCP (ARCHITECT 2026-10-05): the MCP plane is served through its memory-ABI door alone and",
     "installs no PlaneDecl, so it left the reflected set. The six on_swap / parse_endpoint /",
     "lower_endpoint rows (asymmetric only against MCP's Some) and the `mcp` entries of the start /",
-    "card_signing_domain / card_kid_prefix rows were struck as stale in the same commit."
+    "card_signing_domain / card_kid_prefix rows were struck as stale in the same commit.",
+    "",
+    "FLIP-A2A: the A2A plane is served through its memory-ABI door alone (busbar-a2a deleted) and",
+    "installs no PlaneDecl, so it left the reflected set too; the installed planes are llm and",
+    "streaming. The build_runtime row (asymmetric only against a2a's None) and the",
+    "card_signing_domain / card_kid_prefix rows (A2A-only hooks) were struck, and so were the",
+    "admin_routes / openapi / config_validate / registry_contains / reresolve_gates /",
+    "retain_verify_gates rows, whose only Some sibling was the A2A (before it, MCP) decl: with both",
+    "door-only, llm and streaming are both None there, which is symmetric, so those rows are stale."
   ],
   "asymmetries": [
     {
@@ -32,22 +40,6 @@
       ],
       "capability": "catalogue",
       "reason": "the LLM plane is the fallback data-plane: it answers on the neutral completion ingress, not plane-mounted routes, so it declares no route hook"
-    },
-    {
-      "field": "admin_routes",
-      "planes_none": [
-        "llm"
-      ],
-      "capability": "catalogue",
-      "reason": "the LLM `pools:` section is not a 1.5.3 named-definition-map, so the plane has no per-registration admin surface to mount"
-    },
-    {
-      "field": "openapi",
-      "planes_none": [
-        "llm"
-      ],
-      "capability": "catalogue",
-      "reason": "the LLM plane contributes no plane-owned OpenAPI path document; its surface is the core completion API, not a plane fragment"
     },
     {
       "field": "hydrate",
@@ -63,39 +55,7 @@
         "llm"
       ],
       "capability": "disposition",
-      "reason": "the LLM plane runs no long-lived start-time task; only the A2A server plane starts a background loop"
-    },
-    {
-      "field": "config_validate",
-      "planes_none": [
-        "llm"
-      ],
-      "capability": "catalogue",
-      "reason": "the LLM `pools:` grammar is validated by core's pool config path, not by a plane-owned config_validate hook"
-    },
-    {
-      "field": "registry_contains",
-      "planes_none": [
-        "llm"
-      ],
-      "capability": "catalogue",
-      "reason": "the LLM plane keeps no named-registration registry to answer containment on; its pools are core-owned config"
-    },
-    {
-      "field": "reresolve_gates",
-      "planes_none": [
-        "llm"
-      ],
-      "capability": "trust-pinning",
-      "reason": "the LLM plane pins no per-peer artifact, so there are no container gates to re-resolve on a swap"
-    },
-    {
-      "field": "retain_verify_gates",
-      "planes_none": [
-        "llm"
-      ],
-      "capability": "trust-pinning",
-      "reason": "the LLM plane retains no verify gates because it holds no pinned peer artifacts across generations"
+      "reason": "the LLM plane runs no long-lived start-time task; only the streaming plane's session runtime starts a background loop"
     },
     {
       "field": "default_section",
@@ -104,94 +64,6 @@
       ],
       "capability": "catalogue",
       "reason": "the LLM `pools:` section is core-owned config today, so the plane supplies no default section object"
-    },
-    {
-      "field": "build_runtime",
-      "planes_none": [
-        "a2a"
-      ],
-      "capability": "catalogue",
-      "reason": "the A2A plane is delegation-only today and builds no per-generation runtime object; LLM and MCP each build one"
-    },
-    {
-      "field": "card_signing_domain",
-      "planes_none": [
-        "llm"
-      ],
-      "capability": "trust-pinning",
-      "reason": "agent-card signing identity is an A2A-only capability; the LLM plane issues no signed card"
-    },
-    {
-      "field": "card_kid_prefix",
-      "planes_none": [
-        "llm"
-      ],
-      "capability": "trust-pinning",
-      "reason": "the card key-id prefix is part of A2A-only agent-card signing; the LLM plane mints no card key"
-    },
-    {
-      "field": "admin_routes",
-      "planes_none": [
-        "streaming"
-      ],
-      "capability": "catalogue",
-      "reason": "the voice plane's streams: is a singular section, not a named-definition map, so it has no per-registration admin surface to mount"
-    },
-    {
-      "field": "openapi",
-      "planes_none": [
-        "streaming"
-      ],
-      "capability": "catalogue",
-      "reason": "the voice plane contributes no plane-owned OpenAPI path document; its duplex session ingress is not described as an OpenAPI fragment"
-    },
-    {
-      "field": "config_validate",
-      "planes_none": [
-        "streaming"
-      ],
-      "capability": "catalogue",
-      "reason": "the voice streams: grammar is validated through parse_section/default_section, not a separate plane-owned config_validate hook"
-    },
-    {
-      "field": "registry_contains",
-      "planes_none": [
-        "streaming"
-      ],
-      "capability": "catalogue",
-      "reason": "the voice plane keeps no named-registration registry to answer containment on; streams: is a singular section with no named stream defs"
-    },
-    {
-      "field": "reresolve_gates",
-      "planes_none": [
-        "streaming"
-      ],
-      "capability": "trust-pinning",
-      "reason": "the voice plane pins no per-peer artifact (providers are operator-declared endpoints), so there are no container gates to re-resolve on a swap"
-    },
-    {
-      "field": "retain_verify_gates",
-      "planes_none": [
-        "streaming"
-      ],
-      "capability": "trust-pinning",
-      "reason": "the voice plane retains no verify gates because it holds no pinned peer artifacts across generations"
-    },
-    {
-      "field": "card_signing_domain",
-      "planes_none": [
-        "streaming"
-      ],
-      "capability": "trust-pinning",
-      "reason": "agent-card signing identity is an A2A-only capability; the voice plane issues no signed card for a peer to verify"
-    },
-    {
-      "field": "card_kid_prefix",
-      "planes_none": [
-        "streaming"
-      ],
-      "capability": "trust-pinning",
-      "reason": "the card key-id prefix is part of A2A-only agent-card signing; the voice plane mints no card key"
     }
   ]
 }

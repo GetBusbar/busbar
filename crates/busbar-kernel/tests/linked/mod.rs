@@ -138,7 +138,7 @@ pub fn door_section(decl: &PlaneDecl) -> &'static str {
 }
 
 /// `decl`'s own test-seam entry — what its test kit exports for a cross-plane test to drive it by
-/// (its served-call framer, its carried verify-gate reader), found by the key it declares.
+/// (its served-call framer), found by the key it declares.
 pub fn seam(decl: &PlaneDecl) -> &'static TestPlaneSeam {
     install();
     test_plane_seams()

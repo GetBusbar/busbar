@@ -437,6 +437,8 @@ pub const TAIL: &PlaneTail = &PlaneTail {
     // a stalled consumer (its event and subscribe streams were pull-based bodies, `session_serve.rs`,
     // `subscribe.rs`), so the mcp plane states none and keeps that behaviour.
     stream_ceiling_secs: 0,
+    metric_lanes: std::ptr::null(),
+    metric_lanes_len: 0,
 };
 
 /// One path the plane answers on: the verb, the target, the transport claim it arrives over, and

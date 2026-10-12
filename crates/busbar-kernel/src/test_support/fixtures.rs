@@ -286,17 +286,6 @@ impl busbar_kernel::test_support::TestAppSeam for TestApp {
         self.plane_finalizers.push(f);
     }
 
-    fn configured_public_url(&self) -> Option<&str> {
-        TestApp::configured_public_url(self)
-    }
-
-    fn card_issuer(
-        &self,
-        _plane_key: &'static str,
-    ) -> Option<busbar_kernel::plane::registry::CardIssuer> {
-        TestApp::card_issuer(self)
-    }
-
     fn install_plane_runtime(
         &mut self,
         key: &'static str,

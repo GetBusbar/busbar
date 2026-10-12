@@ -45,6 +45,11 @@ enum Script {
     Answer(u32, Option<u64>, Vec<&'static [u8]>),
     /// An answer whose body is followed by the far end's trailers.
     Trailed(u32, Vec<&'static [u8]>, &'static [u8]),
+    /// A far end that states its answer's status at the END (`STATUS_AT_TERMINAL`): a head with
+    /// no status, its messages, then its trailers carrying the status (its number, its class and
+    /// the transport's fault reading of it); a success then completes, any other status then FAILS
+    /// the stream, as such a transport reports a non-success end.
+    Ended(u32, WireStatusClass, Option<WireFault>, Vec<&'static [u8]>),
     Silent,
     Refused,
 }
@@ -72,6 +77,8 @@ struct Table {
     texts: Mutex<Vec<bool>>,
     /// Every write: the connection, the bytes, and whether they completed the caller's message.
     written: Mutex<Vec<(u64, Vec<u8>, bool)>>,
+    /// The connections whose stream FAILS once their scripted pieces are read.
+    failing: Mutex<Vec<u64>>,
 }
 
 fn piece(kind: PieceKind, len: usize, status: Option<(u32, Option<u64>)>) -> Piece {
@@ -147,6 +154,31 @@ impl Conns for Table {
                 bytes.push_back(Vec::new());
                 (pieces, bytes)
             }
+            Script::Ended(code, class, fault, messages) => {
+                let mut pieces = VecDeque::new();
+                let mut bytes = VecDeque::new();
+                pieces.push_back(piece(PieceKind::Fields, 0, None));
+                bytes.push_back(Vec::new());
+                for m in &messages {
+                    pieces.push_back(piece(PieceKind::Body, m.len(), None));
+                    bytes.push_back(m.to_vec());
+                }
+                let trailers = b"far-detail: 1";
+                pieces.push_back(Piece {
+                    status: Some(class),
+                    status_code: Some(code),
+                    fault,
+                    ..piece(PieceKind::Fields, trailers.len(), None)
+                });
+                bytes.push_back(trailers.to_vec());
+                if class == WireStatusClass::Success {
+                    pieces.push_back(piece(PieceKind::Completion, 0, None));
+                    bytes.push_back(Vec::new());
+                } else {
+                    self.failing.lock().unwrap().push(id);
+                }
+                (pieces, bytes)
+            }
             Script::Answer(status, retry, chunks) => {
                 let mut pieces = VecDeque::new();
                 let mut bytes = VecDeque::new();
@@ -206,6 +238,12 @@ impl PollConns for Table {
             .get_mut(&conn.0)
             .and_then(VecDeque::pop_front)
         else {
+            // A failing stream fails once its pieces are read.
+            let mut failing = self.failing.lock().unwrap();
+            if let Some(at) = failing.iter().position(|c| *c == conn.0) {
+                failing.remove(at);
+                return Poll::Ready(Err(ConnError::Fault));
+            }
             // A silent far end never answers (and never wakes).
             return Poll::Pending;
         };
@@ -504,6 +542,7 @@ fn rig(
                             AuthPoints::HEAD
                         },
                         passthrough: k == 1,
+                        per_request: None,
                     }),
                 },
             )
@@ -1207,6 +1246,176 @@ async fn trailers_are_handed_to_the_plane() {
     assert_eq!(trailers.len(), 1, "{pieces:?}");
     assert_eq!(trailers[0].bytes, b"far-status: 0");
     assert!(pieces.last().unwrap().last);
+}
+
+/// A STATUS STATED AT THE END IS AN ANSWER, NEVER A CONNECTION FAULT (`BUSBAR-1.6.0.md` l.394,
+/// l.747): a far end whose head carries no status ends its answer with trailers carrying it. The
+/// trailers reach the plane WITH that status (its number and its class); a non-success one is the
+/// answer's LAST piece, so the failed stream the transport reports after it is never read as a
+/// cut: nothing fails over, nothing is refunded, and no transient is recorded against the member
+/// for a status its transport reads as the caller's (NOT_FOUND's row). RED: the trailers crossed
+/// with no status and the failed end was a cut, recorded as a compensating transient.
+#[tokio::test]
+async fn a_status_stated_in_the_trailers_is_the_answer_never_a_cut() {
+    use busbar_contract::abi::transport::{STATUS_CALLER_FAULT, STATUS_SUCCESS};
+    let r = rig(
+        &[(
+            "a.test",
+            Script::Ended(
+                5,
+                WireStatusClass::CallerFault,
+                Some(WireFault::Caller),
+                vec![],
+            ),
+        )],
+        OnExhausted::Status503,
+        None,
+    );
+    let t = token();
+    let far = r.egress.unit(route());
+    let _ = far.member(&t, 1).await;
+    assert!(far.send(&t, request()).await);
+    let pieces = drain(&far, &t).await;
+    assert!(pieces.iter().all(|p| !p.fail_over), "{pieces:?}");
+    assert_eq!(pieces[0].status, Some((0, u32::from(STATUS_SUCCESS))));
+    let end = pieces.last().expect("the trailers");
+    assert!(end.fields && end.last, "{pieces:?}");
+    assert_eq!(end.bytes, b"far-detail: 1");
+    assert_eq!(end.status, Some((5, u32::from(STATUS_CALLER_FAULT))));
+    assert!(far.next(&t).await.is_none(), "nothing is read past the end");
+    let observed = r.book.observed.lock().unwrap().clone();
+    assert!(
+        !observed
+            .iter()
+            .any(|(_, o)| matches!(o, Outcome::Transient { .. })),
+        "no transient against the member: {observed:?}"
+    );
+    assert_eq!(observed[0], (DestinationId::new(1), Outcome::Success));
+    assert_eq!(
+        r.book.refunded.load(Ordering::SeqCst),
+        0,
+        "an answer, not a cut"
+    );
+    assert_eq!(r.table.opened.lock().unwrap().len(), 1, "never failed over");
+    drop(far);
+    assert_eq!(r.table.closed.load(Ordering::SeqCst), 1);
+}
+
+/// THE BUDGET UNIT OF A NON-SUCCESS END STATED IN THE TRAILERS IS KEPT (lane owner's ruling,
+/// 2026-10-07): the head spent it as a success, and the end that follows is an ANSWER, settled as a
+/// protocol error carried in a 2xx answer is (spent, never refunded), whether the transport's
+/// reading of the status is the caller's or transient, and whether the plane reads it or the unit
+/// drops first. The baseline settled no such unit: origin/predev's plane breaker cells are never
+/// budgeted (`crates/busbar-kernel/src/store/planes.rs:65-66`, `budget: -1` at `:133`), and its
+/// gRPC hop read no trailer status at all, so the ruling's rule for a case new in the lane applies.
+#[tokio::test]
+async fn a_non_success_end_stated_in_the_trailers_keeps_the_budget_unit_its_head_spent() {
+    for (code, class, fault) in [
+        (5, WireStatusClass::CallerFault, WireFault::Caller),
+        (14, WireStatusClass::FarEndFault, WireFault::Transient),
+    ] {
+        for read in [true, false] {
+            let r = rig(
+                &[(
+                    "a.test",
+                    Script::Ended(code, class, Some(fault), vec![b"msg"]),
+                )],
+                OnExhausted::Status503,
+                None,
+            );
+            let t = token();
+            let far = r.egress.unit(route());
+            let _ = far.member(&t, 1).await;
+            assert!(far.send(&t, request()).await);
+            loop {
+                let p = far.next(&t).await.expect("a piece through the last");
+                if read || !p.last {
+                    far.judged(&t, FAULT_NONE);
+                }
+                if p.last {
+                    break;
+                }
+            }
+            drop(far);
+            assert_eq!(r.book.spent.load(Ordering::SeqCst), 1, "{code} read={read}");
+            assert_eq!(
+                r.book.refunded.load(Ordering::SeqCst),
+                0,
+                "{code} read={read}: the unit is kept"
+            );
+        }
+    }
+}
+
+/// The trailers' status is read by the plane first and the transport second, as a relayed
+/// failure's head is (`FarEnd::judged`): a plane that reads the end as the destination answering
+/// (healthy) records no second success beside the head's; a transport's transient reading of the
+/// status, the plane stating none, is recorded and still relayed, never failed over; a success
+/// stated in the trailers crosses with them and the answer ends as it ends.
+#[tokio::test]
+async fn the_trailers_status_is_judged_plane_first_and_a_success_ends_as_it_ends() {
+    use busbar_contract::abi::transport::STATUS_SUCCESS;
+    let ended = |code, class, fault| {
+        rig(
+            &[("a.test", Script::Ended(code, class, fault, vec![b"msg"]))],
+            OnExhausted::Status503,
+            None,
+        )
+    };
+    // The plane reads the end as the destination answering.
+    let r = ended(5, WireStatusClass::CallerFault, Some(WireFault::Caller));
+    let t = token();
+    let far = r.egress.unit(route());
+    let _ = far.member(&t, 1).await;
+    assert!(far.send(&t, request()).await);
+    loop {
+        let p = far.next(&t).await.expect("a piece through the last");
+        far.judged(&t, if p.fields { FAULT_HEALTHY } else { FAULT_NONE });
+        if p.last {
+            break;
+        }
+    }
+    assert_eq!(
+        *r.book.observed.lock().unwrap(),
+        vec![(DestinationId::new(1), Outcome::Success)],
+        "one answer, one success"
+    );
+    drop(far);
+    // A transient end, the plane stating no reading: recorded, relayed.
+    let r = ended(14, WireStatusClass::FarEndFault, Some(WireFault::Transient));
+    let far = r.egress.unit(route());
+    let _ = far.member(&t, 1).await;
+    assert!(far.send(&t, request()).await);
+    let pieces = drain(&far, &t).await;
+    assert!(pieces.iter().all(|p| !p.fail_over), "{pieces:?}");
+    assert!(pieces.last().is_some_and(|p| p.fields && p.last));
+    assert_eq!(
+        *r.book.observed.lock().unwrap(),
+        vec![
+            (DestinationId::new(1), Outcome::Success),
+            (
+                DestinationId::new(1),
+                Outcome::Transient { retry_after: None }
+            ),
+        ]
+    );
+    assert_eq!(r.table.opened.lock().unwrap().len(), 1, "never failed over");
+    drop(far);
+    // A success stated in the trailers: handed on with them, and the answer completes.
+    let r = ended(0, WireStatusClass::Success, None);
+    let far = r.egress.unit(route());
+    let _ = far.member(&t, 1).await;
+    assert!(far.send(&t, request()).await);
+    let pieces = drain(&far, &t).await;
+    let trailers: Vec<&FarPiece> = pieces.iter().filter(|p| p.fields).collect();
+    assert_eq!(trailers.len(), 1, "{pieces:?}");
+    assert_eq!(trailers[0].status, Some((0, u32::from(STATUS_SUCCESS))));
+    assert!(!trailers[0].last, "a success's end is its completion");
+    assert!(pieces.last().is_some_and(|p| p.last && !p.fields));
+    assert_eq!(
+        *r.book.observed.lock().unwrap(),
+        vec![(DestinationId::new(1), Outcome::Success)]
+    );
 }
 
 /// THE PER-CALL SCOPE (ARCHITECT round 5 Q-L3B-EXCHANGE (B)): a plane's attempt that states its
@@ -1918,4 +2127,191 @@ async fn a_502_head_with_no_reading_settled_unread_records_by_the_table() {
             Outcome::Transient { retry_after: None }
         )]
     );
+}
+
+// ── a binding re-resolved per request (`auth_calls::PerRequestHandle`) and the host's waiver ────
+
+/// A binding whose credential is re-resolved per request: it answers the scripted handles in turn
+/// (`None`: the credential is unavailable), counting how often it is asked.
+struct Resolving {
+    answers: Mutex<VecDeque<Option<u64>>>,
+    asked: AtomicU64,
+}
+
+impl busbar_contract::auth_calls::PerRequestHandle for Resolving {
+    fn handle_now(&self) -> Option<u64> {
+        self.asked.fetch_add(1, Ordering::SeqCst);
+        self.answers.lock().unwrap().pop_front().flatten()
+    }
+}
+
+/// An auth binding presenting the handle it is asked on (`authorization: Bearer h<handle>`), so
+/// the wire shows which opened credential a request carried.
+#[derive(Default)]
+struct ByHandle {
+    calls: AtomicU64,
+}
+
+impl OutboundAuth for ByHandle {
+    fn open_outbound(&self, _: &str, _: &[u8], _: &serde_json::Value) -> Result<u64, String> {
+        Ok(1)
+    }
+    fn fields_now(&self, handle: u64, _: &FieldsRequest) -> Option<Fields> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        Some(Fields::Ready(vec![AuthField {
+            name: b"authorization".to_vec(),
+            value: format!("Bearer h{handle}").into_bytes().into(),
+            sensitive: true,
+        }]))
+    }
+    fn fields(&self, h: u64, r: FieldsRequest, _: u64) -> Box<dyn Fielding> {
+        Box::new(Done(self.fields_now(h, &r).unwrap_or(Fields::Failed)))
+    }
+}
+
+/// The rig's member `m0` bound per request over `answers`, presented by [`ByHandle`].
+fn resolving(r: &mut Rig, answers: &[Option<u64>]) -> (Arc<Resolving>, Arc<ByHandle>) {
+    let per = Arc::new(Resolving {
+        answers: Mutex::new(answers.iter().copied().collect()),
+        asked: AtomicU64::new(0),
+    });
+    let auth = Arc::new(ByHandle::default());
+    r.egress
+        .routes
+        .get_mut(&DestinationId::new(1))
+        .expect("m0's route")
+        .auth = Some(AuthBinding {
+        auth: Arc::clone(&auth) as Arc<dyn OutboundAuth>,
+        handle: 1,
+        style_flags: 0,
+        points: AuthPoints::HEAD,
+        passthrough: false,
+        per_request: Some(
+            Arc::clone(&per) as Arc<dyn busbar_contract::auth_calls::PerRequestHandle>
+        ),
+    });
+    (per, auth)
+}
+
+/// The `authorization` each open carried, in order (`None`: none).
+fn authorizations(r: &Rig) -> Vec<Option<Vec<u8>>> {
+    r.table
+        .opened
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|(_, head, _, _)| {
+            head.iter()
+                .find(|(n, _)| n == "authorization")
+                .map(|(_, v)| v.clone())
+        })
+        .collect()
+}
+
+/// RE-RESOLVED ON EVERY REQUEST: each attempt asks the binding for its handle NOW and presents the
+/// credential that handle was opened with, never the one the generation was sealed with — a
+/// credential rotated between two units is presented by the second.
+#[tokio::test]
+async fn each_attempt_presents_the_handle_its_credential_resolves_to_now() {
+    let mut r = rig(
+        &[("a.test", Script::Answer(200, None, vec![b"ok"]))],
+        OnExhausted::Status503,
+        None,
+    );
+    let (per, auth) = resolving(&mut r, &[Some(7), Some(8)]);
+    let t = token();
+    for _ in 0..2 {
+        let far = r.egress.unit(route());
+        let _ = far.member(&t, 1).await;
+        assert!(far.send(&t, request()).await);
+        let _ = drain(&far, &t).await;
+    }
+    assert_eq!(
+        authorizations(&r),
+        vec![Some(b"Bearer h7".to_vec()), Some(b"Bearer h8".to_vec())],
+        "each request carried the handle resolved for it, not the sealed one (h1)"
+    );
+    assert_eq!(
+        per.asked.load(Ordering::SeqCst),
+        2,
+        "asked once per request"
+    );
+    assert_eq!(auth.calls.load(Ordering::SeqCst), 2);
+}
+
+/// A CREDENTIAL THAT NO LONGER RESOLVES REFUSES THE UNIT `credential_unavailable` before anything is
+/// dialled: no connection opened, no auth call made, nothing recorded against the member (it is not
+/// the destination's fault), and the walk's next pick is the refusal, never another member.
+#[tokio::test]
+async fn an_unavailable_credential_refuses_the_unit_before_the_dial() {
+    let mut r = rig(
+        &[
+            ("a.test", Script::Answer(200, None, vec![b"ok"])),
+            ("b.test", Script::Answer(200, None, vec![b"ok"])),
+        ],
+        OnExhausted::Status503,
+        None,
+    );
+    let (per, auth) = resolving(&mut r, &[None]);
+    let t = token();
+    let far = r.egress.unit(route());
+    assert!(matches!(far.member(&t, 1).await, Pick::Member { ref name, .. } if name == "m0"));
+    assert!(!far.send(&t, request()).await, "nothing was sent");
+    assert_eq!(
+        far.member(&t, 2).await,
+        Pick::Refused(busbar_contract::caps::ReasonCode::CredentialUnavailable),
+        "the unit is refused, not failed over"
+    );
+    assert!(r.table.opened.lock().unwrap().is_empty(), "nothing dialled");
+    assert_eq!(auth.calls.load(Ordering::SeqCst), 0, "nothing presented");
+    assert_eq!(per.asked.load(Ordering::SeqCst), 1);
+    assert!(
+        r.book.observed.lock().unwrap().is_empty(),
+        "nothing recorded against the member"
+    );
+}
+
+/// THE WAIVER (`abi::auth::NO_MEMBER_AUTH_FIELD`): a request carrying it is opened with NO member
+/// auth — the binding is not asked for a handle and makes no call, so it is dialled even while the
+/// credential is unavailable — and the field is the host's: it never reaches the wire. RED arm: the
+/// same request without it carries the member's credential.
+#[tokio::test]
+async fn a_waived_request_carries_no_member_auth_and_the_waiver_never_reaches_the_wire() {
+    use busbar_contract::abi::auth::NO_MEMBER_AUTH_FIELD;
+    let mut r = rig(
+        &[("a.test", Script::Answer(200, None, vec![b"ok"]))],
+        OnExhausted::Status503,
+        None,
+    );
+    let (per, auth) = resolving(&mut r, &[Some(5)]);
+    let t = token();
+    for waived in [true, false] {
+        let far = r.egress.unit(route());
+        let _ = far.member(&t, 1).await;
+        let mut req = request();
+        if waived {
+            req.fields
+                .push((NO_MEMBER_AUTH_FIELD.as_bytes().to_vec(), b"1".to_vec()));
+        }
+        assert!(far.send(&t, req).await);
+        let _ = drain(&far, &t).await;
+    }
+    assert_eq!(
+        authorizations(&r),
+        vec![None, Some(b"Bearer h5".to_vec())],
+        "the waived request presented nothing; the other its member's credential"
+    );
+    assert_eq!(
+        per.asked.load(Ordering::SeqCst),
+        1,
+        "only the unwaived asked"
+    );
+    assert_eq!(auth.calls.load(Ordering::SeqCst), 1);
+    for (_, head, _, _) in r.table.opened.lock().unwrap().iter() {
+        assert!(
+            head.iter()
+                .all(|(n, _)| !n.eq_ignore_ascii_case(NO_MEMBER_AUTH_FIELD)),
+            "the host's field never reaches the wire: {head:?}"
+        );
+    }
 }

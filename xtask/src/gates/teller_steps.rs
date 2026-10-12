@@ -653,6 +653,14 @@ pub fn check_root_column(cx: &Ctx, m: &Matrix) -> RootProblems {
     let planes: BTreeSet<String> = m.planes().into_iter().collect();
     let mut leg_of_plane: BTreeMap<String, String> = BTreeMap::new();
     let mut leg_file: BTreeMap<String, String> = BTreeMap::new();
+    // A door plane's own root cells (its crate's `tests/root/mod.rs`, a
+    // `[package.metadata.busbar.door-cells]` row) compile into the root's serve module, so a leg's
+    // evidence may live there: the cells are written in the plane's own words in the plane's crate.
+    let door_cells: BTreeSet<String> =
+        crate::libtest_path::door_cells(&|rel: &str| cx.read(rel).ok(), BUSBAR_MAIN)
+            .into_iter()
+            .map(|(_, file)| file)
+            .collect();
     for leg in legs_obj.keys() {
         let entry = legs.get(leg);
         let plane = entry.str_or("plane", "");
@@ -665,10 +673,10 @@ pub fn check_root_column(cx: &Ctx, m: &Matrix) -> RootProblems {
             ));
             continue;
         }
-        if !file.starts_with(ROOT_DIR) {
+        if !file.starts_with(ROOT_DIR) && !door_cells.contains(&file) {
             p.legs.push(format!(
-                "{LEDGER_REL}: root leg {} names file {}, which is not under {ROOT_DIR} -- a \
-                 leg's evidence lives in the composition root",
+                "{LEDGER_REL}: root leg {} names file {}, which is not under {ROOT_DIR} and is no \
+                 door plane's own root cells -- a leg's evidence lives in the composition root",
                 json_lite::py_repr(leg),
                 json_lite::py_repr(&file)
             ));

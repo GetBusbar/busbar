@@ -210,6 +210,8 @@ pub const TAIL: &PlaneTail = &PlaneTail {
     admin_routes: ptr::null(),
     admin_routes_len: 0,
     admin_openapi: Blob::ABSENT,
+    metric_lanes: ptr::null(),
+    metric_lanes_len: 0,
     stream_ceiling_secs: 0,
 };
 

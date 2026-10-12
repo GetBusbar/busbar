@@ -697,6 +697,13 @@ pub const PLUGIN_REQUEST_HEADERS_TRUNCATED_TOTAL: &str =
 pub const PLUGIN_RESPONSE_HEADERS_REJECTED_TOTAL: &str =
     "busbar_plugin_response_headers_rejected_total"; // no labels
 
+// A plugin stated a counter label for its attempt (`OnPieceOut::metric_pool` / `metric_lane`) outside
+// the bound the walk's counters hold (a pool label or entry name the unit's route reaches, or a lane
+// word the plugin declared once): the counters kept their own label, and this counts the refusal.
+// Unlabeled, so a plugin can never mint a series here either. A non-zero rate means a plugin states
+// words it never declared.
+pub const PLUGIN_LABEL_REFUSED_TOTAL: &str = "busbar_plugin_label_refused_total"; // no labels
+
 // ── Scrape-time gauges (new in feat/observability-depth) ────────────────────────────────────────
 //
 // These are REFRESHED each scrape from in-process reads (governance SQLite + breaker state).

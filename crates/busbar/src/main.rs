@@ -883,7 +883,8 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     let door_auths = root::door_steps::process_auths();
     let door_reach = root::door_steps::DoorReach {
         providers: &door_providers,
-        secrets: &*app.secret_resolver,
+        secrets: Arc::clone(&app.secret_resolver)
+            as Arc<dyn busbar_contract::secret::SecretResolve>,
         auths: door_auths,
         conns: Arc::clone(root::connector::the()) as Arc<dyn busbar_contract::conn::PollConns>,
         stream_ceiling_secs: busbar_kernel::config::limits::installed().map_or(
@@ -1090,68 +1091,14 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // never one with the surface.)
     #[cfg(feature = "root-admin")]
     let admin_router = match &book {
-        Some(book) => root::units_admin::mount(
+        Some(book) => root::units_admin::mount_node(
             admin_router,
-            root::kernel::new_kernel(),
-            // The same ingress cap the router below the wrap was built with, because the wrap reads the
-            // body before that router's own limit can.
             req_body_max,
-            |dispatch| {
-                // THE ADMIN DOOR: the deployment's live `admin_auth` chain, read per unit off the same
-                // snapshot the kernel middleware reads and `PUT /api/v1/admin/admin-auth` swaps.
-                // Over the book boot opened AND the store boot bound beside it, so the three
-                // disaster-recovery verbs reach the configured store (row 113).
-                let mut units = root::kernel::ProductionUnits::admin_over_book(
-                    dispatch,
-                    root::units_admin::live_admin_door(std::sync::Arc::clone(&app_handle)),
-                    book,
-                );
-                // D38 PRODUCTION SEALING (composition-root, binding-only). Replace the assembly's
-                // `UnsealedPosture` default with the posture THIS fleet sealed: `SealedPosture` carries
-                // the boot-resolved operator key, so `operator.pub` present ⇒ `OperatorState::Set` (a
-                // valid-signed `amend_rate_history` is now performable + ed25519-verified) and absent ⇒
-                // `OperatorState::Unset` (amend refused at the ceremony gate, byte-identical to before).
-                // Bound over the SAME public `posture` seam `AdminBinding::with_posture_view` sets — and
-                // the same one the ledger view beside it is bound through — so this is a binding, not a
-                // structural change to the units.
-                units.admin.posture =
-                    std::sync::Arc::new(root::units_admin::SealedPosture::new(operator_key));
-                // Q64/Q67: an `adjust` names the pool its unit was dispatched through, checked against
-                // the pools this node has CONFIGURED — read off the live snapshot on every call, so a
-                // config apply that adds or removes a pool is what the check sees.
-                let live = std::sync::Arc::clone(&app_handle);
-                units.admin.pools = std::sync::Arc::new(move |pool: &str| {
-                    busbar_kernel::governance::group_provision::pool_known(&live.load(), pool)
-                });
-                // Q71(2): `plane_facts` / `plane_record_write` read the planes this node serves off the
-                // live snapshot (Law 7) and write through the configured store's plane-facing seam.
-                units.admin.planes =
-                    root::units_admin::live_planes(std::sync::Arc::clone(&app_handle));
-                units.admin.records = Some(root::units_admin::live_records(std::sync::Arc::clone(
-                    &app_handle,
-                )));
-                // ARCHITECT 2026-10-06: the trust verbs read and decide over the kernel's trust
-                // book — the composed services, reached through the late install.
-                let late = std::sync::Arc::clone(&late_services);
-                units.admin.trust = std::sync::Arc::new(move || late.kernel());
-                // The root breaker is the kernel's own: one cell set on the node, read through the
-                // live snapshot so an apply's rebuilt store is the one it observes into.
-                units.breaker = root::adapters::BreakerAdapter::over_kernel(
-                    std::sync::Arc::clone(&app_handle),
-                    breaker_policy,
-                );
-                // THE REVOCATION SET the authenticate step gates an identification with: the same
-                // governance state's directory, so the revocation set is the one this node keeps. No
-                // governance state is no directory, left as the assembly built it.
-                match app_handle.load().governance.clone() {
-                    Some(gov) => units.with_auth_bindings(
-                        root::kernel::auth_bindings::AuthBindings::new(std::sync::Arc::new(
-                            root::kernel::auth_bindings::GovernanceDirectory::new(gov),
-                        )),
-                    ),
-                    None => units,
-                }
-            },
+            &app_handle,
+            book,
+            operator_key,
+            &late_services,
+            breaker_policy,
         ),
         None => admin_router,
     };

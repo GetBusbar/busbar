@@ -18,7 +18,7 @@ mod cases;
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::task::{Context, Poll, Waker};
 use std::time::{Duration, Instant};
@@ -30,8 +30,9 @@ use busbar_contract::abi::plane::{
     RefusalIn, RefusalOut, UnitCount, AUDIT_APPLIED, CANCEL_ABORTED, CANCEL_FAILED,
     CANCEL_OK_PARTIAL, EMIT_DONE, EMIT_FINAL_STATUS, EMIT_MESSAGE_END, EMIT_TO_FAR_END,
     FROM_CALLER, FROM_FAR_END, FROM_KERNEL, PIECE_FIELDS, PIECE_HAS_STATUS, PIECE_LAST,
-    PIECE_OUT_TEXT, PRINCIPAL_OPTIONAL, RECORD_AUDIT, RECORD_PUT, REFUSAL_ARRIVE, REFUSAL_KERNEL,
-    ROUTE_LOCAL, ROUTE_SESSION, UNITS_ESTIMATED, UNITS_REPORTED, VERDICT_RETRY,
+    PIECE_OUT_TEXT, PIECE_REFUSED, PRINCIPAL_OPTIONAL, RECORD_AUDIT, RECORD_PUT, REFUSAL_ARRIVE,
+    REFUSAL_KERNEL, ROUTE_LOCAL, ROUTE_SCOPE_LOCAL, ROUTE_SESSION, UNITS_ESTIMATED, UNITS_REPORTED,
+    VERDICT_RETRY,
 };
 use busbar_contract::abi::plane::{ServeIn, ServeOut};
 use busbar_contract::caps::OpClassId;
@@ -194,10 +195,24 @@ struct Double {
     /// Each `tick`'s `now_ns`, and the period the next one is asked for (`0` = none).
     ticks: Mutex<Vec<u64>>,
     tick_every_ns: AtomicU64,
+    /// Whether it has a wake channel (R-PUSH), and its driver ticket's wakes: a wake has run
+    /// `drive`, so the schedule re-polls `tick`.
+    wake: Arc<WakeLine>,
     /// What it declares for its admission.
     declared: InstanceDecl,
     /// Its duplex sessions (a `/session` arrival states `ROUTE_SESSION`): see [`Sessions`].
     sessions: Arc<Sessions>,
+    /// The reason of every refused piece (`PIECE_REFUSED`) it was handed.
+    refused: Mutex<Vec<u32>>,
+    /// Every caller piece of a `/scope-local*` unit: its attempt number and the member it lent.
+    scope_members: Mutex<Vec<(u32, Vec<u8>)>>,
+}
+
+/// The double's driver-ticket wake line (R-PUSH): off, it has no wake channel.
+#[derive(Default)]
+struct WakeLine {
+    channel: AtomicBool,
+    told: tokio::sync::Notify,
 }
 
 /// The double's sessions: the streams open, the caller pieces each read (stream, bytes), the
@@ -229,6 +244,9 @@ unsafe fn bytes<'a>(b: Blob) -> &'a [u8] {
         std::slice::from_raw_parts(b.ptr, b.len)
     }
 }
+
+/// What the double answers a refused piece with: never the caller's.
+const NOT_FOR_THE_CALLER: &[u8] = b"not-for-the-caller";
 
 /// The words the double's `/refuse-words` arrival states for its refusal.
 const REFUSAL_WORDS: &[u8] = b"the body is not a document";
@@ -304,6 +322,28 @@ impl Double {
             return (ready(Outcome::Fault), Hold::No);
         };
         self.tickets.lock().unwrap().insert(t, i.unit);
+        if i.from == FROM_KERNEL && i.flags & PIECE_REFUSED != 0 {
+            // THE REFUSED PIECE: the plane writes the record `refused` = the reason's code, and
+            // answers bytes, a status and done, none of which may reach the caller.
+            self.refused.lock().unwrap().push(i.reason);
+            let mut at = 0;
+            let key = put(i, &mut at, b"refused");
+            let value = put(i, &mut at, i.reason.to_string().as_bytes());
+            *i.records_buf = RecordWrite {
+                kind: 0,
+                op: RECORD_PUT,
+                key,
+                value,
+            };
+            o.records_written = 1;
+            o.arena_written = at as u64;
+            let n = NOT_FOR_THE_CALLER.len().min(i.reply_cap);
+            std::ptr::copy_nonoverlapping(NOT_FOR_THE_CALLER.as_ptr(), i.reply_buf, n);
+            o.emitted = n as u64;
+            o.reply_status = 299;
+            o.flags = EMIT_DONE;
+            return (ready(Outcome::Ready), Hold::No);
+        }
         let mut units = self.units.lock().unwrap();
         let u = units.entry(i.unit).or_default();
         let piece = bytes(i.bytes);
@@ -323,11 +363,17 @@ impl Double {
                 return (ready(Outcome::Ready), Hold::No);
             }
             FROM_CALLER => {
+                if head.starts_with(b"/scope-local") {
+                    self.scope_members
+                        .lock()
+                        .unwrap()
+                        .push((i.attempt_no, text(i.member).to_vec()));
+                }
                 u.body.extend_from_slice(piece);
                 if i.flags & PIECE_LAST == 0 {
                     return (ready(Outcome::Ready), Hold::No);
                 }
-                if head.as_slice() == b"/local" {
+                if head.as_slice() == b"/local" || head.as_slice() == b"/scope-local" {
                     // A LOCAL ANSWER: the plane answers the caller itself (an echo of the body),
                     // with nothing for the far end.
                     o.reply_status = 200;
@@ -639,6 +685,11 @@ impl PlaneCalls for Double {
                     out.head.error = AbiStr::over(REFUSAL_WORDS);
                     return Outcome::Refused;
                 }
+                b"/scope-local" | b"/scope-local-far" => {
+                    // A unit the plane answers itself at its scope's one entry (ROUTE_SCOPE_LOCAL).
+                    out.route = ROUTE_SCOPE_LOCAL;
+                    vec![estimate(0)]
+                }
                 b"/session" => {
                     // A unit served as a duplex session, answered by the plane itself.
                     out.route = ROUTE_LOCAL;
@@ -861,6 +912,17 @@ impl PlaneCalls for Double {
         let every = self.tick_every_ns.load(Ordering::SeqCst);
         let next = if every == 0 { 0 } else { now + every };
         Box::pin(std::future::ready(Some(next)))
+    }
+
+    fn woke(&self) -> Pin<Box<dyn Future<Output = bool> + Send>> {
+        let line = Arc::clone(&self.wake);
+        Box::pin(async move {
+            if !line.channel.load(Ordering::SeqCst) {
+                return false;
+            }
+            line.told.notified().await;
+            true
+        })
     }
 
     /// The streams its ticks named, waiting until one is.
@@ -1327,7 +1389,8 @@ fn the_driver_mints_the_instance_s_one_driver_ticket_and_recycles_it() {
 }
 
 /// `tick` runs at once, then at the `next_tick_ns` each answer names, never before it; an answer of
-/// `0` ends the schedule (spec :3288, B.3.7).
+/// `0` ends the schedule of a plane with no wake channel (spec :3288, B.3.7); with one it waits on a
+/// wake (R-PUSH, the cells below).
 #[tokio::test]
 async fn the_driver_ticks_at_each_next_tick_and_stops_at_none() {
     let (plane, _book, driver) = driven(20_000_000);
@@ -1568,6 +1631,45 @@ async fn the_kernels_approve_judges_the_trust_facts_a_plane_states() {
         services.trust_rule("inst/stranger", Ruling::Approve),
         Err(busbar_kernel::host_services::TrustRefused::NoSuchKey)
     );
+}
+
+/// THE GRANT IS JUDGED BEFORE THE TRUST FACTS (ruling (a), coordinator 2026-10-07: the ordered
+/// gate is identity, grant, then the counterparty's standing). A unit whose caller the
+/// deployment's Approve refuses (`scope_denied`) is refused for that, at Approve, even when the
+/// counterparty it states is one the book does not trust: a grant refusal never tells the caller
+/// the counterparty's trust state. RED before the order: the unit was refused `untrusted`. The
+/// control: the same untrusted facts under a deployment that grants are refused `untrusted`.
+#[tokio::test]
+async fn the_kernels_approve_judges_the_grant_before_the_trust_facts() {
+    use busbar_contract::caps::{Outcome, ReasonCode, StepName};
+    let services = stored();
+    let section: serde_yaml::Value = serde_yaml::from_str("peer: {reverify: 1h}").unwrap();
+    let (_plane, _book, driver) = driven_over(declaring(), 0, services.clone(), &section);
+    let (steps, far, caller) = (
+        common::TestUnits::refusing(StepName::Approve, ReasonCode::ScopeDenied),
+        cases::Far::new(&["ok"], cases::CHUNKS),
+        cases::Caller::default(),
+    );
+    let units = driver.unit(
+        &steps,
+        &far,
+        &caller,
+        cases::arrival("/trusted/stranger", b"x"),
+        0,
+    );
+    let outcome = cases::drive(&units).await;
+    assert_eq!(
+        outcome,
+        Outcome::Refused(StepName::Approve, ReasonCode::ScopeDenied),
+        "the grant's refusal, not the counterparty's standing"
+    );
+    let body = units
+        .take_rendered()
+        .map(|r| String::from_utf8_lossy(&r.body).into_owned())
+        .unwrap_or_default();
+    assert!(!body.contains("untrusted"), "{body}");
+    let (outcome, _) = approved(&driver, "/trusted/stranger").await;
+    assert!(untrusted(&outcome), "granted, the book judges: {outcome:?}");
 }
 
 // ── the plane's own work bounds (its section's reserved `work:`) ────────────────────────────────
@@ -2044,6 +2146,100 @@ async fn a_gate_first_planes_passing_screen_reaches_the_door_and_the_far_end_onc
     assert!(!far.sent().is_empty(), "the far end was reached");
 }
 
+/// A UNIT ITS PLANE ANSWERS AT ITS SCOPE'S ONE ENTRY (`ROUTE_SCOPE_LOCAL`, COORDINATOR ruling
+/// 2026-10-07), plane-neutral: the steps resolve the one entry the principal's grant reaches
+/// (`DriverSteps::resolved`), and the driver walks NO route for it, whatever far end it was handed:
+/// the far end is never asked for a member and nothing is sent, and the caller's body reaches the
+/// plane once, with no attempt (`attempt_no` `0`), its `OnPieceIn::member` the resolved entry, and
+/// the plane's own answer is the caller's. A unit the plane sends toward a far end anyway has none
+/// and fails unreachable, still undialled. Steps that resolve zero or several entries refuse it
+/// `no_destination` at admission, before any piece. RED before the driver skipped the walk: the
+/// far end was asked for a member (and, had the plane sent, dialled).
+#[tokio::test]
+async fn a_scope_local_unit_is_answered_at_its_resolved_entry_with_no_walk() {
+    use busbar_contract::caps::{Outcome, ReasonCode, StepName};
+    let r = rig(Way::Double, BufferCaps::default(), cases::Book::default());
+    let steps = common::TestUnits {
+        resolved: Some(b"entry-a".to_vec()),
+        ..common::TestUnits::passing()
+    };
+    let (far, caller) = (
+        cases::Far::new(&["ok"], cases::CHUNKS),
+        cases::Caller::default(),
+    );
+    let units = r.driver.unit(
+        &steps,
+        &far,
+        &caller,
+        cases::arrival("/scope-local", b"hi"),
+        0,
+    );
+    let outcome = cases::drive(&units).await;
+    assert!(matches!(outcome, Outcome::Completed), "{outcome:?}");
+    assert_eq!(far.picks(), 0, "no route is walked");
+    assert!(far.sent().is_empty(), "no egress");
+    assert_eq!(
+        r.plane.scope_members.lock().unwrap().clone(),
+        vec![(0, b"entry-a".to_vec())],
+        "the body, once, with no attempt, its member the resolved entry"
+    );
+    assert_eq!(caller.text(), "hi", "the plane's own answer");
+
+    // The plane sends it toward a far end: there is none to send it to.
+    let (far, caller) = (
+        cases::Far::new(&["ok"], cases::CHUNKS),
+        cases::Caller::default(),
+    );
+    let units = r.driver.unit(
+        &steps,
+        &far,
+        &caller,
+        cases::arrival("/scope-local-far", b"hi"),
+        0,
+    );
+    let outcome = cases::drive(&units).await;
+    assert!(
+        matches!(
+            outcome,
+            Outcome::Failed(_, ReasonCode::DestinationUnreachable)
+                | Outcome::Refused(_, ReasonCode::DestinationUnreachable)
+        ),
+        "{outcome:?}"
+    );
+    assert_eq!((far.picks(), far.sent().len()), (0, 0), "still undialled");
+
+    // Zero or several reachable entries: the steps refuse it `no_destination` before any piece.
+    r.plane.scope_members.lock().unwrap().clear();
+    let unresolved = common::TestUnits {
+        refuse_at: Some((StepName::Admit, ReasonCode::NoDestination)),
+        ..common::TestUnits::passing()
+    };
+    let (far, caller) = (
+        cases::Far::new(&["ok"], cases::CHUNKS),
+        cases::Caller::default(),
+    );
+    let units = r.driver.unit(
+        &unresolved,
+        &far,
+        &caller,
+        cases::arrival("/scope-local", b"hi"),
+        0,
+    );
+    let outcome = cases::drive(&units).await;
+    assert!(
+        matches!(
+            outcome,
+            Outcome::Refused(StepName::Admit, ReasonCode::NoDestination)
+        ),
+        "{outcome:?}"
+    );
+    assert_eq!((far.picks(), far.sent().len()), (0, 0), "undialled");
+    assert!(
+        r.plane.scope_members.lock().unwrap().is_empty(),
+        "no piece reached the plane"
+    );
+}
+
 /// RED (SEAM-4l additions): a plane that frames messages hands the caller's side each message's END
 /// (`EMIT_MESSAGE_END`), one per far-end piece however its bytes were written, and closes its reply
 /// with a FINAL status (`EMIT_FINAL_STATUS`): the status number, its message and its details
@@ -2121,4 +2317,324 @@ async fn a_vetoed_units_refusal_names_the_hook_and_writes_its_rejected_row() {
             common::principal().as_str().to_string(),
         )]
     );
+}
+
+// ── a refusal handed to the plane as a piece first (`TAIL_REFUSED_PIECE`) ───────────────────────
+
+/// A far end whose walk picks `m0` first when it `sends` (the attempt's request goes out and
+/// nothing comes back: its credential no longer resolves, or its connection fails), then answers
+/// `then`: the walk's credential refusal, or its exhaustion terminal. Without `sends` the walk
+/// answers `then` at once and no request goes out.
+struct Gone {
+    sends: bool,
+    then: busbar_kernel::plane_driver::Pick,
+}
+
+impl busbar_kernel::plane_driver::FarEnd for Gone {
+    fn member<'a>(
+        &'a self,
+        _: &'a busbar_contract::caps::Pass<busbar_contract::caps::Route>,
+        attempt_no: u32,
+    ) -> impl Future<Output = busbar_kernel::plane_driver::Pick> + Send + 'a {
+        use busbar_kernel::plane_driver::Pick;
+        let pick = if attempt_no == 1 && self.sends {
+            Pick::Member {
+                name: "m0".to_string(),
+                pool: "pool-a".to_string(),
+                passthrough: false,
+                provider: "acme".to_string(),
+            }
+        } else {
+            self.then.clone()
+        };
+        async move { pick }
+    }
+
+    async fn send(
+        &self,
+        _: &busbar_contract::caps::Pass<busbar_contract::caps::Route>,
+        _: busbar_kernel::plane_driver::OutboundRequest,
+    ) -> bool {
+        false
+    }
+
+    async fn next(
+        &self,
+        _: &busbar_contract::caps::Pass<busbar_contract::caps::Route>,
+    ) -> Option<busbar_kernel::plane_driver::FarPiece> {
+        None
+    }
+
+    async fn write(
+        &self,
+        _: &busbar_contract::caps::Pass<busbar_contract::caps::Route>,
+        _: busbar_kernel::plane_driver::OutboundRequest,
+    ) -> bool {
+        false
+    }
+}
+
+/// Run one unit over `far` through the one loop; its outcome.
+async fn drive_gone(
+    units: &busbar_kernel::plane_driver::PlaneUnits<'_, common::TestUnits, Gone, cases::Caller>,
+) -> busbar_contract::caps::Outcome {
+    use busbar_kernel::slice::{ConcurrencyGauge, LeaseCell};
+    use busbar_kernel::teller::{run_unit_async, AccrualMeter, Ended, Kernel, Run};
+    let kernel = Kernel::new();
+    let (gauge, canary, leases, meter) = (
+        ConcurrencyGauge::new(),
+        busbar_contract::caps::Canary::new(),
+        LeaseCell::new(),
+        AccrualMeter::new(),
+    );
+    let cell = common::cell(&kernel);
+    let run = Run {
+        cell: &cell,
+        parent: None,
+        leases: &leases,
+        gauge: &gauge,
+        canary: &canary,
+        meter: &meter,
+    };
+    match run_unit_async(&kernel, units, &common::ctx(7), run, units).await {
+        Ended::Settled { end, .. } => end.outcome(),
+        Ended::AlreadySettled => panic!("nothing else holds this unit's cell"),
+    }
+}
+
+/// What one unit over [`Gone`] came to, on a driver that `takes` the refused piece or not: its
+/// outcome, the reasons of the refused pieces the plane was handed, the `refused` record as the
+/// host holds it, and whether anything the refused piece emitted reached the caller.
+struct Came {
+    outcome: busbar_contract::caps::Outcome,
+    refused: Vec<u32>,
+    written: Stored,
+    leaked: bool,
+}
+
+async fn came(far: Gone, takes: bool) -> Came {
+    let s = records();
+    let mut r = rig(Way::Double, BufferCaps::default(), cases::Book::default());
+    r.driver = r.driver.with_records(Arc::clone(&s), instance());
+    if takes {
+        r.driver = r.driver.with_refused_piece();
+    }
+    let (steps, caller) = (common::TestUnits::passing(), cases::Caller::default());
+    let units = r
+        .driver
+        .unit(&steps, &far, &caller, cases::arrival("/x", b"x"), 0);
+    let outcome = drive_gone(&units).await;
+    let rendered = units.take_rendered().expect("the refusal is rendered");
+    let body = String::from_utf8_lossy(&rendered.body).into_owned();
+    assert!(body.starts_with("refused:"), "takes={takes}: {body}");
+    let leaked = caller.text().contains("not-for-the-caller") || caller.status() == Some(299);
+    let refused = r.plane.refused.lock().unwrap().clone();
+    Came {
+        outcome,
+        refused,
+        written: get(&s, b"refused"),
+        leaked,
+    }
+}
+
+/// A UNIT REFUSED `credential_unavailable` IS HANDED TO A PLANE WHOSE TAIL TAKES IT AS A PIECE
+/// FIRST (`TAIL_REFUSED_PIECE`, `PlaneDriver::with_refused_piece`): a `FROM_KERNEL` piece flagged
+/// `PIECE_REFUSED` and last, carrying the reason, on the unit's own ticket; its record writes are
+/// written, nothing it emits reaches the caller, and the unit is then refused and rendered by
+/// `refusal` as before. RED arm: a plane without the bit is sent no such piece, writes nothing, and
+/// is refused exactly as today.
+#[tokio::test]
+async fn a_credential_refusal_is_handed_as_a_piece_first_only_to_a_plane_that_takes_it() {
+    use busbar_contract::caps::{Outcome as Unit, ReasonCode, StepName};
+    let code = busbar_contract::abi::plane::reason_code(ReasonCode::CredentialUnavailable);
+    let gone = || Gone {
+        sends: true,
+        then: busbar_kernel::plane_driver::Pick::Refused(ReasonCode::CredentialUnavailable),
+    };
+    for takes in [true, false] {
+        let c = came(gone(), takes).await;
+        assert!(
+            matches!(
+                c.outcome,
+                Unit::Failed(StepName::Route, ReasonCode::CredentialUnavailable)
+            ),
+            "takes={takes}: the unit ends as a credential refusal does without the bit: {:?}",
+            c.outcome
+        );
+        assert!(
+            !c.leaked,
+            "takes={takes}: nothing the refused piece emitted reached the caller"
+        );
+        if takes {
+            assert_eq!(c.refused, vec![code]);
+            assert_eq!(
+                (c.written.value, c.written.bytes),
+                (svc::FOUND, code.to_string().into_bytes()),
+                "the refused piece's record write is written"
+            );
+        } else {
+            assert!(c.refused.is_empty(), "no refused piece");
+            assert_eq!(c.written.value, svc::ABSENT, "nothing written");
+        }
+    }
+}
+
+/// A UNIT WHOSE REQUEST WENT OUT AND WHOSE WALK THEN ENDED WITH NO MEMBER LEFT (its connection
+/// failed, or closed unanswered) is handed to a plane whose tail takes it as a refused piece first,
+/// naming the reason it is refused for (`breaker_open`, the walk's exhaustion terminal); so is a
+/// walk that exhausted before any request went out (R-REJECTED, coordinator 2026-10-07, extends
+/// gap-2: the plane opens the unit's task and settles it `rejected`). RED arm: a plane without the
+/// bit is sent no such piece, in either case, and its unit ends exactly as the bit's does.
+#[tokio::test]
+async fn a_walk_that_ends_after_a_request_went_out_is_handed_as_a_piece_first() {
+    use busbar_contract::caps::ReasonCode;
+    use busbar_kernel::plane_driver::Pick;
+    let code = busbar_contract::abi::plane::reason_code(ReasonCode::BreakerOpen);
+    let exhausted = || Pick::Exhausted {
+        status: 503,
+        retry_after: Some(2),
+    };
+    let taken = came(
+        Gone {
+            sends: true,
+            then: exhausted(),
+        },
+        true,
+    )
+    .await;
+    let without = came(
+        Gone {
+            sends: true,
+            then: exhausted(),
+        },
+        false,
+    )
+    .await;
+    assert_eq!(
+        format!("{:?}", taken.outcome),
+        format!("{:?}", without.outcome),
+        "the unit ends the same with the bit and without it"
+    );
+    assert_eq!(taken.refused, vec![code]);
+    assert_eq!(
+        (taken.written.value, taken.written.bytes),
+        (svc::FOUND, code.to_string().into_bytes()),
+        "the refused piece's record write is written"
+    );
+    assert!(!taken.leaked && !without.leaked);
+    assert!(without.refused.is_empty(), "no bit, no refused piece");
+    assert_eq!(without.written.value, svc::ABSENT);
+    // A walk that exhausted before any request went out: the bit's plane is handed the piece
+    // (R-REJECTED, coordinator 2026-10-07, extends gap-2); a plane without the bit is sent nothing.
+    let unsent = came(
+        Gone {
+            sends: false,
+            then: exhausted(),
+        },
+        true,
+    )
+    .await;
+    assert_eq!(
+        unsent.refused,
+        vec![code],
+        "a walk that exhausted before any request went out is handed the refused piece"
+    );
+    assert_eq!(
+        (unsent.written.value, unsent.written.bytes),
+        (svc::FOUND, code.to_string().into_bytes()),
+        "the refused piece's record write is written"
+    );
+    assert!(!unsent.leaked);
+    let unsent_without = came(
+        Gone {
+            sends: false,
+            then: exhausted(),
+        },
+        false,
+    )
+    .await;
+    assert!(
+        unsent_without.refused.is_empty(),
+        "RED arm: a plane without the bit is handed nothing, sent or not"
+    );
+    assert_eq!(unsent_without.written.value, svc::ABSENT);
+    assert_eq!(
+        format!("{:?}", unsent.outcome),
+        format!("{:?}", unsent_without.outcome),
+        "the unit ends the same with the bit and without it"
+    );
+}
+
+/// R-PUSH (spec :2603-2606, :3470): `next_tick_ns = 0` names no tick until the next wake of the
+/// driver ticket, not "never": a plane whose `tick` answered `0` is ticked again after it wakes its
+/// driver ticket. RED on the base: the schedule ended at the `0` answer.
+#[tokio::test]
+async fn a_wake_of_the_driver_ticket_re_polls_tick_after_an_answer_of_none() {
+    let (plane, _book, driver) = driven(0);
+    plane.wake.channel.store(true, Ordering::SeqCst);
+    let waker = async {
+        let ticks = || plane.ticks.lock().unwrap().len();
+        while ticks() < 1 {
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        assert_eq!(ticks(), 1, "no tick without a wake after an answer of 0");
+        plane.wake.told.notify_one();
+        while ticks() < 2 {
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+        plane.wake.told.notify_one();
+        while ticks() < 3 {
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+    };
+    tokio::time::timeout(Duration::from_secs(5), async {
+        tokio::select! {
+            () = driver.ticks() => panic!("the schedule ended at the answer of 0 while a wake could come"),
+            () = waker => {}
+        }
+    })
+    .await
+    .expect("each wake ticks once");
+}
+
+/// A plane that answers `0` and never wakes its driver ticket is ticked exactly once: the
+/// behaviour of the planes that keep no push queue (R-PUSH changes nothing for them).
+#[tokio::test]
+async fn an_answer_of_none_with_no_wake_ticks_once_and_stays_quiet() {
+    let (plane, _book, driver) = driven(0);
+    plane.wake.channel.store(true, Ordering::SeqCst);
+    let run = tokio::time::timeout(Duration::from_millis(150), driver.ticks()).await;
+    assert!(
+        run.is_err(),
+        "the schedule waits on a wake that never comes"
+    );
+    assert_eq!(plane.ticks.lock().unwrap().len(), 1, "one tick, no more");
+}
+
+/// A wake re-arms the timer to the earlier of its deadline and the new answer: a wake whose tick
+/// answers a nearer time is ticked at that time, not at the old deadline.
+#[tokio::test]
+async fn a_wake_re_arms_the_sleeping_timer_to_the_earlier_deadline() {
+    let (plane, _book, driver) = driven(2_000_000_000);
+    plane.wake.channel.store(true, Ordering::SeqCst);
+    let waker = async {
+        while plane.ticks.lock().unwrap().is_empty() {
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+        // The next answer is 20 ms out; the old deadline (2 s) stands until the wake.
+        plane.tick_every_ns.store(20_000_000, Ordering::SeqCst);
+        plane.wake.told.notify_one();
+        while plane.ticks.lock().unwrap().len() < 4 {
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+    };
+    tokio::time::timeout(Duration::from_secs(1), async {
+        tokio::select! {
+            () = driver.ticks() => panic!("the schedule ended"),
+            () = waker => {}
+        }
+    })
+    .await
+    .expect("the wake brought the timer in from 2 s to 20 ms");
 }

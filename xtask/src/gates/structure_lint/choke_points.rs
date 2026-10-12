@@ -120,7 +120,6 @@ pub fn table(a: &Addresses) -> Vec<ChokeRow> {
     let core = &a.core;
     let substrate = &a.substrate;
     let mcp = &a.mcp;
-    let a2a = &a.a2a;
 
     vec![
         // ── A ── persistence: one durable-write primitive. A fifth call site re-hand-rolling the
@@ -300,15 +299,22 @@ pub fn table(a: &Addresses) -> Vec<ChokeRow> {
             rules: Vec::new(),
             why: "the registry is being written generic on its FIRST build because there is no first use to extract a trait from later, so genericity has to be a test rather than a review habit".into(),
         },
-        // ── G ── the same choke point from the OTHER side: a plane PARAMETERISES the lifecycle, it
-        //         never re-declares one. F stops a plane's vocabulary leaking INTO the machine; this
-        //         stops a copy of the machine leaking OUT into a plane.
+        // ── G ── the same choke point from the OTHER side: a plane's trust is DECIDED BY THE
+        //         KERNEL from the facts the plane declares, never by a lifecycle the plane runs on
+        //         its own authority. F stops a plane's vocabulary leaking INTO the machine; this
+        //         stops a copy of the machine leaking OUT into a plane. RE-POINTED (FLIP-A2A,
+        //         ARCHITECT): it was owned by the legacy a2a engine (`busbar-a2a/src/a2a/pin.rs`,
+        //         `CardPin` parameterising `trust::Approval`) and proved by its `reuse_tests.rs`;
+        //         that crate is deleted, and a door plane names `busbar-contract` and nothing else,
+        //         so the choke point is now held where every door plane meets it — the kernel's
+        //         trust slots on the plane host, which fold the plane's declared facts under the
+        //         kernel's own verdict.
         ChokeRow {
             id: "G-trust-parameterised".into(),
             tag: "TRUST-MACHINE-FORK".into(),
-            owner: format!("{a2a}/pin.rs (CardPin, the artifact, plus the one plane-specific refusal)"),
-            class_test: format!("{a2a}/tests/reuse_tests.rs::the_a2a_plane_declares_no_trust_state_of_its_own"),
-            remedy: "supply an artifact implementing trust::PinnedArtifact; never re-declare TrustState, Drift, Approval or their verbs".into(),
+            owner: format!("crates/busbar-kernel/src/plane_host/trust.rs (verify_decide_due / redeem_approval / quarantine_drift: the kernel decides a plane's counterparty trust from the facts it declares) + {substrate}/trust/mod.rs (Approval / TrustState / Drift)"),
+            class_test: "crates/busbar-kernel/src/plane_host/tests/trust_tests.rs::plane_facts_cannot_assert_allow_over_a_host_refusal".into(),
+            remedy: "declare the facts (identity, registration state, artifact outcome) and let the kernel's Approval decide; a plane may narrow the kernel's verdict, never assert Allow over it".into(),
             rules: Vec::new(),
             why: "two planes carrying two copies of one lifecycle disagree the first time either copy is fixed, and the disagreement surfaces as a registration dispatch serves while the operator view calls it quarantined".into(),
         },

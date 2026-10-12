@@ -137,7 +137,6 @@ fn metadata_value(manifest: &str, table: &str, key: &str) -> Option<String> {
 pub(crate) const SEAMS: &[(&str, &str)] = &[
     ("egress", "linked_egress"),
     ("plane-sections", "linked_plane_sections"),
-    ("admin-envelope", "linked_admin_envelope"),
 ];
 
 /// The `key = "value"` rows of the `[table]` header of a Cargo manifest, in file order. Deliberately

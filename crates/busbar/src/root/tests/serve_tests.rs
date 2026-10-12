@@ -313,7 +313,8 @@ async fn a_claimed_request_is_served_through_the_door_and_its_money_posted() {
         &std::collections::HashMap::from([("typesafe".to_string(), provider)]),
         &busbar_kernel::config_validate::MetadataPosture::default(),
     );
-    let secrets = busbar_kernel::config::secret::SecretResolver::builtins_only();
+    let secrets: Arc<dyn busbar_contract::secret::SecretResolve> =
+        Arc::new(busbar_kernel::config::secret::SecretResolver::builtins_only());
     let auths = OutboundAuths::new(
         Arc::clone(&dispatcher),
         crate::LINKED.auths,
@@ -324,7 +325,7 @@ async fn a_claimed_request_is_served_through_the_door_and_its_money_posted() {
     );
     let reach = DoorReach {
         providers: &providers,
-        secrets: &secrets,
+        secrets: Arc::clone(&secrets),
         auths: Arc::new(auths),
         conns: Arc::clone(&connector) as Arc<dyn PollConns>,
         stream_ceiling_secs: 600,
@@ -1315,31 +1316,23 @@ mod tools_door {
         assert!(gated.all_ended(), "the refused unit ended");
     }
 
-    /// The call log's chained records on `rig`, oldest first: each record's `(seq, prev_hash,
-    /// hash)` as the host chained it.
-    fn call_chain(rig: &Rig) -> Vec<(u64, String, String)> {
-        use busbar_contract::records::{PlaneSelector, RecordStore as _};
-        let kind = surface("record_kind_call");
-        let parents = rig.store.list_plane_record_parents(kind).expect("a read");
-        assert_eq!(parents.len(), 1, "one chain, the caller's: {parents:?}");
-        let chained = rig
-            .store
-            .list_plane_records(kind, &PlaneSelector::Parent(parents[0].as_str().into()))
-            .expect("a read");
-        let mut links: Vec<(u64, String, String)> = chained
-            .iter()
-            .map(|body| {
-                let body: serde_json::Value =
-                    serde_json::from_slice(body).expect("the journal's envelope");
-                (
-                    body["seq"].as_u64().expect("a sequence"),
-                    body["prev_hash"].as_str().expect("a link").to_string(),
-                    body["hash"].as_str().expect("a digest").to_string(),
-                )
-            })
-            .collect();
-        links.sort_by_key(|l| l.0);
-        links
+    /// The call log's chained records on `rig`, oldest first: each record's sequence, read back
+    /// through the host's verified read (a broken link fails the read).
+    fn call_chain(rig: &Rig, want: usize) -> Vec<u64> {
+        let (_, records) = super::planes_tests::chained_records(
+            &rig.store,
+            surface("record_kind_call"),
+            busbar_contract::abi::plane::RecordChain {
+                kind: 0,
+                framing: busbar_contract::abi::plane::CHAIN_LENGTH_PREFIXED,
+                flags: busbar_contract::abi::plane::CHAIN_DIGESTS_SCOPE,
+                _reserved: 0,
+            },
+            want,
+        );
+        let scopes: std::collections::BTreeSet<&Vec<u8>> = records.iter().map(|r| &r.0).collect();
+        assert_eq!(scopes.len(), 1, "one chain, the caller's: {records:?}");
+        records.into_iter().map(|r| r.1).collect()
     }
 
     /// AUDIT-CHAIN: every call through the door lands in two tamper-evident chains. The plane's
@@ -1365,20 +1358,16 @@ mod tools_door {
         let (status, _) = call(&rig, &rig.token, "audited_unlisted", serde_json::json!({})).await;
         assert_ne!(status, StatusCode::OK, "an unknown tool is refused");
 
-        // THE CALL LOG: three records, one chain, each linking the one before.
-        let chain = call_chain(&rig);
+        // THE CALL LOG: three records, one chain, each linking the one before (the host's
+        // verified read refuses a chain whose links do not hold).
+        let chain = call_chain(&rig, 3);
         assert_eq!(
             chain.len(),
             3,
             "every call, served or refused, is logged: {chain:?}"
         );
         for pair in chain.windows(2) {
-            assert_eq!(pair[1].0, pair[0].0 + 1, "consecutive: {chain:?}");
-            assert_eq!(
-                pair[1].1, pair[0].2,
-                "each record links the digest before it: {chain:?}"
-            );
-            assert!(!pair[1].2.is_empty() && pair[1].2 != pair[0].2, "{chain:?}");
+            assert_eq!(pair[1], pair[0] + 1, "consecutive: {chain:?}");
         }
 
         // THE KERNEL'S AUDIT CHAIN: the rows, attributed to the verified key.
@@ -2249,7 +2238,8 @@ async fn serve_configured(
         &std::collections::HashMap::from([("typesafe".to_string(), provider)]),
         &busbar_kernel::config_validate::MetadataPosture::default(),
     );
-    let secrets = busbar_kernel::config::secret::SecretResolver::builtins_only();
+    let secrets: Arc<dyn busbar_contract::secret::SecretResolve> =
+        Arc::new(busbar_kernel::config::secret::SecretResolver::builtins_only());
     let auths = OutboundAuths::new(
         Arc::clone(&dispatcher),
         crate::LINKED.auths,
@@ -2260,7 +2250,7 @@ async fn serve_configured(
     );
     let reach = DoorReach {
         providers: &providers,
-        secrets: &secrets,
+        secrets: Arc::clone(&secrets),
         auths: Arc::new(auths),
         conns: Arc::clone(&connector) as Arc<dyn PollConns>,
         stream_ceiling_secs: 600,

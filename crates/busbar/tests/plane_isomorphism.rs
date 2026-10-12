@@ -73,8 +73,10 @@ const HOOK_FIELDS: &[(&str, fn(&PlaneDecl) -> bool)] = &[
 const MIN_HOOK_FIELDS: usize = 15;
 
 /// Floor on the allowlist: an empty allowlist against a decl set that HAS asymmetries could only be a
-/// file that was gutted; today's honest count is well above this.
-const MIN_ASYMMETRIES: usize = 10;
+/// file that was gutted. Re-armed at today's measured count (Law 9) when FLIP-A2A left two planes on
+/// the installed axis (llm, streaming): the mcp and a2a planes are door-only and install no
+/// PlaneDecl, so the asymmetries among the installed decls are the four the allowlist states.
+const MIN_ASYMMETRIES: usize = 4;
 
 /// The doctrine map: each INSTALLED plane crate key → the directional ledger column(s) it answers to
 /// in `qa/capability-equality.json`. The bidirectional protocols count in both directions. Pinned
@@ -516,15 +518,15 @@ fn the_reflected_hook_set_and_constants_are_the_doctrine() {
         "the reflected hook set shrank below the floor"
     );
     const {
-        assert!(MIN_HOOK_FIELDS >= 15 && MIN_ASYMMETRIES >= 10);
+        assert!(MIN_HOOK_FIELDS >= 15 && MIN_ASYMMETRIES >= 4);
     }
-    // The doctrine's installed-plane axis, verbatim (the same three the composition root installs as
-    // a PlaneDecl: P3 DEL-MCP, ARCHITECT 2026-10-05, took mcp off it — the plane is served through its
-    // memory-ABI door alone and installs no PlaneDecl).
+    // The doctrine's installed-plane axis, verbatim (the planes the composition root installs as a
+    // PlaneDecl: P3 DEL-MCP and FLIP-A2A, ARCHITECT 2026-10-05, took mcp and a2a off it — each is
+    // served through its memory-ABI door alone and installs no PlaneDecl).
     let keys: Vec<&str> = plane_ledger_columns().iter().map(|(k, _)| *k).collect();
     assert_eq!(
         keys.len(),
-        3,
+        2,
         "the installed-plane axis is the owner's ruling; changing it is a doctrine change: {keys:?}"
     );
     // With every plane compiled in, the pinned axis is exactly the planes the root installs from

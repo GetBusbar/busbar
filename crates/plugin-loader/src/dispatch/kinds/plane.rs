@@ -43,10 +43,10 @@ use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::mechanism::KindCode;
 use busbar_contract::abi::plane::check::{
     check_arrive, check_billable_classes, check_cancel, check_cancel_records, check_drive,
-    check_fee_units, check_on_piece, check_pin_mechanisms, check_project, check_record_chains,
-    check_refusal, check_refusal_records, check_refusal_statuses, check_route_cost, check_sections,
-    check_serve, check_serve_records, check_snapshot, check_tail, check_trust_keys, Bounds, Caps,
-    ProjectHost, MAX_SESSIONS,
+    check_fee_units, check_metric_lanes, check_on_piece, check_pin_mechanisms, check_project,
+    check_record_chains, check_refusal, check_refusal_records, check_refusal_statuses,
+    check_route_cost, check_sections, check_serve, check_serve_records, check_snapshot, check_tail,
+    check_trust_keys, Bounds, Caps, ProjectHost, MAX_SESSIONS,
 };
 use busbar_contract::abi::plane::{
     self, slot, ArriveIn, ArriveOut, BillableClass, OnPieceIn, OnPieceOut, PinMechanism,
@@ -136,6 +136,9 @@ pub struct ServedFacts {
     /// whether a unit incurred its fee (THE DESIGN §7, "the plane reports ... whether a fee unit was
     /// incurred").
     pub fee_units: Vec<&'static str>,
+    /// The tail's counter lane words (`PlaneTail::metric_lanes`): the words beside the operator's
+    /// entry names a stated attempt `lane` label may carry.
+    pub metric_lanes: Vec<&'static str>,
     /// Each need's response-head rule, in Statement need order (`Need::keep_mode`, its kept and
     /// denied names): what of a far end's head the host hands the plane on that need.
     pub keeps: Vec<NeedKeep>,
@@ -221,6 +224,8 @@ fn tail_facts(st: &Statement) -> Result<PlaneFacts, String> {
         tail.billable_classes_len as u64,
     )
     .map_err(|f| format!("the plane tail breaks {:?} at {}", f.rule, f.field))?;
+    check_metric_lanes(&listed(tail.metric_lanes, tail.metric_lanes_len))
+        .map_err(|f| format!("the plane tail breaks {:?} at {}", f.rule, f.field))?;
     // A plane declares exactly one section: its verb. The loader's Statement check already
     // refused a NULL list with a count.
     let sections = if st.sections_len == 0 {
@@ -289,6 +294,10 @@ fn tail_facts(st: &Statement) -> Result<PlaneFacts, String> {
                 .map(|c| kept(c.class))
                 .collect(),
             fee_units: listed(tail.fee_units, tail.fee_units_len)
+                .into_iter()
+                .map(kept)
+                .collect(),
+            metric_lanes: listed(tail.metric_lanes, tail.metric_lanes_len)
                 .into_iter()
                 .map(kept)
                 .collect(),

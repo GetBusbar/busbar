@@ -58,7 +58,10 @@ scan_roots = ["crates/*/src", "crates/*/tests", "crates/*/benches"]
 # to [gate.census.deleted]"). The engine is deleted and the mcp plane is its door crate
 # `busbar-plane-mcp`, which `gate.plugin_kinds.plane` already scans; the census floor below drops
 # 4 -> 3 by the one ruled deletion, and `ceiling-census` excuses exactly that one entry.
-plane_crates = ["busbar-llm", "busbar-a2a", "busbar-voice"]
+#
+# `busbar-a2a` IS STRUCK the same way (FLIP-A2A, `crates/busbar-a2a` in [gate.census.deleted]): the
+# a2a plane is its door crate `busbar-plane-a2a`; the census floor drops 3 -> 2 by that deletion.
+plane_crates = ["busbar-llm", "busbar-voice"]
 # A file at one of these path fragments is TEST code (same rule the purity lint applies), in
 # addition to any `#[cfg(test)] mod … { … }` block inside a production file.
 # A bare `tests.rs` (Rust's `#[cfg(test)] mod tests;` file convention) is test code too.
@@ -265,9 +268,8 @@ busbar-llm = 226
 # lines are the secret axis replacing the removed busbar-mcp -> env/file secret dependency, not new reach.
 # busbar-mcp is deleted by DEL-MCP (W2), and the row goes with the crate.
 # STRUCK: busbar-mcp = 281 (P3 DEL-MCP, ARCHITECT 2026-10-05 — the crate is deleted).
-# busbar-a2a 233 -> 232 (downward, at the measure): push delivery names the kernel's engine seam once
-# instead of per signature.
-busbar-a2a = 232
+# STRUCK: busbar-a2a = 232 (FLIP-A2A, the flip: the plane is served through its door, and its row
+# went with the crate).
 busbar-voice = 88
 
 [rules.ports-only-tests]
@@ -287,7 +289,7 @@ counts can trend to zero at their own pace."""
 # tests (RESOLVE c4, ARCHITECT to re-read).
 busbar-llm = 1027
 # STRUCK: busbar-mcp = 185 (P3 DEL-MCP, ARCHITECT 2026-10-05 — the crate is deleted).
-busbar-a2a = 98
+# STRUCK: busbar-a2a = 98 (FLIP-A2A — the crate is deleted).
 busbar-voice = 43
 
 # ── 4. no-uninstalled-seam ───────────────────────────────────────────────────────────────────────
@@ -743,6 +745,13 @@ busbar-transport-stdio = ["tokio", "futures"]
 # The MCP plane's outbound wire (fold A5, ARCHITECT 2026-09-29 under the PLUGIN LIBRARIES ruling):
 # the `Mcp-Name` header's `=?base64?...?=` sentinel for a name a header value cannot carry.
 busbar-plane-mcp = ["base64", "indexmap"]
+# The same ruling applied to a plane: the `agents:` grammar keeps its registrations in the order an
+# operator wrote them (indexmap), and the plane reads its public base URL once (url). Its gRPC line
+# (ARCHITECT ruling Q1 (C), 2026-10-04) generates the a2aproject's messages from the vendored
+# a2a.proto at build time (prost-build driving protoc-bin-vendored's protoc, pbjson-build for the
+# ProtoJSON serde) and decodes, encodes and maps them at run time (prost, pbjson); no gRPC server
+# stack and no calendar crate enter its closure (dep-wall, denylist and source-denylist green).
+busbar-plane-a2a = ["indexmap", "url", "prost", "pbjson", "base64", "prost-build", "pbjson-build", "protoc-bin-vendored"]
 # Ratchet, NOT a review: each busbar-plane-* adapter names its own dialect's legacy engine crate
 # (busbar-llm/-mcp/-a2a/-voice) for codecs only, read-only, no engine state crossing back — but
 # those engine crates are ALSO named in gate.plane_crates, so this is structurally the exact "a
@@ -1605,7 +1614,7 @@ scope_globs = [
   "crates/busbar-llm/src/unit/*",
   # `crates/busbar-mcp/src/*` STRUCK (P3 DEL-MCP, ARCHITECT 2026-10-05): the engine is deleted and
   # the mcp plane is its door crate, which `crates/busbar-plane-*/src/*` above already covers whole.
-  "crates/busbar-a2a/src/*",
+  # `crates/busbar-a2a/src/*` STRUCK the same way (FLIP-A2A): the a2a plane is `busbar-plane-a2a`.
 ]
 # Each is matched as a whole word (an entry starting with `_` as a suffix), and judged against the
 # WHOLE identifier it lands in, so the vocabulary below can excuse a word rather than a substring.
@@ -2007,7 +2016,9 @@ because = "a type alias over the rows the loop posted, and a reader of it; the n
 legacy_reach_prefixes = 4
 # 4 -> 3: `busbar-mcp` left `gate.plane_crates` as a ruled deletion ([gate.census.deleted]
 # "crates/busbar-mcp", P3 DEL-MCP, ARCHITECT 2026-10-05) — the one drop `ceiling-census` excuses.
-plane_crates = 3
+# 3 -> 2: crates/busbar-a2a deleted by the P3 a2a flip (FLIP-A2A), named in [gate.census.deleted]
+# (the plane_crates floor drops only by ledgered deletions, ARCHITECT 2026-10-05).
+plane_crates = 2
 
 # HOW MANY CRATE DIRECTORIES EACH KIND GLOB MATCHES.
 #
@@ -2169,6 +2180,7 @@ abi = 1
 "crates/hook-test-plugin" = "TODO P5: delete hook-test-plugin (ARCHITECT 2026-10-04)"
 "crates/busbar-mcp" = "P3 DEL-MCP: the mcp plane is served through its door alone; the legacy engine crate is deleted (ARCHITECT 2026-10-05, U11 / Q1)"
 "crates/plane-example" = "TODO P5: delete plane-example (Q128 audit BLOCK 11/12: a fixture plane plugin riding the HOT lane with C-unwind doors)"
+"crates/busbar-a2a" = "FLIP-A2A U11 (Q128 pre-audit): the legacy a2a engine is deleted; the plane is served through its door, busbar-plane-a2a, in default (ARCHITECT 2026-10-04)"
 
 # THE RENAME ROWS (ARCHITECT 2026-10-03, Q-L7B2-CENSUS). A moved-out crate excuses its kind's floor
 # drop only when the root pins it as a git dependency at a rev under the package name it had at the

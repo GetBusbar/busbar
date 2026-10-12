@@ -29,12 +29,13 @@ use super::{
     CHAIN_DIGESTS_SCOPE, CHAIN_LENGTH_PREFIXED, CHAIN_PIPE_SEPARATED, CLAIM_EXACT, CLAIM_OPEN,
     CLAIM_PATTERN, EMIT_DONE, EMIT_FINAL_STATUS, EMIT_MESSAGE_END, EMIT_TO_FAR_END,
     EMIT_UNWATCH_CATALOGUE, EMIT_WATCH_CATALOGUE, INGRESS_ACCEPT_LOOP, INGRESS_DUPLEX_SESSION,
-    INGRESS_REQUEST_RESPONSE, INGRESS_RESPONSE_STREAM, INGRESS_SUBSCRIPTION, MAX_REFUSAL_TEXT,
-    MECHANISM_PEER_KEY, MECHANISM_ROOT, PIECE_OUT_TEXT, PIN_FINGERPRINT, PRINCIPAL_OPTIONAL,
-    RECORD_AUDIT, RECORD_PUT, REFUSAL_ANY_DIALECT, ROUTE_COUNTED, ROUTE_DIRECT, ROUTE_LOCAL,
-    ROUTE_ONCE, ROUTE_POOL, ROUTE_PUBLIC, ROUTE_SCOPE, ROUTE_SESSION, ROUTE_STREAM,
-    SHAPE_PIECEWISE, SHAPE_WHOLE, TAIL_FALLBACK, TAIL_HOOKS_GATED, TAIL_PROBES,
-    TRUST_ITEM_APPROVALS, TRUST_PIN, TRUST_PRIVATE_REACH, UNITS_ESTIMATED, VERDICT_HARD,
+    INGRESS_REQUEST_RESPONSE, INGRESS_RESPONSE_STREAM, INGRESS_SUBSCRIPTION, MAX_METRIC_LANES,
+    MAX_REFUSAL_TEXT, MECHANISM_PEER_KEY, MECHANISM_ROOT, PIECE_OUT_TEXT, PIN_FINGERPRINT,
+    PRINCIPAL_OPTIONAL, RECORD_AUDIT, RECORD_PUT, REFUSAL_ANY_DIALECT, ROUTE_CARRIES_OWN_TOKEN,
+    ROUTE_COUNTED, ROUTE_DIRECT, ROUTE_LOCAL, ROUTE_ONCE, ROUTE_POOL, ROUTE_PUBLIC, ROUTE_SCOPE,
+    ROUTE_SCOPE_LOCAL, ROUTE_SESSION, ROUTE_STREAM, SHAPE_PIECEWISE, SHAPE_WHOLE, TAIL_FALLBACK,
+    TAIL_HOOKS_GATED, TAIL_PROBES, TAIL_REFUSED_PIECE, TRUST_ITEM_APPROVALS, TRUST_PIN,
+    TRUST_PRIVATE_REACH, UNITS_ESTIMATED, VERDICT_HARD,
 };
 use crate::abi::hook::{
     signal, MessageView, SignalEntry, REQUEST_HAS_MAX_TOKENS, REQUEST_HAS_TOOLS, REQUEST_STREAM,
@@ -220,14 +221,25 @@ pub fn check_arrive(
         if out.pool.len > MAX_TEXT {
             return Err(fault(Rule::OverMax, "arrive.pool"));
         }
-        if ![ROUTE_POOL, ROUTE_DIRECT, ROUTE_LOCAL, ROUTE_SCOPE].contains(&out.route) {
+        if ![
+            ROUTE_POOL,
+            ROUTE_DIRECT,
+            ROUTE_LOCAL,
+            ROUTE_SCOPE,
+            ROUTE_SCOPE_LOCAL,
+        ]
+        .contains(&out.route)
+        {
             return Err(fault(Rule::UnknownCode, "arrive.route"));
         }
         if out.route_flags & !(ROUTE_ONCE | ROUTE_SESSION | ROUTE_STREAM | ROUTE_COUNTED) != 0 {
             return Err(fault(Rule::UnknownCode, "arrive.route_flags"));
         }
         // A unit counted as an admitted call is one the plane answers itself.
-        if out.route_flags & ROUTE_COUNTED != 0 && out.route != ROUTE_LOCAL {
+        if out.route_flags & ROUTE_COUNTED != 0
+            && out.route != ROUTE_LOCAL
+            && out.route != ROUTE_SCOPE_LOCAL
+        {
             return Err(fault(Rule::Contradiction, "arrive.route_flags"));
         }
         text(out.affinity, "arrive.affinity")?;
@@ -394,6 +406,27 @@ pub fn check_on_piece(
         out.lane.len,
         out.arena_written,
         "on_piece.lane",
+    )?;
+    // The attempt's counter labels, where the answer states them: inside the arena written.
+    span(
+        out.metric_pool.offset,
+        out.metric_pool.len,
+        out.arena_written,
+        "on_piece.metric_pool",
+    )?;
+    span(
+        out.metric_lane.offset,
+        out.metric_lane.len,
+        out.arena_written,
+        "on_piece.metric_lane",
+    )?;
+    // The member whose wait a refusal answers, where the answer states one: inside the arena
+    // written (the kernel judges that it names a member of the unit's pool).
+    span(
+        out.wait_member.offset,
+        out.wait_member.len,
+        out.arena_written,
+        "on_piece.wait_member",
     )?;
     units(bufs.0, u64::from(out.units_written), b)?;
     records(bufs.1, u64::from(out.records_written), out.arena_written, b)?;
@@ -1064,7 +1097,9 @@ pub fn claim_selector(
     }
 }
 
-/// Every snapshot admin route: a verb, a target and known flags.
+/// Every snapshot admin route: a verb, a target and known flags; [`ROUTE_CARRIES_OWN_TOKEN`] only
+/// beside [`ROUTE_PUBLIC`] (an admin route's `authorization` is the operator's credential, which
+/// never crosses).
 ///
 /// # Errors
 ///
@@ -1076,9 +1111,12 @@ pub fn check_admin_routes(routes: &[AdminRoute]) -> Result<(), Fault> {
         text(r.audit_verb, "admin_route.audit_verb")?;
         bits(
             u64::from(r.flags),
-            u64::from(ROUTE_PUBLIC),
+            u64::from(ROUTE_PUBLIC | ROUTE_CARRIES_OWN_TOKEN),
             "admin_route.flags",
         )?;
+        if r.flags & ROUTE_CARRIES_OWN_TOKEN != 0 && r.flags & ROUTE_PUBLIC == 0 {
+            return Err(fault(Rule::Contradiction, "admin_route.flags"));
+        }
     }
     Ok(())
 }
@@ -1096,7 +1134,7 @@ pub fn check_admin_routes(routes: &[AdminRoute]) -> Result<(), Fault> {
 pub fn check_tail(t: &PlaneTail) -> Result<(), Fault> {
     bits(
         u64::from(t.flags),
-        u64::from(TAIL_FALLBACK | TAIL_PROBES | TAIL_HOOKS_GATED),
+        u64::from(TAIL_FALLBACK | TAIL_PROBES | TAIL_HOOKS_GATED | TAIL_REFUSED_PIECE),
         "tail.flags",
     )?;
     let ingress = INGRESS_REQUEST_RESPONSE
@@ -1151,6 +1189,10 @@ pub fn check_tail(t: &PlaneTail) -> Result<(), Fault> {
         "tail.refusal_statuses",
     )?;
     listed(t.admin_routes, t.admin_routes_len, "tail.admin_routes")?;
+    listed(t.metric_lanes, t.metric_lanes_len, "tail.metric_lanes")?;
+    if t.metric_lanes_len > MAX_METRIC_LANES {
+        return Err(fault(Rule::OverMax, "tail.metric_lanes"));
+    }
     listed(
         t.admin_openapi.ptr,
         t.admin_openapi.len,
@@ -1265,6 +1307,34 @@ pub fn check_fee_units(fee_units: &[AbiStr], classes: &[BillableClass]) -> Resul
         if !listed {
             return Err(fault(Rule::Contradiction, FIELD));
         }
+    }
+    Ok(())
+}
+
+/// The tail's counter lane words ([`PlaneTail::metric_lanes`]): at most [`MAX_METRIC_LANES`],
+/// each named, none twice (a word listed twice is [`Rule::Contradiction`]).
+///
+/// # Errors
+///
+/// The rule a word breaks.
+pub fn check_metric_lanes(lanes: &[AbiStr]) -> Result<(), Fault> {
+    const FIELD: &str = "tail.metric_lanes";
+    if lanes.len() > MAX_METRIC_LANES {
+        return Err(fault(Rule::OverMax, FIELD));
+    }
+    let mut seen: Vec<&[u8]> = Vec::with_capacity(lanes.len());
+    for l in lanes {
+        named(*l, FIELD)?;
+        // SAFETY: `named` checked the string non-NULL with its length; the plugin's static bytes.
+        let word = unsafe { core::slice::from_raw_parts(l.ptr, l.len) };
+        // A label value: UTF-8, no control character (it is rendered into an exposition line).
+        if core::str::from_utf8(word).is_err() || word.iter().any(u8::is_ascii_control) {
+            return Err(fault(Rule::UnknownCode, FIELD));
+        }
+        if seen.contains(&word) {
+            return Err(fault(Rule::Contradiction, FIELD));
+        }
+        seen.push(word);
     }
     Ok(())
 }

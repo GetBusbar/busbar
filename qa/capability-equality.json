@@ -92,12 +92,12 @@
       "note": "the MCP plane served through its memory-ABI door on the kernel's plane driver: the door bound through the loader's one load, composed by root/serve.rs (compose_planes, its egress sealed by DoorEgress, the K5 hook stage) and mounted on the data router by door_routes; each loop cell drives a tools/call (or listing) through that router and asserts the capability where it lands -- the walk's breaker cell, the hook stage, the call log's host chain and the kernel's audit chain, the governance book, /metrics, the trust state, the connector's destination guard and the plane's argument guard, the member's auth binding, the caller's catalogue. Its cells are in serve.rs's #[path] test file root/tests/serve_tests.rs (module door_tests::tools_door)."
     },
     "root-a2a": {
-      "file": "crates/busbar/src/root/tests/gauntlet_kernel.rs",
+      "file": "crates/busbar-plane-a2a/tests/root/mod.rs",
       "columns": [
         "a2a-client",
         "a2a-server"
       ],
-      "note": "the A2A plane's SERVED root leg: the inbound call driven through the real router and the kernel-loop rider `gauntlet_install::install()` registers for the plane's key (DECISIONS #28), each root cell running the plane's own served witness (`busbar_a2a::testkit::SERVED`) and requiring its `drive` to have run inside the loop"
+      "note": "the A2A plane's root leg on the DOOR path: its door linked and bound through the loader's one load, its claims mounted on the data router, a keyed caller's unit admitted and charged by the door steps, crossing the door and leaving through the kernel's connector to a real loopback agent; each root cell is a unit driven through that composition (the plane crate's own root cells, tests/root/mod.rs, compiled into the composition root's serve module through its door-cells row)"
     },
     "root-voice": {
       "file": "crates/busbar/src/root/tests/gauntlet_kernel.rs",
@@ -169,18 +169,19 @@
       "capability": "breaker-trip",
       "plane": "a2a-client",
       "state": "proven",
-      "test": "crates/busbar-a2a/src/a2a/tests/breaker_fastfail_tests.rs::a_backend_hard_down_opens_the_core_cell_and_the_second_hop_never_reaches_the_wire",
       "root": {
-        "state": "none",
+        "state": "proven",
         "leg": "root-a2a",
-        "reason": "the served rider carries the breaker inside the plane's `drive`, but no served-leg witness takes a fronted agent down through the rider, so the cell is neither recorded into nor consulted over the loop yet; the plane's own battery (`test`) proves the trip"
-      }
+        "test": "crates/busbar-plane-a2a/tests/root/mod.rs::a_failing_agent_trips_its_breaker_and_the_next_unit_is_refused_before_it_dials"
+      },
+      "test": "crates/busbar-plane-a2a/tests/root/mod.rs::a_failing_agent_trips_its_breaker_and_the_next_unit_is_refused_before_it_dials",
+      "note": "the agent plane served through its door (busbar-plane-a2a, linked and bound through the loader's one load) on the root's data router: the unit admitted and charged by the door steps, its egress the kernel's connector"
     },
     {
       "capability": "breaker-trip",
       "plane": "a2a-server",
       "state": "not-applicable",
-      "reason": "inbound role; no upstream availability to record. The anomaly breaker (a2a/anomaly.rs) is behaviour trust, not availability, and must not be conflated with the core breaker.",
+      "reason": "the front door is inbound; there is no upstream target whose availability could be recorded on this role. The agent a hop dials is the a2a-client cell's evidence.",
       "root": {
         "state": "not-applicable",
         "leg": "root-a2a"
@@ -234,12 +235,13 @@
       "capability": "breaker-fastfail",
       "plane": "a2a-client",
       "state": "proven",
-      "test": "crates/busbar-a2a/src/a2a/tests/breaker_fastfail_tests.rs::a_tripped_agent_rejects_fresh_submissions_on_the_jsonrpc_binding",
       "root": {
-        "state": "none",
+        "state": "proven",
         "leg": "root-a2a",
-        "reason": "no served-leg witness trips a fronted agent and then relays to it again through the rider, so the fast-fail refusal is not watched over the loop; the plane's own battery (`test`) watches it inside the same `drive`"
-      }
+        "test": "crates/busbar-plane-a2a/tests/root/mod.rs::a_failing_agent_trips_its_breaker_and_the_next_unit_is_refused_before_it_dials"
+      },
+      "test": "crates/busbar-plane-a2a/tests/root/mod.rs::a_failing_agent_trips_its_breaker_and_the_next_unit_is_refused_before_it_dials",
+      "note": "the agent plane served through its door (busbar-plane-a2a, linked and bound through the loader's one load) on the root's data router: the unit admitted and charged by the door steps, its egress the kernel's connector"
     },
     {
       "capability": "breaker-fastfail",
@@ -296,12 +298,11 @@
     {
       "capability": "failover-reroute",
       "plane": "a2a-client",
-      "state": "proven",
-      "test": "crates/busbar-a2a/src/a2a/tests/reroute_pool_tests.rs::a_tripped_pool_primary_reroutes_a_fresh_submission_to_the_twin_and_stays_untouched",
+      "state": "missing",
       "root": {
         "state": "none",
         "leg": "root-a2a",
-        "reason": "no served-leg witness registers an agent pool with a second member, so the rider never carries a reroute; `failover::walk` runs inside the plane's `drive` and the plane's own battery (`test`) proves it there"
+        "reason": "no door-path cell registers an agent pool with a second member, so no unit the agent door serves is rerouted; the kernel's one selection walk runs on every door unit's route step but is unwitnessed here for a second candidate"
       }
     },
     {
@@ -361,25 +362,25 @@
       "capability": "hooks-tap",
       "plane": "a2a-client",
       "state": "proven",
-      "test": "crates/busbar-a2a/src/a2a/tests/hook_tap_tests.rs::a_rewrite_hook_edits_the_submission_params_before_the_hop",
-      "note": "the `prompt: rw` transform pass at a2a/receive.rs::admitted rewrites the submission params over the same InvokeReq projection the gate builds; the relay (a2a-client) leg runs downstream of that admission, so one wiring covers both directions. The test asserts on the params the backend actually received (h.sent()).",
       "root": {
-        "state": "none",
+        "state": "proven",
         "leg": "root-a2a",
-        "reason": "no served-leg witness installs an observe or transform hook, so the rider carries no submission a hook rewrote; the tap runs inside the plane's `drive` and the plane's own battery (`test`) proves it before the hop"
-      }
+        "test": "crates/busbar-plane-a2a/tests/root/mod.rs::an_agents_rewrite_replaces_the_params_the_agent_receives"
+      },
+      "test": "crates/busbar-plane-a2a/tests/root/mod.rs::an_agents_rewrite_replaces_the_params_the_agent_receives",
+      "note": "the agent plane served through its door (busbar-plane-a2a, linked and bound through the loader's one load) on the root's data router: the unit admitted and charged by the door steps, its egress the kernel's connector"
     },
     {
       "capability": "hooks-tap",
       "plane": "a2a-server",
       "state": "proven",
-      "test": "crates/busbar-a2a/src/a2a/tests/hook_tap_tests.rs::a_rewrite_hook_edits_the_submission_params_before_the_hop",
-      "note": "same transform_over wiring at a2a/receive.rs; BYTE-IDENTICAL verbatim passthrough when no rewrite hook is attached (the relay re-serializes the envelope only when a rewrite actually committed).",
       "root": {
-        "state": "none",
+        "state": "proven",
         "leg": "root-a2a",
-        "reason": "no served-leg witness installs an observe or transform hook, so the rider on the front door carries no submission a hook rewrote; the tap runs inside the plane's `drive` and the plane's own battery (`test`) proves it before the hop"
-      }
+        "test": "crates/busbar-plane-a2a/tests/root/mod.rs::an_agents_rewrite_replaces_the_params_the_agent_receives"
+      },
+      "test": "crates/busbar-plane-a2a/tests/root/mod.rs::an_agents_rewrite_replaces_the_params_the_agent_receives",
+      "note": "the agent plane served through its door (busbar-plane-a2a, linked and bound through the loader's one load) on the root's data router: the unit admitted and charged by the door steps, its egress the kernel's connector"
     },
     {
       "capability": "hooks-gate",
@@ -438,12 +439,13 @@
       "capability": "hooks-gate",
       "plane": "a2a-server",
       "state": "proven",
-      "test": "crates/busbar-a2a/src/a2a/tests/hook_gate_tests.rs::agents_hooks_reject_all_rejects_a_message_send",
       "root": {
-        "state": "none",
+        "state": "proven",
         "leg": "root-a2a",
-        "reason": "no served-leg witness attaches an agents.hooks gate, so hooks::gate::decide is reached by no unit the rider carries; the gate runs inside the plane's `drive` and the plane's own battery (`test`) proves the refusal"
-      }
+        "test": "crates/busbar-plane-a2a/tests/root/mod.rs::an_agents_gate_refuses_a_submission_in_its_own_words_before_the_hop"
+      },
+      "test": "crates/busbar-plane-a2a/tests/root/mod.rs::an_agents_gate_refuses_a_submission_in_its_own_words_before_the_hop",
+      "note": "the agent plane served through its door (busbar-plane-a2a, linked and bound through the loader's one load) on the root's data router: the unit admitted and charged by the door steps, its egress the kernel's connector"
     },
     {
       "capability": "audit-chain",
@@ -495,25 +497,25 @@
       "capability": "audit-chain",
       "plane": "a2a-client",
       "state": "proven",
-      "test": "crates/busbar-a2a/src/a2a/tests/client_leg_tests.rs::the_delegation_hop_lands_in_the_per_task_chain_naming_the_agent_it_was_issued_to",
-      "note": "the hop busbar ISSUES is chained: `task.delegated` naming who delegated and to which registered agent, appended BEFORE the socket, in the same per-task chain as the submission and verified by crate::audit::verify_chain. A failed hop is chained too and ends terminally (a_failed_hop_is_chained_too_and_the_chain_carries_its_terminal_outcome). Watched red: removing the record_dispatch call in a2a/receive.rs fails both. STILL OPEN on this plane's sibling: push-notification DELIVERY (a2a/pushdeliver.rs) chains nothing -- that is the a2a-server role's own outbound leg, tracked in the gap report, not claimed here.",
       "root": {
         "state": "proven",
         "leg": "root-a2a",
-        "test": "crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_chains_what_it_audits"
-      }
+        "test": "crates/busbar-plane-a2a/tests/root/mod.rs::a_relayed_agent_unit_is_audited_on_the_chain_and_posts_one_line_once"
+      },
+      "test": "crates/busbar-plane-a2a/tests/root/mod.rs::a_relayed_agent_unit_is_audited_on_the_chain_and_posts_one_line_once",
+      "note": "the agent plane served through its door (busbar-plane-a2a, linked and bound through the loader's one load) on the root's data router: the unit admitted and charged by the door steps, its egress the kernel's connector"
     },
     {
       "capability": "audit-chain",
       "plane": "a2a-server",
       "state": "proven",
-      "test": "crates/busbar-a2a/src/a2a/tests/front_door_chain_tests.rs::an_inbound_task_leaves_a_verifying_chain_in_the_store_the_front_door_wrote_it_to",
-      "note": "RE-POINTED. The previous pin (provenance_tests::an_untouched_chain_verifies_and_its_links_are_actual_links) builds a synthetic TaskChain in-process and would have passed unchanged if the front door chained nothing at all -- a cell green on evidence that never touches the plane. The new pin POSTs message/send at a real listener through build_router and reads the events back out of an attached store, so an empty read-back is a failure rather than a pass. This plane's own outbound webhook delivery is covered by the three task.push_* tests in pushdeliver_tests.rs, added with it: before them a delivery refused by the delivery-time SSRF guard left no record anywhere.",
       "root": {
         "state": "proven",
         "leg": "root-a2a",
-        "test": "crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_chains_what_it_audits"
-      }
+        "test": "crates/busbar-plane-a2a/tests/root/mod.rs::a_relayed_agent_unit_is_audited_on_the_chain_and_posts_one_line_once"
+      },
+      "test": "crates/busbar-plane-a2a/tests/root/mod.rs::a_relayed_agent_unit_is_audited_on_the_chain_and_posts_one_line_once",
+      "note": "the agent plane served through its door (busbar-plane-a2a, linked and bound through the loader's one load) on the root's data router: the unit admitted and charged by the door steps, its egress the kernel's connector"
     },
     {
       "capability": "governance-budget",
@@ -566,24 +568,25 @@
       "capability": "governance-budget",
       "plane": "a2a-client",
       "state": "proven",
-      "test": "crates/busbar-a2a/src/a2a/tests/meter_tests.rs::a_delegation_bills_the_initiating_key_for_the_hop_and_claims_nothing_beyond_it",
       "root": {
         "state": "proven",
         "leg": "root-a2a",
-        "test": "crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_charges_the_presenting_key"
-      }
+        "test": "crates/busbar-plane-a2a/tests/root/mod.rs::a_relayed_agent_unit_charges_the_presenting_key"
+      },
+      "test": "crates/busbar-plane-a2a/tests/root/mod.rs::a_relayed_agent_unit_charges_the_presenting_key",
+      "note": "the agent plane served through its door (busbar-plane-a2a, linked and bound through the loader's one load) on the root's data router: the unit admitted and charged by the door steps, its egress the kernel's connector"
     },
     {
       "capability": "governance-budget",
       "plane": "a2a-server",
       "state": "proven",
-      "test": "crates/busbar-a2a/src/a2a/tests/billed_bytes_tests.rs::an_agents_card_prices_the_bytes_and_a_budget_cap_trips_on_a2a",
-      "note": "RE-POINTED (2026-09-30, busbar-kernel-budget deleted whole). The previous test named busbar-kernel-budget::AdmissionUnit::admit, a stack with no production caller; the crate is gone. The live a2a-server path is the kernel governance admission (`govern_admit_reason` -> try_admit, receive.rs). This test drives a2a traffic through it: an `agents.rate_card` prices the first hop's bytes onto the presenting key's group budget, and the second submission is refused 429 on that budget without reaching the backend.",
       "root": {
         "state": "proven",
         "leg": "root-a2a",
-        "test": "crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_charges_the_presenting_key"
-      }
+        "test": "crates/busbar-plane-a2a/tests/root/mod.rs::an_agent_unit_served_through_its_door_charges_the_presenting_key"
+      },
+      "test": "crates/busbar-plane-a2a/tests/root/mod.rs::an_agent_unit_served_through_its_door_charges_the_presenting_key",
+      "note": "the agent plane served through its door (busbar-plane-a2a, linked and bound through the loader's one load) on the root's data router: the unit admitted and charged by the door steps, its egress the kernel's connector"
     },
     {
       "capability": "disposition",
@@ -633,12 +636,13 @@
       "capability": "disposition",
       "plane": "a2a-client",
       "state": "proven",
-      "test": "crates/busbar-a2a/src/a2a/tests/reroute_pool_tests.rs::a_client_fault_answer_never_penalizes_the_agent",
       "root": {
-        "state": "none",
+        "state": "proven",
         "leg": "root-a2a",
-        "reason": "no served-leg witness puts a backend answer the caller caused through the rider and reads the member's breaker cell after it; Stage 1 and Stage 2 run inside the plane's `drive` and the plane's own battery (`test`) proves the classification"
-      }
+        "test": "crates/busbar-plane-a2a/tests/root/mod.rs::a_relayed_agent_unit_to_an_agent_that_is_down_ends_inside_its_unit"
+      },
+      "test": "crates/busbar-plane-a2a/tests/root/mod.rs::a_relayed_agent_unit_to_an_agent_that_is_down_ends_inside_its_unit",
+      "note": "the agent plane served through its door (busbar-plane-a2a, linked and bound through the loader's one load) on the root's data router: the unit admitted and charged by the door steps, its egress the kernel's connector"
     },
     {
       "capability": "disposition",
@@ -699,24 +703,21 @@
     {
       "capability": "metrics",
       "plane": "a2a-client",
-      "state": "proven",
-      "test": "crates/busbar-a2a/src/a2a/tests/relay_leg_metrics_tests.rs::a_relayed_task_counts_an_upstream_attempt_naming_the_agent_it_was_issued_to",
-      "note": "the same two client-leg families, emitted from a2a::relay::prepare and count_leg_failure, labelled with the operator's agent_def id and the binding word off the closed transport axis. Its twin a_backend_that_cannot_be_reached_is_counted_as_a_transient_upstream_failure covers the failure half.",
+      "state": "missing",
       "root": {
-        "state": "proven",
+        "state": "none",
         "leg": "root-a2a",
-        "test": "crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_counts_the_upstream_attempt"
+        "reason": "no door-path cell reads the real /metrics scrape after a unit the agent door relayed, so the upstream-attempt series under this plane's label is unwitnessed over the door"
       }
     },
     {
       "capability": "metrics",
       "plane": "a2a-server",
-      "state": "proven",
-      "test": "crates/busbar/tests/plane_integration.rs::mounted_plane_traffic_appears_on_a_real_metrics_scrape",
+      "state": "missing",
       "root": {
-        "state": "proven",
+        "state": "none",
         "leg": "root-a2a",
-        "test": "crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_counts_the_upstream_attempt"
+        "reason": "no door-path cell reads the real /metrics scrape after a unit the agent door served, so the plane-labelled traffic series is unwitnessed over the door"
       }
     },
     {
@@ -765,23 +766,25 @@
       "capability": "trust-pinning",
       "plane": "a2a-client",
       "state": "proven",
-      "test": "crates/busbar-a2a/src/a2a/tests/transport_pin_tests.rs::the_pin_read_off_the_hop_is_the_leaf_keys_own_key_pin_hash",
       "root": {
         "state": "proven",
         "leg": "root-a2a",
-        "test": "crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_refuses_an_unpinned_peer"
-      }
+        "test": "crates/busbar-plane-a2a/tests/root/mod.rs::a_cert_spki_agent_is_observed_approved_served_and_refused_once_its_key_changes"
+      },
+      "test": "crates/busbar-plane-a2a/tests/root/mod.rs::a_cert_spki_agent_is_observed_approved_served_and_refused_once_its_key_changes",
+      "note": "the agent plane served through its door (busbar-plane-a2a, linked and bound through the loader's one load) on the root's data router: the unit admitted and charged by the door steps, its egress the kernel's connector"
     },
     {
       "capability": "trust-pinning",
       "plane": "a2a-server",
       "state": "proven",
-      "test": "crates/busbar-a2a/src/a2a/tests/pin_tests.rs::an_unpinned_registration_is_capturable_and_never_approvable",
       "root": {
         "state": "proven",
         "leg": "root-a2a",
-        "test": "crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_refuses_an_unpinned_peer"
-      }
+        "test": "crates/busbar-plane-a2a/tests/root/mod.rs::the_kernel_trust_book_pins_an_agent_card_and_the_relay_serves_only_the_approved_one"
+      },
+      "test": "crates/busbar-plane-a2a/tests/root/mod.rs::the_kernel_trust_book_pins_an_agent_card_and_the_relay_serves_only_the_approved_one",
+      "note": "the agent plane served through its door (busbar-plane-a2a, linked and bound through the loader's one load) on the root's data router: the unit admitted and charged by the door steps, its egress the kernel's connector"
     },
     {
       "capability": "net-guard",
@@ -828,23 +831,22 @@
       "capability": "net-guard",
       "plane": "a2a-client",
       "state": "proven",
-      "test": "crates/busbar-a2a/src/a2a/tests/fetch_tests.rs::a_rebinding_host_is_refused_outright_once_it_answers_the_metadata_address",
       "root": {
         "state": "proven",
         "leg": "root-a2a",
-        "test": "crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_dials_only_the_judged_address"
-      }
+        "test": "crates/busbar-plane-a2a/tests/root/mod.rs::an_agent_unit_dials_only_the_address_the_guard_admits"
+      },
+      "test": "crates/busbar-plane-a2a/tests/root/mod.rs::an_agent_unit_dials_only_the_address_the_guard_admits",
+      "note": "the agent plane served through its door (busbar-plane-a2a, linked and bound through the loader's one load) on the root's data router: the unit admitted and charged by the door steps, its egress the kernel's connector"
     },
     {
       "capability": "net-guard",
       "plane": "a2a-server",
-      "state": "proven",
-      "test": "crates/busbar-a2a/src/a2a/tests/pushdeliver_tests.rs::a_callback_that_became_internal_after_registration_is_refused_at_delivery",
-      "note": "this role's own outbound is webhook push delivery, and it is guarded -- the PUSH-DELIVER TCK waivers exist because this guard correctly wins over the conformance score.",
+      "state": "missing",
       "root": {
-        "state": "proven",
+        "state": "none",
         "leg": "root-a2a",
-        "test": "crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_dials_only_the_judged_address"
+        "reason": "no door-path cell delivers a push notification to a callback that turned internal after registration, so the delivery dial's guard is unwitnessed over the door"
       }
     },
     {
@@ -895,22 +897,22 @@
       "capability": "egress-auth",
       "plane": "a2a-client",
       "state": "proven",
-      "test": "crates/busbar-a2a/src/a2a/tests/creds_tests.rs::a_minted_lease_carries_the_secret_only_through_the_header_it_was_placed_at",
       "root": {
-        "state": "none",
+        "state": "proven",
         "leg": "root-a2a",
-        "reason": "no served-leg witness configures an outbound credential for a fronted agent and reads what the hop carried through the rider; the egress plan runs inside the plane's `drive` and the plane's own battery (`test`) proves the lease"
-      }
+        "test": "crates/busbar-plane-a2a/tests/root/mod.rs::a_relayed_agent_unit_never_hands_the_agent_the_callers_token"
+      },
+      "test": "crates/busbar-plane-a2a/tests/root/mod.rs::a_relayed_agent_unit_never_hands_the_agent_the_callers_token",
+      "note": "the agent plane served through its door (busbar-plane-a2a, linked and bound through the loader's one load) on the root's data router: the unit admitted and charged by the door steps, its egress the kernel's connector"
     },
     {
       "capability": "egress-auth",
       "plane": "a2a-server",
-      "state": "proven",
-      "test": "crates/busbar-a2a/src/a2a/tests/pushdeliver_tests.rs::the_callers_own_webhook_credential_is_presented_on_the_delivery",
+      "state": "missing",
       "root": {
         "state": "none",
         "leg": "root-a2a",
-        "reason": "no served-leg witness configures an outbound credential for a fronted agent and reads what the hop carried through the rider on the front door; the egress plan runs inside the plane's `drive` and the plane's own battery (`test`) proves the lease"
+        "reason": "no door-path cell delivers a push notification with the caller's own webhook credential, so that credential's presentation on the delivery is unwitnessed over the door"
       }
     },
     {
@@ -960,23 +962,25 @@
       "capability": "catalogue",
       "plane": "a2a-client",
       "state": "proven",
-      "test": "crates/busbar-a2a/src/a2a/tests/registry_tests.rs::a_fresh_registration_is_pending_and_delegable_to_nobody",
       "root": {
         "state": "proven",
         "leg": "root-a2a",
-        "test": "crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_serves_only_the_callers_catalogue"
-      }
+        "test": "crates/busbar-plane-a2a/tests/root/mod.rs::a_unit_to_an_agent_that_is_not_serving_is_refused_after_its_grant_and_charges_nothing"
+      },
+      "test": "crates/busbar-plane-a2a/tests/root/mod.rs::a_unit_to_an_agent_that_is_not_serving_is_refused_after_its_grant_and_charges_nothing",
+      "note": "the agent plane served through its door (busbar-plane-a2a, linked and bound through the loader's one load) on the root's data router: the unit admitted and charged by the door steps, its egress the kernel's connector"
     },
     {
       "capability": "catalogue",
       "plane": "a2a-server",
       "state": "proven",
-      "test": "crates/busbar-a2a/src/a2a/tests/catalogue_tests.rs::scope_decides_visibility_and_a_pool_only_key_sees_nothing",
       "root": {
         "state": "proven",
         "leg": "root-a2a",
-        "test": "crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_serves_only_the_callers_catalogue"
-      }
+        "test": "crates/busbar-plane-a2a/tests/root/mod.rs::the_extended_card_on_the_planes_endpoint_names_the_callers_agents"
+      },
+      "test": "crates/busbar-plane-a2a/tests/root/mod.rs::the_extended_card_on_the_planes_endpoint_names_the_callers_agents",
+      "note": "the agent plane served through its door (busbar-plane-a2a, linked and bound through the loader's one load) on the root's data router: the unit admitted and charged by the door steps, its egress the kernel's connector"
     },
     {
       "capability": "breaker-trip",

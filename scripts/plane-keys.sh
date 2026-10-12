@@ -52,13 +52,17 @@
 # `crates/busbar-plane-mcp`, which the plane-kind regime scans whole. It stays on the doctrine roster
 # (`PLANE_KEYS_LOCKED`) and reaches the deletion harness as `plane-mcp` (`plane_ondisk_key`), the way
 # `decisions` does as `plane-decisions`.
-PLANE_KEYS="llm a2a voice"
+#
+# `a2a` IS STRUCK the same way (FLIP-A2A): `crates/busbar-a2a` is deleted and the A2A plane is
+# `crates/busbar-plane-a2a`, served through its memory-ABI door (`plane-a2a-door`), scanned by the
+# plane-kind regime and reaching the deletion harness as `plane-a2a`.
+PLANE_KEYS="llm voice"
 
 # PLANE_KEYS_KIND_ONLY — plane keys whose plane has NO legacy-engine crate any more and lives only in
-# its plane-kind crate `crates/busbar-plane-<key>` (P3 DEL-MCP, ARCHITECT 2026-10-05: `mcp`). Never a
-# `crates/busbar-<key>` root; STILL a plane noun, so a needle gate that bans the other planes' keys
-# keeps banning it (`plane_noun_keys_other`). Leaving PLANE_KEYS must not let the word in.
-PLANE_KEYS_KIND_ONLY="mcp"
+# its plane-kind crate `crates/busbar-plane-<key>` (P3 DEL-MCP, ARCHITECT 2026-10-05: `mcp`; FLIP-A2A:
+# `a2a`). Never a `crates/busbar-<key>` root; STILL a plane noun, so a needle gate that bans the other
+# planes' keys keeps banning it (`plane_noun_keys_other`). Leaving PLANE_KEYS must not let the word in.
+PLANE_KEYS_KIND_ONLY="mcp a2a"
 
 # The protocol subset: every plane key except `llm`. Derived from PLANE_KEYS so adding a plane in
 # one place flows here automatically.
@@ -92,9 +96,10 @@ plane_ondisk_key() {
   case "$1" in
     streaming) printf 'voice' ;;
     decisions) printf 'plane-decisions' ;;
-    # P3 DEL-MCP: the engine is deleted; the plane is its one plane-kind crate.
+    # P3 DEL-MCP / FLIP-A2A: the engine is deleted; the plane is its one plane-kind crate.
     mcp) printf 'plane-mcp' ;;
-    llm | a2a) printf '%s' "$1" ;;
+    a2a) printf 'plane-a2a' ;;
+    llm) printf '%s' "$1" ;;
     *) printf '' ;;
   esac
 }

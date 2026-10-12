@@ -44,6 +44,19 @@ fn a_registered_record_is_pending_and_serves_nothing() {
     assert!(!a.serves("read_file", "h1"));
 }
 
+/// Ported from busbar-a2a a2a/tests/verbs_tests.rs::resuming_an_unpinned_registration_still_serves_nothing.
+/// RESUMING cannot make an UNVERIFIED record serve: the evidence that matters is the trust state the
+/// machine still holds, so resume needs no ceremony.
+#[test]
+fn resuming_an_unpinned_registration_still_serves_nothing() {
+    let mut a: Approval<SpkiPin> = Approval::registered();
+    a.suspend("out-of-band intelligence");
+    assert_eq!(a.state(&Sighting::Never), TrustState::Suspended);
+    a.resume();
+    assert_eq!(a.state(&Sighting::Never), TrustState::Pending);
+    assert!(!a.serves("plan", "anything"));
+}
+
 /// CONNECT does not promote. Capturing a pin candidate and a capability set leaves the record
 /// `pending`; only an operator approval moves it. The captured sighting is what distinguishes the
 /// two pending sub-states the design names (`untrusted` vs `trusted-pending`), which is a question

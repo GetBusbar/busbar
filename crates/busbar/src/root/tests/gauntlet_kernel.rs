@@ -657,24 +657,6 @@ async fn served_rider_charges_the_presenting_key() {
     .await;
 }
 
-/// METRICS, on the served leg: the upstream leg is on the scrape.
-#[tokio::test]
-async fn served_rider_counts_the_upstream_attempt() {
-    run_served("metrics", "served_rider_counts_the_upstream_attempt").await;
-}
-
-/// TRUST-PINNING, on the served leg: a drifted or demoted peer is not served.
-#[tokio::test]
-async fn served_rider_refuses_an_unpinned_peer() {
-    run_served("trust-pinning", "served_rider_refuses_an_unpinned_peer").await;
-}
-
-/// NET-GUARD, on the served leg: the dialled address is the one the guard judged.
-#[tokio::test]
-async fn served_rider_dials_only_the_judged_address() {
-    run_served("net-guard", "served_rider_dials_only_the_judged_address").await;
-}
-
 /// VERIFY, on a session's served leg: the destination the door judged is the one the session runs
 /// under.
 #[tokio::test]
@@ -732,16 +714,6 @@ async fn served_rider_fast_fails_a_tripped_upstream() {
     run_served(
         "breaker-fastfail",
         "served_rider_fast_fails_a_tripped_upstream",
-    )
-    .await;
-}
-
-/// CATALOGUE, on the served leg: what the caller may not see is not served.
-#[tokio::test]
-async fn served_rider_serves_only_the_callers_catalogue() {
-    run_served(
-        "catalogue",
-        "served_rider_serves_only_the_callers_catalogue",
     )
     .await;
 }

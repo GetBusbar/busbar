@@ -73,13 +73,13 @@ use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::plane::{
     class_of, reason_code, ArriveIn, ArriveOut, OutField, RefusalClass, RefusalIn, RefusalOut,
     RefusalStatus, UnitCount, REFUSAL_ANY_DIALECT, REFUSAL_ARRIVE, REFUSAL_GATE, REFUSAL_KERNEL,
-    ROUTE_LOCAL, ROUTE_SESSION,
+    ROUTE_LOCAL, ROUTE_SCOPE_LOCAL, ROUTE_SESSION,
 };
 use busbar_contract::abi::sdk::door::{blank_in, blank_out};
 use busbar_contract::caps::{
     Admit, Admittance, Approve, Arrival as ArrivalStep, Audit, Authenticate, Consumption, Decode,
-    Dial, Encode, Grant, HoldAccrual, Meter, OpClassId, Outcome, Pass, PrincipalId, ReasonCode,
-    Refusal, Route, RoutePlan, SeatVerdict as StepAnswer, VerifiedDestination, Verify,
+    Dial, Encode, Grant, HoldAccrual, KernelSeal, Meter, OpClassId, Outcome, Pass, PrincipalId,
+    ReasonCode, Refusal, Route, RoutePlan, SeatVerdict as StepAnswer, VerifiedDestination, Verify,
 };
 use busbar_contract::plane_calls::PlaneCalls;
 use busbar_contract::services::Caller;
@@ -238,6 +238,8 @@ pub struct PlaneDriver {
     label: Arc<str>,
     /// Where a unit's audit row (a `RECORD_AUDIT` write) is written: the kernel's own audit chain.
     audit: Arc<dyn AuditSink>,
+    /// The plane takes a unit's refusal as a piece first (`abi::plane::TAIL_REFUSED_PIECE`).
+    refused_piece: bool,
 }
 
 /// WHERE A DOOR UNIT'S AUDIT ROW GOES (ARCHITECT SEAM-L(k)): a plane writes its unit's audit row
@@ -305,6 +307,29 @@ impl std::fmt::Debug for PlaneDriver {
     }
 }
 
+/// What ended the schedule's wait.
+enum Cause {
+    /// The deadline the last answer named came.
+    Timer,
+    /// A wake of the driver ticket ran its `drive`.
+    Woke,
+}
+
+/// The earlier of two tick deadlines, `0` naming none.
+const fn earlier(a: u64, b: u64) -> u64 {
+    match (a, b) {
+        (0, b) => b,
+        (a, 0) => a,
+        (a, b) => {
+            if a < b {
+                a
+            } else {
+                b
+            }
+        }
+    }
+}
+
 impl PlaneDriver {
     /// The driver of one open plane instance, reached through `calls`: the instance admitted to
     /// `services` from what it declares and its configured `section` (its key and value), then its
@@ -361,27 +386,67 @@ impl PlaneDriver {
             hooks: None,
             label: Arc::from(&*d.label),
             audit: Arc::new(CoreAudit),
+            refused_piece: false,
         })
     }
 
     /// THE INSTANCE'S TICK SCHEDULE, on its driver ticket: `tick` at once, then at each
-    /// `next_tick_ns` it answers, on the dispatcher's clock; it ends when an answer names `0`, or
-    /// is not READY or PENDING, or no driver ticket was minted. It waits on the runtime's timer
-    /// (as the route's deadline does) and holds no `max_inflight` slot.
+    /// `next_tick_ns` it answers, on the dispatcher's clock, and again after every wake of the
+    /// driver ticket (R-PUSH, spec :2603-2606, :3470): a wake runs `drive` as it does, and then the
+    /// schedule re-polls `tick`, the sleeping timer re-armed to the earlier of its deadline and the
+    /// new answer. An answer of `0` names no tick until the next wake; it is not "never". It ends
+    /// when an answer is not READY or PENDING, or no driver ticket was minted, or nothing is left
+    /// to wait on (no deadline, and no wake channel). It waits on the runtime's timer (as the
+    /// route's deadline does) and holds no `max_inflight` slot.
     pub async fn ticks(&self) {
         let Some(driver) = self.driver else {
             return;
         };
         let mut at = 0;
+        let mut cause = Cause::Timer;
         loop {
+            self.services.mark_due();
+            let Some(next) = self.calls.tick(driver, self.calls.now_ns()).await else {
+                return;
+            };
+            at = match cause {
+                Cause::Timer => next,
+                Cause::Woke => earlier(at, next),
+            };
+            let Some(woken) = self.await_tick(at).await else {
+                return;
+            };
+            cause = woken;
+        }
+    }
+
+    /// What the schedule waits on after an answer: `at` (`0` = no deadline) on the dispatcher's
+    /// clock, or a wake of the driver ticket. `None` when neither can come.
+    async fn await_tick(&self, at: u64) -> Option<Cause> {
+        let timer = async {
+            if at == 0 {
+                std::future::pending::<()>().await;
+            }
             let now = self.calls.now_ns();
             if at > now {
                 tokio::time::sleep(std::time::Duration::from_nanos(at - now)).await;
             }
-            self.services.mark_due();
-            match self.calls.tick(driver, self.calls.now_ns()).await {
-                Some(next) if next != 0 => at = next,
-                _ => return,
+        };
+        let woke = self.calls.woke();
+        tokio::pin!(timer, woke);
+        let mut channel = true;
+        loop {
+            tokio::select! {
+                () = &mut timer => return Some(Cause::Timer),
+                alive = &mut woke, if channel => {
+                    if alive {
+                        return Some(Cause::Woke);
+                    }
+                    channel = false;
+                    if at == 0 {
+                        return None;
+                    }
+                }
             }
         }
     }
@@ -391,6 +456,18 @@ impl PlaneDriver {
     #[must_use]
     pub fn with_hooks(mut self, binder: Arc<dyn HookBinder>) -> Self {
         self.hooks = Some(binder);
+        self
+    }
+
+    /// Hand this plane a unit's refusal as a piece first (`abi::plane::TAIL_REFUSED_PIECE`, which
+    /// its tail states: an unavailable credential, or no member left, whether or not the unit's request
+    /// went out): the [`PIECE_REFUSED`] piece on the unit's own ticket, whose record writes are written,
+    /// before `refusal` renders it.
+    ///
+    /// [`PIECE_REFUSED`]: busbar_contract::abi::plane::PIECE_REFUSED
+    #[must_use]
+    pub fn with_refused_piece(mut self) -> Self {
+        self.refused_piece = true;
         self
     }
 
@@ -524,7 +601,8 @@ pub struct Decoded {
     /// The entry it routes over: the name inside the plane's own section (ARCHITECT Q-SW6), opaque
     /// bytes the kernel never parses; `None` = it named none.
     pub pool: Option<Vec<u8>>,
-    /// What [`Decoded::pool`] names: `ROUTE_POOL` or `ROUTE_DIRECT` (ARCHITECT Q-FL3).
+    /// What [`Decoded::pool`] names: `ROUTE_POOL` or `ROUTE_DIRECT` (ARCHITECT Q-FL3), or how the
+    /// unit routes with no entry named (`ROUTE_LOCAL`, `ROUTE_SCOPE`, `ROUTE_SCOPE_LOCAL`).
     pub route: u8,
     /// The `ROUTE_*` flag bits its `arrive` stated (`ROUTE_ONCE`, `ROUTE_SESSION`).
     pub route_flags: u8,
@@ -545,9 +623,21 @@ pub trait DriverSteps: Units {
     /// not retried on another member), told with [`Self::decoded`].
     fn route_flags(&self, _ctx: &UnitCtx, _flags: u8) {}
 
+    /// The COUNTERPARTY the unit's `arrive` stated among its trust facts (an entry of the plane's
+    /// section: the one the unit is addressed to), told with [`Self::decoded`]; never told for a
+    /// unit that states none. The steps' Approve may judge the caller's grant on it.
+    fn counterparty(&self, _ctx: &UnitCtx, _counterparty: &[u8]) {}
+
     /// The units the plane's `arrive` expects the unit to do (its admission estimate, THE DESIGN
     /// §7 `admission: estimate`), told with [`Self::decoded`]. An estimate never bills.
     fn expected(&self, _ctx: &UnitCtx, _units: &[UnitCount]) {}
+
+    /// THE ONE ENTRY a `ROUTE_SCOPE_LOCAL` unit's scope resolved to (its Verify), lent to the
+    /// plane as the member of the unit's pieces with no attempt, so the plane answers and audits it
+    /// under that entry; asked once, at the unit's route leg. `None` = none resolved.
+    fn resolved(&self, _ctx: &UnitCtx) -> Option<Vec<u8>> {
+        None
+    }
 
     /// THE STEPS' OWN WORDS for a refusal they decided with `reason`, handed to the plane's
     /// `refusal` as [`busbar_contract::abi::plane::RefusalIn::text`] (as a limit names the bucket
@@ -1022,7 +1112,22 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> PlaneUnits<'_, S, F, C> {
             drop(st);
             run.lend_unit(self.arrival.claim, dialect, &caller_ref, 0);
         }
-        let end = self.attempts(&mut run, None).await;
+        // A UNIT ITS PLANE ANSWERS AT ITS SCOPE'S ONE ENTRY (`ROUTE_SCOPE_LOCAL`): no route is
+        // walked, whatever far end the unit was handed, and the plane is told the entry its scope
+        // resolved to.
+        let scope_local = self
+            .lock()
+            .decoded
+            .as_ref()
+            .is_some_and(|d| d.route == ROUTE_SCOPE_LOCAL);
+        let end = if scope_local {
+            if let Some(entry) = self.steps.resolved(ctx) {
+                run.lend_resolved(&entry);
+            }
+            self.answered_here(&mut run).await
+        } else {
+            self.attempts(&mut run, None).await
+        };
         // THE `response` STAGE TAP of a unit whose answer never reached the caller's head (the
         // head itself fires it, in the pump): the status the caller is answered under.
         match &end {
@@ -1151,10 +1256,13 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> Units for PlaneUnits<'_, S,
     }
 
     /// THE KERNEL'S APPROVE (ARCHITECT 2026-10-06: trust is the kernel's Approve step; a plane
-    /// states facts and judges none): the trust facts the plane's `arrive` stated are judged
-    /// against the kernel's trust book first, and a unit the book does not trust is refused
-    /// [`ReasonCode::Untrusted`] before the deployment's own Approve runs; a unit that states none
-    /// goes straight to it.
+    /// states facts and judges none). The deployment's own Approve (the caller's grant over the
+    /// unit's route) runs FIRST, and its refusal stands; only a unit it admits has the trust facts
+    /// the plane's `arrive` stated judged against the kernel's trust book, and one the book does
+    /// not trust is refused [`ReasonCode::Untrusted`]. A unit that states none is the deployment's
+    /// answer alone. The order is the ordered gate's (identity, grant, then the counterparty's
+    /// standing; ruling (a), coordinator 2026-10-07): a caller the grant refuses is never told the
+    /// counterparty's trust state.
     fn approve(
         &self,
         token: &Pass<Approve>,
@@ -1162,25 +1270,35 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> Units for PlaneUnits<'_, S,
         principal: &PrincipalId,
         destinations: &[VerifiedDestination],
     ) -> StepAnswer<Approve> {
+        let granted = self.steps.approve(token, ctx, principal, destinations);
         let stated = self.lock().decoded.as_ref().and_then(|d| d.trust.clone());
-        if let Some(t) = stated {
-            let text = |b: &[u8]| String::from_utf8_lossy(b).into_owned();
-            let (counterparty, item, digest) = (
-                text(&t.counterparty),
-                t.item.as_deref().map(text),
-                t.digest.as_deref().map(text),
-            );
-            let facts = TrustFacts {
-                counterparty: &counterparty,
-                item: item.as_deref(),
-                digest: digest.as_deref(),
-            };
-            if let Err(why) = self.driver.services.trust_judge(&self.driver.label, &facts) {
-                self.lock().distrust = Some(why);
-                return StepAnswer::refuse(token, Refusal::new(ReasonCode::Untrusted));
-            }
+        let Some(t) = stated else {
+            return granted;
+        };
+        let facts = match granted.into_result(&KernelSeal::acquire_for_kernel()) {
+            Ok(facts) => facts,
+            Err(refusal) => return StepAnswer::refuse(token, refusal),
+        };
+        let text = |b: &[u8]| String::from_utf8_lossy(b).into_owned();
+        let (counterparty, item, digest) = (
+            text(&t.counterparty),
+            t.item.as_deref().map(text),
+            t.digest.as_deref().map(text),
+        );
+        let stated = TrustFacts {
+            counterparty: &counterparty,
+            item: item.as_deref(),
+            digest: digest.as_deref(),
+        };
+        if let Err(why) = self
+            .driver
+            .services
+            .trust_judge(&self.driver.label, &stated)
+        {
+            self.lock().distrust = Some(why);
+            return StepAnswer::refuse(token, Refusal::new(ReasonCode::Untrusted));
         }
-        self.steps.approve(token, ctx, principal, destinations)
+        StepAnswer::proceed(token, facts)
     }
 
     /// The kernel's verify, after which the unit's caller reference is derived under the node's
@@ -1213,6 +1331,9 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> Units for PlaneUnits<'_, S,
         if let (Some(op), Some(d)) = (op, decoded.as_ref()) {
             self.steps.decoded(ctx, op, d.route, d.pool.as_deref());
             self.steps.route_flags(ctx, d.route_flags);
+            if let Some(t) = d.trust.as_ref() {
+                self.steps.counterparty(ctx, &t.counterparty);
+            }
             self.steps.expected(ctx, &d.expected);
         }
         self.lock().decoded = decoded;
@@ -1294,7 +1415,7 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: SessionCaller> PlaneUnits<'_, S, F, C>
             .lock()
             .decoded
             .as_ref()
-            .is_some_and(|d| d.route == ROUTE_LOCAL);
+            .is_some_and(|d| d.route == ROUTE_LOCAL || d.route == ROUTE_SCOPE_LOCAL);
         match self.session_priced(token, ctx, sealed, !local).await {
             Ok(()) => StepAnswer::proceed(token, RoutePlan::default()),
             Err(reason) => failed(token, reason),

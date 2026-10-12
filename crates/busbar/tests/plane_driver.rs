@@ -501,18 +501,59 @@ async fn the_kernel_ticks_a_plane_on_its_driver_ticket_at_each_next_tick() {
     }
 }
 
-/// A plane that answers `next_tick_ns = 0` is ticked once and never again.
+/// A plane that answers `next_tick_ns = 0` and never wakes its driver ticket is ticked once and
+/// never again (R-PUSH: `0` names no tick until a wake, and no wake comes). The llm and decisions
+/// planes answer `0` and never wake, so this is their count.
 #[tokio::test]
 async fn no_tick_follows_a_tick_that_asks_for_none() {
     for way in ways() {
         let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
         let plugin = load(way, &dispatcher);
         let driver = driver_of(&plugin, dispatcher.clone());
-        tokio::time::timeout(Duration::from_secs(5), driver.ticks())
-            .await
-            .expect("the schedule ends at next_tick_ns = 0");
-        tokio::time::sleep(Duration::from_millis(60)).await;
+        parks_after_one_tick(&driver).await;
         assert_eq!(ticked(&plugin)[plane::Ticked::Ticks as usize], 1, "{way:?}");
+    }
+}
+
+/// The schedule after an answer of `0` (R-PUSH): one tick, then parked on a wake that does not come.
+async fn parks_after_one_tick(driver: &PlaneDriver) {
+    let run = tokio::time::timeout(Duration::from_millis(300), driver.ticks()).await;
+    assert!(run.is_err(), "the schedule parks on an answer of 0");
+}
+
+/// R-PUSH through the real loader: a wake of the driver ticket runs `drive` and then re-polls
+/// `tick`, though the last answer was `0`. RED on the base: the schedule had ended.
+#[tokio::test]
+async fn a_wake_of_the_driver_ticket_runs_drive_then_ticks_again() {
+    for way in ways() {
+        let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
+        let plugin = load(way, &dispatcher);
+        let driver = driver_of(&plugin, dispatcher.clone());
+        let waker = async {
+            let ticks = || ticked(&plugin)[plane::Ticked::Ticks as usize];
+            while ticks() < 1 {
+                tokio::time::sleep(Duration::from_millis(2)).await;
+            }
+            let ticket = ticked(&plugin)[plane::Ticked::Ticket as usize];
+            tokio::time::sleep(Duration::from_millis(60)).await;
+            assert_eq!(ticks(), 1, "{way:?}: no tick without a wake");
+            wake(&plugin, ticket_of(ticket));
+            while ticks() < 2 {
+                tokio::time::sleep(Duration::from_millis(2)).await;
+            }
+            assert!(
+                stats(&plugin)[cases::stat::DRIVES] >= 1,
+                "{way:?}: drive ran before the tick"
+            );
+        };
+        tokio::time::timeout(Duration::from_secs(5), async {
+            tokio::select! {
+                () = driver.ticks() => panic!("{way:?}: the schedule ended at 0"),
+                () = waker => {}
+            }
+        })
+        .await
+        .expect("the wake ticked again");
     }
 }
 
@@ -599,7 +640,7 @@ impl Conns for Far {
     }
 }
 
-/// A HOP INSIDE `tick` PENDS AND RESUMES THROUGH `drive` (ARCHITECT S7-TICK; spec :3314-3316):
+/// A HOP INSIDE `tick` PENDS AND RESUMES THROUGH `drive` (ARCHITECT S7-TICK; spec :3470-3471, the `tick` and `drive` rows of the `bb_ops_head` table):
 /// the plane ESTABLISHes its need (READY: the table holds the dial) and READs it inside `tick`; the
 /// read is PENDING on the instance's driver ticket, not refused for want of one, and `tick` answers
 /// PENDING, which ends it (a driver ticket's op is never resumed: what pended goes on through
@@ -614,9 +655,7 @@ async fn a_read_inside_tick_pends_on_the_driver_ticket_and_resumes_through_drive
         let plugin = load_over(way, &dispatcher, Arc::new(NoSink), Some(far.clone()));
         arrive_at(&plugin, "/tick-read");
         let driver = driver_of(&plugin, dispatcher.clone());
-        tokio::time::timeout(Duration::from_secs(5), driver.ticks())
-            .await
-            .expect("one tick");
+        parks_after_one_tick(&driver).await;
         let t = ticked(&plugin);
         assert_eq!(
             t[plane::Ticked::ReadPended as usize],
@@ -658,9 +697,7 @@ async fn a_tick_forgets_what_the_last_cycle_kept_on_the_driver_ticket() {
         let driver = driver_of(&plugin, dispatcher.clone());
         for _ in 0..2 {
             arrive_at(&plugin, "/tick-read");
-            tokio::time::timeout(Duration::from_secs(5), driver.ticks())
-                .await
-                .expect("one tick");
+            parks_after_one_tick(&driver).await;
         }
         assert_eq!(
             *far.opened.lock().unwrap(),
@@ -732,7 +769,7 @@ fn the_crossing_is_under_a_microsecond() {
                 head_fields: std::ptr::null(),
                 head_fields_len: 0,
                 passthrough: 0,
-                _reserved_tail: 0,
+                reason: 0,
             },
             zero_piece_out(),
         );
@@ -790,6 +827,9 @@ fn zero_piece_out() -> OnPieceOut {
         _final_reserved: 0,
         final_message: span,
         final_details: span,
+        metric_pool: span,
+        metric_lane: span,
+        wait_member: span,
     }
 }
 
@@ -1014,6 +1054,60 @@ fn a_public_route_is_served_by_the_planes_serve_without_a_credential() {
     }
 }
 
+/// GREEN beside SEAM-4o's red arm (`BUSBAR-1.6.0.md` l.4882: a callback route "is auth `none`;
+/// the plane checks its own callback correlation token"): a PUBLIC route whose snapshot states
+/// `ROUTE_CARRIES_OWN_TOKEN` is lent the request's `authorization` (the plane's own token, no
+/// caller's credential), and every other credential field is struck as on any public route.
+#[test]
+fn a_public_route_carrying_its_own_token_is_lent_authorization_and_nothing_else() {
+    use busbar_contract::abi::plane::{ROUTE_CARRIES_OWN_TOKEN, ROUTE_PUBLIC};
+    use busbar_kernel::plane_driver::serve::{answer_public, publish, withdraw};
+    let _one = PUBLISHED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    for way in ways() {
+        let item = format!("{way:?}").to_lowercase();
+        let (_plugin, mut table) = serve_table(way, "the-token-instance");
+        for route in &mut table.routes {
+            if route.flags & ROUTE_PUBLIC != 0 {
+                route.flags |= ROUTE_CARRIES_OWN_TOKEN;
+            }
+        }
+        publish(table, &[]).expect("the instance publishes");
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert("authorization", "Bearer own-token".parse().unwrap());
+        headers.insert("cookie", "session=secret".parse().unwrap());
+        headers.insert("proxy-authorization", "Basic secret".parse().unwrap());
+        headers.insert("x-trace", "t-1".parse().unwrap());
+        let hook = format!("/items/{item}/hook");
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("a runtime");
+        let (status, body) = rt.block_on(async {
+            let resp = answer_public(
+                "POST",
+                &hook,
+                &hook,
+                &headers,
+                axum::body::Bytes::from("go"),
+            )
+            .await;
+            let status = resp.status().as_u16();
+            let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+                .await
+                .expect("a body");
+            (status, String::from_utf8_lossy(&body).into_owned())
+        });
+        withdraw("the-token-instance");
+        assert_eq!(
+            (status, body),
+            (200, format!("public {hook} fields=authorization,x-trace")),
+            "{way:?}: the plane's own token crossed, and no other credential field"
+        );
+    }
+}
+
 // ── duplex sessions (K6) ─────────────────────────────────────────────────────────────────────────
 
 /// One line of a session caller's script.
@@ -1180,9 +1274,7 @@ async fn unsolicited_output_reaches_the_caller_through_the_instances_one_driver_
     for way in ways() {
         let r = rig(way, BufferCaps::default(), cases::Book::default());
         // The plane learns its driver ticket from its first tick.
-        tokio::time::timeout(Duration::from_secs(5), r.driver.ticks())
-            .await
-            .expect("one tick");
+        parks_after_one_tick(&r.driver).await;
         let far = cases::Far::new(&[SEALED], &[b"x"]);
         let caller = Scripted::new([Line::Send(b"push:hello"), Line::Hear("hello")]);
         let ended = tokio::time::timeout(Duration::from_secs(5), async {

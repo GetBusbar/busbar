@@ -81,6 +81,8 @@ pub(crate) struct Far {
     /// The ceiling its plane states on a streamed answer, stated to the driver as the unit's
     /// deadline once the route is known; `None` = none.
     ceiling: Option<Duration>,
+    /// How many times the walk asked it for a member.
+    picks: std::sync::atomic::AtomicU32,
 }
 
 /// The greeting a held far end opens its answer with, before any frame is answered.
@@ -114,6 +116,7 @@ impl Far {
             open: std::sync::atomic::AtomicBool::new(false),
             arrived: tokio::sync::Notify::new(),
             ceiling: None,
+            picks: std::sync::atomic::AtomicU32::new(0),
         }
     }
 
@@ -136,6 +139,12 @@ impl Far {
 
     pub(crate) fn sent(&self) -> Vec<OutboundRequest> {
         self.sent.lock().unwrap().clone()
+    }
+
+    /// How many times the walk asked it for a member.
+    #[allow(dead_code)] // read by the kernel's driver suite only
+    pub(crate) fn picks(&self) -> u32 {
+        self.picks.load(Ordering::SeqCst)
     }
 
     /// The frames written into a held far end, with whether its socket was open when each came.
@@ -184,6 +193,7 @@ impl FarEnd for Far {
         _: &'a Pass<Route>,
         attempt_no: u32,
     ) -> impl Future<Output = Pick> + Send + 'a {
+        self.picks.fetch_add(1, Ordering::SeqCst);
         let pick = match self.members.get(attempt_no as usize - 1) {
             Some(m) => Pick::Member {
                 name: (*m).to_string(),
