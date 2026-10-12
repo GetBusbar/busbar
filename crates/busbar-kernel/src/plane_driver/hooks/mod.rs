@@ -111,6 +111,8 @@ pub struct Bind<'a> {
     pub pool: &'a str,
     /// The principal the kernel verified, when there is one.
     pub principal: Option<&'a str>,
+    /// The dialect the unit arrived in: the index into the plane's dialects.
+    pub dialect: u32,
 }
 
 /// The stage taps a unit binds, by stage.
@@ -177,6 +179,8 @@ pub struct UnitHooks {
     pub groups: GroupScope,
     /// The access amendment of a hook handed the prompt.
     pub reads: HookRead,
+    /// The dialect the unit arrived in, by name (the label of a view the plane could not read).
+    pub dialect: String,
 }
 
 impl std::fmt::Debug for UnitHooks {
@@ -238,8 +242,11 @@ pub trait CallerFacts: Send + Sync {
     fn rate_headroom(&self, principal: &str, pool: &str) -> Option<f64>;
     /// The caller's budget chain.
     fn budget(&self, principal: &str) -> Vec<BudgetBucketState>;
-    /// Leave the access amendment of a hook handed the prompt.
-    fn hook_read(&self, hook: &str, principal: Option<&str>, dialect: &str, identity: bool);
+    /// Leave the access amendment of a hook handed the prompt: the kernel's one seam (the node
+    /// journal), field names only.
+    fn hook_read(&self, hook: &str, principal: Option<&str>, dialect: &str, identity: bool) {
+        crate::audit::amend::hook_read(hook, principal, dialect, identity);
+    }
     /// Fire the `response` taps of a unit refused at authentication.
     fn denied_taps(&self, taps: &[TapEntry], request_id: u64, dialect: &str, status: u16) {
         let shape = StageShape::zeroed(request_id, "", dialect, false);
@@ -302,7 +309,12 @@ impl Parts {
     }
 
     /// The unit's hooks, with what `caller` knows of the verified principal.
-    fn bind(self, bind: &Bind<'_>, caller: &Arc<dyn CallerFacts>, request_id: u64) -> UnitHooks {
+    fn bind(
+        self,
+        bind: &Bind<'_>,
+        (caller, dialects): (&Arc<dyn CallerFacts>, &[String]),
+        request_id: u64,
+    ) -> UnitHooks {
         let principal = bind.principal.map(str::to_string);
         let groups_caller = Arc::clone(caller);
         let reads_caller = Arc::clone(caller);
@@ -326,6 +338,10 @@ impl Parts {
                     reads_caller.hook_read(hook, principal, dialect, id);
                 },
             ),
+            dialect: dialects
+                .get(bind.dialect as usize)
+                .cloned()
+                .unwrap_or_default(),
         }
     }
 }
@@ -368,7 +384,11 @@ impl HookBinder for BoundHooks {
             self.taps.clone(),
             self.requested,
         )?;
-        Some(parts.bind(bind, &self.caller, (self.next_request_id)()))
+        Some(parts.bind(
+            bind,
+            (&self.caller, &self.dialects),
+            (self.next_request_id)(),
+        ))
     }
 
     fn denied(&self, dialect: u32, status: u16) {
@@ -420,7 +440,7 @@ impl HookBinder for HostHooks {
             },
             *h.requested_signals(),
         )?;
-        Some(parts.bind(bind, &self.caller, h.next_request_id()))
+        Some(parts.bind(bind, (&self.caller, &self.dialects), h.next_request_id()))
     }
 
     fn denied(&self, dialect: u32, status: u16) {
@@ -798,7 +818,6 @@ struct Asked<'a> {
     hooks: &'a UnitHooks,
     pool: &'a str,
     candidates: &'a [Candidate<'a>],
-    principal: Option<&'a str>,
     /// The walk named its candidates (an empty pool, then, has nothing to rank).
     named: bool,
 }
@@ -812,8 +831,11 @@ impl Asked<'_> {
         }
     }
 
+    /// The access amendment of a hook handed the prompt, naming whose content it was: the
+    /// caller's governance key, as the previous release named it.
     fn read(&self, hook: &str, identity: bool) {
-        (self.hooks.reads)(hook, self.principal, &self.view.dialect, identity);
+        let whose = self.hooks.key.as_ref().map(|k| k.id.as_str());
+        (self.hooks.reads)(hook, whose, &self.view.dialect, identity);
     }
 
     /// One decision of `resolved`, under its deadline, its failure walked down its on-error chain.
@@ -1234,14 +1256,22 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
             return;
         };
         let d = self.driver;
-        let (unit, principal, dialect) = {
+        // A unit reaches its route leg only through the decode step, which refuses every unit
+        // its plane did not decode (`DecodeFailed`), so its dialect is always known here; a unit
+        // with none would state no stage, and the in-session services refuse a unit they do not
+        // hold by name, never binding it under some other dialect.
+        let (unit, principal, arrived_in) = {
             let st = self.lock();
+            let Some(arrived_in) = st.decoded.as_ref().map(|x| x.dialect) else {
+                return;
+            };
             (
                 st.unit,
                 st.principal.as_ref().map(|p| p.as_str().to_string()),
-                st.decoded.as_ref().map_or(0, |x| x.dialect),
+                arrived_in,
             )
         };
+        let dialect = arrived_in;
         let (scope, dialect) = match &d.hooks {
             Some(binder) => (
                 self.far.scope(token).unwrap_or_else(|| {
@@ -1264,6 +1294,7 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
             runtime,
             d.hooks.clone(),
             (scope, principal, dialect),
+            arrived_in,
         );
         let _held = d.services.units().staged(unit, Arc::new(stage));
     }
@@ -1294,21 +1325,42 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
             .principal
             .as_ref()
             .map(|p| p.as_str().to_string());
+        let dialect = self.lock().decoded.as_ref().map_or(0, |d| d.dialect);
         let Some(hooks) = binder.bind(&Bind {
             pool: &walk_pool,
             principal: principal.as_deref(),
+            dialect,
         }) else {
             return Ok(());
         };
+        self.lock().hooked_pool.clone_from(&walk_pool);
         // The unit's correlation id, a native `u64` on its span (never a formatted string), the
         // same value every hook payload and tap of the unit carries.
         let span = tracing::debug_span!("forward", request_id = tracing::field::Empty);
         span.record("request_id", hooks.request_id);
         let mut view = match self.project(None) {
             Ok(view) => view,
+            // A request the plane cannot read is the request's failure where a hook must judge
+            // it (a rewrite, a gate, a route policy); a tap only observes, and observes the zeroed
+            // shape (the previous release's stage capture), the request proceeding.
+            Err(Stopped::Unreadable)
+                if hooks.rewrites.is_empty()
+                    && hooks.gates.is_empty()
+                    && hooks.policy.is_none() =>
+            {
+                Projection {
+                    pool: walk_pool.clone(),
+                    dialect: hooks.dialect.clone(),
+                    ..Projection::default()
+                }
+            }
             Err(stopped) => {
                 // The unit's response taps still see it, in the zeroed shape.
-                self.lock().hooked = Some((hooks, Projection::default()));
+                let zeroed = Projection {
+                    dialect: hooks.dialect.clone(),
+                    ..Projection::default()
+                };
+                self.lock().hooked = Some((hooks, zeroed));
                 return Err(stopped);
             }
         };
@@ -1317,7 +1369,7 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
         } else {
             walk_pool
         };
-        let principal = principal.as_deref();
+        self.lock().hooked_pool.clone_from(&pool);
 
         // 1. THE REWRITE CHAIN.
         for (timeout, hook) in &hooks.rewrites {
@@ -1377,7 +1429,6 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
                 &all,
                 &mut keep,
                 &mut constraint,
-                principal,
             )
             .await;
         if let Err(stopped) = decided {
@@ -1405,12 +1456,10 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
             self.far.constrain(token, constraint);
         }
         self.lock().hooked = Some((hooks, view));
-        self.lock().hooked_pool = pool;
         Ok(())
     }
 
     /// Steps 3 and 4: the gates reconciled, then the base policy when no gate ordered.
-    #[allow(clippy::too_many_arguments)]
     async fn decide_route(
         &self,
         hooks: &UnitHooks,
@@ -1419,7 +1468,6 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
         all: &[CandidateFacts],
         keep: &mut HashSet<usize>,
         constraint: &mut Constraint,
-        principal: Option<&str>,
     ) -> Result<(), Stopped> {
         let mut gate_order: Option<(Vec<usize>, &'static str)> = None;
         if !hooks.gates.is_empty() {
@@ -1429,7 +1477,6 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
                 hooks,
                 pool,
                 candidates: &shown,
-                principal,
                 named,
             };
             let outcomes: Vec<Decided> =
@@ -1552,7 +1599,6 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
             hooks,
             pool,
             candidates: &shown,
-            principal,
             named,
         };
         match Box::pin(asked.decide(policy)).await {
@@ -1783,6 +1829,9 @@ pub struct SessionStage {
     container: String,
     principal: Option<String>,
     dialect: String,
+    /// The dialect the unit arrived in, as the index into the plane's dialects (what its hooks
+    /// are bound under).
+    arrived_in: u32,
     bound: std::sync::OnceLock<Option<UnitHooks>>,
 }
 
@@ -1797,8 +1846,9 @@ impl std::fmt::Debug for SessionStage {
 
 /// A gate-first unit's hooks, as the in-session stage runs them: its entry's gates and rewrite
 /// chain, its caller's key; no tap and no route policy (the gate-first order has none), and a hook
-/// handed the prompt leaves the kernel's own access amendment.
-fn gated_unit(g: GatedHooks) -> UnitHooks {
+/// handed the prompt leaves the kernel's own access amendment; `dialect` is the name of the dialect
+/// the unit arrived in.
+fn gated_unit(g: GatedHooks, dialect: String) -> UnitHooks {
     UnitHooks {
         request_id: g.request_id,
         rewrites: g.rewrites,
@@ -1818,6 +1868,7 @@ fn gated_unit(g: GatedHooks) -> UnitHooks {
                 crate::audit::amend::hook_read(hook, principal, dialect, identity);
             },
         ),
+        dialect,
     }
 }
 
@@ -1842,13 +1893,17 @@ impl Drop for OwedStage {
 
 impl SessionStage {
     /// The stage of a unit of instance `instance`, routed over `scope` for `principal`, its hooks
-    /// bound by `binder` (none = no hook binds) in the binder's order, run on `runtime`.
+    /// bound by `binder` (none = no hook binds) in the binder's order, run on `runtime`; the unit
+    /// arrived in dialect `arrived_in` (the index into the plane's dialects; its name is
+    /// `dialect`), and its hooks bind there. There is no default dialect: a stage is stated only for
+    /// a unit its plane decoded.
     #[must_use]
     pub fn new(
         instance: Arc<str>,
         runtime: tokio::runtime::Handle,
         binder: Option<Arc<dyn HookBinder>>,
         (scope, principal, dialect): (super::RoutedScope, Option<String>, String),
+        arrived_in: u32,
     ) -> Self {
         let gated = binder
             .as_ref()
@@ -1865,6 +1920,7 @@ impl SessionStage {
             container: scope.container,
             principal,
             dialect,
+            arrived_in,
             bound: std::sync::OnceLock::new(),
         }
     }
@@ -1878,11 +1934,12 @@ impl SessionStage {
                 if b.order() == HookOrder::Gated {
                     return b
                         .bind_gated(&self.container, self.principal.as_deref())
-                        .map(gated_unit);
+                        .map(|g| gated_unit(g, self.dialect.clone()));
                 }
                 b.bind(&Bind {
                     pool: &self.pool,
                     principal: self.principal.as_deref(),
+                    dialect: self.arrived_in,
                 })
             })
             .as_ref()
