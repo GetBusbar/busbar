@@ -498,3 +498,7 @@ async fn session_door_a_provider_key_gone_by_an_apply_reaches_the_caller_without
         .expect("the body reads");
     assert_clean(instance, status, &headers, &body, &secret);
 }
+
+// The scan's fixed-class half and its kept RED arm (status row 127).
+#[path = "secret_source_class.rs"]
+mod class;

@@ -35,14 +35,17 @@ use std::time::{Duration, Instant};
 include!(concat!(env!("OUT_DIR"), "/linked_transports.rs"));
 
 fn fixture_dir() -> PathBuf {
-    let d = std::env::temp_dir().join(format!(
-        "busbar-otlp-delivers-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
+    let d = std::env::temp_dir().join(format!("busbar-otlp-delivers-{}-{}", std::process::id(), {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        format!(
+            "{}-{}-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_nanos()),
+            line!(),
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        )
+    }));
     std::fs::create_dir_all(&d).unwrap();
     d
 }

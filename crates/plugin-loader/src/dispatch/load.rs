@@ -187,7 +187,7 @@ pub fn rendering_of_library(path: &Path) -> Result<Option<Vec<u8>>, LoadError> {
 ///
 /// # Errors
 /// `dlopen` failed.
-#[cfg(feature = "conformance")]
+#[cfg(any(test, feature = "conformance"))]
 pub(crate) fn door_addresses_of_library(path: &Path) -> Result<Option<(usize, usize)>, LoadError> {
     let lib = crate::dlopen_on_worker(path.as_os_str()).map_err(LoadError::Open)?;
     // SAFETY: `DOOR_SYMBOL` is typed `DoorFn` by the mechanism; `lib` outlives every use of it.

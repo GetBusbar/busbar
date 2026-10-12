@@ -16,6 +16,14 @@ ignore = [
     # it). Advisory is "unmaintained", not a security hole. Re-evaluate when tikv-jemalloc-ctl
     # drops paste. Tracking: https://github.com/tikv/jemallocator/issues
     "RUSTSEC-2024-0436",
+    # RUSTSEC-2024-0449: `unsafe-libyaml` 0.2.11 is unmaintained. It is pulled in only via
+    # serde_yaml_ng 0.10, busbar's YAML config parser (`cargo tree -i unsafe-libyaml`:
+    # busbar, busbar-a2a, busbar-contract, busbar-kernel, busbar-core-oauth2,
+    # xtask and others -> serde_yaml_ng -> unsafe-libyaml). Advisory is "unmaintained", not a
+    # security hole. There is no safe swap now: a different YAML parser risks 1.5.5 config-parse
+    # parity (customer-visible behaviour, guarded by the oracle). Re-evaluate when serde_yaml_ng
+    # moves off unsafe-libyaml. Tracking: https://rustsec.org/advisories/RUSTSEC-2024-0449.html
+    "RUSTSEC-2024-0449",
 ]
 
 [licenses]

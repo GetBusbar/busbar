@@ -125,15 +125,18 @@ const ROOTS: &[&str] = &["crates"];
 const EXCLUDE: &[&str] = &["/target/"];
 /// The denominator floor: a walk that finds fewer files than this is broken, not clean.
 ///
-/// ARMED AT THE MEASURED POPULATION (Law 9), not a margin below it: 2140 `.rs` files under
-/// `crates/` on FLIP-STREAMING merged onto predev (the gate prints the count in both judging rows'
-/// detail). It read 200 — about a tenth of the tree — so a walk that silently dropped nine files in
-/// ten still scanned "clean". It was first armed at 2181 on predev 0fd08ee75d; predev then retired
-/// the kernel-identity and kernel `egress_auth` modules (24 files out, 15 in), re-arming it at 2174
-/// on predev 39374ec00e; FLIP-STREAMING then deleted a legacy plane crate (its plane is served
-/// through its door), and a floor above the tree it guards refuses every walk. A tree
-/// that grows keeps this floor; a walk that comes back short of it is refused.
-const SCAN_FLOOR: usize = 2140;
+/// ARMED AT THE MEASURED POPULATION (Law 9), not a margin below it: 2158 `.rs` files under
+/// `crates/` on FLIP-STREAMING merged onto predev 1617e9f019 (the gate prints the count in both
+/// judging rows' detail). It read 200 — about a tenth of the tree — so a walk that silently
+/// dropped nine files in ten still scanned "clean". It was first armed at 2181 on predev
+/// 0fd08ee75d; predev then retired the kernel-identity and kernel `egress_auth` modules (24 files
+/// out, 15 in), re-armed at 2174 on predev 39374ec00e; predev grew to 2176, and the MCP-FIX stack
+/// retired the plane-mcp `outputschema` and `tool_plane` modules with their tests (5 files out, 2
+/// in), re-armed at 2173 on predev bd39476618; FLIP-STREAMING then deleted the legacy
+/// `busbar-voice` crate (its plane is served through its door), so the floor follows the tree it
+/// guards to 2158. A floor above the tree it guards refuses every walk. A tree that grows keeps
+/// this floor; a walk that comes back short of it is refused.
+const SCAN_FLOOR: usize = 2158;
 
 /// Is `rel` a file that compiles only into a TEST, BENCH or EXAMPLE target — never into a shipped
 /// lib/bin? A `tests/` directory anywhere on the path (which covers `src/tests/`), a `benches/` or
