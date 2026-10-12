@@ -1180,7 +1180,7 @@ impl Connector {
                         a.1 = Some(w.clone());
                     }
                 }
-                match self.judge_into(&p.spec.authority(), p.judged_class, true, &j.answer) {
+                match self.judge_into(&p.spec.endpoint(), p.judged_class, true, &j.answer) {
                     None => return Ok(false),
                     Some(Err(v)) => {
                         j.answer.lock().expect("judgement").0 = Some(Err(v));
@@ -1282,7 +1282,7 @@ impl Connector {
             }
             proxied.target_judged = true;
             let answer: Answer = Arc::new(Mutex::new((None, None)));
-            let proxy_authority = proxied.spec.authority();
+            let proxy_authority = proxied.spec.endpoint();
             return match self.judge_into(&proxy_authority, judged_class, true, &answer) {
                 None => Ok((
                     None,

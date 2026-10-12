@@ -6,7 +6,7 @@
 //! through the connector honours `HTTPS_PROXY` / `HTTP_PROXY` / `ALL_PROXY` / `NO_PROXY` exactly
 //! as 1.5.5's reqwest clients did).
 //!
-//! The decision is the kernel engine's owned CONNECT tunnel (`busbar-kernel`
+//! The choice is the kernel engine's owned CONNECT tunnel (`busbar-kernel`
 //! `egress/engine/mod.rs`, `mod tunnel`), moved verbatim: scheme-scoped slots (https targets use
 //! `HTTPS_PROXY`, everything else `HTTP_PROXY`, each falling back to `ALL_PROXY`, uppercase read
 //! before lowercase), `NO_PROXY` with reqwest's full rule set (host, domain suffix, IP literal,
@@ -26,7 +26,7 @@
 use std::net::IpAddr;
 use std::sync::Arc;
 
-/// One boot-resolved proxy endpoint: where to TCP-connect and what to put in
+/// One boot-resolved proxy endpoint: where to connect and what to put in
 /// `Proxy-Authorization`. Parsed ONCE at boot; shared by refcount from the per-scheme slots
 /// of [`ProxyConfig`].
 #[cfg_attr(test, derive(Debug))]
@@ -38,7 +38,7 @@ pub struct ProxySpec {
     auth: Option<String>,
 }
 
-/// The boot-resolved proxy DECISION, reqwest-scoped: https:// targets use the `https` slot
+/// The boot-resolved proxy CHOICE, reqwest-scoped: https:// targets use the `https` slot
 /// (`HTTPS_PROXY`, `ALL_PROXY` fallback), everything else uses the `http` slot (`HTTP_PROXY`,
 /// `ALL_PROXY` fallback), and `NO_PROXY` excludes hosts from both. This mirrors hyper-util's
 /// `client::proxy::matcher::Builder::build` (`http: http.or(all)`, `https: https.or(all)`)
@@ -52,7 +52,7 @@ pub struct ProxyConfig {
 }
 
 impl ProxyConfig {
-    /// The per-CONNECT decision: `None` → direct (NO_PROXY-excluded, or no proxy configured
+    /// The per-CONNECT choice: `None` → direct (NO_PROXY-excluded, or no proxy configured
     /// for the target's scheme), `Some` → tunnel through that proxy.
     #[must_use]
     pub fn select(&self, dst_is_https: bool, target_host: &str) -> Option<Arc<ProxySpec>> {
@@ -210,7 +210,7 @@ fn redact_userinfo(v: &str) -> String {
 
 /// Parse a proxy env value (`http://[user:pass@]host[:port]`; a bare `host:port` is accepted
 /// too). `https://` proxies are refused loudly: TLS-to-proxy is a different transport this
-/// tunnel does not speak, and silently downgrading it to TCP would be a lie.
+/// tunnel does not speak, and silently downgrading it to a plain stream would be a lie.
 ///
 /// Every refusal renders the value through [`redact_userinfo`] — see there for why the raw
 /// value must never reach the message, and why the host still does.
@@ -327,7 +327,7 @@ pub fn resolve_config(env: &ProxyEnvValues) -> Result<Option<Arc<ProxyConfig>>, 
     })))
 }
 
-/// THE PROCESS'S PROXY DECISION, read once from its environment: `None` when no proxy variable is
+/// THE PROCESS'S PROXY CHOICE, read once from its environment: `None` when no proxy variable is
 /// set (the direct arm every known deployment takes).
 ///
 /// # Errors
@@ -342,13 +342,13 @@ pub fn from_env() -> Result<Option<Arc<ProxyConfig>>, String> {
 /// headers. Anything larger is a misbehaving proxy and fails the connect.
 pub const CONNECT_HEAD_CAP: usize = 8 * 1024;
 
-/// Wall-clock bound on the CONNECT handshake — the same 10s the TCP connect itself carries.
+/// Wall-clock bound on the CONNECT handshake — the same 10s the socket connect itself carries.
 pub const CONNECT_HANDSHAKE: std::time::Duration = std::time::Duration::from_secs(10);
 
 impl ProxySpec {
-    /// The proxy's own authority, `host:port`, as the connection dials it.
+    /// The proxy's own `host:port`, as the connection dials it.
     #[must_use]
-    pub fn authority(&self) -> String {
+    pub fn endpoint(&self) -> String {
         if self.host.contains(':') && !self.host.starts_with('[') {
             format!("[{}]:{}", self.host, self.port)
         } else {
@@ -358,10 +358,10 @@ impl ProxySpec {
 }
 
 /// `CONNECT host:port HTTP/1.1` (+ Host, + Proxy-Authorization when configured), the bytes the
-/// engine's `connect_handshake` wrote, for `authority` (`host:port`, a v6 host bracketed).
+/// engine's `connect_handshake` wrote, for `target` (`host:port`, a v6 host bracketed).
 #[must_use]
-pub fn connect_request(authority: &str, proxy: &ProxySpec) -> Vec<u8> {
-    let mut req = format!("CONNECT {authority} HTTP/1.1\r\nHost: {authority}\r\n");
+pub fn connect_request(target: &str, proxy: &ProxySpec) -> Vec<u8> {
+    let mut req = format!("CONNECT {target} HTTP/1.1\r\nHost: {target}\r\n");
     if let Some(auth) = &proxy.auth {
         req.push_str("Proxy-Authorization: ");
         req.push_str(auth);
@@ -371,7 +371,7 @@ pub fn connect_request(authority: &str, proxy: &ProxySpec) -> Vec<u8> {
     req.into_bytes()
 }
 
-/// What the proxy has answered so far to a CONNECT for `authority`: `Ok(None)` = its head is not
+/// What the proxy has answered so far to a CONNECT for `target`: `Ok(None)` = its head is not
 /// complete yet; `Ok(Some(n))` = the tunnel is up and the head is the first `n` bytes (anything
 /// after them is the target's); `Err` = the proxy refused (any status but 2xx: RFC 9110, 2xx means
 /// the tunnel is established) or its head ran past [`CONNECT_HEAD_CAP`].
@@ -379,7 +379,7 @@ pub fn connect_request(authority: &str, proxy: &ProxySpec) -> Vec<u8> {
 /// # Errors
 ///
 /// The refusal, in the engine's words.
-pub fn connect_answer(head: &[u8], authority: &str) -> Result<Option<usize>, String> {
+pub fn connect_answer(head: &[u8], target: &str) -> Result<Option<usize>, String> {
     let Some(at) = head.windows(4).position(|w| w == b"\r\n\r\n") else {
         if head.len() > CONNECT_HEAD_CAP {
             return Err("proxy CONNECT response head exceeded 8KiB".into());
@@ -395,24 +395,20 @@ pub fn connect_answer(head: &[u8], authority: &str) -> Result<Option<usize>, Str
         .is_some_and(|code| code.first() == Some(&b'2') && code.len() == 3);
     if !status_2xx {
         return Err(format!(
-            "proxy refused CONNECT {authority}: {}",
+            "proxy refused CONNECT {target}: {}",
             String::from_utf8_lossy(line)
         ));
     }
     Ok(Some(at + 4))
 }
 
-/// The host of `authority` (`host:port`, a v6 host bracketed), as `NO_PROXY` matches it.
+/// The host of `target` (`host:port`, a v6 host bracketed), as `NO_PROXY` matches it.
 #[must_use]
-pub fn host_of(authority: &str) -> &str {
-    if authority.starts_with('[') {
-        return authority
-            .find(']')
-            .map_or(authority, |end| &authority[..=end]);
+pub fn host_of(target: &str) -> &str {
+    if target.starts_with('[') {
+        return target.find(']').map_or(target, |end| &target[..=end]);
     }
-    authority
-        .rsplit_once(':')
-        .map_or(authority, |(host, _)| host)
+    target.rsplit_once(':').map_or(target, |(host, _)| host)
 }
 
 /// A whole config whose BOTH slots point at one proxy at `host:port`: what a test wires directly

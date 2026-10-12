@@ -25,7 +25,7 @@ const OWNER: busbar_contract::conn::InstanceId = busbar_contract::conn::Instance
 
 /// The selected proxy's `host:port` for a target, or `None` for the direct arm.
 fn selected(config: &Arc<ProxyConfig>, https: bool, host: &str) -> Option<String> {
-    config.select(https, host).map(|p| p.authority())
+    config.select(https, host).map(|p| p.endpoint())
 }
 
 /// The pure value bag, as the environment would fill it.
@@ -61,7 +61,7 @@ fn proxy_url_parse_extracts_auth_and_refuses_https_proxies() {
          Proxy-Authorization: Basic dTpw\r\n\r\n"
     );
     assert_eq!(
-        spec.authority(),
+        spec.endpoint(),
         "proxy.corp:80",
         "a proxy URL's port defaults to 80"
     );
