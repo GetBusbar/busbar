@@ -833,7 +833,10 @@ impl PlaneCalls for Double {
     /// The view this plane projects: each body line `role:text` is a turn, a `sys=` line the
     /// system prompt and a `user=` line the end user. A rewrite (1.5.5's `rewrite` object) is
     /// applied by replacing the turns with its messages' `role:content`, unless the target is
-    /// `/no-rewrite` (a rewrite the plane cannot read); `/unprojectable` refuses to project.
+    /// `/no-rewrite` (a rewrite the plane cannot read); `/unprojectable` refuses to project. The
+    /// view names the entry its `arrive` recorded (none) and states the unit's body: a projection
+    /// with no body would leave a gate-first unit nothing to screen, and the kernel would bind no
+    /// gate for it.
     fn project(
         &self,
         input: &mut ProjectIn,
@@ -864,6 +867,7 @@ impl PlaneCalls for Double {
                     .collect();
                 lines.join("\n").into_bytes()
             });
+        let unit_body = body.clone();
         let effective = rewritten.clone().unwrap_or(body);
         let effective = String::from_utf8_lossy(&effective).into_owned();
         let (mut system, mut user, mut turns) = (None, None, Vec::new());
@@ -877,7 +881,7 @@ impl PlaneCalls for Double {
                 turns.push((role.to_string(), text.to_string()));
             }
         }
-        let mut strings: Vec<&[u8]> = vec![b"pool-a", b"test-dialect"];
+        let mut strings: Vec<&[u8]> = vec![b"", b"test-dialect"];
         strings.push(system.as_deref().unwrap_or("").as_bytes());
         strings.push(user.as_deref().unwrap_or("").as_bytes());
         for (role, text) in &turns {
@@ -885,6 +889,7 @@ impl PlaneCalls for Double {
             strings.push(text.as_bytes());
         }
         let rewritten_bytes = rewritten.unwrap_or_default();
+        strings.push(&unit_body);
         strings.push(&rewritten_bytes);
         let arena: usize = strings.iter().map(|b| b.len()).sum();
         for call in 0..2 {
@@ -920,8 +925,10 @@ impl PlaneCalls for Double {
                 let text = place(pair[1]);
                 unsafe { *input.messages_buf.add(k) = MessageView { role, text } };
             }
+            let _ = place(&unit_body);
             let _ = place(&rewritten_bytes);
             let start = arena - rewritten_bytes.len();
+            let body_start = start - unit_body.len();
             out.view = RequestView {
                 request_id: 0,
                 pool,
@@ -944,9 +951,16 @@ impl PlaneCalls for Double {
             out.prompt.messages = input.messages_buf.cast_const();
             out.prompt.messages_len = turns.len();
             out.end_user = end_user;
-            out.body = Span {
-                offset: busbar_contract::abi::plane::SPAN_ABSENT,
-                len: 0,
+            out.body = if unit_body.is_empty() {
+                Span {
+                    offset: busbar_contract::abi::plane::SPAN_ABSENT,
+                    len: 0,
+                }
+            } else {
+                Span {
+                    offset: body_start as u32,
+                    len: unit_body.len() as u32,
+                }
             };
             out.rewritten = Span {
                 offset: start as u32,
@@ -2104,8 +2118,9 @@ async fn a_gate_first_plane_screens_its_entry_before_the_far_end_and_stops_at_th
             .contains(&busbar_contract::caps::StepName::Admit),
         "a veto admits nothing: the door was never asked"
     );
-    // The entry the plane's projection names (this double projects `pool-a`).
-    assert_eq!(*binder.asked.lock().unwrap(), vec!["pool-a".to_string()]);
+    // The entry the kernel recorded at decode (this double's `arrive` names none, and its
+    // projection names the same).
+    assert_eq!(*binder.asked.lock().unwrap(), vec![String::new()]);
     assert!(far.sent().is_empty(), "nothing reached the far end");
     let rendered = units.take_rendered().expect("the veto is rendered");
     assert_eq!(rendered.status, 451);
