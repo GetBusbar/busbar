@@ -14,7 +14,7 @@ mod common;
 
 use busbar_contract::plane::{Ingress, Plane};
 use busbar_contract::wire::FrameCursor;
-use busbar_plane_mcp::{facts, McpPlane};
+use busbar_plane_mcp::{tool_facts as facts, McpPlane};
 use common::{frame, Scaffold};
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;

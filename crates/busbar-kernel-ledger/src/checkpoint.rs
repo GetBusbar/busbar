@@ -60,22 +60,8 @@ impl Signature {
     }
 }
 
-/// Why a checkpoint could not be signed.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SignError {
-    /// The key this deployment signs with is not available.
-    KeyUnavailable(String),
-}
-
-impl std::fmt::Display for SignError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            SignError::KeyUnavailable(why) => write!(f, "the signing key is not available: {why}"),
-        }
-    }
-}
-
-impl std::error::Error for SignError {}
+/// Why a checkpoint could not be signed: the contract's, because a migration's error carries it.
+pub use busbar_contract::migration::SignError;
 
 /// Signs checkpoint bodies. Implemented by whatever holds the deployment's keys.
 pub trait CheckpointSecret {

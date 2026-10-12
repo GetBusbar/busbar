@@ -133,6 +133,46 @@ fn resolve(cx: &Ctx) -> Result<Vec<Pinned>, String> {
     Ok(out)
 }
 
+/// WHERE A PINNED REPO'S `-plugin` TWIN IS LAID: outside `crates/`, so no rule that walks the
+/// crates reads it as source of the logic crate. Only [`twin_files`] reads it, for the two facts the
+/// twin carries (the exported door and the battery). A self-test plants a twin here.
+pub(super) const TWIN_ROOT: &str = ".pinned-twin";
+
+/// The overlay directory of `name`'s twin.
+pub(super) fn twin_dir(name: &str) -> String {
+    format!("{TWIN_ROOT}/{name}")
+}
+
+/// The checkout directory of `p`'s `-plugin` twin: the sibling directory `<logic dir>-plugin`
+/// whose manifest names the package `<name>-plugin` (a plugin repo's layout, §9). `None` when the
+/// repo carries no such twin.
+fn twin_of(p: &Pinned) -> Option<PathBuf> {
+    let leaf = p.dir.file_name()?.to_str()?;
+    let twin = p.dir.with_file_name(format!("{leaf}{CDYLIB_SUFFIX}"));
+    let manifest = std::fs::read_to_string(twin.join("Cargo.toml")).ok()?;
+    (super::package_name(&manifest)? == format!("{}{CDYLIB_SUFFIX}", p.name)).then_some(twin)
+}
+
+/// Every laid twin file, as `(the logic crate's mount dir, the path inside the twin, text)`, read
+/// through `cx` so a plant's twin is the one judged.
+pub(super) fn twin_files(cx: &Ctx) -> Vec<(String, String, String)> {
+    let Ok(files) = cx.walk(&crate::ctx::WalkSpec::new([TWIN_ROOT]).allow_empty()) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for f in files {
+        let rel = f.rel_str();
+        let Some(rest) = rel.strip_prefix(&format!("{TWIN_ROOT}/")) else {
+            continue;
+        };
+        let Some((name, sub)) = rest.split_once('/') else {
+            continue;
+        };
+        out.push((mount_dir(name), sub.to_string(), f.text.clone()));
+    }
+    out
+}
+
 /// Where a pinned package is read, in the tree's own spelling.
 pub(super) fn mount_dir(name: &str) -> String {
     format!("crates/{name}")
@@ -209,6 +249,19 @@ fn mount(cx: &Ctx) -> Arc<Overlay> {
             }
             for (rel, text) in crate_files(&p.dir) {
                 ov.set(format!("{at}/{rel}"), text);
+            }
+            // Only the twin's Rust sources are laid, and no manifest: a laid twin is two facts
+            // about its logic crate, never a crate the census could discover on its own.
+            if let Some(twin) = twin_of(p) {
+                for (rel, text) in crate_files(&twin) {
+                    let source = rel.ends_with(".rs")
+                        && ["src/", "examples/", "tests/"]
+                            .iter()
+                            .any(|d| rel.starts_with(d));
+                    if source {
+                        ov.set(format!("{}/{rel}", twin_dir(&p.name)), text);
+                    }
+                }
             }
         }
     }

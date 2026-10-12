@@ -16,3 +16,9 @@ It is the control without which every RED case in the self-test is satisfiable b
 simply red about everything. It also carries the DECLARED/UNDECLARED pair: the self-test takes the
 decision plane's unit path away twice, once with `[[dormant]]` rows in `qa/reachability.toml` and
 once without, and the two cases differ in nothing else.
+
+It also carries the five plane-kind crates the real tree does (`crates/busbar-plane-*`, a manifest and
+a `src/lib.rs` each), so `reachability:plane-crates` has a census to read: four map to their roster
+plane by the key their `impl PlaneMeta` declares, and `busbar-plane-mcp` declares none and maps as the
+mcp row's linked crate. The self-test plants a sixth plane crate the roster does not name, a crate
+mapped by its name alone, and a tree with none — each RED.

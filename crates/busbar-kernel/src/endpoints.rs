@@ -229,6 +229,14 @@ fn list_models_dialect(
     models.sort_unstable();
     names.extend(models);
     names.dedup();
+    // Each plane generation's listed names, appended after the routing tables' own, scope-filtered
+    // as the plane admits them; a name already listed is not listed twice. None listed: the list,
+    // and so the bytes, are unchanged.
+    for name in crate::plane::door::listed(&app.plane_slots, gov.key.as_deref()) {
+        if !names.contains(&name) {
+            names.push(name);
+        }
+    }
 
     // Neutral dispatch: core resolves WHICH dialect answers from the request fingerprint, then hands
     // that dialect's declaration the visible name list and lets IT shape the envelope. Each

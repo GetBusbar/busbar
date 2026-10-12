@@ -396,14 +396,14 @@ async fn consent_submit(
                 .into_response()
         }
     };
-    // The redirect host is rendered on the screen but deliberately NOT part of the stake key: the
-    // key has to match what the authorization endpoint compares when it spends the approval, and
-    // widening it here alone would make every approval unspendable. A PUSHED request is keyed by
-    // its single-use handle instead (`consent::pushed_key`), which names its scope already.
-    if let Some((client_id, scope, _redirect_host)) = client_and_scope_of(target) {
+    // The stake key is the request itself: the `return` target this answer hands the browser back
+    // to, which is the path and query `/authorize` spends under (`consent::request_key`). A PUSHED
+    // request is keyed by its single-use handle instead (`consent::pushed_key`), which names its
+    // scope already.
+    if let Some((client_id, _scope, _redirect_host)) = client_and_scope_of(target) {
         let key = match query_value(target, "request_uri") {
             Some(handle) => super::consent::pushed_key(&client_id, &handle),
-            None => format!("{client_id}\u{1f}{scope}"),
+            None => super::consent::request_key(&client_id, target),
         };
         plane.sessions().stake(&session, key, approve);
     }

@@ -130,7 +130,6 @@ pub(crate) extern "C-unwind" fn identity_admit(
         };
         let verdict = rt.block_on(crate::auth::AuthMiddleware::run_chain_on_request_path(
             &app.auth,
-            &app.credential_cache,
             candidate,
             // The identity query carries the caller's credential and no request head.
             crate::auth::ChainHead::default(),

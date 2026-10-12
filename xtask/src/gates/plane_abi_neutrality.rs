@@ -5,9 +5,13 @@
 //! (carrier / scope / egress / metering), NOT ENUMERATED from any one protocol plane. That claim
 //! rots silently the first time someone names a type, fn or variant after a protocol or role noun.
 //! This is the machine check that "derived, not enumerated" STAYS true as capabilities are added:
-//! it scans the HOT lane of `busbar-plugin` for the banned set and asserts zero. Only the hot lane —
-//! the COLD lane keeps its pre-existing store/auth/hook vocabulary and is deliberately exempt, and
-//! the shared crate root is neutral by construction.
+//! it scans THE PLANE ABI for the banned set and asserts zero. The plane ABI is the per-kind plane
+//! ABI (`abi/plane`), the host tables every kind calls (`abi/host`), and the retiring HOT lane
+//! (`abi/hot`) for as long as it exists (X5 finding 4: the witness read only the hot lane, the lane
+//! the module doc says is deleted with the last plane on it, while the live surface went unopened).
+//! The roots are read off the abi module's own `pub mod` lines; the COLD lane keeps its
+//! pre-existing store/auth/hook vocabulary and is deliberately exempt, and the shared crate root is
+//! neutral by construction.
 //!
 //! Six rows, and the first three are about whether the ban list can be trusted at all:
 //!
@@ -23,16 +27,18 @@
 //! * `plane-abi-neutrality:plane-keys-covered` — every CANONICAL plane key is banned. The ban list
 //!   is a curated superset; the keys it must never omit are single-sourced, so the day a plane lands
 //!   this row lands with it.
-//! * `plane-abi-neutrality:hot-lane-present` — the lane exists AND holds Rust. A directory that
-//!   exists but carries no `.rs` greps clean, and zero banned nouns over zero files is the passing
-//!   answer to the only ban here — indistinguishable from a genuinely derived surface.
+//! * `plane-abi-neutrality:scan-roots` — every live root (`abi/plane`, `abi/host`) is declared by
+//!   `abi/mod.rs` AND holds at least its measured file count. A directory that exists but carries no
+//!   `.rs` greps clean, and zero banned nouns over zero files is the passing answer to the only ban
+//!   here — indistinguishable from a genuinely derived surface. The hot lane is scanned while it
+//!   holds Rust and its deletion is not red.
 //! * `plane-abi-neutrality:exported-declarations` — the invariant, ceiling 0.
 //! * `plane-abi-neutrality:test-path-ratchet` — BOTH HALVES, NEITHER HIDDEN. A `#[test] fn
 //!   …_round_trips_…` under `hot/tests/` exports nothing, so counting it as an ABI leak is the wrong
 //!   verdict — but deleting it from the scan without saying so is a gate quietly narrowing itself.
 //!   It is a ratchet at today's count that may only go DOWN, and the sites are printed either way.
 
-use crate::ctx::{Ctx, Edit, Overlay, WalkSpec};
+use crate::ctx::{Ctx, Edit, Overlay, WalkError, WalkSpec};
 use crate::gates::{prove_green, prove_red, Gate, Report};
 use crate::ledger::{Row, Verdict};
 use crate::parity::LegacyRun;
@@ -41,11 +47,23 @@ use crate::planes::{PLANE_GRAMMAR, PLANE_KEYS};
 pub const ROW_MANDATE: &str = "plane-abi-neutrality:mandate-document";
 pub const ROW_BAN_LIST: &str = "plane-abi-neutrality:ban-list-complete";
 pub const ROW_PLANE_KEYS: &str = "plane-abi-neutrality:plane-keys-covered";
-pub const ROW_HOT_LANE: &str = "plane-abi-neutrality:hot-lane-present";
+pub const ROW_SCAN_ROOTS: &str = "plane-abi-neutrality:scan-roots";
 pub const ROW_EXPORTED: &str = "plane-abi-neutrality:exported-declarations";
 pub const ROW_TEST_RATCHET: &str = "plane-abi-neutrality:test-path-ratchet";
 
-const HOT_LANE: &str = "crates/busbar-contract/src/abi/hot";
+/// The abi module. Its own `pub mod` lines (in `{ABI_DIR}/mod.rs`) are where the scanned roots are
+/// read from: a live root the module does not declare is RED, never a narrower scan.
+const ABI_DIR: &str = "crates/busbar-contract/src/abi";
+
+/// THE LIVE PLANE ABI, each with its floor: the `.rs` count measured on predev 5e672d125d. A root
+/// below its floor is RED; a root that grows is fine. `plane` is the per-kind plane ABI (THE
+/// DESIGN's `abi/plane/`), `host` the host tables every kind calls (`abi/host/`: conn, hook,
+/// service). Lower a floor only in a reviewed diff that says which file left and why.
+const LIVE_ROOTS: &[(&str, usize)] = &[("plane", 2), ("host", 5)];
+
+/// The RETIRING lane: scanned while it holds Rust, and its deletion (M6-HOT-PLANE) is not red once
+/// the live roots above are read.
+const RETIRING_ROOT: &str = "hot";
 const TAXONOMY_DOC: &str = "docs/design/BUSBAR-1.6.0.md";
 
 /// DOCUMENTED EXEMPTION for [`declared_plane_keys`]: `crates/busbar-contract/src/abi/hot/mod.rs` declares
@@ -69,6 +87,13 @@ const HOT_LANE_DECL_SITE: &str = "crates/busbar-contract/src/abi/hot/mod.rs";
 /// in writing, instead of the ban list being loosened or a correct primitive being renamed to dodge
 /// a grep. This is the same trade the `PLANE_DECL` exemption above makes.
 ///
+/// `TaskLost` IS THE SAME COLLISION AT THE IDENTIFIER (coordinator ruling, X5 finding 4): the wire
+/// refusal code `RefusalCode::TaskLost` (`abi/plane/mod.rs`) and the kernel reason it maps to are
+/// named for the RUNTIME task that ran a unit and vanished, not the a2a `task` noun, and the reason
+/// persists as the durable string `task_lost` (`caps/seat_verdict.rs`) in journals and disputes —
+/// renaming it would change stored bytes. Exempt as this exact identifier and nothing wider: any
+/// other declaration whose words carry `task` is still a finding.
+///
 /// NOT a licence: a genuine leak of THIS plane into a neutral crate is caught by `plane-purity` and
 /// by the `law0-neutral-instance` class in `kind_isolation::matrix`, which key on the crate edge
 /// rather than on a noun and so are immune to the collision.
@@ -76,11 +101,40 @@ const HOT_LANE_DECL_SITE: &str = "crates/busbar-contract/src/abi/hot/mod.rs";
 /// Two spellings of the ONE plane, because the key is read two ways (see [`declared_plane_keys`]):
 /// `plane-decisions` from the declaration the composition root writes for it, `decisions` from its
 /// crate directory `busbar-plane-decisions`. Same plane, same collision, same exemption.
-const PRIMITIVE_COLLISION_KEYS: &[&str] = &["plane-decisions", "decisions"];
+const PRIMITIVE_COLLISION_KEYS: &[&str] = &["plane-decisions", "decisions", "TaskLost"];
 
-/// The banned protocol/role nouns. Matched case-insensitively as SUBSTRINGS of identifiers on
-/// declaration lines: a banned noun concatenated into a name — `McpTransport`, `server_stream` — is
-/// exactly the leak to catch, and a word-boundary match would miss it.
+/// THE HOOK KIND'S OWN VOCABULARY, A CLOSED LIST (coordinator ruling, X5 finding 4). These are the
+/// spec-approved names of the hook kind's ABI, whose 1.5.5 behaviour is frozen: `hook.call` op 17
+/// is a gate or a rewrite over the hook kind's `PromptView` (`BUSBAR-1.6.0.md` :1617, K5 owns the
+/// ABI and the host side), and the plane's `project` op writes the plane-flattened `PromptView`
+/// (:4709, K5 approved). They are declared in `abi/hook` and appear in the plane ABI where it
+/// carries the hook's view: `abi/host/hook.rs`, `abi/host/service.rs` (`HookCallIn.prompt`),
+/// `ProjectOut.prompt` and `abi/plane/check.rs`. Exactly these three names; nothing else rides it.
+///
+/// THE RIDER, BOUNDED TO THE SITES ABOVE: at a [`RIDER_SITES`] site only, a declaration that names
+/// one of the three may carry that name's own banned word in its own name and nothing more —
+/// `prompt: PromptView`, `fn empty_prompt() -> PromptView`: the member or accessor that holds the
+/// hook's view, named for it. A declaration whose words carry any OTHER banned noun, that names
+/// none of these three, or that sits anywhere else (the same `prompt: PromptView` line in any other
+/// file) is a finding.
+const HOOK_VOCABULARY: &[&str] = &["PromptView", "VIEW_HAS_PROMPT", "REQUEST_HAS_TOOLS"];
+
+/// Where the [`HOOK_VOCABULARY`] rider is allowed: the file, and — where the file is wider than the
+/// hook's view — the one struct whose fields carry it.
+const RIDER_SITES: &[(&str, Option<&str>)] = &[
+    ("crates/busbar-contract/src/abi/host/hook.rs", None),
+    ("crates/busbar-contract/src/abi/host/service.rs", None),
+    (
+        "crates/busbar-contract/src/abi/plane/mod.rs",
+        Some("ProjectOut"),
+    ),
+];
+
+/// The banned protocol/role nouns. Matched against the WORDS of every identifier on a declaration
+/// line (see [`banned_hits`]): a banned noun concatenated into a name — `McpTransport`,
+/// `server_stream` — is a word of that name and is exactly the leak to catch, while a noun that is
+/// only a run of letters inside another word — `BodyTooLarge` reads `body`/`too`/`large`, never
+/// `tool` — is not one (coordinator ruling, X5 finding 4).
 const BANNED: &[&str] = &[
     "llm",
     "mcp",
@@ -124,10 +178,6 @@ const TEST_PATH_RATCHET: usize = 0;
 const CLEAN: &str = "the scan cleared its floors and named nothing";
 const DID_NOT_RUN: &str = "nothing was read, and nothing read is not a neutral ABI";
 
-fn finding(rel: &str, line: usize, code: &str) -> String {
-    format!("{rel}:{line}:{code}")
-}
-
 fn row_exported(offenders: &[String]) -> Row {
     if offenders.is_empty() {
         return Row::pass(
@@ -140,7 +190,7 @@ fn row_exported(offenders: &[String]) -> Row {
         ROW_EXPORTED,
         "a banned protocol/role noun is in a plane-ABI declaration",
         format!(
-            "{} finding(s): {} — the plane ABI must be DERIVED from the primitive taxonomy, never \
+            "{} name(s): {} — the plane ABI must be DERIVED from the primitive taxonomy, never \
              named after one protocol",
             offenders.len(),
             offenders.join(" | ")
@@ -160,27 +210,58 @@ fn row_ratchet(offenders: &[String]) -> Row {
         ROW_TEST_RATCHET,
         "test-path declarations carrying a banned noun are over their ratchet",
         format!(
-            "{} finding(s) against a ratchet of {TEST_PATH_RATCHET}, which may only go down: {}",
+            "{} name(s) against a ratchet of {TEST_PATH_RATCHET}, which may only go down: {}",
             offenders.len(),
             offenders.join(" | ")
         ),
     )
 }
 
-/// A DECLARATION-ish line: one that introduces a Rust identifier, or a `pub` field / enum variant.
-/// The pre-filter is what keeps prose in `///` doc comments — which legitimately discusses
-/// neutrality — out of scope, so only the names the ABI actually exports are scanned.
+/// A DECLARATION line: one that introduces a Rust identifier, or a field / parameter / enum
+/// variant. The pre-filter is what keeps prose in `///` doc comments — which legitimately discusses
+/// neutrality — out of scope, so only the names the ABI actually declares are scanned.
+///
+/// NOT a declaration (X5 finding 4, ruling 4: a name counts once, where it is declared): a match
+/// arm (`=>`), a path (`RefusalCode::TaskLost,`), a `use` list (handled by [`scan`]), and a
+/// lower-case `ident(` / `ident=` / `ident,` — a call, an assignment or a struct-literal shorthand,
+/// since a variant is upper-case and a field or parameter is `ident:`.
 fn is_declaration(line: &str) -> bool {
     let t = line.trim_start();
-    let t = t.strip_prefix("pub ").map(str::trim_start).unwrap_or(t);
-    for kw in ["struct", "enum", "fn", "type", "const", "trait", "mod"] {
+    if t.contains("=>") {
+        return false;
+    }
+    let t = match t.strip_prefix("pub(") {
+        Some(rest) => rest.split_once(')').map_or(t, |(_, r)| r.trim_start()),
+        None => t.strip_prefix("pub ").map(str::trim_start).unwrap_or(t),
+    };
+    let mut t = t;
+    loop {
+        let before = t;
+        for q in ["unsafe ", "async ", "extern "] {
+            if let Some(rest) = t.strip_prefix(q) {
+                t = rest.trim_start();
+            }
+        }
+        if t.starts_with('"') {
+            // `extern "C-unwind" fn`: the ABI string.
+            if let Some((_, rest)) = t[1..].split_once('"') {
+                t = rest.trim_start();
+            }
+        }
+        if t == before {
+            break;
+        }
+    }
+    for kw in [
+        "struct", "enum", "fn", "type", "const", "trait", "mod", "static", "union",
+    ] {
         if let Some(rest) = t.strip_prefix(kw) {
             if rest.starts_with(|c: char| c.is_whitespace()) {
                 return true;
             }
         }
     }
-    // `Ident:` / `Ident(` / `Ident=` / `Ident,` — a field or an enum variant.
+    // `Ident:` / `Ident(` / `Ident=` / `Ident,` — a field, a parameter or an enum variant.
     let mut chars = t.chars();
     let Some(first) = chars.next() else {
         return false;
@@ -191,40 +272,168 @@ fn is_declaration(line: &str) -> bool {
     let ident_len = t
         .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
         .unwrap_or(t.len());
+    let ident = &t[..ident_len];
+    if matches!(ident, "Some" | "None" | "Ok" | "Err" | "Self") {
+        return false;
+    }
     let rest = t[ident_len..].trim_start();
-    rest.starts_with([':', '(', '=', ','])
+    if rest.starts_with("::") {
+        return false;
+    }
+    if rest.starts_with(':') {
+        return true;
+    }
+    first.is_ascii_uppercase()
+        && (rest.starts_with(['(', ',']) || (rest.starts_with('=') && !rest.starts_with("==")))
+}
+
+/// The identifiers of a line, in order (a token of ASCII alphanumerics and `_` that does not start
+/// with a digit). String and comment text on a declaration line is read too: the false-fail side.
+fn idents(line: &str) -> Vec<&str> {
+    line.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+        .filter(|w| w.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_'))
+        .collect()
+}
+
+/// The WORDS of an identifier, lower-cased: its `snake_case` segments, each split at its CamelCase
+/// boundaries (`McpTransport` → mcp, transport; `MCPServer` → mcp, server; `A2aClient` → a2a,
+/// client).
+fn words(ident: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for seg in ident.split('_').filter(|s| !s.is_empty()) {
+        let cs: Vec<char> = seg.chars().collect();
+        let mut cur = String::new();
+        for (i, &c) in cs.iter().enumerate() {
+            if i > 0 && c.is_ascii_uppercase() {
+                let prev = cs[i - 1];
+                let next_lower = cs.get(i + 1).is_some_and(char::is_ascii_lowercase);
+                if prev.is_ascii_lowercase()
+                    || prev.is_ascii_digit()
+                    || (prev.is_ascii_uppercase() && next_lower)
+                {
+                    out.push(std::mem::take(&mut cur));
+                }
+            }
+            cur.push(c.to_ascii_lowercase());
+        }
+        if !cur.is_empty() {
+            out.push(cur);
+        }
+    }
+    out
+}
+
+/// The banned nouns an identifier carries AS WHOLE WORDS: a word, or a run of adjacent words read
+/// together (`RealTime`, `A2A` split as `a2`/`a`), equal to a banned noun or its plural. Never a run
+/// of letters inside a word: `BodyTooLarge` carries no `tool`.
+fn banned_hits(ident: &str) -> Vec<&'static str> {
+    let ws = words(ident);
+    let mut hits = Vec::new();
+    for i in 0..ws.len() {
+        let mut joined = String::new();
+        for w in &ws[i..] {
+            joined.push_str(w);
+            for b in BANNED {
+                let plural = joined
+                    .strip_suffix("es")
+                    .or_else(|| joined.strip_suffix('s'));
+                if (joined == *b || plural == Some(*b)) && !hits.contains(b) {
+                    hits.push(*b);
+                }
+            }
+        }
+    }
+    hits
+}
+
+/// Is the banned identifier `ident` (carrying `hits`) excused? Only by name: a written collision
+/// ([`PRIMITIVE_COLLISION_KEYS`]), one of the three [`HOOK_VOCABULARY`] names, or — at a rider site
+/// only — a member of a declaration line that names one of those three whose every banned word is
+/// a word of that name.
+fn excused(ident: &str, hits: &[&str], line_idents: &[&str], rider_site: bool) -> bool {
+    if PRIMITIVE_COLLISION_KEYS.contains(&ident) || HOOK_VOCABULARY.contains(&ident) {
+        return true;
+    }
+    rider_site
+        && line_idents
+            .iter()
+            .filter(|e| HOOK_VOCABULARY.contains(e))
+            .any(|e| {
+                let carried = banned_hits(e);
+                hits.iter().all(|h| carried.contains(h))
+            })
 }
 
 /// The scan. MATCHES THE CODE, NOT THE PATH: the shell greps an ABSOLUTE root, so under a checkout
 /// directory that happens to contain a banned noun — a git worktree is literally named
 /// `agent-<hash>`, and `agent` is banned — a naive match over the prefixed line matched the PATH on
 /// every declaration and the witness failed everywhere, spuriously. Only the source line is judged.
+///
+/// ONE FINDING PER NAME (ruling 4): a banned name is reported once with every site it is declared
+/// at, so the count is of names, not of the lines that mention them.
 fn scan(files: &[crate::ctx::SourceFile]) -> (Vec<String>, Vec<String>) {
-    let mut prod = Vec::new();
-    let mut test = Vec::new();
+    use std::collections::BTreeMap;
+    let mut prod: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    let mut test: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for f in files {
         let rel = f.rel_str();
         let is_test_path =
             rel.contains("/tests/") || rel.ends_with("_test.rs") || rel.ends_with("_tests.rs");
+        let mut in_use = false;
+        // The struct whose body this line is in, for a rider site bounded to one struct.
+        let mut in_struct: Option<String> = None;
         for (i, line) in f.text.lines().enumerate() {
+            if line.starts_with('}') {
+                in_struct = None;
+            }
+            if let Some(after) = line
+                .trim_start()
+                .strip_prefix("pub struct ")
+                .or_else(|| line.trim_start().strip_prefix("struct "))
+            {
+                in_struct = after
+                    .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                    .next()
+                    .map(str::to_string);
+            }
+            let rider_site = RIDER_SITES.iter().any(|(file, within)| {
+                *file == rel && within.is_none_or(|w| in_struct.as_deref() == Some(w))
+            });
+            let t = line.trim_start();
+            let t = t.strip_prefix("pub ").unwrap_or(t);
+            if t.starts_with("use ") {
+                // An import declares nothing here; the name is judged where it is declared.
+                in_use = !t.contains(';');
+                continue;
+            }
+            if in_use {
+                in_use = !line.contains(';');
+                continue;
+            }
             if !is_declaration(line) {
                 continue;
             }
-            let lower = line.to_lowercase();
-            if !BANNED.iter().any(|b| lower.contains(b)) {
-                continue;
-            }
-            let hit = finding(&rel, i + 1, line);
-            if is_test_path {
-                test.push(hit);
-            } else {
-                prod.push(hit);
+            let ids = idents(line);
+            for id in &ids {
+                let hits = banned_hits(id);
+                if hits.is_empty() || excused(id, &hits, &ids, rider_site) {
+                    continue;
+                }
+                let site = format!("{rel}:{}", i + 1);
+                let map = if is_test_path { &mut test } else { &mut prod };
+                let sites = map.entry((*id).to_string()).or_default();
+                if sites.last() != Some(&site) {
+                    sites.push(site);
+                }
             }
         }
     }
-    prod.sort();
-    test.sort();
-    (prod, test)
+    let render = |m: BTreeMap<String, Vec<String>>| -> Vec<String> {
+        m.into_iter()
+            .map(|(name, sites)| format!("{name} ({} site(s): {})", sites.len(), sites.join(", ")))
+            .collect()
+    };
+    (render(prod), render(test))
 }
 
 /// The plane keys THIS TREE DECLARES, read off the crates that carry a plane declaration.
@@ -348,6 +557,90 @@ fn mandated(cx: &Ctx) -> Result<Vec<String>, String> {
     ))
 }
 
+/// Does `abi/mod.rs` declare `pub mod <name>;`? A `#[path]` on it is refused: the root this gate
+/// walks is `{ABI_DIR}/<name>`, and a module declared elsewhere is one it would not be reading.
+fn declares(abi_mod: &str, name: &str) -> Result<(), String> {
+    let decl = format!("pub mod {name};");
+    let mut pending_path = false;
+    for line in abi_mod.lines() {
+        let t = line.trim();
+        if t.starts_with("#[path") {
+            pending_path = true;
+            continue;
+        }
+        if t == decl {
+            return if pending_path {
+                Err(format!(
+                    "{ABI_DIR}/mod.rs declares `{decl}` through a `#[path]`, so `{ABI_DIR}/{name}` \
+                     is not where it lives"
+                ))
+            } else {
+                Ok(())
+            };
+        }
+        if !t.starts_with("#[") && !t.starts_with("//") && !t.is_empty() {
+            pending_path = false;
+        }
+    }
+    Err(format!(
+        "{ABI_DIR}/mod.rs no longer declares `{decl}`: the live plane-ABI root `{name}` is not a \
+         module of the abi"
+    ))
+}
+
+/// THE ROOTS, READ OFF THE ABI MODULE'S OWN DECLARATIONS. Every live root must be declared by
+/// `abi/mod.rs` and hold at least its floor; the retiring hot lane is scanned while it holds Rust.
+/// Returns the files to scan and one count line per root, or every refusal.
+fn scan_roots(cx: &Ctx) -> Result<(Vec<crate::ctx::SourceFile>, Vec<String>), Vec<String>> {
+    let abi_mod_rel = format!("{ABI_DIR}/mod.rs");
+    let abi_mod = cx
+        .read(&abi_mod_rel)
+        .map_err(|e| vec![format!("{abi_mod_rel} cannot be read ({e})")])?;
+    let mut files = Vec::new();
+    let mut counts = Vec::new();
+    let mut refusals = Vec::new();
+    for (name, floor) in LIVE_ROOTS {
+        if let Err(why) = declares(&abi_mod, name) {
+            refusals.push(why);
+            continue;
+        }
+        let root = format!("{ABI_DIR}/{name}");
+        match cx.walk(&WalkSpec::new([root.clone()]).ext("rs").min_files(*floor)) {
+            Ok(found) => {
+                counts.push(format!("{root}: {} file(s), floor {floor}", found.len()));
+                files.extend(found);
+            }
+            Err(e) => refusals.push(format!("{root} (floor {floor}): {e}")),
+        }
+    }
+    let hot = format!("{ABI_DIR}/{RETIRING_ROOT}");
+    match cx.walk(&WalkSpec::new([hot.clone()]).ext("rs").allow_empty()) {
+        Ok(found) if !found.is_empty() => {
+            counts.push(format!("{hot}: {} file(s), retiring", found.len()));
+            files.extend(found);
+        }
+        Ok(_) | Err(WalkError::MissingRoot { .. }) => {
+            counts.push(format!("{hot}: absent (retired)"));
+        }
+        Err(e) => refusals.push(format!("{hot}: {e}")),
+    }
+    if refusals.is_empty() {
+        Ok((files, counts))
+    } else {
+        Err(refusals)
+    }
+}
+
+/// A selftest RED case over appended declarations: its name, the `(file, text)` appends, and
+/// the needles its red must print.
+type RedCase<'a> = (&'a str, Vec<(String, &'a str)>, Vec<&'a str>);
+
+/// A file's text as an overlay would show it (the overlay's own plant first), for stacking edits.
+fn ov_read(cx: &Ctx, ov: &Overlay, rel: &str) -> Option<String> {
+    let planted = cx.with_overlay(ov.clone());
+    planted.read(rel).ok()
+}
+
 pub struct PlaneAbiNeutralityGate;
 
 impl Gate for PlaneAbiNeutralityGate {
@@ -360,7 +653,7 @@ impl Gate for PlaneAbiNeutralityGate {
             ROW_MANDATE.to_string(),
             ROW_BAN_LIST.to_string(),
             ROW_PLANE_KEYS.to_string(),
-            ROW_HOT_LANE.to_string(),
+            ROW_SCAN_ROOTS.to_string(),
             ROW_EXPORTED.to_string(),
             ROW_TEST_RATCHET.to_string(),
         ]
@@ -451,26 +744,26 @@ impl Gate for PlaneAbiNeutralityGate {
             }
         });
 
-        let files = cx.walk(&WalkSpec::new([HOT_LANE]).ext("rs").min_files(1));
-        match files {
-            Ok(files) => {
+        match scan_roots(cx) {
+            Ok((files, counts)) => {
                 rows.push(Row::pass(
-                    ROW_HOT_LANE,
-                    "the hot lane is present and holds Rust",
-                    CLEAN,
+                    ROW_SCAN_ROOTS,
+                    "every live plane-ABI root is declared and holds at least its measured floor",
+                    counts.join("; "),
                 ));
                 let (prod, test) = scan(&files);
                 rows.push(row_exported(&prod));
                 rows.push(row_ratchet(&test));
             }
-            Err(e) => {
+            Err(refusals) => {
                 rows.push(Row::fail(
-                    ROW_HOT_LANE,
-                    "the hot lane is absent or holds no Rust",
+                    ROW_SCAN_ROOTS,
+                    "a live plane-ABI root is undeclared, absent, or under its floor",
                     format!(
-                        "{e} A scan of zero files reports zero banned nouns, which reads exactly \
-                         like a neutral ABI. If the hot lane moved, point this gate at its new home \
-                         in a reviewed diff that says so."
+                        "{} A scan of zero files reports zero banned nouns, which reads exactly \
+                         like a neutral ABI. If a root moved, point this gate at its new home in a \
+                         reviewed diff that says so.",
+                        refusals.join(" | ")
                     ),
                 ));
                 rows.push(Row::fail(
@@ -509,7 +802,7 @@ impl Gate for PlaneAbiNeutralityGate {
         // A BANNED NOUN IN AN EXPORTED DECLARATION.
         let mut ov = Overlay::new();
         ov.set(
-            format!("{HOT_LANE}/planted_leak.rs"),
+            format!("{ABI_DIR}/plane/planted_leak.rs"),
             format!("pub struct {}Transport;\n", "Mcp"),
         );
         report.push(prove_red(
@@ -525,7 +818,7 @@ impl Gate for PlaneAbiNeutralityGate {
         // refuses everything.
         let mut ov = Overlay::new();
         ov.set(
-            format!("{HOT_LANE}/planted_clean.rs"),
+            format!("{ABI_DIR}/plane/planted_clean.rs"),
             "pub struct CarrierScope;\n",
         );
         report.push(prove_green(
@@ -539,7 +832,7 @@ impl Gate for PlaneAbiNeutralityGate {
         // than dropped from the scan.
         let mut ov = Overlay::new();
         ov.set(
-            format!("{HOT_LANE}/tests/planted_extra_tests.rs"),
+            format!("{ABI_DIR}/plane/tests/planted_extra_tests.rs"),
             "fn prompt_helper() {}\n",
         );
         report.push(prove_red(
@@ -605,9 +898,57 @@ impl Gate for PlaneAbiNeutralityGate {
             );
         }
 
-        // THE ZERO-FILE CASE. A hot lane that EXISTS but has been drained is the one way this gate
-        // reads its own passing answer off a tree it never opened.
-        match cx.walk(&WalkSpec::new([HOT_LANE]).ext("rs")) {
+        // THE LIVE PLANE ABI IS SCANNED (X5 finding 4). The per-kind plane ABI (`abi/plane`) and the
+        // host tables every kind calls (`abi/host`) are the plane ABI the planes speak; a protocol
+        // noun planted in a declaration in either is a finding, not a file this witness never opens.
+        let plane_mod = format!("{ABI_DIR}/plane/mod.rs");
+        let mut ov = Overlay::new();
+        match Edit::Append(format!("\npub struct {}PlantedSlot;\n", "Mcp"))
+            .apply(cx, &plane_mod, &mut ov)
+        {
+            Ok(()) => report.push(prove_red(
+                cx,
+                self,
+                "a protocol noun in a declaration in abi/plane/mod.rs is a finding",
+                &[ROW_EXPORTED],
+                ov,
+                &["abi/plane/mod.rs", "McpPlantedSlot"],
+            )),
+            Err(e) => report.note_infra_failure(format!(
+                "plane-abi-neutrality selftest: {plane_mod} could not be planted ({e})"
+            )),
+        }
+        let host_root = format!("{ABI_DIR}/host");
+        let host_files = cx.walk(&WalkSpec::new([host_root.clone()]).ext("rs"));
+        match host_files
+            .as_ref()
+            .ok()
+            .and_then(|fs| fs.iter().find(|f| !f.rel_str().ends_with("/mod.rs")))
+        {
+            Some(f) => {
+                let rel = f.rel_str();
+                let mut ov = Overlay::new();
+                ov.set(
+                    &rel,
+                    format!("{}\npub struct {}PlantedTable;\n", f.text, "Tool"),
+                );
+                report.push(prove_red(
+                    cx,
+                    self,
+                    "a protocol noun in a declaration in an abi/host file is a finding",
+                    &[ROW_EXPORTED],
+                    ov,
+                    &[rel.as_str(), "ToolPlantedTable"],
+                ));
+            }
+            None => report.note_infra_failure(format!(
+                "plane-abi-neutrality selftest: no non-mod.rs file under {host_root} to plant"
+            )),
+        }
+
+        // AN EMPTIED LIVE ROOT IS RED. `abi/plane` drained of Rust scans zero files, and zero
+        // banned nouns over zero files is the passing answer this row exists to refuse.
+        match cx.walk(&WalkSpec::new([format!("{ABI_DIR}/plane")]).ext("rs")) {
             Ok(files) => {
                 let mut ov = Overlay::new();
                 for f in &files {
@@ -616,14 +957,150 @@ impl Gate for PlaneAbiNeutralityGate {
                 report.push(prove_red(
                     cx,
                     self,
-                    "a hot lane holding no Rust is refused, not scanned as zero banned nouns",
-                    &[ROW_HOT_LANE],
+                    "an emptied abi/plane root is refused, not scanned as zero banned nouns",
+                    &[ROW_SCAN_ROOTS],
                     ov,
-                    &["reads exactly like a neutral ABI"],
+                    &["abi/plane"],
+                ));
+            }
+            Err(e) => report.note_infra_failure(format!(
+                "plane-abi-neutrality selftest: abi/plane is unreadable ({e})"
+            )),
+        }
+
+        // A LIVE ROOT BELOW ITS MEASURED FLOOR IS RED: one abi/host file gone is a narrower scan,
+        // not a cleaner ABI.
+        if let Some(f) = host_files.as_ref().ok().and_then(|fs| fs.first()) {
+            let mut ov = Overlay::new();
+            ov.remove(&f.rel);
+            report.push(prove_red(
+                cx,
+                self,
+                "an abi/host root one file under its measured floor is refused",
+                &[ROW_SCAN_ROOTS],
+                ov,
+                &["abi/host", "floor"],
+            ));
+        }
+
+        // A LIVE ROOT abi/mod.rs NO LONGER DECLARES IS RED: the roots are read off the abi
+        // module's own `pub mod` lines, and a plane ABI the module does not declare is not one
+        // this witness may silently stop scanning.
+        let abi_mod = format!("{ABI_DIR}/mod.rs");
+        match cx.read(&abi_mod) {
+            Ok(text) if text.lines().any(|l| l.trim() == "pub mod plane;") => {
+                let planted: String = text
+                    .lines()
+                    .filter(|l| l.trim() != "pub mod plane;")
+                    .map(|l| format!("{l}\n"))
+                    .collect();
+                let mut ov = Overlay::new();
+                ov.set(&abi_mod, planted);
+                report.push(prove_red(
+                    cx,
+                    self,
+                    "a live root abi/mod.rs does not declare is refused",
+                    &[ROW_SCAN_ROOTS],
+                    ov,
+                    &["pub mod plane;"],
+                ));
+            }
+            _ => report.note_infra_failure(format!(
+                "plane-abi-neutrality selftest: {abi_mod} declares no `pub mod plane;` to plant over"
+            )),
+        }
+
+        // ...AND THE RETIRING HOT LANE GOING IS NOT RED: it is scanned while it exists, and its
+        // deletion (M6-HOT-PLANE) is the plan, not a blind scan, once the live roots are read.
+        match cx.walk(&WalkSpec::new([format!("{ABI_DIR}/hot")]).ext("rs")) {
+            Ok(files) => {
+                let mut ov = Overlay::new();
+                for f in &files {
+                    ov.remove(&f.rel);
+                }
+                report.push(crate::gates::prove_rows_green(
+                    cx,
+                    self,
+                    "the retiring hot lane deleted does not red the scan roots",
+                    &[ROW_SCAN_ROOTS],
+                    ov,
                 ));
             }
             Err(e) => report.note_infra_failure(format!(
                 "plane-abi-neutrality selftest: the hot lane is unreadable ({e})"
+            )),
+        }
+
+        // THE MATCHER AND ITS WRITTEN EXEMPTIONS (coordinator rulings on X5 finding 4). Each case
+        // appends declarations to live plane-ABI files; `None` is a file that could not be read.
+        let plant = |edits: &[(String, &str)]| -> Option<Overlay> {
+            let mut ov = Overlay::new();
+            for (rel, text) in edits {
+                let base = ov_read(cx, &ov, rel)?;
+                ov.set(rel, format!("{base}\n{text}\n"));
+            }
+            Some(ov)
+        };
+        let plane_mod = format!("{ABI_DIR}/plane/mod.rs");
+        let plane_check = format!("{ABI_DIR}/plane/check.rs");
+        let host_hook = format!("{ABI_DIR}/host/hook.rs");
+        let host_service = format!("{ABI_DIR}/host/service.rs");
+        let red_cases: Vec<RedCase> = vec![
+            (
+                "a whole-word protocol noun (ToolSlot) is still a finding, once per name across \
+                 its sites",
+                vec![
+                    (plane_mod.clone(), "pub struct ToolSlot;"),
+                    (host_service.clone(), "pub fn take_slot(slot: ToolSlot) {}"),
+                ],
+                vec!["ToolSlot (2 site(s)"],
+            ),
+            (
+                "a name that is not one of the three hook names does not ride the exemption \
+                 (prompt_slot)",
+                vec![(plane_mod.clone(), "    pub prompt_slot: u32,")],
+                vec!["prompt_slot"],
+            ),
+            (
+                "a name that is not one of the three hook names does not ride the exemption \
+                 (PromptCache)",
+                vec![(plane_mod.clone(), "pub struct PromptCache;")],
+                vec!["PromptCache"],
+            ),
+            (
+                "prompt: PromptView outside the rider sites is a finding",
+                vec![(plane_check.clone(), "    pub prompt: PromptView,")],
+                vec!["abi/plane/check.rs"],
+            ),
+            (
+                "a member naming PromptView but carrying another noun (tool_view) is a finding",
+                vec![(host_hook.clone(), "pub fn tool_view() -> PromptView {}")],
+                vec!["tool_view"],
+            ),
+            (
+                "the TaskLost collision excuses that identifier and no other task name",
+                vec![(plane_mod.clone(), "pub struct TaskQueue;")],
+                vec!["TaskQueue"],
+            ),
+        ];
+        for (name, edits, naming) in red_cases {
+            match plant(&edits) {
+                Some(ov) => report.push(prove_red(cx, self, name, &[ROW_EXPORTED], ov, &naming)),
+                None => report.note_infra_failure(format!(
+                    "plane-abi-neutrality selftest: a file of `{name}` could not be read"
+                )),
+            }
+        }
+        match plant(&[(plane_mod.clone(), "pub struct BodyTooLargeNote;")]) {
+            Some(ov) => report.push(crate::gates::prove_rows_green(
+                cx,
+                self,
+                "a noun that is only letters inside another word (BodyTooLarge) is not a finding",
+                &[ROW_EXPORTED],
+                ov,
+            )),
+            None => report.note_infra_failure(format!(
+                "plane-abi-neutrality selftest: {plane_mod} could not be read"
             )),
         }
 
@@ -792,7 +1269,7 @@ fn translate(run: &LegacyRun) -> Result<Vec<Row>, String> {
     let stopped_early = mandate.is_some() || ban_list.is_some() || plane_keys.is_some();
     if stopped_early {
         rows.push(Row::fail(
-            ROW_HOT_LANE,
+            ROW_SCAN_ROOTS,
             "the scan did not run",
             DID_NOT_RUN.to_string(),
         ));
@@ -810,8 +1287,8 @@ fn translate(run: &LegacyRun) -> Result<Vec<Row>, String> {
     }
     if let Some(why) = hot_lane {
         rows.push(Row::fail(
-            ROW_HOT_LANE,
-            "the hot lane is absent or holds no Rust",
+            ROW_SCAN_ROOTS,
+            "a live plane-ABI root is undeclared, absent, or under its floor",
             why,
         ));
         rows.push(Row::fail(
@@ -828,8 +1305,8 @@ fn translate(run: &LegacyRun) -> Result<Vec<Row>, String> {
     }
 
     rows.push(Row::pass(
-        ROW_HOT_LANE,
-        "the hot lane is present and holds Rust",
+        ROW_SCAN_ROOTS,
+        "every live plane-ABI root is declared and holds at least its measured floor",
         CLEAN,
     ));
     prod.sort();

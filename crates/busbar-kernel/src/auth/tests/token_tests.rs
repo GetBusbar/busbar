@@ -164,6 +164,51 @@ async fn begin_sets_httponly_secure_cookie_and_redirects() {
     );
 }
 
+/// The `refresh` flag the login cookie carries after `GET /auth/token?method=microsoft&refresh=1`
+/// arrives with this `Sec-Fetch-Site` (absent when `None`).
+async fn refresh_flag_for(
+    handle: &std::sync::Arc<crate::state::AppHandle>,
+    sec_fetch_site: Option<&str>,
+) -> bool {
+    let mut req = Request::builder().uri("/auth/token?method=microsoft&refresh=1");
+    if let Some(site) = sec_fetch_site {
+        req = req.header("sec-fetch-site", site);
+    }
+    let resp = browser(State(handle.clone()), req.body(Body::empty()).unwrap()).await;
+    assert_eq!(resp.status().as_u16(), 302, "begin redirects to the IdP");
+    let sc = resp.headers().get("set-cookie").unwrap().to_str().unwrap();
+    let raw = sc
+        .split(';')
+        .next()
+        .unwrap()
+        .strip_prefix(&format!("{LOGIN_COOKIE}="))
+        .unwrap();
+    LoginCookie::decode(raw)
+        .expect("cookie round-trips")
+        .refresh
+}
+
+/// K3 #20: a `refresh=1` login ROTATES (revokes) the user's key, and any site can navigate a signed-in
+/// user to it while the IdP approves silently. It is honoured only on a navigation from busbar's own
+/// page (`Sec-Fetch-Site: same-origin`, the key-issued page's "Refresh key" link); a cross-site link,
+/// a typed or mailed URL (`none`), a sibling subdomain (`same-site`) or no header at all is a plain
+/// issue that re-shows the key.
+#[tokio::test]
+async fn a_refresh_link_rotates_only_from_busbars_own_page() {
+    let app = test_app_with_methods(vec![("microsoft", true)], "");
+    let handle = std::sync::Arc::new(crate::state::AppHandle::new(app));
+    for site in [Some("cross-site"), None, Some("none"), Some("same-site")] {
+        assert!(
+            !refresh_flag_for(&handle, site).await,
+            "Sec-Fetch-Site {site:?} must not rotate the key"
+        );
+    }
+    assert!(
+        refresh_flag_for(&handle, Some("same-origin")).await,
+        "the key-issued page's own Refresh link still rotates"
+    );
+}
+
 /// An authorize URL a `HeaderValue` cannot represent must FAIL CLOSED, not panic. `Location` carries
 /// `LoginOutcome::Authorize(url)` verbatim from the login plugin — the one plugin-authored header on
 /// this path — and `GET /auth/token` is anonymously reachable with no catch-panic layer anywhere in

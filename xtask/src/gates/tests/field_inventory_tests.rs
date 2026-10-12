@@ -66,3 +66,48 @@ fn a_repinned_spec_without_a_regenerated_lock_is_refused() {
     assert_eq!(status_of(&v, ROW_PROVENANCE), Status::Fail);
     assert_eq!(status_of(&v, ROW_REGISTRATION), Status::Pass);
 }
+
+/// A lock in any layout but its canonical render is refused by the canonical row, and the
+/// whitespace-shaped duplicate check alone reads nothing in it.
+#[test]
+fn a_reformatted_lock_is_refused_as_non_canonical() {
+    let cx = cx();
+    let path = wire_lock::lock_path("cohere");
+    let text = cx.read(&path).expect("lock");
+    let mut ov = Overlay::new();
+    ov.set(&path, text.replace("\n    \"", "\n      \""));
+    let v = FieldInventoryGate.run(&cx.with_overlay(ov));
+    assert_eq!(status_of(&v, ROW_CANONICAL_FORM), Status::Fail);
+    assert_eq!(status_of(&v, ROW_PROVENANCE), Status::Pass);
+}
+
+/// A duplicated path key is not the canonical render of anything: the canonical row reds on it
+/// even where the duplicate check's line shape does not match.
+#[test]
+fn a_duplicated_path_in_a_reformatted_lock_is_still_refused() {
+    let cx = cx();
+    let path = wire_lock::lock_path("cohere");
+    let text = cx.read(&path).expect("lock");
+    let doubled = text
+        .replacen(
+            "    \"model\": ",
+            "    \"model\": {\"type\":\"string\"},\n    \"model\": ",
+            1,
+        )
+        .replace("\n    \"", "\n\t\"");
+    let mut ov = Overlay::new();
+    ov.set(&path, doubled);
+    let v = FieldInventoryGate.run(&cx.with_overlay(ov));
+    assert_eq!(status_of(&v, ROW_NO_DUPLICATE_FIELDS), Status::Pass);
+    assert_eq!(status_of(&v, ROW_CANONICAL_FORM), Status::Fail);
+}
+
+/// A floor row naming a pair the register does not declare is a finding.
+#[test]
+fn an_orphan_floor_row_is_refused() {
+    let mut floors = PAIR_FLOORS.to_vec();
+    assert!(orphan_floors(&floors).is_empty());
+    floors.push(("openai", "bogus", 1));
+    floors.push(("retired", "request", 1));
+    assert_eq!(orphan_floors(&floors).len(), 2);
+}

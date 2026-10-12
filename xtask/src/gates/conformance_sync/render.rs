@@ -35,6 +35,11 @@ use crate::toml_lite;
 pub const RELEASE: &str = "1.6.0";
 
 pub const REGISTRY_PATH: &str = "conformance/registry.toml";
+/// Where the planes the build ships are declared: `[gate.plugin_kinds].plane`, one
+/// `crates/busbar-plane-<key>` per plane. The conformance roster's floor is read from here, never
+/// restated (Law 8: a roster is derived from declarations).
+pub const PLANE_ROSTER_PATH: &str = "qa/construction.toml";
+const PLANE_CRATE_PREFIX: &str = "crates/busbar-plane-";
 pub const MANIFEST_PATH: &str = "conformance/manifest.json";
 pub const README_PATH: &str = "README.md";
 
@@ -150,6 +155,50 @@ pub struct Suite {
     pub public: bool,
     /// The reason a suite is legitimately not covered yet, surfaced in the manifest when not-run.
     pub not_run_reason: Option<String>,
+    /// The shipped plane this suite judges (a key of [`plane_roster`]), or `None` for a suite that
+    /// judges no plane (a transport, the auth server, the supply chain).
+    pub plane: Option<String>,
+}
+
+/// THE PLANES THE BUILD SHIPS, by key (`crates/busbar-plane-<key>` -> `<key>`), from
+/// [`PLANE_ROSTER_PATH`]. Every one of them owes at least one registered suite: the conformance
+/// MUST set is "every registered suite", so a plane with no suite is a plane the dev-green
+/// requirement silently stopped covering. An empty roster, or an entry that is not a plane crate's
+/// literal path, is refused rather than read as "no plane to cover".
+pub fn plane_roster(cx: &Ctx) -> Result<Vec<String>, String> {
+    let text = cx
+        .read(PLANE_ROSTER_PATH)
+        .map_err(|e| format!("{PLANE_ROSTER_PATH}: {e}"))?;
+    let entries = toml_lite::parse_text(&text)
+        .table("gate.plugin_kinds")
+        .get_list("plane");
+    if entries.is_empty() {
+        return Err(format!(
+            "{PLANE_ROSTER_PATH} declares no `[gate.plugin_kinds].plane` crate, so the planes the \
+             build ships, and the suites they owe, cannot be derived"
+        ));
+    }
+    let mut keys = Vec::new();
+    for e in &entries {
+        match e.strip_prefix(PLANE_CRATE_PREFIX) {
+            Some(k)
+                if !k.is_empty()
+                    && k.bytes()
+                        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-') =>
+            {
+                keys.push(k.to_string())
+            }
+            _ => {
+                return Err(format!(
+                    "{PLANE_ROSTER_PATH}: `[gate.plugin_kinds].plane` entry `{e}` is not \
+                     `{PLANE_CRATE_PREFIX}<key>`, so it names no plane a suite can be owed for"
+                ))
+            }
+        }
+    }
+    keys.sort();
+    keys.dedup();
+    Ok(keys)
 }
 
 /// Parse and VALIDATE the registry. Every suite must name a standard, plan, label, a tier in the
@@ -194,6 +243,7 @@ pub fn parse_registry(cx: &Ctx) -> Result<Vec<Suite>, String> {
         let tier = Tier::parse(&need("tier")?).map_err(|e| format!("suite `{id}`: {e}"))?;
         let public = matches!(t.get_one("public"), Some("true"));
         let not_run_reason = t.get_one("not_run_reason").map(str::to_string);
+        let plane = t.get_one("plane").map(str::to_string);
         suites.push(Suite {
             id,
             standard,
@@ -203,7 +253,40 @@ pub fn parse_registry(cx: &Ctx) -> Result<Vec<Suite>, String> {
             verdict,
             public,
             not_run_reason,
+            plane,
         });
+    }
+    // THE FLOOR, DERIVED: every plane the build ships is judged by at least one registered suite,
+    // and no suite claims a plane the build does not ship. Deleting or renaming a plane's suite
+    // block shrinks the MUST set, so it is refused here instead of reading as a smaller green.
+    let roster = plane_roster(cx)?;
+    for s in &suites {
+        if let Some(p) = &s.plane {
+            if !roster.contains(p) {
+                return Err(format!(
+                    "suite `{}` judges plane `{p}`, which is not a shipped plane ({PLANE_ROSTER_PATH} \
+                     `[gate.plugin_kinds].plane`: {})",
+                    s.id,
+                    roster.join(", ")
+                ));
+            }
+        }
+    }
+    let uncovered: Vec<&str> = roster
+        .iter()
+        .filter(|p| {
+            !suites
+                .iter()
+                .any(|s| s.plane.as_deref() == Some(p.as_str()))
+        })
+        .map(String::as_str)
+        .collect();
+    if !uncovered.is_empty() {
+        return Err(format!(
+            "no registered suite judges the shipped plane(s) {}: every plane in {PLANE_ROSTER_PATH} \
+             `[gate.plugin_kinds].plane` owes at least one `[[suite]]` with `plane = \"<key>\"`",
+            uncovered.join(", ")
+        ));
     }
     suites.sort_by(|a, b| a.id.cmp(&b.id));
     Ok(suites)

@@ -4,9 +4,10 @@
 # legacy_segment.bin -- provenance
 #
 # WHAT: the four records `records(3, 1, 4, 200)` (node 3, node_seq 1..=4, a 200-byte body whose byte
-# b is (node_seq + b) % 251) framed under the LEGACY wal layout (FRAME_VERSION_LEGACY = 1, no header
-# check): 4 frames x 512 bytes = 2048 bytes, frame i at offset 512*i, no segment header, no padding.
-# Read by `a_legacy_segment_keeps_the_rule_it_was_written_under` in ../corruption_verdict_tests.rs.
+# b is (node_seq + b) % 251) framed under wal layout version 1 (the layout before the header check, never
+# released; no header check): 4 frames x 512 bytes = 2048 bytes, frame i at offset 512*i, no segment header, no padding.
+# Read by `a_version_1_segment_is_quarantined_never_read` in ../corruption_verdict_tests.rs: this build
+# reads only version 2, so the segment is quarantined whole.
 #
 # ENCODER REPRODUCED: busbar_kernel_wal::record::encode_legacy (crates/busbar-kernel-wal/src/record.rs,
 # `#[cfg(test)] pub(crate) fn encode_legacy`) at commit 4aa05a13d71ce79bf8e2320c6689e39cb6e03033:
@@ -16,14 +17,14 @@
 # hashlib.sha256 (SHA-256 is the sole hash primitive; no CRC is involved). Per frame, all integers
 # little-endian, every byte not listed is zero:
 #   [0,4)     b"BWAL"                         FRAME_MAGIC
-#   [4,6)     01 00                           FRAME_VERSION_LEGACY
+#   [4,6)     01 00                           layout version 1
 #   [6]       00                              flags: part 0 of 1, so no FLAG_MORE_PARTS
 #   [8,16)    03 00 00 00 00 00 00 00         node
 #   [16,24)   node_seq (1..=4) as u64
 #   [24,28)   00 00 00 00                     part_index
 #   [28,32)   01 00 00 00                     part_count
 #   [32,34)   c8 00                           payload length 200
-#   [34,64)   zero                            header check zero-filled under the legacy layout
+#   [34,64)   zero                            no header check under version 1
 #   [64,96)   SHA-256( frame[0,64) || frame[96,512) )   frame_digest: digest field skipped
 #   [96,296)  the body
 #   [296,512) zero
@@ -38,4 +39,4 @@
 #
 # SELF-CHECK: the test asserts, before using the vector, that each frame is version 1, matches the
 # current Record::encode byte for byte outside [4,6) (version) and [34,96) (header check zeroed,
-# digest), has [34,64) zero, and passes decode_frame with the expected identity and body.
+# digest), has [34,64) zero, and is refused by decode_frame as an unknown layout (version 1).

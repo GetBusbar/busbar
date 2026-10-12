@@ -94,6 +94,7 @@ use std::path::PathBuf;
 use crate::root::kernel::PinnedHistory;
 
 use busbar_contract::caps::{DurabilityLost, DurableWrite, Grant, PostingFlags, StepName};
+use busbar_contract::migration::{MigrationError, MigrationMarker, MigrationRecords};
 use busbar_kernel_audit::{
     from_journal_body, journal_body, AuditChain, AuditInputs, AuditRecord, KeyError,
 };
@@ -102,7 +103,6 @@ use busbar_kernel_ledger::checkpoint::{
 };
 use busbar_kernel_ledger::cost::{HistoryView, MoneyError};
 use busbar_kernel_ledger::legacy::{LegacyRows, SummedRows};
-use busbar_kernel_ledger::migration::{MigrationError, MigrationMarker, MigrationRecords};
 use busbar_kernel_ledger::settle::{Figures, Ledger, Settlement};
 use busbar_kernel_ledger::totals::{
     BucketId, BucketScope, CapDimension, Totals, TotalsKey, WindowStart,
@@ -152,7 +152,6 @@ mod audit;
 mod book;
 pub use book::{MoneyBook, PostingStamp, Settled, Settling};
 // The pass-through has one caller, the plane node, so it is built where the node is.
-#[cfg(linked_axis_node)]
 pub use book::SharedBook;
 
 /// How many sealed checkpoints a node holds in memory: the latest 1,024, oldest evicted first
@@ -601,13 +600,25 @@ impl Durability {
         let posted = busbar_kernel::recovery::recover_all(&kernel, &records, current, &canary);
         for ((held, checkpointed), posted) in open.iter().zip(checkpointed).zip(posted) {
             let hold = &held.hold;
+            // The unit's arrival in milliseconds: the instant its counts price at, or, for a hold
+            // of the figures era that carried none, its whole-second arrival.
+            let arrived_ms = match &hold.held {
+                Held::Counts { arrived_ms, .. } => *arrived_ms,
+                Held::Figure(_) => hold.wall.saturating_mul(1_000),
+            };
             let at = Settling {
                 key: &hold.key,
                 window: hold.window,
                 durability: &token,
                 step: StepName::Meter,
                 stamp: PostingStamp {
-                    rate_card_version: busbar_kernel_ledger::cost::HistorySeq::OPENING.get(),
+                    // The card in force when the unit ARRIVED (#79), resolved through the dated
+                    // history as the exit arm resolves it (`plane_node::card_in_force`); the
+                    // opening entry only where no history is pinned or none covers the instant.
+                    rate_card_version: view
+                        .as_ref()
+                        .and_then(|v| v.card_at(arrived_ms).map(|(seq, _)| seq.get()))
+                        .unwrap_or_else(|| busbar_kernel_ledger::cost::HistorySeq::OPENING.get()),
                     wall: hold.wall,
                     mono: hold.mono,
                 },
@@ -2131,6 +2142,11 @@ pub struct NodeBook {
     /// The previous release's rows, as the dual write fills them. The write half is inside the
     /// ledger; this is the same value, kept so a view has somewhere to read them from.
     pub rows: std::sync::Arc<SummedRows>,
+    /// The configured store, behind the published ABI, as the admin verbs unit reaches it: the SAME
+    /// loader adapter boot shipped this book's batches through (`StoreAdapter::verb_store`), so the
+    /// disaster-recovery verbs land on the store the book is shipped to. `None` on a node with no
+    /// configured store (row 113, ruling (B)).
+    pub verb_store: crate::root::kernel::VerbStoreHandle,
 }
 
 /// Open the one book a process settles onto.
@@ -2171,6 +2187,8 @@ pub fn node_book_over(history: HistorySource) -> NodeBook {
     NodeBook {
         durability: std::sync::Arc::new(std::sync::Mutex::new(durability)),
         rows,
+        // No store: this constructor is the no-store fallback (see [`node_book`]).
+        verb_store: None,
     }
 }
 
@@ -2251,7 +2269,9 @@ pub fn build_with_cards(
         // Not `Ledger::new()`. The reconciliation identity and rollback both require the dual
         // write, and both are release requirements rather than deployment choices.
         ledger: Ledger::dual_writing(legacy_rows),
-        record: AuditChain::new(),
+        // Every record this book seals names this node (THE DESIGN §1: "when (wall + monotonic,
+        // node)"): the node half of every op id the kernel mints in this process.
+        record: AuditChain::new().sealing_as(busbar_kernel::door::node()),
         checkpoints: Vec::new(),
         audit_records: Vec::new(),
         audit_findings: Vec::new(),

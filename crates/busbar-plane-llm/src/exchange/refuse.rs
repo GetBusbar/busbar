@@ -11,7 +11,7 @@
 //! dialect's own vendor sentence) from the reason; every other message is the kernel's own text,
 //! which names the facts only the kernel has (a group, a window, a model with no rate).
 
-use busbar_contract::abi::plane::reason_of;
+use busbar_contract::abi::plane::{class_of_word, reason_of, RefusalClass};
 use busbar_contract::protocol::{
     ProtocolDecl, APPLICATION_JSON, KIND_API_ERROR, KIND_INSUFFICIENT_QUOTA, KIND_INVALID_REQUEST,
     KIND_NOT_FOUND, KIND_OVERLOADED, KIND_PERMISSION, KIND_RATE_LIMIT, KIND_REQUEST_TOO_LARGE,
@@ -81,22 +81,34 @@ pub fn render(
 /// The kind a kernel refusal wears, by its reason; an unknown reason by its status family.
 #[must_use]
 pub fn kind_of(reason: &str, status: u16) -> &'static str {
-    match reason {
-        "rate_limited" | "in_flight" | "in_flight_cap" => KIND_RATE_LIMIT,
-        "over_budget" => KIND_INSUFFICIENT_QUOTA,
-        "group_frozen" | "scope_denied" | "pool_not_permitted" | "hook_veto" => KIND_PERMISSION,
-        "body_too_large" | "cursor_budget" | "credential_budget" => KIND_REQUEST_TOO_LARGE,
-        "no_rate" | "unpriced" | "decode_failed" | "replayed" | "superseded" => {
-            KIND_INVALID_REQUEST
-        }
-        "no_destination" => KIND_NOT_FOUND,
-        "meter_disputed" | "handoff_mismatch" | "plane_panic" | "task_lost"
-        | "secret_placeholder" => KIND_API_ERROR,
-        _ if status >= 500 && status != 503 => KIND_API_ERROR,
-        _ if status >= 500 => KIND_OVERLOADED,
-        _ if status == 429 => KIND_RATE_LIMIT,
-        _ if status == 403 => KIND_PERMISSION,
-        _ if status == 413 => KIND_REQUEST_TOO_LARGE,
+    // A class-to-kind table over the one classification: this plane holds no reason match.
+    match class_of_word(reason) {
+        Some(RefusalClass::Unreadable | RefusalClass::Rejected) => KIND_INVALID_REQUEST,
+        Some(RefusalClass::Forbidden) => KIND_PERMISSION,
+        Some(RefusalClass::TooLarge) => KIND_REQUEST_TOO_LARGE,
+        Some(RefusalClass::Throttled | RefusalClass::Busy) => KIND_RATE_LIMIT,
+        Some(RefusalClass::QuotaExhausted) => KIND_INSUFFICIENT_QUOTA,
+        Some(RefusalClass::NotFound) => KIND_NOT_FOUND,
+        Some(RefusalClass::PlaneFault | RefusalClass::NodeFault) => KIND_API_ERROR,
+        // The class names no kind of its own here: the status the kernel chose says it.
+        Some(
+            RefusalClass::Unauthenticated
+            | RefusalClass::Unreachable
+            | RefusalClass::Unavailable
+            | RefusalClass::Timeout,
+        )
+        | None => kind_of_status(status),
+    }
+}
+
+/// The kind a status alone reads as.
+fn kind_of_status(status: u16) -> &'static str {
+    match status {
+        503 => KIND_OVERLOADED,
+        s if s >= 500 => KIND_API_ERROR,
+        429 => KIND_RATE_LIMIT,
+        403 => KIND_PERMISSION,
+        413 => KIND_REQUEST_TOO_LARGE,
         _ => KIND_INVALID_REQUEST,
     }
 }
@@ -111,16 +123,10 @@ pub fn model_not_found(model: &str, shaped: Option<&str>) -> String {
     )
 }
 
-/// Whether a reason is an authentication refusal: those answer in the dialect's own vendor terms.
+/// Whether a reason is an authentication refusal (its class is `Unauthenticated`): those answer in
+/// the dialect's own vendor terms.
 fn is_authentication(reason: &str) -> bool {
-    matches!(
-        reason,
-        "unauthenticated"
-            | "revoked"
-            | "scheme_not_declared"
-            | "session_unbound"
-            | "challenge_exhausted"
-    )
+    class_of_word(reason) == Some(RefusalClass::Unauthenticated)
 }
 
 /// RENDER A KERNEL REFUSAL in `envelope`'s dialect: `reason` is the reason's code on the plane ABI,

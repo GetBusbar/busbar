@@ -648,17 +648,17 @@ unsafe impl Sync for NotifyFrame {}
 impl NotifyFrame {
     /// The tap view of `req` (its shape fields and declared signals) at `stage` (`None` = a
     /// request-stage tap: no stage projection, as 1.5.5's `stage` was absent). The prompt view is
-    /// carried only when `prompt_granted` (the tap's `prompt: ro` grant) AND `req` projects one: an
+    /// carried only when `view_granted` (the tap's `prompt: ro` grant) AND `req` projects one: an
     /// ungranted tap never sees the prompt, whatever the request carries.
     #[must_use]
     pub fn build(
         req: &RoutingRequest<'_>,
         stage: Option<&HookStageProjection<'_>>,
-        prompt_granted: bool,
+        view_granted: bool,
     ) -> Arc<Self> {
         let mut store = Store::default();
         let (signals, signals_len) = store.bag(&req.signals);
-        let granted = if prompt_granted {
+        let granted = if view_granted {
             store.prompt(req)
         } else {
             None

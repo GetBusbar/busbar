@@ -117,7 +117,8 @@ pub struct SessionPump<C> {
     /// The locked `session` config: the authoritative copy the plane re-applies. A caller's
     /// `session.update` is a hint reconciled against it, never trusted blind.
     locked_config: Option<SessionConfig>,
-    /// The format uplink audio is counted in: the locked config's input format, else PCM16.
+    /// The format uplink audio is counted in when a frame's wire states none: the locked config's
+    /// input format, else PCM16.
     audio_in: AudioFormat,
     /// The node's open-call table, when one is composed. `None`: every call is served in-process and
     /// a caller-authored result is carried upstream verbatim.
@@ -353,7 +354,8 @@ where
                 }
                 ev => {
                     if let IrClientEvent::AudioFrame(f) = &ev {
-                        self.turn.admit_audio(self.audio_in, f.media.len());
+                        self.turn
+                            .admit_audio(f.format.unwrap_or(self.audio_in), f.media.len());
                     }
                     out.push_up(self.codec.write_up(ev, &mut self.decode));
                 }

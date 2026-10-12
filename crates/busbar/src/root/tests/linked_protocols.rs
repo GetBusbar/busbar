@@ -190,7 +190,10 @@ fn every_declared_verb_has_a_serving_handler() {
 
 /// A linked protocol that declares no codec still resolves, still dispatches, and MUST NOT be offered
 /// to a provider lane: it is absent from the codec-protocol list, without anything comparing its
-/// name. Every such linked declaration is checked; the build links at least one.
+/// name. Every such linked declaration is checked. Since FLIP-MCP the shipped build links none (the
+/// one it linked was the deleted engine's; its plane is served through its door and declares no
+/// protocol row), so the rule over a codec-less declaration is held by the planted one in
+/// [`a_codec_less_declaration_does_not_move_the_operator_visible_list_when_it_is_folded_ahead`].
 #[test]
 fn a_declaration_without_a_codec_dispatches_but_is_not_a_provider_protocol() {
     registered();
@@ -202,10 +205,6 @@ fn a_declaration_without_a_codec_dispatches_but_is_not_a_provider_protocol() {
         .into_iter()
         .filter(|d| d.codec.is_none())
         .collect();
-    assert!(
-        !codec_less.is_empty(),
-        "the shipped build links a codec-less protocol"
-    );
     for decl in codec_less {
         let d = busbar_kernel::proto::decl_for(decl.name).expect("it declares itself");
         assert!(d.codec.is_none());

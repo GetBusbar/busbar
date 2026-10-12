@@ -60,27 +60,15 @@
 //! busbar cannot seal is an ask busbar cannot verify the answer to, and emitting one would be
 //! inviting a retry it would have to trust.
 
-// D3 Phase-C: the ask-state seal PODs + crypto (`AskState`, `Rejected`, `Sealer`, mint/open, and the
-// `DERIVE_DOMAIN`/`MAC_DOMAIN` and the ring HMAC-SHA256 they need) now live in the neutral substrate so a plane
-// holds the seal without naming core. Re-exported here so every in-core call site (`ask_state_sealer`
-// below, the sibling-crate caller that decides an ask, the tests) is unchanged. The key DERIVATION
-// stays core: `ask_state_sealer` reaches `GovState`'s crate-private signing seed and calls
-// `Sealer::derive`.
+// D3 Phase-C: the ask-state seal PODs + crypto (`AskState`, `Rejected`, `Sealer`, mint/open, and
+// the `DERIVE_DOMAIN`/`MAC_DOMAIN` and the ring HMAC-SHA256 they need) now live in the neutral
+// substrate so a plane holds the seal without naming core. Re-exported here so every in-core call
+// site (the sibling-crate caller that decides an ask, the tests) is unchanged.
 //
 // The neutral ask-state helpers `DEFAULT_TTL_SECS` (the short replay window) and `digest_arguments`
 // (the salient-parameter digest) relocated to the substrate seal beside the PODs — pure `mrtr` data +
 // SHA-256/`hex`, no core reach — and are re-exported here so `crate::plane::approvals::{DEFAULT_TTL_SECS,
 // digest_arguments}` still resolves for the tests and for that sibling-crate caller.
-
-/// SEAM: derive this deployment's ask-state [`Sealer`] from governance's fleet-shared signing
-/// secret, WITHOUT the raw secret ever leaving core. The owning plane holds no governance key material
-/// — it asks core for a sealer, and core derives it here from the `pub(crate)` signing seed
-/// ([`crate::governance::GovState::signing_secret`], which stays crate-private). `None` when
-/// governance is disabled (no key), matching the pre-split behaviour where the plane derived the
-/// sealer itself and refused rather than asking with unprotected state.
-pub fn ask_state_sealer(gov: &crate::governance::GovState) -> Option<Sealer> {
-    gov.signing_secret().map(|s| Sealer::derive(&s))
-}
 
 /// THE SPENT-APPROVAL LEDGER — what makes an approval SINGLE-USE.
 ///
@@ -230,11 +218,11 @@ impl SpentTokenLedger {
 #[path = "tests/askstate_tests.rs"]
 mod askstate_tests;
 
-// ONE APPROVAL, REDEEMED ONCE — across a restart and across a fleet. MOVED to
-// `tests/spentledger_cross_plane.rs` (the A6/HostCtx dev-dependency-cycle cleanup): it crosses the
-// real plugin ABI into a real durable store and is judged through a linked plane's SERVED front
-// door, which only type-checks with ONE `busbar_kernel` in the graph — an integration-test target,
-// never this `#[cfg(test)]` unit module. See that file's header.
+// ONE APPROVAL, REDEEMED ONCE — across a restart and across a fleet. Judged through the served
+// door at the composition root (`crates/busbar/src/root/tests/door_steps.rs`, `spent_ledger`;
+// ARCHITECT Q-L3B-ASK): the plane door mints and redeems the sealed state over the host's `sign`
+// and spends it by the host's one-time `records.claim`, and only the root composes a door's
+// served path (P3 DEL-MCP).
 
 // ==== merged from busbar-substrate (W4.b P2 engine drain) ====
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -414,9 +402,6 @@ impl Sealer {
     ///
     /// A DERIVATION rather than the raw bytes: the same secret is the ed25519 virtual-key signer,
     /// and two unrelated uses of one secret should not be able to produce a blob the other accepts.
-    ///
-    /// `pub` (was `pub(crate)` in core) so `busbar_kernel::plane::approvals::ask_state_sealer` — the
-    /// one seam that reaches `GovState` — can derive from the crate-private signing seed core-side.
     pub fn derive(signing_secret: &[u8; 32]) -> Self {
         let out = hmac::sign(
             &hmac::Key::new(hmac::HMAC_SHA256, signing_secret),

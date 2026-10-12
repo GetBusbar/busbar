@@ -2062,7 +2062,7 @@ pub(crate) async fn put_auth(
         let operator = busbar_kernel::config::operator_provider();
         for name in &req.admin_auth {
             let known = current.admin_modules.operator.is(name)
-                || (cfg!(test) && name == "test-scope-module");
+                || (cfg!(any(test, feature = "test-support")) && name == "test-scope-module");
             if !known {
                 return Err(AdminError::Validation(format!(
                     "admin_auth names unknown module '{name}'; the built-in admin module is \
@@ -2153,10 +2153,10 @@ pub(crate) async fn put_auth(
     )
 }
 
-/// `POST /api/v1/admin/auth/cache/flush` — INSTANT REVOCATION of the credential cache's
-/// cached-allow window. Body `{"module": "<name>"}` flushes one module's
-/// partition; no/empty body flushes everything. The deny path never needed this (`Reject` is
-/// never cached); this closes the Identify window when a directory changes NOW.
+/// `POST /api/v1/admin/auth/cache/flush` — INSTANT REVOCATION of every auth plugin's cached-allow
+/// window: each one `refresh`es and drops the verified credentials it caches inside itself (THE
+/// DESIGN 11.11 R3). Body `{"module": "<name>"}` flushes one module; no/empty body flushes
+/// everything. The answer is the sum of the entries they dropped (1.5.5's `{"flushed": N}`).
 pub(crate) async fn flush_credential_cache(
     State(handle): State<Arc<AppHandle>>,
     axum::Extension(principal): axum::Extension<busbar_kernel::auth::AuthPrincipal>,
@@ -2176,10 +2176,7 @@ pub(crate) async fn flush_credential_cache(
                 )),
             }
         };
-    let flushed = match module.as_deref() {
-        Some(m) => app.credential_cache.flush_module(m),
-        None => app.credential_cache.flush_all(),
-    };
+    let flushed = app.flush_verified_credentials(module.as_deref());
     audit::AUDIT.record_by(
         "auth.cache_flush",
         module.as_deref().unwrap_or("*"),

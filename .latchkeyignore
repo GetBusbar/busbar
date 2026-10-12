@@ -1,0 +1,4 @@
+# Latchkey's context packer drops anything matching its credential deny-list (*.pem and the like).
+# This file is a public test key generated for the tests and carries no secret; without it the
+# busbar-auth-oauth tests fail to compile on a runner (include_str! of a missing file).
+!crates/busbar-auth-oauth/src/tests/fixtures/test_sa_key.pem

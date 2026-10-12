@@ -253,3 +253,38 @@ fn no_journal_bound_takes_no_calls_and_behaves_exactly_as_before() {
 /// The sentinel's own bound -- what the replay window is, and is not, a bound on.
 #[path = "sentinel_tests.rs"]
 mod sentinel_tests;
+
+/// Two rotates whose id and header would join to one string on a separator get two slots, and a
+/// create and a rotate sharing a header value never share one.
+#[test]
+fn the_rotate_replay_key_is_framed_so_no_two_pairs_share_a_slot() {
+    use crate::idempotency::rotate_replay_key;
+    assert_eq!(rotate_replay_key("a:b", "c"), "rotate:3:a:b:1:c");
+    assert_eq!(rotate_replay_key("a", "b:c"), "rotate:1:a:3:b:c");
+    assert_ne!(rotate_replay_key("a:b", "c"), rotate_replay_key("a", "b:c"));
+    assert_ne!(rotate_replay_key("x", "shared"), "shared");
+    // The length is of BYTES, so a multi-byte id puts its boundary where the reader finds it.
+    assert_eq!(rotate_replay_key("é", "h"), "rotate:2:é:1:h");
+}
+
+/// A reservation handed to an uncancellable path stays finishable: after `in_flight` a drop leaves
+/// the sentinel, and `commit` still replaces it with the value a retry then replays.
+#[test]
+fn a_reservation_marked_in_flight_survives_a_drop_and_still_commits() {
+    let cache: IdempotencyCache<&'static str> = IdempotencyCache::new();
+    let key = ("alice".to_string(), "k".to_string());
+    let Probe::Reserved(mut r) = cache.probe(key.clone(), 10) else {
+        panic!("first sighting reserves");
+    };
+    r.in_flight();
+    r.commit("done", 11);
+    assert!(matches!(cache.probe(key, 12), Probe::Replay("done")));
+
+    let key = ("alice".to_string(), "dropped".to_string());
+    let Probe::Reserved(mut r) = cache.probe(key.clone(), 20) else {
+        panic!("first sighting reserves");
+    };
+    r.in_flight();
+    drop(r);
+    assert!(matches!(cache.probe(key, 21), Probe::InFlight));
+}

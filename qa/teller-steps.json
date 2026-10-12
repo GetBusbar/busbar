@@ -131,7 +131,7 @@
           "state": "proven",
           "leg": "root-llm",
           "test": "crates/busbar/src/root/tests/plane_node.rs::the_loop_attributes_the_identity_the_door_resolved_and_invents_none",
-          "note": "three credentials through the deployment's own door (EngineHost::identity_admit -- the configured chain plus the one verdict resolution the HTTP middleware runs): the live bearer is admitted and the hold the loop opens names the key it resolved, while a bearer this deployment never minted and one whose exp has passed are both refused before the plane, and the shape the middleware leaves when it binds no key settles on the anonymous actor rather than on the key that was turned away"
+          "note": "three credentials through the deployment's own door (plane_host::identity_admit_over -- the configured chain plus the one verdict resolution the HTTP middleware runs): the live bearer is admitted and the hold the loop opens names the key it resolved, while a bearer this deployment never minted and one whose exp has passed are both refused before the plane, and the shape the middleware leaves when it binds no key settles on the anonymous actor rather than on the key that was turned away"
         }
       },
       "verify": {

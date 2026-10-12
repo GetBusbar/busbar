@@ -117,8 +117,6 @@ park = true
 "output[].type=function_call.call_id" = { prim = "call_id" }
 "output[].type=function_call.name" = { prim = "name" }
 "output[].type=function_call.arguments" = { prim = "arguments" }
-"output[].type=web_search_call.id" = { prim = "id" }
-"output[].type=web_search_call.status" = { prim = "status" }
 "service_tier" = { prim = "served_tier" }
 "usage.input_tokens_details.cache_write_tokens" = { prim = "cache_write_tokens" }
 

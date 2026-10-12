@@ -19,6 +19,34 @@ pub fn is_legal_header_value(s: &str) -> bool {
     s.bytes().all(|b| (b >= 0x20 && b != 0x7F) || b == b'\t')
 }
 
+/// Whether `name` is an RFC 9110 `token` (one or more `tchar`): the only shape a header field name
+/// may take on the wire. A name that is not one (a `:` above all) is re-read as a DIFFERENT field
+/// wherever a head is rendered and parsed again (`authorization:x` + `v` reads back as
+/// `authorization` = `x: v`), which steps around any same-name replacement made on whole names.
+pub fn is_header_name_token(name: &[u8]) -> bool {
+    !name.is_empty()
+        && name.iter().all(|b| {
+            b.is_ascii_alphanumeric()
+                || matches!(
+                    b,
+                    b'!' | b'#'
+                        | b'$'
+                        | b'%'
+                        | b'&'
+                        | b'\''
+                        | b'*'
+                        | b'+'
+                        | b'-'
+                        | b'.'
+                        | b'^'
+                        | b'_'
+                        | b'`'
+                        | b'|'
+                        | b'~'
+                )
+        })
+}
+
 /// The `Authorization` value for a bearer credential: the one place the scheme word and the
 /// credential are joined.
 pub fn token_value(key: &str) -> String {

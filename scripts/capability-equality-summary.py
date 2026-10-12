@@ -211,29 +211,225 @@ def root_cells(doc):
     return out
 
 
-def libtest_path(file, fn):
-    """`crates/busbar/src/root/plane_node.rs::the_x` -> `root::plane_node::tests::the_x`, the name the
-    binary's own test harness knows it by. Derived rather than pinned, then CHECKED against the
-    harness's own --list below, so a module that moved is a refusal and not a silent miss.
+BUSBAR_MAIN = "crates/busbar/src/main.rs"
 
-    A test body may live in a `tests/` child directory rather than inline (structure-lint's
-    <dir>/tests/<stem>.rs convention). Two shapes exist: a SIBLING file's tests
-    (`root/tests/gauntlet_kernel.rs`, alongside the still-present `root/gauntlet_kernel.rs`) belong
-    to `root::gauntlet_kernel::tests`; a DIRECTORY module's own tests (`root/units_admin/tests/units_admin.rs`,
-    the stem repeating the directory's own name) belong to `root::units_admin::tests`. Stripping the
-    `tests` path segment and, only in the repeating-name case, its following stem too, derives either
-    from the path alone."""
-    m = re.search(r"src/(.+)\.rs$", file)
-    if not m:
+
+def _tokens(src):
+    """The tokens the module reader needs: ("id", name), ("str", text) or ("p", char). Comments and
+    literal bodies are skipped (a string's text is kept, for `#[path = ".."]`), and a char literal is
+    told from a lifetime. The same scanner as xtask/src/libtest_path.rs."""
+    c, n, i, out = src, len(src), 0, []
+    ident0 = lambda ch: ch.isascii() and (ch.isalpha() or ch == "_")
+    identc = lambda ch: ch.isascii() and (ch.isalnum() or ch == "_")
+    while i < n:
+        ch = c[i]
+        if ch.isspace():
+            i += 1
+            continue
+        if c.startswith("//", i):
+            while i < n and c[i] != "\n":
+                i += 1
+            continue
+        if c.startswith("/*", i):
+            depth, i = 1, i + 2
+            while i < n and depth:
+                if c.startswith("/*", i):
+                    depth, i = depth + 1, i + 2
+                elif c.startswith("*/", i):
+                    depth, i = depth - 1, i + 2
+                else:
+                    i += 1
+            continue
+        raw_at = i + 1 if ch == "r" else (i + 2 if c.startswith("br", i) else None)
+        if raw_at is not None:
+            j, hashes = raw_at, 0
+            while j < n and c[j] == "#":
+                hashes, j = hashes + 1, j + 1
+            if j < n and c[j] == '"':
+                j += 1
+                end = c.find('"' + "#" * hashes, j)
+                end = n if end < 0 else end
+                out.append(("str", c[j:end]))
+                i = min(end + 1 + hashes, n)
+                continue
+            if ch == "r" and hashes == 1 and j < n and ident0(c[j]):
+                k = j
+                while k < n and identc(c[k]):
+                    k += 1
+                out.append(("id", c[j:k]))
+                i = k
+                continue
+        if ch == '"' or c.startswith('b"', i):
+            j, text = (i + 2 if ch == "b" else i + 1), []
+            while j < n and c[j] != '"':
+                if c[j] == "\\" and j + 1 < n:
+                    text.append(c[j : j + 2])
+                    j += 2
+                    continue
+                text.append(c[j])
+                j += 1
+            out.append(("str", "".join(text)))
+            i = min(j + 1, n)
+            continue
+        if ch == "'" or c.startswith("b'", i):
+            q = i + 1 if ch == "b" else i
+            if q + 1 < n and c[q + 1] == "\\":
+                j = q + 3
+                while j < n and c[j] != "'":
+                    j += 1
+                i = min(j + 1, n)
+                continue
+            if q + 2 < n and c[q + 2] == "'":
+                i = q + 3
+                continue
+            i = q + 1
+            continue
+        if ident0(ch):
+            j = i
+            while j < n and identc(c[j]):
+                j += 1
+            out.append(("id", c[i:j]))
+            i = j
+            continue
+        if ch.isdigit():
+            while i < n and (identc(c[i]) or c[i] == "."):
+                i += 1
+            continue
+        out.append(("p", ch))
+        i += 1
+    return out
+
+
+def _file_items(src):
+    """(decls, fns) of one file: decls are (inline nesting, name, `#[path]` or None) for every
+    `mod <name>;`; fns are (inline nesting, name) for every `fn <name>`."""
+    t = _tokens(src)
+    decls, fns, stack, depth, pending, i = [], [], [], 0, None, 0
+    at = lambda k: t[k] if k < len(t) else (None, None)
+    while i < len(t):
+        kind, val = t[i]
+        if (
+            (kind, val) == ("p", "#")
+            and at(i + 1) == ("p", "[")
+            and at(i + 2) == ("id", "path")
+            and at(i + 3) == ("p", "=")
+            and at(i + 5) == ("p", "]")
+        ):
+            if at(i + 4)[0] == "str":
+                pending = at(i + 4)[1]
+            i += 6
+            continue
+        if (kind, val) == ("id", "mod") and at(i + 1)[0] == "id":
+            name, nest = at(i + 1)[1], [m for m, _ in stack]
+            if at(i + 2) == ("p", ";"):
+                decls.append((nest, name, pending))
+                pending = None
+                i += 3
+                continue
+            if at(i + 2) == ("p", "{"):
+                depth += 1
+                stack.append((name, depth))
+                pending = None
+                i += 3
+                continue
+        if (kind, val) == ("id", "fn") and at(i + 1)[0] == "id":
+            fns.append(([m for m, _ in stack], at(i + 1)[1]))
+            i += 2
+            continue
+        if (kind, val) == ("p", "{"):
+            depth += 1
+            pending = None
+        elif (kind, val) == ("p", "}"):
+            while stack and stack[-1][1] == depth:
+                stack.pop()
+            depth = max(depth - 1, 0)
+            pending = None
+        elif (kind, val) == ("p", ";"):
+            pending = None
+        i += 1
+    return decls, fns
+
+
+def module_tree(read, root_file):
+    """THE MODULE TREE of a crate, read the way rustc builds it: from `root_file`, every
+    `mod <name>;` followed to its file (a `#[path]` relative to the declaring file's directory, or
+    `<name>.rs` / `<name>/mod.rs` beside a mod-rs file and under `<stem>/` beside any other), every
+    inline `mod <name> { .. }` part of the path. Returns (file -> set of module paths, file -> items).
+    `read(path)` gives a repo-relative file's text or None."""
+    norm = lambda p: os.path.normpath(p).replace(os.sep, "/")
+    paths, items = {}, {}
+    work = [(root_file, "", os.path.dirname(root_file), None)]
+    while work:
+        file, module, d, relative = work.pop()
+        seen = paths.setdefault(file, set())
+        if module in seen:
+            continue
+        seen.add(module)
+        if file not in items:
+            src = read(file)
+            if src is None:
+                continue
+            items[file] = _file_items(src)
+        for nest, name, path_attr in items[file][0]:
+            child_module = "::".join([m for m in [module] if m] + nest + [name])
+            inline_dir = d
+            if nest:
+                if relative:
+                    inline_dir = os.path.join(inline_dir, relative)
+                inline_dir = os.path.join(inline_dir, *nest)
+            if path_attr is not None:
+                child = norm(os.path.join(inline_dir, path_attr))
+                work.append((child, child_module, os.path.dirname(child), None))
+                continue
+            base = inline_dir if nest else (os.path.join(d, relative) if relative else d)
+            flat, nested = norm(os.path.join(base, f"{name}.rs")), norm(os.path.join(base, name, "mod.rs"))
+            if read(flat) is not None:
+                work.append((flat, child_module, norm(base), name))
+            elif read(nested) is not None:
+                work.append((nested, child_module, os.path.dirname(nested), None))
+    return paths, items
+
+
+def resolve(tree, file, fn):
+    """(libtest path, None) for `fn` in `file`, or (None, why): the file is reached by no
+    declaration, or the file or the fn is reached two ways (AMBIGUOUS, both named, never guessed)."""
+    paths, items = tree
+    reached = sorted(paths.get(file, set()))
+    if not reached:
+        return None, f"{file} is reached by no `mod` declaration from the crate root, so no test in it runs"
+    if len(reached) > 1:
+        return None, f"{file} is AMBIGUOUS: the crate reaches it as {' and '.join(reached)}; name one"
+    nests = sorted({tuple(nest) for nest, name in items.get(file, ([], []))[1] if name == fn})
+    if not nests:
+        return None, f"no `fn {fn}` in {file}"
+    if len(nests) > 1:
+        return None, (
+            f"`fn {fn}` in {file} is AMBIGUOUS: it is defined under "
+            f"`{'::'.join(nests[0])}` and `{'::'.join(nests[1])}`"
+        )
+    return "::".join([m for m in [reached[0]] if m] + list(nests[0]) + [fn]), None
+
+
+def _read_repo(path):
+    try:
+        with open(path, encoding="utf-8") as f:
+            return f.read()
+    except OSError:
         return None
-    parts = m.group(1).split("/")
-    if "tests" in parts:
-        i = parts.index("tests")
-        if i + 1 >= len(parts):
-            return None
-        prefix, stem = parts[:i], parts[i + 1]
-        parts = prefix if prefix and prefix[-1] == stem else prefix + [stem]
-    return "::".join(parts) + "::tests::" + fn
+
+
+_TREE = None
+
+
+def libtest_path(file, fn):
+    """`crates/busbar/src/root/tests/serve_tests.rs::the_x` -> `root::serve::door_tests::agent_door::the_x`,
+    the name the binary's own test harness knows it by: READ off the module tree (`module_tree`), not
+    guessed from the file's name, then CHECKED against the harness's own --list below. Returns
+    (path, None) or (None, why)."""
+    global _TREE
+    if _TREE is None:
+        _TREE = module_tree(_read_repo, BUSBAR_MAIN)
+    return resolve(_TREE, file, fn)
 
 
 def run_named_root_cells(cells, label):
@@ -268,8 +464,10 @@ def run_named_root_cells(cells, label):
 
     wanted, absent = [], []
     for leg, f, fn in cells:
-        p = libtest_path(f, fn)
-        if p is None or p not in known:
+        p, why = libtest_path(f, fn)
+        if p is None:
+            absent.append(f"{leg}: {f}::{fn} ({why})")
+        elif p not in known:
             absent.append(f"{leg}: {f}::{fn} (looked for {p})")
         elif p not in wanted:
             wanted.append(p)
@@ -445,6 +643,82 @@ def selftest():
             "no fourth state",
         )
 
+    # (4c) THE LIBTEST NAME IS READ OFF THE SOURCE. A body `serve.rs` carries under ANOTHER module
+    # name (`#[path = "tests/serve_tests.rs"] mod door_tests`) and nests in an inline module resolves
+    # to that module path; the file-NAME derivation this replaced gave `root::serve_tests::tests::<fn>`,
+    # a module no build carries (RED: --root-legs reported every door cell absent). A file reached
+    # two ways, or a fn defined under two nestings, is refused naming both; an unreached file is
+    # refused naming it.
+    def fixture_tree(files):
+        return module_tree(lambda p: files.get(p), "c/src/main.rs")
+
+    door = fixture_tree(
+        {
+            "c/src/main.rs": "mod root;\nfn main() {}\n",
+            "c/src/root/mod.rs": "pub mod serve;\n",
+            "c/src/root/serve.rs": (
+                '#[cfg(test)]\n#[path = "tests/serve.rs"]\nmod tests;\n// mod not_a_module;\n'
+                '#[cfg(all(test, linked_axis_node))]\n#[path = "tests/serve_tests.rs"]\nmod door_tests;\n'
+            ),
+            "c/src/root/tests/serve.rs": "#[test]\nfn plain_cell() {}\n",
+            "c/src/root/tests/serve_tests.rs": (
+                "mod decisions_door {\n    #[tokio::test]\n    async fn a_decisions_cell() {\n"
+                '        let s = "mod fake { fn a_door_cell() }";\n        let c = \'}\';\n'
+                "        let q = '\\'';\n    }\n}\n"
+                "mod agent_door {\n    fn helper<'a>(x: &'a str) -> &'a str { x }\n"
+                "    #[tokio::test]\n    async fn a_door_cell() {\n        /* } mod x { */\n"
+                '        assert_eq!(helper(r#"}"#), "}");\n    }\n}\n'
+            ),
+        }
+    )
+    got, why = resolve(door, "c/src/root/tests/serve_tests.rs", "a_door_cell")
+    case(
+        "a #[path]-carried file resolves under its declared module and inline nesting",
+        got == "root::serve::door_tests::agent_door::a_door_cell",
+        f"resolved {got!r} ({why})",
+    )
+    case(
+        "the file-name derivation `root::serve_tests::tests::<fn>` is not what resolves",
+        got != "root::serve_tests::tests::a_door_cell",
+        "the old derivation came back",
+    )
+    case(
+        "a sibling inline module and a plain #[path] tests file resolve too",
+        resolve(door, "c/src/root/tests/serve_tests.rs", "a_decisions_cell")[0]
+        == "root::serve::door_tests::decisions_door::a_decisions_cell"
+        and resolve(door, "c/src/root/tests/serve.rs", "plain_cell")[0]
+        == "root::serve::tests::plain_cell",
+        "a door sibling or the plain tests file did not resolve",
+    )
+    twice = fixture_tree(
+        {
+            "c/src/main.rs": "mod root;\n",
+            "c/src/root/mod.rs": (
+                '#[path = "tests/shared.rs"]\nmod one;\n#[path = "tests/shared.rs"]\nmod two;\n'
+                '#[path = "tests/twice.rs"]\nmod twice;\n'
+            ),
+            "c/src/root/tests/shared.rs": "#[test]\nfn a_cell() {}\n",
+            "c/src/root/tests/twice.rs": "mod a { #[test] fn a_cell() {} }\nmod b { #[test] fn a_cell() {} }\n",
+        }
+    )
+    _, file_why = resolve(twice, "c/src/root/tests/shared.rs", "a_cell")
+    _, fn_why = resolve(twice, "c/src/root/tests/twice.rs", "a_cell")
+    case(
+        "a file reached under two module paths is refused naming both",
+        bool(file_why) and "AMBIGUOUS" in file_why and "root::one" in file_why and "root::two" in file_why,
+        str(file_why),
+    )
+    case(
+        "a fn defined under two inline modules is refused naming both",
+        bool(fn_why) and "AMBIGUOUS" in fn_why and "`a`" in fn_why and "`b`" in fn_why,
+        str(fn_why),
+    )
+    case(
+        "an unreached file is refused naming it",
+        "orphan.rs" in (resolve(door, "c/src/root/tests/orphan.rs", "a_cell")[1] or ""),
+        "an unreached file resolved",
+    )
+
     # (5) The real ledger is accepted and yields a count -- the printer reaches its subject.
     doc, err = load(LEDGER)
     case(f"the real {LEDGER} is accepted", err is None, str(err))
@@ -459,15 +733,17 @@ def selftest():
         # (5b) The derivation the runner uses must reach the file the ledger names, or --root-legs
         # would look for every cell under a path no harness knows and report a gap that is its own.
         leg_cells = root_cells(doc)
+        unresolved = [
+            f"{f}::{fn}: {libtest_path(f, fn)[1]}"
+            for _, f, fn in leg_cells
+            if libtest_path(f, fn)[0] is None
+            or not libtest_path(f, fn)[0].startswith("root::")
+            or not libtest_path(f, fn)[0].endswith(f"::{fn}")
+        ]
         case(
-            "every root cell derives a libtest path under its own root module",
-            leg_cells
-            and all(
-                (libtest_path(f, fn) or "").startswith("root::")
-                and (libtest_path(f, fn) or "").endswith(f"::tests::{fn}")
-                for _, f, fn in leg_cells
-            ),
-            "a root cell derives no module path",
+            "every root cell resolves to a libtest path under its own root module",
+            bool(leg_cells) and not unresolved,
+            "; ".join(unresolved[:5]) or "no root cell",
         )
 
     # (6) The deep gate this printer fronts for actually exists and names the ledger -- a printer

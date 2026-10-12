@@ -16,7 +16,8 @@
 # (`PlaneRoots`), whose tests in `xtask/tests/infra.rs` carry the zero/ambiguous/missing refusals;
 # its old shell twin scripts/plane-roots.sh was sourced by nothing and is deleted (item 549).
 #
-# CONTRACT. Sourcing this file exports `PLANE_KEYS` (all plane keys, canonical order) and
+# CONTRACT. Sourcing this file exports `PLANE_KEYS` (all legacy-engine plane keys, canonical order),
+# `PLANE_KEYS_KIND_ONLY` (plane keys with no legacy-engine crate, see below) and
 # `PLANE_KEYS_PROTOCOL` (every key EXCEPT `llm` — busbar-llm owns the LLM dialect names and is never
 # scanned as a plane key by the grep gate, which bans the dialects there instead). It also defines
 # three pure helpers used by the callers to reconstruct their existing views byte-for-byte:
@@ -44,7 +45,20 @@
 # for their crate/wiring counterpart to land; until then, PLANE_KEYS states what is TRUE ON DISK, and
 # PLANE_KEYS_LOCKED (below) states what is true IN DOCTRINE, so no caller can mistake one for the
 # other by reading only this line.
-PLANE_KEYS="llm mcp a2a voice"
+#
+# `mcp` IS STRUCK (P3 DEL-MCP, ARCHITECT 2026-10-05) — the named change this header asks for. Every
+# consumer reads a key here as a literal `crates/busbar-<key>` LEGACY-ENGINE directory, and
+# `crates/busbar-mcp` is deleted: the mcp plane is PLANE-KIND ONLY now, its door crate
+# `crates/busbar-plane-mcp`, which the plane-kind regime scans whole. It stays on the doctrine roster
+# (`PLANE_KEYS_LOCKED`) and reaches the deletion harness as `plane-mcp` (`plane_ondisk_key`), the way
+# `decisions` does as `plane-decisions`.
+PLANE_KEYS="llm a2a voice"
+
+# PLANE_KEYS_KIND_ONLY — plane keys whose plane has NO legacy-engine crate any more and lives only in
+# its plane-kind crate `crates/busbar-plane-<key>` (P3 DEL-MCP, ARCHITECT 2026-10-05: `mcp`). Never a
+# `crates/busbar-<key>` root; STILL a plane noun, so a needle gate that bans the other planes' keys
+# keeps banning it (`plane_noun_keys_other`). Leaving PLANE_KEYS must not let the word in.
+PLANE_KEYS_KIND_ONLY="mcp"
 
 # The protocol subset: every plane key except `llm`. Derived from PLANE_KEYS so adding a plane in
 # one place flows here automatically.
@@ -78,7 +92,9 @@ plane_ondisk_key() {
   case "$1" in
     streaming) printf 'voice' ;;
     decisions) printf 'plane-decisions' ;;
-    llm | mcp | a2a) printf '%s' "$1" ;;
+    # P3 DEL-MCP: the engine is deleted; the plane is its one plane-kind crate.
+    mcp) printf 'plane-mcp' ;;
+    llm | a2a) printf '%s' "$1" ;;
     *) printf '' ;;
   esac
 }
@@ -158,6 +174,15 @@ plane_src_roots() {   # echo "crates/busbar-<k>/src crates/busbar-<k>-codec/src 
 NEUTRAL_ROOTS_LIST="crates/busbar-kernel/src crates/busbar-kernel-audit/src crates/busbar-kernel-breaker/src crates/busbar-kernel-egress/src crates/busbar-kernel-identity/src crates/busbar-kernel-ledger/src crates/busbar-kernel-scope/src crates/busbar-kernel-wal/src crates/busbar-contract/src crates/plugin-loader/src crates/busbar-core-admin/src crates/busbar-core-connector/src crates/busbar-core-oauth2/src"
 
 neutral_src_roots() { printf '%s' "$NEUTRAL_ROOTS_LIST"; }
+
+plane_noun_keys_other() {  # $1 = self key. Echo every PLANE NOUN (protocol + kind-only keys) except <self>.
+  local k out=""
+  for k in $PLANE_KEYS_PROTOCOL $PLANE_KEYS_KIND_ONLY; do
+    [ "$k" = "$1" ] && continue
+    out="${out:+$out }$k"
+  done
+  printf '%s' "$out"
+}
 
 plane_keys_other() {  # $1 = self key. Echo the PROTOCOL keys except <self>, canonical order.
   local k out=""

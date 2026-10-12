@@ -209,14 +209,20 @@ fn the_codec_state_counts_events() {
     assert_eq!(codec.events_read, 1);
 }
 
-/// A unary answer closes its unit exactly once, and an empty envelope closes nothing.
+/// P-ITEM: UNARY/EMPTY TERMINALITY (spec DONE item 2, "All P-item behaviours match 1.5.5"; the
+/// drive log's P3, commit 470351a480). A unary answer closes its unit exactly once, and an empty
+/// envelope closes nothing.
 ///
 /// This is the money boundary the old `!has("/result/kind")` predicate had backwards: a real Task or
 /// Message answer carries a `kind`, so it never ended its metering unit, while an empty envelope
 /// carried none and billed `Complete` for nothing. The unary path ends on a `result` (or `error`)
-/// and never on an envelope carrying neither.
+/// and never on an envelope carrying neither. The 1.5.5 behaviour this plane matches is its one
+/// surface's (the llm surface; owner correction 2026-09-28): a delivered answer is billed once, at
+/// its end, and a response the caller cannot use is not billed as a delivered one (v1.5.5
+/// `crates/busbar/src/proxy/response_body.rs:415-440`, the token-billing gate on an aborted
+/// stream; `crates/busbar/src/proxy/usage.rs:57-103`, the one accrual site per delivered response).
 #[test]
-fn a_unary_answer_closes_once_and_an_empty_envelope_does_not() {
+fn p_item_unary_empty_terminality_a_unary_answer_closes_once_and_an_empty_envelope_does_not() {
     // A real unary Task answer carries a result (with a kind) and is the whole answer: terminal.
     let task = br#"{"jsonrpc":"2.0","id":1,"result":{"kind":"task","id":"t1"}}"#;
     assert!(
@@ -392,4 +398,37 @@ fn a_request_naming_no_carried_agent_reaches_none() {
         hop_to(&TWO_AGENTS[1]),
         "the one agent there is"
     );
+}
+
+/// P-ITEM: REFUSAL-REASON COLLAPSE (spec DONE item 2, "All P-item behaviours match 1.5.5"; drive
+/// log P1, commit 470351a480; TODO L-ENG9). 1.5.5's one surface gave every limit reason its own
+/// status and kind and answered none of them as an internal error (v1.5.5
+/// `crates/busbar/src/ingress/mod.rs:237-305`). On this plane: a reason renders as the internal
+/// code exactly when its class is a node fault, and every reason of one class renders the same
+/// answer, so the reason-to-family decision is the one classification's
+/// (`busbar_contract::abi::plane::RefusalCode::class`) and never this plane's own.
+#[test]
+fn p_item_refusal_reason_collapse_only_a_node_fault_is_internal_and_one_class_one_answer() {
+    use busbar_contract::abi::plane::{reason_of, RefusalClass, RefusalCode};
+    let mut answers: Vec<(RefusalClass, (i64, &'static str))> = Vec::new();
+    for code in RefusalCode::ALL {
+        // Two codes are the kernel's own money verdicts and never reach a plane (`reason_of`).
+        let Some(reason) = reason_of(code.code()) else {
+            continue;
+        };
+        let class = code.class();
+        let answer = refusal_render(busbar_contract::unit::RefusalReason::from(reason));
+        assert_eq!(
+            answer.0 == crate::jsonrpc::CODE_INTERNAL,
+            class.is_node_fault(),
+            "{code:?} (class {class:?}) renders {answer:?}"
+        );
+        match answers.iter().find(|(c, _)| *c == class) {
+            Some((_, first)) => assert_eq!(
+                *first, answer,
+                "{code:?} answers differently from the rest of {class:?}"
+            ),
+            None => answers.push((class, answer)),
+        }
+    }
 }

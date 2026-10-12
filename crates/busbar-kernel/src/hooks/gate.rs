@@ -362,15 +362,17 @@ pub(crate) async fn decide(
 /// A failed gate's terminal, as a verdict. `Some` only for `reject` — the two ranking terminals
 /// (`weighted`, `first`) are statements about which candidate to pick, and with no candidates they
 /// mean exactly "this gate has no verdict", which is a proceed.
+///
+/// The door gate is one more seat that calls a hook, so it asks the one disposition rule
+/// ([`crate::hooks::failed_call_refuses`]) and answers the one client-facing refusal every other
+/// seat answers ([`crate::hooks::REQUIRED_HOOK_UNAVAILABLE_STATUS`] and its message): a broken
+/// load-bearing gate is the same retryable condition on every plane (audit kernel-K4 #7).
 fn fail_closed(on_error: &crate::config::PolicyOnError, hook: &'static str) -> Option<GateVerdict> {
-    match on_error {
-        crate::config::PolicyOnError::Reject => Some(GateVerdict::Reject {
-            status: 403,
-            message: "A required gate could not complete, so this request was refused.".to_string(),
-            hook,
-        }),
-        crate::config::PolicyOnError::Weighted | crate::config::PolicyOnError::First => None,
-    }
+    crate::hooks::failed_call_refuses(on_error).then(|| GateVerdict::Reject {
+        status: crate::hooks::REQUIRED_HOOK_UNAVAILABLE_STATUS,
+        message: crate::hooks::REQUIRED_HOOK_UNAVAILABLE_MESSAGE.to_string(),
+        hook,
+    })
 }
 
 /// Build ONE gate's projection from the facts, gated by THAT gate's grants.
@@ -402,13 +404,17 @@ fn project<'a>(
         system_chars: items.counts().1,
         max_tokens: shape.max_tokens,
         stream: subject.facts.wants_stream(),
-        prompt: send_prompt.then(|| crate::hooks::PromptProjection {
-            system: join_system(items),
-            messages: items
-                .iter()
-                .filter(|(i, _)| i.slot() != Slot::System)
-                .map(|(i, t)| (Cow::Borrowed(i.author()), Cow::Owned(t.to_string())))
-                .collect(),
+        // Under the hook content ceiling, the one rule every seat that hands a hook the prompt
+        // applies (audit kernel-K4 #8).
+        prompt: send_prompt.then(|| {
+            crate::hooks::content_capped(crate::hooks::PromptProjection {
+                system: join_system(items),
+                messages: items
+                    .iter()
+                    .filter(|(i, _)| i.slot() != Slot::System)
+                    .map(|(i, t)| (Cow::Borrowed(i.author()), Cow::Owned(t.to_string())))
+                    .collect(),
+            })
         }),
         identity: send_user.then(|| crate::hooks::CallerIdentity {
             key_id: subject.key.map(|k| k.id.clone()),

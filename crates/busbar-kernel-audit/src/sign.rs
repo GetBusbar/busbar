@@ -380,14 +380,6 @@ impl AuditKeySet {
         }
     }
 
-    /// The public half of a signing key this node holds, added to the set.
-    pub fn insert_signer(&mut self, signer: &AuditSigningKey) {
-        self.insert(AuditVerifyingKey {
-            inner: signer.verifying_key(),
-            key_id: signer.key_id().to_string(),
-        });
-    }
-
     /// The key one identifier names, if the set holds it.
     #[must_use]
     pub fn get(&self, key_id: &str) -> Option<&AuditVerifyingKey> {

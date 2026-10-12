@@ -127,6 +127,14 @@ pub const MIN_REASON: usize = 40;
 /// A `construct` needle shorter than this cannot be narrow enough to mean anything. `.f(` is three.
 const MIN_NEEDLE: usize = 4;
 
+/// THE DECLARATION FLOOR: the `[[capability]]` rows live in [`DECLARATIONS`] on predev 5e672d125d,
+/// measured 2026-10-07 (`ledger-dual-write`, `audit-chain-signing`; the third `[[capability]]` in
+/// the file is inside THE ROW SHAPE comment and declares nothing). Fewer reds
+/// [`ROW_SCAN_FLOOR`]: a struck row is a construction guard that stopped running, and a file
+/// with none used to read `0 capability declaration(s)` and pass. Lowered only in the reviewed
+/// diff that strikes a row.
+pub const DECLARATION_FLOOR: usize = 2;
+
 const GATE: &str = "unconstructed";
 const CLEAN: &str = "clean";
 const DID_NOT_RUN: &str = "DID NOT RUN";
@@ -656,20 +664,41 @@ impl Gate for UnconstructedGate {
             }
         }
 
-        let mut rows = vec![Row::pass(
-            ROW_SCAN_FLOOR,
-            "the declarations parsed, every construct needle is call-shaped, and every scope was \
-             walked",
-            format!(
-                "{CLEAN} — {} capability declaration(s) in {DECLARATIONS}, {} scope root(s), {} \
-                 file(s) scanned, {} implementation file(s) read; every `construct` needle ends in \
-                 `(` so no `use`, doc comment or type alias can satisfy a row",
-                caps.len(),
-                roots.len(),
-                total,
-                built_text.len()
-            ),
-        )];
+        let measured = format!(
+            "{} capability declaration(s) in {DECLARATIONS} (floor {DECLARATION_FLOOR}), {} scope \
+             root(s), {} file(s) scanned, {} implementation file(s) read",
+            caps.len(),
+            roots.len(),
+            total,
+            built_text.len()
+        );
+        // THE DECLARATION FLOOR. The rows ARE the denominator, so a struck row is a guard that
+        // stopped running — and without this check a file with fewer rows, or none, read as a
+        // smaller clean.
+        let mut rows = vec![if caps.len() < DECLARATION_FLOOR {
+            Row::fail(
+                ROW_SCAN_FLOOR,
+                "fewer capabilities are declared than the reviewed floor",
+                format!(
+                    "{measured}: {} is below the declaration floor of {DECLARATION_FLOOR}. A \
+                     declaration struck from {DECLARATIONS} is a construction guard that no longer \
+                     runs, and the file reads exactly as clean without it. Restore the row, or \
+                     lower DECLARATION_FLOOR in xtask/src/gates/unconstructed.rs in the same \
+                     reviewed diff that strikes it",
+                    caps.len()
+                ),
+            )
+        } else {
+            Row::pass(
+                ROW_SCAN_FLOOR,
+                "the declarations parsed, every construct needle is call-shaped, and every scope \
+                 was walked",
+                format!(
+                    "{CLEAN} — {measured}; every `construct` needle ends in `(` so no `use`, doc \
+                     comment or type alias can satisfy a row"
+                ),
+            )
+        }];
 
         let mut stale: Vec<String> = Vec::new();
         let mut dead: Vec<String> = Vec::new();
@@ -1150,6 +1179,51 @@ impl Gate for UnconstructedGate {
             &["SELF-DECLARED UNSHIPPED", PLANTED_UNSHIPPED],
         ));
 
+        // ── CONTROL 13 — A DELETED DECLARATION IS RED, NOT A SMALLER GREEN. ─────────────────
+        // The declarations ARE the gate's denominator: a row struck from the file is a guard that
+        // stopped running, and the file read exactly as clean with one row as with two. Strike the
+        // last declared row and the floor must go RED, naming the count it found.
+        let ids: Vec<String> = declarations(cx)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|c| c.id)
+            .collect();
+        let one_struck = ids
+            .last()
+            .map(|id| without_declaration(&decls, id))
+            .unwrap_or_default();
+        report.push(prove_rows_red(
+            cx,
+            self,
+            "a [[capability]] declaration struck from the file reds the declaration floor",
+            &[ROW_SCAN_FLOOR],
+            {
+                let mut ov = Overlay::new();
+                ov.set(DECLARATIONS, one_struck);
+                ov
+            },
+            &["below the declaration floor"],
+        ));
+
+        // ── CONTROL 13b — A FILE WITH NO DECLARATIONS AT ALL IS RED. ────────────────────────
+        // Every row struck, every comment kept: the file parses, every scope is walked (there are
+        // none), and the gate used to read that as `0 capability declaration(s)` and pass.
+        let none_left = ids
+            .iter()
+            .fold(decls.clone(), |text, id| without_declaration(&text, id));
+        report.push(prove_rows_red(
+            cx,
+            self,
+            "a declaration file with zero [[capability]] rows reds the declaration floor",
+            &[ROW_SCAN_FLOOR],
+            {
+                let mut ov = Overlay::new();
+                ov.set(DECLARATIONS, none_left);
+                ov
+            },
+            &["below the declaration floor", "0 capability declaration(s)"],
+        ));
+
         // ── CONTROL 11 — RESTORING THE SITE RETURNS THE ROW TO GREEN. ───────────────────────
         // Control 2's overlay with the call put back. This is what proves control 2's RED is about
         // THE MISSING CALL and not about the edit, the overlay, or the file having been touched.
@@ -1181,6 +1255,33 @@ impl Gate for UnconstructedGate {
 
         report
     }
+}
+
+/// `decls` with the live `[[capability]]` table whose `id` is `id` cut out: its header line and
+/// every key line up to the next blank line, comment or table header. Comments stay, so the plant
+/// is a declaration struck from a file that still parses.
+fn without_declaration(decls: &str, id: &str) -> String {
+    let lines: Vec<&str> = decls.lines().collect();
+    let id_line = format!("id        = \"{id}\"");
+    let Some(at) = lines.iter().position(|l| l.trim_end() == id_line) else {
+        return decls.to_string();
+    };
+    let Some(head) = lines[..at]
+        .iter()
+        .rposition(|l| l.trim() == "[[capability]]")
+    else {
+        return decls.to_string();
+    };
+    let end = lines[at..]
+        .iter()
+        .position(|l| {
+            let t = l.trim_start();
+            t.is_empty() || t.starts_with('#') || t.starts_with('[')
+        })
+        .map_or(lines.len(), |n| at + n);
+    let mut out: Vec<&str> = lines[..head].to_vec();
+    out.extend_from_slice(&lines[end..]);
+    format!("{}\n", out.join("\n"))
 }
 
 /// The production file carrying the construction site that makes `money-one-function-view` stale,

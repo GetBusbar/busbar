@@ -125,46 +125,114 @@ fn write_string(s: &str, out: &mut String) {
     out.push('"');
 }
 
-/// RFC 8785 section 3.2.2.3: numbers print as ECMAScript `Number.prototype.toString`, so `1.0` is
-/// `1` and the exponent form carries an explicit sign. Integers that arrived as integers are printed
-/// from their integer representation, which keeps a `u64` beyond f64's exact range exact.
+/// RFC 8785 section 3.2.2.3: EVERY number is an IEEE-754 double, printed as ECMAScript
+/// `Number.prototype.toString`. That includes a number that arrived as an integer: `9007199254740993`
+/// is the double `9007199254740992` and canonicalizes as that, because the signer's canonicalizer
+/// (any conforming JCS implementation) parsed it into a double before printing. Printing the integer
+/// exactly would verify a correctly signed card against a different document.
 fn number(n: &serde_json::Number) -> Result<String, CanonicalError> {
-    if let Some(i) = n.as_i64() {
-        return Ok(i.to_string());
-    }
-    if let Some(u) = n.as_u64() {
-        return Ok(u.to_string());
-    }
-    let f = n.as_f64().ok_or(CanonicalError::NonFiniteNumber)?;
+    // `as f64` on an integer rounds to nearest, ties to even, which is what an ECMAScript parse does.
+    let f = if let Some(i) = n.as_i64() {
+        i as f64
+    } else if let Some(u) = n.as_u64() {
+        u as f64
+    } else {
+        n.as_f64().ok_or(CanonicalError::NonFiniteNumber)?
+    };
     if !f.is_finite() {
         return Err(CanonicalError::NonFiniteNumber);
     }
     Ok(ecmascript_number(f))
 }
 
-/// ECMAScript `Number::toString` for a finite double.
+/// ECMAScript `Number::toString` for a finite double (ECMA-262 Number::toString steps 5-12).
 ///
-/// Rust's own `{}` is already the shortest round-tripping decimal, which is the hard half and the
-/// half the two languages agree on. They disagree on PRESENTATION, in exactly three places, and each
-/// one is a real card field away from mattering: a whole number prints with a trailing `.0`, the
-/// exponent threshold differs, and the exponent has no `+`.
+/// The shortest round-tripping digit string comes from Rust's own float formatter; the LAYOUT is
+/// written out here so it follows the ECMAScript rules exactly rather than Rust's presentation.
+/// One more difference is in the digits themselves: when the double lies exactly halfway between two
+/// k-digit decimals that both round-trip, ECMAScript takes the one with the EVEN last digit and Rust
+/// takes the upper one. RFC 8785 Appendix B carries such a value (1424953923781206.25 is
+/// `1424953923781206.2`), so [`shortest_digits`] settles the tie the ECMAScript way.
 fn ecmascript_number(f: f64) -> String {
     if f == 0.0 {
         // ECMAScript prints negative zero as "0".
         return "0".to_string();
     }
-    let abs = f.abs();
-    // ECMAScript switches to exponential notation at 1e21 and above, and below 1e-6.
-    if (1e-6..1e21).contains(&abs) {
-        let plain = format!("{f}");
-        return plain.strip_suffix(".0").unwrap_or(&plain).to_string();
+    let (digits, point) = shortest_digits(f.abs());
+    let k = digits.len() as i32;
+    // The value is 0.<digits> x 10^n.
+    let n = point + 1;
+    let mut out = String::new();
+    if f < 0.0 {
+        out.push('-');
     }
-    let exp = format!("{f:e}");
-    // Rust writes `1e21` and `1e-7`; ECMAScript writes `1e+21` and `1e-7`.
-    match exp.split_once('e') {
-        Some((mantissa, e)) if !e.starts_with('-') => format!("{mantissa}e+{e}"),
-        _ => exp,
+    if k <= n && n <= 21 {
+        out.push_str(&digits);
+        out.push_str(&"0".repeat((n - k) as usize));
+    } else if 0 < n && n <= 21 {
+        out.push_str(&digits[..n as usize]);
+        out.push('.');
+        out.push_str(&digits[n as usize..]);
+    } else if -6 < n && n <= 0 {
+        out.push_str("0.");
+        out.push_str(&"0".repeat((-n) as usize));
+        out.push_str(&digits);
+    } else {
+        let e = n - 1;
+        out.push_str(&digits[..1]);
+        if k > 1 {
+            out.push('.');
+            out.push_str(&digits[1..]);
+        }
+        out.push('e');
+        out.push(if e < 0 { '-' } else { '+' });
+        out.push_str(&e.abs().to_string());
     }
+    out
+}
+
+/// The shortest decimal digit string that round-trips to `abs` (a finite positive double) and the
+/// decimal exponent of its first digit, with an exact halfway tie settled to the even last digit.
+fn shortest_digits(abs: f64) -> (String, i32) {
+    let (digits, exp) = split_scientific(&format!("{abs:e}"));
+    // The exact expansion of a double has at most 767 significant digits, so 800 is exact.
+    let (exact, exact_exp) = split_scientific(&format!("{abs:.800e}"));
+    let exact = exact.trim_end_matches('0');
+    let k = digits.len();
+    let halfway = exact_exp == exp && exact.len() == k + 1 && exact.ends_with('5');
+    if !halfway {
+        return (digits, exp);
+    }
+    let lower = exact[..k].to_string();
+    let mut upper = lower.clone().into_bytes();
+    // `lower` does not end in 9 here: a 9 would carry and the carried form would be shorter.
+    if let Some(last) = upper.last_mut() {
+        if *last == b'9' {
+            return (digits, exp);
+        }
+        *last += 1;
+    }
+    let upper = String::from_utf8(upper).unwrap_or_default();
+    let round_trips = |d: &str| format!("{d}e{}", exp - (k as i32 - 1)).parse::<f64>() == Ok(abs);
+    if !(round_trips(&lower) && round_trips(&upper)) {
+        return (digits, exp);
+    }
+    let even = |d: &str| {
+        d.as_bytes()
+            .last()
+            .is_some_and(|b| (b - b'0').is_multiple_of(2))
+    };
+    if even(&lower) {
+        (lower, exp)
+    } else {
+        (upper, exp)
+    }
+}
+
+/// `d.ddde-N` (Rust `{:e}`) to its digits with the point removed and its decimal exponent.
+fn split_scientific(s: &str) -> (String, i32) {
+    let (mantissa, exp) = s.split_once('e').unwrap_or((s, "0"));
+    (mantissa.replace('.', ""), exp.parse().unwrap_or(0))
 }
 
 #[cfg(test)]

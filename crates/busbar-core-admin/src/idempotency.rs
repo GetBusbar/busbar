@@ -7,15 +7,14 @@
 //! so a retry with the same key but a DIFFERENT body still replays the first response (parity
 //! clause — 1.5.5 never hashed the body either). The key is `(actor, header)` for a mint and
 //! `(actor, <framed id and header>)` for a rotate; the caller builds it, and see
-//! `verbs::rotate_replay_key` for why the rotate's two halves are length-prefixed rather than
+//! [`rotate_replay_key`] for why the rotate's two halves are length-prefixed rather than
 //! joined on a separator.
 //!
 //! The sweep is NOT the same as 1.5.5's: it steps over the in-flight sentinel. See
 //! [`IdempotencyCache::probe`].
 //!
-//! Generic over the cached value `V` rather than pinned to `serde_json::Value`, because this crate
-//! has no serializer dependency (see the crate-level `// contract:` note in `lib.rs`): the
-//! integrator's codec supplies whatever already-encoded response type it wants replayed.
+//! Generic over the cached value `V`: the served key handlers ([`crate::keys`]) cache the response
+//! object they replay verbatim.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -26,18 +25,26 @@ use std::sync::{Arc, Mutex};
 // `crate::idempotency::IDEMPOTENCY_TTL_SECS` call sites keep resolving.
 pub use busbar_contract::verb_store::IDEMPOTENCY_TTL_SECS;
 
-/// The idempotency cache's encoder seam. This crate has no serializer of its own, so a
-/// replayable verb's cached value must be the EXACT bytes the composition root's own writer would
-/// send as the response body for a fresh call — never an intermediate representation this crate
-/// decodes back into a fresh capability. The composition root binds this to the admin plane's own
-/// writer (the JSON body it was about to send), so a replay returns the post-substitution response
-/// bytes verbatim and can never re-mint a `SecretOnce`: there is no decode step at all, only the
-/// cached `Vec<u8>` returned as-is.
-pub trait ReplayEncoder<T> {
-    /// Encode `value` into the exact bytes a fresh call's response body would carry. The returned
-    /// bytes are what a same-idempotency-key replay returns verbatim for the lifetime of the
-    /// [`IDEMPOTENCY_TTL_SECS`] window.
-    fn encode(&self, value: &T) -> Vec<u8>;
+/// THE REPLAY KEY FOR A ROTATE, FRAMED SO THAT NO TWO `(id, header)` PAIRS JOIN TO ONE KEY.
+///
+/// A rotate is scoped to the key it rotates as well as to the idempotency header, so a create and a
+/// rotate sharing a header value do not replay each other. Both halves are caller-supplied free
+/// text, which is exactly the condition under which a separator join stops being a function: joined
+/// on a bar or a colon, `("a:b", "c")` and `("a", "b:c")` are one string, so the second rotate is
+/// served the FIRST one's cached response and the key it actually named is never rotated — while
+/// the caller is told it was.
+///
+/// So each half is length-prefixed: the decimal byte length, a colon, then exactly that many bytes.
+/// A reader takes the digits up to the colon as a count and then consumes precisely that count, so
+/// every boundary is fixed by a number the caller does not write. A length can contain no colon,
+/// being decimal digits, so there is nothing left for a caller's bytes to move: `("a:b", "c")` is
+/// `rotate:3:a:b:1:c` and `("a", "b:c")` is `rotate:1:a:3:b:c`. This is the same framing, and the
+/// same reason for it, as the length-prefixed audit digest.
+///
+/// The lengths are BYTE lengths, not character counts: the key is compared as bytes, and a count of
+/// characters would put the boundary somewhere other than where the reader would find it.
+pub(crate) fn rotate_replay_key(id: &str, header: &str) -> String {
+    format!("rotate:{}:{}:{}:{}", id.len(), id, header.len(), header)
 }
 
 /// One cache slot: `(inserted_at, value)`. `value: None` is the in-flight reservation sentinel
@@ -196,8 +203,17 @@ impl<'a, V: Clone> Reservation<'a, V> {
 
     /// Mark the reservation as handed to an uncancellable execution path: a subsequent `Drop`
     /// (caller cancellation) must not clear it. Mirrors 1.5.5's `IdemState::InFlight` transition.
-    pub fn leak(mut self) {
+    /// The reservation stays usable: [`commit`](Reservation::commit) and
+    /// [`clear`](Reservation::clear) still release the sentinel, which is how a handler that awaits
+    /// the uncancellable work finishes the claim.
+    pub fn in_flight(&mut self) {
         self.live = false;
+    }
+
+    /// [`Reservation::in_flight`] for a caller that will not finish the claim itself: the sentinel
+    /// is left behind for good.
+    pub fn leak(mut self) {
+        self.in_flight();
     }
 
     fn clear_inner(&self) {

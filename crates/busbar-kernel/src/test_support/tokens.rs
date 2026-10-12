@@ -13,7 +13,10 @@
 //! only under `cfg(test)` or the `test-support` feature (the `test_support` module gate), so no
 //! release build carries a path to a token that does not run through the kernel's loop.
 
-use busbar_contract::caps::{Capability, Grant, KernelSeal, Origin, OriginKind, Pass, Step};
+use busbar_contract::caps::{
+    Capability, DurabilityLost, Exit, Grant, KernelSeal, Origin, OriginKind, Outcome, Pass, Posted,
+    Step, UnitEnd,
+};
 
 /// The kernel seal, for the non-mint calls a test makes that take `&KernelSeal` (reading a verdict
 /// back with `into_result(&seal)`, and the like).
@@ -34,4 +37,9 @@ pub fn grant<C: Capability>() -> Grant<C> {
 /// `Origin::seal`: a sealed unit origin of `kind`.
 pub fn origin(kind: OriginKind) -> Origin {
     Origin::seal(&seal(), kind)
+}
+
+/// `UnitEnd::seal`: a unit's sealed end, its `outcome` and the posting it settled.
+pub fn end(outcome: Outcome, posted: Result<Posted, DurabilityLost>) -> UnitEnd {
+    UnitEnd::seal(&grant::<Exit>(), outcome, posted)
 }

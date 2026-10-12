@@ -32,6 +32,7 @@ where
 }
 
 use crate::admin_state::AppAdmin as _;
+use crate::idempotency::Probe;
 use crate::v1::contract::taxonomy::Cond;
 use crate::v1::contract::AdminError;
 use busbar_kernel::audit_ring as audit;
@@ -465,93 +466,17 @@ fn join_error(op: &str, e: &tokio::task::JoinError) -> Response {
     crate::v1::json::err_json(&AdminError::Internal)
 }
 
-/// Journal a claim's first sighting on the node's durable journal (item 271): called exactly once,
-/// at the moment a NEW reservation is inserted into the live App-state idempotency cache — never on
-/// a replay (the cached-body arm returns before reaching this), never on an in-flight refusal (the
-/// conflict arm returns before reaching this), never a second time for the same reservation. This is
-/// precisely the contract `ClaimJournal::journal_claim` documents, satisfied here rather than on the
-/// `Verbs`-level `IdempotencyCache` (which this crate's own `create_key`/`rotate_key` verbs implement
-/// but which no production caller reaches — see `verbs.rs`'s dedicated methods): this cache, reached
-/// from `App::idempotency_cache`, is the one a live request actually replays against.
-fn journal_first_sighting(
-    claim_journal: &Option<axum::Extension<std::sync::Arc<dyn crate::idempotency::ClaimJournal>>>,
-    key: &(String, String),
-    now: u64,
-) {
-    if let Some(axum::Extension(journal)) = claim_journal {
-        journal.journal_claim(key, now);
-    }
-}
-
 /// The request header carrying a client-chosen idempotency token on the two replayable admin
 /// mutations (key mint + key rotate).
 const IDEMPOTENCY_KEY_HEADER: &str = "idempotency-key";
-/// Replay window (seconds, ~10 min) for the idempotency cache; stale entries are swept on use.
-const IDEMPOTENCY_TTL_SECS: u64 = 600;
-
-/// The three states an idempotency reservation's lifecycle actually has. A plain bool ("committed
-/// or not") conflated two meanings: "safe to clear because nothing irreversible ran" and "unsafe to
-/// clear because an uncancellable blocking task might already have committed" — the latter only
-/// applies once the mint has been handed to `spawn_blocking`/`config_transaction`'s blocking half,
-/// which (per `txn.rs`) keeps running to completion even after the handler future that awaits it is
-/// DROPPED (a client disconnect/timeout). Collapsing those two into one bool meant a disconnect
-/// mid-mint cleared the sentinel while the mint was still landing, so a client retry saw an empty
-/// slot and minted a SECOND key — the exact double-mint the reservation exists to prevent.
-#[derive(PartialEq, Eq)]
-enum IdemState {
-    /// Reserved, nothing irreversible has happened yet. A drop here MUST clear the sentinel — a
-    /// parse/validation refusal must not leave a stuck in-flight key.
-    Reserved,
-    /// The mint has been handed to the uncancellable blocking task. A drop here is a CLIENT
-    /// DISCONNECT, and the mint may already have committed — dropping the sentinel would let the
-    /// client's retry mint a SECOND key. Leave it; it expires with the 10-min window, and until
-    /// then a retry gets the honest 409 "already in flight".
-    InFlight,
-    /// The response was built and cached. Nothing to clear.
-    Committed,
-}
-
-/// An in-flight idempotency RESERVATION. `create_key`/`rotate_key` insert a `Null`-body sentinel
-/// under the cache lock the instant they decide to mint (atomic with the "already cached?" check),
-/// so a concurrent retry with the same `Idempotency-Key` sees the reservation and is rejected instead
-/// of double-minting. This guard clears that sentinel on drop only while [`IdemState::Reserved`] — see
-/// its variants for why the other two states must NOT clear on drop.
-struct IdemReservation {
-    #[allow(clippy::type_complexity)]
-    cache: std::sync::Arc<
-        std::sync::Mutex<std::collections::HashMap<(String, String), (u64, serde_json::Value)>>,
-    >,
-    key: (String, String),
-    state: IdemState,
-}
-
-impl IdemReservation {
-    /// Explicitly clear the sentinel from a POST-AWAIT failure exit that is one of the transaction's
-    /// OWN fail-closed outcomes (a store error, a cap rejection, a not-found) — never reached on
-    /// genuine cancellation, so we KNOW nothing committed and it is safe to free the key for retry
-    /// even though `state` is `InFlight` by this point.
-    fn clear(&mut self) {
-        let mut c = self.cache.lock().unwrap_or_else(|e| e.into_inner());
-        if matches!(c.get(&self.key), Some((_, v)) if v.is_null()) {
-            c.remove(&self.key);
-        }
-        self.state = IdemState::Committed; // nothing left for Drop to do
-    }
-}
-
-impl Drop for IdemReservation {
-    fn drop(&mut self) {
-        if self.state != IdemState::Reserved {
-            return;
-        }
-        let mut c = self.cache.lock().unwrap_or_else(|e| e.into_inner());
-        // Only remove if it is STILL the pending sentinel — never clobber a real committed body
-        // (a success path that already replaced it).
-        if matches!(c.get(&self.key), Some((_, v)) if v.is_null()) {
-            c.remove(&self.key);
-        }
-    }
-}
+/// THE NODE'S REPLAY CACHE for the two replayable key mutations: one process-lifetime
+/// [`crate::idempotency::IdempotencyCache`], handed to these handlers as a request extension (the
+/// composition root builds it once and inserts it on every request, the way the claim journal rides
+/// in; [`crate::v1::json`]'s router supplies a per-router one to a mount that supplies none). It
+/// holds the committed 201/200 object, which carries the once-shown secret, and its in-flight
+/// sentinel is stepped over by the sweep, so a mint stuck past the replay window is still refused to
+/// a retry as in flight rather than minted twice.
+pub type KeyReplayCache = crate::idempotency::IdempotencyCache<Value>;
 
 /// The label a cap rejection uses for the UNBOUND (no `group:`) key bucket.
 const UNBOUND_BUCKET_LABEL: &str = "(no group)";
@@ -613,12 +538,9 @@ pub(crate) async fn create_key(
     >,
     axum::Extension(principal): axum::Extension<busbar_kernel::auth::AuthPrincipal>,
     headers: axum::http::HeaderMap,
-    // The node's claim journal (item 271), reached from the composition root through the mounted
-    // admin surface — see `journal_first_sighting`. `None` on a node that never bound one (a
-    // memory-buffered node, or a caller that mounted this router without the root's wrap: every
-    // test/test-support router built by `busbar_kernel::build_router` and friends) — behaves exactly
-    // as it did before this seam existed.
-    claim_journal: Option<axum::Extension<std::sync::Arc<dyn crate::idempotency::ClaimJournal>>>,
+    // The node's replay cache (item 271: it journals each first sighting on the node's durable
+    // journal itself, where the root bound one).
+    axum::Extension(replays): axum::Extension<std::sync::Arc<KeyReplayCache>>,
     body: Bytes,
 ) -> Response {
     // A fresh snapshot for the mint's pool/group READS; the auto-provision path (below) swaps
@@ -644,23 +566,19 @@ pub(crate) async fn create_key(
     // The idempotency key is scoped to the PRINCIPAL: (actor, header). A different admin's identical
     // Idempotency-Key value must never replay this principal's response (which carries a secret).
     let idem_ckey: Option<(String, String)> = idem_key.as_ref().map(|k| (actor.clone(), k.clone()));
+    let mut idem_reservation: Option<crate::idempotency::Reservation<'_, Value>> = None;
     if let Some(ref ck) = idem_ckey {
-        let now = busbar_kernel::store::now();
-        let mut cache = app
-            .idempotency_cache
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        cache.retain(|_, (t, _)| now.saturating_sub(*t) < IDEMPOTENCY_TTL_SECS);
-        match cache.get(ck) {
+        match replays.probe(ck.clone(), busbar_kernel::store::now()) {
+            // The first (and only) probe of a request that presented no key replays nothing.
+            Probe::NoKey => {}
             // A COMPLETED prior mint (the real 201 object): replay it verbatim.
-            Some((_, cached)) if !cached.is_null() => {
-                return json_response(StatusCode::CREATED, cached.clone());
-            }
-            // An IN-FLIGHT reservation (Null sentinel): a concurrent request with the same key is
-            // still minting. Reject rather than double-mint (the TOCTOU a separate check+insert
-            // allowed); the client's retry succeeds once the first completes or the reservation
-            // expires.
-            Some(_) => {
+            Probe::Replay(cached) => return json_response(StatusCode::CREATED, cached),
+            // An IN-FLIGHT reservation: a concurrent request with the same key is still minting.
+            // Reject rather than double-mint (the TOCTOU a separate check+insert allowed); the
+            // client's retry succeeds once the first completes. The sentinel is never swept for age
+            // (see `IdempotencyCache::probe`), so a mint that outlives the replay window is still
+            // refused here instead of being minted a second time.
+            Probe::InFlight => {
                 return key_err(
                     who,
                     &AdminError::Conflict(
@@ -669,21 +587,13 @@ pub(crate) async fn create_key(
                     Cond::IdempotencyInFlight,
                 );
             }
-            // First time: RESERVE under this SAME lock hold, so a concurrent request observes the
-            // reservation instead of an empty slot.
-            None => {
-                cache.insert(ck.clone(), (now, serde_json::Value::Null));
-                journal_first_sighting(&claim_journal, ck, now);
-            }
+            // First time: the reservation was taken under the cache's own lock hold, so a
+            // concurrent request observes it instead of an empty slot. Dropped before the mint is
+            // handed to the blocking half it clears the sentinel (a parse/validation refusal must
+            // not leave a stuck in-flight key).
+            Probe::Reserved(r) => idem_reservation = Some(r),
         }
     }
-    // Clears the reservation if we return before committing (parse / validation / mint failure);
-    // disarmed on success, where the real body replaces the sentinel.
-    let mut idem_reservation = idem_ckey.as_ref().map(|ck| IdemReservation {
-        cache: app.idempotency_cache.clone(),
-        key: ck.clone(),
-        state: IdemState::Reserved,
-    });
     let Some(gov) = &app.governance else {
         return disabled_write(who);
     };
@@ -889,9 +799,10 @@ pub(crate) async fn create_key(
     let txn_actor = actor.clone();
     // The mint is about to be handed to `config_transaction`'s uncancellable blocking half — from
     // here on, a dropped handler future (client disconnect) must NOT clear the sentinel, since the
-    // mint may already be landing. See `IdemState::InFlight`.
+    // mint may already be landing, so a drop from here on leaves the sentinel (a client retry gets
+    // the honest 409 "already in flight") until the mint answers and commits or clears it.
     if let Some(r) = idem_reservation.as_mut() {
-        r.state = IdemState::InFlight;
+        r.in_flight();
     }
     let res = crate::v1::json::config_transaction(&handle, move |txn| {
         let current = txn.app();
@@ -1005,7 +916,7 @@ pub(crate) async fn create_key(
             // The transaction's OWN fail-closed outcome — reached only when the `.await` completed
             // normally, never on genuine cancellation — so nothing committed and the reservation is
             // safe to free for a legitimate retry.
-            if let Some(r) = idem_reservation.as_mut() {
+            if let Some(r) = idem_reservation.take() {
                 r.clear();
             }
             return crate::v1::json::err_json(&e);
@@ -1020,7 +931,7 @@ pub(crate) async fn create_key(
             // Same reasoning as the `Err(e)` arm above: the transaction committed (if it
             // auto-provisioned) but the mint itself was refused by the cap check — a fail-closed
             // outcome of the completed await, not a cancellation. Safe to free the reservation.
-            if let Some(r) = idem_reservation.as_mut() {
+            if let Some(r) = idem_reservation.take() {
                 r.clear();
             }
             return key_err(
@@ -1066,14 +977,8 @@ pub(crate) async fn create_key(
         body["aws_access_key_id"] = json!(access_key_id);
         body["aws_secret_access_key"] = json!(secret_access_key.expose_secret());
     }
-    if let Some(ref ck) = idem_ckey {
-        app.idempotency_cache
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(ck.clone(), (busbar_kernel::store::now(), body.clone()));
-    }
-    if let Some(g) = idem_reservation.as_mut() {
-        g.state = IdemState::Committed;
+    if let Some(r) = idem_reservation.take() {
+        r.commit(body.clone(), busbar_kernel::store::now());
     }
     json_response(StatusCode::CREATED, body)
 }
@@ -1488,7 +1393,7 @@ pub(crate) async fn rotate_key(
     Path(id): Path<String>,
     headers: axum::http::HeaderMap,
     // See `create_key`'s identical parameter.
-    claim_journal: Option<axum::Extension<std::sync::Arc<dyn crate::idempotency::ClaimJournal>>>,
+    axum::Extension(replays): axum::Extension<std::sync::Arc<KeyReplayCache>>,
 ) -> Response {
     let actor = principal.actor_id().to_string();
     // The ONE audit identity for this operation: `key_err` writes the `rejected` row from it, so a
@@ -1507,7 +1412,7 @@ pub(crate) async fn rotate_key(
     // first (lost) response's secret is silently dead. Same mechanics as create's idempotent mint
     // (principal-scoped cache + in-flight reservation), with the cache key additionally scoped by
     // operation + key id so a create and a rotate sharing a header value can never replay each
-    // other's response. Built through `verbs::rotate_replay_key` rather than a raw
+    // other's response. Built through `idempotency::rotate_replay_key` rather than a raw
     // `format!("rotate:{id}:{k}")`: `id` and `k` are both caller-controlled free text, and an
     // unescaped colon join lets two DIFFERENT `(id, k)` pairs produce the SAME string (e.g.
     // `id="x", k="b:c"` and `id="x:b", k="c"` both join to `"rotate:x:b:c"`), which would let one
@@ -1517,19 +1422,13 @@ pub(crate) async fn rotate_key(
         .get(IDEMPOTENCY_KEY_HEADER)
         .and_then(|v| v.to_str().ok())
         .filter(|v| !v.is_empty())
-        .map(|k| (actor.clone(), crate::verbs::rotate_replay_key(&id, k)));
+        .map(|k| (actor.clone(), crate::idempotency::rotate_replay_key(&id, k)));
+    let mut idem_reservation: Option<crate::idempotency::Reservation<'_, Value>> = None;
     if let Some(ref ck) = idem_ckey {
-        let now = busbar_kernel::store::now();
-        let mut cache = app
-            .idempotency_cache
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        cache.retain(|_, (t, _)| now.saturating_sub(*t) < IDEMPOTENCY_TTL_SECS);
-        match cache.get(ck) {
-            Some((_, cached)) if !cached.is_null() => {
-                return json_response(StatusCode::OK, cached.clone());
-            }
-            Some(_) => {
+        match replays.probe(ck.clone(), busbar_kernel::store::now()) {
+            Probe::NoKey => {}
+            Probe::Replay(cached) => return json_response(StatusCode::OK, cached),
+            Probe::InFlight => {
                 return key_err(
                     who,
                     &AdminError::Conflict(
@@ -1538,17 +1437,9 @@ pub(crate) async fn rotate_key(
                     Cond::IdempotencyInFlight,
                 );
             }
-            None => {
-                cache.insert(ck.clone(), (now, serde_json::Value::Null));
-                journal_first_sighting(&claim_journal, ck, now);
-            }
+            Probe::Reserved(r) => idem_reservation = Some(r),
         }
     }
-    let mut idem_reservation = idem_ckey.as_ref().map(|ck| IdemReservation {
-        cache: app.idempotency_cache.clone(),
-        key: ck.clone(),
-        state: IdemState::Reserved,
-    });
     let Some(gov) = &app.governance else {
         return disabled_write(who);
     };
@@ -1563,9 +1454,10 @@ pub(crate) async fn rotate_key(
     // `expires_at` would receive (rotate takes no body today).
     let exp = busbar_kernel::store::now().saturating_add(DEFAULT_KEY_TTL_SECS);
     // The rotate is about to be handed to `spawn_blocking`'s uncancellable task — from here on, a
-    // dropped handler future (client disconnect) must NOT clear the sentinel. See `IdemState::InFlight`.
+    // dropped handler future (client disconnect) must NOT clear the sentinel. See
+    // `Reservation::in_flight`.
     if let Some(r) = idem_reservation.as_mut() {
-        r.state = IdemState::InFlight;
+        r.in_flight();
     }
     let res = tokio::task::spawn_blocking(move || {
         let _existence_guard = EXISTENCE_GATE.lock().unwrap_or_else(|e| e.into_inner());
@@ -1588,15 +1480,8 @@ pub(crate) async fn rotate_key(
             body["expires_at"] = json!(rotated.exp);
             // COMMIT the idempotency slot with the real response (replaces the reservation) and
             // disarm the drop-guard — a retry inside the window replays THIS body verbatim.
-            if let Some(ref ck) = idem_ckey {
-                let mut cache = app
-                    .idempotency_cache
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner());
-                cache.insert(ck.clone(), (busbar_kernel::store::now(), body.clone()));
-                if let Some(r) = idem_reservation.as_mut() {
-                    r.state = IdemState::Committed;
-                }
+            if let Some(r) = idem_reservation.take() {
+                r.commit(body.clone(), busbar_kernel::store::now());
             }
             json_response(StatusCode::OK, body)
         }
@@ -1604,19 +1489,19 @@ pub(crate) async fn rotate_key(
         // the `.await` completed normally (never on genuine cancellation) — safe to free the
         // reservation for a legitimate retry.
         Ok(Ok(None)) => {
-            if let Some(r) = idem_reservation.as_mut() {
+            if let Some(r) = idem_reservation.take() {
                 r.clear();
             }
             key_err(who, &AdminError::not_found("key"), Cond::UnknownResource)
         }
         Ok(Err(e)) => {
-            if let Some(r) = idem_reservation.as_mut() {
+            if let Some(r) = idem_reservation.take() {
                 r.clear();
             }
             internal_error("rotate_key", &e)
         }
         Err(e) => {
-            if let Some(r) = idem_reservation.as_mut() {
+            if let Some(r) = idem_reservation.take() {
                 r.clear();
             }
             join_error("rotate_key", &e)

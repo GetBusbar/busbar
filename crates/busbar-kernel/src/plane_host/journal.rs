@@ -79,6 +79,18 @@ pub(crate) struct PlaneJournalInput {
     digests_scope: bool,
 }
 
+impl PlaneJournalInput {
+    /// One append's payload: the plane's pre-framed `content` suffix under the stream's `framing`,
+    /// the scope digested iff `digests_scope`.
+    pub(crate) fn new(content: Vec<u8>, framing: Framing, digests_scope: bool) -> Self {
+        PlaneJournalInput {
+            content,
+            framing,
+            digests_scope,
+        }
+    }
+}
+
 impl PlaneJournalRecord {
     /// Assemble a record from reframed parts — the constructor a plane-side reframe (the `call_reframe`
     /// FFI bridge, OR an in-core seam user's own decode bridge like `plane::taskstore`) uses to turn a

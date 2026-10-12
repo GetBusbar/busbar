@@ -40,11 +40,12 @@ fn door() -> Arc<LengthDoor> {
         facts: DoorFacts {
             name: "lp".into(),
             claims: vec!["web", "lp"],
-            // The neutral framer frames its stream over whatever carrier is under it.
+            // It frames messages over the carrier the connector chose: a framer, stated.
             role: busbar_contract::abi::transport::ROLE_FRAMER,
             composes_over: Vec::new(),
             ported: false,
             status_rows: vec![(1, 0, 9)],
+            duplex: Vec::new(),
         },
         framings: Mutex::new(HashMap::new()),
         next: AtomicU64::new(1),

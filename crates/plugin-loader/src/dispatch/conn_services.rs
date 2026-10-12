@@ -385,7 +385,8 @@ extern "C" fn read(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> 
         |id, table, head| {
             // SAFETY: the head covered an `IoIn`.
             let i = unsafe { input.cast::<IoIn>().read_unaligned() };
-            // SAFETY: the caller's buffer, live until the service completes.
+            // SAFETY: the caller's buffer, lent for this call only: the host keeps no hold on it
+            // past the call, a PENDING answer included.
             let Some(buf) = (unsafe { bytes(i.buf, i.len) }) else {
                 return Answer::with(Outcome::Fault, "");
             };
@@ -417,7 +418,8 @@ extern "C" fn write(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) ->
         |id, table, _| {
             // SAFETY: the head covered an `IoIn`.
             let i = unsafe { input.cast::<IoIn>().read_unaligned() };
-            // SAFETY: the caller's bytes, live until the service completes.
+            // SAFETY: the caller's bytes, lent for this call only: the host keeps no hold on it
+            // past the call, a PENDING answer included.
             let Some(buf) = (unsafe { bytes(i.buf, i.len) }) else {
                 return Answer::with(Outcome::Fault, "");
             };
@@ -848,9 +850,11 @@ extern "C" fn write_request(
             if i.piece.is_null() {
                 return Answer::with(Outcome::Fault, "");
             }
-            // SAFETY: the caller's descriptor, checked non-NULL, live until the service completes.
+            // SAFETY: the caller's descriptor, checked non-NULL, lent for this call only: the host
+            // keeps no hold on it past the call, a PENDING answer included.
             let piece: RequestPiece = unsafe { i.piece.read_unaligned() };
-            // SAFETY: the caller's bytes, live until the service completes.
+            // SAFETY: the caller's bytes, lent for this call only: the host keeps no hold on it
+            // past the call, a PENDING answer included.
             let Some(bytes) = (unsafe { bytes(i.buf.cast_mut(), i.len) }) else {
                 return Answer::with(Outcome::Fault, "");
             };
@@ -1123,7 +1127,8 @@ extern "C" fn read_reply(ctx: HostCtx, input: *const c_void, out: *mut ServiceOu
             if i.piece.is_null() {
                 return Answer::with(Outcome::Fault, "");
             }
-            // SAFETY: the caller's buffer, live until the service completes.
+            // SAFETY: the caller's buffer, lent for this call only: the host keeps no hold on it
+            // past the call, a PENDING answer included.
             let Some(buf) = (unsafe { bytes(i.buf, i.len) }) else {
                 return Answer::with(Outcome::Fault, "");
             };

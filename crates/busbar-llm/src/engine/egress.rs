@@ -187,6 +187,27 @@ pub fn build_egress_targets(
     Ok(out)
 }
 
+/// URI-encode a path, preserving `/`: the unreserved bytes (A-Za-z0-9-_.~) pass through, every
+/// other byte becomes `%XX` (uppercase hex) — the encoding a request-signing dialect's canonical path
+/// is built with (applied twice for it, below).
+pub(crate) fn uri_encode_path(path: &str) -> String {
+    let mut out = String::with_capacity(path.len());
+    for &b in path.as_bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' | b'/' => {
+                out.push(b as char)
+            }
+            _ => {
+                const HEX: &[u8; 16] = b"0123456789ABCDEF";
+                out.push('%');
+                out.push(HEX[(b >> 4) as usize] as char);
+                out.push(HEX[(b & 0x0f) as usize] as char);
+            }
+        }
+    }
+    out
+}
+
 pub(crate) fn sign_and_wire_path_parts(url_path: &str) -> (String, String) {
     // The wire path is single-URI-encoded (what actually goes on the request line). The SigV4
     // CANONICAL path is DOUBLE-URI-encoded for every service except S3 (Bedrock included): AWS

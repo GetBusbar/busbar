@@ -4,7 +4,8 @@
 //! A SLOT'S `out`, WRITTEN BY THE SDK (THE DESIGN, plugins: a plugin crate stays
 //! `#![forbid(unsafe_code)]`; memory a plugin returns stays valid for as long as the ABI says).
 //! A [`SafeSlot`](crate::abi::sdk::safe::SafeSlot) body is handed its `out` as an [`Out`], never as
-//! `&mut`: it READS any field, SETS a pointer-free field ([`Scalar`]) directly, and hands every
+//! `&mut`: it READS any field, SETS a pointer-free field ([`Scalar`]) of its kind's own directly
+//! (never one of the [`OutHead`]'s: its lengths and lease have their writers), and hands every
 //! pointer-bearing field — a string, a blob, a list, a published value, a view into a host buffer —
 //! to an SDK writer that takes the memory it points into from a place that outlives the answer:
 //!
@@ -59,11 +60,11 @@
 //! ```
 
 use std::borrow::Cow;
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::mem::size_of;
 use std::ptr;
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 
 use crate::abi::mechanism::call::{
     AbiStr, Blob, Diag, MetricEntry, OutHead, Outcome, MAX_ENVELOPE_ENTRIES,
@@ -178,6 +179,40 @@ pub(crate) struct Reason {
     pub(crate) open: bool,
 }
 
+/// WHETHER WHAT AN ANSWER LEASED OR PUBLISHED FROM IS STILL THERE (C1 M5 b). [`Leases`] and
+/// [`Generations`] each carry one; a writer that names memory they hold records it in the call's
+/// [`Holders`], and the SDK answers FAULT, so the host reads nothing, when one of them is gone by
+/// the time the body returns: a table the body made for itself and dropped would have freed the
+/// memory the host is about to read.
+/// Its token is made at the first writer that needs it, so a table is still built in a `const`
+/// context.
+#[derive(Default)]
+pub(crate) struct Alive(Mutex<Option<Arc<()>>>);
+
+impl Alive {
+    pub(crate) const fn new() -> Self {
+        Self(Mutex::new(None))
+    }
+
+    fn token(&self) -> Weak<()> {
+        let mut held = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        Arc::downgrade(held.get_or_insert_with(|| Arc::new(())))
+    }
+}
+
+/// What one call's writers leased or published from (their [`Alive`] tokens), checked when its
+/// body returns.
+pub(crate) type Holders = RefCell<Vec<Weak<()>>>;
+
+/// Whether every table the call's answer names memory from outlived its body.
+pub(crate) fn holders_live(holders: &Holders) -> bool {
+    holders.borrow().iter().all(|w| w.strong_count() > 0)
+}
+
+/// How many pointer-bearing fields one `out` records exactly; past that, the last mark widens to
+/// cover the rest (refusing more, never less).
+const MARKS: usize = 16;
+
 /// A value with no pointer in it, anywhere: a safe body may set it into an `out` directly.
 ///
 /// # Safety
@@ -198,12 +233,17 @@ unsafe impl Scalar for crate::abi::mechanism::call::RawOutcome {}
 unsafe impl Scalar for crate::abi::mechanism::ticket::Ticket {}
 unsafe impl Scalar for crate::abi::mechanism::call::Span {}
 unsafe impl Scalar for crate::abi::auth::StripName {}
+unsafe impl Scalar for crate::abi::auth::FieldSpan {}
 unsafe impl Scalar for crate::abi::plane::UnitCount {}
 unsafe impl Scalar for crate::abi::plane::RecordWrite {}
 unsafe impl Scalar for crate::abi::plane::OutField {}
 unsafe impl Scalar for crate::abi::transport::FramePiece {}
 unsafe impl Scalar for crate::abi::transport::FramerYield {}
 unsafe impl Scalar for crate::abi::transport::HeadSlots {}
+unsafe impl Scalar for crate::abi::transport::FrameSpan {}
+unsafe impl Scalar for crate::abi::transport::DatagramRoute {}
+unsafe impl Scalar for crate::abi::transport::RendezvousTerms {}
+unsafe impl Scalar for crate::abi::transport::DatagramYield {}
 unsafe impl Scalar for crate::abi::store::CellGrant {}
 
 /// A slot's `out`, as a safe body is handed it: read anything, set scalars, and hand pointers to
@@ -216,6 +256,12 @@ pub struct Out<'a, T> {
     reporting: Option<&'a Reporting>,
     /// The host's lent reason buffer, on an instance-less call that was lent one.
     reason: Option<Reason>,
+    /// The tables this call's answer leased or published from; `None` in the unit tests.
+    holders: Option<&'a Holders>,
+    /// The byte ranges of the `out` an SDK writer set to name memory (a pointer and the length
+    /// paired with it): [`Out::set`] never overwrites them.
+    marks: [(usize, usize); MARKS],
+    marked: usize,
 }
 
 impl<T> std::fmt::Debug for Out<'_, T> {
@@ -353,31 +399,63 @@ impl<'a, T: AbiOut> Out<'a, T> {
     /// An `out` with no instance and no lent reason buffer (the unit tests' writer).
     #[cfg(test)]
     pub(crate) fn new(out: &'a mut T) -> Self {
-        Self {
-            out,
-            kept: None,
-            reporting: None,
-            reason: None,
-        }
+        Self::of(out, None, None, None, None)
+    }
+
+    /// An `out` whose writers record what they lease or publish from in `holders`.
+    #[cfg(test)]
+    pub(crate) fn witnessed(out: &'a mut T, holders: &'a Holders) -> Self {
+        Self::of(out, None, None, None, Some(holders))
     }
 
     /// An `out` answered for the instance that keeps `kept`, its envelope built in `reporting`.
-    pub(crate) fn kept(out: &'a mut T, kept: &'a Kept, reporting: &'a Reporting) -> Self {
-        Self {
-            out,
-            kept: Some(kept),
-            reporting: Some(reporting),
-            reason: None,
-        }
+    pub(crate) fn kept(
+        out: &'a mut T,
+        kept: &'a Kept,
+        reporting: &'a Reporting,
+        holders: &'a Holders,
+    ) -> Self {
+        Self::of(out, Some(kept), Some(reporting), None, Some(holders))
     }
 
     /// An instance-less `out` (`validate`, `open`) lent the host's reason buffer `reason`.
-    pub(crate) fn lent(out: &'a mut T, reason: Option<Reason>) -> Self {
+    pub(crate) fn lent(out: &'a mut T, reason: Option<Reason>, holders: &'a Holders) -> Self {
+        Self::of(out, None, None, reason, Some(holders))
+    }
+
+    fn of(
+        out: &'a mut T,
+        kept: Option<&'a Kept>,
+        reporting: Option<&'a Reporting>,
+        reason: Option<Reason>,
+        holders: Option<&'a Holders>,
+    ) -> Self {
         Self {
             out,
-            kept: None,
-            reporting: None,
+            kept,
+            reporting,
             reason,
+            holders,
+            marks: [(0, 0); MARKS],
+            marked: 0,
+        }
+    }
+
+    /// Record that this answer names memory `alive` guards.
+    fn held_by(&self, alive: &Alive) {
+        if let Some(h) = self.holders {
+            h.borrow_mut().push(alive.token());
+        }
+    }
+
+    /// Record the byte range `[at, end)` of the `out` as set by a writer.
+    fn mark(&mut self, at: usize, end: usize) {
+        if self.marked < MARKS {
+            self.marks[self.marked] = (at, end);
+            self.marked += 1;
+        } else {
+            let last = &mut self.marks[MARKS - 1];
+            *last = (last.0.min(at), last.1.max(end));
         }
     }
 
@@ -408,21 +486,45 @@ impl<'a, T: AbiOut> Out<'a, T> {
             .cast::<F>()
     }
 
-    /// Write `value` into the field `pick` names (any field, however nested).
+    /// Write `value` into the field `pick` names (any field, however nested): an SDK writer's
+    /// pointer or the length paired with one, so the range is marked against [`Out::set`].
     fn put<F>(&mut self, pick: impl FnOnce(&T) -> &F, value: F) {
         let p = self.at(pick);
+        let at = p as usize - ptr::from_ref::<T>(self.out) as usize;
+        self.mark(at, at + size_of::<F>());
         // SAFETY: `p` is a field of `*self.out` (checked by `at`), derived from the exclusive
         // borrow this `Out` holds; `write_unaligned` needs no alignment and drops nothing (the ABI
         // structs are `Copy`).
         unsafe { p.write_unaligned(value) };
     }
 
-    /// Set the pointer-free field `pick` names to `value`.
+    /// Set the pointer-free field `pick` names to `value`: a field of the kind's own, after the
+    /// head. The [`OutHead`] is written only by the SDK's writers ([`Out::wake_at`], [`Out::fail`],
+    /// [`Out::error`], [`Out::metric`], [`Out::diag`], [`Out::lease`], [`Out::keep`]): its lengths
+    /// and its lease name memory the host reads after the call, so a body never sets them by hand.
+    ///
+    /// Nor does it overwrite a field an SDK writer already set in this call (a blob's or a list's
+    /// length beside the pointer the writer named): the host would read past the memory named.
     ///
     /// # Panics
-    /// When `pick` answers a reference that is not a field of the `out`.
+    /// When `pick` answers a reference that is not a field of the `out`, one inside its head, or
+    /// one an SDK writer set (the door answers FAULT).
     pub fn set<F: Scalar>(&mut self, pick: impl FnOnce(&T) -> &F, value: F) {
-        self.put(pick, value);
+        let p = self.at(pick);
+        let offset = p as usize - ptr::from_ref::<T>(self.out) as usize;
+        assert!(
+            offset >= size_of::<OutHead>(),
+            "Out::set: the head is written by the SDK's writers only"
+        );
+        let end = offset + size_of::<F>();
+        assert!(
+            !self.marks[..self.marked]
+                .iter()
+                .any(|&(a, b)| offset < b && a < end),
+            "Out::set: the field names memory an SDK writer set"
+        );
+        // SAFETY: as `put`: `p` is a field of `*self.out` (checked by `at`).
+        unsafe { p.write_unaligned(value) };
     }
 
     /// The `out`'s head (every `out` leads with an [`OutHead`], [`AbiOut`]).
@@ -579,6 +681,7 @@ impl<'a, T: AbiOut> Out<'a, T> {
         bytes: Vec<u8>,
         fmt: u32,
     ) {
+        self.held_by(&leases.alive);
         let blob = leases.blob(self.head(), bytes, fmt);
         self.put(pick, blob);
     }
@@ -591,6 +694,7 @@ impl<'a, T: AbiOut> Out<'a, T> {
         bytes: Vec<u8>,
         fmt: u32,
     ) {
+        self.held_by(&leases.alive);
         let blob = leases.secret_blob(self.head(), bytes, fmt);
         self.put(pick, blob);
     }
@@ -598,6 +702,7 @@ impl<'a, T: AbiOut> Out<'a, T> {
     /// As [`Out::lease`], for a string: set the string field `pick` names to `text`, held by
     /// `leases` under `head.lease` until the host's `release` of it, across refresh generations.
     pub fn lease_str(&mut self, pick: impl FnOnce(&T) -> &AbiStr, leases: &Leases, text: String) {
+        self.held_by(&leases.alive);
         let s = leases.str(self.head(), text);
         self.put(pick, s);
     }
@@ -617,6 +722,7 @@ impl<'a, T: AbiOut> Out<'a, T> {
     /// of it. An answer whose only material is program memory ([`Out::list`], [`Out::text`]) still
     /// names a lease where its kind's check requires one of every answer that names material.
     pub fn keep<O: Send + Sync + 'static>(&mut self, leases: &Leases, owned: O) {
+        self.held_by(&leases.alive);
         leases.keep(self.head(), owned);
     }
 
@@ -645,6 +751,7 @@ impl<'a, T: AbiOut> Out<'a, T> {
         generation: u64,
         spec: &P::Spec,
     ) {
+        self.held_by(&gens.alive);
         let p = gens.publish(generation, spec);
         self.put(pick, p);
     }
@@ -659,6 +766,7 @@ impl<'a, T: AbiOut> Out<'a, T> {
         spec: &P::Spec,
         payload: D,
     ) {
+        self.held_by(&gens.alive);
         let p = gens.publish_with(generation, spec, payload);
         self.put(pick, p);
     }

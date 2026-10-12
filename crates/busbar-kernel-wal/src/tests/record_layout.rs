@@ -83,11 +83,12 @@ fn zeros_are_read_as_the_end_of_the_writes_and_not_as_damage() {
 
 #[test]
 fn a_frame_whose_payload_length_is_impossible_is_refused_before_it_is_used() {
-    // A legacy (version-1) frame: a version-2 frame whose header field is edited fails its header
-    // check first (`a_version_2_header_edit_fails_its_header_check`).
+    // Re-sealed after the edit, so the header check passes and the bound behind it is what refuses
+    // (an unsealed edit fails its header check first: `a_version_2_header_edit_fails_its_header_check`).
     let record = Record::new(1, 1, vec![1u8; 10]);
-    let mut frame = crate::record::encode_legacy(&record).remove(0);
+    let mut frame = record.encode().remove(0);
     frame[32..34].copy_from_slice(&((FRAME_PAYLOAD_BYTES + 1) as u16).to_le_bytes());
+    crate::record::reseal(&mut frame);
     assert!(matches!(
         decode_frame(&frame),
         Err(FrameError::PayloadTooLong { .. })
@@ -105,13 +106,30 @@ fn a_frame_from_a_layout_this_build_does_not_know_stops_the_scan() {
     ));
 }
 
+/// Version 1 — the layout before the header check — was never released, so this build does not read
+/// it: a frame claiming it is an unknown layout, sealed digest or not. Reading it would let a
+/// version-2 frame relabelled 1 skip its header check.
+#[test]
+fn a_version_1_frame_is_a_layout_this_build_does_not_read() {
+    let record = Record::new(1, 1, vec![1u8; 10]);
+    let mut frame = record.encode().remove(0);
+    frame[4..6].copy_from_slice(&1u16.to_le_bytes());
+    // Re-sealed under the edit, so nothing but the version can refuse it.
+    crate::record::reseal(&mut frame);
+    assert_eq!(
+        decode_frame(&frame),
+        Err(FrameError::UnknownVersion { found: 1 })
+    );
+    assert!(crate::record::checked_header(&frame).is_none());
+}
+
 #[test]
 fn a_frame_claiming_a_part_outside_its_own_count_is_refused() {
-    // A legacy (version-1) frame: a version-2 frame whose header field is edited fails its header
-    // check first (`a_version_2_header_edit_fails_its_header_check`).
+    // Re-sealed after the edit, so the header check passes and the bound behind it is what refuses.
     let record = Record::new(1, 1, vec![1u8; 10]);
-    let mut frame = crate::record::encode_legacy(&record).remove(0);
+    let mut frame = record.encode().remove(0);
     frame[24..28].copy_from_slice(&5u32.to_le_bytes());
+    crate::record::reseal(&mut frame);
     assert!(matches!(
         decode_frame(&frame),
         Err(FrameError::BadParts { .. })

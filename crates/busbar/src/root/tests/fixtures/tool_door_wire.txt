@@ -1,0 +1,41 @@
+# THE TOOL DOOR'S WIRE WORDS (door_steps.rs) -- golden input data, one `key = value` per line (`#`
+# starts a comment). These are the linked plane's own words that its Statement does not carry: the
+# request headers a call states, the revision it speaks, the section its grammar reads, the record
+# kind and billable class a served call is ledgered under, and the digest the section approves for
+# the one tool the test server lists (`read_file`, "reads a file from disk", an object schema with
+# one string `path` property).
+#
+# Copied from the line-served plane's own sources: codec.rs (H_MCP_METHOD, H_MCP_NAME,
+# H_PROTOCOL_VERSION, PROTOCOL_VERSION), tools_config.rs (SECTION), tool_records.rs (KIND_CALL),
+# tool_meta.rs (CLASS_TOOL_CALLS, CLASS_BYTES); tool_digest is `trust::tool_digest` over the inputs
+# above.
+# write_digest and stat_digest are `trust::tool_digest` of `write_file` ("writes a file to disk") and
+# `stat` ("reads a file's metadata"), the same schema; scope_server and scope_tool are the two grant
+# kinds door.rs states (SCOPE, SCOPE_TOOL).
+method_header = mcp-method
+name_header = mcp-name
+protocol_header = mcp-protocol-version
+protocol_version = 2026-07-28
+section = tools
+record_kind_call = call
+class_tool_calls = tool_calls
+class_bytes = bytes
+tool_digest = sha256:6d51ebb1b3730422e414cf22c039874e7274e1103a22e6d5819abcfcab9e09cb
+# The subscription channel (subscribe.rs ACKNOWLEDGED, SUBSCRIPTION_ID; codec.rs
+# METHOD_SUBSCRIPTIONS_LISTEN; the list-changed notification of tools).
+listen_method = subscriptions/listen
+acknowledged = notifications/subscriptions/acknowledged
+tools_changed = notifications/tools/list_changed
+subscription_id = io.modelcontextprotocol/subscriptionId
+write_digest = sha256:24844171892a7e325ada2a8675924de9bb83bdbbdf59dfd25af5f8c943982280
+stat_digest = sha256:2785b922e1a5cf2b6d36fc7490ba4522cf931c997d53cfae566e1e9509665bfa
+scope_server = mcp_server
+scope_tool = mcp_tool
+# The endpoint block the door owns beside its declaring section (door.rs ENDPOINT_SECTION).
+endpoint_section = mcp
+# The registry key the plane files its per-entry hooks under (lib.rs PLANE_KEY).
+plane_key = mcp
+# The audit row a tools/call writes on the kernel's audit chain (call.rs ACTION_TOOL_CALL, and the
+# resource noun AuditRow::tool names a tool by: `<noun>:<published name>`).
+audit_action_tool_call = mcp_tool.call
+audit_resource_tool = mcp_tool

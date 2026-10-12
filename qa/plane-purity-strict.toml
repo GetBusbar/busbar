@@ -47,6 +47,7 @@ BACKWARDS = 33
 # agreement between two gates.
 [test-reach]
 llm = 24
-mcp = 1
+# `mcp = 1` STRUCK (P3 DEL-MCP, ARCHITECT 2026-10-05): crates/busbar-mcp is deleted and `mcp` left
+# the legacy-engine roster (xtask::planes::PLANE_KEYS), so its test-reach row goes with it.
 a2a = 3
 voice = 0

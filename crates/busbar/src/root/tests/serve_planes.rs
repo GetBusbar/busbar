@@ -23,7 +23,7 @@ use crate::root::loader::dispatch::{
 
 /// The money steps of a composition: an ungoverned book (a unit that runs here admits nothing that
 /// bills), posting abandoned ends onto the process's one node.
-pub(super) fn money() -> Arc<PlaneMoney> {
+pub(crate) fn money() -> Arc<PlaneMoney> {
     let gov = Arc::new(GovState::new(Arc::new(MemoryStore::new()), None).expect("governance"));
     Arc::new(PlaneMoney::new(gov, post() as Arc<dyn EndPost>))
 }
@@ -35,10 +35,10 @@ pub(super) fn post() -> Arc<NodeEndPost> {
 
 /// THE ADMIN TABLE IS THE PROCESS'S ONE: every test that publishes a plane's admin routes holds
 /// this while its plane is published, and withdraws it ([`Published`]) before letting go.
-pub(super) static PUBLISHING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+pub(crate) static PUBLISHING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 /// A published instance, withdrawn from the admin table when the test lets go of it.
-pub(super) struct Published(pub(super) &'static str);
+pub(crate) struct Published(pub(crate) &'static str);
 
 impl Drop for Published {
     fn drop(&mut self) {
@@ -90,7 +90,7 @@ pub(super) fn bound(
     Some(plane)
 }
 
-pub(super) fn composed_services() -> Arc<LateServices> {
+pub(crate) fn composed_services() -> Arc<LateServices> {
     let late = LateServices::new();
     let kernel = Arc::new(KernelServices::new());
     late.install_kernel(Arc::clone(&kernel), kernel)

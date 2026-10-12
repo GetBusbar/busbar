@@ -208,7 +208,7 @@ async fn dial_provider_routes_through_the_guarded_ws_transport() {
     };
     let host = FixtureHost::new();
     let pool = crate::topology::stream_breaker_key("openai-realtime");
-    let (mut stream, mut sink) = dial_provider(&host, &pool, 0, &url, policy)
+    let (mut stream, mut sink) = dial_provider(&host, &pool, 0, &url, policy, None)
         .await
         .expect("the plane dials the provider through the guarded transport");
     sink.send(b"realtime-frame".to_vec()).await.ok();
@@ -231,11 +231,162 @@ async fn dial_provider_fails_closed_on_a_guarded_target() {
     let host = FixtureHost::new();
     let pool = crate::topology::stream_breaker_key("openai-realtime");
     assert!(
-        dial_provider(&host, &pool, 0, "wss://127.0.0.1/", GuardPolicy::default())
-            .await
-            .is_err(),
+        dial_provider(
+            &host,
+            &pool,
+            0,
+            "wss://127.0.0.1/",
+            GuardPolicy::default(),
+            None
+        )
+        .await
+        .is_err(),
         "the provider dial must refuse an unpinned/guard-failing target"
     );
+}
+
+// ── The provider key: on the upgrade request only, in no dial error ─────────────────────────────
+
+/// The endpoint a provider-dial cell dials: `base_url` with the key `SEKRET123`.
+#[cfg(feature = "test-support")]
+fn sekret_endpoint(base_url: &str) -> crate::mount::ProviderEndpoint {
+    crate::mount::ProviderEndpoint {
+        base_url: base_url.to_string(),
+        api_key: busbar_contract::Redacted::new(SEKRET.to_string()),
+    }
+}
+
+#[cfg(feature = "test-support")]
+const SEKRET: &str = "SEKRET123";
+
+/// THE PROVIDER KEY IS IN NO DIAL ERROR. A `base_url` the dialer cannot parse fails the dial at the
+/// URL check; the error that comes back, and the line the failed-dial arm logs from it, must not carry
+/// the deployment's provider key in either rendering. Before the key moved out of the URL the dialer
+/// quoted the keyed target back verbatim.
+#[cfg(feature = "test-support")]
+#[tokio::test]
+async fn a_failed_provider_dial_error_carries_no_provider_key() {
+    let host = FixtureHost::new();
+    for dialect in [crate::GEMINI_LIVE, crate::OPENAI_REALTIME] {
+        let ep = sekret_endpoint("https://bad host");
+        let pool = crate::topology::stream_breaker_key(dialect);
+        let err = dial_provider(
+            &host,
+            &pool,
+            0,
+            &ep.ws_url(dialect),
+            GuardPolicy::default(),
+            Some(ep.ws_credential(dialect)),
+        )
+        .await
+        .err()
+        .expect("a base_url with a space in its host cannot be dialed");
+        let shown = err.to_string();
+        let debug = format!("{err:?}");
+        assert!(
+            !shown.contains(SEKRET) && !debug.contains(SEKRET),
+            "{dialect}: the dial error carries the provider key: {shown} / {debug}"
+        );
+        assert!(
+            shown.contains("bad host"),
+            "{dialect}: the error still names the target an operator has to fix: {shown}"
+        );
+    }
+}
+
+/// What a loopback provider saw on the upgrade request: the request target and the
+/// `authorization` header.
+#[cfg(feature = "test-support")]
+type SeenUpgrade = Arc<std::sync::Mutex<Option<(String, Option<String>)>>>;
+
+/// A loopback WebSocket "provider" that records the upgrade request's target and `authorization`
+/// header, then serves a socket that answers nothing.
+#[cfg(feature = "test-support")]
+async fn spawn_recording_provider() -> (std::net::SocketAddr, SeenUpgrade) {
+    struct Silent;
+    #[async_trait::async_trait]
+    impl DuplexPlane for Silent {
+        fn classify(&self, _frame: &[u8]) -> Option<CallRef> {
+            None
+        }
+        async fn handle(self: Arc<Self>, _frame: Vec<u8>, _out: DuplexHandle) {}
+    }
+    async fn route(
+        axum::extract::State(seen): axum::extract::State<SeenUpgrade>,
+        uri: axum::http::Uri,
+        headers: axum::http::HeaderMap,
+        upgrade: axum::extract::ws::WebSocketUpgrade,
+    ) -> axum::response::Response {
+        let auth = headers
+            .get("authorization")
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string);
+        *seen.lock().unwrap() = Some((uri.to_string(), auth));
+        ws_ingress::serve(upgrade, Arc::new(Silent))
+    }
+    let seen: SeenUpgrade = Arc::new(std::sync::Mutex::new(None));
+    let app = axum::Router::new()
+        .fallback(route)
+        .with_state(Arc::clone(&seen));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    (addr, seen)
+}
+
+/// THE WIRE IS UNCHANGED FOR GEMINI LIVE, AND OPENAI REALTIME NOW AUTHENTICATES. The key no longer
+/// rides the URL the plane builds, but the upgrade request the provider receives still carries it
+/// where each dialect reads it: Gemini Live's `?key=` on the request target (the bytes it always
+/// received), OpenAI Realtime's `Authorization: Bearer` header (which its dial never sent before).
+/// Loopback is private and plaintext, so the dial needs a guard that admits both.
+#[cfg(feature = "test-support")]
+#[tokio::test]
+async fn the_provider_receives_its_key_where_its_dialect_reads_it() {
+    let admit_loopback = GuardPolicy {
+        allow_private: true,
+        allow_plaintext: true,
+        ..GuardPolicy::default()
+    };
+    let host = FixtureHost::new();
+    for (dialect, want_target, want_auth) in [
+        (
+            crate::GEMINI_LIVE,
+            "/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent\
+             ?key=SEKRET123",
+            None,
+        ),
+        (
+            crate::OPENAI_REALTIME,
+            "/v1/realtime",
+            Some("Bearer SEKRET123".to_string()),
+        ),
+    ] {
+        let (addr, seen) = spawn_recording_provider().await;
+        let ep = sekret_endpoint(&format!("http://{addr}"));
+        assert!(
+            !ep.ws_url(dialect).contains(SEKRET),
+            "{dialect}: the URL the plane builds is keyless"
+        );
+        let pool = crate::topology::stream_breaker_key(dialect);
+        let dialed = dial_provider(
+            &host,
+            &pool,
+            0,
+            &ep.ws_url(dialect),
+            admit_loopback,
+            Some(ep.ws_credential(dialect)),
+        )
+        .await;
+        assert!(dialed.is_ok(), "{dialect}: the loopback provider upgrades");
+        let got = seen.lock().unwrap().clone();
+        assert_eq!(
+            got,
+            Some((want_target.to_string(), want_auth)),
+            "{dialect}: the provider's upgrade request"
+        );
+    }
 }
 
 // ── Topology A: the WebRTC sideband mints a token and relays no media ────────────────────────────

@@ -22,8 +22,9 @@
 //!
 //! ## What is reflected, and what is not
 //!
-//! The installed planes are the ones the composition root links and pushes through `install_planes`:
-//! `{llm, mcp, a2a}` (each a `&'static PlaneDecl` referenced directly here — the same consts
+//! The installed planes are the ones the composition root links and pushes through `install_planes`
+//! (the MCP plane left this set at P3 DEL-MCP: it is served through its door and installs no PlaneDecl):
+//! `{llm, a2a, streaming}` (each a `&'static PlaneDecl` referenced directly here — the same consts
 //! `crates/busbar/src/main.rs` installs; this is also the test-support plane registry's content). The
 //! VOICE plane is off-default, feature-gated, and NOT linked into the binary or this test target (see
 //! `docs/design/BUSBAR-1.6.0.md` #15), so its skeleton asymmetries are governed by the
@@ -517,11 +518,13 @@ fn the_reflected_hook_set_and_constants_are_the_doctrine() {
     const {
         assert!(MIN_HOOK_FIELDS >= 15 && MIN_ASYMMETRIES >= 10);
     }
-    // The doctrine's installed-plane axis, verbatim (the same four the composition root installs).
+    // The doctrine's installed-plane axis, verbatim (the same three the composition root installs as
+    // a PlaneDecl: P3 DEL-MCP, ARCHITECT 2026-10-05, took mcp off it — the plane is served through its
+    // memory-ABI door alone and installs no PlaneDecl).
     let keys: Vec<&str> = plane_ledger_columns().iter().map(|(k, _)| *k).collect();
     assert_eq!(
         keys.len(),
-        4,
+        3,
         "the installed-plane axis is the owner's ruling; changing it is a doctrine change: {keys:?}"
     );
     // With every plane compiled in, the pinned axis is exactly the planes the root installs from

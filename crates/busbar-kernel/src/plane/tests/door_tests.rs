@@ -62,8 +62,13 @@ fn registration(key: &'static str, section: &'static str) -> PlaneRegistration {
             if bytes.is_empty() {
                 return Ok(());
             }
-            let doc: serde_json::Value =
+            // The blob is dealt as stage 3g deals it: `{<section>: <section as written>}`.
+            let dealt: serde_json::Value =
                 serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
+            let doc = dealt.get(section).cloned().unwrap_or_default();
+            if doc.is_null() {
+                return Ok(());
+            }
             let Some(map) = doc.as_object() else {
                 return Err("expected a map".to_string());
             };
@@ -89,6 +94,7 @@ fn registration(key: &'static str, section: &'static str) -> PlaneRegistration {
                 ],
                 admission: public_url
                     .map(|u| (format!("{u}/fleet"), format!("{u}/.well-known/fleet"))),
+                listed: Vec::new(),
             })
         }),
     }
@@ -228,10 +234,10 @@ fn a_door_rows_claims_and_audience_are_what_its_open_faced_the_world_with() {
     let decl = fold(registration("door-fold-facing", NAMED)).expect("folds");
     let reg = registration("door-fold-facing", NAMED);
     let slot = DoorSlot {
-        section: DoorSection {
-            section: NAMED,
-            value: serde_yaml::from_str("zed: {url: 'https://z'}").unwrap(),
-        },
+        section: DoorSection::new(
+            NAMED,
+            serde_yaml::from_str("zed: {url: 'https://z'}").unwrap(),
+        ),
         facing: (reg.facing)(b"{}", b"", Some("https://gw.example")).expect("faces"),
     };
     assert_eq!(
@@ -302,6 +308,7 @@ fn a_doors_owned_section_is_carried_and_handed_to_its_facing() {
         Ok(busbar_contract::plane_calls::DoorFacing {
             claims: Vec::new(),
             admission: audience,
+            listed: Vec::new(),
         })
     });
     let decl = fold(reg).expect("folds");
@@ -310,10 +317,10 @@ fn a_doors_owned_section_is_carried_and_handed_to_its_facing() {
     let parsed = (decl.parse_endpoint.expect("its endpoint parses"))(&block).expect("carried");
     assert!(parsed.is_present());
     let lowered = (decl.lower_endpoint.expect("and lowers"))(&*parsed).expect("as written");
-    let section = DoorSection {
-        section: NAMED,
-        value: serde_yaml::from_str("zed: {url: 'https://z'}").unwrap(),
-    };
+    let section = DoorSection::new(
+        NAMED,
+        serde_yaml::from_str("zed: {url: 'https://z'}").unwrap(),
+    );
     let ctx = BuildCtx {
         endpoint_slot: Some(lowered),
         agent_defs: &(),
@@ -328,4 +335,56 @@ fn a_doors_owned_section_is_carried_and_handed_to_its_facing() {
     let plain = fold(registration("door-fold-owns-none", NAMED)).expect("folds");
     assert!(plain.owned_config_sections.is_empty());
     assert!(plain.parse_endpoint.is_none() && plain.lower_endpoint.is_none());
+}
+
+/// THE NAMES A DOOR'S GENERATION LISTS (THE DESIGN section 2, `/v1/models`): read off its slot's
+/// facing in its own order, filtered as its admission judges a direct route. Ungoverned sees every
+/// name; a key granting the door's scope kind sees the names it grants; a key granting only another
+/// kind sees none. A slot that lists nothing, or a slot of no folded door, adds nothing.
+#[test]
+fn a_doors_listed_names_are_scope_filtered_as_its_admission_judges() {
+    use busbar_contract::records::{ScopeRef, VirtualKey};
+    let mut reg = registration("door-fold-listed", NAMED);
+    reg.facing = Arc::new(|_: &[u8], _: &[u8], _: Option<&str>| {
+        Ok(busbar_contract::plane_calls::DoorFacing {
+            listed: vec!["zeta".to_string(), "alpha".to_string()],
+            ..Default::default()
+        })
+    });
+    let facing = (reg.facing)(b"", b"", None).expect("faces");
+    let decl = fold(reg).expect("folds");
+    let slot = DoorSlot {
+        section: DoorSection::new(NAMED, serde_yaml::Value::Null),
+        facing,
+    };
+    let slots: std::collections::BTreeMap<
+        &'static str,
+        std::sync::Arc<dyn std::any::Any + Send + Sync>,
+    > = [(
+        decl.key,
+        std::sync::Arc::new(slot) as std::sync::Arc<dyn std::any::Any + Send + Sync>,
+    )]
+    .into_iter()
+    .collect();
+    assert_eq!(
+        listed(&slots, None),
+        ["zeta", "alpha"],
+        "ungoverned, in its order"
+    );
+    let key = |scopes: Vec<ScopeRef>| VirtualKey {
+        allowed_scopes: Some(scopes),
+        ..Default::default()
+    };
+    let granted = key(vec![ScopeRef {
+        kind: "member".to_string(),
+        value: "alpha".to_string(),
+    }]);
+    assert_eq!(listed(&slots, Some(&granted)), ["alpha"]);
+    let pools_only = key(vec![ScopeRef::pool("zeta")]);
+    assert!(listed(&slots, Some(&pools_only)).is_empty());
+    let empty: std::collections::BTreeMap<
+        &'static str,
+        std::sync::Arc<dyn std::any::Any + Send + Sync>,
+    > = std::collections::BTreeMap::new();
+    assert!(listed(&empty, None).is_empty());
 }

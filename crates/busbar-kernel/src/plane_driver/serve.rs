@@ -312,15 +312,39 @@ pub async fn answer_public(
     }
 }
 
-/// SERVE ONE ADMIN REQUEST by the published instance whose admin route names `method` and `path`
-/// (relative to the admin mount): the head fields `headers` (the contract's never-kept fields
-/// struck) and `body`. `None` when no published instance names it. The registry row of a door
-/// plane mounts its stated admin routes through this (its `admin_routes` handler), so the request is
-/// served by the instance's own `serve` op, as the router's fallback serves it.
-pub async fn served_at(
-    method: &str,
-    path: &str,
-    headers: &axum::http::HeaderMap,
+/// ONE ADMIN REQUEST as the admin shim hands it to [`served_at`]: its verb, its path relative to
+/// the admin mount and its query, its head fields as received, what the auth gate consumed of them
+/// ([`ConsumedCredentials`]), and the principal the gate admitted.
+#[derive(Debug, Clone, Copy)]
+pub struct AdminServe<'a> {
+    /// The verb.
+    pub method: &'a str,
+    /// The path, relative to the admin mount.
+    pub path: &'a str,
+    /// The query, without its `?`; `None` = none.
+    pub query: Option<&'a str>,
+    /// The head fields, as the request carried them.
+    pub headers: &'a axum::http::HeaderMap,
+    /// The credentials the auth gate consumed; `None` = a route the gate did not judge.
+    pub consumed: Option<&'a ConsumedCredentials>,
+    /// The principal the gate admitted; `None` = the open admin posture.
+    pub principal: Option<&'a AuthPrincipal>,
+}
+
+/// SERVE ONE ADMIN REQUEST by the published instance whose admin route names its verb and path:
+/// the target `path?query`, the head fields with the credentials the auth gate consumed and the
+/// contract's never-kept fields struck, and `body`, the plane's audit rows written under the
+/// admitted principal. `None` when no published instance names it. The registry row of a door
+/// plane mounts its stated admin routes through this (its `admin_routes` handler), so the request
+/// is served by the instance's own `serve` op, as the router's fallback ([`answer`]) serves it.
+pub async fn served_at(req: AdminServe<'_>, body: Bytes) -> Option<Result<Served, Unserved>> {
+    served_at_to(&super::CoreAudit, req, body).await
+}
+
+/// [`served_at`], its plane's audit rows written onto `sink`.
+pub(crate) async fn served_at_to(
+    sink: &dyn super::AuditSink,
+    req: AdminServe<'_>,
     body: Bytes,
 ) -> Option<Result<Served, Unserved>> {
     let (table, index) = {
@@ -328,37 +352,42 @@ pub async fn served_at(
         tables.iter().find_map(|t| {
             t.routes.iter().enumerate().find_map(|(i, r)| {
                 (r.flags & ROUTE_PUBLIC == 0
-                    && r.verb.eq_ignore_ascii_case(method)
-                    && fill(&r.target, path).is_some())
+                    && r.verb.eq_ignore_ascii_case(req.method)
+                    && fill(&r.target, req.path).is_some())
                 .then(|| (t.clone(), i))
             })
         })
     }?;
+    // The credentials the gate consumed go first, as the router's fallback strips them: the
+    // operator's `x-admin-token` is busbar's vocabulary, not the contract's never-kept list.
+    let mut headers = req.headers.clone();
+    ConsumedCredentials::strip_from(req.consumed, &mut headers);
     let head: HeadFields = headers
         .iter()
         .filter(|(n, _)| !NEVER_KEPT.contains(&n.as_str()))
         .map(|(n, v)| (n.as_str().as_bytes().to_vec(), v.as_bytes().to_vec()))
         .collect();
+    let target = match req.query {
+        Some(q) => format!("{}?{q}", req.path),
+        None => req.path.to_string(),
+    };
     let calls = &*table.calls;
     let served = serve(
         calls,
         table.caps,
         table.routes.len(),
         index as u32,
-        path.as_bytes(),
+        target.as_bytes(),
         head,
         body,
     )
     .await;
+    let anonymous = AuthPrincipal(None);
+    let actor = req.principal.unwrap_or(&anonymous);
     Some(match served {
-        Ok(s) => write_served_records(
-            table.records.as_ref(),
-            &super::CoreAudit,
-            &s,
-            AuthPrincipal(None).actor_id(),
-        )
-        .await
-        .map(|()| s),
+        Ok(s) => write_served_records(table.records.as_ref(), sink, &s, actor.actor_id())
+            .await
+            .map(|()| s),
         Err(e) => Err(e),
     })
 }
@@ -605,3 +634,8 @@ fn status_only(status: u32) -> Response {
         .unwrap_or(StatusCode::BAD_GATEWAY);
     resp
 }
+
+#[cfg(test)]
+#[allow(unsafe_code)]
+#[path = "tests/serve_tests.rs"]
+mod tests;

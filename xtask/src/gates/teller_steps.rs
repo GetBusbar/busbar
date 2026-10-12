@@ -962,6 +962,9 @@ fn root_cells(m: &Matrix) -> Vec<(String, String, String)> {
     out
 }
 
+/// The binary crate whose test harness runs the root legs: its module tree starts here.
+const BUSBAR_MAIN: &str = "crates/busbar/src/main.rs";
+
 /// RUN every named loop cell, with all five legs compiled in.
 ///
 /// Three floors, each of which the shell version needed: naming NO cell is a refusal, a build that
@@ -1011,46 +1014,27 @@ fn run_root_legs(cx: &Ctx) -> i32 {
         .filter_map(|l| l.strip_suffix(": test"))
         .collect();
 
-    // `crates/busbar/src/root/plane_node.rs::the_fn` is the ledger's spelling; libtest's is
-    // `root::plane_node::tests::the_fn`. Deriving one from the other rather than storing both is
-    // what keeps the two from drifting apart.
-    //
-    // The structure lint moved each inline `#[cfg(test)] mod tests` body out to its own file, wired
-    // back with `#[path = "tests/<stem>.rs"] mod tests;`, and pointed every ledger entry at that
-    // physical file so the `fn` floor reads it where the body now lives. But `#[path]` does NOT move
-    // the module: the body is still child `tests` of its impl module, so libtest still spells it
-    // `<impl>::tests::<fn>`. The stem is decorative -- named after the impl module by convention --
-    // so a `.../tests/<stem>.rs` tail resolves to `<impl>::tests`, never `...::tests::<stem>::tests`.
+    // `crates/busbar/src/root/plane_node.rs::the_fn` is the ledger's spelling; libtest's is the
+    // module path the crate builds for it. That path is READ OFF THE SOURCE
+    // ([`crate::libtest_path`]): the module tree from `src/main.rs` through every `mod` declaration
+    // and `#[path]` attribute, then the inline modules the fn sits in. It used to be guessed from the
+    // file's NAME (`.../tests/<stem>.rs` -> `<impl>::tests`), which is wrong for a body carried
+    // under another module name (`serve.rs`: `#[path = "tests/serve_tests.rs"] mod door_tests`) or
+    // nested in an inline module (`mod agent_door { .. }`): every such cell was reported absent. A
+    // file or fn the tree reaches two ways is a refusal naming both, never a guess.
+    let tree = crate::libtest_path::module_tree(&|rel: &str| cx.read(rel).ok(), BUSBAR_MAIN);
     let mut wanted: Vec<String> = Vec::new();
     let mut unknown: Vec<String> = Vec::new();
     let mut per_leg: BTreeMap<String, usize> = BTreeMap::new();
     for (leg, file, func) in &cells {
-        let path = file
-            .split("src/")
-            .nth(1)
-            .and_then(|s| s.strip_suffix(".rs"))
-            .map(|s| {
-                let segs: Vec<&str> = s.split('/').collect();
-                // A `.../tests/<stem>` tail is a lifted-out test body reached through `#[path]`.
-                let module = if segs.len() >= 2 && segs[segs.len() - 2] == "tests" {
-                    let stem = segs[segs.len() - 1];
-                    let parent = &segs[..segs.len() - 2];
-                    if parent.last() == Some(&stem) {
-                        // Dir-module impl (`<impl>/mod.rs` beside `<impl>/tests/<stem>.rs`, where
-                        // the dir already IS `<impl>` == stem): the module is `<impl>::tests`.
-                        parent.join("::")
-                    } else {
-                        // File-module impl (`<impl>.rs` beside a sibling `tests/<stem>.rs`, stem ==
-                        // impl name): the module is `<impl>::tests`, restoring the impl segment.
-                        format!("{}::{stem}", parent.join("::"))
-                    }
-                } else {
-                    // Inline / old-style: the file itself is the impl module.
-                    segs.join("::")
-                };
-                format!("{module}::tests::{func}")
-            })
-            .unwrap_or_default();
+        let path = match crate::libtest_path::resolve(&tree, file, func) {
+            Ok(p) => p,
+            Err(why) => {
+                unknown.push(format!("  {leg}: {file}::{func} ({why})"));
+                *per_leg.entry(leg.clone()).or_default() += 1;
+                continue;
+            }
+        };
         if path.is_empty() || !known.contains(path.as_str()) {
             unknown.push(format!("  {leg}: {file}::{func} (looked for {path})"));
         } else if !wanted.contains(&path) {

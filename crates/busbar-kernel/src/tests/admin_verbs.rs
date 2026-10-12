@@ -55,6 +55,8 @@ async fn a_view_that_will_not_serialize_is_not_answered_as_applied() {
         body: axum::body::Bytes::new(),
         headers: axum::http::HeaderMap::new(),
         principal: None,
+        consumed: None,
+        query: None,
     };
     let reply = connect_reply::<NanPlane>(ctx).await;
     assert!(

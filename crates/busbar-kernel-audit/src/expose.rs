@@ -22,7 +22,9 @@
 //! * [`keys_body`] — the public keys. Published, so a verifier never has to ask us for the key out
 //!   of band; a key obtained from the party being audited, over a channel nobody logged, is not
 //!   evidence of anything.
-//! * [`heads_body`] — the anchors, which outlive the records. See [`crate::heads`].
+//!
+//! The anchors ([`crate::heads`]) are not a fourth read: the range read folds the one a window needs
+//! into its own body, as `anchor`.
 //!
 //! ## The bodies are built here, not by whoever serves them
 //!
@@ -329,31 +331,6 @@ pub fn keys_body(keys: &AuditKeySet) -> String {
         out.push(',');
         member_str(&mut out, "public_key", &key.public_key_hex());
         out.push('}');
-    }
-    out.push_str("]}");
-    out
-}
-
-/// THE ANCHOR READ: every head this node has published, which outlives the records.
-///
-/// Folded into the head read's body rather than given a verb of its own, because a puller asks
-/// "where are you, and what have you been" in one breath, and two reads would let the answers come
-/// from two different moments.
-#[must_use]
-pub fn heads_body(chain: &AuditChain) -> String {
-    let mut out = String::new();
-    out.push('{');
-    member_str(&mut out, "recipe", DIGEST_RECIPE);
-    out.push(',');
-    member_num(&mut out, "sample_seconds", chain.heads().sample_seconds());
-    out.push(',');
-    push_json_string(&mut out, "anchors");
-    out.push_str(":[");
-    for (i, head) in chain.heads().anchors().iter().enumerate() {
-        if i > 0 {
-            out.push(',');
-        }
-        push_head(&mut out, head);
     }
     out.push_str("]}");
     out

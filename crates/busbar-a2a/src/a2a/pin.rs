@@ -38,9 +38,16 @@
 // construction `pin_a_signed_card` performs for a mechanism the sweep does not reach.
 #![cfg_attr(not(test), allow(dead_code))]
 
-use super::config::PinMechanism;
+use super::config::{AgentPinCfg, PinMechanism};
 use super::{card, jws};
-use busbar_kernel::trust::{Approval, PinnedArtifact, Sighting, TrustError};
+use busbar_kernel::{
+    plane::DemotionRecord,
+    trust::{
+        book::RulingRow,
+        declared::{declared_pin, Declaration},
+        Approval, CapabilityApproval, PinnedArtifact, Sighting, TrustError,
+    },
+};
 
 /// The identity an A2A registration is pinned to. The mechanism is part of the value, not a
 /// separate field, so a registration cannot claim `jws_issuer_key` while carrying a transport pin.
@@ -244,6 +251,91 @@ fn observed_pin(sighting: &Sighting<CardPin>) -> Option<CardPin> {
         Sighting::Seen(o) => o.pin.clone(),
         _ => None,
     }
+}
+
+/// The instance label an A2A approval is kept under in the kernel's trust-decision record: the
+/// plane's config section, the label the kernel gives a plane's implicit first instance.
+pub(crate) const KEPT_INSTANCE: &str = super::PLANE_DECLARATION.config_section;
+
+/// KEEP AN APPROVAL DURABLY, through the kernel's trust-decision record (`trust_decision` rows,
+/// [`RulingRow`]), the record the kernel keeps its own operator decisions in.
+///
+/// One row for the agent, approved at the locked pin's [`PinnedArtifact::digest`] (the mechanism,
+/// the root key and the card fingerprint), and one row per approved skill at its digest: the two
+/// things drift is judged against. A skill a kept row approved and this approval does not is
+/// written revoked, so a reload adopts exactly this approval's set. The agent's row is written
+/// last; a write that fails part-way leaves rows a reload reads as drift, never as a wider approval.
+///
+/// # Errors
+///
+/// The store's refusal: the approval was not kept, and the caller must not apply it.
+pub(crate) fn keep_approval(
+    record: &DemotionRecord,
+    agent_id: &str,
+    approval: &Approval<CardPin>,
+    now: u64,
+) -> Result<(), String> {
+    let Some(pin) = approval.pin() else {
+        return Ok(());
+    };
+    let row = |item: Option<String>, approved: Option<String>| RulingRow {
+        instance: KEPT_INSTANCE.to_string(),
+        counterparty: agent_id.to_string(),
+        item,
+        approved,
+    };
+    let approved: Vec<(String, String)> = approval
+        .capabilities()
+        .map(|(name, CapabilityApproval::At(digest))| (name.to_string(), digest.clone()))
+        .collect();
+    let dropped: Vec<String> = record
+        .decisions()
+        .into_iter()
+        .filter(|r| r.instance == KEPT_INSTANCE && r.counterparty == agent_id)
+        .filter_map(|r| r.item)
+        .filter(|item| !approved.iter().any(|(name, _)| name == item))
+        .collect();
+    for item in dropped {
+        record.keep_decision(&row(Some(item), None), now)?;
+    }
+    for (name, digest) in approved {
+        record.keep_decision(&row(Some(name), Some(digest)), now)?;
+    }
+    record.keep_decision(&row(None, Some(pin.digest())), now)
+}
+
+/// RELOAD A KEPT APPROVAL for `agent_id`, against the root the operator declares NOW.
+///
+/// `None` when nothing is kept for it, when the kept approval was for another root (the operator
+/// changed `pin.mechanism` or `pin.key` since, which is a re-approval), or when the root declared
+/// now is no authenticity root. The registration then starts pending, as a fresh one does.
+pub(crate) fn kept_approval(
+    pin_cfg: &AgentPinCfg,
+    agent_id: &str,
+    rows: &[RulingRow],
+) -> Option<Approval<CardPin>> {
+    let mine = || {
+        rows.iter()
+            .filter(|r| r.instance == KEPT_INSTANCE && r.counterparty == agent_id)
+    };
+    let kept = mine().find(|r| r.item.is_none())?.approved.as_deref()?;
+    let rooted = |fingerprint: &str| {
+        declared_pin::<CardPin>(Declaration {
+            mechanism: pin_cfg.mechanism,
+            key: pin_cfg.key.as_deref().map(str::trim),
+            fingerprint: Some(fingerprint),
+        })
+        .filter(|p| p.is_a_root())
+    };
+    // The declared root with no fingerprint renders the prefix every pin on that root carries.
+    let fingerprint = kept
+        .strip_prefix(rooted("")?.digest().as_str())
+        .filter(|f| !f.is_empty())?;
+    let pin = rooted(fingerprint).filter(|p| p.digest() == kept)?;
+    let capabilities = mine()
+        .filter_map(|r| Some((r.item.clone()?, r.approved.clone()?)))
+        .collect();
+    Some(Approval::declared(pin, capabilities))
 }
 
 /// THE SANCTIONED WAY TO PRODUCE A SIGNED PIN: verify first, then pin what verified.

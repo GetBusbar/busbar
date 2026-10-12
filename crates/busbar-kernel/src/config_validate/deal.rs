@@ -19,9 +19,10 @@ use serde_json::{Map, Value};
 /// THE RESERVED CORE-OWNED SUB-KEYS a declared-verb section may carry beyond the two every section
 /// reserves (`busbar_contract::section::RESERVED_SECTION_KEYS`) and its card and fees
 /// (`crate::config::prepass`): §4 "Reserved core-owned sub-keys" and the OWNER-CONFIRMED (b) list
-/// (`breaker`, `on_exhausted`, the `gates` binding, `affinity`, `tier`, `repeatable`), and POOLS-VERBS's
-/// `work`.
-pub const RESERVED_SUB_KEYS: [&str; 7] = [
+/// (`breaker`, `on_exhausted`, the `gates` binding, `affinity`, `tier`, `repeatable`), POOLS-VERBS's
+/// `work`, and an entry's `timeout` (`busbar_contract::section::ENTRY_TIMEOUT_KEY`, its member's
+/// attempt bound; ARCHITECT timeout ruling, R2-G).
+pub const RESERVED_SUB_KEYS: [&str; 8] = [
     "breaker",
     "on_exhausted",
     "gates",
@@ -29,6 +30,7 @@ pub const RESERVED_SUB_KEYS: [&str; 7] = [
     "tier",
     "repeatable",
     "work",
+    busbar_contract::section::ENTRY_TIMEOUT_KEY,
 ];
 
 /// Whether `key` is read by the kernel and stripped before a section crosses.

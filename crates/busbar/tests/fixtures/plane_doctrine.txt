@@ -30,7 +30,8 @@ root-leg root-decisions plane-decisions
 # crate <crates/busbar-<suffix>> <ledger column>...: the columns each workspace plane crate answers
 # to (both halves of every plane; plane-streaming is the plane voice is a dialect of).
 crate llm llm
-crate mcp mcp-client mcp-server
+# (`crate mcp` STRUCK, P3 DEL-MCP, ARCHITECT 2026-10-05: crates/busbar-mcp is deleted; the mcp plane is
+# `plane-mcp` below.)
 crate a2a a2a-client a2a-server
 crate voice streaming-client streaming-server
 crate plane-llm llm
@@ -46,11 +47,16 @@ crate plane-decisions decisions
 # — each plane the composition root installs from its own linked entry, and the directional ledger
 # column(s) it answers to.
 installed llm llm
-installed mcp mcp-client mcp-server
+# (`installed mcp` STRUCK, P3 DEL-MCP, ARCHITECT 2026-10-05: the mcp plane is served through its
+# memory-ABI door alone and installs no PlaneDecl, so it is not on the reflected axis; its columns are
+# still answered by the `root-mcp` leg.)
 installed a2a a2a-client a2a-server
 installed streaming streaming-client streaming-server
 #
 # owned-section <plane key> <declaring section> <owned section>...: the linked planes that own the
 # grammar of a top-level section, and those sections (plane_owned_sections_boot.rs).
-owned-section mcp tools mcp
+# (`owned-section mcp tools mcp` STRUCK, P3 DEL-MCP, ARCHITECT 2026-10-05: these rows pin the LINKED
+# PlaneDecl planes' owned sections, and the mcp plane installs no PlaneDecl any more. Its `tools` /
+# `mcp` sections are declared by its door's Statement, which the config-schema gate reads as a
+# door-only plane's declaration (xtask/src/gates/config_schema/declared.rs).)
 owned-section streaming streams streams

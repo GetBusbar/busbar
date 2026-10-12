@@ -109,7 +109,7 @@ fn observed_pin_over_tls(endpoint: &Endpoint, card: &Value) -> (Value, Option<St
         .trusting_root(endpoint.ca_pem.as_bytes())
         .get(
             &url("https", addr.port(), "/.well-known/agent-card.json"),
-            LOOPBACK,
+            super::transport_tests::reaching(LOOPBACK),
         )
         .expect("a certificate for the URL's hostname, from a trusted CA, must be accepted");
     assert_eq!(resp.status, 200);
@@ -527,7 +527,10 @@ fn a_refused_handshake_produces_no_card_and_therefore_no_pin() {
     let policy = FetchPolicy::default();
     // The same far end, the same certificate, the same socket — and its CA is NOT trusted.
     let err = ReqwestTransport::new(&policy)
-        .get(&url("https", addr.port(), "/card"), LOOPBACK)
+        .get(
+            &url("https", addr.port(), "/card"),
+            super::transport_tests::reaching(LOOPBACK),
+        )
         .expect_err("an untrusted certificate must not produce a response");
     assert!(
         err.contains("invalid peer certificate"),

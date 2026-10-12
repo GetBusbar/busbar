@@ -779,6 +779,24 @@ fn census(cx: &Ctx) -> Result<Census, String> {
     })
 }
 
+/// Is `rel` in one of `krate`'s DIALECT MODULES: a file under `<crate>/src/` with a path segment
+/// `<d>`, or a file `<d>.rs`, such that `<crate>/dialects/<d>.toml` declares that dialect. Derived
+/// from the plane's own declarations, never a hand list (Law 8).
+fn in_dialect_module(cx: &Ctx, krate: &str, rel: &str) -> bool {
+    let dir = format!("crates/{krate}");
+    rel.strip_prefix(&dir)
+        .and_then(|r| r.strip_prefix("/src/"))
+        .is_some_and(|r| {
+            r.split('/').any(|seg| {
+                let d = seg.strip_suffix(".rs").unwrap_or(seg);
+                !d.is_empty()
+                    && d.bytes()
+                        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
+                    && cx.exists(format!("{dir}/dialects/{d}.toml"))
+            })
+        })
+}
+
 /// THE DIALECT'S OWN WIRE-PATH TABLE (ARCHITECT ruling C5-Q1, 2026-10-03, on the #324 precedent
 /// the kind-isolation matrix applies to a dialect's item-id prefixes): a provider's own wire words
 /// (the OpenAI Responses item types `mcp_call`, `mcp_list_tools`, ...) are that dialect's protocol
@@ -796,20 +814,7 @@ fn dialect_wire_table_lines(
     text: &str,
 ) -> std::collections::BTreeSet<usize> {
     let mut skipped = std::collections::BTreeSet::new();
-    let dir = format!("crates/{krate}");
-    let in_dialect = rel
-        .strip_prefix(&dir)
-        .and_then(|r| r.strip_prefix("/src/"))
-        .is_some_and(|r| {
-            r.split('/').any(|seg| {
-                let d = seg.strip_suffix(".rs").unwrap_or(seg);
-                !d.is_empty()
-                    && d.bytes()
-                        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
-                    && cx.exists(format!("{dir}/dialects/{d}.toml"))
-            })
-        });
-    if !in_dialect {
+    if !in_dialect_module(cx, krate, rel) {
         return skipped;
     }
     let mut inside = false;
@@ -856,12 +861,28 @@ fn census_file(cx: &Ctx, f: &SourceFile) -> (Vec<Leak>, Vec<exempt::Pragma>) {
         return (leaks, Vec::new());
     };
     // Strip comments once; keep (original, lowercased) for the two match rules.
+    //
+    // A DIALECT'S OWN WIRE LITERALS ARE ITS VOCABULARY (ARCHITECT ruling 2026-10-07, INSTANCE-NOUN
+    // (b); spec Part 1, Law 5: "Dialects are internal to their plane", and "A plane naming its own
+    // dialects/vendors is correct (Law 5) — it is internal. A gate that reds on that is scoped
+    // wrong"). In a plane crate's declared dialect module ([`in_dialect_module`]), its tests' wire
+    // fixtures included, STRING LITERALS are not counted: OpenAI's `"voice"` and Gemini's
+    // `"voiceConfig"` are those dialects' wire keys, customer-visible bytes, and only collide with
+    // the streaming plane's former name. Everything else stays counted — identifiers in the same
+    // file, and literals anywhere outside a dialect module (kernel, contract, root, loader, a
+    // plane's non-dialect code).
+    let blank_literals = in_dialect_module(cx, krate, &rel);
     let mut in_block = false;
+    let mut lex = crate::scan::LexState::default();
     let lines: Vec<(String, String)> = f
         .text
         .lines()
         .map(|l| {
-            let s = strip_comment_line(l, &mut in_block);
+            let s = if blank_literals {
+                crate::scan::blank_code(l, &mut lex)
+            } else {
+                strip_comment_line(l, &mut in_block)
+            };
             let lower = s.to_lowercase();
             (s, lower)
         })

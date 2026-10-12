@@ -1156,12 +1156,12 @@ fn signature_does_not_verify_under_a_weak_key() {
     );
 }
 
-/// THE CONTRACT-ABI RANGE A PLUGIN DECLARES (`declares.contract_abi`) is checked at admission,
-/// before anything is opened: a range sharing no version with this binary's supported range for the
-/// kind is REFUSED, and the refusal names BOTH ranges. The binary's range is read from the one
-/// `supported_abi` table, never restated here, so the test follows the table as it moves.
+/// THE SUPERSEDED CONTRACT-ABI RANGE (`declares.contract_abi`, THE DESIGN §2 table and §11.2) is no
+/// longer enforced: the kind's one `abi_version` is the only version fact admission reads. A
+/// manifest whose range excludes this binary (or is empty, or excludes its own stamp) still loads
+/// when its stamp is the kind's current version, and a wrong stamp is still refused.
 #[test]
-fn a_plugin_outside_its_declared_contract_abi_range_is_refused_naming_both_ranges() {
+fn a_declared_contract_abi_range_no_longer_decides_admission() {
     let supported: &dyn Fn(&str) -> &'static [u32] = &crate::registry::supported_abi;
     let host = crate::registry::supported_abi("store");
     let (floor, max) = (host[0], host[host.len() - 1]);
@@ -1172,64 +1172,30 @@ fn a_plugin_outside_its_declared_contract_abi_range_is_refused_naming_both_range
         m
     };
 
-    // Entirely ABOVE this binary: built for a contract this binary does not speak.
-    let err = validate_abi(&with_range(max + 1, max + 3, max + 1), supported)
-        .expect_err("a plugin whose range is above this binary's must be refused");
-    assert_eq!(
-        err,
-        format!(
-            "plugin 'busbar-store-future' supports contract ABI v{}..=v{} for kind 'store', and this \
-             binary supports v{floor}..=v{max}: the ranges share no version, refusing to load it; \
-             rebuild the plugin against the 1.6.0 SDK",
-            max + 1,
-            max + 3
-        )
-    );
-    // Entirely BELOW this binary's floor.
-    if floor > 0 {
-        let err = validate_abi(&with_range(0, floor - 1, floor - 1), supported)
-            .expect_err("a plugin whose range is below this binary's floor must be refused");
-        assert!(
-            err.contains(&format!("v0..=v{}", floor - 1))
-                && err.contains(&format!("v{floor}..=v{max}")),
-            "{err}"
-        );
+    // A range wholly above this binary's, wholly below it, empty, and one excluding its own stamp:
+    // each loads on the kind's current version.
+    for (min, hi) in [
+        (max + 1, max + 3),
+        (0, floor.saturating_sub(1)),
+        (max + 5, max),
+    ] {
+        validate_abi(&with_range(min, hi, max), supported)
+            .unwrap_or_else(|e| panic!("range v{min}..=v{hi} must not decide admission: {e}"));
     }
 
-    // Overlapping at one version (the plugin's newest is this binary's floor): admitted.
-    validate_abi(
-        &with_range(floor.saturating_sub(1), floor, floor),
-        supported,
-    )
-    .expect("a range sharing a version with this binary's is admitted");
-    // Wholly inside: admitted.
-    validate_abi(&with_range(max, max, max), supported).expect("the current version is admitted");
-
-    // A stamp outside the plugin's OWN range is an incoherent manifest.
-    let err = validate_abi(&with_range(max, max, max + 1), supported)
-        .expect_err("an abi_version outside the declared range must be refused");
+    // The stamp is still the one fact: a version off the kind's window is refused whatever range
+    // the manifest states, and the refusal does not speak of a range.
+    let err = validate_abi(&with_range(max + 1, max + 1, max + 1), supported)
+        .expect_err("a stamp above the kind's version is refused");
     assert!(
-        err.contains(&format!(
-            "manifest abi_version {} is outside the contract-ABI range v{max}..=v{max}",
-            max + 1
-        )),
+        err.contains(&format!("abi_version {}", max + 1)) && !err.contains("contract-ABI range"),
         "{err}"
     );
-    if floor < max {
-        // An empty range declares nothing it can speak.
-        let err = validate_abi(&with_range(max, floor, max), supported)
-            .expect_err("an empty range is refused");
-        assert!(
-            err.contains("declares an empty contract-ABI range"),
-            "{err}"
-        );
-    }
 
-    // ABSENT, the manifest is judged on its stamp alone, exactly as before the field existed.
+    // ABSENT, the manifest is judged on its stamp alone, as it always was.
     let mut plain = manifest("busbar-store-plain", "plain", FIRST_PARTY_PUBLISHER);
     plain.abi_version = max;
-    validate_abi(&plain, supported)
-        .expect("a manifest without a declared range loads on its stamp");
+    validate_abi(&plain, supported).expect("a manifest without a range loads on its stamp");
 }
 
 /// The declared range is SIGNED like every other `declares` statement (a tampered range fails the

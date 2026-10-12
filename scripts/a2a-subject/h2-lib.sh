@@ -252,6 +252,10 @@ print(rows[0].get('$field') if rows else '-')"
 # is not a quantity; #44's flat fee is the dimension that prices it). Used by the class-price leg to
 # ask the one question that needs no rate card to be answerable: did the plane report a number for
 # what it moved, at all?
+#
+# A PLANE'S OWN CLASSES ARE COLUMNS TOO: the row's `classes` object (new in 1.6.0, FLIP-A2A ruling --
+# 1.5.5's rows carried the token split alone and 1.5.5 served no plane with a class of its own) holds
+# each plane-declared class's `{count, cost}`, and its counts are summed with the token columns.
 h2_meter_row_quantity() {
   local model="$1" provider="$2"
   curl -sS -m 10 -H "Authorization: Bearer $H2_ADMIN_TOKEN" \
@@ -263,7 +267,8 @@ if not rows:
     print('-')
 else:
     r=rows[0]
-    print(sum(int(r.get(k) or 0) for k in ('tokens_input','tokens_output','tokens_cache_read','tokens_cache_creation')))"
+    print(sum(int(r.get(k) or 0) for k in ('tokens_input','tokens_output','tokens_cache_read','tokens_cache_creation'))
+          + sum(int((c or {}).get('count') or 0) for c in (r.get('classes') or {}).values()))"
 }
 
 # One scalar off `GET /api/v1/admin/usage`'s `total` block — the OTHER admin money read, and since
@@ -282,19 +287,139 @@ d=json.load(sys.stdin)
 print((d.get('total') or {}).get('$field', '-'))"
 }
 
+# THIS BOOT'S OWN CONFIG DOCUMENT AS JSON -- the body shape `POST /api/v1/admin/config/apply` takes
+# (it reads JSON only). NO YAML LIBRARY IS ASSUMED ON THE RUNNER (the mcp lib's rule, and the
+# coordinator's: a runner image that drops PyYAML must not turn a money leg red), so this is the mcp
+# lib's own reader (`scripts/mcp-subject/h2-lib.sh` `h2_config_json`) for exactly the YAML `h2_boot`
+# writes, with ONE widening: a plain key may carry a colon not followed by a space, because this
+# plane's lane keys do (`agent:probe:` is the key `agent:probe`, as YAML reads it). Anything else it
+# does not know EXITS NON-ZERO rather than guessing.
+h2_config_json() {
+  python3 - "$1" <<'H2_YAML_READER'
+import json, re, sys
+
+def fail(msg):
+    sys.stderr.write("h2_config_json: " + msg + "\n")
+    sys.exit(3)
+
+def scalar(tok):
+    tok = tok.strip()
+    if tok.startswith('"'):
+        return json.loads(tok)
+    if tok.startswith("'"):
+        return tok[1:-1].replace("''", "'")
+    if tok in ("", "~", "null"):
+        return None
+    if tok in ("true", "false"):
+        return tok == "true"
+    if re.fullmatch(r"-?[0-9]+", tok):
+        return int(tok)
+    return tok
+
+def flow(text, i):
+    # One flow value at text[i:]; returns (value, next index).
+    while i < len(text) and text[i] == " ":
+        i += 1
+    if i >= len(text):
+        fail("a flow value ended early: " + text)
+    if text[i] in "{[":
+        close, out, i = ("}" if text[i] == "{" else "]"), ({} if text[i] == "{" else []), i + 1
+        while True:
+            while i < len(text) and text[i] in " ,":
+                i += 1
+            if i >= len(text):
+                fail("an unclosed flow collection: " + text)
+            if text[i] == close:
+                return out, i + 1
+            if close == "]":
+                v, i = flow(text, i)
+                out.append(v)
+                continue
+            m = re.match(r'("(?:[^"\\]|\\.)*"|(?:[^:,{}\[\]]|:(?=[^\s,{}\[\]]))+):\s', text[i:])
+            if not m:
+                fail("unreadable flow key at: " + text[i:])
+            out[scalar(m.group(1))], i = flow(text, i + m.end())
+    m = re.match(r'"(?:[^"\\]|\\.)*"|\'[^\']*\'|[^,{}\[\]]+', text[i:])
+    if not m:
+        fail("unreadable flow scalar at: " + text[i:])
+    return scalar(m.group(0)), i + m.end()
+
+def value(rest):
+    rest = rest.strip()
+    if rest[:1] in ("{", "["):
+        v, end = flow(rest, 0)
+        if rest[end:].strip():
+            fail("trailing text after a flow value: " + rest)
+        return v
+    return scalar(rest)
+
+lines = []
+for raw in open(sys.argv[1]).read().split("\n"):
+    if not raw.strip() or raw.lstrip().startswith("#"):
+        continue
+    lines.append((len(raw) - len(raw.lstrip(" ")), raw.strip()))
+
+def block(i, indent):
+    if lines[i][1].startswith("- "):
+        out = []
+        while i < len(lines) and lines[i][0] == indent and lines[i][1].startswith("- "):
+            out.append(value(lines[i][1][2:]))
+            i += 1
+        return out, i
+    out = {}
+    while i < len(lines) and lines[i][0] == indent:
+        m = re.match(r'("(?:[^"\\]|\\.)*"|(?:[^:]|:(?=\S))+):(?:\s+(.*))?$', lines[i][1])
+        if not m:
+            fail("unreadable mapping line: " + lines[i][1])
+        key, rest = scalar(m.group(1)), m.group(2)
+        if key in out:
+            fail("a key written twice: " + str(key))
+        i += 1
+        if rest:
+            out[key] = value(rest)
+        elif i < len(lines) and lines[i][0] > indent:
+            out[key], i = block(i, lines[i][0])
+        else:
+            out[key] = None
+    if i < len(lines) and lines[i][0] > indent:
+        fail("indentation the reader does not know: " + lines[i][1])
+    return out, i
+
+doc, end = block(0, 0)
+if end != len(lines):
+    fail("unread line: " + lines[end][1])
+json.dump(doc, sys.stdout)
+H2_YAML_READER
+}
+
 # APPEND A DATED RATE CARD (#79) by applying live config. `RootHistory::apply`
 # (crates/busbar/src/root/kernel.rs:249-278) dates the entry at the instant the apply lands: the
 # FIRST card a node resolves is effective from 0 (`HistorySeq::OPENING`) and every later one from
-# `now_ms`, and neither closes the one before it. `rate_card: {}` rides along on purpose — the PUT
-# merges whole sections and dropping the key would leave billing on but the intent unreadable.
-# `per_request_fee` is the ONE pricing dimension of this card that both planes can actually move
-# (#44: a flat fee is a plane-agnostic rate-card dimension), which is what makes a dated-card
-# question askable on a plane whose declared classes no card can name.
+# `now_ms`, and neither closes the one before it.
+#
+# THE FEE THAT MOVES IS THE PLANE'S OWN (#47: rate_card and fees are per-plane reserved keys; this
+# plane's flat fee is `agents.fees.per_request`, #44). Root `per_request_fee:` is the POOLS plane's
+# fee and never priced an agent's call, so moving it asked nothing of this plane. The whole boot
+# config is re-applied through `POST /config/apply` with only that one key changed: apply takes
+# exactly the boot shape, plane sections included, and the plane is refreshed onto the new section
+# with no restart (ARCHITECT, FLIP-A2A). v1.5.5 shipped no agent plane (its boot refuses `agents:`),
+# so the spec decides this leg, not a 1.5.5 run.
 h2_put_fee() {
-  local cents="$1"
-  curl -sS -m 15 -X PUT "http://127.0.0.1:${H2_ADMIN_PORT}/api/v1/admin/config/settings" \
+  local cents="$1" body
+  body="${H2_WORKDIR}/apply.json"
+  if ! h2_config_json "${H2_WORKDIR}/config.yaml" \
+      | H2_FEE="$cents" python3 -c "import json,os,sys
+doc=json.load(sys.stdin)
+doc['agents']['fees']['per_request']=int(os.environ['H2_FEE'])
+json.dump({'config': doc, 'providers': {}}, sys.stdout)" >"$body"; then
+    rm -f "$body"
+    printf 'harness: could not render this boot'"'"'s config as an apply body\n'
+    return
+  fi
+  curl -sS -m 30 -X POST "http://127.0.0.1:${H2_ADMIN_PORT}/api/v1/admin/config/apply" \
     -H "Authorization: Bearer $H2_ADMIN_TOKEN" -H 'content-type: application/json' \
-    -d "{\"per_request_fee\":${cents}}"
+    --data-binary "@${body}"
+  rm -f "$body"
 }
 
 # `--validate` THIS boot's own config with its `rate_card:` line replaced by <card-yaml>, and print
@@ -418,7 +543,7 @@ h2_stop() { :; }
 h2_approve_agent() { return 0; }
 h2_mint() { echo "kid-selftest tok-selftest"; }
 h2_bind() { echo "bound-selftest"; }
-h2_call() { if [ -n "${H2_RATE_CARD_YAML+x}" ]; then echo "200 {}"; else echo "${H2_ST_CALL:-200} {}"; fi; }
+h2_call() { if [ "${H2_RATE_CARD_YAML-unset}" = " " ]; then echo "200 {}"; else echo "${H2_ST_CALL:-200} {}"; fi; }
 h2_usage_field() { _st_next usage "${H2_ST_USAGE:-1}"; }
 h2_put_fee() { echo '{"applied":true}'; }
 h2_admin_usage_total() { echo 80000; }

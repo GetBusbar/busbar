@@ -201,6 +201,7 @@ fn a_node() -> ANodeWhoseChainThisCellReads {
                 crate::root::units_admin::door_of_chain(a_door_that_identifies_the_operator()),
                 held,
                 read,
+                None,
             )
             .with_auth_bindings(crate::root::auth_bindings::AuthBindings::new(
                 Arc::new(ADirectoryThatMintedIt),
@@ -262,6 +263,7 @@ fn the_real_surface_bare_and_mounted() -> (axum::Router, axum::Router) {
                 crate::root::units_admin::door_of_chain(a_door_that_identifies_the_operator()),
                 held,
                 read,
+                None,
             )
             .with_auth_bindings(crate::root::auth_bindings::AuthBindings::new(
                 Arc::new(ADirectoryThatMintedIt),
@@ -595,12 +597,13 @@ async fn every_root_only_mutating_verb_seals_one_durable_row_and_a_read_seals_no
                 crate::root::units_admin::door_of_chain(a_door_that_identifies_the_operator()),
                 held,
                 read,
+                None,
             )
             .with_auth_bindings(crate::root::auth_bindings::AuthBindings::new(Arc::new(
                 ADirectoryThatMintedIt,
             )));
             units.admin.posture = Arc::new(SealedPosture::new(Some([7u8; 32])));
-            units.store = Arc::new(AnApplyingStore);
+            units.store = Some(Arc::new(AnApplyingStore));
             units
         },
     );
@@ -658,6 +661,104 @@ async fn every_root_only_mutating_verb_seals_one_durable_row_and_a_read_seals_no
             "{path}: a read seals nothing"
         );
     }
+}
+
+/// ROW 113 (ruling (B)): A BOOTED NODE'S RECOVERY VERBS REACH ITS CONFIGURED STORE.
+///
+/// The book is the one `root::boot::book` opens over a real App with a governance store, and the
+/// units are the ones `main` composes over it (`ProductionUnits::admin_over_book`). Under a sealed
+/// operator key each of the three verbs answers `204` and lands on that store. RED (the defect this
+/// replaced): the composition held a refusing stand-in, so each answered the store failure on a
+/// node whose store was right there; drop the book's store, or the units' binding of it, and this
+/// goes red. Then restore -> reseal -> replay over the SAME store: a replay slot committed before
+/// the restore survives it and the reseal, and answers its first bytes.
+#[cfg(feature = "root-admin")]
+#[tokio::test]
+async fn a_booted_nodes_recovery_verbs_reach_its_configured_store_through_the_book() {
+    busbar_kernel::snapshot::init();
+    busbar_core_admin::install();
+    // An App with a governance store: the in-tree memory store, as a config that names none gets.
+    let booted = busbar_kernel::test_support::TestApp::new()
+        .governance(Arc::new(
+            busbar_kernel::governance::GovState::new(
+                Arc::new(busbar_kernel::governance::MemoryStore::new()),
+                None,
+            )
+            .expect("a governance over the memory store"),
+        ))
+        .build();
+    let book = crate::root::boot::book(&booted).expect("the boot book opens");
+    let store = book
+        .verb_store
+        .clone()
+        .expect("a node with a configured store carries it on its book");
+
+    // A replay slot committed BEFORE the recovery sequence.
+    let key = (
+        "idem-row-113".to_string(),
+        "POST /api/v1/admin/keys".to_string(),
+    );
+    assert_eq!(store.replay_new_verb(&key).expect("the slot reads"), None);
+    store
+        .commit_new_verb_replay(&key, b"first answer")
+        .expect("the slot commits");
+
+    let app = busbar_kernel::test_support::TestApp::new()
+        .admin_chain(vec![])
+        .build();
+    let (_data, bare, _handle) =
+        busbar_kernel::build_split_routers_with_limits(app, 1 << 20, 0, false);
+    let mounted = mount(
+        bare,
+        crate::root::kernel::new_kernel(),
+        1 << 20,
+        move |dispatch| {
+            // Its OWN full-tier identity, not the operator's: the audit ring is process-wide and
+            // `every_root_only_mutating_verb_seals_one_durable_row_and_a_read_seals_none` counts the
+            // operator's rows on these same three paths.
+            let door: crate::root::units_admin::AdminDoorFn =
+                Arc::new(|_: &crate::root::units_admin::AdminRequest| {
+                    busbar_kernel::auth::AdminDoor::Identified(
+                        busbar_contract::auth::Principal::from_id("row-113-recovery-operator"),
+                        busbar_contract::authz::Grants::of(busbar_contract::authz::Scope::Full),
+                    )
+                });
+            let mut units =
+                crate::root::kernel::ProductionUnits::admin_over_book(dispatch, door, &book)
+                    .with_auth_bindings(crate::root::auth_bindings::AuthBindings::new(Arc::new(
+                        ADirectoryThatMintedIt,
+                    )));
+            units.admin.posture = Arc::new(SealedPosture::new(Some([7u8; 32])));
+            units
+        },
+    );
+
+    for (path, body, verb) in [
+        ("/api/v1/admin/chain-break", "{}", "chain_break"),
+        (
+            "/api/v1/admin/store-restore",
+            r#"{"backup_ref":"nightly"}"#,
+            "store_restore",
+        ),
+        (
+            "/api/v1/admin/reseal-epoch-floor",
+            "{}",
+            "reseal_epoch_floor",
+        ),
+    ] {
+        let (status, _, _) = over(&mounted, "POST", path, body.as_bytes().to_vec()).await;
+        assert_eq!(
+            status, 204,
+            "{verb} reached the configured store and applied"
+        );
+    }
+
+    // The slot survived the restore and the reseal, and replays the first answer's bytes.
+    assert_eq!(
+        store.replay_new_verb(&key).expect("the slot reads"),
+        Some(b"first answer".to_vec()),
+        "a committed replay slot survives restore -> reseal"
+    );
 }
 
 /// The 1.6.0 verbs this build binds NO EFFECT to, as `(method, path)`. Empty since owner answer
@@ -724,6 +825,7 @@ async fn an_unbound_verb_is_not_served_it_answers_the_unmounted_404_and_seals_no
                 crate::root::units_admin::door_of_chain(a_door_that_identifies_the_operator()),
                 held,
                 read,
+                None,
             )
             .with_auth_bindings(crate::root::auth_bindings::AuthBindings::new(Arc::new(
                 ADirectoryThatMintedIt,
@@ -829,6 +931,7 @@ async fn the_amend_path_on_a_node_with_no_operator_key_is_1_5_5_s_404() {
                     crate::root::units_admin::door_of_chain(a_door_that_identifies_the_operator()),
                     held,
                     read,
+                    None,
                 )
                 .with_auth_bindings(crate::root::auth_bindings::AuthBindings::new(Arc::new(
                     ADirectoryThatMintedIt,
@@ -1026,6 +1129,7 @@ fn a_q71_node_trusting(
                 crate::root::units_admin::door_of_chain(door),
                 held,
                 read,
+                None,
             )
             .with_auth_bindings(crate::root::auth_bindings::AuthBindings::new(Arc::new(
                 ADirectoryThatMintedIt,
@@ -1216,6 +1320,54 @@ async fn the_trust_verbs_decide_over_the_kernels_trust_book() {
         the_operators_rows_for(&node, "/api/v1/admin/trust").await,
         Vec::<(String, String)>::new(),
         "the read seals nothing"
+    );
+}
+
+/// THE VERBS UNIT'S MUTATION BUDGET OUTLIVES THE REQUEST (finding 5). The route step builds one
+/// `Verbs` per request, and each used to build its own limiter, so every call saw an empty window
+/// and none was ever refused. Walked over the real mount, which is the production construction: a
+/// new verb past the node's `Crud` budget inside one window is refused with the kernel's own admin
+/// rate-limit answer, the same bytes a legacy mutation's limiter gives. `trust/revoke` is the verb
+/// walked because no other cell counts its audit rows on the shared ring.
+///
+/// The window is the wall clock's minute, so a run that happens to cross a boundary has its count
+/// reset once. That can only delay the refusal, never bring it forward: the first `budget` calls
+/// are never refused, and one more full budget is the most a single reset can cost.
+#[cfg(feature = "root-admin")]
+#[tokio::test]
+async fn a_new_verb_past_the_nodes_mutation_budget_is_refused() {
+    let (node, _) = a_q71_node(a_door_that_identifies_the_operator(), Some([7u8; 32]));
+    let op = Some(THE_OPERATORS_CREDENTIAL);
+    let revoke = || {
+        over_as(
+            &node,
+            "POST",
+            "/api/v1/admin/trust/revoke",
+            r#"{"key":"inst/stranger"}"#,
+            op,
+        )
+    };
+    let budget = busbar_core_admin::rate::MutationClass::Crud.limit();
+    for i in 0..budget {
+        let (status, body) = revoke().await;
+        assert_ne!(status, 429, "call {i} is inside the budget: {body}");
+    }
+    let mut refused = None;
+    for _ in 0..=budget {
+        let answer = revoke().await;
+        if answer.0 == 429 {
+            refused = Some(answer);
+            break;
+        }
+    }
+    assert_eq!(
+        refused,
+        Some((
+            429,
+            r#"{"error":{"code":"rate_limited","message":"admin mutation rate limit exceeded; retry next minute"}}"#
+                .to_string()
+        )),
+        "a call past the node's budget was admitted: the limiter forgot the window"
     );
 }
 

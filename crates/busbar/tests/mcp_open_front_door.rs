@@ -30,9 +30,9 @@
 // `--no-default-features` binary has no MCP front door to leave open, so neither the refusal nor
 // the control can mean anything there. Same shape as `docs_examples.rs` gating its whole file on
 // `auth-admin-tokens`, and the same reasoning as the `plane-mcp` gate in `cli_validate.rs`.
-// The plane under test is the linked row carrying the `stdio-serve` axis (build.rs emits
-// `linked_axis_stdio_serve` from `[package.metadata.busbar.linked-axes]`).
-#![cfg(linked_axis_stdio_serve)]
+// The plane under test is the one `plane-mcp` switches on (served through its door), gated on
+// `linked_section_tools`: set exactly when the linked door declaring `tools:` is in the build.
+#![cfg(linked_section_tools)]
 
 mod common;
 

@@ -98,6 +98,7 @@ fn pcm_mime(fmt: AudioFormat, dir: UpDown) -> Option<&'static str> {
     match (fmt, dir) {
         (AudioFormat::Pcm16, UpDown::Up) => Some(PCM_16K_MIME),
         (AudioFormat::Pcm16, UpDown::Down) => Some(PCM_24K_MIME),
+        (AudioFormat::Pcm16At16k, _) => Some(PCM_16K_MIME),
         (AudioFormat::G711Ulaw, _) => None,
     }
 }
@@ -113,15 +114,16 @@ pub struct GeminiLiveCodec;
 /// Map a Gemini audio `mimeType` to the shared [`AudioFormat`], IN THE DIRECTION IT ARRIVED.
 ///
 /// The two directions of this dialect run at DIFFERENT rates — 16 kHz is what Gemini requires on its
-/// uplink, 24 kHz is what the model synthesizes — and the shared `Pcm16` token carries exactly one
-/// bytes-per-millisecond constant: the 24 kHz one. That constant is what the barge-in truncate math
-/// divides by, and only DOWNLINK audio feeds it.
+/// uplink, 24 kHz is what the model synthesizes — and each format carries exactly one
+/// bytes-per-millisecond constant. The uplink meter divides the client's bytes by it, and the
+/// barge-in truncate math divides the downlink's.
 ///
-/// So the probe is directional. UPLINK PCM at either rate is `Pcm16` (signed-16 LE either way, and no
-/// millisecond count is taken from it). DOWNLINK PCM is accepted only at the rate the shared token
-/// actually means: a 16 kHz downlink blob is NOT `Pcm16`, and admitting it would meter 480 bytes of
-/// 16 kHz audio (30 ms) as 10 ms, cutting the user off mid-word at the next barge-in. An untagged
-/// `audio/pcm` takes the direction's own rate, which is what an untagged frame in that direction is.
+/// So the probe is directional and states the rate. UPLINK PCM is `Pcm16At16k` at 16 kHz and `Pcm16`
+/// at 24 kHz: counting 16 kHz bytes at the 24 kHz rate billed two-thirds of the audio the caller
+/// spoke. DOWNLINK PCM is accepted only at the rate the truncate math measures in: a 16 kHz downlink
+/// blob has no frame, and admitting it as `Pcm16` would meter 480 bytes of 16 kHz audio (30 ms) as
+/// 10 ms, cutting the user off mid-word at the next barge-in. An untagged `audio/pcm` takes the
+/// direction's own rate, which is what an untagged frame in that direction is.
 #[must_use]
 pub fn audio_format_from_mime(mime: &str, dir: UpDown) -> Option<AudioFormat> {
     let m = mime.to_ascii_lowercase();
@@ -149,8 +151,9 @@ pub fn audio_format_from_mime(mime: &str, dir: UpDown) -> Option<AudioFormat> {
         }
     }
     match dir {
-        // No millisecond count is taken from the uplink, so either PCM rate is the shared token.
-        UpDown::Up if rate_16k || rate_24k || untagged => Some(AudioFormat::Pcm16),
+        // The uplink's own rate is 16 kHz; a blob that states 24 kHz is metered at 24 kHz.
+        UpDown::Up if rate_16k || untagged => Some(AudioFormat::Pcm16At16k),
+        UpDown::Up if rate_24k => Some(AudioFormat::Pcm16),
         // The truncate math measures against THIS rate; anything else is a different format.
         UpDown::Down if rate_24k || untagged => Some(AudioFormat::Pcm16),
         _ => None,
@@ -476,9 +479,10 @@ impl DuplexReader for GeminiLiveCodec {
             // modeled audio format has no shared frame (drop).
             let mut out = Vec::new();
             let mut push_blob = |blob: &Value, out: &mut Vec<IrClientEvent>| {
-                if audio_format_from_mime(str_at(blob, "mimeType"), UpDown::Up).is_none() {
+                let Some(format) = audio_format_from_mime(str_at(blob, "mimeType"), UpDown::Up)
+                else {
                     return; // non-audio realtime input has no shared frame (drop).
-                }
+                };
                 let Some(media) = decode_audio(str_at(blob, "data")) else {
                     return; // a payload that is not base64 is not silence — emit no frame.
                 };
@@ -488,6 +492,8 @@ impl DuplexReader for GeminiLiveCodec {
                     media,
                     // This dialect names no item on either audio direction.
                     origin: IrAudioRef::default(),
+                    // The rate the blob's mime states: the rate its bytes are metered at.
+                    format: Some(format),
                 }));
             };
             // Prefer the GA single blob when present so a GA peer never double-decodes; else fall back
@@ -571,9 +577,9 @@ impl DuplexReader for GeminiLiveCodec {
                         let mime = str_at(inline, "mimeType");
                         // The played-out position below is measured in the shared format's own
                         // bytes-per-ms, so a downlink blob at any other rate has no frame here.
-                        if audio_format_from_mime(mime, UpDown::Down).is_none() {
+                        let Some(format) = audio_format_from_mime(mime, UpDown::Down) else {
                             continue;
-                        }
+                        };
                         let Some(media) = decode_audio(str_at(inline, "data")) else {
                             continue; // a payload that is not base64 is not silence — emit no frame.
                         };
@@ -585,6 +591,7 @@ impl DuplexReader for GeminiLiveCodec {
                             // A Gemini `modelTurn` part carries no response/item correlation, and an
                             // id nobody issued is worse than an absent one.
                             origin: IrAudioRef::default(),
+                            format: Some(format),
                         }));
                     }
                     // A `text` part / transcription side-channel has no shared IR home (drop+warn).

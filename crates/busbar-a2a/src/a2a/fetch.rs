@@ -293,7 +293,31 @@ pub(crate) use busbar_kernel::egress::Response as HttpResponse;
 ///
 /// An implementation MUST NOT follow redirects; a 3xx is returned for this module to re-guard.
 pub(crate) trait Transport {
-    fn get(&self, url: &url::Url, addr: IpAddr) -> Result<HttpResponse, String>;
+    fn get(&self, url: &url::Url, pin: Pin) -> Result<HttpResponse, String>;
+}
+
+/// THE ADDRESS A HOP DIALS, WITH THE POLICY THAT JUDGED IT. The host re-judges the address under the
+/// SAME private and plaintext reach before it connects, so a hop never carries more reach to the host
+/// than this plane's guard admitted it with.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Pin {
+    /// The pinned address the guard judged.
+    pub(crate) addr: IpAddr,
+    /// May the hop reach a private or loopback address (the registration's `allow_private:`).
+    pub(crate) allow_private: bool,
+    /// May the hop be plaintext to a host that is not private.
+    pub(crate) allow_plaintext: bool,
+}
+
+impl Pin {
+    /// `addr`, judged under `guard`.
+    pub(crate) fn judged(addr: IpAddr, guard: GuardPolicy) -> Self {
+        Pin {
+            addr,
+            allow_private: guard.allow_private,
+            allow_plaintext: guard.allow_plaintext,
+        }
+    }
 }
 
 /// GUARD ONE HOP AND PIN IT: the card fetch's door onto [`busbar_kernel::net_guard::resolve_and_pin`].
@@ -433,7 +457,7 @@ pub(crate) fn fetch_card(
         chain.push(url.to_string());
 
         let resp = transport
-            .get(&url, pin.addr())
+            .get(&url, Pin::judged(pin.addr(), policy.guard()))
             .map_err(|err| FetchRefusal::Transport {
                 url: url.to_string(),
                 err,

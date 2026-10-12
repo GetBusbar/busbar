@@ -39,7 +39,12 @@ fn fixture_connector(
     let mut http = hyper_util::client::legacy::connect::HttpConnector::new_with_resolver(resolver);
     http.enforce_http(false);
     http.set_nodelay(true);
-    let http = tunnel::TunnelConnector::new(http, None, tunnel::connects_per_shard_for_tests());
+    let http = tunnel::TunnelConnector::new(
+        http,
+        None,
+        tunnel::connects_per_shard_for_tests(),
+        tunnel::loopback_listed_for_tests(),
+    );
     let client = tls
         .layer()
         .client(&crate::secure::ClientTlsSpec {

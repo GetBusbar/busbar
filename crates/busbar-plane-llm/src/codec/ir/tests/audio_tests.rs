@@ -100,7 +100,7 @@ fn speech_projects_input_instructions_and_speaker_names() {
     let req = SpeechReq {
         input: "hello world".into(),
         model: "gpt-4o-mini-tts".into(),
-        voice: "alloy".into(),
+        timbre: "alloy".into(),
         instructions: Some("speak cheerfully".into()),
         speakers: vec![("Dr. Smith".into(), "verse".into())],
         stream: false,
@@ -139,7 +139,7 @@ fn speech_request_meters_by_character_count() {
     let req = SpeechReq {
         input: "hello world".into(), // 11 chars
         model: "tts-1".into(),
-        voice: "alloy".into(),
+        timbre: "alloy".into(),
         ..Default::default()
     };
     assert_eq!(

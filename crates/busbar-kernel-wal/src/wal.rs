@@ -7,9 +7,12 @@
 //!
 //! **Memory-buffered** is the default, and it is what a deployment that names no data directory
 //! gets. There is no file, no directory probe, no preallocation and no boot warning — a node in this
-//! mode leaves a disk exactly as it found it. Durability is the store's: a batch is committed to the
-//! local buffer and shipped synchronously, and a shipping failure is a durability failure, because
-//! the store is the only thing under this node that survives it.
+//! mode leaves a disk exactly as it found it, and the log does not survive the process. A batch is
+//! committed to the local buffer and handed synchronously to the bound shipper, and a refusal fails
+//! the commit. What the shipped build binds there keeps nothing: the store adapter acknowledges every
+//! batch and holds only a count and the last identity. What survives a restart in this mode is what
+//! survived one in the previous release, the settlement rows the ledger dual-writes onto the
+//! configured store — not the log.
 //!
 //! **On-disk** is what a deployment that writes a data directory gets. Segments are real files,
 //! group commits are a positional write and a data sync, and a sync that fails poisons its segment.
@@ -187,7 +190,8 @@ impl Wal {
     }
 
     /// A memory-buffered log shipping to `shipper`. This is the shape a deployment that names a
-    /// store but no data directory runs: the buffer stages, the store keeps.
+    /// store but no data directory runs: the buffer stages, and the shipper decides what, if
+    /// anything, is kept (the shipped store adapter keeps a count and the last identity only).
     pub fn memory_buffered_to(shipper: Box<dyn Shipper>, clock: Clock) -> Self {
         Wal::with_parts(
             Box::new(MemoryFactory::new()),

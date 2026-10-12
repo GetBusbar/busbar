@@ -47,12 +47,87 @@ const MAX_QUEUED_UPSTREAM_FRAMES: usize = 64;
 const MAX_QUEUED_OUTBOUND_FRAMES: usize =
     crate::config::limits::DEFAULT_DUPLEX_OUTBOUND_QUEUE_FRAMES;
 
+/// A dial target as an error may show it: the URL with any userinfo and everything from the first
+/// `?` or `#` taken out. A dial's query or userinfo can carry a credential, and an error is a thing a
+/// caller logs, so the only constructor is the one that strips them.
+#[derive(Clone, PartialEq, Eq)]
+pub struct DialTarget(String);
+
+impl DialTarget {
+    /// `url` with its userinfo, query and fragment removed. Works on text no URL parser accepts,
+    /// because the targets that fail to parse are the ones that reach an error.
+    #[must_use]
+    pub fn new(url: &str) -> Self {
+        let cut = url.find(['?', '#']).unwrap_or(url.len());
+        let head = &url[..cut];
+        let start = head.find("://").map_or(0, |i| i + 3);
+        let authority_end = head[start..]
+            .find(['/', '\\'])
+            .map_or(head.len(), |i| start + i);
+        let mut out = String::with_capacity(head.len());
+        match head[start..authority_end].rfind('@') {
+            Some(at) => {
+                out.push_str(&head[..start]);
+                out.push_str(&head[start + at + 1..]);
+            }
+            None => out.push_str(head),
+        }
+        DialTarget(out)
+    }
+
+    /// The stripped target text.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for DialTarget {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::fmt::Debug for DialTarget {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}", self.0)
+    }
+}
+
+/// Where a dial's credential goes on the WebSocket upgrade request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CredentialPlacement {
+    /// A query parameter with this name, appended to the request target (percent-encoded by
+    /// [`busbar_kernel_egress::query_auth::append_query`]).
+    Query(&'static str),
+    /// A request header `name: {prefix}{secret}`.
+    Header {
+        /// The header name.
+        name: &'static str,
+        /// Written before the secret, e.g. `"Bearer "`.
+        prefix: &'static str,
+    },
+}
+
+/// A credential for one dial: where it goes and the secret itself. The secret stays [`Redacted`]
+/// until the request handed to the WebSocket handshake is built, and no error carries it.
+///
+/// [`Redacted`]: busbar_contract::Redacted
+#[derive(Debug, Clone, Copy)]
+pub struct DialCredential<'a> {
+    /// Where the secret is presented.
+    pub placement: CredentialPlacement,
+    /// The secret.
+    pub secret: &'a busbar_contract::Redacted<String>,
+}
+
 /// Why an outbound duplex dial failed — the FACT, kept separate so a caller renders its own sentence
 /// (mirroring how [`AddressRefusal`] callers convert into their own vocabulary).
 #[derive(Debug)]
 pub enum DialError {
-    /// The URL was not a `ws(s)://` URL, or had no usable host/port.
-    Url(String),
+    /// The URL was not a `ws(s)://` URL, or had no usable host/port. Carries the target without its
+    /// userinfo or query.
+    Url(DialTarget),
     /// The net-guard refused the target (SSRF, plaintext, unresolvable, internal, metadata, …). The
     /// dial NEVER opens a socket past this — the guard is the reason a socket exists at all.
     Guard(AddressRefusal),
@@ -96,13 +171,13 @@ fn split_ws_url(url: &str) -> Result<(bool, String, u16, String), DialError> {
     } else if url.starts_with("ws://") {
         false
     } else {
-        return Err(DialError::Url(url.to_string()));
+        return Err(DialError::Url(DialTarget::new(url)));
     };
-    let parts = net_guard::parse_url(url).map_err(|_| DialError::Url(url.to_string()))?;
+    let parts = net_guard::parse_url(url).map_err(|_| DialError::Url(DialTarget::new(url)))?;
     // No userinfo in an egress target: an `@` is an unusable authority, exactly as the HTTP guard
     // treats it.
     if parts.userinfo {
-        return Err(DialError::Url(url.to_string()));
+        return Err(DialError::Url(DialTarget::new(url)));
     }
     let port = parts.port.unwrap_or(if secure { 443 } else { 80 });
     Ok((secure, parts.host, port, url.to_string()))
@@ -139,13 +214,40 @@ pub async fn dial(
     ),
     DialError,
 > {
-    let (secure, host, port, request_url) = split_ws_url(url)?;
+    dial_with_credential(url, policy, None).await
+}
+
+/// [`dial`], presenting `credential` on the upgrade request.
+///
+/// `url` is the KEYLESS target. The URL check, the guard and every [`DialError`] work on it alone;
+/// the secret is added only to the request handed to the WebSocket handshake — appended as a query
+/// parameter or set as a header, per its [`CredentialPlacement`] — and any handshake error text is
+/// scrubbed of it before it is returned.
+pub async fn dial_with_credential(
+    url: &str,
+    policy: GuardPolicy,
+    credential: Option<DialCredential<'_>>,
+) -> Result<
+    (
+        impl Stream<Item = Vec<u8>> + Unpin,
+        impl Sink<Vec<u8>> + Unpin + Send + 'static,
+    ),
+    DialError,
+> {
+    let (secure, host, port, keyless_url) = split_ws_url(url)?;
 
     // THE GUARD, FIRST — resolve then pin then judge. `https = secure`: a `ws://` target is judged as
     // plaintext (admitted only under the policy's plaintext stance), a `wss://` as TLS. No socket is
     // opened to anything this did not pin.
     let pinned =
         net_guard::resolve_and_pin(&host, port, secure, &net_guard::SystemResolver, policy)?;
+
+    // The upgrade request — the only place the secret is written, built after the guard has judged
+    // the keyless target and before any socket is opened.
+    let request = upgrade_request(&keyless_url, credential)?;
+    let scrub = |e: tokio_tungstenite::tungstenite::Error| {
+        DialError::Handshake(scrub_secret(&e.to_string(), credential))
+    };
 
     // TCP to the PINNED address — never re-resolving the name (the TOCTOU the pin closes).
     let tcp = TcpStream::connect(pinned.socket_addr())
@@ -165,18 +267,83 @@ pub async fn dial(
         let tls = handshake(tcp)
             .await
             .map_err(|e| DialError::Tls(e.to_string()))?;
-        let (ws, _resp) = tokio_tungstenite::client_async(&request_url, tls)
+        let (ws, _resp) = tokio_tungstenite::client_async(request, tls)
             .await
-            .map_err(|e| DialError::Handshake(e.to_string()))?;
+            .map_err(scrub)?;
         let (tx, rx) = split_messages(ws);
         Ok((BoxedStream(rx), BoxedSink(tx)))
     } else {
-        let (ws, _resp) = tokio_tungstenite::client_async(&request_url, tcp)
+        let (ws, _resp) = tokio_tungstenite::client_async(request, tcp)
             .await
-            .map_err(|e| DialError::Handshake(e.to_string()))?;
+            .map_err(scrub)?;
         let (tx, rx) = split_messages(ws);
         Ok((BoxedStream(rx), BoxedSink(tx)))
     }
+}
+
+/// The client upgrade request for `keyless_url` with `credential` written in: a query placement
+/// appends `name=<secret>` to the target, a header placement sets `name: {prefix}<secret>` (marked
+/// sensitive). A request that cannot be built is reported in fixed words, never with the target.
+fn upgrade_request(
+    keyless_url: &str,
+    credential: Option<DialCredential<'_>>,
+) -> Result<tokio_tungstenite::tungstenite::handshake::client::Request, DialError> {
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+    use tokio_tungstenite::tungstenite::http::HeaderValue;
+
+    let unbuildable = || DialError::Url(DialTarget::new(keyless_url));
+    let Some(cred) = credential else {
+        return keyless_url.into_client_request().map_err(|_| unbuildable());
+    };
+    let secret = cred.secret.expose_secret().as_str();
+    match cred.placement {
+        CredentialPlacement::Query(name) => {
+            busbar_kernel_egress::query_auth::append_query(keyless_url, &[(name, secret)])
+                .into_client_request()
+                .map_err(|_| unbuildable())
+        }
+        CredentialPlacement::Header { name, prefix } => {
+            let mut request = keyless_url
+                .into_client_request()
+                .map_err(|_| unbuildable())?;
+            let mut value = HeaderValue::from_str(&format!("{prefix}{secret}")).map_err(|_| {
+                DialError::Handshake(format!(
+                    "the credential for header `{name}` is not a valid header value"
+                ))
+            })?;
+            value.set_sensitive(true);
+            let header =
+                tokio_tungstenite::tungstenite::http::HeaderName::from_bytes(name.as_bytes())
+                    .map_err(|_| {
+                        DialError::Handshake(format!("`{name}` is not a valid header name"))
+                    })?;
+            request.headers_mut().insert(header, value);
+            Ok(request)
+        }
+    }
+}
+
+/// `text` with every copy of the credential's secret — as written, and as a query placement
+/// percent-encodes it — replaced by
+/// [`REDACTED_VALUE`](busbar_kernel_egress::query_auth::REDACTED_VALUE).
+fn scrub_secret(text: &str, credential: Option<DialCredential<'_>>) -> String {
+    let Some(cred) = credential else {
+        return text.to_string();
+    };
+    let secret = cred.secret.expose_secret().as_str();
+    if secret.is_empty() {
+        return text.to_string();
+    }
+    let redacted = busbar_kernel_egress::query_auth::REDACTED_VALUE;
+    let mut out = text.replace(secret, redacted);
+    // `append_query("", ..)` yields `?x=<encoded>`; the encoded secret is what follows `?x=`.
+    let encoded = busbar_kernel_egress::query_auth::append_query("", &[("x", secret)]);
+    if let Some(encoded) = encoded.strip_prefix("?x=") {
+        if encoded != secret {
+            out = out.replace(encoded, redacted);
+        }
+    }
+    out
 }
 
 /// Map a `WebSocketStream<S>` into the neutral `(frame-sink, frame-stream)` the pump speaks: outbound

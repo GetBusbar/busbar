@@ -78,6 +78,9 @@ pub(crate) struct Far {
     open: std::sync::atomic::AtomicBool,
     /// Woken when a held far end has a piece to read.
     arrived: tokio::sync::Notify,
+    /// The ceiling its plane states on a streamed answer, stated to the driver as the unit's
+    /// deadline once the route is known; `None` = none.
+    ceiling: Option<Duration>,
 }
 
 /// The greeting a held far end opens its answer with, before any frame is answered.
@@ -110,6 +113,15 @@ impl Far {
             written: Mutex::new(Vec::new()),
             open: std::sync::atomic::AtomicBool::new(false),
             arrived: tokio::sync::Notify::new(),
+            ceiling: None,
+        }
+    }
+
+    /// The same far end, stating `ceiling` as the unit's deadline once the route is known.
+    pub(crate) fn stating(self, ceiling: Duration) -> Self {
+        Far {
+            ceiling: Some(ceiling),
+            ..self
         }
     }
 
@@ -161,6 +173,12 @@ const PROVIDER: &str = "acme";
 const OVERLOADED: &str = "overloaded";
 
 impl FarEnd for Far {
+    fn deadline_ns(&self, now_ns: u64) -> u64 {
+        self.ceiling.map_or(0, |c| {
+            now_ns.saturating_add(u64::try_from(c.as_nanos()).unwrap_or(u64::MAX))
+        })
+    }
+
     fn member<'a>(
         &'a self,
         _: &'a Pass<Route>,
@@ -283,6 +301,9 @@ pub(crate) struct Caller {
     pub(crate) boundaries: AtomicU64,
     /// The reply's final status, message and details, once stated.
     pub(crate) finale: Mutex<Option<Finale>>,
+    /// A STALLED caller: once it has taken this many writes its side is never writable again, and
+    /// it never goes away (a client that stops reading with its socket open).
+    pub(crate) stall_after: Option<u64>,
 }
 
 impl CallerEnd for Caller {
@@ -291,6 +312,12 @@ impl CallerEnd for Caller {
     }
 
     async fn write(&self, bytes: &[u8]) -> bool {
+        if self
+            .stall_after
+            .is_some_and(|n| self.writes.load(Ordering::SeqCst) >= n)
+        {
+            std::future::pending::<()>().await;
+        }
         tokio::task::yield_now().await;
         self.bytes.lock().unwrap().extend_from_slice(bytes);
         self.writes.fetch_add(1, Ordering::SeqCst);
@@ -1221,6 +1248,52 @@ async fn a_refusal_wears_the_status_the_plane_states_for_its_dialect() {
     }
 }
 
+/// ARCHITECT Q5: an admission refusal's Retry-After is the window reset the door computed, as
+/// 1.5.5 rendered it (`governance/state.rs`: `window_end(window, now) - now`, at least 1), on EVERY
+/// plane: the kernel hands the refusal's own wait to the plane's `refusal`, never `0`. A refusal
+/// that carries no wait (a `total` window, which never rolls) is rendered with none.
+#[tokio::test]
+async fn an_admission_refusal_carries_its_window_reset_to_the_plane() {
+    for way in ways() {
+        for (reason, wait, body) in [
+            (
+                ReasonCode::OverBudget,
+                Some(3_600),
+                "refused:429:over_budget:retry=3600",
+            ),
+            (
+                ReasonCode::RateLimited,
+                Some(42),
+                "refused:429:rate_limited:retry=42",
+            ),
+            (ReasonCode::OverBudget, None, "refused:429:over_budget"),
+        ] {
+            let r = rig(way, BufferCaps::default(), Book::default());
+            let steps = TestUnits {
+                refuse_wait: wait,
+                ..TestUnits::refusing(StepName::Admit, reason)
+            };
+            let (far, caller) = (Far::new(&["ok"], CHUNKS), Caller::default());
+            let units = r
+                .driver
+                .unit(&steps, &far, &caller, arrival("/call", b"x"), 0);
+            let outcome = drive(&units).await;
+            assert!(
+                matches!(outcome, Outcome::Refused(StepName::Admit, r) if r == reason),
+                "{way:?}: {outcome:?}"
+            );
+            assert!(far.sent().is_empty(), "{way:?}: nothing was dispatched");
+            let rendered = units.take_rendered().expect("the refusal is rendered");
+            assert_eq!(rendered.status, 429, "{way:?} {reason:?}");
+            assert_eq!(
+                String::from_utf8_lossy(&rendered.body),
+                body,
+                "{way:?} {reason:?} {wait:?}: the plane renders the refusal's own Retry-After"
+            );
+        }
+    }
+}
+
 /// RED: a refusal the plane's own `arrive` decided wears the 4xx the plane stated, and the plane
 /// is told its own code and the unit when it renders it.
 #[tokio::test]
@@ -1421,6 +1494,68 @@ async fn cancel_on_the_deadline() {
         let s = r.stats();
         assert_eq!(s[stat::CANCELS], 1, "{way:?}: one cancel");
         assert_eq!(s[stat::CANCELS_ON_WORKER], 1, "{way:?}: on the worker");
+    }
+}
+
+/// A STALLED CALLER (ARCHITECT ruling 2026-10-07, STREAM-CEILING): the caller takes the head and
+/// the first piece, then its side is never writable again and it never goes away. On a far end
+/// that states a stream ceiling the unit is released at that ceiling, cut as a deadline with what
+/// was delivered kept; on one that states none it is held until the caller goes, as the previous
+/// release held it. RED: the far end's stated deadline was read nowhere, so the stalled write held
+/// the unit past any ceiling.
+#[tokio::test]
+async fn a_stalled_caller_is_released_at_the_stated_ceiling_and_held_without_one() {
+    for way in ways() {
+        let r = rig(way, BufferCaps::default(), Book::default());
+        let (steps, far, caller) = (
+            TestUnits::passing(),
+            Far::new(&["ok"], CHUNKS).stating(Duration::from_millis(150)),
+            Caller {
+                stall_after: Some(1),
+                ..Caller::default()
+            },
+        );
+        let units = r
+            .driver
+            .unit(&steps, &far, &caller, arrival("/call", b"x"), 0);
+        let outcome = tokio::time::timeout(Duration::from_secs(10), drive(&units))
+            .await
+            .unwrap_or_else(|_| {
+                panic!("{way:?}: the stalled caller held the unit past its ceiling")
+            });
+        assert!(
+            matches!(
+                outcome,
+                Outcome::Failed(StepName::Route, ReasonCode::DeadlineExceeded)
+            ),
+            "{way:?}: {outcome:?}"
+        );
+        assert_eq!(
+            caller.text(),
+            "hello ",
+            "{way:?}: delivered before the stall"
+        );
+        let bill = units.cancel_bill().expect("the cut was billed");
+        assert_eq!(bill.cause, ReasonCode::DeadlineExceeded, "{way:?}");
+
+        let r = rig(way, BufferCaps::default(), Book::default());
+        let (steps, far, caller) = (
+            TestUnits::passing(),
+            Far::new(&["ok"], CHUNKS),
+            Caller {
+                stall_after: Some(1),
+                ..Caller::default()
+            },
+        );
+        let units = r
+            .driver
+            .unit(&steps, &far, &caller, arrival("/call", b"x"), 0);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(400), drive(&units))
+                .await
+                .is_err(),
+            "{way:?}: with no ceiling stated the stalled caller holds the unit until it goes"
+        );
     }
 }
 

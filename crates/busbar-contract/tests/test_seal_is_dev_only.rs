@@ -25,6 +25,11 @@
 //! This is a source scan, and unlike the scan it replaces it is guarding an exception rather than
 //! standing in for a type-system rule that does not exist: the trait is genuinely sealed either
 //! way, and what is checked here is only whether the ONE escape hatch stayed dev-only.
+//!
+//! THE SAME RULE HOLDS THE `services-double` FEATURE (busbar #476 follow-up): the shared
+//! `HostServices` test double (`services::double`) a plugin's tests write against. It forges
+//! nothing, but it is a test double and Locked Decision #33 ships none, so it too may be named only
+//! on a dev edge.
 
 use std::path::{Path, PathBuf};
 
@@ -78,36 +83,25 @@ fn is_dev_section(section: &str) -> bool {
         .any(|seg| seg.trim_matches(|c| c == '\'' || c == '"') == "dev-dependencies")
 }
 
-#[test]
-fn the_test_seal_feature_is_named_only_on_dev_dependency_edges() {
-    let root = workspace_root();
-    let mut found = Vec::new();
-    manifests(&root, &mut found);
-    assert!(
-        found.len() > 10,
-        "manifest walk found only {} Cargo.toml files under {} — the walk is broken, and a broken \
-         walk would pass this test while checking nothing",
-        found.len(),
-        root.display()
-    );
-
-    // This crate's own manifest DECLARES the feature (`test-seal = []` under `[features]`); that is
+/// Every manifest line naming `feature` outside a dev-only table, and how many dev edges name it.
+fn edges_of(feature: &str, found: &[PathBuf], root: &Path) -> (Vec<String>, usize) {
+    // This crate's own manifest DECLARES the feature (`<feature> = []` under `[features]`); that is
     // the definition, not an edge that turns it on.
     let own_manifest = Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
 
     let mut offenders = Vec::new();
     let mut dev_edges = 0usize;
-    for manifest in &found {
+    for manifest in found {
         let Ok(text) = std::fs::read_to_string(manifest) else {
             continue;
         };
-        if !text.contains("test-seal") {
+        if !text.contains(feature) {
             continue;
         }
         let lines: Vec<&str> = text.lines().collect();
         for (n, line) in lines.iter().enumerate() {
             let trimmed = line.trim();
-            if trimmed.starts_with('#') || !trimmed.contains("test-seal") {
+            if trimmed.starts_with('#') || !trimmed.contains(feature) {
                 continue;
             }
             let section = section_of(&lines, n);
@@ -121,7 +115,7 @@ fn the_test_seal_feature_is_named_only_on_dev_dependency_edges() {
             offenders.push(format!(
                 "{}:{} under {} -> {}",
                 manifest
-                    .strip_prefix(&root)
+                    .strip_prefix(root)
                     .unwrap_or(manifest.as_path())
                     .display(),
                 n + 1,
@@ -130,6 +124,45 @@ fn the_test_seal_feature_is_named_only_on_dev_dependency_edges() {
             ));
         }
     }
+    (offenders, dev_edges)
+}
+
+/// The shared host-services double's feature is named only on dev edges, and at least one names
+/// it (the loader's own doubles are written against it).
+#[test]
+fn the_services_double_feature_is_named_only_on_dev_dependency_edges() {
+    let root = workspace_root();
+    let mut found = Vec::new();
+    manifests(&root, &mut found);
+    assert!(found.len() > 10, "the manifest walk is broken");
+    let (offenders, dev_edges) = edges_of("services-double", &found, &root);
+    assert!(
+        offenders.is_empty(),
+        "`services-double` is enabled outside [dev-dependencies]. That compiles the shared \
+         host-services TEST DOUBLE into a RELEASE build. Move these to [dev-dependencies] or drop \
+         them:\n  {}",
+        offenders.join("\n  ")
+    );
+    assert!(
+        dev_edges > 0,
+        "no crate enables `services-double` on a dev edge, so this test just proved nothing"
+    );
+}
+
+#[test]
+fn the_test_seal_feature_is_named_only_on_dev_dependency_edges() {
+    let root = workspace_root();
+    let mut found = Vec::new();
+    manifests(&root, &mut found);
+    assert!(
+        found.len() > 10,
+        "manifest walk found only {} Cargo.toml files under {} — the walk is broken, and a broken \
+         walk would pass this test while checking nothing",
+        found.len(),
+        root.display()
+    );
+
+    let (offenders, dev_edges) = edges_of("test-seal", &found, &root);
 
     assert!(
         offenders.is_empty(),

@@ -991,6 +991,29 @@
         "max_tokens"
       ]
     },
+    "McpCfg": {
+      "deny_unknown_fields": true,
+      "fields": {
+        "allowed_origins": {
+          "optional": true,
+          "type": "Vec<String>"
+        },
+        "authorization_servers": {
+          "optional": true,
+          "type": "Vec<String>"
+        },
+        "canonical_uri": {
+          "optional": false,
+          "type": "String"
+        },
+        "scopes_supported": {
+          "optional": true,
+          "type": "Vec<String>"
+        }
+      },
+      "kind": "struct",
+      "transparent": false
+    },
     "McpPinMechanism": {
       "deny_unknown_fields": false,
       "kind": "enum",
@@ -1061,14 +1084,6 @@
           "optional": true,
           "type": "indexmap::IndexMap<String, ResourceAllowCfg>"
         },
-        "roots": {
-          "optional": true,
-          "type": "Vec<RootCfg>"
-        },
-        "sampling": {
-          "optional": true,
-          "type": "SamplingCfg"
-        },
         "timeout": {
           "optional": true,
           "type": "String"
@@ -1083,7 +1098,7 @@
         },
         "transport": {
           "optional": true,
-          "type": "Transport"
+          "type": "ServerTransport"
         },
         "upstream_credentials": {
           "optional": true,
@@ -2085,21 +2100,6 @@
       "kind": "struct",
       "transparent": false
     },
-    "RootCfg": {
-      "deny_unknown_fields": true,
-      "fields": {
-        "name": {
-          "optional": true,
-          "type": "String"
-        },
-        "uri": {
-          "optional": false,
-          "type": "String"
-        }
-      },
-      "kind": "struct",
-      "transparent": false
-    },
     "RootSettings": {
       "deny_unknown_fields": true,
       "fields": {
@@ -2165,49 +2165,6 @@
         "default_policy_timeout_ms": {
           "optional": true,
           "type": "u64"
-        }
-      },
-      "kind": "struct",
-      "transparent": false
-    },
-    "SamplingCfg": {
-      "deny_unknown_fields": true,
-      "fields": {
-        "max_messages": {
-          "optional": true,
-          "type": "u32"
-        },
-        "max_prompt_bytes": {
-          "optional": true,
-          "type": "u32"
-        },
-        "max_requests_per_minute": {
-          "optional": false,
-          "type": "u32"
-        },
-        "max_stop_sequence_bytes": {
-          "optional": true,
-          "type": "u32"
-        },
-        "max_stop_sequences": {
-          "optional": true,
-          "type": "u32"
-        },
-        "max_tokens": {
-          "optional": false,
-          "type": "u32"
-        },
-        "model": {
-          "optional": false,
-          "type": "String"
-        },
-        "temperature_max_milli": {
-          "optional": true,
-          "type": "u32"
-        },
-        "temperature_min_milli": {
-          "optional": true,
-          "type": "u32"
         }
       },
       "kind": "struct",
@@ -2281,6 +2238,15 @@
       },
       "kind": "struct",
       "transparent": false
+    },
+    "ServerTransport": {
+      "deny_unknown_fields": false,
+      "kind": "enum",
+      "transparent": false,
+      "variants": [
+        "stdio",
+        "streamable_http"
+      ]
     },
     "SplitDocument": {
       "deserialize": "manual",
@@ -2489,15 +2455,6 @@
       "deserialize": "manual",
       "fields": {},
       "kind": "struct"
-    },
-    "Transport": {
-      "deny_unknown_fields": false,
-      "kind": "enum",
-      "transparent": false,
-      "variants": [
-        "stdio",
-        "streamable_http"
-      ]
     },
     "UpstreamCreds": {
       "deny_unknown_fields": false,

@@ -165,9 +165,15 @@ pub const PLANE_HOOKS: PlaneHooks = PlaneHooks {
         // `build_runtime`), so a config apply preserves the coalescing epochs and the boot-set
         // transports. Fresh defaults on the first build (`ctx.prior` is `None`, or fronted no
         // agents last generation).
-        let (verify, cards) = crate::a2a::carried_a2a_gates(ctx.prior);
-        crate::a2a::plane::A2aPlane::from_config_carrying(agent_defs, ctx.public_url, verify, cards)
-            .map(|p| p as std::sync::Arc<dyn std::any::Any + Send + Sync>)
+        let (verify, cards, kept) = crate::a2a::carried_a2a_gates(ctx.prior);
+        crate::a2a::plane::A2aPlane::from_config_carrying(
+            agent_defs,
+            ctx.public_url,
+            verify,
+            cards,
+            kept,
+        )
+        .map(|p| p as std::sync::Arc<dyn std::any::Any + Send + Sync>)
     },
     // S7: A2A contributes its data routes through the NEUTRAL `routes` seam (like MCP). Its
     // handlers ({well_known_card, card, agent_rpc, plane_rpc, push_notification, grpc::serve,
@@ -272,21 +278,24 @@ pub(crate) fn runtime_off_slots(
 /// ([`busbar_kernel::plane::registry::BuildCtx::prior`]) and downcast HERE, inside the plane. Returns fresh
 /// defaults when there was no prior generation or it fronted no agents (no a2a slot) — so the
 /// coalescing epochs and the boot-set transports survive a config apply exactly as the MCP runtime's
-/// `verify` does, and start empty on a fresh boot.
+/// `verify` does, and start empty on a fresh boot. The kept-approval record rides with them, so its
+/// attached store survives the apply and the new registry reloads the operator's approvals.
 pub(crate) fn carried_a2a_gates(
     prior: Option<&dyn busbar_kernel::plane_host::PlaneSlots>,
 ) -> (
     std::sync::Arc<busbar_kernel::trust::VerifyGate>,
     std::sync::Arc<std::sync::OnceLock<std::sync::Arc<crate::a2a::transport::LiveCardFetch>>>,
+    std::sync::Arc<busbar_kernel::plane::DemotionRecord>,
 ) {
     match prior
         .and_then(|s| s.plane_slot(PLANE_DECLARATION.key))
         .and_then(|slot| slot.clone().downcast::<crate::a2a::plane::A2aPlane>().ok())
     {
-        Some(plane) => (plane.verify_arc(), plane.cards_arc()),
+        Some(plane) => (plane.verify_arc(), plane.cards_arc(), plane.kept_arc()),
         None => (
             std::sync::Arc::new(busbar_kernel::trust::VerifyGate::new()),
             std::sync::Arc::new(std::sync::OnceLock::new()),
+            std::sync::Arc::default(),
         ),
     }
 }
@@ -370,6 +379,14 @@ pub(crate) fn a2a_hydrate(
     let Some(store) = ctx.plane_store() else {
         return Ok(());
     };
+    // THE OPERATOR'S KEPT APPROVALS, reloaded BEFORE a listener binds and so before anything can
+    // sight an agent: an approval and the catalogue it pinned survive the restart, and a card that
+    // moved while busbar was down is judged as drift against them rather than met as a first
+    // sighting. The plane was lowered before this store was attached, so it reloads here.
+    if let Some(plane) = crate::a2a::runtime_arc_of(&ctx.engine_host()) {
+        plane.kept().set_sink(store.clone());
+        plane.reload_kept();
+    }
     crate::taskstore::TASKS.set_sink(store.clone());
     // The readability predicate is the plane's own `Task::from_row` (a known state/direction token, a
     // present identity); the chain verification is computed plane-side over the plane's `TaskEventRow`.

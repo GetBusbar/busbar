@@ -301,14 +301,14 @@ fn the_v2_page_is_kept_and_v3_is_v2_less_currency() {
     );
 }
 
-/// THE V3 PAGE STILL CHECKS OUT ON ITS OWN TERMS, AND V4 IS V3 PLUS `incarnation`.
+/// THE V3 PAGE STILL CHECKS OUT ON ITS OWN TERMS, AND V4 IS V3 PLUS `incarnation` AND `node`.
 ///
-/// `v4` was published BESIDE `v3`: a record sealed under `v3` is checked by the `v3` page, so its
-/// table must still reproduce its own example's digest and its example must still name `v3`. The
-/// `v4` table is the `v3` table with exactly `incarnation` (a number) inserted after `unit_key`.
-/// Read off the two pages, never off the code.
+/// The `v3` page stays published as the history of the field list, so its table must still
+/// reproduce its own example's digest and its example must still name `v3`. The `v4` table is the
+/// `v3` table with exactly `incarnation` (a number) inserted after `unit_key` and `node` (a number)
+/// inserted after `mono`. Read off the two pages, never off the code.
 #[test]
-fn the_v3_page_is_kept_and_v4_is_v3_plus_incarnation() {
+fn the_v3_page_is_kept_and_v4_is_v3_plus_incarnation_and_node() {
     let v3 = published_page("audit-chain-digest-v3.md");
     let v3_order = published_field_order(&v3);
     let v3_record = &spec_json_block(&v3, 0)["records"][0];
@@ -317,25 +317,29 @@ fn the_v3_page_is_kept_and_v4_is_v3_plus_incarnation() {
         v3_record["hash"]
             .as_str()
             .expect("the v3 example carries its digest"),
-        "the v3 page no longer reproduces its own example — a v3 record could not be verified"
+        "the v3 page no longer reproduces its own example"
     );
     assert_eq!(
         spec_json_block(&v3, 0)["recipe"].as_str(),
         Some("busbar.audit.digest.v3")
     );
 
-    let at = v3_order
-        .iter()
-        .position(|(name, _)| name == "unit_key")
-        .expect("the v3 page frames unit_key")
-        + 1;
     let v4_order = published_field_order(&published_spec());
-    let mut v3_plus_incarnation = v3_order.clone();
-    v3_plus_incarnation.insert(at, v4_order[at].clone());
-    assert_eq!(v4_order[at].0, "incarnation");
+    let after = |name: &str| {
+        v3_order
+            .iter()
+            .position(|(n, _)| n == name)
+            .unwrap_or_else(|| panic!("the v3 page frames {name}"))
+            + 1
+    };
+    let mut v3_plus = v3_order.clone();
+    // `mono` sits after `unit_key`, so inserting at the later position first keeps the earlier one.
+    v3_plus.insert(after("mono"), ("node".to_string(), Kind::Num));
+    v3_plus.insert(after("unit_key"), ("incarnation".to_string(), Kind::Num));
     assert_eq!(
-        v4_order, v3_plus_incarnation,
-        "the v4 page is not the v3 page plus exactly `incarnation` after `unit_key`"
+        v4_order, v3_plus,
+        "the v4 page is not the v3 page plus exactly `incarnation` after `unit_key` and `node` \
+         after `mono`"
     );
     assert_eq!(
         spec_json_block(&published_spec(), 0)["recipe"].as_str(),

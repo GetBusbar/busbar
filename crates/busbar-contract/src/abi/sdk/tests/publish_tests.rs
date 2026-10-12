@@ -25,6 +25,7 @@ fn publish_then_drop(gens: &Generations<PlaneSnapshot>, generation: u64) -> *con
         audience: Some("aud".to_string()),
         resource_metadata: None,
         resource_facts: None,
+        listed: vec!["listed".to_string()],
     };
     let p = gens.publish(generation, &spec);
     // Everything the plugin owned is overwritten and dropped.
@@ -62,6 +63,9 @@ fn a_published_snapshot_outlives_every_source_the_plugin_dropped() {
     assert_eq!(json, br#"{"paths":{}}"#);
     assert_eq!(read(snap.audience), b"aud");
     assert!(snap.resource_metadata.ptr.is_null());
+    assert_eq!(snap.listed_len, 1);
+    // SAFETY: as above.
+    assert_eq!(read(unsafe { *snap.listed }), b"listed");
     drop(churn);
 }
 

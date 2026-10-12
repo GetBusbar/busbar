@@ -332,6 +332,51 @@ impl McpNotification {
     }
 }
 
+/// The fields THIS BODY implies, by lower-case name: the `Accept` preference (a request that named
+/// a logging level or a progress token asked for the frames only a stream carries), the method,
+/// the target name where the method has one, and the protocol version its `_meta` states.
+#[must_use]
+pub fn mirrored(value: &serde_json::Value) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    let meta = value.get("params").and_then(|p| p.get("_meta"));
+    let wants_stream = meta.is_some_and(|m| {
+        m.get(crate::framing::META_LOGGING_LEVEL).is_some()
+            || m.get("progressToken").is_some_and(|t| !t.is_null())
+    });
+    out.push((
+        "accept".to_string(),
+        if wants_stream {
+            "text/event-stream, application/json"
+        } else {
+            "application/json, text/event-stream"
+        }
+        .to_string(),
+    ));
+    if let Some(method) = value.get("method").and_then(serde_json::Value::as_str) {
+        out.push((
+            H_MCP_METHOD.to_string(),
+            crate::client::jsonrpc::encode_sentinel(method),
+        ));
+        if let Some(name) = name_source_of(method)
+            .and_then(|source| value.get("params").and_then(|p| p.get(source)))
+            .and_then(serde_json::Value::as_str)
+        {
+            out.push((
+                H_MCP_NAME.to_string(),
+                crate::client::jsonrpc::encode_sentinel(name),
+            ));
+        }
+    }
+    if let Some(version) = meta
+        .and_then(|m| m.get(META_PROTOCOL_VERSION))
+        .and_then(serde_json::Value::as_str)
+        .filter(|v| !v.is_empty())
+    {
+        out.push((H_PROTOCOL_VERSION.to_string(), version.to_string()));
+    }
+    out
+}
+
 #[cfg(test)]
 #[path = "tests/codec_tests.rs"]
 mod codec_tests;

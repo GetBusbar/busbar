@@ -4,16 +4,25 @@ use busbar_kernel::proto::SigningContext;
 use std::collections::HashMap;
 use std::sync::Arc;
 
+/// A lane whose credential is bound, under `auth`'s style, on the test build's kind-neutral outbound
+/// double (each style's real bytes are its auth plugin's, proven by that plugin's own suite).
 fn lane_with_auth(auth: Option<&str>) -> Lane {
-    let resolved_auth = auth.map(|a| match a {
-        "api-key" => busbar_kernel::config::ProviderAuth::ApiKey,
-        "bearer" => busbar_kernel::config::ProviderAuth::Bearer,
-        other => panic!("unexpected test auth style: {other}"),
-    });
+    let binding = busbar_kernel::bound_credential::StyleBinding {
+        style: auth.unwrap_or("bearer").to_string(),
+        params: serde_json::json!({}),
+        uses_key: true,
+        statics: &[],
+    };
+    let credential = busbar_kernel::bound_credential::bind(
+        &*busbar_kernel::test_support::outbound_auth::axis(),
+        &binding,
+        b"SECRETKEY",
+    )
+    .expect("the double serves every style");
     Lane {
         prebuilt_auth: None,
         latency_reservoir: std::sync::OnceLock::new(),
-        credential: busbar_kernel::egress_auth::resolve("openai", resolved_auth),
+        credential,
         egress_targets: std::collections::HashMap::new(),
         reasoning: false,
         prompt_caching: false,
@@ -53,33 +62,6 @@ fn ctx<'a>(body: &'a [u8]) -> SigningContext<'a> {
     }
 }
 
-#[test]
-fn test_api_key_auth_sends_api_key_header() {
-    crate::testkit::install_test_seams();
-    // Azure-style: `auth: api-key` sends `api-key: <key>`, NOT a bearer Authorization header.
-    let lane = lane_with_auth(Some("api-key"));
-    let headers = lane_auth_headers(&lane, "SECRETKEY", &ctx(b"{}"));
-    assert_eq!(headers.len(), 1);
-    assert_eq!(headers[0].0.as_str(), "api-key");
-    assert_eq!(headers[0].1.to_str().unwrap(), "SECRETKEY");
-}
-
-#[test]
-fn test_default_auth_falls_back_to_protocol_native_scheme() {
-    crate::testkit::install_test_seams();
-    // No/`bearer` auth override uses the protocol's native sign_request (openai → bearer).
-    for auth in [None, Some("bearer")] {
-        let lane = lane_with_auth(auth);
-        let headers = lane_auth_headers(&lane, "SECRETKEY", &ctx(b"{}"));
-        assert_eq!(headers.len(), 1);
-        assert_eq!(headers[0].0.as_str(), "authorization");
-        assert_eq!(
-            headers[0].1.to_str().unwrap(),
-            super::auth_dispatch_tests::credential_header_value("SECRETKEY")
-        );
-    }
-}
-
 /// NO CREDENTIAL ⇒ NO AUTH HEADER. A lane whose provider declared `api_key: none` (a keyless local
 /// upstream — ollama, vLLM) holds an empty key, and an empty key must produce NO auth header at all
 /// — not `Authorization: Bearer ` with an empty token, and not an empty `api-key:` header. A bare
@@ -98,8 +80,12 @@ fn test_keyless_lane_sends_no_auth_header() {
             "an empty credential must send NO auth header (auth style {auth:?})"
         );
         assert!(
-            busbar_kernel::egress_auth::prebuild_auth(&lane.credential, "", &lane.signing_host)
-                .is_none_or(|h| h.is_empty()),
+            busbar_kernel::bound_credential::prebuild_auth(
+                &lane.credential,
+                "",
+                &lane.signing_host
+            )
+            .is_none_or(|h| h.is_empty()),
             "and the boot-time prebuilt freeze must not hold one either (auth style {auth:?})"
         );
     }
@@ -246,4 +232,63 @@ fn test_sign_and_wire_path_signed_equals_sent_for_reserved_chars() {
         signed_canonical,
         "transmitted path must equal the signed canonical path"
     );
+}
+
+/// THE PLANE'S HALF OF THE DECLARED-CREDENTIAL PROOF (P2 D1): every real dialect declaration's
+/// egress scheme maps to exactly the binding the shared fixture records for it
+/// (`testing/plane-copies/declared-credentials.json`, `bindings`), a signing style's region read
+/// from the host by the dialect's own rule; the `auth: api-key` override to its own. The composition
+/// root binds those same rows on the linked auth plugins and holds the headers they present to the
+/// 1.5.5 builders' (`root/tests/declared_credentials.rs`); neither half names the other.
+#[test]
+fn each_dialects_declared_scheme_maps_to_its_recorded_binding() {
+    crate::testkit::install_test_seams();
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../testing/plane-copies/declared-credentials.json"
+    );
+    let fixture: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(path).expect("fixture readable"))
+            .expect("fixture is JSON");
+    let bindings = fixture["bindings"].as_object().expect("bindings");
+    let mut mapped = 0usize;
+    for (dialect, want) in bindings {
+        if dialect == "api-key-override" {
+            let b = crate::engine::credential::api_key_override_binding();
+            assert_eq!(b.style, want["style"], "{dialect}");
+            assert_eq!(b.params, want["params"], "{dialect}");
+            assert!(
+                b.statics.is_empty(),
+                "the override writes no dialect static"
+            );
+            continue;
+        }
+        let decl = busbar_kernel::proto::decl_for(dialect)
+            .unwrap_or_else(|| panic!("{dialect} is a registered dialect"));
+        let scheme = decl
+            .egress_scheme
+            .expect("each dialect declares its scheme");
+        for region in fixture["regions"].as_array().expect("regions") {
+            let host = region["host"].as_str().expect("host");
+            let b = crate::engine::credential::declared_binding(decl, scheme, host);
+            assert_eq!(b.style, want["style"], "{dialect}");
+            let mut params = b.params.clone();
+            if b.style == "sigv4" {
+                let read = params
+                    .as_object_mut()
+                    .and_then(|m| m.remove("region"))
+                    .expect("a signing binding names its region");
+                assert_eq!(
+                    read.as_str(),
+                    Some(region["region"].as_str().unwrap_or("us-east-1")),
+                    "{dialect} at {host}"
+                );
+            }
+            assert_eq!(params, want["params"], "{dialect} at {host}");
+            assert_eq!(b.statics, decl.static_headers, "{dialect}");
+            assert!(b.uses_key, "{dialect}: a declared scheme presents the key");
+        }
+        mapped += 1;
+    }
+    assert_eq!(mapped, 6, "every recorded dialect was mapped");
 }

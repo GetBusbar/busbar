@@ -135,14 +135,16 @@ pub type Lent = Arc<dyn Any + Send + Sync>;
 pub type SectionJudge = Arc<dyn Fn(&[u8]) -> Result<(), String> + Send + Sync>;
 
 /// WHAT A DOOR FACES THE WORLD WITH for one generation, as its `open` published it: the paths it
-/// answers on (each with the dialect word a refusal on it wears) and the audience it binds, with its
-/// protected-resource metadata document; `None` = it binds none.
+/// answers on (each with the dialect word a refusal on it wears), the audience it binds, with its
+/// protected-resource metadata document (`None` = it binds none), and the names it lists.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct DoorFacing {
     /// Each claimed target, as stated (a pattern keeps its `{name}` segments), and its dialect word.
     pub claims: Vec<(String, &'static str)>,
     /// The audience it binds and its resource metadata document.
     pub admission: Option<(String, String)>,
+    /// The names its snapshot lists (`PlaneSnapshot::listed`), in its order; empty = none.
+    pub listed: Vec<String>,
 }
 
 /// A door's facing for a section, its other owned sections (one JSON object keyed by section name,

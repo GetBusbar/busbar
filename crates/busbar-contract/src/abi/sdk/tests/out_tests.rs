@@ -13,6 +13,11 @@ fn zeroed<T>() -> T {
     unsafe { std::mem::zeroed() }
 }
 
+/// A call's holders for a test `out` (leaked: the test process is short).
+fn holders() -> &'static Holders {
+    Box::leak(Box::default())
+}
+
 fn read(s: AbiStr) -> Vec<u8> {
     // SAFETY: the test reads what the writer named, while its owner lives.
     unsafe { std::slice::from_raw_parts(s.ptr, s.len) }.to_vec()
@@ -23,8 +28,17 @@ fn a_scalar_is_set_in_place_however_nested() {
     let mut o: TickOut = zeroed();
     let mut out = Out::new(&mut o);
     out.set(|o| &o.next_tick_ns, 42);
-    out.set(|o| &o.head.wake_at_ns, 7);
+    out.wake_at(7);
     assert_eq!((o.next_tick_ns, o.head.wake_at_ns), (42, 7));
+}
+
+#[test]
+#[should_panic(expected = "the head is written by the SDK's writers only")]
+fn red_a_head_field_is_not_set_by_hand() {
+    // C1 M5 (a): a body naming another answer's lease (or a length) in the head would have the
+    // host release or read memory this answer does not own.
+    let mut o: TickOut = zeroed();
+    Out::new(&mut o).set(|o| &o.head.lease, 7);
 }
 
 #[test]
@@ -145,16 +159,54 @@ fn a_published_value_is_the_sdks_until_its_retire() {
 }
 
 #[test]
+#[should_panic(expected = "the field names memory an SDK writer set")]
+fn red_a_leased_blobs_length_is_not_set_by_hand() {
+    // C1 M5 (a): a one-byte lease stated sixteen MiB long would have the host read past it.
+    let leases = Leases::default();
+    let mut o: StatusOut = zeroed();
+    let mut out = Out::new(&mut o);
+    out.lease(|o| &o.status, &leases, vec![1], BLOB_JSON);
+    out.set(|o| &o.status.len, 16 << 20);
+}
+
+#[test]
+fn a_publish_from_generations_that_died_is_witnessed() {
+    // C1 M5 (b), the witness the SDK's FAULT reads (the RED is safe_tests'
+    // `red_an_answer_leased_from_a_table_the_body_dropped_is_fault`): generations the body made
+    // for itself are gone when it returns, and so is what the host would read.
+    let holders: Holders = std::cell::RefCell::new(Vec::new());
+    let mut o: PlaneOpenOut = zeroed();
+    {
+        let local: Generations<PlaneSnapshot> = Generations::new();
+        Out::witnessed(&mut o, &holders).publish(
+            |o| &o.snapshot,
+            &local,
+            1,
+            &SnapshotSpec::default(),
+        );
+        assert!(holders_live(&holders), "alive while the body holds them");
+    }
+    assert!(!holders_live(&holders));
+    // The GREEN twin: generations the instance holds outlive the call.
+    let held: Generations<PlaneSnapshot> = Generations::new();
+    let holders: Holders = std::cell::RefCell::new(Vec::new());
+    let mut o: PlaneOpenOut = zeroed();
+    Out::witnessed(&mut o, &holders).publish(|o| &o.snapshot, &held, 1, &SnapshotSpec::default());
+    assert!(holders_live(&holders));
+}
+
+#[test]
 fn a_failure_names_its_text_where_its_instance_keeps_it() {
     let kept = Kept::default();
     let reporting: Reporting = std::cell::Cell::new(None);
     let mut o: CancelOut = zeroed();
-    let answered = Out::kept(&mut o, &kept, &reporting).fail(Refusal::failed(String::from("no")));
+    let answered =
+        Out::kept(&mut o, &kept, &reporting, holders()).fail(Refusal::failed(String::from("no")));
     assert_eq!(answered, Outcome::Failed);
     assert_eq!(read(o.head.error), b"no");
     assert_eq!(kept.held(), (1, 0), "the instance holds the text");
     let mut s: CancelOut = zeroed();
-    let answered = Out::kept(&mut s, &kept, &reporting).fail(Refusal::refused("static"));
+    let answered = Out::kept(&mut s, &kept, &reporting, holders()).fail(Refusal::refused("static"));
     assert_eq!(answered, Outcome::Refused);
     assert_eq!(read(s.head.error), b"static");
     assert_eq!(kept.held(), (1, 0), "a static text is named where it lives");
@@ -166,10 +218,12 @@ fn the_instance_keeps_a_bounded_ring_of_texts_each_readable_while_held() {
     let kept = Kept::default();
     let reporting: Reporting = std::cell::Cell::new(None);
     let mut first: CancelOut = zeroed();
-    let _ = Out::kept(&mut first, &kept, &reporting).fail(Refusal::failed(String::from("first")));
+    let _ = Out::kept(&mut first, &kept, &reporting, holders())
+        .fail(Refusal::failed(String::from("first")));
     for i in 0..KEPT_RING - 1 {
         let mut o: CancelOut = zeroed();
-        let _ = Out::kept(&mut o, &kept, &reporting).fail(Refusal::failed(format!("n{i}")));
+        let _ =
+            Out::kept(&mut o, &kept, &reporting, holders()).fail(Refusal::failed(format!("n{i}")));
     }
     assert_eq!(
         read(first.head.error),
@@ -177,7 +231,8 @@ fn the_instance_keeps_a_bounded_ring_of_texts_each_readable_while_held() {
         "held until the ring wraps"
     );
     let mut o: CancelOut = zeroed();
-    let _ = Out::kept(&mut o, &kept, &reporting).fail(Refusal::failed(String::from("wrap")));
+    let _ =
+        Out::kept(&mut o, &kept, &reporting, holders()).fail(Refusal::failed(String::from("wrap")));
     assert_eq!(
         kept.held().0,
         KEPT_RING,
@@ -195,7 +250,8 @@ fn an_instance_less_failure_writes_the_hosts_lent_buffer_and_else_a_fixed_text()
         open: false,
     };
     let mut v: OutHead = zeroed();
-    let answered = Out::lent(&mut v, Some(lent)).fail(Refusal::failed(String::from("aéé")));
+    let answered =
+        Out::lent(&mut v, Some(lent), holders()).fail(Refusal::failed(String::from("aéé")));
     assert_eq!(answered, Outcome::Failed);
     assert_eq!((v.error.ptr, v.error.len), (buf.as_ptr(), 3));
     assert_eq!(&buf, b"a\xc3\xa9\0");
@@ -207,13 +263,14 @@ fn an_instance_less_failure_writes_the_hosts_lent_buffer_and_else_a_fixed_text()
         open: true,
     };
     let mut o: OpenOut = zeroed();
-    let answered = Out::lent(&mut o, Some(lent)).fail(Refusal::refused(String::from("boom: x")));
+    let answered =
+        Out::lent(&mut o, Some(lent), holders()).fail(Refusal::refused(String::from("boom: x")));
     assert_eq!(answered, Outcome::Refused);
     assert_eq!(o.err_len, 7);
     assert_eq!(&buf[..7], b"boom: x");
     // No buffer lent: the fixed text, and nothing reported.
     let mut n: OpenOut = zeroed();
-    let mut out = Out::lent(&mut n, None);
+    let mut out = Out::lent(&mut n, None, holders());
     assert_eq!(
         out.fail(Refusal::failed(String::from("lost"))),
         Outcome::Failed
@@ -230,7 +287,7 @@ fn a_body_reports_metrics_and_declared_diagnostics_in_its_envelope() {
     let kept = Kept::default();
     let reporting: Reporting = std::cell::Cell::new(None);
     let mut o: CancelOut = zeroed();
-    let mut out = Out::kept(&mut o, &kept, &reporting);
+    let mut out = Out::kept(&mut o, &kept, &reporting, holders());
     assert!(out.metric(2, METRIC_ADD, 1.0));
     assert!(out.metric(5, METRIC_SET, 7.5));
     assert!(out.diag(1, 2, String::from("BUSBAR-7070 the webhook refused")));
@@ -255,7 +312,7 @@ fn a_body_reports_metrics_and_declared_diagnostics_in_its_envelope() {
     assert_eq!(read(d.text), b"BUSBAR-7070 the webhook refused");
     // The next call starts an empty envelope of its own; the first stays as it was.
     let mut o2: CancelOut = zeroed();
-    assert!(Out::kept(&mut o2, &kept, &reporting).metric(0, METRIC_ADD, 3.0));
+    assert!(Out::kept(&mut o2, &kept, &reporting, holders()).metric(0, METRIC_ADD, 3.0));
     assert_eq!(o2.head.envelope.metrics_len, 1);
     assert_ne!(o2.head.envelope.metrics, env.metrics);
     assert_eq!(m[0].family_idx, 2);
@@ -267,7 +324,7 @@ fn a_full_envelope_reports_no_more() {
     let kept = Kept::default();
     let reporting: Reporting = std::cell::Cell::new(None);
     let mut o: CancelOut = zeroed();
-    let mut out = Out::kept(&mut o, &kept, &reporting);
+    let mut out = Out::kept(&mut o, &kept, &reporting, holders());
     for _ in 0..MAX_ENVELOPE_ENTRIES {
         assert!(out.metric(0, METRIC_ADD, 1.0));
     }
@@ -284,7 +341,7 @@ fn an_arrival_names_its_route_and_keeps_the_name() {
     let reporting: Reporting = std::cell::Cell::new(None);
     let mut o: ArriveOut = zeroed();
     let name = String::from("entry");
-    Out::kept(&mut o, &kept, &reporting).route(ROUTE_DIRECT, &name);
+    Out::kept(&mut o, &kept, &reporting, holders()).route(ROUTE_DIRECT, &name);
     drop(name);
     assert_eq!((o.route, read(o.pool)), (ROUTE_DIRECT, b"entry".to_vec()));
     let mut bare: ArriveOut = zeroed();
@@ -302,7 +359,7 @@ fn an_arrival_states_its_trust_facts_and_keeps_them() {
     let reporting: Reporting = std::cell::Cell::new(None);
     let mut o: ArriveOut = zeroed();
     let (cp, item) = (String::from("peer"), String::from("tool"));
-    Out::kept(&mut o, &kept, &reporting).trust(&cp, Some(&item), Some("d1"));
+    Out::kept(&mut o, &kept, &reporting, holders()).trust(&cp, Some(&item), Some("d1"));
     drop((cp, item));
     assert_eq!(
         (
@@ -313,14 +370,14 @@ fn an_arrival_states_its_trust_facts_and_keeps_them() {
         (b"peer".to_vec(), b"tool".to_vec(), b"d1".to_vec())
     );
     let mut whole: ArriveOut = zeroed();
-    Out::kept(&mut whole, &kept, &reporting).trust("peer", Some(""), None);
+    Out::kept(&mut whole, &kept, &reporting, holders()).trust("peer", Some(""), None);
     assert_eq!(
         (whole.trust_item.len, whole.trust_digest.len),
         (0, 0),
         "no item, no digest"
     );
     let mut none: ArriveOut = zeroed();
-    Out::kept(&mut none, &kept, &reporting).trust("", Some("tool"), Some("d1"));
+    Out::kept(&mut none, &kept, &reporting, holders()).trust("", Some("tool"), Some("d1"));
     assert_eq!(none.trust_counterparty.len, 0);
     let mut bare: ArriveOut = zeroed();
     Out::new(&mut bare).trust("peer", None, None);

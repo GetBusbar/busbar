@@ -694,6 +694,8 @@ fn the_declares_file_is_found_beside_the_plugin_crate() {
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(root.join("logic")).unwrap();
     std::fs::create_dir_all(root.join("logic-plugin")).unwrap();
+    // A plugin repo's root is its workspace (`Cargo.toml` beside `logic/` and `logic-plugin/`).
+    std::fs::write(root.join("Cargo.toml"), "[workspace]\n").unwrap();
     std::fs::write(root.join("logic/declares.json"), "{}").unwrap();
     let found = super::declares_file(root.join("logic-plugin").to_str().unwrap());
     assert_eq!(found, Some(root.join("logic/declares.json")));
@@ -703,6 +705,38 @@ fn the_declares_file_is_found_beside_the_plugin_crate() {
         None
     );
     std::fs::remove_dir_all(&root).unwrap();
+}
+
+/// A crate in busbar's own tree (its parent, `crates/`, is no plugin repo's workspace root) is
+/// judged by its OWN declares file: a sibling crate's `declares.json` is that crate's. RED before
+/// the workspace-root rule: the sibling's file was found as this crate's, and two siblings holding
+/// one each panicked every in-tree conformance subject.
+#[test]
+fn a_sibling_crates_declares_file_is_never_this_crates() {
+    let tree = std::env::temp_dir().join(format!("declares-tree-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tree);
+    let crates = tree.join("crates");
+    for c in ["plane-one", "plane-two", "plane-three"] {
+        std::fs::create_dir_all(crates.join(c)).unwrap();
+    }
+    std::fs::write(tree.join("Cargo.toml"), "[workspace]\n").unwrap();
+    std::fs::write(crates.join("plane-one/declares.json"), "{}").unwrap();
+    std::fs::write(crates.join("plane-two/declares.json"), "{}").unwrap();
+    let at = |c: &str| super::declares_file(crates.join(c).to_str().unwrap());
+    assert_eq!(
+        at("plane-three"),
+        None,
+        "a sibling's declares file is not this crate's"
+    );
+    assert_eq!(
+        at("plane-one"),
+        Some(crates.join("plane-one/declares.json"))
+    );
+    assert_eq!(
+        at("plane-two"),
+        Some(crates.join("plane-two/declares.json"))
+    );
+    std::fs::remove_dir_all(&tree).unwrap();
 }
 
 /// The host's secret lending, as the suite lends it: each secret-ref key (a dotted path) is taken

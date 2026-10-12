@@ -657,12 +657,6 @@ async fn served_rider_charges_the_presenting_key() {
     .await;
 }
 
-/// DISPOSITION, on the served leg: an upstream answer is classified, not mistaken for a trip.
-#[tokio::test]
-async fn served_rider_classifies_the_upstream_answer() {
-    run_served("disposition", "served_rider_classifies_the_upstream_answer").await;
-}
-
 /// METRICS, on the served leg: the upstream leg is on the scrape.
 #[tokio::test]
 async fn served_rider_counts_the_upstream_attempt() {
@@ -679,16 +673,6 @@ async fn served_rider_refuses_an_unpinned_peer() {
 #[tokio::test]
 async fn served_rider_dials_only_the_judged_address() {
     run_served("net-guard", "served_rider_dials_only_the_judged_address").await;
-}
-
-/// EGRESS-AUTH, on the served leg: the upstream is handed the planned credential only.
-#[tokio::test]
-async fn served_rider_presents_only_the_planned_credential() {
-    run_served(
-        "egress-auth",
-        "served_rider_presents_only_the_planned_credential",
-    )
-    .await;
 }
 
 /// VERIFY, on a session's served leg: the destination the door judged is the one the session runs

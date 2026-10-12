@@ -78,6 +78,10 @@ struct Observation {
     kind: String,
     metrics: Vec<serde_json::Value>,
     diagnostics: Vec<serde_json::Value>,
+    /// The test that reported it ([`testing::scope`], read on the reporting thread): the test
+    /// binary's one recorder files each fold under it.
+    #[cfg(test)]
+    scope: u64,
 }
 
 /// THE OBSERVER INTAKE: a bounded queue the plugin calls hand their back-channels to without
@@ -110,6 +114,8 @@ fn intake() -> Option<&'static Intake> {
                 .name("busbar-plugin-observe".into())
                 .spawn(move || {
                     for o in rx {
+                        #[cfg(test)]
+                        testing::OBSERVING.store(o.scope, Ordering::SeqCst);
                         observer.observe(&o.plugin, &o.kind, &o.metrics, &o.diagnostics);
                         // Counted only after the observer had it: a back-channel dropped while
                         // this one was folded is reported here, the intake being full then.
@@ -148,6 +154,8 @@ fn enqueue(
         kind: kind.to_string(),
         metrics: metrics.to_vec(),
         diagnostics: diagnostics.to_vec(),
+        #[cfg(test)]
+        scope: testing::scope(),
     };
     // Counted before the send: the observer thread may finish it before `try_send` returns.
     intake.sent.fetch_add(1, Ordering::AcqRel);
@@ -474,7 +482,31 @@ pub(crate) mod testing {
 
     struct Recording;
 
-    static FOLDS: std::sync::Mutex<Vec<Fold>> = std::sync::Mutex::new(Vec::new());
+    /// Every fold the recorder was handed, filed under the test that reported it (its scope).
+    static FOLDS: std::sync::Mutex<Vec<(u64, Fold)>> = std::sync::Mutex::new(Vec::new());
+
+    /// The scope of the observation the intake thread is handing the recorder now: set by that
+    /// one thread before each `observe`, read inside it.
+    pub(crate) static OBSERVING: std::sync::atomic::AtomicU64 =
+        std::sync::atomic::AtomicU64::new(0);
+
+    /// The next test scope [`exclusive`] hands out; `0` is no test's.
+    static NEXT_SCOPE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+    std::thread_local! {
+        /// THIS TEST'S SCOPE: the key its folds are filed and read under. `cargo test` runs each
+        /// test on a thread of its own, and a back-channel is handed to the intake on the thread
+        /// that reported it, so what a test's own sinks report carries its scope, and what every
+        /// other test of the binary folds concurrently (any door it drives with a non-bare
+        /// envelope, the guard serializing only the readers) carries another or none. Busbar
+        /// status row 118: a reader that counted the whole log saw 10 where its sink folded 1.
+        static SCOPE: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    }
+
+    /// The calling thread's test scope (`0` outside an [`exclusive`] holder).
+    pub(crate) fn scope() -> u64 {
+        SCOPE.with(std::cell::Cell::get)
+    }
     /// Serializes the tests that read [`FOLDS`]. `cargo test` runs a binary's tests concurrently and
     /// the log is process-global, so without this a test reads its neighbour's folds — which is
     /// exactly what it looks like when the seam is broken, and therefore the one confusion a test
@@ -504,18 +536,23 @@ pub(crate) mod testing {
             while HOLD.load(std::sync::atomic::Ordering::SeqCst) {
                 std::thread::sleep(std::time::Duration::from_millis(1));
             }
+            let scope = OBSERVING.load(std::sync::atomic::Ordering::SeqCst);
             FOLDS.lock().unwrap_or_else(|e| e.into_inner()).push((
-                plugin.to_string(),
-                kind.to_string(),
-                metrics.to_vec(),
-                diagnostics.to_vec(),
+                scope,
+                (
+                    plugin.to_string(),
+                    kind.to_string(),
+                    metrics.to_vec(),
+                    diagnostics.to_vec(),
+                ),
             ));
         }
     }
 
     /// Take EXCLUSIVE use of the fold log for the rest of the caller's test, installing the shared
-    /// recorder on first use and clearing whatever a previous test left behind. Hold the returned
-    /// guard for as long as you intend to read [`folds`].
+    /// recorder on first use, giving the calling thread a fresh test scope ([`scope`]) and clearing
+    /// whatever a previous test left behind. Hold the returned guard for as long as you intend to
+    /// read [`folds`].
     pub(crate) fn exclusive() -> std::sync::MutexGuard<'static, ()> {
         static ONCE: std::sync::Once = std::sync::Once::new();
         ONCE.call_once(|| {
@@ -526,6 +563,8 @@ pub(crate) mod testing {
             );
         });
         let guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let fresh = NEXT_SCOPE.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        SCOPE.with(|s| s.set(fresh));
         // The intake is asynchronous: what an earlier test handed it lands before the log clears.
         super::settle();
         FOLDS.lock().unwrap_or_else(|e| e.into_inner()).clear();
@@ -538,11 +577,20 @@ pub(crate) mod testing {
         FOLDS.lock().unwrap_or_else(|e| e.into_inner()).clear();
     }
 
-    /// Every fold since the caller took its [`exclusive`] guard.
+    /// Every fold THIS TEST reported (its [`scope`]) since it took its [`exclusive`] guard, or last
+    /// [`clear`]ed: never a fold another test of the binary reported meanwhile.
     pub(crate) fn folds() -> Vec<Fold> {
+        let mine = scope();
+        assert_ne!(mine, 0, "read the fold log under an `exclusive` guard");
         // Everything handed to the intake so far has reached the observer before the log is read.
         super::settle();
-        FOLDS.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        FOLDS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .filter(|(s, _)| *s == mine)
+            .map(|(_, f)| f.clone())
+            .collect()
     }
 }
 

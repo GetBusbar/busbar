@@ -2,11 +2,11 @@
 # Anthropic Messages dialect (stage 1: request, response and stream). Format: see openai_chat.toml.
 
 [dialect]
-wire = "anthropic"  # the wire lock: dialects/anthropic.wire.json (notation A paths)
+wire = "anthropic" # the wire lock: dialects/anthropic.wire.json (notation A paths)
 request = ["structure", "sampling", "tier", "blocks"]
 response = ["response"]
 stream = ["stream"]
-drop_warn = "dropping {slot} on Anthropic egress: the Messages API has no such request                      member (lossy-by-target)"
+drop_warn = "dropping {slot} on Anthropic egress: the Messages API has no such request member (lossy-by-target)"
 drop_field = "parameter"
 
 # Members the dialect's own code models (`prim`). `metadata` (its `user_id` is `user`), `thinking`
@@ -164,4 +164,4 @@ drop_field = "parameter"
 "presence_penalty" = { warn = "dropping presence_penalty on Anthropic egress: the Messages API models no such sampling control (lossy-by-target)", value = true }
 "seed" = { warn = "dropping seed on Anthropic egress: the Messages API models no deterministic-sampling seed (lossy-by-target)", value = true }
 "n" = { warn = "dropping n on Anthropic egress: the Messages API returns a single completion and models no candidate-count parameter (lossy-by-target)", value = true }
-"service_tier" = { warn = "dropping service_tier on Anthropic egress: Anthropic offers only auto /                      standard_only capacity (lossy-by-target)", value = true }
+"service_tier" = { warn = "dropping service_tier on Anthropic egress: Anthropic offers only auto / standard_only capacity (lossy-by-target)", value = true }

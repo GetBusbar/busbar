@@ -426,8 +426,8 @@ fn a_rejected_key_is_never_quoted_back() {
 #[test]
 fn the_key_set_publishes_only_the_public_half() {
     let mut keys = AuditKeySet::new();
-    keys.insert_signer(&signer());
-    keys.insert_signer(&signer());
+    keys.insert(AuditVerifyingKey::from_hex(&signer().public_key_hex()).expect("a public key"));
+    keys.insert(AuditVerifyingKey::from_hex(&signer().public_key_hex()).expect("a public key"));
     assert_eq!(keys.len(), 1, "one key added twice is one key");
 
     let body = expose::keys_body(&keys);
@@ -440,21 +440,18 @@ fn the_key_set_publishes_only_the_public_half() {
     assert!(body.contains("\"algorithm\":\"ed25519\""));
 }
 
-// ── THE ANCHORS OUTLIVE THE RECORDS ──────────────────────────────────────────────────────────────
+// ── THE ANCHORS SURVIVE A RESTART ────────────────────────────────────────────────────────────────
 
-/// HEAD HISTORY SURVIVES A RETENTION PASS THAT PRUNES ITS RECORDS.
+/// HEAD HISTORY SURVIVES A RESTART, rebuilt from the records the journal hands back.
 ///
-/// The pass is [`AuditChain::prune_records_before`] — the predicate every store in this tree
-/// applies, a record whose own instant is before a cutoff goes. After it, the records for the
-/// pruned window are gone, and the ANCHOR for that window is still here and still signed. A puller
-/// that was offline across the cutoff lost the records, which was the deal, and can still say what
-/// the chain's tip was while it was away.
+/// [`AuditChain::resume`] is what a boot continues the chain with. Resumed from the sealed records,
+/// the chain answers the head read with the tip it really has — never a null head beside a
+/// `next_seq` above one — and every window's anchor is the one it had before the restart, still
+/// signed. A chain resumed from its tail alone answered `"head":null` and lost every anchor.
 #[test]
-fn head_history_survives_a_retention_pass_that_prunes_its_records() {
-    // One head per hour; a record every twenty minutes for six hours.
-    let mut chain = AuditChain::new()
-        .signing_with(signer())
-        .sampling_heads_every(3_600);
+fn head_history_survives_a_restart_rebuilt_from_its_records() {
+    // One head per hour (the default); a record every twenty minutes for six hours.
+    let mut chain = AuditChain::new().signing_with(signer());
     let start = 1_700_000_000u64;
     let mut records = Vec::new();
     for step in 0..18u64 {
@@ -462,7 +459,6 @@ fn head_history_survives_a_retention_pass_that_prunes_its_records() {
         i.wall = start + step * 1_200;
         records.push(chain.seal(i, &token()));
     }
-    assert_eq!(records.len(), 18);
     let anchors_before = chain.heads().anchors();
     assert_eq!(
         anchors_before.len(),
@@ -470,58 +466,57 @@ fn head_history_survives_a_retention_pass_that_prunes_its_records() {
         "six hourly samples plus the live tip"
     );
 
-    // Retention keeps the last two hours. Twelve records go.
-    let cutoff = start + 4 * 3_600;
-    let dropped = chain.prune_records_before(&mut records, cutoff);
-    assert_eq!(dropped, 12);
-    assert!(
-        records.iter().all(|r| r.wall >= cutoff),
-        "a record older than the cutoff survived the pass"
-    );
-
-    // THE ANCHORS ARE UNTOUCHED.
+    let resumed = AuditChain::resume(&records).signing_with(signer());
+    assert_eq!(resumed.head(), chain.head());
+    assert_eq!(resumed.next_seq(), chain.next_seq());
     assert_eq!(
-        chain.heads().anchors(),
+        resumed.heads().anchors(),
         anchors_before,
-        "the retention pass reached the head history"
+        "the restart lost or moved an anchor"
     );
-    let vanished_window_anchor = chain
+    assert_eq!(
+        expose::head_body(&resumed),
+        expose::head_body(&chain),
+        "the head read after a restart is not the head read before it"
+    );
+    assert!(
+        !expose::head_body(&resumed).contains("\"head\":null"),
+        "a resumed non-empty chain answered a null head"
+    );
+    let window_anchor = resumed
         .heads()
         .anchor_at(3)
-        .expect("the anchor for a window whose records were pruned");
+        .expect("the anchor for an early window survives the restart");
+    assert_eq!(Some(window_anchor.clone()), chain.heads().anchor_at(3));
     assert!(
-        vanished_window_anchor.wall < cutoff,
-        "the surviving anchor is not for the pruned window"
-    );
-    assert!(
-        vanished_window_anchor.signature.is_some(),
+        window_anchor.signature.is_some(),
         "an anchor that is not signed is not evidence"
     );
-    assert!(
-        !records.iter().any(|r| r.seq == vanished_window_anchor.seq),
-        "the record that anchor names should have been pruned"
+    assert_eq!(
+        expose::range_body(&resumed, &records[..3], 1, 3),
+        expose::range_body(&chain, &records[..3], 1, 3),
+        "a window's published anchor moved across the restart"
     );
 
-    // And a published head body still carries the whole series.
-    let body = expose::heads_body(&chain);
-    for anchor in &anchors_before {
-        assert!(
-            body.contains(&anchor.hash),
-            "an anchor is missing from the published head history"
-        );
-    }
+    // An empty journal resumes as a new chain: a null head, and position one next.
+    let empty = AuditChain::resume(&[]);
+    assert!(expose::head_body(&empty).contains("\"head\":null"));
+    assert_eq!(empty.next_seq(), 1);
 }
 
 /// The genesis head always joins the series, whatever the sampling rate, because a window-verifier
 /// needs it to know the chain started where it says it did.
 #[test]
 fn the_genesis_head_is_always_an_anchor() {
-    let mut chain = AuditChain::new().sampling_heads_every(86_400);
+    let mut history = HeadHistory::every(86_400);
+    let mut chain = AuditChain::new();
     let first = chain.seal(inputs(1), &token());
-    let _ = chain.seal(inputs(2), &token());
-    assert_eq!(chain.heads().series().len(), 1);
-    assert_eq!(chain.heads().series()[0].seq, first.seq);
-    assert_eq!(chain.heads().series()[0].hash, first.hash);
+    let second = chain.seal(inputs(2), &token());
+    test_support::observe(&mut history, &first);
+    test_support::observe(&mut history, &second);
+    assert_eq!(history.series().len(), 1);
+    assert_eq!(history.series()[0].seq, first.seq);
+    assert_eq!(history.series()[0].hash, first.hash);
 }
 
 /// A head history with nothing in it is a node that has sealed nothing, and the head read says so
@@ -784,13 +779,12 @@ fn the_published_bodies_parse_and_the_wide_numbers_are_text() {
     let mut chain = AuditChain::new().signing_with(signer());
     let records: Vec<_> = (1..=2).map(|i| chain.seal(inputs(i), &token())).collect();
     let mut keys = AuditKeySet::new();
-    keys.insert_signer(&signer());
+    keys.insert(AuditVerifyingKey::from_hex(&signer().public_key_hex()).expect("a public key"));
 
     for body in [
         expose::head_body(&chain),
         expose::range_body(&chain, &records, 1, 2),
         expose::keys_body(&keys),
-        expose::heads_body(&chain),
     ] {
         serde_json::from_str::<serde_json::Value>(&body).expect("every published body is JSON");
     }
@@ -883,6 +877,9 @@ fn worked_example_inputs() -> AuditInputs {
     i
 }
 
+/// The node the published spec's worked example was sealed by.
+const WORKED_EXAMPLE_NODE: u64 = 5;
+
 /// Pull the nth fenced `json` block out of the published spec.
 fn spec_json_block(doc: &str, nth: usize) -> serde_json::Value {
     let block = doc
@@ -912,10 +909,12 @@ fn the_worked_example_in_the_published_spec_is_what_this_build_answers_with() {
     )
     .expect("the published spec is in the tree");
 
-    let mut chain = AuditChain::new().signing_with(signer());
+    let mut chain = AuditChain::new()
+        .signing_with(signer())
+        .sealing_as(WORKED_EXAMPLE_NODE);
     let record = chain.seal(worked_example_inputs(), &token());
     let mut keys = AuditKeySet::new();
-    keys.insert_signer(&signer());
+    keys.insert(AuditVerifyingKey::from_hex(&signer().public_key_hex()).expect("a public key"));
 
     let parse = |body: String| -> serde_json::Value {
         serde_json::from_str(&body).expect("a published body is JSON")
@@ -949,7 +948,7 @@ fn the_worked_example_in_the_published_spec_is_what_this_build_answers_with() {
     assert!(doc.contains(&signer().public_key_hex()));
     assert!(doc.contains(signer().key_id()));
     assert!(
-        doc.contains(&format!("preimage is {} bytes", 473)),
+        doc.contains(&format!("preimage is {} bytes", 489)),
         "the spec quotes a preimage length this build does not produce"
     );
     assert_eq!(
@@ -962,7 +961,9 @@ fn the_worked_example_in_the_published_spec_is_what_this_build_answers_with() {
 /// The preimage the spec's worked example quotes the LENGTH of is the one this build frames.
 #[test]
 fn the_worked_examples_preimage_is_the_length_the_spec_quotes() {
-    let mut chain = AuditChain::new().signing_with(signer());
+    let mut chain = AuditChain::new()
+        .signing_with(signer())
+        .sealing_as(WORKED_EXAMPLE_NODE);
     let record = chain.seal(worked_example_inputs(), &token());
     let framed: usize = digest_fields(&record)
         .iter()
@@ -973,7 +974,7 @@ fn the_worked_examples_preimage_is_the_length_the_spec_quotes() {
             }
         })
         .sum();
-    assert_eq!(framed, 473);
+    assert_eq!(framed, 489);
 }
 
 // ── ONE KEYSET, TWO DOMAINS: ledger checkpoints are signed by the audit key (Q71(3), #82) ──────────
@@ -1004,7 +1005,7 @@ fn a_tampered_checkpoint_body_refuses_with_the_bad_signature_text() {
     let chain = AuditChain::new().signing_with(signer());
     let signature = chain.sign_checkpoint_body(CHECKPOINT_BODY).unwrap();
     let mut keys = AuditKeySet::new();
-    keys.insert_signer(&signer());
+    keys.insert(AuditVerifyingKey::from_hex(&signer().public_key_hex()).expect("a public key"));
     let tampered = b"checkpoint 1: bucket b, window 1, settled 451";
     let refused = keys
         .verify_checkpoint_body(tampered, &signature)
@@ -1021,7 +1022,7 @@ fn a_checkpoint_signature_and_a_record_signature_cannot_stand_in_for_each_other(
     let key = signer();
     let digest_hex = busbar_kernel_audit::digest::sha256_hex(CHECKPOINT_BODY);
     let mut keys = AuditKeySet::new();
-    keys.insert_signer(&key);
+    keys.insert(AuditVerifyingKey::from_hex(&key.public_key_hex()).expect("a public key"));
     // A record signature over the checkpoint body's digest does not verify as a checkpoint.
     let record_sig = key.sign_digest(&digest_hex);
     let raw: Vec<u8> = (0..record_sig.len())
@@ -1052,7 +1053,7 @@ fn a_chain_with_no_key_seals_checkpoints_unsigned_and_a_short_signature_is_malfo
         None
     );
     let mut keys = AuditKeySet::new();
-    keys.insert_signer(&signer());
+    keys.insert(AuditVerifyingKey::from_hex(&signer().public_key_hex()).expect("a public key"));
     let refused = keys
         .verify_checkpoint_body(CHECKPOINT_BODY, &[0u8; 10])
         .unwrap_err();

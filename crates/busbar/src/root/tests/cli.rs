@@ -4,17 +4,18 @@
 //! Tests for `cli.rs`: `busbar --help` is the root's own text plus the rows each linked plane
 //! declares on the CLI-help axis, and nothing else.
 
-use super::{is_plane_flag, render_help};
+use super::{help_rows, is_plane_flag, render_help};
 use crate::root::linked::CliHelpRow;
 
 /// The default (every-plane) build prints the help byte for byte as it always has. The golden is
 /// fixture data (`fixtures/cli_help.txt`, the version as `<VERSION>`); every plane-owned line in it
-/// comes from a linked plane's rows, so a plane that stops declaring its rows fails this.
+/// comes from a linked plane's rows (a linked row's `cli-help` axis or a linked door's tail
+/// `cli_help`, as `--help` reads them), so a plane that stops declaring its rows fails this.
 #[cfg(linked_every_plane)]
 #[test]
 fn the_help_reads_as_it_always_has_from_the_linked_rows() {
     assert_eq!(
-        render_help("<VERSION>", crate::LINKED.cli_help),
+        render_help("<VERSION>", &help_rows()),
         include_str!("fixtures/cli_help.txt")
     );
 }
@@ -115,14 +116,15 @@ fn a_declared_plane_flag_is_accepted_and_nothing_else_is() {
     assert!(!is_plane_flag(rows, "a"));
     assert!(!is_plane_flag(rows, "--second"));
     assert!(!is_plane_flag(&[], "--planted-flag"));
-    for rows in crate::LINKED.cli_help {
+    let linked = help_rows();
+    for rows in &linked {
         for (slot, lines) in rows.iter() {
             if *slot == "flag" {
                 let flag = lines
                     .split_whitespace()
                     .next()
                     .expect("a flag row names its flag");
-                assert!(is_plane_flag(crate::LINKED.cli_help, flag), "{flag}");
+                assert!(is_plane_flag(&linked, flag), "{flag}");
             }
         }
     }

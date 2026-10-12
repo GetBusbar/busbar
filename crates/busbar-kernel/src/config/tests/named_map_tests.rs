@@ -43,7 +43,7 @@ fn every_section_round_trips_its_three_route_shapes() {
 }
 
 // `sections_holds_the_frozen_named_map_order_under_the_default_feature_set` MOVED to
-// `tests/named_map_cross_plane.rs`: it pins `sections()`'s fold over the REAL registered roster
+// `crates/busbar/tests/named_map_cross_plane.rs`: it pins `sections()`'s fold over the REAL registered roster
 // (`"tools"`/`"agents"` are the real `busbar_mcp`/`busbar_a2a` config sections) — naming that real
 // vocabulary here (even via a synthetic `#[cfg(test)]` decl) is exactly what `cargo xtask gate
 // construction`'s `neutral-no-dialect` rule (ceiling 0) forbids. See that file for the relocated

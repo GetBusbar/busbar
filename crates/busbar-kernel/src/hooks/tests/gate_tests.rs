@@ -955,3 +955,96 @@ fn an_octet_session_keys_as_its_string() {
         IncrementalScan::derive_session_key_octets(b"ctx-1\xff", "alice", 3)
     );
 }
+
+/// THE DOOR GATE'S FAILED-CALL REFUSAL IS EVERY SEAT'S (audit kernel-K4 #7). A load-bearing gate
+/// that cannot answer refuses with the one client-facing refusal the shared seat answers — the same
+/// status and the same words — so a broken required gate is one retryable condition on every
+/// plane, never a 503 on one and a non-retryable 403 on the door-served planes.
+#[tokio::test]
+async fn a_broken_load_bearing_door_gate_answers_the_shared_refusal() {
+    let facts = tool_call();
+    let closed = gate(
+        Arc::new(Broken),
+        crate::config::PolicyOnError::Reject,
+        false,
+        false,
+    );
+    let subject = GateSubject {
+        facts: &facts,
+        container: "filesystem",
+        ingress_protocol: "example-protocol",
+        request_id: 1,
+        key: None,
+        session: None,
+        incremental: None,
+    };
+    match decide(&closed, &subject).await {
+        GateVerdict::Reject {
+            status, message, ..
+        } => {
+            assert!(
+                crate::hooks::failed_call_refuses(&crate::config::PolicyOnError::Reject),
+                "the shared rule refuses this disposition too"
+            );
+            assert_eq!(status, crate::hooks::REQUIRED_HOOK_UNAVAILABLE_STATUS);
+            assert_eq!(message, crate::hooks::REQUIRED_HOOK_UNAVAILABLE_MESSAGE);
+        }
+        _ => panic!("`on_error: reject` must refuse a broken gate"),
+    }
+}
+
+/// THE DOOR GATE APPLIES THE HOOK CONTENT CEILING (audit kernel-K4 #8), the one rule every seat
+/// that hands a hook the prompt applies: content over the ceiling is omitted whole, the grant
+/// still honoured (an empty projection, never an absent one).
+#[tokio::test]
+async fn the_door_gate_projection_is_under_the_hook_content_ceiling() {
+    let _lock = busbar_kernel::config::limits::LIMITS_TEST_LOCK.lock().await;
+    struct Restore;
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            crate::proxy::set_hook_content_max_bytes(crate::proxy::DEFAULT_HOOK_CONTENT_MAX_BYTES);
+        }
+    }
+    let _restore = Restore;
+    crate::proxy::set_hook_content_max_bytes(8);
+
+    let spy = Arc::new(Spy {
+        reply: RoutingDecision::Abstain,
+        seen: Mutex::new(None),
+    });
+    let facts = tool_call();
+    let gates = gate(
+        spy.clone(),
+        crate::config::PolicyOnError::Weighted,
+        true,
+        false,
+    );
+    let verdict = decide(
+        &gates,
+        &GateSubject {
+            facts: &facts,
+            container: "filesystem",
+            ingress_protocol: "example-protocol",
+            request_id: 7,
+            key: None,
+            session: None,
+            incremental: None,
+        },
+    )
+    .await;
+    assert!(
+        matches!(verdict, GateVerdict::Proceed),
+        "an abstain proceeds"
+    );
+    let seen = spy
+        .seen
+        .lock()
+        .unwrap()
+        .clone()
+        .expect("the gate was fired");
+    let messages = seen["request"]["messages"].clone();
+    assert!(
+        messages.as_array().is_none_or(|m| m.is_empty()),
+        "21 bytes of arguments reached a gate whose ceiling is 8: {messages}"
+    );
+}

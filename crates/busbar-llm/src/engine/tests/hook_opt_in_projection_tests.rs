@@ -786,6 +786,9 @@ fn apply_rewrite_to_body_echoes_redacted_marker_as_visible_text() {
 ///    The always-present size bucket still reports the real total, so the omission is visible.
 #[test]
 fn hook_content_uncapped_by_default_and_omits_whole_when_opted_in() {
+    // The ceiling is mirrored out of the installed limits on every install and rollback, so this
+    // test holds the lock every limits installer in the binary holds.
+    let _lock = busbar_kernel::config::limits::LIMITS_TEST_LOCK.blocking_lock();
     crate::testkit::install_test_seams();
     let big = "x".repeat(200_000);
     let v: Value = serde_json::json!({"messages": [{"role": "user", "content": big}]});

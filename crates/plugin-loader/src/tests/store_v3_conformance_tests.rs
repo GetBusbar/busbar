@@ -54,16 +54,16 @@ pub(super) fn compiled_in() -> LoadedStore {
     LoadedStore::open(p, d, b"{}", mint).expect("it opens")
 }
 
-/// The same door, dropped in (the `store_v3_door` example `cdylib`). `None` only in a scoped,
-/// non-CI run that did not build it (`both_ways::example_cdylib` refuses to skip under CI).
-pub(super) fn dropped_in() -> Option<LoadedStore> {
-    let path = crate::both_ways::example_cdylib("store_v3_door")?;
+/// The same door, dropped in (the `store_v3_door` example `cdylib`). Not built, a hard failure
+/// naming the command that builds it (`both_ways::example_cdylib`), never a skip.
+pub(super) fn dropped_in() -> LoadedStore {
+    let path = crate::both_ways::example_cdylib("store_v3_door");
     let d = Arc::new(Dispatcher::new(DispatchConfig::default()));
     // The signed manifest's rendering: the linked rlib's door, the same crate the cdylib is.
     let stated = rendering_of(crate::both_ways::store_fixture::door)
         .expect("the store renders its Statement");
     let p = load_dropped::<Store>(&path, &stated, bind(&d)).expect("the dropped-in door loads");
-    Some(LoadedStore::open(p, d, b"{}", mint).expect("it opens"))
+    LoadedStore::open(p, d, b"{}", mint).expect("it opens")
 }
 
 /// This test process's `op_id` allocator: one counter, as the kernel's `door::op_id` is.
@@ -527,11 +527,7 @@ fn the_script_drives_every_kind_slot_of_the_table() {
 #[test]
 fn compiled_in_and_dropped_in_answer_the_script_identically() {
     let linked = script(&compiled_in());
-    let Some(dropped) = dropped_in() else {
-        eprintln!("skip: the store's cdylib is not built in this scoped run");
-        return;
-    };
-    let dropped = script(&dropped);
+    let dropped = script(&dropped_in());
     if let Some((i, a, b)) = compare(&linked, &dropped) {
         panic!("the two doors diverge at line {i}:\n compiled in: {a}\n dropped in:  {b}");
     }

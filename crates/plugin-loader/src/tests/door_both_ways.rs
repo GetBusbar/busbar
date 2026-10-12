@@ -54,11 +54,11 @@ pub(crate) fn linked<K: Kind>(door: DoorFn) -> Loaded<K> {
 }
 
 /// The example `cdylib` `example` exporting the same `door`, DROPPED IN through [`load_dropped`]
-/// against the rendering `door` states. `None` only in a scoped, non-CI run that did not build it
-/// (`both_ways::example_cdylib` refuses to skip under CI).
-pub(crate) fn dropped<K: Kind>(door: DoorFn, example: &str) -> Option<Loaded<K>> {
-    let path = crate::both_ways::example_cdylib(example)?;
-    Some(dropped_from(door, &path))
+/// against the rendering `door` states. Not built, a hard failure naming the command that builds
+/// it (`both_ways::example_cdylib`), never a skip.
+pub(crate) fn dropped<K: Kind>(door: DoorFn, example: &str) -> Loaded<K> {
+    let path = crate::both_ways::example_cdylib(example);
+    dropped_from(door, &path)
 }
 
 /// The `cdylib` at `path` exporting the same `door`, DROPPED IN through [`load_dropped`] against

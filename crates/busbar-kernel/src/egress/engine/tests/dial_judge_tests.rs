@@ -311,3 +311,117 @@ async fn with_no_guard_installed_a_pooled_dial_fails_closed() {
     }
     assert!(fixture.records().is_empty(), "no connection was opened");
 }
+
+// ── THE LITERAL ROWS (K3 #3): a literal never reaches a resolver, so the guard's name arm judges it ──
+
+/// RED (K3 #3): an IP-LITERAL target is judged as its own answer. `HttpConnector` hands a literal
+/// straight to the socket without asking any resolver, so before the name arm ran on every dial a
+/// pooled client dialled `http://127.0.0.1:<port>` while `localhost` for the same address was
+/// refused. Now the literal is refused before any socket opens.
+#[tokio::test]
+async fn a_private_literal_is_refused_before_any_socket() {
+    let fixture = spawn_http(CannedResponse::ok("never served"), 4);
+    let client = judged_client(Arc::new(Answers(Vec::new())), private_refusing(&[]));
+    let err = client
+        .request(get(&format!(
+            "http://127.0.0.1:{}/v1/x",
+            fixture.addr.port()
+        )))
+        .await
+        .expect_err("a loopback literal is refused by default");
+    assert!(err.is_connect(), "{err:?}");
+    assert_eq!(dial_refusal(&err).map(|r| r.verdict), Some(DEST_INTERNAL));
+    assert!(fixture.records().is_empty(), "no connection was opened");
+}
+
+/// GREEN: an allowlisted literal dials, as an operator lists a loopback upstream.
+#[tokio::test]
+async fn an_allowlisted_literal_dials() {
+    let fixture = spawn_http(CannedResponse::ok("local model"), 4);
+    let client = judged_client(
+        Arc::new(Answers(Vec::new())),
+        private_refusing(&["127.0.0.1"]),
+    );
+    let resp = client
+        .request(get(&format!(
+            "http://127.0.0.1:{}/v1/x",
+            fixture.addr.port()
+        )))
+        .await
+        .expect("an allowlisted literal dials");
+    assert_eq!(resp.status(), 200);
+    assert_eq!(fixture.records().len(), 1);
+}
+
+/// A guard double whose name arm refuses one NAME (an operator-blocked or metadata name) and
+/// admits every answer: what it proves is that the name arm runs before resolution.
+struct RefusesName(&'static str);
+
+impl DestJudge for RefusesName {
+    fn judge_name(&self, dest: &str, _: u32, _: bool) -> Result<(), u64> {
+        if dest == self.0 {
+            Err(DEST_METADATA)
+        } else {
+            Ok(())
+        }
+    }
+    fn judge(
+        &self,
+        _: &str,
+        _: u32,
+        _: bool,
+        _: Box<dyn FnOnce(crate::host_services::Admitted) + Send>,
+    ) -> Option<crate::host_services::Admitted> {
+        Some(Err(busbar_contract::abi::host::service::DEST_NO_HOST.into()))
+    }
+    fn judge_answer(&self, _: &str, _: &[IpAddr], _: u32) -> Result<(), DestRefusal> {
+        Ok(())
+    }
+}
+
+/// RED (K3 #3): a NAME the guard's name arm refuses (a metadata or operator-blocked name) is refused
+/// whatever it resolves to, and the resolver is never asked. Before, only the answer was judged, so
+/// a blocked name answering a public address was dialled.
+#[tokio::test]
+async fn a_name_the_name_arm_refuses_is_never_resolved() {
+    let fixture = spawn_http(CannedResponse::ok("never served"), 4);
+    let counting = Arc::new(RebindingResolver::counting(fixture.addr));
+    let client = judged_client(
+        Arc::clone(&counting) as Arc<dyn ResolveNames>,
+        Arc::new(RefusesName("blocked.test")),
+    );
+    let err = client
+        .request(get(&format!(
+            "http://blocked.test:{}/v1/x",
+            fixture.addr.port()
+        )))
+        .await
+        .expect_err("a refused name is refused");
+    assert_eq!(dial_refusal(&err).map(|r| r.verdict), Some(DEST_METADATA));
+    assert_eq!(counting.calls(), 0, "the name arm runs before resolution");
+    assert!(fixture.records().is_empty(), "no connection was opened");
+}
+
+/// RED (K3 #3, the pinned arm): a pinned client dials only its pin. A literal target that is not
+/// the pinned address never reaches a socket; before, `HttpConnector` short-circuited the literal
+/// past the pin and dialled it.
+#[tokio::test]
+async fn a_pinned_client_refuses_a_literal_that_is_not_its_pin() {
+    let fixture = spawn_http(CannedResponse::ok("never served"), 4);
+    let client = build_client(&EngineSpec::pinned(
+        Arc::from("pinned.test"),
+        IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)),
+        None,
+        Vec::new(),
+    ))
+    .expect("the pinned posture builds");
+    let err = client
+        .request(get(&format!(
+            "http://127.0.0.1:{}/v1/x",
+            fixture.addr.port()
+        )))
+        .await
+        .expect_err("a literal that is not the pin is refused");
+    assert!(err.is_connect(), "{err:?}");
+    assert!(fixture.records().is_empty(), "no connection was opened");
+}

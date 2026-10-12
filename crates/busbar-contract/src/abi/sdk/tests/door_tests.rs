@@ -1341,6 +1341,8 @@ mod plane_plugin {
 
     /// The generation snapshot `open` publishes.
     pub const SNAPSHOT: &PlaneSnapshot = &PlaneSnapshot {
+        listed: std::ptr::null(),
+        listed_len: 0,
         resource_facts: Blob {
             ptr: std::ptr::null(),
             len: 0,

@@ -122,9 +122,7 @@ fn boot_opens_the_build_store_through_its_door_linked_and_dropped_in_alike() {
         linked.iter().all(|l| !l.contains("Err")),
         "the linked store answered the script: {linked:#?}"
     );
-    let Some(path) = crate::both_ways::example_cdylib("store_v3_door") else {
-        return;
-    };
+    let path = crate::both_ways::example_cdylib("store_v3_door");
     let dropped = axis
         .open(
             StoreDoor::Dropped {

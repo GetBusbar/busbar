@@ -644,6 +644,8 @@ impl DuplexReader for OpenAiRealtimeCodec {
                     // The uplink append names no item — the item does not exist until the server
                     // makes one.
                     origin: IrAudioRef::default(),
+                    // The append states no format: the session's negotiated input format governs.
+                    format: None,
                 })]
             }
             wire::INPUT_AUDIO_COMMIT => {
@@ -734,6 +736,7 @@ impl DuplexReader for OpenAiRealtimeCodec {
                     seq: st.next_down_seq(),
                     media,
                     origin: audio_ref_of(&v),
+                    format: None,
                 })]
             }
             wire::OUTPUT_AUDIO_DONE | wire::OUTPUT_AUDIO_DONE_LEGACY => {

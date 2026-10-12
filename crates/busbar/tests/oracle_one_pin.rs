@@ -75,3 +75,35 @@ fn no_python_mock_upstream_exists() {
         "an upstream mock is the oracle engine's `mock` subcommand, never a .py: {bad:?}"
     );
 }
+
+/// THE ENGINE CLONE STORES NO CREDENTIAL AND BUILDS LOCKED (Q128 WARN, ARCHITECT 2026-10-05):
+/// `bin/oracle` clones the private busbar-release with the token as a one-shot header, never folded
+/// into the clone URL (where `git clone` wrote it into the checkout's `.git/config`), refuses a run
+/// whose checkout config holds a credential, and builds the judge with `--locked` (the pin's
+/// Cargo.lock IS the judge's dependency identity). `bin/oracle token-selftest` plants a token and a
+/// stale tokenized origin and proves neither persists.
+#[test]
+fn the_engine_clone_stores_no_token_and_builds_locked() {
+    let shim = repo_root().join("bin/oracle");
+    let text = std::fs::read_to_string(&shim).expect("bin/oracle");
+    assert!(
+        !text.contains("x-access-token:${"),
+        "bin/oracle folds a token into a clone URL again"
+    );
+    assert!(
+        text.contains("cargo build --locked --release -p \"$CRATE\""),
+        "bin/oracle builds the judge without --locked"
+    );
+    let out = std::process::Command::new("bash")
+        .arg(&shim)
+        .arg("token-selftest")
+        .current_dir(repo_root())
+        .output()
+        .expect("run bin/oracle token-selftest");
+    assert!(
+        out.status.success(),
+        "bin/oracle token-selftest failed:\n{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+}

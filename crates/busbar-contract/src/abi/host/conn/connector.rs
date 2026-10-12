@@ -274,8 +274,9 @@ pub struct StreamIn {
     pub stream: u64,
 }
 
-/// [`service::READ`]'s and [`service::WRITE`]'s `in`. The buffer is the plugin's and stays valid
-/// until the service completes.
+/// [`service::READ`]'s and [`service::WRITE`]'s `in`. The buffer is the plugin's, lent for the
+/// call only: the host reads or writes it before the service returns and keeps no hold on it, a
+/// PENDING answer included (the RESUME lends a buffer again).
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct IoIn {

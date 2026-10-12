@@ -237,10 +237,31 @@ const VOICE_WIRE_FORMATS: &[&str] = &[OPENAI_REALTIME, GEMINI_LIVE];
 /// `Authorization` slot carries the caller's GOVERNANCE key (forwarding it upstream would leak
 /// busbar's own authority), so an `ek_` relay would have to arrive on a non-`Authorization` inbound
 /// slot or be minted+persisted server-side. That is a flagged protocol follow-on, not this hop.
+///
+/// A key that is not a legal header value (a stray CR/LF/NUL a config system injected) yields NO
+/// header — the upstream then 401s — and one coded diagnostic naming the protocol; the key itself
+/// is never logged.
 pub(crate) fn voice_provider_bearer(
     key: &str,
 ) -> Vec<(axum::http::HeaderName, axum::http::HeaderValue)> {
-    busbar_kernel::proto::bearer_auth_headers(OPENAI_REALTIME, key)
+    use busbar_contract::header::{is_legal_header_value, token_value};
+    #[cfg(feature = "runtime")]
+    use busbar_kernel::diagnostics::{diag_debug, PROTO_AUTH_INVALID_HEADER_BYTES as BAD_BYTES};
+    let value = is_legal_header_value(key)
+        .then(|| axum::http::HeaderValue::from_str(&token_value(key)).ok())
+        .flatten();
+    let Some(value) = value else {
+        // The coded line rides the runtime's logging (the serving build's).
+        #[cfg(feature = "runtime")]
+        diag_debug!(
+            BAD_BYTES,
+            protocol = OPENAI_REALTIME,
+            "authorization credential contains invalid header bytes (ASCII control character); \
+             omitting auth header — upstream will reject with 401"
+        );
+        return Vec::new();
+    };
+    vec![(axum::http::header::AUTHORIZATION, value)]
 }
 
 /// `ProtocolDecl::egress_auth_headers` — the plain-Bearer arm of `busbar-llm`'s OpenAI dialect (the

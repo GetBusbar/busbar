@@ -23,7 +23,7 @@ fn a_rotation_renames_the_live_file_and_keeps_its_archives() {
     let path = log.display().to_string();
     for line in ["a\n", "b\n", "c\n"] {
         std::fs::write(&log, line).unwrap();
-        assert_eq!(rotate(&path, 2), (true, Vec::new()));
+        assert_eq!(rotate(std::path::Path::new(&path), 2), (true, Vec::new()));
     }
     assert_eq!(read(&dir.join("log.1")), "c\n");
     assert_eq!(read(&dir.join("log.2")), "b\n", "archives shift up");
@@ -38,6 +38,9 @@ fn a_rotation_renames_the_live_file_and_keeps_its_archives() {
 fn a_failed_rename_is_a_recorded_fault() {
     let dir = scratch("missing");
     let path = dir.join("absent").display().to_string();
-    assert_eq!(rotate(&path, 2), (false, vec!["rename"]));
+    assert_eq!(
+        rotate(std::path::Path::new(&path), 2),
+        (false, vec!["rename"])
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }

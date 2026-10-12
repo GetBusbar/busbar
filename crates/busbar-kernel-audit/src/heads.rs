@@ -1,29 +1,30 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! HEAD HISTORY: the anchors, kept forever, independently of the records they anchor.
+//! HEAD HISTORY: the anchors a node has published, rebuilt from its records at every boot.
 //!
-//! ## The window a puller was offline for
+//! ## What a head is for
 //!
-//! Records age out. Every store in this tree prunes on the same predicate — a record's own instant
-//! is older than a cutoff, so it goes. That is correct for records: they are large, there are a lot
-//! of them, and an operator is entitled to a retention window.
+//! A head is the one fact that says "at position N the chain was THIS", and it is what an external
+//! party timestamps and counter-signs. A puller reading a window it cannot trace to the genesis
+//! needs the head this node published at or before the window's end to tie the window to; the range
+//! read folds exactly that in as its `anchor` ([`HeadHistory::anchor_at`]).
 //!
-//! It is wrong for heads. A head is the one fact that says "at position N the chain was THIS", and
-//! it is what an external party timestamps and counter-signs. A puller that was offline while a
-//! window's records were pruned has lost the records — that was the deal — but if it also lost the
-//! head, it lost the ANCHOR, and with it any ability to say what the chain looked like then. The
-//! records can be gone and the claim survive; the head going takes the claim with it.
+//! ## Where the anchors live
+//!
+//! In memory, derived from the sealed records: a head is a pure function of the record it was taken
+//! after and of the sampling rule, so the history is not a second store that could disagree with
+//! the journal. A boot rebuilds it by walking the records the journal hands back
+//! ([`crate::record::AuditChain::resume`]), so the head read and every window's anchor answer after
+//! a restart exactly as they did before it. The anchors last as long as the journal keeps the
+//! records they were taken from, and the journal keeps every record. Nothing in this module prunes:
+//! [`HeadHistory`] has no pruning method and takes no cutoff.
 //!
 //! ## Why keeping them all is affordable
 //!
 //! A head is a position, a digest, a signature, a key identifier and a clock — about a hundred
-//! bytes. Sampled hourly that is 8 760 of them a year, under a megabyte. A node that cannot afford
-//! a megabyte a year cannot afford an audit chain either. So the sampling rate is the only bound
-//! there is, and there is NO age bound at all: [`HeadHistory`] has no pruning method, takes no
-//! cutoff, and is not reachable from the retention pass. See
-//! [`crate::record::AuditChain::prune_records_before`], which takes `&self` precisely so that it
-//! cannot touch this.
+//! bytes. Sampled hourly that is 8 760 of them a year, under a megabyte, so the sampling rate is the
+//! only bound there is.
 //!
 //! ## Sampled, plus the tip
 //!
@@ -31,9 +32,9 @@
 //! [`HEAD_SAMPLE_SECONDS`] window, and it is append-only: an entry once written is never rewritten
 //! and never dropped. The TIP is the most recent head there is, replaced every seal, because "what
 //! is the head right now" is the other question a puller asks and the answer to it changes
-//! constantly. [`HeadHistory::series`] gives the samples; [`HeadHistory::tip`] gives the tip;
-//! [`HeadHistory::anchors`] gives both, in position order, which is what the head-history read
-//! answers with.
+//! constantly. [`HeadHistory::series`] gives the samples; [`HeadHistory::tip`] gives the tip, which
+//! is what the head read answers with; [`HeadHistory::anchors`] gives both, in position order,
+//! which is what a window's anchor is chosen from.
 
 use crate::record::AuditRecord;
 
@@ -76,11 +77,10 @@ impl SignedHead {
     }
 }
 
-/// THE ANCHORS THIS NODE HAS EVER HAD, and nothing that can remove one.
+/// THE ANCHORS THIS NODE HAS PUBLISHED, and nothing that can remove one.
 ///
-/// Read the module comment for why there is no pruning here. The API is deliberately missing a
-/// `prune`, a `retain`, a `truncate` and a `clear`: the guarantee is that the type cannot express
-/// the loss, not that no caller currently asks for it.
+/// Read the module comment for where they come from. The API is deliberately missing a `prune`, a
+/// `retain`, a `truncate` and a `clear`: the type cannot express the loss of an anchor.
 #[derive(Debug, Clone)]
 pub struct HeadHistory {
     sample_seconds: u64,

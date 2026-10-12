@@ -71,8 +71,9 @@ use busbar_contract::abi::mechanism::call::{
 };
 use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::plane::{
-    reason_code, ArriveIn, ArriveOut, OutField, RefusalIn, RefusalOut, RefusalStatus, UnitCount,
-    REFUSAL_ANY_DIALECT, REFUSAL_ARRIVE, REFUSAL_GATE, REFUSAL_KERNEL, ROUTE_LOCAL, ROUTE_SESSION,
+    class_of, reason_code, ArriveIn, ArriveOut, OutField, RefusalClass, RefusalIn, RefusalOut,
+    RefusalStatus, UnitCount, REFUSAL_ANY_DIALECT, REFUSAL_ARRIVE, REFUSAL_GATE, REFUSAL_KERNEL,
+    ROUTE_LOCAL, ROUTE_SESSION,
 };
 use busbar_contract::abi::sdk::door::{blank_in, blank_out};
 use busbar_contract::caps::{
@@ -96,10 +97,10 @@ pub use hooks::{
     UnitHooks, CONTENT_ROLE, GATE_UNAVAILABLE, GATE_UNAVAILABLE_STATUS, STAGE_GONE,
 };
 pub use hooks::{GatedHooks, GatedScan, GenerationHost, HookOrder, HostGatedHooks, PrincipalKeys};
-pub use money::{EndPost, FeeRefund, PlaneMoney, UnitMoney};
+pub use money::{Accrued, Checkpointer, EndPost, FeeRefund, PlaneMoney, UnitMoney};
 pub use needs::{resolve_member_needs, MemberAuth, NeedRefusal};
 pub use probe::PlaneProbes;
-pub use route::{CallerEnd, FarEnd, FarPiece, OutboundRequest, Pick, SessionCaller};
+pub use route::{CallerEnd, FarEnd, FarPiece, OutboundRequest, Pick, RoutedScope, SessionCaller};
 
 use crate::auth::CallerRefKey;
 use crate::host_services::{InstanceFacts, KernelServices, Signing};
@@ -181,31 +182,37 @@ impl DriverConfig {
     }
 }
 
-/// Whether `reason` refuses a unit at authentication.
+/// Whether `reason` refuses a unit at authentication: its class is
+/// [`RefusalClass::Unauthenticated`] (the one classification, `busbar_contract::abi::plane`).
 fn is_authentication(reason: ReasonCode) -> bool {
-    matches!(
-        reason,
-        ReasonCode::Unauthenticated
-            | ReasonCode::Revoked
-            | ReasonCode::SchemeNotDeclared
-            | ReasonCode::SessionUnbound
-    )
+    class_of(reason) == RefusalClass::Unauthenticated
 }
 
 /// The status the kernel hands `refusal` for a reason, when the deployment states no other.
+///
+/// A class-to-status table over the one classification ([`class_of`]); the kernel holds no reason
+/// match of its own. A plane whose dialect answers a reason differently states a row for it
+/// ([`DriverConfig::refusal_statuses`]), which is how a plane keeps every status 1.5.5 answered.
 pub fn refusal_status(reason: ReasonCode) -> u32 {
-    match reason {
-        ReasonCode::DecodeFailed | ReasonCode::SchemeNotDeclared => 400,
-        ReasonCode::Unauthenticated | ReasonCode::Revoked | ReasonCode::SessionUnbound => 401,
-        ReasonCode::ScopeDenied
-        | ReasonCode::PoolNotPermitted
-        | ReasonCode::HookVeto
-        | ReasonCode::Untrusted => 403,
-        ReasonCode::BodyTooLarge => 413,
-        ReasonCode::RateLimited | ReasonCode::OverBudget | ReasonCode::GroupFrozen => 429,
-        ReasonCode::DestinationUnreachable | ReasonCode::PlanePanic => 502,
-        ReasonCode::DeadlineExceeded | ReasonCode::Stalled => 504,
-        _ => 503,
+    class_status(class_of(reason))
+}
+
+/// The kernel's default status for one refusal class.
+pub const fn class_status(class: RefusalClass) -> u32 {
+    match class {
+        RefusalClass::Unreadable => 400,
+        RefusalClass::Unauthenticated => 401,
+        RefusalClass::Forbidden => 403,
+        RefusalClass::TooLarge => 413,
+        RefusalClass::Throttled | RefusalClass::QuotaExhausted => 429,
+        RefusalClass::PlaneFault => 502,
+        RefusalClass::Timeout => 504,
+        RefusalClass::Rejected
+        | RefusalClass::Busy
+        | RefusalClass::NotFound
+        | RefusalClass::Unreachable
+        | RefusalClass::Unavailable
+        | RefusalClass::NodeFault => 503,
     }
 }
 
@@ -571,6 +578,10 @@ pub(crate) struct UnitState {
     declined: Option<(u32, u32)>,
     /// A REFUSED `arrive`'s own words (its `head.error`), for the plane's `refusal`.
     declined_words: Option<Vec<u8>>,
+    /// THE WAIT THE KERNEL'S REFUSAL CARRIES (ARCHITECT Q5): the reason the loop refused the unit
+    /// under, and the Retry-After its `Refusal` names in whole seconds: an admission's window
+    /// reset, as 1.5.5 rendered it. Handed to the plane's `refusal` beside that reason alone.
+    refused_wait: Option<(ReasonCode, u32)>,
     rendered: Option<Rendered>,
     facts: cancel::Facts,
     bill: Option<CancelBill>,
@@ -762,14 +773,18 @@ impl<S: DriverSteps, F, C> PlaneUnits<'_, S, F, C> {
         said: Option<&str>,
         hook: Option<&str>,
     ) -> Rendered {
-        let (unit, dialect, declined, words) = {
+        let (unit, dialect, declined, words, refused_wait) = {
             let st = self.lock();
             let dialect = st.decoded.as_ref().map_or(0, |d| d.dialect);
             let declined = st.declined.filter(|_| reason == ReasonCode::DecodeFailed);
             // THE PLANE'S OWN WORDS for the arrival it refused (abi/plane "A refused arrival"): they
             // reach the caller only through its `refusal`, as REFUSAL_ARRIVE, unparsed.
             let words = declined.and(st.declined_words.clone());
-            (st.unit, dialect, declined, words)
+            let refused_wait = st
+                .refused_wait
+                .filter(|(refused, _)| *refused == reason)
+                .map(|(_, secs)| secs);
+            (st.unit, dialect, declined, words, refused_wait)
         };
         // A refusal the plane's own `arrive` decided wears the status it stated; the walk's
         // terminal wears its own; every other one the plane's stated row or the kernel's default.
@@ -778,7 +793,9 @@ impl<S: DriverSteps, F, C> PlaneUnits<'_, S, F, C> {
             (None, Some((_, status))) => status,
             (None, None) => self.driver.config.status(dialect, reason),
         };
-        let retry_after_s = walk.and_then(|(_, r)| r).unwrap_or(0);
+        // The walk's terminal floor; else the wait the kernel's own refusal carries (ARCHITECT Q5:
+        // an admission refusal's window reset, on every plane); `0` = none, and no Retry-After.
+        let retry_after_s = walk.and_then(|(_, r)| r).or(refused_wait).unwrap_or(0);
         let steps_words = if words.is_none() {
             self.steps.refusal_words(reason)
         } else {
@@ -978,13 +995,21 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> PlaneUnits<'_, S, F, C> {
         let Some(ticket) = d.calls.mint() else {
             return StepAnswer::refuse(token, Refusal::new(ReasonCode::InFlightCap));
         };
+        // THE DEADLINE ONCE THE ROUTE IS KNOWN (ARCHITECT ruling 2026-10-07, STREAM-CEILING): the
+        // far end states the ceiling its plane puts on a streamed answer; the earlier of it and
+        // the unit's own deadline bounds the pump.
+        let deadline_ns = match (self.deadline_ns, self.far.deadline_ns(d.calls.now_ns())) {
+            (own, 0) => own,
+            (0, stated) => stated,
+            (own, stated) => own.min(stated),
+        };
         let mut run = route::Pumping::new(
             d,
             token,
             &self.state,
             ctx,
             ticket,
-            self.deadline_ns,
+            deadline_ns,
             self.lock()
                 .body
                 .clone()
@@ -1084,9 +1109,25 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> Units for PlaneUnits<'_, S,
         meter(token: &Pass<Meter>, usage: &Grant<Consumption>, ctx: &UnitCtx, provisional: &Outcome,
             destinations: &[VerifiedDestination]) -> StepAnswer<Meter>;
         audit(token: &Pass<Audit>, ctx: &UnitCtx, outcome: &Outcome) -> StepAnswer<Audit>;
-        audit_refused(token: &Pass<Audit>, ctx: &UnitCtx, refusal: &Refusal) -> StepAnswer<Audit>;
         evidence(ctx: &UnitCtx) -> Evidence;
         at_parent_exit(ctx: &UnitCtx, accrual: &HoldAccrual) -> Result<u64, Refusal>;
+    }
+
+    /// The refused unit's audit, after the driver keeps the wait its refusal carries (ARCHITECT
+    /// Q5): the loop hands the `Refusal` here before it encodes the unit, and the encode seat sees
+    /// only its reason. An admission refusal's Retry-After (the window reset the door computed, as
+    /// 1.5.5 rendered it) then reaches the plane's `refusal` on every plane, never `0`.
+    fn audit_refused(
+        &self,
+        token: &Pass<Audit>,
+        ctx: &UnitCtx,
+        refusal: &Refusal,
+    ) -> StepAnswer<Audit> {
+        self.lock().refused_wait = refusal
+            .retry_after_secs()
+            .filter(|secs| *secs != 0)
+            .map(|secs| (refusal.reason(), secs));
+        self.steps.audit_refused(token, ctx, refusal)
     }
 
     /// The kernel's admission, unless the plane's `arrive` refused the unit about the entry it

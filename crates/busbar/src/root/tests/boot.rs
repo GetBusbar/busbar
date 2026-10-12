@@ -238,6 +238,7 @@ fn listening_plane(target_from: &str) -> Candidate {
     Candidate {
         kind: KindCode::Plane,
         name: "p1".into(),
+        version: "1.0.0".into(),
         aliases: Vec::new(),
         sugar: Vec::new(),
         verbs: vec!["agents".into()],
@@ -383,4 +384,67 @@ fn red_3g_deals_each_seat_its_section_and_positions_a_refusal() {
         refused,
         Err("config.yaml: invalid YAML: tools: missing field `kind` at line 6 column 3".to_owned())
     );
+}
+
+/// **RED ARM: `plugins.logs` FOLLOWS A CONFIG APPLY** (THE DESIGN §11.2). A sink opened under
+/// `warn` drops an `info` line; once an apply's `plugins.logs` says `info`, the same sink writes it,
+/// and a `warn` config applied again drops the next.
+#[test]
+fn an_applied_plugins_logs_level_reaches_a_live_sink() {
+    use crate::root::loader::dispatch::{Diagnostic, EnvelopeSink, NoSink, PluginLogConfig};
+    use busbar_contract::abi::mechanism::call::{DIAG_LOG, SEVERITY_INFO};
+    let dir = scratch("logs-apply");
+    let words = |level: &str| {
+        let mut cfg = busbar_kernel::config::PluginsCfg::default();
+        cfg.logs.dir = Some(dir.display().to_string());
+        cfg.logs.level = Some(level.to_string());
+        cfg
+    };
+    let boot = words("warn");
+    let l = &boot.logs;
+    let logs = PluginLogConfig::from_words(
+        l.dir.as_deref(),
+        l.level.as_deref(),
+        &l.levels,
+        l.rotate_mb,
+        l.keep,
+    )
+    .expect("the boot words resolve");
+    let sink = logs
+        .clone()
+        .sink(
+            "applied",
+            busbar_contract::abi::mechanism::KindCode::Hook,
+            Arc::new(NoSink),
+        )
+        .expect("the sink opens");
+    let info = |text: &str| {
+        sink.diag(Diagnostic {
+            id: DIAG_LOG,
+            name: &[],
+            severity: SEVERITY_INFO,
+            text: text.as_bytes(),
+        });
+    };
+    info("under warn");
+    follow_plugin_logs(&logs, &words("info"));
+    info("under info");
+    follow_plugin_logs(&logs, &words("warn"));
+    info("under warn again");
+    let path = logs.path_for("applied");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let text = loop {
+        let text = std::fs::read_to_string(&path).unwrap_or_default();
+        if text.contains("under info") || std::time::Instant::now() > deadline {
+            break text;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    };
+    drop(sink);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(
+        text.contains(" INFO  applied hook under info"),
+        "the applied level reached the live sink:\n{text}"
+    );
+    assert!(!text.contains("under warn"), "{text}");
 }

@@ -13,9 +13,9 @@ use crate::checkpoint::{CheckpointSecret, SignError, Signature};
 use crate::identity::residual;
 use crate::legacy::{LegacyHead, LegacyMigrationSource};
 use crate::migration::{
-    meter_pool_scope, migrate, opening_totals, LegacyFamily, LegacyFigure, LegacyFigures,
-    LegacyLedgerRows, MigrationError, MigrationMarker, MigrationRecords, NodeLocalRecords, Outcome,
-    OPENING_CHECKPOINT_SEQ,
+    meter_pool_scope, migrate, opening_totals, LegacyCapDimension, LegacyFamily, LegacyFigure,
+    LegacyFigures, LegacyLedgerRows, MigrationError, MigrationMarker, MigrationRecords,
+    NodeLocalRecords, Outcome, OPENING_CHECKPOINT_SEQ,
 };
 use crate::totals::{BucketScope, CapDimension, Totals, TotalsKey, WindowStart};
 
@@ -84,7 +84,7 @@ fn window_figure(bucket: &str, window: u64, lane: &str, unit: &str, amount: i128
         window,
         lane: lane.to_string(),
         provider: String::new(),
-        dimension: CapDimension::Class(unit.to_string()),
+        dimension: LegacyCapDimension::Class(unit.to_string()),
         amount,
     }
 }
@@ -103,7 +103,7 @@ fn meter_figure(
         window: day,
         lane: lane.to_string(),
         provider: provider.to_string(),
-        dimension: CapDimension::Class(unit.to_string()),
+        dimension: LegacyCapDimension::Class(unit.to_string()),
         amount,
     }
 }
@@ -125,7 +125,7 @@ fn a_serving_deployment() -> SeededRows {
                 window: 86_400,
                 lane: String::new(),
                 provider: String::new(),
-                dimension: CapDimension::Requests,
+                dimension: LegacyCapDimension::Requests,
                 amount: 512,
             },
             window_figure("team-a", 86_400, "lane-4", "input", 6_000),

@@ -43,9 +43,19 @@ impl UnitKeyMint {
 /// would answer it as that write's replay and apply nothing (the store kind's dedupe outlives the process). The counter is one
 /// process-global from 1.
 pub fn op_id() -> busbar_contract::abi::store::OpId {
-    static IDS: std::sync::LazyLock<OpIds> = std::sync::LazyLock::new(|| OpIds::boot(boot_node()));
     IDS.mint()
 }
+
+/// THIS NODE: the node half of every `op_id` this process mints ([`op_id`]), the one node identity
+/// the kernel draws. The fixed audit record names it as the node that sealed it (THE DESIGN §1:
+/// "when (wall + monotonic, node)"). Never `0`.
+#[must_use]
+pub fn node() -> u64 {
+    IDS.node
+}
+
+/// This boot's `op_id`s, drawn on first use.
+static IDS: std::sync::LazyLock<OpIds> = std::sync::LazyLock::new(|| OpIds::boot(boot_node()));
 
 /// One boot's `op_id`s: its node half and its counter.
 #[derive(Debug)]

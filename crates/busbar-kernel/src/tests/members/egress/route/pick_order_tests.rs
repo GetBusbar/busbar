@@ -230,3 +230,69 @@ fn only_a_member_at_capacity_spends_a_turn_of_the_rotation() {
     );
     drop(held);
 }
+
+/// Three members stated at tiers `0`, `1` and `2`, every one of weight 1.
+fn tiered() -> (Node, Vec<busbar_kernel_egress::pool::Member>) {
+    let (node, mut members) = three_lanes();
+    for (tier, m) in (0u32..).zip(members.iter_mut()) {
+        m.tier = tier;
+    }
+    (node, members)
+}
+
+/// THE LOWEST TIER IS THE PICK (the core-owned per-member `tier`, `BUSBAR-1.6.0.md` l.4196 (b),
+/// R2-G l.4285): while the tier-0 member is healthy every request is sent to it, never rotated
+/// onto the tier-1 or tier-2 member. RED with the tier unread: the weighted floor turns over all
+/// three (`a`, `b`, `c`, `a`).
+#[test]
+fn the_lowest_tier_takes_every_request_while_it_is_healthy() {
+    let (node, members) = tiered();
+    for _ in 0..4 {
+        let mut ctx = node.request_ctx();
+        let picked = node.pick("p", &members, &mut ctx).expect("a member");
+        assert_eq!(picked.destination, DestinationId::new(0));
+    }
+}
+
+/// A suppressed lower tier is passed over for the next tier up, and only for it: the tier-1 member
+/// takes the request while the tier-0 member cools, never the tier-2 one.
+#[test]
+fn a_suppressed_lower_tier_hands_the_request_to_the_next_tier() {
+    let (node, members) = tiered();
+    node.breaker.set(
+        DestinationId::new(0),
+        Health {
+            cooldown: 30,
+            ..Health::default()
+        },
+    );
+    for _ in 0..3 {
+        let mut ctx = node.request_ctx();
+        let picked = node.pick("p", &members, &mut ctx).expect("a member");
+        assert_eq!(picked.destination, DestinationId::new(1));
+    }
+}
+
+/// Members at one tier keep the weighted order among themselves: a pool that states no tier (every
+/// member at `0`) turns as it always did.
+#[test]
+fn members_at_one_tier_keep_the_weighted_rotation() {
+    let (node, members) = three_lanes();
+    let mut seen = Vec::new();
+    for _ in 0..3 {
+        let mut ctx = node.request_ctx();
+        seen.push(
+            node.pick("p", &members, &mut ctx)
+                .expect("a member")
+                .destination,
+        );
+    }
+    assert_eq!(
+        seen,
+        vec![
+            DestinationId::new(0),
+            DestinationId::new(1),
+            DestinationId::new(2)
+        ]
+    );
+}

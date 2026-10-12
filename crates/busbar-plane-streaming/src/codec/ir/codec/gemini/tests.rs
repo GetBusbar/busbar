@@ -479,6 +479,7 @@ fn uplink_audio_is_framed_as_the_ga_blob_stating_its_true_rate() {
                 seq: 0,
                 media: Bytes::from_static(b"uplink-pcm"),
                 origin: IrAudioRef::default(),
+                format: None,
             }),
             &mut st,
         )
@@ -513,6 +514,7 @@ fn each_direction_states_its_own_negotiated_rate() {
                 seq: 0,
                 media: Bytes::from_static(b"up"),
                 origin: IrAudioRef::default(),
+                format: None,
             }),
             &mut st,
         )
@@ -524,6 +526,7 @@ fn each_direction_states_its_own_negotiated_rate() {
                 seq: 0,
                 media: Bytes::from_static(b"down"),
                 origin: IrAudioRef::default(),
+                format: None,
             }),
             &mut st,
         )
@@ -554,6 +557,7 @@ fn a_g711_uplink_frames_nothing_rather_than_a_pcm_mime() {
                     seq: 0,
                     media: Bytes::from_static(b"ulaw"),
                     origin: IrAudioRef::default(),
+                    format: None,
                 }),
                 &mut st,
             )
@@ -567,6 +571,7 @@ fn a_g711_uplink_frames_nothing_rather_than_a_pcm_mime() {
                 seq: 0,
                 media: Bytes::from_static(b"down"),
                 origin: IrAudioRef::default(),
+                format: None,
             }),
             &mut st,
         )
@@ -1193,14 +1198,19 @@ fn cached_content_tokens_are_not_billed_twice() {
 
 #[test]
 fn audio_format_from_mime_probe() {
-    // Uplink: either PCM rate is the shared token (no millisecond count is taken from the uplink).
+    // Uplink: each PCM rate is its own format, because the uplink meter divides by its rate.
     assert_eq!(
         audio_format_from_mime("audio/pcm;rate=24000", UpDown::Up),
         Some(AudioFormat::Pcm16)
     );
     assert_eq!(
         audio_format_from_mime("audio/pcm;rate=16000", UpDown::Up),
-        Some(AudioFormat::Pcm16)
+        Some(AudioFormat::Pcm16At16k)
+    );
+    assert_eq!(
+        audio_format_from_mime("audio/pcm", UpDown::Up),
+        Some(AudioFormat::Pcm16At16k),
+        "an untagged uplink blob is the uplink's own 16 kHz"
     );
     // Downlink: only the rate the shared token actually means — the truncate math divides by it.
     assert_eq!(

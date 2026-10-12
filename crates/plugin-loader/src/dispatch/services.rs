@@ -41,9 +41,10 @@ use busbar_contract::abi::host::service::{
     check_random_fill_in, check_records_claim_in, check_work_record, may_pend, op, ClockNowIn,
     ClockReading, ContentScanIn, DestJudgeIn, DiskAppendIn, DiskWritten, EntitlementCheckIn,
     HookCallIn, HostSlots, RandomFillIn, RecordsClaimIn, RecordsGetIn, RecordsListIn,
-    RecordsSecretIn, ServiceBufs, ServiceHead, ServiceOut, SignIn, SnapshotReadIn, TrustDecideIn,
-    TrustDueIn, TrustServesIn, TrustSightIn, TrustSightItemIn, TrustVerifyIn, UnitNestIn,
-    VerifyLookupIn, VerifyStoreIn, WorkFindIn, WorkOpenIn, WorkResumeIn, WorkSettleIn, SERVICES,
+    RecordsSecretIn, ServiceBufs, ServiceHead, ServiceOut, SessionEmitIn, SignIn, SnapshotReadIn,
+    TrustDecideIn, TrustDueIn, TrustServesIn, TrustSightIn, TrustSightItemIn, TrustStateIn,
+    TrustVerifyIn, UnitNestIn, VerifyLookupIn, VerifyStoreIn, WorkFindIn, WorkOpenIn, WorkResumeIn,
+    WorkSettleIn, SERVICES,
 };
 use busbar_contract::abi::mechanism::call::{AbiStr, Blob, Outcome, RawOutcome};
 use busbar_contract::abi::mechanism::check;
@@ -354,6 +355,8 @@ pub static HOST_SLOTS: HostSlots = HostSlots {
     trust_sight_item: Some(trust_sight_item),
     trust_serves: Some(trust_serves),
     trust_decide: Some(trust_decide),
+    trust_state: Some(trust_state),
+    session_emit: Some(session_emit),
 };
 
 /// The dispatcher an instance's context routes to, and what it serves.
@@ -1003,6 +1006,33 @@ extern "C" fn trust_decide(ctx: HostCtx, input: *const c_void, out: *mut Service
     )
 }
 
+extern "C" fn trust_state(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
+    scoped(
+        ctx,
+        input,
+        out,
+        op::TRUST_STATE,
+        size_of::<TrustStateIn>(),
+        |served, route, head, caller| {
+            // SAFETY: the head covered a `TrustStateIn`.
+            let i = unsafe { input.cast::<TrustStateIn>().read_unaligned() };
+            if check_bufs(&i.into).is_err() {
+                return Answered::fault();
+            }
+            let Some(counterparty) = text_of(i.counterparty, "trust_state.counterparty") else {
+                return Answered::fault();
+            };
+            let provider = Arc::clone(&served.provider);
+            // SAFETY: `into` checked above; the caller's buffers.
+            unsafe {
+                serve(&served.store, &route, &head, Some(&i.into), |_| {
+                    Ran::Now(provider.trust_state(&caller, &counterparty))
+                })
+            }
+        },
+    )
+}
+
 extern "C" fn trust_due(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
     scoped(
         ctx,
@@ -1111,6 +1141,36 @@ extern "C" fn entitlement_check(
         },
     )
 }
+
+extern "C" fn session_emit(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
+    scoped(
+        ctx,
+        input,
+        out,
+        op::SESSION_EMIT,
+        size_of::<SessionEmitIn>(),
+        |served, route, head, caller| {
+            // SAFETY: the head covered a `SessionEmitIn`.
+            let i = unsafe { input.cast::<SessionEmitIn>().read_unaligned() };
+            let Some(bytes) = blob_of(i.bytes, "session_emit.bytes") else {
+                return Answered::fault();
+            };
+            if svc::check_session_emit_in(&i).is_err() {
+                return Answered::bare(Outcome::Refused, EMIT_NOTHING);
+            }
+            let provider = Arc::clone(&served.provider);
+            // SAFETY: no buffer is named.
+            unsafe {
+                serve(&served.store, &route, &head, None, |_| {
+                    Ran::Now(provider.session_emit(&caller, i.session, &bytes))
+                })
+            }
+        },
+    )
+}
+
+/// `session.emit`'s refusal of a write that names no session or no bytes.
+const EMIT_NOTHING: &str = "session.emit names an open session and something to write";
 
 extern "C" fn random_fill(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
     slot(

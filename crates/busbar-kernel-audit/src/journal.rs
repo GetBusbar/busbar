@@ -56,6 +56,7 @@ pub fn journal_body(record: &AuditRecord) -> Vec<u8> {
     w.opt_text(record.what.post_hook_head.as_deref());
     w.num(record.wall);
     w.num(record.mono);
+    w.num(record.node);
     w.text(record.origin_kind);
     w.text(&outcome_tag(record.outcome.unit_end));
     w.opt_text(record.outcome.step.map(step_tag));
@@ -121,7 +122,6 @@ fn decode(
     let bad = |what: &str| format!("an audit record whose {what} does not decode");
     let recipe = match r.text().ok_or_else(|| bad("recipe"))?.as_str() {
         crate::recipe::DIGEST_RECIPE => crate::recipe::Recipe::V4,
-        crate::recipe::DIGEST_RECIPE_V3 => crate::recipe::Recipe::V3,
         crate::recipe::DIGEST_RECIPE_V2 => crate::recipe::Recipe::V2 {
             currency: r.text().ok_or_else(|| bad("currency"))?,
         },
@@ -138,7 +138,7 @@ fn decode(
     let key_id = r.opt_text().ok_or_else(|| bad("key_id"))?;
     let subject = subject_of(
         &r.text().ok_or_else(|| bad("subject"))?,
-        r.text().ok_or_else(|| bad("subject"))?,
+        &r.text().ok_or_else(|| bad("subject"))?,
     )
     .ok_or_else(|| bad("subject"))?;
     let what = What {
@@ -152,6 +152,7 @@ fn decode(
     };
     let wall = r.num().ok_or_else(|| bad("wall"))?;
     let mono = r.num().ok_or_else(|| bad("mono"))?;
+    let node = r.num().ok_or_else(|| bad("node"))?;
     let origin_kind =
         origin_of(&r.text().ok_or_else(|| bad("origin"))?).ok_or_else(|| bad("origin"))?;
     let unit_end =
@@ -224,6 +225,7 @@ fn decode(
         what,
         wall,
         mono,
+        node,
         origin_kind,
         outcome,
         usage,
@@ -294,14 +296,12 @@ fn read_source(r: &mut Reader<'_>) -> Option<QuantitySource> {
     })
 }
 
-fn subject_of(tag: &str, value: String) -> Option<Subject> {
-    Some(match tag {
-        "principal" => Subject::PrincipalId(value),
-        "arrival" => Subject::Arrival,
-        "aggregate" => Subject::Aggregate,
-        "node" => Subject::Node(value.parse().ok()?),
-        _ => return None,
-    })
+/// The subject a sealed body's two frozen fields name — through the ONE decoder the amendment
+/// journal reads its subjects with ([`crate::amend::subject_from_fields`]), which accepts a pair only
+/// when it re-renders to exactly the text that was read. A second, laxer decoder here took `"007"`
+/// as node 7, a value the record never rendered.
+pub(crate) fn subject_of(tag: &str, value: &str) -> Option<Subject> {
+    crate::amend::subject_from_fields(tag, value)
 }
 
 fn origin_of(name: &str) -> Option<&'static str> {

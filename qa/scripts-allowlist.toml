@@ -759,6 +759,11 @@ class = "oracle-driver"
 reason = "an oracle cell driver or rig the oracle runs (scripts/ is in harness-rev): moves into busbar-release-oracle with a golden re-stamp HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
 
 [[script]]
+path = "testing/shadow-oracle/scripts/scrape-after-reload.sh"
+class = "oracle-driver"
+reason = "the driver of oracle cell ops.scrape|reload|sink-removed (the reload-then-scrape cell, golden recorded from published 1.5.5): it boots busbar, scrapes, rewrites config.yaml without the exporter, POSTs /config/reload and scrapes again, which no http or capture cell can do; an oracle cell driver (scripts/ is in harness-rev): moves into busbar-release-oracle with a golden re-stamp HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
 path = "testing/shadow-oracle/scripts/store-persist.sh"
 class = "oracle-driver"
 reason = "an oracle cell driver or rig the oracle runs (scripts/ is in harness-rev): moves into busbar-release-oracle with a golden re-stamp HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"

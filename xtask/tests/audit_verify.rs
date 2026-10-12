@@ -80,8 +80,10 @@ fn the_recipes_differ_from_v4_exactly_as_their_pages_say() {
     let v3: Vec<_> = fields_of("busbar.audit.digest.v3").unwrap();
     let v2: Vec<_> = fields_of("busbar.audit.digest.v2").unwrap();
     assert_eq!(v4.len(), V4_FIELDS.len());
-    assert_eq!(v3.len() + 1, v4.len());
-    assert!(!v3.iter().any(|(n, _)| *n == "incarnation"));
+    assert_eq!(v3.len() + 2, v4.len());
+    assert!(!v3.iter().any(|(n, _)| *n == "incarnation" || *n == "node"));
+    let mono = v4.iter().position(|(n, _)| *n == "mono").unwrap();
+    assert_eq!(v4[mono + 1], ("node", xtask::audit_verify::Kind::Num));
     let fee = v2.iter().position(|(n, _)| *n == "fee_count").unwrap();
     assert_eq!(v2[fee + 1].0, "currency");
     assert_eq!(v2.len(), v3.len() + 1);

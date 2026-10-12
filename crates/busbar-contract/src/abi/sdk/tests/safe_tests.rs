@@ -39,11 +39,16 @@ unsafe impl KindOps for LifecycleOnly {
 pub struct Probe {
     pub drops: &'static AtomicUsize,
     pub value: u64,
+    /// Its `Drop` panics after counting (plugin code the SDK runs at `close`).
+    pub panics_on_drop: bool,
+    /// The leases its answers hold.
+    pub leases: crate::abi::sdk::life::Leases,
 }
 
 impl Drop for Probe {
     fn drop(&mut self) {
         self.drops.fetch_add(1, Ordering::SeqCst);
+        assert!(!self.panics_on_drop, "the state's Drop panics");
     }
 }
 
@@ -53,8 +58,14 @@ const OPEN_FAILED: usize = 2;
 const OPEN_PANICS: usize = 3;
 const OPEN_FORGES: usize = 4;
 const OPEN_INSTALLS_NOTHING: usize = 5;
+const OPEN_DROP_PANICS: usize = 6;
 /// `close` with these `in.flags` answers FAILED.
 const CLOSE_FAILS: u32 = 7;
+/// `drive` with these `in.flags` answers FAILED with a reason leased from a table the body made
+/// for itself.
+const DRIVE_LOCAL_LEASE: u32 = 0x100;
+/// `drive` with these `in.flags` answers FAILED with a reason leased from the instance's table.
+const DRIVE_STATE_LEASE: u32 = 0x200;
 
 mod plugin {
     use super::*;
@@ -91,7 +102,12 @@ mod plugin {
         // SAFETY: the test's leaked, `'static` counter.
         let drops = unsafe { &*s.ptr.cast::<AtomicUsize>() };
         if s.len != OPEN_INSTALLS_NOTHING {
-            i.open(Probe { drops, value: 41 });
+            i.open(Probe {
+                drops,
+                value: 41,
+                panics_on_drop: s.len == OPEN_DROP_PANICS,
+                leases: Default::default(),
+            });
         }
         match s.len {
             OPEN_FAILED => Outcome::Failed,
@@ -115,15 +131,32 @@ mod plugin {
     // Installing outside `open` panics: FAULT.
     safe_slot!(Retire, Probe, GenIn, OutHead, |i, _input, _o| {
         let drops = i.get().expect("open installed a probe").drops;
-        i.open(Probe { drops, value: 0 });
+        i.open(Probe {
+            drops,
+            value: 0,
+            panics_on_drop: false,
+            leases: Default::default(),
+        });
         Outcome::Ready
     });
     safe_slot!(Tick, Probe, TickIn, TickOut, |i, _input, o| {
         o.set(|o| &o.next_tick_ns, i.get().map_or(0, |p| p.value + 1));
         Outcome::Ready
     });
-    safe_slot!(Drive, Probe, DriveIn, OutHead, |_i, _input, _o| {
-        Outcome::Ready
+    safe_slot!(Drive, Probe, DriveIn, OutHead, |i, input, o| {
+        match input.head.flags {
+            DRIVE_LOCAL_LEASE => {
+                let local = crate::abi::sdk::life::Leases::default();
+                o.lease_str(|o| &o.error, &local, "a reason".to_string());
+                Outcome::Failed
+            }
+            DRIVE_STATE_LEASE => {
+                let p = i.get().expect("open installed a probe");
+                o.lease_str(|o| &o.error, &p.leases, "a reason".to_string());
+                Outcome::Failed
+            }
+            _ => Outcome::Ready,
+        }
     });
     safe_slot!(Cancel, Probe, CancelIn, CancelOut, |_i, _input, _o| {
         Outcome::Ready
@@ -334,4 +367,33 @@ fn installing_outside_open_is_fault() {
     assert_eq!(tick(inst), (Outcome::Ready, 42));
     assert_eq!(close(inst, 0), Outcome::Ready);
     assert_eq!(drops.load(Ordering::SeqCst), 2);
+}
+
+#[test]
+fn a_state_whose_drop_panics_still_closes_ready() {
+    // RED (C1 M5 c): the box is freed during the unwind, so a FAULT here would leave the host
+    // holding a freed instance it believes is open. The close answers READY.
+    let (o, inst, drops) = open(OPEN_DROP_PANICS);
+    assert_eq!(o, Outcome::Ready);
+    assert_eq!(close(inst, 0), Outcome::Ready);
+    assert_eq!(drops.load(Ordering::SeqCst), 1, "the state dropped once");
+}
+
+fn drive(instance: *mut c_void, flags: u32) -> Outcome {
+    let mut input: DriveIn = zeroed();
+    input.head = in_head::<DriveIn>(slot::DRIVE);
+    input.head.flags = flags;
+    let mut out = out_head::<OutHead>();
+    call(table().head.drive, instance, &input, &mut out)
+}
+
+#[test]
+fn red_an_answer_leased_from_a_table_the_body_dropped_is_fault() {
+    // C1 M5 (b): the body's own `Leases` is dropped when it returns, freeing the reason the head
+    // names before the host copies it. The SDK answers FAULT, so the host reads nothing.
+    let (_, inst, _) = open(OPEN_READY);
+    assert_eq!(drive(inst, DRIVE_LOCAL_LEASE), Outcome::Fault);
+    // The GREEN twin: leased from the instance's table, the answer stands.
+    assert_eq!(drive(inst, DRIVE_STATE_LEASE), Outcome::Failed);
+    assert_eq!(close(inst, 0), Outcome::Ready);
 }

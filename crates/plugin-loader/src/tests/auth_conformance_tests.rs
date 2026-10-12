@@ -93,17 +93,17 @@ fn dispatcher() -> Arc<Dispatcher> {
 }
 
 /// The fixture's `cdylib`: the `-plugin` crate of its row's logic crate.
-fn fixture_cdylib() -> Option<Vec<u8>> {
+fn fixture_cdylib() -> Vec<u8> {
     let (krate, _) = door_fixture(PROOF);
-    let path = cdylib(&format!("{krate}_plugin"))?;
-    Some(std::fs::read(path).expect("read the cdylib"))
+    let path = cdylib(&format!("{krate}_plugin"));
+    std::fs::read(path).expect("read the cdylib")
 }
 
-/// The linked and dropped-in registries of the fixture; `None` when its `cdylib` is not built in
-/// this scoped, non-CI run ([`cdylib`] hard-fails under CI).
-fn doors(third_party: bool) -> Option<[PluginRegistry; 2]> {
+/// The linked and dropped-in registries of the fixture; a `cdylib` not built is a hard failure
+/// naming the command that builds it ([`cdylib`]), never a skip.
+fn doors(third_party: bool) -> [PluginRegistry; 2] {
     let (krate, door) = door_fixture(PROOF);
-    let lib = fixture_cdylib()?;
+    let lib = fixture_cdylib();
     let linked = PluginRegistry::empty()
         .link(vec![LinkedPlugin::door(stated(door), door)])
         .expect("the linked door admits the plugin");
@@ -114,7 +114,7 @@ fn doors(third_party: bool) -> Option<[PluginRegistry; 2]> {
     } else {
         dropped(krate, stated(door), &lib)
     };
-    Some([linked, dropped])
+    [linked, dropped]
 }
 
 /// One verdict as the transcript spells it.
@@ -219,10 +219,7 @@ async fn transcript(
 /// step of the script the same.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_linked_and_the_dropped_in_auth_door_are_one_plugin() {
-    let Some([linked, dropped]) = doors(false) else {
-        eprintln!("skip: the auth fixture's cdylib is not built");
-        return;
-    };
+    let [linked, dropped] = doors(false);
     let rows = [row(&linked, NAME), row(&dropped, NAME)];
     assert!(
         !rows[0].starts_with("no row"),
@@ -268,10 +265,7 @@ async fn the_linked_and_the_dropped_in_auth_door_are_one_plugin() {
 /// answers the same script differently: the valid token is refused.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_door_judging_another_audience_is_told_apart() {
-    let Some([linked, dropped]) = doors(false) else {
-        eprintln!("skip: the auth fixture's cdylib is not built");
-        return;
-    };
+    let [linked, dropped] = doors(false);
     let a = transcript(linked, AUDIENCE, Some(conns())).await;
     let b = transcript(dropped, "api://someone-else", Some(conns())).await;
     assert!(a.contains("valid -> Identity("), "{a}");
@@ -289,10 +283,7 @@ async fn a_door_judging_another_audience_is_told_apart() {
 /// identity the comparison sees is the table's fetch, not something the plugin did on its own.
 #[test]
 fn a_door_handed_no_connection_table_identifies_no_one() {
-    let Some([_, dropped]) = doors(false) else {
-        eprintln!("skip: the auth fixture's cdylib is not built");
-        return;
-    };
+    let [_, dropped] = doors(false);
     let refused = AuthRows::new(Arc::new(dropped), dispatcher())
         .open(ALIAS, ALIAS, &settings(AUDIENCE))
         .map(|_| ())
@@ -309,10 +300,7 @@ fn a_door_handed_no_connection_table_identifies_no_one() {
 /// row from the linked first-party one.
 #[test]
 fn a_third_party_signature_is_a_different_row() {
-    let Some([linked, dropped]) = doors(true) else {
-        eprintln!("skip: the auth fixture's cdylib is not built");
-        return;
-    };
+    let [linked, dropped] = doors(true);
     let dropped_row = row(&dropped, NAME);
     assert!(!dropped_row.starts_with("no row"), "{dropped_row}");
     assert_ne!(

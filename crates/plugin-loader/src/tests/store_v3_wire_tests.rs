@@ -110,6 +110,8 @@ struct Behaviour {
     delay: Duration,
     /// Close the connection after each reply that is not the handshake's.
     close_after_reply: bool,
+    /// Greet `HELLO` with `STANDBY`: a server this store must not use (a read-only standby).
+    standby: bool,
 }
 
 /// Serve one connection: `HELLO` answers `WELCOME`, any other line `echo <line>`.
@@ -120,7 +122,9 @@ fn serve_lines(r: impl std::io::Read, mut w: impl Write, b: Behaviour) {
         std::thread::sleep(b.delay);
         let got = line.trim_end().to_owned();
         line.clear();
-        let reply = if got == "HELLO" {
+        let reply = if got == "HELLO" && b.standby {
+            "STANDBY".to_owned()
+        } else if got == "HELLO" {
             "WELCOME".to_owned()
         } else {
             format!("echo {got}")
@@ -446,6 +450,118 @@ fn a_unix_target_is_a_unix_domain_stream() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+// ── AN ENDPOINT LIST: open; on reject close and try the next (THE DESIGN §5) ───────────────────
+
+/// One op over an endpoint list, in order: a host whose handshake the store rejects (`STANDBY`)
+/// is CLOSED ([`Wire::close`]) and the next is tried on the same op.
+async fn ping_first_usable(w: Wire, targets: Vec<String>) -> RecordStoreResult<Vec<String>> {
+    let mut last = RecordStoreError("wire-store: no endpoint".into());
+    for target in targets {
+        w.close().await;
+        if let Err(e) = w.connect(0, Some(&target)).await {
+            last = failed(&e);
+            continue;
+        }
+        match line(&w, "HELLO").await {
+            Ok(g) if g == "WELCOME" => return line(&w, "ping").await.map(|l| vec![l]),
+            Ok(g) => last = RecordStoreError(format!("wire-store: {target} greeted {g}")),
+            Err(e) => last = e,
+        }
+    }
+    Err(last)
+}
+
+struct Listed;
+
+impl Listed {
+    fn pool() -> &'static Arc<Pool> {
+        static POOL: LazyLock<Arc<Pool>> = LazyLock::new(|| Pool::new(1));
+        &POOL
+    }
+    fn targets() -> &'static Mutex<Vec<String>> {
+        static TARGETS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+        &TARGETS
+    }
+}
+
+impl Hooks for Listed {
+    fn list_denylist(_: &MemoryStore, cx: &mut Op<'_>) -> Step<RecordStoreResult<Vec<String>>> {
+        let targets = Self::targets()
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        drive_kept(cx, Self::pool(), move |w| {
+            Box::pin(ping_first_usable(w, targets))
+        })
+    }
+}
+
+mod listed {
+    busbar_contract::store_door!(
+        crate::store_v3::wrap::Wrapped<super::Listed>,
+        "wire-store",
+        "0",
+        64,
+        needs: super::TCP
+    );
+}
+
+/// RED (ARCHITECT 2026-10-07, Wire::close): the first host is reachable but rejected (a standby);
+/// the op closes it and lands on the second, ONE op, and the second's connection is the one kept.
+/// Without `close`, the second `connect` answered the first host's connection again.
+#[test]
+fn a_rejected_first_host_is_closed_and_the_op_lands_on_the_next() {
+    let (standby, standby_seen) = tcp_backend(Behaviour {
+        standby: true,
+        ..Behaviour::default()
+    });
+    let (primary, primary_seen) = tcp_backend(Behaviour::default());
+    *Listed::targets().lock().expect("targets") = vec![standby, primary];
+    let s = open_over(listed::door, plain);
+    assert_eq!(
+        ping_of(&s).expect("the op lands on the second host"),
+        vec!["echo ping".to_string()]
+    );
+    assert_eq!(standby_seen.load(Ordering::SeqCst), 1);
+    assert_eq!(primary_seen.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        (Listed::pool().live(), Listed::pool().idle()),
+        (1, 1),
+        "the first host's connection was closed, the second's kept"
+    );
+}
+
+struct Who;
+
+impl Hooks for Who {
+    fn list_denylist(_: &MemoryStore, cx: &mut Op<'_>) -> Step<RecordStoreResult<Vec<String>>> {
+        busbar_contract::abi::sdk::store::wire::drive(cx, |w| {
+            Box::pin(async move { w.os_user().await.map(|u| vec![u]).map_err(|e| failed(&e)) })
+        })
+    }
+}
+
+mod who {
+    busbar_contract::store_door!(
+        crate::store_v3::wrap::Wrapped<super::Who>,
+        "wire-store",
+        "0",
+        64,
+        needs: super::TCP
+    );
+}
+
+/// RED (ARCHITECT 2026-10-07, FLEET-SANSIO): a store whose configuration names no user presents the
+/// OS user (1.5.5 parity). The wire reads it off the host's IDENTITY service, with no connection.
+#[test]
+fn a_store_reads_the_os_user_off_the_hosts_identity_service() {
+    let want = std::env::var("USER")
+        .or_else(|_| std::env::var("LOGNAME"))
+        .unwrap_or_default();
+    let s = open_over(who::door, plain);
+    assert_eq!(ping_of(&s).expect("the identity answers"), vec![want]);
+}
+
 // ── TLS ─────────────────────────────────────────────────────────────────────────────────────────
 
 wire_store!(OverTls, over_tls, max: 1, timeout: 0, tls: Tls::Verified, retry: false);
@@ -496,199 +612,16 @@ fn a_tls_upgrade_without_trust_is_refused() {
 
 // ── a bound over the dial AND the handshake (VALKEY-TIMEOUT: 1.5.5 bounded both) ───────────────
 
-/// Host services offering the clock alone (the dispatcher's own timebase), refusing the rest.
+/// Host services offering the clock alone (the dispatcher's own timebase), refusing the rest as
+/// the contract's shared double does.
 struct ClockOnly;
 
-impl busbar_contract::services::HostServices for ClockOnly {
+impl busbar_contract::services::double::ServicesDouble for ClockOnly {
     fn now(&self) -> busbar_contract::services::Reading {
         busbar_contract::services::Reading {
             wall_ns: 0,
             mono_ns: crate::dispatch::now_ns(),
         }
-    }
-    fn dest_judge(
-        &self,
-        _: &str,
-        _: u32,
-        _: u32,
-        _: Option<busbar_contract::services::Later>,
-    ) -> busbar_contract::services::Ran {
-        busbar_contract::services::Ran::Now(busbar_contract::services::Stored::refused("no"))
-    }
-    fn records_get(
-        &self,
-        _: &busbar_contract::services::Caller,
-        _: &str,
-        _: &[u8],
-        _: busbar_contract::services::Later,
-    ) -> busbar_contract::services::Ran {
-        busbar_contract::services::Ran::Now(busbar_contract::services::Stored::refused("no"))
-    }
-    fn records_list(
-        &self,
-        _: &busbar_contract::services::Caller,
-        _: busbar_contract::services::RecordsList,
-        _: busbar_contract::services::Later,
-    ) -> busbar_contract::services::Ran {
-        busbar_contract::services::Ran::Now(busbar_contract::services::Stored::refused("no"))
-    }
-    fn records_claim(
-        &self,
-        _: &busbar_contract::services::Caller,
-        _: &str,
-        _: &[u8],
-        _: u64,
-        _: busbar_contract::services::Later,
-    ) -> busbar_contract::services::Ran {
-        busbar_contract::services::Ran::Now(busbar_contract::services::Stored::refused("no"))
-    }
-    fn sign(
-        &self,
-        _: &busbar_contract::services::Caller,
-        _: &[u8],
-    ) -> busbar_contract::services::Stored {
-        busbar_contract::services::Stored::refused("no")
-    }
-    fn trust_sight(
-        &self,
-        _: &busbar_contract::services::Caller,
-        _: &str,
-        _: &str,
-        _: busbar_contract::services::Later,
-    ) -> busbar_contract::services::Ran {
-        busbar_contract::services::Ran::Now(busbar_contract::services::Stored::refused("no"))
-    }
-    fn trust_due(
-        &self,
-        _: &busbar_contract::services::Caller,
-    ) -> busbar_contract::services::Stored {
-        busbar_contract::services::Stored::refused("no")
-    }
-    fn trust_verify(
-        &self,
-        _: &busbar_contract::services::Caller,
-        _: &str,
-        _: &[u8],
-        _: &[u8],
-    ) -> busbar_contract::services::Stored {
-        busbar_contract::services::Stored::refused("no")
-    }
-    fn entitlement_check(
-        &self,
-        _: &busbar_contract::services::Caller,
-        _: Option<u64>,
-        _: &str,
-    ) -> busbar_contract::services::Stored {
-        busbar_contract::services::Stored::refused("no")
-    }
-    fn random_fill(&self, _: u64) -> busbar_contract::services::Stored {
-        busbar_contract::services::Stored::refused("no")
-    }
-    fn records_secret(
-        &self,
-        _: &str,
-        _: &str,
-        _: busbar_contract::services::Later,
-    ) -> busbar_contract::services::Ran {
-        busbar_contract::services::Ran::Now(busbar_contract::services::Stored::refused("no"))
-    }
-    fn unit_nest(
-        &self,
-        _: &busbar_contract::services::Caller,
-        _: Option<u64>,
-        _: busbar_contract::services::NestAsk,
-        _: busbar_contract::services::Later,
-    ) -> busbar_contract::services::Ran {
-        busbar_contract::services::Ran::Now(busbar_contract::services::Stored::refused("no"))
-    }
-    fn work_open(
-        &self,
-        _: &busbar_contract::services::Caller,
-        _: Option<u64>,
-        _: &str,
-        _: &[u8],
-        _: busbar_contract::services::Later,
-    ) -> busbar_contract::services::Ran {
-        busbar_contract::services::Ran::Now(busbar_contract::services::Stored::refused("no"))
-    }
-    fn work_find(
-        &self,
-        _: &busbar_contract::services::Caller,
-        _: Option<u64>,
-        _: &[u8],
-        _: busbar_contract::services::Later,
-    ) -> busbar_contract::services::Ran {
-        busbar_contract::services::Ran::Now(busbar_contract::services::Stored::refused("no"))
-    }
-    fn work_settle(
-        &self,
-        _: &busbar_contract::services::Caller,
-        _: u64,
-        _: &[u8],
-        _: busbar_contract::services::Later,
-    ) -> busbar_contract::services::Ran {
-        busbar_contract::services::Ran::Now(busbar_contract::services::Stored::refused("no"))
-    }
-    fn work_resume(
-        &self,
-        _: &busbar_contract::services::Caller,
-        _: Option<u64>,
-        _: u64,
-        _: busbar_contract::services::Later,
-    ) -> busbar_contract::services::Ran {
-        busbar_contract::services::Ran::Now(busbar_contract::services::Stored::refused("no"))
-    }
-    fn verify_lookup(
-        &self,
-        _: &busbar_contract::services::Caller,
-        _: &[u8],
-        _: busbar_contract::services::Later,
-    ) -> busbar_contract::services::Ran {
-        busbar_contract::services::Ran::Now(busbar_contract::services::Stored::refused("no"))
-    }
-    fn verify_store(
-        &self,
-        _: &busbar_contract::services::Caller,
-        _: &[u8],
-        _: &[u8],
-        _: u64,
-    ) -> busbar_contract::services::Stored {
-        busbar_contract::services::Stored::refused("no")
-    }
-    fn content_scan(
-        &self,
-        _: &busbar_contract::services::Caller,
-        _: Option<u64>,
-        _: &[u8],
-        _: busbar_contract::services::Later,
-    ) -> busbar_contract::services::Ran {
-        busbar_contract::services::Ran::Now(busbar_contract::services::Stored::refused("no"))
-    }
-    fn hook_call(
-        &self,
-        _: &busbar_contract::services::Caller,
-        _: Option<u64>,
-        _: busbar_contract::services::HookAsk,
-        _: busbar_contract::services::Later,
-    ) -> busbar_contract::services::Ran {
-        busbar_contract::services::Ran::Now(busbar_contract::services::Stored::refused("no"))
-    }
-
-    fn disk_append(
-        &self,
-        _: &busbar_contract::services::DiskDest,
-        _: Vec<u8>,
-        _: busbar_contract::services::Later,
-    ) -> busbar_contract::services::Ran {
-        busbar_contract::services::Ran::Now(busbar_contract::services::Stored::refused("no"))
-    }
-
-    fn snapshot_read(
-        &self,
-        _: &busbar_contract::services::Caller,
-        _: u32,
-    ) -> busbar_contract::services::Snapshot {
-        busbar_contract::services::Snapshot::Refused("no")
     }
 }
 

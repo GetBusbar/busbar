@@ -456,7 +456,7 @@ fn speech_write_request_carries_instructions_and_speed() {
     let ir = crate::codec::ir::audio::SpeechReq {
         input: "hello world".into(),
         model: "gpt-4o-mini-tts".into(),
-        voice: "alloy".into(),
+        timbre: "alloy".into(),
         instructions: Some("speak cheerfully".into()),
         speed: Some(1.25),
         ..Default::default()

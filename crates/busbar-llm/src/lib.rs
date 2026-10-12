@@ -139,9 +139,9 @@ pub mod arrival;
 
 /// THE NATIVE-PLANE UNIVERSAL INGRESS (pool/model resolution + governance admission + the-one-engine
 /// forward), RELOCATED here from `busbar-core` — it reads the LLM routing tables so it lives in the
-/// plane and calls DOWN into core's neutral accounting. Its production entry is the
-/// resolved-completion re-entry ([`native_ingress::synthesize_completion`]); every body- and
-/// path-model arrival is a unit the composition root's node drives ([`unit`](crate::unit)).
+/// plane and calls DOWN into core's neutral accounting. Every body- and path-model arrival is a unit
+/// the composition root's node drives ([`unit`](crate::unit)); the test kit's shell is its witness
+/// leg.
 pub mod native_ingress;
 
 /// THE TELLER STEP FILES (1.6.0 wave C), one file per step, and the unit over them that every body-
@@ -203,10 +203,7 @@ use busbar_contract::{
     plane::{BillableClass, PER_REQUEST, TOKEN_FAMILY},
     plugin::Kind,
 };
-use busbar_kernel::{
-    ingress::arrival::install_completion_ingress, plane::registry::PlaneHooks,
-    proto::install_stream_translator_factory,
-};
+use busbar_kernel::{plane::registry::PlaneHooks, proto::install_stream_translator_factory};
 
 /// The number of classes the LLM plane ledgers: the four reserved token tiers and every open class.
 const LLM_BILLABLE_COUNT: usize = 4 + busbar_plane_llm::codec::ir::open_class::OPEN_CLASS_COUNT;
@@ -405,13 +402,10 @@ pub mod linked {
     pub const CLAIMS: &[busbar_contract::grammar::Claim] =
         <busbar_plane_llm::LlmPlane as busbar_contract::plane::PlaneMeta>::CLAIMS;
 
-    /// THE PROTOCOL-AXIS SEAMS, installed beside the declarations: the resolved-completion
-    /// synthesizer — the single re-entry the MCP sampling path drives a synthesized chat completion
-    /// through (with no LLM plane linked there is no chat dialect to synthesize, and core returns
-    /// the honest "no default chat protocol" error) — and the cross-protocol stream translator, so
-    /// the neutral construction seam resolves it in production exactly as the test kit does.
+    /// THE PROTOCOL-AXIS SEAM, installed beside the declarations: the cross-protocol stream
+    /// translator, so the neutral construction seam resolves it in production exactly as the test
+    /// kit does.
     pub fn install_protocol_seams() {
-        super::install_completion_ingress(crate::native_ingress::synthesize_completion);
         super::install_stream_translator_factory(crate::proto_stream::new_stream_translator);
     }
 }

@@ -69,8 +69,9 @@ struct List<T> {
     _items: Box<[T]>,
 }
 
-// SAFETY: `T` is one of the SDK's sealed `Publish` types: integers and raw pointers into the arena
-// that owns this list, which nothing reads through on a safe path and nothing mutates.
+// SAFETY: `T` is one of the SDK's sealed `Publish` types or an `AbiStr`: integers and raw
+// pointers into the arena that owns this list, which nothing reads through on a safe path and
+// nothing mutates.
 unsafe impl<T> Send for List<T> {}
 // SAFETY: as `Send`.
 unsafe impl<T> Sync for List<T> {}
@@ -132,6 +133,18 @@ impl Arena {
                 flags: 0,
             },
         }
+    }
+
+    /// Each of `names` copied, held as one list of strings; its pointer (NULL when empty) and
+    /// length.
+    fn strs(&mut self, names: &[String]) -> (*const AbiStr, usize) {
+        if names.is_empty() {
+            return (std::ptr::null(), 0);
+        }
+        let items: Box<[AbiStr]> = names.iter().map(|n| self.str(n)).collect();
+        let p = items.as_ptr();
+        self.lists.push(Box::new(List { _items: items }));
+        (p, names.len())
     }
 
     /// Each of `specs` lowered and held as one list; its pointer (NULL when empty) and length.
@@ -269,6 +282,8 @@ pub struct SnapshotSpec {
     pub resource_metadata: Option<String>,
     /// Its protected-resource facts (JSON, [`PlaneSnapshot::resource_facts`]); `None` = none.
     pub resource_facts: Option<Vec<u8>>,
+    /// The names it lists ([`PlaneSnapshot::listed`]), each non-empty; empty = none.
+    pub listed: Vec<String>,
 }
 
 impl Publish for PlaneSnapshot {
@@ -276,6 +291,7 @@ impl Publish for PlaneSnapshot {
     fn lower(spec: &SnapshotSpec, generation: u64, arena: &mut Arena) -> Self {
         let (claims, claims_len) = arena.list::<Claim>(&spec.claims);
         let (admin_routes, admin_routes_len) = arena.list::<AdminRoute>(&spec.admin_routes);
+        let (listed, listed_len) = arena.strs(&spec.listed);
         Self {
             size: std::mem::size_of::<Self>() as u32,
             _reserved: 0,
@@ -288,6 +304,8 @@ impl Publish for PlaneSnapshot {
             audience: arena.opt_str(spec.audience.as_deref()),
             resource_metadata: arena.opt_str(spec.resource_metadata.as_deref()),
             resource_facts: arena.json(spec.resource_facts.as_deref()),
+            listed,
+            listed_len,
         }
     }
 }
@@ -318,6 +336,9 @@ unsafe impl<T, P: Send + Sync> Sync for Generation<T, P> {}
 /// request keeps reading the generation it arrived under while a refresh publishes the next one.
 pub struct Generations<T: Publish, P = ()> {
     live: Mutex<Vec<Generation<T, P>>>,
+    /// Alive while these generations are: an answer that published from them is FAULT when they
+    /// are gone by the time the body returns (`abi::sdk::out::Holders`).
+    pub(crate) alive: crate::abi::sdk::out::Alive,
 }
 
 impl<T: Publish, P> std::fmt::Debug for Generations<T, P> {
@@ -348,6 +369,7 @@ impl<T: Publish, P> Generations<T, P> {
     pub const fn new() -> Self {
         Self {
             live: Mutex::new(Vec::new()),
+            alive: crate::abi::sdk::out::Alive::new(),
         }
     }
 

@@ -55,6 +55,7 @@ pub const V4_FIELDS: &[(&str, Kind)] = &[
     ("post_hook_head", Text),
     ("wall", Num),
     ("mono", Num),
+    ("node", Num),
     ("origin_kind", Text),
     ("outcome", Text),
     ("step", Text),
@@ -101,16 +102,16 @@ pub const RECIPES: &[Recipe] = &[
         without: &[],
         plus_after: None,
     },
-    // `v3` is `v4` less `incarnation`.
+    // `v3` is `v4` less `incarnation` and `node`.
     Recipe {
         name: "busbar.audit.digest.v3",
-        without: &["incarnation"],
+        without: &["incarnation", "node"],
         plus_after: None,
     },
     // `v2` is `v3` plus `currency`, a text between `fee_count` and `rate_card_version`.
     Recipe {
         name: "busbar.audit.digest.v2",
-        without: &["incarnation"],
+        without: &["incarnation", "node"],
         plus_after: Some(("fee_count", "currency", Text)),
     },
 ];

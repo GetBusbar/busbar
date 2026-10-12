@@ -111,12 +111,18 @@ mod route {
         },
     ];
 
-    /// A paired turn of a gemini-live session routes to the gemini upstream — its real config index
-    /// and its own priced lane — not to the first-declared openai upstream. Before the fix the paired
-    /// branch hard-coded `UpstreamIdx(0)` and `upstreams().first().lane`, so a gemini session's every
-    /// turn was billed on the openai lane: the wrong provider's money.
+    /// P-ITEM: WRONG-PROVIDER ATTRIBUTION (spec DONE item 2, "All P-item behaviours match 1.5.5";
+    /// fixed red-before-green in e15713578a). A paired turn of a gemini-live session routes to the
+    /// gemini upstream — its real config index and its own priced lane — not to the first-declared
+    /// openai upstream. Before the fix the paired branch hard-coded `UpstreamIdx(0)` and
+    /// `upstreams().first().lane`, so a gemini session's every turn was billed on the openai lane:
+    /// the wrong provider's money. The 1.5.5 behaviour this matches is its one surface's (the llm
+    /// surface; owner correction 2026-09-28): usage is ledgered and metered against the SERVING lane
+    /// and its provider, never another configured one (v1.5.5 `crates/busbar/src/proxy/usage.rs:57-103`,
+    /// "`lane` is the SERVING lane (post-failover)"). A bug fixed to match, never a signed diff.
     #[test]
-    fn a_paired_turn_routes_to_the_dialed_upstream_not_the_first() {
+    fn p_item_wrong_provider_attribution_a_paired_turn_routes_to_the_dialed_upstream_not_the_first()
+    {
         let plane = StreamingPlane::new(UPSTREAMS);
         let arena = LeakPlaneAlloc;
         let config = EmptyConfig;

@@ -923,14 +923,20 @@ pub mod door_export {
 }
 
 /// THE LINKED ENTRY (DECISIONS #2 rule (1)): what a build that links this store registers onto the
-/// store axis — the same door a dropped-in store exports. `STORE` is `(name, ephemeral, door)`:
-/// the name `store.module` selects it by, its statement that what it holds is lost on restart, and
-/// its store v3 door, which boot opens it through (the store axis). It claims no default: a config
-/// names its store (Q-STORE = (B)).
+/// store axis — the same door a dropped-in store exports. `STORE` is `(key, ephemeral, door,
+/// canonical)`: the key `store.module` selects it by (and the store catalog prints), its statement
+/// that what it holds is lost on restart, its store v3 door, which boot opens it through (the store
+/// axis), and its canonical name — the manifest name its release tarball carries (plugins.yaml
+/// `manifest_name`, the repo), which config may name it by too, one plugin whichever door it
+/// arrives by (ARCHITECT C'). It claims no default: a config names its store (Q-STORE = (B)).
 pub mod linked {
-    /// `(name, ephemeral, door)`.
-    pub const STORE: (&str, bool, busbar_contract::abi::mechanism::door::DoorFn) =
-        ("memory", true, super::door);
+    /// `(key, ephemeral, door, canonical)`.
+    pub const STORE: (
+        &str,
+        bool,
+        busbar_contract::abi::mechanism::door::DoorFn,
+        &str,
+    ) = ("memory", true, super::door, "busbar-store-memory");
 }
 
 mod v3;

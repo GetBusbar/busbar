@@ -110,11 +110,11 @@ fn spelled(a: &VerifyAnswer) -> String {
     format!("{verdict} {:?} [{}]", a.decision, strips.join(", "))
 }
 
-/// The linked and dropped-in registries of the fixture; `None` when its `cdylib` is not built in
-/// this scoped, non-CI run ([`cdylib`] hard-fails under CI).
-fn doors(third_party: bool) -> Option<[PluginRegistry; 2]> {
+/// The linked and dropped-in registries of the fixture; a `cdylib` not built is a hard failure
+/// naming the command that builds it ([`cdylib`]), never a skip.
+fn doors(third_party: bool) -> [PluginRegistry; 2] {
     let (crate_snake, door) = door_fixture(PROOF);
-    let lib = std::fs::read(cdylib(crate_snake)?).expect("read the cdylib");
+    let lib = std::fs::read(cdylib(crate_snake)).expect("read the cdylib");
     let linked = PluginRegistry::empty()
         .link(vec![LinkedPlugin::door(stated(door), door)])
         .expect("the linked door admits the plugin");
@@ -125,7 +125,7 @@ fn doors(third_party: bool) -> Option<[PluginRegistry; 2]> {
     } else {
         dropped(crate_snake, stated(door), &lib)
     };
-    Some([linked, dropped])
+    [linked, dropped]
 }
 
 /// What one door does, as one comparable transcript: the opened instance's name and facts, the
@@ -169,10 +169,7 @@ fn assert_every_verdict(transcript: &str) {
 /// the same, on the spot and submitted.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_linked_and_a_dropped_in_auth_door_answer_byte_identically() {
-    let Some([linked, dropped]) = doors(false) else {
-        eprintln!("skip: the auth fixture's cdylib is not built");
-        return;
-    };
+    let [linked, dropped] = doors(false);
     let rows = [row(&linked, "auth-fixture"), row(&dropped, "auth-fixture")];
     assert!(
         !rows[0].starts_with("no row"),
@@ -195,10 +192,7 @@ async fn a_linked_and_a_dropped_in_auth_door_answer_byte_identically() {
 /// digest answers the same cases differently: the accepted token is no longer identified.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_door_judging_another_token_is_told_apart() {
-    let Some([linked, dropped]) = doors(false) else {
-        eprintln!("skip: the auth fixture's cdylib is not built");
-        return;
-    };
+    let [linked, dropped] = doors(false);
     let linked = transcript(linked, &sha256_hex(TOKEN.as_bytes())).await;
     let dropped = transcript(dropped, &sha256_hex(b"a-rotated-token")).await;
     assert_every_verdict(&linked);
@@ -217,10 +211,7 @@ async fn a_door_judging_another_token_is_told_apart() {
 /// row from the linked first-party one.
 #[test]
 fn a_third_party_signature_is_a_different_row() {
-    let Some([linked, dropped]) = doors(true) else {
-        eprintln!("skip: the auth fixture's cdylib is not built");
-        return;
-    };
+    let [linked, dropped] = doors(true);
     let dropped_row = row(&dropped, "auth-fixture");
     assert!(!dropped_row.starts_with("no row"), "{dropped_row}");
     assert_ne!(

@@ -214,3 +214,100 @@ pub mod auth {
         );
     }
 }
+
+/// THE EXPORT WITNESS (the shape busbar-export-webhook takes): the same lifecycle on the export
+/// kind's door, stating `ready`, every kind op answering at once. `READIES` counts its `ready` calls,
+/// so a test can tell the open that delivers (asked) from the instance `check` opens (never asked).
+pub mod export {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::task::Poll;
+
+    use busbar_contract::abi::export::{
+        CheckIn, CheckOut, DeliverIn, ScrapeIn, ScrapeOut, ServeIn, ServeOut, StatusOut,
+    };
+    use busbar_contract::abi::mechanism::call::{InHead, OutHead, Outcome};
+    use busbar_contract::abi::mechanism::ticket::Ticket;
+    use busbar_contract::abi::sdk::conn::Host;
+    use busbar_contract::abi::sdk::life::{Held, Life, Refreshed, Refusal};
+    use busbar_contract::abi::sdk::{Instance, Lent, Out, SafeSlot};
+
+    /// Every `ready` the export witness answered, in this process.
+    pub static READIES: AtomicUsize = AtomicUsize::new(0);
+
+    /// The export witness's state: its settings (`err:<text>` refuses `ready`).
+    pub struct Exports(super::Discovers);
+
+    impl Life for Exports {
+        const CANCEL: u32 = 0;
+
+        /// Settings `{"ready": "<the witness's text>"}` (the export kind's settings are an object).
+        fn open(settings: &[u8], secrets: &[&[u8]], generation: u64) -> Result<Self, Refusal> {
+            let text = serde_json::from_slice::<serde_json::Value>(settings)
+                .ok()
+                .and_then(|v| v.get("ready").and_then(|r| r.as_str()).map(str::to_owned))
+                .unwrap_or_default();
+            super::Discovers::open(text.as_bytes(), secrets, generation).map(Self)
+        }
+
+        fn refresh(&self, _: &[u8], _: &[&[u8]], _: u64) -> Result<Refreshed, Refusal> {
+            Ok(Refreshed::default())
+        }
+
+        fn ready(&self, host: &Host, ticket: Ticket) -> Poll<Result<(), Refusal>> {
+            READIES.fetch_add(1, Ordering::SeqCst);
+            self.0.ready(host, ticket)
+        }
+    }
+
+    /// Every export op of the witness: READY at once.
+    pub struct Answers<I, O>(std::marker::PhantomData<(I, O)>);
+    impl<I: busbar_contract::abi::sdk::door::AbiIn, O: busbar_contract::abi::sdk::door::AbiOut>
+        SafeSlot for Answers<I, O>
+    {
+        type In = I;
+        type Out = O;
+        type State = Held<Exports>;
+        fn call(_: Instance<'_, Held<Exports>>, _: Lent<'_, I>, _: Out<'_, O>) -> Outcome {
+            Outcome::Ready
+        }
+    }
+
+    /// Its Statement name.
+    pub const NAME: &str = "ready-export-witness";
+
+    /// The streams it carries: the request log.
+    const STREAMS: &[u8] = &[busbar_contract::abi::export::ExportStream::Logs as u8];
+
+    /// The export kind's Statement tail: `logs`, no route.
+    const TAIL: busbar_contract::abi::export::Tail = busbar_contract::abi::export::Tail {
+        head: busbar_contract::abi::mechanism::door::KindTailHead {
+            size: std::mem::size_of::<busbar_contract::abi::export::Tail>() as u32,
+            _reserved: 0,
+        },
+        streams: STREAMS.as_ptr(),
+        streams_len: STREAMS.len(),
+        routes: std::ptr::null(),
+        routes_len: 0,
+    };
+
+    /// Its Statement: the name, and the export tail.
+    const STATEMENT: busbar_contract::abi::mechanism::door::Statement =
+        busbar_contract::abi::mechanism::door::Statement {
+            kind_tail: (&TAIL as *const busbar_contract::abi::export::Tail)
+                .cast::<busbar_contract::abi::mechanism::door::KindTailHead>(),
+            ..busbar_contract::abi::sdk::door::statement(NAME, "0", 4)
+        };
+
+    busbar_contract::plugin_door! {
+        ops: busbar_contract::abi::export::Ops,
+        statement: STATEMENT,
+        lifecycle: life(Exports, ready),
+        kind_ops: {
+            deliver: busbar_contract::abi::sdk::Safe<Answers<DeliverIn, OutHead>>,
+            scrape: busbar_contract::abi::sdk::Safe<Answers<ScrapeIn, ScrapeOut>>,
+            status: busbar_contract::abi::sdk::Safe<Answers<InHead, StatusOut>>,
+            check: busbar_contract::abi::sdk::Safe<Answers<CheckIn, CheckOut>>,
+            serve: busbar_contract::abi::sdk::Safe<Answers<ServeIn, ServeOut>>,
+        },
+    }
+}

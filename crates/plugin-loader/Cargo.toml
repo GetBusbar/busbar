@@ -11,7 +11,7 @@ license = "Apache-2.0"
 # signing engine (`sign`) and tarball writer (`tarball`), so it lives beside them. It moved here from
 # `busbar-plugin-sdk` (batch 68/69 D1): an optional feature on the SDK is still an edge in the closure
 # of every plugin that names the SDK (`kind-isolation:closure` scores the union of feature
-# configurations), and this crate carries `busbar-kernel-ledger` and `busbar-kernel-wal`. Here it
+# configurations), and this crate carries `busbar-kernel-wal`. Here it
 # reaches no plugin's closure: no plugin-kind crate may name this crate.
 #
 # OPTIONAL ON PURPOSE. This crate is in the `busbar` binary's graph, and `jsonschema` is tooling that
@@ -146,11 +146,11 @@ busbar-contract = { path = "../busbar-contract" }
 # implemented HERE and consumed by the kernel loop, so it is an ABI type). Removing this edge is what
 # breaks the core→plugin-loader→kernel cycle that the busbar-core→busbar-kernel absorption would
 # otherwise create.
-# The migration's read off the previous release's rows. The ledger unit states WHAT an opening
-# figure is; the row shapes it is read from are on this side of the seam, where the loaded plugin
-# already is — the same division the ledger's dual write makes in the other direction. The ledger
-# unit depends only on `busbar-caps`, so there is no cycle back into this crate.
-busbar-kernel-ledger = { path = "../busbar-kernel-ledger" }
+# The migration's read off the previous release's rows implements `busbar_contract::migration`'s
+# seams (the same division as `SliceStore`): the ledger states WHAT an opening figure is and folds
+# it; this crate reads the rows and names the contract alone (Part 2 #33: plugin infrastructure is
+# one crate atop the one contract crate).
+# The durable-write primitive (`durable`) and the log's shipper seam (`store_adapter`).
 busbar-kernel-wal = { path = "../busbar-kernel-wal" }
 # The former `busbar-plugin-sign` crate's own dependencies, moved in with its body
 # (DECISIONS #33). Verify + sign only, no key generation and therefore no RNG: the
@@ -260,7 +260,9 @@ busbar-transport-tcp-plugin = { workspace = true }
 busbar-transport-tcp = { workspace = true }
 # The transport adapter's witness (`transport_adapter_tests`) dials through the trait, which takes a
 # sealed destination: the contract's blessed test seal (#65), as the wire crates' own batteries use.
-busbar-contract = { path = "../busbar-contract", features = ["test-seal"] }
+# The host-services doubles (`ClockOnly`, `DiskHost`, the services `Provider`) are the contract's
+# shared `services::double`, so a service the host adds does not reopen them.
+busbar-contract = { path = "../busbar-contract", features = ["test-seal", "services-double"] }
 
 [target.'cfg(unix)'.dependencies]
 # memfd_create (Linux zero-disk loads) + kill(pid, 0) liveness for the dead-pid staging sweep.

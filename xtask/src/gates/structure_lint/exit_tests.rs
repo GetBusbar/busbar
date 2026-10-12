@@ -104,19 +104,21 @@ fn item_184_a_duplicate_between_llm_and_voice_is_seen() {
 
 /// Item 223: a plane-local copy of another plane's helper (voice beside a2a) is seen, and a name the
 /// ledger signed for mcp+a2a is NOT excused when a third plane grows a copy of it.
+///
+/// The signed name is `config.rs`, the ledger's one surviving row: its fn-name siblings (`judge`
+/// among them) were struck at P3 DEL-MCP with the engine whose half they signed for. The tree
+/// already carries the stretch case — voice's own `config.rs` beside a2a's — so the refusal is read
+/// off the real files.
 #[test]
 fn item_223_a_voice_copy_of_a_plane_helper_is_seen_and_a_signed_claim_does_not_stretch() {
     let signed = plane_dups::ledger()
         .into_iter()
-        .find(|r| r.name == "judge")
-        .expect("the ledger signs `judge` for mcp and a2a");
+        .find(|r| r.name == "config.rs")
+        .expect("the ledger signs `config.rs` for mcp and a2a");
     let mut ov = Overlay::new();
     ov.set(
         "crates/busbar-voice/src/planted_voice_a2a_copy.rs",
-        format!(
-            "pub fn planted_voice_a2a_copy() {{}}\npub fn {}() {{}}\n",
-            signed.name
-        ),
+        "pub fn planted_voice_a2a_copy() {}\n",
     );
     ov.set(
         "crates/busbar-a2a/src/a2a/planted_voice_a2a_copy.rs",
@@ -128,8 +130,9 @@ fn item_223_a_voice_copy_of_a_plane_helper_is_seen_and_a_signed_claim_does_not_s
         &[
             "`planted_voice_a2a_copy`",
             "voice:crates/busbar-voice/src/planted_voice_a2a_copy.rs:1",
-            "`judge`",
-            "voice:crates/busbar-voice/src/planted_voice_a2a_copy.rs:2",
+            &format!("`{}`", signed.name),
+            "voice:crates/busbar-voice/src/config.rs",
+            "the ledger row signs for a2a+mcp only",
         ],
     );
 }

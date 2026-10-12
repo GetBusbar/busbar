@@ -426,6 +426,15 @@ impl crate::host_services::DestJudge for PrivateRefusing {
     fn judge_name(&self, _dest: &str, _class: u32, _refuse_private: bool) -> Result<(), u64> {
         Ok(())
     }
+    /// A literal is its own answer: judged as [`Self::judge_answer`] judges one; a name passes to
+    /// the resolution and its answer's judgement.
+    fn judge_host(&self, host: &str, class: u32) -> Result<(), crate::host_services::DestRefusal> {
+        let bare = host.trim_start_matches('[').trim_end_matches(']');
+        match busbar_contract::net::host_ip(bare) {
+            Some(ip) => self.judge_answer(host, &[ip], class),
+            None => Ok(()),
+        }
+    }
     fn judge(
         &self,
         _dest: &str,
@@ -916,6 +925,22 @@ impl crate::plane_host::egress_trust::EgressTrustHost for TlsEgressTrust {
     fn secure_layer(&self) -> Option<Arc<dyn crate::secure::SecureLayer>> {
         Some(Arc::clone(&self.0))
     }
+    fn judge_name(&self, host: &str, _: u32) -> Result<(), crate::host_services::DestRefusal> {
+        loopback_literal_listed(host)
+    }
+}
+
+/// The name arm of a test binary with no deployment guard, through the same allowlist an operator
+/// writes: the guard double ([`PrivateRefusing`]) with the loopback every fixture binds listed, as
+/// `advanced.allow_destinations: ["127.0.0.1", "::1"]` lists it. A listed loopback literal is
+/// admitted; any other private literal is refused; a name passes to its answer's judgement, which a
+/// process with no guard refuses (fail closed).
+pub fn loopback_literal_listed(host: &str) -> Result<(), crate::host_services::DestRefusal> {
+    use crate::host_services::DestJudge as _;
+    PrivateRefusing(vec!["127.0.0.1".to_owned(), "::1".to_owned()]).judge_host(
+        host,
+        busbar_contract::abi::host::conn::connector::EGRESS_PROVIDER,
+    )
 }
 
 /// TEST SEAM: carry `layer` as the wrap every client in this test binary is built over, in the

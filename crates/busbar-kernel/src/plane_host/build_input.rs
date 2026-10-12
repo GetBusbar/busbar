@@ -35,11 +35,12 @@
 use std::collections::HashMap;
 
 /// The per-provider outbound AUTH STYLE, a neutral mirror of `Option<busbar_kernel::config::ProviderAuth>`
-/// (`None` ⇒ [`AuthStyleInput::Default`], the protocol's native auth). The plane maps this back to the
-/// core enum to drive `egress_auth::{resolve,jwt_bearer,oauth_client_credentials}`.
+/// (`None` ⇒ [`AuthStyleInput::Default`], the protocol's native auth). The plane maps it to the style
+/// its lane's credential is bound under, on the auth plugin that serves that style
+/// ([`PlaneBuildInput::auths`], `busbar_kernel::bound_credential`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum AuthStyleInput {
-    /// No `auth:` override — the protocol's native auth (`egress_auth::resolve(protocol, None)`).
+    /// No `auth:` override — the protocol's native auth (its declared egress scheme).
     #[default]
     Default,
     /// `auth: bearer`.
@@ -77,8 +78,8 @@ pub struct HealthInput {
 
 /// ONE resolved lane (one per model), flattened to neutral scalars. Everything the plane's
 /// `build_runtime` needs to reconstruct a `Lane` — including its provider's egress + auth inputs, so
-/// the plane owns the `build_egress_targets` / `egress_auth` calls (the allowed plane→core edge)
-/// WITHOUT the carrier naming an `EgressTarget` / `CredentialProvider`.
+/// the plane owns the `build_egress_targets` call and its credential's binding (the allowed
+/// plane→core edge) WITHOUT the carrier naming an `EgressTarget` / `CredentialProvider`.
 #[derive(Clone)]
 pub struct LaneInput {
     /// The model name (config key) — the lane's stable identity and `by_model` key.
@@ -340,6 +341,21 @@ pub struct PlaneBuildInput {
     /// test fixture can drive the whole-App failover deadline the way it always could. `None` ⇒ the
     /// plane's own fixed default.
     pub default_failover: Option<FailoverInput>,
+    /// THE BUILD'S AUTH AXIS, whose outbound half binds each lane's credential on the auth plugin
+    /// serving its style (THE DESIGN §6 step 3). `None` (no axis installed): no style is served,
+    /// and every lane presents no credential (the upstream answers 401).
+    pub auths: Option<AuthReach>,
+}
+
+/// The build's auth axis, as the carrier holds it (a contract trait object; the build trace never
+/// prints it).
+#[derive(Clone)]
+pub struct AuthReach(pub std::sync::Arc<dyn busbar_contract::auth_calls::AuthAxis>);
+
+impl std::fmt::Debug for AuthReach {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("AuthReach")
+    }
 }
 
 #[cfg(test)]

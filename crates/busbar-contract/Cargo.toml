@@ -156,3 +156,10 @@ runtime = []
 # own harness. OFF by default and named only in `[dev-dependencies]`: no non-dev dependency edge in
 # this workspace enables it, so the type is absent from every release build.
 test-seal = []
+
+# The TEST-ONLY shared host-services double (`services::double`, busbar #476 follow-up): a
+# `HostServices` with a refusing default per service, so a plugin's test double overrides only what
+# it serves and a service the host adds later is one edit here, not one per plugin repo. OFF by
+# default and named only in `[dev-dependencies]` (`tests/test_seal_is_dev_only.rs`), so it is absent
+# from every release build; it switches on no dependency and no other feature.
+services-double = []

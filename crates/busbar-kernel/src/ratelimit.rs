@@ -76,7 +76,8 @@ enum PathRule {
 /// registry-derived named-map root (CONFIG — one per `NamedMapSection::sections()`, so a plane's
 /// section joins without an edit here), and only then this table. `docs/admin-api.md`'s rate-limit
 /// table is a hand-written restatement of the CONFIG set that FUNCTION produces — kept honest by
-/// `rate_limit_doc_table_matches_classifier` (busbar-core-admin's tests), which classifies every
+/// `rate_limit_doc_table_matches_classifier` (the composition root's admin tests,
+/// `crates/busbar/tests/admin_cross_plane/keys.rs`), which classifies every
 /// mutation operation in the committed `openapi.json` through [`classify_mutation`] and fails if the
 /// CONFIG set differs from the doc's `config` row by one endpoint in either direction; so all four
 /// deciders are inside that check, not only this table.

@@ -414,7 +414,7 @@ fn the_host_refuses_a_capacity_with_a_null_buffer() {
 }
 
 #[test]
-fn the_services_that_never_pend_are_exactly_the_stated_twelve() {
+fn the_services_that_never_pend_are_exactly_the_stated_fourteen() {
     let never: Vec<u32> = (0..SERVICES).filter(|s| !may_pend(*s)).collect();
     assert_eq!(
         never,
@@ -430,7 +430,9 @@ fn the_services_that_never_pend_are_exactly_the_stated_twelve() {
             op::SNAPSHOT_READ,
             op::TRUST_SIGHT_ITEM,
             op::TRUST_SERVES,
-            op::TRUST_DECIDE
+            op::TRUST_DECIDE,
+            op::TRUST_STATE,
+            op::SESSION_EMIT
         ]
     );
     assert!(!may_pend(SERVICES), "an index past the table never pends");
@@ -499,6 +501,8 @@ fn every_service_field_sits_at_its_op_index() {
         ),
         (offset_of!(HostSlots, trust_serves), op::TRUST_SERVES),
         (offset_of!(HostSlots, trust_decide), op::TRUST_DECIDE),
+        (offset_of!(HostSlots, trust_state), op::TRUST_STATE),
+        (offset_of!(HostSlots, session_emit), op::SESSION_EMIT),
     ];
     for (i, (offset, op)) in table.iter().enumerate() {
         assert_eq!(*op as usize, i, "op constants run 0.. in table order");

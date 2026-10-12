@@ -15,9 +15,12 @@ use busbar_kernel_audit::Audit as _;
 impl Durability {
     /// REBUILD THE AUDIT CACHE FROM THE CHAIN and continue the audit chain from its tail: every
     /// `audit.v4` record is read back, the newest [`AUDIT_RING`] are kept, and the next record this
-    /// boot seals links to the last one a predecessor sealed. A record that will not read back is a
-    /// finding, never silently skipped. The first record journalled after a `Bootstrap` (the
-    /// keyset's seal) is where [`Durability::audit_signed_from`] starts.
+    /// boot seals links to the last one a predecessor sealed. The chain is resumed FROM THE RECORDS,
+    /// so its head history is rebuilt with it: the head read answers with the tip the chain has,
+    /// never a null head beside a `next_seq` above one, and a window's anchor is the one it had
+    /// before the restart. A record that will not read back is a finding, never silently skipped.
+    /// The first record journalled after a `Bootstrap` (the keyset's seal) is where
+    /// [`Durability::audit_signed_from`] starts.
     pub(super) fn resume_audit(&mut self, records: &[JournalRecord]) {
         let mut sealed = Vec::new();
         let mut keyed = false;
@@ -37,8 +40,9 @@ impl Durability {
                 )),
             }
         }
-        if let Some(last) = sealed.last() {
-            self.record = AuditChain::resume(last.hash.clone(), last.seq.saturating_add(1));
+        if !sealed.is_empty() {
+            // Resumed as the node this book seals as: a predecessor's records name their own node.
+            self.record = AuditChain::resume(&sealed).sealing_as(self.record.node());
         }
         let keep = sealed.len().saturating_sub(AUDIT_RING);
         self.audit_records = sealed.split_off(keep);
@@ -144,3 +148,11 @@ impl Durability {
         findings
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/durability_audit.rs"]
+mod tests;
+
+#[cfg(test)]
+#[path = "../tests/durability_audit_node.rs"]
+mod node_tests;

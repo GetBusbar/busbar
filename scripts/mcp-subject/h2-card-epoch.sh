@@ -13,22 +13,32 @@
 # ... Publishing a new card never reprices the window before its `effective_from`." The resolution
 # key is the posting's own arrival instant (`arrived_ms`), not a version stamped into the posting.
 #
-# THE DIMENSION THIS LEG MOVES IS THE FLAT FEE, and that is decision-backed rather than convenient.
-# #44: "A flat/static fee is ONE plane-agnostic pricing dimension on the rate card (applied
-# per-request or per-session), identical for every plane, and NEVER rounded." It is also the ONLY
-# dimension of this card an mcp deployment can move at all: the card's other dimensions are the four
-# LLM token tiers keyed by `models:` name, and this plane's declared classes (`tool_calls`, `bytes`)
-# are neither -- which h2-class-price.sh asks directly. Never rounded is what makes the arithmetic
-# below exact rather than approximate.
+# THE DIMENSION THIS LEG MOVES IS THIS PLANE'S OWN FLAT FEE, `tools.fees.per_request`, and both halves
+# of that are decision-backed. FLAT FEE: #44, "A flat/static fee is ONE plane-agnostic pricing
+# dimension on the rate card (applied per-request or per-session), identical for every plane, and
+# NEVER rounded" -- never rounded is what makes the arithmetic below exact rather than approximate.
+# THIS PLANE'S OWN: #47 makes `rate_card` + `fees` per-plane RESERVED keys, and the OWNER's Q129
+# ruling (2026-10-01) places them: "a plane's fees live in its own section (`fees:`; the root
+# `per_request_fee:` is the `pools` plane's key)". This leg used to move the ROOT `per_request_fee`,
+# which is the `pools` plane's fee and not this plane's; it now moves the mcp plane's own.
+#
+# HOW IT MOVES IT: `POST /api/v1/admin/config/apply`, carrying THIS BOOT'S OWN DOCUMENT with that one
+# key changed (`h2_apply_plane_fee`). ARCHITECT ruling (card-epoch): "Under #47 fees are per-plane
+# reserved keys, so the rig moves the mcp plane's own fee. A live change goes through /config/apply,
+# which accepts EXACTLY the shape boot config accepts, plane sections included (no 'unknown
+# field')." The apply used to refuse the `tools:`/`mcp:` sections as unknown fields; that defect is
+# fixed beside this change (busbar-core-admin `apply_config`, and its test
+# `config_apply_accepts_a_plane_section_and_moves_that_planes_own_fee`).
 #
 # THE SHAPE. Two dated cards, one call under each:
 #
-#   boot                    card 0: per_request_fee 1   (effective_from 0 -- `HistorySeq::OPENING`,
-#                                                        because `RootHistory::apply` dates a node's
-#                                                        FIRST card from zero, kernel.rs:264)
+#   boot                    card 0: tools.fees.per_request 1   (effective_from 0 --
+#                                                        `HistorySeq::OPENING`, because
+#                                                        `RootHistory::apply` dates a node's FIRST
+#                                                        card from zero)
 #   call A                  arrives inside card 0's window
-#   PUT /config/settings    card 1: per_request_fee 7   (effective_from = the apply's instant, and
-#                                                        it CLOSES NOTHING -- card 0 goes on
+#   POST /config/apply      card 1: tools.fees.per_request 7   (effective_from = the apply's instant,
+#                                                        and it CLOSES NOTHING -- card 0 goes on
 #                                                        answering for every instant before it)
 #   re-approve              the live apply rebuilds the App and the registry returns unapproved
 #   call B                  arrives inside card 1's window
@@ -74,10 +84,10 @@ spend_a="$(h2_usage_field "$kid" spend_cents)"
 [ "$spend_a" -eq 1 ] || { failures=$((failures+1)); detail="${detail}spend after call A = ${spend_a}(want 1, card 0's fee -- the rest of this leg is meaningless if the opening card does not price its own window); "; }
 
 # ── CARD 1 ────────────────────────────────────────────────────────────────────────────────────────
-apply="$(h2_put_fee 7)"
+apply="$(h2_apply_plane_fee 7)"
 case "$apply" in
   *'"applied":true'*) ;;
-  *) failures=$((failures+1)); detail="${detail}the second card did not apply: ${apply}; " ;;
+  *) failures=$((failures+1)); detail="${detail}the second card (tools.fees.per_request 7, through POST /config/apply) did not apply: ${apply}; " ;;
 esac
 
 # THE SAME ONE CALL, READ AGAIN. Nothing has been served since, so any movement here is a reprice of

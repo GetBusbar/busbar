@@ -630,9 +630,16 @@ async fn a_served_sessions_dial_fast_fails_on_a_tripped_cell() -> u64 {
     let pool = stream_breaker_key("witness-provider");
 
     // A target busbar's own guard refuses is a definitive failure: it trips the provider's cell.
-    let first = dial_provider(&*host, &pool, 0, "wss://127.0.0.1/", Default::default())
-        .await
-        .err();
+    let first = dial_provider(
+        &*host,
+        &pool,
+        0,
+        "wss://127.0.0.1/",
+        Default::default(),
+        None,
+    )
+    .await
+    .err();
     assert!(
         matches!(first, Some(DialProviderError::Dial(_))),
         "the guard-refused dial fails: {first:?}"
@@ -644,7 +651,16 @@ async fn a_served_sessions_dial_fast_fails_on_a_tripped_cell() -> u64 {
     );
 
     // The next dial is refused at admission, before the guard or any socket is reached.
-    match dial_provider(&*host, &pool, 0, "wss://127.0.0.1/", Default::default()).await {
+    match dial_provider(
+        &*host,
+        &pool,
+        0,
+        "wss://127.0.0.1/",
+        Default::default(),
+        None,
+    )
+    .await
+    {
         Err(DialProviderError::BreakerOpen { retry_after_secs }) => assert!(
             retry_after_secs >= 1,
             "the fast-fail carries the cell's own Retry-After"

@@ -94,7 +94,16 @@ fn peer_leaf_pin_seam_is_byte_for_byte_the_free_walk() {
 fn the_composition_root_install_hands_the_installed_capability_back() {
     // Dormant by default: nothing installs the seam on the shipped path. This test installs its
     // own and reads it back, exercising the OnceLock accessor the composition root uses.
-    install_egress_trust_host(std::sync::Arc::new(PassThroughEgressTrust));
+    // The capability installed is the pass-through primitives with the test binary's name arm (the
+    // fixtures' loopback listed), so the process-wide install does not fail closed every other
+    // test's loopback dial (first install wins).
+    struct PassThroughListingLoopback;
+    impl EgressTrustHost for PassThroughListingLoopback {
+        fn judge_name(&self, host: &str, _: u32) -> Result<(), crate::host_services::DestRefusal> {
+            crate::egress::fixtures::loopback_literal_listed(host)
+        }
+    }
+    install_egress_trust_host(std::sync::Arc::new(PassThroughListingLoopback));
     let installed = egress_trust_host().expect("the just-installed capability reads back");
     let der = a_root();
     assert_eq!(

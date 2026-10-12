@@ -8,7 +8,7 @@
 //! the carrier holds NO core type). Here, IN-PLANE, we downcast it and rebuild the concrete
 //! [`Lane`]/[`WeightedLane`]/[`MemberMeta`]/[`PoolRuntime`]/[`NativeRuntime`] routing tables, re-running
 //! the egress-target/credential/upstream-client/probe-schedule resolution against the widened core
-//! down-primitives (`busbar_kernel::egress_auth`, `busbar_kernel::topology::UpstreamClients`, this plane's own
+//! down-primitives (`busbar_kernel::bound_credential`, `busbar_kernel::topology::UpstreamClients`, this plane's own
 //! `EgressTarget`/`ProbeSchedule`) — the allowed plane→core edge. Byte-identical to the pre-pivot
 //! core-resident lowering (old `appbuild`'s lane/pool build loop).
 //!
@@ -20,9 +20,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 pub(crate) use busbar_kernel::config::providers::{ProviderCfg, ProviderDef, ProviderDeploy};
-use busbar_kernel::plane_host::{AuthStyleInput, OnExhaustedInput, PlaneBuildInput, PlaneSlots};
-
-use busbar_kernel::egress_auth::{self, MetadataSsrfPolicy};
+use busbar_kernel::plane_host::{OnExhaustedInput, PlaneBuildInput, PlaneSlots};
 
 use crate::engine::health::ProbeSchedule;
 use crate::engine::{
@@ -89,20 +87,6 @@ pub(crate) fn resolve_provider(def: &ProviderDef, deploy: &ProviderDeploy) -> Pr
     }
 }
 
-/// Map the neutral [`AuthStyleInput`] back to the core `Option<ProviderAuth>` the sync
-/// `egress_auth::resolve` reads (the OAuth styles never route through `resolve` — they mint at boot).
-fn provider_auth(style: AuthStyleInput) -> Option<busbar_kernel::config::ProviderAuth> {
-    match style {
-        AuthStyleInput::Default => None,
-        AuthStyleInput::Bearer => Some(busbar_kernel::config::ProviderAuth::Bearer),
-        AuthStyleInput::ApiKey => Some(busbar_kernel::config::ProviderAuth::ApiKey),
-        AuthStyleInput::JwtBearer => Some(busbar_kernel::config::ProviderAuth::JwtBearer),
-        AuthStyleInput::OAuthClientCredentials => {
-            Some(busbar_kernel::config::ProviderAuth::OAuthClientCredentials)
-        }
-    }
-}
-
 /// THE `PlaneDecl::build_runtime` FN-POINTER for the LLM plane. Downcast the neutral carrier, lower it
 /// to a [`NativeRuntime`], and hand it back type-erased for `plane_slots[runtime_slot_key(<llm key>)]`.
 pub(crate) fn build_runtime(
@@ -155,50 +139,13 @@ pub(crate) fn build_runtime(
                     li.model, li.protocol
                 )
             });
-        // SSRF posture: this provider's allow list ∪ the global one, plus the nuclear allow-all and
-        // the operator's denylist — the SAME union config_validate builds.
-        let allow_overrides: Vec<String> = li
-            .allow_metadata_hosts
-            .iter()
-            .chain(input.allow_metadata_hosts.iter())
-            .cloned()
-            .collect();
-        let ssrf = MetadataSsrfPolicy {
-            allow_overrides: &allow_overrides,
-            allow_all: input.allow_all_metadata,
-            blocked_hosts: &input.blocked_metadata_hosts,
-        };
         // AUDIT POINT: the resolved credential leaves redaction here and nowhere else on this path —
-        // the minters below need the plaintext to sign/exchange with, and the `Lane` this builds
-        // re-wraps it.
+        // the auth plugin serving the lane's style is handed the plaintext to bind, and the `Lane`
+        // this builds re-wraps it.
         let api_key = li.api_key.expose_secret().clone();
-        let credential = match li.auth_style {
-            AuthStyleInput::JwtBearer => egress_auth::jwt_bearer::build(
-                &api_key,
-                li.scope.as_deref(),
-                li.subject.as_deref(),
-                &ssrf,
-            )
-            .unwrap_or_else(|e| panic!("provider for '{}' (jwt-bearer auth): {e}", li.model)),
-            AuthStyleInput::OAuthClientCredentials => {
-                let token_url = li
-                    .token_url
-                    .as_deref()
-                    .expect("oauth-client-credentials lane requires token_url (validated)");
-                let scope = li
-                    .scope
-                    .as_deref()
-                    .expect("oauth-client-credentials lane requires scope (validated)");
-                egress_auth::oauth_client_credentials::build(&api_key, token_url, scope, &ssrf)
-                    .unwrap_or_else(|e| {
-                        panic!(
-                            "provider for '{}' (oauth-client-credentials auth): {e}",
-                            li.model
-                        )
-                    })
-            }
-            other => egress_auth::resolve(protocol, provider_auth(other)),
-        };
+        let signing_host = host_from_base(&li.base_url);
+        let credential =
+            crate::engine::credential::credential_for(input, li, protocol, &signing_host, &api_key);
         let base_url = li.base_url.clone();
         let egress_targets = build_egress_targets(
             protocol,
@@ -208,8 +155,8 @@ pub(crate) fn build_runtime(
             &base_url,
         )
         .unwrap_or_else(|e| panic!("provider for '{}': {e}", li.model));
-        let signing_host = host_from_base(&base_url);
-        let prebuilt_auth = egress_auth::prebuild_auth(&credential, &api_key, &signing_host);
+        let prebuilt_auth =
+            busbar_kernel::bound_credential::prebuild_auth(&credential, &api_key, &signing_host);
         // THE TWO SEATED NAMES. A refusal here is not a lane this node can plan a leg to, and this
         // fn's rule for a lane whose row cannot be built is the loud one every other arm above
         // takes: 1.5.5's answer to a lane that will not lower is a failed apply with the previous
