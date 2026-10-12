@@ -86,14 +86,17 @@ fn xtask_bin() -> std::process::Command {
 
 /// A throwaway busbar-shaped git tree: a repository holding `xtask/Cargo.toml`.
 fn other_tree(tag: &str) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!(
-        "xtask-root-{tag}-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
+    let dir = std::env::temp_dir().join(format!("xtask-root-{tag}-{}-{}", std::process::id(), {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        format!(
+            "{}-{}-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_nanos()),
+            line!(),
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        )
+    }));
     std::fs::create_dir_all(dir.join("xtask")).unwrap();
     std::fs::write(
         dir.join("xtask/Cargo.toml"),
