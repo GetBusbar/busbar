@@ -45,8 +45,9 @@
 //!   The 1.6.0 node keeps its rows at bucket-day width (no lane, no provider), so there the jev
 //!   lane's row is the rig's caller's own bucket ([`judge_jev_ledger`]).
 //!   The subject's own card prices the `decision` class at 1 micro-unit per unit
-//!   (`decisions.rate_card.<model>.units.decision: 1`, in the rig's generated config only), so the
-//!   lane's `priced_micros` IS the unit count: 42.
+//!   (`decisions.rate_card.<model>.units.decision: 1`, in the rig's generated config only) and the
+//!   two token classes the plane also declares at 0 (THE DESIGN §7: "all three required, 0 =
+//!   free"), so the lane's `priced_micros` IS the unit count: 42.
 //!
 //!   THE MODEL-RESOLUTION CHECKS (THE DESIGN §2, the decisions bullet; DECISIONS D8b) run on a second
 //!   boot whose `decisions.models` holds two models, [`MODEL`] and [`UPSTREAM_MODEL`] (its
@@ -567,7 +568,7 @@ pub fn jev_subject_config(data: u16, admin: u16, key_file: &Path) -> String {
          advanced:\n  allow_destinations: [\"127.0.0.1\"]\n\
          groups:\n  {ONE_REQUEST_GROUP}:\n    limits:\n      - {{ requests: 1, per: day }}\n\
          decisions:\n  models:\n    {MODEL}:\n      provider: {PROVIDER}\n\
-         \x20 rate_card:\n    {MODEL}: {{ units: {{ decision: 1 }} }}\n",
+         \x20 rate_card:\n    {MODEL}: {{ units: {{ decision: 1, input_tokens: 0, output_tokens: 0 }} }}\n",
         key_file.display()
     )
 }
@@ -587,8 +588,8 @@ pub fn jev_models_config(data: u16, admin: u16, key_file: &Path) -> String {
          advanced:\n  allow_destinations: [\"127.0.0.1\"]\n\
          decisions:\n  models:\n    {MODEL}:\n      provider: {PROVIDER}\n\
          \x20   {UPSTREAM_MODEL}:\n      provider: {PROVIDER}\n      upstream_model: {UPSTREAM_NAME}\n\
-         \x20 rate_card:\n    {MODEL}: {{ units: {{ decision: 1 }} }}\n\
-         \x20   {UPSTREAM_MODEL}: {{ units: {{ decision: 1 }} }}\n",
+         \x20 rate_card:\n    {MODEL}: {{ units: {{ decision: 1, input_tokens: 0, output_tokens: 0 }} }}\n\
+         \x20   {UPSTREAM_MODEL}: {{ units: {{ decision: 1, input_tokens: 0, output_tokens: 0 }} }}\n",
         key_file.display()
     )
 }

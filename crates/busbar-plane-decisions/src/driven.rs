@@ -39,14 +39,17 @@
 //! list busbar already serves there), so [`tail::CLAIMS`] and [`tail::OP_CLASSES`] carry `systemone` alone and
 //! [`arrive`] answers the models operation as unclaimed.
 //!
-//! Money-blind, like the rest of the crate: the plane reports how many decision units the far end
-//! said it used, in its one billable class, and never what they are worth.
+//! Money-blind, like the rest of the crate: the plane reports what a successful answer bills, in its
+//! billable classes, and never what it is worth (THE DESIGN section 7, the owner money rulings
+//! 2026-09-28: "bills one `decision` per successful, settled answer from every provider; its card
+//! prices `decision`, `input_tokens` and `output_tokens` (family `decision`, all three required, 0
+//! = free); the hosted provider keeps 1.5.5's `/usage/units` as the decision count").
 
 use busbar_contract::ids::{MeterClassId, OpClassId};
 
 use crate::codec::{
     self, error_body, CONTENT_TYPE_JSON, EGRESS_SCHEME, FIELD_CONTENT_TYPE, PTR_ERROR,
-    PTR_USAGE_UNITS,
+    PTR_USAGE_INPUT_TOKENS, PTR_USAGE_OUTPUT_TOKENS, PTR_USAGE_UNITS,
 };
 use crate::ops;
 
@@ -88,15 +91,35 @@ pub mod tail {
     /// The op classes this plane serves, in index order. `systemone` alone (see the module doc).
     pub const OP_CLASSES: &[OpClassId] = &[ops::OP_SYSTEMONE];
 
-    /// The billable classes, in index order, each with its family: the far end's decision count,
-    /// and the fee unit (also a class: the tail check holds `fee_units ⊆ billable_classes`).
+    /// The billable classes, in index order, each with its family: the decision count, the fee
+    /// unit (also a class: the tail check holds `fee_units ⊆ billable_classes`), and the far end's
+    /// input and output tokens. THE DESIGN section 7 (owner money rulings 2026-09-28): the card
+    /// "prices `decision`, `input_tokens` and `output_tokens` (family `decision`, all three
+    /// required, 0 = free)".
     pub const BILLABLE_CLASSES: &[(MeterClassId, &str)] = &[
-        (meta::CLASS_DECISION, "decision"),
+        (meta::CLASS_DECISION, DECISION_FAMILY),
         (MeterClassId::new(FEE_PER_REQUEST), FEE_FAMILY),
+        (CLASS_INPUT_TOKENS, DECISION_FAMILY),
+        (CLASS_OUTPUT_TOKENS, DECISION_FAMILY),
     ];
+
+    /// The family every priced class of this plane is in.
+    pub const DECISION_FAMILY: &str = "decision";
+
+    /// The far end's input tokens, where its answer reports them (`/usage/input_tokens`).
+    pub const CLASS_INPUT_TOKENS: MeterClassId = MeterClassId::new("input_tokens");
+
+    /// The far end's output tokens, where its answer reports them (`/usage/output_tokens`).
+    pub const CLASS_OUTPUT_TOKENS: MeterClassId = MeterClassId::new("output_tokens");
 
     /// The index of [`meta::CLASS_DECISION`] in [`BILLABLE_CLASSES`].
     pub const CLASS_DECISION_INDEX: u32 = 0;
+
+    /// The index of [`CLASS_INPUT_TOKENS`] in [`BILLABLE_CLASSES`].
+    pub const CLASS_INPUT_TOKENS_INDEX: u32 = 2;
+
+    /// The index of [`CLASS_OUTPUT_TOKENS`] in [`BILLABLE_CLASSES`].
+    pub const CLASS_OUTPUT_TOKENS_INDEX: u32 = 3;
 
     /// THE FEE UNIT: the request fee (`decisions.fees.per_request`), counted `1` on a unit whose
     /// far end answered a success, so a refused or failed unit owes none (the signed design C-3,
@@ -339,10 +362,20 @@ pub struct Units {
     pub amount: u64,
 }
 
+/// A usage member the far end's success answer carries but that is not a whole count: the money
+/// rule's loud failure (finding 395, kept: "a usage member present but not a whole count is
+/// LOCATED, never dropped"), never a silent 0. Names the member's pointer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Unreadable(pub &'static str);
+
+/// What one answer bills, in [`tail::BILLABLE_CLASSES`]' order of reading: the decision count,
+/// the input and output tokens, and the request fee. `None` = nothing in that class.
+pub type Counts = [Option<Units>; 4];
+
 /// The far end's answer, read as it is relayed.
 ///
-/// Every piece is relayed to the caller unchanged, as it arrives. The count lives inside the body
-/// (`/usage/units`), so the bytes are also kept until the last piece, and the count is read once,
+/// Every piece is relayed to the caller unchanged, as it arrives. The counts live inside the body
+/// (`/usage/*`), so the bytes are also kept until the last piece, and the counts are read once,
 /// over the whole answer.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct FarEndReading {
@@ -362,39 +395,65 @@ impl FarEndReading {
         bytes
     }
 
-    /// The units the far end reported, read at the last piece, by the rule the plane's
-    /// `decode_response` reads them (`plane.rs`): a count is reported only for an answer with no
-    /// `/error` member, whose `/usage/units` is a whole number a signed 64-bit count holds. An
-    /// error answer, or a count that is missing, negative, fractional or past `i64::MAX`, reports
-    /// nothing. The status plays no part: `decode_response` judges success by the `/error` member
-    /// alone.
+    /// Whether the answer, with the far end's `status`, is a SUCCESS: a `2xx` status and no
+    /// `/error` member (a `null` one is none). The one success rule every count below reads.
     #[must_use]
-    pub fn units(&self) -> Option<Units> {
-        if codec::has(&self.body, PTR_ERROR) {
-            return None;
-        }
-        codec::read_u64(&self.body, PTR_USAGE_UNITS)
-            .filter(|amount| i64::try_from(*amount).is_ok())
-            .map(|amount| Units {
-                class: tail::CLASS_DECISION_INDEX,
-                reported: true,
-                amount,
-            })
+    pub fn success(&self, status: Option<u32>) -> bool {
+        status.is_some_and(|s| (200..300).contains(&s))
+            && codec::read_raw(&self.body, PTR_ERROR).is_none_or(|e| e == b"null")
     }
 
-    /// THE REQUEST FEE, read at the last piece: `1` of [`tail::FEE_PER_REQUEST`] for an answer the
-    /// far end gave as a success — a `2xx` status and no `/error` member, the success rule
-    /// [`Self::units`] reads — and nothing otherwise, so a refused or failed unit owes no fee
-    /// (billable success only).
-    #[must_use]
-    pub fn fee(&self, status: Option<u32>) -> Option<Units> {
-        let success = status.is_some_and(|s| (200..300).contains(&s));
-        (success && !codec::has(&self.body, PTR_ERROR)).then_some(Units {
-            class: tail::CLASS_FEE_INDEX,
+    /// WHAT THE ANSWER BILLS, read at the last piece (THE DESIGN section 7, the owner money rulings):
+    /// a non-success bills nothing; a success bills one `decision`, or the whole count its
+    /// `/usage/units` reports (the hosted provider's count, DECISIONS D9), its `/usage/input_tokens`
+    /// and `/usage/output_tokens` where it reports them, and the request fee (`1` of
+    /// [`tail::FEE_PER_REQUEST`]: a refused or failed unit owes none).
+    ///
+    /// # Errors
+    ///
+    /// [`Unreadable`]: a success whose usage member is present but is not a whole count a signed
+    /// 64-bit count holds (negative, fractional, a string, `null`, past `i64::MAX`).
+    pub fn counts(&self, status: Option<u32>) -> Result<Counts, Unreadable> {
+        if !self.success(status) {
+            return Ok([None; 4]);
+        }
+        let decisions = self.count(PTR_USAGE_UNITS)?.unwrap_or(1);
+        let reported = |class: u32, amount: u64| Units {
+            class,
             reported: true,
-            amount: 1,
-        })
+            amount,
+        };
+        Ok([
+            Some(reported(tail::CLASS_DECISION_INDEX, decisions)),
+            self.count(PTR_USAGE_INPUT_TOKENS)?
+                .map(|n| reported(tail::CLASS_INPUT_TOKENS_INDEX, n)),
+            self.count(PTR_USAGE_OUTPUT_TOKENS)?
+                .map(|n| reported(tail::CLASS_OUTPUT_TOKENS_INDEX, n)),
+            Some(reported(tail::CLASS_FEE_INDEX, 1)),
+        ])
     }
+
+    /// The whole count at `pointer`: `None` when the answer has no such member.
+    fn count(&self, pointer: &'static str) -> Result<Option<u64>, Unreadable> {
+        let Some(raw) = codec::read_raw(&self.body, pointer) else {
+            return Ok(None);
+        };
+        whole(raw).map(Some).ok_or(Unreadable(pointer))
+    }
+}
+
+/// A usage member's raw bytes read as a whole count a signed 64-bit count holds: ASCII digits
+/// alone, at most `i64::MAX`.
+#[must_use]
+pub fn whole(raw: &[u8]) -> Option<u64> {
+    if raw.is_empty() || !raw.iter().all(u8::is_ascii_digit) {
+        return None;
+    }
+    core::str::from_utf8(raw)
+        .ok()?
+        .parse::<u64>()
+        .ok()
+        .filter(|n| i64::try_from(*n).is_ok())
 }
 
 /// THE CALLER FIELDS THE FAR END NEVER RECEIVES: the ones the plane writes itself (the document

@@ -41,10 +41,24 @@ pub const PTR_ID: &str = "/id";
 /// without this plane growing a second top-level member to ignore.
 pub const PTR_USAGE_UNITS: &str = "/usage/units";
 
+/// The pointers a SUCCESSFUL `systemone` response reports its input and output tokens at, where it
+/// reports them (DECISIONS Q1-5: "usage pointers are DIALECT data (/usage/units,
+/// /usage/input_tokens,/usage/output_tokens)").
+pub const PTR_USAGE_INPUT_TOKENS: &str = "/usage/input_tokens";
+/// See [`PTR_USAGE_INPUT_TOKENS`].
+pub const PTR_USAGE_OUTPUT_TOKENS: &str = "/usage/output_tokens";
+
 /// Every pointer this plane resolves in a RESPONSE body (`systemone` or `models`). Declared here
 /// once, so the "never resolves `/state` or `/answers`" claim is checkable by reading one list
 /// rather than auditing every call site.
-pub const RESPONSE_PTRS: &[&str] = &[PTR_ERROR, PTR_REQUEST_ID, PTR_ID, PTR_USAGE_UNITS];
+pub const RESPONSE_PTRS: &[&str] = &[
+    PTR_ERROR,
+    PTR_REQUEST_ID,
+    PTR_ID,
+    PTR_USAGE_UNITS,
+    PTR_USAGE_INPUT_TOKENS,
+    PTR_USAGE_OUTPUT_TOKENS,
+];
 
 /// The pointer a request names the model it is routed over at: its top-level `model` (THE DESIGN
 /// section 2, model resolution; DECISIONS D8b "REQUEST_PTRS += /model (metadata)"). Routing

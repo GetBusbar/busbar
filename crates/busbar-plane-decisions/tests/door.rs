@@ -147,3 +147,117 @@ fn upstream_model_is_spliced_into_the_top_level_model() {
     let unnamed = "{\"state\":{}}";
     assert_eq!(sent(upstream, unnamed.as_bytes()), unnamed);
 }
+
+/// One unit served over [`ONE`]: its ATTEMPT, the caller's body, and the far end's whole answer,
+/// `status` with `answer`. Answers the far end's piece.
+fn answered(status: u32, answer: &[u8]) -> door_harness::Answered {
+    let door = open(ONE);
+    assert_eq!(door.arrive(1, br#"{"state":{}}"#).outcome, Outcome::Ready);
+    let mut bufs = Bufs::new(1 << 16);
+    door.piece(1, Given::attempt(1), &mut bufs);
+    door.piece(1, Given::caller(br#"{"state":{}}"#), &mut bufs);
+    door.piece(1, Given::whole(status, answer), &mut bufs)
+}
+
+/// The class index the tail names `name` at.
+fn class(name: &str) -> u32 {
+    let tail = busbar_plane_decisions::plane_door::TAIL;
+    // SAFETY: the tail's billable classes are a `'static` list of `billable_classes_len` entries,
+    // each naming `'static` strings.
+    let classes =
+        unsafe { std::slice::from_raw_parts(tail.billable_classes, tail.billable_classes_len) };
+    let named = |c: &busbar_contract::abi::plane::BillableClass| {
+        // SAFETY: as above.
+        unsafe { std::slice::from_raw_parts(c.class.ptr, c.class.len) == name.as_bytes() }
+    };
+    let at = classes
+        .iter()
+        .position(named)
+        .unwrap_or_else(|| panic!("the tail declares no class `{name}`"));
+    u32::try_from(at).unwrap()
+}
+
+/// `(class, amount)` of every count an answer reported, each REPORTED.
+fn counts(a: &door_harness::Answered) -> Vec<(u32, u64)> {
+    assert!(
+        a.units
+            .iter()
+            .all(|(_, source, _)| *source == busbar_contract::abi::plane::UNITS_REPORTED),
+        "{a:?}"
+    );
+    a.units.iter().map(|(c, _, n)| (*c, *n)).collect()
+}
+
+/// RED (audit plane-decisions#4): THE DESIGN section 7, "bills one `decision` per successful, settled
+/// answer from every provider": a success with no count bills one decision, beside its fee.
+#[test]
+fn a_success_with_no_count_bills_one_decision() {
+    let fee = class(busbar_contract::plane::PER_REQUEST);
+    let a = answered(200, br#"{"answers":{}}"#);
+    assert_eq!(a.outcome, Some(Outcome::Ready), "{a:?}");
+    assert_eq!(counts(&a), vec![(class("decision"), 1), (fee, 1)]);
+    let reported = answered(200, br#"{"usage":{"units":42}}"#);
+    assert_eq!(counts(&reported), vec![(class("decision"), 42), (fee, 1)]);
+}
+
+/// RED (audit plane-decisions#4): one success rule: a non-2xx answer bills nothing, whatever count
+/// it carries.
+#[test]
+fn a_non_success_bills_nothing() {
+    let a = answered(500, br#"{"usage":{"units":2}}"#);
+    assert_eq!(a.outcome, Some(Outcome::Ready), "{a:?}");
+    assert!(a.units.is_empty(), "{a:?}");
+    assert_eq!(a.bytes, br#"{"usage":{"units":2}}"#, "relayed unchanged");
+}
+
+/// RED (audit plane-decisions#4): a success whose count is not a whole count fails the unit loudly
+/// (finding 395, kept: "LOCATED, never dropped"), never a silent zero.
+#[test]
+fn a_success_with_an_unreadable_count_fails_loudly() {
+    for answer in [
+        &br#"{"usage":{"units":7.5}}"#[..],
+        br#"{"usage":{"units":"7"}}"#,
+        br#"{"usage":{"units":-3}}"#,
+    ] {
+        let a = answered(200, answer);
+        assert_eq!(
+            (a.outcome, a.short),
+            (Some(Outcome::Failed), false),
+            "{}: {a:?}",
+            String::from_utf8_lossy(answer)
+        );
+        assert!(a.units.is_empty() && a.bytes.is_empty(), "{a:?}");
+    }
+}
+
+/// RED (audit plane-decisions#5): THE DESIGN section 7, "its card prices `decision`, `input_tokens`
+/// and `output_tokens` (family `decision`, all three required, 0 = free)": the tail declares the
+/// three in family `decision`, and a success's reported tokens are billed in them.
+#[test]
+fn the_tokens_a_success_reports_are_billed_in_family_decision() {
+    let tail = busbar_plane_decisions::plane_door::TAIL;
+    // SAFETY: as in `class`.
+    let classes =
+        unsafe { std::slice::from_raw_parts(tail.billable_classes, tail.billable_classes_len) };
+    let family = |name: &str| {
+        let c = &classes[class(name) as usize];
+        // SAFETY: as in `class`.
+        String::from_utf8_lossy(unsafe { std::slice::from_raw_parts(c.family.ptr, c.family.len) })
+            .into_owned()
+    };
+    for name in ["decision", "input_tokens", "output_tokens"] {
+        assert_eq!(family(name), "decision", "{name}");
+    }
+    let a = answered(
+        200,
+        br#"{"usage":{"units":2,"input_tokens":12,"output_tokens":5}}"#,
+    );
+    let got = counts(&a);
+    for want in [
+        (class("decision"), 2),
+        (class("input_tokens"), 12),
+        (class("output_tokens"), 5),
+    ] {
+        assert!(got.contains(&want), "{want:?} in {got:?}");
+    }
+}

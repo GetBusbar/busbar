@@ -128,16 +128,15 @@ const OP_CLASSES: &[OpClass] = &[OpClass {
     name: abi_str(tail::OP_CLASSES[0].as_str()),
 }];
 
-const BILLABLE_CLASSES: &[BillableClass] = &[
+const BILLABLE_CLASSES: &[BillableClass] = &[billable(0), billable(1), billable(2), billable(3)];
+
+/// [`tail::BILLABLE_CLASSES`]' class `i`, on the ABI.
+const fn billable(i: usize) -> BillableClass {
     BillableClass {
-        class: abi_str(tail::BILLABLE_CLASSES[0].0.as_str()),
-        family: abi_str(tail::BILLABLE_CLASSES[0].1),
-    },
-    BillableClass {
-        class: abi_str(tail::BILLABLE_CLASSES[1].0.as_str()),
-        family: abi_str(tail::BILLABLE_CLASSES[1].1),
-    },
-];
+        class: abi_str(tail::BILLABLE_CLASSES[i].0.as_str()),
+        family: abi_str(tail::BILLABLE_CLASSES[i].1),
+    }
+}
 
 /// The fee unit the plane counts ([`tail::FEE_UNITS`]).
 const FEE_UNITS: &[AbiStr] = &[abi_str(tail::FEE_UNITS[0])];
@@ -651,10 +650,20 @@ fn far_end(
         }
     }
     if last {
-        for count in [unit.reading.units(), unit.reading.fee(unit.status)]
-            .into_iter()
-            .flatten()
-        {
+        // THE MONEY RULE (THE DESIGN section 7): a success bills its decision count, its tokens and
+        // its fee; a usage member that is not a whole count fails the unit loudly, never a silent 0.
+        let counts = match unit.reading.counts(unit.status) {
+            Ok(counts) => counts,
+            Err(driven::Unreadable(pointer)) => {
+                return (
+                    out.fail(Refusal::failed(format!(
+                        "the far end's answer carries `{pointer}`, which is not a whole count"
+                    ))),
+                    true,
+                );
+            }
+        };
+        for count in counts.into_iter().flatten() {
             units.push(UnitCount {
                 class: count.class,
                 source: UNITS_REPORTED,

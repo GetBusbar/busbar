@@ -31,11 +31,21 @@ fn every_claim_arrives() {
     }
 }
 
+/// RED (audit plane-decisions#5): THE DESIGN section 7, "its card prices `decision`, `input_tokens`
+/// and `output_tokens` (family `decision`, all three required, 0 = free)".
 #[test]
 fn the_tail_names_the_decision_class_at_its_index() {
     let (class, family) = tail::BILLABLE_CLASSES[tail::CLASS_DECISION_INDEX as usize];
     assert_eq!(class, CLASS_DECISION);
     assert_eq!(family, "decision");
+    for (index, name) in [
+        (tail::CLASS_INPUT_TOKENS_INDEX, "input_tokens"),
+        (tail::CLASS_OUTPUT_TOKENS_INDEX, "output_tokens"),
+    ] {
+        let (class, family) = tail::BILLABLE_CLASSES[index as usize];
+        assert_eq!((class.as_str(), family), (name, "decision"));
+    }
+    assert_eq!(tail::BILLABLE_CLASSES.len(), 4);
     // The request fee is the one fee unit, and it is a class at its own index.
     assert_eq!(tail::FEE_UNITS, &[busbar_contract::plane::PER_REQUEST]);
     let (fee, fee_family) = tail::BILLABLE_CLASSES[tail::CLASS_FEE_INDEX as usize];
@@ -67,6 +77,23 @@ fn an_attempt_forwards_the_caller_body_unchanged() {
     );
 }
 
+/// The answer's counts as `(class, amount)`, for a far end answering `status` with `body`.
+fn billed(status: u32, body: &[u8]) -> Result<Vec<(u32, u64)>, Unreadable> {
+    let mut reading = FarEndReading::new();
+    reading.piece(body);
+    reading.counts(Some(status)).map(|c| {
+        c.into_iter()
+            .flatten()
+            .map(|u| (u.class, u.amount))
+            .collect()
+    })
+}
+
+const DECISION: u32 = tail::CLASS_DECISION_INDEX;
+const FEE: u32 = tail::CLASS_FEE_INDEX;
+const INPUT: u32 = tail::CLASS_INPUT_TOKENS_INDEX;
+const OUTPUT: u32 = tail::CLASS_OUTPUT_TOKENS_INDEX;
+
 #[test]
 fn far_end_pieces_are_relayed_unchanged_and_the_count_read_over_the_whole_answer() {
     let mut reading = FarEndReading::new();
@@ -74,10 +101,11 @@ fn far_end_pieces_are_relayed_unchanged_and_the_count_read_over_the_whole_answer
     let b = br#"its":42},"answers":{"decision":"approve"}}"#;
     assert_eq!(reading.piece(a), &a[..]);
     assert_eq!(reading.piece(b), &b[..]);
+    let counts = reading.counts(Some(200)).expect("a whole count");
     assert_eq!(
-        reading.units(),
+        counts[0],
         Some(Units {
-            class: 0,
+            class: DECISION,
             reported: true,
             amount: 42
         })
@@ -85,56 +113,115 @@ fn far_end_pieces_are_relayed_unchanged_and_the_count_read_over_the_whole_answer
 }
 
 #[test]
-fn an_error_answer_reports_no_units() {
-    let mut reading = FarEndReading::new();
-    reading.piece(br#"{"error":{"code":"invalid_state"},"usage":{"units":3}}"#);
-    assert_eq!(reading.units(), None);
-}
-
-/// RED: the count is read as `decode_response` reads it. Success is the absence of an `/error`
-/// member, whatever the status (a 4xx with no `/error` still reports its count, as predev's decode
-/// sets the fact), and a count past `i64::MAX` reports nothing (predev's `i64::try_from` drops it).
-#[test]
-fn the_count_is_read_as_decode_response_reads_it() {
-    let mut reading = FarEndReading::new();
-    reading.piece(br#"{"usage":{"units":3}}"#);
-    assert_eq!(reading.units().map(|u| u.amount), Some(3));
-    for (body, amount) in [
-        (
-            format!(r#"{{"usage":{{"units":{}}}}}"#, i64::MAX),
-            Some(i64::MAX as u64),
+fn an_error_answer_bills_nothing() {
+    assert_eq!(
+        billed(
+            200,
+            br#"{"error":{"code":"invalid_state"},"usage":{"units":3}}"#
         ),
-        (
-            format!(r#"{{"usage":{{"units":{}}}}}"#, i64::MAX as u64 + 1),
-            None,
-        ),
-        (format!(r#"{{"usage":{{"units":{}}}}}"#, u64::MAX), None),
-    ] {
-        let mut reading = FarEndReading::new();
-        reading.piece(body.as_bytes());
-        assert_eq!(reading.units().map(|u| u.amount), amount, "{body}");
-    }
+        Ok(vec![])
+    );
 }
 
+/// RED (audit plane-decisions#4): THE DESIGN section 7, "bills one `decision` per successful, settled
+/// answer from every provider ... the hosted provider keeps 1.5.5's `/usage/units` as the decision
+/// count". A success with no count bills one decision; one with a whole count bills the count.
 #[test]
-fn a_count_that_is_not_a_whole_number_reports_no_units() {
-    for body in [
-        &br#"{"usage":{"units":-1}}"#[..],
-        br#"{"usage":{"units":1.5}}"#,
-        br#"{"usage":{}}"#,
-        br#"{}"#,
-    ] {
-        let mut reading = FarEndReading::new();
-        reading.piece(body);
-        assert_eq!(reading.units(), None, "{}", String::from_utf8_lossy(body));
-    }
+fn a_success_bills_one_decision_or_the_count_it_reports() {
+    assert_eq!(billed(200, br#"{}"#), Ok(vec![(DECISION, 1), (FEE, 1)]));
+    assert_eq!(
+        billed(200, br#"{"usage":{}}"#),
+        Ok(vec![(DECISION, 1), (FEE, 1)])
+    );
+    assert_eq!(
+        billed(201, br#"{"usage":{"units":3}}"#),
+        Ok(vec![(DECISION, 3), (FEE, 1)])
+    );
+    assert_eq!(
+        billed(200, br#"{"usage":{"units":3},"error":null}"#),
+        Ok(vec![(DECISION, 3), (FEE, 1)]),
+        "a null error is no error"
+    );
+    let max = format!(r#"{{"usage":{{"units":{}}}}}"#, i64::MAX);
+    assert_eq!(
+        billed(200, max.as_bytes()),
+        Ok(vec![(DECISION, i64::MAX as u64), (FEE, 1)])
+    );
 }
 
+/// RED (audit plane-decisions#4): one success rule for every count: a non-2xx answer bills nothing,
+/// whatever usage it carries.
 #[test]
-fn the_units_never_read_state_or_answers() {
+fn a_non_success_bills_nothing() {
+    for status in [400, 422, 500, 503] {
+        assert_eq!(
+            billed(status, br#"{"usage":{"units":2}}"#),
+            Ok(vec![]),
+            "{status}"
+        );
+    }
     let mut reading = FarEndReading::new();
-    reading.piece(br#"{"usage":{"units":7},"state":{"units":999},"answers":{"units":888}}"#);
-    assert_eq!(reading.units().map(|u| u.amount), Some(7));
+    reading.piece(br#"{"usage":{"units":2}}"#);
+    assert_eq!(
+        reading.counts(None),
+        Ok([None; 4]),
+        "no status read, no bill"
+    );
+}
+
+/// RED (audit plane-decisions#4): a success whose usage member is there but is not a whole count
+/// fails loudly, naming the member (finding 395 kept: "LOCATED, never dropped"), never a silent 0.
+#[test]
+fn a_usage_member_that_is_not_a_whole_count_fails_loudly() {
+    for units in [
+        "-1".to_string(),
+        "1.5".to_string(),
+        "7.0".to_string(),
+        "1e3".to_string(),
+        "\"7\"".to_string(),
+        "null".to_string(),
+        "{}".to_string(),
+        (i64::MAX as u64 + 1).to_string(),
+        u64::MAX.to_string(),
+    ] {
+        let body = format!(r#"{{"usage":{{"units":{units}}}}}"#);
+        assert_eq!(
+            billed(200, body.as_bytes()),
+            Err(Unreadable(crate::codec::PTR_USAGE_UNITS)),
+            "{body}"
+        );
+    }
+    assert_eq!(
+        billed(200, br#"{"usage":{"units":1,"output_tokens":-2}}"#),
+        Err(Unreadable(crate::codec::PTR_USAGE_OUTPUT_TOKENS))
+    );
+}
+
+/// RED (audit plane-decisions#5): the token counts a success reports are billed in their classes.
+#[test]
+fn a_success_bills_the_tokens_it_reports() {
+    assert_eq!(
+        billed(
+            200,
+            br#"{"usage":{"units":2,"input_tokens":12,"output_tokens":5}}"#
+        ),
+        Ok(vec![(DECISION, 2), (INPUT, 12), (OUTPUT, 5), (FEE, 1)])
+    );
+    assert_eq!(
+        billed(200, br#"{"usage":{"input_tokens":9}}"#),
+        Ok(vec![(DECISION, 1), (INPUT, 9), (FEE, 1)])
+    );
+}
+
+#[test]
+fn the_counts_never_read_state_or_answers() {
+    assert_eq!(
+        billed(
+            200,
+            br#"{"usage":{"units":7},"state":{"usage":{"units":999}},"answers":{"units":888}}"#
+        ),
+        Ok(vec![(DECISION, 7), (FEE, 1)])
+    );
 }
 
 #[test]
@@ -256,18 +343,21 @@ fn the_splice_rewrites_the_top_level_model_value_alone() {
 fn the_request_fee_is_counted_on_a_success_alone() {
     let mut ok = FarEndReading::new();
     ok.piece(br#"{"usage":{"units":3}}"#);
-    let fee = ok.fee(Some(200)).expect("a success owes its fee");
-    assert_eq!(
-        (fee.class, fee.amount, fee.reported),
-        (tail::CLASS_FEE_INDEX, 1, true)
-    );
+    let fee = ok.counts(Some(200)).expect("a success")[3].expect("a success owes its fee");
+    assert_eq!((fee.class, fee.amount, fee.reported), (FEE, 1, true));
     // RED ARMS.
-    assert_eq!(ok.fee(Some(422)), None, "a refused request owes none");
-    assert_eq!(ok.fee(Some(500)), None);
-    assert_eq!(ok.fee(None), None, "no status read, no fee");
-    let mut failed = FarEndReading::new();
-    failed.piece(br#"{"error":{"code":"x","message":"y"}}"#);
-    assert_eq!(failed.fee(Some(200)), None, "an error answer owes none");
+    assert_eq!(
+        ok.counts(Some(422)),
+        Ok([None; 4]),
+        "a refused request owes none"
+    );
+    assert_eq!(ok.counts(Some(500)), Ok([None; 4]));
+    assert_eq!(ok.counts(None), Ok([None; 4]), "no status read, no fee");
+    assert_eq!(
+        billed(200, br#"{"error":{"code":"x","message":"y"}}"#),
+        Ok(vec![]),
+        "an error answer owes none"
+    );
 }
 
 /// THE CALLER'S FIELDS REACH THE FAR END (DEC-SERVE Q2, DIALECT-FIDELITY F2): every one, in order,

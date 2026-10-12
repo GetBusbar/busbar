@@ -242,6 +242,23 @@ fn the_models_subject_configures_two_models_one_with_an_upstream_model() {
             "{m}"
         );
     }
+    // THE DESIGN §7: the card prices `decision`, `input_tokens` and `output_tokens`, all three
+    // required (0 = free), on both subjects.
+    let main = xtask::conformance_record::jev_subject_config(
+        41000,
+        41001,
+        std::path::Path::new("/tmp/signing.key"),
+    );
+    let main: serde_yaml::Value = serde_yaml::from_str(&main).expect("the config is YAML");
+    for (doc, m) in [(&doc, "jev-1"), (&doc, UPSTREAM_MODEL), (&main, "jev-1")] {
+        for class in ["input_tokens", "output_tokens"] {
+            assert_eq!(
+                doc["decisions"]["rate_card"][m]["units"][class].as_u64(),
+                Some(0),
+                "{m} {class}"
+            );
+        }
+    }
     assert_eq!(doc["store"]["module"].as_str(), Some("memory"));
 }
 
