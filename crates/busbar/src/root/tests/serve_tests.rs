@@ -935,10 +935,10 @@ pub(super) mod session_door {
             "{{protocol: {protocol}, base_url: 'http://127.0.0.1:{port}', api_key: {api_key}, error_map: {{}}}}",
         ))
         .expect("a provider entry");
-        let providers = provider_routes(&std::collections::HashMap::from([(
-            "p".to_string(),
-            provider,
-        )]));
+        let providers = provider_routes(
+            &std::collections::HashMap::from([("p".to_string(), provider)]),
+            &busbar_kernel::config_validate::MetadataPosture::default(),
+        );
         let catalog: std::collections::HashMap<String, busbar_contract::config::ModelCfg> =
             serde_yaml::from_str("{m-cap: {provider: p}}").expect("the models catalog");
         let secrets = busbar_kernel::config::secret::SecretResolver::builtins_only();
