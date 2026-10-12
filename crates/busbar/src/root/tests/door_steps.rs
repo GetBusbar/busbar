@@ -1022,6 +1022,7 @@ fn jwt_bearer_routes(
         auths: std::sync::Arc::new(linked_mint_plugin(table)),
         conns: std::sync::Arc::new(busbar_core_connector::Connector::new()),
         stream_ceiling_secs: 1,
+        models: None,
         upgrades: Vec::new(),
     };
     let section: serde_yaml::Value =

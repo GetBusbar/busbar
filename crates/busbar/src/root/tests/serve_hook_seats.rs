@@ -677,7 +677,10 @@ pub(super) async fn rig(instance: &'static str, opts: RigOpts<'_>) -> DoorRig {
     let defs: HashMap<String, busbar_kernel::config::ProviderDef> =
         serde_yaml::from_str(&defs_yaml).expect("the providers");
     let cfg = busbar_kernel::config::resolve(&deploy, &defs).expect("resolves");
-    let providers = provider_routes(&cfg.providers);
+    let providers = provider_routes(
+        &cfg.providers,
+        &busbar_kernel::config_validate::MetadataPosture::default(),
+    );
     let sections = kernel_sections(&cfg);
     let model_pools = crate::root::model_egress::ModelPools::of(&cfg);
 
