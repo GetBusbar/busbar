@@ -631,10 +631,14 @@ impl Registration {
 ///
 /// THE SELF-TEST BUDGET, AND WHY IT IS NOT MEASURED IN SECONDS.
 ///
-/// `cargo test -p xtask` runs `xtask selftest`, which drives EVERY registered gate's cases. That is
-/// the only place several of these gates are ever proven RED-able, so the shard cannot simply be
-/// made smaller -- and it grew past fifty-one minutes, on a runner whose ssh session dies at about
-/// fifty and whose gate job was cancelled at twenty-five. Nothing measured it. A rule that grew a
+/// The `test:xtask-selftest` check runs `xtask selftest <gate>` for every registered gate, split
+/// across the hop's shards (`cargo xtask gate --list` names the parts), and that is the ONE place
+/// every gate's cases are driven: `cargo test -p xtask` pins the dispatcher's arms with one gate's
+/// self-test, never all of them (verification runs once per input). That check is the only place
+/// several of these gates are ever proven RED-able, so the shard cannot simply be made smaller --
+/// and, when `cargo test -p xtask` still ran the whole registry, it grew past fifty-one minutes,
+/// on a runner whose ssh session dies at about fifty and whose gate job was cancelled at
+/// twenty-five. Nothing measured it. A rule that grew a
 /// whole-tree scan per plant looked exactly like one that did not, right up to the point where the
 /// job was killed and the verdict was "cancelled", which is neither green nor red.
 ///
@@ -706,7 +710,15 @@ const MEASURED_KIND_ISOLATION_SHIP: f64 = 536_090.0; // 141 cases, 539.4 s (opt 
 const MEASURED_SHIP_READY: f64 = 23_918.0; // 17 cases, 23.6 s (opt 0: under the default)
 const MEASURED_DESIGN_BINDINGS: f64 = 15_089.0; // 22 cases, 15.0 s (opt 0: under the default)
 const MEASURED_PLANE_TRANSPORT_NEUTRALITY: f64 = 12_959.0; // 9 cases, 12.9 s (opt 0: under the default)
-const MEASURED_TELLER_STEPS: f64 = 19_850.0; // 21 cases, 19.9 s serial on the CI hop (was 15 cases, 12_382; the new `jev.rig` resolver case and the derived-roster cases, ruling Q12(a)); opt 0: under the default
+/// RE-MEASURED for the decision plane's seven gating rig cells (ARCHITECT Q12(a): raise the measure to
+/// the measured units and keep the case). The battery grew from 15 to 22 cases (the derived roster's
+/// plants and the `jev.rig|<check>` resolver plant), and the serial re-take read 21 803 units on
+/// Latchkey large. The 12 382 before it is the 15-case figure taken at [`TAKEN`]; the teller lane's
+/// 21-case re-take (19 850, #628) is below this battery, which carries the jev rig's resolver case.
+const MEASURED_TELLER_STEPS: f64 = 21_803.0; // 22 cases, --jobs 1 re-take (was 12 382, 15 cases)
+/// Where [`MEASURED_TELLER_STEPS`] was taken: the jev rig cells' head, `xtask selftest teller-steps`
+/// re-taken at `--jobs 1`, Latchkey large (job cli-d72bc289).
+const TAKEN_TELLER_STEPS: &str = "2026-10-07 75ebf74496";
 const MEASURED_CONFIG_SCHEMA: f64 = 11_917.0; // 69 cases, 11.9 s (opt 0: under the default)
 const MEASURED_SEAL_WITNESS: f64 = 11_332.0; // 6 cases, 14.2 s (opt 0: under the default)
 const MEASURED_NO_DEFERRAL_STRICT_DONE: f64 = 10_704.0; // 16 cases, 10.6 s (opt 0: under the default)
@@ -890,8 +902,8 @@ const SELFTEST_BUDGETS: &[Budget] = &[
         gate: "teller-steps",
         measured: MEASURED_TELLER_STEPS,
         allowed: MEASURED_TELLER_STEPS * BUDGET_SLACK,
-        taken: TAKEN,
-        why: "Twenty-one cases over the teller-step table and the root's legs. Not analysed here; the entry is the measurement, written down so that a doubling is a red row rather than minutes nobody attributes.",
+        taken: TAKEN_TELLER_STEPS,
+        why: "Twenty-two cases over the teller-step table, its roster derived from the tree, the jev rig's declared checks and the root's legs. Not analysed here; the entry is the measurement, written down so that a doubling is a red row rather than minutes nobody attributes.",
     },
     Budget {
         gate: "config-schema",
@@ -2192,11 +2204,52 @@ pub fn budget_reading_within(
     reading
 }
 
-/// THE `cargo xtask selftest` JUDGE: [`verify_report`]'s verdict and coverage, AND the work-unit
-/// budget read through [`budget_reading`], so an over-budget contended reading is re-taken serially
-/// before it counts. The one place the budget is judged.
+/// THE BUDGET IS THE BINARY'S, and only the binary's — the same split as
+/// [`enable_process_watchdog`], for the same reason. `cargo test -p xtask` drives
+/// [`crate::cli::main`] in-process, so `gate <name> --selftest` and `selftest <gate>` reached from
+/// a test used to read the work-unit budget on cores shared with every other test process: under a
+/// full-workspace nextest run the ruler read 2.5ms a unit, `segregation` came in at 10 744 units
+/// serially against 9 448, and an argument-parsing test went red on a budget it never asked about
+/// (ruling (a), Law 8). `xtask`'s `main` calls [`enable_selftest_budget`]; nothing else does.
+static SELFTEST_BUDGET: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Let [`verify_selftest`] read the work-unit budget. Called by the `xtask` BINARY and by nothing
+/// else.
+pub fn enable_selftest_budget() {
+    SELFTEST_BUDGET.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// Whether this process judges the work-unit budget: the binary does, a test process never does.
+#[must_use]
+pub fn selftest_budget_enabled() -> bool {
+    SELFTEST_BUDGET.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+/// THE `cargo xtask selftest` JUDGE: [`verify_report`]'s verdict and coverage, AND — in the binary,
+/// [`enable_selftest_budget`] — the work-unit budget read through [`budget_reading`], so an
+/// over-budget contended reading is re-taken serially before it counts. The one place the budget
+/// is judged.
 pub fn verify_selftest(gate: &dyn Gate, report: &Report<'_>, cx: &Ctx) -> Result<(), Vec<String>> {
-    verify_report_with(gate, report, &budget_reading(gate, report, cx))
+    let budget = selftest_budget_enabled().then(|| selftest_budget(gate.name()));
+    verify_selftest_within(gate, report, cx, budget)
+}
+
+/// [`verify_selftest`] against `budget` rather than the table's; `None` is a process that does not
+/// judge the budget, which is [`verify_report`] exactly.
+pub fn verify_selftest_within(
+    gate: &dyn Gate,
+    report: &Report<'_>,
+    cx: &Ctx,
+    budget: Option<f64>,
+) -> Result<(), Vec<String>> {
+    match budget {
+        Some(budget) => verify_report_with(
+            gate,
+            report,
+            &budget_reading_within(gate, report, cx, budget),
+        ),
+        None => verify_report(gate, report),
+    }
 }
 
 /// [`verify_report`] with the budget judged by `reading` ([`budget_verdict`]).
