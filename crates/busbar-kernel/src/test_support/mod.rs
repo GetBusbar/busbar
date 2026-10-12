@@ -2433,20 +2433,30 @@ pub fn fetch_stand_in(
     }
 }
 
+/// A test build's release key: the first-party key [`trust_policy`] holds in place of the embedded
+/// one, whose private half no test holds. A test signs a first-party plugin with it (publisher
+/// `busbar`), as the loader's conformance tests sign under a release key of their own.
+pub fn test_release_key() -> busbar_plugin_loader::sign::SigningKey {
+    busbar_plugin_loader::sign::SigningKey::from_bytes(&[0x5a; 32])
+}
+
 /// A test build's trust resolution (it has no composition root): the `plugins:` block through the
-/// loader's `TrustPolicy::from_config`, exactly as the root resolves it.
+/// loader's `TrustPolicy::from_config`, exactly as the root resolves it, its first-party key
+/// [`test_release_key`].
 pub fn trust_policy(
     cfg: &crate::config::PluginsCfg,
 ) -> Result<busbar_plugin_loader::sign::TrustPolicy, String> {
     use busbar_plugin_loader::sign::{TrustInput, TrustPolicy};
-    TrustPolicy::from_config(TrustInput {
+    let mut policy = TrustPolicy::from_config(TrustInput {
         publishers: &cfg.publisher_keys(),
         allow_unsigned: cfg.trust.allow_unsigned,
         allow_third_party: cfg.trust.allow_third_party,
         min_versions: &cfg.min_versions,
         first_party_floors: &cfg.first_party_floors,
         binary_version: env!("CARGO_PKG_VERSION"),
-    })
+    })?;
+    policy.first_party_key = Some(test_release_key().verifying_key());
+    Ok(policy)
 }
 
 /// A test build's store axis (it has no composition root): the loader's axis over a dispatcher of
