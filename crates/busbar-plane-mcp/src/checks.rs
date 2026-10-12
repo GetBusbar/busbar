@@ -19,7 +19,10 @@ use crate::codec::{
     PROTOCOL_VERSION,
 };
 
-/// The revisions this dispatch serves, as `data.supported` names them.
+/// The revisions the STATELESS dispatch serves, as `data.supported` names them: the revision a
+/// request's own `_meta` may name. The session revisions are never named there, because none of
+/// them is carried in `_meta`: a client of theirs opens a session with `initialize`, whose answer
+/// negotiates the revision ([`crate::revision::negotiate`]).
 pub const SUPPORTED_PROTOCOL_VERSIONS: &[&str] = &[PROTOCOL_VERSION];
 
 /// The status every refusal here is answered with.

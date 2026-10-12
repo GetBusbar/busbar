@@ -1,33 +1,18 @@
-//! The plane, driven over the bytes the conformance battery actually sends.
-//!
-//! ## Why this shape, and what it is not
+//! The plane's vocabulary against the conformance battery, and the plane's door driven both ways.
 //!
 //! The judge of this work is the battery: the official suite and the in-house adversarial battery,
-//! both of which speak to a booted node over a socket. Neither can run here, because the composition
-//! root does not yet hand a request to this plane — the existing engine still answers every one of
-//! them. So these tests do the next thing that is actually evidence rather than decoration: they
-//! build requests the way the battery's own request builder builds them, drive each through this
-//! plane's decode step, and assert the operation class and the correlation it produces. The
-//! vocabulary is read out of the battery's own suites and out of the codec's own source, so a
-//! battery that starts sending something new fails HERE rather than in a run someone has to
-//! interpret.
+//! both of which speak to a booted node over a socket. The vocabulary tests here read the
+//! battery's own sources (its method names, error code table, metadata keys and revision) and
+//! assert this crate's tables carry them, so a battery that starts sending something new fails HERE
+//! rather than in a run someone has to interpret. The `both_ways` module drives the served door
+//! through the loader, linked and dropped-in, and compares the transcripts.
 //!
-//! What these tests DO NOT do is drive the existing engine beside this plane and compare. That is
-//! written down as a limitation rather than worked around: the existing plane's request entry point
-//! is visible to its own crate only, it takes an engine handle and an async runtime, and its request
-//! and context types are private. There is no way to call it from here at all. The envelope side is
-//! therefore pinned differently — against the serializer, the codec's own code table and the
-//! battery's own metadata keys, byte for byte — and the operation side is pinned against the
-//! battery's own vocabulary.
+//! The tests that drove the unserved `Plane` trait impl (decode, encode, verify, route, meter) were
+//! retired with that impl (finding 12; the coordinator's order "delete the dead Plane impl with
+//! its struck route"); the served door's own tests carry what the door does.
 
-mod common;
-
-use busbar_contract::plane::{
-    Ingress, Plane, PlaneMeta, Progress, Response, SessionPlane, UnitDraft,
-};
-use busbar_contract::wire::{Decode, DiscardCode, FrameCursor};
+use busbar_contract::plane::PlaneMeta;
 use busbar_plane_mcp::{jsonrpc, tool_facts as facts, tool_ops as ops, McpPlane};
-use common::{frame, response_frame, Scaffold};
 use std::path::{Path, PathBuf};
 
 /// The battery's own source tree.
@@ -89,44 +74,6 @@ fn looks_like_a_method(piece: &str) -> bool {
     heads.iter().any(|h| piece.starts_with(h)) && !piece.contains(' ')
 }
 
-/// One request envelope, built the way the battery's own builder builds one.
-///
-/// The battery always sends the metadata block, so every request here does too: a fixture that
-/// omitted it would be exercising a shape no run ever produces.
-fn request(id: &str, method: &str) -> Vec<u8> {
-    format!(
-        r#"{{"jsonrpc":"2.0","id":{id},"method":"{method}","params":{{"_meta":{{"{}":"2026-07-28","{}":{{}}}}}}}}"#,
-        facts::META_PROTOCOL_VERSION,
-        facts::META_CLIENT_CAPABILITIES
-    )
-    .into_bytes()
-}
-
-/// One notification, built the same way.
-fn notification(method: &str) -> Vec<u8> {
-    format!(r#"{{"jsonrpc":"2.0","method":"{method}","params":{{}}}}"#).into_bytes()
-}
-
-/// Drive one body through the decode step and hand back what the plane made of it.
-fn decode(plane: &McpPlane, body: &[u8]) -> Result<Ingress<'static>, Decode> {
-    let scaffold = Box::leak(Box::new(Scaffold::new("http")));
-    let ctx = scaffold.ctx();
-    let frames: &'static [busbar_contract::wire::Frame] = Box::leak(vec![frame(body)].into());
-    let mut cursor = FrameCursor::new(frames);
-    // The context borrows the leaked scaffold, so the draft it produces borrows the leaked frames
-    // and outlives this call. Leaking is the right trade for a test: the real arena resets per unit,
-    // and a test that had to model the reset would be testing the arena rather than the plane.
-    plane.decode_ingress(&mut cursor, None, &ctx)
-}
-
-/// The draft a decode produced, or a failure naming what it produced instead.
-fn draft_of(ingress: Ingress<'static>) -> UnitDraft<'static> {
-    match ingress {
-        Ingress::Open(d) | Ingress::OneShot(d) | Ingress::Handshake(d) => *d,
-        other => panic!("a well-formed request decoded as {other:?}"),
-    }
-}
-
 /// Every method the battery sends is one this plane carries, in one of its three roles.
 #[test]
 fn every_method_the_battery_sends_is_carried() {
@@ -165,135 +112,30 @@ fn rows_of(sender: ops::Sender) -> Vec<&'static ops::RpcMethodRow> {
     ops::METHODS.iter().filter(|r| r.sender == sender).collect()
 }
 
-/// Every method a caller sends decodes to a declared class, carrying the caller's identifier.
-#[test]
-fn every_client_method_decodes() {
-    let plane = McpPlane::EMPTY;
-    let rows = rows_of(ops::Sender::Client);
-    assert_eq!(rows.len(), CLIENT_ROWS);
-    for row in rows {
-        let body = request("1", row.method);
-        let draft = draft_of(decode(&plane, &body).unwrap_or_else(|e| {
-            panic!(
-                "a caller may send {} and this plane answered {e:?}",
-                row.method
-            )
-        }));
-        assert_eq!(draft.op, row.op, "{} named the wrong class", row.method);
-        assert_eq!(
-            draft.correlation_out.expect("a request correlates").value,
-            busbar_contract::ids::CorrelationValue::Num(1),
-            "{} lost its identifier",
-            row.method
-        );
-        // A request answers nothing; it is answered.
-        assert!(draft.correlates.is_none());
-    }
-}
-
-/// The four the battery sends by name decode to exactly the classes they should.
+/// The method table keeps the roles the door serves: how many rows each role has, every row's class
+/// is one the plane declares, and exactly the held stream is event-framed.
 ///
-/// The battery's suites send these four and no others, so this is the narrowest statement that
-/// covers what a run actually exercises.
+/// The surviving, plane-free half of what the decode-driven tests asserted (finding 12): the door
+/// reads this same table (`ops::method_row_for`), so the table is what is pinned here.
 #[test]
-fn the_four_the_battery_sends_name_their_classes() {
-    let plane = McpPlane::EMPTY;
-    for (method, expected) in [
-        ("server/discover", ops::OP_DISCOVER),
-        ("tools/list", ops::OP_TOOLS_LIST),
-        ("tools/call", ops::OP_TOOL_CALL),
-        ("subscriptions/listen", ops::OP_SUBSCRIPTIONS_LISTEN),
-    ] {
-        let draft = draft_of(
-            decode(&plane, &request("1", method)).expect("the battery's own method decodes"),
-        );
-        assert_eq!(draft.op, expected);
-    }
-}
-
-/// A method the battery sends deliberately, expecting a refusal, is refused.
-#[test]
-fn the_batterys_nonsense_method_is_refused() {
-    let plane = McpPlane::EMPTY;
-    assert_eq!(
-        decode(&plane, &request("1", "this/method/does/not/exist")),
-        Err(Decode::UnsupportedOperation)
-    );
-}
-
-/// A method only an upstream may send is refused on the ingress side.
-///
-/// A caller that could send one would be opening a unit only a paired server is allowed to open,
-/// and this node would answer it on the caller's behalf.
-#[test]
-fn a_caller_cannot_send_an_upstreams_method() {
-    let plane = McpPlane::EMPTY;
-    let rows = rows_of(ops::Sender::Provider);
-    assert_eq!(rows.len(), PROVIDER_ROWS);
-    for row in rows {
-        assert_eq!(
-            decode(&plane, &request("1", row.method)),
-            Err(Decode::UnsupportedOperation),
-            "a caller was allowed to send {}",
-            row.method
-        );
-    }
-}
-
-/// A held stream opens a unit; every other method is complete in one frame.
-#[test]
-fn only_the_held_stream_opens_a_unit() {
-    let plane = McpPlane::EMPTY;
-    let rows = rows_of(ops::Sender::Client);
-    assert_eq!(rows.len(), CLIENT_ROWS);
-    for row in rows {
-        match (decode(&plane, &request("1", row.method)), row.event_framed) {
-            (Ok(Ingress::Open(_)), true) | (Ok(Ingress::OneShot(_)), false) => {}
-            (other, _) => panic!("{} decoded as {other:?}", row.method),
-        }
-    }
-}
-
-/// A notice this plane recognises opens a unit that answers nothing.
-#[test]
-fn a_recognised_notice_opens_a_unit_that_answers_nothing() {
-    let plane = McpPlane::EMPTY;
+fn the_method_table_keeps_its_roles_and_its_declared_classes() {
+    assert_eq!(rows_of(ops::Sender::Client).len(), CLIENT_ROWS);
+    assert_eq!(rows_of(ops::Sender::Provider).len(), PROVIDER_ROWS);
     assert_eq!(ops::NOTIFICATIONS.len(), NOTICE_ROWS);
-    for name in ops::NOTIFICATIONS {
-        let draft = draft_of(decode(&plane, &notification(name)).expect("a notice decodes"));
-        assert_eq!(draft.op, ops::OP_NOTIFICATION);
-        // Nothing correlates: a notice obliges no answer, so there is nothing to answer it with.
-        assert!(draft.correlation_out.is_none());
-        assert!(draft.correlates.is_none());
+    for row in ops::METHODS {
+        assert!(
+            McpPlane::OP_CLASSES.contains(&row.op),
+            "{} names the undeclared class {}",
+            row.method,
+            row.op
+        );
     }
-}
-
-/// A notice this plane does not recognise is dropped, never refused.
-///
-/// The specification forbids answering a notice, and a refusal is an answer.
-#[test]
-fn an_unrecognised_notice_is_dropped() {
-    let plane = McpPlane::EMPTY;
-    assert_eq!(
-        decode(&plane, &notification("notifications/something/else")),
-        Ok(Ingress::Discard {
-            reason: DiscardCode::Unsupported
-        })
-    );
-}
-
-/// The metadata block the battery sends is read, keys and all.
-///
-/// The keys carry separators, which a pointer would read as levels, so this is the case that would
-/// silently read as absent if the reader were written the obvious way.
-#[test]
-fn the_batterys_metadata_block_is_read() {
-    let plane = McpPlane::EMPTY;
-    let draft = draft_of(decode(&plane, &request("1", "tools/list")).expect("it decodes"));
-    assert_eq!(
-        draft.facts.get(facts::FACT_PROTOCOL_VERSION),
-        Some(busbar_contract::bounded::FactValue::Str("2026-07-28"))
-    );
+    let framed: Vec<_> = ops::METHODS
+        .iter()
+        .filter(|r| r.event_framed)
+        .map(|r| r.op)
+        .collect();
+    assert_eq!(framed, vec![ops::OP_SUBSCRIPTIONS_LISTEN]);
 }
 
 /// The revision the battery declares is the revision the codec declares.
@@ -366,746 +208,6 @@ fn the_metadata_keys_are_the_batterys_own() {
     ] {
         assert!(source.contains(key), "the battery no longer sends {key}");
     }
-}
-
-/// An answer that already is an envelope goes back exactly as it arrived.
-#[test]
-fn an_answer_goes_back_as_it_arrived() {
-    let plane = McpPlane::EMPTY;
-    let scaffold = Scaffold::new("http");
-    let ctx = scaffold.ctx();
-    let answer = br#"{"id":1,"jsonrpc":"2.0","result":{"resultType":"complete","tools":[]}}"#;
-    let r = Response {
-        ir: busbar_contract::bounded::Ir::new(answer, &[]),
-        finish: busbar_contract::unit::FinishClass::Complete,
-        facts: busbar_contract::bounded::Facts::new(),
-    };
-    let out = plane
-        .encode_response(&r, None, &ctx)
-        .expect("it re-encodes");
-    assert_eq!(out.as_slice(), answer);
-}
-
-/// An answer this node composed itself is wrapped, stamped and given the caller's identifier.
-#[test]
-fn a_composed_answer_is_stamped_and_wrapped() {
-    let plane = McpPlane::EMPTY;
-    let scaffold = Scaffold::new("http");
-    let ctx = scaffold.ctx();
-    let mut facts_map = busbar_contract::bounded::Facts::new();
-    facts_map
-        .set(
-            facts::FACT_RPC_ID,
-            busbar_contract::bounded::FactValue::Str("1"),
-        )
-        .expect("one key fits");
-    let r = Response {
-        ir: busbar_contract::bounded::Ir::new(br#"{"tools":[]}"#, &[]),
-        finish: busbar_contract::unit::FinishClass::Complete,
-        facts: facts_map,
-    };
-    let out = plane.encode_response(&r, None, &ctx).expect("it wraps");
-    assert_eq!(
-        core::str::from_utf8(out.as_slice()).unwrap(),
-        r#"{"id":1,"jsonrpc":"2.0","result":{"resultType":"complete","tools":[]}}"#
-    );
-}
-
-/// AN UPSTREAM CANNOT SEND A CALLER'S METHOD — the mirror of
-/// [`a_caller_cannot_send_an_upstreams_method`], and the direction that is actually dangerous.
-///
-/// `ops::method_row_for` searches the WHOLE vocabulary with no sender filter. Without the guard in
-/// `decode_response`, a compromised upstream naming `tools/call` on the response leg had it minted
-/// as a genuine unit and run through all seven governance steps under the ORIGINAL CALLER's
-/// identity, budget and approval grant — a confused deputy spending its victim's authority for work
-/// the victim never requested. Ingress had this check; egress did not.
-#[test]
-fn an_upstream_cannot_send_a_callers_method() {
-    let plane = McpPlane::EMPTY;
-    let scaffold = Scaffold::new("http");
-    let ctx = scaffold.ctx();
-    let rows = rows_of(ops::Sender::Client);
-    assert_eq!(rows.len(), CLIENT_ROWS);
-    for row in rows {
-        let asked = format!(
-            r#"{{"jsonrpc":"2.0","id":7,"method":"{}","params":{{}}}}"#,
-            row.method
-        );
-        let frames = vec![response_frame(asked.as_bytes())];
-        let mut cursor = FrameCursor::new(&frames);
-        match plane
-            .decode_response(&mut cursor, &sealed_destination(), None, &ctx)
-            .expect("a refused method still decodes to a verdict")
-        {
-            Progress::Discard { .. } => {}
-            other => panic!(
-                "an upstream was allowed to open a unit with the caller-only method {}: {other:?}",
-                row.method
-            ),
-        }
-    }
-}
-
-/// A document a server sends back mid-call opens a unit of the server's own.
-#[test]
-fn a_servers_own_request_opens_a_provider_unit() {
-    let plane = McpPlane::EMPTY;
-    let scaffold = Scaffold::new("http");
-    let ctx = scaffold.ctx();
-    let asked = br#"{"jsonrpc":"2.0","id":42,"method":"sampling/createMessage","params":{}}"#;
-    let frames = vec![response_frame(asked)];
-    let mut cursor = FrameCursor::new(&frames);
-    match plane
-        .decode_response(&mut cursor, &sealed_destination(), None, &ctx)
-        .expect("a server's own request decodes")
-    {
-        Progress::OneShot(draft) => {
-            assert_eq!(draft.op, ops::OP_SAMPLING);
-            assert_eq!(
-                draft.correlation_out.expect("it correlates").value,
-                busbar_contract::ids::CorrelationValue::Num(42)
-            );
-        }
-        other => panic!("a server's own request decoded as {other:?}"),
-    }
-}
-
-/// A result that asks the caller for something is a turn, not an ending.
-#[test]
-fn a_result_that_asks_for_something_is_a_turn() {
-    let plane = McpPlane::EMPTY;
-    let scaffold = Scaffold::new("http");
-    let ctx = scaffold.ctx();
-    for (kind, expected) in [
-        (
-            jsonrpc::RESULT_TYPE_COMPLETE,
-            busbar_contract::unit::FinishClass::Complete,
-        ),
-        (
-            jsonrpc::RESULT_TYPE_INPUT_REQUIRED,
-            busbar_contract::unit::FinishClass::TurnComplete,
-        ),
-        (
-            jsonrpc::RESULT_TYPE_TASK,
-            busbar_contract::unit::FinishClass::TurnComplete,
-        ),
-    ] {
-        let answer = format!(r#"{{"id":1,"jsonrpc":"2.0","result":{{"resultType":"{kind}"}}}}"#)
-            .into_bytes();
-        let frames = vec![response_frame(&answer)];
-        let mut cursor = FrameCursor::new(&frames);
-        match plane
-            .decode_response(&mut cursor, &sealed_destination(), None, &ctx)
-            .expect("an answer decodes")
-        {
-            Progress::Terminal { r, .. } => assert_eq!(r.finish, expected, "{kind} ended wrongly"),
-            other => panic!("{kind} decoded as {other:?}"),
-        }
-    }
-}
-
-/// P-ITEM: EMPTY REPLY / UNARY-EMPTY TERMINALITY (spec DONE item 2, "All P-item behaviours match
-/// 1.5.5"; the drive log's P4, commit 470351a480, which the money briefs name "mcp bills empty
-/// answer as complete"). An envelope with a real result is billed complete exactly once; one with
-/// neither result nor error is billed `Partial`, never complete.
-///
-/// This is a money boundary. A JSON-RPC answer carries exactly one of `result` or `error`; a
-/// document with NEITHER used to fall through to `Complete` and charge the caller for a full answer
-/// that never came. A genuine result closes the unit `Complete`; an empty envelope is `Partial`.
-/// The 1.5.5 behaviour this plane matches is its one surface's (the llm surface; owner correction
-/// 2026-09-28): a response the caller cannot use is not billed as a delivered one (v1.5.5
-/// `crates/busbar/src/proxy/response_body.rs:415-440`).
-#[test]
-fn p_item_empty_reply_only_a_real_result_bills_complete() {
-    let plane = McpPlane::EMPTY;
-    let scaffold = Scaffold::new("http");
-    let ctx = scaffold.ctx();
-
-    // A genuine result: complete, exactly once (one Terminal, one Complete).
-    let answer = br#"{"id":1,"jsonrpc":"2.0","result":{"resultType":"complete","tools":[]}}"#;
-    let frames = vec![response_frame(answer)];
-    let mut cursor = FrameCursor::new(&frames);
-    match plane
-        .decode_response(&mut cursor, &sealed_destination(), None, &ctx)
-        .expect("a real answer decodes")
-    {
-        Progress::Terminal { r, .. } => assert_eq!(
-            r.finish,
-            busbar_contract::unit::FinishClass::Complete,
-            "a real result must bill complete"
-        ),
-        other => panic!("a real result decoded as {other:?}"),
-    }
-
-    // An envelope with neither result nor error must NOT bill complete.
-    let empty = br#"{"id":1,"jsonrpc":"2.0"}"#;
-    let frames = vec![response_frame(empty)];
-    let mut cursor = FrameCursor::new(&frames);
-    match plane
-        .decode_response(&mut cursor, &sealed_destination(), None, &ctx)
-        .expect("an empty envelope decodes")
-    {
-        Progress::Terminal { r, .. } => assert_eq!(
-            r.finish,
-            busbar_contract::unit::FinishClass::Partial,
-            "an empty envelope must bill what arrived (Partial), never complete"
-        ),
-        other => panic!("an empty envelope decoded as {other:?}"),
-    }
-}
-
-/// `isError` yields a fact only when it is a JSON boolean.
-///
-/// A non-boolean `isError` (the string `"true"`, a number) used to read as `false`, reporting a
-/// failing tool as a succeeding one. It now yields no fact at all; a real boolean still yields
-/// itself. The answer is relayed unchanged either way, as predev relays it.
-#[test]
-fn a_non_boolean_is_error_is_not_read_as_success() {
-    let plane = McpPlane::EMPTY;
-    // Reading an answer consults no carrier, so the scaffold names none.
-    let scaffold = Scaffold::new("");
-    let ctx = scaffold.ctx();
-    for (flag, expected) in [
-        ("true", Some(true)),
-        ("false", Some(false)),
-        ("\"true\"", None),
-        ("\"false\"", None),
-        ("1", None),
-        ("{}", None),
-    ] {
-        let answer =
-            format!(r#"{{"id":1,"jsonrpc":"2.0","result":{{"content":[],"isError":{flag}}}}}"#)
-                .into_bytes();
-        let frames = vec![response_frame(&answer)];
-        let mut cursor = FrameCursor::new(&frames);
-        match plane
-            .decode_response(&mut cursor, &sealed_destination(), None, &ctx)
-            .expect("an answer decodes")
-        {
-            Progress::Terminal { r, .. } => {
-                let read = match r.facts.get(facts::FACT_IS_ERROR) {
-                    Some(busbar_contract::bounded::FactValue::Bool(b)) => Some(b),
-                    None => None,
-                    other => panic!("isError {flag} read as {other:?}"),
-                };
-                assert_eq!(read, expected, "isError {flag}");
-            }
-            other => panic!("isError {flag} decoded as {other:?}"),
-        }
-    }
-}
-
-/// A refusal is rendered as this dialect's error envelope, with the caller's identifier.
-#[test]
-fn a_refusal_is_rendered_in_this_dialect() {
-    let plane = McpPlane::EMPTY;
-    let scaffold = Scaffold::new("http");
-    let ctx = scaffold.ctx();
-    let draft = draft_of(decode(&plane, &request("8", "tools/call")).expect("it decodes"));
-    let refusal = busbar_contract::unit::Refusal {
-        step: busbar_contract::unit::Step::Approve,
-        reason: busbar_contract::unit::RefusalReason::ScopeMissing,
-        retry_after_secs: None,
-        stream: None,
-        correlates: None,
-    };
-    let out = plane
-        .encode_refusal(&refusal, Some(&draft), None, &ctx)
-        .expect("a refusal renders");
-    let value: serde_json::Value =
-        serde_json::from_slice(out.as_slice()).expect("it is a document");
-    assert_eq!(value["id"], 8);
-    assert_eq!(value["jsonrpc"], "2.0");
-    assert_eq!(value["error"]["code"], jsonrpc::CODE_REFUSED);
-}
-
-/// A refusal that implies a wait says so, under a member a caller can act on.
-#[test]
-fn a_refusal_that_implies_a_wait_says_so() {
-    let plane = McpPlane::EMPTY;
-    let scaffold = Scaffold::new("http");
-    let ctx = scaffold.ctx();
-    let refusal = busbar_contract::unit::Refusal {
-        step: busbar_contract::unit::Step::Admit,
-        reason: busbar_contract::unit::RefusalReason::OverBudget,
-        retry_after_secs: Some(30),
-        stream: None,
-        correlates: None,
-    };
-    let out = plane
-        .encode_refusal(&refusal, None, None, &ctx)
-        .expect("a refusal renders");
-    let value: serde_json::Value =
-        serde_json::from_slice(out.as_slice()).expect("it is a document");
-    assert_eq!(value["error"]["data"]["retryAfterSeconds"], 30);
-    // And the identifier member is present and empty, because a peer's own test for "is this a
-    // response" is whether the member is there at all.
-    assert!(value["id"].is_null());
-    assert!(value.as_object().expect("an object").contains_key("id"));
-}
-
-/// How many legs each operation class routes to.
-///
-/// The count is the shape of the plan — a call spends a grant, hops, and settles; a listing reaches
-/// one record — so a leg that appears or disappears is a change to what an operation DOES, and it is
-/// written down here rather than left to a bound that can never fail.
-const EXPECTED_LEGS: &[(&str, usize)] = &[
-    ("discover", 2),
-    ("tools_list", 2),
-    ("tool_call", 5),
-    ("prompts_list", 2),
-    ("prompt_get", 3),
-    ("resources_list", 2),
-    ("resource_templates_list", 2),
-    ("resource_read", 3),
-    ("completion", 1),
-    ("task_get", 1),
-    ("task_update", 2),
-    ("task_cancel", 2),
-    ("subscriptions_listen", 2),
-    ("sampling", 2),
-    ("roots_list", 1),
-    ("elicitation", 1),
-    ("notification", 1),
-];
-
-/// Every operation class routes to at least one leg, and every leg is one its schema declares.
-#[test]
-fn every_operation_routes_somewhere() {
-    let plane = McpPlane::EMPTY;
-    let scaffold = Scaffold::new("http");
-    let ctx = scaffold.ctx();
-    let seal = common::TestSeal;
-    let mut covered = 0usize;
-    for op in McpPlane::OP_CLASSES {
-        covered += 1;
-        let unit = busbar_contract::unit::Unit::new(
-            &seal,
-            busbar_contract::UnitKey::new(1),
-            busbar_contract::unit::Origin::Client,
-            None,
-            None,
-            busbar_contract::wire::Direction::Inbound,
-            Some(common::principal()),
-            *op,
-            busbar_contract::bounded::Ir::new(b"{}", &[]),
-            busbar_contract::bounded::Facts::new(),
-            None,
-        );
-        let plan = plane.route(&unit, &ctx);
-        assert!(!plan.legs.is_empty(), "{op} routes nowhere");
-        let name = op.to_string();
-        let expected = EXPECTED_LEGS
-            .iter()
-            .find(|(n, _)| *n == name)
-            .map(|(_, legs)| *legs)
-            .unwrap_or_else(|| panic!("{op} has no expected leg count written down"));
-        assert_eq!(plan.legs.len(), expected, "{op} routes to a different plan");
-        // A plan filled to its ceiling is one a further leg would be dropped from without a word,
-        // so the ceiling is asserted as headroom rather than as a bound that cannot fail.
-        assert!(
-            !plan.legs.is_full(),
-            "{op} routes with no leg headroom left"
-        );
-        for leg in plan.legs.as_slice() {
-            if let busbar_contract::dest::DestinationFacts::PlaneRecord { schema, op: rop } =
-                leg.destination
-            {
-                assert!(
-                    busbar_plane_mcp::tool_records::operations_for(schema).contains(&rop),
-                    "{op} reaches {schema} with an operation it does not declare: {rop}"
-                );
-            }
-        }
-    }
-    // The loop walks a DECLARED table, so an empty one would walk nothing and report `ok`, and a
-    // class dropped from it would leave its written-down leg count behind unchallenged. The two
-    // tables are pinned equal in size, which makes both of those a failure here.
-    assert_eq!(
-        covered,
-        EXPECTED_LEGS.len(),
-        "the plane declares {covered} operation classes and {} leg counts are written down: a \
-         class with no row is unproven, and a row with no class proves nothing",
-        EXPECTED_LEGS.len()
-    );
-}
-
-/// A call spends its grant before the hop, never after.
-///
-/// A grant spent after a hop is a grant a failed hop leaves unspent, and a retry can then spend it
-/// again. The order of the legs is what makes that impossible, so the order is what is asserted.
-#[test]
-fn a_call_spends_its_grant_before_the_hop() {
-    let plane = McpPlane::EMPTY;
-    let scaffold = Scaffold::new("http");
-    let ctx = scaffold.ctx();
-    let seal = common::TestSeal;
-    let unit = busbar_contract::unit::Unit::new(
-        &seal,
-        busbar_contract::UnitKey::new(1),
-        busbar_contract::unit::Origin::Client,
-        None,
-        None,
-        busbar_contract::wire::Direction::Inbound,
-        Some(common::principal()),
-        ops::OP_TOOL_CALL,
-        busbar_contract::bounded::Ir::new(b"{}", &[]),
-        busbar_contract::bounded::Facts::new(),
-        None,
-    );
-    let plan = plane.route(&unit, &ctx);
-    let legs = plan.legs.as_slice();
-    let redeem = legs
-        .iter()
-        .position(|l| {
-            matches!(
-                l.destination,
-                busbar_contract::dest::DestinationFacts::PlaneRecord { op, .. }
-                    if op == busbar_plane_mcp::tool_records::OP_REDEEM
-            )
-        })
-        .expect("a call spends a grant");
-    let hop = legs
-        .iter()
-        .position(|l| {
-            matches!(
-                l.destination,
-                busbar_contract::dest::DestinationFacts::Upstream { .. }
-            )
-        })
-        .expect("a call hops");
-    assert!(redeem < hop, "the grant is spent after the hop");
-}
-
-/// The metering step reports both declared classes for a call, and one for everything else.
-#[test]
-fn the_metering_step_reports_what_it_read() {
-    let plane = McpPlane::EMPTY;
-    let scaffold = Scaffold::new("http");
-    let ctx = scaffold.ctx();
-    let seal = common::TestSeal;
-    let answer = br#"{"id":1,"jsonrpc":"2.0","result":{"resultType":"complete"}}"#;
-    let r = Response {
-        ir: busbar_contract::bounded::Ir::new(answer, &[]),
-        finish: busbar_contract::unit::FinishClass::Complete,
-        facts: busbar_contract::bounded::Facts::new(),
-    };
-    for (op, lines) in [(ops::OP_TOOL_CALL, 2), (ops::OP_TOOLS_LIST, 1)] {
-        let unit = busbar_contract::unit::Unit::new(
-            &seal,
-            busbar_contract::UnitKey::new(1),
-            busbar_contract::unit::Origin::Client,
-            None,
-            None,
-            busbar_contract::wire::Direction::Inbound,
-            Some(common::principal()),
-            op,
-            busbar_contract::bounded::Ir::new(b"{}", &[]),
-            busbar_contract::bounded::Facts::new(),
-            None,
-        );
-        let locators = plane.meter(&unit, &r, &ctx);
-        assert_eq!(
-            locators.lines.len(),
-            lines,
-            "{op} metered the wrong number of lines"
-        );
-        for line in locators.lines.as_slice() {
-            // A plane names no lane and no price.
-            assert!(line.lane.is_none());
-            let declared = McpPlane::METER_CLASSES
-                .iter()
-                .find(|c| c.key == line.class)
-                .unwrap_or_else(|| panic!("{op} meters the undeclared class {}", line.class));
-            // Which SIDE the class says it is sized from is the side the quantity was taken from.
-            // Both quantities here come off the answer — the call is counted once it has been
-            // answered, and the byte count is the answer's own length — so both classes declare
-            // themselves sized from the answer. A class that declared the request and reported the
-            // answer would have a rate card pricing one side of the exchange at the size of the
-            // other.
-            assert_eq!(
-                declared.direction,
-                busbar_contract::ids::ClassDirection::Response,
-                "{} is metered off the answer and declares another side",
-                line.class
-            );
-        }
-    }
-}
-
-/// The introspection verb answers, and an undeclared verb does not.
-#[test]
-fn the_introspection_verb_answers_only_what_is_declared() {
-    let plane = McpPlane::EMPTY;
-    let scaffold = Scaffold::new("http");
-    let ctx = scaffold.ctx();
-    let facts = plane
-        .plane_facts(busbar_plane_mcp::tool_meta::VERB_TOOLS, None, &ctx)
-        .expect("the declared verb answers");
-    assert_eq!(
-        facts.facts.get("count"),
-        Some(busbar_contract::bounded::FactValue::Int(0))
-    );
-    assert!(plane
-        .plane_facts(
-            busbar_contract::ids::AdminVerbId::new("secrets"),
-            None,
-            &ctx
-        )
-        .is_err());
-}
-
-/// The per-name projection answers for the registration the subject names, and for no other.
-///
-/// This is the projection that could not be declared at all while the introspection verb carried no
-/// argument: one verb, one subject, one registration. A subject naming nothing is refused rather
-/// than answered empty, because "there is no such server" is not "that server has nothing to say".
-#[test]
-fn the_per_name_projection_answers_for_the_named_registration() {
-    static SERVERS: &[busbar_plane_mcp::Server] = &[
-        busbar_plane_mcp::Server {
-            id: "alpha",
-            lane: busbar_contract::ids::LaneId::new("mcp-a"),
-            host: "alpha.invalid:443",
-            transport: "http",
-        },
-        busbar_plane_mcp::Server {
-            id: "beta",
-            lane: busbar_contract::ids::LaneId::new("mcp-b"),
-            host: "",
-            transport: "stdio",
-        },
-    ];
-    let plane = McpPlane::new(SERVERS);
-    let scaffold = Scaffold::new("http");
-    let ctx = scaffold.ctx();
-    let verb = busbar_plane_mcp::tool_meta::VERB_SERVER;
-
-    let alpha = plane
-        .plane_facts(verb, Some("alpha"), &ctx)
-        .expect("a named registration answers");
-    assert_eq!(
-        alpha.facts.get("name"),
-        Some(busbar_contract::bounded::FactValue::Str("alpha"))
-    );
-    assert_eq!(
-        alpha.facts.get("lane"),
-        Some(busbar_contract::bounded::FactValue::Str("mcp-a"))
-    );
-    assert_eq!(
-        alpha.facts.get("transport"),
-        Some(busbar_contract::bounded::FactValue::Str("http"))
-    );
-    assert_eq!(
-        alpha.facts.get("local"),
-        Some(busbar_contract::bounded::FactValue::Bool(false))
-    );
-
-    // The other registration answers for itself, so the subject is what selects, not the order.
-    let beta = plane
-        .plane_facts(verb, Some("beta"), &ctx)
-        .expect("the other named registration answers");
-    assert_eq!(
-        beta.facts.get("lane"),
-        Some(busbar_contract::bounded::FactValue::Str("mcp-b"))
-    );
-    assert_eq!(
-        beta.facts.get("local"),
-        Some(busbar_contract::bounded::FactValue::Bool(true))
-    );
-
-    // A subject that names nothing, and no subject at all, are both refusals.
-    assert!(plane.plane_facts(verb, Some("gamma"), &ctx).is_err());
-    assert!(plane.plane_facts(verb, None, &ctx).is_err());
-
-    // And the per-name verb is declared, so the loop can reach it.
-    assert!(<McpPlane as PlaneMeta>::INTROSPECTION_VERBS.contains(&verb));
-}
-
-/// The session halves open, and each one starts fresh.
-#[test]
-fn the_session_halves_open_fresh() {
-    let plane = McpPlane::EMPTY;
-    let scaffold = Scaffold::new("http");
-    let ctx = scaffold.ctx();
-    let client = plane.open_session(&ctx);
-    let upstream = plane.open_upstream(&sealed_destination(), &ctx);
-    for half in [&client, &upstream] {
-        let codec = half
-            .get::<busbar_plane_mcp::tool_plane::Codec>()
-            .expect("the half carries this plane's own state");
-        assert_eq!((codec.events_read, codec.rounds_asked), (0, 0));
-    }
-}
-
-/// A locally launched server's units narrow to the alternative that has no request to sit on.
-#[test]
-fn a_local_server_narrows_to_the_environment_alternative() {
-    let plane = McpPlane::EMPTY;
-    let seal = common::TestSeal;
-    let unit = busbar_contract::unit::Unit::new(
-        &seal,
-        busbar_contract::UnitKey::new(1),
-        busbar_contract::unit::Origin::Client,
-        None,
-        None,
-        busbar_contract::wire::Direction::Inbound,
-        Some(common::principal()),
-        ops::OP_TOOL_CALL,
-        busbar_contract::bounded::Ir::new(b"{}", &[]),
-        busbar_contract::bounded::Facts::new(),
-        None,
-    );
-    for (transport, expected) in [("stdio", "environment"), ("http", "bearer")] {
-        let scaffold = Scaffold::new(transport);
-        let ctx = scaffold.ctx();
-        let locator = plane.authenticate(&unit, &ctx);
-        assert_eq!(
-            locator.narrowing.expect("it narrows").as_str(),
-            expected,
-            "{transport} narrowed wrongly"
-        );
-    }
-}
-
-/// Every alternative the plane narrows to is one its claims declare.
-///
-/// A plane may only narrow within the set its claim declares; anything else is refused at the
-/// authenticate step, and a plane that narrowed outside it would be refusing its own units.
-#[test]
-fn every_narrowing_is_declared() {
-    // The alternatives of a claim that DECLARES a scheme. The open surface's claim declares none,
-    // which is the whole point of it: there is nothing there to narrow to, so it cannot be the
-    // claim this check is read against.
-    let declared = McpPlane::CLAIMS
-        .iter()
-        .find(|c| c.scheme.is_some())
-        .expect("some claim declares a scheme")
-        .scheme_alternatives;
-    let plane = McpPlane::EMPTY;
-    let seal = common::TestSeal;
-    for op in McpPlane::OP_CLASSES {
-        for transport in ["http", "sse", "stdio"] {
-            let scaffold = Scaffold::new(transport);
-            let ctx = scaffold.ctx();
-            let unit = busbar_contract::unit::Unit::new(
-                &seal,
-                busbar_contract::UnitKey::new(1),
-                busbar_contract::unit::Origin::Client,
-                None,
-                None,
-                busbar_contract::wire::Direction::Inbound,
-                Some(common::principal()),
-                *op,
-                busbar_contract::bounded::Ir::new(b"{}", &[]),
-                busbar_contract::bounded::Facts::new(),
-                None,
-            );
-            let narrowing = plane
-                .authenticate(&unit, &ctx)
-                .narrowing
-                .expect("it narrows");
-            assert!(
-                declared.contains(&narrowing.as_str()),
-                "{op} on {transport} narrows to {narrowing}, which no claim declares"
-            );
-        }
-    }
-}
-
-/// A request bigger than the per-unit arena is still relayed, byte for byte.
-///
-/// The bytes the hop carries are the bytes that arrived, and they already live for the unit that
-/// carries them. Copying them into the arena first spent the whole bounded budget on a second copy
-/// of what the unit was already holding, so a request larger than that budget could not be relayed
-/// at all — a size limit nobody configured, imposed by an allocation with no purpose.
-#[test]
-fn a_request_larger_than_the_arena_is_relayed() {
-    let plane = McpPlane::EMPTY;
-    let scaffold = Scaffold::new("http");
-    let ctx = scaffold.ctx();
-    let seal = common::TestSeal;
-    let argument = "x".repeat(busbar_contract::bounded::SCRATCH_BASE_BYTES * 2);
-    let body = format!(
-        r#"{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"search","arguments":{{"q":"{argument}"}}}}}}"#
-    );
-    let body = body.into_bytes();
-    assert!(body.len() > busbar_contract::bounded::SCRATCH_BASE_BYTES);
-    let unit = busbar_contract::unit::Unit::new(
-        &seal,
-        busbar_contract::UnitKey::new(1),
-        busbar_contract::unit::Origin::Client,
-        None,
-        None,
-        busbar_contract::wire::Direction::Inbound,
-        Some(common::principal()),
-        ops::OP_TOOL_CALL,
-        busbar_contract::bounded::Ir::new(&body, &[]),
-        busbar_contract::bounded::Facts::new(),
-        None,
-    );
-    let egress = plane
-        .encode_egress(&unit, &sealed_destination(), None, &ctx)
-        .expect("a request larger than the arena is still a request this plane can relay");
-    assert_eq!(
-        egress.body.as_slice(),
-        body.as_slice(),
-        "the server is sent the caller's own bytes, whole"
-    );
-}
-
-/// What every operation SEALS is somewhere its own plan then goes.
-///
-/// The verify step seals one destination and the route step lists the legs the unit dials. A class
-/// that seals an upstream and then plans no leg to it has had an upstream admitted, checked against
-/// the allow-list and counted against this node's admission for a hop that never happens; a class
-/// that plans a leg it was not verified for is the other half of the same seam. Asserted over the
-/// whole declared vocabulary, so a class added later cannot quietly acquire either shape.
-#[test]
-fn every_operation_is_verified_for_a_destination_its_plan_reaches() {
-    let plane = McpPlane::EMPTY;
-    let scaffold = Scaffold::new("http");
-    let ctx = scaffold.ctx();
-    let seal = common::TestSeal;
-    for op in <McpPlane as PlaneMeta>::OP_CLASSES {
-        let unit = busbar_contract::unit::Unit::new(
-            &seal,
-            busbar_contract::UnitKey::new(1),
-            busbar_contract::unit::Origin::Client,
-            None,
-            None,
-            busbar_contract::wire::Direction::Inbound,
-            Some(common::principal()),
-            *op,
-            busbar_contract::bounded::Ir::new(b"{}", &[]),
-            busbar_contract::bounded::Facts::new(),
-            None,
-        );
-        let verified = plane.verify(&unit, &ctx);
-        let plan = plane.route(&unit, &ctx);
-        assert!(
-            plan.legs
-                .as_slice()
-                .iter()
-                .any(|l| l.destination == verified),
-            "{op} is verified for {verified:?}, which none of its legs reach"
-        );
-    }
-}
-
-/// A sealed destination, for the calls that take one.
-fn sealed_destination() -> busbar_contract::dest::VerifiedDestination {
-    let seal = common::TestSeal;
-    busbar_contract::dest::VerifiedDestination::seal(
-        &seal,
-        busbar_contract::dest::DestinationFacts::Upstream {
-            transport: "http",
-            address: busbar_contract::UpstreamAddress::socket("server.example"),
-            lane: busbar_contract::ids::LaneId::new("standard"),
-        },
-        "http",
-        None,
-    )
 }
 
 /// THE MCP PLANE'S CONFORMANCE RIG, BOTH WAYS (BUSBAR-1.6.0.md, the plane driver's "Proven by":
@@ -1906,6 +1008,79 @@ mod both_ways {
         }
     }
 
+    /// The kernel refuses with `reason` at its own `status` (no unit had arrived), and the door
+    /// renders it.
+    fn kernel_refusal(p: &Plugin<Plane>, reason: u32, status: u32) -> Step {
+        let words = b"refused";
+        let (mut reply, mut fields, mut arena) = ([0_u8; 512], [z::<OutField>(); 2], [0_u8; 64]);
+        let mut r: Frame<RefusalIn, RefusalOut> = Frame::new(z(), z());
+        (r.input.head, r.out.head) = (in_head(), out_head());
+        (r.input.cause, r.input.status, r.input.reason) = (plane::REFUSAL_KERNEL, status, reason);
+        r.input.text = text(words);
+        (r.input.reply_buf, r.input.reply_cap) = (reply.as_mut_ptr(), reply.len());
+        (r.input.fields_buf, r.input.fields_cap) = (fields.as_mut_ptr(), fields.len());
+        (r.input.arena_buf, r.input.arena_cap) = (arena.as_mut_ptr(), arena.len());
+        let c = p.call(slot::REFUSAL, &mut r);
+        let mut s = Step::new("kernel refusal", c.outcome);
+        s.status = r.out.status;
+        s.reply = reply[..usize::try_from(r.out.reply_written).expect("small")].to_vec();
+        s
+    }
+
+    /// P-ITEM: REFUSAL-REASON COLLAPSE (spec DONE item 2, "All P-item behaviours match 1.5.5";
+    /// drive log P2, commit 470351a480; TODO L-ENG9). 1.5.5's one surface gave every limit reason
+    /// its own status and kind and answered none of them as an internal error (v1.5.5
+    /// `crates/busbar/src/ingress/mod.rs:237-305`). On the served mcp door the reason-to-family
+    /// decision is the kernel's alone: every reason a plane is handed is answered at the status the
+    /// kernel chose from the one classification (`busbar_contract::abi::plane::RefusalCode::class`;
+    /// the door states `0`, the kernel's status stands) and in the one refusal family
+    /// (`CODE_REFUSED`), never as the internal error, whatever its class. The door holds no
+    /// reason-to-class table of its own (the unserved `Plane` impl's `refusal_words` is deleted,
+    /// plane-mcp finding 12).
+    #[test]
+    fn p_item_refusal_reason_collapse_the_door_answers_every_reason_at_the_kernels_status_never_internal(
+    ) {
+        use busbar_contract::abi::plane::{reason_of, RefusalCode};
+        let d = Dispatcher::new(DispatchConfig::default());
+        let p = linked(&d);
+        let mut i: PlaneOpenIn = z();
+        i.open.head = in_head();
+        (i.open.generation, i.open.settings) = (1, octets(SECTION));
+        i.public_url = text(PUBLIC_URL.as_bytes());
+        let mut o: PlaneOpenOut = z();
+        o.open.head = out_head();
+        let (c, _) = p.open(&mut Frame::new(i, o));
+        assert_eq!(c.outcome, Outcome::Ready, "the door opens");
+        let mut rendered = 0;
+        for code in RefusalCode::ALL {
+            // Two codes are the kernel's own money verdicts and never reach a plane (`reason_of`).
+            if reason_of(code.code()).is_none() {
+                continue;
+            }
+            let class = code.class();
+            let status = if class.is_node_fault() { 500 } else { 403 };
+            let r = kernel_refusal(&p, code.code(), status);
+            assert_eq!(
+                (r.outcome, r.status),
+                (Outcome::Ready, 0),
+                "{code:?} (class {class:?}) is answered at the kernel's status"
+            );
+            let body = document(&r.reply);
+            assert_eq!(
+                body["error"]["code"],
+                json!(busbar_plane_mcp::codec::CODE_REFUSED),
+                "{code:?} (class {class:?}) renders {body}"
+            );
+            assert_ne!(
+                body["error"]["code"],
+                json!(busbar_plane_mcp::codec::CODE_INTERNAL),
+                "{code:?} (class {class:?}) is never the internal error"
+            );
+            rendered += 1;
+        }
+        assert!(rendered > 0, "the walk rendered at least one reason");
+    }
+
     // ── the relayed call and the entitlement binding ───────────────────────────────────────────────
 
     /// A HOST whose entitlement answer is a fixed table of `"<kind>:<name>"` grants, and which
@@ -2668,5 +1843,347 @@ mod both_ways {
         );
         assert_ne!(r.reply, h.reply, "the answer is where the two differ");
         assert_ne!(red, honest);
+    }
+}
+
+mod bounds {
+    //! WHAT THE DOOR HOLDS AND GATHERS IS BOUNDED. A unit the kernel refuses is over, and the door
+    //! drops it; an upstream's answer is gathered only under the SDK's reply ceiling.
+    //!
+    //! The units are driven through the linked door op by op, as [`super::both_ways`] drives it.
+
+    use std::mem::zeroed;
+    use std::path::Path;
+    use std::sync::Arc;
+
+    use busbar_contract::abi::mechanism::call::{AbiStr, Blob, Field, Outcome, BLOB_OCTETS};
+    use busbar_contract::abi::mechanism::lifecycle::GenIn;
+    use busbar_contract::abi::plane::{
+        slot, ArriveIn, ArriveOut, OnPieceIn, OnPieceOut, OutField, PlaneOpenIn, PlaneOpenOut,
+        RecordWrite, RefusalIn, RefusalOut, UnitCount, FROM_CALLER, FROM_FAR_END, PIECE_LAST,
+        REFUSAL_GATE,
+    };
+    use busbar_contract::abi::sdk::door::abi_str;
+    use busbar_plane_mcp::codec::{H_MCP_METHOD, H_PROTOCOL_VERSION, PROTOCOL_VERSION};
+    use busbar_plane_mcp::{door, tool_door as plane_door};
+    use busbar_plugin_loader::dispatch::kinds::plane::Plane;
+    use busbar_plugin_loader::dispatch::{
+        in_head, load_linked, out_head, Bind, DispatchConfig, Dispatcher, Frame, LinkedRow, NoSink,
+        Plugin,
+    };
+
+    fn z<T>() -> T {
+        // SAFETY: every `in`/`out` here is plain C data; all-zero is a valid value of each.
+        unsafe { zeroed() }
+    }
+
+    fn octets(b: &'static [u8]) -> Blob {
+        Blob {
+            ptr: b.as_ptr(),
+            len: b.len(),
+            fmt: BLOB_OCTETS,
+            flags: 0,
+        }
+    }
+
+    fn text(b: &'static [u8]) -> AbiStr {
+        AbiStr {
+            ptr: b.as_ptr(),
+            len: b.len(),
+        }
+    }
+
+    const SECTION: &[u8] =
+        br#"{"fs": {"url": "https://mcp.example/fs", "pin": {"mechanism": "unpinned"}}}"#;
+    const PUBLIC_URL: &str = "https://busbar.example";
+    const TOOLS_LIST: &[u8] = br#"{"jsonrpc":"2.0","id":9,"method":"tools/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}"#;
+    const LIST_FIELDS: &[Field] = &[
+        Field {
+            name: abi_str(H_PROTOCOL_VERSION),
+            value: abi_str(PROTOCOL_VERSION),
+        },
+        Field {
+            name: abi_str(H_MCP_METHOD),
+            value: abi_str("tools/list"),
+        },
+    ];
+
+    /// The linked door, opened over [`SECTION`] and started.
+    fn started(d: &Dispatcher) -> Plugin<Plane> {
+        let row = LinkedRow::of(plane_door::door).expect("the linked door states its Statement");
+        let bind = Bind {
+            instance: Arc::from("the-instance"),
+            max_inflight_cap: 64,
+            sink: Arc::new(NoSink),
+            dispatcher: d.adopter(),
+            conns: busbar_plugin_loader::dispatch::ConnTable::Probe,
+        };
+        let p = load_linked(&row, bind).expect("the linked door loads");
+        let mut i: PlaneOpenIn = z();
+        i.open.head = in_head();
+        (i.open.generation, i.open.settings) = (1, octets(SECTION));
+        i.public_url = text(PUBLIC_URL.as_bytes());
+        let mut o: PlaneOpenOut = z();
+        o.open.head = out_head();
+        let (c, _) = p.open(&mut Frame::new(i, o));
+        assert_eq!(c.outcome, Outcome::Ready, "open");
+        for op in [slot::HYDRATE, slot::START] {
+            let mut g = Frame::new(
+                GenIn {
+                    head: in_head(),
+                    generation: 1,
+                },
+                out_head(),
+            );
+            assert_eq!(p.call(op, &mut g).outcome, Outcome::Ready);
+        }
+        p
+    }
+
+    /// A `tools/list` of `unit` arrives (the plane answers it from what it holds).
+    fn arrive_list(p: &Plugin<Plane>, unit: u64) {
+        let route = door::ROUTES
+            .iter()
+            .position(|r| r.verb == "POST" && r.target == "/mcp")
+            .expect("the door routes it");
+        let mut a: Frame<ArriveIn, ArriveOut> = Frame::new(z(), z());
+        (a.input.head, a.out.head) = (in_head(), out_head());
+        a.input.unit = unit;
+        a.input.claim = u32::try_from(route).expect("a small table");
+        (a.input.method, a.input.target) = (text(b"POST"), text(b"/mcp"));
+        a.input.body = octets(TOOLS_LIST);
+        (a.input.fields, a.input.fields_len) = (LIST_FIELDS.as_ptr(), LIST_FIELDS.len());
+        assert_eq!(
+            p.call(slot::ARRIVE, &mut a).outcome,
+            Outcome::Ready,
+            "arrive"
+        );
+    }
+
+    /// What one `on_piece` answered: its outcome, the status it stated and the bytes it emitted.
+    struct Piece {
+        outcome: Outcome,
+        status: u32,
+        reply: Vec<u8>,
+    }
+
+    /// One `on_piece` of `unit` from `from` carrying `flags`, `stream` and `caller`, through a
+    /// reply buffer of `cap` bytes and buffers that hold the rest.
+    fn push(
+        p: &Plugin<Plane>,
+        (unit, from, flags): (u64, u32, u32),
+        (stream, caller): (u64, &'static str),
+        cap: usize,
+    ) -> Piece {
+        let mut reply = vec![0_u8; cap];
+        let (mut fields, mut arena) = ([z::<OutField>(); 16], vec![0_u8; 4096]);
+        let mut records = [z::<RecordWrite>(); 16];
+        let mut units = [z::<UnitCount>(); 8];
+        let mut i: OnPieceIn = z();
+        i.head = in_head();
+        (i.unit, i.from, i.stream) = (unit, from, stream);
+        i.caller_ref = text(caller.as_bytes());
+        (i.flags, i.bytes) = (flags, octets(TOOLS_LIST));
+        (i.reply_buf, i.reply_cap) = (reply.as_mut_ptr(), reply.len());
+        (i.fields_buf, i.fields_cap) = (fields.as_mut_ptr(), fields.len());
+        (i.arena_buf, i.arena_cap) = (arena.as_mut_ptr(), arena.len());
+        (i.records_buf, i.records_cap) = (records.as_mut_ptr(), records.len());
+        (i.units_buf, i.units_cap) = (units.as_mut_ptr(), units.len());
+        let mut o: OnPieceOut = z();
+        o.head = out_head();
+        let mut f = Frame::new(i, o);
+        let c = p.call(slot::ON_PIECE, &mut f);
+        let emitted = usize::try_from(f.out.emitted).expect("small");
+        Piece {
+            outcome: c.outcome,
+            status: f.out.reply_status,
+            reply: reply[..emitted].to_vec(),
+        }
+    }
+
+    /// One whole-body `on_piece` of `unit` from `from`: its outcome.
+    fn piece(p: &Plugin<Plane>, unit: u64, from: u32) -> Outcome {
+        push(p, (unit, from, PIECE_LAST), (0, ""), 1 << 16).outcome
+    }
+
+    /// The kernel refuses `unit` (a gate's `403`), and the plane renders the refusal.
+    fn refuse(p: &Plugin<Plane>, unit: u64) {
+        let (mut reply, mut fields, mut arena) =
+            (vec![0_u8; 4096], [z::<OutField>(); 4], vec![0_u8; 512]);
+        let mut records = [z::<RecordWrite>(); 4];
+        let mut r: Frame<RefusalIn, RefusalOut> = Frame::new(z(), z());
+        (r.input.head, r.out.head) = (in_head(), out_head());
+        r.input.unit = unit;
+        (r.input.cause, r.input.status) = (REFUSAL_GATE, 403);
+        r.input.text = text(b"denied");
+        (r.input.reply_buf, r.input.reply_cap) = (reply.as_mut_ptr(), reply.len());
+        (r.input.fields_buf, r.input.fields_cap) = (fields.as_mut_ptr(), fields.len());
+        (r.input.arena_buf, r.input.arena_cap) = (arena.as_mut_ptr(), arena.len());
+        (r.input.records_buf, r.input.records_cap) = (records.as_mut_ptr(), records.len());
+        assert_eq!(
+            p.call(slot::REFUSAL, &mut r).outcome,
+            Outcome::Ready,
+            "refusal"
+        );
+    }
+
+    /// A unit the kernel refuses after it arrived is over: the plane no longer holds it, so a
+    /// piece naming it is refused rather than answered from the request params it kept.
+    #[test]
+    fn a_unit_the_kernel_refuses_is_dropped() {
+        let d = Dispatcher::new(DispatchConfig::default());
+        let p = started(&d);
+        arrive_list(&p, 7);
+        refuse(&p, 7);
+        assert_eq!(
+            piece(&p, 7, FROM_CALLER),
+            Outcome::Refused,
+            "the refused unit is still held"
+        );
+    }
+
+    /// A unit a piece of which the plane refuses is over too: nothing else would ever end it.
+    #[test]
+    fn a_unit_whose_piece_the_plane_refuses_is_dropped() {
+        let d = Dispatcher::new(DispatchConfig::default());
+        let p = started(&d);
+        arrive_list(&p, 8);
+        // A far end's piece for a unit that sent nothing on.
+        assert_eq!(piece(&p, 8, FROM_FAR_END), Outcome::Refused);
+        assert_eq!(
+            piece(&p, 8, FROM_CALLER),
+            Outcome::Refused,
+            "the unit whose piece was refused is still held"
+        );
+    }
+
+    /// An upstream's answer is gathered only under the SDK's reply ceiling, and the call that
+    /// passes it fails as any bad upstream answer does. The gather site is reached only by a call
+    /// the kernel has admitted and entitled, which this harness has no host to do, so the bound is
+    /// read off the source at that site.
+    #[test]
+    fn an_upstreams_answer_is_gathered_only_under_the_reply_ceiling() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/tool_door.rs");
+        let source = std::fs::read_to_string(path).expect("the door's source reads");
+        let lines: Vec<&str> = source.lines().collect();
+        let gather = lines
+            .iter()
+            .position(|l| l.contains("relay.far.extend_from_slice(bytes)"))
+            .expect("the gather site");
+        let guard = lines[gather.saturating_sub(8)..gather].join("\n");
+        assert!(
+            guard.contains("REPLY_MAX") && guard.contains("upstream_failed"),
+            "the gather is not bounded by the reply ceiling, failing the call past it:\n{guard}"
+        );
+    }
+
+    /// A `subscriptions/listen` of `unit` arrives, opting in to a list category.
+    fn arrive_listen(p: &Plugin<Plane>, unit: u64) {
+        const LISTEN: &[u8] = br#"{"jsonrpc":"2.0","id":3,"method":"subscriptions/listen","params":{"notifications":{"toolsListChanged":true},"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}"#;
+        const FIELDS: &[Field] = &[
+            Field {
+                name: abi_str(H_PROTOCOL_VERSION),
+                value: abi_str(PROTOCOL_VERSION),
+            },
+            Field {
+                name: abi_str(H_MCP_METHOD),
+                value: abi_str("subscriptions/listen"),
+            },
+        ];
+        let route = door::ROUTES
+            .iter()
+            .position(|r| r.verb == "POST" && r.target == "/mcp")
+            .expect("the door routes it");
+        let mut a: Frame<ArriveIn, ArriveOut> = Frame::new(z(), z());
+        (a.input.head, a.out.head) = (in_head(), out_head());
+        a.input.unit = unit;
+        a.input.claim = u32::try_from(route).expect("a small table");
+        (a.input.method, a.input.target) = (text(b"POST"), text(b"/mcp"));
+        a.input.body = octets(LISTEN);
+        (a.input.fields, a.input.fields_len) = (FIELDS.as_ptr(), FIELDS.len());
+        assert_eq!(
+            p.call(slot::ARRIVE, &mut a).outcome,
+            Outcome::Ready,
+            "arrive listen"
+        );
+    }
+
+    /// One caller opening its quota's worth of subscriptions, plus one, cuts off no other caller's
+    /// stream: the extra one is refused, in the caller's own answer.
+    #[test]
+    fn a_caller_at_its_subscription_quota_is_refused_and_evicts_no_other_caller() {
+        const QUOTA: u64 = 64;
+        let d = Dispatcher::new(DispatchConfig::default());
+        let p = started(&d);
+        // Streams are opened through a one-byte reply buffer, so each stays held, its head part
+        // written.
+        let open = |unit: u64, caller: &'static str, cap: usize| {
+            arrive_listen(&p, unit);
+            push(&p, (unit, FROM_CALLER, 0), (unit, caller), cap)
+        };
+        open(1, "caller-b", 1);
+        for unit in 100..100 + QUOTA {
+            assert_eq!(open(unit, "caller-a", 1).outcome, Outcome::Ready);
+        }
+        let over = open(100 + QUOTA, "caller-a", 1 << 16);
+        assert_eq!(
+            over.status, 429,
+            "the caller's extra subscription is refused"
+        );
+        assert!(
+            String::from_utf8_lossy(&over.reply).contains("subscription_quota"),
+            "the refusal names its reason"
+        );
+        let b = push(&p, (1, FROM_CALLER, 0), (1, "caller-b"), 1 << 16);
+        assert_eq!(
+            b.outcome,
+            Outcome::Ready,
+            "caller B's stream survives caller A"
+        );
+        assert!(
+            !b.reply.is_empty(),
+            "caller B's stream still has its frame to write"
+        );
+    }
+
+    /// A `tools/list` of `unit` arrives: its outcome and the status the plane refused it with.
+    fn arrival(p: &Plugin<Plane>, unit: u64) -> (Outcome, u32) {
+        let route = door::ROUTES
+            .iter()
+            .position(|r| r.verb == "POST" && r.target == "/mcp")
+            .expect("the door routes it");
+        let mut a: Frame<ArriveIn, ArriveOut> = Frame::new(z(), z());
+        (a.input.head, a.out.head) = (in_head(), out_head());
+        a.input.unit = unit;
+        a.input.claim = u32::try_from(route).expect("a small table");
+        (a.input.method, a.input.target) = (text(b"POST"), text(b"/mcp"));
+        a.input.body = octets(TOOLS_LIST);
+        (a.input.fields, a.input.fields_len) = (LIST_FIELDS.as_ptr(), LIST_FIELDS.len());
+        let outcome = p.call(slot::ARRIVE, &mut a).outcome;
+        (outcome, a.out.refusal_status)
+    }
+
+    /// A full unit table refuses the next arrival (429) and never evicts: the first unit is still
+    /// held and still answers.
+    #[test]
+    fn a_full_unit_table_refuses_the_next_arrival_and_evicts_nothing() {
+        let d = Dispatcher::new(DispatchConfig::default());
+        let p = started(&d);
+        let mut first_refused = None;
+        for unit in 1..=5000 {
+            if arrival(&p, unit) != (Outcome::Ready, 0) && first_refused.is_none() {
+                first_refused = Some((unit, arrival(&p, unit)));
+            }
+        }
+        assert_eq!(
+            first_refused,
+            Some((4097, (Outcome::Refused, 429))),
+            "the arrival past the cap"
+        );
+        assert_eq!(
+            piece(&p, 1, FROM_CALLER),
+            Outcome::Ready,
+            "the first unit was evicted to make room"
+        );
     }
 }
