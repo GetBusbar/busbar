@@ -1804,6 +1804,16 @@ fn resolve(
             return Resolved::Task(Box::new(task.clone()));
         }
     }
+    // A TERMINAL STATE THIS INSTANCE HOLDS AND STILL OWES THE HOST (a continuation the kernel
+    // refused, its settle owed to the next create's sweep) is newer than the live row the host
+    // keeps until then: the instance's own word answers, as the served engine's runner answered a
+    // call it could not carry at once. The host's live row would otherwise overwrite it.
+    if let Some(task) = held
+        .as_ref()
+        .filter(|t| t.unsettled && t.status().is_terminal())
+    {
+        return Resolved::Task(Box::new(task.clone()));
+    }
     // A host that lists none of the plane's records: what the instance holds answers.
     let unlisted =
         |held: Option<Task>| held.map_or(Resolved::Unknown, |t| Resolved::Task(Box::new(t)));

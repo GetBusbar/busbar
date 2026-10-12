@@ -191,6 +191,15 @@ impl CoreRouter {
         self
     }
 
+    /// The methods a core route is already mounted under at exactly `path`.
+    pub(crate) fn methods_at(&self, path: &str) -> Vec<RouteMethod> {
+        self.table
+            .by_path
+            .get(path)
+            .map(|rows| rows.iter().map(|(m, _)| *m).collect())
+            .unwrap_or_default()
+    }
+
     /// Split into the mounted router and the table describing it.
     pub(crate) fn into_parts(self) -> (Router<Arc<AppHandle>>, CoreRouteTable) {
         (self.router, self.table)
