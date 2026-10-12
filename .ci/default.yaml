@@ -1,0 +1,60 @@
+# What a lane must pass to enter predev: busbar-release's predev `enter_pr` plan
+# (crates/busbar-release-cli/ladder.json), judged on the lane merged onto predev's tip, no worse
+# than predev itself. Shadow while busbar-release still decides.
+to: predev
+on_green: merge
+deadline: 6h
+env:
+  RUSTFLAGS: "-D warnings"
+  CARGO_TERM_COLOR: never
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_INCREMENTAL: "0"
+checks:
+  preflight:
+    run: |
+      cargo fmt --all -- --check
+      cargo metadata --locked --format-version 1 >/dev/null
+      cargo build -q -p xtask
+      cargo xtask gate abi-header --write
+      git diff --exit-code -- crates/busbar-contract/include
+  gates:
+    run: |
+      export XTASK_CEILING_BASE="$MODERNCI_TO_SHA" XTASK_SHIP_TARGET=predev
+      cargo xtask gate --all --format=tsv
+    baseline: target
+    needs: [preflight]
+  clippy:
+    run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+    baseline: target
+    needs: [gates]
+  compile:
+    run: |
+      cargo check --workspace --all-targets --locked
+      cargo check --workspace --exclude xtask --all-targets --no-default-features --locked
+      cargo check --release -p busbar --bin busbar --locked
+    baseline: target
+    needs: [gates]
+  test:
+    run: |
+      cargo build --locked $(cargo metadata --format-version 1 --no-deps | jq -r '.packages[] | select(any(.targets[]; .kind | index("cdylib"))) | "-p " + .name')
+      cargo build --workspace --locked
+      cargo nextest run --workspace --locked --no-fail-fast
+    scope: affected
+    baseline: target
+    needs: [gates]
+  doctest:
+    run: cargo test --workspace --doc --locked --no-fail-fast
+    scope: affected
+    baseline: target
+    needs: [test]
+  deletion-matrix:
+    run: |
+      cargo build -p busbar-kernel -p busbar-contract --no-default-features --features plane-a2a --locked
+      cargo build -p busbar-kernel -p busbar-contract --no-default-features --features plane-mcp --locked
+      cargo build -p busbar-kernel -p busbar-contract --no-default-features --locked
+    baseline: target
+    needs: [gates]
+  deny:
+    run: cargo deny check
+    baseline: target
+    needs: [preflight]
