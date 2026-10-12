@@ -30,7 +30,7 @@ fn a_member_the_section_does_not_declare_is_refused_in_the_grammars_words() {
 }
 
 #[test]
-fn exactly_one_model_claims_systemone_and_nothing_else_claims_anything() {
+fn one_or_more_models_claim_systemone_and_none_claims_nothing() {
     let one = snapshot_spec(1);
     assert_eq!(
         one.claims,
@@ -44,8 +44,12 @@ fn exactly_one_model_claims_systemone_and_nothing_else_claims_anything() {
     assert!(one.admin_routes.is_empty());
     // Served on the plain data plane to a keyed caller: no audience, no protected-resource document.
     assert!(one.audience.is_none() && one.resource_metadata.is_none());
-    for models in [0, 2, 3] {
-        assert!(snapshot_spec(models).claims.is_empty(), "{models} models");
+    assert!(
+        snapshot_spec(0).claims.is_empty(),
+        "no model claims nothing"
+    );
+    for models in [2, 3] {
+        assert_eq!(snapshot_spec(models).claims, one.claims, "{models} models");
     }
 }
 

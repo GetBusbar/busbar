@@ -1,0 +1,149 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
+//! THE DOOR'S ANSWERS, DRIVEN OVER ITS ABI as the kernel's plane driver drives them.
+//!
+//! * MODEL RESOLUTION (THE DESIGN section 2, the decisions bullet; DECISIONS D8b): "a request routes
+//!   by its model; one configured model and none named is the default (byte-identical); more than
+//!   one and none named is 400; an unknown model is 404." The claim is published whenever a model is
+//!   configured.
+//! * `upstream_model` (the same bullet): "rewrites only the top-level model value, by span splice,
+//!   when it is set and differs; otherwise the body passes through."
+
+#![allow(unsafe_code)]
+
+mod door_harness;
+
+use busbar_contract::abi::mechanism::call::Outcome;
+use busbar_contract::abi::plane::ROUTE_DIRECT;
+use door_harness::{open, Bufs, Given};
+
+const SYSTEMONE: (&str, &str) = ("POST", "/v1/systemone");
+
+const TWO: &str = r#"{"models":{"a":{"provider":"typesafe"},"b":{"provider":"typesafe"}}}"#;
+const ONE: &str = r#"{"models":{"jev":{"provider":"typesafe"}}}"#;
+
+fn claims(c: &[(&str, &str)]) -> Vec<(String, String)> {
+    c.iter()
+        .map(|(v, t)| ((*v).to_string(), (*t).to_string()))
+        .collect()
+}
+
+/// RED (audit plane-decisions#1): several configured models publish the claim; none publishes none.
+#[test]
+fn every_generation_with_a_model_claims_systemone() {
+    assert_eq!(open(TWO).claims, claims(&[SYSTEMONE]), "two models");
+    assert_eq!(open(ONE).claims, claims(&[SYSTEMONE]), "one model");
+    let none = open(r#"{"models":{}}"#);
+    assert!(none.claims.is_empty(), "no model claims nothing");
+    // A refresh onto several models keeps the claim, and onto none drops it.
+    assert_eq!(none.refresh(TWO, 2), claims(&[SYSTEMONE]));
+    assert!(none.refresh("{}", 3).is_empty());
+}
+
+/// RED (audit plane-decisions#1): a request routes over the model it names; several configured and
+/// none named is 400; a name no model has is 404; one configured and none named is the default.
+#[test]
+fn a_request_routes_by_its_model() {
+    let two = open(TWO);
+    let b = two.arrive(1, br#"{"model":"b","state":{}}"#);
+    assert_eq!(
+        (b.outcome, b.route, b.entry.as_str()),
+        (Outcome::Ready, ROUTE_DIRECT, "b"),
+        "{b:?}"
+    );
+    let a = two.arrive(2, br#"{"state":{},"model":"a"}"#);
+    assert_eq!(
+        (a.outcome, a.entry.as_str()),
+        (Outcome::Ready, "a"),
+        "{a:?}"
+    );
+
+    let unnamed = two.arrive(3, br#"{"state":{}}"#);
+    assert_eq!(
+        (unnamed.outcome, unnamed.status),
+        (Outcome::Refused, 400),
+        "{unnamed:?}"
+    );
+    assert!(
+        unnamed.refusal != 0 && !unnamed.text.is_empty(),
+        "{unnamed:?}"
+    );
+
+    let unknown = two.arrive(4, br#"{"model":"zz","state":{}}"#);
+    assert_eq!(
+        (unknown.outcome, unknown.status),
+        (Outcome::Refused, 404),
+        "{unknown:?}"
+    );
+    assert!(unknown.text.contains("'zz'"), "{unknown:?}");
+
+    let not_a_name = two.arrive(5, br#"{"model":7}"#);
+    assert_eq!(
+        (not_a_name.outcome, not_a_name.status),
+        (Outcome::Refused, 400),
+        "{not_a_name:?}"
+    );
+
+    let one = open(ONE);
+    let default = one.arrive(6, br#"{"state":{}}"#);
+    assert_eq!(
+        (default.outcome, default.route, default.entry.as_str()),
+        (Outcome::Ready, ROUTE_DIRECT, "jev"),
+        "{default:?}"
+    );
+    let named = one.arrive(7, br#"{"model":"jev"}"#);
+    assert_eq!(
+        (named.outcome, named.entry.as_str()),
+        (Outcome::Ready, "jev")
+    );
+    let elsewhere = one.arrive(8, br#"{"model":"other"}"#);
+    assert_eq!(
+        (elsewhere.outcome, elsewhere.status),
+        (Outcome::Refused, 404),
+        "{elsewhere:?}"
+    );
+}
+
+/// A refused arrival is answered in jev's error shape, the arrival's words and status.
+#[test]
+fn an_unrouted_arrival_renders_in_the_dialect_shape() {
+    let two = open(TWO);
+    let unknown = two.arrive(1, br#"{"model":"zz"}"#);
+    let (outcome, body) = two.refusal(1, unknown.status, &unknown.text, true);
+    assert_eq!(outcome, Outcome::Ready);
+    let v: serde_json::Value = serde_json::from_slice(&body).expect("JSON");
+    assert_eq!(v["error"]["message"], unknown.text.as_str(), "{v}");
+    assert!(v["error"]["code"].is_string(), "{v}");
+}
+
+/// The caller's body as the far end receives it, for a unit routed over `settings` by `body`.
+fn sent(settings: &str, body: &[u8]) -> String {
+    let door = open(settings);
+    let arrived = door.arrive(1, body);
+    assert_eq!(arrived.outcome, Outcome::Ready, "{arrived:?}");
+    let mut bufs = Bufs::new(1 << 16);
+    let attempt = door.piece(1, Given::attempt(1), &mut bufs);
+    assert_eq!(attempt.request, "POST /v1/systemone");
+    let caller = door.piece(1, Given::caller(body), &mut bufs);
+    assert!(caller.far, "the caller's body goes to the far end");
+    String::from_utf8(caller.bytes).expect("UTF-8")
+}
+
+/// RED (audit plane-decisions#2): a set `upstream_model` that differs replaces the top-level model
+/// value alone; every other byte (member order, whitespace) is the caller's.
+#[test]
+fn upstream_model_is_spliced_into_the_top_level_model() {
+    let upstream = r#"{"models":{"jev":{"provider":"typesafe","upstream_model":"jev-1.13.0"}}}"#;
+    let body = "{ \"state\" : {\"model\":\"inner\"},\n  \"model\" :  \"jev\" , \"n\":[1, 2] }";
+    assert_eq!(
+        sent(upstream, body.as_bytes()),
+        "{ \"state\" : {\"model\":\"inner\"},\n  \"model\" :  \"jev-1.13.0\" , \"n\":[1, 2] }"
+    );
+    // The same name, or none set, or a body that names no model: the body passes through.
+    let same = r#"{"models":{"jev":{"provider":"typesafe","upstream_model":"jev"}}}"#;
+    assert_eq!(sent(same, body.as_bytes()), body);
+    assert_eq!(sent(ONE, body.as_bytes()), body);
+    let unnamed = "{\"state\":{}}";
+    assert_eq!(sent(upstream, unnamed.as_bytes()), unnamed);
+}

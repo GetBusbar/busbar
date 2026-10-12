@@ -6,8 +6,8 @@
 //! * BATTERY — `cargo test -p busbar-plane-decisions`: the codec, the fixtures, the PII witness,
 //!   purity and invariance, and the both-ways door. It says the plane reads and writes jev. It
 //!   cannot say busbar SERVES jev, and a battery that selected zero tests says nothing at all.
-//! * SERVED — a busbar built from this checkout, booted with exactly one `decisions.models` entry
-//!   (the one shape that mounts `POST /v1/systemone`, `busbar-plane-decisions/src/driven.rs`),
+//! * SERVED — a busbar built from this checkout, booted with one `decisions.models` entry (so a
+//!   request naming no model routes over it, the default, `busbar-plane-decisions/src/driven.rs`),
 //!   whose provider is a far end this rig owns ([`super::upstream::FarEnd`]). The leg judges the
 //!   SERVED BYTES from both ends of the relay:
 //!
@@ -48,6 +48,16 @@
 //!   (`decisions.rate_card.<model>.units.decision: 1`, in the rig's generated config only), so the
 //!   lane's `priced_micros` IS the unit count: 42.
 //!
+//!   THE MODEL-RESOLUTION CHECKS (THE DESIGN §2, the decisions bullet; DECISIONS D8b) run on a second
+//!   boot whose `decisions.models` holds two models, [`MODEL`] and [`UPSTREAM_MODEL`] (its
+//!   `upstream_model` set to [`UPSTREAM_NAME`]), on the same far end:
+//!
+//!   | check | what a correct busbar does |
+//!   |---|---|
+//!   | `models.unnamed-400` | two models and none named: `400` in jev's shape, no far-end hop |
+//!   | `models.unknown-404` | a model no entry has: `404` in jev's shape, no far-end hop |
+//!   | `models.upstream-model` | the second model named: served, and the far end receives the caller's bytes with the top-level `model` value alone spliced to its `upstream_model` |
+//!
 //! The rules, in order: battery red or empty ⇒ `fail`; no subject binary ⇒ `not-run` (nothing was
 //! booted); a subject that does not boot ⇒ `fail`; `POST /v1/systemone` answering the absence code
 //! measured on the same boot ⇒ `fail` "not served"; any served check red ⇒ `fail` naming it; every
@@ -67,6 +77,9 @@ use super::Outcome;
 const MODEL: &str = "jev-1";
 const PROVIDER: &str = "typesafe";
 const PATH: &str = "/v1/systemone";
+/// The second boot's second model, and the `upstream_model` it names.
+pub const UPSTREAM_MODEL: &str = "jev-2";
+pub const UPSTREAM_NAME: &str = "jev-upstream-2";
 /// The header outside the deny-set the caller sends and the far end must receive unchanged.
 const PROBE_HEADER: &str = "x-jev-conformance-probe";
 
@@ -559,6 +572,76 @@ pub fn jev_subject_config(data: u16, admin: u16, key_file: &Path) -> String {
     )
 }
 
+/// The second boot's config: [`MODEL`] and [`UPSTREAM_MODEL`] (its `upstream_model`
+/// [`UPSTREAM_NAME`]) on the one provider, each priced on its own card entry, the admin token, and
+/// the far end's loopback address declared as an allowed destination.
+pub fn jev_models_config(data: u16, admin: u16, key_file: &Path) -> String {
+    format!(
+        "listen: \"127.0.0.1:{data}\"\n\
+         admin_listen: \"127.0.0.1:{admin}\"\n\
+         store: {{ module: memory }}\n\
+         providers:\n  {PROVIDER}:\n    api_key: {{ env: JEV_CONFORMANCE_PROVIDER_KEY }}\n\
+         models: {{}}\n\
+         identity-providers:\n  admin-tokens: {{ module: admin-tokens, token: {{ env: BUSBAR_ADMIN_TOKEN }} }}\n\
+         auth:\n  chain: [keys]\n  admin_auth: [admin-tokens]\n  signing_key: {{ file: {} }}\n\
+         advanced:\n  allow_destinations: [\"127.0.0.1\"]\n\
+         decisions:\n  models:\n    {MODEL}:\n      provider: {PROVIDER}\n\
+         \x20   {UPSTREAM_MODEL}:\n      provider: {PROVIDER}\n      upstream_model: {UPSTREAM_NAME}\n\
+         \x20 rate_card:\n    {MODEL}: {{ units: {{ decision: 1 }} }}\n\
+         \x20   {UPSTREAM_MODEL}: {{ units: {{ decision: 1 }} }}\n",
+        key_file.display()
+    )
+}
+
+/// A request naming `model` (none: [`REQUEST`]'s own bytes), the odd spacing kept.
+pub fn models_request(model: Option<&str>) -> Vec<u8> {
+    match model {
+        None => REQUEST.to_vec(),
+        Some(m) => format!(
+            "{{ \"model\" :  \"{m}\" , \"state\" : {{\"session\":\"conformance-state\"}},\n  \"context\":{{}} }}"
+        )
+        .into_bytes(),
+    }
+}
+
+/// `models.unnamed-400` and `models.unknown-404`: the `status` refusal in jev's shape (`code`), and
+/// no request at the far end.
+pub fn judge_unrouted(call: &Call, status: u16, code: &str) -> Result<(), String> {
+    if call.status != status {
+        return Err(format!(
+            "answered {} `{}`, not the {status} refusal",
+            call.status,
+            show(&call.body)
+        ));
+    }
+    if call.hops != 0 {
+        return Err(format!(
+            "the unrouted request reached the far end ({} hop(s))",
+            call.hops
+        ));
+    }
+    is_jev_refusal(&call.body, code)
+}
+
+/// `models.upstream-model`: the request naming [`UPSTREAM_MODEL`] is served (the far end's 200 bytes
+/// over one dial), and the far end received `sent` with the top-level `model` value alone spliced
+/// to [`UPSTREAM_NAME`].
+pub fn judge_upstream_model(call: &Call, sent: &[u8], received: &[u8]) -> Result<(), String> {
+    served_once(call)?;
+    let want = String::from_utf8_lossy(sent).replacen(
+        &format!("\"{UPSTREAM_MODEL}\""),
+        &format!("\"{UPSTREAM_NAME}\""),
+        1,
+    );
+    check(received == want.as_bytes(), || {
+        format!(
+            "the far end received `{}`, not the caller's bytes with `model` spliced to \
+             `{UPSTREAM_NAME}`: `{want}`",
+            show(received)
+        )
+    })
+}
+
 fn check(ok: bool, finding: impl FnOnce() -> String) -> Result<(), String> {
     if ok {
         Ok(())
@@ -601,6 +684,9 @@ impl Runner {
                     run.build = Ok(());
                     run.boot = Ok(());
                     self.served(&bin, &dir, &mut run);
+                    if run.boot.is_ok() && !run.checks.is_empty() {
+                        self.served_models(&bin, &dir, &mut run);
+                    }
                 }
                 Err(e) => run.build = Err(e),
             }
@@ -879,6 +965,108 @@ impl Runner {
             // Last: the down lane benches the sole member for its cooldown.
             (H2_ROUTE.to_string(), gate.route(&client)),
         ]);
+        drop(booted);
+    }
+}
+
+impl Runner {
+    /// THE MODEL-RESOLUTION BOOT: two models on the rig's far end, and the three `models.*` checks.
+    fn served_models(&self, bin: &Path, dir: &Path, run: &mut JevRun) {
+        let dir = dir.join("models");
+        let scratch = dir.join("http");
+        let mut fail = |why: String| {
+            run.checks.push(("models.boot".to_string(), Err(why)));
+        };
+        let far = match FarEnd::start() {
+            Ok(f) => f,
+            Err(e) => return fail(e),
+        };
+        let (ports, admin_token, provider_key) = match (
+            subject::free_ports(2),
+            subject::random_hex(24),
+            subject::random_hex(16),
+        ) {
+            (Ok(p), Ok(a), Ok(k)) => (p, a, k),
+            (p, a, k) => {
+                return fail(
+                    [p.err(), a.err(), k.err()]
+                        .into_iter()
+                        .flatten()
+                        .collect::<Vec<_>>()
+                        .join("; "),
+                )
+            }
+        };
+        let (data, admin) = (ports[0], ports[1]);
+        let key_file = match subject::signing_key(bin, &dir) {
+            Ok(k) => k,
+            Err(e) => return fail(e),
+        };
+        let providers = format!(
+            "{PROVIDER}:\n  protocol: jev\n  base_url: http://127.0.0.1:{}\n  error_map: {{}}\n",
+            far.port
+        );
+        let booted = match subject::boot(
+            bin,
+            &dir,
+            &jev_models_config(data, admin, &key_file),
+            &providers,
+            &[
+                ("BUSBAR_ADMIN_TOKEN", admin_token.clone()),
+                ("JEV_CONFORMANCE_PROVIDER_KEY", provider_key),
+            ],
+            &format!("http://127.0.0.1:{data}/stats"),
+            &[],
+        ) {
+            Ok(b) => b,
+            Err(e) => return fail(format!("the two-model subject did not boot: {e}")),
+        };
+        let bearer = match subject::mint_key(&scratch, admin, &admin_token, "jev-models") {
+            Ok((key, _)) => format!("Bearer {key}"),
+            Err(e) => return fail(format!("{e}: {}", booted.log_tail())),
+        };
+        let call = |model: Option<&str>| -> Result<(Call, Vec<u8>), String> {
+            let body = models_request(model);
+            let before = far.seen().len();
+            let r = curl(
+                &scratch,
+                "POST",
+                &format!("http://127.0.0.1:{data}{PATH}"),
+                &[
+                    ("content-type", "application/json"),
+                    ("authorization", bearer.as_str()),
+                ],
+                Some(body.as_slice()),
+                &[],
+            )?;
+            Ok((
+                Call {
+                    status: r.status,
+                    body: r.body,
+                    hops: far.seen().len() - before,
+                },
+                body,
+            ))
+        };
+        run.checks.push((
+            "models.unnamed-400".to_string(),
+            call(None).and_then(|(c, _)| judge_unrouted(&c, 400, "invalid_request")),
+        ));
+        run.checks.push((
+            "models.unknown-404".to_string(),
+            call(Some("jev-no-such-model"))
+                .and_then(|(c, _)| judge_unrouted(&c, 404, "invalid_params")),
+        ));
+        far.clear_replies();
+        far.reply(200, SUCCESS);
+        run.checks.push((
+            "models.upstream-model".to_string(),
+            call(Some(UPSTREAM_MODEL)).and_then(|(c, sent)| {
+                let seen = far.seen();
+                let received = seen.last().map(|s| s.body.clone()).unwrap_or_default();
+                judge_upstream_model(&c, &sent, &received)
+            }),
+        ));
         drop(booted);
     }
 }

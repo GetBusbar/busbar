@@ -161,12 +161,93 @@ fn a_refusal_carries_the_kernel_text_in_the_dialect_shape() {
     );
 }
 
+/// RED (audit plane-decisions#1): every generation with a model mounts the claim (THE DESIGN
+/// section 2: "more than one and none named is 400", so several models are served); none mounts
+/// nothing, and the kernel's unclaimed-route bytes stand.
 #[test]
-fn only_exactly_one_model_mounts_the_claim() {
+fn one_or_more_models_mount_the_claim() {
     assert!(served_claims(0).is_empty());
     assert_eq!(served_claims(1), tail::CLAIMS);
-    assert!(served_claims(2).is_empty());
-    assert!(served_claims(7).is_empty());
+    assert_eq!(served_claims(2), tail::CLAIMS);
+    assert_eq!(served_claims(7), tail::CLAIMS);
+}
+
+fn models(names: &[&str]) -> std::collections::BTreeMap<String, ()> {
+    names.iter().map(|n| ((*n).to_string(), ())).collect()
+}
+
+/// MODEL RESOLUTION (THE DESIGN section 2): the named model; one configured and none named is the
+/// default; several and none named, or a `model` that is not a string, is 400; an unknown name 404.
+#[test]
+fn a_request_routes_over_the_model_it_names() {
+    let two = models(&["a", "b"]);
+    assert_eq!(route_model(br#"{"model":"b"}"#, &two).map(|r| r.0), Ok("b"));
+    assert_eq!(
+        route_model(br#"{"model":"\u0061"}"#, &two).map(|r| r.0),
+        Ok("a"),
+        "an escaped name is the name it spells"
+    );
+    assert_eq!(
+        route_model(br#"{"state":{}}"#, &two),
+        Err(Unrouted::Unnamed)
+    );
+    assert_eq!(
+        route_model(br#"{"model":"zz"}"#, &two),
+        Err(Unrouted::Unknown("zz".to_string()))
+    );
+    assert_eq!(
+        route_model(br#"{"model":null}"#, &two),
+        Err(Unrouted::NotAName)
+    );
+    assert_eq!(
+        route_model(br#"{"model":["a"]}"#, &two),
+        Err(Unrouted::NotAName)
+    );
+    // A nested `model` is not the request's.
+    assert_eq!(
+        route_model(br#"{"state":{"model":"a"}}"#, &two),
+        Err(Unrouted::Unnamed)
+    );
+
+    let one = models(&["jev"]);
+    assert_eq!(
+        route_model(br#"{"state":{}}"#, &one).map(|r| r.0),
+        Ok("jev")
+    );
+    assert_eq!(route_model(b"not json", &one).map(|r| r.0), Ok("jev"));
+    assert_eq!(
+        route_model(br#"{"model":"other"}"#, &one),
+        Err(Unrouted::Unknown("other".to_string()))
+    );
+    assert_eq!(route_model(br#"{}"#, &models(&[])), Err(Unrouted::Unnamed));
+
+    assert_eq!(
+        (Unrouted::Unnamed.status(), Unrouted::NotAName.status()),
+        (400, 400)
+    );
+    assert_eq!(Unrouted::Unknown("zz".to_string()).status(), 404);
+}
+
+/// THE `upstream_model` SPLICE (THE DESIGN section 2): the top-level value alone, when it differs.
+#[test]
+fn the_splice_rewrites_the_top_level_model_value_alone() {
+    let body = br#"{"model" : "jev", "state":{"model":"jev"}}"#;
+    assert_eq!(
+        spliced(body, "jev-1.13.0").as_deref(),
+        Some(&br#"{"model" : "jev-1.13.0", "state":{"model":"jev"}}"#[..])
+    );
+    assert_eq!(spliced(body, "jev"), None, "the same name passes through");
+    assert_eq!(
+        spliced(br#"{"state":{}}"#, "x"),
+        None,
+        "no model to rewrite"
+    );
+    assert_eq!(spliced(br#"{"model":3}"#, "x"), None, "not a name");
+    assert_eq!(
+        spliced(br#"{"model":"a"}"#, "q\"x").as_deref(),
+        Some(&br#"{"model":"q\"x"}"#[..]),
+        "the value is written as a JSON string"
+    );
 }
 
 /// BILLABLE SUCCESS ONLY: the request fee is counted once for a far end's 2xx answer with no

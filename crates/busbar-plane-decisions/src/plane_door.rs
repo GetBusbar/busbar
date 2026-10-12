@@ -22,10 +22,13 @@
 //!   configures (the kernel filters them by scope and `/v1/models` appends them), and binds no
 //!   audience (the operation is served on the plain data plane to a keyed caller). `retire` drops
 //!   a generation.
-//! * `arrive`: [`crate::driven::arrive`]; an unclaimed request is refused at 404.
+//! * `arrive`: [`crate::driven::arrive`], routed over the model the request names
+//!   ([`crate::driven::route_model`]); an unclaimed request is refused at 404, and one that routes
+//!   over no model at its [`crate::driven::Unrouted`] status.
 //! * `on_piece`: the ATTEMPT's request head ([`crate::driven::attempt_request`]), the caller's body to the
-//!   far end unchanged ([`crate::driven::caller_piece`]), and the far end's answer relayed unchanged
-//!   with its count read at the last piece ([`crate::driven::FarEndReading`]).
+//!   far end unchanged ([`crate::driven::caller_piece`]) but for the routed model's `upstream_model`
+//!   ([`crate::driven::spliced`]), and the far end's answer relayed unchanged with its count read at
+//!   the last piece ([`crate::driven::FarEndReading`]).
 //! * `refusal`: [`crate::driven::refusal_body`].
 //! * `serve` and `project` are REFUSED: the plane publishes no admin route and binds no hook view.
 //!   `hydrate`, `start`, `tick`, `drive`, `cancel`, `release` and `close` hold nothing.
@@ -80,6 +83,9 @@ pub const UNCLAIMED: u32 = 1;
 
 /// The status an unclaimed request is refused at.
 const STATUS_NOT_FOUND: u32 = 404;
+
+/// [`ArriveOut::refusal`]: the request routes over no configured model ([`driven::Unrouted`]).
+pub const UNROUTED: u32 = 2;
 
 /// The human label.
 const LABEL: &str = "Decisions";
@@ -320,6 +326,9 @@ struct Unit {
     caller: Vec<(Vec<u8>, Vec<u8>)>,
     /// The far end's status, read off its first piece; the request fee is judged on it.
     status: Option<u32>,
+    /// The routed model's `upstream_model`, kept from `arrive`: the caller's top-level `model` is
+    /// spliced to it on the way to the far end where the two differ ([`driven::spliced`]).
+    upstream: Option<String>,
 }
 
 /// One instance: every live generation's snapshot, and the units in flight.
@@ -327,28 +336,23 @@ struct Unit {
 pub struct DecisionsDoor {
     generations: Generations<PlaneSnapshot>,
     units: Keyed<u64, Unit>,
-    /// The entry a claimed arrival routes over, directly: the one configured model of the latest
-    /// generation (none held when the section configures other than one, and nothing is claimed).
-    routed: Keyed<(), String>,
+    /// The models a claimed arrival routes over, directly, by name: every model the latest
+    /// generation configures, each with its `upstream_model`.
+    models: Keyed<String, Option<String>>,
 }
 
 impl DecisionsDoor {
-    /// Route claimed arrivals over `section`'s one model, or none.
+    /// Route claimed arrivals over `section`'s models.
     fn route_over(&self, section: &DecisionsSection) {
-        match routed_model(section) {
-            Some(model) => self.routed.insert((), model),
-            None => self.routed.remove(&()),
-        };
-    }
-}
-
-/// The entry a claimed arrival routes over under `section`: its one model, when it configures
-/// exactly one ([`driven::served_claims`]' rule); `None` otherwise.
-fn routed_model(section: &DecisionsSection) -> Option<String> {
-    let mut models = section.models.keys();
-    match (models.next(), models.next()) {
-        (Some(one), None) => Some(one.clone()),
-        _ => None,
+        self.models.with_all(|models| {
+            models.clear();
+            models.extend(
+                section
+                    .models
+                    .iter()
+                    .map(|(name, model)| (name.clone(), model.upstream_model.clone())),
+            );
+        });
     }
 }
 
@@ -390,7 +394,7 @@ slot!(
         let plane = DecisionsDoor {
             generations: Generations::new(),
             units: Keyed::new(),
-            routed: Keyed::new(),
+            models: Keyed::new(),
         };
         plane.route_over(&section);
         let spec = generation_spec(&section);
@@ -459,8 +463,9 @@ slot!(
 );
 
 slot!(
-    /// `arrive`: a claimed request's op class, principal need, dialect and route (its one model,
-    /// directly: ARCHITECT Q-SW6/Q-FL3); an unclaimed one is refused at 404.
+    /// `arrive`: a claimed request's op class, principal need, dialect and route (the model it
+    /// names, or the only one configured, directly: ARCHITECT Q-SW6/Q-FL3); an unclaimed one is
+    /// refused at 404, and one that routes over no model at its [`driven::Unrouted`] status.
     Arrive, ArriveIn, ArriveOut, |instance, input, mut out| {
         let verb = input.field(|i| &i.method).as_str().unwrap_or_default();
         let target = input.field(|i| &i.target).as_str().unwrap_or_default();
@@ -480,9 +485,22 @@ slot!(
             },
         );
         if let Some(plane) = instance.get() {
-            if let Some(model) = plane.routed.get(&()) {
-                out.route(ROUTE_DIRECT, &model);
-            }
+            let body = input.field(|i| &i.body).bytes();
+            let routed = plane.models.with_all(|models| {
+                driven::route_model(body, models)
+                    .map(|(name, upstream)| (name.to_string(), upstream.clone()))
+            });
+            let upstream = match routed {
+                Ok((model, upstream)) => {
+                    out.route(ROUTE_DIRECT, &model);
+                    upstream
+                }
+                Err(unrouted) => {
+                    out.set(|o| &o.refusal, UNROUTED);
+                    out.set(|o| &o.refusal_status, u32::from(unrouted.status()));
+                    return out.fail(Refusal::refused(unrouted.text()));
+                }
+            };
             // The caller's head crosses here once: keep what the far end receives of it.
             let caller = driven::relayed_fields(input.fields().iter().map(|f| {
                 (
@@ -491,7 +509,11 @@ slot!(
                 )
             }));
             let unit = input.get().unit;
-            plane.units.with_all(|units| unit_of(units, unit).caller = caller);
+            plane.units.with_all(|units| {
+                let kept = unit_of(units, unit);
+                kept.caller = caller;
+                kept.upstream = upstream;
+            });
         }
         Outcome::Ready
     }
@@ -588,6 +610,7 @@ fn attempt_piece(
     *unit = Unit {
         attempt: true,
         caller: std::mem::take(&mut unit.caller),
+        upstream: unit.upstream.take(),
         ..Unit::default()
     };
     out.set(|o| &o.verb, verb);
@@ -685,7 +708,9 @@ slot!(
                     FROM_CALLER => match driven::caller_piece(bytes, given.flags & PIECE_LAST != 0) {
                         CallerAnswer::Empty => (Outcome::Refused, true),
                         CallerAnswer::Keep if unit.attempt => {
-                            owe(unit, bytes, EMIT_TO_FAR_END, input, &mut out);
+                            let spliced =
+                                unit.upstream.as_deref().and_then(|up| driven::spliced(bytes, up));
+                            owe(unit, spliced.as_deref().unwrap_or(bytes), EMIT_TO_FAR_END, input, &mut out);
                             (Outcome::Ready, false)
                         }
                         CallerAnswer::Keep => (Outcome::Ready, false),

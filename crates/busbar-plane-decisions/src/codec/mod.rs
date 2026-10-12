@@ -46,14 +46,16 @@ pub const PTR_USAGE_UNITS: &str = "/usage/units";
 /// rather than auditing every call site.
 pub const RESPONSE_PTRS: &[&str] = &[PTR_ERROR, PTR_REQUEST_ID, PTR_ID, PTR_USAGE_UNITS];
 
-/// Every pointer this plane resolves in a REQUEST body.
-///
-/// Empty. A `systemone` request carries the caller's `state` and nothing else this plane has a use
-/// for — there is no safe member to declare a pointer at, so none is declared. This is not an
-/// oversight the way an empty ingress pointer list would be for MCP/A2A (which read a method name
-/// and an id out of every request): jev names its operation in the path, not the body, so the
-/// REQUEST body genuinely carries nothing this plane reads.
-pub const REQUEST_PTRS: &[&str] = &[];
+/// The pointer a request names the model it is routed over at: its top-level `model` (THE DESIGN
+/// section 2, model resolution; DECISIONS D8b "REQUEST_PTRS += /model (metadata)"). Routing
+/// metadata, never decision content.
+pub const PTR_MODEL: &str = "/model";
+
+/// Every pointer this plane resolves in a REQUEST body: the model it routes over, and nothing else.
+/// A `systemone` request carries the caller's `state`, which this plane never reads; jev names its
+/// operation in the path, so the top-level `model` is the one member routing needs
+/// (`driven::route_model`) and the one `upstream_model` rewrites (`driven::spliced`).
+pub const REQUEST_PTRS: &[&str] = &[PTR_MODEL];
 
 /// The span view of a body, built from one of the two declared pointer lists above.
 ///

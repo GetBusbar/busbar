@@ -17,22 +17,23 @@
 //! Writing these answers into the host buffers of the plane ABI (`busbar_contract::abi::plane`) is
 //! the plane door's job, one generic adapter for every plane; it is not this plane's.
 //!
-//! ZERO OR SEVERAL DECISIONS MODELS — the driver's rule is today's behaviour, byte for byte. A jev
-//! request names no model, so it has a destination only when `decisions.models` holds exactly one.
-//! Measured on the busbar binary before the driver serves this plane:
+//! MODEL RESOLUTION (THE DESIGN section 2, the decisions bullet; DECISIONS D8b): "a request routes
+//! by its model; one configured model and none named is the default (byte-identical); more than one
+//! and none named is 400; an unknown model is 404. `upstream_model` rewrites only the top-level model
+//! value, by span splice, when it is set and differs; otherwise the body passes through."
 //!
-//! | config | `--validate` and boot | `POST /v1/systemone` |
-//! |---|---|---|
-//! | no jev provider, `decisions.models: {}` | accepted | `404`, the unclaimed-route body |
-//! | a jev provider, `decisions.models: {}` | refused, `BUSBAR-3015`: provider '<name>' has unknown protocol 'jev' | (no boot) |
-//! | one model | accepted | `404`, the unclaimed-route body (the served operation is new surface) |
-//! | two or more models | accepted | `404`, the unclaimed-route body |
+//! | config | `POST /v1/systemone` |
+//! |---|---|
+//! | `decisions.models: {}` | `404`, the kernel's unclaimed-route body (nothing is claimed) |
+//! | one model, none named | routed over that model, the body byte for byte |
+//! | several models, none named | `400` ([`Unrouted::Unnamed`]) |
+//! | a model named | routed over it; a name no model has is `404` ([`Unrouted::Unknown`]) |
 //!
-//! The unclaimed-route body is `{"error":{"code":null,"message":"the requested resource was not
-//! found","param":null,"type":"not_found_error"}}`. So with zero or several models the driver serves
-//! no `systemone` claim for this generation (the snapshot publishes [`served_claims`], empty) and the request falls
-//! through to that same 404; there is no boot check and no new refusal. Only exactly one model
-//! mounts the claim.
+//! With no model configured the snapshot publishes no claim ([`served_claims`]), so the request
+//! falls through to the kernel's unclaimed-route body,
+//! `{"error":{"code":null,"message":"the requested resource was not found","param":null,"type":"not_found_error"}}`,
+//! byte for byte as before. The top-level `model` ([`codec::PTR_MODEL`]) is the one request member
+//! this plane reads, and only to route ([`route_model`]) and splice ([`spliced`]).
 //!
 //! WHAT THIS PLANE DOES NOT CLAIM: `GET /v1/models`. That path keeps its 1.5.5 bytes (the model
 //! list busbar already serves there), so [`tail::CLAIMS`] and [`tail::OP_CLASSES`] carry `systemone` alone and
@@ -122,14 +123,119 @@ pub mod tail {
 }
 
 /// The claims a generation's snapshot publishes, given how many `decisions.models` it configures:
-/// [`tail::CLAIMS`] for exactly one, none otherwise (see the module doc's measured table).
+/// [`tail::CLAIMS`] for one or more, none for none (see the module doc's table).
 #[must_use]
 pub fn served_claims(models: usize) -> &'static [(&'static str, &'static str)] {
-    if models == 1 {
-        tail::CLAIMS
-    } else {
+    if models == 0 {
         &[]
+    } else {
+        tail::CLAIMS
     }
+}
+
+/// Why a claimed request routes over no configured model (THE DESIGN section 2: "more than one and
+/// none named is 400; an unknown model is 404").
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Unrouted {
+    /// The request names no model and the generation configures several.
+    Unnamed,
+    /// The request's `model` is not a string.
+    NotAName,
+    /// The request names a model the generation does not configure.
+    Unknown(String),
+}
+
+impl Unrouted {
+    /// The status the refusal wears.
+    #[must_use]
+    pub const fn status(&self) -> u16 {
+        match self {
+            Self::Unnamed | Self::NotAName => 400,
+            Self::Unknown(_) => 404,
+        }
+    }
+
+    /// The words the caller reads, in the dialect's error shape ([`refusal_body`]).
+    #[must_use]
+    pub fn text(&self) -> String {
+        match self {
+            Self::Unnamed => "the request names no model, and several decisions models are \
+                              configured: name one in `model`"
+                .to_string(),
+            Self::NotAName => "`model` must be a string naming a decisions model".to_string(),
+            Self::Unknown(model) => {
+                format!("The model '{model}' does not exist or you do not have access to it.")
+            }
+        }
+    }
+}
+
+/// The top-level `model` a request body names: `Ok(None)` when it names none, and
+/// [`Unrouted::NotAName`] when the member is there but is not a string.
+///
+/// # Errors
+///
+/// [`Unrouted::NotAName`], as above.
+pub fn requested_model(body: &[u8]) -> Result<Option<std::borrow::Cow<'_, str>>, Unrouted> {
+    let Some(raw) = codec::read_raw(body, codec::PTR_MODEL) else {
+        return Ok(None);
+    };
+    if let Ok(name) = serde_json::from_slice::<&str>(raw) {
+        return Ok(Some(std::borrow::Cow::Borrowed(name)));
+    }
+    serde_json::from_slice::<String>(raw)
+        .map(|name| Some(std::borrow::Cow::Owned(name)))
+        .map_err(|_| Unrouted::NotAName)
+}
+
+/// THE MODEL A CLAIMED REQUEST ROUTES OVER among `models` (the generation's configured names, each
+/// with what this plane keeps of it): the one it names, else the only one configured. Answers the
+/// configured name and its entry.
+///
+/// # Errors
+///
+/// [`Unrouted`]: several configured and none named, a `model` that is not a string, or a name none
+/// of `models` has.
+pub fn route_model<'m, V>(
+    body: &[u8],
+    models: &'m std::collections::BTreeMap<String, V>,
+) -> Result<(&'m str, &'m V), Unrouted> {
+    match requested_model(body)? {
+        Some(name) => models
+            .get_key_value(name.as_ref())
+            .map(|(k, v)| (k.as_str(), v))
+            .ok_or_else(|| Unrouted::Unknown(name.into_owned())),
+        None => {
+            let mut all = models.iter();
+            match (all.next(), all.next()) {
+                (Some((k, v)), None) => Ok((k.as_str(), v)),
+                _ => Err(Unrouted::Unnamed),
+            }
+        }
+    }
+}
+
+/// THE `upstream_model` SPLICE: `body` with its top-level `model` value replaced by `upstream`, when
+/// the body names a model and it differs from `upstream`; `None` when the body passes through
+/// unchanged. Every byte outside the value's span is kept: member order, whitespace and the rest of
+/// the document are the caller's.
+#[must_use]
+pub fn spliced(body: &[u8], upstream: &str) -> Option<Vec<u8>> {
+    let busbar_contract::spans::Resolved::Found(span) =
+        busbar_contract::spans::resolve_pointer(body, codec::PTR_MODEL)
+    else {
+        return None;
+    };
+    let named = requested_model(body).ok().flatten()?;
+    if named == upstream {
+        return None;
+    }
+    let value = serde_json::to_string(upstream).ok()?;
+    let mut out = Vec::with_capacity(body.len() - (span.end - span.start) + value.len());
+    out.extend_from_slice(body.get(..span.start)?);
+    out.extend_from_slice(value.as_bytes());
+    out.extend_from_slice(body.get(span.end..)?);
+    Some(out)
 }
 
 /// Whether the kernel must verify a principal before the first piece.

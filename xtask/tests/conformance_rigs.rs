@@ -221,6 +221,72 @@ fn at_the_node_width_the_jev_ledger_is_the_callers_bucket() {
     assert!(judge_jev_ledger(&bucketed(&[("vk_caller", "", "", 1, "41")]), "vk_caller").is_err());
 }
 
+/// THE MODEL-RESOLUTION BOOT (THE DESIGN §2, the decisions bullet): two models, the second with an
+/// `upstream_model`, each priced.
+#[test]
+fn the_models_subject_configures_two_models_one_with_an_upstream_model() {
+    use xtask::conformance_record::{jev_models_config, UPSTREAM_MODEL, UPSTREAM_NAME};
+    let text = jev_models_config(41000, 41001, std::path::Path::new("/tmp/signing.key"));
+    let doc: serde_yaml::Value = serde_yaml::from_str(&text).expect("the config is YAML");
+    let models = &doc["decisions"]["models"];
+    assert_eq!(models["jev-1"]["provider"].as_str(), Some("typesafe"));
+    assert!(models["jev-1"]["upstream_model"].is_null());
+    assert_eq!(
+        models[UPSTREAM_MODEL]["upstream_model"].as_str(),
+        Some(UPSTREAM_NAME)
+    );
+    for m in ["jev-1", UPSTREAM_MODEL] {
+        assert_eq!(
+            doc["decisions"]["rate_card"][m]["units"]["decision"].as_u64(),
+            Some(1),
+            "{m}"
+        );
+    }
+    assert_eq!(doc["store"]["module"].as_str(), Some("memory"));
+}
+
+fn call(status: u16, body: &[u8], hops: usize) -> xtask::conformance_record::Call {
+    xtask::conformance_record::Call {
+        status,
+        body: body.to_vec(),
+        hops,
+    }
+}
+
+/// `models.unnamed-400` / `models.unknown-404`: the status in jev's shape, before any hop.
+#[test]
+fn an_unrouted_request_is_refused_in_jev_shape_before_any_hop() {
+    use xtask::conformance_record::judge_unrouted;
+    let bad = br#"{"error":{"code":"invalid_request","message":"name one"}}"#;
+    assert!(judge_unrouted(&call(400, bad, 0), 400, "invalid_request").is_ok());
+    // RED ARMS: another status, a hop, another shape.
+    assert!(judge_unrouted(&call(404, bad, 0), 400, "invalid_request").is_err());
+    assert!(judge_unrouted(&call(400, bad, 1), 400, "invalid_request").is_err());
+    assert!(judge_unrouted(&call(400, b"{}", 0), 400, "invalid_request").is_err());
+}
+
+/// `models.upstream-model`: served, and the far end saw the top-level `model` value alone spliced.
+#[test]
+fn the_upstream_model_is_spliced_into_what_the_far_end_receives() {
+    use xtask::conformance_record::{
+        judge_upstream_model, models_request, JEV_SUCCESS, UPSTREAM_MODEL, UPSTREAM_NAME,
+    };
+    let sent = models_request(Some(UPSTREAM_MODEL));
+    let spliced = String::from_utf8(sent.clone())
+        .unwrap()
+        .replace(UPSTREAM_MODEL, UPSTREAM_NAME);
+    let ok = call(200, JEV_SUCCESS, 1);
+    assert!(judge_upstream_model(&ok, &sent, spliced.as_bytes()).is_ok());
+    // RED ARMS: the caller's own name relayed, the far end not reached, another answer.
+    assert!(judge_upstream_model(&ok, &sent, &sent).is_err());
+    assert!(judge_upstream_model(&call(200, JEV_SUCCESS, 0), &sent, spliced.as_bytes()).is_err());
+    assert!(judge_upstream_model(&call(400, b"{}", 1), &sent, spliced.as_bytes()).is_err());
+    // The unnamed request names no model.
+    assert!(!String::from_utf8(models_request(None))
+        .unwrap()
+        .contains("\"model\""));
+}
+
 // ── a2a ───────────────────────────────────────────────────────────────────────────────────────
 
 fn report(rows: &[(&str, &str)]) -> String {
