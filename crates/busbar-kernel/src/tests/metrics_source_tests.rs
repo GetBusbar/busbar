@@ -1,36 +1,36 @@
-// SPDX-License-Identifier: Apache-2.0
-// Copyright (C) 2026 Busbar Inc and contributors
-
 //! Tests for the observation source (`metrics/source.rs`): what it snapshots is what 1.5.5's recorder
-//! (`metrics-exporter-prometheus` 0.18.3, kept here as a dev-dependency and nowhere else) held, so the
-//! scrape sink renders the 1.5.5 exposition from it byte for byte, order included.
+//! (`metrics-exporter-prometheus` 0.18.3, kept here as a dev-dependency and nowhere else) held, so a
+//! scrape sink handed the snapshot renders the 1.5.5 exposition from it. The comparison reads both
+//! snapshots through one stable test view ([`rendered`]) rather than through a scrape sink (R-FIX3:
+//! the kernel's tests name no export plugin; the scrape sink's own rendering of a snapshot is proven
+//! where it is linked, `crates/busbar/src/root/tests/linked.rs`).
 
 use super::*;
-use busbar_contract::abi::sdk::{MetricFamily, MetricSample};
 use metrics_exporter_prometheus::formatting as reference;
 
-/// The scrape sink's rendering of `families` — the bytes an operator scrapes.
+/// THE STABLE TEST VIEW of `families`: families by kind, then by name; within a family its series
+/// (the samples sharing one label set once `le` / `quantile` are set aside) by their labels, each
+/// series' own lines in the order the recorder wrote them — then rendered as the test view
+/// (`test_support::export_axis::lines`). Both recorders hand families and series over in their maps'
+/// hash order, which differs from run to run; the same held metrics must read the same here.
 fn rendered(families: &[Family]) -> String {
-    let families: Vec<MetricFamily> = families
-        .iter()
-        .map(|f| MetricFamily {
-            name: f.name.clone(),
-            kind: busbar_contract::export_calls::type_word(f.kind)
-                .expect("a kind in the vocabulary")
-                .to_string(),
-            help: f.help.clone(),
-            samples: f
-                .samples
+    let mut ordered = families.to_vec();
+    ordered.sort_by(|a, b| a.kind.cmp(&b.kind).then_with(|| a.name.cmp(&b.name)));
+    for family in &mut ordered {
+        let mut series: std::collections::BTreeMap<Vec<(String, String)>, Vec<_>> =
+            std::collections::BTreeMap::new();
+        for sample in std::mem::take(&mut family.samples) {
+            let key = sample
+                .labels
                 .iter()
-                .map(|s| MetricSample {
-                    name: s.name.clone(),
-                    labels: s.labels.clone(),
-                    value: s.value.clone(),
-                })
-                .collect(),
-        })
-        .collect();
-    busbar_export_prometheus::render(&families)
+                .filter(|(k, _)| k != "le" && k != "quantile")
+                .cloned()
+                .collect();
+            series.entry(key).or_default().push(sample);
+        }
+        family.samples = series.into_values().flatten().collect();
+    }
+    crate::test_support::export_axis::lines(&ordered)
 }
 
 /// One workload, every shape the emit sites write: described and undescribed counters, labelled
@@ -71,10 +71,10 @@ fn workload() {
     let _registered_only = metrics::histogram!("busbar_eq_idle_seconds");
 }
 
-/// THE BYTE PROOF: the same workload written to 1.5.5's recorder and to the source renders, through
-/// the scrape sink, to the same exposition — every family, series, label, value and HELP line, in
-/// the same order. The 1.5.5 side is its own text read back through the snapshot reader; the sink
-/// orders both the same stable way, so this compares what the recorders HOLD, not their hash order.
+/// THE BYTE PROOF: the same workload written to 1.5.5's recorder and to the source reads, through
+/// one stable test view, as the same exposition — every family, series, label, value and HELP line.
+/// The 1.5.5 side is its own text read back through the snapshot reader; the view orders both the
+/// same stable way, so this compares what the recorders HOLD, not their hash order.
 #[test]
 fn the_source_holds_what_1_5_5s_recorder_held() {
     let width = Duration::from_secs(20);
