@@ -665,6 +665,10 @@ mod metrics_scrape {
     }
 }
 
+/// The kernel's body-ingress convenience routes (`/{name}/v1/messages`,
+/// `/{provider}/{model}/v1/messages`): 1.5.5 surface, mounted where a plane installed body ingress.
+const BODY_INGRESS_ROUTES: [&str; 2] = ["/{name}/v1/messages", "/{provider}/{model}/v1/messages"];
+
 /// THE PLANE-BOUNDARY RATCHET (1.6.0), driven by the ROUTER TABLE rather than by a hand-listed
 /// sample.
 ///
@@ -823,6 +827,27 @@ async fn an_audience_bound_token_is_confined_to_its_door_plane() {
              RouteAuth::None — the bypass set this names is not the one the router built"
         );
     }
+    // THE BODY-INGRESS CONVENIENCE ROUTES (1.5.5 surface): the kernel mounts them only where a
+    // plane installed body ingress (`busbar_kernel::ingress::arrival::any_body_ingress`), and this
+    // app's linked planes install it, as the default build's boot does. So both are mounted here,
+    // each guarded (a key's bar, never `RouteAuth::None`), and the walk below must reach both: an
+    // anonymous caller refused, a keyed caller admitted.
+    assert!(
+        busbar_kernel::ingress::arrival::any_body_ingress(),
+        "the linked planes installed no body ingress, so the convenience routes are not mounted \
+         and this walk proves nothing about them"
+    );
+    for pattern in BODY_INGRESS_ROUTES {
+        assert!(
+            core_routes
+                .iter()
+                .any(|(path, method, auth)| path == pattern
+                    && method == "POST"
+                    && *auth != busbar_contract::abi::mechanism::route::RouteAuth::None),
+            "{pattern} is a body-ingress convenience route, mounted guarded on POST wherever body \
+             ingress is installed; the router built none: {core_routes:?}"
+        );
+    }
     let boot_plugin_paths: Vec<String> = busbar_kernel::boot_route_paths_of(&app);
     assert!(
         !core_routes.is_empty(),
@@ -872,6 +897,7 @@ async fn an_audience_bound_token_is_confined_to_its_door_plane() {
     .to_string();
 
     let mut checked = 0usize;
+    let mut body_walked: Vec<String> = Vec::new();
     let mut door_checked = 0usize;
     for route in &core_routes {
         let path = concrete(&route.0);
@@ -999,7 +1025,28 @@ async fn an_audience_bound_token_is_confined_to_its_door_plane() {
             route.1,
             path
         );
+        if BODY_INGRESS_ROUTES.contains(&route.0.as_str()) {
+            assert_eq!(
+                anon, 401,
+                "an anonymous caller is refused on the convenience route {} {}",
+                route.1, path
+            );
+            assert!(
+                plain.status() != 401 && plain.status() != 403,
+                "a keyed caller is admitted on the convenience route {} {}: {}",
+                route.1,
+                path,
+                plain.status()
+            );
+            body_walked.push(route.0.clone());
+        }
         checked += 1;
+    }
+    for pattern in BODY_INGRESS_ROUTES {
+        assert!(
+            body_walked.iter().any(|p| p == pattern),
+            "the convenience route {pattern} was never walked: {body_walked:?}"
+        );
     }
     assert_eq!(
         door_checked,
