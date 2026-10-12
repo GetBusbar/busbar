@@ -36,7 +36,7 @@ busbar-core-oauth2 = { path = "../busbar-core-oauth2" }
 busbar-core-admin = { path = "../busbar-core-admin", default-features = false }
 # The core-side connection-security seam (DECISIONS #40): builds the opaque `ConnectionSecurity`
 # wrap (identity for a plaintext binding, TLS for a TLS one) the composition root hands
-# to `busbar_kernel::tls::serve`. A mandatory sibling, like `busbar-admin`/`busbar-core-oauth2` above —
+# to `busbar::root::listener`. A mandatory sibling, like `busbar-admin`/`busbar-core-oauth2` above —
 # never a plugin, always linked.
 busbar-core-connector = { path = "../busbar-core-connector" }
 # `amend_rate_history` decodes the correction body and digests the operator's free-text reason
@@ -190,6 +190,14 @@ axum = { workspace = true }
 # out wrapped so the spend its body reports on the way past has somewhere to land. A passthrough, and
 # the same version axum is built on — this is the trait axum's own `Body` implements, not a second one.
 http-body = { workspace = true }
+# The inbound listener's serve loop (`root::listener`, moved out of the kernel): the connector
+# accepts and hands each stream up, and the root serves it over hyper-util's auto builder, its body
+# bounds reading frames through `bytes::Buf`, and the futures-io/tokio-io compat seam the
+# `ConnectionSecurity::wrap` result crosses (DECISIONS #40).
+hyper = { workspace = true }
+hyper-util = { workspace = true }
+tokio-util = { workspace = true }
+bytes = { workspace = true }
 tracing = { workspace = true }
 # Selects `idna`'s unicode-rs backend for every `url` in the binary (see the workspace row).
 idna_adapter = { workspace = true }
@@ -518,7 +526,7 @@ rcgen = { workspace = true, features = ["pem"] }
 rustls = { workspace = true }
 rustls-pki-types = { workspace = true }
 tokio-rustls = { workspace = true }
-# tests/tls_listener_h2.rs drives the TLS listener as an HTTP/2 client (OWNER RULING Q137).
+# root/tests/listener_h2_tests.rs drives the TLS listener as an HTTP/2 client (OWNER RULING Q137).
 hyper = { workspace = true }
 hyper-util = { workspace = true }
 http = { workspace = true }
