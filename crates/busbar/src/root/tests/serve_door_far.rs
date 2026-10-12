@@ -337,6 +337,7 @@ async fn the_planes_fault_reading_reaches_the_breaker_through_the_doors_far_end(
             },
         )]),
         stream_ceiling_secs: 600,
+        stated_ceiling_secs: 0,
         error_body_max: DEFAULT_ERROR_BODY_MAX,
     };
     let far = DoorFar {
