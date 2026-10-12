@@ -2351,6 +2351,7 @@ impl busbar_kernel::plane_driver::FarEnd for Unpresentable {
             None => Pick::Exhausted {
                 status: 503,
                 retry_after: Some(2),
+                detail: "The service is temporarily overloaded. Please retry shortly.",
             },
         };
         async move { pick }
@@ -2424,11 +2425,11 @@ async fn drive_over<F: busbar_kernel::plane_driver::FarEnd>(
 /// answers) the kernel's own resolver refuses with the operator's text, which names the source (the
 /// control: the markers are there to be found). A unit whose every member's credential cannot be
 /// presented (the auth call refused; the program never spawned) ends at the walk's terminal: the
-/// plane's `refusal` is handed the one reason (`breaker_open`, class `Unreachable`) and that
-/// reason's own word, and the caller's render is byte-identical whichever source failed and carries
-/// none of its markers. RED: a kernel that handed the plane any operator text would fail the
-/// double's own rule (a kernel refusal's text is its reason's word, else FAULT and an empty body),
-/// the byte-identity across sources, and the marker scan.
+/// plane's `refusal` is handed the one reason (`breaker_open`, class `Unreachable`) and the walk
+/// terminal's own words (the exhausted pool's 1.5.5 sentence, a `&'static str` the far end's seam
+/// carries: no operator text fits it), and the caller's render is byte-identical whichever source
+/// failed and carries none of its markers. RED: a kernel that handed the plane any operator text
+/// would fail the exact render, the byte-identity across sources, and the marker scan.
 #[tokio::test]
 async fn a_credential_that_cannot_be_presented_reaches_the_caller_as_a_fixed_class_refusal() {
     use busbar_contract::abi::plane::{class_of, RefusalClass};
@@ -2470,8 +2471,9 @@ async fn a_credential_that_cannot_be_presented_reaches_the_caller_as_a_fixed_cla
             String::from_utf8_lossy(&rendered.body)
         );
         assert_eq!(
-            rendered.body, b"refused:503:breaker_open:retry=2",
-            "the plane is handed the fixed reason and its own word: {render}"
+            rendered.body,
+            b"refused:503:The service is temporarily overloaded. Please retry shortly.:retry=2",
+            "the plane is handed the fixed reason and the walk terminal's own words: {render}"
         );
         let found = markers_in(&render, &failing);
         assert!(
