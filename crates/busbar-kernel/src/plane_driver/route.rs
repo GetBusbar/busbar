@@ -63,6 +63,10 @@ pub struct FarPiece {
     /// attempt fails over: the pump moves to the next member WITHOUT pushing the piece to the
     /// plane, while no byte has reached the caller.
     pub fail_over: bool,
+    /// On the reply's first piece: the far end relays this answer as the unit's (a terminal's
+    /// dispatch: a spill, the least-bad bypass, a queued slot), so it is never failed over: a
+    /// retry verdict renders it, as 1.5.5 relayed a degraded dispatch's answer.
+    pub relayed: bool,
 }
 
 /// What the walk answers for an attempt: the member to try, or the pool's exhaustion terminal.
@@ -88,6 +92,9 @@ pub enum Pick {
         status: u32,
         /// The Retry-After seconds.
         retry_after: Option<u32>,
+        /// The terminal's words (`busbar_kernel_egress::wire::Shed::detail`), the previous
+        /// release's sentence for that shed.
+        detail: &'static str,
     },
     /// The walk refuses for a hook's restriction: a fallback pool no member of which satisfies a
     /// required restrict the hooks decided (the previous release failed closed there rather than
@@ -499,8 +506,9 @@ pub(crate) enum End {
     Done,
     /// The unit failed; nothing was cancelled.
     Failed(ReasonCode),
-    /// The walk had no member left: its exhaustion terminal's status and Retry-After seconds.
-    Exhausted(u32, Option<u32>),
+    /// The walk had no member left: its exhaustion terminal's status, Retry-After seconds and
+    /// words.
+    Exhausted(u32, Option<u32>, &'static str),
     /// The walk refused for a hook's restriction: the status and the words.
     Vetoed(u32, String),
     /// The driver cancels the unit; the answer of the op that was in flight, if one was.
@@ -902,7 +910,22 @@ async fn until(left: Option<Duration>) {
     }
 }
 
-impl<S, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
+/// What the attempt loop tells a unit's kernel steps of each attempt: its [`super::DriverSteps`]
+/// hook, and nothing for a unit with no steps of its own (a health probe).
+pub trait AttemptSteps {
+    /// An attempt starts on a member of `provider`, the unit's request read in `dialect`.
+    fn attempting(&self, _ctx: &UnitCtx, _dialect: u32, _provider: &str) {}
+}
+
+impl<S: super::DriverSteps> AttemptSteps for S {
+    fn attempting(&self, ctx: &UnitCtx, dialect: u32, provider: &str) {
+        super::DriverSteps::attempting(self, ctx, dialect, provider);
+    }
+}
+
+impl AttemptSteps for () {}
+
+impl<S: AttemptSteps, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
     /// S3 for a unit its plane answers AT ITS SCOPE'S ONE ENTRY (`ROUTE_SCOPE_LOCAL`): NO route is
     /// walked: the far end is never asked for a member, so no pool, no breaker and no egress is
     /// touched. The caller's body is pushed once, with no attempt (its member the resolved entry,
@@ -963,18 +986,22 @@ impl<S, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                     provider,
                 }) => {
                     run.bufs.passthrough = passthrough;
+                    self.steps.attempting(run.ctx, run.bufs.dialect, &provider);
                     run.bufs.provider = provider;
                     ((name, pool), None)
                 }
                 Ok(Pick::Exhausted {
                     status,
                     retry_after,
-                }) if attempt_no == 1 => {
-                    ((String::new(), String::new()), Some((status, retry_after)))
-                }
+                    detail,
+                }) if attempt_no == 1 => (
+                    (String::new(), String::new()),
+                    Some((status, retry_after, detail)),
+                ),
                 Ok(Pick::Exhausted {
                     status,
                     retry_after,
+                    detail,
                 }) => {
                     // The walk's exhaustion terminal is refused as `BreakerOpen` (the route
                     // step's `End::Exhausted`): the refused piece names that reason, whether or
@@ -983,7 +1010,7 @@ impl<S, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                         return end;
                     }
                     return match self.stated_wait(run) {
-                        Ok(wait) => End::Exhausted(status, wait.or(retry_after)),
+                        Ok(wait) => End::Exhausted(status, wait.or(retry_after), detail),
                         Err(end) => end,
                     };
                 }
@@ -1063,7 +1090,7 @@ impl<S, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
             }
             if !far_bound {
                 return match terminal {
-                    Some((status, retry_after)) => {
+                    Some((status, retry_after, detail)) => {
                         // THE WALK EXHAUSTED WITH NOTHING SENT (the first attempt found no member):
                         // the refused piece names `BreakerOpen` here too (R-REJECTED, coordinator
                         // 2026-10-07, extends gap-2), so a plane that opens a hop's task can end it.
@@ -1071,7 +1098,7 @@ impl<S, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                             return end;
                         }
                         match self.stated_wait(run) {
-                            Ok(wait) => End::Exhausted(status, wait.or(retry_after)),
+                            Ok(wait) => End::Exhausted(status, wait.or(retry_after), detail),
                             Err(end) => end,
                         }
                     }
@@ -1103,7 +1130,13 @@ impl<S, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                     failed = self.far.failure(run.token);
                     continue 'attempt;
                 }
-                run.lock().facts.far_end_answered = true;
+                {
+                    let mut facts = run.lock();
+                    facts.facts.far_end_answered = true;
+                    if first {
+                        facts.facts.relayed = piece.relayed;
+                    }
+                }
                 if let Some(t) = turn {
                     // The far end answered this attempt: it is the session's held far end.
                     t.held.send_replace(true);
@@ -1331,9 +1364,13 @@ impl<S, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                 }
                 _ => {
                     let n = emitted.len();
-                    let streamed = run.lock().facts.streamed;
+                    let (streamed, relayed) = {
+                        let held = run.lock();
+                        (held.facts.streamed, held.facts.relayed)
+                    };
                     // A retry verdict fails over only before the first byte; after it, it is hard.
-                    if out.verdict == VERDICT_RETRY && !streamed {
+                    // A relayed answer (a terminal's dispatch) is never failed over.
+                    if out.verdict == VERDICT_RETRY && !streamed && !relayed {
                         return Step::Retry;
                     }
                     let headed = run.lock().facts.headed;

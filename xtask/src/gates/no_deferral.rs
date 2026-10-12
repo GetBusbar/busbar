@@ -75,15 +75,17 @@ pub const ROW_STRICT_DONE: &str = "no-deferral:strict-done";
 
 /// The denominator floor, a `const` in the gate's own module with no environment override. It is
 /// pinned AT the measured count: discovery found 932 shipped source files on predev 6ca8584fc0 (it
-/// was 50, about 5% of the tree), and 929 after FLIP-A2A (#787) deleted the `busbar-a2a` crate (the
+/// was 50, about 5% of the tree), and 931 after FLIP-A2A (#787) deleted the `busbar-a2a` crate (the
 /// retired engine, 39 non-test source files of its 97), and in `busbar-plane-a2a` the in-process
 /// `Plane` impl the engine served (`src/plane.rs`) and the anomaly breaker predev never wired
 /// (`src/a2a/anomaly.rs`) (941 at #778's head e846df4e85, 930 after; 929 merged with predev
 /// 62fdbdf3bc, whose #703 retired plane-mcp's `tool_plane.rs` and `outputschema.rs` and added
-/// `door_sessions.rs`). A drop below 929 is refused as UNPROVEN until a reviewed diff re-measures.
-/// The selftest plant cuts the scan set to one file under the floor and must go red. The only way
-/// to lower one is a reviewable source edit.
-pub const DISCOVERY_FLOOR: usize = 929;
+/// `door_sessions.rs`; 931 merged with predev 561c69a3fd, whose FLIP-LLM (#464) added
+/// `busbar/src/root/model_egress.rs` and `busbar-plane-llm/src/exchange/project.rs`). A drop below
+/// 931 is refused as UNPROVEN until a reviewed diff re-measures. The selftest plant cuts the scan
+/// set to one file under the floor and must go red. The only way to lower one is a reviewable
+/// source edit.
+pub const DISCOVERY_FLOOR: usize = 931;
 
 const WAIVERS: &str = "scripts/no-deferral.waivers";
 /// The plan every waiver's expiry is looked up in. It was `docs/design/1.6.0-TRACKER.md` until

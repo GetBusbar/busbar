@@ -116,7 +116,7 @@ pub fn fold(reg: PlaneRegistration) -> Result<&'static PlaneDecl, String> {
 fn declaration_of(reg: &PlaneRegistration) -> PlaneDeclaration {
     PlaneDeclaration {
         key: reg.key,
-        fallback: false,
+        fallback: reg.fallback,
         config_section: reg.section,
         scope_kinds: reg.scope_kinds.clone().leak(),
         subject_noun: reg.subject_noun,

@@ -43,18 +43,20 @@ use crate::ctx::{Ctx, Overlay, SourceFile, WalkSpec};
 /// dispatch/inline.rs, dispatch/io_slots.rs) and remove three (`busbar-core-connector` stream.rs,
 /// `busbar-transport-stdio` carrier.rs and conn.rs, whose work moved to the host's I/O). Lowered
 /// from 948 to 947 when #703 (the MCP-FIX stack) deleted `busbar-plane-mcp/src/tool_plane.rs` and
-/// `outputschema.rs` and added `door_sessions.rs`, a reviewed net removal of one file. Re-pinned
-/// from 947 to 937, across 23 crates, by FLIP-A2A (#787), which deleted the `busbar-a2a` crate
-/// (the retired engine, 39 non-test source files of its 97), and in `busbar-plane-a2a` the
+/// `outputschema.rs` and added `door_sessions.rs`, a reviewed net removal of one file. Raised from
+/// 947 to 949 when FLIP-LLM (#464) added `busbar/src/root/model_egress.rs` and
+/// `busbar-plane-llm/src/exchange/project.rs` (it had raised 941 to 943 over predev d7929b661d).
+/// Re-pinned from 949 to 939, across 23 crates, by FLIP-A2A (#787), which deleted the `busbar-a2a`
+/// crate (the retired engine, 39 non-test source files of its 97), and in `busbar-plane-a2a` the
 /// in-process `Plane` impl the engine served (`src/plane.rs`) and the anomaly breaker predev never
-/// wired (`src/a2a/anomaly.rs`): 947 measured at #778 merged with predev 8777b2bd1f, 937 after, the
-/// door crate's fold having added 30 non-test files. Every file that left is deleted legacy, no
-/// scan that went blind and no check that was lost. A drop below 937 is refused until a reviewed
+/// wired (`src/a2a/anomaly.rs`): 949 measured at #778 merged with predev 561c69a3fd, 939 after,
+/// the door crate's fold having added 30 non-test files. Every file that left is deleted legacy,
+/// no scan that went blind and no check that was lost. A drop below 939 is refused until a reviewed
 /// diff re-measures. The selftest plant ([`one_file_short`]) cuts the live population to
 /// `FLOOR - 1` whatever its size, so predev growing a file no longer forces a re-pin for the
 /// plant's sake. Lowering the floor is how a gate stops reading the repository without saying so,
 /// so a diff that lowers it is the diff to refuse.
-pub const FLOOR: usize = 937;
+pub const FLOOR: usize = 939;
 
 /// The `.rs` under `crates/` that are not test scaffolding, plus the accounting to refuse a
 /// population that cannot support a verdict.

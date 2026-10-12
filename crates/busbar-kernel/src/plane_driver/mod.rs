@@ -88,8 +88,8 @@ use tokio::sync::{watch, Notify};
 pub use cancel::{CancelBill, Checkpoint, MoneySeam};
 pub use epoch::FlushEpoch;
 pub use far_end::{
-    AuthBinding, Egress, EgressFarEnd, MemberRoute, ResponseKeep, Ride, UnitRoute,
-    DEFAULT_ERROR_BODY_MAX,
+    AuthBinding, Egress, EgressFarEnd, MemberFacts, MemberRoute, MemberSignals, MemberStanding,
+    ResponseKeep, Ride, UnitRoute, DEFAULT_ERROR_BODY_MAX,
 };
 pub use hooks::{
     Bind, BoundHooks, CallerFacts, CallerKey, CandidateFacts, Candidates, Constraint, GroupScope,
@@ -268,10 +268,11 @@ pub(crate) fn audit_row_to(
     value: &[u8],
     principal: Option<&PrincipalId>,
 ) -> Result<(), ()> {
-    use busbar_contract::abi::plane::{AUDIT_APPLIED, AUDIT_REJECTED};
+    use busbar_contract::abi::plane::{AUDIT_APPLIED, AUDIT_DEGRADED, AUDIT_REJECTED};
     let outcome = match outcome {
         AUDIT_APPLIED => busbar_contract::vocab::OUTCOME_APPLIED,
         AUDIT_REJECTED => busbar_contract::vocab::OUTCOME_REJECTED,
+        AUDIT_DEGRADED => busbar_contract::vocab::OUTCOME_DEGRADED,
         _ => return Err(()),
     };
     let action = std::str::from_utf8(key).map_err(|_| ())?;
@@ -604,11 +605,24 @@ pub struct Decoded {
     /// What [`Decoded::pool`] names: `ROUTE_POOL` or `ROUTE_DIRECT` (ARCHITECT Q-FL3), or how the
     /// unit routes with no entry named (`ROUTE_LOCAL`, `ROUTE_SCOPE`, `ROUTE_SCOPE_LOCAL`).
     pub route: u8,
-    /// The `ROUTE_*` flag bits its `arrive` stated (`ROUTE_ONCE`, `ROUTE_SESSION`).
+    /// The `ROUTE_*` flag bits its `arrive` stated (`ROUTE_ONCE`, `ROUTE_SESSION`,
+    /// `ROUTE_STREAM`).
     pub route_flags: u8,
     /// The trust facts its `arrive` stated (a counterparty, and an item at a digest), which
     /// the kernel's Approve judges; `None` = the unit rests on no counterparty.
     pub trust: Option<busbar_contract::plane_calls::ArrivedTrust>,
+    /// The sticky-routing key its `arrive` stated, opaque; `None` = none.
+    pub affinity: Option<Vec<u8>>,
+}
+
+/// THE WALK'S AFFINITY POSITION for a plane's opaque sticky key: FNV-1a over its bytes, the hash
+/// 1.5.5 put on a session key (v1.5.5 `stable_hash`, `store::fnv1a_u64`), so one session lands on
+/// the member it landed on before.
+#[must_use]
+pub fn sticky_hash(key: &[u8]) -> u64 {
+    key.iter().fold(crate::store::FNV1A_OFFSET_BASIS, |h, b| {
+        (h ^ u64::from(*b)).wrapping_mul(crate::store::FNV1A_PRIME)
+    })
 }
 
 /// THE KERNEL STEPS A PLANE'S UNIT IS SERVED UNDER ([`PlaneDriver::unit`]'s `steps`): the loop's
@@ -628,6 +642,11 @@ pub trait DriverSteps: Units {
     /// unit that states none. The steps' Approve may judge the caller's grant on it.
     fn counterparty(&self, _ctx: &UnitCtx, _counterparty: &[u8]) {}
 
+    /// The sticky-routing key the unit's `arrive` stated (ARCHITECT Q1 ArriveOut), as the walk's
+    /// affinity position: [`sticky_hash`] of the plane's opaque key. Told with [`Self::decoded`],
+    /// and only when the plane stated a key.
+    fn affinity(&self, _ctx: &UnitCtx, _hash: u64) {}
+
     /// The units the plane's `arrive` expects the unit to do (its admission estimate, THE DESIGN
     /// §7 `admission: estimate`), told with [`Self::decoded`]. An estimate never bills.
     fn expected(&self, _ctx: &UnitCtx, _units: &[UnitCount]) {}
@@ -639,6 +658,19 @@ pub trait DriverSteps: Units {
         None
     }
 
+    /// The words of the refusal one of these steps raised, where it has its own: its Retry-After
+    /// seconds (a rolling limit's wait, `RefusalIn::retry_after_s`, the previous release's
+    /// `Retry-After` on a limit's 429) and its message (`RefusalIn::text`, the kernel's own message
+    /// for the refusal: the previous release's sentence for a pool the key may not use or a model
+    /// no rate prices). `(None, None)` = the reason's own spelling, no wait.
+    fn refused_words(&self) -> (Option<u32>, Option<String>) {
+        (None, None)
+    }
+
+    /// An attempt of the unit starts on a member of `provider`, the unit's request read in its
+    /// `dialect` (the one `arrive` answered): the previous release's translation counter counts an
+    /// attempt whose far end speaks another dialect.
+    fn attempting(&self, _ctx: &UnitCtx, _dialect: u32, _provider: &str) {}
     /// THE STEPS' OWN WORDS for a refusal they decided with `reason`, handed to the plane's
     /// `refusal` as [`busbar_contract::abi::plane::RefusalIn::text`] (as a limit names the bucket
     /// that blocked); `None` = the reason's word. A `ROUTE_SCOPE` unit refused because several
@@ -755,6 +787,11 @@ impl<S, F, C> PlaneUnits<'_, S, F, C> {
         self.lock().decoded.clone()
     }
 
+    /// The status the plane's `arrive` refused the arrival under, when it refused it.
+    pub fn declined_status(&self) -> Option<u32> {
+        self.lock().declined.map(|(_, status)| status)
+    }
+
     /// The status a refusal for `reason` goes out under, as [`Self::render`] chooses it.
     fn status_for(&self, reason: ReasonCode) -> u32 {
         let st = self.lock();
@@ -842,6 +879,10 @@ impl<S, F, C> PlaneUnits<'_, S, F, C> {
             trust: (outcome == AbiOutcome::Ready)
                 .then(|| self.driver.calls.arrived_trust(&o))
                 .flatten(),
+            affinity: (outcome == AbiOutcome::Ready)
+                .then(|| self.driver.calls.arrived_affinity(&o))
+                .flatten()
+                .filter(|k| !k.is_empty()),
         })
     }
 }
@@ -850,7 +891,7 @@ impl<S: DriverSteps, F, C> PlaneUnits<'_, S, F, C> {
     /// The plane renders a refusal (`refusal`, ticketless, one re-call when short); the kernel's
     /// generic failure, with no body, when it cannot.
     fn render(&self, reason: ReasonCode) -> Rendered {
-        self.render_as(reason, None, None, None)
+        self.render_as(reason, None, None, None, None)
     }
 
     /// [`Self::render`], or under the status and Retry-After the walk chose (an exhaustion
@@ -861,6 +902,7 @@ impl<S: DriverSteps, F, C> PlaneUnits<'_, S, F, C> {
         reason: ReasonCode,
         walk: Option<(u32, Option<u32>)>,
         said: Option<&str>,
+        retry_after: Option<u32>,
         hook: Option<&str>,
     ) -> Rendered {
         let (unit, dialect, declined, words, refused_wait) = {
@@ -883,9 +925,14 @@ impl<S: DriverSteps, F, C> PlaneUnits<'_, S, F, C> {
             (None, Some((_, status))) => status,
             (None, None) => self.driver.config.status(dialect, reason),
         };
-        // The walk's terminal floor; else the wait the kernel's own refusal carries (ARCHITECT Q5:
-        // an admission refusal's window reset, on every plane); `0` = none, and no Retry-After.
-        let retry_after_s = walk.and_then(|(_, r)| r).or(refused_wait).unwrap_or(0);
+        // The walk's terminal floor; else the wait this refusal states; else the wait the kernel's
+        // own refusal carries (ARCHITECT Q5: an admission refusal's window reset, on every plane);
+        // `0` = none, and no Retry-After.
+        let retry_after_s = walk
+            .and_then(|(_, r)| r)
+            .or(retry_after)
+            .or(refused_wait)
+            .unwrap_or(0);
         let steps_words = if words.is_none() {
             self.steps.refusal_words(reason)
         } else {
@@ -1035,6 +1082,7 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> PlaneUnits<'_, S, F, C> {
                     ReasonCode::HookVeto,
                     Some((veto.status, None)),
                     Some(veto.text.as_str()),
+                    None,
                     veto.hook.as_deref(),
                 );
                 self.lock().rendered = Some(rendered);
@@ -1135,18 +1183,19 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> PlaneUnits<'_, S, F, C> {
             route::End::Failed(reason) | route::End::Cancel(reason, _) => {
                 self.response_tap(false, self.status_for(*reason));
             }
-            route::End::Exhausted(status, _) => self.response_tap(false, *status),
+            route::End::Exhausted(status, ..) => self.response_tap(false, *status),
             route::End::Vetoed(status, _) => self.response_tap(true, *status),
         }
         let answer = match end {
             route::End::Done => StepAnswer::proceed(token, RoutePlan::default()),
             route::End::Failed(reason) => failed(token, reason),
-            route::End::Exhausted(status, retry_after) => {
+            route::End::Exhausted(status, retry_after, detail) => {
                 // THE WALK'S EXHAUSTION TERMINAL: its status and its Retry-After floor, handed to
                 // the plane's `refusal` (RefusalIn.retry_after_s), which renders them in its dialect.
                 let rendered = self.render_as(
                     ReasonCode::BreakerOpen,
                     Some((status, retry_after)),
+                    Some(detail),
                     None,
                     None,
                 );
@@ -1159,6 +1208,7 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> PlaneUnits<'_, S, F, C> {
                     ReasonCode::HookVeto,
                     Some((status, None)),
                     Some(&text),
+                    None,
                     None,
                 );
                 self.lock().rendered = Some(rendered);
@@ -1334,6 +1384,9 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> Units for PlaneUnits<'_, S,
             if let Some(t) = d.trust.as_ref() {
                 self.steps.counterparty(ctx, &t.counterparty);
             }
+            if let Some(key) = &d.affinity {
+                self.steps.affinity(ctx, sticky_hash(key));
+            }
             self.steps.expected(ctx, &d.expected);
         }
         self.lock().decoded = decoded;
@@ -1373,7 +1426,8 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> Units for PlaneUnits<'_, S,
         };
         let body = match reason {
             Some(reason) if !pending => {
-                let rendered = self.render(reason);
+                let (retry_after, said) = self.steps.refused_words();
+                let rendered = self.render_as(reason, None, said.as_deref(), retry_after, None);
                 if let (Some(binder), true) = (&self.driver.hooks, is_authentication(reason)) {
                     // A unit refused at authentication: the response taps see the previous
                     // release's synthetic completion, under the status the caller is answered.

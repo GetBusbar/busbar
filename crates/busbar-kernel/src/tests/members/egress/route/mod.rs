@@ -250,6 +250,7 @@ impl Node {
                     Pick::Exhausted {
                         status,
                         retry_after,
+                        ..
                     } => {
                         return Routed::Refused(Refusal {
                             status,

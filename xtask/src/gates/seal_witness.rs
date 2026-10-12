@@ -135,12 +135,12 @@ const EXCLUDE: &[&str] = &["/target/"];
 /// in). FLIP-A2A (#787) then deleted the `busbar-a2a` crate (all 97 of its files, the retired
 /// engine), and in `busbar-plane-a2a` the in-process `Plane` impl the engine served
 /// (`src/plane.rs`, its tests, alloc gate and test scaffold) and the anomaly breaker predev never
-/// wired (`src/a2a/anomaly.rs` and its tests): 2197 measured at #778 merged with predev
-/// 8777b2bd1f, 2161 after, the door crate's fold having added 64 files (the restored door alloc
+/// wired (`src/a2a/anomaly.rs` and its tests): 2213 measured at #778 merged with predev
+/// 561c69a3fd (FLIP-LLM's files in), 2177 after, the door crate's fold having added 64 files (the restored door alloc
 /// gate among them; the kernel's two moved cross-plane tests are counted at their new home in the
 /// root). A floor above the tree it guards refuses every walk. A tree that grows keeps this floor;
 /// a walk that comes back short of it is refused.
-const SCAN_FLOOR: usize = 2161;
+const SCAN_FLOOR: usize = 2177;
 
 /// Is `rel` a file that compiles only into a TEST, BENCH or EXAMPLE target — never into a shipped
 /// lib/bin? A `tests/` directory anywhere on the path (which covers `src/tests/`), a `benches/` or

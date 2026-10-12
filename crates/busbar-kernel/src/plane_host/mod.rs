@@ -1671,7 +1671,8 @@ pub use crate::plane_host::build_input::{
     PoolMemberInput, TripInput, TripModeInput,
 };
 pub use crate::plane_host::engine_view::{
-    EmptyEngineTablesView, EngineTablesView, LaneView, EMPTY_VIEW,
+    set_pool_queued_depth, ConfigTables, EmptyEngineTablesView, EngineTablesView, LaneView,
+    EMPTY_VIEW,
 };
 use busbar_contract::abi::hot::{AdmissionId, Signal, StatusClass};
 use busbar_contract::records::PlaneRequestCtx;
