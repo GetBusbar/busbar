@@ -660,9 +660,10 @@ fn stale_host_ctx_through_a_real_vtable_slot_fails_closed() {
 /// 1. It admits ANY JSON object as the replacement. It does not know, and cannot check, the TYPE the
 ///    receiving plane will decode into. For MCP and A2A the target is `serde_json::Value`, so bytes
 ///    core commits always parse and their "output I cannot read back" arms are unreachable through
-///    this host. For `busbar-voice` the target is `SessionConfig`, which rejects `{"voice": 7}` as a
-///    type mismatch — so THAT plane's arm is genuinely reachable through core's real host, and its
-///    refusal (`busbar_voice::mount::committed_session_config`) is a live fix, not a dormant one.
+///    this host. For a session plane the target is a typed session configuration, which rejects
+///    `{"voice": 7}` as a type mismatch — so THAT plane's arm is genuinely reachable through
+///    core's real host, and its refusal (its door's `committed_session_config`) is a live fix,
+///    not a dormant one.
 /// 2. The commit is a WHOLESALE REPLACEMENT, not a merge. A hook that names one field produces
 ///    `arguments` carrying ONLY that field — every other key the caller (or the plane's own lock)
 ///    had is gone from the committed bytes. A plane whose target type defaults its absent fields
