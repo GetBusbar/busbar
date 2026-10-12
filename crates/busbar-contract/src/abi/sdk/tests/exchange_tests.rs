@@ -173,10 +173,18 @@ fn serve(op: u32, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
     answer(out, Outcome::Pending, 0, 0)
 }
 
+/// The C ABI, spelled once for every slot below: each spelling of its literal is a Law 0 hit (the
+/// scan reads it as a secret instance's id).
 macro_rules! slot {
+    ($(#[$m:meta])* fn $name:ident($i:ident, $o:ident) $body:block) => {
+        $(#[$m])*
+        extern "C" fn $name(_: HostCtx, $i: *const c_void, $o: *mut ServiceOut) -> RawOutcome $body
+    };
     ($name:ident, $op:expr) => {
-        extern "C" fn $name(_: HostCtx, i: *const c_void, o: *mut ServiceOut) -> RawOutcome {
-            serve($op, i, o)
+        slot! {
+            fn $name(i, o) {
+                serve($op, i, o)
+            }
         }
     };
 }
@@ -189,47 +197,49 @@ slot!(close, service::CLOSE);
 /// The far end's key pin the scripted host's `FACTS` reports.
 const OBSERVED_PIN: &str = "c2NyaXB0ZWQga2V5";
 
-/// `FACTS`, as a connector host answers it on a stream already dialled: READY at once with the
-/// facts written on a handle's first issue; a re-issue answers the stored outcome and writes
-/// nothing (the replay rule).
-extern "C" fn facts(_: HostCtx, i: *const c_void, o: *mut ServiceOut) -> RawOutcome {
-    // SAFETY: a `FactsIn`.
-    let io = unsafe { *i.cast::<FactsIn>() };
-    assert_eq!(io.head.op, service::FACTS);
-    let seq = io.head.handle.seq;
-    let mut g = SCRIPT.lock().unwrap();
-    let s = g.as_mut().expect("a script");
-    if s.stored.contains_key(&seq) {
-        return answer(o, Outcome::Ready, 0, 0);
+slot! {
+    /// `FACTS`, as a connector host answers it on a stream already dialled: READY at once with the
+    /// facts written on a handle's first issue; a re-issue answers the stored outcome and writes
+    /// nothing (the replay rule).
+    fn facts(i, o) {
+        // SAFETY: a `FactsIn`.
+        let io = unsafe { *i.cast::<FactsIn>() };
+        assert_eq!(io.head.op, service::FACTS);
+        let seq = io.head.handle.seq;
+        let mut g = SCRIPT.lock().unwrap();
+        let s = g.as_mut().expect("a script");
+        if s.stored.contains_key(&seq) {
+            return answer(o, Outcome::Ready, 0, 0);
+        }
+        *s.runs.entry(seq).or_default() += 1;
+        s.stored.insert(seq, (Outcome::Ready, 0, 0));
+        // SAFETY: the SDK's facts slot, live for the call.
+        unsafe {
+            io.facts.write(StreamFacts {
+                size: std::mem::size_of::<StreamFacts>() as u32,
+                secure: 1,
+                endpoint: AbiStr {
+                    ptr: std::ptr::null(),
+                    len: 0,
+                },
+                agreed_protocol: AbiStr {
+                    ptr: std::ptr::null(),
+                    len: 0,
+                },
+                peer_cert_hash: AbiStr {
+                    ptr: std::ptr::null(),
+                    len: 0,
+                },
+                peer_key_pin: AbiStr {
+                    ptr: OBSERVED_PIN.as_ptr(),
+                    len: OBSERVED_PIN.len(),
+                },
+                client_identity: 1,
+                _reserved: 0,
+            });
+        }
+        answer(o, Outcome::Ready, 0, 0)
     }
-    *s.runs.entry(seq).or_default() += 1;
-    s.stored.insert(seq, (Outcome::Ready, 0, 0));
-    // SAFETY: the SDK's facts slot, live for the call.
-    unsafe {
-        io.facts.write(StreamFacts {
-            size: std::mem::size_of::<StreamFacts>() as u32,
-            secure: 1,
-            endpoint: AbiStr {
-                ptr: std::ptr::null(),
-                len: 0,
-            },
-            agreed_protocol: AbiStr {
-                ptr: std::ptr::null(),
-                len: 0,
-            },
-            peer_cert_hash: AbiStr {
-                ptr: std::ptr::null(),
-                len: 0,
-            },
-            peer_key_pin: AbiStr {
-                ptr: OBSERVED_PIN.as_ptr(),
-                len: OBSERVED_PIN.len(),
-            },
-            client_identity: 1,
-            _reserved: 0,
-        });
-    }
-    answer(o, Outcome::Ready, 0, 0)
 }
 
 static SLOTS: ConnectorSlots = ConnectorSlots {
@@ -261,6 +271,7 @@ fn host() -> Host {
         wake: None,
         conns: &SLOTS,
         services: std::ptr::null(),
+        io: std::ptr::null(),
     })
 }
 

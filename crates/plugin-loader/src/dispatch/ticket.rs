@@ -53,6 +53,17 @@ pub(crate) trait WakeRoute: Send + Sync {
     fn services(&self) -> Option<super::services::Served> {
         None
     }
+
+    /// The host's I/O this route's instances are served from; `None` = none.
+    fn io(&self) -> Option<std::sync::Arc<dyn busbar_contract::io_host::IoHost>> {
+        None
+    }
+
+    /// The waker of an INLINE ticket's task (`super::inline`); `None` for any other ticket.
+    fn inline_waker(&self, t: Ticket) -> Option<std::task::Waker> {
+        let _ = t;
+        None
+    }
 }
 
 /// What an instance's `HostCtx` points to: the dispatcher its tickets live in, and who the instance

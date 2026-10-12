@@ -272,7 +272,7 @@ async fn shutdown_signal_blocks_when_no_signal_is_delivered() {
 #[cfg(unix)]
 #[tokio::test]
 async fn serve_listener_actually_serves_real_http_traffic() {
-    let listener = Listening::bind_stream("127.0.0.1:0", ROOT_BIND_LIMITS).unwrap();
+    let listener = Listening::bind_stream(None, "127.0.0.1:0", ROOT_BIND_LIMITS).unwrap();
     let addr = listener.local_addr();
     let router = Router::new().route("/probe", axum::routing::get(|| async { "ok" }));
     let secret_resolver = Arc::new(busbar_kernel::test_support::builtins_only_secret_resolver());

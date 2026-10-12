@@ -43,6 +43,7 @@ fn door() -> Arc<LengthDoor> {
             // It frames messages over the carrier the connector chose: a framer, stated.
             role: busbar_contract::abi::transport::ROLE_FRAMER,
             composes_over: Vec::new(),
+            ported: false,
             status_rows: vec![(1, 0, 9)],
             duplex: Vec::new(),
         },

@@ -50,7 +50,7 @@ use busbar_contract::transport::wire::{
     CloseReason, Encode, Handoff, HandshakeTrigger, TransportError,
 };
 use busbar_contract::transport::{
-    BytesOut, Carrier, CarrierFacts, CarrierPoll, Claim, ConnFacts, Dest, Framed, Framer,
+    BytesOut, Carrier, CarrierFacts, CarrierPoll, Chunk, Claim, ConnFacts, Dest, Framed, Framer,
     FramerOut, Located, Role, Side, TransportRow, TransportSettings,
 };
 use busbar_contract::{AbiVersion, Kind, Plugin};
@@ -553,7 +553,7 @@ impl Carrier for DeclCarrier {
         Ok(conn)
     }
 
-    fn poll_read(&self, conn: u64, cx: &mut Context<'_>, buf: &mut [u8]) -> CarrierPoll<usize> {
+    fn poll_read(&self, conn: u64, cx: &mut Context<'_>, buf: &mut [u8]) -> CarrierPoll<Chunk> {
         let Some(f) = self.slots.poll_read else {
             return Poll::Ready(Err(TransportError::Closed));
         };
@@ -567,12 +567,19 @@ impl Carrier for DeclCarrier {
             if n > cap {
                 Err(TransportError::Closed)
             } else {
-                Ok(n)
+                // This lane carries no frame bit: each read is a stretch of a byte stream.
+                Ok(Chunk::stream(n))
             }
         })
     }
 
-    fn poll_write(&self, conn: u64, cx: &mut Context<'_>, bytes: &[u8]) -> CarrierPoll<usize> {
+    fn poll_write(
+        &self,
+        conn: u64,
+        cx: &mut Context<'_>,
+        bytes: &[u8],
+        _end_of_frame: bool,
+    ) -> CarrierPoll<usize> {
         let Some(f) = self.slots.poll_write else {
             return Poll::Ready(Err(TransportError::Closed));
         };
