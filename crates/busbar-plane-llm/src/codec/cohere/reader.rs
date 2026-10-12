@@ -1251,6 +1251,7 @@ impl ProtocolReader for CohereReader {
             map: super::map::RESPONSE_PATHS,
             code: super::RESPONSE_CODE,
             drops: super::RESPONSE_DROPS,
+            defaults: &[],
         })
     }
 
@@ -1259,6 +1260,7 @@ impl ProtocolReader for CohereReader {
             map: super::map::STREAM_PATHS,
             code: super::STREAM_CODE,
             drops: super::STREAM_DROPS,
+            defaults: &[],
         })
     }
 

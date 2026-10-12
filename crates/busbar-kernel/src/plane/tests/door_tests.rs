@@ -58,6 +58,7 @@ fn registration(key: &'static str, section: &'static str) -> PlaneRegistration {
             },
         ],
         caller_credential_refusal: Some("forwarding a caller credential is refused here"),
+        fallback: false,
         validate: Arc::new(move |bytes: &[u8]| {
             if bytes.is_empty() {
                 return Ok(());
