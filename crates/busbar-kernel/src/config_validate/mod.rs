@@ -2456,9 +2456,11 @@ fn validate_providers_with(
                 let vetted = service_account_token_uri(&cred).map_or(Ok(()), |uri| {
                     vet_token_uri(
                         &uri,
-                        &allow_overrides,
-                        cfg.allow_all_metadata,
-                        &cfg.blocked_metadata_hosts,
+                        &MetadataPosture {
+                            allow_overrides: allow_overrides.clone(),
+                            allow_all: cfg.allow_all_metadata,
+                            blocked_hosts: cfg.blocked_metadata_hosts.clone(),
+                        },
                     )
                 });
                 let refusals = match vetted {
@@ -2486,6 +2488,49 @@ fn validate_providers_with(
     }
 }
 
+/// ONE PROVIDER'S METADATA POSTURE, owned: the hosts its destinations may reach past the
+/// cloud-metadata denylist (its own `allow_metadata_hosts` and the global
+/// `security.allow_metadata_hosts`, the union every destination check here builds), the nuclear
+/// `security.allow_all_metadata`, and the operator's extra `security.blocked_metadata_hosts`. The
+/// composition root carries it to the seal, where a resolved credential's own token endpoint is
+/// judged under it ([`vet_token_uri`]), as 1.5.5's boot judged it (`main.rs`, v1.5.5).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MetadataPosture {
+    /// The provider's allow-overrides, then the global ones.
+    pub allow_overrides: Vec<String>,
+    /// `security.allow_all_metadata`.
+    pub allow_all: bool,
+    /// `security.blocked_metadata_hosts`.
+    pub blocked_hosts: Vec<String>,
+}
+
+impl MetadataPosture {
+    /// The deployment's own posture in `cfg`: the global allow-overrides alone.
+    #[must_use]
+    pub fn global(cfg: &RootCfg) -> Self {
+        Self {
+            allow_overrides: cfg.allow_metadata_hosts.clone(),
+            allow_all: cfg.allow_all_metadata,
+            blocked_hosts: cfg.blocked_metadata_hosts.clone(),
+        }
+    }
+
+    /// The posture `provider` is judged under: its own allow-overrides, then this (global) one's.
+    #[must_use]
+    pub fn for_provider(&self, provider: &crate::config::ProviderCfg) -> Self {
+        Self {
+            allow_overrides: provider
+                .allow_metadata_hosts
+                .iter()
+                .chain(self.allow_overrides.iter())
+                .cloned()
+                .collect(),
+            allow_all: self.allow_all,
+            blocked_hosts: self.blocked_hosts.clone(),
+        }
+    }
+}
+
 /// THE CREDENTIAL REFUSALS the auth plugin serving `style` names for `credential` under `params`,
 /// through the dry `open_outbound` the build binds with (the plugin's `credential:` lines, their
 /// text only). None when no plugin this build reaches serves the style.
@@ -2503,41 +2548,46 @@ fn outbound_credential_refusals(
 
 /// THE SERVICE ACCOUNT'S TOKEN ENDPOINT: the `token_uri` of the service-account JSON a `jwt-bearer`
 /// credential carries inline (it starts with `{`) or names as a key file, else Google's default
-/// endpoint. `Err` when the JSON cannot be read or parsed (the auth plugin names why).
+/// endpoint — 1.5.5's `ServiceAccount` (`egress_auth/jwt_bearer.rs`, v1.5.5: `token_uri` defaults to
+/// `https://oauth2.googleapis.com/token`). `Err` when the JSON cannot be read or parsed (the auth
+/// plugin serving the style names why, in its own words).
 ///
 /// # Errors
+///
 /// The credential cannot be read or is not the service-account JSON.
 pub fn service_account_token_uri(credential: &str) -> Result<String, String> {
     // The service account's shape as its auth plugin reads it, so a JSON this cannot read is one
-    // the plugin refuses, in its own words.
+    // the plugin refuses, in its own words. The key is required and never held.
     #[derive(serde::Deserialize)]
-    #[allow(dead_code)]
     struct TokenUri {
-        client_email: String,
-        // Required, never held: its presence is the shape check, its value the plugin's to read.
+        #[allow(dead_code)]
+        client_email: serde::de::IgnoredAny,
+        #[allow(dead_code)]
         private_key: serde::de::IgnoredAny,
         token_uri: Option<String>,
     }
-    let json = if credential.trim_start().starts_with('{') {
-        credential.to_string()
+    let parsed: TokenUri = if credential.trim_start().starts_with('{') {
+        serde_json::from_str(credential).map_err(|e| e.to_string())?
     } else {
-        std::fs::read_to_string(credential).map_err(|e| e.to_string())?
+        let json = zeroize::Zeroizing::new(
+            std::fs::read_to_string(credential).map_err(|e| e.to_string())?,
+        );
+        serde_json::from_str(&json).map_err(|e| e.to_string())?
     };
-    let parsed: TokenUri = serde_json::from_str(&json).map_err(|e| e.to_string())?;
     Ok(parsed
         .token_uri
         .unwrap_or_else(|| "https://oauth2.googleapis.com/token".to_string()))
 }
 
-/// THE SERVICE ACCOUNT'S `token_uri`, judged as a destination: https for a public host (http only
-/// for a private or loopback one — it receives the signed assertion), and never a cloud-metadata
-/// host the operator's posture blocks.
-fn vet_token_uri(
-    token_uri: &str,
-    allow_overrides: &[String],
-    allow_all: bool,
-    blocked_hosts: &[String],
-) -> Result<(), String> {
+/// THE SERVICE ACCOUNT'S `token_uri`, judged as a destination, 1.5.5's check and words
+/// (`egress_auth/jwt_bearer.rs::validate_token_uri`, v1.5.5): https for a public host (http only for
+/// a private or loopback one — it receives the signed assertion), and never a cloud-metadata host
+/// the operator's posture blocks.
+///
+/// # Errors
+///
+/// The endpoint breaks either rule; the text is 1.5.5's.
+pub fn vet_token_uri(token_uri: &str, posture: &MetadataPosture) -> Result<(), String> {
     use crate::net_guard::{extract_normalized_host, host_is_private_or_loopback, scheme_is};
     let host_private = extract_normalized_host(token_uri)
         .as_deref()
@@ -2548,7 +2598,12 @@ fn vet_token_uri(
             "service-account token_uri must use https for a public host (got '{token_uri}'); it receives the signed JWT assertion, so plaintext http is permitted only for a private/loopback endpoint"
         ));
     }
-    if let Some(host) = ssrf_blocked_host(token_uri, allow_overrides, allow_all, blocked_hosts) {
+    if let Some(host) = ssrf_blocked_host(
+        token_uri,
+        &posture.allow_overrides,
+        posture.allow_all,
+        &posture.blocked_hosts,
+    ) {
         return Err(format!(
             "service-account token_uri '{token_uri}' targets a blocked cloud-metadata host '{host}' (the signed assertion would be POSTed there; cloud-metadata/IMDS endpoints are denied — override via this provider's allow_metadata_hosts, security.allow_metadata_hosts, or security.allow_all_metadata)"
         ));
