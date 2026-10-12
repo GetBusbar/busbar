@@ -18,6 +18,7 @@ fn block() -> serde_yaml::Value {
         key_id: None,
         default_grant: Vec::new(),
         access_token_ttl_secs: None,
+        refresh_token_ttl_secs: None,
         fapi2: false,
         clients: Vec::new(),
     })

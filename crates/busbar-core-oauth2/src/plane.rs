@@ -178,6 +178,8 @@ impl AsPlane {
         config.jwks_uri = Some(identity.jwks_uri());
         config.registration = Some(super::policy::registration_config(&identity));
         config.access_token_ttl = identity.access_token_ttl();
+        // A refresh chain ends: rotation keeps its first expiry, so this bounds the whole chain.
+        config.refresh_token_ttl = Some(identity.refresh_token_ttl());
         config.scopes_supported =
             (!identity.default_grant().is_empty()).then(|| identity.default_grant().to_vec());
         // RFC 8707 §2: the resources this server is WILLING to mint for. Setting it is not optional
