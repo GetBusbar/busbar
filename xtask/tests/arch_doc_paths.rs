@@ -5,7 +5,13 @@
 use std::path::Path;
 
 const ROOTS: &[&str] = &[
-    "crates/", "docs/", "xtask/", "scripts/", "qa/", "conformance/", "tests/",
+    "crates/",
+    "docs/",
+    "xtask/",
+    "scripts/",
+    "qa/",
+    "conformance/",
+    "tests/",
 ];
 
 /// Every backticked token that begins with a repository root, trimmed of trailing punctuation.
@@ -32,7 +38,10 @@ fn repo_root() -> &'static Path {
 #[test]
 fn architecture_md_names_only_paths_that_exist() {
     let text = std::fs::read_to_string(repo_root().join("docs/architecture.md")).unwrap();
-    assert!(!named_paths(&text).is_empty(), "the scan found no paths: the gate is blind");
+    assert!(
+        !named_paths(&text).is_empty(),
+        "the scan found no paths: the gate is blind"
+    );
     assert_eq!(missing(&text, repo_root()), Vec::<String>::new());
 }
 
