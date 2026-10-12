@@ -31,10 +31,10 @@ use super::{
     EMIT_UNWATCH_CATALOGUE, EMIT_WATCH_CATALOGUE, INGRESS_ACCEPT_LOOP, INGRESS_DUPLEX_SESSION,
     INGRESS_REQUEST_RESPONSE, INGRESS_RESPONSE_STREAM, INGRESS_SUBSCRIPTION, MAX_REFUSAL_TEXT,
     MECHANISM_PEER_KEY, MECHANISM_ROOT, PIECE_OUT_TEXT, PIN_FINGERPRINT, PRINCIPAL_OPTIONAL,
-    RECORD_AUDIT, RECORD_PUT, REFUSAL_ANY_DIALECT, ROUTE_DIRECT, ROUTE_LOCAL, ROUTE_ONCE,
-    ROUTE_POOL, ROUTE_PUBLIC, ROUTE_SCOPE, ROUTE_SESSION, ROUTE_STREAM, SHAPE_PIECEWISE,
-    SHAPE_WHOLE, TAIL_FALLBACK, TAIL_HOOKS_GATED, TAIL_PROBES, TRUST_ITEM_APPROVALS, TRUST_PIN,
-    TRUST_PRIVATE_REACH, UNITS_ESTIMATED, VERDICT_HARD,
+    RECORD_AUDIT, RECORD_PUT, REFUSAL_ANY_DIALECT, ROUTE_COUNTED, ROUTE_DIRECT, ROUTE_LOCAL,
+    ROUTE_ONCE, ROUTE_POOL, ROUTE_PUBLIC, ROUTE_SCOPE, ROUTE_SESSION, ROUTE_STREAM,
+    SHAPE_PIECEWISE, SHAPE_WHOLE, TAIL_FALLBACK, TAIL_HOOKS_GATED, TAIL_PROBES,
+    TRUST_ITEM_APPROVALS, TRUST_PIN, TRUST_PRIVATE_REACH, UNITS_ESTIMATED, VERDICT_HARD,
 };
 use crate::abi::hook::{
     signal, MessageView, SignalEntry, REQUEST_HAS_MAX_TOKENS, REQUEST_HAS_TOOLS, REQUEST_STREAM,
@@ -223,8 +223,12 @@ pub fn check_arrive(
         if ![ROUTE_POOL, ROUTE_DIRECT, ROUTE_LOCAL, ROUTE_SCOPE].contains(&out.route) {
             return Err(fault(Rule::UnknownCode, "arrive.route"));
         }
-        if out.route_flags & !(ROUTE_ONCE | ROUTE_SESSION | ROUTE_STREAM) != 0 {
+        if out.route_flags & !(ROUTE_ONCE | ROUTE_SESSION | ROUTE_STREAM | ROUTE_COUNTED) != 0 {
             return Err(fault(Rule::UnknownCode, "arrive.route_flags"));
+        }
+        // A unit counted as an admitted call is one the plane answers itself.
+        if out.route_flags & ROUTE_COUNTED != 0 && out.route != ROUTE_LOCAL {
+            return Err(fault(Rule::Contradiction, "arrive.route_flags"));
         }
         text(out.affinity, "arrive.affinity")?;
         if out.affinity.len > MAX_TEXT {

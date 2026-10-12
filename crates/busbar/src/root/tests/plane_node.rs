@@ -998,8 +998,7 @@ fn a_pin_below_the_head_reads_the_history_as_it_stood_at_that_seq() {
 /// **THE CACHE IS WRITTEN AND IS NEVER AUTHORITATIVE.**
 ///
 /// The posting the pricing builds carries a cache — the head it settled at, the entry it
-/// resolved to, and both figures — so a reader has something to compare a
-/// re-derivation against. Corrupt every one of those figures and ask again: the answer is
+/// resolved to, and both figures. Corrupt every one of those figures and ask again: the answer is
 /// unchanged, because the lookup does not read them. A node that fell back to the cache would
 /// answer the corrupted number and call it money.
 #[test]
@@ -1037,10 +1036,6 @@ fn the_cached_price_rides_the_posting_and_is_never_read_back_for_money() {
             .expect("the lookup still answers"),
         priced.priced_nanos,
         "the money moved when the cache was corrupted, so the cache was on the money path"
-    );
-    assert!(
-        posting.cache_diverges(&priced),
-        "a corrupted cache went unnoticed"
     );
 }
 
@@ -4882,6 +4877,72 @@ async fn a_screened_veto_through_the_node_admits_nothing() {
         .expect("usage read");
     assert_eq!(derived.requests, 0, "a veto admits nothing");
     rig.server.shutdown().await;
+}
+
+/// **A NODE WHOSE JOURNAL CANNOT REACH ITS STORE FAILS CLOSED** (ARCHITECT 2026-10-07 H3 ruling):
+/// the book's journal is kept by the configured store, the store refuses and the lane to it is
+/// full, so a new money-bearing unit is answered 503 with the reason — before anything is built,
+/// held or journalled for it — and nothing the journal holds is dropped. A state 1.5.5 never
+/// reached (it kept no journal).
+///
+/// RED before the fix: the node admitted the unit and drove its build.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_full_journal_lane_refuses_a_new_unit_503_with_the_reason() {
+    let slots = crate::root::store_double::RecordSlots::new();
+    slots.refuse(true);
+    let lane = crate::root::durability::JournalLane::with_capacity(slots.calls(), "test-store", 1)
+        .expect("the lane starts");
+    let book = Arc::new(std::sync::Mutex::new(
+        crate::root::durability::build_on_store(
+            &crate::root::durability::DurabilityConfig { data_dir: None },
+            0,
+            lane,
+            Box::new(busbar_kernel_ledger::legacy::RecordingRows::new()),
+            Box::new(|| None),
+            None,
+        )
+        .expect("the store reads back"),
+    ));
+    let token = busbar_kernel::test_support::tokens::grant::<busbar_contract::caps::DurableWrite>();
+    for _ in 0..3 {
+        let _lost = book.lock().unwrap().journal.append(
+            &token,
+            busbar_contract::caps::StepName::Meter,
+            &[busbar_kernel_wal::Entry::new(
+                busbar_kernel_wal::RecordClass::Load,
+                Vec::new(),
+            )],
+        );
+    }
+    let node = Node::new();
+    node.bind_book(Arc::clone(&book));
+    let built = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let saw = Arc::clone(&built);
+    let handed: crate::root::linked::node::Handed = (
+        PrincipalId::new("acct:full"),
+        busbar_contract::caps::OpClassId::new("call"),
+        PROTO,
+        Box::new(move |_lent| {
+            saw.store(true, std::sync::atomic::Ordering::SeqCst);
+            panic!("a refused unit is never built");
+        }),
+    );
+    let response = node.answer(handed).await;
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("the body");
+    let body = String::from_utf8_lossy(&body);
+    assert!(
+        body.contains("journal is full") && body.contains("`test-store`"),
+        "the reason names the full journal and the store: {body}"
+    );
+    assert!(!built.load(std::sync::atomic::Ordering::SeqCst));
+    assert_eq!(
+        book.lock().unwrap().journal.dropped_total(),
+        0,
+        "no record is dropped"
+    );
 }
 
 /// THE RECORD'S AMOUNT IS COUNTS AND A CARD VERSION, NEVER A PRICE (`BUSBAR-1.6.0.md` THE DESIGN

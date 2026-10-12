@@ -702,10 +702,8 @@ async fn a_task_in_the_registry(
     crate::taskstore::TASKS.set_sink(busbar_kernel::plane::store::PlaneStoreView::narrow(
         ledger.clone(),
     ));
-    // STAMPED AT THE PRESENT. `TASKS` runs the production retention sweep on every submit, and the
-    // other batteries sharing it submit at the real host clock. A row stamped at the fixture's 1970
-    // seconds is "idle past the abandon ceiling" to any such sweep, which then moves it to `canceled`
-    // and chains a `task.terminal` between the submission and the delivery this test reads back.
+    // STAMPED AT THE PRESENT: `TASKS` is shared with batteries that submit at the real host clock,
+    // and this task's clock reads the same as theirs.
     let mut task = task_with_callback(task_id, state);
     task.created_at = crate::host_now();
     task.updated_at = task.created_at;

@@ -51,7 +51,20 @@ fn list_and_a_named_gate_run_and_all_reaches_a_verdict_over_the_real_tree() {
 
 #[test]
 fn selftest_runs_every_registered_gates_red_proof() {
-    assert_eq!(run(&["selftest"]), 0);
+    // `selftest` over EVERY gate is asserted to have REACHED A VERDICT, for the reason `gate --all`
+    // above is: this file's subject is the DISPATCHER. Each gate's red proof is planted over the
+    // tree the test runs in, and a gate already red on that tree reports its proof IMPOSSIBLE — so
+    // requiring 0 here made this one case red on every branch that reds ANY gate, under one name
+    // that says nothing about which. Every gate's proof is judged by itself, gate by gate, in the
+    // `test:xtask-selftest` check; this case pins only that the all-gates arm ran and reported.
+    //
+    // 2 (bad arguments) and 3 (could not run) stay refused: either means the arm never judged.
+    let all = run(&["selftest"]);
+    assert!(
+        all == 0 || all == 1,
+        "`selftest` over every gate must reach a verdict, not report an argument error (2) or a \
+         self-test that could not run (3); got {all}"
+    );
     assert_eq!(run(&["selftest", "segregation"]), 0);
     assert_eq!(run(&["gate", "segregation", "--selftest"]), 0);
 }

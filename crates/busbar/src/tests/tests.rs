@@ -710,9 +710,8 @@ fn a_plane_gated_module_is_named_only_from_code_under_the_same_feature() {
 //     function `run()` calls. It can see the directory and the chain, so it proves the data
 //     directory is honoured and the ORDER holds.
 //   * `the_boot_book_ships_its_opening_to_the_configured_store` drives `root::boot::compose_book`, the seam
-//     `root::boot::book` calls, over a store adapter the TEST holds. The shipped count lives on the
-//     adapter, so this is the only vantage point from which "the store's shipper, not the null one"
-//     is observable at all.
+//     `root::boot::book` calls, over a store whose record slots the TEST holds, so what the store
+//     KEPT is observable: the opening's records, under this node's keys.
 //   * `no_configured_directory_still_opens_nothing_and_writes_nothing` holds the other half of the
 //     discipline: the fix gives a node WITH a directory somewhere to write, and must not make
 //     writing unconditional.
@@ -853,7 +852,7 @@ fn the_boot_path_opens_the_configured_directory_and_seals_before_it_settles() {
     .expect("the app builds over the default memory store");
 
     // THE FUNCTION `run()` CALLS. Not a re-implementation of it, not a recording double of it.
-    let book = root::boot::book(&app).expect("the boot book opens");
+    let book = root::boot::book(&app, "test-store").expect("the boot book opens");
 
     let (on_disk, marker, first_record) = {
         let durability = book
@@ -981,18 +980,51 @@ fn the_boot_path_opens_the_configured_directory_and_seals_before_it_settles() {
     );
 }
 
+/// **A STORE THAT DOES NOT OFFER THE RECORD SLOTS REFUSES THE BOOT**, naming the store and the slots
+/// (ARCHITECT 2026-10-07 H3 open-question ruling): such a store cannot keep the node's journal, and
+/// a boot over it would serve while keeping nothing. The governance state here holds the store's
+/// 1.5.5 op set and no v3 calls — the store as a boot sees one that offers no record slots.
+///
+/// RED before the fix: the boot opened a book whose journal the adapter's shim "kept".
+#[cfg(linked_axis_body_ingress)]
+#[test]
+fn a_store_without_the_record_slots_refuses_the_boot_by_name() {
+    for decls in crate::LINKED.protocols {
+        busbar_kernel::proto::register_test_protocols(decls);
+    }
+    busbar_kernel::snapshot::init();
+    let app = busbar_kernel::test_support::build_once(
+        busbar_kernel::test_support::cfg_with_provider_api_key(
+            busbar_kernel::config::SecretRef::env("BUSBAR_TEST_NO_SUCH_KEY_NO_SLOTS"),
+        ),
+        None,
+    )
+    .expect("the app builds");
+    let mut slotless = app.clone();
+    let store: std::sync::Arc<dyn busbar_contract::records::RecordStore> =
+        std::sync::Arc::new(busbar_kernel::governance::MemoryStore::new());
+    slotless.governance = Some(std::sync::Arc::new(
+        busbar_kernel::governance::GovState::new(store, None).expect("the state opens"),
+    ));
+    let refused = match root::boot::book(&slotless, "no-slots-store") {
+        Ok(_) => panic!("a store with no record slots must refuse the boot"),
+        Err(refused) => refused,
+    };
+    assert_eq!(refused, root::boot::no_record_slots("no-slots-store"));
+    assert!(
+        refused.contains("`no-slots-store`")
+            && refused.contains("record_put, record_get and record_scan"),
+        "the refusal names the store and the slots: {refused}"
+    );
+}
+
 /// THE STORE HALF, at the only vantage point it is visible from: `root::boot::compose_book`, the seam
-/// `root::boot::book` calls, handed a `StoreAdapter` the TEST holds.
+/// `root::boot::book` calls, handed a store whose record slots the TEST holds.
 ///
-/// The shipped count and the acknowledged head live on the ADAPTER — `root::boot::book` builds its own
-/// from `gov.store()`, so from outside the real path there is nothing to read them off. This drives
-/// the same seam with an adapter in hand and asserts what that buys: the opening's batch was
-/// OFFERED TO THE CONFIGURED STORE and acknowledged under this node's identity. A `NullShipper` —
-/// the literal the old `node_book()` passed — would leave both readings at nothing, which is exactly
-/// the difference between the two shapes.
-///
-/// The adapter is the real one over the real in-tree memory store: the store a config naming none
-/// resolves to at boot. Not a recording double.
+/// What the store KEPT is read off the store: the opening's records under the journal schema, put
+/// through its `record_put` slot by the journal's lane, keyed by this node's identity and the
+/// marker's sequence. The adapter's old shipper acknowledged a batch and kept a count, so this
+/// reading was nothing whatever it said (ARCHITECT 2026-10-07 H3 ruling).
 #[test]
 fn the_boot_book_ships_its_opening_to_the_configured_store() {
     use crate::root::loader::store_adapter::StoreAdapter;
@@ -1002,12 +1034,19 @@ fn the_boot_book_ships_its_opening_to_the_configured_store() {
     let store: std::sync::Arc<dyn busbar_contract::records::RecordStore> =
         std::sync::Arc::new(busbar_kernel::governance::MemoryStore::new());
     let adapter = StoreAdapter::native(store);
+    let slots = crate::root::store_double::RecordSlots::new();
     let mig = empty_opening_plan();
     let token = root::kernel::new_kernel().durability_token();
 
-    let (durability, _rows, migration) =
-        root::boot::compose_book(&adapter, Some(dir.0.clone()), &mig, 1_700_000_000, &token)
-            .expect("the boot book composes over the configured directory and an empty store");
+    let (durability, _rows, migration) = root::boot::compose_book(
+        &adapter,
+        journal_lane(&slots),
+        Some(dir.0.clone()),
+        &mig,
+        1_700_000_000,
+        &token,
+    )
+    .expect("the boot book composes over the configured directory and an empty store");
 
     assert!(
         migration.sealed_now(),
@@ -1026,19 +1065,30 @@ fn the_boot_book_ships_its_opening_to_the_configured_store() {
         "exactly the keyset's Bootstrap and then the one opening marker are on the chain"
     );
 
-    // THE ASSERTION THIS TEST EXISTS FOR. The batch reached the CONFIGURED store's shipper.
-    let shim = adapter.shim_state();
+    // THE ASSERTION THIS TEST EXISTS FOR. The records reached the CONFIGURED store's record slots.
+    let lane = durability
+        .lane()
+        .expect("a book over the store holds its lane")
+        .clone();
     assert!(
-        shim.records_shipped >= 1,
-        "the book must ship its batch to the configured store's shipper (shipped {}), which a \
-         NullShipper would never receive — that literal is the defect",
-        shim.records_shipped
+        lane.drain(std::time::Duration::from_secs(5)),
+        "the store takes the opening"
     );
-    assert_eq!(
-        adapter.head(),
-        Some((mig.node, replayed[1].node_seq)),
-        "the store acknowledged the opening under THIS node's identity and the marker's sequence"
+    let marker = replayed[1].node_seq;
+    let kept = futures::executor::block_on(slots.calls().record_get(
+        root::durability::JOURNAL_SCHEMA,
+        &root::durability::part_key(mig.node, marker, 0),
+    ))
+    .expect("the store answers");
+    assert!(
+        kept.is_some(),
+        "the store keeps the opening's marker under THIS node's identity and the marker's sequence"
     );
+}
+
+/// The journal's lane to `slots`, as `root::boot::book` opens one over the configured store.
+fn journal_lane(slots: &crate::root::store_double::RecordSlots) -> root::durability::JournalLane {
+    root::durability::JournalLane::start(slots.calls(), "test-store").expect("the lane starts")
 }
 
 /// THE OTHER HALF OF THE DISCIPLINE, and it is not a footnote: constructing an on-disk journal IS
@@ -1057,11 +1107,18 @@ fn no_configured_directory_still_opens_nothing_and_writes_nothing() {
     let store: std::sync::Arc<dyn busbar_contract::records::RecordStore> =
         std::sync::Arc::new(busbar_kernel::governance::MemoryStore::new());
     let adapter = StoreAdapter::native(store);
+    let slots = crate::root::store_double::RecordSlots::new();
     let token = root::kernel::new_kernel().durability_token();
 
-    let (durability, _rows, migration) =
-        root::boot::compose_book(&adapter, None, &empty_opening_plan(), 1_700_000_000, &token)
-            .expect("a memory-buffered book composes");
+    let (durability, _rows, migration) = root::boot::compose_book(
+        &adapter,
+        journal_lane(&slots),
+        None,
+        &empty_opening_plan(),
+        1_700_000_000,
+        &token,
+    )
+    .expect("a memory-buffered book composes");
 
     assert!(
         !durability.on_disk(),
@@ -1077,9 +1134,16 @@ fn no_configured_directory_still_opens_nothing_and_writes_nothing() {
         "no data directory is not no opening: the balances are still sealed, into the store"
     );
     assert!(
-        adapter.shim_state().records_shipped >= 1,
-        "without a directory the book's durability IS the store's, so the batch must still be \
-         offered to it"
+        durability
+            .lane()
+            .expect("a book over the store holds its lane")
+            .drain(std::time::Duration::from_secs(5)),
+        "the store takes the opening"
+    );
+    assert!(
+        slots.rows_under(root::durability::JOURNAL_SCHEMA) >= 1,
+        "without a directory the book's durability IS the store's, so the records must be kept \
+         there"
     );
 }
 
@@ -1101,6 +1165,7 @@ fn the_boot_book_signs_its_opening_and_refuses_keyset_missing_without_the_cache(
     // No directory: ephemeral, and the opening is signed and verifies against the node's keyset.
     let (memory, _rows, migration) = root::boot::compose_book(
         &adapter(),
+        journal_lane(&crate::root::store_double::RecordSlots::new()),
         None,
         &empty_opening_plan(),
         1_700_000_000,
@@ -1122,6 +1187,7 @@ fn the_boot_book_signs_its_opening_and_refuses_keyset_missing_without_the_cache(
     let dir = BookDir::new("keyset");
     let (first, _rows, _) = root::boot::compose_book(
         &adapter(),
+        journal_lane(&crate::root::store_double::RecordSlots::new()),
         Some(dir.0.clone()),
         &empty_opening_plan(),
         1_700_000_000,
@@ -1133,6 +1199,7 @@ fn the_boot_book_signs_its_opening_and_refuses_keyset_missing_without_the_cache(
     std::fs::remove_file(dir.0.join(root::keyset::KEYSET_FILE)).expect("the cache is removed");
     let refused = root::boot::compose_book(
         &adapter(),
+        journal_lane(&crate::root::store_double::RecordSlots::new()),
         Some(dir.0.clone()),
         &empty_opening_plan(),
         1_700_000_000,
@@ -1192,7 +1259,7 @@ fn one_seal_after_two_reloads() {
     };
 
     let boot = busbar_kernel::test_support::build_once(cfg(), None).expect("the boot builds");
-    let book = root::boot::book(&boot).expect("the boot book opens");
+    let book = root::boot::book(&boot, "test-store").expect("the boot book opens");
     let store = boot
         .governance
         .clone()

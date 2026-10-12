@@ -3138,7 +3138,7 @@ Nothing is rebuilt between them.
 **`GetBusbar/busbar`** — the product. `crates/`, `xtask/` (every gate), `scripts/` (including
 `verify-1.6.0-done.sh`, the definition of done), `conformance/`, `testing/shadow-oracle/`.
 
-**`GetBusbar/busbar-release`** — the engine, five crates:
+**`GetBusbar/busbar-release`** — the engine, nine crates. Being redesigned as one PR state machine (busbar-release docs/ARCHITECTURE.md).
 
 | Crate | Job |
 |---|---|
@@ -3147,6 +3147,10 @@ Nothing is rebuilt between them.
 | `busbar-release-oracle` | The byte-identity oracle: this build vs the published 1.5.5 binary. |
 | `busbar-release-autoscaler` | Runner capacity. Ships the **`busbar-fleet`** binary (`src/bin/busbar-fleet.rs`) — this is the "fleet" tool; there is no separate fleet crate. |
 | `busbar-release-corpus` | The recorded request corpus the oracle replays. |
+| `busbar-release-cli` | The one `busbar-release` command line: ship, dev, watch, status, plugin, and the CI internals under `ci`. |
+| `busbar-release-github` | The one door to GitHub: batched GraphQL reads, REST writes, shared rate-limit and retry policy. |
+| `busbar-release-plugin` | The plugin fleet generator: renders `template/` into every `busbar-<kind>-<name>` repo, with drift check, sync and repin. |
+| `busbar-release-soak` | The sustained mixed-traffic soak of a built binary against the oracle's mocks, judged row by row. |
 
 Its workflows: `turnstile.yml`, `fleet-control.yml`, `oracle-rerecord.yml`, `docker-autoscaler.yml`, `ci.yml`.
 
@@ -3161,9 +3165,8 @@ fully torn down — zero instances, zero volumes, zero NAT gateways, zero elasti
 both cheaper and the money oracle's home (**#56 wins over #29** — the oracle rides Latchkey, it does
 not need a dedicated fleet box; `CI_RUNNER_ONDEMAND_FLOOR` is 0, not 2).
 
-**Capacity order (OWNER 2026-09-28):** zero idle instances; Latchkey first; EC2 only as overflow,
-under a launch cap and #78's spend breaker. The runner autoscaler runs as a scheduled Lambda
-(`busbar-autoscaler`), choosing the cheapest spot region. Agent compute is Latchkey only, through one
+**Runner gateway (OWNER 2026-10-10, supersedes the 2026-09-28 capacity order):** every job asks for a logical size (small, medium, large, xlarge), never a vendor label. One table maps each size to a backend (latchkey, ec2 or github), so switching a backend is a one-line change and nothing else breaks. Today every size maps to Latchkey (account cap 80 concurrent jobs); EC2 burst is off. A daily canary job runs on every backend in the table, including the switched-off ones, so a dormant backend is proven before anyone switches to it. #78's spend breaker binds every paid backend.
+Agent compute is Latchkey only, through one
 shared job budget (`1.6.0-TODO.md`, THE RULES 6.1-6.3); the owner has ruled no extra build capacity
 (2026-09-29). EC2 is allowed for the performance phase (§11.9).
 

@@ -83,6 +83,7 @@ fn build_with_hook_makes_a_plane_attach_live() {
                     tool_defs: cfg.as_any(),
                     public_url: None,
                     prior: None,
+                    providers: None,
                 };
                 let slot = (tools.build)(&ctx).expect("the plane builds from its section");
                 builder.install_plane_runtime(tools.key, slot);

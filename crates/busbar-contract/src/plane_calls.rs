@@ -148,10 +148,59 @@ pub struct DoorFacing {
 }
 
 /// A door's facing for a section, its other owned sections (one JSON object keyed by section name,
-/// as `PlaneOpenIn::owned`; empty = none) and a public base URL (the snapshot a probe instance of it
-/// publishes).
-pub type FacingProbe =
-    Arc<dyn Fn(&[u8], &[u8], Option<&str>) -> Result<DoorFacing, String> + Send + Sync>;
+/// as `PlaneOpenIn::owned`; empty = none), a public base URL and the dialect facts of the providers
+/// the section references (`PlaneOpenIn::providers`): the snapshot a probe instance of it publishes.
+pub type FacingProbe = Arc<
+    dyn Fn(&[u8], &[u8], Option<&str>, &[DialectFacts]) -> Result<DoorFacing, String> + Send + Sync,
+>;
+
+/// ONE PROVIDER'S DIALECT FACTS as a door plane is handed them at open (THE DESIGN section 4;
+/// `PlaneOpenIn::providers`), owned: its name, its resolved `protocol` and its `error_map` as one
+/// JSON object (`None` = it states none).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DialectFacts {
+    /// The provider's `providers:` key.
+    pub name: String,
+    /// Its resolved `protocol`.
+    pub protocol: String,
+    /// Its `error_map`, as JSON; `None` = none stated.
+    pub error_map: Option<Vec<u8>>,
+}
+
+/// THE ONE BUILDER OF A DOOR PLANE'S OPEN-TIME PROVIDER LIST, for its served instance and its probe
+/// alike: each provider `section`'s reserved model map references (`models.<m>.provider`), once, in
+/// the order first referenced, with the `protocol` and `error_map` `lookup` resolves it to (a name
+/// `lookup` does not know is skipped: the configuration's `resolve` refused it). An empty
+/// `error_map` is absent.
+pub fn dialect_facts(
+    section: &serde_yaml::Value,
+    lookup: impl Fn(&str) -> Option<(String, std::collections::BTreeMap<String, String>)>,
+) -> Vec<DialectFacts> {
+    use crate::section::{MODEL_PROVIDER_KEY, RESERVED_MODELS_KEY};
+    let mut out: Vec<DialectFacts> = Vec::new();
+    let referenced = section
+        .get(RESERVED_MODELS_KEY)
+        .and_then(serde_yaml::Value::as_mapping)
+        .into_iter()
+        .flat_map(|m| m.values())
+        .filter_map(|entry| entry.get(MODEL_PROVIDER_KEY)?.as_str());
+    for name in referenced {
+        if out.iter().any(|f| f.name == name) {
+            continue;
+        }
+        let Some((protocol, error_map)) = lookup(name) else {
+            continue;
+        };
+        out.push(DialectFacts {
+            name: name.to_string(),
+            protocol,
+            error_map: (!error_map.is_empty())
+                .then(|| serde_json::to_vec(&error_map).ok())
+                .flatten(),
+        });
+    }
+    out
+}
 
 /// ONE ADMIN ROUTE a plane door states in its Statement tail (`PlaneTail::admin_routes`): the verb,
 /// the target relative to the admin mount, its flags and the word it is audited under (empty =

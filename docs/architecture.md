@@ -5,25 +5,42 @@ Busbar's thesis, *protocols, not providers*, work: the **superset IR** with its
 `ProtocolReader` / `ProtocolWriter` traits, and the **two-stage failure-disposition
 pipeline**.
 
-## Three planes, one core
+## A thin core that hosts plugins
 
-Busbar carries three kinds of traffic, and the point of the architecture is that
-they are three *ingresses onto one core* rather than three products sharing a
-process.
+Core is a thin engine. It knows nothing about any specific protocol: everything that
+knows about a protocol is a **plugin**, and core knows only what *kind* each plugin is
+and talks to it only over that kind's ABI.
+
+There are seven plugin kinds: **store, secret, auth, hook, export, plane and
+transport**. A *plane* is how to speak a family of protocols; a *transport* is how
+to move the bytes. A *dialect* (OpenAI's wire format against Anthropic's, say)
+lives inside a plane, and adding one changes that plane's crate, not core. See
+[Plugins](plugins.md) for the kinds, the artifact and the trust model.
+
+## The planes
+
+Busbar carries five kinds of traffic, and the point of the architecture is that
+they are five *ingresses onto one core* rather than five products sharing a
+process. Each plane is a plugin of kind `plane`, compiled into the binary or
+dropped into the plugins directory on the same contract, and each talks to core
+only over the ABI.
 
 | plane | inbound: Busbar is the server | outbound: Busbar is the client |
 |---|---|---|
 | **LLM** | six wire protocols on `/v1/*` and friends | every provider or pool you configure |
 | **MCP** | `/mcp`, an MCP server your agents log in to | the MCP tool servers you register |
 | **A2A** | `/a2a/agents/{id}`, the agents you front | the backend agent a task is relayed to |
+| **Streaming** | live, full-duplex voice sessions under `/v1/realtime`, declared by `streams:` | the realtime provider a session is brokered or proxied to |
+| **Decisions** | the decision endpoints a `decisions:` block declares | the decision service it is configured against |
 
 Each plane has its own operator reference: this page for the LLM plane's request path,
-[MCP](/docs/mcp/) and [A2A](/docs/a2a/) for the other two.
+[MCP](/docs/mcp/) and [A2A](/docs/a2a/) for those two, [Voice](voice.md) for the
+streaming plane.
 
 Each plane is bidirectional, and that is the whole claim: a caller speaks to
 Busbar, and Busbar speaks onward under its own identity.
 
-**What all three share, exactly once:**
+**What every plane shares, exactly once:**
 
 - **One authentication chain**, failing closed on every plane.
 - **One admission decision.** An inbound MCP `tools/call` authenticates with a
@@ -38,8 +55,8 @@ Busbar, and Busbar speaks onward under its own identity.
   called, not on the shape of the caller: a pool member, a registered MCP tool
   server, or a registered A2A agent. The same Closed → Open → HalfOpen state
   machine, the same cause attribution, the same cooldown backoff and the same
-  single-flight recovery probe run on all three planes. See
-  [Circuit-breaker state](#circuit-breaker-state-on-all-three-planes) below.
+  single-flight recovery probe run on every plane. See
+  [Circuit-breaker state](#circuit-breaker-state-on-every-plane) below.
 - **One audit chain**, hash-chained across all of it.
 - **One outbound guard.** Every address a plane is about to reach is checked
   against cloud-metadata and internal ranges with alternate-encoding
@@ -57,13 +74,13 @@ because that is where a conformant client looks first, and it deliberately names
 **no** fronted agent: an endpoint that cannot ask who is calling must not hand an
 anonymous caller the inventory.
 
-## Request lifecycle: an LLM call, traced
+## Request lifecycle: the LLM plane's trace
 
-The trace below follows a **model** request, because it is the path that exercises
-every seam: protocol translation, pool selection and failover are LLM-plane
-mechanics. The MCP and A2A planes enter at their own ingress and rejoin at the
-shared steps. Authentication, admission, breaker availability, audit and metering
-are the same code on all three.
+The trace below is the LLM plane's: it follows a **model** request, because it is
+the path that exercises every seam: protocol translation, pool selection and
+failover are LLM-plane mechanics. Every other plane enters at its own ingress and
+rejoins at the shared steps. Authentication, admission, breaker availability, audit
+and metering are the same code on every plane.
 
 <svg viewBox="0 0 700 1204" role="img" aria-label="A request enters over any of six wire protocols and hits the axum HTTP router, whose route fixes the ingress protocol. Auth middleware applies token, passthrough or none, or a virtual-key lookup for governance. If governance is enabled it runs allowed-pools, budget and rate-limit checks, returning 403 or 429 on failure. Pool and lane selection uses affinity preference then smooth weighted round-robin over the healthy candidate subset. Each attempt, up to the failover cap, translates the request to the lane protocol via the intermediate representation, rewrites the model and injects credentials, POSTs upstream, and classifies the outcome into a four-disposition matrix: a client fault relays verbatim with no lane penalty, a transient upstream trips the cooldown and fails over, a hard-down auth or billing signal marks the lane dead, and a ContextLength signal fails over to a larger-context lane without penalizing the healthy lane and records nothing. The response is passed through when the protocol matches or translated frame-by-frame when it differs, usage is tapped to charge the virtual key, and the reply returns to the client." style="width:100%;height:auto;max-width:700px;font-family:ui-sans-serif,system-ui,sans-serif;">
   <defs>
@@ -193,7 +210,8 @@ are the same code on all three.
 
 ### 1. Ingress & protocol detection
 
-The route table (`crates/busbar-core/src/router.rs` `build_router`, `crates/busbar-core/src/ingress/mod.rs`) determines the
+The route table (`crates/busbar-kernel/src/router.rs` `build_router`) and the LLM plane's
+arrival (`crates/busbar-plane-llm/src/exchange/arrive.rs`) determine the
 **ingress protocol** by path, not by sniffing the body. All six protocols are
 first-class ingress, one handler per protocol (Gemini's handler is reachable via
 two path prefixes, `v1` and `v1beta`):
@@ -209,7 +227,7 @@ two path prefixes, `v1` and `v1beta`):
   google-generativeai / Gen AI SDKs use either surface. The model and the action
   (`:generateContent` / `:streamGenerateContent`) are packed into the last path
   segment after a `:`; axum can't split on `:` inside a segment, so the tail is
-  captured with a wildcard and split in `gemini_ingress`.
+  captured with a wildcard and split in the Gemini arrival (`gemini_arrival`).
 - `POST /model/{model_id}/converse` and `/model/{model_id}/converse-stream` → ingress
   `bedrock`. The model is in the path; the streaming variant is selected by the
   endpoint suffix.
@@ -224,7 +242,7 @@ Management/observability routes (`/stats`, `/healthz`, `/metrics`,
 
 ### 2. Authentication
 
-`auth_middleware` (`crates/busbar-core/src/auth/mod.rs`) runs before routing:
+`auth_middleware` (`crates/busbar-kernel/src/auth/mod.rs`) runs before routing:
 
 - `/healthz` is always open (liveness probes must not require a token).
 - `/metrics` is **not** exempted, Prometheus telemetry (lane/pool topology,
@@ -252,13 +270,14 @@ Management/observability routes (`/stats`, `/healthz`, `/metrics`,
 - **Bedrock ingress** takes one of two paths. When the data-plane chain does not verify a
   caller (an empty chain, passthrough egress), `extract_client_token` reads only bearer-style
   carriers and ignores the SigV4 header, which is forwarded upstream (passthrough) or dropped.
-  When governance is active, `crates/busbar-core/src/auth/mod.rs` `verify_bedrock_sigv4` intercepts
-  requests carrying `Authorization: AWS4-HMAC-SHA256`, verifies the full SigV4 signature plus
-  body-hash integrity (`x-amz-content-sha256`), and on success attaches the resolved virtual
-  key's `GovCtx` so all governance checks apply. The AWS credential pair (`aws_access_key_id`
-  + `aws_secret_access_key`) is minted via `POST /api/v1/admin/keys` with
-  `"issue_aws_credential": true`. `crates/busbar-core/src/sigv4.rs` provides signing primitives;
-  the inbound verifier lives in `crates/busbar-core/src/auth/mod.rs`.
+  When governance is active, the auth chain in `crates/busbar-kernel/src/auth/mod.rs` runs the
+  SigV4 pre-step on requests carrying `Authorization: AWS4-HMAC-SHA256`: it verifies the full
+  SigV4 signature plus body-hash integrity (`x-amz-content-sha256`), and on success attaches the
+  resolved virtual key's `GovCtx` so all governance checks apply. The AWS credential pair
+  (`aws_access_key_id` + `aws_secret_access_key`) is minted via `POST /api/v1/admin/keys` with
+  `"issue_aws_credential": true`. The SigV4 verifier and signer are one plugin of kind `auth`
+  (`sigv4`, linked by the `auth-sigv4` feature in `crates/busbar/Cargo.toml`); the Bedrock dialect
+  declares SigV4 as its ingress auth and egress scheme (`crates/busbar-plane-llm/src/codec/bedrock/mod.rs`).
 
 ### 3. Governance checks
 
@@ -280,13 +299,14 @@ so a rate correction re-prices past and present windows on the next read. See
 
 ### 4. Pool / lane selection
 
-For a pool target, `forward_with_pool` (`crates/busbar-core/src/proxy/engine/mod.rs`) selects a member:
+For a pool target, the LLM plane's engine (`crates/busbar-llm/src/engine/pipeline.rs`
+`forward_with_pool_parsed`, selecting in `crates/busbar-llm/src/engine/select.rs`) selects a member:
 
 1. **Affinity preference**: if a session header is present and the sticky member is
    usable, use it; otherwise fall through.
 2. **Exclusions**: configured `failover.exclusions` and already-tried lanes (across
    failover hops) are removed from the candidate set.
-3. **SWRR**: `select_weighted` (`crates/busbar-core/src/store/mod.rs`) runs Nginx-style smooth weighted
+3. **SWRR**: `select_weighted` (`crates/busbar-kernel-egress/src/trust/swrr.rs`) runs Nginx-style smooth weighted
    round-robin over the *usable* candidates, using per-pool `current_weight` state.
    A lane is usable only if it isn't dead, isn't out of lifetime budget, and its
    breaker cell admits it.
@@ -305,7 +325,7 @@ translates the **request** through the superset IR:
 ingress.reader().read_request(body)  →  IrRequest  →  lane.writer().write_request(ir)
 ```
 
-The IR (`crates/busbar-core/src/ir/mod.rs`) is a superset of all six protocols' representable content:
+The IR (`crates/busbar-plane-llm/src/codec/ir/types.rs`) is a superset of all six protocols' representable content:
 system blocks, messages with text / thinking (+signature) / tool-use / tool-result
 / image blocks, tools (name + description + JSON schema), `max_tokens`,
 `temperature` (held as `f64` so a caller's value never silently mutates), a `stream`
@@ -317,41 +337,45 @@ Same-protocol RESPONSES pass through byte-for-byte on the wire but still decode 
 the IR as a usage side-channel (see `docs/protocols.md`'s "Same-protocol passthrough"); only the
 re-encode is skipped, not the IR round-trip.
 
-`ProtocolReader` and `ProtocolWriter` (`crates/busbar-core/src/proto/mod.rs`) are the per-protocol
-edges:
+`ProtocolReader` and `ProtocolWriter` (`crates/busbar-plane-llm/src/codec/proto_codec.rs`) are the
+per-dialect edges inside the LLM plane:
 
 - **`ProtocolReader`**: `read_request` (wire → IR), `read_response` /
   `read_response_event(s)` (wire → IR, with stateful fan-out for flat streams like
   OpenAI's), and `extract_error` / `classify` (the breaker's Stage 1).
 - **`ProtocolWriter`**: `write_request` (IR → wire), `write_response` /
-  `write_response_event` (IR → wire), `rewrite_model`, `upstream_path[_for[_stream]]`,
-  and the **auth hooks**: `auth_headers(key)` for static headers and
-  `sign_request(key, ctx)` for per-request signing (overridden by Bedrock for
-  SigV4). It also provides `probe_body`: a one-token request used by active health
-  probes, so every protocol gets a valid probe for free.
+  `write_response_event` (IR → wire), `rewrite_model_if_needed`,
+  `upstream_path[_for[_stream]]`, and `probe_body`: a one-token request used by
+  active health probes, so every protocol gets a valid probe for free.
 
-A `Protocol` bundles a name + reader + writer; the `ProtocolRegistry` resolves them
-by name at startup. This is the entire reason a "provider" needs no code: any
-backend speaking a known protocol is just a catalog row.
+Upstream auth is not a writer hook. Each dialect declares its egress scheme (bearer,
+api-key, or SigV4 for Bedrock), and the lane's credential is bound on the `auth`
+plugin serving that style (`crates/busbar-llm/src/engine/credential.rs`).
+
+A `Protocol` bundles a name + reader + writer; `protocol_for` resolves one by name.
+This is the entire reason a "provider" needs no code: any backend speaking a known
+protocol is just a catalog row.
 
 ### 6. Upstream auth & dispatch
 
 The handler builds the upstream URL (`base_url` + the protocol's path, or the
 provider's `path` override), selects the key (lane key, or the caller's key in
-passthrough mode), and computes auth via `sign_request` against a `SigningContext`
-(host, canonical URI, body, timestamp). For most protocols this is static headers;
-for Bedrock it computes AWS SigV4 with the region parsed from the host. The model
+passthrough mode), and has the auth plugin bound to the lane's declared style present
+the credential over the host, canonical URI, body and timestamp. For most protocols
+this is static headers; for Bedrock the `sigv4` plugin computes AWS SigV4 with the
+region parsed from the host. The model
 field is rewritten to the selected lane's model.
 
 ### 7. Two-stage failure disposition
 
 Every non-2xx upstream response is run through a pipeline that decides **who is at
-fault** and therefore what to do (`crates/busbar-core/src/proxy/engine/mod.rs`, `crates/busbar-core/src/breaker.rs`):
+fault** and therefore what to do (`crates/busbar-kernel/src/breaker.rs`, over the breaker unit's
+`crates/busbar-kernel-breaker/src/normalize.rs` and `crates/busbar-kernel-breaker/src/classify.rs`):
 
 ```
 Stage 1a  proto.reader().extract_error(status, body)  → RawUpstreamError
 Stage 1b  normalize_raw_error(raw, provider.error_map) → CanonicalSignal (StatusClass)
-Stage 2   classify_disposition(signal)                 → Disposition
+Stage 2   classify(signal)                             → Disposition
 ```
 
 `Disposition` is matched **exhaustively** (a project invariant: no `_ =>` catch-all
@@ -374,7 +398,7 @@ On success, the response is streamed (SSE or Bedrock event-stream) or buffered:
 
 - **Same protocol**: passthrough; native usage accounting and provider-specific
   fields survive untouched.
-- **Cross protocol**: `StreamTranslate` (`crates/busbar-core/src/proto/mod.rs`) composes
+- **Cross protocol**: `StreamTranslate` (`crates/busbar-plane-llm/src/codec/proto_stream.rs`) composes
   `egress.reader().read_response_events` with
   `ingress.writer().write_response_event`, re-framing each upstream event into the
   caller's wire format. It reassembles frames split across chunks, threads stream
@@ -391,9 +415,10 @@ the breaker fault and emits a native error in the caller's protocol, an SSE
 `error` event for SSE clients, a binary `:message-type: exception` frame for
 Bedrock-ingress (AWS eventstream) clients.
 
-## Circuit-breaker state, on all three planes
+## Circuit-breaker state, on every plane
 
-Breaker state is stored in `crates/busbar-core/src/store/mod.rs`. The FSM is Closed → Open
+The FSM is the breaker unit (`crates/busbar-kernel-breaker/src/lib.rs`); breaker state is held in
+the kernel's store (`crates/busbar-kernel/src/store/in_memory/availability.rs`). The FSM is Closed → Open
 → HalfOpen → Closed, with exponential cooldown backoff and single-flight half-open
 probing. See [operations.md](operations.md) and
 [circuit-breaker.md](circuit-breaker.md) for the full state machine, trip modes, and
@@ -406,15 +431,15 @@ on A2A. Three identities, one state machine:
 | plane | breaker target | live on the dispatch path? |
 |---|---|---|
 | LLM | a `(pool, lane)` cell | yes, and has been since the breaker landed |
-| MCP | one registered tool server | yes: the dispatch path walks the seam (`mcp/reroute.rs` → `failover::walk`) before every leg |
-| A2A | one registered agent | yes: the ingress walks it at submission admission (`a2a/route.rs` → `failover::walk`) |
+| MCP | one registered tool server | yes: the kernel's walk admits each member through the host's `breaker_admit` slot (`crates/busbar-kernel/src/plane_host/breaker.rs`) before every leg |
+| A2A | one registered agent | yes: the ingress walks it at submission admission (`crates/busbar-a2a/src/a2a/route.rs` → `failover::walk_with`) |
 
 **One state machine, and one place to tune it.** `BreakerCfg` (the cooldown bounds and
 the `trip:` condition) is accepted under `pools:` and nowhere else. There is no
 `breaker:` key under `tools:` or `agents:`, and both sections `deny_unknown_fields`, so
 a config that writes one fails at boot. On MCP and A2A the breaker therefore runs on
-built-in defaults, through `crate::failover`, which calls the same
-`try_admit_breaker` the LLM plane calls and adds no second state machine.
+built-in defaults, through the kernel's failover walk (`crates/busbar-kernel/src/failover/mod.rs`),
+which reaches the same breaker cells the LLM plane uses and adds no second state machine.
 
 **What generalises, and what it took to generalise it.** The state machine and the cause
 attribution need a target identity and a failure history, and neither of those is
@@ -424,7 +449,7 @@ a property of the protocols. It is not one. The case operators actually run is t
 server image deployed twice, or one agent registered twice, and busbar's inability to be
 told about it was a missing config vocabulary rather than a law. The one neutral top-level
 `pools:` map (1.6.0) is that vocabulary — an MCP or A2A failover pool is just a `pools:`
-entry whose kind is inferred from its `tools:`/`agents:` members — over one selection loop in `crate::failover`;
+entry whose kind is inferred from its `tools:`/`agents:` members — over one selection loop in the kernel's failover walk;
 a candidate set of one remains exactly the degenerate case §4 already describes. Two
 rules keep it safe and both are core's, not a plane's: two candidates are interchangeable
 only when the pins busbar already computed AGREE, and a call that has already gone out is
@@ -434,7 +459,7 @@ repeated only when the operation is named in `repeatable:`. See
 **What the caller gets when a target is Open** is protocol-native on each plane, and
 the difference matters more than it looks. All three rows are live. On every plane a
 refusal is what the caller gets only once selection has run out of candidates: if the
-target sits in a pool, `crate::failover` walks to a verified twin first, and the caller
+target sits in a pool, the failover walk moves to a verified twin first, and the caller
 sees the refusal only when no admissible candidate remains.
 
 | plane | refusal | live? |
@@ -461,9 +486,9 @@ invented for it.
 
 Metrics are emitted at the ingress boundary (`busbar_requests_total`, the duration
 histogram) on EVERY plane, and at each upstream attempt/failure/trip/failover/translation
-(`crates/busbar-core/src/metrics.rs`, `crates/busbar-core/src/proxy/engine/mod.rs`). The model plane emits from
-`ingress::finish_inner`, the MCP and A2A planes from the plane ingress boundary layer
-(`crates/busbar-core/src/plane/observe.rs`), distinguished by a `plane` label. Optional OTLP spans and a request-log webhook
+(`crates/busbar-kernel/src/telemetry.rs`, `crates/busbar-llm/src/engine/pipeline.rs`). The model plane emits from
+`ingress::finish_inner` (`crates/busbar-kernel/src/ingress/mod.rs`), every other plane from the plane
+ingress boundary layer (`crates/busbar-kernel/src/plane/observe.rs`), distinguished by a `plane` label. Optional OTLP spans and a request-log webhook
 are configured via the `observability` section.
 
 ## How it deploys, simplest first
@@ -473,7 +498,7 @@ and no database required to start. The topologies below are the same binary with
 progressively more of its optional seams turned on; nothing is a different build or a
 different edition.
 
-All three planes are in the one binary. Serving MCP or fronting agents is a
+Every plane can be in the one binary. Serving MCP or fronting agents is a
 `tools:` or `agents:` block in the config, not another process to run.
 
 **1. One process, no database.** A binary and a config file (with `store: {module: memory}`, which 1.6.0 requires you to state). Virtual keys, budgets
@@ -546,7 +571,13 @@ call site that forgets to bind it a compile error rather than a review comment.
 
 ## Plugins, and what they are trusted with
 
-Stores, hooks, exporters and auth providers load as **signed dynamic libraries**.
+Every plugin kind (store, secret, auth, hook, export, plane and transport) loads
+through **one loader over the memory ABI** (`crates/plugin-loader`). A plugin
+compiled into the binary and a signed dynamic library dropped into the plugins
+directory take the same path and pass the same checks. A plugin built for 1.5.5,
+which spoke JSON, is refused at boot with a message naming the rebuild against the
+1.6.0 SDK.
+
 Identity comes from the signed manifest, never the filename: the publisher
 signature is verified over a canonical manifest, and the manifest's `sha256` pins
 it to the exact library bytes. An unsigned, wrong-key, tampered-library or

@@ -68,8 +68,33 @@ pub(crate) struct Hash(#[schemars(regex(pattern = r"^[0-9a-f]{64}$"))] String);
 #[derive(Serialize, JsonSchema)]
 #[allow(dead_code)]
 pub(crate) struct LedgerTotals {
-    /// The rows, in bucket, day, lane and provider order.
+    /// The rows, in bucket, day, lane and provider order. A row a `refused` entry names is absent.
     rows: Vec<LedgerTotalsRow>,
+    /// Every balance whose counts a present rate card refused to price: its row has no figure, so
+    /// it is withheld from `rows` rather than served as the priced remainder. Empty is the good
+    /// answer.
+    refused: Vec<LedgerRefusedBalance>,
+}
+
+/// A balance with no figure: a unit's counts on it that the rate card in force refused to price
+/// (a present card silent about the lane or a class). The row the balance folds into — the same
+/// `bucket` and `day` — is withheld from the view that names this.
+#[cfg(feature = "openapi-schema")]
+#[derive(Serialize, JsonSchema)]
+#[allow(dead_code)]
+pub(crate) struct LedgerRefusedBalance {
+    /// The balance's bucket.
+    bucket: String,
+    /// The balance's dimension.
+    dimension: String,
+    /// The balance's scope.
+    scope: String,
+    /// The balance's window, as the unix second it opens at: the `day` of the withheld row.
+    day: u64,
+    /// The lane that served the unit whose counts refused.
+    lane: String,
+    /// Why the pricing refused, in its own words.
+    refusal: String,
 }
 
 /// One row of `GET /ledger/totals`. The row width is the reconciliation's, so a discrepancy found
@@ -169,9 +194,12 @@ pub(crate) struct LedgerTotalsCell {
 #[derive(Serialize, JsonSchema)]
 #[allow(dead_code)]
 pub(crate) struct LedgerReconciliation {
-    /// True when every row reconciles. `discrepancies` is then empty.
+    /// True when every row reconciles. `discrepancies` and `refused` are then empty.
     holds: bool,
     discrepancies: Vec<LedgerDiscrepancy>,
+    /// Every balance whose counts a present rate card refused to price: its row is withheld from
+    /// both sides of the identity, which was not measured over it. Empty is the good answer.
+    refused: Vec<LedgerRefusedBalance>,
 }
 
 /// One row on which the identity does not hold. Spend and fee count are checked separately
@@ -467,7 +495,7 @@ pub(crate) struct VerifyView {
     book_verified: bool,
     /// Each thing verification found, in words: a checkpoint edited after it was sealed, a node
     /// sequence that went backwards, a balance out of identity, a sealed balance no longer in the
-    /// book, a closed window that moved.
+    /// book, a closed window that moved, a balance whose counts the rate card refused to price.
     findings: Vec<String>,
     /// Whether the ledger's postings reconcile with the previous release's rows.
     identity_holds: bool,
@@ -724,8 +752,8 @@ fn doc_for(
             request: None,
             query: Vec::new(),
             errors: vec![unavailable_503(
-                "the node could not take the unit, or the book holds a refused counts row the \
-                 read cannot price (the read is refused whole rather than served without it)",
+                "the node could not take the unit, or a figure the read serves is past the range \
+                 it is served in (refused, never pinned)",
             )],
         };
     let audit_read = |summary: &'static str, schema: Value, ok: &'static str| VerbDoc {
@@ -823,8 +851,8 @@ fn doc_for(
             request: None,
             query: Vec::new(),
             errors: vec![unavailable_503(
-                "the node could not take the unit, or the book holds a refused counts row the \
-                 identity cannot be measured over",
+                "the node could not take the unit, or a figure the identity is measured over is \
+                 past the range it is served in",
             )],
         },
         KernelVerb::PlaneFacts => VerbDoc {
@@ -1097,7 +1125,9 @@ fn doc_for(
         KernelVerb::GetLedgerTotals => ledger_read(
             "What the ledger's lines come to, per bucket, day, lane and provider",
             "Each line is priced against the rate card in force at its own arrival instant, and \
-             the row's micro-unit figure is one divide over its summed nano-units.",
+             the row's micro-unit figure is one divide over its summed nano-units. A row whose \
+             balance holds counts the rate card refused to price is withheld and named under \
+             `refused`; every other row is served.",
             schema_of(gen.subschema_for::<LedgerTotals>()),
             "The rows, in bucket, day, lane and provider order",
         ),
@@ -1111,7 +1141,8 @@ fn doc_for(
         KernelVerb::GetLedgerReconciliation => ledger_read(
             "The residual of the ledger's postings against the previous release's rows",
             "An empty `discrepancies` list with `holds: true` is the good answer; a residual names \
-             its row and the amount it is out by.",
+             its row and the amount it is out by, and a row whose balance holds counts the rate \
+             card refused to price is withheld from the identity and named under `refused`.",
             schema_of(gen.subschema_for::<LedgerReconciliation>()),
             "Whether the identity holds, and every row on which it does not",
         ),

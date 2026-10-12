@@ -34,8 +34,9 @@ fn presentation(p: CredentialHeader) -> Value {
 /// The binding a DECLARED egress scheme is opened under: a static scheme on the `api-key` style
 /// with its whole presentation table as parameters and the dialect's name (the `protocol` an
 /// unpresentable credential's line names, as 1.5.5's did), a per-request signature on the `sigv4` style
-/// with its service, the region its host names (else its default) and its content type. The
-/// dialect's static fields (`decl`'s) follow the plugin's.
+/// with its service, the region its host names (else its default) and its content type, which the
+/// lane's writer sends and so is lent as the `content-type` the signature covers. The dialect's
+/// static fields (`decl`'s) follow the plugin's.
 ///
 /// The region is read here SILENTLY: a dialect's `region_of_host` gives the operator its warning
 /// when a host names no region, and 1.5.5 gave it once per signature, at request time, never at
@@ -46,7 +47,7 @@ pub(crate) fn declared_binding(
     scheme: EgressScheme,
     host: &str,
 ) -> StyleBinding {
-    let (style, params) = match scheme {
+    let (style, params, sent) = match scheme {
         EgressScheme::Static {
             families,
             own,
@@ -71,6 +72,7 @@ pub(crate) fn declared_binding(
                     "passthrough": presentation(passthrough),
                     "protocol": decl.name,
                 }),
+                Vec::new(),
             )
         }
         EgressScheme::SigV4 {
@@ -85,6 +87,7 @@ pub(crate) fn declared_binding(
                 "region": silently(|| region_of_host(host)).unwrap_or(default_region),
                 "content_type": content_type,
             }),
+            vec![("content-type".to_string(), content_type.to_string())],
         ),
     };
     StyleBinding {
@@ -92,6 +95,7 @@ pub(crate) fn declared_binding(
         params,
         uses_key: true,
         statics: decl.static_headers,
+        sent,
     }
 }
 
@@ -181,6 +185,7 @@ pub(crate) fn api_key_override_binding() -> StyleBinding {
         params: json!({}),
         uses_key: true,
         statics: &[],
+        sent: Vec::new(),
     }
 }
 
@@ -224,6 +229,7 @@ fn binding_for(protocol: &'static str, lane: &LaneInput, host: &str, api_key: &s
                     params: mint_params(m),
                     uses_key: false,
                     statics: &[],
+                    sent: Vec::new(),
                 },
                 None,
             )
@@ -238,6 +244,7 @@ fn binding_for(protocol: &'static str, lane: &LaneInput, host: &str, api_key: &s
                     params: mint_params(m),
                     uses_key: false,
                     statics: &[],
+                    sent: Vec::new(),
                 },
                 None,
             )

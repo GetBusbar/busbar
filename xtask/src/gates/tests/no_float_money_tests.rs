@@ -29,7 +29,7 @@ fn the_card_build_files_runtime_items_are_outside_every_intake_span() {
         }
     }
     for runtime in [
-        "nanos_sum",
+        "lane_pricing",
         "digest",
         "fee_of",
         "fee_unit_price_nanos",

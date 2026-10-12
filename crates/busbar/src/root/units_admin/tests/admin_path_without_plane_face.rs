@@ -677,17 +677,21 @@ async fn every_root_only_mutating_verb_seals_one_durable_row_and_a_read_seals_no
 async fn a_booted_nodes_recovery_verbs_reach_its_configured_store_through_the_book() {
     busbar_kernel::snapshot::init();
     busbar_core_admin::install();
-    // An App with a governance store: the in-tree memory store, as a config that names none gets.
+    // An App with a governance store: the in-tree memory store, as a config that names none gets,
+    // with the record slots the boot book keeps its journal in (H3: a store without them refuses the
+    // boot) over the test's in-memory map.
+    let gov = Arc::new(
+        busbar_kernel::governance::GovState::new(
+            Arc::new(busbar_kernel::governance::MemoryStore::new()),
+            None,
+        )
+        .expect("a governance over the memory store"),
+    );
+    gov.attach_store_calls(crate::root::store_double::RecordSlots::new().calls());
     let booted = busbar_kernel::test_support::TestApp::new()
-        .governance(Arc::new(
-            busbar_kernel::governance::GovState::new(
-                Arc::new(busbar_kernel::governance::MemoryStore::new()),
-                None,
-            )
-            .expect("a governance over the memory store"),
-        ))
+        .governance(gov)
         .build();
-    let book = crate::root::boot::book(&booted).expect("the boot book opens");
+    let book = crate::root::boot::book(&booted, "test-store").expect("the boot book opens");
     let store = book
         .verb_store
         .clone()

@@ -5,10 +5,11 @@
 //! `streams.hooks: [rewrite]` with a `prompt: rw` gate is attached, a session-open is driven through
 //! the governed choke point, and the params THE PROVIDER RECEIVES are the ones the hook rewrote them
 //! to — asserted on the ACTUAL mint request the loopback provider saw (a rewrite is only real if the
-//! thing downstream saw the rewritten value). The tap fires through the neutral `host.transform_over`
-//! seam, after the gate and before the credential is leased. The host is the substrate's in-memory
-//! fixture host carrying a scripted rewrite under the plane's own decl key and `streams` container, so
-//! the plane's `tap_attached` / `transform_over` legs run exactly as they do over a configured
+//! thing downstream saw the rewritten value). The tap fires through the kernel's
+//! `plane_host::admission_transform`, after the gate and before the credential is leased. The host is
+//! the substrate's in-memory fixture host carrying a scripted rewrite under the plane's own decl key and
+//! `streams` container, so the kernel's `admission_tap_attached` / `admission_transform` run the rewrite
+//! exactly as they do over a configured
 //! deployment. (The same rewrite over the real loaded hook plugin is the engine's own hook battery to
 //! prove; this plane's tests do not link the engine.)
 //!
@@ -25,8 +26,9 @@ use crate::mount::{open_governed, GovernedOpen, Ingress, ProviderEndpoint};
 use crate::runtime::{EchoToolExecutor, VoiceRuntime};
 use crate::testkit::fixture_host::{FixtureHost, RewriteScript};
 use crate::testkit::loopback_http::{MockResponse, MockServer, MockServerState};
+use busbar_contract::hooks::{RewriteReply, TransformOutcome};
 use busbar_kernel::plane::handle_engine::DurableHandleEngine;
-use busbar_kernel::plane_host::{EngineHost, TransformVerdict};
+use busbar_kernel::plane_host::EngineHost;
 use std::sync::Arc;
 
 /// The `streams:` container the voice plane files its operator hooks under.
@@ -36,18 +38,13 @@ const GATE_CONTAINER: &str = "streams";
 /// hermetic test hook plugin reads off its settings: a `rewrite.messages[0].content` is the payload the
 /// hook committed in place of the plane's own; anything else abstains (the payload passes unchanged).
 fn rewrite(raw_transform_reply: serde_json::Value) -> RewriteScript {
-    let rewritten = raw_transform_reply["rewrite"]["messages"][0]["content"].clone();
-    Arc::new(move |args_json: &[u8]| {
-        if rewritten.is_null() {
-            return TransformVerdict::Proceed {
-                applied: false,
-                args_json: args_json.to_vec(),
-            };
-        }
-        TransformVerdict::Proceed {
-            applied: true,
-            args_json: serde_json::to_vec(&rewritten).expect("the rewrite serializes"),
-        }
+    let messages = raw_transform_reply["rewrite"]["messages"].clone();
+    Arc::new(move |_content: &[u8]| match messages.as_array() {
+        Some(messages) => TransformOutcome::Rewrite(RewriteReply {
+            messages: messages.clone(),
+            tools: Vec::new(),
+        }),
+        None => TransformOutcome::Abstain,
     })
 }
 
@@ -64,8 +61,8 @@ fn untapped_host() -> Arc<dyn EngineHost> {
 }
 
 /// Build a host whose `voice`/`streams` container carries the attached rewrite chain, filed under the
-/// plane's own decl key exactly where production's resolved rewrite map puts it, so `tap_attached`
-/// answers true and `transform_over` runs the rewrite. `hook_name` is the operator's name for the
+/// plane's own decl key exactly where production's resolved rewrite map puts it, so
+/// `admission_tap_attached` answers true and `admission_transform` runs the rewrite. `hook_name` is the operator's name for the
 /// hook (it only labels the attachment here).
 fn tapped_host(_hook_name: &'static str, script: RewriteScript) -> Arc<dyn EngineHost> {
     FixtureHost::new()

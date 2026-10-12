@@ -62,7 +62,8 @@ const CONFIG_SCHEMA: &str = r#"{
           "default_max_tokens": { "type": "integer" },
           "attempt_timeout_ms": { "type": "integer" },
           "reasoning": { "type": "boolean" },
-          "prompt_caching": { "type": "boolean" }
+          "prompt_caching": { "type": "boolean" },
+          "protocol": { "type": "string" }
         },
         "required": ["provider"]
       }

@@ -20,8 +20,10 @@
 //!
 //! The binding is best-effort by design. A settlement that failed because a legacy row would not
 //! write would be a behavioural change in the worst possible direction: the previous release
-//! settled, so this one has to. The error comes back so the integrator can count it and alarm on it,
-//! and the settlement stands either way.
+//! settled, so this one has to. [`LegacyRows::write`] answers a `Result` so a binding can say it
+//! failed, and the ledger DROPS that answer: it is not counted, not logged and not returned, and the
+//! settlement stands either way. The production binding, [`SummedRows`], never fails; a binding
+//! that can fail has to count and report its own failures.
 
 /// One posting, in the terms the previous release's rows are written from.
 ///
@@ -76,7 +78,9 @@ pub trait LegacyRows: Send {
 /// **A TEST RECORDER, NOT A PRODUCTION BINDING.** It grows by one posting per settlement for the
 /// life of the process, which is right for a battery that checks posting by posting and wrong for a
 /// node that settles all day. A node binds [`SummedRows`], which holds one row per cell whatever
-/// the traffic has been.
+/// the traffic has been. Nothing in production constructs this; it ships only because the root's
+/// and the kernel's test batteries, in other crates, record through it, and it is listed as such
+/// in `qa/unconstructed.toml`.
 #[derive(Debug, Default, Clone)]
 pub struct RecordingRows {
     written: std::sync::Arc<std::sync::Mutex<Vec<LegacyPosting>>>,

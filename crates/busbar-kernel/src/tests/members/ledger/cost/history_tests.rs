@@ -173,10 +173,9 @@ fn an_instant_no_entry_covers_is_a_refusal() {
 
 /// **A CACHED PRICE NEVER WINS OVER A LOOKUP.** The cache is hand-corrupted to a hundredfold figure
 /// and the answer does not move, because the figure a reader must use is derived from the
-/// quantities and the history and the cache is not on that path at all.
-///
-/// The divergence is reported, so the caller can correct the cache and journal that it did — but
-/// what it reports is the lookup's number either way.
+/// quantities and the history and the cache is not on that path at all. (The comparison that
+/// reported a divergence, `Posting::cache_diverges`, had no production caller and is deleted with
+/// the two assertions that pinned it.)
 #[test]
 fn a_corrupted_cache_never_becomes_the_bill() {
     let history = History::opening(card_at(2.0), 0);
@@ -187,7 +186,6 @@ fn a_corrupted_cache_never_becomes_the_bill() {
     let honest = price(&view, &posting).expect("covered");
     assert_eq!(honest.priced_nanos, 2_000_000);
     posting.cached = Some(honest.as_cache(HistorySeq(0)));
-    assert!(!posting.cache_diverges(&honest));
     assert_eq!(posting.priced_nanos(&view), Ok(2_000_000));
 
     // A hundredfold corruption of the stored figure.
@@ -206,10 +204,6 @@ fn a_corrupted_cache_never_becomes_the_bill() {
         posting.priced_nanos(&view),
         Ok(2_000_000),
         "the figure a reader must use did not move"
-    );
-    assert!(
-        posting.cache_diverges(&after),
-        "and the divergence is reported rather than swallowed"
     );
 }
 

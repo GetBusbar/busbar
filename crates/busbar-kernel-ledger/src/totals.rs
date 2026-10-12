@@ -350,13 +350,6 @@ impl Statement {
     pub fn row(&self, key: &TotalsKey) -> StatementRow {
         self.rows.get(key).copied().unwrap_or_default()
     }
-
-    /// Everything on the statement, in one figure.
-    pub fn total_nanos(&self) -> i128 {
-        self.rows
-            .values()
-            .fold(0i128, |sum, row| sum.saturating_add(row.priced_nanos))
-    }
 }
 
 /// Cut a statement as of a history snapshot: **re-derived from the quantities, every time**.
@@ -386,9 +379,9 @@ pub fn totals_as_of<'a>(
             continue;
         }
         match price_line(line, view, line.tier_bp) {
-            // A lane the card in force does not name is a REFUSAL, not a line of fees: #42
-            // (`BUSBAR-1.6.0.md:2222`) — *"a hit class not priced ⇒ REFUSE … FAILS if billing-on &
-            // unpriced"* — and a lane the card is silent about prices none of the classes it hit.
+            // A lane the card in force does not name is a REFUSAL, not a line of fees: #42 —
+            // *"a hit class not priced ⇒ REFUSE … FAILS if billing-on & unpriced"* — and a lane
+            // the card is silent about prices none of the classes it hit.
             // The read lookup reports it as a flag rather than an error, so the statement turns
             // the flag into the refusal here, and the line moves no row.
             Ok(priced) if priced.lane_unpriced => unpriceable.push(Unpriced {

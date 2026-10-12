@@ -192,19 +192,9 @@ impl SessRow {
 
 fn sess_bounds() -> SweepBounds {
     SweepBounds {
-        abandon_secs: 1_000,
         terminal_ttl_secs: 1_000,
         max_retained: 64,
     }
-}
-
-fn sess_abandon(
-    _id: &str,
-    _row: &(dyn std::any::Any + Send + Sync),
-    _pos: &ChainPosition,
-    _now: u64,
-) -> Option<Mutation> {
-    None
 }
 
 fn sess_no_report(_id: &str, _e: &busbar_contract::records::RecordStoreError) {}
@@ -237,7 +227,6 @@ fn open_session(session: &SessionScope, cursor: u64, now: u64) {
                     }),
                 })
             },
-            sess_abandon,
             sess_no_report,
         )
         .expect("open");

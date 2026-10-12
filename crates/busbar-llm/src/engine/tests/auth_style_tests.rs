@@ -12,6 +12,7 @@ fn lane_with_auth(auth: Option<&str>) -> Lane {
         params: serde_json::json!({}),
         uses_key: true,
         statics: &[],
+        sent: Vec::new(),
     };
     let credential = busbar_kernel::bound_credential::bind(
         &*busbar_kernel::test_support::outbound_auth::axis(),

@@ -67,21 +67,6 @@ impl OutboundInstance {
         }
     }
 
-    /// `plugin`'s instance OPENED for its outbound styles: validated and opened (generation 1) over
-    /// the empty settings document, as [`Self::new`] then serves it. An outbound style binds its
-    /// credential and settings per binding (`open_outbound`), never at the instance's open.
-    ///
-    /// # Errors
-    ///
-    /// `validate` or `open` did not answer READY, naming the plugin.
-    pub fn open(
-        plugin: Plugin<Auth>,
-        dispatcher: Arc<Dispatcher>,
-        worker: u32,
-    ) -> Result<Self, String> {
-        Self::open_with(plugin, dispatcher, worker, b"{}")
-    }
-
     /// `plugin`'s instance OPENED over the settings document `settings` (a JSON object): the
     /// binding's own settings, for a plugin whose needs take their target from them (`target_from`:
     /// the loader declares each such need pinned to what its path resolves to in `settings`, at

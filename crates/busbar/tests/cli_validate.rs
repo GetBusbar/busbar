@@ -170,6 +170,27 @@ fn validate_ok_on_valid_config_without_plugins() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A 1.5.5-shaped config whose root `pools:` names a pool after a reserved sub-key (`tier`, `work`)
+/// validates exactly as 1.5.5 did (Q-STEP9-a, ARCHITECT 2026-10-07): the root `pools:` section keeps
+/// 1.5.5's two reserved words and no more, so both are pools and both are counted.
+#[cfg(linked_axis_node)]
+#[test]
+fn validate_accepts_root_pools_named_after_a_reserved_sub_key_as_1_5_5_did() {
+    let dir = fixture_dir("pools-named-tier-work");
+    write_configs(
+        &dir,
+        "pools:\n  tier:\n    members: [{model: test-model, tier: large}]\n  work:\n    \
+         members: [{model: test-model}]\n",
+    );
+    let (code, stdout, stderr) = run_busbar(&dir, &["--validate"]);
+    assert_eq!(code, 0, "stdout={stdout} stderr={stderr}");
+    assert!(
+        stdout.contains("ok: config valid — 1 provider(s), 1 model(s), 2 pool(s)"),
+        "got {stdout}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// `--validate`'s "N env var(s) referenced but unset" note must appear exactly when a `${VAR}`
 /// interpolation in config/providers resolves to an unset variable, and must name it. Closes an
 /// uncovered branch: `if !unset_env_vars.is_empty()` at main.rs's note-printing site had zero
