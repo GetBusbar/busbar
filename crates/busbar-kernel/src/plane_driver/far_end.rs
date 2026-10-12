@@ -615,16 +615,23 @@ impl EgressFarEnd<'_> {
             None => held.classified,
         };
         let now = e.clock.now_secs();
-        match plane {
-            Some((token, _)) => self.record(live, token, classified, now),
-            // Settling with the answer unread: the kernel records it on its own pass.
-            None => self.record(
-                live,
-                &Pass::<Route>::mint(&KernelSeal::acquire_for_kernel()),
-                classified,
-                now,
-            ),
+        // Settling with the answer unread: the kernel records it on its own pass.
+        let own;
+        let token = match plane {
+            Some((token, _)) => token,
+            None => {
+                own = Pass::<Route>::mint(&KernelSeal::acquire_for_kernel());
+                &own
+            }
+        };
+        if let Some(probed) = self.probe_of {
+            // A HEALTH PROBE'S ANSWER is classified as organic traffic is (Part 3 §12), and
+            // recorded on every cell of its member; the out-of-band prober counts no failure
+            // telemetry (1.5.5).
+            e.breaker.probed(probed, classified.outcome, now, token);
+            return;
         }
+        self.record(live, token, classified, now);
         let hard = matches!(classified.disposition, Disposition::HardDown);
         let client_fault = matches!(classified.disposition, Disposition::ClientFault);
         if !client_fault && !(hard && live.passthrough) {
@@ -1269,17 +1276,23 @@ impl EgressFarEnd<'_> {
         };
         live.answered = true;
         if let Some(destination) = self.probe_of {
-            // THE PROBE'S ANSWER, classified as organic traffic is, recorded on every cell of its
-            // member; the plane is handed the first piece as the whole answer and the rest is
-            // never read.
-            let outcome = if matches!(status.class, Some(WireStatusClass::Success) | None) {
-                Outcome::Success
-            } else {
-                e.breaker.classify(destination, status).outcome
-            };
-            e.breaker.probed(destination, outcome, now, token);
+            // THE PROBE'S ANSWER, classified as organic traffic is (Part 3 §12), recorded on every
+            // cell of its member; the plane is handed the first piece as the whole answer and the
+            // rest is never read. A success is recorded at once; any other answer waits for the
+            // plane's reading of it, exactly as a relayed organic answer does: the plane's first
+            // stated reading is recorded ([`FarEnd::judged`]), the transport's when it states none
+            // or the probe drops first.
             live.ended = true;
-            self.settle(&mut w);
+            if matches!(status.class, Some(WireStatusClass::Success) | None) {
+                e.breaker.probed(destination, Outcome::Success, now, token);
+                self.settle(&mut w);
+            } else {
+                live.unjudged = Some(Unjudged {
+                    classified: e.breaker.classify(destination, status),
+                    class: status.class,
+                    retry_after: status.retry_after,
+                });
+            }
             return FarPiece {
                 bytes,
                 status: far_status,
