@@ -35,12 +35,17 @@ use crate::ctx::{Ctx, Overlay, SourceFile, WalkSpec};
 /// and back to 941 when #648 (q128-kernel-ledger) deleted `busbar-kernel-ledger/src/usage/series.rs`
 /// — the one non-test file that merge removed, a reviewed removal and not a scan that went blind. It
 /// was raised to 942 when the plugin-loader conformance suite's admission and connection RED arms
-/// landed in their own file (`plugin-loader/src/conformance/red.rs`). A drop below 942 is refused
-/// until a reviewed diff re-measures. The selftest plant ([`one_file_short`]) cuts the live
-/// population to `FLOOR - 1` whatever its size, so predev growing a file no longer forces a re-pin
-/// for the plant's sake. Lowering the floor is how a gate stops reading the repository without
-/// saying so, so a diff that lowers it is the diff to refuse.
-pub const FLOOR: usize = 942;
+/// landed in their own file (`plugin-loader/src/conformance/red.rs`). Raised from 942 to 948 by
+/// transport stage B (#502): the host's I/O table and the carriers add nine non-test files
+/// (`busbar-contract` abi/host/io.rs, abi/sdk/io.rs, io_host.rs; `busbar-core-connector`
+/// carrier.rs, hostio.rs; `busbar-plugin-loader` conformance/carrier.rs, conformance/host_io.rs,
+/// dispatch/inline.rs, dispatch/io_slots.rs) and remove three (`busbar-core-connector` stream.rs,
+/// `busbar-transport-stdio` carrier.rs and conn.rs, whose work moved to the host's I/O). A drop
+/// below 948 is refused until a reviewed diff re-measures. The selftest plant ([`one_file_short`])
+/// cuts the live population to `FLOOR - 1` whatever its size, so predev growing a file no longer
+/// forces a re-pin for the plant's sake. Lowering the floor is how a gate stops reading the
+/// repository without saying so, so a diff that lowers it is the diff to refuse.
+pub const FLOOR: usize = 948;
 
 /// The `.rs` under `crates/` that are not test scaffolding, plus the accounting to refuse a
 /// population that cannot support a verdict.
