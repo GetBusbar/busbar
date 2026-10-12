@@ -237,6 +237,9 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     max_citations_per_delta: Some(1),
     // AWS Bedrock is reached via boto3/botocore. RELEASE OBLIGATION: re-verify/bump per release;
     // `test_egress_ua_versions_are_pinned_and_present` guards drift.
+    // OWNER RULING Q10: the plane writes this on a translated route into this dialect, on a
+    // same-dialect route whose caller sent no user-agent (1.5.5's bytes), and on the
+    // kernel-originated health probe; a same-dialect caller's own user-agent replaces it.
     egress_user_agent: "Boto3/1.35.0 md/Botocore#1.35.0",
     has_model_in_url: true,
     auth_failure_status_and_kind: (

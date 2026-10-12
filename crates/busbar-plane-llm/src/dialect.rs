@@ -49,6 +49,14 @@ pub struct Dialect {
     pub scheme_alt: &'static str,
     /// The egress-auth scheme that decorates a request to an upstream of this dialect.
     pub egress_scheme: &'static str,
+    /// THE DIALECT'S DEFAULT OUTBOUND AUTH STYLE (the design's auth points: a member's style is its
+    /// provider's `auth:`, else its plane's default for its dialect; ARCHITECT Q-L1-AUTH (A)): the
+    /// style an auth plugin serves, stated in the plane tail's `dialect_auth`.
+    pub egress_style: &'static str,
+    /// THE DEFAULT STYLE'S PARAMETERS for this dialect, a JSON object (`""`: none), stated in the
+    /// plane tail's `dialect_auth.params` and handed the auth plugin's `open_outbound` as its
+    /// settings at seal, under the provider's own (ARCHITECT RULING 2026-10-03, Q-L6-AUTHPARAMS).
+    pub egress_params: &'static str,
     /// The request headers busbar GOVERNS for this dialect (lower-case): its credential headers and
     /// its tenant selectors. A same-dialect route forwards every other client header unchanged; these
     /// never pass, because busbar's upstream credential and configuration replace them (OWNER HARD
@@ -95,6 +103,28 @@ const OPENAI_GOVERNED: &[&str] = &[
     "openai-project",
 ];
 
+/// The `api-key` style's parameters for the dialect whose credentials come in families (its
+/// codec's `EgressScheme::Static`): an api key presented in `x-api-key` with leading whitespace
+/// trimmed, an oauth token as a bearer, the operator's own key in `x-api-key`, a passthrough caller's
+/// as a bearer.
+pub(crate) const KEY_FAMILY_PARAMS: &str = concat!(
+    r#"{"header":"x-api-key","#,
+    r#""families":[{"prefix":"sk-ant-api","header":"x-api-key","trim_start":true},"#,
+    r#"{"prefix":"sk-ant-oat"}],"#,
+    r#""own":{"header":"x-api-key"},"passthrough":{}}"#,
+);
+
+/// The `sigv4` style's parameters for the signed dialect (its codec's `EgressScheme::SigV4`): the
+/// service, the content type the signature covers, and the region read from the provider's host by
+/// the codec's rule (`derive_sigv4_region`), else its default with the codec's warning.
+pub(crate) const SIGNED_PARAMS: &str = concat!(
+    r#"{"service":"bedrock","content_type":"application/json","#,
+    r#""region":{"host_label_after":["bedrock-runtime","bedrock-runtime-fips","bedrock","bedrock-fips"],"#,
+    r#""default":"us-east-1","#,
+    r#""unread":"could not derive AWS region from Bedrock endpoint host; defaulting SigV4 scope to "#,
+    r#"us-east-1 (set a bedrock-runtime[-fips].<region>.amazonaws.com host)"}}"#,
+);
+
 /// The table, one row per dialect, in the order the codec crate declares them.
 pub const DIALECTS: &[Dialect] = &[
     Dialect {
@@ -108,6 +138,8 @@ pub const DIALECTS: &[Dialect] = &[
         cache_write_pointer: Some("/usage/cache_creation_input_tokens"),
         scheme_alt: "api-key",
         egress_scheme: "bearer",
+        egress_style: "api-key",
+        egress_params: KEY_FAMILY_PARAMS,
         governed_headers: &["authorization", "x-api-key"],
         governed_query: &[],
         tenant_headers: &[],
@@ -128,6 +160,8 @@ pub const DIALECTS: &[Dialect] = &[
         cache_write_pointer: None,
         scheme_alt: "bearer",
         egress_scheme: "bearer",
+        egress_style: "bearer",
+        egress_params: "",
         governed_headers: OPENAI_GOVERNED,
         governed_query: &[],
         tenant_headers: OPENAI_TENANT,
@@ -145,6 +179,8 @@ pub const DIALECTS: &[Dialect] = &[
         cache_write_pointer: None,
         scheme_alt: "api-key",
         egress_scheme: "bearer",
+        egress_style: "x-goog-api-key",
+        egress_params: "",
         governed_headers: &["authorization", "x-goog-api-key", "x-goog-user-project"],
         governed_query: &["key"],
         tenant_headers: &[],
@@ -162,6 +198,8 @@ pub const DIALECTS: &[Dialect] = &[
         cache_write_pointer: Some("/usage/cacheWriteInputTokens"),
         scheme_alt: "request-signature",
         egress_scheme: "request-signature",
+        egress_style: "sigv4",
+        egress_params: SIGNED_PARAMS,
         governed_headers: &[
             "authorization",
             "x-amz-date",
@@ -183,6 +221,8 @@ pub const DIALECTS: &[Dialect] = &[
         cache_write_pointer: Some("/usage/input_tokens_details/cache_write_tokens"),
         scheme_alt: "bearer",
         egress_scheme: "bearer",
+        egress_style: "bearer",
+        egress_params: "",
         governed_headers: OPENAI_GOVERNED,
         governed_query: &[],
         tenant_headers: OPENAI_TENANT,
@@ -200,6 +240,8 @@ pub const DIALECTS: &[Dialect] = &[
         cache_write_pointer: None,
         scheme_alt: "bearer",
         egress_scheme: "bearer",
+        egress_style: "bearer",
+        egress_params: "",
         governed_headers: &["authorization"],
         governed_query: &[],
         tenant_headers: &[],
