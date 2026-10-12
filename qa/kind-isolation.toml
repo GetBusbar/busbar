@@ -1281,6 +1281,41 @@ cite    = "BUSBAR-1.6.0.md THE DESIGN, §8 (BUSBAR-1.6.0.md:1123-1126): \"Exactl
 why     = "busbar-core-admin names busbar-kernel: declared dev in the test graph (features test-support, plane-mcp, plane-a2a), 1 declaration(s) at this commit, beside the shipped edge. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
 drain   = "none: the architecture grants cleanliness -> kernel. What this row holds is the NUMBER."
 
+# THE ADMIN SURFACE'S TEST EDGES WITH THE RETIRING ENGINES. All three are dev-dependencies the
+# merge-base already declared and no row recorded (the `kind-isolation:test-deps` row's three
+# `unlisted-dep-edge` findings on predev d7929b661d); each is written down here with its count, its
+# verdict the one the architecture implies, and its drain. None is introduced here.
+
+[[dep]]
+from    = "busbar-core-admin"
+to      = "busbar-a2a"
+half    = "test"
+count   = "1"
+verdict = "not-allowed"
+cite    = "A cleanliness crate's dependency is ONE-WAY onto the kernel (DECISIONS #5; BUSBAR-1.6.0.md:3780, R2/#37): `cleanliness -> legacy` is in neither ARCHITECTURE_ALLOWED nor ARCHITECTURE_TCB, so the verdict is the one the architecture implies; the edge is test-only and pre-existing at predev d7929b661d."
+why     = "busbar-core-admin names busbar-a2a: declared dev in the test graph (features test-support) so the moved cross-plane drift test drives the A2A plane's trust-verb error surface through its testkit. 1 declaration(s) at this commit, absent from every release build. The count is TODAY'S MEASUREMENT, exact in both directions."
+drain   = "dies with the retiring A2A engine (the legacy drain, `[[transitional]]` busbar-a2a -> busbar-core-admin): the drift test drives the a2a plane crate's surface, and the dev-dependency is deleted."
+
+[[dep]]
+from    = "busbar-core-admin"
+to      = "busbar-llm"
+half    = "test"
+count   = "1"
+verdict = "not-allowed"
+cite    = "A cleanliness crate's dependency is ONE-WAY onto the kernel (DECISIONS #5; BUSBAR-1.6.0.md:3780, R2/#37): `cleanliness -> legacy` is in neither ARCHITECTURE_ALLOWED nor ARCHITECTURE_TCB, so the verdict is the one the architecture implies; the edge is test-only and pre-existing at predev d7929b661d."
+why     = "busbar-core-admin names busbar-llm: declared dev in the test graph (features test-support) so the moved cross-plane drift test registers the plane decls and the self-enveloping admin-verb backing through its testkit. 1 declaration(s) at this commit, absent from every release build. The count is TODAY'S MEASUREMENT, exact in both directions."
+drain   = "dies with the retiring LLM engine: the drift test drives the llm plane crate's surface, and the dev-dependency is deleted."
+
+[[dep]]
+from    = "busbar-a2a"
+to      = "busbar-core-admin"
+half    = "test"
+count   = "1"
+verdict = "not-allowed"
+cite    = "`legacy -> cleanliness` is in neither ARCHITECTURE_ALLOWED nor ARCHITECTURE_TCB, so the verdict is the one the architecture implies; the edge is test-only and pre-existing at predev d7929b661d, and the drain it belongs to is the `[[transitional]]` row busbar-a2a -> busbar-core-admin (legacy drain: the retiring A2A engine's tests drive the admin surface that drained into the cleanliness tier)."
+why     = "busbar-a2a names busbar-core-admin: declared dev in the test graph so the `adminverbs_tests` battery installs the admin seam for this crate's own test binary; a dev-dependency keeps every non-test build one-directional. 1 declaration(s) at this commit, absent from every release build. The count is TODAY'S MEASUREMENT, exact in both directions."
+drain   = "dies with the retiring A2A engine (the legacy drain): the dev-dependency is deleted with busbar-a2a."
+
 [[dep]]
 from    = "busbar-plugin-loader"
 to      = "busbar-contract"
@@ -1496,26 +1531,6 @@ reason = "ARCHITECT EXT-PILOT design (owner rulings 2026-09-25: one repo per plu
 # crates/<package> (xtask/src/gates/kind_isolation/pinned.rs). These ten edges existed at the
 # merge-base and went unmeasured while the census read only this tree; each is measured here with its
 # count, its verdict the one the architecture implies, and its drain.
-
-[[dep]]
-from    = "busbar-kernel"
-to      = "busbar-export-prometheus"
-half    = "test"
-count   = "1"
-verdict = "not-allowed"
-cite    = "`kernel -> export` is in neither ARCHITECTURE_ALLOWED nor ARCHITECTURE_TCB, so the verdict is the one the architecture implies; the edge is test-only. ARCHITECT ruling W4B-Q1 (2026-10-03; RUN.md:119 \"read pinned_exemplars, never skip\"): a plugin crate pulled at a pinned rev is a crate of the census, read from its checkout at crates/<package> (xtask/src/gates/kind_isolation/pinned.rs), so this edge, unmeasured while the census read only this tree, is measured."
-why     = "busbar-kernel names busbar-export-prometheus: declared dev in the test graph so the config tests resolve `module: prometheus` against a sink LINKED into the test binary exactly as the composition root links it into the shipped one; the kernel names no export module. 1 declaration(s) at this commit, absent from every release build. The count is TODAY'S MEASUREMENT, exact in both directions."
-drain   = "moves with the plugin-specific tests under BUSBAR-CI-PLUGIN-AGNOSTIC (owner 2026-10-03, \"busbar ci knows nothing of specific plugins\"): the config tests resolve the export axis through a contract-only row, and the dev-dependency is deleted."
-
-[[dep]]
-from    = "busbar-kernel"
-to      = "busbar-auth-oidc"
-half    = "test"
-count   = "1"
-verdict = "not-allowed"
-cite    = "BUSBAR-1.6.0.md #2 / R-FIX2 (owner FIXTURES ruling: real plugins are the proofs): `auth/tests/plugin_chain_tests.rs` drives the REAL token-verifying module through the dropped-in door with JWTs from the module's own test issuer. `kernel -> auth` is in neither ARCHITECTURE_ALLOWED nor ARCHITECTURE_TCB, so the verdict is the one the architecture implies; the edge is test-only. ARCHITECT ruling W4B-Q1 (2026-10-03; RUN.md:119 \"read pinned_exemplars, never skip\"): a plugin crate pulled at a pinned rev is a crate of the census, read from its checkout at crates/<package> (xtask/src/gates/kind_isolation/pinned.rs), so this edge, unmeasured while the census read only this tree, is measured."
-why     = "busbar-kernel names busbar-auth-oidc: declared dev in the test graph with its `testkit` feature (the module's own ES256 issuer and JWKS endpoint), beside the -plugin cdylib edge the dropped-in proof signs; 1 declaration(s) at this commit, absent from every release build. The count is TODAY'S MEASUREMENT, exact in both directions."
-drain   = "moves with the plugin-specific tests under BUSBAR-CI-PLUGIN-AGNOSTIC (owner 2026-10-03): the auth chain is proven against the published conformance suite in GetBusbar/busbar-auth-oidc, and the dev-dependency is deleted."
 
 [[dep]]
 from    = "busbar-core-admin"
@@ -1752,14 +1767,14 @@ cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain 
 [[law0]]
 crate = "busbar-kernel"
 axis  = "auth"
-count = "61"
-cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; LOWERED 76 -> 61, predev 9c0a394771's measure: the drain landed without giving its row back (Law 9: the ceiling ratchets down)"
+count = "50"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; LOWERED 76 -> 61, predev 9c0a394771's measure: the drain landed without giving its row back (Law 9: the ceiling ratchets down); LOWERED 61 -> 50 by GetBusbar/busbar#570: the kernel's auth plugin-chain tests run on in-crate doubles and name no plugin; the real-plugin proofs are the root's (crates/busbar/tests/auth_plugin_chain.rs), which name the plugin through the one root helper (tests/common/plugins.rs), so busbar x auth stays at its ceiling"
 
 [[law0]]
 crate = "busbar-kernel"
 axis  = "export"
-count = "33"
-cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance"
+count = "28"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance. -5 for R-FIX3: the kernel's tests drop the export-prometheus dev-dependency and run on the stand-in axis's scrape double"
 
 [[law0]]
 crate = "busbar-kernel"
@@ -1776,14 +1791,14 @@ cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain 
 [[law0]]
 crate = "busbar-kernel"
 axis  = "instance:export"
-count = "68"
-cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance"
+count = "67"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance. -1 for R-FIX3 (the kernel's export tests run on the scrape double)"
 
 [[law0]]
 crate = "busbar-kernel"
 axis  = "instance:secret"
-count = "117"
-cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance"
+count = "115"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance. -2 for R-FIX3 (the kernel's plugin tests move onto in-crate doubles)"
 
 [[law0]]
 crate = "busbar-kernel"
@@ -1794,8 +1809,8 @@ cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain 
 [[law0]]
 crate = "busbar-kernel"
 axis  = "plane"
-count = "1175"
-cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; LOWERED 1193 -> 1175, predev 9c0a394771's measure: the drain landed without giving its row back (Law 9: the ceiling ratchets down)"
+count = "1173"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; LOWERED 1193 -> 1175, predev 9c0a394771's measure: the drain landed without giving its row back (Law 9: the ceiling ratchets down); LOWERED 1175 -> 1173, the merge-base d7929b661d's measure, which GetBusbar/busbar#570 holds (its scrape double spells no plane alias) (Law 9: the ceiling ratchets down to today's number)"
 
 [[law0]]
 crate = "busbar-kernel"
@@ -1812,8 +1827,8 @@ cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain 
 [[law0]]
 crate = "busbar-kernel"
 axis  = "transport"
-count = "286"
-cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; LOWERED 288 -> 286, predev 9c0a394771's measure: the drain landed without giving its row back (Law 9: the ceiling ratchets down)"
+count = "285"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; LOWERED 288 -> 286, predev 9c0a394771's measure: the drain landed without giving its row back (Law 9: the ceiling ratchets down); LOWERED 286 -> 285 by GetBusbar/busbar#570: the kernel's auth proof no longer cites the root's stdio-served proof"
 
 [[law0]]
 crate = "busbar-kernel-breaker"
