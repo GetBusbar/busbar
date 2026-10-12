@@ -150,6 +150,23 @@ pub const LEDGER: &str = "qa/kind-isolation.toml";
 /// whose extension is not on [`BINARY_EXTS`], which is 1 707 of them today.
 const MIN_SCANNED: usize = 600;
 
+/// THE MERGE-BASE READING'S DENOMINATOR, carried as an overlay command that only
+/// [`read_law0_base`] sets: the number of text files the base commit itself tracks under `crates/`.
+/// [`MIN_SCANNED`] is a floor calibrated on the tree under judgement; a base is a different tree
+/// (1.5.5, the `dev` merge-base, tracks 502), so its scan is held to its OWN count, every one of
+/// those paths reconciled against the walk before the scan runs (Law 8: the set measured over is
+/// stated, and coverage is proven against the whole).
+const BASE_SCAN_FLOOR_KEY: &str = "kind-isolation:law0-base-scan-floor";
+
+/// The floor [`scan_set`] holds this context's walk to: [`MIN_SCANNED`], or the merge-base's own
+/// count when this context IS the merge-base reading.
+fn scan_floor(cx: &Ctx) -> usize {
+    cx.overlay_command(BASE_SCAN_FLOOR_KEY)
+        .and_then(|n| n.trim().parse::<usize>().ok())
+        .filter(|n| *n > 0)
+        .unwrap_or(MIN_SCANNED)
+}
+
 mod auth_words;
 mod external;
 mod instances;
@@ -1750,9 +1767,10 @@ fn scan_set(cx: &Ctx) -> Result<ScanSet, String> {
         })?;
         files.push((rel, text));
     }
-    if files.len() < MIN_SCANNED {
+    let floor = scan_floor(cx);
+    if files.len() < floor {
         return Err(format!(
-            "{} file(s) under crates/, below the floor of {MIN_SCANNED}",
+            "{} file(s) under crates/, below the floor of {floor}",
             files.len()
         ));
     }
@@ -2790,8 +2808,37 @@ fn read_law0_base(cx: &Ctx, commit: &str, meta: Option<String>) -> Result<Law0Ba
     if let Some(meta) = meta {
         ov.set_command(super::pinned::METADATA_KEY, meta);
     }
-    let bcx = super::pinned::with_pinned(&cx.with_overlay(ov));
     let short = &commit[..8.min(commit.len())];
+    // THE BASE IS HELD TO ITS OWN DENOMINATOR, not to the floor of the tree under judgement: the
+    // text files the base commit tracks under `crates/`, every one of which the walk must reach.
+    let tracked: Vec<String> = cx
+        .git_lines(&["ls-tree", "-r", "--name-only", commit, "--", "crates"])?
+        .into_iter()
+        .filter(|p| binary_ext(p).is_none())
+        .collect();
+    if tracked.is_empty() {
+        return Err(format!(
+            "the merge-base {short} tracks no text file under crates/: a base with nothing to scan \
+             names no coupling, which is indistinguishable from a base that has none"
+        ));
+    }
+    ov.set_command(BASE_SCAN_FLOOR_KEY, tracked.len().to_string());
+    let bcx = super::pinned::with_pinned(&cx.with_overlay(ov));
+    let walked: BTreeSet<String> = bcx
+        .list(&crate::ctx::WalkSpec::new(["crates"]))
+        .map_err(|e| format!("the walk of the merge-base {short}: {e}"))?
+        .iter()
+        .map(|p| p.to_string_lossy().replace('\\', "/"))
+        .collect();
+    let unwalked: Vec<&String> = tracked.iter().filter(|p| !walked.contains(*p)).collect();
+    if let Some(first) = unwalked.first() {
+        return Err(format!(
+            "the walk of the merge-base {short} misses {} of the {} text file(s) it tracks under \
+             crates/ (first: {first}): a scan that does not cover its base is not a reading of it",
+            unwalked.len(),
+            tracked.len()
+        ));
+    }
     let mut crates =
         super::census(&bcx).map_err(|e| format!("the census of the merge-base {short}: {e}"))?;
     let (planes, ports) = super::vocabularies(&crates);
@@ -5346,6 +5393,38 @@ mod tests {
             "{}",
             judged.detail
         );
+    }
+
+    /// RED ARM, THE BASE'S OWN DENOMINATOR. 1.5.5 tracks 502 text files under `crates/`, under the
+    /// 600 the tree under judgement is held to, so its scan refused and the row named no cell. The
+    /// merge-base reading is held to the count the base itself tracks: that count reads, one file
+    /// short of it is still a refusal, and a context that is not the base reading keeps the floor.
+    #[test]
+    fn the_base_reading_is_held_to_its_own_count() {
+        let mut ov = crate::ctx::Overlay::new();
+        ov.set("crates/a/Cargo.toml", "[package]\nname = \"a\"\n");
+        ov.set("crates/a/src/lib.rs", "pub fn a() {}\n");
+        let (cx, dir) = base_cx_with(ov.clone(), "floor");
+        std::fs::create_dir_all(dir.join("crates")).expect("the fixture's crates/");
+        let judged = scan_set(&cx).map(|(files, _)| files.len());
+
+        let mut base = ov.clone();
+        base.set_command(BASE_SCAN_FLOOR_KEY, "2");
+        let read = scan_set(&cx.with_overlay(base)).map(|(files, _)| files.len());
+
+        let mut short = ov;
+        short.set_command(BASE_SCAN_FLOOR_KEY, "3");
+        let refused = scan_set(&cx.with_overlay(short)).map(|(files, _)| files.len());
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let why = judged.expect_err("the tree under judgement keeps its floor");
+        assert!(
+            why.contains(&format!("below the floor of {MIN_SCANNED}")),
+            "{why}"
+        );
+        assert_eq!(read, Ok(2), "the base's own count reads");
+        let why = refused.expect_err("one file short of the base's count is a refusal");
+        assert!(why.contains("below the floor of 3"), "{why}");
     }
 
     /// The other half of the same rule: a base that HAS the ledger and cannot read it is not
