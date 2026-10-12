@@ -617,8 +617,7 @@ impl IoHost for HostIo {
         }
         // The environment's references resolve here, at the spawn, and nowhere earlier: a value
         // exists only in the child's environment. One that does not resolve spawns nothing.
-        let secret_env =
-            crate::compose::resolve_spawn_env(&env_refs).map_err(IoRefusal::Refused)?;
+        let resolved = crate::compose::resolve_spawn_env(&env_refs).map_err(IoRefusal::Refused)?;
         // Two OS pipes: the child reads one and writes the other; the host keeps the far ends.
         // The child's error output is the host's own (a spawned command inherits it).
         let (child_reads, host_writes) = std::io::pipe().map_err(|e| failed(&e))?;
@@ -629,7 +628,7 @@ impl IoHost for HostIo {
             .args(spawn.args)
             .env_clear()
             .envs(spawn.env.iter().copied())
-            .envs(secret_env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
+            .envs(resolved.iter().map(|(k, v)| (k.as_str(), v.as_str())))
             .stdin(child_reads)
             .stdout(child_writes)
             .kill_on_drop(true)
