@@ -80,14 +80,12 @@ checks:
         ln -sf "$T/testssl/testssl.sh" "$T/bin/testssl.sh"
       fi
       export PATH="$T/bin:$PATH"
-      # docker, compose and python3-venv are the backend's, not this job's to install: a missing one
-      # fails the check here, by name.
-      docker info >/dev/null || { echo "conformance: the backend has no usable docker"; exit 1; }
-      docker compose version >/dev/null || { echo "conformance: the backend has no docker compose"; exit 1; }
-      python3 -c "import venv, ensurepip" || { echo "conformance: the backend has no python3-venv"; exit 1; }
       cargo xtask conformance record --all --recording target/oracle/recordings/candidate
       cargo xtask conformance check --musts --sha "$MODERNCI_COMMIT" --format=tsv
     needs: [oracle]
+    # The self-hosted OIDF suite runs in the backend's docker; ModernCI places this check only on a
+    # backend probed to have all of these, and says which one is missing otherwise.
+    requires: [docker, docker-compose, python3-venv, curl, git]
   verify-done:
     # The done-oracle, full run: exit 0 only (3 is a --fast, provisional answer).
     run: bash scripts/verify-1.6.0-done.sh
