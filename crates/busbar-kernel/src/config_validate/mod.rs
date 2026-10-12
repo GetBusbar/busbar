@@ -51,15 +51,15 @@ const MAX_SEMAPHORE_PERMITS: usize = tokio::sync::Semaphore::MAX_PERMITS;
 const MAX_DURATION_SECS: u64 = 30 * 365 * 86_400;
 /// [`MAX_DURATION_SECS`] for the millisecond-denominated knobs.
 const MAX_DURATION_MS: u64 = MAX_DURATION_SECS * 1_000;
-// SSRF host guards relocated DOWN into the neutral `busbar-substrate` net_guard leaf (Batch A),
-// re-exported here so every in-core caller keeps naming `config_validate::{…}` unchanged and the
-// two SSRF guards still single-source their byte-identical atoms.
-pub use crate::net_guard::{
-    extract_normalized_host, host_is_private_or_loopback, scheme_is, ssrf_blocked_host,
-};
+// SSRF host guards: the pure host atoms are `busbar_contract::net`'s and the pre-flight guard is the
+// egress unit's (`busbar_kernel_egress::trust::net`), re-exported here so every in-core caller keeps
+// naming `config_validate::{…}` unchanged and the two SSRF guards still single-source their
+// byte-identical atoms.
+pub use busbar_contract::net::{extract_normalized_host, host_is_private_or_loopback, scheme_is};
+pub use busbar_kernel_egress::trust::net::ssrf_blocked_host;
 // Test-only: the alternate-IPv4 expander moved with the guards; its unit tests still name it here.
 #[cfg(test)]
-use crate::net_guard::expand_alternate_ipv4;
+use busbar_contract::net::expand_alternate_ipv4;
 
 /// Validate the loaded configuration and collect all errors at once.
 /// Returns Ok(()) if valid; Err(Vec<String>) with all validation failures otherwise.
@@ -2588,7 +2588,7 @@ pub fn service_account_token_uri(credential: &str) -> Result<String, String> {
 ///
 /// The endpoint breaks either rule; the text is 1.5.5's.
 pub fn vet_token_uri(token_uri: &str, posture: &MetadataPosture) -> Result<(), String> {
-    use crate::net_guard::{extract_normalized_host, host_is_private_or_loopback, scheme_is};
+    use busbar_contract::net::{extract_normalized_host, host_is_private_or_loopback, scheme_is};
     let host_private = extract_normalized_host(token_uri)
         .as_deref()
         .map(host_is_private_or_loopback)

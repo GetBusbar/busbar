@@ -99,7 +99,7 @@ pub fn build_plane_host_vtable() -> PlaneHostVtable {
         subkey_sign: None,
         // ── WIRED `guard_url` (minor-12) → the host-owned structural URL guard in `super::guard`: the
         //    SSRF/URL-guard chokepoint for a URL-shaped tool argument. Always wired (the host owns the
-        //    net_guard internals whatever the plane); no plane feature gates it. ─────────────────────────
+        //    URL-guard internals whatever the plane); no plane feature gates it. ─────────────────────────
         guard_url: Some(super::guard::guard_url),
         // ── WIRED `identity_admit` (minor-17) → the host-side inbound admission in
         //    `super::identity_admit`: the configured auth chain + the one verdict resolution over the

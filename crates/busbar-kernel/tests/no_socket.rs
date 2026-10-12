@@ -73,8 +73,6 @@ const PINNED: &[(&str, &str)] = &[
     ("src/egress/engine/resolve.rs", "hyper_util::client"),
     ("src/egress/mod.rs", "reqwest::"),
     ("src/secure.rs", "TcpStream"),
-    // E2: net_guard's system resolver.
-    ("src/net_guard.rs", "lookup_host"),
 ];
 
 /// TODAY'S MANIFEST OFFENDERS, struck as the code that needs each one leaves.

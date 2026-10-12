@@ -330,7 +330,7 @@ impl Metadata {
         let mut by_host: HashMap<String, Vec<Entry>> = HashMap::new();
         for (url, own) in &d.url_allow {
             // The one http(s) URL reader; a URL it cannot read names no host, so carves nothing.
-            if let Ok((_, host, _, _)) = busbar_kernel::net_guard::split_url(url) {
+            if let Ok((_, host, _, _)) = busbar_kernel_egress::trust::net::split_url(url) {
                 by_host
                     .entry(norm(&host))
                     .or_default()

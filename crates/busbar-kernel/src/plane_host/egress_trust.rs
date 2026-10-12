@@ -38,6 +38,7 @@ use crate::egress::engine::ClientIdentity;
 use crate::host_services::{DestJudge, DestRefusal};
 use crate::plane_host::spki::SpkiError;
 use crate::secure::SecureLayer;
+use busbar_kernel_egress::trust::net::Resolver;
 
 /// THE OUTBOUND EGRESS-TRUST HOST CAPABILITY, as a neutral trait a plane reaches through instead of
 /// calling [`identity`](super::identity) / [`trust_anchor`](super::trust_anchor) / [`spki`](super::spki)
@@ -116,6 +117,50 @@ pub trait EgressTrustHost: Send + Sync {
     fn secure_layer(&self) -> Option<Arc<dyn SecureLayer>> {
         None
     }
+
+    /// THE NAME RESOLUTION a kernel dial's resolve-then-pin asks for (row 130 E2): every address
+    /// `host` answers with, de-duplicated, unsorted, unfiltered (the guard judges all of them). The
+    /// lookup is the connector's (`busbar_core_connector::process::SystemNames`): the kernel opens no
+    /// socket, a resolver's included. The pass-through has none behind it, so a production build
+    /// that installed no guarded capability refuses every name (FAIL CLOSED); a test build resolves
+    /// through the test fixtures' system lookup.
+    ///
+    /// # Errors
+    ///
+    /// The resolution failure (not an empty answer: the two are different facts).
+    fn resolve_names(&self, host: &str) -> Result<Vec<IpAddr>, String> {
+        unresolved(host)
+    }
+}
+
+/// [`EgressTrustHost::resolve_names`] with no resolver behind it: a test build resolves through the
+/// fixtures' system lookup; a production build refuses the name.
+fn unresolved(host: &str) -> Result<Vec<IpAddr>, String> {
+    #[cfg(any(test, feature = "test-support"))]
+    {
+        crate::egress::fixtures::system_names(host)
+    }
+    #[cfg(not(any(test, feature = "test-support")))]
+    {
+        Err(format!(
+            "name lookup: `{host}` was not resolved: no resolver is installed"
+        ))
+    }
+}
+
+/// THE RESOLVER a kernel resolve-then-pin hands the guard (`resolve_and_pin`): the installed
+/// capability's [`EgressTrustHost::resolve_names`], or, with none installed, the same answer the
+/// pass-through gives.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct InstalledResolver;
+
+impl Resolver for InstalledResolver {
+    fn resolve(&self, host: &str) -> Result<Vec<IpAddr>, String> {
+        match egress_trust_host() {
+            Some(capability) => capability.resolve_names(host),
+            None => unresolved(host),
+        }
+    }
 }
 
 /// The production egress-trust capability: a BYTE-FOR-BYTE pass-through to the host-side primitives.
@@ -126,13 +171,20 @@ pub struct PassThroughEgressTrust;
 impl EgressTrustHost for PassThroughEgressTrust {}
 
 /// The capability the composition root installs: the pass-through primitives, every answer judged by
-/// the deployment's one destination guard, and every outbound connection secured by the one TLS
-/// wrap (both the connector's; this decides nothing).
-pub struct GuardedEgressTrust(pub Arc<dyn DestJudge>, pub Arc<dyn SecureLayer>);
+/// the deployment's one destination guard, every outbound connection secured by the one TLS wrap,
+/// and every name resolved by the one resolver (all three the connector's; this decides nothing).
+pub struct GuardedEgressTrust(
+    pub Arc<dyn DestJudge>,
+    pub Arc<dyn SecureLayer>,
+    pub Arc<dyn Resolver + Send + Sync>,
+);
 
 impl EgressTrustHost for GuardedEgressTrust {
     fn secure_layer(&self) -> Option<Arc<dyn SecureLayer>> {
         Some(Arc::clone(&self.1))
+    }
+    fn resolve_names(&self, host: &str) -> Result<Vec<IpAddr>, String> {
+        self.2.resolve(host)
     }
     fn judge_answer(&self, host: &str, addrs: &[IpAddr], class: u32) -> Result<(), DestRefusal> {
         self.0.judge_answer(host, addrs, class)

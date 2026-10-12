@@ -134,9 +134,45 @@ fn the_guarded_seam_judges_by_the_guard_behind_it() {
     let judged = GuardedEgressTrust(
         crate::egress::fixtures::private_refusing(&[]),
         crate::egress::fixtures::TlsDouble::default().layer(),
+        std::sync::Arc::new(Answers(Vec::new())),
     );
     let private: std::net::IpAddr = "10.0.0.5".parse().unwrap();
     let public: std::net::IpAddr = "93.184.216.34".parse().unwrap();
     assert!(judged.judge_answer("db.test", &[private], 0).is_err());
     assert_eq!(judged.judge_answer("api.test", &[public], 0), Ok(()));
+}
+
+/// A resolver that answers every name with the same addresses, and an empty list as a failure.
+struct Answers(Vec<std::net::IpAddr>);
+
+impl busbar_kernel_egress::trust::net::Resolver for Answers {
+    fn resolve(&self, host: &str) -> Result<Vec<std::net::IpAddr>, String> {
+        if self.0.is_empty() {
+            return Err(format!("{host}: no answer"));
+        }
+        Ok(self.0.clone())
+    }
+}
+
+/// Row 130 E2: the root's capability resolves every name through the resolver behind it (the
+/// connector's), answering exactly what it answered, and its failure as a failure; the kernel
+/// resolves nothing itself.
+#[test]
+fn the_guarded_seam_resolves_by_the_resolver_behind_it() {
+    let public: std::net::IpAddr = "93.184.216.34".parse().unwrap();
+    let guarded = |answers: Vec<std::net::IpAddr>| {
+        GuardedEgressTrust(
+            crate::egress::fixtures::private_refusing(&[]),
+            crate::egress::fixtures::TlsDouble::default().layer(),
+            std::sync::Arc::new(Answers(answers)),
+        )
+    };
+    assert_eq!(
+        guarded(vec![public]).resolve_names("api.test"),
+        Ok(vec![public])
+    );
+    assert_eq!(
+        guarded(Vec::new()).resolve_names("api.test"),
+        Err("api.test: no answer".to_owned())
+    );
 }

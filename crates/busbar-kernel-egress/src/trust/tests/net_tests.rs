@@ -1077,3 +1077,167 @@ fn the_structural_check_refuses_every_loopback_spelling() {
         );
     }
 }
+
+// ── Moved from busbar-kernel's deleted `net_guard` shim suites (row 130 E2): the rows those suites
+// held that this one did not. ───────────────────────────────────────────────────────────────────
+
+/// The NAME arm is the ONLY defence for a metadata host that answers on a PUBLIC address.
+///
+/// `ip_is_cloud_metadata` covers link-local /16 plus three literals plus IMDSv6. A metadata
+/// endpoint reachable at a globally-routable address matches NONE of them, so if the name is not
+/// in `METADATA_HOSTS` the resolve-then-pin path dials it.
+#[test]
+fn a_metadata_name_on_a_public_address_is_refused_by_its_name_alone() {
+    struct Stub(IpAddr);
+    impl Resolver for Stub {
+        fn resolve(&self, _host: &str) -> Result<Vec<IpAddr>, String> {
+            Ok(vec![self.0])
+        }
+    }
+    // Equinix Metal's metadata service answers on a public address, which is exactly why it is on
+    // the denylist by NAME: no address predicate can catch it.
+    let public = IpAddr::V4(Ipv4Addr::new(147, 75, 1, 1));
+    let got = resolve_and_pin(
+        "metadata.platformequinix.com",
+        443,
+        true,
+        &Stub(public),
+        GuardPolicy::default(),
+    );
+    assert!(
+        got.is_err(),
+        "metadata.platformequinix.com resolved to a PUBLIC address was PINNED, not refused: {got:?}"
+    );
+}
+
+/// THE HOST-STRING GUARDS MUST JUDGE THE NAT64 EMBEDDING TOO, not just the address predicates.
+///
+/// [`ip_is_cloud_metadata`] and [`ip_is_internal`] take an already-parsed `IpAddr` and were fixed
+/// first. The three guards below take a HOST STRING and parse it themselves, and each kept its own
+/// `to_ipv4()` unwrap — so `64:ff9b::a9fe:a9fe` parsed clean, matched no v6 range, and read as an
+/// ordinary public address. That gap was live after the address-level fix landed, which is exactly
+/// why this test exists separately from
+/// `nat64_embedded_ipv4_is_judged_by_the_shared_predicates`: fixing the predicate does NOT fix the
+/// callers that never call it.
+///
+/// [`ssrf_blocked_host`] is the pre-flight guard for OAuth token-endpoint URLs and for MCP
+/// tool-call ARGUMENT hosts — attacker-influenced input on the classic SSRF injection path — so a
+/// bypass here is reachable without any DNS answer at all.
+#[test]
+fn nat64_embedded_ipv4_is_judged_by_the_host_string_guards() {
+    // Every spelling of the IMDS target 169.254.169.254 that a caller can hand us.
+    for meta in [
+        "169.254.169.254",           // bare v4
+        "::ffff:169.254.169.254",    // v4-mapped
+        "64:ff9b::a9fe:a9fe",        // NAT64 well-known (RFC 6052)
+        "64:ff9b:1::a9fe:a9fe",      // NAT64 local-use (RFC 8215), zero middle
+        "64:ff9b:1:fffe::a9fe:a9fe", // NAT64 local-use, non-zero middle
+    ] {
+        let url = format!("http://[{meta}]/latest/meta-data/");
+        let url = if meta.contains(':') {
+            url
+        } else {
+            format!("http://{meta}/latest/meta-data/")
+        };
+        assert!(
+            ssrf_blocked_host(&url, &[], false, &[]).is_some(),
+            "{meta} reaches the cloud-metadata service and must be refused pre-flight; \
+             a NAT64 spelling is the same target as the bare form"
+        );
+    }
+
+    // The private/loopback host predicate must see through the embedding as well.
+    for internal in [
+        "64:ff9b::7f00:1",        // 127.0.0.1
+        "64:ff9b::a01:203",       // 10.1.2.3
+        "64:ff9b:1:fffe::c0a8:1", // 192.168.0.1 via local-use NAT64
+    ] {
+        assert!(
+            host_is_private_or_loopback(internal),
+            "{internal} is a NAT64 embedding of an internal target and must read as internal"
+        );
+    }
+
+    // An operator denylist entry written in the bare v4 form must also catch the NAT64 spelling —
+    // otherwise the denylist is trivially evaded by re-encoding the same address. Asked through the
+    // operator's OWN door rather than through the canonicalizer, and asked on an address the
+    // hardcoded denylist does NOT hold (`10.99.99.99` is a legitimate upstream by default), so the
+    // refusal can only be coming from the entry: the control below shows the same host passing when
+    // the list is empty.
+    const NAT64_OF_10_99_99_99: &str = "https://[64:ff9b::a63:6363]/";
+    assert!(
+        ssrf_blocked_host(
+            NAT64_OF_10_99_99_99,
+            &[],
+            false,
+            &["10.99.99.99".to_string()]
+        )
+        .is_some(),
+        "a denylist entry naming the v4 address must match its NAT64 embedding"
+    );
+    assert!(
+        ssrf_blocked_host(NAT64_OF_10_99_99_99, &[], false, &[]).is_none(),
+        "the control: without the operator entry this host is an ordinary private upstream, so the \
+         assertion above is about the entry and not about the hardcoded denylist"
+    );
+
+    // Public addresses are unaffected: 8.8.8.8 embedded in NAT64 is still public.
+    assert!(
+        !host_is_private_or_loopback("64:ff9b::808:808"),
+        "64:ff9b::808:808 embeds public 8.8.8.8 and must NOT read as internal"
+    );
+}
+
+/// THE DIALING GUARD AND THE CONFIG GUARD MUST KNOW THE SAME METADATA NAMES.
+///
+/// They did not. `ssrf_blocked_host` kept a SIX-name list private to its own body while
+/// `judge_host_name` — the arm the resolve-then-pin dialing path consults — read a TWO-name
+/// module const. Config validation refused `metadata.tencentyun.com`; the socket did not.
+#[test]
+fn the_dialing_guard_and_the_config_guard_know_the_same_metadata_names() {
+    // Every name `ssrf_blocked_host` (config validation) refuses must ALSO be refused by
+    // `judge_host_name`, which is the arm the resolve-then-pin dialing path actually consults.
+    for name in [
+        "metadata.google.internal",
+        "metadata.internal",
+        "metadata.tencentyun.com",
+        "metadata.platformequinix.com",
+        "instance-data",
+        "instance-data.ec2.internal",
+    ] {
+        // Config-validation view.
+        let cfg = ssrf_blocked_host(&format!("https://{name}/"), &[], false, &[]);
+        // Dialing view — the one a socket is opened behind.
+        let dial = judge_host_name(name, GuardPolicy::default());
+        assert!(
+            cfg.is_some(),
+            "{name}: config guard should refuse (this is the 6-name list)"
+        );
+        assert!(
+            dial.is_err(),
+            "{name}: DIALING guard did NOT refuse — config refuses it but the dial path allows it"
+        );
+    }
+}
+
+/// NAT64 / RFC 6052 END TO END: a DNS64-answered destination must be refused as metadata, not
+/// pinned as an ordinary public v6 address, running through the SAME resolve-then-pin guard every
+/// other rebinding case in this file is driven through.
+///
+/// A DNS64 resolver on an IPv6-only network answers a AAAA query with the NAT64 synthesis of the
+/// queried name's IPv4 address. `64:ff9b:1:fffe::a9fe:a9fe` is the RFC 8215 local-use synthesis
+/// (with a non-zero middle, the shape RFC 8215 Section 6's own worked example uses) of the IMDS
+/// target `169.254.169.254`; it matches no v6 range and no `to_ipv4()` form, so a guard unwrapping
+/// only `to_ipv4()` would pin it as an ordinary public address.
+#[test]
+fn nat64_dns64_synthesis_of_imds_is_refused_even_under_allow_private() {
+    let r = ScriptedResolver::new(vec![Ok(vec![ip("64:ff9b:1:fffe::a9fe:a9fe")])]);
+    let err = resolve_and_pin("dns64.example", 443, true, &r, private_ok()).expect_err(
+        "the RFC 8215 local-use NAT64 synthesis of the IMDS target must be refused even under \
+         allow_private",
+    );
+    assert!(
+        matches!(err, AddressRefusal::CloudMetadataAddress { .. }),
+        "must be refused AS METADATA, not merely pinned as an ordinary public address: {err:?}"
+    );
+}

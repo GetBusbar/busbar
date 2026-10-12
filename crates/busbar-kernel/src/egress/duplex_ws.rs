@@ -14,7 +14,7 @@
 //!
 //! A `wss://` upstream is an operator/runtime target, so it is resolved-then-pinned-then-guarded on
 //! EXACTLY the discipline the HTTP egress seam applies — never a raw `connect_async` that resolves DNS
-//! itself. The order is [`crate::net_guard::resolve_and_pin`] FIRST (structural refusals, one
+//! itself. The order is [`net::resolve_and_pin`] FIRST (structural refusals, one
 //! resolution, every answered address judged, the survivor pinned), then a TCP connect to THAT pinned
 //! address, then a TLS handshake presenting the URL host for SNI / certificate validation, then the
 //! client WS handshake OVER that already-guarded stream. The socket is never opened to anything the
@@ -27,7 +27,7 @@ use futures::{Sink, SinkExt, Stream, StreamExt};
 use tokio::net::TcpStream;
 use tokio_tungstenite::tungstenite::Message;
 
-use crate::net_guard::{self, AddressRefusal, GuardPolicy};
+use busbar_kernel_egress::trust::net::{self, AddressRefusal, GuardPolicy};
 
 /// How many frames an upstream may have in flight ahead of the leg reading them. The same reasoning
 /// the inbound acceptor's queue is bounded by, pointed the other way: an upstream that emits faster
@@ -161,7 +161,7 @@ impl From<AddressRefusal> for DialError {
 
 /// `wss://host[:port]/path` (or `ws://…`) split into `(secure, host, port, request-url)`. A strict
 /// recogniser over the scheme, with the authority read by the one shared URL reader
-/// ([`net_guard::parse_url`], WHATWG rules) — so it ends at `/`, `?`, `#` or `\` exactly where the
+/// ([`net::parse_url`], WHATWG rules) — so it ends at `/`, `?`, `#` or `\` exactly where the
 /// handshake's own parser ends it, and the host the guard pins is the host the handshake names. The
 /// request-url handed to the handshake keeps the original `ws(s)` scheme so the `Host` /
 /// `Sec-WebSocket-*` headers are exactly what the upstream expects.
@@ -173,7 +173,7 @@ fn split_ws_url(url: &str) -> Result<(bool, String, u16, String), DialError> {
     } else {
         return Err(DialError::Url(DialTarget::new(url)));
     };
-    let parts = net_guard::parse_url(url).map_err(|_| DialError::Url(DialTarget::new(url)))?;
+    let parts = net::parse_url(url).map_err(|_| DialError::Url(DialTarget::new(url)))?;
     // No userinfo in an egress target: an `@` is an unusable authority, exactly as the HTTP guard
     // treats it.
     if parts.userinfo {
@@ -239,8 +239,13 @@ pub async fn dial_with_credential(
     // THE GUARD, FIRST — resolve then pin then judge. `https = secure`: a `ws://` target is judged as
     // plaintext (admitted only under the policy's plaintext stance), a `wss://` as TLS. No socket is
     // opened to anything this did not pin.
-    let pinned =
-        net_guard::resolve_and_pin(&host, port, secure, &net_guard::SystemResolver, policy)?;
+    let pinned = net::resolve_and_pin(
+        &host,
+        port,
+        secure,
+        &crate::plane_host::egress_trust::InstalledResolver,
+        policy,
+    )?;
 
     // The upgrade request — the only place the secret is written, built after the guard has judged
     // the keyless target and before any socket is opened.

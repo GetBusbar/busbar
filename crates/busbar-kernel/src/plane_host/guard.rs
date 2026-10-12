@@ -8,7 +8,7 @@
 //! tool ARGUMENT, and that argument is attacker-influenced DATA travelling to an operator-chosen
 //! destination — the classic SSRF shape. Judging it means naming the tree's host primitives (the
 //! `http(s)` scheme allowlist, the WHATWG host normalizer, the cloud-metadata / obfuscated-encoding
-//! / internal-address checks over [`crate::net_guard`] + [`crate::config_validate`]). Those are the
+//! / internal-address checks over [`busbar_contract::net`] + [`crate::config_validate`]). Those are the
 //! host's internals; a plane compiled apart from the host cannot name them. So the judgement is a
 //! host-vtable slot: the plane passes the URL bytes and the target's private-addressing policy, and
 //! the host returns an allow/deny verdict + the refusal class + the offending host bytes.
@@ -34,10 +34,10 @@ use super::{recover, with_borrowed_host, DispatchScope};
 use crate::config_validate::{
     extract_normalized_host, host_is_private_or_loopback, scheme_is, ssrf_blocked_host,
 };
-use crate::net_guard::is_alternate_ipv4_encoding;
 use crate::state::App;
 use busbar_contract::abi::hot::host::HostCtx;
 use busbar_contract::abi::hot::{GuardClass, GuardVerdict, StatusClass};
+use busbar_contract::net::is_alternate_ipv4_encoding;
 use core::mem::MaybeUninit;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
