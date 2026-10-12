@@ -8,17 +8,20 @@
 //! through `busbar_contract::export_door!`), so the two cannot answer differently.
 //! `tests/conformance.rs` loads both through the one loader and requires one transcript.
 //!
-//! The composition root links [`door`] on its `plane-door` axis under its development-only switch
-//! `plane-decisions-door` (`BUSBAR-1.6.0.md` Part 3, section 12, "The switch") and binds it through
-//! the loader's one load beside the dropped-in plane doors. The root still declares the plane with
-//! its inert claims (`crates/busbar/src/root/plane_decisions.rs`); a request reaches the door once
-//! the serve path composes the bound door planes.
+//! The composition root links [`door`] on its `plane-door` axis under the plane's one switch
+//! `plane-decisions` (`BUSBAR-1.6.0.md` Part 3, section 12, "The switch": the fold is complete and
+//! its development-only switch is gone) and binds it through the loader's one load beside the
+//! dropped-in plane doors. The plane's registry row is this door's Statement, folded by the kernel;
+//! the serve path composes the bound door and hands it its arrivals through the plane driver.
 //!
 //! * The Statement: the plane's key and version, `decisions:` declared and `providers:` consumed,
 //!   its one outbound need, and the tail [`TAIL`] (every list read off [`crate::driven::tail`]).
 //! * `validate`, `open`, `refresh`: the settings blob read as the `decisions:` section
 //!   ([`crate::config::DecisionsSection`]); a generation's snapshot claims
-//!   [`crate::driven::served_claims`] for its model count. `retire` drops a generation.
+//!   [`crate::driven::served_claims`] for its model count, lists every model the section
+//!   configures (the kernel filters them by scope and `/v1/models` appends them), and binds no
+//!   audience (the operation is served on the plain data plane to a keyed caller). `retire` drops
+//!   a generation.
 //! * `arrive`: [`crate::driven::arrive`]; an unclaimed request is refused at 404.
 //! * `on_piece`: the ATTEMPT's request head ([`crate::driven::attempt_request`]), the caller's body to the
 //!   far end unchanged ([`crate::driven::caller_piece`]), and the far end's answer relayed unchanged
@@ -39,7 +42,7 @@ use busbar_contract::abi::mechanism::door::{
     KindTailHead, Section, Statement, SECTION_CONSUMED, SECTION_DECLARING,
 };
 use busbar_contract::abi::mechanism::lifecycle::{
-    CancelIn, CancelOut, GenIn, RefreshIn, ReleaseIn, TickIn, TickOut, ValidateIn,
+    GenIn, RefreshIn, ReleaseIn, TickIn, TickOut, ValidateIn,
 };
 use busbar_contract::abi::plane::{
     ArriveIn, ArriveOut, BillableClass, DialectAuth, OnPieceIn, OnPieceOut, OpClass, OutField,
@@ -49,6 +52,7 @@ use busbar_contract::abi::plane::{
     FROM_KERNEL, INGRESS_REQUEST_RESPONSE, PIECE_HAS_STATUS, PIECE_LAST, PRINCIPAL_NONE,
     PRINCIPAL_OPTIONAL, PRINCIPAL_REQUIRED, ROUTE_DIRECT, SHAPE_WHOLE, UNITS_REPORTED,
 };
+use busbar_contract::abi::plane::{PlaneCancelIn, PlaneCancelOut};
 use busbar_contract::abi::sdk::door::{abi_str, statement};
 use busbar_contract::abi::sdk::life::Refusal;
 use busbar_contract::abi::sdk::publish::{ClaimSpec, SnapshotSpec};
@@ -57,7 +61,7 @@ use busbar_contract::abi::sdk::{
 };
 use busbar_contract::plane::PlaneMeta;
 
-use crate::codec::{CONTENT_TYPE_JSON, FIELD_CONTENT_TYPE};
+use crate::codec::{CONTENT_TYPE_JSON, FIELD_CONTENT_TYPE, FIELD_RETRY_AFTER};
 use crate::config::DecisionsSection;
 use crate::driven::{self, tail, CallerAnswer, FarEndReading, PrincipalNeed};
 use crate::{claims, DecisionPlane};
@@ -108,6 +112,7 @@ const DIALECT_AUTH: &[DialectAuth] = &[DialectAuth {
     dialect: tail::DIALECT_AUTH[0].0,
     _reserved: 0,
     style: abi_str(tail::DIALECT_AUTH[0].1),
+    params: Blob::ABSENT,
 }];
 
 const SCOPE_KINDS: &[AbiStr] = &[abi_str(tail::SCOPE_KINDS[0])];
@@ -117,10 +122,19 @@ const OP_CLASSES: &[OpClass] = &[OpClass {
     name: abi_str(tail::OP_CLASSES[0].as_str()),
 }];
 
-const BILLABLE_CLASSES: &[BillableClass] = &[BillableClass {
-    class: abi_str(tail::BILLABLE_CLASSES[0].0.as_str()),
-    family: abi_str(tail::BILLABLE_CLASSES[0].1),
-}];
+const BILLABLE_CLASSES: &[BillableClass] = &[
+    BillableClass {
+        class: abi_str(tail::BILLABLE_CLASSES[0].0.as_str()),
+        family: abi_str(tail::BILLABLE_CLASSES[0].1),
+    },
+    BillableClass {
+        class: abi_str(tail::BILLABLE_CLASSES[1].0.as_str()),
+        family: abi_str(tail::BILLABLE_CLASSES[1].1),
+    },
+];
+
+/// The fee unit the plane counts ([`tail::FEE_UNITS`]).
+const FEE_UNITS: &[AbiStr] = &[abi_str(tail::FEE_UNITS[0])];
 
 /// The far end's one response field the plane relays: the document type of the answer.
 const KEEP_RESPONSE_HEADERS: &[AbiStr] = &[abi_str(FIELD_CONTENT_TYPE)];
@@ -180,9 +194,8 @@ pub const TAIL: &PlaneTail = &PlaneTail {
     billable_classes_len: BILLABLE_CLASSES.len(),
     route_cost: ptr::null(),
     route_cost_len: 0,
-    // No fee unit ([`tail::FEE_UNITS`]).
-    fee_units: ptr::null(),
-    fee_units_len: 0,
+    fee_units: FEE_UNITS.as_ptr(),
+    fee_units_len: FEE_UNITS.len(),
     record_kinds: ptr::null(),
     record_kinds_len: 0,
     egress_targets: ptr::null(),
@@ -193,6 +206,11 @@ pub const TAIL: &PlaneTail = &PlaneTail {
     trust_keys_len: 0,
     refusal_statuses: ptr::null(),
     refusal_statuses_len: 0,
+    caller_credential_refusal: NONE,
+    admin_routes: ptr::null(),
+    admin_routes_len: 0,
+    admin_openapi: Blob::ABSENT,
+    stream_ceiling_secs: 0,
 };
 
 /// THE STATEMENT: the plane's key and version, its sections, its need and its tail.
@@ -207,6 +225,11 @@ pub const STATEMENT: Statement = Statement {
 
 /// The settings blob read as the `decisions:` section; an empty blob is the empty section.
 ///
+/// The blob is ONE JSON object `{decisions: <section>}` (`BUSBAR-1.6.0.md` section 4: "a plane's
+/// settings reach it as ONE validated JSON object `{section: value}`"), the shape the boot's deal
+/// hands every door; the bare section is read too, since a section never carries a member named
+/// after its own verb (its grammar refuses unknown members), so the two cannot be confused.
+///
 /// # Errors
 ///
 /// The section's first broken rule, in the grammar's words.
@@ -214,11 +237,45 @@ pub fn read_settings(settings: &[u8]) -> Result<DecisionsSection, String> {
     if settings.is_empty() {
         return Ok(DecisionsSection::default());
     }
-    serde_json::from_slice(settings).map_err(|e| e.to_string())
+    let mut value: serde_json::Value =
+        serde_json::from_slice(settings).map_err(|e| e.to_string())?;
+    let section = match value.as_object_mut() {
+        Some(blob) if blob.len() == 1 && blob.contains_key(tail::SECTION_DECLARING) => blob
+            .remove(tail::SECTION_DECLARING)
+            .unwrap_or(serde_json::Value::Null),
+        _ => value,
+    };
+    if section.is_null() {
+        return Ok(DecisionsSection::default());
+    }
+    serde_json::from_value(section).map_err(|e| e.to_string())
+}
+
+/// `validate`'s blob: what stage 3g deals a plane (`{<verb>: <section>}`; the kernel's own judges hand
+/// the same shape), read at the `decisions:` section. An empty blob, or one that writes no
+/// `decisions:`, is the empty section.
+///
+/// # Errors
+///
+/// A blob that is not a map of sections, or the section's first broken rule.
+pub fn read_dealt(settings: &[u8]) -> Result<DecisionsSection, String> {
+    if settings.is_empty() {
+        return Ok(DecisionsSection::default());
+    }
+    let value: serde_json::Value = serde_json::from_slice(settings).map_err(|e| e.to_string())?;
+    let serde_json::Value::Object(mut verbs) = value else {
+        return Err("the dealt settings are not a map of the plane's sections".to_string());
+    };
+    match verbs.remove(tail::SECTION_DECLARING) {
+        None | Some(serde_json::Value::Null) => Ok(DecisionsSection::default()),
+        Some(section) => serde_json::from_value(section).map_err(|e| e.to_string()),
+    }
 }
 
 /// ONE GENERATION'S SNAPSHOT for a section with `models` configured models: the claims
-/// [`driven::served_claims`] serves, each an exact target over the claim's transport.
+/// [`driven::served_claims`] serves, each an exact target over the claim's transport. It binds no
+/// audience: the operation is served on the plain data plane to a keyed caller, as the llm plane's
+/// is, and its refusals are this dialect's.
 #[must_use]
 pub fn snapshot_spec(models: usize) -> SnapshotSpec {
     SnapshotSpec {
@@ -227,6 +284,19 @@ pub fn snapshot_spec(models: usize) -> SnapshotSpec {
             .map(|(verb, target)| ClaimSpec::new(verb, target, claims::TRANSPORT, CLAIM_EXACT))
             .collect(),
         ..SnapshotSpec::default()
+    }
+}
+
+/// ONE GENERATION'S SNAPSHOT for `section`: [`snapshot_spec`]'s claims for its model count, and
+/// every model it configures LISTED (THE DESIGN section 2: all configured decisions models are
+/// listed, scope-filtered by the kernel; `/v1/models` appends them), in ascending name order.
+#[must_use]
+pub fn generation_spec(section: &DecisionsSection) -> SnapshotSpec {
+    let mut listed: Vec<String> = section.models.keys().cloned().collect();
+    listed.sort();
+    SnapshotSpec {
+        listed,
+        ..snapshot_spec(section.models.len())
     }
 }
 
@@ -245,6 +315,11 @@ struct Unit {
     at: usize,
     /// The `EMIT_*` bits the owed bytes carry.
     owed_flags: u32,
+    /// The caller's fields the far end receives ([`driven::relayed_fields`]), kept from `arrive`
+    /// (the caller's head crosses once) for every ATTEMPT of the unit.
+    caller: Vec<(Vec<u8>, Vec<u8>)>,
+    /// The far end's status, read off its first piece; the request fee is judged on it.
+    status: Option<u32>,
 }
 
 /// One instance: every live generation's snapshot, and the units in flight.
@@ -297,7 +372,7 @@ macro_rules! slot {
 slot!(
     /// `validate`: the settings read as the section, or refused in the grammar's words.
     Validate, ValidateIn, OutHead, |_, input, mut out| {
-        match read_settings(input.field(|i| &i.settings).bytes()) {
+        match read_dealt(input.field(|i| &i.settings).bytes()) {
             Ok(_) => Outcome::Ready,
             Err(words) => out.fail(Refusal::refused(words)),
         }
@@ -318,7 +393,7 @@ slot!(
             routed: Keyed::new(),
         };
         plane.route_over(&section);
-        let spec = snapshot_spec(section.models.len());
+        let spec = generation_spec(&section);
         out.publish(|o| &o.snapshot, &plane.generations, open.generation, &spec);
         instance.open(plane);
         Outcome::Ready
@@ -335,7 +410,7 @@ slot!(
             Ok(section) => section,
             Err(words) => return out.fail(Refusal::refused(words)),
         };
-        let spec = snapshot_spec(section.models.len());
+        let spec = generation_spec(&section);
         plane.route_over(&section);
         out.publish(|o| &o.snapshot, &plane.generations, input.generation, &spec);
         Outcome::Ready
@@ -367,8 +442,8 @@ slot!(
 
 slot!(
     /// `cancel`: a unit is never answered before its far end has, so nothing is moved.
-    Cancel, CancelIn, CancelOut, |_, _, mut out| {
-        out.set(|o| &o.disposition, CANCEL_ABORTED);
+    Cancel, PlaneCancelIn, PlaneCancelOut, |_, _, mut out| {
+        out.set(|o| &o.cancel.disposition, CANCEL_ABORTED);
         Outcome::Ready
     }
 );
@@ -404,8 +479,19 @@ slot!(
                 PrincipalNeed::Optional => PRINCIPAL_OPTIONAL,
             },
         );
-        if let Some(model) = instance.get().and_then(|plane| plane.routed.get(&())) {
-            out.route(ROUTE_DIRECT, &model);
+        if let Some(plane) = instance.get() {
+            if let Some(model) = plane.routed.get(&()) {
+                out.route(ROUTE_DIRECT, &model);
+            }
+            // The caller's head crosses here once: keep what the far end receives of it.
+            let caller = driven::relayed_fields(input.fields().iter().map(|f| {
+                (
+                    f.field(|f| &f.name).bytes(),
+                    f.field(|f| &f.value).bytes(),
+                )
+            }));
+            let unit = input.get().unit;
+            plane.units.with_all(|units| unit_of(units, unit).caller = caller);
         }
         Outcome::Ready
     }
@@ -490,11 +576,18 @@ fn attempt_piece(
             value: arena.span(value),
         });
     }
+    for (name, value) in &unit.caller {
+        fields.push(OutField {
+            name: arena.span(name),
+            value: arena.span(value),
+        });
+    }
     if settle(out, &fields, &units, &arena) {
         return Outcome::Failed;
     }
     *unit = Unit {
         attempt: true,
+        caller: std::mem::take(&mut unit.caller),
         ..Unit::default()
     };
     out.set(|o| &o.verb, verb);
@@ -517,6 +610,9 @@ fn far_end(
     let last = given.flags & PIECE_LAST != 0;
     if !unit.recall {
         unit.reading.piece(bytes);
+        if first {
+            unit.status = Some(given.status_code);
+        }
     }
     let (mut fields, mut units, mut arena) =
         (input.fields_buf(), input.units_buf(), input.arena_buf());
@@ -532,7 +628,10 @@ fn far_end(
         }
     }
     if last {
-        if let Some(count) = unit.reading.units() {
+        for count in [unit.reading.units(), unit.reading.fee(unit.status)]
+            .into_iter()
+            .flatten()
+        {
             units.push(UnitCount {
                 class: count.class,
                 source: UNITS_REPORTED,
@@ -604,7 +703,9 @@ slot!(
 );
 
 slot!(
-    /// `refusal`: the kernel's status and text in this dialect's error shape, as JSON.
+    /// `refusal`: the kernel's status and text in this dialect's error shape, as JSON, and the
+    /// wait the kernel handed beside it (`retry_after_s`, a limit's rolling window or the walk's
+    /// floor) as `Retry-After`, as every plane answers it.
     RefusalSlot, RefusalIn, RefusalOut, |_, input, mut out| {
         let given = input.get();
         let status = u16::try_from(given.status).unwrap_or(0);
@@ -617,6 +718,13 @@ slot!(
             name: arena.span(FIELD_CONTENT_TYPE.as_bytes()),
             value: arena.span(CONTENT_TYPE_JSON),
         });
+        if given.retry_after_s > 0 {
+            let wait = given.retry_after_s.to_string();
+            fields.push(OutField {
+                name: arena.span(FIELD_RETRY_AFTER.as_bytes()),
+                value: arena.span(wait.as_bytes()),
+            });
+        }
         let short = !(reply.fits() && fields.fits() && arena.fits());
         let (rw, rnd) = reply.settle(short);
         let (fw, fnd) = fields.settle(short);

@@ -57,6 +57,10 @@ set -euo pipefail
 # so the path the suite posts to and the identifier its token is bound to cannot drift apart.
 subject_canonical_uri() { printf 'http://127.0.0.1:%s/mcp' "$1"; }
 
+# The `seam` registration's `verify_ttl`, in seconds: the default (`5s`, docs/mcp.md), written once
+# here so the config and the driver that waits it out (`client-arm.sh`) cannot disagree about it.
+SEAM_VERIFY_TTL_S=5
+
 # FOUR FREE PORTS, asked of the OS rather than hard-coded. A hard-coded port is a red that is not a
 # defect the first time a runner image happens to have something on it.
 subject_free_ports() {
@@ -168,6 +172,8 @@ YAML
   cat > "$dir/config.yaml" <<YAML
 listen: "127.0.0.1:$data_port"
 admin_listen: "127.0.0.1:$admin_port"
+# A config names its store (Q-STORE = (B), THE DESIGN §4): the compiled-in RAM store.
+store: { module: memory }
 providers: {}
 models: {}
 pools: {}
@@ -918,6 +924,10 @@ YAML
     url: "$MCP_SEAM_UPSTREAM_URL"
     allow_private: true
     timeout: 10s
+    # verify_ttl SAID OUT LOUD, at its default (docs/tool-and-agent-trust.md): \`client-arm.sh\`
+    # waits it out (MCP_SEAM_VERIFY_TTL_S) so each CLI scenario's call is judged on a verification
+    # busbar makes against THAT scenario's peer, not on a verdict latched by the previous attack.
+    verify_ttl: ${SEAM_VERIFY_TTL_S}s
     pin:
       # pinned_pubkey, NOT cert_spki: this hop is plaintext loopback, so there is no served cert to
       # observe an SPKI from. See the header — cert_spki here quarantines under 1.6.0 enforcement.

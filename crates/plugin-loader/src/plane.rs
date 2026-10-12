@@ -16,13 +16,10 @@
 //! # What this consumes, and what it does not
 //!
 //! This is the loader half of the hot lane. The host half is `busbar_kernel::plane_host`'s
-//! `build_plane_host_vtable()` (42 of 42 slots over live core primitives), and the two are CROSSED:
-//! `busbar-plugin-example-plane` is a real cdylib that, once built through [`DynPlane`], calls core's
-//! own host slots back from the plugin side — `clock_now`, `govern_admit`, `meter_charge`,
-//! `journal_append` — and REFUSES its work item if any of them is absent or answers
-//! fail-closed. That crossing is asserted, per slot and by exact call count, in
-//! `src/tests/plane_conformance_tests.rs` (against an instrumented table). This lane retires with the
-//! old loader; the door lane's crossing into the kernel's own host services is proven by the
+//! `build_plane_host_vtable()` (42 of 42 slots over live core primitives). The fixture plane that
+//! crossed them from a cdylib (`busbar-plugin-example-plane`) is deleted (P5, "delete
+//! plane-example"; Q128 audit), with the per-slot crossing tests that drove it. This lane retires
+//! with the old loader; the door lane's crossing into the kernel's own host services is proven by the
 //! composition root (`crates/busbar/src/root/tests/plane_rider.rs`).
 //!
 //! ONE ADMISSION, BOTH DOORS. A plane dropped into `plugins/` reaches the composition root as a
@@ -525,7 +522,8 @@ impl DynPlane {
         let (buf_ptr, cap) = (buf.as_mut_ptr(), buf.len());
         let written_ptr: *mut usize = &mut written;
         let status =
-            crate::ffi_guard(&self.path, op, || f(state, buf_ptr, cap, written_ptr))?.class();
+            crate::ffi_guard_confined(&self.path, op, || f(state, buf_ptr, cap, written_ptr))?
+                .class();
         let path = &self.path;
         if status != StatusClass::Ok {
             return Err(format!("plane '{path}' {op} answered {status:?}"));
@@ -549,7 +547,7 @@ impl DynPlane {
         let Some(f) = pick(self) else {
             return StatusClass::Unsupported;
         };
-        match crate::ffi_guard(&self.path, op, || f(state)) {
+        match crate::ffi_guard_confined(&self.path, op, || f(state)) {
             Ok(status) => status.class(),
             Err(_) => StatusClass::Fault,
         }
@@ -865,7 +863,12 @@ pub fn load_plane(lib_path: &Path) -> Result<DynPlane, String> {
     // compiled-in plane. The path comes from config/the plugins dir, never the request path.
     let lib = crate::dlopen_on_worker(lib_path.as_os_str())
         .map_err(|e| format!("failed to load plane '{display}': {e}"))?;
-    wire_up_plane(lib, display, busbar_contract::abi::cold::kind::PLANE, None)
+    wire_up_plane(
+        lib,
+        display,
+        busbar_contract::abi::mechanism::kind::PLANE,
+        None,
+    )
 }
 
 /// Resolve + validate a mapped plane library against the frozen contract (transport handshake, kind
@@ -882,7 +885,7 @@ fn wire_up_plane(
 
     // ── 2. Kind bound at load — exported kind must be `plane` AND equal the signed manifest kind. ──
     let exported_kind = crate::read_plugin_kind(&lib, &display)?;
-    if exported_kind != busbar_contract::abi::cold::kind::PLANE {
+    if exported_kind != busbar_contract::abi::mechanism::kind::PLANE {
         return Err(format!(
             "plane '{display}' exports kind '{exported_kind}', not 'plane'"
         ));

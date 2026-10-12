@@ -18,6 +18,8 @@
 //! default come off the declaration. The sentences are the ones the planes spoke before the keys
 //! moved here, with the key and token words substituted in.
 
+use std::collections::BTreeMap;
+
 use busbar_contract::plane::{TrustKeyDecl, TrustRole};
 
 use super::reverify::Policy;
@@ -29,9 +31,14 @@ pub struct DeclaredPin {
     pub mechanism: String,
     /// Whether that mechanism is an authenticity root.
     pub root: bool,
+    /// Whether that mechanism's material is the far end's key (a pin of its certificate's
+    /// SubjectPublicKeyInfo), which the host seals into the registration's trust anchors.
+    pub peer_key: bool,
     /// The operator's out-of-band material, verbatim; `None` when absent or blank.
     pub key: Option<String>,
-    /// The approved fingerprint, where the declaration allows one and the operator wrote it.
+    /// The fingerprint the operator declared, where the declaration allows one and the operator
+    /// wrote it. Intent, never an approval: the counterparty stays pending, and nothing drifts,
+    /// until the operator approves it.
     pub fingerprint: Option<String>,
 }
 
@@ -42,6 +49,21 @@ pub struct TrustEntry {
     pub pin: Option<DeclaredPin>,
     /// The re-verification cadence, each half from its key, its declared default, or zero.
     pub policy: Policy,
+    /// The CONFIGURED ITEM APPROVALS (`abi::plane::TRUST_ITEM_APPROVALS`): each item the
+    /// registration approves, at the digest it approves it at. An item written with a blank or
+    /// absent digest is allowed but approved at none, and is absent here.
+    pub approved: BTreeMap<String, String>,
+}
+
+impl TrustEntry {
+    /// Whether the registration declares a pin that is NO authenticity root and pins no
+    /// fingerprint (the plane's no-root spelling): nothing at it can be approved.
+    #[must_use]
+    pub fn rootless(&self) -> bool {
+        self.pin
+            .as_ref()
+            .is_some_and(|p| !p.root && p.fingerprint.is_none())
+    }
 }
 
 /// Parse and judge one registration's trust keys, in declaration order.
@@ -90,6 +112,7 @@ fn read_entry(
             ttl_ms: 0,
             recovery_backoff_ms: 0,
         },
+        approved: BTreeMap::new(),
     };
     let map = entry.as_mapping();
     for decl in keys {
@@ -106,9 +129,57 @@ fn read_entry(
             TrustRole::RecoveryBackoff => {
                 out.policy.recovery_backoff_ms = duration_ms(at, decl, value, strict)?;
             }
+            // Read by [`private_reach`] where the host seals the registration's anchors; judged
+            // here so a malformed value refuses the load in the trust keys' own words.
+            TrustRole::PrivateReach => {
+                if value.is_some_and(|v| v.as_bool().is_none()) {
+                    let k = decl.key;
+                    shape::<()>(strict, format!("{at}: `{k}:` must be true or false"))?;
+                }
+            }
+            TrustRole::ItemApprovals => out.approved = item_approvals(decl, value),
         }
     }
+    // A REGISTRATION WITH NO AUTHENTICITY ROOT APPROVES NOTHING (`trust::declared`: "unpinned can
+    // never be approved"): its configured item approvals are not seeded, whatever digests it
+    // writes, as an unrooted registration never served under the plane-local approval before.
+    if out.rootless() {
+        out.approved.clear();
+    }
     Ok(out)
+}
+
+/// The registration's PRIVATE REACH (`abi::plane::TRUST_PRIVATE_REACH`): `true` only where the plane
+/// declares the key and the registration writes `true` under it; a malformed value reads as `false`
+/// (the load's [`parse_entry`] refuses it first).
+#[must_use]
+pub fn private_reach(entry: &serde_yaml::Value, keys: &[TrustKeyDecl]) -> bool {
+    keys.iter()
+        .filter(|k| k.role == TrustRole::PrivateReach)
+        .filter_map(|k| entry.as_mapping()?.get(k.key)?.as_bool())
+        .any(|b| b)
+}
+
+/// The configured item approvals under an item-approvals key: every item whose object carries a
+/// non-blank digest (trimmed) under the declared field. The map's SHAPE is the plane's grammar to
+/// refuse in its own words; anything that is not an item object reads as no approval here.
+fn item_approvals(
+    decl: &TrustKeyDecl,
+    value: Option<&serde_yaml::Value>,
+) -> BTreeMap<String, String> {
+    let field = decl.default.unwrap_or_default();
+    value
+        .and_then(serde_yaml::Value::as_mapping)
+        .into_iter()
+        .flat_map(|m| m.iter())
+        .filter_map(|(item, object)| {
+            let digest = object.as_mapping()?.get(field)?.as_str()?.trim();
+            if digest.is_empty() {
+                return None;
+            }
+            Some((item.as_str()?.to_string(), digest.to_string()))
+        })
+        .collect()
 }
 
 /// A malformed shape: refused when `strict`, otherwise read as absent.
@@ -140,7 +211,8 @@ pub fn parse_section(
 }
 
 /// The registrations of a plane section, in order: every string key that is not a reserved section
-/// word.
+/// word, the core-owned `work:` bounds, or the reserved `pools` the host hands a named-definition
+/// section (its failover pools are no registration).
 pub(crate) fn registrations(
     value: &serde_yaml::Value,
 ) -> impl Iterator<Item = (&str, &serde_yaml::Value)> {
@@ -149,7 +221,11 @@ pub(crate) fn registrations(
         .into_iter()
         .flat_map(|m| m.iter())
         .filter_map(|(k, v)| k.as_str().map(|k| (k, v)))
-        .filter(|(k, _)| !busbar_contract::section::RESERVED_SECTION_KEYS.contains(k))
+        .filter(|(k, _)| {
+            !busbar_contract::section::RESERVED_SECTION_KEYS.contains(k)
+                && *k != busbar_contract::section::RESERVED_WORK_KEY
+                && *k != busbar_contract::section::RESERVED_POOLS_KEY
+        })
 }
 
 /// A pin object: its shape, then the rule that makes the object form worth having — a root needs
@@ -232,6 +308,7 @@ fn pin(
     Ok(Some(DeclaredPin {
         mechanism,
         root: declared.root,
+        peer_key: declared.peer_key,
         key: key.filter(|m| !m.trim().is_empty()),
         fingerprint,
     }))

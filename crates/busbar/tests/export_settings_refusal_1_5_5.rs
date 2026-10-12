@@ -115,3 +115,35 @@ fn a_sinks_settings_refusal_is_rendered_under_its_instance_as_1_5_5_printed_it()
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// 1.5.5's refusal of a second scrape-sink instance: the sink states the `one_instance` mark, so the
+/// host asks its limits check while the configuration is resolved and prints its line verbatim —
+/// once per extra instance, naming the first. (The kernel's own proof that a `one_instance` module's
+/// words are rendered verbatim runs on its scrape double, busbar-kernel
+/// `config/tests/tests.rs::export_named_map_allows_two_instances_of_one_module`; the 1.5.5 words are
+/// the linked sink's, pinned here.)
+const SECOND_SCRAPE_INSTANCE: &str = "export.two: a second `module: prometheus` instance (already \
+     defined as 'one'). Prometheus serves the ONE well-known /metrics route, so a second instance \
+     could only be silently ignored — keep a single instance.";
+
+#[test]
+fn a_second_scrape_sink_instance_is_refused_as_1_5_5_printed_it() {
+    let dir = common::plugins::scratch("export-second-scrape-1-5-5");
+    let (ok, text) = validate(
+        &dir,
+        "  one: { module: prometheus, settings: { buffer_seconds: 60 } }\n  two: { module: \
+         prometheus, settings: { buffer_seconds: 60 } }\n",
+    );
+    if !text.contains("unknown exporter 'prometheus'") {
+        assert!(
+            !ok,
+            "a second scrape-sink instance validated clean:\n{text}"
+        );
+        let printed = text
+            .lines()
+            .filter(|l| l.trim_start_matches("  - ") == SECOND_SCRAPE_INSTANCE)
+            .count();
+        assert_eq!(printed, 1, "the refusal is not 1.5.5's line, once:\n{text}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}

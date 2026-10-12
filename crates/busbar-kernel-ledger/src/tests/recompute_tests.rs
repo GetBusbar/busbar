@@ -11,7 +11,7 @@
 use crate::cost::{Author, CardEntryDraft, History, LaneClass, RateCard};
 use busbar_contract::caps::MeterClassId;
 
-use crate::cost::apply_tier_signed;
+use crate::cost::checked_apply_tier;
 use crate::recompute::{price_line, Divergence, Posting, PostingOrigin, PricedLine, BASIS_POINTS};
 
 use super::fixtures::key;
@@ -108,21 +108,24 @@ fn a_hole_in_the_history_is_a_refusal_and_never_a_zero() {
     );
 }
 
-/// The tier rule is the one function the bill is computed with (`cost::apply_tier_signed`).
+/// The tier rule is the one function the bill is computed with (`cost::checked_apply_tier`, which
+/// the one function's accumulator applies).
 #[test]
 fn the_tier_rounds_to_nearest_and_never_divides_first() {
-    assert_eq!(apply_tier_signed(1, 9_999), 1, "0.9999 is nearer 1 than 0");
-    assert_eq!(apply_tier_signed(10_000, 9_999), 9_999);
-    assert_eq!(apply_tier_signed(3, 5_000), 2);
-    assert_eq!(apply_tier_signed(-10_000, 9_000), -9_000);
-    assert_eq!(apply_tier_signed(-3, 5_000), -2);
+    assert_eq!(
+        checked_apply_tier(1, 9_999),
+        Some(1),
+        "0.9999 is nearer 1 than 0"
+    );
+    assert_eq!(checked_apply_tier(10_000, 9_999), Some(9_999));
+    assert_eq!(checked_apply_tier(3, 5_000), Some(2));
+    assert_eq!(checked_apply_tier(10_000, 9_000), Some(9_000));
 }
 
 #[test]
-fn the_neutral_tier_is_the_identity_at_the_ceiling_in_both_signs() {
-    assert_eq!(apply_tier_signed(i128::MAX, BASIS_POINTS), i128::MAX);
-    assert_eq!(apply_tier_signed(i128::MIN, BASIS_POINTS), i128::MIN);
-    assert_eq!(apply_tier_signed(10_000, 9_999), 9_999);
+fn the_neutral_tier_is_the_identity_at_the_ceiling() {
+    assert_eq!(checked_apply_tier(u128::MAX, BASIS_POINTS), Some(u128::MAX));
+    assert_eq!(checked_apply_tier(10_000, 9_999), Some(9_999));
 }
 
 /// A figure too large to hold is refused (item 28), never wrapped and never pinned at a ceiling.

@@ -408,13 +408,13 @@ pub fn validate_request<A: PinnedArtifact>(ask: &Ask<'_, A>) -> Result<(), Refus
 
 // ── THE STANDING-PERMISSION PRIMITIVE (D3, relocated from busbar-core) ────────────────────────────
 //
-// A long-lived response re-asks its principal per frame rather than carrying a resolved `Arc<VirtualKey>`
-// into a `'static` future. The struct and its refusal are pure — they name only `busbar_contract::records::VirtualKey`
-// (already imported), this module's `Refusal`, and std — so they live in the substrate; the ONE thing
-// that names a core type, the governance re-resolution, is threaded through the [`GovResolve`] trait
-// (implemented core-side over `GovState`), so a plane holds a `Standing` and re-asks it through the
-// `EngineHost::principal_standing` seam without ever naming governance. Core re-exports these three
-// types + the trait so its in-core call sites (and the tests) are unchanged.
+// A long-lived response re-asks its principal per frame rather than carrying a resolved
+// `Arc<VirtualKey>` into a `'static` future. The struct and its refusal are pure — they name only
+// `busbar_contract::records::VirtualKey` (already imported), this module's `Refusal`, and std — so
+// they live in the substrate; the ONE thing that names a core type, the governance re-resolution,
+// is threaded through the [`GovResolve`] trait (implemented core-side over `GovState`), so a holder
+// of a `Standing` re-asks it without ever naming governance. Core re-exports these three types +
+// the trait so its in-core call sites (and the tests) are unchanged.
 
 /// The governance re-resolution a [`Standing`] performs each frame: re-resolve a principal by its
 /// stable id. Implemented core-side over `busbar_kernel::governance::GovState` (the one core type this

@@ -118,6 +118,9 @@ pub(crate) const EGRESS_SCHEME: &str = "decision-egress";
 /// The envelope member naming the document type of an outbound body.
 pub(crate) const FIELD_CONTENT_TYPE: &str = "content-type";
 
+/// The response field a refusal names its wait in: whole seconds until the caller may retry.
+pub(crate) const FIELD_RETRY_AFTER: &str = "retry-after";
+
 /// The document type every body of this protocol is.
 pub(crate) const CONTENT_TYPE_JSON: &[u8] = b"application/json";
 

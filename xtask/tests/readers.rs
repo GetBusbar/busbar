@@ -94,7 +94,7 @@ fn the_committed_teller_matrix_round_trips_and_keeps_its_step_order() {
             "route",
             "meter",
             "audit",
-            "exit"
+            "encode"
         ],
         "the Teller step order is the file's key order, not an alphabetical one"
     );

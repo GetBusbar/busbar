@@ -18,8 +18,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 
-use busbar_contract::abi::mechanism::call::{AbiStr, Field, Outcome};
+use busbar_contract::abi::mechanism::call::{AbiStr, Field, Outcome, Span};
 use busbar_contract::abi::sdk::door::{blank_in, blank_out};
+use busbar_contract::abi::transport::{check::check_final_status, StatusRow, CLOSE_NORMAL};
 use busbar_contract::abi::transport::{
     AdoptIn, BeginIn, ConnFacts, EmitIn, EncodeIn, FinishIn, FramePiece, FrameSpan, FramerOut,
     FramerSink, FramingIn, HeadSlots, IngestIn, LocateIn, LocateOut, RefuseIn, EMIT_TEXT,
@@ -60,16 +61,56 @@ pub struct DoorFacts {
     pub name: String,
     /// Every scheme it answers for; the first is its own.
     pub claims: Vec<&'static str>,
-    /// The claims it composes over; empty = directly over the host's socket.
+    /// The tail's ROLE (`ROLE_CARRIER` | `ROLE_FRAMER`, ARCHITECT ruling Q128 U7): a CARRIER is a
+    /// byte stream the host's socket or pipe carries as itself (no opening message, nothing framed,
+    /// a stream it may secure mid-way); a FRAMER frames messages over the carrier the connector
+    /// chose from the target's scheme. The role is stated, never derived from `composes_over`.
+    pub role: u32,
+    /// The claims it composes over: always empty now (no transport names another); an entry that
+    /// states one is refused where it would be served.
     pub composes_over: Vec<&'static str>,
+    /// A CARRIER whose own claim selects on the local PORT a connection arrived on (its claim row's
+    /// selector forms hold `SelectorForm::Port`): it listens on, and dials, network addresses. The
+    /// connector carries a framer's connection over the first such carrier
+    /// ([`crate::registry::Transports::address_carrier`]): the carrier under a framer is the
+    /// connector's choice from the target, and no transport names another.
+    pub ported: bool,
+    /// Its status table, row by row: `(claim, lo, hi)`, the code ranges each claim's numbering
+    /// has; a stream's final status is judged against its claim's ([`crate::framed_stream`]).
+    pub status_rows: Vec<(u32, u32, u32)>,
+    /// THE DUPLEX CLAIMS: the ones a stream rides, read off the claim rows of its Statement
+    /// (ARCHITECT ruling Q128 U7): each whose unit 0 opens at an UPGRADE (`UNIT0_UPGRADE`) or that
+    /// carries a session (`session`). A claim that states neither is a request and its answer, which
+    /// the listener it arrived on frames already; a stream on one of these is this entry's to frame.
+    pub duplex: Vec<&'static str>,
 }
 
-/// A transport entry's framer table, as the host reaches it.
+/// A transport entry's table, as the host reaches it: a framer's ops ([`FramerDoor::cross`]) and a
+/// carrier's ([`FramerDoor::carry`]).
 pub trait FramerDoor: Send + Sync {
     /// What the entry states.
     fn facts(&self) -> &DoorFacts;
     /// One crossing: the op, answered into its `out`.
     fn cross(&self, call: Call<'_>) -> Crossed;
+    /// A new side of a carried connection: a ticket the entry's carrier ops are driven on inline
+    /// (`crate::carrier`). `None` = the entry is no carrier the host can drive.
+    fn side(&self) -> Option<Box<dyn crate::carrier::Side>> {
+        None
+    }
+    /// One CARRIER crossing on `side` (a RESUME of the op that pended on it when `resume`). An entry
+    /// that carries nothing answers REFUSED.
+    fn carry(
+        &self,
+        side: &dyn crate::carrier::Side,
+        resume: bool,
+        call: crate::carrier::Carry<'_>,
+    ) -> Crossed {
+        let _ = (side, resume, call);
+        Crossed {
+            outcome: Outcome::Refused,
+            error: None,
+        }
+    }
 }
 
 /// Why a framer op did not answer READY.
@@ -118,6 +159,19 @@ pub struct Got {
     /// On the head's first piece: the far end's reason phrase, exactly as sent (the stream's head
     /// slots), where the wire has one.
     pub reason: Option<Vec<u8>>,
+    /// The stream FAILED (`PIECE_STREAM_FAILED`): this is its last piece and the bytes are the
+    /// reason; its siblings on the connection carry on.
+    pub failed: bool,
+}
+
+impl Got {
+    /// Whether this piece ENDS its stream whole: the EMPTY payload piece that closes a stream's
+    /// frames (`busbar_contract::abi::transport`, "streams end by piece"). An empty fields piece is
+    /// an empty head, never the end, and a failed stream's piece ends it failed.
+    #[must_use]
+    pub fn ends_stream(&self) -> bool {
+        self.end_of_frame && self.bytes.is_empty() && !self.fields && !self.failed
+    }
 }
 
 /// A stream's head typed slots (`HeadSlots`), copied out of the host's buffers: an accepted
@@ -394,6 +448,7 @@ impl Buffers {
                 fields: p.flags & PIECE_FIELDS != 0,
                 text: p.flags & PIECE_TEXT != 0,
                 reason: None,
+                failed: p.flags & PIECE_STREAM_FAILED != 0,
             });
         }
         let heads = self
@@ -520,6 +575,11 @@ pub struct Established {
     pub agreed_protocol: Option<Vec<u8>>,
     /// The claim the connection resolved to.
     pub claim: Option<String>,
+    /// The far end's key pin, read off its verified leaf certificate on a secured dial; `None` =
+    /// no certificate (the transport pin, ARCHITECT 2026-10-03).
+    pub peer_key_pin: Option<String>,
+    /// Whether the handshake presented busbar's client identity.
+    pub client_identity: bool,
 }
 
 impl Established {
@@ -534,6 +594,7 @@ impl Established {
             peer_issuer: NO_TEXT,
             peer_fingerprint: NO_TEXT,
             claim: text(self.claim.as_deref().map(str::as_bytes)),
+            local_certificate: NO_TEXT,
         }
     }
 }
@@ -547,32 +608,56 @@ pub struct Located {
     pub name: Option<String>,
     /// The target asks for connection security.
     pub secure: bool,
+    /// The entry's protocol offer for the handshake (ALPN), most preferred first; empty = it makes
+    /// none (THE DESIGN, connections: "the ALPN offer is the framer's").
+    pub offer: Vec<Vec<u8>>,
 }
 
-/// `locate`: where `target` is, per the entry. One re-call with the sizes a short answer names.
+/// A protocol offer in the handshake's ProtocolNameList encoding (each name led by its one-byte
+/// length), read into its names; `None` where the bytes are not such a list.
+fn protocol_names(mut b: &[u8]) -> Option<Vec<Vec<u8>>> {
+    let mut names = Vec::new();
+    while let Some((&len, rest)) = b.split_first() {
+        let len = usize::from(len);
+        if len == 0 || rest.len() < len {
+            return None;
+        }
+        names.push(rest[..len].to_vec());
+        b = &rest[len..];
+    }
+    Some(names)
+}
+
+/// `locate`: where `target` is, per the entry, and its protocol offer. One re-call with the sizes a
+/// short answer names.
 ///
 /// # Errors
 ///
-/// The entry refused the target.
+/// The entry refused the target, or answered an offer that is not a protocol list.
 pub fn locate(door: &dyn FramerDoor, target: &str) -> Result<Located, Refused> {
-    let (mut auth_cap, mut name_cap) = (256_usize, 256_usize);
+    let (mut auth_cap, mut name_cap, mut alpn_cap) = (256_usize, 256_usize, 256_usize);
     for _ in 0..2 {
         let mut authority = vec![0_u8; auth_cap];
         let mut name = vec![0_u8; name_cap];
+        let mut alpn = vec![0_u8; alpn_cap];
         let mut i: LocateIn = blank_in();
         i.target = abi(target.as_bytes());
         i.authority_buf = authority.as_mut_ptr();
         i.authority_cap = authority.len();
         i.name_buf = name.as_mut_ptr();
         i.name_cap = name.len();
+        i.alpn_buf = alpn.as_mut_ptr();
+        i.alpn_cap = alpn.len();
         let mut o: LocateOut = blank_out();
         let c = door.cross(Call::Locate(&mut i, &mut o));
-        let short = o.authority_needed > auth_cap as u64 || o.name_needed > name_cap as u64;
+        let short = o.authority_needed > auth_cap as u64
+            || o.name_needed > name_cap as u64
+            || o.alpn_needed > alpn_cap as u64;
         if c.outcome == Outcome::Failed && short {
-            auth_cap = usize::try_from(o.authority_needed)
-                .unwrap_or(0)
-                .max(auth_cap);
-            name_cap = usize::try_from(o.name_needed).unwrap_or(0).max(name_cap);
+            let grow = |needed: u64, cap: usize| usize::try_from(needed).unwrap_or(0).max(cap);
+            auth_cap = grow(o.authority_needed, auth_cap);
+            name_cap = grow(o.name_needed, name_cap);
+            alpn_cap = grow(o.alpn_needed, alpn_cap);
             continue;
         }
         ready(c)?;
@@ -580,10 +665,18 @@ pub fn locate(door: &dyn FramerDoor, target: &str) -> Result<Located, Refused> {
             String::from_utf8_lossy(b.get(..usize::try_from(n).unwrap_or(0)).unwrap_or_default())
                 .into_owned()
         };
+        let offered = alpn
+            .get(..usize::try_from(o.alpn_written).unwrap_or(usize::MAX))
+            .and_then(protocol_names)
+            .ok_or_else(|| Refused {
+                outcome: Outcome::Fault,
+                error: "the framer's protocol offer is not a protocol list".into(),
+            })?;
         return Ok(Located {
             authority: text(&authority, o.authority_written),
             name: (o.has_name != 0).then(|| text(&name, o.name_written)),
             secure: o.secure != 0,
+            offer: offered,
         });
     }
     Err(Refused {
@@ -653,7 +746,7 @@ enum Again {
     Ingest,
     Emit(u64),
     Timer,
-    Refuse(Option<u64>),
+    Refuse(Option<u64>, u32),
 }
 
 impl Framing {
@@ -669,12 +762,40 @@ impl Framing {
         target: &str,
         established: &Established,
     ) -> Result<(Self, Yielded), Refused> {
+        Self::begin_with(door, side, target, established, &[])
+    }
+
+    /// [`Framing::begin`], handing a dialled framing its OPENING head fields (`BeginIn::fields`:
+    /// the bound auth's fields and the request's own), for a wire that carries them on the
+    /// connection's opening rather than on a message (ARCHITECT Q-L5B-WS-DIAL).
+    ///
+    /// # Errors
+    ///
+    /// The entry refused to frame the connection.
+    pub fn begin_with(
+        door: Arc<dyn FramerDoor>,
+        side: u32,
+        target: &str,
+        established: &Established,
+        opening: &[(String, Vec<u8>)],
+    ) -> Result<(Self, Yielded), Refused> {
         let mut bufs = Buffers::for_side(side);
         let facts = established.facts();
+        let fields: Vec<Field> = opening
+            .iter()
+            .map(|(n, v)| Field {
+                name: abi(n.as_bytes()),
+                value: abi(v),
+            })
+            .collect();
         let mut i: BeginIn = blank_in();
         i.side = side;
         i.target = abi(target.as_bytes());
         i.facts = &facts;
+        if !fields.is_empty() {
+            i.fields = fields.as_ptr();
+            i.fields_len = fields.len();
+        }
         i.sink = bufs.sink();
         let mut o: FramerOut = blank_out();
         ready(door.cross(Call::Begin(&mut i, &mut o)))?;
@@ -749,11 +870,12 @@ impl Framing {
                     i.sink = sink;
                     self.door.cross(Call::Emit(&mut i, &mut o))
                 }
-                Again::Refuse(stream) => {
+                Again::Refuse(stream, status) => {
                     let mut i: RefuseIn = blank_in();
                     i.framing = self.token;
                     i.stream = stream.unwrap_or(0);
                     i.has_stream = u32::from(stream.is_some());
+                    i.status = status;
                     i.sink = sink;
                     self.door.cross(Call::Refuse(&mut i, &mut o))
                 }
@@ -821,16 +943,23 @@ impl Framing {
         Ok(y)
     }
 
-    /// `refuse`: a refusal's bytes for `stream` (`None` = the whole connection).
+    /// `refuse`: a refusal's bytes for `stream` (`None` = the whole connection), with its neutral
+    /// `status` for the framer to map to its wire (`0` = none stated).
     ///
     /// # Errors
     ///
     /// The framer refused to render it.
-    pub fn refuse(&mut self, stream: Option<u64>, bytes: &[u8]) -> Result<Yielded, Refused> {
+    pub fn refuse(
+        &mut self,
+        stream: Option<u64>,
+        bytes: &[u8],
+        status: u32,
+    ) -> Result<Yielded, Refused> {
         let mut i: RefuseIn = blank_in();
         i.framing = self.token;
         i.stream = stream.unwrap_or(0);
         i.has_stream = u32::from(stream.is_some());
+        i.status = status;
         i.bytes = bytes.as_ptr();
         i.len = bytes.len();
         i.sink = self.bufs.sink();
@@ -838,7 +967,7 @@ impl Framing {
         ready(self.door.cross(Call::Refuse(&mut i, &mut o)))?;
         let mut y = Yielded::default();
         if !self.bufs.take(&o, &mut y)? {
-            self.more(Again::Refuse(stream), &mut y)?;
+            self.more(Again::Refuse(stream, status), &mut y)?;
         }
         Ok(y)
     }
@@ -884,6 +1013,66 @@ impl Framing {
         self.close(reason)
     }
 
+    /// `finish` on ONE STREAM'S framing ([`busbar_contract::abi::transport::SIDE_ACCEPT_STREAM`]):
+    /// close it with the final status the unit stated (ARCHITECT 4l), judged first against the
+    /// status rows of the claim the stream arrived on (`rows`, `claim`). A status the claim's
+    /// numbering does not have never reaches the framer: the close is refused here and the framing
+    /// stays open, so the host can still end the stream another way. What the framer answers is
+    /// the stream's closing field block, in `wire`.
+    ///
+    /// # Errors
+    ///
+    /// The close breaks [`check_final_status`] (FAULT, nothing crossed), or the framer refused it.
+    pub fn finish_final(
+        &mut self,
+        status: u32,
+        message: &[u8],
+        details: &[u8],
+        rows: &[StatusRow],
+        claim: u32,
+    ) -> Result<Yielded, Refused> {
+        let mut bytes = Vec::with_capacity(message.len() + details.len());
+        bytes.extend_from_slice(message);
+        bytes.extend_from_slice(details);
+        let span = |offset: usize, len: usize| -> Result<Span, Refused> {
+            Ok(Span {
+                offset: u32::try_from(offset).map_err(|_| too_long())?,
+                len: u32::try_from(len).map_err(|_| too_long())?,
+            })
+        };
+        let mut i: FinishIn = blank_in();
+        i.framing = self.token;
+        i.reason = CLOSE_NORMAL;
+        i.final_status = status;
+        i.final_message = span(0, message.len())?;
+        i.final_details = span(message.len(), details.len())?;
+        i.final_bytes = bytes.as_ptr();
+        i.final_bytes_len = bytes.len();
+        check_final_status(&i, rows, claim).map_err(|f| Refused {
+            outcome: Outcome::Fault,
+            error: format!(
+                "the stream's final status breaks {:?} at {}",
+                f.rule, f.field
+            ),
+        })?;
+        if self.token == 0 {
+            return Err(Refused {
+                outcome: Outcome::Fault,
+                error: "the stream's framing is already closed".into(),
+            });
+        }
+        let mut y = Yielded::default();
+        loop {
+            i.sink = self.bufs.sink();
+            let mut o: FramerOut = blank_out();
+            ready(self.door.cross(Call::Finish(&mut i, &mut o)))?;
+            if self.bufs.take(&o, &mut y)? {
+                self.token = 0;
+                return Ok(y);
+            }
+        }
+    }
+
     fn close(&mut self, reason: u32) -> Yielded {
         let mut y = Yielded::default();
         if self.token == 0 {
@@ -899,6 +1088,14 @@ impl Framing {
         }
         self.token = 0;
         y
+    }
+}
+
+/// A final status whose message or details no `Span` can carry.
+fn too_long() -> Refused {
+    Refused {
+        outcome: Outcome::Fault,
+        error: "the stream's final status is longer than a span carries".into(),
     }
 }
 

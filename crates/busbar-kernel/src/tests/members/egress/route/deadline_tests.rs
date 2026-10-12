@@ -326,6 +326,35 @@ fn a_buffered_answer_whose_deadline_passes_mid_body_refunds_the_budget_unit() {
     );
 }
 
+/// A BUFFERED ANSWER RUNS TO THE WALK'S WHOLE BUDGET, measured once from the unit's start
+/// (ARCHITECT ruling 2026-10-07, STREAM-CEILING item 3). The wait for each piece after the first is
+/// what is left of the walk's budget; it used to subtract the time since the attempt opened a second
+/// time, so a far end still answering was cut at about half the budget. RED: a piece every 3/16 of
+/// the budget was cut after three pieces, at 9/16 of it, instead of at the budget itself.
+#[test]
+fn a_buffered_answer_is_cut_at_the_walks_budget_not_half_of_it() {
+    let node = one_lane_pool(false);
+    let budget_ms = node.timeout_secs * 1000;
+    node.conns.script("a", drip(20, budget_ms * 3 / 16, false));
+
+    let started = node.clock.now_millis();
+    let outcome = node.route("primary");
+    let elapsed = node.clock.now_millis() - started;
+
+    let Routed::Delivered(delivered) = &outcome else {
+        panic!("the cut answer is handed on, not shed: {outcome:?}");
+    };
+    assert_eq!(
+        u64::try_from(elapsed).unwrap(),
+        budget_ms,
+        "the buffered answer is cut at the walk's budget, measured from the unit's start"
+    );
+    assert_eq!(
+        delivered.pieces, 5,
+        "every piece due inside the budget is relayed: {delivered:?}"
+    );
+}
+
 #[test]
 fn a_streamed_answer_that_finishes_inside_the_ceiling_is_untouched() {
     let node = one_lane_pool(true);

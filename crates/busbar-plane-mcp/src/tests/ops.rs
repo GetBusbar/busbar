@@ -2,7 +2,7 @@
 //! measures implementation and nothing else; still a direct child module, so `use
 //! super::*` reaches the private items it always did.
 
-use super::{is_known_notification, row_for, Sender, METHODS, NOTIFICATIONS, OP_CLASSES};
+use super::{is_known_notification, method_row_for, Sender, METHODS, NOTIFICATIONS, OP_CLASSES};
 
 /// Every method maps to a class the plane declares.
 #[test]
@@ -48,10 +48,10 @@ fn no_class_is_produced_twice() {
 #[test]
 fn the_lookup_answers_the_table_and_nothing_else() {
     for row in METHODS {
-        assert_eq!(row_for(row.method), Some(row));
+        assert_eq!(method_row_for(row.method), Some(row));
     }
-    assert_eq!(row_for("this/method/does/not/exist"), None);
-    assert_eq!(row_for(""), None);
+    assert_eq!(method_row_for("this/method/does/not/exist"), None);
+    assert_eq!(method_row_for(""), None);
 }
 
 /// A notification is not a method, and a method is not a notification.
@@ -60,7 +60,7 @@ fn the_lookup_answers_the_table_and_nothing_else() {
 #[test]
 fn the_two_lists_do_not_overlap() {
     for name in NOTIFICATIONS {
-        assert!(row_for(name).is_none(), "{name} is in both lists");
+        assert!(method_row_for(name).is_none(), "{name} is in both lists");
     }
     for row in METHODS {
         assert!(
@@ -85,7 +85,7 @@ fn every_dispatched_method_is_carried() {
     for method in crate::codec::IMPLEMENTED_METHODS {
         if method.contains('/') {
             assert!(
-                row_for(method).is_some(),
+                method_row_for(method).is_some(),
                 "the codec dispatches {method} and this plane does not carry it"
             );
             seen += 1;

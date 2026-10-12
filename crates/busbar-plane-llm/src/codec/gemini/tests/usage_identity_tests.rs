@@ -239,15 +239,16 @@ fn a_grounded_turn_bills_the_tool_use_term() {
     assert_eq!(billed.output, 172);
 }
 
-/// THE LEDGER HOLDS WHAT GOOGLE ITEMIZED, AND THE GAP IS REPORTED (owner 2026-10-02: ledger what
-/// the plane reports; fix Gemini ledging). If Google states a `totalTokenCount` the itemized terms
-/// cannot reach, no unit is invented for the gap: the buckets ledger exactly as sent and the note
-/// (with its audit WARN) names the gap, which is what says a counter is unmodelled.
+/// THE LEDGER HOLDS WHAT GOOGLE ITEMIZED, AND THE GAP IS ITS OWN LINE (owner 2026-10-02: ledger
+/// what the plane reports; owner LEDGER-100, 2026-10-03: every reported unit is a ledger line). If
+/// Google states a `totalTokenCount` the itemized terms cannot reach, the buckets ledger exactly as
+/// sent, the remainder is the open class `unitemized_tokens`, and the note (with its WARN) names
+/// the gap, which is what says a counter is unmodelled.
 ///
 /// The term here (`someFutureTokenCount`) is deliberately one `GEMINI_USAGE_ADDITIVE_TERMS` does not
 /// model.
 #[test]
-fn an_unmodelled_term_is_reported_never_ledgered() {
+fn an_unmodelled_term_is_reported_and_ledgered_as_unitemized_tokens() {
     let body = serde_json::json!({
         "candidates": [{"content": {"role": "model", "parts": [{"text": "hi"}]}, "finishReason": "STOP"}],
         "usageMetadata": {
@@ -266,6 +267,14 @@ fn an_unmodelled_term_is_reported_never_ledgered() {
     assert_eq!(ir.usage.output_tokens, 5);
     let ledgered = ir.usage.to_token_usage();
     assert_eq!((ledgered.input, ledgered.output), (10, 5));
+    assert_eq!(
+        ledgered.open_units,
+        std::collections::BTreeMap::from([(
+            crate::codec::ir::open_class::UNITEMIZED_TOKENS_CLASS.to_string(),
+            7
+        )]),
+        "the 7 tokens no counter itemizes are one unitemized_tokens line"
+    );
     let note = ir
         .usage
         .detail
@@ -284,7 +293,7 @@ fn an_unmodelled_term_is_reported_never_ledgered() {
 /// THE ORACLE CELL `usage.gemini|tool-use|total-not-a-sum` (TODO 576): Google states 64 where its
 /// named counters sum to 57 (18 prompt + 7 candidates + 32 tool-use). The ledger holds the itemized
 /// 57, on every read path: 50 input (prompt + tool-use prompt) and 7 output. The 7-token gap is
-/// reported, never ledgered.
+/// reported and ledgered as 7 `unitemized_tokens` (owner LEDGER-100).
 #[test]
 fn a_total_above_its_terms_ledgers_the_itemized_counts_on_every_path() {
     const RESP: &str = r#"{"candidates":[{"content":{"parts":[{"text":"pong"}],"role":"model"},"finishReason":"STOP","index":0}],"usageMetadata":{"promptTokenCount":18,"candidatesTokenCount":7,"toolUsePromptTokenCount":32,"totalTokenCount":64},"modelVersion":"m-cap"}"#;
@@ -295,6 +304,8 @@ fn a_total_above_its_terms_ledgers_the_itemized_counts_on_every_path() {
         .expect("read");
     let ledgered = ir.usage.to_token_usage();
     assert_eq!((ledgered.input, ledgered.output), (50, 7));
+    let unitemized = crate::codec::ir::open_class::UNITEMIZED_TOKENS_CLASS;
+    assert_eq!(ledgered.open_units.get(unitemized), Some(&7));
     let note = ir
         .usage
         .detail
@@ -310,6 +321,7 @@ fn a_total_above_its_terms_ledgers_the_itemized_counts_on_every_path() {
         .recover_truncated_usage(RESP.as_bytes())
         .expect("the trailing usageMetadata is recoverable");
     assert_eq!((recovered.input, recovered.output), (50, 7));
+    assert_eq!(recovered.open_units.get(unitemized), Some(&7));
 }
 
 /// A total at or below the sum of its terms adds nothing: an early stream frame states none, and a
@@ -517,9 +529,10 @@ fn relay_grounded_stream() -> (String, busbar_contract::billing::TokenUsage) {
 
 /// THE LEDGER AND THE RELAYED BYTES BOTH CARRY WHAT GOOGLE ITEMIZED (oracle cell
 /// `usage.gemini|stream-grounded|no-tool-use-count`). The final frame states `totalTokenCount` 57
-/// against 18 prompt + 7 candidates; the 32-token gap is reported, never ledgered, so the turn
-/// ledgers 18 in + 7 out (what 1.5.5 billed) and the client receives exactly the 1.5.5 stream: its
-/// usage chunk reports 7 completion, 25 total.
+/// against 18 prompt + 7 candidates; the turn ledgers 18 in + 7 out (what 1.5.5 billed), the
+/// 32-token gap is reported and ledgered as 32 `unitemized_tokens`, one line beside them (owner
+/// LEDGER-100; before it the gap was an unbilled residual), and the client receives exactly the
+/// 1.5.5 stream: its usage chunk reports 7 completion, 25 total.
 #[test]
 fn a_grounded_stream_relays_the_155_bytes_and_ledgers_the_itemized_counts() {
     let (relayed, ledgered) = relay_grounded_stream();
@@ -528,6 +541,19 @@ fn a_grounded_stream_relays_the_155_bytes_and_ledgers_the_itemized_counts() {
         "the relayed stream is 1.5.5's"
     );
     assert_eq!((ledgered.input, ledgered.output), (18, 7));
+    let lines = crate::codec::usage_census::ledgered(&ledgered);
+    assert_eq!(
+        lines[crate::codec::usage_census::slot(
+            crate::codec::ir::open_class::UNITEMIZED_TOKENS_CLASS
+        )],
+        32
+    );
+    assert_eq!(
+        lines[4..].iter().filter(|n| **n != 0).count(),
+        1,
+        "{lines:?}"
+    );
+    assert!(ledgered.residual_units.is_empty());
 }
 
 /// THE RED ARM: the pin above is not vacuous. The stream b8605a388 relayed (the total's remainder

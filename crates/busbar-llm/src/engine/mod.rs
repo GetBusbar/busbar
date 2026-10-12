@@ -39,7 +39,7 @@ use busbar_contract::upstream::StatusClass;
 use busbar_kernel::handlers::op_for;
 use busbar_kernel::plane_host::OnExhaustedInput as OnExhausted;
 use busbar_kernel::{
-    auth::{present_caller, uri_encode_path, CallerCredential as KernelCallerCredential},
+    auth::{present_caller, CallerCredential as KernelCallerCredential},
     breaker::{classify as classify_disposition, normalize_raw_error, parse_retry_after},
     // The kernel diagnostic codes the engine's modules emit, named once here for all of them.
     diagnostics::{
@@ -69,6 +69,7 @@ pub(crate) type CallerCredential = KernelCallerCredential;
 use busbar_kernel::store::{now, Permit};
 
 pub(crate) mod build_runtime;
+pub(crate) mod credential;
 pub(crate) mod tables;
 
 pub(crate) mod egress;

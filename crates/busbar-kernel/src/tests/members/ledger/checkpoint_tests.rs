@@ -12,10 +12,8 @@ use busbar_kernel_ledger::checkpoint::{
     SelfAttestingAnchor, SignError, Signature,
 };
 use busbar_kernel_ledger::settle::Ledger;
-use busbar_kernel_ledger::totals::{TotalsKey, WindowStart};
-use busbar_kernel_ledger::verify::{
-    sequences_are_monotonic, verify, AllWindowsOpen, Finding, WindowState,
-};
+use busbar_kernel_ledger::totals::WindowStart;
+use busbar_kernel_ledger::verify::{sequences_are_monotonic, verify, Finding};
 
 use super::fixtures::{hold, key, ledger_token, usage};
 
@@ -75,7 +73,7 @@ fn editing_a_sealed_figure_is_caught() {
         .unwrap();
     entry.settled += 1;
     assert!(!checkpoint.body_hash_verifies());
-    let findings = verify(&checkpoint, &BTreeMap::new(), &AllWindowsOpen, None);
+    let findings = verify(&checkpoint, &BTreeMap::new(), None);
     assert!(findings
         .iter()
         .any(|f| matches!(f, Finding::CheckpointEdited { .. })));
@@ -137,13 +135,7 @@ fn verification_closes_the_window_when_the_books_balance_and_opens_it_when_they_
     let checkpoint = seal(&ledger, 1);
 
     // Nothing has happened since: the delta is zero, which balances.
-    assert!(verify(
-        &checkpoint,
-        &ledger.book().snapshot(),
-        &AllWindowsOpen,
-        None
-    )
-    .is_empty());
+    assert!(verify(&checkpoint, &ledger.book().snapshot(), None).is_empty());
 
     // More work, properly recorded: still balances.
     let mut ledger = ledger;
@@ -152,51 +144,15 @@ fn verification_closes_the_window_when_the_books_balance_and_opens_it_when_they_
     ledger.record_hold_opened(&k, 1, 200);
     ledger.record_slice_spent(&k, 1, 200);
     ledger.settle(&k, 1, hold("a", 200), 200, &usage("tokens", 200), &token);
-    assert!(verify(
-        &checkpoint,
-        &ledger.book().snapshot(),
-        &AllWindowsOpen,
-        None
-    )
-    .is_empty());
+    assert!(verify(&checkpoint, &ledger.book().snapshot(), None).is_empty());
 
     // One figure edited by hand: does not.
     ledger.book_mut().entry(k.clone(), 1).settled += 5;
-    let findings = verify(
-        &checkpoint,
-        &ledger.book().snapshot(),
-        &AllWindowsOpen,
-        None,
-    );
+    let findings = verify(&checkpoint, &ledger.book().snapshot(), None);
     assert_eq!(findings.len(), 1);
     match &findings[0] {
         Finding::Imbalanced(i) => assert_eq!(i.residual.amount(), 5),
         other => panic!("expected an imbalance, got {other}"),
-    }
-}
-
-#[test]
-fn a_closed_window_that_keeps_posting_is_reported_as_such() {
-    struct EverythingClosed;
-    impl WindowState for EverythingClosed {
-        fn is_open(&self, _key: &TotalsKey, _window: WindowStart) -> bool {
-            false
-        }
-    }
-    let ledger = book_with_a_settlement();
-    let checkpoint = seal(&ledger, 1);
-    let mut ledger = ledger;
-    ledger.book_mut().entry(key("b"), 1).settled += 25;
-
-    let findings = verify(
-        &checkpoint,
-        &ledger.book().snapshot(),
-        &EverythingClosed,
-        None,
-    );
-    match findings.as_slice() {
-        [Finding::ClosedWindowMoved(c)] => assert_eq!(c.moved, 25),
-        other => panic!("expected one closed-window finding, got {other:?}"),
     }
 }
 
@@ -213,22 +169,11 @@ fn a_closed_window_that_keeps_posting_is_reported_as_such() {
 fn a_balance_the_book_retired_is_named_as_retired_and_not_as_an_imbalance() {
     let mut ledger = book_with_a_settlement();
     let checkpoint = seal(&ledger, 1);
-    assert!(verify(
-        &checkpoint,
-        &ledger.book().snapshot(),
-        &AllWindowsOpen,
-        None
-    )
-    .is_empty());
+    assert!(verify(&checkpoint, &ledger.book().snapshot(), None).is_empty());
 
     // The window is sealed, so the book lets it go.
     assert_eq!(ledger.book_mut().retain_from(2), 1);
-    let findings = verify(
-        &checkpoint,
-        &ledger.book().snapshot(),
-        &AllWindowsOpen,
-        None,
-    );
+    let findings = verify(&checkpoint, &ledger.book().snapshot(), None);
     match findings.as_slice() {
         [Finding::Retired { key: k, window }] => {
             assert_eq!(k, &key("b"));
@@ -241,21 +186,6 @@ fn a_balance_the_book_retired_is_named_as_retired_and_not_as_an_imbalance() {
         "the finding says what happened: {}",
         findings[0]
     );
-
-    // And a closed window is answered the same way: what is gone is gone, not gone and unbalanced.
-    struct EverythingClosed;
-    impl WindowState for EverythingClosed {
-        fn is_open(&self, _key: &TotalsKey, _window: WindowStart) -> bool {
-            false
-        }
-    }
-    let closed = verify(
-        &checkpoint,
-        &ledger.book().snapshot(),
-        &EverythingClosed,
-        None,
-    );
-    assert!(matches!(closed.as_slice(), [Finding::Retired { .. }]));
 }
 
 #[test]
@@ -408,13 +338,7 @@ fn a_rolled_back_checkpoint_is_detected_against_the_anchor() {
 
     // Verified against the checkpoint the anchor holds: nothing to report.
     let head = anchor.head().unwrap();
-    assert!(verify(
-        &first,
-        &ledger.book().snapshot(),
-        &AllWindowsOpen,
-        head.as_ref()
-    )
-    .is_empty());
+    assert!(verify(&first, &ledger.book().snapshot(), head.as_ref()).is_empty());
 
     // More work, a second seal, anchored.
     let token = ledger_token();
@@ -429,12 +353,7 @@ fn a_rolled_back_checkpoint_is_detected_against_the_anchor() {
     // self-consistent — and the anchor says the history has moved past it.
     let rolled_back = book_with_a_settlement();
     let head = anchor.head().unwrap();
-    let findings = verify(
-        &first,
-        &rolled_back.book().snapshot(),
-        &AllWindowsOpen,
-        head.as_ref(),
-    );
+    let findings = verify(&first, &rolled_back.book().snapshot(), head.as_ref());
     assert_eq!(
         findings,
         vec![Finding::AnchorHeadDiffers {
@@ -453,12 +372,7 @@ fn a_rolled_back_checkpoint_is_detected_against_the_anchor() {
     forged_book.record_draw(&k, 1, 7);
     let forged = seal(&forged_book, 2);
     assert!(forged.body_hash_verifies());
-    let findings = verify(
-        &forged,
-        &forged_book.book().snapshot(),
-        &AllWindowsOpen,
-        head.as_ref(),
-    );
+    let findings = verify(&forged, &forged_book.book().snapshot(), head.as_ref());
     assert!(findings.iter().any(|f| matches!(
         f,
         Finding::AnchorHeadDiffers {

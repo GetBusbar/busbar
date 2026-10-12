@@ -131,7 +131,9 @@ pub struct Statement {
     pub needs: *const Need,
     /// How many.
     pub needs_len: usize,
-    /// The settings path its connection target comes from; absent = the plugin names it.
+    /// The settings path its connection target comes from; absent = the plugin names it. A
+    /// member-target path (`settings.*.<key>`, [`crate::section::MEMBER_TARGET_PREFIX`]) names each
+    /// registration's own target instead: each member route is sealed at it.
     pub target_from: AbiStr,
     /// The settings path its trust anchors come from; absent = the host's default.
     pub trust_from: AbiStr,

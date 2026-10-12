@@ -109,7 +109,7 @@ plugins:
   enabled: true                          # the durable store is a signed plugin tarball in plugins/
 
 store:
-  module: sqlite                         # durable (the busbar-store-sqlite plugin); omit for the RAM default
+  module: sqlite                         # durable (the busbar-store-sqlite plugin); `module: memory` for the RAM store (the block is required in 1.6.0)
   settings: { db_path: /var/lib/busbar/governance.db }
 
 rate_card:                               # per-model token pricing, micro-units per token

@@ -300,157 +300,128 @@ impl ConstructionGate {
     /// "DID NOT RUN" — which is not a pass.
     pub fn measure(cx: &Ctx) -> Result<(Vec<CRow>, Vec<String>), String> {
         let cfg = ConstructionGate::cfg(cx)?;
-        let tree = Tree::load(cx, &cfg.scan_roots()?, &cfg.test_path_fragments()?)?;
-        let hits = external::purity_hits(cx);
-        let denylist = external::denylist_hits(cx);
+        let scan_roots = cfg.scan_roots()?;
+        let test_fragments = cfg.test_path_fragments()?;
+        // THE TREE AND THE TWO DELEGATED SCANS ARE INDEPENDENT, so they are taken at once — each
+        // on a stack the size of the main thread's, which is where they ran before.
+        let (tree, hits, denylist) = std::thread::scope(|scope| {
+            let spawn = |what: &str| {
+                std::thread::Builder::new()
+                    .stack_size(16 * 1024 * 1024)
+                    .name(format!("construction {what}"))
+            };
+            let hits = spawn("purity scan")
+                .spawn_scoped(scope, || external::purity_hits(cx))
+                .expect("spawn the purity scan's thread");
+            let denylist = spawn("denylist scan")
+                .spawn_scoped(scope, || external::denylist_hits(cx))
+                .expect("spawn the denylist scan's thread");
+            let tree = Tree::load(cx, &scan_roots, &test_fragments);
+            (
+                tree,
+                hits.join()
+                    .unwrap_or_else(|panic| std::panic::resume_unwind(panic)),
+                denylist
+                    .join()
+                    .unwrap_or_else(|panic| std::panic::resume_unwind(panic)),
+            )
+        });
+        let tree = tree?;
 
+        // EVERY RULE READS THE SAME TREE AND WRITES NOTHING, so they run across the cores; their
+        // results are taken back IN THIS ORDER, so the rows and the problems read exactly as the
+        // serial run's did.
+        type Rule<'r> = (
+            &'static str,
+            &'r (dyn Fn() -> Result<Vec<CRow>, String> + Sync),
+        );
+        let rules: &[Rule] = &[
+            ("one-attempt-seam", &|| rules::one_attempt_seam(&tree, &cfg)),
+            ("request-path-fn-size", &|| {
+                rules::request_path_fn_size(&tree, &cfg)
+            }),
+            ("ports-only", &|| rules::ports_only(&tree, &cfg)),
+            ("no-uninstalled-seam", &|| {
+                rules::no_uninstalled_seam(&tree, &cfg)
+            }),
+            ("neutral-no-dialect", &|| {
+                rules::neutral_no_dialect(&cfg, hits.as_deref())
+            }),
+            ("single-terminal", &|| rules::single_terminal(&tree, &cfg)),
+            ("duplicate-dispatch", &|| {
+                rules::duplicate_dispatch(&tree, &cfg)
+            }),
+            ("token-sealed", &|| rules::token_sealed(&tree, &cfg)),
+            ("teller-step-order", &|| {
+                rules::teller_step_order(&tree, &cfg)
+            }),
+            ("one-teller-loop", &|| rules::one_teller_loop(&tree, &cfg)),
+            ("no-response-escapes-audit", &|| {
+                rules::no_response_escapes_audit(&tree, &cfg)
+            }),
+            ("terminal-doors-in-audit-step", &|| {
+                rules::terminal_doors_in_audit_step(&tree, &cfg)
+            }),
+            ("one-pick-site", &|| rules::one_pick_site(&tree, &cfg)),
+            (rules2::ROW_NO_UNIT_CRATES, &|| {
+                rules2::no_unit_crates(cx, &tree, &cfg)
+            }),
+            ("manifest-allowlist", &|| {
+                rules2::manifest_allowlist(cx, &tree, &cfg)
+            }),
+            ("source-denylist", &|| {
+                rules2::source_denylist(cx, &tree, &cfg, denylist.as_ref().map_err(String::as_str))
+            }),
+            ("lean-core", &|| rules2::lean_core(cx, &tree, &cfg)),
+            ("no-default-bodies", &|| {
+                rules2::no_default_bodies(&tree, &cfg)
+            }),
+            ("sealed-unit-traits", &|| {
+                rules2::sealed_unit_traits(&tree, &cfg)
+            }),
+            ("hold-discipline", &|| {
+                rules2::hold_discipline(cx, &tree, &cfg)
+            }),
+            ("hold-escapes", &|| rules2::hold_escapes(cx, &tree, &cfg)),
+            ("seal-sites", &|| rules2::seal_sites(cx, &tree, &cfg)),
+            ("kernel-seal-impls", &|| {
+                rules2::kernel_seal_impls(&tree, &cfg)
+            }),
+            ("forbid-unsafe", &|| rules2::forbid_unsafe(cx, &tree, &cfg)),
+            ("secret-carrier-debug", &|| {
+                rules2::secret_carrier_debug(&tree, &cfg)
+            }),
+            ("no-escaped-newline-doc-comment", &|| {
+                rules2::no_escaped_newline_doc_comment(cx, &tree, &cfg)
+            }),
+            ("unit-no-wall-clock", &|| {
+                rules2::unit_no_wall_clock(&tree, &cfg)
+            }),
+            ("unit-no-finding-ids", &|| {
+                rules2::unit_no_finding_ids(cx, &tree, &cfg)
+            }),
+            ("plane-no-money", &|| {
+                rules2::plane_no_money(cx, &tree, &cfg)
+            }),
+            ("one-pricing-site", &|| {
+                rules2::one_pricing_site(&tree, &cfg)
+            }),
+            ("legacy-reach", &|| rules2::legacy_reach(&tree, &cfg)),
+            ("no-test-doubles-in-production", &|| {
+                rules2::no_test_doubles_in_production(&tree, &cfg)
+            }),
+        ];
         let mut rows = Vec::new();
         let mut problems = Vec::new();
-        let mut take = |what: &str, r: Result<Vec<CRow>, String>, rows: &mut Vec<CRow>| match r {
-            Ok(v) => rows.extend(v),
-            Err(e) => problems.push(format!("{what}: {e}")),
-        };
-
-        take(
-            "one-attempt-seam",
-            rules::one_attempt_seam(&tree, &cfg),
-            &mut rows,
-        );
-        take(
-            "request-path-fn-size",
-            rules::request_path_fn_size(&tree, &cfg),
-            &mut rows,
-        );
-        take("ports-only", rules::ports_only(&tree, &cfg), &mut rows);
-        take(
-            "no-uninstalled-seam",
-            rules::no_uninstalled_seam(&tree, &cfg),
-            &mut rows,
-        );
-        take(
-            "neutral-no-dialect",
-            rules::neutral_no_dialect(&cfg, hits.as_deref()),
-            &mut rows,
-        );
-        take(
-            "single-terminal",
-            rules::single_terminal(&tree, &cfg),
-            &mut rows,
-        );
-        take(
-            "duplicate-dispatch",
-            rules::duplicate_dispatch(&tree, &cfg),
-            &mut rows,
-        );
-        take("token-sealed", rules::token_sealed(&tree, &cfg), &mut rows);
-        take(
-            "teller-step-order",
-            rules::teller_step_order(&tree, &cfg),
-            &mut rows,
-        );
-        take(
-            "one-teller-loop",
-            rules::one_teller_loop(&tree, &cfg),
-            &mut rows,
-        );
-        take(
-            "no-response-escapes-audit",
-            rules::no_response_escapes_audit(&tree, &cfg),
-            &mut rows,
-        );
-        take(
-            "terminal-doors-in-audit-step",
-            rules::terminal_doors_in_audit_step(&tree, &cfg),
-            &mut rows,
-        );
-        take(
-            "one-pick-site",
-            rules::one_pick_site(&tree, &cfg),
-            &mut rows,
-        );
-        take(
-            rules2::ROW_NO_UNIT_CRATES,
-            rules2::no_unit_crates(cx, &tree, &cfg),
-            &mut rows,
-        );
-        take(
-            "manifest-allowlist",
-            rules2::manifest_allowlist(cx, &tree, &cfg),
-            &mut rows,
-        );
-        take(
-            "source-denylist",
-            rules2::source_denylist(cx, &tree, &cfg, denylist.as_ref().map_err(String::as_str)),
-            &mut rows,
-        );
-        take("lean-core", rules2::lean_core(cx, &tree, &cfg), &mut rows);
-        take(
-            "no-default-bodies",
-            rules2::no_default_bodies(&tree, &cfg),
-            &mut rows,
-        );
-        take(
-            "sealed-unit-traits",
-            rules2::sealed_unit_traits(&tree, &cfg),
-            &mut rows,
-        );
-        take(
-            "hold-discipline",
-            rules2::hold_discipline(cx, &tree, &cfg),
-            &mut rows,
-        );
-        take(
-            "hold-escapes",
-            rules2::hold_escapes(cx, &tree, &cfg),
-            &mut rows,
-        );
-        take("seal-sites", rules2::seal_sites(cx, &tree, &cfg), &mut rows);
-        take(
-            "kernel-seal-impls",
-            rules2::kernel_seal_impls(&tree, &cfg),
-            &mut rows,
-        );
-        take(
-            "forbid-unsafe",
-            rules2::forbid_unsafe(cx, &tree, &cfg),
-            &mut rows,
-        );
-        take(
-            "secret-carrier-debug",
-            rules2::secret_carrier_debug(&tree, &cfg),
-            &mut rows,
-        );
-        take(
-            "no-escaped-newline-doc-comment",
-            rules2::no_escaped_newline_doc_comment(cx, &tree, &cfg),
-            &mut rows,
-        );
-        take(
-            "unit-no-wall-clock",
-            rules2::unit_no_wall_clock(&tree, &cfg),
-            &mut rows,
-        );
-        take(
-            "unit-no-finding-ids",
-            rules2::unit_no_finding_ids(cx, &tree, &cfg),
-            &mut rows,
-        );
-        take(
-            "plane-no-money",
-            rules2::plane_no_money(cx, &tree, &cfg),
-            &mut rows,
-        );
-        take(
-            "one-pricing-site",
-            rules2::one_pricing_site(&tree, &cfg),
-            &mut rows,
-        );
-        take("legacy-reach", rules2::legacy_reach(&tree, &cfg), &mut rows);
-        take(
-            "no-test-doubles-in-production",
-            rules2::no_test_doubles_in_production(&tree, &cfg),
-            &mut rows,
-        );
+        for ((what, _), r) in rules
+            .iter()
+            .zip(crate::par::par_map(rules, |(_, rule)| rule()))
+        {
+            match r {
+                Ok(v) => rows.extend(v),
+                Err(e) => problems.push(format!("{what}: {e}")),
+            }
+        }
 
         // ── THE SCAN-SET FLOOR ───────────────────────────────────────────────────────────────────
         // AN ABSENT SUBJECT IS RED, NOT PASS. Around eight rules print `vacuous: <path> does not

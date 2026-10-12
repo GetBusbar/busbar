@@ -48,20 +48,23 @@ use crate::gitp;
 pub use a2a::{discriminates, governance_observed, NEGATIVE_PAIRS};
 pub use h2::{decide_h2, junit_cases, Case, CaseResult, H2Run};
 pub use jev::{
-    decide_jev, is_jev_refusal, jev_subject_config, judge_jev_ledger, tests_passed, JevRun,
-    REPORTED_UNITS,
+    decide_jev, is_jev_refusal, jev_refusal_code, jev_subject_config, judge_admit, judge_audit,
+    judge_audit_window, judge_exit, judge_jev_ledger, judge_meter, judge_refused_before_dial,
+    judge_route, ledger_spend, tests_passed, Call, JevRun, Spend, AUDIT_OP_CLASS, ELSEWHERE,
+    H2_CHECKS, ONE_REQUEST_GROUP, REPORTED_UNITS, SUCCESS as JEV_SUCCESS, UNAVAILABLE,
 };
 pub use oidf::{
     as_signing_key, base64_std, decide_oidf, es256_jwk, idp_reply, module_results,
-    oidf_plan_config, oidf_subject_config, rsa_jwk_from_pkcs8, suite_client_key, OidfClient,
-    OidfRun, OidfSubject, AS_KEY_ID, RESOURCE_PATH as OIDF_RESOURCE_PATH, SUITES as OIDF_SUITES,
+    oidf_plan_config, oidf_subject_config, rsa_jwk_from_pkcs8, suite_client_key, workspace_above,
+    OidfClient, OidfRun, OidfSubject, AS_KEY_ID, RESOURCE_PATH as OIDF_RESOURCE_PATH,
+    SUITES as OIDF_SUITES,
 };
 pub use rigs::{
-    decide_legs, decide_llm, decide_voice, decide_ws, rig_for, Inputs, LlmRun, VoiceRun, WsRun,
-    LLM_DIALECTS,
+    decide_legs, decide_llm, decide_voice, decide_ws, mcp_node_platform, rig_for, Inputs, LlmRun,
+    VoiceRun, WsRun, LLM_DIALECTS, MCP_NODE_VERSION,
 };
 pub use slsa::{decide_slsa, provenance_commit, SlsaRun};
-pub use subject::b64url;
+pub use subject::{b64url, base_config};
 pub use tls::{decide_tls, TlsRun};
 
 /// The schema id every verdict carries (`conformance/verdicts/verdict.schema.json`, `title`).
@@ -270,9 +273,14 @@ fn absolute(root: &Path, p: &str) -> PathBuf {
     }
 }
 
-/// Tracked files that differ from HEAD, outside the verdict directories this run writes. A
+/// Tracked files that differ from HEAD, outside what this command itself writes: the verdict
+/// directories, and the manifest and README badge block [`reconcile_manifest`] renders from them. A
 /// non-empty answer means HEAD does not name the tree the rigs would judge.
-fn tracked_drift(root: &Path, out_dir: &Path) -> Result<Vec<String>, String> {
+///
+/// The reconcile's own outputs are excluded because they are DERIVED from the verdicts (no rig
+/// reads them): one `--suite` run per rig in one checkout (the split a per-job time limit forces)
+/// otherwise found the manifest the first run reconciled and wrote every later suite `not-run`.
+pub fn tracked_drift(root: &Path, out_dir: &Path) -> Result<Vec<String>, String> {
     let out_rel = out_dir
         .strip_prefix(root)
         .ok()
@@ -283,7 +291,9 @@ fn tracked_drift(root: &Path, out_dir: &Path) -> Result<Vec<String>, String> {
         .filter_map(|l| l.get(3..))
         .map(str::to_string)
         .filter(|p| {
-            !p.starts_with(&format!("{}/", render::VERDICT_DIR))
+            p != render::MANIFEST_PATH
+                && p != render::README_PATH
+                && !p.starts_with(&format!("{}/", render::VERDICT_DIR))
                 && out_rel
                     .as_deref()
                     .is_none_or(|o| o.is_empty() || !p.starts_with(&format!("{o}/")))

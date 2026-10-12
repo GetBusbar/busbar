@@ -123,8 +123,8 @@ PLANES="$PLANE_KEYS_DELETE"
 #     `crates/busbar-plane-decisions`, with no I/O host crate beside it, so `git rm -r` of that one
 #     directory removes the whole plane. `$PLANES` is `PLANE_KEYS_DELETE` (scripts/plane-keys.sh),
 #     which carries that on-disk key without adding the bare word to `PLANE_KEYS`. The plane serves
-#     no route yet (`plane_unserved` below), so its boot leg's route probe carries no weight and the
-#     refusal witness is its presence/absence evidence.
+#     `POST /v1/systemone` for its one configured model (the fixture configures one), so its boot leg
+#     probes a real route, and the refusal witness backs it.
 # Computed from PLANE_KEYS_LOCKED against PLANES via the alias, never hard-coded, so a plane that
 # gains an on-disk stand-in (a rename landing, or a new one-crate plane) drops out of
 # the gap with no edit here, and a locked plane added with no stand-in yet lands in it automatically.
@@ -204,11 +204,14 @@ command -v cargo >/dev/null 2>&1 || { echo "plane-delete-test: cargo not found" 
 # default plane set (removing voice touches neither mcp nor a2a). A feature that FORWARDS to
 # `plane-streaming` would leave the bin's default build incoherent without the crate until it came out
 # too — which is what neutralise_bin's forwarding closure is for.
-bin_feature() { case "$1" in llm) echo proto-llm ;; mcp) echo plane-mcp ;; a2a) echo plane-a2a ;; voice) echo plane-streaming ;; plane-decisions) echo plane-decisions ;; esac; }
+# `plane-mcp` (P3 DEL-MCP: the engine crate is deleted; the plane is its one plane-kind crate,
+# `crates/busbar-plane-mcp`, plane_ondisk_key) names its `dep:` in its DOOR row, `plane-mcp-door`;
+# `plane-mcp` forwards to that row, so the reaching closure takes both out of `default`.
+bin_feature() { case "$1" in llm) echo proto-llm ;; mcp) echo plane-mcp ;; plane-mcp) echo plane-mcp-door ;; a2a) echo plane-a2a ;; voice) echo plane-streaming ;; plane-decisions) echo plane-decisions ;; esac; }
 neutral_keep() {
   case "$1" in
     llm) echo "plane-mcp,plane-a2a" ;;
-    mcp) echo "plane-a2a" ;;
+    mcp | plane-mcp) echo "plane-a2a" ;;
     a2a) echo "plane-mcp" ;;
     voice) echo "plane-mcp,plane-a2a" ;;
     plane-decisions) echo "plane-mcp,plane-a2a" ;;
@@ -602,23 +605,24 @@ PYEOF
 # The ONLY per-plane knowledge in this leg: which boot mounts the plane, and the exact request that
 # reaches its route. Adding a plane is four lines here. Every code these probes produce is measured,
 # never assumed — see the calibration above.
-plane_probe_boot() {   # which boot config mounts this plane: `mcp` (closed chain) or `open`
-  case "$1" in mcp) echo mcp ;; *) echo open ;; esac
+plane_probe_boot() {   # which boot config mounts this plane: `mcp` (closed chain), `keyed` or `open`
+  case "$1" in mcp | plane-mcp) echo mcp ;; plane-decisions) echo keyed ;; *) echo open ;; esac
 }
-# plane_unserved <plane> → 0 when the plane is compiled in and configured but MOUNTS NO ROUTE yet.
-# `plane-decisions` is one: its `POST /v1/systemone` is served by the kernel plane driver
-# (`BUSBAR-1.6.0.md` Part 3, §12), which has not landed, so with the plane present the probe reads
-# exactly what absence reads and the route leg can prove nothing. For such a plane the judge REQUIRES
-# the control to read absent (a plane that starts serving while still marked here is RED, so the mark
-# cannot go stale) and the REFUSAL WITNESS carries the presence/absence verdict. Strike the mark the
-# moment the plane serves; the route leg then judges it like every other plane.
-plane_unserved() { case "$1" in plane-decisions) return 0 ;; *) return 1 ;; esac; }
+# plane_unserved <plane> → 0 when the plane is compiled in and configured but MOUNTS NO ROUTE.
+# For such a plane the probe reads exactly what absence reads and the route leg can prove nothing, so
+# the judge REQUIRES the control to read absent (a plane that starts serving while still marked is RED,
+# so the mark cannot go stale) and the REFUSAL WITNESS carries the presence/absence verdict.
+# NO PLANE IS MARKED: `plane-decisions` was, while the fixture configured no model and its route was
+# not mounted; it serves `POST /v1/systemone` for its one model since FLIP-DECISIONS (#497), and the
+# fixture now configures one. The self-test exercises the mechanism by marking a plane itself.
+UNSERVED_PLANES="${UNSERVED_PLANES:-}"
+plane_unserved() { case " $UNSERVED_PLANES " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
 # THE LLM PROBE IS A `GET`, AND THAT IS THE WHOLE POINT — see the calibration note below.
-plane_probe_method() { case "$1" in mcp | llm) echo GET ;; *) echo POST ;; esac; }
+plane_probe_method() { case "$1" in mcp | plane-mcp | llm) echo GET ;; *) echo POST ;; esac; }
 plane_probe_path() {
   case "$1" in
     llm)   echo "/v1/chat/completions" ;;
-    mcp)   echo "/.well-known/oauth-protected-resource/mcp" ;;
+    mcp | plane-mcp) echo "/.well-known/oauth-protected-resource/mcp" ;;
     a2a)   echo "/a2a" ;;
     voice) echo "/v1/realtime/client_secrets" ;;
     plane-decisions) echo "/v1/systemone" ;;
@@ -629,7 +633,7 @@ plane_probe_body() {
     a2a)   printf '{"jsonrpc":"2.0","method":"message/send","id":1}' ;;
     voice) printf '{"model":"gpt-realtime"}' ;;
     plane-decisions) printf '{"state":{},"context":{}}' ;;
-    llm | mcp) printf '' ;;
+    llm | mcp | plane-mcp) printf '' ;;
   esac
 }
 # WHICH TOP-LEVEL CONFIG KEYS IN THE BOOT FIXTURE BELONG TO THIS PLANE — the sections a `git rm -r`
@@ -637,7 +641,7 @@ plane_probe_body() {
 # the SUBJECT boot must not carry. Space-separated; empty for a plane the fixture does not configure.
 # This is the same fail-closed pairing the product enforces at resolve: the section exists only while
 # the plane that owns it is compiled in.
-plane_config_sections() { case "$1" in mcp) echo "mcp" ;; a2a) echo "agents" ;; voice) echo "streams" ;; plane-decisions) echo "decisions" ;; *) echo "" ;; esac; }
+plane_config_sections() { case "$1" in mcp | plane-mcp) echo "mcp" ;; a2a) echo "agents" ;; voice) echo "streams" ;; plane-decisions) echo "decisions" ;; *) echo "" ;; esac; }
 # section_omitted <section> <omit-list> → 0 when <section> is in the space-separated <omit-list>.
 section_omitted() { case " ${2:-} " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
 
@@ -679,10 +683,34 @@ section_omitted() { case " ${2:-} " in *" $1 "*) return 0 ;; *) return 1 ;; esac
 write_boot_config() {
   local mode="$1" dir="$2" port="$3" admin_port="$4" omit="${5:-}" f="$2/config.yaml"
   printf '{}\n' >"$dir/providers.yaml"
-  # BASE — plane-free, and identical in both modes bar the auth posture below.
-  printf 'listen: "127.0.0.1:%s"\nadmin_listen: "127.0.0.1:%s"\npublic_url: https://busbar.example.com\nproviders: {}\nmodels: {}\n' \
+  # BASE — plane-free, and identical in every mode bar the auth posture below. `store:` is required
+  # since Q-STORE (B) (01af48417: a config with no store block is refused at boot); without it neither
+  # boot came up and the boot leg had no control, on every tree.
+  printf 'listen: "127.0.0.1:%s"\nadmin_listen: "127.0.0.1:%s"\npublic_url: https://busbar.example.com\nstore: { module: memory }\nproviders: {}\nmodels: {}\n' \
     "$port" "$admin_port" >"$f"
   case "$mode" in
+    keyed)
+      # THE KEYED BOOT: a closed key chain and nothing else, for a plane served through its door whose
+      # claims are admitted by the key chain alone (`build_dispatch`'s R2: with no chain, a door claim
+      # with no audience refuses the boot, so such a plane cannot be probed on the open boot). Every
+      # request on this boot, the absence calibration included, carries a minted data-plane key.
+      printf 'identity-providers:\n  admin-tokens:\n    module: admin-tokens\n    token: { env: BUSBAR_ADMIN_TOKEN }\nauth:\n  signing_key: { env: BUSBAR_SIGNING_KEY }\n  chain: [keys]\n  admin_auth: [admin-tokens]\n' \
+        >>"$f"
+      # THE DECISIONS PLANE'S OWN SECTION, with exactly ONE model: that is the shape that mounts
+      # `POST /v1/systemone` (the plane claims its operation only for one configured model), so the
+      # control probes a REAL route and the route leg judges this plane like every other. The model's
+      # provider speaks the plane's dialect and points at a port nothing listens on: the probe needs
+      # the route mounted, never an answer from a far end. A build without the plane refuses the
+      # section as an unknown field (the refusal witness). The provider row is written only with the
+      # section, so a plane-less subject is not handed a provider of a dialect it was built without.
+      if ! section_omitted decisions "$omit"; then
+        printf 'decisions:\n  models:\n    probe:\n      provider: probe-jev\n' >>"$f"
+        # the model's provider is a row of the top-level `providers:` map (its credential) AND of the
+        # providers file (its dialect and address), as an operator writes one.
+        sed 's/^providers: {}$/providers:\n  probe-jev:\n    api_key: { env: MOCK_KEY }/' "$f" >"$f.tmp" && mv "$f.tmp" "$f"
+        printf 'probe-jev:\n  protocol: jev\n  base_url: http://127.0.0.1:9\n  error_map: {}\n' >"$dir/providers.yaml"
+      fi
+      ;;
     mcp)
       printf 'identity-providers:\n  admin-tokens:\n    module: admin-tokens\n    token: { env: BUSBAR_ADMIN_TOKEN }\nauth:\n  signing_key: { env: BUSBAR_SIGNING_KEY }\n  chain: [keys]\n  admin_auth: [admin-tokens]\n' \
         >>"$f"
@@ -697,11 +725,6 @@ write_boot_config() {
       # voice probe read 404 with the plane compiled in: a positive control that could not pass.
       section_omitted streams "$omit" || \
         printf 'streams:\n  context_window_tokens: 16384\n' >>"$f"
-      # THE DECISIONS PLANE'S OWN SECTION. `upstream_credentials` is a member the plane declares, so
-      # the block is CONTENT (not the empty section) and names no provider or model — the fixture
-      # stays free of upstreams. A build without the plane refuses it as an unknown field.
-      section_omitted decisions "$omit" || \
-        printf 'decisions:\n  upstream_credentials: own\n' >>"$f"
       ;;
   esac
 }
@@ -742,8 +765,10 @@ boot_and_probe() {
     sleep 0.5
   done
   if [ -z "$up" ]; then
-    red "  boot leg ($label/$mode): the binary did not come up"
-    tail -20 "$fix/boot.log" 2>/dev/null | sed 's/^/      /'
+    # To STDERR: the control's codes are read through `$(control_codes)`, which captured these two
+    # lines and printed only "control build/boot failed", so the reason a boot died was never shown.
+    red "  boot leg ($label/$mode): the binary did not come up" >&2
+    tail -20 "$fix/boot.log" 2>/dev/null | sed 's/^/      /' >&2
     kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null; rm -rf "$fix"
     return 1
   fi
@@ -757,7 +782,23 @@ boot_and_probe() {
   # exists to prevent, and a gate failing for a reason other than the property it measures.
   # It is measured for exactly the same reason every other code here is: one GET, on this same boot,
   # to a path NO plane can own. Whatever that answers IS what absence looks like on this boot.
-  code="$(curl -s -o /dev/null -w '%{http_code}' \
+  # THE KEYED BOOT mints one data-plane key through the admin API, the ordinary way, and every
+  # request below carries it: a keyed caller is what the planes probed here serve.
+  local auth=""
+  if [ "$mode" = "keyed" ]; then
+    local key
+    key="$(curl -s -X POST "http://127.0.0.1:$admin_port/api/v1/admin/keys" \
+      -H 'authorization: Bearer admin-token-for-plane-delete-boot' -H 'content-type: application/json' \
+      -d '{"name":"plane-delete"}' \
+      | python3 -c 'import json,sys; print(json.load(sys.stdin).get("token",""))' 2>/dev/null)"
+    if [ -z "$key" ]; then
+      red "  boot leg ($label/$mode): the admin API minted no data-plane key" >&2
+      kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null; rm -rf "$fix"
+      return 1
+    fi
+    auth="authorization: Bearer $key"
+  fi
+  code="$(curl -s -o /dev/null -w '%{http_code}' ${auth:+-H "$auth"} \
     "http://127.0.0.1:$port/.plane-delete-test/no-such-route-any-plane-could-own")"
   printf '__absent-%s=%s\n' "$mode" "$code" >>"$out"
 
@@ -765,9 +806,9 @@ boot_and_probe() {
     [ "$(plane_probe_boot "$p")" = "$mode" ] || continue
     method="$(plane_probe_method "$p")"; path="$(plane_probe_path "$p")"; body="$(plane_probe_body "$p")"
     if [ "$method" = "GET" ]; then
-      code="$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$port$path")"
+      code="$(curl -s -o /dev/null -w '%{http_code}' ${auth:+-H "$auth"} "http://127.0.0.1:$port$path")"
     else
-      code="$(curl -s -o /dev/null -w '%{http_code}' -X "$method" "http://127.0.0.1:$port$path" \
+      code="$(curl -s -o /dev/null -w '%{http_code}' -X "$method" ${auth:+-H "$auth"} "http://127.0.0.1:$port$path" \
         -H 'content-type: application/json' -d "$body")"
     fi
     printf '%s=%s\n' "$p" "$code" >>"$out"
@@ -786,11 +827,11 @@ build_bin() {
   log="$CACHE_TARGET/.plane-delete-$tag-build.log"; mkdir -p "$CACHE_TARGET"
   CARGO_TARGET_DIR="$CACHE_TARGET" cargo build --manifest-path "$dir/Cargo.toml" -p busbar >"$log" 2>&1; rc=$?
   if [ "$rc" -ne 0 ]; then
-    red "  boot leg ($tag): bin FAILED to build (not just check)"
-    grep -m4 -E "error(\[|:)|couldn't read" "$log" | sed 's/^/      /'
+    red "  boot leg ($tag): bin FAILED to build (not just check)" >&2
+    grep -m4 -E "error(\[|:)|couldn't read" "$log" | sed 's/^/      /' >&2
     return 1
   fi
-  [ -x "$CACHE_TARGET/debug/busbar" ] || { red "  boot leg ($tag): built binary not found"; return 1; }
+  [ -x "$CACHE_TARGET/debug/busbar" ] || { red "  boot leg ($tag): built binary not found" >&2; return 1; }
   kept="$CACHE_TARGET/busbar-$tag"
   cp "$CACHE_TARGET/debug/busbar" "$kept" || return 1
   printf '%s\n' "$kept"
@@ -803,8 +844,9 @@ build_bin() {
 probe_codes() {
   local bin="$1" label="$2" out="$3" omit="${4:-}" fail=0
   : >"$out"
-  boot_and_probe "$bin" mcp  "$label" "$out" "$omit" || fail=1
-  boot_and_probe "$bin" open "$label" "$out" "$omit" || fail=1
+  boot_and_probe "$bin" mcp   "$label" "$out" "$omit" || fail=1
+  boot_and_probe "$bin" open  "$label" "$out" "$omit" || fail=1
+  boot_and_probe "$bin" keyed "$label" "$out" "$omit" || fail=1
   return "$fail"
 }
 
@@ -1350,8 +1392,11 @@ run_selftest() {
   rm -rf "$s"
 
   # A representative plane for the compile controls (bounded self-test time; the mechanism is identical
-  # for all three, proven above). `mcp` keeps the other two planes' shape intact around it.
-  local rp=mcp
+  # for all three, proven above). The mcp plane keeps the other planes' shape intact around it. Its
+  # on-disk key is `plane-mcp` since P3 DEL-MCP deleted `crates/busbar-mcp`: under the old key `mcp`
+  # the controls removed a directory that no longer exists, so the RED control compiled an
+  # UNMUTATED tree and the GREEN control passed for nothing.
+  local rp=plane-mcp
 
   # (2) RED CONTROL — a genuinely-coupled scratch MUST report FAIL. We remove the crate dir + member but
   #     DELIBERATELY SKIP the bin neutralisation, so the bin still carries `dep:busbar-<rp>` pointing at a
@@ -1444,7 +1489,7 @@ run_selftest() {
   # that does not exist answers on each boot. The open boot 404s; the CLOSED one 401s, because its
   # auth middleware refuses an unlisted path before routing is consulted. Planting the real pair is
   # what makes these fixtures the same shape the gate actually judges.
-  local CAL='__absent-open=404\n__absent-mcp=401\n'
+  local CAL='__absent-open=404\n__absent-mcp=401\n__absent-keyed=404\n'
 
   # (5a) GREEN: the plane was mounted (200), is now gone (404 = absent here), neighbours untouched.
   printf "${CAL}llm=200\nmcp=200\na2a=200\nvoice=200\n" >"$ctl"
@@ -1542,6 +1587,8 @@ run_selftest() {
   # (5j) AN UNSERVED PLANE (`plane_unserved`). Its probe reading absent on the control is expected,
   #      not a vacuous probe; the same probe answering anything else means the plane serves now and
   #      its mark is stale, which must be RED so the route leg starts judging it.
+  local unserved_was="$UNSERVED_PLANES"
+  UNSERVED_PLANES="plane-decisions"   # the mechanism's own proof marks a plane; no plane is marked in a real run
   printf "${CAL}llm=200\nmcp=200\na2a=200\nvoice=200\nplane-decisions=404\n" >"$ctl"
   printf "${CAL}llm=200\nmcp=200\na2a=200\nvoice=200\nplane-decisions=404\n" >"$sub"
   if judge_codes "$ctl" "$sub" plane-decisions >/dev/null 2>&1; then
@@ -1562,6 +1609,7 @@ run_selftest() {
   else
     note "PASS  boot-judge UNSERVED: a route appearing on the plane-less build is RED"
   fi
+  UNSERVED_PLANES="$unserved_was"
 
   # (5i) THE SUBJECT BOOT MUST NOT CONFIGURE THE PLANE IT JUST DELETED. This is the fixture defect
   #      the refusal witness exists beside: the shared boot config NAMES every plane, and busbar
@@ -1601,10 +1649,10 @@ run_selftest() {
   write_boot_config open "$cfgdir" 46000 46001 "$(plane_config_sections a2a)"
   open_stripped="$(grep -c . "$cfgdir/config.yaml")"
   if [ "$open_stripped" -lt "$open_full" ] && grep -q "^listen:" "$cfgdir/config.yaml" \
-     && grep -q "^public_url:" "$cfgdir/config.yaml"; then
+     && grep -q "^public_url:" "$cfgdir/config.yaml" && grep -q "^store:" "$cfgdir/config.yaml"; then
     note "PASS  boot fixture: omitting a plane section shrinks the config and leaves the plane-free base intact"
   else
-    fail=1; note "FAIL  boot fixture: the omission removed nothing, or took the plane-free base with it ($open_full -> $open_stripped lines)"
+    fail=1; note "FAIL  boot fixture: the omission removed nothing, or took the plane-free base (listen, public_url, store) with it ($open_full -> $open_stripped lines)"
   fi
   rm -rf "$cfgdir"
 

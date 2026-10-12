@@ -4,10 +4,48 @@
 
 use super::*;
 use busbar_kernel_ledger::legacy::{LegacyHead, LegacyMigrationSource};
+use busbar_kernel_ledger::migration::LegacyCapDimension;
 use busbar_kernel_ledger::migration::{
-    LegacyFamily, LegacyFigure, LegacyFigures, NodeLocalRecords,
+    LegacyFamily, LegacyFigure, LegacyFigures, MigrationError, MigrationMarker, MigrationRecords,
 };
-use busbar_kernel_ledger::totals::CapDimension;
+
+/// Records that keep the marker in this test's memory: the in-memory `MigrationRecords` double.
+///
+/// The ledger used to ship this as `NodeLocalRecords`, a production type nothing in production
+/// constructed (the root keeps the marker on its journal), so it lives with the tests that use it.
+#[derive(Debug, Default, Clone)]
+struct NodeLocalRecords {
+    marker: std::sync::Arc<std::sync::Mutex<Option<MigrationMarker>>>,
+}
+
+impl NodeLocalRecords {
+    fn new() -> Self {
+        NodeLocalRecords::default()
+    }
+
+    /// Whether a marker has been written.
+    fn is_sealed(&self) -> bool {
+        self.marker
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_some()
+    }
+}
+
+impl MigrationRecords for NodeLocalRecords {
+    fn read_marker(&self) -> Result<Option<MigrationMarker>, MigrationError> {
+        Ok(self
+            .marker
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone())
+    }
+
+    fn write_marker(&mut self, marker: &MigrationMarker) -> Result<(), MigrationError> {
+        *self.marker.lock().unwrap_or_else(|e| e.into_inner()) = Some(marker.clone());
+        Ok(())
+    }
+}
 
 /// Rows a test seeded, counting the reads so "the second boot touched nothing" is an assertion
 /// about the previous release's rows rather than about a return value.
@@ -57,7 +95,7 @@ fn rows() -> SeededRows {
             window: 86_400,
             lane: "gpt-4".to_string(),
             provider: String::new(),
-            dimension: CapDimension::Class("input".to_string()),
+            dimension: LegacyCapDimension::Class("input".to_string()),
             amount: 6_000,
         }],
         reads: std::cell::Cell::new(0),

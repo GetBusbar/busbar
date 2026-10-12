@@ -25,7 +25,7 @@ fn names_are_stable_and_distinct() {
 }
 
 // `the_a2a_legs_are_named_by_the_planes_wire_formats` MOVED to
-// `tests/plane_dispatch_cross_plane.rs`: it asserts `wire_format_names("a2a")` against the REAL a2a
+// `crates/busbar/tests/plane_dispatch_cross_plane.rs`: it asserts `wire_format_names("a2a")` against the REAL a2a
 // plane's declared wire formats, which needs the real roster registered — an integration-test
 // target, never this `#[cfg(test)]` unit module (see that file's header).
 

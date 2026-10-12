@@ -4,15 +4,15 @@
 # exactly one token for the length of one call. If it could name the kernel it could reach past the
 # token; if it could name a transport it would grow a second opinion about what a credential is. So
 # the only edge out of this crate is `busbar-caps`, which is where the token and the answer type
-# live. Everything the chain needs from the outside — the credential digest, the key verifier,
-# the revocation set — arrives as a trait the caller implements.
+# live. Everything the chain needs from the outside — the key verifier, the revocation set —
+# arrives as a trait the caller implements.
 [package]
 name = "busbar-kernel-identity"
 version = "1.6.0"
 publish = false            # internal workspace crate; never goes to crates.io
 edition = "2021"
 rust-version = "1.97"
-description = "The authenticate step as a unit: the credential chain, the credential cache, the challenge, and the protocol-claim ladder."
+description = "The authenticate step as a unit: the credential chain, the challenge, and the protocol-claim ladder."
 license = "Apache-2.0"
 
 [lib]
@@ -21,33 +21,14 @@ path = "src/lib.rs"
 
 [dependencies]
 busbar-contract = { path = "../busbar-contract" }
-# `hex` is unconditional: the folded `egress_auth` sigv4 signer needs it. The `sha256` feature still
-# gates the ingress-side production `CredentialDigest` code (`cache::Sha256Digest`).
+# The caller reference (`caller_ref`): its HKDF/HMAC on the one crypto backend, rendered as hex.
 hex = { workspace = true }
-# The caller reference (`caller_ref`) HKDF/HMAC and the sigv4 signer's SHA-256/HMAC-SHA256, all on
-# the one crypto backend.
 ring = { workspace = true }
-# The OAuth token response's tolerant `expires_in` parse (`egress_auth::deserialize_expires_in`) is a
-# serde deserializer. A leaf already in this crate's closure through `busbar-contract`.
-serde = { workspace = true }
-# `report_unpresented` logs a credential a declared scheme could not present, in the line its
-# scheme's builder always logged (operator logs are frozen text); the diagnostic emit macros it
-# writes them through expand to `tracing`.
-tracing = { workspace = true }
 
 [features]
-# A production `CredentialDigest` (1.5.5's hex SHA-256) for callers who would rather take the
-# `sha2`/`hex` dependency than supply their own. Off by default.
-sha256 = []
 # The operator credential's kind-neutral stand-in words (`operator::STAND_IN`) for a TEST build that
 # has no composition root to hand the root legacy table's words in. busbar-kernel's own tests and
 # its `test-support` feature turn it on; a shipped build never does.
 stand-in = []
-
-[dev-dependencies]
-# Independent RustCrypto witness: the tests check ring-computed digests against it byte for byte.
-sha2 = { workspace = true }
-# Test-only, and only exercised under `--features sha256`: the reference `sha256_hex` the
-# `Sha256Digest` jitter-parity test compares against. Never a default-build dependency.
 
 # Temporary standalone root while the workspace members land in parallel.

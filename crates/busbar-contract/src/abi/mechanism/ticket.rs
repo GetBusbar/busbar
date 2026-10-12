@@ -17,6 +17,7 @@
 use std::os::raw::c_void;
 
 use crate::abi::host::conn::connector::ConnectorSlots;
+use crate::abi::host::io::IoSlots;
 use crate::abi::host::service::HostSlots;
 
 /// A ticket: `(slot, generation)`. UNIQUE PER INSTANCE across all workers, so a plugin may key its
@@ -88,4 +89,8 @@ pub struct HostTables {
     /// The host services table (`abi/host/service.rs`), every slot `extern "C"`; NULL when the
     /// host offers none.
     pub services: *const HostSlots,
+    /// THE HOST'S I/O TABLE (`abi/host/io.rs`, `io.*`): the primitives a carrier moves bytes with
+    /// over handles the host owns, every slot a C-ABI fn; NULL when the host offers none.
+    /// Appended: a reader checks `size` covers it before it reads it.
+    pub io: *const IoSlots,
 }

@@ -200,6 +200,9 @@ impl Node {
                     (
                         DestinationId::new(n as u64),
                         MemberRoute {
+                            anchors: Default::default(),
+                            rides: Vec::new(),
+                            spelled: Vec::new(),
                             need: NeedId(0),
                             base_url: format!("https://{lane}.test/"),
                             auth: None,
@@ -210,6 +213,7 @@ impl Node {
                 })
                 .collect(),
             stream_ceiling_secs: STREAM_CEILING_SECS,
+            stated_ceiling_secs: 0,
             error_body_max: DEFAULT_ERROR_BODY_MAX,
         }
     }
@@ -246,10 +250,18 @@ impl Node {
                     Pick::Exhausted {
                         status,
                         retry_after,
+                        ..
                     } => {
                         return Routed::Refused(Refusal {
                             status,
                             retry_after,
+                        })
+                    }
+                    // A hook restriction's refusal; no hook binds in these walk proofs.
+                    Pick::Vetoed { status, .. } => {
+                        return Routed::Refused(Refusal {
+                            status,
+                            retry_after: None,
                         })
                     }
                 };
@@ -390,6 +402,8 @@ fn ports<'p>(node: &'p Node, pools: &'p HashMap<String, Pool>) -> WalkPorts<'p> 
 /// One attempt's request, as a plane bound it for the far end.
 fn request(member: &str, pool: &str, attempt_no: u32) -> OutboundRequest {
     OutboundRequest {
+        text: false,
+        need: 0,
         member: member.to_string(),
         pool: pool.to_string(),
         attempt_no,

@@ -121,7 +121,7 @@
 //! coupling. So a quoted map KEY is masked ONLY when it resolves EXACTLY to a path of the wire lock
 //! the file names (`[dialect] wire`, `testing/llm-conformance/wire/<lock>.wire.json`). The same word
 //! in a value, a comment, or a key the lock does not have is counted as before
-//! ([`mask_dialect_wire_keys`]).
+//! ([`mask_wire_keys`]).
 //!
 //! ONE COLUMN IS NOT MEASURED, AND IT IS A RULE RATHER THAN AN ALLOWANCE: a crate of one of the
 //! seven plugin kinds is not counted in the `contract` column. #40(a) makes `busbar-contract` the
@@ -278,8 +278,8 @@ fn vocabulary(crates: &[CrateInfo]) -> BTreeMap<&'static str, Vec<Needle>> {
             id: String::new(),
         });
         // A WIRE A CRATE DECLARES IS VOCABULARY LIKE ONE IT IS NAMED FOR (#50). `http` holds
-        // `grpc` and `sse` as modules since they folded into it, each registering under its own
-        // key, so each key is a transport instance's bare and kind-qualified id, owned by the crate
+        // `sse` as a module since it folded into it, registering under its own
+        // key, so that key is a transport instance's bare and kind-qualified id, owned by the crate
         // that declares it — exactly the needles a crate named for that wire contributed.
         for key in &c.declared_keys {
             if own_id(c).as_deref() == Some(key.as_str()) {
@@ -515,7 +515,7 @@ fn count_by_windows(chars: &[char], needle: &[String]) -> usize {
 // ------------------------------------------------------------------------------------------------
 
 /// One cell of the matrix.
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 struct Cell {
     /// The HIGHEST of the scanners, never the lowest.
     count: usize,
@@ -580,7 +580,115 @@ struct Plan {
 
 type Measured = (Matrix, usize, Vec<String>);
 
+/// Whether a measurement may use the per-file memos ([`MASKED_MEMO`], [`PLAN_MEMO`],
+/// [`FILE_MEMO`], [`super::code_only_memo`]) or must walk every file afresh.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Walk {
+    /// Every per-file reading from its memo where one is held: the gate's own path.
+    Memoised,
+    /// Every per-file reading taken afresh, no memo read or written: the reference the memoised
+    /// path is held equal to.
+    Full,
+}
+
+/// THE MEMO IS HELD EQUAL TO THE FULL WALK. With `XTASK_MATRIX_VERIFY=1` every measurement is
+/// taken twice, memoised and in full, and a difference is a refusal (the row FAILs naming it), so
+/// a self-test battery run with it set proves that every tree it measured — the unplanted tree and
+/// every planted one — has the matrix a full re-walk produces.
+///
+/// THE COUNT IS OF MEASUREMENTS, NOT OF CASES. Every call prints EXACTLY ONE stderr line, whatever
+/// the outcome — `matrix-verify: equal` (both walks measured the same matrix, or both refused the
+/// tree with the same reason) or `matrix-verify: DIFFER` — naming the tree it measured
+/// (`unplanted`, or the plant's fingerprint digest). A case measures the matrix
+/// zero times (its gate stops before the matrix rule, or its subject does not run it), once (its
+/// planted run), or more (it runs the gate again, e.g. the registered twin beside the subject); the
+/// shared unplanted baseline is one more per gate. So the lines are not the cases, and the proof is
+/// that every line says `equal`. A `DIFFER` is printed here as well as in the row, because the row
+/// of a case expecting RED can fail for the difference and still read as the proof.
+const VERIFY_ENV: &str = "XTASK_MATRIX_VERIFY";
+
 fn measure(cx: &Ctx, crates: &[CrateInfo]) -> Result<Measured, String> {
+    if std::env::var(VERIFY_ENV).as_deref() != Ok("1") {
+        return measure_with(cx, crates, Walk::Memoised);
+    }
+    measure_verified(cx, crates)
+}
+
+/// [`measure`] under [`VERIFY_ENV`]: memoised and full, compared, one stderr line either way.
+fn measure_verified(cx: &Ctx, crates: &[CrateInfo]) -> Result<Measured, String> {
+    let tree = match cx.overlay().map(crate::ctx::Overlay::fingerprint) {
+        None => "unplanted".to_string(),
+        Some(f) if f.is_empty() => "unplanted".to_string(),
+        Some(f) => {
+            use std::hash::{Hash, Hasher};
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            f.hash(&mut h);
+            format!("plant {:016x}", h.finish())
+        }
+    };
+    // A REFUSAL IS A READING TOO: a planted tree the scan refuses (below the file floor) must be
+    // refused the same way by both walks, so both are always taken and compared.
+    let (memoised, full) = match (
+        measure_with(cx, crates, Walk::Memoised),
+        measure_with(cx, crates, Walk::Full),
+    ) {
+        (Ok(m), Ok(f)) => (m, f),
+        (Err(m), Err(f)) if m == f => {
+            eprintln!("matrix-verify: equal ({tree}; both refused: {m})");
+            return Err(m);
+        }
+        (m, f) => {
+            let why =
+                format!(
+                "{VERIFY_ENV}: the memoised walk and the full walk disagree on whether the scan \
+                 runs (memoised: {}, full: {})",
+                m.as_ref().map_or_else(|e| e.clone(), |_| "measured".to_string()),
+                f.as_ref().map_or_else(|e| e.clone(), |_| "measured".to_string())
+            );
+            eprintln!("matrix-verify: DIFFER ({tree}): {why}");
+            return Err(why);
+        }
+    };
+    {
+        if full != memoised {
+            let cells = |m: &Matrix| m.keys().cloned().collect::<BTreeSet<_>>();
+            let differ: Vec<String> = cells(&memoised.0)
+                .union(&cells(&full.0))
+                .filter(|k| memoised.0.get(*k) != full.0.get(*k))
+                .take(10)
+                .map(|(c, k)| format!("{c} x {k}"))
+                .collect();
+            let why = format!(
+                "{VERIFY_ENV}: the memoised matrix differs from the full walk (files {} vs {}, \
+                 skipped {} vs {}; cells: {})",
+                memoised.1,
+                full.1,
+                memoised.2.len(),
+                full.2.len(),
+                differ.join(", ")
+            );
+            eprintln!("matrix-verify: DIFFER ({tree}): {why}");
+            return Err(why);
+        }
+        eprintln!(
+            "matrix-verify: equal ({tree}; {} cells, {} files)",
+            memoised.0.len(),
+            memoised.1
+        );
+    }
+    Ok(memoised)
+}
+
+/// THE MASKED TEXT OF ONE FILE, memoised on everything the mask chain reads: the path, the owning
+/// directory, the bytes, and every input that is not the file — whether it is the contract's own,
+/// the contract's exported identifiers, the crate's external roots, the auth scope, and for a
+/// plane crate whether the file is a dialect module and, for a dialect mapping file, the wire
+/// lock's paths. A planted case changes one file or one crate; every other file's masked text is
+/// a hit here instead of nine masks over its bytes.
+static MASKED_MEMO: std::sync::OnceLock<std::sync::Mutex<BTreeMap<u64, std::sync::Arc<String>>>> =
+    std::sync::OnceLock::new();
+
+fn measure_with(cx: &Ctx, crates: &[CrateInfo], walk: Walk) -> Result<Measured, String> {
     let vocab = vocabulary(crates);
     let by_dir: BTreeMap<&str, &CrateInfo> = crates.iter().map(|c| (c.dir.as_str(), c)).collect();
 
@@ -633,29 +741,49 @@ fn measure(cx: &Ctx, crates: &[CrateInfo]) -> Result<Measured, String> {
     let auth_decision = auth_words::declared(&files);
     // A plugin's own conformance test naming the loader it is granted is the witness, not a
     // coupling ([`super::conformance_witness_edges`]).
-    let granted = super::conformance_witness_edges(cx, crates);
+    let granted = super::conformance_witness_edges_with(cx, crates, walk == Walk::Memoised);
+    // Everything the mask chain reads that is not the file, hashed once for the measurement.
+    let contract_key = {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        contract.hash(&mut h);
+        auth_decision.hash(&mut h);
+        h.finish()
+    };
 
-    // The external crate roots each crate's manifest declares ([`external`]).
+    // The external crate roots each crate's manifest declares ([`external`]): a pure function of
+    // the crate's dependency tables, so it is taken once per directory before the files are read.
     let tree: BTreeSet<&str> = crates.iter().map(|c| c.name.as_str()).collect();
-    let mut externals: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    let externals: BTreeMap<&str, BTreeSet<String>> = by_dir
+        .iter()
+        .map(|(dir, c)| {
+            (
+                *dir,
+                external::external_roots(
+                    c.deps
+                        .iter()
+                        .chain(&c.dev_deps)
+                        .map(|d| (d.pkg.as_str(), d.key.as_str())),
+                    &tree,
+                ),
+            )
+        })
+        .collect();
 
-    let mut matrix: Matrix = BTreeMap::new();
-    let mut wire_locks: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-    for (rel, text) in &files {
-        let rel = rel.clone();
+    // EACH FILE IS MASKED AND SCANNED ON ITS OWN BYTES, so the files are read across the cores and
+    // their hits folded into the matrix below IN SCAN-SET ORDER — the order the serial loop filed
+    // them in, which is the order every cell's drain list prints. The wire-lock cache is a cache of
+    // file reads (the same answer whoever fills it), shared under a lock.
+    let wire_locks: std::sync::Mutex<BTreeMap<String, BTreeSet<String>>> =
+        std::sync::Mutex::new(BTreeMap::new());
+    let scanned = crate::par::par_map(&files, |(rel, text)| {
         // OWNER 2026-10-03: "Cargo.toml is ignored blanketly from this check" (see the module doc).
-        if is_cargo_manifest(&rel) {
-            continue;
+        if is_cargo_manifest(rel) {
+            return None;
         }
-        let Some(dir) = owning_dir(&rel) else {
-            continue;
-        };
-        let Some(c) = by_dir.get(dir.as_str()) else {
-            continue;
-        };
-        let Some(per_kind) = plan.get(dir.as_str()) else {
-            continue;
-        };
+        let dir = owning_dir(rel)?;
+        let c = *by_dir.get(dir.as_str())?;
+        let per_kind = plan.get(dir.as_str())?;
         // `BUSBAR-1.6.0.md` §11.5 "One place for every ABI shape": every ABI shape lives in ONE place,
         // `busbar-contract/src/abi/` — the seven kinds' operations, data shapes and versions
         // legitimately live and cross-reference each other there (`abi/store/` naming `abi/auth/`'s
@@ -667,64 +795,109 @@ fn measure(cx: &Ctx, crates: &[CrateInfo]) -> Result<Measured, String> {
         // `abi/` exactly as before — only the kind-isolation MATRIX stops filing it into a cell. Code
         // in `busbar-contract` OUTSIDE `abi/` is still counted, same as any other crate, except the
         // three mirrors that restate `abi/`'s shapes ([`CONTRACT_ABI_LAYOUT_MIRRORS`]).
-        if c.name == CONTRACT_PACKAGE && is_contract_abi_shape(&rel) {
-            continue;
+        if c.name == CONTRACT_PACKAGE && is_contract_abi_shape(rel) {
+            return None;
         }
-        // The contract's own identifiers are masked everywhere EXCEPT in the contract, whose
-        // vocabulary is its own row's to measure (see [`contract_identifiers`]).
-        let masked = if c.name == CONTRACT_PACKAGE {
-            std::borrow::Cow::Borrowed(text.as_str())
+        let auth = auth_words::scope(c.kind, &dir, rel).filter(|_| auth_decision);
+        let plane = c.kind == Some("plane");
+        // The two plane-crate masks read the tree beside the file: whether it is a dialect module,
+        // and the wire lock a dialect mapping file names. Both are read here, for the key.
+        let dialect_module = plane && in_dialect_module(cx, &dir, rel);
+        let wire = if plane {
+            let mut locks = wire_locks
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            dialect_wire_paths(cx, &dir, rel, text, &mut locks)
         } else {
-            mask_identifiers(text, &contract)
+            None
         };
         // A name inside a path rooted at an EXTERNAL crate is that crate's word (`std::process::
         // Stdio`), and `busbar_kernel::audit` is a module of the kernel facade, not a sibling crate.
-        let roots = externals.entry(dir.clone()).or_insert_with(|| {
-            external::external_roots(
-                c.deps
-                    .iter()
-                    .chain(&c.dev_deps)
-                    .map(|d| (d.pkg.as_str(), d.key.as_str())),
-                &tree,
-            )
-        });
-        let masked = external::mask_external_paths(&rel, &masked, roots);
-        let masked = external::mask_kernel_facade(&rel, &masked);
-        // English words that are also instance names are not counted as English prose.
-        let masked = mask_english_prose(&rel, &masked);
-        // Instance ids that are also a crate's or an abbreviation's name count only as references.
-        let masked = mask_colliding_words(&rel, &masked);
-        // `unix` as the operating system (a cfg, `std::os::unix`, the clock) is not the carrier.
-        // Its context is read off the ORIGINAL text: an earlier mask's filler must not change what
-        // a neighbouring word says ("the unix socket" with `socket` masked as a contract name).
-        let masked = os_words::mask_os_words_in(&rel, text, &masked);
-        let masked = match auth_words::scope(c.kind, &dir, &rel).filter(|_| auth_decision) {
-            Some(with_type) => std::borrow::Cow::Owned(
-                auth_words::mask_auth_decision(&rel, &masked, with_type).into_owned(),
-            ),
-            None => masked,
+        let roots = &externals[dir.as_str()];
+        let key = {
+            use std::hash::{Hash, Hasher};
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            rel.hash(&mut h);
+            dir.hash(&mut h);
+            text.hash(&mut h);
+            (c.name == CONTRACT_PACKAGE).hash(&mut h);
+            contract_key.hash(&mut h);
+            roots.hash(&mut h);
+            auth.hash(&mut h);
+            plane.hash(&mut h);
+            dialect_module.hash(&mut h);
+            wire.hash(&mut h);
+            h.finish()
         };
-        // A dialect mapping file's wire-lock keys are the provider's words (ruling above).
-        let masked = if c.kind == Some("plane") {
-            mask_dialect_wire_keys(cx, &dir, &rel, text, &masked, &mut wire_locks)
-        } else {
-            std::borrow::Cow::Borrowed(&*masked)
+        let memo = MASKED_MEMO.get_or_init(Default::default);
+        let held = match walk {
+            Walk::Memoised => memo
+                .lock()
+                .expect("the masked memo mutex is never poisoned")
+                .get(&key)
+                .cloned(),
+            Walk::Full => None,
         };
-        // A dialect module's native item-id prefix literal is the provider's word (ruling below).
-        let masked = if c.kind == Some("plane") {
-            mask_dialect_id_prefixes(cx, &dir, &rel, text, &masked)
-        } else {
-            std::borrow::Cow::Borrowed(&*masked)
-        };
-        for h in scan_file(per_kind, &dir, &rel, &masked).iter() {
-            let line = h
-                .line
-                .checked_sub(1)
-                .and_then(|i| text.lines().nth(i))
-                .unwrap_or("");
-            if super::is_witness_hit(&granted, c, h.kind, &rel, line) {
-                continue;
+        let masked: std::sync::Arc<String> = match held {
+            Some(m) => m,
+            None => {
+                let m = std::sync::Arc::new(mask_chain(MaskInputs {
+                    rel,
+                    text,
+                    is_contract: c.name == CONTRACT_PACKAGE,
+                    contract: &contract,
+                    roots,
+                    auth,
+                    dialect_module,
+                    wire: wire.as_ref(),
+                }));
+                if walk == Walk::Memoised {
+                    memo.lock()
+                        .expect("the masked memo mutex is never poisoned")
+                        .insert(key, std::sync::Arc::clone(&m));
+                }
+                m
             }
+        };
+        let hits = match walk {
+            Walk::Memoised => scan_file(per_kind, &dir, rel, &masked),
+            Walk::Full => scan_fresh(per_kind, &dir, rel, &masked),
+        };
+        // A hit on a line the conformance witness covers is the witness, not a coupling. Each
+        // hit's line is looked up in the file's line list, read once, rather than by walking the
+        // text from its start once per hit — and only when the witness grant can excuse a hit of
+        // this crate at all.
+        let lines: Vec<&str> = if hits
+            .iter()
+            .any(|h| super::witness_may_apply(&granted, c, h.kind))
+        {
+            text.lines().collect()
+        } else {
+            Vec::new()
+        };
+        let kept: Vec<bool> = hits
+            .iter()
+            .map(|h| {
+                if !super::witness_may_apply(&granted, c, h.kind) {
+                    return true;
+                }
+                let line = h
+                    .line
+                    .checked_sub(1)
+                    .and_then(|i| lines.get(i).copied())
+                    .unwrap_or("");
+                !super::is_witness_hit(&granted, c, h.kind, rel, line)
+            })
+            .collect();
+        Some((c, hits, kept))
+    });
+
+    let mut matrix: Matrix = BTreeMap::new();
+    for ((rel, _), found) in files.iter().zip(scanned) {
+        let Some((c, hits, kept)) = found else {
+            continue;
+        };
+        for (h, _) in hits.iter().zip(kept).filter(|(_, keep)| *keep) {
             let cell = matrix.entry((c.name.clone(), h.kind)).or_default();
             cell.by_segments += h.by_segments;
             cell.by_windows += h.by_windows;
@@ -750,6 +923,103 @@ fn measure(cx: &Ctx, crates: &[CrateInfo]) -> Result<Measured, String> {
     Ok((matrix, files.len(), skipped))
 }
 
+/// Everything the mask chain reads for one file: the file, and the inputs that are not the file.
+struct MaskInputs<'a> {
+    rel: &'a str,
+    text: &'a str,
+    is_contract: bool,
+    contract: &'a BTreeSet<String>,
+    roots: &'a BTreeSet<String>,
+    auth: Option<bool>,
+    dialect_module: bool,
+    wire: Option<&'a BTreeSet<String>>,
+}
+
+/// THE MASK CHAIN, in its order, over one file: a pure function of [`MaskInputs`], which is what
+/// lets [`MASKED_MEMO`] hold its answer.
+fn mask_chain(m: MaskInputs<'_>) -> String {
+    let MaskInputs {
+        rel,
+        text,
+        is_contract,
+        contract,
+        roots,
+        auth,
+        dialect_module,
+        wire,
+    } = m;
+    // The contract's own identifiers are masked everywhere EXCEPT in the contract, whose
+    // vocabulary is its own row's to measure (see [`contract_identifiers`]).
+    let masked = if is_contract {
+        std::borrow::Cow::Borrowed(text)
+    } else {
+        mask_identifiers(text, contract)
+    };
+    // A name inside a path rooted at an EXTERNAL crate is that crate's word (`std::process::
+    // Stdio`), and `busbar_kernel::audit` is a module of the kernel facade, not a sibling crate.
+    let masked = external::mask_external_paths(rel, &masked, roots);
+    let masked = external::mask_kernel_facade(rel, &masked);
+    // English words that are also instance names are not counted as English prose.
+    let masked = mask_english_prose(rel, &masked);
+    // Instance ids that are also a crate's or an abbreviation's name count only as references.
+    let masked = mask_colliding_words(rel, &masked);
+    // `unix` as the operating system (a cfg, `std::os::unix`, the clock) is not the carrier.
+    // Its context is read off the ORIGINAL text: an earlier mask's filler must not change what
+    // a neighbouring word says ("the unix socket" with `socket` masked as a contract name).
+    let masked = os_words::mask_os_words_in(rel, text, &masked);
+    let masked = match auth {
+        Some(with_type) => std::borrow::Cow::Owned(
+            auth_words::mask_auth_decision(rel, &masked, with_type).into_owned(),
+        ),
+        None => masked,
+    };
+    // A dialect mapping file's wire-lock keys are the provider's words (ruling above).
+    let masked = match wire {
+        Some(paths) => mask_wire_keys(text, &masked, paths),
+        None => std::borrow::Cow::Borrowed(&*masked),
+    };
+    // A dialect module's native item-id prefix literal is the provider's word (ruling below).
+    let masked = if dialect_module {
+        mask_id_prefixes(rel, text, &masked)
+    } else {
+        std::borrow::Cow::Borrowed(&*masked)
+    };
+    masked.into_owned()
+}
+
+/// A single measurement walking every file afresh: [`scan_file`] with no memo read or written.
+fn scan_fresh(plan: &Plan, dir: &str, rel: &str, text: &str) -> std::sync::Arc<Vec<Hit>> {
+    let mut seen: BTreeSet<&str> = BTreeSet::new();
+    let only: Vec<usize> = (0..plan.needles.len())
+        .filter(|&i| seen.insert(plan.needles[i].word.as_str()))
+        .collect();
+    let found = scan_needles(plan, &only, dir, rel, text);
+    let mut out: Vec<(usize, usize, Hit)> = Vec::new();
+    for (i, n) in plan.needles.iter().enumerate() {
+        let Some(hits) = found.get(&n.word) else {
+            continue;
+        };
+        for w in hits {
+            out.push((
+                w.line,
+                i,
+                Hit {
+                    kind: n.kind,
+                    word: n.word.clone(),
+                    line: w.line,
+                    by_segments: w.by_segments,
+                    by_windows: w.by_windows,
+                    by_decoded: w.by_decoded,
+                    confusable: w.confusable,
+                },
+            ));
+        }
+    }
+    out.sort_by_key(|(line, i, _)| (*line, *i));
+    one_needle_per_span(plan, &mut out);
+    std::sync::Arc::new(out.into_iter().map(|(_, _, h)| h).collect())
+}
+
 /// Is `rel` a Cargo manifest, by file name? The matrix does not count these (owner 2026-10-03).
 /// Only the exact name `Cargo.toml`: every other `.toml` is still scanned.
 fn is_cargo_manifest(rel: &str) -> bool {
@@ -764,30 +1034,31 @@ const WIRE_LOCK_DIR: &str = "testing/llm-conformance/wire";
 /// (`[dialect] wire = "<lock>"`) is masked. Nothing else is: not the value, not a comment, not a key
 /// the lock lacks, not a file outside `<plane crate>/dialects/`. A file whose lock is missing or
 /// unreadable masks nothing. The keys are read off the ORIGINAL `text` (an earlier mask may have
-/// filled a word of it) and filled in `masked`, which every earlier mask keeps byte-aligned with it.
-/// `locks` caches each lock's path set across files.
-fn mask_dialect_wire_keys<'a>(
+/// filled a word of it) and filled in `masked`, which every earlier mask keeps byte-aligned with it
+/// ([`mask_wire_keys`]).
+///
+/// The wire lock's paths for `rel` when it is a plane crate's dialect mapping file
+/// (`<dir>/dialects/<d>.toml`) that names its lock in `[dialect] wire`; `None` for any other file,
+/// and for one whose lock is missing or unreadable (an empty set: nothing is masked). `locks`
+/// caches each lock's path set across files.
+fn dialect_wire_paths(
     cx: &Ctx,
     dir: &str,
     rel: &str,
     text: &str,
-    masked: &'a str,
     locks: &mut BTreeMap<String, BTreeSet<String>>,
-) -> std::borrow::Cow<'a, str> {
+) -> Option<BTreeSet<String>> {
     let in_dialects = rel
         .strip_prefix(dir)
         .and_then(|r| r.strip_prefix("/dialects/"))
         .is_some_and(|f| f.ends_with(".toml") && !f.contains('/'));
-    if !in_dialects || masked.len() != text.len() {
-        return std::borrow::Cow::Borrowed(masked);
+    if !in_dialects {
+        return None;
     }
-    let Some(wire) = crate::toml_lite::parse_text(text)
+    let wire = crate::toml_lite::parse_text(text)
         .table("dialect")
         .get_one("wire")
-        .map(String::from)
-    else {
-        return std::borrow::Cow::Borrowed(masked);
-    };
+        .map(String::from)?;
     let paths = locks.entry(wire.clone()).or_insert_with(|| {
         cx.read(format!("{WIRE_LOCK_DIR}/{wire}.wire.json"))
             .ok()
@@ -795,6 +1066,20 @@ fn mask_dialect_wire_keys<'a>(
             .map(|l| l.dirs.into_values().flat_map(|d| d.into_keys()).collect())
             .unwrap_or_default()
     });
+    Some(paths.clone())
+}
+
+/// A dialect mapping file's quoted map KEYS that are exactly a path in `paths` (its wire lock),
+/// masked. The keys are read off the ORIGINAL `text` (an earlier mask may have filled a word of it)
+/// and filled in `masked`, which every earlier mask keeps byte-aligned with it.
+fn mask_wire_keys<'a>(
+    text: &str,
+    masked: &'a str,
+    paths: &BTreeSet<String>,
+) -> std::borrow::Cow<'a, str> {
+    if masked.len() != text.len() {
+        return std::borrow::Cow::Borrowed(masked);
+    }
     let mut out: Option<Vec<u8>> = None;
     let mut at = 0usize;
     for line in text.split_inclusive('\n') {
@@ -828,27 +1113,28 @@ fn mask_dialect_wire_keys<'a>(
 /// one-line `const <NAME>: &str = "<lit>";` whose NAME contains `ID_PREFIX` is masked. Nothing else
 /// is: not the constant's name, not the same word in a comment, another literal or another const,
 /// and not an id-prefix const outside a dialect module. Read off the ORIGINAL `text`, filled in
-/// `masked`, byte-aligned like every earlier mask.
-fn mask_dialect_id_prefixes<'a>(
-    cx: &Ctx,
-    dir: &str,
-    rel: &str,
-    text: &str,
-    masked: &'a str,
-) -> std::borrow::Cow<'a, str> {
-    let in_dialect = rel
-        .strip_prefix(dir)
-        .and_then(|r| r.strip_prefix("/src/"))
-        .is_some_and(|r| {
-            r.split('/').any(|seg| {
-                let d = seg.strip_suffix(".rs").unwrap_or(seg);
-                !d.is_empty()
-                    && d.bytes()
-                        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
-                    && cx.exists(format!("{dir}/dialects/{d}.toml"))
+/// `masked`, byte-aligned like every earlier mask ([`mask_id_prefixes`]).
+///
+/// Whether `rel` is such a dialect module of the plane crate at `dir`.
+fn in_dialect_module(cx: &Ctx, dir: &str, rel: &str) -> bool {
+    rel.ends_with(".rs")
+        && rel
+            .strip_prefix(dir)
+            .and_then(|r| r.strip_prefix("/src/"))
+            .is_some_and(|r| {
+                r.split('/').any(|seg| {
+                    let d = seg.strip_suffix(".rs").unwrap_or(seg);
+                    !d.is_empty()
+                        && d.bytes()
+                            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
+                        && cx.exists(format!("{dir}/dialects/{d}.toml"))
+                })
             })
-        });
-    if !rel.ends_with(".rs") || !in_dialect || masked.len() != text.len() {
+}
+
+/// A dialect module's id-prefix literals masked ([`in_dialect_module`] decided it is one).
+fn mask_id_prefixes<'a>(rel: &str, text: &str, masked: &'a str) -> std::borrow::Cow<'a, str> {
+    if !rel.ends_with(".rs") || masked.len() != text.len() {
         return std::borrow::Cow::Borrowed(masked);
     }
     let mut out: Option<Vec<u8>> = None;
@@ -1725,11 +2011,11 @@ fn scan_needles(
         // an ASCII line has nothing to fold.
         let decoded = decoded_line(raw).map(|t| {
             let c: Vec<char> = t.chars().collect();
-            (line_segments(&t), c)
+            (line_segments(&t), c, t.to_ascii_lowercase())
         });
         let folded = folded_line(raw).map(|t| {
             let c: Vec<char> = t.chars().collect();
-            (line_segments(&t), c)
+            (line_segments(&t), c, t.to_ascii_lowercase())
         });
 
         let mut candidates: Vec<usize> = Vec::new();
@@ -1756,17 +2042,32 @@ fn scan_needles(
         candidates.sort_unstable();
         candidates.dedup();
         let segs = line_segments(raw);
+        // EVERY PART OF A NEEDLE IS IN THE READING, LOWERCASED, WHEREVER EITHER SCANNER SEES IT: a
+        // segment is a run of the reading's ASCII alphanumerics, lowercased, and a window matches
+        // each part character for character with ASCII case ignored. So a reading that lacks a part
+        // counts zero in both scanners, and is answered zero without being walked.
+        let raw_lower = raw.to_ascii_lowercase();
+        let has_parts =
+            |lower: &str, parts: &[String]| parts.iter().all(|p| lower.contains(p.as_str()));
         for i in candidates {
             let n = &plan.needles[i];
-            let by_segments = count_by_segments(&segs, &n.parts);
-            let by_windows = count_by_windows(&chars, &n.parts);
+            let (by_segments, by_windows) = if has_parts(&raw_lower, &n.parts) {
+                (
+                    count_by_segments(&segs, &n.parts),
+                    count_by_windows(&chars, &n.parts),
+                )
+            } else {
+                (0, 0)
+            };
             let by_decoded = decoded
                 .as_ref()
-                .map(|(s, c)| count_by_segments(s, &n.parts).max(count_by_windows(c, &n.parts)))
+                .filter(|(_, _, lower)| has_parts(lower, &n.parts))
+                .map(|(s, c, _)| count_by_segments(s, &n.parts).max(count_by_windows(c, &n.parts)))
                 .unwrap_or(0);
             let by_folded = folded
                 .as_ref()
-                .map(|(s, c)| count_by_segments(s, &n.parts).max(count_by_windows(c, &n.parts)))
+                .filter(|(_, _, lower)| has_parts(lower, &n.parts))
+                .map(|(s, c, _)| count_by_segments(s, &n.parts).max(count_by_windows(c, &n.parts)))
                 .unwrap_or(0);
             let plain = by_segments.max(by_windows).max(by_decoded);
             if plain == 0 && by_folded == 0 {
@@ -2196,6 +2497,421 @@ fn law0_offenders(matrix: &Matrix, crates: &[CrateInfo], enforced: Option<&[&str
     offenders
 }
 
+/// THE LAW 0 ROW (ARCHITECT 2026-10-07, Q128 route). The DoD's hard clause (BUSBAR-1.6.0.md
+/// :1994-1999): every `Family::Neutral` crate (the kernel and its workflow crates, the contract,
+/// the loader, the three cleanliness crates and the composition root) names ZERO plugin-instance
+/// vocabulary. The Law 0 class lived inside the report-only matrix row (owner 2026-10-03: "a
+/// measured to-do list, not a gate"), so it could not fail; this row is its gate.
+///
+/// Armed at TODAY'S NUMBER (Law 9): each neutral crate and axis is held to its `[[law0]]` ceiling in
+/// qa/kind-isolation.toml, exact in both directions. A rise is a landing that grew a leak; a fall
+/// below the row is slack the ledger must give back in the commit that drained it. A neutral leak with no
+/// row is a new one. Both registrations judge the same ceilings; the zero the DoD asks for is read
+/// off the same rows by `scripts/verify-1.6.0-done.sh`.
+pub const ROW_LAW0: &str = "kind-isolation:law0";
+
+/// `(neutral crate, axis) -> count`. Axes: a plugin kind (`plane`, `transport`, …) from the
+/// matrix cells; `instance:<kind>` from the five instance axes; `vendor` and `vendor-pragma` from
+/// the vendor-name scan; `unattributed` (crate `*`) for a module name no rule places.
+pub type Law0Counts = BTreeMap<(String, String), usize>;
+
+fn law0_counts(
+    matrix: &Matrix,
+    inst: &instances::Instances,
+    vendor: &[String],
+    unattributed: &[String],
+    crates: &[CrateInfo],
+) -> Law0Counts {
+    let neutral = |k: &str| crates.iter().any(|c| c.name == k && is_core_neutral(c));
+    let mut out = Law0Counts::new();
+    for ((krate, kind), cell) in matrix {
+        if cell.count > 0 && neutral(krate) && instance_vocab_kinds().contains(kind) {
+            *out.entry((krate.clone(), (*kind).to_string())).or_default() += cell.count;
+        }
+    }
+    for ((krate, kind), cell) in inst {
+        if cell.count > 0 && neutral(krate) {
+            *out.entry((krate.clone(), format!("instance:{kind}")))
+                .or_default() += cell.count;
+        }
+    }
+    for f in vendor {
+        let mut parts = f.split('\t');
+        let (Some(code), Some(krate)) = (parts.next(), parts.next()) else {
+            continue;
+        };
+        if !neutral(krate) {
+            continue;
+        }
+        let axis = match code {
+            "vendor-name" => "vendor",
+            "vendor-frozen-wire" => "vendor-pragma",
+            _ => continue,
+        };
+        *out.entry((krate.to_string(), axis.to_string()))
+            .or_default() += 1;
+    }
+    if !unattributed.is_empty() {
+        *out.entry(("*".to_string(), "unattributed".to_string()))
+            .or_default() += unattributed.len();
+    }
+    out
+}
+
+/// THE DoD's NEUTRAL POPULATION (BUSBAR-1.6.0.md:1994-1999): a `Family::Neutral` crate of a core
+/// kind (kernel, contract, plugin-tooling, cleanliness, root). The plugin kinds with no instance family of their own (store, secret, auth,
+/// hooks, export) are `Family::Neutral` too, but a plugin naming its own kind's vocabulary is
+/// correct (Law 5); the clause is about the kernel, its workflow crates, the contract, the loader,
+/// the cleanliness crates and the composition root.
+fn is_core_neutral(c: &CrateInfo) -> bool {
+    const CORE_KINDS: &[&str] = &[
+        "kernel",
+        "contract",
+        "plugin-tooling",
+        "cleanliness",
+        "root",
+    ];
+    c.family == Family::Neutral && c.kind.is_some_and(|k| CORE_KINDS.contains(&k))
+}
+
+/// [`ROW_LAW0`], judged against the `[[law0]]` ceilings. `None` is a scan that did not run, which
+/// is a refusal, never a pass.
+pub fn rule_law0(
+    crates: &[CrateInfo],
+    registry: &super::KindRegistry,
+    law0: Option<&Law0Counts>,
+) -> Row {
+    let Some(measured) = law0 else {
+        return Row::fail(
+            ROW_LAW0,
+            "the Law 0 scan could not run",
+            "the matrix scan the Law 0 class is read from did not run, and an unrun scan is not a \
+             neutral tree"
+                .to_string(),
+        );
+    };
+    let neutral: Vec<&CrateInfo> = crates.iter().filter(|c| is_core_neutral(c)).collect();
+    if neutral.is_empty() {
+        return Row::fail(
+            ROW_LAW0,
+            "no neutral crate reached the Law 0 rule",
+            "0 Family::Neutral crate(s); zero crates name zero instances, which reads exactly like \
+             a neutral tree"
+                .to_string(),
+        );
+    }
+    let reg = &registry.law0;
+    let mut ceilings: BTreeMap<(String, String), usize> = BTreeMap::new();
+    let mut offenders: Vec<String> = Vec::new();
+    // THE ROW'S FIGURE: hits off the ledger, summed over every finding (see [`law0_off`]).
+    let mut off = 0usize;
+    for r in reg {
+        if ceilings
+            .insert((r.krate.clone(), r.axis.clone()), r.count)
+            .is_some()
+        {
+            off += 1;
+            offenders.push(format!(
+                "law0-duplicate\t{} / {}\ttwo `[[law0]]` rows for one crate and axis",
+                r.krate, r.axis
+            ));
+        }
+    }
+    let keys: BTreeSet<(String, String)> =
+        measured.keys().chain(ceilings.keys()).cloned().collect();
+    for key in &keys {
+        let now = measured.get(key).copied().unwrap_or(0);
+        let ceiling = ceilings.get(key).copied();
+        off += law0_off(now, ceiling);
+        match ceiling {
+            None if now > 0 => offenders.push(format!(
+                "law0-new\t{} \u{d7} {}\t{now} hit(s) in a NEUTRAL crate with no `[[law0]]` \
+                 ceiling: a new leak of plugin-instance vocabulary into core. Drain it; the \
+                 ceiling is today's number and nothing raises it",
+                key.0, key.1
+            )),
+            Some(c) if now > c => offenders.push(format!(
+                "law0-rise\t{} \u{d7} {}\t{now} hit(s) against a ceiling of {c}: this landing grew \
+                 a neutral crate's instance vocabulary. Ceilings only fall ({})",
+                key.0,
+                key.1,
+                reg.iter()
+                    .find(|r| r.krate == key.0 && r.axis == key.1)
+                    .map_or("", |r| r.cite.as_str())
+            )),
+            Some(c) if now < c => offenders.push(format!(
+                "law0-slack\t{} \u{d7} {}\t{now} hit(s) under a ceiling of {c}: lower the \
+                 `[[law0]]` row to {now} in the commit that drained it",
+                key.0, key.1
+            )),
+            _ => {}
+        }
+    }
+    let total: usize = measured.values().sum();
+    if offenders.is_empty() {
+        return Row::pass(
+            ROW_LAW0,
+            "every neutral crate is at its Law 0 ceiling",
+            format!(
+                "{} neutral crate(s), {} cell(s), {total} hit(s) at ceiling (DoD: 0)",
+                neutral.len(),
+                measured.len()
+            ),
+        );
+    }
+    offenders.sort();
+    Row::fail(
+        ROW_LAW0,
+        "a neutral crate's Law 0 count is not its ceiling",
+        format!(
+            "{off} hit(s) off the [[law0]] ceilings, {} finding(s) over {} neutral crate(s): {}",
+            offenders.len(),
+            neutral.len(),
+            offenders.join(" | ")
+        ),
+    )
+}
+
+/// How far one cell sits from its `[[law0]]` row, in HITS: above it (a rise), below it (slack the
+/// ledger owes back), or the whole count when no row exists (a new leak). The FAIL row's detail
+/// opens with the sum of these, and that leading number is the figure a base-relative verdict
+/// compares (busbar-release `baseline::figure`).
+///
+/// It was the FINDING COUNT, and a count of cells cannot see a cell grow: once a cell was off its
+/// row, every further hit in it left the figure where it was. The row was armed red on predev
+/// (dc83ff1553, #597: 18 findings), and four landings grew cells that were already off their rows
+/// (#560 `busbar × instance:secret` 35 -> 36, #663 `busbar × vendor` 89 -> 90, #672
+/// `busbar-plugin-loader × transport` 186 -> 190) with the figure flat at 18, while a branch that
+/// drained ONE at-ceiling cell read as 18 -> 19. Law 9 refuses every rise "from that moment"; a
+/// figure in hits is the one that can.
+fn law0_off(now: usize, ceiling: Option<usize>) -> usize {
+    match ceiling {
+        Some(c) => now.abs_diff(c),
+        None => now,
+    }
+}
+
+/// THE LAW 0 ROW'S PER-CELL TWIN: every neutral cell judged against THE SAME CELL AT THE MERGE-BASE,
+/// never against the slack under its `[[law0]]` row.
+///
+/// [`ROW_LAW0`] is red on predev on purpose (cells held at the arming measure stay RED until
+/// drained, #725), so the turnstile judges it by its FIGURE alone, and a figure is a sum over
+/// cells: what one cell grows another can pay for. Under `|now - ceiling|` a hit written into a
+/// cell that sits under its row LOWERS the figure — slack read as a drain — and a hit drained out of
+/// a cell over its row pays for a hit grown in another. So the verdict on one branch depended on what
+/// the base happened to carry: on predev 4f36b97390 `busbar-kernel × plane` measured 1173 under a
+/// row of 1175, so two hits written there read 11 -> 9 ("improvement"), and the same two hits on a
+/// base that had already filled that slack read as a rise. Ceilings only bound; they never license.
+///
+/// This row asks the one question that does not depend on the base's slack: DID THIS BRANCH GROW A
+/// NEUTRAL CELL? Its subject is the base every provenance rule of this gate reads (`base_ref`; in CI
+/// the turnstile hands it over as `XTASK_CEILING_BASE`: a pull-request check's merge-base, a
+/// merge-group entry's entry ahead), measured by THIS tree's code over the base's bytes. So the PR
+/// check and the merge group judge the same thing, the branch's own per-cell delta, and not
+/// whatever slack the base carried. It is PASS on a base that grew nothing, so a grown cell is a
+/// NEW red in the turnstile, never a figure another cell can offset.
+///
+/// * A cell that grew is RED, however much slack its `[[law0]]` row has (BUSBAR-1.6.0.md: the
+///   neutral ceiling is 0, ARMED, and no ratchet row raises it).
+/// * A cell that fell is not this row's subject: a drain is never red here. (Giving the row back
+///   is [`ROW_LAW0`]'s business, as #725 made it.)
+/// * The one thing that covers a rise is a `[[law0]]` row THIS branch raised over the base's own
+///   row: an approved delta (a hit moved from one ratcheting axis to another under a ruling lowers
+///   one row and raises the other), written in the diff a reviewer reads. A row minted on this
+///   branch, and slack the base already carried, cover nothing.
+pub const ROW_LAW0_BASE: &str = "kind-isolation:law0-base";
+
+/// The merge-base's Law 0 reading: its per-cell counts (THIS tree's code over the base's bytes) and
+/// its own `[[law0]]` rows.
+#[derive(Debug, Clone)]
+pub struct Law0Base {
+    pub commit: String,
+    pub counts: Law0Counts,
+    pub rows: BTreeMap<(String, String), usize>,
+}
+
+type Law0BaseCache = std::sync::Mutex<BTreeMap<String, Result<std::sync::Arc<Law0Base>, String>>>;
+
+fn law0_base_cache() -> &'static Law0BaseCache {
+    static C: std::sync::OnceLock<Law0BaseCache> = std::sync::OnceLock::new();
+    C.get_or_init(Default::default)
+}
+
+/// THE MERGE-BASE'S LAW 0 READING, once per (root, base commit) and process: like the base's own
+/// tree, the working tree under judgement does not change while one gate process runs.
+///
+/// The base is THIS tree with every path the diff names laid back to the base's bytes (a path the
+/// base had: its bytes; a path it had not: absent; an untracked file: absent), the pinned
+/// checkouts mounted beneath as the gate itself mounts them. A self-test case's plant is the
+/// "head" side and is not in the base, so the battery's ninety cases share one reading. A base that
+/// cannot be established is RED, never a silent pass (as in `base.rs`).
+pub fn law0_base(cx: &Ctx) -> Result<std::sync::Arc<Law0Base>, String> {
+    let commit = crate::gates::construction::ceilings::base_ref(cx)?.sha;
+    let meta = cx.overlay_command(super::pinned::METADATA_KEY);
+    let key = format!(
+        "{}\u{0}{commit}\u{0}{}",
+        cx.root().display(),
+        meta.as_deref().unwrap_or("")
+    );
+    if let Some(hit) = law0_base_cache()
+        .lock()
+        .ok()
+        .and_then(|m| m.get(&key).cloned())
+    {
+        return hit;
+    }
+    let built = read_law0_base(cx, &commit, meta).map(std::sync::Arc::new);
+    if let Ok(mut m) = law0_base_cache().lock() {
+        m.insert(key, built.clone());
+    }
+    built
+}
+
+fn read_law0_base(cx: &Ctx, commit: &str, meta: Option<String>) -> Result<Law0Base, String> {
+    let changed = cx.git_lines(&["diff", "--no-renames", "--name-status", commit, "--"])?;
+    let untracked = cx.git_lines(&["ls-files", "--others", "--exclude-standard"])?;
+    let mut ov = crate::ctx::Overlay::new();
+    for line in &changed {
+        let Some((status, path)) = line.split_once('\t') else {
+            continue;
+        };
+        if status.starts_with('A') {
+            ov.remove(path);
+            continue;
+        }
+        match cx.git_show(commit, path) {
+            Ok(text) => ov.set(path, text),
+            Err(why) => ov.unreadable(path, why),
+        }
+    }
+    for path in &untracked {
+        ov.remove(path);
+    }
+    if let Some(meta) = meta {
+        ov.set_command(super::pinned::METADATA_KEY, meta);
+    }
+    let bcx = super::pinned::with_pinned(&cx.with_overlay(ov));
+    let short = &commit[..8.min(commit.len())];
+    let mut crates =
+        super::census(&bcx).map_err(|e| format!("the census of the merge-base {short}: {e}"))?;
+    let (planes, ports) = super::vocabularies(&crates);
+    super::assign_instances(&mut crates, &planes, &ports);
+    let reg = super::load_registry(&bcx)
+        .map_err(|e| format!("the ledger of the merge-base {short}: {e}"))?;
+    let mut law0 = None;
+    let (row, _) = measured_row(&bcx, &crates, &reg, false, &mut law0);
+    let counts = law0.ok_or_else(|| {
+        format!(
+            "the Law 0 scan of the merge-base {short} did not run: {}",
+            row.detail
+        )
+    })?;
+    Ok(Law0Base {
+        commit: commit.to_string(),
+        counts,
+        rows: reg
+            .law0
+            .iter()
+            .map(|r| ((r.krate.clone(), r.axis.clone()), r.count))
+            .collect(),
+    })
+}
+
+/// [`ROW_LAW0_BASE`]: this tree's Law 0 cells against the merge-base's. `law0` `None` is a scan
+/// that did not run and `base` `Err` a base that could not be read; both are refusals.
+pub fn rule_law0_base(
+    registry: &super::KindRegistry,
+    law0: Option<&Law0Counts>,
+    base: Result<&Law0Base, &String>,
+) -> Row {
+    let Some(now) = law0 else {
+        return Row::fail(
+            ROW_LAW0_BASE,
+            "the Law 0 scan could not run",
+            "the matrix scan the Law 0 cells are read from did not run, and an unrun scan is not \
+             a branch that grew nothing"
+                .to_string(),
+        );
+    };
+    let base = match base {
+        Ok(b) => b,
+        Err(why) => {
+            return Row::fail(
+                ROW_LAW0_BASE,
+                "the merge-base's Law 0 cells could not be read",
+                format!(
+                    "no-base\t{why}. A base that cannot be established is RED, never a silent \
+                     pass: a branch nobody measured against is not a branch that grew nothing"
+                ),
+            )
+        }
+    };
+    let short = &base.commit[..8.min(base.commit.len())];
+    let mut here: BTreeMap<(String, String), usize> = BTreeMap::new();
+    for r in &registry.law0 {
+        here.entry((r.krate.clone(), r.axis.clone()))
+            .or_insert(r.count);
+    }
+    let keys: BTreeSet<&(String, String)> = now.keys().chain(base.counts.keys()).collect();
+    let (mut grown_total, mut drained, mut moved) = (0usize, 0usize, 0usize);
+    let mut findings = Vec::new();
+    for key in keys {
+        let n = now.get(key).copied().unwrap_or(0);
+        let was = base.counts.get(key).copied().unwrap_or(0);
+        if n <= was {
+            drained += was - n;
+            continue;
+        }
+        // THE ONE COVER: a row this branch RAISED over the base's own row. Slack the base carried
+        // (its row above its measure) and a row minted here are no cover at all.
+        let raised = match (here.get(key), base.rows.get(key)) {
+            (Some(h), Some(b)) => h.saturating_sub(*b),
+            _ => 0,
+        };
+        let grown = n - was;
+        let uncovered = grown.saturating_sub(raised);
+        moved += grown - uncovered;
+        if uncovered == 0 {
+            continue;
+        }
+        grown_total += uncovered;
+        let row = base.rows.get(key).map_or_else(
+            || "no `[[law0]]` row".to_string(),
+            |c| format!("its `[[law0]]` row {c}"),
+        );
+        findings.push(format!(
+            "law0-grown\t{} \u{d7} {}\t{was} -> {n} hit(s) over the same cell at the merge-base \
+             {short} ({row} there): this branch wrote {uncovered} instance-vocabulary hit(s) into a \
+             neutral crate. Slack under a row licenses nothing (BUSBAR-1.6.0.md: ceiling 0, ARMED; \
+             no ratchet row raises it). Drain them; only a row this branch raises over the base's \
+             own, as an approved delta, covers a moved hit",
+            key.0, key.1
+        ));
+    }
+    if findings.is_empty() {
+        return Row::pass(
+            ROW_LAW0_BASE,
+            "no neutral Law 0 cell grew over the merge-base",
+            format!(
+                "against {short}: {} cell(s), {} hit(s) here and {} at the base; {drained} \
+                 drained, {moved} moved under a row this branch raised",
+                now.len(),
+                now.values().sum::<usize>(),
+                base.counts.values().sum::<usize>()
+            ),
+        );
+    }
+    Row::fail(
+        ROW_LAW0_BASE,
+        "a neutral crate's Law 0 cell grew over the merge-base",
+        format!(
+            "{grown_total} hit(s) grown over the merge-base {short}, {} cell(s): {}",
+            findings.len(),
+            findings.join(" | ")
+        ),
+    )
+}
+
 /// THE MATRIX ROW, AS THE GATE EMITS IT: a measured to-do list, not a gate (owner 2026-10-03).
 ///
 /// The row is measured on every run and its number is in the row's detail, but it never fails: a
@@ -2204,6 +2920,7 @@ fn law0_offenders(matrix: &Matrix, crates: &[CrateInfo], enforced: Option<&[&str
 /// reading). `gating` is the self-test subject's setting: the proofs of the counting and of the
 /// ledger comparison run the same rule with its findings as FAIL, because a red is the one
 /// observable a planted case has. No production registration sets it.
+#[cfg(test)]
 pub fn rule_matrix(
     cx: &Ctx,
     crates: &[CrateInfo],
@@ -2211,7 +2928,50 @@ pub fn rule_matrix(
     ship: bool,
     gating: bool,
 ) -> Row {
-    let (row, reading) = measured_row(cx, crates, reg, ship);
+    let mut law0 = None;
+    matrix_row(cx, crates, reg, ship, gating, &mut law0)
+}
+
+/// THE MATRIX ROW AND THE LAW 0 ROW, from ONE scan. The matrix stays report-only (owner
+/// 2026-10-03); the Law 0 class it carries is judged by its own gating row ([`ROW_LAW0`]).
+pub fn rule_matrix_rows(
+    cx: &Ctx,
+    crates: &[CrateInfo],
+    reg: &super::KindRegistry,
+    ship: bool,
+    gating: bool,
+) -> Vec<Row> {
+    let mut law0 = None;
+    // THE MERGE-BASE IS READ BESIDE THE TREE: an independent second scan of the same code over the
+    // base's bytes, so it costs the wall time of the slower of the two, not their sum.
+    let (matrix_row, base) = std::thread::scope(|scope| {
+        let base = std::thread::Builder::new()
+            .stack_size(16 * 1024 * 1024)
+            .spawn_scoped(scope, || law0_base(cx))
+            .expect("spawn the merge-base Law 0 reading thread");
+        let row = matrix_row(cx, crates, reg, ship, gating, &mut law0);
+        (
+            row,
+            base.join()
+                .unwrap_or_else(|panic| std::panic::resume_unwind(panic)),
+        )
+    });
+    vec![
+        matrix_row,
+        rule_law0(crates, reg, law0.as_ref()),
+        rule_law0_base(reg, law0.as_ref(), base.as_deref()),
+    ]
+}
+
+fn matrix_row(
+    cx: &Ctx,
+    crates: &[CrateInfo],
+    reg: &super::KindRegistry,
+    ship: bool,
+    gating: bool,
+    law0: &mut Option<Law0Counts>,
+) -> Row {
+    let (row, reading) = measured_row(cx, crates, reg, ship, law0);
     match reading {
         Some(r) if !gating => {
             let verdict = if row.status == crate::ledger::Status::Fail {
@@ -2299,8 +3059,43 @@ fn measured_row(
     crates: &[CrateInfo],
     reg: &super::KindRegistry,
     ship: bool,
+    law0: &mut Option<Law0Counts>,
 ) -> (Row, Option<Reading>) {
-    let (matrix, scanned, skipped) = match measure(cx, crates) {
+    // THE THREE READINGS OF THE SCAN SET ARE INDEPENDENT — the matrix, the instance axes and the
+    // vendor names — so they are taken at once. Their refusals are read back in the order the
+    // serial run met them: a matrix that could not be measured is reported before a scan set the
+    // instance axes could not read, and that before a vendor scan that did not run.
+    let (measured, rest) = std::thread::scope(|scope| {
+        let measured = std::thread::Builder::new()
+            .stack_size(16 * 1024 * 1024)
+            .spawn_scoped(scope, || measure(cx, crates))
+            .expect("spawn the matrix measurement thread");
+        let rest = scan_set(cx).map(|(files, _)| {
+            let registry = cx.read(instances::REGISTRY).unwrap_or_default();
+            let ivocab = instances::vocabulary(crates, &files, &reg.core_names, &registry);
+            let (inst, vendor) = std::thread::scope(|scope| {
+                let vendor = std::thread::Builder::new()
+                    .stack_size(16 * 1024 * 1024)
+                    .spawn_scoped(scope, || vendors::offenders(cx, crates, &files))
+                    .expect("spawn the vendor-name scan thread");
+                let inst = instances::measure(crates, &files, &ivocab);
+                (
+                    inst,
+                    vendor
+                        .join()
+                        .unwrap_or_else(|panic| std::panic::resume_unwind(panic)),
+                )
+            });
+            (ivocab, inst, vendor)
+        });
+        (
+            measured
+                .join()
+                .unwrap_or_else(|panic| std::panic::resume_unwind(panic)),
+            rest,
+        )
+    });
+    let (matrix, scanned, skipped) = match measured {
         Ok(m) => m,
         Err(e) => {
             return (
@@ -2320,8 +3115,10 @@ fn measured_row(
     let total: usize = matrix.values().map(|c| c.count).sum();
 
     // THE FIVE INSTANCE AXES (item 118). Same scan set, read a second way — see [`instances`].
-    let (files, _) = match scan_set(cx) {
-        Ok(f) => f,
+    // LAW 1 OVER THE NEUTRAL CENSUS (item 203) — a vendor name in a neutral crate plane-purity does
+    // not list. Ceiling 0 in both twins; see [`vendors`].
+    let (ivocab, inst, vendor) = match rest {
+        Ok(r) => r,
         Err(e) => {
             return (
                 Row::fail(
@@ -2333,13 +3130,8 @@ fn measured_row(
             )
         }
     };
-    let ivocab = instances::vocabulary(crates, &files, &reg.core_names);
-    let inst = instances::measure(crates, &files, &ivocab);
     let inst_total: usize = inst.values().map(|c| c.count).sum();
-
-    // LAW 1 OVER THE NEUTRAL CENSUS (item 203) — a vendor name in a neutral crate plane-purity does
-    // not list. Ceiling 0 in both twins; see [`vendors`].
-    let vendor = match vendors::offenders(cx, crates, &files) {
+    let vendor = match vendor {
         Ok(v) => v,
         Err(e) => {
             return (
@@ -2354,6 +3146,14 @@ fn measured_row(
             )
         }
     };
+
+    *law0 = Some(law0_counts(
+        &matrix,
+        &inst,
+        &vendor,
+        &ivocab.unattributed,
+        crates,
+    ));
 
     // THE SHIP TWIN OWES ZERO EVERYWHERE, and owes it without consulting the ledger.
     if ship {
@@ -2941,6 +3741,35 @@ pub fn selftest<'a>(
     // against it would produce the same red it already produces, and "the gate went red"
     // is the answer this battery exists to refuse. So the ship twin gets one case, and it makes a
     // NAMED, NEW deviation: a cell that measures ZERO today and does not after the plant.
+    // THE LAW 0 ROW GATES ON BOTH TWINS (ARCHITECT 2026-10-07): a plane instance noun written in a
+    // neutral crate at its ceiling is a rise (or a new cell) on `kind-isolation:law0`, while the
+    // matrix row it was measured with stays report-only.
+    {
+        let mut ov = crate::ctx::Overlay::new();
+        ov.set(
+            "crates/busbar-core-oauth2/src/planted_law0.rs",
+            "pub fn mcp_tools_listed() -> usize { 0 }\n",
+        );
+        report.push(prove_rows_red(
+            cx,
+            gate,
+            "a plane instance noun written in a neutral crate fails kind-isolation:law0",
+            &[ROW_LAW0],
+            ov.clone(),
+            &["busbar-core-oauth2 \u{d7} plane"],
+        ));
+        // THE SAME HIT, JUDGED AGAINST THE MERGE-BASE: the plant is not in the base, so its cell
+        // grew there, whatever the `[[law0]]` row says.
+        report.push(prove_rows_red(
+            cx,
+            gate,
+            "a plane instance noun written in a neutral crate grows its cell over the merge-base \
+             (kind-isolation:law0-base)",
+            &[ROW_LAW0_BASE],
+            ov,
+            &["law0-grown", "busbar-core-oauth2 \u{d7} plane"],
+        ));
+    }
     if ship {
         report.push(prove_rows_red(
             cx,
@@ -3025,7 +3854,6 @@ pub fn selftest<'a>(
 
     // THE DIALECT ID-PREFIX LITERAL (ARCHITECT ruling 2026-10-02 on #324): a dialect module's
     // native item-id prefix (`ws`) is the provider's word; a real transport `ws` still counts.
-    // The plane crate has no transport cell, so a reference that counts is an `unlisted-cell`.
     let prefix_case = |file: &'static str, line: &'static str| {
         let cx = cx.clone();
         move || {
@@ -3034,7 +3862,6 @@ pub fn selftest<'a>(
         }
     };
     let responses_mod = "crates/busbar-plane-llm/src/codec/openai_responses/mod.rs";
-    let transport_raised = ["unlisted-cell", "busbar-plane-llm \u{d7} transport"];
     report.push(prove_rows_green(
         cx,
         gate,
@@ -3046,35 +3873,13 @@ pub fn selftest<'a>(
             "const ITEM_ID_PREFIX_PLANTED: &str = \"ws\";",
         ),
     ));
-    report.push(prove_rows_red(
-        cx,
-        gate,
-        "a real transport `ws` reference in the same dialect module still counts",
-        &[ROW_MATRIX],
-        {
-            // `busbar-transport-ws` left the workspace (befd20dc37), so `ws` is no needle until a
-            // census transport crate teaches it. Plant one (empty) beside the real reference; the
-            // green control above keeps its own in-tree vocabulary so the dialect-prefix mask is
-            // proven, not flooded.
-            let base = prefix_case(responses_mod, "const PLANTED_CARRIER: &str = \"ws\";");
-            move || with_transport(base(), "ws")
-        },
-        &transport_raised,
-    ));
-    report.push(prove_rows_red(
-        cx,
-        gate,
-        "an id-prefix literal outside a dialect module still counts",
-        &[ROW_MATRIX],
-        {
-            let base = prefix_case(
-                "crates/busbar-plane-llm/src/codec/proto_stream.rs",
-                "const ITEM_ID_PREFIX_PLANTED: &str = \"ws\";",
-            );
-            move || with_transport(base(), "ws")
-        },
-        &transport_raised,
-    ));
+    // …and THE RED HALF IS PROVEN ON THE CELL, not here. The pinned transport checkouts are crates
+    // of the census (ARCHITECT W4B-Q1), so `http` and `sse` are needles on the unplanted tree and
+    // `busbar-plane-llm × transport` is already a measured cell: the debt-free subject takes its
+    // `unlisted-cell` out of view, and presence cannot see one more hit in it. A real `ws` in the
+    // dialect module and an id-prefix literal outside one each raise the cell by exactly one in
+    // `tests::the_dialect_id_prefix_literal_is_masked_and_a_real_ws_still_counts`, over the
+    // tree the gate reads (the pinned mount beneath).
 
     // THIS ROW'S SCAN HAS A FLOOR, AND NOTHING PROVED IT. A mutation campaign turned
     // `files.len() < MIN_SCANNED` into `false && …` and the whole battery stayed green: every other
@@ -4057,6 +4862,411 @@ pub fn selftest<'a>(
 mod tests {
     use super::*;
 
+    fn neutral_kernel(name: &str) -> CrateInfo {
+        CrateInfo {
+            dir: format!("crates/{name}"),
+            manifest: format!("crates/{name}/Cargo.toml"),
+            name: name.to_string(),
+            kind: Some("kernel"),
+            family: Family::Neutral,
+            remainder: Vec::new(),
+            instance: None,
+            declared_keys: Vec::new(),
+            deps: Vec::new(),
+            dev_deps: Vec::new(),
+            ambiguous: Vec::new(),
+            pinned: None,
+        }
+    }
+
+    fn law0_reg(rows: &[(&str, &str, usize)]) -> super::super::KindRegistry {
+        let mut reg = super::super::KindRegistry::default();
+        for (krate, axis, count) in rows {
+            reg.law0.push(super::super::Law0Ceiling {
+                krate: (*krate).to_string(),
+                axis: (*axis).to_string(),
+                count: *count,
+                cite: "planted".to_string(),
+            });
+        }
+        reg
+    }
+
+    fn law0_counts_of(cells: &[(&str, &str, usize)]) -> Law0Counts {
+        cells
+            .iter()
+            .map(|(k, a, n)| (((*k).to_string(), (*a).to_string()), *n))
+            .collect()
+    }
+
+    /// The number a base-relative verdict reads off a FAIL row: the detail's leading count
+    /// (busbar-release `baseline::figure`; this detail carries no `(ceiling` marker).
+    fn figure_of(row: &Row) -> usize {
+        assert!(
+            !row.detail.contains("(ceiling"),
+            "a `(ceiling` marker would move the figure off the leading count: {}",
+            row.detail
+        );
+        row.detail
+            .split_whitespace()
+            .next()
+            .and_then(|t| t.parse().ok())
+            .unwrap_or_else(|| panic!("no leading figure in {}", row.detail))
+    }
+
+    /// THE LAW 0 FIGURE SEES A CELL GROW. RED with the figure as the finding count: a cell already
+    /// above its row that grows by one hit, and an at-ceiling cell drained to slack, both left the
+    /// count where a standing red put it (the four PRs that grew `busbar` and the loader with the
+    /// figure flat at 18; `busbar-kernel-wal × instance:secret` 1 -> 0 read as 18 -> 19 only
+    /// because it was a fresh cell). In hits, every move off the ledger raises the figure and
+    /// every move back lowers it.
+    #[test]
+    fn the_law0_figure_counts_hits_off_the_ledger_not_findings() {
+        let crates = vec![neutral_kernel("busbar-kernel")];
+        let reg = law0_reg(&[
+            ("busbar-kernel", "plane", 10),
+            ("busbar-kernel", "transport", 5),
+            ("busbar-kernel", "auth", 3),
+        ]);
+        let at =
+            |cells: &[(&str, &str, usize)]| rule_law0(&crates, &reg, Some(&law0_counts_of(cells)));
+
+        // The base: `plane` is 2 over its row, `transport` 1 under it, `auth` at it.
+        let base = at(&[
+            ("busbar-kernel", "plane", 12),
+            ("busbar-kernel", "transport", 4),
+            ("busbar-kernel", "auth", 3),
+        ]);
+        assert_eq!(base.status, crate::ledger::Status::Fail);
+        assert_eq!(figure_of(&base), 3, "{}", base.detail);
+
+        // A cell ALREADY over its row grows by one hit: same two findings, the figure rises.
+        let grown = at(&[
+            ("busbar-kernel", "plane", 13),
+            ("busbar-kernel", "transport", 4),
+            ("busbar-kernel", "auth", 3),
+        ]);
+        assert_eq!(grown.detail.matches("law0-").count(), 2, "{}", grown.detail);
+        assert!(
+            figure_of(&grown) > figure_of(&base),
+            "a rise inside a cell already over its row must raise the figure: {} -> {}",
+            figure_of(&base),
+            figure_of(&grown)
+        );
+
+        // A new leak with no row counts its whole measure.
+        let leaked = at(&[
+            ("busbar-kernel", "plane", 12),
+            ("busbar-kernel", "transport", 4),
+            ("busbar-kernel", "auth", 3),
+            ("busbar-kernel", "export", 2),
+        ]);
+        assert_eq!(
+            figure_of(&leaked),
+            figure_of(&base) + 2,
+            "{}",
+            leaked.detail
+        );
+
+        // A drain the ledger has not given back is slack: off the row, so the figure rises by the
+        // hits drained, and the row lowered to the measure takes them back out.
+        let drained = at(&[
+            ("busbar-kernel", "plane", 12),
+            ("busbar-kernel", "transport", 4),
+            ("busbar-kernel", "auth", 1),
+        ]);
+        assert_eq!(
+            figure_of(&drained),
+            figure_of(&base) + 2,
+            "{}",
+            drained.detail
+        );
+        let given_back = law0_reg(&[
+            ("busbar-kernel", "plane", 10),
+            ("busbar-kernel", "transport", 5),
+            ("busbar-kernel", "auth", 1),
+        ]);
+        let lowered = rule_law0(
+            &crates,
+            &given_back,
+            Some(&law0_counts_of(&[
+                ("busbar-kernel", "plane", 12),
+                ("busbar-kernel", "transport", 4),
+                ("busbar-kernel", "auth", 1),
+            ])),
+        );
+        assert_eq!(figure_of(&lowered), figure_of(&base), "{}", lowered.detail);
+
+        // Every cell at its row is the PASS row.
+        let clean = at(&[
+            ("busbar-kernel", "plane", 10),
+            ("busbar-kernel", "transport", 5),
+            ("busbar-kernel", "auth", 3),
+        ]);
+        assert_eq!(
+            clean.status,
+            crate::ledger::Status::Pass,
+            "{}",
+            clean.detail
+        );
+    }
+
+    fn law0_base_of(
+        commit: &str,
+        cells: &[(&str, &str, usize)],
+        rows: &[(&str, &str, usize)],
+    ) -> Law0Base {
+        Law0Base {
+            commit: commit.to_string(),
+            counts: law0_counts_of(cells),
+            rows: rows
+                .iter()
+                .map(|(k, a, n)| (((*k).to_string(), (*a).to_string()), *n))
+                .collect(),
+        }
+    }
+
+    /// The ledger the merge-base carried in these cases: `plane` 2 under its row (predev
+    /// 4f36b97390's `busbar-kernel × plane`, 1173 under 1175), `transport` at its row, `auth` 1
+    /// over it (a cell held RED at the arming measure).
+    const BASE_ROWS: &[(&str, &str, usize)] = &[
+        ("busbar-kernel", "plane", 12),
+        ("busbar-kernel", "transport", 5),
+        ("busbar-kernel", "auth", 3),
+    ];
+    const BASE_CELLS: &[(&str, &str, usize)] = &[
+        ("busbar-kernel", "plane", 10),
+        ("busbar-kernel", "transport", 5),
+        ("busbar-kernel", "auth", 4),
+    ];
+
+    /// RED ARM 1, THE MERGE-QUEUE SKEW. One hit written into a cell with slack under its row: the
+    /// #725 figure FALLS (slack read as a drain), so the PR check reads "improvement"; on a base
+    /// whose slack the entries ahead already filled, the same hit is a rise and the merge group
+    /// DENYs. The per-cell row is red on BOTH bases, because its subject is the branch's own delta.
+    #[test]
+    fn one_hit_into_slack_is_red_against_any_base() {
+        let crates = vec![neutral_kernel("busbar-kernel")];
+        let reg = law0_reg(BASE_ROWS);
+        let base = law0_base_of("4f36b97390", BASE_CELLS, BASE_ROWS);
+        let base_row = rule_law0(&crates, &reg, Some(&law0_counts_of(BASE_CELLS)));
+        let head = law0_counts_of(&[
+            ("busbar-kernel", "plane", 11),
+            ("busbar-kernel", "transport", 5),
+            ("busbar-kernel", "auth", 4),
+        ]);
+        let head_row = rule_law0(&crates, &reg, Some(&head));
+        // TODAY: the figure the turnstile compares fell, 3 -> 2, so the hit was admitted.
+        assert!(
+            figure_of(&head_row) < figure_of(&base_row),
+            "{} -> {}",
+            figure_of(&base_row),
+            figure_of(&head_row)
+        );
+        let judged = rule_law0_base(&reg, Some(&head), Ok(&base));
+        assert_eq!(
+            judged.status,
+            crate::ledger::Status::Fail,
+            "{}",
+            judged.detail
+        );
+        assert!(
+            judged.detail.starts_with("1 hit(s) grown"),
+            "{}",
+            judged.detail
+        );
+        assert!(
+            judged
+                .detail
+                .contains("law0-grown\tbusbar-kernel \u{d7} plane\t10 -> 11"),
+            "{}",
+            judged.detail
+        );
+        assert!(!judged.detail.contains("(ceiling"), "{}", judged.detail);
+
+        // THE MERGE GROUP: the entry ahead filled the slack (plane 12, at its row). The branch's
+        // own hit is the same hit, and the per-cell row says the same thing about it.
+        let ahead = law0_base_of(
+            "855e5f151f",
+            &[
+                ("busbar-kernel", "plane", 12),
+                ("busbar-kernel", "transport", 5),
+                ("busbar-kernel", "auth", 4),
+            ],
+            BASE_ROWS,
+        );
+        let head_mg = law0_counts_of(&[
+            ("busbar-kernel", "plane", 13),
+            ("busbar-kernel", "transport", 5),
+            ("busbar-kernel", "auth", 4),
+        ]);
+        let judged_mg = rule_law0_base(&reg, Some(&head_mg), Ok(&ahead));
+        assert_eq!(judged_mg.status, judged.status, "{}", judged_mg.detail);
+        assert_eq!(figure_of(&judged_mg), figure_of(&judged));
+    }
+
+    /// RED ARM 2: a branch that removes a hit is never red on the per-cell row, given back or not
+    /// (giving the row back stays [`ROW_LAW0`]'s business, as #725 made it).
+    #[test]
+    fn a_drain_is_green_on_the_per_cell_row() {
+        let crates = vec![neutral_kernel("busbar-kernel")];
+        let base = law0_base_of("4f36b97390", BASE_CELLS, BASE_ROWS);
+        let head = law0_counts_of(&[
+            ("busbar-kernel", "plane", 10),
+            ("busbar-kernel", "transport", 4),
+            ("busbar-kernel", "auth", 3),
+        ]);
+        let reg = law0_reg(BASE_ROWS);
+        let judged = rule_law0_base(&reg, Some(&head), Ok(&base));
+        assert_eq!(
+            judged.status,
+            crate::ledger::Status::Pass,
+            "{}",
+            judged.detail
+        );
+        assert!(judged.detail.contains("2 drained"), "{}", judged.detail);
+        // Given back in the same commit (`transport` 5 -> 4): the #725 figure falls by the auth
+        // drain and the per-cell row stays green.
+        let lowered = law0_reg(&[
+            ("busbar-kernel", "plane", 12),
+            ("busbar-kernel", "transport", 4),
+            ("busbar-kernel", "auth", 3),
+        ]);
+        assert_eq!(
+            rule_law0_base(&lowered, Some(&head), Ok(&base)).status,
+            crate::ledger::Status::Pass
+        );
+        let was = rule_law0(
+            &crates,
+            &law0_reg(BASE_ROWS),
+            Some(&law0_counts_of(BASE_CELLS)),
+        );
+        let now = rule_law0(&crates, &lowered, Some(&head));
+        assert!(
+            figure_of(&now) <= figure_of(&was),
+            "{} -> {}",
+            figure_of(&was),
+            figure_of(&now)
+        );
+    }
+
+    /// RED ARM 3: a hit moved from one ratcheting axis to another under a ruling (`transport` row
+    /// lowered by one, `auth` row raised by one in the same diff) is judged as it was: the #725
+    /// figure is unchanged, and the per-cell row covers the moved hit by the raise THIS branch
+    /// wrote. The base's own slack and a row minted here cover nothing.
+    #[test]
+    fn a_ruled_move_between_axes_is_unchanged() {
+        let crates = vec![neutral_kernel("busbar-kernel")];
+        let at_rows: &[(&str, &str, usize)] = &[
+            ("busbar-kernel", "plane", 12),
+            ("busbar-kernel", "transport", 5),
+            ("busbar-kernel", "auth", 3),
+        ];
+        let base = law0_base_of("4f36b97390", at_rows, at_rows);
+        let base_row = rule_law0(&crates, &law0_reg(at_rows), Some(&law0_counts_of(at_rows)));
+        let moved_cells = law0_counts_of(&[
+            ("busbar-kernel", "plane", 12),
+            ("busbar-kernel", "transport", 4),
+            ("busbar-kernel", "auth", 4),
+        ]);
+        let ruled = law0_reg(&[
+            ("busbar-kernel", "plane", 12),
+            ("busbar-kernel", "transport", 4),
+            ("busbar-kernel", "auth", 4),
+        ]);
+        let moved_row = rule_law0(&crates, &ruled, Some(&moved_cells));
+        assert_eq!(moved_row.status, base_row.status, "{}", moved_row.detail);
+        let judged = rule_law0_base(&ruled, Some(&moved_cells), Ok(&base));
+        assert_eq!(
+            judged.status,
+            crate::ledger::Status::Pass,
+            "{}",
+            judged.detail
+        );
+        assert!(judged.detail.contains("1 moved"), "{}", judged.detail);
+
+        // The same move with NO raise written: the grown cell is red.
+        let unruled = rule_law0_base(&law0_reg(at_rows), Some(&moved_cells), Ok(&base));
+        assert_eq!(
+            unruled.status,
+            crate::ledger::Status::Fail,
+            "{}",
+            unruled.detail
+        );
+
+        // A row MINTED on this branch for a new cell covers nothing.
+        let mut minted_rows = at_rows.to_vec();
+        minted_rows.push(("busbar-kernel", "export", 1));
+        let mut leaked = at_rows.to_vec();
+        leaked.push(("busbar-kernel", "export", 1));
+        let minted = rule_law0_base(
+            &law0_reg(&minted_rows),
+            Some(&law0_counts_of(&leaked)),
+            Ok(&base),
+        );
+        assert_eq!(
+            minted.status,
+            crate::ledger::Status::Fail,
+            "{}",
+            minted.detail
+        );
+        assert!(
+            minted
+                .detail
+                .contains("busbar-kernel \u{d7} export\t0 -> 1"),
+            "{}",
+            minted.detail
+        );
+    }
+
+    /// A rise in one cell held over its row, paid for by a drain in another: the #725 figure is
+    /// flat, so the turnstile admits it. The per-cell row does not.
+    #[test]
+    fn a_drain_elsewhere_does_not_pay_for_a_rise() {
+        let crates = vec![neutral_kernel("busbar-kernel")];
+        let rows: &[(&str, &str, usize)] = &[
+            ("busbar-kernel", "plane", 10),
+            ("busbar-kernel", "transport", 5),
+        ];
+        let base_cells: &[(&str, &str, usize)] = &[
+            ("busbar-kernel", "plane", 12),
+            ("busbar-kernel", "transport", 7),
+        ];
+        let head = law0_counts_of(&[
+            ("busbar-kernel", "plane", 13),
+            ("busbar-kernel", "transport", 6),
+        ]);
+        let reg = law0_reg(rows);
+        assert_eq!(
+            figure_of(&rule_law0(&crates, &reg, Some(&head))),
+            figure_of(&rule_law0(&crates, &reg, Some(&law0_counts_of(base_cells))))
+        );
+        let judged = rule_law0_base(&reg, Some(&head), Ok(&law0_base_of("b", base_cells, rows)));
+        assert_eq!(
+            judged.status,
+            crate::ledger::Status::Fail,
+            "{}",
+            judged.detail
+        );
+        assert!(
+            judged.detail.contains("plane\t12 -> 13"),
+            "{}",
+            judged.detail
+        );
+    }
+
+    /// No base, no verdict: an unreadable merge-base is RED, never a pass.
+    #[test]
+    fn an_unreadable_base_is_red() {
+        let reg = law0_reg(BASE_ROWS);
+        let why = "the base ref 'origin/predev' does not resolve".to_string();
+        let row = rule_law0_base(&reg, Some(&law0_counts_of(BASE_CELLS)), Err(&why));
+        assert_eq!(row.status, crate::ledger::Status::Fail, "{}", row.detail);
+        assert!(row.detail.starts_with("no-base"), "{}", row.detail);
+        let unrun = rule_law0_base(&reg, None, Ok(&law0_base_of("b", BASE_CELLS, BASE_ROWS)));
+        assert_eq!(unrun.status, crate::ledger::Status::Fail);
+    }
+
     #[test]
     fn a_nested_name_scores_once() {
         let plan = plan_of(&[
@@ -4504,6 +5714,85 @@ mod tests {
         crates
     }
 
+    /// THE MEMOISED MATRIX IS THE FULL WALK'S, on the real tree and on planted ones: a plant in one
+    /// crate (one file's bytes change), a new transport crate (the vocabulary changes, so every
+    /// crate's needles do), and both measured after the unplanted tree has filled every memo.
+    #[test]
+    fn the_memoised_matrix_is_the_full_walk_on_planted_trees() {
+        let base = Ctx::workspace().expect("the workspace opens");
+        let plants = [
+            crate::ctx::Overlay::new(),
+            plant(
+                &base,
+                "crates/busbar-kernel/src/planted_leak.rs",
+                "//! names busbar_plane_llm and the mcp plane\n",
+            ),
+            with_transport(crate::ctx::Overlay::new(), "a2a"),
+        ];
+        for (i, ov) in plants.into_iter().enumerate() {
+            let cx = base.with_overlay(ov);
+            let crates = crates_of(&cx);
+            let memoised = measure_with(&cx, &crates, Walk::Memoised).expect("memoised");
+            let again = measure_with(&cx, &crates, Walk::Memoised).expect("memoised, warm");
+            let full = measure_with(&cx, &crates, Walk::Full).expect("full");
+            assert!(
+                memoised == full,
+                "plant {i}: the memoised matrix is not the full walk's"
+            );
+            assert!(
+                again == full,
+                "plant {i}: the warm memoised matrix is not the full walk's"
+            );
+        }
+    }
+
+    /// What the verify RED arm writes over its planted file's memo entry: names a plane.
+    const POISON: &str = "busbar_plane_llm mcp a2a\n";
+
+    /// Whether some memo entry holds [`POISON`].
+    fn memo_poisoned() -> bool {
+        MASKED_MEMO.get().is_some_and(|m| {
+            m.lock()
+                .expect("the masked memo mutex is never poisoned")
+                .values()
+                .any(|v| v.as_str() == POISON)
+        })
+    }
+
+    /// THE VERIFY CAN FAIL: a memo entry that no longer matches its file (here, one file's masked
+    /// text replaced by one that names a plane) is a DIFFER, refused, and not a quiet `equal`.
+    #[test]
+    fn the_verify_refuses_a_memo_that_differs_from_the_full_walk() {
+        let cx = Ctx::workspace()
+            .expect("the workspace opens")
+            .with_overlay(plant(
+                &Ctx::workspace().expect("the workspace opens"),
+                "crates/busbar-kernel/src/planted_verify.rs",
+                "//! zqxjkw9vq\n",
+            ));
+        let crates = crates_of(&cx);
+        measure_verified(&cx, &crates).expect("equal before the memo is corrupted");
+        {
+            let mut memo = MASKED_MEMO
+                .get()
+                .expect("the measurement filled the memo")
+                .lock()
+                .expect("the masked memo mutex is never poisoned");
+            let poisoned = std::sync::Arc::new(POISON.to_string());
+            for v in memo.values_mut() {
+                if v.contains("zqxjkw9vq") {
+                    *v = std::sync::Arc::clone(&poisoned);
+                }
+            }
+        }
+        assert!(
+            memo_poisoned(),
+            "the planted file's masked text was found in the memo and corrupted"
+        );
+        let err = measure_verified(&cx, &crates).expect_err("a corrupted memo is refused");
+        assert!(err.contains("differs from the full walk"), "{err}");
+    }
+
     /// One cell's measured count over the real workspace with `ov` laid over it.
     fn cell_count(ov: crate::ctx::Overlay, krate: &str, kind: &'static str) -> usize {
         let cx = Ctx::workspace()
@@ -4554,6 +5843,58 @@ mod tests {
             cell_count(key, "busbar-plugin-loader", "plane") > base,
             "the decisions plane's registry key `\"decision\"` written as a bare literal still \
              counts, auth-named file or not"
+        );
+    }
+
+    /// THE DIALECT ID-PREFIX LITERAL (ARCHITECT ruling 2026-10-02 on #324), measured on the cell
+    /// over the tree the gate reads — the pinned checkouts mounted beneath (ARCHITECT W4B-Q1), so
+    /// `ws` is a transport needle because `busbar-transport-ws` is a crate of the census. In a
+    /// dialect module the id-prefix literal adds nothing to `busbar-plane-llm × transport`; a real
+    /// `ws` reference in the same module, and the same id-prefix const outside a dialect module,
+    /// each add exactly one. (The cell is measured on the unplanted tree — `http`, `sse` — so the
+    /// selftest's debt-free subject cannot see a rise in it; this is where the rise is proven.)
+    #[test]
+    fn the_dialect_id_prefix_literal_is_masked_and_a_real_ws_still_counts() {
+        let real = Ctx::workspace().expect("the workspace opens");
+        let count = |file: &str, line: &str| {
+            let mut ov = crate::ctx::Overlay::new();
+            if !file.is_empty() {
+                let body = real.read(file).expect("the planted file reads");
+                ov.set(file, format!("{body}\n{line}\n"));
+            }
+            let cx = super::super::pinned::with_pinned(&real.with_overlay(ov));
+            let crates = crates_of(&cx);
+            assert!(
+                crates.iter().any(|c| c.name == "busbar-transport-ws"),
+                "the pinned ws checkout is a crate of the census"
+            );
+            let (matrix, _, _) = measure(&cx, &crates).expect("the matrix measures");
+            matrix
+                .get(&("busbar-plane-llm".to_string(), "transport"))
+                .map_or(0, |c| c.count)
+        };
+        let responses_mod = "crates/busbar-plane-llm/src/codec/openai_responses/mod.rs";
+        let base = count("", "");
+        assert_eq!(
+            count(
+                responses_mod,
+                "const ITEM_ID_PREFIX_PLANTED: &str = \"ws\";"
+            ),
+            base,
+            "a dialect module's native item-id prefix literal is the provider's word"
+        );
+        assert_eq!(
+            count(responses_mod, "const PLANTED_CARRIER: &str = \"ws\";"),
+            base + 1,
+            "a real transport `ws` reference in the same dialect module still counts"
+        );
+        assert_eq!(
+            count(
+                "crates/busbar-plane-llm/src/codec/proto_stream.rs",
+                "const ITEM_ID_PREFIX_PLANTED: &str = \"ws\";"
+            ),
+            base + 1,
+            "an id-prefix literal outside a dialect module still counts"
         );
     }
 

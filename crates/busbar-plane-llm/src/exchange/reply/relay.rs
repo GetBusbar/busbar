@@ -384,6 +384,11 @@ impl Relay {
                             open_billing = read.billing();
                             None
                         }
+                        // A JSON body that stops short of its end is one the far end CUT (its
+                        // transfer failed before its last byte): it bills only the usage the far
+                        // end reported in the bytes in hand, never the floor (OWNER RULING Q31,
+                        // oracle cell `route.failover|fo|primary-cut-body`).
+                        Err(_) if cut_short(&buf) => wire::reported_usage(self.ingress, &buf),
                         Err(_) => {
                             fault_unreadable(self.ingress, buf.len());
                             Some(wire::unrecovered_usage(self.ingress, &buf))
@@ -451,11 +456,37 @@ impl Relay {
         }
     }
 
+    /// THE CALLER HAD A USABLE PART: a byte of the answer was relayed and nothing failed it (no
+    /// reader's terminal error, no translate abort), so a caller that leaves now leaves a partial
+    /// answer whose incurred units bill (v1.5.5 `FirstByteBody`'s drop arm).
+    #[must_use]
+    pub fn partial(&self) -> bool {
+        self.first_byte
+            && !self
+                .translate
+                .as_ref()
+                .is_some_and(|t| t.aborted() || t.terminal_error().is_some())
+    }
+
     /// The usage a stream's readers have read so far (cheap: nothing is scanned); `None` for a
     /// relay that reads its usage only at the end.
     #[must_use]
     pub fn streamed_usage(&self) -> Option<TokenUsage> {
         self.translate.as_ref().and_then(|t| t.usage())
+    }
+
+    /// THE FLOOR A NON-STREAM SAME-DIALECT ANSWER HAS INCURRED SO FAR, as it relays: it was
+    /// generated whole before its first byte, so a caller that leaves mid-relay bills the floor
+    /// over the bytes relayed, never 0 (item 367, Q33 (a), told; #62 applied to buffered relays).
+    /// `None` for a stream, a translated answer, or one that meters nothing.
+    #[must_use]
+    pub fn relayed_floor(&self) -> Option<TokenUsage> {
+        (self.translate.is_none()
+            && !self.far_is_stream
+            && self.meter
+            && self.handler.taps_usage()
+            && self.upstream_bytes > 0)
+            .then(|| wire::estimate_usage_from_truncated_tail(self.upstream_bytes))
     }
 
     /// The usage an answer that ended early had incurred: what a stream's readers accumulated;
@@ -470,6 +501,11 @@ impl Relay {
             None => Some(wire::unrecovered_usage(self.ingress, &self.nonstream_buf)),
         }
     }
+}
+
+/// A JSON body that ends before its value does: the far end's transfer stopped short.
+fn cut_short(buf: &[u8]) -> bool {
+    serde_json::from_slice::<serde::de::IgnoredAny>(buf).is_err_and(|e| e.is_eof())
 }
 
 fn bytes_or_nothing<'a>(out: Vec<u8>) -> Fed<'a> {

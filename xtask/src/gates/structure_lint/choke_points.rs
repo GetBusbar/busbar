@@ -128,8 +128,10 @@ pub fn table(a: &Addresses) -> Vec<ChokeRow> {
         //         cleanup / 0600 mode) its author forgot.
         //
         //         LEDGERED EXEMPTION, `fs::rename`, for the request-log sink's rotate-by-rename,
-        //         which the plugin host performs for an export destination
-        //         (`crates/plugin-loader/src/host.rs`): rotation renames a file whose bytes are
+        //         which the plugin host performs for a plugin log file
+        //         (`crates/plugin-loader/src/host.rs`) and the kernel's disk lane for an export
+        //         destination (`crates/busbar-kernel/src/host_disk.rs`, `disk.append`, ARCHITECT
+        //         ruling Q-C1-FILE): rotation renames a file whose bytes are
         //         already fully on disk, and `fs::rename` moves a directory entry without touching
         //         them, so there is no torn state to protect. LEDGERED EXEMPTION, `sync_[ad]` and
         //         `create_dir_all`, for the WAL: it is a SIBLING durability primitive, not a
@@ -147,16 +149,17 @@ pub fn table(a: &Addresses) -> Vec<ChokeRow> {
         ChokeRow {
             id: "A-persistence".into(),
             tag: "DURABLE-BYPASS".into(),
-            owner: "crates/busbar-kernel-wal/src/durable.rs (durable::write / write_with; AppHandle::commit_and_swap)".into(),
-            class_test: "crates/busbar-kernel-wal/src/tests/durable_tests.rs::fault_matrix_returns_err_untouched_target_no_temp_leak".into(),
+            owner: "crates/plugin-loader/src/durable.rs (durable::write / write_with; AppHandle::commit_and_swap)".into(),
+            class_test: "crates/plugin-loader/src/tests/durable_tests.rs::fault_matrix_returns_err_untouched_target_no_temp_leak".into(),
             remedy: "route through crate::durable::write".into(),
             rules: vec![
                 BanRule::new(
                     r"fs::rename\(",
                     "hand-rolled rename-to-publish",
                     &[
-                        "crates/busbar-kernel-wal/src/durable.rs".into(),
+                        "crates/plugin-loader/src/durable.rs".into(),
                         "crates/plugin-loader/src/host.rs".into(),
+                        "crates/busbar-kernel/src/host_disk.rs".into(),
                     ],
                 )
                 .core_tier(),
@@ -164,7 +167,7 @@ pub fn table(a: &Addresses) -> Vec<ChokeRow> {
                     "sync_[ad]",
                     "hand-rolled fsync durability (sync_all/sync_data)",
                     &[
-                        "crates/busbar-kernel-wal/src/durable.rs".into(),
+                        "crates/plugin-loader/src/durable.rs".into(),
                         "crates/busbar-kernel-wal/src/backend.rs".into(),
                         "crates/plugin-loader/src/host.rs".into(),
                     ],
@@ -174,10 +177,9 @@ pub fn table(a: &Addresses) -> Vec<ChokeRow> {
                     r"fs::create_dir_all\(",
                     "directory creation that leaves the new entry non-durable",
                     &[
-                        "crates/busbar-kernel-wal/src/durable.rs".into(),
+                        "crates/plugin-loader/src/durable.rs".into(),
                         format!("{core}/test_support/mod.rs"),
                         format!("{core}/test_support/export_axis.rs"),
-                        "crates/busbar-kernel-wal/src/backend.rs".into(),
                     ],
                 )
                 .core_tier(),
@@ -279,8 +281,8 @@ pub fn table(a: &Addresses) -> Vec<ChokeRow> {
         ChokeRow {
             id: "D-openapi-taxonomy".into(),
             tag: "TAXONOMY-BYPASS".into(),
-            owner: format!("{core}/admin/v1/contract/taxonomy.rs (declared_errors)"),
-            class_test: "crates/busbar-core-admin/src/tests/tests.rs::declared_error_set_is_exactly_what_the_handlers_emit".into(),
+            owner: "crates/busbar-core-admin/src/v1/contract/taxonomy.rs (declared_errors)".into(),
+            class_test: "crates/busbar/tests/admin_cross_plane/keys.rs::declared_error_set_is_exactly_what_the_handlers_emit".into(),
             remedy: "declare the ErrKind in contract::taxonomy::declared_errors".into(),
             rules: Vec::new(),
             why: "openapi.json must be a PROJECTION of one declaration, never a hand-maintained parallel list".into(),
@@ -318,13 +320,16 @@ pub fn table(a: &Addresses) -> Vec<ChokeRow> {
         ChokeRow {
             id: "H-operator-authored-ask".into(),
             tag: "ASK-NOT-OPERATOR-AUTHORED".into(),
-            owner: format!("{mcp}/config.rs (AskEntryCfg, deserialised from operator YAML) + {mcp}/callerask.rs (the private `authored` module, sole constructor)"),
-            class_test: format!("{mcp}/tests/callerask_tests.rs::the_asks_params_are_the_operators_bytes_and_nothing_else"),
+            owner: format!("crates/busbar-plane-mcp/src/tools_config.rs (AskEntryCfg, deserialised from operator YAML; the tools: grammar moved into the plane, MCP-1 M1a) + {mcp}/ask.rs (the private `authored` module, sole constructor)"),
+            // P3 DEL-MCP (ARCHITECT 2026-10-05): the engine's `callerask.rs` and its class test are
+            // deleted; the door carries the same `authored` module (`ask.rs`) and the same test by
+            // name in `tests/ask.rs`.
+            class_test: format!("{mcp}/tests/ask.rs::the_asks_params_are_the_operators_bytes_and_nothing_else"),
             remedy: "let the operator write the ask: an AskEntryCfg is deserialised, never assembled".into(),
             rules: vec![BanRule::new(
                 r"AskEntryCfg[[:space:]]*\{",
                 "an AskEntryCfg built in code rather than deserialised from operator configuration",
-                &[format!("{mcp}/config.rs")],
+                &["crates/busbar-plane-mcp/src/tools_config.rs".to_string()],
             )],
             why: "the text and schema a caller is shown when busbar asks it to confirm something must be bytes the operator wrote; the moment a value can flow from an upstream response into that ask, busbar is laundering an upstream demand for authority under its own name".into(),
         },
@@ -335,9 +340,13 @@ pub fn table(a: &Addresses) -> Vec<ChokeRow> {
         ChokeRow {
             id: "I-trust-serve-derivation".into(),
             tag: "TRUST-COMPARISON-BYPASS".into(),
-            owner: format!("{substrate}/trust/mod.rs (Approval::serves)"),
-            class_test: format!("{mcp}/tests/trust_gate_tests.rs::the_routed_gate_answers_exactly_what_the_deleted_inline_decision_answered"),
-            remedy: "ask crate::trust::Approval::serves; never re-derive the answer from the raw registration fields".into(),
+            // ARCHITECT Q3: the trust decision is the kernel's Approve. A plane states its facts
+            // (item approvals as a declared trust key, sightings) and asks `trust.serves`, which is
+            // `TrustBook::judge`; the engine's routed gate and its class test are deleted, and the
+            // class test is ported to the kernel against a neutral double of the declared facts.
+            owner: format!("{substrate}/trust/book.rs (TrustBook::judge, the kernel's Approve; Approval::serves for a whole-catalogue pin)"),
+            class_test: format!("{substrate}/trust/tests/serve_gate_tests.rs::the_kernels_approve_answers_exactly_what_the_deleted_inline_decision_answered"),
+            remedy: "state the facts and ask the kernel (trust.serves / TrustBook::judge, or Approval::serves); never re-derive the answer from the raw registration fields".into(),
             rules: vec![
                 BanRule::new(
                     r"schema_hash[[:space:]]*\.is_some",
@@ -383,7 +392,7 @@ pub fn table(a: &Addresses) -> Vec<ChokeRow> {
             id: "E-core-route-auth".into(),
             tag: "ROUTE-AUTH-BYPASS".into(),
             owner: format!("{core}/core_routes.rs (CoreRouter::route / CoreRouteTable::declared_auth)"),
-            class_test: "crates/busbar-kernel/tests/plane_integration.rs::an_audience_bound_token_is_confined_to_its_door_plane".into(),
+            class_test: "crates/busbar/tests/plane_integration.rs::an_audience_bound_token_is_confined_to_its_door_plane".into(),
             remedy: "mount core routes through core_routes::CoreRouter::route, which takes the RouteAuth with the handler".into(),
             rules: Vec::new(),
             why: "a route whose admission bar lives in the middleware rather than at the mount is a bar that drifts, and a per-process bypass leaks onto planes that never mount the route".into(),

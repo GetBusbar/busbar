@@ -198,7 +198,6 @@ pub mod audit;
 /// admin HTTP API. Runs on the append-only chain mechanism in [`audit`] above.
 pub mod audit_ring;
 pub mod auth;
-pub mod auth_cache;
 pub mod billing;
 /// THE BOOT SEAM: one entry point per boot action, so the internals each action composes stay
 /// crate-private. See the module header.
@@ -214,17 +213,18 @@ pub mod config_validate;
 pub mod core_routes;
 pub mod cost;
 pub mod diagnostics;
-// The durable-write choke point lives in `busbar-kernel-wal` (the durable medium) so the plugin-loader
-// (plugins.fetch cache write), which this crate links, can route through the SAME primitive.
-// Re-exported here so every existing `crate::durable::*` call site in this binary resolves unchanged.
-pub use busbar_kernel_wal::durable;
+// The durable-write choke point lives in `busbar-plugin-loader` (which names the contract alone, Part 2
+// #33) so the loader's own writes and this crate's route through the SAME primitive. Re-exported here
+// so every existing `crate::durable::*` call site in this binary resolves unchanged.
+pub use busbar_plugin_loader::durable;
 // The host-owned outbound surface: the neutral SSRF-pinned client (re-exported wholesale from
 // busbar-substrate) plus the host-mediated `seam` adapter that drives egress through the
 // `plane_host` FFI vtable, gated behind the neutral `egress-seam` capability feature rather than
 // any one plane. Always compiled, like `net_guard`, because the host owns every outbound byte
 // whether or not a plane needing the seam is built. See the module header.
+/// A lane's credential, bound by the auth plugin that serves its style (P2 D1, the auth split).
+pub mod bound_credential;
 pub mod egress;
-pub mod egress_auth;
 /// THE EGRESS GRANT GATE: may busbar spend its own outbound credential on a subject for this
 /// caller? Authorization, so it lives in `busbar-kernel-scope` (Part 2 #36); re-exported here for
 /// the planes that already reach the kernel.
@@ -235,9 +235,13 @@ pub mod failover;
 pub mod governance;
 pub mod handlers;
 pub mod hooks;
+pub(crate) mod host_chains;
 pub mod host_claims;
+pub mod host_disk;
 pub mod host_records;
 pub mod host_units;
+pub mod host_verify;
+pub mod host_work;
 pub mod ingress;
 pub mod ir;
 // The host's depth-guarded JSON parse/serialize seam (sonic-rs, MAX_JSON_DEPTH = 128). The LLM plane
@@ -246,10 +250,10 @@ pub mod host_services;
 pub mod json;
 pub mod limits;
 pub mod lineage;
-pub mod metrics;
 pub mod net_guard;
 pub mod oauth_as;
 pub mod observability;
+pub mod snapshot;
 // `operation` is the neutral operation vocabulary (`OpVerb`, `OpShape`), re-exported wholesale
 // from `busbar-contract` so `crate::operation::OpVerb` and `busbar_kernel::operation::*` resolve
 // for every existing user. THE ONE GAUNTLET (`run`, the single canonical resolved-operation entry
@@ -274,6 +278,17 @@ pub mod plane;
 #[allow(unsafe_code)]
 pub mod plane_host;
 pub mod plugin_routes;
+/// THE PLUGIN-ADMISSION MACHINERY the operator surface drives (upload, verify, inventory, rescan):
+/// the loader's own items by `pub use`, the same types and the same functions, no wrapper. The
+/// admin cleanliness crate reaches them through the kernel it serves, its one-way dependency
+/// (BUSBAR-1.6.0.md:3780, R2/#37), never by naming the loader: `kernel -> plugin-tooling` is a class
+/// the architecture grants and `cleanliness -> plugin-tooling` is not.
+pub mod plugin_admission {
+    pub use busbar_plugin_loader::{
+        inventory_tarballs, scan_and_validate, sign, supported_abi, tarball, LoadablePlugin,
+        PluginRegistry,
+    };
+}
 // The ENV-guarded hot-path stage profiler (`Stage`/`start`/`record`/`dump`). DECISIONS #83a, and
 // the #83(d) test decides it: a stage vocabulary, a bucket cap and a reservoir policy are an
 // implementation's own instrument — a second honest implementation could bucket differently, or not
@@ -290,6 +305,11 @@ pub mod ratelimit;
 /// THE DURABLE PER-PRINCIPAL RESIDUAL LOG: one hash-chained `usage.residual` row per settle that
 /// carried usage counts no billing class records (MONEY LAW). See the module header.
 pub mod residual_log;
+/// THE CONNECTOR'S TLS WRAP, as the kernel reaches it: this crate names no TLS library (THE DESIGN:
+/// TLS stays in the connector); the egress engine's https arm, the duplex `wss` dial and the
+/// client-identity PEM parse ask this seam, answered through the root-installed egress-trust
+/// capability. See the module header.
+pub mod secure;
 // THE NEUTRAL PER-SESSION SUBSTRATE relocated DOWN to busbar-substrate (std-only, money-safe, zero
 // busbar deps). Core re-exports it so `crate::session::{SessionStore, SessionKey, OwnerKey}` — the
 // gate's screen-cache tenant, the appbuild session_store construction and the App field — are
@@ -342,6 +362,9 @@ pub mod trust;
 #[path = "tests/alarm_silence_tests.rs"]
 mod alarm_silence_tests;
 pub mod appbuild;
+#[cfg(test)]
+#[path = "tests/license_tests.rs"]
+mod license_header_tests;
 // `key_revoke_tombstone_tests` drives the admin key-revoke HTTP surface; it moved to `busbar-admin`
 // with the service (`busbar_admin::tests::key_revoke_tombstone_tests`).
 pub mod preflight;
@@ -364,8 +387,9 @@ pub use preflight::{
     plugins_preflight, preflight_plugins_and_secrets, validate_builtin_secrets_resolve,
 };
 pub use router::{
-    build_router, build_split_routers_serving, build_split_routers_with_limits,
-    fallback_error_response, REQUEST_ACTIVITY_TICKS,
+    build_router, build_split_routers_serving, build_split_routers_serving_doors,
+    build_split_routers_serving_sessions, build_split_routers_with_limits, fallback_error_response,
+    REQUEST_ACTIVITY_TICKS,
 };
 // Referenced as `crate::...` only from the test trees (`#[cfg(test)]`), so the production lib
 // build sees them as unused — allowed, with the reason written down rather than widened away.
@@ -395,6 +419,7 @@ pub fn base_data_route_table_view(app: &state::App) -> Vec<(String, RouteAuth)> 
         &app.plane_slots,
         app.oauth_as.as_ref(),
         Vec::new(),
+        Vec::new(),
     )
     .1
     .routes()
@@ -420,6 +445,7 @@ pub fn base_data_core_lines(
         &app.plane_slots,
         app.oauth_as.as_ref(),
         Vec::new(),
+        Vec::new(),
     )
     .1
     .routes()
@@ -438,6 +464,7 @@ pub fn base_data_route_method_view(app: &state::App) -> Vec<(String, String, Rou
         &app.plugin_routes,
         &app.plane_slots,
         app.oauth_as.as_ref(),
+        Vec::new(),
         Vec::new(),
     )
     .1

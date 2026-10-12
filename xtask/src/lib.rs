@@ -36,6 +36,7 @@
 
 pub mod audit;
 pub mod audit_cmd;
+pub mod audit_pinned;
 pub mod audit_verify;
 pub mod cli;
 pub mod conformance_check;
@@ -50,10 +51,12 @@ pub mod gitp;
 pub mod install_sizes;
 pub mod json_lite;
 pub mod ledger;
+pub mod libtest_path;
 pub mod loc;
 pub mod loom;
 pub mod manifest;
 pub mod method_inventory;
+pub mod par;
 pub mod parity;
 pub mod perf_ab;
 pub mod pin_missing_cells;

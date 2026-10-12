@@ -35,10 +35,17 @@ fn fixture_dir() -> PathBuf {
     let d = std::env::temp_dir().join(format!(
         "busbar-scrape-shape-1-5-5-{}-{}",
         std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
+        {
+            static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            format!(
+                "{}-{}-{}",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |d| d.as_nanos()),
+                line!(),
+                NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            )
+        }
     ));
     std::fs::create_dir_all(&d).unwrap();
     d
@@ -70,6 +77,7 @@ fn write_configs(dir: &Path, data_port: u16, admin_port: u16) {
 admin_listen: "127.0.0.1:{admin_port}"
 advanced:
   allow_destinations: ["127.0.0.1"]
+store: {{module: memory}}
 admin_require_mtls: false
 identity-providers:
   admin-tokens:

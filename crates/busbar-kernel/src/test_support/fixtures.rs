@@ -8,8 +8,18 @@ use super::*;
 
 // ── SHARED CONFIG-BUILD FIXTURES (relocated from src/tests/tests.rs) ─────────────────────────────
 // `pub` so BOTH the in-crate unit tests and busbar-core's OWN integration-test target
-// (`tests/plane_integration.rs`, where the plane crates link as ONE busbar_kernel) can build a RootCfg
+// (`crates/busbar/tests/plane_integration.rs`, where the plane crates link as ONE busbar_kernel) can build a RootCfg
 // and drive it through the real `build_app_from_config`.
+/// The `store:` block a test config names: the stand-in linked store row. A config names its store
+/// (owner ruling Q-STORE = (B), 2026-09-27: a config with no `store:` block is refused), so every
+/// fixture config carries this one.
+pub fn stand_in_store() -> crate::config::StoreCfg {
+    crate::config::StoreCfg {
+        module: fixture_store::linked::STORE.0.to_string(),
+        settings: serde_json::Map::new(),
+    }
+}
+
 /// A minimal `RootCfg` whose SOLE provider's `api_key` is the given secret reference — the smallest
 /// config that exercises `config_validate::secret_refs` (and thus `validate_secret_refs`).
 pub fn cfg_with_provider_api_key(api_key: crate::config::SecretRef) -> crate::config::RootCfg {
@@ -68,7 +78,7 @@ pub fn cfg_with_provider_api_key(api_key: crate::config::SecretRef) -> crate::co
         rate_card: None,
         per_request_fee: 0,
         plane_fees: Default::default(),
-        store: None,
+        store: Some(stand_in_store()),
         secrets: std::collections::BTreeMap::new(),
         global_hooks: Vec::new(),
         blocked_metadata_hosts: Vec::new(),
@@ -123,6 +133,7 @@ pub const NEUTRAL_FALLBACK: crate::plane::registry::PlaneDecl = crate::plane::re
         required_config_sections: &[],
         trust_keys: &[],
         served_op_classes: &[],
+        caller_credential_refusal: None,
     },
     wire_format_names: || &[],
     claims: |_| Vec::new(),
@@ -352,6 +363,6 @@ impl busbar_kernel::test_support::BuiltAppSeam for crate::state::App {
     }
 
     fn refresh_scrape_gauges(&self) {
-        crate::metrics::refresh_scrape_gauges(self);
+        crate::snapshot::refresh_scrape_gauges(self);
     }
 }

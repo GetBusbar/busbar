@@ -51,7 +51,7 @@ use serde_json::Value;
 ///
 /// What produces each entry TODAY (open these before changing this list — the rule is only worth
 /// what the citations are worth):
-/// - `metrics` — the recorder + emit sites in `crate::metrics`, rendered by
+/// - `metrics` — the recorder + emit sites in `crate::snapshot`, rendered by
 ///   the scrape sink through `crate::export::scrape`.
 /// - `logs` — [`crate::export::build_request_log`], from the request-finish path
 ///   (`crate::ingress::finish_inner`). PARTIAL: it produces a subset of the stream's documented

@@ -162,6 +162,9 @@ enum Lease {
 pub struct Leases {
     next: AtomicU64,
     held: Mutex<BTreeMap<(u64, u32), Lease>>,
+    /// Alive while this table is: an answer that leased from it is FAULT when the table is gone
+    /// by the time the body returns (`abi::sdk::out::Holders`).
+    pub(crate) alive: crate::abi::sdk::out::Alive,
 }
 
 impl std::fmt::Debug for Leases {
@@ -262,8 +265,9 @@ impl Leases {
     }
 
     /// Release `lease` and every part chained under it: READY when it was held, REFUSED when it
-    /// was not (a host bug).
-    pub fn release(&self, lease: u64) -> Outcome {
+    /// was not (a host bug). Only the SDK's `release` slot calls it: a body that released a lease
+    /// the host is still copying would free memory under it.
+    pub(crate) fn release(&self, lease: u64) -> Outcome {
         let mut held = self.lock();
         let mut freed = false;
         while let Some(key) = held

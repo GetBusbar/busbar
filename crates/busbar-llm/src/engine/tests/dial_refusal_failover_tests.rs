@@ -137,9 +137,15 @@ async fn a_refused_primary_fails_over_to_the_next_lane() {
     let (next_state, next) = streaming_mock(&["event-0", "event-1"]).await;
 
     let primary_addr = address_of(&primary);
-    let names = names_answering(primary_addr);
+    // The primary's NAME answers a loopback address the allowlist does not list (127.0.0.2), so its
+    // dial is refused; the next lane is the mock's listed loopback LITERAL, judged as its own
+    // answer and admitted, as an operator lists `127.0.0.1`.
+    let names = names_answering(SocketAddr::new(
+        IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
+        primary_addr.port(),
+    ));
     let primary_url = named_primary(primary_addr.port());
-    let app = with_scoped_dial(blocking_loopback(), names.clone(), || {
+    let app = with_scoped_dial(private_refusing(&["127.0.0.1"]), names.clone(), || {
         let app = TestApp::new()
             .lane(LaneSpec::new(
                 "lane0",

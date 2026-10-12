@@ -15,6 +15,11 @@
 # builds from busbar_plugin.h alone: it names busbar in .busbar-ref and its workflows only, and a
 # Cargo.toml or Cargo.lock in it is refused (no Rust, no busbar crate).
 #
+# THE TRANSPORT FRAMERS a networked plugin's conformance host takes as dev-dependencies (rendered by
+# the fleet template, ARCHITECT Q-P4-9: GetBusbar/busbar-transport-*, each its own repo) are pinned
+# too: each such source in the lock must be the one busbar's own Cargo.lock at the pin records for that
+# crate (PIN_CHECK_BUSBAR_LOCK, default: the Cargo.lock of the busbar checkout this script sits in).
+#
 # Two more refusals: a manifest that names a path OUTSIDE the repo (a sibling-checkout dependency
 # builds whatever happens to sit beside the checkout, not the pin), and a retired busbar crate
 # (a plugin's busbar closure is busbar-contract, plus busbar-plugin-loader for its tests).
@@ -24,6 +29,12 @@
 set -euo pipefail
 
 SRC='https://github.com/GetBusbar/busbar'
+# The transport framer repos (their sources in a lock).
+FRAMER_SRC='https://github.com/GetBusbar/busbar-transport-'
+
+lock_sources() {  # lock_sources <Cargo.lock>: "<name> <source>" per package with a source
+  awk '/^\[\[package\]\]/{n=""} /^name = /{gsub(/"/,"",$3); n=$3} /^source = /{gsub(/"/,"",$3); if (n!="") print n, $3}' "$1"
+}
 
 check() {
   local root="$1" fail=0
@@ -88,8 +99,28 @@ check() {
   fi
 
   if [ -f "$root/Cargo.lock" ]; then
-    if grep -E "^source = \"git\+${SRC}" "$root/Cargo.lock" | grep -vqF "?rev=${pin}#${pin}\""; then
+    # busbar's own source exactly (`<SRC>?`): another GetBusbar repo (a transport framer a networked
+    # plugin's conformance host takes as a dev-dependency) is its own source at its own rev.
+    if grep -E "^source = \"git\+${SRC}\?" "$root/Cargo.lock" | grep -vqF "?rev=${pin}#${pin}\""; then
       err "Cargo.lock resolves a busbar source other than rev=${pin}"
+    fi
+    # Each transport framer at the source busbar's own lock at the pin records for it.
+    local framers name src want block
+    framers="$(lock_sources "$root/Cargo.lock" | grep -F " git+${FRAMER_SRC}" || true)"
+    if [ -n "$framers" ]; then
+      block="${PIN_CHECK_BUSBAR_LOCK:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/Cargo.lock}"
+      if [ ! -f "$block" ]; then
+        err "Cargo.lock resolves a transport framer, and busbar's Cargo.lock at the pin is not at $block to hold it to"
+      else
+        while read -r name src; do
+          want="$(lock_sources "$block" | awk -v n="$name" '$1==n{print $2}' | sort -u)"
+          if [ -z "$want" ]; then
+            err "Cargo.lock resolves $name from $src, and busbar at the pin links no $name"
+          elif [ "$src" != "$want" ]; then
+            err "Cargo.lock resolves $name at ${src##*#}, not the rev busbar's lock at the pin records (${want##*#})"
+          fi
+        done <<< "$framers"
+      fi
     fi
   else
     err "Cargo.lock is missing (a release builds --locked)"
@@ -135,12 +166,17 @@ selftest() {
   mk; printf 'x = { path = "../../busbar/crates/x" }\n' >> "$tmp/r/adapter/Cargo.toml"; expect "a sibling-checkout path dependency is refused" red "outside the repo"
   mk; printf 'busbar-plugin-sdk = { git = "%s", rev = "%s" }\n' "$SRC" "$pin" >> "$tmp/r/adapter/Cargo.toml"; expect "a retired busbar crate is refused" red "retired busbar crate"
   mk; sed -i.bak "s/rev=$pin#/rev=$other#/" "$tmp/r/Cargo.lock"; expect "a lock resolving another busbar rev is refused" red "Cargo.lock resolves"
+  # busbar's own lock at the pin, as the framer check reads it.
+  printf '[[package]]\nname = "busbar-transport-http"\nsource = "git+%s-transport-http?rev=%s#%s"\n' "$SRC" "$other" "$other" > "$tmp/busbar.lock"
+  mk; printf '[[package]]\nname = "busbar-transport-http"\nsource = "git+%s-transport-http?rev=%s#%s"\n' "$SRC" "$other" "$other" >> "$tmp/r/Cargo.lock"; PIN_CHECK_BUSBAR_LOCK="$tmp/busbar.lock" expect "a transport framer at the rev busbar's lock records passes (not busbar's own source)" ok
+  mk; printf '[[package]]\nname = "busbar-transport-http"\nsource = "git+%s-transport-http?rev=%s#%s"\n' "$SRC" "$pin" "$pin" >> "$tmp/r/Cargo.lock"; PIN_CHECK_BUSBAR_LOCK="$tmp/busbar.lock" expect "a transport framer at another rev than busbar's lock records is refused" red "not the rev busbar's lock at the pin records"
+  mk; printf '[[package]]\nname = "busbar-transport-grpc"\nsource = "git+%s-transport-grpc?rev=%s#%s"\n' "$SRC" "$other" "$other" >> "$tmp/r/Cargo.lock"; PIN_CHECK_BUSBAR_LOCK="$tmp/busbar.lock" expect "a transport framer busbar does not link is refused" red "links no busbar-transport-grpc"
   mk; sed -i.bak "s/@$pin/@dev/" "$tmp/r/.github/workflows/ci.yml"; expect "a reusable workflow taken at a branch, not the pin, is refused" red "not the pin"
   mkc; PIN_CHECK_LANG=c expect "a C plugin with no Cargo passes (control)" ok
   mkc; printf '[workspace]\n' > "$tmp/r/Cargo.toml"; PIN_CHECK_LANG=c expect "a C plugin carrying a Cargo.toml is refused" red "carries Cargo.toml"
   mkc; sed -i.bak "s/@$pin/@$other/" "$tmp/r/.github/workflows/ci.yml"; PIN_CHECK_LANG=c expect "a C plugin's workflow off the pin is refused" red "not the pin"
   mkc; expect "a C plugin checked as Rust is refused (no Cargo.toml)" red "no Cargo.toml"
-  [ "$ran" = 12 ] || { echo "pin-check selftest: only $ran of 12 cases ran"; return 1; }
+  [ "$ran" = 15 ] || { echo "pin-check selftest: only $ran of 15 cases ran"; return 1; }
   [ "$rc" = 0 ] && echo "pin-check selftest: every refusal fires on its planted defect" || echo "pin-check selftest: FAILED"
   return "$rc"
 }

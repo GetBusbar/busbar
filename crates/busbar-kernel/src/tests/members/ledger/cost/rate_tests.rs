@@ -67,20 +67,14 @@ fn an_appended_entry_prices_later_instants_and_moves_nothing_earlier() {
     );
 }
 
-/// **ITEM 434 — TWO FOLDS, TWO NOUNS, AND THE DOC SAYS WHICH.** `nanos_sum`'s doc claimed it was
-/// the only multiply-and-sum on the money path while the settlement lookup, the read and the
-/// kernel's projection each carried their own, already drifted on overflow (at phase start the
-/// lookup billed the four classes below as `73,786,976,294,838,206,460,000,000,000,000,000,000`
-/// nano-units where the read refused). The spend fold is now `Tally`'s alone, CHECKED; `nanos_sum`
-/// sizes reservations and SATURATES. Asserted on both sides, and on the doc that names them.
+/// **ITEM 434 — ONE SPEND FOLD, AND IT REFUSES.** The settlement lookup, the read and the kernel's
+/// projection each used to carry their own multiply-and-sum, already drifted on overflow (at phase
+/// start the lookup billed the four classes below as
+/// `73,786,976,294,838,206,460,000,000,000,000,000,000` nano-units where the read refused). The
+/// spend fold is now `Tally`'s alone, CHECKED. (The saturating sizing fold `nanos_sum` that sat
+/// beside it had no production caller and is deleted, with the half of this test that pinned it.)
 #[test]
-fn the_spend_fold_refuses_an_overflow_and_the_sizing_fold_pins_it() {
-    // SIZING: a reservation past the ceiling pins there (it can only reserve too much).
-    assert_eq!(
-        busbar_kernel_ledger::cost::nanos_sum([(u64::MAX, u64::MAX); 4]),
-        u128::MAX
-    );
-
+fn the_spend_fold_refuses_an_overflow() {
     // SPEND: the settlement lookup and the read are one fold, and both REFUSE.
     let card = card4("m", [1e15; 4], 0);
     let history = History::opening(card, 0);
@@ -104,23 +98,5 @@ fn the_spend_fold_refuses_an_overflow_and_the_sizing_fold_pins_it() {
         busbar_kernel_ledger::cost::price_exact(&[entry], &history.current()),
         Err(busbar_kernel_ledger::cost::MoneyError::Overflow),
         "the read refuses the same consumption"
-    );
-
-    // THE DOC: `nanos_sum` must not claim to be the only fold, and must name the spend fold.
-    let src = include_str!("../../../../../../busbar-kernel-ledger/src/cost/rate.rs");
-    let at = src
-        .find("pub fn nanos_sum")
-        .expect("nanos_sum is defined in rate.rs");
-    let doc_start = src[..at]
-        .rfind("\n\n")
-        .expect("the doc block starts after a blank line");
-    let doc = &src[doc_start..at];
-    assert!(
-        !doc.contains("THE ONLY MULTIPLY-AND-SUM"),
-        "nanos_sum's doc claims to be the only fold; the spend fold is Tally's"
-    );
-    assert!(
-        doc.contains("Tally") && doc.contains("RESERVATION"),
-        "nanos_sum's doc must name Tally as the spend fold and itself as the reservation fold"
     );
 }

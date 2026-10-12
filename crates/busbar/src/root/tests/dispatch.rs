@@ -33,7 +33,7 @@ fn the_binarys_dispatcher_serves_dest_judge_once_composed() {
         let services = d
             .host_services()
             .expect("the binary's dispatcher has a provider");
-        match services.dest_judge(dest, crate::root::serve::DEFAULT_EGRESS_CLASS, false, None) {
+        match services.dest_judge(dest, crate::root::serve::DEFAULT_EGRESS_CLASS, 0, None) {
             Ran::Now(stored) => stored,
             Ran::Later => panic!("an unresolved judgement answers at once"),
         }

@@ -472,7 +472,7 @@ impl<'a, 'b, 't> Order<'a, 'b, 't> {
 
         // 4. The health filter, applied BEFORE any turn is spent. A drained member, an unusable
         //    destination, or a suppressed cell is excluded here — never ranked last and attempted.
-        let offered: Vec<(DestinationId, u32)> = candidates
+        let healthy: Vec<(DestinationId, u32, u32)> = candidates
             .iter()
             .filter(|(_, destination, weight)| {
                 *weight != 0
@@ -484,7 +484,17 @@ impl<'a, 'b, 't> Order<'a, 'b, 't> {
                         self.input.token,
                     )
             })
-            .map(|(_, destination, weight)| (*destination, *weight))
+            .map(|(position, destination, weight)| {
+                (*destination, *weight, self.input.members[*position].tier)
+            })
+            .collect();
+        // THE LOWEST TIER among the healthy candidates is the only one offered: a higher tier is
+        // reached only when no member of a lower one could take the request (`Member::tier`).
+        let lowest = healthy.iter().map(|(_, _, tier)| *tier).min();
+        let offered: Vec<(DestinationId, u32)> = healthy
+            .iter()
+            .filter(|(_, _, tier)| Some(*tier) == lowest)
+            .map(|(destination, weight, _)| (*destination, *weight))
             .collect();
 
         // 5. A ranking hook's preference, honouring exactly the filter above: the first ranked

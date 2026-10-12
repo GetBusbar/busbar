@@ -4135,3 +4135,42 @@ fn unmodelled_block_is_left_out_of_the_ir_and_spliced_back_same_dialect() {
         "{out}"
     );
 }
+
+/// THE TAIL RESTATES THIS SCHEME as the `api-key` style's parameters (ARCHITECT RULING 2026-10-03,
+/// Q-L6-AUTHPARAMS): the same families, own header and passthrough, in the auth plugin's words.
+#[test]
+fn the_tails_api_key_parameters_restate_the_credential_family_table() {
+    use busbar_contract::protocol::CredentialHeader as H;
+    let Some(EgressScheme::Static {
+        families,
+        own,
+        passthrough,
+    }) = DECL.egress_scheme
+    else {
+        panic!("anthropic declares a static credential scheme");
+    };
+    let words = |h: H| match h {
+        H::Raw { header, trim_start } => {
+            let mut o = serde_json::json!({ "header": header });
+            if trim_start {
+                o["trim_start"] = serde_json::json!(true);
+            }
+            o
+        }
+        H::Bearer => serde_json::json!({}),
+    };
+    let params: serde_json::Value =
+        serde_json::from_str(crate::dialect::KEY_FAMILY_PARAMS).expect("the parameters are JSON");
+    let stated: Vec<serde_json::Value> = families
+        .iter()
+        .map(|f| {
+            let mut row = words(f.presented_as);
+            row["prefix"] = serde_json::json!(f.prefix);
+            row
+        })
+        .collect();
+    assert_eq!(params["families"], serde_json::json!(stated));
+    assert_eq!(params["own"], words(own));
+    assert_eq!(params["header"], words(own)["header"]);
+    assert_eq!(params["passthrough"], words(passthrough));
+}

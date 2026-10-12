@@ -5,17 +5,36 @@
 
 use super::*;
 
-/// The redaction is narrow: a `key=` that is not a query parameter is ordinary text, and a message
-/// with no credential in it survives byte-identical — an error line an operator reads is not worth
-/// mangling to cover a secret that was never in it.
+/// The provider endpoint carries no credential: the plane builds a keyless target and declares where
+/// the host presents the secret.
 #[test]
-fn redaction_leaves_a_message_that_carries_no_query_credential_alone() {
-    let plain = "connecting to the pinned address failed: connection refused";
-    assert_eq!(redact_url_credentials(plain), plain);
-    let worded = "the monkey=business key=";
-    assert_eq!(redact_url_credentials(worded), worded);
+fn the_provider_endpoint_is_keyless_and_each_dialect_names_its_placement() {
     assert_eq!(
-        redact_url_credentials("wss://h/p?key=abc&alt=sse"),
-        "wss://h/p?key=<redacted>&alt=sse"
+        provider_ws_url("https://generativelanguage.googleapis.com/", GEMINI_LIVE),
+        "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.\
+         GenerativeService.BidiGenerateContent"
     );
+    assert_eq!(
+        provider_ws_url("https://api.openai.com", OPENAI_REALTIME),
+        "wss://api.openai.com/v1/realtime"
+    );
+    assert_eq!(
+        credential_placement(GEMINI_LIVE),
+        CredentialPlacement::Query("key")
+    );
+    assert_eq!(
+        credential_placement(OPENAI_REALTIME),
+        CredentialPlacement::Header {
+            name: "authorization",
+            prefix: "Bearer ",
+        }
+    );
+}
+
+/// No code in the plane formats a credential into a URL.
+#[test]
+fn the_plane_source_formats_no_credential_into_a_url() {
+    let src = include_str!("../provider.rs");
+    assert!(!src.contains("?key={"), "provider.rs formats a query key");
+    assert!(!src.contains("api_key"), "provider.rs takes an api_key");
 }

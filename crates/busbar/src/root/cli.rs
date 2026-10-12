@@ -125,6 +125,31 @@ pub(crate) fn render_help(ver: &str, planes: &[&[super::linked::CliHelpRow]]) ->
 }
 
 /// Whether `arg` is a flag a linked plane declares — the first word of one of its `Flags:` rows.
+/// EVERY PLANE'S `busbar --help` ROWS: each linked row's (its `cli-help` axis), then each linked
+/// plane door's, read off its tail's `cli_help` without binding it (a door states one `Flags:` block),
+/// in manifest order. A door whose tail cannot be read contributes nothing here; its boot refuses it.
+pub(crate) fn help_rows() -> Vec<&'static [super::linked::CliHelpRow]> {
+    // The doors' rows, read once and kept for the process (the linked doors are fixed at build),
+    // each lent out as a one-row slice: nothing is leaked to give them their `'static` life.
+    static DOOR_ROWS: std::sync::OnceLock<Vec<super::linked::CliHelpRow>> =
+        std::sync::OnceLock::new();
+    let door_rows = DOOR_ROWS.get_or_init(|| {
+        crate::LINKED
+            .plane_doors
+            .iter()
+            .filter_map(|door| {
+                match crate::root::loader::dispatch::kinds::plane::linked_cli_help(*door) {
+                    Ok(Some(text)) => Some(("flag", text)),
+                    _ => None,
+                }
+            })
+            .collect()
+    });
+    let mut rows: Vec<&'static [super::linked::CliHelpRow]> = crate::LINKED.cli_help.to_vec();
+    rows.extend(door_rows.iter().map(std::slice::from_ref));
+    rows
+}
+
 pub(crate) fn is_plane_flag(planes: &[&[super::linked::CliHelpRow]], arg: &str) -> bool {
     planes
         .iter()
@@ -210,16 +235,13 @@ pub(crate) fn handle_cli_flags() -> Option<i32> {
         // is read again inside `run()`, where it swaps the two TCP listeners for the process's own
         // stdin/stdout. Recognised here so it is not refused as an unknown argument.
         // A flag a linked plane declares (its `Flags:` row) is not an exit-and-print flag either.
-        Some(arg) if is_plane_flag(crate::LINKED.cli_help, arg) => None,
+        Some(arg) if is_plane_flag(&help_rows(), arg) => None,
         Some("--validate") => Some(validate_config_command()),
         Some("--generate-signing-key") => Some(generate_signing_key_command()),
         Some("--list-plugins") => Some(list_plugins_command()),
         Some("--migrate-config") => Some(migrate_config_command(args.next())),
         Some("--help" | "-h") => {
-            print!(
-                "{}",
-                render_help(env!("CARGO_PKG_VERSION"), crate::LINKED.cli_help)
-            );
+            print!("{}", render_help(env!("CARGO_PKG_VERSION"), &help_rows()));
             Some(0)
         }
         // `-c`/`--config`/`--providers` (value-taking flags) as the FIRST argument mean "run the
@@ -368,7 +390,9 @@ fn validate_config_command() -> i32 {
     if loaded.deploy.plugins.enabled {
         println!(
             "  plugins:   enabled — {} validated, {} skipped (untrusted) in '{}'",
-            registry.loadable().len(),
+            // A copy of a plugin this build links, at its version, was validated too: the linked
+            // row serves it (the one-version rule, ARCHITECT C').
+            registry.loadable().len() + registry.linked_copies().len(),
             registry.skipped().len(),
             loaded.deploy.plugins.dir,
         );
@@ -378,8 +402,12 @@ fn validate_config_command() -> i32 {
                 s.manifest.name, s.file, s.reason
             );
         }
+        // The stage report (each dropped-in plugin's stated facts and selection, each plugin
+        // listener) is debug logging, never stdout: `--validate`'s stdout is 1.5.5's bytes
+        // (ARCHITECT 2026-10-06; oracle `plugins.store-persist|store-sqlite` read a
+        // `plugin: … — selected as store` line 1.5.5 never printed). The refusals above stand.
         for line in stages.lines() {
-            println!("{line}");
+            tracing::debug!(target: "busbar::validate", "{}", line.trim_start());
         }
     } else {
         println!("  plugins:   disabled (plugins.enabled is false; no plugin will load)");
@@ -402,7 +430,8 @@ fn list_plugins_command() -> i32 {
     let providers_override = providers_override();
     let config_path = std::path::PathBuf::from(resolve_config_path(config_path_flag().as_deref()));
     // Best-effort config read (lenient env): a missing/broken config falls back to the default
-    // plugins block so the inventory still works pre-deployment.
+    // plugins block so the inventory still works pre-deployment. A config with no `store:` block
+    // selects no store row (Q-STORE = (B): no row is a default).
     let (plugins_cfg, store_ref) = match load_config_from_disk(
         &config_path,
         providers_override.as_deref(),
@@ -410,12 +439,7 @@ fn list_plugins_command() -> i32 {
         config::EnvSubst::Lenient,
     ) {
         Ok(l) => {
-            let store = l
-                .deploy
-                .store
-                .as_ref()
-                .map(|g| g.module.clone())
-                .unwrap_or_else(config::default_governance_store);
+            let store = l.deploy.store.as_ref().map(|g| g.module.clone());
             (l.deploy.plugins, store)
         }
         Err(e) => {
@@ -423,10 +447,7 @@ fn list_plugins_command() -> i32 {
                 "[warn] {}: config not readable ({e}); using the default plugins block",
                 diagnostics::CLI_LIST_PLUGINS_CONFIG_UNREADABLE.banner()
             );
-            (
-                config::PluginsCfg::default(),
-                config::default_governance_store(),
-            )
+            (config::PluginsCfg::default(), None)
         }
     };
     plugins_cfg.warn_invalid_floors();
@@ -469,10 +490,12 @@ fn list_plugins_command() -> i32 {
             })
             .unwrap_or_else(|| ("-".into(), "-".into(), "-".into(), "-".into()));
         // Which row the configured governance store selects (only meaningful when it would load).
-        let selected = plugins_cfg.enabled
-            && row.status == "ready"
-            && (name == store_ref || alias == store_ref);
-        let status = if selected {
+        let selected = store_ref.as_deref().filter(|s| {
+            plugins_cfg.enabled
+                && row.status == "ready"
+                && row.manifest.as_ref().is_some_and(|m| m.answers_to(s))
+        });
+        let status = if let Some(store_ref) = selected {
             format!("LOADS (store.module: {store_ref})")
         } else if !plugins_cfg.enabled && row.status == "ready" {
             "ready (inert: plugins.enabled is false)".to_string()

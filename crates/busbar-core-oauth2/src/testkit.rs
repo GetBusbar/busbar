@@ -7,7 +7,7 @@
 //! Before the extraction, `TestApp::oauth_as(cfg)` lived in busbar-core and built the real
 //! `AsPlane` directly. Now that builder lives here, as an extension trait over `TestApp`'s public
 //! `oauth_as_plane` seam (`busbar_kernel::test_support::TestApp::oauth_as_plane`) — the same relation
-//! `TestAppMcpExt`/`TestAppA2aExt` have to the CRUD-shaped planes' `TestAppSeam`, sized down for a
+//! the CRUD-shaped planes' extension traits have to their `TestAppSeam`, sized down for a
 //! singleton plane with no scratch accumulation: one config in, one plane out, no finalizer needed.
 
 use std::sync::Arc;
@@ -38,7 +38,7 @@ pub trait TestAppOauthExt {
     /// an operator writes.
     ///
     /// Takes the CONFIG and runs the real `AsIdentity::from_cfg` validation and the real
-    /// `AsPlane::build`, for the same reason `TestApp::mcp` does: a test that hand-assembled the
+    /// `AsPlane::build`, for the same reason every plane fixture does: a test that hand-assembled the
     /// plane could mount a combination boot refuses, and would then be asserting against a
     /// deployment that cannot exist. The signing key is left unset, so the plane generates the
     /// ephemeral one — the tests that use this builder assert about the MOUNTED SURFACE, and the
@@ -50,8 +50,8 @@ impl TestAppOauthExt for TestApp {
     fn oauth_as(self, cfg: &OauthAsCfg) -> Self {
         install_test_seam();
         let identity = AsIdentity::from_cfg(cfg).expect("test oauth_as config must be valid");
-        let plane =
-            AsPlane::build(identity, None, Vec::new()).expect("test oauth_as plane must build");
+        let plane = AsPlane::build(identity, None, Vec::new(), crate::cimd::unconnected())
+            .expect("test oauth_as plane must build");
         self.oauth_as_plane(Arc::new(plane))
     }
 }
@@ -65,5 +65,5 @@ impl TestAppOauthExt for TestApp {
 /// registration and every plane-building test calls this via `.oauth_as(cfg)`.
 pub(crate) fn install_test_seam() {
     static INSTALLED: std::sync::Once = std::sync::Once::new();
-    INSTALLED.call_once(crate::install);
+    INSTALLED.call_once(crate::install::<crate::NoConnections>);
 }

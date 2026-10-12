@@ -66,7 +66,7 @@ async fn the_sdp_broker_correlates_the_rtc_call_id_from_the_location_header_onto
     let rt = VoiceRuntime::new(Arc::clone(&engine), Arc::new(EchoToolExecutor));
     let provider = ProviderEndpoint {
         base_url: format!("http://{addr}"),
-        api_key: PROVIDER_KEY.to_string(),
+        api_key: busbar_contract::Redacted::new(PROVIDER_KEY.to_string()),
     };
 
     // The caller reached the `RouteAuth::Key` SDP route with a GOVERNANCE bearer (a sentinel) + an SDP

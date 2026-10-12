@@ -287,13 +287,13 @@ pub fn write_speech_request(r: &crate::codec::ir::audio::SpeechReq) -> Bytes {
     // `voiceConfig`. The old writer never read `SpeechReq::speakers`, so a two-speaker request was
     // silently collapsed to one voice on a same-/cross-protocol hop.
     let speech_config = if r.speakers.is_empty() {
-        prebuilt_speaker(&r.voice)
+        prebuilt_speaker(&r.timbre)
     } else {
         let configs: Vec<Value> = r
             .speakers
             .iter()
-            .map(|(speaker, voice)| {
-                let mut config = prebuilt_speaker(voice);
+            .map(|(speaker, timbre)| {
+                let mut config = prebuilt_speaker(timbre);
                 config[keys::SPEAKER] = json!(speaker);
                 config
             })
@@ -662,7 +662,7 @@ pub fn read_speech_request(
             "speech requires a text part".into(),
         ));
     }
-    let voice = wire
+    let timbre = wire
         .pointer("/generationConfig/speechConfig/voiceConfig/prebuiltVoiceConfig/voiceName")
         .and_then(Value::as_str)
         .unwrap_or_default()
@@ -676,18 +676,18 @@ pub fn read_speech_request(
             arr.iter()
                 .filter_map(|c| {
                     let speaker = c.get(keys::SPEAKER).and_then(Value::as_str)?;
-                    let voice_name = c
+                    let timbre_name = c
                         .pointer("/voiceConfig/prebuiltVoiceConfig/voiceName")
                         .and_then(Value::as_str)
                         .unwrap_or_default();
-                    Some((speaker.to_string(), voice_name.to_string()))
+                    Some((speaker.to_string(), timbre_name.to_string()))
                 })
                 .collect()
         })
         .unwrap_or_default();
     Ok(crate::codec::ir::audio::SpeechReq {
         input,
-        voice,
+        timbre,
         speakers,
         ..Default::default()
     })

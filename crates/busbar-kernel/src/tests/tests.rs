@@ -697,6 +697,7 @@ pub(crate) fn plugin_manifest(
         host: None,
         declares: Default::default(),
         statement: None,
+        former_names: Vec::new(),
     }
 }
 
@@ -717,7 +718,7 @@ fn plugins_cfg(dir: &std::path::Path, enabled: bool) -> crate::config::PluginsCf
 fn gov_with_store(store: &str) -> crate::config::StoreCfg {
     crate::config::StoreCfg {
         module: store.to_string(),
-        ..Default::default()
+        settings: serde_json::Map::new(),
     }
 }
 
@@ -895,64 +896,172 @@ fn the_preflight_warns_about_a_malformed_floor() {
     );
 }
 
-/// K5 (DECISIONS #2 rule (1)) — THE BUILT-IN STORE IS A ROW OF THE STORE AXIS. The default store is
+/// K5 (DECISIONS #2 rule (1)) — THE BUILT-IN STORE IS A ROW OF THE STORE AXIS. The linked store is
 /// registered through `PluginRegistry::link`, the admission a dropped-in store's row takes, and the
 /// configured name resolves to it there — not a name the kernel matches. With the plugins directory
 /// off the registry holds exactly that row, which states itself ephemeral and opens through
-/// `open_store`; with the directory on, the linked row still holds its name (first registration
-/// wins) and a dropped-in plugin spelling the same name stays the directory's own row.
+/// `open_store`, by its key and by its canonical name alike (ARCHITECT C': one plugin, one identity).
+/// With the directory on, a dropped-in copy of the SAME plugin (its canonical name) at the version
+/// the linked plugin states is admitted once — the linked row serves — and a DIFFERENT plugin
+/// spelling the linked row's key is refused, naming both (Q-P4-12: no door outranks the other; the
+/// silent first-registration win is gone).
 ///
-/// RED by planting the door bypass: `linked_rows()` registering nothing leaves the default boot's
-/// `store.module: memory` unresolved (the preflight then refuses it as a plugin with plugins off).
+/// RED by planting the door bypass: `linked_rows()` registering nothing leaves the configured
+/// `store.module` (the stand-in row) unresolved (the preflight then refuses it as a plugin with
+/// plugins off).
 #[test]
 fn the_built_in_store_is_a_linked_row_of_the_store_axis() {
-    let name = crate::preflight::root_rows()
-        .stores
-        .iter()
-        .find(|s| s.2)
-        .map(|s| s.0);
-    let name = name.expect("the stand-in store row claims the default");
+    let store = crate::test_support::stand_in_store();
+    let name = store.module.as_str();
     let reg = crate::plugins_preflight(
-        None,
+        Some(&store),
         None,
         &Default::default(),
         &Default::default(),
         &crate::config::PluginsCfg::default(),
         &Default::default(),
     )
-    .expect("the default boot resolves its store on the axis");
-    let row = reg.resolve(name).expect("the default store is a row");
+    .expect("the configured store resolves on the axis");
+    let row = reg.resolve(name).expect("the configured store is a row");
     assert_eq!((row.manifest.kind.as_str(), row.ephemeral), ("store", true));
     let stores = reg.linked().iter().filter(|p| p.manifest.kind == "store");
     assert_eq!((stores.count(), reg.loadable().len()), (1, 0));
-    reg.open_store(name, "{}")
-        .expect("the row opens through open_store");
-
-    let dir = tmp_plugin_dir("linked-store");
-    let tarball = unsigned_tarball(plugin_manifest(name, "acme-ram", "acme"), b"lib");
-    std::fs::write(dir.join("ram.tar.gz"), tarball).unwrap();
-    let mut cfg = plugins_cfg(&dir, true);
-    cfg.trust.allow_unsigned = true;
-    let reg = crate::plugins_preflight(
-        None,
+    reg.store_door(name)
+        .expect("the row states its door to boot");
+    let canonical = row.manifest.name.clone();
+    assert_ne!(canonical, name, "the row's canonical name is not its key");
+    assert_eq!(row.key(), name, "the row prints its key");
+    let version = row.plugin_version().expect("the store states its version");
+    let statement = row.statement().expect("the store states itself");
+    reg.store_door(&canonical)
+        .expect("the canonical name opens the same store");
+    let by_canonical = crate::plugins_preflight(
+        Some(&gov_with_store(&canonical)),
         None,
         &Default::default(),
         &Default::default(),
-        &cfg,
+        &crate::config::PluginsCfg::default(),
         &Default::default(),
     )
-    .expect("the directory scans");
-    let row = reg.resolve(name).expect("the name still resolves");
+    .expect("`store.module: <canonical>` resolves as the key does");
+    assert!(by_canonical.resolve(&canonical).expect("resolves").linked());
+
+    // A dropped-in copy of the same plugin at its version: admitted once, the linked row serves.
+    let dir = tmp_plugin_dir("linked-store");
+    let mut m = plugin_manifest(&canonical, name, "acme");
+    m.version = version.clone();
+    m.statement = Some(hex::encode(&statement));
+    std::fs::write(dir.join("copy.tar.gz"), unsigned_tarball(m, b"lib")).unwrap();
+    let mut cfg = plugins_cfg(&dir, true);
+    cfg.trust.allow_unsigned = true;
+    let scan = || {
+        crate::plugins_preflight(
+            Some(&store),
+            None,
+            &Default::default(),
+            &Default::default(),
+            &cfg,
+            &Default::default(),
+        )
+    };
+    let reg = scan().expect("the directory scans");
     assert!(
-        row.ephemeral && row.manifest.publisher == "busbar",
-        "the linked row holds its name"
+        reg.resolve(name).expect("resolves").linked(),
+        "the linked row serves"
     );
-    assert_eq!(
-        reg.loadable().len(),
-        1,
-        "the dropped-in row is still the directory's"
+    assert_eq!(reg.loadable().len(), 0, "the copy is no row of its own");
+    assert_eq!(reg.linked_copies().len(), 1);
+
+    // A DIFFERENT plugin spelling the key: refused, naming both.
+    std::fs::remove_file(dir.join("copy.tar.gz")).unwrap();
+    let other = unsigned_tarball(plugin_manifest(name, "acme-ram", "acme"), b"lib");
+    std::fs::write(dir.join("ram.tar.gz"), other).unwrap();
+    let refused = scan().expect_err("two plugins claim the key");
+    assert!(
+        refused.contains("plugin claim conflict")
+            && refused.contains(&format!("'{name}'"))
+            && refused.contains("ram.tar.gz"),
+        "{refused}"
     );
-    assert_eq!(reg.resolve("acme-ram").map(|p| p.ephemeral), Some(false));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// THE PRINTED NAME OF A LINKED ROW IS ITS KEY (ARCHITECT C'): every preflight refusal that names a
+/// linked row prints the key it printed before the row answered to its canonical name too —
+/// reached by its key or by its canonical name. Pinned per surface: `require_plugin` (a hook
+/// referencing the store), the `identity-providers:` refusal, the `secrets:` key and a secret
+/// reference.
+#[test]
+fn a_linked_rows_refusals_print_its_key() {
+    let store = crate::test_support::stand_in_store();
+    let key = store.module.clone();
+    let dir = tmp_plugin_dir("printed-key");
+    let plugins = plugins_cfg(&dir, true);
+    let reg = crate::plugins_preflight(
+        Some(&store),
+        None,
+        &Default::default(),
+        &Default::default(),
+        &plugins,
+        &Default::default(),
+    )
+    .expect("the store resolves");
+    let canonical = reg.resolve(&key).expect("the row").manifest.name.clone();
+    for word in [key.as_str(), canonical.as_str()] {
+        let hooks: std::collections::HashMap<String, crate::config::HookCfg> =
+            serde_json::from_value(serde_json::json!({ "h": { "module": word, "kind": "tap" } }))
+                .expect("hooks");
+        let refused = crate::plugins_preflight(
+            Some(&store),
+            None,
+            &Default::default(),
+            &hooks,
+            &plugins,
+            &Default::default(),
+        )
+        .expect_err("a store is not a hook");
+        assert!(
+            refused.contains(&format!(
+                "resolves to plugin '{key}' of kind 'store', not a `hook` plugin"
+            )),
+            "{word}: {refused}"
+        );
+        let providers: crate::config::IdentityProviders =
+            serde_json::from_value(serde_json::json!({ "x": { "module": word } })).expect("idps");
+        let refused = crate::plugins_preflight(
+            Some(&store),
+            None,
+            &providers,
+            &Default::default(),
+            &plugins,
+            &Default::default(),
+        )
+        .expect_err("a store is not an auth plugin");
+        assert!(
+            refused.contains(&format!(
+                "identity-providers.x.module: '{word}' resolves to plugin '{key}' of kind 'store'"
+            )),
+            "{word}: {refused}"
+        );
+        assert_eq!(
+            crate::preflight::validate_secret_module(&reg, word).unwrap_err(),
+            format!(
+                "secrets.{word}: plugin '{key}' has kind 'store', not 'secret'; only a kind: \
+                 secret plugin can back a `secrets:` block entry"
+            )
+        );
+        let cfg = crate::test_support::cfg_with_provider_api_key(crate::config::SecretRef {
+            module: word.to_string(),
+            ..crate::config::SecretRef::env("K")
+        });
+        let refused = crate::preflight::validate_secret_refs(&reg, &cfg).unwrap_err();
+        assert!(
+            refused.contains(&format!(
+                "references secret module '{word}', but plugin '{key}' has kind 'store'"
+            )),
+            "{word}: {refused}"
+        );
+    }
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -1018,6 +1127,57 @@ fn the_linked_secret_sources_are_plugins_on_the_secret_table() {
     assert_eq!(cold.resolve(&SecretRef::env(var)).unwrap(), b"hunter2");
     std::env::remove_var(var);
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// ARCHITECT Q-P4-13: the pre-flight resolves a hook reference against the SAME claim table boot
+/// opens hooks through — the LINKED hook rows (the hook axis: Statement name, aliases, former names,
+/// hook words) beside the plugins directory's — not the registry alone, which holds no linked hook.
+/// GREEN: a config naming this build's linked hook (the stand-in hook door) passes, with the plugin
+/// subsystem off and on (RED before: "the hooks registry names plugin module(s) [<its name>],
+/// which require the plugin subsystem" / "no plugin matching the hook reference"). RED ARM: an
+/// unknown name is still refused in 1.5.5's BUSBAR-6009 words (golden BOOT-138c).
+#[cfg(feature = "hooks-ranking")]
+#[test]
+fn a_linked_hook_named_in_config_passes_preflight_and_an_unknown_one_is_refused() {
+    let hook = |module: &str| {
+        let cfg: crate::config::HookCfg =
+            serde_yaml::from_str(&format!("kind: gate\nmodule: {module}\n")).expect("a hook");
+        std::collections::HashMap::from([("h".to_string(), cfg)])
+    };
+    let dir = tmp_plugin_dir("linked-hook");
+    let run = |module: &str, enabled: bool| {
+        crate::plugins_preflight(
+            None,
+            None,
+            &Default::default(),
+            &hook(module),
+            &plugins_cfg(&dir, enabled),
+            &Default::default(),
+        )
+    };
+    let linked = linked_hook_name();
+    for enabled in [false, true] {
+        run(linked, enabled).unwrap_or_else(|e| {
+            panic!("the linked hook '{linked}' passes (plugins.enabled: {enabled}): {e}")
+        });
+    }
+    let err = run("oracle-hook", true).expect_err("an unknown hook is refused");
+    assert!(
+        err.starts_with(&format!(
+            "no plugin matching the hook reference 'oracle-hook' is installed in '{}' (plugins ARE \
+             enabled; loadable: []). Two things to check: is the plugin subsystem enabled? (it is) \
+             — and is the signed `kind: hook` tarball actually IN the folder?",
+            dir.display()
+        )),
+        "{err}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The linked hook's Statement name, as this test build links it (the stand-in hook door).
+#[cfg(feature = "hooks-ranking")]
+fn linked_hook_name() -> &'static str {
+    fixture_hook::NAME
 }
 
 /// K5b (3c) exit test, on the hook door: the built-in ranking strategies are the HOOK WORDS of ONE
@@ -1092,6 +1252,7 @@ async fn each_strategy_word_ranks_as_1_5_5_did_through_the_door_and_never_reache
         prompt: None,
         identity: None,
         signals: Default::default(),
+        session: None,
     };
     let ctx = RoutingContext {
         pool: "p",
@@ -1480,7 +1641,7 @@ fn secrets_block_rejects_non_secret_kind() {
 /// read.
 #[test]
 fn boot_refuses_a_provider_api_key_that_does_not_resolve() {
-    crate::metrics::init();
+    crate::snapshot::init();
     const SENTINEL: &str = "sk-sentinel-must-never-be-printed";
     let set_var = format!("BUSBAR_TEST_PROVIDER_KEY_SET_{}", std::process::id());
     let unset_var = format!("BUSBAR_TEST_PROVIDER_KEY_UNSET_{}", std::process::id());
@@ -1532,7 +1693,7 @@ fn boot_refuses_a_provider_api_key_that_does_not_resolve() {
 /// re-derived here through a lane accessor that exists only for the test.
 #[test]
 fn boot_starts_a_keyless_lane_declared_none() {
-    crate::metrics::init();
+    crate::snapshot::init();
     let mut cfg = cfg_with_provider_api_key(crate::config::SecretRef::none());
     cfg.models
         .insert("m0".to_string(), model_cfg_for_provider("acme"));
@@ -1552,6 +1713,7 @@ fn model_cfg_for_provider(provider: &str) -> crate::config::ModelCfg {
         attempt_timeout_ms: None,
         reasoning: None,
         prompt_caching: None,
+        protocol: None,
     }
 }
 
@@ -1671,7 +1833,7 @@ fn secret_ref_wrong_kind_plugin_fails_at_preflight() {
 /// 1.5.4.
 #[test]
 fn a_rebuild_carries_the_session_store_and_defaults_scan_off() {
-    crate::metrics::init();
+    crate::snapshot::init();
     let cfg = || {
         cfg_with_provider_api_key(crate::config::SecretRef::env(
             "BUSBAR_TEST_NO_SUCH_KEY_SESSION_STORE",
@@ -1752,7 +1914,7 @@ fn secrets_block_rejects_alias_and_canonical_for_one_module() {
 /// of them uses this deliberately-illegal number.
 #[test]
 fn a_rejected_config_leaves_no_limits_behind() {
-    crate::metrics::init();
+    crate::snapshot::init();
     // Below `REQUEST_BODY_MAX_BYTES_FLOOR` (64 KiB) — `validate_limits` refuses it, which is the
     // whole point: the refusal happens AFTER the install.
     const ILLEGAL: usize = 4096;
@@ -1799,7 +1961,7 @@ fn a_rejected_config_leaves_no_limits_behind() {
 /// is ever buffered.)
 #[tokio::test]
 async fn oversized_request_413_is_reshaped_on_the_live_stack() {
-    crate::metrics::init();
+    crate::snapshot::init();
     let app = crate::test_support::TestApp::new().build();
     // A tiny body cap so an ordinary request trips `DefaultBodyLimit`.
     let (router, _handle) = crate::build_router_with_limits(app, 64, 1024, false);
@@ -1848,7 +2010,7 @@ async fn oversized_request_413_is_reshaped_on_the_live_stack() {
 // shows.
 
 // `an_unmounted_plane_claims_no_path_by_url_shape` MOVED to `tests/residual_envelope_cross_plane.rs`,
-// beside its mounted twin in `tests/plane_integration.rs`: the path it probes is a real plane's
+// beside its mounted twin in `crates/busbar/tests/plane_integration.rs`: the path it probes is a real plane's
 // mount path, which that integration target names through the plane crate itself.
 
 // ── response-header consolidation (default OFF, opt-in via `advanced.response_headers`) ──────────
@@ -1868,7 +2030,7 @@ async fn oversized_request_413_is_reshaped_on_the_live_stack() {
 /// `busbar;dur=<ms>` shape.
 #[tokio::test]
 async fn server_timing_header_absent_by_default_present_when_enabled() {
-    crate::metrics::init();
+    crate::snapshot::init();
     let client = reqwest::Client::new();
 
     // Default OFF.
@@ -1926,7 +2088,7 @@ async fn server_timing_header_absent_by_default_present_when_enabled() {
 /// into every other test that shares this process.
 #[tokio::test]
 async fn route_policy_headers_absent_by_default_on_the_live_stack() {
-    crate::metrics::init();
+    crate::snapshot::init();
     let app = crate::test_support::TestApp::new().build();
     let (router, _handle) = crate::build_router_with_limits(app, 1 << 20, 1024, false);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -2487,7 +2649,7 @@ fn auth_scope_caps_are_keyed_by_provider_name_not_module() {
 /// (learned reliability survives every apply).
 #[test]
 fn planeless_config_gets_inert_plane_breakers_and_apply_upgrades() {
-    crate::metrics::init();
+    crate::snapshot::init();
     let planeless = || {
         cfg_with_provider_api_key(crate::config::SecretRef::env(
             "BUSBAR_TEST_NO_SUCH_KEY_PLANES",
@@ -2570,7 +2732,7 @@ fn planeless_config_gets_inert_plane_breakers_and_apply_upgrades() {
 #[tokio::test]
 async fn a_panicking_handler_fails_only_its_own_request() {
     use busbar_contract::abi::mechanism::route::{RouteAuth, RouteMethod};
-    crate::metrics::init();
+    crate::snapshot::init();
     let app = crate::test_support::TestApp::new().build();
     let handle = std::sync::Arc::new(crate::state::AppHandle::new(app));
     async fn boom() -> &'static str {

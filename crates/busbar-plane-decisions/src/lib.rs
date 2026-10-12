@@ -59,10 +59,9 @@ use busbar_contract::plugin::{AbiVersion, Kind, Plugin};
 /// [`busbar_contract::ids::Registration`]: whoever builds this plane from a `decisions:` block
 /// interns every config-derived key through it exactly once and hands over names that outlive it.
 ///
-/// Nothing does that yet. The composition root (`busbar/src/root/plane_decisions.rs`) installs this
-/// plane's identity and config seam and builds no `DecisionPlane` today — its `build` is `None` —
-/// so outside this crate's own tests no `DecisionProvider` is constructed and no request reaches
-/// the plane.
+/// Nothing does that: the plane is served through its door ([`plane_door`]), which answers the plane
+/// driver from [`driven`] and never builds a `DecisionPlane`, so outside this crate's own tests no
+/// `DecisionProvider` is constructed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DecisionProvider {
     /// The name the operator gave this provider, and the resource the scope unit judges.

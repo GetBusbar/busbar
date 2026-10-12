@@ -3,7 +3,7 @@
 
 //! Plugin **manifest, signing input, structural validation, and trust evaluation** for busbar.
 //!
-//! A PLUGIN IS A PLUGIN: store, auth, and hook plugins share ONE manifest format and ONE trust
+//! A PLUGIN IS A PLUGIN: plugins of every kind share ONE manifest format and ONE trust
 //! model, discriminated only by the manifest `kind` field. Every plugin ships as a signed tarball
 //! containing exactly the cdylib and this manifest; identity comes from the SIGNED manifest, never
 //! from the filename.
@@ -11,9 +11,9 @@
 //! The manifest carries:
 //!
 //! - **identity**: `name` (canonical, e.g. `busbar-store-valkey-plugin`), `alias` (the short config name,
-//!   e.g. `valkey`), `kind` (`store` | `auth` | `hook` | `secret`), `version` (semver);
+//!   e.g. `valkey`), `kind` (`store` | `auth` | `hook` | `secret` | `export` | `plane` | `transport`), `version` (semver);
 //! - **binding + compat**: `sha256` (of the library bytes, pinning the manifest to that exact
-//!   binary) and `abi_version` (which busbar C ABI the cdylib exports for its `kind`);
+//!   binary) and `abi_version` (its `kind`'s one memory-ABI version, the only version fact admission reads);
 //! - **authenticity**: `publisher` + `signature` over the *canonical whole manifest*;
 //! - **display**: `description`, `homepage`, `license` (all signed, so they cannot be spoofed).
 //!
@@ -60,14 +60,11 @@ use std::collections::BTreeMap;
 /// cannot (and need not) allowlist a key named `busbar`.
 pub const FIRST_PARTY_PUBLISHER: &str = "busbar";
 
-/// The plugin kinds this binary understands. ONE plugin subsystem: `kind` only selects which C ABI
-/// the cdylib exports and which engine subsystem consumes it; discovery/trust/validation are shared.
-/// `plane` is the SIXTH kind (1.6.0 S4): a protocol plane delivered as a `cdylib`, sharing this exact
-/// discovery/trust/validation pipeline but driven over the HOT-tier `#[repr(C)]` `PlaneDecl` vtable
-/// (`busbar_contract::abi::hot`) rather than the five cold kinds' six-symbol JSON `call` wire. Its
-/// `abi_version` axis is the airlock minor; this crate's own `supported_abi("plane")` gates it.
-/// `transport` is the SEVENTH (#3, OWNER-LOCKED: a kind is swappable, compiled in OR dropped in): the
-/// second HOT kind (#30), driven over the `#[repr(C)]` `TransportDecl` the same way.
+/// The plugin kinds this binary understands. ONE plugin subsystem: `kind` only selects which kind's
+/// table the door answers and which engine subsystem consumes it; discovery/trust/validation are
+/// shared. Each kind's manifest `abi_version` is that kind's one version (`supported_abi`, THE DESIGN
+/// §11.2). `plane` and `transport` images that have not moved to their door still ride the HOT-tier
+/// `#[repr(C)]` decls (`busbar_contract::abi::hot`), whose airlock is checked at load, apart.
 // One line, as it always was: the kind list is one statement, not seven.
 #[rustfmt::skip]
 pub const KNOWN_KINDS: &[&str] = &["store", "auth", "hook", "secret", "export", "plane", "transport"];
@@ -75,7 +72,7 @@ pub const KNOWN_KINDS: &[&str] = &["store", "auth", "hook", "secret", "export", 
 /// This binary's own host identity — the value [`Manifest::host`] must match (or omit) to load.
 /// `busbar` names the OSS engine. A sibling product (e.g. `busbar-ui`) that reuses this exact
 /// manifest/signing/ABI machinery stamps its own plugins `host: busbar-ui`; those manifests are
-/// STRUCTURALLY VALID (same six-symbol C ABI, same signed-manifest shape, same `kind` vocabulary)
+/// STRUCTURALLY VALID (same memory ABI, same signed-manifest shape, same `kind` vocabulary)
 /// but semantically foreign — a `busbar-ui` `store` plugin persists tenants/deployments, not the
 /// keys/denylists an engine `store` plugin implements. Same `kind` string, incompatible contracts,
 /// so `host` is what disambiguates them structurally rather than trusting `kind` alone.
@@ -114,7 +111,7 @@ pub struct Manifest {
     /// Short config alias, e.g. `valkey` - what `governance.store:` may reference. Lowercase
     /// `[a-z0-9-]+`. May equal `name`.
     pub alias: String,
-    /// Plugin category: `store` | `secret` | `auth` | `hook`. Selects the C ABI the cdylib exports and the
+    /// Plugin category (see [`KNOWN_KINDS`]). Selects the kind's door the cdylib exports and the
     /// engine subsystem that consumes it; everything else about the plugin machinery is shared.
     pub kind: String,
     /// The plugin's release version (semver, e.g. `1.5.0`).
@@ -202,9 +199,35 @@ pub struct Manifest {
     /// manifest packed before it keeps its canonical bytes and its signature.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub statement: Option<String>,
+    /// The FORMER NAMES the plugin answers to beside `name` and `alias`: the manifest names its
+    /// earlier releases carried (a 1.5.5 config names `busbar-webrequest`, the 1.6.0 plugin is
+    /// `busbar-hook-webrequest`), so a configuration written for those releases loads unchanged.
+    /// Each is a reference the registry resolves exactly as it resolves the alias, and each is held
+    /// to the alias's rules (lowercase `[a-z0-9-]+`) and to phase 3's collision checks. SIGNED like
+    /// every field; `busbar-plugin-pack --former-name` (repeatable) writes it from plugins.yaml's
+    /// `former_names:`. Absent on every manifest packed before it existed, and skipped when empty,
+    /// so their canonical bytes, and therefore their signatures, are unchanged.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub former_names: Vec<String>,
 }
 
 impl Manifest {
+    /// The names config may reference this plugin by beside its canonical `name`: the alias, then
+    /// each former name ([`Manifest::former_names`]).
+    pub fn config_names(&self) -> impl Iterator<Item = &str> {
+        std::iter::once(self.alias.as_str()).chain(self.former_names.iter().map(String::as_str))
+    }
+
+    /// Every identifier this plugin claims: its canonical `name`, then [`Manifest::config_names`].
+    pub fn identities(&self) -> impl Iterator<Item = &str> {
+        std::iter::once(self.name.as_str()).chain(self.config_names())
+    }
+
+    /// Whether config naming `word` names this plugin: its name, its alias or a former name.
+    pub fn answers_to(&self, word: &str) -> bool {
+        self.identities().any(|n| n == word)
+    }
+
     /// The Statement rendering this manifest states ([`Manifest::statement`], hex-decoded); `None`
     /// when it states none.
     ///
@@ -248,7 +271,7 @@ impl Manifest {
 
 /// The declaration shapes a manifest's `declares` section carries, named here so a packer or a
 /// host reaches them beside [`Manifest`].
-pub use busbar_contract::abi::cold::observe::{DiagnosticDecl, SeriesDecl};
+pub use busbar_contract::abi::mechanism::observe::{DiagnosticDecl, SeriesDecl};
 
 /// A manifest's `declares` section — the statements a plugin makes ABOUT ITSELF that the host
 /// grants or refuses at open, never trusts as-is (the export ABI's minor, `EXPORT_ABI_MINOR`).
@@ -256,13 +279,13 @@ pub use busbar_contract::abi::cold::observe::{DiagnosticDecl, SeriesDecl};
 #[serde(deny_unknown_fields, default)]
 pub struct Declares {
     /// The metric series the plugin emits (S1, the first-party metric namespace): granted to a
-    /// first-party plugin only — see [`busbar_contract::abi::cold::observe::SeriesDecl`].
+    /// first-party plugin only — see [`busbar_contract::abi::mechanism::observe::SeriesDecl`].
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub metrics: Vec<busbar_contract::abi::cold::observe::SeriesDecl>,
+    pub metrics: Vec<busbar_contract::abi::mechanism::observe::SeriesDecl>,
     /// The `BUSBAR-NNNN` diagnostics the plugin raises: registered into the host's catalogue
-    /// for a first-party plugin — see [`busbar_contract::abi::cold::observe::DiagnosticDecl`].
+    /// for a first-party plugin — see [`busbar_contract::abi::mechanism::observe::DiagnosticDecl`].
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub diagnostics: Vec<busbar_contract::abi::cold::observe::DiagnosticDecl>,
+    pub diagnostics: Vec<busbar_contract::abi::mechanism::observe::DiagnosticDecl>,
     /// The SETTINGS KEYS that name a destination the host opens for the plugin (S4, the
     /// destination handle): the host resolves each against the operator's settings at open, and
     /// the plugin's host ops name the key, never a path.
@@ -274,18 +297,33 @@ pub struct Declares {
     /// before the field existed keeps its canonical bytes.
     #[serde(skip_serializing_if = "EgressPolicy::is_default")]
     pub egress: EgressPolicy,
-    /// The CONTRACT-ABI RANGE the plugin supports for its kind: the payload-schema versions
-    /// (`abi_version`'s axis) it speaks. A plugin repo states it in its `declares` file, the packer
-    /// signs it into the manifest, and admission ([`validate_abi`]) REFUSES a plugin whose range
-    /// shares no version with this binary's [`crate::supported_abi`] range, naming both. Absent on
-    /// every manifest packed before the field existed, which keep loading on `abi_version` alone
-    /// and keep their canonical bytes (the field is left off the wire when absent).
+    /// SUPERSEDED contract-ABI range (THE DESIGN §2 table, §11.2: a kind has one ABI version, the
+    /// manifest's `abi_version`, and that is the only version fact admission reads). Still PARSED
+    /// and carried, so a tarball signed while the range existed keeps its canonical bytes and its
+    /// signature; [`validate_abi`] no longer reads it, and nothing newly packed states it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub contract_abi: Option<ContractAbiRange>,
+    /// The plane's BREAKER FACTS (ARCHITECT Q4): how its members' breaker cells treat a transient
+    /// failure that does not trip them — see [`BreakerDecl`]. Absent, the host's default posture
+    /// holds; left off the wire when absent, so every manifest packed before the field existed
+    /// keeps its canonical bytes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub breaker: Option<BreakerDecl>,
 }
 
-/// An inclusive `min..=max` range of contract-ABI (payload-schema) versions, as a plugin declares it
-/// in `declares.contract_abi`.
+/// A plane's declared BREAKER FACTS (`declares.breaker`, ARCHITECT Q4): per-plane facts about the
+/// breaker cells of its members, which the host reads and applies to that plane's cells alone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BreakerDecl {
+    /// Whether a transient failure BELOW the trip threshold still benches the member's cell for a
+    /// cooldown. `false`: a cell refuses only on a TRIP (the host's trip thresholds), an upstream
+    /// `Retry-After` still honoured.
+    pub bench_below_trip_threshold: bool,
+}
+
+/// The superseded `declares.contract_abi` range, kept so an already-signed manifest carrying it
+/// still parses and its signed bytes are unchanged. Admission ignores it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ContractAbiRange {
@@ -325,6 +363,40 @@ impl EgressPolicy {
 }
 
 impl Declares {
+    /// THE ONE READER OF A DECLARES DOCUMENT (a plugin's `declares.json`; ARCHITECT ruling (b),
+    /// 2026-10-07): pack's `--declares-file`, a linked export row's `DECLARES` and a linked plane
+    /// door's `linked-declares` row all read through here, and nothing else deserializes declares
+    /// bytes into [`Declares`] (`declares_reader_tests` scans the tree for one).
+    ///
+    /// A networked plugin's file states `needs` (the transport schemes its Statement's needs name)
+    /// for the conformance suite (`the_declared_needs_are_the_statements`) and the fleet render (its
+    /// conformance host). The needs belong to the Statement, so the section never carries them:
+    /// `needs` is checked to be a list of scheme names and removed, and the rest is read with every
+    /// other unknown key still refused. Which schemes it names is not this reader's to judge: core
+    /// names no transport (Law 1), the suite holds the list to the Statement's, and boot resolves a
+    /// Statement's need against the claims the linked and dropped-in transports make. A SIGNED
+    /// manifest's `declares` is not a declares document: it is read with the manifest and refuses
+    /// `needs`.
+    ///
+    /// # Errors
+    /// The bytes are not JSON, `needs` is not a list of non-empty strings, or the rest is not a
+    /// `declares` section (an unknown key, a malformed declaration).
+    pub fn from_declares_json(bytes: &[u8]) -> Result<Declares, String> {
+        let mut doc: serde_json::Value =
+            serde_json::from_slice(bytes).map_err(|e| format!("not a `declares` section: {e}"))?;
+        if let Some(needs) = doc.as_object_mut().and_then(|m| m.remove("needs")) {
+            let list = needs
+                .as_array()
+                .ok_or_else(|| format!("`needs` is not a list of transport schemes: {needs}"))?;
+            for n in list {
+                if !n.as_str().is_some_and(|s| !s.is_empty()) {
+                    return Err(format!("`needs`: {n} is not a transport scheme"));
+                }
+            }
+        }
+        serde_json::from_value(doc).map_err(|e| format!("not a `declares` section: {e}"))
+    }
+
     /// Nothing declared — the section is left off the wire (and out of the signed bytes).
     pub fn is_empty(&self) -> bool {
         self.metrics.is_empty()
@@ -332,6 +404,7 @@ impl Declares {
             && self.destinations.is_empty()
             && self.egress.is_default()
             && self.contract_abi.is_none()
+            && self.breaker.is_none()
     }
 }
 
@@ -356,31 +429,9 @@ impl HookNeeds {
     }
 }
 
-/// One axis of a hook manifest's declared intent — the SAME `no ⊂ ro ⊂ rw` ladder the operator grant
-/// uses, so the core can compare "declared" against "granted" directly. `rw` is meaningful only on the
-/// `prompt` axis (identity is never rewritten); on `user` it reads as "at least ro".
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum NeedLevel {
-    /// Declares no need for this content (the default).
-    #[default]
-    No,
-    /// Asks to READ this content.
-    Ro,
-    /// Asks to read AND rewrite (prompt axis only).
-    Rw,
-}
-
-impl NeedLevel {
-    /// Whether the plugin declared it needs to READ this axis (`ro` or `rw`).
-    pub fn wants_read(self) -> bool {
-        !matches!(self, NeedLevel::No)
-    }
-    /// Whether the plugin declared it needs to REWRITE (prompt axis; `rw`).
-    pub fn wants_rewrite(self) -> bool {
-        matches!(self, NeedLevel::Rw)
-    }
-}
+/// One axis of a hook manifest's declared intent: the contract's (`busbar_contract::plugin_rows`),
+/// the shape the kernel reads a row's needs in.
+pub use busbar_contract::plugin_rows::NeedLevel;
 
 /// How a plugin was permitted to load when it is NOT signed by a trusted key - the operator's
 /// EXPLICIT opt-in (never a silent default).
@@ -609,6 +660,56 @@ pub enum RejectKind {
     Tampered,
     /// Validly signed but by a publisher NOT in the allowlist, and `allow_third_party` is off.
     UnknownPublisher,
+    /// Admitted on trust, but NOT first-party, and its Statement declares a connection need in an
+    /// egress class the host grants to a first-party plugin only ([`egress_grant`]).
+    EgressGrant,
+}
+
+/// The egress classes (`BUSBAR-1.6.0.md` §5) the host grants to a FIRST-PARTY plugin only: every
+/// class that relaxes the open web's rule — a provider's allow-list and metadata hosts, the
+/// operator infrastructure's private and plaintext targets, a collector's loopback plaintext.
+/// The connector's default class and the open web are any trusted plugin's (ARCHITECT ruling
+/// EGRESS-GRANT 2026-10-03; the cold lane's `declares.egress` grant, on the door's needs).
+pub const FIRST_PARTY_EGRESS: [(u32, &str); 3] = [
+    (
+        busbar_contract::abi::host::conn::connector::EGRESS_PROVIDER,
+        "provider",
+    ),
+    (
+        busbar_contract::abi::host::conn::connector::EGRESS_OPERATOR_INFRASTRUCTURE,
+        "operator-infrastructure",
+    ),
+    (
+        busbar_contract::abi::host::conn::connector::EGRESS_LOOPBACK_ALLOWED,
+        "loopback-allowed",
+    ),
+];
+
+/// THE EGRESS-CLASS GRANT on a door plugin's needs: `Err` naming the first need of `manifest`'s
+/// stated Statement whose egress class is a first-party grant ([`FIRST_PARTY_EGRESS`]). Asked of a
+/// plugin that is not first-party; a manifest that states no Statement (a cold plugin) declares no
+/// need here.
+///
+/// # Errors
+///
+/// The refusal, naming the plugin and the class.
+pub fn egress_grant(manifest: &Manifest) -> Result<(), String> {
+    let Some(stated) = manifest.stated()? else {
+        return Ok(());
+    };
+    for need in &stated.needs {
+        if let Some((_, class)) = FIRST_PARTY_EGRESS
+            .iter()
+            .find(|(c, _)| *c == need.egress_class)
+        {
+            return Err(format!(
+                "plugin '{}' declares a `{}` need in the `{class}` egress class, which the host \
+                 grants to a first-party plugin only",
+                manifest.name, need.transport
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Trust failure. The posture forbids loading this plugin; the message is safe to surface. `kind` is
@@ -635,7 +736,7 @@ impl std::error::Error for Rejected {}
 
 /// Lowercase-hex SHA-256 of `bytes` - the library digest stored in the manifest.
 pub fn sha256_hex(bytes: &[u8]) -> String {
-    busbar_kernel_ledger::digest::sha256_hex(bytes)
+    busbar_contract::redacted::sha256_hex(bytes)
 }
 
 /// The canonical byte string that is signed/verified: the whole manifest MINUS its `signature`, as
@@ -809,8 +910,8 @@ pub fn validate_structure(
 }
 
 /// The STATEMENT half of [`validate_structure`] — everything a manifest says about the plugin rather
-/// than about the artifact file (`sha256` is the file's): name, alias, kind, version, publisher,
-/// host. A plugin linked into the build has no artifact, and states exactly this; the registry's
+/// than about the artifact file (`sha256` is the file's): name, alias, former names, kind, version,
+/// publisher, host. A plugin linked into the build has no artifact, and states exactly this; the registry's
 /// linked door runs it, then [`validate_abi`], so a linked row passes the same structural gate a
 /// dropped-in one does.
 pub fn validate_identity(m: &Manifest, host_identity: &str) -> Result<(), String> {
@@ -825,6 +926,18 @@ pub fn validate_identity(m: &Manifest, host_identity: &str) -> Result<(), String
             "manifest alias '{}' is not a valid plugin alias (lowercase [a-z0-9-]+)",
             m.alias
         ));
+    }
+    for (i, former) in m.former_names.iter().enumerate() {
+        if !valid_name(former) {
+            return Err(format!(
+                "manifest former name '{former}' is not a valid plugin name (lowercase [a-z0-9-]+)"
+            ));
+        }
+        if *former == m.name || *former == m.alias || m.former_names[..i].contains(former) {
+            return Err(format!(
+                "manifest former name '{former}' repeats another name of the plugin"
+            ));
+        }
     }
     if !KNOWN_KINDS.contains(&m.kind.as_str()) {
         return Err(format!(
@@ -846,7 +959,7 @@ pub fn validate_identity(m: &Manifest, host_identity: &str) -> Result<(), String
     // HOST identity gate: an ABSENT `host` means `busbar` (backward compatible with every manifest
     // packed before this field existed). An EXPLICIT `host` that is not the caller's own identity
     // is a hard structural reject — not a silent ignore — because a sibling product (busbar-ui)
-    // reuses the identical six-symbol ABI and signed-manifest shape, so a foreign-host manifest
+    // reuses the identical memory ABI and signed-manifest shape, so a foreign-host manifest
     // would otherwise pass the ABI handshake and go on to answer `kind`-matched calls (e.g.
     // `store`) with an incompatible payload contract. This check runs in phase 1 (structural),
     // independent of trust/signature, so even a validly-signed foreign-host manifest is refused.
@@ -873,44 +986,18 @@ pub fn validate_abi(
     supported_abi: &dyn Fn(&str) -> &'static [u32],
 ) -> Result<(), String> {
     // `supported_abi` returns a CONTIGUOUS `[floor, max]` inclusive range (its endpoints) of the
-    // PAYLOAD-schema versions the binary speaks for this kind. Negotiate the manifest's declared
+    // ABI versions the binary speaks for this kind (the kind's ONE version, THE DESIGN §11.2; a
+    // legacy `declares.contract_abi` range is parsed but never consulted). Negotiate the manifest's declared
     // `abi_version` against it: in range → ok; below floor / above max → refuse LOUD naming both.
     // An empty slice means the kind is unsupported (already caught by KNOWN_KINDS, but fail-closed).
     let supported = supported_abi(&m.kind);
-    // The plugin's OWN declared range first, so a refusal names both ranges: a range sharing no
-    // version with this binary's is a plugin built for another contract, whatever its stamp says.
-    if let (Some(r), Some(&floor), Some(&max)) =
-        (m.declares.contract_abi, supported.first(), supported.last())
-    {
-        if r.min > r.max {
-            return Err(format!(
-                "plugin '{}' declares an empty contract-ABI range v{}..=v{} for kind '{}'",
-                m.name, r.min, r.max, m.kind
-            ));
-        }
-        if r.max < floor || r.min > max {
-            return Err(format!(
-                "plugin '{}' supports contract ABI v{}..=v{} for kind '{}', and this binary \
-                 supports v{floor}..=v{max}: the ranges share no version, refusing to load it",
-                m.name, r.min, r.max, m.kind
-            ));
-        }
-        if m.abi_version < r.min || m.abi_version > r.max {
-            return Err(format!(
-                "manifest abi_version {} is outside the contract-ABI range v{}..=v{} plugin '{}' \
-                 declares for kind '{}'",
-                m.abi_version, r.min, r.max, m.name, m.kind
-            ));
-        }
-    }
     match (supported.first(), supported.last()) {
         (Some(&floor), Some(&max)) if m.abi_version >= floor && m.abi_version <= max => {}
         (Some(&floor), Some(&max)) => {
-            // Below the floor is a plugin built against an older contract: say what fixes it.
-            let rebuild = match m.abi_version < floor {
-                true => format!(" — {}", crate::dispatch::load::REBUILD),
-                false => String::new(),
-            };
+            // This arm is reached only for a version OFF the supported window — older OR newer.
+            // C21/ABI-o1: each kind admits exactly its current version, so any mismatch is fixed the
+            // same way — rebuild the plugin against THIS host's (1.6.0) SDK. Both ends name it.
+            let rebuild = format!(" — {}", crate::dispatch::load::REBUILD);
             return Err(format!(
                 "manifest abi_version {} is not supported for kind '{}' by this binary (supported \
                  range v{floor}..=v{max}){rebuild}",
@@ -1144,3 +1231,7 @@ pub fn evaluate(
 #[cfg(test)]
 #[path = "tests/sign_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tests/declares_reader_tests.rs"]
+mod declares_reader_tests;

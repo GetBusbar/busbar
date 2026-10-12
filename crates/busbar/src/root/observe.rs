@@ -11,7 +11,7 @@
 //! has something worth reporting. Unconditional: the `metrics` facade is a no-op without a
 //! recorder, and the diagnostics half has to work whether or not an exporter is configured.
 
-use busbar_kernel::metrics::observe::{Grants, KernelPluginObserver};
+use busbar_kernel::snapshot::observe::{Grants, KernelPluginObserver};
 
 use crate::root::loader::observe::{first_party, first_party_series, PluginObserver};
 
@@ -27,6 +27,10 @@ impl PluginObserver for Observer {
         diagnostics: &[serde_json::Value],
     ) {
         KernelPluginObserver.observe(&LoaderGrants, plugin, kind, metrics, diagnostics);
+    }
+
+    fn dropped(&self, observations: u64) {
+        KernelPluginObserver.dropped(observations);
     }
 }
 

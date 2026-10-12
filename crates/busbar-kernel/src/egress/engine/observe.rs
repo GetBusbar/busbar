@@ -25,10 +25,9 @@ use std::sync::Arc;
 use std::task::{Context, Poll};
 
 use hyper::rt;
-use hyper_rustls::MaybeHttpsStream;
 use hyper_util::client::legacy::connect::{Connected, Connection};
-use hyper_util::rt::TokioIo;
-use tokio::net::TcpStream;
+
+use super::https::MaybeHttpsStream;
 
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
@@ -70,7 +69,7 @@ pub struct ObservedIo<T> {
     key_pin: Option<PeerKeyPin>,
 }
 
-impl ObservedIo<MaybeHttpsStream<TokioIo<TcpStream>>> {
+impl ObservedIo<MaybeHttpsStream> {
     /// The observed peer identity, read ONCE by the owned pool's dial task into its
     /// per-connection snapshot (the same fact `connected()` carries as a `Connected` extra —
     /// exposed directly because the owned pool replays extras itself instead of through
@@ -82,13 +81,9 @@ impl ObservedIo<MaybeHttpsStream<TokioIo<TcpStream>>> {
     /// Whether ALPN negotiated h2 on this connection — the owned pool's protocol branch. A
     /// plaintext hop (h2c rides prior-knowledge posture, not ALPN) is `false`.
     pub(crate) fn negotiated_h2(&self) -> bool {
-        match &self.inner {
-            MaybeHttpsStream::Https(tls) => {
-                let (_, conn) = tls.inner().get_ref();
-                conn.alpn_protocol() == Some(b"h2")
-            }
-            MaybeHttpsStream::Http(_) => false,
-        }
+        self.inner
+            .secured()
+            .is_some_and(|tls| tls.alpn() == Some(b"h2"))
     }
 }
 
@@ -153,11 +148,11 @@ impl<T: rt::Read + rt::Write + Unpin> rt::Write for ObservedIo<T> {
 
 impl<C> tower::Service<http::Uri> for KeyPinObserve<C>
 where
-    C: tower::Service<http::Uri, Response = MaybeHttpsStream<TokioIo<TcpStream>>>,
+    C: tower::Service<http::Uri, Response = MaybeHttpsStream>,
     C::Future: Send + 'static,
     C::Error: Into<BoxError>,
 {
-    type Response = ObservedIo<MaybeHttpsStream<TokioIo<TcpStream>>>;
+    type Response = ObservedIo<MaybeHttpsStream>;
     type Error = BoxError;
     type Future =
         Pin<Box<dyn std::future::Future<Output = Result<Self::Response, BoxError>> + Send>>;
@@ -175,16 +170,10 @@ where
             // produced; index 0 is the leaf. A plaintext hop, or a leaf the DER walk refuses,
             // observes NOTHING — honestly absent, matching the empty TlsInfo of old.
             let key_pin = if observe {
-                match &io {
-                    MaybeHttpsStream::Https(tls) => {
-                        let (_, conn) = tls.inner().get_ref();
-                        conn.peer_certificates()
-                            .and_then(|certs| certs.first())
-                            .and_then(|leaf| crate::plane_host::spki::pin(leaf.as_ref()).ok())
-                            .map(|pin| PeerKeyPin(pin.into()))
-                    }
-                    MaybeHttpsStream::Http(_) => None,
-                }
+                io.secured()
+                    .and_then(|tls| tls.peer_leaf())
+                    .and_then(|leaf| crate::plane_host::spki::pin(leaf).ok())
+                    .map(|pin| PeerKeyPin(pin.into()))
             } else {
                 None
             };

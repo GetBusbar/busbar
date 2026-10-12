@@ -19,13 +19,14 @@
 use std::task::Poll;
 
 use crate::abi::host::conn::connector::{
-    service, ConnectorSlots, EstablishIn, IoIn, ReplyIn, ReplyPiece, RequestIn, RequestPiece,
-    StreamIn, UpgradeIn,
+    service, ConnectorSlots, EstablishIn, FactsIn, IdentityIn, IoIn, ProcessIdentity, ReplyIn,
+    ReplyPiece, RequestIn, RequestPiece, StreamFacts, StreamIn, UpgradeIn,
 };
 use crate::abi::host::service::{
-    op, ClockNowIn, ClockReading, HostSlots, NeedAdmitIn, ServiceFn, ServiceHead, ServiceOut,
+    op, ClockNowIn, ClockReading, DiskAppendIn, DiskWritten, HostSlots, NeedAdmitIn, ServiceFn,
+    ServiceHead, ServiceOut,
 };
-use crate::abi::mechanism::call::{AbiStr, Outcome, RawOutcome};
+use crate::abi::mechanism::call::{AbiStr, Blob, Outcome, RawOutcome, BLOB_OCTETS};
 use crate::abi::mechanism::ticket::{CompletionHandle, HostCtx, HostTables, Ticket, WakeFn};
 
 /// Why a connector service answered without its result.
@@ -63,6 +64,50 @@ impl std::error::Error for ConnFailure {}
 /// A connector service's answer.
 pub type Answer<T> = Poll<Result<T, ConnFailure>>;
 
+/// THE PROCESS IDENTITY, owned, as [`Connector::identity`] read it off the host: who the process
+/// is to a far end that asks (a database login that names no user takes the OS user, as 1.5.5's
+/// driver did).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ProcessId {
+    /// The process id.
+    pub pid: u64,
+    /// The OS user the process runs as; empty = the host could not name one.
+    pub os_user: String,
+    /// The program name.
+    pub program: String,
+}
+
+/// A STREAM'S FACTS, owned, as [`Connector::facts`] read them off the host connector: never key or
+/// certificate material.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Observed {
+    /// Connection security is established on the stream.
+    pub secure: bool,
+    /// The protocol the security handshake agreed; `None` = none.
+    pub agreed_protocol: Option<String>,
+    /// The far end's key, the pin of its leaf certificate's SubjectPublicKeyInfo
+    /// (`transport::trust::key_pin`'s spelling); `None` = the stream carried no certificate.
+    pub peer_key_pin: Option<String>,
+    /// Busbar presented its client identity in the handshake.
+    pub client_identity: bool,
+}
+
+/// Why a `disk.append` ([`Connector::disk_append`]) did not land its bytes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiskFailure {
+    /// The step that failed when the host answered FAILED (`DISK_OPEN_FAILED` /
+    /// `DISK_APPEND_FAILED`); `0` for any other answer.
+    pub step: u64,
+    /// What the rotation the host ran before the failed append did (`rotated`, `faults`); all zero
+    /// when the host wrote no result.
+    pub rotation: DiskWritten,
+    /// The answer, with the host's text.
+    pub why: ConnFailure,
+}
+
+/// A `disk.append`'s answer.
+pub type DiskAnswer = Poll<Result<DiskWritten, DiskFailure>>;
+
 /// THE INSTANCE'S HOST TABLES, as `open` handed them: the context every host call is made with,
 /// the wake, the connector table and the host services table.
 #[derive(Debug, Clone, Copy)]
@@ -71,6 +116,7 @@ pub struct Host {
     wake: Option<WakeFn>,
     conns: *const ConnectorSlots,
     services: *const HostSlots,
+    io: *const crate::abi::host::io::IoSlots,
 }
 
 // SAFETY: the context is an opaque handle and the table plain code addresses, both valid for the
@@ -81,15 +127,30 @@ unsafe impl Send for Host {}
 unsafe impl Sync for Host {}
 
 impl Host {
-    /// The tables `tables` names.
+    /// The tables `tables` names: what `open` was handed (`OpenIn::host`), for a kind whose SDK
+    /// wrapper is not yet in this crate (the auth kind's outbound mint reaches its need through it).
     #[must_use]
     pub const fn of(tables: &HostTables) -> Self {
+        // The I/O table was appended: tables whose `size` ends before it hand none.
+        let io = if tables.size as usize >= std::mem::size_of::<HostTables>() {
+            tables.io
+        } else {
+            std::ptr::null()
+        };
         Self {
             ctx: tables.ctx,
             wake: tables.wake,
             conns: tables.conns,
             services: tables.services,
+            io,
         }
+    }
+
+    /// THE HOST'S I/O (`abi::host::io`, `io.*`) for ONE entry of the op running on `ticket`: what
+    /// a carrier moves bytes with (`abi::sdk::io`).
+    #[must_use]
+    pub fn io(&self, ticket: Ticket) -> super::io::Io<'_> {
+        super::io::Io::new(self.ctx, self.io, ticket)
     }
 
     /// WAKE `ticket` (the host's `wake`, `abi::mechanism::ticket`): from any thread, never blocks,
@@ -99,6 +160,21 @@ impl Host {
         if let Some(wake) = self.wake {
             wake(self.ctx, ticket);
         }
+    }
+
+    /// The host services table these tables carry (`abi::host::service`), as the SDK's typed
+    /// wrappers; `None` when the host offers none.
+    #[must_use]
+    pub fn services(&self) -> Option<crate::abi::sdk::services::Services> {
+        crate::abi::sdk::services::Services::of(&HostTables {
+            size: std::mem::size_of::<HostTables>() as u32,
+            _reserved: 0,
+            ctx: self.ctx,
+            wake: self.wake,
+            conns: self.conns,
+            services: self.services,
+            io: self.io,
+        })
     }
 
     /// The connector for ONE entry of the op running on `ticket`.
@@ -118,7 +194,15 @@ impl Host {
             ticket,
             issued,
             budget_ms: None,
+            cause: std::cell::Cell::new(0),
         }
+    }
+
+    /// Whether the host lent the instance a connector table: a host that declared none of its needs
+    /// (no connection table bound) dials nothing for it.
+    #[must_use]
+    pub fn lends_connector(&self) -> bool {
+        !self.conns.is_null()
     }
 
     fn slots(&self) -> Option<&ConnectorSlots> {
@@ -135,6 +219,8 @@ pub struct Connector<'h> {
     ticket: Ticket,
     issued: u32,
     budget_ms: Option<u64>,
+    /// The `CAUSE_*` stage the host named on the last service that failed (`CAUSE_NONE` = none).
+    cause: std::cell::Cell<u64>,
 }
 
 /// A service `in`: every one leads with a [`ServiceHead`].
@@ -148,13 +234,16 @@ macro_rules! service_in {
 }
 service_in!(
     EstablishIn,
+    FactsIn,
+    IdentityIn,
     StreamIn,
     IoIn,
     UpgradeIn,
     ReplyIn,
     RequestIn,
     ClockNowIn,
-    NeedAdmitIn
+    NeedAdmitIn,
+    DiskAppendIn
 );
 
 const fn blank_head() -> ServiceHead {
@@ -199,6 +288,14 @@ impl Connector<'_> {
         self.issued
     }
 
+    /// Where the last service this connector made that failed was failed, as the host named it:
+    /// a `CAUSE_*` stage (`CAUSE_NONE` = the host named none). The failure's text is the
+    /// [`ConnFailure`]'s, the underlying error's own words when a stage is named.
+    #[must_use]
+    pub fn cause(&self) -> u64 {
+        self.cause.get()
+    }
+
     /// Bound every request this connector sends to `ms` milliseconds: what is left of the op's
     /// deadline, as the op knows it. A request asking for longer is clamped to it.
     #[must_use]
@@ -235,7 +332,9 @@ impl Connector<'_> {
         let Some(f) = f else {
             return Poll::Ready(Err(ConnFailure::Unarmed));
         };
-        if self.ticket.is_none() {
+        // A service on no ticket may not pend: `close` never does, so it is made on none (an
+        // instance closing its kept connections as it goes).
+        if self.ticket.is_none() && op != service::CLOSE {
             return Poll::Ready(Err(ConnFailure::NoTicket));
         }
         let seq = self.issued;
@@ -253,9 +352,34 @@ impl Connector<'_> {
         &self,
         op: u32,
         f: ServiceFn,
-        mut input: I,
+        input: I,
         handle: CompletionHandle,
     ) -> Answer<ServiceOut> {
+        let (answered, out) = self.cross_out(op, f, input, handle);
+        match answered {
+            Outcome::Ready => Poll::Ready(Ok(out)),
+            Outcome::Pending => Poll::Pending,
+            Outcome::Failed => {
+                self.cause.set(out.value);
+                Poll::Ready(Err(ConnFailure::Failed(host_text(out.error))))
+            }
+            Outcome::Refused => {
+                self.cause.set(out.value);
+                Poll::Ready(Err(ConnFailure::Refused(host_text(out.error))))
+            }
+            Outcome::Fault => Poll::Ready(Err(ConnFailure::Fault)),
+        }
+    }
+
+    /// Cross into service `op` through `f` with `input`, under `handle`: the outcome the host
+    /// returned and the `out` it wrote, whatever the outcome.
+    fn cross_out<I: ServiceIn>(
+        &self,
+        op: u32,
+        f: ServiceFn,
+        mut input: I,
+        handle: CompletionHandle,
+    ) -> (Outcome, ServiceOut) {
         *input.head() = ServiceHead {
             size: std::mem::size_of::<I>() as u32,
             op,
@@ -273,13 +397,7 @@ impl Connector<'_> {
             error: absent(),
         };
         let answered = f(self.host.ctx, std::ptr::from_ref(&input).cast(), &mut out).outcome();
-        match answered {
-            Outcome::Ready => Poll::Ready(Ok(out)),
-            Outcome::Pending => Poll::Pending,
-            Outcome::Failed => Poll::Ready(Err(ConnFailure::Failed(host_text(out.error)))),
-            Outcome::Refused => Poll::Ready(Err(ConnFailure::Refused(host_text(out.error)))),
-            Outcome::Fault => Poll::Ready(Err(ConnFailure::Fault)),
-        }
+        (answered, out)
     }
 
     /// Establish a stream for the declared need `need` (its index), to `target` (`None` = the
@@ -287,19 +405,46 @@ impl Connector<'_> {
     /// `dest.judge` answered, `Judged::within`; `""` = no pin beyond the host's judgement): the
     /// stream. A dial the host's judgement pins outside `within` is refused before any byte leaves.
     pub fn establish(&mut self, need: u32, target: Option<&str>, within: &str) -> Answer<u64> {
+        self.establish_timed(need, target, within, 0)
+    }
+
+    /// [`Connector::establish`], its dial bounded by `timeout_ms` (`0` = the need's own timeout,
+    /// else the host's default): an operator-set connect timeout.
+    pub fn establish_timed(
+        &mut self,
+        need: u32,
+        target: Option<&str>,
+        within: &str,
+        timeout_ms: u32,
+    ) -> Answer<u64> {
+        self.establish_as(need, target, within, timeout_ms, None)
+    }
+
+    /// [`Connector::establish_timed`] for the REGISTRATION `member` (its name in the plugin's
+    /// declaring section): what the host sealed for that registration alone (its private reach)
+    /// applies to this stream; `None` = the stream names none.
+    pub fn establish_as(
+        &mut self,
+        need: u32,
+        target: Option<&str>,
+        within: &str,
+        timeout_ms: u32,
+        member: Option<&str>,
+    ) -> Answer<u64> {
         let input = EstablishIn {
             head: blank_head(),
             need,
-            _reserved: 0,
+            timeout_ms,
             target: text(target),
             within: text(Some(within)),
+            member: text(member),
         };
         self.call(service::ESTABLISH, |s| s.establish, input)
             .map(|r| r.map(|o| o.value))
     }
 
-    /// Write `bytes` to `stream`: how many the host took. `bytes` must stay where they are until
-    /// the write completes (on a PENDING answer, keep them parked).
+    /// Write `bytes` to `stream`: how many the host took. The host reads `bytes` during this call
+    /// only (`IoIn`); after a PENDING answer the RESUME lends them again.
     pub fn write(&mut self, stream: u64, bytes: &[u8]) -> Answer<usize> {
         let input = IoIn {
             head: blank_head(),
@@ -311,8 +456,8 @@ impl Connector<'_> {
             .map(|r| r.map(|o| o.len as usize))
     }
 
-    /// Read from `stream` into `buf`: how many bytes; `0` = the end. `buf` must stay where it is
-    /// until the read completes (on a PENDING answer, keep it parked).
+    /// Read from `stream` into `buf`: how many bytes; `0` = the end. The host writes `buf` during
+    /// this call only (`IoIn`); after a PENDING answer the RESUME lends it again.
     pub fn read(&mut self, stream: u64, buf: &mut [u8]) -> Answer<usize> {
         let input = IoIn {
             head: blank_head(),
@@ -332,14 +477,93 @@ impl Connector<'_> {
         name: Option<&str>,
         trust: Option<&str>,
     ) -> Answer<()> {
+        self.upgrade_secure_flagged(stream, name, trust, 0)
+    }
+
+    /// [`Connector::upgrade_secure`] with `UPGRADE_*` `flags`
+    /// ([`UPGRADE_VERIFY_OFF`](crate::abi::host::conn::connector::UPGRADE_VERIFY_OFF): the
+    /// operator's opt-in to an unverified handshake, honoured for an operator-infrastructure need
+    /// only).
+    pub fn upgrade_secure_flagged(
+        &mut self,
+        stream: u64,
+        name: Option<&str>,
+        trust: Option<&str>,
+        flags: u32,
+    ) -> Answer<()> {
         let input = UpgradeIn {
             head: blank_head(),
             stream,
             offered_name: text(name),
             trust: text(trust),
+            flags,
+            _reserved: 0,
         };
         self.call(service::UPGRADE_SECURE, |s| s.upgrade_secure, input)
             .map(|r| r.map(|_| ()))
+    }
+
+    /// WHAT `stream`'s CONNECTION SECURITY ESTABLISHED, as the host connector observed it
+    /// (`service::FACTS`): whether it is secured, the protocol agreed, the far end's key pin and
+    /// whether busbar presented its client identity (the transport pin, ARCHITECT 2026-10-03) — readable
+    /// on a stream whose connection the connector refused for its trust anchors too, until it is
+    /// closed. `None`: a re-issued handle the host answered from its store without writing the
+    /// facts again (the replay rule) — they were read on the entry that first answered it.
+    pub fn facts(&mut self, stream: u64) -> Answer<Option<Observed>> {
+        // `size` stays 0 unless the host wrote the facts on this call.
+        let mut slot = StreamFacts {
+            size: 0,
+            secure: 0,
+            endpoint: absent(),
+            agreed_protocol: absent(),
+            peer_cert_hash: absent(),
+            peer_key_pin: absent(),
+            client_identity: 0,
+            _reserved: 0,
+        };
+        let input = FactsIn {
+            head: blank_head(),
+            stream,
+            facts: std::ptr::from_mut(&mut slot),
+        };
+        self.call(service::FACTS, |s| s.facts, input).map(|r| {
+            r.map(|_| {
+                (slot.size != 0).then(|| {
+                    let owned = |t: AbiStr| Some(host_text(t)).filter(|t| !t.is_empty());
+                    Observed {
+                        secure: slot.secure == 1,
+                        agreed_protocol: owned(slot.agreed_protocol),
+                        peer_key_pin: owned(slot.peer_key_pin),
+                        client_identity: slot.client_identity == 1,
+                    }
+                })
+            })
+        })
+    }
+
+    /// THE PROCESS IDENTITY (`service::IDENTITY`): the pid, OS user and program the host presents
+    /// for this process. Never pends; needs no stream, but the call is made on the op's ticket
+    /// like every connector service.
+    pub fn identity(&mut self) -> Answer<ProcessId> {
+        let mut slot = ProcessIdentity {
+            size: 0,
+            _reserved: 0,
+            pid: 0,
+            os_user: absent(),
+            program: absent(),
+        };
+        let input = IdentityIn {
+            head: blank_head(),
+            identity: std::ptr::from_mut(&mut slot),
+        };
+        self.call(service::IDENTITY, |s| s.identity, input)
+            .map(|r| {
+                r.map(|_| ProcessId {
+                    pid: slot.pid,
+                    os_user: host_text(slot.os_user),
+                    program: host_text(slot.program),
+                })
+            })
     }
 
     /// Close `stream`.
@@ -389,6 +613,74 @@ impl Connector<'_> {
             Poll::Ready(r) => r.map(|_| ()),
             // It never pends: a host that says so broke the service's rule.
             Poll::Pending => Err(ConnFailure::Fault),
+        }
+    }
+
+    /// APPEND `bytes` to the local file the host maps this instance's destination `dest_key` to
+    /// (`disk.append`, the host's bounded disk lane, THE DESIGN): the host owns the path
+    /// and rotates the file by its own rules before the append when it is due. It may pend: a body
+    /// re-issues it with the same `bytes` on resume (the replay rule) and reads the stored answer.
+    /// READY with what the host wrote: the whole of `bytes` landed, and whether the file was rotated
+    /// first. A FAILED answer names its step and still reports the rotation that ran before it.
+    pub fn disk_append(&mut self, dest_key: &str, bytes: &[u8]) -> DiskAnswer {
+        let blank = DiskWritten {
+            size: 0,
+            rotated: 0,
+            faults: 0,
+            _reserved: [0; 2],
+            written: 0,
+        };
+        let fail = |step, rotation, why| {
+            Poll::Ready(Err(DiskFailure {
+                step,
+                rotation,
+                why,
+            }))
+        };
+        // SAFETY: NULL, or the host's services table, valid for the instance's life.
+        let Some(f) = unsafe { self.host.services.as_ref() }.and_then(|s| s.disk_append) else {
+            return fail(0, blank, ConnFailure::Unarmed);
+        };
+        if self.ticket.is_none() {
+            return fail(0, blank, ConnFailure::NoTicket);
+        }
+        let handle = CompletionHandle {
+            ticket: self.ticket,
+            seq: self.issued,
+            _reserved: 0,
+        };
+        self.issued += 1;
+        let mut result = blank;
+        let input = DiskAppendIn {
+            head: blank_head(),
+            dest_key: AbiStr {
+                ptr: dest_key.as_ptr(),
+                len: dest_key.len(),
+            },
+            bytes: Blob {
+                ptr: bytes.as_ptr(),
+                len: bytes.len(),
+                fmt: BLOB_OCTETS,
+                flags: 0,
+            },
+            result: std::ptr::from_mut(&mut result),
+        };
+        let (answered, out) = self.cross_out(op::DISK_APPEND, f, input, handle);
+        let rotation = if result.size as usize == std::mem::size_of::<DiskWritten>() {
+            result
+        } else {
+            blank
+        };
+        match answered {
+            Outcome::Ready => Poll::Ready(Ok(result)),
+            Outcome::Pending => Poll::Pending,
+            Outcome::Failed => fail(
+                out.value,
+                rotation,
+                ConnFailure::Failed(host_text(out.error)),
+            ),
+            Outcome::Refused => fail(0, rotation, ConnFailure::Refused(host_text(out.error))),
+            Outcome::Fault => fail(0, blank, ConnFailure::Fault),
         }
     }
 

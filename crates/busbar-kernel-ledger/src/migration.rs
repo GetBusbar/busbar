@@ -6,11 +6,17 @@
 //! ## What it is for
 //!
 //! A checkpoint is the point the identity is measured FROM, and on the first boot of a deployment
-//! that has been serving for a year there is no such point. Without one, every figure the previous
-//! release accumulated is either invisible to this release's books or — worse — looks like value
-//! that appeared out of nowhere the first time anything is checked. So the first boot reads what the
-//! previous release's rows hold, seals it as an OPENING checkpoint, and measures everything
-//! afterwards from there.
+//! that has been serving for a year there is no such point. So the first boot reads what the
+//! previous release's rows hold and seals it as an OPENING checkpoint: the legacy figures, digested
+//! and signed, with a marker that names the seal.
+//!
+//! **What the caller keeps is the marker.** [`migrate`] hands the sealed [`Opening`] back, and the
+//! composition root writes only the [`MigrationMarker`] (sequence, node, instant, body hash, balance
+//! count, cells read, card version) onto its journal; the opening checkpoint itself and its
+//! balances are not journaled, not held, and not the `since` of any verify. Nothing in the node's
+//! running books is measured from the opening figures: the node's own checkpoints number on from
+//! [`OPENING_CHECKPOINT_SEQ`] and seal the node's own book. The opening is the record that the
+//! previous release's totals were read, and what they hashed to, and that is all it is used for.
 //!
 //! ## The three rules, and why each is a rule rather than an intention
 //!
@@ -33,9 +39,9 @@
 //! Value that the previous release consumed was taken out of the store and posted, so the opening
 //! sets DRAWN and SETTLED to the same amount and everything else to zero. That is not a
 //! presentational choice: it is what makes the opening checkpoint satisfy the identity by
-//! construction — everything drawn is accounted for, in the settled column — so the very first
-//! reconciliation after an upgrade measures this release's own postings and not the previous
-//! release's history.
+//! construction — everything drawn is accounted for, in the settled column — so a verify measured
+//! from it would see this release's own postings and not the previous release's history. (No verify
+//! is measured from it today; see the preamble above.)
 //!
 //! ## Why the two row families stay apart
 //!
@@ -48,7 +54,7 @@
 //!
 //! The prefix settles the families and nothing else. Inside the metering family the pool joins two
 //! caller-controlled components, and a prefix says nothing about where one of them ends: joined on a
-//! bare slash, `("gpt/4", "openai")` and `("gpt", "4/openai")` both spell `meter:gpt/4/openai`, so two
+//! bare slash, `("lane/4", "vendor")` and `("lane", "4/vendor")` both spell `meter:lane/4/vendor`, so two
 //! providers' opening figures land in one balance and add. That is the same error one level down —
 //! two customers' money in one bucket — and it is closed the same way it is closed everywhere else
 //! in this tree: each component is LENGTH-FRAMED, so the boundary is fixed by a count the rows
@@ -65,8 +71,8 @@
 
 use std::collections::BTreeMap;
 
-use crate::checkpoint::{ChainHead, Checkpoint, CheckpointSecret, SignError};
-use crate::legacy::{opening_balances, LegacyHead, LegacyMigrationSource, OpeningBalance};
+use crate::checkpoint::{ChainHead, Checkpoint, CheckpointSecret};
+use crate::legacy::{opening_balances, LegacyHead, OpeningBalance};
 use crate::totals::{BucketId, BucketScope, CapDimension, Totals, TotalsKey, WindowStart};
 
 /// The sequence number of the opening checkpoint.
@@ -76,40 +82,20 @@ use crate::totals::{BucketId, BucketScope, CapDimension, Totals, TotalsKey, Wind
 /// the marker, the checkpoint and anything reading either agree by construction.
 pub const OPENING_CHECKPOINT_SEQ: u64 = 0;
 
-/// Which of the previous release's two row families a figure was read from.
-///
-/// It is carried on the figure rather than decided by the reader, because the family is what
-/// decides the scope, and the scope is the whole of what keeps two views of one consumption from
-/// being added together.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum LegacyFamily {
-    /// A bucket's token ledger for one window: what the bucket consumed, with no lane on it.
-    Window,
-    /// A metering row: one day, one lane, one provider, under the key that was charged.
-    Meter,
-}
+/// The figures the migration reads, the seams it reads them through and the marker it seals: the
+/// contract's, because the store adapter implements the seams on the other side of it.
+pub use busbar_contract::migration::{
+    LegacyCapDimension, LegacyFamily, LegacyFigure, LegacyFigures, LegacyLedgerRows,
+    MigrationError, MigrationMarker, MigrationRecords,
+};
 
-/// One figure the previous release's rows hold.
-///
-/// Deliberately plain — identifiers as strings, the amount as the integer that was read. Anything
-/// richer would be this crate having an opinion about a row shape it does not own, which is the same
-/// reason the dual write next door is a trait rather than an implementation.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LegacyFigure {
-    /// Which family the figure came from.
-    pub family: LegacyFamily,
-    /// Which bucket it is against.
-    pub bucket: String,
-    /// Which window or day it fell in, as that window's opening instant in whole seconds.
-    pub window: WindowStart,
-    /// Which lane served it. Empty where the row carries no lane.
-    pub lane: String,
-    /// Which provider served it. Empty where the row carries no provider.
-    pub provider: String,
-    /// What is being counted.
-    pub dimension: CapDimension,
-    /// How much, as the previous release's row holds it.
-    pub amount: i128,
+impl From<LegacyCapDimension> for CapDimension {
+    fn from(dimension: LegacyCapDimension) -> Self {
+        match dimension {
+            LegacyCapDimension::Requests => CapDimension::Requests,
+            LegacyCapDimension::Class(class) => CapDimension::Class(class),
+        }
+    }
 }
 
 /// ONE COMPONENT OF A COMPOSITE POOL KEY, FRAMED SO ITS BOUNDARY CANNOT BE FORGED.
@@ -119,8 +105,8 @@ pub struct LegacyFigure {
 /// every boundary is fixed by a number the caller does not write; a decimal length can itself contain
 /// no colon, so there is nothing left for a caller's own bytes to move.
 ///
-/// This is the SAME framing, for the same reason, as the admin crate's `verbs::rotate_replay_key`
-/// (`crates/busbar-core-admin/src/verbs.rs:91`), which joins two caller-controlled halves of a
+/// This is the SAME framing, for the same reason, as the admin crate's
+/// `idempotency::rotate_replay_key` (`crates/busbar-core-admin/src/idempotency.rs:46`), which joins two caller-controlled halves of a
 /// replay key. That helper could not be called from here for two independent reasons: it is
 /// `pub(crate)` to `busbar-core-admin`, and `busbar-core-admin` depends on this crate
 /// (`busbar-core-admin → busbar-kernel-ledger`), so an edge back would be a cycle Cargo
@@ -136,7 +122,7 @@ fn length_framed(component: &str) -> String {
 
 /// THE POOL SCOPE A METERING ROW LANDS ON, given its lane and its provider.
 ///
-/// The single source of truth for the metering pool key: [`LegacyFigure::key`] builds its metering
+/// The single source of truth for the metering pool key: [`figure_key`] builds its metering
 /// scope through this, and any consumer that needs to look a migrated metering balance back up must
 /// build the same scope here rather than re-spelling the framed key by hand — a hand-spelled copy is
 /// how the producer and the reader come to disagree about which balance is which.
@@ -149,151 +135,32 @@ pub fn meter_pool_scope(lane: &str, provider: &str) -> BucketScope {
     ))
 }
 
-impl LegacyFigure {
-    /// The balance this figure opens.
-    ///
-    /// The two families take deliberately different pool prefixes. A metering row whose provider
-    /// happens to be empty would otherwise land on the same key as a window row for the same lane,
-    /// and the two would silently add — which is the one arithmetic error a migration cannot be
-    /// allowed to make, because there is nothing left to compare the result against.
-    ///
-    /// The prefix settles the two FAMILIES, and nothing more. Inside the metering family the key
-    /// joins two caller-controlled components — the lane and the provider, both free text read off
-    /// the previous release's rows — and a bare delimiter between them is not a key: joined on a
-    /// slash, `("gpt/4", "openai")` and `("gpt", "4/openai")` both spell `meter:gpt/4/openai` and land
-    /// on ONE balance, silently adding two providers' opening figures together. That is two
-    /// customers' money in one bucket, and it is the one arithmetic error a migration cannot be
-    /// allowed to make. So each component is LENGTH-FRAMED (see [`length_framed`]), which no
-    /// arrangement of delimiters inside a component's own text can imitate.
-    pub fn key(&self) -> TotalsKey {
-        let scope = match (self.family, self.lane.as_str()) {
-            (LegacyFamily::Window, "") => BucketScope::All,
-            (LegacyFamily::Window, lane) => BucketScope::Pool(format!("lane:{lane}")),
-            (LegacyFamily::Meter, lane) => meter_pool_scope(lane, &self.provider),
-        };
-        TotalsKey::new(
-            BucketId::new(self.bucket.clone()),
-            self.dimension.clone(),
-            scope,
-        )
-    }
-}
-
-/// Everything the previous release's rows hold, plus what could not be read.
+/// The balance `figure` opens.
 ///
-/// The unreadable list is part of the answer rather than an error arm because a migration may not
-/// refuse: a store that could not answer for one bucket must not stop a node booting. What it must
-/// not do is lose the fact, so the names come back and whatever runs the migration can say so.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct LegacyFigures {
-    /// Every figure read, in whatever order the rows came back.
-    pub figures: Vec<LegacyFigure>,
-    /// The rows that could not be read, named.
-    pub unreadable: Vec<String>,
-}
-
-/// Reads the figures behind the previous release's chain head.
+/// The two families take deliberately different pool prefixes. A metering row whose provider
+/// happens to be empty would otherwise land on the same key as a window row for the same lane,
+/// and the two would silently add — which is the one arithmetic error a migration cannot be
+/// allowed to make, because there is nothing left to compare the result against.
 ///
-/// Note what is NOT on this trait: a write. The rows this reads may be on a read-only replica, and
-/// the way to guarantee a migration never writes to them is to give it nothing it could write with.
-///
-/// It extends the head-reading seam rather than replacing it, so the head and the figures come from
-/// one object that read one store, and the two cannot disagree about what was there.
-pub trait LegacyLedgerRows: LegacyMigrationSource {
-    /// The figures. An implementation that cannot answer returns an empty set rather than an error,
-    /// exactly as the head does, and the migration seals a zero opening balance.
-    fn read_figures(&self) -> LegacyFigures;
-}
-
-/// The record that says this deployment has already migrated.
-///
-/// It carries the identity of what was sealed, not merely a flag. A flag can only answer "yes"; this
-/// answers "yes, checkpoint N, body hash H, B balances, C cells read", which is what an operator
-/// asking why a balance looks the way it does actually needs.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MigrationMarker {
-    /// The checkpoint the migration sealed.
-    pub checkpoint_seq: u64,
-    /// Which node sealed it.
-    pub node: u64,
-    /// When, in whole seconds.
-    pub sealed_at: u64,
-    /// The digest of that checkpoint's body.
-    pub body_hash: [u8; 32],
-    /// How many balances the opening carries.
-    pub balances: u64,
-    /// How many of the previous release's cells were read to arrive at them.
-    pub cells_read: u64,
-    /// Which card version the opening entries were priced under.
-    pub rate_card_version: u64,
-}
-
-/// The ledger's own records, which is where the marker lives.
-///
-/// Deliberately NOT the rows the migration read. The rows may be read-only, and a marker written
-/// beside somebody else's data is a migration that has quietly taken ownership of a schema it does
-/// not own. This seam is the ledger's own, and the integrator binds whatever durability the
-/// deployment actually has to it.
-pub trait MigrationRecords {
-    /// The marker, if this deployment has already migrated.
-    ///
-    /// # Errors
-    ///
-    /// The records could not be read. The caller decides what to do about it; this crate will not
-    /// guess, because "unreadable" and "absent" are different facts and treating one as the other is
-    /// how a migration runs twice.
-    fn read_marker(&self) -> Result<Option<MigrationMarker>, MigrationError>;
-
-    /// Seal the marker.
-    ///
-    /// # Errors
-    ///
-    /// The records could not be written.
-    fn write_marker(&mut self, marker: &MigrationMarker) -> Result<(), MigrationError>;
-}
-
-/// Why a migration could not be completed.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum MigrationError {
-    /// The ledger's own records could not be read or written.
-    RecordsUnavailable(String),
-    /// The opening checkpoint could not be signed.
-    NotSealed(SignError),
-    /// Two legacy figures for one balance sum past what a figure can hold.
-    ///
-    /// A ledger figure is a signed 128-bit integer, so reaching this means the rows that were read
-    /// are not a plausible history. Refusing is right: opening at a wrapped figure would seed every
-    /// later reconciliation with a number nobody can explain.
-    FigureOverflow {
-        /// Which balance.
-        key: String,
-        /// Which window.
-        window: WindowStart,
-    },
-}
-
-impl std::fmt::Display for MigrationError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            MigrationError::RecordsUnavailable(why) => {
-                write!(f, "the ledger's own records were not usable: {why}")
-            }
-            MigrationError::NotSealed(e) => write!(f, "the opening checkpoint was not sealed: {e}"),
-            MigrationError::FigureOverflow { key, window } => write!(
-                f,
-                "the legacy figures for {key} in the window opening at {window} do not fit in a \
-                 ledger figure"
-            ),
-        }
-    }
-}
-
-impl std::error::Error for MigrationError {}
-
-impl From<SignError> for MigrationError {
-    fn from(e: SignError) -> Self {
-        MigrationError::NotSealed(e)
-    }
+/// The prefix settles the two FAMILIES, and nothing more. Inside the metering family the key
+/// joins two caller-controlled components — the lane and the provider, both free text read off
+/// the previous release's rows — and a bare delimiter between them is not a key: joined on a
+/// slash, `("lane/4", "vendor")` and `("lane", "4/vendor")` both spell `meter:lane/4/vendor` and land
+/// on ONE balance, silently adding two providers' opening figures together. That is two
+/// customers' money in one bucket, and it is the one arithmetic error a migration cannot be
+/// allowed to make. So each component is LENGTH-FRAMED (see [`length_framed`]), which no
+/// arrangement of delimiters inside a component's own text can imitate.
+pub fn figure_key(figure: &LegacyFigure) -> TotalsKey {
+    let scope = match (figure.family, figure.lane.as_str()) {
+        (LegacyFamily::Window, "") => BucketScope::All,
+        (LegacyFamily::Window, lane) => BucketScope::Pool(format!("lane:{lane}")),
+        (LegacyFamily::Meter, lane) => meter_pool_scope(lane, &figure.provider),
+    };
+    TotalsKey::new(
+        BucketId::new(figure.bucket.clone()),
+        figure.dimension.clone().into(),
+        scope,
+    )
 }
 
 /// What the migration sealed.
@@ -308,11 +175,11 @@ pub struct Opening {
     ///
     /// False exactly when the read was degraded — see [`Opening::unreadable`]. The marker is a
     /// run-once record, so committing it over a short read would make the short read permanent:
-    /// every later boot would return [`Outcome::AlreadySealed`] and the buckets the store could not
-    /// answer for would be missing from the opening forever, leaving the reconciliation identity
-    /// quietly short by their whole history. Leaving it unwritten costs a re-read on the next boot
-    /// and nothing else, because the seal is a pure function of what was read: once the store
-    /// answers for everything, the same rows seal the same checkpoint and the marker goes down then.
+    /// every boot after it would return [`Outcome::AlreadySealed`] and the buckets the store could
+    /// not answer for would be missing from the opening forever. Leaving it unwritten costs a re-read on
+    /// the next boot and nothing else, because the sealed figures are a pure function of what was
+    /// read: once the store answers for everything, the same rows seal the same totals (under that
+    /// boot's instant, so a new body hash) and the marker goes down then.
     pub marker_written: bool,
     /// The opening entry per bucket, at the named card version.
     pub balances: Vec<OpeningBalance>,
@@ -363,7 +230,7 @@ pub fn opening_totals(
 ) -> Result<BTreeMap<(TotalsKey, WindowStart), Totals>, MigrationError> {
     let mut totals: BTreeMap<(TotalsKey, WindowStart), Totals> = BTreeMap::new();
     for figure in figures {
-        let key = figure.key();
+        let key = figure_key(figure);
         let entry = totals.entry((key.clone(), figure.window)).or_default();
         let overflow = || MigrationError::FigureOverflow {
             key: key.to_string(),
@@ -402,18 +269,21 @@ fn opening_heads(head: &LegacyHead, node: u64) -> Vec<ChainHead> {
 /// Run the migration: read what the previous release holds, seal it as the opening, and mark it
 /// done IF the read was complete.
 ///
-/// Idempotent by the marker AND by the figures. The marker is what makes a second boot cost
-/// nothing; but a deployment whose records do not survive a restart re-reads the same read-only rows
-/// and seals a checkpoint with the same body hash, so even there running again is indistinguishable
-/// from not having run. That is the property to lean on, because it does not depend on where the
-/// marker was kept.
+/// Idempotent by the marker, and by the FIGURES — not by the bytes. The marker is what makes a
+/// second boot cost nothing. A boot that finds no marker (its records did not survive, or the last
+/// read was degraded) re-reads the same read-only rows and seals the same TOTALS, the same heads and
+/// the same balances; the body it seals differs only by `wall`, the instant it is sealed at, which
+/// the body digests, so a re-run at another instant has a different body hash. Running again
+/// therefore opens the same figures under a new seal; it never doubles or drops one, because the
+/// opening is computed from what was read and nothing is added to it.
 ///
-/// It is also what makes withholding the marker after a degraded read safe, and withholding it
+/// That is what makes withholding the marker after a degraded read safe, and withholding it
 /// necessary: the marker is run-once, so writing it over a read that could not answer for some
-/// buckets would seal those buckets out of the opening forever and leave the reconciliation
-/// identity short by their whole history, with every later boot short-circuiting on the marker
-/// before it could notice. So a degraded read seals the opening the node needs to boot and leaves
-/// the marker for a boot that can read everything ([`Opening::marker_written`] says which happened).
+/// buckets would seal those buckets out of the opening forever, with every boot after it
+/// short-circuiting on the marker before it could notice. So a degraded read seals an opening over
+/// what it could read, and leaves the marker for a boot that can read everything
+/// ([`Opening::marker_written`] says which happened); the marker that boot writes carries ITS seal's
+/// body hash.
 ///
 /// # Errors
 ///
@@ -464,9 +334,9 @@ pub fn migrate(
     // The marker goes down only over a COMPLETE read. It is the run-once record: written over a
     // degraded read it makes the degradation permanent, because every later boot then returns
     // `AlreadySealed` and never looks at the rows the store could not answer for. Withholding it
-    // costs the next boot a re-read and nothing else — the seal is a pure function of what was read,
-    // so a clean re-read seals the identical checkpoint and writes the marker then. The opening is
-    // still returned either way: a node must boot over what could be read.
+    // costs the next boot a re-read and nothing else — the sealed figures are a pure function of what
+    // was read, so a clean re-read seals the same totals (at its own instant) and writes the marker
+    // then. The opening is still returned either way: a node must boot over what could be read.
     let marker_written = read.unreadable.is_empty();
     if marker_written {
         records.write_marker(&marker)?;
@@ -479,45 +349,4 @@ pub fn migrate(
         balances,
         unreadable: read.unreadable,
     })))
-}
-
-/// Records that keep the marker in this node's own memory.
-///
-/// The honest default, and labelled as one: on a deployment whose store predates the ledger's own
-/// record wire there is nowhere durable for a marker to go, so it goes here and does not survive a
-/// restart. That costs a re-read of the previous release's rows on the next boot and nothing else —
-/// the seal is a pure function of what was read, so the same rows seal the same checkpoint.
-#[derive(Debug, Default, Clone)]
-pub struct NodeLocalRecords {
-    marker: std::sync::Arc<std::sync::Mutex<Option<MigrationMarker>>>,
-}
-
-impl NodeLocalRecords {
-    /// A fresh one.
-    pub fn new() -> Self {
-        NodeLocalRecords::default()
-    }
-
-    /// Whether this node has sealed a migration in this process.
-    pub fn is_sealed(&self) -> bool {
-        self.marker
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .is_some()
-    }
-}
-
-impl MigrationRecords for NodeLocalRecords {
-    fn read_marker(&self) -> Result<Option<MigrationMarker>, MigrationError> {
-        Ok(self
-            .marker
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone())
-    }
-
-    fn write_marker(&mut self, marker: &MigrationMarker) -> Result<(), MigrationError> {
-        *self.marker.lock().unwrap_or_else(|e| e.into_inner()) = Some(marker.clone());
-        Ok(())
-    }
 }

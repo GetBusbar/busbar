@@ -178,7 +178,8 @@ plaintext `cert_file`/`key_file`/`client_ca_file` path keys of earlier releases 
 (server) certificate first, followed by any intermediates: exactly what most CAs
 ship as `fullchain.pem`. `key` resolves to the matching PEM private key in PKCS#8
 (`BEGIN PRIVATE KEY`), PKCS#1 (`BEGIN RSA PRIVATE KEY`), or SEC1
-(`BEGIN EC PRIVATE KEY`) encoding. Busbar advertises **http/1.1** over ALPN.
+(`BEGIN EC PRIVATE KEY`) encoding. Busbar offers **h2, http/1.1** over ALPN (1.6.0; 1.5.5
+offered http/1.1 only): an h2-capable client speaks HTTP/2, an http/1.1-only client is served as before.
 
 **Fail-fast.** Any missing, unreadable, or unparseable cert/key/CA file stops the
 process at startup with a message naming the offending file: a misconfigured
@@ -289,8 +290,8 @@ Three things are worth understanding before you scale out:
   *within one instance*. Across instances, an LB that spreads a client's requests will
   spread its affinity too. If you depend on affinity, enable **sticky sessions** at the
   LB (e.g. by the affinity header / a cookie) so a session lands on the same instance.
-- **Governance state defaults to per-instance memory; enforcement is per-node either
-  way.** The default `store: memory` is ephemeral RAM per instance. A cluster-shared
+- **Governance state in `store: memory` is per-instance; enforcement is per-node either
+  way.** The `store:` block is required in 1.6.0 (`busbar --migrate-config` inserts `store: {module: memory}`); `memory` is ephemeral RAM per instance. A cluster-shared
   store (postgres/valkey) genuinely shares keys and the token ledger across N nodes (but
   NOT the durable audit log - see below), and each node's write-behind flush ships
   ADDITIVE per-(model, tier) token deltas so the store converges on the true fleet
@@ -628,7 +629,7 @@ durable revocation denylist immediately.
   atomically pre-forward, and the response's per-(model, tier) token split is ledgered at
   stream end. Spend = requests x fee + tokens x `rate_card` rates, recomputed on every check;
   with no rate card, tokens price at 0 and only the flat fee counts.
-- **Ledgers default to in-memory** (ephemeral); configure a durable store plugin
+- **Ledgers are in-memory under `store: memory`** (ephemeral; the `store:` block itself is required in 1.6.0); configure a durable store plugin
   (`store: { module: sqlite|postgres|valkey, settings: {...} }`) to persist keys, usage, and
   the denylist across restarts.
 

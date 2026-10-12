@@ -189,116 +189,7 @@ pub fn admit_check(
         // bucket label, not an internal credential handle. Server-side tracing records the
         // full detail either way.
         tracing::info!(key_id = %key.id, blocked = ?blocked, "governance: limit bucket blocked admission");
-        use crate::governance::LimitBlocked;
-        let (status, kind, message, retry_after) = match &blocked {
-            LimitBlocked::Limit {
-                group,
-                // The per-tier token caps (`tokens_input`/…) surface as a rate limit exactly like
-                // the aggregate `tokens` metric — a 429 naming the tier — NOT as an over-quota
-                // block. Without this arm they would fall to the budget/quota arm below and return
-                // the vendor quota status (Bedrock 400), silently mislabelling the block.
-                metric:
-                    metric @ ("requests" | "tokens" | "tokens_input" | "tokens_output"
-                    | "tokens_cache_read" | "tokens_cache_write"),
-                window,
-                pool: limit_pool,
-                retry_after,
-                ..
-            } => (
-                StatusCode::TOO_MANY_REQUESTS,
-                crate::proxy::KIND_RATE_LIMIT,
-                format!(
-                    "Rate limit exceeded (group '{group}': {metric} per {}{}). Please retry \
-                         after the indicated time.",
-                    window.unwrap_or("total"),
-                    pool_scope_suffix(limit_pool),
-                ),
-                *retry_after,
-            ),
-            LimitBlocked::Limit {
-                group,
-                metric: "concurrent",
-                ..
-            } => (
-                StatusCode::TOO_MANY_REQUESTS,
-                crate::proxy::KIND_RATE_LIMIT,
-                format!(
-                    "Too many concurrent requests (group '{group}' is at its in-flight \
-                         limit). Please retry shortly."
-                ),
-                None,
-            ),
-            LimitBlocked::Limit {
-                group,
-                metric: "budget",
-                window,
-                pool: limit_pool,
-                retry_after,
-                ..
-            } => (
-                // Native quota status differs by vendor (Bedrock's
-                // ServiceQuotaExceededException is 400; every other vendor surfaces
-                // over-quota as 429). The writer owns that mapping.
-                crate::proto::decl_for(proto)
-                    .map(|d| d.quota_exceeded_status)
-                    .unwrap_or(StatusCode::TOO_MANY_REQUESTS),
-                crate::proxy::KIND_INSUFFICIENT_QUOTA,
-                format!(
-                    "You have exceeded your current quota (group '{group}' budget per {}{} \
-                         exhausted). Please check your plan and billing details.",
-                    window.unwrap_or("total"),
-                    pool_scope_suffix(limit_pool),
-                ),
-                *retry_after,
-            ),
-            // FAIL-SAFE catch-all for any FUTURE metric not yet given an explicit arm above. It
-            // maps to a generic 429 rate limit — never the vendor quota status — so a new metric
-            // can never silently inherit `budget`'s Bedrock-400 semantics. Every metric that exists
-            // today (`requests`/`tokens`/the four `tokens_*` tiers/`concurrent`/`budget`) is matched
-            // explicitly above; this arm only exists to keep the string match exhaustive.
-            LimitBlocked::Limit {
-                group,
-                metric,
-                window,
-                pool: limit_pool,
-                retry_after,
-                ..
-            } => (
-                StatusCode::TOO_MANY_REQUESTS,
-                crate::proxy::KIND_RATE_LIMIT,
-                format!(
-                    "Rate limit exceeded (group '{group}': {metric} per {}{}). Please retry \
-                         after the indicated time.",
-                    window.unwrap_or("total"),
-                    pool_scope_suffix(limit_pool),
-                ),
-                *retry_after,
-            ),
-            // A FROZEN group (`enabled: false`) is an administrative freeze, not a quota: the
-            // vendor-plausible shape is a permission denial.
-            LimitBlocked::Disabled(group) => (
-                StatusCode::FORBIDDEN,
-                crate::proxy::KIND_PERMISSION,
-                format!(
-                    "Your API key does not currently have access to this resource (group \
-                         '{group}' is disabled)."
-                ),
-                None,
-            ),
-            // FAIL-CLOSED: a key bound to a group this node's config does not know is not
-            // admitted; the message names the missing bucket so the operator can fix it.
-            LimitBlocked::MissingGroup(group) => (
-                crate::proto::decl_for(proto)
-                    .map(|d| d.quota_exceeded_status)
-                    .unwrap_or(StatusCode::TOO_MANY_REQUESTS),
-                crate::proxy::KIND_INSUFFICIENT_QUOTA,
-                format!(
-                    "Your quota configuration is incomplete (group '{group}' is not \
-                         configured). Please contact your administrator."
-                ),
-                None,
-            ),
-        };
+        let (status, kind, message, retry_after) = limit_refusal(proto, &blocked);
         let mut resp = ingress_error(proto, status, kind, &message);
         // Standard `Retry-After` for a rolling window so a well-behaved SDK backs off the
         // right amount ('total' never rolls: no header).
@@ -309,6 +200,126 @@ pub fn admit_check(
             }
         }
         Err(Box::new(resp))
+    }
+}
+
+/// THE LIMIT REFUSAL a blocked admission is answered with: its status in `proto`, its kind word,
+/// its message (naming the group, metric and window, never the key), and its Retry-After seconds
+/// (a rolling window's; `total` never rolls). One spelling, read by every door that admits.
+#[must_use]
+pub fn limit_refusal(
+    proto: &str,
+    blocked: &crate::governance::LimitBlocked,
+) -> (StatusCode, &'static str, String, Option<u64>) {
+    use crate::governance::LimitBlocked;
+    match blocked {
+        LimitBlocked::Limit {
+            group,
+            // The per-tier token caps (`tokens_input`/…) surface as a rate limit exactly like
+            // the aggregate `tokens` metric — a 429 naming the tier — NOT as an over-quota
+            // block. Without this arm they would fall to the budget/quota arm below and return
+            // the vendor quota status (Bedrock 400), silently mislabelling the block.
+            metric:
+                metric @ ("requests" | "tokens" | "tokens_input" | "tokens_output" | "tokens_cache_read"
+                | "tokens_cache_write"),
+            window,
+            pool: limit_pool,
+            retry_after,
+            ..
+        } => (
+            StatusCode::TOO_MANY_REQUESTS,
+            crate::proxy::KIND_RATE_LIMIT,
+            format!(
+                "Rate limit exceeded (group '{group}': {metric} per {}{}). Please retry \
+                     after the indicated time.",
+                window.unwrap_or("total"),
+                pool_scope_suffix(limit_pool),
+            ),
+            *retry_after,
+        ),
+        LimitBlocked::Limit {
+            group,
+            metric: "concurrent",
+            ..
+        } => (
+            StatusCode::TOO_MANY_REQUESTS,
+            crate::proxy::KIND_RATE_LIMIT,
+            format!(
+                "Too many concurrent requests (group '{group}' is at its in-flight \
+                     limit). Please retry shortly."
+            ),
+            None,
+        ),
+        LimitBlocked::Limit {
+            group,
+            metric: "budget",
+            window,
+            pool: limit_pool,
+            retry_after,
+            ..
+        } => (
+            // Native quota status differs by vendor (Bedrock's
+            // ServiceQuotaExceededException is 400; every other vendor surfaces
+            // over-quota as 429). The writer owns that mapping.
+            crate::proto::decl_for(proto)
+                .map(|d| d.quota_exceeded_status)
+                .unwrap_or(StatusCode::TOO_MANY_REQUESTS),
+            crate::proxy::KIND_INSUFFICIENT_QUOTA,
+            format!(
+                "You have exceeded your current quota (group '{group}' budget per {}{} \
+                     exhausted). Please check your plan and billing details.",
+                window.unwrap_or("total"),
+                pool_scope_suffix(limit_pool),
+            ),
+            *retry_after,
+        ),
+        // FAIL-SAFE catch-all for any FUTURE metric not yet given an explicit arm above. It
+        // maps to a generic 429 rate limit — never the vendor quota status — so a new metric
+        // can never silently inherit `budget`'s Bedrock-400 semantics. Every metric that exists
+        // today (`requests`/`tokens`/the four `tokens_*` tiers/`concurrent`/`budget`) is matched
+        // explicitly above; this arm only exists to keep the string match exhaustive.
+        LimitBlocked::Limit {
+            group,
+            metric,
+            window,
+            pool: limit_pool,
+            retry_after,
+            ..
+        } => (
+            StatusCode::TOO_MANY_REQUESTS,
+            crate::proxy::KIND_RATE_LIMIT,
+            format!(
+                "Rate limit exceeded (group '{group}': {metric} per {}{}). Please retry \
+                     after the indicated time.",
+                window.unwrap_or("total"),
+                pool_scope_suffix(limit_pool),
+            ),
+            *retry_after,
+        ),
+        // A FROZEN group (`enabled: false`) is an administrative freeze, not a quota: the
+        // vendor-plausible shape is a permission denial.
+        LimitBlocked::Disabled(group) => (
+            StatusCode::FORBIDDEN,
+            crate::proxy::KIND_PERMISSION,
+            format!(
+                "Your API key does not currently have access to this resource (group \
+                     '{group}' is disabled)."
+            ),
+            None,
+        ),
+        // FAIL-CLOSED: a key bound to a group this node's config does not know is not
+        // admitted; the message names the missing bucket so the operator can fix it.
+        LimitBlocked::MissingGroup(group) => (
+            crate::proto::decl_for(proto)
+                .map(|d| d.quota_exceeded_status)
+                .unwrap_or(StatusCode::TOO_MANY_REQUESTS),
+            crate::proxy::KIND_INSUFFICIENT_QUOTA,
+            format!(
+                "Your quota configuration is incomplete (group '{group}' is not \
+                     configured). Please contact your administrator."
+            ),
+            None,
+        ),
     }
 }
 

@@ -149,14 +149,22 @@ pub fn request_path(a: &Addresses) -> Vec<FnRow> {
 /// everywhere. The catalogue stores one, the admin projection renders one, the listing publishes the
 /// OPERATOR's one. It is illegitimate in exactly one place — the code that decides WHERE A CALL GOES
 /// — and the unit of that rule is the function.
+///
+/// REPOINTED AT P3 DEL-MCP (ARCHITECT 2026-10-05): `client/dispatch.rs` (`resolve`, `revalidate`,
+/// `visible_catalogue`) was the deleted engine's. The mcp plane is its door crate now, and the three
+/// decisions live there under the door's names: the published name maps to its bound entry in
+/// `Catalogue::tool` (`catalogue.rs`), the last gate before the call goes out — name, grants,
+/// approved digest, trust state, argument guard — is `admit_trusted` (`call.rs`), and what a caller
+/// is shown is `Catalogue::tools_for` (`catalogue.rs`).
 pub fn decision_input(a: &Addresses) -> Vec<FnRow> {
-    let dispatch = format!("{}/client/dispatch.rs", a.mcp);
+    let catalogue = format!("{}/catalogue.rs", a.mcp);
+    let call = format!("{}/call.rs", a.mcp);
     vec![
         FnRow {
             id: "B10-routing-reads-no-description".into(),
             tag: "DESCRIPTION-ON-ROUTING-PATH".into(),
-            file: dispatch.clone(),
-            func: "resolve".into(),
+            file: catalogue.clone(),
+            func: "tool".into(),
             rules: vec![FnBan::new(
                 "description",
                 "a tool description read while deciding a route",
@@ -167,8 +175,8 @@ pub fn decision_input(a: &Addresses) -> Vec<FnRow> {
         FnRow {
             id: "B10-revalidate-reads-no-description".into(),
             tag: "DESCRIPTION-ON-ROUTING-PATH".into(),
-            file: dispatch.clone(),
-            func: "revalidate".into(),
+            file: call,
+            func: "admit_trusted".into(),
             rules: vec![FnBan::new(
                 "description",
                 "a tool description read while re-validating a route",
@@ -179,8 +187,8 @@ pub fn decision_input(a: &Addresses) -> Vec<FnRow> {
         FnRow {
             id: "B10-visibility-reads-no-description".into(),
             tag: "DESCRIPTION-ON-ROUTING-PATH".into(),
-            file: dispatch,
-            func: "visible_catalogue".into(),
+            file: catalogue,
+            func: "tools_for".into(),
             rules: vec![FnBan::new(
                 "description",
                 "a tool description read while deciding what a caller may see",

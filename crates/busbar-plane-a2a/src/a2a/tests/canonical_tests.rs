@@ -109,14 +109,74 @@ fn numbers_print_as_ecmascript() {
     assert_eq!(c(&json!(1e-6)), "0.000001");
 }
 
-/// A `u64` beyond f64's exactly-representable range must survive. Routing it through a double would
-/// silently round it, and a fingerprint over a rounded value is a fingerprint of a document nobody
-/// sent.
+/// RFC 8785 section 3.2.2.3: a number is an IEEE-754 double whatever its spelling, so an integer
+/// beyond 2^53 canonicalizes as the double it rounds to. Printing it exactly would verify a correctly
+/// signed card against a different document.
 #[test]
-fn a_large_integer_is_not_routed_through_a_double() {
-    assert_eq!(c(&json!(9007199254740993u64)), "9007199254740993");
-    assert_eq!(c(&json!(u64::MAX)), "18446744073709551615");
-    assert_eq!(c(&json!(i64::MIN)), "-9223372036854775808");
+fn a_large_integer_canonicalizes_as_its_double() {
+    assert_eq!(c(&json!(9007199254740992u64)), "9007199254740992");
+    assert_eq!(c(&json!(9007199254740993u64)), "9007199254740992");
+    assert_eq!(c(&json!(9007199254740995u64)), "9007199254740996");
+    assert_eq!(c(&json!(u64::MAX)), "18446744073709552000");
+    assert_eq!(c(&json!(i64::MIN)), "-9223372036854776000");
+    assert_eq!(c(&json!(i64::MIN + 1)), "-9223372036854776000");
+    assert_eq!(c(&json!(-9007199254740993i64)), "-9007199254740992");
+}
+
+/// RFC 8785 Appendix B, the IEEE-754 to ECMAScript table, one row per vector. The hex is the double's
+/// bit pattern, so the test builds the number from the bits exactly as the RFC lists it.
+#[test]
+fn rfc8785_appendix_b_number_vectors() {
+    let rows: &[(u64, &str)] = &[
+        (0x0000000000000000, "0"),
+        (0x8000000000000000, "0"),
+        (0x0000000000000001, "5e-324"),
+        (0x8000000000000001, "-5e-324"),
+        (0x7fefffffffffffff, "1.7976931348623157e+308"),
+        (0xffefffffffffffff, "-1.7976931348623157e+308"),
+        (0x4340000000000000, "9007199254740992"),
+        (0xc340000000000000, "-9007199254740992"),
+        (0x4430000000000000, "295147905179352830000"),
+        (0x44b52d02c7e14af5, "9.999999999999997e+22"),
+        (0x44b52d02c7e14af6, "1e+23"),
+        (0x44b52d02c7e14af7, "1.0000000000000001e+23"),
+        (0x444b1ae4d6e2ef4e, "999999999999999700000"),
+        (0x444b1ae4d6e2ef4f, "999999999999999900000"),
+        (0x444b1ae4d6e2ef50, "1e+21"),
+        (0x3eb0c6f7a0b5ed8c, "9.999999999999997e-7"),
+        (0x3eb0c6f7a0b5ed8d, "0.000001"),
+        (0x41b3de4355555553, "333333333.3333332"),
+        (0x41b3de4355555554, "333333333.33333325"),
+        (0x41b3de4355555555, "333333333.3333333"),
+        (0x41b3de4355555556, "333333333.3333334"),
+        (0x41b3de4355555557, "333333333.33333343"),
+        (0xbecbf647612f3696, "-0.0000033333333333333333"),
+        (0x43143ff3c1cb0959, "1424953923781206.2"),
+    ];
+    for (bits, want) in rows {
+        let f = f64::from_bits(*bits);
+        let v = Value::Number(serde_json::Number::from_f64(f).expect("finite"));
+        assert_eq!(c(&v), *want, "bits {bits:#018x}");
+    }
+}
+
+/// The same table reached through the PARSER, since that is the path a card takes: text to `Value`
+/// to canonical form. Integer spellings and exponent spellings must land on the same bytes.
+#[test]
+fn parsed_number_spellings_canonicalize_as_doubles() {
+    for (text, want) in [
+        ("9007199254740993", "9007199254740992"),
+        ("18446744073709551615", "18446744073709552000"),
+        ("1E30", "1e+30"),
+        ("1.0e+2", "100"),
+        ("123456789012345678901234567890", "1.2345678901234568e+29"),
+        ("5e-324", "5e-324"),
+        ("1e-7", "1e-7"),
+        ("[1.7976931348623157e308]", "[1.7976931348623157e+308]"),
+    ] {
+        let v: Value = serde_json::from_str(text).expect("parses");
+        assert_eq!(c(&v), want, "input {text}");
+    }
 }
 
 /// Whitespace is not canonical, and neither is anything decorative. The canonical form of a

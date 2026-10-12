@@ -1073,31 +1073,54 @@ async fn a_token_is_not_spent_by_being_used_while_the_task_is_live() {
 /// The SAME non-terminal state is pushed every time, so busbar takes every push after the first as
 /// a RETRY (`reported == task.state`) rather than a transition: the task never ends, so nothing but
 /// the volume bound itself can be the reason push 61 is refused.
+///
+/// **THE WINDOW IS FIXED, AND THE HANDLER READS THE HOST WALL CLOCK.** The limiter's own roll is
+/// proven against an injected `now` in `pushback_limiter_tests.rs`; this cell drives the real
+/// endpoint, whose clock is the host's. The 61 pushes are only comparable when they all land in ONE
+/// window, so the cell reads the same wall clock's window before the first push and after the last
+/// one. An attempt that straddled a window boundary (the budget legitimately refilled mid-run) is
+/// discarded and re-run on a fresh task, whose budget is its own; an attempt inside one window
+/// asserts exactly as before. A boundary is crossed at most once a minute, so a second attempt is
+/// always clean; three are allowed and a third straddle is a panic, never a skip.
 #[tokio::test]
 async fn a_live_token_is_bounded_to_sixty_pushes_per_task_per_window() {
-    let h = harness_on(
-        in_turn(200, vec![jsonrpc_working(), jsonrpc_config()]),
-        BINDING_JSONRPC,
-    )
-    .await;
-    let task = open_a_task(&h, &submission()).await;
-    let before = h.sent().len();
-    let registration = issued_last(&h, before, &create_call(&task)).await;
-    let token = token_on_the_wire(&registration);
+    let window_of = |t: u64| t / pushback::PUSH_RATE_WINDOW_SECS;
+    for attempt in 0..3 {
+        let h = harness_on(
+            in_turn(200, vec![jsonrpc_working(), jsonrpc_config()]),
+            BINDING_JSONRPC,
+        )
+        .await;
+        let task = open_a_task(&h, &submission()).await;
+        let before = h.sent().len();
+        let registration = issued_last(&h, before, &create_call(&task)).await;
+        let token = token_on_the_wire(&registration);
 
-    for i in 0..60 {
+        let opened_in = window_of(crate::host_now());
+        let mut statuses = Vec::with_capacity(61);
+        for _ in 0..61 {
+            statuses.push(push_to_busbar(&h, &token, &pushed("working")).await);
+        }
+        let closed_in = window_of(crate::host_now());
+        if opened_in != closed_in {
+            eprintln!("attempt {attempt}: the pushes straddled a window boundary; re-running");
+            continue;
+        }
+
+        for (i, status) in statuses.iter().take(60).enumerate() {
+            assert_eq!(
+                *status, 202,
+                "push {i} of 60 must still be within the window's budget"
+            );
+        }
         assert_eq!(
-            push_to_busbar(&h, &token, &pushed("working")).await,
-            202,
-            "push {i} of 60 must still be within the window's budget"
+            statuses[60], 429,
+            "the 61st push inside one window must be refused: a live token authorises the task it \
+             names, not unlimited volume spent against it"
         );
+        return;
     }
-    assert_eq!(
-        push_to_busbar(&h, &token, &pushed("working")).await,
-        429,
-        "the 61st push inside one window must be refused: a live token authorises the task it \
-         names, not unlimited volume spent against it"
-    );
+    panic!("three attempts in a row straddled a window boundary: the host clock is not advancing normally");
 }
 
 // ══ THE TOKEN AND THE ADDRESS, AS VALUES ═════════════════════════════════════════════════════════

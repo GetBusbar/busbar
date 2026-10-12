@@ -329,6 +329,36 @@ pub const MODE_OWN: u32 = 1;
 /// [`FieldsIn::mode`]: pass the caller's verified credential ([`FieldsIn::caller_credential`]).
 pub const MODE_PASSTHROUGH: u32 = 2;
 
+/// `fields`' EXTENSIONS KEY ([`crate::abi::mechanism::extensions`], carried in
+/// `FieldsIn::head.extensions`): the per-call scope the binding's credential is asked for, its
+/// value the space-delimited scope text (ARCHITECT round 5 Q-L3B-EXCHANGE (B): the caller's
+/// down-scope, which a token-exchange style requests as RFC 8693 `scope`). Absent = the call states
+/// none; a style that asks no per-call scope never reads it.
+pub const EXT_SCOPE: &str = "scope";
+
+/// THE REQUEST FIELD BY WHICH A PLUGIN STATES ITS PER-CALL SCOPE to the host: a field of this name
+/// in a request bound for the far end (a plane's attempt answer, a request it writes on its own
+/// need) is the host's, never the far end's. The host takes it out of the request before anything is
+/// encoded and carries its value into the member's auth call under [`EXT_SCOPE`]; no wire ever
+/// carries it.
+pub const SCOPE_REQUEST_FIELD: &str = "busbar-auth-scope";
+
+/// Whether the request field `name` is [`SCOPE_REQUEST_FIELD`] (a field name compares
+/// case-insensitively).
+#[must_use]
+pub fn is_scope_field(name: &[u8]) -> bool {
+    name.eq_ignore_ascii_case(SCOPE_REQUEST_FIELD.as_bytes())
+}
+
+/// The extensions blob a request's stated `scope` is lent to its auth call in: one [`EXT_SCOPE`]
+/// entry; empty (absent) when the request stated none.
+#[must_use]
+pub fn scope_extensions(scope: Option<&[u8]>) -> Vec<u8> {
+    scope.map_or_else(Vec::new, |s| {
+        crate::abi::mechanism::extensions::encode(&[(EXT_SCOPE, s)])
+    })
+}
+
 /// [`FieldSpan::flags`]: when SET, an h2 encoder sends the field never-indexed. 1.5.5 sent its
 /// credential headers indexable, so the 1.5.5 styles do NOT set it (ARCHITECT ruling 2026-09-28:
 /// the 1.5.5 bytes win); marking them is a behaviour change taken only with the owner. Set or not,

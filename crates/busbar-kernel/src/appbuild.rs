@@ -24,11 +24,10 @@ use crate::state::App;
 use crate::store::{HealthState, LaneData};
 #[allow(unused_imports)]
 use crate::{
-    admin, audit, auth, auth_cache, billing, breaker, catalogue, config, config_validate,
-    core_routes, cost, durable, egress_auth, endpoints, export, failover, governance, handlers,
-    hooks, ingress, ir, json, limits, metrics, net_guard, oauth_as, observability, operation,
-    plane, plugin_routes, profile, proto, proxy, ratelimit, state, store, telemetry, tls,
-    transport, trust,
+    admin, audit, auth, billing, breaker, catalogue, config, config_validate, core_routes, cost,
+    durable, endpoints, export, failover, governance, handlers, hooks, ingress, ir, json, limits,
+    net_guard, oauth_as, observability, operation, plane, plugin_routes, profile, proto, proxy,
+    ratelimit, snapshot, state, store, telemetry, tls, transport, trust,
 };
 use busbar_kernel::plane_host::{
     AffinityInput, AuthStyleInput, ClientSettingsInput, FailoverInput, HealthInput,
@@ -64,7 +63,7 @@ pub const ENV_UPSTREAM_HTTP1_ONLY: &str = "BUSBAR_UPSTREAM_HTTP1_ONLY";
 
 /// A deprecated boolean env override on top of a config value: an UNSET var defers to the config
 /// value; a set var wins, with anything other than empty/`"0"` reading as `true`.
-fn upstream_bool_env_override(env: Option<std::ffi::OsString>, config_val: bool) -> bool {
+pub fn upstream_bool_env_override(env: Option<std::ffi::OsString>, config_val: bool) -> bool {
     match env {
         Some(v) => v != "0" && !v.is_empty(),
         None => config_val,
@@ -154,7 +153,8 @@ pub fn stateful_plane_ephemeral_store_warn(
 }
 
 /// Map a provider's `Option<config::ProviderAuth>` to the NEUTRAL [`AuthStyleInput`] the carrier holds
-/// (`None` ⇒ the protocol's native auth). The fallback plane maps it back to drive `egress_auth::*`.
+/// (`None` ⇒ the protocol's native auth). The fallback plane maps it to the style its lane's credential
+/// is bound under, on the auth plugin serving that style.
 fn auth_style_of(auth: Option<config::ProviderAuth>) -> AuthStyleInput {
     match auth {
         None => AuthStyleInput::Default,
@@ -540,6 +540,19 @@ impl InstalledLimits {
     }
 }
 
+/// WHAT THE COMPOSITION ROOT KEEPS OF A RESOLVED CONFIGURATION beside the generation built from it
+/// (spec Part 1 line 569: a door plane is handed one validated `{section: value}` object per
+/// `open`/`refresh`): the root projects the sections, providers and pool bounds its door planes are
+/// sealed over, and reads the projection back when the generation is swapped in.
+pub type ConfigProjection = fn(&config::RootCfg) -> std::sync::Arc<dyn std::any::Any + Send + Sync>;
+
+static CONFIG_PROJECTION: std::sync::OnceLock<ConfigProjection> = std::sync::OnceLock::new();
+
+/// Bind the composition root's [`ConfigProjection`], once, before the first build.
+pub fn set_config_projection(project: ConfigProjection) {
+    let _ = CONFIG_PROJECTION.set(project);
+}
+
 #[cold] // boot/admin-only — keeps hot text dense (never inlined into a warm path)
 #[inline(never)]
 pub fn build_app_from_config(
@@ -551,6 +564,8 @@ pub fn build_app_from_config(
     config_paths: (Option<std::path::PathBuf>, Option<std::path::PathBuf>),
     prior: Option<&state::App>,
 ) -> Result<(state::App, Option<GovCredentialRotation>, InstalledLimits), String> {
+    // The root's projection of this configuration, taken before any part of it is consumed.
+    let config_projection = CONFIG_PROJECTION.get().map(|project| project(&cfg));
     // Install the resolved operational limits process-wide BEFORE any subsystem reads them —
     // running here (not in main) so a config APPLY/RELOAD refreshes them too. The values threaded
     // explicitly (client/store/router/TLS) read `cfg.limits` directly; the deep call-stack sites
@@ -823,8 +838,8 @@ pub fn build_app_from_config(
 
     // Every lane, flattened into the NEUTRAL `LaneInput` carrier (1.6.0 money-path Phase 3-4 C):
     // the fallback plane's `build_runtime` reconstructs its own concrete lane object (egress targets,
-    // resolved credential, prebuilt auth) FROM these scalars — the `proxy::build_egress_targets` /
-    // `egress_auth::*` calls that used to run here moved in-plane (the allowed plane→core edge), so
+    // resolved credential, prebuilt auth) FROM these scalars — the `proxy::build_egress_targets` call
+    // and the credential's binding on its style's auth plugin run in-plane (the allowed plane→core edge), so
     // core names no plane-owned lane/egress-target/credential-provider type. This loop keeps only the NEUTRAL work:
     // resolve+validate the protocol name, carry the pre-resolved api-key plaintext, and mirror the
     // provider's config into neutral scalars.
@@ -1172,7 +1187,7 @@ pub fn build_app_from_config(
                 a.admin_auth
                     .iter()
                     .chain(a.chain.iter())
-                    .any(|e| e.module == crate::config::operator_provider())
+                    .any(|e| crate::config::names_operator(&e.module))
             });
             // FAIL-CLOSED: a declared ref that no longer resolves ABORTS the apply. The alternative
             // — carry on serving with the old credential — is exactly the defect being fixed.
@@ -1209,10 +1224,11 @@ pub fn build_app_from_config(
         p.governance.clone()
     } else {
         // Governance is ALWAYS available (it is inert until an admin token is set and virtual keys are
-        // minted). Only the STORE backend is a choice: ephemeral RAM by default, or a store PLUGIN
-        // (resolved by alias or canonical name from the validated registry — the engine sees only the
-        // returned `dyn Store`, exactly like a compiled-in backend).
-        let g = cfg.store.clone().unwrap_or_default();
+        // minted). Only the STORE backend is a choice, and config makes it (Q-STORE = (B)): a linked
+        // row, or a store PLUGIN (resolved by alias or canonical name from the validated registry —
+        // the engine sees only the returned `dyn Store`, exactly like a compiled-in backend). The
+        // validation above refused an absent block.
+        let g = cfg.store.clone().ok_or_else(config::store_required)?;
         // Is a STATEFUL container plane actually configured? Those planes carry per-task state that
         // the RAM store drops on restart. "Configured" = any `tools:` server / `agents:` agent OR any
         // tool-pool / agent-pool; the pool maps are always typed (present regardless of which planes
@@ -1266,10 +1282,11 @@ pub fn build_app_from_config(
         let axis = crate::preflight::root_rows()
             .store_axis
             .ok_or_else(|| load_failed("no store axis is installed".to_string()))?;
-        let store: Arc<dyn governance::RecordStore> = axis()
+        let opened = axis()
             .open(door, &g.module, cfg_json.as_bytes())
-            .map_err(load_failed)?
-            .records;
+            .map_err(load_failed)?;
+        let store: Arc<dyn governance::RecordStore> = opened.records;
+        let store_calls = opened.calls;
         // The operator ADMIN credential: the operator-credential entry's `token:` secret ref.
         // FAIL-CLOSED: a configured-but-unresolvable admin token refuses boot (a silently-absent
         // token would lock the admin API while the operator believes it is guarded).
@@ -1287,6 +1304,11 @@ pub fn build_app_from_config(
         ) {
             Ok(gs) => {
                 let gs = Arc::new(gs);
+                // The store's typed records, kept for the kernel's host services (plane records
+                // persist in the configured store: ARCHITECT Q-L3B-RECORDS).
+                if let Some(calls) = store_calls {
+                    gs.attach_store_calls(calls);
+                }
                 // BOOT-ONLY crash-recovery: hydrate the in-memory token-ledger cells (key buckets +
                 // budget-group buckets) from the durable store so a restart resumes enforcement from
                 // the persisted ledger. A no-op for the empty RAM store.
@@ -1557,11 +1579,14 @@ pub fn build_app_from_config(
                     // `BuildCtx` names no plane-owned config type; the `agents:` container plane's
                     // `build` closure downcasts it back to its own typed config.
                     agent_defs: cfg.agent_defs.as_any(),
+                    tool_defs: cfg.tool_defs.as_any(),
                     public_url: cfg.public_url.as_deref(),
                     // THE PRIOR GENERATION'S SLOTS, so a plane's `build` can CARRY accumulated
                     // coordination off its own prior runtime object across this apply — the same
                     // neutral `&dyn PlaneSlots` a container plane's `build_runtime` receives below.
                     prior: prior.map(|p| p as &dyn busbar_kernel::plane_host::PlaneSlots),
+                    // The resolved providers: a door plane's probe is handed its referenced ones.
+                    providers: Some(&cfg.providers),
                 };
                 (decl.build)(&ctx).map(|obj| (decl.key, obj))
             })
@@ -1634,6 +1659,14 @@ pub fn build_app_from_config(
 
     // Populate the NEUTRAL carrier field-by-field from the already-resolved config (pre-resolved secret
     // plaintexts + rate-card-derived costs + resolved context/tokens are in `lane_inputs`/`pool_inputs`).
+    // THE KERNEL'S OWN TABLES over the same resolved sections, for the read seam when no plane
+    // contributes a runtime of its own.
+    let config_tables = Arc::new(busbar_kernel::plane_host::ConfigTables::of(
+        &lane_inputs,
+        &pool_inputs,
+        &by_model,
+        cfg.upstream_credentials,
+    ));
     let fallback_build_input = PlaneBuildInput {
         lanes: lane_inputs,
         pools: pool_inputs,
@@ -1658,29 +1691,30 @@ pub fn build_app_from_config(
             exclusions: None,
             max_hops: crate::config::DEFAULT_FAILOVER_CAP,
         }),
+        // THE BUILD'S AUTH AXIS over the SAME validated registry the inbound chain opened its
+        // positions on: each lane's credential is bound by the auth plugin serving its style.
+        auths: crate::preflight::auth_axis(plugin_registry.clone())
+            .map(busbar_kernel::plane_host::AuthReach),
     };
 
-    let fallback_runtime_key = crate::state::runtime_slot_key(crate::plane::fallback_key());
     // Compose the fallback plane's runtime slot through that plane's OWN `build_runtime` fn-pointer,
     // exactly as a container plane's runtime is composed above — passing the neutral carrier erased to
     // `&dyn Any` and the prior generation's snapshot through the neutral `PlaneSlots` seam (for the
-    // warm-client / probe-schedule carry-over the plane now owns). GATED on a genuine fallback plane
-    // existing — NOT merely on `fallback_key()` resolving — because `fallback_key()` degrades to the
-    // FIRST registered plane's key when no plane flags itself fallback (the plane suites'
-    // dependency-copy of core, which registers only container planes); writing the slot then would
-    // clobber that sibling's runtime. With the fallback plane's `build_runtime` still `None` no slot is
-    // inserted and `App::llm_runtime` reads the empty default — byte-identical to the featureless
-    // zero-plane boot.
-    if crate::plane::is_fallback(crate::plane::fallback_key()) {
-        if let Some(f) = crate::plane::registry::plane_decl_for(crate::plane::fallback_key())
-            .and_then(|d| d.build_runtime)
-        {
-            let slot = f(
-                &fallback_build_input as &dyn std::any::Any,
-                prior.map(|p| p as &dyn busbar_kernel::plane_host::PlaneSlots),
-            );
-            plane_slots.insert(fallback_runtime_key, slot);
-        }
+    // warm-client / probe-schedule carry-over the plane now owns). The slot KEY and the `build_runtime`
+    // come from ONE resolved decl ([`crate::plane::fallback_decl`]): keying off `fallback_key()` would
+    // degrade to the FIRST registered plane's key when no plane flags itself fallback, and the key and
+    // the runtime read from two registry snapshots could name two different planes — the runtime then
+    // lands under a sibling's key and clobbers that sibling's own runtime. With no fallback plane the
+    // key names no plane (no slot is inserted under it) and `App::llm_runtime` reads the empty
+    // default — byte-identical to the featureless zero-plane boot.
+    let fallback = crate::plane::fallback_decl();
+    let fallback_runtime_key = crate::state::runtime_slot_key(fallback.map_or("", |d| d.key));
+    if let Some(f) = fallback.and_then(|d| d.build_runtime) {
+        let slot = f(
+            &fallback_build_input as &dyn std::any::Any,
+            prior.map(|p| p as &dyn busbar_kernel::plane_host::PlaneSlots),
+        );
+        plane_slots.insert(fallback_runtime_key, slot);
     }
 
     // THE AUTHORIZATION SERVER, built ONCE, and only when the operator asked for one. Everything
@@ -1741,12 +1775,12 @@ pub fn build_app_from_config(
         }
     };
 
-    // The generation's hook CONTENT ceiling, installed once here and read on the hook seam with a
-    // single relaxed load — never recomputed per request, and never consulted at all on a
-    // deployment with no content-granted hook, because no content projection is built there.
-    crate::proxy::set_hook_content_max_bytes(cfg.limits.hook_content_max_bytes);
+    // The generation's hook CONTENT ceiling rides the limits guard installed above
+    // (`limits::mirror_derived_caps`): live for this build, put back if the build is refused, and
+    // read on the hook seam with a single relaxed load.
 
     let app = App {
+        config_projection,
         plane_sections: Some(cfg.plane_sections.clone()),
         // Telemetry-bank slot table for this generation (built above as a local, BEFORE the
         // config-derived collections moved into the fallback plane's runtime bundle so its
@@ -1758,6 +1792,7 @@ pub fn build_app_from_config(
         // seam; the snapshot names only the `&'static str` key, and `App::llm_runtime` downcasts the
         // slot on the money path. Absent slot (featureless build) reads the empty default.
         fallback_runtime_key,
+        config_tables,
         store,
         // The container planes' breaker cells: PROCESS-LIFETIME, reused across an apply/reload the
         // way the HTTP client pool and governance state are — a config swap must not un-trip a
@@ -1909,10 +1944,6 @@ pub fn build_app_from_config(
             || Arc::new(ratelimit::MutationLimiter::new()),
             |p| p.mutation_limiter.clone(),
         ),
-        idempotency_cache: prior.map_or_else(
-            || Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
-            |p| p.idempotency_cache.clone(),
-        ),
         base_hook_names,
         admin_chain: cfg.admin_auth.clone(),
         admin_modules,
@@ -1948,6 +1979,7 @@ pub fn build_app_from_config(
             crate::plane::registry::build_dispatch(
                 crate::plane::registry::plane_decls(),
                 &ref_slots,
+                auth_mw.keys_in_chain,
             )?
         }),
         // THE TYPE-ERASED SLOT MAP ITSELF (Step 2.3). Moved in last: every typed field above that
@@ -1974,10 +2006,6 @@ pub fn build_app_from_config(
         demotion_record: prior.map_or_else(
             || Arc::new(crate::plane::quarantine::DemotionRecord::new()),
             |p| p.demotion_record.clone(),
-        ),
-        credential_cache: prior.map_or_else(
-            || Arc::new(auth_cache::CredentialCache::new()),
-            |p| p.credential_cache.clone(),
         ),
         auth_scope_caps: cfg
             .auth

@@ -14,10 +14,10 @@ use crate::diagnostics::{
 
 #[allow(unused_imports)]
 use crate::{
-    admin, audit, auth, auth_cache, billing, breaker, catalogue, config, config_validate,
-    core_routes, cost, durable, egress_auth, endpoints, export, failover, governance, handlers,
-    hooks, ingress, ir, json, limits, metrics, net_guard, oauth_as, observability, operation,
-    plane, plugin_routes, profile, proto, proxy, state, store, telemetry, tls, transport, trust,
+    admin, audit, auth, billing, breaker, catalogue, config, config_validate, core_routes, cost,
+    durable, endpoints, export, failover, governance, handlers, hooks, ingress, ir, json, limits,
+    net_guard, oauth_as, observability, operation, plane, plugin_routes, profile, proto, proxy,
+    snapshot, state, store, telemetry, tls, transport, trust,
 };
 
 /// The FLEET DATA DIR the first-party anti-downgrade floor persists under, or `None` when this
@@ -41,17 +41,16 @@ pub fn fleet_data_dir() -> Option<std::path::PathBuf> {
     (!path.as_os_str().is_empty()).then_some(path)
 }
 
-type StoreOpen = fn(&str) -> Result<Box<dyn governance::RecordStore>, String>;
-/// A linked STORE's entry: `(name, ephemeral, default, open, door)` — the name `governance.store`
-/// selects it by, whether what it holds is lost on restart, whether it claims to be the store a
-/// deployment that configures none runs on, its in-process open, and its store v3 door (the door
-/// boot opens it through, on the root's [`RootInstall::store_axis`]).
+/// A linked STORE's entry: `(key, ephemeral, door, canonical)` — the key `store.module` selects it
+/// by (and the store catalog and every refusal print), whether what it holds is lost on restart,
+/// its store v3 door (the door boot opens it through, on the root's [`RootInstall::store_axis`]),
+/// and its CANONICAL name (the manifest name its release tarball carries, which config may name it
+/// by too: ARCHITECT C'). No row is a default: the store is the one config names (Q-STORE = (B)).
 pub type LinkedStore = (
     &'static str,
     bool,
-    bool,
-    StoreOpen,
     busbar_contract::abi::mechanism::door::DoorFn,
+    &'static str,
 );
 /// The root's store axis (WIRE-STORE Q8/Q9): every store boot opens is loaded through the root's
 /// one dispatcher and opened through the store v3 table.
@@ -107,19 +106,16 @@ pub type PluginsFetch = fn(
     &dyn Fn(&str) -> Result<Vec<u8>, String>,
 ) -> Result<Vec<Fetched>, Vec<String>>;
 
-/// WHAT THE COMPOSITION ROOT INSTALLS into the kernel, by name: its linked entries, the default
-/// store it resolved and its registry build — and, as each kind's axis lands, that kind's
+/// WHAT THE COMPOSITION ROOT INSTALLS into the kernel, by name: its linked entries and its registry
+/// build — and, as each kind's axis lands, that kind's
 /// `<kind>_axis` field (ARCHITECT ruling Q8: the kernel receives contract `<Kind>Axis` seams from
 /// the root, never the loader). A field is added by name; nothing is positional. Nothing
-/// installed ([`Default`]): no linked rows, no default store, and a build and a fetch that refuse,
-/// naming the missing root.
+/// installed ([`Default`]): no linked rows, and a build and a fetch that refuse, naming the missing
+/// root.
 #[derive(Clone, Copy, Default)]
 pub struct RootInstall {
     /// The build's linked in-process stores.
     pub stores: &'static [LinkedStore],
-    /// The governance store a deployment that configures none runs on: the linked store row that
-    /// declares itself the default (empty when no row claims it).
-    pub default_store_module: &'static str,
     /// The root's registry build.
     pub registry_build: Option<RegistryBuild>,
     /// The root's `plugins.fetch`.
@@ -150,12 +146,11 @@ pub type HookAxisBuild =
     ) -> Result<std::sync::Arc<dyn busbar_contract::hook_calls::HookAxis>, String>;
 
 /// A test build has no root: its store and ranking fixtures stand in for the root's entries, the
-/// stand-in store (which claims the default) as the default, the shipped secret sources as the
-/// secret axis, and the test axis for the exports.
+/// in-crate secret double ([`crate::test_support::secrets`]) as the secret axis, and the test axis
+/// for the exports.
 #[cfg(any(test, feature = "test-support"))]
 const STAND_IN: RootInstall = RootInstall {
     stores: &[fixture_store::linked::STORE],
-    default_store_module: fixture_store::linked::STORE.0,
     registry_build: Some(crate::test_support::registry_stand_in),
     plugins_fetch: Some(crate::test_support::fetch_stand_in),
     hook_axis: Some(crate::test_support::hook_axis_stand_in),
@@ -173,21 +168,19 @@ pub(crate) const STAND_IN_HOOK_DOORS: &[busbar_contract::abi::mechanism::door::D
 ];
 
 /// The composition root's linked store and hook entries (the build's in-process stores and, when
-/// compiled in, its ranking hooks), its resolved default store and its registry build, installed
-/// once before the first resolution.
+/// compiled in, its ranking hooks) and its registry build, installed once before the first
+/// resolution.
 static ROOT_ROWS: std::sync::OnceLock<RootInstall> = std::sync::OnceLock::new();
 
-/// THE ROOT'S DOOR onto the cold-kind axis: its linked tables' `stores` and `hooks` entries, the
-/// default store the root resolved from the stores' claims and the root's registry build (the first
-/// install stands). The kernel names none of the plugins it registers, and no default store (#2
-/// rule (1), #40).
+/// THE ROOT'S DOOR onto the cold-kind axis: its linked tables' `stores` and `hooks` entries and the
+/// root's registry build (the first install stands). The kernel names none of the plugins it
+/// registers, and no store is a default (#2 rule (1), #40; Q-STORE = (B)).
 pub fn install_linked_rows(rows: RootInstall) {
     let _ = ROOT_ROWS.set(rows);
 }
 
-/// The installed root rows (a test build stands its fixtures in). `.2` is the governance store a
-/// deployment that configures none runs on: the linked row that declares itself the default. Admin's
-/// store catalog lists `.0`, the stores this build links.
+/// The installed root rows (a test build stands its fixtures in). Admin's store catalog lists
+/// `stores`, the stores this build links.
 pub fn root_rows() -> RootInstall {
     #[cfg(any(test, feature = "test-support"))]
     let _ = ROOT_ROWS.set(STAND_IN);
@@ -199,8 +192,22 @@ pub fn root_rows() -> RootInstall {
 /// credential's included — resolves through this axis by the key configuration names; the kernel
 /// names none of the rows it registers (DECISIONS #2 rule (1), #40; ARCHITECT 2026-09-27 AUTH-ROW).
 pub use busbar_kernel_identity::operator::{
-    install_linked as install_linked_auth, linked_names as linked_auth_names,
+    install_linked as install_linked_auth, linked as linked_auth_rows,
+    linked_names as linked_auth_names,
 };
+
+/// The names of the INBOUND auth-chain modules among `rows`: those whose Statement declares an
+/// inbound capability and is not a host-held credentials' verifier (that one serves the `keys`
+/// entry). `build.auth_modules` lists what an operator can name in `auth.chain` /
+/// `admin_auth`, by alias, as 1.5.5 did; a row that only presents an upstream credential (outbound
+/// styles) is not an auth-chain module. Decided from what the plugin declares, never from its name.
+#[must_use]
+pub fn inbound_auth_names(rows: &[LinkedAuth]) -> Vec<&'static str> {
+    rows.iter()
+        .filter(|r| busbar_plugin_loader::dispatch::kinds::auth::declares_chain_module(r.2))
+        .map(|r| r.0)
+        .collect()
+}
 
 /// Opens one build's AUTH AXIS over that build's registry, on the process's one dispatcher: the
 /// composition root's (it holds the dispatcher), installed once; the kernel names neither the
@@ -221,8 +228,14 @@ pub(crate) fn auth_axis(
     registry: Arc<PluginRegistry>,
 ) -> Option<Arc<dyn busbar_contract::auth_calls::AuthAxis>> {
     #[cfg(feature = "test-support")]
-    let _ = AUTH_AXIS.set(busbar_plugin_loader::auth_axis::stand_in);
+    let _ = AUTH_AXIS.set(crate::test_support::outbound_auth::stand_in);
     AUTH_AXIS.get().map(|open| open(registry))
+}
+
+/// This build's auth axis over its LINKED rows alone (no plugins directory): what `--validate`
+/// asks a style's plugin to judge a credential through.
+pub(crate) fn linked_auth_axis() -> Option<Arc<dyn busbar_contract::auth_calls::AuthAxis>> {
+    auth_axis(Arc::new(linked().ok()?))
 }
 
 /// The rows this build LINKS onto the cold-kind axis, ahead of the plugins directory's: the root's
@@ -231,11 +244,28 @@ pub(crate) fn auth_axis(
 /// takes (DECISIONS #2 rule (1)).
 fn linked_rows() -> Vec<LinkedPlugin> {
     let RootInstall { stores, .. } = root_rows();
-    let store = |s: &LinkedStore| LinkedPlugin::store(s.0, s.3, s.1).with_store_door(s.4);
-    let rows = stores.iter().map(store);
     let auths = busbar_kernel_identity::operator::linked().iter();
-    rows.chain(auths.map(|&(name, door)| LinkedPlugin::auth_door(name, door)))
-        .collect()
+    let rows = stores.iter().map(linked_store_row);
+    rows.chain(auths.map(linked_auth_row)).collect()
+}
+
+/// The registry row a linked STORE entry states: its canonical name, answering also to its key and
+/// to the former names the root legacy table gives that key ([`answering_former_names`]).
+pub fn linked_store_row(&(key, ephemeral, door, canonical): &LinkedStore) -> LinkedPlugin {
+    answering_former_names(LinkedPlugin::store_named(canonical, key, door, ephemeral))
+}
+
+/// The registry row a linked AUTH entry states ([`linked_store_row`]'s rule).
+pub fn linked_auth_row(&(key, canonical, door): &LinkedAuth) -> LinkedPlugin {
+    answering_former_names(LinkedPlugin::auth_door_named(canonical, key, door))
+}
+
+/// `row`, answering also to the former names the root legacy table declares for its alias
+/// (`former.<alias>`, from plugins.yaml `former_names:`): a linked plugin answers the names its
+/// earlier releases carried exactly as its dropped-in copy's signed manifest does.
+pub fn answering_former_names(row: LinkedPlugin) -> LinkedPlugin {
+    let former = config::legacy::former_names(&row.manifest.alias);
+    row.with_former_names(former)
 }
 
 /// The hook axis over this build's LINKED rows alone (no plugins directory): where a pool strategy
@@ -248,7 +278,14 @@ fn linked_hook_axis() -> Option<std::sync::Arc<dyn busbar_contract::hook_calls::
 /// Whether this build links a ranking hook that claims the strategy word `name` (a hook word mark
 /// of a linked `kind: hook` row).
 pub(crate) fn builtin_ranking_known(name: &str) -> bool {
-    linked_hook_axis().is_some_and(|axis| axis.linked(name))
+    linked_hook_answers(name)
+}
+
+/// Whether a `kind: hook` row this build LINKS answers `module` on the hook axis (its Statement
+/// name, an alias, a former name the root legacy table gives it, or a hook word it claims): the
+/// linked half of the claim table boot opens hooks through (ARCHITECT Q-P4-13).
+pub(crate) fn linked_hook_answers(module: &str) -> bool {
+    linked_hook_axis().is_some_and(|axis| axis.linked(module))
 }
 
 /// The built-in ranking strategy `name` names on the hook axis — the linked row that claims the
@@ -271,7 +308,7 @@ pub(crate) fn builtin_ranking(
         .open(name, name, &serde_json::json!({ "policy": name }), budget)
         .ok()?;
     Some((
-        crate::hooks::plugin::HookPolicy::policy(calls, name),
+        crate::plane_driver::hooks::policy::HookPolicy::policy(calls, name),
         budget,
     ))
 }
@@ -301,7 +338,10 @@ fn require_plugin(
         Some(p) if p.manifest.kind == want.kind => Ok(()),
         Some(p) => Err(format!(
             "{} resolves to plugin '{}' of kind '{}', not {}",
-            want.names, p.manifest.name, p.manifest.kind, want.must_be
+            want.names,
+            p.key(),
+            p.manifest.kind,
+            want.must_be
         )),
         None => Err(match registry.unresolved_reason(r) {
             Some(s) => format!(
@@ -330,7 +370,7 @@ fn require_plugin(
 /// A registry holding only the [`linked_rows`] — what a build with the plugins directory off has.
 /// No directory is read and no root is needed: the kernel's own built-in secret modules resolve in
 /// any build.
-pub(crate) fn linked() -> Result<PluginRegistry, String> {
+pub fn linked() -> Result<PluginRegistry, String> {
     PluginRegistry::empty().link(linked_rows())
 }
 
@@ -377,10 +417,12 @@ pub fn plugins_preflight(
         l.rotate_mb,
         l.keep,
     )?;
-    let store_ref = store_cfg.map_or_else(config::default_governance_store, |g| g.module.clone());
+    // The store config names; an absent block names none and resolves nothing here (Q-STORE = (B):
+    // `config_validate::validate` refuses it, on every path that reaches this pre-flight).
+    let store_ref = store_cfg.map(|g| g.module.clone()).unwrap_or_default();
     // Resolved on the store AXIS: a row this build links opens in-process; any other name is a
     // `kind: store` plugin the plugins directory must supply.
-    let store_is_plugin = linked()?.resolve(&store_ref).is_none();
+    let store_is_plugin = store_cfg.is_some() && linked()?.resolve(&store_ref).is_none();
 
     // Every non-builtin `auth.chain` module is a `kind: auth` plugin — the same manifest-only
     // pre-flight the store ref gets, so `--validate` catches a missing/wrong-kind/untrusted auth
@@ -433,8 +475,16 @@ pub fn plugins_preflight(
 
     // Every hook references a `kind: hook` plugin — the same manifest-only pre-flight the store/auth
     // refs get. Deduped for the messages, but validated as the set of names each hook declares.
+    // THE CLAIM TABLE BOOT USES (ARCHITECT Q-P4-13): a hook a LINKED row answers (its Statement
+    // name, an alias, a former name, a hook word) opens through the hook axis with no plugins
+    // directory, exactly as boot opens it, so it is no plugin reference here; every other hook names
+    // a `kind: hook` plugin the directory must supply.
     let hook_plugin_refs: Vec<String> = {
-        let mut v: Vec<String> = hooks_cfg.values().map(|h| h.plugin.clone()).collect();
+        let mut v: Vec<String> = hooks_cfg
+            .values()
+            .map(|h| h.plugin.clone())
+            .filter(|m| !linked_hook_answers(m))
+            .collect();
         v.sort();
         v.dedup();
         v
@@ -562,6 +612,11 @@ pub fn plugins_preflight(
     // resolution as store/auth (no `dlopen` here; the real load happens in `resolve_gate_transport` at
     // App construction). A missing/wrong-kind/untrusted hook plugin fails `--validate` and boot alike.
     for hook_ref in &hook_plugin_refs {
+        // A dropped-in hook answers by every word the hook axis finds it by (its Statement's names
+        // and hook words beside the manifest's), not only by the words the registry indexes.
+        if busbar_plugin_loader::hook_door::dropped_answers(&registry, hook_ref) {
+            continue;
+        }
         require_plugin(
             &registry,
             &plugins_cfg.dir,
@@ -590,7 +645,7 @@ pub fn plugins_preflight(
                     "identity-providers.{name}.module: '{module}' resolves to plugin '{}' of kind \
                      '{}', not an `auth` plugin. A provider's `module:` must be a built-in or a \
                      `kind: auth` plugin; the modules available right now are: {}.",
-                    p.manifest.name,
+                    p.key(),
                     p.manifest.kind,
                     valid_identity_provider_modules(&registry)
                 ));
@@ -648,6 +703,15 @@ fn log_build(n: boot::Note<'_>, dir: &str) {
                 skipped = registry.skipped().len(),
                 "plugins: enabled"
             );
+            for copy in registry.linked_copies() {
+                tracing::info!(
+                    plugin = %copy.name,
+                    version = %copy.version,
+                    file = %copy.file,
+                    "{}",
+                    copy.line()
+                );
+            }
             for s in registry.skipped() {
                 diag_warn!(
                     PLUGIN_SKIPPED_TRUST_POLICY,
@@ -857,11 +921,12 @@ pub(crate) fn validate_secret_module(
         ));
     }
     match registry.resolve(module) {
-        Some(p) if p.manifest.kind == "secret" => Ok(p.manifest.name.clone()),
+        Some(p) if p.manifest.kind == "secret" => Ok(p.key().to_string()),
         Some(p) => Err(format!(
             "secrets.{module}: plugin '{}' has kind '{}', not 'secret'; only a kind: secret plugin \
              can back a `secrets:` block entry",
-            p.manifest.name, p.manifest.kind
+            p.key(),
+            p.manifest.kind
         )),
         None => Err(format!(
             "secrets.{module}: no loadable `kind: secret` plugin is named or aliased '{module}' \
@@ -912,7 +977,7 @@ pub(crate) fn is_real_auth_plugin_ref(m: &str, is_test_build: bool) -> bool {
 /// hard-fails, and gating them on `cfg!(test)` alone refused them in a `test-support` build that
 /// registers them (item 292).
 pub(crate) fn is_real_identity_provider_plugin_ref(m: &str, is_test_build: bool) -> bool {
-    !config::builtin_identity_providers().contains(&m)
+    !config::is_builtin_identity_module(m)
         && !(is_test_build && matches!(m, "test-groups-module" | "test-scope-module"))
 }
 
@@ -995,7 +1060,9 @@ pub(crate) fn validate_secret_refs(
                 return Err(format!(
                     "{what} references secret module '{}', but plugin '{}' has kind '{}', not \
                      'secret'; only a `kind: secret` plugin can back a secret reference",
-                    r.module, p.manifest.name, p.manifest.kind
+                    r.module,
+                    p.key(),
+                    p.manifest.kind
                 ));
             }
             None => {
@@ -1050,9 +1117,8 @@ pub fn validate_builtin_secrets_resolve(cfg: &config::RootCfg) -> Result<(), Str
 
 /// Build the [`config::secret::SecretResolver`] the engine resolves every secret reference through:
 /// the built-in `env`/`file` modules inline, and any OTHER module name via a loaded `kind: secret`
-/// plugin from `registry` (opened per resolution; a secret module is off every hot path so the
-/// per-call open + resolve is fine). FAIL-CLOSED: `open_secret` errors surface as an unresolvable
-/// secret. When the plugin subsystem is off the registry is empty and every non-built-in reference
+/// plugin on the secret axis (opened once per resolver, over the one dispatcher). FAIL-CLOSED: a
+/// module no door answers is an unresolvable secret, refused in the registry's words. When the plugin subsystem is off the registry is empty and every non-built-in reference
 /// is a fail-closed error at resolve time.
 pub(crate) fn build_secret_resolver(
     registry: Arc<busbar_plugin_loader::PluginRegistry>,
@@ -1081,8 +1147,6 @@ pub(crate) fn build_secret_resolver(
     // module-level open config) — is a hard boot error: silently passing `{}` for a mis-typed module
     // is exactly the failure this closes. The `--validate` path applies the identical policy via the
     // shared `validate_secret_module`/`validate_secret_modules` helpers.
-    let mut open_config: std::collections::BTreeMap<String, String> =
-        std::collections::BTreeMap::new();
     let mut raw_config: std::collections::BTreeMap<String, serde_json::Value> =
         std::collections::BTreeMap::new();
     // Which `secrets:` block key produced each canonical entry, so an ALIAS/CANONICAL collision can
@@ -1105,66 +1169,80 @@ pub(crate) fn build_secret_resolver(
                  One of the two blocks would be silently dropped; keep exactly one."
             ));
         }
-        let resolved = config::secret::resolve_settings(&mcfg.settings, &builtins)
+        config::secret::resolve_settings(&mcfg.settings, &builtins)
             .map_err(|e| format!("secrets.{module} settings: {e}"))?;
         claimed_by.insert(canonical.clone(), module.clone());
-        open_config.insert(
-            canonical.clone(),
-            serde_json::Value::Object(resolved).to_string(),
-        );
         raw_config.insert(canonical, serde_json::Value::Object(mcfg.settings.clone()));
     }
     // A dropped-in plugin that states a door opens through the root's secret axis, once per
     // resolver, over its settings as written: the keys its Statement names as secret references are
     // resolved through the linked plugins and lent to `open`, never substituted into the settings.
-    let opened: std::sync::Mutex<
-        std::collections::BTreeMap<String, Arc<dyn busbar_contract::secret::SecretCalls>>,
-    > = Default::default();
+    let opened = OpenedSecrets::default();
     Ok(config::secret::SecretResolver::with_plugin(Box::new(
         move |module: &str, settings: &str| -> Result<Vec<u8>, String> {
             if let Some(axis) = config::secret::axis().filter(|a| a.answers(module)) {
-                let mut opened = opened.lock().unwrap_or_else(|e| e.into_inner());
-                let calls = match opened.get(module) {
-                    Some(c) => c.clone(),
-                    None => {
-                        let raw = registry
-                            .resolve(module)
-                            .and_then(|p| raw_config.get(&p.manifest.name));
-                        let linked = config::secret::SecretResolver::builtins_only();
-                        let c =
-                            axis.open(module, raw.unwrap_or(&serde_json::Value::Null), &|r| {
-                                linked.resolve(r)
-                            })?;
-                        opened.insert(module.to_string(), c.clone());
-                        c
-                    }
-                };
-                return calls
-                    .resolve(settings.as_bytes())
-                    .map(|m| m.expose_secret().clone())
-                    .map_err(|r| r.text);
+                // Keyed by the plugin's CANONICAL name, so an alias and its canonical spelling
+                // open the plugin once.
+                let canonical = registry.resolve(module).map(|p| p.key().to_string());
+                let key = canonical.as_deref().unwrap_or(module);
+                return opened.resolve(key, settings, || {
+                    let raw = canonical.as_ref().and_then(|name| raw_config.get(name));
+                    let linked = config::secret::SecretResolver::builtins_only();
+                    axis.open(module, raw.unwrap_or(&serde_json::Value::Null), &|r| {
+                        linked.resolve(r)
+                    })
+                });
             }
-            // Canonicalize the referenced module the SAME way, so an alias-vs-name spelling difference
-            // between the `secrets:` block and this `SecretRef` still finds the configured open() JSON.
-            // A module that does not resolve falls through to `open_secret` below, which produces the
-            // authoritative "no such plugin" error.
-            let canonical = registry
-                .resolve(module)
-                .map(|p| p.manifest.name.as_str())
-                .unwrap_or(module);
-            // Deliver the module's configured open() JSON (default `{}` for an unconfigured module).
-            let open_cfg = open_config
-                .get(canonical)
-                .map(String::as_str)
-                .unwrap_or("{}");
-            let m = registry.open_secret(module, open_cfg)?;
-            m.resolve(
-                &serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(settings)
-                    .map_err(|e| format!("secret settings are not a JSON object: {e}"))?,
-            )
-            .map_err(|e| e.to_string())
+            // No door answers it: no such secret plugin, or a 1.5.5 JSON-contract one, which this
+            // host does not load (THE DESIGN §11.8). Refused in the registry's own words.
+            Err(registry.secret_refusal(module))
         },
     )))
+}
+
+/// THE SECRET PLUGINS A RESOLVER OPENED, one handle per plugin (audit kernel-K1 #6).
+///
+/// The map's lock is held to find or open a plugin's handle and released before the plugin is asked
+/// to `resolve`: one slow or hung secret source (a remote vault) stalls only the resolutions it
+/// answers, never another module's, and never a second caller of its own that already holds the
+/// handle.
+#[derive(Default)]
+pub(crate) struct OpenedSecrets(
+    std::sync::Mutex<
+        std::collections::BTreeMap<String, Arc<dyn busbar_contract::secret::SecretCalls>>,
+    >,
+);
+
+impl OpenedSecrets {
+    /// The handle opened under `key`, opening it with `open` the first time.
+    fn calls(
+        &self,
+        key: &str,
+        open: impl FnOnce() -> Result<Arc<dyn busbar_contract::secret::SecretCalls>, String>,
+    ) -> Result<Arc<dyn busbar_contract::secret::SecretCalls>, String> {
+        let mut opened = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(calls) = opened.get(key) {
+            return Ok(Arc::clone(calls));
+        }
+        let calls = open()?;
+        opened.insert(key.to_string(), Arc::clone(&calls));
+        Ok(calls)
+    }
+
+    /// Resolve `settings` through the plugin opened under `key`, with no lock held while the plugin
+    /// answers.
+    pub(crate) fn resolve(
+        &self,
+        key: &str,
+        settings: &str,
+        open: impl FnOnce() -> Result<Arc<dyn busbar_contract::secret::SecretCalls>, String>,
+    ) -> Result<Vec<u8>, String> {
+        let calls = self.calls(key, open)?;
+        calls
+            .resolve(settings.as_bytes())
+            .map(|m| m.expose_secret().clone())
+            .map_err(|r| r.text)
+    }
 }
 
 /// The `plugins.fetch` download closure the engine hands to the root's fetch ([`PluginsFetch`]).
@@ -1298,3 +1376,7 @@ pub(crate) fn plugin_fetch_downloader_with_cap(
         })
     }
 }
+
+#[cfg(test)]
+#[path = "tests/opened_secrets_tests.rs"]
+mod opened_secrets_tests;

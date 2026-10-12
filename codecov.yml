@@ -19,7 +19,6 @@ comment: false
 
 ignore:
   - "crates/*-example-plugin"
-  - "crates/hook-test-plugin"
   - "tests"
   - "examples"
   - "docs"

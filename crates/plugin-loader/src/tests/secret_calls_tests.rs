@@ -111,9 +111,7 @@ fn a_dropped_in_secret_plugin_is_the_same_plugin_through_the_axis() {
         .find(|(k, _)| *k == "secret")
         .expect("a `secret` row in Cargo.toml's [package.metadata.busbar.both-ways]");
     // The row names the repo's logic crate; the fleet's twin shape names its cdylib `<logic>_plugin`.
-    let Some(path) = crate::both_ways::cdylib(&format!("{logic}_plugin")) else {
-        return;
-    };
+    let path = crate::both_ways::cdylib(&format!("{logic}_plugin"));
     let stated = rendering_of(door).expect("the door renders its Statement");
     let bytes = std::fs::read(&path).expect("the plugin's cdylib reads");
     let candidate = Candidate::from_rendering(
@@ -155,4 +153,61 @@ fn a_door_of_another_kind_is_refused() {
         .link(hook_door_plugin::conforming::door)
         .expect_err("a hook door is not a secret one");
     assert!(err.contains("not a secret one"), "{err}");
+}
+
+/// The directory the test's `plugins.logs` names (a `fn` pointer reads it, as the root's does).
+static LOG_DIR: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+
+fn log_config() -> crate::dispatch::PluginLogConfig {
+    crate::dispatch::PluginLogConfig::from_words(
+        LOG_DIR.get().and_then(|d| d.to_str()),
+        None,
+        &Default::default(),
+        None,
+        None,
+    )
+    .expect("the plugins.logs words resolve")
+}
+
+/// THE DESIGN §11.2 (every plugin logs to its own `<dir>/<instance>.log`) and §11.12 H2 (`instance`
+/// is the configured instance LABEL): each opened secret instance is bound to a plugin-log sink
+/// under its own label, so two instances of one plugin (two words one plugin answers to) get two
+/// files, and the shared linked instance gets its own. A sink under a named directory opens its
+/// file when it binds, so the files exist before any record is written.
+#[test]
+fn each_secret_instance_logs_to_its_own_file_under_its_own_label() {
+    environment();
+    let dir = std::env::temp_dir().join(format!("busbar-secret-logs-{}", std::process::id()));
+    LOG_DIR
+        .set(dir.clone())
+        .expect("the one test sets the directory");
+    let mut rows = SecretRows::new(dispatcher, || None).with_logs(log_config);
+    rows.link(door).expect("the env source's door links");
+    rows.with_former_names(|w| {
+        if w == NAME {
+            vec!["env-second".to_string()]
+        } else {
+            Vec::new()
+        }
+    })
+    .expect("a former name no other row claims");
+
+    let first = rows.open(NAME, &settings(), &unreached).expect("opens");
+    let second = rows
+        .open("env-second", &settings(), &unreached)
+        .expect("the same plugin opens under its other word");
+    let shared = rows.shared(NAME).expect("the shared instance opens");
+    assert_eq!(resolves(first.as_ref()), resolves(second.as_ref()));
+    drop(shared);
+
+    let file = |label: &str| dir.join(format!("secrets.{label}.log"));
+    assert!(
+        file(NAME).exists(),
+        "the instance `secrets.{NAME}` has its own log file"
+    );
+    assert!(
+        file("env-second").exists(),
+        "a second instance of the one plugin has a file of its own"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
 }

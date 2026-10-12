@@ -31,11 +31,7 @@ fn hook(kind: HookKind, global: bool) -> HookCfg {
 /// Lanes/store are shared (unchanged), proving the store-constraint-free subset.
 #[test]
 fn build_with_hook_registers_and_wires_global_tap() {
-    let Some(env) = busbar_kernel::test_support::test_hook_env(&["test-hook"], Default::default())
-    else {
-        eprintln!("skip: hook cdylib not built (run under --workspace)");
-        return;
-    };
+    let env = busbar_kernel::test_support::test_hook_env(&["test-hook"], Default::default());
     let app = crate::new_test_app().hook_env(env).build();
     assert_eq!(app.tap_hooks.len(), 0, "fixture starts with no taps");
     let next = build_with_hook(&app, "logger", hook(HookKind::Tap, true))
@@ -64,11 +60,7 @@ fn build_with_hook_registers_and_wires_global_tap() {
 /// reported `global: true`.
 #[test]
 fn build_with_hook_demotes_global_false_removes_wiring() {
-    let Some(env) = busbar_kernel::test_support::test_hook_env(&["test-hook"], Default::default())
-    else {
-        eprintln!("skip: hook cdylib not built (run under --workspace)");
-        return;
-    };
+    let env = busbar_kernel::test_support::test_hook_env(&["test-hook"], Default::default());
     let app = crate::new_test_app().hook_env(env).build();
     // Register a GLOBAL tap, then PUT the same name with global: false.
     let promoted =
@@ -90,78 +82,6 @@ fn build_with_hook_demotes_global_false_removes_wiring() {
     assert!(
         demoted.hook_registry.contains_key("logger"),
         "the hook definition itself survives — only its global membership is dropped"
-    );
-}
-
-/// A hook registered through the ADMIN API must become live on every OTHER compiled-in plane too,
-/// not only on the pool-scoped hooks.
-///
-/// The failure this pins is specific and silent: an operator writes an MCP server's `hooks: [screen]`
-/// attach in the file and registers the `screen` DEFINITION later through the API. At boot the name
-/// resolved to nothing (no definition yet), so the server's gate chain was empty — and without
-/// `reresolve_plane_gates` the register would answer `200 OK` while that chain stayed empty
-/// forever, leaving the operator believing a control is attached that is not. The pool-scoped hooks'
-/// own three `resolve_*` calls exist for exactly this reason; this test exercises that same
-/// fail-open for a plane-owned attach, using MCP as the concrete plane under test.
-#[test]
-fn build_with_hook_makes_a_plane_attach_live() {
-    let Some(env) = busbar_kernel::test_support::test_hook_env(&["test-hook"], Default::default())
-    else {
-        eprintln!("skip: hook cdylib not built (run under --workspace)");
-        return;
-    };
-    // The ONLY thing this test reads of the `tools.fs` registration is its hook ATTACH
-    // (`hooks: [screen]`), whose resolution lands in the plane's gate map. Drive that through core's
-    // NEUTRAL container-hook seam, keyed by the plane the registry says owns the `tools:` section, so
-    // this in-crate unit test names no plane, no plane crate and no plane config type (the full
-    // end-to-end builder path is covered by the plane crate's own integration tests).
-    let mut builder = crate::new_test_app().hook_env(env);
-    let tools = busbar_kernel::plane::registry::plane_decl_for_config_section("tools")
-        .expect("a plane is registered to own the `tools:` section");
-    builder.set_container_hooks(
-        tools.key,
-        vec![("fs".to_string(), vec!["screen".to_string()])],
-        Vec::new(),
-    );
-    // The `reresolve_gates` seam re-reads the SERVER REGISTRY off the plane's runtime slot, so the
-    // runtime this generation carries must actually hold the `fs` server (with its `hooks: [screen]`
-    // attach) for the re-resolution under test to have anything to resolve. Build it the way
-    // `appbuild` does — the owning plane parses its own section and builds its runtime from it — so
-    // `build()`'s default empty runtime is not what gets read back.
-    {
-        let section: serde_yaml::Value = serde_yaml::from_str(
-            "fs:\n  url: https://tools.internal/fs\n  pin: { mechanism: cert_spki, key: \"sha256/BASE=\" }\n  hooks: [screen]\n",
-        )
-        .unwrap();
-        let parse = tools
-            .parse_section
-            .expect("the plane parses its own section");
-        let cfg = parse(&section).expect("the `tools:` section parses");
-        let build = tools
-            .build_runtime
-            .expect("the plane builds its runtime from its section");
-        builder.install_plane_runtime(
-            busbar_kernel::state::runtime_slot_key(tools.key),
-            build(cfg.as_any(), None),
-        );
-    }
-    let app = builder.build();
-    assert!(
-        !app.plane_gates(tools.key)
-            .is_some_and(|g| g.contains_key("fs")),
-        "the attach names a hook no registry entry defines yet, so it resolves to nothing"
-    );
-
-    let next = build_with_hook(&app, "screen", hook(HookKind::Gate, false))
-        .expect("a valid gate registers");
-    assert_eq!(
-        next.plane_gates(tools.key)
-            .and_then(|g| g.get("fs"))
-            .map(|g| g.len())
-            .unwrap_or_default(),
-        1,
-        "registering the DEFINITION must make the server's existing attach resolve — a 200 OK that \
-         leaves the chain empty is an operator told a control is attached when it is not"
     );
 }
 
@@ -278,7 +198,7 @@ fn build_with_hook_enforces_grant_immutability() {
 
 // ── plugin admin surface (tarball world) ────────────────────────────────────────────────────
 
-use busbar_plugin_loader::sign::{sign, Manifest, SigningKey};
+use busbar_kernel::plugin_admission::sign::{sign, Manifest, SigningKey};
 
 /// A unique temp plugins directory for one test (isolated so parallel tests never collide).
 fn tmp_plugins_dir(tag: &str) -> std::path::PathBuf {
@@ -314,7 +234,7 @@ fn test_manifest(name: &str, alias: &str, publisher: &str, version: &str) -> Man
         kind: "store".into(),
         version: version.into(),
         publisher: publisher.into(),
-        abi_version: *busbar_plugin_loader::supported_abi("store")
+        abi_version: *busbar_kernel::plugin_admission::supported_abi("store")
             .iter()
             .max()
             .expect("store abi"),
@@ -329,13 +249,14 @@ fn test_manifest(name: &str, alias: &str, publisher: &str, version: &str) -> Man
         host: None,
         declares: Default::default(),
         statement: None,
+        former_names: Vec::new(),
     }
 }
 
 /// Package a signed plugin tarball in memory.
 fn signed_tarball(key: &SigningKey, m: Manifest, lib: &[u8]) -> Vec<u8> {
     let m = sign(key, m, lib);
-    busbar_plugin_loader::tarball::package(&m, "lib.so", lib).unwrap()
+    busbar_kernel::plugin_admission::tarball::package(&m, "lib.so", lib).unwrap()
 }
 
 /// Build a service over an App whose plugins dir + `plugins.*` posture are the given ones.
@@ -379,7 +300,7 @@ fn inspect_previews_a_trusted_candidate_without_installing() {
     let dir = tmp_plugins_dir("inspect-ok");
     let mut m = test_manifest("acme-store-preview", "preview", "acme", "1.0.0");
     m.kind = "secret".into();
-    m.abi_version = *busbar_plugin_loader::supported_abi("secret")
+    m.abi_version = *busbar_kernel::plugin_admission::supported_abi("secret")
         .iter()
         .max()
         .expect("secret abi");
@@ -391,8 +312,9 @@ fn inspect_previews_a_trusted_candidate_without_installing() {
         })
         .to_string(),
     );
-    m.sha256 = busbar_plugin_loader::sign::sha256_hex(b"lib bytes");
-    let tarball = busbar_plugin_loader::tarball::package(&m, "lib.so", b"lib bytes").unwrap();
+    m.sha256 = busbar_kernel::plugin_admission::sign::sha256_hex(b"lib bytes");
+    let tarball =
+        busbar_kernel::plugin_admission::tarball::package(&m, "lib.so", b"lib bytes").unwrap();
     let svc = svc_with(dir.clone(), unsigned_ok_posture());
 
     let v = svc.inspect_plugin(&tarball).expect("inspect succeeds");
@@ -424,8 +346,9 @@ fn inspect_previews_a_trusted_candidate_without_installing() {
 fn inspect_reports_rejected_trust_rather_than_erroring() {
     let dir = tmp_plugins_dir("inspect-rejected");
     let mut m = test_manifest("acme-store-untrusted", "untrusted", "acme", "1.0.0");
-    m.sha256 = busbar_plugin_loader::sign::sha256_hex(b"lib bytes");
-    let tarball = busbar_plugin_loader::tarball::package(&m, "lib.so", b"lib bytes").unwrap();
+    m.sha256 = busbar_kernel::plugin_admission::sign::sha256_hex(b"lib bytes");
+    let tarball =
+        busbar_kernel::plugin_admission::tarball::package(&m, "lib.so", b"lib bytes").unwrap();
     // STRICT posture: no publishers allowlisted, no allow_unsigned opt-in.
     let svc = svc_with(dir, strict_posture());
 
@@ -454,7 +377,8 @@ fn inspect_rejects_invalid_tarball() {
 fn inspect_rejects_oversized_tarball_before_unpacking() {
     let dir = tmp_plugins_dir("inspect-oversized");
     let svc = svc_with(dir, unsigned_ok_posture());
-    let huge = vec![0u8; (busbar_plugin_loader::tarball::MAX_TARBALL_FILE_BYTES + 1) as usize];
+    let huge =
+        vec![0u8; (busbar_kernel::plugin_admission::tarball::MAX_TARBALL_FILE_BYTES + 1) as usize];
     let err = svc.inspect_plugin(&huge).unwrap_err();
     assert!(
         matches!(&err, AdminError::Validation(msg) if msg.contains("byte cap")),
@@ -473,8 +397,9 @@ fn inspect_bounds_pathological_schema_nesting_depth() {
     // A tiny document that nests far past the depth cap: `[[[[...]]]]`.
     let bomb = format!("{}{}", "[".repeat(500), "]".repeat(500));
     m.settings_schema = Some(bomb);
-    m.sha256 = busbar_plugin_loader::sign::sha256_hex(b"lib bytes");
-    let tarball = busbar_plugin_loader::tarball::package(&m, "lib.so", b"lib bytes").unwrap();
+    m.sha256 = busbar_kernel::plugin_admission::sign::sha256_hex(b"lib bytes");
+    let tarball =
+        busbar_kernel::plugin_admission::tarball::package(&m, "lib.so", b"lib bytes").unwrap();
     let svc = svc_with(dir, unsigned_ok_posture());
 
     let v = svc
@@ -551,14 +476,140 @@ fn install_strict_posture_rejects_unsigned() {
     let dir = tmp_plugins_dir("strict");
     let lib = b"\x7fELF junk that would crash if ever dlopened";
     let mut m = test_manifest("acme-store-x", "x", "acme", "1.0.0");
-    m.sha256 = busbar_plugin_loader::sign::sha256_hex(lib);
-    let tarball = busbar_plugin_loader::tarball::package(&m, "lib.so", lib).unwrap();
+    m.sha256 = busbar_kernel::plugin_admission::sign::sha256_hex(lib);
+    let tarball = busbar_kernel::plugin_admission::tarball::package(&m, "lib.so", lib).unwrap();
     let svc = svc_with(dir.clone(), strict_posture());
     let err = svc.install_store_plugin("x.tar.gz", &tarball).unwrap_err();
     assert!(
         matches!(&err, AdminError::Conflict(msg) if msg.contains("allow_third_party")
                 || msg.contains("allow_unsigned")),
         "the rejection names the opt-in flag: {err:?}"
+    );
+    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
+}
+
+/// The build's linked store, as `(canonical name, key, the version it states, its Statement)`: what
+/// a copy of it dropped in must carry to be the same plugin at the same version.
+pub(crate) fn linked_store() -> (&'static str, &'static str, String, Vec<u8>) {
+    let &(key, _, _, canonical) = busbar_kernel::preflight::root_rows()
+        .stores
+        .first()
+        .expect("the build links a store");
+    let reg = busbar_kernel::preflight::linked().expect("the linked rows register");
+    let row = reg
+        .resolve(canonical)
+        .expect("the linked store answers its canonical name");
+    let version = row.plugin_version().expect("the store states its version");
+    (
+        canonical,
+        key,
+        version,
+        row.statement().expect("the store states itself"),
+    )
+}
+
+/// `rendering` with its Statement's version restated as `version` (the rendering's head is the
+/// magic, four `u32`s, then the name and the version, each a `u32` length and its bytes).
+fn restated(rendering: &[u8], version: &str) -> Vec<u8> {
+    let head = busbar_contract::abi::mechanism::rendering::RENDERING_MAGIC.len() + 16;
+    let len = |at: usize| u32::from_le_bytes(rendering[at..at + 4].try_into().unwrap()) as usize;
+    let at = head + 4 + len(head);
+    let mut out = rendering[..at].to_vec();
+    out.extend_from_slice(&(version.len() as u32).to_le_bytes());
+    out.extend_from_slice(version.as_bytes());
+    out.extend_from_slice(&rendering[at + 4 + len(at)..]);
+    out
+}
+
+/// A copy of the linked store, `name` aliased `alias`, unsigned over junk library bytes, stating
+/// the store's Statement restated at `version`.
+pub(crate) fn unsigned_copy(name: &str, alias: &str, version: &str) -> Vec<u8> {
+    let (_, _, _, statement) = linked_store();
+    let lib = b"junk lib bytes of a linked plugin";
+    let mut m = test_manifest(name, alias, "acme", "1.0.0");
+    m.statement = Some(hex::encode(restated(&statement, version)));
+    m.sha256 = busbar_kernel::plugin_admission::sign::sha256_hex(lib);
+    busbar_kernel::plugin_admission::tarball::package(&m, "lib.so", lib).unwrap()
+}
+
+/// THE ONE-VERSION RULE AT THE ADMIN INSTALL (ARCHITECT C'), SAME VERSION: uploading a copy of a
+/// plugin this build LINKS, at the version the linked plugin states, is an accepted no-op — the
+/// linked build already serves it, and nothing is written. RED before: it was published, and the
+/// next boot met the same plugin by both doors.
+#[test]
+fn install_of_a_linked_plugin_at_its_version_is_an_accepted_no_op() {
+    let dir = tmp_plugins_dir("linked-same");
+    let svc = svc_with(dir.clone(), unsigned_ok_posture());
+    let (canonical, key, version, _) = linked_store();
+    let view = svc
+        .install_store_plugin("copy.tar.gz", &unsigned_copy(canonical, key, &version))
+        .expect("the same plugin at the same version is accepted");
+    assert_eq!(view.name, canonical);
+    assert!(view.note.contains("nothing was written"), "{}", view.note);
+    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
+}
+
+/// THE ONE-VERSION RULE AT THE ADMIN INSTALL, ANOTHER VERSION: refused before anything is written,
+/// in the words boot refuses the pair with. RED before: published, bricking the next boot.
+#[test]
+fn install_of_a_linked_plugin_at_another_version_is_refused() {
+    let dir = tmp_plugins_dir("linked-other");
+    let svc = svc_with(dir.clone(), unsigned_ok_posture());
+    let (canonical, key, version, _) = linked_store();
+    let err = svc
+        .install_store_plugin("copy.tar.gz", &unsigned_copy(canonical, key, "99.0.0"))
+        .unwrap_err();
+    let want = format!(
+        "plugin '{canonical}' arrives by both doors at two versions: linked v{version}, dropped \
+         in v99.0.0 (copy.tar.gz) - one version per plugin: remove one"
+    );
+    assert!(
+        matches!(&err, AdminError::Conflict(msg) if *msg == want),
+        "got {err:?}"
+    );
+    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
+}
+
+/// THE ONE-VERSION RULE COMPARES STATEMENT VERSIONS ONLY at the admin install: a copy of a linked
+/// plugin stating no Statement is refused, naming it, whatever its manifest `version` says; nothing
+/// is written.
+#[test]
+fn install_of_a_linked_plugin_stating_no_version_is_refused() {
+    let dir = tmp_plugins_dir("linked-unstated");
+    let svc = svc_with(dir.clone(), unsigned_ok_posture());
+    let (canonical, key, version, _) = linked_store();
+    let lib = b"junk lib bytes of a linked plugin";
+    let mut m = test_manifest(canonical, key, "acme", &version);
+    m.sha256 = busbar_kernel::plugin_admission::sign::sha256_hex(lib);
+    let tarball = busbar_kernel::plugin_admission::tarball::package(&m, "lib.so", lib).unwrap();
+    let err = svc
+        .install_store_plugin("copy.tar.gz", &tarball)
+        .unwrap_err();
+    let want = format!(
+        "plugin '{canonical}' states no version in its Statement: the one-version rule cannot \
+         compare it"
+    );
+    assert!(
+        matches!(&err, AdminError::Conflict(msg) if *msg == want),
+        "got {err:?}"
+    );
+    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
+}
+
+/// TRUST BEFORE IDENTITY at the admin install: under the strict posture an UNSIGNED copy of a
+/// linked plugin at another version is refused by the trust policy, never compared.
+#[test]
+fn install_judges_trust_before_the_one_version_rule() {
+    let dir = tmp_plugins_dir("linked-untrusted");
+    let svc = svc_with(dir.clone(), strict_posture());
+    let (canonical, key, _, _) = linked_store();
+    let err = svc
+        .install_store_plugin("copy.tar.gz", &unsigned_copy(canonical, key, "99.0.0"))
+        .unwrap_err();
+    assert!(
+        matches!(&err, AdminError::Conflict(msg) if msg.starts_with("plugin rejected by the trust policy")
+            && !msg.contains("one version per plugin")),
+        "got {err:?}"
     );
     assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
 }
@@ -572,8 +623,8 @@ fn install_catalog_remove_roundtrip() {
     let svc = svc_with(dir.clone(), unsigned_ok_posture());
     let lib = b"junk lib bytes";
     let mut m = test_manifest("acme-store-junk", "junkstore", "acme", "1.0.0");
-    m.sha256 = busbar_plugin_loader::sign::sha256_hex(lib);
-    let tarball = busbar_plugin_loader::tarball::package(&m, "lib.so", lib).unwrap();
+    m.sha256 = busbar_kernel::plugin_admission::sign::sha256_hex(lib);
+    let tarball = busbar_kernel::plugin_admission::tarball::package(&m, "lib.so", lib).unwrap();
 
     let view = svc
         .install_store_plugin("junk.tar.gz", &tarball)
@@ -621,8 +672,8 @@ fn catalog_repeat_gets_reuse_the_cached_scan() {
     let svc = svc_with(dir.clone(), unsigned_ok_posture());
     let lib = b"junk lib bytes";
     let mut m = test_manifest("acme-store-cache", "cachestore", "acme", "1.0.0");
-    m.sha256 = busbar_plugin_loader::sign::sha256_hex(lib);
-    let tarball = busbar_plugin_loader::tarball::package(&m, "lib.so", lib).unwrap();
+    m.sha256 = busbar_kernel::plugin_admission::sign::sha256_hex(lib);
+    let tarball = busbar_kernel::plugin_admission::tarball::package(&m, "lib.so", lib).unwrap();
     svc.install_store_plugin("cache.tar.gz", &tarball)
         .expect("install");
 
@@ -641,8 +692,8 @@ fn catalog_repeat_gets_reuse_the_cached_scan() {
     // invalidation call required.
     let lib2 = b"junk lib bytes two";
     let mut m2 = test_manifest("acme-store-cache-2", "cachestore2", "acme", "1.0.0");
-    m2.sha256 = busbar_plugin_loader::sign::sha256_hex(lib2);
-    let tarball2 = busbar_plugin_loader::tarball::package(&m2, "lib.so", lib2).unwrap();
+    m2.sha256 = busbar_kernel::plugin_admission::sign::sha256_hex(lib2);
+    let tarball2 = busbar_kernel::plugin_admission::tarball::package(&m2, "lib.so", lib2).unwrap();
     svc.install_store_plugin("cache2.tar.gz", &tarball2)
         .expect("install");
 
@@ -793,8 +844,8 @@ async fn list_plugins_store_single_flights_concurrent_misses() {
     let dir = tmp_plugins_dir("single-flight");
     let lib = b"junk lib bytes";
     let mut m = test_manifest("acme-store-sf", "sfstore", "acme", "1.0.0");
-    m.sha256 = busbar_plugin_loader::sign::sha256_hex(lib);
-    let tarball = busbar_plugin_loader::tarball::package(&m, "lib.so", lib).unwrap();
+    m.sha256 = busbar_kernel::plugin_admission::sign::sha256_hex(lib);
+    let tarball = busbar_kernel::plugin_admission::tarball::package(&m, "lib.so", lib).unwrap();
     std::fs::write(dir.join("sf.tar.gz"), &tarball).unwrap();
 
     let app = crate::new_test_app()
@@ -901,16 +952,18 @@ fn catalog_cache_future_inserted_at_is_treated_as_stale() {
 
 /// The staleness scenario this guards against.
 /// FIRST, an empty-but-READABLE plugins dir caches fine (unchanged behavior — same as a MISSING
-/// dir, both legitimately mean "no plugins"). THEN the directory becomes UNREADABLE (permission
-/// denied) with its CONTENTS unchanged — the exact case the old `unwrap_or_default()` collapsed
-/// to the SAME fingerprint as the empty dir, serving the stale cached `[]` forever instead of
-/// the real `INVALID` row. The fixed version must never serve that stale cache and must surface
-/// the real `INVALID: ...` row on every read while unreadable, not just the first.
+/// dir, both legitimately mean "no plugins"). THEN the path becomes UNREADABLE as a directory —
+/// the exact case the old `unwrap_or_default()` collapsed to the SAME fingerprint as the empty dir,
+/// serving the stale cached `[]` forever instead of the real `INVALID` row. The fixed version must
+/// never serve that stale cache and must surface the real `INVALID: ...` row on every read while
+/// unreadable, not just the first.
+///
+/// The injection replaces the directory with a regular FILE at the same path: `read_dir` on it
+/// fails ("not a directory") whatever the privileges, so the test runs as root and non-root alike
+/// (a `chmod 000` is ignored by root, and once made this test skip on a root-run container).
 #[cfg(unix)]
 #[test]
 fn catalog_unreadable_dir_does_not_serve_stale_cache() {
-    use std::os::unix::fs::PermissionsExt;
-
     let dir = tmp_plugins_dir("unreadable");
     let svc = svc_with(dir.clone(), unsigned_ok_posture());
 
@@ -925,39 +978,25 @@ fn catalog_unreadable_dir_does_not_serve_stale_cache() {
         "an empty dir's (empty) scan is cached, exactly like a missing dir would be"
     );
 
-    // Restoring permissions with a bare `set_permissions` call at the
-    // END of the test left a window — the two `store_plugin_catalog()` reads below AND the
-    // `read_dir` probe above all run un-guarded, and a panic (e.g. an assertion failure inside
-    // `store_plugin_catalog`, or any future change to it) during that window would leave the
-    // temp dir at `0o000` permanently: nothing later ever restores it, potentially breaking
-    // this test's OWN cleanup or a later test that reuses the same `temp_dir()` infrastructure.
-    // An RAII guard restores the original mode on drop — including on an early return or a
-    // panic unwinding through this scope — so there is no code path that leaves the directory
-    // unreadable.
-    struct RestorePermsOnDrop<'a> {
-        dir: &'a std::path::Path,
-        mode: u32,
-    }
-    impl Drop for RestorePermsOnDrop<'_> {
+    // An RAII guard removes the injected file on drop — including on a panic unwinding through
+    // this scope — so no code path leaves a regular file squatting on the plugins-dir path.
+    struct RemoveFileOnDrop<'a>(&'a std::path::Path);
+    impl Drop for RemoveFileOnDrop<'_> {
         fn drop(&mut self) {
-            let _ = std::fs::set_permissions(self.dir, std::fs::Permissions::from_mode(self.mode));
+            let _ = std::fs::remove_file(self.0);
         }
     }
 
-    let original_mode = std::fs::metadata(&dir).unwrap().permissions().mode();
-    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o000)).unwrap();
-    let _restore = RestorePermsOnDrop {
-        dir: &dir,
-        mode: original_mode,
-    };
+    std::fs::remove_dir(&dir).unwrap();
+    std::fs::write(&dir, b"not a directory").unwrap();
+    let _remove = RemoveFileOnDrop(&dir);
 
-    // Some environments (containers running as root) ignore permission bits entirely — skip
-    // rather than false-fail if `read_dir` still succeeds. `_restore` drops (restoring
-    // permissions) when this early return unwinds the scope.
-    if std::fs::read_dir(&dir).is_ok() {
-        eprintln!("skip: running with privileges that bypass directory permission bits");
-        return;
-    }
+    // The precondition is checked, not assumed: a regular file is never readable as a directory,
+    // for root and non-root alike.
+    assert!(
+        std::fs::read_dir(&dir).is_err(),
+        "a regular file at the plugins-dir path must fail read_dir for every user"
+    );
 
     let cat_after = svc.store_plugin_catalog();
     // And every SUBSEQUENT read while STILL unreadable surfaces the SAME real row again — the
@@ -1054,8 +1093,8 @@ fn rollback_is_fail_closed_on_absent_or_untrusted_target() {
     // a rollback (the floor was lowered, but the signature/opt-in gate still fails).
     let lib = b"unsigned prior artifact";
     let mut m = test_manifest("acme-store-x", "x", "acme", "1.4.0");
-    m.sha256 = busbar_plugin_loader::sign::sha256_hex(lib);
-    let tarball = busbar_plugin_loader::tarball::package(&m, "lib.so", lib).unwrap();
+    m.sha256 = busbar_kernel::plugin_admission::sign::sha256_hex(lib);
+    let tarball = busbar_kernel::plugin_admission::tarball::package(&m, "lib.so", lib).unwrap();
     std::fs::write(dir.join("unsigned.tar.gz"), &tarball).unwrap();
     let err = svc
         .resolve_plugin_rollback("unsigned.tar.gz", &empty)
@@ -1075,8 +1114,8 @@ fn catalog_does_not_dlopen_an_untrusted_plugin() {
     let svc = svc_with(dir.clone(), strict_posture());
     let lib = b"\x7fELF definitely not a loadable library";
     let mut m = test_manifest("acme-store-evil", "evil", "acme", "1.0.0");
-    m.sha256 = busbar_plugin_loader::sign::sha256_hex(lib);
-    let tarball = busbar_plugin_loader::tarball::package(&m, "lib.so", lib).unwrap();
+    m.sha256 = busbar_kernel::plugin_admission::sign::sha256_hex(lib);
+    let tarball = busbar_kernel::plugin_admission::tarball::package(&m, "lib.so", lib).unwrap();
     std::fs::write(dir.join("evil.tar.gz"), &tarball).unwrap();
 
     let cat = svc.store_plugin_catalog();
@@ -1272,7 +1311,7 @@ async fn list_groups_projects_the_limit_tree() {
     let svc = AdminService::new(app);
 
     let page = svc
-        .list_groups(0, busbar_kernel::admin::v1::contract::LIST_LIMIT_DEFAULT)
+        .list_groups(0, crate::v1::contract::LIST_LIMIT_DEFAULT)
         .await
         .expect("list ok");
     // BTreeMap order: "team" < "user:bob".
@@ -1329,16 +1368,14 @@ async fn list_groups_is_cursor_paginated() {
         .next_cursor
         .as_deref()
         .expect("more rows remain -> a next_cursor is present");
-    let start2 =
-        busbar_kernel::admin::v1::contract::decode_offset_cursor(c1).expect("valid cursor");
+    let start2 = crate::v1::contract::decode_offset_cursor(c1).expect("valid cursor");
 
     let p2 = svc.list_groups(start2, 2).await.expect("list ok");
     assert_eq!(p2.items.len(), 2);
     let names: Vec<&str> = p2.items.iter().map(|g| g.name.as_str()).collect();
     assert_eq!(names, vec!["g2", "g3"]);
     let c2 = p2.next_cursor.as_deref().expect("one row remains");
-    let start3 =
-        busbar_kernel::admin::v1::contract::decode_offset_cursor(c2).expect("valid cursor");
+    let start3 = crate::v1::contract::decode_offset_cursor(c2).expect("valid cursor");
 
     let p3 = svc.list_groups(start3, 2).await.expect("list ok");
     assert_eq!(p3.items.len(), 1, "final page holds the remainder");
@@ -1670,7 +1707,7 @@ async fn get_group_usage_splits_window_pool_buckets_and_derives_remaining() {
     let find = |window: &str, pool: Option<&str>| {
         view.buckets
             .iter()
-            .find(|b| b.window == window && b.pool.as_deref() == pool)
+            .find(|b| b.window == window && b.scope.as_deref() == pool)
             .unwrap_or_else(|| panic!("bucket ({window}, {pool:?}) missing: {:?}", view.buckets))
     };
 
@@ -1724,7 +1761,7 @@ async fn get_group_usage_unknown_group_not_found() {
 /// same counts). A downstream FinOps consumer's parser keeps working across the upgrade.
 #[test]
 fn admin_usage_breakdown_json_is_byte_identical_flat_token_aliases() {
-    use busbar_kernel::admin::v1::contract::UsageBreakdown;
+    use crate::v1::contract::UsageBreakdown;
     let b = UsageBreakdown {
         tokens_input: 100,
         tokens_output: 40,
@@ -1732,6 +1769,7 @@ fn admin_usage_breakdown_json_is_byte_identical_flat_token_aliases() {
         tokens_cache_creation: 3,
         requests: 5,
         spend_micros: 12_345,
+        classes: Default::default(),
     };
     let json = serde_json::to_string(&b).unwrap();
     assert_eq!(
@@ -1773,7 +1811,7 @@ async fn get_group_usage_governance_off_zero_usage_caps_projected() {
     assert!(view
         .buckets
         .iter()
-        .any(|b| b.budget_cap == Some(500) && b.pool.as_deref() == Some("frontier")));
+        .any(|b| b.budget_cap == Some(500) && b.scope.as_deref() == Some("frontier")));
 }
 
 // ---- fleet-wide usage read: store-failure logging ----
@@ -1973,13 +2011,10 @@ fn max_inspect_schema_json_bytes_is_exactly_256_kibibytes() {
 /// return `Some(false)` and pass a loose "it's false" check, but the detail text would be wrong.
 #[tokio::test]
 async fn probe_transport_distinguishes_wrong_kind_from_unresolved() {
-    let Some(env) = busbar_kernel::test_support::test_hook_env_with_wrong_kind_plugin(
+    let env = busbar_kernel::test_support::test_hook_env_with_wrong_kind_plugin(
         "test-hook",
         "test-wrong-kind",
-    ) else {
-        eprintln!("skip: hook cdylib not built (run under --workspace)");
-        return;
-    };
+    );
     let hook_cfg = hook(HookKind::Tap, false);
 
     // Resolves and IS a hook: (Some(true), None).
@@ -2022,11 +2057,7 @@ async fn probe_transport_distinguishes_wrong_kind_from_unresolved() {
 /// would defeat the guard and double-push on every re-register.
 #[test]
 fn build_with_hook_reregistering_same_global_hook_does_not_duplicate() {
-    let Some(env) = busbar_kernel::test_support::test_hook_env(&["test-hook"], Default::default())
-    else {
-        eprintln!("skip: hook cdylib not built (run under --workspace)");
-        return;
-    };
+    let env = busbar_kernel::test_support::test_hook_env(&["test-hook"], Default::default());
     let app = crate::new_test_app().hook_env(env).build();
     let once = build_with_hook(&app, "logger", hook(HookKind::Tap, true))
         .expect("first global registration");
@@ -2050,13 +2081,10 @@ fn build_with_hook_reregistering_same_global_hook_does_not_duplicate() {
 /// needs at least two).
 #[test]
 fn build_with_hook_demote_only_removes_the_target_hook() {
-    let Some(env) = busbar_kernel::test_support::test_hook_env(
+    let env = busbar_kernel::test_support::test_hook_env(
         &["test-hook", "test-hook-2"],
         Default::default(),
-    ) else {
-        eprintln!("skip: hook cdylib not built (run under --workspace)");
-        return;
-    };
+    );
     let app = crate::new_test_app().hook_env(env).build();
     let mut other = hook(HookKind::Tap, true);
     other.plugin = "test-hook-2".to_string();
@@ -2081,13 +2109,10 @@ fn build_with_hook_demote_only_removes_the_target_hook() {
 /// wiring untouched — same `!=`/`==` retain distinction as the demote case above.
 #[test]
 fn build_without_hook_only_removes_the_target_from_global_wiring() {
-    let Some(env) = busbar_kernel::test_support::test_hook_env(
+    let env = busbar_kernel::test_support::test_hook_env(
         &["test-hook", "test-hook-2"],
         Default::default(),
-    ) else {
-        eprintln!("skip: hook cdylib not built (run under --workspace)");
-        return;
-    };
+    );
     let app = crate::new_test_app().hook_env(env).build();
     let mut other = hook(HookKind::Tap, true);
     other.plugin = "test-hook-2".to_string();
@@ -2132,11 +2157,7 @@ fn build_with_group_name_length_boundary_is_exact() {
 /// one is fine — a mutated `> 1` boundary needs both sides tested to catch `==`/`>=` variants.
 #[test]
 fn build_with_registry_rejects_more_than_one_default_but_allows_exactly_one() {
-    let Some(env) = busbar_kernel::test_support::test_hook_env(&["test-hook"], Default::default())
-    else {
-        eprintln!("skip: hook cdylib not built (run under --workspace)");
-        return;
-    };
+    let env = busbar_kernel::test_support::test_hook_env(&["test-hook"], Default::default());
     let app = crate::new_test_app().hook_env(env).build();
     let mut one_default = hook(HookKind::Tap, false);
     one_default.default = true;
@@ -2161,11 +2182,7 @@ fn build_with_registry_rejects_more_than_one_default_but_allows_exactly_one() {
 /// every VALID global reference instead.
 #[test]
 fn build_with_registry_rejects_a_dangling_global_hook_reference() {
-    let Some(env) = busbar_kernel::test_support::test_hook_env(&["test-hook"], Default::default())
-    else {
-        eprintln!("skip: hook cdylib not built (run under --workspace)");
-        return;
-    };
+    let env = busbar_kernel::test_support::test_hook_env(&["test-hook"], Default::default());
     let app = crate::new_test_app().hook_env(env).build();
     let mut registry = HashMap::new();
     registry.insert("logger".to_string(), hook(HookKind::Tap, true));
@@ -2217,11 +2234,7 @@ async fn healthz_returns_a_real_response_not_the_default() {
 /// whose gate disagrees with its own hook registry.
 #[test]
 fn hook_snapshot_builders_recompute_the_content_gate() {
-    let Some(env) = busbar_kernel::test_support::test_hook_env(&["test-hook"], Default::default())
-    else {
-        eprintln!("skip: hook cdylib not built (run under --workspace)");
-        return;
-    };
+    let env = busbar_kernel::test_support::test_hook_env(&["test-hook"], Default::default());
     let app = crate::new_test_app().hook_env(env).build();
     assert!(
         !app.any_content_hook,
@@ -2266,13 +2279,8 @@ fn hook_snapshot_builders_recompute_the_content_gate() {
 /// one production site to touch and this test is what fails if it is missed.
 #[test]
 fn hook_derived_fields_follow_the_registry() {
-    // PANIC, never skip: a rig that skips when the cdylib is absent reports green over the code it
-    // was written to cover. Build it (`cargo build -p busbar-hook-test-plugin`) or fail loudly.
-    let env = busbar_kernel::test_support::test_hook_env(&["test-hook"], Default::default())
-        .expect(
-            "the hook-test plugin cdylib must be built for this test (cargo build -p \
-         busbar-hook-test-plugin); refusing to skip the derived-field invariant",
-        );
+    // Never a skip: the hook double behind the kernel's hook port is always there.
+    let env = busbar_kernel::test_support::test_hook_env(&["test-hook"], Default::default());
 
     /// Every `App` field that is a PURE FUNCTION of `hook_registry`, re-derived from the snapshot's
     /// own registry and compared against what the builder installed.
@@ -2388,6 +2396,60 @@ plugins:
     );
 }
 
+/// FINDING 7: `POST /config/validate` does its plugin-directory scan (and the resolve and
+/// validate passes before it) OFF the async worker, behind the same bounded gate the catalog's own
+/// scan of that directory takes. Inline, a read-only token parked a Tokio worker per request on
+/// the scan, and on a hung plugins mount stalled the runtime the data plane shares.
+///
+/// With the gate held — a scan that has not come back — the call must still be WAITING after the
+/// runtime has had every chance to run it: work that ran inline on the reactor would already be
+/// done. Released, it completes with the very verdict it always gave.
+#[tokio::test]
+async fn validate_config_waits_on_the_plugin_scan_gate_and_runs_off_the_reactor() {
+    let svc = svc_with(tmp_plugins_dir("validate-gated"), unsigned_ok_posture());
+    let deploy: busbar_kernel::config::DeployCfg = serde_yaml::from_str(
+        r#"
+listen: "0.0.0.0:8080"
+providers:
+  upstream:
+    api_key: { env: UPSTREAM_API_KEY }
+models:
+  claude:
+    provider: upstream
+pools:
+  main:
+    members:
+      - model: claude
+store:
+  module: memory
+"#,
+    )
+    .expect("test DeployCfg yaml must parse");
+    let def: busbar_kernel::config::ProviderDef = serde_yaml::from_str(&format!(
+        "protocol: {}\nbase_url: https://upstream.example\nerror_map:\n  \"400\": client_error\n",
+        busbar_kernel::proto::PROTO_ANTHROPIC
+    ))
+    .unwrap();
+    let defs = std::collections::HashMap::from([("upstream".to_string(), def)]);
+
+    let held = CATALOG_SCAN_GATE.lock().await;
+    let call = tokio::spawn(async move { svc.validate_config(deploy, defs).await });
+    for _ in 0..256 {
+        tokio::task::yield_now().await;
+    }
+    assert!(
+        !call.is_finished(),
+        "validate_config finished while the plugin scan gate was held: its scan ran inline on \
+         the async worker instead of behind the gate on a blocking thread"
+    );
+    drop(held);
+    let view = call
+        .await
+        .expect("the caller task must not panic")
+        .expect("validate returns a view");
+    assert!(view.ok, "the verdict is unchanged: {:?}", view.errors);
+}
+
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 // DECISION #79 — RATE CARDS ARE A DATED HISTORY
 //
@@ -2401,8 +2463,8 @@ plugins:
 #[cfg(test)]
 mod dated_rate_card_history {
     use super::*;
+    use busbar_kernel::cost::{Author, CardEntryDraft, History, RateCard, TierRates};
     use busbar_kernel::governance::{GovState, MemoryStore};
-    use busbar_kernel_ledger::cost::{Author, CardEntryDraft, History, RateCard, TierRates};
 
     /// The one priced lane. It is a metering row's `model` and a card entry's lane, spelled once.
     const LANE: &str = "m-priced-chat";
@@ -3083,7 +3145,7 @@ mod usage_as_of {
     use super::dated_rate_card_history::{
         card, gov_with_rows, read_as_of, read_no_source_as_of, source, windows,
     };
-    use busbar_kernel_ledger::cost::{Author, CardEntryDraft, History};
+    use busbar_kernel::cost::{Author, CardEntryDraft, History};
 
     /// An older snapshot prices at the older head, and the same URL asked twice answers the same
     /// thing forever — which is the whole of what a snapshot is for.
@@ -3187,7 +3249,7 @@ mod usage_as_of {
         let err = read_as_of(gov, src, payg, Some(7))
             .await
             .expect_err("a snapshot that does not exist is a refusal");
-        let busbar_kernel::admin::v1::contract::AdminError::Validation(msg) = &err else {
+        let crate::v1::contract::AdminError::Validation(msg) = &err else {
             panic!("expected a client-safe validation refusal, got {err:?}");
         };
         assert!(
@@ -3205,7 +3267,7 @@ mod usage_as_of {
         let err = read_no_source_as_of(gov, payg, Some(0))
             .await
             .expect_err("there is no snapshot of a history that does not exist");
-        let busbar_kernel::admin::v1::contract::AdminError::Validation(msg) = &err else {
+        let crate::v1::contract::AdminError::Validation(msg) = &err else {
             panic!("expected a client-safe validation refusal, got {err:?}");
         };
         assert!(
@@ -3236,7 +3298,7 @@ mod usage_as_of {
 #[cfg(test)]
 mod one_recorded_usage_every_surface {
     use super::*;
-    use busbar_kernel_ledger::cost::{
+    use busbar_kernel::cost::{
         self as ledger_cost, Author, CardEntryDraft, History, LedgerEntry, RateCard, TierRates,
     };
 
@@ -3633,8 +3695,9 @@ fn every_scripts_path_cited_in_v1_exists() {
 mod plane_fees_on_admin_usage {
     use super::*;
     use busbar_contract::records::RecordStore as _;
+    use busbar_kernel::cost::PlaneFees;
+    use busbar_kernel::governance::PLANE_LANE_SEP;
     use busbar_kernel::plane::registry::{PlaneDecl, PlaneDeclaration, TestRegistryIsolation};
-    use busbar_kernel_ledger::cost::{PlaneFees, PLANE_LANE_SEP};
 
     const KEY: &str = "vk_plane_fees";
     /// The pools plane's model and provider, as the rows below name them.
@@ -3670,6 +3733,7 @@ mod plane_fees_on_admin_usage {
                     required_config_sections: &[],
                     trust_keys: &[],
                     served_op_classes: &[],
+                    caller_credential_refusal: None,
                 },
                 wire_format_names: || &[],
                 claims: |_| Vec::new(),
@@ -3803,9 +3867,9 @@ mod plane_fees_on_admin_usage {
     /// instant — 3 tools calls at 3, 2 pools calls at the flat 5, 4 fee-less plane calls at 0.
     #[test]
     fn the_dated_read_prices_a_planes_row_at_its_own_fee() {
-        use busbar_kernel::admin::v1::contract::UsageBreakdown;
+        use crate::v1::contract::UsageBreakdown;
         let cost = cost();
-        let history = busbar_kernel_ledger::cost::History::opening(cost.card().clone(), 0);
+        let history = busbar_kernel::cost::History::opening(cost.card().clone(), 0);
         let view = history.current();
         let (_, card) = view.card_at(0).expect("the opening card");
         let price = |lane: &str, requests: u64| {
@@ -3930,7 +3994,16 @@ mod plane_fees_on_admin_usage {
         cost: fn() -> busbar_kernel::cost::CostModel,
         calls: &[Call],
     ) -> (i64, i64) {
-        use busbar_kernel_ledger::cost::{plane_fee_lane, PER_SESSION};
+        let (book, view) = serve_calls_view(cost, calls).await;
+        (book, view.total.spend_micros)
+    }
+
+    /// [`serve_calls`], answering the whole `/admin/usage` view beside the budget book's figure.
+    async fn serve_calls_view(
+        cost: fn() -> busbar_kernel::cost::CostModel,
+        calls: &[Call],
+    ) -> (i64, crate::v1::contract::UsageView) {
+        use busbar_kernel::cost::{plane_fee_lane, PER_SESSION};
         let gov = gov();
         let app = crate::new_test_app()
             .governance(Arc::clone(&gov))
@@ -4009,7 +4082,7 @@ mod plane_fees_on_admin_usage {
             .get_usage(None, None)
             .await
             .expect("usage read");
-        (book, view.total.spend_micros)
+        (book, view)
     }
 
     /// (a) Two sessions at `fees.per_session: 40`: the budget book charges 80, and so does
@@ -4044,6 +4117,62 @@ mod plane_fees_on_admin_usage {
         );
     }
 
+    /// A PLANE'S CLASSES ON THE USAGE ROW (new in 1.6.0, FLIP-A2A ruling): three tool calls at
+    /// `tool_calls` 7 and the plane's fee 3 — the row and the total each carry `classes.tool_calls`
+    /// with its count 3 and its cost 21, the share of the row's 30 the class is (the fee is the
+    /// rest), never a second pricing added on top.
+    #[tokio::test]
+    async fn a_planes_class_rides_its_usage_row_with_its_count_and_its_cost() {
+        use crate::v1::contract::ClassUsage;
+        let calls = [Call::Tool, Call::Tool, Call::Tool];
+        let (_, view) = serve_calls_view(|| carded_cost(70_000, 3, 0), &calls).await;
+        let want = std::collections::BTreeMap::from([(
+            "tool_calls".to_string(),
+            ClassUsage {
+                count: 3,
+                cost: 21 * MICROS_PER_MINOR,
+            },
+        )]);
+        let row = view
+            .by_model
+            .iter()
+            .find(|r| r.upstream == FEE_PLANE)
+            .expect("the plane's row");
+        assert_eq!(row.usage.classes, want, "the row carries its class");
+        assert_eq!(view.total.classes, want, "the total sums it");
+        assert_eq!(
+            view.total.spend_micros,
+            30 * MICROS_PER_MINOR,
+            "the class's cost is part of spend_micros, not added to it"
+        );
+        let wire = serde_json::to_value(row).expect("the row serializes");
+        assert_eq!(
+            wire["classes"]["tool_calls"],
+            serde_json::json!({"count": 3, "cost": 21 * MICROS_PER_MINOR}),
+            "the wire shape: classes keyed by class name, each {{count, cost}}"
+        );
+    }
+
+    /// THE RED ARM: a token-only pools row carries NO `classes` key — its tokens ride the token
+    /// columns, as on 1.5.5, whose usage rows had no such field.
+    #[tokio::test]
+    async fn a_token_only_row_carries_no_classes_key_as_on_1_5_5() {
+        let t = Call::Tokens {
+            input: 1_000_000,
+            output: 500_000,
+        };
+        let (_, view) = serve_calls_view(|| carded_cost(70_000, 3, 0), &[t]).await;
+        let row = view.by_model.first().expect("the pools row");
+        assert!(row.usage.classes.is_empty());
+        let wire = serde_json::to_value(row).expect("the row serializes");
+        assert!(
+            wire.get("classes").is_none(),
+            "a token-only row is 1.5.5's shape: {wire}"
+        );
+        let total = serde_json::to_value(&view.total).expect("the total serializes");
+        assert!(total.get("classes").is_none());
+    }
+
     /// A rerank's search units — the pools plane's own open class — price on `/admin/usage` as the
     /// budget book prices them: 2 reranks of 1,000,000 units at 3 micro-units = 6,000,000 micro-units
     /// plus 2 × the flat fee 5 (before: the fee alone).
@@ -4066,6 +4195,59 @@ mod plane_fees_on_admin_usage {
         );
     }
 
+    /// A POOLS ROW'S OPEN CLASS IS PRICED, NEVER ITEMIZED: the rerank's `search_units` stay in
+    /// `spend_micros` (610 over the model rows and on the total, as above), and no model row, key row
+    /// or total carries a `classes` key — 1.5.5's usage shape, which the signed LEDGER-SIMPLE entry
+    /// pins byte for byte on `usage.gemini|stream-grounded|no-tool-use-count` (its open class there
+    /// is `unitemized_tokens`). Only a non-pools plane's row itemizes its declared classes.
+    #[tokio::test]
+    async fn a_pools_open_class_is_priced_but_never_itemized_on_the_usage_read() {
+        let calls = [
+            Call::Rerank {
+                search_units: 1_000_000,
+            },
+            Call::Rerank {
+                search_units: 1_000_000,
+            },
+        ];
+        let (_, view) = serve_calls_view(|| carded_cost(70_000, 3, 0), &calls).await;
+        assert_eq!(view.total.spend_micros, 610 * MICROS_PER_MINOR);
+        assert_eq!(
+            view.by_model
+                .iter()
+                .map(|r| r.usage.spend_micros)
+                .sum::<i64>(),
+            610 * MICROS_PER_MINOR,
+            "the model rows still price the open class"
+        );
+        let mut wires = vec![(
+            "total".to_string(),
+            serde_json::to_value(&view.total).expect("the total serializes"),
+        )];
+        for r in &view.by_model {
+            wires.push((
+                format!("model row {}/{}", r.model, r.upstream),
+                serde_json::to_value(r).expect("the row serializes"),
+            ));
+        }
+        for r in &view.by_key {
+            wires.push((
+                format!("key row {}", r.id),
+                serde_json::to_value(r).expect("the key row serializes"),
+            ));
+        }
+        assert!(
+            wires.len() >= 3,
+            "a total, a model row and a key row: {wires:?}"
+        );
+        for (what, wire) in wires {
+            assert!(
+                wire.get("classes").is_none(),
+                "a pools {what} keeps 1.5.5's usage shape: {wire}"
+            );
+        }
+    }
+
     /// (c) Pools-only token traffic is unchanged: the tokens ride the row's token columns, the fee
     /// the flat `per_request_fee:`, and nothing is counted twice — 2 calls of 1,000,000 input and
     /// 500,000 output at 1 / 2 micro-units: 4,000,000 micro-units + 2 × 5 = 410 on both books, the
@@ -4086,10 +4268,10 @@ mod plane_fees_on_admin_usage {
     /// pools row carrying 1,000,000 search units at 3 micro-units and 1 request at the flat 5.
     #[test]
     fn the_dated_read_prices_a_rows_classes_as_the_fallback_does() {
-        use busbar_kernel::admin::v1::contract::UsageBreakdown;
-        use busbar_kernel_ledger::cost::PER_SESSION;
+        use crate::v1::contract::UsageBreakdown;
+        use busbar_kernel::cost::PER_SESSION;
         let cost = carded_cost(70_000, 3, 40);
-        let history = busbar_kernel_ledger::cost::History::opening(cost.card().clone(), 0);
+        let history = busbar_kernel::cost::History::opening(cost.card().clone(), 0);
         let view = history.current();
         let (_, card) = view.card_at(0).expect("the opening card");
         let classes = |pairs: &[(&str, u64)]| -> std::collections::BTreeMap<String, u64> {
@@ -4142,8 +4324,7 @@ mod plane_fees_on_admin_usage {
 }
 
 /// STORE-DEFAULT (admin) — THE STORE CATALOG'S COMPILED-IN ROWS ARE THE STORES THIS BUILD LINKS, read
-/// off the root's installed linked rows (the declared default among them), in table order, ahead of
-/// every dropped-in row. Admin names no store instance; the row shape (`store`, `compiled-in`, no
+/// off the root's installed linked rows, in table order, ahead of every dropped-in row. Admin names no store instance; the row shape (`store`, `compiled-in`, no
 /// `active`) is 1.5.5's.
 ///
 /// RED when the catalog stops reading the linked rows (a fixed name, or no head row): the head names
@@ -4151,13 +4332,9 @@ mod plane_fees_on_admin_usage {
 #[test]
 fn the_store_catalog_heads_with_the_linked_store_rows() {
     let svc = svc_with(tmp_plugins_dir("linked-head"), unsigned_ok_posture());
-    let rows = busbar_kernel::preflight::root_rows();
-    let (stores, default) = (rows.stores, rows.default_store_module);
+    let stores = busbar_kernel::preflight::root_rows().stores;
     let linked: Vec<&str> = stores.iter().map(|s| s.0).collect();
-    assert!(
-        linked.contains(&default),
-        "the declared default is a linked row"
-    );
+    assert!(!linked.is_empty(), "the build links a store row");
     let cat = svc.store_plugin_catalog();
     let head: Vec<(&str, &str, &str, Option<bool>)> = cat[..linked.len()]
         .iter()

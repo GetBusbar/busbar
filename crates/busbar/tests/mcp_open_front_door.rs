@@ -30,9 +30,9 @@
 // `--no-default-features` binary has no MCP front door to leave open, so neither the refusal nor
 // the control can mean anything there. Same shape as `docs_examples.rs` gating its whole file on
 // `auth-admin-tokens`, and the same reasoning as the `plane-mcp` gate in `cli_validate.rs`.
-// The plane under test is the linked row carrying the `stdio-serve` axis (build.rs emits
-// `linked_axis_stdio_serve` from `[package.metadata.busbar.linked-axes]`).
-#![cfg(linked_axis_stdio_serve)]
+// The plane under test is the one `plane-mcp` switches on (served through its door), gated on
+// `linked_section_tools`: set exactly when the linked door declaring `tools:` is in the build.
+#![cfg(linked_section_tools)]
 
 mod common;
 
@@ -46,10 +46,17 @@ fn fixture_dir(tag: &str) -> PathBuf {
     let d = std::env::temp_dir().join(format!(
         "busbar-open-front-door-{}-{tag}-{}",
         std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
+        {
+            static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            format!(
+                "{}-{}-{}",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |d| d.as_nanos()),
+                line!(),
+                NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            )
+        }
     ));
     std::fs::create_dir_all(&d).unwrap();
     d
@@ -96,6 +103,7 @@ fn write_config(dir: &Path, data_port: u16, admin_port: u16, auth_block: &str) -
         format!(
             r#"listen: "127.0.0.1:{data_port}"
 admin_listen: "127.0.0.1:{admin_port}"
+store: {{module: memory}}
 {catalog}pools: {{}}
 {auth_block}
 {section}"#,

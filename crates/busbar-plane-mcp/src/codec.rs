@@ -70,13 +70,16 @@ pub fn protected_resource_metadata_path(mount_path: &str) -> String {
     format!("{PROTECTED_RESOURCE_WELL_KNOWN}{mount_path}")
 }
 
-/// The single MCP protocol revision busbar implements.
+/// THE STATELESS REVISION: the one the plane's dispatch is written against, and the one busbar
+/// speaks to an upstream first.
 ///
-/// ONE revision, deliberately. The conformance suite runs each scenario per revision and one run
-/// does not cover another, so supporting two revisions is two test legs and two wire formats, not a
-/// compatibility shim. `2025-11-25` and earlier are stateful: they have an `initialize` handshake,
-/// protocol sessions and a GET stream, all of which this revision deleted, and building them means
-/// building session machinery this release can otherwise skip entirely.
+/// It is not the only revision served. The session revisions (`2025-11-25`, `2025-06-18`) and the
+/// `2024-11-05` event stream are served too, in both directions, by revision negotiation and never
+/// by configuration (THE DESIGN section 2, the mcp bullet): a session request is RAISED into this
+/// revision's shape before the one dispatch and its answer LOWERED after it
+/// ([`crate::adapt`]), and the revisions and their negotiation are [`crate::revision`]'s. Every
+/// request of this revision is answered on the stateless path exactly as it was before sessions
+/// existed.
 ///
 /// It lives on the CODEC side of the split because it is protocol vocabulary — the plane's envelope
 /// layer (`busbar_mcp::mcp::envelope`) re-exports it under its historical path, and the conformance
@@ -330,6 +333,51 @@ impl McpNotification {
         }
         Bytes::from(serde_json::to_vec(&envelope).unwrap_or_default())
     }
+}
+
+/// The fields THIS BODY implies, by lower-case name: the `Accept` preference (a request that named
+/// a logging level or a progress token asked for the frames only a stream carries), the method,
+/// the target name where the method has one, and the protocol version its `_meta` states.
+#[must_use]
+pub fn mirrored(value: &serde_json::Value) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    let meta = value.get("params").and_then(|p| p.get("_meta"));
+    let wants_stream = meta.is_some_and(|m| {
+        m.get(crate::framing::META_LOGGING_LEVEL).is_some()
+            || m.get("progressToken").is_some_and(|t| !t.is_null())
+    });
+    out.push((
+        "accept".to_string(),
+        if wants_stream {
+            "text/event-stream, application/json"
+        } else {
+            "application/json, text/event-stream"
+        }
+        .to_string(),
+    ));
+    if let Some(method) = value.get("method").and_then(serde_json::Value::as_str) {
+        out.push((
+            H_MCP_METHOD.to_string(),
+            crate::client::jsonrpc::encode_sentinel(method),
+        ));
+        if let Some(name) = name_source_of(method)
+            .and_then(|source| value.get("params").and_then(|p| p.get(source)))
+            .and_then(serde_json::Value::as_str)
+        {
+            out.push((
+                H_MCP_NAME.to_string(),
+                crate::client::jsonrpc::encode_sentinel(name),
+            ));
+        }
+    }
+    if let Some(version) = meta
+        .and_then(|m| m.get(META_PROTOCOL_VERSION))
+        .and_then(serde_json::Value::as_str)
+        .filter(|v| !v.is_empty())
+    {
+        out.push((H_PROTOCOL_VERSION.to_string(), version.to_string()));
+    }
+    out
 }
 
 #[cfg(test)]

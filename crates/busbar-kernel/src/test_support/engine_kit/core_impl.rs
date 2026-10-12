@@ -42,7 +42,7 @@ fn need(level: HookNeed) -> busbar_plugin_loader::sign::NeedLevel {
 
 impl EngineTestKit for CoreEngineKit {
     fn metrics_init(&self) {
-        crate::metrics::init();
+        crate::snapshot::init();
     }
 
     fn install_operator_auth_row(&self, door: crate::test_support::AuthDoor) {
@@ -85,20 +85,14 @@ impl EngineTestKit for CoreEngineKit {
         ))
     }
 
-    fn hook_env(
-        &self,
-        aliases: &[&str],
-        prompt: HookNeed,
-        user: HookNeed,
-    ) -> Option<HookEnvHandle> {
-        crate::test_support::test_hook_env(
+    fn hook_env(&self, aliases: &[&str], prompt: HookNeed, user: HookNeed) -> HookEnvHandle {
+        Box::new(crate::test_support::test_hook_env(
             aliases,
             busbar_plugin_loader::sign::HookNeeds {
                 prompt: need(prompt),
                 user: need(user),
             },
-        )
-        .map(|env| Box::new(env) as HookEnvHandle)
+        ))
     }
 
     fn call_next_seq(&self, principal: &str) -> u64 {
@@ -148,7 +142,7 @@ impl EngineTestKit for CoreEngineKit {
     }
 
     fn admin_required_scope(&self, method: &axum::http::Method, path: &str) -> AdminScope {
-        match crate::admin::v1::contract::required_scope(method, path) {
+        match crate::admin::gate::required_scope(method, path) {
             busbar_contract::authz::Scope::ReadOnly => AdminScope::ReadOnly,
             busbar_contract::authz::Scope::Full => AdminScope::Full,
         }

@@ -30,6 +30,7 @@ fn manifest(name: &str, alias: &str, publisher: &str) -> Manifest {
         host: None,
         declares: Default::default(),
         statement: None,
+        former_names: Vec::new(),
     }
 }
 
@@ -1155,12 +1156,12 @@ fn signature_does_not_verify_under_a_weak_key() {
     );
 }
 
-/// THE CONTRACT-ABI RANGE A PLUGIN DECLARES (`declares.contract_abi`) is checked at admission,
-/// before anything is opened: a range sharing no version with this binary's supported range for the
-/// kind is REFUSED, and the refusal names BOTH ranges. The binary's range is read from the one
-/// `supported_abi` table, never restated here, so the test follows the table as it moves.
+/// THE SUPERSEDED CONTRACT-ABI RANGE (`declares.contract_abi`, THE DESIGN §2 table and §11.2) is no
+/// longer enforced: the kind's one `abi_version` is the only version fact admission reads. A
+/// manifest whose range excludes this binary (or is empty, or excludes its own stamp) still loads
+/// when its stamp is the kind's current version, and a wrong stamp is still refused.
 #[test]
-fn a_plugin_outside_its_declared_contract_abi_range_is_refused_naming_both_ranges() {
+fn a_declared_contract_abi_range_no_longer_decides_admission() {
     let supported: &dyn Fn(&str) -> &'static [u32] = &crate::registry::supported_abi;
     let host = crate::registry::supported_abi("store");
     let (floor, max) = (host[0], host[host.len() - 1]);
@@ -1171,62 +1172,30 @@ fn a_plugin_outside_its_declared_contract_abi_range_is_refused_naming_both_range
         m
     };
 
-    // Entirely ABOVE this binary: built for a contract this binary does not speak.
-    let err = validate_abi(&with_range(max + 1, max + 3, max + 1), supported)
-        .expect_err("a plugin whose range is above this binary's must be refused");
-    assert_eq!(
-        err,
-        format!(
-            "plugin 'busbar-store-future' supports contract ABI v{}..=v{} for kind 'store', and this \
-             binary supports v{floor}..=v{max}: the ranges share no version, refusing to load it",
-            max + 1,
-            max + 3
-        )
-    );
-    // Entirely BELOW this binary's floor.
-    if floor > 0 {
-        let err = validate_abi(&with_range(0, floor - 1, floor - 1), supported)
-            .expect_err("a plugin whose range is below this binary's floor must be refused");
-        assert!(
-            err.contains(&format!("v0..=v{}", floor - 1))
-                && err.contains(&format!("v{floor}..=v{max}")),
-            "{err}"
-        );
+    // A range wholly above this binary's, wholly below it, empty, and one excluding its own stamp:
+    // each loads on the kind's current version.
+    for (min, hi) in [
+        (max + 1, max + 3),
+        (0, floor.saturating_sub(1)),
+        (max + 5, max),
+    ] {
+        validate_abi(&with_range(min, hi, max), supported)
+            .unwrap_or_else(|e| panic!("range v{min}..=v{hi} must not decide admission: {e}"));
     }
 
-    // Overlapping at one version (the plugin's newest is this binary's floor): admitted.
-    validate_abi(
-        &with_range(floor.saturating_sub(1), floor, floor),
-        supported,
-    )
-    .expect("a range sharing a version with this binary's is admitted");
-    // Wholly inside: admitted.
-    validate_abi(&with_range(max, max, max), supported).expect("the current version is admitted");
-
-    // A stamp outside the plugin's OWN range is an incoherent manifest.
-    let err = validate_abi(&with_range(max, max, floor), supported)
-        .expect_err("an abi_version outside the declared range must be refused");
+    // The stamp is still the one fact: a version off the kind's window is refused whatever range
+    // the manifest states, and the refusal does not speak of a range.
+    let err = validate_abi(&with_range(max + 1, max + 1, max + 1), supported)
+        .expect_err("a stamp above the kind's version is refused");
     assert!(
-        err.contains(&format!(
-            "manifest abi_version {floor} is outside the contract-ABI range v{max}..=v{max}"
-        )),
+        err.contains(&format!("abi_version {}", max + 1)) && !err.contains("contract-ABI range"),
         "{err}"
     );
-    if floor < max {
-        // An empty range declares nothing it can speak.
-        let err = validate_abi(&with_range(max, floor, max), supported)
-            .expect_err("an empty range is refused");
-        assert!(
-            err.contains("declares an empty contract-ABI range"),
-            "{err}"
-        );
-    }
 
-    // ABSENT, the manifest is judged on its stamp alone, exactly as before the field existed.
+    // ABSENT, the manifest is judged on its stamp alone, as it always was.
     let mut plain = manifest("busbar-store-plain", "plain", FIRST_PARTY_PUBLISHER);
     plain.abi_version = max;
-    validate_abi(&plain, supported)
-        .expect("a manifest without a declared range loads on its stamp");
+    validate_abi(&plain, supported).expect("a manifest without a range loads on its stamp");
 }
 
 /// The declared range is SIGNED like every other `declares` statement (a tampered range fails the
@@ -1234,13 +1203,12 @@ fn a_plugin_outside_its_declared_contract_abi_range_is_refused_naming_both_range
 /// the wire when absent so every manifest packed before the field existed keeps its signed bytes.
 #[test]
 fn the_declared_contract_abi_range_is_signed_and_absent_by_default() {
-    let d: Declares =
-        serde_json::from_str(r#"{"contract_abi": {"min": 3, "max": 4}}"#).expect("parses");
+    let d =
+        Declares::from_declares_json(br#"{"contract_abi": {"min": 3, "max": 4}}"#).expect("parses");
     assert_eq!(d.contract_abi, Some(ContractAbiRange { min: 3, max: 4 }));
     assert!(!d.is_empty());
     assert!(
-        serde_json::from_str::<Declares>(r#"{"contract_abi": {"min": 3, "max": 4, "x": 1}}"#)
-            .is_err()
+        Declares::from_declares_json(br#"{"contract_abi": {"min": 3, "max": 4, "x": 1}}"#).is_err()
     );
     assert!(Declares::default().is_empty());
     assert_eq!(
@@ -1257,6 +1225,78 @@ fn the_declared_contract_abi_range_is_signed_and_absent_by_default() {
         signed,
         canonical_manifest_bytes(&widened),
         "the range is covered by the signature"
+    );
+}
+
+/// THE BREAKER FACT A PLANE DECLARES (`declares.breaker`, ARCHITECT Q4) is spelled
+/// `{"breaker": {"bench_below_trip_threshold": ..}}` in a declares file, reads back as stated and is
+/// signed like every other `declares` statement. A manifest that states none carries no `breaker`
+/// key at all: its wire bytes and its signed bytes are exactly the ones it had before the field
+/// existed, so every manifest already packed keeps its signature.
+#[test]
+fn a_declared_breaker_fact_round_trips_and_a_manifest_without_one_keeps_its_bytes() {
+    // ABSENT: no `breaker` key on the wire or under the signature, and the bytes survive a read.
+    let key = test_key(12);
+    let mut quiet = manifest("busbar-plane-quiet", "quiet", FIRST_PARTY_PUBLISHER);
+    quiet.kind = "plane".to_string();
+    quiet.declares.contract_abi = Some(ContractAbiRange { min: 1, max: 2 });
+    let quiet = sign(&key, quiet, b"door");
+    let wire = serde_json::to_vec(&quiet).expect("encodes");
+    assert!(
+        !String::from_utf8_lossy(&wire).contains("breaker"),
+        "an absent fact is left off the wire"
+    );
+    assert!(!String::from_utf8_lossy(&canonical_manifest_bytes(&quiet)).contains("breaker"));
+    let read: Manifest = serde_json::from_slice(&wire).expect("reads");
+    assert_eq!(read.declares.breaker, None);
+    assert_eq!(
+        serde_json::to_vec(&read).expect("encodes"),
+        wire,
+        "a manifest that states no breaker fact keeps its exact bytes"
+    );
+    assert_eq!(
+        canonical_manifest_bytes(&read),
+        canonical_manifest_bytes(&quiet),
+        "and the bytes its signature covers"
+    );
+    assert!(Declares::default().is_empty());
+
+    // STATED: it reads as stated, round-trips, and refuses a word it does not know.
+    let stated = r#"{"breaker":{"bench_below_trip_threshold":false}}"#;
+    let d = Declares::from_declares_json(stated.as_bytes()).expect("parses");
+    assert_eq!(
+        d.breaker,
+        Some(BreakerDecl {
+            bench_below_trip_threshold: false
+        })
+    );
+    assert!(!d.is_empty(), "a stated fact is a declaration");
+    assert_eq!(serde_json::to_string(&d).expect("encodes"), stated);
+    assert!(Declares::from_declares_json(
+        br#"{"breaker":{"bench_below_trip_threshold":false,"x":1}}"#
+    )
+    .is_err());
+    assert!(Declares::from_declares_json(br#"{"breaker":{}}"#).is_err());
+
+    let mut m = quiet.clone();
+    m.declares.breaker = d.breaker;
+    let m = sign(&key, m, b"door");
+    let back: Manifest =
+        serde_json::from_slice(&serde_json::to_vec(&m).expect("encodes")).expect("reads");
+    assert_eq!(back, m, "a stated fact round-trips whole");
+    let mut flipped = m.clone();
+    flipped.declares.breaker = Some(BreakerDecl {
+        bench_below_trip_threshold: true,
+    });
+    assert_ne!(
+        canonical_manifest_bytes(&m),
+        canonical_manifest_bytes(&flipped),
+        "the fact is covered by the signature"
+    );
+    assert_ne!(
+        canonical_manifest_bytes(&m),
+        canonical_manifest_bytes(&quiet),
+        "stating it changes the signed bytes"
     );
 }
 
@@ -1368,4 +1408,91 @@ fn from_config_keeps_its_refusal_bytes_and_carries_every_floor_exactly() {
         Some(test_key(3).verifying_key().to_bytes())
     );
     assert_eq!(p.first_party_key, embedded_release_pubkey());
+}
+
+// ── FORMER NAMES (ARCHITECT ruling: 1.5.5 configs load unchanged) ─────────────────────────────
+
+/// The busbar release public key (`.cargo/config.toml`'s `BUSBAR_RELEASE_PUBKEY`), which signed
+/// every 1.5.5-era first-party tarball.
+const RELEASE_PUBKEY: &str = "b18395a332803151b9cd40a71489a86a96d8bea3ee6a37a45f59dec197bacba7";
+
+/// A manifest packed before `former_names` existed parses UNCHANGED and its signature still
+/// verifies over this binary's canonical bytes: the field is skipped when empty, so an old
+/// manifest's signed bytes are exactly what its publisher signed. The witness is the REAL manifest
+/// of `busbar-webrequest` v1.0.6 (the release beside busbar v1.5.5), as its published tarball
+/// `busbar-webrequest-1.0.6-aarch64-apple-darwin.tar.gz` carries it (sha256 `7f0818c6…`, the
+/// testing/shadow-oracle/plugin-digests.tsv row), verified against the release key that signed it.
+#[test]
+fn an_old_manifest_with_no_former_names_parses_and_verifies_unchanged() {
+    let text = include_str!("../../tests/fixtures/manifest_1_5_5_busbar_webrequest.json");
+    let m: Manifest = serde_json::from_str(text).expect("a 1.5.5 manifest parses");
+    assert!(m.former_names.is_empty());
+    assert_eq!(m.name, "busbar-webrequest");
+    let key = public_key_from_hex(RELEASE_PUBKEY).unwrap();
+    let sig: [u8; 64] = hex::decode(&m.signature).unwrap().try_into().unwrap();
+    let canonical = canonical_manifest_bytes(&m);
+    assert!(
+        !String::from_utf8_lossy(&canonical).contains("former_names"),
+        "an empty former-name list stays off the signed bytes"
+    );
+    key.verify_strict(&canonical, &Signature::from_bytes(&sig))
+        .expect("the 1.5.5 release signature verifies over this binary's canonical bytes");
+    // Re-serialized, it is still the same document (no field appears from nowhere).
+    let back: serde_json::Value = serde_json::to_value(&m).unwrap();
+    let orig: serde_json::Value = serde_json::from_str(text).unwrap();
+    assert_eq!(back, orig);
+}
+
+/// A former name is SIGNED: the signature covers it, so a former name added, dropped or changed
+/// after signing fails verification (RED), and the signed list verifies (GREEN).
+#[test]
+fn former_names_are_covered_by_the_signature() {
+    let key = test_key(9);
+    let lib = b"lib";
+    let mut m = manifest("busbar-store-alpha", "alpha", "busbar");
+    m.former_names = vec!["busbar-store-alpha-plugin".into()];
+    let signed = sign(&key, m, lib);
+    assert!(String::from_utf8_lossy(&canonical_manifest_bytes(&signed))
+        .contains("\"former_names\":[\"busbar-store-alpha-plugin\"]"));
+    signature_ok(&signed, lib, &key.verifying_key()).expect("the signed list verifies");
+    for tamper in [
+        vec![],
+        vec![
+            "busbar-store-alpha-plugin".to_string(),
+            "alpha-x".to_string(),
+        ],
+        vec!["busbar-store-beta-plugin".to_string()],
+    ] {
+        let mut t = signed.clone();
+        t.former_names = tamper.clone();
+        assert!(
+            signature_ok(&t, lib, &key.verifying_key()).is_err(),
+            "a tampered former-name list {tamper:?} must not verify"
+        );
+    }
+}
+
+/// A former name is held to the alias's rules, and to being a name the plugin does not already
+/// have: lowercase `[a-z0-9-]+`, not the plugin's name or alias, not listed twice.
+#[test]
+fn a_malformed_or_repeated_former_name_fails_structure() {
+    let ok = |former: &[&str]| {
+        let mut m = manifest("busbar-hook-webrequest", "webrequest", "busbar");
+        m.former_names = former.iter().map(|s| s.to_string()).collect();
+        validate_identity(&m, HOST_IDENTITY)
+    };
+    ok(&["busbar-webrequest"]).expect("a well-formed former name");
+    ok(&[]).expect("none");
+    for bad in [
+        &["Busbar-WebRequest"][..],
+        &["busbar_webrequest"],
+        &["-busbar"],
+        &[""],
+        &["busbar-hook-webrequest"],
+        &["webrequest"],
+        &["busbar-webrequest", "busbar-webrequest"],
+    ] {
+        let e = ok(bad).expect_err("refused");
+        assert!(e.contains("former name"), "{bad:?}: {e}");
+    }
 }

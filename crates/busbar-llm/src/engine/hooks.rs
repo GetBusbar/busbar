@@ -352,7 +352,7 @@ pub(crate) fn enforce_content_cap(
     if bytes <= cap {
         return Some(p);
     }
-    metrics::counter!(busbar_kernel::metrics::HOOK_CONTENT_TRUNCATED_TOTAL).increment(1);
+    metrics::counter!(busbar_kernel::snapshot::HOOK_CONTENT_TRUNCATED_TOTAL).increment(1);
     // Per-request condition on a configured ceiling; the HOOK_CONTENT_TRUNCATED_TOTAL counter above
     // is the operator-facing signal, so log the detail at `debug!` rather than warn-spamming per call.
     tracing::debug!(
@@ -401,6 +401,7 @@ pub(crate) fn build_rewrite_request<'a>(
         // set to read candidate-phase catalog signals from, and no request-phase compute fn is
         // wired to this builder in this pass. Empty (never allocated).
         signals: Default::default(),
+        session: None,
     }
 }
 
@@ -690,6 +691,7 @@ pub(crate) async fn decide_policy_order(
         // Request-phase catalog signals: none wired to the decide path in this pass (the existing
         // core fields above already cover every request-shape signal a route policy reads today).
         signals: Default::default(),
+        session: None,
     };
 
     // "Decision observability": the config generation's declared-signal
@@ -1019,8 +1021,8 @@ pub(crate) fn map_decision(
         // defense in depth: no policy, present or future, can mint a success/redirect/5xx or a
         // log/client-injecting message through this path.
         RoutingDecision::Reject { status, message } => PolicyOutcome::RejectRequest {
-            status: busbar_kernel::hooks::wire::clamp_reject_status(status),
-            message: busbar_kernel::hooks::wire::sanitize_reject_message(&message),
+            status: busbar_contract::hook_wire::reply::clamp_reject_status(status),
+            message: busbar_contract::hook_wire::reply::sanitize_reject_message(&message),
             name: policy_name,
         },
         // The hook's RESTRICT verb: keep only candidates carrying one of `tags_any` (a compliance

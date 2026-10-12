@@ -296,6 +296,7 @@ def row_first_party_plugin(ctx) -> str:
     with open(config, "w") as fh:
         fh.write(
             'listen: "127.0.0.1:0"\n'
+            "store: { module: memory }\n"
             "providers_file: %s\n"
             "providers:\n  mock:\n    api_key: { env: MOCK_KEY }\n"
             "models:\n  m:\n    provider: mock\n"
@@ -321,9 +322,31 @@ def row_first_party_plugin(ctx) -> str:
     if len(rows) != 1:
         raise RowFailure("expected exactly 1 inventory row for the probe plugin, got %d:\n%s" % (len(rows), out))
     line = rows[0].rstrip()
-    want_sig, want_status = probe["expect_signature"], probe["expect_status"]
-    if not re.search(r"\b%s\b" % re.escape(want_sig), line) or not line.endswith(want_status):
-        raise RowFailure(
+    verdict = judge_probe_row(probe, line)
+    if verdict is not None:
+        raise RowFailure(verdict)
+    if probe["expect_status"] == "refused":
+        return "%s %s is refused as a 1.5.x plugin, naming the rebuild" % (probe["repo"], probe["tag"])
+    return "%s %s verifies as %s/%s" % (
+        probe["repo"], probe["tag"], probe["expect_signature"], probe["expect_status"])
+
+
+def judge_probe_row(probe, line):
+    """The plugin probe's verdict on ONE `--list-plugins` row: `None` when the row is the state the
+    probe expects, else the failure text.
+
+    `expect_status` is `ready` (the row must carry `expect_signature` and end in `ready`) or
+    `refused` (the STATUS column must be an `INVALID:` row carrying every `expect_refusal` string —
+    a 1.5.x JSON-contract plugin is refused at boot naming the rebuild, THE DESIGN §11.8). Any other
+    value, or a `refused` probe naming no refusal, is refused itself: a probe that expects nothing in
+    particular passes on anything.
+    """
+    want_status = probe.get("expect_status")
+    if want_status == "ready":
+        want_sig = probe["expect_signature"]
+        if re.search(r"\b%s\b" % re.escape(want_sig), line) and line.endswith(want_status):
+            return None
+        return (
             "the shipped binary does NOT accept a genuinely signed first-party plugin. Expected "
             "SIGNATURE `%s` and STATUS `%s`; got:\n  %s\n"
             "This is the functional form of the 1.5.3 aarch64 defect -- against that artifact this "
@@ -333,7 +356,26 @@ def row_first_party_plugin(ctx) -> str:
             "not the public half of the key the plugin repos sign with."
             % (want_sig, want_status, line, probe["repo"], probe["tag"])
         )
-    return "%s %s verifies as %s/%s" % (probe["repo"], probe["tag"], want_sig, want_status)
+    if want_status == "refused":
+        needles = probe.get("expect_refusal")
+        if not isinstance(needles, list) or not needles or not all(
+                isinstance(n, str) and n for n in needles):
+            return ("plugin_probe expects `refused` but names no refusal (`expect_refusal` must be a "
+                    "non-empty list of non-empty strings); a refusal nobody named passes on any row")
+        status = line.split(" INVALID: ", 1)
+        if len(status) != 2:
+            return (
+                "the shipped binary did NOT refuse %s %s, a 1.5.x JSON-contract plugin: 1.6.0 loads "
+                "no legacy plugin (THE DESIGN §11.8). Expected an `INVALID:` row naming the "
+                "rebuild; got:\n  %s" % (probe["repo"], probe["tag"], line))
+        missing = [n for n in needles if n not in status[1]]
+        if missing:
+            return (
+                "the shipped binary refused %s %s, but not with the named refusal: the STATUS "
+                "column lacks %s; got:\n  %s"
+                % (probe["repo"], probe["tag"], ", ".join(repr(m) for m in missing), line))
+        return None
+    return ("plugin_probe.expect_status is %r; it must be `ready` or `refused`" % (want_status,))
 
 
 def row_version_anchored(ctx) -> str:
@@ -1024,6 +1066,40 @@ def selftest(contract_path: str = DEFAULT_CONTRACT, targets_path: str = DEFAULT_
         else:
             print("  [FAILED] %-38s -> %s" % (label, why))
             failures += 1
+
+    # ── THE PLUGIN PROBE'S VERDICT, BOTH STATES, BOTH WAYS ───────────────────────────────────────
+    # The row itself needs a real artifact; its JUDGE does not. A `refused` probe must accept the
+    # named refusal and refuse a binary that loads the 1.5.x plugin (the legacy-loading RED arm), a
+    # refusal that does not name the rebuild, and a probe that names no refusal at all.
+    refused_probe = {"repo": "r", "tag": "t", "expect_status": "refused",
+                     "expect_refusal": ["abi_version 2 is not supported for kind 'store'",
+                                        "rebuild the plugin against the 1.6.0 SDK"]}
+    refusal_row = ("p.tar.gz - - - - INVALID INVALID: manifest abi_version 2 is not supported for "
+                   "kind 'store' by this binary (supported range v4..=v4) — rebuild the plugin "
+                   "against the 1.6.0 SDK")
+    loaded_row = "p.tar.gz busbar-store-sqlite-plugin sqlite store 1.0.4 first-party ready"
+    check("a refused probe accepts the named refusal",
+          judge_probe_row(refused_probe, refusal_row) is None,
+          "the 1.5.x plugin refused at the ABI check, naming the rebuild")
+    check("a refused probe refuses a loaded plugin",
+          judge_probe_row(refused_probe, loaded_row) is not None,
+          "RED arm: a binary that loads a 1.5.x JSON-contract plugin is loading legacy")
+    check("a refused probe refuses an unnamed refusal",
+          judge_probe_row(refused_probe, refusal_row.split(" — ")[0]) is not None,
+          "a refusal that does not name the rebuild is not the named refusal")
+    check("a refused probe naming nothing is refused",
+          judge_probe_row(dict(refused_probe, expect_refusal=[]), refusal_row) is not None,
+          "an empty expect_refusal would pass any INVALID row")
+    ready_probe = {"repo": "r", "tag": "t", "expect_status": "ready", "expect_signature": "first-party"}
+    check("a ready probe accepts a ready first-party row",
+          judge_probe_row(ready_probe, loaded_row) is None
+          and judge_probe_row(ready_probe, refusal_row) is not None,
+          "the `ready` state is still judged, both ways, for the day a 1.6.0 plugin is published")
+    real_probe = json.load(open(targets_path, encoding="utf-8"))["plugin_probe"]
+    check("the real probe's state is judged",
+          judge_probe_row(real_probe, refusal_row) is None
+          and judge_probe_row(real_probe, loaded_row) is not None,
+          "release-targets.json's plugin_probe expects the named refusal of its 1.5.x plugin")
 
     # ── A TYPE THAT DRIFTED IS REFUSED, NOT QUIETLY NON-MATCHED ──────────────────────────────────
     # The undeclared-FIELD case above is the loud half; this is the silent half. `published: true`

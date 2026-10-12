@@ -15,8 +15,8 @@
 //!    it to the destination its manifest declares, and the line is on disk — the line, and no span
 //!    (the instance subscribes `logs` only);
 //! 3. the host's `/metrics` exposition, read into the recorder snapshot, reaches the dropped-in
-//!    sink's render. A sink that serves no metrics answers the SDK default, the text content type
-//!    and no body; the byte-for-byte render is the prometheus sink's own, proven in its repo
+//!    sink's render through its memory-ABI door. A sink that serves no metrics renders no body;
+//!    the byte-for-byte render is the prometheus sink's own, proven in its repo
 //!    (`render_exposition` left the contract SDK for it, ABI-TRIM F10a).
 //!
 //! RED against the tree before the axis: step 1 fails, the process exits naming the unknown exporter.
@@ -45,24 +45,28 @@ const PLUGIN: &str = "dropped-sink";
 const CDYLIB: &str = "busbar_export_file_plugin";
 
 /// The real sink's `cdylib`, newest wins: uplifted by its exact name, or under `deps/` with a metadata
-/// hash. Under CI a missing artifact is a hard failure, never a silent skip.
-fn export_cdylib() -> Option<Vec<u8>> {
-    let found = common::plugins::cdylib(CDYLIB);
-    assert!(
-        found.is_some() || std::env::var_os("CI").is_none(),
-        "the {CDYLIB} cdylib is not built under CI; refusing to silently skip item 141's control"
-    );
-    found
+/// hash. A missing artifact is a hard failure in every run, never a silent skip of item 141's
+/// control.
+fn export_cdylib() -> Vec<u8> {
+    common::plugins::cdylib(CDYLIB)
+        .unwrap_or_else(|| common::plugins::missing(CDYLIB, common::plugins::BUILD_PINNED))
 }
 
 fn fixture_dir() -> PathBuf {
     let d = std::env::temp_dir().join(format!(
         "busbar-export-dropped-in-{}-{}",
         std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
+        {
+            static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            format!(
+                "{}-{}-{}",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |d| d.as_nanos()),
+                line!(),
+                NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            )
+        }
     ));
     std::fs::create_dir_all(d.join("plugins")).unwrap();
     d
@@ -73,11 +77,13 @@ fn free_port() -> u16 {
 }
 
 /// The export `cdylib` packed as an UNSIGNED `kind: export` tarball (the config below opts into
-/// unsigned plugins, as the CLI fixtures do), its manifest declaring `destinations` (K9a S4): the
-/// settings keys the host opens a destination for.
+/// unsigned plugins, as the CLI fixtures do), its manifest stating the door's Statement and
+/// declaring `destinations` (K9a S4): the settings keys the host appends to for it.
 fn write_tarball_declaring(dir: &Path, lib: &[u8], destinations: &[&str]) {
     let mut m = common::plugins::manifest("export", PLUGIN, "acme");
     m.declares.destinations = destinations.iter().map(|d| d.to_string()).collect();
+    // The sink is on the export kind's memory ABI: its manifest states its door's Statement.
+    common::plugins::state(&mut m, lib);
     let bytes = common::plugins::seal(m, lib);
     std::fs::write(dir.join("plugins").join("dropped-sink.tar.gz"), bytes).unwrap();
 }
@@ -96,6 +102,7 @@ fn write_configs_with(dir: &Path, data_port: u16, admin_port: u16, tail_settings
 admin_listen: "127.0.0.1:{admin_port}"
 advanced:
   allow_destinations: ["127.0.0.1"]
+store: {{module: memory}}
 admin_require_mtls: false
 auth:
   chain: []
@@ -164,10 +171,7 @@ fn log_of(dir: &Path) -> String {
 
 #[test]
 fn a_dropped_in_export_plugin_serves() {
-    let Some(lib) = export_cdylib() else {
-        eprintln!("skip: the {CDYLIB} cdylib is not built");
-        return;
-    };
+    let lib = export_cdylib();
     let dir = fixture_dir();
     write_tarball_declaring(&dir, &lib, &["path"]);
     let lines = dir.join("lines.jsonl");
@@ -261,14 +265,17 @@ fn a_dropped_in_export_plugin_serves() {
     );
 
     // 3. THE RECORDER SNAPSHOT (K9a S6): the host's real exposition, read into the snapshot, is
-    // handed to the dropped-in sink. The file sink serves no `/metrics`, so it answers the SDK
-    // default: the text content type and no body. The byte-for-byte render is the prometheus
+    // handed to the dropped-in sink through its door. The file sink serves no `/metrics`, so it
+    // renders no body. The byte-for-byte render is the prometheus
     // sink's, which owns `render_exposition` (ABI-TRIM F10a) and proves it in its own repo.
     let exposition = scrape(data_port).map(|(_, b)| b).unwrap_or_default();
     assert!(!exposition.is_empty(), "the host serves an exposition");
-    let (content_type, rendered) = common::plugins::render_snapshot(&lib, PLUGIN, &exposition);
-    assert_eq!(content_type, "text/plain; version=0.0.4");
-    assert_eq!(rendered, "", "a sink serving no metrics renders no body");
+    let settings = format!("{{\"path\":\"{}\"}}", lines.display());
+    let rendered = common::plugins::render_snapshot(&lib, PLUGIN, &settings, &exposition);
+    assert!(
+        rendered.is_empty(),
+        "a sink serving no metrics renders no body"
+    );
 
     drop(child);
     let _ = std::fs::remove_dir_all(&dir);
@@ -280,10 +287,7 @@ fn a_dropped_in_export_plugin_serves() {
 /// accepts validate clean. RED before the op: the refused settings validated clean (exit 0).
 #[test]
 fn validate_reports_a_dropped_in_sinks_settings_errors_in_its_own_words() {
-    let Some(lib) = export_cdylib() else {
-        eprintln!("skip: the {CDYLIB} cdylib is not built");
-        return;
-    };
+    let lib = export_cdylib();
     let dir = fixture_dir();
     write_tarball_declaring(&dir, &lib, &[]);
     let validate = |tail_settings: &str| {

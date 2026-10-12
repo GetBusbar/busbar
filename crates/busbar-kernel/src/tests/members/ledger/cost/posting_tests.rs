@@ -5,7 +5,7 @@
 
 use super::fixtures::*;
 use busbar_kernel_ledger::cost::{
-    apply_tier, LaneClass, MoneyError, Posting, RateCard, FEE_CLASS, STANDARD_TIER_BP,
+    checked_apply_tier, LaneClass, MoneyError, Posting, RateCard, FEE_CLASS, STANDARD_TIER_BP,
 };
 
 /// The stored pre-tier amount is the sum over the posting's lines INCLUDING the fee line, and each
@@ -309,7 +309,7 @@ fn the_tier_is_a_single_divide_not_a_sum_of_per_line_floors() {
         posted.priced_nanos, 5,
         "one divide of the summed ten, never two floors of two and a half"
     );
-    assert_eq!(apply_tier(10, 5_000), 5);
+    assert_eq!(checked_apply_tier(10, 5_000), Some(5));
 }
 
 /// The estimated mark travels from the usage report onto the posting: a figure the destination

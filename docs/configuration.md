@@ -263,7 +263,8 @@ resolving to PEM bytes. The same shape configures the admin listener under `admi
 refuses to boot unless `admin_require_mtls: false` is set deliberately).
 
 Certs/keys are loaded once at startup; any missing or unparseable file is a fatal
-startup error naming the file. ALPN advertises http/1.1. Rotate certs by replacing
+startup error naming the file. ALPN offers `h2, http/1.1`: a client that offers h2 speaks
+HTTP/2, one that offers only http/1.1 is served HTTP/1.1. Rotate certs by replacing
 the files and restarting. Full operational guide:
 [`operations.md`](operations.md#inbound-tls--mutual-tls-mtls).
 
@@ -616,7 +617,14 @@ other limit's.
 ### `rate_card` and `per_request_fee`
 
 The ONLY cost source. Every billable class a plane declares is the ledger (the four reserved LLM
-token tiers, plus any OPEN class a plane counts — a rerank's `search_units`, an A2A hop's `bytes`);
+token tiers, plus any OPEN class a plane counts — a rerank's `search_units`, an A2A hop's `bytes`).
+Every count a provider reports is a ledger line under its class (owner ruling LEDGER-100): beside
+its tokens the LLM plane ledgers `search_units` (rerank search units, Anthropic web searches),
+`classifications` (Cohere `billed_units.classifications`), `web_fetch_requests` (Anthropic),
+`unitemized_tokens` (the tokens a provider's stated total counts above its itemized buckets),
+`images` (per-image answers: dall-e, Imagen, Titan, SDXL), `audio_ms` (a transcription's reported
+duration, in whole milliseconds) and one class per Bedrock guardrail policy-unit count
+(`guardrail_*`). None of these counts toward a `tokens:` cap;
 every dollar figure is DERIVED at read time as `sum(class_count x class_rate) + requests x
 per_request_fee`, so correcting a rate is a config edit + reload with no re-billing and no data
 migration.
@@ -624,8 +632,16 @@ migration.
 ```yaml
 rate_card:
   sonnet-anthropic: { input_utok: 3.0, output_utok: 15.0, cache_read_utok: 0.3, cache_write_utok: 3.75,
-                       units: { search_units: 0 } }     # open class: free, but explicitly configured
-  sonnet-bedrock:   { input_utok: 2.8, output_utok: 14.0, units: { search_units: 0 } }
+                       units: { search_units: 0, classifications: 0, web_fetch_requests: 0,
+                               unitemized_tokens: 0, images: 0, audio_ms: 0,
+                               guardrail_automated_reasoning_policies: 0,
+                               guardrail_automated_reasoning_policy_units: 0,
+                               guardrail_content_policy_image_units: 0, guardrail_content_policy_units: 0,
+                               guardrail_contextual_grounding_policy_units: 0,
+                               guardrail_sensitive_information_policy_free_units: 0,
+                               guardrail_sensitive_information_policy_units: 0,
+                               guardrail_topic_policy_units: 0, guardrail_word_policy_units: 0 } }   # open classes: free, but explicitly configured
+  sonnet-bedrock:   { input_utok: 2.8, output_utok: 14.0 }
 per_request_fee: 0
 ```
 
@@ -674,9 +690,10 @@ rate card in force names no price for class \`<class>\` of \`<lane>\`"}}`) inste
 internal`; no figure moves, only the status and code the caller sees change.
 
 > **Upgrading from 1.5.5.** Every 1.5.5 deployment with a `rate_card:` now FAILS BOOT until the card
-> configures every class its plane declares — in practice, add `units: { search_units: 0 }` to any
-> one entry of the flat/`pools` card (or price it, if you bill reranks). The declared classes per
-> plane are: `pools` (LLM) = `input`, `output`, `cache_read`, `cache_write`, `search_units`; `tools`
+> configures every class its plane declares — in practice, add the `units:` map above (every LLM
+> open class at `0`) to any one entry of the flat/`pools` card, and price the ones you bill. The
+> declared classes per plane are: `pools` (LLM) = `input`, `output`, `cache_read`, `cache_write`,
+> `search_units`, `classifications`, `web_fetch_requests`, `unitemized_tokens`, `images`, `audio_ms`, `guardrail_automated_reasoning_policies`, `guardrail_automated_reasoning_policy_units`, `guardrail_content_policy_image_units`, `guardrail_content_policy_units`, `guardrail_contextual_grounding_policy_units`, `guardrail_sensitive_information_policy_free_units`, `guardrail_sensitive_information_policy_units`, `guardrail_topic_policy_units`, `guardrail_word_policy_units`; `tools`
 > (MCP) = `tool_calls`, `bytes`; `agents` (A2A) = `bytes`; `decisions` = `decision`; `streams`
 > (voice) = `audio_tokens_in`, `audio_tokens_out`, `text_tokens_in`, `text_tokens_out`,
 > `audio_seconds_in`, `tool_calls`. (`cached_tokens` is reported by both duplex dialects but is
@@ -689,7 +706,7 @@ internal`; no figure moves, only the status and code the caller sees change.
 
 ### `store`
 
-The durable store as a plugin instance: `{ module, settings }`. The default `memory` module is the
+The store as a plugin instance: `{ module, settings }`. **Required in 1.6.0**: `busbar --validate` refuses a config without a `store:` block, and `busbar --migrate-config` inserts `store: {module: memory}`. The `memory` module is the
 compiled-in ephemeral RAM store (keys, usage, and the audit log reset on restart); every durable
 backend is a signed plugin tarball.
 
@@ -1435,12 +1452,14 @@ security:
 
 ## Minimal working example
 
-The smallest config that parses and resolves. `providers` and `models` are the only required top-level sections.
+The smallest config that parses and resolves. `providers`, `models` and `store` are the only required top-level sections.
 
 **`config.yaml`:**
 
 <!-- doc-check: config -->
 ```yaml
+store: { module: memory }
+
 providers:
   anthropic:
     api_key: { env: ANTHROPIC_KEY }
@@ -1506,8 +1525,8 @@ rate_card:
 per_request_fee: 1
 
 # ---------------------------------------------------------------------------
-# Store: durable keys/usage/audit/denylist (a loadable plugin; omit the block
-# for the ephemeral RAM default).
+# Store: keys/usage/audit/denylist (a plugin; REQUIRED in 1.6.0, `module: memory`
+# is the ephemeral RAM store; `busbar --migrate-config` inserts it).
 # ---------------------------------------------------------------------------
 store:
   module: sqlite
@@ -1758,7 +1777,7 @@ unless `allow_destinations` names it: a provider on `localhost` or an internal n
 Operator infrastructure a plugin's config names (a database, a secret service, a directory) may be
 private or loopback without an entry. A cloud-metadata address is refused for every destination,
 configured ones included (a configured name that later resolves to one is refused). The check runs after name resolution, and the connection is
-made to the address that was checked. `allow_destinations` lists what is always allowed: an exact host (`ollama.internal`), a
+made to the address that was checked; an IP address written in a URL is checked as that address. Through an HTTP(S)/ALL_PROXY CONNECT proxy, the target is checked before the proxy is asked: its name always, and its addresses when the name resolves locally; a name that does not resolve locally is passed to the proxy, and what it reaches behind the proxy is the proxy's boundary. `allow_destinations` lists what is always allowed: an exact host (`ollama.internal`), a
 wildcard (`*.corp.example.com` matches names under it, not the apex), an IP (`127.0.0.1`), or a CIDR
 (`10.20.0.0/16`). A host entry never admits a cloud-metadata answer; only an IP or CIDR entry naming the
 address does. With `block_private_addresses: false`, cloud metadata is still refused. Both are

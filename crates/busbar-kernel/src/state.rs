@@ -72,14 +72,23 @@ pub struct App {
     /// slots, so counts accumulate monotonically across generations. Observation only — THE RULE:
     /// enforcement counts never go through the bank.
     pub(crate) tslots: Arc<crate::telemetry::AppSlots>,
-    /// THE FALLBACK PLANE'S RUNTIME SLOT KEY — the interned `runtime_slot_key(fallback_key())` under
-    /// which THIS config generation's runtime object rides in [`App::plane_slots`], the same opaque
-    /// slot every other registered plane carries its own runtime object in. Resolved ONCE at build
-    /// (`appbuild` / the test fixture) so the money-path read ([`App::engine_tables_view`]) is a
-    /// single cheap `plane_slots` lookup + ONE downcast, never the interning `runtime_slot_key` call.
+    /// THE FALLBACK PLANE'S RUNTIME SLOT KEY — the interned `runtime_slot_key` of the plane that
+    /// DECLARES itself fallback ([`crate::plane::fallback_decl`]; a key naming no plane when none
+    /// does), under which THIS config generation's runtime object rides in [`App::plane_slots`], the
+    /// same opaque slot every other registered plane carries its own runtime object in. Resolved ONCE
+    /// at build (`appbuild` / the test fixture) so the money-path read ([`App::engine_tables_view`])
+    /// is a single cheap `plane_slots` lookup + ONE downcast, never the interning `runtime_slot_key`
+    /// call.
     /// An ABSENT slot — the featureless binary boots with no fallback plane configured, so none was
     /// inserted — reads as the substrate-resident empty view, never a panic. Neutral: names no dialect.
     pub fallback_runtime_key: &'static str,
+    /// The composition root's projection of the configuration this generation was built from
+    /// ([`crate::appbuild::ConfigProjection`]); `None` when the root bound none.
+    pub config_projection: Option<Arc<dyn std::any::Any + Send + Sync>>,
+    /// The kernel's own tables over the `pools:`/`models:` sections this generation resolved: the
+    /// read seam's answer when no plane contributed a runtime of its own (a door-served plane walks
+    /// these sections through its door).
+    pub config_tables: Arc<busbar_kernel::plane_host::ConfigTables>,
     pub store: Arc<dyn LaneRuntime>,
     /// THE CONTAINER PLANES' BREAKER CELLS — the degenerate single-member cell per registered
     /// container-plane member (the breaker-all-planes audit's closing design). Live state, shared by
@@ -109,9 +118,7 @@ pub struct App {
     /// decl key (the opaque registry key) — a registry-keyed map in place of the former plane-named
     /// pool field, so core carries no plane vocabulary in its own field names. Each plane's
     /// entry is its own resolved pool-member set (member selection derives lanes from member position).
-    /// Read on the plane's submission/route path through [`App::plane_pools`]. (The other container
-    /// plane's own dedicated pool field above keeps its own 3-tuple `pool_members_repeatable` seam,
-    /// which also carries that pool's repeatable-member list.)
+    /// Read on the plane's submission/route path through [`App::plane_pools`].
     // Read on a plane's route/admission path; with one plane's feature off (and another's on) it is
     // never read.
     #[allow(dead_code)]
@@ -302,16 +309,6 @@ pub struct App {
     /// Per-principal ADMIN MUTATION rate limiter. Arc-shared across apply snapshots so the
     /// windows survive every swap.
     pub(crate) mutation_limiter: Arc<crate::ratelimit::MutationLimiter>,
-    /// Idempotency-Key replay cache for key minting (bounded, ~10min TTL): a retried POST with the
-    /// same key returns the FIRST response verbatim instead of double-creating. Arc-shared across
-    /// swaps. Maps (principal id, Idempotency-Key) → (created_at, cached 201 body). The key is
-    /// SCOPED TO THE PRINCIPAL: a different admin presenting the same Idempotency-Key value must
-    /// NOT replay another principal's response (which carries a once-shown secret) — the header is
-    /// a client-chosen string, not a cross-principal handle.
-    #[allow(clippy::type_complexity)]
-    pub idempotency_cache: Arc<
-        std::sync::Mutex<std::collections::HashMap<(String, String), (u64, serde_json::Value)>>,
-    >,
     /// The admin side's state (the config VERSION HISTORY, typed and filled by the admin service),
     /// behind the admin seam's one slot. Arc-shared across apply snapshots (survives every swap).
     pub admin: Arc<crate::admin::seam::AdminSlot>,
@@ -393,9 +390,6 @@ pub struct App {
     /// LAW 7 — this generation's configured plane sections (`RootCfg::plane_sections`). `None` only on
     /// a test fixture that states none, where every linked plane counts as configured.
     pub plane_sections: Option<std::collections::BTreeSet<&'static str>>,
-    /// The credential cache — Arc-shared ACROSS config swaps (like the
-    /// mutation limiter): an apply/reload must not silently re-open every cached-allow window.
-    pub credential_cache: Arc<crate::auth_cache::CredentialCache>,
     /// Per-module `max_admin_scope:` ceilings (from the auth chain entries) - consulted at admin
     /// scope resolution.
     pub auth_scope_caps: std::collections::HashMap<String, String>,
@@ -505,6 +499,23 @@ pub struct App {
 }
 
 impl App {
+    /// THE ADMIN CACHE FLUSH: every data-chain position and every external admin module (or only
+    /// the one `module` names) refreshed, so each auth plugin drops the verified credentials it
+    /// caches inside itself; the sum of the entries they report (THE DESIGN 11.11 R3). The
+    /// operator credential caches nothing.
+    pub fn flush_verified_credentials(&self, module: Option<&str>) -> u64 {
+        let admin: u64 = self
+            .admin_modules
+            .modules
+            .iter()
+            .filter(|(name, _)| module.is_none_or(|m| m == name.as_str()))
+            .map(|(_, m)| m.calls.refresh().unwrap_or(0))
+            .sum();
+        self.auth.flush_verified(module) + admin
+    }
+}
+
+impl App {
     /// LAW 7, the ONE generic check: is this linked plane configured in this generation? The fallback
     /// plane always is; any other only when its declared `config_section` is present. Core names no plane.
     pub fn plane_configured(&self, decl: &crate::plane::registry::PlaneDeclaration) -> bool {
@@ -538,7 +549,7 @@ impl App {
             self.plane_slot(key),
         ) {
             (Some(viewer), Some(slot)) => viewer(slot.as_ref()),
-            _ => &busbar_kernel::plane_host::EMPTY_VIEW,
+            _ => &*self.config_tables,
         }
     }
 
@@ -604,10 +615,11 @@ impl App {
         self.plane_slots.get_mut(key)
     }
 
-    /// The INTERNED runtime-slot key for the fallback plane, precomputed ONCE at build
-    /// (`runtime_slot_key(fallback_key())`). The relocated engine reads its runtime slot through this
-    /// cached `&'static str` rather than re-`runtime_slot_key`-ing (a `format!` + mutex-guarded intern)
-    /// on every own-runtime accessor call — the hot-path allocation the alloc gate pins.
+    /// The INTERNED runtime-slot key for the fallback plane, precomputed ONCE at build from the
+    /// declared fallback plane (`crate::plane::fallback_decl`). The relocated engine reads its runtime
+    /// slot through this cached `&'static str` rather than re-`runtime_slot_key`-ing (a `format!` +
+    /// mutex-guarded intern) on every own-runtime accessor call — the hot-path allocation the alloc
+    /// gate pins.
     pub fn fallback_runtime_key(&self) -> &'static str {
         self.fallback_runtime_key
     }
@@ -802,7 +814,14 @@ pub struct AppHandle {
     /// host. Bound once by the composition root ([`attach_on_swap`](Self::attach_on_swap)), which is
     /// the one place allowed to name the plane that owns them; unbound, a swap re-attaches nothing.
     attach: std::sync::OnceLock<fn(&Arc<dyn busbar_kernel::plane_host::EngineHost>)>,
+    /// What every [`swap`](Self::swap) tells of the generation it installed: the composition root's
+    /// served door planes, each refreshed onto a new generation of its section (ARCHITECT
+    /// Q-DEL-A2A-APPLY; THE DESIGN §11: plugin memory is "valid to its next refresh generation").
+    appliers: std::sync::Mutex<Vec<Applier>>,
 }
+
+/// One thing told of every generation a [`AppHandle::swap`] installs.
+pub type Applier = Box<dyn Fn(&Arc<App>) + Send + Sync>;
 
 impl AppHandle {
     pub fn new(app: Arc<App>) -> Self {
@@ -812,7 +831,17 @@ impl AppHandle {
             swapping: std::sync::atomic::AtomicBool::new(false),
             snapshot_host: std::sync::Mutex::new(None),
             attach: std::sync::OnceLock::new(),
+            appliers: std::sync::Mutex::new(Vec::new()),
         }
+    }
+
+    /// Tell `applier` of every generation a later [`swap`](Self::swap) installs (a config apply,
+    /// reload or mutation), after it is installed.
+    pub fn on_apply(&self, applier: Applier) {
+        self.appliers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(applier);
     }
 
     /// Bind what every [`swap`](Self::swap) runs against the incoming generation's host before the
@@ -915,6 +944,16 @@ impl AppHandle {
             attach(&host);
         }
         self.set_snapshot_host(host);
+        // EVERY APPLY IS A NEW GENERATION for the composition root's served door planes: each is
+        // refreshed onto the installed generation's section (its plugin memory resets with it).
+        for applier in self
+            .appliers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+        {
+            applier(&next);
+        }
     }
 
     /// Commit a live-config mutation as PERSIST-then-SWAP, FAIL-CLOSED — the ONE sanctioned way to

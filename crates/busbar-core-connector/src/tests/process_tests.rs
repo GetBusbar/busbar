@@ -190,27 +190,33 @@ fn loopback_allowed_refuses_the_nodes_own_ports() {
 fn the_kernel_asks_the_same_judge() {
     let j = guard_judge(&["127.0.0.1", "10.1.2.3"], vec![]);
     assert_eq!(
-        j.judge_name("http://93.184.216.34/x", EGRESS_OPEN_WEB),
+        j.judge_name("http://93.184.216.34/x", EGRESS_OPEN_WEB, false),
         Err(DEST_PLAINTEXT)
     );
     assert_eq!(
-        j.judge_name("http://93.184.216.34/x", EGRESS_DEFAULT),
+        j.judge_name("http://93.184.216.34/x", EGRESS_DEFAULT, false),
         Ok(())
     );
     assert_eq!(
-        j.judge_name("http://10.1.2.3/x", EGRESS_LOOPBACK_ALLOWED),
+        j.judge_name("http://10.1.2.3/x", EGRESS_LOOPBACK_ALLOWED, false),
         Err(DEST_PLAINTEXT)
     );
     assert_eq!(
-        j.judge_name("http://127.0.0.1:9/x", EGRESS_LOOPBACK_ALLOWED),
+        j.judge_name("http://127.0.0.1:9/x", EGRESS_LOOPBACK_ALLOWED, false),
         Ok(())
     );
-    assert_eq!(j.judge_name("ftp://93.184.216.34/", 0), Err(DEST_SCHEME));
     assert_eq!(
-        j.judge_name("https://u:p@93.184.216.34/", 0),
+        j.judge_name("ftp://93.184.216.34/", 0, false),
+        Err(DEST_SCHEME)
+    );
+    assert_eq!(
+        j.judge_name("https://u:p@93.184.216.34/", 0, false),
         Err(DEST_NO_HOST)
     );
-    assert_eq!(j.judge_name("https://10.0.0.5/", 0), Err(DEST_INTERNAL));
+    assert_eq!(
+        j.judge_name("https://10.0.0.5/", 0, false),
+        Err(DEST_INTERNAL)
+    );
     let r = j
         .judge_answer("api.test", &["10.9.9.9".parse().unwrap()], EGRESS_DEFAULT)
         .unwrap_err();

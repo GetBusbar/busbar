@@ -57,7 +57,7 @@ impl AbiStore for AuditTail {
 fn adapter_over_tail(tail: Result<Vec<AuditRecord>, String>) -> StoreAdapter {
     StoreAdapter::new(
         Arc::new(AuditTail(tail)),
-        busbar_contract::abi::cold::ABI_VERSION,
+        busbar_contract::abi::store::ABI_VERSION,
     )
 }
 

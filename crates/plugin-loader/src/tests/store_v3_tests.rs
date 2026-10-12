@@ -35,7 +35,7 @@ fn open() -> LoadedStore {
             max_inflight_cap: 1024,
             sink: Arc::new(NoSink),
             dispatcher: d.adopter(),
-            conns: None,
+            conns: crate::dispatch::ConnTable::NoNeeds,
         },
     )
     .expect("the memory store's door loads");
@@ -479,4 +479,23 @@ fn the_ephemeral_store_states_mark_ephemeral_on_its_statement_not_its_tail() {
     let st = read(&row.statement).expect("the rendering reads back");
     assert_eq!(st.marks & MARK_EPHEMERAL, MARK_EPHEMERAL);
     assert_eq!(st.kind_tail_size as usize, std::mem::size_of::<StoreTail>());
+}
+
+#[test]
+fn a_failed_op_reaches_the_record_store_as_the_stores_own_text() {
+    // 1.5.5 printed a durable-store failure as `store error: <the backend's text>` (oracle
+    // BOOT-172/BOOT-175); the v3 door's typed wording must not reach the operator in between.
+    let e = super::bridge::<()>(Err(StoreFailure::Failed(
+        "database disk image is malformed".to_string(),
+    )))
+    .unwrap_err();
+    assert_eq!(
+        e.to_string(),
+        "store error: database disk image is malformed"
+    );
+    let e = super::bridge::<()>(Err(StoreFailure::Overloaded)).unwrap_err();
+    assert_eq!(
+        e.to_string(),
+        "store error: the store is at its in-flight limit"
+    );
 }

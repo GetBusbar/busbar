@@ -22,9 +22,9 @@
   "checks_by_kind": {
    "gate": 9,
    "lint": 5,
-   "oracle-cell": 65,
+   "oracle-cell": 72,
    "oracle-family": 5,
-   "test": 457
+   "test": 438
   }
  },
  "dropped_since_last_write": [],
@@ -63,21 +63,21 @@
    "checks": [
     {
      "kind": "test",
-     "ref": "enforce_restricts_reapplies_compliance_tags_across_pools",
+     "ref": "crates/busbar-llm/src/engine/tests/hook_seam_tests.rs::enforce_restricts_reapplies_compliance_tags_across_pools",
      "proves": "a Reject restrict with no eligible lane fails closed; the Weighted arm passes candidates unchanged",
      "source": "curated",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "multi_restrict_disjoint_intersection_fails_closed",
+     "ref": "crates/busbar-llm/src/engine/tests/hook_seam_tests.rs::multi_restrict_disjoint_intersection_fails_closed",
      "proves": "two restricts intersecting to empty produce a 503 (status only, not the literal body)",
      "source": "curated",
      "status": "mapped"
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "test:enforce_restricts_reapplies_compliance_tags_across_pools, test:multi_restrict_disjoint_intersection_fails_closed"
+   "verdict_detail": "test:crates/busbar-llm/src/engine/tests/hook_seam_tests.rs::enforce_restricts_reapplies_compliance_tags_across_pools, test:crates/busbar-llm/src/engine/tests/hook_seam_tests.rs::multi_restrict_disjoint_intersection_fails_closed"
   },
   {
    "id": "PB-2",
@@ -363,28 +363,28 @@
    "checks": [
     {
      "kind": "test",
-     "ref": "global_gate_reject_short_circuits_the_request",
+     "ref": "crates/busbar-llm/src/engine/tests/hook_seam_tests.rs::global_gate_reject_short_circuits_the_request",
      "proves": "a decision-gate reject ends the request",
      "source": "curated",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "global_request_stage_tap_fires_on_a_real_dispatched_request",
+     "ref": "crates/busbar-llm/src/engine/tests/hook_seam_tests.rs::global_request_stage_tap_fires_on_a_real_dispatched_request",
      "proves": "request-stage taps fire through fire_global_taps",
      "source": "curated",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "migrated_request_hook_seats_after_admit_before_candidate",
+     "ref": "crates/busbar-llm/src/engine/tests/hook_seat_order_tests.rs::migrated_request_hook_seats_after_admit_before_candidate",
      "proves": "a decision-gate reject consumes the requests slot and refunds the billable request; rewrite, request taps and gates all run after the admission charge",
      "source": "hand",
      "status": "mapped"
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "test:global_gate_reject_short_circuits_the_request, test:global_request_stage_tap_fires_on_a_real_dispatched_request, test:migrated_request_hook_seats_after_admit_before_candidate"
+   "verdict_detail": "test:crates/busbar-llm/src/engine/tests/hook_seam_tests.rs::global_gate_reject_short_circuits_the_request, test:crates/busbar-llm/src/engine/tests/hook_seam_tests.rs::global_request_stage_tap_fires_on_a_real_dispatched_request, test:crates/busbar-llm/src/engine/tests/hook_seat_order_tests.rs::migrated_request_hook_seats_after_admit_before_candidate"
   },
   {
    "id": "PB-7",
@@ -600,30 +600,30 @@
   {
    "id": "PB-11",
    "surface": "plugin trust and ABI windows",
-   "binding": "`plugins.trust` verbatim: publishers allow-list, embedded first-party key, `allow_unsigned` / `allow_third_party` (default false; unsigned or unknown-publisher plugin LOGGED and SKIPPED with the literal messages, never dlopened), `UntrustedFloored` never relaxed, catalog verdict strings; the operator-key digest set is an ADDITIVE 1.6.0 layer; every plugin within its kind's 1.6.0 window (store [2,4] — OWNER DECISION: widened past the published-1.5.5 floor of [2,2] because ABI-4 stores are a later release and must load on this binary too, not a 1.5.5-parity constraint; auth [1,2], hook [1,1], export [2,2], secret [1,1] unchanged) loads through its ABI adapter (no \"floor 5\" precondition anywhere); `supported_abi(kind)` REPORTS the current window — boot, `--validate` and `POST /plugins/inspect` print `v2..=v4` for a store, never `v2..=v2` and never `v2..=v5`; a published-1.5.5 store (ABI 2) and an ABI-4 store both load; ABI 3 remains inside the window; `plugin-pack --abi-version` defaults to the 1.5.5 max; `TRANSPORT_VERSION = 1` is checked FIRST in `wire_up_raw` and stays 1 with the six kind-neutral symbols; `plugins.fetch` runs before preflight at boot (`fatal_on_miss`) and on reload (warn-and-keep), verify-before-write, never under `--validate`; a manifest OUTSIDE that window is refused with 1.5.5's literal `manifest abi_version {n} is not supported for kind '{kind}' by this binary (supported range v{floor}..=v{max})` printing the CURRENT range, never `PluginAbiTooOld`",
+   "binding": "`plugins.trust` verbatim: publishers allow-list, embedded first-party key, `allow_unsigned` / `allow_third_party` (default false; unsigned or unknown-publisher plugin LOGGED and SKIPPED with the literal messages, never dlopened), `UntrustedFloored` never relaxed, catalog verdict strings; the operator-key digest set is an ADDITIVE 1.6.0 layer; every plugin at its kind's ONE current version (THE DESIGN §11.8 \"No legacy loading\", ruling C21/ABI-o1, superseding the 1.5.5 floors: store [4], auth [3], hook [2], export [3], secret [1]); `supported_abi(kind)` REPORTS that version — boot, `--validate` and `POST /plugins/inspect` print `v4..=v4` for a store; a published 1.5.5 JSON-contract plugin (store 2, auth 2, hook 1, export 2) and a newer-than-host one are refused at boot (accepted difference ABI-o1, `breaking`); `plugin-pack --abi-version` defaults to the current version; `TRANSPORT_VERSION = 1` is checked FIRST in `wire_up_raw` and stays 1 with the six kind-neutral symbols; `plugins.fetch` runs before preflight at boot (`fatal_on_miss`) and on reload (warn-and-keep), verify-before-write, never under `--validate`; a manifest at any other version is refused with `manifest abi_version {n} is not supported for kind '{kind}' by this binary (supported range v{floor}..=v{max}): rebuild the plugin against the 1.6.0 SDK` printing the CURRENT version, never `PluginAbiTooOld`",
    "inventory": "config, plugins-stores :195, :224, :2000 (`plugin-sign/src/lib.rs:611-615`)",
-   "note": "CONTRADICTED in part by green tests: crates/plugin-loader/src/tests/registry_tests.rs store_abi_below_or_above_the_range_is_refused_naming_v2_to_v4 and supported_abi_store_floor_admits_v2 pin a store window of v2..=v4, where the binding requires v2..=v2 and refuses ABI 3/4. The plugins.load cells prove the trust/skip half only.",
+   "note": "Resolved 2026-10-02 by THE DESIGN 11.8 (ruling C21/ABI-o1): the loader accepts one version per kind; registry_tests.rs supported_abi_is_one_version_per_kind pins the windows and a_1_5_5_json_contract_plugin_is_refused_at_boot_naming_the_rebuild the refusal; the oracle cell plugins.abi|json-contract|store-sqlite@1.5-line records 1.5.5 serving the published plugin (accepted difference ABI-o1).",
    "status": "mapped",
    "checks": [
     {
      "kind": "oracle-family",
      "ref": "plugins",
      "status": "mapped",
-     "cites": 14,
-     "family_size": 14,
+     "cites": 13,
+     "family_size": 13,
      "source": "cells.json why"
     },
     {
      "kind": "test",
-     "ref": "supported_abi_auth_floor_admits_v1",
-     "proves": "the auth window [1,2]",
+     "ref": "supported_abi_is_one_version_per_kind",
+     "proves": "one current version per kind (THE DESIGN 11.8)",
      "source": "curated",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "a_v2_store_artifact_is_accepted_at_load",
-     "proves": "a v2 store artifact loads through the adapter",
+     "ref": "crates/plugin-loader/src/tests/registry_tests.rs::a_1_5_5_json_contract_plugin_is_refused_at_boot_naming_the_rebuild",
+     "proves": "a published 1.5.5 plugin is refused at boot naming the rebuild (C21)",
      "source": "curated",
      "status": "mapped"
     },
@@ -643,7 +643,7 @@
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "oracle-family:plugins, test:supported_abi_auth_floor_admits_v1, test:a_v2_store_artifact_is_accepted_at_load, test:untrusted_is_skipped_not_fatal_but_reference_fails_loud, gate:scripts/signing-gate.sh"
+   "verdict_detail": "oracle-family:plugins, test:supported_abi_is_one_version_per_kind, test:crates/plugin-loader/src/tests/registry_tests.rs::a_1_5_5_json_contract_plugin_is_refused_at_boot_naming_the_rebuild, test:untrusted_is_skipped_not_fatal_but_reference_fails_loud, gate:scripts/signing-gate.sh"
   },
   {
    "id": "PB-12",
@@ -1351,14 +1351,14 @@
    "checks": [
     {
      "kind": "test",
-     "ref": "enforce_restricts_reapplies_compliance_tags_across_pools",
+     "ref": "crates/busbar-llm/src/engine/tests/hook_seam_tests.rs::enforce_restricts_reapplies_compliance_tags_across_pools",
      "proves": "for a gate, Weighted leaves the candidate set unchanged",
      "source": "curated",
      "status": "mapped"
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "test:enforce_restricts_reapplies_compliance_tags_across_pools"
+   "verdict_detail": "test:crates/busbar-llm/src/engine/tests/hook_seam_tests.rs::enforce_restricts_reapplies_compliance_tags_across_pools"
   },
   {
    "id": "PB-29",
@@ -1778,42 +1778,21 @@
     },
     {
      "kind": "test",
-     "ref": "verdict_rules_and_expiry",
-     "proves": "Identify TTL clamp, Pass TTL, Reject never cached",
-     "source": "curated",
-     "status": "mapped"
-    },
-    {
-     "kind": "test",
-     "ref": "bounded_eviction",
-     "proves": "the MAX_ENTRIES cap",
-     "source": "curated",
-     "status": "mapped"
-    },
-    {
-     "kind": "test",
-     "ref": "module_partitions_and_flush",
-     "proves": "the cache is keyed per module and flush counts",
-     "source": "curated",
-     "status": "mapped"
-    },
-    {
-     "kind": "test",
-     "ref": "crates/busbar-kernel/src/auth/tests/plugin_chain_tests.rs::an_unauthenticated_chain_admits_nothing_to_the_cache",
-     "proves": "run_chain_cached caches nothing for a denied chain",
-     "source": "curated",
-     "status": "mapped"
-    },
-    {
-     "kind": "test",
      "ref": "test_admin_v1_credential_cache_and_flush_endpoint",
      "proves": "POST /auth/cache/flush returns a real flushed count",
+     "source": "curated",
+     "status": "mapped"
+    },
+    {
+     "kind": "oracle-cell",
+     "ref": "admin.ops|PostAuthCacheFlush|ok",
+     "proves": "the flush's {\"flushed\": N} diffed against the 1.5.5 binary",
      "source": "curated",
      "status": "mapped"
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "oracle-cell:http.crosscut|bearer-and-x-api-key, test:crates/busbar-kernel/src/auth/tests/tests.rs::test_empty_chain_is_open_front_door, test:crates/busbar-kernel/src/auth/tests/tests.rs::test_nonempty_chain_fails_closed_on_all_pass, test:crates/busbar-kernel/src/auth/tests/tests.rs::test_keys_in_chain_sets_flag_not_module, test:crates/busbar-kernel/src/auth/tests/tests.rs::test_chain_identifies_with_module_and_principal, test:crates/busbar-kernel/src/auth/tests/tests.rs::test_extract_client_token_precedence_is_authorization_first, test:crates/busbar-kernel/src/auth/tests/tests.rs::test_extract_client_token_non_bearer_authorization_falls_through_to_x_api_key, test:crates/busbar-kernel/src/auth/tests/tests.rs::test_extract_client_token_non_bearer_authorization_falls_through_to_x_goog_api_key, test:verdict_rules_and_expiry, test:bounded_eviction, test:module_partitions_and_flush, test:crates/busbar-kernel/src/auth/tests/plugin_chain_tests.rs::an_unauthenticated_chain_admits_nothing_to_the_cache, test:test_admin_v1_credential_cache_and_flush_endpoint"
+   "verdict_detail": "oracle-cell:http.crosscut|bearer-and-x-api-key, test:crates/busbar-kernel/src/auth/tests/tests.rs::test_empty_chain_is_open_front_door, test:crates/busbar-kernel/src/auth/tests/tests.rs::test_nonempty_chain_fails_closed_on_all_pass, test:crates/busbar-kernel/src/auth/tests/tests.rs::test_keys_in_chain_sets_flag_not_module, test:crates/busbar-kernel/src/auth/tests/tests.rs::test_chain_identifies_with_module_and_principal, test:crates/busbar-kernel/src/auth/tests/tests.rs::test_extract_client_token_precedence_is_authorization_first, test:crates/busbar-kernel/src/auth/tests/tests.rs::test_extract_client_token_non_bearer_authorization_falls_through_to_x_api_key, test:crates/busbar-kernel/src/auth/tests/tests.rs::test_extract_client_token_non_bearer_authorization_falls_through_to_x_goog_api_key, test:test_admin_v1_credential_cache_and_flush_endpoint, oracle-cell:admin.ops|PostAuthCacheFlush|ok"
   },
   {
    "id": "PB-36",
@@ -1867,22 +1846,10 @@
      "status": "mapped",
      "why": "validate, boot, mint, spend, restart, read back (persistence is the job)",
      "source": "cells.json why"
-    },
-    {
-     "kind": "test",
-     "ref": "unsupported_alone_opens_the_inert_default_on_every_defaulting_verb",
-     "status": "mapped",
-     "source": "hand"
-    },
-    {
-     "kind": "test",
-     "ref": "every_other_failure_shape_propagates_on_every_verb",
-     "status": "mapped",
-     "source": "hand"
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "oracle-cell:plugins.store-persist|store-mysql, oracle-cell:plugins.store-persist|store-postgres, oracle-cell:plugins.store-persist|store-sqlite, oracle-cell:plugins.store-persist|store-valkey, test:unsupported_alone_opens_the_inert_default_on_every_defaulting_verb, test:every_other_failure_shape_propagates_on_every_verb"
+   "verdict_detail": "oracle-cell:plugins.store-persist|store-mysql, oracle-cell:plugins.store-persist|store-postgres, oracle-cell:plugins.store-persist|store-sqlite, oracle-cell:plugins.store-persist|store-valkey"
   },
   {
    "id": "PB-38",
@@ -2081,7 +2048,7 @@
   {
    "id": "PB-43",
    "surface": "operational routes",
-   "binding": "`/healthz` on both listeners with the unconditional auth bypass, 200 `ok` iff any lane passes the NON-MUTATING `is_ready_any_cell` over the default and every per-pool cell, else 503 `no usable lanes` (side-effect-free, never steals the single-flight recovery probe); `/metrics` is `text/plain; version=0.0.4`; `/metrics/hooks` is a CORE axum route (not a plugin route), `text/plain; version=0.0.4; charset=utf-8`, with its exposition contract verbatim (no prefixing, one `hook=` label, `busbar_`-prefixed dropped, bucketless histogram as summary, first-occurrence type wins, `HOOK_METRICS_TTL_SECS = 10`, `MAX_HOOK_METRICS 64`, the name regex); `/stats` per RT-* with its 20 per-lane fields, `\"unbounded\"` string, `Unavailable` variant names classified breaker-first, `recovery_hint_ms` floor 2000 — the 1.6.0 refusal vocabulary never reaches it; `/metrics` declared only when `export.prometheus` is configured, `RouteAuth::Key` (data-plane client token, not admin); `/metrics/hooks` mounted only when `metrics::enabled()`; `/stats` per RT-*; absent the gate, the catch-all 404",
+   "binding": "`/healthz` on both listeners with the unconditional auth bypass, 200 `ok` iff any lane passes the NON-MUTATING `is_ready_any_cell` over the default and every per-pool cell, else 503 `no usable lanes` (side-effect-free, never steals the single-flight recovery probe) (ARCHITECT RULING K5-H1, 2026-10-07, pending OWNER signature: a deployment with NO model lane answers 200 `ok` iff at least one configured plane's generation OPENED — a door plane whose open answered, any other plane whose slot was built — and 503 `no usable lanes` when none did or no plane is configured, as in 1.5.5; with model lanes the lane rule is unchanged); `/metrics` is `text/plain; version=0.0.4`; `/metrics/hooks` is a CORE axum route (not a plugin route), `text/plain; version=0.0.4; charset=utf-8`, with its exposition contract verbatim (no prefixing, one `hook=` label, `busbar_`-prefixed dropped, bucketless histogram as summary, first-occurrence type wins, `HOOK_METRICS_TTL_SECS = 10`, `MAX_HOOK_METRICS 64`, the name regex); `/stats` per RT-* with its 20 per-lane fields, `\"unbounded\"` string, `Unavailable` variant names classified breaker-first, `recovery_hint_ms` floor 2000 — the 1.6.0 refusal vocabulary never reaches it; `/metrics` declared only when `export.prometheus` is configured, `RouteAuth::Key` (data-plane client token, not admin); `/metrics/hooks` mounted only when `metrics::enabled()`; `/stats` per RT-*; absent the gate, the catch-all 404",
    "inventory": "routes-admin; ops",
    "status": "mapped",
    "checks": [
@@ -2143,6 +2110,27 @@
     },
     {
      "kind": "test",
+     "ref": "healthz_with_no_model_lane_is_ready_when_a_configured_plane_opened",
+     "proves": "K5-H1: with no model lane, a configured plane that opened answers 200 ok",
+     "source": "curated",
+     "status": "mapped"
+    },
+    {
+     "kind": "test",
+     "ref": "healthz_with_no_model_lane_is_unready_when_the_planes_open_refused",
+     "proves": "K5-H1: a configured plane whose open refused answers 503 no usable lanes",
+     "source": "curated",
+     "status": "mapped"
+    },
+    {
+     "kind": "test",
+     "ref": "healthz_with_model_lanes_every_cell_open_stays_unready_beside_an_opened_plane",
+     "proves": "K5-H1: with model lanes the lane rule alone decides",
+     "source": "curated",
+     "status": "mapped"
+    },
+    {
+     "kind": "test",
      "ref": "thread_per_core_boots_and_serves_healthz",
      "proves": "/healthz is served unauthenticated on a real listener",
      "source": "curated",
@@ -2199,7 +2187,7 @@
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "oracle-cell:hooks|metrics-hooks@hooks-webrequest, oracle-cell:ops.scrape|metricshooks|key, oracle-cell:ops.scrape|metrics|key, oracle-cell:ops.scrape|stats|key, test:test_is_ready_any_cell_false_when_every_cell_open, test:test_is_ready_any_cell_true_when_a_pool_cell_is_ready, test:test_is_ready_is_side_effect_free, test:healthz_returns_a_real_response_not_the_default, test:thread_per_core_boots_and_serves_healthz, test:counter_renders_with_hook_label_and_verbatim_name, test:histogram_renders_as_summary, test:busbar_prefix_is_reserved, test:type_conflict_for_shared_name_is_dropped, test:test_stats_reports_at_capacity_when_lane_saturated, test:test_stats_limit_is_numeric_alias_of_max_concurrent, test:test_recovery_hint_ms"
+   "verdict_detail": "oracle-cell:hooks|metrics-hooks@hooks-webrequest, oracle-cell:ops.scrape|metricshooks|key, oracle-cell:ops.scrape|metrics|key, oracle-cell:ops.scrape|stats|key, test:test_is_ready_any_cell_false_when_every_cell_open, test:test_is_ready_any_cell_true_when_a_pool_cell_is_ready, test:test_is_ready_is_side_effect_free, test:healthz_returns_a_real_response_not_the_default, test:healthz_with_no_model_lane_is_ready_when_a_configured_plane_opened, test:healthz_with_no_model_lane_is_unready_when_the_planes_open_refused, test:healthz_with_model_lanes_every_cell_open_stays_unready_beside_an_opened_plane, test:thread_per_core_boots_and_serves_healthz, test:counter_renders_with_hook_label_and_verbatim_name, test:histogram_renders_as_summary, test:busbar_prefix_is_reserved, test:type_conflict_for_shared_name_is_dropped, test:test_stats_reports_at_capacity_when_lane_saturated, test:test_stats_limit_is_numeric_alias_of_max_concurrent, test:test_recovery_hint_ms"
   },
   {
    "id": "PB-44",
@@ -2288,21 +2276,21 @@
    "checks": [
     {
      "kind": "test",
-     "ref": "migrated_request_hook_seats_after_admit_before_candidate",
+     "ref": "crates/busbar-llm/src/engine/tests/hook_seat_order_tests.rs::migrated_request_hook_seats_after_admit_before_candidate",
      "proves": "a migrated request-stage chain seats after the admission door and ahead of the candidate tap: admission → rewrite → request taps → gates → candidate tap",
      "source": "hand",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "candidate_tap_fires_after_an_abstaining_gate_and_a_served_request_bills_once",
+     "ref": "crates/busbar-llm/src/engine/tests/hook_seat_order_tests.rs::candidate_tap_fires_after_an_abstaining_gate_and_a_served_request_bills_once",
      "proves": "the candidate tap fires only after the gates decided, on a served request",
      "source": "hand",
      "status": "mapped"
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "test:migrated_request_hook_seats_after_admit_before_candidate, test:candidate_tap_fires_after_an_abstaining_gate_and_a_served_request_bills_once"
+   "verdict_detail": "test:crates/busbar-llm/src/engine/tests/hook_seat_order_tests.rs::migrated_request_hook_seats_after_admit_before_candidate, test:crates/busbar-llm/src/engine/tests/hook_seat_order_tests.rs::candidate_tap_fires_after_an_abstaining_gate_and_a_served_request_bills_once"
   },
   {
    "id": "PB-47",
@@ -2952,7 +2940,7 @@
    "checks": [
     {
      "kind": "test",
-     "ref": "crates/busbar-kernel/src/admin/v1/contract/tests/tests.rs::required_scope_matrix",
+     "ref": "crates/busbar-core-admin/src/v1/contract/tests/tests.rs::required_scope_matrix",
      "proves": "reads are read-only, mutations full, config/validate and plugins/inspect read-only",
      "source": "curated",
      "status": "mapped"
@@ -2973,7 +2961,7 @@
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "test:crates/busbar-kernel/src/admin/v1/contract/tests/tests.rs::required_scope_matrix, test:required_scope_mutations_are_full, test:openapi_paths_annotate_required_scope"
+   "verdict_detail": "test:crates/busbar-core-admin/src/v1/contract/tests/tests.rs::required_scope_matrix, test:required_scope_mutations_are_full, test:openapi_paths_annotate_required_scope"
   },
   {
    "id": "PB-63",
@@ -3015,50 +3003,22 @@
    "status": "mapped",
    "checks": [
     {
-     "kind": "test",
-     "ref": "crates/busbar-kernel/src/egress_auth/tests/bearer_token_tests.rs::next_refresh_never_sleeps_past_a_live_token_expiry",
-     "proves": "REFRESH_SKEW_SECS and MIN_SLEEP_SECS",
+     "kind": "oracle-cell",
+     "ref": "egress.auth|oauth-cc|mint-refresh",
+     "proves": "the client-credentials mint and refresh bytes, through the oauth auth plugin, diffed against 1.5.5",
      "source": "curated",
      "status": "mapped"
     },
     {
-     "kind": "test",
-     "ref": "headers_for_emits_nothing_before_first_mint",
-     "proves": "no header before the first mint",
-     "source": "curated",
-     "status": "mapped"
-    },
-    {
-     "kind": "test",
-     "ref": "is_ready_false_before_first_mint_true_after",
-     "proves": "is_ready is false pre-mint so the prober skips the lane",
-     "source": "curated",
-     "status": "mapped"
-    },
-    {
-     "kind": "test",
-     "ref": "cached_token_new_omits_header_for_bytes_invalid_in_a_header_value",
-     "proves": "an unencodable credential omits the header",
-     "source": "curated",
-     "status": "mapped"
-    },
-    {
-     "kind": "test",
-     "ref": "headers_for_reflects_prebuilt_header_after_a_refresh",
-     "proves": "the header is built once at mint",
-     "source": "curated",
-     "status": "mapped"
-    },
-    {
-     "kind": "test",
-     "ref": "crates/busbar-kernel/src/egress_auth/tests/oauth_client_credentials_tests.rs::token_response_tolerates_expires_in_as_number_string_or_absent",
-     "proves": "expires_in defaults to 3600",
+     "kind": "oracle-cell",
+     "ref": "egress.auth|jwt-bearer|mint-refresh",
+     "proves": "the RFC 7523 assertion mint and refresh bytes, through the oauth auth plugin, diffed against 1.5.5",
      "source": "curated",
      "status": "mapped"
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "test:crates/busbar-kernel/src/egress_auth/tests/bearer_token_tests.rs::next_refresh_never_sleeps_past_a_live_token_expiry, test:headers_for_emits_nothing_before_first_mint, test:is_ready_false_before_first_mint_true_after, test:cached_token_new_omits_header_for_bytes_invalid_in_a_header_value, test:headers_for_reflects_prebuilt_header_after_a_refresh, test:crates/busbar-kernel/src/egress_auth/tests/oauth_client_credentials_tests.rs::token_response_tolerates_expires_in_as_number_string_or_absent"
+   "verdict_detail": "oracle-cell:egress.auth|oauth-cc|mint-refresh, oracle-cell:egress.auth|jwt-bearer|mint-refresh"
   },
   {
    "id": "PB-65",
@@ -3083,15 +3043,15 @@
     },
     {
      "kind": "test",
-     "ref": "a_declared_static_header_follows_the_credential_verbatim",
+     "ref": "crates/busbar/src/root/tests/declared_credentials.rs::a_declared_static_header_follows_the_credential_verbatim",
      "proves": "anthropic-version follows the credential verbatim",
      "source": "curated",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "each_declared_scheme_presents_what_its_dialect_builder_wrote",
-     "proves": "each declared scheme presents what its dialect's builder wrote",
+     "ref": "crates/busbar/src/root/tests/declared_credentials.rs::each_declared_scheme_presents_what_its_dialect_builder_wrote",
+     "proves": "each declared scheme presents, through the linked auth plugins, what its dialect's builder wrote",
      "source": "curated",
      "status": "mapped"
     },
@@ -3117,16 +3077,16 @@
      "status": "mapped"
     },
     {
-     "kind": "test",
-     "ref": "the_family_table_decides_first_and_the_mode_decides_the_rest",
-     "proves": "the key-prefix disambiguation: the family table decides first",
+     "kind": "oracle-cell",
+     "ref": "egress.auth|cred-identity|anthropic",
+     "proves": "the key-prefix disambiguation and the anthropic credential bytes, diffed against 1.5.5",
      "source": "curated",
      "status": "mapped"
     },
     {
-     "kind": "test",
-     "ref": "a_static_scheme_presents_the_header_its_table_names",
-     "proves": "an oauth token is presented only as Authorization: Bearer",
+     "kind": "oracle-cell",
+     "ref": "egress.auth|sigv4|session-token",
+     "proves": "the SigV4 session-token signature bytes, diffed against 1.5.5",
      "source": "curated",
      "status": "mapped"
     },
@@ -3153,7 +3113,7 @@
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "test:test_auth_headers_valid_key_emits_x_goog_api_key, test:egress_scheme_is_the_declared_credential_family_table, test:a_declared_static_header_follows_the_credential_verbatim, test:each_declared_scheme_presents_what_its_dialect_builder_wrote, test:anthropic_egress_carries_exactly_the_declared_headers, test:every_egress_request_declares_the_pinned_api_version, test:with_no_static_header_declared_the_version_header_is_absent, test:the_family_table_decides_first_and_the_mode_decides_the_rest, test:a_static_scheme_presents_the_header_its_table_names, test:test_bedrock_sigv4_sign_request_structure, test:test_bedrock_sigv4_session_token, test:a_misconfigured_or_unsendable_signing_credential_signs_nothing"
+   "verdict_detail": "test:test_auth_headers_valid_key_emits_x_goog_api_key, test:egress_scheme_is_the_declared_credential_family_table, test:crates/busbar/src/root/tests/declared_credentials.rs::a_declared_static_header_follows_the_credential_verbatim, test:crates/busbar/src/root/tests/declared_credentials.rs::each_declared_scheme_presents_what_its_dialect_builder_wrote, test:anthropic_egress_carries_exactly_the_declared_headers, test:every_egress_request_declares_the_pinned_api_version, test:with_no_static_header_declared_the_version_header_is_absent, oracle-cell:egress.auth|cred-identity|anthropic, oracle-cell:egress.auth|sigv4|session-token, test:test_bedrock_sigv4_sign_request_structure, test:test_bedrock_sigv4_session_token, test:a_misconfigured_or_unsendable_signing_credential_signs_nothing"
   },
   {
    "id": "PB-66",
@@ -3374,7 +3334,7 @@
   {
    "id": "PB-69",
    "surface": "ingress server posture",
-   "binding": "ALPN `http/1.1` only (no h2 served); hyper `header_read_timeout` 30 s; `limits.request_body_read_timeout_secs` 30; `tls_handshake_timeout_secs` 10; header size and count limits as hyper's defaults; the 64 KiB cursor / credential budgets never refuse a request 1.5.5 accepted (PB-18)",
+   "binding": "ALPN `h2, http/1.1` (OWNER RULING Q137, 2026-10-04: a signed change from 1.5.5's `http/1.1` only; an `h2` connection is served HTTP/2, a client offering only `http/1.1` or no ALPN is served as in 1.5.5); hyper `header_read_timeout` 30 s; `limits.request_body_read_timeout_secs` 30; `tls_handshake_timeout_secs` 10; header size and count limits as hyper's defaults; the 64 KiB cursor / credential budgets never refuse a request 1.5.5 accepted (PB-18)",
    "inventory": "auth-secrets :2171; routes-admin :511; config :272-273",
    "status": "mapped",
    "checks": [
@@ -3863,7 +3823,7 @@
    "checks": [
     {
      "kind": "test",
-     "ref": "the_inflight_cap_saturates_and_fails_on_the_caller_deadline_through_resolve_one",
+     "ref": "the_inflight_cap_saturates_and_fails_on_the_caller_deadline_through_the_axis",
      "proves": "a saturated hook fails on the caller's deadline, never waits out the wedge, and serves again once its calls drain",
      "source": "curated",
      "status": "mapped"
@@ -3872,6 +3832,13 @@
      "kind": "test",
      "ref": "dlopen_slow_gate_hits_the_deadline",
      "proves": "the call budget cuts a slow gate off promptly, an error on_error decides (R1: one of the two 1.5.5 timeout tests)",
+     "source": "curated",
+     "status": "mapped"
+    },
+    {
+     "kind": "test",
+     "ref": "a_slow_hook_is_cut_off_at_its_budget_through_the_axis",
+     "proves": "the loader's off-worker lane cuts a slow hook off at its call budget through the hook axis (R1, the lane's half)",
      "source": "curated",
      "status": "mapped"
     },
@@ -3891,7 +3858,7 @@
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "test:the_inflight_cap_saturates_and_fails_on_the_caller_deadline_through_resolve_one, test:dlopen_slow_gate_hits_the_deadline, test:a_panicking_hook_is_broken_through_the_axis_never_a_verdict, lint:xtask/src/gates/blocking_ffi.rs"
+   "verdict_detail": "test:the_inflight_cap_saturates_and_fails_on_the_caller_deadline_through_the_axis, test:dlopen_slow_gate_hits_the_deadline, test:a_slow_hook_is_cut_off_at_its_budget_through_the_axis, test:a_panicking_hook_is_broken_through_the_axis_never_a_verdict, lint:xtask/src/gates/blocking_ffi.rs"
   },
   {
    "id": "PB-82",
@@ -4009,21 +3976,21 @@
    "checks": [
     {
      "kind": "test",
-     "ref": "completion_tap_reports_ok_outcome",
+     "ref": "crates/busbar-llm/src/engine/tests/hook_seam_tests.rs::completion_tap_reports_ok_outcome",
      "proves": "the response stage reports ok",
      "source": "curated",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "completion_tap_fires_synthetic_rejected_by_gate",
+     "ref": "crates/busbar-llm/src/engine/tests/hook_seam_tests.rs::completion_tap_fires_synthetic_rejected_by_gate",
      "proves": "the synthetic outcome rejected_by_gate",
      "source": "curated",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "completion_tap_fires_synthetic_rejected_by_auth",
+     "ref": "crates/busbar-llm/src/engine/tests/hook_seam_tests.rs::completion_tap_fires_synthetic_rejected_by_auth",
      "proves": "OWNER DECISION: an auth refusal on a hooked pool fires the completion tap with outcome rejected_by_auth and the protocol-native status (binding amended)",
      "source": "hand",
      "status": "mapped"
@@ -4037,7 +4004,7 @@
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "test:completion_tap_reports_ok_outcome, test:completion_tap_fires_synthetic_rejected_by_gate, test:completion_tap_fires_synthetic_rejected_by_auth, oracle-cell:hooks|hooked-pool|unauth@hooks-webrequest"
+   "verdict_detail": "test:crates/busbar-llm/src/engine/tests/hook_seam_tests.rs::completion_tap_reports_ok_outcome, test:crates/busbar-llm/src/engine/tests/hook_seam_tests.rs::completion_tap_fires_synthetic_rejected_by_gate, test:crates/busbar-llm/src/engine/tests/hook_seam_tests.rs::completion_tap_fires_synthetic_rejected_by_auth, oracle-cell:hooks|hooked-pool|unauth@hooks-webrequest"
   },
   {
    "id": "PB-85",
@@ -4321,19 +4288,13 @@
     },
     {
      "kind": "test",
-     "ref": "unsupported_alone_opens_the_inert_default_on_every_defaulting_verb",
-     "status": "mapped",
-     "source": "hand"
-    },
-    {
-     "kind": "test",
-     "ref": "a_real_answer_passes_through_untouched",
+     "ref": "every_added_operation_on_a_published_schema_store_is_silent_and_never_errors",
      "status": "mapped",
      "source": "hand"
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "oracle-cell:plugins.store-persist|store-mysql, oracle-cell:plugins.store-persist|store-postgres, oracle-cell:plugins.store-persist|store-sqlite, oracle-cell:plugins.store-persist|store-valkey, test:unsupported_alone_opens_the_inert_default_on_every_defaulting_verb, test:a_real_answer_passes_through_untouched"
+   "verdict_detail": "oracle-cell:plugins.store-persist|store-mysql, oracle-cell:plugins.store-persist|store-postgres, oracle-cell:plugins.store-persist|store-sqlite, oracle-cell:plugins.store-persist|store-valkey, test:every_added_operation_on_a_published_schema_store_is_silent_and_never_errors"
   },
   {
    "id": "PB-94",
@@ -4351,8 +4312,8 @@
     },
     {
      "kind": "test",
-     "ref": "the_family_table_decides_first_and_the_mode_decides_the_rest",
-     "proves": "passthrough vs own picks one header for a credential in no family",
+     "ref": "crates/busbar/src/root/tests/declared_credentials.rs::a_declared_static_header_follows_the_credential_verbatim",
+     "proves": "passthrough vs own picks one header for a credential in no family, through the linked auth plugins",
      "source": "curated",
      "status": "mapped"
     },
@@ -4372,7 +4333,7 @@
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "test:test_passthrough_forwards_caller_token, test:the_family_table_decides_first_and_the_mode_decides_the_rest, test:override_present_runs_full_lookup, test:golden_migrate_auth_upstream_credentials_moves_to_pools"
+   "verdict_detail": "test:test_passthrough_forwards_caller_token, test:crates/busbar/src/root/tests/declared_credentials.rs::a_declared_static_header_follows_the_credential_verbatim, test:override_present_runs_full_lookup, test:golden_migrate_auth_upstream_credentials_moves_to_pools"
   },
   {
    "id": "PB-95",
@@ -4383,21 +4344,21 @@
    "checks": [
     {
      "kind": "test",
-     "ref": "attempt_tap_carries_attempt_story",
+     "ref": "crates/busbar-llm/src/engine/tests/hook_seam_tests.rs::attempt_tap_carries_attempt_story",
      "proves": "the routing-stage payload carries a 1-based attempt_number",
      "source": "curated",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "route_tap_reports_surviving_candidates",
+     "ref": "crates/busbar-llm/src/engine/tests/hook_seam_tests.rs::route_tap_reports_surviving_candidates",
      "proves": "remaining_candidates on the candidate stage",
      "source": "curated",
      "status": "mapped"
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "test:attempt_tap_carries_attempt_story, test:route_tap_reports_surviving_candidates"
+   "verdict_detail": "test:crates/busbar-llm/src/engine/tests/hook_seam_tests.rs::attempt_tap_carries_attempt_story, test:crates/busbar-llm/src/engine/tests/hook_seam_tests.rs::route_tap_reports_surviving_candidates"
   },
   {
    "id": "PB-96",
@@ -4555,37 +4516,9 @@
      "status": "mapped"
     },
     {
-     "kind": "test",
-     "ref": "least_busy_prefers_most_headroom",
-     "proves": "least_busy native",
-     "source": "curated",
-     "status": "mapped"
-    },
-    {
-     "kind": "test",
-     "ref": "least_busy_all_saturated_ranks_by_idx",
-     "proves": "least_busy never abstains",
-     "source": "curated",
-     "status": "mapped"
-    },
-    {
-     "kind": "test",
-     "ref": "cheapest_all_unknown_abstains",
-     "proves": "cheapest abstains when every signal is missing",
-     "source": "curated",
-     "status": "mapped"
-    },
-    {
-     "kind": "test",
-     "ref": "usage_all_unknown_abstains",
-     "proves": "usage abstains when every signal is missing",
-     "source": "curated",
-     "status": "mapped"
-    },
-    {
-     "kind": "test",
-     "ref": "fastest_orders_by_latency",
-     "proves": "fastest native",
+     "kind": "oracle-cell",
+     "ref": "route.cheapest|card-swap",
+     "proves": "a ranking native on the shipped binary: cheapest serves the cheaper lane first and re-ranks after a rate-card swap, diffed against 1.5.5 (the natives' unit tests moved with the crate to GetBusbar/busbar-hook-ranking)",
      "source": "curated",
      "status": "mapped"
     },
@@ -4612,7 +4545,7 @@
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "test:test_normalize_raw_error_with_provider_override, test:restored_halfopen_state_normalizes_to_open, test:restore_does_not_clobber_new_limit_with_unlimited_sentinel, test:test_hard_down_follows_identity_across_rebuild, test:least_busy_prefers_most_headroom, test:least_busy_all_saturated_ranks_by_idx, test:cheapest_all_unknown_abstains, test:usage_all_unknown_abstains, test:fastest_orders_by_latency, test:from_ranked_never_produces_reject, test:from_ranked_empty_is_abstain, test:dlopen_notify_is_fire_and_forget"
+   "verdict_detail": "test:test_normalize_raw_error_with_provider_override, test:restored_halfopen_state_normalizes_to_open, test:restore_does_not_clobber_new_limit_with_unlimited_sentinel, test:test_hard_down_follows_identity_across_rebuild, oracle-cell:route.cheapest|card-swap, test:from_ranked_never_produces_reject, test:from_ranked_empty_is_abstain, test:dlopen_notify_is_fire_and_forget"
   },
   {
    "id": "PB-99",
@@ -4672,7 +4605,7 @@
      "ref": "admin.ops",
      "status": "mapped",
      "cites": 44,
-     "family_size": 323,
+     "family_size": 329,
      "source": "cells.json why"
     },
     {
@@ -4807,29 +4740,15 @@
    "checks": [
     {
      "kind": "test",
-     "ref": "test_verify_sigv4_ingress_credential_unsigned_payload_rejected",
-     "proves": "UNSIGNED-PAYLOAD is refused",
+     "ref": "crates/busbar/tests/sigv4_both_ways.rs::sigv4_is_verified_inbound_and_signed_outbound",
+     "proves": "on the shipped binary, through the linked sigv4 auth plugin's verify over records.secret: a signed request is admitted, a tampered body and an unknown AccessKeyId are refused byte-identically (the dummy-secret path)",
      "source": "curated",
      "status": "mapped"
     },
     {
-     "kind": "test",
-     "ref": "test_verify_sigv4_ingress_credential_body_matches_signed_hash_admits",
-     "proves": "the pre-buffer structural gate admits a matching body",
-     "source": "curated",
-     "status": "mapped"
-    },
-    {
-     "kind": "test",
-     "ref": "test_verify_sigv4_ingress_credential_tampered_body_rejected",
-     "proves": "a tampered body is refused",
-     "source": "curated",
-     "status": "mapped"
-    },
-    {
-     "kind": "test",
-     "ref": "test_verify_inbound_sigv4_unknown_key_dummy_secret_is_signature_mismatch",
-     "proves": "DUMMY_SECRET constant-time reject",
+     "kind": "oracle-cell",
+     "ref": "llm|bedrock|bedrock|request|unauthenticated",
+     "proves": "the bedrock ingress refusal diffed against 1.5.5",
      "source": "curated",
      "status": "mapped"
     },
@@ -4877,7 +4796,7 @@
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "test:test_verify_sigv4_ingress_credential_unsigned_payload_rejected, test:test_verify_sigv4_ingress_credential_body_matches_signed_hash_admits, test:test_verify_sigv4_ingress_credential_tampered_body_rejected, test:test_verify_inbound_sigv4_unknown_key_dummy_secret_is_signature_mismatch, test:throughput_floor_trips_on_a_dribble_the_inter_frame_timer_cannot_catch, test:a_fast_large_upload_is_not_killed_by_the_throughput_floor, test:total_deadline_trips_on_a_body_that_stays_above_the_floor_forever, test:body_read_timeout_trips_on_stalled_body, test:mtls_valid_client_cert_gets_200, test:mtls_rejects_bad_client_then_serves_valid"
+   "verdict_detail": "test:crates/busbar/tests/sigv4_both_ways.rs::sigv4_is_verified_inbound_and_signed_outbound, oracle-cell:llm|bedrock|bedrock|request|unauthenticated, test:throughput_floor_trips_on_a_dribble_the_inter_frame_timer_cannot_catch, test:a_fast_large_upload_is_not_killed_by_the_throughput_floor, test:total_deadline_trips_on_a_body_that_stays_above_the_floor_forever, test:body_read_timeout_trips_on_stalled_body, test:mtls_valid_client_cert_gets_200, test:mtls_rejects_bad_client_then_serves_valid"
   },
   {
    "id": "PB-102",

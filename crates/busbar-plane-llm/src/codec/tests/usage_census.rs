@@ -6,8 +6,64 @@
 
 use busbar_contract::billing::TokenUsage;
 
-/// The ledgered units, in this order: input, output, cache read, cache write, `search_units`.
-pub(crate) type Ledgered = [i64; 5];
+use crate::codec::ir::open_class::{OPEN_CLASSES, OPEN_CLASS_COUNT};
+
+/// How many classes a [`Ledgered`] reading holds: the four token tiers and every open class.
+pub(crate) const CLASSES: usize = 4 + OPEN_CLASS_COUNT;
+
+/// The ledgered units, in this order: input, output, cache read, cache write, then every open
+/// class in [`OPEN_CLASSES`] order (`search_units` first, at index 4) (owner LEDGER-100: every
+/// reported unit is a ledger line, so the census reads every class the plane declares).
+pub(crate) type Ledgered = [i64; CLASSES];
+
+/// The index of the input tier in a [`Ledgered`] reading.
+pub(crate) const IN: usize = 0;
+/// The index of the output tier.
+pub(crate) const OUT: usize = 1;
+/// The index of the cache-read tier.
+pub(crate) const CR: usize = 2;
+/// The index of the cache-write tier.
+pub(crate) const CW: usize = 3;
+/// A reading that moves nothing.
+pub(crate) const NONE: Ledgered = [0; CLASSES];
+
+/// The index of open class `class` in a [`Ledgered`] reading; a class the plane does not declare
+/// fails the build.
+pub(crate) const fn slot(class: &str) -> usize {
+    let mut k = 0;
+    while k < OPEN_CLASSES.len() {
+        let (a, b) = (OPEN_CLASSES[k].0.as_bytes(), class.as_bytes());
+        if a.len() == b.len() {
+            let mut i = 0;
+            while i < a.len() && a[i] == b[i] {
+                i += 1;
+            }
+            if i == a.len() {
+                return 4 + k;
+            }
+        }
+        k += 1;
+    }
+    panic!("not a declared open class")
+}
+
+/// A reading that moves `n` at `slot` and nothing else.
+pub(crate) const fn at(slot: usize, n: i64) -> Ledgered {
+    let mut out = NONE;
+    out[slot] = n;
+    out
+}
+
+/// The sum of two readings.
+pub(crate) const fn plus(a: Ledgered, b: Ledgered) -> Ledgered {
+    let mut out = a;
+    let mut i = 0;
+    while i < CLASSES {
+        out[i] += b[i];
+        i += 1;
+    }
+    out
+}
 
 /// The count members the pinned wire lock of `dialect`
 /// (`testing/llm-conformance/wire/<dialect>.wire.json`) declares under `prefix` in `section`: every
@@ -35,27 +91,43 @@ pub(crate) fn lock_counts(dialect: &str, section: &str, prefix: &str) -> Vec<Str
 }
 
 /// The one ledgered reading of a usage, through BOTH projections a ledger row is built from (the
-/// governance ledger's `tier_usage` and the plane's `Units`); they must agree.
+/// governance ledger's `tier_usage` and the plane's `Units`); they must agree, class for class, and
+/// neither may hold a class the plane does not declare.
 pub(crate) fn ledgered(u: &TokenUsage) -> Ledgered {
     let n = |x: u64| i64::try_from(x).expect("small fixture");
-    let search = crate::codec::ir::rerank::SEARCH_UNITS_CLASS;
     let map = crate::codec::wire_shim::tier_usage(u).usage_units;
-    let class = |c: &str| n(map.get(c).copied().unwrap_or(0));
-    let tiers = [
-        class(busbar_contract::records::UNIT_INPUT),
-        class(busbar_contract::records::UNIT_OUTPUT),
-        class(busbar_contract::records::UNIT_CACHE_READ),
-        class(busbar_contract::records::UNIT_CACHE_WRITE),
-        class(search),
-    ];
     let units = crate::exchange::reply::Units::of(Some(u), Default::default());
-    let plane = [
-        n(units.tokens_in),
-        n(units.tokens_out),
-        n(units.cache_read),
-        n(units.cache_write),
-        n(units.open.get(search).copied().unwrap_or(0)),
-    ];
+    let mut tiers = NONE;
+    let mut plane = NONE;
+    for (i, class) in [
+        busbar_contract::records::UNIT_INPUT,
+        busbar_contract::records::UNIT_OUTPUT,
+        busbar_contract::records::UNIT_CACHE_READ,
+        busbar_contract::records::UNIT_CACHE_WRITE,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        tiers[i] = n(map.get(class).copied().unwrap_or(0));
+    }
+    plane[IN] = n(units.tokens_in);
+    plane[OUT] = n(units.tokens_out);
+    plane[CR] = n(units.cache_read);
+    plane[CW] = n(units.cache_write);
+    for (k, (class, _)) in OPEN_CLASSES.iter().enumerate() {
+        tiers[4 + k] = n(map.get(*class).copied().unwrap_or(0));
+        plane[4 + k] = n(units.open.get(*class).copied().unwrap_or(0));
+    }
+    let declared = |c: &String| {
+        busbar_contract::records::RESERVED_UNITS.contains(&c.as_str())
+            || OPEN_CLASSES.iter().any(|(o, _)| o == c)
+    };
+    assert!(map.keys().all(declared), "an undeclared class: {map:?}");
+    assert!(
+        units.open.keys().all(declared),
+        "an undeclared class: {:?}",
+        units.open
+    );
     assert_eq!(tiers, plane, "the two ledger projections disagree");
     tiers
 }

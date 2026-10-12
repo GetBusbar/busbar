@@ -43,9 +43,11 @@
 //! ## The ROOT LEG column — the same matrix, judged a second time over the loop
 //!
 //! Every plane now also runs through the composition root — `root-llm` (the node, behind
-//! `proto-llm`) / `root-admin` behind their features, `root-mcp` / `root-a2a` / `root-voice` on the kernel-loop rider those planes are served
-//! through (`root/gauntlet_kernel.rs`, the voice leg on its session rider, gated by `plane-mcp` /
-//! `plane-a2a` / `plane-streaming`, the features that link them). A capability proven where the plane crate serves it and
+//! `proto-llm`) / `root-admin` behind their features, `root-mcp` through the MCP plane's memory-ABI
+//! door on the kernel's plane driver (`root/serve.rs`, its cells in the `#[path]` test file
+//! `root/tests/serve_tests.rs`, gated by `plane-mcp`), `root-a2a` / `root-voice` on the kernel-loop
+//! rider those planes are served through (`root/gauntlet_kernel.rs`, the voice leg on its session
+//! rider, gated by `plane-a2a` / `plane-streaming`, the features that link them). A capability proven where the plane crate serves it and
 //! unwitnessed where the root drives it is the same silent half-answer this file exists to refuse,
 //! so the ledger carries a SECOND verdict per cell (`root`) and this gate runs the matrix ONCE PER
 //! LEG: for each declared leg, every cell in that leg's ledger columns is checked against the leg's
@@ -162,7 +164,7 @@ const MIN_PROVEN: usize = 20;
 /// An n/a "argument" shorter than this is a label, not an argument.
 const MIN_NA_REASON: usize = 60;
 
-/// THE FIVE ROOT LEGS, verbatim — one per `root-*` feature the composition root carries. Pinned
+/// THE SIX ROOT LEGS, verbatim — one per `root-*` feature the composition root carries. Pinned
 /// here for the same reason [`PLANES`] is: a leg that quietly left the list would take its whole
 /// column of root verdicts with it.
 fn root_legs() -> &'static [&'static str] {
@@ -477,6 +479,63 @@ fn sibling_tests_file(file: &str) -> String {
     }
 }
 
+/// The files `file` (a repo-relative `.rs`) declares as modules through `#[path = "<rel>"]`, each
+/// resolved against `file`'s own directory as rustc resolves it: the test files a leg's module
+/// carries one file further down (`#[cfg(test)] #[path = "tests/serve_tests.rs"] mod door_tests;`).
+/// Only a `#[path]` ATTRIBUTE counts: a line that merely mentions one in a comment declares nothing.
+fn path_declarations(root: &Path, file: &str) -> Vec<String> {
+    let Ok(src) = std::fs::read_to_string(root.join(file)) else {
+        return Vec::new();
+    };
+    let dir = file.rsplit_once('/').map_or("", |(dir, _)| dir);
+    src.lines()
+        .filter_map(|l| l.trim().strip_prefix("#[path = \""))
+        .filter_map(|rest| rest.split_once("\"]").map(|(rel, _)| rel))
+        .map(|rel| {
+            let mut parts: Vec<&str> = dir.split('/').filter(|p| !p.is_empty()).collect();
+            for seg in rel.split('/') {
+                match seg {
+                    ".." => {
+                        parts.pop();
+                    }
+                    "." | "" => {}
+                    seg => parts.push(seg),
+                }
+            }
+            parts.join("/")
+        })
+        .collect()
+}
+
+/// THE MODULE THAT DECLARES a leg's file, as the composition root's `mod.rs` names it: the file's
+/// own stem when it sits in [`ROOT_DIR`]; the module directory it lives under (`units_admin/…`);
+/// or, for a `#[path]` test file in `root/tests/`, the stem of the root file whose `#[path]`
+/// declares it. `None` when no root file declares it.
+fn declaring_module(root: &Path, file: &str) -> Option<String> {
+    let rel = file.strip_prefix(ROOT_DIR)?;
+    let stem = |f: &str| {
+        Path::new(f)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .map(str::to_string)
+    };
+    match rel.split_once('/') {
+        None => stem(rel),
+        Some((dir, _)) if dir != "tests" => Some(dir.to_string()),
+        Some(_) => std::fs::read_dir(root.join(ROOT_DIR))
+            .ok()?
+            .filter_map(Result::ok)
+            .filter_map(|e| e.file_name().to_str().map(str::to_string))
+            .filter(|name| name.ends_with(".rs"))
+            .find(|name| {
+                path_declarations(root, &format!("{ROOT_DIR}{name}"))
+                    .iter()
+                    .any(|d| d == file)
+            })
+            .and_then(|name| stem(&name)),
+    }
+}
+
 fn named_fn_exists(root: &Path, id: &str, test: &str) -> Result<(), String> {
     named_test_is_real(root, id, test, "root cell")
 }
@@ -633,18 +692,24 @@ fn verify_root(
                         )
                     })?;
                 let want = leg_file.get(leg).unwrap();
-                // The leg's own file OR the test file that file declares. The tree's test-locality
+                // The leg's own file OR a test file that file declares. The tree's test-locality
                 // rule puts a `foo.rs` body in `tests/foo_tests.rs` and leaves `foo.rs` holding the
-                // `#[path]` declaration, so the cells are still the leg's own — same module, same
-                // `use super::*`, one file further down. Both spellings are accepted and nothing
-                // else is: evidence from a SIBLING leg's file still fails, which is what this
-                // check is for.
-                if !test.starts_with(&format!("{want}::"))
-                    && !test.starts_with(&format!("{}::", sibling_tests_file(want)))
-                {
+                // `#[path]` declaration, so the cells are still the leg's own — same module, one
+                // file further down; and a leg file may carry more than one such file
+                // (`serve.rs`'s `#[path = "tests/serve_tests.rs"] mod door_tests;`), each read off
+                // the leg file's own `#[path]` attributes. Those are accepted and nothing else is:
+                // evidence from a file the leg does not declare — a SIBLING leg's file, or any
+                // other — still fails, which is what this check is for.
+                let declared = path_declarations(root, want);
+                let owned = std::iter::once(want.clone())
+                    .chain(std::iter::once(sibling_tests_file(want)))
+                    .chain(declared.iter().cloned())
+                    .any(|f| test.starts_with(&format!("{f}::")));
+                if !owned {
                     return Err(format!(
                         "cell `{id}`'s root evidence {test:?} does not live in `{leg}`'s own file \
-                         {want} (nor in its declared {}). A leg is proven by its own cells.",
+                         {want} (nor in its declared {}, nor in a file it declares through \
+                         `#[path]`: {declared:?}). A leg is proven by its own cells.",
                         sibling_tests_file(want)
                     ));
                 }
@@ -699,7 +764,7 @@ fn verify_root(
         if cols.is_empty() {
             continue;
         }
-        if out.per_leg[leg].0 == 0 {
+        if out.per_leg[leg].0 == 0 && !owed_leg(doc, leg)? {
             return Err(format!(
                 "root leg `{leg}` answers to {cols:?} and proves ZERO cells over the loop. A leg \
                  with no watched cell is a leg nobody drove."
@@ -714,6 +779,127 @@ fn verify_root(
         ));
     }
     Ok(out)
+}
+
+/// AN OWED LEG (U14): a leg whose `owed` names the lane that will prove it may prove ZERO cells,
+/// but only while EVERY cell of its columns is `missing` with root `none` — the whole column is the
+/// named queue. The moment one of its cells claims anything, the owed mark no longer excuses it.
+/// An `owed` shorter than an argument is no excuse at all.
+fn owed_leg(doc: &serde_json::Value, leg: &str) -> Result<bool, String> {
+    let meta = &doc["root_legs"][leg];
+    let Some(owed) = meta.get("owed").and_then(serde_json::Value::as_str) else {
+        return Ok(false);
+    };
+    if owed.trim().len() < MIN_ROOT_REASON {
+        return Err(format!(
+            "root leg `{leg}` is `owed` {owed:?}: an owed leg names the lane that proves it, in an \
+             argument (>= {MIN_ROOT_REASON} chars)."
+        ));
+    }
+    let cols: BTreeSet<&str> = meta["columns"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(serde_json::Value::as_str)
+        .collect();
+    let all_queued = doc["cells"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|c| c["plane"].as_str().is_some_and(|p| cols.contains(p)))
+        .all(|c| c["state"] == "missing" && c["root"]["state"] == "none");
+    if !all_queued {
+        return Err(format!(
+            "root leg `{leg}` is `owed` but a cell of its columns {cols:?} claims something; an owed \
+             leg's whole column is the queue, and a claim ends the owing: prove a loop cell."
+        ));
+    }
+    Ok(true)
+}
+
+/// A DIALECT IS NEVER A COLUMN (U14): no declared ledger plane, nor the plane a directional column
+/// names (`<p>-client` / `<p>-server`), is one of `dialects`.
+fn refuse_dialect_columns(doc: &serde_json::Value, dialects: &[&str]) -> Result<(), String> {
+    for col in doc["planes"]
+        .as_object()
+        .into_iter()
+        .flatten()
+        .map(|(k, _)| k)
+    {
+        let base = col
+            .strip_suffix("-client")
+            .or_else(|| col.strip_suffix("-server"))
+            .unwrap_or(col);
+        if dialects.contains(&base) {
+            return Err(format!(
+                "column `{col}` names `{base}`, which is a plane's dialect, never a column: a \
+                 dialect rides its plane's column"
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// The doctrine's dialects (`dialect <name>` rows).
+fn dialects() -> Vec<&'static str> {
+    common::doctrine_rows("dialect")
+        .into_iter()
+        .map(|r| r[0])
+        .collect()
+}
+
+/// U14: the real ledger names no dialect as a column.
+#[test]
+fn no_dialect_is_a_ledger_column() {
+    refuse_dialect_columns(&real_doc(), &dialects()).unwrap_or_else(|e| panic!("{e}"));
+    assert!(!dialects().is_empty(), "the doctrine names its dialects");
+}
+
+/// U14 RED ARM: a dialect named as a column (either direction) and a plane the doctrine does not
+/// list are both refused.
+#[test]
+fn selftest_a_dialect_or_an_unlisted_plane_is_refused_as_a_column() {
+    let doc = serde_json::json!({ "planes": { "d1-client": "x", "p1": "y" } });
+    assert!(refuse_dialect_columns(&doc, &["d1"])
+        .expect_err("a dialect column is refused")
+        .contains("d1-client"));
+    let doc = serde_json::json!({ "planes": { "d1": "x" } });
+    assert!(refuse_dialect_columns(&doc, &["d1"]).is_err());
+    refuse_dialect_columns(&serde_json::json!({ "planes": { "p1": "y" } }), &["d1"])
+        .expect("a plane column is not a dialect");
+    let root = scratch("unlisted");
+    let mut doc = fixture(&root);
+    doc["planes"]["p3"] = serde_json::json!("an unlisted fixture plane");
+    assert!(verify(&doc, &root, &["p1", "p2"], 2)
+        .expect_err("a plane the doctrine does not list is refused")
+        .contains("`p3` is declared but is not one of the doctrine's planes"));
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// U14 RED ARM: an owed leg may prove nothing only while its whole column is queued; a claim in
+/// it, or an owed with no argument, ends the excuse.
+#[test]
+fn selftest_an_owed_leg_excuses_only_a_fully_queued_column() {
+    let owed = "the lane that proves this leg's loop cells is named here, at argument length";
+    let mut doc = serde_json::json!({
+        "root_legs": { "root-q": { "columns": ["q"], "owed": owed } },
+        "cells": [ { "capability": "c", "plane": "q", "state": "missing",
+                     "root": { "state": "none" } } ]
+    });
+    assert_eq!(owed_leg(&doc, "root-q"), Ok(true));
+    doc["cells"][0]["state"] = serde_json::json!("not-applicable");
+    assert!(owed_leg(&doc, "root-q").is_err(), "a claim ends the owing");
+    doc["cells"][0]["state"] = serde_json::json!("missing");
+    doc["root_legs"]["root-q"]["owed"] = serde_json::json!("soon");
+    assert!(
+        owed_leg(&doc, "root-q").is_err(),
+        "an owed with no argument"
+    );
+    doc["root_legs"]["root-q"]
+        .as_object_mut()
+        .unwrap()
+        .remove("owed");
+    assert_eq!(owed_leg(&doc, "root-q"), Ok(false));
 }
 
 fn real_doc() -> serde_json::Value {
@@ -832,10 +1018,11 @@ fn the_root_leg_matrix_runs_once_per_leg() {
         .expect("`root_legs` is an object");
     for leg in &compiled {
         let file = legs_obj[*leg]["file"].as_str().expect("a leg names a file");
-        let module = Path::new(file)
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or_else(|| panic!("leg `{leg}`'s file {file} has no module name"));
+        // The module that DECLARES the leg's file is the one the root must carry: the file's own
+        // when it sits in the root, else the root file whose `#[path]` declares it.
+        let module = declaring_module(&root, file).unwrap_or_else(|| {
+            panic!("leg `{leg}`'s file {file} is declared by no module of the composition root")
+        });
         assert!(
             mod_rs.contains(&format!("pub mod {module};")),
             "leg `{leg}` is COMPILED INTO this build, but crates/busbar/src/root/mod.rs declares no \
@@ -846,7 +1033,8 @@ fn the_root_leg_matrix_runs_once_per_leg() {
             s.per_leg[*leg].0 > 0
                 || legs_obj[*leg]["columns"]
                     .as_array()
-                    .is_some_and(Vec::is_empty),
+                    .is_some_and(Vec::is_empty)
+                || owed_leg(&doc, leg).unwrap_or(false),
             "leg `{leg}` is compiled into this build, answers to ledger columns, and proves ZERO \
              cells over the loop. A leg nobody drove is not a leg."
         );
@@ -863,14 +1051,15 @@ fn the_root_leg_matrix_runs_once_per_leg() {
 /// able to quietly narrow what the real gate demands.
 #[test]
 fn the_gates_own_constants_are_the_doctrines() {
-    // Seven directional planes: one single-direction plane and the three bidirectional protocols
-    // counted in both directions (`<p>-client` / `<p>-server`), and nothing else.
+    // The five planes (U14): two single-direction (llm, decisions: needs in one direction alone)
+    // and the three bidirectional ones counted in both directions (`<p>-client` / `<p>-server`):
+    // eight columns, and nothing else. A dialect is never a column.
     let planes = planes();
     assert_eq!(
         planes.len(),
-        7,
-        "the plane list is the owner's ruling (the one-direction plane plus both directions of the \
-         bidirectional three); changing it is a doctrine change, not a refactor: {planes:?}"
+        8,
+        "the plane list is the owner's ruling (the two one-direction planes plus both directions of \
+         the bidirectional three); changing it is a doctrine change, not a refactor: {planes:?}"
     );
     let singles: Vec<&&str> = planes
         .iter()
@@ -878,8 +1067,8 @@ fn the_gates_own_constants_are_the_doctrines() {
         .collect();
     assert_eq!(
         singles.len(),
-        1,
-        "exactly one one-direction plane: {planes:?}"
+        2,
+        "exactly two one-direction planes: {planes:?}"
     );
     for p in planes.iter().filter(|p| p.ends_with("-client")) {
         let server = format!("{}-server", p.trim_end_matches("-client"));
@@ -903,8 +1092,8 @@ fn the_gates_own_constants_are_the_doctrines() {
     let legs = root_legs();
     assert_eq!(
         legs.len(),
-        5,
-        "the five root legs are the composition root's own; changing the list is a doctrine change: \
+        6,
+        "the six root legs are the composition root's own; changing the list is a doctrine change: \
          {legs:?}"
     );
     assert!(
@@ -1475,6 +1664,67 @@ fn selftest_root_evidence_that_vanished_or_came_from_another_leg_is_red() {
     for r in [root, root2] {
         let _ = std::fs::remove_dir_all(&r);
     }
+}
+
+/// A leg's evidence may live in a test file the leg file DECLARES through `#[path]` (`serve.rs`'s
+/// `#[path = "tests/serve_tests.rs"] mod door_tests;`), and only there: the same test in a file the
+/// leg does not declare — or one merely NAMED in a comment of the leg file — is refused.
+#[test]
+fn selftest_root_evidence_in_a_path_declared_test_file_is_the_legs_and_no_other_is() {
+    let root = scratch("root-path-declared");
+    let mut doc = root_fixture(&root);
+    let dir = root.join(ROOT_DIR);
+    std::fs::create_dir_all(dir.join("tests")).unwrap();
+    std::fs::write(
+        dir.join("units_a.rs"),
+        format!(
+            "{GREEN_ROOT_FIXTURE_LEG}\n// see #[path = \"tests/mentioned.rs\"]\n\
+             #[cfg(test)]\n#[path = \"tests/declared_door.rs\"]\nmod door_tests;\n"
+        ),
+    )
+    .unwrap();
+    for f in ["declared_door.rs", "undeclared_door.rs", "mentioned.rs"] {
+        std::fs::write(
+            dir.join("tests").join(f),
+            "use super::*;\n\n#[test]\nfn the_door_cell() {\n    assert_eq!(meter(), 7);\n}\n",
+        )
+        .unwrap();
+    }
+    doc["cells"][0]["root"]["test"] =
+        "crates/busbar/src/root/tests/declared_door.rs::the_door_cell".into();
+    verify_root(&doc, &root, &FIXTURE_LEGS, 1)
+        .expect("a test file the leg declares through #[path] is the leg's own evidence");
+    assert_eq!(
+        declaring_module(&root, "crates/busbar/src/root/tests/declared_door.rs").as_deref(),
+        Some("units_a"),
+        "the declaring module is the leg file's"
+    );
+
+    // RED: a file the leg does not declare, and one its comment merely names.
+    for f in ["undeclared_door.rs", "mentioned.rs"] {
+        doc["cells"][0]["root"]["test"] =
+            format!("crates/busbar/src/root/tests/{f}::the_door_cell").into();
+        let err = verify_root(&doc, &root, &FIXTURE_LEGS, 1)
+            .expect_err("evidence from a file the leg does not declare is refused");
+        assert!(err.contains("proven by its own cells"), "{f}: {err}");
+    }
+    // RED: the SIBLING leg's declared file is not this leg's.
+    doc["cells"][0]["root"]["test"] =
+        "crates/busbar/src/root/tests/undeclared_door.rs::the_door_cell".into();
+    std::fs::write(
+        dir.join("units_b.rs"),
+        format!("{GREEN_ROOT_FIXTURE_LEG}\n#[cfg(test)]\n#[path = \"tests/undeclared_door.rs\"]\nmod d;\n"),
+    )
+    .unwrap();
+    let err = verify_root(&doc, &root, &FIXTURE_LEGS, 1)
+        .expect_err("another leg's declared file is another leg's evidence");
+    assert!(err.contains("proven by its own cells"), "{err}");
+    assert_eq!(
+        declaring_module(&root, "crates/busbar/src/root/tests/nobody.rs"),
+        None,
+        "a file no root module declares has no declaring module"
+    );
+    let _ = std::fs::remove_dir_all(&root);
 }
 
 /// A cell with NO second verdict, and a `none` with no argument. R-16: name the gap, never paper it

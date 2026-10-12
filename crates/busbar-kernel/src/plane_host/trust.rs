@@ -417,42 +417,6 @@ pub(crate) fn quarantine_drift(
     crate::plane::quarantine::settle(demotions, subject, state);
 }
 
-/// Settle a drift disposition for `subject` through the host `drift_quarantine` vtable slot — the SAFE
-/// wrapper a core plane call site uses to reach the slot without naming the core-private
-/// [`DemotionRecord`](crate::plane::quarantine::DemotionRecord) an extracted plane could not hold
-/// (the [`card_sign_over`](crate::plane_host::card_sign_over) pattern applied to drift). It marshals
-/// `state` into [`Key::drift_state`] and lets the slot pull the demotion store host-side, so the
-/// caller passes only the subject bytes and its disposition. Returns whether the slot answered `Ok`;
-/// the settle is fire-and-forget at the primitive, so the caller may treat a non-`Ok` as a durability
-/// miss, not a refusal. Opens its own [`DispatchScope`] — the drift settle registers no host handle,
-/// so which arena reclaims is immaterial.
-// Reached by the MCP plane's verify-on-call/admin settle sites via the `EngineHost::quarantine_settle`
-// method (the core impl is always compiled), so it is a plain fn with a dead-code allow rather than a
-// feature gate — it must exist for the trait impl even when no plane is compiled in.
-#[allow(dead_code)]
-pub fn quarantine_settle_over(
-    app: &crate::state::App,
-    subject: &str,
-    state: crate::trust::TrustState,
-) -> bool {
-    let scope = crate::plane_host::DispatchScope::new();
-    crate::plane_host::with_borrowed_host(app, &scope, |host, vt| {
-        let key = Key {
-            size: core::mem::size_of::<Key>() as u32,
-            version: POD_VERSION,
-            _reserved: 0,
-            scope: 0,
-            _reserved2: 0,
-            key_ptr: subject.as_ptr(),
-            key_len: subject.len(),
-            drift_state: trust_state_u8(state),
-        };
-        (vt.drift_quarantine
-            .expect("drift_quarantine is a wired slot"))(host, &key as *const Key)
-            == StatusClass::Ok
-    })
-}
-
 /// THE ONE redemption body — the compiled-in veneer both approval veneers funnel through, the trust
 /// analogue of CLUSTER-1's [`crate::plane_host::scope::DispatchScope::settle_admission`]. Redeem a
 /// one-time approval against the shared spent-approval ledger, spending against the seal's OWN
@@ -515,10 +479,9 @@ mod reg_state {
 }
 
 /// Marshal a [`crate::trust::TrustState`] into the neutral u8 mirror the drift path carries in
-/// [`Key::drift_state`] (the same numbering [`reg_state`] names). Always compiled (the
-/// `EngineHost::quarantine_settle` core impl reaches `quarantine_settle_over`, which needs it, under
-/// any feature set), so a dead-code allow replaces the former `plane-mcp` gate. The inverse of
-/// [`trust_state_from_u8`]; the drift call sites use it to hand the slot the CALLER's disposition.
+/// [`Key::drift_state`] (the same numbering [`reg_state`] names). The inverse of
+/// [`trust_state_from_u8`]; no production caller marshals a disposition in-crate today (the tests
+/// encode with it), hence the dead-code allow.
 #[allow(dead_code)]
 pub(crate) fn trust_state_u8(state: crate::trust::TrustState) -> u8 {
     use crate::trust::TrustState;

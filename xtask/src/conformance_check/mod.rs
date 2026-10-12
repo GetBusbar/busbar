@@ -24,9 +24,12 @@
 //! self-hosted run, FAPI2 suite green, jev suite. LLM x6 + voice x2 already green."), which
 //! enumerates exactly the 17 suites `conformance/registry.toml` carries today (a2a, mcp, the 6 llm-*
 //! planes, the 2 voice-* planes, fapi2, h2, jev, oidf-oauth2, slsa-verifier, tls, ws). So `--musts`
-//! is "every suite the manifest carries", not a filtered subset — adding a suite to the registry
-//! auto-adds it to the MUST set, exactly the P4 "sixth platform auto-owes six rows" shape
-//! (`CONFORMANCE-SYNC-DESIGN.md` §7) the sibling gate already relies on.
+//! is "every suite the manifest carries", not a filtered subset, and it has a FLOOR derived from
+//! the build: every plane `qa/construction.toml` `[gate.plugin_kinds].plane` ships owes at least one
+//! registered suite (`plane = "<key>"`), and a registry that leaves one uncovered denies `--musts`
+//! outright. Adding a suite to the registry auto-adds it to the MUST set, exactly the P4 "sixth
+//! platform auto-owes six rows" shape (`CONFORMANCE-SYNC-DESIGN.md` §7) the sibling gate already
+//! relies on.
 //!
 //! ## Freshness (`CONFORMANCE-SYNC-DESIGN.md` §5.2)
 //!
@@ -300,8 +303,18 @@ fn check_one_suite(cx: &Ctx, manifest_path: &str, id: &str, sha: &str) -> Row {
 }
 
 /// The `--musts` arm: every suite the manifest carries is a MUST (see module docs). One row per
-/// suite so a caller can see exactly which MUST suite(s) are not fresh-pass.
+/// suite so a caller can see exactly which MUST suite(s) are not fresh-pass. The registry is read
+/// first: a registry that leaves a shipped plane with no suite (the derived floor,
+/// [`crate::gates::conformance_sync::render::plane_roster`]) denies the whole set, so the MUST set
+/// can never be made smaller than the planes the build ships.
 fn check_musts(cx: &Ctx, manifest_path: &str, sha: &str) -> Vec<Row> {
+    if let Err(why) = gates::conformance_sync::render::parse_registry(cx) {
+        return vec![Row::fail(
+            "conformance-check:registry",
+            "the MUST set could not be derived from the registry",
+            why,
+        )];
+    }
     let entries = match load_manifest(cx, manifest_path) {
         Ok(e) => e,
         Err(why) => {

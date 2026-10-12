@@ -16,7 +16,7 @@
 //!   the ref and never holds the plaintext.
 
 use super::{HeaderMap, HeaderName, HeaderValue};
-use crate::{egress_auth::CredentialProvider, proto::SigningContext};
+use crate::{bound_credential::CredentialProvider, proto::SigningContext};
 
 /// What the auth gate holds of one request's credentials (request extension): the header names the
 /// configured gate reads a credential from, and the credential it extracted, as a ref. Inserted by the gate on every request it judged;
@@ -64,6 +64,14 @@ impl ConsumedCredentials {
 pub struct CallerCredential(pub(super) String);
 
 impl CallerCredential {
+    /// THE CREDENTIAL LENT TO THE HOST'S EGRESS (L2 credential lending): the bytes, zeroised on
+    /// drop and printed as presence only, for the one outbound auth call of a passthrough member
+    /// (`FieldsRequest::caller_credential`). Never handed to a plane.
+    #[must_use]
+    pub fn lend(&self) -> busbar_contract::redacted::Redacted<Vec<u8>> {
+        busbar_contract::redacted::Redacted::new(self.0.as_bytes().to_vec())
+    }
+
     /// A ref over `token`, for a test that stands in for the gate.
     #[cfg(any(test, feature = "test-support"))]
     pub fn for_test(token: &str) -> Self {

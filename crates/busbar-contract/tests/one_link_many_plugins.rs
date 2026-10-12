@@ -19,17 +19,17 @@ use busbar_contract::abi::cold::STATUS_PROTOCOL;
 use busbar_contract::abi::sdk::__door;
 
 mod first {
-    fn open(_cfg: &str) -> Result<Box<dyn busbar_contract::records::RecordStore>, String> {
+    fn open(_cfg: &str) -> Result<Box<dyn busbar_contract::auth::AuthPlugin>, String> {
         Err("first plugin refuses".into())
     }
-    busbar_contract::abi::sdk::export_store_plugin!(open);
+    busbar_contract::export_login_plugin!(open);
 }
 
 mod second {
-    fn open(_cfg: &str) -> Result<Box<dyn busbar_contract::records::RecordStore>, String> {
+    fn open(_cfg: &str) -> Result<Box<dyn busbar_contract::auth::AuthPlugin>, String> {
         Err("second plugin refuses".into())
     }
-    busbar_contract::abi::sdk::export_store_plugin!(open);
+    busbar_contract::export_login_plugin!(open);
 }
 
 /// A transport's door in the same link (#84 merge: the transport door is the shared one). Before

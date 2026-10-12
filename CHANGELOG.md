@@ -36,13 +36,47 @@ wildcard grants over every registered server: close the data-plane chain, or dro
 Measured by the shadow oracle over 780 cells — boot refusals and warnings, `--validate`,
 `--migrate-config` on the whole migration corpus, the admin API, the six LLM dialects buffered and
 streaming, failover, billing, `/metrics`, and the published store plugins — 1.6.0 answers a 1.5.5
-config, request and plugin exactly as 1.5.5 did, apart from the improvements and breaking changes
-named next.
+config and request exactly as 1.5.5 did, apart from the improvements and breaking changes
+named next. Two owner-signed changes need action: a `store:` block is now required, and a plugin
+built for 1.5.5 no longer loads (see [Owner-signed changes from
+1.5.5](#owner-signed-changes-from-155)); the published store plugins in the oracle ran as 1.5.5
+builds against the 1.5.5 binary.
 
 A request whose upstream is down is counted and billed nothing, as in 1.5.5. The published 1.5.5
 binary books it as one request with 0 cents of spend and 0 tokens (shadow-oracle cell
 `billing|key-usage|upstream-down-refunded` in `testing/shadow-oracle/golden/1.5.5`), and 1.6.0 books
 the same.
+
+### Owner-signed changes from 1.5.5
+
+Everything else in this release is identical to 1.5.5, apart from the improvements and the breaking
+register entries listed below. These are the changes an operator must act on or will notice, each
+signed by the owner (spec: `docs/design/BUSBAR-1.6.0.md`).
+
+- **A `store:` block is required.** `busbar --validate` and boot refuse a config without one, and tell
+  you to add one, e.g. `store: {module: memory}`. 1.5.5 used `memory` when the block was absent.
+  **Migration:** run `busbar --migrate-config`, which inserts exactly `store: {module: memory}`
+  (spec line 555, "a signed customer-visible change from 1.5.5"; owner ruling Q-STORE (B), spec lines
+  4211-4216). See [the migration guide](docs/migration-1.6.md#the-store-block-is-required).
+- **A published 1.5.5 JSON-contract plugin no longer loads.** Plugins speak the memory ABI only; boot
+  refuses a 1.5.5 plugin, including the four published store plugins, with a message naming the
+  rebuild against the 1.6.0 SDK (spec lines 1271 and 1385-1388, section 11.8, "an owner-signed
+  customer-visible break"). A compiled-in plugin and a dropped-in one are the same thing.
+  **Migration:** install the 1.6.0 releases and rebuild any third-party plugin; see
+  [the SDK migration note](docs/plugin-sdk-migration-1.6.md) and [the plugin guide](docs/plugins.md).
+- **Provider and identity-provider addresses that resolve to a private network are refused unless
+  allowlisted.** `advanced.block_private_addresses` defaults to `true`; a provider or IdP on an
+  internal DNS name needs an entry in the allowlist (spec lines 616-620, "the default-true change from
+  1.5.5 is signed off").
+- **A hook with `on_error: reject` whose transform fails answers 503, and a hook granted
+  `prompt: ro|rw` sees tool-call arguments and tool results** (spec line 1356, the two owner-signed
+  exceptions of 2026-10-02, HOOK Q1 and Q2). Both are described further below.
+- **A store refuses a different record at an already-used task-event sequence as a fork**, where the
+  published store plugin overwrote it (spec lines 1200-1202, Q79-fork-refusal, "signed as an accepted
+  difference").
+- **The LDAP auth plugin differs from 1.5.5 in three ways:** a malformed reply or a hostless URL
+  fails closed instead of panicking, an overrunning nested length fails fast, and inbound replies are
+  capped at 16 MiB (spec lines 863-865, signed 2026-09-28).
 
 ### Security
 
@@ -112,12 +146,10 @@ the same.
   task's durable provenance chain. Both planes now ask one predicate of one fact — is this token's
   task still non-terminal — at mint time and at present time.
 
-  The task TTL behind it is now enforced on **presentation**, not only on submission. The retention
-  sweep that ends a task idle past the 24h abandonment ceiling ran only as a side effect of a new
-  task being submitted, so on a deployment that had stopped submitting the ceiling was not a
-  deadline at all and a silent task's token stayed live indefinitely. The callback endpoint runs the
-  sweep itself, after the MAC verifies and before it reads the task; the sweep is claimed once per
-  second, so a busy backend pays an atomic load rather than a scan.
+  A token retires when its task ends, and at no idle deadline: the retention sweep touches only
+  settled tasks, so an idle ACTIVE task is never cancelled or evicted and keeps its token until it
+  ends. The 24h abandonment ceiling is gone (THE DESIGN §1, "an active work handle is never
+  evicted").
 
 - **An A2A hop refusal no longer names the backend to the caller.** Nine refusal arms rendered
   operator-facing detail into the JSON-RPC error body a client reads: the backend's URL, the address
@@ -373,6 +405,9 @@ Each of these is an owner-accepted difference from 1.5.5: additive, or strictly 
   series by their labels; a histogram's or summary's lines stay together in their usual order
   (buckets ascending, then `_sum`, then `_count`). Every name, label and value is unchanged, and
   the order served is one 1.5.5 could already print.
+- **A wedged hook comes back.** A hook that wedged is no longer lost until restart: it is
+  quarantined, backed off from 1 s doubling to 30 s, and then given one trial call on a fresh
+  instance, and a successful trial returns it to service. 1.5.5 had no quarantine to exit.
 
 ### Breaking
 
@@ -394,7 +429,8 @@ differ accepts a `status` class on no other kind, and what it waives is a miscon
 provider that answered 401 now authenticating.)
 Everything else that touches a 1.5.5 config, request or plugin is named above
 as an improvement or does not exist: a config written for 1.5.5 boots, validates and migrates
-identically, and every 1.5.5 key and minted secret carries over.
+identically (once it carries the `store:` block that `--migrate-config` inserts), and every 1.5.5 key and
+minted secret carries over.
 
 - 1.6.0 Improvements: a fallback hop refused upstream is answered in the ingress-native
   auth-failure envelope and recorded on the breaker. Previously, an auth or billing hard-down on a
@@ -543,6 +579,22 @@ is now a `400` naming the field; and the always-`null` `at` field on the hook vi
   said); 1.5.5 passed the request through.
 - 1.6.0 Breaking: a published 1.5.5 JSON-contract plugin no longer loads; boot refuses it with a
   message naming the rebuild against the 1.6.0 SDK (see the SDK migration note).
+- A config with no `store:` block is refused at boot and by `--validate`; `busbar --migrate-config`
+  inserts `store: {module: memory}`, the in-memory store such a config ran on in 1.5.x.
+- A request translated between LLM dialects no longer has a value substituted for one the target
+  dialect cannot carry: an image whose format Bedrock Converse does not accept is dropped instead
+  of relabelled `png`, and a Gemini `thinkingBudget: -1` ("the model decides") is dropped on a
+  target with no such setting instead of sent as the `medium` effort; each drop is warned and
+  audited by its wire path. A wrong-typed Gemini `thinkingBudget` or Anthropic image `media_type` is
+  answered with the caller's own 400 error instead of being translated.
+- 1.6.0 Breaking: when an auth plugin's `max_inflight` is full, a data-plane request is answered `503` with `Retry-After: 1` instead of 1.5.5's `401`.
+  The body is the gateway's at-capacity answer, the one `limits.max_inbound_concurrent` sheds
+  with. A bad credential is still answered `401`, and the admin API keeps 1.5.5's answer. **Migration:** a
+  client that retries a `503` after its `Retry-After` needs no change.
+- 1.6.0 Breaking: the destination guard now also judges an A2A peer's fetches, a streaming upstream and a duplex or WebSocket dial, so a private, loopback or cloud-metadata destination there is refused unless the configuration allows it, as a private provider host is.
+  **Migration:** name an internal peer or upstream in `advanced.allow_destinations` (an A2A
+  registration may also set its own `allow_private: true`), as a provider on an internal DNS name
+  already needs.
 
 ### Deprecated env vars still honoured
 
@@ -576,6 +628,8 @@ installed, and a `plugins.fetch` that downloads by asset name must use the new p
 already published keep the names they were published with and keep loading. `busbar --migrate-config`
 now names the Valkey store's manifest as `busbar-store-valkey`.
 
+**A plugin Busbar links also answers to its canonical repo name** (`store.module: busbar-store-memory`, `module: busbar-auth-admin-tokens`), exactly as it answers to its short name.
+
 **The Headroom hook plugin is no longer a first-party Busbar plugin** (owner ruling, 2026-09-30).
 Busbar no longer lists, builds, tests, bundles or release-notifies it; its repository
 (`GetBusbar/busbar-hook-headroom`) stays where it is. A tarball you already installed is an ordinary
@@ -603,20 +657,18 @@ compiled-in ≡ dropped-in guarantee that was asserted and false: a compiled-in 
 Busbar's own metrics recorder, while the same source built as a dropped-in `.so` links its own and
 silently lost every counter. Reaching a recorder is no longer representable from either build.
 
-**Nothing you have installed needs rebuilding.** The export window widens to `2..=3` rather than
-moving: a sink built before the envelope answers the bare response and keeps loading, and Busbar
-reads whichever shape a plugin speaks — decided once, when it loads. The store, secret, auth and
-hook payload schemas are unchanged, as is the transport version (`busbar_abi() == 1`) and the six
-exported symbols. A sink that wants the back-channel implements one new defaulted SDK method,
-`drain_observations`.
+**A plugin built for 1.6.0 speaks the memory ABI.** Every kind has exactly one ABI version and the
+host accepts only the current one. A sink that wants the observability back-channel implements one
+defaulted SDK method, `drain_observations`.
 
-**A new `plugins.logs` block is accepted and checked; plugin log lines have not moved.** The block
+**A new `plugins.logs` block is accepted and checked, and plugin log lines move to per-plugin log files.** The block
 names the directory for per-plugin log files (`dir`, default `logs/plugins`), the default level
 (`level`, default `info`), per-instance levels (`levels`), and rotation (`rotate_mb` and `keep`).
-A level word that names no level, or a `rotate_mb` of `0`, refuses the boot and names the key. This
-build writes no per-plugin log file: the plugins it loads do not run through the path that writes
-them, so a plugin's log lines reach the Busbar log exactly as they did in 1.5.5, and setting
-`plugins.logs` changes nothing an operator can observe beyond that check.
+A level word that names no level, or a `rotate_mb` of `0`, refuses the boot and names the key.
+
+- 1.6.0 Changed: a plugin's log lines, the LLM plane's included (it is a plugin in 1.6.0), are written to that plugin's own log file under `plugins.logs.dir` (for example `logs/plugins/llm.log`), not to the Busbar log.
+  In 1.5.5 the plane's warnings (for example `dropping image_url.detail: ...`) were lines of the
+  Busbar log. **Migration:** point log collection at `plugins.logs.dir` as well as the Busbar log.
 
 ### Spec fidelity
 
@@ -646,17 +698,26 @@ each dialect translates, field by field, is listed in the generated
   config with none of the three new keys boots and behaves exactly as it did under 1.5.5 (see
   [Behaviour identical to 1.5.5](#behaviour-identical-to-155) above), with one exception below.
 - **A `rate_card` must price every billable class the build declares, or boot refuses.** An unpriced
-  class never silently bills 0. A 1.5.5 config with a `rate_card` needs each entry to gain
-  `units: { search_units: 0 }` (0 keeps search free), and a rate card written through
-  `PUT /api/v1/admin/config/settings` needs the same key or the write answers 400. `--validate`
+  class never silently bills 0. A 1.5.5 config with a `rate_card` needs each entry to gain a
+  `units:` map pricing every LLM open class (`search_units`, `classifications`,
+  `web_fetch_requests`, `unitemized_tokens`, `images`, `audio_ms` and the nine Bedrock
+  `guardrail_*` units; 0 keeps each free, as 1.5.5 billed them), and a rate card written through
+  `PUT /api/v1/admin/config/settings` needs the same keys or the write answers 400. `--validate`
   names every class it wants.
+- **Every count a provider reports is ledgered under its own class** (owner ruling LEDGER-100).
+  Beside its tokens, a turn now ledgers Cohere's billed `classifications`, Anthropic's
+  `web_fetch_requests`, the tokens a provider's stated total counts above its itemized buckets
+  (`unitemized_tokens`), a per-image answer's `images`, a transcription's reported duration
+  (`audio_ms`, whole milliseconds) and each Bedrock guardrail policy-unit count (`guardrail_*`),
+  each priced by the rate card (absent card: 0). The token classes, their figures and every
+  `tokens:` cap count exactly what 1.5.5 counted. A Bedrock guardrail usage count that is present
+  but not a count is refused, like every other billed count.
 - **`busbar --migrate-config` leaves your 1.5.5 pool members exactly as written.** Only the four
   retired spellings named under [Breaking](#breaking) above are rewritten; nothing else in a pool,
   provider or model block is touched.
-- **The store plugin ABI window is `2..=4`.** A published 1.5.5 store plugin (`abi_version: 2`,
-  e.g. the sqlite, postgres, mysql or valkey plugin) loads as-is, with no rebuild and no manifest
-  change, and answers the plane-record verbs it doesn't know with "unsupported", which 1.6.0
-  treats as inert. See [Plugins](#plugins) above.
+- **The store plugin ABI is exactly version 3.** A published 1.5.5 store plugin (`abi_version: 2`,
+  e.g. the sqlite, postgres, mysql or valkey plugin) is refused at boot, naming the rebuild against
+  the 1.6.0 SDK. See [Plugins](#plugins) above.
 
 ### Added
 
@@ -690,8 +751,8 @@ each dialect translates, field by field, is listed in the generated
   "expected `groups`, `hooks`, `root`, `plugin_versions`, `identity-providers`, or `export`"
   (`tools` and `agents` join the list when their plane is configured). **Migration:** none.
 - 1.6.0 Added: a rate-card entry takes a `units:` map that prices each billable class a plane declares beyond the four `*_utok` token tiers.
-  A rate card must configure every billable class its plane declares, so a 1.5.5 card adds
-  `units: { search_units: 0 }` (0 keeps search free). A rate-card entry with a key busbar does not
+  A rate card must configure every billable class its plane declares, so a 1.5.5 card adds a
+  `units:` map with every LLM open class at 0 (0 keeps each free). A rate-card entry with a key busbar does not
   know is still refused in 1.5.5's sentence, with `units` now among the expected fields. Money stays
   unitless: a `currency` key is refused, as in 1.5.5.
 - 1.6.0 Added: a provider entry takes four lane-capability keys, `max_output_key`, `anthropic_adaptive_thinking`, `native_structured_output` and `model_capabilities`.
@@ -706,6 +767,10 @@ each dialect translates, field by field, is listed in the generated
   on an Anthropic or Bedrock upstream instead of sending `{type: disabled}`); the shipped catalog sets
   them for GPT-5.1 / GPT-5.2 and for Claude Opus 5.5 / Fable 5. See
   [Lane capabilities](docs/providers.md#lane-capabilities). **Migration:** none.
+- 1.6.0 Added: a model entry takes `protocol`, an optional override of the dialect its provider's `protocol` sets.
+  Omitted, the model speaks its provider's protocol, as in 1.5.5. A model key busbar does not know
+  is still refused in 1.5.5's sentence, with `protocol` now among the expected fields.
+  **Migration:** none.
 - 1.6.0 Added: `GET /api/v1/admin/audit/keys` publishes the node's ed25519 public verifying key.
   The key set was empty before this release, because nothing was signed. With `data_dir` set, the
   keyset is minted at the first boot and kept in a `0600` file under `data_dir`, so the published
@@ -773,19 +838,33 @@ each dialect translates, field by field, is listed in the generated
   at a durable store and each inbound `tools/call` appends one hash-linked row: who called, which
   tool, under which approved schema, and whether it went out. Refusals are recorded as deliberately
   as successes. This is tamper-evidence, not tamper-prevention, and chains are verified at boot.
-  With the default `store: memory` nothing is persisted and nothing is claimed; with a 1.5.5 store
-  plugin the record is kept in process until an ABI-4 store ships.
+  With `store: memory` nothing is persisted and nothing is claimed; the record is durable only on a
+  store plugin that persists plane records.
 - **A quarantined MCP upstream stays quarantined across a restart**, so a restarted Busbar no
   longer hands an upstream its approval back until the next sweep. The first observation that finds
   the upstream serving what you approved clears it.
 - **An approval for a `ask_caller` confirm-once tool is redeemed once per deployment, not once per
   node.** Two nodes sharing a signing key previously redeemed the same approval once each, so a
   single operator confirmation could execute a money-moving tool twice behind a load balancer. This
-  needs a durable governance store: with the default `store: memory` the ledger is still the
+  needs a durable governance store: with `store: memory` the ledger is still the
   in-process one, so the guarantee is single-use per node, exactly as before.
-- **An upstream's `sampling/createMessage` ask can be satisfied under an operator-capped budget.**
-  `tools.<server>.sampling` declares the model the completion runs on, a `max_tokens` ceiling and
-  `max_requests_per_minute`. Deny-by-default is unchanged: with no grant, the ask is refused.
+- **An upstream's `sampling/createMessage`, `roots/list` or `elicitation/create` ask is relayed to
+  your caller, never answered by Busbar.** Busbar answers nothing on a caller's behalf: the caller
+  receives the upstream's `inputRequests` exactly as sent, under Busbar's own sealed `requestState`
+  (bound to that caller, that tool call and the server that asked), and its retry goes back to that
+  same server with the caller's answers and the server's own state, verbatim. `tools.<server>.grants`
+  decides which asks a server may put to your callers; with no grant the ask is refused, and Busbar
+  only declares a capability upstream that both the grant and the caller declare. The
+  `tools.<server>.roots:` and `tools.<server>.sampling:` blocks — Busbar's own answers to those asks
+  — are removed, and a config that writes either is refused at startup.
+  The same holds inside a task and for a `transport: stdio` child. A task whose upstream asks parks
+  `input_required` with the upstream's `inputRequests` verbatim, and `tasks/update` sends the
+  caller's answers back to that same server, so the task no longer fails with "a task's
+  continuation has no caller waiting". A stdio child's own `sampling/createMessage`,
+  `elicitation/create` or `roots/list` request goes to the caller of the call it is serving —
+  as an `input_required` result over HTTP, as a live request on `busbar --mcp-stdio` — and the
+  caller's answer is written back to the child under its request id; the child no longer
+  receives a `-32001` "no satisfier" reply. An ungranted ask is still refused (`ask_ungranted`).
 - **An upstream's `notifications/resources/updated` is relayed to subscribed clients**, gated on
   the subscriber's own grant, and `server/discover` now declares `resources.subscribe: true`.
 - **Busbar serves A2A over gRPC** at `/lf.a2a.v1.A2AService/*`, on the same data port and data
@@ -820,6 +899,12 @@ each dialect translates, field by field, is listed in the generated
 
 ### Changed
 
+- **The TLS listener now offers h2 via ALPN** (owner-signed, 2026-10-04, Q137). A `tls:` listener offers
+  ALPN `h2, http/1.1`; 1.5.5 offered `http/1.1` alone. A client that offers `h2` (curl, browsers, gRPC
+  clients) speaks HTTP/2 to Busbar over TLS; a client that offers only `http/1.1`, or no ALPN, is served
+  exactly as before. On an HTTP/2 connection a client that does not open with the HTTP/2 connection preface
+  is disconnected, as RFC 9113 requires. **Migration:** none; a client that must stay on HTTP/1.1 offers
+  only `http/1.1`.
 - **The data plane is thread-per-core on unix.** `advanced.worker_threads` (default: one per core,
   cap 128) now sizes N pinned single-threaded runtimes, each with its own `SO_REUSEPORT` listener
   on the data port; the admin plane and background tasks run on a separate control-runtime thread.
@@ -877,12 +962,6 @@ each dialect translates, field by field, is listed in the generated
 - A request translated between LLM dialects no longer carries an empty text block in place of a
   content block the target dialect cannot represent, and an answer translated back no longer
   delivers one; the block is dropped with a warning and an audit row naming its wire path.
-- A request translated between LLM dialects no longer has a value substituted for one the target
-  dialect cannot carry: an image whose format Bedrock Converse does not accept is dropped instead
-  of relabelled `png`, and a Gemini `thinkingBudget: -1` ("the model decides") is dropped on a
-  target with no such setting instead of sent as the `medium` effort; each drop is warned and
-  audited by its wire path. A wrong-typed Gemini `thinkingBudget` or Anthropic image `media_type` is
-  answered with the caller's own 400 error instead of being translated.
 - What a dialect's reader cannot carry across a translation (an unknown image detail or effort
   word, a tool-choice form or modality with no counterpart, extra choices or candidates, a Bedrock-only
   answer member, a Responses answer's request echoes) is now audited like a writer's drop, and every

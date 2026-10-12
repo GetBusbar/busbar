@@ -58,7 +58,7 @@ pub use busbar_kernel::egress::engine::{
 // The infallible per-lane egress-client shim now lives in the neutral substrate
 // (`busbar_kernel::proxy::build_egress_client`) so a plane crate builds its egress client without
 // reaching into `busbar-core`; re-exported here for core's own `crate::proxy::build_egress_client`
-// call sites (`preflight`, `auth::token`, `egress_auth`).
+// call sites (`preflight`, `auth::token`).
 
 // THE MONEY-PATH ENGINE TESTS (usage_tap / on_exhausted / egress_differential / forward_once_pool_cell
 // / pool_upstream_creds / ordered_walk / reroute_pool / probe_* / hook_seam / signal_catalog /

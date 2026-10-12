@@ -728,7 +728,7 @@ async fn substrate_fire_stage_taps_honors_group_scope_via_host_seam() {
         crate::proto_codec::PROTO_ANTHROPIC,
         false,
     );
-    let stage = || busbar_kernel::hooks::wire::HookStageProjection {
+    let stage = || busbar_contract::hook_wire::HookStageProjection {
         at: "response",
         model: None,
         attempt_number: None,
@@ -794,7 +794,7 @@ async fn substrate_fire_stage_taps_honors_group_scope_via_host_seam() {
 #[tokio::test]
 async fn completion_tap_fires_synthetic_rejected_by_auth() {
     crate::testkit::install_test_seams();
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let (cap, tap) = webhook_tap().await;
     let mut app = TestApp::new()
         .lane(LaneSpec::new(
@@ -838,7 +838,7 @@ async fn completion_tap_fires_synthetic_rejected_by_auth() {
 #[tokio::test]
 async fn completion_tap_status_is_protocol_native_gemini_400() {
     crate::testkit::install_test_seams();
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let (cap, tap) = webhook_tap().await;
     let mut app = TestApp::new()
         .auth(Arc::new(busbar_kernel::auth::AuthMiddleware::new_builtin(

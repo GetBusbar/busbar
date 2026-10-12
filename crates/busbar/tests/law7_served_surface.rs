@@ -83,14 +83,17 @@ fn free_port() -> u16 {
 /// Boot the shipped binary on a 1.5.5-shaped config (one provider, one model, keys, an admin token,
 /// `public_url:`), with every plane section appended when `with_planes`.
 fn boot(tag: &str, with_planes: bool) -> Booted {
-    let dir = std::env::temp_dir().join(format!(
-        "busbar-law7-{tag}-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
+    let dir = std::env::temp_dir().join(format!("busbar-law7-{tag}-{}-{}", std::process::id(), {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        format!(
+            "{}-{}-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_nanos()),
+            line!(),
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        )
+    }));
     std::fs::create_dir_all(&dir).unwrap();
     let (data_port, admin_port) = (free_port(), free_port());
     std::fs::write(
@@ -118,6 +121,7 @@ fn boot(tag: &str, with_planes: bool) -> Booted {
 admin_listen: "127.0.0.1:{admin_port}"
 advanced:
   allow_destinations: ["127.0.0.1"]
+store: {{module: memory}}
 public_url: "http://127.0.0.1:{data_port}"
 identity-providers:
   admin-tokens:
@@ -281,14 +285,18 @@ fn a_1_5_5_config_serves_the_1_5_5_surface_and_each_configured_plane_serves_its_
 /// Boot on the oracle's BOOT-181 mutation (listener TLS material that does not parse) and return the
 /// whole of what the refused boot printed.
 fn boot_181_output(extra: &str) -> String {
-    let dir = std::env::temp_dir().join(format!(
-        "busbar-law7-boot181-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
+    let dir =
+        std::env::temp_dir().join(format!("busbar-law7-boot181-{}-{}", std::process::id(), {
+            static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            format!(
+                "{}-{}-{}",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |d| d.as_nanos()),
+                line!(),
+                NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            )
+        }));
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(
         dir.join("providers.yaml"),
@@ -302,6 +310,7 @@ fn boot_181_output(extra: &str) -> String {
 admin_listen: "127.0.0.1:0"
 advanced:
   allow_destinations: ["127.0.0.1"]
+store: {{module: memory}}
 tls:
   cert: {{ env: LAW7_TLS_CERT }}
   key: {{ env: LAW7_TLS_KEY }}

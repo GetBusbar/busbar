@@ -59,6 +59,9 @@ pub(crate) struct AsPlane {
     plain_metadata: Option<bytes::Bytes>,
     /// The verifiers a DPoP proof at busbar's resource is checked with: the plane's ES256 one.
     dpop_verifiers: oauth_as::jwt::JwsVerifiers,
+    /// This server's expired-record sweeper, stopped when the server is let go ([`Sweeper`]).
+    /// `None` for a server built without one (a test that drives the store directly).
+    sweeper: Option<Sweeper>,
 }
 
 /// Why the plane could not be built. Distinct from [`super::config::AsCfgError`] because these are
@@ -98,10 +101,14 @@ impl AsPlane {
     /// `None` means the operator configured no key and accepts an ephemeral one. This function does
     /// not resolve secrets itself, so it stays testable without a secret module and so the one
     /// place that reads operator secrets remains the config layer.
+    ///
+    /// `fetch` is how a Client ID Metadata Document is fetched: [`super::cimd::ConnectorFetch`] over
+    /// the root Connector in production.
     pub(crate) fn build(
         identity: AsIdentity,
         key_material: Option<&str>,
         protected_resources: Vec<String>,
+        fetch: Arc<dyn super::cimd::CimdFetch>,
     ) -> Result<Self, AsBuildError> {
         let key = match key_material {
             Some(b64) => {
@@ -173,7 +180,7 @@ impl AsPlane {
         let store = super::cimd::CimdStore::new(
             MemoryStorage::new(),
             super::policy::default_grant_scopes(&identity),
-            Arc::new(super::cimd::GuardedFetch),
+            fetch,
             provisioned_clients(&identity),
         );
         let server = Arc::new(
@@ -209,6 +216,7 @@ impl AsPlane {
             sessions,
             plain_metadata,
             dpop_verifiers,
+            sweeper: None,
         })
     }
 
@@ -437,7 +445,7 @@ pub(crate) fn seam_verify_dpop(
 /// before the extraction — and hands back the type-erased object `App::oauth_as` stores. This is
 /// the function pointer `busbar_core_oauth2::install` actually registers; core cannot call
 /// [`AsPlane::build`] directly, since that would name this crate's type from busbar-core.
-pub(crate) fn seam_build(
+pub(crate) fn seam_build<C: crate::Connections>(
     block: &serde_yaml::Value,
     secrets: Vec<(String, String)>,
     protected_resources: Vec<String>,
@@ -468,33 +476,77 @@ pub(crate) fn seam_build(
                 })?,
         ),
     };
-    let plane =
-        AsPlane::build(identity, key_material, protected_resources).map_err(|e| e.to_string())?;
-    let plane = Arc::new(plane);
+    // The document fetch rides the composition root's connection table (`C`), read at fetch time.
+    let fetch = Arc::new(super::cimd::ConnectorFetch { table: C::table });
+    let mut plane = AsPlane::build(identity, key_material, protected_resources, fetch)
+        .map_err(|e| e.to_string())?;
     // `Storage::sweep_expired` is the only thing that reclaims anything in `oauth-as`, and it runs
-    // when it is called and never otherwise. Spawned here, once per generation — unchanged from the
-    // inline call `appbuild.rs` made before this moved behind the seam.
-    spawn_sweeper(
-        Arc::clone(plane.server()),
+    // when it is called and never otherwise. Spawned here, once per generation, and OWNED by the
+    // generation's server: a reload builds a new server with its own sweeper, and letting the old
+    // generation go stops the old one ([`Sweeper`]), so a reload leaves exactly one.
+    plane.sweeper = Some(spawn_sweeper(
+        plane.server(),
         std::time::Duration::from_secs(60),
-    );
-    Ok(plane as Arc<dyn std::any::Any + Send + Sync>)
+    ));
+    Ok(Arc::new(plane) as Arc<dyn std::any::Any + Send + Sync>)
 }
 
-/// SWEEP EXPIRED RECORDS, forever, on busbar's own timer.
+/// ONE SERVER'S SWEEPER, as its server holds it. Dropping it stops the sweep: the server owns its
+/// sweeper, so when a reload lets a generation's server go, that generation's sweeper goes with it
+/// rather than holding the old server alive and sweeping it forever.
+pub(crate) struct Sweeper {
+    task: tokio::task::AbortHandle,
+    /// Alive exactly while the sweep task is: the task holds the only strong reference.
+    #[cfg_attr(not(test), allow(dead_code))]
+    running: std::sync::Weak<()>,
+}
+
+impl Drop for Sweeper {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
+impl Sweeper {
+    /// Whether the sweep task is still running (read by the reload test).
+    #[cfg(test)]
+    pub(crate) fn probe(&self) -> std::sync::Weak<()> {
+        self.running.clone()
+    }
+}
+
+impl AsPlane {
+    /// This server's sweeper, when it was built with one.
+    #[cfg(test)]
+    pub(crate) fn sweeper(&self) -> Option<&Sweeper> {
+        self.sweeper.as_ref()
+    }
+}
+
+/// SWEEP EXPIRED RECORDS, on busbar's own timer, for as long as `server` is held.
 ///
 /// `Storage::sweep_expired` is the ONLY thing that reclaims anything in `oauth-as`, and it runs when
 /// it is called and never otherwise. Expiry is enforced on read, so an unswept deployment is not a
 /// security hole — it is a memory one, and the endpoints that fill it take no credential, so an
 /// unauthenticated caller sets the rate. A failure is logged and the loop continues: a sweeper that
 /// exits on the first transient error is a sweeper that is not running by the time anyone looks.
-pub(crate) fn spawn_sweeper(server: Arc<AsServer>, every: std::time::Duration) {
-    tokio::spawn(async move {
+///
+/// The task holds the server WEAKLY: it never keeps a server alive, and it ends when the
+/// [`Sweeper`] the caller keeps is dropped (or the server is gone at a tick).
+pub(crate) fn spawn_sweeper(server: &Arc<AsServer>, every: std::time::Duration) -> Sweeper {
+    let server = Arc::downgrade(server);
+    let alive = Arc::new(());
+    let running = Arc::downgrade(&alive);
+    let task = tokio::spawn(async move {
+        let _alive = alive;
         let mut ticker = tokio::time::interval(every);
         // The first tick fires immediately, which would sweep an empty store at boot for nothing.
         ticker.tick().await;
         loop {
             ticker.tick().await;
+            let Some(server) = server.upgrade() else {
+                return;
+            };
             // The trait must be in scope for the call; `Storage` is imported here rather than at the
             // module top so nothing else in this file can reach for a raw store operation.
             use oauth_as::store::Storage as _;
@@ -533,4 +585,12 @@ pub(crate) fn spawn_sweeper(server: Arc<AsServer>, every: std::time::Duration) {
             }
         }
     });
+    Sweeper {
+        task: task.abort_handle(),
+        running,
+    }
 }
+
+#[cfg(test)]
+#[path = "tests/sweeper_tests.rs"]
+mod sweeper_tests;

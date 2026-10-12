@@ -523,7 +523,7 @@ leaf_op! {
 /// IR → openai speech (TTS) request wire (the body of [`OpenAiSpeech::write_request`], moved behind
 /// the `(speech, openai)` key — G6 A4b option-a). Byte-identical to the pre-cutover inline write.
 pub fn write_speech_request(r: &SpeechReq) -> Bytes {
-    let mut body = json!({ (keys::MODEL): r.model, (keys::INPUT): r.input, "voice": r.voice });
+    let mut body = json!({ (keys::MODEL): r.model, (keys::INPUT): r.input, "voice": r.timbre });
     if let Some(f) = &r.response_format {
         body[keys::RESPONSE_FORMAT] = json!(f);
     }
@@ -1041,7 +1041,7 @@ pub fn read_speech_request(
     Ok(SpeechReq {
         input: get(keys::INPUT),
         model: get(keys::MODEL),
-        voice: get("voice"),
+        timbre: get("voice"),
         response_format: wire
             .get(keys::RESPONSE_FORMAT)
             .and_then(Value::as_str)

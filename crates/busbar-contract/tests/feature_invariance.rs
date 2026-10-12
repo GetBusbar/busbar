@@ -38,6 +38,12 @@
 //!    behind exactly [`TESTKIT_CFG`] — this crate's own `cfg(test)`, or the same dev-only
 //!    `test-seal` feature a plugin's `[dev-dependencies]` edge already enables. No new feature, so
 //!    the surface a plugin compiles against in a release build has no kit in it at all.
+//!
+//! 4. The SHARED HOST-SERVICES DOUBLE (busbar #476 follow-up): `pub mod double;` in `services.rs`,
+//!    behind exactly [`SERVICES_DOUBLE_CFG`] — this crate's own `cfg(test)`, or the dev-only, EMPTY
+//!    `services-double` feature a plugin's `[dev-dependencies]` edge enables
+//!    (`tests/test_seal_is_dev_only.rs` refuses any other edge). It is a `HostServices` test
+//!    double, the host's trait and not the plugin ABI, so a release build carries none of it.
 
 use std::path::{Path, PathBuf};
 
@@ -63,6 +69,16 @@ const TESTKIT_CFG: &str = "#[cfg(any(test, feature = \"test-seal\"))]";
 
 /// The one item [`TESTKIT_CFG`] may gate: `(file under src/, the item's first line)`.
 const TESTKIT_ITEM: (&str, &str) = ("lib.rs", "pub mod testkit;");
+
+/// The dev-only shared host-services double's feature. Empty, and enabled by `[dev-dependencies]`
+/// edges only (`tests/test_seal_is_dev_only.rs`).
+const SERVICES_DOUBLE_FEATURE: &str = "services-double";
+
+/// The one attribute the shared double's module declaration may carry.
+const SERVICES_DOUBLE_CFG: &str = "#[cfg(any(test, feature = \"services-double\"))]";
+
+/// The one item [`SERVICES_DOUBLE_CFG`] may gate: `(file under src/, the item's first line)`.
+const SERVICES_DOUBLE_ITEM: (&str, &str) = ("services.rs", "pub mod double;");
 
 /// Every item `test-seal` may gate: `(file under src/, the item's first line)`. The type and its two
 /// sealed-trait impls, and nothing else.
@@ -92,10 +108,14 @@ fn feature_findings(manifest: &str) -> Vec<String> {
             }
             let key = line.split('=').next().unwrap_or_default().trim();
             let value = line.split('=').nth(1).unwrap_or_default().trim();
-            if !(NEUTRAL_TRANSPORT_FEATURES.contains(&key) || key == TEST_SEAL_FEATURE) {
+            if !(NEUTRAL_TRANSPORT_FEATURES.contains(&key)
+                || key == TEST_SEAL_FEATURE
+                || key == SERVICES_DOUBLE_FEATURE)
+            {
                 out.push(format!(
                     "the contract declares feature {key:?} beyond the neutral transport-axis gates \
-                     and the dev-only `test-seal`, so its plugin-visible surface is not one surface"
+                     and the dev-only `test-seal` and `services-double`, so its plugin-visible \
+                     surface is not one surface"
                 ));
             } else if value != "[]" {
                 out.push(format!(
@@ -156,6 +176,18 @@ fn cfg_findings(files: &[(String, String)]) -> Vec<String> {
                     continue;
                 }
             }
+            // The shared host-services double: this exact attribute, over that one item, in
+            // services.rs.
+            if line.trim_end() == SERVICES_DOUBLE_CFG {
+                let item = lines[n + 1..]
+                    .iter()
+                    .map(|l| l.trim())
+                    .find(|l| !l.starts_with("#["))
+                    .unwrap_or_default();
+                if rel == SERVICES_DOUBLE_ITEM.0 && item == SERVICES_DOUBLE_ITEM.1 {
+                    continue;
+                }
+            }
             out.push(format!("{rel}:{}", n + 1));
         }
     }
@@ -178,7 +210,7 @@ fn src_files() -> Vec<(String, String)> {
 }
 
 /// The manifest declares no features beyond the two neutral transport-axis capability gates and the
-/// dev-only `test-seal`, each empty, and no optional dependencies.
+/// dev-only `test-seal` and `services-double`, each empty, and no optional dependencies.
 #[test]
 fn the_crate_declares_no_features() {
     let manifest =
@@ -250,6 +282,54 @@ fn the_testkit_is_behind_its_test_only_attribute() {
             .any(|l| *l == TESTKIT_CFG),
         "src/lib.rs: `{}` is not behind `{TESTKIT_CFG}`, so the kit ships in every build",
         TESTKIT_ITEM.1
+    );
+}
+
+/// The shared host-services double is not in a release build: its declaration carries exactly
+/// [`SERVICES_DOUBLE_CFG`]; an ungated `pub mod double;` (the double shipping in every build) is
+/// RED here.
+#[test]
+fn the_services_double_is_behind_its_test_only_attribute() {
+    let files = src_files();
+    let (_, text) = files
+        .iter()
+        .find(|(rel, _)| rel == SERVICES_DOUBLE_ITEM.0)
+        .expect("src/services.rs is present");
+    let lines: Vec<&str> = text.lines().map(str::trim).collect();
+    let at = lines
+        .iter()
+        .position(|l| *l == SERVICES_DOUBLE_ITEM.1)
+        .expect("src/services.rs still declares the shared double");
+    assert!(
+        lines[..at]
+            .iter()
+            .rev()
+            .take_while(|l| l.starts_with("#[") || l.starts_with("//"))
+            .any(|l| *l == SERVICES_DOUBLE_CFG),
+        "src/services.rs: `{}` is not behind `{SERVICES_DOUBLE_CFG}`, so the double ships in every \
+         build",
+        SERVICES_DOUBLE_ITEM.1
+    );
+}
+
+/// RED: the shared double's attribute over any other item, in any other file, or spelled any
+/// other way, is refused; a non-empty `services-double` is refused.
+#[test]
+fn the_services_double_attribute_over_another_item_is_red() {
+    let plant = |rel: &str, text: String| cfg_findings(&[(rel.to_string(), text)]);
+    let right =
+        format!("{SERVICES_DOUBLE_CFG}\n#[path = \"services_double.rs\"]\npub mod double;\n");
+    assert!(plant("services.rs", right.clone()).is_empty());
+    assert_eq!(plant("lib.rs", right).len(), 1);
+    let other = format!("{SERVICES_DOUBLE_CFG}\npub fn shipped_only_sometimes() {{}}\n");
+    assert_eq!(plant("services.rs", other).len(), 1);
+    let composed =
+        "#[cfg(any(debug_assertions, feature = \"services-double\"))]\npub mod double;\n";
+    assert_eq!(plant("services.rs", composed.to_string()).len(), 1);
+    assert!(feature_findings("[features]\nservices-double = []\n").is_empty());
+    assert_eq!(
+        feature_findings("[features]\nservices-double = [\"runtime\"]\n").len(),
+        1
     );
 }
 

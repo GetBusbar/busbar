@@ -1,0 +1,16 @@
+{
+  "settings": {},
+  "transport": {
+    "carrier": {
+      "listen": false,
+      "dial": { "program": "/bin/cat", "args": [], "env": [] },
+      "exchange": [
+        { "write": "{\"jsonrpc\":\"2.0\",\"id\":1}", "read": "{\"jsonrpc\":\"2.0\",\"id\":1}" },
+        { "write": "", "read": "" },
+        { "write": "two\nlines", "refused": true },
+        { "write": "ends in a return\r", "refused": true }
+      ],
+      "pending": { "write": "again", "read": "again" }
+    }
+  }
+}

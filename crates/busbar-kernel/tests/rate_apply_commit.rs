@@ -55,7 +55,7 @@ fn build(
 /// at its commit, with its own figures.
 #[test]
 fn an_apply_that_never_commits_raises_no_rates_and_one_that_commits_raises_them_once() {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     linked::install();
     let recorder: &'static Recorder = Box::leak(Box::new(Recorder(Mutex::new(Vec::new()))));
     install_rate_apply(recorder);

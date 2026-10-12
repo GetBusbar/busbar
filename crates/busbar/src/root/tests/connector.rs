@@ -19,13 +19,25 @@ fn judge() -> Arc<dyn busbar_kernel::host_services::DestJudge> {
 fn the_process_has_one_connector_and_every_path_takes_it() {
     let doors = crate::LINKED_TRANSPORT_DOORS;
     assert!(!doors.is_empty(), "this build links a transport door");
-    let built = process::build(|| entries(doors), judge(), &[], Arc::new(|_| {}));
+    let built = process::build(
+        || entries(doors, &TransportSettings::default()),
+        judge(),
+        &[],
+        Arc::new(|_| {}),
+        PoolPosture::NONE,
+    );
     let built = built.expect("the linked doors build a connector");
     let installed = install(Arc::clone(&built)).expect("the first install is the one");
     assert!(Arc::ptr_eq(installed, &built));
     assert!(Arc::ptr_eq(the(), &built), "the() is the installed one");
-    let second = process::build(|| entries(doors), judge(), &[], Arc::new(|_| {}))
-        .expect("a second one builds");
+    let second = process::build(
+        || entries(doors, &TransportSettings::default()),
+        judge(),
+        &[],
+        Arc::new(|_| {}),
+        PoolPosture::NONE,
+    )
+    .expect("a second one builds");
     assert!(install(second).is_err(), "a second connector is refused");
     assert!(Arc::ptr_eq(the(), &built));
 }
@@ -64,7 +76,7 @@ const IMDS: &str = "169.254.169.254";
 /// the catalog, and `security` (YAML, or empty for none).
 fn deployment(providers: &[(&str, &str, &[&str])], security: &str) -> RootCfg {
     let mut defs = std::collections::HashMap::new();
-    let mut yaml = String::from("models: {}\nproviders:");
+    let mut yaml = String::from("store: {module: memory}\nmodels: {}\nproviders:");
     yaml.push_str(if providers.is_empty() { " {}\n" } else { "\n" });
     for (name, url, carve) in providers {
         let def: busbar_kernel::config::ProviderDef =
@@ -110,7 +122,7 @@ fn a_provider_carve_out_does_not_admit_metadata_for_a_default_or_open_web_dial()
             );
         }
         assert_eq!(
-            judge.judge_name(&format!("https://{IMDS}/"), class),
+            judge.judge_name(&format!("https://{IMDS}/"), class, false),
             Err(DEST_METADATA),
             "the literal under class {class}"
         );
@@ -162,7 +174,7 @@ fn operator_infrastructure_refuses_metadata_even_when_carved_out() {
             );
         }
         assert_eq!(
-            judge.judge_name("http://metadata.google.internal/", class),
+            judge.judge_name("http://metadata.google.internal/", class, false),
             Err(DEST_METADATA),
             "the metadata name under class {class}"
         );
@@ -179,9 +191,13 @@ fn a_reload_that_removes_a_carve_out_refuses_the_next_dial() {
     let _registry = busbar_kernel::plane::registry::TestRegistryIsolation::seeded(&[
         busbar_kernel::test_support::neutral_fallback_plane(),
     ]);
+    // The loopback every fixture in this binary binds is listed, as an operator lists a loopback
+    // upstream: the guard installed here is process-wide (first install wins), and every other
+    // test's mock upstream is dialled through it by its loopback literal.
     let boot = deployment(
         &[],
-        "security:\n  allow_metadata_hosts: [169.254.169.254]\n",
+        "security:\n  allow_metadata_hosts: [169.254.169.254]\n\
+         advanced:\n  allow_destinations: [\"127.0.0.1\", \"::1\"]\n",
     );
     let judge = dest_judge(&boot);
     // The boot path's own step: the guard goes behind the egress-trust capability, which is what
@@ -243,4 +259,120 @@ fn a_provider_without_an_allowlist_entry_is_refused_a_private_address() {
         Some(DEST_METADATA),
         "operator infrastructure refuses metadata whatever is carved"
     );
+}
+
+/// RED against busbar-auth-oauth b7d15c7137 and 2a776bd, which declared EGRESS_LOOPBACK_ALLOWED
+/// (lib.rs:137): the pinned plugin's two mint needs (`settings.token_url`, `settings.token_uri`)
+/// are operator infrastructure (BUSBAR-1.6.0.md l.609, ARCHITECT D1 MINT CLASS (B)), so a mint
+/// endpoint on a private host is reached as 1.5.5 reached it, not refused as non-loopback.
+#[test]
+fn the_pinned_mint_needs_are_operator_infrastructure() {
+    let needs = busbar_auth_oauth::NEEDS;
+    assert_eq!(needs.len(), 2, "the plugin declares its two mint needs");
+    for (n, need) in needs.iter().enumerate() {
+        assert_eq!(
+            need.egress_class, EGRESS_OPERATOR_INFRASTRUCTURE,
+            "mint need {n} must be operator-infrastructure (BUSBAR-1.6.0.md l.609): 1.5.5 minted over \
+             plaintext to a private or loopback token endpoint, which loopback-allowed refuses"
+        );
+    }
+}
+
+/// RED (ARCHITECT round 4 (e)): a plane's upstream need whose settings name a PROGRAM is dialled by
+/// the one connector over a linked transport door that frames a program's pipes LINE BY LINE (the
+/// stdio row's door, found by what it does, never by name): the connector spawns the program
+/// (operator-infrastructure class; no shell, only its stated environment), its first line is one
+/// frame with the newline stripped, a message written is one line to its stdin, and it is killed
+/// on close.
+// Every linked wire is composed: a build that leaves one unlinked is a different composition
+// (`linked_every_transport`, emitted by build.rs).
+#[cfg(linked_every_transport)]
+#[test]
+fn a_program_need_is_dialled_through_the_linked_line_framing_door() {
+    use busbar_contract::abi::host::conn::connector::{
+        DIRECTION_OUTBOUND, EGRESS_OPERATOR_INFRASTRUCTURE,
+    };
+    use busbar_contract::abi::mechanism::rendering::{ReadBlob, ReadNeed};
+    use busbar_contract::conn::{
+        ConnError, ConnId, Conns, DeclaredConns, InstanceId, NeedId, OpenDesc,
+    };
+    let doors = crate::LINKED_TRANSPORT_DOORS;
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("a runtime");
+    rt.block_on(async {
+        let c = process::build(
+            || entries(doors, &TransportSettings::default()),
+            judge(),
+            &[],
+            Arc::new(|_| {}),
+            PoolPosture::NONE,
+        )
+        .expect("the linked doors build a connector");
+        let program = busbar_contract::conn::Program::from_settings(&serde_json::json!({
+            "command": "/bin/sh",
+            "args": ["-c", "echo \"got:$DECLARED\"; read line; echo \"again:$line\""],
+            "env": {"DECLARED": "yes"},
+        }))
+        .expect("a program");
+        // The next frame on `conn`, read through the table.
+        let frame = |conn: ConnId| {
+            let c = &c;
+            async move {
+                let mut buf = [0_u8; 128];
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+                loop {
+                    match c.read(InstanceId(7), conn, 1, &mut buf) {
+                        Ok(piece) => break Some(buf[..piece.len].to_vec()),
+                        Err(ConnError::Pending) if std::time::Instant::now() < deadline => {
+                            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                        }
+                        _ => break None,
+                    }
+                }
+            }
+        };
+        let mut line_framed = Vec::new();
+        for (n, (key, _)) in (0u32..).zip(doors) {
+            let need = ReadNeed {
+                direction: DIRECTION_OUTBOUND,
+                egress_class: EGRESS_OPERATOR_INFRASTRUCTURE,
+                transport: (*key).to_owned(),
+                auth: String::new(),
+                target_from: "settings.server".to_owned(),
+                trust_from: String::new(),
+                details: ReadBlob {
+                    fmt: 0,
+                    flags: 0,
+                    bytes: Vec::new(),
+                },
+                timeout_ms: 0,
+            };
+            let (owner, id) = (InstanceId(7), NeedId(n));
+            // A door that frames over another layer carries no program: refused at declare.
+            if c.declare_program(owner, id, &need, &program).is_err() {
+                continue;
+            }
+            // A door that will not begin a framing over a program's pipes refuses the open.
+            let Ok(conn) = c.open(owner, id, &OpenDesc::default()) else {
+                continue;
+            };
+            if frame(conn).await.as_deref() == Some(b"got:yes".as_slice()) {
+                assert_eq!(c.write(owner, conn, b"{\"id\":1}", true, false), Ok(8));
+                assert_eq!(
+                    frame(conn).await.as_deref(),
+                    Some(b"again:{\"id\":1}".as_slice()),
+                    "a message is one line to the program; its answer one frame back"
+                );
+                line_framed.push(*key);
+            }
+            c.close(owner, conn).expect("closes");
+        }
+        assert_eq!(
+            line_framed.len(),
+            1,
+            "exactly one linked door frames a program line by line"
+        );
+    });
 }

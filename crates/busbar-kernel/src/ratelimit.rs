@@ -76,7 +76,8 @@ enum PathRule {
 /// registry-derived named-map root (CONFIG — one per `NamedMapSection::sections()`, so a plane's
 /// section joins without an edit here), and only then this table. `docs/admin-api.md`'s rate-limit
 /// table is a hand-written restatement of the CONFIG set that FUNCTION produces — kept honest by
-/// `rate_limit_doc_table_matches_classifier` (busbar-core-admin's tests), which classifies every
+/// `rate_limit_doc_table_matches_classifier` (the composition root's admin tests,
+/// `crates/busbar/tests/admin_cross_plane/keys.rs`), which classifies every
 /// mutation operation in the committed `openapi.json` through [`classify_mutation`] and fails if the
 /// CONFIG set differs from the doc's `config` row by one endpoint in either direction; so all four
 /// deciders are inside that check, not only this table.
@@ -96,7 +97,7 @@ const CONFIG_CLASS_RULES: &[PathRule] = &[
     // carved out below, before this prefix ever matches it.
     PathRule::Prefix("/config/"),
     // The admin auth chain itself — `PUT /admin-auth` (the remount moved it off `/auth`).
-    PathRule::Exact(crate::admin::v1::contract::PATH_ADMIN_AUTH),
+    PathRule::Exact(crate::admin::gate::PATH_ADMIN_AUTH),
     // A per-section overlay reset discards a whole section back to base config — a blast-radius
     // revert (rebuilds the App).
     PathRule::Prefix("/overlay/"),
@@ -116,10 +117,10 @@ const CONFIG_CLASS_RULES: &[PathRule] = &[
 /// `/config/`, and `/plugins/inspect` is a read-only archive preview that must not contend with
 /// EITHER the CONFIG or the shared CRUD budget — it gets its own [`MutationClass::PluginInspect`].
 pub fn classify_mutation(rel: &str) -> MutationClass {
-    if rel == crate::admin::v1::contract::PATH_CONFIG_VALIDATE {
+    if rel == crate::admin::gate::PATH_CONFIG_VALIDATE {
         return MutationClass::Crud;
     }
-    if rel == crate::admin::v1::contract::PATH_PLUGINS_INSPECT {
+    if rel == crate::admin::gate::PATH_PLUGINS_INSPECT {
         return MutationClass::PluginInspect;
     }
     // The GENERIC named-DEFINITION map writes (`/identity-providers`, `/export`, and any registered

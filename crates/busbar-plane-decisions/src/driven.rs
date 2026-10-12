@@ -87,15 +87,30 @@ pub mod tail {
     /// The op classes this plane serves, in index order. `systemone` alone (see the module doc).
     pub const OP_CLASSES: &[OpClassId] = &[ops::OP_SYSTEMONE];
 
-    /// The billable classes, in index order, each with its family.
-    pub const BILLABLE_CLASSES: &[(MeterClassId, &str)] = &[(meta::CLASS_DECISION, "decision")];
+    /// The billable classes, in index order, each with its family: the far end's decision count,
+    /// and the fee unit (also a class: the tail check holds `fee_units ⊆ billable_classes`).
+    pub const BILLABLE_CLASSES: &[(MeterClassId, &str)] = &[
+        (meta::CLASS_DECISION, "decision"),
+        (MeterClassId::new(FEE_PER_REQUEST), FEE_FAMILY),
+    ];
 
     /// The index of [`meta::CLASS_DECISION`] in [`BILLABLE_CLASSES`].
     pub const CLASS_DECISION_INDEX: u32 = 0;
 
-    /// The fee units this plane counts. None: the only thing a jev unit reports is the far end's
-    /// own decision count.
-    pub const FEE_UNITS: &[&str] = &[];
+    /// THE FEE UNIT: the request fee (`decisions.fees.per_request`), counted `1` on a unit whose
+    /// far end answered a success, so a refused or failed unit owes none (the signed design C-3,
+    /// "billable-success fee gated kernel-side", the tool plane's twin; ARCHITECT Q-L5-FEE (C)). A
+    /// fee unit is no priced class: the rate card never names it.
+    pub const FEE_PER_REQUEST: &str = busbar_contract::plane::PER_REQUEST;
+
+    /// The family of the fee unit's class: a count of 0 or 1.
+    pub const FEE_FAMILY: &str = "count";
+
+    /// The index of the fee unit's class in [`BILLABLE_CLASSES`].
+    pub const CLASS_FEE_INDEX: u32 = 1;
+
+    /// The fee units this plane counts.
+    pub const FEE_UNITS: &[&str] = &[FEE_PER_REQUEST];
 
     /// The connection needs, `(transport, auth)`, for the far-end direction: its dialect's style, the
     /// one a member resolves to by default (a member is bound on the need its resolved style names).
@@ -260,6 +275,50 @@ impl FarEndReading {
                 amount,
             })
     }
+
+    /// THE REQUEST FEE, read at the last piece: `1` of [`tail::FEE_PER_REQUEST`] for an answer the
+    /// far end gave as a success — a `2xx` status and no `/error` member, the success rule
+    /// [`Self::units`] reads — and nothing otherwise, so a refused or failed unit owes no fee
+    /// (billable success only).
+    #[must_use]
+    pub fn fee(&self, status: Option<u32>) -> Option<Units> {
+        let success = status.is_some_and(|s| (200..300).contains(&s));
+        (success && !codec::has(&self.body, PTR_ERROR)).then_some(Units {
+            class: tail::CLASS_FEE_INDEX,
+            reported: true,
+            amount: 1,
+        })
+    }
+}
+
+/// THE CALLER FIELDS THE FAR END NEVER RECEIVES: the ones the plane writes itself (the document
+/// type), the ones naming the hop (`host`), and the credential carriers (the far end is presented
+/// the member's credential by the kernel, never the caller's). Compared without case. Hop-by-hop
+/// fields and the body framing never reach the plane (the framer drops them).
+pub const NOT_RELAYED: &[&str] = &[
+    FIELD_CONTENT_TYPE,
+    "host",
+    "authorization",
+    "proxy-authorization",
+];
+
+/// THE CALLER'S FIELDS THE FAR END RECEIVES, in the order the caller sent them, a repeated name
+/// keeping every value: every field the caller sent but [`NOT_RELAYED`]'s (a same-dialect relay
+/// passes every header but the governed set; ARCHITECT DEC-SERVE Q2, the OWNER's DIALECT-FIDELITY
+/// F2). Names are lowercased, as the wire compares them.
+#[must_use]
+pub fn relayed_fields<'f>(
+    caller: impl IntoIterator<Item = (&'f [u8], &'f [u8])>,
+) -> Vec<(Vec<u8>, Vec<u8>)> {
+    caller
+        .into_iter()
+        .filter(|(name, _)| {
+            !NOT_RELAYED
+                .iter()
+                .any(|n| name.eq_ignore_ascii_case(n.as_bytes()))
+        })
+        .map(|(name, value)| (name.to_ascii_lowercase(), value.to_vec()))
+        .collect()
 }
 
 /// Render a refusal the kernel decided, in this dialect's error shape: `{"error": {"code", "message"}}`.

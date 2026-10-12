@@ -8,16 +8,23 @@
 //!   [`CompletionHandle`] and stores the result. A re-issued handle (a resume, or the re-call a short
 //!   answer earns) reads the stored result; nothing runs twice. The store forgets a ticket's results
 //!   when the ticket is recycled, a driver ticket's when its next tick starts, and any other
-//!   ticket's when a new op (not a short answer's re-call) starts on it.
+//!   ticket's when a new op (not a short answer's re-call) starts on it. Each op's results live
+//!   under an epoch of their own, so a pended service of an op that is over completes into
+//!   nothing: never the next op's same-numbered handle, never a wake for it.
 //! * **The short-buffer rule.** A result that does not fit the caller's buffers answers FAILED with
 //!   `needed_bytes`/`needed_items` at their full sizes and writes nothing. The one re-call on the same
 //!   handle reads the stored result; a second short answer on that handle is FAULT.
 //! * **May pend only on a ticket.** A service that may pend, called with no ticket, is REFUSED and
 //!   never runs.
 //! * **Served so far:** `clock.now`, `dest.judge`, `records.get`/`records.list`/`records.claim`,
-//!   `sign`, `trust.sight`, `trust.due`, `trust.verify` and `records.secret` (to the credential
-//!   kinds the caller's Statement declares, [`UNDECLARED_KIND`] otherwise). Every other slot answers REFUSED
-//!   ([`UNIMPLEMENTED`]).
+//!   `sign`, `trust.sight`, `trust.due`, `trust.verify`, `records.secret` (to the credential
+//!   kinds the caller's Statement declares, [`UNDECLARED_KIND`] otherwise), `work.open` /
+//!   `work.find` / `work.settle` / `work.resume`, `unit.nest`, `content.scan` and `hook.call`
+//!   (for the unit the crossing serves), `verify.lookup` / `verify.store` (the caller's own
+//!   single-flight verify cache), `disk.append` (to the destinations the caller was granted,
+//!   [`NO_DESTINATION`] otherwise) and `snapshot.read` (the host's metric families, laid out in the
+//!   caller's buffer by [`super::snapshot`], to the crossing the kernel granted them). Every slot of
+//!   the table is served.
 //! * **Who called.** The instance's [`Caller`], stated at bind, is handed to every service that is
 //!   scoped to its caller; an instance with none is REFUSED ([`NO_CALLER`]).
 //!
@@ -29,26 +36,30 @@ use std::collections::HashMap;
 use std::mem::size_of;
 use std::os::raw::c_void;
 use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 
 use busbar_contract::abi::host::service::{
-    self as svc, check_bufs, check_head, check_random_fill_in, check_records_claim_in, may_pend,
-    op, ClockNowIn, ClockReading, DestJudgeIn, EntitlementCheckIn, HostSlots, RandomFillIn,
-    RecordsClaimIn, RecordsGetIn, RecordsListIn, RecordsSecretIn, ServiceBufs, ServiceHead,
-    ServiceOut, SignIn, TrustDueIn, TrustSightIn, TrustVerifyIn, SERVICES,
+    self as svc, check_bufs, check_disk_append_in, check_head, check_hook_call_in,
+    check_random_fill_in, check_records_claim_in, check_work_record, may_pend, op, ClockNowIn,
+    ClockReading, ContentScanIn, DestJudgeIn, DiskAppendIn, DiskWritten, EntitlementCheckIn,
+    HookCallIn, HostSlots, RandomFillIn, RecordsClaimIn, RecordsGetIn, RecordsListIn,
+    RecordsSecretIn, ServiceBufs, ServiceHead, ServiceOut, SessionEmitIn, SignIn, SnapshotReadIn,
+    TrustDecideIn, TrustDueIn, TrustServesIn, TrustSightIn, TrustSightItemIn, TrustStateIn,
+    TrustVerifyIn, UnitNestIn, VerifyLookupIn, VerifyStoreIn, WorkFindIn, WorkOpenIn, WorkResumeIn,
+    WorkSettleIn, SERVICES,
 };
 use busbar_contract::abi::mechanism::call::{AbiStr, Blob, Outcome, RawOutcome};
 use busbar_contract::abi::mechanism::check;
 use busbar_contract::abi::mechanism::ticket::{CompletionHandle, HostCtx, Ticket};
 
 pub use busbar_contract::services::{
-    Caller, HostServices, Later, Ran, Reading, RecordsList, Stored,
+    Caller, DiskReport, HookAsk, HostServices, Later, NestAsk, Ran, Reading, RecordsList, Snapshot,
+    Stored,
 };
 
 use super::ticket::{decode, InstanceWake, WakeRoute};
 
-/// The error text of a slot this host does not serve yet.
-pub const UNIMPLEMENTED: &str = busbar_contract::services::UNSERVED;
 /// The error text of a caller-scoped service called from an instance the host states no caller for.
 pub const NO_CALLER: &str = "no caller is bound to this instance";
 /// The error text of a claim with no time to live.
@@ -62,6 +73,12 @@ pub const FILL_OUT_OF_RANGE: &str = "a fill asks for 1 to MAX_RANDOM_FILL bytes"
 /// The refusal of a `records.secret` read of a credential kind the calling instance does not
 /// declare, before anything is read.
 pub const UNDECLARED_KIND: &str = "the caller does not declare that credential kind";
+/// The refusal of a `disk.append` to a key the calling instance was not granted (its manifest
+/// declares no such destination) or its settings leave unset, before anything is written.
+pub const NO_DESTINATION: &str = "the caller was granted no such destination";
+/// The error text of a `snapshot.read` before the host's recorder is installed: the caller answers
+/// "not ready, retry".
+pub const SNAPSHOT_NOT_READY: &str = "the snapshot is not ready";
 /// The error text of the second short answer on one handle.
 pub const SECOND_SHORT: &str = "a second short answer on one handle";
 
@@ -73,21 +90,40 @@ enum Entry {
     Done { stored: Stored, shorts: u8 },
 }
 
-/// The results of one dispatcher's services, by ticket then issue order.
+/// One ticket's results, stamped with the EPOCH of the op that issued them.
+#[derive(Debug)]
+struct Held {
+    /// Minted fresh (never reused) when the ticket's first result of an op is stored; a forget
+    /// (a new op or tick on the ticket, or its recycle) ends it.
+    epoch: u64,
+    entries: HashMap<u32, Entry>,
+}
+
+/// The results of one dispatcher's services, by ticket then issue order, each ticket's under the
+/// epoch of the op that issued them. A new op's handles count from 0 again, so a handle alone does
+/// not name its op: a [`Completer`] carries its op's epoch, and a completion whose epoch is not the
+/// ticket's current one is DROPPED, never stored under the next op's same-numbered handle and
+/// never a wake for it (THE DESIGN §11.11 H2, §11.12).
 #[derive(Debug, Default)]
 pub struct ServiceStore {
-    inner: Mutex<HashMap<Ticket, HashMap<u32, Entry>>>,
+    inner: Mutex<HashMap<Ticket, Held>>,
+    /// The last epoch minted.
+    epochs: AtomicU64,
 }
 
 impl ServiceStore {
-    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<Ticket, HashMap<u32, Entry>>> {
+    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<Ticket, Held>> {
         self.inner.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// Store a pended service's result; `false` when the handle is not running.
-    fn complete(&self, h: CompletionHandle, stored: Stored) -> bool {
+    /// Store a pended service's result; `false` when the handle is not running under `epoch`.
+    fn complete(&self, h: CompletionHandle, epoch: u64, stored: Stored) -> bool {
         let mut map = self.lock();
-        match map.get_mut(&h.ticket).and_then(|t| t.get_mut(&h.seq)) {
+        match map
+            .get_mut(&h.ticket)
+            .filter(|held| held.epoch == epoch)
+            .and_then(|held| held.entries.get_mut(&h.seq))
+        {
             Some(e @ Entry::Running) => {
                 *e = Entry::Done { stored, shorts: 0 };
                 true
@@ -97,9 +133,11 @@ impl ServiceStore {
     }
 
     /// Forget every result under `ticket` (it was recycled, a driver ticket's tick started, or a
-    /// new op started on it); how many there were.
+    /// new op started on it), ending its epoch; how many there were.
     pub(crate) fn forget(&self, ticket: Ticket) -> usize {
-        self.lock().remove(&ticket).map_or(0, |held| held.len())
+        self.lock()
+            .remove(&ticket)
+            .map_or(0, |held| held.entries.len())
     }
 
     /// Forget every result of worker `worker` (it was replaced).
@@ -108,9 +146,9 @@ impl ServiceStore {
     }
 
     /// How many results the store holds.
-    #[must_use]
-    pub fn held(&self) -> usize {
-        self.lock().values().map(HashMap::len).sum()
+    #[cfg(test)]
+    pub(crate) fn held(&self) -> usize {
+        self.lock().values().map(|held| held.entries.len()).sum()
     }
 }
 
@@ -119,23 +157,27 @@ pub struct Completer {
     store: Weak<ServiceStore>,
     route: Weak<dyn WakeRoute>,
     handle: CompletionHandle,
+    /// The epoch of the op that issued `handle`.
+    epoch: u64,
 }
 
 impl std::fmt::Debug for Completer {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Completer")
             .field("handle", &self.handle)
+            .field("epoch", &self.epoch)
             .finish_non_exhaustive()
     }
 }
 
 impl Completer {
-    /// Store `stored` and wake the ticket. A handle whose ticket was recycled meanwhile is dropped.
+    /// Store `stored` and wake the ticket. A handle whose op is over meanwhile (its ticket was
+    /// recycled, or a new op or tick started on it) is dropped, and wakes nothing.
     pub fn complete(self, stored: Stored) {
         let Some(store) = self.store.upgrade() else {
             return;
         };
-        if store.complete(self.handle, stored) {
+        if store.complete(self.handle, self.epoch, stored) {
             if let Some(route) = self.route.upgrade() {
                 route.wake(self.handle.ticket);
             }
@@ -258,13 +300,19 @@ pub(crate) unsafe fn serve(
         };
     }
     let h = head.handle;
-    let fresh = {
+    // The epoch of the op on the ticket: the one its first result minted, or a fresh one.
+    let (epoch, fresh) = {
         let mut map = store.lock();
-        match map.entry(h.ticket).or_default().entry(h.seq) {
-            std::collections::hash_map::Entry::Occupied(_) => false,
+        let held = map.entry(h.ticket).or_insert_with(|| Held {
+            epoch: store.epochs.fetch_add(1, Ordering::Relaxed) + 1,
+            entries: HashMap::new(),
+        });
+        let epoch = held.epoch;
+        match held.entries.entry(h.seq) {
+            std::collections::hash_map::Entry::Occupied(_) => (epoch, false),
             std::collections::hash_map::Entry::Vacant(v) => {
                 v.insert(Entry::Running);
-                true
+                (epoch, true)
             }
         }
     };
@@ -273,16 +321,21 @@ pub(crate) unsafe fn serve(
             store: Arc::downgrade(store),
             route: route.clone(),
             handle: h,
+            epoch,
         };
         match body(Some(completer)) {
             Ran::Now(stored) => {
-                store.complete(h, stored);
+                store.complete(h, epoch, stored);
             }
             Ran::Later => {}
         }
     }
     let mut map = store.lock();
-    match map.get_mut(&h.ticket).and_then(|t| t.get_mut(&h.seq)) {
+    match map
+        .get_mut(&h.ticket)
+        .filter(|held| held.epoch == epoch)
+        .and_then(|held| held.entries.get_mut(&h.seq))
+    {
         Some(Entry::Running) => Answered::bare(Outcome::Pending, ""),
         Some(Entry::Done { stored, shorts }) => {
             if *shorts >= 2 {
@@ -334,6 +387,13 @@ pub static HOST_SLOTS: HostSlots = HostSlots {
     need_admit: Some(need_admit),
     trust_verify: Some(trust_verify),
     records_secret: Some(records_secret),
+    disk_append: Some(disk_append),
+    snapshot_read: Some(snapshot_read),
+    trust_sight_item: Some(trust_sight_item),
+    trust_serves: Some(trust_serves),
+    trust_decide: Some(trust_decide),
+    trust_state: Some(trust_state),
+    session_emit: Some(session_emit),
 };
 
 /// The dispatcher an instance's context routes to, and what it serves.
@@ -495,7 +555,7 @@ extern "C" fn dest_judge(ctx: HostCtx, input: *const c_void, out: *mut ServiceOu
             if check::text(i.dest, "dest_judge.dest").is_err()
                 || check::bits(
                     u64::from(i.flags),
-                    u64::from(svc::DEST_RESOLVE),
+                    u64::from(svc::DEST_RESOLVE | svc::DEST_REFUSE_PRIVATE | svc::DEST_EXPLAIN),
                     "dest_judge.flags",
                 )
                 .is_err()
@@ -503,7 +563,6 @@ extern "C" fn dest_judge(ctx: HostCtx, input: *const c_void, out: *mut ServiceOu
             {
                 return Answered::fault();
             }
-            let resolve = i.flags & svc::DEST_RESOLVE != 0;
             // SAFETY: a checked range of the caller's, live for the call; copied before any pend.
             let dest = if i.dest.len == 0 {
                 String::new()
@@ -518,7 +577,7 @@ extern "C" fn dest_judge(ctx: HostCtx, input: *const c_void, out: *mut ServiceOu
             unsafe {
                 serve(&served.store, &route, &head, Some(&i.into), |completer| {
                     let later = completer.map(|c| -> Later { Box::new(move |s| c.complete(s)) });
-                    provider.dest_judge(&dest, i.egress_class, resolve, later)
+                    provider.dest_judge(&dest, i.egress_class, i.flags, later)
                 })
             }
         },
@@ -654,6 +713,92 @@ extern "C" fn records_secret(
     )
 }
 
+/// The destination the calling instance's `key` is bound to; `None` when it was granted no such
+/// key, or its settings leave it unset.
+fn destination(ctx: HostCtx, key: &str) -> Option<busbar_contract::services::DiskDest> {
+    if ctx.ptr.is_null() {
+        return None;
+    }
+    // SAFETY: every `HostCtx` the host hands out points to a leaked (`'static`) `InstanceWake`.
+    let wake: &'static InstanceWake = unsafe { &*ctx.ptr.cast_const().cast::<InstanceWake>() };
+    if !wake.destinations.get()?.iter().any(|k| k == key) {
+        return None;
+    }
+    let bound = wake
+        .bound
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    bound.iter().find(|d| d.key == key).cloned()
+}
+
+/// `disk.append` (THE DESIGN §11.11 R4, §11.12): the caller's destination KEY is mapped to the
+/// file the host bound for it (granted from its manifest, bound from its settings at open), and
+/// the bytes go to the kernel's bounded disk lane, which pends the call until the append is done.
+/// On READY and FAILED the result slot gets what the lane reported: the rotation before the append,
+/// and on READY the whole of the bytes. A key the caller was not granted is REFUSED
+/// ([`NO_DESTINATION`]) before anything is written.
+extern "C" fn disk_append(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
+    slot(
+        ctx,
+        input,
+        out,
+        op::DISK_APPEND,
+        size_of::<DiskAppendIn>(),
+        |served, route, head| {
+            // SAFETY: the head covered a `DiskAppendIn`.
+            let i = unsafe { input.cast::<DiskAppendIn>().read_unaligned() };
+            if check_disk_append_in(&i).is_err() {
+                return Answered::fault();
+            }
+            let (Some(key), Some(bytes)) = (
+                text_of(i.dest_key, "disk_append.dest_key"),
+                blob_of(i.bytes, "disk_append.bytes"),
+            ) else {
+                return Answered::fault();
+            };
+            let Some(dest) = destination(ctx, &key) else {
+                return Answered::bare(Outcome::Refused, NO_DESTINATION);
+            };
+            let whole = bytes.len() as u64;
+            let provider = Arc::clone(&served.provider);
+            // SAFETY: no buffer: the result is the `DiskWritten` slot, written below.
+            let mut a = unsafe {
+                pended(&served, &route, &head, None, |later| {
+                    provider.disk_append(&dest, bytes, later)
+                })
+            };
+            if matches!(a.outcome, Outcome::Ready | Outcome::Failed) {
+                let report = DiskReport::of(&Stored {
+                    outcome: a.outcome,
+                    value: a.value,
+                    bytes: Vec::new(),
+                    spans: Vec::new(),
+                    error: a.error,
+                });
+                let written = DiskWritten {
+                    size: size_of::<DiskWritten>() as u32,
+                    rotated: u8::from(report.rotated),
+                    faults: report.faults,
+                    _reserved: [0; 2],
+                    written: if a.outcome == Outcome::Ready {
+                        whole
+                    } else {
+                        0
+                    },
+                };
+                // SAFETY: the caller's result slot, checked non-NULL by `check_disk_append_in`.
+                unsafe { i.result.write_unaligned(written) };
+                a.value = if a.outcome == Outcome::Ready {
+                    0
+                } else {
+                    report.step
+                };
+            }
+            a
+        },
+    )
+}
+
 extern "C" fn records_list(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
     scoped(
         ctx,
@@ -762,17 +907,163 @@ extern "C" fn trust_sight(ctx: HostCtx, input: *const c_void, out: *mut ServiceO
         |served, route, head, caller| {
             // SAFETY: the head covered a `TrustSightIn`.
             let i = unsafe { input.cast::<TrustSightIn>().read_unaligned() };
-            let (Some(counterparty), Some(hash)) = (
-                text_of(i.counterparty, "trust_sight.counterparty"),
-                text_of(i.catalogue_hash, "trust_sight.catalogue_hash"),
+            let Some(counterparty) = text_of(i.counterparty, "trust_sight.counterparty") else {
+                return Answered::fault();
+            };
+            let provider = Arc::clone(&served.provider);
+            match i.outcome {
+                svc::TRUST_REACHED => {}
+                // Unreached: the last verdict, nothing sighted (the hash is unread).
+                svc::TRUST_UNREACHABLE => {
+                    // SAFETY: no buffer is named.
+                    return unsafe {
+                        pended(&served, &route, &head, None, |_| {
+                            Ran::Now(provider.trust_unreached(&caller, &counterparty))
+                        })
+                    };
+                }
+                _ => return Answered::fault(),
+            }
+            let Some(hash) = text_of(i.catalogue_hash, "trust_sight.catalogue_hash") else {
+                return Answered::fault();
+            };
+            // SAFETY: no buffer is named.
+            unsafe {
+                pended(&served, &route, &head, None, |later| {
+                    provider.trust_sight(&caller, &counterparty, &hash, later)
+                })
+            }
+        },
+    )
+}
+
+extern "C" fn trust_sight_item(
+    ctx: HostCtx,
+    input: *const c_void,
+    out: *mut ServiceOut,
+) -> RawOutcome {
+    scoped(
+        ctx,
+        input,
+        out,
+        op::TRUST_SIGHT_ITEM,
+        size_of::<TrustSightItemIn>(),
+        |served, route, head, caller| {
+            // SAFETY: the head covered a `TrustSightItemIn`.
+            let i = unsafe { input.cast::<TrustSightItemIn>().read_unaligned() };
+            let (Some(counterparty), Some(item), Some(digest)) = (
+                text_of(i.counterparty, "trust_sight_item.counterparty"),
+                text_of(i.item, "trust_sight_item.item"),
+                text_of(i.digest, "trust_sight_item.digest"),
             ) else {
                 return Answered::fault();
             };
             let provider = Arc::clone(&served.provider);
             // SAFETY: no buffer is named.
             unsafe {
-                pended(&served, &route, &head, None, |later| {
-                    provider.trust_sight(&caller, &counterparty, &hash, later)
+                serve(&served.store, &route, &head, None, |_| {
+                    Ran::Now(provider.trust_sight_item(&caller, &counterparty, &item, &digest))
+                })
+            }
+        },
+    )
+}
+
+extern "C" fn trust_serves(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
+    scoped(
+        ctx,
+        input,
+        out,
+        op::TRUST_SERVES,
+        size_of::<TrustServesIn>(),
+        |served, route, head, caller| {
+            // SAFETY: the head covered a `TrustServesIn`.
+            let i = unsafe { input.cast::<TrustServesIn>().read_unaligned() };
+            let (Some(counterparty), Some(item), Some(digest)) = (
+                text_of(i.counterparty, "trust_serves.counterparty"),
+                text_of(i.item, "trust_serves.item"),
+                text_of(i.digest, "trust_serves.digest"),
+            ) else {
+                return Answered::fault();
+            };
+            let some = |s: String| (!s.is_empty()).then_some(s);
+            let (item, digest) = (some(item), some(digest));
+            let provider = Arc::clone(&served.provider);
+            // SAFETY: no buffer is named.
+            unsafe {
+                serve(&served.store, &route, &head, None, |_| {
+                    Ran::Now(provider.trust_serves(
+                        &caller,
+                        &counterparty,
+                        item.as_deref(),
+                        digest.as_deref(),
+                    ))
+                })
+            }
+        },
+    )
+}
+
+extern "C" fn trust_decide(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
+    scoped(
+        ctx,
+        input,
+        out,
+        op::TRUST_DECIDE,
+        size_of::<TrustDecideIn>(),
+        |served, route, head, caller| {
+            // SAFETY: the head covered a `TrustDecideIn`.
+            let i = unsafe { input.cast::<TrustDecideIn>().read_unaligned() };
+            let approve = match i.decision {
+                svc::TRUST_DECIDE_APPROVE => true,
+                svc::TRUST_DECIDE_REVOKE => false,
+                _ => return Answered::fault(),
+            };
+            let (Some(counterparty), Some(item), Some(expected)) = (
+                text_of(i.counterparty, "trust_decide.counterparty"),
+                text_of(i.item, "trust_decide.item"),
+                text_of(i.expected, "trust_decide.expected"),
+            ) else {
+                return Answered::fault();
+            };
+            let some = |s: String| (!s.is_empty()).then_some(s);
+            let (item, expected) = (some(item), some(expected));
+            let provider = Arc::clone(&served.provider);
+            // SAFETY: no buffer is named.
+            unsafe {
+                serve(&served.store, &route, &head, None, |_| {
+                    let key = busbar_contract::services::TrustKeyRef {
+                        counterparty: &counterparty,
+                        item: item.as_deref(),
+                    };
+                    Ran::Now(provider.trust_decide(&caller, key, expected.as_deref(), approve))
+                })
+            }
+        },
+    )
+}
+
+extern "C" fn trust_state(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
+    scoped(
+        ctx,
+        input,
+        out,
+        op::TRUST_STATE,
+        size_of::<TrustStateIn>(),
+        |served, route, head, caller| {
+            // SAFETY: the head covered a `TrustStateIn`.
+            let i = unsafe { input.cast::<TrustStateIn>().read_unaligned() };
+            if check_bufs(&i.into).is_err() {
+                return Answered::fault();
+            }
+            let Some(counterparty) = text_of(i.counterparty, "trust_state.counterparty") else {
+                return Answered::fault();
+            };
+            let provider = Arc::clone(&served.provider);
+            // SAFETY: `into` checked above; the caller's buffers.
+            unsafe {
+                serve(&served.store, &route, &head, Some(&i.into), |_| {
+                    Ran::Now(provider.trust_state(&caller, &counterparty))
                 })
             }
         },
@@ -888,6 +1179,36 @@ extern "C" fn entitlement_check(
     )
 }
 
+extern "C" fn session_emit(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
+    scoped(
+        ctx,
+        input,
+        out,
+        op::SESSION_EMIT,
+        size_of::<SessionEmitIn>(),
+        |served, route, head, caller| {
+            // SAFETY: the head covered a `SessionEmitIn`.
+            let i = unsafe { input.cast::<SessionEmitIn>().read_unaligned() };
+            let Some(bytes) = blob_of(i.bytes, "session_emit.bytes") else {
+                return Answered::fault();
+            };
+            if svc::check_session_emit_in(&i).is_err() {
+                return Answered::bare(Outcome::Refused, EMIT_NOTHING);
+            }
+            let provider = Arc::clone(&served.provider);
+            // SAFETY: no buffer is named.
+            unsafe {
+                serve(&served.store, &route, &head, None, |_| {
+                    Ran::Now(provider.session_emit(&caller, i.session, &bytes))
+                })
+            }
+        },
+    )
+}
+
+/// `session.emit`'s refusal of a write that names no session or no bytes.
+const EMIT_NOTHING: &str = "session.emit names an open session and something to write";
+
 extern "C" fn random_fill(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
     slot(
         ctx,
@@ -915,27 +1236,337 @@ extern "C" fn random_fill(ctx: HostCtx, input: *const c_void, out: *mut ServiceO
     )
 }
 
-/// `name = OP, In;`: a slot this host does not serve yet: its frame, then REFUSED.
-macro_rules! unimplemented_slot {
-    ($($name:ident = $op:ident, $in:ident;)*) => {$(
-        extern "C" fn $name(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
-            slot(ctx, input, out, op::$op, size_of::<svc::$in>(), |_, _, _| {
-                Answered::bare(Outcome::Refused, UNIMPLEMENTED)
-            })
-        }
-    )*};
+extern "C" fn unit_nest(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
+    scoped(
+        ctx,
+        input,
+        out,
+        op::UNIT_NEST,
+        size_of::<UnitNestIn>(),
+        |served, route, head, caller| {
+            // SAFETY: the head covered a `UnitNestIn`.
+            let i = unsafe { input.cast::<UnitNestIn>().read_unaligned() };
+            let (Some(verb), Some(target), Some(body)) = (
+                text_of(i.verb, "unit_nest.verb"),
+                text_of(i.target, "unit_nest.target"),
+                blob_of(i.body, "unit_nest.body"),
+            ) else {
+                return Answered::fault();
+            };
+            if check_bufs(&i.into).is_err() {
+                return Answered::fault();
+            }
+            let unit = serving_unit();
+            let provider = Arc::clone(&served.provider);
+            let ask = NestAsk { verb, target, body };
+            // SAFETY: `into` checked above; the caller's buffers, where the whole reply goes.
+            unsafe {
+                pended(&served, &route, &head, Some(&i.into), |later| {
+                    provider.unit_nest(&caller, unit, ask, later)
+                })
+            }
+        },
+    )
 }
 
-unimplemented_slot! {
-        unit_nest = UNIT_NEST, UnitNestIn;
-    work_open = WORK_OPEN, WorkOpenIn;
-    work_find = WORK_FIND, WorkFindIn;
-    work_settle = WORK_SETTLE, WorkSettleIn;
-    work_resume = WORK_RESUME, WorkResumeIn;
-    verify_lookup = VERIFY_LOOKUP, VerifyLookupIn;
-    verify_store = VERIFY_STORE, VerifyStoreIn;
-    content_scan = CONTENT_SCAN, ContentScanIn;
-    hook_call = HOOK_CALL, HookCallIn;
+/// The refusal of a `work.open` or `work.settle` record past `MAX_WORK_RECORD`, before anything is
+/// opened or settled.
+pub const WORK_RECORD_TOO_LONG: &str = "the work record is longer than MAX_WORK_RECORD";
+
+extern "C" fn work_open(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
+    scoped(
+        ctx,
+        input,
+        out,
+        op::WORK_OPEN,
+        size_of::<WorkOpenIn>(),
+        |served, route, head, caller| {
+            // SAFETY: the head covered a `WorkOpenIn`.
+            let i = unsafe { input.cast::<WorkOpenIn>().read_unaligned() };
+            let (Some(kind), Some(record)) = (
+                text_of(i.kind, "work_open.kind"),
+                blob_of(i.record, "work_open.record"),
+            ) else {
+                return Answered::fault();
+            };
+            if check_bufs(&i.into).is_err() {
+                return Answered::fault();
+            }
+            if check_work_record(&i.record).is_err() {
+                return Answered::bare(Outcome::Refused, WORK_RECORD_TOO_LONG);
+            }
+            let unit = serving_unit();
+            let provider = Arc::clone(&served.provider);
+            // SAFETY: `into` checked above; the caller's buffers.
+            unsafe {
+                pended(&served, &route, &head, Some(&i.into), |later| {
+                    provider.work_open(&caller, unit, &kind, &record, later)
+                })
+            }
+        },
+    )
+}
+
+extern "C" fn work_find(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
+    scoped(
+        ctx,
+        input,
+        out,
+        op::WORK_FIND,
+        size_of::<WorkFindIn>(),
+        |served, route, head, caller| {
+            // SAFETY: the head covered a `WorkFindIn`.
+            let i = unsafe { input.cast::<WorkFindIn>().read_unaligned() };
+            let Some(reference) = bytes_of(i.reference, "work_find.reference") else {
+                return Answered::fault();
+            };
+            if check_bufs(&i.into).is_err() {
+                return Answered::fault();
+            }
+            let unit = serving_unit();
+            let provider = Arc::clone(&served.provider);
+            // SAFETY: `into` checked above; the caller's buffers.
+            unsafe {
+                pended(&served, &route, &head, Some(&i.into), |later| {
+                    provider.work_find(&caller, unit, &reference, later)
+                })
+            }
+        },
+    )
+}
+
+extern "C" fn work_settle(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
+    scoped(
+        ctx,
+        input,
+        out,
+        op::WORK_SETTLE,
+        size_of::<WorkSettleIn>(),
+        |served, route, head, caller| {
+            // SAFETY: the head covered a `WorkSettleIn`.
+            let i = unsafe { input.cast::<WorkSettleIn>().read_unaligned() };
+            let Some(record) = blob_of(i.record, "work_settle.record") else {
+                return Answered::fault();
+            };
+            if check_work_record(&i.record).is_err() {
+                return Answered::bare(Outcome::Refused, WORK_RECORD_TOO_LONG);
+            }
+            // The unit this crossing serves: the kernel judges the settle against it.
+            let unit = serving_unit();
+            let provider = Arc::clone(&served.provider);
+            // SAFETY: no buffer is named.
+            unsafe {
+                pended(&served, &route, &head, None, |later| {
+                    provider.work_settle(&caller, unit, i.handle, &record, later)
+                })
+            }
+        },
+    )
+}
+
+extern "C" fn work_resume(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
+    scoped(
+        ctx,
+        input,
+        out,
+        op::WORK_RESUME,
+        size_of::<WorkResumeIn>(),
+        |served, route, head, caller| {
+            // SAFETY: the head covered a `WorkResumeIn`.
+            let i = unsafe { input.cast::<WorkResumeIn>().read_unaligned() };
+            if check_bufs(&i.into).is_err() {
+                return Answered::fault();
+            }
+            let unit = serving_unit();
+            let provider = Arc::clone(&served.provider);
+            // SAFETY: `into` checked above; the caller's buffers.
+            unsafe {
+                pended(&served, &route, &head, Some(&i.into), |later| {
+                    provider.work_resume(&caller, unit, i.handle, later)
+                })
+            }
+        },
+    )
+}
+
+/// The refusal of a `verify.lookup` or `verify.store` with an empty key, before the cache is read.
+pub const NO_VERIFY_KEY: &str = "a verify call names its key";
+/// The refusal of a `hook.call` naming a stage that is neither a gate nor a rewrite.
+pub const HOOK_UNKNOWN_STAGE: &str = "the hook stage is neither a gate nor a rewrite";
+/// The refusal of a `hook.call` resuming a chain past `HOOK_FROM_MAX`.
+pub const HOOK_FROM_PAST_CAP: &str = "a rewrite chain resumes no further than HOOK_FROM_MAX";
+/// The refusal of a `hook.call` gate that names a place to resume from.
+pub const HOOK_GATE_RESUMED: &str = "a gate is never resumed";
+/// The refusal of a `hook.call` with no prompt view.
+pub const HOOK_NO_PROMPT: &str = "a hook call states its prompt view";
+
+extern "C" fn verify_lookup(
+    ctx: HostCtx,
+    input: *const c_void,
+    out: *mut ServiceOut,
+) -> RawOutcome {
+    scoped(
+        ctx,
+        input,
+        out,
+        op::VERIFY_LOOKUP,
+        size_of::<VerifyLookupIn>(),
+        |served, route, head, caller| {
+            // SAFETY: the head covered a `VerifyLookupIn`.
+            let i = unsafe { input.cast::<VerifyLookupIn>().read_unaligned() };
+            let Some(key) = bytes_of(i.key, "verify_lookup.key") else {
+                return Answered::fault();
+            };
+            if check_bufs(&i.into).is_err() {
+                return Answered::fault();
+            }
+            if key.is_empty() {
+                return Answered::bare(Outcome::Refused, NO_VERIFY_KEY);
+            }
+            let provider = Arc::clone(&served.provider);
+            // SAFETY: `into` checked above; the caller's buffers, where the entry goes.
+            unsafe {
+                pended(&served, &route, &head, Some(&i.into), |later| {
+                    provider.verify_lookup(&caller, &key, later)
+                })
+            }
+        },
+    )
+}
+
+extern "C" fn verify_store(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
+    scoped(
+        ctx,
+        input,
+        out,
+        op::VERIFY_STORE,
+        size_of::<VerifyStoreIn>(),
+        |served, route, head, caller| {
+            // SAFETY: the head covered a `VerifyStoreIn`.
+            let i = unsafe { input.cast::<VerifyStoreIn>().read_unaligned() };
+            let (Some(key), Some(entry)) = (
+                bytes_of(i.key, "verify_store.key"),
+                blob_of(i.entry, "verify_store.entry"),
+            ) else {
+                return Answered::fault();
+            };
+            if key.is_empty() {
+                return Answered::bare(Outcome::Refused, NO_VERIFY_KEY);
+            }
+            let provider = Arc::clone(&served.provider);
+            // SAFETY: no buffer is named.
+            unsafe {
+                serve(&served.store, &route, &head, None, |_| {
+                    Ran::Now(provider.verify_store(&caller, &key, &entry, i.ttl_ms))
+                })
+            }
+        },
+    )
+}
+
+extern "C" fn content_scan(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
+    scoped(
+        ctx,
+        input,
+        out,
+        op::CONTENT_SCAN,
+        size_of::<ContentScanIn>(),
+        |served, route, head, caller| {
+            // SAFETY: the head covered a `ContentScanIn`.
+            let i = unsafe { input.cast::<ContentScanIn>().read_unaligned() };
+            let Some(content) = blob_of(i.content, "content_scan.content") else {
+                return Answered::fault();
+            };
+            if check_bufs(&i.into).is_err() {
+                return Answered::fault();
+            }
+            let unit = serving_unit();
+            let provider = Arc::clone(&served.provider);
+            // SAFETY: `into` checked above; the caller's buffers, where rewritten content goes.
+            unsafe {
+                pended(&served, &route, &head, Some(&i.into), |later| {
+                    provider.content_scan(&caller, unit, &content, later)
+                })
+            }
+        },
+    )
+}
+
+/// A prompt view, copied: the system text and the `(role, text)` messages.
+type PromptCopy = (Option<String>, Vec<(String, String)>);
+
+/// The caller's prompt view, copied: `None` for a view that breaks its rules (a NULL list with a
+/// count, a count past the hard maximum or contradicting the list, a string NULL with a length or
+/// not UTF-8).
+///
+/// # Safety
+/// `prompt` is non-NULL and, with every list and string it names, the caller's, live for the call.
+unsafe fn prompt_of(prompt: *const busbar_contract::abi::hook::PromptView) -> Option<PromptCopy> {
+    // SAFETY: the caller's contract.
+    let view = unsafe { prompt.read_unaligned() };
+    busbar_contract::abi::hook::validate::check_prompt_view(&view).ok()?;
+    let system = if view.system.ptr.is_null() {
+        None
+    } else {
+        Some(text_of(view.system, "hook_call.prompt.system")?)
+    };
+    let mut messages = Vec::with_capacity(view.messages_len);
+    for n in 0..view.messages_len {
+        // SAFETY: a checked list of `messages_len` views of the caller's (non-NULL for a count).
+        let m = unsafe { view.messages.add(n).read_unaligned() };
+        messages.push((
+            text_of(m.role, "hook_call.prompt.role")?,
+            text_of(m.text, "hook_call.prompt.text")?,
+        ));
+    }
+    Some((system, messages))
+}
+
+extern "C" fn hook_call(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
+    scoped(
+        ctx,
+        input,
+        out,
+        op::HOOK_CALL,
+        size_of::<HookCallIn>(),
+        |served, route, head, caller| {
+            // SAFETY: the head covered a `HookCallIn`.
+            let i = unsafe { input.cast::<HookCallIn>().read_unaligned() };
+            if check_bufs(&i.into).is_err() {
+                return Answered::fault();
+            }
+            if let Err(f) = check_hook_call_in(&i) {
+                return Answered::bare(
+                    Outcome::Refused,
+                    match f.rule {
+                        check::Rule::UnknownCode => HOOK_UNKNOWN_STAGE,
+                        check::Rule::OverMax => HOOK_FROM_PAST_CAP,
+                        check::Rule::Contradiction => HOOK_GATE_RESUMED,
+                        _ => HOOK_NO_PROMPT,
+                    },
+                );
+            }
+            // SAFETY: checked non-NULL above; the caller's view, live for the call; copied before
+            // any pend.
+            let Some((system, messages)) = (unsafe { prompt_of(i.prompt) }) else {
+                return Answered::fault();
+            };
+            let ask = HookAsk {
+                stage: i.stage,
+                from: i.from,
+                system,
+                messages,
+            };
+            let unit = serving_unit();
+            let provider = Arc::clone(&served.provider);
+            // SAFETY: `into` checked above; the caller's buffers, where the reply goes.
+            unsafe {
+                pended(&served, &route, &head, Some(&i.into), |later| {
+                    provider.hook_call(&caller, unit, ask, later)
+                })
+            }
+        },
+    )
 }
 
 /// THE HOST'S VERDICT on the calling instance's declared need: what the host's one connection
@@ -967,3 +1598,48 @@ extern "C" fn need_admit(ctx: HostCtx, input: *const c_void, out: *mut ServiceOu
 #[cfg(test)]
 #[path = "../tests/host_services_tests.rs"]
 mod tests;
+
+extern "C" fn snapshot_read(
+    ctx: HostCtx,
+    input: *const c_void,
+    out: *mut ServiceOut,
+) -> RawOutcome {
+    scoped(
+        ctx,
+        input,
+        out,
+        op::SNAPSHOT_READ,
+        size_of::<SnapshotReadIn>(),
+        |served, _, _, caller| {
+            // SAFETY: the head covered a `SnapshotReadIn`.
+            let i = unsafe { input.cast::<SnapshotReadIn>().read_unaligned() };
+            if check_bufs(&i.into).is_err() {
+                return Answered::fault();
+            }
+            if svc::check_snapshot_read_in(&i).is_err() {
+                return Answered::fault();
+            }
+            match served.provider.snapshot_read(&caller, i.scope) {
+                Snapshot::Families(families) => {
+                    let needed = super::snapshot::size_of_layout(&families);
+                    if needed > i.into.cap {
+                        return Answered {
+                            needed_bytes: needed as u64,
+                            ..Answered::bare(Outcome::Failed, SHORT)
+                        };
+                    }
+                    // SAFETY: `into` was checked above (a capacity never behind NULL, the
+                    // alignment the layout needs), and the layout fits its capacity.
+                    let used = unsafe { super::snapshot::lay_out(&families, i.into.buf) };
+                    Answered {
+                        value: families.len() as u64,
+                        len: used as u64,
+                        ..Answered::bare(Outcome::Ready, "")
+                    }
+                }
+                Snapshot::NotReady => Answered::bare(Outcome::Failed, SNAPSHOT_NOT_READY),
+                Snapshot::Refused(why) => Answered::bare(Outcome::Refused, why),
+            }
+        },
+    )
+}

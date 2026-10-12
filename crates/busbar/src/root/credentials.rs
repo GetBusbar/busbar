@@ -16,7 +16,8 @@ use busbar_contract::abi::mechanism::call::Span;
 use busbar_contract::abi::mechanism::check::SPAN_ABSENT;
 use busbar_contract::redacted::Redacted;
 use busbar_contract::services::{
-    Caller, CredentialRead, HostServices, Later, Ran, Reading, RecordsList, Stored,
+    Caller, CredentialRead, DiskDest, HookAsk, HostServices, Later, NestAsk, Ran, Reading,
+    RecordsList, Stored,
 };
 
 /// The App's swap handle, once it exists.
@@ -121,8 +122,8 @@ impl HostServices for CredentialServices {
         self.inner.now()
     }
 
-    fn dest_judge(&self, dest: &str, class: u32, resolve: bool, later: Option<Later>) -> Ran {
-        self.inner.dest_judge(dest, class, resolve, later)
+    fn dest_judge(&self, dest: &str, class: u32, flags: u32, later: Option<Later>) -> Ran {
+        self.inner.dest_judge(dest, class, flags, later)
     }
 
     fn records_get(&self, caller: &Caller, kind: &str, key: &[u8], later: Later) -> Ran {
@@ -156,6 +157,45 @@ impl HostServices for CredentialServices {
         self.inner.trust_due(caller)
     }
 
+    fn trust_unreached(&self, caller: &Caller, counterparty: &str) -> Stored {
+        self.inner.trust_unreached(caller, counterparty)
+    }
+
+    fn trust_decide(
+        &self,
+        caller: &Caller,
+        key: busbar_contract::services::TrustKeyRef<'_>,
+        expected: Option<&str>,
+        approve: bool,
+    ) -> Stored {
+        self.inner.trust_decide(caller, key, expected, approve)
+    }
+
+    fn trust_state(&self, caller: &Caller, counterparty: &str) -> Stored {
+        self.inner.trust_state(caller, counterparty)
+    }
+
+    fn trust_sight_item(
+        &self,
+        caller: &Caller,
+        counterparty: &str,
+        item: &str,
+        digest: &str,
+    ) -> Stored {
+        self.inner
+            .trust_sight_item(caller, counterparty, item, digest)
+    }
+
+    fn trust_serves(
+        &self,
+        caller: &Caller,
+        counterparty: &str,
+        item: Option<&str>,
+        digest: Option<&str>,
+    ) -> Stored {
+        self.inner.trust_serves(caller, counterparty, item, digest)
+    }
+
     fn trust_verify(
         &self,
         caller: &Caller,
@@ -173,6 +213,10 @@ impl HostServices for CredentialServices {
 
     fn random_fill(&self, len: u64) -> Stored {
         self.inner.random_fill(len)
+    }
+
+    fn session_emit(&self, caller: &Caller, session: u64, bytes: &[u8]) -> Stored {
+        self.inner.session_emit(caller, session, bytes)
     }
 
     fn records_secret(&self, kind: &str, id: &str, _later: Later) -> Ran {
@@ -196,6 +240,70 @@ impl HostServices for CredentialServices {
             spans: vec![span],
             ..Stored::ready(if live { SECRET_LIVE } else { SECRET_NOT_LIVE })
         })
+    }
+
+    fn unit_nest(&self, caller: &Caller, unit: Option<u64>, ask: NestAsk, later: Later) -> Ran {
+        self.inner.unit_nest(caller, unit, ask, later)
+    }
+
+    fn work_open(
+        &self,
+        caller: &Caller,
+        unit: Option<u64>,
+        kind: &str,
+        record: &[u8],
+        later: Later,
+    ) -> Ran {
+        self.inner.work_open(caller, unit, kind, record, later)
+    }
+
+    fn work_find(&self, caller: &Caller, unit: Option<u64>, reference: &[u8], later: Later) -> Ran {
+        self.inner.work_find(caller, unit, reference, later)
+    }
+
+    fn work_settle(
+        &self,
+        caller: &Caller,
+        unit: Option<u64>,
+        handle: u64,
+        record: &[u8],
+        later: Later,
+    ) -> Ran {
+        self.inner.work_settle(caller, unit, handle, record, later)
+    }
+
+    fn work_resume(&self, caller: &Caller, unit: Option<u64>, handle: u64, later: Later) -> Ran {
+        self.inner.work_resume(caller, unit, handle, later)
+    }
+
+    fn disk_append(&self, dest: &DiskDest, bytes: Vec<u8>, later: Later) -> Ran {
+        self.inner.disk_append(dest, bytes, later)
+    }
+
+    fn verify_lookup(&self, caller: &Caller, key: &[u8], later: Later) -> Ran {
+        self.inner.verify_lookup(caller, key, later)
+    }
+
+    fn verify_store(&self, caller: &Caller, key: &[u8], entry: &[u8], ttl_ms: u64) -> Stored {
+        self.inner.verify_store(caller, key, entry, ttl_ms)
+    }
+
+    fn content_scan(
+        &self,
+        caller: &Caller,
+        unit: Option<u64>,
+        content: &[u8],
+        later: Later,
+    ) -> Ran {
+        self.inner.content_scan(caller, unit, content, later)
+    }
+
+    fn hook_call(&self, caller: &Caller, unit: Option<u64>, ask: HookAsk, later: Later) -> Ran {
+        self.inner.hook_call(caller, unit, ask, later)
+    }
+
+    fn snapshot_read(&self, caller: &Caller, scope: u32) -> busbar_contract::services::Snapshot {
+        self.inner.snapshot_read(caller, scope)
     }
 }
 

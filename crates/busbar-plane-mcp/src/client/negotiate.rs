@@ -36,7 +36,7 @@ use super::compat::{
 };
 use super::jsonrpc::OutboundRequest;
 use crate::revision::{self, Revision, StepOutcome};
-use crate::session::Remembered;
+use crate::tool_sessions::Remembered;
 
 /// The verb a hop is sent with.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

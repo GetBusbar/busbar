@@ -15,6 +15,10 @@ fn every_stated_reason_code_is_the_reason_it_is_named_for() {
         (reason::GROUP_FROZEN, "group_frozen"),
         (reason::NO_RATE, "no_rate"),
         (reason::NO_DESTINATION, "no_destination"),
+        (reason::SCHEME_NOT_DECLARED, "scheme_not_declared"),
+        (reason::CHALLENGE_EXHAUSTED, "challenge_exhausted"),
+        (reason::CURSOR_BUDGET, "cursor_budget"),
+        (reason::CREDENTIAL_BUDGET, "credential_budget"),
     ] {
         assert_eq!(
             reason_of(code).map(|r| r.as_str()),

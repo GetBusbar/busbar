@@ -63,6 +63,7 @@ static POOLS_PLANE_STANDIN: busbar_kernel::plane::registry::PlaneDecl =
             required_config_sections: &[],
             trust_keys: &[],
             served_op_classes: &[],
+            caller_credential_refusal: None,
         },
         wire_format_names: || &["pools_standin"],
         claims: |_| Vec::new(),
@@ -101,7 +102,7 @@ fn declared_pin(def: &AgentDefCfg) -> Option<CardPin> {
 /// The section as boot reads it: the kernel's judgement of the keys it owns, then the section parse.
 fn parse(yaml: &str) -> Result<AgentsCfg, String> {
     let value: serde_yaml::Value = serde_yaml::from_str(yaml).map_err(|e| e.to_string())?;
-    validate_plane_section("agents", &value, TRUST_KEYS, &plane_sections())?;
+    validate_plane_section("agents", &value, TRUST_KEYS, None, &plane_sections())?;
     serde_yaml::from_str::<AgentsCfg>(yaml).map_err(|e| e.to_string())
 }
 

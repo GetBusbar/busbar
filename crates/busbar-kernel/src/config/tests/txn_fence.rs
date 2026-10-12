@@ -25,8 +25,8 @@
 
 use std::sync::Arc;
 
+use super::TxnError as AdminError;
 use super::{config_transaction, Outcome};
-use crate::admin::v1::contract::AdminError;
 use crate::state::AppHandle;
 
 /// (1) + (2): the body has no store in scope and `Txn` yields none.

@@ -21,6 +21,7 @@ pub mod embeddings;
 mod facts_impl;
 pub mod image;
 pub mod moderation;
+pub mod open_class;
 pub mod rerank;
 /// IR-18: the busbar signature-provenance envelope for client carriers with no origin field.
 pub mod sig_envelope;

@@ -3192,6 +3192,61 @@
       "notes": "\u00a73.2 BOOT-101 (config/mod.rs:4100-4110), raised in resolve \u2014 so reported under `[error] config errors:` rather than `config validation failed:`."
     },
     {
+      "id": "BOOT-102",
+      "family": "boot.refusal",
+      "mode": "validate",
+      "target": "config",
+      "op": [
+        {
+          "set": "export.metrics2",
+          "value": {
+            "module": "prometheus",
+            "settings": {
+              "buffer_seconds": 60
+            }
+          }
+        }
+      ],
+      "expect": {
+        "exit": 1,
+        "stderr_contains": "export.metrics2: a second `module: prometheus` instance (already defined as 'metrics'). Prometheus serves the ONE well-known /metrics route, so a second instance could only be silently ignored \u2014 keep a single instance.",
+        "stdout_contains": null
+      },
+      "notes": "\u00a73.2 BOOT-102 (config/mod.rs:3557-3566), raised in resolve \u2014 under `[error] config errors:`. The baseline already holds `export.metrics` (prometheus), so the appended `metrics2` is the second. 1.6.0 (busbar Q128 U2, ARCHITECT Q-U2-1): the sink states the one_instance mark and words this refusal itself at its limits check."
+    },
+    {
+      "id": "BOOT-103",
+      "family": "boot.refusal",
+      "mode": "validate",
+      "target": "config",
+      "op": [
+        {
+          "set": "export.traces",
+          "value": {
+            "module": "otlp",
+            "settings": {
+              "url": "http://127.0.0.1:4318/v1/traces"
+            }
+          }
+        },
+        {
+          "set": "export.traces2",
+          "value": {
+            "module": "otlp",
+            "settings": {
+              "url": "http://127.0.0.1:4318/v1/traces"
+            }
+          }
+        }
+      ],
+      "expect": {
+        "exit": 1,
+        "stderr_contains": "export.traces2: a second `module: otlp` instance (already defined as 'traces'). OTLP installs the ONE process-global tracer subscriber, so a second instance could only be silently ignored \u2014 keep a single instance.",
+        "stdout_contains": null
+      },
+      "notes": "\u00a73.2 BOOT-103 (config/mod.rs:3579-3588), raised in resolve \u2014 under `[error] config errors:`. 1.6.0 (busbar Q128 U2, ARCHITECT Q-U2-1): the sink states the one_instance mark and words this refusal itself at its limits check."
+    },
+    {
       "id": "BOOT-105a",
       "family": "boot.refusal",
       "mode": "both",

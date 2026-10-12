@@ -139,7 +139,7 @@ fn no_verb_name_carries_a_protocol_identity() {
     // The identities are READ OFF THE REGISTRY, not listed here: every protocol this test binary
     // registers, so a protocol added to the registry is checked the day it lands. The plane keys of
     // the real roster are checked against the same verbs in
-    // `tests/operation_names_cross_plane.rs`, where that roster is registered.
+    // `crates/busbar/tests/operation_names_cross_plane.rs`, where that roster is registered.
     let identities: Vec<&str> = crate::proto::registry::registry()
         .decls()
         .iter()

@@ -104,7 +104,7 @@ async fn a_composed_provider_credential_makes_the_mint_pass_serve_the_browser_to
     let rt = runtime();
     let provider = ProviderEndpoint {
         base_url: format!("http://{addr}"),
-        api_key: PROVIDER_KEY.to_string(),
+        api_key: busbar_contract::Redacted::new(PROVIDER_KEY.to_string()),
     };
 
     let resp = open_governed(GovernedOpen {

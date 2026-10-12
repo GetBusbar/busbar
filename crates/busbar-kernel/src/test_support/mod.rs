@@ -531,7 +531,7 @@ pub struct LaneSpec {
     // witnessed busbar-llm codec, so the witness can be deleted at the final flip.
     protocol: &'static str,
     max: usize,
-    api_key: String,
+    api_key: busbar_contract::redacted::Redacted<String>,
     error_map: std::collections::HashMap<String, String>,
     context_max: Option<usize>,
     path: Option<String>,
@@ -568,7 +568,7 @@ impl LaneSpec {
             base_url: base_url.into(),
             protocol,
             max: 10,
-            api_key: "k".into(),
+            api_key: String::from("k").into(),
             error_map: std::collections::HashMap::new(),
             context_max: None,
             path: None,
@@ -607,7 +607,7 @@ impl LaneSpec {
         self
     }
     pub fn api_key(mut self, k: &str) -> Self {
-        self.api_key = k.into();
+        self.api_key = k.to_string().into();
         self
     }
     pub fn error_map(mut self, m: std::collections::HashMap<String, String>) -> Self {
@@ -702,7 +702,7 @@ impl LaneSpec {
             organization: self.organization.clone(),
             project: self.project.clone(),
             upstream_model: self.upstream_model.clone(),
-            api_key: busbar_contract::redacted::Redacted::new(self.api_key.clone()),
+            api_key: self.api_key.clone(),
             auth_style,
             scope: None,
             token_url: None,
@@ -764,14 +764,14 @@ impl LaneSpec {
     }
 }
 
-/// The plugin route table a test `App` carries: the host's scrape route `GET /metrics` when the
-/// recorder is installed (`metrics::init()`), else empty. Mirrors production, where the route is the
-/// scrape sink's — here the recorder handle is the stand-in switch (the harness has no `export:`
-/// config surface) and nothing renders but the recorder itself.
+/// The plugin route table a test `App` carries: the scrape routes `GET /metrics` and
+/// `GET /metrics/hooks` when the recorder is installed (`metrics::init()`), else empty. Mirrors
+/// production, where the routes are the scrape sink's — here the recorder handle is the stand-in
+/// switch (the harness has no `export:` config surface) and the neutral
+/// [`export_axis::LinesSink`] answers them.
 fn test_plugin_route_table() -> crate::plugin_routes::PluginRouteTable {
-    if crate::metrics::recorder_installed() {
-        let decl = crate::export::scrape::decl("metrics", None);
-        crate::plugin_routes::build_route_table(vec![decl])
+    if crate::snapshot::recorder_installed() {
+        crate::plugin_routes::build_route_table(export_axis::lines_scrape_routes())
             .unwrap_or_else(|_| crate::plugin_routes::PluginRouteTable::empty())
     } else {
         crate::plugin_routes::PluginRouteTable::empty()
@@ -898,6 +898,8 @@ pub struct TestApp {
     on_exhausted_cfgs: std::collections::HashMap<String, crate::config::OnExhausted>,
     hook_registry: std::collections::HashMap<String, crate::config::HookCfg>,
     global_hooks: Vec<String>,
+    /// Resolve `global_hooks` into the App's global decision gates at build, as production does.
+    resolve_global_gates: bool,
     base_hook_names: std::collections::HashSet<String>,
     groups_registry: std::collections::BTreeMap<String, crate::config::GroupCfg>,
     base_group_names: std::collections::HashSet<String>,
@@ -1031,6 +1033,7 @@ impl TestApp {
             on_exhausted_cfgs: std::collections::HashMap::new(),
             hook_registry: std::collections::HashMap::new(),
             global_hooks: Vec::new(),
+            resolve_global_gates: false,
             base_hook_names: std::collections::HashSet::new(),
             groups_registry: std::collections::BTreeMap::new(),
             base_group_names: std::collections::HashSet::new(),
@@ -1268,6 +1271,14 @@ impl TestApp {
         self.global_hooks.push(name.into());
         self
     }
+    /// Resolve the `global_hooks:` list into the App's global DECISION gates at build, through the
+    /// one resolver production's build uses (`hooks::resolve_gate_hooks`) over this fixture's own
+    /// `hooks:` registry and hook env. Off by default: the read-surface fixtures name global hooks
+    /// they never fire.
+    pub fn resolve_global_gates(mut self) -> Self {
+        self.resolve_global_gates = true;
+        self
+    }
     pub fn lane(mut self, spec: LaneSpec) -> Self {
         self.lanes.push(spec);
         self
@@ -1380,12 +1391,41 @@ impl TestApp {
         lm.methods.insert(
             name.to_string(),
             crate::auth::token::LoginMethod {
-                module,
+                module: crate::auth::token::LoginPlugin::Cold(module),
                 client_secret: client_secret.map(busbar_contract::redacted::Redacted::new),
                 has_button,
                 issuer,
                 login_kind,
                 allowed_hosts,
+            },
+        );
+        self
+    }
+
+    /// Register a hosted-login method `name` whose plugin is ON THE AUTH KIND'S DOOR: `calls` (a
+    /// test stand-in for an opened door instance) answers its `begin_login`/`complete_login`, the
+    /// core holds no client secret for it and runs no hop. `login_kind` is the tail's login kind.
+    pub fn login_method_door(
+        mut self,
+        name: &str,
+        calls: std::sync::Arc<dyn busbar_contract::auth_calls::AuthCalls>,
+        login_kind: busbar_contract::auth::LoginKind,
+        has_button: bool,
+    ) -> Self {
+        let lm = self
+            .login_methods
+            .get_or_insert_with(|| crate::auth::token::LoginMethods {
+                methods: indexmap::IndexMap::new(),
+            });
+        lm.methods.insert(
+            name.to_string(),
+            crate::auth::token::LoginMethod {
+                module: crate::auth::token::LoginPlugin::Door(calls),
+                client_secret: None,
+                has_button,
+                issuer: None,
+                login_kind,
+                allowed_hosts: std::collections::HashSet::new(),
             },
         );
         self
@@ -1686,15 +1726,24 @@ impl TestApp {
         // UNCONDITIONALLY under the interned `runtime_slot_key(<llm plane key>)`: a fixture always
         // configures its lanes/pools and expects them readable through `engine_tables`, exactly as the
         // always-present flat field guaranteed, so `build()` seeds the slot for every `TestApp` whose
-        // process actually has an LLM (fallback) plane. GATED on `is_fallback` because `fallback_key()`
-        // degrades to the FIRST registered plane's key when no plane flags itself fallback (the plane
-        // suites' dependency-copy of core, which registers only MCP/A2A) — inserting there would key the
-        // LLM runtime under a sibling's `runtime_slot_key` and clobber that sibling's own runtime slot.
-        let fallback_runtime_key = crate::state::runtime_slot_key(crate::plane::fallback_key());
+        // process actually has an LLM (fallback) plane. The key AND the `build_runtime` come from ONE
+        // resolved decl ([`crate::plane::fallback_decl`]), never from `fallback_key()`: that degrades to
+        // the FIRST registered plane's key when no plane flags itself fallback (the plane suites'
+        // dependency-copy of core, which registers only MCP/A2A), and this test binary's registry GROWS
+        // while sibling tests run (`register_test_plane`), so a key read before a fallback plane
+        // registers and a decl read after it named two different planes — the LLM runtime then landed
+        // under the sibling's `runtime_slot_key` and clobbered that sibling's own runtime slot.
+        let fallback = crate::plane::fallback_decl();
+        let fallback_runtime_key = crate::state::runtime_slot_key(fallback.map_or("", |d| d.key));
         // Built and inserted ONLY when a real fallback (LLM) plane owns the key — otherwise `lanes`/
         // `by_model`/the `self.*` tables simply drop unused, and `App::llm_runtime` reads the empty
         // default (a surface with no LLM plane never routes through `engine_tables` anyway).
-        if crate::plane::is_fallback(crate::plane::fallback_key()) {
+        // THE KERNEL'S OWN TABLES over the same lanes and pools, as production `appbuild` builds them:
+        // the read seam answers from them when the fallback plane contributes no runtime of its own
+        // (a door plane), and reads the empty default when no fallback plane is registered.
+        let mut config_tables =
+            std::sync::Arc::<busbar_kernel::plane_host::ConfigTables>::default();
+        if let Some(decl) = fallback {
             // Assemble the NEUTRAL `PlaneBuildInput` (money-path Phase 3-4 C) exactly as production
             // `appbuild` does, then hand it to the fallback (LLM) plane's REGISTERED `build_runtime`
             // fn-pointer — so the fixture names no `Lane`/`NativeRuntime` and exercises the SAME in-plane
@@ -1758,6 +1807,12 @@ impl TestApp {
                     name,
                 })
                 .collect();
+            config_tables = std::sync::Arc::new(busbar_kernel::plane_host::ConfigTables::of(
+                &lane_inputs,
+                &pool_inputs,
+                &by_model,
+                self.upstream_credentials,
+            ));
             let default_failover = self
                 .failover_cfg
                 .as_ref()
@@ -1790,11 +1845,17 @@ impl TestApp {
                 global_default_max_tokens: crate::config::DEFAULT_DEFAULT_MAX_TOKENS,
                 reasoning_budgets: [1024, 4096, 8192, 16384],
                 default_failover: Some(default_failover),
+                // The test build's auth axis: the kind-neutral outbound double
+                // (`test_support::outbound_auth`), so a lane's credential binds without naming a
+                // plugin.
+                auths: Some(busbar_kernel::plane_host::AuthReach(
+                    crate::test_support::outbound_auth::axis(),
+                )),
             };
-            if let Some(f) = crate::plane::registry::plane_decl_for(crate::plane::fallback_key())
-                .and_then(|d| d.build_runtime)
-            {
-                let slot = f(&build_input as &dyn std::any::Any, None);
+            // A fallback plane that contributes no runtime of its own (a door plane) is read through
+            // the kernel's own tables above.
+            if let Some(build_runtime) = decl.build_runtime {
+                let slot = build_runtime(&build_input as &dyn std::any::Any, None);
                 plane_slots.insert(fallback_runtime_key, slot);
             }
         }
@@ -1877,6 +1938,11 @@ impl TestApp {
             }
             m
         };
+        let global_gates = if self.resolve_global_gates {
+            crate::hooks::resolve_gate_hooks(&self.hook_registry, &self.global_hooks, &hook_env, 0)
+        } else {
+            Vec::new()
+        };
         let app = std::sync::Arc::new(crate::state::App {
             // No authorization server unless a test asked for one with `TestApp::oauth_as`, which is
             // the production default and is what keeps every existing test's route table unchanged
@@ -1897,6 +1963,10 @@ impl TestApp {
             // above into `plane_slots` under this interned key; the snapshot names only the key, and
             // `App::llm_runtime` downcasts the slot on the money path.
             fallback_runtime_key,
+            // The kernel's own tables over the fixture's lanes and pools (built above when a fallback
+            // plane is registered), read when that plane contributes no runtime of its own.
+            config_tables,
+            config_projection: None,
             store: store.clone(),
             plane_breakers: std::sync::Arc::new(crate::store::PlaneBreakers::new()),
             session_store: std::sync::Arc::new(crate::session::SessionStore::new(1024, None)),
@@ -1921,7 +1991,7 @@ impl TestApp {
             tap_hooks_candidate: Vec::new(),
             tap_hooks_routing: Vec::new(),
             tap_hooks_response: Vec::new(),
-            global_gates: Vec::new(),
+            global_gates,
             // The pool-hook facade maps (money-path Phase 3-4 C): the resolved per-pool routing policy /
             // decision gates / rewrite chains the relocated engine reads via `App::pool_*`. Populated by
             // the policy-exercising fixtures through `.pool_policy_resolved(...)` etc.; empty otherwise.
@@ -1942,9 +2012,6 @@ impl TestApp {
             export_defs: self.export_defs,
             admin: std::sync::Arc::new(crate::admin::seam::AdminSlot::default()),
             mutation_limiter: std::sync::Arc::new(crate::ratelimit::MutationLimiter::new()),
-            idempotency_cache: std::sync::Arc::new(std::sync::Mutex::new(
-                std::collections::HashMap::new(),
-            )),
             base_hook_names: self.base_hook_names,
             admin_chain: self
                 .admin_chain
@@ -1980,7 +2047,6 @@ impl TestApp {
             plane_sections: self.plane_sections,
             spent_token_ledger: Default::default(),
             demotion_record: Default::default(),
-            credential_cache: std::sync::Arc::new(crate::auth_cache::CredentialCache::new()),
             auth_scope_caps: std::collections::HashMap::new(),
             role_bindings: self.role_bindings.unwrap_or_default(),
             config_path: self.disk_paths.as_ref().map(|(c, _)| c.clone()),
@@ -2054,76 +2120,6 @@ impl TestApp {
 // checked) named `mcp::runtime`/`mcp::client` types and so RELOCATED to `busbar_mcp::testkit`
 // alongside the plane it serves — core's `test_support` stays plane-neutral.
 
-/// THE HOOK-KIND FIXTURE'S cdylib: the newest of the "uplifted" `<profile_dir>/<name>` copy (only
-/// refreshed when `[lib]` is a ROOT build target, e.g. `cargo build --all-targets`) and the raw
-/// `<profile_dir>/deps/<name>` compiler output (refreshed on every build that recompiles the lib) —
-/// a scoped `cargo test` / `cargo build` never uplifts, so checking only `profile_dir` silently found
-/// nothing and every hook test quietly no-op'd. When NEITHER exists — a scoped
-/// `cargo test -p busbar-kernel` never builds another package's cdylib — the fixture is BUILT here,
-/// once per process, into its own `<target>/fixture-build` directory (its own build lock, so it never
-/// waits on the build that is running these tests); `None` only when that build fails. Before this, a
-/// scoped run skipped all 37 hook-plugin tests silently off CI and failed them all under `CI`. The
-/// fixture is named by DATA — `[package.metadata.busbar] test-fixtures` in this crate's Cargo.toml,
-/// exported by build.rs — so no source names the plugin. The one lookup the hook tests, the admin
-/// suite and the root's `hook_path` bench share.
-pub fn hook_fixture_cdylib() -> Option<std::path::PathBuf> {
-    let exe = std::env::current_exe().ok()?;
-    let profile_dir = exe.parent()?.parent()?;
-    let name = busbar_plugin_loader::plugin_library_filename(env!("BUSBAR_FIXTURE_HOOK"));
-    let newest = |dirs: &[std::path::PathBuf]| {
-        dirs.iter()
-            .map(|d| d.join(&name))
-            .filter_map(|p| {
-                std::fs::metadata(&p)
-                    .and_then(|m| m.modified())
-                    .ok()
-                    .map(|mtime| (p, mtime))
-            })
-            .max_by_key(|(_, mtime)| *mtime)
-            .map(|(p, _)| p)
-    };
-    if let Some(found) = newest(&[profile_dir.to_path_buf(), profile_dir.join("deps")]) {
-        return Some(found);
-    }
-    static BUILT: std::sync::OnceLock<Option<std::path::PathBuf>> = std::sync::OnceLock::new();
-    BUILT
-        .get_or_init(|| {
-            let profile = profile_dir.file_name()?.to_str()?.to_string();
-            let target = profile_dir.parent()?.join("fixture-build");
-            let cargo = std::env::var_os("CARGO").unwrap_or_else(|| env!("CARGO").into());
-            let workspace = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-            let mut cmd = std::process::Command::new(cargo);
-            cmd.current_dir(&workspace)
-                .args([
-                    "build",
-                    "--locked",
-                    "-p",
-                    env!("BUSBAR_FIXTURE_HOOK_PACKAGE"),
-                ])
-                .arg("--target-dir")
-                .arg(&target);
-            if profile == "release" {
-                cmd.arg("--release");
-            }
-            let status = cmd.status().ok()?;
-            if !status.success() {
-                return None;
-            }
-            let dir = target.join(&profile);
-            newest(&[dir.clone(), dir.join("deps")])
-        })
-        .clone()
-}
-
-/// The hook fixture's Statement rendering, as a signed manifest states it (lowercase hex): what
-/// the dropped-in door admits the fixture against.
-pub fn hook_fixture_statement(cdylib: &std::path::Path) -> String {
-    let rendering = busbar_plugin_loader::dispatch::rendering_of_library(cdylib)
-        .expect("the hook fixture loads")
-        .expect("the hook fixture exports its door");
-    hex::encode(rendering)
-}
-
 /// THE STAND-IN HOOK AXIS: `preflight::RootInstall`'s `hook_axis` in a test build (a test build has
 /// no root). The loader's hook rows over `registry` — the rows the root's axis answers with — on a
 /// dispatcher of their own, of the root's no-boot shape (`root::dispatch::dispatcher`: one worker,
@@ -2152,59 +2148,91 @@ pub fn hook_axis_stand_in(
     Ok(std::sync::Arc::new(rows))
 }
 
-/// Build a [`crate::hooks::HookEnv`] whose registry loads the hermetic `busbar-hook-test-plugin`
-/// cdylib under the given alias(es) (all pointing at the SAME cdylib) with the given declared manifest
-/// `needs`. `None` when the cdylib is not built (the caller skips). Uses the unsigned +
-/// `allow_unsigned` path (tests can't sign with the embedded first-party key) — still the full
-/// scan/trust/load pipeline. Shared by the admin + resolution tests that need a hook to actually load.
+/// THE HOOK DOUBLE (OWNER 2026-10-03, no test plugins): the kernel's hook port answered in
+/// process. See [`hook_double`].
+pub mod hook_double;
+
+/// A [`crate::hooks::HookEnv`] whose registry holds one `kind: hook` row per alias (each stating the
+/// given manifest `needs`, as a dropped-in plugin's signed manifest does) and whose hook axis is the
+/// [`hook_double::HookAxisDouble`] answering those aliases, beside the build's linked rows. The
+/// manifest is the kernel's own reading of a plugin (the grant meet, the schema fallback); the axis
+/// is the port every open goes through. No plugin is loaded: the rows carry no image.
 pub fn test_hook_env(
     aliases: &[&str],
     needs: busbar_plugin_loader::sign::HookNeeds,
-) -> Option<crate::hooks::HookEnv> {
+) -> crate::hooks::HookEnv {
     test_hook_env_with_schema(aliases, needs, None)
 }
 
-/// As [`test_hook_env`], but lets a test stamp the loaded plugin's manifest with a
-/// `settings_schema` — needed to exercise `GET /plugins/{name}/schema`'s describe→manifest
-/// fallback (a real loaded hook whose live `describe` answers `schema: null` still has a real
-/// manifest baseline to fall back to).
+/// As [`test_hook_env`], but every row's manifest also states a `settings_schema` — the baseline
+/// `GET /plugins/{name}/schema` falls back to when the live `describe` answers no schema.
 pub fn test_hook_env_with_schema(
     aliases: &[&str],
     needs: busbar_plugin_loader::sign::HookNeeds,
     settings_schema: Option<&str>,
-) -> Option<crate::hooks::HookEnv> {
-    let cdylib = {
-        let candidate = hook_fixture_cdylib();
-        let Some(candidate) = candidate else {
-            if std::env::var_os("CI").is_some() {
-                panic!(
-                    "the hook-test plugin cdylib is not built under CI (checked both the uplifted \
-                     target dir and target/deps); refusing to silently skip the hook-plugin \
-                     admin/resolution coverage"
-                );
-            }
-            return None;
-        };
-        candidate
-    };
-    let lib = std::fs::read(&cdylib).expect("read hook cdylib");
-    let stated = hook_fixture_statement(&cdylib);
+) -> crate::hooks::HookEnv {
+    let rows = aliases
+        .iter()
+        .enumerate()
+        .map(|(i, alias)| {
+            let mut m = fixture_manifest(
+                &format!("hook-double-{i}"),
+                alias,
+                "hook",
+                hook_double::DOUBLE_ROW_BYTES,
+            );
+            m.needs = needs.clone();
+            m.settings_schema = settings_schema.map(str::to_string);
+            m
+        })
+        .collect();
+    hook_double_env(rows, aliases)
+}
+
+/// As [`test_hook_env`] for `hook_alias`, beside a second row under `wrong_kind_alias` whose
+/// manifest states `kind: "secret"` — the "resolves, but to a non-hook kind" arm of
+/// `probe_transport`, which only ever reads the row's `manifest.kind`.
+pub fn test_hook_env_with_wrong_kind_plugin(
+    hook_alias: &str,
+    wrong_kind_alias: &str,
+) -> crate::hooks::HookEnv {
+    let rows = vec![
+        fixture_manifest(
+            "hook-double-real",
+            hook_alias,
+            "hook",
+            hook_double::DOUBLE_ROW_BYTES,
+        ),
+        fixture_manifest(
+            "hook-double-wrongkind",
+            wrong_kind_alias,
+            "secret",
+            hook_double::DOUBLE_ROW_BYTES,
+        ),
+    ];
+    hook_double_env(rows, &[hook_alias])
+}
+
+/// The registry of `rows` (each packed as the unsigned tarball an operator drops in and admitted
+/// through the full scan/trust pipeline under `allow_unsigned`) behind the hook axis double that
+/// answers `doubled`.
+fn hook_double_env(
+    rows: Vec<busbar_plugin_loader::sign::Manifest>,
+    doubled: &[&str],
+) -> crate::hooks::HookEnv {
     // A monotonic counter, NOT a clock read: two threads can read the same nanosecond, and a
-    // colliding fixture path means one test scans a tarball another is still writing.
+    // colliding path means one test scans a tarball another is still writing.
     static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let dir = std::env::temp_dir().join(format!(
+    let dir = scratch_dir(&format!(
         "busbar-test-hook-env-{}-{}",
         std::process::id(),
         SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     ));
-    std::fs::create_dir_all(&dir).unwrap();
-    for (i, alias) in aliases.iter().enumerate() {
-        let mut m = fixture_manifest(&format!("busbar-hook-test-plugin-{i}"), alias, "hook", &lib);
-        m.needs = needs.clone();
-        m.settings_schema = settings_schema.map(str::to_string);
-        m.statement = Some(stated.clone());
-        let tarball = busbar_plugin_loader::tarball::package(&m, "lib.so", &lib).unwrap();
-        std::fs::write(dir.join(format!("hook{i}.tar.gz")), tarball).unwrap();
+    for (i, m) in rows.into_iter().enumerate() {
+        let tarball =
+            busbar_plugin_loader::tarball::package(&m, "lib.so", hook_double::DOUBLE_ROW_BYTES)
+                .expect("pack a hook double row");
+        std::fs::write(dir.join(format!("hook{i}.tar.gz")), tarball).expect("write the row");
     }
     let policy = busbar_plugin_loader::sign::TrustPolicy {
         binary_version: "1.5.0".into(),
@@ -2213,78 +2241,10 @@ pub fn test_hook_env_with_schema(
     };
     let registry = busbar_plugin_loader::scan_and_validate(&dir, &policy).expect("scan");
     let _ = std::fs::remove_dir_all(&dir);
-    Some(
-        crate::hooks::HookEnv::new(
-            std::sync::Arc::new(registry),
-            std::sync::Arc::new(crate::config::secret::SecretResolver::builtins_only()),
-        )
-        .expect("the fixture registry's hook axis"),
-    )
-}
-
-/// As [`test_hook_env`], but ALSO packs a second tarball under `wrong_kind_alias` whose manifest
-/// claims `kind: "secret"` (reusing the SAME hook-test-plugin cdylib bytes — harmless, since a
-/// resolves-to-wrong-kind check only ever reads `manifest.kind`, never `dlopen`s the wrong-kind
-/// entry). Lets a test reach `probe_transport`'s "resolves, but to a non-hook kind" arm, which
-/// `test_hook_env` alone cannot produce (every plugin it packs is `kind: "hook"`).
-pub fn test_hook_env_with_wrong_kind_plugin(
-    hook_alias: &str,
-    wrong_kind_alias: &str,
-) -> Option<crate::hooks::HookEnv> {
-    let cdylib = hook_fixture_cdylib();
-    let Some(cdylib) = cdylib else {
-        if std::env::var_os("CI").is_some() {
-            panic!(
-                "the hook-test plugin cdylib is not built under CI (checked both the uplifted \
-                 target dir and target/deps); refusing to silently skip the wrong-kind-resolution \
-                 coverage"
-            );
-        }
-        return None;
-    };
-    let lib = std::fs::read(&cdylib).expect("read hook cdylib");
-    let stated = hook_fixture_statement(&cdylib);
-    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let dir = std::env::temp_dir().join(format!(
-        "busbar-test-hook-env-wrongkind-{}-{}",
-        std::process::id(),
-        SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-    ));
-    std::fs::create_dir_all(&dir).unwrap();
-    let manifest_for =
-        |name: &str, alias: &str, kind: &str| fixture_manifest(name, alias, kind, &lib);
-    let mut hook_manifest = manifest_for("busbar-hook-test-plugin-real", hook_alias, "hook");
-    hook_manifest.statement = Some(stated);
-    let hook_tarball =
-        busbar_plugin_loader::tarball::package(&hook_manifest, "lib.so", &lib).unwrap();
-    std::fs::write(dir.join("real-hook.tar.gz"), hook_tarball).unwrap();
-    // `kind: "secret"` is arbitrary — any non-"hook" kind proves the resolves-to-wrong-kind arm;
-    // "secret" is a real ABI kind this cdylib's manifest can validate under without needing a
-    // matching implementation, since `probe_transport` never dlopens this entry.
-    let wrong_kind_tarball = busbar_plugin_loader::tarball::package(
-        &manifest_for(
-            "busbar-hook-test-plugin-wrongkind",
-            wrong_kind_alias,
-            "secret",
-        ),
-        "lib.so",
-        &lib,
-    )
-    .unwrap();
-    std::fs::write(dir.join("wrong-kind.tar.gz"), wrong_kind_tarball).unwrap();
-    let policy = busbar_plugin_loader::sign::TrustPolicy {
-        binary_version: "1.5.0".into(),
-        allow_unsigned: true,
-        ..Default::default()
-    };
-    let registry = busbar_plugin_loader::scan_and_validate(&dir, &policy).expect("scan");
-    let _ = std::fs::remove_dir_all(&dir);
-    Some(
-        crate::hooks::HookEnv::new(
-            std::sync::Arc::new(registry),
-            std::sync::Arc::new(crate::config::secret::SecretResolver::builtins_only()),
-        )
-        .expect("the fixture registry's hook axis"),
+    crate::hooks::HookEnv::with_axis(
+        std::sync::Arc::new(registry),
+        hook_double::HookAxisDouble::new(doubled),
+        std::sync::Arc::new(crate::config::secret::SecretResolver::builtins_only()),
     )
 }
 
@@ -2298,9 +2258,9 @@ pub fn test_hook_env_with_wrong_kind_plugin(
 /// exact metric name (the char after the name must open the label set / value, so a name never
 /// matches a longer neighbor it happens to prefix).
 pub fn metric_sum(name: &str, labels: &[(&str, &str)]) -> f64 {
-    crate::metrics::init();
+    crate::snapshot::init();
     let frags: Vec<String> = labels.iter().map(|(k, v)| format!("{k}=\"{v}\"")).collect();
-    crate::metrics::render()
+    crate::snapshot::render()
         .lines()
         .filter(|l| {
             l.strip_prefix(name)
@@ -2336,6 +2296,8 @@ pub mod tokens;
 
 /// The export axis a test binary's configurations resolve against (K9b).
 pub mod export_axis;
+/// The kind-neutral outbound auth double a test build binds lane credentials on.
+pub mod outbound_auth;
 /// The stand-in secret axis a test build installs in place of the root's.
 pub mod secrets;
 pub use secrets::SecretsStandIn;
@@ -2416,16 +2378,6 @@ pub use busbar_kernel_identity::operator::{
     install_row as install_operator_auth_row_as, AuthDoor, OperatorWords,
 };
 
-/// The SigV4 helpers a test signs an inbound request with, named once here because the
-/// `busbar_kernel::sigv4` re-export path is gone (D3).
-pub mod sigv4 {
-    pub use busbar_contract::redacted::sha256_hex;
-    pub use busbar_kernel_identity::{
-        egress_auth::sigv4::{format_amz_time, uri_encode_path},
-        ingress_sigv4::{sign_v4, CLOCK_SKEW_SECS, X_AMZ_CONTENT_SHA256, X_AMZ_DATE},
-    };
-}
-
 /// The builtin-only `SecretResolver` (env/file sugar, no plugin modules) for a dependent crate's
 /// tests — `SecretResolver::builtins_only` itself stays crate-private; this is the one doorway.
 pub fn builtins_only_secret_resolver() -> crate::config::secret::SecretResolver {
@@ -2500,20 +2452,30 @@ pub fn fetch_stand_in(
     }
 }
 
+/// A test build's release key: the first-party key [`trust_policy`] holds in place of the embedded
+/// one, whose private half no test holds. A test signs a first-party plugin with it (publisher
+/// `busbar`), as the loader's conformance tests sign under a release key of their own.
+pub fn test_release_key() -> busbar_plugin_loader::sign::SigningKey {
+    busbar_plugin_loader::sign::SigningKey::from_bytes(&[0x5a; 32])
+}
+
 /// A test build's trust resolution (it has no composition root): the `plugins:` block through the
-/// loader's `TrustPolicy::from_config`, exactly as the root resolves it.
+/// loader's `TrustPolicy::from_config`, exactly as the root resolves it, its first-party key
+/// [`test_release_key`].
 pub fn trust_policy(
     cfg: &crate::config::PluginsCfg,
 ) -> Result<busbar_plugin_loader::sign::TrustPolicy, String> {
     use busbar_plugin_loader::sign::{TrustInput, TrustPolicy};
-    TrustPolicy::from_config(TrustInput {
+    let mut policy = TrustPolicy::from_config(TrustInput {
         publishers: &cfg.publisher_keys(),
         allow_unsigned: cfg.trust.allow_unsigned,
         allow_third_party: cfg.trust.allow_third_party,
         min_versions: &cfg.min_versions,
         first_party_floors: &cfg.first_party_floors,
         binary_version: env!("CARGO_PKG_VERSION"),
-    })
+    })?;
+    policy.first_party_key = Some(test_release_key().verifying_key());
+    Ok(policy)
 }
 
 /// A test build's store axis (it has no composition root): the loader's axis over a dispatcher of
@@ -2531,7 +2493,7 @@ pub fn store_axis_stand_in() -> std::sync::Arc<dyn busbar_contract::store_calls:
         dispatcher: std::sync::Arc::clone(dispatcher),
         logs: PluginLogConfig::from_words(None, None, &none, None, None)
             .expect("the plugins.logs defaults resolve"),
-        conns: None,
+        conns: busbar_plugin_loader::dispatch::ConnTable::NoNeeds,
         mint: crate::door::op_id,
     })
 }

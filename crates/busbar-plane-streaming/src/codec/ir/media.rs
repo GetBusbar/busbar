@@ -25,9 +25,10 @@ pub enum UpDown {
     Down,
 }
 
-/// THE NEGOTIATED PCM WIRE FORMAT (`BUSBAR-1.6.0.md` #18/#45 audio-format field). Two dialect-normalized shapes:
-/// signed-16-bit little-endian PCM at 24 kHz (the Realtime default) and G.711 µ-law at 8 kHz (the
-/// telephony format). The plane needs this to turn a byte count into a millisecond position — the
+/// THE NEGOTIATED PCM WIRE FORMAT (`BUSBAR-1.6.0.md` #18/#45 audio-format field). Two dialect-normalized shapes
+/// a session negotiates: signed-16-bit little-endian PCM at 24 kHz (the Realtime default) and G.711
+/// µ-law at 8 kHz (the telephony format); and a third a frame's own wire states: signed-16-bit PCM
+/// at 16 kHz (the Gemini Live uplink). The plane needs this to turn a byte count into a millisecond position — the
 /// barge-in truncate math (`BUSBAR-1.6.0.md` #18/#45) — because raw PCM carries no timestamps.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AudioFormat {
@@ -35,6 +36,10 @@ pub enum AudioFormat {
     Pcm16,
     /// G.711 µ-law, 8 kHz, mono — the telephony format (`g711_ulaw`).
     G711Ulaw,
+    /// Signed 16-bit little-endian PCM, 16 kHz, mono — the rate Gemini Live requires on its uplink
+    /// (`audio/pcm;rate=16000`). No Realtime dialect names it, so no session config negotiates it:
+    /// it is the format a frame's own wire states, and uplink audio is metered at it.
+    Pcm16At16k,
 }
 
 impl AudioFormat {
@@ -44,6 +49,10 @@ impl AudioFormat {
         match self {
             AudioFormat::Pcm16 => "pcm16",
             AudioFormat::G711Ulaw => "g711_ulaw",
+            // No Realtime token names 16 kHz PCM, and `pcm16` would claim 24 kHz. This token is one
+            // `from_wire` refuses, so a config that carried the format is refused loudly on read
+            // rather than relabelled.
+            AudioFormat::Pcm16At16k => "pcm16_16khz",
         }
     }
 
@@ -59,14 +68,17 @@ impl AudioFormat {
     }
 
     /// Bytes of audio per millisecond of playback. pcm16 = 24 samples/ms × 2 bytes = 48; g711 µ-law =
-    /// 8 samples/ms × 1 byte = 8. This is the constant the barge-in truncate math divides by.
+    /// 8 samples/ms × 1 byte = 8; 16 kHz pcm16 = 16 samples/ms × 2 bytes = 32. This is the constant
+    /// the barge-in truncate math and the uplink meter divide by.
     #[must_use]
-    pub fn bytes_per_ms(self) -> u64 {
+    pub const fn bytes_per_ms(self) -> u64 {
         match self {
             // 24_000 Hz × 2 bytes/sample / 1000 ms.
             AudioFormat::Pcm16 => 48,
             // 8_000 Hz × 1 byte/sample / 1000 ms.
             AudioFormat::G711Ulaw => 8,
+            // 16_000 Hz × 2 bytes/sample / 1000 ms.
+            AudioFormat::Pcm16At16k => 32,
         }
     }
 
@@ -131,4 +143,9 @@ pub struct IrAudioFrame {
     pub media: Bytes,
     /// Which item this audio is part of, as the source dialect named it (absent when it named none).
     pub origin: IrAudioRef,
+    /// The format this frame's own wire states its bytes are in, where the dialect states one per
+    /// frame (Gemini's blob `mimeType`); `None` where it states none (a Realtime append), and the
+    /// session's negotiated format governs. The uplink meter counts a frame at this format first:
+    /// a 16 kHz frame counted at the 24 kHz rate bills two-thirds of the audio it carries.
+    pub format: Option<AudioFormat>,
 }

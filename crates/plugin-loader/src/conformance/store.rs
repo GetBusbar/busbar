@@ -5,11 +5,11 @@
 //! loader, opened by the kernel's own host adapter ([`LoadedStore::open`]: the `open` crossing,
 //! then the door's `ready` awaited), and called through the two surfaces the kernel calls — the
 //! synchronous [`RecordStore`] bridge (ticket-less crossings) and the typed [`StoreCalls`]
-//! (submitted on a ticket and awaited). Ported from busbar's own store proofs: the store v3 script
-//! (every kind slot of the table, `store_v3_conformance_tests`), its per-op crossing sequence and
-//! replay arm (`store_v3_crossing_conformance_tests`), the both-ways key fold
-//! (`store_conformance_tests`, `store_door_conformance_tests`) and the scope-kind round trip
-//! (`store_scope_kind_conformance_tests`), and the plugin's own wrong-kind arm.
+//! (submitted on a ticket and awaited). THE STORE KIND'S ONE SUITE: busbar's own store proofs were
+//! ported here and the in-tree copies deleted (the store v3 script over every kind slot of the
+//! table, its per-op crossing sequence and replay arm, the both-ways key fold, the scope-kind round
+//! trip) and the plugin's own wrong-kind arm. busbar runs it over the build's store, linked and
+//! dropped in (`conformance_store_runs_tests`), as every store repo runs it over its own.
 //!
 //! Inputs (`conformance.json`):
 //!
@@ -38,14 +38,14 @@
 //!   (one crossing). The typed `heads` is leased the same way. The request-path reads
 //!   (`record_get`, `get_plane_record`, the lists into host buffers) write into the host's
 //!   buffers and hold none;
-//! * the `open` step is [`LoadedStore::open`]: the `open` crossing, plus `inputs.ready_crossings`
-//!   when the door states `ready` (the kernel awaits it inside `open`); [`super::ready_step`]
+//! * the `open` step is [`LoadedStore::open`]: the `open` crossing, plus one `ready` crossing when
+//!   the door states `ready` (the kernel awaits it inside `open`), first invocations both; [`super::ready_step`]
 //!   runs right after it, on the opened store's plugin (a door that states `ready` is awaited a
 //!   second time there; one that states none, 0);
 //! * the facts and the wrong-kind load make no crossing (0).
 
 use std::fmt::{Debug, Display};
-use std::sync::Arc;
+use std::sync::{Arc, PoisonError};
 
 use busbar_contract::abi::sdk::store::{Cap, Cell, CellKey, Dimension, Grant};
 use busbar_contract::abi::store::OpId;
@@ -57,7 +57,7 @@ use busbar_contract::records::{
 };
 use busbar_contract::store_calls::{StoreCalls, StoreFailure};
 
-use super::{bind, crossings, dispatcher, load, ready_step, Fold, Leg, Recorder, Subject};
+use super::{crossings, dispatcher, load, ready_step, Fold, Leg, Recorder, Subject};
 use crate::dispatch::kinds::hook::Hook;
 use crate::dispatch::kinds::store::{Store, StoreFacts};
 use crate::dispatch::LoadError;
@@ -105,16 +105,94 @@ fn block<T>(rt: &tokio::runtime::Runtime, f: impl std::future::Future<Output = T
     rt.block_on(f)
 }
 
-/// The node half of the op ids the bridge mints for the leg running (`node` in the inputs).
-static MINT_NODE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-/// The counter half: reset at each leg's open, so both legs mint the same ids.
-static MINT_NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// THE TABLE THIS SCRIPT DRIVES: 47 kind slots, every one of them stepped below. A slot added to
+/// the store table fails the build here until the script drives it.
+const _: () = assert!(busbar_contract::abi::store::KIND_SLOTS == 47);
 
-/// The host's `op_id` allocator for one leg (`LoadedStore::open`'s mint): `node`'s half, counted
-/// from 1.
-fn leg_mint() -> OpId {
+/// THE HOST'S OP-ID ALLOCATORS, ONE PER FOLD RUNNING. The bridge's mint is a plain `fn() -> OpId`
+/// (`OpIdMint`), so a fold's allocator is one of [`FOLDS`] static slots, each with its own node
+/// half and counter, held by the fold for as long as it runs ([`LegMint`]). Two folds of one test
+/// binary (libtest runs the emitted tests in parallel) never share a counter, so neither re-mints
+/// an op id the other already used, and each leg counts from 1 on its node's half, as before.
+const FOLDS: usize = 16;
+
+struct MintSlot {
+    node: std::sync::atomic::AtomicU64,
+    next: std::sync::atomic::AtomicU64,
+}
+
+#[allow(clippy::declare_interior_mutable_const)] // the array's initializer, never read itself
+const FREE_SLOT: MintSlot = MintSlot {
+    node: std::sync::atomic::AtomicU64::new(0),
+    next: std::sync::atomic::AtomicU64::new(0),
+};
+static MINT_SLOTS: [MintSlot; FOLDS] = [FREE_SLOT; FOLDS];
+/// Which slots a running fold holds.
+static MINT_HELD: std::sync::Mutex<[bool; FOLDS]> = std::sync::Mutex::new([false; FOLDS]);
+static MINT_FREED: std::sync::Condvar = std::sync::Condvar::new();
+
+/// Slot `N`'s allocator: its node's half, counted from 1.
+fn mint_at<const N: usize>() -> OpId {
     use std::sync::atomic::Ordering::Relaxed;
-    OpId::from_parts(MINT_NODE.load(Relaxed), MINT_NEXT.fetch_add(1, Relaxed) + 1)
+    let slot = &MINT_SLOTS[N];
+    OpId::from_parts(slot.node.load(Relaxed), slot.next.fetch_add(1, Relaxed) + 1)
+}
+
+const MINTS: [busbar_contract::store_calls::OpIdMint; FOLDS] = [
+    mint_at::<0>,
+    mint_at::<1>,
+    mint_at::<2>,
+    mint_at::<3>,
+    mint_at::<4>,
+    mint_at::<5>,
+    mint_at::<6>,
+    mint_at::<7>,
+    mint_at::<8>,
+    mint_at::<9>,
+    mint_at::<10>,
+    mint_at::<11>,
+    mint_at::<12>,
+    mint_at::<13>,
+    mint_at::<14>,
+    mint_at::<15>,
+];
+
+/// ONE FOLD'S OP-ID ALLOCATOR (`LoadedStore::open`'s mint), held until it drops: keep it alive
+/// for as long as the store it minted for.
+pub(super) struct LegMint {
+    at: usize,
+}
+
+impl LegMint {
+    /// A free allocator on `node`'s half, counting from 1 (waits for one while all are held).
+    pub(super) fn take(node: u64) -> Self {
+        use std::sync::atomic::Ordering::Relaxed;
+        let mut held = MINT_HELD.lock().unwrap_or_else(PoisonError::into_inner);
+        let at = loop {
+            if let Some(at) = held.iter().position(|h| !h) {
+                break at;
+            }
+            held = MINT_FREED
+                .wait(held)
+                .unwrap_or_else(PoisonError::into_inner);
+        };
+        held[at] = true;
+        MINT_SLOTS[at].node.store(node, Relaxed);
+        MINT_SLOTS[at].next.store(0, Relaxed);
+        Self { at }
+    }
+
+    /// The allocator, as the bridge takes it.
+    pub(super) fn mint(&self) -> busbar_contract::store_calls::OpIdMint {
+        MINTS[self.at]
+    }
+}
+
+impl Drop for LegMint {
+    fn drop(&mut self) {
+        MINT_HELD.lock().unwrap_or_else(PoisonError::into_inner)[self.at] = false;
+        MINT_FREED.notify_one();
+    }
 }
 
 fn op(n: u64) -> OpId {
@@ -176,12 +254,17 @@ fn audit(seq: u64, action: &str) -> AuditRecord {
     }
 }
 
-fn secret(id: &str, key_id: &str, public_id: &str) -> CredentialSecret {
+/// A credential of `kind` (Q-P4-7: the script writes, and looks up, the ONE kind the shipped store
+/// schemas hold, 1.5.5's, `abi::cold`'s `PutCredential` "today only" kind; a store whose schema
+/// constrains the kind refuses any other). The kind is the plugin's `conformance.json`
+/// `store.credential_kind`, never a word this crate spells (`c1-literals`: the loader names no auth
+/// style).
+pub(super) fn secret(kind: &str, id: &str, key_id: &str, public_id: &str) -> CredentialSecret {
     CredentialSecret {
         meta: CredentialMeta {
             id: id.into(),
             key_id: key_id.into(),
-            kind: "generic".into(),
+            kind: kind.into(),
             slot: 0,
             public_id: public_id.into(),
             secret_form: SecretForm::Recoverable,
@@ -242,7 +325,9 @@ fn at<'v>(k: &'v serde_json::Value, path: &str) -> &'v serde_json::Value {
 }
 
 /// The store's inputs, read once.
-struct Inputs<'a> {
+pub(super) struct Inputs<'a> {
+    /// The credential kind the shipped store schemas hold (`store.credential_kind`, Q-P4-7).
+    pub(super) credential_kind: &'a str,
     node: u64,
     cap_bucket: &'a str,
     window_start: u64,
@@ -261,7 +346,7 @@ struct Inputs<'a> {
 }
 
 impl<'a> Inputs<'a> {
-    fn of(k: &'a serde_json::Value) -> Self {
+    pub(super) fn of(k: &'a serde_json::Value) -> Self {
         assert!(k.is_object(), "conformance.json has no `store` inputs");
         let s = |path: &str| -> &'a str {
             at(k, path)
@@ -274,6 +359,7 @@ impl<'a> Inputs<'a> {
                 .unwrap_or_else(|| panic!("conformance.json: store.{path} must be a number"))
         };
         let i = Self {
+            credential_kind: s("credential_kind"),
             node: n("node"),
             cap_bucket: s("caps.bucket"),
             window_start: n("caps.window_start"),
@@ -300,16 +386,26 @@ impl<'a> Inputs<'a> {
     }
 }
 
+/// ONE STORE LEG AT A TIME, per process: [`leg_mint`] is a plain `fn` the bridge calls (it captures
+/// nothing), so its node and counter are process statics, reset at each leg's `open`. The suite's
+/// tests run in parallel threads (the both-ways arm, the RED count arm, the kind-ABI arm), and a leg
+/// opening in one would rewind another's counter mid-leg — the store refuses the replayed op id
+/// (`STORE_OPID_CONFLICT`), a failure of the suite, not of the plugin. Held for the whole leg.
+static LEG: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
+    let _one_leg = LEG
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let i = Inputs::of(s.kind_inputs(ROOT));
-    let settings = s.settings();
+    let settings = leg.settings(s);
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .expect("a runtime");
 
     let d = dispatcher();
-    let p = load::<Store>(s, leg, bind(&d, ROOT)).expect("the store door loads");
+    let p = load::<Store>(s, leg, s.bind(&d, ROOT)).expect("the store door loads");
     // The instance's crossing gate, held across `open` (which takes the plugin by value).
     let held = p.clone();
     let mut r = Recorder::new(crossings(&held));
@@ -323,25 +419,21 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
         )
     });
     r.line("refused as another kind", 0, || {
-        let refused = load::<Hook>(s, leg, bind(&d, "wrong-kind")).err();
+        let refused = load::<Hook>(s, leg, s.bind(&d, "wrong-kind")).err();
         let right = match leg {
             Leg::Linked => matches!(refused, Some(LoadError::WrongKind { .. })),
             Leg::Dropped => matches!(refused, Some(LoadError::ManifestKind { .. })),
         };
         format!("refused={right}")
     });
-    let open_pin = 1 + if p.has_ready() {
-        s.inputs["ready_crossings"].as_u64().unwrap_or_else(|| {
-            panic!("the door states `ready`: conformance.json must pin `ready_crossings`")
-        })
-    } else {
-        0
-    };
+    // ONE first invocation for `open`, and one for the `ready` the kernel awaits inside it; their
+    // resumes are reported (Q-P4-5).
+    let open_pin = 1 + u64::from(p.has_ready());
+    // The bridge mints its writes' op ids from this fold's own allocator, on this node's half;
+    // held until the fold ends (declared before the store, so it outlives it).
+    let minted = LegMint::take(i.node);
     let st = r.step("open", open_pin, || {
-        // The bridge mints its writes' op ids from this leg's allocator, on this node's half.
-        MINT_NODE.store(i.node, std::sync::atomic::Ordering::Relaxed);
-        MINT_NEXT.store(0, std::sync::atomic::Ordering::Relaxed);
-        match LoadedStore::open(p, Arc::clone(&d), &settings, leg_mint) {
+        match LoadedStore::open(p, Arc::clone(&d), &settings, minted.mint()) {
             Ok(st) => (format!("Ready {:?}", st.facts()), st),
             Err(e) => panic!("the store does not open: {e}"),
         }
@@ -390,9 +482,17 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     r.line("usage after purge", LEASED, || ans(b.get_usage(ub, w)));
 
     // ── metering: add_metering, list_metering, purge_metering_before ──
-    r.line("meter p 3", 1, || ans(b.add_metering(&meter("a", "p", 3))));
-    r.line("meter p 4", 1, || ans(b.add_metering(&meter("a", "p", 4))));
-    r.line("meter q 1", 1, || ans(b.add_metering(&meter("a", "q", 1))));
+    // Metering names a key the script has PUT (the grouped key, still live): a store whose metering
+    // rows reference its keys (a metering -> keys foreign key) holds them.
+    r.line("meter p 3", 1, || {
+        ans(b.add_metering(&meter(i.grouped, "p", 3)))
+    });
+    r.line("meter p 4", 1, || {
+        ans(b.add_metering(&meter(i.grouped, "p", 4)))
+    });
+    r.line("meter q 1", 1, || {
+        ans(b.add_metering(&meter(i.grouped, "q", 1)))
+    });
     r.line("metering", LEASED, || {
         ans(b.list_metering(86_400).map(|mut v| {
             v.sort_by(|x, y| x.provider.cmp(&y.provider));
@@ -404,13 +504,16 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     // ── credentials ──
     r.line("put k1", 1, || ans(b.put_key(&key("k1", None))));
     r.line("cred c1", 1, || {
-        ans(b.put_credential(&secret("c1", "k1", "pub1")))
+        ans(b.put_credential(&secret(i.credential_kind, "c1", "k1", "pub1")))
     });
     r.line("cred c9 (live slot)", 1, || {
-        ans(b.put_credential(&secret("c9", "k1", "pub9")))
+        ans(b.put_credential(&secret(i.credential_kind, "c9", "k1", "pub9")))
     });
     r.line("key+cred k2", 1, || {
-        ans(b.put_key_with_credential(&key("k2", None), &secret("c2", "k2", "pub2")))
+        ans(b.put_key_with_credential(
+            &key("k2", None),
+            &secret(i.credential_kind, "c2", "k2", "pub2"),
+        ))
     });
     r.line("creds k1", LEASED, || {
         ans(b
@@ -419,12 +522,12 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     });
     r.line("lookup pub2", LEASED, || {
         ans(b
-            .lookup_credential_secret("generic", "pub2")
+            .lookup_credential_secret(i.credential_kind, "pub2")
             .map(|c| c.map(|c| (c.meta.id, c.secret))))
     });
     r.line("lookup absent", 1, || {
         ans(b
-            .lookup_credential_secret("generic", "pub-absent")
+            .lookup_credential_secret(i.credential_kind, "pub-absent")
             .map(|c| c.map(|c| c.meta.id)))
     });
     r.line("revoke c1", 1, || ans(b.revoke_credential("c1", "rotated")));
@@ -617,7 +720,7 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     r.line("metering batch", 1, || {
         ans(block(
             &rt,
-            st.add_metering_batch(op(9), &[meter("z", "p", 1)]),
+            st.add_metering_batch(op(9), &[meter(i.grouped, "p", 1)]),
         ))
     });
     r.line("audit batch fork", 1, || {
@@ -929,3 +1032,7 @@ fn contract(fold: &Fold, i: &Inputs<'_>) {
     assert_eq!(at("scope-kind get"), "identical=true plane_grants=true");
     assert_eq!(at("scope-kind list"), "identical=true");
 }
+
+#[cfg(test)]
+#[path = "../tests/conformance_store_runs_tests.rs"]
+mod runs_tests;

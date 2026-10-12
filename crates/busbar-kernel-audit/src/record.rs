@@ -38,12 +38,15 @@ use busbar_contract::caps::{Abort, Origin, Outcome, ReasonCode, StepName, UnitKe
 
 /// Whose activity this is.
 ///
-/// A resolved principal appears as a pseudonym, never as an identifier a reader could resolve on
-/// their own. An arrival that never resolved to anybody is recorded as an arrival, because "nobody
-/// authenticated" is itself a fact worth keeping.
+/// A resolved principal appears as its principal IDENTIFIER — the key id the governance store
+/// resolved the credential to, which an operator holding that store can resolve back to the key.
+/// It is not a pseudonym, and the journal is exempt from erasure, so a reader must treat a
+/// principal's id on a sealed record as kept for the life of the chain. An arrival that never
+/// resolved to anybody is recorded as an arrival, because "nobody authenticated" is itself a fact
+/// worth keeping.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Subject {
-    /// A resolved principal, as a pseudonym.
+    /// A resolved principal, by its principal identifier (the governance key id).
     PrincipalId(String),
     /// Something that arrived and was never attributed to a principal.
     Arrival,
@@ -195,6 +198,12 @@ pub struct AuditRecord {
     /// WHEN, on the node's monotonic clock, so a wall clock that jumped cannot reorder a unit's own
     /// events.
     pub mono: u64,
+    /// WHICH NODE SEALED IT (THE DESIGN §1: "when (wall + monotonic, node)"): the node half of every
+    /// `op_id` the sealing process mints, a non-zero draw of the OS CSPRNG. Nodes share one store,
+    /// and a monotonic reading compares only against readings of the same node, so the record names
+    /// the node its `mono` belongs to. Digested from recipe `v4`, so neither the digest, the
+    /// signature over it nor the range read can be re-attributed to another node.
+    pub node: u64,
     /// Where the unit came from.
     pub origin_kind: &'static str,
     /// HOW IT WENT.
@@ -321,7 +330,10 @@ pub struct AuditChain {
     sealed: u64,
     /// The key this chain signs with, when the node was given one.
     signer: Option<crate::sign::AuditSigningKey>,
-    /// The anchors, kept forever. See [`crate::heads`].
+    /// The node every record this chain seals names ([`AuditRecord::node`]). See
+    /// [`AuditChain::sealing_as`].
+    node: u64,
+    /// The anchors. See [`crate::heads`].
     heads: crate::heads::HeadHistory,
 }
 
@@ -343,19 +355,31 @@ impl AuditChain {
             next_seq: 1,
             sealed: 0,
             signer: None,
+            node: 0,
             heads: crate::heads::HeadHistory::new(),
         }
     }
 
-    /// Continue from a persisted tail.
-    pub fn resume(tail_hash: String, next_seq: u64) -> Self {
-        AuditChain {
-            tail_hash,
-            next_seq,
-            sealed: 0,
-            signer: None,
-            heads: crate::heads::HeadHistory::new(),
+    /// CONTINUE FROM THE RECORDS A PREDECESSOR SEALED, oldest first from the genesis, as the
+    /// journal reads them back: the next record links to the last one and takes the next position,
+    /// and the head history is REBUILT from them, so the head read answers with the tip the chain
+    /// really has and every window's anchor is the one it had before the restart.
+    ///
+    /// Rebuilt rather than restored: a head is a pure function of the record it was taken after and
+    /// of the sampling rule, so walking the records again reproduces the series the predecessor
+    /// held, without a second store that could disagree with the journal. A chain resumed from a
+    /// tail alone would answer a null head beside a `next_seq` above one, which says the chain is
+    /// empty while it is not.
+    pub fn resume(sealed: &[AuditRecord]) -> Self {
+        let mut chain = AuditChain::new();
+        for record in sealed {
+            chain.heads.observe(record);
         }
+        if let Some(last) = sealed.last() {
+            chain.tail_hash = last.hash.clone();
+            chain.next_seq = last.seq.saturating_add(1);
+        }
+        chain
     }
 
     /// SIGN FROM HERE ON, with this key.
@@ -372,11 +396,21 @@ impl AuditChain {
         self
     }
 
-    /// Sample heads at a chosen rate instead of hourly. See [`crate::heads::HeadHistory::every`].
+    /// SEAL AS THIS NODE from here on: every record names `node` ([`AuditRecord::node`]).
+    ///
+    /// A builder, like [`Self::signing_with`], and the composition root names the node it runs as.
+    /// A chain no root named one for seals node `0`, which no running node is: the root's node is a
+    /// non-zero draw of the OS CSPRNG.
     #[must_use]
-    pub fn sampling_heads_every(mut self, seconds: u64) -> Self {
-        self.heads = crate::heads::HeadHistory::every(seconds);
+    pub fn sealing_as(mut self, node: u64) -> Self {
+        self.node = node;
         self
+    }
+
+    /// The node this chain seals as.
+    #[must_use]
+    pub fn node(&self) -> u64 {
+        self.node
     }
 
     /// Which key this chain signs with, by identifier. `None` on a node that seals unsigned.
@@ -400,28 +434,9 @@ impl AuditChain {
         self.signer.as_ref().map(|k| k.sign_checkpoint_body(body))
     }
 
-    /// The anchors this node has published, kept forever. See [`crate::heads`].
+    /// The anchors this node has published. See [`crate::heads`].
     pub fn heads(&self) -> &crate::heads::HeadHistory {
         &self.heads
-    }
-
-    /// THE RETENTION PASS over sealed records, and the reason it takes `&self`.
-    ///
-    /// The predicate is the one every store in this tree already applies — a record whose own
-    /// instant is before the cutoff goes — spelled once, here, by the unit that owns the records
-    /// rather than separately by each thing that holds some.
-    ///
-    /// `&self`, NOT `&mut self`, AND THAT IS THE GUARANTEE. The head history lives on this type;
-    /// a pass that cannot borrow the chain mutably cannot prune it, whatever a later edit to this
-    /// function's body tries to do. Phrased as a comment it would be a request; phrased as the
-    /// receiver it is a compile error. A puller that was offline across this cutoff has lost the
-    /// records, which was the deal, and still has the anchor, which was never on the table.
-    ///
-    /// Returns how many records went.
-    pub fn prune_records_before(&self, records: &mut Vec<AuditRecord>, before: u64) -> usize {
-        let was = records.len();
-        records.retain(|r| r.wall >= before);
-        was - records.len()
     }
 
     /// Check one record's signature against one key.
@@ -540,26 +555,6 @@ impl AuditChain {
         }
         Ok(())
     }
-
-    /// Whether a run of records ENDING AT THIS CHAIN'S HEAD is whole: the walk from the genesis,
-    /// plus the check the walk cannot make on its own — that the last record in the run is the last
-    /// record the chain sealed. A tail truncation is invisible to any verifier reading only the
-    /// records, because the survivors link and number correctly among themselves; it takes the
-    /// chain's own head to notice.
-    pub fn verify_to_head(&self, records: &[AuditRecord]) -> Result<(), AuditBreak> {
-        Self::verify_chain(records)?;
-        let (tail_hash, tail_seq) = records
-            .last()
-            .map(|r| (r.hash.as_str(), r.seq))
-            .unwrap_or(("", 0));
-        if tail_hash != self.tail_hash || tail_seq.saturating_add(1) != self.next_seq {
-            return Err(AuditBreak {
-                at_index: records.len(),
-                kind: AuditBreakKind::LinkMismatch,
-            });
-        }
-        Ok(())
-    }
 }
 
 /// THE LINK AND THE POSITION, judged in that order and reported apart (item 405).
@@ -611,6 +606,7 @@ impl Audit for AuditChain {
             what: inputs.what,
             wall: inputs.wall,
             mono: inputs.mono,
+            node: self.node,
             origin_kind: inputs.origin.kind().as_str(),
             outcome: inputs.outcome,
             usage: inputs.usage,
@@ -838,7 +834,7 @@ pub(crate) fn subject_tag(subject: &Subject) -> &'static str {
 
 /// The subject's own identifier, as one text field.
 ///
-/// Two fields — a tag and a value — rather than one, so that a principal whose pseudonym happened to
+/// Two fields — a tag and a value — rather than one, so that a principal whose identifier happened to
 /// read as "node" could not be confused with a node. The node's number is IN the value, because
 /// leaving it out would let two nodes' records digest identically.
 pub(crate) fn subject_value(subject: &Subject) -> String {

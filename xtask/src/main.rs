@@ -16,6 +16,10 @@ fn main() {
     // what keeps those two facts apart. `--all` needs none of this: it runs each gate on its own
     // thread and turns a hung one into red rows either way.
     xtask::gates::enable_process_watchdog();
+    // THE WORK-UNIT BUDGET IS THE BINARY'S TOO (ruling (a)): a test process shares its cores with
+    // every other test, so a budget read there is a flake by construction. See
+    // `gates::enable_selftest_budget`.
+    xtask::gates::enable_selftest_budget();
     let args: Vec<String> = std::env::args().skip(1).collect();
     std::process::exit(xtask::cli::main(&args));
 }

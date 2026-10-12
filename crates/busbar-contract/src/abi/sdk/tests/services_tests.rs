@@ -7,8 +7,8 @@ use std::sync::atomic::{AtomicU8, Ordering};
 
 use super::*;
 use crate::abi::host::service::{
-    ABSENT, CLAIM_TAKEN, DEST_ALLOWED, DEST_INTERNAL, DEST_METADATA, MAX_RANDOM_FILL, NOT_ENTITLED,
-    SERVICES, TRUST_NEW, TRUST_SAME,
+    ABSENT, CLAIM_TAKEN, DEST_ALLOWED, DEST_INTERNAL, DEST_METADATA, HOOK_GATE, HOOK_REWRITE,
+    MAX_RANDOM_FILL, NOT_ENTITLED, SERVICES, TRUST_NEW, TRUST_SAME,
 };
 use crate::abi::mechanism::call::Span;
 use crate::abi::mechanism::ticket::Ticket;
@@ -76,6 +76,13 @@ fn table(slot: Option<ServiceFn>) -> HostSlots {
         need_admit: None,
         trust_verify: None,
         records_secret: None,
+        disk_append: None,
+        snapshot_read: None,
+        trust_sight_item: None,
+        trust_serves: None,
+        trust_decide: None,
+        trust_state: None,
+        session_emit: None,
     }
 }
 
@@ -125,6 +132,7 @@ fn services(t: &HostSlots) -> Services {
         wake: None,
         conns: std::ptr::null(),
         services: t,
+        io: std::ptr::null(),
     };
     Services::of(&tables).expect("a table was handed")
 }
@@ -169,6 +177,7 @@ fn no_table_is_no_services() {
         wake: None,
         conns: std::ptr::null(),
         services: std::ptr::null(),
+        io: std::ptr::null(),
     };
     assert!(Services::of(&tables).is_none());
 }
@@ -1060,5 +1069,447 @@ fn records_claim_is_won_once_and_a_claim_without_a_ttl_never_reaches_the_host() 
     assert_eq!(
         services(&table(None)).records_claim(ticketed(0), "approval", b"k1", 1),
         Poll::Ready(Err(ServiceError::Unserved))
+    );
+}
+
+/// A host whose work handle 9 has reference `ab` and record `rec`, live: `work.open` answers it;
+/// `work.find` finds `ab` and answers absent for anything else.
+extern "C" fn works(_ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
+    // SAFETY: the wrapper hands a service `in` naming its live buffers, and a live `out`.
+    unsafe {
+        let h = input.cast::<ServiceHead>().read_unaligned();
+        let span = |key: (u32, u32), value: (u32, u32)| ItemSpan {
+            key: Span {
+                offset: key.0,
+                len: key.1,
+            },
+            value: Span {
+                offset: value.0,
+                len: value.1,
+            },
+        };
+        let (into, bytes, s, value): (ServiceBufs, &[u8], ItemSpan, u64) = match h.op {
+            op::WORK_OPEN => {
+                let i = input.cast::<WorkOpenIn>().read_unaligned();
+                (i.into, b"ab", span((0, 2), (SPAN_ABSENT, 0)), 9)
+            }
+            _ => {
+                let i = input.cast::<WorkFindIn>().read_unaligned();
+                if std::slice::from_raw_parts(i.reference.ptr, i.reference.len) != b"ab" {
+                    (*out).value = ABSENT;
+                    (*out).outcome = RawOutcome::of(Outcome::Ready);
+                    return RawOutcome::of(Outcome::Ready);
+                }
+                (i.into, b"\x01rec", span((0, 1), (1, 3)), 9)
+            }
+        };
+        std::ptr::copy_nonoverlapping(bytes.as_ptr(), into.buf, bytes.len());
+        into.spans.write_unaligned(s);
+        (*out).value = value;
+        (*out).len = bytes.len() as u64;
+        (*out).items = 1;
+        (*out).outcome = RawOutcome::of(Outcome::Ready);
+    }
+    RawOutcome::of(Outcome::Ready)
+}
+
+#[test]
+fn the_work_wrappers_read_the_reference_and_the_found_record() {
+    let t = HostSlots {
+        work_open: Some(works),
+        work_find: Some(works),
+        ..table(None)
+    };
+    let s = services(&t);
+    let handle = CompletionHandle {
+        ticket: Ticket {
+            slot: 1,
+            generation: 1,
+        },
+        seq: 0,
+        _reserved: 0,
+    };
+    let empty = ItemSpan {
+        key: Span { offset: 0, len: 0 },
+        value: Span { offset: 0, len: 0 },
+    };
+    let (mut buf, mut spans) = ([0u8; 8], [empty; 1]);
+    let opened = s.work_open(handle, "job", b"r", &mut buf, &mut spans);
+    assert_eq!(
+        opened,
+        Poll::Ready(Ok(Opened {
+            handle: 9,
+            reference: "ab"
+        }))
+    );
+    let (mut buf, mut spans) = ([0u8; 8], [empty; 1]);
+    let found = s.work_find(handle, "ab", &mut buf, &mut spans);
+    assert_eq!(
+        found,
+        Poll::Ready(Ok(Some(Found {
+            handle: 9,
+            state: crate::abi::host::service::WORK_LIVE,
+            record: b"rec",
+        })))
+    );
+    let (mut buf, mut spans) = ([0u8; 8], [empty; 1]);
+    assert_eq!(
+        s.work_find(handle, "zz", &mut buf, &mut spans),
+        Poll::Ready(Ok(None))
+    );
+    // A host that serves no work answers unserved.
+    let none = table(None);
+    let (mut buf, mut spans) = ([0u8; 8], [empty; 1]);
+    assert_eq!(
+        services(&none).work_open(handle, "job", b"r", &mut buf, &mut spans),
+        Poll::Ready(Err(ServiceError::Unserved))
+    );
+}
+
+/// A host whose nested unit answers 201, body `ok`, one field `a: b`.
+extern "C" fn nests(_ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
+    // SAFETY: the wrapper hands a `UnitNestIn` naming its live buffers, and a live `out`.
+    unsafe {
+        let i = input.cast::<UnitNestIn>().read_unaligned();
+        let bytes = b"okab";
+        std::ptr::copy_nonoverlapping(bytes.as_ptr(), i.into.buf, bytes.len());
+        let span = |k: (u32, u32), v: (u32, u32)| ItemSpan {
+            key: Span {
+                offset: k.0,
+                len: k.1,
+            },
+            value: Span {
+                offset: v.0,
+                len: v.1,
+            },
+        };
+        i.into.spans.write_unaligned(span((SPAN_ABSENT, 0), (0, 2)));
+        i.into.spans.add(1).write_unaligned(span((2, 1), (3, 1)));
+        (*out).value = 201;
+        (*out).len = bytes.len() as u64;
+        (*out).items = 2;
+        (*out).outcome = RawOutcome::of(Outcome::Ready);
+    }
+    RawOutcome::of(Outcome::Ready)
+}
+
+#[test]
+fn the_nest_wrapper_reads_the_childs_status_body_and_fields() {
+    let t = HostSlots {
+        unit_nest: Some(nests),
+        ..table(None)
+    };
+    let handle = CompletionHandle {
+        ticket: Ticket {
+            slot: 1,
+            generation: 1,
+        },
+        seq: 0,
+        _reserved: 0,
+    };
+    let empty = ItemSpan {
+        key: Span { offset: 0, len: 0 },
+        value: Span { offset: 0, len: 0 },
+    };
+    let (mut buf, mut spans) = ([0u8; 8], [empty; 2]);
+    let Poll::Ready(Ok(nested)) =
+        services(&t).unit_nest(handle, "POST", "/child", b"x", &mut buf, &mut spans)
+    else {
+        panic!("the nest answered");
+    };
+    assert_eq!((nested.status, nested.body), (201, b"ok".as_slice()));
+    assert_eq!(
+        nested.fields().collect::<Vec<_>>(),
+        vec![(b"a".as_slice(), b"b".as_slice())]
+    );
+}
+
+// ── verify, content, hook ─────────────────────────────────────────────────────────────────────
+
+/// A verify cache: key `hit` is cached (`cached`), key `follow` follows (`led`), any other leads.
+extern "C" fn caches(_ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
+    // SAFETY: the wrapper hands a `VerifyLookupIn` naming its live key and buffers, and a live `out`.
+    unsafe {
+        let i = input.cast::<VerifyLookupIn>().read_unaligned();
+        let key = std::slice::from_raw_parts(i.key.ptr, i.key.len);
+        let (value, entry): (u64, &[u8]) = match key {
+            b"hit" => (VERIFY_HIT, b"cached"),
+            b"follow" => (VERIFY_FOLLOW, b"led"),
+            _ => (VERIFY_LEAD, b""),
+        };
+        if !entry.is_empty() {
+            std::ptr::copy_nonoverlapping(entry.as_ptr(), i.into.buf, entry.len());
+            i.into.spans.write(ItemSpan {
+                key: Span {
+                    offset: SPAN_ABSENT,
+                    len: 0,
+                },
+                value: Span {
+                    offset: 0,
+                    len: entry.len() as u32,
+                },
+            });
+        }
+        answer(
+            out,
+            Outcome::Ready,
+            value,
+            entry.len() as u64,
+            u64::from(!entry.is_empty()),
+        )
+    }
+}
+
+extern "C" fn stores(_ctx: HostCtx, _input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
+    answer(out, Outcome::Ready, 0, 0, 0)
+}
+
+#[test]
+fn verify_lookup_reads_a_hit_a_follow_or_the_lead_and_store_is_answered() {
+    let t = HostSlots {
+        verify_lookup: Some(caches),
+        verify_store: Some(stores),
+        ..table(None)
+    };
+    let s = services(&t);
+    let mut buf = [0u8; 8];
+    assert_eq!(
+        s.verify_lookup(ticketed(0), b"hit", &mut buf),
+        Poll::Ready(Ok(Verified::Hit(b"cached")))
+    );
+    let mut buf = [0u8; 8];
+    assert_eq!(
+        s.verify_lookup(ticketed(1), b"follow", &mut buf),
+        Poll::Ready(Ok(Verified::Follow(b"led")))
+    );
+    let mut buf = [0u8; 8];
+    assert_eq!(
+        s.verify_lookup(ticketed(2), b"other", &mut buf),
+        Poll::Ready(Ok(Verified::Lead))
+    );
+    assert_eq!(s.verify_store(handle(), b"other", b"v", 0), Ok(()));
+    // RED: a host serving neither.
+    let none = table(None);
+    let mut buf = [0u8; 8];
+    assert_eq!(
+        services(&none).verify_lookup(ticketed(3), b"hit", &mut buf),
+        Poll::Ready(Err(ServiceError::Unserved))
+    );
+    assert_eq!(
+        services(&none).verify_store(handle(), b"k", b"v", 0),
+        Err(ServiceError::Unserved)
+    );
+}
+
+/// A gate that blocks content starting `bad` and passes the rest.
+extern "C" fn scans(_ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
+    // SAFETY: the wrapper hands a `ContentScanIn` naming its live content, and a live `out`.
+    unsafe {
+        let i = input.cast::<ContentScanIn>().read_unaligned();
+        let content = std::slice::from_raw_parts(i.content.ptr, i.content.len);
+        let block = u64::from(content.starts_with(b"bad"));
+        answer(out, Outcome::Ready, block, 0, 0)
+    }
+}
+
+#[test]
+fn content_scan_answers_pass_or_block_and_pends_on_a_ticket() {
+    let t = HostSlots {
+        content_scan: Some(scans),
+        ..table(None)
+    };
+    let s = services(&t);
+    let mut buf = [0u8; 4];
+    assert_eq!(
+        s.content_scan(ticketed(0), b"fine", &mut buf),
+        Poll::Ready(Ok(Scanned {
+            passed: true,
+            rewritten: None
+        }))
+    );
+    let mut buf = [0u8; 4];
+    assert_eq!(
+        s.content_scan(ticketed(1), b"bad", &mut buf),
+        Poll::Ready(Ok(Scanned {
+            passed: false,
+            rewritten: None
+        }))
+    );
+    let p = HostSlots {
+        content_scan: Some(pends),
+        ..table(None)
+    };
+    let mut buf = [0u8; 4];
+    assert_eq!(
+        services(&p).content_scan(ticketed(2), b"x", &mut buf),
+        Poll::Pending
+    );
+}
+
+/// A hook stage: a gate stops `stop` with 451 `no`; a rewrite from `0` rewrites to `rw` (resume 1),
+/// from `1` passes.
+extern "C" fn hooks(_ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
+    // SAFETY: the wrapper hands a `HookCallIn` naming its live prompt and buffer, and a live `out`.
+    unsafe {
+        let i = input.cast::<HookCallIn>().read_unaligned();
+        let p = i.prompt.read_unaligned();
+        let first = p.messages.read_unaligned();
+        let text = std::slice::from_raw_parts(first.text.ptr, first.text.len);
+        let (value, bytes): (u64, &[u8]) = match (i.stage, i.from, text) {
+            (HOOK_GATE, _, b"stop") => (451, b"no"),
+            (HOOK_REWRITE, 0, _) => (1, b"rw"),
+            _ => (0, b""),
+        };
+        std::ptr::copy_nonoverlapping(bytes.as_ptr(), i.into.buf, bytes.len());
+        answer(out, Outcome::Ready, value, bytes.len() as u64, 0)
+    }
+}
+
+#[test]
+fn hook_call_reads_pass_rewrite_or_stop_and_refuses_a_bad_in_before_the_host() {
+    use crate::abi::host::service::HOOK_FROM_MAX;
+    let t = HostSlots {
+        hook_call: Some(hooks),
+        ..table(None)
+    };
+    let s = services(&t);
+    let msg = |text: &'static str| {
+        [MessageView {
+            role: raw(b"user"),
+            text: raw(text.as_bytes()),
+        }]
+    };
+    let mut buf = [0u8; 8];
+    assert_eq!(
+        s.hook_call(ticketed(0), (HOOK_GATE, 0), None, &msg("stop"), &mut buf),
+        Poll::Ready(Ok(Hooked::Stop {
+            status: 451,
+            words: b"no"
+        }))
+    );
+    let mut buf = [0u8; 8];
+    assert_eq!(
+        s.hook_call(
+            ticketed(1),
+            (HOOK_GATE, 0),
+            Some("sys"),
+            &msg("ok"),
+            &mut buf
+        ),
+        Poll::Ready(Ok(Hooked::Pass))
+    );
+    let mut buf = [0u8; 8];
+    assert_eq!(
+        s.hook_call(ticketed(2), (HOOK_REWRITE, 0), None, &msg("x"), &mut buf),
+        Poll::Ready(Ok(Hooked::Rewrote {
+            resume: 1,
+            rewrite: b"rw"
+        }))
+    );
+    let mut buf = [0u8; 8];
+    assert_eq!(
+        s.hook_call(ticketed(3), (HOOK_REWRITE, 1), None, &msg("rw"), &mut buf),
+        Poll::Ready(Ok(Hooked::Pass))
+    );
+    // RED: a resumed gate and a chain past the cap never reach the host.
+    let none = table(None);
+    for stage_from in [(HOOK_GATE, 1), (HOOK_REWRITE, HOOK_FROM_MAX + 1), (9, 0)] {
+        let mut buf = [0u8; 8];
+        assert_eq!(
+            services(&none).hook_call(ticketed(4), stage_from, None, &msg("x"), &mut buf),
+            Poll::Ready(Err(ServiceError::Declined(Outcome::Refused)))
+        );
+    }
+}
+
+// ── sign ─────────────────────────────────────────────────────────────────────────────────────────
+
+/// The key id and signature [`signs`] answers.
+const KID: &str = "door-1";
+const SIG: &[u8] = b"\x01\x02\x03";
+
+/// A signer in the kernel's layout: span `0`, key = the key id, value = the signature (here the
+/// data reversed after a fixed prefix, so the answer depends on the call); short when the buffers
+/// are.
+extern "C" fn signs(_ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
+    // SAFETY: the wrapper hands a `SignIn` naming its live data and buffers, and a live `out`.
+    unsafe {
+        let i = input.cast::<SignIn>().read_unaligned();
+        let data = std::slice::from_raw_parts(i.data.ptr, i.data.len);
+        let mut sig = SIG.to_vec();
+        sig.extend(data.iter().rev());
+        let need = KID.len() + sig.len();
+        if i.into.cap < need || i.into.spans_cap < 1 {
+            (*out).needed_bytes = need as u64;
+            (*out).needed_items = 1;
+            return answer(out, Outcome::Failed, 0, 0, 0);
+        }
+        std::ptr::copy_nonoverlapping(KID.as_ptr(), i.into.buf, KID.len());
+        std::ptr::copy_nonoverlapping(sig.as_ptr(), i.into.buf.add(KID.len()), sig.len());
+        *i.into.spans = ItemSpan {
+            key: Span {
+                offset: 0,
+                len: KID.len() as u32,
+            },
+            value: Span {
+                offset: KID.len() as u32,
+                len: sig.len() as u32,
+            },
+        };
+        answer(out, Outcome::Ready, 0, need as u64, 1)
+    }
+}
+
+/// A signer that answers READY with no span.
+extern "C" fn signs_nothing(
+    _ctx: HostCtx,
+    _input: *const c_void,
+    out: *mut ServiceOut,
+) -> RawOutcome {
+    answer(out, Outcome::Ready, 0, 0, 0)
+}
+
+fn sign_table(slot: Option<ServiceFn>) -> HostSlots {
+    HostSlots {
+        sign: slot,
+        ..table(None)
+    }
+}
+
+#[test]
+fn sign_answers_the_key_id_and_the_signature_from_the_callers_buffers() {
+    let t = sign_table(Some(signs));
+    let s = services(&t);
+    let (mut buf, mut spans) = ([0u8; 32], [NO_SPAN; 1]);
+    let signed = s
+        .sign(handle(), b"ab", &mut buf, &mut spans)
+        .expect("signed");
+    assert_eq!(signed.key_id, KID);
+    assert_eq!(signed.signature, b"\x01\x02\x03ba");
+    let (mut small, mut spans) = ([0u8; 4], [NO_SPAN; 1]);
+    assert_eq!(
+        s.sign(handle(), b"ab", &mut small, &mut spans),
+        Err(ServiceError::Short {
+            bytes: 11,
+            items: 1
+        })
+    );
+}
+
+#[test]
+fn sign_failures_are_errors() {
+    let (mut buf, mut spans) = ([0u8; 32], [NO_SPAN; 1]);
+    assert_eq!(
+        services(&sign_table(None)).sign(handle(), b"x", &mut buf, &mut spans),
+        Err(ServiceError::Unserved)
+    );
+    assert_eq!(
+        services(&sign_table(Some(fails))).sign(handle(), b"x", &mut buf, &mut spans),
+        Err(ServiceError::Declined(Outcome::Failed))
+    );
+    assert_eq!(
+        services(&sign_table(Some(signs_nothing))).sign(handle(), b"x", &mut buf, &mut spans),
+        Err(ServiceError::Broken),
+        "a READY sign with no key id and no signature is a broken host"
     );
 }

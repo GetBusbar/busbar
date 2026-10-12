@@ -3,9 +3,9 @@
 
 //! THE 1.6.0 KERNEL VERBS, IN THE ONE DOCUMENT.
 //!
-//! The closed verb table (`admin_codec::verbs`) declares 17 operations 1.6.0 adds to the
-//! administrative surface: the 9 money-governance verbs ([`NEW_VERBS`]), the five ledger views
-//! ([`LEDGER_VERBS`]) and the three audit-chain reads ([`AUDIT_VERBS`]). The router in this crate
+//! The closed verb table (`admin_codec::verbs`) declares 20 operations 1.6.0 adds to the
+//! administrative surface: the 12 kernel verbs ([`NEW_VERBS`]: nine money-governance, three trust),
+//! the five ledger views ([`LEDGER_VERBS`]) and the three audit-chain reads ([`AUDIT_VERBS`]). The router in this crate
 //! mounts none of them. The node's administrative mount walks every row the table declares whose
 //! effect is bound through the kernel loop, and it is the composition root's route step that answers them — the ledger and
 //! audit reads render from the node's own book and chain, `adjust` and `amend_rate_history` land on
@@ -22,7 +22,8 @@
 //! node's mount hands it to the surface's own fallback, which answers the unmounted `404` — so this
 //! document does not describe it either: [`operations`] asks the same one question the mount asks.
 //! Since owner answer Q71(2) bound `verify`, `plane_facts`, `plane_record_write` and
-//! `commit_upgrade`, every one of the nine is bound.
+//! `commit_upgrade`, every one of the nine is bound; the three trust verbs are bound with them
+//! (ARCHITECT 2026-10-06).
 
 #[cfg(feature = "openapi-schema")]
 use crate::admin_codec::verbs::ResolvedVerb;
@@ -67,8 +68,33 @@ pub(crate) struct Hash(#[schemars(regex(pattern = r"^[0-9a-f]{64}$"))] String);
 #[derive(Serialize, JsonSchema)]
 #[allow(dead_code)]
 pub(crate) struct LedgerTotals {
-    /// The rows, in bucket, day, lane and provider order.
+    /// The rows, in bucket, day, lane and provider order. A row a `refused` entry names is absent.
     rows: Vec<LedgerTotalsRow>,
+    /// Every balance whose counts a present rate card refused to price: its row has no figure, so
+    /// it is withheld from `rows` rather than served as the priced remainder. Empty is the good
+    /// answer.
+    refused: Vec<LedgerRefusedBalance>,
+}
+
+/// A balance with no figure: a unit's counts on it that the rate card in force refused to price
+/// (a present card silent about the lane or a class). The row the balance folds into — the same
+/// `bucket` and `day` — is withheld from the view that names this.
+#[cfg(feature = "openapi-schema")]
+#[derive(Serialize, JsonSchema)]
+#[allow(dead_code)]
+pub(crate) struct LedgerRefusedBalance {
+    /// The balance's bucket.
+    bucket: String,
+    /// The balance's dimension.
+    dimension: String,
+    /// The balance's scope.
+    scope: String,
+    /// The balance's window, as the unix second it opens at: the `day` of the withheld row.
+    day: u64,
+    /// The lane that served the unit whose counts refused.
+    lane: String,
+    /// Why the pricing refused, in its own words.
+    refusal: String,
 }
 
 /// One row of `GET /ledger/totals`. The row width is the reconciliation's, so a discrepancy found
@@ -168,9 +194,12 @@ pub(crate) struct LedgerTotalsCell {
 #[derive(Serialize, JsonSchema)]
 #[allow(dead_code)]
 pub(crate) struct LedgerReconciliation {
-    /// True when every row reconciles. `discrepancies` is then empty.
+    /// True when every row reconciles. `discrepancies` and `refused` are then empty.
     holds: bool,
     discrepancies: Vec<LedgerDiscrepancy>,
+    /// Every balance whose counts a present rate card refused to price: its row is withheld from
+    /// both sides of the identity, which was not measured over it. Empty is the good answer.
+    refused: Vec<LedgerRefusedBalance>,
 }
 
 /// One row on which the identity does not hold. Spend and fee count are checked separately
@@ -466,7 +495,7 @@ pub(crate) struct VerifyView {
     book_verified: bool,
     /// Each thing verification found, in words: a checkpoint edited after it was sealed, a node
     /// sequence that went backwards, a balance out of identity, a sealed balance no longer in the
-    /// book, a closed window that moved.
+    /// book, a closed window that moved, a balance whose counts the rate card refused to price.
     findings: Vec<String>,
     /// Whether the ledger's postings reconcile with the previous release's rows.
     identity_holds: bool,
@@ -572,6 +601,48 @@ pub(crate) struct PlaneRecordWriteView {
     terminal: bool,
     /// The arrival second the record was written at.
     written_at: u64,
+}
+
+/// One trust key of the kernel's trust book and its state.
+#[cfg(feature = "openapi-schema")]
+#[derive(Serialize, JsonSchema)]
+#[allow(dead_code)]
+pub(crate) struct TrustKeyView {
+    /// The key, `<instance>/<counterparty>[/<item>]`: what `POST /trust/approve` and `/revoke` name.
+    key: String,
+    /// The plane instance label.
+    instance: String,
+    /// The counterparty, as the instance's configuration names it.
+    counterparty: String,
+    /// The item at the counterparty, for an item key.
+    item: Option<String>,
+    /// `new` (sighted and never approved, or revoked: refused), `approved` (approved, not sighted
+    /// since), `same` (sighted as approved), `drifted` (sighted other than approved: refused until
+    /// re-approved) or `quarantined` (the counterparty's catalogue moved: refused until re-approved).
+    #[schemars(regex(pattern = r"^(new|approved|same|drifted|quarantined)$"))]
+    state: String,
+    /// What it is approved at: the catalogue hash, or the item's digest.
+    approved: Option<String>,
+    /// What it was last sighted at.
+    seen: Option<String>,
+}
+
+/// `GET /trust`: every trust key and its state.
+#[cfg(feature = "openapi-schema")]
+#[derive(Serialize, JsonSchema)]
+#[allow(dead_code)]
+pub(crate) struct TrustListView {
+    /// Ordered by instance, counterparty and item, each counterparty before its items.
+    keys: Vec<TrustKeyView>,
+}
+
+/// `POST /trust/approve` and `/trust/revoke`: the trust key decided.
+#[cfg(feature = "openapi-schema")]
+#[derive(Deserialize, JsonSchema)]
+#[allow(dead_code)]
+pub(crate) struct TrustKeyReq {
+    /// `<instance>/<counterparty>[/<item>]`, as `GET /trust` lists it.
+    key: String,
 }
 
 /// `POST /commit-upgrade`: the release the fleet commits to.
@@ -681,8 +752,8 @@ fn doc_for(
             request: None,
             query: Vec::new(),
             errors: vec![unavailable_503(
-                "the node could not take the unit, or the book holds a refused counts row the \
-                 read cannot price (the read is refused whole rather than served without it)",
+                "the node could not take the unit, or a figure the read serves is past the range \
+                 it is served in (refused, never pinned)",
             )],
         };
     let audit_read = |summary: &'static str, schema: Value, ok: &'static str| VerbDoc {
@@ -780,8 +851,8 @@ fn doc_for(
             request: None,
             query: Vec::new(),
             errors: vec![unavailable_503(
-                "the node could not take the unit, or the book holds a refused counts row the \
-                 identity cannot be measured over",
+                "the node could not take the unit, or a figure the identity is measured over is \
+                 past the range it is served in",
             )],
         },
         KernelVerb::PlaneFacts => VerbDoc {
@@ -814,6 +885,80 @@ fn doc_for(
                 unavailable_503("the node could not take the unit"),
             ],
         },
+        KernelVerb::GetTrust => VerbDoc {
+            summary: "Every trust key of the kernel's trust book and its state",
+            description: "The counterparties every plane instance this node serves declares, and \
+                          the items sighted or approved at each: its key, state, what it is \
+                          approved at and what it was last sighted at. A read: it mutates nothing \
+                          and needs `read-only`."
+                .to_string(),
+            success: Success::Json(
+                schema_of(gen.subschema_for::<TrustListView>()),
+                "Every trust key and its state",
+            ),
+            request: None,
+            query: Vec::new(),
+            errors: vec![unavailable_503("the node could not take the unit")],
+        },
+        KernelVerb::TrustApprove | KernelVerb::TrustRevoke => {
+            let approve = verb == KernelVerb::TrustApprove;
+            VerbDoc {
+                summary: if approve {
+                    "Approve one trust key at what it was last sighted at"
+                } else {
+                    "Revoke one trust key"
+                },
+                description: if approve {
+                    "A counterparty is approved at the catalogue hash it last reported, which \
+                     clears its quarantine; an item at the digest it was last sighted at. The \
+                     decision is kept durably and outlives a restart. Idempotent: the same key \
+                     twice answers the same row."
+                } else {
+                    "Refused until approved again: a counterparty revoked refuses everything at \
+                     it, an item revoked refuses it over its configured approval. The decision \
+                     is kept durably and outlives a restart. Idempotent: the same key twice \
+                     answers the same row."
+                }
+                .to_string(),
+                success: Success::Json(
+                    schema_of(gen.subschema_for::<TrustKeyView>()),
+                    "The key, decided",
+                ),
+                request: Some(schema_of(req_gen.subschema_for::<TrustKeyReq>())),
+                query: Vec::new(),
+                errors: {
+                    let mut errors = vec![
+                        (
+                            "400",
+                            format!(
+                                "`invalid_request`: malformed body, `key is required`, or \
+                                 {BODY_UNREADABLE}"
+                            ),
+                        ),
+                        gated_403(),
+                        (
+                            "404",
+                            "`not_found`: ``trust key `<key>` not found`` — no plane instance \
+                             this node serves has the key"
+                                .to_string(),
+                        ),
+                    ];
+                    if approve {
+                        errors.push((
+                            "409",
+                            "`conflict`: ``trust key `<key>` was never sighted`` — nothing to \
+                             approve it at — or ``trust key `<key>` has no authenticity root`` — \
+                             its registration declares none, and nothing at it is approvable"
+                                .to_string(),
+                        ));
+                    }
+                    errors.push(unavailable_503(
+                        "the node could not take the unit, or could not keep the decision",
+                    ));
+                    errors
+                },
+            }
+        }
         KernelVerb::PlaneRecordWrite => VerbDoc {
             summary: "Upsert one record of a plane this node serves",
             description: "Upserted by `(kind, id)` through the plane-facing store the planes \
@@ -980,7 +1125,9 @@ fn doc_for(
         KernelVerb::GetLedgerTotals => ledger_read(
             "What the ledger's lines come to, per bucket, day, lane and provider",
             "Each line is priced against the rate card in force at its own arrival instant, and \
-             the row's micro-unit figure is one divide over its summed nano-units.",
+             the row's micro-unit figure is one divide over its summed nano-units. A row whose \
+             balance holds counts the rate card refused to price is withheld and named under \
+             `refused`; every other row is served.",
             schema_of(gen.subschema_for::<LedgerTotals>()),
             "The rows, in bucket, day, lane and provider order",
         ),
@@ -994,7 +1141,8 @@ fn doc_for(
         KernelVerb::GetLedgerReconciliation => ledger_read(
             "The residual of the ledger's postings against the previous release's rows",
             "An empty `discrepancies` list with `holds: true` is the good answer; a residual names \
-             its row and the amount it is out by.",
+             its row and the amount it is out by, and a row whose balance holds counts the rate \
+             card refused to price is withheld from the identity and named under `refused`.",
             schema_of(gen.subschema_for::<LedgerReconciliation>()),
             "Whether the identity holds, and every row on which it does not",
         ),
@@ -1138,7 +1286,7 @@ pub(crate) fn operations(
             "delete" => axum::http::Method::DELETE,
             _ => continue,
         };
-        let scope = busbar_kernel::admin::v1::contract::required_scope(&http_method, &path);
+        let scope = crate::v1::contract::required_scope(&http_method, &path);
         let mut op = json!({
             "summary": doc.summary,
             "description": doc.description,

@@ -74,38 +74,57 @@ pub fn family(selector: &Selector) -> SelectorFamily {
     }
 }
 
+/// The width of one selector class's band in [`specificity`]: a class's within-class score is held
+/// below it, so no claim, however long, outranks a claim of a more specific class.
+pub const SPECIFICITY_BAND: u32 = 1_000_000;
+
 /// How specific a selector is, for the within-one-plane precedence order: a literal beats a
 /// variable, longer beats shorter, a whole path beats a fragment of one.
+///
+/// THE CLASS DECIDES FIRST. Each class owns one band ([`SPECIFICITY_BAND`] wide, in the sealed
+/// class order: exact path, path pattern, one-level prefix, header exact, header prefix, header
+/// present, path fragment, transport name, ALPN, port), and the within-class score (a literal's
+/// length, a pattern's literal segments) is clamped inside it. A pattern with fifty literal
+/// segments or a thousand-byte suffix therefore never outranks a more specific class's claim; where
+/// no claim reached a band's edge the order is exactly what it always was (audit kernel-K5 #12).
 #[must_use]
 pub fn specificity(selector: &Selector) -> u32 {
-    match selector {
-        Selector::ExactPath(p) => 10_000 + p.len() as u32,
+    let len = |n: usize| u32::try_from(n).unwrap_or(u32::MAX);
+    let (class, within) = match selector {
+        Selector::ExactPath(p) => (10, len(p.len())),
         Selector::PathPattern(segments) => {
-            let literals = segments
+            let literals = len(segments
                 .iter()
                 .filter(|s| matches!(s, Segment::Lit(_)))
-                .count() as u32;
-            let open = segments
+                .count());
+            let open = len(segments
                 .iter()
                 .filter(|s| matches!(s, Segment::Tail))
-                .count() as u32;
+                .count());
             // Saturating, because the discount is a plane's own count of open segments and nothing
             // bounds it: a pattern with more tails than its own score can pay for is the least
-            // specific thing there is, not a subtraction that panics the seal or wraps a claim to
-            // the top of the order.
-            (5_000 + literals * 100 + segments.len() as u32).saturating_sub(open.saturating_mul(50))
+            // specific of its class, not a subtraction that panics the seal or wraps a claim to the
+            // top of the order.
+            (
+                9,
+                literals
+                    .saturating_mul(100)
+                    .saturating_add(len(segments.len()))
+                    .saturating_sub(open.saturating_mul(50)),
+            )
         }
-        Selector::PrefixOneLevel(p) => 4_000 + p.len() as u32,
-        Selector::HeaderExact(n, v) => 3_000 + (n.len() + v.len()) as u32,
-        Selector::HeaderPrefix(n, v) => 2_000 + (n.len() + v.len()) as u32,
-        Selector::HeaderPresent(n) => 1_500 + n.len() as u32,
-        Selector::PathSuffix(s) | Selector::PathContains(s) => 1_000 + s.len() as u32,
+        Selector::PrefixOneLevel(p) => (8, len(p.len())),
+        Selector::HeaderExact(n, v) => (7, len(n.len() + v.len())),
+        Selector::HeaderPrefix(n, v) => (6, len(n.len() + v.len())),
+        Selector::HeaderPresent(n) => (5, len(n.len())),
+        Selector::PathSuffix(s) | Selector::PathContains(s) => (4, len(s.len())),
         Selector::Sni(s) | Selector::ClientCertSubject(s) | Selector::StreamName(s) => {
-            800 + s.len() as u32
+            (3, len(s.len()))
         }
-        Selector::Alpn(a) => 600 + a.len() as u32,
-        Selector::Port(_) => 500,
-    }
+        Selector::Alpn(a) => (2, len(a.len())),
+        Selector::Port(_) => (1, 0),
+    };
+    class * SPECIFICITY_BAND + within.min(SPECIFICITY_BAND - 1)
 }
 
 /// How far into a body the kernel has to read before a unit can open.

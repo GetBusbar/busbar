@@ -32,12 +32,12 @@ fn dropping_a_permit_frees_a_slot() {
 
 #[test]
 fn denied_entry_increments_the_gate_counter() {
-    crate::metrics::init();
+    crate::snapshot::init();
     let gate = AdmissionGate::new(1, "test-denied-counter");
     let _held = gate.try_enter().expect("first entry admits");
     assert!(gate.try_enter().is_none(), "second entry must be denied");
 
-    let out = crate::metrics::render();
+    let out = crate::snapshot::render();
     assert!(
         out.contains("busbar_admission_denied_total{gate=\"test-denied-counter\"} 1"),
         "a denied try_enter must increment the per-gate denied counter; got:\n{out}"

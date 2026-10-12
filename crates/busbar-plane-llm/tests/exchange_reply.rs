@@ -659,6 +659,7 @@ fn lane(dialect: &'static str) -> Lane {
         prompt_caching: false,
         caps: Default::default(),
         error_map: Default::default(),
+        statics: &[],
     }
 }
 
@@ -790,6 +791,54 @@ fn a_reply_judges_a_far_end_error() {
         ));
         assert!(piece.head.is_some());
     }
+}
+
+/// THE BREAKER'S READING beside the walk's verdict (ARCHITECT BREAKER OUTCOME):
+/// a request too large for the window fails over with nothing recorded (RETRY, FAULT_NONE); an
+/// `error_map` entry naming `rate_limit` fails over and counts toward the trip (RETRY,
+/// FAULT_TRANSIENT); the caller's own bad input records nothing (HARD, FAULT_CALLER); a refused
+/// credential trips every cell (HARD, FAULT_HARD) — 1.5.5's per-disposition records.
+#[test]
+fn a_judged_far_end_error_carries_the_breakers_reading_apart_from_its_verdict() {
+    use busbar_contract::abi::transport::{FAULT_CALLER, FAULT_HARD, FAULT_NONE, FAULT_TRANSIENT};
+    use busbar_plane_llm::plane_door::breaker_fault;
+    let arrived = arrival("openai", false);
+    let mut lane = lane("openai");
+    lane.error_map = map(&[("1302", "rate_limit")]);
+    let ctx = ReplyCtx {
+        arrived: &arrived,
+        lane: &lane,
+        intent: stream_intent(chat_handler("openai"), arrived.parsed.as_ref()),
+        passthrough: false,
+    };
+    let error = |code: &str| {
+        format!(r#"{{"error":{{"message":"m","type":"invalid_request_error","code":"{code}"}}}}"#)
+    };
+    for (status, code, verdict, reading) in [
+        (400, "context_length_exceeded", Verdict::Retry, FAULT_NONE),
+        (400, "1302", Verdict::Retry, FAULT_TRANSIENT),
+        (400, "bad_field", Verdict::Hard, FAULT_CALLER),
+        (401, "invalid_api_key", Verdict::Hard, FAULT_HARD),
+        (503, "busy", Verdict::Retry, FAULT_TRANSIENT),
+    ] {
+        let mut reply = Reply::new(&ctx, status, JSON_HEAD);
+        let body = error(code);
+        let piece = reply.feed(&ctx, body.as_bytes(), true, AT);
+        assert!(piece.done, "{status} {code}");
+        assert_eq!(piece.verdict, verdict, "{status} {code}");
+        assert_eq!(
+            breaker_fault(piece.fault.as_ref()),
+            reading,
+            "{status} {code}"
+        );
+    }
+    // RED: a 2xx that failed after its head is the compensating transient 1.5.5 recorded; an
+    // answer with no fault is no reading at all.
+    assert_eq!(
+        breaker_fault(Some(&Fault::Transient("upstream-generation-failed"))),
+        FAULT_TRANSIENT
+    );
+    assert_eq!(breaker_fault(None), FAULT_NONE);
 }
 
 /// A cut: a stream after its first byte ends on the caller's error frame, `Hard`, the far end's

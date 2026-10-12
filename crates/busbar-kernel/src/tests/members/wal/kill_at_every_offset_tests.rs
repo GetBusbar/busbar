@@ -7,6 +7,11 @@
 //! battery writes a run of records, truncates the segment at EVERY offset from zero to the end,
 //! recovers, and asserts the recovered records are exactly the longest complete prefix of what was
 //! written. A special case in the scan shows up here as the one offset the loop fails on.
+//!
+//! A crash does not only shorten a file. The space a segment claims ahead of its writes is zeros,
+//! so a write that stopped part way leaves the file its full length with zeros from the stopping
+//! point on — and that is walked at every offset too, and must read as a torn tail, never as
+//! corruption.
 
 use busbar_kernel_wal::backend::{MemoryFactory, SegmentFactory as _};
 use busbar_kernel_wal::record::{Record, FRAME_BYTES};
@@ -60,6 +65,34 @@ fn recover_from(bytes: &[u8]) -> Vec<Record> {
     .records
 }
 
+/// Write each of `commits` as its own group commit into a fresh memory segment and return exactly
+/// the committed bytes.
+fn lay_down_commits(commits: &[Vec<Record>]) -> Vec<u8> {
+    let mut factory = MemoryFactory::retaining();
+    let mut wal = busbar_kernel_wal::wal::Wal::with_parts(
+        Box::new(factory.clone()),
+        Box::new(busbar_kernel_wal::ship::NullShipper::new()),
+        busbar_kernel_wal::wal::Mode::OnDisk,
+        TEST_CEILING,
+        super::fixtures::wall_ms,
+    )
+    .unwrap();
+    let token = durability_token();
+    let mut end = 0;
+    for commit in commits {
+        end = wal
+            .append_batch(&token, busbar_contract::caps::StepName::Meter, commit)
+            .unwrap()
+            .durable_end;
+    }
+    drop(wal);
+    let backend = factory.open(0).unwrap();
+    let mut bytes = vec![0u8; usize::try_from(end).unwrap()];
+    let n = backend.read_at(0, &mut bytes).unwrap();
+    assert_eq!(n, bytes.len());
+    bytes
+}
+
 /// How many whole records survive a cut at `offset`, given the frame count of each record.
 fn expected_prefix(written: &[Record], offset: usize) -> usize {
     let mut end = 0usize;
@@ -107,6 +140,65 @@ fn a_cut_at_every_byte_offset_recovers_the_longest_complete_prefix() {
             recovered,
             written[..expected].to_vec(),
             "the records recovered after a cut at byte {offset} are not the ones written"
+        );
+    }
+}
+
+/// **A WRITE THAT STOPPED AT ANY BYTE, WITH ZEROS AFTER IT, IS A TORN TAIL — NEVER CORRUPTION**
+/// (Q128 kernel-wal 5).
+///
+/// The shape a crash mid-commit really leaves on a segment that claimed its space ahead: the file
+/// keeps its length, the bytes up to where the write stopped are there, and everything after is the
+/// claimed zeros. Walked at every byte of two group commits. Nothing past the stopping point was
+/// acknowledged — the commit it is in never synced, and nothing after it was written — so the cut is
+/// silent: no quarantine, no identity taken. RED before the fix: a stop inside a frame's payload
+/// (its header and digest written, its payload not) read as a whole frame altered afterwards, and
+/// raised a corruption alarm over an ordinary crash.
+#[test]
+fn a_zero_padded_tear_at_every_byte_offset_is_torn_never_corrupt() {
+    let mut first = Vec::new();
+    let mut second = Vec::new();
+    for (i, body_len) in [0usize, 10, 415, 416, 417, 900, 1000]
+        .into_iter()
+        .enumerate()
+    {
+        let record = Record::new(7, 100 + i as u64, vec![(i + 1) as u8; body_len]);
+        if i < 3 {
+            first.push(record);
+        } else {
+            second.push(record);
+        }
+    }
+    let bytes = lay_down_commits(&[first.clone(), second.clone()]);
+    let mut written = first;
+    written.extend(second);
+    // Space claimed ahead of the writes, which a crash leaves as zeros too.
+    let claimed = bytes.len() + 4 * FRAME_BYTES;
+
+    for stop in 0..=bytes.len() {
+        let mut torn = bytes[..stop].to_vec();
+        torn.resize(claimed, 0);
+        let shared = busbar_kernel_wal::backend::SharedBytes::new(std::sync::Mutex::new(torn));
+        let backend = Box::new(busbar_kernel_wal::backend::MemorySegment::over(shared));
+        let mut segment = Segment::open_at(backend, 0, 0, TEST_CEILING).unwrap();
+        let mut sink = MemoryFactory::new();
+        let recovered =
+            recover_and_truncate(&mut segment, &mut sink, super::fixtures::wall_ms).unwrap();
+        let expected = expected_prefix(&written, stop);
+        assert!(
+            !recovered.was_corrupt(),
+            "a write that stopped at byte {stop} of {} read as corruption: {:?}",
+            bytes.len(),
+            recovered.verdict
+        );
+        assert!(
+            recovered.quarantined.is_none() && sink.quarantined().is_empty(),
+            "a write that stopped at byte {stop} was quarantined"
+        );
+        assert_eq!(
+            recovered.records,
+            written[..expected].to_vec(),
+            "the records recovered after a stop at byte {stop} are not the longest complete prefix"
         );
     }
 }

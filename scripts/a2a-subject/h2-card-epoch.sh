@@ -24,11 +24,12 @@
 #
 # THE SHAPE. Two dated cards, one call under each:
 #
-#   boot                    card 0: per_request_fee 1   (effective_from 0 -- `HistorySeq::OPENING`,
+#   boot                    card 0: agents.fees.per_request 1 (effective_from 0 -- `HistorySeq::OPENING`,
 #                                                        because `RootHistory::apply` dates a node's
 #                                                        FIRST card from zero, kernel.rs:264)
 #   call A                  arrives inside card 0's window
-#   PUT /config/settings    card 1: per_request_fee 7   (effective_from = the apply's instant,
+#   POST /config/apply      card 1: agents.fees.per_request 7 (the plane's own fee, #47;
+#                                                        effective_from = the apply's instant,
 #                                                        and it CLOSES NOTHING -- card 0 goes on
 #                                                        answering for every instant before it)
 #   re-approve              the live apply rebuilds the App and the agent registry returns to

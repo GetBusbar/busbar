@@ -25,18 +25,21 @@
 /// parses; the host owns the parse and never lets the plane hold it, so what crosses this seam is the
 /// material a composition root already resolved, not a handle into a registry the transport cannot
 /// reach.
+///
+/// The key is a [`Redacted`](crate::Redacted): it zeroizes on drop, compares in constant time, and a
+/// TLS stack reads it through `expose_secret()` at the one site that hands it to the handshake.
 #[derive(Clone, Default, PartialEq, Eq)]
 pub struct ClientIdentity {
     /// The certificate chain to present, leaf first, each entry one DER certificate.
     pub cert_chain: Vec<Vec<u8>>,
     /// The private key, in DER, that proves the leaf.
-    pub private_key: Vec<u8>,
+    pub private_key: crate::Redacted<Vec<u8>>,
 }
 
 impl core::fmt::Debug for ClientIdentity {
-    /// Hand-rolled to REDACT the private key. The DER private key is secret material a derived
-    /// `Debug` would spill byte-for-byte into any log line or panic that formats this type; the
-    /// certificate chain is public and prints as itself, and the key prints as `<redacted>`.
+    /// Hand-rolled so the text stays exactly what 1.5.5 printed (log text is customer-visible): the
+    /// certificate chain is public and prints as itself, and the key prints as `<redacted>`, not as
+    /// `Redacted`'s own `[REDACTED]`.
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("ClientIdentity")
             .field("cert_chain", &self.cert_chain)
@@ -91,6 +94,64 @@ impl EgressTrust {
         self.extra_anchors.is_empty()
             && self.pinned_public_keys.is_empty()
             && self.client_identity.is_none()
+    }
+}
+
+/// THE ONE SPELLING OF A KEY PIN: the SHA-256 of a certificate's whole SubjectPublicKeyInfo (its
+/// DER, tag and length included), in standard base64 with padding. What an operator writes as a
+/// registration's peer-key pin, what the connector compares the far end's key against and what it
+/// reports as observed are this one rendering, so a pin and an observation compare as strings.
+#[must_use]
+pub fn key_pin(subject_public_key_info: &[u8]) -> String {
+    use sha2::Digest as _;
+    crate::media::base64_encode(&sha2::Sha256::digest(subject_public_key_info))
+}
+
+/// THE TRUST ANCHORS OF ONE DESTINATION a need reaches (the transport pin, ARCHITECT 2026-10-03): the
+/// connector enforces them itself, on every connection to it.
+///
+/// * `key_pin` — the far end's key, in the [`key_pin`] spelling: a secured connection whose leaf
+///   certificate's key is another is refused before a request byte is written (the ordinary chain
+///   and name check still runs first), and a connection that is not secured is refused outright.
+/// * `client_identity` — busbar's client certificate for that destination, presented when the far
+///   end asks for one.
+///
+/// What the connection observed (the far end's key, whether the identity was presented) is the
+/// connection's facts either way ([`crate::transport::ConnFacts`]). The default anchors nothing.
+#[derive(Clone, Default, PartialEq, Eq)]
+pub struct Anchors {
+    /// The far end's key pin; `None` = no pin.
+    pub key_pin: Option<String>,
+    /// The client identity to present; `None` = present none.
+    pub client_identity: Option<ClientIdentity>,
+    /// The REGISTRATION's private reach for its need (`abi::plane::TRUST_PRIVATE_REACH`): carried
+    /// with the member's anchors, and sealed for that registration alone
+    /// (`conn::PollConns::seal_reach`), never per destination. It anchors no connection security.
+    pub private_reach: bool,
+}
+
+impl Anchors {
+    /// Whether these anchor no connection security (the private reach is sealed on its own).
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        !self.secures()
+    }
+
+    /// Whether these hold the connection's security to anything (a key pin or a client identity).
+    #[must_use]
+    pub fn secures(&self) -> bool {
+        self.key_pin.is_some() || self.client_identity.is_some()
+    }
+}
+
+impl core::fmt::Debug for Anchors {
+    /// The identity's private key is redacted through [`ClientIdentity`]'s own `Debug`.
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Anchors")
+            .field("key_pin", &self.key_pin)
+            .field("client_identity", &self.client_identity)
+            .field("private_reach", &self.private_reach)
+            .finish()
     }
 }
 

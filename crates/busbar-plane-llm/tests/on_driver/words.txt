@@ -1,0 +1,14 @@
+# THE LLM PLANE'S DOOR WORDS, read as data by the composition root's pools-door cells under the fold
+# switch (crates/busbar src/root/tests/serve_hook_seats.rs `word`, and the door cells of
+# serve_tests.rs): `key = value`, one per line, `#` a comment. The root names no plane and no dialect
+# (ARCHITECT ruling, #464), so the dialects those cells speak are this plane's words, kept here.
+#
+# The dialect the cells' members and callers speak: the caller's chat completions, and each member's
+# far end, unless a cell names another.
+dialect = openai
+# A far dialect that cannot carry a control the caller set (`logit_bias`), so a TRANSLATE attempt
+# writes 1.5.5's `egress.control_unrepresentable` rows (`<control> on <dialect>`,
+# `<path> from <dialect>`), and that dialect's answer: a message whose usage carries a member the
+# caller's dialect has no form for.
+untranslatable_dialect = anthropic
+untranslatable_answer = {"id":"msg_1","type":"message","role":"assistant","model":"m0","content":[{"type":"text","text":"hi"}],"stop_reason":"end_turn","stop_sequence":null,"usage":{"input_tokens":1,"output_tokens":1,"output_tokens_details":{"reasoning_tokens":0}}}

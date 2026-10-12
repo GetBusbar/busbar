@@ -15,7 +15,8 @@
 //! Every later call reads it with [`Instance::get`], as `&T`: ops on distinct tickets run
 //! concurrently on one instance (`abi::mechanism::lifecycle`, CONCURRENCY), so the SDK never hands out
 //! `&mut T` — a state that changes holds its own locks or atomics. When `close` answers READY the
-//! SDK drops the state (its `Drop` runs); a `close` answering anything else leaves it in place,
+//! SDK drops the state (its `Drop` runs; a `Drop` that panics is caught and `close` still answers
+//! READY, since the box is gone either way); a `close` answering anything else leaves it in place,
 //! since the host keeps calling an instance whose `close` was not READY. So the body never frees
 //! it, and nothing can free it twice or use it after.
 //!
@@ -39,7 +40,7 @@
 //! than another type's bytes.
 
 use std::any::{Any, TypeId};
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::ffi::c_void;
 use std::marker::PhantomData;
@@ -51,7 +52,7 @@ use crate::abi::mechanism::lifecycle::{slot, CancelIn, OpenIn, OpenOut, Validate
 use crate::abi::mechanism::ticket::Ticket;
 use crate::abi::sdk::door::{AbiIn, AbiOut, Entry};
 use crate::abi::sdk::lent::Lent;
-use crate::abi::sdk::out::{Kept, Out, Reason, Reporting};
+use crate::abi::sdk::out::{holders_live, Holders, Kept, Out, Reason, Reporting};
 
 /// What each ticket's op parked, by ticket.
 type Parked = HashMap<Ticket, Box<dyn Any + Send + Sync>>;
@@ -150,6 +151,31 @@ impl<'call, T: Send + Sync + 'static> Instance<'call, T> {
             head: Head {
                 tag: TypeId::of::<T>(),
                 parked: Mutex::new(HashMap::new()),
+                kept: Kept::default(),
+            },
+            state,
+        })));
+    }
+
+    /// Install the state in `open`, PRE-PARKING `parked` on this call's ticket — for an `open`
+    /// whose connect step answered PENDING. The box is minted and RETAINED across the pend (the
+    /// trampoline keeps it rather than dropping it), so plugin-owned per-instance memory carries
+    /// what the step parked to the RESUME, which reads it back with [`Instance::resume`]. There is
+    /// no module static: the half-open state lives in the instance box, like every other op's. A
+    /// call with no ticket parks nothing (it may not pend). Panics outside `open`, as [`open`].
+    pub fn open_parking<S: Send + Sync + 'static>(&self, state: T, parked: S) {
+        assert!(
+            self.index == slot::OPEN,
+            "Instance::open_parking: the state is installed in `open` only"
+        );
+        let mut map: Parked = HashMap::new();
+        if !self.ticket.is_none() {
+            map.insert(self.ticket, Box::new(parked));
+        }
+        self.opened.set(Some(Box::new(Tagged {
+            head: Head {
+                tag: TypeId::of::<T>(),
+                parked: Mutex::new(map),
                 kept: Kept::default(),
             },
             state,
@@ -351,14 +377,21 @@ impl<S: SafeSlot> Entry for Safe<S> {
         };
         // What the body reports is built here and handed to the instance when it returns.
         let reporting: Reporting = Cell::new(None);
+        // What its answer leased or published from, checked when it returns.
+        let holders: Holders = RefCell::new(Vec::new());
         let written = match parked {
-            Some(h) => Out::kept(&mut *out, &h.kept, &reporting),
+            Some(h) => Out::kept(&mut *out, &h.kept, &reporting, &holders),
             // SAFETY: `input` is the trampoline's copy of the host's `in` for slot `index`.
-            None => Out::lent(&mut *out, unsafe { lent_reason(index, input) }),
+            None => Out::lent(&mut *out, unsafe { lent_reason(index, input) }, &holders),
         };
         // SAFETY: `input` is the trampoline's copy of the host's `in`, whose every pointer is
         // valid for the call (`Entry::enter`'s contract), and it lives until this returns.
-        let answered = S::call(handle, unsafe { Lent::new(input) }, written);
+        let mut answered = S::call(handle, unsafe { Lent::new(input) }, written);
+        if !holders_live(&holders) {
+            // The answer names memory a lease table or published generations held, and that
+            // table went with the body (one it made for itself): the host must read none of it.
+            answered = Outcome::Fault;
+        }
         let reported = reporting.take();
         let kept_report = reported.is_some();
         if let (Some(h), Some(r)) = (parked, reported) {
@@ -370,9 +403,18 @@ impl<S: SafeSlot> Entry for Safe<S> {
                 h.forget(call.ticket);
             }
             if index == slot::CANCEL {
-                if let Some(c) = (input as &dyn Any).downcast_ref::<CancelIn>() {
+                let any = input as &dyn Any;
+                let cancelled = any
+                    .downcast_ref::<CancelIn>()
+                    .map(|c| c.ticket)
+                    .or_else(|| {
+                        // A kind that widens `cancel` embeds the lifecycle's `in` first.
+                        any.downcast_ref::<crate::abi::plane::PlaneCancelIn>()
+                            .map(|c| c.cancel.ticket)
+                    });
+                if let Some(ticket) = cancelled {
                     // `cancel`: the cancelled ticket's op will not resume either.
-                    h.forget(c.ticket);
+                    h.forget(ticket);
                 }
             }
         }
@@ -381,8 +423,27 @@ impl<S: SafeSlot> Entry for Safe<S> {
                 // Every kind's `open` `out` leads with the lifecycle's `OpenOut` (`KindOps`).
                 debug_assert!(size_of::<S::Out>() >= size_of::<OpenOut>());
                 let minted = match (answered, opened.take()) {
-                    (Outcome::Ready, Some(b)) => Box::into_raw(b).cast::<c_void>(),
-                    _ => std::ptr::null_mut(),
+                    // A FRESH open installed a box: hand it to the host when the open is READY, or
+                    // RETAIN it across a PENDING so the open's RESUME finds its half-open state on
+                    // the same box (plugin-owned memory, no module static). Any other outcome drops
+                    // the box (the `take` above).
+                    (Outcome::Ready | Outcome::Pending, Some(b)) => {
+                        Box::into_raw(b).cast::<c_void>()
+                    }
+                    (_, Some(_)) => std::ptr::null_mut(),
+                    // A RESUME of a pended open installs no new box; the box IS the instance the
+                    // host kept across the pend. Keep it while the open runs (READY completes it,
+                    // PENDING pends again). A failure frees it: an open never leaves a half-open
+                    // box behind, and no `close` will come for an instance that never opened.
+                    (Outcome::Ready | Outcome::Pending, None) => instance,
+                    (_, None) if !instance.is_null() => {
+                        // SAFETY: the SDK's `Tagged<S::State>` box this open minted on its earlier
+                        // PENDING; the open failed, so the host holds no instance and will not pass
+                        // it again (the call contract).
+                        drop(unsafe { Box::from_raw(instance.cast::<Tagged<S::State>>()) });
+                        std::ptr::null_mut()
+                    }
+                    (_, None) => std::ptr::null_mut(),
                 };
                 // SAFETY: at OPEN, `S::Out` is the kind's `open` `out`, which leads with an
                 // `OpenOut` (`KindOps`'s contract); `out` is a live `&mut` to it.
@@ -406,7 +467,12 @@ impl<S: SafeSlot> Entry for Safe<S> {
                 }
                 // SAFETY: the SDK's `Tagged<S::State>` box from `open`; `close` answered READY with
                 // no other op in flight, so the host never passes it again (the call contract).
-                drop(unsafe { Box::from_raw(instance.cast::<Tagged<S::State>>()) });
+                let gone = unsafe { Box::from_raw(instance.cast::<Tagged<S::State>>()) };
+                // The state's `Drop` is plugin code and may panic. The box is deallocated during
+                // that unwind all the same, so the answer stays READY: a FAULT here would tell the
+                // host the instance is still live while its memory is gone. The panic dies at the
+                // boundary's one reviewed catch ([`crate::abi::sdk::boundary::caught`]).
+                let _ = crate::abi::sdk::boundary::caught(move || drop(gone));
             }
             _ => {}
         }

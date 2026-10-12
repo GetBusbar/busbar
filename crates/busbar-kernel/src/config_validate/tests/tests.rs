@@ -32,7 +32,7 @@ fn make_root_cfg(
         rate_card: None,
         per_request_fee: 0,
         plane_fees: Default::default(),
-        store: None,
+        store: Some(crate::test_support::stand_in_store()),
         secrets: std::collections::BTreeMap::new(),
         global_hooks: Vec::new(),
         blocked_metadata_hosts: Vec::new(),
@@ -127,6 +127,7 @@ fn make_model_unbounded(provider: &str) -> config::ModelCfg {
     config::ModelCfg {
         reasoning: None,
         prompt_caching: None,
+        protocol: None,
         max_requests: -1,
         provider: provider.into(),
         max_concurrent: None,
@@ -487,6 +488,29 @@ fn test_validate_token_url_ssrf_and_scheme() {
             "{scheme}:// public token_url must be rejected; got: {errs:?}"
         );
     }
+    // The 1.5.5 rule (v1.5.5 config_validate/mod.rs:436-476): plaintext http is permitted for a
+    // PRIVATE or loopback token endpoint, not loopback alone (spec l.609, ARCHITECT D1 MINT CLASS (B)).
+    for tu in [
+        "http://10.0.0.5/oauth2/token",
+        "http://172.16.4.2/token",
+        "http://192.168.1.20:8080/token",
+        "http://127.0.0.1:9000/token",
+        "http://[::1]:9000/token",
+        "http://localhost:9000/token",
+    ] {
+        let errs = build(tu);
+        assert!(
+            !errs.iter().any(|e| e.contains("token_url")),
+            "http token_url to a private/loopback host must be accepted, as 1.5.5 did ({tu}); got: {errs:?}"
+        );
+    }
+    // A public http token_url is refused in 1.5.5's words, byte for byte.
+    let errs = build("http://example.com/token");
+    let want = "provider 'entra' token_url must use https for a public host (got 'http://example.com/token'); it carries the client secret, so plaintext http is permitted only for a private/loopback token endpoint";
+    assert!(
+        errs.iter().any(|e| e == want),
+        "public http token_url must be refused with the 1.5.5 text; got: {errs:?}"
+    );
     // SSRF: an https token_url pointed at cloud metadata is blocked (would leak the client secret).
     for host in ["169.254.169.254", "metadata.google.internal"] {
         let errs = build(&format!("https://{host}/token"));
@@ -501,6 +525,38 @@ fn test_validate_token_url_ssrf_and_scheme() {
     assert!(
         ws.iter().any(|e| e.contains("token_url")),
         "whitespace-only token_url must be rejected as missing; got: {ws:?}"
+    );
+}
+
+#[test]
+fn vet_token_uri_takes_http_to_a_private_host_and_refuses_a_public_one() {
+    // The service account's token_uri gets the same 1.5.5 rule as token_url
+    // (v1.5.5 egress_auth/jwt_bearer.rs:120-149): http only for a private or loopback endpoint.
+    for uri in [
+        "http://10.0.0.5/token",
+        "http://192.168.1.20/token",
+        "http://127.0.0.1:9000/token",
+        "http://[::1]/token",
+        "https://oauth2.googleapis.com/token",
+    ] {
+        assert_eq!(
+            vet_token_uri(uri, &MetadataPosture::default()),
+            Ok(()),
+            "token_uri {uri} must be accepted, as 1.5.5 did"
+        );
+    }
+    let uri = "http://oauth2.example.com/token";
+    assert_eq!(
+        vet_token_uri(uri, &MetadataPosture::default()),
+        Err(format!(
+            "service-account token_uri must use https for a public host (got '{uri}'); it receives the signed JWT assertion, so plaintext http is permitted only for a private/loopback endpoint"
+        )),
+        "a public http token_uri must be refused in 1.5.5's words"
+    );
+    let imds = vet_token_uri("http://169.254.169.254/token", &MetadataPosture::default());
+    assert!(
+        imds.as_ref().is_err_and(|e| e.contains("cloud-metadata")),
+        "a token_uri at the metadata host must be refused as cloud-metadata; got: {imds:?}"
     );
 }
 
@@ -786,6 +842,45 @@ fn test_validate_rejects_non_https_base_url() {
             .any(|e| e.contains("blocked cloud-metadata host") && e.contains("169.254.169.254")),
         "expected a metadata-host error for the http IMDS literal; got: {errs:?}"
     );
+}
+
+/// E1 PARITY: `--validate` accepts a provider at a private or loopback LITERAL, as 1.5.5 did. The
+/// destination guard refuses such a dial at the dial (the connector's name arm, unless
+/// `advanced.allow_destinations` names it); the configuration check does not move with it.
+#[test]
+fn test_validate_accepts_a_private_or_loopback_literal_base_url() {
+    for url in [
+        "http://127.0.0.1:11434",
+        "http://10.1.2.3/",
+        "http://192.168.1.5:8080/v1",
+        "http://[::1]:8080",
+        "https://172.16.0.9",
+    ] {
+        let mut providers = HashMap::new();
+        providers.insert("p".to_string(), make_provider(proto_a(), url, "API_KEY"));
+        let cfg = make_root_cfg(providers, HashMap::new(), HashMap::new());
+        assert!(
+            validate(&cfg).is_ok(),
+            "a private or loopback literal base_url validates, as in 1.5.5: {url}"
+        );
+    }
+}
+
+/// E1 PARITY: the metadata denylist DISPLAYS 1.5.5's eleven entries (`--print-metadata-blocklist`
+/// and the boot line's count), and the guard ENFORCES twelve: the EC2 task-metadata endpoint
+/// `fd00:ec2::23` is refused beside the eleven, though it is not listed.
+#[test]
+fn test_the_metadata_denylist_displays_eleven_and_enforces_twelve() {
+    let shown = crate::config_validate::metadata_denylist_entries();
+    assert_eq!(shown.len(), 11, "1.5.5's displayed list: {shown:?}");
+    assert!(!shown.iter().any(|e| e == "fd00:ec2::23"), "{shown:?}");
+    let task: std::net::IpAddr = "fd00:ec2::23".parse().expect("an address");
+    assert!(
+        busbar_contract::net::ip_is_cloud_metadata(&task),
+        "the twelfth entry is enforced"
+    );
+    let imds: std::net::IpAddr = "fd00:ec2::254".parse().expect("an address");
+    assert!(busbar_contract::net::ip_is_cloud_metadata(&imds));
 }
 
 #[test]
@@ -4502,8 +4597,8 @@ fn test_validate_rejects_negative_per_request_fee() {
     }
 }
 
-/// An empty `store.module` names no store at all - rejected; the compiled-in `memory` module and
-/// an ABSENT store block (ephemeral RAM store) both pass.
+/// An empty `store.module` names no store at all - rejected; the compiled-in `memory` module passes.
+/// (An ABSENT store block is refused too: `store_required_tests.rs`, Q-STORE = (B).)
 #[test]
 fn test_validate_rejects_empty_store_module() {
     let mut cfg = cost_cfg(&["m"]);
@@ -4518,15 +4613,8 @@ fn test_validate_rejects_empty_store_module() {
         "expected the empty-store-module error; got: {errs:?}"
     );
 
-    let mut cfg = cost_cfg(&["m"]);
-    cfg.store = Some(config::StoreCfg::default()); // module: memory
+    let cfg = cost_cfg(&["m"]); // store: {module: memory}
     assert!(validate(&cfg).is_ok(), "store.module: memory must validate");
-
-    let cfg = cost_cfg(&["m"]); // store: None (block absent)
-    assert!(
-        validate(&cfg).is_ok(),
-        "an absent store block must validate"
-    );
 }
 
 // ---- groups: the ONE limit tree - parents exist, acyclic, depth <= 8, sane amounts ----
@@ -5658,7 +5746,7 @@ fn the_empty_set_the_validator_refuses_is_the_one_an_empty_registry_produces() {
 
 // ══ 1.6.0 UNIFIED `pools:` — GLOBAL-NAME VALIDATOR ═══════════════════════════════════════════════
 //
-// The three cross-plane collision tests MOVED to `tests/config_validate_cross_plane.rs` — each
+// The three cross-plane collision tests MOVED to `crates/busbar/tests/config_validate_cross_plane.rs` — each
 // builds a REAL `busbar_mcp::mcp::config::ToolsCfg`, which only type-checks against core's own
 // `RootCfg`/`validate_unified_pool_names` (widened to `pub` for the move) with ONE `busbar_kernel`
 // in the graph. See that file's header for the full rationale.
@@ -6005,6 +6093,7 @@ static CLASS_PLANE: crate::plane::registry::PlaneDecl = crate::plane::registry::
         required_config_sections: &[],
         trust_keys: &[],
         served_op_classes: &[],
+        caller_credential_refusal: None,
     },
     wire_format_names: || &[],
     claims: |_| Vec::new(),
@@ -6143,6 +6232,59 @@ fn a_non_fallback_planes_card_is_held_to_the_same_rule() {
     assert!(validate(&cfg).is_ok(), "no card = billing off, no refusal");
 }
 
+/// A plane served through its DOOR: its fee unit rides among its billable classes (the door's
+/// tail holds `fee_units ⊆ billable_classes`), exactly as `plane::door::fold` builds the row.
+static DOOR_FEE_PLANE: crate::plane::registry::PlaneDecl = crate::plane::registry::PlaneDecl {
+    declaration: crate::plane::registry::PlaneDeclaration {
+        key: "door-fee-plane",
+        billable_classes: &[
+            bc("calls", "count"),
+            bc("bytes", "byte"),
+            bc(busbar_contract::plane::PER_REQUEST, "count"),
+        ],
+        fee_units: &[busbar_contract::plane::PER_REQUEST],
+        ..CLASS_PLANE.declaration
+    },
+    ..CLASS_PLANE
+};
+
+/// SEAM-L(m), FEE-UNIT VALIDATION PARITY: a door plane's fee unit is no priced class. The card
+/// that priced the plane's lane before it was served through its door (its declared classes, no
+/// fee unit) boots; a class it leaves unpriced still refuses (#42), the fee unit never named among
+/// them; and a card naming the fee unit as a class refuses as it did, a fee unit being no class a
+/// card prices. RED: the fee unit was demanded of every card, so the predev card refused.
+#[test]
+fn a_door_planes_fee_unit_is_no_class_its_card_must_price() {
+    let _iso = busbar_kernel::plane::registry::TestRegistryIsolation::seeded(&[&DOOR_FEE_PLANE]);
+    let mut cfg = cost_cfg(&["m"]);
+    cfg.rate_card = Some(plane_card(
+        "door-fee-plane",
+        "srv_read",
+        "units: { calls: 2, bytes: 3 }",
+    ));
+    assert!(validate(&cfg).is_ok(), "{:?}", validate(&cfg));
+
+    cfg.rate_card = Some(plane_card(
+        "door-fee-plane",
+        "srv_read",
+        "units: { calls: 2 }",
+    ));
+    let errs = validate(&cfg).expect_err("bytes is declared and unpriced");
+    let want = "tools.rate_card does not configure billable unit(s) bytes declared by this plane; \
+                add them (0 to make them free)";
+    assert!(errs.iter().any(|e| e == want), "{errs:?}");
+
+    cfg.rate_card = Some(plane_card(
+        "door-fee-plane",
+        "srv_read",
+        "units: { calls: 2, bytes: 3, per_request: 1 }",
+    ));
+    let errs = validate(&cfg).expect_err("a fee unit is no class a card prices");
+    let want = "tools.rate_card configures unit(s) per_request not declared by this plane \
+                (declared: calls, bytes); remove them or fix the name";
+    assert!(errs.iter().any(|e| e == want), "{errs:?}");
+}
+
 /// A plane the kernel was never compiled with — its declaration built at run time, the way a plane
 /// registered from outside core arrives — has ITS declared classes honoured: the kernel reads the
 /// list off the declaration and names what it says.
@@ -6249,4 +6391,40 @@ fn a_fee_the_plane_does_not_count_fails_naming_it_and_the_counted_list() {
 
     cfg.plane_fees = fees("session-plane", 0, 40);
     assert!(validate(&cfg).is_ok(), "{:?}", validate(&cfg));
+}
+
+/// A FEE UNIT IS PRICED BY `fees:`, NEVER BY THE CARD (ARCHITECT Q-L5-FEE (A); Q17-5 (c)): a plane
+/// that declares `per_session` both as its fee unit and as a billable class (so it can report it)
+/// owes no card price for it, and a card that prices it is refused as pricing an undeclared unit:
+/// the fee unit is never ledgered, so a card price for it could only mislead.
+#[test]
+fn a_fee_unit_declared_as_a_class_is_neither_owed_nor_priced_by_the_card() {
+    use busbar_kernel_ledger::cost::PER_SESSION;
+    const CLASSES: &[crate::plane::registry::BillableClass] =
+        &[bc("calls", "count"), bc(PER_SESSION, "count")];
+    let session: &'static crate::plane::registry::PlaneDecl =
+        Box::leak(Box::new(crate::plane::registry::PlaneDecl {
+            declaration: crate::plane::registry::PlaneDeclaration {
+                key: "session-plane",
+                config_section: "live",
+                billable_classes: CLASSES,
+                fee_units: &[PER_SESSION],
+                ..CLASS_PLANE.declaration
+            },
+            ..CLASS_PLANE
+        }));
+    let _iso = busbar_kernel::plane::registry::TestRegistryIsolation::seeded(&[session]);
+    let mut cfg = cost_cfg(&["m"]);
+    cfg.rate_card = Some(plane_card("session-plane", "a", "units: { calls: 1 }"));
+    assert!(validate(&cfg).is_ok(), "{:?}", validate(&cfg));
+
+    cfg.rate_card = Some(plane_card(
+        "session-plane",
+        "a",
+        "units: { calls: 1, per_session: 5 }",
+    ));
+    let errs = validate(&cfg).expect_err("a card does not price the fee unit");
+    let want = "live.rate_card configures unit(s) per_session not declared by this plane \
+                (declared: calls); remove them or fix the name";
+    assert!(errs.iter().any(|e| e == want), "{errs:?}");
 }

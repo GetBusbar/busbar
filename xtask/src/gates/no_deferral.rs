@@ -73,9 +73,12 @@ pub const ROW_UNWAIVED: &str = "no-deferral:unwaived";
 pub const ROW_STALE_WAIVER: &str = "no-deferral:stale-waiver";
 pub const ROW_STRICT_DONE: &str = "no-deferral:strict-done";
 
-/// The denominator floor, a `const` in the gate's own module with no environment override. The
-/// only way to lower one is a reviewable source edit.
-pub const DISCOVERY_FLOOR: usize = 50;
+/// The denominator floor, a `const` in the gate's own module with no environment override. It is
+/// pinned AT the measured count: discovery found 932 shipped source files on predev 6ca8584fc0 (it
+/// was 50, about 5% of the tree), and a drop below 932 is refused as UNPROVEN until a reviewed diff
+/// re-measures. The selftest plant cuts the scan set to one file under the floor and must go red.
+/// The only way to lower one is a reviewable source edit.
+pub const DISCOVERY_FLOOR: usize = 932;
 
 const WAIVERS: &str = "scripts/no-deferral.waivers";
 /// The plan every waiver's expiry is looked up in. It was `docs/design/1.6.0-TRACKER.md` until
@@ -375,6 +378,25 @@ fn discover(cx: &Ctx) -> Result<Vec<(String, String)>, String> {
     Ok(out)
 }
 
+/// How many files the one-short plant removes from a scan set of `discovered` files: enough to
+/// leave exactly `DISCOVERY_FLOOR - 1`, however far the tree has grown past the pin. A cut of one
+/// from the live count left the set at or above the floor on every tree that had grown past the
+/// pin, and the plant read GREEN in the #627 merge group.
+fn one_short_cut(discovered: usize) -> usize {
+    discovered.saturating_sub(DISCOVERY_FLOOR - 1)
+}
+
+/// THE ONE-SHORT PLANT: an overlay over `cx` that removes shipped source files until discovery
+/// finds one fewer than [`DISCOVERY_FLOOR`]. `None` when discovery cannot read the tree.
+pub fn one_short_of_floor(cx: &Ctx) -> Option<Overlay> {
+    let files = discover(cx).ok()?;
+    let mut ov = Overlay::new();
+    for (rel, _) in files.iter().rev().take(one_short_cut(files.len())) {
+        ov.remove(rel);
+    }
+    Some(ov)
+}
+
 // ── WAIVERS ──────────────────────────────────────────────────────────────────────────────────────
 
 /// Load the committed allowlist, refusing every shape a waiver must not have. A reason says why a
@@ -602,7 +624,15 @@ fn row_discovery_floor(found: Option<usize>, why: Option<&str>) -> Row {
         None => Row::pass(
             ROW_DISCOVERY_FLOOR,
             "discovery found a scan set worth drawing a verdict from",
-            format!("at or above the floor of {DISCOVERY_FLOOR} shipped source file(s)"),
+            match found {
+                Some(n) => format!(
+                    "{n} shipped source file(s) discovered, at or above the floor of \
+                     {DISCOVERY_FLOOR}"
+                ),
+                None => {
+                    format!("at or above the floor of {DISCOVERY_FLOOR} shipped source file(s)")
+                }
+            },
         ),
         Some(why) => Row::fail(
             ROW_DISCOVERY_FLOOR,
@@ -1083,6 +1113,24 @@ impl Gate for NoDeferralGate {
             ),
         }
 
+        // ── THE FLOOR BITES AT ITS OWN VALUE. The scan set is cut to exactly one file under
+        //    DISCOVERY_FLOOR, however many files the tree has gained since it was measured (a cut of
+        //    one from the live count passed on every tree that grew past the pin, so the case was red
+        //    only on the tree it was written against).
+        match one_short_of_floor(base) {
+            Some(ov) => report.push(prove_red(
+                base,
+                self,
+                "a scan set one file short of the floor is UNPROVEN, never a clean one",
+                &[ROW_DISCOVERY_FLOOR],
+                ov,
+                &["UNPROVEN, not PASS"],
+            )),
+            None => report.note_infra_failure(
+                "the one-file-short floor case could not be planted: discovery does not read the real tree",
+            ),
+        }
+
         if self.strict {
             // A NON-HOT WAIVER IS THE TRACKED DEBT. Planted as a real marker outside hot/ with a
             // well-formed waiver for it, so the over/under-count rows stay green and the only
@@ -1341,6 +1389,24 @@ fn decolour(line: &str) -> String {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod one_short_tests {
+    use super::{one_short_cut, DISCOVERY_FLOOR};
+
+    /// THE PLANT LANDS ONE UNDER THE FLOOR AT EVERY TREE SIZE, not only at the size it was written
+    /// against: a tree at the pin, one file past it, and one that has grown by hundreds.
+    #[test]
+    fn the_one_short_cut_leaves_one_file_under_the_floor_however_far_the_tree_grew() {
+        for discovered in [DISCOVERY_FLOOR, DISCOVERY_FLOOR + 1, DISCOVERY_FLOOR + 500] {
+            assert_eq!(
+                discovered - one_short_cut(discovered),
+                DISCOVERY_FLOOR - 1,
+                "a scan set of {discovered} must be cut to one under the floor of {DISCOVERY_FLOOR}"
+            );
+        }
+    }
 }
 
 #[cfg(test)]

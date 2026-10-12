@@ -20,11 +20,14 @@
 //! the requirement is a trust assumption rather than something the code enforces. The default local
 //! anchor is self-attestation and calling it anything else would be dishonest.
 //!
-//! ## Repeated anchor failures are themselves a fact
+//! ## Anchor failures are not counted here
 //!
 //! An anchor that has been failing for a week is a deployment whose tamper-evidence stopped a week
-//! ago, silently. [`AnchorState`] counts consecutive failures so that the count can be alarmed on
-//! and journaled rather than living in a log line nobody greps for.
+//! ago. This crate keeps no count of that: [`CheckpointAnchor::anchor`] answers each attempt, and
+//! what the caller does with a failure is the caller's. The one production sink is the
+//! [`SelfAttestingAnchor`], which cannot fail, and the root that calls it drops the answer; a
+//! rolled-back or diverging head is caught instead by `verify` comparing the anchored head with
+//! the checkpoint it measures from.
 
 use std::collections::BTreeMap;
 
@@ -60,22 +63,8 @@ impl Signature {
     }
 }
 
-/// Why a checkpoint could not be signed.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SignError {
-    /// The key this deployment signs with is not available.
-    KeyUnavailable(String),
-}
-
-impl std::fmt::Display for SignError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            SignError::KeyUnavailable(why) => write!(f, "the signing key is not available: {why}"),
-        }
-    }
-}
-
-impl std::error::Error for SignError {}
+/// Why a checkpoint could not be signed: the contract's, because a migration's error carries it.
+pub use busbar_contract::migration::SignError;
 
 /// Signs checkpoint bodies. Implemented by whatever holds the deployment's keys.
 pub trait CheckpointSecret {
@@ -167,8 +156,8 @@ impl std::error::Error for AnchorError {}
 ///
 /// **The requirement this trait cannot enforce.** An anchor sink that the node can rewrite proves
 /// nothing, and there is no way for an implementation to demonstrate to this crate that it is out
-/// of reach. So the requirement is stated, the default is labelled self-attestation, and
-/// [`AnchorState::self_attesting`] carries that label onward to whatever reports the node's health.
+/// of reach. So the requirement is stated, and the default is labelled self-attestation through
+/// [`CheckpointAnchor::is_self_attesting`].
 pub trait CheckpointAnchor {
     /// Put it there. An implementation should read back what it wrote and report a mismatch.
     fn anchor(&mut self, checkpoint: &Checkpoint) -> Result<(), AnchorError>;
@@ -188,24 +177,6 @@ pub struct AnchoredHead {
     pub checkpoint_seq: u64,
     /// The hash of its body.
     pub body_hash: [u8; 32],
-}
-
-/// How the anchoring is going.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct AnchorState {
-    /// How many anchor attempts have failed in a row.
-    pub consecutive_failures: u32,
-    /// Whether the sink is inside the node's own write authority.
-    pub self_attesting: bool,
-    /// The last head the sink reported.
-    pub head: Option<AnchoredHead>,
-}
-
-impl AnchorState {
-    /// Whether the failure count has reached the alarm threshold.
-    pub fn should_alarm(&self, threshold: u32) -> bool {
-        self.consecutive_failures >= threshold
-    }
 }
 
 /// One sealed checkpoint.
@@ -482,6 +453,19 @@ fn encode_body(
         push_text(&mut body, HISTORY_SEQ_FIELD);
         num(seq.get(), &mut body);
     }
+    // THE FEE COUNTS, under the digest like every other sealed figure. They were left out, so a
+    // sealed count could be edited and the seal still verified — and the count is half of what the
+    // reconciliation reads. Framed by name after everything else, and only when some row carries
+    // one, for the reason the history snapshot is: every body sealed with no fee count is the byte
+    // sequence it always was, and a body with them cannot be read as one without, because the name
+    // and the per-row counts are framed rather than run on. The counts follow the rows' own order.
+    if totals.values().any(|figures| figures.fee_count != 0) {
+        push_text(&mut body, FEE_COUNT_FIELD);
+        num(totals.len() as u64, &mut body);
+        for figures in totals.values() {
+            num(figures.fee_count, &mut body);
+        }
+    }
     body
 }
 
@@ -490,6 +474,10 @@ fn encode_body(
 /// Named rather than positional, because it is the first field that is sometimes absent, and a
 /// reader that told presence from length alone would be one totals row away from being wrong.
 const HISTORY_SEQ_FIELD: &str = "history_seq";
+
+/// The name the per-row fee counts are framed under in a checkpoint body, present exactly when a
+/// sealed row carries a fee count.
+const FEE_COUNT_FIELD: &str = "fee_count";
 
 fn push_text(body: &mut Vec<u8>, text: &str) {
     body.extend_from_slice(&(text.len() as u64).to_be_bytes());

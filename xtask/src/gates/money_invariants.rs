@@ -5,7 +5,7 @@
 //!
 //! This is the wave-W3.b proof (arm-gate-per-wave). DECISIONS #77 locks the money model; the
 //! read-time pricing VIEW (`cost/project.rs derive_spend_*`) and the class-keyed usage COUNTS
-//! (`usage/meter.rs`) already exist — what was missing were the GATES that keep the invariants from
+//! (`usage/series.rs`) already exist — what was missing were the GATES that keep the invariants from
 //! silently regressing. This gate holds three of #77's structural claims, each red-before-green.
 //!
 //! | row | the claim it holds (cited to #77) |

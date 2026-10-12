@@ -103,18 +103,22 @@ pub(crate) const TRUST_KEYS: &[TrustKeyDecl] = &[
             PinMechanismDecl {
                 token: "jws_issuer_key",
                 root: true,
+                peer_key: false,
             },
             PinMechanismDecl {
                 token: "cert_spki",
                 root: true,
+                peer_key: false,
             },
             PinMechanismDecl {
                 token: "mtls",
                 root: true,
+                peer_key: false,
             },
             PinMechanismDecl {
                 token: "unpinned",
                 root: false,
+                peer_key: false,
             },
         ],
     },

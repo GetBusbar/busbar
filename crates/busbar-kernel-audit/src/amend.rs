@@ -350,7 +350,7 @@ impl AmendChain {
     /// A derive is not a wire format: renaming a subject variant, or a future compiler rendering an
     /// enumeration differently, would move every sealed amendment hash, and an amendment is a
     /// correction to money, so a moved hash makes the correction read as tampered. Two fields rather
-    /// than one for the reason the record gives: a principal whose pseudonym happened to read as
+    /// than one for the reason the record gives: a principal whose identifier happened to read as
     /// "node" must not digest as a node.
     pub fn digest_of(amendment: &Amendment) -> String {
         let mut d = crate::digest::Digest::new(crate::digest::Framing::LengthPrefixed);
@@ -628,7 +628,75 @@ impl AmendJournal {
 
     /// Verify what is held: from the genesis while nothing has been released, and always to the
     /// chain's own head. Once the window has moved, the run is checked from its first held link.
+    ///
+    /// AND THE CORRECTIONS COPY, which is the one the money read uses: [`Self::counts_now`] reads
+    /// `corrections`, never the window, and a correction older than the window exists only there.
+    /// Each held correction must still hash to its own fields, sit at a position the chain sealed,
+    /// in ascending order, and — where the window still holds its position — be exactly the
+    /// amendment the window holds there; and every adjustment the window holds must be in the copy.
+    /// A copy edited in memory is reported here rather than priced.
+    ///
+    /// # Errors
+    ///
+    /// The held window does not verify, or the corrections copy disagrees with it or with itself.
+    /// `at_index` is one-based into the window for a window break and into the corrections copy for
+    /// a copy break.
     pub fn verify(&self) -> Result<(), crate::record::AuditBreak> {
+        self.verify_window()?;
+        self.verify_corrections()
+    }
+
+    /// The corrections copy, judged against itself, the chain and the held window.
+    fn verify_corrections(&self) -> Result<(), crate::record::AuditBreak> {
+        use crate::record::{AuditBreak, AuditBreakKind};
+        let first_held = self.recent.front().map_or(self.chain.next_seq(), |a| a.seq);
+        let held_at = |seq: u64| {
+            seq.checked_sub(first_held)
+                .and_then(|i| usize::try_from(i).ok())
+                .and_then(|i| self.recent.get(i))
+        };
+        let mut previous = 0u64;
+        for (i, correction) in self.corrections.iter().enumerate() {
+            let at_index = i + 1;
+            if correction.class() != AmendClass::Adjust
+                || AmendChain::digest_of(correction) != correction.hash
+            {
+                return Err(AuditBreak {
+                    at_index,
+                    kind: AuditBreakKind::DigestMismatch,
+                });
+            }
+            if correction.seq <= previous || correction.seq >= self.chain.next_seq() {
+                return Err(AuditBreak {
+                    at_index,
+                    kind: AuditBreakKind::SequenceMismatch {
+                        expected: previous.saturating_add(1),
+                        found: correction.seq,
+                    },
+                });
+            }
+            if correction.seq >= first_held && held_at(correction.seq) != Some(correction) {
+                return Err(AuditBreak {
+                    at_index,
+                    kind: AuditBreakKind::LinkMismatch,
+                });
+            }
+            previous = correction.seq;
+        }
+        let copied = |a: &Amendment| self.corrections.iter().any(|c| c.seq == a.seq);
+        if let Some(i) =
+            (self.recent.iter()).position(|a| a.class() == AmendClass::Adjust && !copied(a))
+        {
+            return Err(AuditBreak {
+                at_index: i + 1,
+                kind: AuditBreakKind::LinkMismatch,
+            });
+        }
+        Ok(())
+    }
+
+    /// The held window: linked, numbered, hashing to its own fields, and ending at the head.
+    fn verify_window(&self) -> Result<(), crate::record::AuditBreak> {
         let run: Vec<Amendment> = self.recent.iter().cloned().collect();
         if self.released == 0 {
             return self.chain.verify_to_head(&run);
@@ -864,8 +932,6 @@ pub fn node_corrections() -> Vec<Amendment> {
     node().corrections().to_vec()
 }
 
-/// The digest of an audit record, so an amendment can name the entry it amends without the caller
-/// reaching into the chain's internals.
-pub fn amends(record: &crate::record::AuditRecord) -> String {
-    record.hash.clone()
-}
+#[cfg(test)]
+#[path = "tests/amend_journal_tests.rs"]
+mod amend_journal_tests;

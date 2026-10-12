@@ -4,7 +4,7 @@
 //! CLIENT ID METADATA DOCUMENTS: the `client_id`-that-is-a-URL mechanism, served at the
 //! `Storage::get_client` seam.
 //!
-//! The `2026-07-28` MCP revision lists CIMD as the `SHOULD` among the three ways a client obtains
+//! The `2026-07-28` authorization revision lists CIMD as the `SHOULD` among the three ways a client obtains
 //! a `client_id`. The shape here is the one `oauth_as/mod.rs` records: a `client_id` that parses
 //! as an HTTPS URL and is absent from the store is FETCHED, validated (`client_id` equal to the
 //! URL it was fetched from, `redirect_uris` taken from the document and exact-matched by
@@ -22,13 +22,15 @@
 //! would turn an attacker-supplied URL into a 500 an attacker can mint, and would make the
 //! refusal distinguishable from "no such client", which is an oracle.
 //!
-//! ## The fetch is an SSRF surface by construction, and the guard is core's
+//! ## The fetch rides the root Connector, and the guard is the connector's
 //!
-//! The URL is attacker-supplied. [`GuardedFetch`] goes through [`crate::net_guard`]'s
-//! resolve-then-pin — the same unconditional cloud-metadata refusal and the same judged-answer
-//! pin as every other guarded fetch in the tree — with this path's OWN bounds: a client metadata
-//! document is a few kilobytes and the fetch is on an interactive authorization request, so
-//! 5 KB and 10 s, not the card fetch's 512 KB. No redirects: the document lives at the
+//! The URL is attacker-supplied. [`ConnectorFetch`] sends one GET through the deployment's ONE
+//! root Connector, over a need this crate declares there (outbound, `https`, the `open-web` egress
+//! class: public HTTPS only), so the connector's single destination guard judges, pins and dials
+//! the address exactly as it does for every other outbound connection in the process (THE DESIGN
+//! §5, "Destination guard"). This crate checks no destination of its own. What stays here is this
+//! path's OWN bounds: a client metadata document is a few kilobytes and the fetch is on an
+//! interactive authorization request, so 5 KB and 10 s. No redirects: the document lives at the
 //! `client_id` or it is not that client's document.
 //!
 //! ## The validator is busbar's own
@@ -53,7 +55,11 @@ use oauth_as::scope::ScopeSet;
 use oauth_as::store::{MemoryStorage, RevocationWindow, Storage, StorageError, WriteOutcome};
 use oauth_as::token::{IssuedToken, RefreshTokenRecord};
 
-use busbar_kernel::net_guard::{self, GuardPolicy};
+use busbar_contract::abi::host::conn::connector::{DIRECTION_OUTBOUND, EGRESS_OPEN_WEB};
+use busbar_contract::abi::mechanism::rendering::{ReadBlob, ReadNeed};
+use busbar_contract::conn::{ConnError, ConnId, NeedId, OpenDesc, PieceKind};
+
+use crate::Table;
 
 /// The body ceiling for one metadata document. A few kilobytes IS the document class; anything
 /// larger is either not a metadata document or an allocation the URL's owner chose the size of.
@@ -63,7 +69,7 @@ pub(crate) const MAX_DOCUMENT_BYTES: usize = 5 * 1024;
 /// slow document host must fail the one login rather than parking a handler for a minute.
 pub(crate) const FETCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
-/// THE FETCH, AS A SEAM. Production installs [`GuardedFetch`]; the flow tests install a stub, so
+/// THE FETCH, AS A SEAM. Production installs [`ConnectorFetch`]; the flow tests install a stub, so
 /// the end-to-end proof drives the real authorize/consent/token wire without a second listener
 /// standing in for "the public internet".
 pub(crate) trait CimdFetch: Send + Sync {
@@ -76,124 +82,166 @@ pub(crate) trait CimdFetch: Send + Sync {
     ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>, String>> + Send + 'a>>;
 }
 
-/// THE PRODUCTION FETCH: resolve-then-pin through [`crate::net_guard`], then one GET to the
-/// pinned address.
-#[derive(Default)]
-pub(crate) struct GuardedFetch;
+/// The one need this crate declares on the root Connector: the document fetch's.
+pub(crate) const DOCUMENT_NEED: NeedId = NeedId(0);
 
-/// This fetch's knobs. Fail-closed in every direction: public HTTPS only, no redirects, a small
-/// body and a short clock. There is deliberately no `allow_private` here — a CIMD `client_id` is a
-/// stranger's URL by definition, so there is no operator intent for a knob to carry.
-fn fetch_policy() -> GuardPolicy {
-    GuardPolicy {
-        allow_private: false,
-        allow_plaintext: false,
-        max_redirects: 0,
-        max_body_bytes: MAX_DOCUMENT_BYTES,
-        timeout: FETCH_TIMEOUT,
+/// THE DOCUMENT FETCH'S NEED, as the connector holds it: outbound, over `https`, in the `open-web`
+/// egress class (THE DESIGN §5: a destination from request data, public HTTPS only). The target is
+/// the plugin's own per open (no `target_from`): a CIMD `client_id` is a stranger's URL by
+/// definition, so there is no operator setting for it to come from, and no auth rides it.
+pub(crate) fn document_need() -> ReadNeed {
+    ReadNeed {
+        direction: DIRECTION_OUTBOUND,
+        egress_class: EGRESS_OPEN_WEB,
+        transport: "https".to_string(),
+        auth: String::new(),
+        target_from: String::new(),
+        trust_from: String::new(),
+        details: ReadBlob {
+            fmt: 0,
+            flags: 0,
+            bytes: Vec::new(),
+        },
+        timeout_ms: u64::try_from(FETCH_TIMEOUT.as_millis()).unwrap_or(u64::MAX),
     }
 }
 
-impl CimdFetch for GuardedFetch {
+/// THE PRODUCTION FETCH: one GET over the document need on the root Connector, whose destination
+/// guard judges, pins and dials the address. `table` reaches the connection table the composition
+/// root hands this crate ([`crate::Connections`]); it is read at fetch time, never at build, so a
+/// plane built before the connector answers nothing it could not stand behind.
+pub(crate) struct ConnectorFetch {
+    pub(crate) table: fn() -> Option<Table>,
+}
+
+/// The fetch of a server built with no connection table ([`crate::NoConnections`]): every document
+/// fetch fails closed, so every metadata-document client is unknown.
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) fn unconnected() -> Arc<dyn CimdFetch> {
+    Arc::new(ConnectorFetch {
+        table: <crate::NoConnections as crate::Connections>::table,
+    })
+}
+
+/// Closes the exchange's connection however the fetch ends, so a refused, failed or oversized
+/// document never leaves a connection held on the table.
+struct Held<'a> {
+    table: &'a Table,
+    conn: ConnId,
+}
+
+impl Drop for Held<'_> {
+    fn drop(&mut self) {
+        let _ = self.table.conns.close(self.table.owner, self.conn);
+    }
+}
+
+impl CimdFetch for ConnectorFetch {
     fn fetch<'a>(
         &'a self,
         url: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>, String>> + Send + 'a>> {
         Box::pin(async move {
-            let policy = fetch_policy();
-            let (https, host, port, _path) =
-                net_guard::split_url(url).map_err(|e| e.to_string())?;
-            net_guard::judge_scheme(url, https, policy).map_err(|e| e.to_string())?;
-            // THE GUARD: structural name refusals, EXACTLY ONE resolution, every answered address
-            // judged, then the pin. All of it core's, including the ordering that keeps the
-            // cloud-metadata arm ahead of everything a knob could say.
-            let pin =
-                net_guard::resolve_and_pin(&host, port, https, &net_guard::SystemResolver, policy)
-                    .map_err(|e| e.to_string())?;
-
-            // THE PINNED ENGINE CLIENT (`EngineSpec::pinned`): the pin IS the resolver — the
-            // socket goes to the address the guard judged while the `Host` header, TLS SNI and
-            // the certificate's name check all stay on the name, and every OTHER name refuses
-            // with the one shared doctrine text. This deletes the fetch's private copy of the
-            // refuse-second-lookup resolver — the third copy of that security control in the
-            // tree, which is exactly the divergence-by-duplication failure mode `net_guard`'s
-            // header warns about. Redirect non-following is structural in hyper; the 3xx is
-            // still surfaced to `refuse_redirect` below so the refusal keeps its own wording.
-            let client = busbar_kernel::egress::engine::build_client(
-                &busbar_kernel::egress::engine::EngineSpec::pinned(
-                    Arc::from(host.as_str()),
-                    pin.socket_addr().ip(),
-                    None,
-                    Vec::new(),
-                ),
-            )
-            .map_err(|e| format!("building the fetch client failed: {e}"))?;
-
-            let uri: http::Uri = url
-                .parse()
-                .map_err(|e| format!("`{url}` does not parse as a URI: {e}"))?;
-            let request = busbar_kernel::egress::engine::request(
-                http::Method::GET,
-                uri,
-                http::HeaderMap::new(),
-                bytes::Bytes::new(),
-            );
-            // ONE deadline for the whole exchange, exactly the client-level total the retired
-            // reqwest builder carried: send to head, then every body chunk, under one instant.
-            let deadline = tokio::time::Instant::now() + policy.timeout;
-            let resp = busbar_kernel::egress::engine::send_bounded(&client, request, deadline)
-                .await
-                .map_err(|e| format!("fetching `{url}` failed: {}", e.into_cause()))?;
-            let status = resp.status();
-            net_guard::refuse_redirect(
-                status.as_u16(),
-                resp.headers()
-                    .get(http::header::LOCATION)
-                    .and_then(|v| v.to_str().ok()),
-            )
-            .map_err(|e| e.to_string())?;
-            if !status.is_success() {
-                return Err(format!("`{url}` answered HTTP {status}"));
+            let table = (self.table)()
+                .ok_or_else(|| "no connection table is installed for the fetch".to_string())?;
+            let failed = |e: ConnError| format!("fetching `{url}` failed: {e}");
+            // THE NEED, declared once on the table and read back after: a table that will not
+            // carry it (no transport serves `https`) refuses here, and the client is unknown.
+            if table.declared.declared(table.owner, DOCUMENT_NEED) != Some(Ok(())) {
+                table
+                    .declared
+                    .declare(table.owner, DOCUMENT_NEED, &document_need(), None, None)
+                    .map_err(failed)?;
             }
+            let deadline = tokio::time::Instant::now() + FETCH_TIMEOUT;
+            // The request's head words: the method, and the path and query the framer writes,
+            // read by the one shared URL reader (a URL with no path asks for `/`).
+            let path = busbar_contract::net::parse_url(url)
+                .map_err(|e| format!("`{url}` does not read as a URL: {e}"))?
+                .path;
+            let conn = table
+                .conns
+                .open(
+                    table.owner,
+                    DOCUMENT_NEED,
+                    &OpenDesc {
+                        target: url,
+                        timeout_ms: u64::try_from(FETCH_TIMEOUT.as_millis()).unwrap_or(u64::MAX),
+                        method: b"GET",
+                        head_target: path.as_bytes(),
+                        ..OpenDesc::default()
+                    },
+                )
+                .map_err(failed)?;
+            let held = Held {
+                table: &table,
+                conn,
+            };
+            read_document(&held, url, deadline).await
+        })
+    }
+}
 
-            // A CAPPED READ, not a read-then-measure: the ceiling is enforced while the bytes
-            // arrive, so an oversized document costs the cap and not itself — and the deadline
-            // keeps ticking through it.
-            use http_body_util::BodyExt;
-            let mut frames = resp.into_body();
-            let mut body: Vec<u8> = Vec::new();
-            loop {
-                let frame = tokio::time::timeout_at(deadline, frames.frame())
-                    .await
-                    .map_err(|_| {
-                        format!(
-                            "reading `{url}` failed: {}",
-                            busbar_kernel::egress::engine::HOP_DEADLINE_CAUSE
-                        )
-                    })?;
-                match frame {
-                    None => break,
-                    Some(Err(e)) => return Err(format!("reading `{url}` failed: {e}")),
-                    Some(Ok(frame)) => {
-                        let Ok(chunk) = frame.into_data() else {
-                            continue; // trailers carry no document bytes.
-                        };
-                        if body.len() + chunk.len() > policy.max_body_bytes {
-                            return Err(net_guard::refuse_oversized_body(
-                                url,
-                                body.len() + chunk.len(),
-                                policy,
-                            )
-                            .expect_err("over the cap by construction")
-                            .to_string());
+/// The far end's answer, read to its completion: its status judged on the head (a 3xx is refused:
+/// the document lives at the `client_id`; anything else that is not a success is refused), then
+/// the body under the document ceiling, enforced while the bytes arrive, so an oversized document
+/// costs the cap and not itself. ONE deadline for the whole exchange.
+async fn read_document(
+    held: &Held<'_>,
+    url: &str,
+    deadline: tokio::time::Instant,
+) -> Result<Vec<u8>, String> {
+    let (table, conn) = (held.table, held.conn);
+    let mut buf = vec![0u8; 16 * 1024];
+    let mut status: Option<u32> = None;
+    let mut body: Vec<u8> = Vec::new();
+    loop {
+        let piece = tokio::time::timeout_at(
+            deadline,
+            std::future::poll_fn(|cx| table.conns.poll_read(table.owner, conn, cx, &mut buf)),
+        )
+        .await
+        .map_err(|_| format!("fetching `{url}` failed: the fetch's deadline passed"))?
+        .map_err(|e| format!("fetching `{url}` failed: {e}"))?;
+        match piece.kind {
+            PieceKind::Completion => break,
+            // The head: its status, judged before any body byte is kept. A fields piece after the
+            // body is the far end's trailers, which carry no document bytes.
+            PieceKind::Fields | PieceKind::HookReply => {
+                if status.is_none() {
+                    if let Some(code) = piece.status_code {
+                        if (300..400).contains(&code) {
+                            return Err(format!(
+                                "`{url}` answered HTTP {code}, a redirect; a client metadata \
+                                 document is served at its client_id and is never followed \
+                                 elsewhere"
+                            ));
                         }
-                        body.extend_from_slice(&chunk);
+                        if !(200..300).contains(&code) {
+                            return Err(format!("`{url}` answered HTTP {code}"));
+                        }
+                        status = Some(code);
                     }
                 }
             }
-            Ok(body)
-        })
+            PieceKind::Body => {
+                if status.is_none() {
+                    return Err(format!("`{url}` answered no status before its body"));
+                }
+                if body.len() + piece.len > MAX_DOCUMENT_BYTES {
+                    return Err(format!(
+                        "`{url}` answered a body over the {MAX_DOCUMENT_BYTES}-byte document \
+                         ceiling"
+                    ));
+                }
+                body.extend_from_slice(&buf[..piece.len]);
+            }
+        }
     }
+    if status.is_none() {
+        return Err(format!("`{url}` answered no status"));
+    }
+    Ok(body)
 }
 
 /// Does this `client_id` name a metadata document at all? HTTPS, a parseable authority, and no
@@ -202,7 +250,7 @@ impl CimdFetch for GuardedFetch {
 fn is_cimd_client_id(client_id: &str) -> bool {
     client_id.starts_with("https://")
         && !client_id.contains('#')
-        && net_guard::split_url(client_id).is_ok()
+        && busbar_contract::net::parse_url(client_id).is_ok_and(|p| !p.userinfo)
 }
 
 /// VALIDATE THE DOCUMENT AND MATERIALISE THE CLIENT, under the operator's ceiling.
@@ -244,7 +292,8 @@ fn materialize(url: &str, body: &[u8], ceiling: &ScopeSet) -> Result<Client, Str
                 // names and the one the browser dials. The consent screen must name the host the
                 // code goes to, so a URI whose two readings differ is refused outright.
                 Some(s)
-                    if s.contains('\\') || net_guard::parse_url(s).is_ok_and(|p| p.userinfo) =>
+                    if s.contains('\\')
+                        || busbar_contract::net::parse_url(s).is_ok_and(|p| p.userinfo) =>
                 {
                     Err("redirect_uris entries carry no backslash and no userinfo".to_string())
                 }

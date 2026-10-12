@@ -2,122 +2,24 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE UNIVERSAL-NEEDS WITNESS (THE DESIGN: connections — "any plugin of any kind reaches the
-//! network only through a need"). A SECRET-kind fixture (`examples/need_dialler.rs`) that declares
-//! one outbound need is loaded DROPPED IN through the real admission, scan and open, and asked for its
-//! secret: it dials through the connection table, writes `ping` and returns what came back.
+//! network only through a need"): the connector drives a dropped-in transport framer door through the
+//! one dispatcher's crossing, every byte through the connection table.
 //!
-//! TODAY'S TRUTH, asserted explicitly: the secret kind's open hands an instance no connection table
-//! yet, so the instance holds none and the dial answers [`TODAY`] — the named refusal for an
-//! instance handed no table, decided per instance. The fixture
-//! has no other way to the network: its closure is held to that by the `dep-wall` gate.
-//!
-//! FLIPS TO GREEN (dial succeeds, bytes round-trip over a loopback echo) once the open/refresh
-//! host tables hand the instance its table: the dial reaches the connector, `TODAY` becomes
-//! success, the test starts a loopback echo as the target, and the assertion below becomes "the
-//! secret is the echoed `ping`".
+//! The JSON-lane secret fixture this file also drove (`examples/need_dialler.rs`, loaded through the
+//! secret kind's JSON lane) went with that lane (THE DESIGN §11.1, the P2 switch-over): a secret
+//! plugin reaches the network through its door's needs, on the connector its host hands the
+//! instance at open.
 
 use std::sync::OnceLock;
 
 use busbar_contract::conn::{ConnError, PieceKind};
-use busbar_plugin_loader::sign::{sign, Manifest, SigningKey, TrustPolicy};
+// The test support's own paths (`super::carrier`, `super::hostio`, ...) resolve at this crate root.
+#[allow(unused_imports)]
+use busbar_core_connector::{carrier, compose, framer, hostio};
 
-/// What the dial answers today. The one edit that flips this witness once instances are handed their table.
-const TODAY: ConnError = ConnError::Unarmed;
-
-const VERSION: &str = env!("CARGO_PKG_VERSION");
-
-/// Where the fixture dials: a loopback address nothing answers on, until the witness starts an echo.
-const TARGET: &str = "127.0.0.1:1";
-
-fn release() -> SigningKey {
-    SigningKey::from_bytes(&[23u8; 32])
-}
-
-/// The fixture's cdylib, as `cargo test` built it (under `examples/`). A missing artifact is a
-/// failure, never a skip: this test IS the witness.
-fn fixture() -> Vec<u8> {
-    let exe = std::env::current_exe().expect("the test binary has a path");
-    let profile = exe
-        .parent()
-        .and_then(|d| d.parent())
-        .expect("target/<profile>");
-    let file = busbar_plugin_loader::plugin_library_filename("need_dialler");
-    let found = [
-        profile.join("examples").join(&file),
-        profile.join("examples").join("deps").join(&file),
-    ]
-    .into_iter()
-    .find(|p| p.exists())
-    .unwrap_or_else(|| panic!("the need_dialler fixture ({file}) is not built"));
-    std::fs::read(found).expect("read the fixture")
-}
-
-/// The fixture, loaded dropped in: signed first-party into a fresh `plugins/` directory, scanned
-/// under a policy holding the release key, and opened as a secret module by name.
-fn dropped_in() -> &'static dyn busbar_contract::secret::SecretModule {
-    static MODULE: OnceLock<Box<dyn busbar_contract::secret::SecretModule>> = OnceLock::new();
-    MODULE
-        .get_or_init(|| {
-            let lib = fixture();
-            let dir = std::env::temp_dir().join(format!("universal-needs-{}", std::process::id()));
-            let _ = std::fs::remove_dir_all(&dir);
-            std::fs::create_dir_all(&dir).expect("create the plugins dir");
-            let manifest = Manifest {
-                name: "need-dialler".into(),
-                alias: "need-dialler".into(),
-                kind: "secret".into(),
-                version: VERSION.into(),
-                publisher: busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER.into(),
-                abi_version: busbar_contract::abi::cold::SECRET_ABI_VERSION,
-                sha256: String::new(),
-                signature: String::new(),
-                description: String::new(),
-                homepage: String::new(),
-                license: String::new(),
-                needs: Default::default(),
-                settings_schema: None,
-                schema_derived: false,
-                host: None,
-                declares: Default::default(),
-                statement: None,
-            };
-            let signed = sign(&release(), manifest, &lib);
-            let tarball = busbar_plugin_loader::tarball::package(&signed, "libneed.so", &lib)
-                .expect("package");
-            std::fs::write(dir.join("need-dialler.tar.gz"), tarball).expect("write the tarball");
-            let policy = TrustPolicy {
-                first_party_key: Some(release().verifying_key()),
-                binary_version: VERSION.into(),
-                first_party_floors: Default::default(),
-                first_party_high_water: Default::default(),
-                publishers: Default::default(),
-                allow_unsigned: false,
-                allow_third_party: false,
-                min_versions: Default::default(),
-            };
-            let registry = busbar_plugin_loader::scan_and_validate(&dir, &policy)
-                .unwrap_or_else(|e| panic!("the signed fixture scans: {e:?}"));
-            let module = registry
-                .open_secret("need-dialler", "{}")
-                .expect("the dropped-in door opens the fixture");
-            let _ = std::fs::remove_dir_all(&dir);
-            module
-        })
-        .as_ref()
-}
-
-/// THE WITNESS: a plugin of a kind that is not a transport reaches the network only through the
-/// connection table — and today, handed none, its dial is refused by name and reaches nothing.
-#[test]
-fn a_secret_plugin_reaches_the_network_only_through_a_need() {
-    let mut settings = serde_json::Map::new();
-    settings.insert("target".into(), serde_json::Value::String(TARGET.into()));
-    let err = match dropped_in().resolve(&settings) {
-        Ok(bytes) => panic!("the dial succeeded ({bytes:?}) — flip TODAY"),
-        Err(e) => e,
-    };
-    assert_eq!(err.message, TODAY.to_string(), "the host's named refusal");
-}
+#[allow(dead_code, unsafe_code, unused_imports)]
+#[path = "../src/tests/support.rs"]
+mod support;
 
 // ── the connector drives a dropped-in framer door ───────────────────────────────────────────────
 
@@ -212,22 +114,21 @@ fn socket_framer_door() -> Option<std::sync::Arc<dyn busbar_core_connector::fram
         .find_map(|p| open_door(&p))
 }
 
-/// The door a composing door is built over: of the libraries beside this test binary, one that
-/// frames the host's socket (an empty `composes_over`) and claims `layer`, found by kind and claim.
-fn layer_door(
-    layer: &'static str,
-) -> Option<std::sync::Arc<dyn busbar_core_connector::framer::FramerDoor>> {
-    libraries_beside_the_test()
-        .into_iter()
-        .filter_map(|p| open_door(&p))
-        .find(|d| d.facts().composes_over.is_empty() && d.facts().claims.contains(&layer))
-}
-
 /// `path` admitted and opened through the one dispatcher as a transport door; `None` when it is
 /// not one.
 fn open_door(
     path: &std::path::Path,
 ) -> Option<std::sync::Arc<dyn busbar_core_connector::framer::FramerDoor>> {
+    open_stated(path).map(|(door, _)| door)
+}
+
+/// [`open_door`], with what the door states (its claims' sessions and upgrades among it).
+fn open_stated(
+    path: &std::path::Path,
+) -> Option<(
+    std::sync::Arc<dyn busbar_core_connector::framer::FramerDoor>,
+    busbar_plugin_loader::dispatch::kinds::transport::TransportFacts,
+)> {
     use busbar_contract::abi::mechanism::lifecycle::{slot as life, OpenIn, OpenOut};
     use busbar_contract::abi::sdk::door::{blank_in, blank_out};
     use busbar_plugin_loader::dispatch::kinds::transport::{Transport, TransportFacts};
@@ -244,7 +145,8 @@ fn open_door(
         dispatcher: ONE
             .get_or_init(|| Dispatcher::new(DispatchConfig::default()))
             .adopter(),
-        conns: None,
+        // A transport door is a framer the connector drives: it declares no need.
+        conns: busbar_plugin_loader::dispatch::ConnTable::NoNeeds,
     };
     let plugin = load_dropped::<Transport>(path, &rendering, bind).ok()?;
     let stated = plugin.context::<TransportFacts>().cloned()?;
@@ -253,14 +155,27 @@ fn open_door(
         plugin.call(life::OPEN, &mut f).outcome,
         busbar_contract::abi::mechanism::call::Outcome::Ready
     );
-    Some(std::sync::Arc::new(DroppedDoor {
-        facts: busbar_core_connector::framer::DoorFacts {
-            name: plugin.name().to_owned(),
-            claims: stated.claims,
-            composes_over: stated.composes_over,
-        },
-        plugin,
-    }))
+    let facts = stated.clone();
+    Some((
+        std::sync::Arc::new(DroppedDoor {
+            facts: busbar_core_connector::framer::DoorFacts {
+                name: plugin.name().to_owned(),
+                claims: stated.claims,
+                role: stated.role,
+                composes_over: stated.composes_over,
+                ported: stated.ported,
+                status_rows: stated.status_rows,
+                duplex: stated
+                    .upgrades
+                    .iter()
+                    .chain(&stated.sessions)
+                    .copied()
+                    .collect(),
+            },
+            plugin,
+        }),
+        facts,
+    ))
 }
 
 /// THE CONNECTOR DRIVES THE DROPPED-IN HTTP DOOR AGAINST A REAL SERVER: the connector dials the
@@ -287,6 +202,7 @@ fn the_connector_drives_the_dropped_in_http_door_against_a_real_server() {
         .await;
         let mut c = Connection::dial(
             door,
+            &support::via(),
             Dial {
                 target: format!("{scheme}://{far}/v1/probe"),
                 tls: None,
@@ -300,6 +216,7 @@ fn the_connector_drives_the_dropped_in_http_door_against_a_real_server() {
                     Vec::new(),
                 )),
                 head_words: Default::default(),
+                anchors: None,
             },
         )
         .expect("the connector dials through the http door");
@@ -366,6 +283,7 @@ fn the_connector_drives_a_dropped_in_socket_framer_against_a_real_far_end() {
         });
         let mut c = Connection::dial(
             door,
+            &support::via(),
             Dial {
                 target: far,
                 tls: None,
@@ -373,6 +291,7 @@ fn the_connector_drives_a_dropped_in_socket_framer_against_a_real_far_end() {
                 open_timeout: std::time::Duration::from_secs(5),
                 opening: Some((Vec::new(), b"opening;".to_vec())),
                 head_words: Default::default(),
+                anchors: None,
             },
         )
         .expect("the connector dials through the door");
@@ -418,8 +337,10 @@ fn head_through_the_table(response: &'static str) -> (Pieces, Option<Vec<u8>>) {
 
     let door = composing_door();
     let scheme = door.facts().claims[0];
-    let layer = layer_door(door.facts().composes_over[0])
-        .expect("the door the composing door is built over is beside the test");
+    // The connector serves a CARRIER beside the framer (no transport names another; the carrier is
+    // the connector's choice): the test carrier over the process's host I/O.
+    let layer: std::sync::Arc<dyn busbar_core_connector::framer::FramerDoor> =
+        std::sync::Arc::new(support::TestDoor::identity("test-carrier"));
     let response = respond(scheme, response);
     // An IP literal is its own address: the judge the test needs, and no more.
     let judge = |dest: &str, _: u32, _: Judged| {
@@ -503,7 +424,11 @@ fn a_response_with_head_fields_yields_fields_then_body() {
         String::from_utf8_lossy(head),
         "x-b: 1\r\nx-b: 2\r\nx-session-id: s1\r\n"
     );
-    let body: Vec<u8> = got[1..]
+    // The answer whole is the exchange's completion (the stream's empty closing piece), and every
+    // piece between the head and it is Body.
+    let (last, between) = got[1..].split_last().expect("pieces after the head");
+    assert_eq!(last.0, PieceKind::Completion, "{got:?}");
+    let body: Vec<u8> = between
         .iter()
         .inspect(|(k, _, _)| assert_eq!(*k, PieceKind::Body, "{got:?}"))
         .flat_map(|(_, _, b)| b.clone())
@@ -576,18 +501,20 @@ fn the_head_words_reach_the_framer_byte_for_byte() {
     );
 }
 
-/// The dropped-in door that composes over ONE socket framer: the request/response framer the head
-/// tests drive, found among the libraries beside this test binary by what it states (one layer in
-/// its `composes_over`), as [`layer_door`] finds its layer. It is a pinned plugin repo's cdylib,
-/// which is in no graph of this workspace: the hop's `build:dlopen-cdylibs` builds it (and the
-/// framer door it composes over) from the pinned checkout busbar's root resolves, into this target dir
-/// (spec P5). A missing door is a failure, never a skip.
+/// THE REQUEST/RESPONSE FRAMER the head tests drive: of the libraries beside this test binary, the
+/// FRAMER (its stated role, ARCHITECT ruling Q128 U7) whose own claim carries no session (one request,
+/// one response), found by what it states and never by a name. It is a pinned plugin repo's cdylib,
+/// which is in no graph of this workspace: the hop's `build:dlopen-cdylibs` builds it from the pinned
+/// checkout busbar's root resolves, into this target dir (spec P5). A missing door is a failure,
+/// never a skip.
 fn composing_door() -> std::sync::Arc<dyn busbar_core_connector::framer::FramerDoor> {
+    use busbar_contract::abi::transport::ROLE_FRAMER;
     libraries_beside_the_test()
         .into_iter()
-        .filter_map(|p| open_door(&p))
-        .find(|d| d.facts().composes_over.len() == 1)
-        .expect("a door composing over one socket framer is built beside the test binary")
+        .filter_map(|p| open_stated(&p))
+        .find(|(d, s)| d.facts().role == ROLE_FRAMER && !s.sessions.contains(&d.facts().claims[0]))
+        .map(|(d, _)| d)
+        .expect("a request/response framer door is built beside the test binary")
 }
 
 /// A response template with its version written as the door's own scheme, upper-cased (`{V}`), so
@@ -625,7 +552,7 @@ async fn serve_once(
 /// RED: A FRAMED REQUEST'S HEAD WORDS GO OUT THROUGH THE CONNECTION TABLE. An open whose
 /// descriptor states head words sends them as the opening message's own request line, byte for
 /// byte; an open that names no target dials the need's declared one. The table reports the
-/// composing door's need framed and the socket framer's raw.
+/// composing door's need framed and the carrier's raw.
 #[test]
 fn an_opening_messages_head_words_reach_the_far_end_through_the_table() {
     use busbar_contract::conn::{Conns, DeclaredConns, InstanceId, NeedId, OpenDesc};
@@ -634,9 +561,12 @@ fn an_opening_messages_head_words_reach_the_far_end_through_the_table() {
 
     let door = composing_door();
     let scheme = door.facts().claims[0];
-    let plain = layer_door(door.facts().composes_over[0])
-        .expect("the door the composing door is built over is beside the test");
-    let raw = plain.facts().claims[0];
+    // The framer rides the connector's ADDRESS carrier (the first carrier in declared order whose
+    // claim serves a port): the test carrier over the process's host I/O. A need over the carrier's
+    // own claim is a raw stream.
+    let layer: std::sync::Arc<dyn busbar_core_connector::framer::FramerDoor> =
+        std::sync::Arc::new(support::TestDoor::identity("test-carrier"));
+    let raw = layer.facts().claims[0];
     let judge = |dest: &str, _: u32, _: Judged| {
         Some(dest.parse::<std::net::SocketAddr>().map_err(|_| 1_u64))
     };
@@ -647,7 +577,7 @@ fn an_opening_messages_head_words_reach_the_far_end_through_the_table() {
                 alpn: Vec::new(),
             },
             Entry {
-                door: plain,
+                door: layer,
                 alpn: Vec::new(),
             },
         ])
@@ -659,10 +589,7 @@ fn an_opening_messages_head_words_reach_the_far_end_through_the_table() {
     let owner = InstanceId(1);
     c.declare_over(owner, NeedId(1), raw)
         .expect("a served scheme declares");
-    assert!(
-        !c.framed(owner, NeedId(1)),
-        "the socket framer is a raw stream"
-    );
+    assert!(!c.framed(owner, NeedId(1)), "the carrier is a raw stream");
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -673,7 +600,7 @@ fn an_opening_messages_head_words_reach_the_far_end_through_the_table() {
         let declared = format!("{scheme}://{far}");
         c.declare_need_to(owner, NeedId(0), scheme, 0, &declared)
             .expect("a served scheme declares");
-        assert!(c.framed(owner, NeedId(0)), "the composing door is framed");
+        assert!(c.framed(owner, NeedId(0)), "the framer is framed");
         let fields: [(&str, &[u8]); 1] = [("x-a", b"1")];
         let desc = OpenDesc {
             fields: &fields,

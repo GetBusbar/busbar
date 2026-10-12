@@ -197,6 +197,9 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     // Anthropic Python SDK is Stainless-generated and emits `<Title>/Python <ver>`. RELEASE
     // OBLIGATION: re-verify each version against the latest published SDK before a release and bump
     // (the `test_egress_ua_versions_are_pinned_and_present` guard forces the change to be conscious).
+    // OWNER RULING Q10: the plane writes this on a translated route into this dialect, on a
+    // same-dialect route whose caller sent no user-agent (1.5.5's bytes), and on the
+    // kernel-originated health probe; a same-dialect caller's own user-agent replaces it.
     egress_user_agent: "Anthropic/Python 0.39.0",
     has_model_in_url: false,
     auth_failure_status_and_kind: (
@@ -747,6 +750,8 @@ const TOOL_USE_ID: &str = "tool_use_id";
 const USER_ID: &str = "user_id";
 /// Wire word `web_search_requests`.
 const WEB_SEARCH_REQUESTS: &str = "web_search_requests";
+/// `usage.server_tool_use.web_fetch_requests`.
+const WEB_FETCH_REQUESTS: &str = "web_fetch_requests";
 
 /// Anthropic citation `type` tag values (the `type` field on each citation object).
 const CITATION_TYPE_CHAR: &str = "char_location";

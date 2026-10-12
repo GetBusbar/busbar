@@ -5,8 +5,9 @@
 //! A-F4). The census is the pinned wire lock (`testing/llm-conformance/wire/responses.wire.json`):
 //! every integer member under `usage` has a declared class below, and the reader is driven on the
 //! buffered response, the streamed `response.completed` terminal and a truncated-body recovery to
-//! prove the class. `total_tokens` is OpenAI's sum, never a unit: a gap between it and the
-//! ledgered classes is reported on the usage identity note (with its WARN) and never ledgered.
+//! prove the class. `total_tokens` is OpenAI's sum, not a unit of its own: a gap between it and
+//! the ledgered classes is reported on the usage identity note (with its WARN), and a total ABOVE
+//! them ledgers the remainder as the open class `unitemized_tokens` (owner LEDGER-100).
 
 use super::*;
 use crate::codec::ir::StreamDecodeState;
@@ -19,7 +20,8 @@ enum Class {
     Ledgered(i64, i64, i64, i64),
     /// A slice inside the named ledgered count: attribution, never ledgered a second time.
     SliceOf(&'static str),
-    /// The provider's stated total: checked against the ledgered classes, never a unit.
+    /// The provider's stated total: checked against the ledgered classes; a total above them
+    /// ledgers the remainder as `unitemized_tokens`.
     StatedTotal,
 }
 
@@ -93,6 +95,14 @@ fn units(u: &busbar_contract::billing::TokenUsage) -> Units {
     )
 }
 
+/// The `unitemized_tokens` a usage ledgers: the stated total above its itemized classes (owner
+/// LEDGER-100), read through both ledger projections.
+fn unitemized(u: &busbar_contract::billing::TokenUsage) -> u64 {
+    let l = crate::codec::usage_census::ledgered(u);
+    let k = crate::codec::usage_census::slot(crate::codec::ir::open_class::UNITEMIZED_TOKENS_CLASS);
+    u64::try_from(l[k]).expect("a count")
+}
+
 fn note_of(u: &crate::codec::ir::IrUsage) -> Note {
     u.detail
         .usage_identity_note
@@ -102,7 +112,7 @@ fn note_of(u: &crate::codec::ir::IrUsage) -> Note {
 
 /// The ledgered units and the identity note on each read path: buffered, streamed, truncated
 /// (the truncated recovery carries units only).
-fn read_all_paths(usage: &serde_json::Value) -> [(Units, Note); 3] {
+fn read_all_paths(usage: &serde_json::Value) -> [(Units, Note, u64); 3] {
     let body = serde_json::json!({
         "id": "resp_census",
         "object": OBJ_RESPONSE,
@@ -136,16 +146,24 @@ fn read_all_paths(usage: &serde_json::Value) -> [(Units, Note); 3] {
         .recover_truncated_usage(body.to_string().as_bytes())
         .expect("the trailing usage is recoverable");
     [
-        (units(&buffered.to_token_usage()), note_of(&buffered)),
-        (units(&streamed.to_token_usage()), note_of(&streamed)),
-        (units(&recovered), None),
+        (
+            units(&buffered.to_token_usage()),
+            note_of(&buffered),
+            unitemized(&buffered.to_token_usage()),
+        ),
+        (
+            units(&streamed.to_token_usage()),
+            note_of(&streamed),
+            unitemized(&streamed.to_token_usage()),
+        ),
+        (units(&recovered), None, unitemized(&recovered)),
     ]
 }
 
 /// EVERY COUNT IN THE WIRE LOCK HAS A CLASS, AND THE READER HONOURS IT ON EVERY PATH. Reporting 7
 /// more of a ledgered count moves (input, cache read, cache write, output) by exactly its class; 7
-/// more of a slice moves nothing; 7 more on `total_tokens` alone ledgers nothing and is reported
-/// as a 7-unit gap. RED when the reader drops a ledgered count (a usage-table row removed),
+/// more of a slice moves nothing; 7 more on `total_tokens` alone moves no token class, is reported
+/// as a 7-unit gap and ledgers 7 `unitemized_tokens` (owner LEDGER-100). RED when the reader drops a ledgered count (a usage-table row removed),
 /// mis-classes one, stops checking the stated total, or the lock gains a count nobody classed.
 #[test]
 fn every_usage_count_in_the_wire_lock_is_ledgered_or_a_declared_slice() {
@@ -158,7 +176,7 @@ fn every_usage_count_in_the_wire_lock_is_ledgered_or_a_declared_slice() {
     let base =
         serde_json::json!({"input_tokens": 1000, "output_tokens": 100, "total_tokens": 1100});
     let before = read_all_paths(&base);
-    for (path, (_, note)) in ["buffered", "streamed", "truncated"].iter().zip(&before) {
+    for (path, (_, note, _)) in ["buffered", "streamed", "truncated"].iter().zip(&before) {
         assert_eq!(*note, None, "{path}: the base usage reconciles");
     }
     for field in &counts {
@@ -169,13 +187,13 @@ fn every_usage_count_in_the_wire_lock_is_ledgered_or_a_declared_slice() {
             .unwrap_or_else(|| panic!("`usage.{field}` is in the wire lock with no class"));
         let mut usage = base.clone();
         bump(&mut usage, field, 7);
-        let (moved, gap) = match class {
+        let (moved, gap, remainder) = match class {
             Class::Ledgered(di, dc, dw, dout) => {
                 // The stated total moves by what the count adds to the ledgered classes, so the
                 // identity still closes.
                 let adds = u64::try_from(di + dc + dw + dout).expect("non-negative");
                 bump(&mut usage, "total_tokens", 7 * adds);
-                ((7 * di, 7 * dc, 7 * dw, 7 * dout), None)
+                ((7 * di, 7 * dc, 7 * dw, 7 * dout), None, 0)
             }
             Class::SliceOf(parent) => {
                 assert!(
@@ -184,12 +202,12 @@ fn every_usage_count_in_the_wire_lock_is_ledgered_or_a_declared_slice() {
                         .any(|(f, c)| *f == parent && matches!(c, Class::Ledgered(..))),
                     "`{field}` is declared a slice of `{parent}`, which must be ledgered"
                 );
-                ((0, 0, 0, 0), None)
+                ((0, 0, 0, 0), None, 0)
             }
-            Class::StatedTotal => ((0, 0, 0, 0), Some((1107, 1100, 7))),
+            Class::StatedTotal => ((0, 0, 0, 0), Some((1107, 1100, 7)), 7),
         };
         let after = read_all_paths(&usage);
-        for (path, ((b, _), (a, note))) in ["buffered", "streamed", "truncated"]
+        for (path, ((b, _, br), (a, note, ar))) in ["buffered", "streamed", "truncated"]
             .iter()
             .zip(before.iter().zip(after.iter()))
         {
@@ -197,6 +215,11 @@ fn every_usage_count_in_the_wire_lock_is_ledgered_or_a_declared_slice() {
                 (a.0 - b.0, a.1 - b.1, a.2 - b.2, a.3 - b.3),
                 moved,
                 "{path}: 7 more `{field}` must move (input, cache read, cache write, output) by its class"
+            );
+            assert_eq!(
+                ar - br,
+                remainder,
+                "{path}: 7 more `{field}` ledgers its unitemized remainder"
             );
             if *path != "truncated" {
                 assert_eq!(
@@ -210,9 +233,10 @@ fn every_usage_count_in_the_wire_lock_is_ledgered_or_a_declared_slice() {
 
 /// A STATED TOTAL ABOVE ITS TERMS (a compatible backend counting reasoning outside
 /// `output_tokens`): total 35 against input 10 + output 5. The ledger holds what the counts itemize
-/// (10 in, 5 out); the 20-unit gap is reported with its WARN and never ledgered.
+/// (10 in, 5 out); the 20-unit gap is reported with its WARN and ledgered as 20
+/// `unitemized_tokens`, one line (owner LEDGER-100; RED before this lane: an unbilled residual).
 #[test]
-fn a_total_above_the_ledgered_classes_is_reported_never_ledgered() {
+fn a_total_above_the_ledgered_classes_ledgers_the_remainder_as_unitemized_tokens() {
     let usage = serde_json::json!({
         "input_tokens": 10,
         "output_tokens": 5,
@@ -221,9 +245,13 @@ fn a_total_above_the_ledgered_classes_is_reported_never_ledgered() {
     });
     let cap = busbar_contract::testkit::WarnCapture::default();
     let read = tracing::subscriber::with_default(cap.clone(), || read_all_paths(&usage));
-    for (path, (units, note)) in ["buffered", "streamed"].iter().zip(&read) {
+    for (path, (units, note, remainder)) in ["buffered", "streamed"].iter().zip(&read) {
         assert_eq!(*units, (10, 0, 0, 5), "{path}: the itemized counts only");
         assert_eq!(*note, Some((35, 15, 20)), "{path}: the gap is reported");
+        assert_eq!(
+            *remainder, 20,
+            "{path}: the gap is ledgered as unitemized_tokens"
+        );
     }
     assert_eq!(
         read[2].0,

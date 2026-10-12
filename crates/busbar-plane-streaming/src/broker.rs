@@ -77,8 +77,12 @@ struct ClientSecretResponse {
 /// A body that does not parse, or a value that is not an `ek_` ephemeral secret, each with the text
 /// the caller reports.
 pub fn read_minted(body: &[u8]) -> Result<Minted, String> {
-    let parsed: ClientSecretResponse = serde_json::from_slice(body)
-        .map_err(|e| format!("client-secret response did not parse: {e}"))?;
+    let parsed: ClientSecretResponse = serde_json::from_slice(body).map_err(|e| {
+        format!(
+            "client-secret response did not parse: {}",
+            json_failure_shape(&e)
+        )
+    })?;
     if !parsed.value.starts_with(EK_PREFIX) {
         return Err("client-secret response value is not an ek_ ephemeral secret".into());
     }
@@ -86,6 +90,24 @@ pub fn read_minted(body: &[u8]) -> Result<Minted, String> {
         value: parsed.value,
         expires_at_unix: parsed.expires_at,
     })
+}
+
+/// A decode failure on the mint answer, described WITHOUT `serde_json::Error`'s own `Display`.
+///
+/// The body being decoded carries the minted secret, and a data error quotes the offending value
+/// (`invalid type: integer ..., expected a string`, or the string itself), so the decoder's text is
+/// withheld at this format site (secret-hygiene #53, Check 3). What survives is the CLASS of the
+/// failure and where it sits — what an operator needs to tell a truncated answer from a malformed
+/// one from a wrongly-shaped one, and nothing of what the answer held.
+fn json_failure_shape(e: &serde_json::Error) -> String {
+    let class = match e.classify() {
+        serde_json::error::Category::Io => "the body could not be read",
+        serde_json::error::Category::Syntax => "it is not well-formed JSON",
+        serde_json::error::Category::Data => "a field is missing or has the wrong type",
+        serde_json::error::Category::Eof => "it ends before the JSON does",
+    };
+    let (line, column) = (e.line(), e.column());
+    format!("{class} (line {line}, column {column}; the decoder's text is withheld)")
 }
 
 /// The browser's answer to a mint: the secret and its expiry, and nothing else.

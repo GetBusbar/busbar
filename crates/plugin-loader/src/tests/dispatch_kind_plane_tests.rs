@@ -13,7 +13,7 @@ use crate::dispatch::kinds::plane::PlaneFacts;
 use busbar_contract::abi::hook::SignalEntry;
 use busbar_contract::abi::mechanism::call::{AbiStr, InHead, OutHead, Outcome, Span};
 use busbar_contract::abi::mechanism::check::{fault, Fault, Rule};
-use busbar_contract::abi::mechanism::lifecycle::{slot as life, CancelOut, GenIn, RefreshIn};
+use busbar_contract::abi::mechanism::lifecycle::{slot as life, GenIn, RefreshIn};
 use busbar_contract::abi::mechanism::KindCode;
 use busbar_contract::abi::plane::check::Bounds;
 use busbar_contract::abi::plane::{
@@ -387,6 +387,38 @@ fn open_green_and_red_on_its_snapshot() {
     );
 }
 
+/// RED, THE APPEND RULE AT THE HOST: a plugin built before `PlaneSnapshot::listed` was appended
+/// publishes a snapshot whose `size` ends before it. The host accepts it and reads its list as none,
+/// never the bytes past that `size` (here garbage: a count over a dangling pointer).
+#[test]
+fn a_snapshot_from_before_listed_reads_as_listing_none() {
+    let mut i: PlaneOpenIn = z();
+    i.open.generation = 7;
+    let mut older = snap(7);
+    older.size = std::mem::offset_of!(PlaneSnapshot, listed) as u32;
+    older.listed = NonNull::<AbiStr>::dangling().as_ptr();
+    older.listed_len = 5;
+    let mut o: PlaneOpenOut = z();
+    o.snapshot = &older;
+    assert_eq!(
+        Plane::check(&answer(life::OPEN, Outcome::Ready, &i, &o)),
+        Ok(()),
+        "a snapshot of the size before the append is this host's to read"
+    );
+    let copied = crate::dispatch::kinds::plane::copy_snapshot(&older, 4)
+        .expect("the older snapshot is copied");
+    assert!(copied.listed.is_empty(), "{:?}", copied.listed);
+    let names = [AbiStr {
+        ptr: b"listed-one".as_ptr(),
+        len: 10,
+    }];
+    let mut newer = snap(7);
+    newer.listed = names.as_ptr();
+    newer.listed_len = 1;
+    let copied = crate::dispatch::kinds::plane::copy_snapshot(&newer, 4).expect("copied");
+    assert_eq!(copied.listed, vec!["listed-one".to_string()]);
+}
+
 #[test]
 fn refresh_green_and_red_on_its_snapshot() {
     let mut i: RefreshIn = z();
@@ -411,22 +443,29 @@ fn refresh_green_and_red_on_its_snapshot() {
 
 #[test]
 fn cancel_green_and_red_on_its_disposition() {
-    let i: InHead = z();
-    let mut o: CancelOut = z();
+    let i: busbar_contract::abi::plane::PlaneCancelIn = z();
+    let mut o: busbar_contract::abi::plane::PlaneCancelOut = z();
     for d in [CANCEL_OK_PARTIAL, CANCEL_ABORTED] {
-        o.disposition = d;
+        o.cancel.disposition = d;
         assert_eq!(
             Plane::check(&answer(life::CANCEL, Outcome::Ready, &i, &o)),
             Ok(())
         );
     }
     for d in [0, CANCEL_ABORTED + 1] {
-        o.disposition = d;
+        o.cancel.disposition = d;
         assert_eq!(
             Plane::check(&answer(life::CANCEL, Outcome::Ready, &i, &o)),
             f(Rule::UnknownCode, "cancel.disposition")
         );
     }
+    // SEAM-L(r): a write counted past the host's record buffer is FAULT.
+    o.cancel.disposition = CANCEL_ABORTED;
+    o.records_written = 1;
+    assert_eq!(
+        Plane::check(&answer(life::CANCEL, Outcome::Ready, &i, &o)),
+        f(Rule::OverCap, "cancel.records")
+    );
 }
 
 #[test]
@@ -513,6 +552,37 @@ fn a_short_project_answer_is_recognised() {
         &i,
         &o
     )));
+    // A prompt with more turns than the host's buffer holds is a short answer too.
+    o.messages_needed = 3;
+    let a = answer(slot::PROJECT, Outcome::Failed, &i, &o);
+    assert_eq!(Plane::check(&a), Ok(()));
+    assert!(Plane::short(&a), "short on the prompt turns");
+}
+
+#[test]
+fn project_red_a_rewritten_body_for_a_call_that_carried_no_rewrite() {
+    let mut signals: [SignalEntry; 2] = z();
+    let mut arena = [0u8; 16];
+    let mut i = project_in(&mut signals, &mut arena);
+    let mut o: ProjectOut = z();
+    o.rewritten = span(0, 8);
+    o.arena_written = 8;
+    assert_eq!(
+        Plane::check(&answer(slot::PROJECT, Outcome::Ready, &i, &o)),
+        f(Rule::Contradiction, "project.rewritten_without_rewrite")
+    );
+    let rewrite = b"{}";
+    i.rewrite = busbar_contract::abi::mechanism::call::Blob {
+        ptr: rewrite.as_ptr(),
+        len: rewrite.len(),
+        fmt: busbar_contract::abi::mechanism::call::BLOB_OCTETS,
+        flags: 0,
+    };
+    assert_eq!(
+        Plane::check(&answer(slot::PROJECT, Outcome::Ready, &i, &o)),
+        Ok(()),
+        "the same answer to a call that carried one"
+    );
 }
 
 // ── foreign sizes ──
@@ -772,4 +842,119 @@ fn red_a_tail_whose_refusal_statuses_break_a_rule_does_not_bind() {
     assert_eq!(facts.refusal_statuses, rows(400).to_vec());
     let refused = bind(rows(200)).expect_err("a status outside 400-599 refuses the load");
     assert!(refused.contains("refusal_status.status"), "{refused}");
+}
+
+/// RED (ARCHITECT Q-L5-FEE (C)): the tail's fee units are judged at bind. A fee unit that is one of
+/// the tail's billable classes binds; one no class lists refuses the load (the plane could never
+/// report it, so its fee would be refunded on every unit), and so does a class with no family.
+#[test]
+fn red_a_tail_whose_fee_unit_is_no_billable_class_does_not_bind() {
+    use busbar_contract::abi::mechanism::door::{
+        KindTailHead, Section, Statement, SECTION_DECLARING,
+    };
+    use busbar_contract::abi::plane::{BillableClass, PlaneTail, INGRESS_DUPLEX_SESSION};
+    fn s(text: &'static str) -> AbiStr {
+        AbiStr {
+            ptr: text.as_ptr(),
+            len: text.len(),
+        }
+    }
+    let bind = |classes: &'static [BillableClass], fees: &'static [AbiStr]| {
+        let mut tail: PlaneTail = z();
+        tail.head = KindTailHead {
+            size: size_of::<PlaneTail>() as u32,
+            _reserved: 0,
+        };
+        tail.ingress = INGRESS_DUPLEX_SESSION;
+        tail.billable_classes = classes.as_ptr();
+        tail.billable_classes_len = classes.len();
+        tail.fee_units = fees.as_ptr();
+        tail.fee_units_len = fees.len();
+        let tail: &'static PlaneTail = Box::leak(Box::new(tail));
+        let sections: &'static [Section] = Box::leak(Box::new([Section {
+            name: s("door"),
+            flags: SECTION_DECLARING,
+            _reserved: 0,
+        }]));
+        let mut st: Statement = z();
+        st.kind_tail = &tail.head;
+        st.sections = sections.as_ptr();
+        st.sections_len = sections.len();
+        Plane::context(&st).map(|_| ())
+    };
+    let class = |name: &'static str, family: &'static str| BillableClass {
+        class: s(name),
+        family: s(family),
+    };
+    let classes: &'static [BillableClass] = Box::leak(Box::new([
+        class("tool_calls", "count"),
+        class("per_session", "count"),
+    ]));
+    let fee: &'static [AbiStr] = Box::leak(Box::new([s("per_session")]));
+    assert_eq!(
+        bind(classes, fee),
+        Ok(()),
+        "a fee unit that is a class binds"
+    );
+    assert_eq!(bind(&[], &[]), Ok(()), "no fee unit, nothing to judge");
+    let unlisted: &'static [BillableClass] = Box::leak(Box::new([class("tool_calls", "count")]));
+    let refused = bind(unlisted, fee).expect_err("a fee unit no class lists refuses the load");
+    assert!(refused.contains("tail.fee_units"), "{refused}");
+    let familyless: &'static [BillableClass] = Box::leak(Box::new([BillableClass {
+        class: s("per_session"),
+        family: z(),
+    }]));
+    let refused = bind(familyless, fee).expect_err("a class with no family refuses the load");
+    assert!(refused.contains("billable_class.family"), "{refused}");
+}
+
+/// THE STREAM CEILING IS A TAIL ADDITION (ARCHITECT ruling 2026-10-07, STREAM-CEILING): a tail of
+/// the whole size states its ceiling and the root is handed it; a tail whose `size` ends before the
+/// field still loads and states none (`0`), even when the memory past its size holds a value. RED:
+/// a frozen size equal to the grown tail refused the shorter tail, and no fact carried the ceiling.
+#[test]
+fn a_tail_states_its_stream_ceiling_and_a_tail_ending_before_it_states_none() {
+    use busbar_contract::abi::mechanism::door::{
+        KindTailHead, Section, Statement, SECTION_DECLARING,
+    };
+    use busbar_contract::abi::plane::{PlaneTail, INGRESS_REQUEST_RESPONSE};
+    let bind = |size: usize| {
+        let mut tail: PlaneTail = z();
+        tail.head = KindTailHead {
+            size: size as u32,
+            _reserved: 0,
+        };
+        tail.ingress = INGRESS_REQUEST_RESPONSE;
+        tail.stream_ceiling_secs = 600;
+        let tail: &'static PlaneTail = Box::leak(Box::new(tail));
+        let sections: &'static [Section] = Box::leak(Box::new([Section {
+            name: AbiStr {
+                ptr: b"door".as_ptr(),
+                len: 4,
+            },
+            flags: SECTION_DECLARING,
+            _reserved: 0,
+        }]));
+        let mut st: Statement = z();
+        st.kind_tail = &tail.head;
+        st.sections = sections.as_ptr();
+        st.sections_len = sections.len();
+        Plane::context(&st)
+            .expect("the tail binds")
+            .expect("a plane has a context")
+            .downcast::<PlaneFacts>()
+            .expect("the plane's facts")
+            .served
+            .stream_ceiling_secs
+    };
+    assert_eq!(
+        bind(size_of::<PlaneTail>()),
+        600,
+        "the whole tail states it"
+    );
+    assert_eq!(
+        bind(std::mem::offset_of!(PlaneTail, stream_ceiling_secs)),
+        0,
+        "a tail ending before the field loads and states no ceiling"
+    );
 }

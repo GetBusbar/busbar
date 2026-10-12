@@ -171,7 +171,11 @@ fn ids(scopes: &[Json]) -> Vec<String> {
 }
 
 fn cmd_sync(git: &Git, register: &std::path::Path, write: bool) -> i32 {
-    let derived = audit::derive_scopes(git.repo());
+    let mounted = match git.mounted_at("HEAD") {
+        Ok(m) => m,
+        Err(e) => return die(e),
+    };
+    let derived = audit::derive_scopes(git.repo(), &mounted);
     let existing = read_scopes(register);
     let derived_ids = ids(&derived);
     let existing_ids = ids(&existing);
@@ -252,7 +256,7 @@ fn cmd_status(git: &Git, register: &std::path::Path, report: &std::path::Path) -
         "-".repeat(92),
     ];
     for r in &rows {
-        out.push(format!(
+        let mut line = format!(
             "{:<46} {:<11} {:<12} {:>5} {:>6} {:>7}",
             r.id,
             r.kind,
@@ -260,7 +264,11 @@ fn cmd_status(git: &Git, register: &std::path::Path, report: &std::path::Path) -
             dash(r.scope.get("round").as_i64()),
             dash(r.age),
             r.loc
-        ));
+        );
+        if let Some(pin) = &r.pin {
+            line.push_str(&format!("  {pin}"));
+        }
+        out.push(line);
     }
     let prod = audit::production(&rows);
     out.push(String::new());
@@ -353,8 +361,14 @@ fn write_report(
                 .get("report")
                 .as_str()
                 .map_or_else(|| "-".to_string(), |p| format!("`{p}`"));
+            // A PINNED SCOPE SAYS SO, on its own row and nowhere else: every row of the tree itself
+            // stays byte-for-byte what it was.
+            let pinned = r
+                .pin
+                .as_ref()
+                .map_or_else(String::new, |p| format!(" ({p})"));
             md.push(format!(
-                "| `{}` | {} | {} | {} | {} | {res} | {auditor} | {rep} |",
+                "| `{}`{pinned} | {} | {} | {} | {} | {res} | {auditor} | {rep} |",
                 r.id,
                 r.status,
                 dash(sc.get("round").as_i64()),
@@ -1270,7 +1284,11 @@ fn cmd_move(git: &Git, register: &std::path::Path, a: &Args) -> i32 {
         Err(e) => return die(e),
     };
 
-    let derived = audit::derive_scopes(git.repo());
+    let mounted = match git.mounted_at("HEAD") {
+        Ok(m) => m,
+        Err(e) => return die(e),
+    };
+    let derived = audit::derive_scopes(git.repo(), &mounted);
     let derived_ids: Vec<&str> = derived
         .iter()
         .filter_map(|s| s.get("id").as_str())
@@ -1476,6 +1494,9 @@ fn cmd_move(git: &Git, register: &std::path::Path, a: &Args) -> i32 {
 #[derive(Default)]
 pub struct CheckFindings {
     pub gaps: Vec<String>,
+    /// Top-level directories no register scope addresses and no excuse names whole. See
+    /// [`crate::audit::unscoped_top_dirs`].
+    pub unscoped: Vec<String>,
     pub missing: Vec<String>,
     pub problems: Vec<String>,
     pub invalid: Vec<String>,
@@ -1494,6 +1515,7 @@ pub struct CheckFindings {
 impl CheckFindings {
     pub fn red(&self) -> bool {
         !self.gaps.is_empty()
+            || !self.unscoped.is_empty()
             || !self.missing.is_empty()
             || !self.problems.is_empty()
             || !self.invalid.is_empty()
@@ -1510,27 +1532,24 @@ impl CheckFindings {
 /// round for the answer that is already known.
 type TreeCache = BTreeMap<String, Result<BTreeMap<String, String>, String>>;
 
-/// The hash `rec`'s scope's files ACTUALLY had at the commit `rec` names, through the cache.
-fn stamped_hash(
-    git: &Git,
-    trees: &mut TreeCache,
-    sc: &Json,
-    rec: &Json,
-) -> Result<Option<String>, String> {
+/// The hash `rec`'s scope's files ACTUALLY had at the commit `rec` names.
+///
+/// ONE `ls-tree` PER COMMIT, not one per record: [`Git::tracked_at`] memoises every full commit id
+/// (which is what `record` stamps), and a pinned checkout is read once per pin. Only the pins the
+/// scope's own paths reach are mounted ([`Git::scope_files_at`]), so a record about one crate is
+/// never held hostage to another pin of the same commit — while a record about a pinned crate whose
+/// checkout cannot be produced fails here, naming the package and the commit.
+fn stamped_hash(git: &Git, sc: &Json, rec: &Json) -> Result<Option<String>, String> {
     let Some(at) = audit::record_at(rec) else {
         return Err("the record names no audited_at commit".to_string());
     };
-    let files = trees
-        .entry(at.to_string())
-        .or_insert_with(|| git.files_at(at));
-    match files {
-        // UNDER THE PATHS THE RECORD'S DIGEST IS ACTUALLY OVER. For every record that has not been
-        // through `ledger move` those are the scope's own paths and this reads exactly as it always
-        // did; for a round carried across a rename it is the path the round read, so the rule still
-        // recomputes the round's claim against the tree the round named. See [`audit::hashed_scope`].
-        Ok(files) => Ok(audit::tree_hash(audit::hashed_scope(sc, rec), files)),
-        Err(e) => Err(e.clone()),
-    }
+    // UNDER THE PATHS THE RECORD'S DIGEST IS ACTUALLY OVER. For every record that has not been
+    // through `ledger move` those are the scope's own paths and this reads exactly as it always
+    // did; for a round carried across a rename it is the path the round read, so the rule still
+    // recomputes the round's claim against the tree the round named. See [`audit::hashed_scope`].
+    let under = audit::hashed_scope(sc, rec);
+    let files = git.scope_files_at(under, at)?;
+    Ok(audit::tree_hash(under, &files))
 }
 
 /// The whole `--check` computation, once, for both the printer and the gate.
@@ -1544,11 +1563,13 @@ pub fn check(git: &Git, register: &std::path::Path) -> Result<CheckFindings, Str
     };
 
     f.gaps = audit::coverage_gaps(&doc, &all);
+    f.unscoped = audit::unscoped_top_dirs(&doc, &all);
 
     // THE TREE IMPLIES SCOPES THE REGISTER DOES NOT CARRY. A new crate is uncovered the moment it
     // lands, and this is the line that says so.
     let have: Vec<String> = rows.iter().map(|r| r.id.clone()).collect();
-    f.missing = audit::derive_scopes(git.repo())
+    let mounted = git.mounted_at("HEAD")?;
+    f.missing = audit::derive_scopes(git.repo(), &mounted)
         .iter()
         .filter_map(|d| d.get("id").as_str().map(str::to_string))
         .filter(|i| !have.contains(i))
@@ -1571,11 +1592,6 @@ pub fn check(git: &Git, register: &std::path::Path) -> Result<CheckFindings, Str
             ));
         }
     }
-
-    // ONE `ls-tree` PER COMMIT, not one per record. 150 scopes carrying 236 rounds name a couple of
-    // dozen distinct commits between them, and re-resolving each one per round is the difference
-    // between a check and a coffee break.
-    let mut trees: TreeCache = BTreeMap::new();
 
     // ONE REACHABILITY ANSWER PER COMMIT, and the pins read once. `merge-base --is-ancestor` is a
     // process; 150 scopes carrying 236 rounds name a couple of dozen distinct commits between them.
@@ -1691,7 +1707,7 @@ pub fn check(git: &Git, register: &std::path::Path) -> Result<CheckFindings, Str
                 f.unreachable
                     .push(format!("{label}  audited_at {short} {why}"));
             }
-            match stamped_hash(git, &mut trees, sc, rec) {
+            match stamped_hash(git, sc, rec) {
                 Ok(actual) if actual.as_deref() == rec.get("tree_hash").as_str() => {}
                 Ok(_) => f.stamped.push(format!("{label}  audited_at {short}")),
                 // FAILING TO RESOLVE THE COMMIT IS THE FINDING, not the absence of one. A rule whose
@@ -1756,6 +1772,11 @@ fn cmd_check(git: &Git, register: &std::path::Path) -> i32 {
         }
         println!("  run: cargo xtask ledger sync --write");
     }
+    block(
+        &f.unscoped,
+        "top-level director(ies) no scope addresses (a new directory the register never heard of):",
+        "  ",
+    );
     block(
         &f.missing,
         "scope(s) the tree implies are not in the register:",
@@ -2320,5 +2341,117 @@ mod move_tests {
             "a destination that is on no disk is a refusal, not a write"
         );
         assert_eq!(s.raw(), untouched, "and the register is byte-identical");
+    }
+
+    /// `sync --write`, committed, twice: the first write creates `qa/`, which is itself a scope the
+    /// second derivation sees. What a real tree looks like after its register is first written.
+    fn settle(s: &Scratch) {
+        for msg in ["register", "register sees itself"] {
+            assert_eq!(s.xtask(&["sync", "--write"]), 0);
+            s.run(&["add", "-A"]);
+            s.run(&["commit", "-q", "--allow-empty", "-m", msg]);
+        }
+    }
+
+    /// THE REMAINDER RULE. A crate directory nobody anticipated (`dialects/`, `include/`), a
+    /// crate's `examples/`, the binary crate's files beside `main.rs`, and `xtask/tests` each land
+    /// in a scope `sync` derives, so coverage closes without one excuse glob.
+    #[test]
+    fn every_tracked_file_in_an_unanticipated_place_gets_a_derived_scope() {
+        let s = scratch("remainder");
+        s.crate_at("plane", "pub fn serve() {}\n");
+        s.write("crates/plane/dialects/a.toml", "name = \"a\"\n");
+        s.write("crates/plane/examples/door.rs", "fn main() {}\n");
+        s.crate_at("busbar", "pub mod root;\n");
+        s.write("crates/busbar/src/root/mod.rs", "pub fn boot() {}\n");
+        s.write("crates/busbar/src/main.rs", "fn main() {}\n");
+        s.write("crates/busbar/src/build_stamp.rs", "pub fn stamp() {}\n");
+        s.write("xtask/src/main.rs", "fn main() {}\n");
+        s.write("xtask/tests/cli.rs", "#[test] fn t() {}\n");
+        s.write("conformance/registry.toml", "x = 1\n");
+        s.write(".mailmap", "a <a@b>\n");
+        s.commit("base");
+        settle(&s);
+
+        for (id, kind) in [
+            ("crates/plane/dialects", "production"),
+            ("crates/plane/examples", "test"),
+            ("crates/busbar/src", "production"),
+            ("crates/busbar/src/root", "production"),
+            ("xtask/tests", "test"),
+            ("conformance", "instrument"),
+            (".mailmap", "instrument"),
+        ] {
+            let sc = s
+                .scope(id)
+                .unwrap_or_else(|| panic!("{id} is derived as a scope"));
+            assert_eq!(
+                sc.get("kind").as_str(),
+                Some(kind),
+                "{id} is a {kind} scope"
+            );
+        }
+        assert!(
+            s.scope("crates/busbar/src/main.rs").is_none(),
+            "the entry point is the rest of src/, not the one file main.rs"
+        );
+        let f = s.check();
+        assert!(
+            f.gaps.is_empty(),
+            "every tracked file has a scope: {:?}",
+            f.gaps
+        );
+        assert!(
+            f.unscoped.is_empty() && f.missing.is_empty(),
+            "and the register is current"
+        );
+        assert!(
+            !f.red(),
+            "an all-unaudited, fully covered register is not red"
+        );
+    }
+
+    /// THE TOP-LEVEL ARM. A new top-level directory is RED by its own name until a scope addresses
+    /// it — not only through the per-file gap list — and a directory an excuse names whole is not.
+    #[test]
+    fn a_new_top_level_directory_is_red_until_a_scope_addresses_it() {
+        let s = scratch("topdir");
+        s.crate_at("kernel", "pub fn admit() {}\n");
+        s.write("docs/guide.md", "prose\n");
+        s.commit("base");
+        settle(&s);
+        let f = s.check();
+        assert!(
+            !f.red() && f.unscoped.is_empty(),
+            "positive control: `docs/` is excused whole and the tree is covered: {:?}",
+            f.unscoped
+        );
+
+        s.write("newtool/run.sh", "#!/bin/sh\n");
+        s.commit("a directory the register never heard of");
+        let f = s.check();
+        assert_eq!(
+            f.unscoped,
+            vec!["newtool".to_string()],
+            "named as a directory"
+        );
+        assert_eq!(
+            f.gaps,
+            vec!["newtool/run.sh".to_string()],
+            "and as an uncovered file"
+        );
+        assert!(
+            f.missing.contains(&"newtool".to_string()),
+            "and sync can derive its scope"
+        );
+        assert!(f.red(), "so --check is RED");
+
+        settle(&s);
+        let f = s.check();
+        assert!(
+            !f.red(),
+            "sync derives its scope and the arm goes quiet: {:?}",
+            f.unscoped
+        );
     }
 }

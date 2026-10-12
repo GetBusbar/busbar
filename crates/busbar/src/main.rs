@@ -45,10 +45,10 @@ use axum::Router;
 // checks without booting, and the last two are the config/providers path precedence the scanners
 // there answer for boot AND for every command.
 use busbar_kernel::{
-    build_app_from_config, build_split_routers_serving, load_config_from_disk, LoadedConfig,
+    build_app_from_config, build_split_routers_serving_doors, load_config_from_disk, LoadedConfig,
     ENV_CONFIG,
 };
-use busbar_kernel::{config, config_validate, diagnostics, export, metrics, tls};
+use busbar_kernel::{config, config_validate, diagnostics, export, snapshot, tls};
 // The root's own binds listen through the connector's listener (the one listener source).
 #[cfg(unix)]
 use busbar_core_connector::listen::{AcceptLimits, Listening, DEFAULT_HANDSHAKE_TIMEOUT};
@@ -104,12 +104,22 @@ fn safe_mode_requested(mut args: impl Iterator<Item = String>) -> bool {
     args.any(|a| a == "--safe-mode")
 }
 
-/// Whether `--mcp-stdio` was passed: boot everything, bind NOTHING, and serve the MCP plane on the
-/// process's own stdin/stdout (see `mcp::stdio_serve`). A scanner like `safe_mode_requested`
-/// rather than a `handle_cli_flags` exit arm, because it modifies how `run()` serves rather than
-/// replacing the run.
-fn stdio_serve_requested(mut args: impl Iterator<Item = String>) -> bool {
-    args.any(|a| a == "--mcp-stdio") // noun-neutrality: frozen-literal pinned-by=crates/busbar/tests/mcp_stdio_serve.rs operator CLI flag (CHANGELOG 1.6.0)
+/// Whether a flag a linked plane declares was passed (its `Flags:` rows, `root::cli::help_rows`):
+/// boot everything, bind NOTHING, and serve the plane claiming the line carrier on the process's own
+/// stdin/stdout (see `root::serve::lines`). The root names no flag of its own here: the plane states
+/// its spelling, and the root reads it off the plane's declared rows. A scanner like
+/// `safe_mode_requested` rather than a `handle_cli_flags` exit arm, because it modifies how `run()`
+/// serves rather than replacing the run.
+fn stdio_serve_requested(args: impl Iterator<Item = String>) -> bool {
+    line_serve_requested(&root::cli::help_rows(), args)
+}
+
+/// [`stdio_serve_requested`] over the `Flags:` rows `planes` declare.
+fn line_serve_requested(
+    planes: &[&[root::linked::CliHelpRow]],
+    mut args: impl Iterator<Item = String>,
+) -> bool {
+    args.any(|a| root::cli::is_plane_flag(planes, &a))
 }
 
 /// Cap on `advanced.worker_threads`/`TOKIO_WORKER_THREADS` (see the `.min(MAX_WORKER_THREADS)` call in
@@ -268,8 +278,8 @@ fn register_planes() {
     // The root legacy table, before the first configuration read (the dropped-plugin scan below
     // reads it): the kernel's 1.x detector and `--migrate-config` rewrite through it.
     root::legacy::install();
-    // The linked store and hook rows onto the kernel's cold-kind axis, with the default store the
-    // store rows declare, and its auth rows onto the auth axis, before anything resolves one.
+    // The linked store and hook rows onto the kernel's cold-kind axis, and its auth rows onto the
+    // auth axis, before anything resolves one.
     root::linked::register_stores(&LINKED);
     busbar_kernel::preflight::install_linked_auth(
         LINKED.auths,
@@ -296,8 +306,9 @@ fn register_planes() {
     // THE AUTHORIZATION-SERVER PLANE'S SEAM, registered UNCONDITIONALLY (no feature flag — see the
     // manifest note on the `busbar-core-oauth2` dependency), before any config loads. Mirrors
     // `install_planes` immediately above for the same reason: one composition root, one
-    // registration, before the first `App` is built.
-    busbar_core_oauth2::install();
+    // registration, before the first `App` is built. Its document fetch rides the one connector,
+    // read when a fetch needs it (`root::connector::AuthServerConns`).
+    busbar_core_oauth2::install::<root::connector::AuthServerConns>();
     // Register the admin API service's mount seam (`busbar_kernel::admin::seam`) — the composition
     // root is the one place entitled to name `busbar-admin`, exactly as it names `busbar-core-oauth2`
     // above. Unconditional: the admin surface carries no feature flag at this layer; core mounts it
@@ -333,6 +344,12 @@ static WORKERS: std::sync::LazyLock<(usize, Vec<String>)> =
     std::sync::LazyLock::new(resolve_worker_threads);
 
 fn main() {
+    // THE `log` BRIDGE, before anything can run a compiled-in plugin's door: that door's call
+    // capture installs the same `LogTracer` in this image on first use, so the host takes the one
+    // `log` logger slot first (`observability::init_log_bridge`). The subscriber goes up in `run()`.
+    if let Err(e) = busbar_kernel::observability::init_log_bridge() {
+        eprintln!("busbar: the `log` bridge is not installed: {e}");
+    }
     // THE PROCESS'S ONE DISPATCHER, first: full-size (one plugin worker per data worker) before any
     // plugin of any kind binds — the planes and transports registered just below included — and
     // handed to the transport doors (`root::doors`), which bind on it.
@@ -593,7 +610,7 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // duplicate singleton — is reported and FATAL a few lines down in `config::resolve`, which runs
     // the same lowering; discarding the error list here just avoids reporting it twice.
     let resolved_export = config::resolve_export(&deploy.export, &mut Vec::new());
-    metrics::configure(
+    snapshot::configure(
         resolved_export
             .recorder
             .as_ref()
@@ -615,9 +632,13 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // Install the tracing subscriber now (stderr fmt always; the `traces` record producer for the
     // export sinks subscribed to it, the `otlp` module's among them) so all subsequent startup and
     // request-path logging is captured.
-    // `--mcp-stdio` reserves stdout for the MCP channel, so its logs move to stderr — see
-    // `init_logging`'s `stdout_reserved`.
-    busbar_kernel::observability::init_logging(stdio_serve_requested(std::env::args()));
+    // A plane's line-serve flag reserves stdout for the plane's channel, so its logs move to
+    // stderr — see `init_logging`'s `stdout_reserved`.
+    if let Err(e) =
+        busbar_kernel::observability::init_logging(stdio_serve_requested(std::env::args()))
+    {
+        eprintln!("busbar: tracing subscriber already initialized: {e}");
+    }
 
     // First line in the logs: which build is running. Operators need this to confirm a deploy /
     // correlate logs to a release without shelling in to run `--version`.
@@ -715,10 +736,12 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // The rows are the linked wires and the ones dropped into `plugins.dir`, folded in one pass.
     let _sealed = root::registry::seal_or_exit(&LINKED, root::policy::client_settings(&cfg.limits));
     // THE PROCESS'S ONE CONNECTOR, right after the transport registry sealed: every linked
-    // transport door as a framer entry, every dial judged by the one destination guard. Inbound
-    // listening and outbound egress both take it from `root::connector::the()`.
+    // transport door as a framer entry opened with the same settings the seal built the transports
+    // from, every dial judged by the one destination guard. Inbound listening and outbound egress
+    // both take it from `root::connector::the()`.
     let _connector = root::connector::boot(
         LINKED_TRANSPORT_DOORS,
+        &root::policy::client_settings(&cfg.limits),
         dest,
         &[cfg.listen.as_str(), cfg.admin_listen.as_str()],
     );
@@ -766,12 +789,35 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
         .unwrap_or_default();
     // The resolved `providers:` (catalog-merged), as the door planes' members reach them (THE
     // DESIGN §6 step 2), captured before `cfg` is consumed.
-    let door_providers = root::door_steps::provider_routes(&cfg.providers);
+    let door_providers = root::door_steps::provider_routes(
+        &cfg.providers,
+        &config_validate::MetadataPosture::global(&cfg),
+    );
+    // The kernel-owned sections a door plane's Statement may name beside its own (spec Part 1 §4),
+    // as the configuration resolved them, captured before `cfg` is consumed.
+    let door_kernel_sections = root::door_steps::kernel_sections(&cfg);
+    // The model-serving pools the plane serving the `pools` map walks, with every bound the
+    // configuration states (`root::model_egress`).
+    let door_model_pools = root::model_egress::ModelPools::of(&cfg);
+    // The unified `pools:` a named-definition carrier's members resolved to, by the carrier's
+    // section key: each door plane's section carries its own pools (DoorPools), captured before
+    // `cfg` is consumed.
+    let door_pools = root::serve::door_pools(&cfg.tool_pools, &cfg.agent_pools);
     // The root breaker's per-pool ladders, read off the same `pools:` the build resolves each pool's
     // own dispatch cfg from, before `cfg` is consumed.
     #[cfg(feature = "root-admin")]
     let breaker_policy = root::adapters::BreakerPolicy::from_pools(&cfg.pools);
 
+    // What the door planes are sealed over, projected from every configuration as it is built
+    // (`root::door_steps::door_config`), so a config apply refreshes them onto the new generation.
+    busbar_kernel::appbuild::set_config_projection(root::door_steps::door_config);
+
+    // The configured store's name, captured before `cfg` is consumed: the boot book's journal is
+    // kept in that store, and a store that cannot keep it is refused by name.
+    let store_module = cfg
+        .store
+        .as_ref()
+        .map_or_else(String::new, |store| store.module.clone());
     // The secret resolver the listeners resolve TLS cert/key/CA references through - the SAME seam
     // (built-in env/file + kind:secret plugins) that resolved provider keys at build time.
     // Boot has no `prior` App, so `build_app_from_config` never resolves a credential rotation here
@@ -833,33 +879,86 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
         .governance
         .clone()
         .map(|g| g as Arc<dyn busbar_kernel::host_services::SignKey>);
-    root::serve::attach(&late_services, signer, &app.demotion_record, &planes);
+    root::serve::attach(
+        &late_services,
+        app.governance.as_deref(),
+        signer,
+        &app.demotion_record,
+        &planes,
+    );
     // THE DOOR PLANES, COMPOSED (`root::serve::compose_served`): opened, driven and ticked here, once,
     // their money posted onto the process's one node, each member's egress sealed over the
     // deployment's providers, the auth plugins that serve its style (the build's own rows, then
     // the plugins directory's) and the one connector their needs were declared on.
-    let door_auths = root::door_steps::OutboundAuths::new(
-        root::dispatch::dispatcher(),
-        LINKED.auths,
-        root::boot::dropped_registry(),
-    );
+    let door_auths = root::door_steps::process_auths();
+    // The kernel's own App (its lane store, its telemetry bank), through its swap handle once it exists (a config apply
+    // rebuilds the store), the boot App's until then.
+    let door_live_handle: std::sync::Arc<
+        std::sync::OnceLock<std::sync::Arc<busbar_kernel::state::AppHandle>>,
+    > = std::sync::Arc::default();
+    let door_models = root::model_egress::ModelServing {
+        pools: door_model_pools,
+        lanes: app
+            .engine_tables_view()
+            .model_indices()
+            .into_iter()
+            .map(|(model, lane)| (model.to_string(), lane))
+            .collect(),
+        app: {
+            let (live, boot) = (
+                std::sync::Arc::clone(&door_live_handle),
+                std::sync::Arc::clone(&app),
+            );
+            std::sync::Arc::new(move || {
+                live.get()
+                    .map_or_else(|| std::sync::Arc::clone(&boot), |h| h.load())
+            })
+        },
+    };
     let door_reach = root::door_steps::DoorReach {
         providers: &door_providers,
         secrets: &*app.secret_resolver,
-        auths: &door_auths,
+        auths: std::sync::Arc::clone(&door_auths),
         conns: Arc::clone(root::connector::the()) as Arc<dyn busbar_contract::conn::PollConns>,
         stream_ceiling_secs: busbar_kernel::config::limits::installed().map_or(
             busbar_kernel::config::limits::DEFAULT_UPSTREAM_REQUEST_TIMEOUT_SECS,
             |l| l.upstream_request_timeout_secs,
         ),
+        models: Some(&door_models),
+        upgrades: root::serve::upgrade_carriers(LINKED.transports),
     };
     let served = root::serve::compose_served(
         app.governance.clone(),
         root::boot::door_planes(),
         &root::dispatch::dispatcher(),
         &late_services,
-        &deploy.door_sections(),
+        &root::serve::with_pools(
+            {
+                let mut sections = deploy.door_sections();
+                for (key, value) in door_kernel_sections {
+                    sections.entry(key).or_insert(value);
+                }
+                sections
+            },
+            &door_pools,
+        ),
+        deploy.public_url.as_deref(),
         &door_reach,
+        Some({
+            // The hooks read the CURRENT generation's host: the App's swap handle once it exists,
+            // the boot App's until then.
+            let (live, boot) = (
+                std::sync::Arc::clone(&door_live_handle),
+                std::sync::Arc::clone(&app),
+            );
+            std::sync::Arc::new(move || {
+                busbar_kernel::plane_host::engine_host(
+                    &live
+                        .get()
+                        .map_or_else(|| std::sync::Arc::clone(&boot), |h| h.load()),
+                )
+            })
+        }),
     )
     .unwrap_or_else(|e| die(e));
     served.spawn_ticks();
@@ -888,7 +987,15 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // first config swap, retiring these boot probers (their `Weak` fails to upgrade) exactly as the old
     // `Weak<App>` did when the boot snapshot drained.
     // Built only when some linked entry re-anchors work on it: a build with none holds no host.
-    let on_host = LINKED.on_host;
+    // While a plane's fold switch is on, the plane serving the `pools` map runs its health probes
+    // through its door as the K7 probe unit (`root::serve`'s probe target over the plane's sealed
+    // egress), so the legacy row's probers are not spawned beside them: one prober per lane, as
+    // 1.5.5 ran.
+    let on_host = if cfg!(linked_fold_on_driver) {
+        &[][..]
+    } else {
+        LINKED.on_host
+    };
     let boot_host = (!on_host.is_empty()).then(|| busbar_kernel::plane_host::engine_host(&app));
     if let Some(host) = &boot_host {
         for spawn in on_host {
@@ -921,23 +1028,112 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     let book = (cfg!(feature = "root-admin")
         || ROOT_UNITS.iter().any(|u| u.opens_book)
         || !served.planes.is_empty())
-    .then(|| root::boot::book(&app).unwrap_or_else(|e| die(e)));
+    .then(|| root::boot::book(&app, &store_module).unwrap_or_else(|e| die(e)));
     // THE DOOR PLANES' DATA ROUTES (`root::serve::data_routes`): each served plane's claims, as its
     // guest-list lines beside the kernel's own, onto the data router at its construction.
-    let doors = root::serve::data_routes(
+    // Every config apply refreshes each served door plane onto the generation it installed
+    // (ARCHITECT Q-DEL-A2A-APPLY), bound on the handle once the routers are built.
+    let door_appliers = served.appliers();
+    #[cfg(linked_axis_node)]
+    let door_post = served.post.clone();
+    // THE LINE CARRIER (SEAM-S1, `root::serve::lines`): with the stdio serve mode asked for and a
+    // served plane claiming the stdio transport, the served planes are kept for the process's own
+    // stdin/stdout, and the data router is built with none of them (it is never bound in this mode).
+    let mut served = served;
+    let line_served = (stdio_serve_requested(std::env::args())
+        && root::serve::lines::line_claim(&served).is_some())
+    .then(|| std::mem::take(&mut served));
+    let (doors, sessions, refusals) = root::serve::data_mounts(
         served,
         &data_chain,
         &busbar_kernel::base_data_core_lines(&app),
+        &root::serve::upgrade_carriers(LINKED.transports),
     )
     .unwrap_or_else(|e| die(e));
-    let (data_router, admin_router, app_handle) = build_split_routers_serving(
+    let (data_router, admin_router, app_handle) = build_split_routers_serving_doors(
         app,
         doors,
+        sessions,
+        refusals,
         req_body_max,
         max_inbound,
         response_headers_cfg.server_timing,
     );
     credential_handle.set(std::sync::Arc::clone(&app_handle));
+    let _ = door_live_handle.set(std::sync::Arc::clone(&app_handle));
+    app_handle.on_apply(Box::new({
+        let door_appliers = door_appliers.clone();
+        move |app| door_appliers.apply(app)
+    }));
+    // A CONFIG APPLY REFRESHES THE PLANE SERVING THE `pools` MAP onto the new generation
+    // (`DoorAppliers::refresh_models`): the swapped-in App's projected configuration, its lane
+    // table and its secret seam. A build with no node composes no door plane's money, so it has
+    // none to refresh.
+    #[cfg(linked_axis_node)]
+    if let Some(post) = door_post {
+        let (auths, live) = (
+            std::sync::Arc::clone(&door_auths),
+            std::sync::Arc::clone(&door_live_handle),
+        );
+        let upgrades = root::serve::upgrade_carriers(LINKED.transports);
+        app_handle.on_apply(Box::new(move |next| {
+            let Some(cfg) = next
+                .config_projection
+                .as_ref()
+                .and_then(|p| p.downcast_ref::<root::door_steps::DoorConfig>())
+            else {
+                return;
+            };
+            let models = root::model_egress::ModelServing {
+                pools: cfg.model_pools.clone(),
+                lanes: next
+                    .engine_tables_view()
+                    .model_indices()
+                    .into_iter()
+                    .map(|(model, lane)| (model.to_string(), lane))
+                    .collect(),
+                app: {
+                    let (live, fallback) =
+                        (std::sync::Arc::clone(&live), std::sync::Arc::clone(next));
+                    std::sync::Arc::new(move || {
+                        live.get()
+                            .map_or_else(|| std::sync::Arc::clone(&fallback), |h| h.load())
+                    })
+                },
+            };
+            let reach = root::door_steps::DoorReach {
+                providers: &cfg.providers,
+                secrets: &*next.secret_resolver,
+                auths: std::sync::Arc::clone(&auths),
+                conns: Arc::clone(root::connector::the())
+                    as Arc<dyn busbar_contract::conn::PollConns>,
+                stream_ceiling_secs: busbar_kernel::config::limits::installed().map_or(
+                    busbar_kernel::config::limits::DEFAULT_UPSTREAM_REQUEST_TIMEOUT_SECS,
+                    |l| l.upstream_request_timeout_secs,
+                ),
+                models: Some(&models),
+                upgrades: upgrades.clone(),
+            };
+            door_appliers.refresh_models(
+                &cfg.sections,
+                &root::serve::DoorEgress {
+                    reach: &reach,
+                    journal: std::sync::Arc::clone(&post)
+                        as std::sync::Arc<dyn busbar_kernel_egress::ports::Journal>,
+                },
+            );
+        }));
+    }
+    // Every opened plugin instance's log sink follows the applied `plugins.logs` (THE DESIGN §11.2).
+    app_handle.on_apply(Box::new(|app| {
+        root::boot::follow_plugin_logs(root::boot::plugin_logs(), &app.plugins_cfg);
+    }));
+    // A door unit's entitlement is judged against its principal AS IT STANDS (re-resolved over the
+    // live snapshot per ask): a long-lived response re-asks per frame.
+    if let Some(kernel) = late_services.kernel() {
+        let _attached =
+            kernel.attach_standing(busbar_kernel::plane_host::live_standing(app_handle.clone()));
+    }
     // THE ROOT-DRIVEN ADMIN SURFACE (composition-root switch-over S1), default-ON. The router that
     // answers the admin operations is unchanged; what the wrap adds is the path a request takes to
     // reach it — through the kernel's loop, past the auth, scope, admission, usage and audit units,
@@ -1016,12 +1212,12 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
             |dispatch| {
                 // THE ADMIN DOOR: the deployment's live `admin_auth` chain, read per unit off the same
                 // snapshot the kernel middleware reads and `PUT /api/v1/admin/admin-auth` swaps.
-                let mut units = root::kernel::ProductionUnits::admin_only_sharing(
+                // Over the book boot opened AND the store boot bound beside it, so the three
+                // disaster-recovery verbs reach the configured store (row 113).
+                let mut units = root::kernel::ProductionUnits::admin_over_book(
                     dispatch,
                     root::units_admin::live_admin_door(std::sync::Arc::clone(&app_handle)),
-                    std::sync::Arc::clone(&book.durability),
-                    std::sync::Arc::clone(&book.rows)
-                        as std::sync::Arc<dyn root::units_admin::LegacyRowsRead>,
+                    book,
                 );
                 // D38 PRODUCTION SEALING (composition-root, binding-only). Replace the assembly's
                 // `UnsealedPosture` default with the posture THIS fleet sealed: `SealedPosture` carries
@@ -1047,6 +1243,10 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
                 units.admin.records = Some(root::units_admin::live_records(std::sync::Arc::clone(
                     &app_handle,
                 )));
+                // ARCHITECT 2026-10-06: the trust verbs read and decide over the kernel's trust
+                // book — the composed services, reached through the late install.
+                let late = std::sync::Arc::clone(&late_services);
+                units.admin.trust = std::sync::Arc::new(move || late.kernel());
                 // The root breaker is the kernel's own: one cell set on the node, read through the
                 // live snapshot so an apply's rebuilt store is the one it observes into.
                 units.breaker = root::adapters::BreakerAdapter::over_kernel(
@@ -1126,21 +1326,21 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // is the plane hook's, propagated through `start_planes`.
     busbar_kernel::boot::start_planes(&app_handle).unwrap_or_else(|e| die(e));
 
-    // THE STDIO SERVE MODE (`--mcp-stdio`). The SAME boot ran above — config load, plugin
+    // THE STDIO SERVE MODE (a plane's declared line-serve flag). The SAME boot ran above — config load, plugin
     // preflight, governance, the flusher and the refresh jobs — and the SAME dispatch will serve
     // every frame; what changes is only the transport: busbar is somebody's CHILD PROCESS here, so
     // it binds no listener at all (a child that opened ports would be a network server its
     // supervisor never asked for) and speaks newline-delimited JSON-RPC on its own stdin/stdout.
     // EOF on stdin is the shutdown signal, and the tail below is the listener path's own shutdown
     // tail: the final budget/metering flush, then the tracer.
-    // The mode exists only when a linked entry serves it. With none there is no dispatch to serve on
-    // stdin/stdout, so the mode is not offered and the build falls through to its listener path.
-    let stdio_serve = LINKED.stdio_serve.first().copied();
-    if let Some(serve) = stdio_serve.filter(|_| stdio_serve_requested(std::env::args())) {
-        // The neutral host factory, minted core-side and threaded into the stdio transport so the plane
-        // re-mints the host over each frame's live snapshot without naming the core factory itself.
-        let factory = busbar_kernel::plane_host::live_host_factory(app_handle.clone());
-        let code = serve(factory).await;
+    // The mode is served when a served door plane, compiled in or dropped in, claims the stdio
+    // transport. With none there is nothing to serve on stdin/stdout, so the build falls through to
+    // its listener path.
+    if let Some(served) = line_served {
+        let code = root::serve::lines::serve_lines(served, app_handle.clone(), || {
+            root::kernel::ROOT_CARD.pin()
+        })
+        .await;
         if let Some(gov) = app_handle.load().governance.clone() {
             let n = gov.flush_budgets();
             tracing::info!(flushed = n, "budget counters flushed on shutdown");
@@ -1207,9 +1407,18 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
             &shutdown_tx,
             worker_shutdown_rx,
         );
-        let admin_listener = Listening::bind_stream(&admin_at, ROOT_BIND_LIMITS)
-            .unwrap_or_else(|e| die(format!("cannot bind listen address '{admin_listen}': {e}")));
-        tracing::debug!(listen = %admin_listen, "admin listening through the connector");
+        // The root's own binds listen through the process's address carrier (TRANSPORT-STACK (2):
+        // the accept loop is the carrier's); each accepted stream is handed up to the kernel.
+        let admin_via = root::connector::the().address_via();
+        let admin_listener =
+            Listening::bind_stream(admin_via.as_ref(), &admin_at, ROOT_BIND_LIMITS).unwrap_or_else(
+                |e| die(format!("cannot bind listen address '{admin_listen}': {e}")),
+            );
+        tracing::debug!(
+            listen = %admin_listen,
+            carrier = %root::connector::carrier_name(admin_via.as_ref()),
+            "admin listening through the connector"
+        );
         serve_listener(
             admin_listener,
             admin_router,
@@ -1276,6 +1485,22 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // THE PLANE RECORD WRITE-BEHIND, drained before the store closes (`root::serve::drain_records`).
     if !root::serve::drain_records(&late_services).await {
         tracing::warn!("plane record writes were still queued at shutdown");
+    }
+    // THE JOURNAL'S LANE TO THE STORE, drained the same way and under the same deadline: on a node
+    // with no data directory the store is where the chain is kept.
+    if let Some(lane) = book.as_ref().and_then(|book| {
+        book.durability
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .lane()
+            .cloned()
+    }) {
+        let drained = tokio::task::spawn_blocking(move || lane.drain(root::serve::RECORD_DRAIN))
+            .await
+            .unwrap_or(false);
+        if !drained {
+            tracing::warn!("journal records were still queued for the store at shutdown");
+        }
     }
     // No state snapshot on shutdown: reliability state is RAM-only (re-learned on boot) and the
     // audit log is written through to the durable store as it happens (store-or-RAM rule — there is
@@ -1413,14 +1638,19 @@ fn serve_thread_per_core(
                     // runs after placement, in the serving loop (pinning at accept would change
                     // 1.5.5's per-core placement).
                     // TRANSITIONAL: drains at K1 U6/U7 (1.6.0-TODO.md).
-                    let listener = Listening::bind_stream(&bind_at, ROOT_BIND_LIMITS)
+                    let via = crate::root::connector::the().address_via();
+                    let listener = Listening::bind_stream(via.as_ref(), &bind_at, ROOT_BIND_LIMITS)
                         .unwrap_or_else(|e| {
                             die(format!(
                                 "cannot bind SO_REUSEPORT data listener on '{listen}' (per-core \
                              runtime {i}): {e}"
                             ))
                         });
-                    tracing::debug!(listen = %listen, "data door listening through the connector");
+                    tracing::debug!(
+                        listen = %listen,
+                        carrier = %crate::root::connector::carrier_name(via.as_ref()),
+                        "data door listening through the connector"
+                    );
                     serve_listener(
                         listener,
                         router,

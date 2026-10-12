@@ -102,6 +102,9 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     max_citations_per_delta: None,
     // Same OpenAI Python SDK UA as the Chat surface (one vendor, two surfaces). RELEASE OBLIGATION:
     // re-verify/bump per release; `test_egress_ua_versions_are_pinned_and_present` guards drift.
+    // OWNER RULING Q10: the plane writes this on a translated route into this dialect, on a
+    // same-dialect route whose caller sent no user-agent (1.5.5's bytes), and on the
+    // kernel-originated health probe; a same-dialect caller's own user-agent replaces it.
     egress_user_agent: "OpenAI/Python 1.54.0",
     has_model_in_url: false,
     auth_failure_status_and_kind: (
@@ -1137,6 +1140,16 @@ const STREAM_CODE: &[&str] = &[
 
 /// The answer paths INSIDE a subtree this dialect carries that its code does not carry, named by the
 /// drop walk (DF-MAP-IR-GAPS section E: its A, B and C paths that a coarse map row covers).
+/// THE REQUEST DEFAULTS A RESPONSES ANSWER ECHOES (the response object restates the request's
+/// `tools`, `tool_choice` and `parallel_tool_calls`, at their defaults when the request set none):
+/// an echoed default is no control the caller set, so a TRANSLATE answer that cannot carry it
+/// names no drop for it (ARCHITECT RULING 2026-10-04). Keyed by the member, its default as JSON.
+pub(super) const ANSWER_DEFAULTS: &[(&str, &str)] = &[
+    (keys::TOOLS, "[]"),
+    (keys::TOOL_CHOICE, "\"auto\""),
+    (keys::PARALLEL_TOOL_CALLS, "true"),
+];
+
 const RESPONSE_DROPS: &[&str] = &[
     "error.misalignment",
     "instructions[].type=additional_tools",
@@ -2252,7 +2265,8 @@ const RESPONSES_USAGE_IDENTITY: &str = "openai_responses.usage";
 /// cached and cache-write slices), `cached_tokens` (cache read), `cache_write_tokens` (cache
 /// write), `output_tokens` (output); `output_tokens_details.reasoning_tokens` is a slice of
 /// `output_tokens`. `total_tokens` is OpenAI's sum, never a unit: it is cross-checked against the
-/// ledgered classes and a gap is WARN-logged and carried as the usage identity note, never ledgered.
+/// ledgered classes, a gap is WARN-logged and carried as the usage identity note, and a total ABOVE
+/// the itemized classes is the open class `unitemized_tokens` (owner LEDGER-100).
 fn read_responses_usage(
     usage: Option<&serde_json::Value>,
     response: Option<&serde_json::Value>,

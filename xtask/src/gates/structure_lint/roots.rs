@@ -186,7 +186,29 @@ pub fn resolve(cx: &Ctx, f: &mut Findings) -> Addresses {
         files.iter().any(|s| s.rel_str().starts_with(&prefix))
     };
 
-    let mut roster: Vec<String> = PLANE_KEYS.iter().map(|k| (*k).to_string()).collect();
+    // A DOOR-ONLY PLANE (P3 DEL-MCP, ARCHITECT 2026-10-05): no grammar declaration claims it, and
+    // its door row in the composition root's manifest is its declaration — the crate the row links
+    // is its home (`crate::planes::door_planes`). Consulted only for a key no declaration claimed,
+    // so a plane whose engine still declares it beside a door row keeps the engine as its home.
+    let manifest = cx
+        .read(format!("{CRATES}/{}", crate::planes::DOOR_MANIFEST))
+        .unwrap_or_default();
+    for (key, krate) in crate::planes::door_planes(&manifest) {
+        if !homes.contains_key(&key) {
+            homes
+                .entry(key)
+                .or_default()
+                .insert(format!("{CRATES}/{krate}/src"));
+        }
+    }
+
+    // The legacy roster AND the kind-only keys (mcp since P3 DEL-MCP): a door-only plane whose door
+    // row vanished must still be PLANE-ROOT-MISSING, not silently off the roster.
+    let mut roster: Vec<String> = PLANE_KEYS
+        .iter()
+        .chain(crate::planes::PLANE_KEYS_KIND_ONLY.iter())
+        .map(|k| (*k).to_string())
+        .collect();
     for key in homes.keys() {
         if !roster.contains(key) {
             roster.push(key.clone());
@@ -308,7 +330,8 @@ pub fn finding_proto_roots() -> String {
 pub fn finding_plane_missing(plane: &str) -> String {
     format!(
         "PLANE-ROOT-MISSING: nothing under crates/ carries the `{plane}` plane's `{PLANE_GRAMMAR}` \
-         declaration, so every rule that names this plane is scanning NOTHING"
+         declaration and no door row declares it, so every rule that names this plane is scanning \
+         NOTHING"
     )
 }
 

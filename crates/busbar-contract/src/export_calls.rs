@@ -8,6 +8,16 @@
 //! names this, and neither names the other. Nothing here crosses the plugin boundary: the export
 //! kind's ABI is `abi::export`, and the loader lowers these types to it.
 
+/// The settings key that states an export instance's in-flight bound: how many deliveries the host
+/// runs at once for that instance (the frozen 1.5.x request-log webhook sink's
+/// `max_inflight_deliveries`). The host bounds the instance by it, within the plugin's declared
+/// `max_inflight`; unset, the host's default bound applies ([`DEFAULT_INFLIGHT`]).
+pub const INFLIGHT_KEY: &str = "max_inflight_deliveries";
+
+/// The in-flight bound of an export instance whose settings state none: 1.5.5's default for its
+/// request-log sinks (the webhook's `max_inflight_deliveries`, the file sink's in-flight appends).
+pub const DEFAULT_INFLIGHT: u32 = 64;
+
 /// One metric family of a host recorder's snapshot, in the recorder's render order. The loader
 /// lowers it to [`crate::abi::export::ScrapeFamily`] for the `scrape` op.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -258,6 +268,17 @@ pub trait ExportCalls: Send + Sync {
     /// The instance failed, was refused, faulted, or answered short twice.
     fn scrape(&self, families: &[Family]) -> Result<Vec<u8>, String>;
 
+    /// Render the HOOK `families` (`/metrics/hooks`) as this instance's exposition text, through
+    /// `scrape` with [`crate::abi::export::SCRAPE_FLAG_HOOK_FAMILIES`] set, on the calling thread.
+    /// An instance with no hook rendering answers `Err`.
+    ///
+    /// # Errors
+    /// The instance renders no hook families, failed, was refused, faulted, or answered short twice.
+    fn scrape_hooks(&self, families: &[Family]) -> Result<Vec<u8>, String> {
+        let _ = families;
+        Err("this instance renders no hook families".to_string())
+    }
+
     /// Ask the instance for its `status` (what it reports when the host renders its status
     /// exposition): the 1.5.5 status JSON, or `None` when it has none. Its envelope's metrics and
     /// diagnostics are folded by the host as every reply's are.
@@ -323,6 +344,28 @@ pub trait ExportAxis: Send + Sync {
 
     /// Whether `module` names a FIRST-PARTY row: linked, or dropped in signed by the release key.
     fn first_party(&self, module: &str) -> bool;
+
+    /// Whether `module`'s row states the `one_instance` mark
+    /// ([`crate::abi::mechanism::door::MARK_ONE_INSTANCE`]): at most one instance may be
+    /// configured. The kernel then asks the module's own `check` at the limits phase while the
+    /// configuration is resolved, and renders its findings verbatim. None by default.
+    fn one_instance(&self, module: &str) -> bool {
+        let _ = module;
+        false
+    }
+
+    /// The routes `module`'s row declares (its Statement's `routes`), read without opening an
+    /// instance: what a configuration apply that adds an instance would mount. None by default.
+    fn routes(&self, module: &str) -> Vec<crate::abi::mechanism::route::Route> {
+        let _ = module;
+        Vec::new()
+    }
+
+    /// The `module:` words of the export rows this build LINKS, in the order the composition root
+    /// registered them: what an unknown-exporter refusal lists. None by default.
+    fn linked_modules(&self) -> Vec<String> {
+        Vec::new()
+    }
 }
 
 #[cfg(test)]

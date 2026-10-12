@@ -32,7 +32,7 @@
 use crate::ir::codec::gemini::GeminiLiveCodec;
 use crate::ir::codec::{DuplexReader, DuplexWriter, OpenAiRealtimeCodec};
 use crate::ir::config::SessionConfig;
-use crate::plane_provider::{provider_ws_url, redact_url_credentials};
+use crate::plane_provider::{credential_placement, provider_ws_url, CredentialPlacement};
 use crate::runtime::carrier::Carrier;
 use crate::runtime::scope::SessionHandle;
 use crate::runtime::session::{serve_to_teardown, serve_with_sweep, UplinkForwarder, VoiceSession};
@@ -45,7 +45,10 @@ use crate::topology::{
     StartError,
 };
 use busbar_kernel::config::RootCfg;
-use busbar_kernel::egress::engine::{send_bounded, EngineClient};
+use busbar_kernel::egress::{
+    duplex_ws::{CredentialPlacement as WsPlacement, DialCredential},
+    engine::{send_bounded, EngineClient},
+};
 use busbar_kernel::ingress::byte_duplex::serve_messages;
 use busbar_kernel::ingress::duplex_ws::{
     accept_gauntlet, install_ws_arrivals, WsAcceptFuture, WsArrival, WsArrivalSpec,
@@ -54,7 +57,10 @@ use busbar_kernel::plane::handle_engine::DurableHandleEngine;
 use busbar_kernel::plane::observe::Counted;
 use busbar_kernel::plane::registry::{BuildCtx, PlaneBootCtx};
 use busbar_kernel::plane::PlaneAdmission;
-use busbar_kernel::plane_host::{EngineHost, GateOutcome, TransformVerdict};
+use busbar_kernel::plane_host::{
+    admission_gates_attached, admission_gates_decide, admission_tap_attached, admission_transform,
+    EngineHost, GateOutcome, TransformVerdict,
+};
 use busbar_kernel::plane_host::{GauntletPlane, GauntletRequest};
 use busbar_kernel::plane_routes::PlaneRouteSpec;
 use busbar_kernel::{door::UnitKeyMint, net_guard::GuardPolicy};
@@ -82,7 +88,7 @@ pub(crate) const SESSION_AUDIT_ACTION: &str = "streaming.session.open";
 /// THE HOOK CONTAINER the voice plane's session-open gate/tap fire under — the plane's SINGULAR config
 /// section noun (`streams`), since voice declares no per-registration container (its config is one
 /// object, not a named-definition map). The operator attaches a session-open gate to this ONE
-/// container, and `gate_attached(plane_key, container)` reads it here.
+/// container, and `admission_gates_attached(host, plane_key, container)` reads it here.
 const GATE_CONTAINER: &str = "streams";
 
 /// THE SCOPE KIND a key must hold to open a live session — the plane's one declared scope kind (see
@@ -121,8 +127,29 @@ fn session_scope_refusal() -> axum::response::Response {
 pub(crate) struct ProviderEndpoint {
     /// The provider origin (scheme + authority, e.g. `https://api.openai.com`).
     pub base_url: String,
-    /// The REAL provider key, held server-side.
-    pub api_key: String,
+    /// The REAL provider key, held server-side and `Redacted`: exposed only at the two sites that
+    /// put it on the provider hop (the mint minter, the SDP bearer). The WebSocket dial hands it,
+    /// still `Redacted`, to the substrate dialer, which writes it into the upgrade request only.
+    pub api_key: busbar_contract::Redacted<String>,
+}
+
+impl ProviderEndpoint {
+    /// The KEYLESS provider WebSocket URL for `dialect`.
+    pub(crate) fn ws_url(&self, dialect: &str) -> String {
+        provider_ws_url(&self.base_url, dialect)
+    }
+
+    /// The provider key and where `dialect` presents it on the WebSocket dial.
+    pub(crate) fn ws_credential(&self, dialect: &str) -> DialCredential<'_> {
+        let placement = match credential_placement(dialect) {
+            CredentialPlacement::Query(name) => WsPlacement::Query(name),
+            CredentialPlacement::Header { name, prefix } => WsPlacement::Header { name, prefix },
+        };
+        DialCredential {
+            placement,
+            secret: &self.api_key,
+        }
+    }
 }
 
 /// THE COMPOSED REALTIME PROVIDER — the one endpoint the mint / SDP-broker passes dial, written once
@@ -145,7 +172,7 @@ pub fn install_provider(base_url: impl Into<String>, api_key: impl Into<String>)
     COMPOSED_PROVIDER
         .set(ProviderEndpoint {
             base_url: base_url.into(),
-            api_key: api_key.into(),
+            api_key: busbar_contract::Redacted::new(api_key.into()),
         })
         .is_ok()
 }
@@ -210,7 +237,7 @@ pub fn install_gemini_provider(base_url: impl Into<String>, api_key: impl Into<S
     COMPOSED_PROVIDER_GEMINI
         .set(ProviderEndpoint {
             base_url: base_url.into(),
-            api_key: api_key.into(),
+            api_key: busbar_contract::Redacted::new(api_key.into()),
         })
         .is_ok()
 }
@@ -354,8 +381,8 @@ pub fn served_governed_session() -> Option<crate::runtime::GovernedSession> {
 }
 
 /// Gemini Live's native provider auth HEADER NAME — `x-goog-api-key`, never `Authorization`. Named
-/// once, publicly, so a conformance probe and the live dial (once header-carrying WS dial lands; see
-/// [`provider_ws_url`]'s doc for today's honest limit) name the SAME literal.
+/// once, publicly, so a conformance probe names the literal. The Live WebSocket dial presents the key
+/// as the `key` query parameter instead (see [`credential_placement`]), the bytes it has always sent.
 pub const GEMINI_API_KEY_HEADER: &str = "x-goog-api-key";
 
 /// THE VOICE PLANE'S RFC 8707 RESOURCE PATH — the segment the plane's canonical audience carries and
@@ -705,10 +732,11 @@ pub(crate) struct GovernedOpen<'a> {
 
 /// THE SHARED GOVERNED OPEN every voice route funnels through — the ONE choke point. In order:
 ///
-/// 1. **hooks-gate** (`host.gate_decide`) — the operator's request-admission gate over the session-open
-///    params. A `Reject` refuses BEFORE any lease/mint/dial. BYTE-IDENTICAL (nothing serialized, no
-///    blocking hop) when no gate is attached — the `gate_attached` presence pre-filter.
-/// 2. **hooks-tap** (`host.transform_over`) — a `prompt: rw` rewrite over the same params, AFTER the
+/// 1. **hooks-gate** (`plane_host::admission_gates_decide`) — the operator's request-admission gate
+///    over the session-open params. A `Reject` refuses BEFORE any lease/mint/dial. BYTE-IDENTICAL
+///    (nothing serialized, no blocking hop) when no gate is attached — the
+///    `admission_gates_attached` presence pre-filter.
+/// 2. **hooks-tap** (`plane_host::admission_transform`) — a `prompt: rw` rewrite over the same params, AFTER the
 ///    gate and BEFORE the credential is leased. A committed rewrite REPLACES the locked session params
 ///    the mint/dial then carries; an abstaining chain (or no attached rewrite) leaves them
 ///    byte-identical.
@@ -774,12 +802,12 @@ pub(crate) async fn open_governed(req: GovernedOpen<'_>) -> axum::response::Resp
     };
 
     // (1) HOOKS-GATE — refuse before any lease/mint/dial. Zero-cost / byte-identical when unattached.
-    if let Err(refused) = hook_gate(&host, key.clone(), &call_id, now, &session_cfg).await {
+    if let Err(refused) = hook_gate(&host, key, &call_id, now, &session_cfg).await {
         return finish(&host, started, *refused);
     }
     // (2) HOOKS-TAP — rewrite the session-open params before the credential is leased. Byte-identical
     // (params untouched) when no rewrite hook is attached or the chain abstains.
-    match hook_tap(&host, key, &owner, &call_id, now, &session_cfg).await {
+    match hook_tap(&host, &owner, &call_id, now, &session_cfg).await {
         Ok(Some(rewritten)) => session_cfg = rewritten,
         Ok(None) => {}
         Err(refused) => return finish(&host, started, *refused),
@@ -866,9 +894,9 @@ fn finish(
     resp
 }
 
-/// The hooks-GATE leg (`host.gate_decide`) over the session-open params. `Ok(())` proceeds; `Err` is a
-/// finished refusal. ZERO-COST / BYTE-IDENTICAL when no gate is attached: the `gate_attached` presence
-/// pre-filter short-circuits before any serialize or blocking hop.
+/// The hooks-GATE leg (`plane_host::admission_gates_decide`) over the session-open params. `Ok(())`
+/// proceeds; `Err` is a finished refusal. ZERO-COST / BYTE-IDENTICAL when no gate is attached: the
+/// `admission_gates_attached` presence pre-filter short-circuits before any serialize or blocking hop.
 async fn hook_gate(
     host: &Arc<dyn EngineHost>,
     key: Option<(String, String)>,
@@ -876,7 +904,7 @@ async fn hook_gate(
     now: u64,
     cfg: &SessionConfig,
 ) -> Result<(), Box<axum::response::Response>> {
-    if !host.gate_attached(crate::PLANE_DECLARATION.key, GATE_CONTAINER) {
+    if !admission_gates_attached(&**host, crate::PLANE_DECLARATION.key, GATE_CONTAINER) {
         return Ok(());
     }
     // Serialized ONCE for the seam (only past the presence check). The host re-selects the gate set by
@@ -887,7 +915,8 @@ async fn hook_gate(
     let sid = session_id.to_string();
     let host = Arc::clone(host);
     let outcome = tokio::task::spawn_blocking(move || {
-        host.gate_decide(
+        admission_gates_decide(
+            &*host,
             crate::PLANE_DECLARATION.key,
             GATE_CONTAINER,
             now,
@@ -974,43 +1003,40 @@ pub(crate) fn committed_session_config(
         .map_err(|e| format!("the output is not a session config: {e}"))
 }
 
-/// The hooks-TAP leg (`host.transform_over`) over the session-open params. `Ok(Some(cfg))` is a
+/// The hooks-TAP leg (`plane_host::admission_transform`) over the session-open params. `Ok(Some(cfg))` is a
 /// committed rewrite the caller substitutes for the locked params; `Ok(None)` is "no change" (no
 /// attached rewrite, or an abstaining chain — BYTE-IDENTICAL); `Err` is a refusal — the rewrite
 /// gate's own `Reject`, or a committed rewrite busbar could not read back (see
 /// [`committed_session_config`]).
 async fn hook_tap(
     host: &Arc<dyn EngineHost>,
-    key: Option<(String, String)>,
     owner: &str,
     session_id: &str,
     now: u64,
     cfg: &SessionConfig,
 ) -> Result<Option<SessionConfig>, Box<axum::response::Response>> {
-    if !host.tap_attached(crate::PLANE_DECLARATION.key, GATE_CONTAINER) {
+    if !admission_tap_attached(&**host, crate::PLANE_DECLARATION.key, GATE_CONTAINER) {
         return Ok(None);
     }
     let args_json = serde_json::to_vec(cfg).unwrap_or_default();
-    let sid = session_id.to_string();
     // The `'static` handle the blocking leg owns. Named apart from the `host` param rather than
     // shadowing it, because the refusal below audits through the SAME host after the join.
     let hook_host = Arc::clone(host);
     let verdict = tokio::task::spawn_blocking(move || {
-        hook_host.transform_over(
+        admission_transform(
+            &*hook_host,
             crate::PLANE_DECLARATION.key,
             GATE_CONTAINER,
             now,
             SESSION_OPEN_METHOD,
             &args_json,
-            key.as_ref().map(|(id, name)| (id.as_str(), name.as_str())),
-            (!sid.is_empty()).then_some(sid.as_str()),
         )
     })
     .await
     // A join panic is FAIL-SAFE on the transform path (the gate already admitted): proceed unchanged.
     .unwrap_or_else(|e| {
         // ...but never SILENT. This is the one disposition on this seam where a hook failure used to
-        // leave no trace at all: `transform_over_over` logs its own `Failed`/timeout arms, so a join
+        // leave no trace at all: `admission_transform` logs its own `Failed`/timeout arms, so a join
         // panic is the only way a `prompt: rw` hook can stop answering without a line naming it.
         tracing::error!(
             session = %session_id,
@@ -1077,7 +1103,13 @@ async fn serve_mint(
     let Some(p) = provider else {
         return sideband_pending();
     };
-    let minter = HttpsTokenMinter::new(egress_client(), &p.base_url, &p.api_key, owner, None);
+    let minter = HttpsTokenMinter::new(
+        egress_client(),
+        &p.base_url,
+        p.api_key.expose_secret(),
+        owner,
+        None,
+    );
     match minter.mint(cfg).await {
         Ok(token) => json_response(
             axum::http::StatusCode::OK,
@@ -1120,7 +1152,7 @@ async fn serve_sdp(
         .uri(&uri)
         .header(http::header::CONTENT_TYPE, "application/sdp");
     // Busbar's OWN provider credential — never the caller's inbound governance bearer.
-    for (name, value) in crate::voice_provider_bearer(&p.api_key) {
+    for (name, value) in crate::voice_provider_bearer(p.api_key.expose_secret()) {
         builder = builder.header(name, value);
     }
     let req = match builder.body(Full::new(offer)) {
@@ -1445,12 +1477,12 @@ where
     // gap where telephony (which has no preceding `ek_` mint pass) reached the media leg screened by
     // nothing but the destination gauntlet; both WS legs now honor the operator gate exactly as the
     // one-shot mint/SDP passes do in `open_governed`.
-    if let Err(refused) = hook_gate(&host, key.clone(), &call_id, now, &session_cfg).await {
+    if let Err(refused) = hook_gate(&host, key, &call_id, now, &session_cfg).await {
         return *refused;
     }
     // (2) HOOKS-TAP — a committed rewrite replaces the locked session posture BEFORE the gauntlet judges
     // the destination and BEFORE the socket binds; byte-identical when no rewrite hook is attached.
-    match hook_tap(&host, key, &owner, &call_id, now, &session_cfg).await {
+    match hook_tap(&host, &owner, &call_id, now, &session_cfg).await {
         Ok(Some(rewritten)) => session_cfg = rewritten,
         Ok(None) => {}
         Err(refused) => return *refused,
@@ -1505,13 +1537,14 @@ where
                     ) {
                         Ok(proxy) => {
                             let pool = stream_breaker_key(dialect);
-                            let url = provider_ws_url(&p.base_url, dialect, &p.api_key);
+                            let url = p.ws_url(dialect);
                             match dial_provider(
                                 host.as_ref(),
                                 &pool,
                                 0,
                                 &url,
                                 GuardPolicy::default(),
+                                Some(p.ws_credential(dialect)),
                             )
                             .await
                             {
@@ -1527,7 +1560,7 @@ where
                                     // The dial failed: nothing to relay client frames to.
                                     settle_undialed(proxy, unix_secs(&*teardown_clock));
                                     tracing::warn!(
-                                        error = %redact_url_credentials(&e.to_string()),
+                                        error = %e,
                                         dialect,
                                         "streaming: provider dial failed; the just-admitted session is \
                                          dropped rather than served with no upstream"

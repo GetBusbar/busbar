@@ -8,9 +8,7 @@ use crate::dest::{EgressBody, RoutePlan, VerifiedDestination};
 use crate::grammar::Claim;
 use crate::ids::{AdminVerbId, CorrelationRef, MeterClassDecl, OpClassId, RecordSchemaId};
 use crate::plugin::Plugin;
-use crate::unit::{
-    AdmitFacts, AuditFacts, Ctx, FinishClass, Refusal, ScopeFacts, Unit, UnitEnd, UsageLocators,
-};
+use crate::unit::{AuditFacts, Ctx, FinishClass, Refusal, Unit, UnitEnd, UsageLocators};
 use crate::wire::{Decode, DiscardCode, Encode, Frame, FrameCursor};
 use std::any::Any;
 
@@ -269,11 +267,9 @@ pub trait Plane: Plugin + Send + Sync + 'static {
     /// Say where this unit wants to go.
     fn verify<'u>(&self, u: &Unit<'u>, ctx: &Ctx<'u>) -> crate::dest::DestinationFacts;
 
-    /// Say what resources this unit touches.
-    fn approve<'u>(&self, u: &Unit<'u>, ctx: &Ctx<'u>) -> ScopeFacts;
-
-    /// Say where the lane name, the response ceiling and the priced input span are.
-    fn admit<'u>(&self, u: &Unit<'u>, ctx: &Ctx<'u>) -> AdmitFacts;
+    // NO `approve` AND NO `admit` (ARCHITECT 2026-10-06: trust and admission are the kernel's
+    // Approve and Admit steps; a plane STATES facts and decides neither). A plane's trust facts
+    // ride its arrival (`abi::plane::ArriveOut`'s `trust_*`), judged by the kernel's Approve.
 
     /// Say which legs this unit needs.
     fn route<'u>(&self, u: &Unit<'u>, ctx: &Ctx<'u>) -> RoutePlan;
@@ -405,6 +401,11 @@ pub struct PlaneDeclaration {
     /// validator does not read them. At most one key per [`TrustRole`]. `&[]` for a plane whose
     /// registrations carry no trust root.
     pub trust_keys: &'static [TrustKeyDecl],
+    /// The plane's own sentence refusing the reserved `upstream_credentials: passthrough` section
+    /// default (the tail's `caller_credential_refusal`). The kernel emits it verbatim when a
+    /// section's default forwards the caller's credential, so the plane owns its words and the
+    /// kernel names only the reserved key. `None` for a plane on which forwarding it is legitimate.
+    pub caller_credential_refusal: Option<&'static str>,
 }
 
 /// Which trust-lifecycle fact a [`TrustKeyDecl`] holds.
@@ -416,6 +417,11 @@ pub enum TrustRole {
     ReverifyTtl,
     /// How long after a drift a clean answer is disbelieved, a `<n><s|m|h|d>` duration.
     RecoveryBackoff,
+    /// The registration's private reach, a boolean (`abi::plane::TRUST_PRIVATE_REACH`).
+    PrivateReach,
+    /// The registration's configured item approvals, `{<item>: {<field>: "<digest>"}}`, the field
+    /// named by [`TrustKeyDecl::default`] (`abi::plane::TRUST_ITEM_APPROVALS`).
+    ItemApprovals,
 }
 
 /// One pin mechanism a [`TrustRole::Pin`] key accepts.
@@ -426,6 +432,10 @@ pub struct PinMechanismDecl {
     /// True when the mechanism is an authenticity root, and so needs key material; false for the
     /// no-root spelling, which must carry none.
     pub root: bool,
+    /// True when the mechanism's material is the far end's KEY (a pin of its certificate's
+    /// SubjectPublicKeyInfo): the host seals it into the registration's trust anchors and the
+    /// connector enforces it on every connection (`abi::plane::MECHANISM_PEER_KEY`).
+    pub peer_key: bool,
 }
 
 /// One per-registration key the host parses for the trust lifecycle ([`PlaneDeclaration::trust_keys`]).
@@ -437,7 +447,8 @@ pub struct TrustKeyDecl {
     pub role: TrustRole,
     /// A pin only: the pin object may also carry `fingerprint`.
     pub fingerprint: bool,
-    /// A duration key's value when a registration writes none; `None` = zero. A pin has none.
+    /// A duration key's value when a registration writes none; `None` = zero. A pin has none. An
+    /// item-approvals key: the field of each item's object holding its approved digest.
     pub default: Option<&'static str>,
     /// A pin's mechanisms; `&[]` for a duration key.
     pub mechanisms: &'static [PinMechanismDecl],
@@ -602,6 +613,23 @@ pub const PER_REQUEST: &str = "per_request";
 
 /// The fee unit a plane counts once per opened session (`fees.per_session`).
 pub const PER_SESSION: &str = "per_session";
+
+/// THE CONDITION OF A REFUSED ADMIN ANSWER: the reply head field a door's `serve` names, beside a
+/// `400`, which of the admin taxonomy's validation conditions the refusal is, so the kernel frames
+/// it condition-tagged (one value of [`ADMIN_CONDITIONS`]). Absent = untagged.
+pub const ADMIN_CONDITION_FIELD: &str = "busbar-admin-condition";
+
+/// [`ADMIN_CONDITION_FIELD`]: the request body did not parse as the verb's expected shape.
+pub const ADMIN_CONDITION_MALFORMED_BODY: &str = "malformed-body";
+
+/// [`ADMIN_CONDITION_FIELD`]: the request contradicts the operator's configured state.
+pub const ADMIN_CONDITION_INVALID_CONFIG: &str = "invalid-config";
+
+/// Every value [`ADMIN_CONDITION_FIELD`] carries.
+pub const ADMIN_CONDITIONS: &[&str] = &[
+    ADMIN_CONDITION_MALFORMED_BODY,
+    ADMIN_CONDITION_INVALID_CONFIG,
+];
 
 /// THE DUP-CLAIM GUARD over a set of declarations' [`PlaneDeclaration::owned_config_sections`],
 /// judged against the sections the host still declares concretely (`reserved`, supplied by the

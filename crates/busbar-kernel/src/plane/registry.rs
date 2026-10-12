@@ -202,11 +202,11 @@ impl PlaneBootCtx for BootCtx {
     /// or an `App`: the returned `Arc<dyn EngineHost>` is the neutral substrate seam and the app it
     /// wraps is the core-owned hydrate-phase `App`.
     fn engine_host(&self) -> std::sync::Arc<dyn busbar_kernel::plane_host::EngineHost> {
-        // PHASE-AWARE: the hydrate phase supplies the freshly-built `app` and mints a SNAPSHOT-ONLY host
-        // over it (no live handle yet, which is correct — hydration reads exactly the generation it
-        // restores into); the start phase supplies the live `handle` and mints a LIVE host from it
-        // (`from_handle`, so `plane_slot_live` sees the current generation), byte-identical to the old
-        // start hook's `handle.load()`-driven reads. Exactly one of the two is present per phase.
+        // PHASE-AWARE: the hydrate phase supplies the freshly-built `app` and mints a SNAPSHOT-ONLY
+        // host over it (no live handle yet, which is correct — hydration reads exactly the
+        // generation it restores into); the start phase supplies the live `handle` and mints a host
+        // over its current load (`from_handle`), byte-identical to the old start hook's
+        // `handle.load()`-driven reads. Exactly one of the two is present per phase.
         if let Some(handle) = self.handle.as_ref() {
             crate::plane_host::engine_host_from_handle(handle)
         } else {
@@ -502,18 +502,6 @@ fn test_memo_key(set: &[&'static PlaneDecl]) -> Vec<usize> {
         .collect()
 }
 
-/// THE ABI PLANE-KEY (the registration INDEX) for a plane's stable decl `key`, or `u8::MAX` when no
-/// registered plane owns it — the opaque numeric handle the FFI PODs carry across the C-ABI seam,
-/// resolved back to the key string via [`plane_key_at`]. This is the "registration index → key"
-/// assignment the plane ABI keys on, in place of a hard-coded `0`/`1` numbering: core spells no plane
-/// token; the number is only a position in the process registry.
-pub fn plane_key_index(key: &str) -> u8 {
-    plane_decls()
-        .iter()
-        .position(|d| d.key == key)
-        .map_or(u8::MAX, |i| i as u8)
-}
-
 /// THE SCOPE-KIND at ABI scope-kind index `idx`, DERIVED FROM REGISTRY DATA rather than a hard-coded
 /// table. Index `0` is core's neutral admission-pool topology (`"pool"`, the kind every deployment
 /// always has); indices `1..` are each installed plane's declared `PlaneDecl.scope_kinds` in
@@ -575,14 +563,6 @@ pub fn scope_kind_index(kind: &str) -> Option<u32> {
         .map(|i| i as u32)
 }
 
-/// The stable decl `key` of the plane at ABI registration index `idx`, or `None` when out of range —
-/// the inverse of [`plane_key_index`], so a host vtable slot that received the opaque numeric handle
-/// resolves it back to the key string it looks its gate set / `ingress_protocol` label up by, naming
-/// no plane token.
-pub fn plane_key_at(idx: u8) -> Option<&'static str> {
-    plane_decls().get(idx as usize).map(|d| d.key)
-}
-
 /// RESOLVE A PLANE DECLARATION BY KEY. Allocates nothing.
 ///
 /// NAMED FOR ITS AXIS, not `decl_for`. the `structure-lint` gate's declaration census holds
@@ -620,13 +600,17 @@ pub fn plane_decl_for_config_section(section: &str) -> Option<&'static PlaneDecl
 ///   mounted, so [`super::PlaneDispatch::admission_for`] resolves an audience on it. A path a plane
 ///   answers on but omits here is unreachable through this table's audience check — which is why the
 ///   claim set, not the router, is the thing a test pins.
-/// - **R2 (mounted ⇒ admitted, or boot refuses):** a plane that claims a path but returns no
-///   admission would serve an audience-less — hence unauthenticated — resource. That is refused here
-///   with a named error rather than mounted, so a future plane cannot lower its own bar to nothing by
-///   omitting an admission.
+/// - **R2 (mounted ⇒ admitted, or boot refuses):** a plane that claims a path but has no admission
+///   path would serve an unauthenticated resource. That is refused here with a named error rather
+///   than mounted, so a future plane cannot lower its own bar to nothing by omitting an admission.
+///   A claim is ADMITTED by an audience the plane binds, or — for a plane served through its door
+///   ([`super::door::is_door`]) — by the kernel's key-verify chain (`key_chain`: the data chain
+///   verifies the busbar key), which admits a door claim exactly as it admits any data-plane path.
+///   A door claim with neither is refused, as any plane's is.
 pub fn build_dispatch(
     decls: &[&'static PlaneDecl],
     slots: &std::collections::BTreeMap<&'static str, &dyn std::any::Any>,
+    key_chain: bool,
 ) -> Result<super::PlaneDispatch, String> {
     let mut dispatch = super::PlaneDispatch::default();
     for decl in decls {
@@ -637,8 +621,9 @@ pub fn build_dispatch(
         };
         let claims = (decl.claims)(slot);
         let admission = (decl.admission)(slot);
-        // R2: a claimed path with no admission is a door with no lock. Refuse the boot.
-        if !claims.is_empty() && admission.is_none() {
+        // R2: a claimed path with no admission path is a door with no lock. Refuse the boot.
+        let key_admitted = key_chain && super::door::is_door(decl);
+        if !claims.is_empty() && admission.is_none() && !key_admitted {
             return Err(format!(
                 "plane `{}` mounts {} path(s) but bound no admission; a mounted plane must bind an \
                  RFC 8707 audience (see PlaneDispatch::admission_for) or claim no path — serving a \
@@ -657,7 +642,7 @@ pub fn build_dispatch(
     Ok(dispatch)
 }
 
-// `registry_tests` MOVED to `tests/registry_cross_plane.rs` (the A6/HostCtx dev-dependency-cycle
+// `registry_tests` MOVED to `crates/busbar/tests/registry_cross_plane.rs` (the A6/HostCtx dev-dependency-cycle
 // cleanup): most of it drove the REAL `busbar_llm`/`busbar_mcp`/`busbar_a2a` `PLANE_DECL`s and their
 // real runtime objects, which only type-checks with ONE `busbar_kernel` in the graph — an
 // integration-test target, never this `#[cfg(test)]` unit module. See that file's header. The two
@@ -693,6 +678,9 @@ pub struct BuildCtx<'a> {
     // back inside its own module; no other plane reads it, and it is built and consumed synchronously
     // here, so the erased `&dyn Any` needs no `Send + Sync` bound.
     pub agent_defs: &'a dyn std::any::Any,
+    /// The `tools:` registry section, erased as `agent_defs` is (`RootCfg::tool_defs`): a door
+    /// plane whose verb it is reads the section its door judged off it.
+    pub tool_defs: &'a dyn std::any::Any,
     pub public_url: Option<&'a str>,
     /// THE PRIOR GENERATION'S SLOT MAP, or `None` on a fresh boot — the same neutral
     /// [`crate::plane_host::PlaneSlots`] seam `build_runtime` receives, so a plane's `build` can CARRY
@@ -703,6 +691,11 @@ pub struct BuildCtx<'a> {
     /// slot. The A2A plane reads it to carry its `VerifyGate` and card-fetch `OnceLock`; a plane with no
     /// carry-over ignores it.
     pub prior: Option<&'a dyn crate::plane_host::PlaneSlots>,
+    /// THIS GENERATION'S RESOLVED `providers:` (catalog-merged), from which a door plane's probe is
+    /// handed the dialect facts of the providers its section references, as its served instance
+    /// is; `None` = none (a test build that states none).
+    pub providers:
+        Option<&'a std::collections::HashMap<String, crate::config::providers::ProviderCfg>>,
 }
 
 /// A PLANE BOOT HOOK — [`PlaneDecl::hydrate`] or [`PlaneDecl::start`]. Handed the [`PlaneBootCtx`] for
@@ -855,6 +848,31 @@ pub type OpenapiSchemasHook = fn(
 #[cfg(not(feature = "openapi-schema"))]
 pub type OpenapiSchemasHook = fn(std::convert::Infallible);
 
+/// THE SCHEMAS HOOK OF THE DOOR PLANE AT `I` (ARCHITECT Q2): the `components.schemas` its admin
+/// OpenAPI blob states ([`crate::plane::door::stated_schemas`]), inserted into the generator's
+/// definitions as written. `None` in a build that generates no document.
+#[cfg(feature = "openapi-schema")]
+pub(crate) const fn stated_schemas_hook<const I: usize>() -> Option<OpenapiSchemasHook> {
+    Some(stated_schemas::<I>)
+}
+
+/// See the `openapi-schema` twin: no document is generated in this build.
+#[cfg(not(feature = "openapi-schema"))]
+pub(crate) const fn stated_schemas_hook<const I: usize>() -> Option<OpenapiSchemasHook> {
+    None
+}
+
+#[cfg(feature = "openapi-schema")]
+fn stated_schemas<const I: usize>(
+    schema_gen: &mut schemars::SchemaGenerator,
+    _req_gen: &mut schemars::SchemaGenerator,
+    _paths: &mut serde_json::Map<String, serde_json::Value>,
+) {
+    if let Some(schemas) = crate::plane::door::stated_schemas::<I>() {
+        schema_gen.definitions_mut().extend(schemas);
+    }
+}
+
 impl std::ops::Deref for PlaneDecl {
     type Target = PlaneDeclaration;
     fn deref(&self) -> &PlaneDeclaration {
@@ -936,7 +954,7 @@ plane_behaviour! {
     /// [`crate::admin_verbs::AdminRouteSpec`] — each a `(method, path, scope, kind, handler)`
     /// where the handler is a neutral async fn over an
     /// [`crate::admin_verbs::AdminReqCtx`], never an `axum` extractor or `Arc<AppHandle>`. The
-    /// CORE adapter (`busbar_kernel::admin::v1::json::mount_plane_admin_routes`) registers each spec at
+    /// CORE adapter (`busbar_core_admin::v1::json::mount_plane_admin_routes`) registers each spec at
     /// its VERBATIM `(method, path)`, so the auth middleware's `required_scope(method, path)` is
     /// byte-identical — the security invariant this seam preserves.
     #[allow(clippy::type_complexity)]
@@ -1031,7 +1049,7 @@ plane_behaviour! {
     reresolve_gates: Option<fn(&mut dyn crate::plane_host::ContainerGateSink)>,
 
     /// ATTACH THIS PLANE'S ADMIN TRUST-VERB SCHEMAS to the OpenAPI document — the plane half of the
-    /// schema pass in `busbar_kernel::admin::v1::json::handlers::openapi_doc`. Handed the SHARED response
+    /// schema pass in `busbar_core_admin::v1::json::handlers::openapi_doc`. Handed the SHARED response
     /// and request [`schemars::SchemaGenerator`]s and the `paths` map, it registers its own view/body
     /// types into `#/components/schemas` and attaches their `$ref`s onto the paths its [`Self::openapi`]
     /// fragment inserted — so `handlers` names no `crate::mcp`/`crate::a2a` view type and the document

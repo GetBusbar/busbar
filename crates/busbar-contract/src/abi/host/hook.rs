@@ -29,7 +29,7 @@ use crate::abi::hook::{
     STAGE_HAS_REMAINING_CANDIDATES, STAGE_HAS_STATUS, VIEW_HAS_BUDGET_REMAINING, VIEW_HAS_PROMPT,
     VIEW_HAS_USER,
 };
-use crate::abi::mechanism::call::{AbiStr, Blob, InHead, BLOB_ABSENT};
+use crate::abi::mechanism::call::{AbiStr, Blob, InHead, Outcome, BLOB_ABSENT, BLOB_OCTETS};
 use crate::hook_wire::HookStageProjection;
 use crate::hooks::{Candidate, RoutingContext, RoutingRequest};
 use crate::signal::{SignalBag, SignalValue as Value};
@@ -56,6 +56,7 @@ struct Store {
     lists: Vec<Box<[AbiStr]>>,
     signals: Vec<Box<[SignalEntry]>>,
     messages: Vec<Box<[MessageView]>>,
+    octets: Vec<Box<[u8]>>,
 }
 
 impl Store {
@@ -72,6 +73,22 @@ impl Store {
 
     fn opt(&mut self, v: Option<&str>) -> AbiStr {
         v.map_or(NULL, |v| self.s(v))
+    }
+
+    /// Present octets ([`BLOB_OCTETS`]), copied into the view; `None` = an absent blob.
+    fn octets(&mut self, v: Option<&[u8]>) -> Blob {
+        let Some(v) = v else {
+            return NO_BLOB;
+        };
+        let b: Box<[u8]> = v.into();
+        let out = Blob {
+            ptr: b.as_ptr(),
+            len: b.len(),
+            fmt: BLOB_OCTETS,
+            flags: 0,
+        };
+        self.octets.push(b);
+        out
     }
 
     fn list(&mut self, v: &[String]) -> (*const AbiStr, usize) {
@@ -174,6 +191,7 @@ fn request_view(store: &mut Store, req: &RoutingRequest<'_>) -> RequestView {
         flags,
         signals,
         signals_len,
+        session: store.octets(req.session),
     }
 }
 
@@ -559,6 +577,53 @@ impl DecideFrame {
     pub fn rewrite(&self, written: usize) -> Vec<u8> {
         self.rewrite.read(written).to_vec()
     }
+
+    /// The 1.5.5 `decide`/`transform` JSON (`op`: [`crate::hook_wire::OP_DECIDE`] or
+    /// [`crate::hook_wire::OP_TRANSFORM`]) a hook written against the JSON contract is handed for
+    /// this frame's view: the SDK's own rebuild ([`crate::abi::sdk::hook::Decoded::projection_json`]),
+    /// read here so an in-process hook reads exactly what a plugin reads (as
+    /// [`NotifyFrame::projection_json`]).
+    #[must_use]
+    pub fn projection_json(&self, op: &'static str) -> serde_json::Value {
+        let input = self.input();
+        // SAFETY: every pointer in `input` names storage this frame owns (its view's store and its
+        // host buffers), live while `self` is borrowed.
+        let lent = unsafe { crate::abi::sdk::Lent::new(&input) };
+        crate::abi::sdk::hook::Decoded::of(lent).projection_json(op)
+    }
+
+    /// ANSWER `decide` IN PROCESS: `v` lowered into this frame's own host buffers exactly as the
+    /// SDK's door lowers it ([`crate::abi::sdk::hook::write_verdict`], the one short FAILED
+    /// included), and the `out` it answers (its head blank: nothing crossed). For an in-process
+    /// [`crate::hook_calls::HookCalls`], the frame's one answerer: nothing reads the answer before
+    /// this returns.
+    #[must_use]
+    pub fn answer_decide(&self, v: &crate::abi::sdk::hook::Verdict) -> (Outcome, DecideOut) {
+        let input = self.input();
+        // SAFETY: as `projection_json`; the host buffers are writable for their stated capacity
+        // and overlap nothing else.
+        let lent = unsafe { crate::abi::sdk::Lent::new(&input) };
+        // SAFETY: `DecideOut` is plain integers and a head of plain integers, raw pointers and
+        // blobs, for which the all-zero pattern is valid (the host's own pre-fill).
+        let mut out: DecideOut = unsafe { std::mem::zeroed() };
+        let outcome = crate::abi::sdk::hook::write_verdict(v, lent, &mut out);
+        (outcome, out)
+    }
+
+    /// [`Self::answer_decide`]'s `transform` twin ([`crate::abi::sdk::hook::write_rewrite`]).
+    #[must_use]
+    pub fn answer_transform(
+        &self,
+        v: &crate::abi::sdk::hook::RewriteVerdict,
+    ) -> (Outcome, TransformOut) {
+        let input = self.input();
+        // SAFETY: as `answer_decide`.
+        let lent = unsafe { crate::abi::sdk::Lent::new(&input) };
+        // SAFETY: as `answer_decide`: `TransformOut` is plain integers and a plain head.
+        let mut out: TransformOut = unsafe { std::mem::zeroed() };
+        let outcome = crate::abi::sdk::hook::write_rewrite(v, lent, &mut out);
+        (outcome, out)
+    }
 }
 
 /// ONE `notify` CALL'S FRAME (WIRE-HOOK Q5): the stage view, the request's declared signals and —
@@ -583,17 +648,17 @@ unsafe impl Sync for NotifyFrame {}
 impl NotifyFrame {
     /// The tap view of `req` (its shape fields and declared signals) at `stage` (`None` = a
     /// request-stage tap: no stage projection, as 1.5.5's `stage` was absent). The prompt view is
-    /// carried only when `prompt_granted` (the tap's `prompt: ro` grant) AND `req` projects one: an
+    /// carried only when `view_granted` (the tap's `prompt: ro` grant) AND `req` projects one: an
     /// ungranted tap never sees the prompt, whatever the request carries.
     #[must_use]
     pub fn build(
         req: &RoutingRequest<'_>,
         stage: Option<&HookStageProjection<'_>>,
-        prompt_granted: bool,
+        view_granted: bool,
     ) -> Arc<Self> {
         let mut store = Store::default();
         let (signals, signals_len) = store.bag(&req.signals);
-        let granted = if prompt_granted {
+        let granted = if view_granted {
             store.prompt(req)
         } else {
             None

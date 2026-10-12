@@ -7,15 +7,26 @@ When you do need more, a durable store, a secret backend, auth or hook modules, 
 capability as a signed plugin tarball dropped into a directory. Lightweight by default, extend when
 needed.
 
-A plugin is a plugin: store, secret, auth, and hook plugins share ONE artifact format, ONE trust model, ONE
-loader, and ONE inventory (`busbar --list-plugins`). The manifest `kind` field is the only
-discriminator; it selects which C ABI the cdylib exports and which engine subsystem consumes it.
-The engine itself never sees any of this machinery. It receives a `dyn Store` (or a `dyn SecretModule` /
-`dyn AuthModule` / `dyn HookHandler`) trait object through the `busbar-contract` contract, exactly as if
-the backend had been compiled in. The engine cannot tell a dynamic plugin from a built-in, and the
-crate boundaries enforce it: all plugin discovery, unpacking, verification, and loading lives in
-the `plugin-*` crates, and the engine crate keeps `#![forbid(unsafe_code)]` with every FFI
-`unsafe` isolated in `busbar-plugin-loader`.
+A plugin is a plugin. There are seven plugin kinds: **store, secret, auth, hook, export, plane and
+transport**. They share ONE artifact format, ONE trust model, ONE loader, and ONE inventory
+(`busbar --list-plugins`). The manifest `kind` field is the only discriminator; it selects which
+kind's interface the plugin answers and which part of Busbar consumes it. (Planes are the plugins that
+bring their own config sections: the model, MCP, A2A, streaming and decisions planes. Transports carry
+bytes for a URL scheme.)
+
+**Plugins speak the memory ABI only** (since 1.6.0). Every kind has one ABI, and all seven share one
+mechanism: a plugin exports ONE symbol, `busbar_plugin_door`, which answers a table of typed slots
+passed as bytes in memory. There is no JSON call contract and no separate "hot" and "cold" lane any
+more. **A compiled-in plugin is a dropped-in plugin:** a compiled-in plugin exports the same door and is
+called through the same table, and the same checks run on both, so a build that links a plugin in and
+a tarball that is dropped into the plugins directory are indistinguishable to Busbar. The `memory`
+store is such a plugin, compiled in. The engine crate keeps `#![forbid(unsafe_code)]` with every FFI
+`unsafe` isolated in `busbar-plugin-loader`. For plugin authors, [Rebuilding a 1.5.5 plugin against the
+1.6.0 SDK](plugin-sdk-migration-1.6.md) is the build guide.
+
+**A plugin built for 1.5.5 does not load.** The published 1.5.5 plugins spoke JSON through six C
+symbols; boot refuses one with a message naming the rebuild against the 1.6.0 SDK. See [Plugins and
+1.6.0](#plugins-and-160).
 
 - [What makes it a plugin](#what-makes-it-a-plugin)
 - [The artifact](#the-artifact)
@@ -39,7 +50,7 @@ the engine wearing a plugin's name.
 
 `scripts/no-plugins-gate.sh` (CI job `no-plugins-gate`) is that rule, executable. It uses a config
 that references zero plugins: only `keys` (the inline signed-key verifier), `weighted` (the inline
-SWRR floor), and `store.module: memory` (the one store that is not a plugin). Against that config it
+SWRR floor), and `store.module: memory`, which is the compiled-in store plugin, not a dropped-in one. Against that config it
 runs busbar two ways:
 
 - **compiled out**: built `--no-default-features`, so the built-in plugin features
@@ -119,24 +130,25 @@ you can name the tarball anything.
 > `<`, and `>` in a URL field to keep the case covered.
 
 `name` is the canonical identity (`[a-z0-9-]+`, e.g. `busbar-store-valkey`); `alias` is the short
-config name (`valkey`). `store.module:` accepts either. `kind` is `store`, `secret`, `auth`, `hook`, or
-`export`. `version` is strict semver. `abi_version` declares which per-kind payload-schema generation
-the cdylib was built against. It is set **per kind**: `auth` is at `3` and `hook` at `2` (each wraps
-its replies in the observability envelope; `auth` accepts `1..=3` — it was bumped 1→2 in 1.5.2 for
-the additive browser-login primitives — and `hook` accepts `1..=2`), `secret` at `1`, `export` is at `2` (1.5.3
-expanded the stream vocabulary and dropped `audit`, so a v1 sink is not accepted), and `store` accepts
-the range `2..=4`. The loader enforces a supported-version RANGE per kind, so a plugin built against an
-outdated (or too-new) ABI is refused at load rather than mis-called. See `busbar_contract::abi::cold` for the
-authoritative versions.
+config name (`valkey`). `store.module:` accepts either. `kind` is one of the seven plugin kinds:
+`store`, `secret`, `auth`, `hook`, `export`, `plane` or `transport`. `version` is strict semver.
+`abi_version` declares which version of its kind's memory ABI the cdylib was built against. It is
+set **per kind**: store `3`, secret `2`, auth `3`, hook `2`, export `3`, plane `1`, transport `1`
+(`busbar_contract::abi::<kind>::ABI_VERSION` is authoritative). The host accepts exactly the
+current version of each kind: older and newer are both refused at boot, naming the plugin, rather
+than mis-called. The mechanism has its own version too, stamped in every door.
 
-**Store plugins and 1.6.0.** Every published 1.5.5 store plugin (`busbar-store-sqlite`, `-postgres`,
-`-mysql`, `-valkey`; all `abi_version: 2`) loads on 1.6.0 unchanged: the durable wire is additive,
-so every request variant the 1.5.x engine sent still exists, and the eight plane-record verbs
-1.6.0 added (the durable MCP call record and A2A task rows) are answered "unsupported" by a
-1.5.5 plugin and treated as inert by the engine — the same data the `memory` store keeps in
-process. Nothing installed needs rebuilding or re-pinning for 1.6.0. Store plugins built against
-ABI 4, which persist those records, are a later release and will ship as new tarballs; a
-`plugins.min_versions` floor you set today keeps meaning what it means.
+### Plugins and 1.6.0
+
+**A published 1.5.5 JSON-contract plugin no longer loads** (an owner-signed change from 1.5.5; spec
+section 11.8). That includes the four published store plugins (`busbar-store-sqlite`, `-postgres`,
+`-mysql`, `-valkey`; all `abi_version: 2`). Boot refuses the plugin with a message naming the rebuild
+against the 1.6.0 SDK, and `busbar --validate` reports it without opening the library. Every
+first-party plugin has been rewritten and re-released; a third-party plugin is rebuilt against the
+1.6.0 SDK. Install the rebuilt releases before upgrading, and raise any `plugins.min_versions` floor
+to match. Your data carries over: a rebuilt store plugin opens its own database and upgrades it with
+its own `migrate()`. Build steps are in [Rebuilding a 1.5.5 plugin against the 1.6.0
+SDK](plugin-sdk-migration-1.6.md).
 
 ## Enabling plugins
 
@@ -166,37 +178,29 @@ read it, and referencing a plugin store (`store.module: valkey`) fails boot with
 
 ## Building a store plugin
 
-The kind-specific sections below carry the auth, secret, and hook build examples. A store plugin in
-Rust is small. Implement the `busbar_contract::records::RecordStore` trait (or wrap an existing
-implementation), adapt the JSON config Busbar passes at open, and let the SDK emit the C glue:
+A store plugin in Rust is small. Implement `busbar_contract::abi::sdk::store::StoreSlots` (which
+extends `busbar_contract::records::RecordStore`) for your type, declare what it keeps, and let the
+SDK emit the door:
 
 ```rust
 // Cargo.toml:
 //   [lib]
-//   crate-type = ["cdylib"]
+//   crate-type = ["rlib", "cdylib"]
 //   [dependencies]
-//   busbar-contract = { .. }   # the plugin contract: shapes, ABI and export macros (#84)
-//   serde_json = "1"
+//   busbar-contract = { .. }   # the plugin contract: shapes, ABI and door macros
 
-use busbar_contract::records::RecordStore;
-
-fn open(cfg: &str) -> Result<Box<dyn RecordStore>, String> {
-    // `cfg` is the store's own `settings` map, passed through verbatim as JSON.
-    let v: serde_json::Value = serde_json::from_str(cfg).map_err(|e| e.to_string())?;
-    let url = v.get("url").and_then(|x| x.as_str()).ok_or("missing url")?;
-    Ok(Box::new(MyStore::connect(url)?))
-}
-
-busbar_contract::abi::sdk::export_store_plugin!(open);
+// `open(settings)` receives the store's own `settings` map.
+busbar_contract::store_door!(MyStore, "my-store", "1.0.0", 64);
 ```
 
-`export_store_plugin!` emits the six kind-neutral extern-C symbols of the plugin ABI (`busbar_abi`,
-`busbar_plugin_kind`, `busbar_open`, `busbar_call`, `busbar_free`, `busbar_close`). Every store
-operation rides one `busbar_call` symbol as a
-JSON-serialized `StoreRequest`/`StoreResponse` pair, so the symbol set never grows as the trait
-does, and a plugin can equally be written in C, Go, or Zig against the same contract
-(`busbar_contract::abi::cold` is the source of truth). The store sits off the request hot path
-(write-behind), so JSON serialization never touches request latency.
+The `cdylib` then invokes `busbar_contract::export_door!` once to emit the one exported symbol,
+`busbar_plugin_door`; gate it behind a cargo feature so a build that merely links your crate does not
+also export it. A host that links your crate registers the same door as a compiled-in row, and a host
+that loads your tarball calls the exported symbol: both reach the same table through the same checks.
+The in-tree `store-memory` crate is the worked example, and
+[Rebuilding a 1.5.5 plugin against the 1.6.0 SDK](plugin-sdk-migration-1.6.md#store) has the full
+recipe. The store sits off the request hot path (write-behind), and a store call is a typed slot
+crossing, not a serialization.
 
 Build per target:
 
@@ -237,12 +241,9 @@ impl SecretModule for MyVault {
     }
 }
 
-fn open(cfg: &str) -> Result<Box<dyn SecretModule>, String> {
-    // `cfg` is the MODULE's own open-time `settings:` map (e.g. the vault address + auth), verbatim
-    // JSON, and distinct from the per-REFERENCE `settings` `resolve` receives above.
-    Ok(Box::new(MyVault::connect(cfg)?))
-}
-busbar_contract::abi::sdk::export_secret_plugin!(open);
+// The module's own open-time `settings:` map (e.g. the vault address + auth) reaches `open`, and is
+// distinct from the per-REFERENCE `settings` `resolve` receives above. The door is built with
+// `plugin_door!` over `abi::secret::Ops`; see the SDK migration note for the exact form.
 ```
 
 A complete, real reference implementation is the HashiCorp Vault plugin
@@ -322,11 +323,8 @@ impl AuthModule for MyIdp {
     fn cacheable(&self) -> bool { true }                     // per-call I/O ⇒ opt into the cred cache
 }
 
-fn open(cfg: &str) -> Result<Box<dyn AuthModule>, String> {
-    // `cfg` is the chain entry's own `settings:` map, passed through verbatim as JSON.
-    Ok(Box::new(MyIdp::from_config(cfg)?))
-}
-busbar_contract::abi::sdk::export_auth_plugin!(open);
+// The chain entry's own `settings:` map reaches `open`. The door is built with `auth_verify_door!`
+// (see the SDK migration note for the exact form).
 ```
 
 An identity provider returns **identity only**: who the caller is (`id` + `roles`). Policy (which
@@ -418,68 +416,48 @@ fn drain_observations(&self) -> Observations {
 }
 ```
 
-It is a **drain**: Busbar calls it once per `busbar_call` and puts the result on that call's
+It is a **drain**: Busbar calls it once per call and puts the result on that call's
 response, so hand over what has accumulated and reset. Report a running total instead and the folded
 counter climbs quadratically against a flat workload.
 
-Writing a plugin in another language? Wrap your response in `{"result": …}` and add the two arrays
-when you have something to report; omit them when you do not. A plugin built before the envelope
-answers `result` bare and keeps working — Busbar reads whichever shape your plugin speaks, decided
-once when it loads. Three kinds declare the enveloped payload schema: `kind: export`
-(`abi_version: 3`), `kind: auth` (`abi_version: 3`) and `kind: hook` (`abi_version: 2`); an auth or
-hook reply inside the envelope is exactly the one it replaced, and an older plugin of either kind
-keeps loading. The store and secret schemas are unchanged, and so are the six exported symbols and
-`busbar_abi() == 1`.
+Three kinds carry the observability envelope: `kind: export` (`abi_version: 3`), `kind: auth`
+(`abi_version: 3`) and `kind: hook` (`abi_version: 2`). A plugin in another language fills the same
+typed slots through the door; the SDK crate `busbar-contract` is the source of truth for the layout.
 
 ## Hook plugins (`kind: hook`)
 
-Hook plugins load over the same signed hybrid ABI as store, secret, and auth plugins. They are
-in-process dlopen consumers: the hook `cdylib` exports the six kind-neutral C symbols
-(`busbar_abi`, `busbar_plugin_kind`, `busbar_open`, `busbar_call`, `busbar_free`, `busbar_close`)
-and the engine loads and calls it directly. Trust is signature-based, not process-based: the
-manifest `kind` is cross-checked against `busbar_plugin_kind()` at load, and the signed `needs`
+Hook plugins load over the same signed memory ABI as every other kind. They are in-process dlopen
+consumers: the hook `cdylib` exports the one `busbar_plugin_door` symbol and the engine loads and
+calls it directly. Trust is signature-based, not process-based: the manifest `kind` and the signed
+Statement are cross-checked against the door at load, and the signed `needs`
 field caps what grants the plugin may receive. For process isolation of out-of-process logic, the
 first-party `busbar-hook-webrequest` plugin forwards the decision to an HTTPS sidecar (1.5.0
 retired the standalone built-in `socket`/`webhook` transports; a hook is now always a signed
 plugin).
 
-A hook plugin implements the SDK's `HookHandler` trait: one method per op, each receiving the op's
-payload as the opaque projection `serde_json::Value` the engine built and returning the reply object
-the engine parses through its existing fail-closed normalizers. Every method has a default, so a
-trivial hook implements only the ops it cares about (a ranking gate implements just `decide`; a
-compressor just `transform`); the rest degrade to the safe abstain/no-op replies the engine already
-treats as fail-open. The SDK emits the ABI glue:
+A hook plugin answers the hook kind's slots (`decide`, `transform`, `notify`, `configure`, `status`,
+`describe`), each receiving the op's payload as the projection the engine built and returning the
+reply object the engine parses through its existing fail-closed normalizers. A trivial hook fills
+only the ops it cares about (a ranking gate implements just `decide`; a compressor just `transform`).
+The sketch below shows the logic of a `decide` slot:
 
 ```rust
 // crate-type = ["cdylib"]; deps: busbar-contract, serde_json
-use busbar_contract::abi::sdk::HookHandler;
-
-struct MyGate { /* … */ }
-impl HookHandler for MyGate {
-    // `decide`: rank candidates / return a verdict. Return `{}` to abstain.
-    fn decide(&self, payload: &serde_json::Value) -> serde_json::Value {
-        let too_big = payload["request"]["total_chars"].as_u64().unwrap_or(0) > 100_000;
-        if too_big {
-            serde_json::json!({ "reject": { "status": 413, "message": "prompt too large" } })
-        } else {
-            serde_json::json!({})
-        }
+// `decide`: rank candidates / return a verdict. Return `{}` to abstain.
+fn decide(payload: &serde_json::Value) -> serde_json::Value {
+    let too_big = payload["request"]["total_chars"].as_u64().unwrap_or(0) > 100_000;
+    if too_big {
+        serde_json::json!({ "reject": { "status": 413, "message": "prompt too large" } })
+    } else {
+        serde_json::json!({})
     }
-    // Unimplemented ops (`transform`/`notify`/`configure`/`describe`/`status`) use the trait defaults.
 }
-
-fn open(cfg: &str) -> Result<Box<dyn HookHandler>, String> {
-    // `cfg` is the hook instance's own `settings:` map, passed through verbatim as JSON.
-    Ok(Box::new(MyGate::from_config(cfg)?))
-}
-busbar_contract::abi::sdk::export_hook_plugin!(open);
+// The door is built with `plugin_door!` over `abi::hook::Ops`, naming the slots you fill
+// (see the SDK migration note for the exact form).
 ```
 
-`export_hook_plugin!` emits the six extern-C hybrid ABI symbols. Every op rides the one `busbar_call`
-as an op-discriminated JSON envelope: the `decide`/`transform`/`notify`/`configure`/`describe`/
-`status` payload contract, one op per envelope. The engine translates each `HookHandler` method into a
-`busbar_call` and parses the reply through the ONE `hooks::wire` fail-closed normalizer, so the
-dlopen and out-of-process seams can never diverge on reject-precedence, the status clamp, or
+The engine parses every reply through the ONE `hooks::wire` fail-closed normalizer, so the
+dropped-in and out-of-process seams can never diverge on reject-precedence, the status clamp, or
 restrict/rewrite parsing. A hook never sees `prompt`/`user` content it was not granted: the engine
 projects those keys into `payload` only when BOTH the operator grant and the signed-manifest `needs`
 allow it.

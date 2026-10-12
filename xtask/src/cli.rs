@@ -875,7 +875,9 @@ fn run_selftest(gate: &dyn gates::Gate, cx: &Ctx) -> i32 {
         };
         println!("  {got:<7} {}", case.name);
     }
-    match gates::verify_report(gate, &report) {
+    // THE BUDGET, AND AN OVER-BUDGET BATTERY RE-TAKEN SERIALLY BEFORE IT COUNTS (ARCHITECT
+    // 2026-10-07): see `gates::budget_reading`.
+    match gates::verify_selftest(gate, &report, cx) {
         Ok(()) => {
             let slowest = report
                 .slowest()

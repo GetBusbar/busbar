@@ -33,9 +33,9 @@
 //!    plane's own `the_digest_of_the_cross_language_pin_fixture_is_pinned`. A drift here would make
 //!    the control fail for the wrong reason; this test names that reason instead.
 
-// The plane under test is the linked row carrying the `stdio-serve` axis (build.rs emits
-// `linked_axis_stdio_serve` from `[package.metadata.busbar.linked-axes]`).
-#![cfg(all(linked_axis_stdio_serve, feature = "auth-admin-tokens"))]
+// The plane under test is the one `plane-mcp` switches on (served through its door), gated on
+// `linked_section_tools`: set exactly when the linked door declaring `tools:` is in the build.
+#![cfg(all(linked_section_tools, feature = "auth-admin-tokens"))]
 
 mod common;
 
@@ -261,10 +261,17 @@ fn fixture_dir(tag: &str) -> PathBuf {
     let d = std::env::temp_dir().join(format!(
         "busbar-qa-tool-integrity-{}-{tag}-{}",
         std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
+        {
+            static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            format!(
+                "{}-{}-{}",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |d| d.as_nanos()),
+                line!(),
+                NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            )
+        }
     ));
     std::fs::create_dir_all(&d).unwrap();
     d
@@ -331,6 +338,7 @@ async fn boot(tag: &str, upstream: &Upstream, approved_digest: &str) -> Node {
         format!(
             r#"listen: "127.0.0.1:{data_port}"
 admin_listen: "127.0.0.1:{admin_port}"
+store: {{module: memory}}
 providers: {{}}
 models: {{}}
 pools: {{}}

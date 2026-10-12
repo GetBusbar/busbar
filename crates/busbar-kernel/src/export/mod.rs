@@ -8,7 +8,7 @@
 //! modules — no config boolean, no dynamic tarball.
 //!
 //! The COLLECTION half stays core: the Prometheus recorder + the ~57 emit sites + the
-//! scrape-time gauge derivation live in [`crate::metrics`]; the request-log projection is still built
+//! scrape-time gauge derivation live in [`crate::snapshot`]; the request-log projection is still built
 //! in the request-finish path. These modules move only the DISTRIBUTION:
 //!
 //! - [`scrape`] — PULL. The host's scrape of the well-known `/metrics`: the export-axis instance
@@ -33,8 +33,8 @@ use busbar_contract::abi::export::{ExportField, ExportStream};
 use serde_json::Value;
 use std::sync::Arc;
 
-/// The live plugin-route declarations the `export:` block contributes — the host's scrape route and
-/// every opened export-axis sink's own. Built at App construction from the resolved `export:` block
+/// The live plugin-route declarations the `export:` block contributes — every opened export-axis
+/// sink's own, the scrape sink's well-known `/metrics` and `/metrics/hooks` first. Built at App construction from the resolved `export:` block
 /// and folded into the [`crate::plugin_routes::PluginRouteTable`] on the App snapshot.
 ///
 /// **A config apply UNMOUNTS but cannot MOUNT.** The two directions are not symmetric, and an earlier
@@ -43,6 +43,8 @@ use std::sync::Arc;
 /// - **Removing** the scrape sink's instance takes effect immediately. The path stays registered on the
 ///   router, but [`crate::plugin_routes::plugin_route_dispatch`] resolves the owner from the CURRENT
 ///   snapshot on every request, finds nothing, and 404s. No rebuild needed.
+///   `/metrics/hooks` is the exception, as in 1.5.5 (a core route then, mounted with the recorder
+///   at boot): the boot's scrape sink keeps answering it until restart.
 /// - **Adding** it does NOT take effect until restart. Each declared PATH is registered on the axum
 ///   router once, at boot (`plugin_routes.rs`, `on(filter, plugin_route_dispatch)`), and a config
 ///   apply swaps only `Arc<App>` — the router is never rebuilt. If no `prometheus` instance existed
@@ -57,8 +59,7 @@ use std::sync::Arc;
 /// for the route itself — genuinely hot-mounting one is a router rebuild, not done here — but it is no
 /// longer a SILENT one.
 pub(crate) fn route_decls(cfg: &ExportCfg) -> Vec<RouteDecl> {
-    let scraped = scrape::route_decl(cfg).into_iter();
-    scraped.chain(plugin::route_decls(cfg)).collect()
+    plugin::route_decls(cfg)
 }
 
 /// The raw per-request facts the `logs` stream is built FROM — everything core knows at

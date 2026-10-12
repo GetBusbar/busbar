@@ -12,7 +12,8 @@
 //! so every draft below hands the loop a body the kernel does not have to re-walk. The plane once
 //! handed back an empty table because the arena could not allocate one; it can, and this does.
 
-use busbar_contract::bounded::{BoundedVec, FactValue, Facts, Ir, ScratchBytes, Span};
+use busbar_contract::abi::plane::{class_of_refusal, RefusalClass};
+use busbar_contract::bounded::{FactValue, Facts, Ir, ScratchBytes};
 use busbar_contract::dest::{DestinationFacts, EgressBody, Leg, RoutePlan, VerifiedDestination};
 use busbar_contract::ids::{AdminVerbId, LaneId, SchemeAlt};
 use busbar_contract::kinds::{ContentFacts, CredentialLocator, PlaneFacts};
@@ -20,8 +21,8 @@ use busbar_contract::plane::{
     Ingress, Plane, PlaneSessionState, Progress, Response, SessionPlane, UnitDraft,
 };
 use busbar_contract::unit::{
-    AdmitFacts, AuditFacts, Ctx, FinishClass, Refusal, RefusalReason, ResourceLocator, ScopeFacts,
-    Unit, UnitEnd, UsageLocator, UsageLocators,
+    AuditFacts, Ctx, FinishClass, Refusal, RefusalReason, Unit, UnitEnd, UsageLocator,
+    UsageLocators,
 };
 use busbar_contract::wire::{Decode, Encode, Frame, FrameCursor, TransportEnvelope};
 
@@ -201,83 +202,54 @@ fn has(body: &[u8], pointer: &str) -> bool {
 /// must compare against the rig's recorded answers on the day it switches this plane on. That is
 /// stated here rather than left for someone to discover.
 fn refusal_render(reason: RefusalReason) -> (i64, &'static str) {
-    // THE MATCH IS TOTAL — there is no `_` arm. A2A's JSON-RPC binding names a small set of codes,
-    // so a busbar-specific condition rides the NEAREST defined binding with the real reason kept out
-    // of the words rather than a code the specification does not define (the rule the legacy plane's
-    // `rpcerror.rs` states: "a busbar-specific condition is mapped to the NEAREST binding ... rather
-    // than to a code the specification does not define"). The whole point of removing the catch-all
-    // is that a reason with no home is a COMPILE error here, never a silent collapse to an internal
-    // fault — the defect this exhaustive form exists to make impossible: a rate-limit, a breaker or a
-    // drain answered as "this node broke" tells the caller to retry the wrong thing.
-    match reason {
+    // A class-to-wire table over the one classification (`busbar_contract::abi::plane::
+    // RefusalClass`; the P-item "refusal-reason collapse"). Which family a reason belongs to is
+    // decided once, there; this plane says only how each family reads on its wire. A2A's JSON-RPC
+    // binding names a small set of codes, so a busbar-specific condition rides the NEAREST defined
+    // binding with the real reason kept out of the words rather than a code the specification does
+    // not define (the rule the legacy plane's `rpcerror.rs` states). The match has no `_` arm: a
+    // class with no home is a compile error, never a silent collapse to an internal fault -- a rate
+    // limit, a breaker or a drain answered as "this node broke" tells the caller to retry the wrong
+    // thing.
+    match class_of_refusal(reason) {
         // The caller's request was not one this node could read or take.
-        RefusalReason::BodyTooLarge => (jsonrpc::CODE_INVALID_REQUEST, "the request is too large"),
-        RefusalReason::DecodeFailed => (
+        RefusalClass::TooLarge => (jsonrpc::CODE_INVALID_REQUEST, "the request is too large"),
+        RefusalClass::Unreadable => (
             jsonrpc::CODE_INVALID_REQUEST,
             "the request could not be read",
         ),
-        RefusalReason::SchemeNotDeclared
-        | RefusalReason::CredentialRejected
-        | RefusalReason::SessionUnbound
-        | RefusalReason::CredentialBudget => (
+        RefusalClass::Unauthenticated => (
             jsonrpc::CODE_INVALID_REQUEST,
             "the request did not carry usable authority",
         ),
         // The caller is known and may not do this.
-        RefusalReason::ScopeMissing
-        | RefusalReason::Vetoed
-        | RefusalReason::Revoked
-        | RefusalReason::PoolNotPermitted => (
+        RefusalClass::Forbidden => (
             jsonrpc::CODE_UNSUPPORTED_OPERATION,
             "the caller may not perform this operation",
         ),
         // There is nowhere for it to go.
-        RefusalReason::NoDestination => (
+        RefusalClass::NotFound => (
             jsonrpc::CODE_INVALID_PARAMS,
             "no agent is reachable for this request",
         ),
         // Every busbar-specific admission / capacity / rate / budget / breaker / drain refusal. The
         // A2A JSON-RPC binding defines no code of its own for any of these, so each rides the nearest
-        // one — `UnsupportedOperation`, which is how the legacy plane answers its own admission
-        // refusals too — with a neutral message that leaks nothing about the money, the buckets or
+        // one -- `UnsupportedOperation`, which is how the legacy plane answers its own admission
+        // refusals too -- with a neutral message that leaks nothing about the money, the buckets or
         // the store. A caller learns it was refused here and nothing more.
-        RefusalReason::InFlightCap
-        | RefusalReason::CursorBudget
-        | RefusalReason::SessionBudget
-        | RefusalReason::OpenSlotBusy
-        | RefusalReason::OverBudget
-        | RefusalReason::GroupFrozen
-        | RefusalReason::Unpriced
-        | RefusalReason::OverdraftCeiling
-        | RefusalReason::StaleSlice
-        | RefusalReason::TierMismatch
-        | RefusalReason::SpillBudget
-        | RefusalReason::ScratchExhausted
-        | RefusalReason::RateLimited
-        | RefusalReason::ChallengeExhausted
-        | RefusalReason::NoRate
-        | RefusalReason::Replayed
-        | RefusalReason::InFlight
-        | RefusalReason::DestinationBudgetExhausted
-        | RefusalReason::BreakerOpen
-        | RefusalReason::DestinationUnreachable
-        | RefusalReason::Drain
-        | RefusalReason::Superseded
-        | RefusalReason::ClientGone
-        | RefusalReason::DeadlineExceeded
-        | RefusalReason::Stalled => (
+        RefusalClass::Rejected
+        | RefusalClass::Throttled
+        | RefusalClass::Busy
+        | RefusalClass::QuotaExhausted
+        | RefusalClass::Unreachable
+        | RefusalClass::Unavailable
+        | RefusalClass::Timeout => (
             jsonrpc::CODE_UNSUPPORTED_OPERATION,
             "the request could not be served at this time",
         ),
-        // A genuine node-internal fault — this node did break, and the caller is owed that fact and
-        // not a false policy refusal. Listed explicitly (never a catch-all) so a new reason cannot
-        // join this arm by accident.
-        RefusalReason::DurabilityUnavailable
-        | RefusalReason::MeterDisputed
-        | RefusalReason::HandoffMismatch
-        | RefusalReason::PlanePanic
-        | RefusalReason::TaskLost
-        | RefusalReason::SecretPlaceholder => (
+        // A genuine node-internal fault -- this node did break, and the caller is owed that fact and
+        // not a false policy refusal.
+        RefusalClass::PlaneFault | RefusalClass::NodeFault => (
             jsonrpc::CODE_INTERNAL,
             "the request could not be served at this time",
         ),
@@ -827,36 +799,6 @@ impl Plane for A2aPlane {
             },
             // Everything else is a hop to the agent.
             _ => self.upstream_destination(u),
-        }
-    }
-
-    fn approve<'u>(&self, u: &Unit<'u>, _ctx: &Ctx<'u>) -> ScopeFacts {
-        let mut facts = ScopeFacts::default();
-        // The resource is the agent, under the kind the codec already names it by. The plane says
-        // WHAT is being asked for; which scope that requires, and whether this principal holds it,
-        // is the scope unit's answer and never this plane's.
-        if let Some(agent) = self.agent_for(u) {
-            let _ = facts.resources.push(ResourceLocator {
-                kind: "agent",
-                name: agent.id,
-            });
-        }
-        facts
-    }
-
-    fn admit<'u>(&self, u: &Unit<'u>, _ctx: &Ctx<'u>) -> AdmitFacts {
-        AdmitFacts {
-            // The lane is not in the request. It is a property of the agent the operator
-            // configured, and the trust unit re-derives it against the allow-list.
-            lane_locator: None,
-            // This protocol gives a caller no way to declare a ceiling on the answer, so no
-            // place is named for one.
-            max_response_ptrs: BoundedVec::new(),
-            // The priced input is the whole request document.
-            input_span: Some(Span {
-                start: 0,
-                end: u.body().body().len(),
-            }),
         }
     }
 

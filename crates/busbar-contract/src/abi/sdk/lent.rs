@@ -231,6 +231,24 @@ impl<'a, T: Copy> HostBuf<'a, T> {
         self.cap
     }
 
+    /// The room left, as the raw parts a HOST call writes into (`abi::sdk::io`: a carrier reads
+    /// straight into the host's buffer): a pointer and how many `T`s fit there. NULL with `0` when
+    /// none is left.
+    pub(crate) fn room(&mut self) -> (*mut T, usize) {
+        let left = self.cap.saturating_sub(self.asked);
+        if left == 0 {
+            return (ptr::null_mut(), 0);
+        }
+        // SAFETY: `asked < cap`, inside the `cap` `T`s the host lent at `ptr` (`new`).
+        (unsafe { self.ptr.add(self.asked) }, left)
+    }
+
+    /// Count `n` values a host call wrote into [`HostBuf::room`] (at most what it offered).
+    pub(crate) fn advance(&mut self, n: usize) {
+        let left = self.cap.saturating_sub(self.asked);
+        self.asked = self.asked.saturating_add(n.min(left));
+    }
+
     /// Every value asked of it so far, written or not.
     #[must_use]
     pub const fn asked(&self) -> usize {
@@ -302,6 +320,18 @@ impl<T: Scalar> HostBuf<'_, T> {
         let room = self.cap.saturating_sub(self.asked).min(vs.len());
         self.extend(&vs[..room]);
         room
+    }
+}
+
+impl HostBuf<'_, crate::abi::hook::MessageView> {
+    /// Write one prompt turn at the next index while there is room; count it either way. Answers
+    /// its index. `role` and `text` are spans the same call wrote into `arena`, the host's arena,
+    /// so the turn points only at host memory.
+    pub fn push_turn(&mut self, arena: &HostBuf<'_, u8>, role: Span, text: Span) -> usize {
+        self.push_row(crate::abi::hook::MessageView {
+            role: arena.str_at(role),
+            text: arena.str_at(text),
+        })
     }
 }
 
@@ -450,7 +480,8 @@ macro_rules! lend {
 }
 
 use crate::abi::auth::{
-    BeginLoginIn, CompleteLoginIn, IdentityBuf, NamedValue, StripName, VerifyIn,
+    BeginLoginIn, CompleteLoginIn, FieldSpan, FieldsIn, IdentityBuf, NamedValue, StripName,
+    VerifyIn,
 };
 use crate::abi::hook::{
     BudgetBucketState as HookBudgetBucketState, CandidateDynamic as HookCandidateDynamic,
@@ -460,12 +491,13 @@ use crate::abi::hook::{
 use crate::abi::mechanism::lifecycle::{OpenIn, ReadyIn, RefreshIn, ValidateIn};
 use crate::abi::mechanism::ticket::HostTables;
 use crate::abi::plane::{
-    ArriveIn, OnPieceIn, OutField, PlaneDriveIn, ProjectIn, RecordWrite, RefusalIn, ServeIn,
-    UnitCount,
+    ArriveIn, OnPieceIn, OutField, PlaneCancelIn, PlaneDriveIn, PlaneOpenIn, ProjectIn,
+    ProviderFacts, RecordWrite, RefusalIn, ServeIn, UnitCount,
 };
 use crate::abi::transport::{
-    AcceptIn, AdoptIn, ArrivalIn, BeginIn, ConnFacts, EmitIn, EncodeIn, FramePiece, FramerSink,
-    HeadSlots, IngestIn, ListenIn, LocateIn, ReadIn, RefuseIn, WriteIn,
+    AcceptIn, AdoptIn, ArrivalIn, BeginIn, ConnFacts, DatagramLane, DatagramPath, DatagramRoute,
+    Destination, DialIn, EmitIn, EncodeIn, FinishIn, FramePiece, FramerSink, FramingIn, HeadSlots,
+    IngestIn, KeyingMaterial, ListenIn, LocateIn, ReadIn, RefuseIn, WriteIn,
 };
 
 lend! {
@@ -483,6 +515,13 @@ lend! {
         list(lines, lines_len) -> NamedValue;
         buf(strip, strip_cap) -> StripName;
     }
+    // `fields`' head envelope (NULL unless the style needs it), and the host's field buffer and
+    // field array.
+    FieldsIn {
+        list(headers, headers_len) -> NamedValue;
+        buf(field_buf, field_buf_cap) -> u8;
+        buf(fields, fields_cap) -> FieldSpan;
+    }
     BeginLoginIn { list(scopes, scopes_len) -> AbiStr; }
     CompleteLoginIn { list(submitted, submitted_len) -> NamedValue; }
     IdentityBuf {
@@ -491,6 +530,7 @@ lend! {
     }
     ValidateIn { buf(err_buf, err_cap) -> u8; }
     // THE PLANE KIND (`abi::plane`): request-path results go into host buffers.
+    PlaneOpenIn { list(providers, providers_len) -> ProviderFacts; }
     ArriveIn {
         list(fields, fields_len) -> Field;
         buf(units_buf, units_cap) -> UnitCount;
@@ -507,18 +547,25 @@ lend! {
         buf(reply_buf, reply_cap) -> u8;
         buf(fields_buf, fields_cap) -> OutField;
         buf(arena_buf, arena_cap) -> u8;
+        buf(records_buf, records_cap) -> RecordWrite;
     }
     ServeIn {
         list(fields, fields_len) -> Field;
         buf(reply_buf, reply_cap) -> u8;
         buf(fields_buf, fields_cap) -> OutField;
         buf(arena_buf, arena_cap) -> u8;
+        buf(records_buf, records_cap) -> RecordWrite;
     }
     PlaneDriveIn { buf(sessions_buf, sessions_cap) -> u64; }
+    PlaneCancelIn {
+        buf(records_buf, records_cap) -> RecordWrite;
+        buf(arena_buf, arena_cap) -> u8;
+    }
     ProjectIn {
         list(fields, fields_len) -> Field;
         buf(signals_buf, signals_cap) -> crate::abi::hook::SignalEntry;
         buf(arena_buf, arena_cap) -> u8;
+        buf(messages_buf, messages_cap) -> crate::abi::hook::MessageView;
     }
     // THE TRANSPORT KIND (`abi::transport`).
     FramerSink {
@@ -530,6 +577,11 @@ lend! {
     ListenIn { buf(addr_buf, addr_cap) -> u8; }
     AcceptIn { buf(peer_buf, peer_cap) -> u8; }
     ArrivalIn { buf(peer_buf, peer_cap) -> u8; }
+    DialIn { one(dest) -> Destination; }
+    Destination {
+        list(args, args_len) -> AbiStr;
+        list(env, env_len) -> Field;
+    }
     ReadIn { buf(buf, cap) -> u8; }
     WriteIn { bytes(bytes, len); }
     LocateIn {
@@ -537,14 +589,37 @@ lend! {
         buf(name_buf, name_cap) -> u8;
         buf(alpn_buf, alpn_cap) -> u8;
     }
-    BeginIn { one(facts) -> ConnFacts; }
-    IngestIn { bytes(bytes, len); }
-    EmitIn { bytes(bytes, len); }
+    BeginIn {
+        one(facts) -> ConnFacts;
+        list(fields, fields_len) -> Field;
+        one(lane) -> DatagramLane;
+    }
+    IngestIn {
+        bytes(bytes, len);
+        one(lane) -> DatagramLane;
+    }
+    EmitIn {
+        bytes(bytes, len);
+        one(lane) -> DatagramLane;
+    }
     EncodeIn {
         list(fields, fields_len) -> Field;
         bytes(body, body_len);
     }
     RefuseIn { bytes(bytes, len); }
+    FinishIn {
+        bytes(final_bytes, final_bytes_len);
+        one(lane) -> DatagramLane;
+    }
+    FramingIn { one(lane) -> DatagramLane; }
+    // THE DATAGRAM LANE (`abi::transport::datagram`): the keying-material item lent for the call
+    // that presents it, and the host buffer the answer's routes go into.
+    DatagramLane {
+        one(keying) -> KeyingMaterial;
+        buf(routes, routes_cap) -> DatagramRoute;
+        list(paths, paths_len) -> DatagramPath;
+    }
+    KeyingMaterial { bytes(bytes, len); }
     AdoptIn {
         one(facts) -> ConnFacts;
         bytes(leftover, leftover_len);

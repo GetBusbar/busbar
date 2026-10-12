@@ -17,7 +17,7 @@ use std::sync::Arc;
 use busbar_contract::abi::mechanism::call::{AbiStr, Blob, Field, Outcome, Span, BLOB_OCTETS};
 use busbar_contract::abi::mechanism::door::Door;
 use busbar_contract::abi::mechanism::lifecycle::{
-    slot as life, CancelIn, CancelOut, GenIn, RefreshIn, TickIn, TickOut, ValidateIn,
+    slot as life, GenIn, RefreshIn, TickIn, TickOut, ValidateIn,
 };
 use busbar_contract::abi::plane::{
     self, slot, ArriveIn, ArriveOut, OnPieceIn, OnPieceOut, OutField, PlaneOpenIn, PlaneOpenOut,
@@ -46,7 +46,8 @@ fn bind(d: &Dispatcher) -> Bind {
         max_inflight_cap: 64,
         sink: Arc::new(NoSink),
         dispatcher: d.adopter(),
-        conns: None,
+        // These rows never dial: the door's needs are not declared, bound as a probe.
+        conns: busbar_plugin_loader::dispatch::ConnTable::Probe,
     }
 }
 
@@ -319,10 +320,16 @@ fn script(p: &Plugin<Plane>) -> Vec<String> {
     );
     let c = p.call(life::TICK, &mut k);
     t.push(format!("tick {:?} next={}", c.outcome, k.out.next_tick_ns));
-    let mut x: Frame<CancelIn, CancelOut> = Frame::new(z(), z());
-    (x.input.head, x.out.head) = (in_head(), out_head());
+    let mut x: Frame<
+        busbar_contract::abi::plane::PlaneCancelIn,
+        busbar_contract::abi::plane::PlaneCancelOut,
+    > = Frame::new(z(), z());
+    (x.input.cancel.head, x.out.cancel.head) = (in_head(), out_head());
     let c = p.call(life::CANCEL, &mut x);
-    t.push(format!("cancel {:?} {}", c.outcome, x.out.disposition));
+    t.push(format!(
+        "cancel {:?} {}",
+        c.outcome, x.out.cancel.disposition
+    ));
 
     let mut f: Frame<RefreshIn, PlaneRefreshOut> = Frame::new(z(), z());
     (f.input.head, f.out.head) = (in_head(), out_head());
@@ -397,8 +404,9 @@ fn assert_the_planes_answers(t: &[String]) {
         "a same-dialect answer is the far end's bytes: {all}"
     );
     assert!(
-        far.contains(r#"units=["0:7:true", "1:3:true", "2:0:true", "3:0:true"]"#),
-        "the far end's counts, in the tail's class order: {all}"
+        far.contains(r#"units=["0:7:true", "1:3:true", "2:0:true", "3:0:true", "19:1:true"]"#),
+        "the far end's counts, in the tail's class order, then the per-request fee unit a success \
+         reply incurs, last after the 15 open classes (owner #77, money-B1; LEDGER-100): {all}"
     );
     let narrow = line(t, "far_end narrow ");
     assert!(

@@ -531,7 +531,7 @@ fn speech_write_request_prefixes_instructions_to_prompt_not_language_code() {
     // in parts[0].text as "<instr>: <input>" and no languageCode key is emitted.
     let ir = crate::codec::ir::audio::SpeechReq {
         input: "hello".into(),
-        voice: "Kore".into(),
+        timbre: "Kore".into(),
         instructions: Some("speak cheerfully".into()),
         ..Default::default()
     };

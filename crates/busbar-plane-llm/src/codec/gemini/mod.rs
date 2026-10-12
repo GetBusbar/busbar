@@ -182,6 +182,9 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     max_citations_per_delta: None,
     // Google GenAI SDK UA. RELEASE OBLIGATION: re-verify/bump per release;
     // `test_egress_ua_versions_are_pinned_and_present` guards drift.
+    // OWNER RULING Q10: the plane writes this on a translated route into this dialect, on a
+    // same-dialect route whose caller sent no user-agent (1.5.5's bytes), and on the
+    // kernel-originated health probe; a same-dialect caller's own user-agent replaces it.
     egress_user_agent: "google-genai-sdk/0.8.0 gl-python/3.11",
     has_model_in_url: true,
     auth_failure_status_and_kind: (
@@ -515,9 +518,11 @@ const FIELD_TRAFFIC_TYPE: &str = "trafficType";
 ///
 /// THIS TABLE IS ALSO THE GUARD. [`gemini_usage_identity_note`] is a DISCREPANCY METRIC over
 /// `totalTokenCount`: it fires when Google's stated total cannot be reached from this table, i.e.
-/// when Google is reporting a counter this dialect does not model yet. Nothing is ledgered for the
-/// gap (owner 2026-10-02: the ledger records exactly what the plane reports, itemized): the WARN
-/// names it, and the fix is a new itemized term backed by the wire lock, never a remainder.
+/// when Google is reporting a counter this dialect does not model yet. The gap is ledgered by the
+/// plane as the open class `unitemized_tokens` (owner LEDGER-100; LEDGER-SIMPLE 2026-10-03: "we
+/// bill 100% of what the plane ledgers", money = the plane's ledger lines x the rate card) and the
+/// WARN names it; no itemized class absorbs it, and a recurring gap is fixed by a new itemized term
+/// backed by the wire lock.
 const GEMINI_USAGE_ADDITIVE_TERMS: &[&str] = &[
     FIELD_PROMPT_TOKEN_COUNT,
     FIELD_CANDIDATES_TOKEN_COUNT,
@@ -557,8 +562,9 @@ fn additive_sum(u: &serde_json::Value) -> Option<u64> {
 /// it), or the billed figure already matches Google's total.
 ///
 /// NOTHING IS ZEROED, CLAMPED OR BACK-FILLED. The buckets stay exactly as Google itemized them; a
-/// total above their sum ledgers nothing extra (no unit is invented from `totalTokenCount`), and
-/// this note plus its audit WARN are what say the gap existed.
+/// total above their sum is the open class `unitemized_tokens` (`IrUsage::to_token_usage`, owner
+/// LEDGER-100: a reported unit is a ledger line, priced by the ratecard), and this note plus its
+/// WARN say where the remainder came from.
 fn gemini_usage_identity_note(
     u: Option<&serde_json::Value>,
 ) -> Option<crate::codec::ir::UsageIdentityNote> {
@@ -597,7 +603,8 @@ fn gemini_usage_identity_note(
          sum of the counters it names. unmodelled_term=true means Google reports a counter this \
          dialect does not model and GEMINI_USAGE_ADDITIVE_TERMS needs a new entry backed by a \
          recording; false means the wire's own terms close and the gap is in normalization. The \
-         ledger holds the itemized counts only; the gap is not ledgered."
+         itemized counts are ledgered as reported; a positive gap is ledgered as the open class \
+         unitemized_tokens."
     );
     Some(crate::codec::ir::UsageIdentityNote {
         reported_total,

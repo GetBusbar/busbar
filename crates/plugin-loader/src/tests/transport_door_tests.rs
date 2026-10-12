@@ -32,38 +32,32 @@ mod adapter;
 
 /// The neutral frame door (`tests/fixtures/neutral_frame_door.rs`): a dropped-in transport door
 /// that frames the host's socket, built beside the test binary as this crate's example `cdylib`.
-/// Under CI a missing artifact is a failure, never a skip.
-fn fixture() -> Option<Vec<u8>> {
-    Some(std::fs::read(fixture_path()?).expect("read the cdylib"))
+/// A missing artifact is a failure naming the command that builds it, never a skip.
+fn fixture() -> Vec<u8> {
+    std::fs::read(fixture_path()).expect("read the cdylib")
 }
 
 /// Where [`fixture`] is: the neutral frame door example, which admits against its own Statement
 /// rendering as a transport composing over nothing.
-fn fixture_path() -> Option<std::path::PathBuf> {
-    let exe = std::env::current_exe().ok()?;
-    let examples = exe.parent()?.parent()?.join("examples");
-    let found = Some(examples.join(crate::plugin_library_filename("neutral_frame_door")))
-        .filter(|p| p.exists())
-        .filter(|p| {
-            crate::dispatch::rendering_of_library(p)
-                .ok()
-                .flatten()
-                .and_then(|stated| {
-                    crate::dispatch::load_dropped::<crate::dispatch::kinds::transport::Transport>(
-                        p,
-                        &stated,
-                        bind(),
-                    )
-                    .ok()
-                })
-                .and_then(|d| d.context::<TransportFacts>().cloned())
-                .is_some_and(|f| f.composes_over.is_empty())
-        });
+fn fixture_path() -> std::path::PathBuf {
+    let p = crate::both_ways::example_cdylib("neutral_frame_door");
     assert!(
-        found.is_some() || std::env::var_os("CI").is_none(),
-        "the neutral frame door example is built beside the test binary under CI"
+        crate::dispatch::rendering_of_library(&p)
+            .ok()
+            .flatten()
+            .and_then(|stated| {
+                crate::dispatch::load_dropped::<crate::dispatch::kinds::transport::Transport>(
+                    &p,
+                    &stated,
+                    bind(),
+                )
+                .ok()
+            })
+            .and_then(|d| d.context::<TransportFacts>().cloned())
+            .is_some_and(|f| f.composes_over.is_empty()),
+        "the neutral frame door example admits as a transport composing over nothing"
     );
-    found
+    p
 }
 
 fn bind() -> Bind {
@@ -72,22 +66,23 @@ fn bind() -> Bind {
         max_inflight_cap: 64,
         sink: Arc::new(NoSink),
         dispatcher: Adopter::unwatched(),
-        conns: None,
+        conns: crate::dispatch::ConnTable::NoNeeds,
     }
 }
 
 /// The fixture's manifest, stating the door's Statement rendering as its signed manifest does (the
 /// door is admitted against it).
 fn manifest() -> crate::sign::Manifest {
-    let rendering =
-        fixture_path().and_then(|path| crate::dispatch::rendering_of_library(&path).ok().flatten());
+    let rendering = crate::dispatch::rendering_of_library(&fixture_path())
+        .ok()
+        .flatten();
     crate::sign::Manifest {
         statement: rendering.map(hex::encode),
         ..statement(
-            busbar_contract::abi::cold::kind::TRANSPORT,
+            busbar_contract::abi::mechanism::kind::TRANSPORT,
             "door-fixture",
             "door-fixture",
-            busbar_contract::abi::ABI_MINOR,
+            busbar_contract::abi::transport::ABI_VERSION,
         )
     }
 }
@@ -102,7 +97,7 @@ fn packed() -> crate::sign::Manifest {
 
 #[test]
 fn a_signed_door_tarball_is_opened_through_the_one_door() {
-    let Some(lib) = fixture() else { return };
+    let lib = fixture();
     let registry = dropped("door-fixture", manifest(), &lib);
     let entries = registry
         .open_transport_entries(&bind())
@@ -111,11 +106,14 @@ fn a_signed_door_tarball_is_opened_through_the_one_door() {
     assert_eq!(entries.doors.len(), 1);
     let door = &entries.doors[0];
     let facts = door.context::<TransportFacts>().expect("its tail");
-    assert_eq!(facts.role, ROLE_FRAMER);
+    assert_eq!(
+        facts.role, ROLE_FRAMER,
+        "the neutral door frames a byte stream; it is never a carrier"
+    );
     assert_eq!(facts.claims, [door.name()], "one claim: its own");
     assert!(
         facts.composes_over.is_empty(),
-        "it frames the host's socket"
+        "it frames whatever carrier the connector rides"
     );
     let mut i: OpenIn = blank_in();
     i.head = in_head();
@@ -132,6 +130,9 @@ fn a_manifest_outside_the_transport_version_window_is_refused() {
     validate_structure(&packed(), b"lib", &crate::supported_abi, "")
         .expect("a transport is a kind the loader admits");
     let mut old = packed();
-    old.abi_version = busbar_contract::abi::hot::TRANSPORT_DECL_MINOR - 1;
+    old.abi_version = busbar_contract::abi::transport::ABI_VERSION - 1;
     assert!(validate_structure(&old, b"lib", &crate::supported_abi, "").is_err());
+    let mut newer = packed();
+    newer.abi_version = busbar_contract::abi::transport::ABI_VERSION + 1;
+    assert!(validate_structure(&newer, b"lib", &crate::supported_abi, "").is_err());
 }

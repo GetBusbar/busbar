@@ -83,6 +83,11 @@ on:
         description: "The manifest alias (the short config name), used by the signing gate's config fixture."
         required: true
         type: string
+      manifest_name:
+        description: "The signed manifest's `name` (the plugin's identity at load), as its release packs it. Default: the repo's name (plugins.yaml `manifest_name` default)."
+        required: false
+        type: string
+        default: ""
       plugin_lang:
         description: "rust | c. `c`: the plugin is C sources built from busbar_plugin.h alone (THE C PATH above)."
         required: false
@@ -313,7 +318,8 @@ jobs:
           lib="target/debug/lib${CRATE//-/_}.so"
           [ -f "$lib" ] || { echo "::error::no cdylib at $lib"; ls -la target/debug/ >&2; exit 1; }
           bash "$GITHUB_WORKSPACE/busbar/scripts/signing-gate.sh" \
-            "$GITHUB_WORKSPACE/busbar" "$CRATE" "${{ inputs.plugin_kind }}" "${{ inputs.plugin_alias }}" "$lib"
+            "$GITHUB_WORKSPACE/busbar" "$CRATE" "${{ inputs.plugin_kind }}" "${{ inputs.plugin_alias }}" "$lib" \
+            "${{ inputs.manifest_name || github.event.repository.name }}"
       - name: mysql strict sql_mode (a dynamic variable; only root may set it)
         if: inputs.service == 'mysql'
         run: mysql -h 127.0.0.1 -uroot -pbusbar -e "SET GLOBAL sql_mode='STRICT_ALL_TABLES,NO_ENGINE_SUBSTITUTION';"
@@ -339,9 +345,12 @@ jobs:
         working-directory: plugin
         env:
           CRATE: ${{ inputs.plugin_crate }}
+          # THE RELEASE GUARD, ARMED FOR THE WHOLE STEP (M6/contract): every suite run here refuses
+          # a debug build (`the_suite_runs_in_the_profile_it_was_asked_to`), the RED run included.
+          BUSBAR_EXPECT_RELEASE: "1"
         run: |
           set -euo pipefail
-          suite="the_linked_and_the_dropped_in_door_are_one_plugin red_a_moved_crossing_count_is_refused red_a_door_at_another_kind_abi_is_refused red_a_failing_ready_refuses_the_boot the_suite_runs_in_the_profile_it_was_asked_to"
+          suite="the_linked_and_the_dropped_in_door_are_one_plugin red_a_moved_crossing_count_is_refused red_a_door_at_another_kind_abi_is_refused red_a_failing_ready_refuses_the_boot red_a_networked_door_with_no_connection_table_is_refused the_declared_needs_are_the_statements the_suite_runs_in_the_profile_it_was_asked_to"
           list="$RUNNER_TEMP/conformance.list"
           cargo test --release --locked -p "$CRATE" --test conformance -- --list > "$list" \
             || { echo "::error::no conformance target ($CRATE/tests/conformance.rs: busbar_plugin_loader::conformance_suite!)"; exit 1; }
@@ -349,11 +358,11 @@ jobs:
           for t in $suite; do
             grep -qx "$t: test" "$list" || { echo "::error::the published suite's test '$t' is not in the conformance target"; exit 1; }
           done
-          out="$(BUSBAR_EXPECT_RELEASE=1 cargo test --release --locked -p "$CRATE" --test conformance 2>&1 | tee /dev/stderr)"
+          out="$(cargo test --release --locked -p "$CRATE" --test conformance 2>&1 | tee /dev/stderr)"
           for t in $suite; do
             printf '%s\n' "$out" | grep -qx "test $t ... ok" || { echo "::error::the published suite's test '$t' did not RUN green"; exit 1; }
           done
-          if red="$(BUSBAR_CONFORMANCE_RED=count BUSBAR_EXPECT_RELEASE=1 cargo test --release --locked -p "$CRATE" --test conformance -- --exact the_linked_and_the_dropped_in_door_are_one_plugin 2>&1)"; then
+          if red="$(BUSBAR_CONFORMANCE_RED=count cargo test --release --locked -p "$CRATE" --test conformance -- --exact the_linked_and_the_dropped_in_door_are_one_plugin 2>&1)"; then
             printf '%s\n' "$red" >&2
             echo "::error::RED: the both-ways arm passed with a pinned crossing count moved"; exit 1
           fi
@@ -370,7 +379,11 @@ jobs:
             "https://github.com/EmbarkStudios/cargo-deny/releases/download/$v/cargo-deny-$v-x86_64-unknown-linux-musl.tar.gz"
           echo "$sum  $RUNNER_TEMP/deny.tgz" | sha256sum -c -
           tar -xzf "$RUNNER_TEMP/deny.tgz" -C "$RUNNER_TEMP"
-          "$RUNNER_TEMP/cargo-deny-$v-x86_64-unknown-linux-musl/cargo-deny" --locked check
+          deny="$RUNNER_TEMP/cargo-deny-$v-x86_64-unknown-linux-musl/cargo-deny"
+          # The advisory verdict as data for the parity gate (a declared extra line never exempts an
+          # advisory); this step's own blocking check is the line after it.
+          "$deny" --locked --format json check advisories 2> "$RUNNER_TEMP/advisories.jsonl" || true
+          "$deny" --locked check
       - name: the shipped closure (cargo metadata, linux target)
         id: meta
         if: ${{ !cancelled() && steps.crates.outputs.present == 'true' }}
@@ -413,10 +426,15 @@ jobs:
         if: ${{ !cancelled() && steps.meta.outcome == 'success' }}
         run: |
           "$PLUGIN_GATES" plugin-gates cdeps "$RUNNER_TEMP/meta.json" busbar/.github/fleet/deps.toml --tree "$RUNNER_TEMP/tree.txt"
-      - name: Cargo.lock parity with busbar's lock at the pin (RED)
+      - name: Cargo.lock parity with busbar's lock at the pin (RED; one version per compatible line, an extra line only as deps.toml [parity-lines] declares it)
         if: ${{ !cancelled() && steps.crates.outputs.present == 'true' }}
+        env:
+          REPO: ${{ github.event.repository.name }}
         run: |
-          "$PLUGIN_GATES" plugin-gates parity plugin/Cargo.lock busbar/Cargo.lock
+          set -euo pipefail
+          adv=()
+          [ -f "$RUNNER_TEMP/advisories.jsonl" ] && adv=(--advisories "$RUNNER_TEMP/advisories.jsonl")
+          "$PLUGIN_GATES" plugin-gates parity plugin/Cargo.lock busbar/Cargo.lock busbar/.github/fleet/deps.toml "$REPO" "${adv[@]}"
       - name: declares.json states the kind's contract ABI at the pin
         if: ${{ !cancelled() && steps.crates.outputs.present == 'true' }}
         env:
@@ -426,6 +444,23 @@ jobs:
           f="$(cd plugin && git ls-files | grep -E '(^|/)declares\.json$' | head -n1)"
           [ -n "$f" ] || { echo "::error::no declares.json in the repo"; exit 1; }
           "$PLUGIN_GATES" plugin-gates declares busbar "$KIND" "plugin/$f"
+
+      - name: a renamed plugin answers its 1.5.5 manifest name (plugins.yaml former_names, and the release that signs them)
+        if: ${{ !cancelled() }}
+        env:
+          REPO: ${{ github.event.repository.name }}
+        run: |
+          set -euo pipefail
+          # The registry entry at the pin declares every 1.5.5-era manifest name `legacy:` freezes for
+          # this repo (RED by name on a missing one): 1.5.5 configs load unchanged.
+          "$PLUGIN_GATES" plugin-gates former-names busbar/plugins.yaml "$REPO"
+          # And the repo's release recipe signs them: the `former_names` its release.yml hands
+          # plugin-release.yml (rendered from plugins.yaml by busbar-release plugin sync).
+          rel=plugin/.github/workflows/release.yml
+          if [ -f "$rel" ]; then
+            declared="$(sed -nE 's/^[[:space:]]*former_names:[[:space:]]*"?([^"#]*)"?.*$/\1/p' "$rel" | head -n1)"
+            "$PLUGIN_GATES" plugin-gates former-names busbar/plugins.yaml "$REPO" --declared "$declared"
+          fi
 
       - name: "C: the kind's conformance through load_dropped at the pin, RED arm kept (both must RUN)"
         if: ${{ !cancelled() && inputs.plugin_lang == 'c' }}

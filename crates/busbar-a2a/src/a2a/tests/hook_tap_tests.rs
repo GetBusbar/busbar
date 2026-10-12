@@ -22,7 +22,7 @@ use super::relay_harness::{backend_ok, call, call_agent, envelope, harness_gated
 use crate::testkit::engine_boot::engine;
 use busbar_kernel::{plane_host::TransformVerdict, test_support::engine_kit::HookNeed};
 
-/// A `prompt: rw` REWRITE gate on the hermetic test cdylib, as the `hooks:` document an operator
+/// A `prompt: rw` REWRITE gate on the kernel's hook double, as the `hooks:` document an operator
 /// writes (the engine parses it with its own grammar at build). `raw_transform_reply` drives its
 /// `transform` reply verbatim, so a test states the exact replacement `params` object it returns.
 fn rewrite(raw_transform_reply: serde_json::Value) -> serde_json::Value {
@@ -40,16 +40,10 @@ fn rewrite(raw_transform_reply: serde_json::Value) -> serde_json::Value {
     })
 }
 
-/// The attach, cdylib loaded through the real scan/trust/load pipeline. ABSENCE IS A HARD FAILURE,
-/// never a skip (a skipped acceptance test reports green); the panic names the fix.
+/// The attach, its registry row answered by the kernel's hook double. It cannot be absent, so
+/// nothing here can skip.
 fn gates(name: &str, cfg: serde_json::Value) -> Gates {
-    let env = engine()
-        .hook_env(&["test-hook"], HookNeed::Rw, HookNeed::Ro)
-        .expect(
-            "the busbar-hook-test-plugin cdylib is not built. This battery is the A2A half of the \
-         rewrite-hook acceptance test and it CANNOT be skipped. Build it: `cargo build -p \
-         busbar-hook-test-plugin`.",
-        );
+    let env = engine().hook_env(&["test-hook"], HookNeed::Rw, HookNeed::Ro);
     Gates {
         env,
         hooks: vec![(name.to_string(), cfg)],
@@ -304,7 +298,7 @@ fn the_rewrite_apply_site_never_falls_back_to_the_caller_s_original_params() {
 /// **WHAT A PANICKING `prompt: rw` HOOK ACTUALLY PRODUCES — and it is not a join failure.**
 ///
 /// This is the reachability leg for [`crate::a2a::receive::tap_join_verdict`], and it is driven
-/// through the REAL cdylib rather than asserted from the source, because the whole disposition
+/// through the kernel's hook port rather than asserted from the source, because the whole disposition
 /// question at that join turns on what can arrive there. A missing check is not a vulnerability
 /// until the line is shown to execute.
 ///

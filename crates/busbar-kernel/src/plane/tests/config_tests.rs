@@ -65,7 +65,7 @@ fn the_section_list_is_derived_from_the_config_grammar_rather_than_written() {
 }
 
 // EVERY section the grammar declares is refused BY BOTH PLANES' production validators MOVED to
-// `tests/plane_config_cross_plane.rs::every_section_the_grammar_declares_is_refused_on_both_planes`
+// `crates/busbar/tests/plane_config_cross_plane.rs::every_section_the_grammar_declares_is_refused_on_both_planes`
 // — it registers the REAL busbar_llm/busbar_mcp/busbar_a2a planes, which only type-checks with
 // ONE `busbar_kernel` in the graph. See that file's header.
 
@@ -150,7 +150,7 @@ fn the_parse_time_refusal_fires_on_a_name_nothing_defines() {
 }
 
 // `the_resolve_time_refusal_fires_on_a_bare_name_that_binds_across_the_boundary` MOVED to
-// `tests/plane_config_cross_plane.rs`: it asserts `RefError::CrossPlane`'s rendered PROSE contains
+// `crates/busbar/tests/plane_config_cross_plane.rs`: it asserts `RefError::CrossPlane`'s rendered PROSE contains
 // the real A2A plane's own config-section name (`"agents"`), which needs the real roster registered
 // — naming that real plane's key/section here (even behind a synthetic `#[cfg(test)]` decl) is
 // exactly what `cargo xtask gate construction`'s `neutral-no-dialect` rule (ceiling 0) exists to

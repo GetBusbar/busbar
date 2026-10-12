@@ -80,10 +80,6 @@ fn a_revoked_credential_is_never_answered_from_a_cache_no_flush_reaches() {
         AuthBindings::without_directory(),
         AuthBindings::new(a_directory() as Arc<dyn VirtualKeyDirectory>),
     ] {
-        assert!(
-            bindings.cache().is_none(),
-            "the bindings hold a credential cache the admin flush cannot reach"
-        );
         let revoked = Arc::new(AtomicBool::new(false));
         let chain = busbar_kernel_identity::AuthChain::new(
             vec![busbar_kernel_identity::chain::ChainEntry {
@@ -92,13 +88,13 @@ fn a_revoked_credential_is_never_answered_from_a_cache_no_flush_reaches() {
             }],
             false,
         );
-        let first = chain.run_chain_cached(Some("vk_live"), bindings.cache(), None, 10, None);
+        let first = chain.run_chain_with(Some("vk_live"), bindings.keys(), 10, None);
         assert!(matches!(
             first,
             busbar_kernel_identity::chain::ChainVerdict::Identified { .. }
         ));
         revoked.store(true, Ordering::SeqCst);
-        let second = chain.run_chain_cached(Some("vk_live"), bindings.cache(), None, 11, None);
+        let second = chain.run_chain_with(Some("vk_live"), bindings.keys(), 11, None);
         assert!(
             matches!(second, busbar_kernel_identity::chain::ChainVerdict::Denied),
             "the revoked credential was answered out of a cache: {second:?}"
@@ -147,7 +143,6 @@ fn the_revocation_view_reads_the_same_directory() {
 #[test]
 fn an_unbound_node_binds_no_authority() {
     let bindings = AuthBindings::without_directory();
-    assert!(bindings.cache().is_none());
     assert!(bindings.keys().is_none());
     assert!(bindings.revocations().is_none());
 }

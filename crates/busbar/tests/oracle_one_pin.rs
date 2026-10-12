@@ -75,3 +75,60 @@ fn no_python_mock_upstream_exists() {
         "an upstream mock is the oracle engine's `mock` subcommand, never a .py: {bad:?}"
     );
 }
+
+/// THE ENGINE CLONE STORES NO CREDENTIAL AND BUILDS LOCKED (Q128 WARN, ARCHITECT 2026-10-05):
+/// `bin/oracle` clones the private busbar-release with the token as a one-shot header, never folded
+/// into the clone URL (where `git clone` wrote it into the checkout's `.git/config`), refuses a run
+/// whose checkout config holds a credential, and builds the judge with `--locked` (the pin's
+/// Cargo.lock IS the judge's dependency identity). `bin/oracle token-selftest` plants a token and a
+/// stale tokenized origin and proves neither persists.
+#[test]
+fn the_engine_clone_stores_no_token_and_builds_locked() {
+    let shim = repo_root().join("bin/oracle");
+    let text = std::fs::read_to_string(&shim).expect("bin/oracle");
+    assert!(
+        !text.contains("x-access-token:${"),
+        "bin/oracle folds a token into a clone URL again"
+    );
+    assert!(
+        text.contains("cargo build --locked --release -p \"$CRATE\""),
+        "bin/oracle builds the judge without --locked"
+    );
+    let out = std::process::Command::new("bash")
+        .arg(&shim)
+        .arg("token-selftest")
+        .current_dir(repo_root())
+        .output()
+        .expect("run bin/oracle token-selftest");
+    assert!(
+        out.status.success(),
+        "bin/oracle token-selftest failed:\n{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// NO ARM EXECS AN ENGINE SUBCOMMAND THE PIN NO LONGER HAS: busbar-release #272 deleted the
+/// engine's `owed-baseline` and `replay` subcommands, so `bin/oracle owed-baseline` and the generated
+/// `$BUSBAR_ORACLE_TOOL_DIR/replay.sh` (`exec busbar-oracle replay`) could only end in clap's
+/// "unrecognized subcommand". Nothing called either; both are gone, and neither may come back.
+#[test]
+fn bin_oracle_has_no_owed_baseline_arm_and_no_replay_sh_shim() {
+    let text = std::fs::read_to_string(repo_root().join("bin/oracle")).expect("bin/oracle");
+    assert!(
+        !text.contains("owed-baseline)"),
+        "bin/oracle dispatches `owed-baseline` again; the engine has no such subcommand since busbar-release #272"
+    );
+    assert!(
+        !text.contains("owed-baseline --baseline"),
+        "bin/oracle execs the engine's removed `owed-baseline` subcommand again"
+    );
+    assert!(
+        !text.contains("replay.sh"),
+        "bin/oracle generates a replay.sh shim again; it execs the engine's removed `replay` subcommand"
+    );
+    assert!(
+        !text.contains("\" replay \""),
+        "bin/oracle execs the engine's removed `replay` subcommand again"
+    );
+}

@@ -556,25 +556,6 @@ pub fn convert_headers(headers: Vec<(http::HeaderName, http::HeaderValue)>) -> h
     map
 }
 
-/// Build the `Authorization: Bearer <key>` header pair for a protocol that presents its credential
-/// itself — the builder body is the egress-auth unit's (`busbar_kernel_identity::egress_auth`), so
-/// the omission rule has one definition; this adds the report. A key that is not a legal header value
-/// (a stray CR/LF/NUL a config system injected) yields NO header — the upstream then 401s — and one
-/// coded diagnostic naming the protocol; the key itself is never logged.
-pub fn bearer_auth_headers(proto: &str, key: &str) -> Vec<(http::HeaderName, http::HeaderValue)> {
-    let built = busbar_kernel_identity::egress_auth::bearer_auth_headers(key);
-    if built.is_empty() {
-        crate::diagnostics::diag_debug!(
-            crate::diagnostics::PROTO_AUTH_INVALID_HEADER_BYTES,
-            protocol = proto,
-            "authorization credential contains invalid header bytes (ASCII control character); \
-             omitting auth header — upstream will reject with 401"
-        );
-    }
-    let typed = |(k, v): (String, String)| Some((k.parse().ok()?, v.parse().ok()?));
-    built.into_iter().filter_map(typed).collect()
-}
-
 #[cfg(test)]
 #[path = "tests/installed_tests.rs"]
 mod installed_tests;

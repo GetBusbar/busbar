@@ -377,7 +377,7 @@ pub struct PlaneDecl {
 }
 
 /// [`PlaneDecl::dispatch_flags`]: the plane's `dispatch` may block the calling thread — it calls a
-/// host slot that waits (`egress_*`, `pipe_*`, `nested_dispatch`, `identity_admit`, `gate_decide`,
+/// host slot that waits (`egress_*`, `pipe_*`, `nested_dispatch`, `identity_admit`,
 /// which drive their own runtime and cannot run on an async worker) or writes a live response
 /// stream the caller's pace must hold back (`emit_body` waits for the caller). A plane that sets it
 /// is dispatched on a blocking thread; one that does not is dispatched inline, and its streamed body

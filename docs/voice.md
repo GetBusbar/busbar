@@ -383,7 +383,7 @@ that is an audit tap, not the ceiling.
 
 Every governed session-open fires the operator's `streams`-container gate and tap, exactly as
 described in [The one choke point](#the-one-choke-point-every-route-runs-through) above — the same
-seam every other plane's hooks fire through (`host.gate_decide` / `host.transform_over`), attached by
+seam every other plane's hooks fire through (`plane_host::admission_gates_decide` / `plane_host::admission_transform`), attached by
 container name `streams` since the plane has no per-registration noun to key a hook on
 (`crates/busbar-voice/src/mount.rs:75-79`). A rejecting gate is byte-identical in cost to an
 unattached one when no hook is configured.
@@ -398,7 +398,7 @@ other durable-handle consumer inherits (`crates/busbar-voice/src/runtime/scope.r
 Retention is generous and fixed, not operator-tunable: an hour of idle, an hour past terminal, a
 working-set cap of 4096 rows (`crates/busbar-voice/src/runtime/scope.rs:25-31`).
 
-With `store: memory` (the default), nothing survives a restart. With a durable store configured, boot
+With `store: memory` (the choice `busbar --migrate-config` writes into a config that had no `store:` block), nothing survives a restart. With a durable store configured, boot
 restores the working set through `voice_hydrate`: an active row is re-installed, a terminal one is
 counted and left, and a row that cannot be decoded is counted and skipped rather than aborting the
 restore — only a store-level list failure refuses boot

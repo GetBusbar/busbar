@@ -9,7 +9,9 @@
 //! reproduction attempts — so what is asserted here is the mechanical property that makes the race
 //! unwinnable.
 
-use super::on_plugin_thread;
+use std::sync::Mutex;
+
+use super::{on_plugin_thread, on_plugin_thread_in, Pool};
 
 /// SERIALISES THE TESTS THAT ASSERT WORKER *IDENTITY*, and it is not belt-and-braces.
 ///
@@ -75,11 +77,15 @@ fn workers_are_named_for_what_they_are() {
 
 /// A worker is REUSED rather than spawned per call — and, more importantly, the same thread can be
 /// handed work again after it has already run some, which is what "never retires" buys.
+///
+/// On a pool of its own: every crate test that crosses into a plugin's lifecycle takes a worker
+/// of the process's pool, so one could take the idle worker between these two calls.
 #[test]
 fn a_worker_is_reused_across_sequential_calls() {
+    static OWN: Mutex<Pool> = Mutex::new(Pool::empty());
     let _serial = identity_lock();
-    let first = on_plugin_thread(|| std::thread::current().id()).expect("no panic");
-    let second = on_plugin_thread(|| std::thread::current().id()).expect("no panic");
+    let first = on_plugin_thread_in(&OWN, || std::thread::current().id()).expect("no panic");
+    let second = on_plugin_thread_in(&OWN, || std::thread::current().id()).expect("no panic");
     assert_eq!(
         first, second,
         "a sequential second call should land on the idle worker the first one released"
@@ -89,16 +95,19 @@ fn a_worker_is_reused_across_sequential_calls() {
 /// A panic in plugin code comes back as `Err` and does NOT kill the worker: the thread that ran it
 /// must survive, because it is carrying that plugin's TLS. A worker that died on a panicking plugin
 /// would reintroduce the exact crash on the panic path.
+///
+/// On a pool of its own, for the reason [`a_worker_is_reused_across_sequential_calls`] states.
 #[test]
 fn a_panicking_job_is_caught_and_the_worker_survives() {
+    static OWN: Mutex<Pool> = Mutex::new(Pool::empty());
     let _serial = identity_lock();
-    let before = on_plugin_thread(|| std::thread::current().id()).expect("no panic");
-    let err = on_plugin_thread(|| panic!("plugin blew up"));
+    let before = on_plugin_thread_in(&OWN, || std::thread::current().id()).expect("no panic");
+    let err = on_plugin_thread_in(&OWN, || panic!("plugin blew up"));
     assert!(
         err.is_err(),
         "a panicking job must surface as Err, not unwind into the caller"
     );
-    let after = on_plugin_thread(|| std::thread::current().id()).expect("no panic");
+    let after = on_plugin_thread_in(&OWN, || std::thread::current().id()).expect("no panic");
     assert_eq!(
         before, after,
         "the worker that ran the panicking job must still be alive and reusable — if it exited, it \

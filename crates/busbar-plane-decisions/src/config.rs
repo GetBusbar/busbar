@@ -103,8 +103,9 @@ pub const SECTION: &str = "decisions";
 /// (`config_validate::validate`'s "model … references unknown provider" rule) and the `tools:`
 /// plane's own hook-reference check runs (`config/mod.rs`'s `resolve`). This function is PURE and
 /// kernel-free by construction (the dep wall, DECISIONS #40, forbids this crate naming a kernel
-/// type), so the composition root — the one place allowed to name both this crate's types and the
-/// kernel's (`busbar/src/root/plane_decisions.rs`) — hands it borrowed, already-resolved primitives:
+/// type), so a caller that holds the resolved document hands it borrowed, already-resolved
+/// primitives (the served build makes the same two checks in the kernel, over the door's folded
+/// section: its reserved `models` map's provider references and the dialects the door states):
 ///
 ///   * `provider_protocols`: every configured `providers:` entry's NAME mapped to its RESOLVED
 ///     `protocol` (post catalog-merge, the same value `providers.<p>.protocol` resolves to

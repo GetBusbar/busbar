@@ -15,11 +15,10 @@
 //!
 //! It runs after every boxed module, because a module that positively identified has already
 //! returned. It is not boxed because the module answer type can only hand back a principal, and the
-//! keys arm resolves a whole enforced key — a thing the module contract has no shape for. It is
-//! also cache-exempt: revocation on that path is a per-request verification plus a short denylist
-//! sync, and caching its verdict would widen the revocation window to the cache lifetime.
+//! keys arm resolves a whole enforced key — a thing the module contract has no shape for. Its
+//! verdict is never cached: revocation on that path is a per-request verification plus a short
+//! denylist sync.
 
-use crate::cache::CredentialCache;
 use crate::module::{AuthModule, AuthOutcome};
 use crate::principal::Principal;
 
@@ -151,21 +150,18 @@ impl AuthChain {
         self.keys_in_chain
     }
 
-    /// Run the chain with no cache and no key verifier — the thin form for callers that only need
-    /// the shape of the verdict.
+    /// Run the chain with no key verifier — the thin form for callers that only need the shape of
+    /// the verdict.
     pub fn run_chain(&self, candidate: Option<&str>) -> ChainVerdict {
-        self.run_chain_cached(candidate, None, None, 0, None)
+        self.run_chain_with(candidate, None, 0, None)
     }
 
-    /// Run the chain with the credential cache consulted around each cacheable module.
-    ///
-    /// The cache stores the module's RAW verdict; anything that narrows an identity afterwards is
-    /// applied on retrieval, so a configuration change to those ceilings takes effect immediately
-    /// even for a cached identity.
-    pub fn run_chain_cached(
+    /// Run the chain: config order, the first module to identify admits, a reject stops the walk, a
+    /// pass continues; then the built-in signed-key arm. No verdict is cached here: a module that
+    /// caches its verdicts does so inside itself (BUSBAR-1.6.0.md THE DESIGN §11.11 R3).
+    pub fn run_chain_with(
         &self,
         candidate: Option<&str>,
-        cache: Option<&CredentialCache>,
         keys: Option<&dyn KeyVerifier>,
         now: u64,
         expected_aud: Option<&str>,
@@ -176,63 +172,15 @@ impl AuthChain {
         if self.chain.is_empty() && !self.keys_in_chain {
             return ChainVerdict::Open;
         }
-        // Pass verdicts are BUFFERED, not admitted, until the chain identifies. An all-pass chain
-        // ends denied, so admitting them eagerly let an unauthenticated caller fill the cache with
-        // rows that then evict real identities under the oldest-inserted rule. Committing only on
-        // the identified return means unauthenticated traffic causes no admissions at all. A cache
-        // HIT is never re-inserted: that would refresh its lifetime and quietly widen revocation.
-        let mut pending_pass: Vec<&str> = Vec::new();
-        // The flush generation as of BEFORE the first module is consulted. Every insert below
-        // carries it, so a flush landing anywhere inside this run drops every verdict the run
-        // computed — they all predate it.
-        let cache_gen = cache.map(CredentialCache::generation);
         for entry in &self.chain {
-            let provider = entry.provider.as_str();
-            let cache_here = match (cache, candidate) {
-                (Some(c), Some(cred)) if entry.module.cacheable() => Some((c, cred)),
-                _ => None,
-            };
-            // The cache key is the PROVIDER name, not the module's self-reported name: two named
-            // providers backed by one module are different verifiers with different settings, so a
-            // shared row would let one provider's verdict admit the other's credential.
-            let hit = cache_here.and_then(|(c, cred)| c.get(provider, cred, now));
-            let was_hit = hit.is_some();
-            let outcome = match hit {
-                Some(hit) => hit,
-                None => {
-                    let o = entry.module.authenticate(candidate);
-                    if cache_here.is_some() && matches!(o, AuthOutcome::Pass) {
-                        pending_pass.push(provider);
-                    }
-                    o
-                }
-            };
-            match outcome {
+            match entry.module.authenticate(candidate) {
                 AuthOutcome::Identify(principal) => {
-                    if let (Some(c), Some(cred), Some(g)) = (cache, candidate, cache_gen) {
-                        for name in &pending_pass {
-                            c.put(name, cred, &AuthOutcome::Pass, now, g);
-                        }
-                        // Only a MISS commits, the way the buffered passes above already do. A hit
-                        // re-inserted here would reset the row's expiry on every request, so a
-                        // credential used more often than its own TTL would never be re-verified
-                        // against its module and an upstream revocation would never land.
-                        if cache_here.is_some() && !was_hit {
-                            c.put(
-                                provider,
-                                cred,
-                                &AuthOutcome::Identify(principal.clone()),
-                                now,
-                                g,
-                            );
-                        }
-                    }
                     // No per-module role filter here: the nested role-binding table IS the
                     // allow-list, so a role this module asserts grants nothing unless that table
                     // binds it. A boxed module never resolves a key, because its answer cannot
                     // carry one.
                     return ChainVerdict::Identified {
-                        module: provider.to_string(),
+                        module: entry.provider.clone(),
                         principal,
                         resolved: None,
                     };
@@ -242,59 +190,10 @@ impl AuthChain {
             }
         }
         // The built-in signed-key arm — a sibling to the boxed modules above, run after them.
-        // Cache-exempt by construction: it neither reads nor writes a row for ITS OWN verdict. But
-        // the buffered Pass rule above is keyed on the chain's `Identified` return, not on which
-        // member produced it — an earlier boxed module's buffered Pass is real work already done,
-        // and the keys arm identifying is as much an `Identified` return as a boxed module's. Never
-        // flushing it here would mean a chain ending in the keys arm re-runs every passing module on
-        // every request, cache or not.
         if self.keys_in_chain {
-            let verdict = keys_arm_verdict(keys, candidate, now, expected_aud);
-            if matches!(verdict, ChainVerdict::Identified { .. }) {
-                if let (Some(c), Some(cred), Some(g)) = (cache, candidate, cache_gen) {
-                    for name in &pending_pass {
-                        c.put(name, cred, &AuthOutcome::Pass, now, g);
-                    }
-                }
-            }
-            return verdict;
+            return keys_arm_verdict(keys, candidate, now, expected_aud);
         }
         ChainVerdict::Denied
-    }
-
-    /// Run the chain and then apply the revocation gate for a NEW unit.
-    ///
-    /// The gate is deliberately not inside the walk: an in-flight unit re-running some part of the
-    /// chain must not be torn down by a revocation that landed after it started. Only the arrival
-    /// of a new unit asks this question.
-    pub fn run_chain_for_new_unit(
-        &self,
-        candidate: Option<&str>,
-        cache: Option<&CredentialCache>,
-        keys: Option<&dyn KeyVerifier>,
-        now: u64,
-        expected_aud: Option<&str>,
-        revocations: Option<&dyn RevocationView>,
-    ) -> ChainVerdict {
-        let verdict = self.run_chain_cached(candidate, cache, keys, now, expected_aud);
-        // ONLY AN `Identified` VERDICT ASKS THE REVOCATION QUESTION. A revocation is a statement
-        // about a credential the chain resolved to SOMEBODY; applied to whatever string arrived it
-        // answers two questions nobody asked. An `Open` (anonymous front door) or `Denied` verdict
-        // never authenticated `candidate` in the first place — so on an open-door deployment an
-        // unrelated header value that happened to collide with an unrelated revoked credential
-        // would turn an anonymous admit into a denial, and on a closed one it would tell an
-        // unauthenticated caller WHICH of two refusals they earned, which is a probe for "was this
-        // string ever a real credential", answered before anything authenticated. This is the same
-        // rule `unit::Auth::resolve` states at the seam that has the reason codes to tell the two
-        // refusals apart; here there is only the one `Denied` to spell, and the gate is the same.
-        if matches!(verdict, ChainVerdict::Identified { .. }) {
-            if let (Some(r), Some(cred)) = (revocations, candidate) {
-                if r.is_revoked(cred) {
-                    return ChainVerdict::Denied;
-                }
-            }
-        }
-        verdict
     }
 
     /// A thin admit-or-deny view over the walk, for callers that do not need the principal.

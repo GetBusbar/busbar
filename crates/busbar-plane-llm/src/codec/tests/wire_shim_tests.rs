@@ -218,3 +218,82 @@ fn a_residual_never_reaches_a_bill() {
     );
     assert!(units.open.is_empty(), "no residual becomes an open class");
 }
+
+/// The open classes a non-token answer ledgers, through both projections: the plane's `Units`
+/// (built from `token_usage_of` and `open_units_of`, as the reply builds it) and the governance
+/// ledger's map (`open_units_of`, which `record_resp_usage` ledgers verbatim).
+fn non_token_open(
+    billing: busbar_contract::billing::Billing,
+) -> std::collections::BTreeMap<String, u64> {
+    let usage = Some(billing);
+    let governance = crate::exchange::reply::wire::open_units_of(&usage);
+    let units = crate::exchange::reply::Units::of(
+        crate::exchange::reply::wire::token_usage_of(&usage).as_ref(),
+        crate::exchange::reply::wire::open_units_of(&usage),
+    );
+    assert_eq!(units.open, governance, "the two projections disagree");
+    assert_eq!(
+        (
+            units.tokens_in,
+            units.tokens_out,
+            units.cache_read,
+            units.cache_write
+        ),
+        (0, 0, 0, 0),
+        "a non-token answer moves no token class"
+    );
+    governance
+}
+
+/// A PER-IMAGE ANSWER LEDGERS ITS IMAGES (owner LEDGER-100). dall-e/Imagen/Titan/SDXL answers carry
+/// no token usage; the far end returned 3 images, so the answer is one `images` line of 3. RED
+/// before this lane: `Billing::Images` was dropped by both projections and nothing was ledgered.
+#[test]
+fn a_per_image_answer_ledgers_one_images_line() {
+    let open = non_token_open(busbar_contract::billing::Billing::Images {
+        count: 3,
+        size: None,
+        quality: None,
+    });
+    assert_eq!(
+        open,
+        std::collections::BTreeMap::from([(
+            crate::codec::ir::open_class::IMAGES_CLASS.to_string(),
+            3
+        )])
+    );
+    assert!(non_token_open(busbar_contract::billing::Billing::Images {
+        count: 0,
+        size: None,
+        quality: None,
+    })
+    .is_empty());
+}
+
+/// A TRANSCRIPTION'S REPORTED DURATION LEDGERS WHOLE MILLISECONDS (owner LEDGER-100). whisper's
+/// `usage.seconds` is an exact decimal; it is ledgered as `audio_ms`, integer only, floored (never
+/// more than reported): 9 s is 9000, 12.3456 s is 12345, 0.0004 s is no line. RED before this lane:
+/// `Billing::Duration` was dropped by both projections.
+#[test]
+fn a_transcription_duration_ledgers_one_audio_ms_line() {
+    let ms = |text: &str| {
+        non_token_open(busbar_contract::billing::Billing::Duration {
+            seconds: busbar_contract::Count::parse(text).expect("a decimal"),
+        })
+        .get(crate::codec::ir::open_class::AUDIO_MS_CLASS)
+        .copied()
+    };
+    assert_eq!(ms("9"), Some(9_000));
+    assert_eq!(ms("12.3456"), Some(12_345));
+    assert_eq!(ms("0.0004"), None);
+    let open = non_token_open(busbar_contract::billing::Billing::Duration {
+        seconds: busbar_contract::Count::parse("1.5").expect("a decimal"),
+    });
+    assert_eq!(open.len(), 1, "one line: {open:?}");
+}
+
+/// Neither a flat answer nor the TTS request-seam size is a reported count: no line.
+#[test]
+fn a_flat_answer_ledgers_no_open_class() {
+    assert!(non_token_open(busbar_contract::billing::Billing::Flat).is_empty());
+}

@@ -29,6 +29,11 @@ pub const MAX_BYTES: u64 = u32::MAX as u64;
 /// (16 MiB).
 pub const HARD_MAX_BYTES: u64 = 16 * 1024 * 1024;
 
+/// The most entries one Statement list (or one list a kind's tail states) may hold. A count above
+/// it is refused before any entry is read, so a plugin's stated length can never walk the host
+/// past the plugin's own data.
+pub const STATEMENT_LIST_MAX: usize = 1024;
+
 /// Which rule an answer broke.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Rule {
@@ -62,6 +67,8 @@ pub enum Rule {
     NotFinite,
     /// Two fields that contradict each other.
     Contradiction,
+    /// A list pointer not aligned for its entry type: no slice may be built over it.
+    Misaligned,
 }
 
 /// Why an answer is FAULT: the rule, and the field that broke it (a distinct message per arm).
@@ -191,6 +198,23 @@ pub const fn within(len: u64, cap: u64, field: &'static str) -> Result<(), Fault
 pub fn listed<T>(ptr: *const T, len: usize, field: &'static str) -> Result<(), Fault> {
     if len > 0 && ptr.is_null() {
         return Err(fault(Rule::NullWithCount, field));
+    }
+    Ok(())
+}
+
+/// A plugin's `'static` list, before any slice is built over it: at most [`STATEMENT_LIST_MAX`]
+/// entries, and a pointer aligned for `T` (a slice over a misaligned pointer is undefined
+/// behaviour, whatever is read through it). A NULL pointer is [`listed`]'s question.
+///
+/// # Errors
+///
+/// [`Rule::OverMax`] above the cap; [`Rule::Misaligned`] for a misaligned pointer with a count.
+pub fn bounded<T>(ptr: *const T, len: usize, field: &'static str) -> Result<(), Fault> {
+    if len > STATEMENT_LIST_MAX {
+        return Err(fault(Rule::OverMax, field));
+    }
+    if len > 0 && !ptr.is_aligned() {
+        return Err(fault(Rule::Misaligned, field));
     }
     Ok(())
 }
@@ -551,6 +575,7 @@ fn header_names(
     if len > KEEP_RESPONSE_HEADERS_MAX {
         return Err(fault(Rule::OverMax, field));
     }
+    bounded(ptr, len, field)?;
     if len == 0 {
         return Ok(());
     }
@@ -574,13 +599,14 @@ fn header_names(
     Ok(())
 }
 
-/// A `'static` Statement list as a slice, after [`listed`].
+/// A `'static` Statement list as a slice, after [`listed`] and [`bounded`].
 ///
 /// # Safety
 ///
 /// A non-NULL `ptr` points at `len` live `'static` `T`s.
 unsafe fn list<'a, T>(ptr: *const T, len: usize, field: &'static str) -> Result<&'a [T], Fault> {
     listed(ptr, len, field)?;
+    bounded(ptr, len, field)?;
     if len == 0 {
         return Ok(&[]);
     }
@@ -588,7 +614,9 @@ unsafe fn list<'a, T>(ptr: *const T, len: usize, field: &'static str) -> Result<
     Ok(unsafe { core::slice::from_raw_parts(ptr, len) })
 }
 
-/// THE STATEMENT'S LISTS, at load: every list never counted with a NULL pointer, then
+/// THE STATEMENT'S LISTS, at load: every list never counted with a NULL pointer, never above
+/// [`STATEMENT_LIST_MAX`] and never misaligned (the metric families, each family's label keys,
+/// the diagnostic ids and the secret references included), then
 /// [`check_marks`], [`check_rewrites`], [`check_statement_sections`], [`check_needs`], the settings
 /// paths and the declared answers. The same check runs for a compiled-in row and a dropped-in door.
 ///
@@ -602,6 +630,18 @@ unsafe fn list<'a, T>(ptr: *const T, len: usize, field: &'static str) -> Result<
 /// `'static` entries.
 pub unsafe fn check_statement(st: &Statement) -> Result<(), Fault> {
     // SAFETY (each `list`): the caller's contract.
+    let families = unsafe { list(st.families, st.families_len, "statement.families") }?;
+    for f in families {
+        // A family's NULL label keys with a count are the loader's own refusal; their bounds are
+        // checked here, before any reader builds a slice over them.
+        bounded(
+            f.label_keys,
+            f.label_keys_len,
+            "statement.family.label_keys",
+        )?;
+    }
+    unsafe { list(st.diag_ids, st.diag_ids_len, "statement.diag_ids") }?;
+    unsafe { list(st.secret_refs, st.secret_refs_len, "statement.secret_refs") }?;
     let words = unsafe { list(st.mark_words, st.mark_words_len, "statement.mark_words") }?;
     check_marks(st.marks, words)?;
     check_rewrites(unsafe { list(st.rewrites, st.rewrites_len, "statement.rewrites") }?)?;

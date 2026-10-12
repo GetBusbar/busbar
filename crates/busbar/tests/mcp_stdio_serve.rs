@@ -12,9 +12,11 @@
 //!   chain with no `BUSBAR_MCP_STDIO_CREDENTIAL`, or with one the admission refuses, **exits
 //!   nonzero without serving a single frame** — the stdio spelling of the HTTP door's `401`;
 //! * a GOVERNED SESSION end to end: the credential — a JWT a local issuer signed — is verified by a
-//!   REAL token-verifying auth plugin (GetBusbar/busbar-auth-oidc, against the issuer's JWKS on a
-//!   certificate-verified loopback endpoint) loaded over the REAL plugin pipeline, `role_bindings` binds the session to a
-//!   budget-capped group,
+//!   REAL token-verifying auth plugin (GetBusbar/busbar-auth-oidc, on the auth kind's door) loaded
+//!   over the REAL plugin pipeline, the issuer's JWKS on a certificate-verified loopback endpoint
+//!   fetched for it by the child's OWN connector over the plugin's declared need (the plugin holds
+//!   no socket and no TLS; `advanced.allow_destinations` lets the loopback through the destination
+//!   guard), `role_bindings` binds the session to a budget-capped group,
 //!   the operator's `ask_caller` is driven as LIVE `elicitation/create` requests over the pipes,
 //!   and **the call over budget is refused with the budget named** — governance applied to a
 //!   child process, watched from outside it;
@@ -30,11 +32,16 @@
 // the flag falls through to the listener path (main.rs, "a build without MCP falls through to its
 // listener path"), so the spawned child is a normal HTTP server that never emits a stdio frame and
 // never exits on stdin EOF. These end-to-end tests drive that stdio channel, so they belong to the
-// same feature as the mode they exercise — matching the binary's own `#[cfg(feature = "plane-mcp")]`
-// on the serve block.
-// The plane under test is the linked row carrying the `stdio-serve` axis (build.rs emits
-// `linked_axis_stdio_serve` from `[package.metadata.busbar.linked-axes]`).
-#![cfg(linked_axis_stdio_serve)]
+// build that links the plane that serves it.
+// The plane under test is the door `plane-mcp` carries, served on the root's line carrier (SEAM-S1)
+// through the stdio claim its door states; gated on `linked_section_tools`, set exactly when the
+// linked door declaring `tools:` is in the build.
+// It also needs the `test-harness` build (ARCHITECT ruling, busbar #700): the dropped-in OIDC module
+// states every need in the `operator-infrastructure` egress class, which the host grants to a
+// first-party plugin only (`BUSBAR-1.6.0.md` §5), and only a `test-harness` child takes the
+// first-party key a test holds (`root::boot::HARNESS_FIRST_PARTY_KEY_ENV`). So this battery runs in
+// the root test-harness row and no longer in the single-plane or plain workspace rows.
+#![cfg(all(linked_section_tools, feature = "test-harness"))]
 
 mod common;
 
@@ -66,24 +73,86 @@ fn fixture_dir(tag: &str) -> PathBuf {
     let d = std::env::temp_dir().join(format!(
         "busbar-stdio-serve-{}-{tag}-{}",
         std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
+        {
+            static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            format!(
+                "{}-{}-{}",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |d| d.as_nanos()),
+                line!(),
+                NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            )
+        }
     ));
     std::fs::create_dir_all(d.join("plugins")).unwrap();
     d
 }
 
-/// THE LOCAL ISSUER, one per test process: the auth module's OWN test issuer (its logic crate's
-/// `testkit` feature) — an ES256 key, its JWKS served over a certificate-verified loopback endpoint
-/// the module trusts through `ca_cert_pem`, and genuinely signed tokens. The child `busbar` process's
-/// dropped-in module does the whole fetch and the whole verification.
-fn issuer() -> &'static busbar_auth_oidc::testkit::Issuer {
-    static ONE: std::sync::OnceLock<busbar_auth_oidc::testkit::Issuer> = std::sync::OnceLock::new();
+/// THE LOCAL ISSUER, one per test process (the loader's `test_issuer`: an ES256 key, its JWKS and
+/// genuinely signed tokens), its JWKS served over a certificate-verified loopback TLS endpoint
+/// ([`serve_jwks`]) the module trusts through `ca_cert_pem`. The child `busbar` process's OWN
+/// connector fetches the JWKS over the dropped-in module's declared need, and the module does the
+/// whole verification.
+fn issuer() -> &'static busbar_plugin_loader::test_issuer::Issuer {
+    static ONE: std::sync::OnceLock<busbar_plugin_loader::test_issuer::Issuer> =
+        std::sync::OnceLock::new();
     ONE.get_or_init(|| {
-        busbar_auth_oidc::testkit::Issuer::start("https://issuer.e2e.invalid", "e2e-issuer")
+        let issuer = busbar_plugin_loader::test_issuer::Issuer::start(
+            "https://issuer.e2e.invalid",
+            "e2e-issuer",
+        );
+        let (url, cert_pem) = serve_jwks(issuer.jwks().to_string());
+        issuer.served_at(&url, &cert_pem)
     })
+}
+
+/// Serve `jwks` over TLS on a fresh loopback port for the life of the process, under a self-signed
+/// certificate for `127.0.0.1`: the JWKS URL and the certificate's PEM. One background thread
+/// answers every request with the document.
+fn serve_jwks(jwks: String) -> (String, String) {
+    use std::io::{Read as _, Write as _};
+    let cert = rcgen::generate_simple_self_signed(vec!["127.0.0.1".to_string()])
+        .expect("mint a self-signed certificate");
+    let cert_pem = cert.cert.pem();
+    let private = rustls_pki_types::PrivateKeyDer::Pkcs8(
+        rustls_pki_types::PrivatePkcs8KeyDer::from(cert.signing_key.serialize_der()),
+    );
+    let config = std::sync::Arc::new(
+        rustls::ServerConfig::builder_with_provider(std::sync::Arc::new(
+            rustls::crypto::ring::default_provider(),
+        ))
+        .with_safe_default_protocol_versions()
+        .expect("protocol versions")
+        .with_no_client_auth()
+        .with_single_cert(vec![cert.cert.der().clone()], private)
+        .expect("server certificate"),
+    );
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind a loopback port");
+    let url = format!(
+        "https://{}/jwks",
+        listener.local_addr().expect("local addr")
+    );
+    std::thread::spawn(move || {
+        for socket in listener.incoming() {
+            let (Ok(socket), Ok(session)) = (socket, rustls::ServerConnection::new(config.clone()))
+            else {
+                continue;
+            };
+            let mut stream = rustls::StreamOwned::new(session, socket);
+            let _ = stream.read(&mut [0u8; 4096]);
+            let _ = write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\
+                 Connection: close\r\n\r\n{jwks}",
+                jwks.len()
+            );
+            let _ = stream.flush();
+            stream.conn.send_close_notify();
+            let _ = stream.flush();
+        }
+    });
+    (url, cert_pem)
 }
 
 /// A JWT for principal `e2e` with role `tester`, bound to `aud` and signed by the local issuer —
@@ -92,81 +161,55 @@ fn token_for(aud: &str) -> String {
     issuer().mint("e2e", &["tester"], aud)
 }
 
-/// RECORD A SKIP, LOUDLY AND DURABLY — never a silent pass.
-///
-/// `libtest` has no "skipped" outcome: a test that returns early reports the same green as a test
-/// that asserted everything it claims to. `eprintln!` does not close that gap, because libtest
-/// captures a passing test's output and never shows it — so the operator sees a green suite and no
-/// indication that four end-to-end coverages did not run.
-///
-/// So a missing prerequisite does two things here. Under CI it PANICS: coverage that CI is supposed
-/// to be providing must not be quietly absent. Everywhere else it appends a row to a skip ledger and
-/// writes the banner to the process's real stderr, bypassing libtest's capture — so the skip is
-/// visible in the moment AND readable afterwards by whatever collates the run.
-///
-/// The ledger path comes from `BUSBAR_TEST_SKIP_LEDGER`, defaulting beside the test binary; a
-/// ledger that cannot be written is itself reported rather than swallowed.
-fn record_skip(reason: &str) {
-    let test = std::thread::current()
-        .name()
-        .unwrap_or(env!("CARGO_CRATE_NAME"))
-        .to_string();
+/// The variable a `test-harness` child reads its first-party key from: the binary's
+/// `root::boot::HARNESS_FIRST_PARTY_KEY_ENV`, whose unit tests pin this spelling.
+const HARNESS_FIRST_PARTY_KEY_ENV: &str = "BUSBAR_TEST_HARNESS_FIRST_PARTY_KEY";
 
-    if std::env::var_os("CI").is_some() {
-        panic!(
-            "SKIP REFUSED UNDER CI: {test} cannot run because {reason}. CI is where this coverage \
-             is supposed to exist, so an absent prerequisite is a failure, not a skip."
-        );
-    }
-
-    let ledger = std::env::var_os("BUSBAR_TEST_SKIP_LEDGER")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            std::env::current_exe()
-                .ok()
-                .and_then(|e| e.parent().map(Path::to_path_buf))
-                .unwrap_or_else(std::env::temp_dir)
-                .join("busbar-test-skips.ledger")
-        });
-
-    let row = format!("{}\t{test}\t{reason}\n", env!("CARGO_CRATE_NAME"));
-    let wrote = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&ledger)
-        .and_then(|mut f| std::io::Write::write_all(&mut f, row.as_bytes()));
-
-    // Straight to the process's stderr, not through libtest's captured `eprintln!`.
-    let mut err = std::io::stderr().lock();
-    let _ = std::io::Write::write_all(
-        &mut err,
-        format!(
-            "\n=== SKIPPED (NOT PASSED): {test} ===\n  reason: {reason}\n  ledger: {}\n{}\n",
-            ledger.display(),
-            match &wrote {
-                Ok(()) => "  this skip is recorded; the assertions below did NOT run".to_string(),
-                Err(e) => format!("  WARNING: the skip ledger could not be written ({e})"),
-            }
-        )
-        .as_bytes(),
-    );
+/// The first-party key this battery signs the dropped-in module with and hands the child through
+/// the harness seam ([`HARNESS_FIRST_PARTY_KEY_ENV`]).
+fn harness_release_key() -> busbar_plugin_loader::sign::SigningKey {
+    common::plugins::key(0x5a)
 }
 
 /// Package the REAL `busbar-auth-oidc-plugin` cdylib (GetBusbar/busbar-auth-oidc, a pinned git
-/// dev-dependency of this crate, so the build leaves it under `deps/` with a metadata hash) into an
-/// unsigned `kind: auth` tarball in the fixture's plugins dir. `false` when the cdylib is not built —
-/// a skip locally, a hard failure under CI, the same posture busbar-kernel's
-/// `auth/tests/plugin_chain_tests.rs` takes for the same artifact.
-fn install_auth_plugin(dir: &Path) -> bool {
-    let Some(lib) = common::plugins::cdylib("busbar_auth_oidc_plugin") else {
-        record_skip("auth-oidc plugin cdylib not built (cargo test -p busbar builds it)");
-        return false;
-    };
-    let mut m = common::plugins::manifest("auth", "e2e-idp-module", "e2e");
+/// dev-dependency of this crate, so the build leaves it under `deps/` with a metadata hash) into a
+/// `kind: auth` tarball SIGNED FIRST-PARTY under [`harness_release_key`] in the fixture's plugins
+/// dir, its manifest stating the door's Statement as the pack tool renders it: its needs are in the
+/// `operator-infrastructure` egress class, which the host grants to a first-party plugin only. A
+/// cdylib that is not built fails the test in every run: `libtest` has no "skipped" outcome, and an
+/// early return would report these end-to-end coverages green without running them.
+fn install_auth_plugin(dir: &Path) {
+    let lib = common::plugins::token_verifier_cdylib_path()
+        .and_then(|p| std::fs::read(p).ok())
+        .unwrap_or_else(|| {
+            common::plugins::missing(
+                "pinned token-verifying `kind: auth` plugin's",
+                common::plugins::BUILD_PINNED,
+            )
+        });
+    let mut m = common::plugins::manifest(
+        "auth",
+        "e2e-idp-module",
+        busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
+    );
     m.alias = "e2e-idp".into();
-    let bytes = common::plugins::seal(m, &lib);
+    // One staging file PER CALL: the scenarios run as threads of one process, and rewriting a
+    // library another thread still has mapped (dlopened for its Statement) truncates it under
+    // that mapping — SIGBUS on Linux.
+    static STAGED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let path = std::env::temp_dir().join(format!(
+        "busbar-stdio-idp-{}-{}{}",
+        std::process::id(),
+        STAGED.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+        std::env::consts::DLL_SUFFIX
+    ));
+    std::fs::write(&path, &lib).expect("stage the library");
+    m.statement = busbar_plugin_loader::dispatch::rendering_of_library(&path)
+        .expect("the OIDC cdylib states its door")
+        .map(hex::encode);
+    let _ = std::fs::remove_file(&path);
+    let bytes = common::plugins::signed(&harness_release_key(), m, &lib);
     std::fs::write(dir.join("plugins").join("e2e-idp-module.tar.gz"), bytes).unwrap();
-    true
 }
 
 /// The config skeleton every scenario shares: the MCP resource, `extra` verbatim, and the minimal
@@ -199,6 +242,7 @@ fn write_configs(dir: &Path, extra: &str) {
 admin_listen: "127.0.0.1:0"
 advanced:
   allow_destinations: ["127.0.0.1"]
+store: {{module: memory}}
 {providers}{section}{extra}"#,
             section = include_str!("fixtures/stdio_plane_section.yaml")
                 .replace("{canonical}", canonical()),
@@ -252,6 +296,10 @@ fn spawn(dir: &Path, credential: Option<&str>) -> StdioChild {
         )
         .env("BUSBAR_CONFIG", dir.join("config.yaml"))
         .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))
+        .env(
+            HARNESS_FIRST_PARTY_KEY_ENV,
+            hex::encode(harness_release_key().verifying_key().as_bytes()),
+        )
         .env_remove(surface("credential_env"))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -363,7 +411,11 @@ fn the_catalog_sections_are_required_only_when_a_linked_plane_requires_them() {
     const STAMP: &str = "BUSBAR-3015: ";
     let dir = fixture_dir("catalog");
     std::fs::write(dir.join("providers.yaml"), "").unwrap();
-    std::fs::write(dir.join("config.yaml"), "listen: \"127.0.0.1:0\"\n").unwrap();
+    std::fs::write(
+        dir.join("config.yaml"),
+        "listen: \"127.0.0.1:0\"\nstore: {module: memory}\n",
+    )
+    .unwrap();
     let out = Command::new(env!("CARGO_BIN_EXE_busbar"))
         .arg("--validate")
         .env("BUSBAR_CONFIG", dir.join("config.yaml"))
@@ -419,9 +471,7 @@ fn a_door_deployment_with_an_empty_chain_refuses_to_boot() {
 #[test]
 fn a_governed_deployment_refuses_an_uncredentialed_stdio_session() {
     let dir = fixture_dir("denied-absent");
-    if !install_auth_plugin(&dir) {
-        return;
-    }
+    install_auth_plugin(&dir);
     write_configs(&dir, &governed_config(&dir, ""));
     let mut child = spawn(&dir, None);
     let code = wait_bounded(&mut child.child, Duration::from_secs(120));
@@ -443,9 +493,7 @@ fn a_governed_deployment_refuses_an_uncredentialed_stdio_session() {
 #[test]
 fn a_governed_deployment_refuses_a_wrong_audience_credential() {
     let dir = fixture_dir("denied-aud");
-    if !install_auth_plugin(&dir) {
-        return;
-    }
+    install_auth_plugin(&dir);
     write_configs(&dir, &governed_config(&dir, ""));
     // Signed by the SAME issuer the module trusts — only the audience is wrong, so the refusal can
     // only be the audience rule's.
@@ -468,9 +516,7 @@ fn a_governed_deployment_refuses_a_wrong_audience_credential() {
 #[test]
 fn a_budgeted_stdio_session_serves_within_budget_and_refuses_over_it() {
     let dir = fixture_dir("budget");
-    if !install_auth_plugin(&dir) {
-        return;
-    }
+    install_auth_plugin(&dir);
     let token = token_for(canonical());
     write_configs(
         &dir,
@@ -550,9 +596,7 @@ fn a_budgeted_stdio_session_serves_within_budget_and_refuses_over_it() {
 #[test]
 fn a_roleless_admitted_credential_is_refused_without_serving_a_frame() {
     let dir = fixture_dir("roleless");
-    if !install_auth_plugin(&dir) {
-        return;
-    }
+    install_auth_plugin(&dir);
     let token = token_for(canonical());
     write_configs(&dir, &governed_config(&dir, ""));
     let mut child = spawn(&dir, Some(&token));
@@ -583,9 +627,7 @@ fn a_roleless_admitted_credential_is_refused_without_serving_a_frame() {
 #[test]
 fn a_bound_session_serves_and_eof_with_a_live_subscription_exits_promptly() {
     let dir = fixture_dir("bound");
-    if !install_auth_plugin(&dir) {
-        return;
-    }
+    install_auth_plugin(&dir);
     let token = token_for(canonical());
     write_configs(
         &dir,
@@ -599,7 +641,9 @@ fn a_bound_session_serves_and_eof_with_a_live_subscription_exits_promptly() {
     );
     let mut child = spawn(&dir, Some(&token));
 
-    // A LEGACY-era opening: `initialize`, no `_meta` — the stdio dual-era negotiation.
+    // A SESSION-era opening over stdio: `initialize`, no `_meta`. The carrier answers in the session
+    // revision the client asked for (revision by negotiation, THE DESIGN section 2); a line that
+    // states the stateless `_meta` after it is still served as it is.
     child.send(&serde_json::json!({
         "jsonrpc": "2.0", "id": 1, "method": "initialize",
         "params": { "protocolVersion": "2025-06-18", "capabilities": {},
@@ -609,7 +653,7 @@ fn a_bound_session_serves_and_eof_with_a_live_subscription_exits_promptly() {
     assert_eq!(
         init.pointer("/result/protocolVersion")
             .and_then(|v| v.as_str()),
-        Some("2026-07-28"),
+        Some("2025-06-18"),
         "{init}"
     );
     child.send(&serde_json::json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }));
@@ -643,5 +687,57 @@ fn a_bound_session_serves_and_eof_with_a_live_subscription_exits_promptly() {
 
     let code = child.eof_and_wait();
     assert_eq!(code, 0, "EOF with a live subscription still exits promptly");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// SEAM-S1 RED ARM, THE GRANT PER CALL ON THE LINE CARRIER: every line is its own unit with its own
+/// scope check, so a principal whose role reaches only another pool (never this server) is refused
+/// EACH `tools/call` it sends,
+/// in the data listener's words (`not_granted`), while the session goes on serving what it may.
+#[test]
+fn an_ungranted_tool_is_refused_per_call_on_the_line() {
+    let dir = fixture_dir("ungranted");
+    install_auth_plugin(&dir);
+    let token = token_for(canonical());
+    write_configs(
+        &dir,
+        &governed_config(
+            &dir,
+            r#"  role_bindings:
+    idp:
+      tester: { allowed_pools: [elsewhere] }
+tools:
+  ws:
+    url: "http://127.0.0.1:9/rpc"
+    allow_private: true
+    pin: { mechanism: cert_spki, key: "sha256/UNUSED=" }
+    tools_allow:
+      read: { schema_hash: "sha256:0000" }
+"#,
+        ),
+    );
+    let mut child = spawn(&dir, Some(&token));
+    for i in 0..2 {
+        child.send(&serde_json::json!({
+            "jsonrpc": "2.0", "id": format!("call-{i}"), "method": "tools/call",
+            "params": { "_meta": meta(), "name": "ws_read", "arguments": {} }
+        }));
+        let line = child.recv();
+        assert_eq!(line["id"], format!("call-{i}"), "{line}");
+        assert_eq!(
+            line.pointer("/error/data/reason").and_then(|v| v.as_str()),
+            Some("not_granted"),
+            "each call is refused on its own scope check: {line}"
+        );
+    }
+    // The session still serves what the principal may: the refusals ended their units, not it.
+    child.send(&serde_json::json!({
+        "jsonrpc": "2.0", "id": "list", "method": "tools/list", "params": { "_meta": meta() }
+    }));
+    let list = child.recv();
+    assert_eq!(list["id"], "list", "{list}");
+    assert!(list.get("result").is_some(), "{list}");
+    let code = child.eof_and_wait();
+    assert_eq!(code, 0, "EOF on stdin is a clean shutdown");
     let _ = std::fs::remove_dir_all(&dir);
 }

@@ -213,8 +213,14 @@ where
             // The kernel reads the keys it owns before the section reaches the plane: the trust
             // keys the plane declares and every registration's hook references, on the same error
             // channel the plane's own refusals ride.
-            validate_plane_section(config_section, &value, d.trust_keys, &config_sections())
-                .map_err(serde::de::Error::custom)?;
+            validate_plane_section(
+                config_section,
+                &value,
+                d.trust_keys,
+                d.caller_credential_refusal,
+                &config_sections(),
+            )
+            .map_err(serde::de::Error::custom)?;
             parse(&value).map_err(serde::de::Error::custom)
         }
         None => {
@@ -387,22 +393,64 @@ pub fn config_sections_from(decls: &[&'static super::registry::PlaneDecl]) -> Ve
 /// words are not registrations and are skipped; the section-level `hooks:` list is judged where every
 /// other cross-reference is, at resolve.
 ///
-/// `trust_keys` is the plane's declaration of its kernel-owned trust keys; `sections` is every
-/// section the config grammar declares ([`config_sections`]).
+/// `trust_keys` is the plane's declaration of its kernel-owned trust keys; `caller_credential_refusal`
+/// is its sentence refusing a forwarded caller credential ([`refuse_forwarded_caller_credential`]);
+/// `sections` is every section the config grammar declares ([`config_sections`]).
 ///
 /// # Errors
 ///
-/// The first registration's refusal.
+/// The first registration's refusal, then the section default's.
 pub fn validate_plane_section(
     section: &str,
     value: &serde_yaml::Value,
     trust_keys: &[busbar_contract::plane::TrustKeyDecl],
+    caller_credential_refusal: Option<&str>,
     sections: &[&'static str],
 ) -> Result<(), String> {
     for (name, entry) in crate::trust::section::registrations(value) {
         validate_plane_entry(section, name, entry, trust_keys, sections)?;
     }
-    Ok(())
+    let models = value
+        .get(busbar_contract::section::RESERVED_MODELS_KEY)
+        .and_then(serde_yaml::Value::as_mapping);
+    for (name, entry) in models.into_iter().flatten() {
+        if let Some(name) = name.as_str() {
+            let models = busbar_contract::section::RESERVED_MODELS_KEY;
+            judge_entry_timeout(&format!("`{section}.{models}.{name}`"), entry)?;
+        }
+    }
+    refuse_forwarded_caller_credential(value, caller_credential_refusal)
+}
+
+/// The reserved section key holding the section-wide upstream-credential default.
+const UPSTREAM_CREDENTIALS: &str = "upstream_credentials";
+
+/// THE RESERVED SECTION DEFAULT MAY NOT FORWARD THE CALLER'S CREDENTIAL on a plane that says so.
+/// The key is the kernel's, so the kernel reads it; the words are the plane's, so a plane that
+/// declares a `refusal` has that sentence emitted verbatim when its section's
+/// `upstream_credentials:` default is `passthrough`. A section default applies to every
+/// registration that never spells the key, which is exactly the set a per-registration check
+/// cannot see. A value that is not a credential mode is left to the section split, which names it.
+///
+/// # Errors
+///
+/// The plane's `refusal`, verbatim.
+pub fn refuse_forwarded_caller_credential(
+    value: &serde_yaml::Value,
+    refusal: Option<&str>,
+) -> Result<(), String> {
+    let Some(refusal) = refusal else {
+        return Ok(());
+    };
+    let default = value
+        .as_mapping()
+        .and_then(|m| m.get(UPSTREAM_CREDENTIALS))
+        .cloned()
+        .map(serde_yaml::from_value::<busbar_contract::config::UpstreamCreds>);
+    match default {
+        Some(Ok(busbar_contract::config::UpstreamCreds::Passthrough)) => Err(refusal.to_string()),
+        _ => Ok(()),
+    }
 }
 
 /// THE KERNEL'S JUDGEMENT OF ONE REGISTRATION: its declared trust keys' values
@@ -422,6 +470,13 @@ pub fn validate_plane_entry(
 ) -> Result<(), String> {
     let at = format!("`{section}.{name}`");
     crate::trust::section::judge_entry(&at, entry, trust_keys)?;
+    // The reserved maps are not entries: a model-serving section's entries are its `models` map's,
+    // judged by [`validate_plane_section`]; a pool's member is judged as the entry it names.
+    if name != busbar_contract::section::RESERVED_MODELS_KEY
+        && name != busbar_contract::section::RESERVED_POOLS_KEY
+    {
+        judge_entry_timeout(&at, entry)?;
+    }
     let hooks = entry
         .as_mapping()
         .and_then(|m| m.get(Kind::Hook.root()))
@@ -432,6 +487,32 @@ pub fn validate_plane_entry(
         }
     }
     Ok(())
+}
+
+/// THE KERNEL'S JUDGEMENT OF AN ENTRY'S RESERVED `timeout:`
+/// (`busbar_contract::section::ENTRY_TIMEOUT_KEY`): absent is no bound of its own; written, it is
+/// the one reading [`busbar_contract::section::entry_timeout_ms`] makes, or the load is refused.
+///
+/// # Errors
+///
+/// The sentence an operator reads, worded at `at`.
+pub fn judge_entry_timeout(at: &str, entry: &serde_yaml::Value) -> Result<(), String> {
+    use busbar_contract::section::{entry_timeout_ms, ENTRY_TIMEOUT_KEY};
+    let Some(written) = entry
+        .as_mapping()
+        .and_then(|m| m.get(ENTRY_TIMEOUT_KEY))
+        .filter(|v| !v.is_null())
+    else {
+        return Ok(());
+    };
+    let Some(text) = written.as_str() else {
+        return Err(format!(
+            "{at}: `{ENTRY_TIMEOUT_KEY}:` must be a duration `<n><s|m|h|d>`, e.g. `30s`"
+        ));
+    };
+    entry_timeout_ms(text)
+        .map(|_| ())
+        .map_err(|reason| format!("{at}: {reason}"))
 }
 
 /// A whole attach list, judged by the same rule one entry is — the SECTION-level `hooks:` list has

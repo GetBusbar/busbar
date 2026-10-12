@@ -606,8 +606,10 @@ deregister}` on the per-worker reactor.
 | Class | Used by | Rule |
 |---|---|---|
 | `provider` | plane upstreams | allow-list + `allow_metadata_hosts` |
-| `operator-infrastructure` | databases, vault, ldap | private, loopback and plaintext allowed; pinned; cloud metadata hosts refused (accepted difference, owner 2026-09-27) |
-| `open-web` | webhook; auth mint endpoints (`token_url`, `token_uri`) | public https only |
+| `operator-infrastructure` | databases, vault, ldap; auth mint endpoints (`token_url`, `token_uri`) | private, loopback and plaintext allowed; pinned; cloud metadata hosts refused (accepted difference, owner 2026-09-27) |
+| `open-web` | webhook; ~~auth mint endpoints (`token_url`, `token_uri`)~~ | public https only |
+
+~~auth mint endpoints in `open-web`~~ STRUCK 2026-10-05 by ARCHITECT (D1, MINT CLASS (B)): the mint need takes operator-infrastructure semantics. Law beats table: customer-visible behaviour stays 1.5.5 unless the owner signs (Part 1), and 1.5.5 minted over plaintext to a private or loopback token endpoint; the owner signed only the destination guard change below. `--validate` keeps refusing an http mint endpoint on a public host, as 1.5.5 did, and the ONE destination guard in the connector still applies on top. Proven byte-identical by the oracle cells `egress.auth|oauth-cc|mint-refresh` and `egress.auth|jwt-bearer|mint-refresh`.
 | `loopback-allowed` | otlp, webrequest | https, or loopback plaintext; the node's own ports refused |
 
 **Destination guard — ONE check for every outbound connection (OWNER ruling, DESTINATION GUARD,
@@ -796,7 +798,7 @@ and guest lists".
    §11.6: the framer no longer calls a `decorate` crossing; the kernel makes the one call. The framer
    now calls its bound auth through the host auth handle at its auth points (SUPERSEDED 2026-09-30 by THE DESIGN §6, "Auth points and guest lists").
 5. **Each style caches inside its plugin.** bearer and api-key build the header once, at `open`.
-   jwt-bearer and oauth-client-credentials mint through the plugin's own `open-web` need and refresh
+   jwt-bearer and oauth-client-credentials mint through the plugin's own `operator-infrastructure` need (§5 egress classes, ARCHITECT D1 MINT CLASS (B)) and refresh
    ahead of expiry in the background on `tick`; the plugin holds the service-account file or client
    secret, validates it, and renders 1.5.5's refusal texts. SigV4 signs per request with a daily
    signing key derived ahead of time. caller-credential passes the caller's credential through. The
@@ -1144,8 +1146,8 @@ listener (§3).
 
 ### 9. Crates and repos
 
-The busbar repo holds **15 crates**: `busbar` (the binary and composition root), `busbar-kernel` and
-its 8 workflow crates, `busbar-contract` (the shapes and the author SDK), `busbar-plugin-loader`, and
+The busbar repo holds **~~15~~ 14 crates** (OWNER 2026-10-07): `busbar` (the binary and composition root), `busbar-kernel` and
+its ~~8~~ 7 workflow crates (`busbar-kernel-budget` is deleted; its admission is `busbar_kernel::door` and `governance::budget_window`), `busbar-contract` (the shapes and the author SDK), `busbar-plugin-loader`, and
 the three cleanliness crates. Every plugin lives in its own repo, named `busbar-<kind>-<name>`:
 
 | Kind | Plugins |
@@ -1584,7 +1586,7 @@ the host never runs a service twice. `HostTables.conns` is swapped to the connec
 | verify | `verify.lookup`, `verify.store` | the host-side verify cache with single-flight leadership: hit, lead (the plane fetches and stores) or follow |
 | entitlement | `entitlement.check` | caller→target entitlement (the catalogue visibility filter) |
 | content | `content.scan` | in-session content governance: a piece of content passes the gate that governs it |
-| hook | `hook.call` | a hook stage run for an in-session sub-operation, over the hook kind's own `RequestView` |
+| hook | `hook.call` | a hook stage run for an in-session sub-operation, over the hook kind's own ~~`RequestView`~~ `PromptView`, a rewrite chain resuming at `from` (SUPERSEDED 2026-10-05 by the H2 ruling at :1616: op 17 is a gate or a rewrite over `PromptView`, resumed with `from: u32`) |
 | auth | `auth.call(point, …)` | a transport's call to the auth bound to its line or binding, owner-scoped; may pend; completion-handle and short-buffer rules apply |
 
 **The short-buffer rule for services.** The caller is the plugin, so a service writes its result
@@ -1771,7 +1773,7 @@ bears on none of them, it is reporting a defect in itself.
 
 Dev-green on **one SHA**, with nothing outstanding or niggling:
 
-1. `scripts/verify-1.6.0-done.sh` exits 0 across all of its groups (`DONE_GROUPS_DECLARED`, 24 today) — full run, never `--fast`
+1. `scripts/verify-1.6.0-done.sh` exits 0 across all of its groups (`DONE_GROUPS_DECLARED`, 25 today) — full run, never `--fast`
    (exit 3 is PROVISIONAL, not spendable), every bless/repoint env var empty.
 2. Construction standing-reds **empty** — `ship-ready` green, not merely `--posture`-tolerated.
    Hard clause: every `Family::Neutral` crate names **ZERO** plane/control/transport/dialect instance
@@ -1992,9 +1994,9 @@ Concretely, ALL of:
 2. **Construction standing-reds are EMPTY** — `ship-ready` green, not merely `--posture`-tolerated.
    The LLM-engine rebuild is done (no 1117-line request-path fn; terminal doors only in the Audit
    step; the price named only where the card lives; one pick site; ports-only tests; holds clean).
-   **The hard clause:** every `Family::Neutral` crate — the kernel and its 8 workflow crates, `busbar-contract`,
+   **The hard clause:** every `Family::Neutral` crate — the kernel and its ~~8~~ 7 workflow crates (OWNER 2026-10-07), `busbar-contract`,
    `busbar-plugin-loader`, `busbar-core-admin`, `busbar-core-oauth2`, `busbar-core-connector`, **and the
-   composition root** (the 15-crate repo, §9) — names
+   composition root** (the ~~15-crate~~ 14-crate repo (OWNER 2026-10-07), §9) — names
    **ZERO** `plane`/`control`/`transport`/`dialect` instance vocabulary in source: ceiling 0,
    ARMED (the `law0-neutral-instance` class in `xtask/src/gates/kind_isolation/matrix.rs`), and no
    `[[cell]]` ratchet row in `qa/kind-isolation.toml` can raise it. Cargo.toml manifest names are
@@ -2189,7 +2191,7 @@ are IN this file — nothing outside it does.
 | 16 | ~~**Worst-case ship date: Wed 2026-10-08 17:00 PDT.**~~ **VOID — owner ruling 10 (2026-09-23): *"forget a date, i want a plan for DONE"*. Three mutually inconsistent dates survived in this file (2026-10-08 twice, 2026-09-25 once); all three are void. The plan is ordered by dependency.** Moves only on a named MAJOR EVENT (Commit-C non-decomposable + divergence cascade; systemic HIGH reopening money path; fleet outage). | Part 5 "Dates" (this file) — same floor, restated there; drift between the two is the gate |
 | 17 | **One feature per plane, no `root-*`.** The per-plane compile knob is exactly `plane-<x>` (pull the plane crate + enable core's plane edge). END STATE default = `["auth-admin-tokens","hook-ranking","plane-llm","plane-mcp","plane-a2a","plane-streaming","plane-decisions"]`. The whole `root-*` family is gone (`teller-waist` is unconditional; the tower dep folds where used). The collapse runs inside the switch-over cutover cleanup — never as a standalone edit (dropping `root-llm` before `teller-waist` is unconditional would unwire the llm unit-plane path). | build (both distributions) green + target default line |
 | 18 | **The fourth plane is STREAMING, not voice.** Voice is ONE capability/dialect inside the streaming plane; streaming can carry more than voice. No `voice` as a plane/kind/crate/feature name: the streaming plane's crate is `busbar-plane-streaming`, feature `plane-streaming`; ALL logic (dialects incl. voice, codecs, modes) lives in that one plane crate — no `busbar-streaming-codec` crate (#6/#39). The rename is byte-identical (naming/packaging, not behavior). | grep: no `voice` as a plane/kind/crate/feature name; the streaming plane is `streaming` |
-| 19 | **busbar-core and busbar-voice are DELETED in 1.6.0 — the deletion is the release.** #1 requires core to name zero planes; #12 makes the internal re-architecture the release. busbar-core dissolves per #36/#37 into `busbar-kernel` (loop) + the 8 `busbar-kernel-<name>` workflow crates + `busbar-core-{admin,oauth2,connector}` (THE DESIGN §8); the fat plane crates collapse to ONE `busbar-plane-<x>` each (codecs/dialects fold IN, #39); busbar-voice is deleted (voice = a streaming dialect, #18). Byte-identical LOC move, oracle-proven; a 15-crate busbar repo with every plugin in its own repo (THE DESIGN §9). Executed as a parallel wave fan-out. | kind-isolation-ship:legacy-drain = 0; 15-crate busbar repo; shadow-oracle byte-green on every money move |
+| 19 | **busbar-core and busbar-voice are DELETED in 1.6.0 — the deletion is the release.** #1 requires core to name zero planes; #12 makes the internal re-architecture the release. busbar-core dissolves per #36/#37 into `busbar-kernel` (loop) + the ~~8~~ 7 `busbar-kernel-<name>` workflow crates (OWNER 2026-10-07) + `busbar-core-{admin,oauth2,connector}` (THE DESIGN §8); the fat plane crates collapse to ONE `busbar-plane-<x>` each (codecs/dialects fold IN, #39); busbar-voice is deleted (voice = a streaming dialect, #18). Byte-identical LOC move, oracle-proven; a ~~15-crate~~ 14-crate busbar repo (OWNER 2026-10-07) with every plugin in its own repo (THE DESIGN §9). Executed as a parallel wave fan-out. | kind-isolation-ship:legacy-drain = 0; ~~15-crate~~ 14-crate busbar repo (OWNER 2026-10-07); shadow-oracle byte-green on every money move |
 | 20 | **Transport-seam #7 extraction is IN the 1.6.0 cut.** The fat plane crates are engine+I/O; the pure `busbar-plane-*` crates enforce purity gates (~~no tokio/reqwest/async~~ SUPERSEDED 2026-09-28 by owner ruling: plugins may use any third-party library; the busbar-contract-only closure and host-owned sockets/TLS stand — a plane still opens no socket of its own (no `std::net`, no transport-kind vocabulary), no kernel-crate names, no money words, #40). The per-plane collapse is proven byte-identical: (a) ALL plane logic incl. codecs/dialects → the ONE `busbar-plane-<x>` crate (#39 — no codec crate); (b) dialing and framing → the transport plugins, pools and TLS → `busbar-core-connector` (#7/#40, THE DESIGN §5 — a plane opens no socket); (c) the engine-proper (App/state/session/secret/plane-registry/cost/governance) → `busbar-kernel`. A spot oracle box (zero-idle, terminate on close) proves each money move. | plane-purity gates green on each `busbar-plane-*`; source-denylist armable; kind-isolation-ship green; shadow-oracle byte-green |
 | 21 | **A plane crate is PURE and self-contained — ONE crate holds all its logic.** `busbar-plane-<x>` holds ALL of the plane's logic — dialects, codecs, modes (#6/#39) — with no I/O, no kernel/core-crate names in its dep closure (#40). There is NO separate codec crate. The crate that dies is the fat `busbar-<x>` engine: its I/O moves to the transport plugin (#7/#40) and its remaining logic into the one plane crate. | plane-purity gates green; no busbar-*-codec crate; fat busbar-<x> engine crate deleted |
 
@@ -2210,12 +2212,12 @@ are IN this file — nothing outside it does.
 | 31 | **Plugin topology = ONE repo per plugin, outside `busbar`. OWNER-LOCKED 2026-09-18.** A plugin is a 3rd party (#2), so it lives in its own GitHub repo — never inside the `busbar` (core) repo, and never bundled into a shared plugins-monorepo (a monorepo invites cross-plugin coupling / shared test utils, which #2 forbids). This is the true 3rd-party model and matches the existing 10 clean external repos (store-{mysql,postgres,sqlite,valkey}, auth-{github,ldap,oidc}, hashicorp-vault, headroom-hook, webrequest-hook). New plugins (incl. the 4 promoted export sinks — export-{prometheus,webhook,file,otlp}, #3) are created as NEW repos templated from those 10. The DEFAULT distribution still compiles a plugin in by depending on its repo (compiled-in vs dropped-in = packaging only, #11) — the plugin SOURCE never re-enters `busbar`. **The multi-repo drift risk (the 10 had drifted to 4 different pre-1.5.5 core pins — 1.5.0/1.5.2/1.5.3/1.5.4 — because each `.busbar-ref` was bumped independently) is solved by TOOLING, not topology:** a release-train step bumps every plugin repo's `.busbar-ref` to the released core SHA in one lockstep pass (the reusable `plugin-ci.yml` already materializes core as a sibling), and this tooling is EXPANDED to cover every new plugin repo as it is created. Independent repos + one-command lockstep pin. Fleet: repos named `busbar-<kind>-<name>`, each a logic crate plus a plugin crate with its own semver and declared contract-ABI range, promoting on its own dev/qa/main, generated and checked from `plugins.yaml` + `.github/fleet/` (THE DESIGN §9). | plugin repos live under GetBusbar/<plugin>, never crates/ in busbar; release-train pin-bump covers all plugin repos incl. new ones; no plugins-monorepo |
 | 32 | **Release-train CI across all repos — OWNER-RATIFIED 2026-09-18.** BRANCH FLOW is `dev → qa → main` in EVERY repo (busbar + every plugin repo in the §9 roster + downstream tooling; plugin repos are twins working on `dev`); **never push to `main` directly** — promotion happens only through CI, driven by the busbar main build. All development lands on `dev`; nothing advances past `dev` until the busbar main build conducts it. CONDUCTOR = **turnstile** (the existing merge-queue/land + EC2-fleet orchestrator, extended to drive releases). The train, on a busbar release SHA: (A) core 21-group done-oracle green on CORE_SHA (single source of truth); (B) PIN-LOCKSTEP — one turnstile dispatch rewrites every manifest repo's `.busbar-ref` → CORE_SHA on `dev` (kills the multi-repo drift that left plugins pinned to 1.5.0/1.5.2/1.5.3/1.5.4); (C) per-plugin verify via the reusable `plugin-ci.yml` (two-leg matrix, real service containers, pack+sign gate); (D) REVERSE CONSUMER-VERIFY — busbar's DEFAULT distribution build git-deps each `compiled_in_default` plugin at its bumped SHA and runs the oracle byte-identical (a BUILD-only concern — plugin SOURCE never re-enters busbar); (E) all green → turnstile promotes each repo dev→qa→main, tags, publishes signed cdylibs + busbar binary, fires downstream bumps (homebrew/helm/tf-provider). ROSTER = `plugins.yaml`, the first-party plugin registry; adding a plugin = one entry, and the registry gate, the fleet check and the train cover it (THE DESIGN §9). | branch protection: no direct main push in any repo; turnstile conducts dev→qa→main; manifest-driven pin-lockstep + consumer-verify + drift-check green before any promotion |
 | 33 | **Plugin infrastructure = ONE crate atop the ONE contract crate (#38). OWNER-LOCKED 2026-09-18.** The author side — the door macro `export_plugin!`, per-kind dispatch and the boundary glue — lives in `busbar-contract` (#84 merged `busbar-plugin-sdk` into it), so a plugin's busbar closure is exactly `busbar-contract`. `busbar-plugin-loader` = **how core loads plugins** (host side): open/verify/identify/call + signature verify (former `busbar-plugin-sign`) + tarball pack (former `busbar-plugin-pack`). There is **NO `testkit`** (dead — not a crate and not a feature): each plugin **self-tests** (#2); the kernel tests no plugin. **A KIND is a match-arm, not a crate; an INSTANCE is a repo** (#31). | plugin-infra crate count = 1 (`busbar-plugin-loader`) over `busbar-contract`; no busbar-plugin / -sdk / -sign / -pack / -testkit crate; no `testkit` feature anywhere; the door macro lives in busbar-contract; sign+pack in loader; kinds are match-arms; instances are repos |
-| 34 | **Universal crate naming = `busbar-<major>-<…>`, where a KIND is its own major. OWNER-RATIFIED 2026-09-18 (scheme A).** `major` ∈ { `plugin` (the plugin ABI MACHINERY only — now just `busbar-plugin-loader`, #33), `core` (the engine), OR a plugin KIND: `store`/`secret`/`auth`/`hook`/`export`/`plane`/`transport` }. A store plugin is `busbar-store-postgres` (store stuff — the word `plugin` is RESERVED for the contract machinery, never prefixed onto instances). `plane`/`transport` already follow this (`busbar-plane-mcp`, `busbar-transport-http`); the outliers to align are the external store/secret/auth/hook repos (`store-postgres`→`busbar-store-postgres`, `hashicorp-vault`→`busbar-secret-vault`, `auth-oidc`→`busbar-auth-oidc`, `{headroom,webrequest}-hook`→`busbar-hook-{…}`) plus `busbar-hooks-ranking`→`busbar-hook-ranking`. Kernel/core tier per #36/#37: the 14 `busbar-unit-*` retire into the 8 `busbar-kernel-<name>` (#36); `busbar-{admin,oauth2}`→`busbar-core-{admin,oauth2}`, plus `busbar-core-connector` (#37); `busbar-kernel` KEEPS its name (its own tier, #37); `caps`/`grammar`/`timing` are KILLED/folded (#37), not renamed; `busbar-contract-transport` FOLDS INTO `busbar-contract` (#38, no rename). `busbar` (the binary) stays. Codecs fold into the plane crate — NO `busbar-*-codec` crate (#39). **TIMING:** scheme locked now; in-tree `git mv`+Cargo-repoint runs as ONE atomic wave once the open codeaudit-fix branches fold (renaming 60 crates against live branches = conflict hell); the external GitHub repo renames (+redirects, homebrew/helm/tf) run now, with the fleet (THE DESIGN §9). **ALL plugin instances = `busbar-<kind>-<name>`** (owner-confirmed 2026-09-18): `busbar-store-postgres`, `busbar-transport-http`, `busbar-secret-vault`, `busbar-auth-oidc`, `busbar-hook-headroom`, `busbar-export-prometheus`, `busbar-plane-mcp`. **RESOLVED (was OPEN):** the `busbar-api`/`busbar-contract` smell is settled by #35 — not a rename but a fold (sealed ABI→`busbar-contract` #38, kernel+money records→core); `busbar-api` retires. | crate names conform to busbar-<major>-<…>; all plugin instances are busbar-<kind>-<name>; `plugin` only on ABI machinery; kinds are majors; a naming gate greps for non-conforming crate names |
+| 34 | **Universal crate naming = `busbar-<major>-<…>`, where a KIND is its own major. OWNER-RATIFIED 2026-09-18 (scheme A).** `major` ∈ { `plugin` (the plugin ABI MACHINERY only — now just `busbar-plugin-loader`, #33), `core` (the engine), OR a plugin KIND: `store`/`secret`/`auth`/`hook`/`export`/`plane`/`transport` }. A store plugin is `busbar-store-postgres` (store stuff — the word `plugin` is RESERVED for the contract machinery, never prefixed onto instances). `plane`/`transport` already follow this (`busbar-plane-mcp`, `busbar-transport-http`); the outliers to align are the external store/secret/auth/hook repos (`store-postgres`→`busbar-store-postgres`, `hashicorp-vault`→`busbar-secret-vault`, `auth-oidc`→`busbar-auth-oidc`, `{headroom,webrequest}-hook`→`busbar-hook-{…}`) plus `busbar-hooks-ranking`→`busbar-hook-ranking`. Kernel/core tier per #36/#37: the 14 `busbar-unit-*` retire into the ~~8~~ 7 `busbar-kernel-<name>` (#36) (OWNER 2026-10-07); `busbar-{admin,oauth2}`→`busbar-core-{admin,oauth2}`, plus `busbar-core-connector` (#37); `busbar-kernel` KEEPS its name (its own tier, #37); `caps`/`grammar`/`timing` are KILLED/folded (#37), not renamed; `busbar-contract-transport` FOLDS INTO `busbar-contract` (#38, no rename). `busbar` (the binary) stays. Codecs fold into the plane crate — NO `busbar-*-codec` crate (#39). **TIMING:** scheme locked now; in-tree `git mv`+Cargo-repoint runs as ONE atomic wave once the open codeaudit-fix branches fold (renaming 60 crates against live branches = conflict hell); the external GitHub repo renames (+redirects, homebrew/helm/tf) run now, with the fleet (THE DESIGN §9). **ALL plugin instances = `busbar-<kind>-<name>`** (owner-confirmed 2026-09-18): `busbar-store-postgres`, `busbar-transport-http`, `busbar-secret-vault`, `busbar-auth-oidc`, `busbar-hook-headroom`, `busbar-export-prometheus`, `busbar-plane-mcp`. **RESOLVED (was OPEN):** the `busbar-api`/`busbar-contract` smell is settled by #35 — not a rename but a fold (sealed ABI→`busbar-contract` #38, kernel+money records→core); `busbar-api` retires. | crate names conform to busbar-<major>-<…>; all plugin instances are busbar-<kind>-<name>; `plugin` only on ABI machinery; kinds are majors; a naming gate greps for non-conforming crate names |
 | 35 | **`busbar-api` + `busbar-contract` are NOT a layered pair — they fold into the 2 infra crates + core. OWNER-LOCKED 2026-09-18; analysis a6a9bda.** The two crates are independent siblings (neither deps the other) that COLLIDE on five false-friend names — `Store`, `StoreError`, `SecretError`, `SecretRef`, `AuthOutcome` — each a *different* type sharing an identifier (e.g. contract::Store = 22-method `Plugin`-bound journal ABI; api::Store = 31-method domain-record CRUD bound to nothing). Not duplication, not layering: two generations of "the plugin contract crate." DISPOSITION: (a) the **sealed plugin-visible ABI** — the closed `Kind` taxonomy + `KindMarker`/`Plugin` base + one capability trait per kind + bounded/grammar vocab — is the neutral ABI both sides name, so it lands in **`busbar-contract`** (#38 — the ONE ABI crate, NOT the sdk); (b) the **kernel vocab + money-path durable records** — `Scratch`(the renamed arena, #41)/`Unit`/`Ctx`/`Facts`/`Ir`/`RoutePlan` and the serde wire records `VirtualKey`(HAND-written wire)/`UsageLedger`/`MeteringRow`/`AuditRecord`/`PlaneRecord`/`CredentialSecret` — are **CORE**, not plugin infra, and move under the core-naming pass (next agenda). **BYTE-IDENTITY GUARD:** the money-path records relocate module-path-ONLY — serde field names / wire bytes must not change; `VirtualKey`'s hand-written `virtual_key_wire` module travels verbatim; the oracle proves it. The five colliding api-side names de-collide on the move (`RecordStore`/`RecordStoreError`/`SecretModuleError`/`SecretConfigRef`/`AuthVerdict` or equivalents chosen at implementation). `busbar-api` as a distinct crate is RETIRED. | no busbar-api crate post-fold; sealed-ABI types in busbar-contract (#38); kernel+money records in core (byte-identical, oracle-gated); zero false-friend name collisions remain |
-| 36 | **Kernel workflow = 8 crates in 4 groups; the word "unit" is retired. OWNER-LOCKED 2026-09-18.** The 14 `busbar-unit-*` crates collapse to **8 `busbar-kernel-<name>`** crates (flat names, group is conceptual only). GATES (the 3 door decisions — who → may → afford): `busbar-kernel-identity` (the AUTHENTICATE step: a presented credential resolved to a principal; the outbound per-request auth call is the auth kind's, THE DESIGN §6), `busbar-kernel-scope` (authZ: declared bar, ceilings, revocation), `busbar-kernel-budget` (the afford gate: try_admit/refund, D7 check-then-charge). MONEY: `busbar-kernel-ledger` (the book — rates+usage+ledger merged, three modules; persists via wal). EGRESS: `busbar-kernel-egress` (the upstream leg — walk + swrr weighting + pre-dial guard; trust folded in), `busbar-kernel-breaker` (trip/cooldown/fast-fail per pool,dest). JOURNAL: `busbar-kernel-wal` (the write-ahead append primitive — ledger AND audit ship through it), `busbar-kernel-audit` (the one append-only chain). EXITS from the unit set: `verbs` → `busbar-core-admin` (admin owns its own execution — no codec/exec split, since admin is a cleanliness crate not a plane); TLS provisioning → **`busbar-core-connector`**, the only holder of TLS keys, certificates, trust roots and mTLS identity; there is no tls plugin (THE DESIGN §5, §8). `busbar-kernel` itself = the loop/registry/teller/sessions. | no busbar-unit-* crates; 8 busbar-kernel-<name> crates; naming gate greps the set |
-| 37 | **Core dissolves to 3 cleanliness crates; no plugin-kind name in the core tier. OWNER-LOCKED 2026-09-18.** `busbar-core` is deleted (#19); the surviving compiled-in scaffolding = exactly **`busbar-core-admin`** (admin codec + verb execution), **`busbar-core-oauth2`** (OAuth AS + hosted login flow) and **`busbar-core-connector`** (composition + TLS) — THE DESIGN §8. `busbar-core-substrate` held two definitions and SPLIT (#83a): the pure leaves → `busbar-contract`, the machinery → `busbar-kernel`; `busbar-core-connsec` folds into the connector. The fat `busbar-substrate` (30k runtime shell) is DELETED — its runtime half drains to the kernel-8/units, `plane_host/` deleted, pure-value leaves (civil/duration/clock/config-enums/audit-vocab) → `busbar-contract`. RULE (a kind is a plugin, never a core crate): **no `busbar-core-<kind>` ever** — kills `busbar-core-hooks` (hook is a kind → `busbar-hook-*`). TIER meaning: `busbar-kernel*` = the engine+workflow (the loop); `busbar-core-*` = compiled-in scaffolding around it, one-way dep on the kernel. Killed/folded: `busbar-core-{hooks,config,caps,grammar,timing}`, `busbar-substrate-values`(name) → contract/kernel/binary. | only busbar-core-{admin,oauth2,connector} carry busbar-core-*; no core-<kind> crate |
+| 36 | **Kernel workflow = ~~8~~ 7 crates in 4 groups; the word "unit" is retired. OWNER-LOCKED 2026-09-18; 7 OWNER 2026-10-07.** The 14 `busbar-unit-*` crates collapse to **~~8~~ 7 `busbar-kernel-<name>`** crates (flat names, group is conceptual only). OWNER 2026-10-07: `busbar-kernel-budget` is gone (deleted whole by the 2026-09-30 ruling: its admission moved to `busbar_kernel::door` and `governance::budget_window`), so the afford gate lives in `busbar-kernel` and the workflow crates are the 7 below without it. GATES (the 3 door decisions — who → may → afford): `busbar-kernel-identity` (the AUTHENTICATE step: a presented credential resolved to a principal; the outbound per-request auth call is the auth kind's, THE DESIGN §6), `busbar-kernel-scope` (authZ: declared bar, ceilings, revocation), ~~`busbar-kernel-budget` (the afford gate: try_admit/refund, D7 check-then-charge)~~ the afford gate (try_admit/refund, D7 check-then-charge) in `busbar_kernel::door` and `governance::budget_window` (OWNER 2026-10-07). MONEY: `busbar-kernel-ledger` (the book — rates+usage+ledger merged, three modules; persists via wal). EGRESS: `busbar-kernel-egress` (the upstream leg — walk + swrr weighting + pre-dial guard; trust folded in), `busbar-kernel-breaker` (trip/cooldown/fast-fail per pool,dest). JOURNAL: `busbar-kernel-wal` (the write-ahead append primitive — ledger AND audit ship through it), `busbar-kernel-audit` (the one append-only chain). EXITS from the unit set: `verbs` → `busbar-core-admin` (admin owns its own execution — no codec/exec split, since admin is a cleanliness crate not a plane); TLS provisioning → **`busbar-core-connector`**, the only holder of TLS keys, certificates, trust roots and mTLS identity; there is no tls plugin (THE DESIGN §5, §8). `busbar-kernel` itself = the loop/registry/teller/sessions. | no busbar-unit-* crates; ~~8~~ 7 busbar-kernel-<name> crates (OWNER 2026-10-07); naming gate greps the set |
+| 37 | **Core dissolves to 3 cleanliness crates; no plugin-kind name in the core tier. OWNER-LOCKED 2026-09-18.** `busbar-core` is deleted (#19); the surviving compiled-in scaffolding = exactly **`busbar-core-admin`** (admin codec + verb execution), **`busbar-core-oauth2`** (OAuth AS + hosted login flow) and **`busbar-core-connector`** (composition + TLS) — THE DESIGN §8. `busbar-core-substrate` held two definitions and SPLIT (#83a): the pure leaves → `busbar-contract`, the machinery → `busbar-kernel`; `busbar-core-connsec` folds into the connector. The fat `busbar-substrate` (30k runtime shell) is DELETED — its runtime half drains to the ~~kernel-8~~ kernel-7 (OWNER 2026-10-07)/units, `plane_host/` deleted, pure-value leaves (civil/duration/clock/config-enums/audit-vocab) → `busbar-contract`. RULE (a kind is a plugin, never a core crate): **no `busbar-core-<kind>` ever** — kills `busbar-core-hooks` (hook is a kind → `busbar-hook-*`). TIER meaning: `busbar-kernel*` = the engine+workflow (the loop); `busbar-core-*` = compiled-in scaffolding around it, one-way dep on the kernel. Killed/folded: `busbar-core-{hooks,config,caps,grammar,timing}`, `busbar-substrate-values`(name) → contract/kernel/binary. | only busbar-core-{admin,oauth2,connector} carry busbar-core-*; no core-<kind> crate |
 | 38 | **`busbar-contract` is the ONE contract/ABI crate; `contract` is a reserved major. OWNER-LOCKED 2026-09-18 (amends #33/#35).** ALL seven kinds' capability traits + Kind taxonomy + every kind's ABI shapes, and only under `src/abi/` — `mechanism/`, one folder per kind, `host/`, `sdk/`, plus a generated C header (THE DESIGN §11.5) ~~+ BOTH lanes' wire types (COLD/JSON and HOT/`repr(C)`, #30)~~ (SUPERSEDED 2026-09-27 by THE DESIGN §11.1) + the neutral vocab (ids, grammar, caps, values, wire, civil/duration, audit vocab) live in **one crate: `busbar-contract`**. NO per-kind contract crate — `busbar-contract-transport` FOLDS IN (a KIND is a match-arm, not a crate, #33; contract already depended on it and already had a `transport.rs`). It is the neutral ABI both sides name, so it is **un-prefixed on purpose** — `contract` is its own reserved major in scheme A alongside `plugin`/`core`/`kind` (prefixing it `plugin-`/`core-` would lie about ownership). The author-side SDK (the door macro, dispatch glue, the typed wrappers) lives IN `busbar-contract`, at `src/abi/sdk/` (#84; THE DESIGN §11.5); plugin machinery = `busbar-plugin-loader` (host-side open/verify/call + sign + pack) atop the one contract; NO testkit (#33). `busbar-api` retires; its record SHAPES → `busbar-contract`, their semantics → `busbar-kernel-ledger` (#83; byte-identical, oracle-gated). **Three properties of the contract surface:** (a) **no default bodies** — every method of every kind trait is implemented by the plugin, because *"a default body is a plugin quietly declining to answer"*; (b) **feature-invariant** — no feature changes the surface a plugin compiles against (the only features are the named exemptions in `feature_invariance.rs`, incl. the dev-only `test-seal`); (c) **bounded** — every collection has a ceiling that is part of its type, except the candidate set and its permutation, which stay unbounded because bounding them would refuse a configuration 1.5.5 accepted. A hold has no `Drop` of its own: *"a hold that goes away without a posting is a bug the canary must see, not a thing a destructor should paper over."* | exactly one *-contract crate (busbar-contract); no busbar-*-contract; no busbar-plugin-sdk crate; the loader depends on contract; the ABI-location gate: no C-layout struct, ABI fn-pointer type or ABI version constant defined outside `busbar-contract/src/abi/` (THE DESIGN §11.5) |
-| 39 | **Every plugin = 1 repo, all 7 kinds; the busbar repo holds NO plugin source and exactly 15 crates. OWNER-LOCKED 2026-09-18; plugins in their own repos OWNER 2026-09-25.** Plane and transport are plugin kinds, so each instance is its own repo exactly like store/secret/auth/hook/export (#31). Codecs, dialects and modes FOLD INTO the plane crate — **planes = exactly 5**, `busbar-plane-{llm,mcp,a2a,streaming,decisions}` (#48; no `busbar-*-codec`, no `busbar-plane-mcp-host`). The busbar repo and every plugin repo are listed in THE DESIGN §9: the busbar repo holds `busbar`, `busbar-kernel` + the 8, `busbar-contract`, `busbar-plugin-loader` and `busbar-core-{admin,oauth2,connector}`. The default distribution compiles a subset in by depending on the plugin repos at pinned versions (#11) — plugin SOURCE never re-enters busbar. There is no in-tree plugin and no fixture plugin: real plugins are the both-ways proofs (#2). | busbar repo crate count = 15; zero plugin crates in busbar; 1 plugin = 1 repo for all 7 kinds; planes = 5 repos (incl. decisions) |
+| 39 | **Every plugin = 1 repo, all 7 kinds; the busbar repo holds NO plugin source and exactly ~~15~~ 14 crates. OWNER-LOCKED 2026-09-18; plugins in their own repos OWNER 2026-09-25; 14 crates OWNER 2026-10-07.** Plane and transport are plugin kinds, so each instance is its own repo exactly like store/secret/auth/hook/export (#31). Codecs, dialects and modes FOLD INTO the plane crate — **planes = exactly 5**, `busbar-plane-{llm,mcp,a2a,streaming,decisions}` (#48; no `busbar-*-codec`, no `busbar-plane-mcp-host`). The busbar repo and every plugin repo are listed in THE DESIGN §9: the busbar repo holds `busbar`, `busbar-kernel` + the ~~8~~ 7 (OWNER 2026-10-07), `busbar-contract`, `busbar-plugin-loader` and `busbar-core-{admin,oauth2,connector}`. The default distribution compiles a subset in by depending on the plugin repos at pinned versions (#11) — plugin SOURCE never re-enters busbar. There is no in-tree plugin and no fixture plugin: real plugins are the both-ways proofs (#2). | busbar repo crate count = ~~15~~ 14 (OWNER 2026-10-07); zero plugin crates in busbar; 1 plugin = 1 repo for all 7 kinds; planes = 5 repos (incl. decisions) |
 | 40 | **Plugin capability isolation — plugins talk to busbar ONLY over the ABI, enforced physically on the plugin→busbar channel. OWNER-LOCKED 2026-09-18.** Treat every plugin as untrusted 3rd party. THREE walls: (a) **dep-wall** — a plugin crate's entire workspace dependency closure = `busbar-contract` and nothing else; a RED-provable `kind-isolation` CI gate runs `cargo metadata` on every `busbar-<kind>-*` crate and asserts closure ∩ {kernel, core-*, any secret impl, any other plugin} = ∅ (you cannot `use` what you cannot name); and no socket2 or `tokio/net` anywhere in the closure, ~~and no ... reqwest, hyper client, rustls or redis `aio` anywhere in the closure,~~ SUPERSEDED 2026-09-28 by owner ruling: plugins may use any third-party library; the busbar-contract-only closure and host-owned sockets/TLS stand — proven by a post-LTO import scan — the carrier plugins are the one named exception (THE DESIGN §5). (b) **capability-ABI** — every privileged resource (`ConnId`, need, auth object) crosses ONLY as an opaque kernel-minted `#[repr(C)]` handle with ZERO byte-accessor on the plugin surface; secret bytes reach a plugin only on the two audited paths under SECRETS. (c) **FFI vtable** — a dropped-in cdylib calls back into busbar ONLY through the host-callback function pointers the kernel handed it at init (= the ABI); no kernel-internal symbol is in its link table, so `kernel.somethingMalicious()` is unrepresentable. SECRETS: the SECRET kind returns material to the KERNEL; the kernel resolves+audits; it delivers secret material only to (a) the auth object bound to it and (b) the non-plane plugin whose settings reference it, as in 1.5.5; a plane never receives secret bytes; framers see decorated headers in transit; TLS keys never leave `busbar-core-connector`; every plugin that holds a credential is operator-trusted (THE DESIGN §6). HONEST CEILING: (a)+(b)+(c) physically wall channel-1 (plugin→busbar) for native, plus mandatory code-signing at load (loader refuses unsigned). Channel-2 (plugin→OS: fs/net/host-RAM) is walled only by a runtime sandbox. **1.6.0 model = posture A** (native + code-signing + capability-ABI + dep-wall). **Posture B** (WASM confinement of the five kinds once called COLD — esp. `secret` — to wall channel-2) is OWNER-TABLED, not in the 1.6.0 crate/security model. | kind-isolation dep-gate green (RED-provable); no secret-bytes accessor on the ABI surface; RED: a plane echoing its whole request and response never sees a credential; loader refuses unsigned; posture A |
 
 | 41 | **Scratch memory GROWS on demand — never a fixed cap, never a crash. OWNER-LOCKED 2026-09-20 (kills the "arena" model + its fixed-4KiB-refuse design).** Per-request scratch: trait `Scratch` (in `busbar-contract`), impl **`ScratchPad`**, module `busbar-kernel::scratch` — the name "arena" is DEAD everywhere (`ArenaBytes`→`Scratch*`). Backed by an audited chunk-chaining bump allocator (bumpalo); `busbar-kernel` stays `forbid(unsafe)`, dep NOT added to `busbar-contract`. **It GROWS ON DEMAND by adding chunks — it never crashes and never issues a size-based refusal (`ArenaExhausted`/`ArenaBudget` for size is GONE).** The old fixed-4 KiB-cap-that-refuses (`set_allocation_limit`, per-worker fixed pool, backpressure-past-N) is KILLED. 4 KiB is only a STARTING size (a perf hint, MEASURED by the architect across planes and reported, not guessed); a big request pays one heap grow instead of crashing. **Shrinks back** to the starting size after a big request (no worker permanently hoards). **Abuse-only backstop**: a ceiling set absurdly high that only a runaway/attack could hit; on trip it cleanly refuses THAT ONE request, never panics. Kernel-owned; planes are size-blind. Proof case: jev (~5 KB responses) throws `ArenaExhausted` on the fixed 4 KiB today — the live bug this fixes. Runtime unchanged (`!Send`, thread-per-core LocalSet). | scratch grows (no set_allocation_limit ceiling); zero `ArenaExhausted`/size-refuse on the serve path; jev ~5KB serves; grow-then-shrink test; abuse-backstop test refuses-one-not-panics; grep: no "arena"/"Arena" type names |
@@ -2247,7 +2249,7 @@ are IN this file — nothing outside it does.
 | 60 | **"2× fresh audit" = loop the full audit to zero-found on a RE-RUN, never trust one 'done'. OWNER-LOCKED 2026-09-20.** Done means: run the full `/codeaudit` over all code → fix to 0 issues → run the full audit AGAIN → still 0. Repeat until a fresh pass finds nothing; a single pass that says "done" is not trusted (the skill already fans sonnet+opus but does not catch everything first time). Convergence = two consecutive clean full passes. "All code" means the code that ships: code being deleted or folded is not audited (owner, ~2026-09-19: *"don't audit what we delete"*); it is audited in its folded home. | ship/done gate requires two consecutive clean full-audit passes (re-run finds zero), not a single pass |
 | 61 | **Force-push rule: own working branches only, `--force-with-lease`, never a shared branch. OWNER-LOCKED 2026-09-20.** An agent may force-push ONLY its own `land-*`/`keep-*` working branches, always with `--force-with-lease`, and NEVER a shared branch (`dev`/`qa`/`main`) or a repo the owner doesn't own. | force-push limited to own land-*/keep-* branches with --force-with-lease; shared branches never force-pushed |
 
-| 62 | **A mid-stream cut is NOT a refund — the customer pays for what actually streamed. OWNER-LOCKED 2026-09-20 ("LOCKED AGREED").** If a live/streaming request is cut off mid-answer (breaker, disconnect, auth revoked, timeout), busbar bills for what was actually delivered up to the cut — it does not refund or zero the charge. Consistent with #43/#45: the plane reports the units actually streamed; the ledger records them; the money view prices them. A cut is an interruption, not a reversal of incurred cost. A stream served on a fallback lane bills like a primary-lane stream (owner, 2026-09-04: `stream_options.include_usage` on the degraded/fallback path, registered `improvement`, money-affecting). | mid-stream cut bills streamed units to the cut point; no refund/zeroing on cut; plane reports actual streamed units |
+| 62 | **A mid-stream cut is NOT a refund — the customer pays for what actually streamed. OWNER-LOCKED 2026-09-20 ("LOCKED AGREED").** If a live/streaming request is cut off mid-answer (breaker, disconnect, auth revoked, timeout — including a plane's stated stream ceiling passing on a streamed unit, whether its far end is still sending or its caller stopped reading (ARCHITECT ruling 2026-10-07, STREAM-CEILING, Appendix B)), busbar bills for what was actually delivered up to the cut — it does not refund or zero the charge. Consistent with #43/#45: the plane reports the units actually streamed; the ledger records them; the money view prices them. A cut is an interruption, not a reversal of incurred cost. A stream served on a fallback lane bills like a primary-lane stream (owner, 2026-09-04: `stream_options.include_usage` on the degraded/fallback path, registered `improvement`, money-affecting). | mid-stream cut bills streamed units to the cut point; no refund/zeroing on cut; plane reports actual streamed units |
 
 | 63 | **Hook behaviour is BYTE/BEHAVIOUR-IDENTICAL to 1.5.5 — 1.6.0 changes only the crate home. OWNER-LOCKED 2026-09-20 (owner-reviewed).** No change to WHERE hooks fire (the four points: request/inbound-rewrite, candidate, routing/decide, response/read-only tap), to fire-once semantics (per request — per gate on rewrite, per hop on decide — NEVER per token), to fail-closed handling (a broken/unparseable reply REJECTS the request; strictest wins: reject > restrict > abstain > allow), or to the grant model (two dials defaulting to nothing: `argument` none/ro/rw + `identity` none/ro; never sees secrets/tokens/price tables). The ONLY 1.6.0 change is relocation to a plugin `busbar-hook-<name>` in its own repo (`busbar-hook-ranking`, #34/#39) computing no money (#43); a plane calls hooks through the completion-style `hook.call` host service (THE DESIGN §2). Oracle proves hook behaviour unchanged. As in 1.5.5 (owner, 2026-09-04): a pre-forward auth refusal (401) on a hooked pool fires the completion tap once, with the synthetic outcome `rejected_by_auth` and the protocol-native status; every other pre-forward refusal (403/429/413/404) never taps. | hook fire-points/fire-once/fail-closed/grants identical to 1.5.5 (oracle byte-green); only the crate home moves to busbar-hook-<name> |
 
@@ -2581,7 +2583,13 @@ allow-list, pin, failover and exhaustion terminals; the driver builds no second 
   reaches the caller; a retry verdict after the first byte is treated as hard.
 - One attempt is live per unit; there is no hedging.
 - Backpressure is `emitted`/`more`: a full reply buffer answers `more = 1`, the kernel flushes, waits
-  for the caller's side to be writable and calls again.
+  for the caller's side to be writable and calls again. That wait is bounded by the unit's deadline
+  alone (ARCHITECT ruling 2026-10-07, STREAM-CEILING, Appendix B): once a streamed unit's head is stated it runs on its own task, the
+  response body only drains what it writes, and dropping the body is how the unit learns its caller
+  is gone. A plane that states a stream ceiling (`PlaneTail::stream_ceiling_secs`) and marks the unit
+  `ROUTE_STREAM` has that ceiling stamped as the unit's deadline once its route is known, so a caller
+  that stops reading with its socket open releases the unit at the ceiling; a plane that states `0`
+  has no ceiling, and a stalled caller holds its unit until it goes, as the previous release did.
 - Every answer carries cumulative units: they feed the budget check (which may use estimates) and the
   checkpoint cadence (§7); a checkpoint that dries the budget under `cut-stream` cuts the unit, the
   plane renders the error frame through `refusal`, and one Abort line settles (§7).
@@ -2591,7 +2599,10 @@ allow-list, pin, failover and exhaustion terminals; the driver builds no second 
   and the boot-verify golden over deployed chains stands. This applies to plane record chains only:
   the kernel's own audit chain is the fixed record of THE DESIGN §1.
 
-**Cancel** (client drop, deadline, reload). The driver keeps its own facts — whether the far end
+**Cancel** (client drop, deadline, reload). A deadline is the unit's own, or the stream ceiling its
+plane states, stamped once the route is known; it fires on the far end's reads and on the caller's
+writes alike, so a stalled caller of a ceiling-stating plane is cut there (`DeadlineExceeded`, billed
+as #62) (ARCHITECT ruling 2026-10-07, STREAM-CEILING, Appendix B). The driver keeps its own facts — whether the far end
 answered, whether the reply streamed, the last reported units. On every path it controls (deadline,
 cut, reload) the driver makes the ticketless `cancel` call itself before the loop future ends; a caller
 that goes away drops the future, and then the ticket goes to the dispatcher's client-drop path, which
@@ -2917,11 +2928,11 @@ inbound agent-card JWS, SSE reframe (#26 S3); (d) HOT-ABI de-stub + drop-in load
 manifest claim-sealing + plane cdylib SDK + bare-bones distribution (#26 S4/#11); (e) busbar-core drain
 facades — per-step re-export so steps relocate in any order (#27b). Nothing swaps the shipped path yet.
 
-### W2 — Loop-unify + kernel-8 + Scratch + Pass/Grant [#28/#36/#41/#65/#72–74]
+### W2 — Loop-unify + ~~kernel-8~~ kernel-7 (OWNER 2026-10-07) + Scratch + Pass/Grant [#28/#36/#41/#65/#72–74]
 Agents: (a) lift the dispatch scope onto the ONE kernel `teller::run_unit`; re-point every plane's
 gauntlet rider (llm/a2a/mcp/streaming) at it; collapse the substrate loop's two audit doors; DELETE
 `busbar-substrate/teller`. Prove MCP end-to-end byte-identical FIRST (proof case), then every plane
-rides the same seam. (b) collapse 14 `busbar-unit-*` → 8 `busbar-kernel-<name>` (#36). (c) `Scratch`
+rides the same seam. (b) collapse 14 `busbar-unit-*` → ~~8~~ 7 `busbar-kernel-<name>` (#36) (OWNER 2026-10-07). (c) `Scratch`
 trait in busbar-contract + `ScratchPad` grow-on-demand in busbar-kernel::scratch; MEASURE + report the
 start size (#41). (d) unify capability proofs to Pass (per stage) + Grant (per action); make
 `KernelSeal` kernel-only/unforgeable (#65); per-request u64 generation in-process + kernel-MAC'd ABI
@@ -2937,7 +2948,7 @@ reserved core-owned config keys stripped before the plugin blob (#43). (b) FIX e
 
 ### W4 — Core dissolve + legacy drain [#19/#37]
 Agents: delete `busbar-core`; land `busbar-core-{admin,oauth2,connector}` (substrate split, #37); drain fat substrate runtime
-into the kernel-8; delete `busbar-voice` (voice = streaming dialect, #18). Gate: legacy-drain = 0.
+into the ~~kernel-8~~ kernel-7 (OWNER 2026-10-07); delete `busbar-voice` (voice = streaming dialect, #18). Gate: legacy-drain = 0.
 
 ### W5 — Folds: planes / contract / plugin-infra / config [#39/#38/#35/#33/#40/#47/#49/#51]
 Agents (parallel, disjoint): (a) planes → 5 one-crate each, codecs/dialects fold IN; add the
@@ -3127,7 +3138,7 @@ Nothing is rebuilt between them.
 **`GetBusbar/busbar`** — the product. `crates/`, `xtask/` (every gate), `scripts/` (including
 `verify-1.6.0-done.sh`, the definition of done), `conformance/`, `testing/shadow-oracle/`.
 
-**`GetBusbar/busbar-release`** — the engine, five crates:
+**`GetBusbar/busbar-release`** — the engine, nine crates. Being redesigned as one PR state machine (busbar-release docs/ARCHITECTURE.md).
 
 | Crate | Job |
 |---|---|
@@ -3136,6 +3147,10 @@ Nothing is rebuilt between them.
 | `busbar-release-oracle` | The byte-identity oracle: this build vs the published 1.5.5 binary. |
 | `busbar-release-autoscaler` | Runner capacity. Ships the **`busbar-fleet`** binary (`src/bin/busbar-fleet.rs`) — this is the "fleet" tool; there is no separate fleet crate. |
 | `busbar-release-corpus` | The recorded request corpus the oracle replays. |
+| `busbar-release-cli` | The one `busbar-release` command line: ship, dev, watch, status, plugin, and the CI internals under `ci`. |
+| `busbar-release-github` | The one door to GitHub: batched GraphQL reads, REST writes, shared rate-limit and retry policy. |
+| `busbar-release-plugin` | The plugin fleet generator: renders `template/` into every `busbar-<kind>-<name>` repo, with drift check, sync and repin. |
+| `busbar-release-soak` | The sustained mixed-traffic soak of a built binary against the oracle's mocks, judged row by row. |
 
 Its workflows: `turnstile.yml`, `fleet-control.yml`, `oracle-rerecord.yml`, `docker-autoscaler.yml`, `ci.yml`.
 
@@ -3150,9 +3165,8 @@ fully torn down — zero instances, zero volumes, zero NAT gateways, zero elasti
 both cheaper and the money oracle's home (**#56 wins over #29** — the oracle rides Latchkey, it does
 not need a dedicated fleet box; `CI_RUNNER_ONDEMAND_FLOOR` is 0, not 2).
 
-**Capacity order (OWNER 2026-09-28):** zero idle instances; Latchkey first; EC2 only as overflow,
-under a launch cap and #78's spend breaker. The runner autoscaler runs as a scheduled Lambda
-(`busbar-autoscaler`), choosing the cheapest spot region. Agent compute is Latchkey only, through one
+**Runner gateway (OWNER 2026-10-10, supersedes the 2026-09-28 capacity order):** every job asks for a logical size (small, medium, large, xlarge), never a vendor label. One table maps each size to a backend (latchkey, ec2 or github), so switching a backend is a one-line change and nothing else breaks. Today every size maps to Latchkey (account cap 80 concurrent jobs); EC2 burst is off. A daily canary job runs on every backend in the table, including the switched-off ones, so a dormant backend is proven before anyone switches to it. #78's spend breaker binds every paid backend.
+Agent compute is Latchkey only, through one
 shared job budget (`1.6.0-TODO.md`, THE RULES 6.1-6.3); the owner has ruled no extra build capacity
 (2026-09-29). EC2 is allowed for the performance phase (§11.9).
 
@@ -3202,6 +3216,9 @@ release slice** and should not be re-done: `build-release` (`ci.yml:1896`) build
 once and `plane-rigs`, `perf-build-gate` and `shadow-oracle` download that artifact. The debug slice
 never got the same treatment. The other ~15 compiling jobs each prove a genuinely distinct
 feature/profile closure — collapsing those would silently drop coverage, so they are **not** waste.
+
+### Verification runs once per input (OWNER-LOCKED 2026-10-06)
+A verification step runs at most once per input key: hash(step id, toolchain, engine RELEASE_REF, the source of exactly the packages and fixtures the step reads). A passed key is reused by every later run — pull request, merge group, base — and the report names the reused key. ~~A pull request into predev runs one runner: build, clippy, and the tests of the crates it changes plus their reverse dependencies; the merge group runs the rung's full plan.~~ **One rule for every check in the release process (OWNER 2026-10-07: "you design the best plan, but it should be consistent for everything; this is our go-forward release process; keep waste in mind"):** a pull request runs the merge group's plan — every gate and every build/test step — minus the test and build rows its diff does not reach, each reported Skipped "not affected" by name, never silently dropped; it is judged on its merge with the base tip, the tree that would land. It runs on one runner unless every crate is affected (`Cargo.lock`, the root manifest, the toolchain, `.cargo/`, a path in no crate, docs a step reads) or the estimate from the measured step timings is over 20 minutes; then it runs the merge group's 4-shard matrix (the same cost, faster). A step that passed on an identical input key is reused, not re-run (the step cache). The merge group runs the rung's full plan. The oracle is never reused across a changed binary. Every CI run and Latchkey job is audited for waste the hour it ends. (Measured basis: 2026-10-06, $131/day CI, PR runs 59%, predev enter_pr == enter.)
 
 ## Promotion — measured 2026-09-21, and mostly NOT blocked
 
@@ -3278,6 +3295,84 @@ is narrow.) Deleting `pr/*` auto-closes those PRs, which also fires nothing, bec
 in the default `pull_request` types.
 
 
+## THE CONDUCTOR (OWNER 2026-10-11) — one deterministic driver; authors write code, nothing else
+
+> **OWNER 2026-10-11.** *"We have the pieces, not a thing pushing things through the pieces, and
+> that can't be an agent."* *"I wake up one day, never use agents again, replace them with human Bob,
+> and the system still works. Bob codes, runs one command, and it does its thing and tells Bob (or
+> the agent) if they need to do something else."* *"Every second of waste is $ burnt — money and
+> time."* *"The workflow is the workflow"* (no run cap). Supersedes, where they disagree: "How work
+> lands" item 3 (GitHub's merge queue, OWNER 2026-10-02), "Ship and stop", and every rule that has
+> an agent push, prove, retry, land, promote, or be spawned by the pipeline.
+
+**Why (measured 2026-10-10/11, busbar-release's 2-hour audit ledger, 9 windows):** Latchkey $442,
+of which $254 (57%) bought nothing: 166 of 264 merge-group runs were cascades thrown away behind a
+red group, 211 of 419 PR runs were red (fixes nobody had run), and the proof that would have caught
+them cheaply was refused by a run cap.
+
+**The rule.** One program decides; authors only write code. An AUTHOR is whoever writes code — a
+person or an agent, interchangeably; the pipeline never knows or cares which, and never spawns one.
+The CONDUCTOR is `busbar-release conductor`, one always-on service (today on the build server, the
+M3 at `10.1.7.14`; it runs anywhere from one config directory). It is deterministic code: every
+decision is a rule over measured facts. It updates itself from each green `main` release of
+busbar-release; nothing about running it is agent-driven.
+
+**The author's whole interface is one command:** `busbar-release submit` from a branch (it replaces
+`ship`). The conductor takes it from there and tells the author only when they must act — what is
+red, with the output, and the one thing to do next (fix and `submit` again; resolve a conflict;
+owner sign-off needed) — on the terminal, as the PR's one verdict comment, and in `busbar-release
+status`.
+
+**The stations after `submit`.** The conductor owns every move.
+
+| Station | What happens | Junk it refuses |
+|---|---|---|
+| PROVE | The conductor runs the tests and gates the change reaches, on a PROVER (below). Red: back to the author with the output; nothing is pushed to CI. No run cap. | A full CI hop used as a compiler; any unproven change reaching CI. |
+| PR CHECK | The conductor pushes and opens or updates the PR; one PR check per head (the merge-group plan minus the rows the diff cannot reach, "Verification runs once per input"). A run on a superseded head is cancelled. | Runs on superseded heads; re-runs because predev moved (the train verifies on the tip). |
+| TRAIN | The conductor batches the PRs whose PR check is green onto the predev tip (`train/<n>`, one merge per PR, a conflicting PR goes back to its author) and runs the full plan ONCE on the batch. Green: predev takes the batch and every PR in it lands. Red: the failing rows are attributed to the PRs whose changes reach them and those go back to their authors; the rest re-batch (unattributable: split in half). Only the conductor moves predev. | Speculative per-PR merge groups and their cascades (impossible by construction); a batch rebuilt for PRs that did not change. |
+| PROMOTE | predev -> dev -> qa -> main on the same engine, each rung judged once, absolutely where the ladder says so. | A promotion run that cannot pass (a rung whose required suite is registered not-run). |
+
+**METER** runs under every station: each proof and CI run records backend, minutes, dollars and
+outcome in one ledger; the waste over any window is a `health` row that fails above 10%.
+
+**PROVERS are registered backends, like runners.** A prover is a drop-in driver beside the runner
+gateway's (`Driver`): its name, slots, price per minute, readiness, canary, its own idempotent
+`up`/`down` (the M3 prover's `up` builds its Linux VM from nothing), and `prove(commit, commands) ->
+verdict`. Which provers are live, in what order and with how many slots is one table (`PROVERS`),
+switched with one command after a canary, never by code: today the M3 (an arm64 Linux VM, warm
+cache), Latchkey as overflow; tomorrow any mix of M3, Latchkey, EC2. The conductor fills the first
+prover with a free slot. A proof is a filter, never the verdict: the verdict stays CI's, on Linux
+x86_64, so a rare arm64/x86_64 difference costs at most one CI run.
+
+**The conductor IS the workflow; GitHub is one forge driver (OWNER 2026-10-11).** *"Conductor is the
+master workflow: what could be a GitHub Actions workflow is the Rust conductor with pluggable
+infra."* *"We shouldn't be tightly coupled to GitHub; it is a code repo, and if I want to go to
+Forgejo I could, mid-work."* So:
+- The conductor executes every job of every station itself, on INFRA DRIVERS (the M3's per-job
+  Linux VMs, the Latchkey CLI, EC2 boxes, GitHub-hosted runners), chosen by one owner command
+  (`busbar-release infra use <backends>`, canaried, effective on the next job). Every job asks for a
+  size, including the light orchestration jobs; nothing names a vendor. It stores logs and links
+  them in the PR's one verdict comment, and posts ONE verdict status per PR head that branch
+  protection requires.
+- The code host is a FORGE DRIVER: git push/fetch, pull requests, comments, the verdict status, branch
+  protection. GitHub is the driver today; Forgejo is the same interface. Nothing in the pipeline
+  depends on a forge-only feature: Actions workflows (replaced by the conductor), the merge queue
+  (replaced by the train), forge-only APIs. Switching forge is configuration and a mirror push.
+- Platform of record: busbar's VERDICT jobs run on x86_64 Linux (the 1.5.5 golden was recorded
+  there) unless a measured run proves arm64 byte-identical; the M3's arm64 VMs take proofs and
+  busbar-release's own CI. The M3 runs untrusted-safe: one throwaway VM per job.
+- OPEN (owner, before step 7 of 1.6.0): release signing without a forge-specific identity (SLSA
+  provenance today assumes GitHub's OIDC token, which exists only inside Actions): our own signing
+  key, or the chosen forge's CI.
+
+**What the conductor replaces** (deleted as each station lands): GitHub's merge queue on predev,
+`jump`, the merge-group re-check and orphan machinery, the STALE/UPDATE rule, `ship` and `dev` as
+author tools, and every agent the pipeline spawns (fix, stuck, rebase, shared). The turnstile, the
+hop, the ladder, the step cache, autopin and the EC2 runner backend stay as its internals.
+
+**Interim, until the train is live:** predev's merge queue builds at most 2 groups at once (OWNER
+2026-10-11, was 10).
+
 ## How work lands: the PR flow and the rules every contributor follows
 
 These are the binding process rules, moved here from the laptop-side `agent-rules.md` (lane R7,
@@ -3297,9 +3392,12 @@ branches live on GitHub so CI runs the pipeline).
    record: the full plan (every gate, every build/test step, the money oracle forced, conformance
    produced at judge time and judged absolutely per #68) on the queue's merge commit, judged "no worse
    than base" against the base the queue built it on; its report becomes the base of the commit it
-   lands. The PULL-REQUEST run is the fast pre-check a PR must pass to enter the queue: the gates and
-   `build:check`, `build:clippy`, `build:dlopen-cdylibs`, `test:workspace`, with no oracle and no
-   conformance (ARCHITECT ruling 2026-10-02, the hop split). Neither may add a red. A local Latchkey
+   lands. The PULL-REQUEST run is the pre-check a PR must pass to enter the queue: the merge group's
+   gates and build/test steps, each test and build step over the crates the PR changes plus their
+   reverse dependencies (a row the diff does not reach is reported skipped, "not affected"), on the
+   PR merged onto the base tip, with no oracle and no conformance; on ONE runner when that is
+   estimated within 20 minutes, else as the merge group's shard matrix ("Verification runs once per
+   input", OWNER-LOCKED 2026-10-06). Neither may add a red. A local Latchkey
    run is for iteration only.
 4. A `$` (money-touching) change is its own PR, never bundled with anything else.
 5. On merge the branch is deleted (OWNER 2026-10-01, BRANCH LIFETIME: "as soon as merged into
@@ -3498,7 +3596,7 @@ typedef uint8_t (*bb_op)(void* instance, const void* in, void* out);   /* extern
    | Class | Deadline | On expiry |
    |---|---|---|
    | `call` | per-call budget | `cancel`, then the kind's timeout outcome (hooks go to `on_error`) |
-   | `stream` | configured idle/overall timeout | |
+   | `stream` | the plane's stated stream ceiling (`PlaneTail::stream_ceiling_secs`) on a unit its `arrive` marks `ROUTE_STREAM`, overall from the moment its route is known; `0` = none (ARCHITECT ruling 2026-10-07, STREAM-CEILING, Appendix B) | the driver's `cancel` (`DeadlineExceeded`), on the far end's reads and the caller's writes alike; the delivered units bill (#62) |
    | `connection` | carrier idle timeout | |
    | `write_behind` | long | never cancelled on client drop or reload; retried with the same `op_id` |
 
@@ -3676,7 +3774,7 @@ The loader checks in this order:
   - `deliver{stream u8, batch jsonl}`, built at batch time with the `fields:` projection applied kernel-side;
   - `scrape(families)` over the host snapshot service;
   - `status` (1.5.5 blob), `check`, `serve`.
-- **Listener.** `/metrics` is served on the **data listener** through the export route exception, with confinement to `/metrics` or `/exports/<name>/*`, the reserved paths and the 64-header cap. `/metrics/hooks` stays a core route.
+- **Listener.** ~~`/metrics` is served on the **data listener** through the export route exception, with confinement to `/metrics` or `/exports/<name>/*`, the reserved paths and the 64-header cap. `/metrics/hooks` stays a core route. (SUPERSEDED 2026-10-04, ARCHITECT Q-D4-HOOKS, by the owner law at the kernel<>plugins synthesis: "the kernel owns no route that exists for one plugin: /metrics and /metrics/hooks leave core": `/metrics/hooks` is rendered by the scrape sink over the existing `scrape(families)` slot, the snapshot service handing the hook families with `SCRAPE_FLAG_HOOK_FAMILIES` set; no new op.)~~ (SUPERSEDED 2026-10-05, ARCHITECT Q-U2-4, by the owner law at the kernel<>plugins synthesis, 2026-09-27: "the kernel owns no route that exists for one plugin: /metrics and /metrics/hooks leave core" and "the data a plugin needs arrives through a kind-neutral host service".) `/metrics` and `/metrics/hooks` are the scrape sink's own listener needs: declared in its `routes` list, served on the **data listener** behind the data key, and answered by its `serve`, which reads the families through the host snapshot service `snapshot.read` (`abi/host/service.rs`; scope `SNAPSHOT_SCOPE_WHOLE` | `SNAPSHOT_SCOPE_HOOKS`, a kind-neutral argument, never a plugin name), lent only to the scrape sink's crossing (#65); not ready is `503`, `Retry-After: 1`. Confinement: `/metrics` or `/exports/<name>/*`, `/metrics/hooks` to the scrape sink alone, the reserved paths and the 64-header cap. A reload that removes the scrape sink leaves 1.5.5's behaviour: `/metrics` `404`s (it followed the configuration) while `/metrics/hooks` keeps answering until restart (1.5.5's core route answered for the process's life), and the restart report names `/metrics` only (ARCHITECT 2026-10-05).
 - **Behaviour.** Webhook and otlp use driver tickets. The `Host` and `Started` variants are retired.
 
 ##### B.6 plane (v1)
@@ -3688,7 +3786,7 @@ The loader checks in this order:
   | Slot | Contract |
   |---|---|
   | `arrive` (P) | Returns `op_class`, `principal_need`, `dialect_id`, `expected_units` (`bb_units`). |
-  | `on_piece` (P, may_pend) | Writes into the host `reply_buf`. Out: `emitted`, `more` (backpressure: the kernel flushes, waits for the socket to be writable, and re-invokes); **cumulative `bb_units[]`**; destination facts (record writes); envelope. Zero host calls per chunk. |
+  | `on_piece` (P, may_pend) | Writes into the host `reply_buf`. Out: `emitted`, `more` (backpressure: the kernel flushes, waits for the socket to be writable — within the unit's deadline, a ceiling-stating plane's stream ceiling for a streamed unit (ARCHITECT ruling 2026-10-07, STREAM-CEILING, Appendix B) — and re-invokes); **cumulative `bb_units[]`**; destination facts (record writes); envelope. Zero host calls per chunk. |
   | `cancel` | Out disposition `ok_partial`, `failed` or `aborted`. The kernel bills the last cumulative units unless failed, and releases the budget hold (1.5.5 `FirstByteBody::drop` parity; oracle cell). |
   | `refusal` | Keeps the `GateRejected` marker. |
   | `serve`, `tick`, `hydrate`, `start` | as in the first draft |
@@ -4223,6 +4321,9 @@ This is signed by the owner as a customer-visible change vs 1.5.5, with its reas
   - test fixtures and example configs gain an explicit store block;
   - the migration corpus gets a no-store fixture;
   - the docs.
+
+### 2026-10-04 — OWNER RULED Q-STEP7-a: the oracle baseline names its store; one accepted difference (#46)
+The owner approved D1 ("Approve D1") and signed D2 ("Sign #46") of 1.6.0-QUESTIONS.md Q-STEP7-a, which settles the oracle follow-through above. D1: every config the oracle hands a binary names `store: {module: memory}`, the store 1.5.5 ran an absent block on, so every 1.5.5 golden stays the 1.5.5 answer; nothing is re-recorded or blessed. Per the ARCHITECT ruling of the same day it is injected at run time (busbar-release `recorder/store_baseline.rs`), never into a stored cell definition, so the golden stays add-only. D2: the cells that move because of Q-STORE = (B) are exactly the 78 `config.migrate|<tag>|migrate` cells, forgiven by the one `breaking` entry "Q-STORE migrate names the store" with its CHANGELOG line. This replaces the "entries for every cell whose config lacks `store:`" item above, which would have forgiven the whole oracle.
 
 ### 2026-09-27 — OWNER MONEY MODEL (confirmed; matches #77)
 - Planes report WHAT UNITS WERE DONE, e.g. `output_tokens = 1`. The kernel WRITES that to the ledger as reported ("what the plane says it did, it did").
@@ -4980,6 +5081,40 @@ Other rulings:
   (the node's `journal_dispatch`: a recovery reads it to tell a unit that sent something from one
   that never did), so it is `$` and is composed with the money steps.
 
+### 2026-10-04 — OWNER RULING Q137: the TLS listener offers ALPN `h2, http/1.1`
+- OWNER (Q137, "offers h2 on the TLS listener. yes why not?"): a `tls:` listener offers ALPN `h2, http/1.1` (1.5.5: `http/1.1` alone), a signed customer-visible change; a client offering only `http/1.1`, or no ALPN, is served byte-identically to 1.5.5, and an ALPN-`h2` connection that does not open with the connection preface is closed with no bytes (RFC 9113 §3.4), in the connector. Parity binding PB-69 cites it.
+
+### 2026-10-07 — ARCHITECT RULING: `kind-isolation:control-path` keeps `data-path-step` and drops its upstream word list
+- The `upstream` check (`egress`, `pool`, `routing`, `failover`, `breaker`, `provider`, refused on every
+  cleanliness line) was written for the `control` plugin kind (65542ca51b), which is cancelled: Part 2 #5,
+  "There is no "control" plugin kind." The cleanliness crates' rule is THE DESIGN §8: each "depends one way
+  on the kernel, names no plugin, and gets its listeners through the connector"; admin owns "the operator
+  surface", oauth2 the authorization server. Those six words name no plugin: route and pools are KERNEL
+  (§5 table, "KERNEL | route (pool walk, member, breaker)"), and the 1.5.5 pools/providers/routing admin API
+  is a customer-visible operator surface over kernel tables, not a plane's. The CIMD document fetch dials
+  through the root connector under an open-web need (Q128), so its egress class is correct vocabulary.
+- So the word check and the connector's in-role carve-out are deleted. `data-path-step` stays: no `fn route`
+  and no `fn meter` in a cleanliness crate (admin and oauth2 are off the hot path, #5). "Names no plugin" is
+  held by `kind-isolation:matrix`'s armed `law0-neutral-instance` class, at zero for every `Family::Neutral`
+  crate on the ship twin, with a red plant of a plane instance noun in core-admin.
+
+### 2026-10-07 — ARCHITECT RULING STREAM-CEILING: a stalled caller is bounded by the plane's stated stream ceiling
+- ARCHITECT (STREAM-CEILING; found by the A2A-FLIP audit, predev `crates/busbar-a2a/src/a2a/receive.rs`
+  `send_or_expire`, `transport.rs` `RELAY_STREAM_TIMEOUT` 600 s): (1) STRUCTURAL, generic: once a
+  streamed unit states its head it runs on its own task; the response body only drains the channel,
+  and dropping the body tells the unit its caller is gone (the driver's client-drop path). No
+  well-behaved client sees a difference. (2) THE BOUND IS THE PLANE'S STATEMENT ONLY: `PlaneTail`
+  gains `stream_ceiling_secs` (a tail addition; a tail ending before it states `0`), `0` = NO
+  ceiling, which keeps 1.5.5's llm and predev's mcp behaviour (neither bounded a stalled consumer).
+  The root records `ROUTE_STREAM` and passes `wants_stream` to the walk; the unit's deadline comes
+  from `Egress::deadline_ns` once the route is known (`FarEnd::deadline_ns`), and a streamed send's
+  ceiling is the plane's stated one, else the deployment's. With (1) in place the ceiling also fires
+  on a stalled caller of a ceiling-stating plane. The a2a plane states 600 s and marks
+  `message/stream` and `tasks/resubscribe` `ROUTE_STREAM`. (3) The far end's wait for a buffered
+  answer's next piece is what is left of the walk's budget, measured once from the unit's start (it
+  subtracted the time since the attempt opened a second time, cutting at about half the budget).
+  Kernel, contract, loader and root stay kind-neutral.
+
 # APPENDIX C — THE PLANE DRIVER AND HOST SERVICES (design, owner-ruled 2026-09-28)
 
 
@@ -5024,7 +5159,7 @@ This is a design only. I committed nothing and pushed nothing, and the driver-de
    - The breaker disposition comes from the walk's status table (TD step 24).
    - The plane can also give a body-level verdict in `OnPieceOut.verdict`, which is the renamed `_reserved` field (B.10).
    - The walk fails over only before the first byte reaches the caller (the rule in its own module doc). Exhaustion goes to its existing terminals (shed, spill, wait).
-4. **Backpressure.** READY with `more = 1` means flush, await writable, then call again with an empty piece (abi/plane doc; P4: `more = 1` with `emitted = 0` is FAULT).
+4. **Backpressure.** READY with `more = 1` means flush, await writable, then call again with an empty piece (abi/plane doc; P4: `more = 1` with `emitted = 0` is FAULT). The await is bounded by the unit's deadline: after its head a streamed unit runs on its own task, so a ceiling-stating plane's stream ceiling fires on a caller that stopped reading; with no ceiling stated it waits until the caller goes (ARCHITECT ruling 2026-10-07, STREAM-CEILING, Appendix B).
 5. **Units.** Every READY answer carries cumulative units, which become a running checkpoint (crash-safe, never a ledger line; §7, TD step 15). If a checkpoint dries the budget:
    - `on_exhaustion: cut-stream` means the driver calls `refusal` for the in-stream error frame, then settles one Abort line (§7 "A cut is told", BB:576).
    - `finish-unit` means the unit runs to its end.

@@ -43,17 +43,19 @@
 /// under. `v2` is `v1` less the three priced figures (`pre_tier`, `priced`,
 /// `hooks[].priced_delta`); `v1` stays published too, and no node retains a `v1` record.
 ///
-/// `v4` is `v3` plus `incarnation`, directly after `unit_key`. A unit key restarts at every boot of
-/// a node, so `unit_key` alone named two different units across two boots; the boot the unit ran in
-/// (`What::incarnation`) makes the pair unique. `v3` is not rewritten: its page,
-/// `docs/audit-chain-digest-v3.md`, stays published, and a record sealed under it carries
-/// [`Recipe::V3`] and verifies by `v3`'s rules.
+/// `v4` is `v3` plus `incarnation`, directly after `unit_key`, and `node`, directly after `mono`. A
+/// unit key restarts at every boot of a node, so `unit_key` alone named two different units across
+/// two boots; the boot the unit ran in (`What::incarnation`) makes the pair unique. Nodes share one
+/// store, and a monotonic reading compares only within the node that took it, so the sealing node
+/// (`AuditRecord::node`) is digested beside `mono` (THE DESIGN §1: "when (wall + monotonic,
+/// node)"). `v3` never shipped (THE DESIGN §7: "The audit digest that ships is v4 (v3 never
+/// shipped)"), so no node holds a `v3` record and this build reads none; its page,
+/// `docs/audit-chain-digest-v3.md`, stays published as the history of the field list, as the `v1`
+/// page does.
 pub const DIGEST_RECIPE: &str = "busbar.audit.digest.v4";
 
-/// The name of the recipe before [`DIGEST_RECIPE`]: `v4` less `incarnation`.
-pub const DIGEST_RECIPE_V3: &str = "busbar.audit.digest.v3";
-
-/// The name of the recipe before [`DIGEST_RECIPE_V3`]: `v3` plus `currency`.
+/// The name of the recipe `v2`: `v3` plus `currency`, so `v4` less `incarnation` and `node`, plus
+/// `currency`.
 pub const DIGEST_RECIPE_V2: &str = "busbar.audit.digest.v2";
 
 /// WHICH RECIPE A RECORD WAS SEALED UNDER — and so the rules it verifies by.
@@ -61,7 +63,7 @@ pub const DIGEST_RECIPE_V2: &str = "busbar.audit.digest.v2";
 /// A record carries this rather than the chain, because a chain that crossed a recipe change holds
 /// records of both, and each verifies only by its own rules. It is not itself digested and does not
 /// need to be: moving a record between the arms changes the field list (a `v2` record relabelled
-/// `v3` loses a field, a `v3` record relabelled `v2` gains one), so the relabelled record no longer
+/// `v4` loses `currency` and gains `incarnation` and `node`), so the relabelled record no longer
 /// hashes to its sealed digest.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Recipe {
@@ -72,9 +74,6 @@ pub enum Recipe {
         /// The text the `v2` preimage framed in the `currency` position.
         currency: String,
     },
-    /// `busbar.audit.digest.v3`: `v4` without `incarnation`. Kept so a record sealed under it
-    /// still verifies.
-    V3,
     /// `busbar.audit.digest.v4`: every record this build seals.
     V4,
 }
@@ -85,7 +84,6 @@ impl Recipe {
     pub fn name(&self) -> &'static str {
         match self {
             Recipe::V2 { .. } => DIGEST_RECIPE_V2,
-            Recipe::V3 => DIGEST_RECIPE_V3,
             Recipe::V4 => DIGEST_RECIPE,
         }
     }
@@ -139,8 +137,8 @@ impl DigestField {
 ///
 /// This is the recipe. `digest_of` hashes exactly this, the range read publishes exactly this, and
 /// the document at `docs/audit-chain-digest-v4.md` describes exactly this — for a record sealed
-/// under [`Recipe::V4`] (`docs/audit-chain-digest-v3.md` for [`Recipe::V3`]). A record sealed
-/// under [`Recipe::V2`] gets the `v2` list, which `docs/audit-chain-digest-v2.md` describes.
+/// under [`Recipe::V4`]. A record sealed under [`Recipe::V2`] gets the `v2` list, which
+/// `docs/audit-chain-digest-v2.md` describes.
 ///
 /// The repeated groups — the usage lines, the hooks that ran, the child units — are each preceded
 /// by their COUNT, which is what stops two different groupings from digesting identically. Their
@@ -185,6 +183,10 @@ pub fn digest_fields(record: &crate::record::AuditRecord) -> Vec<DigestField> {
     ));
     f.push(DigestField::num("wall", record.wall));
     f.push(DigestField::num("mono", record.mono));
+    // `v4` names the node that sealed the record beside the monotonic reading that is the node's.
+    if record.recipe == Recipe::V4 {
+        f.push(DigestField::num("node", record.node));
+    }
     f.push(DigestField::text("origin_kind", record.origin_kind));
     f.push(DigestField::text(
         "outcome",
@@ -235,7 +237,7 @@ pub fn digest_fields(record: &crate::record::AuditRecord) -> Vec<DigestField> {
         "fee_count",
         u64::from(record.usage.fee_count),
     ));
-    // `v2` framed a `currency` text here; `v3` does not (#34).
+    // `v2` framed a `currency` text here; `v4` does not (#34).
     if let Recipe::V2 { currency } = &record.recipe {
         f.push(DigestField::text("currency", currency.clone()));
     }

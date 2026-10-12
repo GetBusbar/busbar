@@ -136,6 +136,10 @@ serde_json = { workspace = true }
 # real JSON Schema validator. Test-only, so neither reaches a plugin's closure.
 serde_yaml = { workspace = true }
 jsonschema = { workspace = true }
+# THE `hyper_io!` SDK MACRO's own test (tests/sdk_hyper.rs) expands it as a framer does; the
+# expansion names `::hyper`, and the test names hyper's own buffer type. Dev-only: the shipped graph
+# does not name it.
+hyper = { workspace = true }
 
 # The two NEUTRAL capability features that gate the `transport::transport` module's
 # `Transport`/`UpstreamWireKind` wire-selection axis (folded in from `busbar-contract-transport`,
@@ -152,3 +156,10 @@ runtime = []
 # own harness. OFF by default and named only in `[dev-dependencies]`: no non-dev dependency edge in
 # this workspace enables it, so the type is absent from every release build.
 test-seal = []
+
+# The TEST-ONLY shared host-services double (`services::double`, busbar #476 follow-up): a
+# `HostServices` with a refusing default per service, so a plugin's test double overrides only what
+# it serves and a service the host adds later is one edit here, not one per plugin repo. OFF by
+# default and named only in `[dev-dependencies]` (`tests/test_seal_is_dev_only.rs`), so it is absent
+# from every release build; it switches on no dependency and no other feature.
+services-double = []

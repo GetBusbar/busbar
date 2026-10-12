@@ -51,10 +51,17 @@ fn fixture_dir(tag: &str) -> PathBuf {
     let d = std::env::temp_dir().join(format!(
         "busbar-docs-examples-{}-{tag}-{}",
         std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
+        {
+            static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            format!(
+                "{}-{}-{}",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |d| d.as_nanos()),
+                line!(),
+                NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            )
+        }
     ));
     std::fs::create_dir_all(&d).unwrap();
     d
@@ -274,15 +281,21 @@ fn marked_config_examples_validate() {
     );
 }
 
-/// The SHIPPED config artifacts users literally copy — root `config.yaml` and the
-/// clean 1.5.0 example — validate clean against the shipped `providers.yaml`. Three lines of
-/// coverage; nothing validated these in CI before this test existed.
+/// The SHIPPED config artifacts users literally copy or run — root `config.yaml`, the clean 1.5.0
+/// example, and `docker/config.yaml` (the default the getbusbar/busbar image boots when nothing is
+/// mounted, which the README's `docker run` relies on) — validate clean against the shipped
+/// `providers.yaml`. The docker default once shipped without the `store:` block 1.6.0 requires
+/// (Q-STORE (B)) and the image refused to boot; this list is what catches that.
 #[test]
 fn shipped_config_artifacts_validate() {
     let root = repo_root();
     let providers_path = root.join("providers.yaml");
 
-    for shipped in ["config.yaml", "examples/clean-config-1.5.0.yaml"] {
+    for shipped in [
+        "config.yaml",
+        "examples/clean-config-1.5.0.yaml",
+        "docker/config.yaml",
+    ] {
         let path = root.join(shipped);
         assert!(path.is_file(), "shipped artifact {shipped} must exist");
         let (code, stdout, stderr) = run_validate(&path, &providers_path);

@@ -10,8 +10,9 @@
 //! * [`plugin`] — [`plugin::Plugin`]`<K>`: the instance handle, the one crossing and its outcome
 //!   authority (the return value decides; a mirror that disagrees, or an unknown byte, is FAULT),
 //!   the #85 envelope ingest, and `max_inflight`.
-//! * [`ticket`] — tickets `(slot, generation)` unique per instance across all workers, the host's
-//!   `wake`, and completion handles `(ticket, seq)`.
+//! * [`ticket`] — tickets `(slot, generation)` unique per instance across all workers, and the
+//!   host's `wake`. A service's result under its completion handle `(ticket, seq)` is held by
+//!   [`services::ServiceStore`].
 //! * [`answer`] — one answer as a kind's validator reads it ([`Kind::check`]).
 //! * [`validate`] — the mechanism's own checks of every `out` head before it is read (its size,
 //!   the error text, the #85 arrays); a violation is FAULT. A kind's reply fields are checked by
@@ -25,9 +26,29 @@
 //! per kind. A kind is a [`Kind`] marker naming its code, its table (`abi/<kind>/Ops`) and its
 //! timeout outcome.
 
+/// THE HOST'S SERVICE ENTRY POINTS, ONE SPELLING OF THE ABI: every `fn` inside is a host service
+/// (`abi::host::service::ServiceFn`, the slot type of `abi::host::io::IoSlots`). The expansion
+/// spells that signature whole, so it reads as an implementation of the ABI's type, never a new
+/// shape. Defined before the modules so each of them can use it.
+macro_rules! c_entry {
+    () => {};
+    (
+        $(#[$m:meta])* $vis:vis fn $name:ident(
+            $ctx:ident: HostCtx, $input:ident: *const c_void, $out:ident: *mut ServiceOut $(,)?
+        ) -> RawOutcome { $($body:tt)* }
+        $($more:tt)*
+    ) => {
+        $(#[$m])* $vis extern "C" fn $name($ctx: HostCtx, $input: *const c_void, $out: *mut ServiceOut) -> RawOutcome { $($body)* }
+        c_entry! { $($more)* }
+    };
+}
+
 pub mod answer;
 pub mod auth_outbound;
+pub mod auth_ticks;
 pub mod conn_services;
+pub mod inline;
+pub mod io_slots;
 pub mod kinds;
 pub mod load;
 pub mod log_file;
@@ -35,6 +56,7 @@ pub mod plane_calls;
 pub mod plugin;
 pub mod ready;
 pub mod services;
+pub mod snapshot;
 pub mod ticket;
 pub mod validate;
 mod watchdog;
@@ -57,17 +79,18 @@ use busbar_contract::abi::mechanism::ticket::{HostCtx, Ticket};
 use busbar_contract::abi::mechanism::KindCode;
 
 pub use answer::{Answer, Context};
+pub use inline::{InlineTicket, InlineTickets};
+pub use kinds::plane::PlaneCancel;
 pub use load::{
     load_dropped, load_dropped_bytes, load_linked, rendering_of, rendering_of_library, LinkedRow,
     LoadError, ManifestFacts,
 };
 pub use log_file::{LogLevel, PluginLogConfig, PluginLogSink};
 pub use plugin::{
-    Bind, Called, Diagnostic, Dropped, EnvelopeSink, Metric, NoSink, Plugin, Recall, MAX_LOG_BYTES,
-    MAX_LOG_RECORDS,
+    install_member_secrets, Bind, Called, ConnTable, Diagnostic, Dropped, EnvelopeSink,
+    MemberSecretFn, Metric, NoSink, Plugin, Recall, MAX_LOG_BYTES, MAX_LOG_RECORDS,
 };
 pub use services::{HostServices, Later, Ran, Reading, Stored};
-pub use ticket::{Completions, Redeem};
 pub use validate::Violation;
 pub use worker::{Adopter, Budgets, DispatchConfig, DispatchStats, Dispatcher, Done, Lent, Reply};
 
@@ -147,6 +170,50 @@ pub trait Kind: Send + Sync + 'static {
             },
             out_head(),
         ))
+    }
+
+    /// A `cancel` frame of this kind: the kind's own `cancel` `in`/`out` (a plane's carries record
+    /// buffers, SEAM-L(r)); a kind whose `cancel` is the lifecycle's answers `CancelIn`/`CancelOut`.
+    fn cancel_frame() -> Box<dyn CancelFrame> {
+        Box::new(cancel_frame(Ticket::NONE))
+    }
+}
+
+/// A `cancel` frame, kind-erased: the kind's own `in`/`out` ([`Kind::cancel_frame`]), the
+/// lifecycle's embedded first, so every kind's head is filled the same way.
+pub trait CancelFrame: Send {
+    /// Stamp the frame for one `cancel` of `ticket` at deadline class `class` and answer its
+    /// heads, `in` first, then `out` and the `out`'s size.
+    fn prepare(&mut self, ticket: Ticket, class: u8) -> (*mut InHead, *mut OutHead, u32);
+
+    /// The disposition its answer carried.
+    fn disposition(&self) -> u32;
+
+    /// The record writes its READY answer carried (a plane's, SEAM-L(r)); none for a kind whose
+    /// `cancel` writes none.
+    fn writes(&self) -> Vec<busbar_contract::plane_calls::CancelWrite> {
+        Vec::new()
+    }
+}
+
+impl CancelFrame for Frame<CancelIn, CancelOut> {
+    fn prepare(&mut self, ticket: Ticket, class: u8) -> (*mut InHead, *mut OutHead, u32) {
+        self.input = CancelIn {
+            head: in_head(),
+            ticket,
+        };
+        self.out = CancelOut {
+            head: out_head(),
+            disposition: 0,
+            _reserved: 0,
+        };
+        self.input.head.size = size_of::<CancelIn>() as u32;
+        self.input.head.deadline_class = class;
+        self.heads()
+    }
+
+    fn disposition(&self) -> u32 {
+        self.out.disposition
     }
 }
 

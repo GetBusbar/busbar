@@ -386,6 +386,44 @@ pub fn error_body(id: Value, code: i64, message: &str, data: Option<Value>) -> V
     Value::Object(envelope)
 }
 
+/// WHETHER `origin` MAY DRIVE THIS DEPLOYMENT.
+///
+/// The DNS-rebinding attack is a page served from an ATTACKER's origin — `http://evil.example` —
+/// whose hostname the attacker has made resolve to busbar's address, driving the plane with
+/// whatever ambient credential the browser attaches. That page's `Origin` header is
+/// `http://evil.example`, never `http://localhost`: a browser sends a loopback `Origin` only for a
+/// document that was itself served from loopback, which is a document already inside the trust
+/// boundary. So loopback origins carry no rebinding risk, and refusing them would refuse the local
+/// inspector and the local agent — the two clients an operator tries first — for no security gain.
+///
+/// The port is deliberately not constrained: any local port is the same trust boundary.
+#[must_use]
+pub fn origin_admitted(origin: &str, allowed: &[String]) -> bool {
+    is_loopback_origin(origin) || allowed.iter().any(|a| a == origin)
+}
+
+fn is_loopback_origin(origin: &str) -> bool {
+    let host = match origin
+        .strip_prefix("http://")
+        .or_else(|| origin.strip_prefix("https://"))
+    {
+        Some(rest) => rest.split('/').next().unwrap_or(""),
+        // `null` and every non-http scheme. `Origin: null` is what a sandboxed iframe and a
+        // `file://` document send, and treating it as local would admit exactly the contexts that
+        // deliberately have no origin.
+        None => return false,
+    };
+    let host = host.rsplit_once(':').map_or(host, |(h, port)| {
+        // Only strip a trailing `:port`; `[::1]` has colons of its own and must survive intact.
+        if port.chars().all(|c| c.is_ascii_digit()) && !port.is_empty() {
+            h
+        } else {
+            host
+        }
+    });
+    matches!(host, "localhost" | "127.0.0.1" | "[::1]")
+}
+
 #[cfg(test)]
 #[path = "tests/jsonrpc_tests.rs"]
 mod jsonrpc_tests;

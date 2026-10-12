@@ -139,6 +139,23 @@ fn main() {
     for cfg in linked_axis_cfgs(&manifest, &enabled).0 {
         println!("cargo::rustc-cfg={cfg}");
     }
+    // THE LINKED-SECTION CFGS: `linked_section_<section>` for every enabled
+    // `[package.metadata.busbar.linked-section]` row (a linked plane door's declaring section), and
+    // the same sections as `BUSBAR_LINKED_SECTIONS`, which the root's tests hold to each door's
+    // Statement.
+    let mut sections: Vec<String> = Vec::new();
+    for (feature, section) in metadata_map(&manifest, "package.metadata.busbar.linked-section") {
+        let cfg = format!("linked_section_{}", section.replace('-', "_"));
+        println!("cargo::rustc-check-cfg=cfg({cfg})");
+        if enabled(&feature) {
+            println!("cargo::rustc-cfg={cfg}");
+            sections.push(section);
+        }
+    }
+    println!(
+        "cargo:rustc-env=BUSBAR_LINKED_SECTIONS={}",
+        sections.join(" ")
+    );
     // `BUSBAR_ENABLED_FEATURES`: the cargo features this build enabled, space-separated — so a test
     // that maps a manifest row to "is it compiled into this build" reads the answer as data rather
     // than spelling a `cfg(feature = "...")` per plugin.
@@ -164,6 +181,34 @@ fn main() {
     let out =
         std::path::PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR")).join("linked_planes.rs");
     std::fs::write(out, linked_planes_source(&manifest, &enabled)).expect("write linked_planes.rs");
+
+    // THE LINKED PLANE DOORS FOR THE INTEGRATION TESTS (tests only include it): each enabled linked
+    // row on the `plane-door` axis, its memory-ABI `door` resolved as the root resolves its entry,
+    // so a test finds a door by what its Statement states without naming a plane crate.
+    let out = std::path::PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR"))
+        .join("linked_plane_doors.rs");
+    std::fs::write(out, linked_plane_doors_source(&manifest, &enabled))
+        .expect("write linked_plane_doors.rs");
+    // `linked_fold_on_driver`: a development-only fold switch is on (a `<plane>-on-driver` feature,
+    // BUSBAR-1.6.0.md Part 3 section 12 "The switch"), so its proofs on the driver compile without a
+    // test spelling the plane the switch carries.
+    println!("cargo::rustc-check-cfg=cfg(linked_fold_on_driver)");
+    if declared_features(&manifest)
+        .iter()
+        .any(|f| f.ends_with("-on-driver") && enabled(f))
+    {
+        println!("cargo::rustc-cfg=linked_fold_on_driver");
+    }
+
+    // THE DRIVER PROOFS OF THE FOLD SWITCH (tests only include them): the enabled
+    // `[package.metadata.busbar.driver-proofs]` row's plane-owned cases (`mod proofs`, which the
+    // `hook_parity_driver` suite compiles beside its rig) and the words its door cells read as data
+    // (`DRIVER_WORDS`), both at the row's crate's own `tests/on_driver/`, so neither the suite nor
+    // the root's door cells spell the plane under proof or its dialects.
+    let (proofs, words) = driver_proofs_source(&manifest, &enabled);
+    let out_dir = std::path::PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR"));
+    std::fs::write(out_dir.join("driver_proofs.rs"), proofs).expect("write driver_proofs.rs");
+    std::fs::write(out_dir.join("driver_words.rs"), words).expect("write driver_words.rs");
 
     // THE LINKED WIRES FOR THE INTEGRATION TESTS (tests only include it): each linked transport row's
     // entry (`KEY`, `COMPOSES_OVER`, `SESSION`, `build`), the rows this build leaves unlinked, and the same
@@ -192,6 +237,121 @@ fn main() {
     // tests drive the plane the node is handed without naming one.
     let out = std::path::PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR")).join("node_plane.rs");
     std::fs::write(out, node_plane_source(&manifest, &enabled)).expect("write node_plane.rs");
+
+    // THE TEST-LINKED PLANES of the cross-plane integration tests (`tests/linked/mod.rs` includes the
+    // file; the binary never does): `[package.metadata.busbar.test-linked] planes`, as data.
+    let out =
+        std::path::PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR")).join("test_linked.rs");
+    std::fs::write(out, test_linked_source(&manifest)).expect("write test_linked.rs");
+    let out = std::path::PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR"))
+        .join("test_operator_auth.rs");
+    std::fs::write(out, test_operator_auth_source(&manifest)).expect("write test_operator_auth.rs");
+}
+
+/// `$OUT_DIR/test_operator_auth.rs` from `[package.metadata.busbar.test-linked] operator-auth`:
+/// `extern crate` per listed auth plugin, then a `for_each_operator_auth_row!($f)` macro calling
+/// `($f)(<crate>::door::door)` for each, in list order (the admin tests' operator credential row).
+fn test_operator_auth_source(manifest: &str) -> String {
+    let idents: Vec<String> = test_linked_list(manifest, "operator-auth")
+        .iter()
+        .map(|c| c.replace('-', "_"))
+        .collect();
+    let mut out = String::from("// @generated by build.rs from Cargo.toml metadata.\n");
+    for id in &idents {
+        out.push_str(&format!("extern crate {id} as _;\n"));
+    }
+    out.push_str("macro_rules! for_each_operator_auth_row {\n    ($f:expr) => {{\n");
+    for id in &idents {
+        out.push_str(&format!("        ($f)({id}::door::door);\n"));
+    }
+    out.push_str("    }};\n}\n");
+    out
+}
+
+/// The prefix of a `test-linked` row that is a plane served through its memory-ABI door only.
+const TEST_LINKED_DOOR_ROW: &str = "door:";
+
+/// `$OUT_DIR/test_linked.rs` from `[package.metadata.busbar.test-linked] planes`: `extern crate` per
+/// listed crate; `static TEST_LINKED`, each non-door row's `testkit::TEST_SEAM`; `static
+/// TEST_LINKED_DOORS`, each `door:<crate>` row's `(<crate>, <crate>::plane_door::door)`; and `static
+/// TEST_LINKED_ORDER`, the list's install order (`false` the next `TEST_LINKED` entry, `true` the
+/// next door). An absent or empty list is a build failure, never an empty roster.
+fn test_linked_source(manifest: &str) -> String {
+    let rows = test_linked_list(manifest, "planes");
+    let ident = |c: &str| c.replace('-', "_");
+    let mut out = String::from("// @generated by build.rs from Cargo.toml metadata.\n");
+    let (mut seams, mut doors) = (Vec::new(), Vec::new());
+    for r in &rows {
+        match r.strip_prefix(TEST_LINKED_DOOR_ROW) {
+            Some(c) => doors.push(ident(c)),
+            None => seams.push(ident(r)),
+        }
+    }
+    for id in seams.iter().chain(&doors) {
+        out.push_str(&format!("extern crate {id} as _;\n"));
+    }
+    out.push_str("static TEST_LINKED: &[busbar_kernel::test_support::seam::TestPlaneSeam] = &[\n");
+    for id in &seams {
+        out.push_str(&format!("    {id}::testkit::TEST_SEAM,\n"));
+    }
+    out.push_str(
+        "];\nstatic TEST_LINKED_DOORS: &[(&str, ::busbar_contract::abi::mechanism::door::DoorFn)] = &[\n",
+    );
+    for id in &doors {
+        out.push_str(&format!("    ({id:?}, {id}::plane_door::door),\n"));
+    }
+    out.push_str("];\nstatic TEST_LINKED_ORDER: &[bool] = &[");
+    for r in &rows {
+        out.push_str(if r.starts_with(TEST_LINKED_DOOR_ROW) {
+            "true, "
+        } else {
+            "false, "
+        });
+    }
+    out.push_str("];\n");
+    out
+}
+
+/// The `key = [...]` string array under `[package.metadata.busbar.test-linked]`. Deliberately not a
+/// TOML parser: the array may span lines, entries are double-quoted crate names.
+fn test_linked_list(manifest: &str, key: &str) -> Vec<String> {
+    let header = "[package.metadata.busbar.test-linked]";
+    let (mut in_table, mut collecting, mut body) = (false, false, String::new());
+    for line in manifest.lines() {
+        let code = line.split('#').next().unwrap_or("").trim();
+        if !collecting && code.starts_with('[') {
+            in_table = code == header;
+            continue;
+        }
+        if collecting {
+            body.push_str(code);
+        } else if in_table {
+            if let Some((k, v)) = code.split_once('=') {
+                if k.trim() == key {
+                    collecting = true;
+                    body.push_str(v.trim());
+                }
+            }
+        }
+        if collecting && body.contains(']') {
+            break;
+        }
+    }
+    let list: Vec<String> = body
+        .trim()
+        .trim_start_matches('[')
+        .split(']')
+        .next()
+        .unwrap_or("")
+        .split(',')
+        .map(|s| s.trim().trim_matches('"').to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+    assert!(
+        !list.is_empty(),
+        "Cargo.toml: `{key}` under `{header}` is missing or empty"
+    );
+    list
 }
 
 /// `pub(crate) use ::<crate> as node_plane;` for the one enabled `[package.metadata.busbar.linked]`
@@ -225,6 +385,55 @@ fn node_plane_source(manifest: &str, enabled: &dyn Fn(&str) -> bool) -> String {
     out
 }
 
+/// `(proofs, words)` for the one enabled `[package.metadata.busbar.driver-proofs]` row (cargo feature
+/// -> the plane crate whose fold switch it is): `proofs` is `pub(crate) mod proofs;` at that crate's
+/// `tests/on_driver/mod.rs`, `words` is `DRIVER_WORDS`, that directory's `words.txt`. The crate's
+/// directory is its `[dependencies]` row's `path`. No row enabled: no module and empty words; more
+/// than one: a compile error in the one suite that includes them, since a build proves one switch.
+fn driver_proofs_source(manifest: &str, enabled: &dyn Fn(&str) -> bool) -> (String, String) {
+    let head =
+        "// @generated by build.rs from Cargo.toml `[package.metadata.busbar.driver-proofs]`.\n";
+    let rows: Vec<(String, String)> =
+        metadata_map(manifest, "package.metadata.busbar.driver-proofs")
+            .into_iter()
+            .filter(|(feature, _)| enabled(feature))
+            .collect();
+    let mut proofs = String::from(head);
+    let mut words = String::from(head);
+    match rows.as_slice() {
+        [] => words.push_str("#[allow(dead_code)]\npub(crate) const DRIVER_WORDS: &str = \"\";\n"),
+        [(feature, krate)] => {
+            let dependency = metadata_value(manifest, "dependencies", krate).unwrap_or_else(|| {
+                panic!("driver-proofs row `{feature}`: `{krate}` is no dependency")
+            });
+            let path = dependency
+                .split_once("path")
+                .and_then(|(_, rest)| rest.split('"').nth(1))
+                .unwrap_or_else(|| {
+                    panic!("driver-proofs row `{feature}`: `{krate}` has no `path`")
+                });
+            let at = std::path::Path::new(&env::var("CARGO_MANIFEST_DIR").expect("manifest dir"))
+                .join(path)
+                .join("tests/on_driver");
+            proofs.push_str(&format!(
+                "#[path = {:?}]\npub(crate) mod proofs;\n",
+                at.join("mod.rs").display().to_string()
+            ));
+            words.push_str(&format!(
+                "#[allow(dead_code)]\npub(crate) const DRIVER_WORDS: &str = include_str!({:?});\n",
+                at.join("words.txt").display().to_string()
+            ));
+        }
+        _ => {
+            proofs.push_str(
+                "compile_error!(\"more than one driver-proofs row is enabled; a build proves one fold switch\");\n",
+            );
+            words.push_str("#[allow(dead_code)]\npub(crate) const DRIVER_WORDS: &str = \"\";\n");
+        }
+    }
+    (proofs, words)
+}
+
 /// `static SERVED_WITNESSES` over `<crate>::testkit::SERVED` for every
 /// `[package.metadata.busbar.served-witness]` row whose cargo feature is enabled, in manifest order.
 /// A build with the feature off has no row, exactly as it has no served leg for that plane.
@@ -245,17 +454,25 @@ fn served_witness_source(manifest: &str, enabled: &dyn Fn(&str) -> bool) -> Stri
 }
 
 /// `(set, declared)`: the `linked_axis_<axis>` cfgs of every axis an enabled linked row carries
-/// (the `plane`, `export-doors` and `transport-door` axes included), and every such cfg any axis could produce (for
+/// (the `plane`, `export-doors`, `transport-door` and `plane-door` axes included), and every such cfg any axis could produce (for
 /// `rustc-check-cfg`).
 fn linked_axis_cfgs(manifest: &str, enabled: &dyn Fn(&str) -> bool) -> (Vec<String>, Vec<String>) {
     let cfg_of = |axis: &str| format!("linked_axis_{}", axis.replace('-', "_"));
     // The plane axis, every registration axis, the export-door axis (the linked export sinks a
     // config may name by module, e.g. the scrape sink: a test booting such a config gates on it) and
     // the transport-door axis (the linked wire at the floor of the shipped stack, which the http rows
-    // compose over: a test that seals or folds the shipped stack gates on it).
-    let mut declared: Vec<String> =
-        vec![cfg_of("plane"), cfg_of(EXPORT_DOOR_AXIS), cfg_of(DOOR_AXIS)];
+    // compose over: a test that seals or folds the shipped stack gates on it) and the plane-door
+    // axis (a plane served through its linked memory-ABI door: a test that drives that door through
+    // the root's composition gates on it).
+    let mut declared: Vec<String> = vec![
+        cfg_of("plane"),
+        cfg_of(EXPORT_DOOR_AXIS),
+        cfg_of(DOOR_AXIS),
+        cfg_of(PLANE_DOOR_AXIS),
+    ];
     declared.extend(AXES.iter().map(|(axis, _, _)| cfg_of(axis)));
+    // The memory-ABI export axis: what a test that documents the linked sinks' declarations needs.
+    declared.push(cfg_of(EXPORT_DOOR_AXIS));
     let mut set: Vec<String> = Vec::new();
     for (feature, axes) in metadata_map(manifest, "package.metadata.busbar.linked-axes") {
         if !enabled(&feature) {
@@ -299,6 +516,36 @@ fn linked_planes_source(manifest: &str, enabled: &dyn Fn(&str) -> bool) -> Strin
     out
 }
 
+/// `static LINKED_PLANE_DOORS`: every enabled `[package.metadata.busbar.linked]` row carrying the
+/// `plane-door` axis, its door at its entry (`linked-entry` by row, then by crate, else
+/// `<crate>::linked`), in manifest order. An entry inside the root itself is no test's to reach.
+fn linked_plane_doors_source(manifest: &str, enabled: &dyn Fn(&str) -> bool) -> String {
+    let axes = metadata_map(manifest, "package.metadata.busbar.linked-axes");
+    let entries = metadata_map(manifest, "package.metadata.busbar.linked-entry");
+    let mut out = String::from(
+        "// @generated by build.rs from Cargo.toml `[package.metadata.busbar.linked]`.\n\
+         pub(crate) static LINKED_PLANE_DOORS: &[::busbar_contract::abi::mechanism::door::DoorFn] = &[\n",
+    );
+    for (feature, krate) in metadata_map(manifest, "package.metadata.busbar.linked") {
+        let is_door = axes
+            .iter()
+            .any(|(f, a)| *f == feature && a.split_whitespace().any(|x| x == "plane-door"));
+        if !(enabled(&feature) && is_door) {
+            continue;
+        }
+        let entry = entries
+            .iter()
+            .find(|(k, _)| *k == feature)
+            .or_else(|| entries.iter().find(|(k, _)| *k == krate))
+            .map_or_else(|| format!("{}::linked", ident(&krate)), |(_, e)| e.clone());
+        if !entry.starts_with("crate::") {
+            out.push_str(&format!("    ::{entry}::door,\n"));
+        }
+    }
+    out.push_str("];\n");
+    out
+}
+
 /// `(source, off)`: `static LINKED_TRANSPORTS` over every `[package.metadata.busbar.linked]` row
 /// carrying the `transport` axis that this build links (its feature on, or its crate a required
 /// dependency — the rule `linked_source` links by), each row's entry resolved as the root resolves it
@@ -334,21 +581,27 @@ fn linked_transports_source(manifest: &str, enabled: &dyn Fn(&str) -> bool) -> (
         let door = axes
             .iter()
             .any(|(f, a)| *f == key && a.split_whitespace().any(|x| x == DOOR_AXIS));
-        let build = if door {
+        let n = rows.matches("LinkedWire {").count();
+        let (build, claims) = if door {
             // A door row's entry exports its memory-ABI `door`; the root's doors module (mounted
-            // here under its own name, the tests including this file have no root) builds it.
-            let n = rows.matches("LinkedWire {").count();
+            // here under its own name, the tests including this file have no root) builds it, and
+            // reads every scheme it claims off its Statement.
             door_builds.push_str(&format!(
                 "fn __door_build_{n}(lower: Option<Wire>, settings: &::busbar_contract::transport::TransportSettings) -> Wire {{\n    \
-                 self::__busbar_doors::build(::{entry}::KEY, ::{entry}::door, lower, settings)\n}}\n"
+                 self::__busbar_doors::build(::{entry}::KEY, ::{entry}::door, lower, settings, None)\n}}\n\
+                 fn __door_claims_{n}() -> Vec<&'static str> {{\n    \
+                 self::__busbar_doors::claims_of(::{entry}::door)\n}}\n"
             ));
-            format!("__door_build_{n}")
+            (format!("__door_build_{n}"), format!("__door_claims_{n}"))
         } else {
-            format!("::{entry}::build")
+            door_builds.push_str(&format!(
+                "fn __row_claims_{n}() -> Vec<&'static str> {{\n    vec![::{entry}::KEY]\n}}\n"
+            ));
+            (format!("::{entry}::build"), format!("__row_claims_{n}"))
         };
         rows.push_str(&format!(
             "    LinkedWire {{ key: ::{entry}::KEY, composes_over: ::{entry}::COMPOSES_OVER, \
-             session: ::{entry}::SESSION, build: {build} }},\n"
+             session: ::{entry}::SESSION, build: {build}, claims: {claims} }},\n"
         ));
     }
     let source = format!(
@@ -358,13 +611,14 @@ fn linked_transports_source(manifest: &str, enabled: &dyn Fn(&str) -> bool) -> (
          /// A wire's build: handed the layer built beneath it, where one is, and the settings.\n\
          pub(crate) type BuildWire = fn(Option<Wire>, &::busbar_contract::transport::TransportSettings) -> Wire;\n\
          /// One linked wire: its registry key, the layers it declares, whether it carries a session,\n\
-         /// and its build.\n\
+         /// its build, and every scheme its entry claims (its own first).\n\
          #[allow(dead_code)]\n\
          pub(crate) struct LinkedWire {{\n    \
              pub(crate) key: &'static str,\n    \
              pub(crate) composes_over: &'static [&'static str],\n    \
              pub(crate) session: bool,\n    \
-             pub(crate) build: BuildWire,\n\
+             pub(crate) build: BuildWire,\n    \
+             pub(crate) claims: fn() -> Vec<&'static str>,\n\
          }}\n\
          /// Every wire this build links, in manifest order.\n\
          #[allow(dead_code)]\n\

@@ -15,6 +15,9 @@ mod common;
 #[path = "support/plane_driver_cases.rs"]
 mod cases;
 
+#[path = "support/plane_driver_hook_cases.rs"]
+mod hook_cases;
+
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
@@ -23,19 +26,22 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::task::{Context, Poll, Waker};
 use std::time::{Duration, Instant};
 
+use busbar_contract::abi::hook::{MessageView, RequestView};
 use busbar_contract::abi::mechanism::call::{AbiStr, Blob, Outcome, Span};
 use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::plane::{
-    ArriveIn, ArriveOut, OnPieceIn, OnPieceOut, OutField, RecordWrite, RefusalIn, RefusalOut,
-    UnitCount, CANCEL_ABORTED, CANCEL_FAILED, CANCEL_OK_PARTIAL, EMIT_DONE, EMIT_TO_FAR_END,
+    ArriveIn, ArriveOut, OnPieceIn, OnPieceOut, OutField, ProjectIn, ProjectOut, RecordWrite,
+    RefusalIn, RefusalOut, UnitCount, AUDIT_APPLIED, CANCEL_ABORTED, CANCEL_FAILED,
+    CANCEL_OK_PARTIAL, EMIT_DONE, EMIT_FINAL_STATUS, EMIT_MESSAGE_END, EMIT_TO_FAR_END,
     FROM_CALLER, FROM_FAR_END, FROM_KERNEL, PIECE_FIELDS, PIECE_HAS_STATUS, PIECE_LAST,
-    PIECE_OUT_TEXT, PRINCIPAL_OPTIONAL, RECORD_PUT, UNITS_ESTIMATED, UNITS_REPORTED, VERDICT_RETRY,
+    PIECE_OUT_TEXT, PRINCIPAL_OPTIONAL, RECORD_AUDIT, RECORD_PUT, REFUSAL_ARRIVE, ROUTE_LOCAL,
+    ROUTE_SESSION, UNITS_ESTIMATED, UNITS_REPORTED, VERDICT_RETRY,
 };
-use busbar_contract::abi::plane::{ServeIn, ServeOut};
+use busbar_contract::abi::plane::{ServeIn, ServeOut, REFUSAL_GATE};
 use busbar_contract::caps::OpClassId;
 use busbar_contract::plane::{TrustKeyDecl, TrustRole};
 use busbar_contract::plane_calls::{
-    Answered, Grow, InstanceDecl, Lent, PieceInFlight, PlaneCalls, ServeInFlight,
+    Answered, ArrivedTrust, Grow, InstanceDecl, Lent, PieceInFlight, PlaneCalls, ServeInFlight,
 };
 use busbar_kernel::plane_driver::{refusal_status, BufferCaps, DriverConfig, PlaneDriver};
 
@@ -64,6 +70,11 @@ pub(crate) struct Rig {
 }
 
 impl Rig {
+    /// Every `project` crossing: the body it was handed and the rewrite, when one came.
+    pub(crate) fn projects(&self) -> Vec<(Vec<u8>, Vec<u8>)> {
+        self.plane.projects.lock().unwrap().clone()
+    }
+
     pub(crate) fn stats(&self) -> [u64; stat::COUNT] {
         let mut out = [0; stat::COUNT];
         for (k, v) in out.iter_mut().enumerate() {
@@ -73,7 +84,17 @@ impl Rig {
     }
 }
 
-pub(crate) fn rig(_way: Way, caps: BufferCaps, book: cases::Book) -> Rig {
+pub(crate) fn rig(way: Way, caps: BufferCaps, book: cases::Book) -> Rig {
+    rig_with_hooks(way, caps, book, None)
+}
+
+/// [`rig`], the driver binding `hooks` to each unit.
+pub(crate) fn rig_with_hooks(
+    _way: Way,
+    caps: BufferCaps,
+    book: cases::Book,
+    hooks: Option<busbar_kernel::plane_driver::BoundHooks>,
+) -> Rig {
     let plane = Arc::new(Double::default());
     let book = Arc::new(book);
     let driver = PlaneDriver::new(
@@ -90,6 +111,10 @@ pub(crate) fn rig(_way: Way, caps: BufferCaps, book: cases::Book) -> Rig {
         ("test_plane", &serde_yaml::Value::Null),
     )
     .expect("the instance is admitted");
+    let driver = match hooks {
+        Some(h) => driver.with_hooks(Arc::new(h)),
+        None => driver,
+    };
     Rig {
         plane,
         driver,
@@ -122,6 +147,8 @@ struct Unit {
 struct Slot {
     answer: Option<(Answered, OnPieceOut)>,
     waker: Option<Waker>,
+    /// The record writes the `cancel` that ended the op carried (SEAM-L(r)).
+    writes: Vec<busbar_contract::plane_calls::CancelWrite>,
 }
 struct Shared(Mutex<Slot>);
 // SAFETY: the `out` inside is plain data the double wrote; its pointers are never dereferenced.
@@ -167,6 +194,9 @@ impl PieceInFlight for Flight {
     fn out(&self) -> Option<OnPieceOut> {
         self.0 .0.lock().unwrap().answer.map(|(_, o)| o)
     }
+    fn cancel_writes(&self) -> Vec<busbar_contract::plane_calls::CancelWrite> {
+        self.0 .0.lock().unwrap().writes.clone()
+    }
 }
 
 #[derive(Default)]
@@ -181,6 +211,8 @@ struct Double {
     held: Mutex<HashMap<Ticket, (Arc<Shared>, OnPieceOut)>>,
     next: AtomicU32,
     stats: [AtomicU64; stat::COUNT],
+    /// `project` crossings, and the bodies each was handed (with the rewrite, when one came).
+    projects: Mutex<Vec<(Vec<u8>, Vec<u8>)>>,
     /// The driver tickets minted, and every ticket recycled.
     drivers: Mutex<Vec<Ticket>>,
     recycled: Mutex<Vec<Ticket>>,
@@ -189,6 +221,19 @@ struct Double {
     tick_every_ns: AtomicU64,
     /// What it declares for its admission.
     declared: InstanceDecl,
+    /// Its duplex sessions (a `/session` arrival states `ROUTE_SESSION`): see [`Sessions`].
+    sessions: Arc<Sessions>,
+}
+
+/// The double's sessions: the streams open, the caller pieces each read (stream, bytes), the
+/// collections answered, and the streams `drive` names once a tick owes them output.
+#[derive(Default)]
+struct Sessions {
+    open: Mutex<Vec<u64>>,
+    read: Mutex<Vec<(u64, Vec<u8>)>>,
+    collects: AtomicU64,
+    named: Mutex<Vec<u64>>,
+    told: tokio::sync::Notify,
 }
 // SAFETY: the held `out`s are plain data the double wrote.
 unsafe impl Send for Double {}
@@ -209,6 +254,9 @@ unsafe fn bytes<'a>(b: Blob) -> &'a [u8] {
         std::slice::from_raw_parts(b.ptr, b.len)
     }
 }
+
+/// The words the double's `/refuse-words` arrival states for its refusal.
+const REFUSAL_WORDS: &[u8] = b"the body is not a document";
 
 unsafe fn text<'a>(s: AbiStr) -> &'a [u8] {
     if s.ptr.is_null() || s.len == 0 {
@@ -241,6 +289,20 @@ impl Double {
     }
 
     /// The disposition `cancel` answers for `u`; `None` = FAULT.
+    /// What a `cancel` of `u` writes: a `hang-row` unit writes its audit row, `thing.cancel` on
+    /// `thing:x` applied (SEAM-L(r)); any other writes nothing.
+    fn cancel_row(&self, u: &Unit) -> Vec<busbar_contract::plane_calls::CancelWrite> {
+        if u.mode != b"hang-row" {
+            return Vec::new();
+        }
+        vec![busbar_contract::plane_calls::CancelWrite {
+            kind: AUDIT_APPLIED,
+            op: RECORD_AUDIT,
+            key: b"thing.cancel".to_vec(),
+            value: b"thing:x".to_vec(),
+        }]
+    }
+
     fn disposition(&self, u: &Unit) -> Option<u32> {
         let d = if u.mode == b"cancel-fault" {
             None
@@ -259,6 +321,9 @@ impl Double {
     unsafe fn piece(&self, t: Ticket, i: &OnPieceIn, o: &mut OnPieceOut) -> (Answered, Hold) {
         self.count(stat::ON_PIECES);
         self.stats[stat::UNIT].store(i.unit, Ordering::SeqCst);
+        if i.stream != 0 {
+            return (self.session_piece(i, o), Hold::No);
+        }
         let Some(head) = self.heads.lock().unwrap().get(&i.unit).cloned() else {
             // A piece of a unit that never arrived: the caller's head is not re-sent.
             return (ready(Outcome::Fault), Hold::No);
@@ -294,6 +359,32 @@ impl Double {
                     let n = u.body.len().min(i.reply_cap);
                     std::ptr::copy_nonoverlapping(u.body.as_ptr(), i.reply_buf, n);
                     o.emitted = n as u64;
+                    o.flags = EMIT_DONE;
+                    return (ready(Outcome::Ready), Hold::No);
+                }
+                if head.as_slice() == b"/audit" {
+                    // A plane that audits its unit and names its ledger lane (SEAM-L(j), (k)): one
+                    // reported unit, the lane `tool_x`, one audit row `thing.call` on `thing:x`
+                    // applied, answered locally with nothing.
+                    let mut at = 0;
+                    let key = put(i, &mut at, b"thing.call");
+                    let value = put(i, &mut at, b"thing:x");
+                    *i.records_buf = RecordWrite {
+                        kind: AUDIT_APPLIED,
+                        op: RECORD_AUDIT,
+                        key,
+                        value,
+                    };
+                    o.records_written = 1;
+                    o.lane = put(i, &mut at, b"tool_x");
+                    *i.units_buf = UnitCount {
+                        class: 0,
+                        source: UNITS_REPORTED,
+                        amount: 1,
+                    };
+                    o.units_written = 1;
+                    o.arena_written = at as u64;
+                    o.reply_status = 200;
                     o.flags = EMIT_DONE;
                     return (ready(Outcome::Ready), Hold::No);
                 }
@@ -345,7 +436,9 @@ impl Double {
                 b"fault" => return (ready(Outcome::Fault), Hold::No),
                 // The watchdog's FAULT for a crossing that has not returned: see `Hold::Wedge`.
                 b"wedge" => return (ready(Outcome::Fault), Hold::Wedge),
-                b"hang" | b"cancel-fault" => return (ready(Outcome::Pending), Hold::Forever),
+                b"hang" | b"hang-row" | b"cancel-fault" => {
+                    return (ready(Outcome::Pending), Hold::Forever)
+                }
                 b"pend" if !u.pended => {
                     u.pended = true;
                     self.count(stat::HOST_CALLS);
@@ -425,7 +518,55 @@ impl Double {
         if u.mode == b"text" && o.emitted > 0 && o.more == 0 {
             o.flags |= PIECE_OUT_TEXT;
         }
+        // A plane that frames messages (mode `framed`): each far-end piece is ONE message, its end
+        // on the answer that empties it; its reply closes with a final status (5, its words and
+        // two details bytes) in the arena.
+        if u.mode == b"framed" {
+            if o.emitted > 0 && o.more == 0 {
+                o.flags |= EMIT_MESSAGE_END;
+            }
+            if o.flags & EMIT_DONE != 0 {
+                let mut at = o.arena_written as usize;
+                o.final_message = put(i, &mut at, b"not here");
+                o.final_details = put(i, &mut at, &[1, 2]);
+                o.final_status = 5;
+                o.arena_written = at as u64;
+                o.flags |= EMIT_FINAL_STATUS;
+            }
+        }
         (ready(Outcome::Ready), hold)
+    }
+}
+
+impl Double {
+    /// A session's piece: the caller's piece opens it (`200`, `open:<body>`), a collection answers
+    /// the output a tick owed (`keepalive;`), and the caller's last piece ends it.
+    unsafe fn session_piece(&self, i: &OnPieceIn, o: &mut OnPieceOut) -> Answered {
+        let s = &self.sessions;
+        let reply = |o: &mut OnPieceOut, bytes: &[u8]| {
+            let n = bytes.len().min(i.reply_cap);
+            std::ptr::copy_nonoverlapping(bytes.as_ptr(), i.reply_buf, n);
+            o.emitted = n as u64;
+        };
+        match i.from {
+            FROM_CALLER if i.flags & PIECE_LAST != 0 => {
+                s.open.lock().unwrap().retain(|k| *k != i.stream);
+                o.flags = EMIT_DONE;
+            }
+            FROM_CALLER => {
+                let body = bytes(i.bytes).to_vec();
+                s.read.lock().unwrap().push((i.stream, body.clone()));
+                s.open.lock().unwrap().push(i.stream);
+                o.reply_status = 200;
+                reply(o, &[b"open:".as_slice(), &body].concat());
+            }
+            FROM_KERNEL if i.attempt_no == 0 => {
+                s.collects.fetch_add(1, Ordering::SeqCst);
+                reply(o, b"keepalive;");
+            }
+            _ => return ready(Outcome::Refused),
+        }
+        ready(Outcome::Ready)
     }
 }
 
@@ -467,6 +608,29 @@ impl PlaneCalls for Double {
             source: UNITS_ESTIMATED,
             amount,
         };
+        // `/trusted/<counterparty>[/<capability>[@<digest>]]`: the unit states its trust facts,
+        // which the kernel's Approve judges (the plane judges none).
+        if let Some(rest) = target.strip_prefix(b"/trusted/") {
+            let leak = |b: &[u8]| -> AbiStr {
+                let kept: &'static [u8] = Box::leak(b.to_vec().into_boxed_slice());
+                AbiStr::over(kept)
+            };
+            let (cp, cap) = match rest.iter().position(|b| *b == b'/') {
+                Some(i) => (&rest[..i], Some(&rest[i + 1..])),
+                None => (rest, None),
+            };
+            out.trust_counterparty = leak(cp);
+            if let Some(cap) = cap {
+                let (cap, digest) = match cap.iter().position(|b| *b == b'@') {
+                    Some(i) => (&cap[..i], Some(&cap[i + 1..])),
+                    None => (cap, None),
+                };
+                out.trust_item = leak(cap);
+                if let Some(d) = digest {
+                    out.trust_digest = leak(d);
+                }
+            }
+        }
         for call in 0..2 {
             let cap = input.units_cap;
             let wants: Vec<UnitCount> = match target.as_slice() {
@@ -481,6 +645,19 @@ impl PlaneCalls for Double {
                     out.refusal = 7;
                     out.refusal_status = 404;
                     return Outcome::Refused;
+                }
+                b"/refuse-words" => {
+                    // The same refusal, stating why in its own words (`head.error`).
+                    out.refusal = 7;
+                    out.refusal_status = 400;
+                    out.head.error = AbiStr::over(REFUSAL_WORDS);
+                    return Outcome::Refused;
+                }
+                b"/session" => {
+                    // A unit served as a duplex session, answered by the plane itself.
+                    out.route = ROUTE_LOCAL;
+                    out.route_flags = ROUTE_SESSION;
+                    vec![estimate(0)]
                 }
                 b"/short-twice" => vec![estimate(0); cap + 1],
                 b"/short" => vec![estimate(1), estimate(2)],
@@ -511,19 +688,40 @@ impl PlaneCalls for Double {
         (!out.pool.ptr.is_null()).then(|| unsafe { text(out.pool) }.to_vec())
     }
 
+    fn arrived_refusal(&self, out: &ArriveOut) -> Option<Vec<u8>> {
+        (!out.head.error.ptr.is_null()).then(|| unsafe { text(out.head.error) }.to_vec())
+    }
+
+    fn arrived_trust(&self, out: &ArriveOut) -> Option<ArrivedTrust> {
+        let read = |s: AbiStr| (!s.ptr.is_null()).then(|| unsafe { text(s) }.to_vec());
+        Some(ArrivedTrust {
+            counterparty: read(out.trust_counterparty)?,
+            item: read(out.trust_item),
+            digest: read(out.trust_digest),
+        })
+    }
+
     fn refusal(
         &self,
         input: &mut RefusalIn,
         out: &mut RefusalOut,
         grow: Grow<'_, RefusalIn, RefusalOut>,
     ) -> Outcome {
-        // The reason crosses beside its text: a refusal whose code names another reason is FAULT.
-        let named =
-            busbar_contract::abi::plane::reason_of(input.reason).map(|r| r.as_str().as_bytes());
-        if named != Some(unsafe { text(input.text) }) {
+        // The reason crosses beside its text (`RefusalIn::text`, the kernel's own message: the
+        // reason's spelling, or the walk terminal's own words): a refusal whose code names no reason,
+        // or that carries no text, is FAULT. A gate's refusal carries the hook's own words instead.
+        let named = busbar_contract::abi::plane::reason_of(input.reason);
+        if input.cause != REFUSAL_GATE
+            && (named.is_none() || unsafe { text(input.text) }.is_empty())
+        {
             return Outcome::Fault;
         }
         let mut body = [
+            if input.cause == REFUSAL_ARRIVE {
+                b"words:".as_slice()
+            } else {
+                b"".as_slice()
+            },
             b"refused:".as_slice(),
             input.status.to_string().as_bytes(),
             b":",
@@ -544,18 +742,65 @@ impl PlaneCalls for Double {
         if input.plane_code != 0 {
             body.extend_from_slice(format!(":{}@{}", input.plane_code, input.unit).as_bytes());
         }
+        // Why the kernel's Approve did not trust the unit: this plane names the `TRUST_*` code.
+        if input.trust != 0 {
+            body.extend_from_slice(format!(":trust={}", input.trust).as_bytes());
+        }
+        // A HOOK VETO (SEAM-L(o), (p)): this plane names the vetoing hook and writes its audit row,
+        // rejected, for the unit the kernel refused.
+        let hook = unsafe { text(input.hook) }.to_vec();
+        if !hook.is_empty() {
+            body.extend_from_slice(b":hook=");
+            body.extend_from_slice(&hook);
+        }
+        let (row_key, row_value) = (b"thing.call".as_slice(), b"thing:x".as_slice());
+        let rows = usize::from(!hook.is_empty());
         let (name, value) = (b"content-type".as_slice(), b"text/plain".as_slice());
-        let arena = name.len() + value.len();
+        let arena = name.len() + value.len() + rows * (row_key.len() + row_value.len());
         for call in 0..2 {
-            if body.len() > input.reply_cap || input.fields_cap < 1 || arena > input.arena_cap {
+            if body.len() > input.reply_cap
+                || input.fields_cap < 1
+                || arena > input.arena_cap
+                || rows > input.records_cap
+            {
                 if call == 1 {
                     return Outcome::Fault;
                 }
                 out.reply_needed = body.len() as u64;
                 out.fields_needed = 1;
                 out.arena_needed = arena as u64;
+                out.records_needed = rows as u32;
                 grow(out, input);
                 continue;
+            }
+            if rows == 1 {
+                let at = name.len() + value.len();
+                // SAFETY: the driver's arena and records buffer, of the capacities checked above.
+                unsafe {
+                    std::ptr::copy_nonoverlapping(
+                        row_key.as_ptr(),
+                        input.arena_buf.add(at),
+                        row_key.len(),
+                    );
+                    std::ptr::copy_nonoverlapping(
+                        row_value.as_ptr(),
+                        input.arena_buf.add(at + row_key.len()),
+                        row_value.len(),
+                    );
+                    *input.records_buf = RecordWrite {
+                        kind: busbar_contract::abi::plane::AUDIT_REJECTED,
+                        op: RECORD_AUDIT,
+                        key: Span {
+                            offset: at as u32,
+                            len: row_key.len() as u32,
+                        },
+                        value: Span {
+                            offset: (at + row_key.len()) as u32,
+                            len: row_value.len() as u32,
+                        },
+                    };
+                }
+                out.records_written = 1;
             }
             // SAFETY: the driver's buffers, of the capacities checked above.
             unsafe {
@@ -585,10 +830,156 @@ impl PlaneCalls for Double {
         Outcome::Fault
     }
 
-    fn cancel(&self, ticket: Ticket) -> Option<u32> {
+    /// The view this plane projects: each body line `role:text` is a turn, a `sys=` line the
+    /// system prompt and a `user=` line the end user. A rewrite (1.5.5's `rewrite` object) is
+    /// applied by replacing the turns with its messages' `role:content`, unless the target is
+    /// `/no-rewrite` (a rewrite the plane cannot read); `/unprojectable` refuses to project. The
+    /// view names the entry its `arrive` recorded (none) and states the unit's body: a projection
+    /// with no body would leave a gate-first unit nothing to screen, and the kernel would bind no
+    /// gate for it.
+    fn project(
+        &self,
+        input: &mut ProjectIn,
+        out: &mut ProjectOut,
+        grow: Grow<'_, ProjectIn, ProjectOut>,
+    ) -> Outcome {
+        let target = unsafe { text(input.target) }.to_vec();
+        let body = unsafe { bytes(input.body) }.to_vec();
+        let rewrite = unsafe { bytes(input.rewrite) }.to_vec();
+        self.projects
+            .lock()
+            .unwrap()
+            .push((body.clone(), rewrite.clone()));
+        if target == b"/unprojectable" {
+            return Outcome::Refused;
+        }
+        let rewritten = (!rewrite.is_empty() && target != b"/no-rewrite")
+            .then(|| serde_json::from_slice::<serde_json::Value>(&rewrite).ok())
+            .flatten()
+            .and_then(|v| v.get("messages").and_then(|m| m.as_array()).cloned())
+            .map(|messages| {
+                let lines: Vec<String> = messages
+                    .iter()
+                    .map(|m| {
+                        let field = |k: &str| m.get(k).and_then(|v| v.as_str()).unwrap_or("");
+                        format!("{}:{}", field("role"), field("content"))
+                    })
+                    .collect();
+                lines.join("\n").into_bytes()
+            });
+        let unit_body = body.clone();
+        let effective = rewritten.clone().unwrap_or(body);
+        let effective = String::from_utf8_lossy(&effective).into_owned();
+        let (mut system, mut user, mut turns) = (None, None, Vec::new());
+        for line in effective.split('\n').filter(|l| !l.is_empty()) {
+            if let Some(v) = line.strip_prefix("sys=") {
+                system = Some(v.to_string());
+            } else if let Some(v) = line.strip_prefix("user=") {
+                user = Some(v.to_string());
+            } else {
+                let (role, text) = line.split_once(':').unwrap_or(("user", line));
+                turns.push((role.to_string(), text.to_string()));
+            }
+        }
+        let mut strings: Vec<&[u8]> = vec![b"", b"test-dialect"];
+        strings.push(system.as_deref().unwrap_or("").as_bytes());
+        strings.push(user.as_deref().unwrap_or("").as_bytes());
+        for (role, text) in &turns {
+            strings.push(role.as_bytes());
+            strings.push(text.as_bytes());
+        }
+        let rewritten_bytes = rewritten.unwrap_or_default();
+        strings.push(&unit_body);
+        strings.push(&rewritten_bytes);
+        let arena: usize = strings.iter().map(|b| b.len()).sum();
+        for call in 0..2 {
+            if turns.len() > input.messages_cap || arena > input.arena_cap {
+                if call == 1 {
+                    return Outcome::Fault;
+                }
+                out.messages_needed = turns.len() as u32;
+                out.arena_needed = arena as u64;
+                grow(out, input);
+                *out = busbar_contract::abi::sdk::door::blank_out();
+                continue;
+            }
+            // SAFETY (below): the driver's buffers, of the capacities checked above.
+            let mut at = 0usize;
+            let mut place = |b: &[u8]| -> AbiStr {
+                unsafe {
+                    std::ptr::copy_nonoverlapping(b.as_ptr(), input.arena_buf.add(at), b.len())
+                };
+                let s = AbiStr {
+                    ptr: unsafe { input.arena_buf.add(at) }.cast_const(),
+                    len: b.len(),
+                };
+                at += b.len();
+                s
+            };
+            let pool = place(strings[0]);
+            let dialect = place(strings[1]);
+            let sys = place(strings[2]);
+            let end_user = place(strings[3]);
+            for (k, pair) in strings[4..4 + 2 * turns.len()].chunks(2).enumerate() {
+                let role = place(pair[0]);
+                let text = place(pair[1]);
+                unsafe { *input.messages_buf.add(k) = MessageView { role, text } };
+            }
+            let _ = place(&unit_body);
+            let _ = place(&rewritten_bytes);
+            let start = arena - rewritten_bytes.len();
+            let body_start = start - unit_body.len();
+            out.view = RequestView {
+                request_id: 0,
+                pool,
+                ingress_dialect: dialect,
+                message_count: turns.len() as u64,
+                total_chars: turns.iter().map(|(_, t)| t.len() as u64).sum(),
+                max_tokens: 0,
+                flags: 0,
+                signals: input.signals_buf.cast_const(),
+                signals_len: 0,
+                session: Blob {
+                    ptr: std::ptr::null(),
+                    len: 0,
+                    fmt: busbar_contract::abi::mechanism::call::BLOB_ABSENT,
+                    flags: 0,
+                },
+            };
+            out.prompt.system = sys;
+            out.prompt.message_count = turns.len() as u64;
+            out.prompt.messages = input.messages_buf.cast_const();
+            out.prompt.messages_len = turns.len();
+            out.end_user = end_user;
+            out.body = if unit_body.is_empty() {
+                Span {
+                    offset: busbar_contract::abi::plane::SPAN_ABSENT,
+                    len: 0,
+                }
+            } else {
+                Span {
+                    offset: body_start as u32,
+                    len: unit_body.len() as u32,
+                }
+            };
+            out.rewritten = Span {
+                offset: start as u32,
+                len: rewritten_bytes.len() as u32,
+            };
+            out.arena_written = arena as u64;
+            return Outcome::Ready;
+        }
+        Outcome::Fault
+    }
+
+    fn cancel(&self, ticket: Ticket) -> Option<busbar_contract::plane_calls::Cancelled> {
         self.count(stat::CANCELS);
         let u = self.unit_of(ticket);
         self.disposition(&u)
+            .map(|disposition| busbar_contract::plane_calls::Cancelled {
+                disposition,
+                writes: self.cancel_row(&u),
+            })
     }
 
     fn mint(&self) -> Option<Ticket> {
@@ -618,14 +1009,30 @@ impl PlaneCalls for Double {
             "tick on the driver ticket"
         );
         self.ticks.lock().unwrap().push(now);
+        // Every open session owes output on the tick: `drive` names it.
+        let open = self.sessions.open.lock().unwrap().clone();
+        if !open.is_empty() {
+            self.sessions.named.lock().unwrap().extend(open);
+            self.sessions.told.notify_one();
+        }
         let every = self.tick_every_ns.load(Ordering::SeqCst);
         let next = if every == 0 { 0 } else { now + every };
         Box::pin(std::future::ready(Some(next)))
     }
 
-    /// The double holds no session: its `drive` names none.
+    /// The streams its ticks named, waiting until one is.
     fn ready(&self) -> Pin<Box<dyn Future<Output = Vec<u64>> + Send>> {
-        Box::pin(std::future::ready(Vec::new()))
+        let sessions = Arc::clone(&self.sessions);
+        Box::pin(async move {
+            loop {
+                let told = sessions.told.notified();
+                let named = std::mem::take(&mut *sessions.named.lock().unwrap());
+                if !named.is_empty() {
+                    return named;
+                }
+                told.await;
+            }
+        })
     }
 
     /// The client-drop path: an op held on `ticket` is cancelled "on its worker" and answers the
@@ -645,6 +1052,9 @@ impl PlaneCalls for Double {
             },
             None => ready(Outcome::Fault),
         };
+        if answer.disposition.is_some() {
+            slot.0.lock().unwrap().writes = self.cancel_row(&u);
+        }
         slot.put(answer, out);
     }
 
@@ -658,6 +1068,7 @@ impl PlaneCalls for Double {
         let slot = Arc::new(Shared(Mutex::new(Slot {
             answer: None,
             waker: None,
+            writes: Vec::new(),
         })));
         // SAFETY: the driver's `in`, whose buffers outlive the answer.
         let (answer, hold) = unsafe { self.piece(ticket, &input, &mut out) };
@@ -870,6 +1281,152 @@ async fn a_record_write_with_no_record_path_fails_the_unit() {
     );
 }
 
+/// The audit rows a driver wrote, as its sink saw them.
+#[derive(Default)]
+struct AuditRows(Mutex<Vec<(String, String, &'static str, String)>>);
+
+impl busbar_kernel::plane_driver::AuditSink for AuditRows {
+    fn record(&self, action: &str, resource: &str, outcome: &'static str, principal: &str) {
+        self.0.lock().unwrap().push((
+            action.to_string(),
+            resource.to_string(),
+            outcome,
+            principal.to_string(),
+        ));
+    }
+}
+
+/// SEAM-L(k), THE DOOR UNIT'S AUDIT ROW: a plane's `RECORD_AUDIT` write on its answer is one row
+/// on the kernel's audit chain, in the plane's words, under the principal the kernel verified,
+/// with no record path (it is no record of the plane's); SEAM-L(j): the lane the same answer names
+/// reaches the money steps. RED: the write failed the unit as an unknown record op, and the lane
+/// was never read.
+#[tokio::test]
+async fn a_units_audit_row_reaches_the_kernels_chain_and_its_lane_the_money_steps() {
+    let mut r = rig(Way::Double, BufferCaps::default(), cases::Book::default());
+    let rows = Arc::new(AuditRows::default());
+    r.driver = r.driver.with_audit(rows.clone());
+    let (steps, far, caller) = (
+        common::TestUnits::passing(),
+        cases::Far::new(&[], &[]),
+        cases::Caller::default(),
+    );
+    let units = r
+        .driver
+        .unit(&steps, &far, &caller, cases::arrival("/audit", b"x"), 0);
+    let o = cases::drive(&units).await;
+    assert!(
+        matches!(o, busbar_contract::caps::Outcome::Completed),
+        "{o:?}"
+    );
+    assert_eq!(
+        *rows.0.lock().unwrap(),
+        vec![(
+            "thing.call".to_string(),
+            "thing:x".to_string(),
+            busbar_contract::vocab::OUTCOME_APPLIED,
+            common::principal().as_str().to_string(),
+        )],
+        "one row, the plane's words, the kernel's principal"
+    );
+    assert_eq!(r.book.laned(), vec!["tool_x".to_string()]);
+}
+
+/// SEAM-L(t), A SERVED REQUEST'S RECORD WRITES: a put reaches the instance's records (read back
+/// through `records.get`) and an audit row reaches the audit sink under the request's actor, in the
+/// plane's order; a put with no record path, or an unknown op, answers 502. RED: the served answer
+/// carried no record writes.
+#[tokio::test]
+async fn a_served_requests_record_writes_reach_the_records_and_the_audit_chain() {
+    use busbar_kernel::plane_driver::serve::{write_served_records, Served, Unserved};
+    let s = records();
+    let rows = AuditRows::default();
+    let served = Served {
+        status: 200,
+        fields: Vec::new(),
+        body: Vec::new(),
+        audit: 0,
+        records: vec![
+            (0, RECORD_PUT, b"cb".to_vec(), b"done".to_vec()),
+            (
+                AUDIT_APPLIED,
+                RECORD_AUDIT,
+                b"thing.callback".to_vec(),
+                b"thing:x".to_vec(),
+            ),
+        ],
+    };
+    let path = (Arc::clone(&s), instance());
+    write_served_records(Some(&path), &rows, &served, "acct:caller")
+        .await
+        .expect("written");
+    let cb = get(&s, b"cb");
+    assert_eq!((cb.value, cb.bytes.as_slice()), (svc::FOUND, &b"done"[..]));
+    assert_eq!(
+        *rows.0.lock().unwrap(),
+        vec![(
+            "thing.callback".to_string(),
+            "thing:x".to_string(),
+            busbar_contract::vocab::OUTCOME_APPLIED,
+            "acct:caller".to_string(),
+        )]
+    );
+    assert_eq!(
+        write_served_records(None, &rows, &served, "acct:caller").await,
+        Err(Unserved::Fault),
+        "a put with no record path is never dropped"
+    );
+}
+
+/// SEAM-L(r), THE CANCEL CROSSING'S RECORD WRITES: a unit cut by a reload while its op hangs is
+/// cancelled on the client-drop path, and the row its plane's `cancel` wrote reaches the kernel's
+/// audit chain under the verified principal; its bill is still the drain's. RED: the cancel had no
+/// record slot, so a reload-cut unit's row disappeared.
+#[tokio::test]
+async fn a_reload_cut_units_cancel_writes_its_row() {
+    let mut r = rig(Way::Double, BufferCaps::default(), cases::Book::default());
+    let rows = Arc::new(AuditRows::default());
+    r.driver = r.driver.with_audit(rows.clone());
+    let r = Arc::new(r);
+    let (steps, far, caller) = (
+        common::TestUnits::passing(),
+        cases::Far::new(&["hang-row"], cases::CHUNKS),
+        cases::Caller::default(),
+    );
+    let units = r
+        .driver
+        .unit(&steps, &far, &caller, cases::arrival("/call", b"x"), 0);
+    let reloader = {
+        let r = r.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(40)).await;
+            r.driver.reload();
+        })
+    };
+    let outcome = cases::drive(&units).await;
+    reloader.await.unwrap();
+    assert!(
+        matches!(
+            outcome,
+            busbar_contract::caps::Outcome::Failed(
+                busbar_contract::caps::StepName::Route,
+                busbar_contract::caps::ReasonCode::Drain
+            )
+        ),
+        "{outcome:?}"
+    );
+    assert_eq!(
+        *rows.0.lock().unwrap(),
+        vec![(
+            "thing.cancel".to_string(),
+            "thing:x".to_string(),
+            busbar_contract::vocab::OUTCOME_APPLIED,
+            common::principal().as_str().to_string(),
+        )],
+        "the cancel's row, under the kernel's principal"
+    );
+}
+
 // ── the instance's driver ticket ─────────────────────────────────────────────────────────────────
 
 /// The kernel's host services, with no egress class and no store.
@@ -1025,7 +1582,930 @@ async fn a_due_subject_shows_in_trust_due_after_a_tick() {
     assert_eq!(due(&services), b"peer".to_vec(), "due after the tick");
 }
 
+// ── the kernel's Approve over the trust facts a plane states ────────────────────────────────────
+
+/// One unit at `target` through `driver`: its outcome and, when refused, the body the plane rendered.
+async fn approved(driver: &PlaneDriver, target: &str) -> (busbar_contract::caps::Outcome, String) {
+    let (steps, far, caller) = (
+        common::TestUnits::passing(),
+        cases::Far::new(&["ok"], cases::CHUNKS),
+        cases::Caller::default(),
+    );
+    let units = driver.unit(&steps, &far, &caller, cases::arrival(target, b"x"), 0);
+    let outcome = cases::drive(&units).await;
+    let body = units
+        .take_rendered()
+        .map(|r| String::from_utf8_lossy(&r.body).into_owned())
+        .unwrap_or_default();
+    (outcome, body)
+}
+
+/// Whether `outcome` is the kernel's Approve refusing the unit as untrusted.
+fn untrusted(outcome: &busbar_contract::caps::Outcome) -> bool {
+    matches!(
+        outcome,
+        busbar_contract::caps::Outcome::Refused(
+            busbar_contract::caps::StepName::Approve,
+            busbar_contract::caps::ReasonCode::Untrusted
+        )
+    )
+}
+
+/// TRUST IS THE KERNEL'S APPROVE STEP (ARCHITECT 2026-10-06): the plane STATES a counterparty, a
+/// capability there and the digest it is offered at; the kernel judges them against its trust book
+/// and refuses `untrusted` (the plane told why, `TRUST_*`) when they do not hold. RED arms: an
+/// undeclared counterparty (1), one never sighted (2), a quarantined one (3), a capability never
+/// approved (4), and one offered at another digest than the one approved (5). A unit stating no
+/// trust facts is judged on nothing.
+#[tokio::test]
+async fn the_kernels_approve_judges_the_trust_facts_a_plane_states() {
+    use busbar_kernel::plane_driver::refusal_status;
+    let services = stored();
+    let section: serde_yaml::Value = serde_yaml::from_str("peer: {reverify: 1h}").unwrap();
+    let (_plane, _book, driver) = driven_over(declaring(), 0, services.clone(), &section);
+    let refused = |code: u32| {
+        format!(
+            "refused:{}:untrusted:trust={code}",
+            refusal_status(busbar_contract::caps::ReasonCode::Untrusted)
+        )
+    };
+
+    // No trust facts: nothing judged.
+    let (outcome, _) = approved(&driver, "/call").await;
+    assert!(!untrusted(&outcome), "{outcome:?}");
+    // RED: an undeclared counterparty; one never sighted.
+    let (outcome, body) = approved(&driver, "/trusted/stranger").await;
+    assert!(untrusted(&outcome), "{outcome:?}");
+    assert_eq!(body, refused(1));
+    let (outcome, body) = approved(&driver, "/trusted/peer").await;
+    assert!(untrusted(&outcome), "{outcome:?}");
+    assert_eq!(body, refused(2));
+
+    // Sighted, it is NEW (a first sighting pins nothing) until the operator approves it
+    // (`POST /api/v1/admin/trust/approve`): then the counterparty as a whole is trusted.
+    let sight = |hash: &'static str| {
+        let later: busbar_contract::services::Later = Box::new(|_| {});
+        let _ = services.trust_sight(&instance(), "peer", hash, later);
+    };
+    let decide = |key: &str, decision| services.trust_rule(key, decision).expect("an admitted key");
+    use busbar_kernel::trust::book::Ruling;
+    sight("h1");
+    let (outcome, body) = approved(&driver, "/trusted/peer").await;
+    assert!(untrusted(&outcome), "{outcome:?}");
+    assert_eq!(body, refused(4), "sighted, never approved");
+    decide("inst/peer", Ruling::Approve);
+    let (outcome, _) = approved(&driver, "/trusted/peer").await;
+    assert!(!untrusted(&outcome), "{outcome:?}");
+
+    // RED: a capability never approved; approved, it serves at its digest alone.
+    let (outcome, body) = approved(&driver, "/trusted/peer/cap@d1").await;
+    assert!(untrusted(&outcome), "{outcome:?}");
+    assert_eq!(body, refused(4));
+    let _ = services.trust_sight_item(&instance(), "peer", "cap", "d1");
+    decide("inst/peer/cap", Ruling::Approve);
+    let (outcome, _) = approved(&driver, "/trusted/peer/cap@d1").await;
+    assert!(!untrusted(&outcome), "{outcome:?}");
+    let (outcome, body) = approved(&driver, "/trusted/peer/cap@d2").await;
+    assert!(untrusted(&outcome), "{outcome:?}");
+    assert_eq!(body, refused(5));
+    let (outcome, _) = approved(&driver, "/trusted/peer/cap").await;
+    assert!(!untrusted(&outcome), "no digest stated: its last sighting");
+
+    // An item stated with no digest: unknown until the plane's re-fetch sights it (6, a 404's
+    // case), known and ungranted after (4, a 403's case), served once approved at its sighting,
+    // and changed once a re-fetch sees another digest (5).
+    let (outcome, body) = approved(&driver, "/trusted/peer/tool").await;
+    assert!(untrusted(&outcome), "{outcome:?}");
+    assert_eq!(body, refused(6));
+    let sighted = services.trust_sight_item(&instance(), "peer", "tool", "t1");
+    assert_eq!(
+        sighted.value,
+        busbar_contract::abi::host::service::TRUST_NEW
+    );
+    let (outcome, body) = approved(&driver, "/trusted/peer/tool").await;
+    assert!(untrusted(&outcome), "{outcome:?}");
+    assert_eq!(body, refused(4));
+    decide("inst/peer/tool", Ruling::Approve);
+    let serves = |item: &str| {
+        services
+            .trust_serves(&instance(), "peer", Some(item), None)
+            .value
+    };
+    assert_eq!(
+        serves("tool"),
+        busbar_contract::abi::host::service::DISTRUST_NONE
+    );
+    let (outcome, _) = approved(&driver, "/trusted/peer/tool").await;
+    assert!(!untrusted(&outcome), "{outcome:?}");
+    let _ = services.trust_sight_item(&instance(), "peer", "tool", "t2");
+    assert_eq!(
+        serves("tool"),
+        busbar_contract::abi::host::service::DISTRUST_CHANGED
+    );
+    assert_eq!(
+        serves("never-seen"),
+        busbar_contract::abi::host::service::DISTRUST_UNKNOWN_ITEM
+    );
+
+    // RED: a sighting that drifts quarantines the counterparty, whatever was approved, until the
+    // operator approves it again; a revoke refuses it.
+    sight("h2");
+    let (outcome, body) = approved(&driver, "/trusted/peer/cap@d1").await;
+    assert!(untrusted(&outcome), "{outcome:?}");
+    assert_eq!(body, refused(3));
+    decide("inst/peer", Ruling::Approve);
+    let (outcome, _) = approved(&driver, "/trusted/peer/cap@d1").await;
+    assert!(!untrusted(&outcome), "re-approved: {outcome:?}");
+    decide("inst/peer", Ruling::Revoke);
+    let (outcome, body) = approved(&driver, "/trusted/peer/cap@d1").await;
+    assert!(untrusted(&outcome), "{outcome:?}");
+    assert_eq!(body, refused(4), "revoked");
+    // Unknown keys are no keys.
+    assert_eq!(
+        services.trust_rule("inst/stranger", Ruling::Approve),
+        Err(busbar_kernel::host_services::TrustRefused::NoSuchKey)
+    );
+}
+
+// ── the plane's own work bounds (its section's reserved `work:`) ────────────────────────────────
+
+/// A PLANE'S `work:` BOUNDS OVERRIDE THE HOST'S (spec POOLS-VERBS: the reserved `work: {max_live,
+/// retain_s}` sub-key): the instance's section binds its bounds at admission (a key it leaves out is
+/// the host's), `work.open` is refused at the plane's own `max_live`, an instance that states none
+/// keeps the host's, and `work:` is never read as a registration.
+#[test]
+fn a_planes_work_section_overrides_the_hosts_work_bounds() {
+    use busbar_kernel::host_units::UnitRecord;
+    use busbar_kernel::host_work::{refusal, WorkBounds};
+    let store = Arc::new(MemoryStore::new());
+    let host = WorkBounds {
+        max_live: 3,
+        retain_ms: 300_000,
+    };
+    let services = Arc::new(
+        KernelServices::new()
+            .with_records(Arc::new(Rows(store.clone())), store)
+            .with_pool(Arc::new(Inline))
+            .with_work_bounds(host),
+    );
+    let section: serde_yaml::Value =
+        serde_yaml::from_str("work: {max_live: 1}\npeer: {reverify: 1h}").unwrap();
+    let (_plane, _book, _driver) = driven_over(declaring(), 0, services.clone(), &section);
+    assert_eq!(
+        services.work_bounds_of("inst"),
+        WorkBounds {
+            max_live: 1,
+            retain_ms: 300_000
+        },
+        "the plane's max_live, the host's retention"
+    );
+    assert_eq!(
+        services.work_bounds_of("unbound"),
+        host,
+        "no work: is the host's"
+    );
+    services.units().admitted(1, UnitRecord::default());
+    let open = |record: &'static [u8]| {
+        let slot: Arc<std::sync::Mutex<Option<busbar_contract::services::Stored>>> = Arc::default();
+        let mine = Arc::clone(&slot);
+        let later: busbar_contract::services::Later =
+            Box::new(move |s| *mine.lock().unwrap() = Some(s));
+        match services.work_open(&instance(), Some(1), "approval", record, later) {
+            Ran::Now(s) => s,
+            Ran::Later => slot.lock().unwrap().take().expect("answered"),
+        }
+    };
+    assert_eq!(open(b"first").outcome, Outcome::Ready);
+    let second = open(b"second");
+    assert_eq!(
+        (second.outcome, second.error),
+        (Outcome::Refused, refusal::AT_BOUND),
+        "refused at the plane's own max_live of 1, under the host's 3"
+    );
+}
+
+/// A SECTION THAT MISSTATES ITS `work:` BOUNDS REFUSES THE INSTANCE, naming the key.
+#[test]
+fn a_misstated_work_section_refuses_the_instance() {
+    for bad in [
+        "work: 4",
+        "work: {max_live: 0}",
+        "work: {max_live: many}",
+        "work: {retain_s: -1}",
+        "work: {evict: true}",
+    ] {
+        let section: serde_yaml::Value = serde_yaml::from_str(bad).unwrap();
+        let refused = PlaneDriver::new(
+            Arc::new(declaring()),
+            DriverConfig {
+                caps: BufferCaps::default(),
+                op_classes: vec![OpClassId::new("call")],
+                status_of: refusal_status,
+                refusal_statuses: cases::statuses(),
+                caller_refs: None,
+            },
+            Arc::new(cases::Book::default()),
+            stored(),
+            ("tools", &section),
+        )
+        .err()
+        .unwrap_or_else(|| panic!("{bad}: refused"));
+        assert!(refused.starts_with("`tools.work`"), "{bad}: {refused}");
+    }
+}
+
 // ── write-behind (ruling H2 U10) ────────────────────────────────────────────────────────────────
 
 #[path = "support/plane_driver_write_behind.rs"]
 mod write_behind;
+
+/// RED (abi/plane "A refused arrival"): an arrival the plane refused in its own words is rendered
+/// by the plane's `refusal` with those words as its text and cause REFUSAL_ARRIVE, at the status
+/// the plane stated; without words it is rendered in the kernel's (`a_refused_arrival_wears_...`).
+#[tokio::test]
+async fn a_refused_arrival_is_rendered_in_the_planes_own_words() {
+    let r = rig(Way::Double, BufferCaps::default(), cases::Book::default());
+    let (steps, far, caller) = (
+        common::TestUnits::passing(),
+        cases::Far::new(&["ok"], &[]),
+        cases::Caller::default(),
+    );
+    let units = r.driver.unit(
+        &steps,
+        &far,
+        &caller,
+        cases::arrival("/refuse-words", b"x"),
+        0,
+    );
+    let outcome = cases::drive(&units).await;
+    assert!(
+        matches!(
+            outcome,
+            busbar_contract::caps::Outcome::Refused(
+                busbar_contract::caps::StepName::Decode,
+                busbar_contract::caps::ReasonCode::DecodeFailed
+            )
+        ),
+        "{outcome:?}"
+    );
+    assert!(far.sent().is_empty());
+    let rendered = units.take_rendered().expect("the refusal is rendered");
+    assert_eq!(rendered.status, 400);
+    let body = String::from_utf8_lossy(&rendered.body).into_owned();
+    assert!(
+        body.starts_with("words:refused:400:the body is not a document:7@"),
+        "{body}"
+    );
+}
+
+// ── a unit served as a session (ARCHITECT round 5 Q-L3B-K6-HTTP (a)) ───────────────────────────
+
+/// A request's caller side, as the composition root's ingress caller is: its read yields the
+/// arrival's body once, then nothing until the caller goes away, when its side ends.
+struct OnceCaller {
+    body: Mutex<Option<Vec<u8>>>,
+    head: Mutex<Option<u32>>,
+    heard: Mutex<Vec<u8>>,
+    gone: tokio::sync::Notify,
+}
+
+impl OnceCaller {
+    fn new(body: &[u8]) -> Self {
+        OnceCaller {
+            body: Mutex::new(Some(body.to_vec())),
+            head: Mutex::new(None),
+            heard: Mutex::new(Vec::new()),
+            gone: tokio::sync::Notify::new(),
+        }
+    }
+
+    fn heard(&self) -> String {
+        String::from_utf8_lossy(&self.heard.lock().unwrap()).into_owned()
+    }
+}
+
+impl busbar_kernel::plane_driver::CallerEnd for OnceCaller {
+    fn head(&self, status: u32, _fields: Vec<(Vec<u8>, Vec<u8>)>) {
+        *self.head.lock().unwrap() = Some(status);
+    }
+
+    async fn write(&self, bytes: &[u8]) -> bool {
+        self.heard.lock().unwrap().extend_from_slice(bytes);
+        true
+    }
+}
+
+impl busbar_kernel::plane_driver::SessionCaller for OnceCaller {
+    async fn read(&self) -> Option<Vec<u8>> {
+        let first = self.body.lock().unwrap().take();
+        if first.is_some() {
+            return first;
+        }
+        self.gone.notified().await;
+        None
+    }
+}
+
+/// A `ROUTE_SESSION` ARRIVAL IS DRIVEN AS A SESSION (ARCHITECT round 5 Q-L3B-K6-HTTP (a)): the
+/// loop's route leg is the duplex session, its caller leg the unit's own caller side, whose read
+/// yields the arrival's body ONCE (one caller piece, on the unit's stream); the instance's tick
+/// owes the session output, `drive` names it, and the session collects it on its caller-side ticket
+/// (the keepalive, every tick) until the caller goes away; nothing dialled, and a session its plane
+/// answers itself bills nothing (as a local request unit). RED before
+/// the route leg switched: the unit was walked as a request, and with no member its walk was
+/// exhausted (refused, nothing heard).
+#[tokio::test]
+async fn a_route_session_arrival_is_driven_as_a_session_whose_caller_leg_is_the_units() {
+    use busbar_kernel::slice::{ConcurrencyGauge, LeaseCell};
+    use busbar_kernel::teller::{run_unit_async, AccrualMeter, Ended, Kernel, Run};
+    let (plane, book, driver) = driven(5_000_000);
+    let (steps, far, caller) = (
+        common::TestUnits::passing(),
+        cases::Far::new(&[], &[]),
+        OnceCaller::new(b"hello"),
+    );
+    let units = driver.unit(
+        &steps,
+        &far,
+        &caller,
+        cases::arrival("/session", b"hello"),
+        0,
+    );
+    let kernel = Kernel::new();
+    let (gauge, canary, leases, meter) = (
+        ConcurrencyGauge::new(),
+        busbar_contract::caps::Canary::new(),
+        LeaseCell::new(),
+        AccrualMeter::new(),
+    );
+    let cell = common::cell(&kernel);
+    let run = Run {
+        cell: &cell,
+        parent: None,
+        leases: &leases,
+        gauge: &gauge,
+        canary: &canary,
+        meter: &meter,
+    };
+    let ctx = common::ctx(7);
+    let unit = run_unit_async(&kernel, &units, &ctx, run, &units);
+    // The caller goes away once it heard the session open and three keepalives.
+    let leaves = async {
+        while caller.heard().matches("keepalive;").count() < 3 {
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+        caller.gone.notify_one();
+        std::future::pending::<()>().await;
+    };
+    let ended = tokio::time::timeout(Duration::from_secs(10), async {
+        tokio::select! {
+            ended = unit => ended,
+            () = async { tokio::join!(driver.ticks(), driver.drives()); } => panic!("the schedule ran on"),
+            () = leaves => unreachable!(),
+        }
+    })
+    .await
+    .expect("the session collected the tick's output and ended with its caller");
+    let outcome = match ended {
+        Ended::Settled { end, .. } => end.outcome(),
+        Ended::AlreadySettled => panic!("nothing else holds this unit's cell"),
+    };
+    assert!(
+        matches!(outcome, busbar_contract::caps::Outcome::Completed),
+        "{outcome:?}"
+    );
+    assert_eq!(*caller.head.lock().unwrap(), Some(200));
+    let heard = caller.heard();
+    assert!(heard.starts_with("open:hello"), "{heard}");
+    assert_eq!(
+        plane.sessions.read.lock().unwrap().clone(),
+        vec![(7, b"hello".to_vec())],
+        "the caller leg yielded the arrival's body once, on the unit's stream"
+    );
+    assert!(plane.sessions.collects.load(Ordering::SeqCst) >= 3);
+    assert!(
+        far.sent().is_empty(),
+        "a session the plane answers dials nothing"
+    );
+    assert_eq!(
+        book.sessions_ended.load(Ordering::SeqCst),
+        0,
+        "a session its plane answers itself (ROUTE_LOCAL) tells the money seam nothing"
+    );
+}
+
+// ── the gate-first hook order (`TAIL_HOOKS_GATED`; spec Part 3 section 12 "Hooks") ────────────
+
+/// A decision gate that refuses every request at 451 with its own words (or, `abstains`, lets
+/// every request by), counting its calls.
+#[derive(Default)]
+struct Refuses {
+    calls: AtomicU32,
+    abstains: bool,
+}
+
+#[async_trait::async_trait]
+impl busbar_contract::hooks::RoutingPolicy for Refuses {
+    async fn decide(
+        &self,
+        _req: &busbar_contract::hooks::RoutingRequest<'_>,
+        _candidates: &[busbar_contract::hooks::Candidate<'_>],
+        _ctx: &busbar_contract::hooks::RoutingContext<'_>,
+        _budget: Duration,
+    ) -> busbar_contract::hooks::PolicyResult {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        if self.abstains {
+            return Ok(busbar_contract::hooks::RoutingDecision::Abstain);
+        }
+        Ok(busbar_contract::hooks::RoutingDecision::Reject {
+            status: 451,
+            message: "refused at the entry".into(),
+        })
+    }
+
+    fn name(&self) -> &'static str {
+        "entry-gate"
+    }
+}
+
+/// A gate-first binder attaching `gate` to every entry, recording the entries it was asked for.
+struct GateFirst {
+    gate: Arc<Refuses>,
+    asked: Mutex<Vec<String>>,
+}
+
+impl busbar_kernel::plane_driver::HookBinder for GateFirst {
+    fn bind(
+        &self,
+        _bind: &busbar_kernel::plane_driver::Bind<'_>,
+    ) -> Option<busbar_kernel::plane_driver::UnitHooks> {
+        panic!("a gate-first plane binds no routed hooks")
+    }
+
+    fn order(&self) -> busbar_kernel::plane_driver::HookOrder {
+        busbar_kernel::plane_driver::HookOrder::Gated
+    }
+
+    fn bind_gated(
+        &self,
+        container: &str,
+        _principal: Option<&str>,
+    ) -> Option<busbar_kernel::plane_driver::GatedHooks> {
+        self.asked.lock().unwrap().push(container.to_string());
+        Some(busbar_kernel::plane_driver::GatedHooks {
+            request_id: 7,
+            gates: vec![(
+                0,
+                busbar_kernel::hooks::ResolvedPolicy::Policy {
+                    policy: Arc::clone(&self.gate)
+                        as Arc<dyn busbar_contract::hooks::RoutingPolicy>,
+                    on_error: busbar_kernel::config::PolicyOnError::Reject,
+                    on_error_chain: Vec::new(),
+                    timeout: Duration::from_secs(5),
+                    send_prompt: false,
+                    send_user: false,
+                    on_empty: busbar_kernel::config::PolicyOnError::Reject,
+                },
+            )],
+            rewrites: Vec::new(),
+            key: None,
+            scan: None,
+        })
+    }
+}
+
+/// THE GATE-FIRST ORDER: a plane whose binder states it has its entry's decision gate screen the
+/// unit before the door (ARCHITECT ruling, Mode B); a refusal stops the unit at the gate's own
+/// status and words (HookVeto, refused at Approve's seat), the binder is asked for the entry the
+/// plane's projection names, the door is never asked (nothing admitted, nothing counted) and
+/// nothing is sent.
+#[tokio::test]
+async fn a_gate_first_plane_screens_its_entry_before_the_far_end_and_stops_at_the_gates_status() {
+    let r = rig(Way::Double, BufferCaps::default(), cases::Book::default());
+    let gate = Arc::new(Refuses::default());
+    let binder = Arc::new(GateFirst {
+        gate: Arc::clone(&gate),
+        asked: Mutex::new(Vec::new()),
+    });
+    let driver = r.driver.with_hooks(binder.clone());
+    let (steps, far, caller) = (
+        common::TestUnits::passing(),
+        cases::Far::new(&["ok"], &[]),
+        cases::Caller::default(),
+    );
+    let units = driver.unit(&steps, &far, &caller, cases::arrival("/v1", b"hi"), 0);
+    let outcome = cases::drive(&units).await;
+    assert!(
+        matches!(
+            outcome,
+            busbar_contract::caps::Outcome::Refused(
+                busbar_contract::caps::StepName::Approve,
+                busbar_contract::caps::ReasonCode::HookVeto
+            )
+        ),
+        "{outcome:?}"
+    );
+    assert_eq!(
+        gate.calls.load(Ordering::SeqCst),
+        1,
+        "the gate screened once"
+    );
+    assert!(
+        !steps
+            .calls
+            .lock()
+            .unwrap()
+            .contains(&busbar_contract::caps::StepName::Admit),
+        "a veto admits nothing: the door was never asked"
+    );
+    // The entry the kernel recorded at decode (this double's `arrive` names none, and its
+    // projection names the same).
+    assert_eq!(*binder.asked.lock().unwrap(), vec![String::new()]);
+    assert!(far.sent().is_empty(), "nothing reached the far end");
+    let rendered = units.take_rendered().expect("the veto is rendered");
+    assert_eq!(rendered.status, 451);
+}
+
+/// RED (ARCHITECT ruling, Mode B order): an OVER-BUDGET caller of a gate-first plane is answered
+/// the gate's refusal, not the door's: the gate screens before the door, which is never asked.
+#[tokio::test]
+async fn a_gate_first_planes_over_budget_caller_gets_the_gates_answer_before_the_budgets() {
+    let r = rig(Way::Double, BufferCaps::default(), cases::Book::default());
+    let gate = Arc::new(Refuses::default());
+    let binder = Arc::new(GateFirst {
+        gate: Arc::clone(&gate),
+        asked: Mutex::new(Vec::new()),
+    });
+    let driver = r.driver.with_hooks(binder);
+    let steps = common::TestUnits {
+        refuse_at: Some((
+            busbar_contract::caps::StepName::Admit,
+            busbar_contract::caps::ReasonCode::OverBudget,
+        )),
+        ..common::TestUnits::passing()
+    };
+    let (far, caller) = (cases::Far::new(&["ok"], &[]), cases::Caller::default());
+    let units = driver.unit(&steps, &far, &caller, cases::arrival("/v1", b"hi"), 0);
+    let outcome = cases::drive(&units).await;
+    assert!(
+        matches!(
+            outcome,
+            busbar_contract::caps::Outcome::Refused(
+                busbar_contract::caps::StepName::Approve,
+                busbar_contract::caps::ReasonCode::HookVeto
+            )
+        ),
+        "the gate's answer, not the budget's: {outcome:?}"
+    );
+    assert_eq!(units.take_rendered().expect("rendered").status, 451);
+    assert!(!steps
+        .calls
+        .lock()
+        .unwrap()
+        .contains(&busbar_contract::caps::StepName::Admit));
+}
+
+/// A gate-first plane whose gate lets the unit by is admitted AFTER it (the door is asked once the
+/// screen passed) and served; the gate is not asked again at the route leg.
+#[tokio::test]
+async fn a_gate_first_planes_passing_screen_reaches_the_door_and_the_far_end_once() {
+    let r = rig(Way::Double, BufferCaps::default(), cases::Book::default());
+    let gate = Arc::new(Refuses {
+        abstains: true,
+        ..Refuses::default()
+    });
+    let binder = Arc::new(GateFirst {
+        gate: Arc::clone(&gate),
+        asked: Mutex::new(Vec::new()),
+    });
+    let driver = r.driver.with_hooks(binder);
+    let (steps, far, caller) = (
+        common::TestUnits::passing(),
+        cases::Far::new(&["ok"], &[]),
+        cases::Caller::default(),
+    );
+    let units = driver.unit(&steps, &far, &caller, cases::arrival("/v1", b"hi"), 0);
+    let outcome = cases::drive(&units).await;
+    assert!(
+        !matches!(outcome, busbar_contract::caps::Outcome::Refused(..)),
+        "{outcome:?}"
+    );
+    assert_eq!(
+        gate.calls.load(Ordering::SeqCst),
+        1,
+        "screened once, at the screen"
+    );
+    assert!(steps
+        .calls
+        .lock()
+        .unwrap()
+        .contains(&busbar_contract::caps::StepName::Admit));
+    assert!(!far.sent().is_empty(), "the far end was reached");
+}
+
+/// RED (SEAM-4l additions): a plane that frames messages hands the caller's side each message's END
+/// (`EMIT_MESSAGE_END`), one per far-end piece however its bytes were written, and closes its reply
+/// with a FINAL status (`EMIT_FINAL_STATUS`): the status number, its message and its details
+/// bytes reach the caller's side whole; a plane that does neither hands neither.
+#[tokio::test]
+async fn a_planes_message_boundaries_and_final_status_reach_the_callers_side() {
+    for (member, framed) in [("framed", true), ("ok", false)] {
+        let r = rig(Way::Double, BufferCaps::default(), cases::Book::default());
+        let (steps, far, caller) = (
+            common::TestUnits::passing(),
+            cases::Far::new(&[member], cases::CHUNKS),
+            cases::Caller::default(),
+        );
+        let units = r
+            .driver
+            .unit(&steps, &far, &caller, cases::arrival("/call", b"p"), 0);
+        assert!(
+            matches!(
+                cases::drive(&units).await,
+                busbar_contract::caps::Outcome::Completed
+            ),
+            "{member}"
+        );
+        let boundaries = caller.boundaries.load(Ordering::SeqCst);
+        let finale = caller.finale.lock().unwrap().clone();
+        if framed {
+            assert_eq!(
+                boundaries,
+                cases::CHUNKS.len() as u64,
+                "one end per far-end piece"
+            );
+            assert_eq!(finale, Some((5, b"not here".to_vec(), vec![1, 2])));
+        } else {
+            assert_eq!(boundaries, 0);
+            assert_eq!(finale, None);
+        }
+        assert_eq!(
+            caller.text(),
+            "hello far end",
+            "{member}: the bytes are unchanged"
+        );
+    }
+}
+
+/// SEAM-L(o), (p): A KERNEL REFUSAL'S RECORD WRITES AND THE VETOING HOOK. A gate's veto hands the
+/// plane's `refusal` the vetoing hook's name, which the plane renders (predev's
+/// `{"reason":"hook_rejected","hook":<name>}`), and the refusal's `RECORD_AUDIT` write is one
+/// rejected row on the kernel's audit chain under the verified principal. RED: the refusal had no
+/// record slot and named no hook.
+#[tokio::test]
+async fn a_vetoed_units_refusal_names_the_hook_and_writes_its_rejected_row() {
+    let r = rig(Way::Double, BufferCaps::default(), cases::Book::default());
+    let rows = Arc::new(AuditRows::default());
+    let binder = Arc::new(GateFirst {
+        gate: Arc::new(Refuses::default()),
+        asked: Mutex::new(Vec::new()),
+    });
+    let driver = r.driver.with_hooks(binder).with_audit(rows.clone());
+    let (steps, far, caller) = (
+        common::TestUnits::passing(),
+        cases::Far::new(&["ok"], &[]),
+        cases::Caller::default(),
+    );
+    let units = driver.unit(&steps, &far, &caller, cases::arrival("/v1", b"hi"), 0);
+    let _ = cases::drive(&units).await;
+    let rendered = units.take_rendered().expect("the veto is rendered");
+    let body = String::from_utf8_lossy(&rendered.body).to_string();
+    assert!(body.ends_with(":hook=entry-gate"), "{body}");
+    assert_eq!(
+        *rows.0.lock().unwrap(),
+        vec![(
+            "thing.call".to_string(),
+            "thing:x".to_string(),
+            busbar_contract::vocab::OUTCOME_REJECTED,
+            common::principal().as_str().to_string(),
+        )]
+    );
+}
+
+// ── a credential that cannot be presented ───────────────────────────────────────────────────────
+
+/// What one failing secret leaves behind: the reference, and every string of it a caller must never
+/// be handed (the variable, the path, the module, the reference as written).
+struct Failing {
+    secret: busbar_contract::secret_ref::SecretRef,
+    markers: Vec<String>,
+}
+
+/// THE FAILING SECRETS this cell plants, one per source shape, each with its own markers: an unset
+/// variable, a file that is not there, and a module no secret plugin answers.
+fn failing_secrets() -> Vec<Failing> {
+    use busbar_contract::secret_ref::SecretRef;
+    let pid = std::process::id();
+    let var = format!("BUSBAR_KERNEL_SECRET_MARKER_{pid}");
+    std::env::remove_var(&var);
+    let path = std::env::temp_dir()
+        .join(format!("busbar-kernel-secret-marker-{pid}"))
+        .display()
+        .to_string();
+    let _ = std::fs::remove_file(&path);
+    let module = format!("secret-marker-module-{pid}");
+    let opaque = format!("secret-marker-setting-{pid}");
+    let plugin: SecretRef = serde_json::from_value(
+        serde_json::json!({ "module": module, "settings": { "at": opaque } }),
+    )
+    .expect("a module reference");
+    [
+        (SecretRef::env(&var), vec![var.clone()]),
+        (SecretRef::file(&path), vec![path.clone()]),
+        (plugin, vec![module.clone()]),
+    ]
+    .into_iter()
+    .map(|(secret, mut markers)| {
+        markers.push(secret.describe());
+        Failing { secret, markers }
+    })
+    .collect()
+}
+
+/// The markers `text` carries, without case.
+fn markers_in(text: &str, failing: &Failing) -> Vec<String> {
+    let lower = text.to_ascii_lowercase();
+    failing
+        .markers
+        .iter()
+        .filter(|m| lower.contains(&m.to_ascii_lowercase()))
+        .cloned()
+        .collect()
+}
+
+/// A FAR END WHOSE MEMBERS' CREDENTIALS CANNOT BE PRESENTED, the two ways production's far end meets
+/// a secret that did not resolve: the member's one auth call is refused (its auth plugin holds no
+/// credential), so nothing is sent; and the member's program is never spawned (the connector refuses
+/// the open), so its attempt fails over before any byte reaches the plane. Each member's operator
+/// text, naming the source, is held here, where the plugin and the connector hold theirs: nothing on
+/// the far end's seam can carry it to the kernel.
+struct Unpresentable {
+    /// The refusal the secret source gave the operator.
+    operator_text: String,
+}
+
+/// The member whose auth call is refused.
+const UNBOUND: &str = "unbound";
+/// The member whose program is never spawned.
+const UNSPAWNED: &str = "unspawned";
+
+impl busbar_kernel::plane_driver::FarEnd for Unpresentable {
+    fn member<'a>(
+        &'a self,
+        _: &'a busbar_contract::caps::Pass<busbar_contract::caps::Route>,
+        attempt_no: u32,
+    ) -> impl Future<Output = busbar_kernel::plane_driver::Pick> + Send + 'a {
+        use busbar_kernel::plane_driver::Pick;
+        let pick = match [UNBOUND, UNSPAWNED].get(attempt_no as usize - 1) {
+            Some(m) => Pick::Member {
+                name: (*m).to_string(),
+                pool: "pool-a".to_string(),
+                passthrough: false,
+                provider: "acme".to_string(),
+            },
+            None => Pick::Exhausted {
+                status: 503,
+                retry_after: Some(2),
+                detail: "The service is temporarily overloaded. Please retry shortly.",
+            },
+        };
+        async move { pick }
+    }
+
+    async fn send(
+        &self,
+        _: &busbar_contract::caps::Pass<busbar_contract::caps::Route>,
+        request: busbar_kernel::plane_driver::OutboundRequest,
+    ) -> bool {
+        request.member != UNBOUND
+    }
+
+    async fn next(
+        &self,
+        _: &busbar_contract::caps::Pass<busbar_contract::caps::Route>,
+    ) -> Option<busbar_kernel::plane_driver::FarPiece> {
+        Some(busbar_kernel::plane_driver::FarPiece {
+            last: true,
+            fail_over: true,
+            ..busbar_kernel::plane_driver::FarPiece::default()
+        })
+    }
+
+    fn failure(
+        &self,
+        _: &busbar_contract::caps::Pass<busbar_contract::caps::Route>,
+    ) -> Option<&'static str> {
+        Some("credential_unavailable")
+    }
+
+    async fn write(
+        &self,
+        _: &busbar_contract::caps::Pass<busbar_contract::caps::Route>,
+        _: busbar_kernel::plane_driver::OutboundRequest,
+    ) -> bool {
+        false
+    }
+}
+
+/// Run one unit through the one loop over any far end; its outcome.
+async fn drive_over<F: busbar_kernel::plane_driver::FarEnd>(
+    units: &busbar_kernel::plane_driver::PlaneUnits<'_, common::TestUnits, F, cases::Caller>,
+) -> busbar_contract::caps::Outcome {
+    use busbar_kernel::teller::{run_unit_async, AccrualMeter, Ended, Kernel, Run};
+    let kernel = Kernel::new();
+    let (gauge, canary, leases, meter) = (
+        busbar_kernel::slice::ConcurrencyGauge::new(),
+        busbar_contract::caps::Canary::new(),
+        busbar_kernel::slice::LeaseCell::new(),
+        AccrualMeter::new(),
+    );
+    let cell = common::cell(&kernel);
+    let run = Run {
+        cell: &cell,
+        parent: None,
+        leases: &leases,
+        gauge: &gauge,
+        canary: &canary,
+        meter: &meter,
+    };
+    match run_unit_async(&kernel, units, &common::ctx(7), run, units).await {
+        Ended::Settled { end, .. } => end.outcome(),
+        Ended::AlreadySettled => panic!("nothing else holds this unit's cell"),
+    }
+}
+
+/// A SECRET THAT DOES NOT RESOLVE REACHES THE CALLER AS A FIXED-CLASS REFUSAL NAMING NO SOURCE
+/// (status row 127; the cell the retired tool-plane crate's `SetupRefusal::client_message` redaction
+/// was until #511). For each failing source (an unset variable, a missing file, a module nothing
+/// answers) the kernel's own resolver refuses with the operator's text, which names the source (the
+/// control: the markers are there to be found). A unit whose every member's credential cannot be
+/// presented (the auth call refused; the program never spawned) ends at the walk's terminal: the
+/// plane's `refusal` is handed the one reason (`breaker_open`, class `Unreachable`) and the walk
+/// terminal's own words (the exhausted pool's 1.5.5 sentence, a `&'static str` the far end's seam
+/// carries: no operator text fits it), and the caller's render is byte-identical whichever source
+/// failed and carries none of its markers. RED: a kernel that handed the plane any operator text
+/// would fail the exact render, the byte-identity across sources, and the marker scan.
+#[tokio::test]
+async fn a_credential_that_cannot_be_presented_reaches_the_caller_as_a_fixed_class_refusal() {
+    use busbar_contract::abi::plane::{class_of, RefusalClass};
+    use busbar_contract::caps::{Outcome as UnitOutcome, ReasonCode, StepName};
+    assert_eq!(class_of(ReasonCode::BreakerOpen), RefusalClass::Unreachable);
+    let mut renders = Vec::new();
+    for failing in failing_secrets() {
+        let operator_text = busbar_kernel::config::secret::resolve_linked_string(&failing.secret)
+            .expect_err("the reference does not resolve");
+        assert!(
+            !markers_in(&operator_text, &failing).is_empty(),
+            "the control: the operator's text names the source: {operator_text}"
+        );
+        let r = rig(Way::Double, BufferCaps::default(), cases::Book::default());
+        let (steps, far, caller) = (
+            common::TestUnits::passing(),
+            Unpresentable { operator_text },
+            cases::Caller::default(),
+        );
+        assert!(!markers_in(&far.operator_text, &failing).is_empty());
+        let units = r
+            .driver
+            .unit(&steps, &far, &caller, cases::arrival("/call", b"p"), 0);
+        let outcome = drive_over(&units).await;
+        assert!(
+            matches!(
+                outcome,
+                UnitOutcome::Refused(StepName::Route, ReasonCode::BreakerOpen)
+                    | UnitOutcome::Failed(StepName::Route, ReasonCode::BreakerOpen)
+            ),
+            "{}: {outcome:?}",
+            failing.secret.describe()
+        );
+        let rendered = units.take_rendered().expect("the terminal is rendered");
+        let render = format!(
+            "{} {:?} {}",
+            rendered.status,
+            rendered.fields,
+            String::from_utf8_lossy(&rendered.body)
+        );
+        assert_eq!(
+            rendered.body,
+            b"refused:503:The service is temporarily overloaded. Please retry shortly.:retry=2",
+            "the plane is handed the fixed reason and the walk terminal's own words: {render}"
+        );
+        let found = markers_in(&render, &failing);
+        assert!(
+            found.is_empty(),
+            "the caller was handed {found:?}: {render}"
+        );
+        assert_eq!(
+            caller.text(),
+            "",
+            "nothing reached the caller but the refusal"
+        );
+        renders.push((rendered.status, rendered.fields, rendered.body));
+    }
+    renders.dedup();
+    assert_eq!(
+        renders.len(),
+        1,
+        "one fixed class: the caller cannot tell which source failed"
+    );
+}

@@ -21,32 +21,17 @@ fn the_identity_holds_over_a_long_run_of_random_postings() {
         let window = 1_000;
         let opening = Totals::zero();
 
+        // The ledger's own verbs, every one the node calls. (A release, an adjustment and a
+        // cross-window transfer had verbs too; nothing in production called them, so they are
+        // deleted and this walk no longer draws them.)
         for step in 0..400u64 {
-            match rng.below(6) {
+            match rng.below(3) {
                 // Draw from the store.
                 0 => ledger.record_draw(&k, window, i128::from(rng.below(10_000) + 1)),
-                // Give some back.
-                1 => {
-                    let held = ledger.book().get(&k, window).open_slice_remainders;
-                    if held > 0 {
-                        let give = i128::from(rng.below(u64::try_from(held).unwrap_or(1)));
-                        ledger.record_release(&k, window, give);
-                    }
-                }
-                // Correct something.
-                2 => {
-                    let amount = i128::from(rng.below(500)) - 250;
-                    ledger.record_adjustment(&k, window, amount);
-                }
                 // Mark something unreconciled, or agree with it again.
-                3 => {
+                1 => {
                     let amount = i128::from(rng.below(400)) - 200;
                     ledger.record_unreconciled(&k, window, amount);
-                }
-                // Move value to the next window and back.
-                4 => {
-                    let amount = i128::from(rng.below(300));
-                    ledger.record_cross_window_transfer(&k, window, window + 1, amount);
                 }
                 // Open a hold, spend some of it, settle.
                 _ => {
@@ -203,32 +188,4 @@ fn a_replayed_posting_moves_the_book_exactly_as_the_live_one_did() {
             "the dual write is fed on replay as it was live"
         );
     }
-}
-
-/// ITEM 26 (a deletion, so the replacing behaviour is asserted): `record_adjustment_releasing` had
-/// no caller anywhere — not in production and not in a test — and is gone. A correction is
-/// `record_adjustment`: it moves value between `settled` and `adjustments` and hands NOTHING back to
-/// the store, so `drawn` and the slice do not move and the identity stays closed.
-#[test]
-fn a_correction_moves_settled_into_adjustments_and_releases_nothing() {
-    let token = ledger_token();
-    let mut ledger = Ledger::new();
-    let k = key("corrected");
-    ledger.record_draw(&k, 1, 1_000);
-    ledger.record_hold_opened(&k, 1, 1_000);
-    ledger.record_slice_spent(&k, 1, 1_000);
-    ledger.settle(&k, 1, hold("p", 1_000), 800, &usage("tokens", 800), &token);
-    let before = ledger.book().get(&k, 1);
-
-    ledger.record_adjustment(&k, 1, 300);
-    let after = ledger.book().get(&k, 1);
-    assert_eq!(after.settled, before.settled - 300);
-    assert_eq!(after.adjustments, before.adjustments + 300);
-    assert_eq!(
-        after.drawn, before.drawn,
-        "a correction releases nothing to the store"
-    );
-    assert_eq!(after.released, before.released);
-    assert_eq!(after.open_slice_remainders, before.open_slice_remainders);
-    assert!(residual(&Totals::zero(), &after).holds());
 }

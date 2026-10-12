@@ -8,13 +8,13 @@ use std::mem::zeroed;
 use std::ptr::null;
 
 use super::*;
-use crate::abi::hook::{SignalEntry, SignalValue, SIGNAL_TAG_BOOL, SIGNAL_TAG_STR};
+use crate::abi::hook::{MessageView, SignalEntry, SignalValue, SIGNAL_TAG_BOOL, SIGNAL_TAG_STR};
 use crate::abi::host::conn::connector::{
     Need, DIRECTION_OUTBOUND, KEEP_ALL_EXCEPT_DENIED, KEEP_NAMED, KEEP_RESPONSE_HEADERS_MAX,
 };
-use crate::abi::mechanism::call::AbiStr;
 use crate::abi::mechanism::call::Outcome;
 use crate::abi::mechanism::call::Outcome::{Failed, Pending, Ready, Refused};
+use crate::abi::mechanism::call::{AbiStr, Blob, MAX_TEXT};
 use crate::abi::mechanism::check::{check_needs, fault};
 use crate::abi::mechanism::door::{Section, SECTION_DECLARING, SECTION_REQUIRED};
 use crate::abi::plane::*;
@@ -246,7 +246,8 @@ fn an_arrival_that_cancels_carries_no_correlation_of_its_own() {
 
 /// THE POOL AN ARRIVAL NAMES (ARCHITECT Q-SW6, 2026-10-02): the entry name inside the plane's own
 /// section, on a READY answer only. Absent is valid (the plane's single default entry); a length
-/// with no bytes is FAULT, and a refused or failed arrival naming a pool is a contradiction.
+/// with no bytes is FAULT, a failed arrival naming a pool is a contradiction, and a refused one may
+/// name the entry its refusal is about (ARCHITECT Q-DEL-A2A-GATE).
 #[test]
 fn an_arrival_names_its_pool_only_when_ready_and_only_with_bytes() {
     let mut o: ArriveOut = z();
@@ -270,14 +271,13 @@ fn an_arrival_names_its_pool_only_when_ready_and_only_with_bytes() {
         check_arrive(Ready, &o, &[], 4, &bounds()),
         f(Rule::NullWithCount, "arrive.pool")
     );
+    // A REFUSED arrival may name the entry its refusal is about (rule 6, ARCHITECT
+    // Q-DEL-A2A-GATE): held past the caller's grant, never charged.
     let mut o: ArriveOut = z();
     o.refusal = 3;
     o.refusal_status = 404;
     o.pool = s("entry");
-    assert_eq!(
-        check_arrive(Refused, &o, &[], 4, &bounds()),
-        f(Rule::Contradiction, "arrive.pool")
-    );
+    assert_eq!(check_arrive(Refused, &o, &[], 4, &bounds()), Ok(()));
     let mut o: ArriveOut = z();
     o.pool = s("entry");
     assert_eq!(
@@ -437,6 +437,64 @@ fn a_text_message_is_whole_and_not_empty() {
     );
 }
 
+/// RED (SEAM-4l additions): THE MESSAGE BOUNDARY is a known bit, valid on an answer toward the
+/// caller with bytes or without, never on a request bound for the far end.
+#[test]
+fn a_message_boundary_ends_a_message_toward_the_caller_only() {
+    let mut o: OnPieceOut = z();
+    o.flags = EMIT_MESSAGE_END;
+    assert_eq!(piece(&o, &[], &[], &[]), Ok(()), "a boundary alone");
+    o.emitted = 3;
+    assert_eq!(
+        piece(&o, &[], &[], &[]),
+        Ok(()),
+        "with the message's last bytes"
+    );
+    o.flags |= EMIT_TO_FAR_END;
+    assert_eq!(
+        piece(&o, &[], &[], &[]),
+        f(Rule::Contradiction, "on_piece.message_end_to_far_end")
+    );
+}
+
+/// RED (SEAM-4l additions): THE FINAL STATUS closes the reply (`EMIT_DONE`), its message and details
+/// inside the arena written; its fields are zero unless it is flagged.
+#[test]
+fn a_final_status_closes_the_reply_inside_the_arena() {
+    let at = |offset: u32, len: u32| crate::abi::mechanism::call::Span { offset, len };
+    let mut o: OnPieceOut = z();
+    o.flags = EMIT_DONE | EMIT_FINAL_STATUS;
+    o.final_status = 5;
+    o.arena_written = 10;
+    o.final_message = at(0, 8);
+    o.final_details = at(8, 2);
+    assert_eq!(piece(&o, &[], &[], &[]), Ok(()));
+    let mut open = o;
+    open.flags = EMIT_FINAL_STATUS;
+    assert_eq!(
+        piece(&open, &[], &[], &[]),
+        f(Rule::Contradiction, "on_piece.final_status_not_closing")
+    );
+    let mut far = o;
+    far.flags |= EMIT_TO_FAR_END;
+    assert_eq!(
+        piece(&far, &[], &[], &[]),
+        f(Rule::Contradiction, "on_piece.final_status_not_closing")
+    );
+    let mut outside = o;
+    outside.final_details = at(9, 2);
+    assert!(
+        piece(&outside, &[], &[], &[]).is_err(),
+        "details past the arena"
+    );
+    let mut unflagged = o;
+    unflagged.flags = EMIT_DONE;
+    assert_eq!(
+        piece(&unflagged, &[], &[], &[]),
+        f(Rule::Contradiction, "on_piece.final_status_unflagged")
+    );
+}
+
 /// THE CATALOGUE WATCH: `EMIT_WATCH_CATALOGUE` and `EMIT_UNWATCH_CATALOGUE` are known bits, each
 /// valid alone, and an answer setting both is a contradiction.
 #[test]
@@ -551,7 +609,7 @@ fn a_non_ready_on_piece_still_has_its_units_and_records_judged() {
     let mut o: OnPieceOut = z();
     o.records_written = 1;
     let mut r: RecordWrite = z();
-    r.op = 3;
+    r.op = 4;
     assert_eq!(
         check_on_piece(Pending, &o, (&[], &[r], &[]), &caps(), &bounds()),
         f(Rule::UnknownCode, "record.op")
@@ -623,6 +681,184 @@ fn a_record_write_that_is_not_a_put_is_fault() {
         r.op = op;
         assert_eq!(piece(&o, &[], &[r], &[]), f(Rule::UnknownCode, "record.op"));
     }
+}
+
+/// SEAM-L(k), THE UNIT'S AUDIT RECORD: a [`RECORD_AUDIT`] write names the row's outcome where a
+/// put names its kind (so it needs no record kind of the plane's: here a tail with none), its
+/// action in `key` (never empty) and its resource in `value`, both inside the arena. RED: every
+/// write but a put was FAULT, and its outcome was judged as a record kind.
+#[test]
+fn an_audit_record_names_its_outcome_and_action() {
+    let mut o: OnPieceOut = z();
+    o.records_written = 1;
+    o.arena_written = 8;
+    let mut r: RecordWrite = z();
+    r.op = RECORD_AUDIT;
+    r.key = sp(0, 4);
+    r.value = sp(4, 4);
+    let none = Bounds {
+        record_kinds: 0,
+        ..bounds()
+    };
+    for outcome in [AUDIT_APPLIED, AUDIT_REJECTED, AUDIT_DEGRADED] {
+        r.kind = outcome;
+        assert_eq!(
+            check_on_piece(Ready, &o, (&[], &[r], &[]), &caps(), &none),
+            Ok(()),
+            "outcome {outcome}"
+        );
+    }
+    for outcome in [AUDIT_NONE, AUDIT_DEGRADED + 1, u32::MAX] {
+        r.kind = outcome;
+        assert_eq!(
+            piece(&o, &[], &[r], &[]),
+            f(Rule::UnknownCode, "record.audit_outcome")
+        );
+    }
+    r.kind = AUDIT_APPLIED;
+    r.key = sp(0, 0);
+    assert_eq!(
+        piece(&o, &[], &[r], &[]),
+        f(Rule::Contradiction, "record.audit_without_action")
+    );
+    r.key = sp(6, 4);
+    assert_eq!(
+        piece(&o, &[], &[r], &[]),
+        f(Rule::SpanOutOfBounds, "record.key")
+    );
+    r.key = sp(0, 4);
+    r.value = sp(6, 4);
+    assert_eq!(
+        piece(&o, &[], &[r], &[]),
+        f(Rule::SpanOutOfBounds, "record.value")
+    );
+}
+
+/// SEAM-L(j), THE UNIT'S LEDGER LANE: an answer may name the lane its units are priced under, in
+/// the arena written, on any answer; none named is a zero length. RED: the answer had no lane.
+#[test]
+fn a_ledger_lane_rides_the_arena() {
+    let mut o: OnPieceOut = z();
+    o.arena_written = 8;
+    o.lane = sp(2, 6);
+    assert_eq!(piece(&o, &[], &[], &[]), Ok(()));
+    o.lane = sp(4, 6);
+    assert_eq!(
+        piece(&o, &[], &[], &[]),
+        f(Rule::SpanOutOfBounds, "on_piece.lane")
+    );
+    o.lane = sp(SPAN_ABSENT, 1);
+    assert_eq!(
+        piece(&o, &[], &[], &[]),
+        f(Rule::SpanNotAbsent, "on_piece.lane")
+    );
+    o.lane = sp(0, 0);
+    assert_eq!(piece(&o, &[], &[], &[]), Ok(()));
+}
+
+/// SEAM-L(o), A REFUSAL'S RECORD WRITES: judged as an `on_piece` answer's, under the short-buffer
+/// rule over the host's `records_buf`: an audit row inside the arena passes; a write past the cap,
+/// an unknown op or a span outside the arena is FAULT. RED: a refusal had no record slot.
+#[test]
+fn a_refusals_record_writes_are_judged_as_an_answers() {
+    let mut o: RefusalOut = z();
+    o.records_written = 1;
+    o.arena_written = 8;
+    let mut r: RecordWrite = z();
+    r.op = RECORD_AUDIT;
+    r.kind = AUDIT_REJECTED;
+    r.key = sp(0, 4);
+    r.value = sp(4, 4);
+    assert_eq!(check_refusal_records(Ready, &o, &[r], 1, &bounds()), Ok(()));
+    assert_eq!(
+        check_refusal_records(Ready, &o, &[r], 0, &bounds()),
+        f(Rule::OverCap, "refusal.records")
+    );
+    let mut bad = r;
+    bad.op = 4;
+    assert_eq!(
+        check_refusal_records(Ready, &o, &[bad], 1, &bounds()),
+        f(Rule::UnknownCode, "record.op")
+    );
+    let mut bad = r;
+    bad.value = sp(6, 4);
+    assert_eq!(
+        check_refusal_records(Ready, &o, &[bad], 1, &bounds()),
+        f(Rule::SpanOutOfBounds, "record.value")
+    );
+    let none: RefusalOut = z();
+    assert_eq!(
+        check_refusal_records(Ready, &none, &[], 0, &bounds()),
+        Ok(())
+    );
+}
+
+/// SEAM-L(t), A SERVED REQUEST'S RECORD WRITES: judged as an answer's: a put of a declared kind
+/// inside the arena passes; a short buffer is a short answer; a kind past the tail is FAULT. RED: a
+/// served request had no record slot.
+#[test]
+fn a_served_requests_record_writes_are_judged_as_an_answers() {
+    let mut o: ServeOut = z();
+    o.records_written = 1;
+    o.arena_written = 8;
+    let mut r: RecordWrite = z();
+    r.op = RECORD_PUT;
+    r.key = sp(0, 4);
+    r.value = sp(4, 4);
+    assert_eq!(check_serve_records(Ready, &o, &[r], 1, &bounds()), Ok(()));
+    let mut bad = r;
+    bad.kind = 1;
+    assert_eq!(
+        check_serve_records(Ready, &o, &[bad], 1, &bounds()),
+        f(Rule::IndexOutOfRange, "record.kind")
+    );
+    let mut short: ServeOut = z();
+    short.records_needed = 2;
+    assert_eq!(
+        check_serve_records(Failed, &short, &[], 1, &bounds()),
+        Ok(())
+    );
+    assert_eq!(
+        check_serve_records(Ready, &short, &[], 1, &bounds()),
+        f(Rule::NeededNotFailed, "serve.records")
+    );
+}
+
+/// SEAM-L(r), A CANCEL'S RECORD WRITES: never re-called, so they fit the host's buffers or the
+/// answer is FAULT; each is judged as an answer's; a `cancel` that is not READY writes none. RED: a
+/// cancel had no record slot.
+#[test]
+fn a_cancels_record_writes_fit_and_are_judged_as_an_answers() {
+    let mut o: PlaneCancelOut = z();
+    o.records_written = 1;
+    o.arena_written = 8;
+    let mut r: RecordWrite = z();
+    r.op = RECORD_AUDIT;
+    r.kind = AUDIT_APPLIED;
+    r.key = sp(0, 4);
+    r.value = sp(4, 4);
+    assert_eq!(
+        check_cancel_records(Ready, &o, &[r], (1, 8), &bounds()),
+        Ok(())
+    );
+    assert_eq!(
+        check_cancel_records(Ready, &o, &[r], (0, 8), &bounds()),
+        f(Rule::OverCap, "cancel.records")
+    );
+    assert_eq!(
+        check_cancel_records(Ready, &o, &[r], (1, 4), &bounds()),
+        f(Rule::OverCap, "cancel.arena")
+    );
+    assert_eq!(
+        check_cancel_records(Failed, &o, &[r], (1, 8), &bounds()),
+        f(Rule::Contradiction, "cancel.records_not_ready")
+    );
+    let mut bad = r;
+    bad.op = 4;
+    assert_eq!(
+        check_cancel_records(Ready, &o, &[bad], (1, 8), &bounds()),
+        f(Rule::UnknownCode, "record.op")
+    );
 }
 
 // ── refusal, serve, cancel ──
@@ -786,6 +1022,36 @@ fn a_snapshot_list_counted_with_a_null_pointer_or_too_long_is_fault() {
     );
 }
 
+/// THE APPEND RULE ON THE SNAPSHOT: a snapshot published before `listed` was appended states the
+/// size its fields end at and is judged as one that lists nothing; any other size is foreign. The
+/// list itself is bounded and never counted over NULL, and each name is non-empty text.
+#[test]
+fn a_snapshot_from_before_listed_is_read_and_its_list_is_judged() {
+    let mut sn = snapshot();
+    sn.size = std::mem::offset_of!(PlaneSnapshot, listed) as u32;
+    assert_eq!(
+        check_snapshot(&sn, 7),
+        Ok(()),
+        "the pre-append size is accepted"
+    );
+    sn.size += 8;
+    assert_eq!(check_snapshot(&sn, 7), f(Rule::Foreign, "snapshot.size"));
+    let mut sn = snapshot();
+    sn.listed_len = 1;
+    assert_eq!(
+        check_snapshot(&sn, 7),
+        f(Rule::NullWithCount, "snapshot.listed")
+    );
+    sn.listed_len = MAX_ROUTES as usize + 1;
+    assert_eq!(check_snapshot(&sn, 7), f(Rule::OverMax, "snapshot.listed"));
+    use crate::abi::plane::check::check_listed;
+    assert_eq!(check_listed(&[s("a"), s("b")]), Ok(()));
+    assert_eq!(
+        check_listed(&[s("a"), s("")]),
+        f(Rule::Missing, "snapshot.listed")
+    );
+}
+
 fn claim(verb: &'static str, target: &'static str, flags: u32) -> Claim {
     Claim {
         verb: s(verb),
@@ -801,8 +1067,8 @@ fn claim(verb: &'static str, target: &'static str, flags: u32) -> Claim {
 fn a_claim_states_only_known_flags() {
     let open_exact = claim("V", "/t", CLAIM_OPEN | CLAIM_EXACT);
     assert_eq!(check_claims(&[open_exact], 1), Ok(()));
-    // RED: a bit neither CLAIM_OPEN nor CLAIM_EXACT.
-    let unknown = claim("V", "/t", CLAIM_EXACT << 1);
+    // RED: a bit none of CLAIM_OPEN, CLAIM_EXACT, CLAIM_PATTERN.
+    let unknown = claim("V", "/t", CLAIM_PATTERN << 1);
     assert_eq!(
         check_claims(&[unknown], 1),
         f(Rule::UnknownCode, "claim.flags")
@@ -825,6 +1091,106 @@ fn a_claims_refusal_dialect_is_a_declared_dialect() {
     );
     c.refusal_dialect = 0;
     assert_eq!(check_claims(&[c], 0), Ok(()), "no dialects: 0");
+}
+
+/// A test keeps a pattern's segments for the process.
+fn kept(segments: Vec<crate::grammar::PathSeg>) -> &'static [crate::grammar::PathSeg] {
+    Box::leak(segments.into_boxed_slice())
+}
+
+#[test]
+fn a_pattern_claim_is_never_also_exact() {
+    let pattern = claim("V", "/t/{id}", CLAIM_OPEN | CLAIM_PATTERN);
+    assert_eq!(check_claims(&[pattern], 1), Ok(()));
+    let both = claim("V", "/t/{id}", CLAIM_EXACT | CLAIM_PATTERN);
+    assert_eq!(
+        check_claims(&[both], 1),
+        f(Rule::Contradiction, "claim.flags")
+    );
+    assert_eq!(
+        claim_selector("/t/{id}", CLAIM_EXACT | CLAIM_PATTERN, kept).map(|_| ()),
+        f(Rule::Contradiction, "claim.flags")
+    );
+}
+
+#[test]
+fn a_pattern_target_parses_into_literals_and_one_level_placeholders() {
+    use crate::grammar::PathSeg::{Lit, Var};
+    assert_eq!(
+        claim_pattern("/v1/tasks/{id}/configs/{config_id}"),
+        Ok(vec![Lit("v1"), Lit("tasks"), Var, Lit("configs"), Var])
+    );
+    for bad in [
+        "t/{id}", "/t//{id}", "/t/{}", "/t/{id", "/t/id}", "/t/{i}d}", "/t/{id}/",
+    ] {
+        assert_eq!(
+            claim_pattern(bad).map(|_| ()),
+            f(Rule::Contradiction, "claim.pattern"),
+            "{bad}"
+        );
+    }
+    assert_eq!(
+        claim_pattern("/t/id").map(|_| ()),
+        f(Rule::Missing, "claim.pattern")
+    );
+}
+
+/// RED: a malformed pattern is refused AT BIND, by the same grammar the selector reads, so a bad
+/// claim never waits for its first route.
+#[test]
+fn a_malformed_pattern_is_refused_at_bind_by_the_selectors_grammar() {
+    for bad in [
+        "t/{id}", "/t//{id}", "/t/{}", "/t/{id", "/t/id}", "/t/{i}d}", "/t/{id}/",
+    ] {
+        let at_bind = check_claim_target(bad, CLAIM_PATTERN);
+        assert_eq!(at_bind, f(Rule::Contradiction, "claim.pattern"), "{bad}");
+        assert_eq!(
+            at_bind,
+            claim_selector(bad, CLAIM_PATTERN, kept).map(|_| ()),
+            "{bad}"
+        );
+    }
+    assert_eq!(
+        check_claim_target("/t/id", CLAIM_PATTERN),
+        f(Rule::Missing, "claim.pattern")
+    );
+    assert_eq!(
+        check_claim_target("/t/{id}", CLAIM_EXACT | CLAIM_PATTERN),
+        f(Rule::Contradiction, "claim.flags")
+    );
+    assert_eq!(check_claim_target("/t/{id}", CLAIM_PATTERN), Ok(()));
+    assert_eq!(check_claim_target("/t/{id}", CLAIM_EXACT), Ok(()));
+}
+
+#[test]
+fn a_claim_reads_as_the_grammars_selector_by_its_flags() {
+    use crate::grammar::{PathSeg, Selector};
+    assert_eq!(
+        claim_selector("/t", CLAIM_EXACT, kept),
+        Ok(Selector::ExactPath("/t"))
+    );
+    assert_eq!(
+        claim_selector("/t", CLAIM_OPEN, kept),
+        Ok(Selector::PrefixOneLevel("/t"))
+    );
+    assert_eq!(
+        claim_selector("/t/{id}", CLAIM_PATTERN, kept),
+        Ok(Selector::PathPattern(&[PathSeg::Lit("t"), PathSeg::Var]))
+    );
+}
+
+/// RED: a placeholder claims ONE level, non-empty, with no `/`.
+#[test]
+fn a_pattern_claims_one_level_only() {
+    let Ok(crate::grammar::Selector::PathPattern(p)) =
+        claim_selector("/v1/tasks/{id}", CLAIM_PATTERN, kept)
+    else {
+        panic!("a pattern claim reads as a segment pattern");
+    };
+    assert!(crate::grammar::pattern_matches(p, "/v1/tasks/t1"));
+    assert!(!crate::grammar::pattern_matches(p, "/v1/tasks/t1/x"));
+    assert!(!crate::grammar::pattern_matches(p, "/v1/tasks/"));
+    assert!(!crate::grammar::pattern_matches(p, "/v1/tasks"));
 }
 
 #[test]
@@ -864,8 +1230,9 @@ fn a_tail_with_unknown_bits_or_no_ingress_is_fault() {
     let mut t = tail();
     t.ingress = INGRESS_REQUEST_RESPONSE | (1 << 5);
     assert_eq!(check_tail(&t), f(Rule::UnknownCode, "tail.ingress"));
+    // The first bit past the last one a tail may state (`TAIL_HOOKS_GATED`, bit 2, is known).
     let mut t = tail();
-    t.flags = 4;
+    t.flags = TAIL_HOOKS_GATED << 1;
     assert_eq!(check_tail(&t), f(Rule::UnknownCode, "tail.flags"));
     let mut t = tail();
     t.dispatch_shape = 2;
@@ -922,6 +1289,7 @@ fn dialect_auth_names_a_dialect_and_a_style() {
         dialect: 0,
         _reserved: 0,
         style: s("st"),
+        params: Blob::ABSENT,
     };
     assert_eq!(check_dialect_auth(&[d], 1), Ok(()));
     assert_eq!(
@@ -933,6 +1301,27 @@ fn dialect_auth_names_a_dialect_and_a_style() {
     assert_eq!(
         check_dialect_auth(&[bad], 1),
         f(Rule::Missing, "dialect_auth.style")
+    ); // The style's parameters: a JSON object, a counted blob never NULL.
+    const PARAMS: &[u8] = br#"{"service":"s"}"#;
+    let mut with = d;
+    with.params = Blob {
+        ptr: PARAMS.as_ptr(),
+        len: PARAMS.len(),
+        fmt: crate::abi::mechanism::call::BLOB_JSON,
+        flags: 0,
+    };
+    assert_eq!(check_dialect_auth(&[with], 1), Ok(()));
+    let mut octets = with;
+    octets.params.fmt = crate::abi::mechanism::call::BLOB_OCTETS;
+    assert_eq!(
+        check_dialect_auth(&[octets], 1),
+        f(Rule::Contradiction, "dialect_auth.params.fmt")
+    );
+    let mut dangling = with;
+    dangling.params.ptr = null();
+    assert_eq!(
+        check_dialect_auth(&[dangling], 1),
+        f(Rule::NullWithCount, "dialect_auth.params")
     );
 }
 
@@ -1257,6 +1646,40 @@ fn a_verdict_is_known() {
     );
 }
 
+/// THE BREAKER FAULT READING (ARCHITECT 2026-10-05): one vocabulary with the transport's
+/// (`FAULT_*`), separate from the verdict. RED arms: past `FAULT_HARD`, on an answer that is not
+/// READY, and its padding not zero.
+#[test]
+fn a_fault_reading_is_the_transports_vocabulary_on_a_ready_answer() {
+    use crate::abi::transport::{FAULT_CALLER, FAULT_HARD, FAULT_NONE, FAULT_TRANSIENT};
+    let mut o: OnPieceOut = z();
+    for reading in [FAULT_NONE, FAULT_CALLER, FAULT_TRANSIENT, FAULT_HARD] {
+        o.fault = reading;
+        assert_eq!(piece(&o, &[], &[], &[]), Ok(()), "{reading}");
+    }
+    // Separate from the verdict: a retried answer that is the caller's own fault.
+    o.verdict = VERDICT_RETRY;
+    o.fault = FAULT_CALLER;
+    assert_eq!(piece(&o, &[], &[], &[]), Ok(()));
+    o.verdict = 0;
+    o.fault = FAULT_HARD + 1;
+    assert_eq!(
+        piece(&o, &[], &[], &[]),
+        f(Rule::UnknownCode, "on_piece.fault")
+    );
+    o.fault = FAULT_TRANSIENT;
+    assert_eq!(
+        check_on_piece(Pending, &o, (&[], &[], &[]), &caps(), &bounds()),
+        f(Rule::Contradiction, "on_piece.fault_not_ready")
+    );
+    o.fault = FAULT_NONE;
+    o._fault_reserved = [0, 1, 0];
+    assert_eq!(
+        piece(&o, &[], &[], &[]),
+        f(Rule::Contradiction, "on_piece.fault_reserved")
+    );
+}
+
 #[test]
 fn a_verdict_rides_only_a_ready_answer() {
     let mut o: OnPieceOut = z();
@@ -1298,6 +1721,21 @@ fn an_attempt_answer_names_its_verb_and_target_in_the_arena() {
     );
 }
 
+/// MULTI-NEED (ARCHITECT Q-L5B-NEEDS 2026-10-03): a far request may name the need it rides; a need
+/// named on an answer that sends nothing to the far end contradicts it.
+#[test]
+fn a_named_need_rides_only_a_far_request() {
+    let mut o = attempt_answer();
+    o.need = 5;
+    assert_eq!(piece(&o, &[], &[], &[]), Ok(()));
+    let mut o: OnPieceOut = z();
+    o.need = 1;
+    assert_eq!(
+        piece(&o, &[], &[], &[]),
+        f(Rule::Contradiction, "on_piece.need_not_to_far_end")
+    );
+}
+
 #[test]
 fn a_verb_never_comes_without_a_target() {
     let mut o = attempt_answer();
@@ -1330,6 +1768,17 @@ fn a_tail_may_declare_probes() {
     t.flags = TAIL_PROBES | TAIL_FALLBACK;
     assert_eq!(check_tail(&t), Ok(()));
     assert_eq!(CLAIM_PROBE, u32::MAX, "never a snapshot claim index");
+}
+
+/// A tail may state the gate-first hook order (`TAIL_HOOKS_GATED`); a flag past the known ones is
+/// still unknown.
+#[test]
+fn a_tail_may_declare_the_gate_first_hook_order() {
+    let mut t = tail();
+    t.flags = TAIL_HOOKS_GATED;
+    assert_eq!(check_tail(&t), Ok(()));
+    t.flags = TAIL_HOOKS_GATED << 1;
+    assert_eq!(check_tail(&t), f(Rule::UnknownCode, "tail.flags"));
 }
 
 #[test]
@@ -1470,6 +1919,26 @@ fn a_tail_counting_trust_keys_over_a_null_pointer_is_fault() {
 }
 
 #[test]
+fn a_tail_caller_credential_refusal_is_absent_or_a_sentence() {
+    assert_eq!(check_tail(&tail()), Ok(()));
+    let mut t = tail();
+    t.caller_credential_refusal = s("refused here");
+    assert_eq!(check_tail(&t), Ok(()));
+    let mut t = tail();
+    t.caller_credential_refusal = s("");
+    assert_eq!(
+        check_tail(&t),
+        f(Rule::Missing, "tail.caller_credential_refusal")
+    );
+    let mut t = tail();
+    t.caller_credential_refusal.len = 1;
+    assert_eq!(
+        check_tail(&t),
+        f(Rule::NullWithCount, "tail.caller_credential_refusal")
+    );
+}
+
+#[test]
 fn well_formed_trust_keys_pass() {
     let keys = [
         pin_key(),
@@ -1478,6 +1947,65 @@ fn well_formed_trust_keys_pass() {
     ];
     assert_eq!(check_trust_keys(&keys), Ok(()));
     assert_eq!(check_pin_mechanisms(&MECHANISMS), Ok(()));
+}
+
+/// RED (SEAM-4f): a registration's private reach is a trust key of its own role: a boolean the
+/// host reads, so it carries no flags, no mechanisms and no default (absent reads `false`).
+#[test]
+fn a_private_reach_key_carries_no_default_flags_or_mechanisms() {
+    let reach = TrustKey {
+        default: AbiStr {
+            ptr: null(),
+            len: 0,
+        },
+        ..duration_key(TRUST_PRIVATE_REACH)
+    };
+    assert_eq!(check_trust_keys(&[pin_key(), reach]), Ok(()));
+    assert_eq!(
+        check_trust_keys(&[duration_key(TRUST_PRIVATE_REACH)]),
+        f(Rule::Contradiction, "trust_key.reach_default")
+    );
+    assert_eq!(
+        check_trust_keys(&[TrustKey { flags: 1, ..reach }]),
+        f(Rule::UnknownCode, "trust_key.duration_flags")
+    );
+    assert_eq!(
+        check_trust_keys(&[TrustKey {
+            mechanisms: MECHANISMS.as_ptr(),
+            mechanisms_len: MECHANISMS.len(),
+            ..reach
+        }]),
+        f(Rule::Contradiction, "trust_key.duration_mechanisms")
+    );
+}
+
+/// RED (ARCHITECT 2026-10-06): the configured item approvals name the field each item's digest is
+/// written under (`default`), and carry no flags and no mechanisms.
+#[test]
+fn an_item_approvals_key_names_its_digest_field() {
+    let approvals = duration_key(TRUST_ITEM_APPROVALS);
+    assert_eq!(check_trust_keys(&[pin_key(), approvals]), Ok(()));
+    assert_eq!(
+        check_trust_keys(&[TrustKey {
+            default: AbiStr {
+                ptr: null(),
+                len: 0,
+            },
+            ..approvals
+        }]),
+        f(Rule::Missing, "trust_key.approvals_field")
+    );
+    assert_eq!(
+        check_trust_keys(&[TrustKey {
+            flags: 1,
+            ..approvals
+        }]),
+        f(Rule::UnknownCode, "trust_key.duration_flags")
+    );
+    assert_eq!(
+        check_trust_keys(&[approvals, approvals]),
+        f(Rule::Contradiction, "trust_key.role_twice")
+    );
 }
 
 #[test]
@@ -1492,7 +2020,7 @@ fn a_trust_key_is_named() {
 
 #[test]
 fn a_trust_key_role_is_known() {
-    for role in [0, TRUST_RECOVERY_BACKOFF + 1] {
+    for role in [0, TRUST_ITEM_APPROVALS + 1] {
         assert_eq!(
             check_trust_keys(&[duration_key(role)]),
             f(Rule::UnknownCode, "trust_key.role")
@@ -1649,11 +2177,21 @@ fn a_pin_mechanism_is_named_with_known_flags() {
         f(Rule::Missing, "pin_mechanism.token")
     );
     let mut m = MECHANISMS[0];
-    m.flags = MECHANISM_ROOT << 1;
+    m.flags = MECHANISM_PEER_KEY << 1;
     assert_eq!(
         check_pin_mechanisms(&[m]),
         f(Rule::UnknownCode, "pin_mechanism.flags")
     );
+    // A far-end key pin is a root; the no-root spelling carrying one contradicts itself.
+    let mut m = MECHANISMS[0];
+    m.flags = MECHANISM_PEER_KEY;
+    assert_eq!(
+        check_pin_mechanisms(&[m]),
+        f(Rule::Contradiction, "pin_mechanism.flags")
+    );
+    let mut m = MECHANISMS[0];
+    m.flags = MECHANISM_ROOT | MECHANISM_PEER_KEY;
+    assert_eq!(check_pin_mechanisms(&[m]), Ok(()));
 }
 
 #[test]
@@ -1734,6 +2272,7 @@ const PINNED: &[(u32, RefusalCode, &str)] = &[
     (39, RefusalCode::Superseded, "superseded"),
     (40, RefusalCode::ClientGone, "client_gone"),
     (41, RefusalCode::DeadlineExceeded, "deadline_exceeded"),
+    (42, RefusalCode::Untrusted, "untrusted"),
 ];
 
 #[test]
@@ -1775,12 +2314,14 @@ fn every_wire_refusal_code_is_pinned_to_its_number_and_word() {
 
 struct Host {
     signals: [SignalEntry; 2],
+    messages: [MessageView; 2],
     arena: [u8; 16],
 }
 
 fn host() -> Host {
     Host {
         signals: z(),
+        messages: z(),
         arena: [0; 16],
     }
 }
@@ -1804,7 +2345,46 @@ fn view(h: &Host, written: usize) -> ProjectOut {
 }
 
 fn project(outcome: Outcome, h: &Host, o: &ProjectOut) -> Result<(), Fault> {
-    check_project(outcome, o, &h.signals, 2, (h.arena.as_ptr(), 16))
+    project_as(outcome, h, o, false)
+}
+
+/// [`project`], for a call that carried a rewrite (`rewrite`) or not.
+fn project_as(outcome: Outcome, h: &Host, o: &ProjectOut, rewrite: bool) -> Result<(), Fault> {
+    check_project(
+        outcome,
+        o,
+        &ProjectHost {
+            signals: &h.signals,
+            signals_cap: 2,
+            messages: &h.messages,
+            messages_cap: 2,
+            arena: (h.arena.as_ptr(), 16),
+            rewrite,
+        },
+    )
+}
+
+/// A view whose prompt holds `turns` turns at the host's `messages_buf`, each naming arena bytes.
+fn prompted(h: &mut Host, turns: usize) -> ProjectOut {
+    for m in h.messages.iter_mut().take(turns) {
+        *m = MessageView {
+            role: AbiStr {
+                ptr: h.arena.as_ptr(),
+                len: 4,
+            },
+            text: AbiStr {
+                ptr: h.arena.as_ptr().wrapping_add(4),
+                len: 4,
+            },
+        };
+    }
+    let mut o = view(h, 0);
+    o.prompt.system = arena_str(h, 0, 4);
+    o.prompt.messages = h.messages.as_ptr();
+    o.prompt.message_count = turns as u64;
+    o.prompt.messages_len = turns;
+    o.end_user = arena_str(h, 4, 4);
+    o
 }
 
 #[test]
@@ -1894,6 +2474,85 @@ fn projected_strings_lie_inside_the_arena_written() {
     );
 }
 
+/// THE SESSION (ARCHITECT RULING 2026-10-03, Q-FOLD-A2A-2-PROJECT-POOL session half): absent, or
+/// flagless octets inside the arena written; anything else is FAULT, naming the field.
+#[test]
+fn a_projected_session_is_absent_or_octets_inside_the_arena_written() {
+    use crate::abi::mechanism::call::{Blob, BLOB_ABSENT, BLOB_JSON, BLOB_OCTETS};
+    let h = host();
+    let octets = |offset: usize, len: usize| Blob {
+        ptr: h.arena.as_ptr().wrapping_add(offset),
+        len,
+        fmt: BLOB_OCTETS,
+        flags: 0,
+    };
+    let with = |b: Blob| {
+        let mut o = view(&h, 0);
+        o.view.session = b;
+        o
+    };
+    assert_eq!(project(Ready, &h, &view(&h, 0)), Ok(()), "no session");
+    assert_eq!(project(Ready, &h, &with(octets(8, 8))), Ok(()));
+    assert_eq!(
+        project(Ready, &h, &with(octets(12, 8))),
+        f(Rule::SpanOutOfBounds, "project.view.session")
+    );
+    let before = Blob {
+        ptr: h.arena.as_ptr().wrapping_sub(4),
+        ..octets(0, 4)
+    };
+    assert_eq!(
+        project(Ready, &h, &with(before)),
+        f(Rule::SpanOutOfBounds, "project.view.session"),
+        "a session before the arena"
+    );
+    assert_eq!(
+        project(
+            Ready,
+            &h,
+            &with(Blob {
+                fmt: BLOB_JSON,
+                ..octets(8, 4)
+            })
+        ),
+        f(Rule::UnknownCode, "project.view.session")
+    );
+    assert_eq!(
+        project(
+            Ready,
+            &h,
+            &with(Blob {
+                flags: 1,
+                ..octets(8, 4)
+            })
+        ),
+        f(Rule::UnknownCode, "project.view.session")
+    );
+    assert_eq!(
+        project(
+            Ready,
+            &h,
+            &with(Blob {
+                ptr: std::ptr::null(),
+                ..octets(0, 4)
+            })
+        ),
+        f(Rule::NullWithCount, "project.view.session")
+    );
+    assert_eq!(
+        project(
+            Ready,
+            &h,
+            &with(Blob {
+                fmt: BLOB_ABSENT,
+                ..octets(8, 4)
+            })
+        ),
+        f(Rule::Contradiction, "project.view.session"),
+        "an absent session that names bytes"
+    );
+}
+
 #[test]
 fn a_projected_body_lies_inside_the_arena_written() {
     let h = host();
@@ -1953,6 +2612,133 @@ fn a_projected_signal_value_is_valid_for_its_tag() {
     assert_eq!(project(Ready, &h, &o), Ok(()));
 }
 
+#[test]
+fn a_prompt_view_and_end_user_inside_the_hosts_buffers_are_green() {
+    let mut h = host();
+    let o = prompted(&mut h, 2);
+    assert_eq!(project(Ready, &h, &o), Ok(()));
+}
+
+#[test]
+fn projected_turns_follow_the_multi_buffer_short_rule() {
+    let h = host();
+    let mut o: ProjectOut = z();
+    o.messages_needed = 3;
+    assert_eq!(
+        project(Ready, &h, &o),
+        f(Rule::NeededNotFailed, "project.messages")
+    );
+    assert_eq!(project(Failed, &h, &o), Ok(()), "the short answer");
+    o.messages_needed = MAX_TURNS as u32 + 1;
+    assert_eq!(
+        project(Failed, &h, &o),
+        f(Rule::OverMax, "project.messages")
+    );
+    let mut h = host();
+    let mut o = prompted(&mut h, 2);
+    o.prompt.message_count = 3;
+    o.prompt.messages_len = 3;
+    assert_eq!(project(Ready, &h, &o), f(Rule::OverCap, "project.messages"));
+}
+
+#[test]
+fn a_prompt_views_turn_count_and_its_list_length_agree() {
+    let mut h = host();
+    let mut o = prompted(&mut h, 2);
+    o.prompt.messages_len = 1;
+    assert_eq!(
+        project(Ready, &h, &o),
+        f(Rule::Contradiction, "project.prompt.messages_len")
+    );
+}
+
+#[test]
+fn projected_turns_are_the_hosts_buffer() {
+    let mut h = host();
+    let other: [MessageView; 2] = z();
+    let mut o = prompted(&mut h, 1);
+    o.prompt.messages = other.as_ptr();
+    assert_eq!(
+        project(Ready, &h, &o),
+        f(Rule::Foreign, "project.prompt.messages")
+    );
+}
+
+#[test]
+fn a_projected_turn_and_the_prompt_strings_lie_inside_the_arena_written() {
+    let mut h = host();
+    let mut o = prompted(&mut h, 1);
+    h.messages[0].role = arena_str(&h, 12, 8);
+    assert_eq!(
+        project(Ready, &h, &o),
+        f(Rule::SpanOutOfBounds, "project.message.role")
+    );
+    let mut h = host();
+    o = prompted(&mut h, 1);
+    h.messages[0].text = arena_str(&h, 14, 4);
+    assert_eq!(
+        project(Ready, &h, &o),
+        f(Rule::SpanOutOfBounds, "project.message.text")
+    );
+    let mut h = host();
+    let mut o = prompted(&mut h, 0);
+    o.prompt.system = arena_str(&h, 12, 8);
+    assert_eq!(
+        project(Ready, &h, &o),
+        f(Rule::SpanOutOfBounds, "project.prompt.system")
+    );
+    let mut o = prompted(&mut h, 0);
+    o.end_user = arena_str(&h, 12, 8);
+    assert_eq!(
+        project(Ready, &h, &o),
+        f(Rule::SpanOutOfBounds, "project.end_user")
+    );
+}
+
+#[test]
+fn the_prompt_view_carries_no_body_of_the_planes() {
+    let h = host();
+    let mut o = view(&h, 0);
+    o.prompt.body = crate::abi::mechanism::call::Blob {
+        ptr: h.arena.as_ptr(),
+        len: 4,
+        fmt: crate::abi::mechanism::call::BLOB_OCTETS,
+        flags: 0,
+    };
+    assert_eq!(
+        project(Ready, &h, &o),
+        f(Rule::Foreign, "project.prompt.body")
+    );
+}
+
+#[test]
+fn a_rewritten_body_answers_only_a_rewrite_and_lies_inside_the_arena_written() {
+    let h = host();
+    let mut o = view(&h, 0);
+    o.rewritten = sp(8, 8);
+    assert_eq!(
+        project_as(Ready, &h, &o, true),
+        Ok(()),
+        "the rewrite applied"
+    );
+    assert_eq!(
+        project(Ready, &h, &o),
+        f(Rule::Contradiction, "project.rewritten_without_rewrite")
+    );
+    o.rewritten = sp(SPAN_ABSENT, 0);
+    assert_eq!(project(Ready, &h, &o), Ok(()), "no rewrite, none applied");
+    assert_eq!(
+        project_as(Ready, &h, &o, true),
+        Ok(()),
+        "a rewrite the plane could not apply"
+    );
+    o.rewritten = sp(12, 8);
+    assert_eq!(
+        project_as(Ready, &h, &o, true),
+        f(Rule::SpanOutOfBounds, "project.rewritten")
+    );
+}
+
 // ── drive ──
 
 #[test]
@@ -2005,9 +2791,191 @@ fn a_plane_naming_a_kernel_money_verdict_is_malformed_not_the_verdict() {
     }
 }
 
-/// THE ROUTE CLASS (ARCHITECT Q-SW6 amended by Q-FL3, 2026-10-02): a READY arrival names whether its
-/// entry is a pool or a model routed directly; any other class is FAULT, and an answer that admits
-/// nothing names the default class only.
+/// THE ROUTE FLAGS (ARCHITECT round 4 Q-L3B-SURFACES (h) `ROUTE_ONCE`; round 5 Q-L3B-K6-HTTP (a)
+/// `ROUTE_SESSION`): a READY arrival may state either or both, whatever it routes over; a bit the
+/// contract does not define is FAULT, and an answer that admits nothing states none.
+#[test]
+fn an_arrivals_route_flags_are_once_and_session() {
+    for flags in [
+        ROUTE_ONCE,
+        ROUTE_SESSION,
+        ROUTE_STREAM,
+        ROUTE_ONCE | ROUTE_SESSION,
+        ROUTE_ONCE | ROUTE_STREAM,
+        ROUTE_ONCE | ROUTE_SESSION | ROUTE_STREAM,
+        ROUTE_COUNTED,
+        ROUTE_ONCE | ROUTE_COUNTED,
+    ] {
+        let mut o: ArriveOut = z();
+        o.route = ROUTE_LOCAL;
+        o.route_flags = flags;
+        assert_eq!(
+            check_arrive(Ready, &o, &[], 4, &bounds()),
+            Ok(()),
+            "{flags}"
+        );
+    }
+    let mut o: ArriveOut = z();
+    o.route = ROUTE_LOCAL;
+    o.route_flags = ROUTE_COUNTED << 1;
+    assert_eq!(
+        check_arrive(Ready, &o, &[], 4, &bounds()),
+        f(Rule::UnknownCode, "arrive.route_flags")
+    );
+    // ROUTE_COUNTED counts a unit the plane answers itself; on a routed unit it contradicts.
+    for route in [ROUTE_POOL, ROUTE_DIRECT, ROUTE_SCOPE] {
+        let mut o: ArriveOut = z();
+        o.route = route;
+        o.route_flags = ROUTE_COUNTED;
+        assert_eq!(
+            check_arrive(Ready, &o, &[], 4, &bounds()),
+            f(Rule::Contradiction, "arrive.route_flags"),
+            "route {route}"
+        );
+    }
+    let mut o: ArriveOut = z();
+    o.refusal = 3;
+    o.refusal_status = 404;
+    o.route_flags = ROUTE_SESSION;
+    assert_eq!(
+        check_arrive(Refused, &o, &[], 4, &bounds()),
+        f(Rule::Contradiction, "arrive.pool"),
+        "a refused arrival opens no session"
+    );
+}
+
+/// THE TRUST FACTS (ARCHITECT 2026-10-06, the kernel's Approve): a READY arrival may state a
+/// counterparty, a capability there and the digest it is offered at, each a bounded text. RED arms:
+/// a capability with no counterparty, a digest with no capability, a fact counted with no bytes, a
+/// fact past the text bound, and any fact on an answer that admits nothing.
+#[test]
+fn an_arrivals_trust_facts_are_bounded_ordered_and_an_admitted_units_own() {
+    let s = |b: &'static [u8]| AbiStr {
+        ptr: b.as_ptr(),
+        len: b.len(),
+    };
+    let mut o: ArriveOut = z();
+    o.route = ROUTE_LOCAL;
+    assert_eq!(check_arrive(Ready, &o, &[], 4, &bounds()), Ok(()), "none");
+    o.trust_counterparty = s(b"peer-a");
+    assert_eq!(
+        check_arrive(Ready, &o, &[], 4, &bounds()),
+        Ok(()),
+        "a counterparty"
+    );
+    o.trust_item = s(b"cap-x");
+    o.trust_digest = s(b"d1");
+    assert_eq!(
+        check_arrive(Ready, &o, &[], 4, &bounds()),
+        Ok(()),
+        "all three"
+    );
+
+    // RED: a digest with no capability; a capability with no counterparty.
+    o.trust_item = z();
+    assert_eq!(
+        check_arrive(Ready, &o, &[], 4, &bounds()),
+        f(Rule::Contradiction, "arrive.trust_digest")
+    );
+    o.trust_digest = z();
+    o.trust_item = s(b"cap-x");
+    o.trust_counterparty = z();
+    assert_eq!(
+        check_arrive(Ready, &o, &[], 4, &bounds()),
+        f(Rule::Contradiction, "arrive.trust_item")
+    );
+    // RED: counted with no bytes; past the text bound.
+    o.trust_item = z();
+    o.trust_counterparty = AbiStr {
+        ptr: std::ptr::null(),
+        len: 2,
+    };
+    assert_eq!(
+        check_arrive(Ready, &o, &[], 4, &bounds()),
+        f(Rule::NullWithCount, "arrive.trust_counterparty")
+    );
+    let long = vec![b'p'; MAX_TEXT + 1];
+    o.trust_counterparty = AbiStr {
+        ptr: long.as_ptr(),
+        len: long.len(),
+    };
+    assert_eq!(
+        check_arrive(Ready, &o, &[], 4, &bounds()),
+        f(Rule::OverMax, "arrive.trust_counterparty")
+    );
+    // RED: an answer that admits nothing states no trust fact.
+    let mut o: ArriveOut = z();
+    o.refusal = 3;
+    o.refusal_status = 404;
+    o.trust_counterparty = s(b"peer-a");
+    assert_eq!(
+        check_arrive(Refused, &o, &[], 4, &bounds()),
+        f(Rule::Contradiction, "arrive.trust")
+    );
+}
+
+/// THE STICKY-ROUTING KEY (ARCHITECT Q1 ArriveOut, 2026-10-05): a READY arrival may state an
+/// opaque key, bounded like every plane text; a key counted with no bytes is FAULT, and an answer
+/// that admits nothing states none (RED arms).
+#[test]
+fn an_arrivals_affinity_is_an_admitted_units_own_bounded_key() {
+    let key = b"session-7";
+    let mut o: ArriveOut = z();
+    o.route = ROUTE_LOCAL;
+    assert_eq!(check_arrive(Ready, &o, &[], 4, &bounds()), Ok(()), "none");
+    o.affinity = AbiStr {
+        ptr: key.as_ptr(),
+        len: key.len(),
+    };
+    assert_eq!(check_arrive(Ready, &o, &[], 4, &bounds()), Ok(()), "a key");
+    o.affinity = AbiStr {
+        ptr: std::ptr::null(),
+        len: 3,
+    };
+    assert_eq!(
+        check_arrive(Ready, &o, &[], 4, &bounds()),
+        f(Rule::NullWithCount, "arrive.affinity")
+    );
+    let long = vec![b'k'; MAX_TEXT + 1];
+    o.affinity = AbiStr {
+        ptr: long.as_ptr(),
+        len: long.len(),
+    };
+    assert_eq!(
+        check_arrive(Ready, &o, &[], 4, &bounds()),
+        f(Rule::OverMax, "arrive.affinity")
+    );
+    for outcome in [Pending, Failed] {
+        let mut o: ArriveOut = z();
+        o.units_needed = u32::from(outcome == Failed);
+        o.affinity = AbiStr {
+            ptr: key.as_ptr(),
+            len: key.len(),
+        };
+        assert_eq!(
+            check_arrive(outcome, &o, &[], 0, &bounds()),
+            f(Rule::Contradiction, "arrive.affinity"),
+            "{outcome:?}"
+        );
+    }
+    let mut o: ArriveOut = z();
+    o.refusal = 3;
+    o.refusal_status = 404;
+    o.affinity = AbiStr {
+        ptr: key.as_ptr(),
+        len: key.len(),
+    };
+    assert_eq!(
+        check_arrive(Refused, &o, &[], 4, &bounds()),
+        f(Rule::Contradiction, "arrive.affinity"),
+        "a refused arrival routes nowhere"
+    );
+}
+
+/// THE ROUTE CLASS (ARCHITECT Q-SW6 amended by Q-FL3, 2026-10-02, Q-L3B-LOCAL and Q-DEL-A2A-SELECT):
+/// a READY arrival names whether its entry is a pool or a model routed directly, that the plane
+/// answers it itself, or that the kernel routes it by the principal's scope (both naming no entry); any other class is FAULT, and an answer that admits nothing names the default
+/// class only.
 #[test]
 fn an_arrivals_route_class_is_pool_or_direct() {
     for class in [ROUTE_POOL, ROUTE_DIRECT] {
@@ -2020,8 +2988,26 @@ fn an_arrivals_route_class_is_pool_or_direct() {
             "{class}"
         );
     }
+    // A unit the plane answers itself names no entry (ARCHITECT Q-L3B-LOCAL).
     let mut o: ArriveOut = z();
-    o.route = ROUTE_DIRECT + 1;
+    o.route = ROUTE_LOCAL;
+    assert_eq!(check_arrive(Ready, &o, &[], 4, &bounds()), Ok(()));
+    o.pool = s("entry");
+    assert_eq!(
+        check_arrive(Ready, &o, &[], 4, &bounds()),
+        f(Rule::Contradiction, "arrive.pool"),
+        "a local unit names no entry"
+    );
+    // A unit routed by scope names no entry: the kernel picks the one member the principal's
+    // sealed set reaches (ARCHITECT Q-DEL-A2A-SELECT).
+    let mut o: ArriveOut = z();
+    o.route = ROUTE_SCOPE;
+    assert_eq!(check_arrive(Ready, &o, &[], 4, &bounds()), Ok(()));
+    // It may name its candidate entries (ARCHITECT Q-DEL-A2A-SCOPE-TRUST).
+    o.pool = s("a, b");
+    assert_eq!(check_arrive(Ready, &o, &[], 4, &bounds()), Ok(()));
+    let mut o: ArriveOut = z();
+    o.route = ROUTE_SCOPE + 1;
     assert_eq!(
         check_arrive(Ready, &o, &[], 4, &bounds()),
         f(Rule::UnknownCode, "arrive.route")
@@ -2033,5 +3019,47 @@ fn an_arrivals_route_class_is_pool_or_direct() {
     assert_eq!(
         check_arrive(Refused, &o, &[], 4, &bounds()),
         f(Rule::Contradiction, "arrive.pool")
+    );
+}
+
+/// A REFUSAL ABOUT AN ENTRY (ARCHITECT Q-DEL-A2A-GATE, abi/plane "A refused arrival" rule 6): a
+/// REFUSED arrival may name the entry its refusal concerns, with its class, operation class and
+/// dialect, and then wear a 5xx; one naming no entry stays a 4xx; a named entry with a class the
+/// rule does not admit, or an operation class the plane does not have, is FAULT.
+#[test]
+fn a_refused_arrival_may_name_the_entry_it_is_about() {
+    let about = |route: u8, status: u32| {
+        let mut o: ArriveOut = z();
+        o.refusal = 7;
+        o.refusal_status = status;
+        o.route = route;
+        o.pool = s("planner");
+        o
+    };
+    assert_eq!(
+        check_arrive(Refused, &about(ROUTE_DIRECT, 503), &[], 4, &bounds()),
+        Ok(())
+    );
+    assert_eq!(
+        check_arrive(Refused, &about(ROUTE_POOL, 403), &[], 4, &bounds()),
+        Ok(())
+    );
+    assert_eq!(
+        check_arrive(Refused, &about(ROUTE_SCOPE, 503), &[], 4, &bounds()),
+        f(Rule::UnknownCode, "arrive.route")
+    );
+    let mut o = about(ROUTE_DIRECT, 503);
+    o.op_class = 99;
+    assert_eq!(
+        check_arrive(Refused, &o, &[], 4, &bounds()),
+        f(Rule::IndexOutOfRange, "arrive.op_class")
+    );
+    let mut o: ArriveOut = z();
+    o.refusal = 7;
+    o.refusal_status = 503;
+    assert_eq!(
+        check_arrive(Refused, &o, &[], 4, &bounds()),
+        f(Rule::UnknownCode, "arrive.refusal_status"),
+        "a refusal about no entry is the caller's: a 4xx"
     );
 }

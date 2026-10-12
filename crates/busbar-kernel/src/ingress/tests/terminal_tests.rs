@@ -23,7 +23,7 @@ use busbar_contract::records::{PlaneRequestCtx, ScopeRef, VirtualKey};
 /// these tests run alone, so it cannot supply one.)
 fn deployment(pool: &str) -> Arc<App> {
     crate::test_support::register_neutral_test_plane();
-    crate::metrics::init();
+    crate::snapshot::init();
     TestApp::new()
         .lane(LaneSpec::new(
             pool,
@@ -49,7 +49,7 @@ fn caller(pools: &[&str]) -> PlaneRequestCtx {
 /// How many terminals units spoken in `proto` have been through so far.
 fn terminals(proto: &str) -> u64 {
     metric_sum(
-        crate::metrics::REQUESTS_TOTAL,
+        crate::snapshot::REQUESTS_TOTAL,
         &[("ingress_protocol", proto)],
     )
     .round() as u64

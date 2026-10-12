@@ -139,9 +139,9 @@ pub mod arrival;
 
 /// THE NATIVE-PLANE UNIVERSAL INGRESS (pool/model resolution + governance admission + the-one-engine
 /// forward), RELOCATED here from `busbar-core` — it reads the LLM routing tables so it lives in the
-/// plane and calls DOWN into core's neutral accounting. Its production entry is the
-/// resolved-completion re-entry ([`native_ingress::synthesize_completion`]); every body- and
-/// path-model arrival is a unit the composition root's node drives ([`unit`](crate::unit)).
+/// plane and calls DOWN into core's neutral accounting. Every body- and path-model arrival is a unit
+/// the composition root's node drives ([`unit`](crate::unit)); the test kit's shell is its witness
+/// leg.
 pub mod native_ingress;
 
 /// THE TELLER STEP FILES (1.6.0 wave C), one file per step, and the unit over them that every body-
@@ -203,9 +203,50 @@ use busbar_contract::{
     plane::{BillableClass, PER_REQUEST, TOKEN_FAMILY},
     plugin::Kind,
 };
-use busbar_kernel::{
-    ingress::arrival::install_completion_ingress, plane::registry::PlaneHooks,
-    proto::install_stream_translator_factory,
+use busbar_kernel::{plane::registry::PlaneHooks, proto::install_stream_translator_factory};
+
+/// The number of classes the LLM plane ledgers: the four reserved token tiers and every open class.
+const LLM_BILLABLE_COUNT: usize = 4 + busbar_plane_llm::codec::ir::open_class::OPEN_CLASS_COUNT;
+
+/// THE LLM PLANE'S BILLABLE CLASSES, in the tail's order: the four reserved token tiers, then every
+/// open class the codec declares (`open_class::OPEN_CLASSES`, the same table the plane's tail
+/// states). `search_units` keeps the `count` family this declaration always gave it.
+const LLM_BILLABLE_CLASSES: [BillableClass; LLM_BILLABLE_COUNT] = {
+    use busbar_plane_llm::codec::ir::open_class::{OPEN_CLASSES, OPEN_CLASS_COUNT};
+    const EMPTY: BillableClass = BillableClass {
+        class: "",
+        family: "",
+    };
+    let mut out = [EMPTY; LLM_BILLABLE_COUNT];
+    out[0] = BillableClass {
+        class: busbar_contract::records::UNIT_INPUT,
+        family: TOKEN_FAMILY,
+    };
+    out[1] = BillableClass {
+        class: busbar_contract::records::UNIT_OUTPUT,
+        family: TOKEN_FAMILY,
+    };
+    out[2] = BillableClass {
+        class: busbar_contract::records::UNIT_CACHE_READ,
+        family: TOKEN_FAMILY,
+    };
+    out[3] = BillableClass {
+        class: busbar_contract::records::UNIT_CACHE_WRITE,
+        family: TOKEN_FAMILY,
+    };
+    out[4] = BillableClass {
+        class: OPEN_CLASSES[0].0,
+        family: "count",
+    };
+    let mut k = 1;
+    while k < OPEN_CLASS_COUNT {
+        out[4 + k] = BillableClass {
+            class: OPEN_CLASSES[k].0,
+            family: OPEN_CLASSES[k].1,
+        };
+        k += 1;
+    }
+    out
 };
 
 /// EVERY DIALECT THIS PLUGIN DECLARES, in the order an operator sees.
@@ -251,30 +292,10 @@ pub const PLANE_DECLARATION: busbar_contract::plane::PlaneDeclaration =
         // config-seam stage 1: the registry starts EMPTY — nothing has moved out of core yet.
         owned_config_sections: &[],
         // THE CLASSES THIS PLANE LEDGERS (#71): the four reserved token tiers every dialect reports,
-        // and billed searches (the one open class a codec counts: a rerank's search units, an
-        // Anthropic turn's web searches). A present card must configure all five (Q29/Q35).
-        billable_classes: &[
-            BillableClass {
-                class: busbar_contract::records::UNIT_INPUT,
-                family: TOKEN_FAMILY,
-            },
-            BillableClass {
-                class: busbar_contract::records::UNIT_OUTPUT,
-                family: TOKEN_FAMILY,
-            },
-            BillableClass {
-                class: busbar_contract::records::UNIT_CACHE_READ,
-                family: TOKEN_FAMILY,
-            },
-            BillableClass {
-                class: busbar_contract::records::UNIT_CACHE_WRITE,
-                family: TOKEN_FAMILY,
-            },
-            BillableClass {
-                class: busbar_plane_llm::codec::ir::rerank::SEARCH_UNITS_CLASS,
-                family: "count",
-            },
-        ],
+        // then every open class a codec counts beside them (owner LEDGER-100: every reported unit
+        // is a ledger line; `busbar_plane_llm::codec::ir::open_class::OPEN_CLASSES`). A present card
+        // must configure every one (Q29/Q35); an explicit 0 makes one free.
+        billable_classes: &LLM_BILLABLE_CLASSES,
         // 1.6.0 pools stage-B: the providers/models/pools LOGIC seam. `providers`/`pools` stay
         // CORE-OWNED-CONCRETE (never listed in `owned_config_sections` — see that field's doc), but
         // the per-provider catalog/deployment MERGE logic now lives here; core calls it at the exact
@@ -291,6 +312,7 @@ pub const PLANE_DECLARATION: busbar_contract::plane::PlaneDeclaration =
         // this plane refuses a document missing either, with the config grammar's own message.
         required_config_sections: &[Kind::Transport.root(), "models"],
         trust_keys: &[],
+        caller_credential_refusal: None,
     };
 
 /// THE PLANE'S BEHAVIOUR — every hook the kernel runs for it, handed over BESIDE
@@ -380,13 +402,10 @@ pub mod linked {
     pub const CLAIMS: &[busbar_contract::grammar::Claim] =
         <busbar_plane_llm::LlmPlane as busbar_contract::plane::PlaneMeta>::CLAIMS;
 
-    /// THE PROTOCOL-AXIS SEAMS, installed beside the declarations: the resolved-completion
-    /// synthesizer — the single re-entry the MCP sampling path drives a synthesized chat completion
-    /// through (with no LLM plane linked there is no chat dialect to synthesize, and core returns
-    /// the honest "no default chat protocol" error) — and the cross-protocol stream translator, so
-    /// the neutral construction seam resolves it in production exactly as the test kit does.
+    /// THE PROTOCOL-AXIS SEAM, installed beside the declarations: the cross-protocol stream
+    /// translator, so the neutral construction seam resolves it in production exactly as the test
+    /// kit does.
     pub fn install_protocol_seams() {
-        super::install_completion_ingress(crate::native_ingress::synthesize_completion);
         super::install_stream_translator_factory(crate::proto_stream::new_stream_translator);
     }
 }

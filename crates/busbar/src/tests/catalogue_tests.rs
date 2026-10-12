@@ -26,8 +26,8 @@ fn installed() -> Vec<&'static Diagnostic> {
 /// The codes the linked first-party plugins DECLARE (K9a S3), read off each linked row's `declares`
 /// section exactly as the plugin states it — the same field-by-field reading the composition root's
 /// declaration check makes, so the page documents what the catalogue installs. Read only by the
-/// `linked_axis_exports` cells, so gated with them.
-#[cfg(linked_axis_exports)]
+/// `linked_axis_export_doors` cells, so gated with them.
+#[cfg(linked_axis_export_doors)]
 fn declared_by_linked_plugins() -> Vec<&'static Diagnostic> {
     use busbar_contract::diagnostic::{Class, Severity};
     let leak = |v: &serde_json::Value| -> &'static str {
@@ -39,7 +39,9 @@ fn declared_by_linked_plugins() -> Vec<&'static Diagnostic> {
         )
     };
     let mut out = Vec::new();
-    for &(name, _, declares, _) in LINKED.exports {
+    // The export axis: each memory-ABI row on `export-doors` states its `declares`.
+    let rows = LINKED.export_doors.iter().map(|d| (d.name, d.declares));
+    for (name, declares) in rows {
         let decl: serde_json::Value = serde_json::from_str(declares)
             .unwrap_or_else(|e| panic!("linked export '{name}': its declares section: {e}"));
         for d in decl["diagnostics"].as_array().into_iter().flatten() {
@@ -118,7 +120,7 @@ fn every_diagnostic_code_is_unique_across_the_neutral_and_plane_catalogues() {
 /// declared half is not vacuously empty.
 // "The linked plugins declare codes" reads the linked export rows' declared codes; a build that
 // links no plugin (`--no-default-features`) declares none, so this cell gates on the exports axis.
-#[cfg(linked_axis_exports)]
+#[cfg(linked_axis_export_doors)]
 #[test]
 fn declared_codes_do_not_collide_with_the_registry() {
     let declared = declared_by_linked_plugins();
@@ -140,7 +142,7 @@ fn declared_codes_do_not_collide_with_the_registry() {
 // row, `--no-default-features`) installs fewer catalogues, so its render is a DIFFERENT page, not a
 // stale one; the pair below is compiled only where every plane and the export axis are linked. The
 // uniqueness checks above run in every build.
-#[cfg(all(linked_every_plane, linked_axis_exports))]
+#[cfg(all(linked_every_plane, linked_axis_export_doors))]
 mod page {
     use super::*;
     use busbar_kernel::diagnostics::{render_json_for, render_markdown_for, REGISTRY};

@@ -37,6 +37,7 @@ fn req(prompt: bool) -> RoutingRequest<'static> {
             user: Some("u".into()),
         }),
         signals,
+        session: None,
     }
 }
 
@@ -169,4 +170,86 @@ fn red_an_ungranted_tap_never_sees_the_prompt_the_request_carries() {
     assert!(tap.prompt.body.ptr.is_null());
     // The signals are not grant-gated: they still ride.
     assert_eq!(tap.signals_len, 1);
+}
+
+/// THE SESSION CROSSES (ARCHITECT RULING 2026-10-03, Q-FOLD-A2A-2-PROJECT-POOL session half): the
+/// request's opaque session reaches the hook's request view as octets, byte for byte; a request
+/// that names none crosses an absent blob.
+#[test]
+fn a_decide_view_carries_the_request_session_as_octets() {
+    let ctx = RoutingContext {
+        pool: "p",
+        budget_remaining: None,
+        budget: &[],
+    };
+    let mut with = req(false);
+    with.session = Some(b"ctx-\xff-1");
+    let frame = DecideFrame::first(DecideView::build(&with, &[], &ctx));
+    let s = frame.input().request.session;
+    assert_eq!(s.fmt, crate::abi::mechanism::call::BLOB_OCTETS);
+    assert_eq!(s.flags, 0);
+    // SAFETY: the frame owns the bytes the view names for its life.
+    let bytes = unsafe { std::slice::from_raw_parts(s.ptr, s.len) };
+    assert_eq!(bytes, b"ctx-\xff-1");
+
+    let none = DecideFrame::first(DecideView::build(&req(false), &[], &ctx)).input();
+    assert_eq!(none.request.session.fmt, BLOB_ABSENT);
+    assert!(none.request.session.ptr.is_null());
+    assert_eq!(none.request.session.len, 0);
+}
+
+/// An IN-PROCESS answer lands in the frame's own host buffers exactly as the SDK's door writes it:
+/// the projection is the SDK's rebuild, each verdict reads back through the frame's readers, and an
+/// answer too long for the first frame is the one short FAILED whose regrown frame then fits.
+#[test]
+fn an_in_process_answer_reads_back_through_the_frame() {
+    use crate::abi::hook::{
+        VERB_HAS_REJECT_STATUS, VERB_PREFER, VERB_REJECT, VERB_RESTRICT, VERB_REWRITE,
+    };
+    use crate::abi::mechanism::call::Outcome;
+    use crate::abi::sdk::hook::{RewriteVerdict, Verdict};
+    let ctx = RoutingContext {
+        pool: "p",
+        budget_remaining: None,
+        budget: &[],
+    };
+    let frame = DecideFrame::first(DecideView::build(&req(true), &[], &ctx));
+    let projection = frame.projection_json(crate::hook_wire::OP_DECIDE);
+    assert_eq!(projection["request"]["messages"][0]["text"], "hi");
+
+    let (outcome, out) = frame.answer_decide(&Verdict::Prefer(vec![0]));
+    assert_eq!((outcome, out.verbs), (Outcome::Ready, VERB_PREFER));
+    assert_eq!(frame.order(out.order_written), vec![0]);
+
+    let (outcome, out) = frame.answer_decide(&Verdict::Reject {
+        status: Some(451),
+        message: "no".into(),
+    });
+    assert_eq!(outcome, Outcome::Ready);
+    assert_eq!(out.verbs, VERB_REJECT | VERB_HAS_REJECT_STATUS);
+    assert_eq!(out.reject_status, 451);
+    assert_eq!(frame.reject_message(out.reject_message_written), "no");
+
+    let (_, out) = frame.answer_decide(&Verdict::Restrict(vec!["a".into(), "b".into()]));
+    assert_eq!(out.verbs, VERB_RESTRICT);
+    assert_eq!(
+        frame.restrict_tags(out.restrict_tags_written),
+        vec!["a", "b"]
+    );
+
+    let (outcome, out) = frame.answer_transform(&RewriteVerdict::Rewrite(b"{}".to_vec()));
+    assert_eq!((outcome, out.verbs), (Outcome::Ready, VERB_REWRITE));
+    assert_eq!(frame.rewrite(out.rewrite_written), b"{}");
+
+    // Two candidates' order does not fit the first frame's one slot: the short FAILED names it,
+    // and the regrown frame takes it.
+    let (outcome, out) = frame.answer_decide(&Verdict::Prefer(vec![1, 0]));
+    assert_eq!(
+        (outcome, out.order_written, out.order_needed),
+        (Outcome::Failed, 0, 2)
+    );
+    let grown = frame.regrown_decide(&out);
+    let (outcome, out) = grown.answer_decide(&Verdict::Prefer(vec![1, 0]));
+    assert_eq!(outcome, Outcome::Ready);
+    assert_eq!(grown.order(out.order_written), vec![1, 0]);
 }

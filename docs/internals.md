@@ -269,7 +269,7 @@ approximate, but eligibility filtering and long-run proportionality hold. See
   rejection names the exact blocking (group, metric, window); a frozen group
   (`enabled: false`) rejects before anything is charged. Windows are in-memory,
   per-node, reconciled durably by additive flushes.
-- **Store backends.** The default `store.module: memory` is the compiled-in ephemeral RAM
+- **Store backends.** The `store.module: memory` choice (the `store:` block is required in 1.6.0) is the compiled-in ephemeral RAM
   store (keys, the token ledger, and audit reset on restart); it needs no plugin and
   is the admission-path source of truth. Durability is opt-in: `sqlite`, `postgres`,
   and `valkey` each ship as a signed store plugin behind the same `Store` trait.

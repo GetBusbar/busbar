@@ -1,30 +1,36 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! A FRAMER ENTRY OVER HOST SOCKETS: [`HostWire`] serves one transport entry that frames directly
-//! over the host's socket (an empty `composes_over`) through the connector's own host-side surface.
+//! A TRANSPORT ENTRY OVER HOST SOCKETS: [`HostWire`] serves one transport entry over the host's
+//! socket through the connector's own host-side surface, a carrier as itself or a framer over the
+//! carrier the connector chose. No entry composes over another (`BUSBAR-1.6.0.md` TRANSPORT-STACK
+//! (2), :4721: every entry states an EMPTY `composes_over`, and the carrier is the connector's
+//! choice from the target's scheme); a stream another entry handed up is ADOPTED by the entry the
+//! connector picks for it ([`HostWire::adopt_from`]), never by a list the entry states.
 //! The connector is core and presents no plugin face; the composition root adapts this surface to
 //! the kernel's legacy transport seam, so the kernel's listeners, accept loop and upgrades drive it
 //! the way they drive any transport.
 //!
-//! The sockets are the host's: listened, accepted, dialled, read and written here, non-blocking,
-//! their readiness on the calling worker's reactor ([`crate::io`]). Every byte in or out goes
-//! through the entry's framer ([`crate::framer`]); a connection handed up (`detach`) gives the socket
-//! to the layer above with the bytes the framer took and did not answer in front of it. Nothing
-//! here starts a thread. A close ends whatever is parked on the connection — a read on a silent
-//! peer, a write into a peer that stopped reading — at once.
+//! The sockets are the host's, and a CARRIER moves their bytes ([`crate::carrier`]): a dial rides the
+//! entry itself when it is a carrier (carried as itself: every read a frame, every write a frame's
+//! bytes), else the address carrier the wire was handed ([`crate::carrier::AddressCarrier`]) under the
+//! entry's framer ([`crate::framer`]); a connection handed up (`detach`) gives the carried stream to
+//! the layer above with the bytes the framer took and did not answer in front of it. Nothing here
+//! starts a thread. A close ends whatever is parked on the connection — a read on a silent peer, a
+//! write into a peer that stopped reading — at once.
 
 use std::collections::{HashMap, VecDeque};
-use std::io::{self, Read, Write};
-use std::net::{Shutdown, TcpStream};
+use std::io;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, Waker};
 use std::time::Duration;
 
-use busbar_contract::abi::transport::{CLOSE_NORMAL, SIDE_DIAL};
+use busbar_contract::abi::transport::{
+    CLOSE_NORMAL, ROLE_CARRIER, ROLE_FRAMER, SIDE_ACCEPT, SIDE_DIAL,
+};
 use busbar_contract::transport::wire::{
-    ArrivalRecord, CloseReason, Conn, ConnHandle, Direction as FrameDirection, FrameMeta,
+    ArrivalRecord, CloseReason, Conn, ConnHandle, Direction as FrameDirection, FrameMeta, RawIo,
     RawStream, TransportError,
 };
 use busbar_contract::transport::FrameStream;
@@ -33,10 +39,10 @@ use busbar_contract::{
     VerifiedDestination,
 };
 
-use crate::framer::{self, Established, FramerDoor, Framing, Got};
-use crate::io::{self as reactor, Direction, Registered};
+use crate::carrier::{Carried, CarrierStream, Dest, DialFailure};
+use crate::framer::{self, Established, FramerDoor, Framing, Got, Yielded};
+use crate::hostio::HostIo;
 use crate::socket;
-use crate::stream::HostStream;
 
 /// How long a dial may wait for the far end's handshake.
 pub const DIAL_TIMEOUT: Duration = Duration::from_secs(10);
@@ -47,6 +53,12 @@ pub const READ_CHUNK_BYTES: usize = 16 * 1024;
 /// One transport entry over host sockets.
 pub struct HostWire {
     door: Arc<dyn FramerDoor>,
+    /// The host I/O its carriers are served from.
+    io: Arc<HostIo>,
+    /// The carrier its framed connections ride; `None` = the address carrier [`HostWire::riding`].
+    under: Option<Arc<dyn FramerDoor>>,
+    /// Where its framed connections find the address carrier when no `under` was given.
+    riding: Option<crate::carrier::AddressCarrier>,
     key: &'static str,
     conns: Arc<Mutex<HashMap<u64, Arc<HostConn>>>>,
     next: AtomicU64,
@@ -66,10 +78,17 @@ struct HostConn {
     id: u64,
     peer: String,
     local_port: u16,
-    sock: Mutex<Option<Arc<Registered<TcpStream>>>>,
+    /// The transports this connection stands on, bottom first, this entry last.
+    chain: Vec<&'static str>,
+    sock: Mutex<Option<Io>>,
+    /// The entry is a carrier carried as itself: no framing, every read a frame.
+    raw: bool,
     framing: Mutex<Option<Framing>>,
     /// Frames the framer answered and no reader has taken.
     ready: Mutex<VecDeque<Got>>,
+    /// Bytes the framer owes the far end that a reader's ingest produced (a handshake answer, a
+    /// pong, a close answer) and the socket has not yet taken: they go out before anything else.
+    owed: Mutex<Vec<u8>>,
     closed: AtomicBool,
     /// The wakers parked on the connection, woken by a close.
     parked: Mutex<Vec<Waker>>,
@@ -87,20 +106,32 @@ impl HostConn {
     /// a poll that parks and then re-reads the flag cannot miss both.
     fn finalise(&self) {
         self.closed.store(true, Ordering::Release);
-        if let Some(sock) = self.sock.lock().expect("socket").as_ref() {
-            let _ = sock.get_ref().shutdown(Shutdown::Both);
+        let mut sock = self.sock.lock().expect("socket");
+        match sock.as_ref() {
+            Some(Io::Carried(c)) => c.close(),
+            // A handed-up stream ends when its last holder lets it go.
+            Some(Io::HandedUp(_)) => *sock = None,
+            None => {}
         }
+        drop(sock);
         for w in self.parked.lock().expect("parked").drain(..) {
             w.wake();
         }
     }
 
-    fn socket(&self) -> Option<Arc<Registered<TcpStream>>> {
+    fn socket(&self) -> Option<Io> {
         self.sock.lock().expect("socket").clone()
     }
 
     /// Write `bytes` whole, raced against the close.
     async fn send(&self, bytes: &[u8]) -> Result<(), TransportError> {
+        let owed = std::mem::take(&mut *self.owed.lock().expect("owed"));
+        let bytes: std::borrow::Cow<'_, [u8]> = if owed.is_empty() {
+            bytes.into()
+        } else {
+            [owed.as_slice(), bytes].concat().into()
+        };
+        let bytes = &*bytes;
         let sock = self.socket().ok_or(TransportError::Closed)?;
         let mut at = 0;
         while at < bytes.len() {
@@ -112,7 +143,7 @@ impl HostConn {
                 if self.closed.load(Ordering::Acquire) {
                     return Poll::Ready(Err(TransportError::Closed));
                 }
-                sock.poll_io(Direction::Write, cx, |mut s| s.write(&bytes[at..]))
+                sock.poll_write(cx, &bytes[at..])
                     .map_err(|e| map_io_err(&e))
             })
             .await?;
@@ -121,7 +152,128 @@ impl HostConn {
             }
             at += n;
         }
-        Ok(())
+        futures::future::poll_fn(|cx| sock.poll_flush(cx))
+            .await
+            .map_err(|e| map_io_err(&e))
+    }
+}
+
+impl HostConn {
+    /// Offer what the framer owes the far end to the socket, without waiting: what it takes is
+    /// gone, the rest waits for the next offer or the next send.
+    fn offer_owed(&self, cx: &mut Context<'_>) {
+        let Some(sock) = self.socket() else { return };
+        let mut owed = self.owed.lock().expect("owed");
+        while !owed.is_empty() {
+            match sock.poll_write(cx, &owed) {
+                Poll::Ready(Ok(n)) if n > 0 => {
+                    owed.drain(..n);
+                }
+                _ => break,
+            }
+        }
+        if owed.is_empty() {
+            let _ = sock.poll_flush(cx);
+        }
+    }
+
+    /// DRIVE the connection until the framer's answer to what it read satisfies `done`: read,
+    /// ingest, keep the frames for the reader, send what the framer owes. An upgrade's handshake
+    /// is driven here (the adopted side's answer, a dialled side's held messages going out once
+    /// the far end answered), where no reader drives it yet.
+    async fn drive_until(
+        &self,
+        bound: Duration,
+        done: fn(&Yielded) -> bool,
+    ) -> Result<(), TransportError> {
+        let driven = async {
+            loop {
+                let sock = self.socket().ok_or(TransportError::Closed)?;
+                let mut buf = vec![0_u8; READ_CHUNK_BYTES];
+                let n = futures::future::poll_fn(|cx| {
+                    if self.closed.load(Ordering::Acquire) {
+                        return Poll::Ready(Err(TransportError::Closed));
+                    }
+                    self.park(cx);
+                    sock.poll_read(cx, &mut buf).map_err(|e| map_io_err(&e))
+                })
+                .await?;
+                let y = {
+                    let mut framing = self.framing.lock().expect("framing");
+                    let f = framing.as_mut().ok_or(TransportError::Closed)?;
+                    f.ingest(&buf[..n], n == 0)
+                        .map_err(|_| TransportError::Framing)?
+                };
+                let finished = done(&y);
+                self.ready
+                    .lock()
+                    .expect("ready")
+                    .extend(y.pieces.iter().cloned());
+                self.owed.lock().expect("owed").extend_from_slice(&y.wire);
+                self.send(&[]).await?;
+                if finished {
+                    return Ok(());
+                }
+                if n == 0 || y.ended {
+                    return Err(TransportError::Closed);
+                }
+            }
+        };
+        tokio::time::timeout(bound, driven)
+            .await
+            .map_err(|_| TransportError::Timeout)?
+    }
+}
+
+/// Whether a framer's answer carries bytes for the far end (an upgrade's answer, held messages
+/// going out).
+fn answers(y: &Yielded) -> bool {
+    !y.wire.is_empty()
+}
+
+/// Whether an adopted framing has answered what the lower layer handed up: bytes for the far end
+/// (an upgrade's answer) or a frame for the reader (a framing with no handshake of its own).
+fn opened(y: &Yielded) -> bool {
+    !y.wire.is_empty() || !y.pieces.is_empty()
+}
+
+/// What one connection reads and writes: a carrier's connection, or the stream another entry
+/// handed up ([`HostWire::adopt_from`]).
+#[derive(Clone)]
+enum Io {
+    Carried(Arc<Carried>),
+    HandedUp(Arc<Mutex<Box<dyn RawIo>>>),
+}
+
+impl Io {
+    fn poll_read(&self, cx: &mut Context<'_>, buf: &mut [u8]) -> Poll<io::Result<usize>> {
+        match self {
+            Io::Carried(c) => c.poll_read(cx, buf).map_ok(|(n, _)| n),
+            Io::HandedUp(s) => {
+                let mut s = s.lock().expect("stream");
+                futures::io::AsyncRead::poll_read(std::pin::Pin::new(&mut **s), cx, buf)
+            }
+        }
+    }
+
+    fn poll_write(&self, cx: &mut Context<'_>, bytes: &[u8]) -> Poll<io::Result<usize>> {
+        match self {
+            Io::Carried(c) => c.poll_write(cx, bytes, false),
+            Io::HandedUp(s) => {
+                let mut s = s.lock().expect("stream");
+                futures::io::AsyncWrite::poll_write(std::pin::Pin::new(&mut **s), cx, bytes)
+            }
+        }
+    }
+
+    fn poll_flush(&self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        match self {
+            Io::Carried(c) => c.poll_flush(cx),
+            Io::HandedUp(s) => {
+                let mut s = s.lock().expect("stream");
+                futures::io::AsyncWrite::poll_flush(std::pin::Pin::new(&mut **s), cx)
+            }
+        }
     }
 }
 
@@ -139,6 +291,19 @@ impl ConnHandle for Handle {
     }
 }
 
+/// A carrier's refusal of a connect, in the system's words, as the transport seam spells it.
+fn map_text(text: &str) -> TransportError {
+    if text.contains("refused") {
+        TransportError::Refused
+    } else if text.contains("timed out") {
+        TransportError::Timeout
+    } else if text.contains("reset") || text.contains("aborted") {
+        TransportError::Reset
+    } else {
+        TransportError::Closed
+    }
+}
+
 /// An I/O error as the transport seam spells it.
 #[must_use]
 pub fn map_io_err(e: &io::Error) -> TransportError {
@@ -149,6 +314,8 @@ pub fn map_io_err(e: &io::Error) -> TransportError {
         io::ErrorKind::AddrNotAvailable | io::ErrorKind::InvalidInput => {
             TransportError::AddressRefused
         }
+        // A carrier's error carries the system's words, not its kind.
+        io::ErrorKind::Other => map_text(&e.to_string()),
         _ => TransportError::Closed,
     }
 }
@@ -158,7 +325,8 @@ impl HostWire {
     ///
     /// # Errors
     ///
-    /// The entry states no claim, or composes over a layer (it does not frame the host's socket).
+    /// The entry states no claim, or names another transport it composes over (no transport names
+    /// another: the carrier is the connector's choice).
     pub fn new(door: Arc<dyn FramerDoor>) -> Result<Self, String> {
         let facts = door.facts();
         let Some(&key) = facts.claims.first() else {
@@ -166,18 +334,42 @@ impl HostWire {
         };
         if !facts.composes_over.is_empty() {
             return Err(format!(
-                "transport `{}` composes over a layer; only a framer over the host's socket is \
-                 served here",
+                "transport `{}` names a transport it composes over; no transport names another \
+                 (the carrier is the connector's choice from the target's scheme)",
                 facts.name
             ));
         }
         Ok(Self {
             door,
+            io: crate::hostio::process(),
+            under: None,
+            riding: None,
             key,
             conns: Arc::new(Mutex::new(HashMap::new())),
             next: AtomicU64::new(1),
             dial_timeout: DIAL_TIMEOUT,
         })
+    }
+
+    /// The same wire with its framed connections riding the carrier `under`, served from `io`.
+    #[must_use]
+    pub fn over(mut self, under: Arc<dyn FramerDoor>, io: Arc<HostIo>) -> Self {
+        self.under = Some(under);
+        self.io = io;
+        self
+    }
+
+    /// The same wire, its framed connections riding the address carrier `carrier` answers at each
+    /// dial (the serving connector's; [`crate::carrier::AddressCarrier`]).
+    #[must_use]
+    pub fn riding(mut self, carrier: crate::carrier::AddressCarrier) -> Self {
+        self.riding = Some(carrier);
+        self
+    }
+
+    /// Whether this wire's entry is a carrier, carried as itself.
+    fn is_carrier(&self) -> bool {
+        self.door.facts().role == ROLE_CARRIER
     }
 
     /// The same wire with the dial's handshake bounded by `budget`.
@@ -191,34 +383,59 @@ impl HostWire {
         self.conns.lock().expect("conns").get(&id).cloned()
     }
 
-    #[cfg(test)]
-    fn hold(
-        &self,
-        stream: TcpStream,
-        peer: String,
-        side: u32,
-        target: &str,
-    ) -> Result<Conn, TransportError> {
-        stream.set_nonblocking(true).map_err(|e| map_io_err(&e))?;
-        let local_port = stream.local_addr().map_or(0, |a| a.port());
-        let sock = reactor::register(stream).map_err(|e| map_io_err(&e))?;
-        self.frame(Arc::new(sock), peer, local_port, side, target)
-    }
-
+    /// Hold `carried`, its connect settled, as a connection of this wire: framed by the entry,
+    /// begun on `side` for `target`, or carried as itself when the entry is a carrier.
     fn frame(
         &self,
-        sock: Arc<Registered<TcpStream>>,
+        carried: Arc<Carried>,
         peer: String,
         local_port: u16,
         side: u32,
         target: &str,
-    ) -> Result<Conn, TransportError> {
-        let established = Established {
+    ) -> Result<(Conn, Vec<u8>), TransportError> {
+        let chain = vec![self.key];
+        if self.is_carrier() {
+            return Ok(self.hold_io(
+                Io::Carried(carried),
+                peer,
+                local_port,
+                chain,
+                None,
+                Yielded::default(),
+            ));
+        }
+        let (framing, y) =
+            Framing::begin(Arc::clone(&self.door), side, target, &self.established())
+                .map_err(|_| TransportError::Framing)?;
+        Ok(self.hold_io(
+            Io::Carried(carried),
+            peer,
+            local_port,
+            chain,
+            Some(framing),
+            y,
+        ))
+    }
+
+    /// What a framing on this entry is told the handshake established: its claim.
+    fn established(&self) -> Established {
+        Established {
             claim: Some(self.key.to_owned()),
             ..Established::default()
-        };
-        let (framing, _) = Framing::begin(Arc::clone(&self.door), side, target, &established)
-            .map_err(|_| TransportError::Framing)?;
+        }
+    }
+
+    /// Hold `io` as a connection framed by `framing`, the pieces its opening yielded waiting for the
+    /// first reader; answers the connection and the bytes the opening owes the far end.
+    fn hold_io(
+        &self,
+        io: Io,
+        peer: String,
+        local_port: u16,
+        chain: Vec<&'static str>,
+        framing: Option<Framing>,
+        y: Yielded,
+    ) -> (Conn, Vec<u8>) {
         let id = self.next.fetch_add(1, Ordering::Relaxed);
         self.conns.lock().expect("conns").insert(
             id,
@@ -226,14 +443,78 @@ impl HostWire {
                 id,
                 peer: peer.clone(),
                 local_port,
-                sock: Mutex::new(Some(sock)),
-                framing: Mutex::new(Some(framing)),
-                ready: Mutex::new(VecDeque::new()),
+                chain,
+                sock: Mutex::new(Some(io)),
+                raw: framing.is_none(),
+                framing: Mutex::new(framing),
+                ready: Mutex::new(y.pieces.into()),
+                owed: Mutex::new(Vec::new()),
                 closed: AtomicBool::new(false),
                 parked: Mutex::new(Vec::new()),
             }),
         );
-        Ok(Conn::new(Arc::new(Handle { id, peer })))
+        (Conn::new(Arc::new(Handle { id, peer })), y.wire)
+    }
+
+    /// Send what a connection's opening owes the far end, if anything; a send that fails ends it.
+    async fn open_with(&self, conn: Conn, opening: Vec<u8>) -> Result<Conn, TransportError> {
+        if opening.is_empty() {
+            return Ok(conn);
+        }
+        let c = self.get(conn.id()).ok_or(TransportError::Closed)?;
+        if let Err(e) = c.send(&opening).await {
+            if let Some(gone) = self.conns.lock().expect("conns").remove(&c.id) {
+                gone.finalise();
+            }
+            return Err(e);
+        }
+        Ok(conn)
+    }
+
+    /// ADOPT the stream another entry handed up (`raw`, that entry's own
+    /// [`busbar_contract::Transport::detach`]): framed from here on by this entry (or by `door`, the
+    /// same entry opened under a listener's own settings), begun on the accept side (an upgrade the
+    /// far end asked the other entry for). WHICH entry adopts is the connector's choice (the upgrade's
+    /// scheme), never a list this entry states. The stream carries in front of it whatever the other
+    /// entry took and did not answer. `below` is the chain that entry reported for the connection
+    /// (bottom first); the adopted connection reports it with this entry on top.
+    ///
+    /// # Errors
+    ///
+    /// [`TransportError::Framing`]: the entry refused to adopt it.
+    pub async fn adopt_from(
+        &self,
+        raw: RawStream,
+        below: Vec<&'static str>,
+        door: Option<Arc<dyn FramerDoor>>,
+    ) -> Result<Conn, TransportError> {
+        let door = door.unwrap_or_else(|| Arc::clone(&self.door));
+        let (framing, y) = Framing::adopt(door, SIDE_ACCEPT, &[], &self.established())
+            .map_err(|_| TransportError::Framing)?;
+        let mut chain = if below.is_empty() {
+            vec![raw.from()]
+        } else {
+            below
+        };
+        chain.push(self.key);
+        let peer = raw.peer().to_owned();
+        let io = Io::HandedUp(Arc::new(Mutex::new(raw.into_io())));
+        let (conn, opening) = self.hold_io(io, peer, 0, chain, Some(framing), y);
+        let answered = !opening.is_empty();
+        let conn = self.open_with(conn, opening).await?;
+        // THE UPGRADE IS ANSWERED BEFORE THE CONNECTION IS HANDED OVER, as an adopting layer's
+        // handshake always was: the framer reads the request the lower layer handed up and answers
+        // it, so a write that follows meets an open connection.
+        if !answered {
+            let c = self.get(conn.id()).ok_or(TransportError::Closed)?;
+            if let Err(e) = c.drive_until(self.dial_timeout, opened).await {
+                if let Some(gone) = self.conns.lock().expect("conns").remove(&c.id) {
+                    gone.finalise();
+                }
+                return Err(e);
+            }
+        }
+        Ok(conn)
     }
 
     /// Dial `authority` directly: the endpoint check, then a non-blocking connect on the calling
@@ -243,24 +524,61 @@ impl HostWire {
     ///
     /// The authority is refused, the far end refused, or the handshake outlived its bound.
     pub async fn dial_authority(&self, authority: &str) -> Result<Conn, TransportError> {
+        self.dial_at(authority, authority).await
+    }
+
+    /// DIAL A DECLARED TARGET (SEAM-4n, ARCHITECT ruling): the framer is handed the FULL target
+    /// its need declared (`scheme://host:port/path`) and derives what it needs from it; the carrier
+    /// dials the authority the entry's `locate` reads off it. A target that asks for connection
+    /// security is refused before any socket exists: this wire secures nothing, so a secure target
+    /// over it would go out in the clear.
+    ///
+    /// # Errors
+    ///
+    /// The entry refuses the target, the target asks for connection security, the authority is
+    /// refused, the far end refused, or the handshake outlived its bound.
+    pub async fn dial_target(&self, target: &str) -> Result<Conn, TransportError> {
+        let located = framer::locate(self.door.as_ref(), target)
+            .map_err(|_| TransportError::AddressRefused)?;
+        if located.secure {
+            return Err(TransportError::AddressRefused);
+        }
+        self.dial_at(&located.authority, target).await
+    }
+
+    /// Dial `authority` and begin the dialled framing for `target`: through the entry itself when
+    /// it is a carrier, else through the carrier its framed connections ride.
+    async fn dial_at(&self, authority: &str, target: &str) -> Result<Conn, TransportError> {
         crate::endpoint::check(authority).map_err(|_| TransportError::AddressRefused)?;
         let addr = socket::address_of(authority).ok_or(TransportError::AddressRefused)?;
-        let sock = reactor::register(socket::connect(addr).map_err(|e| map_io_err(&e))?)
-            .map_err(|e| map_io_err(&e))?;
-        let connected = futures::future::poll_fn(|cx| socket::poll_connected(&sock, cx));
+        let carrier = if self.is_carrier() {
+            Arc::clone(&self.door)
+        } else {
+            self.under
+                .clone()
+                .or_else(|| self.riding.as_ref().and_then(|carrier| carrier()))
+                .ok_or(TransportError::AddressRefused)?
+        };
+        let carried = Carried::dial(
+            carrier,
+            Arc::clone(&self.io),
+            &Dest::Authority(addr.to_string()),
+        )
+        .map_err(|f| match f {
+            DialFailure::Refused(_) => TransportError::Refused,
+            DialFailure::Failed(_) => TransportError::Closed,
+        })?;
+        let carried = Arc::new(carried);
+        let connected = futures::future::poll_fn(|cx| carried.poll_connected(cx));
         match tokio::time::timeout(self.dial_timeout, connected).await {
             Err(_) => return Err(TransportError::Timeout),
-            Ok(Err(e)) => return Err(map_io_err(&e)),
+            Ok(Err(e)) => return Err(map_text(&e)),
             Ok(Ok(())) => {}
         }
-        let local_port = sock.get_ref().local_addr().map_or(0, |a| a.port());
-        self.frame(
-            Arc::new(sock),
-            addr.to_string(),
-            local_port,
-            SIDE_DIAL,
-            authority,
-        )
+        let local_port = carried.arrival().map_or(0, |(_, port)| port);
+        let (conn, opening) =
+            self.frame(carried, addr.to_string(), local_port, SIDE_DIAL, target)?;
+        self.open_with(conn, opening).await
     }
 
     /// The connections this wire holds.
@@ -282,14 +600,14 @@ impl HostWire {
 
     /// What the host records about `conn` on arrival: its peer, the local port, this entry as the chain.
     pub fn arrival(&self, conn: &Conn) -> ArrivalRecord {
-        let port = self.get(conn.id()).map_or(0, |c| c.local_port);
+        let held = self.get(conn.id());
         ArrivalRecord {
             source: conn.peer(),
-            port,
+            port: held.as_ref().map_or(0, |c| c.local_port),
             alpn: None,
             sni: None,
             peer_cert: None,
-            transport_chain: vec![self.key],
+            transport_chain: held.map_or_else(|| vec![self.key], |c| c.chain.clone()),
         }
     }
 
@@ -297,29 +615,32 @@ impl HostWire {
     /// end. Nothing listens through this seam in the product: an inbound socket is the
     /// connector's listener's ([`crate::listen::Listening`], the one listener source).
     #[cfg(test)]
-    pub(crate) fn accepted(&self, stream: TcpStream, peer: String) -> Result<Conn, TransportError> {
-        self.hold(
-            stream,
-            peer,
-            busbar_contract::abi::transport::SIDE_ACCEPT,
-            "",
-        )
+    pub(crate) fn accepted(&self, carried: Carried, peer: String) -> Result<Conn, TransportError> {
+        let carried = Arc::new(carried);
+        let local_port = carried.arrival().map_or(0, |(_, port)| port);
+        self.frame(carried, peer, local_port, SIDE_ACCEPT, "")
+            .map(|(conn, _)| conn)
     }
 
-    /// Dial a verified upstream destination: its authority, as [`Self::dial_authority`] does.
+    /// Dial a verified upstream destination at its declared target: a URL is handed to the framer
+    /// whole ([`Self::dial_target`]); a bare `host:port` is its own target ([`Self::dial_authority`]).
     pub fn dial<'a>(
         &'a self,
         dest: &'a VerifiedDestination,
         _keys: &'a TransportKeyHandle,
     ) -> Fut<'a, Conn> {
         Box::pin(async move {
-            let authority = match dest.facts() {
+            let target = match dest.facts() {
                 DestinationFacts::Upstream { address, .. } => {
                     address.authority().ok_or(TransportError::AddressRefused)?
                 }
                 _ => return Err(TransportError::AddressRefused),
             };
-            self.dial_authority(authority).await
+            if target.contains("://") {
+                self.dial_target(target).await
+            } else {
+                self.dial_authority(target).await
+            }
         })
     }
 
@@ -333,7 +654,14 @@ impl HostWire {
                 return Poll::Ready(None);
             };
             loop {
+                c.offer_owed(cx);
                 if let Some(got) = c.ready.lock().expect("ready").pop_front() {
+                    // A stream the framer FAILED (`PIECE_STREAM_FAILED`: a message past the
+                    // ceiling, a protocol breach) is an error to its reader, not a clean end.
+                    if got.failed {
+                        ended = true;
+                        return Poll::Ready(Some(Err(TransportError::Framing)));
+                    }
                     let n = got.bytes.len() as u64;
                     let frame = Frame {
                         direction: FrameDirection::Inbound,
@@ -361,12 +689,28 @@ impl HostWire {
                     return Poll::Ready(None);
                 };
                 let mut buf = [0_u8; READ_CHUNK_BYTES];
-                let read = match sock.poll_io(Direction::Read, cx, |mut s| s.read(&mut buf)) {
+                let read = match sock.poll_read(cx, &mut buf) {
                     Poll::Pending => return Poll::Pending,
                     Poll::Ready(r) => r,
                 };
                 let (bytes, end) = match read {
                     Ok(0) => (&buf[..0], true),
+                    // A carrier carried as itself: every read is a frame.
+                    Ok(n) if c.raw => {
+                        c.ready.lock().expect("ready").push_back(Got {
+                            stream: 0,
+                            bytes: buf[..n].to_vec(),
+                            end_of_frame: true,
+                            status_code: None,
+                            status_class: 0,
+                            retry_after_secs: None,
+                            fields: false,
+                            text: false,
+                            reason: None,
+                            failed: false,
+                        });
+                        continue;
+                    }
                     Ok(n) => (&buf[..n], false),
                     Err(e) => {
                         // A read error is the connection's end: it is deregistered and finalised
@@ -378,6 +722,10 @@ impl HostWire {
                         return Poll::Ready(Some(Err(map_io_err(&e))));
                     }
                 };
+                if c.raw && end {
+                    ended = true;
+                    continue;
+                }
                 let mut framing = c.framing.lock().expect("framing");
                 let Some(f) = framing.as_mut() else {
                     return Poll::Ready(None);
@@ -385,6 +733,9 @@ impl HostWire {
                 match f.ingest(bytes, end) {
                     Ok(y) => {
                         c.ready.lock().expect("ready").extend(y.pieces);
+                        // What the framer answers to what it read (a pong, a close answer, an
+                        // upgrade's answer) is owed to the far end, ahead of anything else.
+                        c.owed.lock().expect("owed").extend_from_slice(&y.wire);
                         ended |= y.ended || end;
                     }
                     Err(_) => {
@@ -407,6 +758,11 @@ impl HostWire {
     ) -> Fut<'a, usize> {
         Box::pin(async move {
             let c = self.get(conn.id()).ok_or(TransportError::Closed)?;
+            // A carrier carried as itself writes the bytes as they are.
+            if c.raw {
+                c.send(bytes.as_slice()).await?;
+                return Ok(bytes.len());
+            }
             let wire = {
                 let mut framing = c.framing.lock().expect("framing");
                 let f = framing.as_mut().ok_or(TransportError::Closed)?;
@@ -414,7 +770,14 @@ impl HostWire {
                     .map_err(|_| TransportError::Framing)?
                     .wire
             };
+            let held = wire.is_empty() && !bytes.as_slice().is_empty();
             c.send(&wire).await?;
+            // A message a FRAMER HELD (its upgrade not yet answered by the far end) goes out once
+            // the far end's answer is read: the connection is driven until it does. A carrier
+            // frames nothing and holds nothing.
+            if held && self.door.facts().role == ROLE_FRAMER {
+                c.drive_until(self.dial_timeout, answers).await?;
+            }
             Ok(bytes.len())
         })
     }
@@ -449,15 +812,17 @@ impl HostWire {
         let c = self.get(conn.id())?;
         let taken = {
             let mut sock = c.sock.lock().expect("socket");
-            let arc = sock.take()?;
-            match Arc::try_unwrap(arc) {
-                Ok(reg) => reg,
-                // A reader still holds the socket: the upgrade never races a read.
-                Err(arc) => {
-                    *sock = Some(arc);
-                    return None;
-                }
+            // A stream handed up to this entry is handed up no further: no layer composes over
+            // a composed one here.
+            let Some(Io::Carried(arc)) = sock.take() else {
+                return None;
+            };
+            // A reader still holds the stream: the upgrade never races a read.
+            if Arc::strong_count(&arc) > 1 {
+                *sock = Some(Io::Carried(arc));
+                return None;
             }
+            arc
         };
         self.conns.lock().expect("conns").remove(&c.id);
         let mut left: Vec<u8> = c
@@ -473,14 +838,8 @@ impl HostWire {
         Some(RawStream::new(
             self.key,
             c.peer.clone(),
-            Box::new(HostStream::new(taken, left)),
+            Box::new(CarrierStream::new(taken, left)),
         ))
-    }
-
-    /// The layer this entry composes over: none, it frames the host's own socket.
-    pub fn composed_over(&self) -> Option<&'static str> {
-        // The entry frames the host's own socket: nothing built it over a lower layer.
-        None
     }
 
     /// Close `conn`: the framer finishes, and whatever is parked on it ends.
@@ -510,7 +869,9 @@ impl HostWire {
                     .as_mut()
                     .ok_or(TransportError::Closed)
                     .and_then(|f| {
-                        f.refuse(stream.map(|s| s.0), bytes.as_slice())
+                        // A Unit 0 refusal's bytes are the transport's whole envelope, rendered
+                        // before any plane: they state no neutral status apart from themselves.
+                        f.refuse(stream.map(|s| s.0), bytes.as_slice(), 0)
                             .map_err(|_| TransportError::Framing)
                     })
                     .map(|y| y.wire)

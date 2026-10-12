@@ -74,7 +74,7 @@ use std::time::Duration;
 
 use busbar_kernel::egress::seam;
 
-use super::fetch::{FetchPolicy, HttpResponse, Resolver, Transport};
+use super::fetch::{FetchPolicy, HttpResponse, Pin, Resolver, Transport};
 use super::relay::{ChunkFlow, RelayTransport, SendFailure, StreamHead};
 use super::verify::CardTransports;
 
@@ -233,7 +233,7 @@ pub(crate) struct ReqwestTransport {
     /// Additional trust anchors (DER), accumulated by [`Self::trusting_root`] (test-only) so the full set
     /// can be re-registered as one host-side [`busbar_kernel::plane_host::trust_anchor`] ref. EMPTY in
     /// production — the platform's roots are the roots.
-    extra_roots: Vec<rustls_pki_types::CertificateDer<'static>>,
+    extra_roots: Vec<Vec<u8>>,
     /// THE OPAQUE host-side trust-anchor ref (`0` = platform roots only). Registered ONCE, when the
     /// transport is built, and carried on every per-hop [`EgressDesc`](busbar_contract::abi::hot::EgressDesc);
     /// the host resolves it to the parsed roots — the certificate bytes never cross the seam.
@@ -280,20 +280,40 @@ impl ReqwestTransport {
 
     #[cfg(all(test, feature = "test-support"))]
     pub(crate) fn trusting_root(mut self, pem: &[u8]) -> Self {
-        {
-            use rustls_pki_types::pem::PemObject;
-            self.extra_roots.extend(
-                rustls_pki_types::CertificateDer::pem_slice_iter(pem)
-                    .collect::<Result<Vec<_>, _>>()
-                    .expect("a PEM certificate"),
-            );
-        }
+        self.extra_roots.extend(pem_certificates(
+            std::str::from_utf8(pem).expect("a PEM certificate"),
+        ));
         // Re-register the FULL accumulated set (a fresh ref each time), so the desc's one ref resolves
         // to every root this transport was told to trust — the host owns the parsed certificates.
         self.trust_anchor_ref =
             busbar_kernel::plane_host::trust_anchor::register(self.extra_roots.clone());
         self
     }
+}
+
+/// TEST-ONLY: every `CERTIFICATE` section of a PEM bundle, DER. The roots a test hands
+/// [`ReqwestTransport::trusting_root`] are read with this plain walk: TLS lives only in the
+/// connector, so this crate names no TLS library, not even in a test.
+#[cfg(all(test, feature = "test-support"))]
+pub(crate) fn pem_certificates(pem: &str) -> Vec<Vec<u8>> {
+    use base64::Engine as _;
+    const BEGIN: &str = "-----BEGIN CERTIFICATE-----";
+    const END: &str = "-----END CERTIFICATE-----";
+    pem.split(BEGIN)
+        .skip(1)
+        .map(|section| {
+            let body: String = section
+                .split(END)
+                .next()
+                .expect("a certificate section")
+                .chars()
+                .filter(|c| !c.is_whitespace())
+                .collect();
+            base64::engine::general_purpose::STANDARD
+                .decode(body)
+                .expect("a certificate section decodes")
+        })
+        .collect()
 }
 
 /// ONE PINNED HOP, shared by the card fetch and the relay.
@@ -306,8 +326,9 @@ impl ReqwestTransport {
 /// green.
 struct Hop<'a> {
     url: &'a url::Url,
-    /// The address the guard judged. The socket goes HERE; see the pin below.
-    addr: IpAddr,
+    /// The address the guard judged, with the reach it was judged under. The socket goes HERE; see
+    /// the pin below.
+    pin: Pin,
     headers: &'a [(String, String)],
     body: Option<Vec<u8>>,
 }
@@ -330,7 +351,7 @@ impl ReqwestTransport {
         &self,
         verb: &'a str,
         url: &'a str,
-        addr: IpAddr,
+        pin: Pin,
         headers: &'a [(String, String)],
         body: &'a [u8],
         timeout: Duration,
@@ -351,7 +372,9 @@ impl ReqwestTransport {
             client_identity_ref: self.client_identity_ref,
             trust_anchor_ref: self.trust_anchor_ref,
             timeout,
-            addr,
+            addr: pin.addr,
+            allow_private: pin.allow_private,
+            allow_plaintext: pin.allow_plaintext,
         }
     }
 
@@ -364,13 +387,13 @@ impl ReqwestTransport {
     ) -> Result<HttpResponse, SendFailure> {
         let Hop {
             url,
-            addr,
+            pin,
             headers,
             body,
         } = hop;
         let cap = self.max_body_bytes.saturating_add(1);
         let body = body.unwrap_or_default();
-        let hop = self.pinned_hop(method.as_str(), url.as_str(), addr, headers, &body, timeout);
+        let hop = self.pinned_hop(method.as_str(), url.as_str(), pin, headers, &body, timeout);
 
         // THE HOP, over the HOSTLESS egress seam. The host owns the socket, the pinned client (its own
         // refusing resolver), the verified handshake and the capped read; it hands back the status, the
@@ -405,13 +428,13 @@ impl ReqwestTransport {
 }
 
 impl Transport for ReqwestTransport {
-    fn get(&self, url: &url::Url, addr: IpAddr) -> Result<HttpResponse, String> {
+    fn get(&self, url: &url::Url, pin: Pin) -> Result<HttpResponse, String> {
         self.execute(
             "agent card fetch",
             http::Method::GET,
             Hop {
                 url,
-                addr,
+                pin,
                 headers: &[],
                 body: None,
             },
@@ -431,7 +454,7 @@ impl RelayTransport for ReqwestTransport {
         &self,
         http_method: &str,
         url: &url::Url,
-        addr: IpAddr,
+        pin: Pin,
         headers: &[(String, String)],
         body: &[u8],
     ) -> Result<HttpResponse, SendFailure> {
@@ -449,7 +472,7 @@ impl RelayTransport for ReqwestTransport {
             method,
             Hop {
                 url,
-                addr,
+                pin,
                 headers,
                 body,
             },
@@ -466,7 +489,7 @@ impl RelayTransport for ReqwestTransport {
     fn post_stream(
         &self,
         url: &url::Url,
-        addr: IpAddr,
+        pin: Pin,
         headers: &[(String, String)],
         body: &[u8],
         on_chunk: &mut (dyn FnMut(&[u8]) -> ChunkFlow + Send),
@@ -475,7 +498,7 @@ impl RelayTransport for ReqwestTransport {
         let hop = self.pinned_hop(
             "POST",
             url.as_str(),
-            addr,
+            pin,
             headers,
             body,
             RELAY_STREAM_TIMEOUT,

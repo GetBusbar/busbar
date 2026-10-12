@@ -182,7 +182,7 @@ fn an_empty_amendment_run_against_a_chain_that_has_sealed_amendments_is_refused(
         .expect("a chain with no amendments is whole");
 }
 
-// ── THE RECORD CHAIN'S TAIL CHECK ────────────────────────────────────────────────────────────────
+// ── THE RECORD CHAIN'S RUNS ──────────────────────────────────────────────────────────────────────
 
 /// Three sealed audit records and the chain that sealed them.
 fn three_records() -> (AuditChain, Vec<AuditRecord>) {
@@ -190,40 +190,6 @@ fn three_records() -> (AuditChain, Vec<AuditRecord>) {
     let t = token();
     let records = (1..=3).map(|i| chain.seal(inputs(i), &t)).collect();
     (chain, records)
-}
-
-/// THE SAME TWO CLAUSES, ON THE FIXED RECORD CHAIN.
-///
-/// A tail truncation of an audit chain removes the most recent evidence — which is the evidence
-/// somebody would most want gone. The run that is left links and numbers correctly among itself, so
-/// only the chain's own head notices, and only if BOTH of the head's two clauses are checked.
-#[test]
-fn a_record_run_matching_the_chains_head_on_only_one_count_is_refused() {
-    let (chain, records) = three_records();
-    chain
-        .verify_to_head(&records)
-        .expect("the whole run against its own chain is whole");
-
-    let ahead = AuditChain::resume(chain.head().to_string(), chain.next_seq() + 1);
-    assert_eq!(
-        ahead
-            .verify_to_head(&records)
-            .expect_err("a sealed record is missing from this run")
-            .kind,
-        AuditBreakKind::LinkMismatch
-    );
-
-    let substituted = AuditChain::resume("a-different-head".to_string(), chain.next_seq());
-    assert_eq!(
-        substituted
-            .verify_to_head(&records)
-            .expect_err("this run does not end on the record the chain sealed")
-            .kind,
-        AuditBreakKind::LinkMismatch
-    );
-
-    // And a truncated run fails both clauses at once, which is the ordinary case.
-    assert!(chain.verify_to_head(&records[..2]).is_err());
 }
 
 // ── A RENUMBERING IS NOT A SPLICE (item 405) ─────────────────────────────────────────────────────

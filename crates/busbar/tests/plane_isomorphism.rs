@@ -22,8 +22,9 @@
 //!
 //! ## What is reflected, and what is not
 //!
-//! The installed planes are the ones the composition root links and pushes through `install_planes`:
-//! `{llm, mcp, a2a}` (each a `&'static PlaneDecl` referenced directly here — the same consts
+//! The installed planes are the ones the composition root links and pushes through `install_planes`
+//! (the MCP plane left this set at P3 DEL-MCP: it is served through its door and installs no PlaneDecl):
+//! `{llm, a2a, streaming}` (each a `&'static PlaneDecl` referenced directly here — the same consts
 //! `crates/busbar/src/main.rs` installs; this is also the test-support plane registry's content). The
 //! VOICE plane is off-default, feature-gated, and NOT linked into the binary or this test target (see
 //! `docs/design/BUSBAR-1.6.0.md` #15), so its skeleton asymmetries are governed by the
@@ -37,6 +38,7 @@ mod common;
 
 use busbar_kernel::plane::registry::PlaneDecl;
 use std::collections::{BTreeMap, BTreeSet};
+#[cfg(linked_axis_plane)]
 use std::path::{Path, PathBuf};
 
 /// THE PINNED HOOK-FIELD SET — every `Option<…>` capability hook on the registry `PlaneDecl`, each
@@ -88,6 +90,7 @@ fn plane_ledger_columns() -> Vec<(&'static str, &'static [&'static str])> {
         .collect()
 }
 
+#[cfg(linked_axis_plane)]
 fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
@@ -99,18 +102,22 @@ fn repo_root() -> PathBuf {
 /// through `install_planes` (and the content of the test-support plane registry). Referenced directly
 /// so the Some/None this test reasons over is the REAL decl, never a restated copy.
 // Each plane crate is only linked when its feature is on. Under `--no-default-features` no plane
-// is installed, so this yields an empty set and the gate test below is vacuous (returns early).
+// is installed, so this yields an empty set and the gate tests below are not compiled
+// (`linked_axis_plane`), nor is this or anything only they read.
+#[cfg(linked_axis_plane)]
 fn installed_decls() -> Vec<(&'static str, &'static PlaneDecl)> {
     LINKED_PLANES.iter().map(|d| (d.key, d)).collect()
 }
 
 // The linked plane rows (build.rs: every enabled `[package.metadata.busbar.linked]` row carrying the
 // `plane` axis, assembled from its crate's own `linked` entry exactly as the root assembles it).
+#[cfg(linked_axis_plane)]
 include!(concat!(env!("OUT_DIR"), "/linked_planes.rs"));
 
 /// The Some/None matrix: `field -> (plane -> is_some)`. Computed from the live decls.
 type Matrix = BTreeMap<String, BTreeMap<String, bool>>;
 
+#[cfg(linked_axis_plane)]
 fn reflect(installed: &[(&'static str, &'static PlaneDecl)]) -> Matrix {
     let mut m: Matrix = BTreeMap::new();
     for (field, extract) in HOOK_FIELDS {
@@ -321,6 +328,7 @@ fn verify_scoped(
     })
 }
 
+#[cfg(linked_axis_plane)]
 fn read_json(path: &Path) -> serde_json::Value {
     serde_json::from_str(
         &std::fs::read_to_string(path)
@@ -329,6 +337,7 @@ fn read_json(path: &Path) -> serde_json::Value {
     .unwrap_or_else(|e| panic!("{} does not parse as JSON: {e}", path.display()))
 }
 
+#[cfg(linked_axis_plane)]
 fn columns_map() -> BTreeMap<&'static str, &'static [&'static str]> {
     plane_ledger_columns().into_iter().collect()
 }
@@ -337,13 +346,17 @@ fn columns_map() -> BTreeMap<&'static str, &'static [&'static str]> {
 // 1. THE GATE: the live decls' asymmetries are all declared, ledger-anchored, and exact.
 // ---------------------------------------------------------------------------
 
+// No plane linked (e.g. --no-default-features): cross-plane isomorphism is vacuous, so the test is
+// the plane axis's (any linked row carrying it, the rows `LINKED_PLANES` holds); a partial roster
+// still runs it, scoped below.
+#[cfg(linked_axis_plane)]
 #[test]
 fn installed_plane_decls_are_behaviourally_isomorphic_or_declared() {
     let decls = installed_decls();
-    if decls.is_empty() {
-        // No plane linked (e.g. --no-default-features): cross-plane isomorphism is vacuous.
-        return;
-    }
+    assert!(
+        !decls.is_empty(),
+        "a build on the plane axis installs no plane decl"
+    );
     let root = repo_root();
     let matrix = reflect(&decls);
     let ledger = read_json(&root.join("qa/capability-equality.json"));
@@ -381,6 +394,7 @@ fn installed_plane_decls_are_behaviourally_isomorphic_or_declared() {
 /// so the only way to ask a build which legs it has is to compile the question in — but the question
 /// must be asked per leg, not as a five-way conjunction, because the planes are switched onto the
 /// root one at a time and every partially-switched build is an ordinary build.
+#[cfg(linked_axis_plane)]
 fn compiled_legs() -> BTreeSet<&'static str> {
     common::compiled_root_legs()
 }
@@ -399,12 +413,14 @@ fn compiled_legs() -> BTreeSet<&'static str> {
 /// decide is which legs are COMPILED, and that is asserted separately below: a plane installed into
 /// this build whose answering leg this build also carries must be driven through the loop by a leg
 /// that proves at least one cell.
+#[cfg(linked_axis_plane)]
 #[test]
 fn every_installed_plane_is_answered_by_a_root_leg() {
     let decls = installed_decls();
-    if decls.is_empty() {
-        return;
-    }
+    assert!(
+        !decls.is_empty(),
+        "a build on the plane axis installs no plane decl"
+    );
     let ledger = read_json(&repo_root().join("qa/capability-equality.json"));
     let legs = ledger["root_legs"]
         .as_object()
@@ -517,11 +533,13 @@ fn the_reflected_hook_set_and_constants_are_the_doctrine() {
     const {
         assert!(MIN_HOOK_FIELDS >= 15 && MIN_ASYMMETRIES >= 10);
     }
-    // The doctrine's installed-plane axis, verbatim (the same four the composition root installs).
+    // The doctrine's installed-plane axis, verbatim (the same three the composition root installs as
+    // a PlaneDecl: P3 DEL-MCP, ARCHITECT 2026-10-05, took mcp off it — the plane is served through its
+    // memory-ABI door alone and installs no PlaneDecl).
     let keys: Vec<&str> = plane_ledger_columns().iter().map(|(k, _)| *k).collect();
     assert_eq!(
         keys.len(),
-        4,
+        3,
         "the installed-plane axis is the owner's ruling; changing it is a doctrine change: {keys:?}"
     );
     // With every plane compiled in, the pinned axis is exactly the planes the root installs from

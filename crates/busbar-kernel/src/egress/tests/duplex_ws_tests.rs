@@ -703,3 +703,169 @@ fn ws_arrival_spec_installs_and_drains_verbatim() {
         "take is read-many, not destructive"
     );
 }
+
+// ── THE DIAL CREDENTIAL: on the upgrade request only, in no error ─────────────────────────────────
+
+use crate::egress::duplex_ws::{CredentialPlacement, DialCredential, DialTarget};
+
+const SEKRET: &str = "SEKRET123";
+
+/// The two placements a provider dial uses.
+const PLACEMENTS: [CredentialPlacement; 2] = [
+    CredentialPlacement::Query("key"),
+    CredentialPlacement::Header {
+        name: "authorization",
+        prefix: "Bearer ",
+    },
+];
+
+/// K3 #43: a URL refusal shows the target without its userinfo, query or fragment — a caller logs
+/// it, and either part can carry a credential.
+#[tokio::test]
+async fn a_url_refusal_carries_no_userinfo_and_no_query() {
+    for url in [
+        "wss://bad host/p?key=SEKRET123",
+        "https://example.com/p?key=SEKRET123",
+        "wss://user:SEKRET123@example.com/p",
+        "wss://bad host/p#SEKRET123",
+    ] {
+        let err = duplex_ws::dial(url, loopback_policy())
+            .await
+            .err()
+            .expect("an unusable target is refused");
+        assert!(
+            matches!(err, DialError::Url(_)),
+            "{url}: a URL refusal, got {err:?}"
+        );
+        let (shown, debug) = (err.to_string(), format!("{err:?}"));
+        assert!(
+            !shown.contains(SEKRET) && !debug.contains(SEKRET),
+            "{url}: the refusal carries the secret: {shown} / {debug}"
+        );
+    }
+}
+
+/// What the stripped target keeps: the scheme, host and path an operator has to fix.
+#[test]
+fn a_dial_target_keeps_scheme_host_and_path() {
+    assert_eq!(
+        DialTarget::new("wss://bad host/p?key=SEKRET123").as_str(),
+        "wss://bad host/p"
+    );
+    assert_eq!(
+        DialTarget::new("wss://u:p@h:8443/x#frag").as_str(),
+        "wss://h:8443/x"
+    );
+    assert_eq!(DialTarget::new("not a url").as_str(), "not a url");
+    assert_eq!(
+        DialTarget::new("wss://h/a@b?x=1").as_str(),
+        "wss://h/a@b",
+        "an `@` in the path is not userinfo"
+    );
+}
+
+/// A server that answers the upgrade with `403` — the handshake fails after the request was sent.
+async fn spawn_refusing_server() -> SocketAddr {
+    async fn route() -> axum::response::Response {
+        axum::response::Response::builder()
+            .status(axum::http::StatusCode::FORBIDDEN)
+            .body(axum::body::Body::from(SEKRET))
+            .expect("refusal builds")
+    }
+    let app = axum::Router::new().fallback(route);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    addr
+}
+
+/// A CREDENTIALED DIAL KEEPS THE SECRET OUT OF EVERY ERROR: the URL check, the guard, the connect and
+/// the handshake each fail, under both placements, and no rendering of the error carries the secret.
+#[tokio::test]
+async fn a_credentialed_dial_carries_the_secret_in_no_error() {
+    let secret = busbar_contract::Redacted::new(SEKRET.to_string());
+    let refusing = spawn_refusing_server().await;
+    for placement in PLACEMENTS {
+        let cred = DialCredential {
+            placement,
+            secret: &secret,
+        };
+        for (url, policy) in [
+            ("https://bad host/p".to_string(), loopback_policy()),
+            ("wss://bad host/p".to_string(), loopback_policy()),
+            ("wss://127.0.0.1/p".to_string(), GuardPolicy::default()),
+            ("ws://127.0.0.1:1/p".to_string(), loopback_policy()),
+            (format!("ws://{refusing}/p"), loopback_policy()),
+        ] {
+            let err = duplex_ws::dial_with_credential(&url, policy, Some(cred))
+                .await
+                .err()
+                .expect("each target fails");
+            let (shown, debug) = (err.to_string(), format!("{err:?}"));
+            assert!(
+                !shown.contains(SEKRET) && !debug.contains(SEKRET),
+                "{placement:?} {url}: the error carries the secret: {shown} / {debug}"
+            );
+        }
+    }
+}
+
+/// THE SECRET IS ON THE UPGRADE REQUEST: a query placement appends `name=<secret>` to the request
+/// target; a header placement sets the header and leaves the target alone.
+#[tokio::test]
+async fn the_credential_is_written_into_the_upgrade_request() {
+    type Seen = Arc<std::sync::Mutex<Option<(String, Option<String>)>>>;
+    async fn route(
+        axum::extract::State(seen): axum::extract::State<Seen>,
+        uri: axum::http::Uri,
+        headers: axum::http::HeaderMap,
+        upgrade: axum::extract::ws::WebSocketUpgrade,
+    ) -> axum::response::Response {
+        let auth = headers
+            .get("authorization")
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string);
+        *seen.lock().unwrap() = Some((uri.to_string(), auth));
+        ws_ingress::serve(upgrade, Arc::new(EchoPlane))
+    }
+    let seen: Seen = Arc::new(std::sync::Mutex::new(None));
+    let app = axum::Router::new()
+        .fallback(route)
+        .with_state(Arc::clone(&seen));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+
+    let secret = busbar_contract::Redacted::new(SEKRET.to_string());
+    for (placement, want) in [
+        (
+            PLACEMENTS[0],
+            ("/p?a=1&key=SEKRET123".to_string(), None::<String>),
+        ),
+        (
+            PLACEMENTS[1],
+            ("/p?a=1".to_string(), Some("Bearer SEKRET123".to_string())),
+        ),
+    ] {
+        let cred = DialCredential {
+            placement,
+            secret: &secret,
+        };
+        let (_stream, _sink) = duplex_ws::dial_with_credential(
+            &format!("ws://{addr}/p?a=1"),
+            loopback_policy(),
+            Some(cred),
+        )
+        .await
+        .expect("the loopback upgrades");
+        assert_eq!(
+            seen.lock().unwrap().take(),
+            Some(want),
+            "{placement:?}: the upgrade request"
+        );
+    }
+}

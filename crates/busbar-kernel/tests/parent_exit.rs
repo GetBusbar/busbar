@@ -246,3 +246,121 @@ fn a_converted_hold_the_door_cannot_back_ends_the_child_over_budget() {
     assert_eq!(child_cell.state(), HoldCellState::Taken);
     assert_eq!(canary.balanced(), Ok(()));
 }
+
+/// Run `units` as one unit on `cell`, under `parent` when it has one, counted on `canary`.
+fn run_on(
+    kernel: &Kernel,
+    units: &TestUnits,
+    key: u64,
+    cell: &HoldCell,
+    parent: Option<&HoldCell>,
+    canary: &Canary,
+) -> Ended {
+    let (leases, gauge) = (LeaseCell::new(), ConcurrencyGauge::new());
+    run_unit(
+        kernel,
+        units,
+        &ctx(key),
+        Run {
+            cell,
+            parent,
+            leases: &leases,
+            gauge: &gauge,
+            canary,
+            meter: &units.meter,
+        },
+    )
+}
+
+/// A unit that spends and reports `amount` through `door`.
+fn spending(door: Door, amount: u64) -> TestUnits {
+    TestUnits {
+        door,
+        spend: amount,
+        evidence: Evidence {
+            reported: Some(amount),
+            ..Evidence::default()
+        },
+        ..TestUnits::default()
+    }
+}
+
+/// A CHILD FIRST RUN AFTER ITS PARENT SEALED NEVER WRITES THE PARENT'S LINE (a task's
+/// continuation: BUSBAR-1.6.0.md, the `work.*` row note — a child unit whose parent has exited,
+/// filed under the late-arm rules). The parent settles 300 on its own sealed line; the child, nested
+/// on that parent's cell and asking to accrue at zero the way the root door does, is refused the
+/// accrual and posts its own line of 400. The parent's cell is byte-identical before and after the
+/// child; the two lines total 700, each counted once.
+#[test]
+fn a_child_run_after_its_parent_sealed_posts_its_own_line_and_never_the_parents() {
+    let kernel = Kernel::new();
+    let canary = Canary::new();
+    let parent_cell = Arc::new(cell(&kernel));
+    let parent_line = match run_on(
+        &kernel,
+        &spending(Door::Own(1_000), 300),
+        7,
+        &parent_cell,
+        None,
+        &canary,
+    ) {
+        Ended::Settled { end, .. } => end.into_posted().expect("the parent posts"),
+        other => panic!("expected a settled parent, got {other:?}"),
+    };
+    assert_eq!(
+        parent_cell.state(),
+        HoldCellState::Taken,
+        "the parent sealed"
+    );
+    assert_eq!(
+        (parent_line.reserved(), parent_line.settled()),
+        (1_000, 300)
+    );
+    let sealed = format!("{parent_cell:?}");
+
+    let child_cell = cell(&kernel);
+    let child_line = match run_on(
+        &kernel,
+        &spending(Door::Accrual(Arc::clone(&parent_cell), 0), 400),
+        8,
+        &child_cell,
+        Some(&parent_cell),
+        &canary,
+    ) {
+        Ended::Settled { end, requests, fee } => {
+            assert_eq!(end.outcome(), Outcome::Completed);
+            assert_eq!(
+                (requests, fee),
+                (0, 0),
+                "a child draws no slot and posts no fee"
+            );
+            end.into_posted().expect("the child posts its own line")
+        }
+        other => panic!("expected a settled child, got {other:?}"),
+    };
+
+    assert_eq!(
+        format!("{parent_cell:?}"),
+        sealed,
+        "the parent's sealed line is never written by its child"
+    );
+    assert_eq!(child_line.principal(), parent_line.principal());
+    assert_eq!(
+        (child_line.reserved(), child_line.settled()),
+        (0, 400),
+        "the child's own line, at its own zero hold"
+    );
+    assert_eq!(child_cell.state(), HoldCellState::Taken);
+    assert_eq!(
+        parent_line.settled() + child_line.settled(),
+        700,
+        "billed: parent + child, nothing lost and nothing twice"
+    );
+    let counts = canary.counts();
+    assert_eq!(
+        (counts.accruals, counts.settlements),
+        (0, 2),
+        "two lines, no accrual into the sealed parent"
+    );
+    assert_eq!(canary.balanced(), Ok(()));
+}

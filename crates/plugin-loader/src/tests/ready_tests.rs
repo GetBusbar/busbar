@@ -36,7 +36,7 @@ fn bind(d: &Dispatcher) -> Bind {
         max_inflight_cap: 16,
         sink: Arc::new(NoSink),
         dispatcher: d.adopter(),
-        conns: None,
+        conns: crate::dispatch::ConnTable::NoNeeds,
     }
 }
 
@@ -76,12 +76,24 @@ fn a_ready_that_pends_serves_after_its_wake() {
     let d = dispatcher();
     let p = opened(&d, with_ready::door, b"pend");
     let before = crossings(&p);
+    let resumed = p.inner.resumes.load(Ordering::Relaxed);
     assert_eq!(p.ready(&d, WITHIN), Ok(()));
     // It pended once and was resumed once, on its ticket, by the wake it fired.
     assert_eq!(
         crossings(&p),
         before + 2,
         "one PENDING crossing, then its RESUME"
+    );
+    // Counted apart (Q-P4-5): ONE first invocation, ONE resume.
+    assert_eq!(
+        p.inner.resumes.load(Ordering::Relaxed),
+        resumed + 1,
+        "the resume"
+    );
+    assert_eq!(
+        crossings(&p) - p.inner.resumes.load(Ordering::Relaxed),
+        before - resumed + 1,
+        "one op, one first invocation"
     );
 }
 

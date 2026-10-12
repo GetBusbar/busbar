@@ -52,7 +52,9 @@ use busbar_contract::caps::{
 use busbar_contract::{LaneId, Registration, UnitKey};
 use busbar_kernel::plane_host::PlaneAnswer;
 use busbar_kernel::slice::GroupLeaseSlip;
-use busbar_kernel::teller::{AccrualMeter, Ended, Evidence, RouteAwait, RouteLeg, UnitCtx, Units};
+use busbar_kernel::teller::{
+    AccrualMeter, Ended, Evidence, RouteAwait, RouteLeg, Screen, UnitCtx, Units,
+};
 use busbar_kernel_audit::{
     AuditInputs, Controls, FinishClass as RecordFinish, OpClassId as RecordOpClass, OutcomeFacts,
     Subject, Usage as RecordUsage, UsageLine as RecordLine, What,
@@ -178,7 +180,7 @@ impl LaneNames {
 /// One per process. The per-request half is the plane's unit, which a plane's arrival hands this
 /// node ([`Handed`]) and which is thrown away with the unit.
 pub struct Node {
-    kernel: busbar_kernel::teller::Kernel,
+    kernel: Arc<busbar_kernel::teller::Kernel>,
     inflight: busbar_kernel::inflight::InFlight,
     gauge: busbar_kernel::slice::ConcurrencyGauge,
     canary: busbar_contract::caps::Canary,
@@ -191,7 +193,7 @@ pub struct Node {
     /// The names this node has already put through that interner, so the request path does not put
     /// them through it again. Shared with the resolver every unit is lent ([`Node::resolver`]).
     lane_names: Arc<Mutex<LaneNames>>,
-    next_key: busbar_kernel::door::UnitKeyMint,
+    next_key: Arc<busbar_kernel::door::UnitKeyMint>,
     /// How many slots the drop guard has MARKED since the sweep last walked the table.
     ///
     /// A counter rather than a walk on every arrival: a unit whose task went away leaves its slot
@@ -218,6 +220,10 @@ pub struct Node {
     ///
     /// [`bind_book`]: Node::bind_book
     book: std::sync::OnceLock<Arc<Mutex<crate::root::durability::Durability>>>,
+    /// THE BOOK'S LANE TO THE CONFIGURED STORE, when the store is where the book's journal is kept
+    /// (no data directory). Read at every arrival, without the book's lock: while it is full a new
+    /// money-bearing unit is refused 503 with the reason (ARCHITECT 2026-10-07 H3 ruling).
+    lane: std::sync::OnceLock<crate::root::durability::JournalLane>,
     /// The journal's token, minted from this node's own kernel at construction and lent to the exit
     /// arm for the length of one settlement.
     ///
@@ -282,7 +288,8 @@ impl Node {
             durability_token: kernel.durability_token(),
             usage_token: kernel.usage_token(),
             book: std::sync::OnceLock::new(),
-            kernel,
+            lane: std::sync::OnceLock::new(),
+            kernel: Arc::new(kernel),
             // The data listener already carries the operator-configured inbound-concurrency layer,
             // which is where this deployment's admission-to-the-node decision is made and has always
             // been made. A second cap here would be a second answer to one question, and the one
@@ -301,7 +308,7 @@ impl Node {
                 resolved: HashMap::new(),
                 consulted: 0,
             })),
-            next_key: busbar_kernel::door::UnitKeyMint::default(),
+            next_key: Arc::default(),
             marked: AtomicU64::new(0),
             lost: Mutex::new(HashMap::new()),
             mono: AtomicU64::new(0),
@@ -310,6 +317,18 @@ impl Node {
             // work, the root names what the work is driven through, and neither names the other's.
             dispatch: Arc::new(crate::root::transports::DrivenOnce::new()),
         }
+    }
+
+    /// The node's kernel and its one unit-key mint, shared with a unit the node does not drive but
+    /// whose key must be unique beside its own (a door plane's health probe, K7).
+    #[must_use]
+    pub fn kernel_and_keys(
+        &self,
+    ) -> (
+        Arc<busbar_kernel::teller::Kernel>,
+        Arc<busbar_kernel::door::UnitKeyMint>,
+    ) {
+        (Arc::clone(&self.kernel), Arc::clone(&self.next_key))
     }
 
     /// How many of this node's units have driven the engine through the Route seam.
@@ -364,8 +383,32 @@ impl Node {
     ///
     /// Unbound, the exit arm below does nothing and the unit ends as it always has. That is the
     /// honest answer for a build with no root ledger in it, not a settlement quietly dropped.
+    ///
+    /// When the book's journal is kept by the configured store, the store's lane is bound with it:
+    /// the node FAILS CLOSED while that lane is full ([`Node::journal_refusal`]).
     pub fn bind_book(&self, book: Arc<Mutex<crate::root::durability::Durability>>) {
+        let lane = {
+            let durability = book.lock().unwrap_or_else(|p| p.into_inner());
+            durability
+                .durable_in_store()
+                .then(|| durability.lane().cloned())
+                .flatten()
+        };
+        if let Some(lane) = lane {
+            let _ = self.lane.set(lane);
+        }
         let _ = self.book.set(book);
+    }
+
+    /// WHY THIS NODE REFUSES A NEW MONEY-BEARING UNIT NOW, or `None` — one atomic read while the
+    /// store keeps up. The book's journal is kept by the configured store and the lane to it is
+    /// full: admitting the unit would put records on the chain nothing has room to hold, and a record
+    /// is never dropped, so the unit is refused instead (ARCHITECT 2026-10-07 H3 ruling).
+    #[must_use]
+    pub fn journal_refusal(&self) -> Option<String> {
+        self.lane
+            .get()
+            .and_then(crate::root::durability::JournalLane::refuses_money)
     }
 
     /// Put what the loop posted onto the book, if this node has one.
@@ -396,8 +439,12 @@ impl Node {
         let Ok(posted) = end.into_posted() else {
             return;
         };
-        // THE UNIT'S RECORD, sealed with its one line: what the line wrote is the record's amount.
-        let lines = exit_lines(outcome, &posted);
+        // THE UNIT'S RECORD, sealed with its one line. Its amount is the unit's counts plus the card
+        // version, never a price (`BUSBAR-1.6.0.md` THE DESIGN §1, #43, #77(3)). The exit's posting
+        // carries only the figure the settlement writer moved, money in nano-units, and no class or
+        // count, so it gives the record no line. A unit whose counts are known has a late arm, and
+        // that arm seals them ([`report_lines`]).
+        let lines = Vec::new();
         // Settle THROUGH the money-book seam rather than a `&mut` on the book itself: the lock is
         // taken and released inside the seam, so this arm settling does not hold the one book across
         // its whole exit the way a `&mut Durability` did. The pass-through settles the identical
@@ -493,6 +540,42 @@ impl Node {
         let _dispatched = durability.journal_dispatch(&at);
     }
 
+    /// Record on the book this unit's ACCRUAL SO FAR: a durability `unit.accrued` checkpoint
+    /// (THE DESIGN §7), counts and the instant they price at, never a figure (#71).
+    ///
+    /// On the balance, window and arrival reading its hold was opened under
+    /// ([`Self::open_on_book`]), as [`Self::dispatch_on_book`] marks it, so a node killed before the
+    /// unit's one line is written recovers the hold at these counts, marked recovered. Called from
+    /// the root's checkpoint flush tick alone, never on a piece's path. A journal that will not take
+    /// it retains and re-offers it; a checkpoint for a hold already closed marks nothing.
+    fn checkpoint_on_book(
+        &self,
+        principal: &PrincipalId,
+        arrived: Arrived,
+        counts: &crate::root::durability::UnitCounts,
+    ) {
+        let Some(book) = self.book.get() else {
+            return;
+        };
+        let key = balance(principal);
+        let at = crate::root::durability::Settling {
+            key: &key,
+            window: busbar_kernel::governance::budget_window(
+                busbar_kernel::governance::WINDOW_DAY,
+                arrived.secs(),
+            ),
+            durability: &self.durability_token,
+            step: busbar_contract::caps::StepName::Meter,
+            stamp: crate::root::durability::PostingStamp {
+                rate_card_version: 0,
+                wall: arrived.secs(),
+                mono: arrived.mono(),
+            },
+        };
+        let mut durability = book.lock().unwrap_or_else(|p| p.into_inner());
+        let _accrued = durability.checkpoint_accrual(&at, counts, arrived.ms());
+    }
+
     /// THE SWEEP: the second holder of a key to every unit's hold cell, run over the slots the drop
     /// guard MARKED (item 129).
     ///
@@ -583,6 +666,13 @@ impl Node {
         swept
     }
 
+    /// THE PARENT a nested unit is driven under ([`Node::drive_borrowed`]): the unit `key`, while it
+    /// is live in this node's table.
+    #[must_use]
+    pub fn parent(&self, key: UnitKey) -> Option<Parent> {
+        self.inflight.get(key).map(|slot| Parent { key, slot })
+    }
+
     /// A key for one unit this node is about to drive ([`Node::drive_borrowed`]), from the node's
     /// one mint: the steps that serve it are told it before it runs.
     #[must_use]
@@ -604,6 +694,11 @@ impl Node {
     /// once the unit has ended (what it consumed, priced at the card pinned at its door, the node's
     /// one pricing site), else the exit's posting as it stood, its audit record sealed with it.
     /// Answers whether the table took the unit. Dropping the future marks its slot for the sweep.
+    ///
+    /// A NESTED unit (`unit.nest`, THE DESIGN §11.12 unit row) names its `parent`: it enters the
+    /// table as `OriginKind::Nested`, its loop runs with the parent's hold cell as its `Run.parent`
+    /// (so its door accrues against the parent's admission, and its posting goes into the parent's
+    /// hold, or late on its own when the parent exited first), and its record names the parent.
     #[allow(clippy::too_many_arguments)]
     pub async fn drive_borrowed<U: Units + RouteAwait>(
         &self,
@@ -614,9 +709,108 @@ impl Node {
         units: &U,
         late: Late,
         history: Option<crate::root::kernel::PinnedHistory>,
-    ) -> bool {
+        parent: Option<&Parent>,
+    ) -> Option<Outcome> {
         self.sweep(arrived);
+        if self.journal_refusal().is_some() {
+            return None;
+        }
         post.open(key, principal.clone(), arrived, history.clone());
+        let meter = Arc::new(AccrualMeter::new());
+        let origin = parent.map_or(OriginKind::Client, |p| OriginKind::Nested { parent: p.key });
+        let hold =
+            busbar_kernel::inflight::arrival_hold(&self.kernel, &self.door, principal.clone());
+        let Ok(slot) = self.inflight.insert(busbar_kernel::inflight::Enter {
+            key,
+            origin,
+            session: None,
+            admin_listener: false,
+            zero_hold_tick: false,
+            arrival: hold,
+            now: arrived.ms(),
+        }) else {
+            post.close(key);
+            return None;
+        };
+        self.open_on_book(principal, arrived);
+        let mut occupied = Occupied {
+            node: self,
+            slot: Arc::clone(&slot),
+            arrived,
+            reached_end: false,
+        };
+        let ctx = UnitCtx {
+            key,
+            origin,
+            session: None,
+            generation: busbar_kernel::registry::Generation::FIRST,
+            admin_listener: false,
+            kernel_verb_only: false,
+        };
+        let borrowed = Borrowed { units, post };
+        let ended = busbar_kernel::teller::run_unit_async(
+            &self.kernel,
+            &borrowed,
+            &ctx,
+            busbar_kernel::teller::Run {
+                cell: slot.cell(),
+                parent: parent.map(|p| p.slot.cell()),
+                leases: slot.leases(),
+                gauge: &self.gauge,
+                canary: &self.canary,
+                meter: &meter,
+            },
+            &borrowed,
+        )
+        .await;
+        // How the unit ended, for the caller's close (a framed stream's final status); `None` when
+        // the node's sweep settled it first.
+        let outcome = match &ended {
+            Ended::Settled { end, .. } => Some(end.outcome()),
+            Ended::AlreadySettled => None,
+        };
+        // The unit returned: its facts close here, and its record is sealed with its one line.
+        let seal = post.take(key).map(|(facts, pass)| UnitSeal {
+            facts,
+            pass,
+            key,
+            origin: self.kernel.origin(origin),
+            parent: parent.map(|p| p.key),
+        });
+        match self.late_arm(Some(late), principal, arrived, history.as_ref()) {
+            Some(mut arm) => {
+                arm.seal = seal;
+                arm.carrying(ended).post();
+            }
+            None => self.settle_end(principal, arrived, history.as_ref(), ended, seal),
+        }
+        occupied.reached_end = true;
+        outcome
+    }
+
+    /// THE BORROWED SESSION OPEN (K6; ARCHITECT Q-L5B-SESSION-SERVE 2026-10-03): one duplex session
+    /// unit whose steps, far end and caller live on the serving task (a plane driver's unit), run
+    /// through the loop's session opener ([`busbar_kernel::teller::open_unit`]: arrival to the door
+    /// and its audit, a session admitting at a zero hold, so nothing is held on the book and there is
+    /// no exit to settle) under this node's in-flight table, sweep and gauge. Its facts are opened on
+    /// `post` for the whole session. What the door said comes back with the unit's context and the
+    /// slot the session holds while it runs: [`SessionSlot::finish`] gives it back once the session
+    /// ended (its money is the session's one line, `PlaneMoney::session_ended`); dropping the slot
+    /// marks it for the sweep. `None` when the table would not take the unit.
+    pub fn open_borrowed<U: Units>(
+        &self,
+        key: UnitKey,
+        arrived: Arrived,
+        principal: &PrincipalId,
+        post: &'_ NodeEndPost,
+        units: &U,
+        history: Option<crate::root::kernel::PinnedHistory>,
+    ) -> Option<(busbar_kernel::teller::SessionOpen, UnitCtx, SessionSlot<'_>)> {
+        self.sweep(arrived);
+        if self.journal_refusal().is_some() {
+            return None;
+        }
+        post.open(key, principal.clone(), arrived, history);
         let meter = Arc::new(AccrualMeter::new());
         let hold =
             busbar_kernel::inflight::arrival_hold(&self.kernel, &self.door, principal.clone());
@@ -630,10 +824,9 @@ impl Node {
             now: arrived.ms(),
         }) else {
             post.close(key);
-            return false;
+            return None;
         };
-        self.open_on_book(principal, arrived);
-        let mut occupied = Occupied {
+        let occupied = Occupied {
             node: self,
             slot: Arc::clone(&slot),
             arrived,
@@ -648,7 +841,7 @@ impl Node {
             kernel_verb_only: false,
         };
         let borrowed = Borrowed { units, post };
-        let ended = busbar_kernel::teller::run_unit_async(
+        let opened = busbar_kernel::teller::open_unit(
             &self.kernel,
             &borrowed,
             &ctx,
@@ -660,25 +853,8 @@ impl Node {
                 canary: &self.canary,
                 meter: &meter,
             },
-            &borrowed,
-        )
-        .await;
-        // The unit returned: its facts close here, and its record is sealed with its one line.
-        let seal = post.take(key).map(|(facts, pass)| UnitSeal {
-            facts,
-            pass,
-            key,
-            origin: self.kernel.origin(OriginKind::Client),
-        });
-        match self.late_arm(Some(late), principal, arrived, history.as_ref()) {
-            Some(mut arm) => {
-                arm.seal = seal;
-                arm.carrying(ended).post();
-            }
-            None => self.settle_end(principal, arrived, history.as_ref(), ended, seal),
-        }
-        occupied.reached_end = true;
-        true
+        );
+        Some((opened, ctx, SessionSlot { occupied, key }))
     }
 
     /// Walk one handed unit through the loop and answer with what the terminal posted.
@@ -724,6 +900,11 @@ impl Node {
         // Whose unit, what class, and the dialect a refusal this node renders is written in — the
         // plane's statements about what arrived, read off it before any step runs.
         let (principal, op_class, proto, build) = handed;
+        // FAIL CLOSED while the book's journal cannot reach its store: nothing is built, held or
+        // journalled for a unit that is refused here, and the reason is the answer.
+        if let Some(why) = self.journal_refusal() {
+            return journal_unavailable(proto, &why);
+        }
         let key = self.next_key.mint();
         // ONE METER, on both sides of the loop: the unit accrues onto it at the Meter step and the
         // kernel reads it at the exit. It is lent to the unit at the build.
@@ -1200,7 +1381,8 @@ impl LateAccrual {
             // Nothing arrived after all: the one line is the exit's posting as it stood, written
             // where the exit would have written it.
             if let Some(exit) = exit {
-                let lines = outcome.map(|o| exit_lines(o, &exit)).unwrap_or_default();
+                // No counts arrived, and the posting is a figure, not counts: no line.
+                let lines = Vec::new();
                 let _settled = settle(
                     &book,
                     &principal,
@@ -1503,6 +1685,29 @@ struct Occupied<'n> {
     reached_end: bool,
 }
 
+/// THE IN-FLIGHT SLOT A BORROWED SESSION HOLDS while it runs ([`Node::open_borrowed`]).
+#[must_use = "a session slot dropped unfinished is marked for the sweep"]
+pub struct SessionSlot<'n> {
+    occupied: Occupied<'n>,
+    key: UnitKey,
+}
+
+impl std::fmt::Debug for SessionSlot<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SessionSlot")
+            .field("key", &self.key)
+            .finish()
+    }
+}
+
+impl SessionSlot<'_> {
+    /// The session ended on its own path: its facts close on `post` and its slot is given back.
+    pub fn finish(mut self, post: &NodeEndPost) {
+        post.close(self.key);
+        self.occupied.reached_end = true;
+    }
+}
+
 impl Drop for Occupied<'_> {
     fn drop(&mut self) {
         if self.reached_end {
@@ -1517,6 +1722,17 @@ impl Drop for Occupied<'_> {
             self.node.marked.fetch_add(1, Ordering::AcqRel);
         }
     }
+}
+
+/// What a node whose journal cannot reach its store answers a new unit with, in the caller's own
+/// dialect: 503 and the reason. A state the previous release never reached (it kept no journal).
+fn journal_unavailable(proto: &str, why: &str) -> Response {
+    busbar_kernel::proxy::ingress_error(
+        proto,
+        StatusCode::SERVICE_UNAVAILABLE,
+        busbar_contract::protocol::KIND_OVERLOADED,
+        why,
+    )
 }
 
 /// What a node that cannot take the unit at all answers with, in the caller's own dialect.
@@ -1572,6 +1788,7 @@ impl Driven<'_> {
             pass,
             key,
             origin: self.node.kernel.origin(OriginKind::Client),
+            parent: None,
         })
     }
 }
@@ -1697,6 +1914,12 @@ impl RouteAwait for Driven<'_> {
             self.op_class,
             self.route.route_leg(token, ctx, destinations),
         )
+    }
+
+    /// The plane's own screen before the door (SEAM-4j: a gate-first plane's hooks), forwarded:
+    /// a wrapper that answered the default would let the gate run after admission.
+    fn screen<'a>(&'a self, ctx: &'a UnitCtx) -> Screen<'a> {
+        self.route.screen(ctx)
     }
 
     /// THE CALLER WENT AWAY MID-DISPATCH, and the end the loop reached for it is POSTED here (item
@@ -1842,6 +2065,11 @@ impl<U: RouteAwait> RouteAwait for Borrowed<'_, U> {
     fn abandoned(&self, ctx: &UnitCtx, ended: Ended) {
         self.units.abandoned(ctx, ended);
     }
+
+    /// The borrowed units' own screen before the door, forwarded (SEAM-4j).
+    fn screen<'a>(&'a self, ctx: &'a UnitCtx) -> Screen<'a> {
+        self.units.screen(ctx)
+    }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1970,6 +2198,29 @@ impl busbar_kernel_egress::ports::Journal for NodeEndPost {
     fn abandoned(&self, _record: &busbar_kernel_egress::ports::Dispatched) {}
 }
 
+/// THE RUNNING UNIT'S CHECKPOINT, ON THE NODE'S BOOK (THE DESIGN §7): the root's flush tick hands
+/// each driven unit's accrual so far here ([`busbar_kernel::plane_driver::PlaneMoney::flush_checkpoints`]),
+/// and it is journaled as a `unit.accrued` record under the facts the unit was opened with at
+/// admission. A session's turns are the same call with its cumulative counts. A unit with no open
+/// facts was never admitted onto the book: nothing is written.
+impl busbar_kernel::plane_driver::Checkpointer for NodeEndPost {
+    fn checkpoint(&self, key: UnitKey, accrued: &busbar_kernel::plane_driver::Accrued) {
+        let facts = self
+            .lock()
+            .get(&key)
+            .map(|(principal, arrived, _, _)| (principal.clone(), *arrived));
+        let Some((principal, arrived)) = facts else {
+            return;
+        };
+        let counts = crate::root::durability::UnitCounts {
+            lane: accrued.lane.clone(),
+            fee_count: accrued.fee_count,
+            classes: accrued.classes.clone(),
+        };
+        self.node.checkpoint_on_book(&principal, arrived, &counts);
+    }
+}
+
 impl busbar_kernel::plane_driver::EndPost for NodeEndPost {
     /// Post the abandoned end, once. Inside the loop's `Drop` guard: the book's settle is the
     /// node's in-memory posting behind one short lock, and nothing here awaits or crosses a plugin.
@@ -1981,7 +2232,11 @@ impl busbar_kernel::plane_driver::EndPost for NodeEndPost {
                 facts,
                 pass,
                 key: ctx.key,
-                origin: self.node.kernel.origin(OriginKind::Client),
+                origin: self.node.kernel.origin(ctx.origin),
+                parent: match ctx.origin {
+                    OriginKind::Nested { parent } => Some(parent),
+                    _ => None,
+                },
             });
             self.node
                 .settle_end(&principal, arrived, history.as_ref(), ended, seal);
@@ -1993,6 +2248,33 @@ impl busbar_kernel::plane_driver::EndPost for NodeEndPost {
 // The unit's fixed audit record
 // ---------------------------------------------------------------------------------------------
 
+/// A NESTED UNIT'S PARENT, live in the node's table ([`Node::parent`]): its key and its slot, whose
+/// hold cell the child accrues against.
+pub struct Parent {
+    key: UnitKey,
+    slot: Arc<busbar_kernel::inflight::UnitSlot>,
+}
+
+impl Parent {
+    /// The parent's key.
+    #[must_use]
+    pub fn key(&self) -> UnitKey {
+        self.key
+    }
+
+    /// The parent's hold cell.
+    #[must_use]
+    pub fn cell(&self) -> &busbar_contract::caps::HoldCell {
+        self.slot.cell()
+    }
+}
+
+impl std::fmt::Debug for Parent {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Parent").field("key", &self.key).finish()
+    }
+}
+
 /// A UNIT'S RECORD-TO-BE: the facts its audit door sealed and the pass that door was lent, handed
 /// back by the loop (`Units::audited`), carried to the unit's one line and sealed there — once, since
 /// sealing consumes the pass. A unit whose audit door never answered has none, so it has no record.
@@ -2001,6 +2283,8 @@ struct UnitSeal {
     pass: Pass<Audit>,
     key: UnitKey,
     origin: busbar_contract::caps::Origin,
+    /// The unit that caused this one (a nested unit's parent).
+    parent: Option<UnitKey>,
 }
 
 impl UnitSeal {
@@ -2026,7 +2310,7 @@ impl UnitSeal {
                 incarnation: 0,
                 op_class: RecordOpClass::new(self.facts.op_class.as_str()),
                 destination: None,
-                parent: None,
+                parent: self.parent,
                 pre_hook_head: None,
                 post_hook_head: None,
             },
@@ -2074,22 +2358,6 @@ fn audit_finish(finish: busbar_contract::FinishClass) -> RecordFinish {
         busbar_contract::FinishClass::Partial => RecordFinish::Partial,
         busbar_contract::FinishClass::Error => RecordFinish::Error,
     }
-}
-
-/// The record's amount for a line the EXIT wrote: the kernel's own accrual, as the exit's usage
-/// line carried it — nothing for a refused unit, which was charged nothing.
-fn exit_lines(outcome: Outcome, posted: &busbar_contract::caps::Posted) -> Vec<RecordLine> {
-    if matches!(outcome, Outcome::Refused(..)) || posted.settled() == 0 {
-        return Vec::new();
-    }
-    vec![RecordLine {
-        class: busbar_kernel::teller::KERNEL_ACCRUAL_CLASS,
-        quantity: posted.settled(),
-        source: busbar_contract::caps::QuantitySource::Count,
-        estimated: posted
-            .flags()
-            .contains(busbar_contract::caps::PostingFlags::ESTIMATED),
-    }]
 }
 
 /// The record's amount for a line the LATE ARM wrote: every class the unit reported, by the
@@ -2305,6 +2573,6 @@ fn bind_node_book(
 ///
 /// Each fixture builds TWO deployments — own registry, own scripted upstream, own governance store —
 /// so the two legs' counters are compared rather than summed.
-#[cfg(test)]
+#[cfg(all(test, linked_axis_node))]
 #[path = "tests/plane_node.rs"]
 mod tests;

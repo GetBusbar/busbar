@@ -25,14 +25,20 @@ fn repo_root() -> PathBuf {
 }
 
 fn tmpdir(tag: &str) -> PathBuf {
-    let d = repo_root().join(".fix").join(format!(
-        "xtask-test-{tag}-{}-{:?}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
+    let d =
+        repo_root()
+            .join(".fix")
+            .join(format!("xtask-test-{tag}-{}-{:?}", std::process::id(), {
+                static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+                format!(
+                    "{}-{}-{}",
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map_or(0, |d| d.as_nanos()),
+                    line!(),
+                    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                )
+            }));
     std::fs::create_dir_all(&d).expect("scratch dir");
     d
 }

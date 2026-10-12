@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE FLUSH EPOCH: how many times the kernel's one flush tick has run. The composition root's
-//! 1 s flush tick bumps it once per tick, right after the host services' flush; the money seam
-//! reads it to write a unit's accrual checkpoint at most once per tick. It is the only cadence:
-//! nothing else in the kernel keeps a second timer for it.
+//! THE FLUSH EPOCH: how many times the root's checkpoint flush tick has run. The composition
+//! root's flush tick (every `host_records::FLUSH_INTERVAL`) bumps it once per tick and then runs
+//! each plane's [`PlaneMoney::flush_checkpoints`](super::PlaneMoney::flush_checkpoints); the money
+//! seam reads it to write a unit's accrual checkpoint at most once per tick. It is the only cadence:
+//! nothing in the kernel keeps a timer for it.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;

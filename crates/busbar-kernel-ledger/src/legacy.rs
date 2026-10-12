@@ -20,8 +20,10 @@
 //!
 //! The binding is best-effort by design. A settlement that failed because a legacy row would not
 //! write would be a behavioural change in the worst possible direction: the previous release
-//! settled, so this one has to. The error comes back so the integrator can count it and alarm on it,
-//! and the settlement stands either way.
+//! settled, so this one has to. [`LegacyRows::write`] answers a `Result` so a binding can say it
+//! failed, and the ledger DROPS that answer: it is not counted, not logged and not returned, and the
+//! settlement stands either way. The production binding, [`SummedRows`], never fails; a binding
+//! that can fail has to count and report its own failures.
 
 /// One posting, in the terms the previous release's rows are written from.
 ///
@@ -71,8 +73,14 @@ pub trait LegacyRows: Send {
     fn write(&mut self, posting: &LegacyPosting) -> Result<(), LegacyWriteError>;
 }
 
-/// A binding that keeps what it was handed, so a test can look at it and an integrator has
-/// something to start from.
+/// A binding that keeps EVERY posting it was handed, in order, so a test can look at each one.
+///
+/// **A TEST RECORDER, NOT A PRODUCTION BINDING.** It grows by one posting per settlement for the
+/// life of the process, which is right for a battery that checks posting by posting and wrong for a
+/// node that settles all day. A node binds [`SummedRows`], which holds one row per cell whatever
+/// the traffic has been. Nothing in production constructs this; it ships only because the root's
+/// and the kernel's test batteries, in other crates, record through it, and it is listed as such
+/// in `qa/unconstructed.toml`.
 #[derive(Debug, Default, Clone)]
 pub struct RecordingRows {
     written: std::sync::Arc<std::sync::Mutex<Vec<LegacyPosting>>>,
@@ -120,43 +128,96 @@ impl LegacyRows for RecordingRows {
     }
 }
 
-/// What the previous release's chain head looked like when the migration read it.
+/// The cell a previous release's row is kept at: whose, against which bucket, in which window.
+type Cell = (String, String, u64);
+
+/// **THE PRODUCTION BINDING**: the previous release's rows as running sums, one per cell.
 ///
-/// An EMPTY head is a legitimate answer, not a failure. A deployment whose store keeps nothing
-/// across a restart has no head to read, and an older store that does not know how to answer says
-/// so. Both seal a migration at a zero opening balance and the node serves — a refusal there would
-/// mean a configuration that worked yesterday stops working on upgrade, which is the one outcome a
-/// migration may not produce.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct LegacyHead {
-    /// The last sequence number the previous release's chain reached, if any.
-    pub seq: Option<u64>,
-    /// The hash at that point, if any.
-    pub hash: Option<String>,
-    /// The opening balance per bucket, as the previous release's rows hold it.
-    pub balances: Vec<(String, i128)>,
-    /// How many rows were read to arrive at those balances.
-    pub cells_read: u64,
+/// What a node's dual write has to keep in memory is what its readers read, and its one reader —
+/// the reconciliation view — sums the postings per bucket and window. So this keeps exactly that
+/// shape, one level finer (the principal stays in the cell, so a row still names whose it is):
+/// every posting into a cell adds its four figures onto that cell's row and is not itself kept.
+/// Memory is bounded by the cells the node has settled into, never by how many settlements it has
+/// made — a cell settled into a million times is one row.
+///
+/// The postings themselves are not lost by this. The durable record of every settlement is the
+/// node's journal, written before the book moves, and a restart replays it through the same dual
+/// write, which rebuilds these sums exactly. This is the in-memory cross-check, and a cross-check
+/// over sums needs only the sums.
+///
+/// Every figure saturates rather than wraps, as every book operator does (`settle.rs`, `totals.rs`):
+/// a sum pinned at its bound is a reading a reconciliation can still flag, where a wrapped one is a
+/// small number that looks true.
+#[derive(Debug, Default, Clone)]
+pub struct SummedRows {
+    cells: std::sync::Arc<std::sync::Mutex<std::collections::BTreeMap<Cell, LegacyPosting>>>,
 }
 
-impl LegacyHead {
-    /// The answer a store with nothing to say gives.
-    pub fn empty() -> Self {
-        LegacyHead::default()
+impl SummedRows {
+    /// A fresh one, holding no row.
+    pub fn new() -> Self {
+        SummedRows::default()
     }
 
-    /// Whether there was anything there.
+    /// How many rows it holds: one per cell settled into, however many postings each took.
+    pub fn len(&self) -> usize {
+        self.cells.lock().unwrap_or_else(|e| e.into_inner()).len()
+    }
+
+    /// Whether nothing has been posted.
     pub fn is_empty(&self) -> bool {
-        self.seq.is_none() && self.balances.is_empty()
+        self.len() == 0
+    }
+
+    /// A copy of every row, in cell order.
+    pub fn rows(&self) -> Vec<LegacyPosting> {
+        self.cells
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .values()
+            .cloned()
+            .collect()
+    }
+
+    /// Show each row to a fold, in cell order, without copying any of them.
+    pub fn fold_rows(&self, take: &mut dyn FnMut(&LegacyPosting)) {
+        for row in self
+            .cells
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .values()
+        {
+            take(row);
+        }
     }
 }
 
-/// Reads the previous release's chain head and balances at migration time.
-pub trait LegacyMigrationSource {
-    /// The head and balances. An implementation that cannot answer returns an empty head rather
-    /// than an error, and the migration seals a zero opening balance.
-    fn read_head(&self) -> LegacyHead;
+impl LegacyRows for SummedRows {
+    fn write(&mut self, posting: &LegacyPosting) -> Result<(), LegacyWriteError> {
+        let mut cells = self.cells.lock().unwrap_or_else(|e| e.into_inner());
+        let cell = (
+            posting.principal.clone(),
+            posting.bucket.clone(),
+            posting.window_start,
+        );
+        match cells.get_mut(&cell) {
+            Some(row) => {
+                row.reserved = row.reserved.saturating_add(posting.reserved);
+                row.settled = row.settled.saturating_add(posting.settled);
+                row.overdraft = row.overdraft.saturating_add(posting.overdraft);
+                row.fee_count = row.fee_count.saturating_add(posting.fee_count);
+            }
+            None => {
+                cells.insert(cell, posting.clone());
+            }
+        }
+        Ok(())
+    }
 }
+
+/// The head the migration reads and the seam it reads it through: the contract's, because the
+/// store adapter implements the seam on the other side of it.
+pub use busbar_contract::migration::{LegacyHead, LegacyMigrationSource};
 
 /// The opening entries a migration seals: one per bucket, at the named card version.
 #[derive(Debug, Clone, PartialEq, Eq)]

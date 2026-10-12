@@ -33,7 +33,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 fn write_all(c: &dyn Carrier, conn: u64, bytes: &[u8]) -> Result<(), TransportError> {
     let mut at = 0;
     while at < bytes.len() {
-        at += wait(|cx| c.poll_write(conn, cx, &bytes[at..]))?;
+        at += wait(|cx| c.poll_write(conn, cx, &bytes[at..], false))?;
     }
     wait(|cx| c.poll_flush(conn, cx))
 }
@@ -79,7 +79,7 @@ fn read_exact(c: &dyn Carrier, conn: u64, n: usize, chunk: usize) -> Vec<u8> {
     let mut buf = vec![0_u8; chunk];
     while all.len() < n {
         let want = (n - all.len()).min(chunk);
-        match wait(|cx| c.poll_read(conn, cx, &mut buf[..want])) {
+        match wait(|cx| c.poll_read(conn, cx, &mut buf[..want]).map_ok(|c| c.len)) {
             Ok(0) => panic!("the peer closed after {} of {n} bytes", all.len()),
             Ok(got) => all.extend_from_slice(&buf[..got]),
             Err(e) => panic!("read failed mid-stream: {e:?}"),
@@ -93,7 +93,7 @@ fn drain(c: &dyn Carrier, conn: u64, chunk: usize) -> Vec<u8> {
     let mut all = Vec::new();
     let mut buf = vec![0_u8; chunk];
     loop {
-        match wait(|cx| c.poll_read(conn, cx, &mut buf)) {
+        match wait(|cx| c.poll_read(conn, cx, &mut buf).map_ok(|c| c.len)) {
             Ok(0) => return all,
             Ok(n) => all.extend_from_slice(&buf[..n]),
             Err(e) => panic!("read failed mid-stream: {e:?}"),
@@ -172,7 +172,7 @@ fn fold(c: &dyn Carrier) -> Fold {
         accept_read,
         accept_peer_saw,
         arrival_agrees,
-        unknown_write: wait(|cx| c.poll_write(u64::MAX, cx, b"x")).unwrap_err(),
+        unknown_write: wait(|cx| c.poll_write(u64::MAX, cx, b"x", false)).unwrap_err(),
         unknown_close: wait(|cx| c.poll_close(u64::MAX, cx, CloseReason::Normal)),
         refused_dial,
         program_dial: c
@@ -277,31 +277,33 @@ fn manifest(kind: &str) -> Manifest {
             kind,
             "my-transport",
             "my-transport",
-            busbar_contract::abi::ABI_MINOR,
+            busbar_contract::abi::transport::ABI_VERSION,
         )
     }
 }
 
-/// A `kind: transport` manifest passes the structural gate on the airlock-minor axis, floored at the
-/// first minor with the carrier/framer decl; an unknown kind is still refused with the established
-/// prefix.
+/// A `kind: transport` manifest passes the structural gate at the transport kind's one version
+/// (THE DESIGN §11.2, A.9: no range); an older or a newer one is refused, and an unknown kind is
+/// still refused with the established prefix.
 #[test]
-fn a_transport_manifest_is_admitted_on_the_airlock_axis() {
+fn a_transport_manifest_is_admitted_at_the_kinds_one_version() {
     assert_eq!(
         crate::supported_abi("transport"),
-        &[
-            busbar_contract::abi::hot::TRANSPORT_DECL_MINOR,
-            busbar_contract::abi::ABI_MINOR
-        ]
+        &[busbar_contract::abi::transport::ABI_VERSION]
     );
     validate_structure(&manifest("transport"), b"lib", &crate::supported_abi, "")
         .expect("a transport is a kind the loader admits");
-    let mut old = manifest("transport");
-    old.abi_version = busbar_contract::abi::hot::TRANSPORT_DECL_MINOR - 1;
-    assert!(
-        validate_structure(&old, b"lib", &crate::supported_abi, "").is_err(),
-        "a minor with the retired byte-stream decl has no carrier or framer to speak"
-    );
+    for other in [
+        busbar_contract::abi::transport::ABI_VERSION - 1,
+        busbar_contract::abi::transport::ABI_VERSION + 1,
+    ] {
+        let mut m = manifest("transport");
+        m.abi_version = other;
+        assert!(
+            validate_structure(&m, b"lib", &crate::supported_abi, "").is_err(),
+            "a transport at version {other} is refused"
+        );
+    }
     let err = validate_structure(&manifest("gizmo"), b"lib", &crate::supported_abi, "")
         .expect_err("an unknown kind is refused");
     assert!(

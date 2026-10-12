@@ -8,14 +8,8 @@
 //! one and downcast by the other cannot match — these must run in the plugin's single-`busbar-core`
 //! binary. The pure-auth (401/verification) tests that never reach dispatch stay in core.
 
-use axum::http::header::AUTHORIZATION;
 use busbar_contract::records::ScopeRef;
-use busbar_kernel::{
-    auth::AuthMiddleware,
-    test_support::sigv4::{
-        format_amz_time, sha256_hex, sign_v4, uri_encode_path, X_AMZ_CONTENT_SHA256, X_AMZ_DATE,
-    },
-};
+use busbar_kernel::auth::AuthMiddleware;
 
 /// HOW A TEST CALLER PRESENTS ITS CREDENTIAL — the one place this crate's engine tests spell the
 /// `Authorization` scheme. Every other engine test module presents a credential through
@@ -80,48 +74,6 @@ fn chain_cfg(modules: &[&str]) -> busbar_kernel::config::auth::AuthCfg {
             .map(|m| busbar_kernel::config::auth::AuthChainEntry::bare(*m))
             .collect(),
     )
-}
-
-/// Helper: SigV4-sign a Bedrock request the way a real AWS client would, returning the
-/// `Authorization` header value + the signed headers.
-#[allow(clippy::type_complexity)]
-fn sign_bedrock_request(
-    secret: &str,
-    access_key_id: &str,
-    region: &str,
-    service: &str,
-    path: &str,
-    body: &[u8],
-    amzdate: &str,
-) -> (String, Vec<(String, String)>) {
-    let datestamp = &amzdate[0..8];
-    let payload_hash = sha256_hex(body);
-    let headers = vec![
-        (
-            "host".to_string(),
-            "bedrock-runtime.us-east-1.amazonaws.com".to_string(),
-        ),
-        (X_AMZ_CONTENT_SHA256.to_string(), payload_hash.clone()),
-        (X_AMZ_DATE.to_string(), amzdate.to_string()),
-    ];
-    let canonical_uri = uri_encode_path(path);
-    let (sig, signed_headers) = sign_v4(
-        secret,
-        region,
-        service,
-        "POST",
-        &canonical_uri,
-        "",
-        &headers,
-        &payload_hash,
-        amzdate,
-        datestamp,
-    );
-    let auth = format!(
-        "AWS4-HMAC-SHA256 Credential={access_key_id}/{datestamp}/{region}/{service}/aws4_request, \
-             SignedHeaders={signed_headers}, Signature={sig}"
-    );
-    (auth, headers)
 }
 
 /// Local helper: serve a router on an ephemeral port, returning (addr, join handle).
@@ -194,7 +146,7 @@ async fn test_chain_accepts_all_carriers_and_native_401() {
     use serde_json::json;
     use std::sync::Arc;
 
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
 
     let token = "grp:carrier";
 
@@ -369,7 +321,7 @@ async fn test_disabled_virtual_key_is_rejected_401() {
     use serde_json::json;
     use std::sync::Arc;
 
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
 
     // Mock upstream that returns a valid Anthropic-shaped body, so an ADMITTED request reaches
     // 200 rather than failing for an unrelated reason.
@@ -499,7 +451,7 @@ async fn test_governance_accepts_vendor_carriers_and_native_401() {
     use serde_json::json;
     use std::sync::Arc;
 
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
 
     let state = Arc::new(MockServerState::new());
     // Two admitted requests (x-goog-api-key, x-api-key) reach the upstream; queue two bodies.
@@ -641,7 +593,7 @@ async fn test_governance_revoked_signed_token_key_rejected() {
     use serde_json::json;
     use std::sync::Arc;
 
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
 
     let state = Arc::new(MockServerState::new());
     let server = MockServer::new(state).await;
@@ -743,7 +695,7 @@ async fn test_governance_inert_without_admin_token_static_token_admitted() {
     use serde_json::json;
     use std::sync::Arc;
 
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
 
     let state = Arc::new(MockServerState::new());
     state.push(MockResponse::Ok {
@@ -848,7 +800,7 @@ async fn test_governance_inert_without_admin_token_open_relay_admits() {
     use serde_json::json;
     use std::sync::Arc;
 
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
 
     let state = Arc::new(MockServerState::new());
     state.push(MockResponse::Ok {
@@ -918,7 +870,7 @@ async fn test_governance_active_with_admin_token_enforces_minted_key() {
     use serde_json::json;
     use std::sync::Arc;
 
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
 
     let state = Arc::new(MockServerState::new());
     state.push(MockResponse::Ok {
@@ -1041,7 +993,7 @@ async fn test_inert_governance_persisted_key_is_not_enforced_static_chain_wins()
     use serde_json::json;
     use std::sync::Arc;
 
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
 
     let state = Arc::new(MockServerState::new());
     for _ in 0..2 {
@@ -1068,7 +1020,7 @@ async fn test_inert_governance_persisted_key_is_not_enforced_static_chain_wins()
     store
         .put_key(&VirtualKey {
             id: "kold".to_string(),
-            generation_hash: sha256_hex(persisted_secret.as_bytes()),
+            generation_hash: busbar_contract::redacted::sha256_hex(persisted_secret.as_bytes()),
             name: "kold".to_string(),
             allowed_scopes: Some(vec![ScopeRef::pool("restricted")]),
             enabled: true,
@@ -1180,7 +1132,7 @@ async fn test_active_governance_persisted_key_is_enforced() {
     use serde_json::json;
     use std::sync::Arc;
 
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
 
     // No upstream body queued — enforcement must reject before any upstream call.
     let state = Arc::new(MockServerState::new());
@@ -1265,7 +1217,7 @@ async fn test_active_governance_persisted_key_is_enforced() {
 async fn test_1_5_2_open_chain_admin_token_no_credential_admits_anon() {
     crate::testkit::install_test_seams();
     use crate::test_support::{LaneSpec, MockServer, TestApp};
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let server = MockServer::new(dp_ok_state()).await;
     let (gov, _secret) = dp_gov_with_key();
     // Default auth = empty chain (open front door). Admin token present (governance active).
@@ -1301,7 +1253,7 @@ async fn test_1_5_2_open_chain_admin_token_no_credential_admits_anon() {
 async fn test_1_5_2_open_chain_inserts_default_govctx_no_500() {
     crate::testkit::install_test_seams();
     use crate::test_support::{LaneSpec, MockServer, TestApp};
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let server = MockServer::new(dp_ok_state()).await;
     let (gov, _secret) = dp_gov_with_key();
     let app = TestApp::new()
@@ -1337,7 +1289,7 @@ async fn test_1_5_2_open_chain_inserts_default_govctx_no_500() {
 async fn test_1_5_2_open_chain_valid_vkey_ignored_not_metered() {
     crate::testkit::install_test_seams();
     use crate::test_support::{LaneSpec, MockServer, TestApp};
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let server = MockServer::new(dp_ok_state()).await;
     let (gov, secret) = dp_gov_with_key();
     let key_id = gov.all_keys().unwrap()[0].id.clone();
@@ -1384,7 +1336,7 @@ async fn test_1_5_2_open_chain_valid_vkey_ignored_not_metered() {
 async fn test_1_5_2_keys_chain_valid_vkey_admits() {
     crate::testkit::install_test_seams();
     use crate::test_support::{LaneSpec, MockServer, TestApp};
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let server = MockServer::new(dp_ok_state()).await;
     let (gov, secret) = dp_gov_with_key();
     let app = TestApp::new()
@@ -1420,7 +1372,7 @@ async fn test_1_5_2_keys_chain_valid_vkey_admits() {
 async fn test_1_5_2_role_bound_principal_synthesized() {
     crate::testkit::install_test_seams();
     use crate::test_support::{LaneSpec, MockServer, TestApp};
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let server = MockServer::new(dp_ok_state()).await;
     let (gov, _secret) = dp_gov_with_key();
     let rb = bindings_for(
@@ -1457,89 +1409,6 @@ async fn test_1_5_2_role_bound_principal_synthesized() {
         mk("pb").await.unwrap().status().as_u16(),
         403,
         "ungranted pool is pool-ACL denied"
-    );
-    handle.abort();
-    server.shutdown().await;
-}
-
-/// A correctly-signed Bedrock SigV4 ingress request under `chain:[keys]` is VERIFIED by the
-/// pre-step and admitted (GovCtx attached, routes to upstream). The SigV4 pre-step now runs because
-/// the chain names `keys`, NOT because an admin token is set.
-#[tokio::test]
-async fn test_1_5_2_signed_ingress_under_keys_chain_admitted() {
-    crate::testkit::install_test_seams();
-    use crate::test_support::engine_kit::EngineTestKit as _;
-    use crate::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
-    use busbar_kernel::governance::NewKeySpec;
-    busbar_kernel::metrics::init();
-    let state = std::sync::Arc::new(MockServerState::new());
-    state.push(MockResponse::Ok {
-        status: axum::http::StatusCode::OK,
-        body: serde_json::json!({
-            "id": "chatcmpl-1", "object": "chat.completion", "model": "foo",
-            "choices": [{"index": 0, "message": {"role": "assistant", "content": "hi"}, "finish_reason": "stop"}],
-            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
-        }),
-    });
-    let server = MockServer::new(state).await;
-
-    let store = crate::test_support::engine_kit::CORE_ENGINE_KIT.scratch_store();
-    let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
-        .governance(store, Some("admintok".to_string()), None)
-        .unwrap();
-    let (_key, _plaintext, akid, secret) = gov
-        .create_key_with_aws(
-            NewKeySpec {
-                name: "bedrock".to_string(),
-                allowed_pools: None,
-                group: None,
-                labels: Default::default(),
-                ..Default::default()
-            },
-            busbar_kernel::store::now(),
-        )
-        .unwrap();
-
-    let app = TestApp::new()
-        .lane(
-            LaneSpec::new("foo", crate::proto_codec::PROTO_OPENAI, &server.base_url())
-                .provider("zai"),
-        )
-        .pool("foo", &[(0, 1)])
-        .keys_chain()
-        .governance_kit(gov)
-        .build();
-    let (addr, handle) = dp_serve(app).await;
-
-    let path = "/model/foo/converse";
-    let body = serde_json::json!({"messages": [{"role": "user", "content": [{"text": "hi"}]}]})
-        .to_string();
-    let amzdate = {
-        let (a, _d) = format_amz_time(busbar_kernel::store::now());
-        a
-    };
-    let (auth, headers) = sign_bedrock_request(
-        &secret,
-        &akid,
-        "us-east-1",
-        "bedrock",
-        path,
-        body.as_bytes(),
-        &amzdate,
-    );
-    let mut rb = reqwest::Client::new()
-        .post(format!("http://{addr}{path}"))
-        .header(AUTHORIZATION, auth)
-        .body(body);
-    for (k, v) in &headers {
-        rb = rb.header(k.as_str(), v.as_str());
-    }
-    let r = rb.send().await.unwrap();
-    assert_eq!(
-        r.status().as_u16(),
-        200,
-        "a correctly-signed Bedrock request under chain:[keys] must verify and be admitted (got {})",
-        r.status()
     );
     handle.abort();
     server.shutdown().await;

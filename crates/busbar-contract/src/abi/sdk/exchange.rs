@@ -19,7 +19,7 @@ use crate::abi::host::conn::connector::{
     REQUEST_END, REQUEST_HEAD,
 };
 use crate::abi::mechanism::ticket::Ticket;
-use crate::abi::sdk::conn::{Answer, ConnFailure, Connector, Host};
+use crate::abi::sdk::conn::{Answer, ConnFailure, Connector, Host, Observed};
 use crate::abi::sdk::safe::Instance;
 use crate::abi::transport::{fields, FrameSpan};
 
@@ -104,6 +104,12 @@ pub struct Exchange {
     ended: Option<u32>,
     /// The address set the dial must land on ([`Exchange::landing_within`]); empty = no pin.
     within: String,
+    /// The registration the exchange reaches ([`Exchange::as_member`]); `None` = none.
+    member: Option<String>,
+    /// The stream's facts are read before it closes ([`Exchange::observing`]).
+    observe: bool,
+    /// What they said, once read: kept across replays, which answer without writing them again.
+    observed: Option<Observed>,
 }
 
 fn piece(kind: u32) -> Box<RequestPiece> {
@@ -131,7 +137,27 @@ impl Exchange {
             applied: 0,
             ended: None,
             within: String::new(),
+            member: None,
+            observe: false,
+            observed: None,
         }
+    }
+
+    /// Read the stream's facts ([`Connector::facts`]) once its reply has ended — or once the reply
+    /// failed, a connection the connector refused for its trust anchors included — before it is
+    /// closed: [`Exchange::observed`] answers them. One more service on the op's count, made only
+    /// by an exchange that asks.
+    #[must_use]
+    pub fn observing(mut self) -> Self {
+        self.observe = true;
+        self
+    }
+
+    /// What the stream's facts said ([`Exchange::observing`]); `None` before they were read, for
+    /// an exchange that did not ask, or a host that offers no facts.
+    #[must_use]
+    pub fn observed(&self) -> Option<&Observed> {
+        self.observed.as_ref()
     }
 
     /// Land this exchange's dial only on an address of `within`, the set the plugin's
@@ -140,6 +166,15 @@ impl Exchange {
     #[must_use]
     pub fn landing_within(mut self, within: String) -> Self {
         self.within = within;
+        self
+    }
+
+    /// This exchange reaches the REGISTRATION `name` (its name in the plugin's declaring section):
+    /// what the host sealed for that registration alone (its private reach) applies to its dial;
+    /// an exchange that names none dials under its need's class alone (SEAM-4p).
+    #[must_use]
+    pub fn as_member(mut self, name: impl Into<String>) -> Self {
+        self.member = Some(name.into());
         self
     }
 
@@ -269,11 +304,21 @@ fn send_and_read(
     need: u32,
     target: Option<&str>,
 ) -> Answer<()> {
-    let stream = ready!(c.establish(need, target, &state.within));
+    let stream = ready!(c.establish_as(need, target, &state.within, 0, state.member.as_deref()));
     ready!(send(c, state, stream));
     loop {
         let this = c.issued();
-        let got = ready!(c.read_reply(stream, &mut state.buf, &mut state.slot));
+        let got = match c.read_reply(stream, &mut state.buf, &mut state.slot) {
+            Poll::Ready(Ok(got)) => got,
+            Poll::Ready(Err(e)) => {
+                // A failed reply: what the stream observed says why, where the caller asks.
+                if observe(c, state, stream).is_pending() {
+                    return Poll::Pending;
+                }
+                return Poll::Ready(Err(e));
+            }
+            Poll::Pending => return Poll::Pending,
+        };
         // A replayed read answers its stored result; it was applied on the entry that first saw it
         // (its bytes are no longer in the buffer).
         let fresh = this >= state.applied;
@@ -310,9 +355,28 @@ fn send_and_read(
             break;
         }
     }
+    if observe(c, state, stream).is_pending() {
+        return Poll::Pending;
+    }
     match c.close(stream) {
         Poll::Pending => Poll::Pending,
         Poll::Ready(_) => Poll::Ready(Ok(())),
+    }
+}
+
+/// Read `stream`'s facts into `state` where it asks ([`Exchange::observing`]): a facts answer the
+/// host replays leaves what the first entry read; a host that offers none leaves none.
+fn observe(c: &mut Connector<'_>, state: &mut Exchange, stream: u64) -> Poll<()> {
+    if !state.observe {
+        return Poll::Ready(());
+    }
+    match c.facts(stream) {
+        Poll::Pending => Poll::Pending,
+        Poll::Ready(Ok(Some(observed))) => {
+            state.observed = Some(observed);
+            Poll::Ready(())
+        }
+        Poll::Ready(_) => Poll::Ready(()),
     }
 }
 

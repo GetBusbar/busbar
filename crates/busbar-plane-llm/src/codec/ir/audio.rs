@@ -153,7 +153,8 @@ impl TranscriptionResp {
 pub struct SpeechReq {
     pub input: String,
     pub model: String,
-    pub voice: String,
+    /// The provider's speaker id: OpenAI's `voice` member, Gemini's `prebuiltVoiceConfig.voiceName`.
+    pub timbre: String,
     pub response_format: Option<String>, // mp3/opus/aac/flac/wav/pcm (Gemini → pcm)
     pub speed: Option<f32>,              // 0.25–4.0 (OpenAI)
     pub instructions: Option<String>,    // gpt-4o-mini-tts / Gemini style
@@ -225,7 +226,7 @@ impl busbar_contract::ir::facts::IrFacts for SpeechReq {
                 text: Cow::Borrowed(instructions.as_str()),
             });
         }
-        for (name, _voice) in &self.speakers {
+        for (name, _timbre) in &self.speakers {
             out.push(ContentItem::Text {
                 author: "user",
                 slot: Slot::Turn(0),

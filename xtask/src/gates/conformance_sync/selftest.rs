@@ -209,6 +209,47 @@ pub fn run<'a>(gate: &'a dyn Gate, cx: &'a Ctx) -> Report<'a> {
         &["missing `standard`"],
     ));
 
+    // THE PLANE FLOOR, derived from the planes the build ships (qa/construction.toml
+    // `[gate.plugin_kinds].plane`): each plant is the real registry or roster with one mutation.
+    let real_registry = cx.read(super::render::REGISTRY_PATH).unwrap_or_default();
+    report.push(prove_rows_red(
+        cx,
+        gate,
+        "registry: a shipped plane (decisions) whose suite block is gone is REFUSED",
+        &[ROW_REGISTRY],
+        overlay_registry(real_registry.replace("plane = \"decisions\"\n", "")),
+        &["no registered suite judges the shipped plane(s) decisions"],
+    ));
+    report.push(prove_rows_red(
+        cx,
+        gate,
+        "registry: a suite judging a plane the build does not ship is REFUSED",
+        &[ROW_REGISTRY],
+        overlay_registry(
+            real_registry.replace("plane = \"decisions\"\n", "plane = \"telepathy\"\n"),
+        ),
+        &["which is not a shipped plane"],
+    ));
+    let roster = cx
+        .read(super::render::PLANE_ROSTER_PATH)
+        .unwrap_or_default();
+    let mut ov = Overlay::new();
+    ov.set(
+        super::render::PLANE_ROSTER_PATH,
+        roster.replace(
+            "  \"crates/busbar-plane-streaming\",\n",
+            "  \"crates/busbar-plane-streaming\",\n  \"crates/busbar-plane-video\",\n",
+        ),
+    );
+    report.push(prove_rows_red(
+        cx,
+        gate,
+        "registry: a sixth shipped plane owes a suite the moment the build ships it",
+        &[ROW_REGISTRY],
+        ov,
+        &["no registered suite judges the shipped plane(s) video"],
+    ));
+
     // ══ :manifest-drift ══════════════════════════════════════════════════════════════════════════
     let mut ov = Overlay::new();
     ov.set(

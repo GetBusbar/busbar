@@ -74,7 +74,7 @@ fn mint_then_expire_the_row(
 #[tokio::test]
 async fn a_key_row_whose_expires_at_is_in_the_past_is_admitted_on_the_data_plane() {
     register_planes();
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     // Force the protocol registry's core-test built-in tail to seed BEFORE `TestApp::build()` banks
     // `AppSlots` off `busbar_kernel::proto::known_protocols()`. Any registry accessor seeds it
     // (idempotent, process-wide), and ordinarily some earlier test in the same binary already has by

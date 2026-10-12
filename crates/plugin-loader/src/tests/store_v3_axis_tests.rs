@@ -16,7 +16,7 @@ use std::sync::Arc;
 
 use busbar_contract::abi::sdk::store::{Cap, Cell, CellKey, Dimension};
 use busbar_contract::abi::store::OpId;
-use busbar_contract::records::{RecordStore, VirtualKey};
+use busbar_contract::records::VirtualKey;
 use busbar_contract::store_calls::{OpenedStore, StoreAxis, StoreDoor};
 
 use crate::dispatch::{rendering_of, DispatchConfig, Dispatcher, PluginLogConfig};
@@ -37,7 +37,7 @@ fn axis() -> DoorStoreAxis {
         dispatcher: Arc::new(Dispatcher::new(DispatchConfig::default())),
         logs: PluginLogConfig::from_words(None, None, &none, None, None)
             .expect("the plugins.logs defaults resolve"),
-        conns: None,
+        conns: crate::dispatch::ConnTable::NoNeeds,
         mint,
     }
 }
@@ -122,9 +122,7 @@ fn boot_opens_the_build_store_through_its_door_linked_and_dropped_in_alike() {
         linked.iter().all(|l| !l.contains("Err")),
         "the linked store answered the script: {linked:#?}"
     );
-    let Some(path) = crate::both_ways::example_cdylib("store_v3_door") else {
-        return;
-    };
+    let path = crate::both_ways::example_cdylib("store_v3_door");
     let dropped = axis
         .open(
             StoreDoor::Dropped {
@@ -140,16 +138,14 @@ fn boot_opens_the_build_store_through_its_door_linked_and_dropped_in_alike() {
 }
 
 #[test]
-fn boot_is_handed_a_stores_door_never_its_in_process_open() {
+fn boot_is_handed_a_stores_door_and_a_row_with_none_is_refused() {
     use crate::{LinkedPlugin, PluginRegistry};
-    fn ram(_: &str) -> Result<Box<dyn RecordStore>, String> {
-        Err("the in-process open is never what boot calls".into())
-    }
     let door = crate::both_ways::store_fixture::door;
     let reg = PluginRegistry::empty()
         .link(vec![
-            LinkedPlugin::store("no-door", ram, true),
-            LinkedPlugin::store("with-door", ram, true).with_store_door(door),
+            // A store row whose entry is not the store's own door states none to boot.
+            LinkedPlugin::door_of_kind("store", "no-door", door),
+            LinkedPlugin::store("with-door", door, true),
         ])
         .expect("the rows register");
     let Err(e) = reg.store_door("no-door") else {

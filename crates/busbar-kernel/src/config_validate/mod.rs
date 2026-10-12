@@ -1018,7 +1018,7 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
             }
             // `token:` is the operator credential; on any other module it is inert and almost
             // certainly a misplaced secret. Fail loud.
-            if entry.token.is_some() && entry.module != operator_provider() {
+            if entry.token.is_some() && !crate::config::names_operator(&entry.module) {
                 errors.push(operator::misplaced_token(
                     operator_provider(),
                     &entry.module,
@@ -1502,6 +1502,16 @@ fn validate_limit_ceilings(limits: &crate::config::LimitsResolved, errors: &mut 
 // the old prose: a blank token does not merely lock the admin API, it computes the digest over the
 // blank string, so an empty presented credential would authenticate as the operator.
 
+/// The classes a plane's card prices: its declared billable classes less its fee units (a fee unit
+/// says whether the flat fee was incurred and is never ledgered as usage, so no card prices it).
+fn priced_classes(
+    d: &crate::plane::registry::PlaneDecl,
+) -> impl Iterator<Item = &'static str> + Clone + '_ {
+    (d.billable_classes.iter())
+        .map(|c| c.class)
+        .filter(|c| !d.fee_units.contains(c))
+}
+
 /// Validate the COST + GROUPS + STORE + SECRETS surface of the resolved config:
 /// rate_card completeness/wellformedness, the `groups:` limit tree (parents exist, chain acyclic —
 /// any depth, the cycle check is the bound; limit values sane), `per_request_fee` sanity, the store
@@ -1628,6 +1638,15 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
         // configure every billable class the plane declares, on any entry; an explicit 0 counts, and
         // a reserved tier omitted in YAML is 0 by the 1.5.5 grammar. The kernel asks the plane and
         // names each class missing. A per-lane gap stays the run-time #42 refusal.
+        //
+        // A FEE UNIT IS NO PRICED CLASS (SEAM-L(m)): a plane served through its door declares its
+        // fee units among its billable classes (the tail check holds `fee_units ⊆
+        // billable_classes`), but a fee unit's count only says whether the flat fee its
+        // `<section>.fees` sets was incurred; it is never ledgered as usage and no card prices it.
+        // The classes a card must configure, and may name, are the declared ones less the fee
+        // units: exactly the classes the plane's lane was priced by before it was served through
+        // its door, so a configuration that booted then boots now and an unpriced class still
+        // refuses (#42).
         for d in crate::plane::registry::plane_decls() {
             let own = if d.fallback { "" } else { d.key };
             let on: Vec<_> = card
@@ -1639,7 +1658,7 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
                 !(entry && busbar_contract::records::RESERVED_UNITS.contains(c)
                     || on.iter().any(|(_, r)| r.units.contains_key(*c)))
             };
-            let declared = d.billable_classes.iter().map(|c| c.class);
+            let declared = priced_classes(d);
             let missing: Vec<&str> = declared.clone().filter(unset).collect();
             let present = if d.fallback {
                 flat_card
@@ -1696,8 +1715,8 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
             else {
                 continue;
             };
-            let zero = (d.billable_classes.iter())
-                .map(|c| format!("{}: 0", c.class))
+            let zero = priced_classes(d)
+                .map(|c| format!("{c}: 0"))
                 .collect::<Vec<_>>()
                 .join(", ");
             let stub: String = (missing.iter())
@@ -1754,16 +1773,20 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
         }
     }
 
-    // store: the module name must be non-empty; a non-memory module additionally requires the
-    // plugin subsystem (checked with the registry in `plugins_preflight`, the shared boot path).
-    if let Some(store) = &cfg.store {
-        if store.module.trim().is_empty() {
+    // store: REQUIRED (Q-STORE = (B)): exactly one store resolves, from config, and no linked row
+    // stands in for an absent block. The module name must be non-empty; a module no linked row
+    // answers to additionally requires the plugin subsystem (checked with the registry in
+    // `plugins_preflight`, the shared boot path).
+    match &cfg.store {
+        None => errors.push(crate::config::store_required()),
+        Some(store) if store.module.trim().is_empty() => {
             errors.push(format!(
                 "store.module must be non-empty; use `memory` (the compiled-in RAM store) or a \
                  store plugin name/alias ({} | <third-party>)",
                 crate::config::migrate::legacy_store_text("module_examples")
             ));
         }
+        Some(_) => {}
     }
 
     // SECRET REFERENCES: every secret's MODULE must be resolvable BY NAME. The built-ins are
@@ -2091,6 +2114,7 @@ pub fn metadata_denylist_entries() -> Vec<String> {
     .collect()
 }
 
+pub mod deal;
 /// Enumerating every secret reference in the resolved config, and the two-layer guard that makes
 /// forgetting one impossible rather than merely discouraged. Its own module because the guard is a
 /// cohesive unit (the walk, the exhaustive destructures, and the type inventory the coverage test
@@ -2389,9 +2413,13 @@ fn validate_providers_with(
             let cred = crate::config::secret::resolve_linked_string(&provider_cfg.api_key)
                 .unwrap_or_default();
             if !cred.trim().is_empty() {
-                if let Err(e) =
-                    crate::egress_auth::oauth_client_credentials::validate_credential(&cred)
-                {
+                // The credential's shape is the serving auth plugin's to judge, in its own words,
+                // through the same `open_outbound` the build binds it with (never dialing).
+                let params = serde_json::json!({
+                    "token_url": provider_cfg.token_url.clone().unwrap_or_default(),
+                    "scope": provider_cfg.scope.clone().unwrap_or_default(),
+                });
+                for e in outbound_credential_refusals("oauth-client-credentials", &cred, &params) {
                     errors.push(format!(
                         "provider '{provider_name}' oauth-client-credentials credential (from {}) is invalid: {e}",
                         provider_cfg.api_key.describe()
@@ -2420,14 +2448,36 @@ fn validate_providers_with(
             let cred = crate::config::secret::resolve_linked_string(&provider_cfg.api_key)
                 .unwrap_or_default();
             if !cred.trim().is_empty() {
-                // Pass the SAME operator metadata posture the boot path threads into jwt_bearer::build,
-                // so the token_uri SSRF check is identical at validate and apply time.
-                let ssrf = crate::egress_auth::MetadataSsrfPolicy {
-                    allow_overrides: &allow_overrides,
-                    allow_all: cfg.allow_all_metadata,
-                    blocked_hosts: &cfg.blocked_metadata_hosts,
+                // THE NEED'S TARGET IS THE KERNEL'S TO JUDGE (THE DESIGN §5; ARCHITECT ruling
+                // 2026-09-28, Q2 (a)): the service account's `token_uri`, under the SAME operator
+                // metadata posture as every other destination, before the key material is judged —
+                // 1.5.5's order. The service account's own shape (its JSON, its key) is the serving
+                // auth plugin's to judge, in its own words.
+                let vetted = service_account_token_uri(&cred).map_or(Ok(()), |uri| {
+                    vet_token_uri(
+                        &uri,
+                        &MetadataPosture {
+                            allow_overrides: allow_overrides.clone(),
+                            allow_all: cfg.allow_all_metadata,
+                            blocked_hosts: cfg.blocked_metadata_hosts.clone(),
+                        },
+                    )
+                });
+                let refusals = match vetted {
+                    Err(e) => vec![e],
+                    Ok(()) => {
+                        let mut params = serde_json::Map::new();
+                        if let Some(scope) = &provider_cfg.scope {
+                            params.insert("scope".into(), serde_json::Value::String(scope.clone()));
+                        }
+                        outbound_credential_refusals(
+                            "jwt-bearer",
+                            &cred,
+                            &serde_json::Value::Object(params),
+                        )
+                    }
                 };
-                if let Err(e) = crate::egress_auth::jwt_bearer::validate_credential(&cred, &ssrf) {
+                for e in refusals {
                     errors.push(format!(
                         "provider '{provider_name}' jwt-bearer credential (from {}) is invalid: {e}",
                         provider_cfg.api_key.describe()
@@ -2436,6 +2486,129 @@ fn validate_providers_with(
             }
         }
     }
+}
+
+/// ONE PROVIDER'S METADATA POSTURE, owned: the hosts its destinations may reach past the
+/// cloud-metadata denylist (its own `allow_metadata_hosts` and the global
+/// `security.allow_metadata_hosts`, the union every destination check here builds), the nuclear
+/// `security.allow_all_metadata`, and the operator's extra `security.blocked_metadata_hosts`. The
+/// composition root carries it to the seal, where a resolved credential's own token endpoint is
+/// judged under it ([`vet_token_uri`]), as 1.5.5's boot judged it (`main.rs`, v1.5.5).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MetadataPosture {
+    /// The provider's allow-overrides, then the global ones.
+    pub allow_overrides: Vec<String>,
+    /// `security.allow_all_metadata`.
+    pub allow_all: bool,
+    /// `security.blocked_metadata_hosts`.
+    pub blocked_hosts: Vec<String>,
+}
+
+impl MetadataPosture {
+    /// The deployment's own posture in `cfg`: the global allow-overrides alone.
+    #[must_use]
+    pub fn global(cfg: &RootCfg) -> Self {
+        Self {
+            allow_overrides: cfg.allow_metadata_hosts.clone(),
+            allow_all: cfg.allow_all_metadata,
+            blocked_hosts: cfg.blocked_metadata_hosts.clone(),
+        }
+    }
+
+    /// The posture `provider` is judged under: its own allow-overrides, then this (global) one's.
+    #[must_use]
+    pub fn for_provider(&self, provider: &crate::config::ProviderCfg) -> Self {
+        Self {
+            allow_overrides: provider
+                .allow_metadata_hosts
+                .iter()
+                .chain(self.allow_overrides.iter())
+                .cloned()
+                .collect(),
+            allow_all: self.allow_all,
+            blocked_hosts: self.blocked_hosts.clone(),
+        }
+    }
+}
+
+/// THE CREDENTIAL REFUSALS the auth plugin serving `style` names for `credential` under `params`,
+/// through the dry `open_outbound` the build binds with (the plugin's `credential:` lines, their
+/// text only). None when no plugin this build reaches serves the style.
+fn outbound_credential_refusals(
+    style: &str,
+    credential: &str,
+    params: &serde_json::Value,
+) -> Vec<String> {
+    let Some(axis) = crate::preflight::linked_auth_axis() else {
+        return Vec::new();
+    };
+    axis.check_outbound(style, credential.as_bytes(), params)
+        .unwrap_or_default()
+}
+
+/// THE SERVICE ACCOUNT'S TOKEN ENDPOINT: the `token_uri` of the service-account JSON a `jwt-bearer`
+/// credential carries inline (it starts with `{`) or names as a key file, else Google's default
+/// endpoint — 1.5.5's `ServiceAccount` (`egress_auth/jwt_bearer.rs`, v1.5.5: `token_uri` defaults to
+/// `https://oauth2.googleapis.com/token`). `Err` when the JSON cannot be read or parsed (the auth
+/// plugin serving the style names why, in its own words).
+///
+/// # Errors
+///
+/// The credential cannot be read or is not the service-account JSON.
+pub fn service_account_token_uri(credential: &str) -> Result<String, String> {
+    // The service account's shape as its auth plugin reads it, so a JSON this cannot read is one
+    // the plugin refuses, in its own words. The key is required and never held.
+    #[derive(serde::Deserialize)]
+    struct TokenUri {
+        #[allow(dead_code)]
+        client_email: serde::de::IgnoredAny,
+        #[allow(dead_code)]
+        private_key: serde::de::IgnoredAny,
+        token_uri: Option<String>,
+    }
+    let parsed: TokenUri = if credential.trim_start().starts_with('{') {
+        serde_json::from_str(credential).map_err(|e| e.to_string())?
+    } else {
+        let json = zeroize::Zeroizing::new(
+            std::fs::read_to_string(credential).map_err(|e| e.to_string())?,
+        );
+        serde_json::from_str(&json).map_err(|e| e.to_string())?
+    };
+    Ok(parsed
+        .token_uri
+        .unwrap_or_else(|| "https://oauth2.googleapis.com/token".to_string()))
+}
+
+/// THE SERVICE ACCOUNT'S `token_uri`, judged as a destination, 1.5.5's check and words
+/// (`egress_auth/jwt_bearer.rs::validate_token_uri`, v1.5.5): https for a public host (http only for
+/// a private or loopback one — it receives the signed assertion), and never a cloud-metadata host
+/// the operator's posture blocks.
+///
+/// # Errors
+///
+/// The endpoint breaks either rule; the text is 1.5.5's.
+pub fn vet_token_uri(token_uri: &str, posture: &MetadataPosture) -> Result<(), String> {
+    use crate::net_guard::{extract_normalized_host, host_is_private_or_loopback, scheme_is};
+    let host_private = extract_normalized_host(token_uri)
+        .as_deref()
+        .map(host_is_private_or_loopback)
+        .unwrap_or(false);
+    if !(scheme_is(token_uri, "https") || (host_private && scheme_is(token_uri, "http"))) {
+        return Err(format!(
+            "service-account token_uri must use https for a public host (got '{token_uri}'); it receives the signed JWT assertion, so plaintext http is permitted only for a private/loopback endpoint"
+        ));
+    }
+    if let Some(host) = ssrf_blocked_host(
+        token_uri,
+        &posture.allow_overrides,
+        posture.allow_all,
+        &posture.blocked_hosts,
+    ) {
+        return Err(format!(
+            "service-account token_uri '{token_uri}' targets a blocked cloud-metadata host '{host}' (the signed assertion would be POSTed there; cloud-metadata/IMDS endpoints are denied — override via this provider's allow_metadata_hosts, security.allow_metadata_hosts, or security.allow_all_metadata)"
+        ));
+    }
+    Ok(())
 }
 
 /// The provider-protocol arm of `validate`, PARAMETERISED on the known-protocol set — by argument
@@ -2475,3 +2648,7 @@ fn validate_provider_protocol_with(
 #[cfg(test)]
 #[path = "tests/tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tests/store_required_tests.rs"]
+mod store_required_tests;

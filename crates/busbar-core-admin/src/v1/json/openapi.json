@@ -763,6 +763,27 @@
         ],
         "type": "object"
       },
+      "ClassUsage": {
+        "description": "One plane-declared class's consumption on a usage row: its raw count and its cost.\n\nNEW IN 1.6.0 (1.5.5's usage rows carried the token split alone, and 1.5.5 served no plane that\ndeclares a class of its own): ledgered by the FLIP-A2A ruling. `cost` is in the same MICRO-units\nas [`UsageBreakdown::spend_micros`], priced by the same card in force at the row's instant, and is\npart of that row's `spend_micros`, never added to it a second time.",
+        "properties": {
+          "cost": {
+            "description": "What the card in force priced that count at, in micro-units.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "count": {
+            "description": "The raw count the plane's ledger lines recorded under the class.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "count",
+          "cost"
+        ],
+        "type": "object"
+      },
       "CommitUpgradeReq": {
         "description": "`POST /commit-upgrade`: the release the fleet commits to.",
         "properties": {
@@ -2005,6 +2026,13 @@
       "KeyUsageView": {
         "description": "One key's row of the per-key aggregation: the key id/name (never the secret) + its counts.",
         "properties": {
+          "classes": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/ClassUsage"
+            },
+            "description": "THE PLANE-DECLARED CLASSES the row's ledger lines counted outside the token split, keyed by\nthe class name the plane declares (new in 1.6.0, [`ClassUsage`]). Absent when the row carries\nnone, so a token-only row reads exactly as 1.5.5's.",
+            "type": "object"
+          },
           "id": {
             "type": "string"
           },
@@ -2351,13 +2379,61 @@
             "type": "array"
           },
           "holds": {
-            "description": "True when every row reconciles. `discrepancies` is then empty.",
+            "description": "True when every row reconciles. `discrepancies` and `refused` are then empty.",
             "type": "boolean"
+          },
+          "refused": {
+            "description": "Every balance whose counts a present rate card refused to price: its row is withheld from\nboth sides of the identity, which was not measured over it. Empty is the good answer.",
+            "items": {
+              "$ref": "#/components/schemas/LedgerRefusedBalance"
+            },
+            "type": "array"
           }
         },
         "required": [
           "holds",
-          "discrepancies"
+          "discrepancies",
+          "refused"
+        ],
+        "type": "object"
+      },
+      "LedgerRefusedBalance": {
+        "description": "A balance with no figure: a unit's counts on it that the rate card in force refused to price\n(a present card silent about the lane or a class). The row the balance folds into — the same\n`bucket` and `day` — is withheld from the view that names this.",
+        "properties": {
+          "bucket": {
+            "description": "The balance's bucket.",
+            "type": "string"
+          },
+          "day": {
+            "description": "The balance's window, as the unix second it opens at: the `day` of the withheld row.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "dimension": {
+            "description": "The balance's dimension.",
+            "type": "string"
+          },
+          "lane": {
+            "description": "The lane that served the unit whose counts refused.",
+            "type": "string"
+          },
+          "refusal": {
+            "description": "Why the pricing refused, in its own words.",
+            "type": "string"
+          },
+          "scope": {
+            "description": "The balance's scope.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "bucket",
+          "dimension",
+          "scope",
+          "day",
+          "lane",
+          "refusal"
         ],
         "type": "object"
       },
@@ -2387,8 +2463,15 @@
       "LedgerTotals": {
         "description": "`GET /ledger/totals`: what the ledger's lines come to, per bucket, day, lane and provider.",
         "properties": {
+          "refused": {
+            "description": "Every balance whose counts a present rate card refused to price: its row has no figure, so\nit is withheld from `rows` rather than served as the priced remainder. Empty is the good\nanswer.",
+            "items": {
+              "$ref": "#/components/schemas/LedgerRefusedBalance"
+            },
+            "type": "array"
+          },
           "rows": {
-            "description": "The rows, in bucket, day, lane and provider order.",
+            "description": "The rows, in bucket, day, lane and provider order. A row a `refused` entry names is absent.",
             "items": {
               "$ref": "#/components/schemas/LedgerTotalsRow"
             },
@@ -2396,7 +2479,8 @@
           }
         },
         "required": [
-          "rows"
+          "rows",
+          "refused"
         ],
         "type": "object"
       },
@@ -2730,6 +2814,13 @@
       "ModelUsageView": {
         "description": "One (model, provider) row of the per-model aggregation.",
         "properties": {
+          "classes": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/ClassUsage"
+            },
+            "description": "THE PLANE-DECLARED CLASSES the row's ledger lines counted outside the token split, keyed by\nthe class name the plane declares (new in 1.6.0, [`ClassUsage`]). Absent when the row carries\nnone, so a token-only row reads exactly as 1.5.5's.",
+            "type": "object"
+          },
           "model": {
             "type": "string"
           },
@@ -3961,6 +4052,88 @@
         ],
         "type": "object"
       },
+      "TrustKeyReq": {
+        "description": "`POST /trust/approve` and `/trust/revoke`: the trust key decided.",
+        "properties": {
+          "key": {
+            "description": "`<instance>/<counterparty>[/<item>]`, as `GET /trust` lists it.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "key"
+        ],
+        "type": "object"
+      },
+      "TrustKeyView": {
+        "description": "One trust key of the kernel's trust book and its state.",
+        "properties": {
+          "approved": {
+            "description": "What it is approved at: the catalogue hash, or the item's digest.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "counterparty": {
+            "description": "The counterparty, as the instance's configuration names it.",
+            "type": "string"
+          },
+          "instance": {
+            "description": "The plane instance label.",
+            "type": "string"
+          },
+          "item": {
+            "description": "The item at the counterparty, for an item key.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "key": {
+            "description": "The key, `<instance>/<counterparty>[/<item>]`: what `POST /trust/approve` and `/revoke` name.",
+            "type": "string"
+          },
+          "seen": {
+            "description": "What it was last sighted at.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "state": {
+            "description": "`new` (sighted and never approved, or revoked: refused), `approved` (approved, not sighted\nsince), `same` (sighted as approved), `drifted` (sighted other than approved: refused until\nre-approved) or `quarantined` (the counterparty's catalogue moved: refused until re-approved).",
+            "pattern": "^(new|approved|same|drifted|quarantined)$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "instance",
+          "counterparty",
+          "item",
+          "state",
+          "approved",
+          "seen"
+        ],
+        "type": "object"
+      },
+      "TrustListView": {
+        "description": "`GET /trust`: every trust key and its state.",
+        "properties": {
+          "keys": {
+            "description": "Ordered by instance, counterparty and item, each counterparty before its items.",
+            "items": {
+              "$ref": "#/components/schemas/TrustKeyView"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "keys"
+        ],
+        "type": "object"
+      },
       "UpdateKeyReq": {
         "additionalProperties": false,
         "description": "Partial update to an existing key. Keys are PURE AUTH (1.5.0), so the mutable surface is\nauth-shaped only. Every field is optional; only the present ones change. The credential, name,\nallowed-pools, and labels are immutable here (rotate/recreate for those).\n\n`group` is THREE-STATE via serde double-option (`Option<Option<String>>`):\n- absent (`#[serde(default)]` -> outer `None`): leave the binding unchanged.\n- JSON `null` (`Some(None)`): UNBIND to no group (authed + unlimited).\n- a value (`Some(Some(name))`): REBIND to that group (must exist; mint-parity check).\n\nA single `Option<T>` could not tell absent from present-null, so a binding could never be\ncleared once set. `enabled` is a plain `Option<bool>` (a bool has no clear state). The 1.4.x\ncap fields (`rpm_limit`/`tpm_limit`/`max_budget_cents`) are GONE: limits live on the group.",
@@ -3986,6 +4159,13 @@
       "UsageBreakdown": {
         "description": "The raw consumption counts + the derived spend estimate: the one shape shared by `total`,\n`by_model` rows, and `by_key` rows, so a consumer writes ONE aggregation reader.",
         "properties": {
+          "classes": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/ClassUsage"
+            },
+            "description": "THE PLANE-DECLARED CLASSES the row's ledger lines counted outside the token split, keyed by\nthe class name the plane declares (new in 1.6.0, [`ClassUsage`]). Absent when the row carries\nnone, so a token-only row reads exactly as 1.5.5's.",
+            "type": "object"
+          },
           "requests": {
             "format": "uint64",
             "minimum": 0,
@@ -4155,7 +4335,7 @@
             "type": "integer"
           },
           "findings": {
-            "description": "Each thing verification found, in words: a checkpoint edited after it was sealed, a node\nsequence that went backwards, a balance out of identity, a sealed balance no longer in the\nbook, a closed window that moved.",
+            "description": "Each thing verification found, in words: a checkpoint edited after it was sealed, a node\nsequence that went backwards, a balance out of identity, a sealed balance no longer in the\nbook, a closed window that moved, a balance whose counts the rate card refused to price.",
             "items": {
               "type": "string"
             },
@@ -10787,7 +10967,7 @@
                 }
               }
             },
-            "description": "`unavailable`: the node could not take the unit, or the book holds a refused counts row the read cannot price (the read is refused whole rather than served without it). The body is the admin error envelope with code `unavailable`"
+            "description": "`unavailable`: the node could not take the unit, or a figure the read serves is past the range it is served in (refused, never pinned). The body is the admin error envelope with code `unavailable`"
           }
         },
         "security": [
@@ -10836,7 +11016,7 @@
                 }
               }
             },
-            "description": "`unavailable`: the node could not take the unit, or the book holds a refused counts row the read cannot price (the read is refused whole rather than served without it). The body is the admin error envelope with code `unavailable`"
+            "description": "`unavailable`: the node could not take the unit, or a figure the read serves is past the range it is served in (refused, never pinned). The body is the admin error envelope with code `unavailable`"
           }
         },
         "security": [
@@ -10904,7 +11084,7 @@
     },
     "/api/v1/admin/ledger/reconciliation": {
       "get": {
-        "description": "An empty `discrepancies` list with `holds: true` is the good answer; a residual names its row and the amount it is out by. A read: it mutates nothing, is never posture-gated, and needs no more authority than `GET /usage`.",
+        "description": "An empty `discrepancies` list with `holds: true` is the good answer; a residual names its row and the amount it is out by, and a row whose balance holds counts the rate card refused to price is withheld from the identity and named under `refused`. A read: it mutates nothing, is never posture-gated, and needs no more authority than `GET /usage`.",
         "operationId": "GetLedgerReconciliation",
         "responses": {
           "200": {
@@ -10935,7 +11115,7 @@
                 }
               }
             },
-            "description": "`unavailable`: the node could not take the unit, or the book holds a refused counts row the read cannot price (the read is refused whole rather than served without it). The body is the admin error envelope with code `unavailable`"
+            "description": "`unavailable`: the node could not take the unit, or a figure the read serves is past the range it is served in (refused, never pinned). The body is the admin error envelope with code `unavailable`"
           }
         },
         "security": [
@@ -10953,7 +11133,7 @@
     },
     "/api/v1/admin/ledger/totals": {
       "get": {
-        "description": "Each line is priced against the rate card in force at its own arrival instant, and the row's micro-unit figure is one divide over its summed nano-units. A read: it mutates nothing, is never posture-gated, and needs no more authority than `GET /usage`.",
+        "description": "Each line is priced against the rate card in force at its own arrival instant, and the row's micro-unit figure is one divide over its summed nano-units. A row whose balance holds counts the rate card refused to price is withheld and named under `refused`; every other row is served. A read: it mutates nothing, is never posture-gated, and needs no more authority than `GET /usage`.",
         "operationId": "GetLedgerTotals",
         "responses": {
           "200": {
@@ -10984,7 +11164,7 @@
                 }
               }
             },
-            "description": "`unavailable`: the node could not take the unit, or the book holds a refused counts row the read cannot price (the read is refused whole rather than served without it). The body is the admin error envelope with code `unavailable`"
+            "description": "`unavailable`: the node could not take the unit, or a figure the read serves is past the range it is served in (refused, never pinned). The body is the admin error envelope with code `unavailable`"
           }
         },
         "security": [
@@ -13454,6 +13634,243 @@
         "x-busbar-required-scope": "full"
       }
     },
+    "/api/v1/admin/trust": {
+      "get": {
+        "description": "The counterparties every plane instance this node serves declares, and the items sighted or approved at each: its key, state, what it is approved at and what it was last sighted at. A read: it mutates nothing and needs `read-only`.",
+        "operationId": "GetTrust",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TrustListView"
+                }
+              }
+            },
+            "description": "Every trust key and its state"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Missing/invalid admin credential (error code `unauthorized`)"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "`unavailable`: the node could not take the unit. The body is the admin error envelope with code `unavailable`"
+          }
+        },
+        "security": [
+          {
+            "adminToken": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Every trust key of the kernel's trust book and its state",
+        "x-busbar-required-scope": "read-only",
+        "x-busbar-since": "1.6.0"
+      }
+    },
+    "/api/v1/admin/trust/approve": {
+      "post": {
+        "description": "A counterparty is approved at the catalogue hash it last reported, which clears its quarantine; an item at the digest it was last sighted at. The decision is kept durably and outlives a restart. Idempotent: the same key twice answers the same row.",
+        "operationId": "PostTrustApprove",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TrustKeyReq"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TrustKeyView"
+                }
+              }
+            },
+            "description": "The key, decided"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "`invalid_request`: malformed body, `key is required`, or a request body that could not be read to the operator's size cap"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Missing/invalid admin credential (error code `unauthorized`)"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "`forbidden`: the credential does not hold `full` (the message names the scope), the fleet's operator key is not set, dual control holds the mutation for an approval, the verb's per-principal rate class is exhausted, or an idempotent retry is still in flight"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "`not_found`: ``trust key `<key>` not found`` — no plane instance this node serves has the key"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "`conflict`: ``trust key `<key>` was never sighted`` — nothing to approve it at — or ``trust key `<key>` has no authenticity root`` — its registration declares none, and nothing at it is approvable"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "`unavailable`: the node could not take the unit, or could not keep the decision. The body is the admin error envelope with code `unavailable`"
+          }
+        },
+        "security": [
+          {
+            "adminToken": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Approve one trust key at what it was last sighted at",
+        "x-busbar-required-scope": "full",
+        "x-busbar-since": "1.6.0"
+      }
+    },
+    "/api/v1/admin/trust/revoke": {
+      "post": {
+        "description": "Refused until approved again: a counterparty revoked refuses everything at it, an item revoked refuses it over its configured approval. The decision is kept durably and outlives a restart. Idempotent: the same key twice answers the same row.",
+        "operationId": "PostTrustRevoke",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TrustKeyReq"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TrustKeyView"
+                }
+              }
+            },
+            "description": "The key, decided"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "`invalid_request`: malformed body, `key is required`, or a request body that could not be read to the operator's size cap"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Missing/invalid admin credential (error code `unauthorized`)"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "`forbidden`: the credential does not hold `full` (the message names the scope), the fleet's operator key is not set, dual control holds the mutation for an approval, the verb's per-principal rate class is exhausted, or an idempotent retry is still in flight"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "`not_found`: ``trust key `<key>` not found`` — no plane instance this node serves has the key"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "`unavailable`: the node could not take the unit, or could not keep the decision. The body is the admin error envelope with code `unavailable`"
+          }
+        },
+        "security": [
+          {
+            "adminToken": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Revoke one trust key",
+        "x-busbar-required-scope": "full",
+        "x-busbar-since": "1.6.0"
+      }
+    },
     "/api/v1/admin/usage": {
       "get": {
         "operationId": "GetUsage",
@@ -13585,7 +14002,7 @@
                 }
               }
             },
-            "description": "`unavailable`: the node could not take the unit, or the book holds a refused counts row the identity cannot be measured over. The body is the admin error envelope with code `unavailable`"
+            "description": "`unavailable`: the node could not take the unit, or a figure the identity is measured over is past the range it is served in. The body is the admin error envelope with code `unavailable`"
           }
         },
         "security": [

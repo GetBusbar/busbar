@@ -19,8 +19,8 @@ use std::sync::Arc;
 use super::resolve::ResolveNames;
 use super::*;
 use crate::egress::fixtures::{
-    ca_and_leaf, certs_from_pem, private_refusing, spawn_http, spawn_tls, CannedResponse,
-    ClientAuth, RebindingResolver, TlsServerSpec,
+    ca_and_leaf, private_refusing, spawn_double, spawn_http, CannedResponse, DoublePeer,
+    RebindingResolver, TlsDouble,
 };
 use crate::host_services::{DestJudge, DestRefusal};
 use busbar_contract::abi::host::service::{DEST_INTERNAL, DEST_METADATA};
@@ -211,28 +211,34 @@ async fn a_refusal_is_connect_class_with_no_timeout_in_its_chain() {
 }
 
 /// THE NAME STAYS ON THE WIRE. A judged TLS dial connects to the address the name answered with
-/// and presents the configured NAME: the ClientHello's SNI is the name, the certificate is
-/// verified against it (the leaf is minted for the name only), and the request head carries it as
-/// `Host`, byte-identical to the head the pinned posture sends for the same request.
+/// and hands the TLS wrap the configured NAME (the SNI, and the name the certificate is verified
+/// against — over the real wrap, the connector's `tls/engine_tests.rs`), and the request head carries it
+/// as `Host`, byte-identical to the head the pinned posture sends for the same request.
 #[tokio::test]
 async fn a_judged_tls_dial_keeps_the_name_for_sni_and_host() {
     let material = ca_and_leaf(&["provider.test"]);
-    let fixture = spawn_tls(TlsServerSpec {
-        cert_chain_pem: material.leaf_pem.clone(),
-        key_pem: material.leaf_key_pem.clone(),
-        client_auth: ClientAuth::None,
-        response: CannedResponse::ok("named"),
-        max_requests_per_connection: 4,
-    });
+    let fixture = spawn_double(
+        DoublePeer {
+            leaf: Some(material.leaf_der.clone()),
+            ..DoublePeer::default()
+        },
+        CannedResponse::ok("named"),
+        4,
+    );
+    let tls = TlsDouble::default();
     let url = format!("https://provider.test:{}/v1/x", fixture.addr.port());
 
     let judged = EngineSpec {
         dns: Dns::Custom(Arc::new(Answers(vec![fixture.addr]))),
         judge: Some(private_refusing(&["provider.test"])),
-        trust: Trust::WebpkiPlus(certs_from_pem(&material.ca_pem)),
+        trust: Trust::WebpkiPlus(vec![material.leaf_der.clone()]),
         ..EngineSpec::pooled_webpki(4, 300, false, false)
     };
-    let client = build_client(&judged).expect("builds");
+    let client = build_client(&EngineSpec {
+        tls: Some(tls.layer()),
+        ..judged
+    })
+    .expect("builds");
     let resp = client.request(get(&url)).await.expect("the named dial");
     assert_eq!(resp.status(), 200);
     let _ = http_body_util::BodyExt::collect(resp.into_body()).await;
@@ -241,16 +247,20 @@ async fn a_judged_tls_dial_keeps_the_name_for_sni_and_host() {
         Arc::from("provider.test"),
         fixture.addr.ip(),
         None,
-        certs_from_pem(&material.ca_pem),
+        vec![material.leaf_der.clone()],
     );
-    let client = build_client(&pinned).expect("builds");
+    let client = build_client(&EngineSpec {
+        tls: Some(tls.layer()),
+        ..pinned
+    })
+    .expect("builds");
     let resp = client.request(get(&url)).await.expect("the pinned dial");
     assert_eq!(resp.status(), 200);
     let _ = http_body_util::BodyExt::collect(resp.into_body()).await;
 
     let records = fixture.records_when(|r| r.len() == 2 && r.iter().all(|c| c.requests == 1));
     let judged_conn = &records[0];
-    assert!(judged_conn.handshake_ok, "verified against the name");
+    assert!(judged_conn.handshake_ok, "the handshake completed");
     assert_eq!(judged_conn.sni.as_deref(), Some("provider.test"));
     let host_line = format!("host: provider.test:{}", fixture.addr.port());
     assert!(
@@ -265,6 +275,11 @@ async fn a_judged_tls_dial_keeps_the_name_for_sni_and_host() {
         "the judged head is the pinned head, byte for byte"
     );
     assert_eq!(judged_conn.sni, records[1].sni);
+    let hellos = tls.hellos();
+    assert!(
+        hellos.iter().all(|h| h.server_name == "provider.test"),
+        "both postures hand the wrap the name: {hellos:?}"
+    );
 }
 
 /// THE SEAM, FAIL CLOSED (ARCHITECT ruling (C)): a pooled client naming no judge of its own asks
@@ -294,5 +309,119 @@ async fn with_no_guard_installed_a_pooled_dial_fails_closed() {
             "refused through the seam: {err:?}"
         );
     }
+    assert!(fixture.records().is_empty(), "no connection was opened");
+}
+
+// ── THE LITERAL ROWS (K3 #3): a literal never reaches a resolver, so the guard's name arm judges it ──
+
+/// RED (K3 #3): an IP-LITERAL target is judged as its own answer. `HttpConnector` hands a literal
+/// straight to the socket without asking any resolver, so before the name arm ran on every dial a
+/// pooled client dialled `http://127.0.0.1:<port>` while `localhost` for the same address was
+/// refused. Now the literal is refused before any socket opens.
+#[tokio::test]
+async fn a_private_literal_is_refused_before_any_socket() {
+    let fixture = spawn_http(CannedResponse::ok("never served"), 4);
+    let client = judged_client(Arc::new(Answers(Vec::new())), private_refusing(&[]));
+    let err = client
+        .request(get(&format!(
+            "http://127.0.0.1:{}/v1/x",
+            fixture.addr.port()
+        )))
+        .await
+        .expect_err("a loopback literal is refused by default");
+    assert!(err.is_connect(), "{err:?}");
+    assert_eq!(dial_refusal(&err).map(|r| r.verdict), Some(DEST_INTERNAL));
+    assert!(fixture.records().is_empty(), "no connection was opened");
+}
+
+/// GREEN: an allowlisted literal dials, as an operator lists a loopback upstream.
+#[tokio::test]
+async fn an_allowlisted_literal_dials() {
+    let fixture = spawn_http(CannedResponse::ok("local model"), 4);
+    let client = judged_client(
+        Arc::new(Answers(Vec::new())),
+        private_refusing(&["127.0.0.1"]),
+    );
+    let resp = client
+        .request(get(&format!(
+            "http://127.0.0.1:{}/v1/x",
+            fixture.addr.port()
+        )))
+        .await
+        .expect("an allowlisted literal dials");
+    assert_eq!(resp.status(), 200);
+    assert_eq!(fixture.records().len(), 1);
+}
+
+/// A guard double whose name arm refuses one NAME (an operator-blocked or metadata name) and
+/// admits every answer: what it proves is that the name arm runs before resolution.
+struct RefusesName(&'static str);
+
+impl DestJudge for RefusesName {
+    fn judge_name(&self, dest: &str, _: u32, _: bool) -> Result<(), u64> {
+        if dest == self.0 {
+            Err(DEST_METADATA)
+        } else {
+            Ok(())
+        }
+    }
+    fn judge(
+        &self,
+        _: &str,
+        _: u32,
+        _: bool,
+        _: Box<dyn FnOnce(crate::host_services::Admitted) + Send>,
+    ) -> Option<crate::host_services::Admitted> {
+        Some(Err(busbar_contract::abi::host::service::DEST_NO_HOST.into()))
+    }
+    fn judge_answer(&self, _: &str, _: &[IpAddr], _: u32) -> Result<(), DestRefusal> {
+        Ok(())
+    }
+}
+
+/// RED (K3 #3): a NAME the guard's name arm refuses (a metadata or operator-blocked name) is refused
+/// whatever it resolves to, and the resolver is never asked. Before, only the answer was judged, so
+/// a blocked name answering a public address was dialled.
+#[tokio::test]
+async fn a_name_the_name_arm_refuses_is_never_resolved() {
+    let fixture = spawn_http(CannedResponse::ok("never served"), 4);
+    let counting = Arc::new(RebindingResolver::counting(fixture.addr));
+    let client = judged_client(
+        Arc::clone(&counting) as Arc<dyn ResolveNames>,
+        Arc::new(RefusesName("blocked.test")),
+    );
+    let err = client
+        .request(get(&format!(
+            "http://blocked.test:{}/v1/x",
+            fixture.addr.port()
+        )))
+        .await
+        .expect_err("a refused name is refused");
+    assert_eq!(dial_refusal(&err).map(|r| r.verdict), Some(DEST_METADATA));
+    assert_eq!(counting.calls(), 0, "the name arm runs before resolution");
+    assert!(fixture.records().is_empty(), "no connection was opened");
+}
+
+/// RED (K3 #3, the pinned arm): a pinned client dials only its pin. A literal target that is not
+/// the pinned address never reaches a socket; before, `HttpConnector` short-circuited the literal
+/// past the pin and dialled it.
+#[tokio::test]
+async fn a_pinned_client_refuses_a_literal_that_is_not_its_pin() {
+    let fixture = spawn_http(CannedResponse::ok("never served"), 4);
+    let client = build_client(&EngineSpec::pinned(
+        Arc::from("pinned.test"),
+        IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)),
+        None,
+        Vec::new(),
+    ))
+    .expect("the pinned posture builds");
+    let err = client
+        .request(get(&format!(
+            "http://127.0.0.1:{}/v1/x",
+            fixture.addr.port()
+        )))
+        .await
+        .expect_err("a literal that is not the pin is refused");
+    assert!(err.is_connect(), "{err:?}");
     assert!(fixture.records().is_empty(), "no connection was opened");
 }

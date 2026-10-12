@@ -70,7 +70,7 @@ impl RelayTransport for RecordingTransport {
         &self,
         _http_method: &str,
         url: &url::Url,
-        addr: IpAddr,
+        crate::a2a::fetch::Pin { addr, .. }: crate::a2a::fetch::Pin,
         headers: &[(String, String)],
         body: &[u8],
     ) -> Result<HttpResponse, crate::a2a::relay::SendFailure> {
@@ -95,7 +95,7 @@ impl RelayTransport for RecordingTransport {
     fn post_stream(
         &self,
         _url: &url::Url,
-        _addr: IpAddr,
+        _addr: crate::a2a::fetch::Pin,
         _headers: &[(String, String)],
         _body: &[u8],
         _on_chunk: &mut (dyn FnMut(&[u8]) -> ChunkFlow + Send),
@@ -279,7 +279,7 @@ fn the_callers_own_webhook_credential_is_presented_on_the_delivery() {
         id,
         Some(&pushdeliver::DeliveryAuth {
             scheme: "Bearer".to_string(),
-            credentials: "receiver-issued-token".to_string(),
+            credentials: busbar_contract::Redacted::new("receiver-issued-token".to_string()),
         }),
     );
     let (seam, log) = seam_answering(&[AT_REGISTRATION], 200);
@@ -314,7 +314,7 @@ fn re_registering_without_authentication_stops_the_credential_being_sent() {
         id,
         Some(&pushdeliver::DeliveryAuth {
             scheme: "Bearer".to_string(),
-            credentials: "old-token".to_string(),
+            credentials: busbar_contract::Redacted::new("old-token".to_string()),
         }),
     );
     pushdeliver::remember_auth(id, None);
@@ -347,7 +347,7 @@ fn a_terminal_delivery_drops_the_credential_as_well_as_the_pin() {
         id,
         Some(&pushdeliver::DeliveryAuth {
             scheme: "Bearer".to_string(),
-            credentials: "short-lived".to_string(),
+            credentials: busbar_contract::Redacted::new("short-lived".to_string()),
         }),
     );
     let (seam, _log) = seam_answering(&[AT_REGISTRATION], 200);
@@ -366,7 +366,7 @@ fn the_delivery_credential_does_not_appear_in_its_own_debug_rendering() {
     crate::testkit::install_test_seams();
     let auth = pushdeliver::DeliveryAuth {
         scheme: "Bearer".to_string(),
-        credentials: "a-secret-nobody-should-log".to_string(),
+        credentials: busbar_contract::Redacted::new("a-secret-nobody-should-log".to_string()),
     };
     let rendered = format!("{auth:?}");
     assert!(
@@ -702,10 +702,8 @@ async fn a_task_in_the_registry(
     crate::taskstore::TASKS.set_sink(busbar_kernel::plane::store::PlaneStoreView::narrow(
         ledger.clone(),
     ));
-    // STAMPED AT THE PRESENT. `TASKS` runs the production retention sweep on every submit, and the
-    // other batteries sharing it submit at the real host clock. A row stamped at the fixture's 1970
-    // seconds is "idle past the abandon ceiling" to any such sweep, which then moves it to `canceled`
-    // and chains a `task.terminal` between the submission and the delivery this test reads back.
+    // STAMPED AT THE PRESENT: `TASKS` is shared with batteries that submit at the real host clock,
+    // and this task's clock reads the same as theirs.
     let mut task = task_with_callback(task_id, state);
     task.created_at = crate::host_now();
     task.updated_at = task.created_at;
@@ -883,7 +881,7 @@ impl RelayTransport for ScriptedTransport {
         &self,
         _http_method: &str,
         _url: &url::Url,
-        _addr: IpAddr,
+        _addr: crate::a2a::fetch::Pin,
         _headers: &[(String, String)],
         body: &[u8],
     ) -> Result<HttpResponse, crate::a2a::relay::SendFailure> {
@@ -908,7 +906,7 @@ impl RelayTransport for ScriptedTransport {
     fn post_stream(
         &self,
         _url: &url::Url,
-        _addr: IpAddr,
+        _addr: crate::a2a::fetch::Pin,
         _headers: &[(String, String)],
         _body: &[u8],
         _on_chunk: &mut (dyn FnMut(&[u8]) -> ChunkFlow + Send),

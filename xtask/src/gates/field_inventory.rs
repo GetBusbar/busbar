@@ -11,6 +11,7 @@
 //! | --- | --- |
 //! | `:provenance` | every lock names its spec and carries the digest `spec-digests.tsv` pins today; a re-pin that skipped the regeneration is red |
 //! | `:schema-identity` | a lock's `dialect` agrees with its filename and its spec with the register |
+//! | `:canonical-form` | every lock is byte-equal to its canonical render (what `dialect wire --write` emits); any other layout is refused naming the first differing line |
 //! | `:no-duplicate-fields` | no direction lists a path twice (JSON would silently keep one) |
 //! | `:registration` | the registered dialects and the lock files are the same set, both ways |
 //! | `:both-directions` | every declared direction is present and at or above its armed path floor |
@@ -25,12 +26,13 @@
 use std::collections::BTreeSet;
 
 use crate::ctx::{Ctx, Overlay, WalkSpec};
-use crate::gates::{prove_green, prove_red, Gate, Report};
+use crate::gates::{prove_green, prove_red, prove_red_by_configuration, Gate, Report};
 use crate::ledger::{Row, Verdict};
 use crate::wire_lock::{self, Lock, DIALECTS, INVENTORY, LOCK_DIR};
 
 pub const ROW_PROVENANCE: &str = "field-inventory:provenance";
 pub const ROW_SCHEMA_IDENTITY: &str = "field-inventory:schema-identity";
+pub const ROW_CANONICAL_FORM: &str = "field-inventory:canonical-form";
 pub const ROW_NO_DUPLICATE_FIELDS: &str = "field-inventory:no-duplicate-fields";
 pub const ROW_REGISTRATION: &str = "field-inventory:registration";
 pub const ROW_BOTH_DIRECTIONS: &str = "field-inventory:both-directions";
@@ -222,18 +224,15 @@ fn duplicates(texts: &[(String, String)]) -> Vec<String> {
 
 /// Every (dialect, direction) pair below its armed floor, absent though the register declares a
 /// root for it, or with no floor at all.
-fn short_pairs(locks: &[Lock]) -> Vec<String> {
-    let mut short = Vec::new();
+fn short_pairs(locks: &[Lock], floors: &[(&str, &str, usize)]) -> Vec<String> {
+    let mut short = orphan_floors(floors);
     for (d, l) in DIALECTS.iter().zip(locks) {
         for (dir, root) in wire_lock::DIRECTIONS.iter().zip(d.roots.iter()) {
             if root.is_none() {
                 continue;
             }
             let got = l.dirs.get(*dir).map_or(0, |p| p.len());
-            match PAIR_FLOORS
-                .iter()
-                .find(|(n, x, _)| *n == d.name && x == dir)
-            {
+            match floors.iter().find(|(n, x, _)| *n == d.name && x == dir) {
                 Some((_, _, floor)) if got >= *floor => {}
                 Some((_, _, floor)) => {
                     short.push(format!("{}/{dir} ({got} path(s), floor {floor})", d.name))
@@ -243,6 +242,57 @@ fn short_pairs(locks: &[Lock]) -> Vec<String> {
         }
     }
     short
+}
+
+/// A floor row that matches no declared (dialect, direction) pair: its dialect left the register,
+/// or the register no longer declares that direction. Such a row guards nothing and would rot.
+fn orphan_floors(floors: &[(&str, &str, usize)]) -> Vec<String> {
+    floors
+        .iter()
+        .filter(|(n, x, _)| {
+            !DIALECTS.iter().any(|d| {
+                d.name == *n
+                    && wire_lock::DIRECTIONS
+                        .iter()
+                        .zip(d.roots.iter())
+                        .any(|(dir, root)| dir == x && root.is_some())
+            })
+        })
+        .map(|(n, x, f)| format!("{n}/{x} (floor {f} matches no declared pair; remove the row)"))
+        .collect()
+}
+
+/// A lock whose committed text is not its canonical render: the first line that differs, so a
+/// reformatted or hand-edited layout (which the line-shaped duplicate check cannot read) is
+/// refused rather than passed on zero recognised lines.
+fn non_canonical(texts: &[(String, String)], locks: &[Lock]) -> Vec<String> {
+    let mut out = Vec::new();
+    for ((path, text), lock) in texts.iter().zip(locks) {
+        let canon = lock.render();
+        if *text == canon {
+            continue;
+        }
+        let mut a = text.lines();
+        let mut b = canon.lines();
+        let mut n = 0;
+        let why = loop {
+            n += 1;
+            match (a.next(), b.next()) {
+                (Some(x), Some(y)) if x == y => {}
+                (x, y) => {
+                    break format!(
+                        "line {n} is `{}` where the canonical render has `{}`",
+                        x.unwrap_or("<end of file>"),
+                        y.unwrap_or("<end of file>")
+                    )
+                }
+            }
+        };
+        out.push(format!(
+            "{path} is not in canonical form ({why}); run cargo xtask dialect wire --write all"
+        ));
+    }
+    out
 }
 
 fn audited_missing(locks: &[Lock]) -> Vec<String> {
@@ -273,6 +323,128 @@ fn row(id: &str, ok: &str, bad: &str, problems: &[String], green: String) -> Row
 
 pub struct FieldInventoryGate;
 
+/// The gate over a floor table with one extra row, so the selftest can plant an orphan floor
+/// (the table is a const, not a file an overlay could edit).
+struct PlantedFloors;
+
+const ORPHAN_FLOOR: (&str, &str, usize) = ("retired-dialect", "request", 1);
+
+impl Gate for PlantedFloors {
+    fn name(&self) -> &'static str {
+        "field-inventory"
+    }
+    fn baseline_key(&self) -> Option<String> {
+        Some("field-inventory:orphan-floor".to_string())
+    }
+    fn owed(&self) -> Vec<String> {
+        FieldInventoryGate.owed()
+    }
+    fn run(&self, cx: &Ctx) -> Verdict {
+        let mut floors = PAIR_FLOORS.to_vec();
+        floors.push(ORPHAN_FLOOR);
+        run_with(self, cx, &floors)
+    }
+    fn selftest<'a>(&'a self, _cx: &'a Ctx) -> Report<'a> {
+        Report::new()
+    }
+}
+
+fn run_with(gate: &dyn Gate, cx: &Ctx, floors: &[(&str, &str, usize)]) -> Verdict {
+    let loaded = match load(cx) {
+        Ok(l) => l,
+        Err(refusal) => {
+            let mut rows = vec![Row::fail(
+                refusal.row,
+                "the wire locks were refused",
+                refusal.why.clone(),
+            )];
+            for id in gate.owed() {
+                if id != refusal.row {
+                    rows.push(Row::skip(
+                        &id,
+                        "unproven — the lock set was refused above this check",
+                        "the lock set was refused, so nothing was read from it".to_string(),
+                    ));
+                }
+            }
+            return Verdict::of(rows);
+        }
+    };
+    let locks = &loaded.locks;
+    let paths: usize = locks
+        .iter()
+        .flat_map(|l| l.dirs.values())
+        .map(|d| d.len())
+        .sum();
+    let drift = match cx.read(INVENTORY) {
+        Ok(t) if t == wire_lock::render_inventory(locks) => Vec::new(),
+        Ok(_) => vec![format!(
+            "{INVENTORY} is STALE; run cargo xtask dialect wire --write all"
+        )],
+        Err(_) => vec![format!(
+            "{INVENTORY} is missing; run cargo xtask dialect wire --write all"
+        )],
+    };
+    Verdict::of(vec![
+        row(
+            ROW_PROVENANCE,
+            "every wire lock carries the digest its spec is pinned at",
+            "a wire lock is not generated from the spec pinned today",
+            &provenance(cx, locks),
+            format!("{} lock(s), each at its pinned digest", locks.len()),
+        ),
+        row(
+            ROW_SCHEMA_IDENTITY,
+            "every lock's dialect agrees with its filename and the register",
+            "a lock names a dialect its filename does not",
+            &identity(locks),
+            "each lock names its own dialect and format".to_string(),
+        ),
+        row(
+            ROW_CANONICAL_FORM,
+            "every wire lock is byte-equal to its canonical render",
+            "a wire lock is not in canonical form",
+            &non_canonical(&loaded.texts, locks),
+            format!("{} lock(s), each its canonical render", locks.len()),
+        ),
+        row(
+            ROW_NO_DUPLICATE_FIELDS,
+            "no direction lists a path twice",
+            "a lock lists a path twice",
+            &duplicates(&loaded.texts),
+            "every direction's paths are a set".to_string(),
+        ),
+        row(
+            ROW_REGISTRATION,
+            "the registered dialects and the lock files are the same set",
+            "the lock set and the register disagree",
+            &[],
+            format!("{} dialect(s), matched both ways", DIALECTS.len()),
+        ),
+        row(
+            ROW_BOTH_DIRECTIONS,
+            "every declared direction is at or above its armed path floor",
+            "a dialect enumerates a direction below its floor",
+            &short_pairs(locks, floors),
+            format!("{paths} path(s) across every dialect/direction pair"),
+        ),
+        row(
+            ROW_AUDITED_FIELDS,
+            "every field the audit found by hand is in the locks",
+            "the locks cannot see a defect that was found by hand",
+            &audited_missing(locks),
+            format!("{} audited field(s) present", AUDITED.len()),
+        ),
+        row(
+            ROW_ARTIFACT_DRIFT,
+            "the generated inventory is the projection of the locks",
+            "the generated inventory is not what the locks project",
+            &drift,
+            format!("{INVENTORY} is up to date"),
+        ),
+    ])
+}
+
 impl Gate for FieldInventoryGate {
     fn name(&self) -> &'static str {
         "field-inventory"
@@ -282,6 +454,7 @@ impl Gate for FieldInventoryGate {
         [
             ROW_PROVENANCE,
             ROW_SCHEMA_IDENTITY,
+            ROW_CANONICAL_FORM,
             ROW_NO_DUPLICATE_FIELDS,
             ROW_REGISTRATION,
             ROW_BOTH_DIRECTIONS,
@@ -294,92 +467,7 @@ impl Gate for FieldInventoryGate {
     }
 
     fn run(&self, cx: &Ctx) -> Verdict {
-        let loaded = match load(cx) {
-            Ok(l) => l,
-            Err(refusal) => {
-                let mut rows = vec![Row::fail(
-                    refusal.row,
-                    "the wire locks were refused",
-                    refusal.why.clone(),
-                )];
-                for id in self.owed() {
-                    if id != refusal.row {
-                        rows.push(Row::skip(
-                            &id,
-                            "unproven — the lock set was refused above this check",
-                            "the lock set was refused, so nothing was read from it".to_string(),
-                        ));
-                    }
-                }
-                return Verdict::of(rows);
-            }
-        };
-        let locks = &loaded.locks;
-        let paths: usize = locks
-            .iter()
-            .flat_map(|l| l.dirs.values())
-            .map(|d| d.len())
-            .sum();
-        let drift = match cx.read(INVENTORY) {
-            Ok(t) if t == wire_lock::render_inventory(locks) => Vec::new(),
-            Ok(_) => vec![format!(
-                "{INVENTORY} is STALE; run cargo xtask dialect wire --write all"
-            )],
-            Err(_) => vec![format!(
-                "{INVENTORY} is missing; run cargo xtask dialect wire --write all"
-            )],
-        };
-        Verdict::of(vec![
-            row(
-                ROW_PROVENANCE,
-                "every wire lock carries the digest its spec is pinned at",
-                "a wire lock is not generated from the spec pinned today",
-                &provenance(cx, locks),
-                format!("{} lock(s), each at its pinned digest", locks.len()),
-            ),
-            row(
-                ROW_SCHEMA_IDENTITY,
-                "every lock's dialect agrees with its filename and the register",
-                "a lock names a dialect its filename does not",
-                &identity(locks),
-                "each lock names its own dialect and format".to_string(),
-            ),
-            row(
-                ROW_NO_DUPLICATE_FIELDS,
-                "no direction lists a path twice",
-                "a lock lists a path twice",
-                &duplicates(&loaded.texts),
-                "every direction's paths are a set".to_string(),
-            ),
-            row(
-                ROW_REGISTRATION,
-                "the registered dialects and the lock files are the same set",
-                "the lock set and the register disagree",
-                &[],
-                format!("{} dialect(s), matched both ways", DIALECTS.len()),
-            ),
-            row(
-                ROW_BOTH_DIRECTIONS,
-                "every declared direction is at or above its armed path floor",
-                "a dialect enumerates a direction below its floor",
-                &short_pairs(locks),
-                format!("{paths} path(s) across every dialect/direction pair"),
-            ),
-            row(
-                ROW_AUDITED_FIELDS,
-                "every field the audit found by hand is in the locks",
-                "the locks cannot see a defect that was found by hand",
-                &audited_missing(locks),
-                format!("{} audited field(s) present", AUDITED.len()),
-            ),
-            row(
-                ROW_ARTIFACT_DRIFT,
-                "the generated inventory is the projection of the locks",
-                "the generated inventory is not what the locks project",
-                &drift,
-                format!("{INVENTORY} is up to date"),
-            ),
-        ])
+        run_with(self, cx, &PAIR_FLOORS)
     }
 
     fn selftest<'a>(&'a self, cx: &'a Ctx) -> Report<'a> {
@@ -424,6 +512,34 @@ impl Gate for FieldInventoryGate {
             &[ROW_NO_DUPLICATE_FIELDS],
             ov,
             &["path 'model' appears twice"],
+        ));
+        let mut ov = Overlay::new();
+        ov.set(&path, text.replace("\n    \"", "\n      \""));
+        report.push(prove_red(
+            cx,
+            self,
+            "a lock reformatted (same content, other indent) is refused as non-canonical",
+            &[ROW_CANONICAL_FORM],
+            ov,
+            &["not in canonical form", "line 6"],
+        ));
+        let mut ov = Overlay::new();
+        ov.set(&path, text.replacen("\": {", "\":{", 1));
+        report.push(prove_red(
+            cx,
+            self,
+            "a lock written `\":{` without the space is refused as non-canonical",
+            &[ROW_CANONICAL_FORM],
+            ov,
+            &["not in canonical form"],
+        ));
+        report.push(prove_red_by_configuration(
+            cx,
+            self,
+            &PlantedFloors,
+            "a floor row that matches no declared pair is refused",
+            &[ROW_BOTH_DIRECTIONS],
+            &["retired-dialect/request", "matches no declared pair"],
         ));
         let mut ov = Overlay::new();
         ov.remove(wire_lock::lock_path("openai"));

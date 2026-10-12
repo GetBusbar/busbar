@@ -40,6 +40,9 @@ pub mod authz;
 // nowhere else (the unsafe policy above).
 #[allow(unsafe_code, missing_docs, missing_debug_implementations)]
 pub mod abi;
+// THE SANS-IO `hyper` DRIVE framers expand (`hyper_io!(<buffer>)`): a macro only, so the contract
+// depends on neither `hyper` nor a buffer crate (ARCHITECT ruling 2026-09-30 (c)).
+mod sdk_hyper;
 // THE SUBSTRATE-VALUES SHAPES (DECISIONS #83: contract = shapes; #83a, SD-1): `billing`, `codec`,
 // `ir`, `protocol` (and `diagnostic`, below) are module-path-only moves out of `busbar-substrate-values`, which re-exports
 // every item under its historical path until the split retires it (and the two upstream signal shapes
@@ -73,6 +76,8 @@ pub mod hook_wire;
 #[allow(missing_docs)]
 pub mod hooks;
 pub mod ids;
+// THE HOST'S I/O, as the connector implements it and the loader's `io` slots reach it.
+pub mod io_host;
 #[allow(missing_docs, missing_debug_implementations)]
 pub mod ir;
 pub(crate) mod json_grammar;
@@ -81,6 +86,9 @@ pub mod kinds;
 // The media carriers (#83a SD-2b), re-expressed over `bounded::SlabBytes`.
 #[allow(missing_docs, missing_debug_implementations)]
 pub mod media;
+// THE MIGRATION SEAMS: the legacy-row shapes and the three traits the store adapter implements and
+// the ledger's migration consumes (the same division `slice` makes).
+pub mod migration;
 // The one URL and host reader (the destination-guard audit): pure, outside `abi/`.
 pub mod net;
 #[allow(missing_docs)]
@@ -88,6 +96,7 @@ pub mod operation;
 pub mod plane;
 pub mod plane_calls;
 pub mod plugin;
+pub mod plugin_rows;
 #[allow(missing_docs, missing_debug_implementations)]
 pub mod protocol;
 pub mod redacted;
@@ -113,6 +122,8 @@ pub mod secret_ref;
 pub mod section;
 pub mod services;
 pub mod signal;
+// THE LOG'S SHIPPING SEAM: the trait the store adapter implements and the log ships through.
+pub mod ship;
 pub mod slice;
 // THE STORE'S CALLS: the typed store v3 surface the loader implements and the kernel calls.
 pub mod spans;

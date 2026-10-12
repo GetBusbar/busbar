@@ -416,6 +416,7 @@ fn a_downlink_audio_delta_from_a_dialect_that_names_no_item_invents_none() {
             seq: 0,
             media: Bytes::from_static(b"x"),
             origin: IrAudioRef::default(),
+            format: None,
         }),
     );
     let v = as_value(&w);

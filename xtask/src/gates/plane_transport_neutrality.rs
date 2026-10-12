@@ -10,14 +10,21 @@
 //!
 //! Three rows:
 //!
-//! * `plane-transport-neutrality:neutral-roots` — every listed root is on disk. `find $ROOTS …
-//!   2>/dev/null | sort` swallowed the diagnostic for a root that had been renamed, split or
-//!   drained, and lost `find`'s status through the pipe: an empty file list, a hit total of 0, and a
-//!   green PASS over a tree the gate never opened.
-//! * `plane-transport-neutrality:zero-file-refusal` — trusted BEFORE the total is. This catches
-//!   every OTHER way the list comes back empty: a root that exists but holds no `.rs`, a layout move
-//!   that left the sources one level down. A zero-file scan and a perfectly clean tree produce the
-//!   IDENTICAL number, so the count alone can never tell them apart.
+//! * `plane-transport-neutrality:neutral-roots` — THE CENSUS ROW. The scanned population is not a
+//!   list: it is [`neutral_census`], kind-isolation's crate census read off the kind table, so a
+//!   neutral crate created today is scanned today. The row holds that every `crates/*/src` is either
+//!   census-neutral (and on disk, and scanned) or named non-neutral by its family (plane,
+//!   transport). A crate the census cannot classify — no manifest, a name no kind claims, a name two
+//!   kinds claim — is in no population and so in no scan, and is RED here; so is a census-neutral
+//!   crate whose `src/` is not on disk, which would be scanned as zero files. (Before the census,
+//!   this row checked a hand list, `planes::neutral_src_roots`, that enrolled a new neutral crate
+//!   only when somebody remembered it.)
+//! * `plane-transport-neutrality:zero-file-refusal` — THE FILE-COUNT FLOOR, trusted BEFORE the total
+//!   is: [`MIN_FILES`], the `.rs` count measured on predev. It catches every OTHER way the scan set
+//!   shrinks: a root that exists but holds no `.rs`, a layout move that left the sources one level
+//!   down, a tree that lost files. It was `files.is_empty()`, under which one surviving file passed.
+//!   A shrunken scan and a cleaner tree produce the same number, so the count alone can never tell
+//!   them apart.
 //! * `plane-transport-neutrality:no-transport-noun` — the finding.
 //!
 //! ## THE IDENTIFIER BOUNDARY INCLUDES `_`, AND THAT IS THE WHOLE FIX
@@ -42,10 +49,10 @@
 //! such check and a row it cannot produce would break the parity proof this conversion turns on.
 
 use crate::ctx::{Ctx, Overlay, WalkSpec};
+use crate::gates::kind_isolation::{neutral_census, neutral_kind_src_roots};
 use crate::gates::{prove_green, prove_red, Gate, Report};
 use crate::ledger::{Row, Verdict};
 use crate::parity::LegacyRun;
-use crate::planes::neutral_src_roots;
 use crate::scan;
 
 pub const ROW_ROOTS: &str = "plane-transport-neutrality:neutral-roots";
@@ -66,6 +73,22 @@ pub const NOUNS: &[&str] = &[
 /// that declares them. A `_audio` name anywhere else, or a NEW transport name in this file, flags.
 const TWIN_FILE: &str = "crates/busbar-contract/src/billing.rs";
 const TWIN_IDENTS: &[&str] = &["input_audio", "output_audio"];
+
+/// THE FILE-COUNT FLOOR: the `.rs` files the census-neutral roots held on predev, measured
+/// (39374ec00e, 2026-10-09). A scan set under it is refused rather than read as a cleaner tree:
+/// the hand list's guard was `files.is_empty()`, so a root list that collapsed to one file passed.
+/// Raised as the neutral crates grow; lowered only in a reviewed diff that names the files that
+/// legitimately left.
+///
+/// Was 1231 on 0fd08ee75d. Lowered by the egress-auth move out of the kernel (5c23d7527): 13
+/// `busbar-kernel/src` files left (`auth_cache.rs`, `egress_auth/{mod,bearer_token,jwt_bearer,
+/// oauth_client_credentials}.rs`, `egress_auth/tests/{bearer_token,helper,jwt_bearer,
+/// oauth_client_credentials,prebuilt_auth}_tests.rs`, `tests/auth_cache_tests.rs`,
+/// `tests/members/identity/{declared,egress_auth}_tests.rs`) and 11 `busbar-kernel-identity/src`
+/// files (`cache.rs`, `ingress_sigv4.rs`, `egress_auth/{mod,declared,declared_tests,tests,
+/// token_response}.rs`, `egress_auth/sigv4/{mod,tests}.rs`, `tests/{cache,ingress_sigv4}_tests.rs`),
+/// against 6 arrivals there (net -18, 1213); then raised by 7 files predev landed by 39374ec00e.
+pub const MIN_FILES: usize = 1220;
 
 const CLEAN: &str = "the scan cleared its floors and named nothing";
 const DID_NOT_RUN: &str = "nothing was read, and nothing read is not a clean tree";
@@ -196,40 +219,13 @@ impl Gate for PlaneTransportNeutralityGate {
     }
 
     fn run(&self, cx: &Ctx) -> Verdict {
-        let roots = neutral_src_roots();
-
-        // THE ROOT GUARD, root by root, before any number means anything.
-        let missing: Vec<String> = roots
-            .iter()
-            .filter(|r| !cx.abs(r).is_dir() && !cx.exists(r))
-            .cloned()
-            .collect();
-        if !missing.is_empty() {
-            return Verdict::of(vec![
-                Row::fail(
-                    ROW_ROOTS,
-                    "a neutral root is listed but not present on disk",
-                    format!(
-                        "{} — a listed root that does not exist is scanned as ZERO files, and zero \
-                         passes every ban. If the crate is legitimately gone, DELETE its entry in a \
-                         reviewed diff that says so; never leave a stale root in the list.",
-                        missing.join(", ")
-                    ),
-                ),
-                Row::fail(ROW_ZERO_FILES, "the scan set is unknown", DID_NOT_RUN.to_string()),
-                Row::fail(ROW_NO_NOUN, "the scan did not run", DID_NOT_RUN.to_string()),
-            ]);
-        }
-
-        // `allow_empty`, because THE ZERO-FILE REFUSAL BELOW IS THIS GATE'S OWN ROW. Left to the
-        // walk, an empty scan set came back as a walk ERROR and was reported on the roots row as
-        // "could not be read" — the refusal happened, but on a row that does not own it, and the
-        // row that does (`zero-file-refusal`) had no red proof that reached it.
-        let files = match cx.walk(&WalkSpec::new(roots.clone()).ext("rs").allow_empty()) {
-            Ok(f) => f,
+        // THE POPULATION IS THE CENSUS'S. Every `crates/*` the kind table classes neutral is
+        // scanned; a hand list enrolled a new neutral crate only when somebody remembered it.
+        let census = match neutral_census(cx) {
+            Ok(c) => c,
             Err(e) => {
                 return Verdict::of(vec![
-                    Row::fail(ROW_ROOTS, "a neutral root could not be read", e.to_string()),
+                    Row::fail(ROW_ROOTS, "the crate census could not be read", e),
                     Row::fail(
                         ROW_ZERO_FILES,
                         "the scan set is unknown",
@@ -240,18 +236,105 @@ impl Gate for PlaneTransportNeutralityGate {
             }
         };
 
-        // THE ZERO-FILE GUARD, resolved before the total means anything.
-        if files.is_empty() {
+        // THE CENSUS ROW: every `crates/*/src` is census-neutral and scanned, or named non-neutral
+        // by its family. A crate the census cannot classify is in no population and so in no scan;
+        // a census-neutral crate whose source is not on disk would be scanned as zero files.
+        let mut census_findings: Vec<String> = census
+            .unclassified
+            .iter()
+            .map(|(dir, why)| format!("{dir}: {why}"))
+            .collect();
+        census_findings.extend(census.sourceless.iter().map(|r| {
+            format!(
+                "{r}: the census classes this crate neutral but its source is not present on \
+                 disk — a neutral root that does not exist is scanned as ZERO files, and zero \
+                 passes every ban. If the crate is legitimately gone, strike its manifest with it."
+            )
+        }));
+        if census.neutral.is_empty() {
+            census_findings.push(
+                "the census classes no crate under crates/ neutral — an empty population is the \
+                 passing answer to every ban"
+                    .to_string(),
+            );
+        }
+        let non_neutral = census
+            .non_neutral
+            .iter()
+            .map(|(dir, family)| format!("{dir} ({family})"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let roots_row = if census_findings.is_empty() {
+            Row::pass(
+                ROW_ROOTS,
+                "every crates/*/src is census-neutral and scanned, or named non-neutral by its \
+                 family",
+                format!(
+                    "{} census-neutral root(s) scanned; {} crate(s) named non-neutral: {}",
+                    census.neutral.len(),
+                    census.non_neutral.len(),
+                    non_neutral
+                ),
+            )
+        } else {
+            Row::fail(
+                ROW_ROOTS,
+                "a crate under crates/ is outside the neutral census",
+                format!(
+                    "{} finding(s): {} — every crates/*/src must be census-neutral (and present) \
+                     or named non-neutral by its family in the kind table",
+                    census_findings.len(),
+                    census_findings.join(" | ")
+                ),
+            )
+        };
+
+        // The scan reads the neutral roots that ARE on disk; a sourceless one is already the
+        // census row's finding, and the floor below counts what was actually read.
+        let roots: Vec<String> = census
+            .neutral
+            .iter()
+            .filter(|r| !census.sourceless.contains(r))
+            .cloned()
+            .collect();
+
+        // `allow_empty`, because THE FILE-COUNT FLOOR BELOW IS THIS GATE'S OWN ROW. Left to the
+        // walk, an empty scan set came back as a walk ERROR and was reported on the roots row as
+        // "could not be read" — the refusal happened, but on a row that does not own it.
+        let files = if roots.is_empty() {
+            Vec::new()
+        } else {
+            match cx.walk(&WalkSpec::new(roots.clone()).ext("rs").allow_empty()) {
+                Ok(f) => f,
+                Err(e) => {
+                    return Verdict::of(vec![
+                        Row::fail(ROW_ROOTS, "a neutral root could not be read", e.to_string()),
+                        Row::fail(
+                            ROW_ZERO_FILES,
+                            "the scan set is unknown",
+                            DID_NOT_RUN.to_string(),
+                        ),
+                        Row::fail(ROW_NO_NOUN, "the scan did not run", DID_NOT_RUN.to_string()),
+                    ])
+                }
+            }
+        };
+
+        // THE FILE-COUNT FLOOR, resolved before the total means anything. `files.is_empty()`
+        // passed a scan set that had collapsed to one surviving file.
+        if files.len() < MIN_FILES {
             return Verdict::of(vec![
-                Row::pass(ROW_ROOTS, "every neutral root is present on disk", CLEAN),
+                roots_row,
                 Row::fail(
                     ROW_ZERO_FILES,
-                    "the neutral roots hold no source to scan",
+                    "the neutral roots hold less source than the measured floor",
                     format!(
-                        "0 file(s) across {} neutral root(s) ({}) — a scan of zero files reports \
-                         zero nouns, which is indistinguishable from a clean tree.",
-                        roots.len(),
-                        roots.join(", ")
+                        "{} file(s) across {} census-neutral root(s), under the floor of \
+                         {MIN_FILES} measured on predev — a scan that lost files reports fewer \
+                         nouns, which is indistinguishable from a clean tree. If the sources \
+                         legitimately moved or shrank, re-measure the floor in a reviewed diff.",
+                        files.len(),
+                        roots.len()
                     ),
                 ),
                 Row::fail(ROW_NO_NOUN, "the scan did not run", DID_NOT_RUN.to_string()),
@@ -276,11 +359,15 @@ impl Gate for PlaneTransportNeutralityGate {
         offenders.sort();
 
         Verdict::of(vec![
-            Row::pass(ROW_ROOTS, "every neutral root is present on disk", CLEAN),
+            roots_row,
             Row::pass(
                 ROW_ZERO_FILES,
                 "the neutral roots hold source to scan",
-                CLEAN,
+                format!(
+                    "{} file(s) across {} census-neutral root(s), floor {MIN_FILES}",
+                    files.len(),
+                    roots.len()
+                ),
             ),
             row_no_noun(&offenders),
         ])
@@ -304,25 +391,30 @@ impl Gate for PlaneTransportNeutralityGate {
             &[ROW_ROOTS, ROW_ZERO_FILES, ROW_NO_NOUN],
         ));
 
-        // THE ROOT GUARD. `Overlay::remove` cannot trip it — the guard asks `cx.abs(r).is_dir()`,
-        // which reads the real disk past the overlay — so the row had no red proof and the guard
-        // could have been deleted with the selftest green. Re-rooting the whole context at a tree
-        // that holds none of the neutral crates is the plant that works, and it is the shape the
-        // guard exists for: a listed root that is not there is scanned as zero files, and zero
-        // files pass every ban in this gate.
+        // A TREE THE CENSUS CANNOT READ. Re-rooted at a fixture with a `crates/*/src` and no
+        // manifest anywhere, the census has nothing to classify; that is refused on the census row,
+        // never read as an empty neutral population scanned as zero files.
         report.push(crate::gates::prove_rows_red_at(
             cx,
             self,
-            "a neutral root that is not on disk is refused, not scanned as zero files",
+            "a tree with no crate census is refused, not scanned as zero files",
             &[ROW_ROOTS],
             crate::gates::PLANE_ROOT_MISSING_FIXTURE,
-            &["not present on disk"],
+            &["yielded ZERO files"],
         ));
 
-        let neutral = neutral_src_roots();
+        let neutral = match neutral_kind_src_roots(cx) {
+            Ok(n) => n,
+            Err(e) => {
+                report.note_infra_failure(format!(
+                    "plane-transport-neutrality selftest: the neutral census is unreadable ({e})"
+                ));
+                return report;
+            }
+        };
         let api = neutral
             .iter()
-            .find(|r| r.starts_with("crates/api"))
+            .find(|r| r.starts_with("crates/busbar-kernel/"))
             .cloned()
             .unwrap_or_else(|| neutral[0].clone());
 
@@ -431,6 +523,92 @@ impl Gate for PlaneTransportNeutralityGate {
             &[ROW_NO_NOUN],
         ));
 
+        // A NEUTRAL CRATE NOBODY LISTED. The census classes `busbar-kernel-*` neutral by its name,
+        // so a crate created today is scanned today: the transport noun in it is a finding on the
+        // day it lands, not on the day somebody remembers to enrol its root.
+        let mut ov = Overlay::new();
+        ov.set(
+            "crates/busbar-kernel-planted/Cargo.toml",
+            "[package]\nname = \"busbar-kernel-planted\"\nversion = \"0.0.0\"\nedition = \"2021\"\n",
+        );
+        ov.set(
+            "crates/busbar-kernel-planted/src/lib.rs",
+            "pub fn f() -> u16 { let rtp_port = 1; rtp_port }\n",
+        );
+        report.push(prove_red(
+            cx,
+            self,
+            "a new census-neutral crate carrying a transport noun is scanned and flagged",
+            &[ROW_NO_NOUN],
+            ov,
+            &["rtp", "crates/busbar-kernel-planted/src/lib.rs"],
+        ));
+
+        // A CRATE THE CENSUS CANNOT CLASSIFY. Its name resolves to no kind, so it is neither a
+        // neutral crate the scan reads nor a plane or transport its family names: it is in no
+        // population at all, and that is the census row's finding.
+        let mut ov = Overlay::new();
+        ov.set(
+            "crates/widget-planted/Cargo.toml",
+            "[package]\nname = \"widget-planted\"\nversion = \"0.0.0\"\nedition = \"2021\"\n",
+        );
+        ov.set(
+            "crates/widget-planted/src/lib.rs",
+            "pub fn f() -> u16 { let rtp_port = 1; rtp_port }\n",
+        );
+        report.push(prove_red(
+            cx,
+            self,
+            "a crates/*/src the census cannot classify is refused on the census row",
+            &[ROW_ROOTS],
+            ov,
+            &["crates/widget-planted", "cannot classify"],
+        ));
+
+        // A CENSUS-NEUTRAL CRATE WITH NO SOURCE ON DISK. The manifest says the crate is there and
+        // neutral; its `src/` is not. That root would be scanned as zero files.
+        let mut ov = Overlay::new();
+        ov.set(
+            "crates/busbar-kernel-ghost/Cargo.toml",
+            "[package]\nname = \"busbar-kernel-ghost\"\nversion = \"0.0.0\"\nedition = \"2021\"\n",
+        );
+        report.push(prove_red(
+            cx,
+            self,
+            "a census-neutral crate whose src/ is not on disk is refused, not scanned as zero files",
+            &[ROW_ROOTS],
+            ov,
+            &["crates/busbar-kernel-ghost/src", "not present on disk"],
+        ));
+
+        // ONE FILE UNDER THE FLOOR. `files.is_empty()` passed a scan set that had collapsed to a
+        // single surviving file; the floor is the count measured on predev, so a scan set of
+        // `MIN_FILES - 1` is refused rather than read as a cleaner tree. The plant KEEPS exactly
+        // that many files and removes the rest: removing one file proved the floor only on a tree
+        // that held exactly `MIN_FILES`, and a tree that grows keeps this floor (as `seal-witness`).
+        match cx.list(&WalkSpec::new(neutral.clone()).ext("rs")) {
+            Ok(rels) => {
+                let twin = std::path::Path::new(TWIN_FILE);
+                let keep = MIN_FILES - 1 - usize::from(rels.iter().any(|r| r == twin));
+                let mut ov = Overlay::new();
+                for rel in rels.iter().filter(|r| *r != twin).skip(keep) {
+                    ov.remove(rel);
+                }
+                let found = format!("{} file(s) across", MIN_FILES - 1);
+                report.push(prove_red(
+                    cx,
+                    self,
+                    "a neutral scan set one file under the measured floor is refused",
+                    &[ROW_ZERO_FILES],
+                    ov,
+                    &["under the floor", found.as_str()],
+                ));
+            }
+            Err(e) => report.note_infra_failure(format!(
+                "plane-transport-neutrality selftest: the neutral roots are unreadable ({e})"
+            )),
+        }
+
         // THE BLIND SCANS: the gate must not be able to pass by looking at nothing. A root that is
         // not there, and a root that is there and holds no source, are two different facts and each
         // gets its own case.
@@ -460,6 +638,14 @@ impl Gate for PlaneTransportNeutralityGate {
 
 /// Read the shell gate's own output into the same three rows. Its hits are printed as the same TSV
 /// triples the scanner emits, indented under the FAIL line.
+///
+/// THE POPULATIONS DIFFER, AND ONLY IN ONE DIRECTION. The shell scanned its own hand-typed `ROOTS`;
+/// this gate scans the census-neutral set, which is a superset of it (it adds `crates/busbar` and
+/// `crates/store-memory` on predev 0fd08ee75d, both measured clean). So parity holds row for row
+/// over every tree where the added crates carry no noun, and where one does, the Rust gate is red
+/// and the shell is green — the enrolment hole the census closes, never a rule the shell had and
+/// this gate lost. The shell's census-row and floor checks were a listed-root guard and an empty
+/// guard; the translator keeps reading those two shapes onto the same two rows.
 fn translate(run: &LegacyRun) -> Result<Vec<Row>, String> {
     let mut offenders = Vec::new();
     let mut missing_root = None;
@@ -555,4 +741,22 @@ fn decolour(line: &str) -> String {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// THE FLOOR PLANT ON A TREE THAT HAS GROWN PAST THE FLOOR. Removing one file proved the floor
+    /// only while the census-neutral roots held exactly [`MIN_FILES`]; the merge group of #605 ran
+    /// it over a predev that held more, and the case came back green. Every owed row is proven RED
+    /// over the real tree, whatever it has grown to.
+    #[test]
+    fn the_selftest_proves_every_owed_row_over_the_real_tree() {
+        let cx = Ctx::workspace().expect("workspace context");
+        let report = PlaneTransportNeutralityGate.selftest(&cx);
+        crate::gates::verify_report(&PlaneTransportNeutralityGate, &report)
+            .unwrap_or_else(|errs| panic!("plane-transport-neutrality selftest: {errs:#?}"));
+        assert_eq!(report.skipped(), 0, "a case had nothing to plant");
+    }
 }

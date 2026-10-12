@@ -26,8 +26,10 @@ path = "src/lib.rs"
 
 # THE LINKED TEST-SEAM LIST: the dev-dependency crates whose `testkit::TEST_SEAM` entry this crate's
 # unit tests register and loop (build.rs emits the table; the sources name none of these crates).
+# A `door:` row is a plane crate served through its memory-ABI door only: its registry row is folded
+# from its Statement, as the composition root folds it. The list is the install order.
 [package.metadata.busbar]
-test-linked = ["busbar-llm", "busbar-mcp", "busbar-a2a"]
+test-linked = ["busbar-llm", "busbar-a2a"]
 # THE TEST REGISTRY ROW for the operator credential: the auth plugin dev-dependency whose SDK boundary
 # this crate's unit tests link onto the auth axis (build.rs emits it; the sources name no auth plugin),
 # as the composition root links it into the shipped binary.
@@ -38,20 +40,6 @@ busbar-kernel = { path = "../busbar-kernel", default-features = false }
 # The kernel-verb store face + idempotency window the absorbed verb-execution unit binds against
 # (DECISIONS #38/#40): `busbar_contract::verb_store::{Store, StoreError, IDEMPOTENCY_TTL_SECS}`.
 busbar-contract = { path = "../busbar-contract" }
-# The MONEY LOOKUP the usage read performs (DECISION #79): the dated rate-card history
-# (`cost::History`/`HistoryView::card_at`), the card it resolves to, and the one micro-unit
-# projection. Named directly rather than re-derived here, because the resolution rule and the
-# multiply-and-sum live in exactly one crate — a second copy in this one is how a request comes to
-# be judged at one figure and billed at another. The edge is one-way (the ledger names nothing
-# here) and adds no cycle — the ledger's own closure is `busbar-contract` + `sha2` + `serde`.
-#
-# IT DOES NOT REOPEN #84. That decision took the ledger edge OFF `busbar-api` so a third-party
-# plugin stops transitively linking the money one-book (`plugin -> busbar-plugin-sdk ->
-# busbar-api`). This crate is not on that path: it is a mandatory, compiled-in core sibling and no
-# plugin names it. The prohibition is on the PLUGIN closure carrying settlement semantics, and core
-# is where the money view is supposed to live (#43: pricing is CORE functionality).
-busbar-kernel-ledger = { path = "../busbar-kernel-ledger" }
-busbar-plugin-loader = { path = "../plugin-loader" }
 axum = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -80,7 +68,7 @@ test-support = ["busbar-kernel/test-support"]
 # verbs lose their typed bodies. The binary forwards the same four; without this, `cargo test -p
 # busbar-core-admin --features openapi-schema` run alone generated a different document than CI's
 # combined `-p busbar -p busbar-kernel -p busbar-core-admin` run, where feature unification hid it.
-openapi-schema = ["dep:schemars", "busbar-kernel/openapi-schema", "busbar-llm/openapi-schema", "busbar-mcp/openapi-schema", "busbar-a2a/openapi-schema"]
+openapi-schema = ["dep:schemars", "busbar-kernel/openapi-schema", "busbar-llm/openapi-schema", "busbar-a2a/openapi-schema"]
 
 [dev-dependencies]
 # Test-only (json body decode + public-key hex in the service tests); no production use.
@@ -92,7 +80,6 @@ busbar-kernel = { path = "../busbar-kernel", default-features = false, features 
 # `CorePlaneAdminEnvelope`, which STAYED in busbar-core). NOTE: do NOT enable busbar-admin/test-support
 # on these edges.
 busbar-llm = { path = "../busbar-llm", features = ["test-support"] }
-busbar-mcp = { path = "../busbar-mcp", features = ["test-support"] }
 busbar-a2a = { path = "../busbar-a2a", features = ["test-support"] }
 # THE OPERATOR CREDENTIAL'S TEST REGISTRY ROW (`test-operator-auth` above): the admin e2e tests
 # authenticate through the auth plugin the composition root links for it, from its own repo, at the

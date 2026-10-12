@@ -104,6 +104,9 @@ pub(crate) struct GateSubject<'a> {
     /// cleared for each hook (the session-substrate tenant, design G5). `None` = screen the full
     /// projection every time — the default, byte-identical to pre-incremental behaviour.
     pub(crate) incremental: Option<IncrementalScan<'a>>,
+    /// The request's session, opaque octets the plane named, shown to every hook on its request
+    /// view ([`RoutingRequest::session`]); `None` = the request names none.
+    pub(crate) session: Option<&'a [u8]>,
 }
 
 /// The gate's tenant of the session substrate: a per-`(session, hook)` set of the content-piece
@@ -150,12 +153,28 @@ impl IncrementalScan<'_> {
         principal_id: &str,
         hook_generation: u64,
     ) -> crate::session::SessionKey {
-        let material = format!(
-            "g={hook_generation}\u{1f}p{}={principal_id}\u{1f}s{}={sid}",
+        Self::derive_session_key_octets(sid.as_bytes(), principal_id, hook_generation)
+    }
+
+    /// [`Self::derive_session_key`] over a session of opaque octets (the request view's
+    /// `session`, which no reader interprets): the same domain-separated material with the session's
+    /// bytes last, so a UTF-8 session keys exactly as its string does.
+    pub(crate) fn derive_session_key_octets(
+        sid: &[u8],
+        principal_id: &str,
+        hook_generation: u64,
+    ) -> crate::session::SessionKey {
+        let head = format!(
+            "g={hook_generation}\u{1f}p{}={principal_id}\u{1f}s{}=",
             principal_id.len(),
             sid.len()
         );
-        crate::session::SessionKey(busbar_kernel::store::fnv1a_u64(&material))
+        let mut hash = busbar_kernel::store::FNV1A_OFFSET_BASIS;
+        for &byte in head.as_bytes().iter().chain(sid) {
+            hash ^= u64::from(byte);
+            hash = hash.wrapping_mul(busbar_kernel::store::FNV1A_PRIME);
+        }
+        crate::session::SessionKey(hash)
     }
 
     /// Get-or-create this session's cleared-sets slot. The get-then-put is not atomic, but a lost race
@@ -343,15 +362,17 @@ pub(crate) async fn decide(
 /// A failed gate's terminal, as a verdict. `Some` only for `reject` — the two ranking terminals
 /// (`weighted`, `first`) are statements about which candidate to pick, and with no candidates they
 /// mean exactly "this gate has no verdict", which is a proceed.
+///
+/// The door gate is one more seat that calls a hook, so it asks the one disposition rule
+/// ([`crate::hooks::failed_call_refuses`]) and answers the one client-facing refusal every other
+/// seat answers ([`crate::hooks::REQUIRED_HOOK_UNAVAILABLE_STATUS`] and its message): a broken
+/// load-bearing gate is the same retryable condition on every plane (audit kernel-K4 #7).
 fn fail_closed(on_error: &crate::config::PolicyOnError, hook: &'static str) -> Option<GateVerdict> {
-    match on_error {
-        crate::config::PolicyOnError::Reject => Some(GateVerdict::Reject {
-            status: 403,
-            message: "A required gate could not complete, so this request was refused.".to_string(),
-            hook,
-        }),
-        crate::config::PolicyOnError::Weighted | crate::config::PolicyOnError::First => None,
-    }
+    crate::hooks::failed_call_refuses(on_error).then(|| GateVerdict::Reject {
+        status: crate::hooks::REQUIRED_HOOK_UNAVAILABLE_STATUS,
+        message: crate::hooks::REQUIRED_HOOK_UNAVAILABLE_MESSAGE.to_string(),
+        hook,
+    })
 }
 
 /// Build ONE gate's projection from the facts, gated by THAT gate's grants.
@@ -383,13 +404,17 @@ fn project<'a>(
         system_chars: items.counts().1,
         max_tokens: shape.max_tokens,
         stream: subject.facts.wants_stream(),
-        prompt: send_prompt.then(|| crate::hooks::PromptProjection {
-            system: join_system(items),
-            messages: items
-                .iter()
-                .filter(|(i, _)| i.slot() != Slot::System)
-                .map(|(i, t)| (Cow::Borrowed(i.author()), Cow::Owned(t.to_string())))
-                .collect(),
+        // Under the hook content ceiling, the one rule every seat that hands a hook the prompt
+        // applies (audit kernel-K4 #8).
+        prompt: send_prompt.then(|| {
+            crate::hooks::content_capped(crate::hooks::PromptProjection {
+                system: join_system(items),
+                messages: items
+                    .iter()
+                    .filter(|(i, _)| i.slot() != Slot::System)
+                    .map(|(i, t)| (Cow::Borrowed(i.author()), Cow::Owned(t.to_string())))
+                    .collect(),
+            })
         }),
         identity: send_user.then(|| crate::hooks::CallerIdentity {
             key_id: subject.key.map(|k| k.id.clone()),
@@ -402,7 +427,91 @@ fn project<'a>(
         // No request-phase catalog signal is wired to this seam in this pass; the core fields above
         // are what these protocols can answer today.
         signals: Default::default(),
+        session: subject.session,
     }
+}
+
+/// The session substrate the door path's incremental scan reads: the node's session store, the
+/// hook-config generation a clearance is bound to, and the clock. The composition root hands it
+/// only under the operator's `incremental_scan` opt-in; `None` there = every request is screened
+/// whole.
+#[derive(Clone, Copy)]
+pub(crate) struct ScanSubstrate<'a> {
+    /// The neutral session substrate the cleared-sets live in.
+    pub(crate) store: &'a crate::session::SessionStore,
+    /// The hook-config generation (`config_version`): a policy change re-screens everything.
+    pub(crate) generation: u64,
+    /// Epoch millis for the substrate's TTL.
+    pub(crate) now_ms: u64,
+}
+
+/// One request on THE DOOR PATH, as the request gate sees it: the plane's own `project` answer
+/// (its projected body, the container it names, its dialect label and its opaque session) and what
+/// the kernel resolved (the request id and the caller's key).
+pub(crate) struct DoorSubject<'a> {
+    /// The plane's projected body: the invoke IR's `{tool, arguments}` document.
+    pub(crate) projected: &'a [u8],
+    /// The container the request is addressed to.
+    pub(crate) container: &'a str,
+    /// The dialect label, verbatim onto the hook's view.
+    pub(crate) dialect: &'a str,
+    /// The request-spine correlation id.
+    pub(crate) request_id: u64,
+    /// The caller's resolved key (its `id` binds the incremental scan's clearance).
+    pub(crate) key: Option<&'a busbar_contract::records::VirtualKey>,
+    /// The request view's session ([`busbar_contract::abi::hook::RequestView::session`]);
+    /// `None` or empty = the request names none.
+    pub(crate) session: Option<&'a [u8]>,
+    /// The incremental scan's substrate, under the operator's opt-in.
+    pub(crate) scan: Option<ScanSubstrate<'a>>,
+}
+
+/// FIRE THE GATES OF A REQUEST SERVED THROUGH A PLANE'S DOOR (ARCHITECT RULING 2026-10-03,
+/// the session half): the same [`decide`] the engine fired, over the plane's
+/// projected `{tool, arguments}`, with the incremental scan KEYED ON THE VIEW'S SESSION, bound to
+/// the caller principal and the hook generation exactly as the engine's was
+/// ([`IncrementalScan::derive_session_key`]). A request whose view names no session, or a node
+/// that did not opt in, screens the whole projection every time. A projected body that is not the
+/// invoke document is screened as a call to no tool with `null` arguments (the engine's own
+/// fallback for arguments it could not read).
+pub(crate) async fn decide_door(
+    gates: &[(u16, ResolvedPolicy)],
+    door: &DoorSubject<'_>,
+) -> GateVerdict {
+    if gates.is_empty() {
+        return GateVerdict::Proceed;
+    }
+    let doc: serde_json::Value =
+        serde_json::from_slice(door.projected).unwrap_or(serde_json::Value::Null);
+    let facts = busbar_contract::ir::invoke::InvokeReq {
+        tool: doc
+            .get("tool")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        arguments: doc
+            .get("arguments")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null),
+        extra: Default::default(),
+    };
+    let session = door.session.filter(|s| !s.is_empty());
+    let principal = door.key.map(|k| k.id.as_str()).unwrap_or("");
+    let incremental = door.scan.zip(session).map(|(scan, sid)| IncrementalScan {
+        store: scan.store,
+        session: IncrementalScan::derive_session_key_octets(sid, principal, scan.generation),
+        now_ms: scan.now_ms,
+    });
+    let subject = GateSubject {
+        facts: &facts,
+        container: door.container,
+        ingress_protocol: door.dialect,
+        request_id: door.request_id,
+        key: door.key,
+        incremental,
+        session,
+    };
+    decide(gates, &subject).await
 }
 
 /// The system slot, flattened — `None` when the request has none, which is what the wire contract

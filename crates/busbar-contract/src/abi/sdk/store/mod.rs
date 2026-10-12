@@ -22,6 +22,7 @@
 //! short-buffer answer never reaches the store and is never recorded (the S1 addendum).
 
 pub mod door;
+pub mod wire;
 
 use crate::abi::sdk::conn::Host;
 use crate::abi::store::OpId;
@@ -177,6 +178,23 @@ pub trait StoreSlots: Sized + Send + Sync + 'static {
     /// # Errors
     /// A text naming why the settings do not open a store, carried verbatim to the operator.
     fn open(settings: &[u8], host: Option<Host>) -> Result<Self, String>;
+
+    /// THE CONNECT STEP of `open` (ARCHITECT ruling 2026-10-03 on Q-L16-2): what the store reaches
+    /// before the host counts it opened (its backend's first round trip, a schema check). It runs
+    /// on the instance [`StoreSlots::open`] answered, on `open`'s own ticket, and may PEND on the
+    /// connector exactly as an op does: the host re-enters `open` on the wake and the door hands
+    /// back the same instance and [`Op`] (what it parked, its one connection), never calling
+    /// [`StoreSlots::open`] again. An `Err` fails the load with its text, verbatim, as an `open`
+    /// refusal does, so a store that refused at open in 1.5.5 still refuses there, in its own
+    /// words. The connection it checked out is closed when the step answers. A store that reaches
+    /// nothing at open answers `Ready(Ok(()))`, the default.
+    ///
+    /// # Errors
+    /// A text naming why the store does not open, carried verbatim to the operator.
+    fn connect(&self, cx: &mut Op<'_>) -> Step<Result<(), String>> {
+        let _ = cx;
+        Step::Ready(Ok(()))
+    }
 
     /// `add_usage` (slot 8): [`RecordStore::add_usage`], deduped on `op`.
     ///

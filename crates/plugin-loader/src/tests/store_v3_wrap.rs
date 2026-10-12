@@ -33,6 +33,11 @@ pub(crate) trait Hooks: Send + Sync + 'static {
         let _ = (settings, host);
         Ok(Arc::new(MemoryStore::new()))
     }
+    /// `open`'s connect step.
+    fn connect(inner: &MemoryStore, cx: &mut Op<'_>) -> Step<Result<(), String>> {
+        let _ = (inner, cx);
+        Step::Ready(Ok(()))
+    }
     fn add_usage_op(
         inner: &MemoryStore,
         cx: &mut Op<'_>,
@@ -444,6 +449,10 @@ impl<H: Hooks> StoreSlots for Wrapped<H> {
 
     fn open(settings: &[u8], host: Option<Host>) -> Result<Self, String> {
         H::open(settings, host).map(|m| Self(m, PhantomData))
+    }
+
+    fn connect(&self, cx: &mut Op<'_>) -> Step<Result<(), String>> {
+        H::connect(&self.0, cx)
     }
 
     fn add_usage_op(

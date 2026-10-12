@@ -347,6 +347,76 @@ fn a_tool_call_dispatches_on_close_with_its_arguments() {
     assert_eq!(args["city"], "Paris");
 }
 
+/// P-ITEM: VOICE TOOL-ARGS through the plane's own `decode_response` (spec DONE item 2; the drive
+/// log's P5, commit 470351a480: "streamed tool-call arguments are discarded"). The arguments arrive
+/// ONLY as fragments and the close states none of its own, so nothing but accumulation can deliver
+/// them: the dispatched `tool_call` unit carries the fragments concatenated in order.
+///
+/// The 1.5.5 behaviour matched is the llm surface's streamed tool call (owner correction
+/// 2026-09-28): every argument fragment of an open tool block accumulated, the call emitted once on
+/// its block stop with the fully reassembled arguments (v1.5.5
+/// `crates/busbar/src/proto/gemini/writer.rs:734-780`).
+#[test]
+fn p_item_voice_tool_args_fragments_alone_reach_the_dispatched_call_whole() {
+    let plane = openai_plane();
+    let arena = LeakPlaneAlloc;
+    let config = EmptyConfig;
+    let transport = WsStack::new("/v1/realtime");
+    let labels = Labels::new();
+    let c = ctx(&arena, &config, &transport, &labels);
+    let dest = destination("api.openai.com", LaneId::new("realtime"));
+    let mut upstream_state = SessionPlane::open_upstream(&plane, &dest, &c);
+
+    let mut events = vec![json!({
+        "type": "response.output_item.added",
+        "item": { "type": "function_call", "call_id": "call_9", "name": "weather" },
+    })];
+    for fragment in ["{\"lo", "c\":\"S", "F\"}"] {
+        events.push(json!({
+            "type": "response.function_call_arguments.delta",
+            "call_id": "call_9",
+            "delta": fragment,
+        }));
+    }
+    for event in events {
+        let bytes = serde_json::to_vec(&event).unwrap();
+        let frames = [frame(&bytes)];
+        let mut cursor = FrameCursor::new(&frames);
+        assert!(
+            matches!(
+                plane
+                    .decode_response(&mut cursor, &dest, Some(&mut upstream_state), &c)
+                    .expect("a tool-call frame decodes"),
+                Progress::Discard { .. }
+            ),
+            "no unit before the call closes"
+        );
+    }
+    let done = serde_json::to_vec(&json!({
+        "type": "response.function_call_arguments.done",
+        "call_id": "call_9",
+    }))
+    .unwrap();
+    let frames = [frame(&done)];
+    let mut cursor = FrameCursor::new(&frames);
+    let Progress::OneShot(draft) = plane
+        .decode_response(&mut cursor, &dest, Some(&mut upstream_state), &c)
+        .expect("a tool-call close decodes")
+    else {
+        panic!("a completed tool call is dispatched as its own unit");
+    };
+    assert_eq!(draft.op.as_str(), "tool_call");
+    assert_eq!(
+        draft.facts.get(crate::meta::FACT_TOOL_NAME),
+        Some(busbar_contract::bounded::FactValue::Str("weather"))
+    );
+    assert_eq!(
+        draft.body_ir.body(),
+        b"{\"loc\":\"SF\"}",
+        "the fragments reach the call whole, in order"
+    );
+}
+
 /// Two tool calls open at once are two different things to wait on.
 ///
 /// A turn that asks for two tools opens two units, and each waits for its own reply. The reply leg
@@ -960,6 +1030,66 @@ fn uplink_audio_meters_on_the_half_the_upstream_answer_arrives_on() {
     );
 }
 
+/// A Gemini Live caller's uplink is metered at the rate its blob's `mimeType` states.
+///
+/// Gemini requires 16 kHz PCM on its uplink: 32 bytes a millisecond. The relay step counted every
+/// uplink frame at the 24 kHz rate (48 bytes a millisecond), so one second a Gemini caller spoke
+/// metered as 666 ms and `audio_seconds_in` reported two-thirds of the audio (audit HIGH 9). A blob
+/// that states 24 kHz is metered at 24 kHz.
+#[test]
+fn a_gemini_live_uplink_is_metered_at_the_rate_its_blob_states() {
+    use crate::tests::harness::{ctx_with_session, PairedSession};
+
+    static UPSTREAMS: &[Upstream] = &[Upstream {
+        lane: LaneId::new("realtime-gemini"),
+        host: "api.gemini.example",
+        dialect: Dialect::GeminiLive,
+    }];
+    let plane = StreamingPlane::new(UPSTREAMS);
+    let arena = LeakPlaneAlloc;
+    let config = EmptyConfig;
+    let transport = WsStack::new(
+        "/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent",
+    );
+    let labels = Labels::new();
+    let session = PairedSession::new(Dialect::GeminiLive.name(), 1);
+    let c = ctx_with_session(&arena, &config, &transport, &labels, &session);
+    let dest = destination("api.gemini.example", LaneId::new("realtime-gemini"));
+    let relay_unit = unit(
+        busbar_contract::ids::OpClassId::new("duplex_turn"),
+        busbar_contract::bounded::Ir::empty(),
+        Facts::new(),
+    );
+
+    // The uplink milliseconds one relayed blob of `bytes` bytes at `mime` adds to the turn.
+    let relayed_ms = |mime: &str, bytes: usize| {
+        let mut upstream = SessionPlane::open_upstream(&plane, &dest, &c);
+        let blob = serde_json::to_vec(&json!({
+            "realtimeInput": { "audio": { "mimeType": mime, "data": base64_of(&vec![0u8; bytes]) } },
+        }))
+        .expect("audio fixture serializes");
+        let frames = [frame(&blob)];
+        let _relayed =
+            plane.encode_ingress_frame(&relay_unit, &frames[0], &dest, Some(&mut upstream), &c);
+        upstream
+            .get_mut::<crate::session::VoiceSessionState>()
+            .expect("the plane's own session state")
+            .turn
+            .audio_ms_in
+    };
+
+    // One second at 16 kHz: 32 000 bytes.
+    assert_eq!(
+        relayed_ms("audio/pcm;rate=16000", 32_000),
+        1_000,
+        "one second of 16 kHz uplink is one second, not two-thirds of one"
+    );
+    // An untagged blob is the direction's own rate, 16 kHz.
+    assert_eq!(relayed_ms("audio/pcm", 32_000), 1_000);
+    // One second at 24 kHz: 48 000 bytes.
+    assert_eq!(relayed_ms("audio/pcm;rate=24000", 48_000), 1_000);
+}
+
 /// The duration class is denominated in seconds, and the counter behind it is in milliseconds.
 ///
 /// The design names the class `audio_seconds_in`. This plane counts milliseconds, because that is
@@ -1272,6 +1402,69 @@ fn a_refusal_renders_an_opaque_code_not_the_internal_reason() {
             parsed["error"]["message"].is_string(),
             "the error carries a message"
         );
+    }
+}
+
+/// P-ITEM: REFUSAL-REASON COLLAPSE (spec DONE item 2, "All P-item behaviours match 1.5.5"; TODO
+/// L-ENG9). This plane's refusal table ended in `_ => "internal"`, so a spent budget, a frozen
+/// group, a replayed key, a superseded unit or a deadline told the caller the node had broken.
+/// 1.5.5's one surface answered none of its limit reasons as an internal error (v1.5.5
+/// `crates/busbar/src/ingress/mod.rs:237-305`). Pinned through the plane's own `encode_refusal`
+/// bytes: a refusal reads `internal` exactly when its class is a node fault, and every reason of
+/// one class reads the same, so the family is the one classification's
+/// (`busbar_contract::abi::plane::RefusalCode::class`) and never this plane's own.
+#[test]
+fn p_item_refusal_reason_collapse_only_a_node_fault_is_internal_and_one_class_one_answer() {
+    use busbar_contract::abi::plane::{reason_of, RefusalClass, RefusalCode};
+    use busbar_contract::unit::{Refusal, RefusalReason, Step};
+
+    let plane = openai_plane();
+    let arena = LeakPlaneAlloc;
+    let config = EmptyConfig;
+    let transport = WsStack::new("/v1/realtime");
+    let labels = Labels::new();
+    let c = ctx(&arena, &config, &transport, &labels);
+    let mut answers: Vec<(RefusalClass, (String, String))> = Vec::new();
+    for code in RefusalCode::ALL {
+        // Two codes are the kernel's own money verdicts and never reach a plane (`reason_of`).
+        let Some(reason) = reason_of(code.code()) else {
+            continue;
+        };
+        let class = code.class();
+        let refusal = Refusal {
+            step: Step::Decode,
+            reason: RefusalReason::from(reason),
+            retry_after_secs: None,
+            stream: None,
+            correlates: None,
+        };
+        let bytes = plane
+            .encode_refusal(&refusal, None, None, &c)
+            .expect("a refusal renders");
+        let parsed: serde_json::Value =
+            serde_json::from_slice(bytes.as_slice()).expect("the refusal is this dialect's JSON");
+        let answer = (
+            parsed["error"]["code"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string(),
+            parsed["error"]["message"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string(),
+        );
+        assert_eq!(
+            answer.0 == "internal",
+            class.is_node_fault(),
+            "{code:?} (class {class:?}) renders {answer:?}"
+        );
+        match answers.iter().find(|(c, _)| *c == class) {
+            Some((_, first)) => assert_eq!(
+                *first, answer,
+                "{code:?} answers differently from the rest of {class:?}"
+            ),
+            None => answers.push((class, answer)),
+        }
     }
 }
 

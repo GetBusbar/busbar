@@ -113,11 +113,39 @@ impl LinkedRow {
 ///
 /// The refusal the door or its Statement earns.
 pub fn rendering_of(door_fn: DoorFn) -> Result<Vec<u8>, LoadError> {
-    let (door, _) = read_door(door_fn(), None)?;
+    let (door, _) = read_door(enter_door(door_fn), None)?;
     let st = statement(&door)?;
     // SAFETY: `statement` ran `check_statement`: every list is its stated count of `'static`
     // entries.
     unsafe { render(&st) }.map_err(|e| LoadError::Rendering(format!("{} is too long", e.0)))
+}
+
+/// THE KIND A DOOR STATES, from its head alone: the door's head checks ([`read_door`]: not NULL, the
+/// magic, the mechanism version, a size that reaches `ops`, a kind the host has at this host's ABI
+/// version for it) and nothing past them. The loader-mechanism paths that ask a mapped library
+/// which kind it is (the upload vet, the plugins inventory, the kind gates) read a memory-ABI
+/// image's kind here: its `busbar_plugin_kind` answers for no door it registered.
+///
+/// # Errors
+///
+/// The refusal the door's head earns.
+pub(crate) fn kind_of_door(door_fn: DoorFn) -> Result<KindCode, LoadError> {
+    read_door(enter_door(door_fn), None).map(|(_, kind)| kind)
+}
+
+/// THE ENTRY: `door_fn` called on a permanent FFI worker ([`crate::ffi_thread`]), for every kind and
+/// both origins. The door function is plugin code like any slot, so it runs where every other
+/// per-load crossing runs; a call already on a worker stays there. A door function that panicked
+/// answers NULL ([`LoadError::NullDoor`]).
+pub(crate) fn enter_door(door_fn: DoorFn) -> *const Door {
+    let call = || {
+        crate::ffi_thread::debug_assert_permanent("the door function");
+        door_fn()
+    };
+    if crate::ffi_thread::on_permanent_worker() {
+        return call();
+    }
+    crate::ffi_thread::on_plugin_thread(call).unwrap_or(std::ptr::null())
 }
 
 /// THE PACK-TIME RENDERING: `path`'s door, if the library exports one, rendered
@@ -138,6 +166,34 @@ pub fn rendering_of_library(path: &Path) -> Result<Option<Vec<u8>>, LoadError> {
     let rendering = rendering_of(door);
     drop(Lib(Some(lib), None));
     rendering.map(Some)
+}
+
+/// Where the door `path`'s library exports, and its ops table, live in this process while the
+/// library is open: `(door, ops)` addresses, read with the library loaded (it is unloaded after,
+/// on the reaper). `None` when it exports no door. The published conformance suite proves with
+/// them that its dropped-in door is an image of its own, never the linked door it is compared
+/// against (`conformance::both_ways`).
+///
+/// # Errors
+/// `dlopen` failed.
+#[cfg(any(test, feature = "conformance"))]
+pub(crate) fn door_addresses_of_library(path: &Path) -> Result<Option<(usize, usize)>, LoadError> {
+    let lib = crate::dlopen_on_worker(path.as_os_str()).map_err(LoadError::Open)?;
+    // SAFETY: `DOOR_SYMBOL` is typed `DoorFn` by the mechanism; `lib` outlives every use of it.
+    let door = match unsafe { lib.get::<DoorFn>(DOOR_SYMBOL).map(|s| *s) } {
+        Ok(door) => door,
+        Err(_) => return Ok(None),
+    };
+    let at = door();
+    let ops = if at.is_null() {
+        0
+    } else {
+        // SAFETY: a non-NULL door answer is a `'static` door of the library's; only its `ops` word
+        // is read, unaligned, while the library is open.
+        unsafe { std::ptr::addr_of!((*at).ops).read_unaligned() as usize }
+    };
+    drop(Lib(Some(lib), None));
+    Ok(Some((at as usize, ops)))
 }
 
 /// Why a plugin was refused. Every refusal names the value it saw and the host's.
@@ -252,6 +308,15 @@ pub enum LoadError {
         /// The need's unserved scheme.
         scheme: String,
     },
+    /// A door whose Statement declares a need was bound to SERVE with no connection table
+    /// ([`ConnTable::NoNeeds`](super::ConnTable::NoNeeds)): it could never dial or listen, so it is
+    /// refused at bind (Q-P4-3), never at its first open.
+    NoConnectionTable {
+        /// The plugin the Statement names.
+        plugin: String,
+        /// How many needs it declares.
+        needs: usize,
+    },
 }
 
 /// What every refusal of a plugin built against an older contract tells the operator to do.
@@ -322,6 +387,10 @@ impl fmt::Display for LoadError {
                 f,
                 "plugin `{plugin}` declares an {} need over `{scheme}`, and no loaded transport serves `{scheme}`",
                 if *inbound { "inbound" } else { "outbound" }
+            ),
+            Self::NoConnectionTable { plugin, needs } => write!(
+                f,
+                "plugin '{plugin}' declares {needs} connection need(s) and was bound with no connection table"
             ),
         }
     }
@@ -554,7 +623,7 @@ fn admitted<K: Kind>(door: DoorFn, stated: &[u8]) -> Result<Validated, LoadError
 
 /// The door checks, in the order the mechanism states them. Shared by both origins.
 pub(crate) fn validate<K: Kind>(door_fn: DoorFn) -> Result<Validated, LoadError> {
-    validate_door::<K>(door_fn())
+    validate_door::<K>(enter_door(door_fn))
 }
 
 /// Where the door's append-only `ready` tail starts: the least size a door states.
@@ -563,7 +632,10 @@ const READY_AT: usize = std::mem::offset_of!(Door, ready);
 /// The door's head checks, in the mechanism's order: not NULL, the magic, the mechanism version, a
 /// size that reaches `ops` (the append-only `ready` tail is optional), a kind the host has, the kind `want` asks for (any, for `None`), and
 /// that kind's ABI version.
-fn read_door(p: *const Door, want: Option<KindCode>) -> Result<(Door, KindCode), LoadError> {
+pub(crate) fn read_door(
+    p: *const Door,
+    want: Option<KindCode>,
+) -> Result<(Door, KindCode), LoadError> {
     if p.is_null() {
         return Err(LoadError::NullDoor);
     }
@@ -675,7 +747,7 @@ fn table<K: Kind>(ops: *const OpsHead) -> Result<Box<[Op]>, LoadError> {
         .collect()
 }
 
-fn statement(door: &Door) -> Result<Statement, LoadError> {
+pub(crate) fn statement(door: &Door) -> Result<Statement, LoadError> {
     let p = door.statement;
     if p.is_null() {
         return Err(LoadError::NullStatement);
@@ -705,8 +777,14 @@ fn statement(door: &Door) -> Result<Statement, LoadError> {
     if st.diag_ids_len > 0 && st.diag_ids.is_null() {
         return Err(LoadError::BadStatement("diag_ids is NULL".into()));
     }
+    // THE LISTS' BOUNDS FIRST: `check_statement` refuses a NULL list with a count, a count above
+    // `STATEMENT_LIST_MAX` and a misaligned list before any entry is read, so the walk below never
+    // reads past the plugin's own data.
+    // SAFETY: a door's Statement is `'static` plugin data; every list is checked before it is read.
+    unsafe { check_statement(&st) }
+        .map_err(|f| LoadError::BadStatement(format!("{} breaks {:?}", f.field, f.rule)))?;
     for i in 0..st.families_len {
-        // SAFETY: `families` holds `families_len` `'static` entries.
+        // SAFETY: `families` holds `families_len` `'static` entries, at most STATEMENT_LIST_MAX.
         let fam: MetricFamily = unsafe { st.families.add(i).read_unaligned() };
         if fam.kind > FAMILY_HISTOGRAM {
             return Err(LoadError::BadStatement(format!(
@@ -723,10 +801,6 @@ fn statement(door: &Door) -> Result<Statement, LoadError> {
             return Err(LoadError::BadStatement(format!("family {i} has no name")));
         }
     }
-    // SAFETY: a door's Statement is `'static` plugin data; `check_statement` refuses a NULL list
-    // with a count before it reads the list.
-    unsafe { check_statement(&st) }
-        .map_err(|f| LoadError::BadStatement(format!("{} breaks {:?}", f.field, f.rule)))?;
     kind_tail(&st)?;
     Ok(st)
 }

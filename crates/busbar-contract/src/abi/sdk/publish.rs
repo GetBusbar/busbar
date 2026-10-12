@@ -42,7 +42,7 @@
 
 use std::any::Any;
 use std::collections::BTreeMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use crate::abi::mechanism::call::{AbiStr, Blob, BLOB_ABSENT, BLOB_JSON};
 use crate::abi::plane::{AdminRoute, Claim, PlaneSnapshot};
@@ -69,8 +69,9 @@ struct List<T> {
     _items: Box<[T]>,
 }
 
-// SAFETY: `T` is one of the SDK's sealed `Publish` types: integers and raw pointers into the arena
-// that owns this list, which nothing reads through on a safe path and nothing mutates.
+// SAFETY: `T` is one of the SDK's sealed `Publish` types or an `AbiStr`: integers and raw
+// pointers into the arena that owns this list, which nothing reads through on a safe path and
+// nothing mutates.
 unsafe impl<T> Send for List<T> {}
 // SAFETY: as `Send`.
 unsafe impl<T> Sync for List<T> {}
@@ -132,6 +133,18 @@ impl Arena {
                 flags: 0,
             },
         }
+    }
+
+    /// Each of `names` copied, held as one list of strings; its pointer (NULL when empty) and
+    /// length.
+    fn strs(&mut self, names: &[String]) -> (*const AbiStr, usize) {
+        if names.is_empty() {
+            return (std::ptr::null(), 0);
+        }
+        let items: Box<[AbiStr]> = names.iter().map(|n| self.str(n)).collect();
+        let p = items.as_ptr();
+        self.lists.push(Box::new(List { _items: items }));
+        (p, names.len())
     }
 
     /// Each of `specs` lowered and held as one list; its pointer (NULL when empty) and length.
@@ -267,6 +280,10 @@ pub struct SnapshotSpec {
     pub audience: Option<String>,
     /// Its resource metadata; `None` = none.
     pub resource_metadata: Option<String>,
+    /// Its protected-resource facts (JSON, [`PlaneSnapshot::resource_facts`]); `None` = none.
+    pub resource_facts: Option<Vec<u8>>,
+    /// The names it lists ([`PlaneSnapshot::listed`]), each non-empty; empty = none.
+    pub listed: Vec<String>,
 }
 
 impl Publish for PlaneSnapshot {
@@ -274,6 +291,7 @@ impl Publish for PlaneSnapshot {
     fn lower(spec: &SnapshotSpec, generation: u64, arena: &mut Arena) -> Self {
         let (claims, claims_len) = arena.list::<Claim>(&spec.claims);
         let (admin_routes, admin_routes_len) = arena.list::<AdminRoute>(&spec.admin_routes);
+        let (listed, listed_len) = arena.strs(&spec.listed);
         Self {
             size: std::mem::size_of::<Self>() as u32,
             _reserved: 0,
@@ -285,31 +303,45 @@ impl Publish for PlaneSnapshot {
             openapi: arena.json(spec.openapi.as_deref()),
             audience: arena.opt_str(spec.audience.as_deref()),
             resource_metadata: arena.opt_str(spec.resource_metadata.as_deref()),
+            resource_facts: arena.json(spec.resource_facts.as_deref()),
+            listed,
+            listed_len,
         }
     }
 }
 
-/// One published generation: the value (boxed: its address is what the host holds) and the arena
-/// it points into.
-struct Generation<T> {
+/// One published generation: the value (boxed: its address is what the host holds), the arena
+/// it points into, and the plugin's own payload for that generation.
+struct Generation<T, P> {
     generation: u64,
     _value: Box<T>,
     _arena: Arena,
+    payload: Arc<P>,
 }
 
 // SAFETY: `T: Publish` is plain data whose pointers point into `_arena`, owned by the same value;
-// nothing reads through them on a safe path, and nothing mutates either after publishing.
-unsafe impl<T> Send for Generation<T> {}
+// nothing reads through them on a safe path, and nothing mutates either after publishing. The
+// payload is the plugin's own `Send + Sync` value behind an `Arc`.
+unsafe impl<T, P: Send + Sync> Send for Generation<T, P> {}
 // SAFETY: as `Send`.
-unsafe impl<T> Sync for Generation<T> {}
+unsafe impl<T, P: Send + Sync> Sync for Generation<T, P> {}
 
 /// THE PUBLISHED GENERATIONS of one instance: instance state (`Send + Sync`), holding each
-/// published value and its storage until `retire` of its generation, or until it drops (`close`).
-pub struct Generations<T: Publish> {
-    live: Mutex<Vec<Generation<T>>>,
+/// published value and its storage, and the plugin's payload `P` for that generation (what it
+/// built from that generation's settings), until `retire` of its generation, or until it drops
+/// (`close`).
+///
+/// [`Generations::current`] is the NEWEST live generation's payload: what a request arriving now
+/// is answered from. A plugin keeps the `Arc` it took for as long as that request lives, so a
+/// request keeps reading the generation it arrived under while a refresh publishes the next one.
+pub struct Generations<T: Publish, P = ()> {
+    live: Mutex<Vec<Generation<T, P>>>,
+    /// Alive while these generations are: an answer that published from them is FAULT when they
+    /// are gone by the time the body returns (`abi::sdk::out::Holders`).
+    pub(crate) alive: crate::abi::sdk::out::Alive,
 }
 
-impl<T: Publish> std::fmt::Debug for Generations<T> {
+impl<T: Publish, P> std::fmt::Debug for Generations<T, P> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Generations")
             .field("live", &self.live())
@@ -317,30 +349,40 @@ impl<T: Publish> std::fmt::Debug for Generations<T> {
     }
 }
 
-impl<T: Publish> Default for Generations<T> {
+impl<T: Publish, P> Default for Generations<T, P> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<T: Publish> Generations<T> {
+impl<T: Publish> Generations<T, ()> {
+    /// Publish `spec` as `generation`, with no payload: the SDK's copy, lowered; the address the
+    /// host reads, valid until [`Generations::retire`] of `generation` or until this drops.
+    pub fn publish(&self, generation: u64, spec: &T::Spec) -> *const T {
+        self.publish_with(generation, spec, ())
+    }
+}
+
+impl<T: Publish, P> Generations<T, P> {
     /// None published.
     #[must_use]
     pub const fn new() -> Self {
         Self {
             live: Mutex::new(Vec::new()),
+            alive: crate::abi::sdk::out::Alive::new(),
         }
     }
 
-    fn lock(&self) -> std::sync::MutexGuard<'_, Vec<Generation<T>>> {
+    fn lock(&self) -> std::sync::MutexGuard<'_, Vec<Generation<T, P>>> {
         self.live
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    /// Publish `spec` as `generation`: the SDK's copy, lowered; the address the host reads, valid
-    /// until [`Generations::retire`] of `generation` or until this drops.
-    pub fn publish(&self, generation: u64, spec: &T::Spec) -> *const T {
+    /// Publish `spec` as `generation` with the plugin's `payload` for it: the SDK's copy, lowered;
+    /// the address the host reads. Both are held until [`Generations::retire`] of `generation` or
+    /// until this drops.
+    pub fn publish_with(&self, generation: u64, spec: &T::Spec, payload: P) -> *const T {
         let mut arena = Arena::new();
         let value = Box::new(T::lower(spec, generation, &mut arena));
         let p = std::ptr::from_ref::<T>(&*value);
@@ -348,13 +390,42 @@ impl<T: Publish> Generations<T> {
             generation,
             _value: value,
             _arena: arena,
+            payload: Arc::new(payload),
         });
         p
     }
 
-    /// Drop every value published as `generation`, and its storage.
+    /// The newest live generation's payload; `None` when none is live.
+    #[must_use]
+    pub fn current(&self) -> Option<Arc<P>> {
+        self.lock()
+            .iter()
+            .max_by_key(|g| g.generation)
+            .map(|g| Arc::clone(&g.payload))
+    }
+
+    /// The payload of `generation`, while it is live.
+    #[must_use]
+    pub fn at(&self, generation: u64) -> Option<Arc<P>> {
+        self.lock()
+            .iter()
+            .rev()
+            .find(|g| g.generation == generation)
+            .map(|g| Arc::clone(&g.payload))
+    }
+
+    /// Drop every value published as `generation`, its storage, and the SDK's hold on its
+    /// payload (a request still holding the `Arc` keeps its own).
     pub fn retire(&self, generation: u64) {
-        self.lock().retain(|g| g.generation != generation);
+        let gone: Vec<Generation<T, P>> = {
+            let mut live = self.lock();
+            let (gone, keep) = std::mem::take(&mut *live)
+                .into_iter()
+                .partition(|g| g.generation == generation);
+            *live = keep;
+            gone
+        };
+        drop(gone);
     }
 
     /// How many published values are held.

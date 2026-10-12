@@ -153,7 +153,11 @@ impl ScriptedTransport {
 }
 
 impl Transport for ScriptedTransport {
-    fn get(&self, url: &url::Url, addr: IpAddr) -> Result<HttpResponse, String> {
+    fn get(
+        &self,
+        url: &url::Url,
+        crate::a2a::fetch::Pin { addr, .. }: crate::a2a::fetch::Pin,
+    ) -> Result<HttpResponse, String> {
         self.calls.borrow_mut().push((url.to_string(), addr));
         self.routes
             .borrow()

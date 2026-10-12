@@ -430,3 +430,108 @@ fn a_statement_list_is_checked_whole_and_a_null_list_with_a_count_is_fault() {
         Err(fault(Rule::UnknownCode, "statement.marks"))
     );
 }
+
+// ── THE STATEMENT LISTS' BOUNDS (contract audit M7: at most STATEMENT_LIST_MAX, never misaligned) ─
+
+/// `STATEMENT_LIST_MAX + 1` answers, one past the cap.
+const OVER_CAP: &[AbiStr] = &[abi_str("a"); STATEMENT_LIST_MAX + 1];
+
+/// A Statement list above [`STATEMENT_LIST_MAX`] is refused before any entry is read, whichever
+/// list states it; exactly the cap passes. RED: without the cap a plugin's stated count is walked
+/// whole, and a count past its own data reads the host past it.
+#[test]
+fn a_statement_list_above_the_cap_is_refused_before_it_is_read() {
+    let at_cap = &OVER_CAP[..STATEMENT_LIST_MAX];
+    let mut st = statement("p", "1.0.0", 1);
+    st.answers = at_cap.as_ptr();
+    st.answers_len = at_cap.len();
+    // SAFETY: the list is a `'static` array of its stated count.
+    assert_eq!(unsafe { check_statement(&st) }, Ok(()));
+    for (field, set) in [
+        (
+            "statement.answers",
+            (|s: &mut Statement| {
+                s.answers = OVER_CAP.as_ptr();
+                s.answers_len = OVER_CAP.len();
+            }) as fn(&mut Statement),
+        ),
+        ("statement.diag_ids", |s| {
+            s.diag_ids = OVER_CAP.as_ptr();
+            s.diag_ids_len = OVER_CAP.len();
+        }),
+        ("statement.secret_refs", |s| {
+            s.secret_refs = OVER_CAP.as_ptr();
+            s.secret_refs_len = OVER_CAP.len();
+        }),
+        ("statement.claims", |s| {
+            s.kind = crate::abi::mechanism::KindCode::Transport as u32;
+            s.claims = OVER_CAP.as_ptr();
+            s.claims_len = OVER_CAP.len();
+        }),
+    ] {
+        let mut bad = statement("p", "1.0.0", 1);
+        set(&mut bad);
+        // SAFETY: each list is a `'static` array of its stated count; the cap refuses it unread.
+        assert_eq!(
+            unsafe { check_statement(&bad) },
+            Err(fault(Rule::OverMax, field)),
+            "{field}"
+        );
+    }
+}
+
+/// A Statement list whose pointer is not aligned for its entry type is refused before a slice is
+/// built over it (a slice over a misaligned pointer is undefined behaviour). RED: without the
+/// alignment check the host builds the slice.
+#[test]
+fn a_misaligned_statement_list_is_refused_before_a_slice_is_built() {
+    #[repr(C, align(16))]
+    struct Raw([u8; 128]);
+    let raw = Raw([0; 128]);
+    let off = raw.0.as_ptr().wrapping_add(1);
+    for (field, set) in [
+        (
+            "statement.answers",
+            (|s: &mut Statement, p: *const u8| {
+                s.answers = p.cast();
+                s.answers_len = 1;
+            }) as fn(&mut Statement, *const u8),
+        ),
+        ("statement.mark_words", |s, p| {
+            s.mark_words = p.cast();
+            s.mark_words_len = 1;
+        }),
+        ("statement.needs", |s, p| {
+            s.needs = p.cast();
+            s.needs_len = 1;
+        }),
+        ("statement.families", |s, p| {
+            s.families = p.cast();
+            s.families_len = 1;
+        }),
+    ] {
+        let mut bad = statement("p", "1.0.0", 1);
+        set(&mut bad, off);
+        // SAFETY: the misaligned list is refused before it is read.
+        assert_eq!(
+            unsafe { check_statement(&bad) },
+            Err(fault(Rule::Misaligned, field)),
+            "{field}"
+        );
+    }
+}
+
+/// [`bounded`] alone: the cap and the alignment, NULL left to [`listed`].
+#[test]
+fn bounded_checks_the_cap_and_the_alignment_and_leaves_null_to_listed() {
+    let ok: [u64; 2] = [0, 0];
+    assert_eq!(bounded(ok.as_ptr(), 2, "t"), Ok(()));
+    assert_eq!(bounded(core::ptr::null::<u64>(), 3, "t"), Ok(()));
+    assert_eq!(
+        bounded(ok.as_ptr(), STATEMENT_LIST_MAX + 1, "t"),
+        Err(fault(Rule::OverMax, "t"))
+    );
+    let off = ok.as_ptr().cast::<u8>().wrapping_add(1).cast::<u64>();
+    assert_eq!(bounded(off, 1, "t"), Err(fault(Rule::Misaligned, "t")));
+    assert_eq!(bounded(off, 0, "t"), Ok(()));
+}

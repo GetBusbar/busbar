@@ -27,7 +27,7 @@ use crate::dispatch::kinds::{
     transport::Transport,
 };
 use crate::dispatch::{
-    load_dropped_bytes, load_linked, Adopter, Bind, EnvelopeSink, LinkedRow, Plugin,
+    load_dropped_bytes, load_linked, Adopter, Bind, ConnTable, EnvelopeSink, LinkedRow, Plugin,
     PluginLogConfig,
 };
 
@@ -192,8 +192,10 @@ pub struct Candidate {
     pub kind: KindCode,
     /// Its name.
     pub name: String,
+    /// Its version, as its Statement states it (the one-version rule's, [`one_owner`]).
+    pub version: String,
     /// The other names config may give it: its Statement's alias rewrites and, for a dropped
-    /// plugin, its manifest's alias.
+    /// plugin, its manifest's alias and former names.
     pub aliases: Vec<String>,
     /// The reference keys that name it (its sugar rewrites).
     pub sugar: Vec<String>,
@@ -248,9 +250,44 @@ impl Candidate {
             schemes: r.claims,
             needs: r.needs,
             name: r.name,
+            version: r.version,
             stated,
             origin,
         })
+    }
+
+    /// The candidate a DROPPED-IN plugin's signed manifest states: its Statement rendering, its
+    /// manifest alias and each of its former names ([`crate::sign::Manifest::former_names`]), so
+    /// config reaches it by every name the registry resolves it by.
+    ///
+    /// # Errors
+    ///
+    /// As [`Candidate::from_rendering`].
+    pub fn from_manifest(
+        stated: Vec<u8>,
+        manifest: &crate::sign::Manifest,
+        origin: Origin,
+    ) -> Result<Self, String> {
+        Self::from_rendering(stated, Some(&manifest.alias), origin)
+            .map(|c| c.answering(&manifest.former_names))
+    }
+
+    /// This candidate, answering also to each of `names` it does not already answer to (a plugin's
+    /// former names: what config written for its earlier releases calls it).
+    #[must_use]
+    pub fn answering<S: AsRef<str>>(mut self, names: impl IntoIterator<Item = S>) -> Self {
+        for word in names {
+            let word = word.as_ref();
+            if !self.answers(word) {
+                self.aliases.push(word.to_string());
+            }
+        }
+        self
+    }
+
+    /// Every word config may name this candidate by: its name, then its aliases.
+    fn words(&self) -> impl Iterator<Item = &str> {
+        std::iter::once(self.name.as_str()).chain(self.aliases.iter().map(String::as_str))
     }
 
     /// A compiled-in row's candidate: its row's rendering.
@@ -269,6 +306,77 @@ impl Candidate {
     }
 }
 
+/// THE ONE-OWNER RULE over an axis's candidates, linked and dropped in alike (Q-P4-12 (ARCHITECT, BUSBAR-1.6.0.md:106 "it refuses at boot when two plugins claim the same thing")): two DIFFERENT
+/// plugins (different names) that answer one word (a name, an alias, a former name) are refused,
+/// naming both and the word. No ambiguity is resolved by picking a winner, and neither door outranks
+/// the other (compiled in = dropped in). Two candidates of the SAME plugin (a linked row and its
+/// dropped-in copy) are not a claim conflict: they are one plugin, held to the ONE-VERSION RULE
+/// (ARCHITECT C', [`crate::registry::one_version`]) — at one version the linked row serves (it is
+/// read first; [`both_doors`] names the pair for the log), at two the boot is refused.
+///
+/// # Errors
+///
+/// The first contested word, with the two plugins that claim it; or one plugin linked and dropped
+/// in at two versions.
+pub fn one_owner(candidates: &[Candidate]) -> Result<(), String> {
+    for (i, a) in candidates.iter().enumerate() {
+        for b in &candidates[i + 1..] {
+            if a.name == b.name {
+                if let Some((linked, file, dropped)) = doors(a, b) {
+                    if linked.version.is_empty() || dropped.version.is_empty() {
+                        return Err(crate::registry::unversioned(&a.name));
+                    }
+                    crate::registry::two_versions(
+                        &a.name,
+                        &linked.version,
+                        file,
+                        &dropped.version,
+                    )?;
+                }
+                continue;
+            }
+            if let Some(word) = a.words().find(|w| b.answers(w)) {
+                return Err(format!(
+                    "plugin claim conflict: '{word}' is claimed by both '{}' and '{}' - a name, \
+                     alias or former name must resolve to one plugin; remove one",
+                    a.name, b.name
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The pair `a`, `b` as (the linked one, the dropped-in one's file, the dropped-in one), when one
+/// came in by each door.
+fn doors<'c>(
+    a: &'c Candidate,
+    b: &'c Candidate,
+) -> Option<(&'c Candidate, &'c str, &'c Candidate)> {
+    match (&a.origin, &b.origin) {
+        (Origin::Linked(_), Origin::Dropped { file, .. }) => Some((a, file, b)),
+        (Origin::Dropped { file, .. }, Origin::Linked(_)) => Some((b, file, a)),
+        _ => None,
+    }
+}
+
+/// THE ONE INFO LINE per plugin among `candidates` that is linked AND dropped in at one version
+/// ([`crate::registry::LinkedCopy::line`]'s words): what the axis that admits them logs, once.
+#[must_use]
+pub fn both_doors(candidates: &[Candidate]) -> Vec<String> {
+    let mut lines = Vec::new();
+    for (i, a) in candidates.iter().enumerate() {
+        for b in &candidates[i + 1..] {
+            if let Some((linked, file, dropped)) = doors(a, b) {
+                if a.name == b.name && linked.version == dropped.version {
+                    lines.push(crate::registry::both_doors(&a.name, &linked.version, file));
+                }
+            }
+        }
+    }
+    lines
+}
+
 // ── SELECT: the plugins the configuration uses ──────────────────────────────────────────────────
 
 /// One selected instance: which candidate, under which instance name (the config key).
@@ -285,9 +393,9 @@ pub struct Selected {
 /// one of its verbs is a root key; a store, secret, auth, hook or export plugin once per entry whose
 /// `module` names it (its name or an alias) and once if a reference uses its sugar; a transport iff
 /// a configured URL uses a scheme it claims. Candidates are read in order and the first that answers
-/// an entry takes it, so a linked row listed ahead answers its module ahead of a dropped-in plugin
-/// spelling the same word. An entry no candidate answers selects nothing here: the kind's own
-/// validation refuses it, naming the missing module.
+/// an entry takes it; two DIFFERENT plugins never both answer one word, which the one-owner rule
+/// ([`one_owner`], Q-P4-12 (ARCHITECT, BUSBAR-1.6.0.md:106 "it refuses at boot when two plugins claim the same thing")) refuses before selection. An entry no candidate answers selects nothing here:
+/// the kind's own validation refuses it, naming the missing module.
 #[must_use]
 pub fn select(uses: &Uses, candidates: &[Candidate]) -> Vec<Selected> {
     let mut out = Vec::new();
@@ -433,7 +541,7 @@ pub fn load_planes(
     metrics: Arc<dyn EnvelopeSink>,
     dispatcher: Adopter,
     max_inflight_cap: u32,
-    conns: Option<Arc<dyn busbar_contract::conn::DeclaredConns>>,
+    conns: ConnTable,
 ) -> Result<Vec<(String, Plugin<Plane>)>, String> {
     let selected: Vec<Selected> = doors
         .iter()
@@ -665,8 +773,8 @@ pub struct LoadRequest<'a> {
     pub dispatcher: Adopter,
     /// The host's clamp on `max_inflight`.
     pub max_inflight_cap: u32,
-    /// The host's one connection table ([`Bind::conns`]).
-    pub conns: Option<Arc<dyn busbar_contract::conn::DeclaredConns>>,
+    /// The host's one connection table, or why the load has none ([`Bind::conns`]).
+    pub conns: ConnTable,
     /// What OPENS each auth instance the load binds, and awaits its `ready`; `None` = bind only.
     pub opening: Option<Opening<'a>>,
 }
@@ -790,17 +898,45 @@ pub fn resolve_secrets(
     resolver: &dyn busbar_contract::secret::SecretResolve,
 ) -> Result<Vec<Vec<u8>>, String> {
     keys.iter()
-        .map(|key| {
-            let Some(found) = take_path(block, key) else {
-                return Ok(Vec::new());
-            };
-            let r: busbar_contract::secret_ref::SecretRef = serde_json::from_value(found)
-                .map_err(|e| format!("settings.{key}: not a secret reference: {e}"))?;
-            resolver
-                .resolve(&r)
-                .map_err(|e| format!("settings.{key}: the secret did not resolve: {e}"))
-        })
+        .map(|path| resolve_one(block, path, resolver))
         .collect()
+}
+
+/// One declared secret of [`resolve_secrets`]: taken out of the block, decoded as a reference and
+/// resolved. Decoding and resolving are separate steps so the decoder's text never shares a message
+/// with anything: a value that is not a reference may be the secret itself, pasted where its
+/// reference belongs, so its decode failure is described by [`not_a_reference`] alone.
+fn resolve_one(
+    block: &mut serde_json::Value,
+    path: &str,
+    resolver: &dyn busbar_contract::secret::SecretResolve,
+) -> Result<Vec<u8>, String> {
+    let Some(found) = take_path(block, path) else {
+        return Ok(Vec::new());
+    };
+    let r: busbar_contract::secret_ref::SecretRef =
+        serde_json::from_value(found).map_err(not_a_reference(format!("settings.{path}")))?;
+    resolver
+        .resolve(&r)
+        .map_err(|e| format!("settings.{path}: the secret did not resolve: {e}"))
+}
+
+/// The `map_err` for a settings value that should be a secret REFERENCE and does not decode as one.
+/// `serde_json::Error`'s own `Display` is withheld: a data error quotes the offending value, and a
+/// value that is not a reference may be the secret itself, pasted inline where its reference
+/// belongs (secret-hygiene #53, Check 3: redact at the format site). What survives is WHERE (`at`,
+/// the settings path) and the CLASS of the failure.
+pub(crate) fn not_a_reference(at: String) -> impl FnOnce(serde_json::Error) -> String {
+    move |e: serde_json::Error| {
+        let class = match e.classify() {
+            serde_json::error::Category::Io => "the value could not be read",
+            serde_json::error::Category::Syntax | serde_json::error::Category::Eof => {
+                "it is not well-formed"
+            }
+            serde_json::error::Category::Data => "a field is missing or has the wrong type",
+        };
+        format!("{at}: not a secret reference: {class} (the decoder's text is withheld)")
+    }
 }
 
 /// Remove and answer the value at the `.`-separated `path` of `v`, if set.

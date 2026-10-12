@@ -284,8 +284,8 @@ fn a_corrected_card_keeps_everything_it_does_not_name() {
     };
     let card = RateCard::from_config(
         Some([
-            ("gpt", tiers(2.0, 8.0)),
-            ("claude", tiers(3.0, 15.0)),
+            ("lane-g", tiers(2.0, 8.0)),
+            ("lane-c", tiers(3.0, 15.0)),
             ("plane-b\u{1f}search", tiers(5.0, 6.0)),
         ]),
         3,
@@ -297,11 +297,11 @@ fn a_corrected_card_keeps_everything_it_does_not_name() {
     };
 
     let corrected = card
-        .corrected([(LaneClass::new("gpt", "input"), 1_000)], None)
+        .corrected([(LaneClass::new("lane-g", "input"), 1_000)], None)
         .expect("the flat card is present");
-    assert_eq!(nanos(&corrected, "gpt", "input"), Some(1_000));
-    assert_eq!(nanos(&corrected, "gpt", "output"), Some(8_000));
-    assert_eq!(nanos(&corrected, "claude", "output"), Some(15_000));
+    assert_eq!(nanos(&corrected, "lane-g", "input"), Some(1_000));
+    assert_eq!(nanos(&corrected, "lane-g", "output"), Some(8_000));
+    assert_eq!(nanos(&corrected, "lane-c", "output"), Some(15_000));
     assert_eq!(
         nanos(&corrected, "plane-b\u{1f}search", "input"),
         Some(5_000)
@@ -323,7 +323,7 @@ fn a_corrected_card_keeps_everything_it_does_not_name() {
         Some(6_000)
     );
     assert_eq!(
-        nanos(&corrected, "gpt", "input"),
+        nanos(&corrected, "lane-g", "input"),
         Some(2_000),
         "the flat card is untouched"
     );
@@ -336,7 +336,7 @@ fn a_corrected_card_keeps_everything_it_does_not_name() {
     );
     assert!(
         RateCard::absent(3)
-            .corrected([(LaneClass::new("gpt", "input"), 1)], None)
+            .corrected([(LaneClass::new("lane-g", "input"), 1)], None)
             .is_none(),
         "an absent flat card has nowhere for a cell to land"
     );
@@ -355,7 +355,7 @@ fn a_corrected_card_keeps_everything_it_does_not_name() {
 }
 
 /// **A CORRECTED CELL IS NO LONGER A REFUSED ONE** (#79, #42). A card that could not represent
-/// its configured `gpt`/`input` leaves that cell UNPRICED and lists it in `refused_cells`; a
+/// its configured `lane-g`/`input` leaves that cell UNPRICED and lists it in `refused_cells`; a
 /// signed correction that prices the cell takes it off the list, on the flat card and on a plane's
 /// own card alike, and leaves every refused cell it did not name on it.
 #[test]
@@ -365,7 +365,7 @@ fn a_correction_that_prices_a_refused_cell_takes_it_off_the_refused_list() {
     let card = RateCard::from_config(
         Some([
             (
-                "gpt",
+                "lane-g",
                 TierRates {
                     input: unrepresentable,
                     output: unrepresentable,
@@ -394,8 +394,8 @@ fn a_correction_that_prices_a_refused_cell_takes_it_off_the_refused_list() {
     assert_eq!(
         card.refused_cells(),
         [
-            LaneClass::new("gpt", "input"),
-            LaneClass::new("gpt", "output")
+            LaneClass::new("lane-g", "input"),
+            LaneClass::new("lane-g", "output")
         ]
     );
     assert_eq!(plane_refused(&card), [LaneClass::new("search", "input")]);
@@ -403,7 +403,7 @@ fn a_correction_that_prices_a_refused_cell_takes_it_off_the_refused_list() {
     let corrected = card
         .corrected(
             [
-                (LaneClass::new("gpt", "input"), 1_000),
+                (LaneClass::new("lane-g", "input"), 1_000),
                 (LaneClass::new("plane-b\u{1f}search", "input"), 9_000),
             ],
             None,
@@ -411,7 +411,7 @@ fn a_correction_that_prices_a_refused_cell_takes_it_off_the_refused_list() {
         .expect("both cards are present");
     assert_eq!(
         corrected.refused_cells(),
-        [LaneClass::new("gpt", "output")],
+        [LaneClass::new("lane-g", "output")],
         "the corrected cell is priced, so it is not refused; the cell it did not name still is"
     );
     assert!(

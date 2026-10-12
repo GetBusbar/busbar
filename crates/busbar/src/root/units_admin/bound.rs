@@ -26,6 +26,8 @@ use std::sync::Arc;
 use busbar_contract::plane::PlaneDeclaration;
 use busbar_contract::records::{PlaneDisposition, PlaneRecord};
 use busbar_core_admin::GovernanceError;
+use busbar_kernel::host_services::{KernelServices, TrustRefused};
+use busbar_kernel::trust::book::{KeyRow, Ruling};
 
 use super::{AdminAnswer, AmendmentJournal, LedgerView};
 
@@ -45,6 +47,17 @@ pub fn no_planes() -> PlaneLookup {
 /// words, for the node's log only.
 pub type PlaneRecordSink = Arc<dyn Fn(&PlaneRecord) -> Result<(), String> + Send + Sync>;
 
+/// The kernel's host services, whose trust book the three trust verbs read and decide over
+/// (ARCHITECT 2026-10-06): `None` until the root composed them, and on a node that composed none —
+/// which then has no trust keys, lists none and answers every key `404`.
+pub type TrustDesk = Arc<dyn Fn() -> Option<Arc<KernelServices>> + Send + Sync>;
+
+/// The desk of a node no root bound the kernel's services to: no trust keys.
+#[must_use]
+pub fn no_trust() -> TrustDesk {
+    Arc::new(|| None)
+}
+
 /// The domain tag a `commit_upgrade` journal record's body opens with, so a `Policy`-class record
 /// is recognisable as a committed release without guessing.
 pub const COMMIT_UPGRADE_RECORD_TAG: &str = "busbar/commit-upgrade/v1";
@@ -59,6 +72,12 @@ fn refused(status: u16, code: &str, message: &str) -> AdminAnswer {
         headers: vec![("content-type".to_string(), "application/json".to_string())],
         body: busbar_core_admin::admin_codec::refusal::envelope_of(code, message).into_bytes(),
     }
+}
+
+/// A durable verb the store has not acknowledged: `503` with the reason (ARCHITECT 2026-10-07 H3
+/// ruling (d)). A refusal the previous release never answered: it kept no journal.
+pub(crate) fn journal_unavailable(why: &str) -> AdminAnswer {
+    refused(503, "service_unavailable", why)
 }
 
 /// A `200` carrying `value` as JSON.
@@ -81,14 +100,14 @@ fn query_param<'t>(target: &'t str, name: &str) -> Option<&'t str> {
 
 /// `GET /api/v1/admin/verify` — everything that has to be true of this node's ledger, checked.
 ///
-/// A node whose book holds a refused counts row is refused whole (`Store`), exactly as the ledger
-/// views beside it are: an identity measured over a book with a hole in it is not a measurement.
+/// A balance whose book holds a refused counts row (#42) is a FINDING, named with its window, lane
+/// and refusal, and its row is withheld from the identity exactly as the ledger views beside it
+/// withhold it: an identity measured over a balance with no figure is not a measurement. Every
+/// other check still runs and every other finding is still reported — one refused row is a hole
+/// in one balance, and a verify that went dark over it would hide everything else it found.
 pub(crate) fn verify_effect(ledger: &dyn LedgerView) -> Result<AdminAnswer, GovernanceError> {
-    use busbar_kernel_ledger::verify::{sequences_are_monotonic, verify, AllWindowsOpen, Finding};
+    use busbar_kernel_ledger::verify::{sequences_are_monotonic, verify, Finding};
 
-    if ledger.has_refused_rows() {
-        return Err(GovernanceError::Store);
-    }
     let (checkpoints, book, anchored) = ledger.verify_snapshot_anchored();
     let mut findings: Vec<Finding> = Vec::new();
     for checkpoint in &checkpoints {
@@ -106,7 +125,7 @@ pub(crate) fn verify_effect(ledger: &dyn LedgerView) -> Result<AdminAnswer, Gove
         (Some(since), Some(now)) => {
             // The checkpoint's own digest was checked above with every other one.
             findings.extend(
-                verify(since, now, &AllWindowsOpen, anchored.as_ref())
+                verify(since, now, anchored.as_ref())
                     .into_iter()
                     .filter(|f| !matches!(f, Finding::CheckpointEdited { .. })),
             );
@@ -114,13 +133,23 @@ pub(crate) fn verify_effect(ledger: &dyn LedgerView) -> Result<AdminAnswer, Gove
         }
         _ => false,
     };
-    let (ledger_rows, legacy_rows) = ledger
+    let (mut ledger_rows, mut legacy_rows) = ledger
         .identity_snapshot()
         .map_err(|_| GovernanceError::Store)?;
+    // Asked AFTER the rows are read: see `LedgerView::refused_balances`.
+    let refused = ledger.refused_balances();
+    super::withhold_refused(&mut ledger_rows, &refused);
+    super::withhold_refused(&mut legacy_rows, &refused);
     let discrepancies = crate::root::ledger_identity::reconcile(&ledger_rows, &legacy_rows)
         .map_err(|_| GovernanceError::Store)?;
     let identity_holds = discrepancies.is_empty();
     let mut findings: Vec<String> = findings.iter().map(ToString::to_string).collect();
+    // EVERY BALANCE WITH NO FIGURE (#42): its balance, window, lane and refusal, in words.
+    findings.extend(
+        refused
+            .iter()
+            .map(|balance| format!("refused counts: {balance}")),
+    );
     // WHAT THE BOOT RECONCILIATION FOUND: a journal record the chain could not read, or a balance
     // the book and a second replay disagree on. A settled figure edited on disk is caught here; the
     // boot logs it and serves on, and this is where an operator asking reads it.
@@ -142,6 +171,14 @@ pub(crate) fn verify_effect(ledger: &dyn LedgerView) -> Result<AdminAnswer, Gove
             .retained_audit_findings()
             .into_iter()
             .map(|finding| format!("audit chain: {finding}")),
+    );
+    // EVERY CHAIN THE STORE KEEPS, this node's and its peers', walked and verified against the
+    // deployment keyset: a chain on the store that does not verify is a finding wherever it is.
+    findings.extend(
+        ledger
+            .stored_chain_findings()
+            .into_iter()
+            .map(|finding| format!("stored chain: {finding}")),
     );
     answer(&serde_json::json!({
         "checkpoints": checkpoints.len(),
@@ -307,7 +344,8 @@ pub(crate) fn plane_record_write_effect(
 /// conflict` and seals nothing. The committed release is sealed on the node's journal as a
 /// `Policy` record ([`COMMIT_UPGRADE_RECORD_TAG`], the release, the second, the principal) before
 /// the answer names its position and chain hash. A node with no journal bound refuses (`Store`):
-/// a commit nothing recorded did not happen.
+/// a commit nothing recorded did not happen. Where the store keeps the journal, the commit answers
+/// only once the store acknowledged its record, and `503` with the reason otherwise.
 pub(crate) fn commit_upgrade_effect(
     body: &[u8],
     at: u64,
@@ -332,18 +370,104 @@ pub(crate) fn commit_upgrade_effect(
         ));
     }
     let journal = journal.ok_or(GovernanceError::Store)?;
+    if let Err(why) = journal.admit() {
+        return Ok(journal_unavailable(&why));
+    }
     let mut record = busbar_kernel_wal::BodyWriter::new();
     record.text(COMMIT_UPGRADE_RECORD_TAG);
     record.text(version);
     record.num(at);
     record.text(principal);
     let (node_seq, hash) = journal.seal_policy(record.finish(), at)?;
+    if let Err(why) = journal.acked(node_seq) {
+        return Ok(journal_unavailable(&format!(
+            "the commit is sealed at journal position {node_seq} and not yet kept by the store: \
+             {why}; do not re-submit"
+        )));
+    }
     answer(&serde_json::json!({
         "committed": version,
         "committed_at": at,
         "seq": node_seq,
         "hash": hex::encode(hash),
     }))
+}
+
+/// One trust key's row as the trust verbs write it.
+fn trust_row(row: &KeyRow) -> serde_json::Value {
+    serde_json::json!({
+        "key": row.key(),
+        "instance": row.instance,
+        "counterparty": row.counterparty,
+        "item": row.item,
+        "state": row.state.word(),
+        "approved": row.approved,
+        "seen": row.seen,
+    })
+}
+
+/// `GET /api/v1/admin/trust` — every trust key of the kernel's trust book and its state. A read.
+pub(crate) fn trust_list_effect(desk: &TrustDesk) -> Result<AdminAnswer, GovernanceError> {
+    let rows = desk().map(|k| k.trust_rows()).unwrap_or_default();
+    answer(&serde_json::json!({
+        "keys": rows.iter().map(trust_row).collect::<Vec<_>>(),
+    }))
+}
+
+/// `POST /api/v1/admin/trust/approve` and `/revoke` — the operator's decision about one trust key,
+/// `{ "key": "<instance>/<counterparty>[/<item>]" }`, made on the kernel's trust book and kept
+/// durably. Idempotent: the same key twice answers the same row. An unknown key is `404`; an
+/// approval with nothing ever sighted to approve at is `409`; a decision the store could not keep is
+/// `Store` (`503`).
+pub(crate) fn trust_decide_effect(
+    body: &[u8],
+    decision: Ruling,
+    desk: &TrustDesk,
+) -> Result<AdminAnswer, GovernanceError> {
+    let doc: serde_json::Value =
+        serde_json::from_slice(body).map_err(|_| GovernanceError::Validation)?;
+    let obj = doc.as_object().ok_or(GovernanceError::Validation)?;
+    let Some(key) = obj
+        .get("key")
+        .and_then(serde_json::Value::as_str)
+        .filter(|k| !k.trim().is_empty())
+    else {
+        return Ok(refused(400, "invalid_request", "key is required"));
+    };
+    let not_found = || {
+        Ok(refused(
+            404,
+            "not_found",
+            &format!("trust key `{key}` not found"),
+        ))
+    };
+    let Some(kernel) = desk() else {
+        return not_found();
+    };
+    match kernel.trust_rule(key, decision) {
+        Ok(row) => answer(&trust_row(&row)),
+        Err(TrustRefused::NoSuchKey) => not_found(),
+        Err(TrustRefused::NothingSighted) => Ok(refused(
+            409,
+            "conflict",
+            &format!("trust key `{key}` was never sighted"),
+        )),
+        // The core-admin verbs state no expected fingerprint, so a stale one is never theirs.
+        Err(TrustRefused::Stale) => Ok(refused(
+            409,
+            "conflict",
+            &format!("trust key `{key}` moved since it was seen"),
+        )),
+        Err(TrustRefused::Rootless) => Ok(refused(
+            409,
+            "conflict",
+            &format!("trust key `{key}` has no authenticity root"),
+        )),
+        Err(TrustRefused::Store(why)) => {
+            tracing::error!(key = %key, error = %why, "a trust decision could not be kept");
+            Err(GovernanceError::Store)
+        }
+    }
 }
 
 /// THE PRODUCTION PLANE LOOKUP: the registry's planes, filtered by Law 7 against the LIVE

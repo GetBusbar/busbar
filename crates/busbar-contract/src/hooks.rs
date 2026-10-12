@@ -51,6 +51,11 @@ pub struct RoutingRequest<'a> {
     /// existing typed field above is unchanged; a consumer that reads only them sees the identical
     /// projection it always has.
     pub signals: crate::SignalBag,
+    /// The request's session, opaque octets the plane named (the memory ABI's
+    /// [`RequestView::session`](crate::abi::hook::RequestView::session)); `None` = no session.
+    /// Never on the 1.5.5 JSON wire ([`crate::hook_wire::build`] does not read it): only the memory
+    /// ABI's view carries it.
+    pub session: Option<&'a [u8]>,
 }
 
 /// The prompt content projection (the hook's `prompt: ro|rw` grant), read from the normalized IR.

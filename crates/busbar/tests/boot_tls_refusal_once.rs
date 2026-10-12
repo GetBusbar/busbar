@@ -16,18 +16,23 @@
 //! is ever reached — the same gate every LLM-config boot test in `cli_validate.rs` carries.
 #![cfg(all(unix, linked_axis_body_ingress))]
 
+mod common;
+
 use std::path::PathBuf;
 use std::process::Command;
 
 fn fixture_dir() -> PathBuf {
-    let d = std::env::temp_dir().join(format!(
-        "busbar-boot-tls-once-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
+    let d = std::env::temp_dir().join(format!("busbar-boot-tls-once-{}-{}", std::process::id(), {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        format!(
+            "{}-{}-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_nanos()),
+            line!(),
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        )
+    }));
     std::fs::create_dir_all(&d).unwrap();
     d
 }
@@ -35,11 +40,7 @@ fn fixture_dir() -> PathBuf {
 #[test]
 fn a_tls_material_refusal_names_the_listener_once() {
     let dir = fixture_dir();
-    let port = std::net::TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port();
+    let port = common::boot::free_port();
     std::fs::write(
         dir.join("providers.yaml"),
         "mock:\n  protocol: anthropic\n  base_url: \"http://127.0.0.1:9\"\n  api_key_env: MOCK_KEY\n",
@@ -52,6 +53,7 @@ fn a_tls_material_refusal_names_the_listener_once() {
 admin_listen: "127.0.0.1:0"
 advanced:
   allow_destinations: ["127.0.0.1"]
+store: {{module: memory}}
 tls:
   cert: {{ env: BOOT_TLS_ONCE_CERT }}
   key: {{ env: BOOT_TLS_ONCE_KEY }}

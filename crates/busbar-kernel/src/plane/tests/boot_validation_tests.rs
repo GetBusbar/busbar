@@ -17,10 +17,12 @@ const MECHANISMS: &[PinMechanismDecl] = &[
     PinMechanismDecl {
         token: "sealed_key",
         root: true,
+        peer_key: false,
     },
     PinMechanismDecl {
         token: "open",
         root: false,
+        peer_key: false,
     },
 ];
 
@@ -56,6 +58,7 @@ static BAYS_PLANE: crate::plane::registry::PlaneDecl = crate::plane::registry::P
         config_section: "bays",
         owned_config_sections: &["bays"],
         trust_keys: KEYS,
+        caller_credential_refusal: None,
         ..crate::test_support::NEUTRAL_FALLBACK.declaration
     },
     parse_section: Some(accept_anything),
@@ -111,6 +114,42 @@ fn boot_refuses_a_bad_cadence_in_a_planes_section() {
     let _isolation = crate::plane::registry::TestRegistryIsolation::seeded(&[&BAYS_PLANE]);
     boot("  dock:\n    recheck_after: 30s\n").expect("a duration is legal");
     assert_refused(boot("  dock:\n    recheck_after: soon\n"), CADENCE_REFUSAL);
+}
+
+/// RED (ARCHITECT timeout ruling): an entry's `timeout:` is a reserved key the KERNEL judges, for a
+/// plane that names none of it: a duration is legal; an unparseable one and a zero are refused in
+/// the kernel's sentence, on the boot path and on the admin write path alike.
+#[test]
+fn boot_and_the_admin_write_path_judge_an_entrys_timeout() {
+    let _isolation = crate::plane::registry::TestRegistryIsolation::seeded(&[&BAYS_PLANE]);
+    boot("  dock:\n    timeout: 10s\n").expect("a duration is legal");
+    assert_refused(
+        boot("  dock:\n    timeout: soon\n"),
+        "`bays.dock`: `timeout:` invalid duration 'soon': expected <number><s|m|h|d>",
+    );
+    assert_refused(
+        boot("  dock:\n    timeout: 0s\n"),
+        "`bays.dock`: `timeout: 0s` is zero, which would refuse every call to this entry before \
+         it was sent.",
+    );
+    assert_refused(
+        boot("  dock:\n    timeout: 10\n"),
+        "`bays.dock`: `timeout:` must be a duration `<n><s|m|h|d>`, e.g. `30s`",
+    );
+    let entry: serde_yaml::Value = serde_yaml::from_str("timeout: 0m").expect("yaml");
+    let refused = validate_plane_entry("bays", "dock", &entry, KEYS, &["bays"]).unwrap_err();
+    assert!(
+        refused.starts_with("`bays.dock`: `timeout: 0m` is zero"),
+        "{refused}"
+    );
+    // A model-serving section's entries are its `models` map's: each judged, at its own path.
+    let models: serde_yaml::Value =
+        serde_yaml::from_str("models:\n  m1: { timeout: never }\n").expect("yaml");
+    let refused = validate_plane_section("bays", &models, KEYS, None, &["bays"]).unwrap_err();
+    assert!(
+        refused.starts_with("`bays.models.m1`: `timeout:`"),
+        "{refused}"
+    );
 }
 
 #[test]
@@ -175,7 +214,7 @@ fn a_section_is_judged_per_registration_in_order_skipping_reserved_words() {
     )
     .unwrap();
     assert_eq!(
-        validate_plane_section("bays", &value, KEYS, &sections).unwrap_err(),
+        validate_plane_section("bays", &value, KEYS, None, &sections).unwrap_err(),
         CADENCE_REFUSAL,
         "the trust keys are judged before the hook list, and the reserved `hooks:` is not an entry"
     );
@@ -184,5 +223,62 @@ fn a_section_is_judged_per_registration_in_order_skipping_reserved_words() {
         validate_plane_entry("bays", "dock", &entry, &[], &sections).unwrap_err(),
         "`bays.dock`: `hooks:` may only name hooks from the top-level `hooks:` map, by bare name. \
          `a.b` is not a bare name."
+    );
+}
+
+/// The words a plane uses to refuse a forwarded caller credential. The kernel never writes them.
+const FORWARD_REFUSAL: &str = "the moorings plane never forwards a caller's credential";
+
+/// A plane owning the `moorings:` section that refuses a forwarded caller credential.
+static MOORINGS_PLANE: crate::plane::registry::PlaneDecl = crate::plane::registry::PlaneDecl {
+    declaration: crate::plane::registry::PlaneDeclaration {
+        key: "moorings-plane",
+        fallback: false,
+        config_section: "moorings",
+        owned_config_sections: &["moorings"],
+        trust_keys: &[],
+        caller_credential_refusal: Some(FORWARD_REFUSAL),
+        ..crate::test_support::NEUTRAL_FALLBACK.declaration
+    },
+    parse_section: Some(accept_anything),
+    ..crate::test_support::NEUTRAL_FALLBACK
+};
+
+#[test]
+fn boot_refuses_a_forwarded_caller_credential_in_the_planes_own_words() {
+    let _isolation =
+        crate::plane::registry::TestRegistryIsolation::seeded(&[&BAYS_PLANE, &MOORINGS_PLANE]);
+    let moorings = |default: &str| {
+        crate::config::deploy_from_yaml_str(&format!(
+            "providers: {{}}\nmodels: {{}}\nmoorings:\n  upstream_credentials: {default}\n  berth: {{}}\n"
+        ))
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+    };
+    assert_refused(moorings("passthrough"), FORWARD_REFUSAL);
+    moorings("own").expect("the plane's own credential is not refused");
+    boot("  upstream_credentials: passthrough\n  dock: {}\n")
+        .expect("a plane that states no refusal accepts a forwarded caller credential");
+}
+
+#[test]
+fn the_section_default_is_judged_after_its_registrations() {
+    let value: serde_yaml::Value =
+        serde_yaml::from_str("upstream_credentials: passthrough\nberth: {}\n").unwrap();
+    assert_eq!(
+        validate_plane_section("moorings", &value, &[], Some(FORWARD_REFUSAL), &[]),
+        Err(FORWARD_REFUSAL.to_string())
+    );
+    assert_eq!(
+        validate_plane_section("moorings", &value, &[], None, &[]),
+        Ok(())
+    );
+    let value: serde_yaml::Value =
+        serde_yaml::from_str("upstream_credentials: passthrough\ndock:\n  recheck_after: soon\n")
+            .unwrap();
+    assert_eq!(
+        validate_plane_section("bays", &value, KEYS, Some(FORWARD_REFUSAL), &[]).unwrap_err(),
+        CADENCE_REFUSAL,
+        "a registration's refusal comes first, as the plane's section split ordered it"
     );
 }

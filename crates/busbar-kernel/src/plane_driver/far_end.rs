@@ -29,11 +29,15 @@
 //!    key failing and records nothing; a transient failure is recorded and the piece fails over
 //!    before the plane sees it. A failure before any answer — refused, reset, the attempt's cap —
 //!    fails over too.
+//! 4. [`FarEnd::write`], for a duplex session's HELD far end only: once the attempt's far end has
+//!    answered, each later turn's frame goes into the same connection (`Conns::write`, one message
+//!    per frame), never a second dial; the reads of step 3 go on until its answer ends.
 //!
 //! Deadlines are 1.5.5's: the walk's whole budget is the pool's request timeout, measured from the
 //! unit's start; the first answer is bounded by the member's attempt cap (never beyond what the walk
 //! has left); the whole send by the walk's remaining budget, or the stream ceiling for a streamed
-//! answer.
+//! answer (the plane's stated one, else the deployment's). A plane that states a stream ceiling
+//! also has it stamped as the unit's deadline once the route is known ([`Egress::deadline_ns`]).
 //!
 //! The kernel names no plane here and no plugin: the connection table is the contract's
 //! [`PollConns`], the auth binding the contract's [`OutboundAuth`], and both are handed in by the
@@ -51,7 +55,7 @@ use crate::proxy::egress_unit::{
         Journal, Outcome, Permit, Telemetry, UpstreamStatus,
     },
     walk::budget_secs,
-    Member, Pool, Shed, Step, Taken, Walk, WalkPorts, WeightedFloor,
+    Member, Pool, Shape, Shed, Step, Taken, Walk, WalkPorts, WeightedFloor,
 };
 use busbar_contract::abi::auth::{AuthPoint, AuthPoints, STYLE_NEEDS_HEADERS};
 use busbar_contract::abi::transport::{
@@ -66,10 +70,15 @@ use busbar_contract::redacted::Redacted;
 use busbar_contract::transport::registry::status_ns;
 use busbar_contract::transport::wire::{WireStatus, WireStatusClass};
 
+use super::hooks::{CandidateFacts, Candidates, Constraint};
 use super::route::{FarEnd, FarPiece, OutboundRequest, Pick};
 
 /// The bytes one read of the far end takes.
 const READ_BYTES: usize = 16 * 1024;
+
+/// The longest pause between two offers of a held far end's frame its connection's buffer had no
+/// room for, milliseconds.
+const WRITE_PAUSE_MAX_MS: u64 = 64;
 
 /// 1.5.5's cap on a buffered far-end ERROR body (`limits.upstream_error_body_max_bytes`, default
 /// 256 KiB; v1.5.5 `DEFAULT_UPSTREAM_ERROR_BODY_MAX_BYTES`, config/mod.rs): the default for
@@ -93,6 +102,57 @@ pub struct MemberRoute {
     /// Which of the far end's response head fields cross to the plane: its need's declared keep
     /// rule (THE DESIGN §5, "The response head and trailers": the kernel copies only those).
     pub keep: ResponseKeep,
+    /// EVERY need bound for the member beside [`Self::need`] (ARCHITECT Q-L5B-NEEDS 2026-10-03: one
+    /// binding per (transport, auth)), each with its keep rule: a far request that names one of
+    /// them (`OutboundRequest::need`) opens on it. Empty = the member rides [`Self::need`] alone.
+    pub rides: Vec<(NeedId, ResponseKeep)>,
+    /// The member's trust anchors (the transport pin, ARCHITECT 2026-10-03): the far end's key pin and
+    /// busbar's client identity, sealed into the connector at the egress's composition so every
+    /// connection to the member, the walk's and the plane's own, is held to them. Default = none.
+    pub anchors: busbar_contract::transport::trust::Anchors,
+    /// The base URL a bound need dials, where its transport spells the member's `base_url` in its
+    /// own scheme (a framer composed over the base URL's carrier: the same authority and path, read
+    /// by that framer); a need not listed dials [`Self::base_url`]. Composed by the root, which
+    /// knows the linked transports; the kernel names no scheme.
+    pub spelled: Vec<(NeedId, String)>,
+}
+
+/// The need a far request opens on: its id, its keep rule and the base URL it dials.
+#[derive(Debug, Clone, Copy)]
+pub struct Ride<'a> {
+    /// The need.
+    pub need: NeedId,
+    /// Its response-head rule.
+    pub keep: &'a ResponseKeep,
+    /// The base URL the far request's target is joined onto.
+    pub base_url: &'a str,
+}
+
+impl MemberRoute {
+    /// The need a far request opens on: the one it names (its declared index plus one), else the
+    /// member's own; `None` when it names a need not bound for the member. It dials the base URL
+    /// that need spells ([`Self::spelled`]), else the member's own.
+    #[must_use]
+    pub fn ride(&self, named: u32) -> Option<Ride<'_>> {
+        let (need, keep) = match named.checked_sub(1) {
+            Some(index) if self.need.0 != index => self
+                .rides
+                .iter()
+                .find(|(need, _)| need.0 == index)
+                .map(|(need, keep)| (*need, keep))?,
+            _ => (self.need, &self.keep),
+        };
+        let base_url = self
+            .spelled
+            .iter()
+            .find(|(n, _)| *n == need)
+            .map_or(self.base_url.as_str(), |(_, url)| url.as_str());
+        Some(Ride {
+            need,
+            keep,
+            base_url,
+        })
+    }
 }
 
 /// A NEED'S RESPONSE-HEAD RULE, as its Statement declares it (`Need::keep_mode`,
@@ -163,8 +223,14 @@ pub struct Egress {
     pub pools: HashMap<String, Pool>,
     /// Every member's route.
     pub routes: HashMap<DestinationId, MemberRoute>,
-    /// The ceiling on a streamed answer's whole send, seconds.
+    /// The ceiling on a streamed answer's whole send, seconds: the deployment's, for a plane that
+    /// states none of its own.
     pub stream_ceiling_secs: u64,
+    /// THE PLANE'S STATED STREAM CEILING, seconds (its tail's `stream_ceiling_secs`; ARCHITECT
+    /// ruling 2026-10-07, STREAM-CEILING): a streamed answer's whole send, and the unit's deadline
+    /// ([`Egress::deadline_ns`]). `0` = the plane states none: no unit deadline, and a streamed
+    /// answer's send runs under [`Egress::stream_ceiling_secs`].
+    pub stated_ceiling_secs: u64,
     /// The most bytes of a relayed non-success answer's body the plane is handed (the operator's
     /// `limits.upstream_error_body_max_bytes`, [`DEFAULT_ERROR_BODY_MAX`] unset). What overruns it
     /// is dropped and the answer ends there, as 1.5.5's capped read did: an error envelope is far
@@ -189,6 +255,10 @@ pub struct UnitRoute {
     /// The caller's verified credential, as the identity step read it, for a member configured for
     /// passthrough. Zeroised on drop; never logged, stored or handed to the plane.
     pub caller_credential: Option<Redacted<Vec<u8>>>,
+    /// The unit's operation is performed AT MOST ONCE (the plane's `ROUTE_ONCE`): a member that
+    /// ANSWERED with a failure is not retried on another; its answer reaches the plane as it came.
+    /// A walk still moves on before anything was answered.
+    pub once: bool,
 }
 
 impl Default for UnitRoute {
@@ -201,6 +271,7 @@ impl Default for UnitRoute {
             wants_stream: false,
             leg: 0,
             caller_credential: None,
+            once: false,
         }
     }
 }
@@ -224,20 +295,28 @@ impl Egress {
         }
     }
 
-    /// THE UNIT'S DEADLINE on the dispatcher's clock (`now_ns`): the pool's request timeout, or the
-    /// stream ceiling when the answer streams — the bound 1.5.5 put on the whole exchange. `0` (none)
-    /// only for a pool with no timeout.
+    /// THE UNIT'S DEADLINE on the dispatcher's clock (`now_ns`), read once its route is known
+    /// (ARCHITECT ruling 2026-10-07, STREAM-CEILING): the plane's stated stream ceiling from now,
+    /// for a unit whose answer streams on a plane that states one. It bounds the whole streamed
+    /// answer and a caller that stops reading it alike. `0` (none) otherwise: a plane that states
+    /// no ceiling keeps the previous release's unbounded stream, and a buffered answer is bounded
+    /// by the walk's own budget.
     #[must_use]
     pub fn deadline_ns(&self, route: &UnitRoute, now_ns: u64) -> u64 {
-        let secs = if route.wants_stream {
-            self.stream_ceiling_secs.max(self.budget_secs(&route.pool))
-        } else {
-            self.budget_secs(&route.pool)
-        };
-        if secs == 0 {
+        if !route.wants_stream || self.stated_ceiling_secs == 0 {
             return 0;
         }
-        now_ns.saturating_add(secs.saturating_mul(1_000_000_000))
+        now_ns.saturating_add(self.stated_ceiling_secs.saturating_mul(1_000_000_000))
+    }
+
+    /// The ceiling on a streamed answer's whole send, seconds: the plane's stated one, else the
+    /// deployment's.
+    fn send_ceiling_secs(&self) -> u64 {
+        if self.stated_ceiling_secs == 0 {
+            self.stream_ceiling_secs
+        } else {
+            self.stated_ceiling_secs
+        }
     }
 
     /// One unit's far end, its walk starting now.
@@ -251,8 +330,12 @@ impl Egress {
                 walk,
                 live: None,
                 probe: None,
+                failed: None,
             }),
             probe_of: None,
+            described: None,
+            signals: None,
+            constraint: Mutex::new(None),
         }
     }
 
@@ -282,8 +365,12 @@ impl Egress {
                 walk,
                 live: None,
                 probe: Some(member),
+                failed: None,
             }),
             probe_of: Some(destination),
+            described: None,
+            signals: None,
+            constraint: Mutex::new(None),
         })
     }
 }
@@ -303,6 +390,8 @@ struct Live {
     passthrough: bool,
     /// When the send started, ms.
     anchor_ms: u128,
+    /// The same anchor, in microseconds: the head's latency sample is taken from it.
+    anchor_us: u128,
     /// The far end answered.
     answered: bool,
     /// One unit of lifetime budget was spent on the success.
@@ -315,6 +404,8 @@ struct Live {
     ended: bool,
     /// A relayed non-success answer: how many more of its body's bytes the plane may be handed.
     error_left: Option<usize>,
+    /// The keep rule of the need the attempt opened on.
+    keep: ResponseKeep,
 }
 
 /// One unit's state: the egress unit's walk, the attempt in flight, and a health probe's one
@@ -323,6 +414,9 @@ struct State {
     walk: Walk,
     live: Option<Live>,
     probe: Option<Member>,
+    /// Why the last attempt failed over, in the walk's failover vocabulary (the `routing` stage
+    /// tap's `previous_failure`).
+    failed: Option<&'static str>,
 }
 
 /// ONE UNIT'S FAR END over its [`Egress`].
@@ -332,6 +426,133 @@ pub struct EgressFarEnd<'e> {
     state: Mutex<State>,
     /// The member a health probe is pinned to; `None` for a unit's walk.
     probe_of: Option<DestinationId>,
+    /// What the hooks are shown of each member beyond the walk's own facts, by member name: the
+    /// operator's tags, tier and cost (the plane's section states them).
+    described: Option<Arc<HashMap<String, MemberFacts>>>,
+    /// Each member's live standing as the ranking hooks read it ([`MemberSignals`]).
+    signals: Option<Arc<dyn MemberSignals>>,
+    /// The hooks' constraint on the walk, once the request stage set one.
+    constraint: Mutex<Option<Constraint>>,
+}
+
+/// ONE MEMBER'S LIVE STANDING, as the ranking hooks read it (1.5.5 fed every candidate these from
+/// the lane store, and the ones a deployment declares as catalog signals): its latency signal, its
+/// free concurrency, its remaining lifetime budget, and its breaker state, recent error rate and
+/// p95 latency in the routing pool.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct MemberStanding {
+    /// The latency signal (milliseconds), once a sample is recorded.
+    pub latency_ms: Option<f64>,
+    /// The free concurrency.
+    pub available_concurrency: usize,
+    /// The remaining lifetime request budget; `None` = unlimited.
+    pub budget_remaining: Option<i64>,
+    /// The breaker state in the pool (`closed` | `open` | `half_open`).
+    pub breaker_state: Option<&'static str>,
+    /// The recent error rate in the pool, once an outcome is in its window.
+    pub error_rate: Option<f64>,
+    /// The p95 latency (whole milliseconds), once a sample is held.
+    pub latency_p95_ms: Option<u64>,
+}
+
+/// WHERE A MEMBER'S STANDING IS READ: the composition root's lane store, by the routing pool and
+/// the member's destination.
+pub trait MemberSignals: Send + Sync {
+    /// `destination`'s standing in `pool`.
+    fn standing(&self, pool: &str, destination: DestinationId) -> MemberStanding;
+}
+
+/// What the operator states of one member for the hooks: its tags, its tier and its cost.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct MemberFacts {
+    /// The member's model, as the hooks name it (empty = the member's name).
+    pub model: String,
+    /// The operator's tags.
+    pub tags: Vec<String>,
+    /// The operator's tier.
+    pub tier: Option<String>,
+    /// The operator's cost per million tokens.
+    pub cost_per_mtok: Option<f64>,
+}
+
+impl EgressFarEnd<'_> {
+    /// What the hooks are shown of each member beyond the walk's own facts, by member name.
+    #[must_use]
+    pub fn described(mut self, facts: Arc<HashMap<String, MemberFacts>>) -> Self {
+        self.described = Some(facts);
+        self
+    }
+
+    /// Where each member's live standing is read for the hooks.
+    #[must_use]
+    pub fn signals(mut self, signals: Arc<dyn MemberSignals>) -> Self {
+        self.signals = Some(signals);
+        self
+    }
+
+    fn facts_of(&self, member: &Member) -> Option<&MemberFacts> {
+        self.described.as_ref().and_then(|d| d.get(&member.name))
+    }
+
+    fn tags_of(&self, member: &Member) -> &[String] {
+        self.facts_of(member).map_or(&[], |f| f.tags.as_slice())
+    }
+
+    /// `members` as the hooks' constraint leaves them for one pick: the routed pool's members the
+    /// hooks kept, in their order; a fallback pool's held to their restricts (`Err` = a required
+    /// restrict no member satisfies). The order, as destinations, rides beside.
+    fn constrained(
+        &self,
+        members: Vec<Member>,
+        primary: bool,
+    ) -> Result<(Vec<Member>, Vec<DestinationId>), ()> {
+        let constraint = self
+            .constraint
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        let Some(c) = constraint else {
+            return Ok((members, Vec::new()));
+        };
+        if primary {
+            let kept: Vec<Member> = members
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| c.keep.as_ref().is_none_or(|k| k.contains(i)))
+                .map(|(_, m)| m.clone())
+                .collect();
+            let order: Vec<DestinationId> = c
+                .order
+                .iter()
+                .flatten()
+                .filter_map(|i| members.get(*i))
+                .map(|m| m.destination)
+                .collect();
+            return Ok((kept, order));
+        }
+        let tagged = members
+            .iter()
+            .enumerate()
+            .map(|(i, m)| (i, self.tags_of(m)));
+        let kept = c.enforce(tagged).map_err(|_| ())?;
+        Ok((
+            kept.into_iter()
+                .filter_map(|i| members.get(i).cloned())
+                .collect(),
+            Vec::new(),
+        ))
+    }
+}
+
+/// The walk's picks as the unit's hooks shape them ([`EgressFarEnd::constrained`]).
+impl Shape for EgressFarEnd<'_> {
+    fn shape(
+        &self,
+        members: Vec<Member>,
+        primary: bool,
+    ) -> Option<(Vec<Member>, Vec<DestinationId>)> {
+        self.constrained(members, primary).ok()
+    }
 }
 
 fn exhausted(shed: &Shed) -> Pick {
@@ -340,6 +561,20 @@ fn exhausted(shed: &Shed) -> Pick {
         retry_after: shed
             .retry_after_secs
             .map(|s| u32::try_from(s).unwrap_or(u32::MAX)),
+        detail: shed.detail,
+    }
+}
+
+/// The walk's shed as the unit is answered: a required gate restriction no member satisfies is the
+/// hooks' veto in the shed's words; any other shed is the walk's exhaustion.
+fn shed_pick(shed: &Shed) -> Pick {
+    if shed.gate_rejected {
+        Pick::Vetoed {
+            status: u32::from(shed.status),
+            text: shed.detail.to_string(),
+        }
+    } else {
+        exhausted(shed)
     }
 }
 
@@ -500,9 +735,11 @@ impl EgressFarEnd<'_> {
         };
         let name = member.name.clone();
         let route = self.egress.routes.get(&member.destination);
-        let passthrough = route
-            .and_then(|r| r.auth.as_ref())
-            .is_some_and(|a| a.passthrough);
+        // Through its pool (`upstream_credentials: passthrough`), or by its own binding.
+        let passthrough = member.passthrough
+            || route
+                .and_then(|r| r.auth.as_ref())
+                .is_some_and(|a| a.passthrough);
         let provider = route.map(|r| r.provider.clone()).unwrap_or_default();
         w.live = Some(Live {
             pool: pool.clone(),
@@ -514,11 +751,13 @@ impl EgressFarEnd<'_> {
             degraded,
             passthrough,
             anchor_ms: 0,
+            anchor_us: 0,
             answered: false,
             spent: false,
             delivered: false,
             ended: false,
             error_left: None,
+            keep: ResponseKeep::default(),
         });
         Pick::Member {
             name,
@@ -542,9 +781,12 @@ impl EgressFarEnd<'_> {
                     return self.claim_member(&mut w, String::new(), member, None, None, false, 1);
                 }
             }
-            match w.walk.next(&ports, self.route.affinity, token) {
+            match w
+                .walk
+                .next_shaped(&ports, self.route.affinity, Some(self), token)
+            {
                 Step::Take(taken) => return self.admit_taken(&mut w, taken),
-                Step::Shed(shed) => return exhausted(&shed),
+                Step::Shed(shed) => return shed_pick(&shed),
                 Step::Wait(wait) => wait,
             }
         };
@@ -569,6 +811,7 @@ impl EgressFarEnd<'_> {
     fn no_answer(&self, token: &Pass<Route>, cause: NoAnswer) -> FarPiece {
         let e = self.egress;
         let mut w = self.lock();
+        let mut failed = None;
         if let Some(live) = w.live.as_mut() {
             let now = e.clock.now_secs();
             live.probe = None;
@@ -594,6 +837,10 @@ impl EgressFarEnd<'_> {
                 e.telemetry.upstream_failure(&pool, destination, failure);
                 e.telemetry.failover(&pool, failover);
             }
+            failed = Some(failover);
+        }
+        if failed.is_some() {
+            w.failed = failed;
         }
         self.settle(&mut w);
         fail_over()
@@ -610,12 +857,18 @@ impl EgressFarEnd<'_> {
             .map_or(remaining.max(1), |ms| attempt_cap_ms(ms, remaining))
     }
 
+    /// Whether the live attempt's member relays the caller's own credential.
+    fn live_passthrough(&self) -> bool {
+        self.lock().live.as_ref().is_some_and(|l| l.passthrough)
+    }
+
     /// ONE CALL to the member's auth binding for this attempt's fields (THE DESIGN, section 6).
     async fn auth_fields(
         &self,
         binding: &AuthBinding,
         request: &OutboundRequest,
         url: &str,
+        extensions: Vec<u8>,
     ) -> Option<Vec<AuthField>> {
         let (authority, path_query) = split(url);
         let (path, query) = match path_query.split_once('?') {
@@ -642,11 +895,22 @@ impl EgressFarEnd<'_> {
             } else {
                 Vec::new()
             },
-            caller_credential: if binding.passthrough {
-                self.route.caller_credential.clone()
+            // A passthrough member's one auth call is lent the caller's verified credential; a
+            // caller who presented none lends an empty one, so nothing is presented (never the
+            // operator's own key), as 1.5.5's `present_caller` did.
+            caller_credential: if binding.passthrough || self.live_passthrough() {
+                Some(
+                    self.route
+                        .caller_credential
+                        .clone()
+                        .unwrap_or_else(|| Redacted::new(Vec::new())),
+                )
             } else {
                 None
             },
+            // The per-call scope the plane stated for this attempt (ARCHITECT round 5
+            // Q-L3B-EXCHANGE (B): the caller's down-scope), in the call's extensions blob.
+            extensions,
             ..FieldsRequest::default()
         };
         let answer = match binding.auth.fields_now(binding.handle, &facts) {
@@ -671,6 +935,19 @@ impl EgressFarEnd<'_> {
         let e = self.egress;
         // Busbar is invisible to upstreams; the per-connection mechanics are the connection's own.
         crate::proxy::strip_re_derived(&mut request.fields);
+        // THE PLANE'S PER-CALL SCOPE rides its request as the host's own field
+        // (`abi::auth::SCOPE_REQUEST_FIELD`): taken out here, before anything is encoded, and lent
+        // to the member's auth call in its extensions blob. No wire carries it.
+        let mut scope = None;
+        request.fields.retain(|(name, value)| {
+            if busbar_contract::abi::auth::is_scope_field(name) {
+                scope.get_or_insert_with(|| value.clone());
+                false
+            } else {
+                true
+            }
+        });
+        let extensions = busbar_contract::abi::auth::scope_extensions(scope.as_deref());
         let (destination, record) = {
             let w = self.lock();
             let Some(live) = w.live.as_ref() else {
@@ -681,6 +958,16 @@ impl EgressFarEnd<'_> {
         let Some(route) = e.routes.get(&destination).cloned() else {
             return false;
         };
+        // THE NEED IT RIDES: the one the far request names, bound for the member; a need the member
+        // has no binding for is no destination's fault, and nothing is recorded or dialled.
+        let Some((need, keep, base_url)) = route
+            .ride(request.need)
+            .map(|r| (r.need, r.keep.clone(), r.base_url.to_string()))
+        else {
+            let mut w = self.lock();
+            self.settle(&mut w);
+            return false;
+        };
         // THE TARGET IS A PATH. Joined onto the operator's base_url, anything else could move the
         // authority (`@evil.test/x` makes `api.host@evil.test`) and carry the member's auth fields
         // to a host nobody configured: refused before the record, the auth call or the dial, and
@@ -689,8 +976,16 @@ impl EgressFarEnd<'_> {
         // abandon. A probe moves no money and dispatches nothing a recovery would settle: it
         // writes no record.
         let path = request.target.starts_with(b"/");
-        let unrecorded = path && self.probe_of.is_none() && e.journal.dispatched(&record).is_err();
-        if !path || unrecorded {
+        // A plane field whose name is not an RFC 9110 token is refused the same way: a `:` in a name
+        // (`authorization:x`) is re-read as another field when the framer renders and parses its
+        // head again, which steps around the same-name auth replacement below (whole names).
+        let named = request
+            .fields
+            .iter()
+            .all(|(n, _)| busbar_contract::header::is_header_name_token(n));
+        let unrecorded =
+            path && named && self.probe_of.is_none() && e.journal.dispatched(&record).is_err();
+        if !path || !named || unrecorded {
             let mut w = self.lock();
             if let Some(live) = w.live.as_mut() {
                 live.answered = true;
@@ -705,11 +1000,11 @@ impl EgressFarEnd<'_> {
             }
             return false;
         }
-        let url = join(&route.base_url, &request.target);
+        let url = join(&base_url, &request.target);
         // 2. The one auth call; its fields lead the head (1.5.5's order).
         let mut auth = Vec::new();
         if let Some(binding) = &route.auth {
-            match self.auth_fields(binding, &request, &url).await {
+            match self.auth_fields(binding, &request, &url, extensions).await {
                 Some(fields) => auth = fields,
                 None => {
                     // Not the destination's fault: nothing recorded against it; the next member.
@@ -748,43 +1043,101 @@ impl EgressFarEnd<'_> {
             .map(|(n, v)| (n.as_str(), v.as_slice()))
             .collect();
         let cap_ms = self.attempt_cap();
-        let pool = {
+        let (pool, degraded) = {
             let w = self.lock();
-            w.live
-                .as_ref()
-                .map(|l| Self::metric_pool(&l.pool, &l.member).to_string())
-                .unwrap_or_default()
+            w.live.as_ref().map_or((String::new(), false), |l| {
+                (
+                    Self::metric_pool(&l.pool, &l.member).to_string(),
+                    l.degraded,
+                )
+            })
         };
-        if self.probe_of.is_none() {
+        // A terminal's dispatch (a spill, the least-bad bypass, a queued slot) is not one of the
+        // walk's attempts: 1.5.5's degraded forward counted none (`busbar_upstream_attempts_total`).
+        if self.probe_of.is_none() && !degraded {
             e.telemetry.upstream_attempt(&pool, destination);
         }
         // 3. The connector: the judged, pinned dial and the framer's encode.
         let opened = e.conns.open(
             e.caller,
-            route.need,
+            need,
             &OpenDesc {
                 target: &url,
                 fields: &borrowed,
-                body: &request.body,
+                // A TEXT message rides no opening: the connection opens bare and the message is
+                // written to it as text once open (the opening carries no text bit).
+                body: if request.text { &[] } else { &request.body },
                 timeout_ms: cap_ms,
                 method: &request.verb,
                 head_target: path.as_bytes(),
                 within: &[],
+                // The registration the member route reaches: what the host sealed for it alone
+                // (its private reach) applies to this dial.
+                member: &route.provider,
             },
         );
         let now_ms = e.clock.now_millis();
+        let now_us = e.clock.now_micros();
         match opened {
             Ok(conn) => {
-                let mut w = self.lock();
-                if let Some(live) = w.live.as_mut() {
-                    live.conn = Some(conn);
-                    live.anchor_ms = now_ms;
+                {
+                    let mut w = self.lock();
+                    if let Some(live) = w.live.as_mut() {
+                        live.keep = keep;
+                        live.conn = Some(conn);
+                        live.anchor_ms = now_ms;
+                        live.anchor_us = now_us;
+                    }
+                }
+                if request.text && !request.body.is_empty() {
+                    return self.write_to(conn, &request.body, true).await;
                 }
                 true
             }
             Err(err) => {
                 let _ = self.no_answer(token, NoAnswer::of(err));
                 false
+            }
+        }
+    }
+
+    /// A HELD FAR END's next frame: `body`, as one message, into the live attempt's connection,
+    /// once its far end has answered and while its answer has not ended. The connection's own
+    /// buffer takes it; while it is full the write waits a short, growing pause and offers the rest
+    /// again (the table's write registers no waker), bounded by the session's own waits.
+    async fn write_frame(&self, body: Vec<u8>, text: bool) -> bool {
+        let conn = {
+            let w = self.lock();
+            match w.live.as_ref() {
+                Some(live) if live.answered && !live.ended => live.conn,
+                _ => None,
+            }
+        };
+        let Some(conn) = conn else {
+            return false;
+        };
+        self.write_to(conn, &body, text).await
+    }
+
+    /// Write `body` whole to `conn` as one message (`text` = a text message), pausing on a full
+    /// buffer.
+    async fn write_to(&self, conn: ConnId, body: &[u8], text: bool) -> bool {
+        let e = self.egress;
+        let (mut at, mut pause_ms) = (0, 1);
+        loop {
+            match e.conns.write(e.caller, conn, &body[at..], true, text) {
+                Ok(n) => {
+                    at += n;
+                    if at >= body.len() {
+                        return true;
+                    }
+                    pause_ms = 1;
+                }
+                Err(ConnError::Pending) => {
+                    tokio::time::sleep(Duration::from_millis(pause_ms)).await;
+                    pause_ms = (pause_ms * 2).min(WRITE_PAUSE_MAX_MS);
+                }
+                Err(_) => return false,
             }
         }
     }
@@ -802,14 +1155,17 @@ impl EgressFarEnd<'_> {
             let now = e.clock.now_millis();
             let remaining = w.walk.ctx().remaining_ms(now);
             let wait = if live.answered {
-                // The whole send: the walk's budget, or the stream ceiling, from the anchor.
-                let budget = if self.route.wants_stream {
-                    e.stream_ceiling_secs.max(1).saturating_mul(1000)
+                // The whole send: the stream ceiling from the anchor, or what is left of the walk's
+                // budget, which is already measured from the unit's start (subtracting the time
+                // since the anchor again cut a buffered answer at half its budget).
+                if self.route.wants_stream {
+                    let ceiling = e.send_ceiling_secs().max(1).saturating_mul(1000);
+                    let spent =
+                        u64::try_from(now.saturating_sub(live.anchor_ms)).unwrap_or(u64::MAX);
+                    ceiling.saturating_sub(spent)
                 } else {
                     remaining.max(1)
-                };
-                let spent = u64::try_from(now.saturating_sub(live.anchor_ms)).unwrap_or(u64::MAX);
-                budget.saturating_sub(spent)
+                }
             } else {
                 live.member
                     .attempt_timeout_ms
@@ -872,11 +1228,7 @@ impl EgressFarEnd<'_> {
         use busbar_contract::abi::transport::fields::lines;
         let keep = {
             let w = self.lock();
-            w.live
-                .as_ref()
-                .and_then(|l| self.egress.routes.get(&l.member.destination))
-                .map(|r| r.keep.clone())
-                .unwrap_or_default()
+            w.live.as_ref().map(|l| l.keep.clone()).unwrap_or_default()
         };
         let nominated: Vec<&[u8]> = lines(block)
             .filter(|(n, _)| n.eq_ignore_ascii_case(b"connection"))
@@ -1017,6 +1369,12 @@ impl EgressFarEnd<'_> {
             live.probe = None;
             live.spent = e.breaker.spend_budget(destination);
             live.delivered = self.route.wants_stream && !bytes.is_empty();
+            // In fractional milliseconds, as 1.5.5 measured it (`elapsed().as_secs_f64() * 1000`):
+            // a sub-millisecond head is a sample, not the EWMA's "none".
+            let head_us = e.clock.now_micros().saturating_sub(live.anchor_us);
+            #[allow(clippy::cast_precision_loss)]
+            e.telemetry
+                .upstream_latency(destination, head_us as f64 / 1000.0);
             return FarPiece {
                 bytes,
                 status: far_status,
@@ -1024,6 +1382,7 @@ impl EgressFarEnd<'_> {
                 fail_over: false,
                 fields: false,
                 head: Vec::new(),
+                relayed: live.degraded,
             };
         }
         let classified = e.breaker.classify(destination, status);
@@ -1046,15 +1405,17 @@ impl EgressFarEnd<'_> {
             live.probe = None;
         }
         // The caller's own fault is not the destination's, a hard-down is the plane's to render
-        // (its verdict: an auth failure ends the unit, a billing one retries), and a degraded
-        // dispatch relays the upstream's answer: each reaches the plane as it came.
+        // (its verdict: an auth failure ends the unit, a billing one retries), a degraded dispatch
+        // relays the upstream's answer, and an operation performed at most once is not repeated on
+        // another member once one answered: each reaches the plane as it came.
         let client_fault = matches!(classified.disposition, Disposition::ClientFault);
-        if client_fault || hard || live.degraded {
+        if client_fault || hard || live.degraded || self.route.once {
             if !client_fault && !callers_key {
                 e.telemetry
                     .upstream_failure(&pool, destination, classified.label);
             }
             live.error_left = Some(e.error_body_max);
+            let relayed = live.degraded;
             let piece = cap(
                 live,
                 FarPiece {
@@ -1064,6 +1425,7 @@ impl EgressFarEnd<'_> {
                     fail_over: false,
                     fields: false,
                     head: Vec::new(),
+                    relayed,
                 },
             );
             if piece.last {
@@ -1080,6 +1442,7 @@ impl EgressFarEnd<'_> {
             let (pool, failed) = (live.pool.clone(), live.member.clone());
             w.walk.refused_for_size(&e.ports(), &pool, &failed);
         }
+        w.failed = Some(classified.label);
         self.settle(&mut w);
         fail_over()
     }
@@ -1095,6 +1458,10 @@ impl Drop for EgressFarEnd<'_> {
 }
 
 impl FarEnd for EgressFarEnd<'_> {
+    fn deadline_ns(&self, now_ns: u64) -> u64 {
+        self.egress.deadline_ns(&self.route, now_ns)
+    }
+
     fn member<'a>(
         &'a self,
         token: &'a Pass<Route>,
@@ -1116,6 +1483,86 @@ impl FarEnd for EgressFarEnd<'_> {
         token: &'a Pass<Route>,
     ) -> impl Future<Output = Option<FarPiece>> + Send + 'a {
         self.next_piece(token)
+    }
+
+    fn candidates(&self, _token: &Pass<Route>) -> Option<Candidates> {
+        let pool = self.egress.pools.get(&self.route.pool)?;
+        let members = pool.admissible_members();
+        Some(Candidates {
+            pool: pool.name.clone(),
+            members: members
+                .iter()
+                .enumerate()
+                .map(|(idx, m)| {
+                    let facts = self.facts_of(m);
+                    let standing = self
+                        .signals
+                        .as_ref()
+                        .map(|s| s.standing(&pool.name, m.destination))
+                        .unwrap_or_default();
+                    CandidateFacts {
+                        idx,
+                        model: facts
+                            .filter(|f| !f.model.is_empty())
+                            .map_or_else(|| m.name.clone(), |f| f.model.clone()),
+                        provider: self
+                            .egress
+                            .routes
+                            .get(&m.destination)
+                            .map(|r| r.provider.clone())
+                            .unwrap_or_default(),
+                        weight: m.weight,
+                        context_max: m.context_max.and_then(|c| usize::try_from(c).ok()),
+                        tier: facts.and_then(|f| f.tier.clone()),
+                        cost_per_mtok: facts.and_then(|f| f.cost_per_mtok),
+                        tags: facts.map(|f| f.tags.clone()).unwrap_or_default(),
+                        latency_ms: standing.latency_ms,
+                        available_concurrency: standing.available_concurrency,
+                        budget_remaining: standing.budget_remaining,
+                        breaker_state: standing.breaker_state,
+                        error_rate: standing.error_rate,
+                        latency_p95_ms: standing.latency_p95_ms,
+                    }
+                })
+                .collect(),
+        })
+    }
+
+    fn remaining(&self, _token: &Pass<Route>) -> Option<usize> {
+        let w = self.lock();
+        let Some((name, primary)) = w.walk.walking() else {
+            return Some(0);
+        };
+        let pool = self.egress.pools.get(name)?;
+        let members = self
+            .constrained(pool.admissible_members().into_owned(), primary)
+            .map(|(members, _)| members)
+            .unwrap_or_default();
+        Some(
+            members
+                .iter()
+                .filter(|m| !w.walk.ctx().is_excluded(m.destination))
+                .count(),
+        )
+    }
+
+    fn failure(&self, _token: &Pass<Route>) -> Option<&'static str> {
+        self.lock().failed
+    }
+
+    fn constrain(&self, _token: &Pass<Route>, constraint: Constraint) {
+        *self
+            .constraint
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(constraint);
+    }
+
+    fn write<'a>(
+        &'a self,
+        _token: &'a Pass<Route>,
+        request: OutboundRequest,
+    ) -> impl Future<Output = bool> + Send + 'a {
+        self.write_frame(request.body, request.text)
     }
 }
 

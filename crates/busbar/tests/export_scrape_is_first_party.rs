@@ -39,25 +39,29 @@ use std::time::{Duration, Instant};
 const THIRD_PARTY: &str = "tp-metrics";
 
 /// The in-tree `cdylib` that loads as an export sink carrying exactly the `metrics` stream, in the
-/// target directory this test binary lives in (uplifted or under `deps`, newest first). Under CI a
-/// missing artifact is a failure, never a skip.
-fn metrics_sink_cdylib() -> Option<Vec<u8>> {
-    let found = common::plugins::metrics_sink_cdylib();
-    assert!(
-        found.is_some() || std::env::var_os("CI").is_none(),
-        "no in-tree metrics-stream export cdylib is built under CI; refusing to skip #65's control"
-    );
-    found
+/// target directory this test binary lives in (uplifted or under `deps`, newest first). A missing
+/// artifact is a failure in every run, never a skip of #65's control.
+fn metrics_sink_cdylib() -> Vec<u8> {
+    common::plugins::metrics_sink_cdylib().unwrap_or_else(|| {
+        common::plugins::missing("metrics-stream export sink", common::plugins::BUILD_PINNED)
+    })
 }
 
 fn fixture_dir(tag: &str) -> PathBuf {
     let d = std::env::temp_dir().join(format!(
         "busbar-scrape-first-party-{tag}-{}-{}",
         std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
+        {
+            static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            format!(
+                "{}-{}-{}",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |d| d.as_nanos()),
+                line!(),
+                NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            )
+        }
     ));
     std::fs::create_dir_all(d.join("plugins")).unwrap();
     d
@@ -98,6 +102,7 @@ fn write_configs(dir: &Path, data_port: u16, first_party: bool, third_party: boo
 admin_listen: "127.0.0.1:{admin_port}"
 advanced:
   allow_destinations: ["127.0.0.1"]
+store: {{module: memory}}
 admin_require_mtls: false
 auth:
   chain: []
@@ -221,10 +226,7 @@ fn post_messages(port: u16) {
 
 #[test]
 fn a_third_party_metrics_sink_never_serves_metrics() {
-    let Some(lib) = metrics_sink_cdylib() else {
-        eprintln!("skip: no in-tree metrics-stream export cdylib is built (run under --workspace)");
-        return;
-    };
+    let lib = metrics_sink_cdylib();
 
     // 1. The third party ALONE, subscribed to `metrics`: no `/metrics`, as 1.5.5 without a
     //    `module: prometheus` instance.
@@ -275,7 +277,7 @@ fn kind_rank(kind: &str) -> u8 {
 /// DERIVATION, not a captured guess (a single 1.5.5 capture cannot pin this: within a kind the
 /// order is hash-map order and "varies between runs"). Both v1.5.5
 /// (`v1.5.5:crates/busbar/src/metrics.rs`, `render()` at line 691 calling `h.render()`) and this
-/// binary (`busbar_kernel::metrics::render()`) hand the SAME `metrics-exporter-prometheus` v0.18.3
+/// binary (`busbar_kernel::snapshot::render()`) hand the SAME `metrics-exporter-prometheus` v0.18.3
 /// recorder's `render_to_write` the whole exposition: that function drains its counters map
 /// whole, then its gauges map whole, then its distributions (histogram + summary) map whole —
 /// three sequential, unconditional passes, in that fixed order, in every release either binary

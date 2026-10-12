@@ -31,6 +31,12 @@ pub struct Member {
     /// before decommissioning it, so no path may select it — not the weighted walk, not a ranked
     /// preference, and not the sticky fast path.
     pub weight: u32,
+    /// Its TIER (the core-owned per-member `tier` key, `BUSBAR-1.6.0.md` l.4196 (b), l.4202, R2-G
+    /// l.4285): the pick takes the lowest tier among the members that could take the request, and
+    /// the weighted order turns only among those; a higher tier is reached only when every lower
+    /// one is unhealthy, drained or already tried. Every member of a pool that states no tier is at
+    /// `0`, so the weighted order is the pool's whole order.
+    pub tier: u32,
     /// The member's own cap on time to response headers, overriding the destination's.
     pub attempt_timeout_ms: Option<u64>,
     /// The largest request this member accepts, where it declares one. The walk reads it only to
@@ -38,6 +44,10 @@ pub struct Member {
     pub context_max: Option<u64>,
     /// The lane this member is priced on, as the trust unit sealed it.
     pub lane: Option<busbar_contract::LaneId>,
+    /// Through this pool the member is reached with the caller's own credential (the pool's
+    /// `upstream_credentials: passthrough`): its auth call is lent the caller's verified
+    /// credential, and nothing else is presented when the caller presented none.
+    pub passthrough: bool,
 }
 
 impl Member {
@@ -48,9 +58,11 @@ impl Member {
             destination,
             name: name.into(),
             weight,
+            tier: 0,
             attempt_timeout_ms: None,
             context_max: None,
             lane: None,
+            passthrough: false,
         }
     }
 }

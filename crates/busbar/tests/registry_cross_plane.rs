@@ -1,0 +1,1131 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
+//! THE PLANE-KIND SEAM, proven the way the protocol registry proves itself: by folding a
+//! declaration core has never heard of through the SAME functions production folds the built-ins
+//! through, and showing the difference reaches a production refusal.
+//!
+//! Relocated here from `src/plane/tests/registry_tests.rs` (the A6/HostCtx dev-dependency-cycle
+//! cleanup): `builtin_plane_decls()` below is the local analogue of the old
+//! `TEST_BUILTIN_PLANE_DECLS` — the REAL linked planes' registry rows, which only type-check (as
+//! `&'static busbar_kernel::plane::registry::PlaneDecl`) with ONE `busbar_kernel` in the graph. The
+//! planes come from the test-linked table (`tests/linked/mod.rs`; K3, architect ruling N02): this
+//! file names no plane crate and spells no plane key — it addresses a plane by what it declares
+//! (the section it owns, the fallback flag), and each plane pins its own literal identity in its own
+//! crate. The runtime objects `build_dispatch` folds are built CONFIG-DRIVEN, through the kernel's
+//! own `deploy_from_yaml_str` → `resolve` → each plane's `build` hook, exactly as `appbuild` does. `busbar_kernel::plane::registry::builtin_plane_decls()` itself
+//! is now UNCONDITIONALLY the empty production set (its old `#[cfg(test)]` branch, which returned
+//! this exact array, is gone) — see that fn's doc for the full rationale. A handful of `pub(crate)`
+//! fns this file drives directly (`config_sections_from`, `fallback_key`, `plane_keys`, `plane_decl`,
+//! `wire_formats`, `boot::run_start_hooks`, `boot::run_hydrate_hooks`) were widened to `pub` for
+//! exactly this move — the internal-only `busbar-kernel` crate (`publish = false`) pays that cost so
+//! these tests keep driving the REAL functions, not a shim.
+//!
+//! These tests drive [`merged_boot_plane_decls`] and [`config_sections_from`] directly rather than
+//! the process `OnceLock`, for the reason the protocol registry's own tests give: a process
+//! singleton can be initialised once per test binary, which would leave the fold's order and skip
+//! rules provable only by booting binaries.
+
+mod linked;
+
+use busbar_kernel::config::{deploy_from_yaml_str, resolve, RootCfg};
+use busbar_kernel::plane::config::{config_sections_from, refuse_cross_plane_reference};
+use busbar_kernel::plane::registry::{
+    build_dispatch, install_planes, merged_boot_plane_decls, plane_decl_for, BuildCtx, PlaneDecl,
+    PlaneDeclaration,
+};
+use std::any::Any;
+use std::collections::{BTreeMap, HashMap};
+use std::sync::Arc;
+
+/// THE LINKED PROCESS PLANE LIST for this integration target — the local analogue of the removed
+/// `TEST_BUILTIN_PLANE_DECLS`: every test-linked plane's registry row, in the registry's canonical
+/// order.
+fn builtin_plane_decls() -> &'static [&'static PlaneDecl] {
+    linked::planes()
+}
+
+/// Register the linked roster in the PROCESS registry (idempotent, first-wins) — for the tests below
+/// that resolve through `plane_decl_for`/`scope_kind_index` (the process `plane_decls()` fold).
+fn register_planes() {
+    linked::install();
+}
+
+/// The canonical plane order, spelled by the sections each plane declares (never by key): the
+/// fallback plane's `pools:`, then the `tools:` plane, then the `agents:` plane.
+fn canonical_keys() -> Vec<&'static str> {
+    ["pools", "tools", "agents"]
+        .iter()
+        .map(|s| linked::owning(s).key)
+        .collect()
+}
+
+/// A PLANE BUSBAR DOES NOT HAVE. Nothing in core names it, nothing in core has an enum variant for
+/// it, and no `match` anywhere has an arm for it — which is precisely the property under test.
+/// Stands in for the `busbar-plane-a2a` crate's own `PLANE_DECL`.
+static WIDGET_PLANE: PlaneDecl = PlaneDecl {
+    declaration: PlaneDeclaration {
+        key: "widget",
+        fallback: false,
+        config_section: "widgets",
+        scope_kinds: &["widget"],
+        subject_noun: "fronted widget",
+        admin_noun: "fronted-widget",
+        audit_kind: "widget_thing",
+        card_signing_domain: None,
+        card_kid_prefix: None,
+        owned_config_sections: &[],
+        billable_classes: &[],
+        fee_units: &[],
+        metric_families: &[],
+        record_kinds: &[],
+        required_config_sections: &[],
+        trust_keys: &[],
+        caller_credential_refusal: None,
+        served_op_classes: &[],
+    },
+    wire_format_names: || &["widgetrpc"],
+    claims: |_| Vec::new(),
+    admission: |_| None,
+    build: |_| None,
+    routes: None,
+    admin_routes: None,
+    openapi: None,
+    hydrate: None,
+    start: None,
+    config_validate: None,
+    named_def_list: None,
+    named_def_get: None,
+    registry_contains: None,
+    reresolve_gates: None,
+    openapi_schemas: None,
+    on_swap: None,
+    parse_section: None,
+    parse_endpoint: None,
+    lower_endpoint: None,
+    build_runtime: None,
+    viewer: None,
+    retain_verify_gates: None,
+    default_section: None,
+    resolve_provider: None,
+};
+
+fn installed() -> Vec<&'static PlaneDecl> {
+    merged_boot_plane_decls(&[&WIDGET_PLANE], builtin_plane_decls())
+}
+
+/// THE HEADLINE BEHAVIOUR. A plane registered from OUTSIDE core changes what a production config
+/// refusal says — `widgets.foo` in a `hooks:` list is refused as a CROSS-PLANE reach, naming the
+/// section, with nothing written for `widget` anywhere in this crate.
+///
+/// Watched RED before the seam existed: with the built-ins alone the same reference is refused as
+/// `NotBare` (a dotted name naming no section busbar knows), which is a different sentence telling
+/// the operator to do a different thing.
+#[test]
+fn an_installed_plane_reaches_the_cross_plane_refusal() {
+    let sections = config_sections_from(&installed());
+
+    let refusal = refuse_cross_plane_reference("widgets.reporter", "widgets.audit", &sections)
+        .expect_err("a reach onto a registered plane's section is refused");
+    assert!(
+        refusal.contains("reaches onto the `widgets:` plane"),
+        "the refusal must name the registered plane's own section: {refusal}"
+    );
+    assert!(
+        refusal.contains("Did you mean the hook `audit`?"),
+        "and must offer the bare name the operator probably meant: {refusal}"
+    );
+
+    // THE CONTROL: without the registration, core has no idea `widgets:` is a plane, and the same
+    // reference gets the generic not-a-bare-name sentence instead. This is what the seam changed.
+    let builtin_only = config_sections_from(builtin_plane_decls());
+    let refusal = refuse_cross_plane_reference("widgets.reporter", "widgets.audit", &builtin_only)
+        .expect_err("still refused, but for a different reason");
+    assert!(
+        !refusal.contains("reaches onto"),
+        "unregistered: must NOT be diagnosed as a cross-plane reach: {refusal}"
+    );
+    assert!(
+        refusal.contains("is not a bare name"),
+        "unregistered: the generic diagnosis: {refusal}"
+    );
+}
+
+/// CANONICAL LAYERING ORDER, INSTALL-SOURCE-INDEPENDENT, and the built-ins' own operator-visible
+/// order is BYTE-IDENTICAL either side of the fold — the hard property the protocol control earned,
+/// restated on the plane axis. The fold normalises to the canonical layering order DERIVED FROM THE
+/// REGISTRATION DATA (`canonical_key_order`), so the three canonical planes keep their layering order
+/// regardless of whether a plane arrived built-in or installed; a plane outside that list (`widget`)
+/// sorts stably to the tail rather than jumping ahead.
+#[test]
+fn installed_planes_fold_ahead_and_the_builtin_order_is_unchanged() {
+    let keys: Vec<&str> = installed().iter().map(|d| d.key).collect();
+    let mut want = canonical_keys();
+    want.push("widget");
+    assert_eq!(keys, want);
+
+    let builtin_keys: Vec<&str> = builtin_plane_decls().iter().map(|d| d.key).collect();
+    assert_eq!(
+        builtin_keys,
+        canonical_keys(),
+        "the layering order Plane::ALL has always reported"
+    );
+    assert_eq!(
+        &keys[..3],
+        builtin_keys.as_slice(),
+        "the canonical three keep their order at the head; an unknown installed plane goes to the tail"
+    );
+
+    // The same property where it is actually operator-visible: the config-section list.
+    let sections = config_sections_from(&installed());
+    assert_eq!(
+        &sections[..3],
+        &["pools", "tools", "agents"],
+        "the plane sections keep their canonical layering order at the head"
+    );
+    assert_eq!(
+        sections[3], "widgets",
+        "an unknown installed plane's section sorts into its canonical (tail) plane slot, \
+         after the three built-in planes and before the non-plane sections"
+    );
+    let mut without_widgets = sections.clone();
+    without_widgets.retain(|s| *s != "widgets");
+    assert_eq!(
+        config_sections_from(builtin_plane_decls()),
+        without_widgets,
+        "removing the installed plane leaves the built-in grammar byte-identical"
+    );
+}
+
+/// A SAME-KEY RE-REGISTRATION IS SKIPPED, not asserted on — the `test-support` shape, where a build
+/// compiles an extracted plane back in as a built-in while the composition root still installs the
+/// crate's own copy. The FIRST (installed) copy wins and the list does not grow.
+#[test]
+fn a_same_key_registration_is_skipped_and_the_first_copy_wins() {
+    // A second, INSTALLED copy of the `agents:` plane's row: the same declared facts under the same
+    // key, but its own static (so pointer identity tells the two copies apart).
+    let agents = linked::owning("agents");
+    let from_the_crate: &'static PlaneDecl = Box::leak(Box::new(PlaneDecl {
+        declaration: agents.declaration,
+        ..WIDGET_PLANE
+    }));
+
+    let folded = merged_boot_plane_decls(&[from_the_crate], builtin_plane_decls());
+    let keys: Vec<&str> = folded.iter().map(|d| d.key).collect();
+    assert_eq!(
+        keys,
+        canonical_keys(),
+        "one entry per key: the built-in `agents:` row is skipped, not duplicated — and the \
+         survivors are normalised to canonical layering order"
+    );
+    // The entry lands in its CANONICAL slot (not the head), and it is the INSTALLED copy that
+    // survived the dedup, not the built-in one.
+    let entry = folded
+        .iter()
+        .find(|d| d.key == agents.key)
+        .expect("the folded set has the `agents:` plane's entry");
+    assert!(
+        std::ptr::eq(*entry, from_the_crate),
+        "the installed copy is the one that survives"
+    );
+    // And the grammar does not gain a duplicate section from the doubled registration.
+    let sections = config_sections_from(&folded);
+    assert_eq!(
+        sections.iter().filter(|s| **s == "agents").count(),
+        1,
+        "`agents:` appears once: {sections:?}"
+    );
+}
+
+/// ONE SOURCE PER FACT. Every built-in plane KEY resolves to a decl, and what the plane surface
+/// answers for that key is exactly what the decl says. This pins the direction after the enum was
+/// dissolved: the by-key indirection reads its declaration rather than restating any fact.
+///
+/// Unlike the original in-crate version, this drives `plane_decl_for` directly over the
+/// EXPLICITLY-REGISTERED process set (`register_planes()`) rather than the process registry's
+/// `#[cfg(test)]` built-ins (which no longer exist) — same assertion, explicit registration instead
+/// of ambient seeding.
+///
+/// Checked field-by-field (a registry row is ASSEMBLED kernel-side from a plane's contract
+/// declaration and its hooks, so the property under test is that the by-key indirection reads the
+/// SAME declared facts). The literal values each plane publishes (`mcp_server`, `fronted agent`, …)
+/// are pinned by the plane that declares them, in its own crate.
+#[test]
+fn every_plane_key_answers_from_its_declaration() {
+    register_planes();
+    for decl in builtin_plane_decls() {
+        let resolved = plane_decl_for(decl.key).expect("every built-in key resolves to a decl");
+        assert_eq!(resolved.key, decl.key);
+        assert_eq!(resolved.config_section, decl.config_section);
+        assert_eq!(resolved.scope_kinds, decl.scope_kinds);
+        assert_eq!(resolved.audit_kind, decl.audit_kind);
+        assert_eq!(resolved.subject_noun, decl.subject_noun);
+        assert_eq!(
+            busbar_kernel::plane::wire_format_names(decl.key),
+            (decl.wire_format_names)()
+        );
+    }
+    // The by-key surfaces answer exactly what each linked plane declares — the operator-visible
+    // strings that metrics, audit records and grants are keyed by.
+    assert_eq!(busbar_kernel::plane::fallback_key(), linked::fallback().key);
+    for decl in builtin_plane_decls() {
+        let by_key = busbar_kernel::plane::plane_decl(decl.key);
+        assert_eq!(by_key.audit_kind, decl.audit_kind);
+        assert_eq!(by_key.subject_noun, decl.subject_noun);
+        assert_eq!(by_key.scope_kinds, decl.scope_kinds);
+    }
+}
+
+/// THE LLM PLANE'S WIRE-FORMAT LIST IS STILL READ OFF THE LIVE PROTOCOL REGISTRY, through the decl's
+/// function pointer. This is the join between the two registries, and it is what keeps the
+/// superset-IR rule a RULE: a seventh dialect moves this list with nothing edited on the plane axis.
+#[test]
+fn the_fallback_decl_reads_the_protocol_registry() {
+    linked::install();
+    assert_eq!(
+        busbar_kernel::plane::wire_format_names(busbar_kernel::plane::fallback_key()),
+        busbar_kernel::proto::known_protocols(),
+        "the fallback plane's dialects are the registered protocols, not a literal"
+    );
+    assert!(
+        busbar_kernel::plane::wire_formats(busbar_kernel::plane::fallback_key()) > 1,
+        "and the superset-IR threshold is computed from that list"
+    );
+}
+
+/// NO TWO PLANES MAY SHARE A SCOPE KIND OR AN AUDIT KIND — the collision rule the enum's docs state,
+/// now enforced over the FOLDED list rather than the three hardcoded variants. A registered plane
+/// that claimed `agent` as a scope kind would have its grants admit A2A traffic; that is a boot-time
+/// refusal's job, and this pins the property the refusal would defend.
+#[test]
+fn a_registered_plane_cannot_collide_with_a_builtin_vocabulary() {
+    let folded = installed();
+    let mut scope_kinds: Vec<&str> = folded
+        .iter()
+        .flat_map(|d| d.scope_kinds.iter().copied())
+        .collect();
+    let before = scope_kinds.len();
+    scope_kinds.sort_unstable();
+    scope_kinds.dedup();
+    assert_eq!(
+        before,
+        scope_kinds.len(),
+        "scope kinds collide: {scope_kinds:?}"
+    );
+
+    let mut audit_kinds: Vec<&str> = folded.iter().map(|d| d.audit_kind).collect();
+    let before = audit_kinds.len();
+    audit_kinds.sort_unstable();
+    audit_kinds.dedup();
+    assert_eq!(
+        before,
+        audit_kinds.len(),
+        "audit kinds collide: {audit_kinds:?}"
+    );
+
+    let mut sections: Vec<&str> = folded.iter().map(|d| d.config_section).collect();
+    let before = sections.len();
+    sections.sort_unstable();
+    sections.dedup();
+    assert_eq!(
+        before,
+        sections.len(),
+        "config sections collide: {sections:?}"
+    );
+}
+
+/// **THE SCOPE-KIND CODEC ROUND-TRIPS, so encode and decode cannot skew.** `scope_kind_at` (decode)
+/// and `scope_kind_index` (encode) each apply the base-first, first-seen dedup independently; if they
+/// ever disagreed a `pool` grant could resolve an `mcp_server` target (the entitlement escalation the
+/// dedup exists to prevent). This pins `scope_kind_at(scope_kind_index(k)) == k` over the FULL builtin
+/// kind set — the neutral base plus every registered plane's declared kinds — so any future encoder
+/// that routes through `scope_kind_index` is proven to invert the decoder here.
+#[test]
+fn the_scope_kind_index_is_the_exact_inverse_of_scope_kind_at() {
+    register_planes();
+    use busbar_kernel::plane::registry::{scope_kind_at, scope_kind_index};
+    // The neutral base kind plus every kind any registered plane declares — the full vocabulary the
+    // two functions share. Iterating this (rather than a literal list) means a plane adding a kind
+    // is covered with no edit here.
+    let kinds: Vec<&'static str> = std::iter::once("pool")
+        .chain(
+            builtin_plane_decls()
+                .iter()
+                .flat_map(|d| d.scope_kinds.iter().copied()),
+        )
+        .collect();
+    assert!(kinds.len() > 1, "the builtin kind set must be non-trivial");
+    for k in kinds {
+        let idx = scope_kind_index(k)
+            .unwrap_or_else(|| panic!("'{k}' is a declared kind but has no index"));
+        assert_eq!(
+            scope_kind_at(idx),
+            Some(k),
+            "encode/decode skew: index {idx} for '{k}' does not decode back to it"
+        );
+    }
+    // A kind no plane declares is fail-closed on the encode side, matching `scope_kind_at`'s
+    // out-of-range `None` on the decode side.
+    assert_eq!(
+        scope_kind_index("no-plane-declares-this"),
+        None,
+        "an undeclared kind must have no index (fail-closed)"
+    );
+}
+
+/// INSTALL BEFORE FIRST READ, enforced. The module header states the invariant: a declaration
+/// installed after another layer resolved against the smaller (built-ins-only) set would mean two
+/// layers of one process disagree about which planes exist, so [`install_planes`] must refuse to
+/// run once the process plane list has been read even once.
+///
+/// This is the ONLY test in this file that calls [`install_planes`], deliberately: it is a write to
+/// process-global `OnceLock`s, and a second call anywhere else in this BINARY (this file — each
+/// `tests/*.rs` file is its own process) would make this test's outcome depend on test execution
+/// order. `config_sections()` is called here specifically to force the read `install_planes` must
+/// then refuse to follow — it is exercised incidentally by many other tests in this file already
+/// (any test that touches `busbar_kernel::plane::config::config_sections()` /
+/// `busbar_kernel::plane::registry::plane_decls()`), so this call is not what makes the read happen;
+/// it is what makes the read happen NO LATER than this test needs it to, regardless of what ran
+/// before it.
+#[test]
+#[should_panic(expected = "install_planes called after the plane list was first read")]
+fn install_planes_after_first_read_panics() {
+    let _ = busbar_kernel::plane::config::config_sections();
+    install_planes(&[]);
+}
+
+// ── PLANE-OWNED-CONFIG DUP-CLAIM GUARD (1.6.0 config-seam, stage 1) ─────────────────────────────────
+//
+// The guard is the whole point of stage 1: it must refuse a boot where two planes claim the same
+// top-level config section, or where a plane claims a section core still owns concretely. These prove
+// both refusals fire and that the SHIPPED set (every plane claiming `&[]`) passes cleanly.
+
+/// A plane busbar does not have that CLAIMS one owned config section — built by functional update off
+/// [`WIDGET_PLANE`] (every field of which is `Copy`), so only the two fields under test are named.
+static ALPHA_CLAIMS_FOO: PlaneDecl = PlaneDecl {
+    declaration: PlaneDeclaration {
+        key: "alpha",
+        owned_config_sections: &["foo"],
+        fee_units: &[],
+        ..WIDGET_PLANE.declaration
+    },
+    resolve_provider: None,
+    ..WIDGET_PLANE
+};
+
+/// A DIFFERENT plane that claims the SAME section — the dup-claim collision.
+static BETA_CLAIMS_FOO: PlaneDecl = PlaneDecl {
+    declaration: PlaneDeclaration {
+        key: "beta",
+        owned_config_sections: &["foo"],
+        fee_units: &[],
+        ..WIDGET_PLANE.declaration
+    },
+    resolve_provider: None,
+    ..WIDGET_PLANE
+};
+
+/// A plane that claims a section core STILL owns concretely (`rate_card` is in
+/// `CORE_OWNED_CONCRETE_SECTIONS` in stage 1 — nothing has moved yet).
+static GAMMA_CLAIMS_RATE_CARD: PlaneDecl = PlaneDecl {
+    declaration: PlaneDeclaration {
+        key: "gamma",
+        owned_config_sections: &["rate_card"],
+        fee_units: &[],
+        ..WIDGET_PLANE.declaration
+    },
+    resolve_provider: None,
+    ..WIDGET_PLANE
+};
+
+#[test]
+fn dup_claim_guard_fires_when_two_planes_claim_the_same_section() {
+    let decls: Vec<&PlaneDeclaration> = vec![&ALPHA_CLAIMS_FOO, &BETA_CLAIMS_FOO];
+    let err = busbar_kernel::plane::registry::check_owned_config_claims(
+        &decls,
+        busbar_kernel::plane::registry::CORE_OWNED_CONCRETE_SECTIONS,
+    )
+    .expect_err("two planes claiming section `foo` MUST be refused — one plane's grammar would answer for the other's");
+    assert!(
+        err.contains("foo") && err.contains("alpha") && err.contains("beta"),
+        "the refusal must name the contested section and both claimants, got: {err}"
+    );
+}
+
+#[test]
+fn dup_claim_guard_fires_when_a_plane_claims_a_core_owned_section() {
+    let decls: Vec<&PlaneDeclaration> = vec![&GAMMA_CLAIMS_RATE_CARD];
+    let err = busbar_kernel::plane::registry::check_owned_config_claims(
+        &decls,
+        busbar_kernel::plane::registry::CORE_OWNED_CONCRETE_SECTIONS,
+    )
+    .expect_err("claiming `rate_card` while core still owns it concretely MUST be refused — the grammar would be declared twice");
+    assert!(
+        err.contains("rate_card") && err.contains("gamma"),
+        "the refusal must name the core-owned section and the claimant, got: {err}"
+    );
+}
+
+/// An example future plane's real claim, mirrored on the [`WIDGET_PLANE`] template — `streams` ∉
+/// `CORE_OWNED_CONCRETE_SECTIONS`, so a lone claimant is admitted (this is the shape a plugin
+/// declaring `streams` as its owned section will take once one exists).
+static ONE_CLAIMS_STREAMS: PlaneDecl = PlaneDecl {
+    declaration: PlaneDeclaration {
+        key: "one",
+        owned_config_sections: &["streams"],
+        fee_units: &[],
+        ..WIDGET_PLANE.declaration
+    },
+    resolve_provider: None,
+    ..WIDGET_PLANE
+};
+
+/// A DIFFERENT plane also claiming `streams` — the collision the guard must refuse by construction.
+static TWO_CLAIMS_STREAMS: PlaneDecl = PlaneDecl {
+    declaration: PlaneDeclaration {
+        key: "two",
+        owned_config_sections: &["streams"],
+        fee_units: &[],
+        ..WIDGET_PLANE.declaration
+    },
+    resolve_provider: None,
+    ..WIDGET_PLANE
+};
+
+#[test]
+fn dup_claim_guard_admits_streams_alone_and_refuses_a_streams_collision() {
+    // `streams` is NOT in `CORE_OWNED_CONCRETE_SECTIONS`, so the lone claim is ADMITTED.
+    busbar_kernel::plane::registry::check_owned_config_claims(
+        &[&ONE_CLAIMS_STREAMS],
+        busbar_kernel::plane::registry::CORE_OWNED_CONCRETE_SECTIONS,
+    )
+    .expect("`streams` is not core-owned and has one claimant — the lone claim must be admitted");
+    // A SECOND claimant of `streams` is refused by construction, naming both planes and the section.
+    let err = busbar_kernel::plane::registry::check_owned_config_claims(
+        &[&ONE_CLAIMS_STREAMS, &TWO_CLAIMS_STREAMS],
+        busbar_kernel::plane::registry::CORE_OWNED_CONCRETE_SECTIONS,
+    )
+    .expect_err("two planes claiming `streams` MUST be refused — one plane's grammar would answer for the other's");
+    assert!(
+        err.contains("streams") && err.contains("one") && err.contains("two"),
+        "the refusal must name the contested section and both claimants, got: {err}"
+    );
+}
+
+#[test]
+fn dup_claim_guard_passes_for_the_shipped_registry() {
+    // The shipped roster's owned-config claims are disjoint and claim nothing core still owns, so the
+    // guard admits the real set.
+    let decls = merged_boot_plane_decls(&[], builtin_plane_decls());
+    busbar_kernel::plane::registry::check_owned_config_claims(
+        &decls.iter().map(|d| &d.declaration).collect::<Vec<_>>(),
+        busbar_kernel::plane::registry::CORE_OWNED_CONCRETE_SECTIONS,
+    )
+    .expect("the shipped roster's owned-config claims must pass the dup-claim guard");
+    // And no plane claims ANOTHER plane's declaring section: a section a plane owns beside its own
+    // (its endpoint door, which the config pre-pass lifts off the registry) is no sibling's noun.
+    for decl in &decls {
+        for owned in decl.owned_config_sections {
+            assert!(
+                !decls
+                    .iter()
+                    .any(|other| other.key != decl.key && other.config_section == *owned),
+                "plane `{}` claims `{owned}`, which another shipped plane declares as its section",
+                decl.key
+            );
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// THE THREE ADMISSION RATCHETS (Step 2.2). These drive `build_dispatch` — the registry-driven
+// fold that assembles the dispatch table from each plane's decl and its runtime object — directly,
+// with the SAME real MCP/A2A objects a boot builds, so the security property they pin is the one
+// production has rather than one a fixture invented.
+// ---------------------------------------------------------------------------------------------
+
+/// A deployment's configuration, lowered by the kernel's own entry points (`deploy_from_yaml_str` →
+/// `resolve`), exactly as boot and `--validate` lower it.
+fn resolved(yaml: &str) -> RootCfg {
+    register_planes();
+    let deploy = deploy_from_yaml_str(yaml).expect("the fixture configuration parses");
+    resolve(&deploy, &HashMap::new()).unwrap_or_else(|e| panic!("the fixture resolves: {e:?}"))
+}
+
+/// A RECEIVING deployment: a `public_url`, the `tools:` plane's endpoint door (the section it owns
+/// beside `tools:`, read off its declaration) and one `agents:` entry — so every mountable linked
+/// plane has a door and binds an audience.
+fn receiving_cfg() -> RootCfg {
+    let owner = linked::owning("tools");
+    let door = linked::door_section(owner);
+    // The door's path is the one its owner claims (its key), never an operator's choice: a
+    // canonical URI naming another path is a boot refusal (CG-17).
+    let key = owner.key;
+    resolved(&format!(
+        "providers: {{}}\nmodels: {{}}\npublic_url: \"https://busbar.example\"\n\
+         {door}:\n  canonical_uri: \"https://gw.example.com/{key}\"\n  \
+         authorization_servers: [\"https://login.example.com\"]\n\
+         agents:\n  planner:\n    url: \"https://agent.example/planner\"\n    \
+         pin: {{ mechanism: unpinned }}\n"
+    ))
+}
+
+/// THE PLANE SLOT MAP a boot builds for `cfg` — every linked plane's runtime object from its OWN
+/// decl's `build` hook over the SAME `BuildCtx` `appbuild` hands it, filtered by LAW 7 (an
+/// unconfigured plane builds no slot). Names no plane type.
+fn built_slots(cfg: &RootCfg) -> BTreeMap<&'static str, Arc<dyn Any + Send + Sync>> {
+    builtin_plane_decls()
+        .iter()
+        .filter(|decl| decl.fallback || cfg.plane_sections.contains(decl.config_section))
+        .filter_map(|decl| {
+            let ctx = BuildCtx {
+                endpoint_slot: cfg.endpoint_resources.get(decl.config_section).cloned(),
+                agent_defs: cfg.agent_defs.as_any(),
+                tool_defs: cfg.tool_defs.as_any(),
+                public_url: cfg.public_url.as_deref(),
+                prior: None,
+                providers: None,
+            };
+            (decl.build)(&ctx).map(|obj| (decl.key, obj))
+        })
+        .collect()
+}
+
+/// The borrowed slot map `build_dispatch` takes.
+fn slot_refs<'a>(
+    slots: &'a BTreeMap<&'static str, Arc<dyn Any + Send + Sync>>,
+) -> BTreeMap<&'static str, &'a dyn Any> {
+    slots.iter().map(|(k, v)| (*k, &**v as &dyn Any)).collect()
+}
+
+/// **RATCHET R1 — every declared path is claimed, and every claimed path is audience-checked.**
+///
+/// For each registered plane, every `(path, wire)` its decl declares against its real object is
+/// mounted, and [`busbar_kernel::plane::PlaneDispatch::admission_for`] resolves an audience on it —
+/// including the A2A gRPC SECOND claim, `/lf.a2a.v1.A2AService`, whose path a gRPC client cannot be
+/// pointed off of. A path a plane answers on but does not claim here is a confused-deputy hole where
+/// no token's `aud` is checked, which is the whole reason the claim set — not the router — is what
+/// this pins.
+///
+/// RED, watched: drop the gRPC entry from the A2A decl's `claims` and this fails —
+/// `admission_for("/lf.a2a.v1.A2AService/SendMessage")` returns `None` on a path the plane still
+/// answers, the exact audience-less door the ratchet forbids.
+#[test]
+fn r1_every_declared_path_resolves_an_admission() {
+    let owned = built_slots(&receiving_cfg());
+    let slots = slot_refs(&owned);
+    let dispatch =
+        build_dispatch(builtin_plane_decls(), &slots, false).expect("the dispatch table builds");
+
+    let mut claimed = 0;
+    for decl in builtin_plane_decls() {
+        let Some(slot) = slots.get(decl.key).copied() else {
+            continue;
+        };
+        let claims = (decl.claims)(slot);
+        claimed += claims.len();
+        // A plane with SEVERAL doors (a second binding whose path a client derives and cannot be
+        // pointed off of) resolves the ONE audience its card publishes on every one of them — the
+        // property that would vanish the moment a second claim were dropped.
+        let audiences: Vec<_> = claims
+            .iter()
+            .map(|(path, _)| dispatch.admission_for(&format!("{path}/probe")))
+            .collect();
+        assert!(
+            audiences.windows(2).all(|w| w[0] == w[1]),
+            "plane `{}`: its doors resolve different audiences: {claims:?}",
+            decl.key
+        );
+        for (path, _wire) in claims {
+            // A claim's own path, and a path beneath it, both inherit the plane's audience.
+            assert!(
+                dispatch.admission_for(&path).is_some(),
+                "plane `{}` claims `{path}` but it resolves NO admission — an audience-less door",
+                decl.key
+            );
+            let beneath = format!("{path}/probe");
+            assert!(
+                dispatch.admission_for(&beneath).is_some(),
+                "plane `{}`: `{beneath}` under a claimed mount must inherit the audience",
+                decl.key
+            );
+        }
+    }
+
+    // The receiving deployment mounts the `agents:` plane's two doors and the `tools:` plane's one.
+    let multi = linked::owning("agents");
+    let multi_claims = (multi.claims)(slots[multi.key]);
+    assert!(
+        multi_claims.len() >= 2,
+        "the multi-binding plane claims every binding's door: {multi_claims:?}"
+    );
+    assert!(claimed >= 3, "every mountable plane claimed its doors");
+}
+
+/// **RATCHET R2 — a mounted plane must bind an admission, or boot refuses.**
+///
+/// A plane that claims a path but returns `None` for its admission would serve an audience-less —
+/// hence unauthenticated — resource. [`build_dispatch`] refuses that at boot with a named error
+/// rather than mounting it. This is what stops a future plane lowering its own admission bar to
+/// nothing simply by omitting the fact.
+///
+/// RED, watched: delete the `!claims.is_empty() && admission.is_none()` guard in `build_dispatch`
+/// and this fails — the table builds `Ok`, the path is in `mounted_keys()`, and no audience guards
+/// it: a door with no lock.
+#[test]
+fn r2_a_mounted_plane_with_no_admission_refuses_boot() {
+    static MOUNTS_BUT_NEVER_ADMITS: PlaneDecl = PlaneDecl {
+        declaration: PlaneDeclaration {
+            key: "widget",
+            fallback: false,
+            config_section: "widgets",
+            scope_kinds: &["widget"],
+            subject_noun: "fronted widget",
+            admin_noun: "fronted-widget",
+            audit_kind: "widget_thing",
+            card_signing_domain: None,
+            card_kid_prefix: None,
+            owned_config_sections: &[],
+            billable_classes: &[],
+            fee_units: &[],
+            metric_families: &[],
+            record_kinds: &[],
+            required_config_sections: &[],
+            trust_keys: &[],
+            caller_credential_refusal: None,
+            served_op_classes: &[],
+        },
+        wire_format_names: || &["widgetrpc"],
+        // Claims a path — but binds no audience. The shape build_dispatch must refuse.
+        claims: |_| vec![("/widget".to_string(), "widgetrpc")],
+        admission: |_| None,
+        build: |_| None,
+        routes: None,
+        admin_routes: None,
+        openapi: None,
+        hydrate: None,
+        start: None,
+        config_validate: None,
+        named_def_list: None,
+        named_def_get: None,
+        registry_contains: None,
+        reresolve_gates: None,
+        openapi_schemas: None,
+        on_swap: None,
+        parse_section: None,
+        parse_endpoint: None,
+        lower_endpoint: None,
+        build_runtime: None,
+        viewer: None,
+        retain_verify_gates: None,
+        default_section: None,
+        resolve_provider: None,
+    };
+    let unit = ();
+    let mut slots: BTreeMap<&'static str, &dyn Any> = BTreeMap::new();
+    slots.insert("widget", &unit);
+
+    let err = build_dispatch(&[&MOUNTS_BUT_NEVER_ADMITS], &slots, false)
+        .expect_err("a plane that mounts a path but binds no admission must refuse boot");
+    assert!(
+        err.contains("widget"),
+        "the refusal names the offending plane: {err}"
+    );
+    assert!(
+        err.contains("bound no admission"),
+        "the refusal says what is missing: {err}"
+    );
+    // RED ARM: the key-verify chain admits a DOOR's claims alone; a plane that is not served
+    // through its door is refused whatever the data chain verifies.
+    assert!(
+        build_dispatch(&[&MOUNTS_BUT_NEVER_ADMITS], &slots, true).is_err(),
+        "a non-door plane with no audience is refused even under a key chain"
+    );
+
+    // The CONTROL: a plane that mounts nothing (claims empty) needs no admission and does NOT refuse.
+    static MOUNTS_NOTHING: PlaneDecl = PlaneDecl {
+        declaration: PlaneDeclaration {
+            key: "widget",
+            fallback: false,
+            config_section: "widgets",
+            scope_kinds: &["widget"],
+            subject_noun: "fronted widget",
+            admin_noun: "fronted-widget",
+            audit_kind: "widget_thing",
+            card_signing_domain: None,
+            card_kid_prefix: None,
+            owned_config_sections: &[],
+            billable_classes: &[],
+            fee_units: &[],
+            metric_families: &[],
+            record_kinds: &[],
+            required_config_sections: &[],
+            trust_keys: &[],
+            caller_credential_refusal: None,
+            served_op_classes: &[],
+        },
+        wire_format_names: || &["widgetrpc"],
+        claims: |_| Vec::new(),
+        admission: |_| None,
+        build: |_| None,
+        routes: None,
+        admin_routes: None,
+        openapi: None,
+        hydrate: None,
+        start: None,
+        config_validate: None,
+        named_def_list: None,
+        named_def_get: None,
+        registry_contains: None,
+        reresolve_gates: None,
+        openapi_schemas: None,
+        on_swap: None,
+        parse_section: None,
+        parse_endpoint: None,
+        lower_endpoint: None,
+        build_runtime: None,
+        viewer: None,
+        retain_verify_gates: None,
+        default_section: None,
+        resolve_provider: None,
+    };
+    let dispatch = build_dispatch(&[&MOUNTS_NOTHING], &slots, false)
+        .expect("a plane that claims no path needs no admission");
+    assert!(dispatch.mounted_keys().is_empty(), "and it mounts nothing");
+}
+
+/// **R2-boot — a plane whose `start` returns `Err` REFUSES BOOT.** The start fold
+/// [`busbar_kernel::boot::run_start_hooks`] (which `boot::start_planes` drives over the real plane
+/// list) propagates the hook's `Err` with `?`, so a plane that cannot start its background work — an
+/// A2A outbound client identity that does not resolve — aborts the boot with its OWN named message
+/// rather than yielding a running deployment that silently re-verifies nothing for that agent.
+///
+/// Driven over an INJECTED decl for the reason `build_dispatch` is: the ratchet is provable without
+/// the process plane `OnceLock` (once-per-binary) and without booting real listeners.
+///
+/// RED, watched: change `start(ctx)?;` to `let _ = start(ctx);` in `boot::run_start_hooks` and this
+/// fails — the fold returns `Ok`, the refusal is swallowed, and the named message never reaches the
+/// operator. GREEN with the `?`.
+#[test]
+fn r2_boot_a_plane_whose_start_errs_refuses_boot() {
+    static REFUSES_START: PlaneDecl = PlaneDecl {
+        declaration: PlaneDeclaration {
+            key: "refuser",
+            fallback: false,
+            config_section: "refusers",
+            scope_kinds: &["refuser"],
+            subject_noun: "refuser",
+            admin_noun: "refuser",
+            audit_kind: "refuser",
+            card_signing_domain: None,
+            card_kid_prefix: None,
+            owned_config_sections: &[],
+            billable_classes: &[],
+            fee_units: &[],
+            metric_families: &[],
+            record_kinds: &[],
+            required_config_sections: &[],
+            trust_keys: &[],
+            caller_credential_refusal: None,
+            served_op_classes: &[],
+        },
+        wire_format_names: || &["refrpc"],
+        claims: |_| Vec::new(),
+        admission: |_| None,
+        build: |_| None,
+        routes: None,
+        admin_routes: None,
+        openapi: None,
+        hydrate: None,
+        start: Some(|_ctx| Err("refuser: outbound client identity did not resolve".to_string())),
+        config_validate: None,
+        named_def_list: None,
+        named_def_get: None,
+        registry_contains: None,
+        reresolve_gates: None,
+        openapi_schemas: None,
+        on_swap: None,
+        parse_section: None,
+        parse_endpoint: None,
+        lower_endpoint: None,
+        build_runtime: None,
+        viewer: None,
+        retain_verify_gates: None,
+        default_section: None,
+        resolve_provider: None,
+    };
+    let ctx = busbar_kernel::plane::registry::BootCtx::stub();
+
+    let err = busbar_kernel::boot::run_start_hooks(&[&REFUSES_START], &ctx)
+        .expect_err("a plane whose start returns Err must refuse boot, not continue");
+    assert!(
+        err.contains("refuser: outbound client identity did not resolve"),
+        "the boot refusal carries the plane hook's own message verbatim: {err}"
+    );
+
+    // CONTROL: a plane whose `start` returns `Ok`, and a plane with NO `start` hook (WIDGET_PLANE),
+    // do not abort — the fold runs to the end and returns `Ok`.
+    static STARTS_CLEAN: PlaneDecl = PlaneDecl {
+        declaration: PlaneDeclaration {
+            key: "clean",
+            fallback: false,
+            config_section: "cleans",
+            scope_kinds: &["clean"],
+            subject_noun: "clean",
+            admin_noun: "clean",
+            audit_kind: "clean",
+            card_signing_domain: None,
+            card_kid_prefix: None,
+            owned_config_sections: &[],
+            billable_classes: &[],
+            fee_units: &[],
+            metric_families: &[],
+            record_kinds: &[],
+            required_config_sections: &[],
+            trust_keys: &[],
+            caller_credential_refusal: None,
+            served_op_classes: &[],
+        },
+        wire_format_names: || &["cleanrpc"],
+        claims: |_| Vec::new(),
+        admission: |_| None,
+        build: |_| None,
+        routes: None,
+        admin_routes: None,
+        openapi: None,
+        hydrate: None,
+        start: Some(|_ctx| Ok(())),
+        config_validate: None,
+        named_def_list: None,
+        named_def_get: None,
+        registry_contains: None,
+        reresolve_gates: None,
+        openapi_schemas: None,
+        on_swap: None,
+        parse_section: None,
+        parse_endpoint: None,
+        lower_endpoint: None,
+        build_runtime: None,
+        viewer: None,
+        retain_verify_gates: None,
+        default_section: None,
+        resolve_provider: None,
+    };
+    busbar_kernel::boot::run_start_hooks(&[&STARTS_CLEAN, &WIDGET_PLANE], &ctx)
+        .expect("an Ok start and a None-start plane do not refuse boot");
+}
+
+/// **R2-boot, the hydrate half.** A plane whose `hydrate` returns `Err` REFUSES BOOT the same way:
+/// [`busbar_kernel::boot::run_hydrate_hooks`] propagates it with `?`, so a plane that cannot restore
+/// its durable state does not go on to serve half of it. Same red (`hydrate(ctx)?` → `let _ = ...`).
+#[test]
+fn r2_boot_a_plane_whose_hydrate_errs_refuses_boot() {
+    static REFUSES_HYDRATE: PlaneDecl = PlaneDecl {
+        declaration: PlaneDeclaration {
+            key: "refuser",
+            fallback: false,
+            config_section: "refusers",
+            scope_kinds: &["refuser"],
+            subject_noun: "refuser",
+            admin_noun: "refuser",
+            audit_kind: "refuser",
+            card_signing_domain: None,
+            card_kid_prefix: None,
+            owned_config_sections: &[],
+            billable_classes: &[],
+            fee_units: &[],
+            metric_families: &[],
+            record_kinds: &[],
+            required_config_sections: &[],
+            trust_keys: &[],
+            caller_credential_refusal: None,
+            served_op_classes: &[],
+        },
+        wire_format_names: || &["refrpc"],
+        claims: |_| Vec::new(),
+        admission: |_| None,
+        build: |_| None,
+        routes: None,
+        admin_routes: None,
+        openapi: None,
+        hydrate: Some(|_ctx| Err("refuser: durable task state did not verify".to_string())),
+        start: None,
+        config_validate: None,
+        named_def_list: None,
+        named_def_get: None,
+        registry_contains: None,
+        reresolve_gates: None,
+        openapi_schemas: None,
+        on_swap: None,
+        parse_section: None,
+        parse_endpoint: None,
+        lower_endpoint: None,
+        build_runtime: None,
+        viewer: None,
+        retain_verify_gates: None,
+        default_section: None,
+        resolve_provider: None,
+    };
+    let ctx = busbar_kernel::plane::registry::BootCtx::stub();
+
+    let err = busbar_kernel::boot::run_hydrate_hooks(&[&REFUSES_HYDRATE], &ctx)
+        .expect_err("a plane whose hydrate returns Err must refuse boot");
+    assert!(
+        err.contains("refuser: durable task state did not verify"),
+        "the boot refusal carries the plane hook's own message verbatim: {err}"
+    );
+}
+
+/// **RATCHET R3 — no scope-kind or audit-kind collision across the DISPATCHED set.**
+///
+/// 2.0 pinned this over the declared list; here it is re-asserted over the planes actually MOUNTED
+/// in a built dispatch table. Two planes sharing a scope kind is how one plane's grant admits
+/// another plane's traffic, and two sharing an audit kind is how one plane's records answer
+/// another's question — a hazard that only bites once both colliding planes have a door.
+///
+/// RED, watched: register a fourth plane that both MOUNTS and reuses `mcp_server` as a scope kind
+/// (a colliding widget in the mount set) and this fails on the scope-kind dedup.
+#[test]
+fn r3_no_vocabulary_collision_across_the_mounted_set() {
+    let owned = built_slots(&receiving_cfg());
+    let slots = slot_refs(&owned);
+    let dispatch =
+        build_dispatch(builtin_plane_decls(), &slots, false).expect("the dispatch table builds");
+
+    let mounted_keys = dispatch.mounted_keys();
+    let mounted: Vec<&&PlaneDecl> = builtin_plane_decls()
+        .iter()
+        .filter(|d| mounted_keys.contains(&d.key))
+        .collect();
+
+    let mut scope_kinds: Vec<&str> = mounted
+        .iter()
+        .flat_map(|d| d.scope_kinds.iter().copied())
+        .collect();
+    let before = scope_kinds.len();
+    scope_kinds.sort_unstable();
+    scope_kinds.dedup();
+    assert_eq!(
+        before,
+        scope_kinds.len(),
+        "scope kinds collide across the mounted set: {scope_kinds:?}"
+    );
+
+    let mut audit_kinds: Vec<&str> = mounted.iter().map(|d| d.audit_kind).collect();
+    let before = audit_kinds.len();
+    audit_kinds.sort_unstable();
+    audit_kinds.dedup();
+    assert_eq!(
+        before,
+        audit_kinds.len(),
+        "audit kinds collide across the mounted set: {audit_kinds:?}"
+    );
+
+    // The mounted set is exactly the non-fallback planes this boot configured.
+    let mut keys = mounted_keys;
+    keys.sort_unstable();
+    let mut want = vec![linked::owning("tools").key, linked::owning("agents").key];
+    want.sort_unstable();
+    assert_eq!(keys, want);
+}
+
+/// The registry-driven fold reproduces the OLD hardcoded blocks BYTE-FOR-BEHAVIOUR: the same paths
+/// claimed with the same wire formats and the same admissions, built by hand through the public
+/// `mount`/`admit` API and by `build_dispatch` through the decls, must be equal.
+#[test]
+fn build_dispatch_matches_the_hand_mounted_table() {
+    let owned = built_slots(&receiving_cfg());
+    let slots = slot_refs(&owned);
+    let built = build_dispatch(builtin_plane_decls(), &slots, false).expect("dispatch builds");
+
+    // By hand, through the public `mount`/`admit` API, from each configured plane's OWN object: its
+    // claimed doors and its admission.
+    let mut hand = busbar_kernel::plane::PlaneDispatch::default();
+    let mut mounted = 0;
+    for decl in builtin_plane_decls() {
+        let Some(slot) = slots.get(decl.key).copied() else {
+            continue;
+        };
+        let claims = (decl.claims)(slot);
+        if claims.is_empty() {
+            continue;
+        }
+        for (path, wire) in claims {
+            hand = hand.mount(decl.key, &path, wire);
+            mounted += 1;
+        }
+        hand = hand.admit(
+            decl.key,
+            (decl.admission)(slot).expect("a mounted plane binds an admission"),
+        );
+    }
+    assert!(mounted >= 3, "the receiving deployment mounts every door");
+
+    assert_eq!(
+        built, hand,
+        "the registry-driven fold must match the old blocks"
+    );
+}
+
+/// A DELEGATION-ONLY `agents:` plane (no `public_url`) mounts nothing and binds no audience — so it
+/// is NOT refused by R2 (it claims no path) and its paths stay unclaimed. Byte-identical to the old
+/// `admission().is_some()` gate on the hardcoded block.
+#[test]
+fn a_delegation_only_multi_binding_plane_mounts_nothing() {
+    let cfg = resolved(
+        "providers: {}\nmodels: {}\n\
+         agents:\n  planner:\n    url: \"https://agent.example/planner\"\n    \
+         pin: { mechanism: unpinned }\n",
+    );
+    let agents = linked::owning("agents");
+    // No public_url ⇒ no receiving side ⇒ the plane's admission is None.
+    let owned = built_slots(&cfg);
+    let slot = owned
+        .get(agents.key)
+        .map(|v| &**v as &dyn Any)
+        .expect("the configured `agents:` plane builds its object");
+    assert!((agents.admission)(slot).is_none());
+
+    let mut slots: BTreeMap<&'static str, &dyn Any> = BTreeMap::new();
+    slots.insert(agents.key, slot);
+    let dispatch =
+        build_dispatch(builtin_plane_decls(), &slots, false).expect("no path, no refusal");
+    assert!(
+        dispatch.mounted_keys().is_empty(),
+        "a delegation-only deployment claims no path"
+    );
+    assert!(dispatch
+        .admission_for(&format!("/{}", agents.key))
+        .is_none());
+}
+
+/// THE OpenAPI NON-VACUITY FLOOR. A silently-empty OpenAPI contribution reads to the drift guard as
+/// "this plane documents nothing", which passes vacuously — so a mounted admin verb could ship with
+/// no documented path and nothing would notice. This pins the floor: every plane that contributes
+/// admin verbs (`admin_routes: Some`) MUST also contribute at least one OpenAPI path, and both come
+/// from the SAME decl the router mounts from, so the document cannot omit a verb the surface serves.
+///
+/// Watched RED with a stubbed empty contributor (a decl whose `admin_routes` is `Some` but whose
+/// `openapi` returns an empty object): the floor fires. The real linked decls pass it.
+#[test]
+fn a_plane_with_admin_verbs_documents_at_least_one_openapi_path() {
+    for decl in builtin_plane_decls() {
+        if decl.admin_routes.is_none() {
+            continue;
+        }
+        let openapi = decl.openapi.unwrap_or_else(|| {
+            panic!(
+                "plane `{}` contributes admin verbs but no OpenAPI fn",
+                decl.key
+            )
+        });
+        let doc = openapi();
+        let count = doc.as_object().map(|o| o.len()).unwrap_or(0);
+        assert!(
+            count > 0,
+            "plane `{}` contributes admin verbs but documents zero OpenAPI paths — a mounted verb \
+             would ship undocumented, and the drift guard passes vacuously over an empty fragment",
+            decl.key
+        );
+    }
+}

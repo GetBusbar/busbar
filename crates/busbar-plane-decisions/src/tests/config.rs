@@ -137,3 +137,20 @@ fn hooks_is_a_plain_name_list() {
         vec!["redact".to_string(), "budget-gate".to_string()]
     );
 }
+
+/// RED, A MODEL'S DIALECT OVERRIDE (#51; ARCHITECT Q9(a), `ModelCfg += protocol`): a
+/// `decisions.models.<m>.protocol` parses into the shared `ModelCfg` (it was refused as an unknown
+/// member), absent reads as none, and an unknown member is still refused, naming `protocol` last.
+#[test]
+fn a_models_protocol_override_parses() {
+    let json = r#"{"models":{"nano":{"provider":"typesafe","protocol":"nanojev"},"jev":{"provider":"typesafe"}}}"#;
+    let section: DecisionsSection = serde_json::from_str(json).expect("the override parses");
+    assert_eq!(section.models["nano"].protocol.as_deref(), Some("nanojev"));
+    assert_eq!(section.models["jev"].protocol, None);
+    let err = serde_json::from_str::<DecisionsSection>(
+        r#"{"models":{"m":{"provider":"p","bogus_key":1}}}"#,
+    )
+    .expect_err("an unknown member is still refused")
+    .to_string();
+    assert!(err.contains("`prompt_caching`, `protocol`"), "{err}");
+}

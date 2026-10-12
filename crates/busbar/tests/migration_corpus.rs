@@ -26,6 +26,11 @@
 //! ADDING A RELEASE: drop its `config.yaml` in as `v<x.y.z>_config.yaml`. No code change; the test
 //! discovers the directory. `tests/migration-corpus/refresh.sh` regenerates the whole set from tags.
 
+// The helpers that supply the deferred decisions, validate a migrated config and read the 1.5.5
+// warning oracle serve only the two corpus tests, which a build without the admin credential's
+// plugin does not compile (see the first of them).
+#![cfg_attr(not(feature = "auth-admin-tokens"), allow(dead_code))]
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -309,8 +314,11 @@ fn validate(yaml: &str, tmp: &Path, providers: &Path) -> Result<String, String> 
     // Point the copy under test at a real temp file so the gate checks the migration, not this
     // machine's filesystem layout.
     let yaml = if yaml.contains("file:") {
-        let dir = tmp.parent().unwrap_or(Path::new("."));
-        let stand_in = dir.join("corpus-secret");
+        // ONE STAND-IN PER CALLER'S TEMP CONFIG, never one shared name: the corpus tests run side by
+        // side, and a shared file one test rewrote (truncate, then write) while another's
+        // `--validate` read it resolved as an EMPTY secret and dropped that config from the count
+        // (hop run 37300700141: 77 of 78 compared).
+        let stand_in = tmp.with_extension("secret");
         std::fs::write(&stand_in, "a".repeat(64)).map_err(|e| format!("write stand-in: {e}"))?;
         let out = rewrite_file_secret_paths(yaml, &stand_in.display().to_string());
         std::fs::write(tmp, &out).map_err(|e| format!("rewrite temp config: {e}"))?;
@@ -350,20 +358,14 @@ fn validate(yaml: &str, tmp: &Path, providers: &Path) -> Result<String, String> 
 /// the first: when a migration rule regresses it usually breaks a whole era of configs at once, and
 /// seeing "these 9 all lost their pools block" is a diagnosis where "v1.2.0 failed" is a scavenger
 /// hunt.
+// A config whose chain names `keys` needs an admin credential that can mint one, and the only
+// built-in is `admin-tokens`. Without that feature the binary REFUSES such a config by design ("the
+// admin API would be silently disabled"), so the deferred decision cannot be supplied and the test
+// would be asserting a property of the build, not of the migrator. A build without it never
+// compiles the test; the default build runs it, so coverage is not lost.
+#[cfg(feature = "auth-admin-tokens")]
 #[test]
 fn every_shipped_config_migrates_to_a_valid_current_config() {
-    // A config whose chain names `keys` needs an admin credential that can mint one, and the only
-    // built-in is `admin-tokens`. Without that feature the binary REFUSES such a config by design
-    // ("the admin API would be silently disabled"), so the deferred decision cannot be supplied and
-    // the test would be asserting a property of the build, not of the migrator. Skipped loudly
-    // rather than silently: the default build runs it, so coverage is not lost.
-    if !cfg!(feature = "auth-admin-tokens") {
-        eprintln!(
-            "SKIP: built without `auth-admin-tokens`, so a migrated config naming `keys` cannot be \
-             given a valid admin mint path. The default-features build covers this."
-        );
-        return;
-    }
     let files = corpus_files();
     assert!(
         files.len() >= 20,
@@ -399,6 +401,7 @@ fn every_shipped_config_migrates_to_a_valid_current_config() {
         }
     }
     let _ = std::fs::remove_file(&tmp);
+    let _ = std::fs::remove_file(tmp.with_extension("secret"));
 
     assert!(
         failures.is_empty(),
@@ -517,15 +520,11 @@ fn recorded_1_5_5_warning_count(tag: &str) -> Option<usize> {
 /// Reports every config that gained a warning, with the lines it gained, rather than dying on the
 /// first: a warning added to a shared boot path shows up on the whole corpus at once, and the set
 /// is the diagnosis.
+// Gated as [`every_shipped_config_migrates_to_a_valid_current_config`] is: a migrated config naming
+// `keys` has a valid admin mint path only where the admin credential's plugin is linked.
+#[cfg(feature = "auth-admin-tokens")]
 #[test]
 fn no_corpus_config_warns_more_at_boot_than_the_published_1_5_5_did() {
-    if !cfg!(feature = "auth-admin-tokens") {
-        eprintln!(
-            "SKIP: built without `auth-admin-tokens`, so a migrated config naming `keys` cannot be \
-             given a valid admin mint path. The default-features build covers this."
-        );
-        return;
-    }
     let files = corpus_files();
     let tmp = std::env::temp_dir().join(format!("busbar-warncount-{}.yaml", std::process::id()));
     let mut regressions: Vec<String> = Vec::new();
@@ -570,6 +569,7 @@ fn no_corpus_config_warns_more_at_boot_than_the_published_1_5_5_did() {
         }
     }
     let _ = std::fs::remove_file(&tmp);
+    let _ = std::fs::remove_file(tmp.with_extension("secret"));
 
     // A run that compared nothing must never read as green. Without this, a renamed golden
     // directory or a corpus that stopped migrating would silently turn the whole test into a

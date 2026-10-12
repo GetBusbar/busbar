@@ -1,9 +1,20 @@
 //! # M4 acceptance suite (TODO M4 HOOK-PARITY, 1.6.0-TODO PHASE 4)
 //!
 //! The kernel's single named home for the v1.5.5 `kind: hook` test corpus, ported as BLACK-BOX
-//! assertions against the CURRENT dispatch path (the real `test_env`/`resolve_one` harness above,
-//! which resolves a `plugin:` ref through the same loader `scan_and_validate` +
+//! assertions against the CURRENT resolution path (the `test_env`/`resolve_one` harness above,
+//! which resolves a `plugin:` ref through the registry and the kernel's hook axis port — the same
 //! `resolve_gate_transport` seam a live request uses — not a hand-rolled `HookPolicy::policy`).
+//!
+//! ## Moved out with the test-hook plugin (OWNER 2026-10-03, no test plugins)
+//!
+//! This file held ONE test: the inflight cap, ported from the loader's
+//! `hook_calls_are_capped_and_saturation_fails_on_the_caller_deadline`. The cap is the
+//! dispatcher's (a hook's Statement `max_inflight`), and the plugin that wedged it here is deleted;
+//! a double behind the kernel's port would only prove its own cap. It now lives where the cap does,
+//! every assertion kept: `busbar-plugin-loader`'s
+//! `hook_door_tests::the_inflight_cap_saturates_and_fails_on_the_caller_deadline_through_the_axis`,
+//! over the loader's own hook fixture. The kernel's half of the same call path (the budget, the
+//! error `on_error` decides) stays in `tests.rs` above.
 //!
 //! ## Reconciliation: 189 counted vs the signed brief's "178+4"
 //!
@@ -42,10 +53,9 @@
 //!
 //! ## What is physically consolidated HERE vs left at its existing (passing) location
 //!
-//! This file adds the ONE test from the loader-origin group whose PINNED 1.5.5 behaviour
-//! (`MAX_INFLIGHT_HOOK_CALLS = 64` per loaded hook) had no equivalent anywhere in
-//! this crate's own `tests.rs` dlopen coverage — the concurrency-cap/backpressure guarantee — ported
-//! against the real `resolve_one` harness rather than a bare `HookPolicy`. Everything else in the
+//! The ONE test from the loader-origin group whose PINNED 1.5.5 behaviour (`MAX_INFLIGHT_HOOK_CALLS =
+//! 64` per loaded hook) had no equivalent in `tests.rs` — the concurrency-cap/backpressure guarantee
+//! — lives in the loader (see above). Everything else in the
 //! loader-origin 16 already has a same-behaviour sibling in `tests.rs` above, reached through
 //! the identical harness, and is not duplicated:
 //!
@@ -75,85 +85,5 @@
 //! is not exported for cross-crate reuse, so relocating them here would mean rewriting rather than
 //! porting them — out of scope for a byte-for-byte behaviour port.
 //!
-//! No test below is `#[ignore]`d: the one gap this file fills (the inflight cap) already passes
-//! against today's dispatch path, and the two ARCHITECT-named timeout tests already pass, unignored,
-//! in `tests.rs` above.
-
-use std::time::Duration;
-
-/// PINNED (inventory-hook.md §4): `MAX_INFLIGHT_HOOK_CALLS = 64` per loaded hook
-/// (the plugin loader's hook module, a private const — mirrored here as a literal since it is not
-/// exported across the crate boundary; the value is the pinned 1.5.5 constant, not a guess).
-const MAX_INFLIGHT_HOOK_CALLS: usize = 64;
-
-/// Ported from the plugin loader's
-/// `hook_calls_are_capped_and_saturation_fails_on_the_caller_deadline` (v1.5.5 `hook.rs` inline
-/// test), rebuilt against THIS crate's `resolve_one`/`test_env` harness (the real `plugin:`
-/// resolution path) instead of a bare `HookPolicy`.
-///
-/// One hook is saturated with `MAX_INFLIGHT_HOOK_CALLS` calls that never return inside the test's
-/// budget (the fixture's `sleep_ms` knob). A further call must fail CLOSED on the caller's own
-/// deadline — never wait out the wedge — and once the wedged calls drain, the freed slots let
-/// service resume. The cap is backpressure, not a latch.
-#[tokio::test]
-async fn the_inflight_cap_saturates_and_fails_on_the_caller_deadline_through_resolve_one() {
-    let _dlopen_body = super::DLOPEN_BODY_LOCK.lock().await;
-    let Some(env) = super::test_env() else {
-        eprintln!("skip: hook cdylib not built (run under --workspace)");
-        return;
-    };
-    let wedged = super::resolve_one(&env, serde_json::json!({"order": [0], "sleep_ms": 1_500}))
-        .expect("resolve");
-
-    let mut inflight = Vec::with_capacity(MAX_INFLIGHT_HOOK_CALLS);
-    for _ in 0..MAX_INFLIGHT_HOOK_CALLS {
-        let wedged = wedged.clone();
-        inflight.push(tokio::spawn(async move {
-            let _ = wedged
-                .decide(
-                    &super::dreq("x"),
-                    &[super::dcand(0)],
-                    &super::dctx(),
-                    Duration::from_millis(50),
-                )
-                .await;
-        }));
-    }
-    // Let every spawned call reach the plugin and take its slot.
-    tokio::time::sleep(Duration::from_millis(400)).await;
-
-    let start = std::time::Instant::now();
-    let saturated = wedged
-        .decide(
-            &super::dreq("y"),
-            &[super::dcand(0)],
-            &super::dctx(),
-            Duration::from_millis(150),
-        )
-        .await;
-    assert!(
-        saturated.is_err(),
-        "with every slot held, a further call must fail rather than wait for one"
-    );
-    assert!(
-        start.elapsed() < Duration::from_secs(2),
-        "the wait must be bounded by the caller's own deadline, not by the wedged plugin"
-    );
-
-    // The wedged calls returning frees the slots — the cap is backpressure, not a latch.
-    for h in inflight {
-        let _ = h.await;
-    }
-    let resumed = wedged
-        .decide(
-            &super::dreq("z"),
-            &[super::dcand(0)],
-            &super::dctx(),
-            Duration::from_secs(5),
-        )
-        .await;
-    assert!(
-        resumed.is_ok(),
-        "a freed slot must let the next call through"
-    );
-}
+//! The two ARCHITECT-named timeout tests pass, unignored, in `tests.rs` above (the kernel's half)
+//! and in the loader's `a_slow_hook_is_cut_off_at_its_budget_through_the_axis` (the lane's half).

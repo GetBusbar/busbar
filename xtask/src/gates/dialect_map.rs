@@ -126,6 +126,26 @@ impl Gate for DialectMapGate {
             &["no_such_answer_slot"],
         ));
 
+        // A ROW KEY WRITTEN TWICE in one table (invalid TOML the line reader would otherwise take
+        // as two rows). The second row is valid on its own, so only the repeat can refuse it.
+        let mut twice = Overlay::new();
+        twice.set(
+            &anthropic,
+            cx.read(&anthropic).unwrap_or_default().replacen(
+                "\"stop_reason\" = { prim = \"finish_reason\" }",
+                "\"stop_reason\" = { prim = \"finish_reason\" }\n\"stop_reason\" = { prim = \"finish_reason\" }",
+                1,
+            ),
+        );
+        report.push(prove_red(
+            cx,
+            self,
+            "a row key written twice in one table does not compile, naming it",
+            &[ROW_DRIFT],
+            twice,
+            &["\"stop_reason\" is written twice"],
+        ));
+
         // A HAND EDIT of the generated translation matrix.
         let matrix = crate::dialect::MATRIX;
         let mut matrix_edit = Overlay::new();

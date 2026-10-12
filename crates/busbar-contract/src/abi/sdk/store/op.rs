@@ -17,8 +17,9 @@
 //!   and target and is REFUSED for any other; the SDK closes the checkout when the op answers
 //!   anything but PENDING, when its ticket is cancelled, and whenever its parked state is dropped
 //!   (a recycle, an instance that faulted and closed);
-//! * a call on no ticket (the synchronous bridge, a direct call in a test) may not pend: PENDING
-//!   there is FAULT.
+//! * a call on no ticket (the synchronous bridge's fallback on a dispatcher's only worker, a direct
+//!   call in a test) may not pend: PENDING there is FAULT. The synchronous bridge itself calls on a
+//!   ticket and waits for the completion, so a store may pend on it.
 //!
 //! MONEY: closing a connection undoes nothing a remote store already committed. So a cancelled or
 //! failed `op_id`-carrying op is EITHER not applied OR applied, and then a retry with the SAME
@@ -97,8 +98,8 @@ impl std::fmt::Debug for Op<'_> {
 }
 
 impl Op<'static> {
-    /// An op on no ticket: the synchronous bridge, a direct call in a test. It may not pend and has
-    /// no connector.
+    /// An op on no ticket: the synchronous bridge's fallback on a dispatcher's only worker, a
+    /// direct call in a test. It may not pend and has no connector.
     #[must_use]
     pub fn detached() -> Self {
         Self {
@@ -210,6 +211,17 @@ impl<'a> Op<'a> {
     /// may be PENDING), then the same stream for every later call with the same need and target.
     /// The SDK closes it when the op ends.
     pub fn checkout(&mut self, need: u32, target: Option<&str>) -> Answer<u64> {
+        self.checkout_timed(need, target, 0)
+    }
+
+    /// [`Op::checkout`], its dial bounded by `timeout_ms` (`0` = the need's own timeout, else the
+    /// host's default).
+    pub fn checkout_timed(
+        &mut self,
+        need: u32,
+        target: Option<&str>,
+        timeout_ms: u32,
+    ) -> Answer<u64> {
         if let Some(c) = &self.checkout {
             return std::task::Poll::Ready(if c.need == need && c.target.as_deref() == target {
                 Ok(c.stream)
@@ -223,7 +235,7 @@ impl<'a> Op<'a> {
             Ok(s) => s,
             Err(e) => return std::task::Poll::Ready(Err(e)),
         };
-        let answer = services.establish(need, target, "");
+        let answer = services.establish_timed(need, target, "", timeout_ms);
         drop(services);
         if let std::task::Poll::Ready(Ok(stream)) = answer {
             self.checkout = Some(Checkout {
@@ -233,6 +245,35 @@ impl<'a> Op<'a> {
             });
         }
         answer
+    }
+}
+
+impl Op<'_> {
+    /// The op's ticket.
+    pub(crate) const fn ticket(&self) -> Ticket {
+        self.ticket
+    }
+
+    /// Take the op's connection out of its keeping: it is no longer closed when the op ends (a
+    /// kept connection going back to its instance's set).
+    pub(crate) fn take_checkout(&mut self) -> Option<Checkout> {
+        self.checkout.take()
+    }
+
+    /// Make `c` the op's connection (one drawn from its instance's kept set): closed if the op
+    /// ends without handing it back.
+    pub(crate) fn adopt(&mut self, c: Checkout) {
+        self.checkout = Some(c);
+    }
+
+    /// Close the op's connection now (it is not fit for reuse); the next [`Op::checkout`]
+    /// establishes a fresh one.
+    pub(crate) fn close_checkout(&mut self) {
+        if let Some(c) = self.checkout.take() {
+            if let Ok(mut s) = self.connector() {
+                let _ = s.close(c.stream);
+            }
+        }
     }
 }
 

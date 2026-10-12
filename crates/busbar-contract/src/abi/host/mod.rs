@@ -7,4 +7,5 @@
 
 pub mod conn;
 pub mod hook;
+pub mod io;
 pub mod service;

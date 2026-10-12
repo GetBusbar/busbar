@@ -1560,6 +1560,20 @@ fn merge_trailing_usage(acc: &mut crate::codec::ir::IrUsage, trailing: &crate::c
         acc.cache_read_input_tokens = trailing.cache_read_input_tokens;
     }
     merge_trailing_usage_detail(&mut acc.detail, &trailing.detail);
+    // THE STATED-TOTAL CHECK BELONGS TO THE COUNTERS IT WAS COMPUTED FROM. A frame that carries
+    // counters states them cumulatively (Gemini restates every counter on each usage-bearing
+    // chunk), so its note, Some or None, is the check of the counts the fold now holds: a stale
+    // gap from an earlier frame that a following frame reconciled is no unit (its remainder is the
+    // billed open class `unitemized_tokens`, LEDGER-100, so a kept stale note would bill tokens
+    // the provider's final total does not state). A counter-less frame (Gemini's early chunks)
+    // checked nothing and leaves the note as it was.
+    let counted = trailing.input_tokens > 0
+        || trailing.output_tokens > 0
+        || trailing.cache_creation_input_tokens.is_some()
+        || trailing.cache_read_input_tokens.is_some();
+    if counted {
+        acc.detail.usage_identity_note = trailing.detail.usage_identity_note.clone();
+    }
 }
 
 /// The DETAIL half of the fold: every [`crate::codec::ir::IrUsageDetail`] bucket rides the same Some-wins
@@ -1584,6 +1598,7 @@ fn merge_trailing_usage_detail(
         cache_creation_1h_input_tokens,
         search_units,
         web_search_requests,
+        web_fetch_requests,
         service_tier,
         input_audio_tokens,
         output_audio_tokens,
@@ -1594,6 +1609,7 @@ fn merge_trailing_usage_detail(
         billed_output_tokens,
         billed_classifications,
         usage_identity_note,
+        open_units,
         residual_units,
         traffic_type,
         create_time,
@@ -1617,6 +1633,11 @@ fn merge_trailing_usage_detail(
     // token total that reconciles perfectly, so an unmerged one is a silent attribution loss.
     if web_search_requests.is_some() {
         acc.web_search_requests = *web_search_requests;
+    }
+    // The server-side fetch count rides the same frames as the search count (Anthropic's
+    // `message_delta`), and is the billed open class `web_fetch_requests` (LEDGER-100).
+    if web_fetch_requests.is_some() {
+        acc.web_fetch_requests = *web_fetch_requests;
     }
     if service_tier.is_some() {
         acc.service_tier = service_tier.clone();
@@ -1665,10 +1686,15 @@ fn merge_trailing_usage_detail(
     if billed_classifications.is_some() {
         acc.billed_classifications = *billed_classifications;
     }
+    // The open-class counts a reader carried (Bedrock's guardrail policy units, billed under their
+    // own classes, LEDGER-100) ride the frame that reported them: they arrive on the stream's
+    // `metadata` frame only, and a fold that dropped them would bill the streamed turn less than
+    // its buffered twin.
+    if !open_units.is_empty() {
+        acc.open_units = open_units.clone();
+    }
     // The residuals (counts no billing class records, never billed) ride the frame that reported
-    // them, as the note above does: Bedrock's guardrail units arrive on the stream's `metadata`
-    // frame only, and a fold that dropped them would leave the streamed turn with no audit row where
-    // its buffered twin has one.
+    // them the same way.
     if !residual_units.is_empty() {
         acc.residual_units = residual_units.clone();
     }

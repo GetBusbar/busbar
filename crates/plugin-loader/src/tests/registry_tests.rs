@@ -10,123 +10,94 @@ fn key(seed: u8) -> SigningKey {
     SigningKey::from_bytes(&[seed; 32])
 }
 
-/// After the auth ABI v1→2 bump (and v2→3, the enveloped wire) the loader floor MUST still admit
-/// v1 — a pre-built v1 auth plugin (a verify-only module built against 1.5.x) keeps loading. The
-/// supported range is the inclusive `[1, 3]`.
+/// ONE VERSION PER KIND (THE DESIGN §11.2, §11.8; A.9): each kind's window is exactly
+/// `abi::<kind>::ABI_VERSION` — no ranges, no JSON-lane versions, no 1.5.5 floors (ruling
+/// C21/ABI-o1) — at the shipped numbers.
+///
+/// RED before the P2 switch-over: store, secret and auth answered their JSON-lane versions (4, 1, 3),
+/// plane the range `[1, ABI_MINOR]` and transport `[TRANSPORT_DECL_MINOR, ABI_MINOR]`.
 #[test]
-fn supported_abi_auth_floor_admits_v1() {
-    let range = supported_abi("auth");
-    assert_eq!(range, &[1, busbar_contract::abi::cold::AUTH_ABI_VERSION]);
-    let (floor, max) = (range[0], range[1]);
-    assert_eq!(floor, 1, "v1 auth plugins must still load");
-    assert_eq!(max, 3, "v3 is the current auth payload schema");
-    assert!(floor <= 1 && 1 <= max, "abi_version 1 is in range");
-    assert!(floor <= 2 && 2 <= max, "abi_version 2 is in range");
-    assert!(floor <= 3 && 3 <= max, "abi_version 3 is in range");
+fn supported_abi_is_one_version_per_kind() {
+    use busbar_contract::abi;
+    let shipped: &[(&str, u32, u32)] = &[
+        ("store", abi::store::ABI_VERSION, 3),
+        ("secret", abi::secret::ABI_VERSION, 2),
+        ("auth", abi::auth::ABI_VERSION, 3),
+        ("hook", abi::hook::ABI_VERSION, 2),
+        ("export", abi::export::ABI_VERSION, 3),
+        ("plane", abi::plane::ABI_VERSION, 1),
+        ("transport", abi::transport::ABI_VERSION, 1),
+    ];
+    for &(kind, version, number) in shipped {
+        assert_eq!(supported_abi(kind), &[version], "{kind}");
+        assert_eq!(version, number, "{kind} ships at {number}");
+    }
+    assert!(supported_abi("nonsense").is_empty());
 }
 
-/// THE STORE FLOOR IS 2 AND MUST STAY THERE. Every published first-party store plugin
-/// (beta/alpha/mysql/gamma) carries `abi_version: 2`, the 1.5.x wire. The 2→3 and 3→4 bumps
-/// changed what a plugin is COMPILED against, not a byte the engine exchanges with a built artifact:
-/// every variant the 1.5.x engine sent still exists unchanged, and the eight neutral plane-record
-/// verbs added since are ones a v2 plugin answers with `STATUS_UNSUPPORTED`, which `DynStore`
-/// already treats as inert. So the range is `[2, ABI_VERSION]` = `[2, 4]`; v1 (whose AWS-only
-/// credential variants no longer exist) is the only store schema this binary cannot speak.
+/// C21 (ABI-o1, THE DESIGN §11.8): a signed, otherwise-valid artifact stating its kind's 1.5.5
+/// payload version — what every published 1.5.5 JSON-contract plugin ships (store 2, auth 2, hook 1,
+/// export 2) — is a HARD structural refusal at boot that names the file, the kind, the version and
+/// the rebuild against the 1.6.0 SDK. The signatures are valid on purpose: the refusal is the
+/// version, not trust.
 #[test]
-fn supported_abi_store_floor_admits_v2() {
-    let range = supported_abi("store");
-    assert_eq!(
-        range,
-        &[STORE_ABI_FLOOR, busbar_contract::abi::cold::ABI_VERSION]
-    );
-    assert_eq!(
-        busbar_contract::abi::cold::ABI_VERSION,
-        4,
-        "store payload schema is v4"
-    );
-    let (floor, max) = (range[0], range[1]);
-    assert_eq!(
-        floor, 2,
-        "the floor MUST be 2 — every published 1.5.x store plugin declares abi_version 2"
-    );
-    assert!(!(floor <= 1 && 1 <= max), "abi_version 1 is NOT in range");
-    assert!(floor <= 2 && 2 <= max, "abi_version 2 is in range");
-    assert!(floor <= 3 && 3 <= max, "abi_version 3 is in range");
-    assert!(floor <= 4 && 4 <= max, "abi_version 4 is in range");
-}
-
-/// PARITY WITH 1.5.5: a signed, otherwise-valid store artifact whose manifest declares
-/// `abi_version: 2` (what every published store plugin ships) LOADS — it enters the registry and
-/// resolves by name and alias, exactly as it did under the 1.5.5 binary. Refusing it here was the
-/// bug that made 1.6.0 reject the entire published store catalogue at boot.
-#[test]
-fn a_v2_store_artifact_is_accepted_at_load() {
+fn a_1_5_5_json_contract_plugin_is_refused_at_boot_naming_the_rebuild() {
     let release = key(1);
-    let dir = tmpdir("v2-accepted");
-    let mut m = manifest("busbar-store-legacy", "legacy", "busbar");
-    m.abi_version = 2; // the 1.5.x store wire every published plugin was built against
-    let m = sign(&release, m, b"legacy lib");
-    write_tarball(&dir, "legacy.tar.gz", &m, b"legacy lib");
+    for (kind, v155) in [("store", 2u32), ("auth", 2), ("hook", 1), ("export", 2)] {
+        let dir = tmpdir(&format!("v155-{kind}"));
+        let mut m = manifest(&format!("busbar-{kind}-published"), "published", "busbar");
+        m.kind = kind.into();
+        m.abi_version = v155;
+        let m = sign(&release, m, b"published lib");
+        write_tarball(&dir, "published.tar.gz", &m, b"published lib");
 
-    let reg = scan_and_validate(&dir, &policy(&release))
-        .unwrap_or_else(|e| panic!("a v2 store artifact must load: {e:?}"));
-    assert_eq!(reg.loadable().len(), 1);
-    assert!(reg.skipped().is_empty(), "nothing skipped: {reg:?}");
-    let p = reg
-        .resolve("legacy")
-        .expect("resolves by alias, like any current-schema store");
-    assert_eq!(p.manifest.name, "busbar-store-legacy");
-    assert_eq!(p.manifest.abi_version, 2);
-    assert!(
-        reg.resolve("busbar-store-legacy").is_some(),
-        "resolves by name"
-    );
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-/// THE RANGE EDGES, both ways. The store range is `v2..=v4`: a v2 manifest is accepted (above),
-/// while v1 (below the floor) and v5 (above what this binary speaks) are each a HARD structural
-/// INVALID that names the file, the kind, the offending version AND the range — so an operator
-/// reading the line knows exactly what this binary will take. The signatures are valid on purpose:
-/// both rejections are the ABI range, not trust.
-#[test]
-fn store_abi_below_or_above_the_range_is_refused_naming_v2_to_v4() {
-    let release = key(1);
-    for (tag, version) in [("v1", 1u32), ("v5", 5u32)] {
-        let dir = tmpdir(&format!("range-{tag}"));
-        let mut m = manifest("busbar-store-edge", "edge", "busbar");
-        m.abi_version = version;
-        let m = sign(&release, m, b"edge lib");
-        write_tarball(&dir, "edge.tar.gz", &m, b"edge lib");
-
-        let errs = scan_and_validate(&dir, &policy(&release)).unwrap_err();
-        assert_eq!(
-            errs.len(),
-            1,
-            "{tag}: one artifact, one hard rejection: {errs:?}"
+        let errs = scan_and_validate(&dir, &policy(&release))
+            .expect_err("a 1.5.5 JSON-contract plugin must not load");
+        assert_eq!(errs.len(), 1, "{kind}: one artifact, one refusal: {errs:?}");
+        let e = &errs[0];
+        assert!(
+            e.contains("published.tar.gz"),
+            "{kind}: names the file: {e}"
         );
         assert!(
-            errs[0].contains("edge.tar.gz"),
-            "{tag}: names the file: {}",
-            errs[0]
+            e.contains(&format!("'{kind}'")),
+            "{kind}: names the kind: {e}"
         );
         assert!(
-            errs[0].contains(&format!("abi_version {version} is not supported")),
-            "{tag}: rejected by the ABI range, not trust: {}",
-            errs[0]
+            e.contains(&format!("abi_version {v155} is not supported")),
+            "{kind}: refused by the version, not trust: {e}"
         );
         assert!(
-            errs[0].contains("'store'"),
-            "{tag}: names the kind: {}",
-            errs[0]
-        );
-        assert!(
-            errs[0].contains("supported range v2..=v4"),
-            "{tag}: names the range this binary speaks: {}",
-            errs[0]
+            e.contains("rebuild the plugin against the 1.6.0 SDK"),
+            "{kind}: names the rebuild: {e}"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
+}
+
+/// A store artifact built for a NEWER schema than the host speaks is refused the same way.
+#[test]
+fn a_store_newer_than_the_host_is_refused() {
+    let release = key(1);
+    let dir = tmpdir("newer");
+    let mut m = manifest("busbar-store-edge", "edge", "busbar");
+    m.abi_version = busbar_contract::abi::store::ABI_VERSION + 1;
+    let m = sign(&release, m, b"edge lib");
+    write_tarball(&dir, "edge.tar.gz", &m, b"edge lib");
+
+    let errs = scan_and_validate(&dir, &policy(&release)).unwrap_err();
+    assert_eq!(errs.len(), 1, "one artifact, one refusal: {errs:?}");
+    assert!(
+        errs[0].contains("edge.tar.gz"),
+        "names the file: {}",
+        errs[0]
+    );
+    assert!(
+        errs[0].contains("rebuild the plugin against the 1.6.0 SDK"),
+        "names the rebuild: {}",
+        errs[0]
+    );
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 fn manifest(name: &str, alias: &str, publisher: &str) -> Manifest {
@@ -136,7 +107,7 @@ fn manifest(name: &str, alias: &str, publisher: &str) -> Manifest {
         kind: "store".into(),
         version: "1.5.0".into(),
         publisher: publisher.into(),
-        abi_version: busbar_contract::abi::cold::ABI_VERSION,
+        abi_version: busbar_contract::abi::store::ABI_VERSION,
         sha256: String::new(),
         signature: String::new(),
         description: String::new(),
@@ -148,6 +119,7 @@ fn manifest(name: &str, alias: &str, publisher: &str) -> Manifest {
         host: None,
         declares: Default::default(),
         statement: None,
+        former_names: Vec::new(),
     }
 }
 
@@ -310,7 +282,7 @@ fn untrusted_is_skipped_not_fatal_but_reference_fails_loud() {
         reg.resolve("dynamo").is_none(),
         "a skipped plugin never resolves"
     );
-    let err = reg.open_store("dynamo", "{}").map(|_| ()).unwrap_err();
+    let err = reg.store_door("dynamo").map(|_| ()).unwrap_err();
     assert!(err.contains("was not loaded"), "got {err}");
     assert!(err.contains("allowlist"), "carries the trust reason: {err}");
     let _ = std::fs::remove_dir_all(&dir);
@@ -431,7 +403,7 @@ fn open_store_refuses_non_store_kind() {
     let m = sign(&release, m, b"hook lib");
     write_tarball(&dir, "hook.tar.gz", &m, b"hook lib");
     let reg = scan_and_validate(&dir, &policy(&release)).expect("scan");
-    let err = reg.open_store("ranker", "{}").map(|_| ()).unwrap_err();
+    let err = reg.store_door("ranker").map(|_| ()).unwrap_err();
     assert!(err.contains("kind 'hook'"), "got {err}");
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -447,7 +419,7 @@ fn open_secret_refuses_non_secret_kind_and_vice_versa() {
     // A trusted secret plugin (abi_version stamped to the secret ABI so the scan admits it).
     let mut m = manifest("busbar-secret-vault", "vault", "busbar");
     m.kind = "secret".into();
-    m.abi_version = busbar_contract::abi::cold::SECRET_ABI_VERSION;
+    m.abi_version = busbar_contract::abi::secret::ABI_VERSION;
     let m = sign(&release, m, b"secret lib");
     write_tarball(&dir, "vault.tar.gz", &m, b"secret lib");
     // And a trusted store plugin beside it.
@@ -460,21 +432,28 @@ fn open_secret_refuses_non_secret_kind_and_vice_versa() {
     let reg = scan_and_validate(&dir, &policy(&release)).expect("scan admits both kinds");
     assert_eq!(reg.loadable().len(), 2, "one secret + one store validated");
     // The kind gates: a store referenced as a secret module fails naming the kind...
-    let err = reg.open_secret("gamma", "{}").map(|_| ()).unwrap_err();
+    let err = reg.secret_refusal("gamma");
     assert!(err.contains("kind 'store'"), "got {err}");
     // ...and a secret plugin cannot back the store.
-    let err = reg.open_store("vault", "{}").map(|_| ()).unwrap_err();
+    let err = reg.store_door("vault").map(|_| ()).unwrap_err();
     assert!(err.contains("kind 'secret'"), "got {err}");
     // An unknown secret module name is fail-closed with the loadable set named.
-    let err = reg.open_secret("nope", "{}").map(|_| ()).unwrap_err();
+    let err = reg.secret_refusal("nope");
     assert!(err.contains("no plugin named or aliased"), "got {err}");
+    // A secret plugin that states no door (a 1.5.5 JSON-contract plugin) is refused naming the
+    // rebuild: no JSON secret lane remains (THE DESIGN §11.8).
+    let err = reg.secret_refusal("vault");
+    assert!(
+        err.contains(crate::registry::JSON_SECRET_REFUSED),
+        "got {err}"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// Kind gating: a non-auth plugin resolves but cannot serve as an auth module. Mirrors
 /// `open_store_refuses_non_store_kind`: a store-kind manifest passes phase 1/2/3 (its default
-/// `kind`/`abi_version` from `manifest()` are already store-admissible) and is then handed to
-/// `open_auth`, which must reject on the KIND gate before ever attempting to load it.
+/// `kind`/`abi_version` from `manifest()` are already store-admissible) and is then resolved as an
+/// auth row, which must reject on the KIND gate before ever attempting to load it.
 #[test]
 fn open_auth_refuses_non_auth_kind() {
     let release = key(1);
@@ -486,7 +465,10 @@ fn open_auth_refuses_non_auth_kind() {
     );
     write_tarball(&dir, "gamma.tar.gz", &m, b"store lib");
     let reg = scan_and_validate(&dir, &policy(&release)).expect("scan");
-    let err = reg.open_auth("gamma", "{}").map(|_| ()).unwrap_err();
+    let err = reg
+        .resolve_kind("gamma", "auth", "serve as an auth module")
+        .map(|_| ())
+        .unwrap_err();
     assert!(err.contains("kind 'store'"), "got {err}");
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -594,67 +576,6 @@ fn inventory_reports_every_row_class_without_loading() {
     assert!(by_file("third.tar.gz").status.starts_with("SKIPPED:"));
     assert_eq!(by_file("junk.tar.gz").signature, "INVALID");
     assert!(by_file("junk.tar.gz").status.starts_with("INVALID:"));
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-/// The REAL `kind: store` cdylib — exactly the loader tests' `store_fixture_plugin_path` in
-/// `crate::tests` (the sibling-built store-beta plugin, else the in-tree store proof; see
-/// that function's doc for where a missing cdylib is a hard failure: the removed ci.yml's `check` job on every
-/// push, the removed qa-gate.yml's `loader` job on `qa`). Used here purely to prove the tarball PIPELINE's
-/// mechanics (sign, package, scan, resolve-by-alias, open), never store-specific behavior.
-fn store_fixture_cdylib() -> Option<PathBuf> {
-    crate::tests::store_fixture_plugin_path()
-}
-
-/// END-TO-END, REAL CODE: package the real kind:store fixture cdylib into a SIGNED tarball, run
-/// the full three-phase pipeline, resolve by ALIAS, and open a live `dyn Store` through the
-/// memfd (Linux) / private-temp loader - exercising put/get over the C ABI. This is the exact
-/// seam the engine sees: verified bytes in, `Box<dyn Store>` out, indistinguishable from a
-/// compiled-in backend.
-#[test]
-fn end_to_end_open_store_from_signed_tarball() {
-    let Some(path) = store_fixture_cdylib() else {
-        eprintln!(
-            "skip: no kind:store cdylib built (run under --workspace, or build the sibling store plugin repo)"
-        );
-        return;
-    };
-    let lib = std::fs::read(&path).expect("read the kind:store fixture cdylib");
-    let acme = key(3);
-    let dir = tmpdir("e2e");
-    let m = sign(&acme, manifest("acme-store-beta", "beta", "acme"), &lib);
-    let bytes = tarball::package(&m, "libbusbar_store_beta_plugin.so", &lib).unwrap();
-    std::fs::write(dir.join("beta.tar.gz"), bytes).unwrap();
-
-    let mut pol = policy(&key(1));
-    pol.publishers
-        .insert("acme".to_string(), acme.verifying_key());
-    let reg = scan_and_validate(&dir, &pol).expect("scan");
-    let store = reg
-        .open_store("beta", r#"{"db_path": ":memory:"}"#)
-        .expect("open the real store through the full pipeline");
-    let key = busbar_contract::records::VirtualKey {
-        id: "vk_pipeline".into(),
-        generation_hash: "h".into(),
-        name: "pipeline".into(),
-        allowed_scopes: Some(vec![busbar_contract::records::ScopeRef::pool("p")]),
-        enabled: true,
-        created_at: 1,
-        group: Some("growth".into()),
-        labels: std::collections::BTreeMap::new(),
-        expires_at: None,
-        deleted_at: None,
-        revision: 1,
-        ..Default::default()
-    };
-    store.put_key(&key).expect("put over the ABI");
-    let got = store.get_key("vk_pipeline").unwrap().unwrap();
-    assert_eq!(got.group.as_deref(), Some("growth"));
-    assert_eq!(
-        got.allowed_scopes,
-        Some(vec![busbar_contract::records::ScopeRef::pool("p")])
-    );
-    drop(store);
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -839,54 +760,6 @@ fn crafted_publisher_cannot_forge_signature_label() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// The auth range's MAX reads `busbar_contract::abi::cold::AUTH_ABI_VERSION` (matching `"secret"`/`"hook"`
-/// on the max axis). Post-1.5.2 the FLOOR is pinned at 1 (v1 plugins still load — see
-/// `supported_abi_auth_floor_admits_v1`), so the range is `[1, AUTH_ABI_VERSION]`, not
-/// `[AUTH_ABI_VERSION, AUTH_ABI_VERSION]`.
-#[test]
-fn auth_supported_abi_reads_the_shared_const() {
-    assert_eq!(
-        supported_abi("auth"),
-        &[1, busbar_contract::abi::cold::AUTH_ABI_VERSION]
-    );
-}
-
-/// The export range is the export kind's MEMORY ABI version on both endpoints (THE DESIGN §11.8,
-/// ABI-b6): a bump propagates instead of drifting, and `kind: export` is a recognized kind with a
-/// non-empty supported range.
-#[test]
-fn export_supported_abi_reads_the_shared_const() {
-    let v = busbar_contract::abi::export::ABI_VERSION;
-    assert_eq!(supported_abi("export"), &[v, v]);
-    assert!(!supported_abi("export").is_empty());
-}
-
-/// OLD-ABI RED (ABI-b6, the export half): a 1.5.5 export plugin — its manifest stating the 1.5.5
-/// JSON contract's `abi_version` 2 — is refused at scan, and the refusal names the rebuild.
-#[test]
-fn a_1_5_5_export_plugin_is_refused_naming_the_rebuild() {
-    let release = key(1);
-    let dir = tmpdir("export-1-5-5");
-    let mut m = manifest("busbar-export-old", "old-sink", "busbar");
-    m.kind = "export".into();
-    m.abi_version = 2; // the 1.5.5 JSON contract every published export plugin was built against
-    let m = sign(&release, m, b"a 1.5.5 sink");
-    write_tarball(&dir, "old-sink.tar.gz", &m, b"a 1.5.5 sink");
-    let errs = scan_and_validate(&dir, &policy(&release)).unwrap_err();
-    let _ = std::fs::remove_dir_all(&dir);
-    assert_eq!(errs.len(), 1, "{errs:?}");
-    assert!(
-        errs[0].contains("abi_version 2 is not supported for kind 'export'"),
-        "{}",
-        errs[0]
-    );
-    assert!(
-        errs[0].contains(crate::dispatch::load::REBUILD),
-        "the refusal names the rebuild: {}",
-        errs[0]
-    );
-}
-
 // ── The FIRST-PARTY replay, end to end over the real scan ──────────────────────────────────────
 
 /// `docs/plugins.md` security-model item 3, proven through the actual pipeline: a deployment loads
@@ -990,4 +863,527 @@ fn read_file_capped_bounds_the_stream_not_the_stale_metadata() {
     assert_eq!(read_file_capped(&small, 8).unwrap(), b"hello");
 
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ── FORMER NAMES (ARCHITECT ruling: 1.5.5 configs load UNCHANGED) ─────────────────────────────
+
+/// A door a registry row carries but these tests never open.
+extern "C" fn unopened_door() -> *const busbar_contract::abi::mechanism::door::Door {
+    std::ptr::null()
+}
+
+/// The 1.6.0 manifest of a renamed plugin: `name` aliased `alias`, of `kind`, answering `former`.
+fn renamed(kind: &str, name: &str, alias: &str, former: &[&str]) -> Manifest {
+    let mut m = manifest(name, alias, "busbar");
+    m.kind = kind.into();
+    m.abi_version = supported_abi(kind)[0];
+    m.former_names = former.iter().map(|s| s.to_string()).collect();
+    m
+}
+
+/// The registry over `m` DROPPED IN (signed first-party into a fresh plugins dir and scanned).
+fn dropped_in(tag: &str, m: Manifest) -> PluginRegistry {
+    let release = key(1);
+    let dir = tmpdir(tag);
+    let lib = format!("{tag} lib");
+    write_tarball(
+        &dir,
+        "plugin.tar.gz",
+        &sign(&release, m, lib.as_bytes()),
+        lib.as_bytes(),
+    );
+    let reg = scan_and_validate(&dir, &policy(&release)).expect("scan");
+    let _ = std::fs::remove_dir_all(&dir);
+    reg
+}
+
+/// The registry over `m` LINKED (the build's own row, no artifact).
+fn linked_in(m: Manifest) -> PluginRegistry {
+    PluginRegistry::empty()
+        .link(vec![LinkedPlugin::door(m, unopened_door)])
+        .expect("the linked door admits the row")
+}
+
+/// THE RULING'S CASE: a 1.5.5-shaped config names a hook and a store by the manifest names their
+/// 1.5.5-era releases carried (`busbar-webrequest`; a store's `busbar-store-<name>-plugin`, here a
+/// neutral one — the fleet's real names are swept from plugins.yaml by
+/// [`every_former_name_plugins_yaml_declares_resolves_both_ways`]); each resolves to the 1.6.0 plugin
+/// of the kind the reference needs, DROPPED IN and LINKED alike — the resolution preflight's `require_plugin`, the
+/// store door and the auth and export axes all read. RED ARM, in the same test: the same plugins
+/// without their former names leave both references unresolved, which is the boot refusal 52 oracle
+/// cells hit ("no plugin matching the hook reference 'busbar-webrequest'").
+#[test]
+fn a_1_5_5_name_resolves_to_the_1_6_0_plugin_dropped_in_and_linked() {
+    let cases = [
+        (
+            "hook",
+            "busbar-hook-webrequest",
+            "webrequest",
+            "busbar-webrequest",
+        ),
+        (
+            "store",
+            "busbar-store-alpha",
+            "alpha",
+            "busbar-store-alpha-plugin",
+        ),
+    ];
+    for (kind, name, alias, old) in cases {
+        let with = || renamed(kind, name, alias, &[old]);
+        for (way, reg) in [
+            ("dropped in", dropped_in(&format!("former-{alias}"), with())),
+            ("linked", linked_in(with())),
+        ] {
+            let p = reg
+                .resolve(old)
+                .unwrap_or_else(|| panic!("{way}: '{old}' resolves"));
+            assert_eq!(p.manifest.name, name, "{way}");
+            assert!(reg.answers(old, kind), "{way}: '{old}' answers as a {kind}");
+            assert!(reg.resolve(alias).is_some() && reg.resolve(name).is_some());
+        }
+        // RED ARM: no former name, no resolution.
+        let without = || renamed(kind, name, alias, &[]);
+        for (way, reg) in [
+            (
+                "dropped in",
+                dropped_in(&format!("bare-{alias}"), without()),
+            ),
+            ("linked", linked_in(without())),
+        ] {
+            assert!(
+                reg.resolve(old).is_none(),
+                "{way}: '{old}' must not resolve"
+            );
+        }
+    }
+    // The store door opens through the same resolution (the store axis's lookup by config name).
+    let reg = linked_in(renamed(
+        "store",
+        "busbar-store-alpha",
+        "alpha",
+        &["busbar-store-alpha-plugin"],
+    ));
+    let refusal = reg
+        .store_door("busbar-store-alpha-plugin")
+        .expect_err("a door row of a store is not the store kind's linked row");
+    assert!(
+        refusal.contains("busbar-store-alpha") && !refusal.contains("no plugin named"),
+        "the former name resolved to the plugin: {refusal}"
+    );
+}
+
+/// PHASE 3: two dropped-in plugins claiming ONE former name, or a former name that is another
+/// plugin's name or alias, are a hard error naming both plugins and the contested name.
+#[test]
+fn two_plugins_claiming_one_former_name_are_refused() {
+    let release = key(1);
+    let mut pol = policy(&release);
+    pol.allow_third_party = true;
+    let acme = key(2);
+    for (second, contested) in [
+        (
+            renamed("hook", "acme-hook-x", "x", &["busbar-webrequest"]),
+            "busbar-webrequest",
+        ),
+        (
+            renamed("hook", "busbar-webrequest", "y", &[]),
+            "busbar-webrequest",
+        ),
+        (
+            renamed("hook", "acme-hook-z", "busbar-webrequest", &[]),
+            "busbar-webrequest",
+        ),
+        (
+            renamed("hook", "acme-hook-w", "w", &["webrequest"]),
+            "webrequest",
+        ),
+    ] {
+        let dir = tmpdir("former-conflict");
+        let first = sign(
+            &release,
+            renamed(
+                "hook",
+                "busbar-hook-webrequest",
+                "webrequest",
+                &["busbar-webrequest"],
+            ),
+            b"lib1",
+        );
+        let mut second = second;
+        second.publisher = "acme".into();
+        let other = second.name.clone();
+        write_tarball(&dir, "first.tar.gz", &first, b"lib1");
+        write_tarball(
+            &dir,
+            "second.tar.gz",
+            &sign(&acme, second, b"lib2"),
+            b"lib2",
+        );
+        let errs = scan_and_validate(&dir, &pol).unwrap_err();
+        let all = errs.join("\n");
+        assert!(
+            all.contains(&format!("'{contested}'"))
+                && all.contains("busbar-hook-webrequest")
+                && all.contains(&other),
+            "{all}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+/// THE ONE-OWNER RULE ACROSS THE DOORS (ARCHITECT Q-P4-12, BUSBAR-1.6.0.md:106): a linked row and
+/// any DIFFERENT plugin claiming one name, alias or former name refuse the boot, naming both and the
+/// word; neither door outranks the other. The SAME plugin linked and dropped in is not a claim
+/// conflict (the one-version-per-kind rule governs it).
+#[test]
+fn a_linked_and_another_plugin_claiming_one_name_are_refused() {
+    let webrequest = || {
+        renamed(
+            "hook",
+            "busbar-hook-webrequest",
+            "webrequest",
+            &["busbar-webrequest"],
+        )
+    };
+    // RED: the 1.5.5 tarball (manifest name `busbar-webrequest`) dropped in beside a linked 1.6.0
+    // webrequest that answers that name.
+    let old = renamed("hook", "busbar-webrequest", "webrequest-1-5-5", &[]);
+    let refused = dropped_in("cross-old", old)
+        .link(vec![LinkedPlugin::door(webrequest(), unopened_door)])
+        .expect_err("a linked row and a dropped-in plugin claiming one name are refused");
+    assert!(
+        refused.contains("'busbar-webrequest'")
+            && refused.contains("busbar-hook-webrequest")
+            && refused.contains("claim conflict"),
+        "{refused}"
+    );
+    // RED: two linked rows claiming one alias.
+    let refused = PluginRegistry::empty()
+        .link(vec![
+            LinkedPlugin::door(webrequest(), unopened_door),
+            LinkedPlugin::door(
+                renamed("hook", "acme-hook-x", "busbar-webrequest", &[]),
+                unopened_door,
+            ),
+        ])
+        .expect_err("two linked rows claiming one word are refused");
+    assert!(
+        refused.contains("'busbar-webrequest'") && refused.contains("acme-hook-x"),
+        "{refused}"
+    );
+    // GREEN: the linked row and its own dropped-in copy; the linked row answers.
+    let reg = dropped_in("cross-same", stating(webrequest(), None))
+        .link(vec![LinkedPlugin::door(webrequest(), versioned_door)])
+        .expect("the same plugin linked and dropped in is not a conflict");
+    assert!(reg.resolve("busbar-webrequest").expect("resolves").linked());
+    // RED (Q-P4-12): a different dropped-in plugin spelling the linked row's ALIAS, or its NAME.
+    for (tag, other) in [
+        (
+            "cross-alias",
+            renamed("hook", "acme-hook-y", "webrequest", &[]),
+        ),
+        (
+            "cross-name",
+            renamed("hook", "acme-hook-z", "busbar-hook-webrequest", &[]),
+        ),
+    ] {
+        let refused = dropped_in(tag, other)
+            .link(vec![LinkedPlugin::door(webrequest(), unopened_door)])
+            .expect_err("no door outranks the other");
+        assert!(
+            refused.contains("claim conflict") && refused.contains("busbar-hook-webrequest"),
+            "{tag}: {refused}"
+        );
+    }
+}
+
+/// A linked door whose Statement states a version: the store both-ways fixture's.
+#[allow(non_upper_case_globals)]
+const versioned_door: busbar_contract::abi::mechanism::door::DoorFn =
+    crate::both_ways::store_fixture::door;
+
+/// The version [`versioned_door`]'s Statement states.
+fn door_version() -> String {
+    let stated = crate::dispatch::rendering_of(versioned_door).expect("the door states itself");
+    busbar_contract::abi::mechanism::rendering::read(&stated)
+        .expect("reads")
+        .version
+}
+
+/// `rendering` with its Statement's version restated as `version` (the rendering's head is the
+/// magic, four `u32`s, then the name and the version, each a `u32` length and its bytes).
+fn restated(rendering: &[u8], version: &str) -> Vec<u8> {
+    let head = busbar_contract::abi::mechanism::rendering::RENDERING_MAGIC.len() + 16;
+    let len = |at: usize| u32::from_le_bytes(rendering[at..at + 4].try_into().unwrap()) as usize;
+    let at = head + 4 + len(head);
+    let mut out = rendering[..at].to_vec();
+    out.extend_from_slice(&(version.len() as u32).to_le_bytes());
+    out.extend_from_slice(version.as_bytes());
+    out.extend_from_slice(&rendering[at + 4 + len(at)..]);
+    out
+}
+
+/// `m` stating [`versioned_door`]'s Statement in its manifest, its version restated as `version`
+/// (`None`: the door's own).
+fn stating(m: Manifest, version: Option<&str>) -> Manifest {
+    let stated = crate::dispatch::rendering_of(versioned_door).expect("the door states itself");
+    let stated = version.map_or(stated.clone(), |v| restated(&stated, v));
+    Manifest {
+        statement: Some(hex::encode(stated)),
+        ..m
+    }
+}
+
+/// `webrequest`'s 1.6.0 manifest at `version`.
+fn webrequest_at(version: &str) -> Manifest {
+    let mut m = renamed(
+        "hook",
+        "busbar-hook-webrequest",
+        "webrequest",
+        &["busbar-webrequest"],
+    );
+    m.version = version.into();
+    m
+}
+
+/// THE ONE-VERSION RULE, SAME VERSION (ARCHITECT C'): one plugin linked and dropped in at ONE
+/// version — the version each door's Statement states — is ONE plugin, admitted once: the linked
+/// row serves every name, the dropped-in copy is no row of its own, and it is recorded for boot's
+/// one INFO line naming both doors and the version. The manifests' own `version`s differ on
+/// purpose: they are never compared. RED before: the copy stayed a second loadable row.
+#[test]
+fn one_plugin_by_both_doors_at_one_version_is_admitted_once() {
+    let version = door_version();
+    let reg = dropped_in("copy-same", stating(webrequest_at("9.9.9"), None))
+        .link(vec![LinkedPlugin::door(
+            webrequest_at("1.5.0"),
+            versioned_door,
+        )])
+        .expect("one plugin at one version is admitted");
+    assert!(reg.loadable().is_empty(), "the copy is no row of its own");
+    for word in ["busbar-hook-webrequest", "webrequest", "busbar-webrequest"] {
+        assert!(
+            reg.resolve(word).expect("resolves").linked(),
+            "{word}: the linked row serves"
+        );
+    }
+    assert_eq!(
+        reg.linked_copies(),
+        &[LinkedCopy {
+            name: "busbar-hook-webrequest".into(),
+            version: version.clone(),
+            file: "plugin.tar.gz".into(),
+        }]
+    );
+    assert_eq!(
+        reg.linked_copies()[0].line(),
+        format!(
+            "plugin 'busbar-hook-webrequest' v{version} is linked and also dropped in \
+             (plugin.tar.gz); the linked build serves it"
+        )
+    );
+}
+
+/// THE ONE-VERSION RULE, TWO VERSIONS: the same plugin linked and dropped in, its Statements stating
+/// two versions, refuses the boot, naming the plugin, both doors and both versions. RED before: the
+/// pair was skipped and the linked row silently won.
+#[test]
+fn one_plugin_by_both_doors_at_two_versions_refuses_the_boot() {
+    let refused = dropped_in("copy-other", stating(webrequest_at("1.5.0"), Some("1.6.1")))
+        .link(vec![LinkedPlugin::door(
+            webrequest_at("1.5.0"),
+            versioned_door,
+        )])
+        .expect_err("two versions of one plugin");
+    assert_eq!(
+        refused,
+        format!(
+            "plugin 'busbar-hook-webrequest' arrives by both doors at two versions: linked v{}, \
+             dropped in v1.6.1 (plugin.tar.gz) - one version per plugin: remove one",
+            door_version()
+        )
+    );
+}
+
+/// TRUST BEFORE IDENTITY: an UNSIGNED copy of a linked plugin at another version is SKIPPED by the
+/// trust phase before the one-version rule ever compares it — the boot is not refused for a
+/// tarball that was never admitted, and the skip names it.
+#[test]
+fn an_untrusted_copy_is_skipped_before_its_version_is_compared() {
+    let release = key(1);
+    let dir = tmpdir("copy-unsigned");
+    let mut m = stating(webrequest_at("1.5.0"), Some("1.6.1"));
+    m.sha256 = crate::sign::sha256_hex(b"unsigned lib");
+    write_tarball(&dir, "plugin.tar.gz", &m, b"unsigned lib");
+    let reg = scan_and_validate(&dir, &policy(&release))
+        .expect("scan")
+        .link(vec![LinkedPlugin::door(
+            webrequest_at("1.5.0"),
+            versioned_door,
+        )])
+        .expect("an untrusted tarball is skipped, not compared");
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(reg.skipped().len(), 1, "the unsigned copy is skipped");
+    assert!(reg.linked_copies().is_empty() && reg.loadable().is_empty());
+}
+
+/// THE VERSION COMPARED IS THE STATEMENT'S, AND ONLY THE STATEMENT'S (ARCHITECT C', 2026-10-07): a
+/// plugin that reaches the one-version compare stating no version in a Statement is REFUSED, naming
+/// it — a dropped-in copy whose manifest states no Statement (its manifest `version` is never read
+/// in its place, even when it equals the linked plugin's), one stating an empty version, and a
+/// linked row whose door states none. The build's store under its canonical name and a copy
+/// stating the store door's own Statement are one plugin at one version.
+#[test]
+fn the_one_version_rule_compares_statement_versions_only() {
+    let door = crate::both_ways::store_fixture::door;
+    let linked = || {
+        vec![LinkedPlugin::store_named(
+            "busbar-store-mem",
+            "mem",
+            door,
+            true,
+        )]
+    };
+    let m = || {
+        let mut m = manifest("busbar-store-mem", "mem", "busbar");
+        m.version = door_version();
+        m
+    };
+    let reg = dropped_in("copy-stated", stating(m(), None))
+        .link(linked())
+        .expect("one plugin at the version both doors state");
+    assert_eq!(reg.linked_copies()[0].version, door_version());
+    let refusal = "plugin 'busbar-store-mem' states no version in its Statement: the one-version \
+                   rule cannot compare it";
+    for (tag, copy) in [
+        ("copy-unstated", m()),
+        ("copy-empty", stating(m(), Some(""))),
+    ] {
+        let refused = dropped_in(tag, copy)
+            .link(linked())
+            .expect_err("a copy stating no version cannot be compared");
+        assert_eq!(refused, refusal, "{tag}");
+    }
+    let refused = dropped_in("copy-unopened", stating(m(), None))
+        .link(vec![LinkedPlugin::door_of_kind(
+            "store",
+            "busbar-store-mem",
+            unopened_door,
+        )])
+        .expect_err("a linked row whose door states nothing cannot be compared");
+    assert_eq!(refused, refusal);
+}
+
+/// THE LINKED BUILT-IN UNDER ITS CANONICAL NAME (ARCHITECT C'): a store or auth row the root names
+/// canonically answers to that name AND to its key, and every surface that printed the key before
+/// still prints it ([`LoadablePlugin::key`]): the claim conflict, a row of the wrong kind
+/// (`resolve_kind`'s words, which `appbuild` and the axes print), a store with no door. A
+/// dropped-in row prints its manifest name.
+#[test]
+fn a_linked_built_in_answers_its_canonical_name_and_prints_its_key() {
+    let door = crate::both_ways::store_fixture::door;
+    let reg = PluginRegistry::empty()
+        .link(vec![
+            LinkedPlugin::store_named("busbar-store-mem", "mem", door, true),
+            LinkedPlugin::auth_door_named("busbar-auth-tok", "tok", unopened_door),
+        ])
+        .expect("the rows register");
+    for (word, key) in [
+        ("busbar-store-mem", "mem"),
+        ("mem", "mem"),
+        ("busbar-auth-tok", "tok"),
+        ("tok", "tok"),
+    ] {
+        let p = reg.resolve(word).expect("resolves");
+        assert_eq!(p.key(), key, "{word}");
+    }
+    assert!(reg.store_door("busbar-store-mem").is_ok() && reg.store_door("mem").is_ok());
+    // A row of another kind: the key, as before (`store.module` naming the auth row).
+    assert_eq!(
+        reg.store_door("busbar-auth-tok").err().as_deref(),
+        Some("plugin 'tok' has kind 'auth', not 'store' - it cannot back the governance store")
+    );
+    assert_eq!(
+        reg.secret_refusal("tok"),
+        "plugin 'tok' has kind 'auth', not 'secret' - it cannot resolve config secrets"
+    );
+    // The claim conflict: a different dropped-in plugin spelling the store's key.
+    let refused = dropped_in("key-claim", manifest("busbar-store-other", "mem", "busbar"))
+        .link(vec![LinkedPlugin::store_named(
+            "busbar-store-mem",
+            "mem",
+            door,
+            true,
+        )])
+        .expect_err("two plugins claim `mem`");
+    assert_eq!(
+        refused,
+        "plugin claim conflict: 'mem' is claimed by both (linked) (mem) and plugin.tar.gz \
+         (busbar-store-other) - a name, alias or former name must resolve to one plugin; remove one"
+    );
+    // A row the root does not name canonically prints its name, as before.
+    let plain = PluginRegistry::empty()
+        .link(vec![LinkedPlugin::store("plain", door, true)])
+        .expect("registers");
+    assert_eq!(plain.resolve("plain").expect("resolves").key(), "plain");
+}
+
+/// The fleet's plugins.yaml entries, as `(repo, kind, alias, former_names)`: the four fields this
+/// sweep reads, off the registry's own flat shape (`  - repo:` opens an entry).
+fn fleet_entries(yaml: &str) -> Vec<(String, String, String, Vec<String>)> {
+    let mut out: Vec<(String, String, String, Vec<String>)> = Vec::new();
+    for line in yaml.lines() {
+        if let Some(repo) = line.strip_prefix("  - repo: ") {
+            out.push((repo.trim().into(), String::new(), String::new(), Vec::new()));
+            continue;
+        }
+        let Some(e) = out.last_mut() else { continue };
+        let Some(field) = line.strip_prefix("    ") else {
+            continue;
+        };
+        if let Some(v) = field.strip_prefix("kind: ") {
+            e.1 = v.trim().into();
+        } else if let Some(v) = field.strip_prefix("alias: ") {
+            e.2 = v.trim().into();
+        } else if let Some(v) = field.strip_prefix("former_names: ") {
+            e.3 = v
+                .trim()
+                .trim_start_matches('[')
+                .trim_end_matches(']')
+                .split(',')
+                .map(|w| w.trim().to_string())
+                .filter(|w| !w.is_empty())
+                .collect();
+        }
+    }
+    out
+}
+
+/// EVERY former name the committed plugins.yaml declares (the measured 1.5.5 manifest names of the
+/// renamed fleet plugins) resolves to its 1.6.0 plugin, of its kind, dropped in and linked: the
+/// ruling's case over the real data a 1.5.5 config names (`busbar-webrequest` under hooks, a store's
+/// `busbar-store-<name>-plugin` under `store.module`). A kind the linked door does not serve is
+/// checked dropped in only.
+#[test]
+fn every_former_name_plugins_yaml_declares_resolves_both_ways() {
+    let entries = fleet_entries(include_str!("../../../../plugins.yaml"));
+    let renamed_entries: Vec<_> = entries.iter().filter(|e| !e.3.is_empty()).collect();
+    assert!(renamed_entries.len() >= 9, "{renamed_entries:?}");
+    for (repo, kind, alias, former) in renamed_entries {
+        let former: Vec<&str> = former.iter().map(String::as_str).collect();
+        let m = || renamed(kind, repo, alias, &former);
+        let mut ways = vec![("dropped in", dropped_in(&format!("sweep-{alias}"), m()))];
+        if LINKED_KINDS.contains(&kind.as_str()) {
+            ways.push(("linked", linked_in(m())));
+        }
+        for (way, reg) in ways {
+            for old in &former {
+                let p = reg
+                    .resolve(old)
+                    .unwrap_or_else(|| panic!("{way}: {repo}'s former name '{old}' resolves"));
+                assert_eq!(&p.manifest.name, repo, "{way}");
+                assert!(reg.answers(old, kind), "{way}: '{old}' answers as a {kind}");
+            }
+        }
+    }
 }

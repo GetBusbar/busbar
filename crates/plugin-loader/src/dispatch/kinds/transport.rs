@@ -27,12 +27,14 @@ use busbar_contract::abi::mechanism::lifecycle::{slot as life, CancelOut};
 use busbar_contract::abi::mechanism::KindCode;
 use busbar_contract::abi::transport::check::{
     check_accept, check_arrival, check_cancel, check_claims, check_composes_over, check_framer,
-    check_framer_fields, check_head_slots, check_io, check_listen, check_locate, check_tail,
+    check_framer_fields, check_head_slots, check_io, check_listen, check_locate, check_settings,
+    check_tail,
 };
 use busbar_contract::abi::transport::{
     self, slot, AcceptIn, AcceptOut, AdoptIn, ArrivalIn, ArrivalOut, BeginIn, Claim, ConnIn,
     ConnOut, DialIn, EmitIn, EncodeIn, FinishIn, FramerOut, FramerSink, FramingIn, IngestIn, IoOut,
-    ListenIn, ListenOut, LocateIn, LocateOut, ReadIn, RefuseIn, ShutIn, TransportTail, WriteIn,
+    ListenIn, ListenOut, LocateIn, LocateOut, ReadIn, RefuseIn, SettingDecl, ShutIn, StatusRow,
+    TransportTail, WriteIn,
 };
 
 use crate::dispatch::{lifecycle_name, Answer, Context, InFrame, Kind, OutFrame};
@@ -52,9 +54,26 @@ pub struct TransportFacts {
     /// Every scheme the entry answers for, in order (interned: one allocation per distinct name for
     /// the process).
     pub claims: Vec<&'static str>,
+    /// The claims whose unit 0 opens at an UPGRADE (their row's `unit0_trigger` is
+    /// `UNIT0_UPGRADE`): the host's upgrade lines, read off the claim rows and never off a layer
+    /// list (ARCHITECT ruling Q128 U7). The handoff target on an upgrade is the claim that owns the
+    /// requested scheme.
+    pub upgrades: Vec<&'static str>,
+    /// The claims whose row carries a session (`session = 1`): a duplex line, never one request
+    /// and its response.
+    pub sessions: Vec<&'static str>,
     /// The claims it composes over; empty = directly over the host's socket (a framer) or the
     /// bottom of its stack (a carrier).
     pub composes_over: Vec<&'static str>,
+    /// The customer settings it reads, by their 1.5.5 config paths (`TransportTail::settings`), in
+    /// its order: the host deals each one's value to its `open`. The KEYS only, never a value.
+    pub settings_keys: Vec<&'static str>,
+    /// Its own claim (row `0`) selects on the local PORT a connection arrived on
+    /// (`SelectorForm::Port` among its selector forms): a carrier of network addresses.
+    pub ported: bool,
+    /// Its status table, row by row: `(claim, lo, hi)`, the code ranges each claim's numbering
+    /// has (`TransportTail::status_rows`); a stream's final status is judged against them.
+    pub status_rows: Vec<(u32, u32, u32)>,
 }
 
 /// A plugin string, interned.
@@ -100,17 +119,77 @@ fn tail_facts(st: &Statement) -> Result<TransportFacts, String> {
         unsafe { std::slice::from_raw_parts(tail.composes_over, tail.composes_over_len) }
     };
     check_composes_over(under).map_err(broke)?;
+    let settings: &[SettingDecl] = if tail.settings_len == 0 {
+        &[]
+    } else {
+        // SAFETY: `check_tail` refused a NULL list with a count; the list is `'static` plugin data.
+        unsafe { std::slice::from_raw_parts(tail.settings, tail.settings_len) }
+    };
+    check_settings(settings).map_err(broke)?;
+    let claims: Vec<&'static str> = names
+        .iter()
+        .map(|c| owned(*c, "claim"))
+        .collect::<Result<_, _>>()?;
+    // Row `i` describes `claims[i]` (`check_claim_rows` held the counts equal).
+    let upgrades = claims
+        .iter()
+        .zip(rows)
+        .filter(|(_, row)| row.unit0_trigger == busbar_contract::abi::transport::UNIT0_UPGRADE)
+        .map(|(name, _)| *name)
+        .collect();
+    let sessions = claims
+        .iter()
+        .zip(rows)
+        .filter(|(_, row)| row.session == 1)
+        .map(|(name, _)| *name)
+        .collect();
+    let status: &[StatusRow] = if tail.status_rows_len == 0 {
+        &[]
+    } else {
+        // SAFETY: `check_tail` refused a NULL list with a count; the list is `'static` plugin data.
+        unsafe { std::slice::from_raw_parts(tail.status_rows, tail.status_rows_len) }
+    };
     Ok(TransportFacts {
+        status_rows: status.iter().map(|r| (r.claim, r.lo, r.hi)).collect(),
         role: tail.role,
-        claims: names
-            .iter()
-            .map(|c| owned(*c, "claim"))
-            .collect::<Result<_, _>>()?,
+        claims,
+        upgrades,
+        sessions,
         composes_over: under
             .iter()
             .map(|s| owned(*s, "composes_over"))
             .collect::<Result<_, _>>()?,
+        settings_keys: settings
+            .iter()
+            .map(|s| owned(s.path, "settings"))
+            .collect::<Result<_, _>>()?,
+        ported: rows.first().is_some_and(|row| {
+            let port = busbar_contract::abi::hot::transport::code::selector_form(
+                busbar_contract::SelectorForm::Port,
+            );
+            row.selector_forms.len > 0
+                // SAFETY: `check_claims` refused a NULL list with a count; `'static` plugin data.
+                && unsafe {
+                    std::slice::from_raw_parts(row.selector_forms.ptr, row.selector_forms.len)
+                }
+                .contains(&port)
+        }),
     })
+}
+
+/// WHAT A COMPILED-IN TRANSPORT DOOR STATES, read off its Statement through the same door and tail
+/// checks a load runs, without binding or opening it: the boot seal registers every scheme an entry
+/// claims under its own key (`BUSBAR-1.6.0.md` TRANSPORT-STACK: ONE ENTRY PER PLUGIN, the schemes
+/// are its claims).
+///
+/// # Errors
+///
+/// The door, its Statement or its transport tail is refused.
+pub fn linked_facts(
+    door: busbar_contract::abi::mechanism::door::DoorFn,
+) -> Result<TransportFacts, String> {
+    let v = crate::dispatch::load::validate::<Transport>(door).map_err(|e| e.to_string())?;
+    tail_facts(&v.statement)
 }
 
 /// The transport kind.

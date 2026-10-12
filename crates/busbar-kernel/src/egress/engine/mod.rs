@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE EGRESS ENGINE — the OWNED connection pool with dial coalescing (`pool.rs`/`client.rs`)
-//! over a rustls/webpki connector: the ONE owned outbound HTTP stack (owner-ruled), relocated
+//! over the connector's TLS wrap: the ONE owned outbound HTTP stack (owner-ruled), relocated
 //! here from `busbar-core::proxy::egress_client` so every plane builds its clients from one
 //! neutral home. Core re-exports every name from its old `crate::proxy::` paths. The pool was
 //! `hyper_util::client::legacy::Client` until the owned-pool step: hyper (the protocol library)
@@ -21,8 +21,8 @@
 //!   * pooling: `pool_max_idle_per_host` / `pool_idle_timeout` / Tokio pool timer — same knobs,
 //!     same per-shard division; warm-pool reuse on config apply keyed by the plane's own
 //!     `ClientSettingsInput` snapshot (the core `UpstreamClientSettings` it replaced is deleted).
-//!   * TLS trust: rustls + compiled-in webpki (Mozilla) roots — byte-identical trust story to
-//!     reqwest's `rustls-tls` feature. ALPN offers `h2,http/1.1` by default; `http1_only` pins
+//!   * TLS trust: rustls + compiled-in webpki (Mozilla) roots, run by the connector's TLS wrap
+//!     (`crate::secure`) — byte-identical trust story to reqwest's `rustls-tls` feature. ALPN offers `h2,http/1.1` by default; `http1_only` pins
 //!     h1 (and wins over h2c, preserving the old apply-order); `h2_prior_knowledge` forces
 //!     cleartext h2c.
 //!   * timeouts: connect 10s on the connector; h2 keep-alive interval/timeout + adaptive window
@@ -63,6 +63,7 @@ use http_body_util::Full;
 // CONNECT tunnel stays in this file's `tunnel` module, where it moved from core verbatim.
 mod client;
 pub mod deadline;
+pub mod https;
 pub mod observe;
 mod pool;
 pub mod resolve;
@@ -76,16 +77,19 @@ pub use resolve::{EgressResolver, ResolveNames};
 pub use tls::{ClientIdentity, Trust};
 
 /// The connector stack, bottom-up: TCP through the pin-aware resolver (+ boot-detected CONNECT
-/// tunnel when a proxy env is set) + rustls, the whole connect under one wall-clock deadline,
+/// tunnel when a proxy env is set) + the connector's TLS wrap ([`https`]), the whole connect under
+/// one wall-clock deadline,
 /// with the peer identity observed on the way out. ONE concrete type for every posture — the
 /// per-posture differences are VALUES inside the layers, never per-request branches.
 pub type EngineConnector =
-    KeyPinObserve<ConnectDeadline<hyper_rustls::HttpsConnector<tunnel::TunnelConnector>>>;
+    KeyPinObserve<ConnectDeadline<https::HttpsConnector<tunnel::TunnelConnector>>>;
 
+#[cfg(test)]
+pub(crate) use client::RETURN_DELAY_FOR_TESTS;
 /// The pooled egress client — the OWNED pool with dial coalescing (`client.rs`/`pool.rs`),
 /// behind the same `request()` surface the `hyper_util::client::legacy::Client` alias had.
 /// `Full<Bytes>`: every engine egress body is one owned buffer.
-pub use client::EngineClient;
+pub use client::{ConnReturned, EngineClient};
 
 /// The error type `EngineClient::request` yields — named so a consumer's transport-error
 /// classification arms read as prose. Owned (`pool::EngineError`): carries its cause chain as
@@ -129,6 +133,10 @@ pub struct EngineSpec {
     /// h2 keep-alive interval/timeout + adaptive window: `Some` on the pooled posture, `None` on
     /// the pinned postures (reqwest set none — parity).
     pub h2_keepalive: Option<H2KeepAlive>,
+    /// The TLS wrap the https arm is secured by: `None` (every blessed posture) = the connector's,
+    /// carried by the root-installed egress-trust capability (`crate::secure::layer`). A test
+    /// hands its own TLS double here, as it hands its own names to `dns` and its own guard to `judge`.
+    pub tls: Option<Arc<dyn crate::secure::SecureLayer>>,
     /// TCP keepalive: pooled `Some(60s)`; pinned `None` (reqwest default — parity). nodelay is
     /// unconditional (both stacks set it).
     pub tcp_keepalive: Option<Duration>,
@@ -197,6 +205,7 @@ impl EngineSpec {
                 timeout: Duration::from_secs(10),
                 adaptive_window: true,
             }),
+            tls: None,
             tcp_keepalive: Some(Duration::from_secs(60)),
         }
     }
@@ -212,7 +221,7 @@ impl EngineSpec {
         host: Arc<str>,
         addr: IpAddr,
         identity: Option<ClientIdentity>,
-        extra_roots: Vec<rustls_pki_types::CertificateDer<'static>>,
+        extra_roots: Vec<Vec<u8>>,
     ) -> Self {
         EngineSpec {
             idle_per_host: usize::MAX,
@@ -227,6 +236,7 @@ impl EngineSpec {
             identity,
             proxy: ProxyPosture::Direct,
             h2_keepalive: None,
+            tls: None,
             tcp_keepalive: None,
         }
     }
@@ -290,18 +300,30 @@ pub fn build_client(spec: &EngineSpec) -> Result<EngineClient, String> {
     // THE RESOLVER IS THE PIN (see `resolve`): a pinned spec installs the one-name table and the
     // `dns` posture is structurally unreachable — not "unused", absent from the connector. An
     // unpinned spec judges every answer through the destination guard before the connector sees it.
-    let resolver = match (&spec.pin, &spec.dns) {
-        (Some(pin), _) => EgressResolver::Pinned {
-            host: Arc::clone(&pin.host),
-            addr: pin.addr,
-        },
-        (None, dns) => EgressResolver::Judged {
-            names: Box::new(match dns {
+    let (resolver, posture) = match (&spec.pin, &spec.dns) {
+        (Some(pin), _) => (
+            EgressResolver::Pinned {
+                host: Arc::clone(&pin.host),
+                addr: pin.addr,
+            },
+            tunnel::DialPosture::Pinned { addr: pin.addr },
+        ),
+        (None, dns) => {
+            let names = match dns {
                 Dns::System => EgressResolver::system(),
                 Dns::Custom(names) => EgressResolver::Custom(Arc::clone(names)),
-            }),
-            judge: spec.judge.clone(),
-        },
+            };
+            (
+                EgressResolver::Judged {
+                    names: Box::new(names.clone()),
+                    judge: spec.judge.clone(),
+                },
+                tunnel::DialPosture::Judged {
+                    judge: spec.judge.clone(),
+                    names,
+                },
+            )
+        }
     };
     let mut http = hyper_util::client::legacy::connect::HttpConnector::new_with_resolver(resolver);
     // The mock/bench upstreams are plain http; TLS wraps only https targets (below).
@@ -310,9 +332,6 @@ pub fn build_client(spec: &EngineSpec) -> Result<EngineClient, String> {
     http.set_keepalive(spec.tcp_keepalive);
     http.set_nodelay(true);
 
-    // rustls client config over the compiled-in webpki roots — the same trust anchors reqwest's
-    // rustls-tls used. ALPN is set below: `http/1.1` under `http1_only`, else `h2` then
-    // `http/1.1`.
     // The tunnel wrapper sits BETWEEN TCP and TLS: with no proxy env (every known deployment) it
     // delegates to the plain connector untouched; with one, it CONNECTs through the proxy the
     // target's SCHEME selects and TLS then handshakes over the tunnel with the real target's SNI
@@ -326,19 +345,17 @@ pub fn build_client(spec: &EngineSpec) -> Result<EngineClient, String> {
     // The per-client bound, resolved ONCE and handed to BOTH consumers: the gate's permits and
     // the pool's coalescing bound — one number, one derivation, no drift.
     let dial_bound = dial_bound_for(spec.pin.as_ref());
-    let http = tunnel::TunnelConnector::new(http, proxy, dial_bound);
+    let http = tunnel::TunnelConnector::new(http, proxy, dial_bound, posture);
 
-    let mut tls = rustls_client_config(spec)?;
-    // 1.5.5's hello (reqwest) offered `http/1.1` under http1-only, `h2, http/1.1` otherwise. The
-    // builder's http1-only path leaves ALPN empty, so the offer is stated here and the connector
-    // is made from the config directly (`https_or_http`, the builder's own result).
+    // The client TLS over the compiled-in webpki roots — the same trust anchors reqwest's
+    // rustls-tls used — built by the connector's TLS wrap. 1.5.5's hello (reqwest) offered
+    // `http/1.1` under http1-only, `h2, http/1.1` otherwise, so the offer is stated here.
     let offer = if spec.http1_only {
         OFFER_H1
     } else {
         OFFER_H2_H1
     };
-    tls.alpn_protocols = offer.iter().map(|id| id.to_vec()).collect();
-    let https = hyper_rustls::HttpsConnector::from((http, tls));
+    let https = https::HttpsConnector::new(http, client_tls(spec, offer)?);
     // One wall-clock bound over the WHOLE connect — TCP + tunnel + TLS handshake (see
     // `deadline`; reqwest's connect_timeout parity on the pinned postures, a strict tightening
     // of the latent black-hole-TLS gap on the pooled posture). Then the peer-identity observation,
@@ -365,62 +382,28 @@ pub fn build_client(spec: &EngineSpec) -> Result<EngineClient, String> {
     ))
 }
 
-/// The rustls client config, per spec: webpki roots (plus the spec's extras), ALPN left to the
-/// connector builder. The crypto provider is named EXPLICITLY (`ring` — the provider reqwest's
-/// `rustls-tls` used, so the cipher-suite story is unchanged): the bare `builder()` auto-detects
-/// the process provider and PANICS AT FIRST USE when more than one provider crate is in the
-/// binary's graph — which is exactly the composed busbar binary, and a boot-time panic CI caught.
-/// Explicit therefore, never ambient.
-fn rustls_client_config(spec: &EngineSpec) -> Result<rustls::ClientConfig, String> {
-    // ONE base root store and ONE crypto provider, shared by refcount across every client shard
-    // (`ClientConfig` holds both behind `Arc`s, and both builder seams take `Into<Arc<_>>`).
-    // The pooled-posture builder runs ONCE PER DATA WORKER (one client shard each, `appbuild`'s
-    // `make_one`), and `TLS_SERVER_ROOTS.to_vec()` materializes the ~150-anchor trust store on
-    // the heap — N private copies of identical, immutable data was pure idle RSS scaling with
-    // core count. Same anchors, same provider, same cipher-suite story; only the duplication is
-    // gone. A `WebpkiPlus` posture builds its OWN store (the extras join the defaults, exactly
-    // reqwest's `add_root_certificate` semantics) — a per-client-build cost on the cold pinned
-    // path, never per request.
-    static ROOTS: std::sync::OnceLock<std::sync::Arc<rustls::RootCertStore>> =
-        std::sync::OnceLock::new();
-    static PROVIDER: std::sync::OnceLock<std::sync::Arc<rustls::crypto::CryptoProvider>> =
-        std::sync::OnceLock::new();
-    let roots = match &spec.trust {
-        Trust::Webpki => ROOTS
-            .get_or_init(|| {
-                std::sync::Arc::new(rustls::RootCertStore {
-                    roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
-                })
-            })
-            .clone(),
-        Trust::WebpkiPlus(extras) => {
-            let mut store = rustls::RootCertStore {
-                roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
-            };
-            for der in extras {
-                store.add(der.clone()).map_err(|e| {
-                    format!("an extra trust root was refused by the root store: {e}")
-                })?;
-            }
-            std::sync::Arc::new(store)
-        }
+/// The client TLS for a spec's trust and identity, with the ALPN offer `alpn`, built by the
+/// connector's TLS wrap (`crate::secure`). `None` in a process that installed no wrap: its
+/// https dials then fail after the TCP connect, naming the missing install. An extra root the store
+/// refuses, or an identity the stack refuses, fails the build loudly.
+pub(crate) fn client_tls(
+    spec: &EngineSpec,
+    alpn: &[&[u8]],
+) -> Result<Option<Arc<dyn crate::secure::ClientTls>>, String> {
+    let Some(layer) = spec.tls.clone().or_else(crate::secure::layer) else {
+        return Ok(None);
     };
-    let provider = PROVIDER
-        .get_or_init(|| std::sync::Arc::new(rustls::crypto::ring::default_provider()))
-        .clone();
-    let builder = rustls::ClientConfig::builder_with_provider(provider)
-        .with_safe_default_protocol_versions()
-        .expect("ring provider supports the default TLS protocol versions")
-        .with_root_certificates(roots);
-    Ok(match &spec.identity {
-        None => builder.with_no_client_auth(),
-        // BUSBAR'S OWN END OF A MUTUAL HANDSHAKE. Offering a certificate ASKS FOR NOTHING and
-        // WEAKENS NOTHING: it is presented only when the peer's `CertificateRequest` asks, and
-        // the peer's certificate is still verified by the ordinary chain-and-name check.
-        Some(identity) => builder
-            .with_client_auth_cert(identity.chain(), identity.key())
-            .map_err(|e| format!("the client identity was refused by rustls: {e}"))?,
-    })
+    let extra_roots = match &spec.trust {
+        Trust::Webpki => None,
+        Trust::WebpkiPlus(extras) => Some(extras.as_slice()),
+    };
+    layer
+        .client(&crate::secure::ClientTlsSpec {
+            extra_roots,
+            identity: spec.identity.as_ref().map(|id| (id.chain(), id.key())),
+            alpn,
+        })
+        .map(Some)
 }
 
 /// Assemble one egress request from precomputed parts: method, `http::Uri`, caller-built header
@@ -611,6 +594,12 @@ mod resolver_tests;
 #[cfg(test)]
 #[path = "tests/dial_judge_tests.rs"]
 mod dial_judge_tests;
+
+/// The tunnelled target judged before CONNECT (K3 #5): a private literal or a privately-answering
+/// name is never tunnelled to, a name that does not resolve here still is.
+#[cfg(test)]
+#[path = "tests/tunnel_judge_tests.rs"]
+mod tunnel_judge_tests;
 
 /// The R1 extras-propagation spike (pooled reuse carries `PeerKeyPin` on every response), SNI
 /// preservation under the pin with its wrong-name refusing twin, the R2 URI-port-wins proof, and
@@ -946,7 +935,7 @@ mod tunnel {
         INSTALLED.get().cloned().flatten()
     }
 
-    /// The connector hyper-rustls wraps: plain TCP in the direct arm, TCP-to-proxy + CONNECT in
+    /// The connector the https arm (`https`) wraps: plain TCP in the direct arm, TCP-to-proxy + CONNECT in
     /// the tunneled arm. Sits BELOW TLS, so an https target's TLS handshake (with the target's
     /// SNI, against the target's cert) runs over the established tunnel — the proxy sees only
     /// `CONNECT host:port`, never a decrypted byte.
@@ -958,6 +947,84 @@ mod tunnel {
         /// (hyper clones the service per connect), NOT across shards: each worker paces its own
         /// establishment so no cross-worker lock ever appears on the connect path.
         gate: Arc<ConnectGate>,
+        /// How every target this connector dials is judged before a socket opens.
+        posture: DialPosture,
+    }
+
+    /// HOW A TARGET IS JUDGED BEFORE THE DIAL (THE DESIGN §5 DESTINATION GUARD: one check for every
+    /// outbound connection, a literal included). `HttpConnector` hands an IP-literal host straight
+    /// to the socket without asking its resolver, so the resolver's judgement alone never sees a
+    /// literal; this is the judgement that does, and it runs on both arms, direct and tunnelled.
+    #[derive(Clone)]
+    pub enum DialPosture {
+        /// The pinned posture: the resolver answers only the pin, so a literal target must BE the
+        /// pinned address; any other literal is refused.
+        Pinned { addr: IpAddr },
+        /// The pooled posture: the guard's name arm judges every target (a literal as its own
+        /// answer; a metadata, blocked or `localhost` name), then the resolver judges a name's
+        /// answer. A tunnelled target is resolved here through `names` as well: an answer is judged
+        /// whole and a refused one is never tunnelled to; a name that does not resolve here goes to
+        /// the proxy after the name arm (reach behind the proxy is the proxy's boundary).
+        Judged {
+            judge: Option<Arc<dyn crate::host_services::DestJudge>>,
+            names: super::EgressResolver,
+        },
+    }
+
+    impl DialPosture {
+        /// The judgement every dial opens with, before any socket.
+        fn admit(&self, target_host: &str) -> Result<(), BoxError> {
+            match self {
+                DialPosture::Pinned { addr } => {
+                    let bare = target_host.trim_start_matches('[').trim_end_matches(']');
+                    match bare.parse::<IpAddr>() {
+                        Ok(ip) if ip != *addr => Err(format!(
+                            "a pinned governed egress connects only to the address its guard judged \
+                             ({addr}); the HTTP client asked to dial the literal `{target_host}`, \
+                             which no guard judged"
+                        )
+                        .into()),
+                        _ => Ok(()),
+                    }
+                }
+                DialPosture::Judged { judge, .. } => {
+                    super::resolve::judged_name(judge.as_ref(), target_host)
+                }
+            }
+        }
+
+        /// A tunnelled target's own resolution, judged: `Err` when it resolved here to an answer
+        /// the guard refuses; `Ok` when the answer is admitted or the name does not resolve here
+        /// (the proxy resolves it). A literal was judged by [`Self::admit`] already.
+        async fn admit_tunnelled(&self, target_host: &str) -> Result<(), BoxError> {
+            let DialPosture::Judged { judge, names } = self else {
+                return Ok(());
+            };
+            let bare = target_host.trim_start_matches('[').trim_end_matches(']');
+            if bare.parse::<IpAddr>().is_ok() {
+                return Ok(());
+            }
+            let Ok(name) = bare.parse::<hyper_util::client::legacy::connect::dns::Name>() else {
+                return Ok(());
+            };
+            let mut names = names.clone();
+            if std::future::poll_fn(|cx| tower::Service::poll_ready(&mut names, cx))
+                .await
+                .is_err()
+            {
+                return Ok(());
+            }
+            match tower::Service::call(&mut names, name).await {
+                Ok(addrs) => {
+                    let addrs: Vec<std::net::SocketAddr> = addrs.collect();
+                    if addrs.is_empty() {
+                        return Ok(());
+                    }
+                    super::resolve::judged_answer(judge.as_ref(), target_host, addrs)
+                }
+                Err(_) => Ok(()),
+            }
+        }
     }
 
     impl TunnelConnector {
@@ -965,11 +1032,13 @@ mod tunnel {
             inner: hyper_util::client::legacy::connect::HttpConnector<super::EgressResolver>,
             config: Option<Arc<ProxyConfig>>,
             dial_bound: usize,
+            posture: DialPosture,
         ) -> Self {
             Self {
                 inner,
                 config,
                 gate: Arc::new(ConnectGate::new(dial_bound)),
+                posture,
             }
         }
     }
@@ -1075,6 +1144,10 @@ mod tunnel {
             // https slot, everything else the http slot; NO_PROXY excludes from both. Direct
             // arm: no config installed, no proxy for this scheme, or the host is excluded.
             let target_host = dst.host().unwrap_or_default().to_string();
+            // THE GUARD FIRST, on both arms: no socket opens to a target it refuses.
+            if let Err(refused) = self.posture.admit(&target_host) {
+                return Box::pin(async move { Err(refused) });
+            }
             let dst_is_https = dst.scheme_str() == Some("https");
             let proxy = match self
                 .config
@@ -1116,7 +1189,11 @@ mod tunnel {
             // authority; the permit spans dial + CONNECT handshake (both are establishment).
             let gate = self.gate.slot(&format!("{}:{}", proxy.host, proxy.port));
             let dial = tower::Service::call(&mut self.inner, proxy_uri);
+            let posture = self.posture.clone();
             Box::pin(async move {
+                // The proxy connects to the target itself, so the target's answer is judged HERE,
+                // before the proxy is dialled or asked anything.
+                posture.admit_tunnelled(&target_host).await?;
                 let _permit = gate
                     .acquire_owned()
                     .await
@@ -1221,6 +1298,16 @@ mod tunnel {
 
     #[cfg(test)]
     pub(super) use connects_per_shard as connects_per_shard_for_tests;
+
+    /// The pooled posture a hand-assembled test connector dials by: the refusing guard double with
+    /// the loopback every fixture binds allowlisted, as an operator lists a loopback upstream.
+    #[cfg(test)]
+    pub(super) fn loopback_listed_for_tests() -> DialPosture {
+        DialPosture::Judged {
+            judge: Some(crate::egress::fixtures::private_refusing(&["127.0.0.1"])),
+            names: super::EgressResolver::system(),
+        }
+    }
 
     #[cfg(test)]
     impl ConnectGate {

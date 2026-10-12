@@ -21,7 +21,8 @@ use std::task::{Context, Poll, Waker};
 
 use busbar_contract::abi::auth::{
     slot, AuthPoint, FieldSpan, FieldsIn, FieldsOut, NamedValue, OpenOutboundIn, OpenOutboundOut,
-    RequestFacts, FIELDS_BUF_BYTES, FIELDS_MAX, FIELD_SENSITIVE, MODE_OWN, MODE_PASSTHROUGH,
+    OutboundReadyIn, OutboundReadyOut, RequestFacts, FIELDS_BUF_BYTES, FIELDS_MAX, FIELD_SENSITIVE,
+    MODE_OWN, MODE_PASSTHROUGH,
 };
 use busbar_contract::abi::mechanism::call::{
     AbiStr, Blob, DeadlineClass, Outcome, BLOB_ABSENT, BLOB_JSON, BLOB_OCTETS, BLOB_SECRET,
@@ -47,7 +48,7 @@ pub struct OutboundInstance {
 /// (`busbar-kernel/src/trust/mod.rs` `Approval::serves`, the dispatch gate) -- a different concept
 /// (auth-style serving, not trust dispatch); the neutrality census keeps `fn serves(` kernel-only.
 #[must_use]
-pub fn serves_style(plugin: &Plugin<Auth>, style: &str) -> Option<OutboundStyle> {
+pub fn outbound_style(plugin: &Plugin<Auth>, style: &str) -> Option<OutboundStyle> {
     plugin
         .context::<AuthFacts>()?
         .styles
@@ -66,20 +67,21 @@ impl OutboundInstance {
         }
     }
 
-    /// `plugin`'s instance OPENED for its outbound styles: validated and opened (generation 1) over
-    /// the empty settings document, as [`Self::new`] then serves it. An outbound style binds its
-    /// credential and settings per binding (`open_outbound`), never at the instance's open.
+    /// `plugin`'s instance OPENED over the settings document `settings` (a JSON object): the
+    /// binding's own settings, for a plugin whose needs take their target from them (`target_from`:
+    /// the loader declares each such need pinned to what its path resolves to in `settings`, at
+    /// this `open`, THE DESIGN §5 PB-100).
     ///
     /// # Errors
     ///
     /// `validate` or `open` did not answer READY, naming the plugin.
-    pub fn open(
+    pub fn open_with(
         plugin: Plugin<Auth>,
         dispatcher: Arc<Dispatcher>,
         worker: u32,
+        settings: &[u8],
     ) -> Result<Self, String> {
         use busbar_contract::abi::mechanism::lifecycle::{slot as lc, OpenIn, OpenOut, ValidateIn};
-        const EMPTY: &[u8] = b"{}";
         let named = |what: &str, outcome: Outcome| {
             format!(
                 "`{}` did not {what} for its outbound styles: {outcome:?}",
@@ -89,7 +91,7 @@ impl OutboundInstance {
         let mut v = Frame::new(
             ValidateIn {
                 head: in_head(),
-                settings: blob(EMPTY, BLOB_JSON, 0),
+                settings: blob(settings, BLOB_JSON, 0),
                 err_buf: std::ptr::null_mut(),
                 err_cap: 0,
             },
@@ -103,7 +105,7 @@ impl OutboundInstance {
             OpenIn {
                 head: in_head(),
                 host: std::ptr::null(),
-                settings: blob(EMPTY, BLOB_JSON, 0),
+                settings: blob(settings, BLOB_JSON, 0),
                 secrets: std::ptr::null(),
                 secrets_len: 0,
                 generation: 1,
@@ -121,6 +123,13 @@ impl OutboundInstance {
             return Err(named("open", called.outcome));
         }
         Ok(Self::new(plugin, dispatcher, worker))
+    }
+
+    /// THE INSTANCE'S TICK SCHEDULE (THE DESIGN §6.5: a minted credential refreshes ahead of
+    /// expiry on `tick`): the one auth schedule, [`super::auth_ticks::ticks`], holding the instance
+    /// for as long as it runs.
+    pub async fn ticks(self: Arc<Self>) {
+        super::auth_ticks::ticks(&self.plugin, &self.dispatcher, self.worker).await;
     }
 }
 
@@ -206,8 +215,14 @@ impl Lend {
     /// The `in` naming this memory under `handle`.
     fn input(&mut self, handle: u64) -> FieldsIn {
         let r = &self.request;
+        let mut head = in_head();
+        // The call's extensions blob (the per-call scope, when the request stated one), lent with
+        // the rest of the request's bytes.
+        if !r.extensions.is_empty() {
+            head.extensions = blob(&r.extensions, BLOB_OCTETS, 0);
+        }
         FieldsIn {
-            head: in_head(),
+            head,
             handle,
             mode: if r.caller_credential.is_some() {
                 MODE_PASSTHROUGH
@@ -286,6 +301,7 @@ fn copy(r: &FieldsRequest) -> FieldsRequest {
         timestamp: r.timestamp,
         headers: r.headers.clone(),
         caller_credential: r.caller_credential.clone(),
+        extensions: r.extensions.clone(),
     }
 }
 
@@ -316,14 +332,20 @@ fn settled(outcome: Outcome, lend: &Lend, out: &FieldsOut) -> Fields {
     }
 }
 
-impl OutboundAuth for OutboundInstance {
-    fn open_outbound(
+impl OutboundInstance {
+    /// `open_outbound`, its refusal as the plugin wrote it: the outcome and the plugin's own error
+    /// text (empty when it wrote none).
+    ///
+    /// # Errors
+    /// The binding did not open: the outcome and the plugin's words.
+    pub fn open_outbound_raw(
         &self,
         style: &str,
         credential: &[u8],
         settings: &serde_json::Value,
-    ) -> Result<u64, String> {
-        let settings = serde_json::to_vec(settings).map_err(|e| e.to_string())?;
+    ) -> Result<u64, (Outcome, String)> {
+        let settings =
+            serde_json::to_vec(settings).map_err(|e| (Outcome::Refused, e.to_string()))?;
         let mut frame = Frame::new(
             OpenOutboundIn {
                 head: in_head(),
@@ -348,11 +370,42 @@ impl OutboundAuth for OutboundInstance {
             .error
             .map(|e| String::from_utf8_lossy(&e).into_owned())
             .unwrap_or_default();
-        Err(format!(
-            "`{}` did not open the outbound style `{style}`: {:?} {why}",
-            self.plugin.name(),
-            called.outcome
-        ))
+        Err((called.outcome, why))
+    }
+}
+
+impl OutboundAuth for OutboundInstance {
+    fn open_outbound(
+        &self,
+        style: &str,
+        credential: &[u8],
+        settings: &serde_json::Value,
+    ) -> Result<u64, String> {
+        self.open_outbound_raw(style, credential, settings)
+            .map_err(|(outcome, why)| {
+                format!(
+                    "`{}` did not open the outbound style `{style}`: {outcome:?} {why}",
+                    self.plugin.name(),
+                )
+            })
+    }
+
+    fn ready(&self, handle: u64) -> bool {
+        let mut frame = Frame::new(
+            OutboundReadyIn {
+                head: in_head(),
+                handle,
+            },
+            OutboundReadyOut {
+                head: out_head(),
+                ready: 0,
+                _reserved: 0,
+            },
+        );
+        // Not READY (a handle this generation does not hold, a fault): not ready, so a prober never
+        // sends an unauthenticated request on it.
+        self.plugin.call(slot::OUTBOUND_READY, &mut frame).outcome == Outcome::Ready
+            && frame.out.ready != 0
     }
 
     fn fields_now(&self, handle: u64, request: &FieldsRequest) -> Option<Fields> {

@@ -628,16 +628,18 @@ impl Tree {
         production_only: bool,
         files: Option<&[String]>,
     ) -> Vec<(&'t str, &'t Line)> {
-        let mut out = Vec::new();
         let names: Vec<String> = match files {
             Some(f) => f.to_vec(),
             None => self.files.keys().cloned().collect(),
         };
-        for rel in names {
-            let Some((key, lines)) = self.files.get_key_value(&rel) else {
-                continue;
-            };
-            for i in grep_file(rx, production_only, lines).iter() {
+        let asked: Vec<(&String, &std::sync::Arc<Vec<Line>>)> = names
+            .iter()
+            .filter_map(|rel| self.files.get_key_value(rel))
+            .collect();
+        let found = grep_files(rx, production_only, &asked);
+        let mut out = Vec::new();
+        for ((key, lines), hits) in asked.iter().zip(found.iter()) {
+            for i in hits.iter() {
                 out.push((key.as_str(), &lines[*i]));
             }
         }
@@ -664,42 +666,65 @@ impl Tree {
 /// cost. The key is the pattern, the production flag and the scan's IDENTITY; the memo holds a
 /// clone of that `Arc`, so the allocation can never be freed and its address handed to a different
 /// file while the entry exists. A planted file is a new scan, a new `Arc`, and a fresh answer.
-fn grep_file(
+///
+/// ONE `grep` TAKES THE MEMO'S LOCK TWICE, NOT ONCE PER FILE: once to read every answer it already
+/// holds, once to file the new ones. The files it did not hold are matched across the cores in
+/// between, outside the lock — a lock per file is what the rules, run concurrently, queued on.
+fn grep_files(
     rx: &Regex,
     production_only: bool,
-    lines: &std::sync::Arc<Vec<Line>>,
-) -> std::sync::Arc<Vec<usize>> {
+    asked: &[(&String, &std::sync::Arc<Vec<Line>>)],
+) -> Vec<std::sync::Arc<Vec<usize>>> {
     type Memo = std::collections::HashMap<
         (String, bool, usize),
         (std::sync::Arc<Vec<Line>>, std::sync::Arc<Vec<usize>>),
     >;
     static MEMO: std::sync::Mutex<Option<Memo>> = std::sync::Mutex::new(None);
-    let key = (
-        rx.as_str().to_string(),
-        production_only,
-        std::sync::Arc::as_ptr(lines) as usize,
-    );
-    if let Some((_, hit)) = MEMO
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .as_ref()
-        .and_then(|m| m.get(&key))
-    {
-        return hit.clone();
-    }
-    let found: std::sync::Arc<Vec<usize>> = std::sync::Arc::new(
-        lines
+    let key_of = |lines: &std::sync::Arc<Vec<Line>>| {
+        (
+            rx.as_str().to_string(),
+            production_only,
+            std::sync::Arc::as_ptr(lines) as usize,
+        )
+    };
+    let held: Vec<Option<std::sync::Arc<Vec<usize>>>> = {
+        let memo = MEMO.lock().unwrap_or_else(|e| e.into_inner());
+        asked
             .iter()
-            .enumerate()
-            .filter(|(_, l)| !(production_only && l.intest) && rx.is_match(l.code_bytes()))
-            .map(|(i, _)| i)
-            .collect(),
-    );
-    MEMO.lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .get_or_insert_with(Default::default)
-        .insert(key, (lines.clone(), found.clone()));
-    found
+            .map(|(_, lines)| {
+                memo.as_ref()
+                    .and_then(|m| m.get(&key_of(lines)))
+                    .map(|(_, hit)| hit.clone())
+            })
+            .collect()
+    };
+    let missing: Vec<&std::sync::Arc<Vec<Line>>> = asked
+        .iter()
+        .zip(&held)
+        .filter(|(_, h)| h.is_none())
+        .map(|((_, lines), _)| *lines)
+        .collect();
+    let fresh: Vec<std::sync::Arc<Vec<usize>>> = crate::par::par_map(&missing, |lines| {
+        std::sync::Arc::new(
+            lines
+                .iter()
+                .enumerate()
+                .filter(|(_, l)| !(production_only && l.intest) && rx.is_match(l.code_bytes()))
+                .map(|(i, _)| i)
+                .collect(),
+        )
+    });
+    if !fresh.is_empty() {
+        let mut memo = MEMO.lock().unwrap_or_else(|e| e.into_inner());
+        let memo = memo.get_or_insert_with(Default::default);
+        for (lines, found) in missing.iter().zip(&fresh) {
+            memo.insert(key_of(lines), ((*lines).clone(), found.clone()));
+        }
+    }
+    let mut fresh = fresh.into_iter();
+    held.into_iter()
+        .map(|h| h.unwrap_or_else(|| fresh.next().expect("one fresh answer per missing file")))
+        .collect()
 }
 
 /// THE SAME MEMO FOR A RULE THAT SCANS A FILE ITS OWN WAY rather than through [`Tree::grep`]:

@@ -502,3 +502,62 @@ fn the_tail_is_read_at_bind_and_a_missing_one_refuses() {
     };
     assert!(Transport::context(&one_name).is_err(), "two rows, one name");
 }
+
+/// THE UPGRADE LINES ARE READ OFF THE CLAIM ROWS (ARCHITECT ruling Q128 U7): a claim whose row states
+/// `unit0_trigger = UNIT0_UPGRADE` is an upgrade line, and a claim that states anything else is not —
+/// RED: the same scheme with the trigger left at 0 yields an EMPTY upgrade set, so the host mounts no
+/// upgrade line for it.
+#[test]
+fn an_upgrade_line_is_a_claim_whose_unit_zero_opens_at_the_upgrade() {
+    use busbar_contract::abi::mechanism::door::{KindTailHead, Statement};
+    use busbar_contract::abi::sdk::door::{abi_str, statement};
+    use busbar_contract::abi::transport::{Claim, TransportTail, ROLE_FRAMER, UNIT0_UPGRADE};
+
+    use crate::dispatch::kinds::transport::TransportFacts;
+
+    let upgrades_of = |trigger: u8| -> Vec<&'static str> {
+        let claims: [Claim; 1] = [Claim {
+            selector_forms: abi_str(""),
+            egress_selector_forms: abi_str(""),
+            facts: std::ptr::null(),
+            facts_len: 0,
+            status_namespace: abi_str(""),
+            session: 1,
+            session_bound: 0,
+            unit0_trigger: trigger,
+            status_at: 0,
+            _reserved: 0,
+        }];
+        let mut tail: TransportTail = z();
+        tail.head = KindTailHead {
+            size: size_of::<TransportTail>() as u32,
+            _reserved: 0,
+        };
+        tail.role = ROLE_FRAMER;
+        tail.claim_rows = claims.as_ptr();
+        tail.claim_rows_len = 1;
+        let names = [abi_str("up")];
+        let st = Statement {
+            kind_tail: std::ptr::from_ref(&tail).cast::<KindTailHead>(),
+            claims: names.as_ptr(),
+            claims_len: names.len(),
+            ..statement("t", "0", 1)
+        };
+        let ctx = Transport::context(&st)
+            .expect("a framer tail binds")
+            .expect("a context");
+        ctx.downcast_ref::<TransportFacts>()
+            .expect("the transport facts")
+            .upgrades
+            .clone()
+    };
+    assert_eq!(
+        upgrades_of(UNIT0_UPGRADE),
+        ["up"],
+        "the upgrade claim is a line"
+    );
+    assert!(
+        upgrades_of(0).is_empty(),
+        "RED: a claim that does not open at the upgrade is no upgrade line"
+    );
+}

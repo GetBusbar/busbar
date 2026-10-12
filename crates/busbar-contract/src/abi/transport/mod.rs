@@ -46,6 +46,15 @@
 //! continuing where it stopped. A framer that answers any byte or piece twice is wrong. A framer op
 //! never pends.
 //!
+//! A STREAM'S OWN BACKPRESSURE. A framer that queues a stream's emitted bytes until the far end is
+//! ready for them (a multiplexed wire whose peer grants room stream by stream) answers an `emit`
+//! that brings the queue to its high-water mark with [`YIELD_STREAM_FULL`]: the bytes were taken,
+//! and the host emits nothing more on that stream, holding whatever feeds it (not-ready, with a
+//! wake), until the framer hands a [`PIECE_WRITABLE`] piece on the stream (its queue drained below
+//! the low-water mark) or the stream's end or failure piece. A host that keeps emitting past the
+//! mark is the framer's to bound: it may fail the stream. This is the stream's, never the
+//! connection's: [`YIELD_MORE`] still means only that a host buffer filled.
+//!
 //! STREAMS END BY PIECE. A frame is one or more pieces on one stream; the last carries
 //! [`PIECE_END_OF_FRAME`]. A stream's frames END with an EMPTY piece (length `0`) carrying
 //! [`PIECE_END_OF_FRAME`]; a stream that FAILED ends instead with a piece carrying
@@ -78,6 +87,12 @@
 //!   host calls again once it has drained the sink.
 //!
 //! The tokens an `out` carries (`listener`, `conn`, `framing`) are names, not results.
+//!
+//! A CARRIER MOVES BYTES OVER THE HOST'S HANDLES. It opens, binds, accepts, reads, writes, shuts
+//! and spawns through the host's I/O table (`abi::host::io`, `io.*`): it never holds a descriptor,
+//! and the host opens only what it admitted for the dial that asked. Its frames: a carrier carried
+//! as ITSELF (a need over its own claim, no framer above it) delimits them with
+//! [`READ_END_OF_FRAME`] and [`WRITE_END_OF_FRAME`]; under a framer, its bytes are a stream.
 //!
 //! WHAT THE HOT-LANE `TransportDecl` BECOMES (a mechanical re-heading):
 //!
@@ -129,8 +144,16 @@
 //! ```
 
 pub mod check;
+pub mod datagram;
 pub mod fields;
 pub mod route;
+
+pub use datagram::{
+    DatagramLane, DatagramPath, DatagramRoute, DatagramYield, KeyingMaterial, RendezvousTerms,
+    FINGERPRINT_BYTES, HANDSHAKE_ANSWERS, HANDSHAKE_INITIATES, HANDSHAKE_NONE, LANE_CLEAR,
+    LANE_RENDEZVOUS, LANE_SECURED, MAX_KEYING_BYTES, MAX_ROUTES, PATH_REQUEST_BIND,
+    PATH_REQUEST_NONE, PATH_REQUEST_REBIND,
+};
 
 /// THE AUTH POINTS a transport offers and calls its bound auth at (THE DESIGN, "Auth points
 /// and guest lists", step 1): defined once in `abi::auth`, referred to here, never redefined.
@@ -138,7 +161,7 @@ pub use super::auth::{
     AuthPoint, AuthPoints, POINT_FRAME, POINT_HEAD, POINT_HEAD_BODY, POINT_PEER,
 };
 
-use super::mechanism::call::{AbiStr, Field, InHead, Op, OutHead};
+use super::mechanism::call::{AbiStr, Field, InHead, Op, OutHead, Span};
 use super::mechanism::check::{contract, OpContract};
 use super::mechanism::door::KindTailHead;
 use super::mechanism::lifecycle::{OpsHead, LIFECYCLE_SLOTS};
@@ -304,6 +327,17 @@ pub const FACT_DECODES_PAYLOAD: u32 = 2;
 pub const SIDE_ACCEPT: u32 = 0;
 /// `side`: the dialing end.
 pub const SIDE_DIAL: u32 = 1;
+/// `side`: the accepting end of ONE STREAM whose connection and head the host's own framer carries
+/// (ARCHITECT 4l, 2026-10-05: one listener port carries every claim's streams, so a claim's framer
+/// frames the stream, not the connection). Its one stream is stream `1`. `begin` takes the stream's
+/// target and its head fields ([`BeginIn::fields`]); `ingest` takes the stream's body bytes and
+/// yields each message as a piece that ends its frame (no piece ends the stream: the host's framer
+/// knows where its body ended); `emit` takes one message's bytes (`end_of_frame` = it ends) and yields the
+/// stream's body bytes in `wire`; `refuse` and `finish` yield the stream's CLOSING FIELD BLOCK in
+/// `wire`, as field lines (`name: value` CRLF each), which the host sends verbatim: after a head as
+/// its trailers, before one as the fields of an answer that is nothing else. `finish` states the
+/// stream's final status ([`FinishIn::final_status`]).
+pub const SIDE_ACCEPT_STREAM: u32 = 2;
 
 /// Close reason: normal.
 pub const CLOSE_NORMAL: u32 = 0;
@@ -332,6 +366,19 @@ pub const STATUS_CALLER_FAULT: u8 = 2;
 pub const STATUS_FAR_END_FAULT: u8 = 3;
 /// Status class: other.
 pub const STATUS_OTHER: u8 = 4;
+
+/// Fault reading: none stated. The breaker reads an answer with no fault reading as the caller's
+/// (it records nothing against the destination): a framer that states no fault table never trips
+/// anything.
+pub const FAULT_NONE: u8 = 0;
+/// Fault reading: the caller's own fault. The destination is healthy and nothing is recorded.
+pub const FAULT_CALLER: u8 = 1;
+/// Fault reading: a transient fault of the destination. Its cell counts it toward a trip, and the
+/// piece's `retry_after_secs`, where stated, floors the cooldown.
+pub const FAULT_TRANSIENT: u8 = 2;
+/// Fault reading: the destination itself is down for every caller (its credential or its account
+/// was refused), so every pool's cell for it trips at once.
+pub const FAULT_HARD: u8 = 3;
 
 /// [`Claim::status_at`]: no status.
 pub const STATUS_AT_NONE: u8 = 0;
@@ -393,10 +440,26 @@ pub const PIECE_CONTINUED: u16 = 32;
 /// it into `FrameMeta::text`, the bit's one home above the ABI.
 pub const PIECE_TEXT: u16 = 64;
 
+/// [`FramePiece::flags`]: the stream is WRITABLE again: the queue an `emit` answered with
+/// [`YIELD_STREAM_FULL`] drained below the framer's low-water mark, and the host may emit on the
+/// stream again. Always an EMPTY piece, with no other flag: it ends no frame and no stream.
+pub const PIECE_WRITABLE: u16 = 256;
+
 /// [`EmitIn::flags`]: the bytes are a TEXT message, not a binary one, on a wire whose messages are
 /// one or the other (ws sends them under its TEXT opcode); read on the call that completes the
 /// frame. Absent means binary. The outbound twin of [`PIECE_TEXT`].
 pub const EMIT_TEXT: u32 = 1;
+
+/// [`WriteIn::flags`]: the bytes complete a FRAME of the carrier's own wire, for a carrier that
+/// delimits frames itself (a carrier carried as itself, with no framer above it). A carrier that
+/// carries an undelimited byte stream ignores it.
+pub const WRITE_END_OF_FRAME: u32 = 1;
+
+/// [`IoOut::flags`] on a `read`: the bytes complete a FRAME of the carrier's own wire. A carrier
+/// whose wire is an undelimited byte stream sets it on every read: each read is a frame, the
+/// degenerate case. A frame longer than the host's buffer comes in several reads, the last one
+/// carrying it.
+pub const READ_END_OF_FRAME: u32 = 1;
 
 /// [`FramerYield::flags`]: no frame follows on this connection.
 pub const YIELD_ENDED: u32 = 1;
@@ -404,6 +467,9 @@ pub const YIELD_ENDED: u32 = 1;
 pub const YIELD_MORE: u32 = 2;
 /// [`FramerYield::flags`]: `next_deadline_ns` is set; call [`slot::TIMER`] then.
 pub const YIELD_HAS_DEADLINE: u32 = 4;
+/// [`FramerYield::flags`], on `emit` only: the bytes were taken and the stream's queue is at its
+/// high-water mark; emit nothing more on it until a [`PIECE_WRITABLE`] piece or its last piece.
+pub const YIELD_STREAM_FULL: u32 = 8;
 
 // ── the Statement tail ───────────────────────────────────────────────────────────────────────────
 
@@ -556,6 +622,10 @@ pub struct ConnFacts {
     pub peer_fingerprint: AbiStr,
     /// The claim the connection resolved to (absent = the entry's first claim).
     pub claim: AbiStr,
+    /// The host's own certificate, DER, for a framer that states its fingerprint to the far end in
+    /// a session description; absent when the secure layer presents none. Public: the certificate's
+    /// key never crosses. A tail addition (pre-tag v1).
+    pub local_certificate: AbiStr,
 }
 
 /// One frame piece a framer produced, in [`FramerSink::pieces`]; its bytes are
@@ -770,6 +840,10 @@ pub struct WriteIn {
     pub bytes: *const u8,
     /// How many.
     pub len: usize,
+    /// `WRITE_*` bits: [`WRITE_END_OF_FRAME`].
+    pub flags: u32,
+    /// Alignment padding.
+    pub _reserved: u32,
 }
 
 /// `read`'s and `write`'s `out`.
@@ -780,6 +854,10 @@ pub struct IoOut {
     pub head: OutHead,
     /// Bytes read (`0` = the end) or taken.
     pub len: u64,
+    /// `READ_*` bits on a `read`: [`READ_END_OF_FRAME`]. `0` on a `write`.
+    pub flags: u32,
+    /// Alignment padding.
+    pub _reserved: u32,
 }
 
 /// `flush`'s `in`.
@@ -882,7 +960,9 @@ pub struct LocateOut {
     pub has_name: u32,
     /// Bytes of `alpn_buf` written: the framer's protocol offer (`0` = it offers none, and the
     /// handshake carries no ALPN). The connector offers exactly these, in this order, and tells
-    /// the framer which one was agreed in [`ConnFacts::agreed_protocol`].
+    /// the framer which one was agreed in [`ConnFacts::agreed_protocol`]. A target without
+    /// connection security has no handshake: there an offer of exactly ONE protocol is the protocol
+    /// the framer speaks by prior knowledge, and the connector hands it back as agreed.
     pub alpn_written: u64,
     /// Short answer: the bytes `alpn_buf` needs.
     pub alpn_needed: u64,
@@ -898,6 +978,9 @@ pub struct FramerOut {
     pub yielded: FramerYield,
     /// `begin`/`adopt`: the new framing token; other ops leave it.
     pub framing: u64,
+    /// A datagram framer's routes, path request and rendezvous terms ([`datagram`]); all zero from
+    /// a stream framer. A tail addition (pre-tag v1).
+    pub datagram: DatagramYield,
 }
 
 /// `begin`'s `in` (the framer's `open`).
@@ -906,16 +989,26 @@ pub struct FramerOut {
 pub struct BeginIn {
     /// The head.
     pub head: InHead,
-    /// [`SIDE_ACCEPT`] | [`SIDE_DIAL`].
+    /// [`SIDE_ACCEPT`] | [`SIDE_DIAL`] | [`SIDE_ACCEPT_STREAM`].
     pub side: u32,
     /// Alignment padding.
     pub _reserved: u32,
-    /// The target.
+    /// The target ([`SIDE_ACCEPT_STREAM`]: the stream's path and query).
     pub target: AbiStr,
     /// What connection security established.
     pub facts: *const ConnFacts,
     /// The sink.
     pub sink: FramerSink,
+    /// [`SIDE_DIAL`]: the dial's OPENING head fields (the bound auth's fields and the request's
+    /// own, in order), for a framer whose wire carries them on its connection's opening (an
+    /// upgrade request) rather than on a message; a framer that renders them per message takes them
+    /// in `encode` too and ignores these (ARCHITECT Q-L5B-WS-DIAL 2026-10-03). A tail addition.
+    /// [`SIDE_ACCEPT_STREAM`]: the stream's head fields, as the caller sent them.
+    pub fields: *const Field,
+    /// How many.
+    pub fields_len: usize,
+    /// The datagram lane ([`datagram`]): NULL for a stream framer. A tail addition (pre-tag v1).
+    pub lane: *const DatagramLane,
 }
 
 /// `ingest`'s `in`.
@@ -936,6 +1029,8 @@ pub struct IngestIn {
     pub _reserved: u32,
     /// The sink.
     pub sink: FramerSink,
+    /// The datagram lane ([`datagram`]): NULL for a stream framer. A tail addition (pre-tag v1).
+    pub lane: *const DatagramLane,
 }
 
 /// `emit`'s `in`.
@@ -965,6 +1060,8 @@ pub struct EmitIn {
     /// starts an attempt) ALWAYS stamps it at attempt start; `0` is only the standalone fallback,
     /// where the framer counts its own configured timeout from that first `emit`.
     pub deadline_ns: u64,
+    /// The datagram lane ([`datagram`]): NULL for a stream framer. A tail addition (pre-tag v1).
+    pub lane: *const DatagramLane,
 }
 
 /// `encode`'s `in`. The rendered bytes go into `sink.wire`.
@@ -1010,9 +1107,26 @@ pub struct RefuseIn {
     pub len: usize,
     /// The sink.
     pub sink: FramerSink,
+    /// The refusal's neutral status number, in the space of the plane kind's refusal status
+    /// ([`crate::abi::plane::RefusalIn::status`]): the transport maps it to its own wire, where
+    /// `bytes` do not state one in the wire's own terms. `0` = none stated. Appended (OWNER
+    /// R-addendum 2026-09-30: the refusal carries a neutral status number the transport maps to
+    /// its wire).
+    pub status: u32,
+    /// Alignment padding.
+    pub _reserved2: u32,
 }
 
 /// `finish`'s `in` (the framer's `close`).
+///
+/// THE FINAL STATUS (ARCHITECT 4l, 2026-10-05): on a framing begun on [`SIDE_ACCEPT_STREAM`], the
+/// close is the stream's last answer, and the four `final_*` fields state how it ended, as the unit
+/// stated it: `final_status` in the numbering of the claim the stream arrived on (a number the
+/// claim's status rows cover; `0` where the unit stated none and the claim's numbering has one for
+/// success), its message and its details as byte ranges of `final_bytes`, each empty where the
+/// unit stated none. The framer renders them on its own wire, verbatim; the host renders nothing.
+/// The same names and shape as the plane's `OnPieceOut` final tail. Any other framing's close
+/// carries the four zeroed. A tail addition (pre-tag v1).
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct FinishIn {
@@ -1026,6 +1140,20 @@ pub struct FinishIn {
     pub _reserved: u32,
     /// The sink.
     pub sink: FramerSink,
+    /// The status the stream ended with, in its claim's numbering.
+    pub final_status: u32,
+    /// Alignment padding.
+    pub _final_reserved: u32,
+    /// The status's message, a range of `final_bytes`; empty = none.
+    pub final_message: Span,
+    /// The status's details, a range of `final_bytes`, passed through as stated; empty = none.
+    pub final_details: Span,
+    /// The bytes `final_message` and `final_details` index (host memory, valid for the call).
+    pub final_bytes: *const u8,
+    /// How many.
+    pub final_bytes_len: usize,
+    /// The datagram lane ([`datagram`]): NULL for a stream framer. A tail addition (pre-tag v1).
+    pub lane: *const DatagramLane,
 }
 
 /// `detach`'s and `timer`'s `in`.
@@ -1038,6 +1166,8 @@ pub struct FramingIn {
     pub framing: u64,
     /// The sink.
     pub sink: FramerSink,
+    /// The datagram lane ([`datagram`]): NULL for a stream framer. A tail addition (pre-tag v1).
+    pub lane: *const DatagramLane,
 }
 
 /// `adopt`'s `in`.

@@ -192,3 +192,47 @@ fn the_comments_cite_the_design_in_words() {
         "the source cites the design by number rather than in words: {offenders:?}"
     );
 }
+
+/// THE CADENCE RATCHET, OVER THIS PLANE'S OWN FILES (moved with the grammar: the host's connect
+/// path went with its crate, so the ratchet now reads the grammar and the door that judge
+/// `verify_ttl:`). Detection is never rate-limited and demotion is never held.
+#[test]
+fn the_cadence_grammar_has_no_knob_that_slows_detection_or_delays_demotion() {
+    let read = |rel: &str| -> String {
+        std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join(rel)).unwrap_or_else(
+            |e| {
+                panic!(
+                    "the cadence ratchet cannot read `{rel}`: {e}. If the file moved, MOVE THE \
+                     RATCHET — do not drop the path."
+                )
+            },
+        )
+    };
+    let code = |s: &str| -> String {
+        s.lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    for rel in ["src/tools_config.rs", "src/endpoint.rs", "src/tool_door.rs"] {
+        let src = code(&read(rel));
+        for banned in [
+            "detection_backoff",
+            "detection_grace",
+            "demotion_backoff",
+            "demotion_grace",
+            "demotion_delay",
+            "quarantine_grace",
+            "quarantine_delay",
+            "drift_grace",
+            "suppress_drift",
+            "min_drift",
+        ] {
+            assert!(
+                !src.contains(banned),
+                "{rel} names `{banned}`. Detection is never rate-limited and demotion is never \
+                 held; the only direction that may be held is RECOVERY."
+            );
+        }
+    }
+}

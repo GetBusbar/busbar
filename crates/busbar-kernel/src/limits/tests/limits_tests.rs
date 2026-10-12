@@ -233,3 +233,38 @@ fn rollback_is_visible_on_the_live_read_path_from_another_thread() {
          the rollback has to land on the process-global slot, not just on the guard"
     );
 }
+
+/// A REJECTED APPLY LEAVES ITS HOOK CONTENT CEILING BEHIND (audit kernel-K1 #5): the generation's
+/// hook content ceiling is a process global mirrored out of the installed limits, so a build that
+/// is rolled back puts it back with the rest. Before, it was set mid-build, outside the guard, and
+/// a build refused after that point left the rejected ceiling live under the running generation.
+#[test]
+fn uncommitted_guard_restores_the_hook_content_ceiling() {
+    let _lock = LIMITS_TEST_LOCK.blocking_lock();
+    let _restore = RestoreOnDrop(get());
+
+    let previous = LimitsResolved {
+        hook_content_max_bytes: 4_096,
+        ..distinctive(1_111, 5 * 1024 * 1024, 17)
+    };
+    busbar_kernel::config::limits::install(&previous);
+    assert_eq!(busbar_kernel::proxy::hook_content_max_bytes(), 4_096);
+
+    {
+        let _rejected = InstallGuard::install(&LimitsResolved {
+            hook_content_max_bytes: 64,
+            ..distinctive(2_222, 1024, 3)
+        });
+        assert_eq!(
+            busbar_kernel::proxy::hook_content_max_bytes(),
+            64,
+            "the candidate's ceiling is live while its build runs"
+        );
+    }
+
+    assert_eq!(
+        busbar_kernel::proxy::hook_content_max_bytes(),
+        4_096,
+        "a rejected apply left its hook content ceiling live"
+    );
+}

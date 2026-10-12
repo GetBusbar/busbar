@@ -31,7 +31,7 @@ async fn stream_with_stream_options(
     stream_options: Value,
 ) -> (axum::response::Response, Arc<MockServerState>, MockServer) {
     crate::testkit::install_test_seams();
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let state = Arc::new(MockServerState::new());
     state.push(stream_with_usage_chunk());
     let server = MockServer::new(state.clone()).await;

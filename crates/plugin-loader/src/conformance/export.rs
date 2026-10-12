@@ -50,15 +50,17 @@ use busbar_contract::abi::export::{
     SCRAPE_KIND_SUMMARY, SCRAPE_KIND_UNTYPED,
 };
 use busbar_contract::abi::mechanism::call::{
-    AbiStr, Blob, InHead, OutHead, BLOB_JSON, BLOB_JSONL, BLOB_OCTETS,
+    AbiStr, Blob, InHead, OutHead, Outcome, BLOB_JSON, BLOB_JSONL, BLOB_OCTETS,
 };
 
 use super::{
-    bind, called, close, crossings, dispatcher, input, load, open, output, ready_step, refresh,
-    release, tick, validate, Fold, Leg, Recorder, Subject,
+    called, close, crossings, dispatcher, input, load, open, output, ready_step, refresh, release,
+    tick, validate, Fold, Leg, Recorder, Subject,
 };
 use crate::dispatch::kinds::export::Export;
-use crate::dispatch::{Bind, Diagnostic, Dropped, EnvelopeSink, Frame, Metric, Plugin, NO_BLOB};
+use crate::dispatch::{
+    Bind, Called, Diagnostic, Dispatcher, Dropped, EnvelopeSink, Frame, Metric, Plugin, NO_BLOB,
+};
 
 /// This kind's section of the plugin's `conformance.json`, and its instance label: the kind's
 /// config root key, read off the kind list (`busbar_contract::plugin::Kind::verb`).
@@ -262,13 +264,25 @@ fn snapshot(families: &serde_json::Value) -> Snapshot {
     }
 }
 
-/// One `deliver` of `batch` on `stream`.
-fn deliver(p: &Plugin<Export>, stream: u8, batch: &[u8], n: u8) -> String {
+/// One `deliver` of `batch` on `stream`, AS THE KERNEL'S EXPORT FLUSHER OFFERS IT
+/// (`export_door`): on a ticket of `d`'s, write-behind, so a delivery that waits on the network
+/// answers PENDING and is RESUMED on its wake.
+fn deliver(p: &Plugin<Export>, d: &Dispatcher, stream: u8, batch: &[u8], n: u8) -> String {
+    // The batch rides with the op (THE DESIGN §2): the lending submit owns it.
+    let batch: std::sync::Arc<Vec<u8>> = std::sync::Arc::new(batch.to_vec());
     let mut f: Frame<DeliverIn, OutHead> = Frame::new(input(), output());
     f.input.op_id = [n; 16];
     f.input.stream = stream;
-    f.input.batch = blob(batch, BLOB_JSONL);
-    called(&p.call(export::slot::DELIVER, &mut f))
+    f.input.batch = blob(&batch, BLOB_JSONL);
+    called(&super::on_ticket(
+        p,
+        d,
+        export::slot::DELIVER,
+        f,
+        busbar_contract::abi::mechanism::call::DeadlineClass::WriteBehind,
+        0,
+        batch,
+    ))
 }
 
 /// One `scrape` over `families` into a host buffer of `cap` bytes, and the ONE re-call a short
@@ -301,10 +315,27 @@ fn scrape(p: &Plugin<Export>, families: &[ScrapeFamily], cap: usize, exposition:
     )
 }
 
+/// Whether the dispatcher JUDGED `c`'s answer, so what its `out` names may be read: every outcome
+/// but FAULT is judged by the kind's check (a FAULT is the answer the check refused, or a crossing
+/// the host cut, and its `out` is the plugin's unjudged words), and PENDING never reaches a
+/// ticket-less caller (THE DESIGN §11.13 M1: a slice is formed only from a length the host judged).
+fn judged(c: &Called) -> bool {
+    matches!(
+        c.outcome,
+        Outcome::Ready | Outcome::Failed | Outcome::Refused
+    )
+}
+
+/// What a line says in place of plugin memory the host never read (an unjudged answer).
+const UNREAD: &str = "<unread>";
+
 /// `status`: its line and its lease, still held.
 fn status(p: &Plugin<Export>) -> (String, u64) {
     let mut f: Frame<InHead, StatusOut> = Frame::new(input(), output());
     let c = p.call(export::slot::STATUS, &mut f);
+    if !judged(&c) {
+        return (format!("{} status={UNREAD}", called(&c)), c.lease);
+    }
     // SAFETY: the plugin's status blob, judged by `check_status`, live under the lease.
     let body = unsafe { copied(f.out.status.ptr, f.out.status.len) };
     (format!("{} status={body:?}", called(&c)), c.lease)
@@ -317,6 +348,9 @@ fn check(p: &Plugin<Export>, phase: u32, instances: &[CheckInstance]) -> (String
     f.input.instances = list(instances);
     f.input.instances_len = instances.len();
     let c = p.call(export::slot::CHECK, &mut f);
+    if !judged(&c) {
+        return (format!("{} findings={UNREAD}", called(&c)), c.lease);
+    }
     // SAFETY: the plugin's findings blob, judged by `check_check`, live under the lease.
     let findings = unsafe { copied(f.out.findings.ptr, f.out.findings.len) };
     (format!("{} findings={findings:?}", called(&c)), c.lease)
@@ -334,6 +368,16 @@ fn serve(p: &Plugin<Export>, r: &serde_json::Value) -> (String, u64) {
     f.input.query = lend(field(r, "query"));
     f.input.body = blob(body.as_bytes(), BLOB_OCTETS);
     let c = p.call(export::slot::SERVE, &mut f);
+    if !judged(&c) {
+        return (
+            format!(
+                "{} code={} headers={UNREAD} body={UNREAD}",
+                called(&c),
+                f.out.status_code
+            ),
+            c.lease,
+        );
+    }
     let headers: Vec<String> = if f.out.headers_out.is_null() || f.out.headers_out_len == 0 {
         Vec::new()
     } else {
@@ -371,7 +415,7 @@ fn stream(d: &serde_json::Value) -> u8 {
 pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     let k = s.kind_inputs(ROOT);
     assert!(k.is_object(), "conformance.json has no `export` inputs");
-    let settings = s.settings();
+    let settings = leg.settings(s);
     let empty = Vec::new();
     let arr = |key: &str| {
         k.get(key)
@@ -401,7 +445,7 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
                 .iter()
                 .map(|i| (field(i, "name").to_string(), text(&i["settings"])))
                 .collect(),
-            None => vec![("conformance".to_string(), settings.clone())],
+            None => vec![("conformance".to_string(), settings.to_vec())],
         };
     let instances: Vec<CheckInstance> = instance_settings
         .iter()
@@ -415,7 +459,7 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     let tape = Arc::new(Tape::default());
     let b = Bind {
         sink: tape.clone(),
-        ..bind(&d, ROOT)
+        ..s.bind(&d, ROOT)
     };
     let p = load::<Export>(s, leg, b).expect("the export door loads");
     let mut r = Recorder::new(crossings(&p));
@@ -438,13 +482,19 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     // The host refuses an unopened instance's kind op before any crossing.
     r.line("deliver unopened", 0, || {
         let d0 = &delivers[0];
-        host(deliver(&p, stream(d0), &text(&d0["batch"]), 0))
+        host(deliver(&p, &d, stream(d0), &text(&d0["batch"]), 0))
     });
     r.line("open", 1, || host(called(&open(&p, &settings))));
     ready_step(&mut r, s, &p, &d);
     for (i, dl) in delivers.iter().enumerate() {
         r.line(&format!("deliver #{i}"), 1, || {
-            host(deliver(&p, stream(dl), &text(&dl["batch"]), i as u8 + 1))
+            host(deliver(
+                &p,
+                &d,
+                stream(dl),
+                &text(&dl["batch"]),
+                i as u8 + 1,
+            ))
         });
     }
     for (i, (sc, snap)) in scrapes.iter().zip(&snapshots).enumerate() {
@@ -501,13 +551,13 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     r.line("refresh", 1, || host(called(&refresh(&p, &settings))));
     r.line("deliver after refresh", 1, || {
         let d0 = &delivers[0];
-        host(deliver(&p, stream(d0), &text(&d0["batch"]), 0xfe))
+        host(deliver(&p, &d, stream(d0), &text(&d0["batch"]), 0xfe))
     });
     r.line("close", 1, || host(called(&close(&p))));
     // A closed instance answers FAULT without a crossing.
     r.line("deliver after close", 0, || {
         let d0 = &delivers[0];
-        host(deliver(&p, stream(d0), &text(&d0["batch"]), 0xff))
+        host(deliver(&p, &d, stream(d0), &text(&d0["batch"]), 0xff))
     });
     let fold = r.fold();
     contract(&fold, k);
@@ -631,3 +681,7 @@ fn contract(fold: &Fold, k: &serde_json::Value) {
         assert!(!at(label).starts_with("Ready"), "{label}: {}", at(label));
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/conformance_export_unjudged_tests.rs"]
+mod unjudged_tests;

@@ -14,9 +14,17 @@
 //! **A failed sync poisons the segment, permanently.** Not "retries", not "degrades" — poisons. The
 //! moment a sync reports an error, every byte in this segment after the last good commit is of
 //! unknown state, and the one safe reading of unknown is that it is not there. So the segment is
-//! closed to further writes, the caller is handed a durability loss, and the batch that failed goes
-//! to a fresh segment along with the one after it. A segment that has been poisoned never un-poisons
-//! itself, because nothing that happens later can tell you what landed.
+//! closed to further writes, the failed batch's bytes are cut off it (the segment is shortened back
+//! to the last good commit and that is synced), the caller is handed a durability loss, and the
+//! batch that failed goes to a fresh segment along with the one after it. A segment that has been
+//! poisoned never un-poisons itself, because nothing that happens afterwards can tell you what landed.
+//!
+//! The cut is what keeps a batch the caller was told was lost from coming back: after a write error
+//! its pages can still sit in the page cache, readable and verifying, without ever reaching the
+//! medium, and a restart that read them would put on the book records that are on no disk and chain
+//! the next ones onto them. That the segment is finished is recorded by the log opening the next
+//! segment at once (see `crate::wal`): a restart appends to the newest segment, never to one below
+//! it, so a poisoned segment is never written to again by this process or the next one.
 
 use std::io;
 
@@ -167,8 +175,10 @@ impl Segment {
             return Err(SegmentError::Poisoned);
         }
         let mut buf: Vec<u8> = Vec::new();
-        for record in records {
-            for frame in record.encode() {
+        for (i, record) in records.iter().enumerate() {
+            // The commit's first frame says so: a subsequent commit verifying past a damaged one is the
+            // proof the damaged one was acknowledged.
+            for frame in record.encode_in_commit(i == 0) {
                 buf.extend_from_slice(&frame);
             }
         }
@@ -181,19 +191,34 @@ impl Segment {
         }
         if let Err(e) = self.claim_through(end) {
             // A claim that fails is a write that may have half happened. Treated as a loss.
-            self.poisoned = true;
+            self.poison();
             return Err(SegmentError::Write(e));
         }
         if let Err(e) = self.backend.write_all_at(self.write_offset, &buf) {
-            self.poisoned = true;
+            self.poison();
             return Err(SegmentError::Write(e));
         }
         if let Err(e) = self.backend.sync() {
-            self.poisoned = true;
+            self.poison();
             return Err(SegmentError::Sync(e));
         }
         self.write_offset = end;
         Ok(self.write_offset)
+    }
+
+    /// Close the segment for good after a failed write or sync, and cut what the failed batch may
+    /// have left on the backing: shorten it to the last good commit and sync the new length.
+    ///
+    /// The write's own error is what the caller reports as the durability loss. A cut that fails
+    /// too has nothing further to try on a medium that refuses both: the failed batch's bytes may
+    /// then still read back until the retried batch is durable in the next segment, which is the
+    /// one case `crate::wal` names as beyond what any record of the loss could cover.
+    fn poison(&mut self) {
+        self.poisoned = true;
+        if self.backend.set_len(self.write_offset).is_ok() {
+            self.claimed = self.write_offset;
+            let _synced = self.backend.sync().is_ok();
+        }
     }
 
     /// Claim space forward so that `end` is inside the backing, a step at a time.

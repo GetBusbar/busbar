@@ -315,3 +315,51 @@ fn a_trip_suspends_an_otherwise_perfectly_healthy_registration() {
     assert_eq!(approval.state(&sighting), TrustState::Approved);
     assert!(approval.serves("plan", "sha256/PLAN"));
 }
+
+/// A KEPT APPROVAL RELOADS ONLY ONTO THE ROOT IT WAS MADE UNDER. The approval round-trips through
+/// the kernel's trust-decision record, pin and skill digests alike; a skill the approval no longer
+/// carries is written revoked and not reloaded; and once the operator declares another root key the
+/// kept approval is for a different identity, so the registration starts pending.
+#[test]
+fn a_kept_approval_reloads_onto_its_own_root_and_no_other() {
+    let store = busbar_kernel::plane::store::PlaneStoreView::narrow(
+        crate::testkit::engine_boot::engine().scratch_store(),
+    );
+    let record = DemotionRecord::default();
+    record.set_sink(store);
+    let cfg = |key: &str| AgentPinCfg {
+        mechanism: PinMechanism::JwsIssuerKey,
+        key: Some(format!(" {key} ")),
+        fingerprint: None,
+    };
+
+    let mut wider = Approval::registered();
+    let mut two = caps();
+    two.insert("draft".to_string(), "sha256/DRAFT".to_string());
+    wider
+        .approve(
+            &Sighting::Seen(Observation {
+                pin: Some(signed("K1", "sha256:one")),
+                capabilities: two,
+            }),
+            None,
+        )
+        .unwrap();
+    keep_approval(&record, "planner", &wider, 1).unwrap();
+    let mut approval = Approval::registered();
+    approval
+        .approve(&seen(signed("K1", "sha256:one")), None)
+        .unwrap();
+    keep_approval(&record, "planner", &approval, 2).unwrap();
+
+    let rows = record.decisions();
+    let reloaded = kept_approval(&cfg("K1"), "planner", &rows).expect("kept under K1");
+    assert_eq!(reloaded, approval, "pin and skill set reload exactly");
+    assert_eq!(
+        reloaded.state(&seen(signed("K1", "sha256:two"))),
+        TrustState::Quarantined,
+        "a moved card is drift against the reloaded approval"
+    );
+    assert!(kept_approval(&cfg("K2"), "planner", &rows).is_none());
+    assert!(kept_approval(&cfg("K1"), "other", &rows).is_none());
+}

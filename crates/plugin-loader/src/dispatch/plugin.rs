@@ -42,8 +42,8 @@ use std::time::Instant;
 use busbar_contract::abi::host::conn::connector::DIRECTION_OUTBOUND;
 use busbar_contract::abi::mechanism::call::{
     AbiStr, Blob, DeadlineClass, Diag, InHead, MetricEntry, Op, OutHead, Outcome, RawOutcome,
-    DIAG_LOG, DIAG_LOG_DROPPED, METRIC_ADD, METRIC_OBSERVE, METRIC_SET, SEVERITY_ERROR,
-    SEVERITY_TRACE,
+    DIAG_LOG, DIAG_LOG_DROPPED, FLAG_RESUME, METRIC_ADD, METRIC_OBSERVE, METRIC_SET,
+    SEVERITY_ERROR, SEVERITY_TRACE,
 };
 use busbar_contract::abi::mechanism::door::{FAMILY_COUNTER, FAMILY_GAUGE, FAMILY_HISTOGRAM};
 use busbar_contract::abi::mechanism::lifecycle::{
@@ -148,6 +148,19 @@ impl EnvelopeSink for NoSink {
 /// The next instance identity bind mints; `0` is never minted.
 static NEXT_INSTANCE: AtomicU64 = AtomicU64::new(1);
 
+/// MINT ONE INSTANCE IDENTITY off `next`, never `0`: `0` is the composition root's own identity on
+/// the one connector (`busbar`'s `root::connector::ROOT_OWNER`, the authorization server's needs),
+/// so a plugin minted `0` would share that table's needs and connections. A counter that wraps
+/// past `u64::MAX` skips `0` rather than handing it out.
+fn mint_instance(next: &AtomicU64) -> InstanceId {
+    loop {
+        let id = next.fetch_add(1, Ordering::Relaxed);
+        if id != 0 {
+            return InstanceId(id);
+        }
+    }
+}
+
 /// What the host binds a loaded plugin to.
 #[derive(Clone)]
 pub struct Bind {
@@ -168,10 +181,55 @@ pub struct Bind {
     /// let _ = busbar_plugin_loader::dispatch::Bind { instance: "a".into(), max_inflight_cap: 1, sink };
     /// ```
     pub dispatcher: super::worker::Adopter,
-    /// The host's ONE connection table. An instance whose Statement declares a need is declared on
-    /// it at bind (each need under its Statement index) and handed the connector slots
+    /// The host's ONE connection table, or why the bind has none, stated at every call site
+    /// ([`ConnTable`]). An instance whose Statement declares a need is declared on the table at bind
+    /// (each need under its Statement index) and handed the connector slots
     /// ([`super::conn_services::CONN_SLOTS`]); any other instance is handed none.
-    pub conns: Option<Arc<dyn busbar_contract::conn::DeclaredConns>>,
+    pub conns: ConnTable,
+}
+
+/// THE BIND'S CONNECTION TABLE (Q-P4-3): the host's table, or, explicitly, why there is none. A
+/// door that declares a need and is bound to serve with no table is REFUSED at bind, naming the
+/// plugin ([`LoadError::NoConnectionTable`]); only a probe binds it with none.
+#[derive(Clone)]
+pub enum ConnTable {
+    /// The host's one connection table: a need the Statement declares is declared on it.
+    Host(Arc<dyn busbar_contract::conn::DeclaredConns>),
+    /// A PROBE or CHECK bind: the instance is only validated or read for its facts, never opened to
+    /// serve, so a need it declares is not declared and it is handed no table (nothing is opened to
+    /// the network while a configuration is judged). Not refused.
+    Probe,
+    /// A bind to SERVE with no connection table: the door must declare no need. One that declares
+    /// a need is refused ([`LoadError::NoConnectionTable`]).
+    NoNeeds,
+}
+
+impl ConnTable {
+    /// A SERVING bind over the table an axis holds: [`ConnTable::Host`] when it holds one, else
+    /// [`ConnTable::NoNeeds`] (an axis handed no table serves only doors that declare no need).
+    #[must_use]
+    pub fn serving(table: Option<Arc<dyn busbar_contract::conn::DeclaredConns>>) -> Self {
+        table.map_or(Self::NoNeeds, Self::Host)
+    }
+
+    /// The table, when the bind has one.
+    #[must_use]
+    pub fn table(&self) -> Option<&Arc<dyn busbar_contract::conn::DeclaredConns>> {
+        match self {
+            Self::Host(t) => Some(t),
+            Self::Probe | Self::NoNeeds => None,
+        }
+    }
+}
+
+impl std::fmt::Debug for ConnTable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Host(_) => "Host",
+            Self::Probe => "Probe",
+            Self::NoNeeds => "NoNeeds",
+        })
+    }
 }
 
 impl std::fmt::Debug for Bind {
@@ -179,6 +237,7 @@ impl std::fmt::Debug for Bind {
         f.debug_struct("Bind")
             .field("instance", &self.instance)
             .field("max_inflight_cap", &self.max_inflight_cap)
+            .field("conns", &self.conns)
             .finish_non_exhaustive()
     }
 }
@@ -250,6 +309,8 @@ pub(crate) struct Crossed {
     pub(crate) short: bool,
     /// `cancel`'s `CancelOut.disposition`, when the op ended through `cancel`.
     pub(crate) disposition: Option<u32>,
+    /// The record writes that `cancel` carried (a plane's, SEAM-L(r)).
+    pub(crate) cancel_writes: Vec<busbar_contract::plane_calls::CancelWrite>,
 }
 
 impl Crossed {
@@ -261,6 +322,7 @@ impl Crossed {
             wake_at_ns: 0,
             short: false,
             disposition: None,
+            cancel_writes: Vec::new(),
         }
     }
 }
@@ -287,6 +349,9 @@ pub(crate) struct Instance {
     /// Each whose `target_from` or `trust_from` names a config path is declared at every `open` and
     /// `refresh`, with what those paths resolve to in the settings it is handed.
     needs: Box<[ReadNeed]>,
+    /// The settings keys its Statement names as secret references (`Statement::secret_refs`), in
+    /// order: the host resolves each and lends the material in `open`/`refresh`'s `secrets`.
+    secret_refs: Box<[String]>,
     pub(crate) kind: KindCode,
     name: String,
     slots: Box<[Op]>,
@@ -294,16 +359,32 @@ pub(crate) struct Instance {
     ready: Option<Op>,
     families: Box<[FamilyShape]>,
     diag_ids: DiagIds,
+    /// The instance box: set by an `open` that answered READY, and ALSO by one that answered
+    /// PENDING (its half-open box, which its RESUME runs on); nulled when an `open` ends any other
+    /// way (FAULT included) and when `close` answered READY. An `open` the plugin answered READY or
+    /// PENDING but the host judged FAULT leaves the plugin's live box half-open, and the host
+    /// closes it at once ([`Instance::close_half_open`]); so does a pended `open` the host
+    /// cancels (a deadline or a client drop: the worker's `cancel`, then its `close`).
     ptr: AtomicPtr<c_void>,
+    /// `open` answered READY and `close` has not: what [`Instance::is_open`] reads. A half-open box
+    /// (an `open` in flight that pended) is not open.
+    opened: AtomicBool,
     pub(crate) faulted: AtomicBool,
-    /// `close` answered READY: every later op answers FAULT without a crossing.
+    /// `close` of an OPEN instance answered READY, or any `close` answered FAULT: every later op
+    /// answers FAULT without a crossing. (Closing a half-open box frees the box; the instance never
+    /// opened, so it is not closed.)
     closed: AtomicBool,
     /// THE CROSSING GATE: the count of crossings in progress, with [`CLOSING`] set while `close`
     /// crosses (and kept once it closed). `close` enters only when nothing else is crossing, and
     /// nothing enters while it is set, so no crossing ever meets a freed instance.
     gate: AtomicU32,
-    /// Crossings actually made (the witness of "without a crossing").
+    /// Crossings actually made (the witness of "without a crossing"), RESUMES included.
     pub(crate) crossings: AtomicU64,
+    /// Of [`Instance::crossings`], the RESUME re-invocations ([`FLAG_RESUME`]: the same op
+    /// re-entered on its ticket after it answered PENDING; THE DESIGN §11.2, A.3 "Resume"). An
+    /// op's FIRST invocations are `crossings - resumes`: "one op = one crossing", however often
+    /// the op pends.
+    pub(crate) resumes: AtomicU64,
     /// The ticket-less crossings in progress, for the watchdog: `(id, started, slot)`.
     pub(crate) calls: Mutex<Vec<(u64, Instant, u32)>>,
     next_call: AtomicU64,
@@ -321,6 +402,8 @@ pub(crate) struct Instance {
     op_name: fn(u32) -> &'static str,
     /// [`Kind::unit_of`] of the bound kind.
     unit_of: fn(u32, *const InHead, usize) -> Option<u64>,
+    /// [`Kind::cancel_frame`] of the bound kind.
+    pub(crate) cancel_frame: fn() -> Box<dyn super::CancelFrame>,
     /// [`Kind::context`] of the bound kind, built from the Statement at bind.
     context: Option<Box<super::Context>>,
     sink: Arc<dyn EnvelopeSink>,
@@ -368,7 +451,40 @@ struct LogBudget {
 /// The gate bit `close` holds.
 const CLOSING: u32 = 1 << 31;
 
+/// An `open`'s crossing, armed with the instance pointer: dropped armed (the host's judgement did
+/// not end the `open` READY or PENDING), it leaves the pointer at `live`, whichever way the
+/// crossing returned: the box the plugin still holds (it answered READY or PENDING, so it freed
+/// nothing; the host then closes it), else NULL (any other answer frees the box).
+struct OpenEnded<'a> {
+    ptr: Option<&'a AtomicPtr<c_void>>,
+    live: *mut c_void,
+}
+
+impl Drop for OpenEnded<'_> {
+    fn drop(&mut self) {
+        if let Some(ptr) = self.ptr {
+            ptr.store(self.live, Ordering::Release);
+        }
+    }
+}
+
 /// Whether `slot` is one of the five that never overlap on one instance (`ready` among them).
+/// THE FFI CALL of a lifecycle slot (`validate`, `open`, `refresh`, `retire`, `close`, `ready`):
+/// `op` entered, after asserting in debug builds that the thread is a permanent FFI worker
+/// ([`crate::ffi_thread`]). [`Instance::cross_gated`] calls it only from inside
+/// [`crate::ffi_thread::on_plugin_thread`]; a lifecycle slot entered on any other thread trips the
+/// assertion.
+pub(crate) fn enter_lifecycle(
+    what: &str,
+    op: Op,
+    instance: *mut c_void,
+    input: *const c_void,
+    output: *mut c_void,
+) -> RawOutcome {
+    crate::ffi_thread::debug_assert_permanent(what);
+    op(instance, input, output)
+}
+
 pub(crate) fn is_lifecycle(s: u32) -> bool {
     matches!(
         s,
@@ -409,8 +525,15 @@ impl Instance {
         self.slots.len() as u32
     }
 
+    /// Whether `open` answered READY and `close` has not.
     pub(crate) fn is_open(&self) -> bool {
-        !self.ptr.load(Ordering::Acquire).is_null()
+        self.opened.load(Ordering::Acquire)
+    }
+
+    /// Whether the host holds a HALF-OPEN box: an `open` that pended and has not answered READY
+    /// (still in flight, or ended without an answer, e.g. cancelled).
+    pub(crate) fn half_open(&self) -> bool {
+        !self.is_open() && !self.ptr.load(Ordering::Acquire).is_null()
     }
 
     /// Take the `max_inflight` units op `s` needs: one, or for `close` ALL of them and only when
@@ -462,7 +585,7 @@ impl Instance {
         self.calls.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// Whether `close` answered READY.
+    /// Whether `close` answered READY or FAULT.
     pub(crate) fn is_closed(&self) -> bool {
         self.closed.load(Ordering::Acquire)
     }
@@ -499,12 +622,77 @@ impl Instance {
             if !from_settings(need) {
                 continue;
             }
-            let resolve = |path: &str| doc.as_ref().and_then(|d| resolve_setting(d, path));
-            let target = resolve(&need.target_from);
-            let trust = resolve(&need.trust_from);
             let id = NeedId(u32::try_from(i).unwrap_or(u32::MAX));
+            // THE MEMBER-PROGRAM PATH (ARCHITECT round 5 Q-L3B-STDIO-UPSTREAM (A)): each
+            // registration that names a program is a member, its `command`/`args`/`env` its
+            // program (every other key its own), sealed per member: the table keeps one long-lived
+            // program per member, and a re-declaration retires a member that changed or is gone.
+            if busbar_contract::section::member_program(&need.target_from) {
+                let programs = doc.as_ref().map(member_programs).unwrap_or_default();
+                let _ = table.declare_member_programs(*instance, id, need, &programs);
+                continue;
+            }
+            // A PROGRAM the settings spell at the path (`{command, args, env}`) is declared as one:
+            // the table spawns it (ARCHITECT round 4 (e)). One the settings misspell is declared
+            // with no target, which the table refuses.
+            let at = doc.as_ref().and_then(|d| setting_at(d, &need.target_from));
+            if let Some(value) = at.filter(|v| v.is_object()) {
+                let _ = match busbar_contract::conn::Program::from_settings(value) {
+                    Ok(program) => table.declare_program(*instance, id, need, &program),
+                    Err(_) => table.declare(*instance, id, need, None, None),
+                };
+                continue;
+            }
+            let target = doc
+                .as_ref()
+                .and_then(|d| resolve_target(d, &need.target_from));
+            let trust = doc
+                .as_ref()
+                .and_then(|d| resolve_setting(d, &need.trust_from));
             let _ = table.declare(*instance, id, need, target.as_deref(), trust.as_deref());
         }
+    }
+
+    /// Bind each DESTINATION key the instance was granted to the file `settings` (the settings
+    /// `open` or `refresh` hands the plugin) give it, before the plugin sees them: a non-empty path
+    /// under the key, rotated at the `rotate_mb` (the host's rotation key,
+    /// [`busbar_contract::services::DISK_ROTATE_KEY`]) beside it, keeping
+    /// [`busbar_contract::services::DISK_KEEP`] archives. A key the settings leave unset is not
+    /// bound, and `disk.append` refuses it. A refresh re-binds, so a changed path moves the file.
+    fn bind_destinations(&self, settings: Blob) {
+        let Some(keys) = self.wake.destinations.get() else {
+            return;
+        };
+        let bytes: &[u8] = if settings.ptr.is_null() {
+            &[]
+        } else {
+            // SAFETY: the host's own settings blob, live for the crossing it is handed to.
+            unsafe { std::slice::from_raw_parts(settings.ptr, settings.len) }
+        };
+        let doc = serde_json::from_slice::<serde_json::Value>(bytes).unwrap_or_default();
+        let rotate_at = doc
+            .get(busbar_contract::services::DISK_ROTATE_KEY)
+            .and_then(serde_json::Value::as_u64)
+            .map(|mb| mb.saturating_mul(1024 * 1024));
+        let bound = keys
+            .iter()
+            .filter_map(|key| {
+                let path = doc.get(key)?.as_str()?;
+                (!path.is_empty() && !path.contains('\0')).then(|| {
+                    busbar_contract::services::DiskDest {
+                        key: key.clone(),
+                        path: path.to_owned(),
+                        rotate_at,
+                        keep: busbar_contract::services::DISK_KEEP,
+                    }
+                })
+            })
+            .collect();
+        *self
+            .wake
+            .bound
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = bound;
     }
 
     pub(crate) fn leave_lifecycle(&self) {
@@ -527,9 +715,10 @@ impl Instance {
     }
 
     /// What the host answers WITHOUT calling the plugin, if anything: a faulted instance, a slot
-    /// the table does not have, an instance-less call before `open`, a second `open`, an `open`
-    /// whose frame cannot hold `OpenIn`/`OpenOut`, or a `validate` whose frame cannot hold
-    /// `ValidateIn`.
+    /// the table does not have, an instance-less call before `open` answered READY (a half-open
+    /// box admits only its `close`, once its `open` is over: the lifecycle exclusion), a second
+    /// `open`, an `open` whose frame cannot hold `OpenIn`/`OpenOut`, or a `validate` whose frame
+    /// cannot hold `ValidateIn`.
     pub(crate) fn refuse(&self, s: u32, in_size: usize, out_size: usize) -> Option<Outcome> {
         if self.faulted.load(Ordering::Acquire) || self.is_closed() {
             return Some(Outcome::Fault);
@@ -544,14 +733,16 @@ impl Instance {
             return Some(Outcome::Refused);
         }
         let open = self.is_open();
+        let half_open = self.half_open();
         match s {
             slot::VALIDATE if in_size < size_of::<ValidateIn>() => Some(Outcome::Refused),
             slot::VALIDATE => None,
-            slot::OPEN if open => Some(Outcome::Refused),
+            slot::OPEN if open || half_open => Some(Outcome::Refused),
             slot::OPEN if in_size < size_of::<OpenIn>() || out_size < size_of::<OpenOut>() => {
                 Some(Outcome::Refused)
             }
             slot::OPEN => None,
+            slot::CLOSE if half_open => None,
             _ if !open => Some(Outcome::Refused),
             _ => None,
         }
@@ -580,8 +771,52 @@ impl Instance {
         }
         // SAFETY: the caller's contract.
         let crossed = unsafe { self.cross_gated(s, input, out, out_size) };
-        self.leave_gate(s, s == slot::CLOSE && crossed.outcome == Outcome::Ready);
+        // A `close` that answered FAULT may already have freed the instance (a teardown that
+        // failed after its memory went): the host treats it as closed, never crossing into the
+        // pointer again. That can leak a live instance; it never uses a freed one. A READY `close`
+        // of a half-open box frees the box only; the instance never opened, so it is not closed.
+        let mut shut = false;
+        if s == slot::CLOSE && matches!(crossed.outcome, Outcome::Ready | Outcome::Fault) {
+            let was_open = self.opened.swap(false, Ordering::AcqRel);
+            shut = was_open || crossed.outcome == Outcome::Fault;
+            if shut {
+                self.closed.store(true, Ordering::Release);
+            }
+            self.ptr.store(std::ptr::null_mut(), Ordering::Release);
+        }
+        self.leave_gate(s, shut);
+        let ended = !matches!(crossed.outcome, Outcome::Ready | Outcome::Pending);
+        if s == slot::OPEN && ended && self.half_open() && !self.faulted.load(Ordering::Acquire) {
+            self.close_half_open();
+        }
         crossed
+    }
+
+    /// CLOSE THE LIVE BOX OF AN `open` THE HOST JUDGED FAULT: the plugin answered READY or PENDING,
+    /// so it freed nothing and holds a live box, but the op is over (no RESUME will come). The host
+    /// sends it `close` (the `close` a half-open box admits), so nothing dangles and nothing leaks.
+    /// Called with the `open`'s lifecycle exclusion still held, so nothing else crosses meanwhile.
+    fn close_half_open(&self) {
+        let mut input = super::in_head();
+        let mut out = super::out_head();
+        // SAFETY: the host's own head-only `close` frame (`close`'s `in`/`out` are the heads),
+        // live and unaliased for the call.
+        let closed = unsafe {
+            self.cross(
+                slot::CLOSE,
+                &raw mut input,
+                &raw mut out,
+                size_of::<OutHead>() as u32,
+            )
+        };
+        if closed.outcome != Outcome::Ready {
+            tracing::warn!(
+                plugin = %self.name,
+                kind = ?self.kind,
+                outcome = ?closed.outcome,
+                "the close of a FAULTed open's live box did not answer READY"
+            );
+        }
     }
 
     /// [`Instance::cross`] inside the gate.
@@ -596,15 +831,22 @@ impl Instance {
         out_size: u32,
     ) -> Crossed {
         let needs_instance = !matches!(s, slot::VALIDATE | slot::OPEN);
-        if self.is_closed() || (needs_instance && !self.is_open()) {
+        // A half-open box is crossed only by the `cancel` of its pended `open` and its `close`.
+        let crossable =
+            self.is_open() || (matches!(s, slot::CANCEL | slot::CLOSE) && self.half_open());
+        if self.is_closed() || (needs_instance && !crossable) {
             return Crossed::host(Outcome::Fault);
         }
         // SAFETY: the caller's contract.
-        let (ticket, instance) = unsafe {
+        let (ticket, instance, resumed) = unsafe {
             let head = &mut *input;
             head.op = s;
             head.host = self.ctx();
-            (head.ticket, self.ptr.load(Ordering::Acquire))
+            (
+                head.ticket,
+                self.ptr.load(Ordering::Acquire),
+                head.flags & busbar_contract::abi::mechanism::call::FLAG_RESUME != 0,
+            )
         };
         // A `validate`, of every kind, is lent a reason buffer for its crossing alone (it never
         // pends): it names what it wrote in `head.error`, read below while the buffer lives.
@@ -629,7 +871,9 @@ impl Instance {
                 open.err_cap = err_cap;
             }
             // SAFETY: as above.
-            self.declare_targeted(unsafe { (*input.cast::<OpenIn>()).settings });
+            let settings = unsafe { (*input.cast::<OpenIn>()).settings };
+            self.declare_targeted(settings);
+            self.bind_destinations(settings);
         }
         if s == slot::READY {
             // `ready` is handed the same host tables `open` was.
@@ -639,7 +883,9 @@ impl Instance {
         // SAFETY: the host wrote `in.size`; a frame that holds a `RefreshIn` is read as one.
         if s == slot::REFRESH && unsafe { (*input).size } as usize >= size_of::<RefreshIn>() {
             // SAFETY: as above.
-            self.declare_targeted(unsafe { (*input.cast::<RefreshIn>()).settings });
+            let settings = unsafe { (*input.cast::<RefreshIn>()).settings };
+            self.declare_targeted(settings);
+            self.bind_destinations(settings);
         }
         // THE HOST ZEROES THE WHOLE `out` BEFORE EVERY CALL, RESUME included (FAULT = 0, every
         // tail field absent), then states its size: the plugin writes at most min(out.size, own).
@@ -654,11 +900,58 @@ impl Instance {
             _ => self.slots[s as usize],
         };
         self.crossings.fetch_add(1, Ordering::Relaxed);
+        if resumed {
+            self.resumes.fetch_add(1, Ordering::Relaxed);
+        }
         // SAFETY: the host wrote `in.size` itself.
         let in_size = unsafe { (*input).size } as usize;
         // The unit this crossing serves, for the host services it calls.
-        let _unit = super::services::serving((self.unit_of)(s, input.cast_const(), in_size));
-        let raw = op(instance, input.cast_const().cast(), out.cast());
+        let unit = (self.unit_of)(s, input.cast_const(), in_size);
+        let _unit = super::services::serving(unit);
+        // From here an `open` that does not end READY or PENDING, FAULT included, leaves no
+        // instance published: the SDK frees a half-open box on any answer but READY/PENDING, so a
+        // pointer kept to it would hand a later crossing freed memory; a box the plugin still
+        // holds (it answered READY/PENDING, the host judged FAULT) is closed by the host.
+        let mut open_ended = OpenEnded {
+            ptr: (s == slot::OPEN).then_some(&self.ptr),
+            live: std::ptr::null_mut(),
+        };
+        let raw = if s == slot::VALIDATE || is_lifecycle(s) {
+            // A LIFECYCLE CROSSING RUNS ON A PERMANENT FFI WORKER (`crate::ffi_thread`), whoever
+            // called it: a dispatcher worker that may later exit, or a ticket-less caller thread
+            // (a libtest thread, a reload's thread) that will. `open` is where a plugin first
+            // touches its thread-locals and `close` runs its `Drop`; either on a thread that
+            // exits after the library is unmapped runs the plugin's thread-local destructor out
+            // of unmapped memory. What the crossing's thread states for the host services the
+            // plugin calls goes with it: the unit it serves, the dispatcher worker it acts for and
+            // the runtime that thread is inside.
+            let acting = super::worker::worker_mark();
+            let runtime = tokio::runtime::Handle::try_current().ok();
+            let (input, output): (*const c_void, *mut c_void) =
+                (input.cast_const().cast(), out.cast());
+            let routed = crate::ffi_thread::on_plugin_thread(|| {
+                let _runtime = runtime.as_ref().map(tokio::runtime::Handle::enter);
+                let _acting = super::worker::acting_for(acting);
+                let _unit = super::services::serving(unit);
+                enter_lifecycle((self.op_name)(s), op, instance, input, output)
+            });
+            match routed {
+                Ok(raw) => raw,
+                // Only a host-side panic on the worker reaches here (an escaping slot panic
+                // aborts): the crossing answers FAULT.
+                Err(_) => return Crossed::host(Outcome::Fault),
+            }
+        } else {
+            op(instance, input.cast_const().cast(), out.cast())
+        };
+        if s == slot::OPEN
+            && (raw == RawOutcome::of(Outcome::Ready) || raw == RawOutcome::of(Outcome::Pending))
+        {
+            // What the plugin answered READY or PENDING still holds its box, whatever the host
+            // judges below.
+            // SAFETY: `refuse` checked the frame holds an `OpenOut`.
+            open_ended.live = unsafe { (*out.cast::<OpenOut>()).instance };
+        }
         // SAFETY: the plugin wrote at most the host's `out`; read it back.
         let head = unsafe { *out };
         let outcome = judge(raw, &head, ticket, out_size);
@@ -729,20 +1022,25 @@ impl Instance {
                 return Crossed::host(Outcome::Fault);
             }
         }
-        match (s, outcome) {
-            (slot::OPEN, Outcome::Ready) => {
-                // SAFETY: `refuse` checked the frame holds an `OpenOut`.
-                let inst = unsafe { (*out.cast::<OpenOut>()).instance };
-                if inst.is_null() {
-                    return Crossed::host(Outcome::Fault);
-                }
-                self.ptr.store(inst, Ordering::Release);
+        // An open that FAILED or was REFUSED (fresh, or on its RESUME) gets no instance: the
+        // plugin's trampoline freed the box a prior PENDING minted; `open_ended` drops our pointer
+        // to it. `close` (READY or FAULT) shuts the instance in `Instance::cross`.
+        if s == slot::OPEN && matches!(outcome, Outcome::Ready | Outcome::Pending) {
+            // An open that answered READY (done) or PENDING (its connect step pends) hands back
+            // its instance box; the host keeps it so a PENDING open's RESUME runs on the SAME
+            // box — plugin-owned memory carries the half-open state across the pend (no module
+            // static in the contract).
+            // SAFETY: `refuse` checked the frame holds an `OpenOut`.
+            let inst = unsafe { (*out.cast::<OpenOut>()).instance };
+            if inst.is_null() {
+                return Crossed::host(Outcome::Fault);
             }
-            (slot::CLOSE, Outcome::Ready) => {
-                self.closed.store(true, Ordering::Release);
-                self.ptr.store(std::ptr::null_mut(), Ordering::Release);
+            open_ended.ptr = None;
+            self.ptr.store(inst, Ordering::Release);
+            // Only READY opens it; a PENDING open's box is half-open until its RESUME answers.
+            if outcome == Outcome::Ready {
+                self.opened.store(true, Ordering::Release);
             }
-            _ => {}
         }
         Crossed {
             outcome,
@@ -755,6 +1053,7 @@ impl Instance {
             },
             short,
             disposition: None,
+            cancel_writes: Vec::new(),
         }
     }
 
@@ -985,6 +1284,46 @@ impl<K: Kind> std::fmt::Debug for Plugin<K> {
     }
 }
 
+/// The kind's name as the host's observer knows it (the cold wire's kind words).
+fn kind_word(kind: KindCode) -> &'static str {
+    use busbar_contract::abi::mechanism::kind;
+    match kind {
+        KindCode::Store => kind::STORE,
+        KindCode::Secret => kind::SECRET,
+        KindCode::Auth => kind::AUTH,
+        KindCode::Hook => kind::HOOK,
+        KindCode::Export => kind::EXPORT,
+        KindCode::Plane => kind::PLANE,
+        KindCode::Transport => kind::TRANSPORT,
+    }
+}
+
+/// THE #85 ENVELOPE, OBSERVED FOR EVERY KIND (ARCHITECT ruling ENVELOPE-ALL 2026-10-03): the
+/// binder's sink, with the host's observability standing before it
+/// ([`crate::observe::EnvelopeObserver`]): every metric of a family the Statement declares and every
+/// declared diagnostic reach the installed observer, under the plugin's name and kind, whoever bound
+/// the door, and the binder's sink is still handed every entry.
+fn observed(
+    then: &Arc<dyn EnvelopeSink>,
+    st: &busbar_contract::abi::mechanism::door::Statement,
+    kind: KindCode,
+    name: &[u8],
+) -> Arc<dyn EnvelopeSink> {
+    // SAFETY: `validate` ran `check_statement` on this Statement; the rendering reads its
+    // `'static` lists.
+    let families = unsafe { busbar_contract::abi::mechanism::rendering::render(st) }
+        .ok()
+        .and_then(|b| busbar_contract::abi::mechanism::rendering::read(&b).ok())
+        .map(|r| r.families)
+        .unwrap_or_default();
+    Arc::new(crate::observe::EnvelopeObserver::before(
+        then.clone(),
+        &String::from_utf8_lossy(name),
+        kind_word(kind),
+        families,
+    ))
+}
+
 impl<K: Kind> Plugin<K> {
     pub(crate) fn bind(v: Validated, lib: Option<Lib>, bind: Bind) -> Result<Self, LoadError> {
         let st = v.statement;
@@ -1003,11 +1342,19 @@ impl<K: Kind> Plugin<K> {
         let wake: &'static InstanceWake = Box::leak(Box::default());
         // THE CONNECTION TABLE: minted an identity and declared on the host's one table, need by
         // need under its Statement index, when the Statement declares a need; otherwise none.
-        let instance = InstanceId(NEXT_INSTANCE.fetch_add(1, Ordering::Relaxed));
+        let instance = mint_instance(&NEXT_INSTANCE);
         let mut declared_needs: Box<[ReadNeed]> = Box::default();
         let conns: *const busbar_contract::abi::host::conn::connector::ConnectorSlots =
             match (&bind.conns, st.needs_len) {
-                (Some(table), n) if n > 0 => {
+                (ConnTable::NoNeeds, n) if n > 0 => {
+                    return Err(LoadError::NoConnectionTable {
+                        plugin: str_bytes(st.name)
+                            .map(|n| String::from_utf8_lossy(n).into_owned())
+                            .unwrap_or_default(),
+                        needs: n,
+                    });
+                }
+                (ConnTable::Host(table), n) if n > 0 => {
                     // SAFETY: `validate` ran `check_statement`, which refused a NULL list with a
                     // count; the rendering reads the Statement's `'static` lists.
                     let needs = unsafe { busbar_contract::abi::mechanism::rendering::render(&st) }
@@ -1055,9 +1402,20 @@ impl<K: Kind> Plugin<K> {
             wake: Some(host_wake),
             conns,
             services: &super::services::HOST_SLOTS,
+            io: &super::io_slots::IO_SLOTS,
         }));
         let name = str_bytes(st.name)
             .ok_or_else(|| LoadError::BadStatement("the name is NULL or over-long".into()))?;
+        let secret_refs: Box<[String]> = (0..st.secret_refs_len)
+            .map(|i| {
+                // SAFETY: `validate` ran `check_statement`, which refused a NULL list with a count;
+                // the list holds `secret_refs_len` `'static` strings.
+                let key = unsafe { st.secret_refs.add(i).read_unaligned() };
+                str_bytes(key)
+                    .map(|k| String::from_utf8_lossy(k).into_owned())
+                    .ok_or_else(|| LoadError::BadStatement("a secret ref is malformed".into()))
+            })
+            .collect::<Result<_, _>>()?;
         let _ = wake.caller.set(busbar_contract::services::Caller {
             instance: Arc::clone(&bind.instance),
             plugin: Arc::from(String::from_utf8_lossy(name).as_ref()),
@@ -1071,6 +1429,7 @@ impl<K: Kind> Plugin<K> {
             inner: Arc::new(Instance {
                 instance,
                 needs: declared_needs,
+                secret_refs,
                 kind: v.kind,
                 name: String::from_utf8_lossy(name).into_owned(),
                 slots: v.slots,
@@ -1081,10 +1440,12 @@ impl<K: Kind> Plugin<K> {
                     len: st.diag_ids_len,
                 },
                 ptr: AtomicPtr::new(std::ptr::null_mut()),
+                opened: AtomicBool::new(false),
                 faulted: AtomicBool::new(false),
                 closed: AtomicBool::new(false),
                 gate: AtomicU32::new(0),
                 crossings: AtomicU64::new(0),
+                resumes: AtomicU64::new(0),
                 calls: Mutex::new(Vec::new()),
                 next_call: AtomicU64::new(0),
                 inflight: AtomicU32::new(0),
@@ -1096,8 +1457,9 @@ impl<K: Kind> Plugin<K> {
                 short: K::short,
                 op_name: K::op_name,
                 unit_of: K::unit_of,
+                cancel_frame: K::cancel_frame,
                 context,
-                sink: bind.sink.clone(),
+                sink: observed(&bind.sink, &st, v.kind, name),
                 wake,
                 tables,
                 open_reason: Mutex::new(Vec::new()),
@@ -1108,6 +1470,20 @@ impl<K: Kind> Plugin<K> {
         };
         bind.dispatcher.adopt(&plugin.inner);
         Ok(plugin)
+    }
+
+    /// The envelope sink the dispatcher ingests this instance's replies into (a witness).
+    #[cfg(test)]
+    pub(crate) fn envelope_sink(&self) -> Arc<dyn EnvelopeSink> {
+        self.inner.sink.clone()
+    }
+
+    /// GRANT this instance the DESTINATIONS its manifest declares (the settings keys that name a
+    /// file the host appends to for it, `declares.destinations`), before it opens: its `open` and
+    /// `refresh` bind each to the path its settings give, and `disk.append` serves it those only.
+    /// Granted once; a second grant is ignored.
+    pub fn grant_destinations(&self, keys: &[String]) {
+        let _ = self.inner.wake.destinations.set(keys.to_vec());
     }
 
     /// What the kind read from the Statement at bind ([`Kind::context`]), as the kind's type `T`.
@@ -1128,9 +1504,26 @@ impl<K: Kind> Plugin<K> {
         self.inner.name()
     }
 
+    /// The settings keys its Statement names as secret references, in the Statement's order.
+    #[must_use]
+    pub fn secret_refs(&self) -> &[String] {
+        &self.inner.secret_refs
+    }
+
     /// The instance's identity on the host's connection table (minted at bind, one per instance).
     pub fn instance(&self) -> InstanceId {
         self.inner.instance
+    }
+
+    /// The host's connection table the instance's needs were declared on at bind; `None` when its
+    /// Statement declares no need or the bind lent none (the composition root holds its members'
+    /// auth bindings on it).
+    pub fn conn_table(&self) -> Option<Arc<dyn busbar_contract::conn::DeclaredConns>> {
+        self.inner
+            .wake
+            .conn
+            .get()
+            .map(|(_, table)| Arc::clone(table))
     }
 
     /// `max_inflight`, as the host clamped it.
@@ -1147,6 +1540,12 @@ impl<K: Kind> Plugin<K> {
     /// op on it answers FAULT without a crossing.
     pub fn is_faulted(&self) -> bool {
         self.inner.faulted.load(Ordering::Acquire)
+    }
+
+    /// Whether the Statement declares a need whose target comes from the instance's settings
+    /// (`target_from`), on the connection table it was handed (none without one).
+    pub fn targets_from_settings(&self) -> bool {
+        self.inner.needs.iter().any(|n| !n.target_from.is_empty())
     }
 
     /// Whether `open` answered READY and `close` has not.
@@ -1177,6 +1576,22 @@ impl<K: Kind> Plugin<K> {
         self.call_once(s, frame, true)
     }
 
+    /// AN INLINE CALL on `ticket` (an inline ticket's, `super::inline::InlineTicket::ticket`): on the caller's thread, like [`Plugin::call`],
+    /// but on a REAL ticket, so the op may answer PENDING — the op's wake (an `io.*` slot's, or the
+    /// plugin's own) wakes the task `ticket` registered, which calls again with `resume` (the
+    /// mechanism's `FLAG_RESUME`: the same op on the same ticket). The caller serializes the ops on
+    /// one ticket. A carrier's connection is driven so, one inline ticket per side, with no thread
+    /// handoff (#30).
+    pub fn call_inline<I: InFrame, O: OutFrame>(
+        &self,
+        ticket: Ticket,
+        resume: bool,
+        s: u32,
+        frame: &mut Frame<I, O>,
+    ) -> Called {
+        self.call_ticketed(s, frame, ticket, resume)
+    }
+
     fn instance_id(&self) -> usize {
         Arc::as_ptr(&self.inner) as usize
     }
@@ -1186,6 +1601,20 @@ impl<K: Kind> Plugin<K> {
         s: u32,
         frame: &mut Frame<I, O>,
         recall: bool,
+    ) -> Called {
+        let called = self.call_ticketed(s, frame, Ticket::NONE, false);
+        if recall && called.recall.is_some() {
+            return Called::from(Crossed::host(Outcome::Fault));
+        }
+        called
+    }
+
+    fn call_ticketed<I: InFrame, O: OutFrame>(
+        &self,
+        s: u32,
+        frame: &mut Frame<I, O>,
+        ticket: Ticket,
+        resume: bool,
     ) -> Called {
         let inst = &*self.inner;
         if let Some(o) = inst.refuse(s, size_of::<I>(), size_of::<O>()) {
@@ -1208,18 +1637,21 @@ impl<K: Kind> Plugin<K> {
         let crossed = unsafe {
             let head = &mut *i;
             head.size = size_of::<I>() as u32;
-            head.flags = 0;
-            head.deadline_class = DeadlineClass::Call as u8;
-            head.ticket = Ticket::NONE;
+            // The dispatcher owns only the mechanism's own bit; a kind's bit the caller set on the
+            // head (the export scrape's `SCRAPE_FLAG_HOOK_FAMILIES`) rides through untouched.
+            head.flags = (head.flags & !FLAG_RESUME) | if resume { FLAG_RESUME } else { 0 };
+            head.deadline_class = if ticket.is_none() {
+                DeadlineClass::Call as u8
+            } else {
+                DeadlineClass::Connection as u8
+            };
+            head.ticket = ticket;
             inst.cross(s, i, o, out_size)
         };
         inst.lock_calls().retain(|c| c.0 != id);
         inst.release(units);
         if lifecycle {
             inst.leave_lifecycle();
-        }
-        if recall && crossed.short {
-            return Called::from(Crossed::host(Outcome::Fault));
         }
         let token = crossed.short.then(|| Recall {
             instance: self.instance_id(),
@@ -1253,6 +1685,10 @@ mod open_reason_plugins;
 #[path = "../tests/open_reason_tests.rs"]
 mod open_reason_tests;
 
+#[cfg(test)]
+#[path = "../tests/lifecycle_worker_tests.rs"]
+mod lifecycle_worker_tests;
+
 /// Whether a need takes a value from its instance's settings (`target_from` or `trust_from`), so it
 /// is declared at `open` and `refresh` rather than at bind.
 fn from_settings(need: &ReadNeed) -> bool {
@@ -1270,3 +1706,79 @@ pub(crate) fn resolve_setting(settings: &serde_json::Value, path: &str) -> Optio
         .filter(|t| !t.is_empty())
         .map(str::to_owned)
 }
+
+/// How a member program's `env` secret REFERENCE turns into its value: a string secret resolved
+/// through the secret plugins the build links (the root installs it once, at boot). `Err` names
+/// the reference's source, never a byte of the secret.
+pub type MemberSecretFn = fn(&busbar_contract::secret_ref::SecretRef) -> Result<String, String>;
+
+/// The installed [`MemberSecretFn`]; until one is installed no reference resolves (fail-closed: a
+/// member whose program needs one is no member).
+static MEMBER_SECRETS: std::sync::OnceLock<MemberSecretFn> = std::sync::OnceLock::new();
+
+/// Install how a member program's `env` secret references resolve ([`member_programs`]); the first
+/// install holds. Answers whether this one was installed.
+pub fn install_member_secrets(resolve: MemberSecretFn) -> bool {
+    MEMBER_SECRETS.set(resolve).is_ok()
+}
+
+/// EVERY MEMBER'S PROGRAM a member-program need reaches (`busbar_contract::section::MEMBER_PROGRAM`):
+/// each registration of the settings that names a `command`, read by
+/// [`busbar_contract::conn::Program::of_member`] (its other keys ignored), in the settings' order.
+/// An `env` value written as a secret REFERENCE (`{ env: X }`, `{ file: P }`) is resolved here, by
+/// the installed [`MemberSecretFn`], as the previous release resolved it at the spawn: the program is handed
+/// the value, the settings keep the reference. A registration whose program does not read (a
+/// relative command, a reference that does not resolve) is no member: an open naming it is refused.
+pub(crate) fn member_programs(
+    settings: &serde_json::Value,
+) -> Vec<(String, busbar_contract::conn::Program)> {
+    let Some(map) = settings.as_object() else {
+        return Vec::new();
+    };
+    map.iter()
+        .filter_map(|(name, registration)| {
+            let mut registration = registration.clone();
+            if let Some(env) = registration
+                .get_mut("env")
+                .and_then(serde_json::Value::as_object_mut)
+            {
+                for value in env.values_mut() {
+                    if value.is_string() {
+                        continue;
+                    }
+                    let reference =
+                        serde_json::from_value::<busbar_contract::secret_ref::SecretRef>(
+                            value.clone(),
+                        )
+                        .ok()?;
+                    *value = serde_json::Value::String(MEMBER_SECRETS.get()?(&reference).ok()?);
+                }
+            }
+            let program = busbar_contract::conn::Program::of_member(&registration)?.ok()?;
+            Some((name.clone(), program))
+        })
+        .collect()
+}
+
+/// The value a need's `target_from` path (`settings.<key>[.<key>...]`) names in an instance's
+/// settings, whatever it is.
+pub(crate) fn setting_at<'v>(
+    settings: &'v serde_json::Value,
+    path: &str,
+) -> Option<&'v serde_json::Value> {
+    let rest = path.strip_prefix("settings.")?;
+    rest.split('.').try_fold(settings, |v, key| v.get(key))
+}
+
+/// What a need's `target_from` names in an instance's settings: `settings.<key>[.<key>...]`, walked
+/// through the settings object to a non-empty string. Anything else resolves to nothing.
+pub(crate) fn resolve_target(settings: &serde_json::Value, path: &str) -> Option<String> {
+    setting_at(settings, path)
+        .and_then(serde_json::Value::as_str)
+        .filter(|t| !t.is_empty())
+        .map(str::to_owned)
+}
+
+#[cfg(test)]
+#[path = "../tests/instance_id_tests.rs"]
+mod instance_id_tests;

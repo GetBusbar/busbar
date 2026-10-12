@@ -9,7 +9,7 @@
 //! asserts nothing about what any real plane IS or DOES — see
 //! [`crate::plane::isolated_three_plane_test_registry`]'s doc. The one test here that DID need a real
 //! plane's own section-name prose (`the_refusal_message_is_actionable`) moved to
-//! `tests/plane_config_cross_plane.rs`, where naming the real planes is licensed.
+//! `crates/busbar/tests/plane_config_cross_plane.rs`, where naming the real planes is licensed.
 
 use super::*;
 

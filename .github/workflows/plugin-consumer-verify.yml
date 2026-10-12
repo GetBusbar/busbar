@@ -144,7 +144,7 @@ permissions:
 jobs:
   consumer:
     name: consumer check (fetch what we published and use it)
-    runs-on: latchkey-large
+    runs-on: ${{ fromJSON(vars.RUNNERS).large.label }}
     timeout-minutes: 25
     outputs:
       version: ${{ steps.check.outputs.version }}
@@ -473,7 +473,7 @@ jobs:
     name: alert (fail the run loudly — never file an issue)
     needs: consumer
     if: ${{ always() && needs.consumer.result == 'failure' }}
-    runs-on: latchkey-small
+    runs-on: ${{ fromJSON(vars.RUNNERS).small.label }}
     timeout-minutes: 10
     permissions:
       contents: read

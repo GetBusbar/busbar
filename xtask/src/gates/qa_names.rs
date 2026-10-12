@@ -44,6 +44,12 @@
 //! and the declaration is itself held to three liveness rules, because an exemption that outlives
 //! what it excused silently excuses the next name to take the spelling.
 //!
+//! AN EXEMPTION IS SCOPED TO THE FILE IT NAMES. A declaration excuses its name in the `<covered
+//! file>` it writes and NOWHERE ELSE: the same dead name written in any other covered file is RED
+//! until that file is declared for too. Keyed on the spelling alone, one written exception silenced
+//! every other dead name of that spelling in the tree, and the file field was checked only to be
+//! SOME covered file, never the one holding the site (X5 finding 8).
+//!
 //! WHAT A NAME IS, AND WHY SO NARROWLY. A `qa/*.toml` carries prose as well as configuration — a
 //! `why = """…"""`, a `reason`, a `because`, a `cite`, a ledger row's `drain` — and prose names
 //! deleted crates and moved files on purpose, because prose is what RECORDS a deletion. So a value
@@ -96,8 +102,8 @@
 //!    entry (`crates/busbar-export-*`, zero today, and the entry that closes defect 2) as long as
 //!    the kind as a whole finds something, and a kind that finds nothing is excused only by its own
 //!    census row declaring zero.
-//! 7. [`ROW_DECL_LIVE`] — a declaration names a name that is still written down AND still fails to
-//!    resolve. A stale exemption outlives the site it excused and silently excuses the next name to
+//! 7. [`ROW_DECL_LIVE`] — a declaration names a name that is still written down IN THE FILE IT
+//!    NAMES AND still fails to resolve there. A stale exemption outlives the site it excused and silently excuses the next name to
 //!    take the spelling; one for a name that resolves again is an exemption nobody needs, and
 //!    leaving it hides the day it stops resolving.
 //! 8. [`ROW_DECL_FILE`] — the file a declaration names is one of the covered files.
@@ -173,9 +179,8 @@ pub const ROW_XTASK_FLOOR: &str = "qa-names:xtask-const-floor";
 // They are declared HERE rather than beside the site because `xtask/src/gates/config_schema/mod.rs`
 // carries another agent's uncommitted work as this lands, and `git commit --only` on a path commits
 // the WORKING TREE state of that path — which would sweep their in-flight edit into this commit.
-// The mechanism is name-scoped, not file-scoped, so a declaration is valid wherever it is written
-// and names the covered file it excuses; MOVE THESE TWO LINES BESIDE `SNAPSHOT_HOMES` the moment
-// that file is free. If the constant is struck instead, `qa-names:declaration-names-a-live-name`
+// A declaration is valid wherever it is written and excuses its name IN THE COVERED FILE IT NAMES,
+// and only there; MOVE THESE TWO LINES BESIDE `SNAPSHOT_HOMES` the moment that file is free. If the constant is struck instead, `qa-names:declaration-names-a-live-name`
 // reds on both of these, which is the mechanism working and not a surprise.
 // qa-names: crates/busbar-core/src/config/config-schema.snapshot.json -- xtask/src/gates/config_schema/mod.rs -- a HISTORICAL home of the config fingerprint, read with `git show <ref>:<path>` at a ref where it existed; absence from the working tree is the fact it records
 // qa-names: crates/busbar/src/config/config-schema.snapshot.json -- xtask/src/gates/config_schema/mod.rs -- the ORIGINAL home, the one the released tags v1.5.3/v1.5.4/v1.5.5 carry; a baseline older than the move has to ask for the path as it was THEN
@@ -960,7 +965,12 @@ impl Gate for QaNamesGate {
             decls.extend(d.into_iter().map(|(line, decl)| (rel.clone(), line, decl)));
         }
         let covered_paths: BTreeSet<&str> = files.iter().map(|(r, _)| r.as_str()).collect();
-        let declared: BTreeSet<&str> = decls.iter().map(|(_, _, d)| d.name.as_str()).collect();
+        // KEYED ON (NAME, FILE). A declaration excuses its name in the file it names and nowhere
+        // else; the same dead spelling in another covered file is that file's defect.
+        let declared: BTreeSet<(&str, &str)> = decls
+            .iter()
+            .map(|(_, _, d)| (d.name.as_str(), d.file.as_str()))
+            .collect();
         let kindset: BTreeSet<&str> = kinds.iter().map(String::as_str).collect();
 
         let mut rows = vec![Row::pass(
@@ -1020,7 +1030,7 @@ impl Gate for QaNamesGate {
         // THE FOUR RESOLUTION RULES. A declared name discharges every one of them; the declaration's
         // own validity is rules 7-9, so exactly one row moves per defect.
         let live = |n: &Name| -> bool {
-            if declared.contains(n.text.as_str()) {
+            if declared.contains(&(n.text.as_str(), n.file.as_str())) {
                 return true;
             }
             match n.class {
@@ -1069,7 +1079,7 @@ impl Gate for QaNamesGate {
         for (kind, (entries, hits)) in &kind_globs {
             if *hits == 0
                 && census.get(kind).copied() != Some(0)
-                && !declared.contains(kind.as_str())
+                && !declared.contains(&(kind.as_str(), CONFIG_REL))
             {
                 empty_kinds.push(format!(
                     "[{KIND_TABLE}] {kind} = {entries:?} matches nothing (census declares {})",
@@ -1170,19 +1180,23 @@ impl Gate for QaNamesGate {
         let mut needless = Vec::new();
         let mut bad_file = Vec::new();
         let mut thin = Vec::new();
-        let written: BTreeSet<&str> = names.iter().map(|n| n.text.as_str()).collect();
+        let written: BTreeSet<(&str, &str)> = names
+            .iter()
+            .map(|n| (n.text.as_str(), n.file.as_str()))
+            .collect();
         for (rel, line, d) in &decls {
-            if !written.contains(d.name.as_str()) {
-                unused.push(format!("{rel}:{line} `{}`", d.name));
+            // A declaration naming a file this gate does not cover can excuse nothing and can
+            // never be live: that is ONE defect, and rule 8 alone reports it.
+            if !covered_paths.contains(d.file.as_str()) {
+                bad_file.push(format!("{rel}:{line} `{}` names `{}`", d.name, d.file));
+            } else if !written.contains(&(d.name.as_str(), d.file.as_str())) {
+                unused.push(format!("{rel}:{line} `{}` for `{}`", d.name, d.file));
             } else if names
                 .iter()
-                .filter(|n| n.text == d.name)
+                .filter(|n| n.text == d.name && n.file == d.file)
                 .all(|n| resolves_without_declaration(cx, n, &packages, &kindset))
             {
                 needless.push(format!("{rel}:{line} `{}`", d.name));
-            }
-            if !covered_paths.contains(d.file.as_str()) {
-                bad_file.push(format!("{rel}:{line} `{}` names `{}`", d.name, d.file));
             }
             if d.reason.chars().count() < MIN_REASON {
                 thin.push(format!(
@@ -1196,8 +1210,10 @@ impl Gate for QaNamesGate {
         let mut live_detail = String::new();
         if !unused.is_empty() {
             live_detail.push_str(&format!(
-                "no covered file writes {} — a stale exemption outlives the name it excused and \
-                 then silently excuses the next name to take the spelling. ",
+                "the file a declaration names does not write its name: {} — a stale exemption \
+                 outlives the name it excused and then silently excuses the next name to take the \
+                 spelling; the same spelling in some OTHER file is not the site it was written \
+                 for. ",
                 unused.join(", ")
             ));
         }
@@ -1419,9 +1435,9 @@ const PLANTED_CRATE: &str = "busbar-selftest-no-such-package";
 ///
 /// Writing either of these whole as a `const` makes it a name this gate reads OUT OF ITS OWN
 /// SOURCE — the Rust arm makes no exception for the file it is written in — and the only way to
-/// clear the row it would then redden is to DECLARE it. A declaration excuses a name GLOBALLY, by
-/// spelling, which would leave both plants unable to redden anything at all: the gate would have
-/// been told to ignore the very string the case plants. **A plant its own gate has been instructed
+/// clear the row it would then redden is to DECLARE it — for THIS file, which is where every
+/// planted overlay writes it too, so both plants would be unable to redden anything at all: the
+/// gate would have been told to ignore the very string the case plants. **A plant its own gate has been instructed
 /// to overlook proves nothing, and it proves it in green.** That is `prove_red`'s `Inert` verdict
 /// arriving through the front door, and the Rust arm found it in this file on its first run.
 ///
@@ -1552,30 +1568,34 @@ fn anchor(cx: &Ctx, want: impl Fn(&Name) -> bool) -> Option<(String, String, Nam
     None
 }
 
+/// The second file of the file-scope plants: a covered `qa/*.toml` that exists only in an
+/// [`Overlay`]. The bare file name carries no `/`, so it is no name and needs no declaration.
+const PLANTED_SCOPE_FILE_NAME: &str = "zzz-qa-names-scope-plant.toml";
+
+/// A planted name's file, that file's text, and the name a phantom is planted beside.
+type Anchor = (String, String, Name);
+
+/// TWO anchors in two DIFFERENT covered `qa/*.toml` files, for the plants that write a declaration
+/// in one file and the same name in another. A is the first real file carrying an array item the
+/// plant can sit beside; B is a planted file whose one array holds A's own (live) value under a
+/// path key, so the same phantom lands beside a live name in each. Both TOML, so both take the `#`
+/// declaration spelling.
+fn anchor_pair(cx: &Ctx, want: impl Fn(&Name) -> bool) -> Option<(Anchor, Anchor)> {
+    let a = anchor(cx, |n| !is_rust(&n.file) && want(n))?;
+    let b_rel = format!("{QA_ROOT}/{PLANTED_SCOPE_FILE_NAME}");
+    let b_text = format!("[selftest]\nscan_roots = [\"{}\"]\n", a.2.text);
+    let (names, _) = scan(&b_rel, &b_text, &top_level_dirs(cx));
+    let b_at = names
+        .into_iter()
+        .find(|n| n.in_array && n.line > 0 && want(n))?;
+    Some((a, (b_rel, b_text, b_at)))
+}
+
 fn beside(cx: &Ctx, want: impl Fn(&Name) -> bool, phantom: &str) -> Option<Overlay> {
     let (rel, text, at) = anchor(cx, want)?;
     let planted = plant_beside(&text, &at, phantom)?;
     let mut ov = Overlay::new();
     ov.set(&rel, planted);
-    Some(ov)
-}
-
-/// A phantom name AND a declaration for it, so a plant aimed at the declaration rules leaves the
-/// four resolution rules exactly as it found them.
-fn beside_declared(
-    cx: &Ctx,
-    want: impl Fn(&Name) -> bool,
-    phantom: &str,
-    file_field: &str,
-    reason: &str,
-) -> Option<Overlay> {
-    let (rel, text, at) = anchor(cx, want)?;
-    let planted = plant_beside(&text, &at, phantom)?;
-    let mut ov = Overlay::new();
-    ov.set(
-        &rel,
-        format!("{planted}\n{DECL} {phantom}{SEP}{file_field}{SEP}{reason}\n"),
-    );
     Some(ov)
 }
 
@@ -1664,13 +1684,20 @@ fn plants(cx: &Ctx) -> Vec<Plant> {
     });
 
     // A DECLARATION POINTING AT A FILE THAT IS NOT COVERED, and one WITH A SHRUG FOR A REASON.
-    let bad_file_decl = beside_declared(
-        cx,
-        |n| n.class == Class::Crate,
-        PLANTED_CRATE,
-        PLANTED_GONE_FILE,
-        PLANTED_REASON,
-    );
+    // The uncovered-file declaration plants no phantom beside it: a declaration excuses only the
+    // file it names, so a phantom here would be unexcused and redden the crate row as well, and the
+    // liveness rule leaves an uncovered file to the file rule alone.
+    let bad_file_decl = covered(cx).ok().and_then(|files| {
+        let (rel, text) = files.into_iter().find(|(r, _)| !is_rust(r))?;
+        let mut ov = Overlay::new();
+        ov.set(
+            &rel,
+            format!(
+                "{text}\n{DECL} {PLANTED_CRATE}{SEP}{PLANTED_GONE_FILE}{SEP}{PLANTED_REASON}\n"
+            ),
+        );
+        Some(ov)
+    });
     let thin_decl = anchor(cx, |n| n.class == Class::Crate).and_then(|(rel, text, at)| {
         let planted = plant_beside(&text, &at, PLANTED_CRATE)?;
         let mut ov = Overlay::new();
@@ -1680,6 +1707,63 @@ fn plants(cx: &Ctx) -> Vec<Plant> {
         );
         Some(ov)
     });
+
+    // AN EXEMPTION IS SCOPED TO ITS OWN FILE. File A writes the dead path beside a real one and
+    // declares it FOR A; file B writes the same dead path and declares nothing. A's site is excused
+    // and B's is not: a declaration keyed on the spelling alone would silence B too, which is one
+    // written exception excusing every other dead name of that spelling in the tree.
+    let live_path = |n: &Name| n.class == Class::Path && !n.is_glob();
+    let pair = anchor_pair(cx, live_path);
+    let scoped = pair
+        .as_ref()
+        .and_then(|((a, a_text, a_at), (b, b_text, b_at))| {
+            let a_planted = plant_beside(a_text, a_at, &planted_path())?;
+            let b_planted = plant_beside(b_text, b_at, &planted_path())?;
+            let mut ov = Overlay::new();
+            ov.set(
+                a,
+                format!(
+                    "{a_planted}\n{DECL} {}{SEP}{a}{SEP}{PLANTED_REASON}\n",
+                    planted_path()
+                ),
+            );
+            ov.set(b, b_planted);
+            Some(ov)
+        });
+    let scoped_naming = pair
+        .as_ref()
+        .map(|(_, (b, _, b_at))| vec![format!("{b}:{} `{}`", b_at.line, planted_path())])
+        .unwrap_or_else(|| vec![planted_path()]);
+
+    // A DECLARATION WHOSE OWN FILE NO LONGER WRITES THE NAME. A declares the dead path for A and
+    // writes nothing; B writes it and carries its own declaration. Every site is excused, so only
+    // the liveness rule can move: A's exemption outlived the site it was written for, and the same
+    // spelling in some other file is not that site.
+    let scoped_stale = pair
+        .as_ref()
+        .and_then(|((a, a_text, _), (b, b_text, b_at))| {
+            let b_planted = plant_beside(b_text, b_at, &planted_path())?;
+            let mut ov = Overlay::new();
+            ov.set(
+                a,
+                format!(
+                    "{a_text}\n{DECL} {}{SEP}{a}{SEP}{PLANTED_REASON}\n",
+                    planted_path()
+                ),
+            );
+            ov.set(
+                b,
+                format!(
+                    "{b_planted}\n{DECL} {}{SEP}{b}{SEP}{PLANTED_REASON}\n",
+                    planted_path()
+                ),
+            );
+            Some(ov)
+        });
+    let stale_naming = pair
+        .as_ref()
+        .map(|((a, _, _), _)| vec![format!("{a}:"), planted_path()])
+        .unwrap_or_else(|| vec![planted_path()]);
 
     // THE SCAN THAT MATCHED NOTHING. Every covered file is still THERE and still walked, and the
     // kind table is still readable — so every other rule passes, vacuously, which is exactly what a
@@ -1818,6 +1902,18 @@ fn plants(cx: &Ctx) -> Vec<Plant> {
             rule: ROW_GLOB,
             naming: vec!["matches nothing".to_string()],
             overlay: empty_kind,
+        },
+        Plant {
+            label: "a declaration in one file does not excuse the same dead name in another",
+            rule: ROW_PATH,
+            naming: scoped_naming,
+            overlay: scoped,
+        },
+        Plant {
+            label: "a declaration whose own file no longer writes the name is stale",
+            rule: ROW_DECL_LIVE,
+            naming: stale_naming,
+            overlay: scoped_stale,
         },
         Plant {
             label: "a declared exception outlived the name it excused",
@@ -2041,6 +2137,52 @@ mod tests {
                 p.label
             );
         }
+    }
+
+    /// AN EXEMPTION IS SCOPED TO ITS OWN FILE: the declared file stays green on the path row, and a
+    /// second file writing the same dead path is RED, cited by its own path and line.
+    #[test]
+    fn a_declaration_excuses_the_dead_name_only_in_the_file_it_names() {
+        let cx = cx();
+        let ((a, a_text, a_at), (b, b_text, b_at)) =
+            anchor_pair(&cx, |n| n.class == Class::Path && !n.is_glob())
+                .expect("two covered TOML files carrying a path array");
+        let dead = planted_path();
+        let a_declared = format!(
+            "{}\n{DECL} {dead}{SEP}{a}{SEP}{PLANTED_REASON}\n",
+            plant_beside(&a_text, &a_at, &dead).expect("planted beside A")
+        );
+        let path_detail = |ov: Overlay| {
+            crate::gates::execute(&QaNamesGate, &cx.with_overlay(ov))
+                .rows
+                .into_iter()
+                .find(|r| r.id == ROW_PATH)
+                .expect("the path row")
+                .detail
+        };
+
+        let mut only_a = Overlay::new();
+        only_a.set(&a, a_declared.clone());
+        assert!(
+            !path_detail(only_a).contains(&dead),
+            "the declared name in its own file must stay excused"
+        );
+
+        let mut both = Overlay::new();
+        both.set(&a, a_declared);
+        both.set(
+            &b,
+            plant_beside(&b_text, &b_at, &dead).expect("planted beside B"),
+        );
+        let detail = path_detail(both);
+        assert!(
+            detail.contains(&format!("{b}:{} `{dead}`", b_at.line)),
+            "{detail}"
+        );
+        assert!(
+            !detail.contains(&format!("{a}:{} `{dead}`", a_at.line)),
+            "{detail}"
+        );
     }
 
     /// The rows with no standing debt are green, and the scan is over a real population.

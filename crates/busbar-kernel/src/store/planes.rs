@@ -119,6 +119,14 @@ impl PlaneBreakers {
         self.provisioned
     }
 
+    /// A PROVISIONED breaker store (the full placeholder lane table) — what a deployment with plane
+    /// content runs on ([`Self::new`]), and what a plane's test host hands the kernel's breaker
+    /// functions so they run the real breaker rather than a model of it.
+    #[must_use]
+    pub fn provisioned() -> Self {
+        Self::new()
+    }
+
     pub(crate) fn new() -> Self {
         Self {
             provisioned: true,
@@ -343,8 +351,9 @@ impl PlaneBreakers {
         self.state_at(key, 0)
     }
 
-    /// [`Self::state`] for a pooled member's cell.
-    #[cfg(any(test, feature = "test-support"))]
+    /// [`Self::state`] for a pooled member's cell. A pure projection over the production snapshot read,
+    /// so a plane's test host reads the real cell back without the kernel's test surface.
+    #[must_use]
     pub fn state_at(&self, key: &str, lane: usize) -> super::BreakerState {
         self.health.breaker_state_snapshot_in(key, lane)
     }

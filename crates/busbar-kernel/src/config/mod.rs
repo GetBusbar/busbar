@@ -475,8 +475,8 @@ pub struct RootCfg {
     pub per_request_fee: i64,
     /// Every other plane's own fees, by plane registry key. See `DeployCfg::plane_fees`.
     pub plane_fees: PlaneFeesMap,
-    /// The `store:` block as configured; `None` = the block was ABSENT (ephemeral RAM store,
-    /// presence-driven governance stays off unless another governance signal is present).
+    /// The `store:` block as configured; `None` = the block was ABSENT, which `--validate` and boot
+    /// refuse ([`store_required`], Q-STORE = (B)).
     pub store: Option<StoreCfg>,
     /// Module-level `open()` config for `kind: secret` plugins, keyed by module name (the top-level
     /// `secrets:` block). Empty = every secret plugin opens with `{}` (the prior behavior). The
@@ -568,7 +568,8 @@ impl RootCfg {
 pub use busbar_kernel::config::sections::TlsCfg;
 
 pub use busbar_kernel::config::auth::{
-    builtin_identity_providers, operator_principal_id, operator_provider,
+    builtin_identity_providers, is_builtin_identity_module, names_operator, operator_module,
+    operator_principal_id, operator_provider,
 };
 /// One entry in the top-level `identity-providers:` NAMED-DEFINITION map, the resolved auth-chain
 /// entry, the role-binding grant, the token-mint policy, the built-in provider names, and the
@@ -619,7 +620,7 @@ pub const CONFIG_TARGET_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// entirely — the API answered 200 and stored the misplaced credential, and the error surfaced only
 /// once something named the provider.
 pub fn validate_token_placement(name: &str, module: &str, has_token: bool) -> Result<(), String> {
-    if has_token && module != operator_provider() {
+    if has_token && !names_operator(module) {
         let op = operator_provider();
         return Err(busbar_kernel_identity::operator::misplaced_definition_token(op, name, module));
     }
@@ -644,7 +645,7 @@ pub fn resolve_auth(
                     errors.push(e);
                 }
                 let max_admin_scope = def.max_admin_scope.clone().or_else(|| {
-                    (module != operator_provider()).then(|| DEFAULT_MAX_ADMIN_SCOPE.to_string())
+                    (!names_operator(&module)).then(|| DEFAULT_MAX_ADMIN_SCOPE.to_string())
                 });
                 AuthChainEntry {
                     name: name.clone(),
@@ -687,7 +688,7 @@ pub fn resolve_auth(
     // exactly what the retired `auth.methods:` map allowed, so nothing narrows.)
     let methods: AuthMethods = providers
         .iter()
-        .filter(|(_, def)| !builtin_identity_providers().contains(&def.module.trim()))
+        .filter(|(_, def)| !is_builtin_identity_module(def.module.trim()))
         .map(|(name, def)| {
             (
                 name.clone(),
@@ -1277,7 +1278,8 @@ pub struct DeployCfg {
     /// its door, beside the parse its grammar made. See [`DeployCfg::door_sections`].
     #[serde(skip)]
     pub declared_raw: std::collections::BTreeMap<&'static str, serde_yaml::Value>,
-    /// The durable store as `{ module, settings }`. Absent = the ephemeral RAM store.
+    /// The durable store as `{ module, settings }`. Required: absent is refused at validation
+    /// ([`store_required`], Q-STORE = (B)).
     #[serde(default)]
     pub store: Option<StoreCfg>,
     /// Module-level `open()` config for `kind: secret` plugins, keyed by module name — the delivery
@@ -1351,11 +1353,18 @@ impl DeployCfg {
     /// through its door opens with its own (LAW 7: a section absent here opens nothing).
     #[must_use]
     pub fn door_sections(&self) -> std::collections::BTreeMap<&'static str, serde_yaml::Value> {
+        // A named-definition carrier (`tools:`/`agents:`) holds a door plane's section as the door
+        // judged it ([`busbar_kernel::plane::door::DoorSection`], DECL-FOLD): handed as written.
+        let named = [&*self.tools.0, &*self.agents.0]
+            .into_iter()
+            .filter_map(|c| c.as_any().downcast_ref::<crate::plane::door::DoorSection>())
+            .map(|d| (d.section, d.value.clone()));
         self.plane_raw
             .iter()
             .chain(&self.declared_raw)
-            .filter(|(_, v)| !v.is_null())
             .map(|(k, v)| (*k, v.clone()))
+            .chain(named)
+            .filter(|(_, v)| !v.is_null())
             .collect()
     }
 
@@ -1717,7 +1726,9 @@ impl PluginsCfg {
 // The `store:` block and the `secrets:` per-module init block are plain serde data (`{ module,
 // settings }` shapes). Moved to `busbar_kernel::config::sections`; re-exported at their
 // historical `config::` path.
-pub use busbar_kernel::config::sections::{default_governance_store, SecretModuleCfg, StoreCfg};
+pub use busbar_kernel::config::sections::{
+    store_required, SecretModuleCfg, StoreCfg, MIGRATED_STORE_MODULE,
+};
 
 // The `advanced:` block (INTERNAL tuning knobs) and its nested `response_headers:` block are plain
 // serde data with `Default` impls that route through the same shared consts as their `#[serde(default
@@ -1735,8 +1746,7 @@ pub use busbar_kernel::config::sections::{
 // Moved to `busbar_kernel::config::sections`; re-exported at their historical `config::` path.
 pub use busbar_kernel::config::sections::{
     rate_entry_per_mtok, ConfigMgmtCfg, ExportDefCfg, ExportDefs, OverlayBackend, OverlayCfg,
-    RateEntryCfg, EXPORT_MODULES, EXPORT_MODULE_OTLP, EXPORT_MODULE_REQUEST_LOG_FILE,
-    EXPORT_MODULE_REQUEST_LOG_WEBHOOK,
+    RateEntryCfg,
 };
 
 /// The serde default for `per_request_fee:` - 0 (no flat per-request charge; token spend derives
@@ -1839,9 +1849,11 @@ pub struct PrometheusSettings {
 ///   build serves (never a silently-ignored sink);
 /// - a bad/typo'd key inside `settings:` is a boot error (each settings struct is
 ///   `deny_unknown_fields`, so the opaque bag is only opaque to the OUTER layer);
-/// - a SECOND instance of the scrape sink's module is a boot error (see [`ExportCfg`] — it is
-///   process-singleton by construction and a second one could only lose silently), and so, in
-///   1.5.5's words, is a second `module: otlp` instance;
+/// - a SECOND instance of a module whose row states the `one_instance` mark is that module's own
+///   refusal: the kernel asks the module's `check` at the limits phase, here (so it reports among
+///   the configuration's errors, before any sink opens), and renders its findings verbatim — the
+///   plugin words it (1.5.5's text for the scrape and trace sinks); the extra instance is not
+///   resolved;
 /// - the instance's PROJECTION (`streams:` / `fields:` / `durable:`) is resolved + validated by
 ///   [`crate::export::projection::resolve_projection`], which is where the HARD RULE lives: a stream
 ///   with no producer in this release, a stream the module cannot carry, a `fields:` list that omits
@@ -1849,8 +1861,9 @@ pub struct PrometheusSettings {
 ///   and delivers nothing.
 pub fn resolve_export(defs: &ExportDefs, errors: &mut Vec<String>) -> ExportCfg {
     let mut out = ExportCfg::default();
-    // The instance that already claimed `module: otlp`, for 1.5.5's "named twice" refusal.
-    let mut otlp_owner: Option<&str> = None;
+    // The `one_instance` modules already configured once, and those whose refusal is already in.
+    let mut seen_once: Vec<&str> = Vec::new();
+    let mut refused: Vec<&str> = Vec::new();
 
     for (name, def) in defs {
         let settings = serde_json::Value::Object(def.settings.clone());
@@ -1868,42 +1881,37 @@ pub fn resolve_export(defs: &ExportDefs, errors: &mut Vec<String>) -> ExportCfg 
             def.durable,
             errors,
         );
-        // 1.5.5 refused a second `module: otlp` instance HERE, as a configuration error, in these
-        // frozen words: the module is a sink on the export axis now, and the refusal keeps its
-        // words and its place among the configuration's errors.
-        if module == EXPORT_MODULE_OTLP {
-            if let Some(owner) = otlp_owner {
-                errors.push(format!(
-                    "export.{name}: a second `module: otlp` instance (already defined as \
-                     '{owner}'). OTLP installs the ONE process-global tracer subscriber, so a \
-                     second instance could only be silently ignored — keep a single instance."
-                ));
+        // A `one_instance` module configured again: its own `check` (limits phase) words the
+        // refusal, once, over every instance of it; the extra instance is not resolved.
+        if crate::export::plugin::one_instance(module) {
+            if seen_once.contains(&module) {
+                if !refused.contains(&module) {
+                    refused.push(module);
+                    let instances: Vec<(String, serde_json::Value)> = defs
+                        .iter()
+                        .filter(|(_, d)| d.module.trim() == module)
+                        .map(|(n, d)| (n.clone(), serde_json::Value::Object(d.settings.clone())))
+                        .collect();
+                    errors.extend(crate::export::plugin::check_one_instance(
+                        module, &instances,
+                    ));
+                }
                 continue;
             }
-            otlp_owner = Some(name);
+            seen_once.push(module);
         }
         match module {
             // THE EXPORT AXIS: a module some compiled-in or dropped-in export plugin registered.
             // An instance subscribed to `metrics` whose sink carries it and is granted FIRST-PARTY
-            // is the SCRAPE SINK — once: a second instance of that module could only be silently
-            // ignored. A third party may subscribe to `metrics`; it never renders busbar's own
-            // `/metrics` (#65).
+            // is the SCRAPE SINK — the first such instance. A third party may subscribe to
+            // `metrics`; it never renders busbar's own `/metrics` (#65).
             other if axis.is_some() => {
                 let metrics = busbar_contract::abi::export::ExportStream::Metrics;
                 let carries = declared.is_some_and(|d| d.contains(&metrics));
                 let first_party = crate::export::plugin::first_party(other);
                 let scrape = carries && first_party && projection.wants_stream(metrics);
-                let taken = out.plugins.iter().find(|p| p.scrape && scrape);
-                if let Some(owner) = taken.filter(|p| p.def.module.trim() == other) {
-                    errors.push(format!(
-                        "export.{name}: a second `module: {other}` instance (already defined as \
-                         '{}'). Prometheus serves the ONE well-known /metrics route, so a \
-                         second instance could only be silently ignored — keep a single instance.",
-                        owner.name
-                    ));
-                    continue;
-                }
-                let scrape = scrape && taken.is_none();
+                // The first scrape-sink instance renders `/metrics`; no other takes it over.
+                let scrape = scrape && !out.plugins.iter().any(|p| p.scrape);
                 if scrape {
                     out.recorder = serde_json::from_value(settings).ok();
                 }
@@ -1915,17 +1923,13 @@ pub fn resolve_export(defs: &ExportDefs, errors: &mut Vec<String>) -> ExportCfg 
                     scrape,
                 })
             }
-            // The modules THIS build serves: the ones it links, in the frozen order. A default
-            // build links every sink, so its text is 1.5.5's byte for byte.
+            // The modules THIS build serves: the export rows it links, in the order the
+            // composition root registered them (1.5.5's, so a default build, which links every
+            // sink, prints 1.5.5's text byte for byte). The kernel names none.
             other => errors.push(format!(
                 "export.{name}.module: unknown exporter '{other}'; the built-in export modules are \
                  {}",
-                EXPORT_MODULES
-                    .iter()
-                    .copied()
-                    .filter(|m| crate::export::plugin::linked(m))
-                    .collect::<Vec<_>>()
-                    .join(" | ")
+                crate::export::plugin::linked_modules().join(" | ")
             )),
         }
     }
@@ -2428,7 +2432,34 @@ pub fn resolve(
     // section carries no per-registration containers, only its section-wide `<section>.hooks:`
     // list, read through the SAME `container_gates` seam the `tools:` block above reads). An entry
     // naming an undefined hook booted silently before this.
-    for (section, cfg) in &deploy.declared.0 {
+    //
+    // A RAW-carried section ([`DeployCfg::plane_raw`]) whose registered plane parses its section
+    // (a plane served through its door: `busbar_kernel::plane::door`, whose parse is the door's own
+    // `validate`) is judged HERE too, so `--validate` and boot refuse a section its plane refuses,
+    // naming the section, and the parsed section answers the same reserved-word checks a declared
+    // one does (its `hooks:` list here, its model map's provider references below).
+    let raw_judged: Vec<(&'static str, Box<dyn crate::plane::config::PlaneCfg>)> = deploy
+        .plane_raw
+        .iter()
+        .filter(|(_, v)| !v.is_null())
+        .filter_map(|(&section, value)| {
+            let parse = crate::plane::registry::plane_decls()
+                .iter()
+                .find(|d| d.config_section == section)
+                .and_then(|d| d.parse_section)?;
+            parse(value)
+                .map_err(|e| errors.push(format!("`{section}:` is not valid: {e}")))
+                .ok()
+                .map(|cfg| (section, cfg))
+        })
+        .collect();
+    let judged = deploy
+        .declared
+        .0
+        .iter()
+        .map(|(s, c)| (*s, c))
+        .chain(raw_judged.iter().map(|(s, c)| (*s, c)));
+    for (section, cfg) in judged {
         for hook in &cfg.container_gates().section_hooks {
             if !deploy.hooks.contains_key(hook) {
                 errors.push(format!(
@@ -2448,7 +2479,12 @@ pub fn resolve(
     // (BUSBAR-1.6.0.md #51, OWNER-LOCKED: an unknown dialect fails closed — "the decisions plane
     // (only jev) handed `anthropic` fails"). Dialect validation stays the PLANE's answer (`#49`: core
     // spells no protocol literal); this loop only compares strings the plane itself supplied.
-    let declared = deploy.declared.0.values().map(AsRef::as_ref);
+    let declared = deploy
+        .declared
+        .0
+        .values()
+        .chain(raw_judged.iter().map(|(_, c)| c))
+        .map(AsRef::as_ref);
     for section in [deploy.tools.0.as_ref(), deploy.agents.0.as_ref()]
         .into_iter()
         .chain(declared)

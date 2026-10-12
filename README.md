@@ -252,8 +252,8 @@ Runs on x86_64 and 64-bit ARM (Linux, macOS, Windows, Docker). On ARM Linux ther
 
 ### Persistence
 
-The default store is in-memory: keys, usage counters, ledgers and the audit trail all reset on
-restart (one WARN at boot says so). The admin-API config overlay is separate and persists on its
+A `store:` block is required (1.6.0; `busbar --migrate-config` inserts `store: {module: memory}`), and `memory` is in-memory:
+keys, usage counters, ledgers and the audit trail all reset on restart (one WARN at boot says so). The admin-API config overlay is separate and persists on its
 own writable path regardless. Durable keys/usage/ledgers/audit need a store plugin (`sqlite`,
 `postgres`, `mysql` or `valkey`, each its own signed release) wired up with four config keys, not
 just a mounted volume — see [Durable store: giving persistence a writable

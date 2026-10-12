@@ -12,7 +12,7 @@
 //! [`crate::revision::next_step`]; [`probe_outcome`] is what feeds it.
 //!
 //! Pure: no I/O, no clock, no randomness. The caller owns the connection and the memory of what
-//! each upstream negotiated ([`crate::session::UpstreamTable`]).
+//! each upstream negotiated ([`crate::tool_sessions::UpstreamTable`]).
 
 use serde_json::Value;
 

@@ -49,8 +49,8 @@ pub(crate) struct Lane {
     /// and its constant facts via `decl_for(self.protocol).<field>`. Copy-cheap, so `Lane: Clone` stays.
     pub(crate) protocol: &'static str,
     /// Outbound credential — how this lane presents Busbar's identity to the upstream. Resolved once
-    /// at boot from (protocol, auth). See `busbar_kernel::egress_auth`; the request path calls `headers_for`.
-    pub(crate) credential: Arc<dyn busbar_kernel::egress_auth::CredentialProvider>,
+    /// at boot from (protocol, auth). See `busbar_kernel::bound_credential`; the request path calls `headers_for`.
+    pub(crate) credential: Arc<dyn busbar_kernel::bound_credential::CredentialProvider>,
     #[allow(dead_code)]
     pub(crate) max: usize,
     // error_map cloned into each lane at startup for Stage 1b normalization
@@ -101,7 +101,7 @@ pub(crate) struct Lane {
         HashMap<(busbar_contract::operation::OpVerb, bool), crate::engine::EgressTarget>,
     /// Boot-prebuilt egress auth headers for `Own`-mode dispatch, or `None` when this lane's
     /// credential is not lane-constant (OAuth mints, SigV4 signs — those stay per-request). Built
-    /// by `egress_auth::prebuild_auth` from the SAME `headers_for` call the request path makes, so
+    /// by `bound_credential::prebuild_auth` from the SAME `headers_for` call the request path makes, so
     /// a clone of this map is byte-identical to the per-request build; the request path takes the
     /// clone (one buffer copy) iff the resolved credential mode is `Own` — Passthrough carries the
     /// CALLER's credential and always builds live.

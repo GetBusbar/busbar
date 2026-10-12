@@ -2,8 +2,8 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The export rows (`export_axis.rs`) through BOTH DOORS on the export kind's memory ABI: the real
-//! sinks (owner FIXTURES ruling: "real plugins are the proofs") — the prometheus sink and the OTLP
-//! trace sink — each LINKED by its logic crate's `door` and DROPPED IN as its `-plugin` crate's
+//! sinks (owner FIXTURES ruling: "real plugins are the proofs") — the prometheus sink, the OTLP
+//! trace sink and the request-log webhook sink — each LINKED by its logic crate's `door` and DROPPED IN as its `-plugin` crate's
 //! `cdylib` (signed first-party, its Statement rendering in its manifest), probed, validated and
 //! opened through ONE dispatcher, and required to answer the same. The validate refusal renders
 //! under the instance as 1.5.5 printed it.
@@ -26,10 +26,10 @@ fn manifest(name: &str) -> Manifest {
 }
 
 /// The two registries a sink is reached through: its `door` LINKED, and its `-plugin` crate's
-/// `cdylib` (`crate_snake`) DROPPED IN with its Statement rendering. `None` when the `cdylib` is not
-/// built in this (scoped, non-CI) run.
-fn both(name: &str, door: DoorFn, crate_snake: &str) -> Option<[PluginRegistry; 2]> {
-    let lib = std::fs::read(both_ways::cdylib(crate_snake)?).expect("read the cdylib");
+/// `cdylib` (`crate_snake`) DROPPED IN with its Statement rendering. A `cdylib` not built is a hard
+/// failure naming the command that builds it, never a skip.
+fn both(name: &str, door: DoorFn, crate_snake: &str) -> [PluginRegistry; 2] {
+    let lib = std::fs::read(both_ways::cdylib(crate_snake)).expect("read the cdylib");
     let linked = PluginRegistry::empty()
         .link(vec![crate::LinkedPlugin::door(manifest(name), door)])
         .expect("the linked door admits the sink");
@@ -38,7 +38,7 @@ fn both(name: &str, door: DoorFn, crate_snake: &str) -> Option<[PluginRegistry; 
         rendering_of(door).expect("the door renders its Statement"),
     ));
     let dropped = both_ways::dropped(crate_snake, stated, &lib);
-    Some([linked, dropped])
+    [linked, dropped]
 }
 
 fn dispatcher() -> Arc<Dispatcher> {
@@ -67,14 +67,11 @@ busbar_request_duration_seconds_count 2
 /// whole sentence, and renders the recorder snapshot back byte for byte — the same either way.
 #[test]
 fn the_scrape_sink_answers_the_same_through_either_door() {
-    let Some(doors) = both(
+    let doors = both(
         "busbar-export-prometheus",
         busbar_export_prometheus::door::door,
         "busbar_export_prometheus_plugin",
-    ) else {
-        eprintln!("skip: the prometheus sink's cdylib is not built");
-        return;
-    };
+    );
     let transcripts = doors.map(|registry| {
         let rows = ExportRows::new(&registry, dispatcher());
         let module = "busbar-export-prometheus";
@@ -118,16 +115,16 @@ fn the_scrape_sink_answers_the_same_through_either_door() {
 /// connector; the shipped binary's both-doors proof posts them (`traces_stream_both_doors`).
 #[test]
 fn the_trace_sink_answers_the_same_through_either_door() {
-    let Some(doors) = both(
+    let doors = both(
         "busbar-export-otlp",
         busbar_export_otlp::door::door,
         "busbar_export_otlp_plugin",
-    ) else {
-        eprintln!("skip: the OTLP sink's cdylib is not built");
-        return;
-    };
+    );
     let transcripts = doors.map(|registry| {
-        let rows = ExportRows::new(&registry, dispatcher());
+        // The OTLP sink declares an http need: opened to deliver, it binds over a table (one that
+        // declares it and opens nothing; this row never delivers).
+        let rows = ExportRows::new(&registry, dispatcher())
+            .with_conns(Arc::new(crate::needs_restated::Inert));
         let module = "busbar-export-otlp";
         let good = serde_json::json!({ "url": "http://127.0.0.1:4318/v1/traces" });
         let (streams, clean) = rows.probe(module, "trace", &good).expect("an export row");
@@ -147,6 +144,41 @@ fn the_trace_sink_answers_the_same_through_either_door() {
     assert_eq!(transcripts[0], transcripts[1], "both doors answer the same");
 }
 
+/// THE REQUEST-LOG WEBHOOK SINK, BOTH DOORS: each probes as carrying `logs`, validates good settings
+/// clean, refuses a bad key under the instance in 1.5.5's words, and opens on good settings — the
+/// same either way. Its POSTs ride the host's connector over the `http` framer.
+#[test]
+fn the_request_log_webhook_sink_answers_the_same_through_either_door() {
+    let doors = both(
+        "busbar-export-webhook",
+        busbar_export_webhook::door,
+        "busbar_export_webhook_plugin",
+    );
+    let transcripts = doors.map(|registry| {
+        // The webhook sink declares an http need: opened to deliver, it binds over a table (one that
+        // declares it and opens nothing; this row never delivers).
+        let rows = ExportRows::new(&registry, dispatcher())
+            .with_conns(Arc::new(crate::needs_restated::Inert));
+        let module = "busbar-export-webhook";
+        let good = serde_json::json!({ "url": "https://collector.example.com/v1/logs" });
+        let (streams, clean) = rows.probe(module, "audit", &good).expect("an export row");
+        assert_eq!(streams, Some(vec![ExportStream::Logs as u8]));
+        assert!(clean.is_empty(), "{clean:?}");
+        let bad = serde_json::json!({ "url": "https://collector.example.com", "bogus": 1 });
+        let (_, refused) = rows.probe(module, "audit", &bad).expect("an export row");
+        assert_eq!(refused.len(), 1, "{refused:?}");
+        assert!(
+            refused[0].starts_with("export.audit.settings: unknown field `bogus`"),
+            "{refused:?}"
+        );
+        let sink = rows
+            .open(module, "export.audit", &good)
+            .expect("the sink opens");
+        format!("{refused:?} {:?}", sink.streams())
+    });
+    assert_eq!(transcripts[0], transcripts[1], "both doors answer the same");
+}
+
 /// A module no `kind: export` row answers is not the axis's (`None`), and opening it is refused
 /// naming it.
 #[test]
@@ -159,4 +191,44 @@ fn a_module_no_row_answers_is_not_on_the_axis() {
         panic!("no row answers");
     };
     assert_eq!(refused, "no `kind: export` plugin answers to 'nothing'");
+}
+
+/// DISCOVERY AT BOOT ON THE EXPORT AXIS (`abi::mechanism::lifecycle` READY): an export door that
+/// states `ready` is awaited when its instance is opened to deliver, as a store's and an auth door's
+/// are. A refusal refuses the open with the plugin's own text; a READY answer opens it. The instance
+/// `check` opens to judge a configuration (it has no connector) is never asked.
+#[test]
+fn an_export_door_stating_ready_is_awaited_when_it_opens_to_deliver() {
+    use crate::dispatch::ready::ready_plugins::export::{door, NAME, READIES};
+    use std::sync::atomic::Ordering;
+    let registry = PluginRegistry::empty()
+        .link(vec![crate::LinkedPlugin::door(manifest(NAME), door)])
+        .expect("the linked witness admits");
+    let rows =
+        ExportRows::new(&registry, dispatcher()).with_conns(Arc::new(crate::needs_restated::Inert));
+    let refused = serde_json::json!({ "ready": "err:the target is refused" });
+    let before = READIES.load(Ordering::SeqCst);
+    let _ = rows.check(
+        NAME,
+        CHECK_PHASE_INSTANCES,
+        &[("audit".into(), refused.clone())],
+    );
+    assert_eq!(
+        READIES.load(Ordering::SeqCst),
+        before,
+        "check's instance is never asked"
+    );
+    let failed = rows
+        .open(NAME, "export.audit", &refused)
+        .err()
+        .expect("a refused ready refuses the open");
+    assert!(failed.contains("the target is refused"), "{failed}");
+    assert_eq!(READIES.load(Ordering::SeqCst), before + 1);
+    rows.open(
+        NAME,
+        "export.audit",
+        &serde_json::json!({ "ready": "fine" }),
+    )
+    .expect("a READY ready opens the sink");
+    assert_eq!(READIES.load(Ordering::SeqCst), before + 2);
 }

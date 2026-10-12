@@ -137,6 +137,9 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     max_citations_per_delta: None,
     // OpenAI Python SDK UA (the Responses surface shares it). RELEASE OBLIGATION: re-verify/bump per
     // release; the `test_egress_ua_versions_are_pinned_and_present` guard forces a conscious change.
+    // OWNER RULING Q10: the plane writes this on a translated route into this dialect, on a
+    // same-dialect route whose caller sent no user-agent (1.5.5's bytes), and on the
+    // kernel-originated health probe; a same-dialect caller's own user-agent replaces it.
     egress_user_agent: "OpenAI/Python 1.54.0",
     has_model_in_url: false,
     auth_failure_status_and_kind: (
@@ -249,8 +252,9 @@ const OPENAI_USAGE_IDENTITY: &str = "openai.usage";
 /// partition `prompt_tokens`, `completion_tokens_details.{reasoning,audio,text,accepted_prediction,
 /// rejected_prediction}_tokens` sit inside `completion_tokens` (OpenAI bills rejected predictions as
 /// completion tokens, and counts them there). `total_tokens` is OpenAI's sum, never a unit: it is
-/// cross-checked against the ledgered classes and a gap is WARN-logged and carried as the usage
-/// identity note, never ledgered.
+/// cross-checked against the ledgered classes, a gap is WARN-logged and carried as the usage
+/// identity note, and a total ABOVE the itemized classes is the open class `unitemized_tokens`
+/// (owner LEDGER-100).
 fn read_openai_usage(
     usage: Option<&serde_json::Value>,
     tier: Option<&serde_json::Value>,

@@ -3,8 +3,7 @@
 
 //! `Verbs` — the one entry point the admin codec calls: `execute(KernelVerb, &Grant<AdminVerb>)`, plus
 //! the call context every verb needs (who is calling, what scope they were granted, the current
-//! time, and — for the two replayable legacy operations and the mint/rotate arguments this crate
-//! ports semantics for — the extra fields those specific verbs read).
+//! time, and the extra fields the verbs read).
 //!
 //! What happens before a verb's own effect, for EVERY verb, in this order:
 //!
@@ -16,7 +15,10 @@
 //!    middleware, which this crate does not run).
 //! 2. **Rate limit.** [`crate::rate::MutationClass::for_verb`] then
 //!    [`crate::rate::MutationLimiter::check`] — refused `RateLimited` otherwise. Reads never reach
-//!    the limiter at all (their class is `Forbidden`, i.e. never checked).
+//!    the limiter at all (their class is `Forbidden`, i.e. never checked). The limiter is the one
+//!    the composition root built for the life of the node and handed to [`Verbs::new`], so the
+//!    window outlives the request; and it spends only the new verbs (see [`Verbs::admit`] for why
+//!    a legacy verb's budget is not spent here).
 //! 3. **Posture** (new verbs only). [`crate::posture::check_new_verb_admission`]. The five ledger
 //!    views ([`crate::verb::LEDGER_VERBS`]) are answered BEFORE this step and never reach it: a view
 //!    reads figures the ledger already holds, so there is no mutation for dual control to check and
@@ -25,9 +27,10 @@
 //!    audit-chain reads ([`crate::verb::AUDIT_VERBS`]) are answered on the same rung, one branch
 //!    later, through [`crate::governance::Governance::execute_audit_read`], for the same reason and
 //!    with the same checks run first.
-//! 4. **Idempotency** (the two legacy replayable mutations only, `create_key`/`rotate_key`,
-//!    reached through their own dedicated methods rather than the generic [`Verbs::execute`] — see
-//!    their doc comments for why they are not folded into the generic dispatch).
+//! 4. **Idempotency** is not a step of this executor. The two replayable mutations, `POST /keys`
+//!    and `POST /keys/{id}/rotate`, are answered by the served handlers in [`crate::keys`] behind
+//!    the kernel's mutation limiter, against the node's one process-lifetime
+//!    [`crate::idempotency::IdempotencyCache`]; [`Verbs::execute`] refuses both verbs.
 //!
 //! Only once all of that has admitted the call does anything reach [`crate::governance::Governance`]
 //! or [`busbar_contract::verb_store::Store`]. That holds for the three disaster-recovery verbs too: their effect
@@ -37,133 +40,16 @@
 //! not handed out — a caller holding it could have run any of the three with none of the checks,
 //! and nothing in the type system would have asked it not to.
 
-use crate::governance::{Governance, GovernanceError, RotateOutcome};
-use crate::idempotency::{ClaimJournal, IdempotencyCache, Probe, ReplayEncoder, Reservation};
-use crate::mint::{plan_mint_group, GroupLookup, MintPlan};
+use crate::governance::{Governance, GovernanceError};
 use crate::posture::{ApprovalState, PostureCtx};
 use crate::rate::{ConfigClassRule, MutationClass, MutationLimiter, RateCheck};
 use crate::refusal::{store_error_into_refusal, ReasonCode, Refusal, RefusalStep};
 use crate::verb::{
     KernelVerb, VerbScope, AUDIT_VERBS, LEDGER_VERBS, LEGACY_VERBS, NEW_VERBS, READ_ONLY_NEW_VERBS,
 };
-use busbar_contract::caps::{AdminVerb, Grant, SecretOnce, UnitKey};
+use busbar_contract::caps::{AdminVerb, Grant};
 use busbar_contract::verb_store::Store;
-use std::ops::ControlFlow;
 use std::sync::Arc;
-
-/// The nonce seam. This crate has no CSPRNG dependency of its own, so the 128-bit nonce a
-/// [`SecretOnce`] is bound to — the thing that proves exactly one occurrence of the minted secret
-/// at its declared target location — must come from the composition root's own entropy (the secret
-/// plugin's CSPRNG). Deliberately has **no** `Default` impl and
-/// no derivable placeholder: a mandatory seam, bound once at [`Verbs::new`], never silently
-/// defaulted to something predictable (a derivable nonce is security-shaped — it must never reach a
-/// release binary).
-pub trait NonceSource {
-    /// Fill `buf` with 128 bits of nonce material for exactly one mint. Called once per
-    /// [`SecretOnce`]; two calls must not return the same bytes (the property the CSPRNG, not this
-    /// trait, is responsible for).
-    fn fill(&self, buf: &mut [u8; 16]);
-}
-
-/// The longest a group/parent name may be. `// contract:` in spirit: 1.5.5 pins this in
-/// `busbar-core::admin::v1::service::MAX_GROUP_NAME_LEN`, and the number here is that number. The
-/// literal is repeated rather than imported because the source is `pub(crate)` and this crate
-/// depends on nothing that could hand it over.
-///
-/// It had drifted to 253 on the theory that a mismatch could only ever be too strict and so was
-/// harmless. Too strict IS the harm: a 254-, 255- or 256-character parent name that the shipped
-/// release accepted would have been refused, which is a served answer changing.
-pub const MAX_GROUP_NAME_LEN: usize = 256;
-
-/// THE REPLAY KEY FOR A ROTATE, FRAMED SO THAT NO TWO `(id, header)` PAIRS JOIN TO ONE KEY.
-///
-/// A rotate is scoped to the key it rotates as well as to the idempotency header, so a create and a
-/// rotate sharing a header value do not replay each other. Both halves are caller-supplied free
-/// text, which is exactly the condition under which a separator join stops being a function: joined
-/// on a bar or a colon, `("a:b", "c")` and `("a", "b:c")` are one string, so the second rotate is
-/// served the FIRST one's cached response and the key it actually named is never rotated — while
-/// the caller is told it was.
-///
-/// So each half is length-prefixed: the decimal byte length, a colon, then exactly that many bytes.
-/// A reader takes the digits up to the colon as a count and then consumes precisely that count, so
-/// every boundary is fixed by a number the caller does not write. A length can contain no colon,
-/// being decimal digits, so there is nothing left for a caller's bytes to move: `("a:b", "c")` is
-/// `rotate:3:a:b:1:c` and `("a", "b:c")` is `rotate:1:a:3:b:c`. This is the same framing, and the
-/// same reason for it, as the length-prefixed audit digest.
-///
-/// The lengths are BYTE lengths, not character counts: the key is compared as bytes, and a count of
-/// characters would put the boundary somewhere other than where the reader would find it.
-pub(crate) fn rotate_replay_key(id: &str, header: &str) -> String {
-    format!("rotate:{}:{}:{}:{}", id.len(), id, header.len(), header)
-}
-
-/// The outcome of a verb call that minted or rotated a credential: the once-shown secret is a
-/// [`SecretOnce`] placeholder, never a plain string, so nothing downstream of this crate can hold
-/// or log the real material without going through the one capability built to carry it.
-#[derive(Debug)]
-pub struct MintedKeyOutcome {
-    /// The key's id.
-    pub id: String,
-    /// The once-shown secret placeholder.
-    pub secret: SecretOnce,
-    /// Unix-seconds expiry, when the credential shape carries one.
-    pub expires_at: Option<u64>,
-}
-
-/// The result of [`Verbs::create_key`]/[`Verbs::rotate_key`]: either a fresh mint/rotation, or the
-/// verbatim replay of a previous call's response for the same idempotency key. A replay
-/// carries no [`MintedKeyOutcome`] at all — there is no decode step that could reconstruct (and
-/// thereby re-mint) a fresh [`SecretOnce`]; `body` is exactly the bytes the encoder produced for the
-/// original call, byte-for-byte, for as long as the idempotency window is open.
-#[derive(Debug)]
-pub enum MintOutcome {
-    /// A fresh mint or rotation. `body` is [`ReplayEncoder::encode`]'s output over `outcome` — the
-    /// exact bytes cached for any future replay of this idempotency key.
-    Minted {
-        /// The freshly minted or rotated capability.
-        outcome: MintedKeyOutcome,
-        /// The encoded response body, as cached for replay.
-        body: Vec<u8>,
-    },
-    /// A replay: the previously encoded response body, verbatim. No secret was minted or rotated on
-    /// this call.
-    Replayed {
-        /// The exact bytes committed by the original call.
-        body: Vec<u8>,
-    },
-}
-
-impl MintOutcome {
-    /// The response body to send: the fresh encoding on a mint, the cached bytes verbatim on a
-    /// replay — the two cases a caller building an HTTP response must treat identically.
-    pub fn body(&self) -> &[u8] {
-        match self {
-            MintOutcome::Minted { body, .. } => body,
-            MintOutcome::Replayed { body } => body,
-        }
-    }
-}
-
-/// Probe a mint verb's replay cache: a cached body or an in-flight claim ends the call (`Break`),
-/// anything else continues with the reservation this call now owns, if it presented a key.
-fn claim_mint_slot(
-    cache: &IdempotencyCache<Vec<u8>>,
-    key: Option<(String, String)>,
-    now: u64,
-) -> ControlFlow<Result<MintOutcome, Refusal>, Option<Reservation<'_, Vec<u8>>>> {
-    let Some(key) = key else {
-        return ControlFlow::Continue(None);
-    };
-    match cache.probe(key, now) {
-        Probe::NoKey => ControlFlow::Continue(None),
-        Probe::Replay(body) => ControlFlow::Break(Ok(MintOutcome::Replayed { body })),
-        Probe::InFlight => ControlFlow::Break(Err(Refusal::new(
-            RefusalStep::Admit,
-            ReasonCode::IdempotencyInFlight,
-        ))),
-        Probe::Reserved(r) => ControlFlow::Continue(Some(r)),
-    }
-}
 
 /// Resolve the scope a [`KernelVerb`] requires. Legacy verbs read [`LEGACY_VERBS`]; fifteen of the
 /// new money-governance verbs are `Full` (they mutate state or read privileged material) and the two
@@ -209,66 +95,50 @@ pub fn required_scope(verb: KernelVerb) -> VerbScope {
 }
 
 /// `Verbs` — the closed kernel-verb executor. Generic over the seams the integrator binds: the
-/// [`Governance`] and [`Store`] record-store adapters, the [`NonceSource`] the secret plugin lends
-/// and the [`ReplayEncoder`] the admin plane's own writer implements.
-/// `config_class_rules` is data rather than a fifth type parameter — a `&'static` table has
-/// no behaviour to seal behind a trait.
-pub struct Verbs<G: Governance, S: Store, N: NonceSource, E: ReplayEncoder<MintedKeyOutcome>> {
+/// [`Governance`] and [`Store`] record-store adapters. `config_class_rules` is data rather than a
+/// third type parameter — a `&'static` table has no behaviour to seal behind a trait.
+pub struct Verbs<G: Governance, S: Store + ?Sized> {
     governance: G,
-    store: S,
-    nonce_source: N,
-    replay_encoder: E,
+    /// The node's store, shared with the composition that built it; `None` on a node with no
+    /// configured store, where each disaster-recovery verb is refused as a store failure.
+    store: Option<Arc<S>>,
     config_class_rules: &'static [ConfigClassRule],
-    create_key_cache: IdempotencyCache<Vec<u8>>,
-    rotate_key_cache: IdempotencyCache<Vec<u8>>,
-    limiter: MutationLimiter,
+    /// The node's mutation limiter: built ONCE by the composition root and shared by every `Verbs`
+    /// it builds. A `Verbs` lives for one request, so a limiter it built for itself saw an empty
+    /// window on every call and never refused anything.
+    limiter: Arc<MutationLimiter>,
 }
 
-impl<G: Governance, S: Store, N: NonceSource, E: ReplayEncoder<MintedKeyOutcome>>
-    Verbs<G, S, N, E>
-{
-    /// Build a fresh executor over the four bound seams. `config_class_rules` is the composition
+impl<G: Governance, S: Store + ?Sized> Verbs<G, S> {
+    /// Build a fresh executor over the bound seams. `config_class_rules` is the composition
     /// root's sealed class table (see [`crate::rate::CONFIG_CLASS_RULES`] for the 1.5.5-parity
-    /// default); `nonce_source` and `replay_encoder` are mandatory — there is no `Default` for
-    /// either, so a caller cannot silently construct a `Verbs` with a predictable nonce or a
-    /// re-minting replay path.
+    /// default); `limiter` is mandatory: it is the node's, built once for the life of the process,
+    /// and there is no per-executor default that could stand in for it — a limiter born with the
+    /// request forgets every attempt before the next one.
     pub fn new(
         governance: G,
-        store: S,
-        nonce_source: N,
-        replay_encoder: E,
+        store: Option<Arc<S>>,
         config_class_rules: &'static [ConfigClassRule],
+        limiter: Arc<MutationLimiter>,
     ) -> Self {
         Verbs {
             governance,
             store,
-            nonce_source,
-            replay_encoder,
             config_class_rules,
-            create_key_cache: IdempotencyCache::new(),
-            rotate_key_cache: IdempotencyCache::new(),
-            limiter: MutationLimiter::new(),
+            limiter,
         }
-    }
-
-    /// Bind where an idempotency claim the create-key and rotate-key caches take is journalled:
-    /// `Some` on a durable node (the composition root's handle onto its journal), `None` on a node
-    /// with no data directory. `None` is exactly [`Verbs::new`]: both caches stay
-    /// [`IdempotencyCache::new`] and nothing is journalled. Called at construction, before either
-    /// cache has taken a claim, so the caches it replaces are empty.
-    #[must_use]
-    pub fn with_claim_journal(mut self, claim_journal: Option<Arc<dyn ClaimJournal>>) -> Self {
-        let cache = |journal: &Option<Arc<dyn ClaimJournal>>| match journal {
-            Some(j) => IdempotencyCache::with_journal(Arc::clone(j)),
-            None => IdempotencyCache::new(),
-        };
-        self.create_key_cache = cache(&claim_journal);
-        self.rotate_key_cache = cache(&claim_journal);
-        self
     }
 
     /// The scope + rate-limit gate every verb runs through. Returns the [`MutationClass`] on
     /// success, so a caller that must also check idempotency doesn't re-derive it.
+    ///
+    /// ONE REQUEST, ONE LIMITER. A legacy verb (every verb with a [`LEGACY_VERBS`] row, the two
+    /// mint verbs among them) is answered by the 1.5.5 surface it always was, and that surface
+    /// spends the principal's mutation budget itself, in front of the handler, exactly as 1.5.5
+    /// did. Spending it here as well would count one request twice and refuse at half the budget
+    /// 1.5.5 granted. So this limiter spends exactly the verbs no legacy surface answers — the new
+    /// verbs ([`NEW_VERBS`]), whose effects land on the store, the journal and the kernel's books
+    /// and meet no other limiter on their way.
     fn admit(
         &self,
         verb: KernelVerb,
@@ -280,8 +150,8 @@ impl<G: Governance, S: Store, N: NonceSource, E: ReplayEncoder<MintedKeyOutcome>
             return Err(Refusal::new(RefusalStep::Admit, ReasonCode::Unauthorized));
         }
         let class = MutationClass::for_verb(verb, self.config_class_rules);
-        if class == MutationClass::Forbidden {
-            // Never rate-limited (a read, or a verb this limiter does not shape).
+        if class == MutationClass::Forbidden || !NEW_VERBS.contains(&verb) {
+            // Never rate-limited here: a read, or a legacy verb whose own surface spends its budget.
             return Ok(class);
         }
         match self.limiter.check(actor, class, now) {
@@ -292,159 +162,10 @@ impl<G: Governance, S: Store, N: NonceSource, E: ReplayEncoder<MintedKeyOutcome>
         }
     }
 
-    /// Mint a [`SecretOnce`] whose nonce comes from the bound [`NonceSource`] — never a
-    /// value derivable from the unit key or the secret's own shape.
-    fn to_secret_once(
-        &self,
-        admin: &Grant<AdminVerb>,
-        unit: UnitKey,
-        minted: crate::governance::MintedKey,
-        target: &str,
-    ) -> MintedKeyOutcome {
-        let mut buf = [0u8; 16];
-        self.nonce_source.fill(&mut buf);
-        let nonce = u128::from_be_bytes(buf);
-        MintedKeyOutcome {
-            id: minted.id,
-            secret: SecretOnce::mint(admin, nonce, unit, target),
-            expires_at: minted.expires_at,
-        }
-    }
-
-    /// `POST /api/v1/admin/keys` — mint a virtual key. Ported in full: the idempotency probe/
-    /// reservation (per-actor, `Idempotency-Key` header value, 600 s TTL, no body hash — a retry
-    /// with the same key but a different body still replays the first response, exactly as 1.5.5),
-    /// then [`plan_mint_group`]'s existence-only parent check, then the governance mint itself.
-    ///
-    /// Not folded into [`Verbs::execute`]'s generic dispatch because it is one of the two 1.5.5
-    /// operations with its OWN ported replay cache and its own multi-step plan — exactly the two
-    /// operations the architecture document calls out by name in the holds/keys/recovery section.
-    ///
-    /// Eight positional arguments rather than a bundled call-context struct: every one of them is
-    /// a distinct thing the ported logic reads by name (see the doc above), and a bundling struct
-    /// would only move the same count one level out without changing what a caller has to supply.
-    #[allow(clippy::too_many_arguments)]
-    pub fn create_key(
-        &self,
-        admin: &Grant<AdminVerb>,
-        actor: &str,
-        granted: VerbScope,
-        now: u64,
-        unit: UnitKey,
-        idempotency_key: Option<&str>,
-        group: Option<&str>,
-        parent: Option<&str>,
-    ) -> Result<MintOutcome, Refusal> {
-        self.admit(KernelVerb::PostKeys, actor, granted, now)?;
-        if group.is_none() && parent.is_some() {
-            return Err(Refusal::new(RefusalStep::Verify, ReasonCode::Validation));
-        }
-        let ck = idempotency_key.map(|k| (actor.to_string(), k.to_string()));
-        let reservation = match claim_mint_slot(&self.create_key_cache, ck.clone(), now) {
-            ControlFlow::Break(answer) => return answer,
-            ControlFlow::Continue(reservation) => reservation,
-        };
-
-        let plan = plan_mint_group(
-            &GovernanceGroupLookup(&self.governance),
-            group,
-            parent,
-            MAX_GROUP_NAME_LEN,
-        );
-        let plan = match plan {
-            Ok(p) => p,
-            Err(e) => {
-                if let Some(r) = reservation {
-                    r.clear();
-                }
-                return Err(e);
-            }
-        };
-        if let MintPlan::ProvisionLeaf { parent } = &plan {
-            if let Err(e) = self
-                .governance
-                .provision_group(admin, group.unwrap(), parent)
-            {
-                if let Some(r) = reservation {
-                    r.clear();
-                }
-                return Err(e.into_refusal());
-            }
-        }
-        match self.governance.mint_key(admin, group) {
-            Ok(minted) => {
-                let outcome = self.to_secret_once(admin, unit, minted, "response.secret");
-                let body = self.replay_encoder.encode(&outcome);
-                if let Some(r) = reservation {
-                    r.commit(body.clone(), now);
-                }
-                Ok(MintOutcome::Minted { outcome, body })
-            }
-            Err(e) => {
-                if let Some(r) = reservation {
-                    r.clear();
-                }
-                Err(e.into_refusal())
-            }
-        }
-    }
-
-    /// `POST /api/v1/admin/keys/{id}/rotate` — ported in full: same idempotency mechanics as
-    /// [`Verbs::create_key`], SCOPED to the key id as well as the header rather than to the header
-    /// alone — the architecture document's note that a create and a rotate sharing a header value
-    /// must never replay each other. See [`rotate_replay_key`] for how the two are joined.
-    #[allow(clippy::too_many_arguments)]
-    pub fn rotate_key(
-        &self,
-        admin: &Grant<AdminVerb>,
-        actor: &str,
-        granted: VerbScope,
-        now: u64,
-        unit: UnitKey,
-        idempotency_key: Option<&str>,
-        id: &str,
-    ) -> Result<MintOutcome, Refusal> {
-        self.admit(KernelVerb::PostKeysIdRotate, actor, granted, now)?;
-        let ck = idempotency_key.map(|k| (actor.to_string(), rotate_replay_key(id, k)));
-        let reservation = match claim_mint_slot(&self.rotate_key_cache, ck, now) {
-            ControlFlow::Break(answer) => return answer,
-            ControlFlow::Continue(reservation) => reservation,
-        };
-        match self.governance.rotate_key(admin, id) {
-            Ok(RotateOutcome::NotFound) => {
-                if let Some(r) = reservation {
-                    r.clear();
-                }
-                Err(Refusal::new(RefusalStep::Verify, ReasonCode::NotFound))
-            }
-            Ok(RotateOutcome::Tombstoned) => {
-                if let Some(r) = reservation {
-                    r.clear();
-                }
-                Err(Refusal::new(RefusalStep::Verify, ReasonCode::Conflict))
-            }
-            Ok(RotateOutcome::Rotated(minted)) => {
-                let outcome = self.to_secret_once(admin, unit, minted, "response.token");
-                let body = self.replay_encoder.encode(&outcome);
-                if let Some(r) = reservation {
-                    r.commit(body.clone(), now);
-                }
-                Ok(MintOutcome::Minted { outcome, body })
-            }
-            Err(e) => {
-                if let Some(r) = reservation {
-                    r.clear();
-                }
-                Err(e.into_refusal())
-            }
-        }
-    }
-
-    /// The generic dispatcher for every other verb: every legacy operation but the two above, the
-    /// new verbs (posture-gated), and nothing else — a caller for `PostKeys`/`PostKeysIdRotate`
-    /// or a named surface must use the dedicated method / must not call this crate at all.
-    /// `PostKeys` and `PostKeysIdRotate` are refused here rather than served, because this path
-    /// carries none of the replay machinery their own methods do.
+    /// The generic dispatcher: every legacy operation but the two key mints, the new verbs
+    /// (posture-gated), and nothing else. `PostKeys` and `PostKeysIdRotate` are refused here rather
+    /// than served, because this path carries none of the replay machinery the served handlers in
+    /// [`crate::keys`] answer them with.
     #[allow(clippy::too_many_arguments)]
     pub fn execute(
         &self,
@@ -515,7 +236,15 @@ impl<G: Governance, S: Store, N: NonceSource, E: ReplayEncoder<MintedKeyOutcome>
     /// `cfg(test)` so it is not a way for a caller to route around the gates below.
     #[cfg(test)]
     fn store_for_test(&self) -> &S {
-        &self.store
+        self.store.as_deref().expect("these tests bind a store")
+    }
+
+    /// The bound store, or the refusal a node with none answers: there is nothing for the verb to
+    /// reach, so it fails as a store failure rather than succeeding over nothing.
+    fn bound_store(&self) -> Result<&S, busbar_contract::verb_store::StoreError> {
+        self.store
+            .as_deref()
+            .ok_or(busbar_contract::verb_store::StoreError::Failed)
     }
 
     /// The gate the three disaster-recovery verbs run through before they reach the store.
@@ -562,8 +291,8 @@ impl<G: Governance, S: Store, N: NonceSource, E: ReplayEncoder<MintedKeyOutcome>
             posture,
             approval,
         )?;
-        self.store
-            .chain_break(admin)
+        self.bound_store()
+            .and_then(|store| store.chain_break(admin))
             .map_err(store_error_into_refusal)
     }
 
@@ -588,8 +317,8 @@ impl<G: Governance, S: Store, N: NonceSource, E: ReplayEncoder<MintedKeyOutcome>
             posture,
             approval,
         )?;
-        self.store
-            .store_restore(admin, backup_ref)
+        self.bound_store()
+            .and_then(|store| store.store_restore(admin, backup_ref))
             .map_err(store_error_into_refusal)
     }
 
@@ -612,22 +341,9 @@ impl<G: Governance, S: Store, N: NonceSource, E: ReplayEncoder<MintedKeyOutcome>
             posture,
             approval,
         )?;
-        self.store
-            .reseal_epoch_floor(admin)
+        self.bound_store()
+            .and_then(|store| store.reseal_epoch_floor(admin))
             .map_err(store_error_into_refusal)
-    }
-}
-
-/// Adapts [`Governance`] to [`GroupLookup`] so [`plan_mint_group`] can be called without this crate
-/// naming a second copy of the group-tree query surface.
-struct GovernanceGroupLookup<'a, G: Governance>(&'a G);
-
-impl<'a, G: Governance> GroupLookup for GovernanceGroupLookup<'a, G> {
-    fn group_exists(&self, name: &str) -> bool {
-        self.0.group_exists(name)
-    }
-    fn actual_parent(&self, name: &str) -> Option<String> {
-        self.0.actual_parent(name)
     }
 }
 

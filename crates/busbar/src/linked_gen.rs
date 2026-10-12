@@ -17,10 +17,14 @@
 //                                            half lives in the root, or one crate carries several
 //                                            rows)
 //   [package.metadata.busbar.root-units]    <cargo feature> = "<root module>"    (`ROOT_UNIT` of
-//                                            `crate::root::<module>`, in order)
+//                                            `crate::root::<module>`, in order; the row keyed
+//                                            `node` is the node's own unit, in every build)
 //   [package.metadata.busbar.linked-name]   <row key> = "<registry key>"         (the key an `auths`
-//                                            row answers on the auth axis: what its signed tarball's
-//                                            manifest would state as its name)
+//                                            row answers on the auth axis, and every surface prints)
+//   [package.metadata.busbar.linked-canonical] <row key> = "<manifest name>"     (an `auths` row's
+//                                            CANONICAL name, when it is not its key: the manifest
+//                                            name its signed tarball states, plugins.yaml
+//                                            `manifest_name`; config may name the row by either)
 //
 // and this turns the rows whose feature is ENABLED into `extern crate <crate> as _;` lines, one table
 // per registration axis over each entry module's item for that axis (the `LINKED` value), the cfgs
@@ -28,6 +32,12 @@
 // as the test-seam table `busbar-core-admin`'s build script emits (`metadata_list` + `linked_table`
 // there); a build script may not read another crate's source (kind-isolation `build-script-reach`),
 // so the two are written in each crate rather than shared by a path that climbs out of one of them.
+
+/// THE NODE'S OWN ROOT-UNIT ROW (ARCHITECT Q1): keyed to the node itself rather than to a plane
+/// feature, because the node compiles in every build and every door plane — compiled in or dropped
+/// in — is driven and posted on it. Its configuration and book steps (the card repricer, the book
+/// binding) therefore run in every build.
+pub(crate) const NODE_UNIT: &str = "node";
 
 /// A registration axis: its manifest name, the `LINKED` field it fills, and the entry item a crate
 /// that registers on it exports. The plane axis is the one exception, built below (two items, joined),
@@ -41,9 +51,7 @@ pub(crate) const AXES: &[(&str, &str, &str)] = &[
     ("ws-arrivals", "ws_arrivals", "install_ws_arrivals"),
     ("on-host", "on_host", "on_host"),
     ("compose", "compose", "compose"),
-    ("stdio-serve", "stdio_serve", "stdio_serve"),
     ("cli-help", "cli_help", "CLI_HELP"),
-    ("exports", "exports", "EXPORT"),
     ("stores", "stores", "STORE"),
     // The hook axis: each linked `kind: hook` row's door (`plugin_door!`), the same door its
     // dropped-in build exports.
@@ -100,7 +108,8 @@ const SECRET_AXIS: &str = "secret-doors";
 /// The auth axis (#2 rule (1), #40): each row's entry (its crate root) exports, at `door::door`, the
 /// memory-ABI door every `kind: auth` plugin exports (the same door its dropped-in build exports as
 /// `busbar_plugin_door`: THE DESIGN, compiled-in = dropped-in), registered under the key its
-/// `linked-name` row states.
+/// `linked-name` row states and the canonical name its `linked-canonical` row states (the key, when
+/// it has none).
 const AUTH_AXIS: &str = "auths";
 
 /// The `value` of `key` under the `[table]` header, when the table and the row exist. The optional
@@ -238,7 +247,7 @@ pub(crate) fn linked_source(
     }
     for (feature, _) in &units {
         assert!(
-            features.contains(feature),
+            features.contains(feature) || feature == NODE_UNIT,
             "Cargo.toml: linked feature `{feature}` is not declared under [features]"
         );
     }
@@ -358,6 +367,40 @@ pub(crate) fn linked_source(
         out.push_str(&format!("{e}::door, "));
     }
     out.push_str("],\n");
+    // Each door row's place among the plane rows (how many `plane` rows precede it in manifest
+    // order): a door plane's registry row folds in at its row's place, so the layering order is the
+    // manifest's whichever axis a plane registers on.
+    out.push_str("    plane_door_slots: &[");
+    let mut planes_before = 0usize;
+    for (_, axes) in &linked {
+        if axes.iter().any(|a| a == PLANE_DOOR_AXIS) {
+            out.push_str(&format!("{planes_before}, "));
+        }
+        if axes.iter().any(|a| a == "plane") {
+            planes_before += 1;
+        }
+    }
+    out.push_str("],\n");
+    // EACH LINKED PLANE DOOR'S DECLARED METADATA: `(crate, door, declares)`, the JSON its
+    // `[package.metadata.busbar.linked-declares]` row names (the crate's `declares.json`), read as
+    // every default-linked plugin's `declares` section is, beside the door it belongs to (so the
+    // root finds a bound door plane's declaration by its Statement). A door row with no such row
+    // declares none.
+    out.push_str("    plane_door_declares: &[");
+    for ((feature, krate), (entry, _)) in on.iter().zip(&linked) {
+        let is_door = axes
+            .iter()
+            .any(|(f, a)| f == feature && a.split_whitespace().any(|x| x == PLANE_DOOR_AXIS));
+        if !is_door {
+            continue;
+        }
+        if let Some(path) =
+            metadata_value(manifest, "package.metadata.busbar.linked-declares", feature)
+        {
+            out.push_str(&format!("({krate:?}, {entry}::door, {path}), "));
+        }
+    }
+    out.push_str("],\n");
     out.push_str("    transports: &[");
     let mut door_builds = String::new();
     for (n, (e, axes)) in linked
@@ -365,20 +408,36 @@ pub(crate) fn linked_source(
         .filter(|(_, a)| a.iter().any(|x| x == TRANSPORT_AXIS))
         .enumerate()
     {
-        let build = if axes.iter().any(|x| x == DOOR_AXIS) {
+        let (build, claims, upgrades) = if axes.iter().any(|x| x == DOOR_AXIS) {
             door_builds.push_str(&format!(
                 "fn __door_build_{n}(\n    lower: Option<std::sync::Arc<dyn busbar_contract::Transport>>,\n    \
                  settings: &busbar_contract::transport::TransportSettings,\n\
                  ) -> std::sync::Arc<dyn busbar_contract::Transport> {{\n    \
-                 crate::root::doors::build({e}::KEY, {e}::door, lower, settings)\n}}\n"
+                 crate::root::doors::build({e}::KEY, {e}::door, lower, settings, Some(crate::root::connector::address_carrier()))\n}}\n\
+                 fn __door_claims_{n}() -> Vec<&'static str> {{\n    \
+                 crate::root::doors::claims_of({e}::door)\n}}\n\
+                 fn __door_upgrades_{n}() -> Vec<&'static str> {{\n    \
+                 crate::root::doors::upgrades_of({e}::door)\n}}\n"
             ));
-            format!("__door_build_{n}")
+            (
+                format!("__door_build_{n}"),
+                format!("__door_claims_{n}"),
+                format!("__door_upgrades_{n}"),
+            )
         } else {
-            format!("{e}::build")
+            door_builds.push_str(&format!(
+                "fn __row_claims_{n}() -> Vec<&'static str> {{\n    vec![{e}::KEY]\n}}\n\
+                 fn __row_upgrades_{n}() -> Vec<&'static str> {{\n    Vec::new()\n}}\n"
+            ));
+            (
+                format!("{e}::build"),
+                format!("__row_claims_{n}"),
+                format!("__row_upgrades_{n}"),
+            )
         };
         out.push_str(&format!(
             "crate::root::linked::LinkedTransport {{ key: {e}::KEY, composes_over: \
-             {e}::COMPOSES_OVER, build: {build} }}, "
+             {e}::COMPOSES_OVER, build: {build}, claims: {claims}, upgrades: {upgrades} }}, "
         ));
     }
     out.push_str("],\n");
@@ -392,7 +451,10 @@ pub(crate) fn linked_source(
                          `[package.metadata.busbar.linked-name]` row naming its registry key"
                     )
                 });
-            out.push_str(&format!("({name:?}, {entry}::door::door), "));
+            let canonical =
+                metadata_value(manifest, "package.metadata.busbar.linked-canonical", feature)
+                    .unwrap_or_else(|| name.clone());
+            out.push_str(&format!("({name:?}, {canonical:?}, {entry}::door::door), "));
         }
     }
     out.push_str("],\n");
@@ -435,7 +497,10 @@ pub(crate) fn linked_source(
         .iter()
         .filter(|(_, a)| a.iter().any(|x| x == TRANSPORT_AXIS))
     {
-        if axes.iter().any(|x| x == DOOR_AXIS || x == CONNECTOR_DOOR_AXIS) {
+        if axes
+            .iter()
+            .any(|x| x == DOOR_AXIS || x == CONNECTOR_DOOR_AXIS)
+        {
             out.push_str(&format!("({e}::KEY, {e}::door), "));
         }
     }
@@ -462,7 +527,7 @@ pub(crate) fn linked_source(
         "/// Every enabled root unit, in manifest order.\n\
          static ROOT_UNITS: &[&crate::root::linked::RootUnit] = &[\n",
     );
-    for (_, module) in units.iter().filter(|(f, _)| enabled(f)) {
+    for (_, module) in units.iter().filter(|(f, _)| f == NODE_UNIT || enabled(f)) {
         out.push_str(&format!("    &crate::root::{module}::ROOT_UNIT,\n"));
     }
     out.push_str("];\n");

@@ -300,7 +300,9 @@ run_gate() {
 
   hdr "building the release artifact (default features, exactly as a release builds it)"
   cargo build --release --locked -p "$BIN_NAME" 2>&1 | tail -5
-  local bin="target/release/$BIN_NAME"
+  # Where cargo put it: CARGO_TARGET_DIR when the caller set one (the conformance rig does), else
+  # target/. Reading target/ unconditionally found no binary under the rig and read nothing.
+  local bin="${CARGO_TARGET_DIR:-target}/release/$BIN_NAME"
 
   local failed=0
   hdr "AXIS 1 — THE ARTIFACT"

@@ -303,10 +303,6 @@ const TERMINAL_TASK_TTL_SECS: u64 = 300;
 /// TERMINAL tasks are dropped first; an ACTIVE task is NEVER dropped to make room.
 const MAX_RETAINED_TASKS: usize = 4096;
 
-/// RETENTION: the ABANDONMENT ceiling on an ACTIVE task. One whose last update is older than this
-/// transitions to `canceled` through the normal write path. In SECONDS.
-const ACTIVE_TASK_ABANDON_SECS: u64 = 86_400;
-
 /// Why a scoped read was refused.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Denied {
@@ -420,55 +416,20 @@ fn seal_task_event(
     })
 }
 
-/// THE ABANDON TRANSITION the retention sweep applies to an A2A task idle past the ceiling: move it to
-/// `canceled` through the normal chained write path (a `task.terminal` event on its provenance chain).
-/// A2A-specific — the `canceled` token and the event vocab are the plane's — so it is handed to the
-/// engine's neutral sweep as its abandon callback. A seal/encode failure here (impossible in practice
-/// for a `TaskRow`) skips the abandon; the task stays active and the next sweep retries, exactly as a
-/// durable-write failure does.
-fn plan_abandon(
-    _id: &str,
-    row: &(dyn Any + Send + Sync),
-    pos: &ChainPosition,
-    now: u64,
-) -> Option<Mutation> {
-    let row = row.downcast_ref::<TaskRow>()?;
-    let mut candidate = row.clone();
-    candidate.state = "canceled".to_string();
-    candidate.updated_at = now;
-    let ev = EventInput {
-        kind: busbar_contract::vocab::EV_TERMINAL,
-        context_id: candidate.context_id.clone(),
-        principal: candidate.principal.clone(),
-        agent_id: candidate.agent_id.clone(),
-        state: candidate.state.clone(),
-        request_id: String::new(),
-        ts: now,
-    };
-    let event = seal_task_event(pos, &candidate.task_id, &ev).ok()?;
-    let row_record = candidate.to_plane_record().ok()?;
-    let meta = meta_of(&candidate);
-    Some(Mutation {
-        row: Some(Arc::new(candidate)),
-        meta: Some(meta),
-        row_record: Some(row_record),
-        event: Some(event),
-    })
-}
-
-/// Report an abandon that could not be durably recorded: the task stays active and the next sweep
-/// retries. Warned at most once (the durable sink is down; a per-task log would flood). Handed to the
-/// engine's sweep as its neutral failure reporter.
-fn report_abandon_fail(id: &str, e: &RecordStoreError) {
-    static ABANDON_UNRECORDED_WARNED: std::sync::atomic::AtomicBool =
+/// Report a submitted task's row that could not be taken back after its genesis event failed to
+/// append: the submit is still refused, and the row is left for the next boot to find chainless.
+/// Warned at most once (the durable sink is down; a per-task log would flood). Handed to the
+/// engine's submit as its neutral failure reporter.
+fn report_rollback_fail(id: &str, e: &RecordStoreError) {
+    static ROLLBACK_UNRECORDED_WARNED: std::sync::atomic::AtomicBool =
         std::sync::atomic::AtomicBool::new(false);
-    if !ABANDON_UNRECORDED_WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+    if !ROLLBACK_UNRECORDED_WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
         busbar_contract::diag_error!(
             crate::diagnostics::A2A_FAILURE_UNRECORDED,
             task_id = %id,
             error = %e,
-            "an abandoned A2A task could not be transitioned to canceled; it stays \
-             active and the next sweep retries"
+            "a refused A2A submit's row could not be taken back after its genesis event \
+             failed to append"
         );
     }
 }
@@ -484,7 +445,6 @@ fn map_engine_err(e: HandleEngineError) -> TaskStoreError {
 
 /// The A2A retention knobs, handed to the engine's submit-time sweep.
 const SWEEP_BOUNDS: SweepBounds = SweepBounds {
-    abandon_secs: ACTIVE_TASK_ABANDON_SECS,
     terminal_ttl_secs: TERMINAL_TASK_TTL_SECS,
     max_retained: MAX_RETAINED_TASKS,
 };
@@ -660,8 +620,7 @@ impl TaskRegistry {
                         event: Some(event),
                     })
                 },
-                plan_abandon,
-                report_abandon_fail,
+                report_rollback_fail,
             )
             .map(|arc| as_task(&arc))
             .map_err(map_engine_err)
@@ -888,25 +847,6 @@ impl TaskRegistry {
         self.engine.evict_if_terminal(task_id)
     }
 
-    /// **RUN THE RETENTION SWEEP AT `now` WITHOUT A SUBMISSION.** The same sweep [`submit`] runs,
-    /// under the same [`SWEEP_BOUNDS`] and the same once-a-second claim, reached from a caller that
-    /// merely knows time has passed.
-    ///
-    /// A task idle past [`ACTIVE_TASK_ABANDON_SECS`] is moved to `canceled`, and `canceled` is
-    /// terminal — which is what retires the per-task push token that names it
-    /// (`super::a2a::pushback::token_live`). Until this existed, that whole deadline was reachable
-    /// ONLY through a new submission, so on a deployment that had stopped submitting, a silent
-    /// task's capability stayed live indefinitely: the abandon bound was documented as a bound on
-    /// the token and was not one. Calling it on PRESENT — the moment a token is offered — is what
-    /// closes that, and it closes it exactly where it matters, because the sweep and the check that
-    /// reads its result are then the same instant.
-    ///
-    /// Returns whether THIS call swept; a caller that lost the claim did no scan.
-    pub fn sweep_now(&self, now: u64) -> bool {
-        self.engine
-            .sweep_now(now, SWEEP_BOUNDS, plan_abandon, report_abandon_fail)
-    }
-
     /// RETENTION: ask the store to drop terminal task rows older than `before`, and drop any matching
     /// working-set entries. Returns how many durable rows went.
     pub fn compact(&self, before: u64) -> RecordStoreResult<u64> {
@@ -925,12 +865,6 @@ impl TaskRegistry {
     #[cfg(any(test, feature = "test-support"))]
     pub fn retention_bounds() -> (u64, usize) {
         (TERMINAL_TASK_TTL_SECS, MAX_RETAINED_TASKS)
-    }
-
-    /// TEST ONLY: the abandonment ceiling.
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn abandon_ceiling_secs() -> u64 {
-        ACTIVE_TASK_ABANDON_SECS
     }
 
     /// VERIFY one task's persisted provenance chain, end to end, against the store.

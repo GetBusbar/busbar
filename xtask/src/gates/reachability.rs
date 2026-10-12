@@ -82,13 +82,23 @@
 //!   runner that builds no unit — root-reach PASSES and unit-path FAILS. The two rows together say
 //!   the exact true thing.
 //!
-//! and four rows that keep the gate honest and stop it going stale:
+//! and five rows that keep the gate honest and stop it going stale:
 //!
 //! * `reachability:root-module` — EVERY non-test module under `crates/busbar/src/root/` is reached
 //!   from `fn main()`. This is what catches `money_book.rs` and `vocabulary.rs`, which are not plane
 //!   units at all and would otherwise sit outside every row above.
 //! * `reachability:roster` — every `root/units_*.rs` on disk maps to a roster plane, so a new
 //!   module cannot appear beside the table and be scanned by nothing.
+//! * `reachability:plane-crates` — every crate of kind `plane` maps to a roster plane, so a new
+//!   plane crate cannot be linked beside the roster and owe no row here. The population is DERIVED,
+//!   never listed: the kind-isolation census
+//!   ([`crate::gates::kind_isolation::plane_kind_crates`]), every manifest in the tree whose crate
+//!   resolves to `plane`. A crate maps to a roster plane when it is that plane's `linked_crate`, or
+//!   when a key its `impl PlaneMeta` declares is the plane's key or its on-disk spelling — the
+//!   crate's DECLARATION, never its name. The `legacy` kind (`busbar-llm`, `busbar-a2a`,
+//!   `busbar-voice`) is not in the population: those are retiring engines matched by exact name, a
+//!   closed list no new crate can join, and the plane each serves is declared by its
+//!   `busbar-plane-<key>` successor, which is. An empty population is RED, not zero findings.
 //! * `reachability:stale-declaration` — a declaration whose subject is reached again, or that names
 //!   a subject, aspect or file that does not exist. A ledger cannot outlive the debt it tracked.
 //! * `reachability:scan-floor` — the manifest, the composition root and the declaration file were
@@ -152,6 +162,7 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use crate::ctx::{Ctx, Overlay, WalkSpec};
+use crate::gates::kind_isolation::{plane_kind_crates, PlaneKindCrate};
 use crate::gates::{execute, prove_rows_red_at, Case, Expect, Gate, Report};
 use crate::ledger::{Row, Status, Verdict};
 use crate::scan::{test_scope, ScopeLine};
@@ -184,6 +195,8 @@ const GATE: &str = "reachability";
 
 pub const ROW_SCAN_FLOOR: &str = "reachability:scan-floor";
 pub const ROW_ROSTER: &str = "reachability:roster";
+/// Every plane-kind crate the census finds maps to a roster plane. See the header.
+pub const ROW_PLANE_CRATES: &str = "reachability:plane-crates";
 pub const ROW_STALE: &str = "reachability:stale-declaration";
 pub const ROW_ROOT_MODULE: &str = "reachability:root-module";
 /// THE CITED EVIDENCE IS READ, AND NOT MERELY NAMED.
@@ -228,13 +241,14 @@ pub const ASPECTS: &[&str] = &["registered", "unit-path", "root-reach", "root-mo
 ///
 /// #48 (OWNER-LOCKED 2026-09-20, amending #18/#39): *"The locked plane roster becomes 5: llm, mcp,
 /// a2a, streaming, decisions(jev)."* That is the DOCTRINE roster and it is what this gate measures
-/// against — deliberately NOT [`crate::planes::PLANE_KEYS`], which is the ON-DISK roster of four
-/// (`llm`, `mcp`, `a2a`, `voice`) and says so in its own header: every consumer of that constant
-/// treats each entry as a literal `crates/busbar-<key>` directory suffix or a literal grep needle,
-/// so spelling it `streaming` before `crates/busbar-voice` is renamed would make those consumers
-/// open a directory that is not there. The two rosters are held in step by
-/// `every_on_disk_plane_key_maps_to_a_roster_plane` below, which is the right place for a claim
-/// about two Rust constants — a gate row would need a planted tree to prove a compile-time fact.
+/// against — deliberately NOT [`crate::planes::PLANE_KEYS`], the legacy-engine roster whose every
+/// consumer reads an entry as a literal `crates/busbar-<key>` directory suffix.
+///
+/// THE ROSTER IS HELD TO THE TREE, NOT TO ANOTHER LIST (Law 8: rosters are derived, never
+/// hand-kept). It used to be held in step by a unit test against `PLANE_KEYS` — a three-entry typed
+/// list that named neither the mcp nor the decision plane — so a plane crate on disk that neither
+/// list named had no row here at all. `reachability:plane-crates` now reads the plane-kind crates
+/// off the kind-isolation census and refuses any that maps to no row of this table.
 struct Plane {
     /// The #48 roster key.
     key: &'static str,
@@ -269,14 +283,22 @@ const ROSTER: &[Plane] = &[
                the plane-free node its units are handed to (`root/plane_node.rs`, on the `node` \
                axis)",
     },
+    // RE-POINTED TO THE DOOR SHAPE (P3 DEL-MCP, ARCHITECT 2026-10-05): the legacy engine
+    // `busbar-mcp` is deleted and the plane is served through its memory-ABI door alone — the
+    // `plane-mcp-door = "busbar-plane-mcp"` row on the `plane-door` axis (crates/busbar/Cargo.toml).
+    // Its unit path is the door arm, as the decisions plane's is. `registered` for a door row is
+    // ruled on p3-reach-door (a `plane-door` row counts as registered for any plane) and is not
+    // decided here.
     Plane {
         key: "mcp",
         on_disk: "mcp",
         module: "units_mcp",
-        linked_crate: "busbar-mcp",
+        linked_crate: "busbar-plane-mcp",
         register_tokens: &["McpPlane"],
-        note: "extracted to `busbar-mcp`; served on the kernel loop by the #28 rider, and \
-               `root/units_mcp.rs` is the superseded pre-unification module",
+        note:
+            "a DOOR plane since P3 DEL-MCP: served through its memory-ABI door (`plane-mcp-door`, \
+               the `plane-door` row linking `busbar-plane-mcp`); the engine `busbar-mcp` and the \
+               superseded `root/units_mcp.rs` are deleted",
     },
     Plane {
         key: "a2a",
@@ -1755,7 +1777,6 @@ const AXIS_ITEMS: &[(&str, &[&str])] = &[
     ("ws-arrivals", &["install_ws_arrivals"]),
     ("on-host", &["on_host"]),
     ("compose", &["compose"]),
-    ("stdio-serve", &["stdio_serve"]),
 ];
 
 /// The registration axes the manifest's `[package.metadata.busbar.linked-axes]` row lists for the
@@ -1772,6 +1793,23 @@ fn axes_of(manifest: &str, krate: &str) -> Vec<String> {
         .find(|(f, _)| features.contains(f))
         .map(|(_, v)| v.split_whitespace().map(str::to_string).collect())
         .unwrap_or_default()
+}
+
+/// THE DOOR ROWS OF `krate`: every linked feature that links it whose `linked-axes` row carries
+/// [`PLANE_DOOR_AXIS`]. A plane's door row is a first-class roster row of its own (its feature
+/// beside the plane's declaration row, e.g. `<plane>-door = "plane-door"`), so the door arm reads
+/// every row of the crate, never only its first.
+fn door_rows_of(manifest: &str, krate: &str) -> Vec<String> {
+    let features: Vec<String> = manifest_table(manifest, "package.metadata.busbar.linked")
+        .into_iter()
+        .filter(|(_, k)| k == krate)
+        .map(|(f, _)| f)
+        .collect();
+    manifest_table(manifest, "package.metadata.busbar.linked-axes")
+        .into_iter()
+        .filter(|(f, v)| features.contains(f) && v.split_whitespace().any(|a| a == PLANE_DOOR_AXIS))
+        .map(|(f, _)| f)
+        .collect()
 }
 
 /// What the generated `$OUT_DIR/linked.rs` that `main.rs` includes references in THIS crate, read
@@ -1966,6 +2004,78 @@ fn evidence_row(
     }
 }
 
+/// The roster plane a plane-kind crate belongs to: the plane whose `linked_crate` it is, else the
+/// plane a key its `impl PlaneMeta` declares names (by the roster key or its on-disk spelling).
+fn roster_plane_of(krate: &PlaneKindCrate) -> Option<&'static Plane> {
+    ROSTER
+        .iter()
+        .find(|p| p.linked_crate == krate.name)
+        .or_else(|| {
+            ROSTER.iter().find(|p| {
+                krate
+                    .declared_keys
+                    .iter()
+                    .any(|k| k == p.key || k == p.on_disk)
+            })
+        })
+}
+
+/// `reachability:plane-crates` — every plane-kind crate the census finds maps to a roster plane.
+fn plane_crates_row(cx: &Ctx) -> Row {
+    let crates = match plane_kind_crates(cx) {
+        Ok(c) => c,
+        Err(e) => {
+            return Row::fail(
+                ROW_PLANE_CRATES,
+                "the plane-kind crates could not be read off the census",
+                format!("{e} — {DID_NOT_RUN}"),
+            )
+        }
+    };
+    let mut mapped: Vec<String> = Vec::new();
+    let mut orphans: Vec<String> = Vec::new();
+    for c in &crates {
+        match roster_plane_of(c) {
+            Some(p) => mapped.push(format!("{} -> {}", c.name, p.key)),
+            None => orphans.push(format!(
+                "`{}` ({}; declared PlaneMeta key(s): {})",
+                c.name,
+                c.manifest,
+                if c.declared_keys.is_empty() {
+                    "none".to_string()
+                } else {
+                    c.declared_keys.join(", ")
+                }
+            )),
+        }
+    }
+    if orphans.is_empty() {
+        Row::pass(
+            ROW_PLANE_CRATES,
+            "every plane-kind crate the census finds maps to a roster plane",
+            format!(
+                "{CLEAN} — {} plane-kind crate(s) read off the kind-isolation census: {}",
+                crates.len(),
+                mapped.join(", ")
+            ),
+        )
+    } else {
+        Row::fail(
+            ROW_PLANE_CRATES,
+            "a plane-kind crate maps to no plane in the #48 roster",
+            format!(
+                "{} of {} plane-kind crate(s): {} — a plane crate the roster does not name has no \
+                 registered, unit-path or root-reach row, so nothing here asks whether it is \
+                 served at all. Add its plane to `ROSTER` (its `linked_crate`, or the key its \
+                 `impl PlaneMeta` declares), or delete the crate.",
+                orphans.len(),
+                crates.len(),
+                orphans.join(", ")
+            ),
+        )
+    }
+}
+
 fn all_rows_did_not_run(why: &str) -> Verdict {
     let mut rows = vec![Row::fail(
         ROW_SCAN_FLOOR,
@@ -1981,7 +2091,13 @@ fn all_rows_did_not_run(why: &str) -> Verdict {
             rows.push(Row::fail(id, "the scan did not run", DID_NOT_RUN));
         }
     }
-    for id in [ROW_ROOT_MODULE, ROW_ROSTER, ROW_STALE, ROW_EVIDENCE] {
+    for id in [
+        ROW_ROOT_MODULE,
+        ROW_ROSTER,
+        ROW_PLANE_CRATES,
+        ROW_STALE,
+        ROW_EVIDENCE,
+    ] {
         rows.push(Row::fail(id, "the scan did not run", DID_NOT_RUN));
     }
     Verdict::of(rows)
@@ -1999,6 +2115,7 @@ impl Gate for ReachabilityGate {
             ROW_SCAN_FLOOR.to_string(),
             ROW_ROOT_MODULE.to_string(),
             ROW_ROSTER.to_string(),
+            ROW_PLANE_CRATES.to_string(),
             ROW_STALE.to_string(),
             ROW_EVIDENCE.to_string(),
         ];
@@ -2120,9 +2237,26 @@ impl Gate for ReachabilityGate {
                     .into_iter()
                     .map(|h| format!("registry.rs:{h}")),
             );
+            // A DOOR ROW IS REGISTRATION (Part 2 #2: compiled-in = dropped-in): a linked row of the
+            // plane's crate whose `linked-axes` row carries `plane-door` is bound through the
+            // loader's one load at boot (`open_planes` over `LINKED.plane_doors`), the same
+            // registration a dropped-in door gets. The rule decisions' door row is read by, for
+            // every roster row.
+            if folds_linked {
+                hits.extend(
+                    door_rows_of(&manifest, p.linked_crate)
+                        .into_iter()
+                        .map(|feature| {
+                            format!(
+                        "{CRATE_MANIFEST} [package.metadata.busbar.linked-axes] `{feature}` on the \
+                         `{PLANE_DOOR_AXIS}` axis, bound through the loader's one load at boot"
+                    )
+                        }),
+                );
+            }
             let registered = if hits.is_empty() {
                 Err(format!(
-                    "no linked-table row for `{}` on the `plane` axis in {CRATE_MANIFEST} that \
+                    "no linked-table row for `{}` on the `plane` or `plane-door` axis in {CRATE_MANIFEST} that \
                      `register_planes()` ({MAIN_RS}) folds over `LINKED`, and no registration token {:?} appears in \
                      `plane_claims()` ({REGISTRY_RS}). The composition root does not install this \
                      plane, so nothing it declares is served. ({})",
@@ -2256,7 +2390,10 @@ impl Gate for ReachabilityGate {
             // A DOOR PLANE'S UNIT PATH (ARCHITECT Q-SO10; spec K5): its door row (its `linked-axes`
             // row carries the `plane-door` axis) AND the one composition building a driver AND a
             // reached line in that module driving a unit. Any one alone stays red.
-            let door_row = axes.iter().any(|a| a == PLANE_DOOR_AXIS);
+            // Its own row carrying the axis, or a door row of its own beside it (the plane's crate
+            // linked again under a `plane-door` feature).
+            let door_rows = door_rows_of(&manifest, p.linked_crate);
+            let door_row = axes.iter().any(|a| a == PLANE_DOOR_AXIS) || !door_rows.is_empty();
             let door_live = match (door_row, &door.composition, &door.served) {
                 (true, Ok(built), Ok(served)) => Some(format!(
                     "its door row (`{PLANE_DOOR_AXIS}` on its `linked-axes` row) is composed into a \
@@ -2519,6 +2656,9 @@ impl Gate for ReachabilityGate {
                 ),
             )
         });
+
+        // ── every plane crate the census finds is on the roster ──────────────────────────────
+        rows.push(plane_crates_row(cx));
 
         // ── a declaration cannot outlive what it declared ────────────────────────────────────
         let mut stale: Vec<String> = Vec::new();
@@ -2803,6 +2943,25 @@ impl Gate for ReachabilityGate {
             decision_door(false, true, false),
             "no `plane-door` axis (no door row)",
         ));
+        // ITS DOOR ROW BESIDE ITS DECLARATION ROW (a `<plane>-door` feature linking the same crate
+        // on the `plane-door` axis): a first-class roster row. Green composed and served; a door
+        // row with no data route stays red.
+        report.push(green_over(
+            self,
+            cx,
+            FIX_GREEN,
+            "a door plane whose door row sits beside its declaration row, composed and driven, is green",
+            evidenced(decision_door_row_beside(true)),
+        ));
+        report.push(red_over(
+            self,
+            cx,
+            FIX_GREEN,
+            "a door row beside the declaration row with no data route reds its unit-path and root-reach rows",
+            &[row_unit_path("decision"), row_root_reach("decision")],
+            decision_door_row_beside(false),
+            "a driver with no data route is not a unit path",
+        ));
         report.push(red_over(
             self,
             cx,
@@ -2883,6 +3042,76 @@ impl Gate for ReachabilityGate {
             &[ROW_ROSTER],
             FIX_RED,
             &["units_orphan"],
+        ));
+        // ── THE PLANE CRATES ARE READ OFF THE CENSUS, NOT OFF A LIST ─────────────────────────
+        //
+        // The green fixture carries the five plane-kind crates the real tree does, each mapped to a
+        // roster plane (four by the key their `impl PlaneMeta` declares, `busbar-plane-mcp` by being
+        // the mcp row's linked crate). A SIXTH plane crate whose plane is on no roster row is the
+        // finding this row exists for: the old gate held the roster against `planes::PLANE_KEYS`, a
+        // second typed list, and had no row that read the plane crates on disk at all.
+        report.push(red_over(
+            self,
+            cx,
+            FIX_GREEN,
+            "a sixth plane-kind crate whose plane is on no roster row reds the plane-crates row",
+            &[ROW_PLANE_CRATES.to_string()],
+            evidenced(sixth_plane_crate()),
+            "`busbar-plane-zzz`",
+        ));
+        // A NAME IS NOT A THING: a crate named for a roster plane, declaring no key and linked by no
+        // roster row, maps to nothing.
+        report.push(red_over(
+            self,
+            cx,
+            FIX_GREEN,
+            "a plane-kind crate mapped only by its NAME reds the plane-crates row",
+            &[ROW_PLANE_CRATES.to_string()],
+            evidenced({
+                let mut ov = Overlay::new();
+                ov.set(
+                    "crates/busbar-plane-a2a/src/lib.rs",
+                    "pub struct A2aPlane;\n",
+                );
+                ov
+            }),
+            "`busbar-plane-a2a`",
+        ));
+        // A CENSUS THAT FINDS NO PLANE CRATE FOUND NOTHING, which is not zero findings.
+        report.push(red_over(
+            self,
+            cx,
+            FIX_GREEN,
+            "a tree with no plane-kind crate reds the plane-crates row",
+            &[ROW_PLANE_CRATES.to_string()],
+            evidenced({
+                let mut ov = Overlay::new();
+                for c in FIXTURE_PLANE_CRATES {
+                    ov.remove(format!("crates/{c}/Cargo.toml"));
+                }
+                ov
+            }),
+            "the plane-crate population is empty",
+        ));
+        // THE ON-DISK SPELLING MAPS: a plane crate declaring `voice` is the streaming plane's.
+        report.push(green_over(
+            self,
+            cx,
+            FIX_GREEN,
+            "a plane-kind crate declaring a roster plane's on-disk spelling maps to that plane",
+            evidenced({
+                let mut ov = Overlay::new();
+                ov.set(
+                    "crates/busbar-plane-voice/Cargo.toml",
+                    "[package]\nname = \"busbar-plane-voice\"\nversion = \"0.0.0\"\n",
+                );
+                ov.set(
+                    "crates/busbar-plane-voice/src/lib.rs",
+                    "pub struct VoicePlane;\n\nimpl PlaneMeta for VoicePlane {\n    \
+                     const KEY: &'static str = \"voice\";\n}\n",
+                );
+                ov
+            }),
         ));
         report.push(prove_rows_red_at(
             cx,
@@ -3026,7 +3255,7 @@ impl Gate for ReachabilityGate {
                 );
                 ov
             },
-            "no linked-table row for `busbar-a2a` on the `plane` axis",
+            "no linked-table row for `busbar-a2a` on the `plane` or `plane-door` axis",
         ));
         report.push(red_over(
             self,
@@ -3043,7 +3272,27 @@ impl Gate for ReachabilityGate {
                 );
                 ov
             },
-            "no linked-table row for `busbar-voice` on the `plane` axis",
+            "no linked-table row for `busbar-voice` on the `plane` or `plane-door` axis",
+        ));
+        // A DOOR ROW IS REGISTRATION (Part 2 #2, compiled-in = dropped-in): a door-shaped plane —
+        // its declaration row on no `plane` axis, its crate linked again on `plane-door`, no
+        // plane_claims token — is registered by its door row, and green end to end. RED: the same
+        // plane with neither a door row nor a plane axis reds its registration row.
+        report.push(green_over(
+            self,
+            cx,
+            FIX_GREEN,
+            "a door-shaped plane registered ONLY through its plane-door row is green",
+            evidenced(door_shaped_decision(true)),
+        ));
+        report.push(red_over(
+            self,
+            cx,
+            FIX_GREEN,
+            "a plane with no door row and no plane axis, and no plane_claims token, reds its registration row",
+            &[row_registered("decision")],
+            door_shaped_decision(false),
+            "no linked-table row for `busbar-plane-decisions` on the `plane` or `plane-door` axis",
         ));
         report.push(red_over(
             self,
@@ -3080,6 +3329,30 @@ impl Gate for ReachabilityGate {
 
         report
     }
+}
+
+/// The plane-kind crates the green fixture carries — the five the real tree does.
+const FIXTURE_PLANE_CRATES: &[&str] = &[
+    "busbar-plane-a2a",
+    "busbar-plane-decisions",
+    "busbar-plane-llm",
+    "busbar-plane-mcp",
+    "busbar-plane-streaming",
+];
+
+/// A SIXTH plane-kind crate beside the green fixture's five: a manifest and a source declaring a
+/// plane key no roster row has.
+fn sixth_plane_crate() -> Overlay {
+    let mut ov = Overlay::new();
+    ov.set(
+        "crates/busbar-plane-zzz/Cargo.toml",
+        "[package]\nname = \"busbar-plane-zzz\"\nversion = \"0.0.0\"\n",
+    );
+    ov.set(
+        "crates/busbar-plane-zzz/src/lib.rs",
+        "pub struct ZzzPlane;\n\nimpl PlaneMeta for ZzzPlane {\n    const KEY: &'static str = \"zzz\";\n}\n",
+    );
+    ov
 }
 
 /// The green fixture's `plane_claims()` naming no plane type, so the linked table is the only
@@ -3123,6 +3396,7 @@ const FIXTURE_GREEN_MAIN: &str =
 /// The green fixture's rider, runner and decision entry, verbatim (the planted variants edit a copy).
 const INSTALL_RS: &str = "crates/busbar/src/root/gauntlet_install.rs";
 const KERNEL_RS: &str = "crates/busbar/src/root/gauntlet_kernel.rs";
+// qa-names: crates/busbar/src/root/plane_decisions.rs -- xtask/src/gates/reachability.rs -- a path inside the green FIXTURE tree (xtask/fixtures/reachability-green), whose planted variants edit the decision entry it carries; the real tree has no such file since FLIP-DECISIONS served the decisions plane through its door
 const DECISION_ENTRY_RS: &str = "crates/busbar/src/root/plane_decisions.rs";
 const FIXTURE_GREEN_INSTALL: &str =
     include_str!("../../fixtures/reachability-green/crates/busbar/src/root/gauntlet_install.rs");
@@ -3131,7 +3405,7 @@ const FIXTURE_GREEN_KERNEL: &str =
 const FIXTURE_GREEN_DECISION: &str =
     include_str!("../../fixtures/reachability-green/crates/busbar/src/root/plane_decisions.rs");
 const A2A_FLIP_LINE: &str = "    flip_one_shot_to_kernel(busbar_a2a::PLANE_KEY);\n";
-const MCP_FLIP_LINE: &str = "    flip_one_shot_to_kernel(busbar_mcp::PLANE_KEY);\n";
+const MCP_FLIP_LINE: &str = "    flip_one_shot_to_kernel(busbar_plane_mcp::PLANE_KEY);\n";
 const VOICE_FLIP_LINE: &str = "    flip_session_to_kernel(busbar_voice::PLANE_KEY);\n";
 const INSTALL_CALL_LINE: &str = "    root::gauntlet_install::install();\n";
 
@@ -3197,6 +3471,67 @@ fn decision_door(door_row: bool, driven: bool, twice: bool) -> Overlay {
     ov
 }
 
+/// [`decision_door`] with NO `plane-door` on the plane's own row and its door row BESIDE it: a
+/// `plane-decisions-door` feature linking the same crate, its `linked-axes` row `plane-door`.
+fn decision_door_row_beside(driven: bool) -> Overlay {
+    let mut ov = decision_door(false, driven, false);
+    ov.set(
+        CRATE_MANIFEST,
+        FIXTURE_LINKED_MANIFEST
+            .replace(
+                "plane-decisions = \"busbar-plane-decisions\"\n",
+                "plane-decisions = \"busbar-plane-decisions\"\nplane-decisions-door = \"busbar-plane-decisions\"\n",
+            )
+            .replace(
+                "plane-decisions = \"plane\"\n",
+                "plane-decisions = \"plane\"\nplane-decisions-door = \"plane-door\"\n",
+            ),
+    );
+    ov
+}
+
+/// THE DOOR SHAPE, registration-wise: [`decision_door_row_beside`] (served, driven) with the plane's
+/// declaration row carrying NO `plane` axis and no plane_claims token, so the only registration
+/// left is its door row beside it (`door_row`), or none at all.
+fn door_shaped_decision(door_row: bool) -> Overlay {
+    let mut ov = decision_door_row_beside(true);
+    let mut manifest = FIXTURE_LINKED_MANIFEST.replace(
+        "plane-decisions = \"plane\"\n",
+        "plane-decisions = \"claims\"\n",
+    );
+    if door_row {
+        manifest = manifest
+            .replace(
+                "plane-decisions = \"busbar-plane-decisions\"\n",
+                "plane-decisions = \"busbar-plane-decisions\"\nplane-decisions-door = \"busbar-plane-decisions\"\n",
+            )
+            .replace(
+                "plane-decisions = \"claims\"\n",
+                "plane-decisions = \"claims\"\nplane-decisions-door = \"plane-door\"\n",
+            );
+    }
+    ov.set(CRATE_MANIFEST, manifest);
+    // With no `plane` axis the generated table no longer names the entry module, so `fn main()`
+    // reaches it directly, as a door plane's root module is reached on the real tree.
+    ov.set(
+        MAIN_RS,
+        FIXTURE_GREEN_MAIN.replace(
+            INSTALL_CALL_LINE,
+            &format!(
+                "{INSTALL_CALL_LINE}    let planes = root::serve::compose_planes();\n    let _ = \
+                 root::serve::serve(&planes);\n    let _ = root::plane_decisions::PLANE_HOOKS;\n"
+            ),
+        ),
+    );
+    ov.set(
+        REGISTRY_RS,
+        include_str!("../../fixtures/reachability-green/crates/busbar/src/root/registry.rs")
+            .replace("use busbar_plane_decisions::DecisionPlane;\n", "")
+            .replace("    claims.push(DecisionPlane::KEY);\n", ""),
+    );
+    ov
+}
+
 /// The runner the keys are flipped onto, with its type no longer a `Units` impl.
 fn runner_builds_no_unit() -> Overlay {
     let mut ov = Overlay::new();
@@ -3224,7 +3559,7 @@ fn flips_in_a_colliding_uncalled_fn() -> Overlay {
     ov
 }
 
-/// mcp's flip removed, and `crates/busbar-mcp/src/linked.rs` exporting a `Units` impl — built in its
+/// mcp's flip removed, and `crates/busbar-plane-mcp/src/linked.rs` exporting a `Units` impl — built in its
 /// `PLANE_HOOKS` (on mcp's plane axis) when `built`, in a function nothing exported calls otherwise.
 fn mcp_by_linked_export(built: bool) -> Overlay {
     let hooks = if built {
@@ -3235,7 +3570,7 @@ fn mcp_by_linked_export(built: bool) -> Overlay {
     let mut ov = Overlay::new();
     ov.set(INSTALL_RS, FIXTURE_GREEN_INSTALL.replace(MCP_FLIP_LINE, ""));
     ov.set(
-        "crates/busbar-mcp/src/linked.rs",
+        "crates/busbar-plane-mcp/src/linked.rs",
         format!(
             "pub struct McpLinkedUnit {{\n    n: u64,\n}}\n\n\
              impl busbar_kernel::teller::Units for McpLinkedUnit {{\n    fn drive(&self) -> u64 {{\n        self.n\n    }}\n}}\n\n\
@@ -3448,24 +3783,6 @@ fn describe(sites: &[Site]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// THE TWO ROSTERS, HELD IN STEP. `crate::planes::PLANE_KEYS` is the ON-DISK roster of four and
-    /// `ROSTER` is #48's locked roster of five; the gap between them is real and named in both
-    /// headers. What must never happen is a key in one that maps to nothing in the other — an
-    /// on-disk plane this gate has no row for is a plane it scans nothing of, and zero findings is
-    /// the passing answer to every rule. This is a claim about two Rust constants, which is why it
-    /// is a unit test and not a gate row: a gate row would need a planted tree to prove a fact that
-    /// is fixed at compile time.
-    #[test]
-    fn every_on_disk_plane_key_maps_to_a_roster_plane() {
-        for key in crate::planes::PLANE_KEYS {
-            assert!(
-                ROSTER.iter().any(|p| p.key == key || p.on_disk == key),
-                "on-disk plane key `{key}` maps to no plane in the #48 roster — add it to ROSTER \
-                 (or to its `on_disk` spelling) or this gate scans nothing of it"
-            );
-        }
-    }
 
     /// Every roster row is distinct in both spellings, and every aspect the declaration file may
     /// name is one this gate actually measures.

@@ -3,12 +3,18 @@
 
 //! Verification: everything that has to be true between two checkpoints.
 //!
-//! One entry point, four kinds of answer, and each of them names something an operator would do
+//! One entry point, five kinds of answer, and each of them names something an operator would do
 //! differently. A verifier that returns a boolean tells nobody anything, gets run once, and is then
 //! ignored — so this one returns findings.
+//!
+//! Every window is measured by the identity alone. A window is never treated as closed: a line
+//! written late files under the window of its unit's arrival (THE DESIGN §7), so an earlier window
+//! may legitimately move after the day it covers has ended. A closed-window arm used to sit here
+//! behind a window-state seam whose only production answer was "everything is open", so it never
+//! ran; it is deleted rather than kept as a check nothing performs.
 
 use crate::checkpoint::{AnchoredHead, Checkpoint};
-use crate::identity::{closed_window_is_settled, residual, ClosedWindowMoved, Imbalance};
+use crate::identity::{residual, Imbalance};
 use crate::totals::{Totals, TotalsKey, WindowStart};
 
 /// Something verification found.
@@ -58,8 +64,6 @@ pub enum Finding {
         /// Which window.
         window: WindowStart,
     },
-    /// A closed window moved after its last transfer.
-    ClosedWindowMoved(ClosedWindowMoved),
 }
 
 impl std::fmt::Display for Finding {
@@ -82,25 +86,7 @@ impl std::fmt::Display for Finding {
                 f,
                 "{key} in the window opening at {window} was sealed into the checkpoint and is no longer in the book — retired, or REMOVED"
             ),
-            Finding::ClosedWindowMoved(c) => write!(f, "{c}"),
         }
-    }
-}
-
-/// Which windows have closed, so verification knows which ones must have stopped moving.
-pub trait WindowState {
-    /// Whether this window is still open.
-    fn is_open(&self, key: &TotalsKey, window: WindowStart) -> bool;
-}
-
-/// Everything is open. The right answer for a deployment with one rolling window, and a sensible
-/// default for a caller that has not wired window state yet.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct AllWindowsOpen;
-
-impl WindowState for AllWindowsOpen {
-    fn is_open(&self, _key: &TotalsKey, _window: WindowStart) -> bool {
-        true
     }
 }
 
@@ -124,7 +110,6 @@ impl WindowState for AllWindowsOpen {
 pub fn verify(
     since: &Checkpoint,
     now: &std::collections::BTreeMap<(TotalsKey, WindowStart), Totals>,
-    windows: &dyn WindowState,
     anchor: Option<&AnchoredHead>,
 ) -> Vec<Finding> {
     let mut findings = Vec::new();
@@ -161,20 +146,12 @@ pub fn verify(
             findings.push(Finding::Retired { key, window });
             continue;
         };
-        if windows.is_open(&key, window) {
-            let r = residual(&before, &after);
-            if !r.holds() {
-                findings.push(Finding::Imbalanced(Imbalance {
-                    key: key.clone(),
-                    window,
-                    residual: r,
-                }));
-            }
-        } else if let Err(moved) = closed_window_is_settled(&before, &after) {
-            findings.push(Finding::ClosedWindowMoved(ClosedWindowMoved {
+        let r = residual(&before, &after);
+        if !r.holds() {
+            findings.push(Finding::Imbalanced(Imbalance {
                 key: key.clone(),
                 window,
-                moved,
+                residual: r,
             }));
         }
     }

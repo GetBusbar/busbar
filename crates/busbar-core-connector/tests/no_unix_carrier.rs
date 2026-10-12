@@ -5,6 +5,11 @@
 //! unix transport"). The carriers are tcp and stdio. A `unix://` target is refused, whichever way a
 //! need names it: declared over a `unix` scheme no entry serves, or named as the target of a need
 //! declared over a served scheme. Neither reaches a dial.
+//!
+//! What the connector DOES serve is a unix-domain SOCKET PATH as the target of a `tcp` need in the
+//! operator-infrastructure (or loopback-allowed) class, spelled `unix:/absolute/path` (ARCHITECT
+//! ruling 2026-10-03 12:10Z, VALKEY-UNIX; `src/tests/unix_target_tests.rs`). That is no transport
+//! and no scheme: the `unix://` URL spelling below is still refused.
 
 use busbar_contract::conn::{ConnError, Conns, InstanceId, NeedId, OpenDesc};
 use busbar_core_connector::endpoint::{self, EndpointRefusal};

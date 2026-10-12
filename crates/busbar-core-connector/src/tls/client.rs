@@ -59,8 +59,10 @@ pub fn build_client_config(trust: &EgressTrust) -> Result<rustls::ClientConfig, 
     match &trust.client_identity {
         None => Ok(wants_client_cert(trust).with_no_client_auth()),
         Some(identity) => {
-            let key = rustls_pki_types::PrivateKeyDer::try_from(identity.private_key.clone())
-                .map_err(|e| BadClientIdentity(format!("private key: {e}")))?;
+            let key = rustls_pki_types::PrivateKeyDer::try_from(
+                identity.private_key.expose_secret().clone(),
+            )
+            .map_err(|e| BadClientIdentity(format!("private key: {e}")))?;
             let chain: Vec<rustls_pki_types::CertificateDer<'static>> = identity
                 .cert_chain
                 .iter()
@@ -134,6 +136,68 @@ fn wants_client_cert(
         builder
             .dangerous()
             .with_custom_certificate_verifier(Arc::new(verifier))
+    }
+}
+
+/// THE UNVERIFIED CLIENT CONFIG: the far end's certificate (its chain, its name, its validity) is
+/// NOT checked, only that it signed the handshake. The operator's explicit opt-in for one need
+/// (`UPGRADE_VERIFY_OFF`, 1.5.5's `rediss://…#insecure`; ARCHITECT ruling 2026-10-03 on Q-L16-4),
+/// honoured for an operator-infrastructure need only (`Connector::upgrade_secure`); never a default.
+#[must_use]
+pub fn unverified_client_config() -> rustls::ClientConfig {
+    let crypto = crate::tls::installed_crypto();
+    rustls::ClientConfig::builder()
+        .dangerous()
+        .with_custom_certificate_verifier(Arc::new(AcceptsAnyCertificate(crypto)))
+        .with_no_client_auth()
+}
+
+/// A verifier that accepts any certificate and checks only the handshake's signature with it.
+#[derive(Debug)]
+struct AcceptsAnyCertificate(Arc<rustls::crypto::CryptoProvider>);
+
+impl rustls::client::danger::ServerCertVerifier for AcceptsAnyCertificate {
+    fn verify_server_cert(
+        &self,
+        _: &rustls_pki_types::CertificateDer<'_>,
+        _: &[rustls_pki_types::CertificateDer<'_>],
+        _: &rustls_pki_types::ServerName<'_>,
+        _: &[u8],
+        _: rustls_pki_types::UnixTime,
+    ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+        Ok(rustls::client::danger::ServerCertVerified::assertion())
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &rustls_pki_types::CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls12_signature(
+            message,
+            cert,
+            dss,
+            &self.0.signature_verification_algorithms,
+        )
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &rustls_pki_types::CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls13_signature(
+            message,
+            cert,
+            dss,
+            &self.0.signature_verification_algorithms,
+        )
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+        self.0.signature_verification_algorithms.supported_schemes()
     }
 }
 
@@ -213,6 +277,108 @@ impl rustls::client::danger::ServerCertVerifier for PinnedKeyVerifier {
     fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
         self.inner.supported_verify_schemes()
     }
+}
+
+/// ONE DESTINATION'S TRUST ANCHORS, sealed for dialling (the transport pin, ARCHITECT 2026-10-03): the far
+/// end's key pin to hold every connection to, and busbar's client identity, parsed once, to present.
+#[derive(Debug, Clone, Default)]
+pub struct Sealed {
+    /// The far end's key pin, in `busbar_contract::transport::trust::key_pin`'s spelling, trimmed.
+    pub key_pin: Option<String>,
+    /// The client identity to present when the far end asks for one.
+    pub identity: Option<Arc<rustls::sign::CertifiedKey>>,
+}
+
+/// SEAL `anchors` for dialling under `base` (the connector's client config, whose crypto provider
+/// parses the identity): the identity is parsed and its key checked against its leaf here, once,
+/// so a pair the stack cannot use refuses the seal (the boot), never a dial.
+///
+/// # Errors
+///
+/// The identity does not parse, its key is not its leaf's, or there is no client config to present
+/// it under.
+pub fn seal(
+    base: Option<&rustls::ClientConfig>,
+    anchors: &busbar_contract::transport::trust::Anchors,
+) -> Result<Sealed, BadClientIdentity> {
+    let identity = match &anchors.client_identity {
+        None => None,
+        Some(identity) => {
+            let base = base.ok_or_else(|| {
+                BadClientIdentity("the connector secures no connection to present it on".into())
+            })?;
+            let key = rustls_pki_types::PrivateKeyDer::try_from(
+                identity.private_key.expose_secret().clone(),
+            )
+            .map_err(|e| BadClientIdentity(format!("private key: {e}")))?;
+            let chain: Vec<rustls_pki_types::CertificateDer<'static>> = identity
+                .cert_chain
+                .iter()
+                .cloned()
+                .map(rustls_pki_types::CertificateDer::from)
+                .collect();
+            let certified =
+                rustls::sign::CertifiedKey::from_der(chain, key, base.crypto_provider())
+                    .map_err(|e| BadClientIdentity(format!("certificate chain: {e}")))?;
+            Some(Arc::new(certified))
+        }
+    };
+    Ok(Sealed {
+        key_pin: anchors
+            .key_pin
+            .as_deref()
+            .map(str::trim)
+            .filter(|k| !k.is_empty())
+            .map(str::to_owned),
+        identity,
+    })
+}
+
+/// The client-certificate resolver of one dial under sealed anchors: it presents the identity when
+/// the far end asks for one and records that it did, so the connection's facts say whether busbar
+/// proved who it is ([`busbar_contract::transport::ConnFacts::client_identity`]).
+#[derive(Debug)]
+pub struct Presenting {
+    identity: Arc<rustls::sign::CertifiedKey>,
+    presented: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl Presenting {
+    /// Present `identity`, raising `presented` when the far end asked for it.
+    #[must_use]
+    pub fn new(
+        identity: Arc<rustls::sign::CertifiedKey>,
+        presented: Arc<std::sync::atomic::AtomicBool>,
+    ) -> Self {
+        Self {
+            identity,
+            presented,
+        }
+    }
+}
+
+impl rustls::client::ResolvesClientCert for Presenting {
+    fn resolve(
+        &self,
+        _root_hint_subjects: &[&[u8]],
+        _sigschemes: &[rustls::SignatureScheme],
+    ) -> Option<Arc<rustls::sign::CertifiedKey>> {
+        self.presented
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        Some(Arc::clone(&self.identity))
+    }
+
+    fn has_certs(&self) -> bool {
+        true
+    }
+}
+
+/// THE FAR END'S KEY PIN off its leaf certificate's DER, in the one spelling
+/// (`busbar_contract::transport::trust::key_pin`); `None` when the certificate is not the DER this
+/// walk reads. Taken off a certificate the handshake's chain-and-name check already verified.
+#[must_use]
+pub fn peer_key_pin(leaf_der: &[u8]) -> Option<String> {
+    subject_public_key_info(leaf_der).map(busbar_contract::transport::trust::key_pin)
 }
 
 /// THE SubjectPublicKeyInfo of a DER certificate, whole (tag and length included), or `None` when the

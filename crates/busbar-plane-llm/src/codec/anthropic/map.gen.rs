@@ -145,12 +145,12 @@ pub(crate) const CONTROLS: &[(Slot, Handled)] = &[
     (Slot::PresencePenalty, Handled::Warn("dropping presence_penalty on Anthropic egress: the Messages API models no such sampling control (lossy-by-target)", true)),
     (Slot::Seed, Handled::Warn("dropping seed on Anthropic egress: the Messages API models no deterministic-sampling seed (lossy-by-target)", true)),
     (Slot::N, Handled::Warn("dropping n on Anthropic egress: the Messages API returns a single completion and models no candidate-count parameter (lossy-by-target)", true)),
-    (Slot::ServiceTier, Handled::Warn("dropping service_tier on Anthropic egress: Anthropic offers only auto /                      standard_only capacity (lossy-by-target)", true)),
+    (Slot::ServiceTier, Handled::Warn("dropping service_tier on Anthropic egress: Anthropic offers only auto / standard_only capacity (lossy-by-target)", true)),
 ];
 
 /// The warn for every other derived drop.
 pub(crate) const DROP_WARN: crate::codec::dialect::DropWarn =
-    crate::codec::dialect::DropWarn::Parameter("dropping {slot} on Anthropic egress: the Messages API has no such request                      member (lossy-by-target)");
+    crate::codec::dialect::DropWarn::Parameter("dropping {slot} on Anthropic egress: the Messages API has no such request member (lossy-by-target)");
 
 /// Word table `service_tier`: (wire word, IR word, direction).
 pub(crate) const WORDS_SERVICE_TIER: &[Word] = &[

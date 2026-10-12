@@ -42,9 +42,6 @@ fn policy_timeout(timeout_ms: u64) -> std::time::Duration {
 /// only as an [`busbar_contract::ir::facts::IrFacts`]. The MCP and A2A firing sites call it; the model plane's
 /// own phase-2 reconcile (which also has a candidate set to reconcile) stays in `proxy::engine`.
 pub mod gate;
-pub mod plugin;
-pub mod scrape;
-pub mod wire;
 
 // The HOOK CONTRACT — the `RoutingPolicy` trait and the read-only projections it is invoked with
 // (`RoutingRequest`, `Candidate`, `RoutingContext`, `RoutingDecision`, …) — lives in the
@@ -178,6 +175,24 @@ impl HookEnv {
         })
     }
 
+    /// A test build's environment over a hook axis it was handed (the kernel's hook port answered
+    /// by `test_support::hook_double`) rather than the one the root builds over `registry`.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn with_axis(
+        registry: std::sync::Arc<busbar_plugin_loader::PluginRegistry>,
+        axis: std::sync::Arc<dyn busbar_contract::hook_calls::HookAxis>,
+        secret_resolver: std::sync::Arc<dyn busbar_contract::secret::SecretResolve>,
+    ) -> Self {
+        HookEnv {
+            registry,
+            axis: Some(axis),
+            secret_resolver,
+            banner_seen: std::sync::Arc::new(std::sync::Mutex::new(
+                std::collections::HashSet::new(),
+            )),
+        }
+    }
+
     /// Whether a `kind: hook` row answers to `module` here (the axis names it, or the registry
     /// resolves it): a module neither knows is GENUINELY ABSENT.
     fn knows(&self, module: &str) -> bool {
@@ -200,7 +215,9 @@ impl HookEnv {
             .ok_or_else(|| format!("no `kind: hook` plugin answers to '{module}'"))?;
         let settings = serde_json::Value::Object(settings.clone());
         let calls = axis.open(module, name, &settings, policy_timeout(timeout_ms))?;
-        Ok(plugin::HookPolicy::policy(calls, name))
+        Ok(crate::plane_driver::hooks::policy::HookPolicy::policy(
+            calls, name,
+        ))
     }
 
     /// Resolve a hook's opaque `settings:` map — substituting any SecretRef-typed value (e.g. a
@@ -473,7 +490,7 @@ pub fn resolve_pool_rewrites(
 /// `reject` refuses the unit, anything else proceeds with the ORIGINAL body.
 ///
 /// A DECORATOR rather than a branch at each firing site: the rewrite chain fires from four places
-/// (the model plane's global + per-pool passes and the neutral `transform_over` seam the MCP, A2A
+/// (the model plane's global + per-pool passes and the kernel's `admission_transform` the MCP, A2A
 /// and voice planes share), and a per-site branch would have to be written — and kept correct —
 /// four times. Wrapping at RESOLUTION means every firing site, present and future, gets the
 /// operator's disposition for free, and the sites keep their fail-safe shape.
@@ -857,7 +874,7 @@ type Resolved = (Arc<dyn RoutingPolicy>, ResolvedSettings);
 /// names that list as the reason a per-open allocation had to be interned; the load itself was left
 /// alone.
 ///
-/// Measured on this tree, on the 2.1 MB `busbar-hook-test-plugin` cdylib (macOS, 18 cores), timing
+/// Measured on a 2.1 MB hook cdylib (the since-deleted test hook; macOS, 18 cores), timing
 /// the `Library::new` call alone:
 ///
 /// | how it was run | p50 | p90 | max |
@@ -1804,6 +1821,32 @@ pub enum ResolvedPolicy {
         /// policies (native/order-only), which never produce an empty intersection.
         on_empty: crate::config::PolicyOnError,
     },
+}
+
+/// THE HOOK CONTENT CEILING, on a built prompt projection: measured on its bytes BEFORE any call,
+/// and over the ceiling the content is OMITTED WHOLE (the hook is shown an empty projection, its
+/// grant still honoured), never truncated mid-value; `busbar_hook_content_truncated_total` counts
+/// it. A `0` ceiling is the operator turning it off. The one rule every seat that hands a hook the
+/// prompt applies.
+#[must_use]
+pub fn content_capped(p: PromptProjection<'_>) -> PromptProjection<'_> {
+    let cap = crate::proxy::hook_content_max_bytes();
+    if cap == 0 {
+        return p;
+    }
+    let bytes = p.system.as_deref().map(str::len).unwrap_or(0)
+        + p.messages
+            .iter()
+            .map(|(role, text)| role.len() + text.len())
+            .sum::<usize>();
+    if bytes <= cap {
+        return p;
+    }
+    metrics::counter!(crate::snapshot::HOOK_CONTENT_TRUNCATED_TOTAL).increment(1);
+    PromptProjection {
+        system: None,
+        messages: Vec::new(),
+    }
 }
 
 /// THE disposition rule for a hook call that FAILED — one rule, one place, for every seat that

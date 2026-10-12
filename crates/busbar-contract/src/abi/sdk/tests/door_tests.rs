@@ -1341,6 +1341,14 @@ mod plane_plugin {
 
     /// The generation snapshot `open` publishes.
     pub const SNAPSHOT: &PlaneSnapshot = &PlaneSnapshot {
+        listed: std::ptr::null(),
+        listed_len: 0,
+        resource_facts: Blob {
+            ptr: std::ptr::null(),
+            len: 0,
+            fmt: crate::abi::mechanism::call::BLOB_ABSENT,
+            flags: 0,
+        },
         size: size_of::<PlaneSnapshot>() as u32,
         _reserved: 0,
         generation: 7,
@@ -1364,14 +1372,36 @@ mod plane_plugin {
         },
     };
 
-    /// `open`: the plane's own `out`, carrying the snapshot.
+    std::thread_local! {
+        /// How many providers' dialect facts this thread's last `open` read in its `in`.
+        pub static PROVIDERS_READ: std::cell::Cell<usize> = const { std::cell::Cell::new(usize::MAX) };
+    }
+
+    /// `open`: the plane's own `out`, carrying the snapshot; it notes how many providers' facts
+    /// its `in` carried.
     pub struct Open;
     impl Slot for Open {
         type In = PlaneOpenIn;
         type Out = PlaneOpenOut;
-        fn call(_: *mut c_void, _: &PlaneOpenIn, out: &mut PlaneOpenOut) -> Outcome {
+        fn call(_: *mut c_void, input: &PlaneOpenIn, out: &mut PlaneOpenOut) -> Outcome {
+            PROVIDERS_READ.with(|n| n.set(input.providers_len));
             out.snapshot = SNAPSHOT;
             Outcome::Ready
+        }
+    }
+
+    /// `cancel`: the plane's own `in`/`out` (the lifecycle's embedded first).
+    pub struct Cancel;
+    impl Slot for Cancel {
+        type In = crate::abi::plane::PlaneCancelIn;
+        type Out = crate::abi::plane::PlaneCancelOut;
+        fn call(
+            _: *mut c_void,
+            input: &crate::abi::plane::PlaneCancelIn,
+            out: &mut crate::abi::plane::PlaneCancelOut,
+        ) -> Outcome {
+            out.cancel.disposition = input.cancel.ticket.slot + 6;
+            Outcome::Failed
         }
     }
 
@@ -1404,6 +1434,34 @@ mod plane_plugin {
             start: Start, project: Project,
         },
     }
+}
+
+/// THE APPEND RULE ON `PlaneOpenIn::providers`: a host whose `open` `in` ends before the list (its
+/// `size` says so) hands none, whatever bytes lie past its `size`; a host that states the whole `in`
+/// hands its count.
+#[test]
+fn a_plane_open_in_that_ends_before_the_providers_hands_none() {
+    use crate::abi::plane::{Ops, PlaneOpenIn, PlaneOpenOut, ProviderFacts};
+    // SAFETY: the macro's `'static` door and its plane table.
+    let t = unsafe { &*(*plane_plugin::door()).ops.cast::<Ops>() };
+    // SAFETY: plain data; all-zero is valid.
+    let mut input: PlaneOpenIn = unsafe { std::mem::zeroed() };
+    input.open.head = in_head::<PlaneOpenIn>(slot::OPEN, Ticket::NONE);
+    input.providers = std::ptr::NonNull::<ProviderFacts>::dangling().as_ptr();
+    input.providers_len = 3;
+    // SAFETY: as above.
+    let mut out: PlaneOpenOut = unsafe { std::mem::zeroed() };
+    out.open.head = prefilled_head(size_of::<PlaneOpenOut>());
+    assert_eq!(call(t.head.open, &input, &mut out), Outcome::Ready);
+    assert_eq!(plane_plugin::PROVIDERS_READ.with(std::cell::Cell::get), 3);
+    input.open.head.size = std::mem::offset_of!(PlaneOpenIn, providers) as u32;
+    out.open.head = prefilled_head(size_of::<PlaneOpenOut>());
+    assert_eq!(call(t.head.open, &input, &mut out), Outcome::Ready);
+    assert_eq!(
+        plane_plugin::PROVIDERS_READ.with(std::cell::Cell::get),
+        0,
+        "an `in` that ends before the list hands none"
+    );
 }
 
 #[test]

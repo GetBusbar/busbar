@@ -9,10 +9,14 @@ Read alongside `scripts/a2a-subject/boot.sh` (which produces the number) and `ru
 runs the suite). **Nothing here silences a test.** Every waived requirement still runs, still fails,
 and is still counted in the suite's own MUST row.
 
-**`testing/a2a-tck/subject-waivers.json` is the machine-checkable PIN of exactly one entry from
-this file's ledger** — the LOCKED `PUSH-DELIVER-001/002/003` trio — and it is what
-`scripts/a2a-subject/boot.sh`'s `assert_tck_number` gates the subject leg on, at the
-REQUIREMENT level (not the suite's own MUST row, which folds `NOT TESTED` requirements — a suite
+**`testing/a2a-tck/subject-waivers.json` is the machine-checked half of this file** (2026-10-04,
+Laws 8 and 10). Its `waived` list holds the LOCKED `PUSH-DELIVER-001/002/003` trio and its `skipped`
+list the five SKIPPED MUSTs below, and NO entry is trusted by its id: each carries a premise that
+`scripts/a2a-subject/boot.sh`'s `assert_tck_number` EVALUATES on every run — the trio only while every
+error the suite reports for it is busbar's plaintext-callback refusal, each SKIP only while the agent
+card the suite read holds the capability fact the test skips on. A premise that is false, an entry
+whose requirement no longer fails (or no longer skips), and a SKIP the ledger does not name are all
+RED. That ledger is what the gate holds the subject leg to, at the REQUIREMENT level (not the suite's own MUST row, which folds `NOT TESTED` requirements — a suite
 limitation shared by the pinned third-party control, see `check-baseline.py` and
 `testing/a2a-tck/baselines/` — into "failed" and is printed for a human but not gated on).
 `CARD-EXT-001` and `GRPC-ERR-001` were both deliberately absent from that pin while they failed —

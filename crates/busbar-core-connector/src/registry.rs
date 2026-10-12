@@ -152,6 +152,18 @@ impl Transports {
         })
     }
 
+    /// THE CARRIER OF A NETWORK ADDRESS: the first entry, in registration order, that is a CARRIER
+    /// whose own claim selects on the local port ([`crate::framer::DoorFacts::ported`]). A framer's
+    /// connection, and every listener, ride it; `None` = no such carrier is loaded, and nothing
+    /// dials or binds an address.
+    #[must_use]
+    pub fn address_carrier(&self) -> Option<&Entry> {
+        self.entries.iter().find(|e| {
+            let f = e.door.facts();
+            f.role == busbar_contract::abi::transport::ROLE_CARRIER && f.ported
+        })
+    }
+
     /// Every scheme, the entry serving it and its claim index, in registration order.
     #[must_use]
     pub fn view(&self) -> Vec<(String, String, usize)> {

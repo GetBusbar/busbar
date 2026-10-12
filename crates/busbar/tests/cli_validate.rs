@@ -27,13 +27,30 @@ fn fixture_dir(tag: &str) -> PathBuf {
     let d = std::env::temp_dir().join(format!(
         "busbar-cli-validate-{}-{tag}-{}",
         std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
+        {
+            static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            format!(
+                "{}-{}-{}",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |d| d.as_nanos()),
+                line!(),
+                NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            )
+        }
     ));
     std::fs::create_dir_all(d.join("plugins")).unwrap();
     d
+}
+
+/// The `store:` line a fixture config carries unless the block under test writes its own: a config
+/// names its store (owner ruling Q-STORE = (B), 2026-09-27).
+fn store_unless_written(extra: &str) -> &'static str {
+    if extra.lines().any(|l| l.starts_with("store:")) {
+        ""
+    } else {
+        "store: {module: memory}\n"
+    }
 }
 
 /// A minimal VALID providers.yaml + config.yaml pair. `extra` is appended verbatim to config.yaml
@@ -58,7 +75,8 @@ providers:
 models:
   test-model:
     provider: mock
-{extra}"#
+{}{extra}"#,
+            store_unless_written(extra)
         ),
     )
     .unwrap();
@@ -69,7 +87,7 @@ models:
 /// codecs) the build carries. The empty `providers:`/`models:` pair is written only when the plane
 /// that owns `models:` is linked (`linked_axis_body_ingress`): a plane the build does not link
 /// requires nothing (Law 7).
-#[cfg(linked_axis_stdio_serve)]
+#[cfg(linked_section_tools)]
 fn write_tools_only_configs(dir: &Path, extra: &str) {
     std::fs::write(dir.join("providers.yaml"), "").unwrap();
     let catalog = if cfg!(linked_axis_body_ingress) {
@@ -79,7 +97,10 @@ fn write_tools_only_configs(dir: &Path, extra: &str) {
     };
     std::fs::write(
         dir.join("config.yaml"),
-        format!("listen: \"127.0.0.1:0\"\n{catalog}{extra}"),
+        format!(
+            "listen: \"127.0.0.1:0\"\n{catalog}{}{extra}",
+            store_unless_written(extra)
+        ),
     )
     .unwrap();
 }
@@ -152,6 +173,27 @@ fn validate_ok_on_valid_config_without_plugins() {
         !stdout.contains("note:") && !stdout.contains("env var(s)"),
         "no config value here uses ${{VAR}} interpolation, so there must be no unset-env-var \
          note: got {stdout}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A 1.5.5-shaped config whose root `pools:` names a pool after a reserved sub-key (`tier`, `work`)
+/// validates exactly as 1.5.5 did (Q-STEP9-a, ARCHITECT 2026-10-07): the root `pools:` section keeps
+/// 1.5.5's two reserved words and no more, so both are pools and both are counted.
+#[cfg(linked_axis_node)]
+#[test]
+fn validate_accepts_root_pools_named_after_a_reserved_sub_key_as_1_5_5_did() {
+    let dir = fixture_dir("pools-named-tier-work");
+    write_configs(
+        &dir,
+        "pools:\n  tier:\n    members: [{model: test-model, tier: large}]\n  work:\n    \
+         members: [{model: test-model}]\n",
+    );
+    let (code, stdout, stderr) = run_busbar(&dir, &["--validate"]);
+    assert_eq!(code, 0, "stdout={stdout} stderr={stderr}");
+    assert!(
+        stdout.contains("ok: config valid — 1 provider(s), 1 model(s), 2 pool(s)"),
+        "got {stdout}"
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -334,6 +376,125 @@ fn validate_trust_gate_matches_boot() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// THE SIGNING GATE'S READING, PINNED (scripts/signing-gate.sh, ARCHITECT ruling (A)): when a
+/// linked row answers the config's reference, `--validate` exits 0 whatever an unsigned tarball's
+/// fate, and the gate judges its refusing arms by these exact lines of the summary instead: the
+/// count `0 validated, 1 skipped` and the skip line `skipped: <manifest name> (<file>) — ... manifest
+/// carries no signature`. A rewording of either reds this test, not the gate silently. The store
+/// the config names is the linked one (`memory`); the unsigned tarball is not referenced at all.
+#[cfg(linked_axis_body_ingress)]
+#[test]
+fn validate_summary_names_an_unsigned_tarball_as_the_signing_gate_reads_it() {
+    let dir = fixture_dir("gate-lines");
+    write_tarball(
+        &dir,
+        "p.tar.gz",
+        "busbar-store-docstore",
+        "docstore",
+        b"lib",
+    );
+    write_configs(&dir, &plugins_block(&dir, true, false));
+    let (code, stdout, stderr) = run_busbar(&dir, &["--validate"]);
+    assert_eq!(
+        code, 0,
+        "the linked store answers the config: stderr={stderr}"
+    );
+    assert!(
+        stdout.contains("0 validated, 1 skipped"),
+        "the summary's count, as the gate matches it: {stdout}"
+    );
+    let line = stdout
+        .lines()
+        .find(|l| {
+            l.trim_start()
+                .starts_with("skipped: busbar-store-docstore (p.tar.gz) ")
+        })
+        .unwrap_or_else(|| panic!("the skip line names the manifest and the file: {stdout}"));
+    assert!(
+        line.contains("manifest carries no signature"),
+        "the skip line names the trust reason the gate matches: {line}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// THE SIGNING GATE'S REFERENCE reaches the dropped-in tarball under test, even when this build links
+/// the same plugin (ARCHITECT C': one plugin, one identity whichever door it arrives by).
+/// scripts/signing-gate.sh writes `store: { module: <ref> }`, its reference the tarball's MANIFEST
+/// NAME (`$MANIFEST_NAME`, what its release packs). busbar links busbar-store-memory under that same
+/// canonical name, alias `memory`, so the linked row answers the reference and `--validate` exits
+/// 0: the gate then judges the tarball by the loader's own verdict on it, which must name THAT
+/// tarball skipped for its missing signature with nothing validated beside it. A tarball whose
+/// name no linked row answers is refused outright (exit 1). The reference is read from the gate's
+/// own store arm, so this test fails if the gate spells it by alias or by crate.
+#[cfg(linked_axis_body_ingress)]
+#[test]
+fn the_signing_gate_reference_reaches_the_dropped_in_tarball_past_a_linked_alias() {
+    const NAME: &str = "busbar-store-memory";
+    const ALIAS: &str = "memory";
+    let gate = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/signing-gate.sh"),
+    )
+    .expect("read scripts/signing-gate.sh");
+    let arm = gate
+        .lines()
+        .find(|l| l.trim_start().starts_with("store)") && l.contains("REF="))
+        .expect("the gate has a store arm writing REF");
+    assert!(
+        arm.contains("$MANIFEST_NAME")
+            && !arm.contains("$PLUGIN_ALIAS")
+            && !arm.contains("$PLUGIN_CRATE"),
+        "the store arm names the tarball by its manifest name: {arm}"
+    );
+
+    for (tag, name, alias, linked) in [
+        ("signing-gate-ref", NAME, ALIAS, true),
+        (
+            "signing-gate-ref-unlinked",
+            "signing-gate-unlinked-memory",
+            "signing-gate-unlinked-memory",
+            false,
+        ),
+    ] {
+        let dir = fixture_dir(tag);
+        let mut m = plugins::manifest("store", name, "busbar");
+        m.alias = alias.into();
+        std::fs::write(dir.join("plugins/p.tar.gz"), plugins::seal(m, b"lib")).unwrap();
+        write_configs(
+            &dir,
+            &format!(
+                "{}store:\n  module: {name}\n",
+                plugins_block(&dir, true, false)
+            ),
+        );
+        let (code, stdout, stderr) = run_busbar(&dir, &["--validate"]);
+        let out = format!("{stdout}{stderr}");
+        if linked {
+            assert_eq!(code, 0, "the linked row answers `{name}`: {out}");
+            assert!(
+                stdout.contains("0 validated, 1 skipped")
+                    && stdout.lines().any(|l| {
+                        l.trim_start()
+                            .starts_with(&format!("skipped: {name} (p.tar.gz) "))
+                            && l.contains("manifest carries no signature")
+                    }),
+                "the loader's verdict names the unsigned tarball under test: {out}"
+            );
+        } else {
+            assert_eq!(
+                code, 1,
+                "no row answers `{name}`: an unsigned tarball refuses: {out}"
+            );
+            assert!(
+                out.contains("was not loaded")
+                    && (out.contains("manifest carries no signature")
+                        || out.contains("allow_unsigned")),
+                "the refusal is the trust verdict on the tarball: {out}"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
 /// FAIL-CLOSED (conflict): two plugins claiming the same alias fail --validate naming BOTH.
 #[cfg(linked_axis_body_ingress)]
 #[test]
@@ -501,7 +662,12 @@ fn migrate_config_omits_changes_and_warnings_sections_when_empty() {
     let dir = fixture_dir("migrate-clean");
     std::fs::create_dir_all(&dir).unwrap();
     let legacy = dir.join("legacy.yaml");
-    std::fs::write(&legacy, "listen: \"127.0.0.1:8080\"\n").unwrap();
+    // Names its store, so the Q-STORE insertion has nothing to add either.
+    std::fs::write(
+        &legacy,
+        "listen: \"127.0.0.1:8080\"\nstore: {module: memory}\n",
+    )
+    .unwrap();
 
     let out = Command::new(env!("CARGO_BIN_EXE_busbar"))
         .args(["--migrate-config", legacy.to_str().unwrap()])
@@ -904,13 +1070,13 @@ fn validate_fails_on_unresolvable_browser_login_client_secret() {
 /// typed (`publish_as: foo_bar` versus server `foo`'s tool `bar`). A check that compared overrides
 /// only to each other would exit 0 here and look correct doing it.
 ///
-/// GATED ON the linked `stdio-serve` axis (`linked_axis_stdio_serve`, emitted by build.rs from
-/// `[package.metadata.busbar.linked-axes]`): the collision check lives in the plane that owns
-/// `tools:`, the linked row carrying that axis, and is compiled out with it — a binary without that
+/// GATED ON `linked_section_tools`, set exactly when the linked door declaring `tools:` is in the
+/// build (the `linked-section` row; the linked row that once carried a `stdio-serve` axis is gone): the collision check lives in that
+/// plane and is compiled out with it — a binary without that
 /// plane has no `tools:` to collide in, so `--validate` exiting 0 there is the correct answer, not the
 /// missed refusal this test exists to pin. The config configures that plane and nothing else (no
 /// provider, no model), so the test runs on every build that links it, whatever else is linked.
-#[cfg(linked_axis_stdio_serve)]
+#[cfg(linked_section_tools)]
 #[test]
 fn validate_refuses_a_publish_as_collision_with_a_namespaced_default() {
     let dir = fixture_dir("publish-as-collision");
@@ -1090,6 +1256,7 @@ fn providers_flag_overrides_providers_file_and_default() {
     std::fs::write(
         &config,
         "listen: \"127.0.0.1:0\"\n\
+         store: {module: memory}\n\
          providers:\n\
          \x20 mock:\n\
          \x20   api_key: { env: MOCK_KEY }\n\
@@ -1207,6 +1374,7 @@ fn write_configs_with_api_key(dir: &Path, api_key_yaml: &str, extra: &str) {
         dir.join("config.yaml"),
         format!(
             r#"listen: "127.0.0.1:0"
+store: {{module: memory}}
 providers:
   mock:
     api_key: {api_key_yaml}
@@ -1312,7 +1480,8 @@ fn validate_refuses_none_on_a_secret_that_requires_a_credential() {
 //
 // `providers.yaml`'s `protocol:` selects the WIRE dialect (`anthropic`/`openai`/…/`jev`); a `mock`
 // provider on `protocol: jev` is what a genuine decisions deployment configures — the decision
-// plane's own `PlaneCfg::known_dialects` (`root/plane_decisions.rs`) is unioned into the provider
+// plane's door states it as its one dialect and consumes `providers:`, so its folded section's
+// `PlaneCfg::known_dialects` (`busbar_kernel::plane::door`) is unioned into the provider
 // wire-codec check (`config_validate::validate_providers_with`) for exactly this reason, so `jev`
 // is a legal `protocol:` value even though no `busbar-llm-codec` dialect module translates it.
 
@@ -1337,6 +1506,7 @@ fn write_decisions_configs(dir: &Path, protocol: &str, decisions_yaml: &str) {
         dir.join("config.yaml"),
         format!(
             r#"listen: "127.0.0.1:0"
+store: {{module: memory}}
 providers:
   mock:
     api_key: {{ env: MOCK_KEY }}
@@ -1491,6 +1661,40 @@ fn validate_refuses_a_decisions_model_whose_provider_speaks_a_foreign_dialect() 
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// THE SECTION IS JUDGED BY THE PLANE'S OWN DOOR (FLIP-DECISIONS): the plane's registry row is its
+/// door's Statement, folded, and its section parses through the door's `validate`. A `decisions:`
+/// that is a scalar where a mapping belongs, or that carries a member the plane does not declare,
+/// fails `--validate` naming the block, rather than landing as an untyped capture that does
+/// nothing. The control is `validate_ok_on_a_good_decisions_config`.
+#[cfg(feature = "plane-decisions")]
+#[test]
+fn validate_refuses_a_decisions_block_its_door_does_not_accept() {
+    for (case, block, member) in [
+        ("scalar", "decisions: \"hello\"\n", None),
+        (
+            "typo",
+            "decisions:\n  modles:\n    verdicts:\n      provider: mock\n",
+            Some("modles"),
+        ),
+    ] {
+        let dir = fixture_dir(&format!("decisions-door-{case}"));
+        write_decisions_configs(&dir, &decision_dialect(), block);
+        let (code, _stdout, stderr) = run_busbar(&dir, &["--validate"]);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(code, 1, "{case}: the door refuses the block: {stderr}");
+        assert!(
+            stderr.contains("decisions"),
+            "{case}: the refusal names the block: {stderr}"
+        );
+        if let Some(member) = member {
+            assert!(
+                stderr.contains(member),
+                "{case}: the refusal names the member: {stderr}"
+            );
+        }
+    }
+}
+
 // ── LAW 7: AN UNCONFIGURED PLANE CONTRIBUTES NO PROVIDER DIALECT (oracle cell BOOT-020) ───────────
 //
 // The provider protocol check is unioned with the dialects of the planes a config CONFIGURES, not
@@ -1550,21 +1754,23 @@ fn validate_refuses_the_decision_protocol_when_no_decisions_section_is_configure
 /// Retry-After ceiling — and its delivery deadline after them, though both are the sink's own
 /// checks now. The whole refusal is pinned line for line; RED: the sink's lines answered in one
 /// place (all after the limits) reorder the second and third lines.
-#[cfg(linked_axis_body_ingress)]
+#[cfg(all(linked_axis_body_ingress, linked_axis_export_doors))]
 #[test]
 fn validate_orders_a_webhook_sinks_refusals_among_the_limits_as_before() {
-    // Whether this binary links the webhook sink is the binary's own answer — a module on no export
-    // axis is refused as an unknown exporter — never a feature name. A build without it has no
-    // refusal of the sink's to order.
+    // A build that links no export sink has no refusal of the sink's to order: the test is the
+    // export door axis's (the linked table's answer, never a feature name), so it compiles where the
+    // build links that axis and asserts the binary links the webhook sink (a module on no export
+    // axis is refused as an unknown exporter).
     let probe = fixture_dir("webhook-order-probe");
     write_configs(
         &probe,
         "export:\n  hook: { module: request-log-webhook, settings: { url: \"https://siem.example/in\" } }\n",
     );
     let (_, _, probed) = run_busbar(&probe, &["--validate"]);
-    if probed.contains("unknown exporter 'request-log-webhook'") {
-        return;
-    }
+    assert!(
+        !probed.contains("unknown exporter 'request-log-webhook'"),
+        "{probed}"
+    );
     let dir = fixture_dir("webhook-order");
     write_configs(
         &dir,
@@ -1617,40 +1823,42 @@ fn write_stated_store(dir: &Path, name: &str, alias: &str, kind_abi: u32, lib: &
     .unwrap();
 }
 
-/// STAGES 0-2 (BUSBAR-1.6.0.md §3): `--validate` names a dropped-in plugin's stated facts and whether the
-/// configuration selects it, read off its signed manifest — WITHOUT opening it: the library bytes
-/// are not a library, so a `dlopen` would refuse the run.
+/// STAGES 0-2 (BUSBAR-1.6.0.md §3): `--validate` reads a dropped-in plugin's stated facts off its
+/// signed manifest and selects it WITHOUT opening it (the library bytes are not a library, so a
+/// `dlopen` would refuse the run) — and its report is 1.5.5's bytes: the stage report is debug
+/// logging, never a `plugin: … — selected as …` line (ARCHITECT 2026-10-06; oracle
+/// `plugins.store-persist|store-sqlite`).
 #[cfg(linked_axis_body_ingress)]
 #[test]
-fn validate_names_a_dropped_plugins_stated_facts_without_opening_it() {
+fn validate_selects_a_dropped_plugin_without_opening_it_and_reports_in_1_5_5s_words() {
     use busbar_contract::abi::mechanism::KindCode;
     let dir = fixture_dir("stated");
     let abi = KindCode::Store.abi_version();
     write_stated_store(&dir, "busbar-store-stated", "stated", abi, b"not a library");
-    write_configs(
-        &dir,
-        &format!(
+    for config in [
+        format!(
             "{}store:\n  module: stated\n",
             plugins_block(&dir, true, true)
         ),
-    );
-    let (code, stdout, stderr) = run_busbar(&dir, &["--validate"]);
-    assert_eq!(code, 0, "stderr={stderr}");
-    assert!(
-        stdout.contains(&format!(
-            "    plugin: busbar-store-stated (store, ABI {abi}) — selected as store"
-        )),
-        "got {stdout}"
-    );
-    // Not named by the configuration: listed, not selected.
-    write_configs(&dir, &plugins_block(&dir, true, true));
-    let (code, stdout, stderr) = run_busbar(&dir, &["--validate"]);
-    assert_eq!(code, 0, "stderr={stderr}");
-    assert!(
-        stdout.contains("busbar-store-stated (store, ABI")
-            && stdout.contains("not used by this config"),
-        "got {stdout}"
-    );
+        // Not named by the configuration.
+        plugins_block(&dir, true, true),
+    ] {
+        write_configs(&dir, &config);
+        let (code, stdout, stderr) = run_busbar(&dir, &["--validate"]);
+        assert_eq!(code, 0, "stderr={stderr}");
+        assert!(
+            stdout.contains("  plugins:   enabled — 1 validated, 0 skipped (untrusted) in '"),
+            "got {stdout}"
+        );
+        for out in [&stdout, &stderr] {
+            assert!(
+                !out.contains("plugin: busbar-store-stated")
+                    && !out.contains("selected as")
+                    && !out.contains("not used by this config"),
+                "--validate printed a line 1.5.5 never printed: {out}"
+            );
+        }
+    }
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -1679,4 +1887,60 @@ fn validate_refuses_a_selected_plugin_built_for_another_host() {
         "got {stderr}"
     );
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// THE MINT ENDPOINT'S SCHEME, AT `--validate` (ARCHITECT ruling D1 2026-10-05, MINT CLASS (B); RED):
+/// the token endpoint need is operator-infrastructure, so the connector would dial plaintext, and
+/// the 1.5.5 rule is `--validate`'s to keep: an `http` `token_url` on a PUBLIC host is refused (it
+/// would POST the client secret in clear), and on a loopback host it is not, as in 1.5.5.
+#[cfg(linked_axis_body_ingress)]
+#[test]
+fn validate_refuses_an_http_token_url_on_a_public_host() {
+    let run = |token_url: &str| {
+        let dir = fixture_dir("mint-scheme");
+        std::fs::write(
+            dir.join("providers.yaml"),
+            r#"entra:
+  protocol: openai
+  base_url: "https://res.example.com"
+  api_key_env: MOCK_KEY
+"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("config.yaml"),
+            format!(
+                r#"listen: "127.0.0.1:0"
+store: {{module: memory}}
+providers:
+  entra:
+    api_key: {{ env: MOCK_KEY }}
+    auth: oauth-client-credentials
+    token_url: "{token_url}"
+    scope: "api://x/.default"
+models:
+  test-model:
+    provider: entra
+"#
+            ),
+        )
+        .unwrap();
+        let out = run_busbar(&dir, &["--validate"]);
+        let _ = std::fs::remove_dir_all(&dir);
+        out
+    };
+    let refused = |stdout: &str, stderr: &str| {
+        format!("{stdout}{stderr}").contains("token_url must use https for a public host")
+    };
+    let (code, stdout, stderr) = run("http://token.example.com/oauth2/token");
+    assert_ne!(code, 0, "stdout={stdout} stderr={stderr}");
+    assert!(
+        refused(&stdout, &stderr),
+        "an http token_url on a public host is refused at --validate: stdout={stdout} stderr={stderr}"
+    );
+    let (_, stdout, stderr) = run("http://127.0.0.1:9/oauth2/token");
+    assert!(
+        !refused(&stdout, &stderr),
+        "an http token_url on loopback is 1.5.5's to allow: stdout={stdout} stderr={stderr}"
+    );
 }

@@ -253,7 +253,7 @@ async fn serve() -> (String, Arc<busbar_kernel::state::App>) {
 async fn serve_with_admin_chain(
     admin_chain: Vec<String>,
 ) -> (String, Arc<busbar_kernel::state::App>) {
-    busbar_kernel::metrics::init();
+    busbar_kernel::snapshot::init();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind");
@@ -591,7 +591,7 @@ async fn the_authorization_code_flow_mints_and_exchanges_a_code() {
     );
 
     // 7. The approval was ONE-SHOT: replaying the same authorization request goes back to the
-    //    consent screen rather than minting a second code from a decision made once.
+    //    consent screen rather than minting a second code from an approval given once.
     let (status, headers, body) =
         send(&client, &mut jar, reqwest::Method::GET, &authorize, None).await;
     assert_eq!(status, 302, "{body}");
@@ -600,6 +600,88 @@ async fn the_authorization_code_flow_mints_and_exchanges_a_code() {
         "/consent",
         "a spent approval must not authorise a second request"
     );
+}
+
+/// THE APPROVAL IS SPENT UNDER THE REQUEST IT WAS GIVEN FOR, whatever the scope text says (Q128
+/// core-oauth2). The screen used to stake the raw `scope` text while `/authorize` spent under
+/// `oauth-as`'s normalised set (sorted, deduplicated, the registered default when absent), so a
+/// request naming two scopes out of order, a scope twice, or no scope at all was sent back to the
+/// consent screen forever. Each request here must reach a code on its first approval.
+#[tokio::test]
+async fn a_multi_scope_or_default_scope_request_is_approved_on_its_first_consent() {
+    const MULTI: &str = "flow-test-multi-scope";
+    let (origin, app) = serve().await;
+    let scopes = ScopeSet::from_tokens(["read", "write"]).expect("scope");
+    oauth_as_plane(&app)
+        .expect("configured")
+        .server()
+        .register_client(Client {
+            client_id: ClientId::new(MULTI),
+            auth: ClientAuth::Public,
+            grant_types: vec![GrantType::AuthorizationCode, GrantType::RefreshToken],
+            redirect_uris: vec![REDIRECT_URI.to_string()],
+            allowed_scopes: scopes.clone(),
+            default_scopes: scopes,
+            name: Some("Multi Scope".to_string()),
+            registration: None,
+        })
+        .await
+        .expect("register client");
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .expect("client");
+    // Out of order; repeated; absent (the registered default, `read write`).
+    for scope in ["&scope=write%20read", "&scope=read%20read%20write", ""] {
+        let mut jar = Jar::new(false);
+        let authorize = format!(
+            "{origin}/authorize?response_type=code&client_id={MULTI}\
+             &redirect_uri=http%3A%2F%2F127.0.0.1%3A9999%2Fcb&state=s1{scope}\
+             &code_challenge={CHALLENGE}&code_challenge_method=S256"
+        );
+        let (status, headers, body) =
+            send(&client, &mut jar, reqwest::Method::GET, &authorize, None).await;
+        assert_eq!(
+            status, 302,
+            "{scope:?}: authorize must redirect to consent: {body}"
+        );
+        let consent = location(&headers, &origin);
+        let (status, _headers, body) =
+            send(&client, &mut jar, reqwest::Method::GET, &consent, None).await;
+        assert_eq!(
+            status, 200,
+            "{scope:?}: the consent screen must render: {body}"
+        );
+        let return_to = percent_decode(
+            &query_param(&consent, "return").expect("the screen carries the pending request"),
+        );
+        let (status, headers, body) = send(
+            &client,
+            &mut jar,
+            reqwest::Method::POST,
+            &format!("{origin}/consent"),
+            Some(&[("return", return_to.as_str())]),
+        )
+        .await;
+        assert_eq!(
+            status, 302,
+            "{scope:?}: an approval must redirect back: {body}"
+        );
+        let back = location(&headers, &origin);
+        let (status, headers, body) =
+            send(&client, &mut jar, reqwest::Method::GET, &back, None).await;
+        assert_eq!(status, 302, "{scope:?}: {body}");
+        let redirect = location(&headers, &origin);
+        assert!(
+            redirect.starts_with(REDIRECT_URI),
+            "{scope:?}: an approved request goes to the client's redirect URI on its FIRST \
+             approval, not back to the consent screen. Got: {redirect}"
+        );
+        assert!(
+            query_param(&redirect, "code").is_some_and(|c| !c.is_empty()),
+            "{scope:?}: the approved request carries a code: {redirect}"
+        );
+    }
 }
 
 // ── all three registration mechanisms, end to end ───────────────────────────────────────────────
@@ -985,7 +1067,7 @@ async fn an_unauthenticated_visitor_is_never_shown_the_consent_screen() {
 /// The PATH after it stays plain ASCII, so the mounted `/authorize` route is perfectly ordinary and
 /// reachable — only the Location this plane builds for ITS OWN login redirect is broken.
 ///
-/// Before the fix, `redirect`'s `Err` arm answered `ApprovalDecision::Deny`, which `oauth-as` turns
+/// Before the fix, `redirect`'s `Err` arm answered `Deny` to the library, which `oauth-as` turns
 /// into an ordinary `access_denied` redirect to the CLIENT's `redirect_uri` (RFC 6749 §4.1.2.1) —
 /// the broken server silently completing the flow as though the resource owner had refused, having
 /// never actually sent anyone to log in. That is "proceeding" rather than refusing. The fix answers
@@ -1051,5 +1133,69 @@ async fn an_unencodable_login_redirect_fails_closed_rather_than_proceeding() {
         status, 502,
         "an unencodable login redirect must fail closed with a 502, not proceed as though the \
          resource owner had answered: got {status} {body}"
+    );
+}
+
+/// THE OPEN REDIRECT, on the wire. An operator who opened a real consent screen (so the session
+/// cookie is live) and then submitted a form whose `return` is `/<TAB>/evil.example` must not be
+/// sent anywhere: a browser drops the tab and follows `//evil.example` off-site. Both buttons, since
+/// Deny redirects exactly as Approve does. Before the fix both answered 302 to that `Location`.
+#[tokio::test]
+async fn a_return_target_a_browser_reads_as_off_site_is_refused_on_approve_and_deny() {
+    let (origin, _app) = serve().await;
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .expect("client");
+    let mut jar = Jar::new(false);
+    let authorize = format!(
+        "{origin}/authorize?response_type=code&client_id={CLIENT_ID}\
+         &redirect_uri=http%3A%2F%2F127.0.0.1%3A9999%2Fcb&state=s1&scope={SCOPE}\
+         &code_challenge={CHALLENGE}&code_challenge_method=S256"
+    );
+    let (_, headers, _) = send(&client, &mut jar, reqwest::Method::GET, &authorize, None).await;
+    let consent = location(&headers, &origin);
+    let (status, _, body) = send(&client, &mut jar, reqwest::Method::GET, &consent, None).await;
+    assert_eq!(
+        status, 200,
+        "the consent screen renders and opens a session: {body}"
+    );
+    assert!(
+        jar.header_for("/consent").is_some(),
+        "the session cookie is live"
+    );
+
+    for answer in ["approve", "deny"] {
+        for bypass in ["/\t/evil.example", "/\n/evil.example", "/\\evil.example"] {
+            let (status, headers, _) = send(
+                &client,
+                &mut jar,
+                reqwest::Method::POST,
+                &format!("{origin}/consent"),
+                Some(&[("return", bypass), ("answer", answer)]),
+            )
+            .await;
+            assert_eq!(
+                status, 400,
+                "{answer} with return {bypass:?} must be refused"
+            );
+            assert!(
+                headers.get(reqwest::header::LOCATION).is_none(),
+                "{answer} with return {bypass:?} redirected the browser"
+            );
+        }
+    }
+    // And the screen itself refuses to render for one.
+    let (status, _, _) = send(
+        &client,
+        &mut jar,
+        reqwest::Method::GET,
+        &format!("{origin}/consent?return=%2F%09%2Fevil.example"),
+        None,
+    )
+    .await;
+    assert_eq!(
+        status, 400,
+        "the consent screen renders for an off-site return target"
     );
 }

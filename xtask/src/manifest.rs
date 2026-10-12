@@ -93,6 +93,9 @@ pub struct DepDecl {
     /// crates depend on. Matching an off-tree manifest by PACKAGE NAME reported all five. What
     /// makes a fixture reachable is the path, so the path is what a rule about reaching one reads.
     pub path: Option<String>,
+    /// The `features = […]` this declaration turns on in the crate it reaches, verbatim. A
+    /// shipped declaration that turns on a test-only feature ships it.
+    pub features: Vec<String>,
 }
 
 impl DepDecl {
@@ -134,6 +137,22 @@ fn header_segments(header: &str) -> Vec<String> {
 }
 
 /// The `package = "…"` an inline table states, if it states one.
+/// The `features = [...]` array in a declaration's inline table (or a sub-table line), if any.
+fn inline_features(value: &str) -> Vec<String> {
+    let Some(at) = value.find("features") else {
+        return Vec::new();
+    };
+    let rest = value[at + "features".len()..].trim_start();
+    let Some(rest) = rest.strip_prefix('=') else {
+        return Vec::new();
+    };
+    let rest = rest.trim_start();
+    match rest.find(']') {
+        Some(end) if rest.starts_with('[') => string_array(&rest[..=end]),
+        _ => Vec::new(),
+    }
+}
+
 fn inline_package(value: &str) -> Option<String> {
     let v = value.trim();
     if !v.starts_with('{') {
@@ -354,6 +373,7 @@ pub fn dep_decls(text: &str) -> Vec<DepDecl> {
                     inherits: false,
                     optional: false,
                     path: None,
+                    features: Vec::new(),
                 });
                 subtable = Some(out.len() - 1);
             }
@@ -375,6 +395,9 @@ pub fn dep_decls(text: &str) -> Vec<DepDecl> {
             }
             if let Some(p) = scalar_string(t, "path") {
                 out[i].path = Some(p);
+            }
+            if t.trim_start().starts_with("features") {
+                out[i].features = inline_features(t);
             }
             continue;
         }
@@ -404,6 +427,7 @@ pub fn dep_decls(text: &str) -> Vec<DepDecl> {
                                 inherits: scalar_true(&v, "workspace"),
                                 optional: scalar_true(&v, "optional"),
                                 path: scalar_string(&v, "path"),
+                                features: inline_features(&v),
                             });
                         }
                         continue;
@@ -420,6 +444,7 @@ pub fn dep_decls(text: &str) -> Vec<DepDecl> {
                             inherits: scalar_true(value, "workspace"),
                             optional: scalar_true(value, "optional"),
                             path: scalar_string(value, "path"),
+                            features: inline_features(value),
                         });
                         continue;
                     }
@@ -442,6 +467,7 @@ pub fn dep_decls(text: &str) -> Vec<DepDecl> {
             inherits: scalar_true(value, "workspace"),
             optional: scalar_true(value, "optional"),
             path: scalar_string(value, "path"),
+            features: inline_features(value),
         });
     }
     out
