@@ -201,7 +201,10 @@ impl DialJudge for LiteralsOnly {
 
 /// THE SCHEME RULE OF A NEED'S EGRESS CLASS (`abi::host::conn::connector`, `EGRESS_*`), held
 /// against the address the judge pinned: open-web dials over connection security only;
-/// loopback-allowed over connection security, or in plaintext to loopback only; every other
+/// loopback-allowed over connection security, or in plaintext only to a target whose host is
+/// WRITTEN as loopback ([`guard::names_loopback`]: a loopback literal in any spelling, `localhost`,
+/// `*.localhost`), as 1.5.5's collector and webrequest guards ruled on the URL's host and never on
+/// what a name resolved to (ARCHITECT parity ruling A3); every other
 /// class takes the scheme its target names (operator-infrastructure's plaintext included). Which
 /// addresses may be dialled at all is the destination guard's ([`guard`]), the same in every class.
 /// THE LANDING RULE rides with it: a dial stated `within` an address set (`EstablishIn::within`)
@@ -215,11 +218,17 @@ fn scheme_admits(egress_class: u32, secure: bool) -> bool {
     egress_class != EGRESS_OPEN_WEB || secure
 }
 
-fn class_admits(egress_class: u32, secure: bool, within: &[IpAddr], addr: SocketAddr) -> bool {
+fn class_admits(
+    egress_class: u32,
+    secure: bool,
+    within: &[IpAddr],
+    authority: &str,
+    addr: SocketAddr,
+) -> bool {
     (within.is_empty() || within.contains(&addr.ip()))
         && match egress_class {
             EGRESS_OPEN_WEB => secure,
-            EGRESS_LOOPBACK_ALLOWED => secure || guard::is_loopback(addr.ip()),
+            EGRESS_LOOPBACK_ALLOWED => secure || guard::names_loopback(&host_of(authority)),
             _ => true,
         }
 }
@@ -742,7 +751,14 @@ impl Connector {
                 .judge
                 .judge_dial(&located.authority, judged_class, Box::new(|_| {}))
             {
-                Some(Ok(addr)) if class_admits(egress_class, located.secure, &[], addr) => {}
+                Some(Ok(addr))
+                    if class_admits(
+                        egress_class,
+                        located.secure,
+                        &[],
+                        &located.authority,
+                        addr,
+                    ) => {}
                 Some(_) => return Err(ConnError::Refused),
                 None => {}
             }
@@ -1013,7 +1029,8 @@ impl Connector {
         };
         let addr = got.map_err(pended_verdict)?;
         let secure = j.planned.as_ref().is_some_and(Planned::secure);
-        if !class_admits(j.egress_class, secure, &j.within, addr) {
+        let authority = j.planned.as_ref().map_or("", Planned::authority);
+        if !class_admits(j.egress_class, secure, &j.within, authority, addr) {
             // The refusal stays the connection's answer.
             j.answer.lock().expect("judgement").0 = Some(Err(DEST_PLAINTEXT));
             return Err(ConnError::Refused);
@@ -1078,7 +1095,15 @@ impl Connector {
         Ok(match judged {
             // Decided at once: a refusal answers the open, as 1.5.5 answered it.
             Some(Err(_)) => return Err(ConnError::Refused),
-            Some(Ok(addr)) if !class_admits(egress_class, planned.secure(), within, addr) => {
+            Some(Ok(addr))
+                if !class_admits(
+                    egress_class,
+                    planned.secure(),
+                    within,
+                    planned.authority(),
+                    addr,
+                ) =>
+            {
                 return Err(ConnError::Refused)
             }
             Some(Ok(addr)) => (Some(planned.dial_at(addr).map_err(|f| map(&f))?), None),
