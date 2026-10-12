@@ -1120,7 +1120,7 @@ fn a_metadata_name_on_a_public_address_is_refused_by_its_name_alone() {
 /// `nat64_embedded_ipv4_is_judged_by_the_shared_predicates`: fixing the predicate does NOT fix the
 /// callers that never call it.
 ///
-/// [`ssrf_blocked_host`] is the pre-flight guard for OAuth token-endpoint URLs and for MCP
+/// [`ssrf_blocked_host`] is the pre-flight guard for OAuth token-endpoint URLs and for
 /// tool-call ARGUMENT hosts — attacker-influenced input on the classic SSRF injection path — so a
 /// bypass here is reachable without any DNS answer at all.
 #[test]

@@ -3322,14 +3322,14 @@
     },
     {
      "kind": "test",
-     "ref": "crates/busbar-kernel/src/tests/net_guard_tests.rs::the_shared_internal_predicate_covers_every_range_any_plane_ever_checked",
+     "ref": "crates/busbar-kernel-egress/src/trust/tests/net_tests.rs::the_shared_internal_predicate_covers_every_range_any_plane_ever_checked",
      "proves": "one shared predicate across planes",
      "source": "curated",
      "status": "mapped"
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "test:test_ssrf_blocks_metadata_denylist_by_default, test:test_ssrf_blocked_returns_exact_host_string, test:test_reject_cidr_metadata_entries, test:test_global_allow_overrides_blocked_metadata_hosts, test:test_allow_all_metadata_beats_nonempty_blocked_list, test:test_ssrf_allows_private_and_loopback_by_default, test:test_validate_rejects_non_https_base_url, test:test_validate_token_url_ssrf_and_scheme, test:crates/busbar-kernel/src/tests/net_guard_tests.rs::the_shared_internal_predicate_covers_every_range_any_plane_ever_checked"
+   "verdict_detail": "test:test_ssrf_blocks_metadata_denylist_by_default, test:test_ssrf_blocked_returns_exact_host_string, test:test_reject_cidr_metadata_entries, test:test_global_allow_overrides_blocked_metadata_hosts, test:test_allow_all_metadata_beats_nonempty_blocked_list, test:test_ssrf_allows_private_and_loopback_by_default, test:test_validate_rejects_non_https_base_url, test:test_validate_token_url_ssrf_and_scheme, test:crates/busbar-kernel-egress/src/trust/tests/net_tests.rs::the_shared_internal_predicate_covers_every_range_any_plane_ever_checked"
   },
   {
    "id": "PB-69",
