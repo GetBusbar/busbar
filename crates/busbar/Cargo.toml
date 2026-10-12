@@ -190,6 +190,9 @@ axum = { workspace = true }
 # out wrapped so the spend its body reports on the way past has somewhere to land. A passthrough, and
 # the same version axum is built on — this is the trait axum's own `Body` implements, not a second one.
 http-body = { workspace = true }
+# The plugins.fetch download (`root::plugin_fetch`): a refused status rendered as 1.5.5's client
+# rendered it (`404 Not Found`).
+http = { workspace = true }
 tracing = { workspace = true }
 # Selects `idna`'s unicode-rs backend for every `url` in the binary (see the workspace row).
 idna_adapter = { workspace = true }

@@ -2405,32 +2405,27 @@ fn fixture_manifest(
 #[path = "tests/eventstream_frame_tests.rs"]
 mod eventstream_frame_tests;
 
-/// A test build's `plugins.fetch` (it has no composition root): each target downloaded through the
-/// kernel's guarded `download` and written into `dir`. No cache and no pin check: the root's fetch
-/// owns those, and its tests prove them.
+/// A test build's `plugins.fetch` (it has no composition root, so no connector): every target is a
+/// miss, refused before any dial (status row 130 E6: the kernel dials nothing; the root's fetch
+/// downloads through the connector, and its tests prove it).
 pub fn fetch_stand_in(
-    dir: &std::path::Path,
+    _dir: &std::path::Path,
     targets: &[crate::config::FetchTarget],
     _fatal_on_miss: bool,
-    download: &dyn Fn(&str) -> Result<Vec<u8>, String>,
+    _blocked: &[String],
 ) -> Result<Vec<crate::preflight::Fetched>, Vec<String>> {
-    let mut errors = Vec::new();
-    let mut done = Vec::new();
-    for t in targets {
-        match download(&t.url)
-            .and_then(|b| std::fs::write(dir.join(&t.filename), b).map_err(|e| e.to_string()))
-        {
-            Ok(()) => done.push(crate::preflight::Fetched::Fetched {
-                filename: t.filename.clone(),
-            }),
-            Err(e) => errors.push(format!("download failed: {e}")),
-        }
+    if targets.is_empty() {
+        return Ok(Vec::new());
     }
-    if errors.is_empty() {
-        Ok(done)
-    } else {
-        Err(errors)
-    }
+    Err(targets
+        .iter()
+        .map(|t| {
+            format!(
+                "{}: a test build has no connector to download through",
+                t.url
+            )
+        })
+        .collect())
 }
 
 /// A test build's release key: the first-party key [`trust_policy`] holds in place of the embedded

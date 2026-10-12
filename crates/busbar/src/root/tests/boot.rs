@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The root's boot stages: its `plugins.fetch` runs the loader's fetch, and only ever downloads
-//! through the kernel's SSRF-guarded downloader.
+//! through its SSRF-guarded download over the one connector (`root::plugin_fetch`).
 
 use super::*;
 
@@ -49,9 +49,9 @@ fn a_pin_cached_fetch_never_downloads() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// THE ROOT'S FETCH CANNOT BYPASS THE GUARD: a cloud-metadata URL fetched through the root, with
-/// the kernel's SSRF-guarded downloader, is refused with the same message the loader's fetch gives
-/// that downloader directly, and nothing is written.
+/// THE ROOT'S FETCH CANNOT BYPASS THE GUARD: a cloud-metadata URL fetched through the root is
+/// refused, before any dial, with the same message the loader's fetch gives the root's
+/// SSRF-guarded download directly, and nothing is written.
 #[test]
 fn the_roots_fetch_refuses_a_metadata_host_through_the_kernels_guard() {
     let dir = scratch("ssrf");
@@ -60,8 +60,8 @@ fn the_roots_fetch_refuses_a_metadata_host_through_the_kernels_guard() {
         sha256: None,
         filename: "plugin.tar.gz".into(),
     };
-    let guard = busbar_kernel::preflight::plugin_fetch_downloader(&[]);
-    let via_root = plugins_fetch(&dir, std::slice::from_ref(&target), true, &guard).unwrap_err();
+    let guard = crate::root::plugin_fetch::downloader(&[]);
+    let via_root = plugins_fetch(&dir, std::slice::from_ref(&target), true, &[]).unwrap_err();
     let spec = super::super::loader::FetchSpec {
         url: target.url.clone(),
         sha256: None,
