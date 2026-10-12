@@ -443,10 +443,10 @@ fn run_scan() -> Scan {
 fn no_unjustified_single_plane_method_on_universal_engine_host() {
     let scan = run_scan();
 
-    // Enumeration floor: the ~12 slices carry ~67 methods. A parse regression that found almost
-    // nothing would make the whole gate vacuous. (67 today; floored below to tolerate churn.)
+    // Enumeration floor: the ~12 slices carry ~60 methods. A parse regression that found almost
+    // nothing would make the whole gate vacuous. (60 today; floored below to tolerate churn.)
     assert!(
-        scan.methods.len() >= 60,
+        scan.methods.len() >= 55,
         "enumerated only {} universal-EngineHost methods from {HOST_TRAIT_FILE} — the trait-body \
          parse regressed; a broken enumeration would pass this gate vacuously",
         scan.methods.len()
@@ -531,7 +531,7 @@ fn detector_is_non_vacuous_across_single_multi_and_zero_plane_methods() {
         "settle_residual",   // JournalHost
         "verify_token_test", // IdentityHost
         "clock_now_secs",    // ClockHost
-        "breaker_admit",     // BreakerHost
+        "breaker_settle",    // BreakerHost
         "plane_defs",        // RegistryHost
     ] {
         assert!(

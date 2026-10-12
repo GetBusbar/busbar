@@ -7,7 +7,7 @@
 
 [[frozen]]
 dir = "crates/busbar-contract/src/abi/hot"
-lines = "6346"
+lines = "6224"
 
 [[frozen]]
 dir = "crates/busbar-contract/src/abi/cold"

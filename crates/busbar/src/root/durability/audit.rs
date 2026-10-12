@@ -91,7 +91,7 @@ impl Durability {
     pub fn audit_window(&self, from: u64, to: u64) -> Vec<AuditRecord> {
         let covered = self.audit_records.first().is_some_and(|r| r.seq <= from);
         let pick = |r: &&AuditRecord| r.seq >= from && r.seq <= to;
-        if covered || self.audit_records.is_empty() && !self.on_disk() {
+        if covered || self.audit_records.is_empty() && !self.keeps_chain() {
             return self
                 .audit_records
                 .iter()

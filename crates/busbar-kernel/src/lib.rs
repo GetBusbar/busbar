@@ -213,10 +213,10 @@ pub mod config_validate;
 pub mod core_routes;
 pub mod cost;
 pub mod diagnostics;
-// The durable-write choke point lives in `busbar-kernel-wal` (the durable medium) so the plugin-loader
-// (plugins.fetch cache write), which this crate links, can route through the SAME primitive.
-// Re-exported here so every existing `crate::durable::*` call site in this binary resolves unchanged.
-pub use busbar_kernel_wal::durable;
+// The durable-write choke point lives in `busbar-plugin-loader` (which names the contract alone, Part 2
+// #33) so the loader's own writes and this crate's route through the SAME primitive. Re-exported here
+// so every existing `crate::durable::*` call site in this binary resolves unchanged.
+pub use busbar_plugin_loader::durable;
 // The host-owned outbound surface: the neutral SSRF-pinned client (re-exported wholesale from
 // busbar-substrate) plus the host-mediated `seam` adapter that drives egress through the
 // `plane_host` FFI vtable, gated behind the neutral `egress-seam` capability feature rather than

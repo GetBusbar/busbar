@@ -239,7 +239,7 @@ struct RecordingShipper {
     offers: OfferLog,
 }
 
-impl Shipper for RecordingShipper {
+impl Shipper<Record> for RecordingShipper {
     fn ship(&mut self, records: &[Record]) -> Result<(), ShipError> {
         self.offers
             .lock()
@@ -301,7 +301,7 @@ struct RefuseOnceShipper {
     offers: OfferLog,
 }
 
-impl Shipper for RefuseOnceShipper {
+impl Shipper<Record> for RefuseOnceShipper {
     fn ship(&mut self, records: &[Record]) -> Result<(), ShipError> {
         let mut offers = self.offers.lock().unwrap();
         offers.push(records.iter().map(Record::identity).collect());

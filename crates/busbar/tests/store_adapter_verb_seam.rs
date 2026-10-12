@@ -12,7 +12,6 @@
 use busbar_contract::caps::{AdminVerb, Grant};
 use busbar_contract::slice::{bucket_all, CapDimension, Epoch, SliceRequest, SliceStore};
 use busbar_contract::verb_store::Store as VerbStore;
-use busbar_kernel_wal::Record;
 use busbar_plugin_loader::store_adapter::{ShimClock, StoreAdapter, REPLAY_TTL_SECS};
 use std::sync::Arc;
 
@@ -296,23 +295,17 @@ fn sweep_every_seam_method(adapter: &StoreAdapter, failures: &mut Vec<String>) {
     if let Err(e) = adapter.commit_new_verb_replay(&key, b"ok") {
         note("commit_new_verb_replay", format!("{e:?}"));
     }
-    if let Err(e) = adapter.shipper().ship(&[Record::new(1, 1, b"r".to_vec())]) {
-        note("ship", format!("{e:?}"));
-    }
 }
 
-/// The appendix's rule, on the adapter's own surface: every operation this release adds, invoked on
-/// a store at the published schema, answers from the shim with NO error and NO log line. Repeated,
-/// so the silence is the rule and not a warn-once latch's first pass.
+/// On the adapter's own surface: every seam it answers from node memory, invoked on a store at the
+/// published schema, answers with NO error and NO log line. Repeated, so the silence is the rule
+/// and not a warn-once latch's first pass. (The journal is not among them: the adapter is no
+/// shipper; the node's journal is kept by the store's record slots.)
 #[test]
 fn every_added_operation_on_a_published_schema_store_is_silent_and_never_errors() {
     let Some(adapter) = adapter_over_published_schema() else {
         return;
     };
-    assert!(
-        !adapter.speaks_new_ops(),
-        "the fixture must be a store that predates the added operations"
-    );
     let log = EventLog::default();
     let mut failures: Vec<String> = Vec::new();
     tracing::subscriber::with_default(log.clone(), || {
@@ -335,22 +328,17 @@ fn every_added_operation_on_a_published_schema_store_is_silent_and_never_errors(
 }
 
 /// Two handles onto one adapter are one shim: the kernel's slice draw and the verbs unit's restore
-/// see each other, because the root binds all three seams to the SAME store.
+/// see each other, because the root binds both seams to the SAME store.
 #[test]
-fn the_three_seams_share_one_shim() {
+fn the_seams_share_one_shim() {
     let Some(adapter) = adapter_over_published_schema() else {
         return;
     };
     let slices: Arc<dyn SliceStore> = adapter.slice_store();
     let verbs: Arc<dyn VerbStore + Send + Sync> = adapter.verb_store();
-    let mut shipper = adapter.shipper();
 
     slices.reserve(&slice_request(9, 0)).expect("reserve");
-    shipper
-        .ship(&[Record::new(2, 1, b"x".to_vec())])
-        .expect("ship");
     assert_eq!(adapter.shim_state().slices_outstanding, 1);
-    assert_eq!(adapter.shim_state().records_shipped, 1);
     verbs.store_restore(&admin(), "b-2").expect("store_restore");
     assert_eq!(
         adapter.shim_state().slices_outstanding,

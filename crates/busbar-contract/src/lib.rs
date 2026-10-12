@@ -76,6 +76,8 @@ pub mod hook_wire;
 #[allow(missing_docs)]
 pub mod hooks;
 pub mod ids;
+// THE HOST'S I/O, as the connector implements it and the loader's `io` slots reach it.
+pub mod io_host;
 #[allow(missing_docs, missing_debug_implementations)]
 pub mod ir;
 pub(crate) mod json_grammar;
@@ -120,6 +122,8 @@ pub mod secret_ref;
 pub mod section;
 pub mod services;
 pub mod signal;
+// THE LOG'S SHIPPING SEAM: the trait the store adapter implements and the log ships through.
+pub mod ship;
 pub mod slice;
 // THE STORE'S CALLS: the typed store v3 surface the loader implements and the kernel calls.
 pub mod spans;

@@ -158,8 +158,13 @@ impl History {
         }
     }
 
-    /// **THE MIGRATION HELPER.** A single-entry history: the operator's card, effective from instant
-    /// zero, open-ended, authored as the opening entry.
+    /// **A SINGLE-ENTRY HISTORY**: the operator's card, effective from instant zero, open-ended,
+    /// authored as the opening entry.
+    ///
+    /// No production caller. The root's first configuration apply appends the same shape itself —
+    /// effective from zero, authored [`Author::Config`] — so this constructor ships only because the
+    /// test batteries of several crates build their histories through it; it is listed as such in
+    /// `qa/unconstructed.toml`.
     ///
     /// `card_at` then returns entry zero for every instant, so a lookup against this history is
     /// arithmetically the 1.5.5 read-time derivation at that card — same rates, same order, same

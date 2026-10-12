@@ -8,7 +8,9 @@
 //! with a unit is chosen by the member name the kernel hands its ATTEMPT piece (`ok`, `retry`,
 //! `retry-late`, `pend`, `hang`, `wedge`, `fault`, `cancel-fault`, `short`, `short-twice`), and `arrive`
 //! reacts to the request target (`/short`, `/short-twice`, `/refuse`, `/stats`, `/clock`). A unit
-//! on `/call/local` answers its caller itself (an echo of the body); a unit on `/call/nest:<target>`
+//! on `/call/local` answers its caller itself (an echo of the body), as does one on
+//! `/call/local-counted`, `/call/local-quiet` and `/call/local-estimated` (routed `ROUTE_LOCAL`:
+//! counted as an admitted call, not, and stating expected units); a unit on `/call/nest:<target>`
 //! runs `POST <target>` as a NESTED unit through the host's `unit.nest` and answers its caller
 //! `nested:<status>:<the child's body>` (`nest-refused:<reason>` when the host refused it); a unit on
 //! `/call/services` (or `/call/services-pool:<pool>`, routed over that pool) passes its body
@@ -72,8 +74,8 @@ use busbar_contract::abi::plane::{
     CLAIM_OPEN, EMIT_DONE, EMIT_FINAL_STATUS, EMIT_MESSAGE_END, EMIT_TO_FAR_END, FROM_CALLER,
     FROM_FAR_END, FROM_KERNEL, INGRESS_DUPLEX_SESSION, INGRESS_REQUEST_RESPONSE,
     INGRESS_RESPONSE_STREAM, PIECE_FIELDS, PIECE_HAS_STATUS, PIECE_LAST, PIECE_OUT_TEXT,
-    PRINCIPAL_OPTIONAL, REFUSAL_ANY_DIALECT, ROUTE_DIRECT, ROUTE_POOL, ROUTE_PUBLIC, SHAPE_WHOLE,
-    SPAN_ABSENT, UNITS_ESTIMATED, UNITS_REPORTED, VERDICT_RETRY,
+    PRINCIPAL_OPTIONAL, REFUSAL_ANY_DIALECT, ROUTE_COUNTED, ROUTE_DIRECT, ROUTE_LOCAL, ROUTE_POOL,
+    ROUTE_PUBLIC, SHAPE_WHOLE, SPAN_ABSENT, UNITS_ESTIMATED, UNITS_REPORTED, VERDICT_RETRY,
 };
 
 /// The plane's own refusal code and the status `/clock` refuses with when the host will not read
@@ -574,6 +576,39 @@ extern "C" fn open(_: *mut c_void, input: *const c_void, out: *mut c_void) -> Ra
         let Some(wake) = host.wake else {
             return say(out, Outcome::Refused);
         };
+        // THE PROVIDERS' DIALECT FACTS this open was handed, echoed as the snapshot's resource
+        // facts (`[[name, protocol, error_map or null], ..]`; absent when none), so a test reads what
+        // crossed. Read only where the host's `in` reaches them (the append rule).
+        let handed = i.open.head.size as usize >= std::mem::size_of::<PlaneOpenIn>()
+            && !i.providers.is_null()
+            && i.providers_len > 0;
+        let resource_facts = if handed {
+            let facts: Vec<serde_json::Value> =
+                std::slice::from_raw_parts(i.providers, i.providers_len)
+                    .iter()
+                    .map(|p| {
+                        let map = bytes(p.error_map);
+                        serde_json::json!([
+                            String::from_utf8_lossy(text(p.name)),
+                            String::from_utf8_lossy(text(p.protocol)),
+                            serde_json::from_slice::<serde_json::Value>(map).ok(),
+                        ])
+                    })
+                    .collect();
+            let json: &'static [u8] = Box::leak(
+                serde_json::to_vec(&facts)
+                    .unwrap_or_default()
+                    .into_boxed_slice(),
+            );
+            Blob {
+                ptr: json.as_ptr(),
+                len: json.len(),
+                fmt: busbar_contract::abi::mechanism::call::BLOB_JSON,
+                flags: 0,
+            }
+        } else {
+            NO_BLOB
+        };
         let snapshot = Box::new(PlaneSnapshot {
             size: std::mem::size_of::<PlaneSnapshot>() as u32,
             _reserved: 0,
@@ -585,7 +620,7 @@ extern "C" fn open(_: *mut c_void, input: *const c_void, out: *mut c_void) -> Ra
             openapi: NO_BLOB,
             audience: NO_STR,
             resource_metadata: NO_STR,
-            resource_facts: NO_BLOB,
+            resource_facts,
             listed: std::ptr::null(),
             listed_len: 0,
         });
@@ -780,6 +815,21 @@ extern "C" fn arrive(instance: *mut c_void, input: *const c_void, out: *mut c_vo
                     .unwrap_or(0);
                 me.tick_every_ms.store(ms, Ordering::SeqCst);
                 vec![estimate(0, ms)]
+            }
+            // UNITS THE PLANE ANSWERS ITSELF (`ROUTE_LOCAL`), stating no expected units: counted as an
+            // admitted call (`ROUTE_COUNTED`), or not; and one stating expected units.
+            b"/call/local-counted" => {
+                o.route = ROUTE_LOCAL;
+                o.route_flags = ROUTE_COUNTED;
+                vec![]
+            }
+            b"/call/local-quiet" => {
+                o.route = ROUTE_LOCAL;
+                vec![]
+            }
+            b"/call/local-estimated" => {
+                o.route = ROUTE_LOCAL;
+                vec![estimate(0, i.body.len as u64)]
             }
             t if t.starts_with(b"/call/services-pool:") => {
                 // The in-session services on a unit routed over the pool the target names.
@@ -983,7 +1033,7 @@ extern "C" fn on_piece(
                     o.flags = EMIT_DONE;
                     return say(out, Outcome::Ready);
                 }
-                if head.as_slice() == b"/local" || head.as_slice() == b"/call/local" {
+                if head.as_slice() == b"/local" || head.starts_with(b"/call/local") {
                     // A LOCAL ANSWER: the plane answers the caller itself (an echo of the body),
                     // with nothing for the far end.
                     o.reply_status = 200;

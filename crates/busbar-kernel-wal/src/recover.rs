@@ -25,32 +25,43 @@
 //!
 //! ## Two ways a scan stops on damage, and only one of them may be cut
 //!
-//! A crash in the middle of a group commit leaves a TORN tail: the last batch's bytes are partly on
-//! the medium and nothing after them was ever written. Cutting that tail loses nothing that was
-//! acknowledged — the sync never returned — so it is cut silently, exactly as it always was.
+//! A crash in the middle of a group commit leaves a TORN tail: the commit's bytes are partly on the
+//! medium and nothing after them was ever written. Cutting that tail loses nothing that was
+//! acknowledged — the sync never returned — so it is cut silently, exactly as it always was. A
+//! record that was acknowledged and then damaged is something else, and is never cut silently
+//! wherever it sits, the tail included: a silent cut would drop a settlement the node had already
+//! made, and let recovery settle the unit again at its checkpoint. So it is CORRUPT. Telling the two
+//! apart is a question about what was ACKNOWLEDGED, and the medium answers it two ways.
 //!
-//! A WHOLE frame that was altered after it was written is something else again, and is never cut
-//! silently wherever it sits, the tail included. A version-2 frame carries a header check over its
-//! fixed header fields: a write that stopped inside the header fails that check and leaves nothing
-//! past it but zeros (torn), while a frame whose header checks and whose digest does not — or whose
-//! header does not check but which holds bytes past the check, its digest at least — was written in
-//! full and changed afterwards. "Torn" is a statement about the WRITE: a frame that is short, or
-//! zeros past the point the write stopped. A whole frame is never torn, whichever check it fails.
-//! Its record was acknowledged; a silent cut would drop a settlement the node had already made,
-//! and let recovery settle the unit again at its checkpoint. So it is CORRUPT, and the record's
-//! bytes as they now read are handed to the caller (`Quarantine::damaged`), which is the one place
-//! that knows what they named.
+//! **A subsequent commit verifying past the damage.** The first frame of every group commit says so, and
+//! a commit is only ever written after the one before it synced. So a verifying frame that opens a
+//! commit, past the damage, proves the damaged commit's sync returned: it was acknowledged, and the
+//! damage is the medium, or something outside this process, changing bytes that were already
+//! durable. Corrupt, whatever the damage looks like. A verifying frame of the SAME commit proves
+//! nothing — writeback puts a commit's pages down in any order, so a crash mid-commit leaves good
+//! frames past missing ones as a matter of course — and is cut with the torn commit it belongs to.
 //!
-//! A frame that fails its digest with WHOLE, VERIFYING frames after it is something else. Nothing
-//! about a crash writes a good frame past a bad one: the writes are one contiguous run from the
-//! durable end, and the space past them is zeros. So damage with a verifying frame beyond it is the
-//! medium, or something outside this process, changing bytes that were already durable, and the
-//! records behind it were acknowledged. That verdict is CORRUPT, and a corrupt segment is never cut
-//! on its own say-so: the damaged remainder is first copied, byte for byte, into a quarantine the
-//! factory makes durable, and only then is the segment cut back to the verified prefix. A crash
-//! between the two steps leaves the copy AND the uncut segment, so it loses nothing. A frame written
-//! under a layout version this build does not read is treated the same way — its bytes are whole
-//! and another build can read them, so they are never simply cut.
+//! **The shape of the damage, in the commit nothing acknowledges.** The last commit has no subsequent one
+//! to vouch for it; its sync may or may not have returned. A crash leaves only one shape behind:
+//! frames that never landed (the zeros the segment claimed ahead of the writes) and frames whose
+//! write stopped part way (their leading bytes, then zeros). Every frame ends with an end mark that
+//! is never zero, so a frame whose write stopped anywhere inside it — header, digest or payload —
+//! has a zero last byte, and one whose last byte is there was written to its end. If every frame of
+//! the damaged tail is one a write could have left unfinished, the tail is TORN. If any is a WHOLE
+//! frame that fails a check — its end mark is there, so the write that made it completed — it was
+//! written in full and changed afterwards: CORRUPT, and the record's bytes as they now read are
+//! handed to the caller (`Quarantine::damaged`), which is the one place that knows what they named.
+//!
+//! What this cannot see, nothing can: bytes changed in the last commit into exactly the shape of an
+//! unfinished write — zeros to the end of a frame — read as a torn tail. That is the power to cut
+//! the file short, which a torn tail has always been indistinguishable from.
+//!
+//! A corrupt segment is never cut on its own say-so: the damaged remainder is first copied, byte for
+//! byte, into a quarantine the factory makes durable, and only then is the segment cut back to the
+//! verified prefix. A crash between the two steps leaves the copy AND the uncut segment, so it loses
+//! nothing. A frame written under a layout version this build does not read is never one a write of
+//! this layout left unfinished, so it is treated the same way — its bytes are whole and another
+//! build can read them, so they are never simply cut.
 //!
 //! The verdict is returned rather than acted on further here. Raising the alarm — the log line, the
 //! counter, the durable record naming what was set aside — is the caller's, which is the one place
@@ -61,8 +72,8 @@ use std::path::PathBuf;
 
 use crate::backend::SegmentFactory;
 use crate::record::{
-    checked_header, decode_frame, frame_version, unchecked_whole, written_whole, FrameError,
-    Record, FRAME_BYTES,
+    checked_header, decode_frame, unchecked_whole, unfinished_write, FrameError, Record,
+    FRAME_BYTES,
 };
 use crate::segment::Segment;
 
@@ -72,12 +83,13 @@ pub enum TailVerdict {
     /// The writes end where the verified records end. Anything past them is space claimed ahead of
     /// the writes, which is zeros.
     Clean,
-    /// The scan stopped on an incomplete final record — a crash mid-append. Nothing past the damage
-    /// verifies, so nothing acknowledged is behind it: cut silently.
+    /// The scan stopped in the last group commit, on damage a crash mid-commit leaves: frames that
+    /// never landed and frames whose write stopped part way. Nothing acknowledged is in it: cut
+    /// silently, with any frame of the same commit that did land.
     Torn,
-    /// The scan stopped on damage with whole, verifying frames beyond it (or on a frame written
-    /// under a layout this build does not read). Records that were acknowledged are behind it. Never
-    /// cut without a quarantine copy first.
+    /// The scan stopped on damage a crash does not leave: a commit a subsequent one acknowledges, a whole
+    /// frame that fails a check, or a frame written under a layout this build does not read.
+    /// Acknowledged records are in it. Never cut without a quarantine copy first.
     Corrupt {
         /// The byte offset, inside the segment, of the frame the scan stopped on.
         at: u64,
@@ -134,10 +146,10 @@ pub struct Quarantine {
     /// Every record the set-aside bytes hold whose frames' HEADERS check, assembled as the bytes now
     /// read: a whole altered record (header checks, digest does not) and every acknowledged record
     /// behind the damage. They are gone from the log, and the caller reads what they named — a
-    /// settlement the node made must not be settled again as if it never happened. A whole
-    /// version-2 frame whose header does not check contributes its record as its bytes now read
-    /// (unverified, so a caller that cannot decode it holds back what it cannot rule out); a torn
-    /// or unreadable frame contributes nothing.
+    /// settlement the node made must not be settled again as if it never happened. A whole frame
+    /// whose header does not check — of this layout or another — contributes its record as its
+    /// bytes now read (unverified, so a caller that cannot decode it holds back what it cannot rule
+    /// out); a frame a write left unfinished contributes nothing.
     pub damaged: Vec<Record>,
     /// When recovery set them aside, in milliseconds since the Unix epoch. The quarantine file's
     /// name carries the same number.
@@ -329,18 +341,10 @@ pub fn scan(segment: &Segment) -> io::Result<Recovered> {
 
     let len = segment.len()?;
     let mut beyond = look_past(segment, durable_end, stop_at, len)?;
-    let unreadable_layout = matches!(stopped_because, Some(FrameError::UnknownVersion { .. }));
-    // A WHOLE frame altered after it was written: its header checks and its digest does not, or its
-    // header does not check and it holds bytes past the check. The write that made it completed, so
-    // this is never a torn tail.
-    let altered = stopped_because.is_some_and(|why| {
-        let mut stop_frame = [0u8; FRAME_BYTES];
-        read_full(segment, stop_at, &mut stop_frame).unwrap_or(false)
-            && (why.is_altered_whole_frame(frame_version(&stop_frame))
-                || (matches!(why, FrameError::HeaderMismatch | FrameError::NotAFrame)
-                    && written_whole(&stop_frame)))
-    });
-    let corrupt = beyond.verifies || unreadable_layout || altered;
+    // Corrupt when anything is past the verified prefix and either a subsequent commit acknowledges the
+    // damaged one or the damage is not a shape a crash leaves. See the module preamble.
+    let corrupt =
+        beyond.written_end > durable_end && (beyond.acknowledged || !beyond.unfinished_only);
     let damaged = if corrupt {
         let records = read_set_aside(segment, durable_end, len)?;
         // Every set-aside identity is taken, the altered record's first: it was acknowledged, and
@@ -426,23 +430,30 @@ fn read_set_aside(segment: &Segment, from: u64, len: u64) -> io::Result<Vec<Reco
 
 /// What lies past the verified prefix.
 struct Beyond {
-    /// Whether any whole frame at or after the stop verifies.
-    verifies: bool,
     /// The end of the last frame-sized chunk that holds a non-zero byte.
     written_end: u64,
+    /// Whether a verifying frame that OPENS a commit lies past the frame the scan stopped on: a
+    /// commit written after the damaged one, which therefore synced.
+    acknowledged: bool,
+    /// Whether every frame past the prefix is one a crash can leave: verifying (a frame of the torn
+    /// commit that landed), or a write of this layout that never reached the frame's end. A short
+    /// remainder at the end of the backing counts too: the backing simply stops there.
+    unfinished_only: bool,
     /// The identities every verifying frame past the prefix carries, deduplicated, in the order
     /// they were met.
     identities: Vec<(u64, u64)>,
 }
 
-/// Walk `[from, len)` a frame at a time: note where the written bytes end, and whether any frame at
-/// or after `stop_at` verifies on its own. Read in blocks, because on an ordinary boot this walks
-/// the zeros claimed ahead of the writes and a read per frame would be a read per 512 bytes.
+/// Walk `[from, len)` a frame at a time: note where the written bytes end, whether a subsequent commit
+/// verifies past `stop_at`, and whether every frame is one a crash can leave. Read in blocks,
+/// because on an ordinary boot this walks the zeros claimed ahead of the writes and a read per
+/// frame would be a read per 512 bytes.
 fn look_past(segment: &Segment, from: u64, stop_at: u64, len: u64) -> io::Result<Beyond> {
     const BLOCK_FRAMES: usize = 128;
     let mut beyond = Beyond {
-        verifies: false,
         written_end: from,
+        acknowledged: false,
+        unfinished_only: true,
         identities: Vec::new(),
     };
     let mut block = vec![0u8; BLOCK_FRAMES * FRAME_BYTES];
@@ -468,17 +479,26 @@ fn look_past(segment: &Segment, from: u64, stop_at: u64, len: u64) -> io::Result
             let Ok(whole) = <&[u8; FRAME_BYTES]>::try_from(chunk) else {
                 continue;
             };
-            if let Ok((header, _)) = decode_frame(whole) {
-                // Frames before the stop are the head of a record that never completed: they
-                // verify on their own, say nothing about what lies past the damage, and still
-                // carry an identity the set-aside bytes hold.
-                if chunk_at >= stop_at {
-                    beyond.verifies = true;
+            match decode_frame(whole) {
+                Ok((header, _)) => {
+                    // A verifying frame AT the stop is one the scan refused for where it sits (a
+                    // part out of order), which no crash writes.
+                    if chunk_at == stop_at {
+                        beyond.unfinished_only = false;
+                    }
+                    // Frames before the stop are the head of a record that never completed: they
+                    // verify on their own, belong to the damaged commit, and still carry an
+                    // identity the set-aside bytes hold.
+                    if chunk_at > stop_at && header.opens_commit {
+                        beyond.acknowledged = true;
+                    }
+                    let id = (header.node, header.node_seq);
+                    if !beyond.identities.contains(&id) {
+                        beyond.identities.push(id);
+                    }
                 }
-                let id = (header.node, header.node_seq);
-                if !beyond.identities.contains(&id) {
-                    beyond.identities.push(id);
-                }
+                Err(_) if unfinished_write(whole) => {}
+                Err(_) => beyond.unfinished_only = false,
             }
         }
         at += filled as u64;
@@ -489,7 +509,8 @@ fn look_past(segment: &Segment, from: u64, stop_at: u64, len: u64) -> io::Result
 /// Scan, then cut the segment back to the last complete record — branching on WHY the scan
 /// stopped.
 ///
-/// - A torn tail, or a clean end with space claimed ahead of it, is cut silently.
+/// - A torn tail (the last commit, torn by a crash), or a clean end with space claimed ahead of
+///   it, is cut silently.
 /// - A corrupt one first has its damaged remainder copied, byte for byte, into a quarantine
 ///   `factory` makes durable, and only then is the segment cut. If the copy cannot be made, the
 ///   segment is NOT cut: it is closed to writes instead, so the next append rolls past it and the
@@ -507,7 +528,7 @@ pub fn recover_and_truncate(
 ) -> io::Result<Recovered> {
     let mut recovered = scan(segment)?;
     if recovered.was_torn() {
-        // A crash mid-append. Nothing past the damage was acknowledged.
+        // A crash mid-commit. Nothing past the verified prefix was acknowledged.
         segment.truncate_to(recovered.durable_end)?;
         return Ok(recovered);
     }

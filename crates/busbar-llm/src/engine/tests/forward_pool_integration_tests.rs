@@ -3463,6 +3463,7 @@ mod disposition_matrix_tests {
         let model = busbar_kernel::config::providers::ModelCfg {
             reasoning: None,
             prompt_caching: None,
+            protocol: None,
             max_requests: -1,
             provider: "p".into(),
             max_concurrent: Some(10),

@@ -23,7 +23,7 @@
 //! Layer zero is [`Posting`]: quantities per meter class, the lane, the fee count, the tier and the
 //! instant. Layer one is [`History`]: entries of `(effective_from, card)`, appended and never
 //! rewritten. Layer two is [`price`]. Nothing priced is authoritative — a [`CachedPrice`] on a
-//! posting is a convenience, and where it disagrees with a lookup the lookup wins.
+//! posting is what the settlement lookup answered, and nothing reads it back.
 //!
 //! # The five clauses, and where each one lives
 //!
@@ -43,18 +43,18 @@
 //!    prices what happens after it rather than what happened before it. See [`History::append`].
 //! 5. **Tier.** One multiplier per chain, in basis points, applied once over the summed pre-tier
 //!    amount — a single divide, never a sum of per-line floors, rounded HALF-TO-EVEN because it is
-//!    a per-N-units division term (#44 `BUSBAR-1.6.0.md:372`, restated at #81 `:428`). There is ONE
-//!    implementation of it, [`apply_tier`]; [`checked_apply_tier`] is the same arithmetic refusing
-//!    instead of pinning, and [`apply_tier_signed`] is the same arithmetic on a signed column.
+//!    a per-N-units division term (#44, restated at #81). There is ONE implementation of it,
+//!    [`checked_apply_tier`], applied by the one function at the exact scale and refusing an
+//!    overflow; the billed figure is the single truncation of its answer (clause three).
 //!
 //! # Money is UNITLESS
 //!
-//! #66 (`BUSBAR-1.6.0.md:528`, owner-locked): *"Money is UNITLESS abstract cost — no currency type,
+//! #66 (owner-locked): *"Money is UNITLESS abstract cost — no currency type,
 //! no symbol … rate card + ledger + views are unitless numbers."* There is no currency type in this
 //! crate, no currency argument to any function here, and exactly one scale — [`NANOS_PER_CENT`] —
 //! which is therefore not a choice anything can make. What a figure is DISPLAYED as, and in what
 //! denomination, belongs to the operator's dashboard and is invisible from here
-//! (`docs/configuration.md:634`).
+//! (`docs/configuration.md`, `rate_card` and `per_request_fee`).
 //!
 //! That absence is a money property, not a tidiness one. A scale that could be NAMED could be named
 //! differently by two readers of the same figures, or moved by a request body — and moving it moves
@@ -79,13 +79,13 @@ mod view;
 pub use busbar_contract::count::Count;
 pub use history::{Author, CardEntry, CardEntryDraft, History, HistorySeq, HistoryView};
 pub use posting::{
-    apply_tier, apply_tier_signed, checked_apply_tier, price, price_at_card, price_fail_closed,
-    CachedPrice, Posting, Priced, PricedLine, Quantity, Unpriceable, FEE_CLASS, STANDARD_TIER_BP,
+    checked_apply_tier, price, price_at_card, price_fail_closed, CachedPrice, Posting, Priced,
+    PricedLine, Quantity, Unpriceable, FEE_CLASS, STANDARD_TIER_BP,
 };
 pub use project::{derive_spend_cents, derive_spend_micros, MeteredRow};
 pub use rate::{
-    compose_plane_cards, flat_card_present, nano_rate, nanos_sum, plane_fee_lane,
-    representable_nano_rate, split_plane_lane, CellPrices, LaneClass, LaneRates, PlaneFees,
+    compose_plane_cards, flat_card_present, nano_rate, plane_fee_lane, representable_nano_rate,
+    split_plane_lane, CellPrices, ClassPrice, LaneClass, LanePricing, LaneRates, PlaneFees,
     RateCard, TierRates, CLASS_CACHE_READ, CLASS_CACHE_WRITE, CLASS_INPUT, CLASS_OUTPUT,
     PER_REQUEST, PER_SESSION,
 };
@@ -97,7 +97,7 @@ pub use view::{
 
 /// **THE ONE SCALE.** Nano-units in one minor unit: ten million.
 ///
-/// This is the ONLY divisor on the money path (#66 `BUSBAR-1.6.0.md:528`). There is no currency
+/// This is the ONLY divisor on the money path (#66). There is no currency
 /// type to ask for a second one, no table of minor-unit exponents to look one up in, and no request
 /// body, config key or label that can move it — a scale nothing can name is a scale nothing can
 /// change. It is the number every 1.5.5 cent projection divided by, so every figure that release
@@ -105,7 +105,7 @@ pub use view::{
 ///
 /// The name is historical ("cent") and the quantity is not: money here is unitless abstract cost,
 /// and a minor unit is a hundredth of one abstract unit because that is the granularity 1.5.5
-/// billed at. Denomination and symbol are the dashboard's (`docs/configuration.md:634`).
+/// billed at. Denomination and symbol are the dashboard's (`docs/configuration.md`, `rate_card`).
 pub const NANOS_PER_CENT: u128 = 10_000_000;
 
 /// Nano-units in one micro-unit, for the finer of the two read projections.

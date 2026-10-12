@@ -33,7 +33,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 fn write_all(c: &dyn Carrier, conn: u64, bytes: &[u8]) -> Result<(), TransportError> {
     let mut at = 0;
     while at < bytes.len() {
-        at += wait(|cx| c.poll_write(conn, cx, &bytes[at..]))?;
+        at += wait(|cx| c.poll_write(conn, cx, &bytes[at..], false))?;
     }
     wait(|cx| c.poll_flush(conn, cx))
 }
@@ -79,7 +79,7 @@ fn read_exact(c: &dyn Carrier, conn: u64, n: usize, chunk: usize) -> Vec<u8> {
     let mut buf = vec![0_u8; chunk];
     while all.len() < n {
         let want = (n - all.len()).min(chunk);
-        match wait(|cx| c.poll_read(conn, cx, &mut buf[..want])) {
+        match wait(|cx| c.poll_read(conn, cx, &mut buf[..want]).map_ok(|c| c.len)) {
             Ok(0) => panic!("the peer closed after {} of {n} bytes", all.len()),
             Ok(got) => all.extend_from_slice(&buf[..got]),
             Err(e) => panic!("read failed mid-stream: {e:?}"),
@@ -93,7 +93,7 @@ fn drain(c: &dyn Carrier, conn: u64, chunk: usize) -> Vec<u8> {
     let mut all = Vec::new();
     let mut buf = vec![0_u8; chunk];
     loop {
-        match wait(|cx| c.poll_read(conn, cx, &mut buf)) {
+        match wait(|cx| c.poll_read(conn, cx, &mut buf).map_ok(|c| c.len)) {
             Ok(0) => return all,
             Ok(n) => all.extend_from_slice(&buf[..n]),
             Err(e) => panic!("read failed mid-stream: {e:?}"),
@@ -172,7 +172,7 @@ fn fold(c: &dyn Carrier) -> Fold {
         accept_read,
         accept_peer_saw,
         arrival_agrees,
-        unknown_write: wait(|cx| c.poll_write(u64::MAX, cx, b"x")).unwrap_err(),
+        unknown_write: wait(|cx| c.poll_write(u64::MAX, cx, b"x", false)).unwrap_err(),
         unknown_close: wait(|cx| c.poll_close(u64::MAX, cx, CloseReason::Normal)),
         refused_dial,
         program_dial: c

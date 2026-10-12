@@ -59,8 +59,8 @@ members = [
 [workspace.dependencies]
 # ── External plugin crates: ONE pin each (ONE HOME PER FACT); members use `workspace = true` ──
 busbar-auth-admin-tokens-plugin = { git = "https://github.com/GetBusbar/busbar-auth-admin-tokens", rev = "648b6683d0b9274c02a20f6da17146ba1b85f74c" }
-busbar-auth-oidc = { git = "https://github.com/GetBusbar/busbar-auth-oidc", rev = "0a7b7a5c59593e4e5a9b742b5c5a9f0147dc17cb" }
-busbar-auth-oidc-plugin = { git = "https://github.com/GetBusbar/busbar-auth-oidc", rev = "0a7b7a5c59593e4e5a9b742b5c5a9f0147dc17cb" }
+busbar-auth-oidc = { git = "https://github.com/GetBusbar/busbar-auth-oidc", rev = "4d9e8f4cec149d6142854ef2b63c1e639b85f87d" }
+busbar-auth-oidc-plugin = { git = "https://github.com/GetBusbar/busbar-auth-oidc", rev = "4d9e8f4cec149d6142854ef2b63c1e639b85f87d" }
 busbar-export-file = { git = "https://github.com/GetBusbar/busbar-export-file", rev = "c0a2d690b281ec96ef5d904981f73e2b2a0b11c2" }
 busbar-export-file-plugin = { git = "https://github.com/GetBusbar/busbar-export-file", rev = "c0a2d690b281ec96ef5d904981f73e2b2a0b11c2" }
 busbar-export-otlp = { git = "https://github.com/GetBusbar/busbar-export-otlp", rev = "d4e24f17b57ae9e16026fbe6a56a1e8966773e51" }
@@ -90,17 +90,17 @@ busbar-transport-ws = { git = "https://github.com/GetBusbar/busbar-transport-ws"
 busbar-export-webhook-plugin = { git = "https://github.com/GetBusbar/busbar-export-webhook", rev = "46cd95ba78f6639b28d14067bc7c6876e00c5458" }
 # THE TCP TRANSPORT: the identity framer door (kind: transport), one pin for the logic crate the root
 # links and the cdylib crate the loader's both-ways proof builds. Same repo, same rev, one resolved copy.
-busbar-transport-tcp = { git = "https://github.com/GetBusbar/busbar-transport-tcp", rev = "4af9e2ca8bc164d0066e6d107024ba416192a4ba" }
-busbar-transport-tcp-plugin = { git = "https://github.com/GetBusbar/busbar-transport-tcp", rev = "4af9e2ca8bc164d0066e6d107024ba416192a4ba" }
+busbar-transport-tcp = { git = "https://github.com/GetBusbar/busbar-transport-tcp", rev = "eb334dd6e9d3dcd62ae1616f77a5ed56311b255a" }
+busbar-transport-tcp-plugin = { git = "https://github.com/GetBusbar/busbar-transport-tcp", rev = "eb334dd6e9d3dcd62ae1616f77a5ed56311b255a" }
 # THE OUTBOUND HEADER STYLES (kind: auth): the logic crate the root links on its `auths` axis
 # (feature `auth-header`), pulled at a pinned rev (P5; OWNER Q99 keep the split).
-busbar-auth-header = { git = "https://github.com/GetBusbar/busbar-auth-header", rev = "37811aad91caecb2d337a44748bd848f99879e27" }
+busbar-auth-header = { git = "https://github.com/GetBusbar/busbar-auth-header", rev = "70f356722c37b7efe9e8fc5f23d3f30e606556f0" }
 # THE OAUTH MINTING STYLES (kind: auth): the logic crate the root links on its `auths` axis (feature
 # `auth-oauth`; P2 D1: the kernel's own minting copies are deleted). One pin.
-busbar-auth-oauth = { git = "https://github.com/GetBusbar/busbar-auth-oauth", rev = "98fb861d14914982fdba6f8666681fb62ba1d6b1" }
+busbar-auth-oauth = { git = "https://github.com/GetBusbar/busbar-auth-oauth", rev = "7022a0891c7e197b1a7f87ab839aee2c8e2b9b3c" }
 # THE SIGV4 STYLE (kind: auth): outbound signing and the inbound SigV4 verify, linked on the root's
 # `auths` axis (feature `auth-sigv4`; P2 D1: the kernel's own SigV4 copies are deleted). One pin.
-busbar-auth-sigv4 = { git = "https://github.com/GetBusbar/busbar-auth-sigv4", rev = "c22578acc927269f27e25dcef41ff7a4d91403ee" }
+busbar-auth-sigv4 = { git = "https://github.com/GetBusbar/busbar-auth-sigv4", rev = "963df8e00421a574a7d68bd8371472ff59f345c8" }
 # THE RANKING HOOK (kind: hook), pulled at a pinned rev: the logic crate the root links on its hooks
 # axis (feature `hooks-ranking`). The same package at the same rev, under the role the kernel's test
 # build gives it (`fixture-hook`: a kernel source names no plugin). A rev bump moves both lines.

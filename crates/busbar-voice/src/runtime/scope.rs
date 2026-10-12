@@ -21,11 +21,11 @@ use busbar_kernel::plane::store::PlaneStore;
 use busbar_kernel::plane_host::SessionScope;
 use std::sync::Arc;
 
-/// Retain a live session for an hour of idle, an hour past terminal, and cap the working set — plain,
-/// generous bounds for a long-lived carrier (the plane's own retention policy, not a wire fact).
+/// Retain a settled session for an hour past terminal, and cap the settled population — plain,
+/// generous bounds for a long-lived carrier (the plane's own retention policy, not a wire fact). A
+/// live session is never retired by retention; it ends at its teardown.
 fn session_bounds() -> SweepBounds {
     SweepBounds {
-        abandon_secs: 3_600,
         terminal_ttl_secs: 3_600,
         max_retained: 4_096,
     }
@@ -109,14 +109,7 @@ impl SessionHandle {
                     }),
                 })
             },
-            // An ACTIVE session idle past `abandon_secs` is ABANDONED TERMINAL by the retention
-            // sweep, so the sweep's terminal-TTL rule can then evict it. Opting out (`None`) left
-            // every session whose teardown never ran — a dropped socket, a one-shot pass whose
-            // sideband never came — ACTIVE for ever: the cap rule evicts only terminal rows, so the
-            // working set grew without bound. Explicit teardown ([`SessionHandle::finish`]) is the
-            // fast path; this is the backstop that makes it not the only one.
-            |_id, row, _pos, now| abandon_idle(row, now),
-            // No durable sink attached in this build ⇒ no sweep-time failures to report.
+            // No durable sink attached in this build ⇒ no rollback failures to report.
             |_id, _e| {},
         )?;
         Ok(())
@@ -226,16 +219,6 @@ pub fn rehydrate_sessions(
             Err(_) => Ok(RehydrateOutcome::Unreadable),
         }
     })
-}
-
-/// The retention sweep's transition for an idle ACTIVE voice session: the same row, terminal, stamped
-/// at `now`. `None` for a row that is not a voice session's (nothing this plane can speak for).
-fn abandon_idle(row: &(dyn std::any::Any + Send + Sync), now: u64) -> Option<Mutation> {
-    let cur = row.downcast_ref::<VoiceSessionRow>()?;
-    let mut next = cur.clone();
-    next.terminal = true;
-    next.updated_at = now;
-    Some(mutation_for(next))
 }
 
 /// Wall-clock Unix seconds — the clock a serving site stamps its teardown with. The retention sweep

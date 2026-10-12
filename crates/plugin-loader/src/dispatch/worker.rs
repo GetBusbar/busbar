@@ -50,9 +50,7 @@ use busbar_contract::conn::InstanceId;
 
 use super::plugin::{is_lifecycle, Crossed, Instance, Plugin};
 use super::services::{HostServices, Served, ServiceStore};
-use super::ticket::{
-    decode, encode, recycled_generation, Completions, WakeRoute, MAX_INDEX, MAX_WORKERS,
-};
+use super::ticket::{decode, encode, recycled_generation, WakeRoute, MAX_INDEX, MAX_WORKERS};
 use super::{in_head, now_ns, out_head, watchdog, DriveFrame, Frame, InFrame, Kind, OutFrame};
 
 /// The longest a crossing may take before the watchdog faults it, per class. A crossing never
@@ -132,6 +130,11 @@ pub struct DispatchStats {
     pub live_reapers: u64,
     /// The most service answers one driver ticket kept over one tick cycle (a high-water gauge).
     pub driver_kept_high: u64,
+    /// `bb_deadline_without_wake_total` (THE DESIGN A.4.3): ops that answered PENDING and were
+    /// still owed their wake when their DEADLINE settled them (a Call/Stream/Connection op
+    /// cancelled, a WriteBehind op's caller released), never woken before it. A door whose every
+    /// wait is woken keeps it 0; every conformance script requires 0.
+    pub deadline_without_wake: u64,
 }
 
 #[derive(Debug, Default)]
@@ -140,13 +143,13 @@ pub(crate) struct Stats {
     pub(crate) replacements: AtomicU64,
     write_behind_late: AtomicU64,
     driver_kept_high: AtomicU64,
+    deadline_without_wake: AtomicU64,
 }
 
 /// What a worker thread needs besides its worker.
 pub(crate) struct Env {
     pub(crate) budgets: Budgets,
     pub(crate) stats: Arc<Stats>,
-    pub(crate) completions: Arc<Completions<Vec<u8>>>,
     /// The host services' stored results.
     pub(crate) services: Arc<ServiceStore>,
     /// What the host services are served from; `None` = the host bound none, and every service
@@ -161,6 +164,11 @@ pub(crate) struct Env {
     /// on worker ops at boot, so a socket a plugin opened there was never driven. None installed:
     /// a worker enters no runtime, and its I/O takes the connector's own refusal.
     pub(crate) runtime: std::sync::OnceLock<tokio::runtime::Handle>,
+    /// THE HOST'S I/O (`io.*`) the instances of this dispatcher are served from; unset = none, and
+    /// every `io` slot answers REFUSED.
+    pub(crate) io: std::sync::OnceLock<Arc<dyn busbar_contract::io_host::IoHost>>,
+    /// The tickets of ops driven inline on the calling thread (a carrier's connection sides).
+    pub(crate) inline: Arc<super::inline::InlineTickets>,
 }
 
 /// One op's completion.
@@ -478,6 +486,11 @@ pub(crate) struct Current {
 pub(crate) struct Driven {
     names: Mutex<Vec<u64>>,
     told: tokio::sync::Notify,
+    /// How many `drive` crossings answered, and the last one's outcome: what a synchronous host
+    /// that woke the driver waits on ([`Driven::answered_after`]; the published conformance suite
+    /// drives `drive` this way, as a wake, THE DESIGN §11.4).
+    answers: Mutex<(u64, Option<Outcome>)>,
+    answered: Condvar,
 }
 
 impl Driven {
@@ -495,6 +508,45 @@ impl Driven {
         if !names.is_empty() {
             self.told.notify_one();
         }
+    }
+
+    /// A `drive` crossing answered `outcome`.
+    fn answer(&self, outcome: Outcome) {
+        let mut a = self.answers.lock().unwrap_or_else(|e| e.into_inner());
+        *a = (a.0 + 1, Some(outcome));
+        drop(a);
+        self.answered.notify_all();
+    }
+
+    /// How many `drive` crossings have answered so far.
+    #[cfg(any(test, feature = "conformance"))]
+    pub(crate) fn answers(&self) -> u64 {
+        self.answers.lock().unwrap_or_else(|e| e.into_inner()).0
+    }
+
+    /// The first outcome other than PENDING a `drive` answered after the `seen`th answer, waited
+    /// for up to `timeout` (a synchronous caller; it blocks this thread). `None` past it.
+    #[cfg(any(test, feature = "conformance"))]
+    pub(crate) fn answered_after(&self, seen: u64, timeout: Duration) -> Option<Outcome> {
+        let until = Instant::now() + timeout;
+        let mut a = self.answers.lock().unwrap_or_else(|e| e.into_inner());
+        loop {
+            if a.0 > seen && a.1 != Some(Outcome::Pending) {
+                return a.1;
+            }
+            let left = until.checked_duration_since(Instant::now())?;
+            a = self
+                .answered
+                .wait_timeout(a, left)
+                .unwrap_or_else(|e| e.into_inner())
+                .0;
+        }
+    }
+
+    /// Every name held now, taken (none when none is); never waits.
+    #[cfg(any(test, feature = "conformance"))]
+    pub(crate) fn drain(&self) -> Vec<u64> {
+        std::mem::take(&mut *self.names.lock().unwrap_or_else(|e| e.into_inner()))
     }
 
     /// Every name held, once one is; never parks a thread.
@@ -614,6 +666,10 @@ pub(crate) struct Pool {
 impl WakeRoute for Pool {
     /// Route a wake to the worker its slot names. Never blocks on the plugin: a channel push.
     fn wake(&self, t: Ticket) {
+        if super::inline::is_inline(t) {
+            self.env.inline.wake(t);
+            return;
+        }
         let (w, _) = decode(t.slot);
         match self.slots.get(w as usize) {
             Some(slot) => {
@@ -630,6 +686,14 @@ impl WakeRoute for Pool {
             store: Arc::clone(&self.env.services),
             provider: Arc::clone(self.env.provider.as_ref()?),
         })
+    }
+
+    fn io(&self) -> Option<Arc<dyn busbar_contract::io_host::IoHost>> {
+        self.env.io.get().cloned()
+    }
+
+    fn inline_waker(&self, t: Ticket) -> Option<std::task::Waker> {
+        self.env.inline.waker_of(t)
     }
 }
 
@@ -806,7 +870,6 @@ impl Worker {
 
     fn recycle_now(&self, st: &mut WorkerState, idx: u32, env: &Env) {
         let e = &mut st.entries[idx as usize];
-        env.completions.forget(self.ticket(idx, e.generation));
         env.services.forget(self.ticket(idx, e.generation));
         let ticket = self.ticket(idx, e.generation);
         for id in e.conns.drain(..) {
@@ -857,14 +920,19 @@ impl Worker {
     }
 
     /// Due deadlines and timers; the wait until the next one.
-    fn timers(&self, st: &mut WorkerState, now: u64) -> Duration {
+    fn timers(&self, st: &mut WorkerState, now: u64, env: &Env) -> Duration {
+        let mut without_wake = 0_u64;
         let mut next = u64::MAX;
         let mut due = Vec::new();
         for (idx, e) in st.entries.iter_mut().enumerate() {
+            // A wake that came is scheduled as the op's resume: it is not owed any more.
+            let owed = !matches!(e.next, Some(Action::Resume));
             if let Some(c) = e.current.as_mut().filter(|c| c.pending) {
                 let (class, deadline) = (c.meta.class, c.meta.deadline_ns);
                 if deadline != 0 && class != DeadlineClass::WriteBehind {
                     if now >= deadline {
+                        // Pending, its wake still owed: the deadline, not a wake, ends it.
+                        without_wake += u64::from(owed);
                         due.push((idx as u32, Action::Cancel));
                         continue;
                     }
@@ -872,7 +940,9 @@ impl Worker {
                 }
                 if deadline != 0 && class == DeadlineClass::WriteBehind && !c.detached {
                     if now >= deadline {
-                        // The caller stops WAITING; the op keeps its ticket and runs on.
+                        // The caller stops WAITING; the op keeps its ticket and runs on. Pending,
+                        // its wake still owed: the deadline, not a wake, settled its caller.
+                        without_wake += u64::from(owed);
                         c.detached = c.meta.reply.settle(c.meta.instance.timeout, true);
                     } else {
                         next = next.min(deadline);
@@ -898,6 +968,11 @@ impl Worker {
         }
         for (idx, a) in due {
             Self::schedule(st, idx, a);
+        }
+        if without_wake > 0 {
+            env.stats
+                .deadline_without_wake
+                .fetch_add(without_wake, Ordering::Relaxed);
         }
         Duration::from_nanos(next.saturating_sub(now)).min(Duration::from_millis(100))
     }
@@ -955,7 +1030,8 @@ impl Worker {
                     return Some(st);
                 };
                 if e.driver.is_some() {
-                    // A tick starts the driver ticket's next cycle: the last cycle's kept answers go.
+                    // A tick starts the driver ticket's next cycle: the last cycle's kept answers (and
+                    // their epoch) go.
                     let kept = env.services.forget(ticket)
                         + super::conn_services::forget(meta.instance.instance, ticket);
                     env.stats
@@ -967,6 +1043,8 @@ impl Worker {
                     // stored result is redeemed only by the op that issued it, on its resume (THE
                     // DESIGN §11.12) — so the last op's kept answers go. Kept, the next op's
                     // `ESTABLISH` (handle 0) would answer the last op's stream without a dial.
+                    // The forget ends the last op's epoch too: a service of its still running
+                    // completes into nothing, never into this op's same-numbered handle.
                     env.services.forget(ticket);
                     super::conn_services::forget(meta.instance.instance, ticket);
                 }
@@ -1037,6 +1115,7 @@ impl Worker {
                 cur.pending = false;
                 let inst = cur.meta.instance.clone();
                 let class = cur.meta.class;
+                let op_slot = cur.meta.slot;
                 let timeout = inst.timeout;
                 if inst.faulted.load(Ordering::Acquire) {
                     self.end(&mut st, idx, Crossed::host(Outcome::Fault), env);
@@ -1048,6 +1127,27 @@ impl Worker {
                 let heads = frame.prepare(ticket, class as u8);
                 let budget = env.budgets.of(slot::CANCEL, class);
                 let (mut st, c) = self.cross(st, &inst, slot::CANCEL, heads, budget)?;
+                // A cancelled `open` that pended will never answer: the plugin still holds its
+                // half-open box, and no caller will close an instance that never opened. The host
+                // closes it here, once, inside the open's own lifecycle exclusion (given back by
+                // `end` below); a later caller's `close` finds nothing and is refused.
+                if op_slot == slot::OPEN
+                    && inst.half_open()
+                    && !inst.faulted.load(Ordering::Acquire)
+                {
+                    let (mut input, mut out) = (in_head(), out_head());
+                    let heads = (&raw mut input, &raw mut out, size_of::<OutHead>() as u32);
+                    let budget = env.budgets.of(slot::CLOSE, class);
+                    let (back, closed) = self.cross(st, &inst, slot::CLOSE, heads, budget)?;
+                    st = back;
+                    if closed.outcome != Outcome::Ready {
+                        tracing::warn!(
+                            plugin = %inst.name(),
+                            outcome = ?closed.outcome,
+                            "the close of a cancelled open's half-open box did not answer READY"
+                        );
+                    }
+                }
                 // The op answers the kind's timeout with `cancel`'s disposition and the writes it
                 // carried; a `cancel` that FAULTed makes the op FAULT.
                 let ended = if c.outcome == Outcome::Fault {
@@ -1085,6 +1185,7 @@ impl Worker {
                 if c.outcome == Outcome::Ready {
                     inst.driven.name(frame.named());
                 }
+                inst.driven.answer(c.outcome);
                 let e = &mut st.entries[idx as usize];
                 if e.generation == generation {
                     if let Some(d) = e.driver.as_mut() {
@@ -1166,7 +1267,7 @@ pub(crate) fn run(w: Arc<Worker>, rx: Receiver<Msg>, env: Arc<Env>) {
             drop(gone);
             return;
         }
-        let wait = w.timers(&mut st, now_ns());
+        let wait = w.timers(&mut st, now_ns(), &env);
         if let Some(idx) = st.runnable.pop_front() {
             match w.run_one(st, idx, &env) {
                 Some(g) => st = g,
@@ -1197,6 +1298,29 @@ std::thread_local! {
     /// The dispatcher worker this thread is, as `(the dispatcher's Env address, worker index)`;
     /// `None` on every other thread ([`Dispatcher::current_worker`]).
     static ON_WORKER: std::cell::Cell<Option<(usize, u32)>> = const { std::cell::Cell::new(None) };
+}
+
+/// The dispatcher worker the calling thread is, or acts for ([`acting_for`]); `None` on any other
+/// thread.
+pub(crate) fn worker_mark() -> Option<(usize, u32)> {
+    ON_WORKER.with(std::cell::Cell::get)
+}
+
+/// A crossing handed from a dispatcher worker to a permanent FFI worker acts for that dispatcher
+/// worker until the returned guard drops: a host service the plugin calls on the FFI worker then
+/// sees the worker it serves ([`Dispatcher::current_worker`]), so a synchronous waiter never
+/// submits to the worker blocked on this very crossing.
+pub(crate) fn acting_for(mark: Option<(usize, u32)>) -> ActingFor {
+    ActingFor(ON_WORKER.with(|c| c.replace(mark)))
+}
+
+/// [`acting_for`]'s guard: restores the thread's own mark.
+pub(crate) struct ActingFor(Option<(usize, u32)>);
+
+impl Drop for ActingFor {
+    fn drop(&mut self) {
+        ON_WORKER.with(|c| c.set(self.0));
+    }
 }
 
 pub(crate) fn spawn_worker(w: Arc<Worker>, rx: Receiver<Msg>, env: Arc<Env>) {
@@ -1302,14 +1426,16 @@ impl Dispatcher {
     }
 
     fn build(config: DispatchConfig, provider: Option<Arc<dyn HostServices>>) -> Self {
-        let n = config.workers.clamp(1, MAX_WORKERS);
+        // The last worker index names the inline tickets (`inline::INLINE_WORKER`), never a worker.
+        let n = config.workers.clamp(1, MAX_WORKERS - 1);
         let env = Arc::new(Env {
             budgets: config.budgets,
             stats: Arc::default(),
-            completions: Arc::default(),
             services: Arc::default(),
             provider,
             runtime: std::sync::OnceLock::new(),
+            io: std::sync::OnceLock::new(),
+            inline: Arc::default(),
         });
         let mut started = Vec::new();
         let slots = (0..n)
@@ -1354,12 +1480,8 @@ impl Dispatcher {
             write_behind_late: s.write_behind_late.load(Ordering::Relaxed),
             live_reapers: super::load::live_reapers(),
             driver_kept_high: s.driver_kept_high.load(Ordering::Relaxed),
+            deadline_without_wake: s.deadline_without_wake.load(Ordering::Relaxed),
         }
-    }
-
-    /// The completion handles of this dispatcher's tickets.
-    pub fn completions(&self) -> &Completions<Vec<u8>> {
-        &self.pool.env.completions
     }
 
     /// The host services' stored results.
@@ -1380,6 +1502,19 @@ impl Dispatcher {
     /// Bind `inst`'s wakes to this dispatcher; `false` when it is bound to another.
     fn adopt(&self, inst: &Arc<Instance>) -> bool {
         self.adopter().adopt(inst)
+    }
+
+    /// Serve every instance of this dispatcher the HOST'S I/O (`io.*`) from `io`; the first install
+    /// stands. `false` when one was installed already.
+    pub fn install_io(&self, io: Arc<dyn busbar_contract::io_host::IoHost>) -> bool {
+        self.pool.env.io.set(io).is_ok()
+    }
+
+    /// A ticket for ops driven INLINE on the calling thread ([`super::inline`]): one per side of a
+    /// carrier's connection. `None` when every inline slot is held.
+    #[must_use]
+    pub fn inline_ticket(&self) -> Option<super::inline::InlineTicket> {
+        self.pool.env.inline.mint()
     }
 
     /// The handle a [`super::Bind`] carries to be adopted by this dispatcher at bind.

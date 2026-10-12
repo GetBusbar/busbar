@@ -760,7 +760,7 @@ impl crate::hooks::RoutingPolicy for AbstainingRewrite {
     }
 }
 
-/// THE REWRITE LEG EVERY NON-LLM PLANE FIRES (`host.transform_over`, reached by the tool, agent and
+/// THE REWRITE LEG EVERY NON-LLM PLANE FIRES (`plane_host::admission_transform`, reached by the tool, agent and
 /// session planes alike) hands the hook the call's arguments, and leaves exactly one access
 /// amendment naming the hook — the same record the gate seam leaves.
 #[test]

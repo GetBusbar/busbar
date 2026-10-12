@@ -231,6 +231,24 @@ impl<'a, T: Copy> HostBuf<'a, T> {
         self.cap
     }
 
+    /// The room left, as the raw parts a HOST call writes into (`abi::sdk::io`: a carrier reads
+    /// straight into the host's buffer): a pointer and how many `T`s fit there. NULL with `0` when
+    /// none is left.
+    pub(crate) fn room(&mut self) -> (*mut T, usize) {
+        let left = self.cap.saturating_sub(self.asked);
+        if left == 0 {
+            return (ptr::null_mut(), 0);
+        }
+        // SAFETY: `asked < cap`, inside the `cap` `T`s the host lent at `ptr` (`new`).
+        (unsafe { self.ptr.add(self.asked) }, left)
+    }
+
+    /// Count `n` values a host call wrote into [`HostBuf::room`] (at most what it offered).
+    pub(crate) fn advance(&mut self, n: usize) {
+        let left = self.cap.saturating_sub(self.asked);
+        self.asked = self.asked.saturating_add(n.min(left));
+    }
+
     /// Every value asked of it so far, written or not.
     #[must_use]
     pub const fn asked(&self) -> usize {
@@ -473,13 +491,13 @@ use crate::abi::hook::{
 use crate::abi::mechanism::lifecycle::{OpenIn, ReadyIn, RefreshIn, ValidateIn};
 use crate::abi::mechanism::ticket::HostTables;
 use crate::abi::plane::{
-    ArriveIn, OnPieceIn, OutField, PlaneCancelIn, PlaneDriveIn, ProjectIn, RecordWrite, RefusalIn,
-    ServeIn, UnitCount,
+    ArriveIn, OnPieceIn, OutField, PlaneCancelIn, PlaneDriveIn, PlaneOpenIn, ProjectIn,
+    ProviderFacts, RecordWrite, RefusalIn, ServeIn, UnitCount,
 };
 use crate::abi::transport::{
     AcceptIn, AdoptIn, ArrivalIn, BeginIn, ConnFacts, DatagramLane, DatagramPath, DatagramRoute,
-    EmitIn, EncodeIn, FinishIn, FramePiece, FramerSink, FramingIn, HeadSlots, IngestIn,
-    KeyingMaterial, ListenIn, LocateIn, ReadIn, RefuseIn, WriteIn,
+    Destination, DialIn, EmitIn, EncodeIn, FinishIn, FramePiece, FramerSink, FramingIn, HeadSlots,
+    IngestIn, KeyingMaterial, ListenIn, LocateIn, ReadIn, RefuseIn, WriteIn,
 };
 
 lend! {
@@ -512,6 +530,7 @@ lend! {
     }
     ValidateIn { buf(err_buf, err_cap) -> u8; }
     // THE PLANE KIND (`abi::plane`): request-path results go into host buffers.
+    PlaneOpenIn { list(providers, providers_len) -> ProviderFacts; }
     ArriveIn {
         list(fields, fields_len) -> Field;
         buf(units_buf, units_cap) -> UnitCount;
@@ -558,6 +577,11 @@ lend! {
     ListenIn { buf(addr_buf, addr_cap) -> u8; }
     AcceptIn { buf(peer_buf, peer_cap) -> u8; }
     ArrivalIn { buf(peer_buf, peer_cap) -> u8; }
+    DialIn { one(dest) -> Destination; }
+    Destination {
+        list(args, args_len) -> AbiStr;
+        list(env, env_len) -> Field;
+    }
     ReadIn { buf(buf, cap) -> u8; }
     WriteIn { bytes(bytes, len); }
     LocateIn {

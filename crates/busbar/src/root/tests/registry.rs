@@ -846,21 +846,26 @@ fn dropped_doors() -> &'static [DroppedDoor] {
     let doors = DOORS.get_or_init(|| {
         crate::root::test_plugins::neutral_frame_door()
             .into_iter()
-            .map(|(plugin, key)| DroppedDoor {
-                key,
-                claims: vec![key],
-                composes_over: Vec::new(),
-                wire: crate::root::doors::host_wire(
+            .map(|(plugin, key)| {
+                let (door, wire) = crate::root::doors::served(
                     plugin,
                     &busbar_contract::transport::TransportSettings::default(),
+                    Some(crate::root::connector::address_carrier()),
                 )
-                .expect("the door serves"),
+                .expect("the door serves");
+                DroppedDoor {
+                    key,
+                    claims: vec![key],
+                    composes_over: Vec::new(),
+                    wire,
+                    door,
+                }
             })
             .collect()
     });
     assert!(
         !doors.is_empty() || std::env::var_os("CI").is_none(),
-        "the neutral frame door cdylib is built beside the test binary under CI"
+        "the neutral frame door example cdylib is built beside the test binary under CI: run `cargo build --workspace --examples`"
     );
     doors
 }
@@ -927,7 +932,7 @@ fn rows_of(
 #[test]
 fn a_dropped_in_wire_rides_the_one_fold_in_place_of_its_linked_row() {
     let Some(wire) = dropped_doors().first() else {
-        eprintln!("skip: the neutral frame door is not built beside the test binary");
+        eprintln!("skip: the neutral frame door example cdylib is not built beside the test binary; run `cargo build --workspace --examples`");
         return;
     };
     static ROWS: std::sync::OnceLock<Vec<LinkedTransport>> = std::sync::OnceLock::new();
@@ -963,7 +968,7 @@ fn a_dropped_in_wire_rides_the_one_fold_in_place_of_its_linked_row() {
 #[test]
 fn a_dropped_in_wire_on_a_linked_key_is_refused_as_a_second_linked_row_is() {
     let Some(wire) = dropped_doors().first() else {
-        eprintln!("skip: the neutral frame door is not built beside the test binary");
+        eprintln!("skip: the neutral frame door example cdylib is not built beside the test binary; run `cargo build --workspace --examples`");
         return;
     };
     let row = the_wires_linked_row(wire);

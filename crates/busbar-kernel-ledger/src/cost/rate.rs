@@ -4,8 +4,8 @@
 //! The rate card: the one place a decimal from config becomes an integer rate, and the cell that
 //! holds one price.
 //!
-//! **THE PRICES ARE UNITLESS** (#66 `BUSBAR-1.6.0.md:528`). A cell holds ONE integer, not one per
-//! denomination, because there is no denomination here to hold one per: money in this tree is
+//! **THE PRICES ARE UNITLESS** (#66). A cell holds ONE integer, not one per denomination, because
+//! there is no denomination here to hold one per: money in this tree is
 //! abstract cost and the scale it truncates at is [`crate::cost::NANOS_PER_CENT`], fixed for every
 //! card and every reading of one. What a figure is DISPLAYED as is the dashboard's, downstream of
 //! this crate and invisible to it.
@@ -67,12 +67,12 @@ pub fn nano_rate(micro_per_unit: f64) -> u64 {
 /// `None` — the card CANNOT represent it, and must not claim to (item 22). [`nano_rate`] maps every
 /// value it cannot hold onto `0`, which is the right answer for a conversion with no error channel
 /// and the WRONG answer for a card: a configured positive rate below the half-nano-unit quantum
-/// (`0.0004` micro-units — `$0.10/GB` is `0.00009313` micro-units a byte) became `0` while the
-/// card reported the class PRICED, so every unit of it billed as nothing and #42's refusal could
-/// never fire. The same is true of a rate too large for the integer (it was a clamp to `0`), and of
-/// a value that is not a rate at all (negative, NaN, infinite — config validation refuses those
-/// first; this is the card's own statement of the same rule). Each of those is now an UNPRICED
-/// cell, so a hit on it REFUSES (#42) instead of pricing at a zero nobody configured.
+/// (`0.0004` micro-units — a rate of `0.10` per GiB is `0.00009313` micro-units a byte) became `0`
+/// while the card reported the class PRICED, so every unit of it billed as nothing and #42's
+/// refusal could never fire. The same is true of a rate too large for the integer (it was a clamp
+/// to `0`), and of a value that is not a rate at all (negative, NaN, infinite — config validation
+/// refuses those first; this is the card's own statement of the same rule). Each of those is now an
+/// UNPRICED cell, so a hit on it REFUSES (#42) instead of pricing at a zero nobody configured.
 pub fn representable_nano_rate(micro_per_unit: f64) -> Option<u64> {
     if micro_per_unit == 0.0 {
         // An explicit zero (`-0.0` included): the operator configured this class free.
@@ -85,51 +85,11 @@ pub fn representable_nano_rate(micro_per_unit: f64) -> Option<u64> {
     }
 }
 
-/// Fold quantity-and-rate pairs into one nano-unit total: multiply each pair, sum the products,
-/// and SATURATE at both steps. **A SIZING fold, not a spend fold.**
-///
-/// THE TREE HAS TWO MULTIPLY-AND-SUMS ON THE MONEY PATH, AND THEY ARE TWO NOUNS (item 434). This
-/// doc used to claim this was the only one, while the settlement lookup, the read and the kernel's
-/// projection each carried their own — one of them CHECKED, so the in-crate copies had already
-/// drifted on overflow policy (one pinned, one refused). Today:
-///
-/// - **every SPEND figure** — a bill, a read, a cap comparison, a settlement posting — is
-///   [`crate::cost::Tally`]'s fold (`Tally::row`), and it is CHECKED: an overflow is
-///   [`crate::cost::MoneyError::Overflow`], a refusal, never a pin (item 28). There is no spend
-///   figure on this fold.
-/// - **this fold** sizes a RESERVATION: a hold, released at settlement and paid by nobody. For a
-///   hold, pinning at the top is the safe reading of an over-the-top size — it can only reserve too
-///   much, which the unit gives straight back — and a refusal would be wrong, because the hold is
-///   accounting and never refuses a unit the decision admitted. It has no production caller: the
-///   door that sized its holds with it was deleted with its crate, and a lane's rates size no usage
-///   report here, because pricing a report is a spend and a spend is `Tally`'s.
-///
-/// A change to overflow or rounding here moves no bill; a change to a bill belongs in `Tally`.
-///
-/// BOTH OPERATIONS ARE GUARDED, AND THE SECOND IS THE ONE THAT MATTERS. A single product cannot
-/// overflow the accumulator — a `u64` quantity times a `u64` rate is inside a `u128` by a whole bit
-/// — and it is the SUM that overflows: four maximal products reach about 2^130 against a 2^128
-/// ceiling. A plain `+` panics on overflow in a debug build and WRAPS in a release one, and the
-/// wrap would size a hold of very nearly nothing for an astronomical estimate.
-///
-/// #81 keeps this integer: no `f32`/`f64` touches a quantity or a rate here. The only decimal on
-/// the money path is the one [`nano_rate`] converts, once, at card-build time.
-pub fn nanos_sum<I>(pairs: I) -> u128
-where
-    I: IntoIterator<Item = (u64, u64)>,
-{
-    pairs
-        .into_iter()
-        .fold(0u128, |acc, (quantity, nanos_per_unit)| {
-            acc.saturating_add(u128::from(quantity).saturating_mul(u128::from(nanos_per_unit)))
-        })
-}
-
 /// The uncached-input meter class, as a card entry is keyed.
 pub const CLASS_INPUT: &str = "input";
 /// The response meter class.
 pub const CLASS_OUTPUT: &str = "output";
-/// The cache-read meter class — a prompt read back from cache, priced apart from uncached input.
+/// The cache-read meter class — input read back from a cache, priced apart from uncached input.
 pub const CLASS_CACHE_READ: &str = "cache_read";
 /// The cache-write (cache creation) meter class.
 pub const CLASS_CACHE_WRITE: &str = "cache_write";
@@ -144,8 +104,8 @@ pub const CLASS_CACHE_WRITE: &str = "cache_write";
 /// is why its dependency closure is still the capability crate and nothing else.
 ///
 /// It is ONE CONSTRUCTOR FOR A CARD RATHER THAN THE CARD'S SHAPE. It can only express the four
-/// token classes a 1.5.5 deployment configures, and a card's class map is string-keyed, so audio
-/// seconds, bytes and any future class price through the same card with no type change.
+/// token classes a 1.5.5 deployment configures, and a card's class map is string-keyed, so seconds,
+/// bytes and any other declared class price through the same card with no type change.
 ///
 /// FLOATS LIVE ONLY HERE. [`RateCard::from_config`] converts each one to an integer nano-unit rate
 /// exactly once, and no decimal touches money after that.
@@ -739,6 +699,83 @@ impl RateCard {
         card.prices.get(lane).map(|classes| LaneRates {
             classes: Some(classes),
         })
+    }
+
+    /// **HOW A LANE PRICES ON THIS CARD — THE ONE RESOLUTION** (#42, #44, #47). Both the settlement
+    /// lookup ([`crate::cost::price_at_card`]) and the one function's accumulator
+    /// ([`crate::cost::Tally::row`]) resolve a lane here and nowhere else, so they cannot disagree
+    /// about which card prices it, whether it is a plane's fee lane, or what a class on it costs.
+    ///
+    /// - The card is the lane's plane's ([`Self::plane_lane`]).
+    /// - A plane's FEE LANE (`"<plane>\u{1f}"`, [`plane_fee_lane`]) prices its reserved fee
+    ///   classes ([`PER_REQUEST`], [`PER_SESSION`]) at that plane's own fees, card present or not;
+    ///   any other class on it refuses on a present card and reads 0 on an absent one.
+    /// - Any other lane prices by [`Self::lane_rates`]: an absent card reads 0, a present card prices
+    ///   the classes it names, and a lane a present card does not name is unnamed (a refusal).
+    pub fn lane_pricing(&self, lane: &str) -> LanePricing<'_> {
+        let (card, key) = self.plane_lane(lane);
+        let rule = if key.is_empty() && lane.ends_with(crate::cost::PLANE_LANE_SEP) {
+            LaneRule::Fees
+        } else {
+            match card.lane_rates(key) {
+                Some(rates) => LaneRule::Rates(rates),
+                None => LaneRule::Unnamed,
+            }
+        };
+        LanePricing { card, rule }
+    }
+}
+
+/// A lane as [`RateCard::lane_pricing`] resolved it: the card that prices it, and how.
+#[derive(Debug, Clone, Copy)]
+pub struct LanePricing<'c> {
+    /// The card the lane is priced by — its plane's own (an absent card for a plane with none).
+    pub card: &'c RateCard,
+    rule: LaneRule<'c>,
+}
+
+/// The three ways a lane prices.
+#[derive(Debug, Clone, Copy)]
+enum LaneRule<'c> {
+    /// A plane's fee lane: its reserved fee classes at the plane's own fees.
+    Fees,
+    /// A lane priced by its card's rates (all zero on an absent card).
+    Rates(LaneRates<'c>),
+    /// A present card names no entry for the lane.
+    Unnamed,
+}
+
+/// What one class on a resolved lane prices at.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClassPrice {
+    /// A reserved fee class on a plane's fee lane: this many MINOR units per unit, never rounded and
+    /// never divided (#44).
+    FeeMinor(i64),
+    /// A rate, in nano-units per unit. Zero on an absent card (billing off, #42).
+    Nanos(u64),
+    /// A present card names no price for the class on this lane: a refusal (#42), never a zero.
+    Unpriced,
+}
+
+impl LanePricing<'_> {
+    /// Whether the lane is priced at all: `false` exactly when a present card names no entry for it.
+    pub fn lane_named(&self) -> bool {
+        !matches!(self.rule, LaneRule::Unnamed)
+    }
+
+    /// What one class prices at on this lane. Every class on an unnamed lane is [`ClassPrice::Unpriced`].
+    pub fn class_price(&self, class: &str) -> ClassPrice {
+        match self.rule {
+            LaneRule::Fees => match self.card.fee_of(class) {
+                Some(fee_minor) => ClassPrice::FeeMinor(fee_minor),
+                None if self.card.pricing_enabled() => ClassPrice::Unpriced,
+                None => ClassPrice::Nanos(0),
+            },
+            LaneRule::Rates(rates) if rates.class_priced(class) => {
+                ClassPrice::Nanos(rates.nanos_per_unit(class))
+            }
+            LaneRule::Rates(_) | LaneRule::Unnamed => ClassPrice::Unpriced,
+        }
     }
 }
 

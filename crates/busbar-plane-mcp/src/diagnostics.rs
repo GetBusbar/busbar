@@ -116,20 +116,23 @@ pub const MCP_ASK_RECOGNISER_MISSED: Diagnostic = Diagnostic {
     retired: false,
 };
 
-/// MCP upstream structuredContent violates the published outputSchema.
+/// RETIRED in 1.6.0 with the structured-output check it reported: an upstream's tool result is
+/// relayed unchanged (THE DESIGN Law 11). The number is kept so a log line from a pre-release build
+/// still resolves to an entry that says what happened.
 pub const MCP_OUTPUT_SCHEMA_VIOLATION: Diagnostic = Diagnostic {
     code: 7065,
     class: Class::Plane,
     slug: "mcp-output-schema-violation",
-    title: "MCP upstream structuredContent violates the published outputSchema",
+    title: "MCP upstream structuredContent violated the published outputSchema — RETIRED",
     severity: Severity::BenignRecurring,
-    summary: "An upstream MCP tool returned `structuredContent` that does not validate against the \
-              tool's own published `outputSchema`, so the result is refused. This is an upstream \
-              contract violation that can recur per request, so it is logged at debug to avoid spam.",
-    action: "If a specific tool trips this repeatedly, report the schema mismatch to that MCP \
-             server's operator. No local action is needed.",
+    summary: "RETIRED. An upstream MCP tool's `structuredContent` that did not validate against \
+              the tool's published `outputSchema` was once refused and replaced by busbar's own \
+              tool error. 1.6.0 removed that check: busbar relays an upstream's tool result \
+              unchanged (THE DESIGN Law 11), and the caller judges it against the published \
+              schema.",
+    action: "Nothing emits this code.",
     since: "1.6.0",
-    retired: false,
+    retired: true,
 };
 
 /// MCP tools/call refused by policy.

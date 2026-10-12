@@ -71,7 +71,7 @@ fn dropped_path() -> Option<std::path::PathBuf> {
     let found = path.exists().then_some(path);
     assert!(
         found.is_some() || std::env::var_os("CI").is_none(),
-        "the plane_driver_test_plane example cdylib is not built under CI"
+        "the plane_driver_test_plane example cdylib is not built under CI: run `cargo build --workspace --examples`"
     );
     found
 }
@@ -149,6 +149,8 @@ fn load_open(
                 len: 0,
             },
             owned: NO_BLOB,
+            providers: std::ptr::null(),
+            providers_len: 0,
         },
         PlaneOpenOut {
             open: OpenOut {

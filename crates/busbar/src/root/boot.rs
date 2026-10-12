@@ -68,19 +68,60 @@ pub fn registry(
 ///
 /// # Errors
 ///
-/// A reserved or malformed publisher.
+/// A reserved or malformed publisher; in a `test-harness` build, a malformed
+/// `HARNESS_FIRST_PARTY_KEY_ENV`.
 pub fn trust_policy(
     cfg: &PluginsCfg,
     binary_version: &str,
 ) -> Result<super::loader::sign::TrustPolicy, String> {
-    super::loader::sign::TrustPolicy::from_config(super::loader::sign::TrustInput {
-        publishers: &cfg.publisher_keys(),
-        allow_unsigned: cfg.trust.allow_unsigned,
-        allow_third_party: cfg.trust.allow_third_party,
-        min_versions: &cfg.min_versions,
-        first_party_floors: &cfg.first_party_floors,
-        binary_version,
-    })
+    #[allow(unused_mut)] // assigned only in a `test-harness` build
+    let mut policy =
+        super::loader::sign::TrustPolicy::from_config(super::loader::sign::TrustInput {
+            publishers: &cfg.publisher_keys(),
+            allow_unsigned: cfg.trust.allow_unsigned,
+            allow_third_party: cfg.trust.allow_third_party,
+            min_versions: &cfg.min_versions,
+            first_party_floors: &cfg.first_party_floors,
+            binary_version,
+        })?;
+    #[cfg(feature = "test-harness")]
+    if let Some(key) =
+        harness_first_party_key(std::env::var(HARNESS_FIRST_PARTY_KEY_ENV).ok().as_deref())?
+    {
+        policy.first_party_key = Some(key);
+    }
+    Ok(policy)
+}
+
+/// THE TEST HARNESS'S FIRST-PARTY KEY SEAM (ARCHITECT ruling, busbar #700, 2026-10-10): a
+/// `test-harness` build of the binary takes its first-party key from this variable when it is set,
+/// in place of the embedded release key, whose private half no test holds. That is how a child
+/// `busbar` process under test admits a plugin a test signed first-party: a plugin whose needs sit
+/// in a first-party egress class (`BUSBAR-1.6.0.md` §5), such as the dropped-in OIDC module this
+/// crate's end-to-end battery drives. The seam exists only under `cfg(feature = "test-harness")`,
+/// which no release build enables (`crates/busbar/Cargo.toml`, `test-harness`; asserted by
+/// `root::tests::boot::the_release_feature_set_excludes_test_harness`). Without the feature, no code
+/// path reads the variable, and the embedded key stays the only first-party key.
+#[cfg(feature = "test-harness")]
+pub const HARNESS_FIRST_PARTY_KEY_ENV: &str = "BUSBAR_TEST_HARNESS_FIRST_PARTY_KEY";
+
+/// The harness first-party key that `raw` (the value of [`HARNESS_FIRST_PARTY_KEY_ENV`]) names:
+/// `None` when the variable is unset or empty, so the embedded release key stands.
+///
+/// # Errors
+///
+/// A value that is not a 64-hex ed25519 public key. A harness that sets the variable meant it, so
+/// a typo is refused rather than silently ignored.
+#[cfg(feature = "test-harness")]
+pub fn harness_first_party_key(
+    raw: Option<&str>,
+) -> Result<Option<super::loader::sign::VerifyingKey>, String> {
+    match raw.map(str::trim).filter(|s| !s.is_empty()) {
+        None => Ok(None),
+        Some(hex_key) => super::loader::sign::public_key_from_hex(hex_key)
+            .map(Some)
+            .map_err(|e| format!("{HARNESS_FIRST_PARTY_KEY_ENV} is not a usable key: {e}")),
+    }
 }
 
 /// THE ROOT'S PLUGINS FETCH (the kernel preflight's `PluginsFetch`): every `plugins.fetch` target
@@ -685,12 +726,17 @@ pub fn dropped_transports(
                         let key = facts.claims.first().copied().unwrap_or_default();
                         let claims = facts.claims;
                         let composes_over = facts.composes_over;
-                        let wire = crate::root::doors::host_wire(plugin, settings)?;
+                        let (door, wire) = crate::root::doors::served(
+                            plugin,
+                            settings,
+                            Some(crate::root::connector::address_carrier()),
+                        )?;
                         Ok(crate::root::registry::DroppedDoor {
                             key,
                             claims,
                             composes_over,
                             wire,
+                            door,
                         })
                     })
                     .collect::<Result<Vec<_>, String>>()?;
@@ -710,15 +756,13 @@ pub fn dropped_transports(
 /// Three decisions, made together here because they are ONE value and a caller that made them
 /// separately would have a node whose halves disagree:
 ///
-/// 1. **The journal ships to the CONFIGURED STORE'S shipper.** A batch is offered to that shipper
-///    and its answer is part of the commit — committed-before-ack — and it is written to this
-///    node's own disk as well when a data directory was resolved. Read
-///    [`super::durability`]'s preamble for what "the store" answers with TODAY: on every store this
-///    binary can load, the record verbs are answered by the adapter's node-local shim, which
-///    acknowledges and never fails. So this line buys the WIRING, not new bytes at rest — the
-///    moment a store speaks the record ABI the batches land in it, with no change here. The
-///    durability a node gains today from this function is the on-disk half, and the honesty of the
-///    other half is that the previous release kept nothing there either.
+/// 1. **The journal is KEPT BY THE CONFIGURED STORE** (ARCHITECT 2026-10-07 H3 ruling (a)-(c)): each
+///    record goes through `lane`, the host's bounded write-behind lane, to the store's v3
+///    `record_put` slot under the journal schema. With no data directory the chain the store kept is
+///    READ BACK first and the journal resumes it, so the book, the open holds, the audit records,
+///    the dated rate-card history and the amendments are what they were before the restart; with
+///    one the disk is the record and the store is catch-up work. See [`super::durability`]'s
+///    preamble for what a full lane means.
 /// 2. **The ledger dual-writes onto the in-memory reconciliation rows.** That half stays memory: it
 ///    is the cross-check the reconciliation identity is read from, not the acknowledgement path.
 /// 3. **The OPENING IS SEALED, here, before this function returns.** The previous release's rows are
@@ -744,6 +788,7 @@ pub fn dropped_transports(
 /// NOT one of them; see that module's preamble.
 pub fn compose_book(
     adapter: &super::loader::store_adapter::StoreAdapter,
+    lane: super::durability::JournalLane,
     data_dir: Option<std::path::PathBuf>,
     mig: &super::migration::MigrationConfig,
     now: u64,
@@ -759,18 +804,20 @@ pub fn compose_book(
     // The dual write's rows as running sums, one per cell: memory bounded by the cells the node
     // settles into, never by how many settlements it makes (the journal is the durable record).
     let rows = Arc::new(busbar_kernel_ledger::legacy::SummedRows::new());
-    let mut durability = super::durability::build_for_node(
+    let mut durability = super::durability::build_on_store(
         &super::durability::DurabilityConfig {
             data_dir: data_dir.clone(),
         },
         mig.node,
-        adapter.shipper(),
+        lane,
         Box::new(busbar_kernel_ledger::legacy::SummedRows::clone(&rows)),
+        Box::new(|| crate::root::kernel::ROOT_CARD.pin()),
+        Some(&crate::root::kernel::ROOT_CARD),
     )
     .map_err(|e| format!("the boot ledger's log could not be opened: {e}"))?;
     // The node amendment journal is rebuilt from the chain before anything can seal onto it, so a
-    // corrected count and every recorded content access survive the restart (a node with no data
-    // directory rebuilds nothing).
+    // corrected count and every recorded content access survive the restart — off the disk, or off
+    // the chain the store kept.
     durability.restore_amendments();
     // A corrupt journal segment was already logged and counted when the book was built; this puts
     // the durable record of it on the chain. A failed append is logged, never a refusal to boot.
@@ -795,6 +842,12 @@ pub fn compose_book(
         now,
     )
     .map_err(|e| e.to_string())?;
+    // The opening is sealed under the identity the journal writes as: the node's stable id, or the
+    // one a data directory's chain was written under.
+    let mig = &super::migration::MigrationConfig {
+        node: durability.journal.node(),
+        ..mig.clone()
+    };
     let migration = {
         let (mut records, signer) =
             durability.migration_records_signed(token, busbar_contract::caps::StepName::Meter);
@@ -814,9 +867,13 @@ pub fn compose_book(
 /// generation carries the store it was handed, so a reload neither reopens the store nor seals a
 /// second opening.
 ///
-/// A node with a governance store ships its book to that store and opens it from the rows the
-/// previous release left there; a node with none keeps the previous release's memory-only book,
-/// because a store the batches were never going to reach cannot be the one they are shipped to.
+/// The book's journal is kept by the configured store, `store` by name: its records go to the store's
+/// v3 record slots and a boot with no data directory reads them back (ARCHITECT 2026-10-07 H3
+/// ruling). The opening is sealed from the rows the previous release left in that store.
+///
+/// A configuration names its store (Q-STORE = (B), Appendix B 2026-09-27), so a boot that resolved
+/// none refuses; and a store that does not offer the record slots cannot keep a journal, so the
+/// boot refuses that too, naming the store and the slots.
 ///
 /// The data directory is the one [`busbar_kernel::preflight::fleet_data_dir`] resolves — the SAME
 /// accessor the plugin anti-downgrade floor persists under, so the two can never disagree about
@@ -827,26 +884,40 @@ pub fn compose_book(
 ///
 /// # Errors
 ///
-/// The ephemeral keyset could not be bound, or [`compose_book`] refused.
-pub fn book(app: &busbar_kernel::state::App) -> Result<super::durability::NodeBook, String> {
+/// No store resolved, the store offers no record slots, its lane could not start, or
+/// [`compose_book`] refused.
+pub fn book(
+    app: &busbar_kernel::state::App,
+    store: &str,
+) -> Result<super::durability::NodeBook, String> {
     let Some(gov) = app.governance.as_ref() else {
-        // No store: the keyset is node-local and ephemeral (PB-13), and the chain still signs.
-        let book = super::durability::node_book();
-        if let Err(e) = super::keyset::bind_ephemeral(
-            &mut book.durability.lock().unwrap_or_else(|p| p.into_inner()),
-        ) {
-            return Err(e.to_string());
-        }
-        return Ok(book);
+        return Err(
+            "the boot book needs the configured store and none resolved; add a store, e.g. \
+             `store: {module: memory}`, or run `busbar migrate` (Q-STORE)"
+                .to_string(),
+        );
     };
+    let Some(calls) = gov.store_calls() else {
+        return Err(no_record_slots(store));
+    };
+    let lane = super::durability::JournalLane::start(calls, store)?;
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());
     let adapter = super::loader::store_adapter::StoreAdapter::native(gov.store());
-    let mig = super::migration::config_from(&app.cost, now);
+    // THIS NODE'S STABLE IDENTITY (ARCHITECT 2026-10-07 H3 ruling, follow-up): the id the store's
+    // node registry keeps for this host, minted into it on the host's first boot. Its journal
+    // records are keyed by it, so two nodes on one store never write under one identity.
+    let node =
+        super::durability::node_id(lane.calls().as_ref(), &super::durability::host_identity())
+            .map_err(|why| format!("this node's identity in the store `{store}`: {why}"))?;
+    let mig = super::migration::MigrationConfig {
+        node,
+        ..super::migration::config_from(&app.cost, now)
+    };
     let token = super::kernel::new_kernel().durability_token();
     let data_dir = busbar_kernel::preflight::fleet_data_dir();
-    let (durability, rows, migration) = compose_book(&adapter, data_dir, &mig, now, &token)?;
+    let (durability, rows, migration) = compose_book(&adapter, lane, data_dir, &mig, now, &token)?;
     // DEBUG, NOT INFO, and that is a neutrality decision rather than a taste one. The
     // boot log's INFO+ line set is part of what "LLM-only ≡ 1.5.5" means — it is pinned
     // by `tests/boot_lines_neutrality.rs` and recorded by the oracle's
@@ -883,6 +954,16 @@ pub fn book(app: &busbar_kernel::state::App) -> Result<super::durability::NodeBo
         // adapter: one store behind the node, not one per seam (row 113, ruling (B)).
         verb_store: Some(adapter.verb_store()),
     })
+}
+
+/// The boot's refusal of a store that offers no record slots: it cannot keep the journal.
+#[must_use]
+pub fn no_record_slots(store: &str) -> String {
+    format!(
+        "the configured store `{store}` does not offer the record slots ({}) the node's journal is \
+         kept in; configure a store that implements store ABI v3",
+        super::durability::RECORD_SLOTS
+    )
 }
 
 #[cfg(test)]

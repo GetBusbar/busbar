@@ -20,11 +20,14 @@
 //! the requirement is a trust assumption rather than something the code enforces. The default local
 //! anchor is self-attestation and calling it anything else would be dishonest.
 //!
-//! ## Repeated anchor failures are themselves a fact
+//! ## Anchor failures are not counted here
 //!
 //! An anchor that has been failing for a week is a deployment whose tamper-evidence stopped a week
-//! ago, silently. [`AnchorState`] counts consecutive failures so that the count can be alarmed on
-//! and journaled rather than living in a log line nobody greps for.
+//! ago. This crate keeps no count of that: [`CheckpointAnchor::anchor`] answers each attempt, and
+//! what the caller does with a failure is the caller's. The one production sink is the
+//! [`SelfAttestingAnchor`], which cannot fail, and the root that calls it drops the answer; a
+//! rolled-back or diverging head is caught instead by `verify` comparing the anchored head with
+//! the checkpoint it measures from.
 
 use std::collections::BTreeMap;
 
@@ -153,8 +156,8 @@ impl std::error::Error for AnchorError {}
 ///
 /// **The requirement this trait cannot enforce.** An anchor sink that the node can rewrite proves
 /// nothing, and there is no way for an implementation to demonstrate to this crate that it is out
-/// of reach. So the requirement is stated, the default is labelled self-attestation, and
-/// [`AnchorState::self_attesting`] carries that label onward to whatever reports the node's health.
+/// of reach. So the requirement is stated, and the default is labelled self-attestation through
+/// [`CheckpointAnchor::is_self_attesting`].
 pub trait CheckpointAnchor {
     /// Put it there. An implementation should read back what it wrote and report a mismatch.
     fn anchor(&mut self, checkpoint: &Checkpoint) -> Result<(), AnchorError>;
@@ -174,24 +177,6 @@ pub struct AnchoredHead {
     pub checkpoint_seq: u64,
     /// The hash of its body.
     pub body_hash: [u8; 32],
-}
-
-/// How the anchoring is going.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct AnchorState {
-    /// How many anchor attempts have failed in a row.
-    pub consecutive_failures: u32,
-    /// Whether the sink is inside the node's own write authority.
-    pub self_attesting: bool,
-    /// The last head the sink reported.
-    pub head: Option<AnchoredHead>,
-}
-
-impl AnchorState {
-    /// Whether the failure count has reached the alarm threshold.
-    pub fn should_alarm(&self, threshold: u32) -> bool {
-        self.consecutive_failures >= threshold
-    }
 }
 
 /// One sealed checkpoint.

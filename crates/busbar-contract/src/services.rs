@@ -215,8 +215,18 @@ pub trait HostServices: Send + Sync {
     /// `0`'s key the state byte and its value the record.
     fn work_find(&self, caller: &Caller, unit: Option<u64>, reference: &[u8], later: Later) -> Ran;
 
-    /// `work.settle`: settle `caller`'s live handle `handle` with its final `record`. READY `0`.
-    fn work_settle(&self, caller: &Caller, handle: u64, record: &[u8], later: Later) -> Ran;
+    /// `work.settle`: settle `caller`'s live handle `handle` with its final `record`, from a
+    /// crossing serving `unit`. While a unit the handle was opened or resumed by is still in flight,
+    /// only the principal it recorded settles it; a handle whose units have all ended settles by
+    /// its instance. READY `0`.
+    fn work_settle(
+        &self,
+        caller: &Caller,
+        unit: Option<u64>,
+        handle: u64,
+        record: &[u8],
+        later: Later,
+    ) -> Ran;
 
     /// `work.resume`: bind `caller`'s handle `handle` to `unit`, whose principal must be the one the
     /// handle recorded. READY `0`, span `0`'s key the state byte and its value the record.

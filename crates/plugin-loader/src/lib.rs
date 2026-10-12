@@ -24,12 +24,21 @@ pub mod boot;
 pub mod carrier;
 /// THE PUBLISHED CONFORMANCE SUITE (TODO ABI-b4): what every real plugin repo runs against the busbar
 /// commit it pins, linked and dropped in, through the one loader. Behind `conformance`: a plugin's
-/// dev-dependency turns it on; no busbar build ships it.
-#[cfg(feature = "conformance")]
+/// dev-dependency turns it on; no busbar build ships it. This crate's own tests drive the shipped
+/// transport row through it too (`transport_door_conformance_tests`).
+#[cfg(any(test, feature = "conformance"))]
 pub mod conformance;
 /// THE ONE DISPATCHER of the memory ABI (`BUSBAR-1.6.0.md` THE DESIGN, §11): one loader path, one
 /// crossing, tickets, wakes, deadlines and the watchdog, generic over the kind.
 pub mod dispatch;
+/// THE ONE DURABLE-WRITE OWNER: the whole-file publish (temp, fsync, rename, fsync the holding
+/// directory) every durable file write in busbar goes through — the loader's own (fetched artifacts,
+/// the high-water marks, plugin log directories) and, through `busbar_kernel::durable`, the
+/// kernel's and the admin surface's. It lives here because the loader is the lowest host-only crate
+/// every writer links (Part 2 #33: the loader names `busbar-contract` alone, so it cannot reach a
+/// kernel crate for it). Host-only: no plugin image links this crate, so its temp-name counter is
+/// one per process.
+pub mod durable;
 pub mod export_axis;
 pub mod export_door;
 pub mod fetch;
@@ -37,9 +46,6 @@ mod ffi_thread;
 pub mod highwater;
 pub mod hook_door;
 mod host;
-/// THE ONE DURABLE-WRITE OWNER, named once for the whole loader: every file or directory the loader
-/// publishes (fetched artifacts, the high-water marks, plugin log directories) goes through it.
-pub(crate) use busbar_kernel_wal::durable;
 /// NEVER SHIPPED: the framed connection-table stand-in with in-process far ends (`test-support`,
 /// and the published conformance suite's `far_ends`), for a build that cannot link the process's
 /// connector. No TLS library: TLS stays in the connector.
@@ -201,7 +207,10 @@ pub fn intern_name(name: &str) -> &'static str {
 pub(crate) fn dlopen_on_worker(path: &std::ffi::OsStr) -> Result<Library, String> {
     // SAFETY (unchanged from the direct call this replaces): loading an operator-placed library runs
     // its init code, which is the same trust as compiling it in. Callers apply the trust gate first.
-    match ffi_thread::on_plugin_thread(|| unsafe { Library::new(path) }) {
+    match ffi_thread::on_plugin_thread(|| {
+        ffi_thread::debug_assert_permanent("dlopen");
+        unsafe { Library::new(path) }
+    }) {
         Ok(r) => r.map_err(|e| e.to_string()),
         // An init constructor that PANICKED into us. Vanishingly rare, but the rendezvous must
         // produce a value rather than resume an unwind on a worker whose thread must not die.
@@ -215,7 +224,10 @@ pub(crate) fn dlopen_on_worker(path: &std::ffi::OsStr) -> Result<Library, String
 pub(crate) fn dlclose_on_worker(lib: Library) {
     #[cfg(test)]
     UNLOADS_ON_WORKER.with(|n| n.set(n.get() + 1));
-    let _ = ffi_thread::on_plugin_thread(move || drop(lib));
+    let _ = ffi_thread::on_plugin_thread(move || {
+        ffi_thread::debug_assert_permanent("dlclose");
+        drop(lib);
+    });
 }
 
 #[cfg(test)]
@@ -300,7 +312,11 @@ pub(crate) fn abi_handshake(
 }
 
 fn ffi_guard_confined<R>(path: &str, op: &str, f: impl FnOnce() -> R) -> Result<R, String> {
-    ffi_thread::on_plugin_thread(f).map_err(|_| {
+    ffi_thread::on_plugin_thread(|| {
+        ffi_thread::debug_assert_permanent(op);
+        f()
+    })
+    .map_err(|_| {
         format!("plugin '{path}' panicked across the ABI boundary in {op} (treated as failure)")
     })
 }
@@ -674,8 +690,8 @@ mod store_door_conformance_tests;
 #[path = "tests/secret_door_conformance_tests.rs"]
 mod secret_door_conformance_tests;
 
-/// `kind: transport` over the REAL `tcp` door, both ways: the shipped linked door against the pinned
-/// cdylib, one script, equal transcripts and exact crossing counts.
+/// `kind: transport` over the REAL shipped carrier, both ways: the linked door against the pinned
+/// cdylib, through the published suite's carrier script, equal folds and exact crossing counts.
 #[cfg(test)]
 #[path = "tests/transport_door_conformance_tests.rs"]
 mod transport_door_conformance_tests;

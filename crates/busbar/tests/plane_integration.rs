@@ -90,6 +90,7 @@ fn built_planes(cfg: &RootCfg) -> Vec<(&'static PlaneDecl, Arc<dyn std::any::Any
                 tool_defs: cfg.tool_defs.as_any(),
                 public_url: cfg.public_url.as_deref(),
                 prior: None,
+                providers: None,
             };
             (decl.build)(&ctx).map(|obj| (decl, obj))
         })

@@ -56,8 +56,9 @@ fn bound(binding: &StyleBinding, credential: &str) -> Arc<dyn CredentialProvider
 }
 
 /// The binding the fixture records for `dialect` (`bindings`): the style its declared scheme is
-/// bound under and its parameters, a signing style's region added from `host` as the plane adds it
-/// (the plane's own suite holds its mapping to the same rows).
+/// bound under and its parameters, a signing style's region added from `host` and its content type
+/// lent as the sent `content-type`, as the plane adds them (the plane's own suite holds its mapping
+/// to the same rows).
 fn binding_of(
     dialect: &str,
     host: &str,
@@ -66,15 +67,19 @@ fn binding_of(
     let row = &fixture()["bindings"][dialect];
     let style = row["style"].as_str().expect("style").to_string();
     let mut params = row["params"].clone();
+    let mut sent = Vec::new();
     if style == "sigv4" {
         let region = recorded_region(host).unwrap_or("us-east-1");
         params["region"] = serde_json::Value::String(region.to_string());
+        let content_type = params["content_type"].as_str().expect("content_type");
+        sent.push(("content-type".to_string(), content_type.to_string()));
     }
     StyleBinding {
         style,
         params,
         uses_key: true,
         statics,
+        sent,
     }
 }
 
@@ -391,6 +396,189 @@ fn a_fips_host_signs_for_its_region_and_an_unnamed_one_for_the_default() {
     );
     let auth = get(&cname, "authorization").expect("authorization");
     assert!(auth.contains("/us-east-1/bedrock/aws4_request"), "{auth}");
+}
+
+// ══ SIGV4 SIGNS THE WALKED REQUEST (auth audit fix b; BUSBAR-1.6.0 l.870-873) ═══════════════════
+//
+// The door-plane walk hands the style the request's real method and query (`far_end.rs`'s
+// `FieldsRequest`), so the signature must cover those, not a fixed `POST` with no query. The
+// expected signature is recomputed here from the request facts with plain AWS SigV4 steps; the
+// plugin's signer is never called for it.
+
+/// RED ARM (on the sigv4 plugin's pin c22578a, which signs `POST`, an empty query and an unsent
+/// `content-type`): a `GET` with a query, signed through the linked sigv4 style, verifies under the
+/// secret over that method, the double-encoded path, the sorted query and the headers it names,
+/// and names no `content-type`, since the request carries none. The binding is the fixture's one
+/// signing row (the one whose parameters name a service); the suite is built only where the
+/// sigv4 plugin is linked (`dispatch.rs`).
+#[test]
+fn the_linked_sigv4_style_signs_the_walked_requests_method_and_query() {
+    use busbar_contract::abi::auth::AuthPoint;
+    use busbar_contract::auth_calls::{Fields, FieldsRequest};
+
+    const SECRET: &str = "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY";
+    const AUTHORITY: &str = "runtime.example.com";
+    let dialect = fixture()["bindings"]
+        .as_object()
+        .expect("bindings")
+        .iter()
+        .find(|(_, row)| row["params"].get("service").is_some())
+        .map(|(dialect, _)| dialect.as_str())
+        .expect("a signing binding");
+    let binding = binding_of(dialect, SIGNING_HOST, &[]);
+    let (style, params) = (binding.style.as_str(), &binding.params);
+    let service = params["service"].as_str().expect("service");
+    assert_eq!(
+        *params,
+        serde_json::json!({
+            "service": service,
+            "region": "us-east-1",
+            "content_type": "application/json"
+        })
+    );
+    let serving = axis()
+        .serving(style, params)
+        .expect("the signing plugin opens")
+        .expect("a linked plugin serves the signing style");
+    let handle = serving
+        .auth
+        .open_outbound(style, format!("AKIDEXAMPLE:{SECRET}").as_bytes(), params)
+        .expect("the binding opens");
+    // The shape the door-plane walk builds (`far_end.rs`): the real method, path and query.
+    let request = FieldsRequest {
+        point: AuthPoint::Head,
+        method: b"GET".to_vec(),
+        authority: AUTHORITY.into(),
+        path: b"/model/a%3Ab/invoke".to_vec(),
+        query: Some(b"b=2&a=1".to_vec()),
+        timestamp: 1_440_938_160, // 20150830T123600Z
+        headers: vec![],
+        ..Default::default()
+    };
+    let fields = match serving.auth.fields_now(handle, &request) {
+        Some(Fields::Ready(fields)) => fields,
+        other => panic!("the style signs in place: {other:?}"),
+    };
+    let field = |name: &str| {
+        fields
+            .iter()
+            .find(|f| f.name == name.as_bytes())
+            .map(|f| String::from_utf8(f.value.expose_secret().clone()).expect("utf-8"))
+    };
+    let auth = field("authorization").expect("an authorization field");
+    let amzdate = field("x-amz-date").expect("an x-amz-date field");
+    assert_eq!(amzdate, "20150830T123600Z");
+    let scope = format!(
+        "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/20150830/us-east-1/{service}/aws4_request, "
+    );
+    let rest = auth
+        .strip_prefix(scope.as_str())
+        .unwrap_or_else(|| panic!("the scope is the request's day, region and service: {auth}"));
+    let (signed_headers, signature) = rest
+        .strip_prefix("SignedHeaders=")
+        .and_then(|r| r.split_once(", Signature="))
+        .unwrap_or_else(|| panic!("SignedHeaders then Signature: {auth}"));
+
+    // Each header the signature names, valued as the request sends it: the authority, the empty
+    // payload's hash, and otherwise the field the style answered.
+    let empty_hash = sigv4::sha256_hex(b"");
+    let mut canonical_headers = String::new();
+    for name in signed_headers.split(';') {
+        let value = match name {
+            "host" => AUTHORITY.to_string(),
+            "x-amz-content-sha256" => empty_hash.clone(),
+            other => {
+                field(other).unwrap_or_else(|| panic!("no field carries the signed `{other}`"))
+            }
+        };
+        canonical_headers.push_str(&format!("{name}:{value}\n"));
+    }
+    let canonical_request = format!(
+        "GET\n{}\na=1&b=2\n{canonical_headers}\n{signed_headers}\n{empty_hash}",
+        sigv4::uri_encode("/model/a%3Ab/invoke")
+    );
+    assert_eq!(
+        signature,
+        sigv4::signature(
+            SECRET,
+            &amzdate,
+            "20150830",
+            "us-east-1",
+            service,
+            &canonical_request
+        ),
+        "the signature verifies over the walked request:\n{canonical_request}"
+    );
+    assert!(
+        signed_headers.split(';').all(|h| h != "content-type"),
+        "a request without content-type signs none: {signed_headers}"
+    );
+}
+
+/// The SigV4 steps the cell above recomputes with, ported from `tests/sigv4_both_ways.rs`.
+mod sigv4 {
+    use sha2::{Digest, Sha256};
+
+    /// The SigV4 signature (hex) of `canonical_request` under `secret`'s derived signing key.
+    pub(super) fn signature(
+        secret: &str,
+        amzdate: &str,
+        datestamp: &str,
+        region: &str,
+        service: &str,
+        canonical_request: &str,
+    ) -> String {
+        let scope = format!("{datestamp}/{region}/{service}/aws4_request");
+        let string_to_sign = format!(
+            "AWS4-HMAC-SHA256\n{amzdate}\n{scope}\n{}",
+            sha256_hex(canonical_request.as_bytes())
+        );
+        let k_date = hmac_sha256(format!("AWS4{secret}").as_bytes(), datestamp.as_bytes());
+        let k_region = hmac_sha256(&k_date, region.as_bytes());
+        let k_service = hmac_sha256(&k_region, service.as_bytes());
+        let k_signing = hmac_sha256(&k_service, b"aws4_request");
+        hex::encode(hmac_sha256(&k_signing, string_to_sign.as_bytes()))
+    }
+
+    /// HMAC-SHA256 (RFC 2104) over `sha2`.
+    fn hmac_sha256(key: &[u8], msg: &[u8]) -> Vec<u8> {
+        const BLOCK: usize = 64;
+        let mut k = if key.len() > BLOCK {
+            Sha256::digest(key).to_vec()
+        } else {
+            key.to_vec()
+        };
+        k.resize(BLOCK, 0);
+        let ipad: Vec<u8> = k.iter().map(|b| b ^ 0x36).collect();
+        let opad: Vec<u8> = k.iter().map(|b| b ^ 0x5c).collect();
+        let inner = Sha256::new()
+            .chain_update(&ipad)
+            .chain_update(msg)
+            .finalize();
+        Sha256::new()
+            .chain_update(&opad)
+            .chain_update(inner)
+            .finalize()
+            .to_vec()
+    }
+
+    pub(super) fn sha256_hex(bytes: &[u8]) -> String {
+        hex::encode(Sha256::digest(bytes))
+    }
+
+    /// SigV4 URI encoding of a path: unreserved bytes and `/` pass, every other byte is `%XX`.
+    pub(super) fn uri_encode(path: &str) -> String {
+        let mut out = String::with_capacity(path.len());
+        for &b in path.as_bytes() {
+            match b {
+                b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' | b'/' => {
+                    out.push(b as char)
+                }
+                _ => out.push_str(&format!("%{b:02X}")),
+            }
+        }
+        out
+    }
 }
 
 #[test]

@@ -151,3 +151,45 @@ async fn a2a_content_reaches_the_gate() {
         "still one hop — the refused submission was not relayed"
     );
 }
+
+/// THE REFUSAL MESSAGE REACHES THE CALLER WHOLE, as 1.5.5 sent it. A hook's reject message is capped
+/// at 300 characters by the hook wire, not by bytes, so 300 multibyte characters (`€` is three UTF-8
+/// bytes: 900 bytes) is a message the hook contract delivers in full.
+///
+/// RED before the admission gates left the universal host: the request-gate host slot copied the
+/// message through a 512-byte buffer, so the caller got the first 512 bytes, a split `€` rendered as
+/// U+FFFD, and the rest of the operator's text dropped.
+#[tokio::test]
+async fn a_multibyte_reject_message_past_512_bytes_reaches_the_caller_whole() {
+    let message = "€".repeat(300);
+    assert!(
+        message.len() > 512,
+        "the cell needs a message past the old 512-byte cut"
+    );
+    let gates = gates(
+        "reject-long",
+        serde_json::json!({
+            "raw_decide_reply": {"reject": {"status": 403, "message": message}}
+        }),
+    );
+    let h = harness_gated(
+        Outcome::AnswersCorrelated(200, super::relay_harness::backend_ok()),
+        false,
+        &["planner"],
+        Some(gates),
+    )
+    .await;
+    let (status, body) = call(&h).await;
+
+    assert_eq!(status, 403, "the gate refuses the submission: {body}");
+    assert_eq!(
+        body["error"]["message"].as_str(),
+        Some(message.as_str()),
+        "the hook's whole 300-character message reaches the caller, byte for byte, as 1.5.5 sent it; \
+         a message cut at 512 bytes is the defect. Body: {body}"
+    );
+    assert!(
+        h.sent().is_empty(),
+        "the refused submission was not relayed"
+    );
+}

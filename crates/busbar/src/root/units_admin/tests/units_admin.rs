@@ -2519,7 +2519,10 @@ fn the_reconciliation_names_a_row_this_nodes_dual_write_lost() {
 /// reach it. The book does not move: `settled`/`reserved`/`overdraft` are all zero, and the row
 /// lives only in [`crate::root::durability::Durability::refused_rows`].
 #[cfg(feature = "root-admin")]
-fn post_a_refused_counts_row_on(units: &crate::root::kernel::ProductionUnits, bucket: &str) {
+fn post_a_refused_counts_row_on(
+    durability: &std::sync::Mutex<crate::root::durability::Durability>,
+    bucket: &str,
+) {
     use crate::root::durability::{PostingStamp, Settling, UnitCounts};
     use busbar_contract::caps::PrincipalId;
     use busbar_kernel_ledger::totals::{BucketId, BucketScope, CapDimension, TotalsKey};
@@ -2538,7 +2541,7 @@ fn post_a_refused_counts_row_on(units: &crate::root::kernel::ProductionUnits, bu
         classes,
     };
 
-    let mut durability = units.durability.lock().unwrap_or_else(|p| p.into_inner());
+    let mut durability = durability.lock().unwrap_or_else(|p| p.into_inner());
     let posted = durability
         .post_counts(
             &Settling {
@@ -2564,67 +2567,141 @@ fn post_a_refused_counts_row_on(units: &crate::root::kernel::ProductionUnits, bu
     );
 }
 
-/// **THE EXIT TEST for the admin read's blind spot over a refused counts row.**
+/// **A REFUSED COUNTS ROW REFUSES ITS OWN ROW, NEVER THE TOTALS READ** (#42; audit root-R1 #10).
 ///
 /// `15d23bb90` made the Durability ("second") book carry a refused unit's raw counts (#42/#71) and
 /// gave it a refusing read, [`crate::root::durability::Durability::settled_read`] — but
 /// `NodeLedger::rows_of` walked the book's settled balances directly, and a refused row moves no
-/// balance, so `/admin/ledger/totals` and `/admin/ledger/reconciliation` served a figure that
-/// silently omitted the row the unit actually posted. [`LedgerView::has_refused_rows`] closes it:
-/// both reads ask it first and refuse the whole read (`GovernanceError::Store`, served at 503 —
-/// `V::StoreError` maps to `ReasonCode::DurabilityUnavailable`, `admin_mount.rs`'s
-/// `503`/`"unavailable"`) rather than serve a table with a hole in it — a node whose book holds ANY
-/// refused row refuses on this endpoint entirely, the same `Store` path item 28's out-of-range
-/// figure refuses through.
+/// balance, so `/admin/ledger/totals` served a figure that silently omitted the row the unit
+/// actually posted. The first fix refused the WHOLE read (`Store`, 503) for any refused row, which
+/// hid every other row for the life of the journal: a refused row is rebuilt from the chain at every
+/// boot. [`LedgerView::refused_balances`] refuses per balance and window instead: the row a
+/// refused balance folds into is withheld from `rows` and named under `refused` (balance, window,
+/// lane, refusal), and every other row is answered, figure intact.
 ///
-/// The second half of the proof is the one item 28's own test states in its title: "never served
-/// pinned" cuts both ways. A CLEAN book — no refused row — must go on serving the exact bytes it
-/// served before this fix, which is asserted here by settling the SAME two fixture units on two
-/// independently built nodes and diffing the served bodies byte for byte.
+/// Balance A here (`KEPT`) holds BOTH a priced settlement and a refused counts row, so serving its
+/// row would be the priced remainder — the silent zero — and the row must be withheld. Balance B
+/// (`LOST`) holds only its priced settlement and must be served as it was. A clean book serves the
+/// same rows under an empty `refused`.
 #[cfg(feature = "root-admin")]
 #[test]
-fn a_refused_counts_row_fails_the_totals_and_reconciliation_reads_a_clean_book_is_untouched() {
-    // A clean book, built twice, must serve byte-identical figures — the fix touches no path a
-    // node with no refused row takes.
-    let clean_a = a_node_that_settled(None);
-    let node_a = AdminNode::new(crate::root::kernel::new_kernel(), clean_a);
-    let totals_a = node_a.answer(a_ledger_request("/api/v1/admin/ledger/totals"));
-    let recon_a = node_a.answer(a_ledger_request("/api/v1/admin/ledger/reconciliation"));
-    assert_eq!(totals_a.status, 200, "a clean book must still serve totals");
+fn a_refused_counts_row_withholds_its_row_and_totals_answers_every_other_row() {
+    let clean = AdminNode::new(crate::root::kernel::new_kernel(), a_node_that_settled(None));
+    let clean = clean.answer(a_ledger_request("/api/v1/admin/ledger/totals"));
+    assert_eq!(clean.status, 200, "a clean book must still serve totals");
+    let clean: serde_json::Value = serde_json::from_slice(&clean.body).expect("valid JSON");
+    assert_eq!(clean["rows"].as_array().map(Vec::len), Some(2));
+    assert_eq!(clean["refused"], serde_json::json!([]));
+
+    let units = a_node_that_settled(None);
+    post_a_refused_counts_row_on(&units.durability, KEPT.0);
+    let node = AdminNode::new(crate::root::kernel::new_kernel(), units);
+    let totals = node.answer(a_ledger_request("/api/v1/admin/ledger/totals"));
     assert_eq!(
-        recon_a.status, 200,
-        "a clean book must still serve reconciliation"
+        totals.status, 200,
+        "one refused counts row must not take the whole totals read down"
+    );
+    let totals: serde_json::Value = serde_json::from_slice(&totals.body).expect("valid JSON");
+
+    let rows = totals["rows"].as_array().expect("rows");
+    assert_eq!(rows.len(), 1, "only the unrefused row is priced: {totals}");
+    assert_eq!(rows[0]["bucket"], LOST.0);
+    assert_eq!(rows[0]["day"], A_DAY);
+    assert_eq!(rows[0]["priced_nanos"], LOST.1.to_string());
+    assert!(
+        rows.iter().all(|r| r["bucket"] != KEPT.0),
+        "the refused balance's row was served as its priced remainder: {totals}"
     );
 
-    let clean_b = a_node_that_settled(None);
-    let node_b = AdminNode::new(crate::root::kernel::new_kernel(), clean_b);
-    let totals_b = node_b.answer(a_ledger_request("/api/v1/admin/ledger/totals"));
-    let recon_b = node_b.answer(a_ledger_request("/api/v1/admin/ledger/reconciliation"));
+    let refused = totals["refused"].as_array().expect("refused");
     assert_eq!(
-        totals_a.body, totals_b.body,
-        "a clean book's totals figure must stay byte-identical"
+        refused.len(),
+        1,
+        "the refused balance is named once: {totals}"
     );
-    assert_eq!(
-        recon_a.body, recon_b.body,
-        "a clean book's reconciliation figure must stay byte-identical"
-    );
+    assert_eq!(refused[0]["bucket"], KEPT.0);
+    assert_eq!(refused[0]["day"], A_DAY);
+    assert_eq!(refused[0]["lane"], "gpt");
+    assert_eq!(refused[0]["refusal"], "ClassUnpriced(cache_read)");
+}
 
-    // The same node, PLUS one refused counts row: both reads must now refuse rather than silently
-    // omit it.
-    let refused_units = a_node_that_settled(None);
-    post_a_refused_counts_row_on(&refused_units, "vk_refused");
-    let refused_node = AdminNode::new(crate::root::kernel::new_kernel(), refused_units);
-    let totals = refused_node.answer(a_ledger_request("/api/v1/admin/ledger/totals"));
-    let recon = refused_node.answer(a_ledger_request("/api/v1/admin/ledger/reconciliation"));
+/// **AND THE RECONCILIATION MEASURES EVERY OTHER ROW** (#42; audit root-R1 #10): the refused
+/// balance's row is withheld from both sides of the identity and named under `refused`, `holds` is
+/// false (the identity was not measured over that row), and a real discrepancy on another row —
+/// the dual write that lost `LOST` — is still reported, by the amount it is out by.
+#[cfg(feature = "root-admin")]
+#[test]
+fn a_refused_counts_row_withholds_its_row_and_reconciliation_measures_every_other_row() {
+    let units = a_node_that_settled(Some(LOST.0));
+    post_a_refused_counts_row_on(&units.durability, KEPT.0);
+    let node = AdminNode::new(crate::root::kernel::new_kernel(), units);
+    let recon = node.answer(a_ledger_request("/api/v1/admin/ledger/reconciliation"));
     assert_eq!(
-        totals.status, 503,
-        "a refused counts row must fail /admin/ledger/totals, not be silently omitted from it"
+        recon.status, 200,
+        "one refused counts row must not take the whole reconciliation read down"
     );
-    assert_eq!(
-        recon.status, 503,
-        "a refused counts row must fail /admin/ledger/reconciliation, not be silently omitted \
-         from it"
+    let recon: serde_json::Value = serde_json::from_slice(&recon.body).expect("valid JSON");
+
+    assert_eq!(recon["holds"], false, "{recon}");
+    let out = recon["discrepancies"].as_array().expect("discrepancies");
+    assert_eq!(out.len(), 1, "exactly the lost row must be named: {recon}");
+    assert_eq!(out[0]["bucket"], LOST.0);
+    assert_eq!(out[0]["residual"]["amount"], (LOST.1 / 1_000).to_string());
+
+    let refused = recon["refused"].as_array().expect("refused");
+    assert_eq!(refused.len(), 1, "{recon}");
+    assert_eq!(refused[0]["bucket"], KEPT.0);
+    assert_eq!(refused[0]["day"], A_DAY);
+    assert_eq!(refused[0]["lane"], "gpt");
+    assert_eq!(refused[0]["refusal"], "ClassUnpriced(cache_read)");
+}
+
+/// **`GET /admin/verify` NAMES A REFUSED BALANCE AND EVERY OTHER FINDING** (BUSBAR-1.6.0.md §7:
+/// the integrity verifiers are wired into the verify surface; #42; audit root-R1 #10). A refused
+/// counts row is a finding — its balance, window, lane and refusal — and an independent finding
+/// beside it (here, what the boot reconciliation found) is still reported. It used to refuse the
+/// whole verb (`Store`), hiding every finding for the life of the journal.
+#[cfg(feature = "root-admin")]
+#[test]
+fn verify_names_a_refused_balance_and_every_other_finding() {
+    use crate::root::units_admin::{LegacyRowsRead, NodeLedger};
+    let node_book = crate::root::durability::node_book();
+    let legacy: std::sync::Arc<dyn LegacyRowsRead> = node_book.rows.clone();
+    let view = NodeLedger::new(std::sync::Arc::clone(&node_book.durability), legacy);
+    node_book
+        .durability
+        .lock()
+        .expect("unpoisoned")
+        .restart_findings
+        .push(crate::root::durability::JournalDisagreement::Unreadable(
+            "the journal does not verify: a forged record".to_string(),
+        ));
+    post_a_refused_counts_row_on(&node_book.durability, "vk_refused");
+
+    let answer = crate::root::units_admin::bound::verify_effect(&view)
+        .expect("a refused counts row must not take /admin/verify down");
+    let body: serde_json::Value = serde_json::from_slice(&answer.body).expect("valid JSON");
+    let findings: Vec<&str> = body["findings"]
+        .as_array()
+        .expect("findings")
+        .iter()
+        .filter_map(serde_json::Value::as_str)
+        .collect();
+    assert!(
+        findings
+            .iter()
+            .any(|f| f.starts_with("restart: ") && f.contains("a forged record")),
+        "the independent finding must still be reported: {body}"
     );
+    assert!(
+        findings.iter().any(|f| f.starts_with("refused counts: ")
+            && f.contains("vk_refused")
+            && f.contains(&A_DAY.to_string())
+            && f.contains("\"gpt\"")
+            && f.contains("ClassUnpriced(cache_read)")),
+        "the refused balance must be a named finding: {body}"
+    );
+    assert_eq!(body["ok"], false, "{body}");
 }
 
 /// The other two views are this node's too: the seal it made and the marker it sealed.
@@ -3457,8 +3534,9 @@ fn a_configured_name_cannot_break_out_of_the_document() {
             fee_count: 0,
         },
     );
-    let parsed: serde_json::Value = serde_json::from_str(&render_totals(&rows).expect("projects"))
-        .expect("a hostile name still renders JSON");
+    let parsed: serde_json::Value =
+        serde_json::from_str(&render_totals(&rows, &[]).expect("projects"))
+            .expect("a hostile name still renders JSON");
     assert_eq!(parsed["rows"][0]["bucket"], hostile);
     assert_eq!(parsed["rows"][0]["lane"], hostile);
     assert_eq!(parsed["rows"][0]["provider"], hostile);
@@ -5809,6 +5887,502 @@ fn a_signed_record_and_a_signed_checkpoint_verify_against_the_served_audit_keys(
     checkpoint
         .verify_seal(&crate::root::durability::KeySetVerifier::new(keys))
         .expect("the signed checkpoint verifies against the served key");
+}
+
+// ---------------------------------------------------------------------------------------------
+// H3 (ARCHITECT 2026-10-07 ruling (d)): THE DURABLE VERBS OVER A JOURNAL THE STORE KEEPS
+// ---------------------------------------------------------------------------------------------
+
+/// A book with no data directory whose journal is kept by `slots`, as the production boot builds
+/// one over the configured store.
+#[cfg(test)]
+fn a_book_over_the_store(
+    slots: &crate::root::store_double::RecordSlots,
+) -> Arc<Mutex<crate::root::durability::Durability>> {
+    let lane = crate::root::durability::JournalLane::start(slots.calls(), "test-store")
+        .expect("the lane starts");
+    Arc::new(Mutex::new(
+        crate::root::durability::build_on_store(
+            &crate::root::durability::DurabilityConfig { data_dir: None },
+            0,
+            lane,
+            Box::new(busbar_kernel_ledger::legacy::RecordingRows::new()),
+            Box::new(|| None),
+            None,
+        )
+        .expect("the store reads back"),
+    ))
+}
+
+/// The status and body of a packed admin answer.
+#[cfg(test)]
+fn status_and_body(packed: &[u8]) -> (u16, String) {
+    let answer = AdminAnswer::unpack(packed).expect("a packed answer");
+    (
+        answer.status,
+        String::from_utf8_lossy(&answer.body).into_owned(),
+    )
+}
+
+/// **A SIGNED BACK-DATED CORRECTION SURVIVES A RESTART ON A NODE WITH NO DATA DIRECTORY**
+/// (ARCHITECT 2026-10-07 H3 ruling (a), (b), (d)): `amend_rate_history` answers 200 only once the
+/// store acknowledged its record, and a fresh book over the same store reads the amendment back,
+/// figures and all.
+///
+/// RED before the fix: the journal shipped to the store adapter's shim, which acknowledged and kept
+/// a count — the verb answered 200 and the restarted book held no amendment.
+#[test]
+fn a_correction_on_a_node_with_no_data_dir_is_kept_by_the_store_and_survives_a_restart() {
+    let slots = crate::root::store_double::RecordSlots::new();
+    {
+        let book = a_book_over_the_store(&slots);
+        let answered = amend_rate_history_effect(
+            &a_seeded_history(),
+            Some(&a_journal_over(&book)),
+            &a_priced_correction(5, serde_json::json!(1.5)),
+            6,
+            a_sealed_operator(),
+            &an_attribution(),
+        )
+        .expect("the correction applies");
+        let (status, body) = status_and_body(&answered);
+        assert_eq!(status, 200, "{body}");
+    }
+    let restarted = a_book_over_the_store(&slots);
+    let records = replayed_amendments(&restarted.lock().unwrap());
+    assert_eq!(
+        records.len(),
+        1,
+        "the store kept the amendment and the restart read it back"
+    );
+    assert_eq!(records[0].sealed_fee, 5);
+}
+
+/// **A STORE THAT REFUSES THE RECORD REFUSES THE VERB** (ARCHITECT 2026-10-07 H3 ruling (d)):
+/// `amend_rate_history` answers 503 with the store's reason, never 200 over a record nothing kept.
+///
+/// RED before the fix: the verb answered 200.
+#[test]
+fn a_correction_the_store_refuses_answers_503_with_the_reason() {
+    let slots = crate::root::store_double::RecordSlots::new();
+    slots.refuse(true);
+    let book = a_book_over_the_store(&slots);
+    let answered = amend_rate_history_effect(
+        &a_seeded_history(),
+        Some(&a_journal_over(&book)),
+        &a_priced_correction(5, serde_json::json!(1.5)),
+        6,
+        a_sealed_operator(),
+        &an_attribution(),
+    )
+    .expect("an answer, not an error");
+    let (status, body) = status_and_body(&answered);
+    assert_eq!(status, 503, "{body}");
+    assert!(
+        body.contains("the test store refuses writes"),
+        "the store's reason is stated: {body}"
+    );
+    // A second correction while the store still refuses records nothing at all.
+    let before = book.lock().unwrap().journal.next_seq();
+    let again = amend_rate_history_effect(
+        &a_seeded_history(),
+        Some(&a_journal_over(&book)),
+        &a_priced_correction(6, serde_json::json!(2)),
+        7,
+        a_sealed_operator(),
+        &an_attribution(),
+    )
+    .expect("an answer");
+    assert_eq!(status_and_body(&again).0, 503);
+    assert_eq!(
+        book.lock().unwrap().journal.next_seq(),
+        before,
+        "nothing is recorded while the store refuses"
+    );
+}
+
+/// **`commit_upgrade` OVER A STORE THAT REFUSES ANSWERS 503** with the reason ("a commit nothing
+/// recorded did not happen"), and 200 over a store that takes it (ARCHITECT 2026-10-07 H3 ruling
+/// (d)).
+///
+/// RED before the fix: 200 over the refusing store.
+#[test]
+fn commit_upgrade_answers_only_once_the_store_kept_its_record() {
+    let body = serde_json::to_vec(&serde_json::json!({ "version": bound::RUNNING_RELEASE }))
+        .expect("json");
+
+    let refusing = crate::root::store_double::RecordSlots::new();
+    refusing.refuse(true);
+    let book = a_book_over_the_store(&refusing);
+    let answer =
+        bound::commit_upgrade_effect(&body, 1_700_000_000, "admin", Some(&a_journal_over(&book)))
+            .expect("an answer");
+    assert_eq!(
+        answer.status,
+        503,
+        "{}",
+        String::from_utf8_lossy(&answer.body)
+    );
+    assert!(String::from_utf8_lossy(&answer.body).contains("the test store refuses writes"));
+
+    let taking = crate::root::store_double::RecordSlots::new();
+    let book = a_book_over_the_store(&taking);
+    let answer =
+        bound::commit_upgrade_effect(&body, 1_700_000_000, "admin", Some(&a_journal_over(&book)))
+            .expect("an answer");
+    assert_eq!(
+        answer.status,
+        200,
+        "{}",
+        String::from_utf8_lossy(&answer.body)
+    );
+    assert!(taking.rows_under(crate::root::durability::JOURNAL_SCHEMA) >= 1);
+}
+
+// ---------------------------------------------------------------------------------------------
+// H6 (audit root-R1 #6; ARCHITECT 2026-10-07 H6 retention ruling): THE NODE'S TOTALS READ PRICES
+// THE BOOK'S COUNTED LINES AT READ TIME (BUSBAR-1.6.0.md §7)
+// ---------------------------------------------------------------------------------------------
+
+/// How long a test waits for the write-behind lane to hand the store what it holds.
+#[cfg(feature = "root-admin")]
+const H6_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// A dated history of the test's own, opened by a card pricing `A_LANE` input at 2 micro-units a
+/// unit and no flat fee. Its own rather than the root's, so no other test's applies reach it.
+#[cfg(feature = "root-admin")]
+fn h6_history() -> Arc<crate::root::kernel::RootHistory> {
+    let history = Arc::new(crate::root::kernel::RootHistory::default());
+    history.apply(a_card_at(2.0, 0), 1_000);
+    history
+}
+
+/// A node book with no data directory whose chain `slots` keeps, as the production boot builds one
+/// over the configured store, pricing against `history`.
+#[cfg(feature = "root-admin")]
+fn h6_book(
+    slots: &crate::root::store_double::RecordSlots,
+    history: &Arc<crate::root::kernel::RootHistory>,
+) -> Arc<Mutex<crate::root::durability::Durability>> {
+    let lane = crate::root::durability::JournalLane::start(slots.calls(), "test-store")
+        .expect("the lane starts");
+    let source = Arc::clone(history);
+    Arc::new(Mutex::new(
+        crate::root::durability::build_on_store(
+            &crate::root::durability::DurabilityConfig { data_dir: None },
+            0,
+            lane,
+            Box::new(busbar_kernel_ledger::legacy::RecordingRows::new()),
+            Box::new(move || source.pin()),
+            None,
+        )
+        .expect("the store reads back"),
+    ))
+}
+
+/// The balance a bucket's units settle onto.
+#[cfg(feature = "root-admin")]
+fn h6_key(bucket: &str) -> busbar_kernel_ledger::totals::TotalsKey {
+    busbar_kernel_ledger::totals::TotalsKey::new(
+        busbar_kernel_ledger::totals::BucketId::new(bucket),
+        busbar_kernel_ledger::totals::CapDimension::NanoUnits,
+        busbar_kernel_ledger::totals::BucketScope::All,
+    )
+}
+
+/// Settle one unit the way the late arm does: `input` units on `lane`, arrived at `A_LINE_MS` in
+/// the window `A_DAY`, posted at `settled` nano-units — the figure the card in force priced it at —
+/// and journalled WITH its counts. `mono` names the unit.
+#[cfg(feature = "root-admin")]
+fn h6_settle_counted(
+    book: &Arc<Mutex<crate::root::durability::Durability>>,
+    bucket: &str,
+    lane: &str,
+    input: u64,
+    settled: u64,
+    mono: u64,
+) {
+    use crate::root::durability::{PostingStamp, Settling, UnitCounts};
+    use busbar_contract::caps::{DurableWrite, HoldAccrual, Posted, PrincipalId, WriteMoney};
+    let ledger = busbar_kernel::test_support::tokens::grant::<WriteMoney>();
+    let token = busbar_kernel::test_support::tokens::grant::<DurableWrite>();
+    let posted = Posted::settle_late(
+        HoldAccrual::after_terminal(PrincipalId::new(bucket), settled, &ledger),
+        &ledger,
+    );
+    let counts = UnitCounts {
+        lane: lane.to_string(),
+        fee_count: 0,
+        classes: std::collections::BTreeMap::from([(
+            busbar_kernel_ledger::cost::CLASS_INPUT.to_string(),
+            input,
+        )]),
+    };
+    let key = h6_key(bucket);
+    book.lock()
+        .expect("unpoisoned")
+        .settle_counted(
+            &Settling {
+                key: &key,
+                window: A_DAY,
+                durability: &token,
+                step: busbar_contract::caps::StepName::Meter,
+                stamp: PostingStamp {
+                    rate_card_version: 0,
+                    wall: A_DAY,
+                    mono,
+                },
+            },
+            posted,
+            &counts,
+            A_LINE_MS,
+        )
+        .expect("the journal takes it");
+}
+
+/// Settle one unit with a FIGURE and no counts: a settlement whose writer knew no counts.
+#[cfg(feature = "root-admin")]
+fn h6_settle_uncounted(
+    book: &Arc<Mutex<crate::root::durability::Durability>>,
+    bucket: &str,
+    settled: u64,
+    mono: u64,
+) {
+    use crate::root::durability::{PostingStamp, Settling};
+    use busbar_contract::caps::{DurableWrite, HoldAccrual, Posted, PrincipalId, WriteMoney};
+    let ledger = busbar_kernel::test_support::tokens::grant::<WriteMoney>();
+    let token = busbar_kernel::test_support::tokens::grant::<DurableWrite>();
+    let posted = Posted::settle_late(
+        HoldAccrual::after_terminal(PrincipalId::new(bucket), settled, &ledger),
+        &ledger,
+    );
+    let key = h6_key(bucket);
+    book.lock()
+        .expect("unpoisoned")
+        .settle_posted(
+            &Settling {
+                key: &key,
+                window: A_DAY,
+                durability: &token,
+                step: busbar_contract::caps::StepName::Meter,
+                stamp: PostingStamp {
+                    rate_card_version: 0,
+                    wall: A_DAY,
+                    mono,
+                },
+            },
+            posted,
+        )
+        .expect("the journal takes it");
+}
+
+/// A signed, back-dated correction covering the instant every fixture unit arrived at, pricing
+/// `A_LANE` input at `nanos_per_unit`, appended long after the units settled.
+#[cfg(feature = "root-admin")]
+fn h6_correct(history: &crate::root::kernel::RootHistory, nanos_per_unit: u64) {
+    history
+        .amend(
+            &crate::root::kernel::Correction {
+                effective_from: A_LINE_MS,
+                effective_until: Some(A_LINE_MS + 86_400_000),
+                appended_at: A_LINE_MS + 60_000,
+                author: busbar_kernel_ledger::cost::Author::Amend {
+                    operator_fingerprint: "op-1".to_string(),
+                    reason_hash: [9u8; 32],
+                },
+                cells: vec![(
+                    busbar_kernel_ledger::cost::LaneClass::new(
+                        A_LANE,
+                        busbar_kernel_ledger::cost::CLASS_INPUT,
+                    ),
+                    nanos_per_unit,
+                )],
+                fee: Some(0),
+            },
+            |_, _| Ok::<(), ()>(()),
+        )
+        .expect("the history has an opening entry to correct");
+}
+
+/// The totals document the node's OWN ledger view serves over `book`, as bytes, through the whole
+/// loop.
+#[cfg(feature = "root-admin")]
+fn h6_totals_bytes(book: &Arc<Mutex<crate::root::durability::Durability>>) -> Vec<u8> {
+    let legacy: Arc<dyn LegacyRowsRead> =
+        Arc::new(busbar_kernel_ledger::legacy::RecordingRows::new());
+    let mut units =
+        crate::root::kernel::ProductionUnits::admin_only(Arc::new(AnsweringDispatch), open_door());
+    units.admin = AdminBinding::new(Arc::new(AnsweringDispatch), open_door())
+        .with_ledger_view(Arc::new(NodeLedger::new(Arc::clone(book), legacy)));
+    let answer = AdminNode::new(crate::root::kernel::new_kernel(), units)
+        .answer(a_ledger_request("/api/v1/admin/ledger/totals"));
+    assert_eq!(
+        answer.status,
+        200,
+        "the totals view did not answer: {}",
+        String::from_utf8_lossy(&answer.body)
+    );
+    answer.body
+}
+
+/// The rows of that document, keyed by bucket.
+#[cfg(feature = "root-admin")]
+fn h6_rows(
+    book: &Arc<Mutex<crate::root::durability::Durability>>,
+) -> std::collections::BTreeMap<String, serde_json::Value> {
+    let doc: serde_json::Value =
+        serde_json::from_slice(&h6_totals_bytes(book)).expect("the totals response is JSON");
+    doc["rows"]
+        .as_array()
+        .expect("a rows array")
+        .iter()
+        .map(|row| {
+            (
+                row["bucket"].as_str().expect("a bucket").to_string(),
+                row.clone(),
+            )
+        })
+        .collect()
+}
+
+/// **A SIGNED BACK-DATED CORRECTION MOVES THE NODE'S OWN TOTALS ON THE NEXT READ, WITH NO
+/// RESTART** (BUSBAR-1.6.0.md §7; audit root-R1 #6).
+///
+/// One unit settles 1,000,000 input units with its counts at 2 micro-units a unit. A correction
+/// appended afterwards prices the interval it arrived in at 4: the next read answers 4,000,000,000
+/// nano-units, and the book's settled balance is untouched — the money moved and no posted figure
+/// did.
+///
+/// RED before the fix: `NodeLedger::booked_lines` answered nothing, so the read fell back to the
+/// book's balance and went on answering the 2,000,000,000 the unit settled at.
+#[cfg(feature = "root-admin")]
+#[test]
+fn h6_a_back_dated_correction_moves_the_node_totals_on_the_next_read_without_a_restart() {
+    let slots = crate::root::store_double::RecordSlots::new();
+    let history = h6_history();
+    let book = h6_book(&slots, &history);
+    h6_settle_counted(&book, "team-a", A_LANE, 1_000_000, 2_000_000_000, 1);
+
+    let before = h6_rows(&book);
+    assert_eq!(before.len(), 1, "one unit, one row: {before:?}");
+    assert_eq!(before["team-a"]["day"], A_DAY);
+    assert_eq!(before["team-a"]["priced_nanos"], "2000000000");
+
+    h6_correct(&history, 4_000);
+
+    let after = h6_rows(&book);
+    assert_eq!(
+        after["team-a"]["priced_nanos"], "4000000000",
+        "a back-dated correction must move the next read of the node's totals: {after:?}"
+    );
+    assert_eq!(after["team-a"]["priced_micros"], "4000000");
+    assert_eq!(
+        book.lock()
+            .expect("unpoisoned")
+            .settled_read(&h6_key("team-a"), A_DAY)
+            .expect("no refused row"),
+        2_000_000_000,
+        "the correction moved the book's settled balance; it must move only the read"
+    );
+}
+
+/// **THE SAME READ ANSWERS THE SAME BYTES BEFORE AND AFTER A RESTART OVER THE SAME CHAIN.**
+///
+/// The counted lines are appended as they are journalled and rebuilt from the chain at boot, so
+/// the read is one derivation either side of the restart. Here the chain is kept by the configured
+/// store (no data directory, H3), and the restart is a fresh book over the same store.
+///
+/// RED before the fix: before the restart the read answered the settled balance (2,000,000,000),
+/// after it the balance a replay re-derived at the corrected card (4,000,000,000) — the same
+/// endpoint, the same chain, two amounts.
+#[cfg(feature = "root-admin")]
+#[test]
+fn h6_the_node_totals_answer_the_same_bytes_before_and_after_a_restart() {
+    let slots = crate::root::store_double::RecordSlots::new();
+    let history = h6_history();
+    let book = h6_book(&slots, &history);
+    h6_settle_counted(&book, "team-a", A_LANE, 1_000_000, 2_000_000_000, 1);
+    h6_settle_counted(&book, "team-b", A_LANE, 250_000, 500_000_000, 2);
+    h6_correct(&history, 4_000);
+
+    let before = h6_totals_bytes(&book);
+    assert!(
+        book.lock()
+            .expect("unpoisoned")
+            .lane()
+            .expect("a book over the store has a lane")
+            .drain(H6_WAIT),
+        "the store took the chain"
+    );
+    drop(book);
+
+    let restarted = h6_book(&slots, &history);
+    let after = h6_totals_bytes(&restarted);
+    assert_eq!(
+        String::from_utf8_lossy(&before),
+        String::from_utf8_lossy(&after),
+        "the same chain must answer the same totals either side of a restart"
+    );
+    let rows = h6_rows(&restarted);
+    assert_eq!(rows["team-a"]["priced_nanos"], "4000000000");
+    assert_eq!(rows["team-b"]["priced_nanos"], "1000000000");
+}
+
+/// **A LINE ITS CARD CANNOT PRICE, OR A FIGURE NO COUNTS STAND BEHIND, SERVES THE BOOK'S BALANCE —
+/// NEVER A ZERO AND NEVER A TABLE WITH A ROW MISSING** (#42; `derived_totals_rows`).
+///
+/// A guard on the two ways the counted lines are not the whole of the money: a line on a lane the
+/// card names nothing for (a hole is a refusal, so the derivation refuses for the whole read), and
+/// a settlement whose writer posted a figure with no counts (nothing to price, so the lines do not
+/// cover the book). Either way the read answers the balance, every row in it. This passes before
+/// the fix as well, where every read was the balance; after it, it pins the fallback.
+#[cfg(feature = "root-admin")]
+#[test]
+fn h6_an_unpriceable_line_or_an_uncounted_figure_serves_the_balance_never_zero() {
+    // A line the card cannot price.
+    let slots = crate::root::store_double::RecordSlots::new();
+    let history = h6_history();
+    let book = h6_book(&slots, &history);
+    h6_settle_counted(&book, "team-a", A_LANE, 1_000_000, 2_000_000_000, 1);
+    h6_settle_counted(
+        &book,
+        "team-b",
+        "lane-the-card-does-not-name",
+        1_000_000,
+        3_000_000_000,
+        2,
+    );
+    h6_correct(&history, 4_000);
+    let rows = h6_rows(&book);
+    assert_eq!(rows.len(), 2, "every row is served: {rows:?}");
+    assert_eq!(
+        rows["team-b"]["priced_nanos"], "3000000000",
+        "an unpriceable line serves the balance, never zero"
+    );
+    assert_eq!(
+        rows["team-a"]["priced_nanos"], "2000000000",
+        "one hole refuses the derivation for the whole read: one vintage per response"
+    );
+
+    // A figure with no counts behind it.
+    let slots = crate::root::store_double::RecordSlots::new();
+    let history = h6_history();
+    let book = h6_book(&slots, &history);
+    h6_settle_counted(&book, "team-a", A_LANE, 1_000_000, 2_000_000_000, 1);
+    h6_settle_uncounted(&book, "team-c", 700_000_000, 2);
+    h6_correct(&history, 4_000);
+    let rows = h6_rows(&book);
+    assert_eq!(
+        rows.len(),
+        2,
+        "the uncounted figure's row is served: {rows:?}"
+    );
+    assert_eq!(rows["team-c"]["priced_nanos"], "700000000");
+    assert_eq!(
+        rows["team-a"]["priced_nanos"], "2000000000",
+        "a figure with no counts behind it means the lines are not the whole of the money: the \
+         whole read is the balance"
+    );
 }
 
 /// ROUTE IS FAIL-CLOSED ON AN ABSENT GRANT (audit root-R1 M7).

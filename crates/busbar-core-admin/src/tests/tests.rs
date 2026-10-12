@@ -1524,6 +1524,8 @@ async fn test_admin_v1_credential_cache_and_flush_endpoint() {
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let door = Arc::new(CachingDoor(std::sync::atomic::AtomicUsize::new(0)));
+    // The operator credential's provider, named once: the chain lists it and a flush addresses it.
+    let operator = "admin-tokens";
     let mut app = crate::new_test_app()
         .governance(gov)
         .admin_door("ext-idp", door.clone())
@@ -1533,7 +1535,7 @@ async fn test_admin_v1_credential_cache_and_flush_endpoint() {
         inner.admin_chain = vec![
             "test-scope-module".to_string(),
             "ext-idp".to_string(),
-            "admin-tokens".to_string(),
+            operator.to_string(),
         ];
         let mut table = std::collections::BTreeMap::new();
         table.insert(
@@ -1579,12 +1581,9 @@ async fn test_admin_v1_credential_cache_and_flush_endpoint() {
     assert_eq!(door.0.load(std::sync::atomic::Ordering::SeqCst), 1);
 
     // A provider that holds no plugin cache (the operator credential) flushes nothing.
-    let r = flush(
-        "admintok",
-        Some(serde_json::json!({"module": "admin-tokens"})),
-    )
-    .await
-    .unwrap();
+    let r = flush("admintok", Some(serde_json::json!({"module": operator})))
+        .await
+        .unwrap();
     let body: serde_json::Value = r.json().await.unwrap();
     assert_eq!(body["flushed"], 0);
     assert_eq!(door.0.load(std::sync::atomic::Ordering::SeqCst), 1);
@@ -10842,10 +10841,17 @@ fn test_get_config_settings_warns_when_overlay_is_unreadable() {
     let dir = std::env::temp_dir().join(format!(
         "busbar-get-settings-corrupt-{}-{}",
         std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
+        {
+            static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            format!(
+                "{}-{}-{}",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |d| d.as_nanos()),
+                line!(),
+                NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            )
+        }
     ));
     std::fs::create_dir_all(&dir).unwrap();
     let overlay = dir.join("overlay.json");

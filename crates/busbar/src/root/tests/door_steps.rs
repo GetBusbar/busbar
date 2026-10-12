@@ -373,9 +373,11 @@ fn provider(protocol: &str, style: Option<&str>) -> super::ProviderRoute {
     super::ProviderRoute {
         base_url: "http://127.0.0.1:9".to_string(),
         protocol: protocol.to_string(),
+        error_map: Default::default(),
         credential: busbar_contract::secret_ref::SecretRef::none(),
         style: style.map(str::to_string),
         params: super::StyleParams::default(),
+        metadata: busbar_kernel::config_validate::MetadataPosture::default(),
     }
 }
 
@@ -760,6 +762,25 @@ fn presented(answer: Option<&busbar_contract::auth_calls::Fields>) -> Option<Str
     }
 }
 
+/// The linked auth plugin that serves both mint styles (`oauth-client-credentials`, `jwt-bearer`),
+/// its mint connections declared and opened over `table`.
+fn linked_mint_plugin(table: &std::sync::Arc<TokenEndpoint>) -> super::OutboundAuths {
+    let dispatcher = std::sync::Arc::new(crate::root::loader::dispatch::Dispatcher::new(
+        crate::root::loader::dispatch::DispatchConfig::default(),
+    ));
+    crate::root::connector::install_io(&dispatcher);
+    // The row's canonical name is its key.
+    let name = "busbar-auth-oauth";
+    let linked: [busbar_kernel::preflight::LinkedAuth; 1] = [(name, name, busbar_auth_oauth::door)];
+    super::OutboundAuths::new(
+        dispatcher,
+        &linked,
+        None,
+        crate::root::loader::dispatch::ConnTable::Host(std::sync::Arc::clone(table)
+            as std::sync::Arc<dyn busbar_contract::conn::DeclaredConns>),
+    )
+}
+
 /// THE MEMBER UNDER `auth: oauth-client-credentials`, BOUND BY THE COMPOSITION (THE DESIGN §6 steps
 /// 2-3, §5, §6.5): the auth plugin serving the style is opened over the provider's own settings,
 /// so its `loopback-allowed` mint need is declared pinned to the provider's `token_url`; its tick schedule runs
@@ -782,6 +803,7 @@ async fn a_member_under_an_oauth_grant_presents_its_minted_then_refreshed_bearer
         super::ProviderRoute {
             base_url: "http://127.0.0.1:9".to_string(),
             protocol: "d".to_string(),
+            error_map: Default::default(),
             credential: busbar_contract::secret_ref::SecretRef::file(
                 key_file.display().to_string(),
             ),
@@ -789,31 +811,18 @@ async fn a_member_under_an_oauth_grant_presents_its_minted_then_refreshed_bearer
             params: super::StyleParams {
                 token_url: Some(TOKEN_URL.to_string()),
                 scope: Some("https://cognitiveservices.azure.com/.default".to_string()),
-                subject: None,
+                ..super::StyleParams::default()
             },
+            metadata: busbar_kernel::config_validate::MetadataPosture::default(),
         },
     )]
     .into();
     let table = std::sync::Arc::new(TokenEndpoint::default());
-    let dispatcher = std::sync::Arc::new(crate::root::loader::dispatch::Dispatcher::new(
-        crate::root::loader::dispatch::DispatchConfig::default(),
-    ));
-    crate::root::connector::install_io(&dispatcher);
-    // The row's canonical name is its key.
-    let name = "busbar-auth-oauth";
-    let linked: [busbar_kernel::preflight::LinkedAuth; 1] = [(name, name, busbar_auth_oauth::door)];
-    let auths = super::OutboundAuths::new(
-        dispatcher,
-        &linked,
-        None,
-        crate::root::loader::dispatch::ConnTable::Host(std::sync::Arc::clone(&table)
-            as std::sync::Arc<dyn busbar_contract::conn::DeclaredConns>),
-    );
     let secrets = busbar_kernel::config::secret::SecretResolver::builtins_only();
     let reach = super::DoorReach {
         providers: &providers,
         secrets: &secrets,
-        auths: std::sync::Arc::new(auths),
+        auths: std::sync::Arc::new(linked_mint_plugin(&table)),
         conns: std::sync::Arc::new(busbar_core_connector::Connector::new()),
         stream_ceiling_secs: 1,
         upgrades: Vec::new(),
@@ -876,6 +885,196 @@ async fn a_member_under_an_oauth_grant_presents_its_minted_then_refreshed_bearer
         opened[1].3,
         "grant_type=client_credentials&client_id=oracle-client-0001&client_secret=\
          oracle%3Asecret%3Awith%3Acolons&scope=https%3A%2F%2Fcognitiveservices.azure.com%2F.default"
+    );
+}
+
+/// A test-only 2048-bit PKCS#8 RSA private key (generated for the kernel's `jwt_bearer` tests and
+/// granting no real access), so the serving plugin can sign the assertion it mints with.
+const TEST_SA_KEY_PEM: &str = "-----BEGIN PRIVATE KEY-----\n\
+MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQCu2RTBghXyuvqd\n\
+v/4AIq1NcPzdRUCr0wyjEH35avOM9vSW+fuira0UtCQcyTHJZswoJqgwcdO2SRav\n\
+/QMZhnjB/sCzuvHrbILd/T0nK19Fdld/wKMQlQlqz94OpS5b0J/nEc7/IOTxszbq\n\
+4B2geG7lJc5wm3dMjKwr7IPbnWs5fMEVyZFaFsctrejOTURx8duff8eM2L+Lf5No\n\
+H2k0h+6blyDTq1Iu+9UM5/AfycgvdhPlcKCL1VZq9+YY5zW5GuXj997TnEWEeiam\n\
+ZfaHklhdSX3zzSUkShqayzaxX6YRdlUvE6yEIkjq/AVRVrMZDynyD7J0nsyjykhx\n\
+WVh79c5fAgMBAAECggEALHaz2onUPwfhl6AtXadz3s+u3i4wRgHDouwcvQK/sMdU\n\
+Z9hmb3YvH6a30EIx0P+9RzCdcMRhjGeFx3dWBHW3282G/624u5+6n+04Ue+rqKRx\n\
+l+FLFnpwDKOT2rGS2nJxV3el5iddUUG743rezeISgV9d4jEG44aaegkJdx3PGKz/\n\
+E76BIyi9H4oUgiqIyPW2trPEeg5n/1oVMHLGDBhotuM7VPUCegh/J3e1jSxcYvi8\n\
+0CutgOLynZAS1xSatbbp8nWrUSRHOUYrgE9OYbS7TSgGz1PjzdcmLEsHEGcor0wm\n\
+cT4oePDjZmuxICFBSg96Ffb82t6UGXC7xLQbglsfQQKBgQDlBOBtVQafWVJiEj83\n\
+fG2YfKTMx1neGO/6ftBMn7XUt4D/AbL0Kx0/Z5lfxm2cixlxcGWT6e96CmZmEsyA\n\
+RFSyuG/bvbTF1c0vaKXcjghtPH5TaB6MjgP3VmjOHR5V5o3JMQX0Xayxf/kBP//f\n\
+wfolsPUM5hcB7pMjVDQz0OZacQKBgQDDcm0i42UA1wrh4XUTNAbVHfacTm/zBhVB\n\
+zvtEC3WGkBCRdU9JSwFAJitPmxrVS3+w2fxO47IiSngeQEyC2neew/H5FrWSNs+L\n\
+xV9Jystubq6oTCulEGBP4gb99FkDY2RToNYOjVrEQDsmiijv3CeZyHnes0/8uMQq\n\
+5ekEveH9zwKBgBZvR9zt+1wYz+0zhGXXFpVdgHde//q1zqxnR9h5vMI9x7EzZWht\n\
+4MuZRnkPYyV2quNl801uGTuHUUimhsn556IqVyrbhp3qt9LxGW5lq4Wn62gYRwXV\n\
+06WjHVkzmQkpMLKIzuCFXKl2s9nffx1YTzzp/Ndqos5ZpKhNU1/QEwDBAoGAfVvA\n\
+WldFqmNDbJwCTp3ZIAqG6bx5m4O0ULBkg0FiUTvIFLQMdbMxCycwMnAGpvY04Yb/\n\
+iM4MrGfdYXHWYTuk6+U8J4sETNLxDfI7awYysxM03Wd1uvqk+7e6ylpWWZD/gZAw\n\
+m8bYh/W2usJ0/VvU3pMyb7/NNwh/chBjBBKSiAsCgYEAsTCMDD6CYdncyFWMtWpK\n\
+vaTrTko3xPDigybk5520jK5UkEaZr0meRn1CFYFAnfUs0sKB4EbWkcmkZOayPPtQ\n\
+su3l06s8o+WrP8Bp2GikIg+jVz9sdz9Vph0Vr0VOPwdBKbWUT4As0r6Muceq+sH6\n\
+oy3z0wnL4GXkIelYmU1zCk0=\n\
+-----END PRIVATE KEY-----\n";
+
+/// A member under `auth: jwt-bearer` whose service account names `token_uri`, sealed by the
+/// composition over `table` with `metadata` as the provider's posture: its routes, or why the load
+/// is refused.
+fn jwt_bearer_routes(
+    token_uri: &str,
+    metadata: busbar_kernel::config_validate::MetadataPosture,
+    table: &std::sync::Arc<TokenEndpoint>,
+) -> Result<std::collections::BTreeMap<String, busbar_kernel::plane_driver::MemberRoute>, String> {
+    use busbar_contract::abi::host::conn::connector::DIRECTION_OUTBOUND;
+    let sa = serde_json::json!({
+        "client_email": "svc@proj.iam.gserviceaccount.com",
+        "private_key": TEST_SA_KEY_PEM,
+        "token_uri": token_uri,
+    });
+    let key_file = std::env::temp_dir().join(format!(
+        "busbar-door-steps-jwt-{}-{}",
+        std::process::id(),
+        token_uri.len()
+    ));
+    std::fs::write(&key_file, sa.to_string()).expect("key");
+    let providers: std::collections::BTreeMap<String, super::ProviderRoute> = [(
+        "p".to_string(),
+        super::ProviderRoute {
+            base_url: "http://127.0.0.1:9".to_string(),
+            protocol: "d".to_string(),
+            error_map: Default::default(),
+            credential: busbar_contract::secret_ref::SecretRef::file(
+                key_file.display().to_string(),
+            ),
+            style: Some("jwt-bearer".to_string()),
+            params: super::StyleParams::default(),
+            metadata,
+        },
+    )]
+    .into();
+    let secrets = busbar_kernel::config::secret::SecretResolver::builtins_only();
+    let reach = super::DoorReach {
+        providers: &providers,
+        secrets: &secrets,
+        auths: std::sync::Arc::new(linked_mint_plugin(table)),
+        conns: std::sync::Arc::new(busbar_core_connector::Connector::new()),
+        stream_ceiling_secs: 1,
+        upgrades: Vec::new(),
+    };
+    let section: serde_yaml::Value =
+        serde_yaml::from_str("models: {m: {provider: p}}").expect("yaml");
+    let facts = crate::root::loader::dispatch::kinds::plane::ServedFacts {
+        need_auths: vec![(DIRECTION_OUTBOUND, "jwt-bearer")],
+        dialects: vec!["d"],
+        ..Default::default()
+    };
+    let routes = super::member_routes(&section, &DoorPools::of(&section), &facts, &reach);
+    let _ = std::fs::remove_file(&key_file);
+    routes
+}
+
+/// RED (ARCHITECT 2026-10-04 parity ruling, THE DESIGN §5 `loopback-allowed`: "auth mint endpoints
+/// (`token_url`, `token_uri`)"; the oracle cell `egress.auth|jwt-bearer|mint-refresh`): THE MEMBER
+/// UNDER `auth: jwt-bearer` MINTS AT ITS SERVICE ACCOUNT'S `token_uri`. The serving plugin's
+/// `settings.token_uri` need is declared pinned to the endpoint the service account names (the
+/// seal fills it from the resolved credential), the first request carries the bearer minted there,
+/// and the mint is 1.5.5's RFC 7523 POST (`egress_auth/jwt_bearer.rs:172-178`, v1.5.5).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_member_under_jwt_bearer_mints_at_its_service_accounts_token_uri() {
+    use busbar_contract::auth_calls::FieldsRequest;
+    const TOKEN_URI: &str = "https://oauth2.example.com/token";
+    let table = std::sync::Arc::new(TokenEndpoint::default());
+    let routes = jwt_bearer_routes(
+        TOKEN_URI,
+        busbar_kernel::config_validate::MetadataPosture::default(),
+        &table,
+    )
+    .expect("the member resolves");
+    let binding = routes["m"].auth.clone().expect("its credential is bound");
+    assert!(
+        table
+            .declared
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|(_, _, target)| target.as_deref() == Some(TOKEN_URI)),
+        "the plugin's mint need, pinned to the service account's token_uri: {:?}",
+        table.declared.lock().unwrap()
+    );
+    // A bearer minted at the token_uri is presented once the first mint lands (asked for on
+    // the spot, so the cell reads the same whether a pre-mint call waits or answers no header).
+    let minted = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            let now = binding
+                .auth
+                .fields_now(binding.handle, &FieldsRequest::default());
+            if presented(now.as_ref()).is_some_and(|a| a.starts_with("Bearer oracle-minted-")) {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    })
+    .await;
+    assert!(
+        minted.is_ok(),
+        "a bearer minted at the token_uri is presented"
+    );
+    let opened = table.opened.lock().unwrap();
+    let (_, target, words, body) = &opened[0];
+    assert_eq!(target, TOKEN_URI);
+    assert_eq!(words, b"/token");
+    assert!(
+        body.starts_with(
+            "grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Ajwt-bearer&assertion="
+        ),
+        "1.5.5's RFC 7523 form: {body}"
+    );
+}
+
+/// RED (1.5.5 `main.rs:2960-2966` over `egress_auth/jwt_bearer.rs::validate_token_uri`, v1.5.5): A
+/// SERVICE ACCOUNT'S `token_uri` IS JUDGED AT THE SEAL, in 1.5.5's words — plaintext to a public
+/// host and a cloud-metadata host are refused, naming the provider; the provider's metadata posture
+/// carves the metadata host back out, as 1.5.5's did.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_service_account_token_uri_is_judged_at_the_seal_in_1_5_5s_words() {
+    use busbar_kernel::config_validate::MetadataPosture;
+    let table = std::sync::Arc::new(TokenEndpoint::default());
+    let Err(plaintext) = jwt_bearer_routes(
+        "http://oauth2.example.com/token",
+        MetadataPosture::default(),
+        &table,
+    ) else {
+        panic!("plaintext to a public host is refused");
+    };
+    assert_eq!(
+        plaintext,
+        "provider 'p' (jwt-bearer auth): service-account token_uri must use https for a public \
+         host (got 'http://oauth2.example.com/token'); it receives the signed JWT assertion, so \
+         plaintext http is permitted only for a private/loopback endpoint"
+    );
+    let Err(metadata) = jwt_bearer_routes(
+        "https://169.254.169.254/token",
+        MetadataPosture::default(),
+        &table,
+    ) else {
+        panic!("a metadata host is refused");
+    };
+    assert!(
+        metadata.starts_with(
+            "provider 'p' (jwt-bearer auth): service-account token_uri \
+             'https://169.254.169.254/token' targets a blocked cloud-metadata host"
+        ),
+        "{metadata}"
+    );
+    let allowed = MetadataPosture {
+        allow_overrides: vec!["169.254.169.254".to_string()],
+        ..MetadataPosture::default()
+    };
+    assert!(
+        jwt_bearer_routes("https://169.254.169.254/token", allowed, &table).is_ok(),
+        "the provider's allow-override carves the host back out"
     );
 }
 
@@ -1269,6 +1468,10 @@ pub(crate) mod tool_door {
         pub(crate) plane: crate::root::boot::DoorPlane,
         /// How far the kernel's monotonic clock (`clock.now`) reads ahead of the runtime's.
         pub(crate) clock: Arc<std::sync::atomic::AtomicU64>,
+        /// How far the kernel's wall clock reads ahead of the system's, in milliseconds.
+        pub(crate) wall: Arc<std::sync::atomic::AtomicU64>,
+        /// What a config apply refreshes the served door onto (`DoorApply::apply`).
+        pub(crate) live: Arc<crate::root::serve::DoorApply>,
     }
 
     impl Rig {
@@ -1298,10 +1501,38 @@ pub(crate) mod tool_door {
                 busbar_kernel::test_support::TestApp,
             ) -> busbar_kernel::test_support::TestApp,
         ) -> Self {
+            Self::try_with(
+                instance,
+                port,
+                allowed_pools,
+                block,
+                tools,
+                footing,
+                configure,
+            )
+            .unwrap_or_else(|e| panic!("the door plane composes: {e}"))
+        }
+
+        /// [`Self::with`], the composition's refusal answered rather than panicked on: what the
+        /// root's boot refuses with (`main.rs` dies on it), the operator's text.
+        pub(crate) fn try_with(
+            instance: &'static str,
+            port: u16,
+            allowed_pools: Option<Vec<String>>,
+            block: Option<serde_yaml::Value>,
+            tools: Option<serde_yaml::Value>,
+            footing: Footing<'_>,
+            configure: &dyn Fn(
+                busbar_kernel::test_support::TestApp,
+            ) -> busbar_kernel::test_support::TestApp,
+        ) -> Result<Self, String> {
             // THE CONNECTOR, over every linked transport door (the default distribution links the
-            // http framer's door), its dials judged by a destination guard that admits loopback.
+            // http framer's door), its dials judged by a destination guard that admits loopback. The
+            // same guard is the kernel's `dest.judge` (as `root::serve::kernel_services` composes
+            // it), and the deployment blocks one extra host ([`BLOCKED_HOST`]).
             let judge = crate::root::connector::guard_for(&busbar_kernel::config::Destinations {
                 block_private_addresses: footing.guarded,
+                blocked: vec![BLOCKED_HOST.to_string()],
                 ..Default::default()
             })
             .expect("the guard");
@@ -1344,10 +1575,19 @@ pub(crate) mod tool_door {
                 }
             };
             let clock = Arc::new(std::sync::atomic::AtomicU64::new(0));
-            let (late, store) = records_composed(footing.ledger, Arc::clone(&gov), &clock);
+            let wall = Arc::new(std::sync::atomic::AtomicU64::new(0));
+            let (late, store) = records_composed(
+                footing.ledger,
+                Arc::clone(&gov),
+                (&clock, &wall),
+                Arc::clone(&judge) as Arc<dyn busbar_kernel::host_services::DestJudge>,
+            );
             let dispatcher = Arc::new(Dispatcher::with_services(
                 DispatchConfig::default(),
-                Arc::clone(&late) as Arc<dyn busbar_contract::services::HostServices>,
+                Arc::new(Clocked {
+                    inner: Arc::clone(&late) as Arc<dyn busbar_contract::services::HostServices>,
+                    wall: Arc::clone(&wall),
+                }),
             ));
             crate::root::connector::install_io(&dispatcher);
             // Its connection reads through a ticket (the door's `exchange`) wake on the dispatcher.
@@ -1467,8 +1707,7 @@ pub(crate) mod tool_door {
                 &plane_money,
                 Some(&egress),
                 Some(&stage),
-            )
-            .expect("the door plane composes");
+            )?;
             let _ = caller;
             let composed = &mut served.planes[0];
             assert!(
@@ -1476,6 +1715,7 @@ pub(crate) mod tool_door {
                 "its egress is sealed"
             );
             let money_steps = Arc::clone(&composed.money);
+            let live = Arc::clone(&composed.live);
             let plane_key = composed.facts.plane.clone();
             served.post = Some(Arc::clone(&post));
             let app = configure(
@@ -1508,7 +1748,7 @@ pub(crate) mod tool_door {
                 0,
                 false,
             );
-            Rig {
+            Ok(Rig {
                 router,
                 admin,
                 gov,
@@ -1524,7 +1764,9 @@ pub(crate) mod tool_door {
                 door_table,
                 plane,
                 clock,
-            }
+                wall,
+                live,
+            })
         }
 
         /// The key's admitted requests on the governance ledger.
@@ -1592,25 +1834,54 @@ pub(crate) mod tool_door {
         )
     }
 
+    /// [`rig_tools`], the composition's refusal answered: what the boot would refuse with.
+    pub(crate) fn try_rig_tools(
+        instance: &'static str,
+        port: u16,
+        tools: serde_yaml::Value,
+    ) -> Result<Rig, String> {
+        Rig::try_with(
+            instance,
+            port,
+            None,
+            None,
+            Some(tools),
+            Footing::own(),
+            &|app| app,
+        )
+    }
+
     /// The kernel's host services composed whole for a door plane that writes records: a record store
     /// (an in-memory store: its typed record rows and its plane-record slots, where a chained kind's
-    /// journal persists), the runtime's blocking pool the store calls run on, installed as the
-    /// process's late services.
+    /// journal persists), the runtime's blocking pool the store calls run on, and `dest`, the
+    /// deployment's one destination judge, installed as the process's late services.
     fn records_composed(
         ledger: Ledger,
         signer: Arc<GovState>,
-        clock: &Arc<std::sync::atomic::AtomicU64>,
+        (clock, wall): (
+            &Arc<std::sync::atomic::AtomicU64>,
+            &Arc<std::sync::atomic::AtomicU64>,
+        ),
+        dest: Arc<dyn busbar_kernel::host_services::DestJudge>,
     ) -> (
         Arc<crate::root::serve::LateServices>,
         Arc<busbar_kernel::governance::MemoryStore>,
     ) {
         let store = Arc::new(busbar_kernel::governance::MemoryStore::new());
         let (origin, ahead) = (std::time::Instant::now(), Arc::clone(clock));
+        let wall_ahead = Arc::clone(wall);
         let kernel = busbar_kernel::host_services::KernelServices::new()
+            .with_dest_judge(dest)
             .with_mono_clock(Arc::new(move || {
                 u64::try_from(origin.elapsed().as_nanos())
                     .unwrap_or(u64::MAX)
                     .saturating_add(ahead.load(std::sync::atomic::Ordering::SeqCst))
+            }))
+            .with_wall_clock(Arc::new(move || {
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
+                    .saturating_add(wall_ahead.load(std::sync::atomic::Ordering::SeqCst))
             }))
             .with_signer(signer)
             .with_pool(Arc::new(busbar_kernel::host_services::BlockingPool::new(
@@ -1622,12 +1893,270 @@ pub(crate) mod tool_door {
                 kernel.with_records(Arc::new(Rows::default()), Arc::clone(&store) as _)
             }
             Ledger::Store(claims) => kernel.with_records(Arc::new(Rows::default()), claims),
+            Ledger::Rows(rows, max_live) => kernel
+                .with_work_bounds(busbar_kernel::host_work::WorkBounds {
+                    max_live,
+                    ..Default::default()
+                })
+                .with_records(rows, Arc::clone(&store) as _),
             Ledger::Unbound => kernel,
         });
         let late = crate::root::serve::LateServices::new();
         late.install_kernel(Arc::clone(&kernel), kernel)
             .expect("installed once");
         (late, store)
+    }
+
+    /// The host services as the door reads them, the wall clock `clock.now` answers read `wall`
+    /// milliseconds ahead, as the kernel's work book reads it: every other service is `inner`'s.
+    struct Clocked {
+        inner: Arc<dyn busbar_contract::services::HostServices>,
+        wall: Arc<std::sync::atomic::AtomicU64>,
+    }
+
+    impl busbar_contract::services::HostServices for Clocked {
+        fn now(&self) -> busbar_contract::services::Reading {
+            let mut reading = self.inner.now();
+            let ahead = self.wall.load(std::sync::atomic::Ordering::SeqCst);
+            reading.wall_ns = reading
+                .wall_ns
+                .saturating_add(ahead.saturating_mul(1_000_000));
+            reading
+        }
+        fn dest_judge(
+            &self,
+            dest: &str,
+            class: u32,
+            flags: u32,
+            later: Option<busbar_contract::services::Later>,
+        ) -> busbar_contract::services::Ran {
+            self.inner.dest_judge(dest, class, flags, later)
+        }
+        fn records_get(
+            &self,
+            caller: &busbar_contract::services::Caller,
+            kind: &str,
+            key: &[u8],
+            later: busbar_contract::services::Later,
+        ) -> busbar_contract::services::Ran {
+            self.inner.records_get(caller, kind, key, later)
+        }
+        fn records_list(
+            &self,
+            caller: &busbar_contract::services::Caller,
+            list: busbar_contract::services::RecordsList,
+            later: busbar_contract::services::Later,
+        ) -> busbar_contract::services::Ran {
+            self.inner.records_list(caller, list, later)
+        }
+        fn records_claim(
+            &self,
+            caller: &busbar_contract::services::Caller,
+            kind: &str,
+            key: &[u8],
+            ttl_ms: u64,
+            later: busbar_contract::services::Later,
+        ) -> busbar_contract::services::Ran {
+            self.inner.records_claim(caller, kind, key, ttl_ms, later)
+        }
+        fn sign(
+            &self,
+            caller: &busbar_contract::services::Caller,
+            data: &[u8],
+        ) -> busbar_contract::services::Stored {
+            self.inner.sign(caller, data)
+        }
+        fn trust_sight(
+            &self,
+            caller: &busbar_contract::services::Caller,
+            counterparty: &str,
+            hash: &str,
+            later: busbar_contract::services::Later,
+        ) -> busbar_contract::services::Ran {
+            self.inner.trust_sight(caller, counterparty, hash, later)
+        }
+        fn trust_unreached(
+            &self,
+            caller: &busbar_contract::services::Caller,
+            counterparty: &str,
+        ) -> busbar_contract::services::Stored {
+            self.inner.trust_unreached(caller, counterparty)
+        }
+        fn trust_sight_item(
+            &self,
+            caller: &busbar_contract::services::Caller,
+            counterparty: &str,
+            item: &str,
+            digest: &str,
+        ) -> busbar_contract::services::Stored {
+            self.inner
+                .trust_sight_item(caller, counterparty, item, digest)
+        }
+        fn trust_decide(
+            &self,
+            caller: &busbar_contract::services::Caller,
+            key: busbar_contract::services::TrustKeyRef<'_>,
+            expected: Option<&str>,
+            approve: bool,
+        ) -> busbar_contract::services::Stored {
+            self.inner.trust_decide(caller, key, expected, approve)
+        }
+        fn trust_state(
+            &self,
+            caller: &busbar_contract::services::Caller,
+            counterparty: &str,
+        ) -> busbar_contract::services::Stored {
+            self.inner.trust_state(caller, counterparty)
+        }
+        fn trust_serves(
+            &self,
+            caller: &busbar_contract::services::Caller,
+            counterparty: &str,
+            item: Option<&str>,
+            digest: Option<&str>,
+        ) -> busbar_contract::services::Stored {
+            self.inner.trust_serves(caller, counterparty, item, digest)
+        }
+        fn trust_due(
+            &self,
+            caller: &busbar_contract::services::Caller,
+        ) -> busbar_contract::services::Stored {
+            self.inner.trust_due(caller)
+        }
+        fn trust_verify(
+            &self,
+            caller: &busbar_contract::services::Caller,
+            counterparty: &str,
+            payload: &[u8],
+            signatures: &[u8],
+        ) -> busbar_contract::services::Stored {
+            self.inner
+                .trust_verify(caller, counterparty, payload, signatures)
+        }
+        fn entitlement_check(
+            &self,
+            caller: &busbar_contract::services::Caller,
+            unit: Option<u64>,
+            target: &str,
+        ) -> busbar_contract::services::Stored {
+            self.inner.entitlement_check(caller, unit, target)
+        }
+        fn session_emit(
+            &self,
+            caller: &busbar_contract::services::Caller,
+            session: u64,
+            bytes: &[u8],
+        ) -> busbar_contract::services::Stored {
+            self.inner.session_emit(caller, session, bytes)
+        }
+        fn random_fill(&self, len: u64) -> busbar_contract::services::Stored {
+            self.inner.random_fill(len)
+        }
+        fn records_secret(
+            &self,
+            kind: &str,
+            id: &str,
+            later: busbar_contract::services::Later,
+        ) -> busbar_contract::services::Ran {
+            self.inner.records_secret(kind, id, later)
+        }
+        fn unit_nest(
+            &self,
+            caller: &busbar_contract::services::Caller,
+            unit: Option<u64>,
+            ask: busbar_contract::services::NestAsk,
+            later: busbar_contract::services::Later,
+        ) -> busbar_contract::services::Ran {
+            self.inner.unit_nest(caller, unit, ask, later)
+        }
+        fn work_open(
+            &self,
+            caller: &busbar_contract::services::Caller,
+            unit: Option<u64>,
+            kind: &str,
+            record: &[u8],
+            later: busbar_contract::services::Later,
+        ) -> busbar_contract::services::Ran {
+            self.inner.work_open(caller, unit, kind, record, later)
+        }
+        fn work_find(
+            &self,
+            caller: &busbar_contract::services::Caller,
+            unit: Option<u64>,
+            reference: &[u8],
+            later: busbar_contract::services::Later,
+        ) -> busbar_contract::services::Ran {
+            self.inner.work_find(caller, unit, reference, later)
+        }
+        fn work_settle(
+            &self,
+            caller: &busbar_contract::services::Caller,
+            unit: Option<u64>,
+            handle: u64,
+            record: &[u8],
+            later: busbar_contract::services::Later,
+        ) -> busbar_contract::services::Ran {
+            self.inner.work_settle(caller, unit, handle, record, later)
+        }
+        fn work_resume(
+            &self,
+            caller: &busbar_contract::services::Caller,
+            unit: Option<u64>,
+            handle: u64,
+            later: busbar_contract::services::Later,
+        ) -> busbar_contract::services::Ran {
+            self.inner.work_resume(caller, unit, handle, later)
+        }
+        fn disk_append(
+            &self,
+            dest: &busbar_contract::services::DiskDest,
+            bytes: Vec<u8>,
+            later: busbar_contract::services::Later,
+        ) -> busbar_contract::services::Ran {
+            self.inner.disk_append(dest, bytes, later)
+        }
+        fn verify_lookup(
+            &self,
+            caller: &busbar_contract::services::Caller,
+            key: &[u8],
+            later: busbar_contract::services::Later,
+        ) -> busbar_contract::services::Ran {
+            self.inner.verify_lookup(caller, key, later)
+        }
+        fn verify_store(
+            &self,
+            caller: &busbar_contract::services::Caller,
+            key: &[u8],
+            entry: &[u8],
+            ttl_ms: u64,
+        ) -> busbar_contract::services::Stored {
+            self.inner.verify_store(caller, key, entry, ttl_ms)
+        }
+        fn content_scan(
+            &self,
+            caller: &busbar_contract::services::Caller,
+            unit: Option<u64>,
+            content: &[u8],
+            later: busbar_contract::services::Later,
+        ) -> busbar_contract::services::Ran {
+            self.inner.content_scan(caller, unit, content, later)
+        }
+        fn hook_call(
+            &self,
+            caller: &busbar_contract::services::Caller,
+            unit: Option<u64>,
+            ask: busbar_contract::services::HookAsk,
+            later: busbar_contract::services::Later,
+        ) -> busbar_contract::services::Ran {
+            self.inner.hook_call(caller, unit, ask, later)
+        }
+        fn snapshot_read(
+            &self,
+            caller: &busbar_contract::services::Caller,
+            scope: u32,
+        ) -> busbar_contract::services::Snapshot {
+            self.inner.snapshot_read(caller, scope)
+        }
     }
 
     /// What a rig stands on: the record store its host services bind, and whose governance book it
@@ -1652,25 +2181,36 @@ pub(crate) mod tool_door {
         }
     }
 
+    /// A public-looking host the rig's deployment refuses by its own rules alone
+    /// (`security.blocked_metadata_hosts`): no address rule refuses it, so only the deployment's
+    /// destination judge can.
+    pub(crate) const BLOCKED_HOST: &str = "blocked.example";
+
     /// The record store a rig's host services bind.
     pub(crate) enum Ledger {
         /// A fresh in-memory store (the rig's own).
         Memory,
         /// The given store: a handle on a durable journal (a restart or a fleet node).
         Store(Arc<dyn busbar_contract::records::RecordStore>),
+        /// The given typed rows, which the nodes of one deployment and the successive processes of
+        /// one node share (their work handles and their plugins' records), the host keeping at most
+        /// the given number of live work handles.
+        Rows(Arc<Rows>, usize),
         /// None: the host binds no store.
         Unbound,
     }
 
-    /// Typed record rows in memory: the store kind's record slots, for the records services.
+    /// Typed record rows in memory: the store kind's record slots, for the records services; and
+    /// how many writes of a settled work handle the store refuses next.
     #[derive(Default)]
-    struct Rows(
-        std::sync::Mutex<
+    pub(crate) struct Rows(
+        pub(crate)  std::sync::Mutex<
             BTreeMap<
                 (busbar_contract::ids::RecordSchemaId, Vec<u8>),
                 busbar_contract::kinds::RecordBytes,
             >,
         >,
+        pub(crate) std::sync::atomic::AtomicU32,
     );
 
     impl busbar_kernel::host_records::RecordRows for Rows {
@@ -1680,6 +2220,21 @@ pub(crate) mod tool_door {
             key: &[u8],
             value: &busbar_contract::kinds::RecordBytes,
         ) -> Result<(), busbar_contract::kinds::StoreError> {
+            let settles = schema == busbar_kernel::host_work::WORK_SCHEMA
+                && value.as_slice().get(1)
+                    == Some(&busbar_contract::abi::host::service::WORK_SETTLED);
+            let refused = settles
+                && self
+                    .1
+                    .fetch_update(
+                        std::sync::atomic::Ordering::SeqCst,
+                        std::sync::atomic::Ordering::SeqCst,
+                        |n| n.checked_sub(1),
+                    )
+                    .is_ok();
+            if refused {
+                return Err(busbar_contract::kinds::StoreError::Unavailable);
+            }
             self.0
                 .lock()
                 .expect("unpoisoned")
@@ -2453,6 +3008,98 @@ pub(crate) mod tool_door {
         assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
     }
 
+    /// A `tools/call` of the rig's one tool whose undeclared `fetch` argument carries `url`.
+    fn fetching(url: &str) -> String {
+        serde_json::json!({
+            "jsonrpc": "2.0", "id": 32, "method": "tools/call",
+            "params": {
+                "name": "fs_read_file",
+                "arguments": { "path": "notes.txt", "fetch": url },
+                "_meta": {
+                    "io.modelcontextprotocol/protocolVersion": protocol_version(),
+                    "io.modelcontextprotocol/clientCapabilities": {}
+                }
+            }
+        })
+        .to_string()
+    }
+
+    /// Each URL in `urls`, carried in a call's arguments, is refused before the call is sent, with
+    /// the argument guard's bytes (403, JSON-RPC -32000, `tool_argument_refused`); then a public
+    /// URL in the same field is served.
+    async fn refused_in_the_arguments(instance: &'static str, urls: &[&str]) {
+        let (port, mut heard) = tool_server().await;
+        let rig = Rig::new(instance, port, None);
+        for url in urls {
+            let (status, body) = send(&rig.router, Some(&rig.token), &fetching(url)).await;
+            let shown = String::from_utf8_lossy(&body);
+            assert_eq!(status.as_u16(), 403, "`{url}` must be refused: {shown}");
+            let body: serde_json::Value = serde_json::from_slice(&body).expect("JSON-RPC");
+            assert_eq!(body["error"]["code"], -32000, "`{url}`: {body}");
+            assert_eq!(
+                body["error"]["data"]["reason"], "tool_argument_refused",
+                "`{url}`: {body}"
+            );
+        }
+        let mut wire = Vec::new();
+        while let Ok(r) = heard.try_recv() {
+            wire.push(r);
+        }
+        assert!(
+            wire.iter().all(|r| !r.contains("\"tools/call\"")),
+            "no refused call reached the wire: {wire:?}"
+        );
+        let (status, body) = send(
+            &rig.router,
+            Some(&rig.token),
+            &fetching("https://docs.example.com/notes"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+    }
+
+    /// THE ARGUMENT GUARD ASKS THE KERNEL'S `dest.judge` (THE DESIGN §11 host services B.3 item
+    /// 11): a host the deployment's own egress rules refuse ([`BLOCKED_HOST`], a
+    /// `security.blocked_metadata_hosts` entry no address rule would refuse) is refused when a
+    /// call's arguments name it. A guard deciding in the plane admits it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_host_the_deployment_refuses_is_refused_in_the_arguments() {
+        let _one = PUBLISHING.lock().await;
+        let instance = "serve-door-tools-destjudge-blocked";
+        let _published = Published(instance);
+        let (plain, secure) = (
+            format!("http://{BLOCKED_HOST}/x"),
+            format!("https://{BLOCKED_HOST}:8443/y"),
+        );
+        refused_in_the_arguments(instance, &[&plain, &secure]).await;
+    }
+
+    /// The addresses the connector's guard refuses as internal are refused in a call's arguments
+    /// too, by that same judgement (`dest.judge`, private reach refused for a registration that
+    /// was granted none): benchmarking, IETF protocol assignments, "this network", the mapped,
+    /// scoped and link-local IPv6 spellings, multicast and broadcast.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn every_internal_address_the_guard_refuses_is_refused_in_the_arguments() {
+        let _one = PUBLISHING.lock().await;
+        let instance = "serve-door-tools-destjudge-internal";
+        let _published = Published(instance);
+        refused_in_the_arguments(
+            instance,
+            &[
+                "http://198.18.0.1/x",
+                "http://192.0.0.8/x",
+                "http://0.1.2.3/x",
+                "http://[::ffff:198.18.0.1]/x",
+                "http://[::1%25lo]/x",
+                "http://[fe80::1%25eth0]/x",
+                "http://224.0.0.1/x",
+                "http://255.255.255.255/x",
+                "http://[ff02::1]/x",
+            ],
+        )
+        .await;
+    }
+
     /// A UNIT THE PLANE ANSWERS ITSELF (ARCHITECT Q-L3B-LOCAL): a keyed `tools/list` names no entry,
     /// is admitted with no route walk and answered 200 by the plane from its catalogue — nothing
     /// charged (only far-end-reported units bill), nothing dialled, every unit ended.
@@ -2775,6 +3422,7 @@ pub(crate) mod door_boundary {
             tool_defs: &tools,
             public_url: Some(PUBLIC_URL),
             prior: None,
+            providers: None,
         })
         .expect("the door builds from its section")
     }
@@ -3734,7 +4382,8 @@ mod task_continuation {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     use super::tool_door::{
-        protocol_version, rig_tools, send_as, tool_digest, tool_listing, Rig, CALL,
+        protocol_version, rig_on, rig_tools, send_as, tool_digest, tool_listing, Footing, Ledger,
+        Rig, Rows, CALL,
     };
     use crate::root::serve::planes_tests::{Published, PUBLISHING};
 
@@ -4306,6 +4955,178 @@ mod task_continuation {
         );
         assert!(failed["result"].get("inputRequests").is_none(), "{failed}");
     }
+
+    // ── THE TASK STORE IS HOST RECORDS (BUSBAR-1.6.0.md §2; §1 "Admission bounds
+    // live work; nothing evicts it") ────────────────────────────────────────────────────────────
+
+    /// One node of a deployment of `instance` on `port`, standing on the typed rows `rows` its
+    /// other nodes and processes share, its host keeping `max_live` live work handles, reading
+    /// `book`'s governance.
+    fn node(
+        instance: &'static str,
+        port: u16,
+        rows: &std::sync::Arc<Rows>,
+        max_live: usize,
+        book: Option<&Rig>,
+    ) -> Rig {
+        rig_on(
+            instance,
+            port,
+            tools(port, "optional"),
+            Footing {
+                ledger: Ledger::Rows(std::sync::Arc::clone(rows), max_live),
+                book,
+                guarded: false,
+            },
+        )
+    }
+
+    /// Every unit `rig` admitted has ended.
+    async fn ended(rig: &Rig) {
+        let ended = async {
+            while !rig.all_ended() {
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(10), ended)
+            .await
+            .expect("every unit ended");
+    }
+
+    /// A LIVE TASK IS ANSWERED FROM THE HOST'S ROWS: created through one node (its call held at
+    /// the server, so the task stays live), `tasks/get` through another node of the deployment
+    /// answers it exactly as the creating node does, and never as an unknown task.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_live_task_created_on_one_node_is_answered_by_another() {
+        let _one = PUBLISHING.lock().await;
+        let instance = "door-task-fleet";
+        let _published = Published(instance);
+        let (_release, gate) = tokio::sync::watch::channel(false);
+        let (port, mut heard) = gated_server(gate).await;
+        let rows = std::sync::Arc::new(Rows::default());
+        let a = node(instance, port, &rows, 4096, None);
+        let b = node(instance, port, &rows, 4096, Some(&a));
+        let (_, task_id) = create(&a).await;
+        let _call = next_call(&mut heard).await;
+        let (status, here) = ask(&a, &a.token, "tasks/get", &task_id).await;
+        assert_eq!(status, 200, "{here}");
+        assert_eq!(here["result"]["status"], "working", "{here}");
+        // The other node reads the host's rows once the first node's writes reach them.
+        let mut there = serde_json::Value::Null;
+        for _ in 0..250 {
+            there = ask(&b, &b.token, "tasks/get", &task_id).await.1;
+            if there == here {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert_eq!(
+            there, here,
+            "the other node answers the live task from the host's rows"
+        );
+    }
+
+    /// THE HANDLES A GONE PROCESS LEFT ARE SETTLED: a process opens live work up to its host's
+    /// bound and ends with it live; past the lease of their runs, the next process's task-creating
+    /// call settles them `cancelled` and is admitted, where it would be refused at the bound.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_live_handles_a_gone_process_left_are_settled_and_a_new_task_is_admitted() {
+        let _one = PUBLISHING.lock().await;
+        let instance = "door-task-restart";
+        let _published = Published(instance);
+        let (_release, gate) = tokio::sync::watch::channel(false);
+        let (port, _heard) = gated_server(gate).await;
+        let rows = std::sync::Arc::new(Rows::default());
+        let gone = node(instance, port, &rows, 2, None);
+        let (_, first) = create(&gone).await;
+        let (_, second) = create(&gone).await;
+        let (status, refused) = send_as(
+            &gone.router,
+            Some(&gone.token),
+            &task_call(),
+            "tools/call",
+            Some("fs_read_file"),
+        )
+        .await;
+        assert_eq!(
+            status.as_u16(),
+            503,
+            "at the bound of live work: {}",
+            String::from_utf8_lossy(&refused)
+        );
+        // Its writes reach the shared rows; then its process ends, and the clock moves on.
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        let next = node(instance, port, &rows, 2, Some(&gone));
+        drop(gone);
+        next.wall
+            .fetch_add(3_600_000, std::sync::atomic::Ordering::SeqCst);
+        let (status, body) = send_as(
+            &next.router,
+            Some(&next.token),
+            &task_call(),
+            "tools/call",
+            Some("fs_read_file"),
+        )
+        .await;
+        assert_eq!(
+            status.as_u16(),
+            200,
+            "admitted: {}",
+            String::from_utf8_lossy(&body)
+        );
+        for id in [&first, &second] {
+            let (_, got) = ask(&next, &next.token, "tasks/get", id).await;
+            assert_eq!(got["result"]["status"], "cancelled", "{got}");
+        }
+    }
+
+    /// A SETTLE THE STORE REFUSES IS MADE AGAIN UNTIL IT LANDS: the store refuses the first two
+    /// writes of a settled handle (the continuation's own settle, and the next create's); the
+    /// handle is settled by a following create rather than left live for ever.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_settle_the_store_refuses_is_made_again_until_it_lands() {
+        let _one = PUBLISHING.lock().await;
+        let instance = "door-task-settle-retry";
+        let _published = Published(instance);
+        let (_release, gate) = tokio::sync::watch::channel(true);
+        let (port, _heard) = gated_server(gate).await;
+        let rows = std::sync::Arc::new(Rows::default());
+        rows.1.store(2, std::sync::atomic::Ordering::SeqCst);
+        let rig = node(instance, port, &rows, 4096, None);
+        let (_, task_id) = create(&rig).await;
+        ended(&rig).await;
+        let reference =
+            busbar_kernel::host_work::parse_reference(task_id.as_bytes()).expect("a reference");
+        let key = (
+            busbar_kernel::host_work::WORK_SCHEMA,
+            busbar_kernel::host_work::work_key(instance, &reference),
+        );
+        let state = || {
+            rows.0
+                .lock()
+                .expect("unpoisoned")
+                .get(&key)
+                .and_then(|row| row.as_slice().get(1).copied())
+        };
+        assert_eq!(
+            state(),
+            Some(busbar_contract::abi::host::service::WORK_LIVE),
+            "the store refused the continuation's settle"
+        );
+        for _ in 0..2 {
+            create(&rig).await;
+            ended(&rig).await;
+        }
+        let mut settled = false;
+        for _ in 0..250 {
+            if state() == Some(busbar_contract::abi::host::service::WORK_SETTLED) {
+                settled = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert!(settled, "the owed settle landed");
+    }
 }
 
 /// THE HOOK PARITY BATTERY ON THE DRIVER (BUSBAR-1.6.0.md Part 3 section 12 "Hooks": the hook stages
@@ -4673,7 +5494,7 @@ pub(crate) mod hook_parity {
 /// exchange — verify-on-call's tool list, the relayed call over the kernel's walk, the reply to its
 /// own request — on that one child, correlated by id.
 #[cfg(all(linked_axis_plane_door, linked_axis_node))]
-mod program_member {
+pub(crate) mod program_member {
     use axum::http::StatusCode;
 
     use super::tool_door::{rig_tools, send, tool_digest, tool_listing, CALL};
@@ -4682,7 +5503,7 @@ mod program_member {
     /// The server, as a shell script: it answers the handshake, its tool list (after a log line of
     /// its own) and each call (after a request of its own, `ping`, which it counts the answers to),
     /// each call answered with its process id and what it has seen so far.
-    fn script() -> String {
+    pub(crate) fn script() -> String {
         let listing = tool_listing().to_string().replace('\'', "'\\''");
         format!(
             "inits=0; lists=0; calls=0; pongs=0\n\

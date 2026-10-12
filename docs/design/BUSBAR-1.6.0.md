@@ -3138,7 +3138,7 @@ Nothing is rebuilt between them.
 **`GetBusbar/busbar`** — the product. `crates/`, `xtask/` (every gate), `scripts/` (including
 `verify-1.6.0-done.sh`, the definition of done), `conformance/`, `testing/shadow-oracle/`.
 
-**`GetBusbar/busbar-release`** — the engine, five crates:
+**`GetBusbar/busbar-release`** — the engine, nine crates. Being redesigned as one PR state machine (busbar-release docs/ARCHITECTURE.md).
 
 | Crate | Job |
 |---|---|
@@ -3147,6 +3147,10 @@ Nothing is rebuilt between them.
 | `busbar-release-oracle` | The byte-identity oracle: this build vs the published 1.5.5 binary. |
 | `busbar-release-autoscaler` | Runner capacity. Ships the **`busbar-fleet`** binary (`src/bin/busbar-fleet.rs`) — this is the "fleet" tool; there is no separate fleet crate. |
 | `busbar-release-corpus` | The recorded request corpus the oracle replays. |
+| `busbar-release-cli` | The one `busbar-release` command line: ship, dev, watch, status, plugin, and the CI internals under `ci`. |
+| `busbar-release-github` | The one door to GitHub: batched GraphQL reads, REST writes, shared rate-limit and retry policy. |
+| `busbar-release-plugin` | The plugin fleet generator: renders `template/` into every `busbar-<kind>-<name>` repo, with drift check, sync and repin. |
+| `busbar-release-soak` | The sustained mixed-traffic soak of a built binary against the oracle's mocks, judged row by row. |
 
 Its workflows: `turnstile.yml`, `fleet-control.yml`, `oracle-rerecord.yml`, `docker-autoscaler.yml`, `ci.yml`.
 
@@ -3161,9 +3165,8 @@ fully torn down — zero instances, zero volumes, zero NAT gateways, zero elasti
 both cheaper and the money oracle's home (**#56 wins over #29** — the oracle rides Latchkey, it does
 not need a dedicated fleet box; `CI_RUNNER_ONDEMAND_FLOOR` is 0, not 2).
 
-**Capacity order (OWNER 2026-09-28):** zero idle instances; Latchkey first; EC2 only as overflow,
-under a launch cap and #78's spend breaker. The runner autoscaler runs as a scheduled Lambda
-(`busbar-autoscaler`), choosing the cheapest spot region. Agent compute is Latchkey only, through one
+**Runner gateway (OWNER 2026-10-10, supersedes the 2026-09-28 capacity order):** every job asks for a logical size (small, medium, large, xlarge), never a vendor label. One table maps each size to a backend (latchkey, ec2 or github), so switching a backend is a one-line change and nothing else breaks. Today every size maps to Latchkey (account cap 80 concurrent jobs); EC2 burst is off. A daily canary job runs on every backend in the table, including the switched-off ones, so a dormant backend is proven before anyone switches to it. #78's spend breaker binds every paid backend.
+Agent compute is Latchkey only, through one
 shared job budget (`1.6.0-TODO.md`, THE RULES 6.1-6.3); the owner has ruled no extra build capacity
 (2026-09-29). EC2 is allowed for the performance phase (§11.9).
 
@@ -3291,6 +3294,84 @@ job-minutes. (The comment at `ci.yml:23` claiming `branches: ['**']` is stale; t
 is narrow.) Deleting `pr/*` auto-closes those PRs, which also fires nothing, because `closed` is not
 in the default `pull_request` types.
 
+
+## THE CONDUCTOR (OWNER 2026-10-11) — one deterministic driver; authors write code, nothing else
+
+> **OWNER 2026-10-11.** *"We have the pieces, not a thing pushing things through the pieces, and
+> that can't be an agent."* *"I wake up one day, never use agents again, replace them with human Bob,
+> and the system still works. Bob codes, runs one command, and it does its thing and tells Bob (or
+> the agent) if they need to do something else."* *"Every second of waste is $ burnt — money and
+> time."* *"The workflow is the workflow"* (no run cap). Supersedes, where they disagree: "How work
+> lands" item 3 (GitHub's merge queue, OWNER 2026-10-02), "Ship and stop", and every rule that has
+> an agent push, prove, retry, land, promote, or be spawned by the pipeline.
+
+**Why (measured 2026-10-10/11, busbar-release's 2-hour audit ledger, 9 windows):** Latchkey $442,
+of which $254 (57%) bought nothing: 166 of 264 merge-group runs were cascades thrown away behind a
+red group, 211 of 419 PR runs were red (fixes nobody had run), and the proof that would have caught
+them cheaply was refused by a run cap.
+
+**The rule.** One program decides; authors only write code. An AUTHOR is whoever writes code — a
+person or an agent, interchangeably; the pipeline never knows or cares which, and never spawns one.
+The CONDUCTOR is `busbar-release conductor`, one always-on service (today on the build server, the
+M3 at `10.1.7.14`; it runs anywhere from one config directory). It is deterministic code: every
+decision is a rule over measured facts. It updates itself from each green `main` release of
+busbar-release; nothing about running it is agent-driven.
+
+**The author's whole interface is one command:** `busbar-release submit` from a branch (it replaces
+`ship`). The conductor takes it from there and tells the author only when they must act — what is
+red, with the output, and the one thing to do next (fix and `submit` again; resolve a conflict;
+owner sign-off needed) — on the terminal, as the PR's one verdict comment, and in `busbar-release
+status`.
+
+**The stations after `submit`.** The conductor owns every move.
+
+| Station | What happens | Junk it refuses |
+|---|---|---|
+| PROVE | The conductor runs the tests and gates the change reaches, on a PROVER (below). Red: back to the author with the output; nothing is pushed to CI. No run cap. | A full CI hop used as a compiler; any unproven change reaching CI. |
+| PR CHECK | The conductor pushes and opens or updates the PR; one PR check per head (the merge-group plan minus the rows the diff cannot reach, "Verification runs once per input"). A run on a superseded head is cancelled. | Runs on superseded heads; re-runs because predev moved (the train verifies on the tip). |
+| TRAIN | The conductor batches the PRs whose PR check is green onto the predev tip (`train/<n>`, one merge per PR, a conflicting PR goes back to its author) and runs the full plan ONCE on the batch. Green: predev takes the batch and every PR in it lands. Red: the failing rows are attributed to the PRs whose changes reach them and those go back to their authors; the rest re-batch (unattributable: split in half). Only the conductor moves predev. | Speculative per-PR merge groups and their cascades (impossible by construction); a batch rebuilt for PRs that did not change. |
+| PROMOTE | predev -> dev -> qa -> main on the same engine, each rung judged once, absolutely where the ladder says so. | A promotion run that cannot pass (a rung whose required suite is registered not-run). |
+
+**METER** runs under every station: each proof and CI run records backend, minutes, dollars and
+outcome in one ledger; the waste over any window is a `health` row that fails above 10%.
+
+**PROVERS are registered backends, like runners.** A prover is a drop-in driver beside the runner
+gateway's (`Driver`): its name, slots, price per minute, readiness, canary, its own idempotent
+`up`/`down` (the M3 prover's `up` builds its Linux VM from nothing), and `prove(commit, commands) ->
+verdict`. Which provers are live, in what order and with how many slots is one table (`PROVERS`),
+switched with one command after a canary, never by code: today the M3 (an arm64 Linux VM, warm
+cache), Latchkey as overflow; tomorrow any mix of M3, Latchkey, EC2. The conductor fills the first
+prover with a free slot. A proof is a filter, never the verdict: the verdict stays CI's, on Linux
+x86_64, so a rare arm64/x86_64 difference costs at most one CI run.
+
+**The conductor IS the workflow; GitHub is one forge driver (OWNER 2026-10-11).** *"Conductor is the
+master workflow: what could be a GitHub Actions workflow is the Rust conductor with pluggable
+infra."* *"We shouldn't be tightly coupled to GitHub; it is a code repo, and if I want to go to
+Forgejo I could, mid-work."* So:
+- The conductor executes every job of every station itself, on INFRA DRIVERS (the M3's per-job
+  Linux VMs, the Latchkey CLI, EC2 boxes, GitHub-hosted runners), chosen by one owner command
+  (`busbar-release infra use <backends>`, canaried, effective on the next job). Every job asks for a
+  size, including the light orchestration jobs; nothing names a vendor. It stores logs and links
+  them in the PR's one verdict comment, and posts ONE verdict status per PR head that branch
+  protection requires.
+- The code host is a FORGE DRIVER: git push/fetch, pull requests, comments, the verdict status, branch
+  protection. GitHub is the driver today; Forgejo is the same interface. Nothing in the pipeline
+  depends on a forge-only feature: Actions workflows (replaced by the conductor), the merge queue
+  (replaced by the train), forge-only APIs. Switching forge is configuration and a mirror push.
+- Platform of record: busbar's VERDICT jobs run on x86_64 Linux (the 1.5.5 golden was recorded
+  there) unless a measured run proves arm64 byte-identical; the M3's arm64 VMs take proofs and
+  busbar-release's own CI. The M3 runs untrusted-safe: one throwaway VM per job.
+- OPEN (owner, before step 7 of 1.6.0): release signing without a forge-specific identity (SLSA
+  provenance today assumes GitHub's OIDC token, which exists only inside Actions): our own signing
+  key, or the chosen forge's CI.
+
+**What the conductor replaces** (deleted as each station lands): GitHub's merge queue on predev,
+`jump`, the merge-group re-check and orphan machinery, the STALE/UPDATE rule, `ship` and `dev` as
+author tools, and every agent the pipeline spawns (fix, stuck, rebase, shared). The turnstile, the
+hop, the ladder, the step cache, autopin and the EC2 runner backend stay as its internals.
+
+**Interim, until the train is live:** predev's merge queue builds at most 2 groups at once (OWNER
+2026-10-11, was 10).
 
 ## How work lands: the PR flow and the rules every contributor follows
 

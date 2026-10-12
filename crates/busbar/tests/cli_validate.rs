@@ -27,10 +27,17 @@ fn fixture_dir(tag: &str) -> PathBuf {
     let d = std::env::temp_dir().join(format!(
         "busbar-cli-validate-{}-{tag}-{}",
         std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
+        {
+            static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            format!(
+                "{}-{}-{}",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |d| d.as_nanos()),
+                line!(),
+                NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            )
+        }
     ));
     std::fs::create_dir_all(d.join("plugins")).unwrap();
     d
@@ -166,6 +173,27 @@ fn validate_ok_on_valid_config_without_plugins() {
         !stdout.contains("note:") && !stdout.contains("env var(s)"),
         "no config value here uses ${{VAR}} interpolation, so there must be no unset-env-var \
          note: got {stdout}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A 1.5.5-shaped config whose root `pools:` names a pool after a reserved sub-key (`tier`, `work`)
+/// validates exactly as 1.5.5 did (Q-STEP9-a, ARCHITECT 2026-10-07): the root `pools:` section keeps
+/// 1.5.5's two reserved words and no more, so both are pools and both are counted.
+#[cfg(linked_axis_node)]
+#[test]
+fn validate_accepts_root_pools_named_after_a_reserved_sub_key_as_1_5_5_did() {
+    let dir = fixture_dir("pools-named-tier-work");
+    write_configs(
+        &dir,
+        "pools:\n  tier:\n    members: [{model: test-model, tier: large}]\n  work:\n    \
+         members: [{model: test-model}]\n",
+    );
+    let (code, stdout, stderr) = run_busbar(&dir, &["--validate"]);
+    assert_eq!(code, 0, "stdout={stdout} stderr={stderr}");
+    assert!(
+        stdout.contains("ok: config valid — 1 provider(s), 1 model(s), 2 pool(s)"),
+        "got {stdout}"
     );
     let _ = std::fs::remove_dir_all(&dir);
 }

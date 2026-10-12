@@ -1467,6 +1467,21 @@ impl Gate for SettingsLeakGate {
             Err(_) => { /* already reported by the case above */ }
         }
 
+        // THE FLOOR REFUSES A POPULATION UNDER IT: the plant cuts the live tree to FLOOR - 1
+        // whatever its size (`Overlay::below_floor`), so predev growing a file never turns this
+        // plant green and never forces a re-pin for its sake.
+        match population::one_file_short(cx) {
+            Ok(ov) => report.push(prove_red(
+                cx,
+                self,
+                "a population one file short of the measured floor is refused",
+                &[ROW_SCAN_FLOOR],
+                ov,
+                &["below its floor"],
+            )),
+            Err(e) => report.note_infra_failure(format!("settings-leak selftest: {e}")),
+        }
+
         // THE PLANE ROOTS: the row this gate's header calls the only thing that can catch a plane
         // that split, and which had no red proof at all — a plane that left takes its projections
         // with it, and every remaining root still clears its floor. Driven THROUGH `Gate::run`

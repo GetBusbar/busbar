@@ -789,7 +789,10 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
         .unwrap_or_default();
     // The resolved `providers:` (catalog-merged), as the door planes' members reach them (THE
     // DESIGN §6 step 2), captured before `cfg` is consumed.
-    let door_providers = root::door_steps::provider_routes(&cfg.providers);
+    let door_providers = root::door_steps::provider_routes(
+        &cfg.providers,
+        &config_validate::MetadataPosture::global(&cfg),
+    );
     // The unified `pools:` a named-definition carrier's members resolved to, by the carrier's
     // section key: each door plane's section carries its own pools (DoorPools), captured before
     // `cfg` is consumed.
@@ -799,6 +802,12 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     #[cfg(feature = "root-admin")]
     let breaker_policy = root::adapters::BreakerPolicy::from_pools(&cfg.pools);
 
+    // The configured store's name, captured before `cfg` is consumed: the boot book's journal is
+    // kept in that store, and a store that cannot keep it is refused by name.
+    let store_module = cfg
+        .store
+        .as_ref()
+        .map_or_else(String::new, |store| store.module.clone());
     // The secret resolver the listeners resolve TLS cert/key/CA references through - the SAME seam
     // (built-in env/file + kind:secret plugins) that resolved provider keys at build time.
     // Boot has no `prior` App, so `build_app_from_config` never resolves a credential rotation here
@@ -970,7 +979,7 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     let book = (cfg!(feature = "root-admin")
         || ROOT_UNITS.iter().any(|u| u.opens_book)
         || !served.planes.is_empty())
-    .then(|| root::boot::book(&app).unwrap_or_else(|e| die(e)));
+    .then(|| root::boot::book(&app, &store_module).unwrap_or_else(|e| die(e)));
     // THE DOOR PLANES' DATA ROUTES (`root::serve::data_routes`): each served plane's claims, as its
     // guest-list lines beside the kernel's own, onto the data router at its construction.
     // Every config apply refreshes each served door plane onto the generation it installed
@@ -1285,9 +1294,18 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
             &shutdown_tx,
             worker_shutdown_rx,
         );
-        let admin_listener = Listening::bind_stream(&admin_at, ROOT_BIND_LIMITS)
-            .unwrap_or_else(|e| die(format!("cannot bind listen address '{admin_listen}': {e}")));
-        tracing::debug!(listen = %admin_listen, "admin listening through the connector");
+        // The root's own binds listen through the process's address carrier (TRANSPORT-STACK (2):
+        // the accept loop is the carrier's); each accepted stream is handed up to the kernel.
+        let admin_via = root::connector::the().address_via();
+        let admin_listener =
+            Listening::bind_stream(admin_via.as_ref(), &admin_at, ROOT_BIND_LIMITS).unwrap_or_else(
+                |e| die(format!("cannot bind listen address '{admin_listen}': {e}")),
+            );
+        tracing::debug!(
+            listen = %admin_listen,
+            carrier = %root::connector::carrier_name(admin_via.as_ref()),
+            "admin listening through the connector"
+        );
         serve_listener(
             admin_listener,
             admin_router,
@@ -1354,6 +1372,22 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // THE PLANE RECORD WRITE-BEHIND, drained before the store closes (`root::serve::drain_records`).
     if !root::serve::drain_records(&late_services).await {
         tracing::warn!("plane record writes were still queued at shutdown");
+    }
+    // THE JOURNAL'S LANE TO THE STORE, drained the same way and under the same deadline: on a node
+    // with no data directory the store is where the chain is kept.
+    if let Some(lane) = book.as_ref().and_then(|book| {
+        book.durability
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .lane()
+            .cloned()
+    }) {
+        let drained = tokio::task::spawn_blocking(move || lane.drain(root::serve::RECORD_DRAIN))
+            .await
+            .unwrap_or(false);
+        if !drained {
+            tracing::warn!("journal records were still queued for the store at shutdown");
+        }
     }
     // No state snapshot on shutdown: reliability state is RAM-only (re-learned on boot) and the
     // audit log is written through to the durable store as it happens (store-or-RAM rule — there is
@@ -1491,14 +1525,19 @@ fn serve_thread_per_core(
                     // runs after placement, in the serving loop (pinning at accept would change
                     // 1.5.5's per-core placement).
                     // TRANSITIONAL: drains at K1 U6/U7 (1.6.0-TODO.md).
-                    let listener = Listening::bind_stream(&bind_at, ROOT_BIND_LIMITS)
+                    let via = crate::root::connector::the().address_via();
+                    let listener = Listening::bind_stream(via.as_ref(), &bind_at, ROOT_BIND_LIMITS)
                         .unwrap_or_else(|e| {
                             die(format!(
                                 "cannot bind SO_REUSEPORT data listener on '{listen}' (per-core \
                              runtime {i}): {e}"
                             ))
                         });
-                    tracing::debug!(listen = %listen, "data door listening through the connector");
+                    tracing::debug!(
+                        listen = %listen,
+                        carrier = %crate::root::connector::carrier_name(via.as_ref()),
+                        "data door listening through the connector"
+                    );
                     serve_listener(
                         listener,
                         router,

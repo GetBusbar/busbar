@@ -261,8 +261,15 @@ impl HostServices for CredentialServices {
         self.inner.work_find(caller, unit, reference, later)
     }
 
-    fn work_settle(&self, caller: &Caller, handle: u64, record: &[u8], later: Later) -> Ran {
-        self.inner.work_settle(caller, handle, record, later)
+    fn work_settle(
+        &self,
+        caller: &Caller,
+        unit: Option<u64>,
+        handle: u64,
+        record: &[u8],
+        later: Later,
+    ) -> Ran {
+        self.inner.work_settle(caller, unit, handle, record, later)
     }
 
     fn work_resume(&self, caller: &Caller, unit: Option<u64>, handle: u64, later: Later) -> Ran {
