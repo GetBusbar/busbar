@@ -44,7 +44,7 @@
 //! | row | the refusal |
 //! | --- | --- |
 //! | `:waiver-shape` | every waiver row is an exact `path:line` carrying an expiry that RESOLVES |
-//! | `:discovery-floor` | a scan below [`DISCOVERY_FLOOR`] files is UNPROVEN, never PASS |
+//! | `:discovery-floor` | a scan that is not the tracked set is UNPROVEN, never PASS |
 //! | `:unwaived` | over-count: a marker nobody waived is a new, undeclared deferral |
 //! | `:stale-waiver` | under-count: a waiver matching no marker outlived the thing it excused |
 //! | `:strict-done` | (strict only) the only permanent exemptions are the `*/hot/*` fixtures |
@@ -61,7 +61,7 @@
 //! check cannot fire on a glob while even one of its markers survives, so 51 could be resolved with
 //! the row still reading as live. A matcher that is not an exact `path:line` is refused at load.
 
-use crate::ctx::{Ctx, Overlay, WalkSpec};
+use crate::ctx::{Coverage, Ctx, Overlay, WalkSpec};
 use crate::gates::{prove_green, prove_red, Gate, Report};
 use crate::ledger::{Row, Verdict};
 use crate::parity::LegacyRun;
@@ -72,14 +72,6 @@ pub const ROW_DISCOVERY_FLOOR: &str = "no-deferral:discovery-floor";
 pub const ROW_UNWAIVED: &str = "no-deferral:unwaived";
 pub const ROW_STALE_WAIVER: &str = "no-deferral:stale-waiver";
 pub const ROW_STRICT_DONE: &str = "no-deferral:strict-done";
-
-/// The denominator floor, a `const` in the gate's own module with no environment override. It is
-/// pinned AT the measured count: discovery found 932 shipped source files on predev 6ca8584fc0 (it
-/// was 50, about 5% of the tree), and 931 after #532 (p2-cold-auth) deleted the cold auth lane's
-/// files; a drop below 931 is refused as UNPROVEN until a reviewed diff
-/// re-measures. The selftest plant cuts the scan set to one file under the floor and must go red.
-/// The only way to lower one is a reviewable source edit.
-pub const DISCOVERY_FLOOR: usize = 931;
 
 const WAIVERS: &str = "scripts/no-deferral.waivers";
 /// The plan every waiver's expiry is looked up in. It was `docs/design/1.6.0-TRACKER.md` until
@@ -353,49 +345,59 @@ fn markers_in(rel: &str, text: &str) -> Vec<String> {
 
 // ── DISCOVERY ────────────────────────────────────────────────────────────────────────────────────
 
+/// The walk discovery takes; the tracked set it is reconciled against is cut by the same spec.
+fn discovery_spec() -> WalkSpec {
+    WalkSpec::new(["crates"])
+        .ext("rs")
+        .exclude(["/tests/", "/test_support/"])
+}
+
+/// The rest of discovery's filter: under a crate's `src/`, and not a `_test(s).rs` module.
+fn discovered(rel: &str) -> bool {
+    let mut parts = rel.split('/');
+    let under_src =
+        parts.next() == Some("crates") && parts.next().is_some() && parts.next() == Some("src");
+    under_src && !rel.ends_with("_test.rs") && !rel.ends_with("_tests.rs")
+}
+
 /// `find crates/*/src -name '*.rs' | grep -vE '/tests/|/test_support/|_tests?\.rs$' | sort`.
 fn discover(cx: &Ctx) -> Result<Vec<(String, String)>, String> {
-    let files = cx
-        .walk(
-            &WalkSpec::new(["crates"])
-                .ext("rs")
-                .exclude(["/tests/", "/test_support/"]),
-        )
-        .map_err(|e| e.to_string())?;
-    let mut out = Vec::new();
-    for f in files {
-        let rel = f.rel_str();
-        let mut parts = rel.split('/');
-        let under_src =
-            parts.next() == Some("crates") && parts.next().is_some() && parts.next() == Some("src");
-        if !under_src {
-            continue;
-        }
-        if rel.ends_with("_test.rs") || rel.ends_with("_tests.rs") {
-            continue;
-        }
-        out.push((rel, f.text));
-    }
-    Ok(out)
+    let files = cx.walk(&discovery_spec()).map_err(|e| e.to_string())?;
+    Ok(files
+        .into_iter()
+        .map(|f| (f.rel_str(), f.text))
+        .filter(|(rel, _)| discovered(rel))
+        .collect())
 }
 
-/// How many files the one-short plant removes from a scan set of `discovered` files: enough to
-/// leave exactly `DISCOVERY_FLOOR - 1`, however far the tree has grown past the pin. A cut of one
-/// from the live count left the set at or above the floor on every tree that had grown past the
-/// pin, and the plant read GREEN in the #627 merge group.
-fn one_short_cut(discovered: usize) -> usize {
-    discovered.saturating_sub(DISCOVERY_FLOOR - 1)
+/// THE DENOMINATOR IS THE TRACKED SET, NOT A COUNT (Law 8: "a census reports the LIST it scanned,
+/// not the count"). Discovery's list is reconciled against every tracked path the same filter
+/// admits; a tracked file it did not read, or a file it read that nothing tracks, is UNPROVEN by
+/// name. This replaced a floor pinned at the measured count (last 932), which a change removing
+/// source had to re-pin and which, matched, said nothing about WHICH files were read.
+fn discovery_coverage(cx: &Ctx, files: &[(String, String)]) -> Result<Coverage, String> {
+    let whole: Vec<String> = cx
+        .tracked(&discovery_spec())?
+        .into_iter()
+        .filter(|p| discovered(p))
+        .collect();
+    Ok(Coverage::of(
+        files.iter().map(|(rel, _)| rel.clone()),
+        whole,
+    ))
 }
 
-/// THE ONE-SHORT PLANT: an overlay over `cx` that removes shipped source files until discovery
-/// finds one fewer than [`DISCOVERY_FLOOR`]. `None` when discovery cannot read the tree.
-pub fn one_short_of_floor(cx: &Ctx) -> Option<Overlay> {
-    let files = discover(cx).ok()?;
-    let mut ov = Overlay::new();
-    for (rel, _) in files.iter().rev().take(one_short_cut(files.len())) {
-        ov.remove(rel);
-    }
-    Some(ov)
+/// THE COVERAGE PLANT: one discovered file hidden from the walk while the index still lists it,
+/// returned with its path so a case can require the refusal to name it. No count is in it, so no
+/// tree size turns it green. `Err` when discovery cannot read the tree.
+pub fn one_file_hidden_from_discovery(cx: &Ctx) -> Result<(Overlay, String), String> {
+    let files = discover(cx)?;
+    let rel = files
+        .last()
+        .map(|(rel, _)| rel.clone())
+        .ok_or_else(|| "discovery found no file to hide".to_string())?;
+    let ov = cx.hide_from_scan([&rel])?;
+    Ok((ov, rel))
 }
 
 // ── WAIVERS ──────────────────────────────────────────────────────────────────────────────────────
@@ -620,29 +622,18 @@ fn row_waiver_shape(rows: Option<usize>, why: Option<&str>) -> Row {
     }
 }
 
-fn row_discovery_floor(found: Option<usize>, why: Option<&str>) -> Row {
+fn row_discovery_floor(census: Option<String>, why: Option<&str>) -> Row {
     match why {
         None => Row::pass(
             ROW_DISCOVERY_FLOOR,
             "discovery found a scan set worth drawing a verdict from",
-            match found {
-                Some(n) => format!(
-                    "{n} shipped source file(s) discovered, at or above the floor of \
-                     {DISCOVERY_FLOOR}"
-                ),
-                None => {
-                    format!("at or above the floor of {DISCOVERY_FLOOR} shipped source file(s)")
-                }
-            },
+            census.unwrap_or_else(|| "discovery read exactly the tracked set".to_string()),
         ),
         Some(why) => Row::fail(
             ROW_DISCOVERY_FLOOR,
-            "the scan set is below its floor, so the verdict is UNPROVEN",
-            match found {
-                Some(n) => format!(
-                    "discovery found only {n} shipped source file(s) (floor {DISCOVERY_FLOOR}). \
-                     {why}"
-                ),
+            "the scan set is not the tracked set, so the verdict is UNPROVEN",
+            match census {
+                Some(c) => format!("{c}. {why}"),
                 None => why.to_string(),
             },
         ),
@@ -802,12 +793,24 @@ impl Gate for NoDeferralGate {
                 )
             }
         };
-        if files.len() < DISCOVERY_FLOOR {
+        let coverage = match discovery_coverage(cx, &files) {
+            Ok(c) => c,
+            Err(why) => {
+                return self.stopped(
+                    ROW_DISCOVERY_FLOOR,
+                    "the tracked set discovery is reconciled against would not read",
+                    row_discovery_floor(None, Some(&why)),
+                )
+            }
+        };
+        // AN EMPTY DISCOVERY IS NEVER A CLEAN TREE, even when the tracked set agrees with it: a
+        // scope whose every file left reconciles perfectly and has examined nothing.
+        if files.is_empty() || !coverage.is_whole() {
             let mut v = self.stopped(
                 ROW_DISCOVERY_FLOOR,
-                "discovery came back below its floor, so no verdict was drawn",
+                "discovery is not the tracked set, so no verdict was drawn",
                 row_discovery_floor(
-                    Some(files.len()),
+                    Some(coverage.census()),
                     Some("Broken discovery reports a clean tree. This verdict is UNPROVEN, not PASS."),
                 ),
             );
@@ -843,7 +846,7 @@ impl Gate for NoDeferralGate {
 
         let mut rows = vec![
             row_waiver_shape(Some(waivers.len()), None),
-            row_discovery_floor(Some(files.len()), None),
+            row_discovery_floor(Some(coverage.census()), None),
             row_unwaived(markers.len(), &unwaived),
             row_stale(&stale),
         ];
@@ -1114,22 +1117,21 @@ impl Gate for NoDeferralGate {
             ),
         }
 
-        // ── THE FLOOR BITES AT ITS OWN VALUE. The scan set is cut to exactly one file under
-        //    DISCOVERY_FLOOR, however many files the tree has gained since it was measured (a cut of
-        //    one from the live count passed on every tree that grew past the pin, so the case was red
-        //    only on the tree it was written against).
-        match one_short_of_floor(base) {
-            Some(ov) => report.push(prove_red(
+        // ── THE SCAN IS THE TRACKED SET. One discovered file hidden from the walk while the index
+        //    still lists it is UNPROVEN, and the refusal names the file. No count is in it, so no
+        //    tree size turns it green.
+        match one_file_hidden_from_discovery(base) {
+            Ok((ov, rel)) => report.push(prove_red(
                 base,
                 self,
-                "a scan set one file short of the floor is UNPROVEN, never a clean one",
+                "a tracked file discovery did not read is UNPROVEN, never a clean tree",
                 &[ROW_DISCOVERY_FLOOR],
                 ov,
-                &["UNPROVEN, not PASS"],
+                &["UNPROVEN, not PASS", "NOT scanned", rel.as_str()],
             )),
-            None => report.note_infra_failure(
-                "the one-file-short floor case could not be planted: discovery does not read the real tree",
-            ),
+            Err(e) => {
+                report.note_infra_failure(format!("the coverage case could not be planted: {e}"))
+            }
         }
 
         if self.strict {
@@ -1338,7 +1340,10 @@ fn translate(strict: bool, run: &LegacyRun) -> Result<Vec<Row>, String> {
     rows.push(row_waiver_shape(waiver_rows, None));
 
     if let Some(why) = floor_why {
-        rows.push(row_discovery_floor(found, Some(&why)));
+        rows.push(row_discovery_floor(
+            found.map(|n| format!("discovery found {n} shipped source file(s)")),
+            Some(&why),
+        ));
         let note = "discovery came back below its floor, so no verdict was drawn";
         rows.push(unproven(ROW_UNWAIVED, note));
         rows.push(unproven(ROW_STALE_WAIVER, note));
@@ -1390,24 +1395,6 @@ fn decolour(line: &str) -> String {
         }
     }
     out
-}
-
-#[cfg(test)]
-mod one_short_tests {
-    use super::{one_short_cut, DISCOVERY_FLOOR};
-
-    /// THE PLANT LANDS ONE UNDER THE FLOOR AT EVERY TREE SIZE, not only at the size it was written
-    /// against: a tree at the pin, one file past it, and one that has grown by hundreds.
-    #[test]
-    fn the_one_short_cut_leaves_one_file_under_the_floor_however_far_the_tree_grew() {
-        for discovered in [DISCOVERY_FLOOR, DISCOVERY_FLOOR + 1, DISCOVERY_FLOOR + 500] {
-            assert_eq!(
-                discovered - one_short_cut(discovered),
-                DISCOVERY_FLOOR - 1,
-                "a scan set of {discovered} must be cut to one under the floor of {DISCOVERY_FLOOR}"
-            );
-        }
-    }
 }
 
 #[cfg(test)]
