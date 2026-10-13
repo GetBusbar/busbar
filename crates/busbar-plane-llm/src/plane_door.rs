@@ -58,15 +58,16 @@ use busbar_contract::abi::mechanism::lifecycle::{
     GenIn, RefreshIn, ReleaseIn, TickIn, TickOut, ValidateIn,
 };
 use busbar_contract::abi::mechanism::ticket::{CompletionHandle, Ticket};
+use busbar_contract::abi::plane::check::check_piece_in;
 use busbar_contract::abi::plane::{
     ArriveIn, ArriveOut, BillableClass, DialectAuth, OnPieceIn, OnPieceOut, OpClass, OutField,
     PlaneDriveIn, PlaneDriveOut, PlaneOpenIn, PlaneOpenOut, PlaneRefreshOut, PlaneSnapshot,
     PlaneTail, ProjectIn, ProjectOut, RefusalIn, RefusalOut, ServeIn, ServeOut, UnitCount,
     CANCEL_ABORTED, CANCEL_OK_PARTIAL, CLAIM_EXACT, CLAIM_PROBE, EMIT_DONE, EMIT_TO_FAR_END,
     FROM_CALLER, FROM_FAR_END, FROM_KERNEL, INGRESS_REQUEST_RESPONSE, INGRESS_RESPONSE_STREAM,
-    PIECE_HAS_STATUS, PIECE_LAST, PRINCIPAL_NONE, PRINCIPAL_REQUIRED, REFUSAL_GATE, ROUTE_DIRECT,
-    ROUTE_POOL, SHAPE_PIECEWISE, SPAN_ABSENT, TAIL_FALLBACK, TAIL_PROBES, UNITS_FLOOR,
-    UNITS_REPORTED, VERDICT_HARD, VERDICT_NONE, VERDICT_OK, VERDICT_RETRY,
+    PIECE_FINAL, PIECE_HAS_STATUS, PIECE_LAST, PRINCIPAL_NONE, PRINCIPAL_REQUIRED, REFUSAL_GATE,
+    ROUTE_DIRECT, ROUTE_POOL, SHAPE_PIECEWISE, SPAN_ABSENT, TAIL_FALLBACK, TAIL_PROBES,
+    UNITS_FLOOR, UNITS_REPORTED, VERDICT_HARD, VERDICT_NONE, VERDICT_OK, VERDICT_RETRY,
 };
 use busbar_contract::abi::plane::{PlaneCancelIn, PlaneCancelOut};
 use busbar_contract::abi::plane::{RecordWrite, AUDIT_DEGRADED, RECORD_AUDIT};
@@ -502,6 +503,9 @@ struct UnitState {
     reported: Vec<UnitCount>,
     /// The caller was answered under a success status: the request's fee unit was incurred.
     fee: bool,
+    /// The kernel stated the current attempt's answer will not be failed over (`PIECE_FINAL`): a
+    /// retry verdict on it ends the unit like any other done answer.
+    final_answer: bool,
 }
 
 impl UnitState {
@@ -520,6 +524,7 @@ impl UnitState {
             unreadable: false,
             reported: Vec::new(),
             fee: false,
+            final_answer: false,
         }
     }
 
@@ -837,6 +842,7 @@ struct PieceIn<'a> {
 /// An ATTEMPT: the far-end request for the member the walk picked.
 fn attempt(unit: &mut UnitState, piece: &PieceIn<'_>) -> Answer {
     unit.member = String::from_utf8_lossy(piece.member).into_owned();
+    unit.final_answer = false;
     unit.reply = None;
     unit.request = None;
     unit.started = piece.clock.map(|c| c.mono_ns);
@@ -1044,6 +1050,9 @@ fn deliver(
     let more = p.sent < p.answer.bytes.len();
     let to_far_end = p.answer.to_far_end;
     let done = p.answer.done && !more;
+    // A RETRY verdict the kernel may still fail over keeps the unit for its next ATTEMPT; a done
+    // answer of any other verdict, or one the kernel stated is final (`PIECE_FINAL`), ends it.
+    let retried = p.answer.verdict == VERDICT_RETRY && !unit.final_answer;
     let far = if to_far_end { EMIT_TO_FAR_END } else { 0 };
     out.set(|o| &o.emitted, n as u64);
     out.set(|o| &o.more, u32::from(more));
@@ -1054,7 +1063,7 @@ fn deliver(
     if !more {
         unit.pending = None;
     }
-    (Outcome::Ready, done && !to_far_end)
+    (Outcome::Ready, done && !to_far_end && !retried)
 }
 
 // ── the slots ────────────────────────────────────────────────────────────────────────────────────
@@ -1260,12 +1269,20 @@ slot!(
         };
         let given = input.get();
         let key = given.unit;
+        // A piece whose flags the contract refuses (a cut or a final mark off the far end's own
+        // piece) is a FAULT before anything of the unit moves.
+        if check_piece_in(given.from, given.flags).is_err() {
+            return Outcome::Fault;
+        }
         // The unit leaves the map for the call, so its answer is computed with no lock held.
         let Some(mut unit) = guard(&door.units).remove(&key) else {
             return Outcome::Fault;
         };
         guard(&door.tickets).insert(given.head.ticket, key);
         if unit.pending.is_none() {
+            if given.from == FROM_FAR_END && given.flags & PIECE_FINAL != 0 {
+                unit.final_answer = true;
+            }
             let piece = PieceIn {
                 last: given.flags & PIECE_LAST != 0,
                 status: (given.flags & PIECE_HAS_STATUS != 0).then_some(given.status_code),
