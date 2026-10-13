@@ -588,9 +588,22 @@ impl ProtocolReader for GeminiReader {
             // Gemini's own error envelope (spec Part 2 #76), never silently left out.
             Some(budget) => match read_gemini_thinking_budget(budget).ok_or_else(ir_parse_error)? {
                 -1 => Some(crate::codec::ir::IrReasoningAsk::Dynamic),
-                // 0 = thinking explicitly switched off (IR-09): a foreign reasoning-by-default
-                // backend must be told, not left to think.
-                0 => Some(crate::codec::ir::IrReasoningAsk::Off),
+                // 0 = thinking switched off. It carries no ask across the seam, exactly as 1.5.5
+                // read it (v1.5.5 `crates/busbar/src/proto/gemini/reader.rs:554-558`, `_ => None`):
+                // promoting it to `Off` switched thinking off on a foreign reasoning-by-default
+                // lane, changing the thinking tokens that request is billed, and no owner ruling
+                // signs that (BUSBAR-1.6.0.md:4774, "Billing never moves"). Dropped on the one drop
+                // path; the raw member still rides `extra` on the same dialect.
+                0 => {
+                    crate::codec::drops::writer_drop!(
+                        crate::codec::drops::REASONING,
+                        &crate::codec::diagnostics::IR_DROP_REASONING,
+                        [],
+                        "dropping thinkingBudget 0 (reasoning off) across dialects: it carries no \
+                         ask, as in 1.5.5"
+                    );
+                    None
+                }
                 n => Some(crate::codec::ir::IrReasoningAsk::Budget(n.unsigned_abs())),
             },
             // Gemini 3's word-form knob, `thinkingLevel`, is the effort ask (GEM-09). The API

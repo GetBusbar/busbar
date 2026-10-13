@@ -103,8 +103,8 @@ fn on_the_drop_path(audited: &[String], cap: &WarnCapture, path: &str, diag: &st
 
 // ───────────────────────────── (1) a member, by the caller's row ─────────────────────────────
 
-/// openai_chat writer: a Gemini caller's reasoning-off ask (`thinkingBudget: 0`) on a Chat lane that
-/// does not declare `"none"` is named by Gemini's own row for it.
+/// A Gemini caller's reasoning-off ask (`thinkingBudget: 0`), which carries no ask across dialects
+/// (1.5.5), is named by Gemini's own row for it.
 #[test]
 fn a_request_member_drop_is_named_by_the_callers_row() {
     let (audited, cap) = translate(
@@ -118,7 +118,7 @@ fn a_request_member_drop_is_named_by_the_callers_row() {
         &cap,
         "generationConfig.thinkingConfig.thinkingBudget",
         "BUSBAR-7079",
-        "omitting reasoning OFF on OpenAI Chat egress",
+        "dropping thinkingBudget 0 (reasoning off) across dialects",
     );
 }
 
