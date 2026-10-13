@@ -150,6 +150,23 @@ pub const LEDGER: &str = "qa/kind-isolation.toml";
 /// whose extension is not on [`BINARY_EXTS`], which is 1 707 of them today.
 const MIN_SCANNED: usize = 600;
 
+/// THE MERGE-BASE READING'S DENOMINATOR, carried as an overlay command that only
+/// [`read_law0_base`] sets: the number of text files the base commit itself tracks under `crates/`.
+/// [`MIN_SCANNED`] is a floor calibrated on the tree under judgement; a base is a different tree
+/// (1.5.5, the `dev` merge-base, tracks 502), so its scan is held to its OWN count, every one of
+/// those paths reconciled against the walk before the scan runs (Law 8: the set measured over is
+/// stated, and coverage is proven against the whole).
+const BASE_SCAN_FLOOR_KEY: &str = "kind-isolation:law0-base-scan-floor";
+
+/// The floor [`scan_set`] holds this context's walk to: [`MIN_SCANNED`], or the merge-base's own
+/// count when this context IS the merge-base reading.
+fn scan_floor(cx: &Ctx) -> usize {
+    cx.overlay_command(BASE_SCAN_FLOOR_KEY)
+        .and_then(|n| n.trim().parse::<usize>().ok())
+        .filter(|n| *n > 0)
+        .unwrap_or(MIN_SCANNED)
+}
+
 mod auth_words;
 mod external;
 mod instances;
@@ -1750,9 +1767,10 @@ fn scan_set(cx: &Ctx) -> Result<ScanSet, String> {
         })?;
         files.push((rel, text));
     }
-    if files.len() < MIN_SCANNED {
+    let floor = scan_floor(cx);
+    if files.len() < floor {
         return Err(format!(
-            "{} file(s) under crates/, below the floor of {MIN_SCANNED}",
+            "{} file(s) under crates/, below the floor of {floor}",
             files.len()
         ));
     }
@@ -2728,6 +2746,9 @@ pub struct Law0Base {
     pub commit: String,
     pub counts: Law0Counts,
     pub rows: BTreeMap<(String, String), usize>,
+    /// What the base's cells were measured over, in words (Law 8): its file denominator and whose
+    /// vocabulary. Printed in the row's detail, pass or fail.
+    pub how: String,
 }
 
 type Law0BaseCache = std::sync::Mutex<BTreeMap<String, Result<std::sync::Arc<Law0Base>, String>>>;
@@ -2770,51 +2791,218 @@ pub fn law0_base(cx: &Ctx) -> Result<std::sync::Arc<Law0Base>, String> {
 fn read_law0_base(cx: &Ctx, commit: &str, meta: Option<String>) -> Result<Law0Base, String> {
     let changed = cx.git_lines(&["diff", "--no-renames", "--name-status", commit, "--"])?;
     let untracked = cx.git_lines(&["ls-files", "--others", "--exclude-standard"])?;
-    let mut ov = crate::ctx::Overlay::new();
-    for line in &changed {
-        let Some((status, path)) = line.split_once('\t') else {
-            continue;
-        };
-        if status.starts_with('A') {
-            ov.remove(path);
-            continue;
-        }
-        match cx.git_show(commit, path) {
-            Ok(text) => ov.set(path, text),
-            Err(why) => ov.unreadable(path, why),
-        }
-    }
-    for path in &untracked {
-        ov.remove(path);
-    }
-    if let Some(meta) = meta {
-        ov.set_command(super::pinned::METADATA_KEY, meta);
-    }
-    let bcx = super::pinned::with_pinned(&cx.with_overlay(ov));
     let short = &commit[..8.min(commit.len())];
-    let mut crates =
-        super::census(&bcx).map_err(|e| format!("the census of the merge-base {short}: {e}"))?;
-    let (planes, ports) = super::vocabularies(&crates);
-    super::assign_instances(&mut crates, &planes, &ports);
-    let reg = super::load_registry(&bcx)
-        .map_err(|e| format!("the ledger of the merge-base {short}: {e}"))?;
+    // THE BASE IS HELD TO ITS OWN DENOMINATOR, not to the floor of the tree under judgement: the
+    // text files the base commit tracks under `crates/`, every one of which the walk must reach.
+    let tracked: Vec<String> = cx
+        .git_lines(&["ls-tree", "-r", "--name-only", commit, "--", "crates"])?
+        .into_iter()
+        .filter(|p| binary_ext(p).is_none())
+        .collect();
+    if tracked.is_empty() {
+        return Err(format!(
+            "the merge-base {short} tracks no text file under crates/: a base with nothing to scan \
+             names no coupling, which is indistinguishable from a base that has none"
+        ));
+    }
+    let tree = BaseTree {
+        cx,
+        commit,
+        short,
+        changed: &changed,
+        untracked: &untracked,
+        meta: meta.as_deref(),
+        tracked: &tracked,
+    };
+    let (mut bcx, mut crates) = tree.open(&[])?;
+    // The base's own ledger: its `[[law0]]` rows are the only cover a rise can have.
+    let base_reg = base_ledger(&bcx, short)?;
+    let mut vocab_reg = None;
+    let mut how = format!(
+        "{} text file(s) the base tracks under crates/, every one walked; the base's own \
+         vocabulary ({} plane-kind crate(s))",
+        tracked.len(),
+        crates.iter().filter(|c| c.family == Family::Plane).count()
+    );
+    // A BASE OLDER THAN THE PLUGIN KINDS IS MEASURED WITH TODAY'S VOCABULARY, NEVER EXEMPTED
+    // (ARCHITECT 2026-10-12; BUSBAR-1.6.0.md:1929 "when an instrument must choose, it false-fails",
+    // :1936-1940 the ship criterion "is not 'no worse than the last commit'"). 1.5.5 carried its
+    // planes inside one crate, so a census of its bytes holds no plane-kind crate and the
+    // vocabulary every scan here derives from the census is empty: the vendor scan refuses, and a
+    // row that cannot run cannot produce a NO (Law 0 of the instruments, :2038). The plugin crates
+    // THIS tree added since the base are read at this tree's bytes, with this tree's instance
+    // registry and ledger names, and supply the vocabulary; every other path is the base's. They
+    // are plugin crates, never neutral, so no Law 0 cell is read from them. Names the base can
+    // only lack (the contract's declared module names) read as absent there: the base reads
+    // lower, so the error runs toward a false RED.
+    if !crates.iter().any(|c| c.family == Family::Plane) {
+        let added: BTreeSet<&str> = changed
+            .iter()
+            .filter_map(|l| l.split_once('\t'))
+            .filter(|(status, _)| status.starts_with('A'))
+            .map(|(_, path)| path)
+            .collect();
+        let head = super::census(cx).map_err(|e| format!("the census of this tree: {e}"))?;
+        let kept: Vec<String> = head
+            .iter()
+            .filter(|c| {
+                c.kind
+                    .is_some_and(|k| super::pinned::PLUGIN_KINDS.contains(&k))
+            })
+            .filter(|c| added.contains(c.manifest.as_str()))
+            .map(|c| c.dir.clone())
+            .collect();
+        if kept.is_empty() {
+            return Err(format!(
+                "the merge-base {short} holds no plane-kind crate and this tree added none since \
+                 it, so there is no vocabulary to measure the base with"
+            ));
+        }
+        (bcx, crates) = tree.open(&kept)?;
+        vocab_reg =
+            Some(super::load_registry(cx).map_err(|e| format!("the ledger of this tree: {e}"))?);
+        how = format!(
+            "{} text file(s) the base tracks under crates/, every one walked; TODAY'S vocabulary, \
+             because the base predates the plugin kinds (no plane-kind crate): the {} plugin \
+             crate(s) this tree added since it ({}) and {} read at this tree's bytes, every \
+             other path at the base's (ARCHITECT 2026-10-12)",
+            tracked.len(),
+            kept.len(),
+            kept.join(", "),
+            instances::REGISTRY
+        );
+    }
     let mut law0 = None;
-    let (row, _) = measured_row(&bcx, &crates, &reg, false, &mut law0);
+    let (row, _) = measured_row(
+        &bcx,
+        &crates,
+        vocab_reg.as_ref().unwrap_or(&base_reg),
+        false,
+        &mut law0,
+    );
     let counts = law0.ok_or_else(|| {
         format!(
-            "the Law 0 scan of the merge-base {short} did not run: {}",
+            "the Law 0 scan of the merge-base {short} did not run ({how}): {}",
             row.detail
         )
     })?;
     Ok(Law0Base {
         commit: commit.to_string(),
         counts,
-        rows: reg
+        rows: base_reg
             .law0
             .iter()
             .map(|r| ((r.krate.clone(), r.axis.clone()), r.count))
             .collect(),
+        how,
     })
+}
+
+/// Does the merge-base reading lay `path` back to the base's bytes? Every path the diff names is,
+/// except when the base predates the plugin kinds: then the plugin crates this tree added since it
+/// (`kept`, crate directories) and the instance registry stay at this tree's bytes, as TODAY'S
+/// VOCABULARY ([`read_law0_base`]). `kept` empty is the ordinary base, laid back whole.
+fn lays_back(path: &str, kept: &[String]) -> bool {
+    if kept.is_empty() {
+        return true;
+    }
+    if path == instances::REGISTRY {
+        return false;
+    }
+    !kept.iter().any(|dir| {
+        path.strip_prefix(dir.as_str())
+            .is_some_and(|r| r.starts_with('/'))
+    })
+}
+
+/// The inputs of one merge-base tree: this tree with the paths the diff names laid back.
+struct BaseTree<'a> {
+    cx: &'a Ctx,
+    commit: &'a str,
+    short: &'a str,
+    changed: &'a [String],
+    untracked: &'a [String],
+    meta: Option<&'a str>,
+    tracked: &'a [String],
+}
+
+impl BaseTree<'_> {
+    /// The base's context and census, with `kept` at this tree's bytes ([`lays_back`]). Every text
+    /// file the base tracks under `crates/` must be in the walk, and the scan is held to that count.
+    fn open(&self, kept: &[String]) -> Result<(Ctx, Vec<CrateInfo>), String> {
+        let (cx, short) = (self.cx, self.short);
+        let mut ov = crate::ctx::Overlay::new();
+        for line in self.changed {
+            let Some((status, path)) = line.split_once('\t') else {
+                continue;
+            };
+            if !lays_back(path, kept) {
+                continue;
+            }
+            if status.starts_with('A') {
+                ov.remove(path);
+                continue;
+            }
+            match cx.git_show(self.commit, path) {
+                Ok(text) => ov.set(path, text),
+                Err(why) => ov.unreadable(path, why),
+            }
+        }
+        for path in self.untracked {
+            ov.remove(path);
+        }
+        if let Some(meta) = self.meta {
+            ov.set_command(super::pinned::METADATA_KEY, meta);
+        }
+        ov.set_command(BASE_SCAN_FLOOR_KEY, self.tracked.len().to_string());
+        let bcx = super::pinned::with_pinned(&cx.with_overlay(ov));
+        let walked: BTreeSet<String> = bcx
+            .list(&crate::ctx::WalkSpec::new(["crates"]))
+            .map_err(|e| format!("the walk of the merge-base {short}: {e}"))?
+            .iter()
+            .map(|p| p.to_string_lossy().replace('\\', "/"))
+            .collect();
+        let unwalked: Vec<&String> = self
+            .tracked
+            .iter()
+            .filter(|p| !walked.contains(*p))
+            .collect();
+        if let Some(first) = unwalked.first() {
+            return Err(format!(
+                "the walk of the merge-base {short} misses {} of the {} text file(s) it tracks \
+                 under crates/ (first: {first}): a scan that does not cover its base is not a \
+                 reading of it",
+                unwalked.len(),
+                self.tracked.len()
+            ));
+        }
+        let mut crates = super::census(&bcx)
+            .map_err(|e| format!("the census of the merge-base {short}: {e}"))?;
+        let (planes, ports) = super::vocabularies(&crates);
+        super::assign_instances(&mut crates, &planes, &ports);
+        Ok((bcx, crates))
+    }
+}
+
+/// THE MERGE-BASE'S LEDGER, AS THE BASE HAD IT: `bcx` is this tree laid back to the base's bytes.
+///
+/// A BASE THAT PREDATES THE LEDGER IS A BASE WITH NO ROWS, NOT A BASE THAT CANNOT BE READ. The
+/// predev -> dev hop measures against `dev`, and `dev` is 1.5.5 (a71b21e9), which never carried
+/// `qa/kind-isolation.toml`. This used to refuse there ("the merge-base's Law 0 cells could not be
+/// read"), so the row named no cell at all on the one hop DEV-GREEN is judged on (BUSBAR-1.6.0.md
+/// Part 5, DONE = DEV-GREEN item 3). The base's cells ARE readable: its bytes are in history and
+/// they are measured by this tree's code, exactly as on any other base. Only its `[[law0]]` rows
+/// are missing, and a base with no rows covers no rise, which is already this row's rule for a row
+/// minted on the branch. So an absent ledger reads as the empty ledger, the same reading the census
+/// gives it (`census`) and the provenance rules give it (`base.rs`: "the state a branch
+/// that ADDS the ledger is in"). It is the strict reading: nothing at the base can cover a cell.
+///
+/// A ledger the base HAS and that will not read is still a refusal: that base is not established.
+fn base_ledger(bcx: &Ctx, short: &str) -> Result<super::KindRegistry, String> {
+    if !bcx.exists(super::REGISTRY_FILE) {
+        return Ok(super::KindRegistry::default());
+    }
+    super::load_registry(bcx).map_err(|e| format!("the ledger of the merge-base {short}: {e}"))
 }
 
 /// [`ROW_LAW0_BASE`]: this tree's Law 0 cells against the merge-base's. `law0` `None` is a scan
@@ -2893,11 +3081,14 @@ pub fn rule_law0_base(
             ROW_LAW0_BASE,
             "no neutral Law 0 cell grew over the merge-base",
             format!(
-                "against {short}: {} cell(s), {} hit(s) here and {} at the base; {drained} \
-                 drained, {moved} moved under a row this branch raised",
+                "against {short}: {} cell(s), {} hit(s) here and {} cell(s), {} hit(s) at the \
+                 base; {drained} drained, {moved} moved under a row this branch raised. The base \
+                 was measured over {}",
                 now.len(),
                 now.values().sum::<usize>(),
-                base.counts.values().sum::<usize>()
+                base.counts.len(),
+                base.counts.values().sum::<usize>(),
+                base.how
             ),
         );
     }
@@ -2905,9 +3096,15 @@ pub fn rule_law0_base(
         ROW_LAW0_BASE,
         "a neutral crate's Law 0 cell grew over the merge-base",
         format!(
-            "{grown_total} hit(s) grown over the merge-base {short}, {} cell(s): {}",
+            "{grown_total} hit(s) grown over the merge-base {short}, {} cell(s): {}. Here {} \
+             cell(s), {} hit(s); at the base {} cell(s), {} hit(s), measured over {}",
             findings.len(),
-            findings.join(" | ")
+            findings.join(" | "),
+            now.len(),
+            now.values().sum::<usize>(),
+            base.counts.len(),
+            base.counts.values().sum::<usize>(),
+            base.how
         ),
     )
 }
@@ -5023,6 +5220,7 @@ mod tests {
                 .iter()
                 .map(|(k, a, n)| (((*k).to_string(), (*a).to_string()), *n))
                 .collect(),
+            how: "the planted base's files; its own vocabulary".to_string(),
         }
     }
 
@@ -5265,6 +5463,213 @@ mod tests {
         assert!(row.detail.starts_with("no-base"), "{}", row.detail);
         let unrun = rule_law0_base(&reg, None, Ok(&law0_base_of("b", BASE_CELLS, BASE_ROWS)));
         assert_eq!(unrun.status, crate::ledger::Status::Fail);
+    }
+
+    /// A context over an empty fixture root carrying `ov`: the merge-base's tree as
+    /// [`read_law0_base`] lays it down.
+    fn base_cx_with(ov: crate::ctx::Overlay, tag: &str) -> (Ctx, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join(format!(
+            "xtask-law0-base-{tag}-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let cx = Ctx::at(&dir, dir.join("scratch")).expect("a fixture context");
+        (cx.with_overlay(ov), dir)
+    }
+
+    /// RED ARM, THE PREDEV -> DEV HOP. The merge-base with `dev` is 1.5.5 (a71b21e9), which never
+    /// carried `qa/kind-isolation.toml`. Its cells are read and judged, not refused: a neutral cell
+    /// the branch grew from nothing is RED as `law0-grown` over "no `[[law0]]` row there", and the
+    /// rows this tree carries for it cover none of it (each is minted on the branch).
+    #[test]
+    fn a_base_that_predates_the_ledger_is_judged_not_refused() {
+        let mut ov = crate::ctx::Overlay::new();
+        ov.remove(super::super::REGISTRY_FILE);
+        let (bcx, dir) = base_cx_with(ov, "absent");
+        let ledger = base_ledger(&bcx, "a71b21e9");
+        let _ = std::fs::remove_dir_all(&dir);
+        let ledger = ledger.expect("a base without the ledger is a base with no rows");
+        assert!(ledger.law0.is_empty());
+
+        let base = Law0Base {
+            commit: "a71b21e9fa".to_string(),
+            counts: law0_counts_of(&[("busbar", "plane", 900)]),
+            rows: ledger
+                .law0
+                .iter()
+                .map(|r| ((r.krate.clone(), r.axis.clone()), r.count))
+                .collect(),
+            how: ONE_FIVE_FIVE_HOW.to_string(),
+        };
+        let head = law0_counts_of(&[("busbar", "plane", 824), ("busbar-kernel", "plane", 12)]);
+        let reg = law0_reg(&[("busbar", "plane", 824), ("busbar-kernel", "plane", 12)]);
+        let judged = rule_law0_base(&reg, Some(&head), Ok(&base));
+        assert_eq!(
+            judged.status,
+            crate::ledger::Status::Fail,
+            "{}",
+            judged.detail
+        );
+        assert!(!judged.detail.contains("no-base"), "{}", judged.detail);
+        assert!(
+            judged.detail.contains(
+                "law0-grown\tbusbar-kernel \u{d7} plane\t0 -> 12 hit(s) over the same cell at the \
+                 merge-base a71b21e9 (no `[[law0]]` row there)"
+            ),
+            "{}",
+            judged.detail
+        );
+        // The cell the monolith carried at the base and the branch drained is not this row's red.
+        assert!(
+            !judged.detail.contains("busbar \u{d7} plane"),
+            "{}",
+            judged.detail
+        );
+    }
+
+    /// How a 1.5.5 base reading states its denominators (the shape [`read_law0_base`] writes).
+    const ONE_FIVE_FIVE_HOW: &str = "502 text file(s) the base tracks under crates/, every one \
+        walked; TODAY'S vocabulary, because the base predates the plugin kinds (no plane-kind \
+        crate)";
+
+    /// RED ARM, ARCHITECT 2026-10-12 (a): A BASE OLDER THAN THE PLUGIN KINDS IS MEASURED WITH
+    /// TODAY'S VOCABULARY, NEVER EXEMPTED. A neutral cell that grew over the 1.5.5 measure is RED,
+    /// the monolith's own cell included, and the row states both sides with their denominators.
+    #[test]
+    fn a_cell_grown_over_the_one_five_five_measure_is_red() {
+        let base = Law0Base {
+            commit: "a71b21e9fa".to_string(),
+            counts: law0_counts_of(&[("busbar", "plane", 820), ("busbar", "transport", 300)]),
+            rows: BTreeMap::new(),
+            how: ONE_FIVE_FIVE_HOW.to_string(),
+        };
+        let head = law0_counts_of(&[("busbar", "plane", 824), ("busbar", "transport", 208)]);
+        let reg = law0_reg(&[("busbar", "plane", 824), ("busbar", "transport", 208)]);
+        let judged = rule_law0_base(&reg, Some(&head), Ok(&base));
+        assert_eq!(
+            judged.status,
+            crate::ledger::Status::Fail,
+            "{}",
+            judged.detail
+        );
+        assert!(
+            judged
+                .detail
+                .starts_with("4 hit(s) grown over the merge-base a71b21e9"),
+            "{}",
+            judged.detail
+        );
+        assert!(
+            judged
+                .detail
+                .contains("law0-grown\tbusbar \u{d7} plane\t820 -> 824"),
+            "{}",
+            judged.detail
+        );
+        assert!(
+            !judged.detail.contains("transport\t300"),
+            "{}",
+            judged.detail
+        );
+        assert!(
+            judged.detail.contains(
+                "Here 2 cell(s), 1032 hit(s); at the base 2 cell(s), 1120 hit(s), measured over \
+                 502 text file(s)"
+            ),
+            "{}",
+            judged.detail
+        );
+        assert!(
+            judged.detail.contains("TODAY'S vocabulary"),
+            "{}",
+            judged.detail
+        );
+        // Drained to the 1.5.5 measure, the same cell is not this row's red.
+        let drained = law0_counts_of(&[("busbar", "plane", 820), ("busbar", "transport", 208)]);
+        assert_eq!(
+            rule_law0_base(&reg, Some(&drained), Ok(&base)).status,
+            crate::ledger::Status::Pass
+        );
+    }
+
+    /// Which paths the 1.5.5 reading keeps at this tree's bytes: the plugin crates this tree added
+    /// (by directory, never a prefix of another crate's name) and the instance registry, and
+    /// nothing at all on an ordinary base.
+    #[test]
+    fn only_the_added_plugin_crates_and_the_registry_keep_todays_bytes() {
+        let kept = vec!["crates/busbar-plane-llm".to_string()];
+        assert!(lays_back("crates/busbar-plane-llm/src/lib.rs", &[]));
+        assert!(lays_back(instances::REGISTRY, &[]));
+        assert!(!lays_back("crates/busbar-plane-llm/src/lib.rs", &kept));
+        assert!(!lays_back("crates/busbar-plane-llm/Cargo.toml", &kept));
+        assert!(!lays_back(instances::REGISTRY, &kept));
+        assert!(lays_back("crates/busbar-plane-llm-extra/src/lib.rs", &kept));
+        assert!(lays_back("crates/busbar-kernel/src/lib.rs", &kept));
+        assert!(lays_back("crates/busbar/src/main.rs", &kept));
+        assert!(lays_back("qa/kind-isolation.toml", &kept));
+    }
+
+    /// RED ARM, THE BASE'S OWN DENOMINATOR. 1.5.5 tracks 502 text files under `crates/`, under the
+    /// 600 the tree under judgement is held to, so its scan refused and the row named no cell. The
+    /// merge-base reading is held to the count the base itself tracks: that count reads, one file
+    /// short of it is still a refusal, and a context that is not the base reading keeps the floor.
+    #[test]
+    fn the_base_reading_is_held_to_its_own_count() {
+        let mut ov = crate::ctx::Overlay::new();
+        ov.set("crates/a/Cargo.toml", "[package]\nname = \"a\"\n");
+        ov.set("crates/a/src/lib.rs", "pub fn a() {}\n");
+        let (cx, dir) = base_cx_with(ov.clone(), "floor");
+        std::fs::create_dir_all(dir.join("crates")).expect("the fixture's crates/");
+        let judged = scan_set(&cx).map(|(files, _)| files.len());
+
+        let mut base = ov.clone();
+        base.set_command(BASE_SCAN_FLOOR_KEY, "2");
+        let read = scan_set(&cx.with_overlay(base)).map(|(files, _)| files.len());
+
+        let mut short = ov;
+        short.set_command(BASE_SCAN_FLOOR_KEY, "3");
+        let refused = scan_set(&cx.with_overlay(short)).map(|(files, _)| files.len());
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let why = judged.expect_err("the tree under judgement keeps its floor");
+        assert!(
+            why.contains(&format!("below the floor of {MIN_SCANNED}")),
+            "{why}"
+        );
+        assert_eq!(read, Ok(2), "the base's own count reads");
+        let why = refused.expect_err("one file short of the base's count is a refusal");
+        assert!(why.contains("below the floor of 3"), "{why}");
+    }
+
+    /// The other half of the same rule: a base that HAS the ledger and cannot read it is not
+    /// established, and stays a refusal; a base's ledger that reads is the ledger used.
+    #[test]
+    fn a_base_ledger_that_will_not_read_is_still_refused() {
+        let mut ov = crate::ctx::Overlay::new();
+        ov.unreadable(
+            super::super::REGISTRY_FILE,
+            "planted: the object is corrupt",
+        );
+        let (bcx, dir) = base_cx_with(ov, "unreadable");
+        let refused = base_ledger(&bcx, "4f36b973");
+        let _ = std::fs::remove_dir_all(&dir);
+        let why = refused.expect_err("an unreadable base ledger is not an empty one");
+        assert!(
+            why.contains("the ledger of the merge-base 4f36b973"),
+            "{why}"
+        );
+
+        let mut ov = crate::ctx::Overlay::new();
+        ov.set(
+            super::super::REGISTRY_FILE,
+            "[[law0]]\ncrate = \"busbar-kernel\"\naxis = \"plane\"\ncount = \"12\"\ncite = \"planted\"\n",
+        );
+        let (bcx, dir) = base_cx_with(ov, "present");
+        let read = base_ledger(&bcx, "4f36b973");
+        let _ = std::fs::remove_dir_all(&dir);
+        let read = read.expect("a ledger that reads");
+        assert_eq!(read.law0.len(), 1, "{:?}", read.law0);
+        assert_eq!(read.law0[0].count, 12);
     }
 
     #[test]
