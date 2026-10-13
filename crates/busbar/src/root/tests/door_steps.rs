@@ -5871,3 +5871,33 @@ done
         );
     }
 }
+
+/// A MODEL'S `protocol` OVERRIDE REACHES THE PLANE (#51): the section the root hands the plane
+/// serving the `pools` map carries each model's own `protocol` where it names one, and nothing for a
+/// model that names none (its provider's stands). RED: a root that drops the member hands the plane
+/// no override, so the plane speaks the provider's dialect to that model.
+#[test]
+fn a_models_protocol_override_is_handed_to_the_plane() {
+    let def: busbar_kernel::config::ProviderDef =
+        serde_yaml::from_str("protocol: openai\nbase_url: http://127.0.0.1:9\n").expect("a def");
+    let defs = std::collections::HashMap::from([("p".to_string(), def)]);
+    let deploy = busbar_kernel::config::deploy_from_yaml_str(
+        "store: {module: memory}\nproviders:\n  p:\n    api_key: { env: BUSBAR_TEST_KEY }\n\
+         models:\n  over:\n    provider: p\n    protocol: anthropic\n  plain:\n    provider: p\n",
+    )
+    .expect("parses");
+    let cfg = busbar_kernel::config::resolve(&deploy, &defs).expect("resolves");
+    let sections = super::kernel_sections(&cfg);
+    let models = sections
+        .get(busbar_contract::section::RESERVED_MODELS_KEY)
+        .expect("the models section");
+    assert_eq!(
+        models["over"]["protocol"].as_str(),
+        Some("anthropic"),
+        "{models:?}"
+    );
+    assert!(
+        models["plain"].get("protocol").is_none(),
+        "a model naming no protocol states none: {models:?}"
+    );
+}

@@ -112,3 +112,28 @@ fn the_glob_takes_prefix_suffix_and_middle_wildcards() {
     assert!(!glob_match("a*c*e", "abde"));
     assert!(glob_match("exact", "exact") && !glob_match("exact", "exactly"));
 }
+
+/// A MODEL'S OWN `protocol` OVERRIDES ITS PROVIDER'S (#51, THE DESIGN §2 BEDROCK-INVOKE ruling): the
+/// model is spoken in the dialect it names, a sibling model on the same provider keeps the
+/// provider's, and a dialect the plane does not serve is refused naming the model (fail-closed).
+/// RED: a plane that reads only the provider's `protocol` writes the overriding model's requests
+/// in `openai` and accepts an unknown override.
+#[test]
+fn a_models_protocol_overrides_its_providers_and_an_unknown_one_is_refused() {
+    let mut v = settings();
+    v["models"]["gpt-as-ant"] = json!({ "provider": "oai", "protocol": "anthropic" });
+    let s = Shaping::from_settings(&v).expect("reads");
+    assert_eq!(s.lane("gpt-as-ant").expect("the lane").dialect, "anthropic");
+    assert_eq!(
+        s.lane("gpt").expect("the sibling").dialect,
+        "openai",
+        "a model naming no protocol keeps its provider's"
+    );
+    let mut v = settings();
+    v["models"]["gpt"]["protocol"] = json!("klingon");
+    let refused = Shaping::from_settings(&v).unwrap_err();
+    assert!(
+        refused.contains("model 'gpt' uses unknown protocol 'klingon'"),
+        "{refused}"
+    );
+}
