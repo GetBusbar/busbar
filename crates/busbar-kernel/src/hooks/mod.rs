@@ -1398,7 +1398,7 @@ pub async fn fetch_status(
 /// `kind: secret` plugin, inline on a Tokio worker with no `spawn_blocking` and no cache: a Vault
 /// round-trip per poll, a worker parked for the plugin's full timeout whenever Vault is slow, and a
 /// `tracing::info!` naming the setting and its reference on every single call.
-/// `run_chain_on_request_path`'s own doc describes exactly this hazard and offloads for it. So the
+/// The auth chain's request path awaits its doors for exactly this hazard. So the
 /// classification is done by SHAPE instead (`config::secret::classify_setting` — the same
 /// classifier `resolve_settings` uses, so the two cannot drift about what a reference is), which
 /// reads nothing and calls nothing.

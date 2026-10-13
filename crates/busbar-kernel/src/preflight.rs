@@ -145,12 +145,12 @@ pub type HookAxisBuild =
         &std::sync::Arc<PluginRegistry>,
     ) -> Result<std::sync::Arc<dyn busbar_contract::hook_calls::HookAxis>, String>;
 
-/// A test build has no root: its store and ranking fixtures stand in for the root's entries, the
-/// in-crate secret double ([`crate::test_support::secrets`]) as the secret axis, and the test axis
-/// for the exports.
+/// A test build has no root: its store double ([`crate::test_support::store_double`]) and ranking
+/// double stand in for the root's entries, the in-crate secret double
+/// ([`crate::test_support::secrets`]) as the secret axis, and the test axis for the exports.
 #[cfg(any(test, feature = "test-support"))]
 const STAND_IN: RootInstall = RootInstall {
-    stores: &[fixture_store::linked::STORE],
+    stores: &[crate::test_support::store_double::STORE],
     registry_build: Some(crate::test_support::registry_stand_in),
     plugins_fetch: Some(crate::test_support::fetch_stand_in),
     hook_axis: Some(crate::test_support::hook_axis_stand_in),
@@ -160,11 +160,11 @@ const STAND_IN: RootInstall = RootInstall {
 };
 
 /// The hook doors a test build links in place of the root's (the stand-in hook axis,
-/// [`crate::test_support::hook_axis_stand_in`]): the ranking door, under its feature.
+/// [`crate::test_support::hook_axis_stand_in`]): the ranking double, under its feature.
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) const STAND_IN_HOOK_DOORS: &[busbar_contract::abi::mechanism::door::DoorFn] = &[
     #[cfg(feature = "hooks-ranking")]
-    fixture_hook::linked::door,
+    crate::test_support::ranking_double::door,
 ];
 
 /// The composition root's linked store and hook entries (the build's in-process stores and, when

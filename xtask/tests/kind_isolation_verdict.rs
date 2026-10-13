@@ -19,8 +19,8 @@ use xtask::gates::execute;
 use xtask::gates::kind_isolation::KindIsolationGate;
 use xtask::ledger::Status;
 
-const PLANT: &str = "crates/store-memory/src/gates_fast_plant.rs";
-const LIB: &str = "crates/store-memory/src/lib.rs";
+const PLANT: &str = "crates/busbar-store-memory/src/gates_fast_plant.rs";
+const LIB: &str = "crates/busbar-store-memory/src/lib.rs";
 
 const PLANT_TEXT: &str = r#"//! gates-fast known-bad plant: every line below breaks a rule.
 use busbar_plane_llm::VERSION;
@@ -52,10 +52,34 @@ fn repo_root() -> PathBuf {
         .to_path_buf()
 }
 
+/// The store crate's `lib.rs` as the gate reads it: the crate is pinned (P5), and the gate mounts
+/// its checkout at `crates/<package>` beneath any plant, so the bytes are the checkout's.
+fn pinned_store_lib(cx: &Ctx) -> String {
+    let meta = cx
+        .cargo_metadata("Cargo.toml")
+        .expect("cargo metadata answers");
+    let meta: serde_json::Value = serde_json::from_str(&meta).expect("cargo metadata is JSON");
+    let manifest = meta["packages"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|p| {
+            p["name"] == "busbar-store-memory"
+                && p["source"].as_str().is_some_and(|s| s.starts_with("git+"))
+        })
+        .and_then(|p| p["manifest_path"].as_str())
+        .expect("the store crate is a pinned git package");
+    let lib = PathBuf::from(manifest)
+        .parent()
+        .expect("a manifest sits in its crate directory")
+        .join("src/lib.rs");
+    std::fs::read_to_string(&lib).unwrap_or_else(|e| panic!("{}: {e}", lib.display()))
+}
+
 #[test]
 fn a_planted_store_crate_coupling_is_found_exactly_as_the_serial_gate_found_it() {
     let cx = Ctx::new(repo_root()).expect("the real tree opens with a writable scratch dir");
-    let lib = cx.read(LIB).expect("the store crate's lib.rs reads");
+    let lib = pinned_store_lib(&cx);
     let mut ov = Overlay::new();
     ov.set(PLANT, PLANT_TEXT);
     ov.set(LIB, format!("{lib}mod gates_fast_plant;\n"));

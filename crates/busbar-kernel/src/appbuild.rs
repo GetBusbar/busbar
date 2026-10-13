@@ -534,7 +534,7 @@ impl InstalledLimits {
             destinations,
         } = self;
         guard.commit();
-        crate::plane_host::egress_trust::destinations_applied(&destinations);
+        crate::egress::trust::destinations_applied(&destinations);
         staged.armed = false;
         crate::rate_apply::rates_applied(&rates.raw());
     }
@@ -1717,7 +1717,8 @@ pub fn build_app_from_config(
         plane_slots.insert(fallback_runtime_key, slot);
     }
 
-    // THE AUTHORIZATION SERVER, built ONCE, and only when the operator asked for one. Everything
+    // THE AUTHORIZATION SERVER, built once per generation, and only when the operator asked for
+    // one. Everything
     // this plane costs hangs off this `Option`: absent, nothing below runs, `App::oauth_as` is
     // `None`, `oauth_as::routes::mount` returns the router untouched, and no sweeper exists.
     //
@@ -1771,7 +1772,14 @@ pub fn build_app_from_config(
             // act this call site used to perform inline (`Storage::sweep_expired` is the only thing
             // that reclaims anything in `oauth-as`, and it runs when it is called and never
             // otherwise; spawned once per generation).
-            Some((seam.build)(&checked.block, secrets, protected_resources)?)
+            // The PRIOR generation's server goes in with it: what the server holds carries across
+            // the swap, so a reload does not void its tokens, clients, sessions and replay ledgers.
+            Some((seam.build)(
+                &checked.block,
+                secrets,
+                protected_resources,
+                prior.and_then(state::App::oauth_as_any),
+            )?)
         }
     };
 

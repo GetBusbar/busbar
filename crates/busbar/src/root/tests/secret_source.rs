@@ -12,8 +12,8 @@
 //!
 //! Each linked door is driven where a failing reference can meet a caller:
 //! * at REQUEST time, a member program whose `env` reference does not resolve (the loader declares
-//!   no such member; the open naming it is the connector's fixed-class refusal), unresolvable at
-//!   compose or after an apply;
+//!   the reference, the connector resolves it at the SPAWN and refuses the open with its
+//!   fixed-class refusal), unresolvable at compose, or gone by an apply after its spawn;
 //! * at COMPOSE time, a member's credential (a token exchange's subject token, a provider's
 //!   `api_key`): the boot is refused with the operator's text and nothing is served;
 //! * across an APPLY, the same credential gone: the door keeps the generation it serves, and the
@@ -123,10 +123,10 @@ fn missing(case: &str) -> String {
         .to_string()
 }
 
-/// A member program's `env` secret reference resolves through the linked secret plugins, as the
-/// root's boot installs them (the first install holds; this is the same one).
+/// A member program's `env` secret reference resolves through the linked secret plugins at its
+/// SPAWN, as the root's boot installs them (the first install holds; this is the same one).
 fn member_secrets_installed() {
-    let _ = crate::root::loader::dispatch::install_member_secrets(
+    let _ = busbar_core_connector::compose::install_spawn_secrets(
         busbar_kernel::config::secret::resolve_linked_string,
     );
 }
@@ -242,7 +242,7 @@ fn every_linked_door_plane_is_driven() {
 }
 
 /// THE TOOL DOOR, REQUEST TIME: a member program whose `env` reference does not resolve (an unset variable,
-/// a missing file) is no member, and a caller's call to its tool is refused with nothing of the
+/// a missing file) is never spawned, and a caller's call to its tool is refused with nothing of the
 /// reference's source.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn tool_door_a_program_members_unresolved_env_reaches_the_caller_without_its_source() {
@@ -274,8 +274,9 @@ async fn tool_door_a_program_members_unresolved_env_reaches_the_caller_without_i
 }
 
 /// THE TOOL DOOR, ACROSS AN APPLY: a member program served while its `env` reference resolved, the variable
-/// then gone and the configuration applied: the refreshed door holds no such member, and the
-/// caller's call is refused with nothing of its source.
+/// then gone and the configuration applied: the reference resolved at the program's SPAWN, so the
+/// program it spawned keeps serving the unchanged member, and the caller's render carries nothing
+/// of its source.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn tool_door_a_program_members_env_gone_by_an_apply_reaches_the_caller_without_its_source() {
     let _one = PUBLISHING.lock().await;
@@ -298,9 +299,10 @@ async fn tool_door_a_program_members_env_gone_by_an_apply_reaches_the_caller_wit
     rig.live.apply(&rig.app);
     let (status, headers, body) = call(&rig).await;
     assert_clean(instance, status, &headers, &body, &secret);
+    assert_eq!(status, StatusCode::OK, "the spawned program keeps serving");
     assert!(
-        !String::from_utf8_lossy(&body).contains("from the server"),
-        "the refreshed door holds no such member"
+        String::from_utf8_lossy(&body).contains("from the server"),
+        "the member is served by the program spawned while its reference resolved"
     );
 }
 
