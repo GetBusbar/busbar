@@ -1240,6 +1240,10 @@
           "optional": true,
           "type": "String"
         },
+        "refresh_token_ttl_secs": {
+          "optional": true,
+          "type": "u64"
+        },
         "signing_key": {
           "optional": true,
           "type": "SecretRef"
