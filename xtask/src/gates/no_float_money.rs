@@ -1581,12 +1581,13 @@ fn read_args(bytes: &[u8], text: &str, mut i: usize) -> Option<(String, usize)> 
 /// Does a silent zero default follow the accessor that starts at `start` and ends at `i`? Returns
 /// the index past it. The default is judged by VALUE ([`is_zero_value`]), in every shape that
 /// substitutes it: `unwrap_or_default()`, `unwrap_or(Z)`, `unwrap_or_else(Z)`, `map_or(Z, f)`,
-/// `map_or_else(Z, f)`, and `if let Some(n) = <read> { … } else { Z }`.
+/// `map_or_else(Z, f)`, `if let Some(n) = <read> { … } else { Z }` and
+/// `match <read> { … None => Z }`.
 fn zero_default_after(flat: &Flat, start: usize, i: usize) -> Option<usize> {
     let bytes = flat.text.as_bytes();
     let next = skip_call(bytes, &flat.text, i)?;
     if bytes.get(next) == Some(&b'{') {
-        return if_let_else_zero(flat, start, next);
+        return if_let_else_zero(flat, start, next).or_else(|| match_none_zero(flat, start, next));
     }
     let dot = skip_to_dot(bytes, &flat.text, i)?;
     let (name, after) = read_ident(bytes, &flat.text, dot);
@@ -1603,6 +1604,48 @@ fn zero_default_after(flat: &Flat, start: usize, i: usize) -> Option<usize> {
         }
         _ => None,
     }
+}
+
+/// `match <read> { … None => Z, … }` (or `_ => Z`) with `Z` zero (audit xtask-E HIGH 4): the `{` at
+/// `body` opens the `match` body, and the read starting at `start` must be its scrutinee (no `{`,
+/// `}` or `;` between the `match` and the read). An arm ends at a `,` at its own depth, or at the `}`
+/// that closes a block arm.
+fn match_none_zero(flat: &Flat, start: usize, body: usize) -> Option<usize> {
+    let bytes = flat.text.as_bytes();
+    let head = &flat.text[..start];
+    let at = word_positions(head, "match").last()?;
+    if head[at..].contains(['{', '}', ';']) {
+        return None;
+    }
+    let close = balanced(bytes, body, b'{', b'}')?;
+    let arms = &flat.text[body + 1..close - 1];
+    // A block arm needs no comma, so its closing `}` ends it once the arm has its `=>` — a `}`
+    // before the `=>` closes a struct pattern instead.
+    let mut ends: Vec<(usize, usize)> = Vec::new();
+    let mut depth = 0i32;
+    let mut arm_start = 0usize;
+    for (k, b) in arms.bytes().enumerate() {
+        match b {
+            b'(' | b'[' | b'{' => depth += 1,
+            b')' | b']' | b'}' => depth -= 1,
+            _ => {}
+        }
+        if depth == 0 && b == b',' {
+            ends.push((arm_start, k));
+            arm_start = k + 1;
+        } else if depth == 0 && b == b'}' && arms[arm_start..k].contains("=>") {
+            ends.push((arm_start, k + 1));
+            arm_start = k + 1;
+        }
+    }
+    ends.push((arm_start, arms.len()));
+    let zero_arm = ends.iter().any(|&(from, to)| {
+        arms[from..to].split_once("=>").is_some_and(|(pat, value)| {
+            let pat = pat.trim();
+            (pat == "_" || pat == "None" || pat.ends_with("::None")) && is_zero_value(value)
+        })
+    });
+    zero_arm.then_some(close)
 }
 
 /// `if let Some(n) = <read> { … } else { Z }` with `Z` zero: the `{` at `body` opens the `if let`
@@ -3113,6 +3156,16 @@ impl Gate for NoFloatMoneyGate {
                 "an if-let with a zero else",
                 "if let Some(n) = v.as_u64() { n } else { 0 }",
             ),
+            // AUDIT XTASK-E HIGH 4: A `match` WHOSE `None` (OR WILDCARD) ARM IS ZERO. A `{` after the
+            // read was judged only as an `if let` body, so each of these was GREEN.
+            (
+                "a match with a zero None arm",
+                "match v.as_u64() { Some(n) => n, None => 0 }",
+            ),
+            (
+                "a match with a block arm and a zero wildcard",
+                "match v.get(\"tokens\").and_then(Json::as_u64) { Some(n) => { n } _ => 0u64 }",
+            ),
         ] {
             report.push(plant(
                 cx,
@@ -3287,6 +3340,20 @@ impl Gate for NoFloatMoneyGate {
         );
         report.push(Case {
             name: "a read that propagates None instead of defaulting stays green".to_string(),
+            covers: vec![ROW_COUNT_READ.to_string()],
+            expected: crate::gates::Expect::Green,
+            got: verdict_expect(self, &cx.with_overlay(ov)),
+        });
+
+        // AND A `match` WHOSE `None` ARM REFUSES IS THE CORRECT SHAPE: judging the `match` must not
+        // turn a refusal into a finding.
+        let mut ov = Overlay::new();
+        ov.set(
+            "crates/busbar-plane-llm/src/planted_refusing_match.rs",
+            "use serde_json::Value;\npub fn planted(v: &Value) -> Result<u64, Refused> {\n    match v.as_u64() { Some(n) => Ok(n), None => Err(Refused) }\n}\n",
+        );
+        report.push(Case {
+            name: "a match whose None arm refuses stays green".to_string(),
             covers: vec![ROW_COUNT_READ.to_string()],
             expected: crate::gates::Expect::Green,
             got: verdict_expect(self, &cx.with_overlay(ov)),
@@ -3911,6 +3978,22 @@ mod tests {
             vec![(3, "read_count_u64"), (6, "read_count_u64")],
             "the helper defaulted to zero must be a hit, and the undefaulted read must not"
         );
+    }
+
+    /// AUDIT XTASK-E HIGH 4: A ZERO DEFAULT IN A `match` IS THE SAME SILENT ZERO. Lines 2-3 default
+    /// to zero (a `None` arm, a block arm and a path-form read with an `Option::None` arm); lines 4-5
+    /// refuse or name a non-zero default and must not be hits.
+    #[test]
+    fn a_zero_default_in_a_match_is_a_hit() {
+        let src = "fn f(v: &Value) -> u64 {\n\
+                   \x20   let c = match v.as_u64() { Some(n) => n, None => 0 };\n\
+                   \x20   let d = match Json::as_i64(v) { Some(n) => { n } Option::None => { 0 } };\n\
+                   \x20   let g = match v.as_u64() { Some(n) => n, None => return Err(Refused) };\n\
+                   \x20   let h = match v.as_u64() { Some(0) => 1, Some(n) => n, None => 7 };\n\
+                   }\n";
+        let hits = scan_count_reads(src);
+        let lines: Vec<usize> = hits.iter().map(|h| h.line).collect();
+        assert_eq!(lines, vec![2, 3], "the hits were {lines:?}");
     }
 
     /// ITEM 178: THE PENDING ALLOWANCES ARE HELD TO THEIR ARMED NUMBER. A needle names a shape, so
