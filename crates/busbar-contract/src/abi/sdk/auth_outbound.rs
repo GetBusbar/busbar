@@ -216,6 +216,14 @@ impl Diags {
         self.staged.is_empty()
     }
 
+    /// The staged diagnostics, in order: `(id_idx, severity, text)` (a plugin's own tests read
+    /// what it noted here).
+    pub fn iter(&self) -> impl Iterator<Item = (u32, u8, &str)> {
+        self.staged
+            .iter()
+            .map(|(id, sev, text)| (*id, *sev, &**text))
+    }
+
     /// Write them into the reply's envelope, in order.
     fn write<T: AbiOut>(self, out: &mut Out<'_, T>) {
         for (id_idx, severity, text) in self.staged {

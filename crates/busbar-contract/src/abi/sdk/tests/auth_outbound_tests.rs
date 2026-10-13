@@ -1121,3 +1121,17 @@ fn open_and_refresh_hand_the_plugin_its_generation_and_its_refusals() {
         "a refused reload changes nothing"
     );
 }
+
+/// What a plugin staged reads back in order, for its own tests.
+#[test]
+fn staged_diagnostics_read_back_in_order() {
+    let mut d = Diags::default();
+    assert!(d.is_empty());
+    d.push(0, SEVERITY_WARN, "one");
+    d.push(2, SEVERITY_INFO, String::from("two"));
+    assert_eq!(d.len(), 2);
+    assert_eq!(
+        d.iter().collect::<Vec<_>>(),
+        vec![(0, SEVERITY_WARN, "one"), (2, SEVERITY_INFO, "two")]
+    );
+}
