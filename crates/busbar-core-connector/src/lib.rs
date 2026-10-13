@@ -339,7 +339,7 @@ struct Judging {
 /// when it resolves here; a name that does not resolve here goes to the proxy, which resolves it),
 /// then the proxy's own address (a private proxy admitted, cloud metadata never).
 struct Proxied {
-    spec: Arc<proxy::ProxySpec>,
+    spec: Arc<proxy::ProxyHop>,
     judged_class: u32,
     target_judged: bool,
 }
@@ -525,7 +525,7 @@ pub struct Connector {
     /// THE HOST'S I/O every carrier is served from ([`hostio`]): the one holder of OS handles.
     io: Arc<HostIo>,
     /// THE PROXY ENVIRONMENT every framed dial honours ([`proxy`]); `None` = every dial direct.
-    proxy: Option<Arc<proxy::ProxyConfig>>,
+    proxy: Option<Arc<proxy::ProxyChoice>>,
 }
 
 impl std::fmt::Debug for Connector {
@@ -681,15 +681,22 @@ impl Connector {
     /// it ([`proxy`]: the process's `HTTPS_PROXY` / `HTTP_PROXY` / `ALL_PROXY` / `NO_PROXY`, as
     /// 1.5.5's clients honoured them); `None` = every dial direct.
     #[must_use]
-    pub fn proxying(mut self, config: Option<Arc<proxy::ProxyConfig>>) -> Self {
+    pub fn proxying(mut self, config: Option<Arc<proxy::ProxyChoice>>) -> Self {
         self.proxy = config;
         self
+    }
+
+    /// The proxy choice this connector's dials honour (the process's environment, read once), for
+    /// the composition root to hand the kernel's remaining egress engine.
+    #[must_use]
+    pub fn proxy(&self) -> Option<Arc<proxy::ProxyChoice>> {
+        self.proxy.clone()
     }
 
     /// The proxy a dial of `planned` goes through: a framed dial (never a carrier carried as
     /// itself) not pinned `within` an address set, to a host the scheme's slot has a proxy for and
     /// `NO_PROXY` does not exclude.
-    fn tunnel_for(&self, planned: &Planned, within: &[IpAddr]) -> Option<Arc<proxy::ProxySpec>> {
+    fn tunnel_for(&self, planned: &Planned, within: &[IpAddr]) -> Option<Arc<proxy::ProxyHop>> {
         if !planned.framed() || !within.is_empty() {
             return None;
         }

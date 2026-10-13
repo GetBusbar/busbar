@@ -6,8 +6,11 @@
 //! through the connector honours `HTTPS_PROXY` / `HTTP_PROXY` / `ALL_PROXY` / `NO_PROXY` exactly
 //! as 1.5.5's reqwest clients did).
 //!
-//! The choice is the kernel engine's owned CONNECT tunnel (`busbar-kernel`
-//! `egress/engine/mod.rs`, `mod tunnel`), moved verbatim: scheme-scoped slots (https targets use
+//! This is the ONE place the proxy environment is read (ARCHITECT ruling 2026-10-12, a move, not a
+//! copy): the parser is the kernel engine's former one (`busbar-kernel` `egress/engine/mod.rs`,
+//! `mod tunnel`), moved verbatim into here, and it fills the shared choice
+//! (`busbar_contract::proxy_route`), which the composition root hands the kernel's remaining
+//! engine; the kernel reads no environment of its own. The rules: scheme-scoped slots (https targets use
 //! `HTTPS_PROXY`, everything else `HTTP_PROXY`, each falling back to `ALL_PROXY`, uppercase read
 //! before lowercase), `NO_PROXY` with reqwest's full rule set (host, domain suffix, IP literal,
 //! CIDR), `Proxy-Authorization: Basic` from the proxy URL's userinfo, an `https://` proxy refused
@@ -23,154 +26,9 @@
 //! were); a carrier carried as itself (a database's or a directory's raw stream) and a program
 //! never are, as 1.5.5's drivers never were.
 
-use std::net::IpAddr;
 use std::sync::Arc;
 
-/// One boot-resolved proxy endpoint: where to connect and what to put in
-/// `Proxy-Authorization`. Parsed ONCE at boot; shared by refcount from the per-scheme slots
-/// of [`ProxyConfig`].
-#[cfg_attr(test, derive(Debug))]
-pub struct ProxySpec {
-    /// Proxy endpoint as the plain `host:port` CONNECT dial string.
-    host: String,
-    port: u16,
-    /// `Proxy-Authorization: Basic <b64(user:pass)>` prebuilt from the proxy URL's userinfo.
-    auth: Option<String>,
-}
-
-/// The boot-resolved proxy CHOICE, reqwest-scoped: https:// targets use the `https` slot
-/// (`HTTPS_PROXY`, `ALL_PROXY` fallback), everything else uses the `http` slot (`HTTP_PROXY`,
-/// `ALL_PROXY` fallback), and `NO_PROXY` excludes hosts from both. This mirrors hyper-util's
-/// `client::proxy::matcher::Builder::build` (`http: http.or(all)`, `https: https.or(all)`)
-/// and `Matcher::intercept` (NO_PROXY first, then the slot picked by `dst.scheme_str()`) —
-/// the machinery reqwest 0.12 delegates its implicit env behavior to.
-#[cfg_attr(test, derive(Debug))]
-pub struct ProxyConfig {
-    https: Option<Arc<ProxySpec>>,
-    http: Option<Arc<ProxySpec>>,
-    no_proxy: NoProxy,
-}
-
-impl ProxyConfig {
-    /// The per-CONNECT choice: `None` → direct (NO_PROXY-excluded, or no proxy configured
-    /// for the target's scheme), `Some` → tunnel through that proxy.
-    #[must_use]
-    pub fn select(&self, dst_is_https: bool, target_host: &str) -> Option<Arc<ProxySpec>> {
-        if self.no_proxy.matches(target_host) {
-            return None;
-        }
-        if dst_is_https {
-            self.https.clone()
-        } else {
-            self.http.clone()
-        }
-    }
-}
-
-/// Parsed `NO_PROXY` entries, reqwest's full rule set (hyper-util `matcher::NoProxy`, which
-/// documents itself as curl's rules): `*` matches everything; an IP literal matches exactly;
-/// a CIDR block (`10.0.0.0/8`, `fd00::/8`) matches by containment; anything else is a domain
-/// matched exactly or as a `.`-boundary suffix. Like reqwest, an IP-literal target host is
-/// checked ONLY against the IP/CIDR entries and a domain host ONLY against the domain
-/// entries.
-#[cfg_attr(test, derive(Debug))]
-struct NoProxy {
-    entries: Vec<NoProxyEntry>,
-}
-
-#[cfg_attr(test, derive(Debug))]
-enum NoProxyEntry {
-    MatchAll,
-    /// Lowercased, leading dot stripped (`.google.com` ≡ `google.com`, per curl/reqwest).
-    Domain(String),
-    Ip(IpAddr),
-    /// Network address + prefix length, validated ≤32 (v4) / ≤128 (v6) at parse.
-    Cidr(IpAddr, u8),
-}
-
-impl NoProxy {
-    /// Comma-separated entries, whitespace trimmed, empties dropped. Entry classification
-    /// mirrors reqwest: try CIDR, then IP literal, then fall back to domain — a malformed
-    /// CIDR (`10.0.0.0/40`) therefore degrades to a domain entry that never matches, exactly
-    /// as `ipnet` parse failure does under reqwest, rather than aborting boot.
-    fn parse(raw: &str) -> Self {
-        let mut entries = Vec::new();
-        for part in raw.split(',') {
-            let part = part.trim();
-            if part.is_empty() {
-                continue;
-            }
-            if part == "*" {
-                entries.push(NoProxyEntry::MatchAll);
-                continue;
-            }
-            if let Some((addr, len)) = part.split_once('/') {
-                if let (Ok(addr), Ok(len)) = (addr.parse::<IpAddr>(), len.parse::<u8>()) {
-                    let max = if addr.is_ipv4() { 32 } else { 128 };
-                    if len <= max {
-                        entries.push(NoProxyEntry::Cidr(addr, len));
-                        continue;
-                    }
-                }
-            } else if let Ok(addr) = part.parse::<IpAddr>() {
-                entries.push(NoProxyEntry::Ip(addr));
-                continue;
-            }
-            entries.push(NoProxyEntry::Domain(
-                part.trim_start_matches('.').to_ascii_lowercase(),
-            ));
-        }
-        NoProxy { entries }
-    }
-
-    fn matches(&self, target_host: &str) -> bool {
-        // `http::Uri::host()` may carry an IPv6 literal in brackets; strip them before the
-        // IpAddr parse, as hyper-util's NoProxy::contains does.
-        let bare = target_host.trim_start_matches('[').trim_end_matches(']');
-        let ip: Option<IpAddr> = bare.parse().ok();
-        let host = target_host.to_ascii_lowercase();
-        self.entries.iter().any(|entry| match entry {
-            NoProxyEntry::MatchAll => true,
-            NoProxyEntry::Ip(a) => ip == Some(*a),
-            NoProxyEntry::Cidr(net, len) => ip.is_some_and(|h| cidr_contains(net, *len, &h)),
-            NoProxyEntry::Domain(d) => {
-                ip.is_none()
-                    && (host == *d
-                        || (host.len() > d.len()
-                            && host.ends_with(d.as_str())
-                            && host.as_bytes()[host.len() - d.len() - 1] == b'.'))
-            }
-        })
-    }
-}
-
-/// CIDR containment by prefix-length bit compare over octets — the ~10 lines that make an
-/// `ipnet` dependency unnecessary. Families never cross: a v4 block does not match a v6
-/// address and vice versa, INCLUDING v6-mapped forms (`10.0.0.0/8` does NOT match
-/// `::ffff:10.0.0.1` — it is a v6 address), matching `ipnet`/reqwest, which do not
-/// special-case mapped addresses either.
-fn cidr_contains(net: &IpAddr, prefix: u8, addr: &IpAddr) -> bool {
-    match (net, addr) {
-        (IpAddr::V4(n), IpAddr::V4(a)) => octets_prefix_eq(&n.octets(), &a.octets(), prefix),
-        (IpAddr::V6(n), IpAddr::V6(a)) => octets_prefix_eq(&n.octets(), &a.octets(), prefix),
-        _ => false,
-    }
-}
-
-/// The first `prefix` bits of `net` and `addr` are equal. `prefix` is pre-validated against
-/// the address width; `/0` matches everything (whole bytes to compare: none, remainder: 0).
-fn octets_prefix_eq(net: &[u8], addr: &[u8], prefix: u8) -> bool {
-    let whole = usize::from(prefix / 8);
-    let rem = prefix % 8;
-    if net[..whole] != addr[..whole] {
-        return false;
-    }
-    if rem == 0 {
-        return true;
-    }
-    let mask = 0xffu8 << (8 - rem);
-    (net[whole] & mask) == (addr[whole] & mask)
-}
+pub use busbar_contract::proxy_route::{ProxyChoice, ProxyHop};
 
 /// The proxy env value as a REFUSAL may render it: userinfo replaced by `***`, everything
 /// else verbatim.
@@ -218,7 +76,7 @@ fn redact_userinfo(v: &str) -> String {
 /// # Errors
 ///
 /// The value does not read as an `http://` proxy URL with a host.
-pub fn parse_proxy(v: &str) -> Result<ProxySpec, String> {
+pub fn parse_proxy(v: &str) -> Result<ProxyHop, String> {
     let shown = redact_userinfo(v);
     let url = if v.contains("://") {
         v.to_string()
@@ -252,7 +110,7 @@ pub fn parse_proxy(v: &str) -> Result<ProxySpec, String> {
             base64::engine::general_purpose::STANDARD.encode(creds)
         )
     });
-    Ok(ProxySpec { host, port, auth })
+    Ok(ProxyHop::new(host, port, auth))
 }
 
 /// The raw proxy env, read once — a plain value bag so precedence resolution
@@ -302,14 +160,14 @@ impl ProxyEnvValues {
 /// # Errors
 ///
 /// A set value that does not parse ([`parse_proxy`]).
-pub fn resolve_config(env: &ProxyEnvValues) -> Result<Option<Arc<ProxyConfig>>, String> {
+pub fn resolve_config(env: &ProxyEnvValues) -> Result<Option<Arc<ProxyChoice>>, String> {
     let all = env
         .all
         .as_deref()
         .map(parse_proxy)
         .transpose()?
         .map(Arc::new);
-    let scheme_slot = |v: &Option<String>| -> Result<Option<Arc<ProxySpec>>, String> {
+    let scheme_slot = |v: &Option<String>| -> Result<Option<Arc<ProxyHop>>, String> {
         Ok(match v.as_deref() {
             Some(v) => Some(Arc::new(parse_proxy(v)?)),
             None => all.clone(),
@@ -320,11 +178,11 @@ pub fn resolve_config(env: &ProxyEnvValues) -> Result<Option<Arc<ProxyConfig>>, 
     if https.is_none() && http.is_none() {
         return Ok(None);
     }
-    Ok(Some(Arc::new(ProxyConfig {
+    Ok(Some(Arc::new(ProxyChoice::new(
         https,
         http,
-        no_proxy: NoProxy::parse(env.no.as_deref().unwrap_or("")),
-    })))
+        env.no.as_deref().unwrap_or(""),
+    ))))
 }
 
 /// THE PROCESS'S PROXY CHOICE, read once from its environment: `None` when no proxy variable is
@@ -334,7 +192,7 @@ pub fn resolve_config(env: &ProxyEnvValues) -> Result<Option<Arc<ProxyConfig>>, 
 ///
 /// A proxy variable that is set and does not parse: the boot refuses (fail-loud beats silently
 /// egressing direct past a configured proxy), the password never in the text.
-pub fn from_env() -> Result<Option<Arc<ProxyConfig>>, String> {
+pub fn from_env() -> Result<Option<Arc<ProxyChoice>>, String> {
     resolve_config(&ProxyEnvValues::from_process_env())
 }
 
@@ -345,24 +203,12 @@ pub const CONNECT_HEAD_CAP: usize = 8 * 1024;
 /// Wall-clock bound on the CONNECT handshake — the same 10s the socket connect itself carries.
 pub const CONNECT_HANDSHAKE: std::time::Duration = std::time::Duration::from_secs(10);
 
-impl ProxySpec {
-    /// The proxy's own `host:port`, as the connection dials it.
-    #[must_use]
-    pub fn endpoint(&self) -> String {
-        if self.host.contains(':') && !self.host.starts_with('[') {
-            format!("[{}]:{}", self.host, self.port)
-        } else {
-            format!("{}:{}", self.host, self.port)
-        }
-    }
-}
-
 /// `CONNECT host:port HTTP/1.1` (+ Host, + Proxy-Authorization when configured), the bytes the
 /// engine's `connect_handshake` wrote, for `target` (`host:port`, a v6 host bracketed).
 #[must_use]
-pub fn connect_request(target: &str, proxy: &ProxySpec) -> Vec<u8> {
+pub fn connect_request(target: &str, proxy: &ProxyHop) -> Vec<u8> {
     let mut req = format!("CONNECT {target} HTTP/1.1\r\nHost: {target}\r\n");
-    if let Some(auth) = &proxy.auth {
+    if let Some(auth) = proxy.auth() {
         req.push_str("Proxy-Authorization: ");
         req.push_str(auth);
         req.push_str("\r\n");
@@ -411,7 +257,7 @@ pub fn host_of(target: &str) -> &str {
     target.rsplit_once(':').map_or(target, |(host, _)| host)
 }
 
-/// A whole config whose BOTH slots point at one proxy at `host:port`: what a test wires directly
+/// A whole choice whose BOTH slots point at one proxy at `host:port`: what a test wires directly
 /// so parallel tests never race an environment variable.
 #[cfg(test)]
 pub(crate) fn test_config(
@@ -419,23 +265,15 @@ pub(crate) fn test_config(
     port: u16,
     auth: Option<String>,
     no_proxy: &str,
-) -> Arc<ProxyConfig> {
-    let spec = Arc::new(ProxySpec {
-        host: host.to_string(),
-        port,
-        auth,
-    });
-    Arc::new(ProxyConfig {
-        https: Some(spec.clone()),
-        http: Some(spec),
-        no_proxy: NoProxy::parse(no_proxy),
-    })
+) -> Arc<ProxyChoice> {
+    let hop = Arc::new(ProxyHop::new(host.to_string(), port, auth));
+    Arc::new(ProxyChoice::new(Some(hop.clone()), Some(hop), no_proxy))
 }
 
-/// `NO_PROXY` matching alone, as tests read it.
+/// The exemption list alone, as tests read it.
 #[cfg(test)]
 pub(crate) fn no_proxy_matches(entries: &str, target_host: &str) -> bool {
-    NoProxy::parse(entries).matches(target_host)
+    ProxyChoice::new(None, None, entries).exempts(target_host)
 }
 
 #[cfg(test)]

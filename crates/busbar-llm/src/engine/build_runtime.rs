@@ -318,8 +318,8 @@ pub(crate) fn build_runtime(
     let client = if let (true, Some(pr)) = (reuse_prior_client, prior_rt) {
         pr.client.clone()
     } else {
-        crate::engine::install_proxy_tunnel_if_configured()
-            .unwrap_or_else(|e| panic!("upstream proxy tunnel: {e}"));
+        // The proxy choice is the connector's parse of the process environment, installed into the
+        // engine by the composition root at boot (status row 130 E5a); nothing is read here.
         let shard_count = busbar_kernel::topology::UpstreamClients::shard_count();
         let idle_per_host_per_shard = input
             .client_settings
