@@ -258,9 +258,9 @@ extern "C-unwind" fn neutral_reframe(
     StatusClass::Ok
 }
 
-/// A generic PERSISTING `Store` double: the shipped `busbar_store_memory` keeps NO plane records
-/// (the lossy RAM default), so this delegates the required key/usage/metering surface to a real
-/// memory store (so `GovState::new` sees genuine governance behaviour) and PERSISTS the neutral
+/// A generic PERSISTING `Store` double: the RAM store keeps NO plane records across a restart (the
+/// lossy RAM default), so this delegates the required key/usage/metering surface to the kernel's
+/// store double (so `GovState::new` sees genuine governance behaviour) and PERSISTS the neutral
 /// plane-record verbs generically by `(kind, parent)` — exactly what a durable backend does.
 struct GenericPlaneStore {
     inner: crate::governance::MemoryStore,

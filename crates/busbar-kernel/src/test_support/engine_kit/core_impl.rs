@@ -17,8 +17,6 @@ use crate::test_support::TestApp;
 use busbar_contract::records::{AuditRecord, MeteringRow, RecordStore, VirtualKey};
 use busbar_kernel::governance::signing::TokenSigner;
 use busbar_kernel::governance::NewKeySpec;
-use busbar_kernel::plane::calllog::CallRecorded;
-use busbar_kernel::plane::store::PlaneStore;
 use busbar_kernel::plane_host::{EngineHost, LiveHostFactory};
 use busbar_kernel::store::BreakerState;
 use std::any::Any;
@@ -93,22 +91,6 @@ impl EngineTestKit for CoreEngineKit {
                 user: need(user),
             },
         ))
-    }
-
-    fn call_next_seq(&self, principal: &str) -> u64 {
-        crate::calllog::CALLS.next_seq(principal)
-    }
-
-    fn ensure_call_stream_registered(&self) {
-        crate::calllog::ensure_global_call_stream_registered();
-    }
-
-    fn aim_call_sink(&self, store: Option<Arc<dyn PlaneStore>>) {
-        crate::calllog::aim_global_call_sink(store);
-    }
-
-    fn verify_call_rows(&self, rows: &[CallRecorded]) -> Result<(), String> {
-        crate::calllog::verify_call_rows(rows).map_err(|e| format!("{e:?}"))
     }
 
     fn audit_high_water_seq(&self) -> u64 {

@@ -57,11 +57,11 @@
 //! the boot half — and the honest measure of how much of the plane problem is covered.
 
 // S4b: the NEUTRAL PLANE-REGISTRY SURFACE — `PlaneDecl` (the plane vocabulary/seam declaration), the
-// `BuildCtx` its `build` reads, the neutral `PlaneBootCtx` boot-context trait + its `RestoredSummary`
-// return, and the `BootHook` alias — relocated into `busbar-substrate` so an extracted plane crate
+// `BuildCtx` its `build` reads, the neutral `PlaneBootCtx` boot-context trait and the
+// `BootHook` alias — relocated into `busbar-substrate` so an extracted plane crate
 // constructs its own `PlaneDecl` and names every seam type without a path back to core. Re-exported
 // HERE at their old paths so the population glue below, the built-in `PLANE_DECL`s and every in-core
-// caller (`busbar_kernel::plane::registry::{PlaneDecl, BuildCtx, RestoredSummary}`) resolve unchanged.
+// caller (`busbar_kernel::plane::registry::{PlaneDecl, BuildCtx}`) resolve unchanged.
 // What did NOT move: the glue (it names `PlaneDispatch`/the built-in statics, all
 // core-live) and `BootCtx` (its phase fields hold the core-live `App`/`AppHandle`) — `BootCtx` stays
 // here and IMPLEMENTS the neutral `PlaneBootCtx` so a plane hook reads it without naming `App`.
@@ -151,48 +151,6 @@ impl PlaneBootCtx for BootCtx {
             app.spent_token_ledger.set_sink(store.clone());
             app.demotion_record.set_sink(store.clone());
         }
-    }
-
-    /// REGISTER A PLANE'S DURABLE `call` STREAM with the host, in the hydrate phase — the first
-    /// boot step of the per-call log, before the rehydrate. Named HERE, core side, so
-    /// the plane's own hydrate hook registers the stream without its own code naming
-    /// `crate::calllog` or an `App` field: the `with_dispatch_scope`/`HostCtx` mint the register
-    /// does stays wholly inside `calllog::register_call_stream` (minted synchronously, never across an
-    /// `.await`), and the app it reads is the core-owned hydrate-phase `App`. A no-op unless the
-    /// freshly-built app (hydrate phase) is present — byte-identical to the old inline
-    /// `busbar_kernel::calllog::register_call_stream(app)`.
-    fn register_call_stream(&self) {
-        if let Some(app) = self.app.as_ref() {
-            crate::calllog::register_call_stream(app);
-        }
-    }
-
-    /// REHYDRATE A PLANE'S DURABLE `call` CHAIN from the plane-narrowed store, in the hydrate
-    /// phase — the boot rehydrate, run AFTER [`Self::register_call_stream`]. Returns the NEUTRAL
-    /// [`RestoredSummary`] rather than the core-live `calllog::Restored` (which carries
-    /// `audit::ChainBreak`), so the hook logs the outcome without naming a core-live type. The
-    /// `with_dispatch_scope`/`HostCtx` mint stays wholly inside `calllog::restore_from_store_over`
-    /// (minted synchronously, never across an `.await`). The `Err` is mapped to the store error's
-    /// Display string so the hook's unread-call-log warning reads byte-identically. A no-op-shaped
-    /// panic guards the impossible None-app/None-store hydrate call (the hook reaches here only past its
-    /// store guard, in the phase that supplies the app) — byte-identical to the old inline
-    /// `busbar_kernel::calllog::restore_from_store_over(app, store)`.
-    fn restore_call_log(&self) -> Result<RestoredSummary, String> {
-        let app = self.app.as_ref().expect(
-            "restore_call_log runs in the HYDRATE phase, which supplies the freshly-built app",
-        );
-        let store = self.store.as_ref().expect(
-            "restore_call_log runs past the hydrate hook's store guard, so a store is present",
-        );
-        crate::calllog::restore_from_store_over(app, store.as_ref())
-            .map(|r| RestoredSummary {
-                principals: r.principals,
-                records: r.records,
-                empty_chains: r.empty_chains,
-                unreadable: r.unreadable,
-                chain_breaks: r.chain_breaks.iter().map(|b| b.to_string()).collect(),
-            })
-            .map_err(|e| e.to_string())
     }
 
     /// MINT THE NEUTRAL ENGINE HOST over the freshly-built app, in the hydrate phase — the
@@ -707,29 +665,6 @@ pub struct BuildCtx<'a> {
 /// [`PlaneBootCtx::as_any`].
 pub type BootHook = fn(&dyn PlaneBootCtx) -> Result<(), String>;
 
-/// A NEUTRAL, PLAIN-DATA SUMMARY of what a boot rehydrate of a plane's durable per-call log found —
-/// the value [`PlaneBootCtx::restore_call_log`] returns so a plane's hydrate hook can log the outcome
-/// WITHOUT naming the core-live `busbar_kernel::calllog::Restored` type (which carries the rich
-/// `audit::ChainBreak`). Every field is the same value the old `Restored` comparison and logging
-/// relied on: the three counts verbatim, and each chain break as its already-Display-formatted
-/// string (the exact text the hook logged via `%brk`), so an all-default summary means an all-default
-/// restore and the per-break diagnostic reads byte-identically.
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
-pub struct RestoredSummary {
-    /// Principals whose chain position was resumed.
-    pub principals: usize,
-    /// Records read back across every principal — the durability signal.
-    pub records: usize,
-    /// Principals the store enumerated but returned no records for.
-    pub empty_chains: usize,
-    /// Records the store held but this build could NOT decode — counted and SKIPPED per-record on
-    /// restore (each also reported LOUDLY at its skip site). Surfaced here as belt-and-suspenders so
-    /// the boot summary logs it even when every row of a scope was undecodable (`records == 0`).
-    pub unreadable: usize,
-    /// Chains that FAILED to verify, each rendered as the exact break-detail text the hook logs.
-    pub chain_breaks: Vec<String>,
-}
-
 /// BUSBAR'S PUBLISHED CARD-ISSUER KEY, computed core-side and handed to the A2A [`PlaneDecl::start`]
 /// hook as PUBLIC values ONLY — the `kid` and the base64 Ed25519 SPKI an operator hands a counterparty
 /// out of band to pin busbar by. Deliberately NOT the signer and NOT its seed: a boot hook publishes
@@ -759,17 +694,6 @@ pub trait PlaneBootCtx {
     /// gate a hydrate hook opens with, so it skips its restore when the plane's durable state is
     /// ephemeral by design (`store: memory`). `true` iff a plane-narrowed store is present.
     fn has_store(&self) -> bool;
-
-    /// REGISTER THE MCP PLANE'S DURABLE `call` STREAM with the host, in the hydrate phase — the first
-    /// boot step of the per-call log, before the rehydrate. A no-op unless the freshly-built app
-    /// (hydrate phase) is present.
-    fn register_call_stream(&self);
-
-    /// REHYDRATE THE MCP PLANE'S DURABLE `call` CHAIN from the plane-narrowed store, in the hydrate
-    /// phase — the boot rehydrate, run AFTER [`Self::register_call_stream`]. Returns the NEUTRAL
-    /// [`RestoredSummary`] rather than the core-live `calllog::Restored`, so the hook logs the outcome
-    /// without naming a core-live type. The `Err` is the store error's Display string.
-    fn restore_call_log(&self) -> Result<RestoredSummary, String>;
 
     /// ATTACH THE CALLING PLANE'S DURABLE WRITE-THROUGH SINKS (today only the MCP plane has durable task state to attach) — the spent-approval ledger and the
     /// upstream-demotion record — to the plane-narrowed store, in the hydrate phase. A no-op unless

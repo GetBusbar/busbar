@@ -71,11 +71,6 @@ item = "extern 'C-unwind'"
 
 [[finding]]
 rule = "one-memory-abi:c-unwind"
-file = "crates/busbar-kernel/src/calllog.rs"
-item = "extern 'C-unwind'"
-
-[[finding]]
-rule = "one-memory-abi:c-unwind"
 file = "crates/busbar-kernel/src/plane_host/breaker.rs"
 item = "extern 'C-unwind'"
 
@@ -146,32 +141,7 @@ item = "busbar_call"
 
 [[finding]]
 rule = "one-memory-abi:cold-lane"
-file = "crates/plugin-loader/src/auth.rs"
-item = "abi::cold"
-
-[[finding]]
-rule = "one-memory-abi:cold-lane"
-file = "crates/plugin-loader/src/hostlog.rs"
-item = "abi::cold"
-
-[[finding]]
-rule = "one-memory-abi:cold-lane"
 file = "crates/plugin-loader/src/lib.rs"
-item = "ColdEntry"
-
-[[finding]]
-rule = "one-memory-abi:cold-lane"
-file = "crates/plugin-loader/src/lib.rs"
-item = "abi::cold"
-
-[[finding]]
-rule = "one-memory-abi:cold-lane"
-file = "crates/plugin-loader/src/registry.rs"
-item = "ColdEntry"
-
-[[finding]]
-rule = "one-memory-abi:cold-lane"
-file = "crates/plugin-loader/src/registry.rs"
 item = "abi::cold"
 
 [[finding]]

@@ -86,14 +86,13 @@ busbar-kernel-scope = { path = "../busbar-kernel-scope" }
 # dump, and only under the non-default `timing` feature. The default build does not link it.
 libc = { workspace = true, optional = true }
 busbar-plugin-loader = { path = "../plugin-loader" }
-# THE STAND-IN LINKED ROWS (test-only edges): the composition root links the build's default store
-# and ranking hooks onto the cold-kind axis (`preflight::install_linked_rows`); a test build has no
-# root, so these stand in, under `test-support` (which the dev-dependency cycle through the plane
-# crates turns on for this crate's own tests). The store is a fixture, renamed to the role it plays:
-# no source here names the plugin. The ranking row is no crate at all: it is the in-crate R-FIX3
-# double `test_support::ranking_double`, linked only, and the root proves it states what the real
-# ranking door states.
-fixture-store = { workspace = true, optional = true }
+# THE STAND-IN LINKED ROWS are no crate at all: the composition root links the build's store and
+# ranking hooks onto the cold-kind axis (`preflight::install_linked_rows`); a test build has no root,
+# so the in-crate R-FIX3 doubles stand in, linked only — `test_support::store_double` (the store row
+# and the `MemoryStore` the kernel's tests build a `GovState` over) and `test_support::ranking_double`.
+# The kernel names no store crate under any name (THE DESIGN Part 2 #2: the kernel reaches a store
+# only through the store kind's door), and the root proves each double states what the real door
+# states.
 axum = { workspace = true }
 tower = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time", "sync", "signal", "io-util", "io-std", "process"] }
@@ -144,10 +143,6 @@ arc-swap = { workspace = true }
 httpdate = { workspace = true }
 hyper = { workspace = true }
 hyper-util = { workspace = true }
-# The futures-io/tokio-io compat seam `tls::serve_one` bridges the accepted `TcpStream` and the
-# `ConnectionSecurity::wrap` result through (DECISIONS #40) — the same seam the core
-# connection-security `Tls` wrap crosses on the other side of that call.
-tokio-util = { workspace = true }
 # W4.b P2 (absorbed from busbar-substrate): the client WS handshake for the neutral full-duplex
 # WEBSOCKET transport, OPTIONAL behind the `runtime` capability — OFF in a default/shipped build.
 tokio-tungstenite = { workspace = true, optional = true }
@@ -246,7 +241,7 @@ loom-model = ["dep:loom"]
 # Exposes `test_support` to a DEPENDENT crate's tests (the bin's). Never on in a normal build;
 # the bin enables it from its [dev-dependencies] edge only. The contract's test double (its warn
 # capture) is always compiled (ARCHITECT SD-3 queue (4)), so nothing forwards there.
-test-support = ["dep:reqwest", "dep:rcgen", "dep:fixture-store", "busbar-kernel-identity/stand-in", "busbar-plugin-loader/test-support"]
+test-support = ["dep:reqwest", "dep:rcgen", "busbar-kernel-identity/stand-in", "busbar-plugin-loader/test-support"]
 # The debug-only per-method micro-timing in `src/timing` (folded from busbar-timing, OWNER Q70).
 # DEFAULT OFF: with this off, `timeit!` expands to `()` and the RAII guards it produces are
 # zero-sized no-ops, so the `drop(_guard)` calls that end a timed span are compiled in ONLY under this
