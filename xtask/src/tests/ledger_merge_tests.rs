@@ -316,7 +316,7 @@ fn a_row_deleted_on_one_side_and_changed_on_the_other_is_refused() {
     let a = law0("busbar", "auth", "10", "measured");
     let c = |n: &str| law0("busbar", "secret", n, "measured");
     let base = ledger(&[a.clone(), c("3")]);
-    let deleted = ledger(&[a.clone()]);
+    let deleted = ledger(std::slice::from_ref(&a));
     let changed = ledger(&[a, c("2")]);
     assert!(
         refusals(&base, &deleted, &changed).contains("ours deleted the row and theirs changed it")

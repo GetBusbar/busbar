@@ -290,8 +290,11 @@ fn subst_number(text: &str, from: i64, to: i64) -> String {
     out
 }
 
+/// A move's byte spans of X and Y in its clause, then X's and Y's values.
+type Move = ((usize, usize), (usize, usize), i64, i64);
+
 /// The first `X -> Y` in `clause`, as the byte spans of X and Y and their values.
-fn first_move(clause: &str) -> Option<((usize, usize), (usize, usize), i64, i64)> {
+fn first_move(clause: &str) -> Option<Move> {
     let bytes = clause.as_bytes();
     let mut from = 0;
     while let Some(at) = clause[from..].find("->").map(|p| p + from) {
