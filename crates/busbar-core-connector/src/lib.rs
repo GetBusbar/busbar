@@ -1508,7 +1508,10 @@ impl DeclaredConns for Connector {
     /// connector's default trust for a need that names none, offering `name` or the endpoint's
     /// host name, bounded by the open's default timeout. A framed need's stream is refused (its
     /// framer, not the plugin, speaks on it), and so is a `trust` reference other than the need's
-    /// own `trust_from`.
+    /// own `trust_from`. So is an upgrade asked for while bytes the far end sent in the clear are
+    /// still unread at any layer (a short read's rest, a piece parked on the line, the
+    /// connection's inbox): read after it they would pass as the verified far end's (STARTTLS
+    /// response injection), so the connection fails, closed.
     fn upgrade_secure(
         &self,
         caller: InstanceId,
@@ -1558,14 +1561,26 @@ impl DeclaredConns for Connector {
             Some(n) => n.to_owned(),
             None => host_of(&line.target().ok_or(ConnError::Closed)?),
         };
-        match line.upgrade_secure(
+        // What a short read left of a clear piece is the far end's clear bytes, unread: the line
+        // refuses the upgrade over it and fails the connection, and the rest is never read, the
+        // failure is. Held across the upgrade, so no read takes a piece meanwhile.
+        let mut rest = held.rest.lock().expect("rest");
+        let answer = line.upgrade_secure(
             &config,
             &name,
             DEFAULT_OPEN_TIMEOUT,
+            rest.0.is_some(),
             &mut Context::from_waker(&waker),
-        ) {
+        );
+        match answer {
             Poll::Ready(Ok(())) => Ok(()),
-            Poll::Ready(Err(f)) => Err(map(&f)),
+            Poll::Ready(Err(f)) => {
+                if matches!(&f, Failure::Refused(t) if t == compose::UPGRADE_OVER_CLEAR_BYTES) {
+                    rest.0 = None;
+                    rest.1.clear();
+                }
+                Err(map(&f))
+            }
             Poll::Pending => Err(ConnError::Pending),
         }
     }

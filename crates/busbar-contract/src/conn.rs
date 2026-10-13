@@ -297,8 +297,9 @@ pub trait DeclaredConns: Conns {
     ///
     /// # Errors
     ///
-    /// [`ConnError::Pending`], [`ConnError::Refused`] (the stream is framed, already secure, or
-    /// the far end's certificate was refused), [`ConnError::NotOwner`], [`ConnError::Closed`],
+    /// [`ConnError::Pending`], [`ConnError::Refused`] (the stream is framed, already secure,
+    /// bytes the far end sent in the clear are still unread, which fails the stream, or the far
+    /// end's certificate was refused), [`ConnError::NotOwner`], [`ConnError::Closed`],
     /// [`ConnError::Timeout`].
     fn upgrade_secure(
         &self,
