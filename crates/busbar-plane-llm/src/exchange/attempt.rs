@@ -774,13 +774,7 @@ pub fn build(
     );
     let (translated, dropped_controls) = (t.outcome?, t.dropped_controls);
     let pristine = translated.pristine;
-    let body = inject_stream_usage(
-        ingress,
-        lane,
-        &intent,
-        body_is_json,
-        translated.bytes.into_owned(),
-    )?;
+    let body = inject_stream_usage(lane, &intent, body_is_json, translated.bytes.into_owned());
     let path = upstream_path(lane, arrived.operation, intent.wants_stream)
         .ok_or_else(|| internal(ingress))?;
     let (mut target, _canonical) = wire_and_canonical_path(&path);
@@ -811,34 +805,31 @@ pub fn build(
     })
 }
 
-/// The caller's `stream_options` is not an object, so usage cannot be asked for.
+/// The caller's `stream_options` is not an object, so usage cannot be asked for. The plane forwards
+/// such a body unchanged (1.5.5); the sentence stays for the legacy engine that still names it.
 pub const DETAIL_STREAM_OPTIONS_NOT_OBJECT: &str =
     "Invalid type for 'stream_options': expected an object.";
 
 /// A streamed request to a far end that reports usage only when asked is asked, unless the caller
 /// asked already: the governed METERING edit (`stream_options.include_usage`), a byte splice.
 fn inject_stream_usage(
-    ingress: &'static str,
     lane: &Lane,
     intent: &StreamIntent,
     body_is_json: bool,
     payload: Vec<u8>,
-) -> Result<Vec<u8>, Answer> {
+) -> Vec<u8> {
     if !(intent.wants_stream
         && body_is_json
         && decl(lane.dialect).is_some_and(|d| d.stream_usage_requires_opt_in)
         && !intent.client_include_usage)
     {
-        return Ok(payload);
+        return payload;
     }
-    try_inject_stream_include_usage(payload).map_err(|_unmeterable| {
-        answer(
-            ingress,
-            400,
-            KIND_INVALID_REQUEST,
-            DETAIL_STREAM_OPTIONS_NOT_OBJECT,
-        )
-    })
+    // A `stream_options` that is not an object cannot be asked for its usage: the body goes out
+    // as the caller wrote it and the far end answers it, as 1.5.5 left it (v1.5.5
+    // proxy/engine/mod.rs:2379, "`stream_options` present but not an object: leave the body
+    // untouched (the upstream will 400 ...)").
+    try_inject_stream_include_usage(payload).unwrap_or_else(|verbatim| verbatim)
 }
 
 /// The member a streamed request is asked for its usage with, and the object it lives in.
@@ -849,8 +840,8 @@ const INCLUDE_USAGE: &str = "include_usage";
 /// Ask a streamed request for its usage: `stream_options.include_usage = true`, the object made
 /// when absent or null. A byte-level splice over the payload (every other byte stays): the member is
 /// set where it stands, or inserted after the opening brace. `Err` carries the payload back verbatim
-/// when `stream_options` is not an object (the request cannot be asked, and the caller refuses it
-/// rather than bill it blind); a payload that is not a JSON object goes out unchanged.
+/// when `stream_options` is not an object (the request cannot be asked, and the caller forwards it
+/// unchanged, as 1.5.5 did); a payload that is not a JSON object goes out unchanged.
 ///
 /// # Errors
 ///

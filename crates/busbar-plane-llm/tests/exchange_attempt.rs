@@ -288,9 +288,14 @@ fn a_streamed_request_asks_a_far_end_that_reports_usage_only_when_asked() {
         &h,
         r#"{"model":"gpt","stream":true,"stream_options":7,"messages":[]}"#,
     );
-    let refused = build(&a, &h, &shaping(), "p", "gpt").expect_err("refused");
-    assert_eq!(refused.status, 400);
-    assert_eq!(refused.message, DETAIL_STREAM_OPTIONS_NOT_OBJECT);
+    // 1.5.5 left a `stream_options` that is not an object untouched and let the far end answer it
+    // (v1.5.5 proxy/engine/mod.rs:2379; row-155 F25 map row 25, ARCHITECT 2026-10-13). RED: the
+    // plane refusing it with a 400 of its own.
+    let forwarded = build(&a, &h, &shaping(), "p", "gpt").expect("forwarded, never refused");
+    assert_eq!(
+        forwarded.body, br#"{"model":"gpt","stream":true,"stream_options":7,"messages":[]}"#,
+        "the caller's body, unchanged"
+    );
 }
 
 #[test]
