@@ -171,8 +171,9 @@ pub enum IntakeItem {
     ConversionFn,
     /// `struct <boundary>` and its inherent `impl <boundary>` blocks: THE RECORD OF CONFIGURED
     /// DECIMALS a conversion fn reads, exempt as declared. It carries decimals INTO a named
-    /// conversion fn, so it has no "integers come out" to hold it to; what it hands on is read by
-    /// one of the named fns or the read is a finding in the fn that makes it.
+    /// conversion fn, so it has no "integers come out" to hold it to. Outside the named items, a
+    /// read of it is a finding where the line spells a float, calls a [`FLOAT_ONLY_METHODS`] method
+    /// or names a [`FLOAT_CARRIERS`] item; a bare field read with none of those is not seen.
     DecimalRecord,
 }
 
@@ -504,6 +505,22 @@ const KERNEL_MONEY_FILES: &[&str] = &[
 /// The float tokens a money path may not name. Word-boundary matched so `nf64` or an identifier that
 /// merely contains the text is not a hit, but the bare type is.
 pub const FLOAT_TOKENS: &[&str] = &["f64", "f32"];
+
+/// THE FLOAT-ONLY METHODS (audit xtask-E HIGH 2). A float can reach a scanned money line with no
+/// float token on it: `r.input.round() as u64` reads a field whose `f64` was declared in a file no
+/// money scan reads, and the line names neither type word nor a literal. Each of these methods
+/// exists on `f32`/`f64` and on no integer type, so a call to one IS a float on the line, whatever
+/// its receiver is spelled as. (`as f64` / `as f32` is already the [`FLOAT_TOKENS`] word.)
+pub const FLOAT_ONLY_METHODS: &[&str] = &[
+    "round", "floor", "ceil", "trunc", "fract", "mul_add", "powf", "powi", "sqrt",
+];
+
+/// THE NAMED FLOAT CARRIERS (audit xtask-E HIGH 2): items declared outside every money scan set that
+/// hand their caller a float. `blended_per_mtok` (`busbar_contract::billing::RawTierRates`) returns
+/// the routing cost scalar as an `f64`; called from a scanned money file it puts a float on the
+/// money path with no float token on the line. A named intake row ([`MONEY_INTAKE`]) is the only
+/// exemption, as it is for every other float.
+pub const FLOAT_CARRIERS: &[&str] = &["blended_per_mtok"];
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
 // The count-read scan set, the shape it hunts, and the sites it knows about
@@ -1056,7 +1073,32 @@ fn scan_file(rel: &str, text: &str, exempt: &IntakeSpans, offenders: &mut Vec<St
         for spelled in float_spellings(&blanked) {
             offenders.push(finding(rel, line, &spelled));
         }
+        for carried in float_carriers(&blanked) {
+            offenders.push(finding(rel, line, &carried));
+        }
     }
+}
+
+/// A FLOAT CARRIED BY A TYPE, NOT SPELLED ON THE LINE (audit xtask-E HIGH 2): a call to a
+/// [`FLOAT_ONLY_METHODS`] method (`.round()`, reached through a `.`), or any use of a
+/// [`FLOAT_CARRIERS`] item. Reads a line whose literals and comments are already blanked.
+fn float_carriers(blanked: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for name in FLOAT_ONLY_METHODS {
+        for at in word_positions(blanked, name) {
+            let before = blanked[..at].trim_end();
+            let after = blanked[at + name.len()..].trim_start();
+            if before.ends_with('.') && !before.ends_with("..") && after.starts_with('(') {
+                out.push(format!(".{name}()"));
+            }
+        }
+    }
+    for name in FLOAT_CARRIERS {
+        if word_hit(blanked, name) {
+            out.push((*name).to_string());
+        }
+    }
+    out
 }
 
 /// EVERY OTHER WAY A FLOAT IS SPELLED ON A LINE (item 213). [`FLOAT_TOKENS`] is a case-sensitive
@@ -2304,6 +2346,22 @@ impl Gate for NoFloatMoneyGate {
             &["planted_trailing_dot", "`1000.`", "`0.`"],
         ));
 
+        // AUDIT XTASK-E HIGH 2: A FLOAT CARRIED BY A TYPE. The rate-apply seam holds the configured
+        // `RawTierRates`, whose fields and `blended_per_mtok()` are `f64` declared in a file no money
+        // scan reads; a scanned fn can turn one into a figure with no float token on the line.
+        report.push(plant(
+            cx,
+            self,
+            "a float reached through a float-only method or a named float carrier is flagged",
+            &[ROW_NO_FLOAT],
+            "crates/busbar-kernel/src/rate_apply.rs",
+            Edit::Append(
+                "\npub fn planted_blend(rates: &RawRates<'_>) -> u64 {\n    let lane = &rates.lanes[0].1;\n    lane.blended_per_mtok() as u64 + lane.input.round() as u64\n}\n"
+                    .to_string(),
+            ),
+            &["rate_apply.rs", "`blended_per_mtok`", "`.round()`"],
+        ));
+
         // A FLOAT IN A NAMED BINARY MONEY FILE IS FLAGGED.
         report.push(plant(
             cx,
@@ -3535,6 +3593,39 @@ mod tests {
                 "{spelled} was not named: {offenders:#?}"
             );
         }
+    }
+
+    /// AUDIT XTASK-E HIGH 2: A FLOAT CARRIED BY A TYPE NEEDS NO FLOAT TOKEN. Lines 1, 3 and 4 reach a
+    /// float through a float-only method (line 3 is the call rustfmt broke onto its own line) or a
+    /// named carrier; line 5 is integer work spelled alike (a `div_ceil`, a `round_up` fn, a `floor`
+    /// field, a range to `round`, a method name in a string) and must stay clean.
+    #[test]
+    fn a_float_carried_by_a_method_is_a_finding() {
+        let src = "pub fn a(r: &Raw) -> u64 { r.input.round() as u64 }\n\
+                   pub fn b(r: &Raw) -> u64 { (r.output\n        .mul_add(2, 1)) as u64 }\n\
+                   pub fn c(l: &Lane) -> u64 { l.1.blended_per_mtok() as u64 }\n\
+                   pub fn d(x: u64, w: W) -> u64 { x.div_ceil(2) + round_up(x) + w.floor + (0..round).len() as u64 + \".ceil()\".len() as u64 }\n";
+        let mut offenders = Vec::new();
+        scan_file("m.rs", src, &IntakeSpans::new(), &mut offenders);
+        let named: Vec<(&str, &str)> = offenders
+            .iter()
+            .map(|o| {
+                let mut parts = o.split(':');
+                let _file = parts.next();
+                let line = parts.next().unwrap_or_default();
+                let token = o.split('`').nth(1).unwrap_or_default();
+                (line, token)
+            })
+            .collect();
+        assert_eq!(
+            named,
+            vec![
+                ("1", ".round()"),
+                ("3", ".mul_add()"),
+                ("4", "blended_per_mtok")
+            ],
+            "{offenders:#?}"
+        );
     }
 
     /// ITEM 178: A ZERO DEFAULT ON THE CODEC'S COUNT HELPER IS THE SAME SILENT ZERO. The accessor
