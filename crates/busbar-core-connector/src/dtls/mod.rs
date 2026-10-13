@@ -208,6 +208,17 @@ pub enum SrtpProfile {
     AeadAes256Gcm,
 }
 
+impl SrtpProfile {
+    /// The profile's registry code (RFC 7714 §14.2), as the keying-material item names it.
+    #[must_use]
+    pub fn code(self) -> u32 {
+        match self {
+            SrtpProfile::AeadAes128Gcm => 0x0007,
+            SrtpProfile::AeadAes256Gcm => 0x0008,
+        }
+    }
+}
+
 /// The DTLS-SRTP exporter's output (RFC 5764 §4.2): the profile and the keying material, zeroed
 /// on drop. The one secret the framer holds — it protects media, like the headers a request framer
 /// sees.
@@ -562,6 +573,20 @@ impl Association {
     #[must_use]
     pub fn bound_path(&self) -> Option<SocketAddr> {
         self.bound
+    }
+
+    /// Whether a verified check came from `path` (or core's own probe proved it) and consent has
+    /// not aged it out: the only paths whose datagrams the framer is handed.
+    #[must_use]
+    pub fn knows(&self, path: SocketAddr) -> bool {
+        self.heard.contains_key(&path) || self.proven.contains_key(&path)
+    }
+
+    /// Whether the far end's certificate matched the fingerprint its description carried. Nothing
+    /// is exported, connected or opened before it does.
+    #[must_use]
+    pub fn peer_verified(&self) -> bool {
+        self.peer_verified && self.failed.is_none()
     }
 
     /// Record a verified check from `path`. At the cap the oldest heard path that is neither bound
