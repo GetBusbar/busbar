@@ -6009,6 +6009,7 @@ fn own_reach() -> super::DoorReach<'static> {
         conns: std::sync::Arc::new(busbar_core_connector::Connector::new()),
         stream_ceiling_secs: 1,
         upgrades: Vec::new(),
+        models: None,
     }
 }
 

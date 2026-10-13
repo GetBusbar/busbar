@@ -834,6 +834,7 @@ fn served_core(
         conns: Arc::clone(&connector) as Arc<dyn busbar_contract::conn::PollConns>,
         stream_ceiling_secs: 600,
         upgrades: Vec::new(),
+        models: None,
     };
     let mut composed = compose_planes(
         &[(instance.to_string(), plane)],

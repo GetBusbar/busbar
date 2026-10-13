@@ -1104,7 +1104,8 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
             };
             let reach = root::door_steps::DoorReach {
                 providers: &cfg.providers,
-                secrets: &*next.secret_resolver,
+                secrets: Arc::clone(&next.secret_resolver)
+                    as Arc<dyn busbar_contract::secret::SecretResolve>,
                 auths: std::sync::Arc::clone(&auths),
                 conns: Arc::clone(root::connector::the())
                     as Arc<dyn busbar_contract::conn::PollConns>,

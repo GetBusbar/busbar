@@ -346,6 +346,7 @@ async fn the_planes_fault_reading_reaches_the_breaker_through_the_doors_far_end(
         unit: busbar_contract::UnitKey::new(1),
         credential: None,
         far: OnceLock::new(),
+        shown: None,
     };
     let t = pass::<Route>();
     assert!(matches!(far.member(&t, 1).await, Pick::Member { .. }));

@@ -35,8 +35,7 @@ use busbar_contract::abi::plane::{
     CANCEL_OK_PARTIAL, EMIT_DONE, EMIT_FINAL_STATUS, EMIT_MESSAGE_END, EMIT_TO_FAR_END,
     FROM_CALLER, FROM_FAR_END, FROM_KERNEL, PIECE_FIELDS, PIECE_HAS_STATUS, PIECE_LAST,
     PIECE_OUT_TEXT, PIECE_REFUSED, PRINCIPAL_OPTIONAL, RECORD_AUDIT, RECORD_PUT, REFUSAL_ARRIVE,
-    REFUSAL_KERNEL, ROUTE_LOCAL, ROUTE_SCOPE_LOCAL, ROUTE_SESSION, UNITS_ESTIMATED, UNITS_REPORTED,
-    VERDICT_RETRY,
+    ROUTE_LOCAL, ROUTE_SCOPE_LOCAL, ROUTE_SESSION, UNITS_ESTIMATED, UNITS_REPORTED, VERDICT_RETRY,
 };
 use busbar_contract::abi::plane::{ServeIn, ServeOut, REFUSAL_GATE};
 use busbar_contract::caps::OpClassId;
@@ -2652,6 +2651,7 @@ async fn a_walk_that_ends_after_a_request_went_out_is_handed_as_a_piece_first() 
     let exhausted = || Pick::Exhausted {
         status: 503,
         retry_after: Some(2),
+        detail: "The service is temporarily overloaded. Please retry shortly.",
     };
     let taken = came(
         Gone {

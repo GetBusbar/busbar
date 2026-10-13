@@ -268,10 +268,11 @@ test_plane_owned:
         None,
     )
     .expect("the door plane composes");
-    let secrets = busbar_kernel::config::secret::SecretResolver::builtins_only();
+    let secrets: std::sync::Arc<dyn busbar_contract::secret::SecretResolve> =
+        std::sync::Arc::new(busbar_kernel::config::secret::SecretResolver::builtins_only());
     served.planes[0]
         .live
-        .refreshed(&sections["test_plane"], 2, &secrets)
+        .refreshed(&sections["test_plane"], 2, secrets)
         .expect("the plane refreshes");
 
     let read = |name: &str| {
