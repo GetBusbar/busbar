@@ -161,6 +161,7 @@ pub fn run() -> bool {
         &mut fails,
     );
     check_test_code_excluded(&mut fails);
+    check_grouped_use_is_red(&mut fails);
     check_via_only(&mut fails);
     check_via_bypass(&mut fails);
     check(
@@ -219,6 +220,52 @@ fn check_test_code_excluded(fails: &mut Vec<String>) {
         );
     } else {
         println!("  GREEN  test-code exclusion: #[cfg(test)] mod's std::env::var was NOT reported");
+    }
+}
+
+/// A GROUPED IMPORT IS A BANNED PATH. `use std::{fs, net::TcpStream};` (rustfmt splits it over
+/// lines) and `use std::{self as s};` then `s::env::var` spell no banned path whole, and the
+/// own-src scan matched substrings per line, so both read clean. Each planted file must be RED on
+/// exactly the paths it reaches.
+fn check_grouped_use_is_red(fails: &mut Vec<String>) {
+    let root = workspace_root();
+    let banned = denylist::load_banned_lists(&root);
+    let fragments = denylist::load_test_fragments_pub(&root);
+    let pc = PureCrate {
+        name: "xtask-fixture-grouped-use".to_string(),
+        dir: fixtures_dir().join("grouped-use"),
+        kind: "plane".to_string(),
+        report_name: "xtask-fixture-grouped-use".to_string(),
+    };
+    for (label, text, want) in [
+        (
+            "a grouped std import over several lines",
+            "use std::{\n    collections::HashMap,\n    fs,\n    net::TcpStream,\n};\n",
+            &["std::fs", "std::net"][..],
+        ),
+        (
+            "std bound under another name, then used",
+            "use std::{self as s};\n\npub fn f() {\n    let _ = s::env::var(\"X\");\n}\n",
+            &["std::env"][..],
+        ),
+    ] {
+        let files = vec![(
+            "crates/xtask-fixture-grouped-use/src/lib.rs".to_string(),
+            text.to_string(),
+        )];
+        let mut got: Vec<String> = denylist::own_src_hits_over(&files, &pc, &banned, &fragments)
+            .into_iter()
+            .map(|h| h.offender)
+            .collect();
+        got.sort();
+        got.dedup();
+        if got == want {
+            println!("  RED    own-src {label}: hit(s) {got:?}");
+        } else {
+            fails.push(format!(
+                "own-src {label}: expected exactly {want:?}, got {got:?}"
+            ));
+        }
     }
 }
 

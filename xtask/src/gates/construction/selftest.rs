@@ -1254,6 +1254,26 @@ fn kind_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<'a> {
         &["zz_planted_io.rs"],
     ));
 
+    // THE GROUPED IMPORT (xtask-D finding 2). `use std::{fs, net::TcpStream}` as rustfmt lays it
+    // out spells neither `std::fs` nor `std::net` on any line, so the per-line search read the
+    // crate as clean; the expanded use tree names both.
+    let mut ov = on(base);
+    for c in &pure {
+        ov.set(
+            format!("crates/{c}/src/zz_planted_grouped_io.rs"),
+            "use std::{\n    fs,\n    net::TcpStream,\n};\n\npub fn planted_grouped_io() {\n    \
+             let _ = TcpStream::connect(addr);\n    let _ = fs::read(path);\n}\n",
+        );
+    }
+    r.push(prove_red(
+        cx,
+        gate,
+        "every pure-kind crate opens a socket and a file through a grouped std import",
+        &refs(&ids("source-denylist:", &pure)),
+        ov,
+        &["zz_planted_grouped_io.rs"],
+    ));
+
     // ITEM 167: THE CLOSURE HALF THAT NEVER ANSWERED. The rule's UNPROVEN arm was unreachable —
     // every path of `denylist_hits` answered "asked, clean" — so it could not be planted and was
     // never proven. The rows above are green at baseline; this plant makes the closure scan not

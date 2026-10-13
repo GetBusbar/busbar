@@ -263,15 +263,29 @@ pub fn source_denylist(
         let allowed_here = allow.list_of(&crate_name);
         let mut offenders = Vec::new();
         for rel in tree.crate_files(&crate_name) {
+            let mut direct: BTreeSet<(usize, String)> = BTreeSet::new();
             for l in tree.files[&rel].iter() {
                 if l.intest {
                     continue;
                 }
                 if let Some(m) = pat_rx.search(l.code_bytes()) {
                     let hit = m.str_of(l.code_bytes(), 0).unwrap_or_default();
+                    direct.insert((l.no, hit.clone()));
                     if !allowed_here.contains(&hit) {
                         offenders.push(format!("`{hit}` at {rel}:{}", l.no));
                     }
+                }
+            }
+            // A grouped import (`use std::{fs, net::TcpStream};`) spells no banned path whole, so
+            // the line search above reads it as clean; the expanded use tree names it.
+            let production: Vec<(usize, &str)> = tree.files[&rel]
+                .iter()
+                .filter(|l| !l.intest)
+                .map(|l| (l.no, l.code.as_str()))
+                .collect();
+            for (no, hit) in crate::denylist::use_tree_hits(&production, &patterns) {
+                if !direct.contains(&(no, hit.clone())) && !allowed_here.contains(&hit) {
+                    offenders.push(format!("`{hit}` at {rel}:{no}"));
                 }
             }
         }

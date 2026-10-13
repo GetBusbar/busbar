@@ -605,7 +605,7 @@ fn own_src_hits(
 /// The own-src scan over files SOMEBODY ELSE LISTED AND READ, as `(rel, text)` pairs — the form
 /// [`run`] hands it after walking the `Ctx`, so a planted source file is scanned and a `src/` an
 /// overlay emptied is scanned as empty rather than read around through `std::fs`.
-fn own_src_hits_over(
+pub(crate) fn own_src_hits_over(
     files: &[(String, String)],
     pc: &PureCrate,
     banned: &BannedLists,
@@ -617,19 +617,209 @@ fn own_src_hits_over(
         if is_test_path(&rel_with_slashes, fragments) {
             continue;
         }
-        for (lineno, code) in production_lines(src) {
+        let lines = production_lines(src);
+        let mut found: BTreeSet<(usize, String)> = BTreeSet::new();
+        for (lineno, code) in &lines {
             for pat in &banned.std_paths {
                 if code.contains(pat.as_str()) {
-                    hits.push(Hit {
-                        crate_name: pc.report_name.clone(),
-                        offender: pat.clone(),
-                        via: format!("own src at {rel}:{lineno}"),
-                    });
+                    found.insert((*lineno, pat.clone()));
+                }
+            }
+        }
+        let borrowed: Vec<(usize, &str)> = lines.iter().map(|(n, c)| (*n, c.as_str())).collect();
+        found.extend(use_tree_hits(&borrowed, &banned.std_paths));
+        for (lineno, pat) in found {
+            hits.push(Hit {
+                crate_name: pc.report_name.clone(),
+                offender: pat,
+                via: format!("own src at {rel}:{lineno}"),
+            });
+        }
+    }
+    hits
+}
+
+/// THE BANNED PATHS A FILE NAMES THROUGH A `use` TREE, which a substring scan cannot see.
+/// `use std::{fs, net::TcpStream};` contains neither `std::fs` nor `std::net`, and rustfmt splits a
+/// long group over several lines, so the line scan read it as clean. Here every `use` (and
+/// `extern crate`) statement is gathered to its `;`, its tree is expanded to full paths
+/// (`std::fs`, `std::net::TcpStream`), and each expanded path is matched against `patterns`; the
+/// hit is filed on the statement's first line. An import that BINDS AN ANCESTOR of a banned path
+/// under another name (`use std as s;`, `use std::{self as s};`, `use std::*;`) is followed into
+/// the file: `s::net` (or `net::` under a glob) is then the banned `std::net`.
+///
+/// `lines` are production lines (`(line number, code)`); the caller scans them for direct
+/// spellings itself. Returns `(line, pattern)`, deduplicated.
+pub(crate) fn use_tree_hits(
+    lines: &[(usize, &str)],
+    patterns: &[String],
+) -> BTreeSet<(usize, String)> {
+    let mut hits: BTreeSet<(usize, String)> = BTreeSet::new();
+    let mut aliases: BTreeSet<(String, String)> = BTreeSet::new();
+    let mut open: Option<(usize, String)> = None;
+    for &(no, code) in lines {
+        let (start, text) = match open.take() {
+            Some((start, mut text)) => {
+                text.push(' ');
+                text.push_str(code);
+                (start, text)
+            }
+            None => match use_statement_start(code) {
+                Some(rest) => (no, rest.to_string()),
+                None => continue,
+            },
+        };
+        if !text.contains(';') {
+            open = Some((start, text));
+            continue;
+        }
+        let tree = text.split_once(';').map_or(text.as_str(), |(t, _)| t);
+        let mut paths = Vec::new();
+        expand_use_tree(&normalise_use_tree(tree), "", &mut paths);
+        for (path, binding) in paths {
+            let bare = path.trim_start_matches("::");
+            for p in patterns {
+                if path.contains(p.as_str()) {
+                    hits.insert((start, p.clone()));
+                } else if let Some(rest) = p.strip_prefix(&format!("{bare}::")) {
+                    let needle = if binding.is_empty() {
+                        format!("{rest}::")
+                    } else {
+                        format!("{binding}::{rest}")
+                    };
+                    if needle != *p && binding != "_" {
+                        aliases.insert((needle, p.clone()));
+                    }
                 }
             }
         }
     }
+    for (needle, canonical) in &aliases {
+        for &(no, code) in lines {
+            if names_path(code, needle) {
+                hits.insert((no, canonical.clone()));
+            }
+        }
+    }
     hits
+}
+
+/// The tree of a `use` / `extern crate` statement that opens on this line, or `None`.
+fn use_statement_start(code: &str) -> Option<&str> {
+    let mut t = code.trim_start();
+    if let Some(rest) = t.strip_prefix("pub") {
+        t = match rest.strip_prefix('(') {
+            Some(r) => r.split_once(')')?.1.trim_start(),
+            None if rest.starts_with(char::is_whitespace) => rest.trim_start(),
+            None => return None,
+        };
+    }
+    for kw in ["use", "extern crate"] {
+        if let Some(rest) = t.strip_prefix(kw) {
+            if rest.starts_with(char::is_whitespace) {
+                return Some(rest.trim_start());
+            }
+        }
+    }
+    None
+}
+
+/// One space between words, none around `::`, braces and commas: `std :: { fs ,\n net }` reads
+/// `std::{fs,net}`, and `fs as f` keeps the spaces its `as` needs.
+fn normalise_use_tree(tree: &str) -> String {
+    let collapsed = tree.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut out = String::with_capacity(collapsed.len());
+    let chars: Vec<char> = collapsed.chars().collect();
+    for (i, &c) in chars.iter().enumerate() {
+        if c == ' ' {
+            let prev = i.checked_sub(1).map(|j| chars[j]);
+            let next = chars.get(i + 1).copied();
+            let tight = |x: Option<char>| matches!(x, Some(':' | '{' | '}' | ','));
+            if tight(prev) || tight(next) {
+                continue;
+            }
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// Expand one (normalised) use-tree item under `base` into `(full path, name it binds)` pairs. A
+/// glob binds the empty name: its children are named bare.
+fn expand_use_tree(item: &str, base: &str, out: &mut Vec<(String, String)>) {
+    let join = |b: &str, p: &str| {
+        if b.is_empty() {
+            p.to_string()
+        } else {
+            format!("{b}::{p}")
+        }
+    };
+    let item = item.trim();
+    if item.is_empty() {
+        return;
+    }
+    if let Some(open) = item.find('{') {
+        let head = item[..open].trim_end_matches("::");
+        let close = item.rfind('}').unwrap_or(item.len()).max(open + 1);
+        let inner = &item[open + 1..close];
+        let nested = if head.is_empty() {
+            base.to_string()
+        } else {
+            join(base, head)
+        };
+        let mut depth = 0i64;
+        let mut cur = String::new();
+        for ch in inner.chars() {
+            match ch {
+                '{' => depth += 1,
+                '}' => depth -= 1,
+                ',' if depth == 0 => {
+                    expand_use_tree(&std::mem::take(&mut cur), &nested, out);
+                    continue;
+                }
+                _ => {}
+            }
+            cur.push(ch);
+        }
+        expand_use_tree(&cur, &nested, out);
+        return;
+    }
+    let (path, alias) = match item.split_once(" as ") {
+        Some((p, a)) => (p.trim(), Some(a.trim())),
+        None => (item, None),
+    };
+    let (full, last) = match path {
+        "self" => (base.to_string(), base.rsplit("::").next().unwrap_or(base)),
+        "*" => (base.to_string(), ""),
+        _ => {
+            let joined = join(base, path);
+            let tail = path.rsplit("::").next().unwrap_or(path);
+            out.push((joined, alias.unwrap_or(tail).to_string()));
+            return;
+        }
+    };
+    out.push((full, alias.unwrap_or(last).to_string()));
+}
+
+/// `code` names the path `needle` as a path of its own: not the tail of a longer identifier or
+/// path (`crate::s::net`, `xs::net`), and not the head of a longer segment (`s::network`). A
+/// needle ending `::` (a glob's child, `net::`) is followed by the rest of its path by design.
+fn names_path(code: &str, needle: &str) -> bool {
+    let ident = |c: char| c.is_alphanumeric() || c == '_';
+    let open_tail = needle.ends_with("::");
+    let mut from = 0;
+    while let Some(i) = code[from..].find(needle) {
+        let at = from + i;
+        let end = at + needle.len();
+        let before = code[..at].chars().next_back();
+        let after = code[end..].chars().next();
+        if !before.is_some_and(|c| ident(c) || c == ':') && (open_tail || !after.is_some_and(ident))
+        {
+            return true;
+        }
+        from = end;
+    }
+    false
 }
 
 /// One `[[rules.source-denylist.edge_exemptions]]` entry in `qa/construction.toml`: a ruling about
