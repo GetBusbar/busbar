@@ -44,7 +44,6 @@
 use std::collections::BTreeMap;
 use std::mem::size_of;
 use std::ptr;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use busbar_contract::abi::host::conn::connector::{
     Need, DIRECTION_OUTBOUND, EGRESS_PROVIDER, KEEP_NAMED,
@@ -423,8 +422,10 @@ pub struct DecisionsDoor {
     /// The models a claimed arrival routes over, directly, by name: every model the latest
     /// generation configures, each with its dialect and `upstream_model`.
     models: Keyed<String, Routed>,
-    /// How many arrivals the instance has kept: each unit's [`Unit::seq`].
-    arrivals: AtomicU64,
+    /// How many arrivals the instance has kept: each unit's [`Unit::seq`]. The count is the
+    /// SDK's per-instance keyed state, its one entry under `()`: the plane holds no interior
+    /// state of its own.
+    arrivals: Keyed<(), u64>,
     /// Each provider's protocol, as the host stated it at `open` (`PlaneOpenIn::providers`).
     protocols: BTreeMap<String, String>,
 }
@@ -493,7 +494,7 @@ slot!(
             generations: Generations::new(),
             units: Keyed::new(),
             models: Keyed::new(),
-            arrivals: AtomicU64::new(0),
+            arrivals: Keyed::new(),
             protocols,
         };
         let spec = generation_spec(&routed);
@@ -628,7 +629,12 @@ slot!(
                 )
             }));
             let unit = input.get().unit;
-            let seq = plane.arrivals.fetch_add(1, Ordering::Relaxed);
+            let seq = plane.arrivals.with_all(|n| {
+                let next = n.entry(()).or_insert(0);
+                let seq = *next;
+                *next = seq.wrapping_add(1);
+                seq
+            });
             let kept = plane.units.with_all(|units| {
                 reclaim_stale(units, unit, seq);
                 let Some(kept) = unit_of(units, unit) else {
