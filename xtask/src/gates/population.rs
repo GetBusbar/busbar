@@ -17,7 +17,7 @@
 //!
 //! * [`Population::below_floor`] — the aggregate ratchet. It is not `> 0`: a walk that collapses to
 //!   a handful of files reports no findings and reads exactly like a clean tree. The floor is a
-//!   RATCHET pinned AT the measured count ([`FLOOR`], 953 since the webrtc framer), not a margin
+//!   RATCHET pinned AT the measured count ([`FLOOR`], 955 since the webrtc framer), not a margin
 //!   below it: one file fewer is refused until a reviewed diff re-measures. It is raised as the
 //!   tree grows, never lowered to accommodate a scan that stopped finding things.
 //! * [`Population::drained`] — a crate that has a `src/` and contributed NOTHING. The floor catches
@@ -43,13 +43,15 @@ use crate::ctx::{Ctx, Overlay, SourceFile, WalkSpec};
 /// `busbar-transport-stdio` carrier.rs and conn.rs, whose work moved to the host's I/O). Lowered
 /// from 948 to 947 when #703 (the MCP-FIX stack) deleted `busbar-plane-mcp/src/tool_plane.rs` and
 /// `outputschema.rs` and added `door_sessions.rs`, a reviewed net removal of one file. Raised from
-/// 947 to 953 when the webrtc framer landed its six `busbar-transport-webrtc/src` files (crypto,
-/// door, framing, lib, shim, stun). A drop below 953 is refused until a reviewed diff re-measures.
-/// The selftest plant ([`one_file_short`]) cuts the live population to `FLOOR - 1` whatever its
-/// size, so predev growing a file no longer forces a re-pin for the plant's sake. Lowering the
-/// floor is how a gate stops reading the repository without saying so, so a diff that lowers it is
-/// the diff to refuse.
-pub const FLOOR: usize = 953;
+/// 947 to 949 when FLIP-LLM (#464) added `busbar/src/root/model_egress.rs` and
+/// `busbar-plane-llm/src/exchange/project.rs` (it had raised 941 to 943 over predev d7929b661d).
+/// Raised from 949 to 955 when the webrtc framer landed its six `busbar-transport-webrtc/src`
+/// files (crypto, door, framing, lib, shim, stun). A drop below 955 is refused until a reviewed diff
+/// re-measures. The selftest plant ([`one_file_short`]) cuts the live population to `FLOOR - 1`
+/// whatever its size, so predev growing a file no longer forces a re-pin for the plant's sake.
+/// Lowering the floor is how a gate stops reading the repository without saying so, so a diff that
+/// lowers it is the diff to refuse.
+pub const FLOOR: usize = 955;
 
 /// The `.rs` under `crates/` that are not test scaffolding, plus the accounting to refuse a
 /// population that cannot support a verdict.
