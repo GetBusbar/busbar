@@ -232,12 +232,36 @@ async fn ping(
     }
 }
 
+/// `$door`: the store door over `$name`'s hooks, declaring `$needs` (by default the line
+/// backend's one outbound need).
+macro_rules! store_door_of {
+    ($door:ident, $name:ident) => {
+        store_door_of!($door, $name, needs: TCP);
+    };
+    ($door:ident, $name:ident, needs: $needs:ident) => {
+        mod $door {
+            busbar_contract::store_door!(
+                crate::store_v3::wrap::Wrapped<super::$name>,
+                "wire-store",
+                "0",
+                64,
+                needs: super::$needs
+            );
+        }
+    };
+}
+
 /// A store whose `list_denylist` is [`ping`] on its kept set.
 macro_rules! wire_store {
     ($name:ident, $door:ident, max: $max:expr, timeout: $t:expr, tls: $tls:expr, retry: $retry:expr) => {
-        wire_store!($name, $door, max: $max, timeout: $t, tls: $tls, retry: $retry, needs: TCP);
+        wire_store!(@hooks $name, max: $max, timeout: $t, tls: $tls, retry: $retry);
+        store_door_of!($door, $name);
     };
     ($name:ident, $door:ident, max: $max:expr, timeout: $t:expr, tls: $tls:expr, retry: $retry:expr, needs: $needs:ident) => {
+        wire_store!(@hooks $name, max: $max, timeout: $t, tls: $tls, retry: $retry);
+        store_door_of!($door, $name, needs: $needs);
+    };
+    (@hooks $name:ident, max: $max:expr, timeout: $t:expr, tls: $tls:expr, retry: $retry:expr) => {
         struct $name;
         impl $name {
             fn pool() -> &'static Arc<Pool> {
@@ -259,15 +283,6 @@ macro_rules! wire_store {
                     Box::pin(ping(w, target, $t, $tls, $retry))
                 })
             }
-        }
-        mod $door {
-            busbar_contract::store_door!(
-                crate::store_v3::wrap::Wrapped<super::$name>,
-                "wire-store",
-                "0",
-                64,
-                needs: super::$needs
-            );
         }
     };
 }
@@ -298,6 +313,15 @@ fn open_over(
 
 fn plain(d: &Dispatcher) -> Arc<dyn busbar_contract::conn::DeclaredConns> {
     Arc::new(TcpConns::new(d.conn_waker()))
+}
+
+/// The table, its upgrades secured through `tls` (the TLS double).
+fn secured_by(
+    tls: Arc<dyn SecureDial>,
+) -> impl FnOnce(&Dispatcher) -> Arc<dyn busbar_contract::conn::DeclaredConns> {
+    move |d: &Dispatcher| -> Arc<dyn busbar_contract::conn::DeclaredConns> {
+        Arc::new(TcpConns::with_tls(d.conn_waker(), tls))
+    }
 }
 
 fn ping_of(s: &LoadedStore) -> RecordStoreResult<Vec<String>> {
@@ -576,9 +600,7 @@ fn a_tls_secured_stream_carries_the_stores_ops() {
     *OverTls::target().lock().expect("target") = format!("localhost:{port}");
     let tls = Arc::new(TlsDouble::default());
     let table_tls = Arc::clone(&tls);
-    let s = open_over(over_tls::door, move |d| {
-        Arc::new(TcpConns::with_tls(d.conn_waker(), table_tls))
-    });
+    let s = open_over(over_tls::door, secured_by(table_tls));
     for _ in 0..2 {
         assert_eq!(
             ping_of(&s).expect("answers over TLS"),
@@ -636,15 +658,7 @@ impl Hooks for StartTls {
     }
 }
 
-mod start_tls {
-    busbar_contract::store_door!(
-        crate::store_v3::wrap::Wrapped<super::StartTls>,
-        "wire-store",
-        "0",
-        64,
-        needs: super::TCP
-    );
-}
+store_door_of!(start_tls, StartTls);
 
 /// RED (audit core-connector#3, STARTTLS response injection, the store SDK's own layer): the far
 /// end's clear `OK` arrives with a forged line behind it in ONE segment. The store reads its
@@ -669,9 +683,7 @@ fn an_upgrade_over_unread_input_is_refused_before_any_handshake() {
     });
     let tls = Arc::new(TlsDouble::default());
     let table_tls = Arc::clone(&tls);
-    let s = open_over(start_tls::door, move |d| {
-        Arc::new(TcpConns::with_tls(d.conn_waker(), table_tls))
-    });
+    let s = open_over(start_tls::door, secured_by(table_tls));
     let answered = ping_of(&s);
     assert!(
         answered
