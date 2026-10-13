@@ -266,6 +266,7 @@ async fn serve_with_admin_chain(
         key_id: None,
         default_grant: vec![SCOPE.to_string()],
         access_token_ttl_secs: None,
+        refresh_token_ttl_secs: None,
         fapi2: false,
         clients: Vec::new(),
     };
@@ -377,6 +378,7 @@ fn the_session_cookie_carries_exactly_the_attributes_it_should() {
             key_id: None,
             default_grant: Vec::new(),
             access_token_ttl_secs: None,
+            refresh_token_ttl_secs: None,
             fapi2: false,
             clients: Vec::new(),
         };
@@ -1089,6 +1091,7 @@ async fn an_unencodable_login_redirect_fails_closed_rather_than_proceeding() {
         key_id: None,
         default_grant: vec![SCOPE.to_string()],
         access_token_ttl_secs: None,
+        refresh_token_ttl_secs: None,
         fapi2: false,
         clients: Vec::new(),
     };

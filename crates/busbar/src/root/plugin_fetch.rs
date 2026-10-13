@@ -5,16 +5,18 @@
 //! DESIGN §3 boot stage 3c, "fetch plugins through the connector", and §5: the kernel dials
 //! nothing). Every `plugins.fetch` artifact is one GET over a need the root declares on the
 //! process's one connector under its own identity, so the connector's one destination guard judges,
-//! pins and dials the address, the proxy environment applies as it did in 1.5.5, and the http
-//! transport writes the request (its client defaults included: `accept: */*` before `host`, the
-//! bytes 1.5.5's `Client::new().get()` sent, oracle cell `egress.fetch|plugins|url`).
+//! pins and dials the address, the proxy environment applies as it did in 1.5.5, and the
+//! transport serving the URL's scheme writes the request (its client defaults included:
+//! `accept: */*` before `host`, the bytes 1.5.5's `Client::new().get()` sent, oracle cell
+//! `egress.fetch|plugins|url`).
 //!
-//! What stays the download's own is moved verbatim from the kernel's deleted
-//! `preflight::plugin_fetch_downloader`: https for a public host and plaintext only for a
-//! loopback or private one (a local dev registry), the cloud-metadata denylist (the operator's
-//! `security.blocked_metadata_hosts` extending it), no redirect ever followed, a declared
-//! `Content-Length` over the cap refused before a body byte and the body counted against the cap as
-//! it arrives, and every refusal in 1.5.5's words. The GET runs on a dedicated thread with its own
+//! The download's own rules are the kernel's deleted `preflight::plugin_fetch_downloader`'s,
+//! verbatim: the pre-check before any dial and the verdict on the answer's status are the kernel's
+//! pure rules ([`busbar_kernel::preflight::plugin_fetch_admits`],
+//! [`busbar_kernel::preflight::plugin_fetch_status_refusal`]: the scheme rule, the cloud-metadata
+//! denylist the operator's `security.blocked_metadata_hosts` extends, no redirect ever followed);
+//! here, a declared `Content-Length` over the cap refused before a body byte and the body counted
+//! against the cap as it arrives, every refusal in 1.5.5's words. The GET runs on a dedicated thread with its own
 //! current-thread runtime, so it is safe whether the caller sits on a runtime worker (boot) or a
 //! blocking thread (reload).
 
@@ -25,7 +27,6 @@ use busbar_contract::abi::mechanism::rendering::{ReadBlob, ReadNeed};
 use busbar_contract::conn::{
     ConnId, DeclaredConns, InstanceId, NeedId, OpenDesc, PieceKind, PollConns,
 };
-use busbar_kernel::config_validate;
 
 /// The need a download over a secured scheme rides, under the root's own identity
 /// ([`crate::root::connector::ROOT_OWNER`]; `NeedId(0)` there is the authorization server's).
@@ -75,27 +76,8 @@ pub fn downloader_over(
 ) -> impl Fn(&str) -> Result<Vec<u8>, String> {
     let blocked: Vec<String> = blocked.to_vec();
     move |url: &str| -> Result<Vec<u8>, String> {
-        // Scheme: https required for a public host; plaintext http only for loopback/private (a local
-        // dev registry). Mirrors the provider base_url rule.
-        let https = config_validate::scheme_is(url, "https");
-        if !https {
-            let host_local = config_validate::extract_normalized_host(url)
-                .as_deref()
-                .map(config_validate::host_is_private_or_loopback)
-                .unwrap_or(false);
-            if !(config_validate::scheme_is(url, "http") && host_local) {
-                return Err(format!(
-                    "plugins.fetch url must use https for a public host (got '{url}')"
-                ));
-            }
-        }
-        // SSRF: never fetch from a cloud-metadata host (no per-provider carve-outs; the operator
-        // denylist still extends the built-in list).
-        if let Some(bad) = config_validate::ssrf_blocked_host(url, &[], false, &blocked) {
-            return Err(format!(
-                "plugins.fetch url '{url}' targets a blocked cloud-metadata host '{bad}'"
-            ));
-        }
+        // The scheme rule and the cloud-metadata denylist, before any dial.
+        let secured = busbar_kernel::preflight::plugin_fetch_admits(url, &blocked)?;
         let table = table();
         std::thread::scope(|s| {
             s.spawn(|| -> Result<Vec<u8>, String> {
@@ -103,7 +85,7 @@ pub fn downloader_over(
                     .enable_all()
                     .build()
                     .map_err(|e| format!("fetch runtime: {e}"))?;
-                rt.block_on(get(&table, url, https, cap))
+                rt.block_on(get(&table, url, secured, cap))
             })
             .join()
             .map_err(|_| "plugins.fetch download thread panicked".to_string())?
@@ -142,21 +124,13 @@ impl Drop for Held<'_> {
     }
 }
 
-/// The response status as 1.5.5's client rendered it (`404 Not Found`).
-fn status_text(code: u32) -> String {
-    u16::try_from(code)
-        .ok()
-        .and_then(|c| http::StatusCode::from_u16(c).ok())
-        .map_or_else(|| code.to_string(), |s| s.to_string())
-}
-
 /// One GET of `url` over `table`, read whole under `cap`.
-async fn get(table: &Table, url: &str, https: bool, cap: usize) -> Result<Vec<u8>, String> {
+async fn get(table: &Table, url: &str, secured: bool, cap: usize) -> Result<Vec<u8>, String> {
     // 1.5.5-faithful wording for a request that never got an answer: the older client rendered
     // every send failure as `error sending request for url (URL)`.
     let sending = || format!("GET {url}: error sending request for url ({url})");
     let (need_id, scheme) = match url.split_once("://") {
-        Some((scheme, _)) if https => (SECURE_NEED, scheme.to_ascii_lowercase()),
+        Some((scheme, _)) if secured => (SECURE_NEED, scheme.to_ascii_lowercase()),
         Some((scheme, _)) => (PLAIN_NEED, scheme.to_ascii_lowercase()),
         None => return Err(sending()),
     };
@@ -215,15 +189,10 @@ async fn read_whole(held: &Held<'_>, url: &str, cap: usize) -> Result<Vec<u8>, O
                 let Some(code) = piece.status_code.filter(|_| status.is_none()) else {
                     continue;
                 };
-                if !(200..300).contains(&code) {
-                    let shown = status_text(code);
-                    if (300..400).contains(&code) {
-                        return Err(Some(format!(
-                            "GET {url}: HTTP {shown} — refusing to follow a plugins.fetch \
-                             redirect (redirect-SSRF guard)"
-                        )));
-                    }
-                    return Err(Some(format!("GET {url}: HTTP {shown}")));
+                if let Some(refused) =
+                    busbar_kernel::preflight::plugin_fetch_status_refusal(url, code)
+                {
+                    return Err(Some(refused));
                 }
                 // A declared Content-Length over the cap is rejected BEFORE reading a single body
                 // byte; a dishonest or absent header falls through to the counted cap below.

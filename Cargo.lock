@@ -711,9 +711,9 @@ dependencies = [
  "axum",
  "base64 0.22.1",
  "bumpalo",
- "busbar-a2a",
  "busbar-contract",
  "busbar-hook-ranking",
+ "busbar-kernel",
  "busbar-kernel-audit",
  "busbar-kernel-breaker",
  "busbar-kernel-egress",
@@ -721,7 +721,6 @@ dependencies = [
  "busbar-kernel-ledger",
  "busbar-kernel-scope",
  "busbar-kernel-wal",
- "busbar-llm",
  "busbar-plugin-loader",
  "busbar-store-memory",
  "bytes",
@@ -1001,7 +1000,7 @@ dependencies = [
 [[package]]
 name = "busbar-transport-http"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-transport-http?rev=ed1e9b7719bfce7df3bf6ddef8a2132c3c7a6e57#ed1e9b7719bfce7df3bf6ddef8a2132c3c7a6e57"
+source = "git+https://github.com/GetBusbar/busbar-transport-http?rev=a715d1ab57dcec469930563da0c0509a4fb75289#a715d1ab57dcec469930563da0c0509a4fb75289"
 dependencies = [
  "busbar-contract",
  "bytes",

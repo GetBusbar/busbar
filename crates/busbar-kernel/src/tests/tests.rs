@@ -409,8 +409,9 @@ fn residual_planes() -> crate::plane::PlaneDispatch {
 }
 
 // THE RESIDUAL-DIALECT TABLE (`test_residual_dialect_inference`: which shipped dialect each residual
-// path shape is answered in) MOVED to `tests/residual_envelope_cross_plane.rs`, beside the other
-// tests that assert real-plane behaviour. Its assertions are the real dialects' own residual
+// path shape is answered in) MOVED to the composition root's
+// `crates/busbar/tests/residual_envelope_cross_plane.rs`, beside the other tests that assert
+// real-plane behaviour. Its assertions are the real dialects' own residual
 // claims, which that integration target reaches through the plane crate's testkit; this neutral
 // source names no dialect.
 
@@ -2009,8 +2010,8 @@ async fn oversized_request_413_is_reshaped_on_the_live_stack() {
 // mount table and the path-shape classifier ever disagree again, these three tests are where it
 // shows.
 
-// `an_unmounted_plane_claims_no_path_by_url_shape` MOVED to `tests/residual_envelope_cross_plane.rs`,
-// beside its mounted twin in `crates/busbar/tests/plane_integration.rs`: the path it probes is a real plane's
+// `an_unmounted_plane_claims_no_path_by_url_shape` MOVED to the composition root's
+// `crates/busbar/tests/residual_envelope_cross_plane.rs`, beside its mounted twin in `crates/busbar/tests/plane_integration.rs`: the path it probes is a real plane's
 // mount path, which that integration target names through the plane crate itself.
 
 // ── response-header consolidation (default OFF, opt-in via `advanced.response_headers`) ──────────

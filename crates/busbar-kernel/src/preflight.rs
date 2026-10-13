@@ -1247,6 +1247,58 @@ impl OpenedSecrets {
     }
 }
 
+/// THE `plugins.fetch` PRE-CHECK, before any dial (status row 130 E6: the root downloads through
+/// the connector; the rules are the kernel's deleted downloader's, verbatim): https required for a
+/// public host, plaintext http only for a loopback or private one (a local dev registry, the
+/// provider base_url rule); never a cloud-metadata host (no per-provider carve-outs; the operator's
+/// `blocked` denylist extends the built-in list). `Ok` answers whether the URL is secured.
+///
+/// # Errors
+///
+/// The refusal, in 1.5.5's words.
+pub fn plugin_fetch_admits(url: &str, blocked: &[String]) -> Result<bool, String> {
+    let https = config_validate::scheme_is(url, "https");
+    if !https {
+        let host_local = config_validate::extract_normalized_host(url)
+            .as_deref()
+            .map(config_validate::host_is_private_or_loopback)
+            .unwrap_or(false);
+        if !(config_validate::scheme_is(url, "http") && host_local) {
+            return Err(format!(
+                "plugins.fetch url must use https for a public host (got '{url}')"
+            ));
+        }
+    }
+    if let Some(bad) = config_validate::ssrf_blocked_host(url, &[], false, blocked) {
+        return Err(format!(
+            "plugins.fetch url '{url}' targets a blocked cloud-metadata host '{bad}'"
+        ));
+    }
+    Ok(https)
+}
+
+/// THE `plugins.fetch` VERDICT ON AN ANSWER'S STATUS `code`, in 1.5.5's words: `None` for a
+/// success; a redirect is refused and never followed (the pre-check vets only the original url, so
+/// a `Location` from the semi-trusted registry could otherwise bounce the fetch to an internal
+/// target); any other status is refused with its code and reason (`404 Not Found`).
+#[must_use]
+pub fn plugin_fetch_status_refusal(url: &str, code: u32) -> Option<String> {
+    if (200..300).contains(&code) {
+        return None;
+    }
+    let shown = u16::try_from(code)
+        .ok()
+        .and_then(|c| http::StatusCode::from_u16(c).ok())
+        .map_or_else(|| code.to_string(), |s| s.to_string());
+    if (300..400).contains(&code) {
+        return Some(format!(
+            "GET {url}: HTTP {shown} — refusing to follow a plugins.fetch redirect \
+             (redirect-SSRF guard)"
+        ));
+    }
+    Some(format!("GET {url}: HTTP {shown}"))
+}
+
 #[cfg(test)]
 #[path = "tests/opened_secrets_tests.rs"]
 mod opened_secrets_tests;
