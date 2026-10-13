@@ -116,6 +116,7 @@ impl TestDoor {
                 ported: composes_over.is_empty() && !frames,
                 status_rows: Vec::new(),
                 duplex: Vec::new(),
+                datagram: false,
             },
             knobs,
             framings: Mutex::new(HashMap::new()),

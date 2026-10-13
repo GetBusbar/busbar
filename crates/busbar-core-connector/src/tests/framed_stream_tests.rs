@@ -46,6 +46,7 @@ fn door() -> Arc<LengthDoor> {
             ported: false,
             status_rows: vec![(1, 0, 9)],
             duplex: Vec::new(),
+            datagram: false,
         },
         framings: Mutex::new(HashMap::new()),
         next: AtomicU64::new(1),

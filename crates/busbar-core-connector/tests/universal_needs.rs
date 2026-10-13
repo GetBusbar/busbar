@@ -165,6 +165,7 @@ fn open_stated(
                 composes_over: stated.composes_over,
                 ported: stated.ported,
                 status_rows: stated.status_rows,
+                datagram: stated.datagram,
                 duplex: stated
                     .upgrades
                     .iter()

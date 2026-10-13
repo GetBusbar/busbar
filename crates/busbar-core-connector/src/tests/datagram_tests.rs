@@ -155,6 +155,7 @@ fn scripted_as(knobs: Knobs, local: (&'static str, &'static str)) -> Arc<Scripte
             ported: false,
             status_rows: Vec::new(),
             duplex: Vec::new(),
+            datagram: true,
         },
         knobs,
         st: Mutex::new(St {
@@ -936,4 +937,24 @@ fn a_dialled_association_is_found_by_its_admitted_candidates_before_they_speak()
     assert!(port
         .datagram(p(METADATA), &[0x80, 0x6f, 0, 1], r.now)
         .is_none());
+}
+
+#[test]
+fn only_a_datagram_framer_is_driven_over_the_port() {
+    let stream_framer = scripted(Knobs::default());
+    // RED: a framer whose tail states no datagram framing is refused before any call crosses.
+    let not = Arc::new(Scripted {
+        facts: DoorFacts {
+            datagram: false,
+            ..stream_framer.facts.clone()
+        },
+        knobs: Knobs::default(),
+        st: Mutex::new(St::default()),
+    });
+    let cert = Arc::new(SessionCert::mint().unwrap());
+    let e = DatagramFraming::accept(not.clone(), Arc::clone(&cert), p("198.51.100.1:3478"))
+        .expect_err("not a datagram framer");
+    assert_eq!(e.outcome, Outcome::Refused);
+    assert!(not.st.lock().unwrap().seen.is_empty(), "nothing crossed");
+    assert!(DatagramFraming::accept(stream_framer, cert, p("198.51.100.1:3478")).is_ok());
 }

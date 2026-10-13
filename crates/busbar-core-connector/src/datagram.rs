@@ -281,6 +281,15 @@ impl DatagramFraming {
         judge: Option<(Arc<dyn DialJudge>, u32)>,
         opening: &[(String, Vec<u8>)],
     ) -> Result<(Self, Yielded), Refused> {
+        if !door.facts().datagram {
+            return Err(Refused {
+                outcome: Outcome::Refused,
+                error: format!(
+                    "`{}` is no datagram framer: its calls carry no datagram lane",
+                    door.facts().name
+                ),
+            });
+        }
         let mut f = DatagramFraming {
             door,
             token: 0,
