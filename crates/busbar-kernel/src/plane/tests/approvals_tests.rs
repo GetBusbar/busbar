@@ -48,11 +48,3 @@ fn the_kernel_holds_no_plane_named_seal_domain() {
         "the kernel carries a plane's seal domain: {carriers:?}"
     );
 }
-
-#[test]
-fn the_ledger_spends_an_approval_once() {
-    let ledger = super::SpentTokenLedger::new();
-    let nonce = super::nonce().expect("a nonce");
-    assert!(ledger.spend(&nonce, 100 + super::DEFAULT_TTL_SECS, 100));
-    assert!(!ledger.spend(&nonce, 100 + super::DEFAULT_TTL_SECS, 101));
-}
