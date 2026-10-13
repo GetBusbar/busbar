@@ -1658,15 +1658,15 @@ A push callback URL that the SSRF guard refuses reached the plane task store and
 **What to do:** Find the caller that stored this callback without validating it (a code-level defect in a submission path) and add the SSRF check before the store.
 
 <a id="approval-ledger-unreachable-refused"></a>
-### BUSBAR-7091 — Spent-approval ledger unreachable — redemption refused
+### BUSBAR-7091 — Spent-approval ledger unreachable — redemption refused — RETIRED *(retired)*
 
 - **Severity:** actionable
 - **Since:** 1.6.0
 - **Slug:** `approval-ledger-unreachable-refused`
 
-The shared spent-approval ledger could not be reached, so an approval redemption was REFUSED: a ledger that cannot say whether an approval was already spent must not be read as saying it was not (a double-spend on a money-moving tool is the defect the gate exists to stop).
+RETIRED. The shared spent-approval ledger could not be reached, so an approval redemption was REFUSED: a ledger that cannot say whether an approval was already spent must not be read as saying it was not (a double-spend on a money-moving tool is the defect the gate exists to stop).
 
-**What to do:** Restore connectivity to the shared spent-approval ledger's durable store. Until then, approval redemptions fail closed by design.
+**What to do:** Nothing emits this code. A one-time approval is redeemed through the host's records.claim service.
 
 <a id="plane-calllog-empty-chain"></a>
 ### BUSBAR-7092 — Durable plane call log enumerates a principal with NO records

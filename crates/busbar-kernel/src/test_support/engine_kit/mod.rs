@@ -38,7 +38,6 @@ use crate::plane::PlaneAdmission;
 use crate::plane_host::{EngineHost, LiveHostFactory, PlaneSlots};
 use crate::store::BreakerState;
 use crate::trust::validate::GovResolve;
-use busbar_contract::abi::hot::GuardClass;
 use busbar_contract::records::{AuditRecord, MeteringRow, RecordStore, VirtualKey};
 use std::any::Any;
 use std::collections::BTreeMap;
@@ -227,9 +226,6 @@ pub trait EngineApp: PlaneSlots + Any + Send + Sync {
     /// The mounted data-plane route paths — which paths appear — so a plane asserts what an
     /// (un)configured deployment mounts.
     fn data_route_paths(&self) -> Vec<String>;
-    /// The host-owned structural URL guard the `guard_url` host slot drives, over this App's
-    /// policy: `Ok(())` admissible, else the neutral refusal class and the offending host/url.
-    fn guard_url(&self, url: &str, allow_private: bool) -> Result<(), (GuardClass, String)>;
 }
 
 /// THE TEST-APP BUILDER, object-safe: every engine-side fixture verb a plane's tests drove on the

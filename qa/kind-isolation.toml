@@ -1714,8 +1714,8 @@ cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain 
 [[law0]]
 crate = "busbar-kernel"
 axis  = "plane"
-count = "1145"
-cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; LOWERED 1193 -> 1175, predev 9c0a394771's measure: the drain landed without giving its row back (Law 9: the ceiling ratchets down); LOWERED 1175 -> 1173, the merge-base d7929b661d's measure, which GetBusbar/busbar#570 holds (its scrape double spells no plane alias) (Law 9: the ceiling ratchets down to today's number); LOWERED 1173 -> 1172, the gate's measure on this branch merged with predev 1617e9f019: Q128 A4's plane_driver/gated.rs drain; REBALANCED 1172 -> 1168 (Q128, PR #686 architect ruling, BUSBAR-1.6.0.md l.475-483): the cross-plane cells moved verbatim into the composition root's crates/busbar/tests/, which takes the same 4 hits (busbar × plane 822 -> 826); LOWERED 1168 -> 1145 by FLIP-A2A (#787), this PR's own delta re-applied over predev 872b6ae0e2's row (Law 9: the ceiling ratchets down): the flip measured 1172 -> 1148 merged with predev 62fdbdf3bc, 24 down, of which 1 was residual_envelope_cross_plane.rs's `llm-plane` prose leaving for the composition root, a move #686's rebalance already carries; the flip's own drain is 23: busbar-a2a is deleted, the a2a door's root cells live in its own crate and the stale mentions of the deleted engine are gone"
+count = "1118"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; LOWERED 1193 -> 1175, predev 9c0a394771's measure: the drain landed without giving its row back (Law 9: the ceiling ratchets down); LOWERED 1175 -> 1173, the merge-base d7929b661d's measure, which GetBusbar/busbar#570 holds (its scrape double spells no plane alias) (Law 9: the ceiling ratchets down to today's number); LOWERED 1173 -> 1172, the gate's measure on this branch merged with predev 1617e9f019: Q128 A4's plane_driver/gated.rs drain; REBALANCED 1172 -> 1168 (Q128, PR #686 architect ruling, BUSBAR-1.6.0.md l.475-483): the cross-plane cells moved verbatim into the composition root's crates/busbar/tests/, which takes the same 4 hits (busbar × plane 822 -> 826); LOWERED 1168 -> 1141 by row 157: the hits drained with the deleted HOT trust and guard slots (plane_host/trust.rs, plane_host/guard.rs); LOWERED 1141 -> 1118 (-23) by FLIP-A2A (#787), this PR's own delta re-applied over predev 872b6ae0e2's row (Law 9: the ceiling ratchets down): the flip measured 1172 -> 1148 merged with predev 62fdbdf3bc, 24 down, of which 1 was residual_envelope_cross_plane.rs's `llm-plane` prose leaving for the composition root, a move #686's rebalance already carries; the flip's own drain is 23: busbar-a2a is deleted, the a2a door's root cells live in its own crate and the stale mentions of the deleted engine are gone"
 
 [[law0]]
 crate = "busbar-kernel"
@@ -1732,8 +1732,8 @@ cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain 
 [[law0]]
 crate = "busbar-kernel"
 axis  = "transport"
-count = "285"
-cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; LOWERED 288 -> 286, predev 9c0a394771's measure: the drain landed without giving its row back (Law 9: the ceiling ratchets down); LOWERED 286 -> 285 by GetBusbar/busbar#570: the kernel's auth proof no longer cites the root's stdio-served proof"
+count = "284"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; LOWERED 288 -> 286, predev 9c0a394771's measure: the drain landed without giving its row back (Law 9: the ceiling ratchets down); LOWERED 286 -> 285 by GetBusbar/busbar#570: the kernel's auth proof no longer cites the root's stdio-served proof; LOWERED 285 -> 284 by row 157: the hit drained with the same deletion"
 
 [[law0]]
 crate = "busbar-kernel-breaker"
@@ -1805,7 +1805,7 @@ cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain 
 crate = "busbar-plugin-loader"
 axis  = "instance:secret"
 count = "23"
-cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance. -1: dispatch/plugin.rs no longer edits a member's `env` map in place (a member's env references resolve at the spawn). predev -1: the secret shared-instance open moved to OpenOnce (f664bca2cf) -86 (FLIP-A2A, #787; 109 - 86 = 23): the scanner no longer counts extern ABI strings (ARCHITECT ruling on #787; an `extern C` ABI string read as the `c` secret plugin), 86 such hits measured on #787's tree (111 -> 25 there); neither of predev's two drains above is an extern ABI string, so none is counted twice"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance. -1: dispatch/plugin.rs no longer edits a member's `env` map in place (a member's env references resolve at the spawn). predev -1: the secret shared-instance open moved to OpenOnce (f664bca2cf) 109 - 85 = 24 (FLIP-A2A, #787: the scanner no longer counts extern ABI strings, ARCHITECT ruling on #787, an `extern C` ABI string read as the `c` secret plugin; the 86 extern ABI strings measured on #787's tree, 111 -> 25 there, include #671's 111 -> 110); -1: plugin-loader durable_tests.rs test directory renamed (#787) = 23"
 
 [[law0]]
 crate = "busbar-plugin-loader"
