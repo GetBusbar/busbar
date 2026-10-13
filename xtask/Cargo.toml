@@ -64,6 +64,14 @@ rcgen = { workspace = true, features = ["pem"] }
 rustls = { workspace = true }
 rustls-pki-types = { workspace = true }
 
+# getrusage(2), Linux only: the self-test budget's unit is CPU TIME (ARCHITECT 2026-10-12; Law 8,
+# an instrument must not report by noise) — RUSAGE_SELF + RUSAGE_CHILDREN around a battery, over the
+# ruler's thread CPU time (CLOCK_THREAD_CPUTIME_ID). std has no CPU clock. libc is already in Cargo.lock (the workspace table)
+# and is the one way to make that call without a hand-written `extern` block; it adds no crate.
+# Elsewhere the budget is not read and the selftest says so (xtask/src/gates/mod.rs, `cpu`).
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = { workspace = true }
+
 [dev-dependencies]
 # Test-only: proves the verifier's small-order key table against an independent curve
 # implementation (`VerifyingKey::is_weak`), already in Cargo.lock as busbar-kernel-audit's signer.
