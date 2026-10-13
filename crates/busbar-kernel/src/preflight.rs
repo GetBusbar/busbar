@@ -147,12 +147,12 @@ pub type HookAxisBuild =
         &std::sync::Arc<PluginRegistry>,
     ) -> Result<std::sync::Arc<dyn busbar_contract::hook_calls::HookAxis>, String>;
 
-/// A test build has no root: its store fixture and ranking double stand in for the root's entries, the
-/// in-crate secret double ([`crate::test_support::secrets`]) as the secret axis, and the test axis
-/// for the exports.
+/// A test build has no root: its store double ([`crate::test_support::store_double`]) and ranking
+/// double stand in for the root's entries, the in-crate secret double
+/// ([`crate::test_support::secrets`]) as the secret axis, and the test axis for the exports.
 #[cfg(any(test, feature = "test-support"))]
 const STAND_IN: RootInstall = RootInstall {
-    stores: &[fixture_store::linked::STORE],
+    stores: &[crate::test_support::store_double::STORE],
     registry_build: Some(crate::test_support::registry_stand_in),
     plugins_fetch: Some(crate::test_support::fetch_stand_in),
     hook_axis: Some(crate::test_support::hook_axis_stand_in),
