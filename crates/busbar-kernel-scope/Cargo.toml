@@ -1,23 +1,22 @@
-# busbar-kernel-scope — the APPROVE step: required scope from (claim, op_class) in Policy.
+# busbar-kernel-scope — the APPROVE step's scope half: the admin-API scope matrix and the egress
+# grant gate.
 #
 # WHY A SEPARATE CRATE. The kernel loop's APPROVE step asks one question — does the principal's
-# held scope cover what this operation needs — and answers it with resource locators only; a hook's
-# veto is a separate, closed code, and the first veto at any seat wins. None of that needs a wire
-# format, an HTTP framework, or a store: it is a pure function over data, so it gets its own crate
-# with `busbar-contract` as its only workspace dependency, exactly like the door does not need to know
-# what building it is bolted to.
+# held scope cover what this operation needs. None of that needs a wire format, an HTTP framework,
+# or a store: it is a pure function over data, so it gets its own crate with `busbar-contract` as its
+# only workspace dependency.
 #
-# WHAT LIVES HERE. The two-rung `Scope` chain (`ReadOnly`/`Full`), the `Grants` bitset roles
-# aggregate into, `required_scope(method, path)` — the admin-API scope matrix ported verbatim from
-# 1.5.5's `openapi.json` at the tag (66 operations, 34 read-only / 32 full) — and the `PolicyView`
-# lookup a native plane's `(claim, op_class)` entries are read through.
+# WHAT LIVES HERE. `admin_required_scope(method, path)` — THE admin-API scope matrix, ported from
+# 1.5.5's `openapi.json` at the tag (66 operations, 34 read-only / 32 full), which the kernel's admin
+# gate calls — the table it is proven against, and the egress grant gate. The two-rung `Scope` chain
+# and the `Grants` bitset are re-exported from `busbar_contract::authz`, their one home.
 [package]
 name = "busbar-kernel-scope"
 version = "1.6.0"
 publish = false            # internal workspace crate; never goes to crates.io
 edition = "2021"
 rust-version = "1.97"
-description = "The APPROVE step: required scope from (claim, op_class) in Policy, and the 1.5.5 admin scope table as data."
+description = "The APPROVE step's scope half: the admin-API scope matrix, the 1.5.5 admin scope table as data, and the egress grant gate."
 license = "Apache-2.0"
 
 [lib]
