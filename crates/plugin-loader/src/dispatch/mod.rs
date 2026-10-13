@@ -87,8 +87,8 @@ pub use load::{
 };
 pub use log_file::{LogLevel, PluginLogConfig, PluginLogSink};
 pub use plugin::{
-    install_member_secrets, Bind, Called, ConnTable, Diagnostic, Dropped, EnvelopeSink,
-    MemberSecretFn, Metric, NoSink, Plugin, Recall, MAX_LOG_BYTES, MAX_LOG_RECORDS,
+    Bind, Called, ConnTable, Diagnostic, Dropped, EnvelopeSink, Metric, NoSink, Plugin, Recall,
+    MAX_LOG_BYTES, MAX_LOG_RECORDS,
 };
 pub use services::{HostServices, Later, Ran, Reading, Stored};
 pub use validate::Violation;

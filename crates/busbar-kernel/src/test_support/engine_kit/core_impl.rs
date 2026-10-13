@@ -363,16 +363,6 @@ impl EngineApp for crate::state::App {
             .map(|(path, _auth)| path)
             .collect()
     }
-    fn guard_url(
-        &self,
-        url: &str,
-        allow_private: bool,
-    ) -> Result<(), (busbar_contract::abi::hot::GuardClass, String)> {
-        match crate::plane_host::guard_url_over(self, url, allow_private) {
-            crate::plane_host::GuardOutcome::Allow => Ok(()),
-            crate::plane_host::GuardOutcome::Deny { class, reason } => Err((class, reason)),
-        }
-    }
 }
 
 /// Take the engine's concrete snapshot back out of the neutral handle a plane held.

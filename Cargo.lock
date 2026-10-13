@@ -710,7 +710,6 @@ dependencies = [
  "base64 0.22.1",
  "bumpalo",
  "busbar-contract",
- "busbar-hook-ranking",
  "busbar-kernel",
  "busbar-kernel-audit",
  "busbar-kernel-breaker",
