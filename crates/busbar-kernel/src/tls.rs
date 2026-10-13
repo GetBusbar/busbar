@@ -2,8 +2,8 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The inbound listener moved to the composition root, `busbar::root::listener`; `read_pem` stays
-//! here for its outbound callers (the connector's `tls:` block resolution and `busbar-a2a`'s
-//! outbound client identity).
+//! here for its outbound callers (the connector's `tls:` block resolution and a plane's outbound
+//! client identity).
 
 // ==== merged from busbar-substrate (W4.b P2 engine drain) ====
 /// Resolve a TLS secret reference to its PEM bytes, mapping any resolve error into a clear,
