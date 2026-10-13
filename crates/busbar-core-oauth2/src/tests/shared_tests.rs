@@ -131,11 +131,14 @@ impl StoreCalls for OneStore {
         not_this()
     }
     fn upsert_plane_record<'a>(&'a self, record: PlaneRecordRef<'a>) -> StoreCall<'a, ()> {
+        // Filed as the linked in-tree store files it: under the parent when there is one, at its
+        // sequence position.
+        let identity = record.parent.unwrap_or(record.id).to_string();
         self.records
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .insert(
-                (record.kind.to_string(), record.id.to_string()),
+                (record.kind.to_string(), identity, record.seq),
                 (record.parent.map(str::to_string), record.body.to_vec()),
             );
         Box::pin(async { Ok(()) })
