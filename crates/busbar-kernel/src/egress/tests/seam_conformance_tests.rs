@@ -36,7 +36,7 @@ const LOOPBACK: &str = "127.0.0.1";
 const CAP: usize = 1024 * 1024;
 
 /// A loopback HTTP/1.1 server that answers every connection with a fixed status line, headers, and
-/// body. Raw TCP so there is no ambient runtime.
+/// body. A plain std listener, so there is no ambient runtime.
 fn spawn_mock(
     status_line: &'static str,
     headers: &'static [(&'static str, &'static str)],
@@ -285,14 +285,14 @@ fn capped_read_reproduces_all_three_readend_states() {
 fn stream_adapter_concatenation_matches_post_stream() {
     use futures::StreamExt;
 
-    let sse = b"event: message\ndata: {\"one\":1}\n\ndata: {\"two\":2}\n\n".to_vec();
+    let event_stream = b"event: message\ndata: {\"one\":1}\n\ndata: {\"two\":2}\n\n".to_vec();
     let addr: IpAddr = LOOPBACK.parse().unwrap();
 
     // The direct streamed hop, collecting the concatenated body.
     let port = spawn_mock(
         "200 OK",
         &[("content-type", "text/event-stream")],
-        sse.clone(),
+        event_stream.clone(),
     );
     let url = format!("http://127.0.0.1:{port}/rpc");
     let rt = tokio::runtime::Builder::new_current_thread()
@@ -333,7 +333,7 @@ fn stream_adapter_concatenation_matches_post_stream() {
     let port2 = spawn_mock(
         "200 OK",
         &[("content-type", "text/event-stream")],
-        sse.clone(),
+        event_stream.clone(),
     );
     let url2 = format!("http://127.0.0.1:{port2}/rpc");
     let spec = HopSpec {
@@ -378,5 +378,5 @@ fn stream_adapter_concatenation_matches_post_stream() {
         seam_body, direct_body,
         "the concatenated event-stream body is byte-identical"
     );
-    assert_eq!(seam_body, sse, "and equals what the upstream sent");
+    assert_eq!(seam_body, event_stream, "and equals what the upstream sent");
 }

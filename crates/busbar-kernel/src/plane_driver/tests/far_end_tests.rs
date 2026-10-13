@@ -1345,7 +1345,8 @@ async fn a_status_stated_in_the_trailers_is_the_answer_never_a_cut() {
 /// reading of the status is the caller's or transient, and whether the plane reads it or the unit
 /// drops first. The baseline settled no such unit: origin/predev's plane breaker cells are never
 /// budgeted (`crates/busbar-kernel/src/store/planes.rs:65-66`, `budget: -1` at `:133`), and its
-/// gRPC hop read no trailer status at all, so the ruling's rule for a case new in the lane applies.
+/// trailered hop read no trailer status at all, so the ruling's rule for a case new in the lane
+/// applies.
 #[tokio::test]
 async fn a_non_success_end_stated_in_the_trailers_keeps_the_budget_unit_its_head_spent() {
     for (code, class, fault) in [
