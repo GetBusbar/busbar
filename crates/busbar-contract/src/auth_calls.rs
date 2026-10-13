@@ -224,6 +224,13 @@ pub trait Verifying: Future<Output = VerifyAnswer> + Send + Unpin {
     /// The answer, if it has arrived; never waits. A SYNC caller polls this once and fails closed
     /// on `None` rather than block a thread.
     fn settled(&mut self) -> Option<VerifyAnswer>;
+
+    /// Whether the verify's answer is a FAULT: the plugin broke its contract (a caught panic, a
+    /// malformed answer), answered as a failed verify — so the host can tell a plugin that failed
+    /// from one that refused. `false` until the verify has answered.
+    fn faulted(&self) -> bool {
+        false
+    }
 }
 
 /// One `complete_login` as the kernel hands it: the callback's `state` and the login's `nonce` (the
@@ -251,6 +258,13 @@ pub struct LoginCallback {
 pub trait LoginCall: Future<Output = LoginOutcome> + Send + Unpin {
     /// The answer, if it has arrived; never waits.
     fn settled(&mut self) -> Option<LoginOutcome>;
+
+    /// Whether the step's answer is a FAULT: the plugin broke its contract (a caught panic, a
+    /// malformed answer), answered as [`LoginOutcome::Reject`] — so the host can tell a plugin
+    /// that failed from one that declined. `false` until the step has answered.
+    fn faulted(&self) -> bool {
+        false
+    }
 }
 
 /// A login step answered before anything crossed.

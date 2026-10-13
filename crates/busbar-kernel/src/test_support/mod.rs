@@ -1314,16 +1314,32 @@ impl TestApp {
     }
 
     /// Inject a resolved external admin auth module under `name` (the config module name that both
-    /// `admin_chain` and `role_bindings.<name>` key off): an external module, so the admin auth
-    /// middleware OFFLOADS its call off the reactor — the seam the 1.5.2 admin-plane OIDC offload
-    /// test drives.
+    /// `admin_chain` and `role_bindings.<name>` key off): an in-process stand-in, answered on the
+    /// spot.
     pub fn admin_module(mut self, name: &str, module: Box<dyn crate::auth::AuthModule>) -> Self {
+        let chain = self
+            .admin_modules
+            .get_or_insert_with(crate::auth::AdminAuthChain::empty);
+        chain.modules.insert(
+            name.to_string(),
+            crate::auth::AdminModule::in_process(module),
+        );
+        self
+    }
+
+    /// Inject an external admin auth module under `name` ON THE AUTH KIND'S DOOR: `calls` (a test
+    /// stand-in for an opened door instance) answers its `verify`, submitted and awaited.
+    pub fn admin_door(
+        mut self,
+        name: &str,
+        calls: std::sync::Arc<dyn busbar_contract::auth_calls::AuthCalls>,
+    ) -> Self {
         let chain = self
             .admin_modules
             .get_or_insert_with(crate::auth::AdminAuthChain::empty);
         chain
             .modules
-            .insert(name.to_string(), crate::auth::AdminModule::cold(module));
+            .insert(name.to_string(), crate::auth::AdminModule { calls });
         self
     }
 
@@ -1367,41 +1383,6 @@ impl TestApp {
         self
     }
 
-    /// Inject a hosted-login method (1.5.2) keyed by `name`. `module` is a login-capable auth
-    /// plugin (test stand-in); `client_secret`/`issuer` are the CORE-held confidential-client secret
-    /// + issuer hint; `has_button` gates whether it renders on the chooser / accepts begin.
-    pub fn login_method(
-        mut self,
-        name: &str,
-        module: Box<dyn busbar_contract::auth::AuthPlugin>,
-        client_secret: Option<String>,
-        issuer: Option<String>,
-        has_button: bool,
-    ) -> Self {
-        let lm = self
-            .login_methods
-            .get_or_insert_with(|| crate::auth::token::LoginMethods {
-                methods: indexmap::IndexMap::new(),
-            });
-        let login_kind = module.login_kind();
-        // Derive the hop host-allowlist from the issuer hint (same core-side rule as production), so a
-        // test whose mock IdP host appears in `issuer` is reachable by the hop executor.
-        let allowed_hosts =
-            crate::auth::token::collect_allowed_hosts(&serde_json::Map::new(), issuer.as_deref());
-        lm.methods.insert(
-            name.to_string(),
-            crate::auth::token::LoginMethod {
-                module: crate::auth::token::LoginPlugin::Cold(module),
-                client_secret: client_secret.map(busbar_contract::redacted::Redacted::new),
-                has_button,
-                issuer,
-                login_kind,
-                allowed_hosts,
-            },
-        );
-        self
-    }
-
     /// Register a hosted-login method `name` whose plugin is ON THE AUTH KIND'S DOOR: `calls` (a
     /// test stand-in for an opened door instance) answers its `begin_login`/`complete_login`, the
     /// core holds no client secret for it and runs no hop. `login_kind` is the tail's login kind.
@@ -1420,12 +1401,10 @@ impl TestApp {
         lm.methods.insert(
             name.to_string(),
             crate::auth::token::LoginMethod {
-                module: crate::auth::token::LoginPlugin::Door(calls),
-                client_secret: None,
+                module: calls,
                 has_button,
                 issuer: None,
                 login_kind,
-                allowed_hosts: std::collections::HashSet::new(),
             },
         );
         self
