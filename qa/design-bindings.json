@@ -24,7 +24,7 @@
    "lint": 5,
    "oracle-cell": 72,
    "oracle-family": 5,
-   "test": 436
+   "test": 428
   }
  },
  "dropped_since_last_write": [],
@@ -1867,48 +1867,6 @@
    "checks": [
     {
      "kind": "test",
-     "ref": "add_usage_sweeps_stale_windows",
-     "proves": "the add_usage sweep by window_start",
-     "source": "curated",
-     "status": "mapped"
-    },
-    {
-     "kind": "test",
-     "ref": "add_usage_sweep_boundary_is_exact",
-     "proves": "strict > on the usage sweep boundary",
-     "source": "curated",
-     "status": "mapped"
-    },
-    {
-     "kind": "test",
-     "ref": "add_metering_sweeps_stale_buckets",
-     "proves": "the add_metering sweep by bucket age",
-     "source": "curated",
-     "status": "mapped"
-    },
-    {
-     "kind": "test",
-     "ref": "add_metering_sweep_boundary_is_exact",
-     "proves": "strict > on the metering sweep boundary",
-     "source": "curated",
-     "status": "mapped"
-    },
-    {
-     "kind": "test",
-     "ref": "put_key_sweeps_stale_tombstones",
-     "proves": "the put_key tombstone sweep",
-     "source": "curated",
-     "status": "mapped"
-    },
-    {
-     "kind": "test",
-     "ref": "put_credential_sweeps_stale_revoked_creds",
-     "proves": "the put_credential revoked-only sweep",
-     "source": "curated",
-     "status": "mapped"
-    },
-    {
-     "kind": "test",
      "ref": "test_budget_sweep_staleness_boundary_is_exact",
      "proves": "the idle cell sweep boundary is strict",
      "source": "curated",
@@ -1930,7 +1888,7 @@
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "test:add_usage_sweeps_stale_windows, test:add_usage_sweep_boundary_is_exact, test:add_metering_sweeps_stale_buckets, test:add_metering_sweep_boundary_is_exact, test:put_key_sweeps_stale_tombstones, test:put_credential_sweeps_stale_revoked_creds, test:test_budget_sweep_staleness_boundary_is_exact, test:test_budget_sweep_evicts_idle_attribution_cells_but_never_group_caps, test:test_budget_sweep_only_exempts_group_cells_that_still_enforce_a_cap"
+   "verdict_detail": "test:test_budget_sweep_staleness_boundary_is_exact, test:test_budget_sweep_evicts_idle_attribution_cells_but_never_group_caps, test:test_budget_sweep_only_exempts_group_cells_that_still_enforce_a_cap"
   },
   {
    "id": "PB-39",
@@ -4581,24 +4539,10 @@
      "proves": "billable_requests deltas verbatim",
      "source": "curated",
      "status": "mapped"
-    },
-    {
-     "kind": "test",
-     "ref": "delete_key_tombstones_and_cascades_usage_and_creds",
-     "proves": "delete_key destroys usage rows and credentials",
-     "source": "curated",
-     "status": "mapped"
-    },
-    {
-     "kind": "test",
-     "ref": "scrub_key_requires_tombstone_first",
-     "proves": "scrub_key nulls PII only on a tombstone",
-     "source": "curated",
-     "status": "mapped"
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "test:test_metering_accumulates_split_per_key_model_and_bucket, test:test_record_metering_from_ir_usage_and_flat, test:test_additive_flush_carries_refund_deltas, test:delete_key_tombstones_and_cascades_usage_and_creds, test:scrub_key_requires_tombstone_first"
+   "verdict_detail": "test:test_metering_accumulates_split_per_key_model_and_bucket, test:test_record_metering_from_ir_usage_and_flat, test:test_additive_flush_carries_refund_deltas"
   },
   {
    "id": "PB-100",

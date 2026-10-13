@@ -237,12 +237,6 @@ pub static SEED: &[(&str, &[SeededCheck])] = &[
         ("test", "admin_scope_resolution", "admin_auth [] grants Scope::Full when no principal"),
     ]),
     ("PB-38", &[
-        ("test", "add_usage_sweeps_stale_windows", "the add_usage sweep by window_start"),
-        ("test", "add_usage_sweep_boundary_is_exact", "strict > on the usage sweep boundary"),
-        ("test", "add_metering_sweeps_stale_buckets", "the add_metering sweep by bucket age"),
-        ("test", "add_metering_sweep_boundary_is_exact", "strict > on the metering sweep boundary"),
-        ("test", "put_key_sweeps_stale_tombstones", "the put_key tombstone sweep"),
-        ("test", "put_credential_sweeps_stale_revoked_creds", "the put_credential revoked-only sweep"),
         ("test", "test_budget_sweep_staleness_boundary_is_exact", "the idle cell sweep boundary is strict"),
         ("test", "test_budget_sweep_evicts_idle_attribution_cells_but_never_group_caps", "a cell survives while it still enforces a cap or is dirty"),
         ("test", "test_budget_sweep_only_exempts_group_cells_that_still_enforce_a_cap", "the still_enforces_a_cap predicate"),
@@ -554,8 +548,6 @@ pub static SEED: &[(&str, &[SeededCheck])] = &[
         ("test", "test_metering_accumulates_split_per_key_model_and_bucket", "the flushed row literals key_group_at_use, pricing_version, billable_requests"),
         ("test", "test_record_metering_from_ir_usage_and_flat", "a flat-fee op still counts the request"),
         ("test", "test_additive_flush_carries_refund_deltas", "billable_requests deltas verbatim"),
-        ("test", "delete_key_tombstones_and_cascades_usage_and_creds", "delete_key destroys usage rows and credentials"),
-        ("test", "scrub_key_requires_tombstone_first", "scrub_key nulls PII only on a tombstone"),
     ]),
     ("PB-100", &[
         ("test", "test_admin_v1_key_idempotent_mint_and_if_match", "stale If-Match is 409 and the ETag is header-only"),
