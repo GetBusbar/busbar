@@ -28,7 +28,7 @@ use busbar_contract::records::{
     PlaneRecord, PlaneRecordRef, PlaneSelector, RecordStoreError, RecordStoreResult,
 };
 use busbar_kernel::plane::handle_engine::DurableHandleEngine;
-use busbar_kernel::plane::registry::{BuildCtx, CardIssuer, PlaneBootCtx, RestoredSummary};
+use busbar_kernel::plane::registry::{BuildCtx, CardIssuer, PlaneBootCtx};
 use busbar_kernel::plane::store::PlaneStore;
 use busbar_kernel::plane_host::EngineHost;
 use futures::channel::mpsc::unbounded;
@@ -139,10 +139,6 @@ struct FakeBootCtx {
 impl PlaneBootCtx for FakeBootCtx {
     fn has_store(&self) -> bool {
         self.store.is_some()
-    }
-    fn register_call_stream(&self) {}
-    fn restore_call_log(&self) -> Result<RestoredSummary, String> {
-        Ok(RestoredSummary::default())
     }
     fn attach_durable_sinks(&self) {}
     fn plane_store(&self) -> Option<Arc<dyn PlaneStore>> {

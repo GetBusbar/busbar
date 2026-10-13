@@ -22,7 +22,7 @@
 //! installs — precisely what the construction gate's uninstalled-seam rule exists to refuse.
 //!
 //! Every type on these signatures is neutral: the substrate's own `EngineHost` / `PlaneSlots` /
-//! `LiveHostFactory` / `BreakerState` / `TokenSigner` / `NewKeySpec` / `CallRecorded`, the
+//! `LiveHostFactory` / `BreakerState` / `TokenSigner` / `NewKeySpec`, the
 //! `busbar_contract` store contracts (`Store`, `VirtualKey`, `MeteringRow`, `AuditRecord`), axum's
 //! `Router` / `Method`, `serde_json::Value` for config documents the engine parses itself, and an
 //! opaque `Box<dyn Any>` for the one fixture (the hook plugin environment) that has no neutral shape.
@@ -32,9 +32,7 @@ use crate::config::groups::GroupCfg;
 use crate::config::sections::RateEntryCfg;
 use crate::governance::signing::TokenSigner;
 use crate::governance::{DerivedUsage, NewKeySpec};
-use crate::plane::calllog::CallRecorded;
 use crate::plane::registry::CardIssuer;
-use crate::plane::store::PlaneStore;
 use crate::plane::PlaneAdmission;
 use crate::plane_host::{EngineHost, LiveHostFactory, PlaneSlots};
 use crate::store::BreakerState;
@@ -413,17 +411,6 @@ pub trait EngineTestKit: Send + Sync {
     /// declaring `prompt`/`user` intent, answered by the kernel's hook double
     /// (`test_support::hook_double`; no plugin is loaded).
     fn hook_env(&self, aliases: &[&str], prompt: HookNeed, user: HookNeed) -> HookEnvHandle;
-
-    // ── the process-wide per-call log ──────────────────────────────────────────────────────────
-    /// The next sequence number `principal`'s call chain will mint.
-    fn call_next_seq(&self, principal: &str) -> u64;
-    /// Register the process-wide `call` stream with no sink (the boot step a harness that does not
-    /// boot through the plane's hydrate hook has to do itself so an emit mints a seq).
-    fn ensure_call_stream_registered(&self);
-    /// Aim the process-wide call sink at `store` (`None` detaches it).
-    fn aim_call_sink(&self, store: Option<Arc<dyn PlaneStore>>);
-    /// Verify one principal's persisted call chain against its own hashes.
-    fn verify_call_rows(&self, rows: &[CallRecorded]) -> Result<(), String>;
 
     // ── the process-wide admin audit ring ─────────────────────────────────────────────────────
     /// The highest audit sequence number appended so far (0 when empty) — monotonic for the process

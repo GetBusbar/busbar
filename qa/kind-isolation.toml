@@ -675,6 +675,16 @@ drain   = "none: BUSBAR-1.6.0.md grants this class. Draining it would be an arch
 
 [[dep]]
 from    = "busbar"
+to      = "busbar-transport-webrtc"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "BUSBAR-1.6.0.md THE DESIGN, §1 / §9 — the composition root is the one thing that names all three axes."
+why     = "busbar names busbar-transport-webrtc: declared normal, optional in the shipped graph, 1 declaration(s) at this commit — the webrtc wire's one registration (its `transport-webrtc` linked row, off by default). The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: BUSBAR-1.6.0.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar"
 to      = "busbar-voice"
 half    = "shipped"
 count   = "1"
@@ -1549,8 +1559,8 @@ drain   = "none: BUSBAR-1.6.0.md grants this class. What this row holds is the N
 [[law0]]
 crate = "busbar"
 axis  = "auth"
-count = "21"
-cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance. +4 for status row 120 (owner task): root/tests/connector.rs `the_pinned_mint_needs_are_operator_infrastructure` reads the pinned plugin's NEEDS by its crate path and its doc names the divergent pins, 2 hits each (package name + kind-qualified id); test-only, over the granted root -> auth dev edge; RE-ARMED 46 -> 51 (Law 9, BUSBAR-1.6.0.md: it pins its ceiling at TODAY'S MEASURED VALUE): the row went live on predev at dc83ff1553 (#597) and measured 49 there; the 46 was f830faa691's, nine hours older than the arming, so the row armed red. 51 is predev 9c0a394771's measure, at or under the arming value (arming measure 49, plus status row 120 (#704, owner task) at its measured +2 of the +4 its cite approved). LOWERED 51 -> 49: the root-crate no-silent-skip lane (#712) drained two with the skips it removed from crates/busbar/tests, measured 49 on its head (law0-slack); LOWERED 49 -> 21, drained by #805 (the gate's measure on its candidate)"
+count = "49"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance. +4 for status row 120 (owner task): root/tests/connector.rs `the_pinned_mint_needs_are_operator_infrastructure` reads the pinned plugin's NEEDS by its crate path and its doc names the divergent pins, 2 hits each (package name + kind-qualified id); test-only, over the granted root -> auth dev edge; RE-ARMED 46 -> 51 (Law 9, BUSBAR-1.6.0.md: it pins its ceiling at TODAY'S MEASURED VALUE): the row went live on predev at dc83ff1553 (#597) and measured 49 there; the 46 was f830faa691's, nine hours older than the arming, so the row armed red. 51 is predev 9c0a394771's measure, at or under the arming value (arming measure 49, plus status row 120 (#704, owner task) at its measured +2 of the +4 its cite approved). LOWERED 51 -> 49: the root-crate no-silent-skip lane (#712) drained two with the skips it removed from crates/busbar/tests, measured 49 on its head (law0-slack)"
 
 [[law0]]
 crate = "busbar"
@@ -1736,7 +1746,7 @@ cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain 
 crate = "busbar-core-connector"
 axis  = "transport"
 count = "69"
-cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; RAISED 68 -> 69 (+1) by the ruled MOVE of #805 (status row 130 E5a; ARCHITECT ruling 2026-10-12): the proxy environment parse moved out of busbar-kernel's egress engine into busbar-core-connector::proxy, paired with busbar-kernel x transport -1 for the same move, so the law0 total does not rise"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; REBALANCED 68 -> 69 by row 130 E5a (#804, ruled MOVE, net flat): the proxy tunnel moved out of busbar-kernel's egress engine into this crate's proxy.rs, and its `\"http\"` proxy-scheme check moved with it verbatim, 1 hit (busbar-kernel × transport gives the same 1 up, 284 -> 278)"
 
 [[law0]]
 crate = "busbar-core-oauth2"
@@ -1747,8 +1757,8 @@ cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain 
 [[law0]]
 crate = "busbar-kernel"
 axis  = "auth"
-count = "31"
-cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; LOWERED 76 -> 61, predev 9c0a394771's measure: the drain landed without giving its row back (Law 9: the ceiling ratchets down); LOWERED 61 -> 50 by GetBusbar/busbar#570: the kernel's auth plugin-chain tests run on in-crate doubles and name no plugin; the real-plugin proofs are the root's (crates/busbar/tests/auth_plugin_chain.rs), which name the plugin through the one root helper (tests/common/plugins.rs), so busbar x auth stays at its ceiling; LOWERED 50 -> 31, drained by #805 (the gate's measure on its candidate)"
+count = "49"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; LOWERED 76 -> 61, predev 9c0a394771's measure: the drain landed without giving its row back (Law 9: the ceiling ratchets down); LOWERED 61 -> 50 by GetBusbar/busbar#570: the kernel's auth plugin-chain tests run on in-crate doubles and name no plugin; the real-plugin proofs are the root's (crates/busbar/tests/auth_plugin_chain.rs), which name the plugin through the one root helper (tests/common/plugins.rs), so busbar x auth stays at its ceiling; LOWERED 50 -> 49 by row 130 E5a (#804): the `auth header` comment drained with the proxy-parse test the egress engine's tests gave up (engine_tests.rs); none moved"
 
 [[law0]]
 crate = "busbar-kernel"
@@ -1789,8 +1799,8 @@ cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain 
 [[law0]]
 crate = "busbar-kernel"
 axis  = "plane"
-count = "1137"
-cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; LOWERED 1193 -> 1175, predev 9c0a394771's measure: the drain landed without giving its row back (Law 9: the ceiling ratchets down); LOWERED 1175 -> 1173, the merge-base d7929b661d's measure, which GetBusbar/busbar#570 holds (its scrape double spells no plane alias) (Law 9: the ceiling ratchets down to today's number); LOWERED 1173 -> 1172, the gate's measure on this branch merged with predev 1617e9f019: Q128 A4's plane_driver/gated.rs drain; REBALANCED 1172 -> 1168 (Q128, PR #686 architect ruling, BUSBAR-1.6.0.md l.475-483): the cross-plane cells moved verbatim into the composition root's crates/busbar/tests/, which takes the same 4 hits (busbar × plane 822 -> 826); LOWERED 1168 -> 1141 by row 157: the hits drained with the deleted HOT trust and guard slots (plane_host/trust.rs, plane_host/guard.rs); LOWERED 1141 -> 1137, drained by #805 (the gate's measure on its candidate)"
+count = "1128"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; LOWERED 1193 -> 1175, predev 9c0a394771's measure: the drain landed without giving its row back (Law 9: the ceiling ratchets down); LOWERED 1175 -> 1173, the merge-base d7929b661d's measure, which GetBusbar/busbar#570 holds (its scrape double spells no plane alias) (Law 9: the ceiling ratchets down to today's number); LOWERED 1173 -> 1172, the gate's measure on this branch merged with predev 1617e9f019: Q128 A4's plane_driver/gated.rs drain; REBALANCED 1172 -> 1168 (Q128, PR #686 architect ruling, BUSBAR-1.6.0.md l.475-483): the cross-plane cells moved verbatim into the composition root's crates/busbar/tests/, which takes the same 4 hits (busbar × plane 822 -> 826); LOWERED 1168 -> 1141 by row 157: the hits drained with the deleted HOT trust and guard slots (plane_host/trust.rs, plane_host/guard.rs); LOWERED 1141 -> 1132 by row 156: the hits drained with the deleted kernel call log (calllog.rs, plane/calllog.rs); LOWERED 1132 -> 1128 by row 130 E5a (#804): the hits drained with the proxy tunnel the egress engine gave up (two `llm engine` prose mentions, the `decision:` doc key and the `installed decision` assert message in engine/mod.rs and engine_tests.rs); none moved — busbar-contract's proxy_route.rs names the per-dial choice without the word"
 
 [[law0]]
 crate = "busbar-kernel"
@@ -1808,7 +1818,7 @@ cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain 
 crate = "busbar-kernel"
 axis  = "transport"
 count = "278"
-cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; LOWERED 288 -> 286, predev 9c0a394771's measure: the drain landed without giving its row back (Law 9: the ceiling ratchets down); LOWERED 286 -> 285 by GetBusbar/busbar#570: the kernel's auth proof no longer cites the root's stdio-served proof; LOWERED 285 -> 284 by row 157: the hit drained with the same deletion; LOWERED 284 -> 278 by #805: -1 the proxy environment parse moved into busbar-core-connector (the ruled MOVE, paired with busbar-core-connector x transport 68 -> 69), -5 drained by #805 (the plugins.fetch downloader and its suite left the kernel)"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; LOWERED 288 -> 286, predev 9c0a394771's measure: the drain landed without giving its row back (Law 9: the ceiling ratchets down); LOWERED 286 -> 285 by GetBusbar/busbar#570: the kernel's auth proof no longer cites the root's stdio-served proof; LOWERED 285 -> 284 by row 157: the hit drained with the same deletion; LOWERED 284 -> 278 by row 130 E5a (#804): the proxy tunnel left the egress engine (engine/mod.rs, engine_tests.rs) for busbar-core-connector's proxy.rs — 5 hits drained with it (three `TCP` prose mentions, two `\"http\"` test literals) and 1 MOVED verbatim (the `\"http\"` proxy-scheme check; busbar-core-connector × transport 68 -> 69, net flat)"
 
 [[law0]]
 crate = "busbar-kernel-breaker"
@@ -1855,8 +1865,8 @@ cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain 
 [[law0]]
 crate = "busbar-plugin-loader"
 axis  = "auth"
-count = "0"
-cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; LOWERED 5 -> 0, drained by #805 (the gate's measure on its candidate)"
+count = "5"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance"
 
 [[law0]]
 crate = "busbar-plugin-loader"

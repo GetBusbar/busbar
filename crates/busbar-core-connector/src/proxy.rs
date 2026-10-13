@@ -208,7 +208,7 @@ pub const CONNECT_HANDSHAKE: std::time::Duration = std::time::Duration::from_sec
 #[must_use]
 pub fn connect_request(target: &str, proxy: &ProxyHop) -> Vec<u8> {
     let mut req = format!("CONNECT {target} HTTP/1.1\r\nHost: {target}\r\n");
-    if let Some(auth) = proxy.auth() {
+    if let Some(auth) = proxy.proxy_authorization() {
         req.push_str("Proxy-Authorization: ");
         req.push_str(auth);
         req.push_str("\r\n");
@@ -217,7 +217,7 @@ pub fn connect_request(target: &str, proxy: &ProxyHop) -> Vec<u8> {
     req.into_bytes()
 }
 
-/// What the proxy has answered so far to a CONNECT for `target`: `Ok(None)` = its head is not
+/// What the proxy has answered so far to a CONNECT for `addr` (`host:port`): `Ok(None)` = its head is not
 /// complete yet; `Ok(Some(n))` = the tunnel is up and the head is the first `n` bytes (anything
 /// after them is the target's); `Err` = the proxy refused (any status but 2xx: RFC 9110, 2xx means
 /// the tunnel is established) or its head ran past [`CONNECT_HEAD_CAP`].
@@ -225,7 +225,7 @@ pub fn connect_request(target: &str, proxy: &ProxyHop) -> Vec<u8> {
 /// # Errors
 ///
 /// The refusal, in the engine's words.
-pub fn connect_answer(head: &[u8], target: &str) -> Result<Option<usize>, String> {
+pub fn connect_answer(head: &[u8], addr: &str) -> Result<Option<usize>, String> {
     let Some(at) = head.windows(4).position(|w| w == b"\r\n\r\n") else {
         if head.len() > CONNECT_HEAD_CAP {
             return Err("proxy CONNECT response head exceeded 8KiB".into());
@@ -241,7 +241,7 @@ pub fn connect_answer(head: &[u8], target: &str) -> Result<Option<usize>, String
         .is_some_and(|code| code.first() == Some(&b'2') && code.len() == 3);
     if !status_2xx {
         return Err(format!(
-            "CONNECT {target} refused by the tunnel's far end: {}",
+            "proxy refused CONNECT {addr}: {}",
             String::from_utf8_lossy(line)
         ));
     }

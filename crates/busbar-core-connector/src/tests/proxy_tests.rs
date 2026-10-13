@@ -274,7 +274,7 @@ fn the_proxys_answer_is_judged_on_its_status_line() {
     );
     assert_eq!(
         connect_answer(b"HTTP/1.1 407 Proxy Authentication Required\r\n\r\n", "t:1"),
-        Err("CONNECT t:1 refused by the tunnel's far end: HTTP/1.1 407 Proxy Authentication Required".into())
+        Err("proxy refused CONNECT t:1: HTTP/1.1 407 Proxy Authentication Required".into())
     );
     assert!(connect_answer(&[b'x'; CONNECT_HEAD_CAP + 1], "t:1").is_err());
     assert_eq!(host_of("upstream.test:8080"), "upstream.test");

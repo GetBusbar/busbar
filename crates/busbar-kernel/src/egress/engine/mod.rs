@@ -937,7 +937,7 @@ mod tunnel {
     ) -> Result<(), BoxError> {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         let mut req = format!("CONNECT {host}:{port} HTTP/1.1\r\nHost: {host}:{port}\r\n");
-        if let Some(auth) = proxy.auth() {
+        if let Some(auth) = proxy.proxy_authorization() {
             req.push_str("Proxy-Authorization: ");
             req.push_str(auth);
             req.push_str("\r\n");
