@@ -2269,18 +2269,17 @@ pub const APPROVAL_LEDGER_UNREACHABLE_REFUSED: Diagnostic = Diagnostic {
     code: 7091,
     class: Class::Plane,
     slug: "approval-ledger-unreachable-refused",
-    title: "Spent-approval ledger unreachable — redemption refused",
+    title: "Spent-approval ledger unreachable — redemption refused — RETIRED",
     severity: Severity::Actionable,
     summary:
-        "The shared spent-approval ledger could not be reached, so an approval redemption was \
+        "RETIRED. The shared spent-approval ledger could not be reached, so an approval redemption was \
               REFUSED: a ledger that cannot say whether an approval was already spent must not be \
               read as saying it was not (a double-spend on a money-moving tool is the defect the \
               gate exists to stop).",
-    action:
-        "Restore connectivity to the shared spent-approval ledger's durable store. Until then, \
-             approval redemptions fail closed by design.",
+    action: "Nothing emits this code. A one-time approval is redeemed through the host's \
+             records.claim service.",
     since: "1.6.0",
-    retired: false,
+    retired: true,
 };
 
 pub const PLANE_CALLLOG_EMPTY_CHAIN: Diagnostic = Diagnostic {

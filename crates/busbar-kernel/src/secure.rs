@@ -9,7 +9,7 @@
 //! seam, and `busbar-core-connector` (which depends on this crate, never the other way) answers it.
 //!
 //! The answer arrives through the egress-trust capability the composition root already installs
-//! once, at boot, before anything dials ([`crate::plane_host::egress_trust::EgressTrustHost::secure_layer`]):
+//! once, at boot, before anything dials ([`crate::egress::trust::EgressTrustHost::secure_layer`]):
 //! the outbound trust a dial is secured with is that capability's business, so no second
 //! process-wide seam is opened for it.
 //!
@@ -112,7 +112,7 @@ pub trait SecureLayer: Send + Sync {
 /// client a TLS double of its own (`EngineSpec::tls`), or, in a test binary no composition root
 /// boots, installs a capability carrying one ([`install_test_tls`]).
 pub fn layer() -> Option<Arc<dyn SecureLayer>> {
-    crate::plane_host::egress_trust::egress_trust_host().and_then(|host| host.secure_layer())
+    crate::egress::trust::egress_trust_host().and_then(|host| host.secure_layer())
 }
 
 /// TEST SEAM: carry `layer` in the egress-trust capability of a test binary no composition root

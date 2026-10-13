@@ -62,20 +62,21 @@ use busbar_contract::abi::mechanism::door::{
     Door, KindTailHead, MetricFamily, Section, Statement, FAMILY_GAUGE, SECTION_DECLARING,
 };
 use busbar_contract::abi::mechanism::lifecycle::{
-    CancelIn, CancelOut, DriveIn, OpsHead, TickIn, TickOut, LIFECYCLE_SLOTS,
+    CancelIn, CancelOut, DriveIn, OpsHead, RefreshIn, TickIn, TickOut, LIFECYCLE_SLOTS,
 };
 use busbar_contract::abi::mechanism::ticket::{CompletionHandle, HostCtx, Ticket, WakeFn};
 use busbar_contract::abi::mechanism::{KindCode, DOOR_MAGIC, MECHANISM_VERSION};
 use busbar_contract::abi::plane::{
     AdminRoute, ArriveIn, ArriveOut, BillableClass, Claim, OnPieceIn, OnPieceOut, OpClass, Ops,
-    OutField, PlaneDriveIn, PlaneDriveOut, PlaneOpenIn, PlaneOpenOut, PlaneSnapshot, PlaneTail,
-    ProjectOut, RefusalIn, RefusalOut, RefusalStatus, ServeIn, ServeOut, UnitCount, AUDIT_APPLIED,
-    AUDIT_NONE, AUDIT_REJECTED, CANCEL_ABORTED, CANCEL_FAILED, CANCEL_OK_PARTIAL, CLAIM_EXACT,
-    CLAIM_OPEN, EMIT_DONE, EMIT_FINAL_STATUS, EMIT_MESSAGE_END, EMIT_TO_FAR_END, FROM_CALLER,
-    FROM_FAR_END, FROM_KERNEL, INGRESS_DUPLEX_SESSION, INGRESS_REQUEST_RESPONSE,
-    INGRESS_RESPONSE_STREAM, PIECE_FIELDS, PIECE_HAS_STATUS, PIECE_LAST, PIECE_OUT_TEXT,
-    PRINCIPAL_OPTIONAL, REFUSAL_ANY_DIALECT, ROUTE_COUNTED, ROUTE_DIRECT, ROUTE_LOCAL, ROUTE_POOL,
-    ROUTE_PUBLIC, SHAPE_WHOLE, SPAN_ABSENT, UNITS_ESTIMATED, UNITS_REPORTED, VERDICT_RETRY,
+    OutField, PlaneDriveIn, PlaneDriveOut, PlaneOpenIn, PlaneOpenOut, PlaneRefreshOut,
+    PlaneSnapshot, PlaneTail, ProjectOut, RefusalIn, RefusalOut, RefusalStatus, ServeIn, ServeOut,
+    UnitCount, AUDIT_APPLIED, AUDIT_NONE, AUDIT_REJECTED, CANCEL_ABORTED, CANCEL_FAILED,
+    CANCEL_OK_PARTIAL, CLAIM_EXACT, CLAIM_OPEN, EMIT_DONE, EMIT_FINAL_STATUS, EMIT_MESSAGE_END,
+    EMIT_TO_FAR_END, FROM_CALLER, FROM_FAR_END, FROM_KERNEL, INGRESS_DUPLEX_SESSION,
+    INGRESS_REQUEST_RESPONSE, INGRESS_RESPONSE_STREAM, PIECE_FIELDS, PIECE_HAS_STATUS, PIECE_LAST,
+    PIECE_OUT_TEXT, PRINCIPAL_OPTIONAL, REFUSAL_ANY_DIALECT, ROUTE_COUNTED, ROUTE_DIRECT,
+    ROUTE_LOCAL, ROUTE_POOL, ROUTE_PUBLIC, SHAPE_WHOLE, SPAN_ABSENT, UNITS_ESTIMATED,
+    UNITS_REPORTED, VERDICT_RETRY,
 };
 
 /// The plane's own refusal code and the status `/clock` refuses with when the host will not read
@@ -160,11 +161,19 @@ const NO_BLOB: Blob = Blob {
     flags: 0,
 };
 
-static SECTIONS: Shared<[Section; 1]> = Shared([Section {
-    name: s(b"test_plane"),
-    flags: SECTION_DECLARING,
-    _reserved: 0,
-}]);
+/// Its declaring section, and an owned section beside it (handed at `open` as `PlaneOpenIn::owned`).
+static SECTIONS: Shared<[Section; 2]> = Shared([
+    Section {
+        name: s(b"test_plane"),
+        flags: SECTION_DECLARING,
+        _reserved: 0,
+    },
+    Section {
+        name: s(b"test_plane_owned"),
+        flags: 0,
+        _reserved: 0,
+    },
+]);
 static DIALECTS: Shared<[AbiStr; 1]> = Shared([s(b"plain")]);
 static OP_CLASSES: Shared<[OpClass; 1]> = Shared([OpClass {
     op: s(b"call"),
@@ -327,7 +336,7 @@ static STATEMENT: Shared<Statement> = Shared(Statement {
     rewrites: std::ptr::null(),
     rewrites_len: 0,
     sections: &SECTIONS.0 as *const Section,
-    sections_len: 1,
+    sections_len: 2,
     needs: &NEEDS.0 as *const Need,
     needs_len: 1,
     target_from: NO_STR,
@@ -362,7 +371,7 @@ static OPS: Shared<Ops> = Shared(Ops {
         slots: LIFECYCLE_SLOTS + busbar_contract::abi::plane::KIND_SLOTS,
         validate: Some(ready),
         open: Some(open),
-        refresh: Some(ready),
+        refresh: Some(refresh),
         retire: Some(ready),
         tick: Some(tick),
         drive: Some(drive),
@@ -567,9 +576,43 @@ extern "C" fn project(_: *mut c_void, _: *const c_void, out: *mut c_void) -> Raw
     }
 }
 
+/// THE CROSSING RECORDER: a settings object naming a `capture_to` directory (a key no other
+/// caller writes) has every blob the call was handed written there, as `<tag>.<blob>`, so a test
+/// reads the exact bytes that crossed the ABI.
+unsafe fn record(tag: &str, settings: Blob, blobs: &[(&str, Blob)]) {
+    let Ok(v) = serde_json::from_slice::<serde_json::Value>(bytes(settings)) else {
+        return;
+    };
+    let Some(dir) = v.get("capture_to").and_then(serde_json::Value::as_str) else {
+        return;
+    };
+    let dir = std::path::Path::new(dir);
+    let _ = std::fs::create_dir_all(dir);
+    let _ = std::fs::write(dir.join(format!("{tag}.settings")), bytes(settings));
+    for (name, b) in blobs {
+        let _ = std::fs::write(dir.join(format!("{tag}.{name}")), bytes(*b));
+    }
+}
+
+/// `refresh`: the next generation, its snapshot the first one's claims; recorded.
+extern "C" fn refresh(instance: *mut c_void, input: *const c_void, out: *mut c_void) -> RawOutcome {
+    unsafe {
+        let i = &*input.cast::<RefreshIn>();
+        record("refresh", i.settings, &[]);
+        let me = inst(instance);
+        let snapshot = Box::leak(Box::new(PlaneSnapshot {
+            generation: i.generation,
+            ..*me.snapshot
+        }));
+        (*out.cast::<PlaneRefreshOut>()).snapshot = snapshot as *const PlaneSnapshot;
+        say(out, Outcome::Ready)
+    }
+}
+
 extern "C" fn open(_: *mut c_void, input: *const c_void, out: *mut c_void) -> RawOutcome {
     unsafe {
         let i = &*input.cast::<PlaneOpenIn>();
+        record("open", i.open.settings, &[("owned", i.owned)]);
         let Some(host) = i.open.host.as_ref() else {
             return say(out, Outcome::Refused);
         };

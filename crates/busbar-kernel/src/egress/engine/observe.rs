@@ -33,7 +33,7 @@ type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
 /// The observed transport-layer identity of the peer: the `sha256/<b64>` pin of the leaf
 /// certificate's SubjectPublicKeyInfo, in the one canonical spelling
-/// (`crate::plane_host::spki::pin`). Cloneable and cheap: the pool clones it into every
+/// (`crate::egress::trust::spki::pin`). Cloneable and cheap: the pool clones it into every
 /// response's extensions.
 #[derive(Clone, Debug)]
 pub struct PeerKeyPin(pub Arc<str>);
@@ -172,7 +172,7 @@ where
             let key_pin = if observe {
                 io.secured()
                     .and_then(|tls| tls.peer_leaf())
-                    .and_then(|leaf| crate::plane_host::spki::pin(leaf).ok())
+                    .and_then(|leaf| crate::egress::trust::spki::pin(leaf).ok())
                     .map(|pin| PeerKeyPin(pin.into()))
             } else {
                 None
