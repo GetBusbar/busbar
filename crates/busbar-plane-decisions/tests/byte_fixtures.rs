@@ -31,8 +31,9 @@ const SYSTEMONE_422: &[u8] = br#"{"error":{"code":"invalid_state","message":"bad
 const MODELS_LIST: &[u8] =
     br#"{"request_id":"req_2","data":[{"id":"jev-1.13.0","object":"model"}]}"#;
 
-/// The request body a `systemone` call carries — this plane never reads a pointer off it (see
-/// `codec::REQUEST_PTRS`), so its shape only matters for byte-identity forwarding.
+/// The request body a `systemone` call carries — this plane reads it at its top-level `model` alone
+/// (see `codec::REQUEST_PTRS`), and names none here, so its shape only matters for byte-identity
+/// forwarding.
 const SYSTEMONE_REQUEST: &[u8] = br#"{"state":{"session":"caller-secret-state-xyz"},"context":{}}"#;
 
 #[test]

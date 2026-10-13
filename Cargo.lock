@@ -733,7 +733,6 @@ dependencies = [
  "busbar-kernel-scope",
  "busbar-kernel-wal",
  "busbar-plugin-loader",
- "busbar-store-memory",
  "bytes",
  "crc32fast",
  "criterion",
