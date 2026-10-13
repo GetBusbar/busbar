@@ -156,6 +156,7 @@ mod debt_free;
 mod inputs;
 mod matrix;
 mod pinned;
+pub(crate) use pinned::plane_base;
 mod truths;
 
 pub use closure::ROW_CLOSURE;

@@ -520,6 +520,15 @@ impl Env {
 pub struct Ctx {
     root: PathBuf,
     overlay: Option<Arc<Overlay>>,
+    /// THE BASE LAYER, beneath the overlay and above the disk: the pinned checkouts of the plane-kind
+    /// plugins this workspace links, laid at `crates/<package>` exactly as each crate lived here
+    /// before it left for its own repo (ARCHITECT row 106 (A): plugin SOURCE never re-enters busbar,
+    /// spec #39, so it is READ from the checkout cargo fetched for the rev `Cargo.lock` pins, and
+    /// never written, copied or linked into the tree). [`Ctx::with_overlay`] keeps it, so a plant
+    /// still wins over the pinned bytes and every gate reads a plane that left the tree exactly as it
+    /// read it when it lived here. Set by [`Ctx::workspace`] ([`crate::gates::kind_isolation::plane_base`]); a fixture
+    /// context has none.
+    base: Option<Arc<Overlay>>,
     scratch: PathBuf,
     env: Env,
     /// `git check-ignore`'s answers, per path, SHARED by every clone and every overlay of this
@@ -574,6 +583,7 @@ impl Ctx {
         Ok(Ctx {
             root,
             overlay: None,
+            base: None,
             scratch,
             env: Env::capture(),
             ignore_memo: Arc::default(),
@@ -592,6 +602,7 @@ impl Ctx {
         Ok(Ctx {
             root: root.into(),
             overlay: None,
+            base: None,
             scratch,
             env: Env::capture(),
             ignore_memo: Arc::default(),
@@ -603,8 +614,55 @@ impl Ctx {
 
     /// The workspace root, resolved at RUNTIME ([`workspace_root`]), never the tree the binary was
     /// compiled in.
+    ///
+    /// THE PINNED PLANES ARE LAID AS ITS BASE ([`crate::gates::kind_isolation::plane_base`]): a plane crate that
+    /// left for its own repo is read from the checkout of the rev the root pins, at the directory it
+    /// lived at. A pinned plane that does not resolve is an `Err` naming the package and the rev:
+    /// the workspace never opens over a tree that silently lost a plane.
     pub fn workspace() -> Result<Ctx, String> {
-        Ctx::new(workspace_root()?)
+        Ctx::new(workspace_root()?)?.with_pinned_planes()
+    }
+
+    /// This context with the pinned planes of its own root laid as its BASE layer
+    /// ([`crate::gates::kind_isolation::plane_base`]): what [`Ctx::workspace`] opens, for a caller
+    /// that opens the real tree through [`Ctx::new`].
+    ///
+    /// # Errors
+    /// A pinned plane does not resolve (named, with its rev).
+    pub fn with_pinned_planes(&self) -> Result<Ctx, String> {
+        let base = crate::gates::kind_isolation::plane_base(self)?;
+        Ok(self.with_base(base))
+    }
+
+    /// This context with `base` as its BASE layer (see the field): beneath every overlay, above
+    /// the disk. An empty base is no base.
+    pub fn with_base(&self, base: Overlay) -> Ctx {
+        Ctx {
+            base: (!base.is_empty()).then(|| Arc::new(base)),
+            ..self.clone()
+        }
+    }
+
+    /// This context with NO base layer: the tree on disk and the overlay alone. What a gate reads
+    /// the day the pinned planes are not laid, and so the shape of every gate family's RED plant
+    /// that proves the gate reads them (ARCHITECT row 106 (A) condition 3).
+    pub fn without_base(&self) -> Ctx {
+        Ctx {
+            base: None,
+            ..self.clone()
+        }
+    }
+
+    /// The base layer, when one is laid.
+    pub fn base(&self) -> Option<&Overlay> {
+        self.base.as_deref()
+    }
+
+    /// What the overlay, else the base, claims about `rel`: the overlay wins.
+    fn claim(&self, rel: &Path) -> Option<&Change> {
+        self.overlay()
+            .and_then(|ov| ov.files.get(rel))
+            .or_else(|| self.base().and_then(|b| b.files.get(rel)))
     }
 
     pub fn root(&self) -> &Path {
@@ -660,17 +718,15 @@ impl Ctx {
     /// Read a file, consulting the overlay first.
     pub fn read(&self, rel: impl AsRef<Path>) -> Result<String, String> {
         let rel = rel.as_ref();
-        if let Some(ov) = self.overlay() {
-            match ov.files.get(rel) {
-                Some(Change::Content(c)) => return Ok(c.clone()),
-                Some(Change::Absent) => {
-                    return Err(format!("{}: absent (overlay)", rel.display()));
-                }
-                Some(Change::Unreadable(why)) => {
-                    return Err(format!("{}: {why} (overlay)", rel.display()));
-                }
-                None => {}
+        match self.claim(rel) {
+            Some(Change::Content(c)) => return Ok(c.clone()),
+            Some(Change::Absent) => {
+                return Err(format!("{}: absent (overlay)", rel.display()));
             }
+            Some(Change::Unreadable(why)) => {
+                return Err(format!("{}: {why} (overlay)", rel.display()));
+            }
+            None => {}
         }
         self.read_disk_memoized(rel, &self.abs(rel))
     }
@@ -745,14 +801,12 @@ impl Ctx {
 
     pub fn exists(&self, rel: impl AsRef<Path>) -> bool {
         let rel = rel.as_ref();
-        if let Some(ov) = self.overlay() {
-            match ov.files.get(rel) {
-                Some(Change::Content(_)) => return true,
-                // An unreadable file IS on disk; it is the READ that fails, not the stat.
-                Some(Change::Unreadable(_)) => return true,
-                Some(Change::Absent) => return false,
-                None => {}
-            }
+        match self.claim(rel) {
+            Some(Change::Content(_)) => return true,
+            // An unreadable file IS on disk; it is the READ that fails, not the stat.
+            Some(Change::Unreadable(_)) => return true,
+            Some(Change::Absent) => return false,
+            None => {}
         }
         self.abs(rel).exists()
     }
@@ -821,20 +875,18 @@ impl Ctx {
         let mut rels: Vec<PathBuf> = Vec::new();
         for root in &spec.roots {
             let abs = self.abs(root);
-            let overlay_adds_it = self
-                .overlay()
-                .map(|ov| {
-                    ov.paths()
-                        .any(|p| p.to_string_lossy().starts_with(&format!("{root}/")))
-                })
-                .unwrap_or(false);
+            let overlay_adds_it = self.base().into_iter().chain(self.overlay()).any(|ov| {
+                ov.paths()
+                    .any(|p| p.to_string_lossy().starts_with(&format!("{root}/")))
+            });
             if !abs.exists() && !overlay_adds_it {
                 return Err(WalkError::MissingRoot { root: root.clone() });
             }
             rels.extend(self.collect_memoized(&abs)?.iter().cloned());
         }
 
-        if let Some(ov) = self.overlay() {
+        // The base first, then the overlay, so a plant's claim about a pinned file is the last word.
+        for ov in self.base().into_iter().chain(self.overlay()) {
             for (path, change) in &ov.files {
                 let s = path.to_string_lossy().replace('\\', "/");
                 // `.` IS THE WHOLE TREE, AND A PLANT INTO A DIRECTORY THAT DOES NOT EXIST YET IS
@@ -1069,7 +1121,9 @@ impl Ctx {
         }
         let mut index: std::collections::BTreeSet<String> =
             self.index_listing()?.iter().cloned().collect();
-        if let Some(ov) = self.overlay() {
+        // The base is the tree this context shows too: its files are tracked as a commit of the
+        // planted tree would track them (the pinned crate, as it was tracked when it lived here).
+        for ov in self.base().into_iter().chain(self.overlay()) {
             let mut added = Vec::new();
             for (path, change) in &ov.files {
                 let p = path.to_string_lossy().replace('\\', "/");

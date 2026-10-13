@@ -272,6 +272,157 @@ fn mount(cx: &Ctx) -> Arc<Overlay> {
     ov
 }
 
+/// The plugin kind whose pinned checkouts are every gate's BASE layer ([`plane_base`]).
+const BASE_KIND: &str = "plane";
+
+/// The root manifest's pinned git rows of the [`BASE_KIND`]: `(package, rev)` for every
+/// `[workspace.dependencies]` row naming a `git` source whose package resolves to that kind and is
+/// not a `-plugin` twin. Read off the manifest, not off `cargo metadata`, so a pin cargo cannot
+/// resolve is still NAMED in the refusal.
+fn pinned_base_rows(cx: &Ctx) -> Result<Vec<(String, String)>, String> {
+    let manifest = cx.read("Cargo.toml")?;
+    let mut rows = Vec::new();
+    let mut inside = false;
+    for raw in manifest.lines() {
+        let t = raw.trim();
+        if t.starts_with('[') {
+            inside = t == "[workspace.dependencies]";
+            continue;
+        }
+        if !inside || t.starts_with('#') {
+            continue;
+        }
+        let Some((key, spec)) = t.split_once('=') else {
+            continue;
+        };
+        if !spec.contains("git =") {
+            continue;
+        }
+        let field = |name: &str| {
+            spec.split_once(&format!("{name} = \""))
+                .and_then(|(_, rest)| rest.split_once('"'))
+                .map(|(v, _)| v.to_string())
+        };
+        let name = field("package").unwrap_or_else(|| key.trim().to_string());
+        if name.ends_with(CDYLIB_SUFFIX)
+            || super::plugin_kind(&name) != Some(BASE_KIND)
+            || rows.iter().any(|(n, _): &(String, String)| *n == name)
+        {
+            continue;
+        }
+        rows.push((name, field("rev").unwrap_or_else(|| "<no rev>".to_string())));
+    }
+    Ok(rows)
+}
+
+/// THE PLANE'S OWN REPO JUDGES ITS SOURCE WITH BUSBAR'S GATES (ARCHITECT row 106 (A), condition 7):
+/// `BUSBAR_PLANE_SOURCE=<package>=<dir>[,<package>=<dir>…]` lays `<dir>` — the plane repo's logic
+/// crate, at the change under test — in place of the pinned checkout of `<package>`. plugin-ci.yml's
+/// plane-gates step sets it over a busbar checkout at the repo's pin. A named package the root does
+/// not pin, or a directory that reads no file, is an `Err`.
+pub(crate) const PLANE_SOURCE_ENV: &str = "BUSBAR_PLANE_SOURCE";
+
+/// [`PLANE_SOURCE_ENV`]'s `(package, dir)` pairs.
+fn plane_source_overrides() -> Result<Vec<(String, PathBuf)>, String> {
+    let Ok(raw) = std::env::var(PLANE_SOURCE_ENV) else {
+        return Ok(Vec::new());
+    };
+    raw.split(',')
+        .filter(|s| !s.trim().is_empty())
+        .map(|pair| {
+            pair.split_once('=')
+                .map(|(n, d)| (n.trim().to_string(), PathBuf::from(d.trim())))
+                .ok_or_else(|| format!("{PLANE_SOURCE_ENV}: `{pair}` is not `<package>=<dir>`"))
+        })
+        .collect()
+}
+
+static BASE_MEMO: OnceLock<Mutex<BTreeMap<String, Result<Overlay, String>>>> = OnceLock::new();
+
+/// THE PINNED PLANES, AS EVERY GATE'S BASE LAYER (ARCHITECT row 106 (A)): each pinned package of
+/// the [`BASE_KIND`] the root manifest names, laid at its [`mount_dir`] from the checkout `cargo
+/// metadata` resolves for the rev `Cargo.lock` pins, exactly as [`mount`] lays it for this gate.
+/// Generic over the kind: no plane instance is named here, so each plane that leaves the tree is
+/// laid by the same code. Read, never written: nothing lands in the tree (spec #39).
+///
+/// FAILS CLOSED. A pinned plane `cargo metadata` does not resolve, or whose checkout reads no file,
+/// is an `Err` naming the package and the rev; the tree is never read as one that quietly lost a
+/// plane. A root that pins no plane lays nothing.
+///
+/// # Errors
+/// As above, or the root manifest does not read.
+pub(crate) fn plane_base(cx: &Ctx) -> Result<Overlay, String> {
+    let key = cx.root().display().to_string();
+    let memo = BASE_MEMO.get_or_init(Default::default);
+    if let Some(hit) = memo
+        .lock()
+        .expect("the base memo mutex is never poisoned")
+        .get(&key)
+    {
+        return hit.clone();
+    }
+    let built = build_plane_base(cx);
+    memo.lock()
+        .expect("the base memo mutex is never poisoned")
+        .insert(key, built.clone());
+    built
+}
+
+fn build_plane_base(cx: &Ctx) -> Result<Overlay, String> {
+    let rows = pinned_base_rows(cx)?;
+    let mut ov = Overlay::new();
+    if rows.is_empty() {
+        return Ok(ov);
+    }
+    let named = || {
+        rows.iter()
+            .map(|(n, r)| format!("{n} at {r}"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let resolved = pinned_packages(cx);
+    let pinned = resolved.as_ref().as_ref().map_err(|e| {
+        format!(
+            "the pinned {BASE_KIND}(s) {} cannot be read: cargo metadata does not answer ({e})",
+            named()
+        )
+    })?;
+    let overrides = plane_source_overrides()?;
+    if let Some((stray, _)) = overrides
+        .iter()
+        .find(|(n, _)| !rows.iter().any(|(r, _)| r == n))
+    {
+        return Err(format!(
+            "{PLANE_SOURCE_ENV} names `{stray}`, which the root does not pin as a {BASE_KIND}"
+        ));
+    }
+    let on_disk = disk_crate_names(cx.root());
+    for (name, rev) in &rows {
+        let p = pinned.iter().find(|p| p.name == *name).ok_or_else(|| {
+            format!("the pinned {BASE_KIND} `{name}` at {rev} does not resolve in cargo metadata")
+        })?;
+        let at = mount_dir(&p.name);
+        if on_disk.contains(&p.name) || cx.root().join(&at).exists() {
+            continue;
+        }
+        let dir = overrides
+            .iter()
+            .find(|(n, _)| n == name)
+            .map_or(&p.dir, |(_, d)| d);
+        let files = crate_files(dir);
+        if files.is_empty() {
+            return Err(format!(
+                "the pinned {BASE_KIND} `{name}` at {rev}: {} reads no file",
+                dir.display()
+            ));
+        }
+        for (rel, text) in files {
+            ov.set(format!("{at}/{rel}"), text);
+        }
+    }
+    Ok(ov)
+}
+
 /// The pinned source of the crate the census reads at `dir` under `name`, when it is a mounted
 /// pinned checkout: a plugin-kind crate at exactly [`mount_dir`]`(name)`, NOT on disk (only the
 /// mount lays it there), whose name `cargo metadata` resolves to a pinned `git+` package. A crate a

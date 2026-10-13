@@ -378,6 +378,18 @@ jobs:
           printf '%s\n' "$red" | grep -q "crossing(s), pinned" \
             || { printf '%s\n' "$red" >&2; echo "::error::RED: the moved count failed for another reason than the exact comparator"; exit 1; }
           echo "conformance: the published suite ran green; the moved count was refused"
+      - name: "busbar's plane gates over this plane's source (plane-purity, structure-lint, config-schema): no row that passes over busbar's pinned plane fails over this change"
+        # ARCHITECT row 106 (A): a plane that left busbar is read by busbar's gates from its pinned
+        # checkout; here the same gates, at this repo's busbar pin, read THIS change in its place
+        # (BUSBAR_PLANE_SOURCE), so the plane is judged where its source changes.
+        if: ${{ !cancelled() && inputs.plugin_kind == 'plane' && steps.crates.outputs.present == 'true' }}
+        working-directory: busbar
+        env:
+          CRATE: ${{ inputs.plugin_crate }}
+        run: |
+          set -euo pipefail
+          bash scripts/fleet/plane-gates.sh --selftest
+          bash scripts/fleet/plane-gates.sh "$GITHUB_WORKSPACE/plugin" "${CRATE%-plugin}"
       - name: cargo deny (the rendered deny.toml; busbar's .github/fleet/deps.toml at the pin)
         if: ${{ !cancelled() && steps.crates.outputs.present == 'true' }}
         working-directory: plugin

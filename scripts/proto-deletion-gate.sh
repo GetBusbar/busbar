@@ -147,6 +147,26 @@ require_scan_dir() { # $1 = directory this gate scans or path-pins inside; $2 = 
   [ -d "$1" ] || die "SCAN ROOT MISSING: $1 ($2) is not on disk. A scan of zero files satisfies every prohibition below, so this is RED and not a pass — repoint this gate at whatever replaced that path (see CORE_SRC_ROOTS)"
 }
 
+# A PLANE THAT LEFT FOR ITS OWN REPO IS READ FROM ITS PINNED CHECKOUT (ARCHITECT row 106 (A)): the
+# root pins `busbar-plane-<key>` as a git row and cargo fetched its checkout for the rev Cargo.lock
+# pins. `pinned_dir crates/<package>/<rest>` prints the path the tree has on disk, or, for a pinned
+# plane no crate on disk is, the same path inside that checkout (read, never copied: spec #39). A
+# pinned plane cargo does not resolve is RED, naming it.
+pinned_dir() { # $1 = repo-relative path
+  if [ -e "$1" ]; then printf '%s\n' "$1"; return 0; fi
+  case "$1" in crates/busbar-plane-*) ;; *) printf '%s\n' "$1"; return 0 ;; esac
+  local rest="${1#crates/}" pkg inner dir
+  pkg="${rest%%/*}"; inner="${rest#"$pkg"}"
+  dir="$(cargo metadata --format-version 1 2>/dev/null | python3 -I -c '
+import json, os, sys
+for p in json.load(sys.stdin)["packages"]:
+    if p["name"] == sys.argv[1] and (p.get("source") or "").startswith("git+"):
+        print(os.path.dirname(p["manifest_path"])); break
+' "$pkg")" || true
+  [ -n "$dir" ] || die "PINNED PLANE UNRESOLVED: $pkg ($1) is neither on disk nor a pinned git package cargo metadata resolves"
+  printf '%s%s\n' "$dir" "$inner"
+}
+
 # THE NEEDLE SET IS DERIVED FROM THE TWO FILES THAT ALREADY DEFINE IT, NOT FROM A PREFIX LIST.
 # It used to be six hand-written globs (busbar-llm/mcp/a2a/voice, busbar-*-codec, busbar-plane-*),
 # so a protocol or plane-side crate whose name matched none of them was no needle at all -- the
@@ -305,7 +325,7 @@ if [ "${1:-}" = "--selftest" ]; then
   # rename reds the self-test too, not only the run, and names which path went.
   for st_root in "${CORE_SRC_ROOTS[@]}" \
                  crates/busbar-kernel/src/ir \
-                 crates/busbar-kernel/src/handlers crates/busbar-plane-mcp/src; do
+                 crates/busbar-kernel/src/handlers "$(pinned_dir crates/busbar-plane-mcp/src)"; do
     if ( require_scan_dir "$st_root" "a live scan root" ) >/dev/null 2>&1; then
       note "self-test ROOT(3): live scan root present — $st_root"
     else
@@ -752,8 +772,9 @@ require_scan_dir crates/busbar-kernel/src/handlers "core's protocol-handler modu
 # declared by the door crate, OUTSIDE core; no crate builds a `ProtocolDecl` over it (a row that came
 # back would be a second, un-doored path for the plane); and the composition root links the door
 # behind the one `plane-mcp` switch, as DATA in its manifest.
-require_scan_dir crates/busbar-plane-mcp/src "the MCP plane's door crate (its PLANE_KEY lives here)"
-grep -rq 'PLANE_KEY: &str = "mcp"' crates/busbar-plane-mcp/src \
+MCP_DOOR_SRC="$(pinned_dir crates/busbar-plane-mcp/src)"
+require_scan_dir "$MCP_DOOR_SRC" "the MCP plane's door crate (its PLANE_KEY lives here)"
+grep -rq 'PLANE_KEY: &str = "mcp"' "$MCP_DOOR_SRC" \
   || die "the MCP door crate must declare the mcp plane key (PLANE_KEY = \"mcp\")"
 if grep -rq 'ProtocolDecl::named(busbar_plane_mcp::PLANE_KEY)' crates --include='*.rs'; then
   die "a crate builds a ProtocolDecl over the mcp key: the plane is served through its door alone (P3 DEL-MCP)"
