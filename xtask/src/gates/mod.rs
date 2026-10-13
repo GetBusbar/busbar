@@ -26,6 +26,7 @@ pub mod c1_literals;
 pub mod changelog;
 pub mod changelog_register;
 pub mod config_schema;
+pub mod config_scope;
 pub mod conformance_sync;
 pub mod construction;
 pub mod contract_stateless;
@@ -3338,6 +3339,15 @@ pub static REGISTRY: &[Registration] = &[
         tier: Tier::Fast,
         build: || Box::new(secret_accessor_seal::SecretAccessorSealGate),
         summary: "no cdylib plugin crate reaches a raw secret accessor (expose/bytes) or KernelSeal::acquire_for_kernel (DECISIONS #40)",
+    },
+    Registration {
+        name: "config-scope",
+        batch: 1,
+        tier: Tier::Fast,
+        build: || Box::new(config_scope::ConfigScopeGate),
+        summary: "the config-time proof (ConfigScope) is constructed only in the host's boot, apply, \
+                  refresh, pre-flight and validate functions, never on a request path (THE DESIGN \
+                  §11.11 R4)",
     },
     Registration {
         name: "money-invariants",

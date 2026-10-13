@@ -232,9 +232,12 @@ impl LoginMethods {
         // chain's own rows, the same dispatcher and connection table).
         let mut axis: Option<Arc<dyn busbar_contract::auth_calls::AuthAxis>> = None;
         for (name, mc) in &cfg.methods {
-            let mut resolved =
-                crate::config::secret::resolve_settings(&mc.settings, secret_resolver)
-                    .map_err(|e| format!("identity-providers.{name} settings: {e}"))?;
+            let mut resolved = crate::config::secret::resolve_settings(
+                &mc.settings,
+                secret_resolver,
+                &busbar_contract::config_time::ConfigScope::config_time(),
+            )
+            .map_err(|e| format!("identity-providers.{name} settings: {e}"))?;
             // The OAuth `client_id` (the PUBLIC half) rides the module's settings so the module can
             // build the authorize URL + token-exchange with it. It is NOT a secret and is passed
             // through.
@@ -283,9 +286,14 @@ impl LoginMethods {
                 .as_ref()
                 .and_then(|bl| bl.client_secret.as_ref())
             {
-                let secret = secret_resolver.resolve_string(sref).map_err(|e| {
-                    format!("identity-providers.{name} browser_login.client_secret: {e}")
-                })?;
+                let secret = secret_resolver
+                    .resolve_string_at_config(
+                        sref,
+                        &busbar_contract::config_time::ConfigScope::config_time(),
+                    )
+                    .map_err(|e| {
+                        format!("identity-providers.{name} browser_login.client_secret: {e}")
+                    })?;
                 resolved.insert(
                     "client_secret".to_string(),
                     serde_json::Value::String(secret),

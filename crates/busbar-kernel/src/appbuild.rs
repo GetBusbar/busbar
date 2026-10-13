@@ -757,7 +757,10 @@ pub fn build_app_from_config(
                 String::new()
             } else {
                 secret_resolver
-                    .resolve_string(&provider_cfg.api_key)
+                    .resolve_string_at_config(
+                        &provider_cfg.api_key,
+                        &busbar_contract::config_time::ConfigScope::config_time(),
+                    )
                     .map_err(|e| {
                         diag_error!(
                             PROVIDER_API_KEY_UNRESOLVABLE,
@@ -1120,9 +1123,11 @@ pub fn build_app_from_config(
     // orchestrator mounts on the next deploy is a legitimate workflow — and `tls` already accepts
     // exactly that. Rejecting here would make the store stricter than the block beside it.
     if let Some(store_cfg) = cfg.store.as_ref() {
-        if let Err(e) =
-            config::secret::resolve_settings(&store_cfg.settings, secret_resolver.as_ref())
-        {
+        if let Err(e) = config::secret::resolve_settings(
+            &store_cfg.settings,
+            secret_resolver.as_ref(),
+            &busbar_contract::config_time::ConfigScope::config_time(),
+        ) {
             diag_warn!(
                 STORE_SECRET_REF_UNRESOLVED,
                 store = %store_cfg.module,
@@ -1269,8 +1274,12 @@ pub fn build_app_from_config(
         // handed no settings, so it has none to resolve (the built-in store never read its own).
         let resolved = match row.is_some_and(|p| p.in_process()) {
             true => Default::default(),
-            false => config::secret::resolve_settings(&g.settings, secret_resolver.as_ref())
-                .map_err(|e| format!("store '{}' settings: {e}", g.module))?,
+            false => config::secret::resolve_settings(
+                &g.settings,
+                secret_resolver.as_ref(),
+                &busbar_contract::config_time::ConfigScope::config_time(),
+            )
+            .map_err(|e| format!("store '{}' settings: {e}", g.module))?,
         };
         let cfg_json = serde_json::Value::Object(resolved).to_string();
         // The configured store's DOOR (a linked row's, or a dropped-in plugin's verified bytes),
@@ -1743,7 +1752,10 @@ pub fn build_app_from_config(
                 .iter()
                 .map(|(path, reference)| {
                     secret_resolver
-                        .resolve_string(reference)
+                        .resolve_string_at_config(
+                            reference,
+                            &busbar_contract::config_time::ConfigScope::config_time(),
+                        )
                         .map(|value| (path.clone(), value))
                         .map_err(|e| format!("{path}: {e}"))
                 })

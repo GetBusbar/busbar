@@ -1193,9 +1193,11 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
                 .any(|p| p.upstream_credentials == Some(crate::auth::UpstreamCreds::Passthrough));
         if any_passthrough {
             for (provider_name, provider_cfg) in &cfg.providers {
-                let resolved_key =
-                    crate::config::secret::resolve_linked_string(&provider_cfg.api_key)
-                        .unwrap_or_default();
+                let resolved_key = crate::config::secret::resolve_linked_string_at_config(
+                    &provider_cfg.api_key,
+                    &busbar_contract::config_time::ConfigScope::config_time(),
+                )
+                .unwrap_or_default();
                 if !resolved_key.trim().is_empty() {
                     diag_warn!(
                         CONFIG_PASSTHROUGH_UNUSED_APIKEY,
@@ -2410,8 +2412,11 @@ fn validate_providers_with(
             // colon-split lives only in `build()`, which `--validate` never reaches, so a malformed
             // credential otherwise passes validate and fails at boot/apply. Check it here when the env var
             // resolves (an unset var can't be validated — caught at boot).
-            let cred = crate::config::secret::resolve_linked_string(&provider_cfg.api_key)
-                .unwrap_or_default();
+            let cred = crate::config::secret::resolve_linked_string_at_config(
+                &provider_cfg.api_key,
+                &busbar_contract::config_time::ConfigScope::config_time(),
+            )
+            .unwrap_or_default();
             if !cred.trim().is_empty() {
                 // The credential's shape is the serving auth plugin's to judge, in its own words,
                 // through the same `open_outbound` the build binds it with (never dialing).
@@ -2445,8 +2450,11 @@ fn validate_providers_with(
                      service-account JSON or key file), so there is nothing to declare keyless"
                 ));
             }
-            let cred = crate::config::secret::resolve_linked_string(&provider_cfg.api_key)
-                .unwrap_or_default();
+            let cred = crate::config::secret::resolve_linked_string_at_config(
+                &provider_cfg.api_key,
+                &busbar_contract::config_time::ConfigScope::config_time(),
+            )
+            .unwrap_or_default();
             if !cred.trim().is_empty() {
                 // THE NEED'S TARGET IS THE KERNEL'S TO JUDGE (THE DESIGN §5; ARCHITECT ruling
                 // 2026-09-28, Q2 (a)): the service account's `token_uri`, under the SAME operator
