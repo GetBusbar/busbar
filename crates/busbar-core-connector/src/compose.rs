@@ -60,6 +60,13 @@ pub const EXCHANGE_STREAM: u64 = 1;
 /// faster than its far end reads cannot grow the host's memory.
 pub const WRITE_BUFFER_BYTES: usize = 256 * 1024;
 
+/// THE RECEIVE BUFFER CAP: the most bytes the far end sent that one connection holds read off its
+/// socket and not yet taken by its holders (the connection's unread pieces; on a line, the pieces
+/// parked for its holders). At the cap the socket is not read until a holder takes some, so a far
+/// end that sends faster than its holder reads is held back by the transport's own flow control
+/// instead of growing the host's memory.
+pub const RECEIVE_BUFFER_BYTES: usize = 1024 * 1024;
+
 /// Why a connection did not answer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Failure {
@@ -235,6 +242,13 @@ struct Tunnel {
 /// before a request byte is written. The connection's facts still name the key it served.
 pub const PIN_REFUSED: &str =
     "tls: the far end's key is not the one its trust anchors pin; refused before any request byte";
+
+/// THE REFUSAL OF AN UPGRADE OVER UNREAD CLEAR BYTES (STARTTLS response injection, the class of
+/// CVE-2021-23214): the far end sent bytes in the clear that the caller has not read when it asked
+/// for connection security. Read after the upgrade they would pass as the verified far end's, so
+/// the upgrade is refused and the connection fails, closed.
+pub const UPGRADE_OVER_CLEAR_BYTES: &str =
+    "tls: bytes the far end sent in the clear are still unread; the upgrade is refused";
 
 /// One of a listener's connection slots, held by the connection it admitted and freed on drop.
 #[derive(Debug)]
@@ -1039,7 +1053,9 @@ impl Connection {
     /// # Errors
     ///
     /// [`Failure::Refused`]: the connection is an accepted one, was secured at its dial, the name
-    /// is not a server name, or the far end's certificate or handshake was refused.
+    /// is not a server name, the far end's certificate or handshake was refused, or a piece the
+    /// far end sent in the clear is still unread in the connection's inbox when the upgrade
+    /// starts ([`UPGRADE_OVER_CLEAR_BYTES`]; the connection fails with it).
     pub fn upgrade_secure(
         &mut self,
         config: &Arc<rustls::ClientConfig>,
@@ -1047,11 +1063,32 @@ impl Connection {
         timeout: Duration,
         cx: &mut Context<'_>,
     ) -> Poll<Result<(), Failure>> {
+        self.upgrade_secure_over(config, name, timeout, false, cx)
+    }
+
+    /// [`Self::upgrade_secure`] for a connection whose reader above (`unread_above`) still keeps
+    /// clear bytes it took off it: refused like a piece unread in the inbox.
+    pub(crate) fn upgrade_secure_over(
+        &mut self,
+        config: &Arc<rustls::ClientConfig>,
+        name: &str,
+        timeout: Duration,
+        unread_above: bool,
+        cx: &mut Context<'_>,
+    ) -> Poll<Result<(), Failure>> {
         if !self.upgraded {
             if self.side != SIDE_DIAL || self.tls.is_some() {
                 return Poll::Ready(Err(Failure::Refused(
                     "the stream is already secure, or is not a dialled one".into(),
                 )));
+            }
+            if unread_above || !self.inbox.is_empty() {
+                // Read after the upgrade, the far end's clear bytes would pass as the verified far
+                // end's (STARTTLS response injection): the connection fails, closed.
+                let f = Failure::Refused(UPGRADE_OVER_CLEAR_BYTES.into());
+                self.inbox.clear();
+                self.fail(f.clone());
+                return Poll::Ready(Err(f));
             }
             let mut config = (**config).clone();
             config.alpn_protocols.clear();
@@ -1104,14 +1141,19 @@ impl Connection {
         self.tls.as_ref().is_some_and(|t| t.is_handshaking())
     }
 
-    /// The SHA-256 of the far end's certificate (the channel-binding input), lower-case hex, once a
-    /// handshake completed; `None` on a connection in the clear or still handshaking.
+    /// The far end's certificate hashed as RFC 5929 section 4.1 `tls-server-end-point` hashes it
+    /// (the channel-binding input; SHA-256 unless the certificate is signed with SHA-384 or
+    /// SHA-512, [`crate::tls::client::end_point_digest`]), lower-case hex, once a handshake
+    /// completed; `None` on a connection in the clear or still handshaking.
     #[must_use]
     pub fn peer_cert_hash(&self) -> Option<String> {
         use std::fmt::Write as _;
         let tls = self.tls.as_ref().filter(|t| !t.is_handshaking())?;
         let leaf = tls.peer_certificates()?.first()?;
-        let digest = ring::digest::digest(&ring::digest::SHA256, leaf.as_ref());
+        let digest = ring::digest::digest(
+            crate::tls::client::end_point_digest(leaf.as_ref()),
+            leaf.as_ref(),
+        );
         Some(
             digest
                 .as_ref()
@@ -1306,7 +1348,10 @@ impl Connection {
         }
         if !matches!(self.phase, Phase::Connecting) {
             moved |= self.flush(cx)?;
-            moved |= self.read(cx)?;
+            // At the receive cap the socket waits for the holder to take what was read.
+            if self.unread_bytes() < RECEIVE_BUFFER_BYTES {
+                moved |= self.read(cx)?;
+            }
         }
         moved |= self.keep_deadlines(cx)?;
         Ok(moved)
@@ -1353,6 +1398,11 @@ impl Connection {
             self.feed(&rest, false, false)?;
         }
         Ok(true)
+    }
+
+    /// The bytes of the pieces read and not yet taken.
+    fn unread_bytes(&self) -> usize {
+        self.inbox.iter().map(|g| g.bytes.len()).sum()
     }
 
     /// Write what the carrier owes, as far as it takes it; once it took everything, its `flush`.
