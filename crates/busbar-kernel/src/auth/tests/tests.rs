@@ -313,7 +313,8 @@ fn test_empty_chain_is_open_front_door() {
     assert!(mw.validate_token(Some("anything")));
 }
 
-// `test_open_door_regardless_of_upstream_creds` MOVED to `tests/auth_cross_plane.rs`:
+// `test_open_door_regardless_of_upstream_creds` MOVED to the composition root's
+// `crates/busbar/tests/auth_cross_plane.rs`:
 // `App::upstream_creds()` reads through `engine_tables_view()`, which only the REAL `busbar_llm`
 // plane's `build_runtime` populates with the configured `upstream_credentials` — an
 // integration-test target, never this `#[cfg(test)]` unit module (see `endpoints_cross_plane.rs`'s
