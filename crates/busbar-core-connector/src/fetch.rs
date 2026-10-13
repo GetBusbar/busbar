@@ -6,8 +6,9 @@
 //! artifact is one GET over a need the composition root declares on the process's one connector
 //! under its own identity ([`Table`]), so the one destination guard judges, pins and dials the
 //! address, the proxy environment applies ([`crate::proxy`]), and the transport serving the URL's
-//! scheme writes the request (its client defaults included: `accept: */*` before `host`, the bytes
-//! 1.5.5's `Client::new().get()` sent, oracle cell `egress.fetch|plugins|url`).
+//! scheme writes the request: the download states 1.5.5's client default `accept: */*` as its own
+//! field and the transport adds `host` after it, the bytes 1.5.5's `Client::new().get()` sent
+//! (oracle cell `egress.fetch|plugins|url`).
 //!
 //! The download's own rules are the kernel's deleted `preflight::plugin_fetch_downloader`'s,
 //! verbatim: the pre-check before any dial and the verdict on the answer's status are the kernel's
@@ -129,6 +130,10 @@ async fn get(table: &Table, url: &str, secured: bool, cap: usize) -> Result<Vec<
     let path = busbar_contract::net::parse_url(url)
         .map_err(|_| sending())?
         .path;
+    // 1.5.5's client default `accept: */*` is a field of the REQUEST, and the transport writes no
+    // field its caller did not (SEAM-4i): the download states it, and the transport adds `host`
+    // after it, the order 1.5.5's `Client::new().get()` put on the wire.
+    let fields: [(&str, &[u8]); 1] = [("accept", b"*/*")];
     let conn = table
         .conns
         .open(
@@ -138,6 +143,7 @@ async fn get(table: &Table, url: &str, secured: bool, cap: usize) -> Result<Vec<
                 target: url,
                 method: b"GET",
                 head_target: path.as_bytes(),
+                fields: &fields,
                 ..OpenDesc::default()
             },
         )
