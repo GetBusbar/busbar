@@ -358,6 +358,42 @@
    ]
   },
   {
+   "id": "crates/busbar-auth-oauth/src",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-auth-oauth/src"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null,
+   "exclude": [
+    "crates/busbar-auth-oauth/src/tests"
+   ]
+  },
+  {
+   "id": "crates/busbar-auth-sigv4/src",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-auth-sigv4/src"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null,
+   "exclude": [
+    "crates/busbar-auth-sigv4/src/tests"
+   ]
+  },
+  {
    "id": "crates/busbar-contract/src",
    "kind": "production",
    "paths": [
@@ -782,53 +818,6 @@
       "NIT": 5
      },
      "report": "The kernel still knows planes, protocols and transports. It types and validates plane config sections and names plugin instances; its ingress reads JSON-RPC and WebSocket and mounts a model-plane route; it dials, pools and tunnels HTTP itself beside a second destination guard that lets IP-literal and proxied targets through; it keeps its own outbound auth, a verified-credential cache and inbound request signing; a plugin's replay claim is dropped; static seams beyond the two allowed ones remain; host locks are held across plugin calls; health reports unhealthy without model-plane lanes. Read in five parts, mostly fully; the files another lane is relocating were not read."
-    }
-   ]
-  },
-  {
-   "id": "crates/busbar-kernel/build.rs",
-   "kind": "production",
-   "paths": [
-    "crates/busbar-kernel/build.rs"
-   ],
-   "tree_hash": "2f39fc56e50b5059d9a087a0a0839ac5d27dde9b6527f67bd26dd53f35ee4bf4",
-   "audited_at": "f830faa691149288ddbaeda4b2efa444ce44d4b0",
-   "round": 2,
-   "result": "findings",
-   "counts": {
-    "HIGH": 2,
-    "MEDIUM": 0,
-    "LOW": 2,
-    "NIT": 0
-   },
-   "report": "The kernel's build script still generates a table that installs real plane plugins, two of them now, into ten of the kernel's own integration test targets, keyed by plugin names held in the kernel manifest, and requires each listed plane to ship a test-kit module. The kernel manifest names further plugins beyond the composition root: plane-named default features the shipped binary turns on, a schema feature forwarding into two planes, and stand-in store, hook, secret, export and auth plugins. A door-row branch is never used. Read fully.",
-   "auditor": "opus-ledger-kernel-build",
-   "fixed_at": null,
-   "rounds": [
-    {
-     "round": 1,
-     "result": "findings",
-     "auditor": "opus-q128-architecture",
-     "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
-     "tree_hash": "d5e94abe951d549a14509f05154aec470659f1819c2498aef60cc256370d8789",
-     "counts": {
-      "HIGH": 1
-     },
-     "report": "Generates a table that installs three plane crates into the kernel's integration tests, names held in manifest metadata; the kernel still tests plugins instead of kind-neutral doubles. The production library never includes the file. Read fully."
-    },
-    {
-     "round": 2,
-     "result": "findings",
-     "auditor": "opus-ledger-kernel-build",
-     "audited_at": "f830faa691149288ddbaeda4b2efa444ce44d4b0",
-     "tree_hash": "2f39fc56e50b5059d9a087a0a0839ac5d27dde9b6527f67bd26dd53f35ee4bf4",
-     "counts": {
-      "HIGH": 2,
-      "MEDIUM": 0,
-      "LOW": 2,
-      "NIT": 0
-     },
-     "report": "The kernel's build script still generates a table that installs real plane plugins, two of them now, into ten of the kernel's own integration test targets, keyed by plugin names held in the kernel manifest, and requires each listed plane to ship a test-kit module. The kernel manifest names further plugins beyond the composition root: plane-named default features the shipped binary turns on, a schema feature forwarding into two planes, and stand-in store, hook, secret, export and auth plugins. A door-row branch is never used. Read fully."
     }
    ]
   },
@@ -1476,6 +1465,24 @@
    ]
   },
   {
+   "id": "crates/busbar-store-memory/src",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-store-memory/src"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null,
+   "exclude": [
+    "crates/busbar-store-memory/src/tests"
+   ]
+  },
+  {
    "id": "crates/busbar-transport-grpc/src",
    "kind": "production",
    "paths": [
@@ -1580,6 +1587,24 @@
    "fixed_at": null,
    "exclude": [
     "crates/busbar-transport-tcp/src/tests"
+   ]
+  },
+  {
+   "id": "crates/busbar-transport-webrtc/src",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-transport-webrtc/src"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null,
+   "exclude": [
+    "crates/busbar-transport-webrtc/src/tests"
    ]
   },
   {
@@ -1706,59 +1731,6 @@
    ]
   },
   {
-   "id": "crates/store-memory/src",
-   "kind": "production",
-   "paths": [
-    "crates/store-memory/src"
-   ],
-   "tree_hash": "2972d7c32e7ae6d03a96a571e30a0fd078b37352cd4bc14cc44544d19696138e",
-   "audited_at": "f830faa691149288ddbaeda4b2efa444ce44d4b0",
-   "round": 2,
-   "result": "findings",
-   "counts": {
-    "HIGH": 0,
-    "MEDIUM": 3,
-    "LOW": 6,
-    "NIT": 0
-   },
-   "report": "The memory store's money slots follow the store rules: reserve is all-or-nothing, cap pushes are atomic, releases are clamped, and dedupe records only applied ops for a day. Records are never evicted by age, and a forked append is refused. Three defects remain. The dedupe log holds the full text of every write for a day, and every production write mints an op id, so memory grows with traffic. Fully spent slices, window counters and journal rows are never freed. The plane-record purge keeps live rows only for one hard-coded record kind. Read fully.",
-   "auditor": "opus-ledger-store-memory",
-   "fixed_at": null,
-   "exclude": [
-    "crates/store-memory/src/tests"
-   ],
-   "rounds": [
-    {
-     "round": 1,
-     "result": "findings",
-     "auditor": "opus-ledger-store-memory",
-     "audited_at": "f830faa691149288ddbaeda4b2efa444ce44d4b0",
-     "tree_hash": "2972d7c32e7ae6d03a96a571e30a0fd078b37352cd4bc14cc44544d19696138e",
-     "counts": {
-      "HIGH": 0,
-      "MEDIUM": 3,
-      "LOW": 4,
-      "NIT": 0
-     },
-     "report": "draft"
-    },
-    {
-     "round": 2,
-     "result": "findings",
-     "auditor": "opus-ledger-store-memory",
-     "audited_at": "f830faa691149288ddbaeda4b2efa444ce44d4b0",
-     "tree_hash": "2972d7c32e7ae6d03a96a571e30a0fd078b37352cd4bc14cc44544d19696138e",
-     "counts": {
-      "HIGH": 0,
-      "MEDIUM": 3,
-      "LOW": 6,
-      "NIT": 0
-     },
-     "report": "The memory store's money slots follow the store rules: reserve is all-or-nothing, cap pushes are atomic, releases are clamped, and dedupe records only applied ops for a day. Records are never evicted by age, and a forked append is refused. Three defects remain. The dedupe log holds the full text of every write for a day, and every production write mints an op id, so memory grows with traffic. Fully spent slices, window counters and journal rows are never freed. The plane-record purge keeps live rows only for one hard-coded record kind. Read fully."
-    }
-   ]
-  },
-  {
    "id": "xtask/src",
    "kind": "production",
    "paths": [
@@ -1845,6 +1817,78 @@
       "NIT": 0
      },
      "report": "The auth plugin's declares document states only the superseded contract range, and it names the auth kind's one version, which the loader no longer reads at admission. Nothing else is declared and nothing is missing. Read fully."
+    }
+   ]
+  },
+  {
+   "id": "crates/busbar-auth-oauth/declares.json",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-auth-oauth/declares.json"
+   ],
+   "tree_hash": "e675db949ce97946cfac369c3411f2b06a121519dec4c6c1c265ffd91064f73e",
+   "audited_at": "00555bd98ac1a143587ea4ab8948d8ef3b44dcf0",
+   "round": 1,
+   "result": "zero",
+   "counts": {
+    "HIGH": 0,
+    "MEDIUM": 0,
+    "LOW": 0,
+    "NIT": 0
+   },
+   "report": "The plugin's declares document states only the superseded contract range, naming its kind's one version, which the loader no longer reads at admission; a transport-scheme list, where present, is the Statement's needs and is stripped by the one declares reader. Nothing else is declared and nothing is missing. Read fully.",
+   "auditor": "opus-ledger-declares",
+   "fixed_at": null,
+   "rounds": [
+    {
+     "round": 1,
+     "result": "zero",
+     "auditor": "opus-ledger-declares",
+     "audited_at": "00555bd98ac1a143587ea4ab8948d8ef3b44dcf0",
+     "tree_hash": "e675db949ce97946cfac369c3411f2b06a121519dec4c6c1c265ffd91064f73e",
+     "counts": {
+      "HIGH": 0,
+      "MEDIUM": 0,
+      "LOW": 0,
+      "NIT": 0
+     },
+     "report": "The plugin's declares document states only the superseded contract range, naming its kind's one version, which the loader no longer reads at admission; a transport-scheme list, where present, is the Statement's needs and is stripped by the one declares reader. Nothing else is declared and nothing is missing. Read fully."
+    }
+   ]
+  },
+  {
+   "id": "crates/busbar-auth-sigv4/declares.json",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-auth-sigv4/declares.json"
+   ],
+   "tree_hash": "bfb4ed50a8cafa1cac857135b1a710c7f87313bb61825eb5ddd2f8853d03b681",
+   "audited_at": "00555bd98ac1a143587ea4ab8948d8ef3b44dcf0",
+   "round": 1,
+   "result": "zero",
+   "counts": {
+    "HIGH": 0,
+    "MEDIUM": 0,
+    "LOW": 0,
+    "NIT": 0
+   },
+   "report": "The plugin's declares document states only the superseded contract range, naming its kind's one version, which the loader no longer reads at admission; a transport-scheme list, where present, is the Statement's needs and is stripped by the one declares reader. Nothing else is declared and nothing is missing. Read fully.",
+   "auditor": "opus-ledger-declares",
+   "fixed_at": null,
+   "rounds": [
+    {
+     "round": 1,
+     "result": "zero",
+     "auditor": "opus-ledger-declares",
+     "audited_at": "00555bd98ac1a143587ea4ab8948d8ef3b44dcf0",
+     "tree_hash": "bfb4ed50a8cafa1cac857135b1a710c7f87313bb61825eb5ddd2f8853d03b681",
+     "counts": {
+      "HIGH": 0,
+      "MEDIUM": 0,
+      "LOW": 0,
+      "NIT": 0
+     },
+     "report": "The plugin's declares document states only the superseded contract range, naming its kind's one version, which the loader no longer reads at admission; a transport-scheme list, where present, is the Statement's needs and is stripped by the one declares reader. Nothing else is declared and nothing is missing. Read fully."
     }
    ]
   },
@@ -2146,6 +2190,42 @@
    "fixed_at": null
   },
   {
+   "id": "crates/busbar-store-memory/declares.json",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-store-memory/declares.json"
+   ],
+   "tree_hash": "77e550fa47d32153a0343cc1fddf6288c5be233d92f4823ad0b47af46d42dc96",
+   "audited_at": "00555bd98ac1a143587ea4ab8948d8ef3b44dcf0",
+   "round": 1,
+   "result": "zero",
+   "counts": {
+    "HIGH": 0,
+    "MEDIUM": 0,
+    "LOW": 0,
+    "NIT": 0
+   },
+   "report": "The plugin's declares document states only the superseded contract range, naming its kind's one version, which the loader no longer reads at admission; a transport-scheme list, where present, is the Statement's needs and is stripped by the one declares reader. Nothing else is declared and nothing is missing. Read fully.",
+   "auditor": "opus-ledger-declares",
+   "fixed_at": null,
+   "rounds": [
+    {
+     "round": 1,
+     "result": "zero",
+     "auditor": "opus-ledger-declares",
+     "audited_at": "00555bd98ac1a143587ea4ab8948d8ef3b44dcf0",
+     "tree_hash": "77e550fa47d32153a0343cc1fddf6288c5be233d92f4823ad0b47af46d42dc96",
+     "counts": {
+      "HIGH": 0,
+      "MEDIUM": 0,
+      "LOW": 0,
+      "NIT": 0
+     },
+     "report": "The plugin's declares document states only the superseded contract range, naming its kind's one version, which the loader no longer reads at admission; a transport-scheme list, where present, is the Statement's needs and is stripped by the one declares reader. Nothing else is declared and nothing is missing. Read fully."
+    }
+   ]
+  },
+  {
    "id": "crates/busbar-transport-grpc/declares.json",
    "kind": "production",
    "paths": [
@@ -2378,6 +2458,36 @@
    "kind": "test",
    "paths": [
     "crates/busbar-auth-header/src/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-auth-oauth/src/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-auth-oauth/src/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-auth-sigv4/src/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-auth-sigv4/src/tests"
    ],
    "tree_hash": null,
    "audited_at": null,
@@ -3159,6 +3269,36 @@
    "fixed_at": null
   },
   {
+   "id": "crates/busbar-store-memory/src/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-store-memory/src/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-store-memory/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-store-memory/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
    "id": "crates/busbar-transport-grpc/src/tests",
    "kind": "test",
    "paths": [
@@ -3234,21 +3374,6 @@
    "fixed_at": null
   },
   {
-   "id": "crates/busbar-transport-stdio/src/tests",
-   "kind": "test",
-   "paths": [
-    "crates/busbar-transport-stdio/src/tests"
-   ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null
-  },
-  {
    "id": "crates/busbar-transport-stdio/tests",
    "kind": "test",
    "paths": [
@@ -3268,6 +3393,36 @@
    "kind": "test",
    "paths": [
     "crates/busbar-transport-tcp/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-transport-webrtc/src/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-transport-webrtc/src/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-transport-webrtc/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-transport-webrtc/tests"
    ],
    "tree_hash": null,
    "audited_at": null,
@@ -3384,82 +3539,19 @@
    "fixed_at": null
   },
   {
-   "id": "crates/store-memory/src/tests",
+   "id": "xtask/src/tests",
    "kind": "test",
    "paths": [
-    "crates/store-memory/src/tests"
+    "xtask/src/tests"
    ],
-   "tree_hash": "f0dc343ede9c84bf5cf8c2df634311087a3bd0489ad35c785617df4b1c928409",
-   "audited_at": "d526455b8e8920a235aebf8528ff9e1ad0fd75c0",
-   "round": 2,
-   "result": "findings",
-   "counts": {
-    "HIGH": 0,
-    "MEDIUM": 0,
-    "LOW": 3,
-    "NIT": 0
-   },
-   "report": "The memory store's unit tests now hold the record leg to the never-evict rule. A task record written forty days ago survives repeated writes, and a control in the same test proves the age sweep really ran on usage windows. The production store matches this: the record map has no age sweep and no delete verb. Three low items remain. The tests run the shared epoch and slice cases from the contract's test kit. Test prose names sibling store backends and a plane. One test comment misdescribes which clock stamps a revocation. Read fully.",
-   "auditor": "opus-ledger-store-memory-tests",
-   "fixed_at": null,
-   "rounds": [
-    {
-     "round": 1,
-     "result": "findings",
-     "auditor": "opus-q128-architecture",
-     "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
-     "tree_hash": "9a7a4f99234583680f164304391f1729f3474af17393e8a4d58a2c066dfe3506",
-     "counts": {
-      "HIGH": 1,
-      "LOW": 2
-     },
-     "report": "Breaks the rule that an active work handle is never evicted: the memory store's tests assert that a task record written through the record leg is deleted after 31 days on write age alone with no settled check, contradicting the crate's own conformance suite. The tests also use a contract test kit, and their prose names sibling stores and a plane. Read fully."
-    },
-    {
-     "round": 2,
-     "result": "findings",
-     "auditor": "opus-ledger-store-memory-tests",
-     "audited_at": "d526455b8e8920a235aebf8528ff9e1ad0fd75c0",
-     "tree_hash": "f0dc343ede9c84bf5cf8c2df634311087a3bd0489ad35c785617df4b1c928409",
-     "counts": {
-      "HIGH": 0,
-      "MEDIUM": 0,
-      "LOW": 3,
-      "NIT": 0
-     },
-     "report": "The memory store's unit tests now hold the record leg to the never-evict rule. A task record written forty days ago survives repeated writes, and a control in the same test proves the age sweep really ran on usage windows. The production store matches this: the record map has no age sweep and no delete verb. Three low items remain. The tests run the shared epoch and slice cases from the contract's test kit. Test prose names sibling store backends and a plane. One test comment misdescribes which clock stamps a revocation. Read fully."
-    }
-   ]
-  },
-  {
-   "id": "crates/store-memory/tests",
-   "kind": "test",
-   "paths": [
-    "crates/store-memory/tests"
-   ],
-   "tree_hash": "a697c86e91de21dd589af336b5fe93d373ef76a2614d1a45dbbaf830f3802848",
-   "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
-   "round": 1,
-   "result": "findings",
-   "counts": {
-    "LOW": 4
-   },
-   "report": "Thorough conformance and round-trip tests reaching no kernel internals, but the only door-level test drives the retired cold JSON door and nothing drives the shipped store door; the suite pins plane-instance row shapes, names sibling stores, describes the ask ledger as making a tool execute once, and carries stale prose. Read fully.",
-   "auditor": "opus-q128-architecture",
-   "fixed_at": null,
-   "rounds": [
-    {
-     "round": 1,
-     "result": "findings",
-     "auditor": "opus-q128-architecture",
-     "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
-     "tree_hash": "a697c86e91de21dd589af336b5fe93d373ef76a2614d1a45dbbaf830f3802848",
-     "counts": {
-      "LOW": 4
-     },
-     "report": "Thorough conformance and round-trip tests reaching no kernel internals, but the only door-level test drives the retired cold JSON door and nothing drives the shipped store door; the suite pins plane-instance row shapes, names sibling stores, describes the ask ledger as making a tool execute once, and carries stale prose. Read fully."
-    }
-   ]
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
   },
   {
    "id": "xtask/tests",
@@ -4086,6 +4178,36 @@
      "report": "The root testing README describes a deleted workflow and only the A2A batteries, and justifies a non-failing A2A subject leg with the claim that busbar does not serve A2A, a premise no longer true and checked by nothing. Read fully."
     }
    ]
+  },
+  {
+   "id": ".ci",
+   "kind": "instrument",
+   "paths": [
+    ".ci"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": ".latchkeyignore",
+   "kind": "instrument",
+   "paths": [
+    ".latchkeyignore"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
   },
   {
    "id": ".mailmap",
