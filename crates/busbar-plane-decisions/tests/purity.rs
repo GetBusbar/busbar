@@ -18,6 +18,9 @@ use busbar_contract::wire::FrameCursor;
 use busbar_plane_decisions::DecisionPlane;
 use std::path::{Path, PathBuf};
 
+#[path = "common/pinned.rs"]
+mod pinned;
+
 mod common;
 use common::{frame, Scaffold};
 
@@ -68,6 +71,13 @@ fn sibling_plane_modules() -> Vec<String> {
         .filter(|name| name.starts_with("busbar-plane-") && *name != this)
         .map(|name| name.replace('-', "_"))
         .collect();
+    // A plane that left for its own repo is still a sibling (ARCHITECT row 106 (A)).
+    for (name, _) in pinned::pinned_planes(&crates_dir) {
+        let module = name.replace('-', "_");
+        if name != this && !out.contains(&module) {
+            out.push(module);
+        }
+    }
     out.sort();
     out
 }

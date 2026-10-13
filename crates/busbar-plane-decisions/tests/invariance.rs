@@ -24,6 +24,9 @@
 
 use std::path::{Path, PathBuf};
 
+#[path = "common/pinned.rs"]
+mod pinned;
+
 fn src_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("src")
 }
@@ -54,8 +57,54 @@ fn sibling_plane_dirs() -> Vec<String> {
         .filter_map(|e| e.file_name().to_str().map(str::to_string))
         .filter(|name| name.starts_with("busbar-plane-") && *name != this)
         .collect();
+    // A PLANE THAT LEFT FOR ITS OWN REPO is still a sibling: the root pins it as a git row of
+    // `[workspace.dependencies]`, resolved by cargo to the checkout of the rev `Cargo.lock` pins
+    // (ARCHITECT row 106 (A), the pinned planes every gate reads as its base layer). Fails closed: a
+    // pinned plane cargo does not resolve is a panic naming it and its rev, never a smaller set.
+    for (name, _) in pinned::pinned_planes(&crates_dir) {
+        if name != this && !out.contains(&name) {
+            out.push(name);
+        }
+    }
     out.sort();
     out
+}
+
+/// THE SIBLING SET IS THE WHOLE PLANE ROSTER (ARCHITECT row 106 (A)): every `busbar-plane-*` repo
+/// the plugin roster (`plugins.yaml`) registers, this one aside, is a sibling, in the tree or
+/// pinned — and the roster holds the five planes. A sibling that left the tree and dropped out of
+/// the derivation (a plane, the day it is extracted) turns this RED instead of quietly
+/// un-forbidding it.
+#[test]
+fn the_sibling_planes_are_every_plane_in_the_roster() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .expect("the workspace root");
+    let roster = std::fs::read_to_string(root.join("plugins.yaml")).expect("plugins.yaml");
+    let planes: Vec<String> = roster
+        .lines()
+        .filter_map(|l| l.trim().strip_prefix("- repo: "))
+        .map(str::trim)
+        .filter(|r| r.starts_with("busbar-plane-"))
+        .map(str::to_string)
+        .collect();
+    assert!(
+        planes.len() >= 5,
+        "the roster registers {planes:?}: fewer than the five planes"
+    );
+    let this = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .file_name()
+        .and_then(|n| n.to_str())
+        .expect("this crate has a directory name");
+    let siblings = sibling_plane_dirs();
+    for plane in planes.iter().filter(|p| p.as_str() != this) {
+        assert!(
+            siblings.contains(plane),
+            "{plane} is a registered plane and not a sibling here ({siblings:?}): a plane that left \
+             the tree must still be forbidden by name"
+        );
+    }
 }
 
 fn walk(dir: &Path, f: &mut impl FnMut(&Path, &str)) {
