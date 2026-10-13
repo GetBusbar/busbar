@@ -900,7 +900,6 @@ pub(crate) fn isolated_three_plane_test_registry() -> registry::TestRegistryIsol
 mod sections_tests;
 
 // ==== merged from busbar-substrate (W4.b P2 engine drain) ====
-pub mod calllog;
 
 // The NEUTRAL plane-observe response marker `Counted` — the one type a plane's handler and core's
 // `plane::observe` boundary both name. It carries nothing and names no engine type, so it lives
@@ -917,8 +916,8 @@ pub mod calllog;
 // `config_sections`, the reserved-key literal) stays core.
 
 // S4b: the NEUTRAL PLANE-REGISTRY SURFACE — the plane VOCABULARY/SEAM declaration `PlaneDecl`, the
-// `BuildCtx` its `build` reads, the neutral `PlaneBootCtx` boot-context trait + its `RestoredSummary`
-// return, and the `BootHook` alias. Relocated here so an extracted plane crate constructs its own
+// `BuildCtx` its `build` reads, the neutral `PlaneBootCtx` boot-context trait and the
+// `BootHook` alias. Relocated here so an extracted plane crate constructs its own
 // `PlaneDecl` and every seam type its fields name without a path back to core. Core re-exports each
 // from `busbar_kernel::plane::registry`, and keeps the population glue + the concrete `BootCtx` (which
 // borrows the core-live `App`) that implements `PlaneBootCtx`.
