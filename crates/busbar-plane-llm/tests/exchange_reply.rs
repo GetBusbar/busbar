@@ -1041,3 +1041,66 @@ fn a_stream_cut_after_its_first_byte_ends_in_1_5_5s_bytes_for_every_caller_diale
         }
     }
 }
+
+/// A RESPONSES STREAM THE FAR END ENDS AS FAILED BILLS NO TOKENS (row-159 audit plane-llm L3#4;
+/// ARCHITECT 2026-10-13: 1.5.5 billed nothing for a stream with a terminal error, v1.5.5
+/// proxy/response_body.rs:550-575), `$`: its `response.failed` event carries usage, and the answer
+/// still reports 0 in and 0 out, as the buffered `status: "failed"` answer does. RED: the stream's
+/// failed usage (5 in, 2 out) reported as billable.
+#[test]
+fn a_responses_stream_that_fails_bills_no_tokens_and_agrees_with_its_buffered_twin() {
+    let mut arrived = arrival("responses", true);
+    arrived.path = "/v1/responses".to_string();
+    let body = serde_json::json!({"model": "p", "stream": true, "input": "hi"});
+    arrived.body = serde_json::to_vec(&body).unwrap();
+    arrived.parsed = Some(body);
+    let lane = lane("responses");
+    let ctx = ReplyCtx {
+        arrived: &arrived,
+        lane: &lane,
+        intent: stream_intent(chat_handler("responses"), arrived.parsed.as_ref()),
+        passthrough: false,
+    };
+    let stream = concat!(
+        "event: response.created\n",
+        "data: {\"type\":\"response.created\",\"sequence_number\":0,\"response\":{\"id\":\"resp_1\",\"object\":\"response\",\"created_at\":1,\"status\":\"in_progress\",\"model\":\"m-1\",\"output\":[]}}\n\n",
+        "event: response.output_text.delta\n",
+        "data: {\"type\":\"response.output_text.delta\",\"sequence_number\":1,\"item_id\":\"msg_1\",\"output_index\":0,\"content_index\":0,\"delta\":\"hel\"}\n\n",
+        "event: response.failed\n",
+        "data: {\"type\":\"response.failed\",\"sequence_number\":2,\"response\":{\"id\":\"resp_1\",\"object\":\"response\",\"created_at\":1,\"status\":\"failed\",\"model\":\"m-1\",\"output\":[],\"error\":{\"code\":\"server_error\",\"message\":\"boom\"},\"usage\":{\"input_tokens\":5,\"output_tokens\":2,\"total_tokens\":7}}}\n\n",
+    );
+    let head: &[(&[u8], &[u8])] = &[(b"content-type", b"text/event-stream")];
+    let mut reply = Reply::new(&ctx, 200, head);
+    let end = reply.feed(&ctx, stream.as_bytes(), true, AT);
+    assert!(end.done, "{end:?}");
+    assert_eq!(
+        (end.units.tokens_in, end.units.tokens_out),
+        (0, 0),
+        "a failed stream bills no tokens: {:?}",
+        end.units
+    );
+
+    let arrived = {
+        let mut a = arrival("responses", false);
+        a.path = "/v1/responses".to_string();
+        let body = serde_json::json!({"model": "p", "input": "hi"});
+        a.body = serde_json::to_vec(&body).unwrap();
+        a.parsed = Some(body);
+        a
+    };
+    let ctx = ReplyCtx {
+        arrived: &arrived,
+        lane: &lane,
+        intent: stream_intent(chat_handler("responses"), arrived.parsed.as_ref()),
+        passthrough: false,
+    };
+    let failed = br#"{"id":"resp_1","object":"response","created_at":1,"status":"failed","model":"m-1","output":[],"error":{"code":"server_error","message":"boom"},"usage":{"input_tokens":5,"output_tokens":2,"total_tokens":7}}"#;
+    let mut reply = Reply::new(&ctx, 200, JSON_HEAD);
+    let whole = reply.feed(&ctx, failed, true, AT);
+    assert_eq!(
+        (whole.units.tokens_in, whole.units.tokens_out),
+        (0, 0),
+        "the buffered twin agrees: {:?}",
+        whole.units
+    );
+}

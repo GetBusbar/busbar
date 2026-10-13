@@ -408,9 +408,17 @@ impl Reply {
                     .generation_failed
                     .then_some(Fault::Transient("upstream-generation-failed")));
                 // The end's report replaces a floor stated while relaying, even when it is zero.
-                let units = Units {
-                    stated: units.floor,
-                    ..Units::of(end.usage.as_ref(), end.open_units)
+                // A stream the far end itself ended as FAILED (its terminal error, or a translation
+                // that aborted) delivered no completed generation and bills no tokens, as 1.5.5
+                // billed none (v1.5.5 proxy/response_body.rs:550-575, `if !billing_failed`): its
+                // buffered twin (a `failed` status) reports none either (row-159 L3#4).
+                let units = if end.stream_fault.is_some() {
+                    Units::default()
+                } else {
+                    Units {
+                        stated: units.floor,
+                        ..Units::of(end.usage.as_ref(), end.open_units)
+                    }
                 };
                 self.ended_partial = partial && fault.is_none();
                 self.state = State::Done;
