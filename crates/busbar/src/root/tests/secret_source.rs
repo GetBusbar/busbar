@@ -123,11 +123,12 @@ fn missing(case: &str) -> String {
         .to_string()
 }
 
-/// A member program's `env` secret reference resolves through the linked secret plugins at its
-/// SPAWN, as the root's boot installs them (the first install holds; this is the same one).
+/// A member program's `env` secret reference resolves through the linked secret plugins at
+/// CONFIG TIME (its need's declaration, the connector's refresher) and is held for its spawns, as
+/// the root's boot installs them (the first install holds; this is the same one).
 fn member_secrets_installed() {
     let _ = busbar_core_connector::compose::install_spawn_secrets(
-        busbar_kernel::config::secret::resolve_linked_string,
+        busbar_kernel::config::secret::resolve_linked_string_at_config,
     );
 }
 
@@ -262,7 +263,7 @@ async fn tool_door_a_program_members_unresolved_env_reaches_the_caller_without_i
         let _published = Published(instance);
         refused_naming_its_source(&secret);
         let rig = try_rig_tools(instance, 0, program_section(&secret)).unwrap_or_else(|e| {
-            panic!("{instance}: a member's env is not resolved at compose: {e}")
+            panic!("{instance}: a member's env that did not resolve refuses its spawns, never the compose: {e}")
         });
         let (status, headers, body) = call(&rig).await;
         assert_clean(instance, status, &headers, &body, &secret);
@@ -274,9 +275,9 @@ async fn tool_door_a_program_members_unresolved_env_reaches_the_caller_without_i
 }
 
 /// THE TOOL DOOR, ACROSS AN APPLY: a member program served while its `env` reference resolved, the variable
-/// then gone and the configuration applied: the reference resolved at the program's SPAWN, so the
-/// program it spawned keeps serving the unchanged member, and the caller's render carries nothing
-/// of its source.
+/// then gone and the configuration applied: the apply resolves the reference again and holds the
+/// refusal for the member's NEXT spawn, but the program already spawned keeps serving the unchanged
+/// member, and the caller's render carries nothing of its source.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn tool_door_a_program_members_env_gone_by_an_apply_reaches_the_caller_without_its_source() {
     let _one = PUBLISHING.lock().await;

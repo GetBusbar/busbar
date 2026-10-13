@@ -61,6 +61,7 @@ pub mod process;
 mod program;
 pub mod registry;
 pub mod socket;
+pub mod spawn_env;
 /// The TLS test kit (far ends, the recording TLS fixture server, a private test CA) for this crate's
 /// tests that need a real handshake, and (feature `test-support`) a plugin repo's conformance test:
 /// TLS stays in the connector, even in a test.
@@ -299,8 +300,9 @@ struct DeclaredNeed {
     /// with that CA added on top (spec section 5, the host connector: "an extra trusted root added
     /// on top of the public roots, as in 1.5.5"); `None` = the connector's default trust.
     tls: Option<Arc<rustls::ClientConfig>>,
-    /// The program the need's `target_from` resolved to: every open spawns it.
-    program: Option<busbar_contract::conn::Program>,
+    /// The program the need's `target_from` resolved to, its environment references held as its
+    /// declaration resolved them: every open spawns it.
+    program: Option<(busbar_contract::conn::Program, spawn_env::HeldEnv)>,
     /// A member-program need's members (`busbar_contract::section::MEMBER_PROGRAM`): every open
     /// names one and leases its one long-lived program connection.
     members: Option<Arc<program::Members>>,
@@ -890,6 +892,7 @@ impl Connector {
         need: NeedId,
         spec: &ReadNeed,
         programs: &[(String, busbar_contract::conn::Program)],
+        scope: &busbar_contract::config_time::ConfigScope,
     ) -> Result<(), ConnError> {
         let served = {
             let view = self.transports.read().expect("transports");
@@ -920,9 +923,15 @@ impl Connector {
                     .and_then(|b| b.get(name))
                     .filter(|m| m.program() == p)
                     .cloned();
+                // A kept member's environment resolves again at this declaration (a config apply):
+                // its next child is handed what the apply resolved.
+                if let Some(kept) = &kept {
+                    kept.env().reload(scope);
+                }
                 let member = kept.unwrap_or_else(|| {
                     Arc::new(program::Member::new(
                         p.clone(),
+                        spawn_env::HeldEnv::load(&p.env_refs, scope),
                         Via {
                             door: Arc::clone(&door),
                             io: Arc::clone(&self.io),
@@ -964,6 +973,7 @@ impl Connector {
         need: NeedId,
         spec: &ReadNeed,
         program: &busbar_contract::conn::Program,
+        scope: &busbar_contract::config_time::ConfigScope,
     ) -> Result<(), ConnError> {
         let served = {
             let view = self.transports.read().expect("transports");
@@ -989,7 +999,10 @@ impl Connector {
                 egress_class: spec.egress_class,
                 declared_target: None,
                 tls: None,
-                program: Some(program.clone()),
+                program: Some((
+                    program.clone(),
+                    spawn_env::HeldEnv::load(&program.env_refs, scope),
+                )),
                 members: None,
             }),
         );
@@ -1607,7 +1620,10 @@ impl DeclaredConns for Connector {
         spec: &ReadNeed,
         program: &busbar_contract::conn::Program,
     ) -> Result<(), ConnError> {
-        let answer = self.record_program(owner, need, spec, program);
+        // A need is declared at a plane's load or a config apply: config time, so the program's
+        // environment references resolve here, never at a spawn (`spawn_env`).
+        let scope = busbar_contract::config_time::ConfigScope::config_time();
+        let answer = self.record_program(owner, need, spec, program, &scope);
         self.declared
             .lock()
             .expect("declared needs")
@@ -1655,7 +1671,10 @@ impl DeclaredConns for Connector {
         spec: &ReadNeed,
         programs: &[(String, busbar_contract::conn::Program)],
     ) -> Result<(), ConnError> {
-        let answer = self.record_members(owner, need, spec, programs);
+        // A need is declared at a plane's load or a config apply: config time, so each member's
+        // environment references resolve here, never at a spawn (`spawn_env`).
+        let scope = busbar_contract::config_time::ConfigScope::config_time();
+        let answer = self.record_members(owner, need, spec, programs, &scope);
         self.declared
             .lock()
             .expect("declared needs")
@@ -1715,7 +1734,7 @@ impl Conns for Connector {
         }
         // A PROGRAM NEED spawns the program its config names, and nothing else: an open naming a
         // target of its own is refused. No address is judged: no network is dialled.
-        if let Some(program) = program {
+        if let Some((program, env)) = program {
             if !desc.target.is_empty() {
                 return Err(ConnError::Refused);
             }
@@ -1738,7 +1757,7 @@ impl Conns for Connector {
                 door,
                 io: Arc::clone(&self.io),
             };
-            let conn = Connection::spawn(&via, &program, dial).map_err(|f| map(&f))?;
+            let conn = Connection::spawn(&via, &program, &env, dial).map_err(|f| map(&f))?;
             // A program is a dialled, single-use line (no pool, no judgement): its one exchange
             // rides EXCHANGE_STREAM, as a freshly dialled connection's does.
             let line = Line::new(conn);

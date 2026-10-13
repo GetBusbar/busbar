@@ -162,6 +162,8 @@ struct State {
 /// lease on it shares.
 pub(crate) struct Member {
     program: Program,
+    /// Its environment references, resolved at config time and held for every spawn.
+    env: crate::spawn_env::HeldEnv,
     /// The carrier the member's program rides.
     via: Via,
     alpn: Vec<Vec<u8>>,
@@ -242,11 +244,17 @@ impl State {
 }
 
 impl Member {
-    /// The member running `program` over the carrier `via`; nothing is spawned until the
-    /// first lease.
-    pub(crate) fn new(program: Program, via: Via, alpn: Vec<Vec<u8>>) -> Self {
+    /// The member running `program` over the carrier `via`, its environment references held as
+    /// `env`; nothing is spawned until the first lease.
+    pub(crate) fn new(
+        program: Program,
+        env: crate::spawn_env::HeldEnv,
+        via: Via,
+        alpn: Vec<Vec<u8>>,
+    ) -> Self {
         Self {
             program,
+            env,
             via,
             alpn,
             state: Mutex::new(State {
@@ -265,6 +273,11 @@ impl Member {
     /// The program this member runs.
     pub(crate) fn program(&self) -> &Program {
         &self.program
+    }
+
+    /// Its environment references as config time resolved them.
+    pub(crate) fn env(&self) -> &crate::spawn_env::HeldEnv {
+        &self.env
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, State> {
@@ -307,7 +320,7 @@ impl Member {
                 head_words: (Vec::new(), Vec::new()),
                 anchors: None,
             };
-            match Connection::spawn(&self.via, &self.program, dial) {
+            match Connection::spawn(&self.via, &self.program, &self.env, dial) {
                 Ok(conn) => {
                     st.generation += 1;
                     let generation = st.generation;

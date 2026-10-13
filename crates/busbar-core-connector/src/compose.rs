@@ -621,51 +621,9 @@ impl Connection {
     }
 }
 
-/// How a program's environment REFERENCE (`Program::env_refs`) turns into its value at the
-/// spawn: a string secret resolved through the secret plugins the build links. `Err` names the
-/// reference's source, never a byte of the secret.
-pub type SpawnSecretFn = fn(&busbar_contract::secret_ref::SecretRef) -> Result<String, String>;
-
-/// The installed [`SpawnSecretFn`]; until one is installed no reference resolves, and a program
-/// that states one is not spawned (fail-closed).
-static SPAWN_SECRETS: std::sync::OnceLock<SpawnSecretFn> = std::sync::OnceLock::new();
-
-/// Install how a program's environment references resolve at the spawn (the host's `io.spawn`,
-/// [`crate::hostio::HostIo`]); the first install holds. Answers whether this one was installed.
-pub fn install_spawn_secrets(resolve: SpawnSecretFn) -> bool {
-    SPAWN_SECRETS.set(resolve).is_ok()
-}
-
-/// A program's environment REFERENCES resolved NOW, at the spawn (a template's every `${VAR}`
-/// through the `env` module), name and value in the settings' order. The host's `io.spawn` calls
-/// this and nothing earlier does: the value exists only in the child's environment, never in the
-/// table that holds the program and never in the destination the carrier is handed.
-///
-/// # Errors
-///
-/// The refusal's text, naming the variable and the reference's source (never a value), when a
-/// reference does not resolve or no resolver is installed.
-pub(crate) fn resolve_spawn_env(
-    env_refs: &[(String, busbar_contract::secret_ref::SecretRef)],
-) -> Result<Vec<(String, String)>, String> {
-    let mut env = Vec::with_capacity(env_refs.len());
-    for (name, reference) in env_refs {
-        let resolve = SPAWN_SECRETS.get().ok_or_else(|| {
-            format!(
-                "the program's environment `{name}` is a secret reference and no secret \
-                 resolver is installed"
-            )
-        })?;
-        let value = reference.resolve_template(&|r| resolve(r)).map_err(|e| {
-            format!(
-                "the program's environment `{name}` ({}) did not resolve: {e}",
-                reference.describe()
-            )
-        })?;
-        env.push((name.clone(), value));
-    }
-    Ok(env)
-}
+/// How a program's environment references resolve: at config time, held for its spawns
+/// ([`crate::spawn_env`]).
+pub use crate::spawn_env::{install_spawn_secrets, SpawnSecretFn};
 
 impl Connection {
     /// SPAWN `program` through the carrier `via` (the host spawns it: no shell, its absolute path
@@ -681,6 +639,7 @@ impl Connection {
     pub fn spawn(
         via: &Via,
         program: &busbar_contract::conn::Program,
+        env: &crate::spawn_env::HeldEnv,
         dial: Dial,
     ) -> Result<Self, Failure> {
         if !program.command.starts_with('/') {
@@ -691,7 +650,7 @@ impl Connection {
         let carried = Carried::dial(
             Arc::clone(&via.door),
             Arc::clone(&via.io),
-            &Dest::Program(program.clone()),
+            &Dest::Program(program.clone(), env.clone()),
         )
         .map_err(dial_failure)?;
         let established = Established {

@@ -28,6 +28,7 @@ path = "src/lib.rs"
 
 [dependencies]
 busbar-contract = { path = "../busbar-contract" }
+arc-swap = { workspace = true }
 # One-way: this crate reads `busbar-kernel`'s `TlsCfg` config shape and its `SecretResolver` seam
 # (the "secret kind" — the one place a `SecretRef` is turned into bytes), reads its `Destinations`
 # config and implements its `DestJudge` trait with the one destination guard (`guard`, `process`);

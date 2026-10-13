@@ -68,6 +68,17 @@ pub const ALLOWED: &[(&str, &[&str])] = &[
         "crates/busbar/src/root/door_steps.rs",
         &["token_exchange_binding", "member_routes"],
     ),
+    // A program need's declaration (a plane's load, a config apply): its environment references
+    // resolve here and are held for its spawns, which resolve nothing.
+    (
+        "crates/busbar-core-connector/src/lib.rs",
+        &["declare_program", "declare_member_programs"],
+    ),
+    // The held environments' refresher, on its own thread, off every request path.
+    (
+        "crates/busbar-core-connector/src/spawn_env.rs",
+        &["refresh"],
+    ),
 ];
 
 /// Below this many production files the walk has lost the workspace.

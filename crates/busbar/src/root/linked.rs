@@ -366,11 +366,11 @@ pub fn register_stores(linked: &Linked) {
         }
     }
     // A member program's `env` secret references resolve through the same linked secret plugins
-    // (ARCHITECT round 5 Q-L3B-STDIO-UPSTREAM (A): as the previous release resolved them), at the
-    // SPAWN, by the connector that spawns it (SECURITY ruling 2026-10-07: a member's env resolves
-    // at spawn).
+    // (ARCHITECT round 5 Q-L3B-STDIO-UPSTREAM (A)), at CONFIG TIME — the need's declaration at a
+    // plane's load or a config apply, and the connector's refresher — and are held for the spawns,
+    // which resolve nothing (ARCHITECT ruling 2026-10-13, row 166: a spawn serves a request).
     busbar_core_connector::compose::install_spawn_secrets(
-        busbar_kernel::config::secret::resolve_linked_string,
+        busbar_kernel::config::secret::resolve_linked_string_at_config,
     );
 }
 

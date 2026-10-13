@@ -46,8 +46,8 @@ pub enum Admission {
     Dial(Vec<String>),
     /// `listen` on exactly this bind (`ip:port`).
     Bind(String),
-    /// `spawn` of exactly this program.
-    Spawn(Program),
+    /// `spawn` of exactly this program, its environment references as config time resolved them.
+    Spawn(Program, crate::spawn_env::HeldEnv),
 }
 
 /// Why an `open` failed, as the connector's own dial reported it: refused (no one listens), or
@@ -596,14 +596,14 @@ impl IoHost for HostIo {
 
     fn spawn(&self, owner: u64, ticket: Ticket, spawn: &Spawn<'_>) -> IoResult<u64> {
         // The admitted program's environment REFERENCES: never in the destination the carrier was
-        // handed (it carries the written values only), resolved below, at the spawn.
-        let mut env_refs = Vec::new();
+        // handed (it carries the written values only), held since config time resolved them.
+        let mut held = None;
         self.admits(ticket, |a| {
-            let admitted = matches!(a, Admission::Spawn(p) if p.command == spawn.program
+            let admitted = matches!(a, Admission::Spawn(p, _) if p.command == spawn.program
                 && p.args.iter().map(String::as_str).eq(spawn.args.iter().copied())
                 && p.env.iter().map(|(k, v)| (k.as_str(), v.as_str())).eq(spawn.env.iter().copied()));
-            if let (true, Admission::Spawn(p)) = (admitted, a) {
-                env_refs.clone_from(&p.env_refs);
+            if let (true, Admission::Spawn(_, env)) = (admitted, a) {
+                held = Some(env.clone());
             }
             admitted
         })?;
@@ -615,9 +615,16 @@ impl IoHost for HostIo {
         if tokio::runtime::Handle::try_current().is_err() {
             return Err(IoRefusal::Failed(reactor::NOT_ON_A_WORKER.into()));
         }
-        // The environment's references resolve here, at the spawn, and nowhere earlier: a value
-        // exists only in the child's environment. One that does not resolve spawns nothing.
-        let resolved = crate::compose::resolve_spawn_env(&env_refs).map_err(IoRefusal::Refused)?;
+        // The environment's references were resolved at config time and are HELD for the spawn
+        // (`crate::spawn_env`): the spawn loads them and resolves nothing, so no secret resolution
+        // runs on the request a spawn serves. One that did not resolve at its last load or refresh
+        // spawns nothing.
+        let held = held.map(|env| env.now());
+        let resolved = match held.as_deref().map(crate::spawn_env::Resolved::env) {
+            None => &[][..],
+            Some(Ok(env)) => env,
+            Some(Err(why)) => return Err(IoRefusal::Refused(why.to_owned())),
+        };
         // Two OS pipes: the child reads one and writes the other; the host keeps the far ends.
         // The child's error output is the host's own (a spawned command inherits it).
         let (child_reads, host_writes) = std::io::pipe().map_err(|e| failed(&e))?;
@@ -628,7 +635,11 @@ impl IoHost for HostIo {
             .args(spawn.args)
             .env_clear()
             .envs(spawn.env.iter().copied())
-            .envs(resolved.iter().map(|(k, v)| (k.as_str(), v.as_str())))
+            .envs(
+                resolved
+                    .iter()
+                    .map(|(k, v)| (k.as_str(), v.expose_secret().as_str())),
+            )
             .stdin(child_reads)
             .stdout(child_writes)
             .kill_on_drop(true)
