@@ -927,6 +927,15 @@ pub fn book(
     let token = super::kernel::new_kernel().durability_token();
     let data_dir = busbar_kernel::preflight::fleet_data_dir();
     let (durability, rows, migration) = compose_book(&adapter, lane, data_dir, &mig, now, &token)?;
+    // THE CALLER REFERENCE OF EVERY VERIFIED PRINCIPAL (row 159 H2): a node that keeps no signing
+    // material derives it from the deployment keyset just bound, so no verified principal is lent
+    // an empty reference and two principals never share one.
+    if let Some(material) = durability
+        .record
+        .derived_secret(super::keyset::CALLER_REF_MATERIAL)
+    {
+        gov.bind_deployment_caller_ref(material);
+    }
     // DEBUG, NOT INFO, and that is a neutrality decision rather than a taste one. The
     // boot log's INFO+ line set is part of what "LLM-only ≡ 1.5.5" means — it is pinned
     // by `tests/boot_lines_neutrality.rs` and recorded by the oracle's
