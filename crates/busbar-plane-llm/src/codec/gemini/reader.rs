@@ -1618,6 +1618,7 @@ impl ProtocolReader for GeminiReader {
             map: super::map::RESPONSE_PATHS,
             code: super::RESPONSE_CODE,
             drops: super::RESPONSE_DROPS,
+            defaults: &[],
         })
     }
 
@@ -1626,6 +1627,7 @@ impl ProtocolReader for GeminiReader {
             map: super::map::RESPONSE_PATHS,
             code: super::RESPONSE_CODE,
             drops: super::RESPONSE_DROPS,
+            defaults: &[],
         })
     }
 

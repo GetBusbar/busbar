@@ -540,6 +540,19 @@ impl InstalledLimits {
     }
 }
 
+/// WHAT THE COMPOSITION ROOT KEEPS OF A RESOLVED CONFIGURATION beside the generation built from it
+/// (spec Part 1 line 569: a door plane is handed one validated `{section: value}` object per
+/// `open`/`refresh`): the root projects the sections, providers and pool bounds its door planes are
+/// sealed over, and reads the projection back when the generation is swapped in.
+pub type ConfigProjection = fn(&config::RootCfg) -> std::sync::Arc<dyn std::any::Any + Send + Sync>;
+
+static CONFIG_PROJECTION: std::sync::OnceLock<ConfigProjection> = std::sync::OnceLock::new();
+
+/// Bind the composition root's [`ConfigProjection`], once, before the first build.
+pub fn set_config_projection(project: ConfigProjection) {
+    let _ = CONFIG_PROJECTION.set(project);
+}
+
 #[cold] // boot/admin-only — keeps hot text dense (never inlined into a warm path)
 #[inline(never)]
 pub fn build_app_from_config(
@@ -551,6 +564,8 @@ pub fn build_app_from_config(
     config_paths: (Option<std::path::PathBuf>, Option<std::path::PathBuf>),
     prior: Option<&state::App>,
 ) -> Result<(state::App, Option<GovCredentialRotation>, InstalledLimits), String> {
+    // The root's projection of this configuration, taken before any part of it is consumed.
+    let config_projection = CONFIG_PROJECTION.get().map(|project| project(&cfg));
     // Install the resolved operational limits process-wide BEFORE any subsystem reads them —
     // running here (not in main) so a config APPLY/RELOAD refreshes them too. The values threaded
     // explicitly (client/store/router/TLS) read `cfg.limits` directly; the deep call-stack sites
@@ -1644,6 +1659,14 @@ pub fn build_app_from_config(
 
     // Populate the NEUTRAL carrier field-by-field from the already-resolved config (pre-resolved secret
     // plaintexts + rate-card-derived costs + resolved context/tokens are in `lane_inputs`/`pool_inputs`).
+    // THE KERNEL'S OWN TABLES over the same resolved sections, for the read seam when no plane
+    // contributes a runtime of its own.
+    let config_tables = Arc::new(busbar_kernel::plane_host::ConfigTables::of(
+        &lane_inputs,
+        &pool_inputs,
+        &by_model,
+        cfg.upstream_credentials,
+    ));
     let fallback_build_input = PlaneBuildInput {
         lanes: lane_inputs,
         pools: pool_inputs,
@@ -1757,6 +1780,7 @@ pub fn build_app_from_config(
     // read on the hook seam with a single relaxed load.
 
     let app = App {
+        config_projection,
         plane_sections: Some(cfg.plane_sections.clone()),
         // Telemetry-bank slot table for this generation (built above as a local, BEFORE the
         // config-derived collections moved into the fallback plane's runtime bundle so its
@@ -1768,6 +1792,7 @@ pub fn build_app_from_config(
         // seam; the snapshot names only the `&'static str` key, and `App::llm_runtime` downcasts the
         // slot on the money path. Absent slot (featureless build) reads the empty default.
         fallback_runtime_key,
+        config_tables,
         store,
         // The container planes' breaker cells: PROCESS-LIFETIME, reused across an apply/reload the
         // way the HTTP client pool and governance state are — a config swap must not un-trip a
