@@ -7,7 +7,8 @@
 //! structured-field sweep and its closed metric set are byte-identical.
 //!
 //! `a_1_5_5_request_lifecycle_emits_no_alarm_or_dispute_event_or_metric` — the real-request-lifecycle
-//! half of this binding — MOVED to `tests/alarm_silence_cross_plane.rs`: it drives a real router
+//! half of this binding — MOVED to the composition root's
+//! `crates/busbar/tests/alarm_silence_cross_plane.rs`: it drives a real router
 //! built from `TestApp::lane`/`.pool()`, which only routes through the REAL `busbar_llm` plane's
 //! `build_runtime`/`viewer` (see that file's header, and `endpoints_cross_plane.rs`'s for the same
 //! reason). What stays here is the pure-function half: the marker matcher and the exposition-line
