@@ -5081,3 +5081,44 @@ fn responses_failed_stream_bills_its_reported_usage() {
     assert!(none.usage().is_none());
     assert!(none.terminal_error().is_some());
 }
+
+/// A TRANSLATED STREAM INTO A RESPONSES CLIENT IS STAMPED WITH THE HOST'S CLOCK, NOT 1970. The
+/// translator clears the upstream's creation time, and the Responses writer then stamped
+/// `UNSTAMPED_CREATED_AT` (`0`) on `response.created` and every terminal event. 1.5.5 stamped
+/// `now_unix_secs()` (v1.5.5 `crates/busbar/src/proto/openai_responses/writer.rs:479`); the plane
+/// reads the host's wall clock through `busbar_contract::codec::wall_clock_now`, as the Chat
+/// writer's `created` does. RED while every translated stream carried `created_at: 0`.
+#[test]
+fn a_translated_stream_into_responses_carries_the_host_clock_created_at() {
+    crate::codec::ensure_test_protocols_registered();
+    let before = busbar_contract::codec::wall_clock_now().expect("the test host arms a clock");
+    let mut st = StreamTranslate::new("responses", "anthropic").expect("translator");
+    let mut out = st.feed(
+        b"event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude\",\"content\":[],\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":3,\"output_tokens\":1}}}\n\n",
+    );
+    out.extend(st.feed(
+        b"event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\",\"stop_sequence\":null},\"usage\":{\"output_tokens\":2}}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
+    ));
+    out.extend(st.finish());
+    let text = String::from_utf8_lossy(&out);
+    let stamps: Vec<u64> = text
+        .lines()
+        .filter_map(|l| l.strip_prefix("data: "))
+        .filter_map(|d| serde_json::from_str::<serde_json::Value>(d).ok())
+        .filter_map(|v| v["response"]["created_at"].as_u64())
+        .collect();
+    assert!(
+        stamps.len() >= 2,
+        "response.created and the terminal event carry created_at: {text}"
+    );
+    for s in &stamps {
+        assert!(
+            *s >= before,
+            "created_at {s} is the host clock, never 0: {text}"
+        );
+    }
+    assert!(
+        stamps.windows(2).all(|w| w[0] == w[1]),
+        "one created_at across the stream: {stamps:?}"
+    );
+}

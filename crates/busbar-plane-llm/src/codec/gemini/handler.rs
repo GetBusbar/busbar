@@ -229,17 +229,12 @@ pub fn write_transcription_response(r: &crate::codec::ir::audio::TranscriptionRe
                 (FIELD_TOTAL_TOKEN_COUNT): t.input.saturating_add(t.output),
             });
         }
-        // whisper-1 bills audio DURATION (produced by the OpenAI transcription reader). Gemini's
-        // usageMetadata is token-shaped and has no seconds field, so surfacing this as a token count
-        // would fabricate tokens and corrupt downstream token pricing. Instead carry the exact
-        // seconds through under an explicit duration field so the billable quantity is not dropped
-        // on an openai->gemini transcription hop (the closest faithful representation).
-        Some(busbar_contract::billing::Billing::Duration { seconds }) => {
-            // The one render boundary — byte-identical to what this wrote before the quantity
-            // became exact (see `billing::duration_seconds_to_wire`).
-            let seconds = busbar_contract::billing::duration_seconds_to_wire(*seconds);
-            body[FIELD_USAGE_METADATA] = json!({ (FIELD_AUDIO_DURATION_SECONDS): seconds });
-        }
+        // A duration-billed answer (whisper-1's `Billing::Duration`, an openai->gemini hop) has no
+        // member in Gemini's token-shaped `usageMetadata`: it is written without one, exactly as
+        // 1.5.5 wrote it (v1.5.5 `crates/busbar/src/handlers/gemini.rs:259-265` wrote
+        // `usageMetadata` only for `Billing::Tokens`). The billed seconds are read off the EGRESS
+        // reader, never off these bytes, so nothing billed is lost; an invented
+        // `audioDurationSeconds` member is not Gemini's wire.
         _ => {}
     }
     WireBody::json(SlabBytes::from(

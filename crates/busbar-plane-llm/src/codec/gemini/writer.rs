@@ -1613,26 +1613,17 @@ impl ProtocolWriter for GeminiWriter {
     }
 }
 
-/// `candidatesTokenCount` and `thoughtsTokenCount` from the IR usage (IR audit GEM-13). The IR folds
-/// reasoning INTO `output_tokens` (every dialect's reasoning count is a slice of its output total), but
-/// Gemini states the two apart: `candidatesTokenCount` is the visible answer and the ADDITIVE
-/// `thoughtsTokenCount` is the thinking. Writing the whole output as `candidatesTokenCount` told a
-/// Gemini client the thinking was answer. `thoughtsTokenCount` is emitted only for a non-zero
-/// reasoning count (native Gemini omits it when the model did not think); the total is unchanged.
+/// `candidatesTokenCount` from the IR usage: the WHOLE output count, reasoning included, exactly
+/// as 1.5.5 wrote it (v1.5.5 `crates/busbar/src/proto/gemini/writer.rs:962-964`,
+/// `serde_json::json!(usage.output_tokens)`). A Gemini client reconciling usage against its bill
+/// reads the figure 1.5.5 gave it; splitting the reasoning out into `thoughtsTokenCount` lowered the
+/// answer count a 1.5.5 client read, and no register entry signs that value change.
 fn insert_gemini_output_counts(
     usage_metadata: &mut serde_json::Map<String, serde_json::Value>,
     usage: &crate::codec::ir::IrUsage,
 ) {
-    let thoughts = usage
-        .detail
-        .reasoning_tokens
-        .filter(|&t| t > 0)
-        .map(|t| t.min(usage.output_tokens));
     usage_metadata.insert(
         FIELD_CANDIDATES_TOKEN_COUNT.to_string(),
-        serde_json::json!(usage.output_tokens.saturating_sub(thoughts.unwrap_or(0))),
+        serde_json::json!(usage.output_tokens),
     );
-    if let Some(t) = thoughts {
-        usage_metadata.insert(FIELD_THOUGHTS_TOKEN_COUNT.to_string(), serde_json::json!(t));
-    }
 }
