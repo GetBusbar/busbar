@@ -2858,8 +2858,8 @@ fn a_driven_unit_killed_mid_stream_over_the_store_is_recovered_at_its_flushed_ch
     use std::sync::Arc;
 
     let slots = crate::root::store_double::RecordSlots::new();
-    let principal = PrincipalId::new("vk_streaming_store");
-    let balance = totals_key("vk_streaming_store");
+    let principal = PrincipalId::new("vk_driven_unit_store");
+    let balance = totals_key("vk_driven_unit_store");
     let unit = busbar_contract::UnitKey::new(9);
     let arrived = crate::root::plane_node::Arrived::at(ARRIVED_MS, 91);
     {
@@ -3115,7 +3115,7 @@ fn a_lost_keyset_claim_with_nothing_kept_refuses_until_the_claim_lapses() {
     let now = secs();
     // A winner that died before it kept anything: this period's claim is redeemed, nothing kept.
     assert!(slots.redeem(MINT_CLAIM_KIND, &keyset_claim(now), u64::MAX, now));
-    let mine = "c".repeat(64);
+    let mine = "d".repeat(64);
     let refused = keep_keyset(slots.calls().as_ref(), &mine).expect_err("no second key");
     assert!(refused.contains("claim"), "{refused}");
     assert_eq!(stored_keyset(slots.calls().as_ref()).expect("read"), None);
