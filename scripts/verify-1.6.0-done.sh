@@ -106,6 +106,16 @@ print_help() { awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; next } { exi
 FAST=0 SELFTEST=0
 case "${1:-}" in --fast) FAST=1 ;; --selftest) SELFTEST=1 ;; "" ) ;; -h|--help) print_help; exit 0 ;; *) echo "usage: $0 [--fast|--selftest]" >&2; exit 2 ;; esac
 
+# THE BASE THE GATES ARE MEASURED AGAINST, named as CI names it. `ceiling-census` and kind-isolation
+# hold their floors against a base, and a detached checkout derives none, which is RED (a base that
+# cannot be established is never a silent pass). So name it: a caller's own value stands, then the
+# ModernCI target sha the gates check exports, then the merge-base with origin/predev. If none
+# resolves it stays unset and the gates say so.
+if [ -z "${XTASK_CEILING_BASE:-}" ]; then
+  XTASK_CEILING_BASE="${MODERNCI_TO_SHA:-$(git merge-base HEAD origin/predev 2>/dev/null || true)}"
+  [ -n "$XTASK_CEILING_BASE" ] && export XTASK_CEILING_BASE || unset XTASK_CEILING_BASE
+fi
+
 # Results accumulators (parallel arrays — bash 3.2 has no assoc arrays).
 G_NAME=(); G_STATE=(); G_NOTE=()
 CUR_GROUP=""; CUR_RED=0; CUR_FIRST_NOTE=""
