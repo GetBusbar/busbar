@@ -595,10 +595,17 @@ impl IoHost for HostIo {
     }
 
     fn spawn(&self, owner: u64, ticket: Ticket, spawn: &Spawn<'_>) -> IoResult<u64> {
+        // The admitted program's environment REFERENCES: never in the destination the carrier was
+        // handed (it carries the written values only), resolved below, at the spawn.
+        let mut env_refs = Vec::new();
         self.admits(ticket, |a| {
-            matches!(a, Admission::Spawn(p) if p.command == spawn.program
+            let admitted = matches!(a, Admission::Spawn(p) if p.command == spawn.program
                 && p.args.iter().map(String::as_str).eq(spawn.args.iter().copied())
-                && p.env.iter().map(|(k, v)| (k.as_str(), v.as_str())).eq(spawn.env.iter().copied()))
+                && p.env.iter().map(|(k, v)| (k.as_str(), v.as_str())).eq(spawn.env.iter().copied()));
+            if let (true, Admission::Spawn(p)) = (admitted, a) {
+                env_refs.clone_from(&p.env_refs);
+            }
+            admitted
         })?;
         if !spawn.program.starts_with('/') {
             return Err(IoRefusal::Refused(
@@ -608,6 +615,9 @@ impl IoHost for HostIo {
         if tokio::runtime::Handle::try_current().is_err() {
             return Err(IoRefusal::Failed(reactor::NOT_ON_A_WORKER.into()));
         }
+        // The environment's references resolve here, at the spawn, and nowhere earlier: a value
+        // exists only in the child's environment. One that does not resolve spawns nothing.
+        let resolved = crate::compose::resolve_spawn_env(&env_refs).map_err(IoRefusal::Refused)?;
         // Two OS pipes: the child reads one and writes the other; the host keeps the far ends.
         // The child's error output is the host's own (a spawned command inherits it).
         let (child_reads, host_writes) = std::io::pipe().map_err(|e| failed(&e))?;
@@ -618,6 +628,7 @@ impl IoHost for HostIo {
             .args(spawn.args)
             .env_clear()
             .envs(spawn.env.iter().copied())
+            .envs(resolved.iter().map(|(k, v)| (k.as_str(), v.as_str())))
             .stdin(child_reads)
             .stdout(child_writes)
             .kill_on_drop(true)
