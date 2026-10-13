@@ -7,7 +7,9 @@
 //!
 //! The store here is a double of the store's plane-record verbs and its single-use claims, over
 //! maps the test holds: every clone is the same store, so two planes built over two clones are two
-//! nodes on one deployment.
+//! nodes on one deployment. It files records exactly as the linked in-tree store does: a record is
+//! kept at `(kind, parent or else id, seq)`, `get_plane_record` reads `(kind, id, 0)`, a list by
+//! parent reads the records whose parent it names, and a delete takes every sequence of an identity.
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -26,8 +28,8 @@ use crate::config::OauthAsCfg;
 use crate::plane::{seam_build, AsPlane};
 use crate::shared::{Shared, SharedStorage, LABEL, MINT_CLAIM_SECS};
 
-/// `(kind, id)` to `(parent, body)`.
-type Records = BTreeMap<(String, String), (Option<String>, Vec<u8>)>;
+/// `(kind, parent or else id, seq)` to `(parent, body)`, as the linked in-tree store keys them.
+type Records = BTreeMap<(String, String, u64), (Option<String>, Vec<u8>)>;
 
 /// The double. Cheap to clone; every clone is the same store.
 #[derive(Clone, Default)]
@@ -54,7 +56,7 @@ impl OneStore {
         self.records
             .lock()
             .unwrap_or_else(|p| p.into_inner())
-            .insert((kind.to_string(), id.to_string()), (None, body.to_vec()));
+            .insert((kind.to_string(), id.to_string(), 0), (None, body.to_vec()));
     }
 }
 
@@ -147,7 +149,7 @@ impl StoreCalls for OneStore {
             .records
             .lock()
             .unwrap_or_else(|p| p.into_inner())
-            .get(&(kind.to_string(), id.to_string()))
+            .get(&(kind.to_string(), id.to_string(), 0))
             .map(|(_, body)| body.clone());
         Box::pin(async move { Ok(got) })
     }
@@ -164,7 +166,7 @@ impl StoreCalls for OneStore {
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .iter()
-            .filter(|((k, _), (parent, _))| {
+            .filter(|((k, _, _), (parent, _))| {
                 k == kind
                     && match selector {
                         PlaneSelector::All => true,
@@ -179,7 +181,7 @@ impl StoreCalls for OneStore {
         self.records
             .lock()
             .unwrap_or_else(|p| p.into_inner())
-            .remove(&(kind.to_string(), id.to_string()));
+            .retain(|(k, i, _), _| !(k == kind && i == id));
         Box::pin(async { Ok(()) })
     }
     fn redeem_plane_token<'a>(
@@ -414,11 +416,10 @@ async fn a_configured_signing_key_overrides_the_minted_one() {
 async fn a_minting_claim_loser_never_signs_with_its_own_key() {
     let store = OneStore::default();
     let now = now_secs();
-    let period = now / MINT_CLAIM_SECS;
     assert!(store.redeem(
         &format!("{LABEL}mint"),
-        &format!("signing@{period}"),
-        (period + 2) * MINT_CLAIM_SECS,
+        "signing",
+        now + MINT_CLAIM_SECS,
         now
     ));
     let minted = AtomicBool::new(false);

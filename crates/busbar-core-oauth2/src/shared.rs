@@ -32,7 +32,13 @@
 //!   cascade (which lists the family's index after recording the barrier) sees the record.
 //!
 //! What a crash between a won version claim and its write costs: that bucket refuses writes until
-//! the claim lapses ([`VERSION_CLAIM_SECS`]); nothing is lost and nothing is double-spent.
+//! the claim lapses ([`VERSION_CLAIM_SECS`], two minutes); nothing is lost and nothing is
+//! double-spent.
+//!
+//! Where each record sits: a point-read record (a bucket, a cell, a session, a stake, the key) at
+//! sequence 0 with no parent, where every store reads `get_plane_record` back from; an index row as a
+//! child of its key's digest, one sequence position per client, so a store that files a parented
+//! record by `(parent, seq)` keeps one per client and lists them by parent.
 //!
 //! The consent screen's sessions and staked answers, the pushed-request notes and the minted
 //! signing key ride the same records ([`Shared`]).
@@ -59,7 +65,7 @@ pub(crate) const LABEL: &str = "\u{1}oauth_as\u{1}";
 
 /// How long a won version claim stands: past it, a bucket whose winner never wrote is writable
 /// again.
-pub(crate) const VERSION_CLAIM_SECS: u64 = 3600;
+pub(crate) const VERSION_CLAIM_SECS: u64 = 120;
 
 /// How many times one write reads again after losing a version to another writer.
 const SWAP_ATTEMPTS: u32 = 64;
@@ -333,7 +339,9 @@ impl Shared {
             {
                 let body = serde_json::to_vec(&Cell { v: next, b: &value })
                     .map_err(|e| decode_failed(kind_name, e))?;
-                self.put_body(kind_name, id, None, next, &body).await?;
+                // Point-read records live at sequence 0 with no parent: that is where every store
+                // reads `get_plane_record` back from. The version rides in the cell itself.
+                self.put_body(kind_name, id, None, 0, &body).await?;
                 return Ok(answer);
             }
             // Another writer holds this version: read again, after a short, growing pause.
@@ -369,12 +377,16 @@ impl Shared {
 
     async fn index(&self, ix: &str, key: &str, client_id: &str) -> Result<(), StorageError> {
         let parent = digest(key);
-        let id = format!("{parent}:{}", digest(client_id));
+        let client = digest(client_id);
+        let id = format!("{parent}:{client}");
+        // A child of the key's parent, one position per client: a store files a parented record by
+        // `(parent, seq)`, so each client the key names needs its own sequence number.
+        let seq = u64::from_str_radix(&client[..15], 16).unwrap_or(0) + 1;
         self.put_body(
             &format!("ix.{ix}"),
             &id,
             Some(&parent),
-            0,
+            seq,
             client_id.as_bytes(),
         )
         .await
@@ -500,7 +512,6 @@ impl Shared {
         if self.session_subject(id).await?.is_none() {
             return Ok(());
         }
-        let parent = digest(id);
         let body = serde_json::to_vec(&StakeRow {
             approve,
             until: now_secs() + ttl.as_secs(),
@@ -508,8 +519,8 @@ impl Shared {
         .map_err(|e| decode_failed("stake", e))?;
         self.put_body(
             "stake",
-            &format!("{parent}:{}", digest(key)),
-            Some(&parent),
+            &format!("{}:{}", digest(id), digest(key)),
+            None,
             0,
             &body,
         )
@@ -598,11 +609,10 @@ impl Shared {
         if let Some(held) = read().await? {
             return Ok(held);
         }
-        let now = now_secs();
-        let period = now / MINT_CLAIM_SECS;
-        let lapses = (period + 2) * MINT_CLAIM_SECS;
+        // ONE minting claim, standing for one period: two builds can never both hold it, and a
+        // winner that died before keeping its key frees it when the period ends.
         let won = self
-            .claim("mint", &format!("signing@{period}"), lapses)
+            .claim("mint", "signing", now_secs() + MINT_CLAIM_SECS)
             .await
             .map_err(|e| e.0)?;
         if !won {
@@ -621,7 +631,7 @@ impl Shared {
                 std::thread::sleep(Duration::from_millis(20));
             }
         }
-        // A build that claimed a later period than a slow earlier claimant finds that one's key.
+        // A build that won after a slow earlier winner's claim lapsed finds that one's key.
         if let Some(held) = read().await? {
             return Ok(held);
         }
@@ -1361,7 +1371,9 @@ impl Storage for SharedStorage {
             .collect();
         for client in clients {
             let mut freed: Vec<(String, String)> = Vec::new();
-            removed += s
+            // One bucket that will not swap (a held version, a store fault) is skipped and said,
+            // never the end of the sweep: the next tick tries it again.
+            let swept = s
                 .update(&client, |b| {
                     let mut n = 0u64;
                     freed = Vec::new();
@@ -1402,7 +1414,14 @@ impl Storage for SharedStorage {
                         Swap::Write(n)
                     })
                 })
-                .await?;
+                .await;
+            match swept {
+                Ok(n) => removed += n,
+                Err(e) => {
+                    tracing::debug!(error = %e, "oauth_as: a client's records were not swept this tick");
+                    continue;
+                }
+            }
             for (uc, dc) in freed {
                 s.release_user_code(&uc, &dc).await?;
             }
