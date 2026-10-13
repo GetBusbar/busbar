@@ -54,7 +54,7 @@
 //! rather than replacing it: those hold the minting SURFACE; this holds the #73 vocabulary result
 //! and gives the wave a single red-before-green witness of its own.
 
-use crate::ctx::{Ctx, Overlay, SourceFile, WalkSpec};
+use crate::ctx::{Coverage, Ctx, Overlay, SourceFile, WalkSpec};
 use crate::gates::{prove_green, prove_red, prove_rows_green, Gate, Report};
 #[cfg(test)]
 use crate::ledger::Status;
@@ -123,18 +123,6 @@ const KERNEL_ROOT: &str = "crates/busbar-kernel/src/";
 /// constants and plants.
 const ROOTS: &[&str] = &["crates"];
 const EXCLUDE: &[&str] = &["/target/"];
-/// The denominator floor: a walk that finds fewer files than this is broken, not clean.
-///
-/// ARMED AT THE MEASURED POPULATION (Law 9), not a margin below it: 2173 `.rs` files under
-/// `crates/` once the MCP-FIX stack lands on predev bd39476618 (the gate prints the count in both
-/// judging rows' detail). It read 200 — about a tenth of the tree — so a walk that silently
-/// dropped nine files in ten still scanned "clean". It was first armed at 2181 on predev
-/// 0fd08ee75d; predev then retired the kernel-identity and kernel `egress_auth` modules (24 files
-/// out, 15 in), re-armed at 2174 on predev 39374ec00e; predev grew to 2176, and the MCP-FIX stack
-/// retired the plane-mcp `outputschema` and `tool_plane` modules with their tests (5 files out, 2
-/// in). A floor above the tree it guards refuses every walk. A tree that grows keeps this floor; a
-/// walk that comes back short of it is refused.
-const SCAN_FLOOR: usize = 2173;
 
 /// Is `rel` a file that compiles only into a TEST, BENCH or EXAMPLE target — never into a shipped
 /// lib/bin? A `tests/` directory anywhere on the path (which covers `src/tests/`), a `benches/` or
@@ -588,25 +576,44 @@ struct Scan {
     test_mints: Vec<String>,
 }
 
-/// The walk the gate judges, without its floor — the one place the scan set is spelled, so the
-/// floor plant counts exactly the files [`scan_tree`] does.
+/// The walk the gate judges — the one place the scan set is spelled, so the tracked set it is
+/// reconciled against is cut by exactly the same scope and filters.
 fn scan_spec() -> WalkSpec {
     WalkSpec::new(ROOTS.iter().copied())
         .ext("rs")
         .exclude(EXCLUDE.iter().copied())
 }
 
-/// THE FLOOR PLANT: the live walk cut to exactly `SCAN_FLOOR - 1` files, however far the tree has
-/// grown past the floor (see [`Overlay::below_floor`]). A fixed one-file cut went green the day
-/// the tree gained a file.
-fn floor_plant(cx: &Ctx) -> Result<Overlay, String> {
+/// THE COVERAGE PLANT: one tracked file hidden from the walk while the index still lists it,
+/// returned with its path so the case can require the refusal to name it.
+fn coverage_plant(cx: &Ctx) -> Result<(Overlay, String), String> {
     let rels = cx.list(&scan_spec()).map_err(|e| e.to_string())?;
-    Overlay::below_floor(rels.len(), SCAN_FLOOR, rels.iter().rev())
+    let rel = rels
+        .last()
+        .map(|p| p.to_string_lossy().replace('\\', "/"))
+        .ok_or_else(|| "the crates walk lists nothing to hide".to_string())?;
+    let ov = cx.hide_from_scan([&rel])?;
+    Ok((ov, rel))
 }
 
+/// THE DENOMINATOR IS THE TRACKED SET, NOT A COUNT (Law 8: "a census reports the LIST it scanned,
+/// not the count"). The walk is reconciled against every tracked `.rs` under the same roots and
+/// excludes; a tracked file it did not read, or a file it read that nothing tracks, refuses the
+/// scan by name. This replaced a floor pinned at the measured file count (last 2173), which every
+/// change that removed source had to re-pin and which, matched, said nothing about WHICH files
+/// were read. An empty walk stays the walker's own refusal.
 fn scan_tree(cx: &Ctx) -> Result<Scan, String> {
-    let spec = scan_spec().min_files(SCAN_FLOOR);
-    let files = cx.walk(&spec).map_err(|e| format!("{e:?}"))?;
+    let files = cx.walk(&scan_spec()).map_err(|e| format!("{e:?}"))?;
+    let whole = cx.tracked(&scan_spec()).map_err(|e| {
+        format!("the tracked set the walk is reconciled against would not read: {e}")
+    })?;
+    let coverage = Coverage::of(files.iter().map(SourceFile::rel_str), whole);
+    if !coverage.is_whole() {
+        return Err(format!(
+            "the crates walk is not the tracked set: {}",
+            coverage.census()
+        ));
+    }
 
     let aliases = seal_aliases(&files);
 
@@ -731,7 +738,7 @@ impl SealWitnessGate {
                 "in shipped code, the one root minter is referenced only inside the kernel crate",
                 format!(
                     "`{MINTER}` is referenced, in any spelling, in no lib/bin code outside \
-                     {KERNEL_ROOT} ({} files scanned, floor {SCAN_FLOOR}; receivers resolved \
+                     {KERNEL_ROOT} ({} files scanned, exactly the tracked set; receivers resolved \
                      against {}; {} test-scope call(s) are counted by {ROW_TEST_MINTS})",
                     scan.files,
                     join_or_none(&scan.aliases.iter().cloned().collect::<Vec<_>>()),
@@ -950,22 +957,17 @@ impl Gate for SealWitnessGate {
             ));
         }
 
-        // RED 12 (X5 finding 1): THE FLOOR IS THE MEASURED POPULATION. A walk that comes back one
-        // file short of it is refused, though it still holds ten times the old floor of 200. The
-        // cut is computed from the live count, so a tree grown past the floor still lands at
-        // exactly floor - 1.
-        match floor_plant(cx) {
-            Ok(ov7) => {
-                let found = format!("found: {}", SCAN_FLOOR - 1);
-                report.push(prove_red(
-                    cx,
-                    self,
-                    "a walk one file below the measured population (and far above 200) is refused",
-                    &[ROW_NO_SURVIVING, ROW_SINGLE_MINTER],
-                    ov7,
-                    &["BelowFloor", found.as_str()],
-                ));
-            }
+        // RED 12 (X5 finding 1): THE SCAN IS THE TRACKED SET. One tracked file hidden from the
+        // walk is refused, and both judging rows name it. No count, so no tree size turns it green.
+        match coverage_plant(cx) {
+            Ok((ov7, rel)) => report.push(prove_red(
+                cx,
+                self,
+                "a tracked file the walk did not read is refused by name",
+                &[ROW_NO_SURVIVING, ROW_SINGLE_MINTER],
+                ov7,
+                &["NOT scanned", rel.as_str()],
+            )),
             Err(e) => report.note_infra_failure(format!("seal-witness selftest: {e}")),
         }
 
@@ -1182,10 +1184,11 @@ mod tests {
         assert!(minter.detail.contains("(via `S`)"), "{}", minter.detail);
     }
 
-    /// A temp tree of `n` `.rs` files under `crates/`, and a context over it.
-    fn floor_tree(tag: &str, n: usize) -> (std::path::PathBuf, Ctx) {
+    /// A temp tree of four `.rs` files under `crates/`, and a context over it whose index is
+    /// planted (a temp tree has no git index of its own) — every file but `untracked`.
+    fn fixture(tag: &str, untracked: Option<&str>) -> (std::path::PathBuf, Ctx) {
         let root = std::env::temp_dir().join(format!(
-            "xtask-seal-witness-floor-{tag}-{}-{:?}",
+            "xtask-seal-witness-coverage-{tag}-{}-{:?}",
             std::process::id(),
             std::thread::current().id()
         ));
@@ -1194,43 +1197,47 @@ mod tests {
         let scratch = root.join(".fix").join("xtask");
         std::fs::create_dir_all(&src).expect("src dir creates");
         std::fs::create_dir_all(&scratch).expect("scratch dir creates");
-        for i in 0..n {
+        let mut index = Vec::new();
+        for i in 0..4 {
             std::fs::write(src.join(format!("f{i:05}.rs")), "pub fn f() {}\n").expect("seed");
+            let rel = format!("crates/a/src/f{i:05}.rs");
+            if Some(rel.as_str()) != untracked {
+                index.push(rel);
+            }
         }
-        let cx = Ctx::at(&root, &scratch).expect("ctx opens over the temp root");
+        let mut ov = Overlay::new();
+        ov.set_command(crate::ctx::INDEX_KEY, index.join("\n"));
+        let cx = Ctx::at(&root, &scratch)
+            .expect("ctx opens over the temp root")
+            .with_overlay(ov);
         (root, cx)
     }
 
-    /// THE RED ARM: the tree five files past `SCAN_FLOOR`. The old one-file cut left floor + 4 and
-    /// the scan green; the computed cut lands the gate's own scan at exactly floor - 1, refused.
+    /// THE RED ARM: a tree whose walk reads exactly its index scans green; the same tree with one
+    /// tracked file hidden from the walk is refused, and the refusal names the file.
     #[test]
-    fn the_floor_plant_lands_one_under_the_floor_on_a_grown_tree() {
-        let (root, cx) = floor_tree("grown", SCAN_FLOOR + 5);
-        let base = scan_tree(&cx).expect("the grown tree clears the floor");
-        assert_eq!(base.files, SCAN_FLOOR + 5);
-        let ov = floor_plant(&cx).expect("the floor plant plants");
-        assert_eq!(ov.paths().count(), 6, "live - floor + 1 files are removed");
+    fn a_tracked_file_hidden_from_the_walk_is_refused_by_name() {
+        let (root, cx) = fixture("hidden", None);
+        let base = scan_tree(&cx).expect("a walk of exactly the tracked set scans green");
+        assert_eq!(base.files, 4);
+        let (ov, rel) = coverage_plant(&cx).expect("the coverage plant plants");
+        assert_eq!(rel, "crates/a/src/f00003.rs");
         let Err(err) = scan_tree(&cx.with_overlay(ov)) else {
             panic!("the planted scan must be refused");
         };
-        let found = format!("found: {}", SCAN_FLOOR - 1);
-        assert!(err.contains("BelowFloor") && err.contains(&found), "{err}");
+        assert!(err.contains("NOT scanned") && err.contains(&rel), "{err}");
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// THE CONTROL: a tree exactly at `SCAN_FLOOR` scans green, and the plant still takes it to
-    /// floor - 1.
+    /// THE OTHER DIRECTION: a file the walk read that the index does not hold is refused by name.
     #[test]
-    fn a_tree_at_the_floor_scans_green_and_the_plant_takes_one_file() {
-        let (root, cx) = floor_tree("at", SCAN_FLOOR);
-        let base = scan_tree(&cx).expect("a tree at the floor is green");
-        assert_eq!(base.files, SCAN_FLOOR);
-        let ov = floor_plant(&cx).expect("the floor plant plants");
-        assert_eq!(ov.paths().count(), 1);
-        let Err(err) = scan_tree(&cx.with_overlay(ov)) else {
-            panic!("the planted scan must be refused");
+    fn a_walked_file_nothing_tracks_is_refused_by_name() {
+        let stray = "crates/a/src/f00001.rs";
+        let (root, cx) = fixture("extra", Some(stray));
+        let Err(err) = scan_tree(&cx) else {
+            panic!("a scan holding an untracked file must be refused");
         };
-        assert!(err.contains(&format!("found: {}", SCAN_FLOOR - 1)), "{err}");
+        assert!(err.contains("NOT tracked") && err.contains(stray), "{err}");
         let _ = std::fs::remove_dir_all(&root);
     }
 }
