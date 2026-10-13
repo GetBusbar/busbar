@@ -89,7 +89,7 @@ impl ProxyChoice {
         }
     }
 
-    /// The per-dial decision: `None` → direct (the host is exempt, or no proxy is set for the
+    /// The per-dial choice: `None` → direct (the host is exempt, or no proxy is set for the
     /// target's slot), `Some` → tunnel through that proxy.
     #[must_use]
     pub fn select(&self, secured_target: bool, target_host: &str) -> Option<Arc<ProxyHop>> {

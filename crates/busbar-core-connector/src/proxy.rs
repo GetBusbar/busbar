@@ -241,7 +241,7 @@ pub fn connect_answer(head: &[u8], target: &str) -> Result<Option<usize>, String
         .is_some_and(|code| code.first() == Some(&b'2') && code.len() == 3);
     if !status_2xx {
         return Err(format!(
-            "proxy refused CONNECT {target}: {}",
+            "CONNECT {target} refused by the tunnel's far end: {}",
             String::from_utf8_lossy(line)
         ));
     }
