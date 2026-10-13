@@ -225,7 +225,10 @@ fn pii_witness_never_surfaces_state_or_answers_in_any_fact() {
     // behind every assertion above.
     assert!(!busbar_plane_decisions::codec::RESPONSE_PTRS.contains(&"/state"));
     assert!(!busbar_plane_decisions::codec::RESPONSE_PTRS.contains(&"/answers"));
-    assert!(busbar_plane_decisions::codec::REQUEST_PTRS.is_empty());
+    assert_eq!(
+        busbar_plane_decisions::codec::REQUEST_PTRS,
+        &[busbar_plane_decisions::codec::PTR_MODEL]
+    );
     assert!(!facts::CONTENT_FACTS
         .iter()
         .any(|k| *k == "state" || *k == "answers"));
