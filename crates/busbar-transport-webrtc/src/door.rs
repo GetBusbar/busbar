@@ -42,8 +42,8 @@ use busbar_contract::abi::transport::{
     LocateIn, LocateOut, Ops, ReadIn, RefuseIn, RendezvousTerms, ShutIn, TransportTail, WriteIn,
     CANCEL_NOTHING_MOVED, EMIT_TEXT, FRAMING_DATAGRAM, HANDSHAKE_ANSWERS, HANDSHAKE_INITIATES,
     LANE_CLEAR, LANE_RENDEZVOUS, LANE_SECURED, PATH_REQUEST_BIND, PATH_REQUEST_REBIND,
-    PIECE_CONTINUED, PIECE_END_OF_FRAME, PIECE_FIELDS, PIECE_TEXT, ROLE_FRAMER, SIDE_ACCEPT,
-    SIDE_DIAL, UNIT0_FIRST_DATAGRAM, YIELD_ENDED, YIELD_HAS_DEADLINE, YIELD_MORE,
+    PIECE_CONTINUED, PIECE_END, PIECE_END_OF_FRAME, PIECE_FIELDS, PIECE_TEXT, ROLE_FRAMER,
+    SIDE_ACCEPT, SIDE_DIAL, UNIT0_FIRST_DATAGRAM, YIELD_ENDED, YIELD_HAS_DEADLINE, YIELD_MORE,
 };
 
 use crate::framing::{Framing, Lane, Opening, Piece, Request, Side, MEDIA_BASE};
@@ -315,19 +315,7 @@ fn answer(
         }
         let n = p.bytes.len().min(room);
         let at = frame.extend(&p.bytes[..n]);
-        let mut flags = 0_u16;
-        if p.fields {
-            flags |= PIECE_FIELDS;
-            if continued {
-                flags |= PIECE_CONTINUED;
-            }
-        }
-        if p.text && n > 0 && !p.fields {
-            flags |= PIECE_TEXT;
-        }
-        if whole {
-            flags |= PIECE_END_OF_FRAME;
-        }
+        let flags = piece_flags(&p, continued, whole, n);
         pieces.push(FramePiece {
             stream: p.stream,
             offset: at as u64,
@@ -733,5 +721,33 @@ busbar_contract::plugin_door! {
     },
 }
 
+/// The `PIECE_*` bits of one piece of the framing's `p`: `n` of its bytes taken, `whole` when that
+/// is all of them, `continued` when a split field block's earlier piece came first. A closed data
+/// channel is the stream's END: its own empty piece with [`PIECE_END`] and [`PIECE_END_OF_FRAME`]
+/// (the transport contract's "streams end by flag"); an empty piece without it is an empty message.
+fn piece_flags(p: &Piece, continued: bool, whole: bool, n: usize) -> u16 {
+    if p.end {
+        return PIECE_END | PIECE_END_OF_FRAME;
+    }
+    let mut flags = 0_u16;
+    if p.fields {
+        flags |= PIECE_FIELDS;
+        if continued {
+            flags |= PIECE_CONTINUED;
+        }
+    }
+    if p.text && n > 0 && !p.fields {
+        flags |= PIECE_TEXT;
+    }
+    if whole {
+        flags |= PIECE_END_OF_FRAME;
+    }
+    flags
+}
+
 /// The first media stream, for a host that names streams.
 pub const FIRST_MEDIA_STREAM: u64 = MEDIA_BASE;
+
+#[cfg(test)]
+#[path = "tests/door_tests.rs"]
+mod tests;
