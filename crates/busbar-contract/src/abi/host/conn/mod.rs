@@ -428,6 +428,8 @@ extern "C-unwind" fn host_open(
                     within: &[],
                     // So is a registration (`EstablishIn::member`).
                     member: "",
+                    // A plugin's own open serves no kernel unit.
+                    unit: 0,
                 },
             )?;
             set(out_conn, conn.0)

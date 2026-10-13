@@ -320,6 +320,7 @@ fn start(c: &Connector, url: &str) -> ConnId {
             head_target: b"/v1/chat/completions",
             within: &[],
             member: "",
+            unit: 0,
         },
     )
     .expect("the open")
@@ -448,6 +449,7 @@ async fn the_http1_only_key_offers_http1_alone() {
                 head_target: b"/v1/chat/completions",
                 within: &[],
                 member: "",
+                unit: 0,
             },
         )
         .expect("the open");

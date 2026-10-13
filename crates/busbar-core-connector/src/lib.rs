@@ -51,6 +51,7 @@
 pub mod carrier;
 pub mod compose;
 pub mod datagram;
+mod dialled;
 pub mod dtls;
 pub mod endpoint;
 pub mod framed_stream;
@@ -370,6 +371,9 @@ struct Held {
     /// THE REQUEST'S WHOLE BOUND until its answer (`OpenDesc::timeout_ms`; `None` = unbounded
     /// here): see [`Due`].
     due: Mutex<Option<Due>>,
+    /// A held session's UPSTREAM LEG over a datagram framer's need ([`dialled`]): its exchange
+    /// rides this connection's line, then its reads and writes are the leg's.
+    dialled: Option<dialled::Dialled>,
 }
 
 /// THE WHOLE REQUEST'S BOUND (`RequestPiece::timeout_ms`, BUSBAR-1.6.0.md:4890 "timeout clamped to
@@ -400,7 +404,14 @@ impl Held {
             redial: Mutex::new(None),
             lease: None,
             due: Mutex::new(None),
+            dialled: None,
         }
+    }
+
+    /// This connection carries a held session's upstream leg (`d`).
+    fn dialling(mut self, d: dialled::Dialled) -> Self {
+        self.dialled = Some(d);
+        self
     }
 
     fn line(&self) -> Option<(Arc<Line>, u64)> {
@@ -463,6 +474,10 @@ impl Drop for Held {
         if let Some((member, lease)) = self.lease.take() {
             member.close(lease);
         }
+        // A held session's leg no one closed closes its pairing as it goes, both legs with it.
+        if let Some(d) = &self.dialled {
+            d.close();
+        }
     }
 }
 
@@ -506,6 +521,10 @@ pub struct Connector {
     authority_held: Mutex<HashSet<InstanceId>>,
     /// THE HOST'S I/O every carrier is served from ([`hostio`]): the one holder of OS handles.
     io: Arc<HostIo>,
+    /// THE SESSION BOOK: each held session's [`datagram::Pairing`], by its kernel-minted unit key
+    /// ([`Connector::pair`]): what an open serving that unit (`OpenDesc::unit`) over a datagram
+    /// framer's need bridges with.
+    pairs: Mutex<HashMap<u64, Arc<datagram::Pairing>>>,
 }
 
 impl std::fmt::Debug for Connector {
@@ -531,6 +550,7 @@ impl Default for Connector {
             auths: Mutex::new(HashMap::new()),
             authority_held: Mutex::new(HashSet::new()),
             io: hostio::process(),
+            pairs: Mutex::new(HashMap::new()),
         }
     }
 }
@@ -1269,7 +1289,10 @@ impl Connector {
         // THE WHOLE REQUEST'S BOUND, held before anything is read: past it the read is a timeout,
         // and short of it the reader is woken when it passes.
         held.within_due(waker)?;
-        let read = self.read_held(&held, waker, buf);
+        let read = match &held.dialled {
+            Some(d) => self.read_dialled(&held, d, waker, buf),
+            None => self.read_held(&held, waker, buf),
+        };
         // A LEASE'S HEAD is the host's own (the generation of the program it reaches), served the
         // instant the lease opens: the far end's answer begins with the program's first bytes.
         if read
@@ -1279,6 +1302,25 @@ impl Connector {
             held.answered();
         }
         read
+    }
+
+    /// One read of a held session's upstream leg: its exchange's pieces, judged (the far end's
+    /// description is the host's, never the reader's), then the leg's channel messages.
+    fn read_dialled(
+        &self,
+        held: &Held,
+        d: &dialled::Dialled,
+        waker: &Waker,
+        buf: &mut [u8],
+    ) -> Result<Piece, ConnError> {
+        while d.exchanging() {
+            let piece = self.read_held(held, waker, buf)?;
+            let len = piece.len.min(buf.len());
+            if let Some(piece) = d.exchanged(piece, &buf[..len])? {
+                return Ok(piece);
+            }
+        }
+        d.read(waker, buf)
     }
 
     /// One read of `held`'s answer (see [`Self::read_waking`]).
@@ -1668,6 +1710,264 @@ impl DeclaredConns for Connector {
     }
 }
 
+impl Connector {
+    /// Register a held session's `pairing` under its kernel-minted `unit` key, before the session
+    /// runs: the upstream leg its walk opens for that unit is bridged with its caller leg.
+    ///
+    /// # Errors
+    ///
+    /// [`ConnError::Refused`] for unit `0`, or a unit already registered.
+    pub fn pair(&self, unit: u64, pairing: Arc<datagram::Pairing>) -> Result<(), ConnError> {
+        if unit == 0 {
+            return Err(ConnError::Refused);
+        }
+        let mut pairs = self.pairs.lock().expect("pairs");
+        if pairs.contains_key(&unit) {
+            return Err(ConnError::Refused);
+        }
+        pairs.insert(unit, pairing);
+        Ok(())
+    }
+
+    /// THE SESSION'S CLEANUP (once, K6): its pairing leaves the book and closes, both legs with it,
+    /// so a unit key the slot is given again never finds a stale leg.
+    pub fn unpair(&self, unit: u64) {
+        let gone = self.pairs.lock().expect("pairs").remove(&unit);
+        if let Some(p) = gone {
+            p.close();
+        }
+    }
+
+    /// THE COMPOSED OPEN of a held session's upstream leg over a datagram framer's need ([`dialled`]):
+    /// refused with no unit, or for a unit no session registered; its exchange is one dial over the
+    /// framer serving the target's scheme, never pooled, its body the leg's own description.
+    #[allow(clippy::too_many_arguments)]
+    fn open_dialled(
+        &self,
+        caller: InstanceId,
+        need: NeedId,
+        desc: &OpenDesc<'_>,
+        door: &Arc<dyn FramerDoor>,
+        target: &str,
+        open_timeout: Duration,
+        (egress_class, declared_target, tls): (
+            u32,
+            Option<String>,
+            Option<Arc<rustls::ClientConfig>>,
+        ),
+    ) -> Result<Held, ConnError> {
+        if desc.unit == 0 {
+            return Err(ConnError::Refused);
+        }
+        let pairing = self
+            .pairs
+            .lock()
+            .expect("pairs")
+            .get(&desc.unit)
+            .cloned()
+            .ok_or(ConnError::Refused)?;
+        if pairing.closed() {
+            return Err(ConnError::Refused);
+        }
+        let scheme = target
+            .split_once("://")
+            .map(|(s, _)| s)
+            .ok_or(ConnError::Refused)?;
+        let (exchange, alpn) = {
+            let view = self.transports.read().expect("transports");
+            let served = view.serving(scheme).ok_or(ConnError::Refused)?;
+            (Arc::clone(&served.entry.door), served.entry.alpn.clone())
+        };
+        if exchange.facts().datagram {
+            return Err(ConnError::Refused);
+        }
+        // The leg's own port, on the host address the caller's leg is served at.
+        let port = udp::bind(&SocketAddr::new(pairing.local().ip(), 0).to_string())
+            .and_then(udp::ReadyPort::open)
+            .map_err(|_| ConnError::Fault)?;
+        let cert = Arc::new(dtls::SessionCert::mint().map_err(|_| ConnError::Fault)?);
+        let judged_class = guard::judged_class(egress_class, declared_target.is_some());
+        let (framing, began) = datagram::DatagramFraming::dial(
+            Arc::clone(door),
+            cert,
+            port.local_addr(),
+            &pairing.opening(),
+            Arc::clone(&self.judge),
+            judged_class,
+        )
+        .map_err(|_| ConnError::Refused)?;
+        let description = began
+            .pieces
+            .into_iter()
+            .find(|g| g.stream == 0 && !g.fields)
+            .map(|g| g.bytes)
+            .ok_or(ConnError::Fault)?;
+        let due = (desc.timeout_ms != 0)
+            .then(|| std::time::Instant::now() + Duration::from_millis(desc.timeout_ms));
+        let held = self.dial_exchange(
+            caller,
+            need,
+            &OpenDesc {
+                body: &description,
+                ..*desc
+            },
+            (exchange, alpn),
+            target,
+            open_timeout,
+            (egress_class, declared_target, tls),
+            false,
+        )?;
+        Ok(held.dialling(dialled::Dialled::new(framing, port, pairing, due)))
+    }
+
+    /// THE DIALLED EXCHANGE over `door` (a framer of a stream, or a carrier carried as itself):
+    /// judged and pinned, its connection security, the pool where `poolable`, the dial.
+    #[allow(clippy::too_many_arguments)]
+    fn dial_exchange(
+        &self,
+        caller: InstanceId,
+        need: NeedId,
+        desc: &OpenDesc<'_>,
+        (door, alpn): (Arc<dyn FramerDoor>, Vec<Vec<u8>>),
+        target: &str,
+        open_timeout: Duration,
+        (egress_class, declared_target, tls): (
+            u32,
+            Option<String>,
+            Option<Arc<rustls::ClientConfig>>,
+        ),
+        poolable: bool,
+    ) -> Result<Held, ConnError> {
+        endpoint::check(target).map_err(|_| ConnError::Refused)?;
+        let dial = Dial {
+            target: target.to_owned(),
+            tls: tls.or_else(|| self.tls.clone()),
+            alpn,
+            open_timeout,
+            opening: Some((
+                desc.fields
+                    .iter()
+                    .map(|(n, v)| ((*n).to_owned(), v.to_vec()))
+                    .collect(),
+                desc.body.to_vec(),
+            )),
+            head_words: (desc.method.to_vec(), desc.head_target.to_vec()),
+            anchors: None,
+        };
+        let planned = self.plan(&door, dial).map_err(|f| map(&f))?;
+        // THE DESTINATION'S TRUST ANCHORS (the transport pin, ARCHITECT 2026-10-03): every connection to a sealed
+        // destination is held to them; one that pins the far end's key and is not secured has no
+        // key to hold, and is refused before any judgement or dial.
+        let anchors = self
+            .anchored
+            .lock()
+            .expect("anchors")
+            .get(&(caller, need, planned.authority().to_ascii_lowercase()))
+            .cloned();
+        if anchors
+            .as_ref()
+            .is_some_and(|a| a.key_pin.is_some() && !planned.secure())
+        {
+            return Err(ConnError::Refused);
+        }
+        let planned = planned.anchored(anchors);
+        // THE REGISTRATION'S PRIVATE REACH (`abi::plane::TRUST_PRIVATE_REACH`, sealed per
+        // registration): an open that names a registration holding one, to that registration's own
+        // authority, is judged with it; no other open is.
+        let reach = !desc.member.is_empty()
+            && self
+                .reaching
+                .lock()
+                .expect("reach")
+                .get(&(caller, need, desc.member.to_owned()))
+                .is_some_and(|at| at.eq_ignore_ascii_case(planned.authority()));
+        // A TARGET THE NEED'S CONFIG NAMES IS THE OPERATOR'S OWN (THE DESIGN §5 egress-class
+        // table, owner-signed 2026-09-27): in a request-data class its address is judged as
+        // operator infrastructure. A provider need keeps its class: it is refused a private
+        // address unless allowlisted (ARCHITECT ruling CRATES-14, `guard::judged_class`).
+        let judged_class = guard::judged_class(egress_class, declared_target.is_some());
+        // THE DECLARED TARGET (1.5.5's per-module target guarantee, on every need): a need whose
+        // config names its target dials that target and no other.
+        if let Some(declared) = declared_target {
+            let located = self.located(&door, &declared).ok_or(ConnError::Refused)?;
+            if !located.authority.eq_ignore_ascii_case(planned.authority())
+                || located.secure != planned.secure()
+            {
+                return Err(ConnError::Refused);
+            }
+        }
+        // SCHEME BY EGRESS CLASS: open-web is secure-only, decided by the target before any
+        // judgement; loopback-allowed's plaintext-to-loopback rule is held against the pinned
+        // address below.
+        if !scheme_admits(egress_class, planned.secure()) {
+            return Err(ConnError::Refused);
+        }
+        // THE POOL: on this worker's shard, a live h2 line to the same place carries this
+        // exchange as its next stream, or a line an earlier exchange finished on carries it
+        // (judged, pinned and secured when it was dialled, under the same class); a dial pinned
+        // `within` an address set is never pooled.
+        let pooled = (poolable && self.pools.keeps() && desc.within.is_empty()).then(|| {
+            (
+                self.pools.shard(),
+                PoolKey {
+                    door: Arc::as_ptr(&door).cast::<()>() as usize,
+                    authority: planned.authority().to_ascii_lowercase(),
+                    secure: planned.secure(),
+                    name: planned.name().map(str::to_owned),
+                    class: (judged_class, egress_class),
+                    reach,
+                },
+            )
+        });
+        let mut planned = planned;
+        if let Some((shard, key)) = &pooled {
+            if let Some(line) = self.pools.lend(*shard, key) {
+                let redial = Redial {
+                    door: Arc::clone(&door),
+                    dial: planned.dial().clone(),
+                    egress_class,
+                    judged_class,
+                    reach,
+                    mark: line.flushed(),
+                };
+                let (opening, words) = planned.into_opening();
+                match line.attach(opening, words) {
+                    Ok(stream) => {
+                        let held =
+                            Held::over(Some((line, stream)), None, pooled).bounded(desc.timeout_ms);
+                        *held.redial.lock().expect("redial") = Some(redial);
+                        return Ok(held);
+                    }
+                    // The attach wrote the opening and THEN found the line failed (the far end's
+                    // close met in the same drive that flushed it): a byte of the exchange left,
+                    // so it is never re-sent (Q-L18-RETRY). It holds the failed line and its read
+                    // answers the failure, as a failure met at the first read does; the line is
+                    // let go when it closes. Whether the failure is met here or at that read is
+                    // the far end's timing; the verdict is the socket's count either way.
+                    Err((stream, _)) if line.flushed() != redial.mark => {
+                        let held = Held::over(Some((line, stream)), None, pooled);
+                        return Ok(held);
+                    }
+                    // The lent line failed before the exchange left (ARCHITECT ruling
+                    // Q-L18-RETRY): it is let go, and the exchange dials a fresh connection.
+                    Err((stream, _)) => {
+                        line.leave(stream, false);
+                        self.pools.drop_line(*shard, key, &line);
+                        planned = self.plan(&redial.door, redial.dial).map_err(|f| map(&f))?;
+                    }
+                }
+            }
+        }
+        let (conn, judging) =
+            self.dial_judged(planned, egress_class, judged_class, desc.within, reach)?;
+        let held = Held::over(None, judging, pooled).bounded(desc.timeout_ms);
+        if let Some(conn) = conn {
+            self.ride(&held, conn);
+        }
+        Ok(held)
+    }
+}
+
 impl Conns for Connector {
     fn open(
         &self,
@@ -1754,15 +2054,30 @@ impl Conns for Connector {
         }
         // No target named: the need's own, its config's (`EstablishIn.target` absent = the need's
         // `target_from`).
-        let target = match (desc.target, declared_target.as_deref()) {
+        let named = match (desc.target, declared_target.as_deref()) {
             ("", Some(declared)) => declared,
             (named, _) => named,
-        };
+        }
+        .to_owned();
+        let target = named.as_str();
         let open_timeout = if desc.timeout_ms == 0 {
             DEFAULT_OPEN_TIMEOUT
         } else {
             Duration::from_millis(desc.timeout_ms)
         };
+        // A DATAGRAM FRAMER'S NEED: the composed open of a held session's upstream leg.
+        if door.facts().datagram {
+            let held = self.open_dialled(
+                caller,
+                need,
+                desc,
+                &door,
+                target,
+                open_timeout,
+                (egress_class, declared_target, tls),
+            )?;
+            return self.slab.insert(caller, need, held);
+        }
         // A UNIX-DOMAIN TARGET (`unix:/path`; ARCHITECT ruling 2026-10-03 12:10Z, VALKEY-UNIX):
         // served to an operator-infrastructure (or loopback-allowed) need as a raw stream, every
         // other class refused; there is no address to resolve or judge. A need whose config names
@@ -1801,132 +2116,16 @@ impl Conns for Connector {
                 Held::over(Some((line, EXCHANGE_STREAM)), None, None).bounded(desc.timeout_ms),
             );
         }
-        endpoint::check(target).map_err(|_| ConnError::Refused)?;
-        let dial = Dial {
-            target: target.to_owned(),
-            tls: tls.or_else(|| self.tls.clone()),
-            alpn,
+        let held = self.dial_exchange(
+            caller,
+            need,
+            desc,
+            (door, alpn),
+            target,
             open_timeout,
-            opening: Some((
-                desc.fields
-                    .iter()
-                    .map(|(n, v)| ((*n).to_owned(), v.to_vec()))
-                    .collect(),
-                desc.body.to_vec(),
-            )),
-            head_words: (desc.method.to_vec(), desc.head_target.to_vec()),
-            anchors: None,
-        };
-        let planned = self.plan(&door, dial).map_err(|f| map(&f))?;
-        // THE DESTINATION'S TRUST ANCHORS (the transport pin, ARCHITECT 2026-10-03): every connection to a sealed
-        // destination is held to them; one that pins the far end's key and is not secured has no
-        // key to hold, and is refused before any judgement or dial.
-        let anchors = self
-            .anchored
-            .lock()
-            .expect("anchors")
-            .get(&(caller, need, planned.authority().to_ascii_lowercase()))
-            .cloned();
-        if anchors
-            .as_ref()
-            .is_some_and(|a| a.key_pin.is_some() && !planned.secure())
-        {
-            return Err(ConnError::Refused);
-        }
-        let planned = planned.anchored(anchors);
-        // THE REGISTRATION'S PRIVATE REACH (`abi::plane::TRUST_PRIVATE_REACH`, sealed per
-        // registration): an open that names a registration holding one, to that registration's own
-        // authority, is judged with it; no other open is.
-        let reach = !desc.member.is_empty()
-            && self
-                .reaching
-                .lock()
-                .expect("reach")
-                .get(&(caller, need, desc.member.to_owned()))
-                .is_some_and(|at| at.eq_ignore_ascii_case(planned.authority()));
-        // A TARGET THE NEED'S CONFIG NAMES IS THE OPERATOR'S OWN (THE DESIGN §5 egress-class
-        // table, owner-signed 2026-09-27): in a request-data class its address is judged as
-        // operator infrastructure. A provider need keeps its class: it is refused a private
-        // address unless allowlisted (ARCHITECT ruling CRATES-14, `guard::judged_class`).
-        let judged_class = guard::judged_class(egress_class, declared_target.is_some());
-        // THE DECLARED TARGET (1.5.5's per-module target guarantee, on every need): a need whose
-        // config names its target dials that target and no other.
-        if let Some(declared) = declared_target {
-            let located = self.located(&door, &declared).ok_or(ConnError::Refused)?;
-            if !located.authority.eq_ignore_ascii_case(planned.authority())
-                || located.secure != planned.secure()
-            {
-                return Err(ConnError::Refused);
-            }
-        }
-        // SCHEME BY EGRESS CLASS: open-web is secure-only, decided by the target before any
-        // judgement; loopback-allowed's plaintext-to-loopback rule is held against the pinned
-        // address below.
-        if !scheme_admits(egress_class, planned.secure()) {
-            return Err(ConnError::Refused);
-        }
-        // THE POOL: on this worker's shard, a live h2 line to the same place carries this
-        // exchange as its next stream, or a line an earlier exchange finished on carries it
-        // (judged, pinned and secured when it was dialled, under the same class); a dial pinned
-        // `within` an address set is never pooled.
-        let pooled = (self.pools.keeps() && desc.within.is_empty()).then(|| {
-            (
-                self.pools.shard(),
-                PoolKey {
-                    door: Arc::as_ptr(&door).cast::<()>() as usize,
-                    authority: planned.authority().to_ascii_lowercase(),
-                    secure: planned.secure(),
-                    name: planned.name().map(str::to_owned),
-                    class: (judged_class, egress_class),
-                    reach,
-                },
-            )
-        });
-        let mut planned = planned;
-        if let Some((shard, key)) = &pooled {
-            if let Some(line) = self.pools.lend(*shard, key) {
-                let redial = Redial {
-                    door: Arc::clone(&door),
-                    dial: planned.dial().clone(),
-                    egress_class,
-                    judged_class,
-                    reach,
-                    mark: line.flushed(),
-                };
-                let (opening, words) = planned.into_opening();
-                match line.attach(opening, words) {
-                    Ok(stream) => {
-                        let held =
-                            Held::over(Some((line, stream)), None, pooled).bounded(desc.timeout_ms);
-                        *held.redial.lock().expect("redial") = Some(redial);
-                        return self.slab.insert(caller, need, held);
-                    }
-                    // The attach wrote the opening and THEN found the line failed (the far end's
-                    // close met in the same drive that flushed it): a byte of the exchange left,
-                    // so it is never re-sent (Q-L18-RETRY). It holds the failed line and its read
-                    // answers the failure, as a failure met at the first read does; the line is
-                    // let go when it closes. Whether the failure is met here or at that read is
-                    // the far end's timing; the verdict is the socket's count either way.
-                    Err((stream, _)) if line.flushed() != redial.mark => {
-                        let held = Held::over(Some((line, stream)), None, pooled);
-                        return self.slab.insert(caller, need, held);
-                    }
-                    // The lent line failed before the exchange left (ARCHITECT ruling
-                    // Q-L18-RETRY): it is let go, and the exchange dials a fresh connection.
-                    Err((stream, _)) => {
-                        line.leave(stream, false);
-                        self.pools.drop_line(*shard, key, &line);
-                        planned = self.plan(&redial.door, redial.dial).map_err(|f| map(&f))?;
-                    }
-                }
-            }
-        }
-        let (conn, judging) =
-            self.dial_judged(planned, egress_class, judged_class, desc.within, reach)?;
-        let held = Held::over(None, judging, pooled).bounded(desc.timeout_ms);
-        if let Some(conn) = conn {
-            self.ride(&held, conn);
-        }
+            (egress_class, declared_target, tls),
+            true,
+        )?;
         self.slab.insert(caller, need, held)
     }
 
@@ -1946,6 +2145,9 @@ impl Conns for Connector {
         let (_, held) = self.slab.get(caller, conn)?;
         if let Some((member, lease)) = &held.lease {
             return member.write(*lease, bytes);
+        }
+        if let Some(d) = held.dialled.as_ref().filter(|d| !d.exchanging()) {
+            return d.write(bytes, end, text);
         }
         if !self.settle(&held, None)? {
             if let Some(j) = held.judging.lock().expect("judging").as_mut() {
@@ -1993,6 +2195,12 @@ impl Conns for Connector {
                     Ok(false) => continue,
                     _ => return Ok(at),
                 }
+            }
+            if let Some(d) = held.dialled.as_ref().filter(|d| !d.exchanging()) {
+                if d.ready(&waker) {
+                    return Ok(at);
+                }
+                continue;
             }
             if held.rest.lock().expect("rest").0.is_some() {
                 return Ok(at);
@@ -2046,6 +2254,10 @@ impl Conns for Connector {
         if let Some((member, lease)) = &held.lease {
             // The lease ends here; the member's program runs on for the next open.
             member.close(*lease);
+        }
+        if let Some(d) = &held.dialled {
+            // A held session's leg: its pairing closes, both legs with it, once.
+            d.close();
         }
         let line = held.line.lock().expect("line").take();
         if let Some((line, stream)) = line {

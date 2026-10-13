@@ -1068,3 +1068,276 @@ fn legs_that_do_not_mirror_never_half_bridge() {
     let _ = k.sort(Leg::Upstream, vec![got(20, b"kind: video\r\n", true)]);
     assert!(k.mirrored().is_err(), "a kind mismatch");
 }
+
+// ── the session book and the upstream leg (ARCHITECT ruling, row 132 "pairing") ────────────────
+
+/// A leg as a test sees it: the frames that crossed into it, and how often it was closed.
+#[derive(Default)]
+struct Sink {
+    lines: Mutex<Vec<super::Across>>,
+    closed: std::sync::atomic::AtomicU32,
+}
+
+impl super::LegSink for Sink {
+    fn line(&self, across: super::Across, _now: Instant) {
+        self.lines.lock().unwrap().push(across);
+    }
+    fn close(&self) {
+        self.closed
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+fn closes(s: &Sink) -> u32 {
+    s.closed.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+/// A connector serving the scripted dialling framer under `dg` and the identity framer under
+/// `bytes`, its need 0 declared over `dg`.
+fn book() -> crate::Connector {
+    let dg = Arc::new(Scripted {
+        facts: DoorFacts {
+            name: "dg".into(),
+            claims: vec!["dg"],
+            ..scripted(dialling()).facts.clone()
+        },
+        knobs: dialling(),
+        st: Mutex::new(St {
+            local: (HOST_UFRAG, HOST_PWD),
+            ..St::default()
+        }),
+    });
+    let view = crate::registry::Transports::new(vec![
+        crate::registry::Entry {
+            door: dg,
+            alpn: Vec::new(),
+        },
+        crate::registry::Entry {
+            door: Arc::new(crate::support::TestDoor::identity("bytes")),
+            alpn: Vec::new(),
+        },
+    ])
+    .unwrap();
+    let c = crate::Connector::serving(
+        view,
+        crate::tests::loopback_literals(),
+        None,
+        Arc::new(|_| {}),
+    );
+    c.declare_over(
+        busbar_contract::conn::InstanceId(1),
+        busbar_contract::conn::NeedId(0),
+        "dg",
+    )
+    .expect("a served scheme declares");
+    c
+}
+
+fn open_unit(
+    c: &crate::Connector,
+    unit: u64,
+) -> Result<busbar_contract::conn::ConnId, busbar_contract::conn::ConnError> {
+    use busbar_contract::conn::Conns as _;
+    c.open(
+        busbar_contract::conn::InstanceId(1),
+        busbar_contract::conn::NeedId(0),
+        &busbar_contract::conn::OpenDesc {
+            target: "bytes://127.0.0.1:9",
+            unit,
+            ..busbar_contract::conn::OpenDesc::default()
+        },
+    )
+}
+
+/// RED arms of the session book: an open over a datagram framer's need serving no unit, or a unit
+/// no session registered, is refused before anything is bound or sent; a unit is registered once;
+/// a closed session's unit is forgotten (its pairing closed once), so the key given again never
+/// finds the stale leg.
+#[test]
+fn the_session_book_refuses_no_unit_and_an_unregistered_unit_and_forgets_a_closed_one() {
+    use busbar_contract::conn::ConnError;
+    let c = book();
+    assert_eq!(open_unit(&c, 0), Err(ConnError::Refused), "no unit");
+    assert_eq!(open_unit(&c, 7), Err(ConnError::Refused), "no registration");
+    let sink = Arc::new(Sink::default());
+    let pairing = super::Pairing::new(sink.clone(), p("127.0.0.1:3478"));
+    assert_eq!(c.pair(0, Arc::clone(&pairing)), Err(ConnError::Refused));
+    c.pair(7, Arc::clone(&pairing)).unwrap();
+    assert_eq!(
+        c.pair(
+            7,
+            super::Pairing::new(Arc::new(Sink::default()), p("127.0.0.1:3478"))
+        ),
+        Err(ConnError::Refused),
+        "one session per unit"
+    );
+    c.unpair(7);
+    assert!(pairing.closed());
+    assert_eq!(closes(&sink), 1, "the caller leg closed once");
+    c.unpair(7);
+    assert_eq!(closes(&sink), 1, "a second cleanup closes nothing");
+    assert_eq!(
+        open_unit(&c, 7),
+        Err(ConnError::Refused),
+        "the stale leg is gone"
+    );
+}
+
+/// Two sessions' pairings never cross: a frame sorted on one reaches only its own other leg; and a
+/// close stops the bridge and closes both legs exactly once (RED: nothing crosses after it).
+#[test]
+fn two_sessions_never_cross_and_a_close_closes_both_legs_once() {
+    use super::{Leg, Pairing};
+    let now = Instant::now();
+    let (ca, ua, cb, ub) = (
+        Arc::new(Sink::default()),
+        Arc::new(Sink::default()),
+        Arc::new(Sink::default()),
+        Arc::new(Sink::default()),
+    );
+    let a = Pairing::new(ca.clone(), p("127.0.0.1:1"));
+    let b = Pairing::new(cb.clone(), p("127.0.0.1:2"));
+    for (pairing, up) in [(&a, &ua), (&b, &ub)] {
+        pairing.sort(Leg::Caller, vec![got(10, b"kind: audio\r\n", true)], now);
+        pairing.sort(Leg::Upstream, vec![got(20, b"kind: audio\r\n", true)], now);
+        pairing.attach(up.clone()).unwrap();
+    }
+    a.sort(Leg::Caller, vec![got(10, b"A", false)], now);
+    b.sort(Leg::Upstream, vec![got(20, b"B", false)], now);
+    assert_eq!(ua.lines.lock().unwrap().len(), 1);
+    assert_eq!(ua.lines.lock().unwrap()[0].bytes, b"A");
+    assert_eq!(cb.lines.lock().unwrap()[0].bytes, b"B");
+    assert!(ub.lines.lock().unwrap().is_empty() && ca.lines.lock().unwrap().is_empty());
+    a.close();
+    a.close();
+    assert_eq!((closes(&ca), closes(&ua)), (1, 1), "both legs, once");
+    assert_eq!(
+        (closes(&cb), closes(&ub)),
+        (0, 0),
+        "the other session runs on"
+    );
+    a.sort(Leg::Caller, vec![got(10, b"late", false)], now);
+    assert_eq!(ua.lines.lock().unwrap().len(), 1, "nothing after the close");
+    assert!(
+        a.attach(ua.clone()).is_err(),
+        "a closed pairing attaches nothing"
+    );
+}
+
+fn head(status: busbar_contract::transport::wire::WireStatusClass) -> busbar_contract::conn::Piece {
+    busbar_contract::conn::Piece {
+        kind: busbar_contract::conn::PieceKind::Fields,
+        stream: busbar_contract::ids::StreamId(0),
+        len: 0,
+        end: true,
+        status: Some(status),
+        status_code: None,
+        status_namespace: None,
+        retry_after_secs: None,
+        reason: None,
+    }
+}
+
+fn piece(kind: busbar_contract::conn::PieceKind) -> busbar_contract::conn::Piece {
+    busbar_contract::conn::Piece {
+        kind,
+        status: None,
+        ..head(busbar_contract::transport::wire::WireStatusClass::Other)
+    }
+}
+
+/// An upstream leg dialled by the scripted framer for `pairing`, on a real port.
+fn leg(pairing: &Arc<super::Pairing>) -> crate::dialled::Dialled {
+    let cert = Arc::new(SessionCert::mint().unwrap());
+    let port = crate::udp::ReadyPort::open(crate::udp::bind("127.0.0.1:0").unwrap()).unwrap();
+    let (framing, _) = DatagramFraming::dial(
+        scripted(dialling()),
+        cert,
+        port.local_addr(),
+        &pairing.opening(),
+        judge(Arc::new(Mutex::new(Vec::new()))),
+        0,
+    )
+    .unwrap();
+    crate::dialled::Dialled::new(framing, port, Arc::clone(pairing), None)
+}
+
+/// A far end that refuses the exchange is relayed whole (its head, its body, its end) and nothing
+/// is attached: the pairing closes, the caller's leg with it (RED: no partial bridge survives).
+/// A success answer's body is the host's: it settles the leg, which runs once attached.
+#[test]
+fn a_refused_exchange_is_relayed_whole_and_leaves_no_bridge_and_an_answered_one_runs() {
+    use busbar_contract::conn::PieceKind;
+    use busbar_contract::transport::wire::WireStatusClass;
+    crate::support::worker().block_on(async {
+        let sink = Arc::new(Sink::default());
+        let pairing = super::Pairing::new(sink.clone(), p("127.0.0.1:3478"));
+        let d = leg(&pairing);
+        let h = d
+            .exchanged(head(WireStatusClass::FarEndFault), b"")
+            .unwrap();
+        assert!(h.is_some(), "the far end's head is the reader's");
+        let body = d
+            .exchanged(piece(PieceKind::Body), b"{\"error\":{}}")
+            .unwrap();
+        assert!(body.is_some(), "a refusal's body is the reader's");
+        let end = d.exchanged(piece(PieceKind::Completion), b"").unwrap();
+        assert!(end.is_some());
+        assert!(!d.exchanging());
+        assert!(pairing.closed(), "nothing half-bridges");
+        assert_eq!(closes(&sink), 1);
+
+        // RED arm: a success answer's body is the far end's description, never the reader's.
+        let sink = Arc::new(Sink::default());
+        let pairing = super::Pairing::new(sink.clone(), p("127.0.0.1:3478"));
+        let d = leg(&pairing);
+        assert!(d
+            .exchanged(head(WireStatusClass::Success), b"")
+            .unwrap()
+            .is_some());
+        let fp = hex(&SessionCert::mint().unwrap().fingerprint());
+        let answer = format!("{FAR_UFRAG} {FAR_PWD} {fp} 203.0.113.9:50000");
+        assert!(d
+            .exchanged(piece(PieceKind::Body), answer.as_bytes())
+            .unwrap()
+            .is_none());
+        assert!(d
+            .exchanged(piece(PieceKind::Completion), b"")
+            .unwrap()
+            .is_none());
+        assert!(!d.exchanging());
+        assert!(!pairing.closed(), "the mirrored leg is attached and runs");
+        d.close();
+        assert!(pairing.closed());
+        assert_eq!(closes(&sink), 1);
+    });
+}
+
+/// Lines that do not mirror refuse the open: the description settles nothing attached, and the
+/// pairing closes (RED: one caller line against none upstream never half-bridges).
+#[test]
+fn an_answer_whose_lines_do_not_mirror_refuses_the_open() {
+    use busbar_contract::conn::{ConnError, PieceKind};
+    use busbar_contract::transport::wire::WireStatusClass;
+    crate::support::worker().block_on(async {
+        let sink = Arc::new(Sink::default());
+        let pairing = super::Pairing::new(sink.clone(), p("127.0.0.1:3478"));
+        pairing.sort(
+            super::Leg::Caller,
+            vec![got(10, b"kind: audio\r\n", true)],
+            Instant::now(),
+        );
+        let d = leg(&pairing);
+        d.exchanged(head(WireStatusClass::Success), b"").unwrap();
+        let fp = hex(&SessionCert::mint().unwrap().fingerprint());
+        let answer = format!("{FAR_UFRAG} {FAR_PWD} {fp} 203.0.113.9:50000");
+        d.exchanged(piece(PieceKind::Body), answer.as_bytes())
+            .unwrap();
+        assert_eq!(
+            d.exchanged(piece(PieceKind::Completion), b""),
+            Err(ConnError::Refused)
+        );
+        assert!(pairing.closed());
+        assert_eq!(closes(&sink), 1);
+    });
+}
