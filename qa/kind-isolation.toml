@@ -1804,8 +1804,8 @@ cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain 
 [[law0]]
 crate = "busbar-plugin-loader"
 axis  = "instance:secret"
-count = "25"
-cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; LOWERED 111 -> 110 by #671 (loader-pl1-a), whose drain was the host random service's `extern C fn random`; LOWERED 110 -> 25 by FLIP-A2A (#787): the scanner no longer counts extern ABI strings (ARCHITECT ruling on #787; an `extern C` ABI string read as the `c` secret plugin), 86 such hits on #787's tree less the one #671 already took out"
+count = "23"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance. -1: dispatch/plugin.rs no longer edits a member's `env` map in place (a member's env references resolve at the spawn). predev -1: the secret shared-instance open moved to OpenOnce (f664bca2cf) -86 (FLIP-A2A, #787; 109 - 86 = 23): the scanner no longer counts extern ABI strings (ARCHITECT ruling on #787; an `extern C` ABI string read as the `c` secret plugin), 86 such hits measured on #787's tree (111 -> 25 there); neither of predev's two drains above is an extern ABI string, so none is counted twice"
 
 [[law0]]
 crate = "busbar-plugin-loader"
