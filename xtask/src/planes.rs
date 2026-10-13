@@ -24,7 +24,7 @@
 //! `busbar-plane-<key>` crate whose `[package.metadata.busbar.linked-axes]` row carries the
 //! `plane-door` axis, e.g. `plane-mcp-door`). Its home is that crate's `src`, read by
 //! [`door_planes`]. The door is consulted ONLY for a plane no grammar declaration claims, so a
-//! plane that still has its engine beside a door row (`llm-on-driver`) keeps the engine as its
+//! plane that still has its engine beside a door row (`plane-llm-door`) keeps the engine as its
 //! home; a door row that names no crate on disk is still `Missing`, never a pass. This is the same
 //! reading `gates::config_schema::declared` gives a door-only plane's Statement.
 
@@ -422,13 +422,13 @@ mod tests {
     use super::*;
 
     const MANIFEST: &str = "[package.metadata.busbar.linked]\n\
-        proto-llm = \"busbar-llm\"\n\
-        llm-on-driver = \"busbar-plane-llm\"\n\
+        plane-llm = \"busbar-llm\"\n\
+        plane-llm-door = \"busbar-plane-llm\"\n\
         plane-mcp-door = \"busbar-plane-mcp\"\n\
         transport-tcp = \"busbar-transport-tcp\"\n\n\
         [package.metadata.busbar.linked-axes]\n\
-        proto-llm = \"plane claims\"\n\
-        llm-on-driver = \"plane-door\"\n\
+        plane-llm = \"plane claims\"\n\
+        plane-llm-door = \"plane-door\"\n\
         plane-mcp-door = \"plane-door\" # the door\n\
         transport-tcp = \"transport transport-door\"\n";
 

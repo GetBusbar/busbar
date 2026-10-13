@@ -377,12 +377,13 @@ fn the_manifest_links_a_plane_through_its_door() {
     );
 }
 
-/// A FOLD'S SWITCH (BUSBAR-1.6.0.md Part 3 §12 "The switch"): every development-only
-/// `<plane>-on-driver` feature links its plane's memory-ABI door on the `plane-door` axis, and the
-/// default build links none of those doors, so the shipped binary serves the plane as it did until
-/// the flip. The switches are read off the manifest, so this names no plane.
+/// EVERY FOLD IS DONE (BUSBAR-1.6.0.md Part 3 §12 "The switch": a fold's development-only switch is
+/// deleted when the fold completes; status row 155): the manifest states no `<plane>-on-driver`
+/// feature, and the default build links every plane door any feature links, so the shipped binary
+/// serves each plane through its door. The doors are read off the manifest, so this names no plane.
+/// RED: a `-on-driver` switch back in `[features]`, or a plane's switch taken out of `default`.
 #[test]
-fn every_on_driver_switch_links_its_door_and_the_default_build_does_not() {
+fn no_fold_switch_remains_and_the_default_build_links_every_plane_door() {
     let manifest = read("Cargo.toml");
     let default: Vec<String> = manifest
         .lines()
@@ -400,30 +401,58 @@ fn every_on_driver_switch_links_its_door_and_the_default_build_does_not() {
         .filter(|name| name.ends_with("-on-driver"))
         .collect();
     assert!(
-        !switches.is_empty(),
-        "the manifest states no development-only `-on-driver` switch"
+        switches.is_empty(),
+        "a development-only fold switch is still stated: {switches:?}"
     );
-    let doors_of = |on: &dyn Fn(&str) -> bool| {
+    let doors_of = |on: &dyn Fn(&str) -> bool| -> Vec<String> {
         let (src, _) = linked_source(&manifest, on);
-        src.lines()
+        let table = src
+            .lines()
             .find_map(|l| l.trim().strip_prefix("plane_doors: &[").map(str::to_string))
-            .unwrap_or_else(|| panic!("no plane_doors table generated:\n{src}"))
-    };
-    let shipped = doors_of(&|f: &str| default.iter().any(|d| d == f));
-    for switch in &switches {
-        assert!(
-            !default.iter().any(|f| f == switch),
-            "the development-only switch `{switch}` is in `default`: {default:?}"
-        );
-        let switched = doors_of(&|f: &str| f == switch || default.iter().any(|d| d == f));
-        let added: Vec<&str> = switched
+            .unwrap_or_else(|| panic!("no plane_doors table generated:\n{src}"));
+        table
             .split(", ")
-            .filter(|d| d.ends_with("::plane_door::door") && !shipped.contains(*d))
+            .filter(|d| d.contains("::plane_door::door"))
+            .map(str::to_string)
+            .collect()
+    };
+    // The default set as cargo resolves it: each feature with every feature its `[features]` row
+    // turns on (`dep:` and `crate/feature` entries name no feature of this crate).
+    let rows: Vec<(String, Vec<String>)> = manifest
+        .split("\n[features]\n")
+        .nth(1)
+        .and_then(|rest| rest.split("\n[").next())
+        .expect("the manifest states a `[features]` table")
+        .lines()
+        .filter_map(|l| l.split_once(" = ["))
+        .map(|(name, list)| {
+            let on = list
+                .split('"')
+                .skip(1)
+                .step_by(2)
+                .map(str::to_string)
+                .collect();
+            (name.trim().to_string(), on)
+        })
+        .collect();
+    let mut resolved = default;
+    let mut at = 0;
+    while at < resolved.len() {
+        let implied: Vec<String> = rows
+            .iter()
+            .filter(|(name, _)| *name == resolved[at])
+            .flat_map(|(_, on)| on.iter().cloned())
+            .filter(|f| !f.contains(':') && !f.contains('/') && !resolved.contains(f))
             .collect();
-        assert!(
-            !added.is_empty(),
-            "`{switch}` links no door the default build does not: switched = [{switched}, \
-             shipped = [{shipped}"
-        );
+        resolved.extend(implied);
+        at += 1;
     }
+    let every = doors_of(&|_: &str| true);
+    let shipped = doors_of(&|f: &str| resolved.iter().any(|d| d == f));
+    assert!(!every.is_empty(), "no feature links a plane door");
+    let missing: Vec<&String> = every.iter().filter(|d| !shipped.contains(d)).collect();
+    assert!(
+        missing.is_empty(),
+        "the default build does not link these plane doors: {missing:?} (shipped = {shipped:?})"
+    );
 }

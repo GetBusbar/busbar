@@ -12,7 +12,7 @@
 //! mutation (non-PEM bytes resolved from the environment) and counts the prefix.
 //!
 //! The fixture is an LLM config (`providers:`/`models:`/`pools:`), so it needs the LLM plane in the
-//! build: without `proto-llm` no plane owns those sections and boot refuses them before the listener
+//! build: without `plane-llm` no plane owns those sections and boot refuses them before the listener
 //! is ever reached — the same gate every LLM-config boot test in `cli_validate.rs` carries.
 #![cfg(all(unix, linked_axis_body_ingress))]
 

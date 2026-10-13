@@ -20,10 +20,10 @@
 //! the one `#[path]`); the plane under proof is the one whose Statement declares the `pools` map,
 //! found by what it states, never by name.
 //!
-//! Development-only, like the switch it proves: built with a plane's development-only fold switch
-//! (`linked_fold_on_driver`).
+//! Built whenever a `driver-proofs` row's plane door is linked (`linked_driver_proofs`): the default
+//! build links it, so the hook gate on the driver runs with every default test run.
 
-#![cfg(linked_fold_on_driver)]
+#![cfg(linked_driver_proofs)]
 
 // The linked plane doors (`LINKED_PLANE_DOORS`), generated from the manifest.
 include!(concat!(env!("OUT_DIR"), "/linked_plane_doors.rs"));

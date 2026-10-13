@@ -584,7 +584,7 @@ llm_dialect_refused() {
 
 # ── run_gate: levels 2/3 + control, for ONE extracted PROTOCOL ──────────────────────────────────
 # $1 = protocol label, and the config `protocol:` value whose refusal levels 3a/control assert
-# $2 = its Cargo feature name (e.g. "proto-llm")
+# $2 = its Cargo feature name (e.g. "plane-llm")
 # $3 = comma-separated features to keep ON for every OTHER protocol plugin (so this run deletes
 #      exactly one PLUGIN, not every plugin at once)
 # $4 = remaining dialects string, in `known_protocols()` order, as the refusal names them; EMPTY
@@ -718,7 +718,7 @@ case " $LLM_DIALECTS " in
 esac
 LLM_ALSO_DELETED="$(printf '%s\n' "$LLM_DIALECTS" | tr ' ' '\n' | grep -vx anthropic | tr '\n' ' ')"
 note "level 3a dialects: $LLM_DIALECTS_N derived from busbar-plane-llm's codec DECLS ($LLM_DIALECTS)"
-run_gate "anthropic" "proto-llm" "plane-mcp" \
+run_gate "anthropic" "plane-llm" "plane-mcp" \
   "" "" "/v1/messages" \
   "$LLM_ALSO_DELETED"
 [ "$LLM_REFUSED" -eq "$LLM_DIALECTS_N" ] \
@@ -773,7 +773,7 @@ note "mcp-a static: mcp declared by its door crate, absent from core, no protoco
 # (R-D). It is NOT a behaviour discriminator and is not presented as one: mcp-a above is what goes
 # red without the move.
 MCP_TARGET="$GATE_TARGET_ROOT/deletion-gate-mcp"
-MCP_KEEP="${BASE_KEEP},proto-llm"
+MCP_KEEP="${BASE_KEEP},plane-llm"
 note "mcp-b build: cargo build -p busbar --no-default-features --features $MCP_KEEP (plane-mcp OFF)"
 CARGO_TARGET_DIR="$MCP_TARGET" cargo build -q -p busbar \
   --no-default-features --features "$MCP_KEEP" \
@@ -897,7 +897,7 @@ note "mcp-b-mounted: plane-mcp ON mounts the door — metadata route 200 (presen
 # SEPARATE feature axis from `plane-mcp` — dropping it keeps MCP, proving the two planes are
 # independently droppable rather than droppable only as a set.
 A2A_TARGET="$GATE_TARGET_ROOT/deletion-gate-a2a"
-A2A_KEEP="${BASE_KEEP},proto-llm,plane-mcp"
+A2A_KEEP="${BASE_KEEP},plane-llm,plane-mcp"
 note "a2a-b build: cargo build -p busbar --no-default-features --features $A2A_KEEP (plane-a2a OFF)"
 CARGO_TARGET_DIR="$A2A_TARGET" cargo build -q -p busbar \
   --no-default-features --features "$A2A_KEEP" \
@@ -1006,11 +1006,11 @@ note "a2a-b-mounted: plane-a2a ON mounts the door — POST /a2a $A2A_ON_CODE (pr
 
 # ── mcp-d: DROP MCP, KEEP A2A ON — the symmetric twin of a2a-b (which drops A2A and keeps MCP) ────
 # a2a-b/mcp-b drop the two planes as a SET or one-with-LLM-only; neither boots "MCP gone, A2A still
-# serving". This leg does: build with `plane-a2a` (plus proto-llm + admin/hooks) but NOT `plane-mcp`,
+# serving". This leg does: build with `plane-a2a` (plus plane-llm + admin/hooks) but NOT `plane-mcp`,
 # under `-D warnings`, and prove the two planes are independently droppable in BOTH directions — the
 # A2A door mounts and routes on a build the MCP plane has left entirely.
 MCP_A2AON_TARGET="$GATE_TARGET_ROOT/deletion-gate-mcp-a2aon"
-MCP_A2AON_KEEP="${BASE_KEEP},proto-llm,plane-a2a"
+MCP_A2AON_KEEP="${BASE_KEEP},plane-llm,plane-a2a"
 note "mcp-d build: RUSTFLAGS=-D warnings cargo build -p busbar --no-default-features --features $MCP_A2AON_KEEP (plane-mcp OFF, plane-a2a ON)"
 RUSTFLAGS="-D warnings" CARGO_TARGET_DIR="$MCP_A2AON_TARGET" cargo build -q -p busbar \
   --no-default-features --features "$MCP_A2AON_KEEP" \

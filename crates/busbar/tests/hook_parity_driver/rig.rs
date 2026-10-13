@@ -450,7 +450,7 @@ pub(crate) fn pools_door() -> busbar_contract::abi::mechanism::door::DoorFn {
             .section
                 == busbar_contract::section::RESERVED_POOLS_KEY
         })
-        .expect("the fold switch links the door serving the `pools` map")
+        .expect("the driver-proofs row links the door serving the `pools` map")
 }
 
 /// The plane under proof's dialects, in its tail's order, as its door states them.

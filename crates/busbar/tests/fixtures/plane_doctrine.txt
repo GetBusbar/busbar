@@ -22,7 +22,7 @@ dialect voice
 # rider (the voice leg its session rider), so the feature that links the plane gates them.
 root-leg root-a2a plane-a2a
 root-leg root-admin root-admin
-root-leg root-llm proto-llm
+root-leg root-llm plane-llm
 root-leg root-mcp plane-mcp
 root-leg root-voice plane-streaming
 root-leg root-decisions plane-decisions

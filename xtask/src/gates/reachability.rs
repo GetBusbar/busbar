@@ -278,7 +278,7 @@ const ROSTER: &[Plane] = &[
         module: "units_llm",
         linked_crate: "busbar-llm",
         register_tokens: &["LlmPlane"],
-        note: "the 1.5.5 plane; `proto-llm` carries the crate edge, the protocol DECLS and the \
+        note: "the 1.5.5 plane; `plane-llm` carries the crate edge, the protocol DECLS and the \
                plane decl together. Its pre-unification module is gone: what the root keeps is \
                the plane-free node its units are handed to (`root/plane_node.rs`, on the `node` \
                axis)",
@@ -3594,8 +3594,8 @@ fn folded_install(all: bool) -> Overlay {
            flip_session_to_kernel(row.key);\n        }\n    }\n}\n";
     let mut manifest = FIXTURE_LINKED_MANIFEST
         .replace(
-            "proto-llm = \"plane protocols\"",
-            "proto-llm = \"plane protocols gauntlet-one-shot\"",
+            "plane-llm = \"plane protocols\"",
+            "plane-llm = \"plane protocols gauntlet-one-shot\"",
         )
         .replace(
             "plane-mcp = \"plane protocols diagnostics\"",

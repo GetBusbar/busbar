@@ -193,7 +193,7 @@ command -v tar   >/dev/null 2>&1 || { echo "plane-delete-test: tar not found"   
 command -v cargo >/dev/null 2>&1 || { echo "plane-delete-test: cargo not found" >&2; exit 2; }
 
 # ── per-plane metadata ────────────────────────────────────────────────────────────────────────────
-# The bin FEATURE that names the plane's `dep:busbar-<P>` (llm rides `proto-llm`; mcp/a2a ride the
+# The bin FEATURE that names the plane's `dep:busbar-<P>` (llm rides `plane-llm`; mcp/a2a ride the
 # plane-kind name). The NEUTRAL feature set to keep ON for the neutral-crate check (every default plane
 # EXCEPT the one being removed) — llm has no neutral-side feature of its own, so removing it keeps both
 # plane-mcp and plane-a2a. A crate/feature that appears or moves is a one-line edit here.
@@ -207,7 +207,7 @@ command -v cargo >/dev/null 2>&1 || { echo "plane-delete-test: cargo not found" 
 # `plane-mcp` (P3 DEL-MCP: the engine crate is deleted; the plane is its one plane-kind crate,
 # `crates/busbar-plane-mcp`, plane_ondisk_key) names its `dep:` in its DOOR row, `plane-mcp-door`;
 # `plane-mcp` forwards to that row, so the reaching closure takes both out of `default`.
-bin_feature() { case "$1" in llm) echo proto-llm ;; mcp) echo plane-mcp ;; plane-mcp) echo plane-mcp-door ;; a2a) echo plane-a2a ;; voice) echo plane-streaming ;; plane-decisions) echo plane-decisions ;; esac; }
+bin_feature() { case "$1" in llm) echo plane-llm ;; mcp) echo plane-mcp ;; plane-mcp) echo plane-mcp-door ;; a2a) echo plane-a2a ;; voice) echo plane-streaming ;; plane-decisions) echo plane-decisions ;; esac; }
 neutral_keep() {
   case "$1" in
     llm) echo "plane-mcp,plane-a2a" ;;

@@ -1396,7 +1396,7 @@ models:
 // `anthropic`, and a build with no wire codec compiled in refuses that config at BUSBAR-3015 --
 // "no protocol with a wire codec compiled in, so no provider lane can be served" -- before it ever
 // reaches the credential field this test is about. The 18 sibling provider tests in this file are
-// already `proto-llm`-gated for exactly that reason; these two were not, so
+// already `plane-llm`-gated for exactly that reason; these two were not, so
 // `cargo test -p busbar --test cli_validate --no-default-features` failed both on an error neither
 // is asking about. The question here genuinely needs a provider lane, so it is gated rather than
 // re-fixtured.
@@ -1430,7 +1430,7 @@ fn validate_refuses_a_provider_api_key_that_does_not_resolve() {
 // `anthropic`, and a build with no wire codec compiled in refuses that config at BUSBAR-3015 --
 // "no protocol with a wire codec compiled in, so no provider lane can be served" -- before it ever
 // reaches the credential field this test is about. The 18 sibling provider tests in this file are
-// already `proto-llm`-gated for exactly that reason; these two were not, so
+// already `plane-llm`-gated for exactly that reason; these two were not, so
 // `cargo test -p busbar --test cli_validate --no-default-features` failed both on an error neither
 // is asking about. The question here genuinely needs a provider lane, so it is gated rather than
 // re-fixtured.

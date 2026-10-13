@@ -19,7 +19,7 @@ busbar-plane-decisions = { path = "../busbar-plane-decisions", optional = true }
 
 # The linked table the real root's build script turns into the `LINKED` table `main.rs` includes.
 [package.metadata.busbar.linked]
-proto-llm = "busbar-llm"
+plane-llm = "busbar-llm"
 plane-mcp = "busbar-plane-mcp"
 plane-a2a = "busbar-a2a"
 plane-streaming = "busbar-voice"
@@ -27,7 +27,7 @@ plane-decisions = "busbar-plane-decisions"
 
 # The axes each linked crate registers on; the plane axis is what `register_planes()` folds.
 [package.metadata.busbar.linked-axes]
-proto-llm = "plane protocols"
+plane-llm = "plane protocols"
 plane-mcp = "plane protocols diagnostics"
 plane-a2a = "plane diagnostics"
 plane-streaming = "plane diagnostics"

@@ -220,7 +220,7 @@ fn driven() -> Vec<String> {
     )];
     #[cfg(linked_section_decisions)]
     names.push(super::door_tests::decisions_name());
-    #[cfg(linked_fold_on_driver)]
+    #[cfg(linked_driver_proofs)]
     names.push(statement_name(super::hook_seat_tests::pools_door()));
     names
 }
@@ -435,7 +435,7 @@ async fn decisions_a_provider_key_gone_by_an_apply_reaches_the_caller_without_it
 
 /// THE POOLS DOOR, COMPOSE TIME: a provider whose `api_key` does not resolve refuses the boot with the
 /// operator's text, which names the source; nothing is served to a caller.
-#[cfg(linked_fold_on_driver)]
+#[cfg(linked_driver_proofs)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn pools_door_an_unresolved_provider_key_refuses_the_boot_naming_its_source() {
     use super::hook_seat_tests::{far_end_answering, try_rig, RigOpts, ANSWER};
@@ -474,7 +474,7 @@ async fn pools_door_an_unresolved_provider_key_refuses_the_boot_naming_its_sourc
 /// THE POOLS DOOR, ACROSS AN APPLY: a provider served while its `api_key` file was there, the file then
 /// gone and the configuration applied: the door keeps the generation it serves, and the caller is
 /// served by it, its render clean of the source.
-#[cfg(linked_fold_on_driver)]
+#[cfg(linked_driver_proofs)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn pools_door_a_provider_key_gone_by_an_apply_reaches_the_caller_without_its_source() {
     use super::hook_seat_tests::{far_end_answering, rig, RigOpts, ANSWER};
