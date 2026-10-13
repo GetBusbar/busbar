@@ -921,7 +921,7 @@ pub fn spawn_double(
 /// the pass-through primitives (so every other answer is the one no capability gives), and `layer`.
 pub struct TlsEgressTrust(pub Arc<dyn crate::secure::SecureLayer>);
 
-impl crate::plane_host::egress_trust::EgressTrustHost for TlsEgressTrust {
+impl crate::egress::trust::EgressTrustHost for TlsEgressTrust {
     fn secure_layer(&self) -> Option<Arc<dyn crate::secure::SecureLayer>> {
         Some(Arc::clone(&self.0))
     }
@@ -947,5 +947,5 @@ pub fn loopback_literal_listed(host: &str) -> Result<(), crate::host_services::D
 /// egress-trust capability the composition root installs at boot in a shipped process (first
 /// install wins).
 pub fn install_test_tls(layer: Arc<dyn crate::secure::SecureLayer>) {
-    crate::plane_host::egress_trust::install_egress_trust_host(Arc::new(TlsEgressTrust(layer)));
+    crate::egress::trust::install_egress_trust_host(Arc::new(TlsEgressTrust(layer)));
 }
