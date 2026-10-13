@@ -780,6 +780,7 @@ mod outbound {
         OutboundPlugin,
     };
     use busbar_contract::abi::sdk::exchange::Op;
+    use busbar_contract::abi::sdk::life::Refusal;
     use busbar_contract::auth_calls::{AuthField, Fields, FieldsRequest};
 
     use super::*;
@@ -791,7 +792,7 @@ mod outbound {
     }
 
     impl OutboundPlugin for Echo {
-        fn open(_: &[u8], _: &[&[u8]]) -> Result<Self, &'static str> {
+        fn open(_: &[u8], _: &[&[u8]], _: u64) -> Result<Self, Refusal> {
             Ok(Echo::default())
         }
 

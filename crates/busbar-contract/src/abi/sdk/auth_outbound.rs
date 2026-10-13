@@ -429,12 +429,24 @@ impl From<String> for OpenRefusal {
 
 /// AN AUTH PLUGIN THAT PRESENTS CREDENTIALS UPSTREAM, in safe Rust.
 pub trait OutboundPlugin: Send + Sync + Sized + 'static {
-    /// Build the plugin from its settings blob (one JSON document) and its resolved secrets (one
-    /// per Statement `secret_refs` key, in order). `Err` answers `open` FAILED with that text.
+    /// `validate`: whether `settings` (one JSON document) open an instance; `Err` answers its
+    /// outcome (REFUSED or FAILED) with its text. The default takes any settings (`open` judges).
     ///
     /// # Errors
     /// The settings are not this plugin's.
-    fn open(settings: &[u8], secrets: &[&[u8]]) -> Result<Self, &'static str>;
+    fn validate(settings: &[u8]) -> Result<(), Refusal> {
+        let _ = settings;
+        Ok(())
+    }
+
+    /// Build the plugin from its settings blob (one JSON document) and its resolved secrets (one
+    /// per Statement `secret_refs` key, in order), at `generation` (the generation the handles it
+    /// opens belong to until [`OutboundPlugin::refresh`] names the next). `Err` answers `open`
+    /// with the refusal's outcome and text.
+    ///
+    /// # Errors
+    /// The settings are not this plugin's.
+    fn open(settings: &[u8], secrets: &[&[u8]], generation: u64) -> Result<Self, Refusal>;
 
     /// Bind `style` (one the tail declares) to its resolved `credential` (`None` for a
     /// passthrough-only binding) and the provider's auth `settings` (`None` when absent); the
@@ -466,12 +478,15 @@ pub trait OutboundPlugin: Send + Sync + Sized + 'static {
     /// style's first mint, or expired with a failed refresh, or for a handle it does not hold).
     fn outbound_ready(&self, handle: u64) -> bool;
 
-    /// A reload, with the new settings and secrets. The outbound token cache survives it (it is
-    /// keyed by style, credential and settings, never by handle). The count it answers is not
-    /// reported: the flushed count is the inbound cache's ([`VerifyPlugin::refresh`]).
-    fn refresh(&self, settings: &[u8], secrets: &[&[u8]]) -> u64 {
-        let _ = (settings, secrets);
-        0
+    /// A reload to `generation`, with the new settings and secrets: the handles opened from now on
+    /// belong to it. The outbound token cache survives it (it is keyed by style, credential and
+    /// settings, never by handle). `Err` refuses the reload with the refusal's outcome and text.
+    ///
+    /// # Errors
+    /// The new settings are not this plugin's.
+    fn refresh(&self, settings: &[u8], secrets: &[&[u8]], generation: u64) -> Result<(), Refusal> {
+        let _ = (settings, secrets, generation);
+        Ok(())
     }
 
     /// `retire` of `generation`: drop the handles opened at it.
@@ -536,8 +551,8 @@ pub trait HoldsOutbound<T: OutboundPlugin>: Life {
 /// THE AUTH KIND'S [`Life`] over an [`OutboundPlugin`] `T`: the instance state the shared
 /// lifecycle slots (`abi::sdk::life`) serve, a [`Held`] of it. Each per-kind value is stated here:
 ///
-/// * `validate` answers READY: the settings are judged by `open`;
-/// * `open`, `refresh` and `retire` are the plugin's;
+/// * `validate`, `open`, `refresh` and `retire` are the plugin's (`open` and `refresh` with the
+///   generation, so a handle is generation data);
 /// * `tick`, `drive` and `cancel` are the plugin's too, through the kit's own slots
 ///   ([`OutboundTick`], [`OutboundDrive`], [`OutboundCancel`]), which hand it the host tables and
 ///   the driver ticket: [`Life::DRIVE`] and [`Life::CANCEL`] here are what a door naming the
@@ -563,18 +578,21 @@ impl<T: OutboundPlugin> Life for Outbound<T> {
     const CANCEL: u32 = crate::abi::auth::CANCEL_ABANDONED;
     const DRIVE: Outcome = Outcome::Refused;
 
-    fn validate(_: &[u8]) -> Result<(), Refusal> {
-        Ok(())
+    fn validate(settings: &[u8]) -> Result<(), Refusal> {
+        T::validate(settings)
     }
 
-    fn open(settings: &[u8], secrets: &[&[u8]], _: u64) -> Result<Self, Refusal> {
-        T::open(settings, secrets)
-            .map(Outbound)
-            .map_err(Refusal::failed)
+    fn open(settings: &[u8], secrets: &[&[u8]], generation: u64) -> Result<Self, Refusal> {
+        T::open(settings, secrets, generation).map(Outbound)
     }
 
-    fn refresh(&self, settings: &[u8], secrets: &[&[u8]], _: u64) -> Result<Refreshed, Refusal> {
-        self.0.refresh(settings, secrets);
+    fn refresh(
+        &self,
+        settings: &[u8],
+        secrets: &[&[u8]],
+        generation: u64,
+    ) -> Result<Refreshed, Refusal> {
+        self.0.refresh(settings, secrets, generation)?;
         Ok(Refreshed::default())
     }
 
@@ -592,8 +610,9 @@ impl<T: OutboundPlugin> HoldsOutbound<T> for Outbound<T> {
 /// THE AUTH KIND'S [`Life`] over a plugin `T` that both verifies and presents (the SigV4 shape):
 /// ONE `T`, built by [`OutboundPlugin::open`] (its [`VerifyPlugin::open`] must build the same
 /// plugin). `refresh` calls both refreshes and reports the inbound entries
-/// [`VerifyPlugin::refresh`] dropped under [`VerifyPlugin::CACHE_FAMILY`]; `retire`, `tick`,
-/// `drive` and `cancel` are the outbound side's; `validate` is [`Outbound`]'s.
+/// [`VerifyPlugin::refresh`] dropped under [`VerifyPlugin::CACHE_FAMILY`] (the outbound side's
+/// refusal first: a refused reload flushes nothing); `validate`, `retire`, `tick`, `drive` and
+/// `cancel` are the outbound side's.
 pub struct Both<T>(T);
 
 impl<T> std::fmt::Debug for Both<T> {
@@ -614,19 +633,23 @@ impl<T: VerifyPlugin + OutboundPlugin> Life for Both<T> {
     const CANCEL: u32 = crate::abi::auth::CANCEL_ABANDONED;
     const DRIVE: Outcome = Outcome::Refused;
 
-    fn validate(_: &[u8]) -> Result<(), Refusal> {
-        Ok(())
+    fn validate(settings: &[u8]) -> Result<(), Refusal> {
+        <T as OutboundPlugin>::validate(settings)
     }
 
-    fn open(settings: &[u8], secrets: &[&[u8]], _: u64) -> Result<Self, Refusal> {
-        <T as OutboundPlugin>::open(settings, secrets)
-            .map(Both)
-            .map_err(Refusal::failed)
+    fn open(settings: &[u8], secrets: &[&[u8]], generation: u64) -> Result<Self, Refusal> {
+        <T as OutboundPlugin>::open(settings, secrets, generation).map(Both)
     }
 
-    fn refresh(&self, settings: &[u8], secrets: &[&[u8]], _: u64) -> Result<Refreshed, Refusal> {
+    fn refresh(
+        &self,
+        settings: &[u8],
+        secrets: &[&[u8]],
+        generation: u64,
+    ) -> Result<Refreshed, Refusal> {
+        // The outbound side judges the new settings first: a refused reload flushes nothing.
+        OutboundPlugin::refresh(&self.0, settings, secrets, generation)?;
         let dropped = VerifyPlugin::refresh(&self.0, settings, secrets);
-        OutboundPlugin::refresh(&self.0, settings, secrets);
         Ok(Refreshed {
             counted: <T as VerifyPlugin>::CACHE_FAMILY.map(|family| Counted {
                 family,

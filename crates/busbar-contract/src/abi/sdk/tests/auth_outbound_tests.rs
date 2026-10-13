@@ -70,7 +70,7 @@ struct Echo {
 }
 
 impl OutboundPlugin for Echo {
-    fn open(_: &[u8], _: &[&[u8]]) -> Result<Self, &'static str> {
+    fn open(_: &[u8], _: &[&[u8]], _: u64) -> Result<Self, Refusal> {
         Ok(Echo::default())
     }
 
@@ -610,7 +610,7 @@ fn the_view_reads_the_requests_facts() {
 struct Stray;
 
 impl OutboundPlugin for Stray {
-    fn open(_: &[u8], _: &[&[u8]]) -> Result<Self, &'static str> {
+    fn open(_: &[u8], _: &[&[u8]], _: u64) -> Result<Self, Refusal> {
         Ok(Stray)
     }
     fn open_outbound(
@@ -674,7 +674,7 @@ impl VerifyPlugin for Sig {
 }
 
 impl OutboundPlugin for Sig {
-    fn open(_: &[u8], _: &[&[u8]]) -> Result<Self, &'static str> {
+    fn open(_: &[u8], _: &[&[u8]], _: u64) -> Result<Self, Refusal> {
         Ok(Sig)
     }
     fn open_outbound(
@@ -847,7 +847,7 @@ const WAITING: Ticket = Ticket {
 };
 
 impl OutboundPlugin for Minter {
-    fn open(_: &[u8], _: &[&[u8]]) -> Result<Self, &'static str> {
+    fn open(_: &[u8], _: &[&[u8]], _: u64) -> Result<Self, Refusal> {
         Ok(Minter)
     }
     fn open_outbound(
@@ -1002,5 +1002,122 @@ fn a_plugin_without_a_driver_ticket_keeps_the_defaults() {
     assert_eq!(
         cancel(t, inst, DRIVER),
         (Outcome::Ready, crate::abi::auth::CANCEL_ABANDONED)
+    );
+}
+
+/// Judges its settings (`{"bad":true}` is refused, in its own words) and answers each binding's
+/// handle as the generation it was opened at.
+struct Generational(AtomicU64);
+
+/// The settings [`Generational`] refuses.
+const BAD: &[u8] = br#"{"bad":true}"#;
+
+impl OutboundPlugin for Generational {
+    fn validate(settings: &[u8]) -> Result<(), Refusal> {
+        if settings == BAD {
+            return Err(Refusal::refused("settings: bad"));
+        }
+        Ok(())
+    }
+    fn open(settings: &[u8], _: &[&[u8]], generation: u64) -> Result<Self, Refusal> {
+        Self::validate(settings)?;
+        Ok(Generational(AtomicU64::new(generation)))
+    }
+    fn open_outbound(
+        &self,
+        _: &str,
+        _: Option<&[u8]>,
+        _: Option<&[u8]>,
+        _: Option<&SdkHost>,
+        _: &mut Diags,
+    ) -> Result<u64, OpenRefusal> {
+        Ok(self.0.load(Ordering::SeqCst))
+    }
+    fn fields(
+        &self,
+        _: &FieldsView<'_>,
+        _: &mut FieldsWriter<'_>,
+        _: &Op<'_>,
+    ) -> Poll<FieldsAnswer> {
+        Poll::Ready(FieldsAnswer::Ready)
+    }
+    fn outbound_ready(&self, _: u64) -> bool {
+        true
+    }
+    fn refresh(&self, settings: &[u8], _: &[&[u8]], generation: u64) -> Result<(), Refusal> {
+        Self::validate(settings)?;
+        self.0.store(generation, Ordering::SeqCst);
+        Ok(())
+    }
+}
+
+mod generational {
+    use super::*;
+    crate::auth_outbound_door!(Generational, with_tail(statement("gen", "1.0.0", 8), TAIL));
+}
+
+/// The text a REFUSED or FAILED answer names.
+fn error_text(head: &OutHead) -> String {
+    if head.error.ptr.is_null() {
+        return String::new();
+    }
+    // SAFETY: the answer's error text, `len` bytes, kept by the instance or the program.
+    let text = unsafe { std::slice::from_raw_parts(head.error.ptr, head.error.len) };
+    String::from_utf8_lossy(text).into_owned()
+}
+
+/// A HANDLE IS GENERATION DATA: `open` and `refresh` hand the plugin the generation, so the
+/// handles a binding opens after a reload belong to the new one; `validate` and `refresh` refuse
+/// settings that are not the plugin's with the plugin's own outcome and words, and a refused
+/// reload changes nothing.
+#[test]
+fn open_and_refresh_hand_the_plugin_its_generation_and_its_refusals() {
+    let t = ops_of(generational::door);
+
+    let mut buf = vec![0_u8; 64];
+    let input = crate::abi::mechanism::lifecycle::ValidateIn {
+        head: head::<crate::abi::mechanism::lifecycle::ValidateIn>(life::VALIDATE),
+        settings: blob(BAD, BLOB_JSON, 0),
+        err_buf: buf.as_mut_ptr(),
+        err_cap: buf.len(),
+    };
+    let mut out = out_head(size_of::<OutHead>());
+    assert_eq!(
+        cross(t.head.validate, ptr::null_mut(), &input, &mut out),
+        Outcome::Refused
+    );
+    assert_eq!(error_text(&out), "settings: bad");
+
+    let inst = opened(t);
+    assert_eq!(
+        open_outbound(t, inst, "bearer-test", None, b"{}").1.handle,
+        1
+    );
+
+    let refresh = |settings: &[u8], generation: u64| {
+        let input = crate::abi::mechanism::lifecycle::RefreshIn {
+            head: head::<crate::abi::mechanism::lifecycle::RefreshIn>(life::REFRESH),
+            generation,
+            settings: blob(settings, BLOB_JSON, 0),
+            secrets: ptr::null(),
+            secrets_len: 0,
+        };
+        let mut out = out_head(size_of::<OutHead>());
+        let o = cross(t.head.refresh, inst, &input, &mut out);
+        (o, error_text(&out))
+    };
+    assert_eq!(refresh(b"{}", 2), (Outcome::Ready, String::new()));
+    assert_eq!(
+        open_outbound(t, inst, "bearer-test", None, b"{}").1.handle,
+        2
+    );
+    assert_eq!(
+        refresh(BAD, 3),
+        (Outcome::Refused, "settings: bad".to_string())
+    );
+    assert_eq!(
+        open_outbound(t, inst, "bearer-test", None, b"{}").1.handle,
+        2,
+        "a refused reload changes nothing"
     );
 }
