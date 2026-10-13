@@ -56,6 +56,7 @@ fn cfg() -> OauthAsCfg {
         key_id: None,
         default_grant: Vec::new(),
         access_token_ttl_secs: None,
+        refresh_token_ttl_secs: None,
         fapi2: false,
         clients: Vec::new(),
     }
@@ -87,6 +88,7 @@ fn inventory(id: &AsIdentity) -> Vec<String> {
         issuer_path: _,
         default_grant: _,
         access_token_ttl: _,
+        refresh_token_ttl: _,
         key_id: _,
         signing_key: _,
         // The posture switch: not a path, but it decides whether `par_path` is one.

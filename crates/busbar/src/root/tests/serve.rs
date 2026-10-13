@@ -418,7 +418,7 @@ async fn dropping_the_body_drops_the_unit_and_a_read_body_carries_every_piece() 
     let (caller, reply) = IngressCaller::new();
     let unit: DrivenUnit = Box::pin(async move {
         caller.head(200, Vec::new());
-        for piece in [&b"a"[..], b"b", b"c"] {
+        for piece in [&b"a"[..], b"b", b"d"] {
             assert!(caller.write(piece).await);
         }
         None
@@ -427,7 +427,7 @@ async fn dropping_the_body_drops_the_unit_and_a_read_body_carries_every_piece() 
     let body = axum::body::to_bytes(response.into_body(), 1 << 20)
         .await
         .expect("the body");
-    assert_eq!(&body[..], b"abc");
+    assert_eq!(&body[..], b"abd");
 }
 
 /// A caller that went away: every write answers `false` (the driver's ClientGone), and a head
