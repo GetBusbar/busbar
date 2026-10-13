@@ -274,7 +274,7 @@ fn fill_splits_what_does_not_fit_and_says_more() {
 }
 
 /// A PIECE MAY STATE ITS OWN FAULT READING. A framer that maps an answer into its claim's numbering
-/// from something the numbering does not hold (a bare HTTP status on a gRPC call) reads the fault
+/// from something the numbering does not hold (a bare status line on a call that numbers its statuses otherwise) reads the fault
 /// from that, and `fill` writes the piece's own reading over `fault_of(status)`; a piece that
 /// states none is read by the table as before. RED on a `fill` that ignores the piece's reading.
 #[test]

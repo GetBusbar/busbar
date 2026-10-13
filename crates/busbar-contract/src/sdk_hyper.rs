@@ -450,8 +450,9 @@ macro_rules! hyper_io {
                 /// The stream's frames are over (`PIECE_END`): its last piece, with no bytes.
                 pub end: bool,
                 /// The framer's own fault reading of this piece, where it reads the answer from
-                /// something other than `status` (a bare HTTP answer on a gRPC call, its status
-                /// mapped to the call's numbering but its fault read by its HTTP band). `None`:
+                /// something other than `status` (a bare status line on a call that numbers its statuses
+                /// otherwise, its status mapped to the call's numbering but its fault read by the
+                /// status line's own band). `None`:
                 /// [`fill`]'s `fault_of(status)`. Read only on a piece that states a status.
                 pub fault: Option<u8>,
                 /// The stream is writable again (`PIECE_WRITABLE`): an empty piece, nothing else

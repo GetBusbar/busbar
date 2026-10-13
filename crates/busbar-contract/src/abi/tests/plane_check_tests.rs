@@ -3173,7 +3173,7 @@ fn an_attempts_stated_counter_labels_sit_inside_the_arena() {
 fn a_tails_counter_lane_words_are_a_small_closed_vocabulary() {
     assert_eq!(check_metric_lanes(&[]), Ok(()));
     assert_eq!(
-        check_metric_lanes(&[s("jsonrpc"), s("http+json"), s("grpc")]),
+        check_metric_lanes(&[s("jsonrpc"), s("beta+json"), s("gamma")]),
         Ok(())
     );
     assert_eq!(

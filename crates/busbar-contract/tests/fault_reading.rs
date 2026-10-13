@@ -3,7 +3,7 @@
 
 //! A TRANSPORT THAT STATES NO FAULT READING READS AS NONE (ARCHITECT breaker ruling, 2026-10-05).
 //!
-//! A transport built before the fault byte was named (a carrier such as tcp, whose pieces carry
+//! A transport built before the fault byte was named (a carrier, whose pieces carry
 //! no status at all) wrote that byte as alignment padding, always `0`, and its tail stops short of
 //! the appended fault table, which the host then reads as absent. Both read as "no reading": the
 //! byte is `FAULT_NONE`, and `FAULT_NONE` is no `WireFault`, which the breaker reads as the
