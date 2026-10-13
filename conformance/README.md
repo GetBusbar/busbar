@@ -10,7 +10,7 @@ The conformance-claim manifest home (`CONFORMANCE-SYNC-DESIGN.md` §3.1).
 - `manifest.json` — NOT YET GENERATED. Written only by
   `cargo xtask conformance-manifest --write` (§3.2), which is NOT YET BUILT.
   Until that xtask subcommand and its `xtask conformance check --suite <id>`
-  companion land, the `busbar-release-turnstile` `conformance::conformance_checks`
+  companion land, the busbar-release `conformance::conformance_checks`
   `CommandCheck`s that shell to `cargo xtask conformance check --suite <id>`
   will fail closed (non-zero exit / could-not-spawn) — the correct deny-safe
   default for an unimplemented check, not a silent pass.
