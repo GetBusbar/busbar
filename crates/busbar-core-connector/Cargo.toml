@@ -35,7 +35,7 @@ busbar-contract = { path = "../busbar-contract" }
 busbar-kernel = { path = "../busbar-kernel", default-features = false }
 # The egress unit's one http(s) URL reader (`trust::net::split_url`, the destination judge's URL arm
 # and the metadata carve-outs' host), and its `Resolver` seam, which the system name lookup the
-# kernel's remaining resolve-then-pin dials ask (`process::SystemNames`) implements: the kernel
+# kernel's remaining resolve-then-pin dials ask (`hostio::SystemNames`) implements: the kernel
 # resolves no name itself (row 130 E2). One-way, like the edge above.
 busbar-kernel-egress = { path = "../busbar-kernel-egress" }
 rustls = { workspace = true }

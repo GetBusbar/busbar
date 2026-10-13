@@ -954,7 +954,7 @@ pub fn install_test_tls(layer: Arc<dyn crate::secure::SecureLayer>) {
 /// capability is installed (`plane_host::egress_trust::EgressTrustHost::resolve_names`): every
 /// address `host` answers with, de-duplicated but otherwise untouched and unsorted. Test machinery
 /// only: a production kernel resolves nothing itself, the connector's resolver
-/// (`busbar_core_connector::process::SystemNames`, the same body) is installed behind the capability.
+/// (`busbar_core_connector::hostio::SystemNames`, the same body) is installed behind the capability.
 ///
 /// # Errors
 ///

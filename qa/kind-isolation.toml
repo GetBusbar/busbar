@@ -904,7 +904,7 @@ to      = "busbar-kernel-egress"
 half    = "shipped"
 count   = "1"
 verdict = "allowed"
-cite    = "BUSBAR-1.6.0.md:3780 (R2/#37) and ARCHITECT ruling: cleanliness crates are compiled-in with a one-way dependency on the kernel; the root links them (ARCHITECTURE_ALLOWED cleanliness -> kernel). Here it reads the egress unit's one http(s) URL reader (trust::net::split_url) and implements its Resolver seam with the system name lookup the kernel's resolve-then-pin dials ask (process::SystemNames): the kernel resolves no name itself (status row 130 E2; THE DESIGN §5: the one destination check is the connector's)."
+cite    = "BUSBAR-1.6.0.md:3780 (R2/#37) and ARCHITECT ruling: cleanliness crates are compiled-in with a one-way dependency on the kernel; the root links them (ARCHITECTURE_ALLOWED cleanliness -> kernel). Here it reads the egress unit's one http(s) URL reader (trust::net::split_url) and implements its Resolver seam with the system name lookup the kernel's resolve-then-pin dials ask (hostio::SystemNames): the kernel resolves no name itself (status row 130 E2; THE DESIGN §5: the one destination check is the connector's)."
 why     = "busbar-core-connector names busbar-kernel-egress: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
 drain   = "none: BUSBAR-1.6.0.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
 

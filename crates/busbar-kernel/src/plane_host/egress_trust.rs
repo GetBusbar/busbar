@@ -120,7 +120,7 @@ pub trait EgressTrustHost: Send + Sync {
 
     /// THE NAME RESOLUTION a kernel dial's resolve-then-pin asks for (row 130 E2): every address
     /// `host` answers with, de-duplicated, unsorted, unfiltered (the guard judges all of them). The
-    /// lookup is the connector's (`busbar_core_connector::process::SystemNames`): the kernel opens no
+    /// lookup is the connector's (`busbar_core_connector::hostio::SystemNames`): the kernel opens no
     /// socket, a resolver's included. The pass-through has none behind it, so a production build
     /// that installed no guarded capability refuses every name (FAIL CLOSED); a test build resolves
     /// through the test fixtures' system lookup.
