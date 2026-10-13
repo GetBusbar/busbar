@@ -74,16 +74,16 @@ fn truncated_recovery_yields_no_usage_for_a_stringified_count() {
 
 // ── CACHE COUNTS (item 133 remainder) ────────────────────────────────────────────────────────────
 //
-// `read_cached_tokens` / `read_cache_write_tokens` read `input_tokens_details.*` as
-// `.and_then(read_count_u64)`, so an unreadable spelling became `None` — "no cache" — and a reported
-// cache read or write left the bill. Both now refuse on every path.
+// `read_cached_tokens` read `input_tokens_details.cached_tokens` as `.and_then(read_count_u64)`,
+// so an unreadable spelling became `None` — "no cache" — and a reported cache read left the bill.
+// It now refuses on every path. `input_tokens_details.cache_write_tokens` is not a ledgered count:
+// it is a slice of `input_tokens` billed at the input tier, as 1.5.5 billed it (v1.5.5
+// `crates/busbar/src/proto/openai_responses/reader.rs:1022`, `:1341`), so no spelling of it moves
+// the bill or refuses the answer.
 
 #[test]
 fn buffered_response_refuses_an_unreadable_cache_count() {
-    for details in [
-        serde_json::json!({"cached_tokens": "40"}),
-        serde_json::json!({"cache_write_tokens": "40"}),
-    ] {
+    for details in [serde_json::json!({"cached_tokens": "40"})] {
         ResponsesReader
             .read_response(&response(serde_json::json!({
                 "input_tokens": 100, "output_tokens": 9, "input_tokens_details": details
@@ -109,16 +109,14 @@ fn buffered_response_cache_counts_absent_null_and_readable_still_read() {
         })))
         .expect("readable cache counts read");
     assert_eq!(ir.usage.cache_read_input_tokens, Some(30));
-    assert_eq!(ir.usage.cache_creation_input_tokens, Some(20));
-    assert_eq!(ir.usage.input_tokens, 50);
+    // 1.5.5: the 20 cache-write tokens stay in the input (100 - 30 cached = 70), no cache write.
+    assert_eq!(ir.usage.cache_creation_input_tokens, None);
+    assert_eq!(ir.usage.input_tokens, 70);
 }
 
 #[test]
 fn streaming_terminal_refuses_an_unreadable_cache_count() {
-    for details in [
-        serde_json::json!({"cached_tokens": "40"}),
-        serde_json::json!({"cache_write_tokens": "40"}),
-    ] {
+    for details in [serde_json::json!({"cached_tokens": "40"})] {
         let mut state = crate::codec::ir::StreamDecodeState::default();
         let completed = serde_json::json!({
             "response": {"status": STATUS_COMPLETED, "usage": {
@@ -134,8 +132,46 @@ fn streaming_terminal_refuses_an_unreadable_cache_count() {
     }
 }
 
+/// The cache-write slice bills inside the input on every path and in every spelling, as in 1.5.5:
+/// the buffered answer, the stream terminal and the truncated recovery each ledger input 100,
+/// output 9 and no cache write. RED while the reader split the slice out to the cache-write tier
+/// (input 60, cache write 40) or refused its stringified spelling.
 #[test]
-fn truncated_recovery_yields_no_usage_for_an_unreadable_cache_write_count() {
-    let tail = br#"...cut"}]}],"usage":{"input_tokens":100,"output_tokens":9,"input_tokens_details":{"cache_write_tokens":"40"}}}"#;
-    assert_eq!(ResponsesReader.recover_truncated_usage(tail), None);
+fn cache_write_tokens_bill_inside_the_input_on_every_path() {
+    for spelling in [serde_json::json!(40), serde_json::json!("40")] {
+        let usage = serde_json::json!({
+            "input_tokens": 100, "output_tokens": 9,
+            "input_tokens_details": {"cache_write_tokens": spelling}
+        });
+        let ir = ResponsesReader
+            .read_response(&response(usage.clone()))
+            .expect("the cache-write slice never refuses the answer");
+        let t = ir.usage.to_token_usage();
+        assert_eq!((t.input, t.output, t.cache_creation), (100, 9, None));
+        let mut state = crate::codec::ir::StreamDecodeState::default();
+        let completed = serde_json::json!({
+            "response": {"status": STATUS_COMPLETED, "usage": usage}
+        });
+        let ev =
+            ResponsesReader.read_response_events(EVT_RESPONSE_COMPLETED, &completed, &mut state);
+        let streamed = ev
+            .iter()
+            .find_map(|e| match e {
+                IrStreamEvent::MessageDelta { usage, .. } => Some(usage.to_token_usage()),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("the terminal carries its usage: {ev:?}"));
+        assert_eq!(
+            (streamed.input, streamed.output, streamed.cache_creation),
+            (100, 9, None)
+        );
+        let tail = format!(r#"...cut"}}]}}],"usage":{usage}}}"#);
+        let recovered = ResponsesReader
+            .recover_truncated_usage(tail.as_bytes())
+            .expect("the usage recovers");
+        assert_eq!(
+            (recovered.input, recovered.output, recovered.cache_creation),
+            (100, 9, None)
+        );
+    }
 }

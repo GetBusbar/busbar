@@ -32,9 +32,12 @@ const OPENAI_COUNT_CLASSES: &[(&str, Class)] = &[
         "prompt_tokens_details.cached_tokens",
         Class::Ledgered(-1, 1, 0, 0),
     ),
+    // A slice of `prompt_tokens` billed at the input tier, as 1.5.5 billed it (it never split a
+    // cache write out of an OpenAI input total: v1.5.5 `crates/busbar/src/proto/openai_chat/reader.rs:693, :966`,
+    // `cache_creation_input_tokens: None`).
     (
         "prompt_tokens_details.cache_write_tokens",
-        Class::Ledgered(-1, 0, 1, 0),
+        Class::SliceOf("prompt_tokens"),
     ),
     (
         "prompt_tokens_details.audio_tokens",

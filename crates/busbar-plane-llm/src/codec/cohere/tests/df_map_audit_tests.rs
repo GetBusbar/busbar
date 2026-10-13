@@ -5,7 +5,8 @@
 //! for any of the five answer slots (safety verdicts, the hosted web-search record, audio output,
 //! usage by modality, file citations), so a Cohere answer reads none of them and a Cohere client is
 //! written none of them: translate what maps, drop what doesn't. The one carried path this audit
-//! adds a row for is `usage.cached_tokens` (the cache-read count, both directions).
+//! adds a row for is `usage.cached_tokens`: the writer carries an IR cache read to it, and the
+//! reader leaves it inside the input count, billed at the input tier as 1.5.5 billed it.
 //! `citations[].content_index` and a tool source's `tool_output` have no IR home either (DF-MAP
 //! correction to IR-GAPS section B): the reader does not read them.
 use super::super::proto_codec::protocol_for;
@@ -40,10 +41,17 @@ fn write(resp: &crate::codec::ir::IrResponse) -> serde_json::Value {
         .write_response(resp)
 }
 
+/// The read direction bills the cache hit inside the input, as 1.5.5 did (v1.5.5
+/// `crates/busbar/src/proto/cohere/reader.rs:964-979`: `input_tokens` = `tokens.input_tokens`,
+/// `cache_read_input_tokens: None`); the write direction still carries an IR cache read to
+/// `cached_tokens`.
 #[test]
-fn the_cache_read_count_row_is_carried_both_ways() {
-    let resp = read(&answer());
-    assert_eq!(resp.usage.cache_read_input_tokens, Some(4));
+fn the_cache_read_count_row_bills_inside_the_input_and_is_written() {
+    let mut resp = read(&answer());
+    assert_eq!(resp.usage.cache_read_input_tokens, None);
+    assert_eq!(resp.usage.input_tokens, 12);
+    resp.usage.input_tokens = 8;
+    resp.usage.cache_read_input_tokens = Some(4);
     let out = write(&resp);
     assert_eq!(out["usage"]["cached_tokens"], json!(4), "{out}");
 }
