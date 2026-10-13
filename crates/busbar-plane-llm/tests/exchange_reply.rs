@@ -965,3 +965,79 @@ fn a_same_dialect_stream_drops_nothing() {
         .replace("\"object\":", "\"obfuscation\":\"x\",\"object\":");
     assert!(stream_drops("openai", "openai", far.as_bytes()).is_empty());
 }
+
+// ── an upstream cut after the first byte, in 1.5.5's bytes ─────────────────────────────────────────
+
+/// The far end's one content chunk before its connection dropped (an OpenAI chat stream), as the
+/// recordings below were taken.
+const CUT_FIRST: &[u8] = b"data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"m\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"hel\"},\"finish_reason\":null}]}\n\n";
+
+/// THE BYTES 1.5.5 ENDED A CUT STREAM WITH, per caller dialect: recorded 2026-10-13 from the
+/// published 1.5.5 binary (`busbar 1.5.5`, the oracle cache's aarch64-apple-darwin build) in front
+/// of an OpenAI far end that sent [`CUT_FIRST`] and then dropped its connection with no terminating
+/// chunk, one fresh process per caller (v1.5.5 `crates/busbar/src/proxy/response_body.rs:279-345`,
+/// the `had_first && is_sse` arm and its JSON-array twin). What follows the caller's own copy of
+/// the delivered chunk, verbatim; the Responses frame's response id and `created_at` are the run's
+/// own and are compared with both removed.
+const CUT_1_5_5: &[(&str, bool, &[u8])] = &[
+    ("openai", false, b"data: {\"error\":{\"code\":null,\"message\":\"The response stream was interrupted.\",\"param\":null,\"type\":\"server_error\"}}\n\n"),
+    ("anthropic", false, b"event: error\ndata: {\"error\":{\"message\":\"The response stream was interrupted.\",\"type\":\"The response stream was interrupted.\"},\"type\":\"error\"}\n\n"),
+    ("gemini", false, b"data: {\"error\":{\"code\":500,\"message\":\"The response stream was interrupted.\",\"status\":\"INTERNAL\"}}\n\n"),
+    ("gemini", true, b",{\"error\":{\"code\":500,\"message\":\"The response stream was interrupted.\",\"status\":\"INTERNAL\"}}]"),
+    ("cohere", false, b"data: {\"delta\":{\"finish_reason\":\"ERROR\",\"usage\":{\"tokens\":{\"input_tokens\":0,\"output_tokens\":0}}},\"type\":\"message-end\"}\n\n"),
+    ("responses", false, b"event: response.failed\ndata: {\"response\":{\"created_at\":1791927860,\"error\":{\"code\":\"server_error\",\"message\":\"The response stream was interrupted.\"},\"id\":\"resp_zjjqukHWABl78LV1C9NNR22oHbFmGEmq0TypczYXR4ZIVu2O\",\"model\":\"gpt-4o\",\"object\":\"response\",\"output\":[],\"status\":\"failed\"},\"sequence_number\":0,\"type\":\"response.failed\"}\n\n"),
+];
+
+/// 1.5.5's Bedrock caller: one `InternalServerException` exception frame (binary eventstream).
+const CUT_1_5_5_BEDROCK: &str = "000000a7000000659afd09380f3a657863657074696f6e2d74797065070017496e7465726e616c536572766572457863657074696f6e0d3a636f6e74656e742d747970650700106170706c69636174696f6e2f6a736f6e0d3a6d6573736167652d74797065070009657863657074696f6e7b226d657373616765223a2254686520726573706f6e73652073747265616d2077617320696e7465727275707465642e227d4b3fd5c9";
+
+/// A Responses frame with its run-specific id and timestamp removed.
+fn without_run_ids(frame: &[u8]) -> (Vec<u8>, Value) {
+    let text = std::str::from_utf8(frame).expect("text");
+    let (event, data) = text.split_once("\ndata: ").expect("an event and its data");
+    let mut v: Value = serde_json::from_str(data.trim_end()).expect("JSON");
+    if let Some(r) = v.get_mut("response").and_then(Value::as_object_mut) {
+        r.remove("id");
+        r.remove("created_at");
+    }
+    (event.as_bytes().to_vec(), v)
+}
+
+/// A STREAM CUT AFTER ITS FIRST BYTE ENDS IN 1.5.5'S BYTES, for every caller dialect (row-159 audit
+/// plane-llm L1#2; ARCHITECT ruling 2026-10-13, condition 5): the in-band error 1.5.5 wrote, in
+/// the caller's own framing (an SSE event, a JSON-array element and its `]`, an eventstream
+/// exception frame). RED: a cut written as a clean end (the caller's terminator) or in another
+/// dialect's framing.
+#[test]
+fn a_stream_cut_after_its_first_byte_ends_in_1_5_5s_bytes_for_every_caller_dialect() {
+    let hex = |s: &str| -> Vec<u8> {
+        (0..s.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&s[i..i + 2], 16).expect("hex"))
+            .collect()
+    };
+    let bedrock = hex(CUT_1_5_5_BEDROCK);
+    let cases = CUT_1_5_5
+        .iter()
+        .copied()
+        .chain(std::iter::once(("bedrock", false, &bedrock[..])));
+    for (ingress, json_array, want) in cases {
+        let mut ctx = relay_ctx(ingress, "openai", true);
+        ctx.json_array = json_array;
+        let mut r = Relay::new(ctx);
+        let _ = r.feed(CUT_FIRST);
+        let cut = r.cut(true);
+        assert_eq!(cut.reason, "mid-stream", "{ingress}");
+        let got = cut.bytes.expect("the caller's in-band error");
+        if ingress == "responses" {
+            assert_eq!(without_run_ids(&got), without_run_ids(want), "{ingress}");
+        } else {
+            assert_eq!(
+                String::from_utf8_lossy(&got),
+                String::from_utf8_lossy(want),
+                "{ingress} (json array: {json_array})"
+            );
+            assert_eq!(got, want, "{ingress} (json array: {json_array})");
+        }
+    }
+}

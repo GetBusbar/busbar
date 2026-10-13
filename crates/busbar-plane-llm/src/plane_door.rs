@@ -65,9 +65,10 @@ use busbar_contract::abi::plane::{
     PlaneTail, ProjectIn, ProjectOut, RefusalIn, RefusalOut, ServeIn, ServeOut, UnitCount,
     CANCEL_ABORTED, CANCEL_OK_PARTIAL, CLAIM_EXACT, CLAIM_PROBE, EMIT_DONE, EMIT_TO_FAR_END,
     FROM_CALLER, FROM_FAR_END, FROM_KERNEL, INGRESS_REQUEST_RESPONSE, INGRESS_RESPONSE_STREAM,
-    PIECE_FINAL, PIECE_HAS_STATUS, PIECE_LAST, PRINCIPAL_NONE, PRINCIPAL_REQUIRED, REFUSAL_GATE,
-    ROUTE_DIRECT, ROUTE_POOL, SHAPE_PIECEWISE, SPAN_ABSENT, TAIL_FALLBACK, TAIL_PROBES,
-    UNITS_FLOOR, UNITS_REPORTED, VERDICT_HARD, VERDICT_NONE, VERDICT_OK, VERDICT_RETRY,
+    PIECE_CUT, PIECE_FINAL, PIECE_HAS_STATUS, PIECE_LAST, PRINCIPAL_NONE, PRINCIPAL_REQUIRED,
+    REFUSAL_GATE, ROUTE_DIRECT, ROUTE_POOL, SHAPE_PIECEWISE, SPAN_ABSENT, TAIL_FALLBACK,
+    TAIL_PROBES, UNITS_FLOOR, UNITS_REPORTED, VERDICT_HARD, VERDICT_NONE, VERDICT_OK,
+    VERDICT_RETRY,
 };
 use busbar_contract::abi::plane::{PlaneCancelIn, PlaneCancelOut};
 use busbar_contract::abi::plane::{RecordWrite, AUDIT_DEGRADED, RECORD_AUDIT};
@@ -830,6 +831,8 @@ fn at(clock: Option<ClockReading>, started: Option<u64>) -> At {
 /// One piece of a unit, as `on_piece` lends it.
 struct PieceIn<'a> {
     last: bool,
+    /// The far end's answer ended without completing (`PIECE_CUT`, on its last piece).
+    cut: bool,
     status: Option<u32>,
     fields: Vec<(&'a [u8], &'a [u8])>,
     bytes: &'a [u8],
@@ -929,6 +932,16 @@ fn far_end(unit: &mut UnitState, piece: &PieceIn<'_>) -> Answer {
     let Some(reply) = unit.reply.as_mut() else {
         return Answer::hard();
     };
+    if piece.cut {
+        // THE FAR END'S ANSWER WAS CUT (`PIECE_CUT`): the caller's answer ends as a cut, 1.5.5's
+        // in-band error after a streamed first byte or its buffered-cut answer, and reports the
+        // units the stream stated to the caller up to the cut (#62: a cut bills what streamed).
+        // The kernel's far end recorded the compensating transient against the member, so no
+        // second reading is given.
+        let mut cut = reply.cut(&ctx, true);
+        cut.fault = None;
+        return to_caller(cut);
+    }
     let mut fed = reply.feed(&ctx, piece.bytes, piece.last, at(piece.clock, unit.started));
     // An answer member the caller's dialect has no form for, one degraded row each (`<path> from
     // <dialect>`, the row 1.5.5 wrote as it delivered the translated answer).
@@ -1285,6 +1298,7 @@ slot!(
             }
             let piece = PieceIn {
                 last: given.flags & PIECE_LAST != 0,
+                cut: given.from == FROM_FAR_END && given.flags & PIECE_CUT != 0,
                 status: (given.flags & PIECE_HAS_STATUS != 0).then_some(given.status_code),
                 fields: input
                     .head_fields()
