@@ -64,7 +64,7 @@
 use std::collections::BTreeMap;
 
 use crate::ctx::{Ctx, Overlay, WalkSpec};
-use crate::gates::{prove_red, prove_rows_green, Gate, Report};
+use crate::gates::{prove_red, prove_rows_green, Case, Expect, Gate, Report};
 use crate::ledger::{Row, Verdict};
 use crate::scan;
 
@@ -985,6 +985,191 @@ fn scan_population(pop: &Population) -> RecordScan {
     }
 }
 
+/// THE POLICY RECORD CLASS (ARCHITECT ruling, row 159, 2026-10-13). A Policy record carries the
+/// RATE CARD the counts are priced by at read time — a rate is not money moved — so it may carry
+/// exact integer RATES at a DECLARED scale, never `Money` and never a moved amount. The rule is
+/// EXHAUSTIVE BY DECLARED ROLE: every integer field a Policy writer puts on the chain is listed in
+/// [`POLICY_FIELDS`] with its role, so a new money field can never ride in as a "count".
+const POLICY_CLASS: &str = "RecordClass::Policy";
+
+/// The roles an integer on a Policy record may hold. `money-rate` carries its scale (minor units 2,
+/// nanos 9: [`RATE_SCALES`]); the others carry none.
+const POLICY_ROLES: &[&str] = &["money-rate", "time", "seq", "epoch", "count"];
+
+/// The scales a rate may be declared at: minor units (2) and nano-units (9).
+const RATE_SCALES: &[u8] = &[2, 9];
+
+/// The integer type words a Policy field is judged by. `u8` is bytes (a digest, a payload), not a
+/// number, and is not one of them.
+const INT_WORDS: &[&str] = &[
+    "u16", "u32", "u64", "u128", "usize", "i8", "i16", "i32", "i64", "i128", "isize",
+];
+
+/// EVERY integer field a Policy writer puts on the chain, by `(record type, field)`, with its role
+/// and, for a rate, its scale. Measured on predev 2026-10-13: the card applied by config
+/// (`root/kernel.rs` `CardApplied::body`) and the operator's rate amendment
+/// (`root/units_admin/mod.rs` `amendment_body`). `flat`, `planes` (per-plane request and session
+/// fees) and `sealed_fee` are the card's fees in MINOR units (`card.fee()`, scale 2); `cells`,
+/// `units` and `rates` are per-unit rates in nanos (scale 9).
+const POLICY_FIELDS: &[(&str, &str, &str, Option<u8>)] = &[
+    ("CardApplied", "effective_from", "time", None),
+    ("CardApplied", "appended_at", "time", None),
+    ("CardApplied", "policy_epoch", "epoch", None),
+    ("CardForm", "flat", "money-rate", Some(2)),
+    ("CardForm", "cells", "money-rate", Some(9)),
+    ("CardForm", "units", "money-rate", Some(9)),
+    ("CardForm", "planes", "money-rate", Some(2)),
+    ("AmendmentRecord", "effective_from", "time", None),
+    ("AmendmentRecord", "effective_until", "time", None),
+    ("AmendmentRecord", "amended_at_ms", "time", None),
+    ("AmendmentRecord", "sealed_fee", "money-rate", Some(2)),
+    ("AmendmentRecord", "rates", "money-rate", Some(9)),
+];
+
+/// The Policy record types the writers yield today (`CardApplied`, `AmendmentRecord`): fewer is a
+/// Policy writer the derivation stopped seeing.
+const POLICY_ROOT_FLOOR: usize = 2;
+
+/// The table's own rules: a known role; a rate with a declared scale the ledger knows; nothing
+/// else with a scale. One finding per broken row.
+fn policy_table_problems(table: &[(&str, &str, &str, Option<u8>)]) -> Vec<String> {
+    let mut out = Vec::new();
+    for (ty, field, role, scale) in table {
+        let at = format!("the Policy field table's `{ty}.{field}`");
+        if !POLICY_ROLES.contains(role) {
+            out.push(format!(
+                "{at} names role `{role}`, which is none of {POLICY_ROLES:?}"
+            ));
+        } else if *role == "money-rate" {
+            match scale {
+                None => out.push(format!("{at} is a money-rate with no declared scale")),
+                Some(n) if !RATE_SCALES.contains(n) => out.push(format!(
+                    "{at} declares scale {n}, which is none of {RATE_SCALES:?}"
+                )),
+                Some(_) => {}
+            }
+        } else if scale.is_some() {
+            out.push(format!("{at} is a `{role}` and declares a scale"));
+        }
+    }
+    out
+}
+
+/// The Policy writers' verdict: `(findings, gaps)`. A finding is a field or a figure the rule
+/// refuses; a gap is a Policy record the scan could not read.
+fn policy_scan(cx: &Ctx, table: &[(&str, &str, &str, Option<u8>)]) -> (Vec<String>, Vec<String>) {
+    let mut findings = policy_table_problems(table);
+    let mut gaps = Vec::new();
+    let spec = WalkSpec::new(ROOTS.iter().copied())
+        .ext("rs")
+        .exclude(EXCLUDE.iter().copied())
+        .min_files(SCAN_FLOOR);
+    let files = match cx.walk(&spec) {
+        Ok(f) => f,
+        Err(e) => {
+            return (
+                findings,
+                vec![format!("the Policy writer walk could not run: {e:?}")],
+            )
+        }
+    };
+    let mut roots = 0usize;
+    let mut seen_fields: std::collections::BTreeSet<(String, String)> = Default::default();
+    let mut cache: Cache = BTreeMap::new();
+    for f in &files {
+        let code: String = scan::production_lines(&f.text)
+            .into_iter()
+            .map(|(_, l)| l)
+            .collect::<Vec<_>>()
+            .join("\n");
+        if !(code.contains("Entry::new(") && code.contains(POLICY_CLASS)) {
+            continue;
+        }
+        let path = f.rel_str();
+        let local = parse_decls(&path, &f.text);
+        let uses = use_paths(&f.text);
+        for root in journal_roots(&path, &f.text) {
+            let Some(def) = local.iter().find(|d| d.name == root.ty).cloned() else {
+                gaps.push(format!(
+                    "Policy record `{}` ({path}) is not defined in its writer file — the scan \
+                     cannot read its fields",
+                    root.ty
+                ));
+                continue;
+            };
+            roots += 1;
+            let at = format!("the `{}` writer at {}:{}", root.ty, root.file, root.line);
+            // A ledger figure written onto a Policy record must be a listed rate.
+            for (i, _) in root.writer.match_indices(".figure(") {
+                let arg: String = root.writer[i + ".figure(".len()..]
+                    .chars()
+                    .take_while(|c| *c != ';')
+                    .collect();
+                let rate = table.iter().any(|(ty, field, role, _)| {
+                    *ty == root.ty && *role == "money-rate" && arg.contains(&format!(".{field}"))
+                });
+                if !rate {
+                    findings.push(format!(
+                        "`BodyWriter::figure({})` in {at} writes a figure that is no listed rate",
+                        arg.trim().trim_end_matches(')')
+                    ));
+                }
+            }
+            let mut chain = vec![(written_fields(&def, &root), def, Pool::Local)];
+            let mut read = std::collections::BTreeSet::new();
+            while let Some((fields, d, pool)) = chain.pop() {
+                if !read.insert((d.file.clone(), d.name.clone())) {
+                    continue;
+                }
+                for field in fields {
+                    for word in type_words(&field.ty) {
+                        if let Some((one, q)) =
+                            resolve_word(cx, &mut cache, &local, &uses, &pool, word)
+                        {
+                            chain.push((one.fields.clone(), one, q));
+                        }
+                    }
+                    let where_ = format!(
+                        "`{}: {}` on {} at {}:{} ({at})",
+                        field.name, field.ty, d.name, d.file, field.line
+                    );
+                    if type_words(&field.ty).any(|w| w == "Money") {
+                        findings.push(format!("{where_} is Money on a Policy record"));
+                        continue;
+                    }
+                    if !type_words(&field.ty).any(|w| INT_WORDS.contains(&w)) {
+                        continue;
+                    }
+                    seen_fields.insert((d.name.clone(), field.name.clone()));
+                    if !table
+                        .iter()
+                        .any(|(ty, name, _, _)| *ty == d.name && *name == field.name)
+                    {
+                        findings.push(format!(
+                            "{where_} is an integer on a Policy record with no declared role"
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    if roots < POLICY_ROOT_FLOOR {
+        gaps.push(format!(
+            "the Policy writers yield {roots} Policy record type(s), below the floor of \
+             {POLICY_ROOT_FLOOR} — a Policy writer the derivation no longer sees"
+        ));
+    }
+    for (ty, field, _, _) in table {
+        if !seen_fields.contains(&(ty.to_string(), field.to_string())) {
+            findings.push(format!(
+                "the Policy field table lists `{ty}.{field}`, an integer no Policy writer puts on \
+                 the chain (a stale row)"
+            ));
+        }
+    }
+    (findings, gaps)
+}
+
 struct SealScan {
     files: usize,
     seals_outside: Vec<String>,
@@ -1063,7 +1248,11 @@ pub struct MoneyInvariantsGate;
 
 impl MoneyInvariantsGate {
     fn rows(cx: &Ctx) -> Vec<Row> {
-        let pop = derive_population(cx);
+        let mut pop = derive_population(cx);
+        // THE POLICY RECORDS (ARCHITECT ruling, row 159): exact integer rates at a declared scale,
+        // every integer by its declared role, no Money. Their gaps refuse like the money records'.
+        let (policy_findings, policy_gaps) = policy_scan(cx, POLICY_FIELDS);
+        pop.gaps.extend(policy_gaps);
 
         // EXISTENCE BEFORE VERDICT. Both record rows are claims ABOUT the durable records; a record
         // source the derivation could not read, resolve or reach is a record neither row
@@ -1086,7 +1275,9 @@ impl MoneyInvariantsGate {
                 Self::seal_row(cx),
             ];
         }
-        let scan = scan_population(&pop);
+        let mut scan = scan_population(&pop);
+        scan.stored_price.extend(policy_findings);
+        scan.stored_price.sort();
         let scanned = format!(
             "{} durable record type(s) scanned ({} declared in {STORE_RECORDS_PATH}; journal \
              records {} written by {} and the types their fields name) across {}",
@@ -1436,6 +1627,69 @@ impl Gate for MoneyInvariantsGate {
             ov13,
             &["`ceiling: i128` on TotalsKey"],
         ));
+
+        // THE POLICY RECORDS (ARCHITECT ruling, row 159, 2026-10-13): exact integer rates at a
+        // declared scale, every integer by its declared role, never Money.
+        const KERNEL: &str = "crates/busbar/src/root/kernel.rs";
+        // RED (n): Money on a Policy record (the applied card's form, written whole) is refused.
+        let ov14 = plant_over(cx, &fixture, KERNEL, |s| {
+            s.replace(
+                "pub struct CardForm {",
+                "pub struct CardForm {\n    charge: Money,",
+            )
+        });
+        report.push(prove_red(
+            &fcx,
+            self,
+            "Money on a Policy record is RED",
+            &[ROW_NO_STORED_PRICE],
+            ov14,
+            &["`charge: Money` on CardForm", "is Money on a Policy record"],
+        ));
+        // RED (o): an integer on a Policy record the table gives no role is refused — a new money
+        // field cannot ride in as a "count".
+        let ov15 = plant_over(cx, &fixture, KERNEL, |s| {
+            s.replace(
+                "pub struct CardForm {",
+                "pub struct CardForm {\n    extra_cents: u64,",
+            )
+        });
+        report.push(prove_red(
+            &fcx,
+            self,
+            "an unlisted integer on a Policy record is RED",
+            &[ROW_NO_STORED_PRICE],
+            ov15,
+            &["`extra_cents: u64` on CardForm", "no declared role"],
+        ));
+        // RED (p): a rate the table lists with no declared scale is refused.
+        let unscaled = policy_table_problems(&[("CardForm", "flat", "money-rate", None)]);
+        report.push(Case {
+            name: "a Policy rate field with no declared scale is RED".to_string(),
+            covers: Vec::new(),
+            expected: Expect::Red {
+                naming: vec!["is a money-rate with no declared scale".to_string()],
+            },
+            got: if unscaled.is_empty() {
+                Expect::Green
+            } else {
+                Expect::Red { naming: unscaled }
+            },
+        });
+        // GREEN (q): the Policy records as they are — listed time, epoch and rate fields — pass.
+        let (policy_findings, policy_gaps) = policy_scan(cx, POLICY_FIELDS);
+        report.push(Case {
+            name: "the Policy records' listed time, epoch and rate fields are GREEN".to_string(),
+            covers: Vec::new(),
+            expected: Expect::Green,
+            got: if policy_findings.is_empty() && policy_gaps.is_empty() {
+                Expect::Green
+            } else {
+                Expect::Red {
+                    naming: policy_findings.into_iter().chain(policy_gaps).collect(),
+                }
+            },
+        });
 
         // RED (c): a plane/plugin crate sealing its own facts line is caught (#77(2)).
         let victim = "crates/busbar-llm/src/lib.rs";
