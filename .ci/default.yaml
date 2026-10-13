@@ -3,6 +3,11 @@
 to: predev
 on_green: merge
 deadline: 6h
+# The PR battery, named explicitly so a check declared below but NOT listed here is on-demand only
+# (`modernci call measure {repo, from, check}`), never run on every move.
+on:
+  move: [preflight, gates, clippy, compile, test, doctest, deletion-matrix, deny]
+  manual: [oracle]
 env:
   RUSTFLAGS: "-D warnings"
   CARGO_TERM_COLOR: never
@@ -88,3 +93,24 @@ checks:
     baseline: target
     requires: [cargo-deny]
     needs: [preflight]
+  # ON-DEMAND ONLY (not in on.move): the predev->dev oracle, measurable on a PR head that changes the
+  # served LLM path (e.g. a plane default flip), so claim C3 is proven before landing, not only at the move.
+  oracle:
+    # busbar's own check tool, the pinned busbar-oracle (the backend's busbar-oracle tool sets
+    # BUSBAR_ORACLE_RUST_BIN): the judge is the one dev's oracle-rust.pin names, run only when its
+    # sha256 is that pin's for this host (a candidate never picks its own judge); the 1.5.5 golden is
+    # add-only from dev to this commit; then the candidate's release binary is recorded over the
+    # corpus and replayed against the committed 1.5.5 golden, strict: green is every cell byte-green
+    # or forgiven by an owner-signed accepted difference.
+    run: |
+      pin=$(git show "$MODERNCI_TO_SHA:testing/shadow-oracle/oracle-rust.pin")
+      want=$(printf '%s\n' "$pin" | sed -n "s/^sha256_linux_$(uname -m)=//p")
+      [[ "$want" =~ ^[0-9a-f]{64}$ ]] || { echo "ORACLE-PIN: oracle-rust.pin at $MODERNCI_TO_SHA pins no linux $(uname -m) judge"; exit 1; }
+      echo "$want  $BUSBAR_ORACLE_RUST_BIN" | sha256sum -c -
+      "$BUSBAR_ORACLE_RUST_BIN" golden-guard --repo . --base "$MODERNCI_TO_SHA" --head HEAD
+      cargo build --locked --release -p busbar --bin busbar
+      ./bin/oracle fetch-golden
+      rm -rf target/oracle/recordings/candidate target/oracle/reports/dev
+      ./bin/oracle record --bin target/release/busbar --plane all --out target/oracle/recordings/candidate
+      ./bin/oracle replay --golden testing/shadow-oracle/golden/1.5.5 --candidate target/oracle/recordings/candidate --out target/oracle/reports/dev --strict
+    needs: [gates]
