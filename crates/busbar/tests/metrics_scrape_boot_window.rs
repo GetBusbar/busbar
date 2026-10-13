@@ -22,7 +22,7 @@
 // The fixture boots a REAL busbar with a configured provider; a `--no-default-features` build has
 // no wire codec compiled in and fails closed at boot, which is correct product behavior, not the
 // seam under test here.
-#![cfg(linked_axis_body_ingress)]
+#![cfg(linked_section_pools)]
 // The config names `module: prometheus`, the linked scrape sink on the export-doors axis: a build
 // that links no export door (the single-plane rows link only the exports axis) refuses that module at
 // boot ("unknown exporter 'prometheus'"), which is correct product behaviour, not what this measures.
@@ -200,6 +200,36 @@ fn metrics_scrape_is_never_a_200_with_an_empty_body() {
          exposition:\n{}",
         reference.body
     );
+    // THE 1.5.5 SHAPE: the settled exposition carries the scrape-time lane families the configured
+    // model's lane renders (RED: a door served without the fallback plane's tables, which scraped
+    // no lane at all), and every `# HELP` / `# TYPE` line of a family 1.5.5 also exposed is the 1.5.5
+    // golden's line, byte for byte (`ops.scrape|metrics|key`).
+    for family in LANE_FAMILIES {
+        assert!(
+            reference_names.contains(*family),
+            "the settled exposition lacks the 1.5.5 lane family `{family}`; exposition:\n{}",
+            reference.body
+        );
+    }
+    let golden = golden_meta_lines();
+    let mut drifted = Vec::new();
+    for line in meta_lines(&reference.body) {
+        let name = meta_name(&line);
+        let kind = &line[..6];
+        if let Some(want) = golden
+            .iter()
+            .find(|g| meta_name(g) == name && g.starts_with(kind))
+        {
+            if *want != line {
+                drifted.push(format!("got  {line}\nwant {want}"));
+            }
+        }
+    }
+    assert!(
+        drifted.is_empty(),
+        "HELP/TYPE lines differ from the 1.5.5 golden:\n{}",
+        drifted.join("\n")
+    );
 
     let _ = child.kill();
     let _ = child.wait();
@@ -231,6 +261,48 @@ fn metrics_scrape_is_never_a_200_with_an_empty_body() {
     );
 
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The scrape-time lane families a configured model's lane renders on every scrape, pool or none
+/// (`busbar_kernel::snapshot`: the direct-model loop emits these three for every routed model).
+const LANE_FAMILIES: &[&str] = &[
+    "busbar_lane_state",
+    "busbar_lane_available",
+    "busbar_lane_inflight",
+];
+
+/// Every `# HELP` and `# TYPE` line of an exposition, in order.
+fn meta_lines(body: &str) -> Vec<String> {
+    body.lines()
+        .filter(|l| l.starts_with("# HELP ") || l.starts_with("# TYPE "))
+        .map(str::to_string)
+        .collect()
+}
+
+/// The family a `# HELP` / `# TYPE` line names.
+fn meta_name(line: &str) -> &str {
+    line[7..].split(' ').next().unwrap_or("")
+}
+
+/// The 1.5.5 golden's `# HELP` / `# TYPE` lines, read from the shadow-oracle cell that scraped a
+/// served 1.5.5 node (`ops.scrape|metrics|key`), so the claim is the golden's and is never re-typed.
+fn golden_meta_lines() -> Vec<String> {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../testing/shadow-oracle/golden/1.5.5/cells/ops.scrape__metrics__key.json");
+    let raw = std::fs::read_to_string(&path).unwrap_or_else(|e| {
+        panic!("the 1.5.5 golden scrape cell must be readable at {path:?}: {e}")
+    });
+    let cell: serde_json::Value = serde_json::from_str(&raw).expect("the golden cell is JSON");
+    let text = cell["body"]["text"]
+        .as_str()
+        .expect("the golden scrape cell carries its body text");
+    let lines = meta_lines(text);
+    assert!(
+        lines.iter().any(|l| meta_name(l) == LANE_FAMILIES[0]),
+        "the golden scrape names no `{}`: the derivation did not bite",
+        LANE_FAMILIES[0]
+    );
+    lines
 }
 
 /// Extract the set of `# HELP <name> ...` metric names from a Prometheus exposition — the closed

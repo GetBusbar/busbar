@@ -471,6 +471,7 @@ plane-mcp-door = "busbar_plane_mcp::DECLARES"
 # that declares this section is linked" gates on the section rather than on a feature that spells one
 # plugin. Held to each door's own Statement by `root::linked`'s tests.
 [package.metadata.busbar.linked-section]
+plane-llm-door = "pools"
 plane-mcp-door = "tools"
 plane-decisions = "decisions"
 

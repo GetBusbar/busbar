@@ -27,7 +27,7 @@
 // A bootable data plane with the bedrock path ingress, the admin listener, the admin-token door and
 // the SigV4 auth plugin must all be linked.
 #![cfg(all(
-    linked_axis_body_ingress,
+    linked_section_pools,
     feature = "root-admin",
     feature = "auth-admin-tokens",
     feature = "auth-sigv4"
