@@ -8,7 +8,7 @@
 use crate::operator::{AdminUnavailable, Judgement, OperatorCredential};
 use busbar_contract::auth::AuthVerdict;
 use busbar_contract::auth_calls::{
-    AuthCalls, Verified, VerifiedIdentity, VerifyAnswer, VerifyRequest, Verifying,
+    AuthCalls, Replay, Strip, Verified, VerifiedIdentity, VerifyAnswer, VerifyRequest, Verifying,
 };
 use busbar_contract::redacted::Redacted;
 use std::future::Future;
@@ -100,13 +100,19 @@ fn request() -> VerifyRequest {
 }
 
 fn kind(j: Option<Judgement>) -> &'static str {
-    match j {
+    match j.map(|j| j.outcome) {
         None => "unanswered",
-        Some(Judgement::Verdict(AuthVerdict::Identify(_))) => "identify",
-        Some(Judgement::Verdict(AuthVerdict::Reject)) => "reject",
-        Some(Judgement::Verdict(AuthVerdict::Pass)) => "pass",
-        Some(Judgement::Overloaded) => "overloaded",
-        Some(Judgement::Outage) => "outage",
+        Some(Ok(verdict)) => verdict_kind(&verdict),
+        Some(Err(AdminUnavailable::Overloaded)) => "overloaded",
+        Some(Err(AdminUnavailable::Outage)) => "outage",
+    }
+}
+
+fn verdict_kind(verdict: &AuthVerdict) -> &'static str {
+    match verdict {
+        AuthVerdict::Identify(_) => "identify",
+        AuthVerdict::Reject => "reject",
+        AuthVerdict::Pass => "pass",
     }
 }
 
@@ -156,7 +162,7 @@ fn the_identity_becomes_the_principal() {
         true,
     );
     let credential = OperatorCredential::Module(double);
-    let Some(Judgement::Verdict(AuthVerdict::Identify(p))) = ready(credential.judge(request()))
+    let Some(Ok(AuthVerdict::Identify(p))) = ready(credential.judge(request())).map(|j| j.outcome)
     else {
         panic!("identifies");
     };
@@ -206,8 +212,8 @@ fn an_unjudged_admin_verdict_is_unavailable_not_a_refusal() {
             credential.probe(&request()),
         ];
         for (judged, how) in judged.into_iter().zip(["awaited", "probed"]) {
-            let got = judged.expect("a row answers").verdict();
-            let got = got.map(|v| kind(Some(Judgement::Verdict(v))));
+            let got = judged.expect("a row answers").outcome;
+            let got = got.as_ref().map(verdict_kind).map_err(|why| *why);
             assert_eq!(got, want, "{how}");
         }
     }
@@ -215,4 +221,51 @@ fn an_unjudged_admin_verdict_is_unavailable_not_a_refusal() {
         AdminUnavailable::Outage.message(),
         AdminUnavailable::Overloaded.message()
     );
+}
+
+/// NOTHING OF A `verify` ANSWER IS DROPPED (THE DESIGN §6, Inbound verify; §6.4): the identity's
+/// replay claim rides the judgement to the door that wins it, and the lines the plugin named ride
+/// it whatever the verdict — an overloaded verifier and an outage included. RED: a judgement read
+/// down to its verdict alone (the shape before) carries neither, so a replayed signed message is
+/// admitted again and a named credential line crosses to the plane.
+#[test]
+fn the_replay_claim_and_the_named_lines_ride_the_judgement() {
+    let named = vec![Strip::field("x-signature"), Strip::query("sig")];
+    let identity = Verified::Identity(VerifiedIdentity {
+        subject: "op".into(),
+        replay: Some(Box::new(Replay {
+            key: "msg-1".into(),
+            ttl_secs: 300,
+        })),
+        ..VerifiedIdentity::default()
+    });
+    let judged = Judgement::answered(VerifyAnswer {
+        strips: named.clone(),
+        ..identity.into()
+    });
+    assert_eq!(
+        judged
+            .replay
+            .as_deref()
+            .map(|r| (r.key.as_str(), r.ttl_secs)),
+        Some(("msg-1", 300)),
+        "the identity's replay claim rides out"
+    );
+    assert_eq!(judged.strips, named, "the identity's named lines ride out");
+    for verified in [
+        Verified::Reject,
+        Verified::Pass,
+        Verified::Overloaded,
+        Verified::Failed,
+    ] {
+        let judged = Judgement::answered(VerifyAnswer {
+            strips: named.clone(),
+            ..verified.clone().into()
+        });
+        assert_eq!(
+            judged.strips, named,
+            "{verified:?} keeps the lines it named"
+        );
+        assert!(judged.replay.is_none(), "{verified:?} carries no claim");
+    }
 }

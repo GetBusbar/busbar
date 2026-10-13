@@ -54,11 +54,13 @@ const EXCLUDE_TESTS_DIR: &str = "/tests/";
 /// `busbar-transport-stdio` carrier.rs and conn.rs) — 971 on predev d7929b661d, after
 /// busbar-kernel-ledger's usage/series.rs left (972 on predev 3bc48823df; 971 on predev
 /// 39374ec00e; 980 on 5e672d125d, before the egress_auth / auth_cache / ingress_sigv4 files left
-/// the kernel crates; it was 130 against a tree that had grown past 700). A drop below 979 is
+/// the kernel crates; it was 130 against a tree that had grown past 700); #686 (q128-linked-neutral)
+/// then deleted `crates/busbar-kernel/build.rs`, the one non-test file it removed, so the floor
+/// re-pins from 979 to 978. A drop below 978 is
 /// refused until a reviewed diff re-measures; the selftest plant cuts the walk to one file under
 /// the floor (see [`floor_plant`]), so the tree growing past it needs no re-pin. It is a `const`
 /// here and has no environment override: the only way to lower one is a reviewable source edit.
-const SCAN_FLOOR: usize = 979;
+const SCAN_FLOOR: usize = 978;
 
 /// THE SUBJECT FLOOR (item 228). The file floor above proves the walk opened the crates; it says
 /// nothing about whether the thing this gate judges is still there. "Every `#[instrument]` has a
