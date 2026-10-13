@@ -1065,7 +1065,8 @@ fn scan_file(rel: &str, text: &str, exempt: &IntakeSpans, offenders: &mut Vec<St
 /// is `let mut acc = 0.0;`. Four spellings, each a real Rust float:
 ///
 /// * a FLOAT LITERAL — `1.0`, `1_000.5`, `0.25` (a digit, a dot, a digit; a tuple index `x.0.1`
-///   and a range `0..5` are not);
+///   and a range `0..5` are not), and the TRAILING-DOT form `1000.` / `0.` (a decimal, then a dot
+///   that opens no range, field or method);
 /// * an EXPONENT LITERAL — `1e9`, `2.5E-3`, which Rust types as a float with no dot at all;
 /// * a SUFFIXED LITERAL — `0f64`, `1_f32`, `2.5f64`, where the word match misses because the digit
 ///   before the `f` is part of the same word;
@@ -1103,6 +1104,19 @@ fn float_spellings(blanked: &str) -> Vec<String> {
                 while i < chars.len() && wordy(chars[i]) {
                     i += 1;
                 }
+            } else if chars.get(i) == Some(&'.')
+                && chars[start..i]
+                    .iter()
+                    .all(|d| d.is_ascii_digit() || *d == '_')
+                && !chars
+                    .get(i + 1)
+                    .is_some_and(|n| *n == '.' || *n == '_' || n.is_alphabetic())
+            {
+                // A TRAILING-DOT literal — `1000.`, `0.` — is a float too (audit xtask-E HIGH 1):
+                // a decimal followed by a `.` that opens no range (`0..5`), field or method
+                // (`1.max(2)`) is how Rust spells `1000.0` without the zero.
+                dotted = true;
+                i += 1;
             }
             // `1e-9` / `1.5E+3`: the sign splits the word, so the exponent is read through it.
             if i + 1 < chars.len()
@@ -2273,6 +2287,21 @@ impl Gate for NoFloatMoneyGate {
                     .to_string(),
             ),
             &["planted_unspelled_float", "1_000_000_000.0"],
+        ));
+
+        // AUDIT XTASK-E HIGH 1: THE TRAILING-DOT LITERAL. `1000.` and `0.` are Rust floats with no
+        // digit after the dot, no exponent and no suffix, so the literal reader passed them.
+        report.push(plant(
+            cx,
+            self,
+            "a trailing-dot float literal (`1000.`, `0.`) is flagged",
+            &[ROW_NO_FLOAT],
+            &format!("{LEDGER_SRC}/planted_trailing_dot.rs"),
+            Edit::Create(
+                "pub fn drift(x: Rate) -> u128 {\n    let zero = 0.;\n    (x.get() * 1000.) as u128 + zero as u128\n}\n"
+                    .to_string(),
+            ),
+            &["planted_trailing_dot", "`1000.`", "`0.`"],
         ));
 
         // A FLOAT IN A NAMED BINARY MONEY FILE IS FLAGGED.
@@ -3468,7 +3497,9 @@ mod tests {
                    pub fn e2() -> u64 { 2.5E-3 as u64 }\n\
                    pub fn sfx() -> u64 { 0f64 as u64 }\n\
                    pub fn j(v: &Value) -> u64 { v.as_f64().map(|x| x as u64).unwrap_or(1) }\n\
-                   pub fn ints(t: (u64, (u64, u64))) -> u64 { let _r = 0..5; let _h = 0xE5; let _s = 12usize; let _v = \"1.0\"; t.1.0 + 1_000 + 7u64.max(2) }\n";
+                   pub fn ints(t: (u64, (u64, u64))) -> u64 { let _r = 0..5; let _h = 0xE5; let _s = 12usize; let _v = \"1.0\"; t.1.0 + 1_000 + 7u64.max(2) }\n\
+                   pub fn td(x: Rate) -> u128 { let zero = 0.; (x.get() * 1_000.) as u128 + zero as u128 }\n\
+                   pub fn td_ints(t: (u64, u64)) -> u64 { let _r = 0..=5; let _q = 1..; t.0.max(1) + 1.max(2) + 3._x() }\n";
         let mut offenders = Vec::new();
         scan_file("m.rs", src, &IntakeSpans::new(), &mut offenders);
         let lines: std::collections::BTreeSet<&str> = offenders
@@ -3477,9 +3508,18 @@ mod tests {
             .collect();
         assert_eq!(
             lines,
-            ["2", "4", "5", "6", "7", "8"].into_iter().collect(),
+            ["2", "4", "5", "6", "7", "8", "10"].into_iter().collect(),
             "{offenders:#?}"
         );
+        // AUDIT XTASK-E HIGH 1: the trailing-dot spellings are named as written.
+        for spelled in ["`0.`", "`1_000.`"] {
+            assert!(
+                offenders
+                    .iter()
+                    .any(|o| o.starts_with("m.rs:10:") && o.contains(spelled)),
+                "{spelled} was not named: {offenders:#?}"
+            );
+        }
         for spelled in [
             "`F64`",
             "`1_000_000_000.0`",
