@@ -2357,9 +2357,9 @@ fn authorizations(r: &Rig) -> Vec<Option<Vec<u8>>> {
         .collect()
 }
 
-/// RE-RESOLVED ON EVERY REQUEST: each attempt asks the binding for its handle NOW and presents the
+/// ASKED ON EVERY REQUEST: each attempt asks the binding for its handle NOW and presents the
 /// credential that handle was opened with, never the one the generation was sealed with — a
-/// credential rotated between two units is presented by the second.
+/// credential its binding refreshed between two units is presented by the second.
 #[tokio::test]
 async fn each_attempt_presents_the_handle_its_credential_resolves_to_now() {
     let mut r = rig(

@@ -565,15 +565,17 @@ pub trait Fielding: Future<Output = Fields> + Send + Unpin {
     fn settled(&mut self) -> Option<Fields>;
 }
 
-/// A BINDING WHOSE CREDENTIAL IS RE-RESOLVED ON EVERY REQUEST (a registration's own credential, read
-/// per hop as the previous plane read it): the composition root holds the reference and the binding,
-/// and answers the handle a request's fields are asked of. The binding is re-opened, and its handle
-/// swapped, only when the re-resolved value changed, so handles grow by rotations and never by
-/// requests; a request sees the old handle or the new one, never a half state.
+/// A BINDING WHOSE CREDENTIAL IS REFRESHED OFF THE REQUEST PATH (a registration's own credential):
+/// the composition root holds the reference and the binding, re-resolves the value once per lease
+/// on a thread of its own, and answers the handle a request's fields are asked of. The binding is
+/// re-opened, and its handle swapped, only when the re-resolved value changed, so handles grow by
+/// rotations and never by requests; a request sees the old handle or the new one, never a half
+/// state.
 pub trait PerRequestHandle: Send + Sync {
-    /// The handle this request's auth call is made on, the credential re-resolved first; `None` when
-    /// the credential is unavailable (it no longer resolves, or its new value would not bind): the
-    /// request is refused and nothing is presented.
+    /// The handle this request's auth call is made on, as the last refresh left it: a load, never a
+    /// resolution, an open or a wait (it is asked on the request path). `None` when the last
+    /// refresh found the credential unavailable (it no longer resolves, or its new value would not
+    /// bind): the request is refused and nothing is presented.
     fn handle_now(&self) -> Option<u64>;
 }
 

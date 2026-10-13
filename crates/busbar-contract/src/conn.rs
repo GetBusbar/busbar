@@ -473,7 +473,7 @@ pub struct ConnAuth {
     pub passthrough: bool,
     /// Where a passthrough member's credential is lent from, by unit.
     pub lender: Option<Arc<dyn LendCredential>>,
-    /// A binding re-resolved on every request ([`crate::auth_calls::PerRequestHandle`]): its
+    /// A binding refreshed off the request path ([`crate::auth_calls::PerRequestHandle`]): its
     /// current handle is asked for each request, in place of [`ConnAuth::handle`]. `None` = the
     /// handle stands for the generation.
     pub per_request: Option<Arc<dyn crate::auth_calls::PerRequestHandle>>,

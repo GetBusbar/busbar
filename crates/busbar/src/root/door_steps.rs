@@ -2127,7 +2127,7 @@ pub fn process_auths() -> Arc<OutboundAuths> {
 pub struct DoorReach<'a> {
     /// The providers, by name ([`provider_routes`]).
     pub providers: &'a BTreeMap<String, ProviderRoute>,
-    /// The secret seam (shared: a binding re-resolved per hop holds it for its generation).
+    /// The secret seam (shared: a binding refreshed once per lease holds it for its generation).
     pub secrets: Arc<dyn busbar_contract::secret::SecretResolve>,
     /// The auth plugins.
     pub auths: Arc<OutboundAuths>,
@@ -2255,7 +2255,11 @@ fn token_exchange_binding(
 /// the style its `placement` names: `bearer` (absent = it) presents `authorization: Bearer
 /// <secret>`, `{header: <name>}` presents the secret verbatim in that header (the `api-key` style
 /// over that header). The kernel presents it on every request to the member through the auth
-/// kind's per-request call. `None` when the registration states no such block.
+/// kind's per-request call, which reads the binding's current handle and nothing else; the
+/// credential is re-resolved OFF the request path, by the host's refresher once per lease
+/// (`lease_ttl_ms`, [`refresher`]; ARCHITECT ruling on #787, THE DESIGN §11: no blocking, plugin
+/// memory valid to its next refresh generation). `None` when the registration states no such
+/// block.
 ///
 /// # Errors
 ///
@@ -2266,9 +2270,25 @@ fn upstream_credential_binding(
     registration: &serde_yaml::Value,
     reach: &DoorReach<'_>,
 ) -> Result<Option<busbar_kernel::plane_driver::AuthBinding>, String> {
+    Ok(
+        upstream_credential(member_name, registration, reach)?.map(|(binding, per)| {
+            refresher::keep(&per);
+            binding
+        }),
+    )
+}
+
+/// [`upstream_credential_binding`]'s binding and the [`PerHop`] it presents through, opened over
+/// the value resolved now and kept by nothing: the caller hands it to the [`refresher`] (or, in a
+/// cell, refreshes it by hand).
+fn upstream_credential(
+    member_name: &str,
+    registration: &serde_yaml::Value,
+    reach: &DoorReach<'_>,
+) -> Result<Option<(busbar_kernel::plane_driver::AuthBinding, Arc<PerHop>)>, String> {
     use busbar_contract::section::{
-        CREDENTIAL_PLACEMENT_KEY, CREDENTIAL_SECRET_KEY, PLACEMENT_BEARER, PLACEMENT_HEADER_KEY,
-        UPSTREAM_CREDENTIAL_KEY,
+        CREDENTIAL_LEASE_TTL_KEY, CREDENTIAL_PLACEMENT_KEY, CREDENTIAL_SECRET_KEY,
+        PLACEMENT_BEARER, PLACEMENT_HEADER_KEY, UPSTREAM_CREDENTIAL_KEY,
     };
     /// The style a `bearer` placement is bound under.
     const BEARER_STYLE: &str = "bearer";
@@ -2315,6 +2335,20 @@ fn upstream_credential_binding(
             }
         },
     };
+    // THE LEASE: how long one resolution of the credential may be presented, and so how often
+    // the refresher re-resolves it (the grammar's `lease_ttl_ms`, greater than zero).
+    let lease = block
+        .get(CREDENTIAL_LEASE_TTL_KEY)
+        .and_then(serde_yaml::Value::as_u64)
+        .filter(|ms| *ms > 0)
+        .map(std::time::Duration::from_millis)
+        .ok_or_else(|| {
+            format!(
+                "member '{member_name}': its \
+                 `{UPSTREAM_CREDENTIAL_KEY}.{CREDENTIAL_LEASE_TTL_KEY}` is not a lease in \
+                 milliseconds greater than zero"
+            )
+        })?;
     let settings = placement_settings(header.as_deref());
     let credential = busbar_contract::redacted::Redacted::new(
         reach
@@ -2337,28 +2371,35 @@ fn upstream_credential_binding(
     let handle = auth
         .open_outbound(style, credential.expose_secret(), &settings)
         .map_err(|e| format!("member '{member_name}' {e}"))?;
-    // RE-RESOLVED ON EVERY HOP, as the previous plane read it: the binding holds the reference and
-    // the digest of the value its handle was opened with, never the value.
-    let per_hop = PerHop {
+    // The binding holds the reference and the digest of the value its handle was opened with,
+    // never the value.
+    let per = Arc::new(PerHop {
         secret,
         secrets: Arc::clone(&reach.secrets),
         auth: Arc::clone(&auth),
         style,
         header,
-        held: Mutex::new((
-            busbar_contract::abi::sdk::digest::sha256(credential.expose_secret()),
+        lease,
+        held: arc_swap::ArcSwapOption::from_pointee(Held {
+            digest: busbar_contract::abi::sdk::digest::sha256(credential.expose_secret()),
             handle,
-        )),
-    };
+        }),
+        refreshing: Mutex::new(()),
+    });
     drop(credential);
-    Ok(Some(busbar_kernel::plane_driver::AuthBinding {
-        auth,
-        handle,
-        style_flags: decl.flags,
-        points: busbar_contract::abi::auth::AuthPoints(decl.points),
-        passthrough: false,
-        per_request: Some(Arc::new(per_hop)),
-    }))
+    Ok(Some((
+        busbar_kernel::plane_driver::AuthBinding {
+            auth,
+            handle,
+            style_flags: decl.flags,
+            points: busbar_contract::abi::auth::AuthPoints(decl.points),
+            passthrough: false,
+            per_request: Some(
+                Arc::clone(&per) as Arc<dyn busbar_contract::auth_calls::PerRequestHandle>
+            ),
+        },
+        per,
+    )))
 }
 
 /// THE OUTBOUND SETTINGS an `upstream_credential:` placement opens its style under: none for
@@ -2371,19 +2412,70 @@ fn placement_settings(header: Option<&str>) -> serde_json::Value {
     )
 }
 
-/// A REGISTRATION'S OWN CREDENTIAL, RE-RESOLVED ON EVERY HOP (`upstream_credential:`): the
-/// reference, the secret seam it resolves through, the auth instance, the style it is bound under
-/// and the header a named-header placement names, and, under one lock, the SHA-256 of the value
-/// the current handle was opened with beside that handle. A hop re-resolves the value and re-opens
-/// the binding only when its digest changed, so handles grow by rotations and never by hops; the
-/// value itself is dropped once compared or opened, never kept.
+/// What a [`PerHop`] presents now: the handle its auth instance opened, and the SHA-256 of the
+/// value it was opened with (the value itself is never kept).
+struct Held {
+    digest: [u8; 32],
+    handle: u64,
+}
+
+/// A REGISTRATION'S OWN CREDENTIAL, REFRESHED OFF THE REQUEST PATH (`upstream_credential:`): the
+/// reference, the secret seam it resolves through, the auth instance, the style it is bound under,
+/// the header a named-header placement names and its lease, and, in one swap cell, what it
+/// presents now ([`Held`]; empty = refused). A hop only LOADS the cell ([`PerHop::handle_now`]):
+/// no resolution, no open, no lock (ARCHITECT ruling on #787: a secret resolution blocks its
+/// thread up to its deadline, `busbar_contract::secret::SecretCalls`, and is never made on the
+/// request path). [`PerHop::refresh`] re-resolves the value, re-opens the binding only when its
+/// digest changed (handles grow by rotations, never by hops), and swaps the cell whole, so a hop
+/// sees the old handle or the new one; a value that no longer resolves or binds EMPTIES the cell,
+/// so every hop after it is refused, never served a stale credential.
 struct PerHop {
     secret: busbar_contract::secret_ref::SecretRef,
     secrets: Arc<dyn busbar_contract::secret::SecretResolve>,
     auth: Arc<dyn busbar_contract::auth_calls::OutboundAuth>,
     style: &'static str,
     header: Option<String>,
-    held: Mutex<([u8; 32], u64)>,
+    /// The lease: how often the [`refresher`] re-resolves the credential.
+    lease: std::time::Duration,
+    held: arc_swap::ArcSwapOption<Held>,
+    /// Taken by [`PerHop::refresh`] alone, so two refreshes never open the same rotation twice;
+    /// no hop ever waits on it.
+    refreshing: Mutex<()>,
+}
+
+impl PerHop {
+    /// RE-RESOLVE the credential and swap what the binding presents: the same value keeps its
+    /// handle; a changed one is opened (outside every lock a hop could wait on) and swapped in
+    /// whole; one that no longer resolves, or whose new value will not bind, empties the cell (fail
+    /// closed). Off the request path only: the binding's build, and the [`refresher`]'s own thread.
+    fn refresh(&self) {
+        let _one = self
+            .refreshing
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Ok(value) = self.secrets.resolve_string(&self.secret) else {
+            self.held.store(None);
+            return;
+        };
+        let value = busbar_contract::redacted::Redacted::new(value.into_bytes());
+        let digest = busbar_contract::abi::sdk::digest::sha256(value.expose_secret());
+        if self
+            .held
+            .load()
+            .as_ref()
+            .is_some_and(|held| busbar_contract::redacted::constant_time_eq(&held.digest, &digest))
+        {
+            return;
+        }
+        let opened = self.auth.open_outbound(
+            self.style,
+            value.expose_secret(),
+            &placement_settings(self.header.as_deref()),
+        );
+        drop(value);
+        self.held
+            .store(opened.ok().map(|handle| Arc::new(Held { digest, handle })));
+    }
 }
 
 /// A `PerHop` NAMES NO CREDENTIAL in a debug line: it holds the reference and a digest, never the
@@ -2391,14 +2483,12 @@ struct PerHop {
 /// the one in a log line and a guessing oracle for the other in it).
 impl std::fmt::Debug for PerHop {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let handle = self
-            .held
-            .lock()
-            .map_or_else(|p| p.into_inner().1, |held| held.1);
+        let handle = self.held.load().as_ref().map(|held| held.handle);
         f.debug_struct("PerHop")
-            .field("secret", &"<redacted; re-resolved per hop>")
+            .field("secret", &"<redacted; refreshed once per lease>")
             .field("style", &self.style)
             .field("carried_in", &self.header)
+            .field("lease", &self.lease)
             .field("handle", &handle)
             .finish_non_exhaustive()
     }
@@ -2406,27 +2496,133 @@ impl std::fmt::Debug for PerHop {
 
 impl busbar_contract::auth_calls::PerRequestHandle for PerHop {
     fn handle_now(&self) -> Option<u64> {
-        let value = busbar_contract::redacted::Redacted::new(
-            self.secrets.resolve_string(&self.secret).ok()?.into_bytes(),
-        );
-        let digest = busbar_contract::abi::sdk::digest::sha256(value.expose_secret());
-        let mut held = self
-            .held
+        self.held.load().as_ref().map(|held| held.handle)
+    }
+}
+
+/// THE HOST'S CREDENTIAL REFRESHER: one thread of its own (never a runtime worker, never a
+/// dispatcher worker's crossing) that re-resolves each live [`PerHop`] once per its lease. It keeps
+/// each binding WEAKLY, so a binding its generation dropped (a config apply builds the next
+/// generation's bindings, and the last request on the old one lets it go) is forgotten at its next
+/// due time, never refreshed again.
+mod refresher {
+    use super::PerHop;
+    use std::sync::{Arc, Condvar, Mutex, Once, Weak};
+    use std::time::Instant;
+
+    /// One kept binding and when it is next due.
+    struct Kept {
+        per: Weak<PerHop>,
+        due: Instant,
+    }
+
+    /// The kept bindings, and the signal a new one wakes the thread with.
+    struct Book {
+        kept: Mutex<Vec<Kept>>,
+        woken: Condvar,
+    }
+
+    /// The process's one book.
+    static BOOK: Book = Book {
+        kept: Mutex::new(Vec::new()),
+        woken: Condvar::new(),
+    };
+
+    /// The process's one book, its thread started the first time it is reached.
+    fn book() -> &'static Book {
+        static STARTED: Once = Once::new();
+        STARTED.call_once(|| {
+            std::thread::Builder::new()
+                .name("busbar-cred-refresh".into())
+                .spawn(|| run(&BOOK))
+                .unwrap_or_else(|e| {
+                    eprintln!("busbar: the credential refresher did not start: {e}");
+                    std::process::exit(2);
+                });
+        });
+        &BOOK
+    }
+
+    /// Keep `per`, first due one lease from now (its build has just resolved it).
+    pub(super) fn keep(per: &Arc<PerHop>) {
+        let book = book();
+        book.kept
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(Kept {
+                per: Arc::downgrade(per),
+                due: Instant::now() + per.lease,
+            });
+        book.woken.notify_one();
+    }
+
+    /// The thread: refresh every binding that is due, forget every one dropped, sleep to the next
+    /// due time (or a new binding). The book's lock is never held across a refresh.
+    fn run(book: &'static Book) {
+        let mut kept = book
+            .kept
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if !busbar_contract::redacted::constant_time_eq(&held.0, &digest) {
-            let handle = self
-                .auth
-                .open_outbound(
-                    self.style,
-                    value.expose_secret(),
-                    &placement_settings(self.header.as_deref()),
-                )
-                .ok()?;
-            *held = (digest, handle);
+        loop {
+            let now = Instant::now();
+            kept.retain(|k| k.per.strong_count() > 0);
+            let mut due = Vec::new();
+            for k in kept.iter_mut().filter(|k| k.due <= now) {
+                if let Some(per) = k.per.upgrade() {
+                    k.due = now + per.lease;
+                    due.push(per);
+                }
+            }
+            if !due.is_empty() {
+                drop(kept);
+                for per in due {
+                    per.refresh();
+                }
+                kept = book
+                    .kept
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                continue;
+            }
+            let next = kept.iter().map(|k| k.due).min();
+            kept = match next {
+                Some(at) => {
+                    book.woken
+                        .wait_timeout(kept, at.saturating_duration_since(now))
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .0
+                }
+                None => book
+                    .woken
+                    .wait(kept)
+                    .unwrap_or_else(std::sync::PoisonError::into_inner),
+            };
         }
-        Some(held.1)
     }
+
+    /// Refresh every live kept binding NOW, on the calling thread (a cell that rotates or removes
+    /// a served credential, then asserts what the first hop after the refresh presents).
+    #[cfg(test)]
+    #[allow(dead_code)] // reached only by a door plane's own root cells, which a build may not link
+    pub(crate) fn refresh_all() {
+        let live: Vec<Arc<PerHop>> = book()
+            .kept
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .filter_map(|k| k.per.upgrade())
+            .collect();
+        for per in live {
+            per.refresh();
+        }
+    }
+}
+
+/// [`refresher`]'s refresh of every live served credential, for the door planes' own root cells.
+#[cfg(test)]
+#[allow(dead_code)] // reached only by a door plane's own root cells, which a build may not link
+pub(crate) fn refresh_credentials() {
+    refresher::refresh_all();
 }
 
 /// THE DOOR'S OWN REQUESTS TO ITS REGISTRATION MEMBERS carry each member's binding (round 4 (d):

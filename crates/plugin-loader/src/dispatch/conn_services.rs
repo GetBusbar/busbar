@@ -1049,8 +1049,9 @@ extern "C" fn write_request(
                     } else {
                         table.auth_of(id, need, &member, &target)
                     };
-                    // A binding re-resolved per request answers this request's handle; one whose
-                    // credential is unavailable refuses the request under its own cause, nothing
+                    // A refreshed binding answers this request's handle with a load (never a
+                    // resolution inside this crossing); one whose credential its last refresh
+                    // found unavailable refuses the request under its own cause, nothing
                     // presented.
                     let handle = bound.as_ref().and_then(|b| match &b.per_request {
                         Some(per) => per.handle_now(),

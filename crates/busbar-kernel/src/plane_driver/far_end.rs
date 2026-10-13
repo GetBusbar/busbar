@@ -198,7 +198,7 @@ pub struct AuthBinding {
     /// the caller's own verified credential (THE DESIGN, section 6.6, style `caller-credential`). No other
     /// binding is ever handed it.
     pub passthrough: bool,
-    /// A binding re-resolved on every request (`auth_calls::PerRequestHandle`): its current
+    /// A binding refreshed off the request path (`auth_calls::PerRequestHandle`): its current
     /// handle is asked for each attempt, in place of `handle`; one that answers none refuses the
     /// unit `credential_unavailable`. `None` = the handle stands for the generation.
     pub per_request: Option<Arc<dyn busbar_contract::auth_calls::PerRequestHandle>>,
@@ -1165,8 +1165,9 @@ impl EgressFarEnd<'_> {
         // 2. The one auth call; its fields lead the head (1.5.5's order).
         let mut auth = Vec::new();
         if let Some(binding) = route.auth.as_ref().filter(|_| !waived) {
-            // A binding re-resolved per request answers this attempt's handle; one whose
-            // credential is unavailable refuses the unit before anything is dialled.
+            // A refreshed binding answers this attempt's handle with a load (never a resolution
+            // on this task); one whose credential its last refresh found unavailable refuses the
+            // unit before anything is dialled.
             let handle = match &binding.per_request {
                 Some(per) => per.handle_now(),
                 None => Some(binding.handle),

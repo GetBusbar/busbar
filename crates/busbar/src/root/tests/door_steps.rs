@@ -5983,7 +5983,7 @@ done
     }
 }
 
-// ── `upstream_credential:` — busbar's own credential for a registration, re-resolved per hop ────
+// ── `upstream_credential:` — busbar's own credential for a registration, refreshed once per lease ─
 
 /// No provider: a registration is reached at its own target.
 static NO_PROVIDERS: std::collections::BTreeMap<String, super::ProviderRoute> =
@@ -6094,7 +6094,7 @@ fn a_bearer_placement_presents_the_secret_only_as_the_bearer() {
         let handle = binding
             .per_request
             .as_ref()
-            .expect("re-resolved per hop")
+            .expect("a refreshed binding")
             .handle_now()
             .expect("it resolves");
         assert_eq!(
@@ -6134,7 +6134,7 @@ fn a_named_header_placement_presents_the_secret_verbatim_in_that_header() {
     let handle = binding
         .per_request
         .as_ref()
-        .expect("re-resolved per hop")
+        .expect("a refreshed binding")
         .handle_now()
         .expect("it resolves");
     assert_eq!(
@@ -6152,7 +6152,10 @@ fn a_named_header_placement_presents_the_secret_verbatim_in_that_header() {
 
 /// Ported from the deleted engine crate's `creds_tests::an_unresolvable_handle_fails_closed_and_names_the_agent`:
 /// a secret that does not resolve when the generation is sealed refuses the load naming the member
-/// (fail closed); one that stops resolving after it is refused per hop: the handle answers none.
+/// (fail closed); one that stops resolving after it is refused from the next refresh on: the handle
+/// answers none, hop after hop, and answers again once a refresh finds it back. A block stating no
+/// lease (or a zero one) refuses the load naming the member too: the lease is how often the
+/// credential is refreshed.
 #[test]
 fn an_unresolvable_credential_fails_closed_and_names_the_member() {
     let reach = own_reach();
@@ -6168,16 +6171,55 @@ fn an_unresolvable_credential_fails_closed_and_names_the_member() {
     );
 
     let path = own_secret("vanish", "tok");
-    let binding = super::upstream_credential_binding("planner", &registration(&path, ""), &reach)
+    for lease in [None, Some(0_u64)] {
+        let mut bare = registration(&path, "");
+        let block = bare
+            .get_mut(busbar_contract::section::UPSTREAM_CREDENTIAL_KEY)
+            .and_then(serde_yaml::Value::as_mapping_mut)
+            .expect("the block");
+        let key = serde_yaml::Value::from(busbar_contract::section::CREDENTIAL_LEASE_TTL_KEY);
+        match lease {
+            None => {
+                block.remove(&key);
+            }
+            Some(ms) => {
+                block.insert(key, serde_yaml::Value::from(ms));
+            }
+        }
+        let err = refused(super::upstream_credential_binding("planner", &bare, &reach));
+        assert!(
+            err.contains("member 'planner'") && err.contains("lease_ttl_ms"),
+            "{err}"
+        );
+    }
+    let (_, per) = super::upstream_credential("planner", &registration(&path, ""), &reach)
         .expect("it binds")
         .expect("a binding");
-    let per = binding.per_request.as_ref().expect("re-resolved per hop");
+    use busbar_contract::auth_calls::PerRequestHandle as _;
+    let first = per
+        .handle_now()
+        .expect("it resolves while the file is there");
+    std::fs::remove_file(&path).expect("remove it");
+    assert_eq!(
+        per.handle_now(),
+        Some(first),
+        "a hop before the next refresh presents what the last refresh left"
+    );
+    per.refresh();
+    for _ in 0..8 {
+        assert_eq!(
+            per.handle_now(),
+            None,
+            "gone: nothing is presented, hop after hop"
+        );
+    }
+    std::fs::write(&path, "tok").expect("put it back");
+    per.refresh();
     assert!(
         per.handle_now().is_some(),
-        "it resolves while the file is there"
+        "a refresh that finds it back serves it again"
     );
-    std::fs::remove_file(&path).expect("remove it");
-    assert_eq!(per.handle_now(), None, "gone: nothing is presented");
+    let _ = std::fs::remove_file(&path);
 }
 
 /// A SECRET PASTED WHERE ITS REFERENCE BELONGS IS NEVER ECHOED (secret-hygiene Check 3; coordinator
@@ -6258,10 +6300,21 @@ impl busbar_contract::auth_calls::OutboundAuth for CountingOpens {
 }
 
 /// A `bearer` [`super::PerHop`] over the secret at `path`, opened by `auth` as the composition
-/// opens it.
+/// opens it, its lease a minute (no cell waits on the refresher: each refreshes by hand).
 fn per_hop(path: &std::path::Path, auth: std::sync::Arc<CountingOpens>) -> super::PerHop {
-    let secrets: std::sync::Arc<dyn busbar_contract::secret::SecretResolve> =
-        std::sync::Arc::new(busbar_kernel::config::secret::SecretResolver::builtins_only());
+    per_hop_over(
+        path,
+        auth,
+        std::sync::Arc::new(busbar_kernel::config::secret::SecretResolver::builtins_only()),
+    )
+}
+
+/// [`per_hop`], its secret resolved through `secrets`.
+fn per_hop_over(
+    path: &std::path::Path,
+    auth: std::sync::Arc<CountingOpens>,
+    secrets: std::sync::Arc<dyn busbar_contract::secret::SecretResolve>,
+) -> super::PerHop {
     let secret = busbar_contract::secret_ref::SecretRef::file(path.display().to_string());
     let value = secrets.resolve_string(&secret).expect("it resolves");
     let settings = serde_json::json!({});
@@ -6276,10 +6329,12 @@ fn per_hop(path: &std::path::Path, auth: std::sync::Arc<CountingOpens>) -> super
         auth: auth as std::sync::Arc<dyn busbar_contract::auth_calls::OutboundAuth>,
         style: "bearer",
         header: None,
-        held: std::sync::Mutex::new((
-            busbar_contract::abi::sdk::digest::sha256(value.as_bytes()),
+        lease: std::time::Duration::from_secs(60),
+        held: arc_swap::ArcSwapOption::from_pointee(super::Held {
+            digest: busbar_contract::abi::sdk::digest::sha256(value.as_bytes()),
             handle,
-        )),
+        }),
+        refreshing: std::sync::Mutex::new(()),
     }
 }
 
@@ -6296,12 +6351,13 @@ fn bearer_auth() -> std::sync::Arc<CountingOpens> {
     })
 }
 
-/// RE-RESOLVED ON EVERY HOP (as the previous plane minted a lease from the secret per hop): a hop
-/// after the secret's source changed presents the NEW value, re-opening the binding exactly once
-/// for the rotation; an unchanged secret never re-opens it, however many hops ask (handles grow by
+/// REFRESHED ONCE PER LEASE, OFF THE HOP (ARCHITECT ruling on #787): a hop after the secret's
+/// source changed still presents what the last refresh left; the first hop after the next refresh
+/// presents the NEW value, the refresh re-opening the binding exactly once for the rotation; an
+/// unchanged secret never re-opens it, however many hops or refreshes ask (handles grow by
 /// rotations, never by hops).
 #[test]
-fn a_rotated_secret_is_presented_on_the_next_hop_and_an_unchanged_one_never_reopens() {
+fn a_rotated_secret_is_presented_on_the_first_hop_after_the_next_refresh() {
     use busbar_contract::auth_calls::PerRequestHandle as _;
     let path = own_secret("rotate", "old-token");
     let auth = bearer_auth();
@@ -6323,15 +6379,31 @@ fn a_rotated_secret_is_presented_on_the_next_hop_and_an_unchanged_one_never_reop
         vec![("authorization".to_string(), "Bearer old-token".to_string())]
     );
 
+    per.refresh();
+    assert_eq!(
+        opens(),
+        1,
+        "a refresh over an unchanged secret never re-opens the binding"
+    );
     rotate(&path, "new-token");
+    assert_eq!(
+        per.handle_now(),
+        Some(first),
+        "a hop before the next refresh presents what the last refresh left"
+    );
+    per.refresh();
     let next = per.handle_now().expect("it resolves");
-    assert_ne!(next, first, "the rotation re-opened the binding");
+    assert_ne!(
+        next, first,
+        "the refresh re-opened the binding for the rotation"
+    );
     assert_eq!(opens(), 2, "one re-open for one rotation");
     assert_eq!(
         presents(&*auth, next),
         vec![("authorization".to_string(), "Bearer new-token".to_string())],
-        "the very next hop presents the new value"
+        "the first hop after the refresh presents the new value"
     );
+    per.refresh();
     assert_eq!(per.handle_now(), Some(next));
     assert_eq!(
         opens(),
@@ -6349,20 +6421,21 @@ fn a_rotated_secret_is_presented_on_the_next_hop_and_an_unchanged_one_never_reop
 fn a_rotated_header_credential_is_presented_in_the_same_header() {
     let path = own_secret("rotate-header", "key-old");
     let reach = own_reach();
-    let binding = super::upstream_credential_binding(
+    let (binding, per) = super::upstream_credential(
         "planner",
         &registration(&path, ", placement: {header: X-API-Key}"),
         &reach,
     )
     .expect("it binds")
     .expect("a binding");
-    let per = binding.per_request.as_ref().expect("re-resolved per hop");
+    use busbar_contract::auth_calls::PerRequestHandle as _;
     let first = per.handle_now().expect("it resolves");
     assert_eq!(
         presents(&*binding.auth, first),
         vec![("x-api-key".to_string(), "key-old".to_string())]
     );
     rotate(&path, "key-new");
+    per.refresh();
     let next = per.handle_now().expect("it resolves");
     assert_ne!(next, first, "the rotation re-opened the binding");
     assert_eq!(
@@ -6374,7 +6447,7 @@ fn a_rotated_header_credential_is_presented_in_the_same_header() {
 }
 
 /// HOPS RACING A ROTATION each present ONE COMPLETE VALUE, the old or the new, never a mix: the
-/// handle a hop is given was opened over one whole value, and it is swapped under one lock.
+/// handle a hop is given was opened over one whole value, and a refresh swaps it whole.
 #[test]
 fn hops_racing_a_rotation_each_present_one_whole_value() {
     use busbar_contract::auth_calls::PerRequestHandle as _;
@@ -6410,6 +6483,7 @@ fn hops_racing_a_rotation_each_present_one_whole_value() {
             "value-old-0000000000"
         };
         rotate(&path, value);
+        per.refresh();
         std::thread::sleep(std::time::Duration::from_millis(1));
     }
     stop.store(true, std::sync::atomic::Ordering::SeqCst);
@@ -6422,6 +6496,199 @@ fn hops_racing_a_rotation_each_present_one_whole_value() {
             assert!(whole.contains(&value), "a mixed or partial value: {value}");
         }
     }
+    let _ = std::fs::remove_file(&path);
+}
+
+/// A `SecretResolve` counting its resolutions over the built-in resolver.
+struct CountingResolves {
+    inner: busbar_kernel::config::secret::SecretResolver,
+    resolved: std::sync::atomic::AtomicUsize,
+}
+
+impl busbar_contract::secret::SecretResolve for CountingResolves {
+    fn resolve(&self, secret: &busbar_contract::secret_ref::SecretRef) -> Result<Vec<u8>, String> {
+        self.resolved
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        busbar_contract::secret::SecretResolve::resolve(&self.inner, secret)
+    }
+
+    fn resolve_string(
+        &self,
+        secret: &busbar_contract::secret_ref::SecretRef,
+    ) -> Result<String, String> {
+        self.resolved
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        busbar_contract::secret::SecretResolve::resolve_string(&self.inner, secret)
+    }
+}
+
+/// Whether `ask` answers within `budget`, asked on a thread of its own (a hop that blocks is
+/// left parked there and reported as not answering).
+fn answers_within<T: Send + 'static>(
+    budget: std::time::Duration,
+    ask: impl FnOnce() -> T + Send + 'static,
+) -> Option<T> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(ask());
+    });
+    rx.recv_timeout(budget).ok()
+}
+
+/// A HOP RESOLVES NOTHING AND TAKES NO LOCK (ARCHITECT ruling on #787: a secret resolution blocks
+/// its thread up to its deadline, `busbar_contract::secret::SecretCalls`, and is never made on the
+/// request path): across many hops the resolver is asked nothing, and a hop answers while a
+/// refresh holds the binding's own lock. Only a refresh resolves.
+/// RED before the fix: `handle_now` re-resolved the secret on every hop (the count rose by one per
+/// hop) under the binding's lock.
+#[test]
+fn a_hop_resolves_nothing_and_takes_no_lock() {
+    use busbar_contract::auth_calls::PerRequestHandle as _;
+    let path = own_secret("no-resolve", "steady-token");
+    let resolver = std::sync::Arc::new(CountingResolves {
+        inner: busbar_kernel::config::secret::SecretResolver::builtins_only(),
+        resolved: std::sync::atomic::AtomicUsize::new(0),
+    });
+    let per = std::sync::Arc::new(per_hop_over(
+        &path,
+        bearer_auth(),
+        std::sync::Arc::clone(&resolver)
+            as std::sync::Arc<dyn busbar_contract::secret::SecretResolve>,
+    ));
+    let resolved = || resolver.resolved.load(std::sync::atomic::Ordering::SeqCst);
+    let built = resolved();
+    let first = per.handle_now().expect("it resolved at build");
+    for _ in 0..256 {
+        assert_eq!(per.handle_now(), Some(first));
+    }
+    assert_eq!(resolved(), built, "256 hops asked the resolver nothing");
+
+    let held = per
+        .refreshing
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let hop = std::sync::Arc::clone(&per);
+    assert_eq!(
+        answers_within(std::time::Duration::from_secs(5), move || hop.handle_now()),
+        Some(Some(first)),
+        "a hop answers while a refresh holds the binding's lock"
+    );
+    drop(held);
+
+    per.refresh();
+    assert_eq!(resolved(), built + 1, "a refresh resolves, once");
+    let _ = std::fs::remove_file(&path);
+}
+
+/// An `OutboundAuth` whose `open_outbound` parks until released, over the real one.
+struct ParkedOpens {
+    inner: std::sync::Arc<CountingOpens>,
+    parked: std::sync::Mutex<Option<std::sync::mpsc::Receiver<()>>>,
+    entered: std::sync::mpsc::SyncSender<()>,
+}
+
+impl busbar_contract::auth_calls::OutboundAuth for ParkedOpens {
+    fn open_outbound(
+        &self,
+        style: &str,
+        credential: &[u8],
+        settings: &serde_json::Value,
+    ) -> Result<u64, String> {
+        let release = self
+            .parked
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        if let Some(release) = release {
+            let _ = self.entered.send(());
+            let _ = release.recv();
+        }
+        busbar_contract::auth_calls::OutboundAuth::open_outbound(
+            &*self.inner,
+            style,
+            credential,
+            settings,
+        )
+    }
+
+    fn fields_now(
+        &self,
+        handle: u64,
+        request: &busbar_contract::auth_calls::FieldsRequest,
+    ) -> Option<busbar_contract::auth_calls::Fields> {
+        busbar_contract::auth_calls::OutboundAuth::fields_now(&*self.inner, handle, request)
+    }
+
+    fn fields(
+        &self,
+        handle: u64,
+        request: busbar_contract::auth_calls::FieldsRequest,
+        deadline_ns: u64,
+    ) -> Box<dyn busbar_contract::auth_calls::Fielding> {
+        busbar_contract::auth_calls::OutboundAuth::fields(
+            &*self.inner,
+            handle,
+            request,
+            deadline_ns,
+        )
+    }
+}
+
+/// THE OPEN RUNS UNDER NO LOCK A HOP WAITS ON (ARCHITECT ruling on #787): while a refresh's
+/// `open_outbound` for a rotated secret is parked inside the auth plugin, a hop answers at once with
+/// the handle the last refresh left; once the open returns, the next hop presents the new handle.
+/// RED before the fix: the re-open ran under the `held` mutex every hop locked, so the hop waited
+/// out the open.
+#[test]
+fn an_open_runs_under_no_lock_a_hop_waits_on() {
+    use busbar_contract::auth_calls::PerRequestHandle as _;
+    let path = own_secret("parked-open", "token-before");
+    let counting = bearer_auth();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    let (entered_tx, entered_rx) = std::sync::mpsc::sync_channel(1);
+    let parked = std::sync::Arc::new(ParkedOpens {
+        inner: std::sync::Arc::clone(&counting),
+        parked: std::sync::Mutex::new(None),
+        entered: entered_tx,
+    });
+    let mut per = per_hop(&path, std::sync::Arc::clone(&counting));
+    per.auth = std::sync::Arc::clone(&parked)
+        as std::sync::Arc<dyn busbar_contract::auth_calls::OutboundAuth>;
+    let per = std::sync::Arc::new(per);
+    let first = per.handle_now().expect("it resolved at build");
+
+    rotate(&path, "token-after");
+    *parked
+        .parked
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(release_rx);
+    let refreshing = std::sync::Arc::clone(&per);
+    let refresh = std::thread::spawn(move || refreshing.refresh());
+    entered_rx
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .expect("the refresh reached the auth plugin's open");
+
+    let hop = std::sync::Arc::clone(&per);
+    assert_eq!(
+        answers_within(std::time::Duration::from_secs(5), move || hop.handle_now()),
+        Some(Some(first)),
+        "a hop answers, with the last refresh's handle, while the open is parked"
+    );
+
+    release_tx.send(()).expect("release the open");
+    refresh.join().expect("the refresh");
+    let next = per.handle_now().expect("the rotation bound");
+    assert_ne!(
+        next, first,
+        "the hop after the open presents the new handle"
+    );
+    assert_eq!(
+        presents(&*counting, next),
+        vec![(
+            "authorization".to_string(),
+            "Bearer token-after".to_string()
+        )]
+    );
     let _ = std::fs::remove_file(&path);
 }
 

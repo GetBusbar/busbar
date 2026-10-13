@@ -5243,10 +5243,11 @@ async fn a_card_signed_by_another_key_than_the_pinned_one_is_refused_and_never_s
 }
 
 /// THE AGENT'S OWN CREDENTIAL THROUGH THE DOOR (`upstream_credential:`): busbar's credential
-/// for a registration, bound by the composition, re-resolved on every hop and presented by the
-/// auth kind's per-request call (the plane never holds it); the door's public and verification
-/// card fetches waive it; a credential that stops resolving refuses each hop in the served
-/// engine's words (`receive.rs`, the `mint_from` arm, and `originate`).
+/// for a registration, bound by the composition, refreshed off the request path once per lease
+/// and presented by the auth kind's per-request call (the plane never holds it); the door's
+/// public and verification card fetches waive it; a credential its last refresh found gone
+/// refuses each hop in the served engine's words (`receive.rs`, the `mint_from` arm, and
+/// `originate`).
 mod upstream_credential {
     use super::*;
 
@@ -5323,6 +5324,14 @@ mod upstream_credential {
         ));
         std::fs::write(&path, value).expect("write the secret");
         path
+    }
+
+    /// REFRESH every served credential now, off the runtime's workers (each lease here is a
+    /// minute, so no cell waits on the refresher's own schedule).
+    async fn refreshed() {
+        tokio::task::spawn_blocking(crate::root::door_steps::refresh_credentials)
+            .await
+            .expect("the refresh");
     }
 
     /// ROTATE the secret at `path` to `value` as a secret store does: written aside, renamed
@@ -5609,10 +5618,11 @@ mod upstream_credential {
         let _ = std::fs::remove_file(&summarizer);
     }
 
-    /// ROTATION: the secret's source changes between two hops; the very next hop presents the
-    /// new value (re-resolved per hop, as predev minted a lease per hop).
+    /// ROTATION: the secret's source changes between two hops; a hop before the next refresh
+    /// still presents what the last refresh left (no hop resolves a secret: ARCHITECT ruling on
+    /// #787), and the first hop after the next refresh presents the new value.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn a_rotated_secret_is_presented_on_the_very_next_hop() {
+    async fn a_rotated_secret_is_presented_on_the_first_hop_after_the_next_refresh() {
         let _one = PUBLISHING.lock().await;
         let instance = "serve-agent-cred-rotate";
         let _published = Published(instance);
@@ -5626,8 +5636,25 @@ mod upstream_credential {
         );
         approve(&s, "planner").await;
         let _ = agent.take();
+        let mut last = "before-rotation";
         for value in ["before-rotation", "after-rotation"] {
             rotate(&path, value);
+            let (status, body) = answered(
+                &s.router,
+                rpc("planner", "message/send", SEND, Some(&s.token)),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            let (_, posts) = split(agent.take());
+            assert_eq!(posts.len(), 1, "{posts:?}");
+            assert_eq!(
+                header(&posts[0], "authorization"),
+                Some(format!("Bearer {last}")),
+                "before the refresh: {}",
+                posts[0]
+            );
+            refreshed().await;
+            last = value;
             let (status, body) = answered(
                 &s.router,
                 rpc("planner", "message/send", SEND, Some(&s.token)),
@@ -5646,8 +5673,8 @@ mod upstream_credential {
         let _ = std::fs::remove_file(&path);
     }
 
-    /// A CREDENTIAL THAT STOPS RESOLVING (its secret file removed) refuses every hop, in the
-    /// served engine's bytes, and dials nothing:
+    /// A CREDENTIAL THAT STOPS RESOLVING (its secret file removed) refuses every hop after the
+    /// next refresh, in the served engine's bytes, and dials nothing:
     ///
     /// * a relayed task hop: `502`, `-32006` "the backend agent did not complete this task"
     ///   naming the task (`fail_task`), and the task row is closed `failed`;
@@ -5656,7 +5683,7 @@ mod upstream_credential {
     /// * busbar's own originated requests (the `ListTasks` refresh, the push-config mirror): no
     ///   hop at all (`originate` returned none), the caller's own answer unchanged (`200`).
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn a_vanished_secret_refuses_each_hop_in_the_engines_words() {
+    async fn a_vanished_secret_refuses_each_hop_after_the_next_refresh() {
         let _one = PUBLISHING.lock().await;
         let instance = "serve-agent-cred-vanished";
         let _published = Published(instance);
@@ -5677,6 +5704,7 @@ mod upstream_credential {
         assert_eq!(status, StatusCode::OK, "served while it resolves: {body}");
         let live = task_of(&body);
         std::fs::remove_file(&path).expect("the secret vanishes");
+        refreshed().await;
         let _ = agent.take();
 
         let info = serde_json::json!({
@@ -5795,10 +5823,10 @@ mod upstream_credential {
 
     /// A SECRET'S SOURCE NEVER REACHES A CALLER (the root's secret-source scan, coordinator ruling
     /// 2026-10-07): the agent's own credential served while its reference resolves, then the
-    /// variable unset or the file removed, refuses the next hop with a status line, headers and
-    /// body free of the reference's source (the variable's name, the file's path, the reference
-    /// as written, the words a source's refusal is phrased in), while the source's own refusal
-    /// names it (the control).
+    /// variable unset or the file removed, refuses the first hop after the next refresh with a
+    /// status line, headers and body free of the reference's source (the variable's name, the
+    /// file's path, the reference as written, the words a source's refusal is phrased in), while
+    /// the source's own refusal names it (the control).
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_credential_that_stops_resolving_reaches_the_caller_without_its_source() {
         use super::super::secret_source_tests::{
@@ -5834,6 +5862,7 @@ mod upstream_credential {
             assert_eq!(status, StatusCode::OK, "{instance}: served while it resolves: {body}");
             std::env::remove_var(&var);
             let _ = std::fs::remove_file(&path);
+            refreshed().await;
             refused_naming_its_source(&secret);
             let response = {
                 use tower::ServiceExt as _;
