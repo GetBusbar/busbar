@@ -103,3 +103,7 @@ rcgen = { workspace = true, features = ["pem"] }
 # brings it in.
 busbar-transport-tcp-plugin = { workspace = true }
 
+# THE LOG SCAN (tests/connector_tests.rs, a settings-derived target's dropped userinfo): installs
+# the contract's in-memory log double (`busbar_contract::testkit::WarnCapture`) for the test's
+# thread. Dev-only.
+tracing = { workspace = true }

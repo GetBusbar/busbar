@@ -1279,24 +1279,24 @@ fn an_inbound_need_listens_and_its_connections_are_its_owners() {
     });
 }
 
-/// RED (ARCHITECT ruling 2026-10-02, WIRE-EXPORT userinfo): a need declared with a target that
-/// carries a userinfo — a URL's `user:pass@` or a bare `user@host:port` — is REFUSED, fail closed:
-/// the answer is kept for the need's admission, and nothing opens on it. The same target without
-/// the userinfo is declared.
+/// RED (ARCHITECT ruling 2026-10-02, WIRE-EXPORT userinfo; kept by the audit export-webhook #1
+/// ruling (a)): the refusal of a userinfo in a need's target STAYS for every target the need's own
+/// settings did not give it — a need with no `target_from`, a member path, a path outside its
+/// settings. Such a target carrying a userinfo — a URL's `user:pass@` or a bare `user@host:port` —
+/// is REFUSED, fail closed: the answer is kept for the need's admission, and nothing opens on it.
+/// So is a settings-derived target whose userinfo cannot be read out of it. The same target
+/// without the userinfo is declared.
 #[test]
-fn a_declared_target_carrying_a_userinfo_is_refused() {
+fn a_target_not_from_its_own_settings_carrying_a_userinfo_is_still_refused() {
     worker().block_on(async {
         let (_listening, resolved) = far_end().await;
         let c = literal_connector();
-        let need = config_targeted_need("settings.url");
-        for credentialed in [
-            format!("http://user:secret@{resolved}/v1/traces"),
-            format!("user@{resolved}"),
-        ] {
+        let refused = |need: &ReadNeed, credentialed: &str| {
             assert_eq!(
-                DeclaredConns::declare(&c, OWNER, NeedId(0), &need, Some(&credentialed), None),
+                DeclaredConns::declare(&c, OWNER, NeedId(0), need, Some(credentialed), None),
                 Err(ConnError::Refused),
-                "{credentialed}"
+                "{:?} {credentialed}",
+                need.target_from
             );
             assert_eq!(
                 DeclaredConns::declared(&c, OWNER, NeedId(0)),
@@ -1312,19 +1312,107 @@ fn a_declared_target_carrying_a_userinfo_is_refused() {
                     },
                 )
                 .is_err());
+        };
+        for target_from in [
+            "",
+            "settings.*.url",
+            "request.url",
+            "settings.",
+            "settings..url",
+        ] {
+            let need = config_targeted_need(target_from);
+            for credentialed in [
+                format!("http://user:secret@{resolved}/v1/traces"),
+                format!("user@{resolved}"),
+            ] {
+                refused(&need, &credentialed);
+            }
         }
+        refused(
+            &config_targeted_need("settings.url"),
+            &format!("http:\\\\user:secret@{resolved}/v1/traces"),
+        );
         assert_eq!(
             DeclaredConns::declare(
                 &c,
                 OWNER,
                 NeedId(0),
-                &need,
+                &config_targeted_need("settings.url"),
                 Some(&format!("http://{resolved}/v1/traces")),
                 None
             ),
             Ok(())
         );
     });
+}
+
+/// RED (ARCHITECT ruling, audit export-webhook #1 (a)(b)): USERINFO IS NOT PART OF A
+/// SETTINGS-DERIVED TARGET. A need whose `target_from` reads the plugin's own settings, declared
+/// with a target carrying a userinfo — a URL's `user:pass@`, a bare `user:pass@host:port` or
+/// `user@host:port` — is declared, pinned to that target WITHOUT the userinfo, and opens there.
+/// The userinfo is dropped: no record the connector keeps holds it, no event logged while the need
+/// is declared, admitted, opened or refused carries it, and no error text says it.
+#[test]
+fn a_settings_derived_target_is_declared_without_its_userinfo() {
+    const USER: &str = "the-user";
+    const SECRET: &str = "s3cret-pw";
+    let cap = busbar_contract::testkit::WarnCapture::capturing_debug();
+    let mut said: Vec<String> = Vec::new();
+    tracing::subscriber::with_default(cap.clone(), || {
+        worker().block_on(async {
+            let (_listening, resolved) = far_end().await;
+            let c = literal_connector();
+            let need = config_targeted_need("settings.url");
+            let pinned = |need_id: NeedId| {
+                c.over
+                    .lock()
+                    .unwrap()
+                    .get(&(OWNER, need_id))
+                    .and_then(|d| d.declared_target.clone())
+            };
+            for (credentialed, cleared) in [
+                (
+                    format!("http://{USER}:{SECRET}@{resolved}/v1/traces"),
+                    format!("http://{resolved}/v1/traces"),
+                ),
+                (format!("{USER}:{SECRET}@{resolved}"), resolved.clone()),
+                (format!("{USER}@{resolved}"), resolved.clone()),
+            ] {
+                assert_eq!(
+                    DeclaredConns::declare(&c, OWNER, NeedId(0), &need, Some(&credentialed), None),
+                    Ok(()),
+                    "{credentialed}"
+                );
+                assert_eq!(DeclaredConns::declared(&c, OWNER, NeedId(0)), Some(Ok(())));
+                assert_eq!(pinned(NeedId(0)).as_deref(), Some(cleared.as_str()));
+                said.push(format!("{:?}", pinned(NeedId(0))));
+                said.push(format!("{:?}", c.declared_spec(OWNER, NeedId(0))));
+            }
+            // The cleared target is the one the need dials: an open naming none opens there.
+            let id = c
+                .open(OWNER, NeedId(0), &OpenDesc::default())
+                .expect("the cleared target opens");
+            c.close(OWNER, id).unwrap();
+            // A settings-derived target refused on other grounds (a cloud metadata host) says
+            // nothing of its userinfo either, and leaves no record of it.
+            let metadata = format!("{USER}:{SECRET}@169.254.169.254:80");
+            let e = DeclaredConns::declare(&c, OWNER, NeedId(1), &need, Some(&metadata), None)
+                .expect_err("a metadata host is refused");
+            said.push(format!("{e:?} {}", e.text()));
+            assert_eq!(pinned(NeedId(1)), None);
+            let e = c
+                .open(OWNER, NeedId(1), &OpenDesc::default())
+                .expect_err("nothing opens on a refused need");
+            said.push(format!("{e:?} {}", e.text()));
+        });
+    });
+    said.extend(cap.messages());
+    for line in &said {
+        assert!(
+            !line.contains(SECRET) && !line.contains(USER),
+            "the dropped userinfo was repeated: {line}"
+        );
+    }
 }
 
 // ── a need whose target is a PROGRAM ───────────────────────────────────────────────────────────
