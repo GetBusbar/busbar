@@ -35,6 +35,7 @@
 //!   carried connections to the kernel's transport seam.
 //! * [`process`] builds the process's one connector for the root: the deployment's one destination
 //!   guard behind the one dial judge, the default outbound trust, and the proxy environment.
+//! * [`fetch`] is the `plugins.fetch` download over the connection table, the root's own need.
 //! * [`proxy`] is the proxy environment every framed dial honours (`HTTPS_PROXY`, `HTTP_PROXY`,
 //!   `ALL_PROXY`, `NO_PROXY`), the CONNECT tunnel 1.5.5's clients ran.
 //!
@@ -51,6 +52,7 @@ pub mod carrier;
 pub mod compose;
 pub mod dtls;
 pub mod endpoint;
+pub mod fetch;
 pub mod framed_stream;
 pub mod framer;
 pub mod guard;
