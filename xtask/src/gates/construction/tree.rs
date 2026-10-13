@@ -798,7 +798,7 @@ pub fn glob_dirs(cx: &Ctx, pattern: &str) -> Vec<String> {
                 } else {
                     format!("{base}/{seg}")
                 };
-                if cx.abs(&cand).exists() {
+                if cx.abs(&cand).exists() || cx.is_dir(&cand) {
                     next.push(cand);
                 }
                 continue;
@@ -808,14 +808,17 @@ pub fn glob_dirs(cx: &Ctx, pattern: &str) -> Vec<String> {
             } else {
                 cx.abs(base)
             };
-            let Ok(rd) = std::fs::read_dir(&dir) else {
-                continue;
-            };
-            let mut names: Vec<String> = rd
+            // The disk's entries and the BASE layer's (a pinned plane's crate directory, laid
+            // where it lived: ARCHITECT row 106 (A)).
+            let mut names: Vec<String> = std::fs::read_dir(&dir)
+                .into_iter()
+                .flatten()
                 .filter_map(|e| e.ok())
                 .map(|e| e.file_name().to_string_lossy().into_owned())
+                .chain(cx.base_children(base.as_str()))
                 .collect();
             names.sort();
+            names.dedup();
             for nm in names {
                 if glob_segment(seg, &nm) {
                     next.push(if base.is_empty() {

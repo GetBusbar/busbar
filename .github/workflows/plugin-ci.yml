@@ -388,8 +388,7 @@ jobs:
           CRATE: ${{ inputs.plugin_crate }}
         run: |
           set -euo pipefail
-          bash scripts/fleet/plane-gates.sh --selftest
-          bash scripts/fleet/plane-gates.sh "$GITHUB_WORKSPACE/plugin" "${CRATE%-plugin}"
+          "$PLUGIN_GATES" plugin-gates plane "$GITHUB_WORKSPACE/busbar" "$GITHUB_WORKSPACE/plugin" "${CRATE%-plugin}"
       - name: cargo deny (the rendered deny.toml; busbar's .github/fleet/deps.toml at the pin)
         if: ${{ !cancelled() && steps.crates.outputs.present == 'true' }}
         working-directory: plugin

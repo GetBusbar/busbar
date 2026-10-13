@@ -658,6 +658,40 @@ impl Ctx {
         self.base.as_deref()
     }
 
+    /// Whether the BASE layer lays `rel` itself or anything under it (`rel` as a directory).
+    pub fn in_base(&self, rel: impl AsRef<Path>) -> bool {
+        let rel = rel.as_ref();
+        self.base()
+            .is_some_and(|b| b.paths().any(|p| p == rel || p.starts_with(rel)))
+    }
+
+    /// The names of `dir`'s immediate children the BASE layer lays (a laid crate's directory under
+    /// `crates/`, a laid file under its `src/`), sorted. Empty when it lays nothing there.
+    pub fn base_children(&self, dir: impl AsRef<Path>) -> Vec<String> {
+        let dir = dir.as_ref();
+        let mut out: Vec<String> = self
+            .base()
+            .into_iter()
+            .flat_map(|b| b.paths())
+            .filter_map(|p| p.strip_prefix(dir).ok())
+            .filter_map(|rest| rest.components().next())
+            .map(|c| c.as_os_str().to_string_lossy().into_owned())
+            .collect();
+        out.sort();
+        out.dedup();
+        out
+    }
+
+    /// Whether `rel` is a directory of the tree this context shows: on disk, or laid by the BASE
+    /// layer (a pinned plane's crate directory and every directory inside it).
+    pub fn is_dir(&self, rel: impl AsRef<Path>) -> bool {
+        let rel = rel.as_ref();
+        self.abs(rel).is_dir()
+            || self
+                .base()
+                .is_some_and(|b| b.paths().any(|p| p != rel && p.starts_with(rel)))
+    }
+
     /// What the overlay, else the base, claims about `rel`: the overlay wins.
     fn claim(&self, rel: &Path) -> Option<&Change> {
         self.overlay()
@@ -808,7 +842,9 @@ impl Ctx {
             Some(Change::Absent) => return false,
             None => {}
         }
-        self.abs(rel).exists()
+        // A directory the base layer lays (a pinned plane's crate, or a directory inside it) is
+        // there, as it was when the crate lived in the tree.
+        self.abs(rel).exists() || self.is_dir(rel)
     }
 
     /// The repo walk. Sorted, floor-checked, missing-root-checked, overlay-aware.
