@@ -41,6 +41,15 @@
 //!    `AuditRecord`'s `amount: Amount` pulls in `Amount`, whose fields are where the priced figure
 //!    actually sits.
 //!
+//! WHAT THE JOURNAL STORES, NOT WHAT A FIELD IS CALLED (audit xtask G HIGH 1). A name list misses
+//! a figure under a name it does not know (`Posting.settled: i128`), so the stored-price row also
+//! reads each journal WRITER: the fields of the record it reads (`self.key`, `record` handed on
+//! whole; a `.len()` of a field is a count of it, not the field), and every type such a field names,
+//! whole, across crates through the writer file's `use` lines. A written field whose type is a
+//! money figure's ([`MONEY_TYPES`]) is red whatever it is called, and so is any
+//! `BodyWriter::figure` call in a writer. An enum's tuple variant is the field its payload is
+//! (`Figure(u64)` is `figure: u64`), for both record rows.
+//!
 //! EXISTENCE BEFORE VERDICT. Both record rows refuse, rather than pass over a gap, when: a record
 //! source cannot be read; the store file declares fewer types than [`STORE_TYPE_FLOOR`]; the
 //! journal writers yield fewer journal record types than [`JOURNAL_ROOT_FLOOR`]; a journal type
@@ -280,8 +289,35 @@ struct TypeDecl {
     fields: Vec<Field>,
 }
 
-/// Every production `struct`/`enum` a source file declares, with its named fields. Test modules and
-/// comments are dropped first (through the one scanner), braces are counted on literal-blanked text.
+/// An enum's TUPLE VARIANT as the field its payload is: `Figure(u64)` is `figure: u64` (audit xtask
+/// G HIGH 1). A payload is what the variant carries onto the chain exactly as a named field is, so a
+/// figure in one is judged like a field — before this, a line with no `name:` was not a field at
+/// all and `Held::Figure(u64)` was invisible. The variant name is snake-cased so the token match
+/// sees its `_` segments (`PrincipalId` is `principal_id`).
+fn tuple_variant(trimmed: &str) -> Option<(String, String)> {
+    let open = trimmed.find('(')?;
+    let close = trimmed.rfind(')')?;
+    let name = trimmed[..open].trim();
+    if close <= open || !is_ident(name) || !name.starts_with(|c: char| c.is_ascii_uppercase()) {
+        return None;
+    }
+    let mut snake = String::new();
+    for (k, c) in name.chars().enumerate() {
+        if c.is_ascii_uppercase() {
+            if k > 0 {
+                snake.push('_');
+            }
+            snake.push(c.to_ascii_lowercase());
+        } else {
+            snake.push(c);
+        }
+    }
+    Some((snake, trimmed[open + 1..close].trim().to_string()))
+}
+
+/// Every production `struct`/`enum` a source file declares, with its named fields — and, for an
+/// enum, each tuple variant's payload ([`tuple_variant`]). Test modules and comments are dropped
+/// first (through the one scanner), braces are counted on literal-blanked text.
 fn parse_decls(file: &str, src: &str) -> Vec<TypeDecl> {
     let lines = scan::production_lines(src);
     let mut out = Vec::new();
@@ -293,6 +329,7 @@ fn parse_decls(file: &str, src: &str) -> Vec<TypeDecl> {
             i += 1;
             continue;
         };
+        let is_enum = strip_vis(trimmed).starts_with("enum ");
         let mut decl = TypeDecl {
             name: name.to_string(),
             file: file.to_string(),
@@ -337,6 +374,16 @@ fn parse_decls(file: &str, src: &str) -> Vec<TypeDecl> {
                         line: *no,
                     });
                 }
+                // A variant line sits at depth 1 of the enum's body.
+                if is_enum && depth == 1 {
+                    if let Some((n, ty)) = tuple_variant(t.trim()) {
+                        decl.fields.push(Field {
+                            name: n,
+                            ty,
+                            line: *no,
+                        });
+                    }
+                }
                 depth += scan::delta(&blanked, '{', '}');
                 if depth <= 0 {
                     break 'body;
@@ -350,18 +397,28 @@ fn parse_decls(file: &str, src: &str) -> Vec<TypeDecl> {
     out
 }
 
-/// The journal record type names one journal writer file writes: the `&T` argument of every
+/// One journal record type and the writer that turns it into a journal body.
+#[derive(Debug, Clone)]
+struct Root {
+    /// The record type.
+    ty: String,
+    /// The writer file it was derived from, and the writer's line there.
+    file: String,
+    line: usize,
+    /// The name the writer reads the record through: `self`, or the argument's name.
+    recv: String,
+    /// The writer's body, from its opening brace to the brace that closes it.
+    writer: String,
+}
+
+/// The journal record types one journal writer file writes: the `&T` argument of every
 /// `fn <name>_body(x: &T)` or free `fn body(x: &T)`, and every `T` whose `impl T { .. }` carries
-/// `fn body(&self)`.
-fn journal_roots(seam_src: &str) -> Vec<String> {
-    let mut roots: Vec<String> = Vec::new();
-    let mut push = |t: &str| {
-        if !roots.iter().any(|r| r == t) {
-            roots.push(t.to_string());
-        }
-    };
+/// `fn body(&self)` — each with the writer's own text, which is what says what reaches the chain.
+fn journal_roots(file: &str, src: &str) -> Vec<Root> {
+    let lines = scan::production_lines(src);
+    let mut roots: Vec<Root> = Vec::new();
     let mut current_impl: Option<String> = None;
-    for (_, text) in scan::production_lines(seam_src) {
+    for (k, (no, text)) in lines.iter().enumerate() {
         let t = text.trim();
         if !text.starts_with(char::is_whitespace) {
             current_impl = t
@@ -382,25 +439,146 @@ fn journal_roots(seam_src: &str) -> Vec<String> {
         };
         let fname = &rest[..paren];
         let args = &rest[paren + 1..];
-        if fname == "body" && args.starts_with("&self") {
-            if let Some(owner) = &current_impl {
-                push(owner);
-            }
-            continue;
-        }
-        if fname == "body" || fname.ends_with("_body") {
-            if let Some(amp) = args.find('&') {
+        let found: Option<(String, String)> = if fname == "body" && args.starts_with("&self") {
+            current_impl
+                .clone()
+                .map(|owner| (owner, "self".to_string()))
+        } else if fname == "body" || fname.ends_with("_body") {
+            args.find('&').and_then(|amp| {
                 let ty: String = args[amp + 1..]
                     .chars()
                     .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
                     .collect();
-                if is_ident(&ty) && ty != "self" {
-                    push(&ty);
-                }
-            }
+                // The argument's own name: the identifier just before its `:`.
+                let recv = args[..amp]
+                    .trim_end()
+                    .trim_end_matches(':')
+                    .rsplit(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                    .next()
+                    .unwrap_or("")
+                    .to_string();
+                (is_ident(&ty) && ty != "self").then_some((ty, recv))
+            })
+        } else {
+            None
+        };
+        let Some((ty, recv)) = found else {
+            continue;
+        };
+        if roots.iter().any(|r| r.ty == ty) {
+            continue;
         }
+        roots.push(Root {
+            ty,
+            file: file.to_string(),
+            line: *no,
+            recv,
+            writer: fn_body(&lines[k..]),
+        });
     }
     roots
+}
+
+/// The body of the function whose signature opens `lines[0]`: its text from the opening brace to
+/// the brace that closes it (braces counted on literal-blanked text). Empty for a signature with no
+/// body.
+fn fn_body(lines: &[(usize, String)]) -> String {
+    let mut out = String::new();
+    let mut depth: i32 = 0;
+    let mut opened = false;
+    for (_, text) in lines {
+        let blanked = scan::blank_literals(text);
+        let from = if opened {
+            0
+        } else if let (Some(_), Some(raw)) = (blanked.find('{'), text.find('{')) {
+            opened = true;
+            raw
+        } else if blanked.contains(';') {
+            break;
+        } else {
+            continue;
+        };
+        depth += scan::delta(&blanked, '{', '}');
+        out.push_str(&text[from..]);
+        out.push('\n');
+        if depth <= 0 {
+            break;
+        }
+    }
+    out
+}
+
+/// The byte offsets just past every WHOLE-WORD occurrence of `needle` in `hay`.
+fn word_ends(hay: &str, needle: &str) -> Vec<usize> {
+    let wordy = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    let mut out = Vec::new();
+    if needle.is_empty() {
+        return out;
+    }
+    let mut from = 0;
+    while let Some(at) = hay[from..].find(needle) {
+        let start = from + at;
+        let end = start + needle.len();
+        from = end;
+        let before = hay[..start].chars().next_back().is_none_or(|c| !wordy(c));
+        let after = hay[end..].chars().next().is_none_or(|c| !wordy(c));
+        if before && after {
+            out.push(end);
+        }
+    }
+    out
+}
+
+/// Reads of a field that put a COUNT or a flag of it on the chain, not the field itself:
+/// `checkpoint.totals.len()` is how many balances a checkpoint sealed, never their figures.
+const COUNT_READS: &[&str] = &[".len()", ".is_some()", ".is_none()", ".is_empty()"];
+
+/// Whether the writer hands the record on WHOLE (`journal_body(record)`): an occurrence of its name
+/// that is not a field read. A writer whose argument the derivation could not name is read as
+/// whole too — over-reading is a red to look at, under-reading is a hole.
+fn passes_whole(writer: &str, recv: &str) -> bool {
+    recv.is_empty()
+        || word_ends(writer, recv)
+            .into_iter()
+            .any(|end| !writer[end..].starts_with('.'))
+}
+
+/// Whether the writer reads `recv.field` other than as a count of it.
+fn writes_field(writer: &str, recv: &str, field: &str) -> bool {
+    word_ends(writer, &format!("{recv}.{field}"))
+        .into_iter()
+        .any(|end| !COUNT_READS.iter().any(|m| writer[end..].starts_with(*m)))
+}
+
+/// THE SERIALIZATION READ (audit xtask G HIGH 1): the fields of a journal record its writer puts on
+/// the chain. `Posting` holds `reserved`/`settled`/`overdraft` as readings its writer never writes;
+/// a field the writer does read — `self.key`, `self.held`, `self.counts` — reaches the chain.
+fn written_fields(def: &TypeDecl, root: &Root) -> Vec<Field> {
+    if passes_whole(&root.writer, &root.recv) {
+        return def.fields.clone();
+    }
+    def.fields
+        .iter()
+        .filter(|f| writes_field(&root.writer, &root.recv, &f.name))
+        .cloned()
+        .collect()
+}
+
+/// The types a money FIGURE is held in: the ledger's signed figure width (`i128` — what
+/// `BodyWriter::figure` takes, and what every `Totals` running figure and every `Posting` reading
+/// is), its unsigned twin, and the cost view's `Money`. A count is a `u64` or a contract `Count`,
+/// never one of these — so a field of one of these types on the chain is a stored figure whatever
+/// it is called.
+const MONEY_TYPES: &[&str] = &["i128", "u128", "Money"];
+
+/// The identifier words a field's type text names (`Option<UnitCounts>` → `Option`, `UnitCounts`).
+fn type_words(ty: &str) -> impl Iterator<Item = &str> + '_ {
+    ty.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+        .filter(|w| is_ident(w))
+}
+
+fn money_typed(ty: &str) -> bool {
+    type_words(ty).any(|w| MONEY_TYPES.contains(&w))
 }
 
 /// THE JOURNAL WRITERS, DERIVED (audit xtask G HIGH 2): every production file under `crates/` that
@@ -428,22 +606,27 @@ fn journal_writers(cx: &Ctx) -> Result<Vec<(String, String)>, String> {
     Ok(out)
 }
 
-/// The crate source directory a type the seam imports lives in: the first path segment of the `use`
-/// statement that names it (`busbar_kernel_audit` → `crates/busbar-kernel-audit/src`).
-fn crate_dir_of(seam_src: &str, ty: &str) -> Option<String> {
-    let code: String = scan::production_lines(seam_src)
+/// Every `use` path a source file declares (production code only), joined across lines.
+fn use_paths(src: &str) -> Vec<String> {
+    let code: String = scan::production_lines(src)
         .into_iter()
         .map(|(_, l)| l)
         .collect::<Vec<_>>()
         .join("\n");
-    for stmt in code.split(';') {
-        let s = stmt.trim();
-        let Some(path) = s
-            .strip_prefix("use ")
-            .or_else(|| s.strip_prefix("pub use "))
-        else {
-            continue;
-        };
+    code.split(';')
+        .filter_map(|stmt| {
+            let s = stmt.trim();
+            s.strip_prefix("use ")
+                .or_else(|| s.strip_prefix("pub use "))
+                .map(str::to_string)
+        })
+        .collect()
+}
+
+/// The crate source directory a type a file imports lives in: the first path segment of the `use`
+/// path that names it (`busbar_kernel_audit` → `crates/busbar-kernel-audit/src`).
+fn crate_dir_in(uses: &[String], ty: &str) -> Option<String> {
+    for path in uses {
         let names_it = path
             .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
             .any(|w| w == ty);
@@ -476,6 +659,73 @@ fn crate_decls(cx: &Ctx, dir: &str) -> Result<BTreeMap<String, Vec<TypeDecl>>, S
     Ok(map)
 }
 
+type Decls = BTreeMap<String, Vec<TypeDecl>>;
+type Cache = BTreeMap<String, Result<Decls, String>>;
+
+/// Where a type name is looked up: the writer file's own declarations, or one crate's.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Pool {
+    Local,
+    Crate(String),
+}
+
+/// Every definition of `name` in `pool`. `Err` when the pool's crate cannot be walked.
+fn lookup(
+    cx: &Ctx,
+    cache: &mut Cache,
+    local: &[TypeDecl],
+    pool: &Pool,
+    name: &str,
+) -> Result<Vec<TypeDecl>, String> {
+    match pool {
+        Pool::Local => Ok(local.iter().filter(|d| d.name == name).cloned().collect()),
+        Pool::Crate(dir) => match cache
+            .entry(dir.clone())
+            .or_insert_with(|| crate_decls(cx, dir))
+        {
+            Ok(map) => Ok(map.get(name).cloned().unwrap_or_default()),
+            Err(e) => Err(e.clone()),
+        },
+    }
+}
+
+/// The ONE definition a field's type word names, and the pool it was found in: the member's own
+/// pool first, then — for a type the writer file imports from another crate (`TotalsKey`,
+/// `PostingFlags`, audit xtask G HIGH 1) — the crate its `use` line names. `None` for a word that
+/// names no type the tree defines exactly once (a primitive, a std type, an alias, a name two
+/// definitions share).
+fn resolve_word(
+    cx: &Ctx,
+    cache: &mut Cache,
+    local: &[TypeDecl],
+    uses: &[String],
+    pool: &Pool,
+    word: &str,
+) -> Option<(TypeDecl, Pool)> {
+    match lookup(cx, cache, local, pool, word).ok()?.as_slice() {
+        [one] => return Some((one.clone(), pool.clone())),
+        [] => {}
+        _ => return None,
+    }
+    let other = Pool::Crate(crate_dir_in(uses, word)?);
+    if other == *pool {
+        return None;
+    }
+    match lookup(cx, cache, local, &other, word).ok()?.as_slice() {
+        [one] => Some((one.clone(), other.clone())),
+        _ => None,
+    }
+}
+
+/// One field a journal writer puts on the chain, and which writer.
+#[derive(Debug, Clone)]
+struct Written {
+    owner: String,
+    file: String,
+    field: Field,
+    writer: String,
+}
+
 /// Where one population member came from, printed so a reader can check the derivation.
 #[derive(Debug, Clone)]
 struct Member {
@@ -489,6 +739,10 @@ struct Population {
     journal_roots: Vec<String>,
     /// The derived journal writer files the roots were read from.
     writers: Vec<String>,
+    /// Every field a journal writer puts on the chain (the serialization read).
+    written: Vec<Written>,
+    /// Every `BodyWriter::figure` call in a journal writer.
+    figures: Vec<String>,
     store_types: usize,
 }
 
@@ -534,62 +788,50 @@ fn derive_population(cx: &Ctx) -> Population {
     // 2. THE JOURNAL — every type a derived journal writer writes, and what its fields name.
     let mut roots: Vec<String> = Vec::new();
     let mut writers: Vec<String> = Vec::new();
+    let mut written: Vec<Written> = Vec::new();
+    let mut figures: Vec<String> = Vec::new();
     match journal_writers(cx) {
         Err(e) => gaps.push(format!("the journal-writer walk could not run: {e}")),
         Ok(files) => {
-            let mut crate_cache: BTreeMap<String, BTreeMap<String, Vec<TypeDecl>>> =
-                BTreeMap::new();
+            let mut cache: Cache = BTreeMap::new();
             for (seam_path, seam) in &files {
                 writers.push(seam_path.clone());
                 let seam_decls = parse_decls(seam_path, seam);
-                for root in journal_roots(seam) {
-                    roots.push(root.clone());
-                    let root = &root;
+                let uses = use_paths(seam);
+                for root in journal_roots(seam_path, seam) {
+                    roots.push(root.ty.clone());
+                    let name = root.ty.as_str();
                     // A type the writer file defines itself resolves there; any other resolves
                     // through the file's own `use` line to the crate that defines it.
-                    let (dir, local) = if seam_decls.iter().any(|d| &d.name == root) {
-                        (seam_path.clone(), true)
+                    let (pool, dir) = if seam_decls.iter().any(|d| d.name == name) {
+                        (Pool::Local, seam_path.clone())
                     } else {
-                        match crate_dir_of(seam, root) {
-                            Some(d) => (d, false),
+                        match crate_dir_in(&uses, name) {
+                            Some(d) => (Pool::Crate(d.clone()), d),
                             None => {
                                 gaps.push(format!(
-                                    "journal record `{root}` ({seam_path}) is neither defined there \
-                                     nor named by any `use` line — the scan cannot find its \
+                                    "journal record `{name}` ({seam_path}) is neither defined \
+                                     there nor named by any `use` line — the scan cannot find its \
                                      definition"
                                 ));
                                 continue;
                             }
                         }
                     };
-                    if !local && !crate_cache.contains_key(&dir) {
-                        match crate_decls(cx, &dir) {
-                            Ok(m) => {
-                                crate_cache.insert(dir.clone(), m);
-                            }
-                            Err(e) => {
-                                gaps.push(format!(
-                                    "journal record `{root}`: its crate could not be walked: {e}"
-                                ));
-                                continue;
-                            }
+                    let candidates = match lookup(cx, &mut cache, &seam_decls, &pool, name) {
+                        Ok(c) => c,
+                        Err(e) => {
+                            gaps.push(format!(
+                                "journal record `{name}`: its crate could not be walked: {e}"
+                            ));
+                            continue;
                         }
-                    }
-                    let empty = BTreeMap::new();
-                    let decls = if local { &empty } else { &crate_cache[&dir] };
-                    let candidates: Vec<&TypeDecl> = if local {
-                        seam_decls.iter().filter(|d| &d.name == root).collect()
-                    } else {
-                        decls
-                            .get(root)
-                            .map(|v| v.iter().collect())
-                            .unwrap_or_default()
                     };
                     let def = match candidates.as_slice() {
-                        [one] => (*one).clone(),
+                        [one] => one.clone(),
                         [] => {
                             gaps.push(format!(
-                                "journal record `{root}` resolves to NO definition under {dir} — \
+                                "journal record `{name}` resolves to NO definition under {dir} — \
                                  renamed or moved; the rows cannot vouch for a record they cannot \
                                  read"
                             ));
@@ -597,7 +839,7 @@ fn derive_population(cx: &Ctx) -> Population {
                         }
                         many => {
                             gaps.push(format!(
-                                "journal record `{root}` resolves to {} definitions under {dir} \
+                                "journal record `{name}` resolves to {} definitions under {dir} \
                                  ({}) — the scan cannot tell which one {seam_path} writes",
                                 many.len(),
                                 many.iter()
@@ -608,34 +850,59 @@ fn derive_population(cx: &Ctx) -> Population {
                             continue;
                         }
                     };
-                    // THE FIELD CLOSURE: every type a member's fields name that this crate defines
-                    // exactly once. `AuditRecord.amount: Amount` is how `Amount` is reached.
-                    let mut queue = vec![def];
-                    while let Some(d) = queue.pop() {
+                    // THE FIELD CLOSURE: every type a member's fields (and variant payloads) name
+                    // that its crate — or, imported, another crate — defines exactly once.
+                    // `AuditRecord.amount: Amount` is how `Amount` is reached.
+                    let mut queue = vec![(def.clone(), pool.clone())];
+                    while let Some((d, p)) = queue.pop() {
                         for f in &d.fields {
-                            for word in
-                                f.ty.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
-                                    .filter(|w| is_ident(w))
-                            {
-                                let pool: Vec<&TypeDecl> = if local {
-                                    seam_decls.iter().filter(|x| x.name == word).collect()
-                                } else {
-                                    decls
-                                        .get(word)
-                                        .map(|v| v.iter().collect())
-                                        .unwrap_or_default()
+                            for word in type_words(&f.ty) {
+                                let Some((one, q)) =
+                                    resolve_word(cx, &mut cache, &seam_decls, &uses, &p, word)
+                                else {
+                                    continue;
                                 };
-                                if let [one] = pool.as_slice() {
-                                    if !members
-                                        .iter()
-                                        .any(|m| m.decl.name == one.name && m.decl.file == one.file)
-                                    {
-                                        queue.push((*one).clone());
-                                    }
+                                if !members
+                                    .iter()
+                                    .any(|m| m.decl.name == one.name && m.decl.file == one.file)
+                                {
+                                    queue.push((one, q));
                                 }
                             }
                         }
                         admit(d, &mut members);
+                    }
+                    // THE SERIALIZATION READ (audit xtask G HIGH 1): what the writer puts on the
+                    // chain — the root's fields its writer reads, and every type such a field
+                    // names, whole. A `BodyWriter::figure` call is a ledger figure by the writer's
+                    // own API.
+                    let at = format!("the `{}` writer at {}:{}", root.ty, root.file, root.line);
+                    if root.writer.contains(".figure(") {
+                        figures.push(format!(
+                            "`BodyWriter::figure` (a signed ledger figure) in {at}"
+                        ));
+                    }
+                    let mut chain = vec![(written_fields(&def, &root), def, pool)];
+                    let mut read = std::collections::BTreeSet::new();
+                    while let Some((fields, d, p)) = chain.pop() {
+                        if !read.insert((d.file.clone(), d.name.clone())) {
+                            continue;
+                        }
+                        for f in fields {
+                            for word in type_words(&f.ty) {
+                                if let Some((one, q)) =
+                                    resolve_word(cx, &mut cache, &seam_decls, &uses, &p, word)
+                                {
+                                    chain.push((one.fields.clone(), one, q));
+                                }
+                            }
+                            written.push(Written {
+                                owner: d.name.clone(),
+                                file: d.file.clone(),
+                                field: f,
+                                writer: at.clone(),
+                            });
+                        }
                     }
                 }
             }
@@ -666,6 +933,8 @@ fn derive_population(cx: &Ctx) -> Population {
         gaps,
         journal_roots: roots,
         writers,
+        written,
+        figures,
         store_types,
     }
 }
@@ -693,6 +962,21 @@ fn scan_population(pop: &Population) -> RecordScan {
             }
         }
     }
+    // WHAT THE JOURNAL STORES, by type (audit xtask G HIGH 1): a field a journal writer puts on the
+    // chain whose type is a money figure's, whatever its name — `Posting.settled: i128` written by
+    // `Posting::body` is a stored figure though no token names it.
+    let mut judged = std::collections::BTreeSet::new();
+    for w in &pop.written {
+        if money_typed(&w.field.ty)
+            && judged.insert((w.file.clone(), w.field.line, w.field.name.clone()))
+        {
+            stored_price.push(format!(
+                "`{}: {}` on {} at {}:{} — a money-typed figure {} puts on the chain",
+                w.field.name, w.field.ty, w.owner, w.file, w.field.line, w.writer
+            ));
+        }
+    }
+    stored_price.extend(pop.figures.iter().cloned());
     plugin_keyed.sort();
     stored_price.sort();
     RecordScan {
@@ -1063,6 +1347,94 @@ impl Gate for MoneyInvariantsGate {
             &[ROW_NO_STORED_PRICE],
             ov8,
             &["`price` on Amendment", AMEND],
+        ));
+
+        // RED (i) — audit xtask G HIGH 1: a money figure the posting writer puts on the chain under
+        // a name no token knows. `Posting.settled` is an `i128` reading; the old gate judged field
+        // NAMES only, so one `body.num(self.settled as u64)` in `Posting::body` passed GREEN.
+        let ov9 = plant_over(cx, &fixture, JOURNAL_SEAM, |s| {
+            s.replace(
+                "body.num(self.rate_card_version);",
+                "body.num(self.rate_card_version);\n        body.num(self.settled as u64);",
+            )
+        });
+        report.push(prove_red(
+            &fcx,
+            self,
+            "a money-typed field the journal writer writes is RED whatever it is called",
+            &[ROW_NO_STORED_PRICE],
+            ov9,
+            &["`settled: i128` on Posting"],
+        ));
+
+        // RED (j) — audit xtask G HIGH 1: a money figure carried as an ENUM VARIANT PAYLOAD of a
+        // journalled record (`UnitMark.mark: Mark`, written by `UnitMark::body`). The old gate read
+        // only `name: Type` parts, so a tuple variant was no field at all and this passed GREEN.
+        let ov10 = plant_over(cx, &fixture, JOURNAL_SEAM, |s| {
+            s.replace("pub enum Mark {", "pub enum Mark {\n    Charged(i128),")
+        });
+        report.push(prove_red(
+            &fcx,
+            self,
+            "a money figure in an enum variant payload on a journalled record is RED",
+            &[ROW_NO_STORED_PRICE],
+            ov10,
+            &["`charged: i128` on Mark"],
+        ));
+
+        // RED (k) — audit xtask G HIGH 1: a journal writer calling `BodyWriter::figure`, the
+        // journal's own "signed ledger figure" field. The old gate never read a writer.
+        let ov11 = plant_over(cx, &fixture, JOURNAL_SEAM, |s| {
+            s.replace(
+                "body.text(&self.taken.claim);",
+                "body.text(&self.taken.claim);\n        body.figure(0);",
+            )
+        });
+        report.push(prove_red(
+            &fcx,
+            self,
+            "a ledger figure a journal writer writes is RED",
+            &[ROW_NO_STORED_PRICE],
+            ov11,
+            &["`BodyWriter::figure`"],
+        ));
+
+        // RED (l) — audit xtask G HIGH 1: a stored price on a type reached ONLY through a variant
+        // payload (`Amendment.body: AmendBody` → `AmendBody::Adjust(Adjust)`). The old closure
+        // stopped at the enum, so `Adjust` was never read and this passed GREEN.
+        let ov12 = plant_over(cx, &fixture, AMEND, |s| {
+            s.replace(
+                "pub struct Adjust {",
+                "pub struct Adjust {\n    pub fee_nanos: u64,",
+            )
+        });
+        report.push(prove_red(
+            &fcx,
+            self,
+            "a stored price on a type a variant payload carries is RED",
+            &[ROW_NO_STORED_PRICE],
+            ov12,
+            &["`fee_nanos` on Adjust"],
+        ));
+
+        // RED (m) — audit xtask G HIGH 1: a money figure inside an IMPORTED type the writer puts on
+        // the chain (`Posting.key: TotalsKey`, written through `write_key`). `TotalsKey` lives in
+        // `busbar-kernel-ledger`; the old closure of a seam-local record never left the seam file,
+        // and judged no type.
+        const TOTALS: &str = "crates/busbar-kernel-ledger/src/totals.rs";
+        let ov13 = plant_over(cx, &fixture, TOTALS, |s| {
+            s.replace(
+                "pub struct TotalsKey {",
+                "pub struct TotalsKey {\n    pub ceiling: i128,",
+            )
+        });
+        report.push(prove_red(
+            &fcx,
+            self,
+            "a money figure in an imported type a journal writer writes is RED",
+            &[ROW_NO_STORED_PRICE],
+            ov13,
+            &["`ceiling: i128` on TotalsKey"],
         ));
 
         // RED (c): a plane/plugin crate sealing its own facts line is caught (#77(2)).
