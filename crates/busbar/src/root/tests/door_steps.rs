@@ -5879,11 +5879,11 @@ done
 #[test]
 fn a_models_protocol_override_is_handed_to_the_plane() {
     let def: busbar_kernel::config::ProviderDef =
-        serde_yaml::from_str("protocol: openai\nbase_url: http://127.0.0.1:9\n").expect("a def");
+        serde_yaml::from_str("protocol: dialect-a\nbase_url: http://127.0.0.1:9\n").expect("a def");
     let defs = std::collections::HashMap::from([("p".to_string(), def)]);
     let deploy = busbar_kernel::config::deploy_from_yaml_str(
         "store: {module: memory}\nproviders:\n  p:\n    api_key: { env: BUSBAR_TEST_KEY }\n\
-         models:\n  over:\n    provider: p\n    protocol: anthropic\n  plain:\n    provider: p\n",
+         models:\n  over:\n    provider: p\n    protocol: dialect-b\n  plain:\n    provider: p\n",
     )
     .expect("parses");
     let cfg = busbar_kernel::config::resolve(&deploy, &defs).expect("resolves");
@@ -5893,7 +5893,7 @@ fn a_models_protocol_override_is_handed_to_the_plane() {
         .expect("the models section");
     assert_eq!(
         models["over"]["protocol"].as_str(),
-        Some("anthropic"),
+        Some("dialect-b"),
         "{models:?}"
     );
     assert!(
