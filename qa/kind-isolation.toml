@@ -1789,8 +1789,8 @@ cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain 
 [[law0]]
 crate = "busbar-kernel"
 axis  = "plane"
-count = "1168"
-cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; LOWERED 1193 -> 1175, predev 9c0a394771's measure: the drain landed without giving its row back (Law 9: the ceiling ratchets down); LOWERED 1175 -> 1173, the merge-base d7929b661d's measure, which GetBusbar/busbar#570 holds (its scrape double spells no plane alias) (Law 9: the ceiling ratchets down to today's number); LOWERED 1173 -> 1172, the gate's measure on this branch merged with predev 1617e9f019: Q128 A4's plane_driver/gated.rs drain; REBALANCED 1172 -> 1168 (Q128, PR #686 architect ruling, BUSBAR-1.6.0.md l.475-483): the cross-plane cells moved verbatim into the composition root's crates/busbar/tests/, which takes the same 4 hits (busbar × plane 822 -> 826)"
+count = "1141"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; LOWERED 1193 -> 1175, predev 9c0a394771's measure: the drain landed without giving its row back (Law 9: the ceiling ratchets down); LOWERED 1175 -> 1173, the merge-base d7929b661d's measure, which GetBusbar/busbar#570 holds (its scrape double spells no plane alias) (Law 9: the ceiling ratchets down to today's number); LOWERED 1173 -> 1172, the gate's measure on this branch merged with predev 1617e9f019: Q128 A4's plane_driver/gated.rs drain; REBALANCED 1172 -> 1168 (Q128, PR #686 architect ruling, BUSBAR-1.6.0.md l.475-483): the cross-plane cells moved verbatim into the composition root's crates/busbar/tests/, which takes the same 4 hits (busbar × plane 822 -> 826); LOWERED 1168 -> 1141 by row 157: the hits drained with the deleted HOT trust and guard slots (plane_host/trust.rs, plane_host/guard.rs)"
 
 [[law0]]
 crate = "busbar-kernel"
@@ -1807,8 +1807,8 @@ cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain 
 [[law0]]
 crate = "busbar-kernel"
 axis  = "transport"
-count = "284"
-cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; LOWERED 288 -> 286, predev 9c0a394771's measure: the drain landed without giving its row back (Law 9: the ceiling ratchets down); LOWERED 286 -> 285 by GetBusbar/busbar#570: the kernel's auth proof no longer cites the root's stdio-served proof; LOWERED 285 -> 284 by GetBusbar/busbar#532 (Q1): the kernel's cold auth path is deleted, re-measured on #532 merged with predev 1617e9f019"
+count = "283"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; LOWERED 288 -> 286, predev 9c0a394771's measure: the drain landed without giving its row back (Law 9: the ceiling ratchets down); LOWERED 286 -> 285 by GetBusbar/busbar#570: the kernel's auth proof no longer cites the root's stdio-served proof; LOWERED 285 -> 284 by row 157: the hit drained with the same deletion; LOWERED 284 -> 283 by GetBusbar/busbar#532 (Q1): the kernel's cold auth path is deleted (auth/token.rs's `"http"` scheme check), a different hit from row 157's"
 
 [[law0]]
 crate = "busbar-kernel-breaker"
