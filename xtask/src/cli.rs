@@ -32,6 +32,7 @@ usage:
   cargo xtask loc --selftest
   cargo xtask teller-steps [--root-legs] [--root-legs-gating]
   cargo xtask ledger {sync|status|next|record|fixed|move} | --check
+  cargo xtask q128 audit [--record <path>] [--out <path>]   (the Q128 architecture audit on this tree; writes target/q128-audit.json; exit 1 on an open BLOCK)
   cargo xtask proof-manifest --version <v> --out <file> [--sha S] [--run-id ID] [--run-url U] [--staged-json F] [--reports-dir D] [--hits-dir D] [--repo-root D] [--run-cargo|--run-parity|--run-composability] [--mark ID=STATUS]... [--index] [--print]
   cargo xtask proof-manifest --selftest
   cargo xtask proof-manifest --check [<manifest.json>...]   (the public-safety guard; no args = docs/proof/*.json)
@@ -50,7 +51,17 @@ usage:
   cargo xtask dialect compile
   cargo xtask readme-assets [<outdir>]   (redraw the README SVGs from assets/readme/data.json + install.json)
   cargo xtask install-sizes [--check]    (re-measure the image sizes from the registries into assets/readme/install.json)
-  cargo xtask perf-ab [--base <busbar>] [--candidate <busbar>] [--conc 1,64,512] [--secs N] [--streams N] [--trend <file>]";
+  cargo xtask perf-ab [--base <busbar>] [--candidate <busbar>] [--conc 1,64,512] [--secs N] [--streams N] [--trend <file>]
+
+gate --format=tsv columns:
+  <id>\\t<PASS|FAIL|SKIP>\\t<title>\\t<detail>       one line per ledger row
+  \\t<id>/<cell>\\t<PASS|FAIL>\\t<figure>/<ceiling>\\t<finding(s)>
+      under a FAIL row whose detail is a list of coded findings, one line per CELL, indented by
+      one tab: <cell> is the key busbar-release's baseline::cells files a finding under (`busbar
+      × plane`) with its spaces removed (`kind-isolation:law0/busbar×plane`); <figure>/<ceiling>
+      is the cell's measured count over its ceiling (`828/826`), `-` for a side not stated. A row
+      measured cell by cell (kind-isolation:law0) prints every cell, the at-ceiling ones PASS.
+      A reader keyed on column 1 (busbar-release's parse_tsv_rows) reads no cell line.";
 
 /// The environment variable the legacy release-gate scripts write their ledger through.
 const LEGACY_LEDGER_ENV: &str = "LEDGER";
@@ -65,6 +76,7 @@ const LEGACY_LEDGER_ENV: &str = "LEDGER";
 /// here, beside the dispatch arms that prove it, so the reader and the dispatcher cannot drift.
 pub const NON_GATE_SUBCOMMANDS: &[&str] = &[
     "ledger",
+    "q128",
     "audit-verify",
     "plugin-gates",
     "conformance",
@@ -197,6 +209,12 @@ pub fn main(args: &[String]) -> i32 {
         Some("loom") => crate::loom::main(&args[1..]),
         Some("ledger") => match open_ctx() {
             Ok(cx) => crate::audit_cmd::main(cx.root(), &args[1..]),
+            Err(code) => code,
+        },
+        // THE Q128 ARCHITECTURE AUDIT (DEV-GREEN item 5): the auditor's record and the audit ledger,
+        // judged on this tree; exit 1 on an open BLOCK.
+        Some("q128") => match open_ctx() {
+            Ok(cx) => crate::q128::main(cx.root(), &args[1..]),
             Err(code) => code,
         },
         Some("teller-steps") => match open_ctx() {

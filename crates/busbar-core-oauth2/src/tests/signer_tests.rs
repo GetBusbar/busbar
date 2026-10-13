@@ -187,6 +187,7 @@ async fn the_jwks_and_metadata_documents_are_byte_identical_to_1_5_5() {
         key_id: None,
         default_grant: vec!["read".to_string()],
         access_token_ttl_secs: None,
+        refresh_token_ttl_secs: None,
         fapi2: false,
         clients: Vec::new(),
     };

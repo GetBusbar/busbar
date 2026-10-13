@@ -82,6 +82,13 @@ pub struct App {
     /// An ABSENT slot — the featureless binary boots with no fallback plane configured, so none was
     /// inserted — reads as the substrate-resident empty view, never a panic. Neutral: names no dialect.
     pub fallback_runtime_key: &'static str,
+    /// The composition root's projection of the configuration this generation was built from
+    /// ([`crate::appbuild::ConfigProjection`]); `None` when the root bound none.
+    pub config_projection: Option<Arc<dyn std::any::Any + Send + Sync>>,
+    /// The kernel's own tables over the `pools:`/`models:` sections this generation resolved: the
+    /// read seam's answer when no plane contributed a runtime of its own (a door-served plane walks
+    /// these sections through its door).
+    pub config_tables: Arc<busbar_kernel::plane_host::ConfigTables>,
     pub store: Arc<dyn LaneRuntime>,
     /// THE CONTAINER PLANES' BREAKER CELLS — the degenerate single-member cell per registered
     /// container-plane member (the breaker-all-planes audit's closing design). Live state, shared by
@@ -542,7 +549,7 @@ impl App {
             self.plane_slot(key),
         ) {
             (Some(viewer), Some(slot)) => viewer(slot.as_ref()),
-            _ => &busbar_kernel::plane_host::EMPTY_VIEW,
+            _ => &*self.config_tables,
         }
     }
 

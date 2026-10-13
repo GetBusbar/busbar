@@ -641,7 +641,7 @@ fn a_bound_session_serves_and_eof_with_a_live_subscription_exits_promptly() {
     );
     let mut child = spawn(&dir, Some(&token));
 
-    // A SESSION-era opening over stdio: `initialize`, no `_meta`. The carrier answers in the session
+    // A SESSION-era opening on this child: `initialize`, no `_meta`. The carrier answers in the session
     // revision the client asked for (revision by negotiation, THE DESIGN section 2); a line that
     // states the stateless `_meta` after it is still served as it is.
     child.send(&serde_json::json!({
