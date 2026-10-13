@@ -1502,3 +1502,7 @@ mod linked_protocols;
 #[cfg(all(test, linked_axis_hooks))]
 #[path = "tests/linked_hook_ranking.rs"]
 mod linked_hook_ranking;
+
+#[cfg(test)]
+#[path = "tests/linked_store_double.rs"]
+mod linked_store_double;
