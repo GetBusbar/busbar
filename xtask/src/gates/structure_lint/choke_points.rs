@@ -306,14 +306,14 @@ pub fn table(a: &Addresses) -> Vec<ChokeRow> {
         //         ARCHITECT): it was owned by the legacy a2a engine (`busbar-a2a/src/a2a/pin.rs`,
         //         `CardPin` parameterising `trust::Approval`) and proved by its `reuse_tests.rs`;
         //         that crate is deleted, and a door plane names `busbar-contract` and nothing else,
-        //         so the choke point is now held where every door plane meets it — the kernel's
-        //         trust slots on the plane host, which fold the plane's declared facts under the
-        //         kernel's own verdict.
+        //         so the choke point is now held where every door plane meets it — the plane's own
+        //         pin artifact, and the kernel's HostSlots `trust.*` service its verbs call (the
+        //         HOT-lane trust slots on the plane host had no caller and are deleted, #798).
         ChokeRow {
             id: "G-trust-parameterised".into(),
             tag: "TRUST-MACHINE-FORK".into(),
-            owner: format!("crates/busbar-kernel/src/plane_host/trust.rs (verify_decide_due / redeem_approval / quarantine_drift: the kernel decides a plane's counterparty trust from the facts it declares) + {substrate}/trust/mod.rs (Approval / TrustState / Drift)"),
-            class_test: "crates/busbar-kernel/src/plane_host/tests/trust_tests.rs::plane_facts_cannot_assert_allow_over_a_host_refusal".into(),
+            owner: "crates/busbar-plane-a2a/src/trust.rs (CardPin, the artifact, plus the one plane-specific refusal, jws_refusal) + the kernel's HostSlots trust.* service (the verbs a plane calls; BUSBAR-1.6.0.md Part 3 §4)".into(),
+            class_test: "crates/busbar-plane-a2a/tests/purity.rs::the_a2a_plane_declares_no_trust_state_of_its_own".into(),
             remedy: "declare the facts (identity, registration state, artifact outcome) and let the kernel's Approval decide; a plane may narrow the kernel's verdict, never assert Allow over it".into(),
             rules: Vec::new(),
             why: "two planes carrying two copies of one lifecycle disagree the first time either copy is fixed, and the disagreement surfaces as a registration dispatch serves while the operator view calls it quarantined".into(),
