@@ -65,6 +65,9 @@ const MAX_INFLIGHT_CAP: u32 = 64;
 pub const QUARANTINE_FIRST: Duration = Duration::from_secs(1);
 /// The longest trial window: each failed trial doubles the window up to this.
 pub const QUARANTINE_MAX: Duration = Duration::from_secs(30);
+
+/// How often a call that finds a trial in flight looks again, within its own budget.
+const TRIAL_POLL: Duration = Duration::from_millis(5);
 /// The first wait for a `max_inflight` unit after a REFUSED submit.
 const SLOT_WAIT_FIRST: Duration = Duration::from_millis(1);
 /// The longest wait between two tries for a `max_inflight` unit: each try doubles it up to this.
@@ -193,6 +196,10 @@ enum State {
     /// Faulted: no call reaches a plugin before `trial_at`; the trial then opens a fresh instance.
     /// `window` is the wait that set `trial_at`; a failed trial doubles it.
     Quarantined { trial_at: Instant, window: Duration },
+    /// One caller is binding and opening the trial's fresh instance, with the state lock let go
+    /// (THE DESIGN §11.13 M1: no plugin code, `dlopen` and `open` included, runs under a host
+    /// lock). Every other caller waits for it within its own budget; a wedged trial blocks none.
+    Trialing,
 }
 
 struct Inner {
@@ -216,53 +223,86 @@ impl Inner {
     /// within `deadline` — a fresh one. `Err` says why there is none.
     async fn live(&self, deadline: Instant) -> Result<Plugin<Hook>, String> {
         loop {
-            let wait = {
+            let (wait, retired, trial) = {
                 let mut state = self.lock();
+                let now = Instant::now();
                 match &*state {
                     State::Live(p) if !p.is_faulted() => return Ok(p.clone()),
-                    State::Live(p) => {
-                        close(p);
-                        *state = State::Quarantined {
-                            trial_at: Instant::now() + QUARANTINE_FIRST,
-                            window: QUARANTINE_FIRST,
+                    State::Live(_) => {
+                        let State::Live(p) = std::mem::replace(
+                            &mut *state,
+                            State::Quarantined {
+                                trial_at: now + QUARANTINE_FIRST,
+                                window: QUARANTINE_FIRST,
+                            },
+                        ) else {
+                            unreachable!("matched live")
                         };
-                        continue;
+                        (Duration::ZERO, Some(p), None)
                     }
-                    State::Quarantined { trial_at, window } => {
-                        let now = Instant::now();
-                        if now >= *trial_at {
-                            match (self.rebind)().and_then(|p| {
-                                open(&p, &self.settings)?;
-                                Ok(p)
-                            }) {
-                                Ok(p) => {
-                                    *state = State::Live(p.clone());
-                                    return Ok(p);
-                                }
-                                Err(e) => {
-                                    let window = (*window * 2).min(QUARANTINE_MAX);
-                                    *state = State::Quarantined {
-                                        trial_at: now + window,
-                                        window,
-                                    };
-                                    return Err(format!(
-                                        "hook '{}' is quarantined: its trial did not open: {e}",
-                                        self.name
-                                    ));
-                                }
-                            }
-                        }
+                    State::Quarantined { trial_at, window } if now >= *trial_at => {
+                        let window = *window;
+                        *state = State::Trialing;
+                        (Duration::ZERO, None, Some(window))
+                    }
+                    State::Quarantined { trial_at, .. } => {
                         if *trial_at > deadline {
                             return Err(format!(
                                 "hook '{}' is quarantined past the call's budget",
                                 self.name
                             ));
                         }
-                        *trial_at - now
+                        (*trial_at - now, None, None)
+                    }
+                    State::Trialing => {
+                        if now >= deadline {
+                            return Err(format!(
+                                "hook '{}' is quarantined past the call's budget",
+                                self.name
+                            ));
+                        }
+                        ((deadline - now).min(TRIAL_POLL), None, None)
                     }
                 }
             };
+            // The faulted instance is closed, and the trial's fresh one bound and opened, with
+            // the state lock let go.
+            if let Some(p) = retired {
+                close(&p);
+                continue;
+            }
+            if let Some(window) = trial {
+                return self.trial(window);
+            }
             tokio::time::sleep(wait).await;
+        }
+    }
+
+    /// THE QUARANTINE'S TRIAL, run by the one caller that moved the state to `Trialing`: bind a
+    /// fresh instance and `open` it outside the lock, then swap the answer in. A failed trial
+    /// doubles the window.
+    fn trial(&self, window: Duration) -> Result<Plugin<Hook>, String> {
+        let opened = (self.rebind)().and_then(|p| {
+            open(&p, &self.settings)?;
+            Ok(p)
+        });
+        let mut state = self.lock();
+        match opened {
+            Ok(p) => {
+                *state = State::Live(p.clone());
+                Ok(p)
+            }
+            Err(e) => {
+                let window = (window * 2).min(QUARANTINE_MAX);
+                *state = State::Quarantined {
+                    trial_at: Instant::now() + window,
+                    window,
+                };
+                Err(format!(
+                    "hook '{}' is quarantined: its trial did not open: {e}",
+                    self.name
+                ))
+            }
         }
     }
 
@@ -272,16 +312,24 @@ impl Inner {
         if !plugin.is_faulted() {
             return;
         }
-        let mut state = self.lock();
-        let window = match &*state {
-            State::Live(_) => QUARANTINE_FIRST,
-            State::Quarantined { window, .. } => (*window * 2).min(QUARANTINE_MAX),
-        };
+        {
+            let mut state = self.lock();
+            let window = match &*state {
+                State::Live(_) => Some(QUARANTINE_FIRST),
+                State::Quarantined { window, .. } => Some((*window * 2).min(QUARANTINE_MAX)),
+                // A trial is binding a fresh instance: its answer decides the state, not an
+                // older instance's fault.
+                State::Trialing => None,
+            };
+            if let Some(window) = window {
+                *state = State::Quarantined {
+                    trial_at: Instant::now() + window,
+                    window,
+                };
+            }
+        }
+        // Closed with the state lock let go (§11.13 M1).
         close(plugin);
-        *state = State::Quarantined {
-            trial_at: Instant::now() + window,
-            window,
-        };
     }
 
     /// SUBMIT op `s` with the frame `make` builds (re-built over `regrow` once after a SHORT
@@ -494,7 +542,8 @@ impl std::fmt::Debug for HookInstance {
 
 impl Drop for Inner {
     fn drop(&mut self) {
-        if let State::Live(p) = &*self.lock() {
+        // The last owner: nothing else can reach the state, so no lock is taken to close it.
+        if let State::Live(p) = self.state.get_mut().unwrap_or_else(|p| p.into_inner()) {
             close(p);
         }
     }
@@ -530,7 +579,7 @@ impl HookInstance {
     pub fn quarantined(&self) -> bool {
         match &*self.inner.lock() {
             State::Live(p) => p.is_faulted(),
-            State::Quarantined { .. } => true,
+            State::Quarantined { .. } | State::Trialing => true,
         }
     }
 
