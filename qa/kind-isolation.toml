@@ -1757,8 +1757,8 @@ cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain 
 [[law0]]
 crate = "busbar-kernel"
 axis  = "auth"
-count = "49"
-cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; LOWERED 76 -> 61, predev 9c0a394771's measure: the drain landed without giving its row back (Law 9: the ceiling ratchets down); LOWERED 61 -> 50 by GetBusbar/busbar#570: the kernel's auth plugin-chain tests run on in-crate doubles and name no plugin; the real-plugin proofs are the root's (crates/busbar/tests/auth_plugin_chain.rs), which name the plugin through the one root helper (tests/common/plugins.rs), so busbar x auth stays at its ceiling; LOWERED 50 -> 49 by row 130 E5a (#804): the `auth header` comment drained with the proxy-parse test the egress engine's tests gave up (engine_tests.rs); none moved"
+count = "50"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; LOWERED 76 -> 61, predev 9c0a394771's measure: the drain landed without giving its row back (Law 9: the ceiling ratchets down); LOWERED 61 -> 50 by GetBusbar/busbar#570: the kernel's auth plugin-chain tests run on in-crate doubles and name no plugin; the real-plugin proofs are the root's (crates/busbar/tests/auth_plugin_chain.rs), which name the plugin through the one root helper (tests/common/plugins.rs), so busbar x auth stays at its ceiling"
 
 [[law0]]
 crate = "busbar-kernel"
