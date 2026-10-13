@@ -829,17 +829,6 @@ why     = "busbar-kernel names busbar-plugin-loader: declared normal in the ship
 drain   = "none: BUSBAR-1.6.0.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
 
 [[dep]]
-from    = "busbar-kernel"
-to      = "busbar-store-memory"
-half    = "shipped"
-count   = "1"
-verdict = "not-allowed"
-cite    = "ARCHITECT K5/K5b/K5c/K5d rulings (b17f0a2c1, 0ade205df): the composition root links the build's default store as a row of its linked tables (roster def 1); the kernel names neither crate in production. `kernel -> store` is in neither ARCHITECTURE_ALLOWED nor ARCHITECTURE_TCB, so the verdict stays the one the architecture implies; the row holds a TEST-SUPPORT stand-in edge, not a shipped coupling."
-why     = "busbar-kernel names busbar-store-memory as `fixture-store`: declared normal, optional in the shipped graph, enabled ONLY by the kernel's `test-support` feature (`dep:fixture-store`) — a test build has no root, so this fixture stands in for the row the root links (`preflight::install_linked_rows`); no kernel source names the plugin, and no default or shipped feature turns the edge on. 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions."
-drain   = "delete the `fixture-store` stand-in from busbar-kernel's Cargo.toml once the kernel's own tests take their linked rows from a contract-only fixture; the shipped edge is the root's (busbar -> busbar-store-memory)."
-
-
-[[dep]]
 from    = "busbar-a2a"
 to      = "busbar-contract"
 half    = "shipped"
@@ -1811,8 +1800,8 @@ cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain 
 [[law0]]
 crate = "busbar-kernel"
 axis  = "store"
-count = "4"
-cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance"
+count = "1"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; LOWERED 4 -> 1 by row 88 (kernel -> store edge): the kernel names no store crate, its tests run on the in-crate store double, and the three test comments that cited the plugin by package name now cite the double (audit/tests/journal_tests.rs, plane/tests/demotion_tests.rs, plane_host/tests/journal_tests.rs); the one left is config/sections.rs's 1.5.x `GOVERNANCE_STORE_MEMORY` citation"
 
 [[law0]]
 crate = "busbar-kernel"

@@ -2135,6 +2135,10 @@ pub mod hook_double;
 /// test build. Linked only.
 pub mod ranking_double;
 
+/// The store double (R-FIX3): the door that stands in for the root's linked store row in a test
+/// build, and the `MemoryStore` the kernel's tests build a `GovState` over. Linked only.
+pub mod store_double;
+
 /// A [`crate::hooks::HookEnv`] whose registry holds one `kind: hook` row per alias (each stating the
 /// given manifest `needs`, as a dropped-in plugin's signed manifest does) and whose hook axis is the
 /// [`hook_double::HookAxisDouble`] answering those aliases, beside the build's linked rows. The
