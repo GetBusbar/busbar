@@ -1578,8 +1578,8 @@ cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain 
 [[law0]]
 crate = "busbar"
 axis  = "instance:secret"
-count = "35"
-cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; RE-ARMED 34 -> 35, the measure at the arming SHA dc83ff1553 (#597; Law 9). Predev 9c0a394771 measures 36: #560 (7b5f5d8be4) grew it after the row was live, invisible to a figure that counted findings. That excess is a Law 0 rise, so it stays RED until drained; this row does not raise to cover it"
+count = "19"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; RE-ARMED 34 -> 35, the measure at the arming SHA dc83ff1553 (#597; Law 9). Predev 9c0a394771 measures 36: #560 (7b5f5d8be4) grew it after the row was live, invisible to a figure that counted findings. That excess is a Law 0 rise, so it stays RED until drained; this row does not raise to cover it; LOWERED 35 -> 19, alias needle min length (false positive), ARCHITECT 2026-10-13: the plugins.yaml alias `c` (busbar-secret-c) is under the three-character needle floor, so `extern \"C\"` and one-letter `\"c\"` literals no longer count as a secret instance (row 159)"
 
 [[law0]]
 crate = "busbar"
@@ -1638,8 +1638,8 @@ cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain 
 [[law0]]
 crate = "busbar-contract"
 axis  = "instance:secret"
-count = "133"
-cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; RE-ARMED 128 -> 133 (Law 9, BUSBAR-1.6.0.md: it pins its ceiling at TODAY'S MEASURED VALUE): the row went live on predev at dc83ff1553 (#597) and measured 133 there; the 128 was f830faa691's, nine hours older than the arming, so the row armed red. 133 is predev 9c0a394771's measure, at or under the arming value"
+count = "45"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; RE-ARMED 128 -> 133 (Law 9, BUSBAR-1.6.0.md: it pins its ceiling at TODAY'S MEASURED VALUE): the row went live on predev at dc83ff1553 (#597) and measured 133 there; the 128 was f830faa691's, nine hours older than the arming, so the row armed red. 133 is predev 9c0a394771's measure, at or under the arming value; LOWERED 133 -> 45, alias needle min length (false positive), ARCHITECT 2026-10-13: the plugins.yaml alias `c` (busbar-secret-c) is under the three-character needle floor, so `extern \"C\"` and one-letter `\"c\"` literals no longer count as a secret instance (row 159)"
 
 [[law0]]
 crate = "busbar-contract"
@@ -1698,8 +1698,8 @@ cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain 
 [[law0]]
 crate = "busbar-core-admin"
 axis  = "instance:secret"
-count = "50"
-cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance"
+count = "38"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; LOWERED 50 -> 38, alias needle min length (false positive), ARCHITECT 2026-10-13: the plugins.yaml alias `c` (busbar-secret-c) is under the three-character needle floor, so `extern \"C\"` and one-letter `\"c\"` literals no longer count as a secret instance (row 159)"
 
 [[law0]]
 crate = "busbar-core-admin"
@@ -1723,12 +1723,6 @@ cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain 
 crate = "busbar-core-connector"
 axis  = "export"
 count = "1"
-cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance"
-
-[[law0]]
-crate = "busbar-core-connector"
-axis  = "instance:secret"
-count = "3"
 cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance"
 
 [[law0]]
@@ -1776,8 +1770,8 @@ cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain 
 [[law0]]
 crate = "busbar-kernel"
 axis  = "instance:secret"
-count = "114"
-cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance. -2 for R-FIX3 (the kernel's plugin tests move onto in-crate doubles); lowered 115 -> 114 by the deletion of the kernel's dead ask-state seal (audit K2-H3), the gate's measure on this branch merged with predev 1617e9f019"
+count = "67"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance. -2 for R-FIX3 (the kernel's plugin tests move onto in-crate doubles); lowered 115 -> 114 by the deletion of the kernel's dead ask-state seal (audit K2-H3), the gate's measure on this branch merged with predev 1617e9f019; LOWERED 114 -> 67, alias needle min length (false positive), ARCHITECT 2026-10-13: the plugins.yaml alias `c` (busbar-secret-c) is under the three-character needle floor, so `extern \"C\"` and one-letter `\"c\"` literals no longer count as a secret instance (row 159)"
 
 [[law0]]
 crate = "busbar-kernel"
@@ -1819,12 +1813,6 @@ cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain 
 crate = "busbar-kernel-breaker"
 axis  = "transport"
 count = "134"
-cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance"
-
-[[law0]]
-crate = "busbar-kernel-egress"
-axis  = "instance:secret"
-count = "1"
 cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance"
 
 [[law0]]
@@ -1878,8 +1866,8 @@ cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain 
 [[law0]]
 crate = "busbar-plugin-loader"
 axis  = "instance:secret"
-count = "107"
-cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance. -1: dispatch/plugin.rs no longer edits a member's `env` map in place (a member's env references resolve at the spawn). predev -1: the secret shared-instance open moved to OpenOnce (f664bca2cf) -2 (GetBusbar/busbar#532, Q1; 109 - 2 = 107): the raw JSON-lane loader and the cold auth lane are deleted (111 -> 109 on #532 merged with predev 1617e9f019); #532 touches neither of predev's two drains above"
+count = "12"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance. -1: dispatch/plugin.rs no longer edits a member's `env` map in place (a member's env references resolve at the spawn). predev -1: the secret shared-instance open moved to OpenOnce (f664bca2cf) -2 (GetBusbar/busbar#532, Q1; 109 - 2 = 107): the raw JSON-lane loader and the cold auth lane are deleted (111 -> 109 on #532 merged with predev 1617e9f019); #532 touches neither of predev's two drains above; LOWERED 107 -> 12, alias needle min length (false positive), ARCHITECT 2026-10-13: the plugins.yaml alias `c` (busbar-secret-c) is under the three-character needle floor, so `extern \"C\"` and one-letter `\"c\"` literals no longer count as a secret instance (row 159)"
 
 [[law0]]
 crate = "busbar-plugin-loader"

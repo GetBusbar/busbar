@@ -43,6 +43,18 @@
 //! compiler reads it (escapes decoded, adjacent literals joined — [`super::decoded_line`]), so
 //! `"\x6f\x74lp"` and `concat!("ot", "lp")` are `"otlp"`.
 //!
+//! ## A NAME SHORTER THAN THREE LETTERS IS NO NEEDLE
+//!
+//! A name LEARNED off another name — a census id, a `plugins.yaml` alias — is admitted only at
+//! [`MIN_NEEDLE_LEN`] characters or more. `plugins.yaml` files the C-built secret plugin as alias
+//! `c`, and a whole literal `"c"` (folded to lower case) is every `extern "C"` ABI string and every
+//! one-letter test key in core: 262 of the secret axis's 444 Law 0 hits on predev 5c99befcfa were
+//! that, not an instance. Three is the floor because every other alias and census id of the five
+//! kinds is at least that long (the shortest is the secret alias `env`), so the floor drops `c` and
+//! nothing else; one- and two-letter literals (`"c"`, `"id"`, `"ok"`) are keys and fixtures far
+//! more often than names. A module-name CONSTANT is not learned, it is the compiled-in name itself,
+//! and it counts at any length.
+//!
 //! ## PRESENCE, NOT SIZE
 //!
 //! Every non-zero cell carries an `[[instance]]` row in `qa/kind-isolation.toml` — crate and kind,
@@ -93,6 +105,19 @@ pub struct Vocab {
     pub unattributed: Vec<String>,
     /// Every `[[core-name]]` row that would mask a PLUGIN's name, and so masks nothing.
     pub refused_core: Vec<String>,
+    /// `(kind, name, from)`: every learned name under [`MIN_NEEDLE_LEN`], kept out of `names` and
+    /// printed by `--report` so the floor is read, not silent.
+    pub short: Vec<(&'static str, String, String)>,
+}
+
+/// THE SHORTEST LEARNED NAME THAT IS A NEEDLE (row 159, ARCHITECT 2026-10-13). See the module
+/// header: a census id or `plugins.yaml` alias under three characters (`c`) matches `extern "C"`
+/// and one-letter fixtures, not an instance.
+pub(super) const MIN_NEEDLE_LEN: usize = 3;
+
+/// Whether a learned name is long enough to be counted as a whole-literal needle.
+fn is_needle(name: &str) -> bool {
+    name.chars().count() >= MIN_NEEDLE_LEN
 }
 
 /// One `const` declaration a module name was read from.
@@ -250,6 +275,10 @@ pub fn vocabulary(
         };
         let Some(id) = super::own_id(c) else { continue };
         census.entry(id.clone()).or_default().insert(k);
+        if !is_needle(&id) {
+            v.short.push((k, id, c.name.clone()));
+            continue;
+        }
         v.names
             .entry(k)
             .or_default()
@@ -265,11 +294,16 @@ pub fn vocabulary(
     // manifest names, so it can see external plugins"). An out-of-tree plugin has no crate here to
     // teach the census its name; `plugins.yaml` files it under its kind with the `module:` word an
     // operator writes (`alias`). Owned by its plugin crate, so it is never counted against itself.
+    // An alias under [`MIN_NEEDLE_LEN`] still attributes a constant that spells it, and is no needle.
     for (kind, alias, krate) in registry_aliases(registry) {
         let Some(k) = axes.iter().copied().find(|k| *k == kind) else {
             continue;
         };
         census.entry(alias.clone()).or_default().insert(k);
+        if !is_needle(&alias) {
+            v.short.push((k, alias, format!("plugins.yaml {krate}")));
+            continue;
+        }
         v.names
             .entry(k)
             .or_default()
@@ -780,6 +814,11 @@ pub fn render(measured: &Instances, vocab: &Vocab) -> String {
             s.push_str(&format!("vocab\t{k}\t{name}\t{}\n", from.join(" ; ")));
         }
     }
+    for (k, name, from) in &vocab.short {
+        s.push_str(&format!(
+            "short\t{k}\t{name}\t{from} (under {MIN_NEEDLE_LEN} characters: no needle)\n"
+        ));
+    }
     for ((krate, kind), cell) in measured {
         s.push_str(&format!("cell\t{krate}\t{kind}\t{}\n", cell.count));
     }
@@ -1106,6 +1145,75 @@ pub fn selftest<'a>(
         ],
     ));
 
+    // A ONE-LETTER ALIAS IS NO NEEDLE (row 159, ARCHITECT 2026-10-13), AND A REAL ALIAS STILL IS.
+    // `plugins.yaml` files the C-built secret plugin as alias `c`; read as a needle, the fixture's
+    // `extern "C"` ABI string and its one-letter `"c"` key were two `× secret` hits, an
+    // `unlisted-instance` on a crate that names no plugin. Every alias the live registry gives an
+    // axis under [`MIN_NEEDLE_LEN`] is planted the same way, and the cell stays at zero: GREEN.
+    // The same plant plus one comparison against a real registry alias of the same tree (`vault`
+    // today, read off `plugins.yaml`, never typed here) is that axis's `unlisted-instance`: RED.
+    let axis_aliases: Vec<(String, String, String)> =
+        registry_aliases(&cx.read(REGISTRY).unwrap_or_default())
+            .into_iter()
+            .filter(|(k, _, _)| axes().iter().any(|a| *a == k.as_str()))
+            .collect();
+    let mut short_body = String::from(
+        "pub extern \"C\" fn planted_one() {}\n\
+         pub fn planted_two(c: &str) -> bool {\n    c == \"c\"\n}\n",
+    );
+    for (i, (_, alias, _)) in axis_aliases
+        .iter()
+        .filter(|(_, a, _)| !is_needle(a))
+        .enumerate()
+    {
+        short_body.push_str(&format!(
+            "pub const PLANTED_SHORT_{i}: &str = \"{alias}\";\n"
+        ));
+    }
+    report.push(prove_rows_green(
+        cx,
+        gate,
+        "`extern \"C\"` and a one-letter `\"c\"` in a neutral crate are no secret instance (an \
+         alias under three characters is no needle)",
+        &[ROW_MATRIX],
+        super::fixture_files(&[("planted_short_alias.rs", short_body.as_str())]),
+    ));
+    let long = axis_aliases
+        .iter()
+        .filter(|(_, a, _)| is_needle(a))
+        .find(|(k, _, _)| k == "secret")
+        .or_else(|| axis_aliases.iter().find(|(_, a, _)| is_needle(a)));
+    match long {
+        Some((kind, alias, _)) => {
+            let pick =
+                format!("pub fn pick(module: &str) -> bool {{\n    module == \"{alias}\"\n}}\n");
+            report.push(prove_rows_red(
+                cx,
+                gate,
+                format!(
+                    "a real `{kind}` registry alias (`{alias}`) still counts beside the planted short \
+                     aliases"
+                ),
+                &[ROW_MATRIX],
+                super::fixture_files(&[
+                    ("planted_short_alias.rs", short_body.as_str()),
+                    ("planted_alias_pick.rs", pick.as_str()),
+                ]),
+                &[
+                    "unlisted-instance",
+                    &super::fixture_subject(kind),
+                    "planted_alias_pick.rs",
+                ],
+            ));
+        }
+        None => report.push(crate::gates::CasePlan::from(super::super::unplantable(
+            "the instance registry gives an axis an alias of three characters or more",
+            &[ROW_MATRIX],
+            &["instance"],
+            format!("{REGISTRY} files no alias of {MIN_NEEDLE_LEN}+ characters under any axis"),
+        ))),
+    }
+
     // A CRATE IS NEVER MEASURED AGAINST ITS OWN NAME — the store instance writing its own id is
     // the instance, not a neutral crate naming one.
     report.push(prove_rows_green(
@@ -1387,6 +1495,31 @@ mod tests {
             0
         );
         assert_eq!(n("crates/k/src/a.yaml", json), 0);
+    }
+
+    #[test]
+    fn an_alias_under_three_characters_is_no_needle_and_a_longer_one_still_is() {
+        // RED on predev 5c99befcfa: `c` was a secret needle, so every `extern "C"` and one-letter
+        // `"c"` in a neutral crate counted as a secret instance.
+        let registry = "plugins:\n  - repo: busbar-secret-c\n    kind: secret\n    alias: c\n    \
+                        crate: busbar-secret-c\n  - repo: busbar-secret-vault\n    kind: secret\n    \
+                        alias: vault\n    crate: busbar-secret-vault-plugin\n  - repo: \
+                        busbar-secret-env\n    kind: secret\n    alias: env\n    crate: \
+                        busbar-secret-env-plugin\n";
+        let v = vocabulary(&[], &[], &[], registry);
+        let secret = v.names.get("secret").expect("the secret axis");
+        assert!(!secret.contains_key("c"), "{secret:?}");
+        assert!(secret.contains_key("vault"), "{secret:?}");
+        assert!(secret.contains_key("env"), "{secret:?}");
+        assert_eq!(
+            v.short,
+            vec![(
+                "secret",
+                "c".to_string(),
+                "plugins.yaml busbar-secret-c".to_string()
+            )]
+        );
+        assert!(render(&Instances::new(), &v).contains("short\tsecret\tc\t"));
     }
 
     #[test]
