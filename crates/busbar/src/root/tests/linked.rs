@@ -550,10 +550,10 @@ fn every_linked_section_row_is_a_linked_doors_declaring_section() {
 /// every family type the recorder writes (a HELP-less counter, labels with escapes, a histogram, a
 /// quantile summary), the sink answers exactly those bytes. Moved here from busbar-kernel's
 /// `export/tests/scrape_tests.rs` (R-FIX3: the kernel's own tests run on the stand-in axis's scrape
-/// double). Compiled only where the scrape sink is linked (`export-prometheus`): a build without it
+/// double). Compiled only where an export door is linked (`linked_axis_export_doors`): a build without one
 /// has no sink to prove, and reports no vacuous pass; where it is linked, an absent module word or
 /// an unresolved row is a failure.
-#[cfg(feature = "export-prometheus")]
+#[cfg(linked_axis_export_doors)]
 #[test]
 fn the_linked_scrape_sink_renders_the_recorder_snapshot_byte_identically() {
     let module = busbar_kernel::test_support::export_axis::scrape_module();
