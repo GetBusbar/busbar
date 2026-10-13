@@ -475,7 +475,7 @@ fn charge_once(
 
 const DOWNGRADE_SECTION: &str = "models:\n  big: {}\n  small: {}\n  tiny: {}\n\
      pools:\n  frontier:\n    members: [big]\n  value:\n    members: [small]\n\
-     \x20 a:\n    members: [big]\n  b:\n    members: [small]\n  c:\n    members: [tiny]";
+     \x20 first:\n    members: [big]\n  second:\n    members: [small]\n  third:\n    members: [tiny]";
 
 /// BUDGET DOWNGRADE ON THE DOOR PATH (1.5.5 `test_budget_exhaustion_downgrades_pool`): exhausting
 /// the `frontier` budget re-admits the unit through `value` instead of refusing it; the charge lands
@@ -487,51 +487,56 @@ fn an_exhausted_budget_re_pools_the_unit_through_its_downgrade_pool() {
     let pools = pools(DOWNGRADE_SECTION);
     // fee 10, cap 25: two frontier admissions spend 20; the third would reach 30.
     for unit in 1..=2 {
-        let c = charge_once(&app, &key, &pools, "frontier", unit);
-        assert_eq!(c.admitted, Ok(()), "unit {unit} is under the frontier cap");
-        assert_eq!(c.downgraded, None, "no downgrade while under the cap");
-        assert_eq!(c.routed, owned("frontier", &["big"]));
+        let charged = charge_once(&app, &key, &pools, "frontier", unit);
+        assert_eq!(
+            charged.admitted,
+            Ok(()),
+            "unit {unit} is under the frontier cap"
+        );
+        assert_eq!(charged.downgraded, None, "no downgrade while under the cap");
+        assert_eq!(charged.routed, owned("frontier", &["big"]));
     }
-    let c = charge_once(&app, &key, &pools, "frontier", 3);
-    assert_eq!(c.admitted, Ok(()), "downgraded, not refused");
+    let charged = charge_once(&app, &key, &pools, "frontier", 3);
+    assert_eq!(charged.admitted, Ok(()), "downgraded, not refused");
     assert_eq!(
-        c.downgraded.as_deref(),
+        charged.downgraded.as_deref(),
         Some("value"),
         "the charge landed on the downgrade pool"
     );
     assert_eq!(
-        c.routed,
+        charged.routed,
         owned("value", &["small"]),
         "the walk follows the charge to the downgrade pool"
     );
 }
 
 /// A DOWNGRADE CYCLE TERMINATES (1.5.5 `test_downgrade_cycle_terminates_via_the_revisit_guard`):
-/// `a` -> `b` -> `c` -> `b` walks to `c` and stops at the revisit, refusing with `c`'s bucket named
-/// in the previous release's words; a guard that refused one hop early names `b`.
+/// `first` -> `second` -> `third` -> `second` walks to `third` and stops at the revisit, refusing
+/// with `third`'s bucket named in the previous release's words; a guard that refused one hop early
+/// names `second`.
 #[test]
 fn a_downgrade_cycle_ends_in_the_plain_refusal_naming_the_last_pool_walked() {
     let (app, key) = downgrade_book(
         vec![
-            downgrading("a", 10, "b"),
-            downgrading("b", 0, "c"),
-            downgrading("c", 0, "b"),
+            downgrading("first", 10, "second"),
+            downgrading("second", 0, "third"),
+            downgrading("third", 0, "second"),
         ],
         None,
     );
     let pools = pools(DOWNGRADE_SECTION);
-    let first = charge_once(&app, &key, &pools, "a", 1);
-    assert_eq!(first.admitted, Ok(()), "under a's cap");
+    let first = charge_once(&app, &key, &pools, "first", 1);
+    assert_eq!(first.admitted, Ok(()), "under the first pool's cap");
     assert_eq!(first.downgraded, None);
-    let second = charge_once(&app, &key, &pools, "a", 2);
+    let second = charge_once(&app, &key, &pools, "first", 2);
     let (reason, words) = second
         .admitted
         .expect_err("a cyclic downgrade chain ends in a refusal");
     assert_eq!(reason, busbar_contract::caps::ReasonCode::OverBudget);
     let words = words.expect("the plane serving the `pools` map renders 1.5.5's words");
     assert!(
-        words.contains("pool 'c'"),
-        "the chain walked a -> b -> c before the revisit guard: {words}"
+        words.contains("pool 'third'"),
+        "the chain walked first -> second -> third before the revisit guard: {words}"
     );
     assert_eq!(
         second.downgraded, None,
@@ -554,15 +559,15 @@ fn a_downgrade_never_routes_a_key_into_a_pool_it_may_not_use() {
             Ok(())
         );
     }
-    let c = charge_once(&app, &key, &pools, "frontier", 3);
+    let charged = charge_once(&app, &key, &pools, "frontier", 3);
     assert_eq!(
-        c.admitted.map_err(|(reason, _)| reason),
+        charged.admitted.map_err(|(reason, _)| reason),
         Err(busbar_contract::caps::ReasonCode::OverBudget),
         "the plain budget refusal, not a leaked pool"
     );
-    assert_eq!(c.downgraded, None);
+    assert_eq!(charged.downgraded, None);
     assert_eq!(
-        c.routed,
+        charged.routed,
         owned("frontier", &["big"]),
         "the route is unchanged"
     );
