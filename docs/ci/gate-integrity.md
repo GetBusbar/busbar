@@ -36,14 +36,14 @@ be promoted.
 
 ## What the pipeline holds mechanically
 
-busbar has one pipeline workflow, `.github/workflows/promote.yml`: every same-repo pull request is one
-hop up the branch ladder, and the release engine in busbar-release plans the hop from the PR's base
-branch.
+Pull requests into `predev` are judged by ModernCI (required check `ci`). The promotion up the
+branch ladder runs `.github/workflows/promote.yml`, where the pinned release engine in busbar-release
+plans the hop from the PR's base branch.
 
 | check | what it is | required on |
 | --- | --- | --- |
-| `preflight` | formatting, `Cargo.lock` current, the generated C header current, on a free runner | qa, main |
-| `hop` | the turnstile admits the candidate: EVERY registered `cargo xtask gate`, plus the oracle and conformance where the rung asks, then the fast-forward of the base | qa, main |
+| `preflight` | formatting, `Cargo.lock` current, the generated C header current, on a free runner | dev (promote.yml) |
+| `hop` | the engine admits the candidate: EVERY registered `cargo xtask gate`, plus the oracle and conformance where the rung asks, then the fast-forward of the base | dev (promote.yml) |
 
 `ship-ready` is a registered gate like the rest: it runs on every hop, with `XTASK_SHIP_TARGET` set to
 the hop's base branch, so it is strict for `qa` and `main` and carries the dev line's standing reds
@@ -64,18 +64,15 @@ MONEY legs, one set per plane: `h2-class-price.sh`, `h2-card-epoch.sh`, `h2-unpr
 
 ### Which registered gate runs on a hop
 
-Every gate in `xtask`'s registry runs on every hop: the turnstile discovers them with
+Every gate in `xtask`'s registry runs on every hop: the engine discovers them with
 `cargo xtask gate --list` and runs each by name, so a gate that runs on no job cannot exist here
 quietly. `design-bindings` counts a gate module as invoked exactly when it is registered; a script it
 cites counts only when something the pipeline runs invokes that script, and a script nothing runs
 compares nothing, so the binding is reported unproven rather than waved through.
 
-The required-check list is not maintained by hand in a settings page. It is
-[`scripts/ci-branch-protection.sh`](../../scripts/ci-branch-protection.sh): idempotent, `gh api`,
-read-modify-write (it adds a floor of two contexts, `preflight` and `hop`, to whatever a branch already requires, and never removes a
-context somebody added for a reason this script does not know about). It also sets
-`allow_force_pushes: false`, `allow_deletions: false` and `enforce_admins: true` — the last of which
-is the point. A required check an administrator can click past is a required check that gets clicked
+The required-check list lives in the repository rulesets (see
+[`.github/required-status-checks.md`](../../.github/required-status-checks.md)), which apply
+bind administrators too, and that is the point. A required check an administrator can click past is a required check that gets clicked
 past at 2am, by the person best placed to know they should not.
 
 `strict` is deliberately **false**: this repository lands by cherry-pick, and requiring branches to
@@ -119,8 +116,8 @@ green-with-the-list-printed on the dev line and red for `qa`/`main` while anythi
 ## The landing runner
 
 Promotion is `promote.yml`'s hop (busbar-release `ci/promote/`): a pull request into `qa` or `main`
-is admitted by the turnstile or not at all, and the hop has no override flag. A lane lands on
-`predev` through `busbar-release ship`, which opens the pull request and stops; CI is the proof.
+is admitted by the engine or not at all, and the hop has no override flag. A lane lands on
+`predev` when ModernCI's `ci` check is green; CI is the proof.
 
 ## The sentence this all exists for
 
