@@ -30,19 +30,24 @@
 //!    file exists to hold durable store shapes, so membership is the file, not a list. The routing
 //!    records (`PlaneRecord` and friends) are in it and are scanned like the rest: #77(1) is a rule
 //!    about FIELD NAMES, and `PlaneRecord.kind` — the neutral routing selector — names no plugin.
-//! 2. **The journal** ([`JOURNAL_SEAM`]): every type the durability seam turns into a journal body —
-//!    the argument type of each `fn <name>_body(x: &T)` and every `impl T` carrying `fn body(&self)`.
-//!    Each is resolved to its ONE definition through the seam's own `use` lines (a type the seam
-//!    defines itself resolves there), and every type its fields name that the same crate defines is
-//!    folded in, transitively — `AuditRecord`'s `amount: Amount` pulls in `Amount`, whose fields are
-//!    where the priced figure actually sits.
+//! 2. **The journal**: every type a JOURNAL WRITER turns into a journal body — the argument type of
+//!    each `fn <name>_body(x: &T)` or free `fn body(x: &T)`, and every `impl T` carrying
+//!    `fn body(&self)`. The writers are DERIVED, not named: every production file under `crates/`
+//!    that builds a journal entry (`Entry::new(`) and names a money record class
+//!    ([`MONEY_CLASSES`]) — today `durability/mod.rs` and `durability/amend.rs`, whose amendment
+//!    record is journalled as a `Transaction`. Each type is resolved to its ONE definition through
+//!    its writer file's own `use` lines (a type the file defines itself resolves there), and every
+//!    type its fields name that the same crate defines is folded in, transitively —
+//!    `AuditRecord`'s `amount: Amount` pulls in `Amount`, whose fields are where the priced figure
+//!    actually sits.
 //!
 //! EXISTENCE BEFORE VERDICT. Both record rows refuse, rather than pass over a gap, when: a record
-//! source cannot be read; the store file declares fewer types than [`STORE_TYPE_FLOOR`]; the seam
-//! yields fewer journal record types than [`JOURNAL_ROOT_FLOOR`]; a journal type resolves to no
-//! definition or to more than one; or [`REQUIRED_HOMES`] (the audit record file BUSBAR-1.6.0 Part 0
-//! names) is not among the files the population was drawn from. A rename is therefore not a hiding
-//! place: the seam still names the old type, and a name that resolves to nothing is a refusal.
+//! source cannot be read; the store file declares fewer types than [`STORE_TYPE_FLOOR`]; the
+//! journal writers yield fewer journal record types than [`JOURNAL_ROOT_FLOOR`]; a journal type
+//! resolves to no definition or to more than one; or [`REQUIRED_HOMES`] (the audit record file
+//! BUSBAR-1.6.0 Part 0 names, and the amendment record file) is not among the files the population
+//! was drawn from. A rename is therefore not a hiding place: the writer still names the old type,
+//! and a name that resolves to nothing is a refusal.
 //!
 //! The scan is comment-stripped and test-module-stripped (a doc note naming a forbidden field is
 //! prose, not a field). Row (c) walks production `crates/` the way `seal-witness` does.
@@ -98,15 +103,24 @@ const STORE_RECORDS_PATH: &str = "crates/busbar-contract/src/records.rs";
 /// number; a reviewed diff lowers it with the move.
 const STORE_TYPE_FLOOR: usize = 18;
 
-/// The durability seam: the one production file that turns records into journal bodies
-/// (`Entry::new(RecordClass::…, <x>_body(..))`). Its `<x>_body` functions and `body(&self)` impls
-/// are what DEFINE which types are durable journal records.
-/// `847c22f98` split the seam (structure-lint oversized) into `durability/mod.rs` (the seam
-/// itself, the journal writers, the money-book impl) and `durability/replay.rs` (the book-rebuild
-/// replay it split out). Every `<x>_body`/`body(&self)` writer this gate derives the journal
-/// population from stayed in `mod.rs` — the split moved replay code, not writer code — so the seam
-/// this row reads is still the one file.
+/// The durability seam, where most journal writers live. The gate does NOT read the journal from
+/// this one file (that was the hand-named denominator that left `durability/amend.rs`'s amendment
+/// record unread): the writer files are derived ([`journal_writers`]). The selftest names it to
+/// plant into it.
 const JOURNAL_SEAM: &str = "crates/busbar/src/root/durability/mod.rs";
+
+/// The journal record classes that carry money (`busbar-kernel-wal`'s `RecordClass`): a hold,
+/// dispatch, settlement or adjustment (`Transaction`), a slice drawn or returned against a bucket
+/// window (`Slice`), a sealed checkpoint of balances (`Checkpoint`), a reconciliation pass
+/// (`Reconciliation`) and the opening of balances after an upgrade (`Migration`). A production file
+/// that builds a journal entry and names one of these is a journal writer this gate reads.
+const MONEY_CLASSES: &[&str] = &[
+    "RecordClass::Transaction",
+    "RecordClass::Slice",
+    "RecordClass::Checkpoint",
+    "RecordClass::Reconciliation",
+    "RecordClass::Migration",
+];
 
 /// The seam's journal record types, RE-MEASURED 2026-09-24 against the tree at commit
 /// `847c22f98^` (the seam's shape before the structure-lint split, so the recount is over the same
@@ -118,12 +132,20 @@ const JOURNAL_SEAM: &str = "crates/busbar/src/root/durability/mod.rs";
 /// count had simply never counted them. Fewer is a journal writer the derivation stopped seeing.
 /// The floor is the count, not below it: a floor one short lets exactly one writer vanish in
 /// silence, which is the defect it exists to refuse.
-const JOURNAL_ROOT_FLOOR: usize = 7;
+///
+/// EIGHT since the writer files are derived (audit xtask G HIGH 2, 2026-10-13): `Amendment`
+/// (`durability/amend.rs`, free `fn body(amendment: &Amendment)`), the count correction journalled
+/// as a `Transaction` record, joins the seven the seam writes.
+const JOURNAL_ROOT_FLOOR: usize = 8;
 
-/// The record files BUSBAR-1.6.0 Part 0 holds this gate to by name. The population is derived; this
-/// is the check that the derivation still REACHES them — the defect item 9 names is exactly this
-/// file being outside the scan.
-const REQUIRED_HOMES: &[&str] = &["crates/busbar-kernel-audit/src/record.rs"];
+/// The record files BUSBAR-1.6.0 Part 0 holds this gate to by name, and the amendment record file a
+/// correction is journalled from (audit xtask G HIGH 2). The population is derived; this is the
+/// check that the derivation still REACHES them — the defect item 9 names is exactly such a file
+/// being outside the scan.
+const REQUIRED_HOMES: &[&str] = &[
+    "crates/busbar-kernel-audit/src/record.rs",
+    "crates/busbar-kernel-audit/src/amend.rs",
+];
 
 /// The facts-line constructors (#77(2) / `busbar-contract` `Posted`). One sealed line per unit.
 const SEAL_MARKERS: &[&str] = &["Posted::settle(", "Posted::settle_late("];
@@ -328,8 +350,9 @@ fn parse_decls(file: &str, src: &str) -> Vec<TypeDecl> {
     out
 }
 
-/// The journal record type names the durability seam writes: the `&T` argument of every
-/// `fn <name>_body(x: &T)`, and every `T` whose `impl T { .. }` carries `fn body(&self)`.
+/// The journal record type names one journal writer file writes: the `&T` argument of every
+/// `fn <name>_body(x: &T)` or free `fn body(x: &T)`, and every `T` whose `impl T { .. }` carries
+/// `fn body(&self)`.
 fn journal_roots(seam_src: &str) -> Vec<String> {
     let mut roots: Vec<String> = Vec::new();
     let mut push = |t: &str| {
@@ -365,7 +388,7 @@ fn journal_roots(seam_src: &str) -> Vec<String> {
             }
             continue;
         }
-        if fname.ends_with("_body") {
+        if fname == "body" || fname.ends_with("_body") {
             if let Some(amp) = args.find('&') {
                 let ty: String = args[amp + 1..]
                     .chars()
@@ -378,6 +401,31 @@ fn journal_roots(seam_src: &str) -> Vec<String> {
         }
     }
     roots
+}
+
+/// THE JOURNAL WRITERS, DERIVED (audit xtask G HIGH 2): every production file under `crates/` that
+/// builds a journal entry (`Entry::new(`) and names a money record class ([`MONEY_CLASSES`]), with
+/// its text. The FILE is the unit, not the call: a writer may pick the class before it builds the
+/// entry (`durability/amend.rs` matches an adjustment to `RecordClass::Transaction` and passes the
+/// class as a variable).
+fn journal_writers(cx: &Ctx) -> Result<Vec<(String, String)>, String> {
+    let spec = WalkSpec::new(ROOTS.iter().copied())
+        .ext("rs")
+        .exclude(EXCLUDE.iter().copied())
+        .min_files(SCAN_FLOOR);
+    let files = cx.walk(&spec).map_err(|e| format!("{e:?}"))?;
+    let mut out = Vec::new();
+    for f in &files {
+        let code: String = scan::production_lines(&f.text)
+            .into_iter()
+            .map(|(_, l)| l)
+            .collect::<Vec<_>>()
+            .join("\n");
+        if code.contains("Entry::new(") && MONEY_CLASSES.iter().any(|c| code.contains(c)) {
+            out.push((f.rel_str(), f.text.clone()));
+        }
+    }
+    Ok(out)
 }
 
 /// The crate source directory a type the seam imports lives in: the first path segment of the `use`
@@ -439,6 +487,8 @@ struct Population {
     /// Refusals that mean the rows cannot vouch for the population.
     gaps: Vec<String>,
     journal_roots: Vec<String>,
+    /// The derived journal writer files the roots were read from.
+    writers: Vec<String>,
     store_types: usize,
 }
 
@@ -481,110 +531,122 @@ fn derive_population(cx: &Ctx) -> Population {
         Err(e) => gaps.push(format!("could not read {STORE_RECORDS_PATH}: {e}")),
     }
 
-    // 2. THE JOURNAL — every type the durability seam writes, and what its fields name.
-    let mut roots = Vec::new();
-    match cx.read(JOURNAL_SEAM) {
-        Err(e) => gaps.push(format!("could not read {JOURNAL_SEAM}: {e}")),
-        Ok(seam) => {
-            roots = journal_roots(&seam);
-            if roots.len() < JOURNAL_ROOT_FLOOR {
-                gaps.push(format!(
-                    "{JOURNAL_SEAM} yields {} journal record type(s) ({}), below the floor of \
-                     {JOURNAL_ROOT_FLOOR} — a journal writer the derivation no longer sees",
-                    roots.len(),
-                    roots.join(", ")
-                ));
-            }
-            let seam_decls = parse_decls(JOURNAL_SEAM, &seam);
+    // 2. THE JOURNAL — every type a derived journal writer writes, and what its fields name.
+    let mut roots: Vec<String> = Vec::new();
+    let mut writers: Vec<String> = Vec::new();
+    match journal_writers(cx) {
+        Err(e) => gaps.push(format!("the journal-writer walk could not run: {e}")),
+        Ok(files) => {
             let mut crate_cache: BTreeMap<String, BTreeMap<String, Vec<TypeDecl>>> =
                 BTreeMap::new();
-            for root in &roots {
-                // A type the seam defines itself resolves there; any other resolves through the
-                // seam's own `use` line to the crate that defines it.
-                let (dir, local) = if seam_decls.iter().any(|d| &d.name == root) {
-                    ("crates/busbar/src/root".to_string(), true)
-                } else {
-                    match crate_dir_of(&seam, root) {
-                        Some(d) => (d, false),
-                        None => {
-                            gaps.push(format!(
-                                "journal record `{root}` ({JOURNAL_SEAM}) is neither defined there \
-                                 nor named by any `use` line — the scan cannot find its definition"
-                            ));
-                            continue;
+            for (seam_path, seam) in &files {
+                writers.push(seam_path.clone());
+                let seam_decls = parse_decls(seam_path, seam);
+                for root in journal_roots(seam) {
+                    roots.push(root.clone());
+                    let root = &root;
+                    // A type the writer file defines itself resolves there; any other resolves
+                    // through the file's own `use` line to the crate that defines it.
+                    let (dir, local) = if seam_decls.iter().any(|d| &d.name == root) {
+                        (seam_path.clone(), true)
+                    } else {
+                        match crate_dir_of(seam, root) {
+                            Some(d) => (d, false),
+                            None => {
+                                gaps.push(format!(
+                                    "journal record `{root}` ({seam_path}) is neither defined there \
+                                     nor named by any `use` line — the scan cannot find its \
+                                     definition"
+                                ));
+                                continue;
+                            }
                         }
-                    }
-                };
-                if !crate_cache.contains_key(&dir) {
-                    match crate_decls(cx, &dir) {
-                        Ok(m) => {
-                            crate_cache.insert(dir.clone(), m);
-                        }
-                        Err(e) => {
-                            gaps.push(format!(
-                                "journal record `{root}`: its crate could not be walked: {e}"
-                            ));
-                            continue;
-                        }
-                    }
-                }
-                let decls = &crate_cache[&dir];
-                let candidates: Vec<&TypeDecl> = if local {
-                    seam_decls.iter().filter(|d| &d.name == root).collect()
-                } else {
-                    decls
-                        .get(root)
-                        .map(|v| v.iter().collect())
-                        .unwrap_or_default()
-                };
-                let def = match candidates.as_slice() {
-                    [one] => (*one).clone(),
-                    [] => {
-                        gaps.push(format!(
-                            "journal record `{root}` resolves to NO definition under {dir} — \
-                             renamed or moved; the rows cannot vouch for a record they cannot read"
-                        ));
-                        continue;
-                    }
-                    many => {
-                        gaps.push(format!(
-                            "journal record `{root}` resolves to {} definitions under {dir} ({}) — \
-                             the scan cannot tell which one the seam writes",
-                            many.len(),
-                            many.iter().map(|d| d.file.as_str()).collect::<Vec<_>>().join(", ")
-                        ));
-                        continue;
-                    }
-                };
-                // THE FIELD CLOSURE: every type a member's fields name that this crate defines
-                // exactly once. `AuditRecord.amount: Amount` is how `Amount` is reached.
-                let mut queue = vec![def];
-                while let Some(d) = queue.pop() {
-                    for f in &d.fields {
-                        for word in
-                            f.ty.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
-                                .filter(|w| is_ident(w))
-                        {
-                            let pool: Vec<&TypeDecl> = if local {
-                                seam_decls.iter().filter(|x| x.name == word).collect()
-                            } else {
-                                decls
-                                    .get(word)
-                                    .map(|v| v.iter().collect())
-                                    .unwrap_or_default()
-                            };
-                            if let [one] = pool.as_slice() {
-                                if !members
-                                    .iter()
-                                    .any(|m| m.decl.name == one.name && m.decl.file == one.file)
-                                {
-                                    queue.push((*one).clone());
-                                }
+                    };
+                    if !local && !crate_cache.contains_key(&dir) {
+                        match crate_decls(cx, &dir) {
+                            Ok(m) => {
+                                crate_cache.insert(dir.clone(), m);
+                            }
+                            Err(e) => {
+                                gaps.push(format!(
+                                    "journal record `{root}`: its crate could not be walked: {e}"
+                                ));
+                                continue;
                             }
                         }
                     }
-                    admit(d, &mut members);
+                    let empty = BTreeMap::new();
+                    let decls = if local { &empty } else { &crate_cache[&dir] };
+                    let candidates: Vec<&TypeDecl> = if local {
+                        seam_decls.iter().filter(|d| &d.name == root).collect()
+                    } else {
+                        decls
+                            .get(root)
+                            .map(|v| v.iter().collect())
+                            .unwrap_or_default()
+                    };
+                    let def = match candidates.as_slice() {
+                        [one] => (*one).clone(),
+                        [] => {
+                            gaps.push(format!(
+                                "journal record `{root}` resolves to NO definition under {dir} — \
+                                 renamed or moved; the rows cannot vouch for a record they cannot \
+                                 read"
+                            ));
+                            continue;
+                        }
+                        many => {
+                            gaps.push(format!(
+                                "journal record `{root}` resolves to {} definitions under {dir} \
+                                 ({}) — the scan cannot tell which one {seam_path} writes",
+                                many.len(),
+                                many.iter()
+                                    .map(|d| d.file.as_str())
+                                    .collect::<Vec<_>>()
+                                    .join(", ")
+                            ));
+                            continue;
+                        }
+                    };
+                    // THE FIELD CLOSURE: every type a member's fields name that this crate defines
+                    // exactly once. `AuditRecord.amount: Amount` is how `Amount` is reached.
+                    let mut queue = vec![def];
+                    while let Some(d) = queue.pop() {
+                        for f in &d.fields {
+                            for word in
+                                f.ty.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                                    .filter(|w| is_ident(w))
+                            {
+                                let pool: Vec<&TypeDecl> = if local {
+                                    seam_decls.iter().filter(|x| x.name == word).collect()
+                                } else {
+                                    decls
+                                        .get(word)
+                                        .map(|v| v.iter().collect())
+                                        .unwrap_or_default()
+                                };
+                                if let [one] = pool.as_slice() {
+                                    if !members
+                                        .iter()
+                                        .any(|m| m.decl.name == one.name && m.decl.file == one.file)
+                                    {
+                                        queue.push((*one).clone());
+                                    }
+                                }
+                            }
+                        }
+                        admit(d, &mut members);
+                    }
                 }
+            }
+            if roots.len() < JOURNAL_ROOT_FLOOR {
+                gaps.push(format!(
+                    "the journal writers ({}) yield {} journal record type(s) ({}), below the \
+                     floor of {JOURNAL_ROOT_FLOOR} — a journal writer the derivation no longer sees",
+                    writers.join(", "),
+                    roots.len(),
+                    roots.join(", ")
+                ));
             }
         }
     }
@@ -603,6 +665,7 @@ fn derive_population(cx: &Ctx) -> Population {
         members,
         gaps,
         journal_roots: roots,
+        writers,
         store_types,
     }
 }
@@ -742,10 +805,11 @@ impl MoneyInvariantsGate {
         let scan = scan_population(&pop);
         let scanned = format!(
             "{} durable record type(s) scanned ({} declared in {STORE_RECORDS_PATH}; journal \
-             records {} and the types their fields name) across {}",
+             records {} written by {} and the types their fields name) across {}",
             pop.members.len(),
             pop.store_types,
             pop.journal_roots.join(", "),
+            pop.writers.join(", "),
             pop.files().join(", ")
         );
 
@@ -979,6 +1043,26 @@ impl Gate for MoneyInvariantsGate {
             &[ROW_NO_PLUGIN_KEYED, ROW_NO_STORED_PRICE],
             ov7,
             &[&format!("below the floor of {JOURNAL_ROOT_FLOOR}")],
+        ));
+
+        // RED (h) — audit xtask G HIGH 2: a stored price on the AMENDMENT record is caught. The
+        // count correction is journalled as a `Transaction` record from `durability/amend.rs`, a
+        // writer file the gate used to never open (it read the one hand-named seam, `mod.rs`), so
+        // `Amendment` was outside the population and this plant passed GREEN.
+        const AMEND: &str = "crates/busbar-kernel-audit/src/amend.rs";
+        let ov8 = plant_over(cx, &fixture, AMEND, |s| {
+            s.replace(
+                "pub struct Amendment {",
+                "pub struct Amendment {\n    pub price: u64,",
+            )
+        });
+        report.push(prove_red(
+            &fcx,
+            self,
+            "a stored price on the journalled amendment record is RED",
+            &[ROW_NO_STORED_PRICE],
+            ov8,
+            &["`price` on Amendment", AMEND],
         ));
 
         // RED (c): a plane/plugin crate sealing its own facts line is caught (#77(2)).
