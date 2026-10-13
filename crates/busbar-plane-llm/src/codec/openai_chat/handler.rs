@@ -652,11 +652,9 @@ leaf_op! {
     OpenAiImage: super::VENDOR_NAME,
     ImageReqHandle = read_image_request,
     ImageRespHandle = read_image_response;
-    // Token-metered for gpt-image-1: buffer the same-protocol non-stream 2xx body so the default
-    // `extract_usage` can read the `usage` object and bill the virtual key's TPM/spend. The
-    // cross-protocol path already bills via `translate_response`; this closes the same-protocol gap
-    // (mirrors the embeddings cell). Per-image models return no `usage`, so the tap bills 0 tokens
-    // and the request still meters once — unchanged for them.
+    // Buffer the same-protocol non-stream 2xx body so the default `extract_usage` runs this op's
+    // reader: a gpt-image-1 answer's reported tokens are RECORDED (never billed, as in 1.5.5; see
+    // `ImageResp::billing`), and a per-image answer with no `usage` bills its `images` count.
     fn taps_usage(&self) -> bool {
         true
     }
@@ -1365,24 +1363,22 @@ pub fn read_image_response(wire: &[u8]) -> Result<crate::codec::ir::image::Image
         })
         .unwrap_or_default();
     // gpt-image-1 returns a token `usage` object (`{total_tokens,input_tokens,output_tokens}`);
-    // per-image models (dall-e, etc.) return no usage body at all. Without this the response was
-    // billed nothing — `ImageResp::billing()` returns `None` when BOTH `usage` and `cost_basis`
-    // are unset. Parse the token object when present so `billing()` yields `Billing::Tokens`.
-    let usage = v
-        .get(keys::USAGE)
-        .map(
-            |u| -> Result<busbar_contract::billing::TokenUsage, CodecError> {
-                // BILLED COUNTS: absent is zero, UNREADABLE IS A REFUSAL (#81/#42).
-                Ok(busbar_contract::billing::TokenUsage {
-                    input: crate::codec::usage_count::billed_count(u, keys::INPUT_TOKENS)
-                        .map_err(|e| CodecError::Malformed(e.to_string()))?,
-                    output: crate::codec::usage_count::billed_count(u, keys::OUTPUT_TOKENS)
-                        .map_err(|e| CodecError::Malformed(e.to_string()))?,
-                    ..Default::default()
-                })
-            },
-        )
-        .transpose()?;
+    // per-image models (dall-e, etc.) return no usage body at all. The tokens are RECORDED, never
+    // billed (`ImageResp::billing`, 1.5.5 parity), so they are read leniently: an unreadable count
+    // is left out and never refuses an answer 1.5.5 served (v1.5.5
+    // `crates/busbar/src/handlers/openai.rs:731-758` read no `usage` at all).
+    let usage = v.get(keys::USAGE).map(|u| {
+        let count = |k: &str| {
+            u.get(k)
+                .and_then(crate::codec::usage_count::read_count_u64)
+                .unwrap_or(0)
+        };
+        busbar_contract::billing::TokenUsage {
+            input: count(keys::INPUT_TOKENS),
+            output: count(keys::OUTPUT_TOKENS),
+            ..Default::default()
+        }
+    });
     // Per-image (dall-e-style) providers carry no `usage` — record the per-image cost basis so the
     // op is billed as `Billing::Images` rather than nothing. The billable COUNT is recoverable from
     // the response itself (one image per `data` entry). The size/quality TIERS live on the request

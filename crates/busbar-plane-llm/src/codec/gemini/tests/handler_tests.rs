@@ -308,11 +308,12 @@ fn image_read_response_captures_base64_image_bytes() {
     assert_eq!(r.images[0].mime_type.as_deref(), Some("image/png"));
 }
 
-// FIND (money): a token-metered Gemini image response carries a `usageMetadata` token object; the
-// reader must surface it so `billing()` token-meters the request instead of billing nothing. Fails
-// pre-fix (usage left unset → `billing()` is None).
+// A token-reporting Gemini image response carries a `usageMetadata` token object. Its tokens are
+// RECORDED (residual units) and bill NOTHING on the four token tiers, as in 1.5.5, whose Imagen
+// reader read no `usageMetadata` (v1.5.5 `crates/busbar/src/handlers/gemini.rs:446-472`) and whose
+// image op tapped no same-dialect body. RED while the reader token-billed 20 in / 10 out.
 #[test]
-fn image_response_with_usage_metadata_bills_tokens() {
+fn image_response_usage_metadata_is_recorded_never_billed() {
     let wire = serde_json::to_vec(&json!({
         "predictions": [{ "bytesBase64Encoded": "AAAA", "mimeType": "image/png" }],
         "usageMetadata": { "promptTokenCount": 20, "candidatesTokenCount": 10 },
@@ -321,10 +322,18 @@ fn image_response_with_usage_metadata_bills_tokens() {
     let resp = super::read_image_response(&wire).unwrap();
     match resp.billing() {
         Some(busbar_contract::billing::Billing::Tokens(t)) => {
-            assert_eq!(t.input, 20);
-            assert_eq!(t.output, 10);
+            assert_eq!((t.input, t.output), (0, 0), "no image token bills: {t:?}");
+            assert_eq!(
+                t.residual_units,
+                std::collections::BTreeMap::from([
+                    ("image.input_tokens".to_string(), 20),
+                    ("image.output_tokens".to_string(), 10),
+                ])
+            );
         }
-        other => panic!("token-metered Gemini image must token-bill, got {other:?}"),
+        other => {
+            panic!("a token-reporting Gemini image answer is a zero token line, got {other:?}")
+        }
     }
 }
 

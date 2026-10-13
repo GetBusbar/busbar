@@ -132,30 +132,38 @@ fn buffered_read_response_reads_float_encoded_counts() {
 // `ledger x ratecard`, so every figure derived from that row was faithfully wrong and nothing
 // downstream could tell. These pin the live reader paths, which is where the ledger row comes from.
 
-/// THE BUFFERED IMAGE READER REFUSES AN UNREADABLE BILLED COUNT.
+/// AN IMAGE ANSWER'S TOKENS ARE RECORDED, NOT BILLED, SO AN UNREADABLE ONE NEVER REFUSES IT.
+///
+/// 1.5.5 served every gpt-image-1 answer and read no `usage` (v1.5.5
+/// `crates/busbar/src/handlers/openai.rs:731-758`). The counts are now recorded (residual units),
+/// never billed, so an unreadable one is left out of the record rather than refusing a served
+/// answer; a float-spelled one is recorded as its count.
 #[test]
-fn an_unreadable_image_count_refuses_instead_of_billing_zero() {
-    // `"27"` is a string, not a number: present, and not a count.
+fn an_unreadable_image_count_never_refuses_the_answer() {
     let wire = br#"{"data":[{"b64_json":"aGk="}],"usage":{"input_tokens":"27","output_tokens":5}}"#;
-    let err = crate::codec::openai_chat::handler::read_image_response(wire)
-        .expect_err("a present, unreadable billed count is a refusal, never a zero");
-    let text = format!("{err:?}");
-    assert!(
-        text.contains("input_tokens"),
-        "the refusal names the field: {text}"
-    );
+    let resp = crate::codec::openai_chat::handler::read_image_response(wire)
+        .expect("an image answer is served whatever its usage spelling");
+    match resp.billing() {
+        Some(busbar_contract::billing::Billing::Tokens(t)) => {
+            assert_eq!((t.input, t.output), (0, 0));
+            assert_eq!(
+                t.residual_units,
+                std::collections::BTreeMap::from([("image.output_tokens".to_string(), 5)])
+            );
+        }
+        other => panic!("expected a zero token line, got {other:?}"),
+    }
 
-    // And the same body with a READABLE count still reads, float-spelled included — the refusal is
-    // about unreadability, not about strictness for its own sake.
     let ok = br#"{"data":[{"b64_json":"aGk="}],"usage":{"input_tokens":27.0,"output_tokens":5}}"#;
     let resp = crate::codec::openai_chat::handler::read_image_response(ok)
         .expect("a float-spelled count reads");
     match resp.billing() {
         Some(busbar_contract::billing::Billing::Tokens(t)) => {
-            assert_eq!(t.input, 27);
-            assert_eq!(t.output, 5);
+            assert_eq!((t.input, t.output), (0, 0));
+            assert_eq!(t.residual_units.get("image.input_tokens"), Some(&27));
+            assert_eq!(t.residual_units.get("image.output_tokens"), Some(&5));
         }
-        other => panic!("expected token billing, got {other:?}"),
+        other => panic!("expected a zero token line, got {other:?}"),
     }
 }
 
@@ -183,10 +191,14 @@ fn an_absent_count_still_reads_as_zero_and_no_usage_object_still_reads() {
         .expect("absent output_tokens reads");
     match resp.billing() {
         Some(busbar_contract::billing::Billing::Tokens(t)) => {
-            assert_eq!(t.input, 27);
-            assert_eq!(t.output, 0, "an absent count is zero, exactly as before");
+            assert_eq!((t.input, t.output), (0, 0), "image tokens never bill");
+            assert_eq!(
+                t.residual_units,
+                std::collections::BTreeMap::from([("image.input_tokens".to_string(), 27)]),
+                "an absent count is zero, and a zero is not recorded"
+            );
         }
-        other => panic!("expected token billing, got {other:?}"),
+        other => panic!("expected a zero token line, got {other:?}"),
     }
     // No `usage` object at all: unchanged, bills via the per-image cost basis.
     let wire = br#"{"data":[{"b64_json":"aGk="}]}"#;

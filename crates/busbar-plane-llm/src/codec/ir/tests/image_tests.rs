@@ -31,7 +31,15 @@ fn billing_prefers_tokens_else_per_image() {
         }),
         ..Default::default()
     };
-    assert!(matches!(tokenized.billing(), Some(Billing::Tokens(_))));
+    // Image tokens are recorded, never billed (1.5.5 billed no image token).
+    match tokenized.billing() {
+        Some(Billing::Tokens(t)) => {
+            assert_eq!((t.input, t.output), (0, 0));
+            assert_eq!(t.residual_units.get("image.input_tokens"), Some(&5));
+            assert_eq!(t.residual_units.get("image.output_tokens"), Some(&272));
+        }
+        other => panic!("expected a zero token line, got {other:?}"),
+    }
 
     let per_image = ImageResp {
         cost_basis: Some(CostBasis {
