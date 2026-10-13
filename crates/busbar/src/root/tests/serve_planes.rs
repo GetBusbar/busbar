@@ -373,7 +373,7 @@ fn a_door_plane_is_handed_its_referenced_providers_dialect_facts_at_open() {
     assert_eq!(names, ["eng-a", "eng-b"], "referenced, once each, in order");
     let snapshot = super::open(
         &plane,
-        "test_plane",
+        &["test_plane"],
         &section,
         None,
         &Default::default(),
@@ -400,7 +400,7 @@ fn a_door_plane_is_handed_its_referenced_providers_dialect_facts_at_open() {
     let plane = bound("serve-open-dialect-none", &dispatcher);
     let snapshot = super::open(
         &plane,
-        "test_plane",
+        &["test_plane"],
         &serde_yaml::Value::Null,
         None,
         &Default::default(),
