@@ -1,6 +1,5 @@
-# What a lane must pass to enter predev: busbar-release's predev `enter_pr` plan
-# (crates/busbar-release-cli/ladder.json), judged on the lane merged onto predev's tip, no worse
-# than predev itself. Shadow while busbar-release still decides.
+# What a lane must pass to enter predev, judged by ModernCI (required check `ci`) on the lane
+# merged onto predev's tip, no worse than predev itself. Live: ModernCI decides and lands.
 to: predev
 on_green: merge
 deadline: 6h
