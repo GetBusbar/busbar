@@ -233,24 +233,6 @@ fn stream_handle(kind_id: u32) -> Option<StreamHandle> {
     })
 }
 
-/// TEST ONLY: point an already-registered stream's durable journal at `store` (or detach it) WITHOUT
-/// re-registering — so a global-`TASKS` chain test can aim the process-wide `kind_id` at its own
-/// ledger for the duration it holds `TASKS_SINK_LOCK`, leaving the chain POSITIONS untouched (a
-/// re-register would reset every position and race the no-sink registration the working-set tests
-/// share). A no-op if the stream is not registered.
-#[cfg(any(test, feature = "test-support"))]
-pub(crate) fn set_stream_sink_for_test(
-    kind_id: u32,
-    store: Option<Arc<dyn crate::plane::store::PlaneStore>>,
-) {
-    if let Some(s) = streams_lock().get(&kind_id) {
-        match store {
-            Some(store) => s.journal.set_sink(store),
-            None => s.journal.clear_sink_for_test(),
-        }
-    }
-}
-
 /// REPORT THE CHAIN BREAKS A RESUME FOUND, once each, after an append. A scope evicted from the
 /// journal's cache is read back from the store to take its next record; a persisted tail that does not
 /// verify is tamper evidence the journal records and resumes past (it never refuses the write). This
@@ -598,6 +580,8 @@ fn register_stream(
 /// which the `Seq`-only ABI append does not surface). `Err` carries the STORE's own error verbatim (a
 /// durable-write failure the caller surfaces to decide on), an unregistered stream / empty scope, or a
 /// caught panic — so the caller reports the same reason the pre-cleave `Journal::record` did.
+/// Its one caller is the admin audit log's test harness.
+#[cfg(test)]
 pub(crate) fn journal_append_scoped_full(
     host: HostCtx,
     kind_id: u32,
@@ -698,20 +682,6 @@ pub(crate) fn journal_append_scoped_full_hostless(
             "journal append panicked".to_string(),
         ))
     })
-}
-
-/// The sequence the next record for `scope` on the registered `kind_id` stream will carry (1 for an
-/// uncached scope) — a diagnostic on the position, read WITHIN CORE (the ABI exposes no `next_seq`).
-pub(crate) fn journal_next_seq_scoped(kind_id: u32, scope: &str) -> u64 {
-    stream_handle(kind_id)
-        .map(|h| h.journal.next_seq(scope))
-        .unwrap_or(1)
-}
-
-/// How many scope positions the registered `kind_id` stream is holding — the diagnostic the MCP call
-/// log's bounded-map test reads, exposed WITHIN CORE (the ABI has no `len`).
-pub(crate) fn journal_len_scoped(kind_id: u32) -> usize {
-    stream_handle(kind_id).map(|h| h.journal.len()).unwrap_or(0)
 }
 
 /// APPEND one record to a registered stream's durable `scope`: mint the seq/prev_hash/hash through the

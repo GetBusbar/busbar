@@ -93,7 +93,7 @@ busbar-plugin-loader = { path = "../plugin-loader" }
 # no source here names the plugin. The ranking row is no crate at all: it is the in-crate R-FIX3
 # double `test_support::ranking_double`, linked only, and the root proves it states what the real
 # ranking door states.
-fixture-store = { package = "busbar-store-memory", path = "../store-memory", optional = true }
+fixture-store = { workspace = true, optional = true }
 axum = { workspace = true }
 tower = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time", "sync", "signal", "io-util", "io-std", "process"] }
