@@ -634,6 +634,14 @@ const ARCHITECTURE_ALLOWED: &[(&str, &str)] = &[
     // plugin-loader edges are measured in the `[[dep]]` ledger like every other Neutral kind's.
     ("cleanliness", "contract"),
     ("cleanliness", "kernel"),
+    // THE LOADER ATOP THE CONTRACT IS THE ARCHITECTURE, NOT A HOLE IN IT (ARCHITECT 2026-10-12).
+    // Part 2 #33 (OWNER-LOCKED 2026-09-18): "Plugin infrastructure = ONE crate atop the ONE
+    // contract crate", and Part 5's shape of done is "plugin infra = `busbar-plugin-loader` over
+    // `busbar-contract`" (BUSBAR-1.6.0.md:2957). `allowed` and `tcb` are readings of the
+    // architecture (:1936), and the architecture rules this edge, so it is granted here and the
+    // ship twin admits it. It was a [`ARCHITECTURE_TCB`] class, which made a tree built to the
+    // design unshippable by construction. Every other TCB class stays refused at ship.
+    ("plugin-tooling", "contract"),
 ];
 
 /// THE EDGE CLASSES `BUSBAR-1.6.0.md` PART 0 ALLOWS IN RUST SOURCE, which are therefore LISTED
@@ -704,7 +712,7 @@ pub(super) fn is_the_wall(from: &str, to: &str) -> bool {
 /// granted `-> contract` class, and their contract vocabulary is not a coupling this gate ratchets.
 /// The plugin tooling (the loader and the rest of the trusted computing base) is here too: after the
 /// plugin ABI and SDK merged into the contract (#84), the loader names the ABI in the one crate
-/// where the ABI lives, and its contract class is the TCB's own ([`ARCHITECTURE_TCB`]). The retiring
+/// where the ABI lives, and its contract class is granted by #33 ([`ARCHITECTURE_ALLOWED`]). The retiring
 /// legacy engines are NOT here: their contract naming is still measured, cell by cell, until they
 /// drain.
 const CONTRACT_TIERS: &[&str] = &["root", "kernel", CLEANLINESS, "plugin-tooling"];
@@ -727,9 +735,8 @@ pub(super) fn names_contract_by_design(from: &str, to: &str) -> bool {
 /// written down instance by instance, and the ship twin still refuses them: a tag's criterion is
 /// the architecture's own graph, and the TCB is a hole in that graph rather than a clause of it.
 const ARCHITECTURE_TCB: &[(&str, &str)] = &[
-    // The loader's store adapter names the folded capability vocabulary at its new home in
-    // `busbar-contract` (formerly `busbar-caps`, W2.c).
-    ("plugin-tooling", "contract"),
+    // `("plugin-tooling", "contract")` WAS HERE. It is the architecture's own edge (Part 2 #33,
+    // BUSBAR-1.6.0.md:2957) and lives in [`ARCHITECTURE_ALLOWED`] (ARCHITECT 2026-10-12).
     ("plugin-tooling", "kernel"),
     ("plugin-tooling", "plugin-tooling"),
     ("plugin-tooling", "secret"),
@@ -12492,6 +12499,34 @@ mod plant_tests {
             assert!(
                 !is_the_wall(neutral, CONTRACT_KIND),
                 "`{neutral}` is not a plugin kind; its contract edge is an ordinary ledger row"
+            );
+        }
+    }
+
+    /// RED ARM, THE LOADER ATOP THE CONTRACT (ARCHITECT 2026-10-12; Part 2 #33; BUSBAR-1.6.0.md
+    /// :2957). The ship twin refuses every class that is not `allowed`, so while `plugin-tooling ->
+    /// contract` read `tcb` a tree built to the design could not ship. It reads `allowed`; every
+    /// other TCB class still reads `tcb` and is still refused at ship.
+    #[test]
+    fn the_loader_atop_the_contract_is_granted_and_the_rest_of_the_tcb_is_not() {
+        let class = |a: &str, b: &str| (a.to_string(), b.to_string());
+        assert_eq!(
+            verdict_for(&class("plugin-tooling", CONTRACT_KIND)),
+            "allowed"
+        );
+        assert!(!ARCHITECTURE_TCB.contains(&("plugin-tooling", CONTRACT_KIND)));
+        for (from, to) in [
+            ("plugin-tooling", "kernel"),
+            ("plugin-tooling", "plugin-tooling"),
+            ("plugin-tooling", "secret"),
+        ] {
+            assert!(ARCHITECTURE_TCB.contains(&(from, to)), "{from} -> {to}");
+            assert_eq!(verdict_for(&class(from, to)), "tcb", "{from} -> {to}");
+        }
+        for (from, to) in ARCHITECTURE_TCB {
+            assert!(
+                !ARCHITECTURE_ALLOWED.contains(&(from, to)),
+                "`({from}, {to})` is in both tables"
             );
         }
     }

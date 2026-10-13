@@ -54,13 +54,13 @@ const EXCLUDE_TESTS_DIR: &str = "/tests/";
 /// `busbar-transport-stdio` carrier.rs and conn.rs) — 971 on predev d7929b661d, after
 /// busbar-kernel-ledger's usage/series.rs left (972 on predev 3bc48823df; 971 on predev
 /// 39374ec00e; 980 on 5e672d125d, before the egress_auth / auth_cache / ingress_sigv4 files left
-/// the kernel crates; it was 130 against a tree that had grown past 700); P5 then extracted
-/// `crates/store-memory` (its `src/lib.rs` and `src/v3.rs` left with the crate for
-/// GetBusbar/busbar-store-memory), so the floor re-pins from 979 to 977. A drop below 977 is
+/// the kernel crates; it was 130 against a tree that had grown past 700); #686 (q128-linked-neutral)
+/// then deleted `crates/busbar-kernel/build.rs`, the one non-test file it removed, so the floor
+/// re-pins from 979 to 978. P5 then extracted `crates/store-memory` (its `src/lib.rs` and `src/v3.rs` left with the crate for GetBusbar/busbar-store-memory), so the floor re-pins from 978 to 976. A drop below 976 is
 /// refused until a reviewed diff re-measures; the selftest plant cuts the walk to one file under
 /// the floor (see [`floor_plant`]), so the tree growing past it needs no re-pin. It is a `const`
 /// here and has no environment override: the only way to lower one is a reviewable source edit.
-const SCAN_FLOOR: usize = 977;
+const SCAN_FLOOR: usize = 976;
 
 /// THE SUBJECT FLOOR (item 228). The file floor above proves the walk opened the crates; it says
 /// nothing about whether the thing this gate judges is still there. "Every `#[instrument]` has a
