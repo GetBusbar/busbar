@@ -958,3 +958,113 @@ fn only_a_datagram_framer_is_driven_over_the_port() {
     assert!(not.st.lock().unwrap().seen.is_empty(), "nothing crossed");
     assert!(DatagramFraming::accept(stream_framer, cert, p("198.51.100.1:3478")).is_ok());
 }
+
+// ── the bridge ──────────────────────────────────────────────────────────────────────────────────
+
+fn got(stream: u64, bytes: &[u8], fields: bool) -> crate::framer::Got {
+    crate::framer::Got {
+        stream,
+        bytes: bytes.to_vec(),
+        end_of_frame: true,
+        status_code: None,
+        status_class: 0,
+        retry_after_secs: None,
+        fields,
+        text: false,
+        reason: None,
+        failed: false,
+    }
+}
+
+#[test]
+fn a_head_block_names_a_line_by_kind_and_a_channel_by_label() {
+    use super::{stream_head, StreamHead};
+    assert_eq!(
+        stream_head(b"kind: audio\r\ncodec: opus\r\n"),
+        Some(StreamHead::Line {
+            kind: "audio".into()
+        })
+    );
+    assert_eq!(
+        stream_head(b"label: events\r\n"),
+        Some(StreamHead::Channel {
+            label: "events".into()
+        })
+    );
+    assert_eq!(stream_head(b"other: x\r\n"), None);
+}
+
+#[test]
+fn the_bridge_carries_line_frames_unread_line_for_line_and_hands_channels_to_the_session() {
+    use super::{Across, Bridge, Leg};
+    let mut b = Bridge::new();
+    let (session, across) = b.sort(
+        Leg::Caller,
+        vec![
+            got(0, b"description", false),
+            got(1 << 32, b"kind: audio\r\ncodec: opus\r\n", true),
+            got(1, b"label: events\r\n", true),
+            got(1 << 32, b"frame-before-upstream", false),
+        ],
+    );
+    // A line frame before the upstream leg named its lines is dropped, never queued.
+    assert!(across.is_empty());
+    assert_eq!(
+        session.iter().map(|g| g.stream).collect::<Vec<_>>(),
+        vec![0, 1],
+        "the description and the channel's head are the session's"
+    );
+    // The upstream dial mirrors the caller's lines, then names the session's channels.
+    assert_eq!(
+        b.opening(&["events"]),
+        vec![
+            ("media".to_owned(), b"audio".to_vec()),
+            ("channel".to_owned(), b"events".to_vec())
+        ]
+    );
+    let _ = b.sort(Leg::Upstream, vec![got(7 << 32, b"kind: audio\r\n", true)]);
+    assert_eq!(b.mirrored(), Ok(()));
+    let (session, across) = b.sort(
+        Leg::Caller,
+        vec![got(1 << 32, b"\x01\x02", false), got(1, b"{}", false)],
+    );
+    assert_eq!(
+        across,
+        vec![Across {
+            stream: 7 << 32,
+            bytes: b"\x01\x02".to_vec(),
+            end_of_frame: true
+        }]
+    );
+    assert_eq!(session.len(), 1, "the channel's message is the session's");
+    let (_, back) = b.sort(Leg::Upstream, vec![got(7 << 32, b"\x03", false)]);
+    assert_eq!(back[0].stream, 1 << 32);
+    // RED: after the session's close nothing crosses, either way.
+    b.stop();
+    let (_, a) = b.sort(Leg::Caller, vec![got(1 << 32, b"\x04", false)]);
+    let (_, z) = b.sort(Leg::Upstream, vec![got(7 << 32, b"\x05", false)]);
+    assert!(a.is_empty() && z.is_empty());
+}
+
+#[test]
+fn legs_that_do_not_mirror_never_half_bridge() {
+    use super::{Bridge, Leg};
+    let mut b = Bridge::new();
+    let _ = b.sort(
+        Leg::Caller,
+        vec![
+            got(10, b"kind: audio\r\n", true),
+            got(11, b"kind: audio\r\n", true),
+        ],
+    );
+    let _ = b.sort(Leg::Upstream, vec![got(20, b"kind: audio\r\n", true)]);
+    assert!(b.mirrored().is_err(), "two lines against one");
+    // RED: line 0 exists on both legs, yet nothing crosses while the whole set does not mirror.
+    assert_eq!(b.across(Leg::Caller, 10), None);
+    let (_, a) = b.sort(Leg::Caller, vec![got(10, b"\x01", false)]);
+    assert!(a.is_empty());
+    let mut k = Bridge::new();
+    let _ = k.sort(Leg::Caller, vec![got(10, b"kind: audio\r\n", true)]);
+    let _ = k.sort(Leg::Upstream, vec![got(20, b"kind: video\r\n", true)]);
+    assert!(k.mirrored().is_err(), "a kind mismatch");
+}
