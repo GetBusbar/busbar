@@ -44,23 +44,25 @@ pub const ROW_CLOSES: &str = "tracing:attribute-closes";
 const SCAN_ROOT: &str = "crates";
 const EXCLUDE_TESTS_DIR: &str = "/tests/";
 
-/// The denominator floor, pinned AT the measured count: the crates walk reads 976 files after #532
-/// (p2-cold-auth) deleted the cold auth lane's three non-test files (contract abi/cold/auth.rs,
-/// plugin-loader auth.rs and hostlog.rs), merged with predev 561c69a3fd; 979 once FLIP-LLM (#464)
-/// adds `busbar/src/root/model_egress.rs` and `busbar-plane-llm/src/exchange/project.rs` (973 over
-/// predev d7929b661d's 971) to predev's 977; 977 after #703 (the MCP-FIX stack) deleted
-/// busbar-plane-mcp's tool_plane.rs and outputschema.rs and added door_sessions.rs, merged with
-/// predev 1c586876f8 (978 there); 977 with transport stage B (#502) merged with predev 13a9ecbfb2,
-/// which adds the host's I/O table and the carriers (nine files outside `/tests/`) and removes three
-/// (`busbar-core-connector` stream.rs, `busbar-transport-stdio` carrier.rs and conn.rs) — 971 on
-/// predev d7929b661d, after busbar-kernel-ledger's usage/series.rs left (972 on predev 3bc48823df;
-/// 971 on predev 39374ec00e; 980 on 5e672d125d, before the egress_auth / auth_cache /
-/// ingress_sigv4 files left the kernel crates; it was 130 against a tree that had grown past 700).
-/// A drop below 976 is refused until a reviewed diff re-measures; the selftest plant cuts the walk
-/// to one file under the floor (see [`floor_plant`]), so the tree growing past it needs no re-pin.
-/// It is a `const` here and has no environment override: the only way to lower one is a reviewable
+/// The denominator floor, pinned AT the measured count: the crates walk reads 979 files once
+/// FLIP-LLM (#464) adds `busbar/src/root/model_egress.rs` and
+/// `busbar-plane-llm/src/exchange/project.rs` (973 over predev d7929b661d's 971) to predev's 977;
+/// 977 after #703 (the MCP-FIX stack) deleted busbar-plane-mcp's tool_plane.rs and outputschema.rs
+/// and added door_sessions.rs, merged with predev 1c586876f8 (978 there); 977 with transport stage
+/// B (#502) merged with predev 13a9ecbfb2, which adds the host's I/O table and the carriers (nine
+/// files outside `/tests/`) and removes three (`busbar-core-connector` stream.rs,
+/// `busbar-transport-stdio` carrier.rs and conn.rs) — 971 on predev d7929b661d, after
+/// busbar-kernel-ledger's usage/series.rs left (972 on predev 3bc48823df; 971 on predev 39374ec00e;
+/// 980 on 5e672d125d, before the egress_auth / auth_cache / ingress_sigv4 files left the kernel
+/// crates; it was 130 against a tree that had grown past 700); #686 (q128-linked-neutral) then
+/// deleted `crates/busbar-kernel/build.rs`, the one non-test file it removed, so the floor re-pins
+/// from 979 to 978. #532 (p2-cold-auth) deletes the cold auth lane's three non-test files (contract
+/// abi/cold/auth.rs, plugin-loader auth.rs and hostlog.rs), so the floor re-pins from 978 to 975. A
+/// drop below 975 is refused until a reviewed diff re-measures; the selftest plant cuts the walk to
+/// one file under the floor (see [`floor_plant`]), so the tree growing past it needs no re-pin. It
+/// is a `const` here and has no environment override: the only way to lower one is a reviewable
 /// source edit.
-const SCAN_FLOOR: usize = 976;
+const SCAN_FLOOR: usize = 975;
 
 /// THE SUBJECT FLOOR (item 228). The file floor above proves the walk opened the crates; it says
 /// nothing about whether the thing this gate judges is still there. "Every `#[instrument]` has a

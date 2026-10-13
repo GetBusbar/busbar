@@ -17,8 +17,8 @@
 //!
 //! * [`Population::below_floor`] — the aggregate ratchet. It is not `> 0`: a walk that collapses to
 //!   a handful of files reports no findings and reads exactly like a clean tree. The floor is a
-//!   RATCHET pinned AT the measured count ([`FLOOR`], 944 after #532's cold-auth deletions, merged
-//!   with predev 1617e9f019), not a margin below it: one file fewer is refused until a reviewed diff
+//!   RATCHET pinned AT the measured count ([`FLOOR`], 945 after #532's cold-auth deletions, merged
+//!   with predev 872b6ae0e2), not a margin below it: one file fewer is refused until a reviewed diff
 //!   re-measures. It is raised as the tree grows, never lowered to accommodate a scan that stopped
 //!   finding things.
 //! * [`Population::drained`] — a crate that has a `src/` and contributed NOTHING. The floor catches
@@ -46,14 +46,16 @@ use crate::ctx::{Ctx, Overlay, SourceFile, WalkSpec};
 /// `outputschema.rs` and added `door_sessions.rs`, a reviewed net removal of one file. Raised from
 /// 947 to 949 when FLIP-LLM (#464) added `busbar/src/root/model_egress.rs` and
 /// `busbar-plane-llm/src/exchange/project.rs` (it had raised 941 to 943 over predev d7929b661d).
-/// Lowered from 949 to 946 when #532 (p2-cold-auth) deleted `busbar-contract/src/abi/cold/auth.rs`,
-/// `plugin-loader/src/auth.rs` and `plugin-loader/src/hostlog.rs`, the cold auth lane it retires
-/// (re-measured at 946 on #532 merged with predev 561c69a3fd). A drop below 946 is refused until a
-/// reviewed diff re-measures. The selftest plant ([`one_file_short`]) cuts the live population to
-/// `FLOOR - 1` whatever its size, so predev growing a file no longer forces a re-pin for the plant's
-/// sake. Lowering the floor is how a gate stops reading the repository without saying so, so a diff
-/// that lowers it is the diff to refuse.
-pub const FLOOR: usize = 946;
+/// Re-pinned from 949 to 948 when #686 (q128-linked-neutral) deleted
+/// `crates/busbar-kernel/build.rs`, the one non-test file that PR removed, a reviewed removal.
+/// Re-pinned from 948 to 945 by #532 (p2-cold-auth), which deletes
+/// `busbar-contract/src/abi/cold/auth.rs`, `plugin-loader/src/auth.rs` and
+/// `plugin-loader/src/hostlog.rs`, the cold auth lane it retires. A drop below 945 is refused until
+/// a reviewed diff re-measures. The selftest plant ([`one_file_short`]) cuts the live population to
+/// `FLOOR - 1` whatever its size, so predev growing a file no longer forces a re-pin for the
+/// plant's sake. Lowering the floor is how a gate stops reading the repository without saying so,
+/// so a diff that lowers it is the diff to refuse.
+pub const FLOOR: usize = 945;
 
 /// The `.rs` under `crates/` that are not test scaffolding, plus the accounting to refuse a
 /// population that cannot support a verdict.

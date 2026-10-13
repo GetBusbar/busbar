@@ -57,6 +57,24 @@ pub struct Row {
     pub status: Status,
     pub title: String,
     pub detail: String,
+    /// THE ROW'S CELLS, when the gate measured it cell by cell (`kind-isolation:law0`: one cell per
+    /// neutral crate and axis, at its ceiling or off it). Never on the wire of [`Row::tsv`] and
+    /// never in the human printer: only `gate --format=tsv` prints them, one indented line each
+    /// ([`crate::cells`]). Empty for a row whose gate keeps no per-cell figures.
+    pub cells: Vec<Cell>,
+}
+
+/// One cell of a row: the key busbar-release's `baseline::cells` files a finding under (the words
+/// after the finding's code up to its first count, `busbar × plane`), the cell's own verdict, and
+/// its measured figure against its ceiling, so a rise inside a cell already off its row is visible
+/// on that cell's line.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Cell {
+    pub key: String,
+    pub status: Status,
+    pub figure: Option<u64>,
+    pub ceiling: Option<u64>,
+    pub detail: String,
 }
 
 impl Row {
@@ -71,7 +89,15 @@ impl Row {
             status,
             title: title.into(),
             detail: detail.into(),
+            cells: Vec::new(),
         }
+    }
+
+    /// The row with its measured cells attached (see [`Row::cells`]).
+    #[must_use]
+    pub fn with_cells(mut self, cells: Vec<Cell>) -> Row {
+        self.cells = cells;
+        self
     }
 
     pub fn pass(id: impl Into<String>, title: impl Into<String>, detail: impl Into<String>) -> Row {
@@ -99,7 +125,7 @@ impl Row {
     }
 }
 
-fn flatten(s: &str) -> String {
+pub(crate) fn flatten(s: &str) -> String {
     s.replace(['\t', '\n'], " ")
 }
 
