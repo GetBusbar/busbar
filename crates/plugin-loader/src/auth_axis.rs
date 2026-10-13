@@ -313,7 +313,7 @@ impl AuthRows {
         style: &str,
         settings: &serde_json::Value,
     ) -> Result<Option<busbar_contract::auth_calls::OutboundServing>, String> {
-        use crate::dispatch::auth_outbound::{outbound_style, OutboundInstance};
+        use crate::dispatch::auth_outbound::{outbound_styles, OutboundInstance};
         let rows = self
             .registry
             .linked()
@@ -323,7 +323,10 @@ impl AuthRows {
             let Ok(Door::Memory(plugin, _)) = self.load(row, &row.manifest.alias, true) else {
                 continue;
             };
-            let Some(decl) = outbound_style(&plugin, style) else {
+            let Some(decl) = outbound_styles(&plugin)
+                .into_iter()
+                .find(|s| s.name == style)
+            else {
                 continue;
             };
             let settings = serde_json::to_vec(settings).map_err(|e| e.to_string())?;
