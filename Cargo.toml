@@ -23,8 +23,8 @@ members = [
     "crates/busbar-plane-streaming",
     "crates/busbar-plane-decisions",
     "crates/plugin-loader",
-    "crates/store-memory",
     "crates/busbar-transport-stdio",
+    "crates/busbar-transport-webrtc",
     "testing/ws-conformance/subject",
     "xtask",
 ]
@@ -59,8 +59,8 @@ members = [
 [workspace.dependencies]
 # ── External plugin crates: ONE pin each (ONE HOME PER FACT); members use `workspace = true` ──
 busbar-auth-admin-tokens-plugin = { git = "https://github.com/GetBusbar/busbar-auth-admin-tokens", rev = "648b6683d0b9274c02a20f6da17146ba1b85f74c" }
-busbar-auth-oidc = { git = "https://github.com/GetBusbar/busbar-auth-oidc", rev = "0a7b7a5c59593e4e5a9b742b5c5a9f0147dc17cb" }
-busbar-auth-oidc-plugin = { git = "https://github.com/GetBusbar/busbar-auth-oidc", rev = "0a7b7a5c59593e4e5a9b742b5c5a9f0147dc17cb" }
+busbar-auth-oidc = { git = "https://github.com/GetBusbar/busbar-auth-oidc", rev = "4d9e8f4cec149d6142854ef2b63c1e639b85f87d" }
+busbar-auth-oidc-plugin = { git = "https://github.com/GetBusbar/busbar-auth-oidc", rev = "4d9e8f4cec149d6142854ef2b63c1e639b85f87d" }
 busbar-export-file = { git = "https://github.com/GetBusbar/busbar-export-file", rev = "c0a2d690b281ec96ef5d904981f73e2b2a0b11c2" }
 busbar-export-file-plugin = { git = "https://github.com/GetBusbar/busbar-export-file", rev = "c0a2d690b281ec96ef5d904981f73e2b2a0b11c2" }
 busbar-export-otlp = { git = "https://github.com/GetBusbar/busbar-export-otlp", rev = "d4e24f17b57ae9e16026fbe6a56a1e8966773e51" }
@@ -80,7 +80,7 @@ busbar-secret-file = { git = "https://github.com/GetBusbar/busbar-secret-file", 
 # same rev, one resolved copy in Cargo.lock.
 busbar-export-webhook = { git = "https://github.com/GetBusbar/busbar-export-webhook", rev = "46cd95ba78f6639b28d14067bc7c6876e00c5458" }
 # THE HTTP TRANSPORT (kind: transport), pulled at a pinned rev; the logic crate the root links.
-busbar-transport-http = { git = "https://github.com/GetBusbar/busbar-transport-http", rev = "ed1e9b7719bfce7df3bf6ddef8a2132c3c7a6e57" }
+busbar-transport-http = { git = "https://github.com/GetBusbar/busbar-transport-http", rev = "a715d1ab57dcec469930563da0c0509a4fb75289" }
 # THE GRPC TRANSPORT: the gRPC framer door (kind: transport), pulled at a pinned rev; the logic crate the root
 # links on the transport-door axis (the gRPC module left busbar-transport-http for it).
 busbar-transport-grpc = { git = "https://github.com/GetBusbar/busbar-transport-grpc", rev = "a5140eee3e608e03bae21486c1feb27eafb06b7c" }
@@ -90,8 +90,8 @@ busbar-transport-ws = { git = "https://github.com/GetBusbar/busbar-transport-ws"
 busbar-export-webhook-plugin = { git = "https://github.com/GetBusbar/busbar-export-webhook", rev = "46cd95ba78f6639b28d14067bc7c6876e00c5458" }
 # THE TCP TRANSPORT: the identity framer door (kind: transport), one pin for the logic crate the root
 # links and the cdylib crate the loader's both-ways proof builds. Same repo, same rev, one resolved copy.
-busbar-transport-tcp = { git = "https://github.com/GetBusbar/busbar-transport-tcp", rev = "4af9e2ca8bc164d0066e6d107024ba416192a4ba" }
-busbar-transport-tcp-plugin = { git = "https://github.com/GetBusbar/busbar-transport-tcp", rev = "4af9e2ca8bc164d0066e6d107024ba416192a4ba" }
+busbar-transport-tcp = { git = "https://github.com/GetBusbar/busbar-transport-tcp", rev = "eb334dd6e9d3dcd62ae1616f77a5ed56311b255a" }
+busbar-transport-tcp-plugin = { git = "https://github.com/GetBusbar/busbar-transport-tcp", rev = "eb334dd6e9d3dcd62ae1616f77a5ed56311b255a" }
 # THE OUTBOUND HEADER STYLES (kind: auth): the logic crate the root links on its `auths` axis
 # (feature `auth-header`), pulled at a pinned rev (P5; OWNER Q99 keep the split).
 busbar-auth-header = { git = "https://github.com/GetBusbar/busbar-auth-header", rev = "70f356722c37b7efe9e8fc5f23d3f30e606556f0" }
@@ -102,10 +102,16 @@ busbar-auth-oauth = { git = "https://github.com/GetBusbar/busbar-auth-oauth", re
 # `auths` axis (feature `auth-sigv4`; P2 D1: the kernel's own SigV4 copies are deleted). One pin.
 busbar-auth-sigv4 = { git = "https://github.com/GetBusbar/busbar-auth-sigv4", rev = "963df8e00421a574a7d68bd8371472ff59f345c8" }
 # THE RANKING HOOK (kind: hook), pulled at a pinned rev: the logic crate the root links on its hooks
-# axis (feature `hooks-ranking`). The same package at the same rev, under the role the kernel's test
-# build gives it (`fixture-hook`: a kernel source names no plugin). A rev bump moves both lines.
+# axis (feature `hooks-ranking`). The root alone takes it: the kernel's test build links its in-crate
+# R-FIX3 double (`busbar_kernel::test_support::ranking_double`) instead, and the root's
+# `linked_hook_ranking` tests prove the double states what this door states.
 busbar-hook-ranking = { git = "https://github.com/GetBusbar/busbar-hook-ranking", rev = "7e1285e2e3293627723ab2754b9ddbfddeba9c46" }
-fixture-hook = { package = "busbar-hook-ranking", git = "https://github.com/GetBusbar/busbar-hook-ranking", rev = "7e1285e2e3293627723ab2754b9ddbfddeba9c46" }
+# THE MEMORY STORE (kind: store), pulled at a pinned rev: the logic crate the root links on its store
+# axis in every build (`[package.metadata.busbar.linked] store-memory`) and the plugin loader's `store`
+# both-ways fixture. The kernel names it under no name: its test build links the in-crate R-FIX3
+# double (`busbar_kernel::test_support::store_double`), and the root's `linked_store_double` tests
+# prove the double states what this door states.
+busbar-store-memory = { git = "https://github.com/GetBusbar/busbar-store-memory", rev = "848851e63ac7a454eb3d5daf9e11d739c48d738b" }
 # ── A2A, from the a2aproject's OWN crates ──────────────────────────────────────────────────────
 # THE OBVIOUS NAME IS THE WRONG ONE. `a2a-rs` on crates.io is `emillindfors/a2a-rs` (MIT, v0.5.0) —
 # a different author entirely. The a2aproject family is the `a2a-*-lf` / `a2a-pb` set, all
@@ -158,6 +164,15 @@ crc32fast = "1"
 # DTLS for the connector's dtls engine (WebRTC), on ring through the connector's own provider:
 # no default features, so neither aws-lc-rs nor the RustCrypto suite enters.
 dimpl = { version = "=0.7.4", default-features = false }
+# THE WEBRTC FRAMER's media stack (busbar-transport-webrtc; ARCHITECT WEBRTC spike GO and D2 approval,
+# THE DESIGN l.756-765): ICE, SRTP and SCTP, sans-IO. No default features: no aws-lc-rs, no OpenSSL,
+# no example server; the framer installs its own crypto provider on ring and a host shim in place of
+# str0m's DTLS (the framer holds no DTLS state).
+str0m = { version = "=0.24.1", default-features = false }
+# THE ONE EXCEPTION TO ring-ONLY (THE DESIGN l.759-761, QUESTIONS Q101): ring has no raw AES block, and
+# the SRTP key derivation (RFC 3711 §4.3, RFC 7714 §11) is AES in counter mode over 16-byte blocks.
+# aes/cipher/inout enter for that derivation alone; a dependency-closure test confines them to it.
+aes = { version = "0.8", default-features = false }
 # THE MICROBENCHMARK HARNESS. Dev-only, and deliberately stripped: `default-features = false` drops
 # criterion's plotting stack (plotters, its font/image chain) and its rayon thread pool, keeping
 # `cargo_bench_support` — the part `cargo bench` actually needs to run a `harness = false` target.

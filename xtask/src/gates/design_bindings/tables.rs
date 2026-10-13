@@ -19,8 +19,8 @@ pub static SEED: &[(&str, &[SeededCheck])] = &[
         ("gate", "xtask/src/gates/inventory_coverage.rs", "every qa/evidence/inventory/*.md row id either has a citing shadow-oracle cell that PASSes on the golden ledger or is a NAMED gap in qa/inventory-gaps.json; a row with neither turns the check red, and so does a gap entry naming a row that no longer exists or has since been covered"),
     ]),
     ("PB-1", &[
-        ("test", "enforce_restricts_reapplies_compliance_tags_across_pools", "a Reject restrict with no eligible lane fails closed; the Weighted arm passes candidates unchanged"),
-        ("test", "multi_restrict_disjoint_intersection_fails_closed", "two restricts intersecting to empty produce a 503 (status only, not the literal body)"),
+        ("test", "crates/busbar-llm/src/engine/tests/hook_seam_tests.rs::enforce_restricts_reapplies_compliance_tags_across_pools", "a Reject restrict with no eligible lane fails closed; the Weighted arm passes candidates unchanged"),
+        ("test", "crates/busbar-llm/src/engine/tests/hook_seam_tests.rs::multi_restrict_disjoint_intersection_fails_closed", "two restricts intersecting to empty produce a 503 (status only, not the literal body)"),
     ]),
     ("PB-2", &[
         ("test", "excluded_reasons_records_at_capacity", "a saturated lane's try_admit yields no pick and records AtCapacity"),
@@ -60,8 +60,8 @@ pub static SEED: &[(&str, &[SeededCheck])] = &[
         ("test", "ordered_walk_empty_order_is_swrr", "no ordering gate means the SWRR floor"),
     ]),
     ("PB-6", &[
-        ("test", "global_gate_reject_short_circuits_the_request", "a decision-gate reject ends the request"),
-        ("test", "global_request_stage_tap_fires_on_a_real_dispatched_request", "request-stage taps fire through fire_global_taps"),
+        ("test", "crates/busbar-llm/src/engine/tests/hook_seam_tests.rs::global_gate_reject_short_circuits_the_request", "a decision-gate reject ends the request"),
+        ("test", "crates/busbar-llm/src/engine/tests/hook_seam_tests.rs::global_request_stage_tap_fires_on_a_real_dispatched_request", "request-stage taps fire through fire_global_taps"),
     ]),
     ("PB-8", &[
         ("test", "test_saturated_lane_respects_deadline_no_infinite_spin", "the pick_among guard is bounded by failover.timeout_secs and resolves 503"),
@@ -177,7 +177,7 @@ pub static SEED: &[(&str, &[SeededCheck])] = &[
         ("test", "test_finish_refunds_flat_fee_on_non_2xx_keeps_on_2xx", "the flat fee is kept after 2xx headers"),
     ]),
     ("PB-28", &[
-        ("test", "enforce_restricts_reapplies_compliance_tags_across_pools", "for a gate, Weighted leaves the candidate set unchanged"),
+        ("test", "crates/busbar-llm/src/engine/tests/hook_seam_tests.rs::enforce_restricts_reapplies_compliance_tags_across_pools", "for a gate, Weighted leaves the candidate set unchanged"),
     ]),
     ("PB-30", &[
         ("test", "resolver_table", "the detect ladder rungs: headers, SigV4 prefix, path suffixes, catch-all"),
@@ -230,18 +230,13 @@ pub static SEED: &[(&str, &[SeededCheck])] = &[
         ("test", "crates/busbar-kernel/src/auth/tests/tests.rs::test_extract_client_token_non_bearer_authorization_falls_through_to_x_api_key", "a non-Bearer Authorization falls through to x-api-key"),
         ("test", "crates/busbar-kernel/src/auth/tests/tests.rs::test_extract_client_token_non_bearer_authorization_falls_through_to_x_goog_api_key", "a non-Bearer Authorization falls through to x-goog-api-key"),
         ("test", "test_admin_v1_credential_cache_and_flush_endpoint", "POST /auth/cache/flush returns a real flushed count"),
+        ("test", "crates/busbar-kernel/src/auth/tests/tests.rs::every_request_is_verified_by_the_door_and_the_kernel_caches_no_verdict", "the kernel caches no verdict: one door verify per request, the second verdict the door's own"),
         ("oracle-cell", "admin.ops|PostAuthCacheFlush|ok", "the flush's {\"flushed\": N} diffed against the 1.5.5 binary"),
     ]),
     ("PB-36", &[
         ("test", "admin_scope_resolution", "admin_auth [] grants Scope::Full when no principal"),
     ]),
     ("PB-38", &[
-        ("test", "add_usage_sweeps_stale_windows", "the add_usage sweep by window_start"),
-        ("test", "add_usage_sweep_boundary_is_exact", "strict > on the usage sweep boundary"),
-        ("test", "add_metering_sweeps_stale_buckets", "the add_metering sweep by bucket age"),
-        ("test", "add_metering_sweep_boundary_is_exact", "strict > on the metering sweep boundary"),
-        ("test", "put_key_sweeps_stale_tombstones", "the put_key tombstone sweep"),
-        ("test", "put_credential_sweeps_stale_revoked_creds", "the put_credential revoked-only sweep"),
         ("test", "test_budget_sweep_staleness_boundary_is_exact", "the idle cell sweep boundary is strict"),
         ("test", "test_budget_sweep_evicts_idle_attribution_cells_but_never_group_caps", "a cell survives while it still enforces a cap or is dirty"),
         ("test", "test_budget_sweep_only_exempts_group_cells_that_still_enforce_a_cap", "the still_enforces_a_cap predicate"),
@@ -482,8 +477,8 @@ pub static SEED: &[(&str, &[SeededCheck])] = &[
         ("test", "test_unbounded_lane_skips_the_semaphore_bounded_still_enforces", "max_concurrent is lane-global"),
     ]),
     ("PB-84", &[
-        ("test", "completion_tap_reports_ok_outcome", "the response stage reports ok"),
-        ("test", "completion_tap_fires_synthetic_rejected_by_gate", "the synthetic outcome rejected_by_gate"),
+        ("test", "crates/busbar-llm/src/engine/tests/hook_seam_tests.rs::completion_tap_reports_ok_outcome", "the response stage reports ok"),
+        ("test", "crates/busbar-llm/src/engine/tests/hook_seam_tests.rs::completion_tap_fires_synthetic_rejected_by_gate", "the synthetic outcome rejected_by_gate"),
     ]),
     ("PB-85", &[
         ("test", "per_model_then_global_then_4096", "default_max_tokens is injected only when the IR carries none; a caller value survives"),
@@ -518,8 +513,8 @@ pub static SEED: &[(&str, &[SeededCheck])] = &[
         ("test", "golden_migrate_auth_upstream_credentials_moves_to_pools", "the 1.5.5 key lands under pools"),
     ]),
     ("PB-95", &[
-        ("test", "attempt_tap_carries_attempt_story", "the routing-stage payload carries a 1-based attempt_number"),
-        ("test", "route_tap_reports_surviving_candidates", "remaining_candidates on the candidate stage"),
+        ("test", "crates/busbar-llm/src/engine/tests/hook_seam_tests.rs::attempt_tap_carries_attempt_story", "the routing-stage payload carries a 1-based attempt_number"),
+        ("test", "crates/busbar-llm/src/engine/tests/hook_seam_tests.rs::route_tap_reports_surviving_candidates", "remaining_candidates on the candidate stage"),
     ]),
     ("PB-96", &[
         ("test", "test_translate_anthropic_egress_to_openai_ingress", "[DONE] for an openai ingress"),
@@ -553,8 +548,6 @@ pub static SEED: &[(&str, &[SeededCheck])] = &[
         ("test", "test_metering_accumulates_split_per_key_model_and_bucket", "the flushed row literals key_group_at_use, pricing_version, billable_requests"),
         ("test", "test_record_metering_from_ir_usage_and_flat", "a flat-fee op still counts the request"),
         ("test", "test_additive_flush_carries_refund_deltas", "billable_requests deltas verbatim"),
-        ("test", "delete_key_tombstones_and_cascades_usage_and_creds", "delete_key destroys usage rows and credentials"),
-        ("test", "scrub_key_requires_tombstone_first", "scrub_key nulls PII only on a tombstone"),
     ]),
     ("PB-100", &[
         ("test", "test_admin_v1_key_idempotent_mint_and_if_match", "stale If-Match is 409 and the ETag is header-only"),
@@ -567,9 +560,6 @@ pub static SEED: &[(&str, &[SeededCheck])] = &[
         ("test", "begin_sets_httponly_secure_cookie_and_redirects", "the GET /auth/token begin flow"),
         ("test", "callback_state_mismatch_400", "constant-time state check"),
         ("test", "callback_nonce_mismatch_rejected", "the id_token nonce"),
-        ("test", "execute_hop_refuses_non_allowlisted_host", "the hop host allowlist"),
-        ("test", "vet_hop_url_enforces_https_allowlist_and_blocks_metadata", "ssrf_blocked_host on hops"),
-        ("test", "execute_hop_does_not_follow_redirect", "hops never follow redirects"),
         ("test", "refresh_rotates_key_and_revokes_the_old_one", "?refresh rotates and revokes"),
     ]),
     ("PB-101", &[

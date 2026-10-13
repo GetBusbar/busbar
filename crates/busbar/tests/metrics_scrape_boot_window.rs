@@ -54,10 +54,17 @@ fn fixture_dir() -> PathBuf {
     let d = std::env::temp_dir().join(format!(
         "busbar-metrics-boot-window-{}-{}",
         std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
+        {
+            static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            format!(
+                "{}-{}-{}",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |d| d.as_nanos()),
+                line!(),
+                NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            )
+        }
     ));
     std::fs::create_dir_all(&d).unwrap();
     d
@@ -68,7 +75,7 @@ fn free_port() -> u16 {
 }
 
 /// A high worker count + `export.prometheus` + an OPEN auth chain (so `/metrics`, declared
-/// `RouteAuth::Key`, is reachable with no bearer at all — see `AuthChain::run_chain_cached`'s
+/// `RouteAuth::Key`, is reachable with no bearer at all — see `AuthChain::run_chain_with`'s
 /// `chain.is_empty() && !keys_in_chain` open-front-door arm) — nothing else is topology-specific.
 fn write_configs(dir: &Path, data_port: u16, admin_port: u16) {
     std::fs::write(

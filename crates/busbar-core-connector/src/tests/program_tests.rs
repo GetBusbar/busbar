@@ -16,15 +16,20 @@ use busbar_contract::conn::{
 };
 
 use crate::registry::{Entry, Transports};
-use crate::support::{worker, TestDoor};
+use crate::support::{worker, Knobs, TestDoor};
 use crate::Connector;
 
 const OWNER: InstanceId = InstanceId(1);
 const NEED: NeedId = NeedId(1);
 
 fn connector() -> Connector {
+    connector_over(TestDoor::identity("bytes"))
+}
+
+/// A connector whose `bytes` entry is `door`.
+fn connector_over(door: TestDoor) -> Connector {
     let view = Transports::new(vec![Entry {
-        door: Arc::new(TestDoor::identity("bytes")),
+        door: Arc::new(door),
         alpn: Vec::new(),
     }])
     .unwrap();
@@ -63,6 +68,7 @@ fn sh(script: &str, env: &[(&str, &str)]) -> Program {
             .iter()
             .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
             .collect(),
+        env_refs: Vec::new(),
     }
 }
 
@@ -234,6 +240,52 @@ fn a_frame_reaches_every_open_lease_and_an_opens_body_is_its_first_message() {
     });
 }
 
+/// RED (finding 13): a lease opened while the program is part way through one frame does not read
+/// that frame's rest as though it began there (on one shared child, another exchange's answer
+/// taken as its own): its first body bytes begin a frame. The lease already reading the frame reads
+/// it whole.
+#[test]
+fn a_lease_opened_mid_frame_reads_from_the_next_frame() {
+    worker().block_on(async {
+        let c = connector_over(TestDoor::new(
+            "bytes",
+            &["bytes"],
+            &[],
+            Knobs {
+                piece: Some(16),
+                ..Knobs::default()
+            },
+        ));
+        let long = "A".repeat(100);
+        let script = format!("read x; echo {long}; read y; echo second; cat >/dev/null");
+        declare(&c, &[("one", sh(&script, &[]))]).unwrap();
+        let a = open(&c, "one", b"go\n").unwrap();
+        assert_eq!(generation(&c, a).await, 1);
+        let mut buf = [0_u8; 64];
+        let first = read(&c, a, &mut buf)
+            .await
+            .expect("the long frame's first piece");
+        assert_eq!(first.kind, PieceKind::Body);
+        assert!(!first.end, "the long frame arrives in pieces");
+        let mut ha = buf[..first.len].to_vec();
+        let b = open(&c, "one", b"next\n").unwrap();
+        assert_eq!(generation(&c, b).await, 1);
+        let mut hb = Vec::new();
+        assert_eq!(
+            line(&c, b, &mut hb).await.as_deref(),
+            Some("second"),
+            "the lease opened mid-frame took the rest of a frame it never saw begin"
+        );
+        assert_eq!(
+            line(&c, a, &mut ha).await,
+            Some(long),
+            "a reads its frame whole"
+        );
+        c.close(OWNER, a).unwrap();
+        c.close(OWNER, b).unwrap();
+    });
+}
+
 /// RED: a program that ends ends every lease of its generation; the next open spawns it anew — the
 /// next generation, another process — once the restart backoff has passed.
 #[test]
@@ -332,6 +384,7 @@ fn a_members_program_inherits_only_its_stated_environment() {
             command: "/usr/bin/env".to_owned(),
             args: Vec::new(),
             env: vec![("DECLARED".to_owned(), "yes".to_owned())],
+            env_refs: Vec::new(),
         };
         declare(&c, &[("shown", env)]).unwrap();
         let id = open(&c, "shown", b"").unwrap();
@@ -343,6 +396,83 @@ fn a_members_program_inherits_only_its_stated_environment() {
         }
         assert_eq!(lines, vec!["DECLARED=yes".to_owned()]);
         c.close(OWNER, id).unwrap();
+    });
+}
+
+/// The spawn's resolver in these cells: an `env` reference reads its variable, nothing else resolves.
+fn env_only(r: &busbar_contract::secret_ref::SecretRef) -> Result<String, String> {
+    r.env_var()
+        .and_then(|v| std::env::var(v).ok())
+        .ok_or_else(|| format!("{} does not resolve", r.describe()))
+}
+
+/// RED (SECURITY ruling 2026-10-07: a member's env resolves at spawn): an `env` entry written as a
+/// secret reference stays the reference in the declared program, and only the spawn resolves it:
+/// the child's environment carries the value, a template's `${VAR}` filled in place.
+#[test]
+fn a_members_env_refsironment_resolves_at_the_spawn() {
+    const VAR: &str = "BUSBAR_CONNECTOR_SPAWN_SECRET";
+    std::env::set_var(VAR, "spawn-value");
+    let _ = crate::compose::install_spawn_secrets(env_only);
+    worker().block_on(async {
+        let c = connector();
+        let env = Program {
+            command: "/usr/bin/env".to_owned(),
+            args: Vec::new(),
+            env: vec![("DECLARED".to_owned(), "yes".to_owned())],
+            env_refs: vec![
+                (
+                    "WHOLE".to_owned(),
+                    busbar_contract::secret_ref::SecretRef::env(VAR),
+                ),
+                (
+                    "TEMPLATED".to_owned(),
+                    busbar_contract::secret_ref::SecretRef::template(format!("Bearer ${{{VAR}}}")),
+                ),
+            ],
+        };
+        assert!(
+            !format!("{env:?}").contains("spawn-value"),
+            "the declared program holds no value"
+        );
+        declare(&c, &[("shown", env)]).unwrap();
+        let id = open(&c, "shown", b"").unwrap();
+        generation(&c, id).await;
+        let mut held = Vec::new();
+        let mut lines = Vec::new();
+        while let Some(l) = line(&c, id, &mut held).await {
+            lines.push(l);
+        }
+        lines.sort();
+        assert_eq!(
+            lines,
+            vec![
+                "DECLARED=yes".to_owned(),
+                "TEMPLATED=Bearer spawn-value".to_owned(),
+                "WHOLE=spawn-value".to_owned(),
+            ]
+        );
+        c.close(OWNER, id).unwrap();
+    });
+}
+
+/// A member whose environment reference does not resolve is not spawned (fail-closed).
+#[test]
+fn a_member_whose_env_refsironment_does_not_resolve_is_not_spawned() {
+    let _ = crate::compose::install_spawn_secrets(env_only);
+    worker().block_on(async {
+        let c = connector();
+        let env = Program {
+            command: "/usr/bin/env".to_owned(),
+            args: Vec::new(),
+            env: Vec::new(),
+            env_refs: vec![(
+                "MISSING".to_owned(),
+                busbar_contract::secret_ref::SecretRef::env("BUSBAR_CONNECTOR_SPAWN_UNSET_VAR"),
+            )],
+        };
+        declare(&c, &[("unresolved", env)]).unwrap();
+        assert!(open(&c, "unresolved", b"").is_err());
     });
 }
 
@@ -376,6 +506,7 @@ fn a_member_program_need_is_refused_unless_declared_as_written() {
                 command: "sh".into(),
                 args: Vec::new(),
                 env: Vec::new(),
+                env_refs: Vec::new(),
             },
         )];
         assert_eq!(

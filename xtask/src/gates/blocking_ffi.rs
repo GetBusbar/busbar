@@ -133,7 +133,7 @@ fn seams() -> Vec<Seam> {
         },
         // dlopen + the plugin CONSTRUCTOR: a staging copy, dynamic-linker work, then the open.
         Seam {
-            methods: &["open_hook", "open_login", "open_auth"],
+            methods: &["open_hook"],
             bare: &["gate_transport_named", "preopen_gate_hooks"],
             msg: "plugin OPEN (dlopen + constructor) called inline from an async fn — use \
                   hooks::gate_transport_offloaded / offload_bounded",
@@ -644,15 +644,15 @@ impl Gate for BlockingFfiGate {
         };
 
         let files = population.files.clone();
-        if population.below_floor() {
+        if population.unreconciled() {
             return Verdict::of(vec![
                 Row::pass(ROW_PLANE_ROOTS, "every plane root resolved", CLEAN),
                 Row::fail(
                     ROW_SCAN_FLOOR,
-                    "the scan set is below its floor",
+                    "the scan set is not the tracked set",
                     format!(
-                        "{}. This gate scanned (almost) nothing, so its verdict is meaningless — \
-                         it is NOT a pass.",
+                        "{}. This gate did not read the tree it would report on, so its verdict \
+                         is meaningless — it is NOT a pass.",
                         population.census()
                     ),
                 ),
@@ -706,7 +706,7 @@ impl Gate for BlockingFfiGate {
             Row::pass(ROW_PLANE_ROOTS, "every plane root resolved", CLEAN),
             Row::pass(
                 ROW_SCAN_FLOOR,
-                "the scan set cleared its floor",
+                "the scan set is the tracked set",
                 population.census(),
             ),
             status,
@@ -953,45 +953,47 @@ impl Gate for BlockingFfiGate {
             &["never closed", "planted_unclosed.rs"],
         ));
 
-        // THE FLOOR SITS AT THE MEASURED COUNT: one file fewer than the live population is
-        // refused. A floor set a margin below the count passes this tree, so the plant is red
-        // exactly when the floor has slipped under the number the tree measures.
-        match population::one_file_short(cx) {
-            Ok(ov) => report.push(prove_red(
+        // THE SCAN IS RECONCILED AGAINST THE TRACKED SET: one tracked file hidden from the walk
+        // is refused, and the refusal NAMES it. There is no count to re-pin, so neither a tree that
+        // grew nor one that shrank turns this plant green.
+        match population::one_file_hidden(cx) {
+            Ok((ov, rel)) => report.push(prove_red(
                 cx,
                 self,
-                "a population one file short of the measured floor is refused",
+                "a tracked file the scan did not read is refused by name",
                 &[ROW_SCAN_FLOOR],
                 ov,
-                &["below its floor"],
+                &["NOT scanned", rel.as_str()],
             )),
             Err(e) => report.note_infra_failure(format!("blocking-ffi selftest: {e}")),
         }
 
-        // THE FLOOR, on the run path.
+        // THE RECONCILIATION, on the run path: every root keeps a file, so the per-root check
+        // passes, and the files hidden from the walk are still owed.
         match scan_roots(cx) {
             Ok(roots) => match candidates(cx, &roots) {
                 Ok(_) => {
-                    let mut ov = Overlay::new();
+                    let mut hidden = Vec::new();
                     for root in &roots {
                         if let Ok(files) = cx.walk(
                             &WalkSpec::new([root.clone()])
                                 .ext("rs")
                                 .exclude([EXCLUDE_TESTS_DIR]),
                         ) {
-                            for f in files.iter().skip(1) {
-                                ov.remove(&f.rel);
-                            }
+                            hidden.extend(files.iter().skip(1).map(|f| f.rel.clone()));
                         }
                     }
-                    report.push(prove_red(
-                        cx,
-                        self,
-                        "a scan set below its floor is refused though every root still holds a file",
-                        &[ROW_SCAN_FLOOR],
-                        ov,
-                        &["below its floor"],
-                    ));
+                    match cx.hide_from_scan(&hidden) {
+                        Ok(ov) => report.push(prove_red(
+                            cx,
+                            self,
+                            "files hidden from the walk are refused though every root still holds one",
+                            &[ROW_SCAN_FLOOR],
+                            ov,
+                            &["NOT scanned"],
+                        )),
+                        Err(e) => report.note_infra_failure(format!("blocking-ffi selftest: {e}")),
+                    }
                 }
                 Err(e) => report.note_infra_failure(format!("blocking-ffi selftest: {e}")),
             },

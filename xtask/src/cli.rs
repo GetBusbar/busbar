@@ -32,6 +32,8 @@ usage:
   cargo xtask loc --selftest
   cargo xtask teller-steps [--root-legs] [--root-legs-gating]
   cargo xtask ledger {sync|status|next|record|fixed|move} | --check
+  cargo xtask ledger-merge <base> <ours> <theirs> [<path> [<marker-size>]]   (git merge driver `ledger-count` for qa/kind-isolation.toml: a count both sides moved is theirs + ours - base; ours is rewritten in place; exit 1 leaves the conflict, reasons on stderr)
+  cargo xtask q128 audit [--record <path>] [--out <path>]   (the Q128 architecture audit on this tree; writes target/q128-audit.json; exit 1 on an open BLOCK)
   cargo xtask proof-manifest --version <v> --out <file> [--sha S] [--run-id ID] [--run-url U] [--staged-json F] [--reports-dir D] [--hits-dir D] [--repo-root D] [--run-cargo|--run-parity|--run-composability] [--mark ID=STATUS]... [--index] [--print]
   cargo xtask proof-manifest --selftest
   cargo xtask proof-manifest --check [<manifest.json>...]   (the public-safety guard; no args = docs/proof/*.json)
@@ -50,7 +52,17 @@ usage:
   cargo xtask dialect compile
   cargo xtask readme-assets [<outdir>]   (redraw the README SVGs from assets/readme/data.json + install.json)
   cargo xtask install-sizes [--check]    (re-measure the image sizes from the registries into assets/readme/install.json)
-  cargo xtask perf-ab [--base <busbar>] [--candidate <busbar>] [--conc 1,64,512] [--secs N] [--streams N] [--trend <file>]";
+  cargo xtask perf-ab [--base <busbar>] [--candidate <busbar>] [--conc 1,64,512] [--secs N] [--streams N] [--trend <file>]
+
+gate --format=tsv columns:
+  <id>\\t<PASS|FAIL|SKIP>\\t<title>\\t<detail>       one line per ledger row
+  \\t<id>/<cell>\\t<PASS|FAIL>\\t<figure>/<ceiling>\\t<finding(s)>
+      under a FAIL row whose detail is a list of coded findings, one line per CELL, indented by
+      one tab: <cell> is the key busbar-release's baseline::cells files a finding under (`busbar
+      × plane`) with its spaces removed (`kind-isolation:law0/busbar×plane`); <figure>/<ceiling>
+      is the cell's measured count over its ceiling (`828/826`), `-` for a side not stated. A row
+      measured cell by cell (kind-isolation:law0) prints every cell, the at-ceiling ones PASS.
+      A reader keyed on column 1 (busbar-release's parse_tsv_rows) reads no cell line.";
 
 /// The environment variable the legacy release-gate scripts write their ledger through.
 const LEGACY_LEDGER_ENV: &str = "LEDGER";
@@ -65,6 +77,8 @@ const LEGACY_LEDGER_ENV: &str = "LEDGER";
 /// here, beside the dispatch arms that prove it, so the reader and the dispatcher cannot drift.
 pub const NON_GATE_SUBCOMMANDS: &[&str] = &[
     "ledger",
+    "ledger-merge",
+    "q128",
     "audit-verify",
     "plugin-gates",
     "conformance",
@@ -195,8 +209,17 @@ pub fn main(args: &[String]) -> i32 {
         Some("txn-fence") => crate::txn_fence::main(&args[1..]),
         // THE LOOM MODEL of the config swap (slow, exhaustive; refuses a run that ran no model).
         Some("loom") => crate::loom::main(&args[1..]),
+        // THE LEDGER MERGE DRIVER (`.gitattributes`: `merge=ledger-count`). Not a gate: git hands it
+        // three versions of `qa/kind-isolation.toml` and it reads no tree.
+        Some("ledger-merge") => crate::ledger_merge::main(&args[1..]),
         Some("ledger") => match open_ctx() {
             Ok(cx) => crate::audit_cmd::main(cx.root(), &args[1..]),
+            Err(code) => code,
+        },
+        // THE Q128 ARCHITECTURE AUDIT (DEV-GREEN item 5): the auditor's record and the audit ledger,
+        // judged on this tree; exit 1 on an open BLOCK.
+        Some("q128") => match open_ctx() {
+            Ok(cx) => crate::q128::main(cx.root(), &args[1..]),
             Err(code) => code,
         },
         Some("teller-steps") => match open_ctx() {
@@ -844,19 +867,29 @@ fn run_selftest(gate: &dyn gates::Gate, cx: &Ctx) -> i32 {
         gate.owed(),
         gates::selftest_ceiling_from_env(gate.name()),
     );
-    let report = gate.selftest(cx);
+    // ONE MEASURED BATTERY: built and every case taken inside one CPU-time window (ARCHITECT
+    // 2026-10-12, Law 8; see `gates::take_battery`). TAKEN UNDER THE WATCHDOG, NOT AFTER IT. A case
+    // is a plan, and a plan is taken on the first read of the report — so reading the cases after
+    // the watchdog was dropped would have disarmed the ceiling over exactly the work it exists to
+    // bound. `take_battery` is that read.
+    let report = gates::take_battery(gate, cx);
     let jobs = report.jobs();
-    // TAKEN UNDER THE WATCHDOG, NOT AFTER IT. A case is a plan now, and a plan is taken on the
-    // first read of the report — so reading the cases after the watchdog was dropped would have
-    // disarmed the ceiling over exactly the work it exists to bound. This is that read.
-    let _ = report.cases();
     drop(watchdog);
     if std::env::var("XTASK_SELFTEST_TIMING").is_ok() {
         let mut rows = report.timings();
-        rows.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal));
-        for (name, took, units, prepaid) in &rows {
+        rows.sort_by_key(|row| std::cmp::Reverse(row.1));
+        eprintln!(
+            "TIMING per case: the WORKER THREAD's own wall clock and CPU, for diagnosis only. They \
+             do not sum to the battery's cost, which is the whole process's CPU (every thread and \
+             reaped child) and is the only figure the budget judges: {}",
+            report.cost()
+        );
+        for (name, took, worker_cpu, prepaid) in &rows {
+            let worker_cpu = worker_cpu
+                .map(|c| format!("{:7.2}s", c.as_secs_f64()))
+                .unwrap_or_else(|| "      -".to_string());
             eprintln!(
-                "TIMING {units:8.1}u {:7.2}s (prepaid {:6.2}s)  {name}",
+                "TIMING {:7.2}s wall {worker_cpu} worker CPU (prepaid {:6.2}s)  {name}",
                 took.as_secs_f64(),
                 prepaid.as_secs_f64()
             );
@@ -884,11 +917,11 @@ fn run_selftest(gate: &dyn gates::Gate, cx: &Ctx) -> i32 {
                 .map(|(n, t)| format!(", slowest {:.1}s ({n})", t.as_secs_f64()))
                 .unwrap_or_default();
             println!(
-                "  {} case(s), {} skipped, {:.1}s / {:.0} work units{slowest}{} — the gate is proven RED-able",
+                "  {} case(s), {} skipped, {:.1}s / {}{slowest}{} — the gate is proven RED-able",
                 report.cases().len(),
                 report.skipped(),
                 report.total().as_secs_f64(),
-                report.units(),
+                report.cost(),
                 planting(&report),
             );
             0
@@ -898,11 +931,11 @@ fn run_selftest(gate: &dyn gates::Gate, cx: &Ctx) -> i32 {
             // path, so the one run a reader most needs to attribute — the slow one that also
             // failed — was the one that said nothing about where its minutes went.
             println!(
-                "  {} case(s), {} skipped, {:.1}s / {:.0} work units{} at --jobs {jobs}",
+                "  {} case(s), {} skipped, {:.1}s / {}{} at --jobs {jobs}",
                 report.cases().len(),
                 report.skipped(),
                 report.total().as_secs_f64(),
-                report.units(),
+                report.cost(),
                 report
                     .slowest()
                     .map(|(n, t)| format!(", slowest {:.1}s ({n})", t.as_secs_f64()))

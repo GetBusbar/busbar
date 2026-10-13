@@ -1,85 +1,19 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE PLANE'S OWN DECLARATIONS AGREE WITH EACH OTHER — four facts asked where the declarations
-//! live.
+//! THE PLANE'S OWN DECLARATIONS AGREE WITH EACH OTHER — facts asked where the declarations live.
 //!
-//! Each of the four is a compile-time fact of this crate: a schema nothing can reach, a leg naming
-//! an operation its schema never declared, a completed call metered under a class the plane does not
-//! have, and a claim set whose credential alternatives disagree. None depends on a configuration, a
-//! store or a request, so none needs a node to answer it: a test that runs on every build of this
-//! crate answers each one before any binary is linked. Contract only — nothing here names the
-//! kernel. (The composition root's pre-unification mcp unit asked the same four at boot, over the
-//! same constants.)
-//!
-//! The leg check reads the legs off the plane's own `verify` and `route` for every operation class
-//! it declares — this crate's test seal builds the unit reaching the plan needs — and keeps a
-//! written-down table as the pin those legs must equal, so a plan that starts or stops touching a
-//! record is a reviewed change.
+//! Each is a compile-time fact of this crate: a schema nothing can reach, a completed call metered
+//! under a class the plane does not have, a meter class sized from a side the door does not report
+//! it from, and a claim set whose credential alternatives disagree. None depends on a configuration,
+//! a store or a request, so none needs a node to answer it. Contract only — nothing here names the
+//! kernel. (The record-leg pin that read legs off the unserved `Plane::verify`/`route` was retired
+//! with that impl, finding 12.)
 
-mod common;
-
-use std::collections::BTreeSet;
-
-use busbar_contract::dest::DestinationFacts;
-use busbar_contract::ids::RecordSchemaId;
-use busbar_contract::plane::{Plane, PlaneMeta};
+use busbar_contract::ids::ClassDirection;
+use busbar_contract::plane::PlaneMeta;
 use busbar_plane_mcp::tool_meta::CLASS_TOOL_CALLS;
 use busbar_plane_mcp::{tool_records as records, McpPlane};
-use common::Scaffold;
-
-/// Every record leg this plane's plans reach, written down.
-///
-/// The pin the plans are compared against, in both directions: a plan that starts reaching a pair
-/// not listed here, or stops reaching one that is, is a change to what an operation touches in the
-/// node's own records, and it is reviewed here rather than discovered in a store.
-const PLANNED_LEGS: &[(RecordSchemaId, &str)] = &[
-    (records::SCHEMA_CATALOGUE, records::OP_GET),
-    (records::SCHEMA_CATALOGUE, records::OP_PUT),
-    (records::SCHEMA_CATALOGUE, records::OP_SCAN),
-    (records::SCHEMA_DEMOTION, records::OP_GET),
-    (records::SCHEMA_DEMOTION, records::OP_SCAN),
-    (records::SCHEMA_APPROVAL, records::OP_REDEEM),
-    (records::SCHEMA_CALL, records::OP_APPEND),
-    (records::SCHEMA_TASK, records::OP_GET),
-    (records::SCHEMA_TASK, records::OP_PUT),
-    (records::SCHEMA_SETTINGS, records::OP_GET),
-];
-
-/// The record legs the plane itself names, read off `verify` and `route` for every operation class
-/// it declares.
-fn reached_record_legs() -> BTreeSet<(&'static str, &'static str)> {
-    let plane = McpPlane::EMPTY;
-    let scaffold = Scaffold::new("http");
-    let ctx = scaffold.ctx();
-    let seal = common::TestSeal;
-    let mut reached = BTreeSet::new();
-    for op in <McpPlane as PlaneMeta>::OP_CLASSES {
-        let unit = busbar_contract::unit::Unit::new(
-            &seal,
-            busbar_contract::UnitKey::new(1),
-            busbar_contract::unit::Origin::Client,
-            None,
-            None,
-            busbar_contract::wire::Direction::Inbound,
-            Some(common::principal()),
-            *op,
-            busbar_contract::bounded::Ir::new(b"{}", &[]),
-            busbar_contract::bounded::Facts::new(),
-            None,
-        );
-        let sealed = plane.verify(&unit, &ctx);
-        let plan = plane.route(&unit, &ctx);
-        for destination in
-            std::iter::once(&sealed).chain(plan.legs.as_slice().iter().map(|leg| &leg.destination))
-        {
-            if let DestinationFacts::PlaneRecord { schema, op } = destination {
-                reached.insert((schema.as_str(), *op));
-            }
-        }
-    }
-    reached
-}
 
 /// Every schema the plane declares carries at least one operation — a schema with none is one no
 /// leg can ever reach, and a record written under it is a record nothing reads back.
@@ -94,42 +28,6 @@ fn every_declared_record_schema_carries_operations() {
         assert!(
             !records::operations_for(*schema).is_empty(),
             "the plane declares the unreachable schema {schema}"
-        );
-    }
-}
-
-/// Every record leg the plane's own plans reach names an operation its schema declares, the legs
-/// reached are exactly the written-down set, and every declared schema is reached by some plan.
-///
-/// A leg naming an undeclared operation would be refused by the trust unit on every request that
-/// planned it: an operation whose plan depends on that refusal is an operation that never works.
-#[test]
-fn every_record_leg_the_plans_reach_is_one_its_schema_declares() {
-    let reached = reached_record_legs();
-    for (schema, op) in &reached {
-        assert!(
-            records::operations_for(RecordSchemaId::new(schema)).contains(op),
-            "a route leg names an undeclared {op} on {schema}"
-        );
-    }
-    let pinned: BTreeSet<(&str, &str)> = PLANNED_LEGS
-        .iter()
-        .map(|(schema, op)| (schema.as_str(), *op))
-        .collect();
-    assert_eq!(
-        reached, pinned,
-        "the record legs the plans reach moved; the written-down set is reviewed with them"
-    );
-    for (schema, op) in PLANNED_LEGS {
-        assert!(
-            records::operations_for(*schema).contains(op),
-            "the written-down leg {op} on {schema} is not declared"
-        );
-    }
-    for schema in <McpPlane as PlaneMeta>::RECORD_SCHEMAS {
-        assert!(
-            reached.iter().any(|(s, _)| *s == schema.as_str()),
-            "{schema} is declared and no plan reaches it"
         );
     }
 }
@@ -166,6 +64,29 @@ fn every_credentialed_claim_declares_the_same_scheme_alternatives() {
         assert_eq!(
             alternatives, &first,
             "the mcp plane's claims declare different scheme alternatives"
+        );
+    }
+}
+
+/// Both declared meter classes are sized from the ANSWER, because the served door reports both off
+/// the answer: a call is counted once the upstream has answered the round, and the byte count is
+/// the answered document's own length (`tool_door.rs`, `Pending::counted`). A class that declared
+/// the request and was reported from the answer would have a rate card pricing one side of the
+/// exchange at the size of the other. The surviving half of the retired
+/// `the_metering_step_reports_what_it_read`, which drove the unserved `Plane::meter`.
+#[test]
+fn both_meter_classes_are_sized_from_the_answer() {
+    let classes = <McpPlane as PlaneMeta>::METER_CLASSES;
+    assert!(
+        !classes.is_empty(),
+        "non-vacuity: the plane declares meter classes"
+    );
+    for class in classes {
+        assert_eq!(
+            class.direction,
+            ClassDirection::Response,
+            "{} is reported off the answer and declares another side",
+            class.key
         );
     }
 }

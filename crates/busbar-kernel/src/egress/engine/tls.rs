@@ -80,7 +80,7 @@ impl ClientIdentity {
     /// Overwrite the private key IF this handle is the last one holding it.
     ///
     /// `Arc::get_mut` is the whole guard, and it is not an optimisation: identities are cloned per
-    /// hop and per client build (`plane_host::identity::resolve` hands out a clone every time), so a
+    /// hop and per client build (`egress::trust::identity::resolve` hands out a clone every time), so a
     /// wipe that did not ask whether anyone else still held the key would blank a key another hop is
     /// about to hand to the TLS stack, and the handshake it was parsed for would fail. `get_mut` answers
     /// `Some` only when this is the last strong reference and there are no weak ones — exactly the
@@ -103,7 +103,7 @@ impl ClientIdentity {
 ///
 /// The key's DER is an ordinary `Vec<u8>`, and its drop glue is an ordinary deallocation: the key DER sits in freed heap afterwards, readable by a
 /// heap dump, a core file, or an out-of-bounds read elsewhere in the process. That drop is reached
-/// on a live path — `plane_host::identity::register` retains at most `MAX_RETAINED_IDENTITIES`
+/// on a live path — `egress::trust::identity::register` retains at most `MAX_RETAINED_IDENTITIES`
 /// identities and evicts the oldest FIFO, and the evicted `ClientIdentity` drops right there — so an
 /// operator who rotates the mTLS client certificate 257 times has 257 client keys lying in the
 /// process's freed heap, which is exactly the retention the FIFO cap was added to stop.

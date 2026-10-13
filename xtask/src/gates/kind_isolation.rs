@@ -634,6 +634,14 @@ const ARCHITECTURE_ALLOWED: &[(&str, &str)] = &[
     // plugin-loader edges are measured in the `[[dep]]` ledger like every other Neutral kind's.
     ("cleanliness", "contract"),
     ("cleanliness", "kernel"),
+    // THE LOADER ATOP THE CONTRACT IS THE ARCHITECTURE, NOT A HOLE IN IT (ARCHITECT 2026-10-12).
+    // Part 2 #33 (OWNER-LOCKED 2026-09-18): "Plugin infrastructure = ONE crate atop the ONE
+    // contract crate", and Part 5's shape of done is "plugin infra = `busbar-plugin-loader` over
+    // `busbar-contract`" (BUSBAR-1.6.0.md:2957). `allowed` and `tcb` are readings of the
+    // architecture (:1936), and the architecture rules this edge, so it is granted here and the
+    // ship twin admits it. It was a [`ARCHITECTURE_TCB`] class, which made a tree built to the
+    // design unshippable by construction. Every other TCB class stays refused at ship.
+    ("plugin-tooling", "contract"),
 ];
 
 /// THE EDGE CLASSES `BUSBAR-1.6.0.md` PART 0 ALLOWS IN RUST SOURCE, which are therefore LISTED
@@ -704,7 +712,7 @@ pub(super) fn is_the_wall(from: &str, to: &str) -> bool {
 /// granted `-> contract` class, and their contract vocabulary is not a coupling this gate ratchets.
 /// The plugin tooling (the loader and the rest of the trusted computing base) is here too: after the
 /// plugin ABI and SDK merged into the contract (#84), the loader names the ABI in the one crate
-/// where the ABI lives, and its contract class is the TCB's own ([`ARCHITECTURE_TCB`]). The retiring
+/// where the ABI lives, and its contract class is granted by #33 ([`ARCHITECTURE_ALLOWED`]). The retiring
 /// legacy engines are NOT here: their contract naming is still measured, cell by cell, until they
 /// drain.
 const CONTRACT_TIERS: &[&str] = &["root", "kernel", CLEANLINESS, "plugin-tooling"];
@@ -727,9 +735,8 @@ pub(super) fn names_contract_by_design(from: &str, to: &str) -> bool {
 /// written down instance by instance, and the ship twin still refuses them: a tag's criterion is
 /// the architecture's own graph, and the TCB is a hole in that graph rather than a clause of it.
 const ARCHITECTURE_TCB: &[(&str, &str)] = &[
-    // The loader's store adapter names the folded capability vocabulary at its new home in
-    // `busbar-contract` (formerly `busbar-caps`, W2.c).
-    ("plugin-tooling", "contract"),
+    // `("plugin-tooling", "contract")` WAS HERE. It is the architecture's own edge (Part 2 #33,
+    // BUSBAR-1.6.0.md:2957) and lives in [`ARCHITECTURE_ALLOWED`] (ARCHITECT 2026-10-12).
     ("plugin-tooling", "kernel"),
     ("plugin-tooling", "plugin-tooling"),
     ("plugin-tooling", "secret"),
@@ -1894,6 +1901,43 @@ pub fn plane_kind_src_roots(cx: &Ctx) -> Result<Vec<String>, String> {
              empty, and an empty population is the passing answer to every ban"
                 .to_string(),
         );
+    }
+    Ok(out)
+}
+
+/// One crate's `impl PlaneMeta for …` declarations, as the census reads them.
+pub struct PlaneMetaDecl {
+    /// The package name.
+    pub krate: String,
+    /// Whether the kind table resolves the crate to the `plane` kind (`busbar-plane-*`) — a PLANE
+    /// CRATE, as opposed to a crate of another kind that states a plane surface's grammar (the
+    /// admin surface in the `cleanliness` crate `busbar-core-admin`).
+    pub plane_kind: bool,
+    /// Every `const KEY` its `impl PlaneMeta for …` blocks state, sorted.
+    pub keys: Vec<String>,
+}
+
+/// THE PLANE KEYS THE TREE DECLARES, read off the declarations themselves: for every crate of the
+/// census, the `const KEY` of each `impl PlaneMeta for …` under its `src/` — the same reading
+/// [`CrateInfo::declared_keys`] gives a plane-kind crate. Every plane-kind crate is returned, even
+/// one that declares no key (a plane the caller cannot name is a finding, not a skip); a crate of
+/// any other kind is returned only when it declares a key.
+pub fn plane_meta_declarations(cx: &Ctx) -> Result<Vec<PlaneMetaDecl>, String> {
+    let mut out = Vec::new();
+    for c in census(cx)? {
+        let plane_kind = c.kind == Some("plane");
+        let keys = if plane_kind {
+            c.declared_keys
+        } else {
+            declared_meta_keys(cx, &c.dir, "PlaneMeta")
+        };
+        if plane_kind || !keys.is_empty() {
+            out.push(PlaneMetaDecl {
+                krate: c.name,
+                plane_kind,
+                keys,
+            });
+        }
     }
     Ok(out)
 }
@@ -8096,7 +8140,7 @@ impl Gate for KindIsolationGate {
             // and its `tests/conformance.rs` is the loader's only user: no edge, closure or cell is
             // scored for it…
             let conformance = |normal: bool, extra_user: bool| {
-                let dir = "crates/store-memory";
+                let dir = "crates/busbar-store-memory";
                 let rel = format!("{dir}/Cargo.toml");
                 let table = if normal {
                     "dependencies"
@@ -8740,7 +8784,7 @@ impl Gate for KindIsolationGate {
         // could name any other kind freely — and this row scanned ZERO files of them.
         let mut ov = Overlay::new();
         ov.set(
-            "crates/store-memory/src/planted_leak.rs",
+            "crates/busbar-store-memory/src/planted_leak.rs",
             "pub fn leak() { let _ = busbar_plane_llm::VERSION; let _ = \
              busbar_transport_http::Client::default(); }\n",
         );
@@ -8942,7 +8986,7 @@ impl Gate for KindIsolationGate {
             "the crate census missed the workspace's members",
             &[ROW_REGISTRY],
             move || all_but(cx, "toml", 4),
-            &["missed-member", "crates/store-memory"],
+            &["missed-member", "crates/plugin-loader"],
         ));
         report.push(prove_rows_red(
             cx,
@@ -9710,14 +9754,14 @@ impl Gate for KindIsolationGate {
         // bare `target/`, so the file was invisible twice over. The plant is that file.
         let mut ov = Overlay::new();
         ov.set(
-            "crates/store-memory/src/target/leak.rs",
+            "crates/busbar-store-memory/src/target/leak.rs",
             "pub const P: &str = \"busbar-plane-llm\";\npub fn mcp_hook() {}\n",
         );
         ov.set(
-            "crates/store-memory/src/lib.rs",
+            "crates/busbar-store-memory/src/lib.rs",
             format!(
                 "{}\n#[path = \"target/leak.rs\"]\npub mod leak;\n",
-                cx.read("crates/store-memory/src/lib.rs")
+                cx.read("crates/busbar-store-memory/src/lib.rs")
                     .unwrap_or_default()
                     .trim_end()
             ),
@@ -9730,7 +9774,7 @@ impl Gate for KindIsolationGate {
             ov,
             &[
                 "hidden-source",
-                "crates/store-memory/src/target/leak.rs",
+                "crates/busbar-store-memory/src/target/leak.rs",
                 "git check-ignore",
             ],
         ));
@@ -9740,10 +9784,10 @@ impl Gate for KindIsolationGate {
         // that would go quiet the day the walker gains one more skipped directory name.
         let mut ov = Overlay::new();
         ov.set(
-            "crates/store-memory/src/lib.rs",
+            "crates/busbar-store-memory/src/lib.rs",
             format!(
                 "{}\npub mod planted_ghost;\n",
-                cx.read("crates/store-memory/src/lib.rs")
+                cx.read("crates/busbar-store-memory/src/lib.rs")
                     .unwrap_or_default()
                     .trim_end()
             ),
@@ -9757,7 +9801,7 @@ impl Gate for KindIsolationGate {
             &[
                 "hidden-source",
                 "planted_ghost",
-                "crates/store-memory/src/planted_ghost.rs",
+                "crates/busbar-store-memory/src/planted_ghost.rs",
             ],
         ));
 
@@ -10252,10 +10296,11 @@ impl Gate for KindIsolationGate {
         ));
 
         // A STEP THAT IS DECLARED AND NOT RUN. The compiler is satisfied and the loop stops there,
-        // which is the case the presence check alone cannot see.
+        // which is the case the presence check alone cannot see. Planted in a plane that still has
+        // a legacy face (the mcp plane is a door plane only: its unserved `Plane` impl is deleted).
         let mut ov = Overlay::new();
         ov.set(
-            "crates/busbar-plane-mcp/src/planted_step.rs",
+            "crates/busbar-plane-a2a/src/planted_step.rs",
             "impl Foo {\n    fn route(&self) -> RoutePlan {\n        todo!()\n    }\n}\n",
         );
         report.push(prove_rows_red(
@@ -10309,7 +10354,7 @@ impl Gate for KindIsolationGate {
             "a STORE plugin depending on a wire crate — every kind but root and transport",
             &[ROW_WIRES],
             manifest_plant(
-                "crates/store-memory",
+                "crates/busbar-store-memory",
                 "busbar-store-memory",
                 &["busbar-contract", "busbar-transport-stdio"],
             ),
@@ -10324,7 +10369,7 @@ impl Gate for KindIsolationGate {
         // test binary picks a wire has already decided which wire it is for.
         let mut ov = Overlay::new();
         ov.set(
-            "crates/store-memory/Cargo.toml",
+            "crates/busbar-store-memory/Cargo.toml",
             "[package]\nname = \"busbar-store-memory\"\nversion = \"0.0.0\"\n\n[dependencies]\n\
              busbar-contract = { workspace = true }\n\n[dev-dependencies]\n\
              busbar-transport-stdio = { path = \"../busbar-transport-stdio\" }\n",
@@ -12454,6 +12499,34 @@ mod plant_tests {
             assert!(
                 !is_the_wall(neutral, CONTRACT_KIND),
                 "`{neutral}` is not a plugin kind; its contract edge is an ordinary ledger row"
+            );
+        }
+    }
+
+    /// RED ARM, THE LOADER ATOP THE CONTRACT (ARCHITECT 2026-10-12; Part 2 #33; BUSBAR-1.6.0.md
+    /// :2957). The ship twin refuses every class that is not `allowed`, so while `plugin-tooling ->
+    /// contract` read `tcb` a tree built to the design could not ship. It reads `allowed`; every
+    /// other TCB class still reads `tcb` and is still refused at ship.
+    #[test]
+    fn the_loader_atop_the_contract_is_granted_and_the_rest_of_the_tcb_is_not() {
+        let class = |a: &str, b: &str| (a.to_string(), b.to_string());
+        assert_eq!(
+            verdict_for(&class("plugin-tooling", CONTRACT_KIND)),
+            "allowed"
+        );
+        assert!(!ARCHITECTURE_TCB.contains(&("plugin-tooling", CONTRACT_KIND)));
+        for (from, to) in [
+            ("plugin-tooling", "kernel"),
+            ("plugin-tooling", "plugin-tooling"),
+            ("plugin-tooling", "secret"),
+        ] {
+            assert!(ARCHITECTURE_TCB.contains(&(from, to)), "{from} -> {to}");
+            assert_eq!(verdict_for(&class(from, to)), "tcb", "{from} -> {to}");
+        }
+        for (from, to) in ARCHITECTURE_TCB {
+            assert!(
+                !ARCHITECTURE_ALLOWED.contains(&(from, to)),
+                "`({from}, {to})` is in both tables"
             );
         }
     }

@@ -1,9 +1,11 @@
 # Releasing Busbar
 
-The branch ladder is **predev → dev → qa → main**. busbar has ONE pipeline workflow,
-[`.github/workflows/promote.yml`](.github/workflows/promote.yml): every same-repo pull request is one
-hop up the ladder. The release engine lives in the private `GetBusbar/busbar-release` repository
-(pinned by `RELEASE_REF` in `promote.yml`); busbar-release's `crates/busbar-release-train/ladder.json`
+The branch ladder is **predev → dev → qa → main**. Pull requests into `predev` are judged and landed by
+ModernCI (required check `ci`, configured by [`.ci/default.yaml`](.ci/default.yaml)). The promotion
+from `predev` to `dev` runs [`.github/workflows/promote.yml`](.github/workflows/promote.yml). The release engine lives in the private `GetBusbar/busbar-release` repository
+(pinned outside this repo by the org variables `ENGINE_REF` and `ENGINE_SHA256`, set with
+`busbar-release engine pin <sha>`; `workflow-rules` R16 holds promote.yml to a 40-hex check and a
+sha256 verify of the engine at run time); busbar-release's `crates/busbar-release-train/ladder.json`
 says what entering each rung needs.
 
 | Rung entered (the PR's base) | What the hop runs | Consent |
@@ -17,8 +19,8 @@ A hop has two jobs, both in `promote.yml`:
 
 * **`preflight`**, on a free runner: `cargo fmt --all -- --check`, `cargo metadata --locked`, and the
   generated C header is current (`cargo xtask gate abi-header --write` leaves no diff).
-* **`hop`**, on a Latchkey runner sized by the rung: the engine plans the hop, the turnstile
-  admits the candidate sha, and the verdict is uploaded as the `turnstile-report-<sha>` artifact. When
+* **`hop`**, on a Latchkey runner sized by the rung: the pinned engine plans the hop and admits the
+  candidate sha, and the verdict is uploaded as an artifact. When
   the rung needs no consent and the repository variable `PROMOTE_BOARD` is `true`, the engine
   fast-forwards the base branch to the exact sha it tested. Both promotions are **fast-forward
   pushes**: linear history is what makes "main's HEAD *is* the qa commit" true.
@@ -61,7 +63,7 @@ forward on the lower branch and the pull request re-run: every push re-runs the 
 `qa` and `main` require the two contexts `preflight` and `hop` (plus the org ruleset's owner
 consent).
 
-`scripts/ci-branch-protection.sh` writes the floor (and strips the contexts of the deleted workflows).
+Branch protection lives in repository rulesets, not in a script (see `.github/required-status-checks.md`).
 Keep `enforce_admins: true`, `required_linear_history: true`, `allow_force_pushes: false` and
 `allow_deletions: false` on `qa` and `main`. No workflow may push a commit to either branch
 (`workflow-rules` R11).

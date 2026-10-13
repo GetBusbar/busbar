@@ -15,6 +15,7 @@ use busbar_kernel::host_services::KernelServices;
 use busbar_kernel::plane_driver::{EndPost, PlaneMoney};
 
 use crate::root::plane_node::NodeEndPost;
+use crate::root::test_plugins::{missing, BUILD_BUSBAR_EXAMPLES};
 
 use super::{compose_planes, LateServices};
 use crate::root::loader::dispatch::{
@@ -46,34 +47,34 @@ impl Drop for Published {
     }
 }
 
-/// The test plane's example `cdylib` beside this test binary; `None` where a scoped run did not
-/// build it. Under CI a missing artifact is a failure.
-fn dropped_path() -> Option<std::path::PathBuf> {
-    let exe = std::env::current_exe().ok()?;
-    let path = exe.parent()?.parent()?.join("examples").join(format!(
-        "{}plane_driver_test_plane{}",
-        std::env::consts::DLL_PREFIX,
-        std::env::consts::DLL_SUFFIX
-    ));
-    let found = path.exists().then_some(path);
-    assert!(
-        found.is_some() || std::env::var_os("CI").is_none(),
-        "the plane_driver_test_plane example cdylib is not built under CI: run `cargo build --workspace --examples`"
-    );
-    found
+/// The test plane's example `cdylib` beside this test binary. Not built is a failure in every run,
+/// never a skip: a composition proof without its plane proves nothing.
+fn dropped_path() -> std::path::PathBuf {
+    let name = "plane_driver_test_plane";
+    let exe = std::env::current_exe().expect("the test binary's path");
+    let path = exe
+        .parent()
+        .and_then(|deps| deps.parent())
+        .expect("the test binary sits in target/<profile>/deps")
+        .join("examples")
+        .join(format!(
+            "{}{name}{}",
+            std::env::consts::DLL_PREFIX,
+            std::env::consts::DLL_SUFFIX
+        ));
+    if !path.exists() {
+        missing(name, BUILD_BUSBAR_EXAMPLES);
+    }
+    path
 }
 
-/// The test plane, dropped in and bound on `dispatcher` as `instance`; `None` where its `cdylib`
-/// is not built.
-pub(super) fn bound(
-    instance: &str,
-    dispatcher: &Arc<Dispatcher>,
-) -> Option<crate::root::boot::DoorPlane> {
-    let path = dropped_path()?;
+/// The test plane, dropped in and bound on `dispatcher` as `instance`.
+pub(super) fn bound(instance: &str, dispatcher: &Arc<Dispatcher>) -> crate::root::boot::DoorPlane {
+    let path = dropped_path();
     let stated = rendering_of_library(&path)
         .expect("the test plane's library reads")
         .expect("the test plane states its Statement");
-    let plane = load_dropped(
+    load_dropped(
         &path,
         &stated,
         Bind {
@@ -86,8 +87,7 @@ pub(super) fn bound(
             conns: crate::root::loader::dispatch::ConnTable::Probe,
         },
     )
-    .expect("the dropped-in door binds");
-    Some(plane)
+    .expect("the dropped-in door binds")
 }
 
 pub(crate) fn composed_services() -> Arc<LateServices> {
@@ -122,10 +122,7 @@ fn a_configured_door_plane_is_opened_driven_and_its_admin_routes_published() {
     let instance = "serve-compose-configured";
     let _one = PUBLISHING.blocking_lock();
     let _published = Published(instance);
-    let Some(plane) = bound(instance, &dispatcher) else {
-        eprintln!("skip: the test plane's cdylib (the plane_driver_test_plane example) is not built; run `cargo build --workspace --examples`");
-        return;
-    };
+    let plane = bound(instance, &dispatcher);
     let doors = vec![(instance.to_string(), plane)];
     let mut sections = BTreeMap::new();
     sections.insert("test_plane", serde_yaml::Value::Mapping(Default::default()));
@@ -171,10 +168,7 @@ fn a_configured_door_plane_is_opened_driven_and_its_admin_routes_published() {
 fn a_door_plane_whose_section_is_absent_stays_unopened() {
     let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
     let instance = "serve-compose-unconfigured";
-    let Some(plane) = bound(instance, &dispatcher) else {
-        eprintln!("skip: the test plane's cdylib (the plane_driver_test_plane example) is not built; run `cargo build --workspace --examples`");
-        return;
-    };
+    let plane = bound(instance, &dispatcher);
     let doors = vec![(instance.to_string(), plane)];
     let late = composed_services();
     let served = compose_planes(
@@ -208,6 +202,134 @@ fn no_door_plane_composes_nothing_and_needs_no_services() {
     assert!(served.planes.is_empty());
 }
 
+/// A PLANE NEVER RECEIVES SECRET BYTES (THE DESIGN §6; SECURITY ruling 2026-10-07). `${VAR}` is
+/// spliced into the config text before it is parsed, so its plaintext used to reach a door plane's
+/// `open` settings, its owned sections and its `refresh` settings. The test plane records the bytes
+/// it is handed at the ABI. At every CREDENTIAL position (`token`, `api_key`, a program's `env`) the
+/// blobs carry the reference: `{ env: VAR }` for a whole value, a template reference for a part.
+/// An operator-written reference crosses as written, unresolved. Every other position (`url`,
+/// `args`, `command`) keeps the load-time interpolation, as 1.5.5 handed it on.
+#[test]
+fn an_interpolated_credential_reaches_a_door_plane_as_its_reference_never_its_bytes() {
+    const PLAIN: &str = "sk-plane-bound-PLAINTEXT-0001";
+    const RESOLVED: &str = "sk-plane-bound-RESOLVED-0002";
+    let pid = std::process::id();
+    let plain_var = format!("BUSBAR_PLANE_BOUND_SECRET_{pid}");
+    let ref_var = format!("BUSBAR_PLANE_BOUND_REF_{pid}");
+    let host_var = format!("BUSBAR_PLANE_BOUND_HOST_{pid}");
+    std::env::set_var(&plain_var, PLAIN);
+    std::env::set_var(&ref_var, RESOLVED);
+    std::env::set_var(&host_var, "upstream.invalid");
+    let dir = std::env::temp_dir().join(format!("busbar-plane-bound-{pid}"));
+    let template = format!(
+        r#"
+test_plane:
+  capture_to: "{dir}"
+  reg1:
+    url: "http://${{{host_var}}}/v1"
+    api_key: {{env: {ref_var}}}
+    token: "${{{plain_var}}}"
+    args: ["--flag", "${{{host_var}}}"]
+    env:
+      WHOLE: "${{{plain_var}}}"
+      PART: "Bearer ${{{plain_var}}}"
+test_plane_owned:
+  reg: {{api_key: "${{{plain_var}}}", ref: {{env: {ref_var}}}, url: "http://${{{host_var}}}/o"}}
+"#,
+        dir = dir.display()
+    );
+    let text = busbar_kernel::config::interpolate_env_with(
+        &template,
+        busbar_kernel::config::EnvSubst::Strict,
+        &mut Vec::new(),
+    )
+    .expect("interpolates");
+    let doc: serde_yaml::Mapping = serde_yaml::from_str(&text).expect("parses");
+    let mut sections = BTreeMap::new();
+    for key in ["test_plane", "test_plane_owned"] {
+        sections.insert(key, doc.get(key).cloned().expect("written"));
+    }
+    let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
+    let instance = "serve-compose-plane-bound";
+    let _one = PUBLISHING.blocking_lock();
+    let _published = Published(instance);
+    let plane = bound(instance, &dispatcher);
+    let doors = vec![(instance.to_string(), plane)];
+    let late = composed_services();
+    let served = compose_planes(
+        &doors,
+        &dispatcher,
+        &late,
+        &sections,
+        None,
+        &money,
+        None,
+        None,
+    )
+    .expect("the door plane composes");
+    let secrets = busbar_kernel::config::secret::SecretResolver::builtins_only();
+    served.planes[0]
+        .live
+        .refreshed(&sections["test_plane"], 2, &secrets)
+        .expect("the plane refreshes");
+
+    let read = |name: &str| {
+        String::from_utf8_lossy(&std::fs::read(dir.join(name)).unwrap_or_default()).into_owned()
+    };
+    let whole = serde_json::json!({ (busbar_contract::secret_ref::SECRET_MODULE_ENV): plain_var });
+    let part = serde_json::to_value(busbar_contract::secret_ref::SecretRef::template(format!(
+        "Bearer ${{{plain_var}}}"
+    )))
+    .expect("a reference");
+    let written_reference =
+        serde_json::json!({ (busbar_contract::secret_ref::SECRET_MODULE_ENV): ref_var });
+    for name in ["open.settings", "open.owned", "refresh.settings"] {
+        let text = read(name);
+        assert!(!text.is_empty(), "the plane recorded its {name}");
+        assert!(
+            !text.contains(PLAIN),
+            "{name} carries the secret's bytes: {text}"
+        );
+        assert!(
+            !text.contains(RESOLVED),
+            "{name} carries a resolved reference: {text}"
+        );
+    }
+    for name in ["open.settings", "refresh.settings"] {
+        let text = read(name);
+        let settings: serde_json::Value = serde_json::from_str(&text).expect("JSON");
+        assert_eq!(settings["reg1"]["token"], whole, "{name}: {text}");
+        let env = &settings["reg1"][busbar_contract::conn::PROGRAM_ENV_KEY];
+        assert_eq!(env["WHOLE"], whole, "{name}: {text}");
+        assert_eq!(env["PART"], part, "{name}: {text}");
+        assert_eq!(
+            settings["reg1"]["api_key"], written_reference,
+            "{name}: {text}"
+        );
+        // Not a credential field: the load-time interpolation, as 1.5.5 handed it on.
+        assert_eq!(
+            settings["reg1"]["url"], "http://upstream.invalid/v1",
+            "{name}: {text}"
+        );
+        assert_eq!(
+            settings["reg1"]["args"],
+            serde_json::json!(["--flag", "upstream.invalid"]),
+            "{name}: {text}"
+        );
+    }
+    let text = read("open.owned");
+    let owned: serde_json::Value = serde_json::from_str(&text).expect("JSON");
+    assert_eq!(owned["test_plane_owned"]["reg"]["api_key"], whole, "{text}");
+    assert_eq!(
+        owned["test_plane_owned"]["reg"]["ref"], written_reference,
+        "{text}"
+    );
+    assert_eq!(
+        owned["test_plane_owned"]["reg"]["url"], "http://upstream.invalid/o",
+        "{text}"
+    );
+}
+
 /// RED, THE DIALECT FACTS AT OPEN (THE DESIGN §4: a plane receives, at open, the dialect fields of
 /// the providers it references): the providers its section's `models.<m>.provider` entries name,
 /// once each in the order first referenced, cross `PlaneOpenIn::providers` with their resolved
@@ -217,10 +339,7 @@ fn no_door_plane_composes_nothing_and_needs_no_services() {
 fn a_door_plane_is_handed_its_referenced_providers_dialect_facts_at_open() {
     use crate::root::door_steps::{dialect_facts, ProviderRoute, StyleParams};
     let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
-    let Some(plane) = bound("serve-open-dialect-facts", &dispatcher) else {
-        eprintln!("skip: the test plane's cdylib is not built in this scoped run");
-        return;
-    };
+    let plane = bound("serve-open-dialect-facts", &dispatcher);
     // The kernel's host services the plane's open is handed, as a composition installs them.
     let _late = composed_services();
     let route = |protocol: &str, error_map: &[(&str, &str)]| ProviderRoute {
@@ -233,6 +352,7 @@ fn a_door_plane_is_handed_its_referenced_providers_dialect_facts_at_open() {
         credential: busbar_contract::secret_ref::SecretRef::none(),
         style: None,
         params: StyleParams::default(),
+        metadata: busbar_kernel::config_validate::MetadataPosture::default(),
     };
     let providers: BTreeMap<String, ProviderRoute> = [
         ("eng-b".to_string(), route("dial-two", &[])),
@@ -251,8 +371,15 @@ fn a_door_plane_is_handed_its_referenced_providers_dialect_facts_at_open() {
     let facts = dialect_facts(&section, &providers);
     let names: Vec<&str> = facts.iter().map(|f| f.name.as_str()).collect();
     assert_eq!(names, ["eng-a", "eng-b"], "referenced, once each, in order");
-    let snapshot =
-        super::open(&plane, &section, None, &Default::default(), &facts).expect("the door opens");
+    let snapshot = super::open(
+        &plane,
+        &["test_plane"],
+        &section,
+        None,
+        &Default::default(),
+        &facts,
+    )
+    .expect("the door opens");
     let handed: serde_json::Value = serde_json::from_slice(
         snapshot
             .resource_facts
@@ -270,11 +397,10 @@ fn a_door_plane_is_handed_its_referenced_providers_dialect_facts_at_open() {
     let none = dialect_facts(&serde_yaml::Value::Null, &providers);
     assert!(none.is_empty(), "a section that references none hands none");
     // A second instance (an instance opens once): a section that references none is handed none.
-    let Some(plane) = bound("serve-open-dialect-none", &dispatcher) else {
-        return;
-    };
+    let plane = bound("serve-open-dialect-none", &dispatcher);
     let snapshot = super::open(
         &plane,
+        &["test_plane"],
         &serde_yaml::Value::Null,
         None,
         &Default::default(),
@@ -282,4 +408,11 @@ fn a_door_plane_is_handed_its_referenced_providers_dialect_facts_at_open() {
     )
     .expect("the door opens");
     assert_eq!(snapshot.resource_facts, None);
+}
+
+/// THE RED ARM OF "NEVER SKIPS": a fixture that is not built fails the test, naming what builds it.
+#[test]
+#[should_panic(expected = "is not built: run")]
+fn a_missing_fixture_cdylib_fails_the_test_and_names_its_build() {
+    missing("no_such_fixture", BUILD_BUSBAR_EXAMPLES);
 }

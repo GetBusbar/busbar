@@ -80,7 +80,7 @@ fn bytes_go_through_the_framer_both_ways_byte_exact() {
         let door = Arc::new(TestDoor::identity("bytes"));
         let mut d = dial(&far);
         d.opening = Some((Vec::new(), b"hello ".to_vec()));
-        let mut c = Connection::dial(door.clone(), d).expect("dials");
+        let mut c = Connection::dial(door.clone(), &crate::support::via(), d).expect("dials");
         let waker = std::task::Waker::noop();
         let sent: Vec<u8> = (0..=255_u8).cycle().take(100_000).collect();
         c.write(
@@ -113,7 +113,7 @@ fn the_far_ends_close_ends_the_connection() {
             s.write_all(b"bye").await.unwrap();
         });
         let door = Arc::new(TestDoor::identity("bytes"));
-        let mut c = Connection::dial(door, dial(&far)).unwrap();
+        let mut c = Connection::dial(door, &crate::support::via(), dial(&far)).unwrap();
         assert_eq!(gather(&mut c, 3).await, b"bye");
         assert_eq!(
             next(&mut c).await,
@@ -135,7 +135,7 @@ fn a_metadata_host_is_refused_before_any_socket_exists() {
             "0xa9fea9fe:80",
         ] {
             let door = Arc::new(TestDoor::identity("bytes"));
-            let r = Connection::dial(door.clone(), dial(target));
+            let r = Connection::dial(door.clone(), &crate::support::via(), dial(target));
             assert!(matches!(r, Err(Failure::Refused(_))), "{target}");
             assert_eq!(
                 door.count("locate"),
@@ -152,7 +152,7 @@ fn a_metadata_host_is_refused_before_any_socket_exists() {
                 ..Knobs::default()
             },
         ));
-        let r = Connection::dial(door.clone(), dial("127.0.0.1:9"));
+        let r = Connection::dial(door.clone(), &crate::support::via(), dial("127.0.0.1:9"));
         assert!(matches!(r, Err(Failure::Refused(_))));
         assert_eq!(door.count("begin"), 0, "no framing on a refused authority");
     });
@@ -174,7 +174,7 @@ fn a_silent_far_end_is_held_to_the_framers_deadline() {
             },
         ));
         let start = Instant::now();
-        let mut c = Connection::dial(door.clone(), dial(&far)).unwrap();
+        let mut c = Connection::dial(door.clone(), &crate::support::via(), dial(&far)).unwrap();
         let r = tokio::time::timeout(Duration::from_secs(10), next(&mut c))
             .await
             .expect("the deadline fires, the connection does not hang");
@@ -214,7 +214,7 @@ fn an_open_that_never_completes_is_held_to_its_timeout() {
         ));
         d.open_timeout = Duration::from_millis(300);
         let start = Instant::now();
-        let mut c = Connection::dial(door.clone(), d).unwrap();
+        let mut c = Connection::dial(door.clone(), &crate::support::via(), d).unwrap();
         assert_eq!(next(&mut c).await, Err(Failure::Timeout));
         assert!(start.elapsed() >= Duration::from_millis(300));
         assert_eq!(door.count("begin"), 0, "no framing before the handshake");
@@ -282,7 +282,7 @@ fn tls_and_the_protocol_offer_are_the_connectors() {
         ));
         d.alpn = vec![b"h2".to_vec()];
         d.opening = Some((Vec::new(), b"hello".to_vec()));
-        let mut c = Connection::dial(door, d).unwrap();
+        let mut c = Connection::dial(door, &crate::support::via(), d).unwrap();
         assert_eq!(gather(&mut c, 5).await, b"hello");
         assert_eq!(c.established().agreed_protocol.as_deref(), Some(&b"h2"[..]));
         assert_eq!(c.established().offered_name.as_deref(), Some("localhost"));
@@ -350,7 +350,7 @@ fn the_handshake_offers_what_the_framer_located() {
             ));
             d.alpn = registered;
             d.opening = Some((Vec::new(), b"hello".to_vec()));
-            let mut c = Connection::dial(door, d).unwrap();
+            let mut c = Connection::dial(door, &crate::support::via(), d).unwrap();
             assert_eq!(gather(&mut c, 5).await, b"hello");
             assert_eq!(
                 c.established().agreed_protocol.as_deref(),
@@ -375,7 +375,7 @@ fn a_malformed_protocol_offer_refuses_the_dial() {
                 ..Knobs::default()
             },
         ));
-        let got = Connection::dial(door, dial("127.0.0.1:9"));
+        let got = Connection::dial(door, &crate::support::via(), dial("127.0.0.1:9"));
         assert!(
             matches!(&got, Err(Failure::Refused(why)) if why.contains("protocol offer")),
             "{got:?}"
@@ -391,7 +391,7 @@ fn a_far_end_that_never_reads_fills_the_buffer_and_writes_are_refused_room() {
     worker().block_on(async {
         let far = silent().await;
         let door = Arc::new(TestDoor::identity("bytes"));
-        let mut c = Connection::dial(door, dial(&far)).expect("dials");
+        let mut c = Connection::dial(door, &crate::support::via(), dial(&far)).expect("dials");
         let waker = std::task::Waker::noop();
         let chunk = vec![7_u8; 64 * 1024];
         let mut full = false;
@@ -453,7 +453,7 @@ fn a_message_handed_up_with_the_frames_end_is_still_answered() {
             got
         });
         let door = Arc::new(TestDoor::identity("bytes"));
-        let mut c = Connection::dial(door, dial(&far)).unwrap();
+        let mut c = Connection::dial(door, &crate::support::via(), dial(&far)).unwrap();
         assert_eq!(gather(&mut c, 5).await, b"hello");
         assert_eq!(next(&mut c).await, Ok(None), "the far side's frames ended");
         let waker = std::task::Waker::noop();
@@ -496,7 +496,8 @@ fn a_failed_connection_names_its_stage_and_the_underlying_error() {
             .expect_err("nothing listens")
             .to_string();
         let door = Arc::new(TestDoor::identity("bytes"));
-        let mut c = Connection::dial(door, dial(&closed.to_string())).unwrap();
+        let mut c =
+            Connection::dial(door, &crate::support::via(), dial(&closed.to_string())).unwrap();
         assert!(matches!(next(&mut c).await, Err(Failure::Refused(_))));
         assert_eq!(
             c.cause(),
@@ -538,7 +539,7 @@ fn a_failed_connection_names_its_stage_and_the_underlying_error() {
                 ..Knobs::default()
             },
         ));
-        let mut c = Connection::dial(door.clone(), secure(&far)).unwrap();
+        let mut c = Connection::dial(door.clone(), &crate::support::via(), secure(&far)).unwrap();
         assert!(matches!(next(&mut c).await, Err(Failure::Refused(_))));
         let unknown = rustls::Error::InvalidCertificate(rustls::CertificateError::UnknownIssuer);
         assert_eq!(
@@ -551,7 +552,7 @@ fn a_failed_connection_names_its_stage_and_the_underlying_error() {
         // A handshake that never finishes.
         let mut d = secure(&silent().await);
         d.open_timeout = Duration::from_millis(200);
-        let mut c = Connection::dial(door, d).unwrap();
+        let mut c = Connection::dial(door, &crate::support::via(), d).unwrap();
         assert_eq!(next(&mut c).await, Err(Failure::Timeout));
         assert_eq!(
             c.cause(),
@@ -559,6 +560,90 @@ fn a_failed_connection_names_its_stage_and_the_underlying_error() {
                 stage: CAUSE_DEADLINE,
                 text: String::new()
             })
+        );
+    });
+}
+
+/// RED (audit core-connector#3, STARTTLS response injection), the connection's own layer: a raw
+/// stream whose far end answered `OK\n` with forged bytes behind it, the piece taken off the socket
+/// into the connection's inbox and not read. The upgrade is refused and the connection fails: the
+/// forged bytes are never read, least of all as a verified far end's.
+#[test]
+fn an_upgrade_over_a_piece_still_in_the_inbox_is_refused_and_the_connection_fails() {
+    worker().block_on(async {
+        let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let far = l.local_addr().unwrap().to_string();
+        tokio::spawn(async move {
+            let (mut s, _) = l.accept().await.unwrap();
+            let _ = s.write_all(b"OK\nFORGED-PLAINTEXT").await;
+            let mut sink = [0_u8; 1024];
+            while matches!(s.read(&mut sink).await, Ok(n) if n > 0) {}
+        });
+        let mut c = Planned::carried(crate::support::via(), dial(&far))
+            .and_then(|p| p.dial_at(far.parse().unwrap()))
+            .expect("dials");
+        tokio::time::timeout(
+            Duration::from_secs(10),
+            futures::future::poll_fn(|cx| c.poll_ready(cx)),
+        )
+        .await
+        .expect("the far end's clear answer arrives");
+        crate::tls::install_crypto_provider();
+        let config = Arc::new(
+            crate::tls::client::build_client_config(&Default::default())
+                .expect("the default config"),
+        );
+        let answer = futures::future::poll_fn(|cx| {
+            c.upgrade_secure(&config, "localhost", Duration::from_secs(5), cx)
+        })
+        .await;
+        assert!(
+            matches!(answer, Err(Failure::Refused(_))),
+            "a clear piece is still unread: no upgrade over it; it answered {answer:?}"
+        );
+        assert!(
+            next(&mut c).await.is_err(),
+            "the connection failed, closed: the clear piece is never read"
+        );
+    });
+}
+
+/// RED (audit core-connector#6): a far end that sends far more than its holder reads (64 MiB, the
+/// holder only waiting on readiness) is held back by the receive cap: the line stops reading, so
+/// the far end's own flow control stops it, short of what it meant to send.
+#[test]
+fn a_holder_that_does_not_read_holds_the_far_end_back() {
+    const SENT: usize = 64 * 1024 * 1024;
+    worker().block_on(async {
+        let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let far = l.local_addr().unwrap().to_string();
+        let written = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = Arc::clone(&written);
+        tokio::spawn(async move {
+            let (mut s, _) = l.accept().await.unwrap();
+            let chunk = vec![7_u8; 64 * 1024];
+            for _ in 0..SENT / chunk.len() {
+                if s.write_all(&chunk).await.is_err() {
+                    return;
+                }
+                counted.fetch_add(chunk.len(), std::sync::atomic::Ordering::SeqCst);
+            }
+        });
+        let conn = Planned::carried(crate::support::via(), dial(&far))
+            .and_then(|p| p.dial_at(far.parse().unwrap()))
+            .expect("dials");
+        let line = crate::line::Line::new(conn);
+        let waker = std::task::Waker::noop();
+        let started = Instant::now();
+        while started.elapsed() < Duration::from_secs(2) {
+            let _ = line.poll_ready(EXCHANGE_STREAM, &mut std::task::Context::from_waker(waker));
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+        let written = written.load(std::sync::atomic::Ordering::SeqCst);
+        assert!(
+            written < SENT / 2,
+            "the far end wrote {written} of {SENT} bytes to a holder that never read: the line took \
+             them all"
         );
     });
 }

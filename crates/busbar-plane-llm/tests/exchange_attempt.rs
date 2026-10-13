@@ -16,6 +16,8 @@ fn shaping() -> Shaping {
         "providers": {
             "oai": { "protocol": "openai", "base_url": "https://api.example" },
             "ant": { "protocol": "anthropic", "base_url": "https://anthropic.example" },
+            "ant-key": { "protocol": "anthropic", "base_url": "https://az.example", "auth": "api-key" },
+            "ant-bearer": { "protocol": "anthropic", "base_url": "https://b.example", "auth": "bearer" },
             "goo": { "protocol": "gemini", "base_url": "https://gemini.example" },
             "fixed": { "protocol": "openai", "base_url": "https://x.example", "path": "/custom/chat" }
         },
@@ -23,6 +25,8 @@ fn shaping() -> Shaping {
             "gpt": { "provider": "oai" },
             "gpt-alias": { "provider": "oai", "upstream_model": "gpt-4o" },
             "claude": { "provider": "ant", "default_max_tokens": 321 },
+            "claude-key": { "provider": "ant-key", "default_max_tokens": 321 },
+            "claude-bearer": { "provider": "ant-bearer", "default_max_tokens": 321 },
             "gem": { "provider": "goo", "upstream_model": "gemini-pro" },
             "fixed": { "provider": "fixed" }
         },
@@ -132,20 +136,21 @@ fn a_same_dialect_caller_s_fields_all_go_out_but_the_governed_ones() {
     assert_eq!(
         names,
         [
+            "anthropic-version",
+            "content-type",
             "user-agent",
             "accept",
-            "content-type",
-            "anthropic-version",
             "anthropic-beta",
             "anthropic-beta",
             "x-client-trace"
         ],
-        "busbar's native defaults the caller did not send, then every caller field but the credential"
+        "busbar's own fields at their positions (the caller's values where it sent one), then every \
+         other caller field but the credential, as 1.5.5's header map laid them"
     );
     assert_eq!(
         field(&r, "user-agent"),
         [b"Anthropic/Python 0.39.0".as_slice()],
-        "a caller that sent no user-agent: the native client's (1.5.5's bytes)"
+        "a caller that sent no user-agent: the native client's (1.5.5's bytes, Q10)"
     );
     assert_eq!(field(&r, "accept"), [b"application/json".as_slice()]);
     assert_eq!(
@@ -222,6 +227,33 @@ fn a_same_dialect_unknown_body_member_goes_out() {
     let v: Value = busbar_plane_llm::codec::json::parse(&r.body).expect("json");
     assert_eq!(v["model"], "gpt-4o", "the mapped model");
     assert_eq!(v["x_vendor_flag"], true, "the unknown member, unchanged");
+}
+
+/// A body-model caller that smuggles busbar's own array-stream router key into its body is not a
+/// JSON-array caller (only a path-model arrival's URL makes one), and the key never reaches the far
+/// end: 1.5.5 stripped every dialect's router key before every upstream call (v1.5.5
+/// `crates/busbar/src/proxy/wire.rs` `strip_router_shim_keys`; the retired legacy cover
+/// `test_gemini_json_array_shim_ignored_for_body_model_ingress`).
+#[test]
+fn a_body_model_callers_smuggled_router_key_never_reaches_the_far_end() {
+    let h = head(&[("content-type", "application/json")]);
+    let a = arrived(
+        "/v1/chat/completions",
+        &h,
+        r#"{"model":"gpt","stream":true,"__busbar_gemini_json_array":true,"messages":[]}"#,
+    );
+    assert!(
+        !a.path_model.as_ref().is_some_and(|p| p.json_array),
+        "a body key never makes a JSON-array caller"
+    );
+    let r = build(&a, &h, &shaping(), "p", "gpt").expect("built");
+    assert!(!r.pristine, "the router key is a governed member");
+    let v: Value = busbar_plane_llm::codec::json::parse(&r.body).expect("json");
+    assert!(v.get("__busbar_gemini_json_array").is_none(), "{v}");
+    assert_eq!(
+        v["stream"], true,
+        "a body-model far end keeps the caller's stream"
+    );
 }
 
 #[test]
@@ -435,4 +467,122 @@ fn the_providers_tenant_goes_out_and_the_callers_does_not() {
     let r = build(&a, &h, &shaping, "p", "gpt").expect("built");
     assert_eq!(field(&r, "openai-organization"), [b"org-cfg".as_slice()]);
     assert_eq!(field(&r, "openai-project"), [b"proj-cfg".as_slice()]);
+}
+
+/// THE DIALECT'S STATIC FIELDS (ARCHITECT SD-3 (1), "anthropic S2-a": anthropic declares
+/// `anthropic-version`, written verbatim; byte-identical upstream requests): a caller that sends no
+/// field of its own still reaches an anthropic far end with the pinned version and the native
+/// client's user-agent, same-dialect or translated; under an operator's `auth: api-key` override,
+/// whose scheme declares no static field, none goes out; `auth: bearer` is the dialect's own scheme
+/// and keeps it. A same-dialect caller's own value replaces it.
+#[test]
+fn no_client_header_leaves_egress_unchanged() {
+    let none = head(&[]);
+    let body = r#"{"model":"claude","max_tokens":5,"messages":[{"role":"user","content":"hi"}]}"#;
+    let a = arrived("/v1/messages", &none, body);
+    let r = build(&a, &none, &shaping(), "p", "claude").expect("built");
+    assert_eq!(field(&r, "anthropic-version"), [b"2023-06-01".as_slice()]);
+    assert_eq!(
+        field(&r, "user-agent"),
+        [b"Anthropic/Python 0.39.0".as_slice()]
+    );
+    let names: Vec<&str> = r.fields.iter().map(|(n, _)| n.as_str()).collect();
+    assert_eq!(
+        names,
+        ["anthropic-version", "content-type", "user-agent", "accept"]
+    );
+
+    let openai = r#"{"model":"claude","messages":[{"role":"user","content":"hi"}]}"#;
+    let a = arrived("/v1/chat/completions", &none, openai);
+    let r = build(&a, &none, &shaping(), "p", "claude").expect("built");
+    assert_eq!(
+        field(&r, "anthropic-version"),
+        [b"2023-06-01".as_slice()],
+        "a translated route into anthropic carries it too"
+    );
+
+    let a = arrived("/v1/messages", &none, &body.replace("claude", "claude-key"));
+    let r = build(&a, &none, &shaping(), "p", "claude-key").expect("built");
+    assert!(
+        field(&r, "anthropic-version").is_empty(),
+        "an api-key override declares no static field"
+    );
+    let a = arrived(
+        "/v1/messages",
+        &none,
+        &body.replace("claude", "claude-bearer"),
+    );
+    let r = build(&a, &none, &shaping(), "p", "claude-bearer").expect("built");
+    assert_eq!(field(&r, "anthropic-version"), [b"2023-06-01".as_slice()]);
+
+    let own = head(&[("anthropic-version", "2024-01-01")]);
+    let a = arrived("/v1/messages", &own, body);
+    let r = build(&a, &own, &shaping(), "p", "claude").expect("built");
+    assert_eq!(
+        field(&r, "anthropic-version"),
+        [b"2024-01-01".as_slice()],
+        "the same-dialect caller's own value wins"
+    );
+
+    let a = arrived(
+        "/v1/chat/completions",
+        &none,
+        &openai.replace("claude", "gpt"),
+    );
+    let r = build(&a, &none, &shaping(), "p", "gpt").expect("built");
+    assert!(
+        field(&r, "anthropic-version").is_empty(),
+        "openai declares none"
+    );
+}
+
+/// THE PREVIOUS RELEASE'S HEADER-MAP ORDER (oracle `egress.auth|cred-identity|*`, `route.529|*`): a
+/// same-dialect caller's own fields lie over busbar's as a header map lays them, one position per
+/// name: a name busbar writes (its static field, `content-type`, `user-agent`, `accept`) keeps
+/// busbar's position and takes the caller's value, a new name is appended in the caller's order,
+/// and a repeated name keeps every value at its position.
+#[test]
+fn a_same_dialect_callers_fields_keep_busbars_positions() {
+    let h = head(&[
+        ("user-agent", "Anthropic/Python 0.39.0"),
+        ("accept", "application/json"),
+        ("anthropic-version", "2023-06-01"),
+        ("content-type", "application/json"),
+        ("x-trace", "a"),
+        ("x-trace", "b"),
+    ]);
+    let body = r#"{"model":"claude","max_tokens":5,"messages":[{"role":"user","content":"hi"}]}"#;
+    let a = arrived("/v1/messages", &h, body);
+    let r = build(&a, &h, &shaping(), "p", "claude").expect("built");
+    let names: Vec<&str> = r.fields.iter().map(|(n, _)| n.as_str()).collect();
+    assert_eq!(
+        names,
+        [
+            "anthropic-version",
+            "content-type",
+            "user-agent",
+            "accept",
+            "x-trace",
+            "x-trace"
+        ]
+    );
+    assert_eq!(field(&r, "x-trace"), [b"a".as_slice(), b"b".as_slice()]);
+}
+
+/// THE `accept` FIELD IS BUSBAR'S OWN (1.5.5's bytes: the oracle's same-dialect cells, e.g.
+/// `llm|openai|openai|request|ok`, carry `accept: application/json` though the caller sent `*/*`):
+/// every far request carries the answer framing busbar reads the reply in, a same-dialect caller's
+/// `accept` never replaces it, and the transport is left no default to fill.
+#[test]
+fn a_same_dialect_callers_accept_never_replaces_busbars_own() {
+    let h = head(&[("accept", "*/*"), ("x-trace", "a")]);
+    let body = r#"{"model":"gpt","messages":[{"role":"user","content":"hi"}]}"#;
+    let a = arrived("/v1/chat/completions", &h, body);
+    let r = build(&a, &h, &shaping(), "p", "gpt").expect("built");
+    assert_eq!(field(&r, "accept"), [b"application/json".as_slice()]);
+    assert_eq!(field(&r, "x-trace"), [b"a".as_slice()]);
+    let streamed = r#"{"model":"gpt","stream":true,"messages":[{"role":"user","content":"hi"}]}"#;
+    let a = arrived("/v1/chat/completions", &h, streamed);
+    let r = build(&a, &h, &shaping(), "p", "gpt").expect("built");
+    assert_eq!(field(&r, "accept"), [b"text/event-stream".as_slice()]);
 }

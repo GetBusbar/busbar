@@ -595,10 +595,17 @@ impl Rig {
         let dir = std::env::temp_dir().join(format!(
             "busbar-ledger-identity-{}-{}",
             std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
+            {
+                static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+                format!(
+                    "{}-{}-{}",
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map_or(0, |d| d.as_nanos()),
+                    line!(),
+                    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                )
+            }
         ));
         std::fs::create_dir_all(&dir).unwrap();
         let control = dir.join("mock.control");
@@ -678,6 +685,25 @@ impl Rig {
             booted.is_some(),
             "busbar did not answer on {}; log:\n{}",
             PORTS.data,
+            read_to_string(&rig.log_path)
+        );
+        // The data door answering says nothing about the admin door: the control thread binds it
+        // after the data workers. Minting before it answers fails as status 0 (connection refused)
+        // under load. Ready means the admin listener ANSWERS (any HTTP status), so wait for that
+        // rather than for a delay.
+        let admin_up = wait_until(Duration::from_secs(60), || {
+            if let Some(status) = rig.child.try_wait().expect("try_wait") {
+                panic!(
+                    "busbar exited before its admin door answered (status {status:?}); log:\n{}",
+                    read_to_string(&rig.log_path)
+                );
+            }
+            get(PORTS.admin, "/api/v1/admin/keys", Some(ADMIN_TOKEN)).status != 0
+        });
+        assert!(
+            admin_up.is_some(),
+            "busbar's admin door did not answer on {}; log:\n{}",
+            PORTS.admin,
             read_to_string(&rig.log_path)
         );
 

@@ -27,10 +27,17 @@ fn fixture_dir(tag: &str) -> PathBuf {
     let d = std::env::temp_dir().join(format!(
         "busbar-cli-validate-{}-{tag}-{}",
         std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
+        {
+            static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            format!(
+                "{}-{}-{}",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |d| d.as_nanos()),
+                line!(),
+                NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            )
+        }
     ));
     std::fs::create_dir_all(d.join("plugins")).unwrap();
     d
@@ -1510,10 +1517,10 @@ models: {{}}
     .unwrap();
 }
 
-/// THE DECISIONS PLANE'S DIALECT, discovered black-box rather than spelled: a `decisions:` model whose
-/// provider speaks an unknown protocol is refused naming the dialect(s) the plane speaks ("this plane
-/// speaks only: <d>."), so the binary itself says which protocol the linked decisions plane reads.
-/// Exactly one is required; a refusal that stops naming it fails here, loudly.
+/// THE PLANE'S FIRST DIALECT, discovered black-box rather than spelled: a model whose provider
+/// speaks an unknown protocol is refused naming the dialects the plane speaks ("this plane speaks
+/// only: <d>, <d>."), so the binary itself says which protocols the linked plane reads. Exactly
+/// two are required; a refusal that stops naming them fails here, loudly.
 #[cfg(feature = "plane-decisions")]
 fn decision_dialect() -> String {
     let dir = fixture_dir("decisions-dialect-probe");
@@ -1534,11 +1541,7 @@ fn decision_dialect() -> String {
         .and_then(|rest| rest.split('.').next())
         .unwrap_or_else(|| panic!("the refusal names the dialects the plane speaks: {stderr}"));
     let dialects: Vec<&str> = spoken.split(',').map(str::trim).collect();
-    assert_eq!(
-        dialects.len(),
-        1,
-        "the decision plane speaks one dialect: {stderr}"
-    );
+    assert_eq!(dialects.len(), 2, "the plane speaks two dialects: {stderr}");
     dialects[0].to_string()
 }
 
@@ -1560,6 +1563,24 @@ fn validate_ok_on_a_good_decisions_config() {
         "a good decisions config validates: stdout={stdout} stderr={stderr}"
     );
     assert!(stdout.contains("ok: config valid"), "got {stdout}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// THE SECOND DIALECT: a model whose provider speaks the plane's second dialect validates clean too.
+#[cfg(feature = "plane-decisions")]
+#[test]
+fn validate_ok_on_a_config_in_the_planes_second_dialect() {
+    let dir = fixture_dir("plane-ok-second-dialect");
+    write_decisions_configs(
+        &dir,
+        "nanojev",
+        "decisions:\n  models:\n    verdicts:\n      provider: mock\n",
+    );
+    let (code, stdout, stderr) = run_busbar(&dir, &["--validate"]);
+    assert_eq!(
+        code, 0,
+        "a config in the second dialect validates: stdout={stdout} stderr={stderr}"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -1747,21 +1768,23 @@ fn validate_refuses_the_decision_protocol_when_no_decisions_section_is_configure
 /// Retry-After ceiling — and its delivery deadline after them, though both are the sink's own
 /// checks now. The whole refusal is pinned line for line; RED: the sink's lines answered in one
 /// place (all after the limits) reorder the second and third lines.
-#[cfg(linked_axis_body_ingress)]
+#[cfg(all(linked_axis_body_ingress, linked_axis_export_doors))]
 #[test]
 fn validate_orders_a_webhook_sinks_refusals_among_the_limits_as_before() {
-    // Whether this binary links the webhook sink is the binary's own answer — a module on no export
-    // axis is refused as an unknown exporter — never a feature name. A build without it has no
-    // refusal of the sink's to order.
+    // A build that links no export sink has no refusal of the sink's to order: the test is the
+    // export door axis's (the linked table's answer, never a feature name), so it compiles where the
+    // build links that axis and asserts the binary links the webhook sink (a module on no export
+    // axis is refused as an unknown exporter).
     let probe = fixture_dir("webhook-order-probe");
     write_configs(
         &probe,
         "export:\n  hook: { module: request-log-webhook, settings: { url: \"https://siem.example/in\" } }\n",
     );
     let (_, _, probed) = run_busbar(&probe, &["--validate"]);
-    if probed.contains("unknown exporter 'request-log-webhook'") {
-        return;
-    }
+    assert!(
+        !probed.contains("unknown exporter 'request-log-webhook'"),
+        "{probed}"
+    );
     let dir = fixture_dir("webhook-order");
     write_configs(
         &dir,

@@ -31,23 +31,13 @@ mod creds;
 pub mod dispatch;
 pub mod egress;
 mod govern;
-pub mod guard;
-// The mTLS client-identity registry and the extra-root trust-anchor registry are PURE
-// (process-atomic registries; no `App`, no engine, no FFI), so they live NEUTRALLY in
-// `busbar_kernel::plane_host` and are re-exported here — core's egress chokepoint names the
-// same `crate::plane_host::{identity, trust_anchor}` paths as before. The peer-SPKI DER walk's
-// last in-core reader is gone with the engine cutover (the ENGINE computes the pin at connect
-// and the chokepoint reads it off the response extensions), so `spki` is no longer re-exported;
-// the A2A plane and the engine name the neutral `busbar_kernel::plane_host::spki` directly.
 pub(crate) mod identity_admit;
 pub mod journal;
 pub mod pipe;
 pub mod scope;
 pub mod session_meter;
-pub mod trust;
 pub mod vtable;
 
-pub use guard::{guard_url_over, GuardOutcome};
 pub use scope::{DispatchScope, DurableScope, SessionScope};
 pub use vtable::build_plane_host_vtable;
 
@@ -76,8 +66,8 @@ pub struct HostState<'a> {
     /// the `metrics_emit` slot used to take verbatim. So it is set here, by the minter, or it is not
     /// set at all.
     ///
-    /// `None` for the host's OWN uses of the vtable — `calllog`, `auditlog`, `trust`, `guard` and
-    /// the breaker all mint a host handle to drive a slot themselves, on nobody's behalf. Those are
+    /// `None` for the host's OWN uses of the vtable — `calllog`, `auditlog` and the
+    /// breaker all mint a host handle to drive a slot themselves, on nobody's behalf. Those are
     /// not planes and have no plane to be attributed to, so rather than invent a name for them the
     /// slots that REQUIRE an attributable emitter refuse a `None`. Use
     /// [`with_borrowed_host_as`] to mint a handle that carries one.
@@ -1648,22 +1638,13 @@ pub mod build_input;
 // the `EngineTablesView` trait + `LaneView` + the zero-plane `EMPTY_VIEW` the core scrape/discovery
 // readers name so they need not move when the tables relocate into `busbar-llm`.
 pub mod engine_view;
-// The mTLS client-identity registry, the extra-root trust-anchor registry and the peer-certificate
-// SPKI DER walk — PURE host-side TLS helpers (process-atomic registries + an RFC 5280 length-skip; no
-// `App`, no engine, no FFI). They live here so the host egress chokepoint and the A2A plane both name
-// one neutral home; core re-exports them under their historical `crate::plane_host::{identity,
-// trust_anchor,spki}` paths.
-pub mod identity;
-// THE COMPOSITION-ROOT-OWNED EGRESS-TRUST SEAM (HOST-CAPS S3, DECISIONS #26): the `EgressTrustHost`
-// trait naming client-identity / trust-anchor / peer-SPKI as ONE host capability, with a byte-for-byte
-// pass-through impl and a composition-root install/get. Additive and DORMANT — no shipped call site
-// consults it yet (W2 flips the egress chokepoint onto it).
-pub mod egress_trust;
 // `PlaneSlots` through any pointer to a slot holder (`Arc`, load guard, borrow), so a plane's slot
 // readers can take `&impl PlaneSlots` instead of a concrete snapshot type without touching callers.
 pub mod slots_through;
-pub mod spki;
-pub mod trust_anchor;
+// The egress-trust primitives (client identity, extra trust anchors, the peer-SPKI pin) live on the
+// kernel's outbound surface, `crate::egress::trust`. This re-export only keeps the legacy plane crates'
+// `busbar_kernel::plane_host::{identity, spki, trust_anchor}` paths resolving; it leaves with them.
+pub use crate::egress::trust::{identity, spki, trust_anchor};
 
 pub use crate::plane_host::build_input::{
     AffinityInput, AuthReach, AuthStyleInput, BreakerInput, ClientSettingsInput, FailoverInput,
@@ -1671,7 +1652,8 @@ pub use crate::plane_host::build_input::{
     PoolMemberInput, TripInput, TripModeInput,
 };
 pub use crate::plane_host::engine_view::{
-    EmptyEngineTablesView, EngineTablesView, LaneView, EMPTY_VIEW,
+    set_pool_queued_depth, ConfigTables, EmptyEngineTablesView, EngineTablesView, LaneView,
+    EMPTY_VIEW,
 };
 use busbar_contract::abi::hot::{AdmissionId, Signal, StatusClass};
 use busbar_contract::records::PlaneRequestCtx;

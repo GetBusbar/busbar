@@ -362,8 +362,10 @@ pub fn register_stores(linked: &Linked) {
         }
     }
     // A member program's `env` secret references resolve through the same linked secret plugins
-    // (ARCHITECT round 5 Q-L3B-STDIO-UPSTREAM (A): as the previous release resolved them).
-    crate::root::loader::dispatch::install_member_secrets(
+    // (ARCHITECT round 5 Q-L3B-STDIO-UPSTREAM (A): as the previous release resolved them), at the
+    // SPAWN, by the connector that spawns it (SECURITY ruling 2026-10-07: a member's env resolves
+    // at spawn).
+    busbar_core_connector::compose::install_spawn_secrets(
         busbar_kernel::config::secret::resolve_linked_string,
     );
 }
@@ -611,8 +613,8 @@ pub(crate) fn door_probe_dispatcher() -> Arc<crate::root::loader::dispatch::Disp
 
 /// THE DOOR PLANES' REGISTRY ROWS (DECL-FOLD; ARCHITECT RULING 2026-10-03, Q-DEL-A2A-DECL; spec #49
 /// and R2-C): every plane [`dropped_planes_of`] discovered through a door, linked or dropped, bound
-/// once through the loader's one load on a dispatcher of its own (the process's is built after the
-/// configuration is read, and the rows must be in before the config prepass), and its Statement
+/// once through the loader's one load on the process's one dispatcher (booted as main's first act,
+/// before any plane registers and before the config prepass), and its Statement
 /// folded into a registry row by the kernel (`busbar_kernel::plane::door::fold`). The row's every
 /// word is the door's; a door owns the plane axis for its key, a linked legacy row of the same key
 /// keeping only its other axes ([`doors_own_their_plane_keys`]), and two doors registering one key
@@ -1496,3 +1498,11 @@ mod linked_canonical;
 #[cfg(all(test, linked_every_plane))]
 #[path = "tests/linked_protocols.rs"]
 mod linked_protocols;
+
+#[cfg(all(test, linked_axis_hooks))]
+#[path = "tests/linked_hook_ranking.rs"]
+mod linked_hook_ranking;
+
+#[cfg(test)]
+#[path = "tests/linked_store_double.rs"]
+mod linked_store_double;

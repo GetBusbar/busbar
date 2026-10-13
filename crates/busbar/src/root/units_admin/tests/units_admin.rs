@@ -6064,7 +6064,7 @@ fn h6_book(
     slots: &crate::root::store_double::RecordSlots,
     history: &Arc<crate::root::kernel::RootHistory>,
 ) -> Arc<Mutex<crate::root::durability::Durability>> {
-    let lane = crate::root::durability::JournalLane::start(slots.calls(), "memory")
+    let lane = crate::root::durability::JournalLane::start(slots.calls(), "test-store")
         .expect("the lane starts");
     let source = Arc::clone(history);
     Arc::new(Mutex::new(

@@ -22,11 +22,13 @@ This page is the short version. Where the two differ, Part 6 wins.
    cargo xtask gate abi-header --write            # regenerates the C header
    ```
 
-   Builds, tests, clippy, the gates and the oracle run in CI (`.github/workflows/promote.yml`).
-3. Ship it from the lane's worktree with the release CLI (a clone of GetBusbar/busbar-release):
-   `busbar-release ship "<PR title>" [--body <file>]`. It merges `origin/predev`, runs the
-   pre-flight, commits its changes, pushes, opens (or reuses) the PR into `predev` and turns on
-   auto-merge. Then stop; CI is the proof and a red comes back as a task.
+   Once per clone, register the merge driver that settles `qa/kind-isolation.toml` count rows
+   both sides moved (theirs + ours − base; anything else stays a conflict):
+   `git config merge.ledger-count.driver "cargo xtask ledger-merge %O %A %B"`.
+
+   Builds, tests, clippy, the gates and the oracle run in CI (ModernCI for `predev` PRs; `.github/workflows/promote.yml` for the promotion).
+3. Push the lane and open a PR into `predev`. ModernCI (required check `ci`) judges and lands it.
+   Then stop; CI is the proof and a red comes back as a task.
 4. The PR body says what changed, why, and the ruling or issue it implements. No AI attribution.
 
 ## Fixing a defect: the remediation contract and what every PR is held to

@@ -21,7 +21,7 @@ use busbar_contract::transport::trust::EgressTrust;
 use busbar_kernel::config::Destinations;
 use busbar_kernel::host_services::{Admitted, DestJudge, DestRefusal, Refused};
 
-use crate::guard::{is_loopback, Guard, Resolve, SystemResolver};
+use crate::guard::{is_loopback, names_loopback, Guard, Resolve, SystemResolver};
 use crate::pool::PoolPosture;
 use crate::registry::{Entry, Transports};
 use crate::{Connector, DialJudge, Judged, Verdict, WakeTicket};
@@ -108,17 +108,18 @@ impl GuardJudge {
             .guard
             .judge_name_with(&host, class, strict, reach)
             .map_err(|r| r.verdict)?;
-        if let Some(ip) = literal {
-            plaintext_to_loopback(class, https, ip)?;
+        if literal.is_some() {
+            plaintext_to_loopback(class, https, &host)?;
         }
         Ok((host, port, https, literal))
     }
 }
 
-/// Loopback-allowed's scheme rule over a pinned address: plaintext to loopback only (loopback as
-/// 1.5.5 read it, [`is_loopback`]).
-fn plaintext_to_loopback(class: u32, https: bool, ip: IpAddr) -> Result<(), u64> {
-    if class == EGRESS_LOOPBACK_ALLOWED && !https && !is_loopback(ip) {
+/// Loopback-allowed's scheme rule, held once the guard admitted the destination: plaintext only
+/// to a host WRITTEN as loopback ([`names_loopback`]), as 1.5.5's collector and webrequest guards
+/// ruled on the URL's host, never on what a name resolved to (ARCHITECT parity ruling A3).
+fn plaintext_to_loopback(class: u32, https: bool, host: &str) -> Result<(), u64> {
+    if class == EGRESS_LOOPBACK_ALLOWED && !https && !names_loopback(host) {
         return Err(DEST_PLAINTEXT);
     }
     Ok(())
@@ -247,7 +248,7 @@ impl GuardJudge {
                         .and_then(|()| {
                             // All admitted, so the first is a choice between equals that keeps
                             // the resolver's own ordering.
-                            plaintext_to_loopback(class, https, addrs[0])?;
+                            plaintext_to_loopback(class, https, &host)?;
                             Ok((SocketAddr::new(addrs[0], port), addrs))
                         }),
                 });

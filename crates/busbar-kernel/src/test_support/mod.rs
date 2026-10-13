@@ -1314,16 +1314,32 @@ impl TestApp {
     }
 
     /// Inject a resolved external admin auth module under `name` (the config module name that both
-    /// `admin_chain` and `role_bindings.<name>` key off): an external module, so the admin auth
-    /// middleware OFFLOADS its call off the reactor — the seam the 1.5.2 admin-plane OIDC offload
-    /// test drives.
+    /// `admin_chain` and `role_bindings.<name>` key off): an in-process stand-in, answered on the
+    /// spot.
     pub fn admin_module(mut self, name: &str, module: Box<dyn crate::auth::AuthModule>) -> Self {
+        let chain = self
+            .admin_modules
+            .get_or_insert_with(crate::auth::AdminAuthChain::empty);
+        chain.modules.insert(
+            name.to_string(),
+            crate::auth::AdminModule::in_process(module),
+        );
+        self
+    }
+
+    /// Inject an external admin auth module under `name` ON THE AUTH KIND'S DOOR: `calls` (a test
+    /// stand-in for an opened door instance) answers its `verify`, submitted and awaited.
+    pub fn admin_door(
+        mut self,
+        name: &str,
+        calls: std::sync::Arc<dyn busbar_contract::auth_calls::AuthCalls>,
+    ) -> Self {
         let chain = self
             .admin_modules
             .get_or_insert_with(crate::auth::AdminAuthChain::empty);
         chain
             .modules
-            .insert(name.to_string(), crate::auth::AdminModule::cold(module));
+            .insert(name.to_string(), crate::auth::AdminModule { calls });
         self
     }
 
@@ -1367,41 +1383,6 @@ impl TestApp {
         self
     }
 
-    /// Inject a hosted-login method (1.5.2) keyed by `name`. `module` is a login-capable auth
-    /// plugin (test stand-in); `client_secret`/`issuer` are the CORE-held confidential-client secret
-    /// + issuer hint; `has_button` gates whether it renders on the chooser / accepts begin.
-    pub fn login_method(
-        mut self,
-        name: &str,
-        module: Box<dyn busbar_contract::auth::AuthPlugin>,
-        client_secret: Option<String>,
-        issuer: Option<String>,
-        has_button: bool,
-    ) -> Self {
-        let lm = self
-            .login_methods
-            .get_or_insert_with(|| crate::auth::token::LoginMethods {
-                methods: indexmap::IndexMap::new(),
-            });
-        let login_kind = module.login_kind();
-        // Derive the hop host-allowlist from the issuer hint (same core-side rule as production), so a
-        // test whose mock IdP host appears in `issuer` is reachable by the hop executor.
-        let allowed_hosts =
-            crate::auth::token::collect_allowed_hosts(&serde_json::Map::new(), issuer.as_deref());
-        lm.methods.insert(
-            name.to_string(),
-            crate::auth::token::LoginMethod {
-                module: crate::auth::token::LoginPlugin::Cold(module),
-                client_secret: client_secret.map(busbar_contract::redacted::Redacted::new),
-                has_button,
-                issuer,
-                login_kind,
-                allowed_hosts,
-            },
-        );
-        self
-    }
-
     /// Register a hosted-login method `name` whose plugin is ON THE AUTH KIND'S DOOR: `calls` (a
     /// test stand-in for an opened door instance) answers its `begin_login`/`complete_login`, the
     /// core holds no client secret for it and runs no hop. `login_kind` is the tail's login kind.
@@ -1420,12 +1401,10 @@ impl TestApp {
         lm.methods.insert(
             name.to_string(),
             crate::auth::token::LoginMethod {
-                module: crate::auth::token::LoginPlugin::Door(calls),
-                client_secret: None,
+                module: calls,
                 has_button,
                 issuer: None,
                 login_kind,
-                allowed_hosts: std::collections::HashSet::new(),
             },
         );
         self
@@ -1738,7 +1717,12 @@ impl TestApp {
         // Built and inserted ONLY when a real fallback (LLM) plane owns the key — otherwise `lanes`/
         // `by_model`/the `self.*` tables simply drop unused, and `App::llm_runtime` reads the empty
         // default (a surface with no LLM plane never routes through `engine_tables` anyway).
-        if let Some(build_runtime) = fallback.and_then(|d| d.build_runtime) {
+        // THE KERNEL'S OWN TABLES over the same lanes and pools, as production `appbuild` builds them:
+        // the read seam answers from them when the fallback plane contributes no runtime of its own
+        // (a door plane), and reads the empty default when no fallback plane is registered.
+        let mut config_tables =
+            std::sync::Arc::<busbar_kernel::plane_host::ConfigTables>::default();
+        if let Some(decl) = fallback {
             // Assemble the NEUTRAL `PlaneBuildInput` (money-path Phase 3-4 C) exactly as production
             // `appbuild` does, then hand it to the fallback (LLM) plane's REGISTERED `build_runtime`
             // fn-pointer — so the fixture names no `Lane`/`NativeRuntime` and exercises the SAME in-plane
@@ -1802,6 +1786,12 @@ impl TestApp {
                     name,
                 })
                 .collect();
+            config_tables = std::sync::Arc::new(busbar_kernel::plane_host::ConfigTables::of(
+                &lane_inputs,
+                &pool_inputs,
+                &by_model,
+                self.upstream_credentials,
+            ));
             let default_failover = self
                 .failover_cfg
                 .as_ref()
@@ -1841,8 +1831,12 @@ impl TestApp {
                     crate::test_support::outbound_auth::axis(),
                 )),
             };
-            let slot = build_runtime(&build_input as &dyn std::any::Any, None);
-            plane_slots.insert(fallback_runtime_key, slot);
+            // A fallback plane that contributes no runtime of its own (a door plane) is read through
+            // the kernel's own tables above.
+            if let Some(build_runtime) = decl.build_runtime {
+                let slot = build_runtime(&build_input as &dyn std::any::Any, None);
+                plane_slots.insert(fallback_runtime_key, slot);
+            }
         }
         let requested_signals = crate::hooks::requested_signals(&self.hook_registry);
         let any_content_hook = crate::hooks::any_content_hook(&self.hook_registry);
@@ -1948,6 +1942,10 @@ impl TestApp {
             // above into `plane_slots` under this interned key; the snapshot names only the key, and
             // `App::llm_runtime` downcasts the slot on the money path.
             fallback_runtime_key,
+            // The kernel's own tables over the fixture's lanes and pools (built above when a fallback
+            // plane is registered), read when that plane contributes no runtime of its own.
+            config_tables,
+            config_projection: None,
             store: store.clone(),
             plane_breakers: std::sync::Arc::new(crate::store::PlaneBreakers::new()),
             session_store: std::sync::Arc::new(crate::session::SessionStore::new(1024, None)),
@@ -2132,6 +2130,14 @@ pub fn hook_axis_stand_in(
 /// THE HOOK DOUBLE (OWNER 2026-10-03, no test plugins): the kernel's hook port answered in
 /// process. See [`hook_double`].
 pub mod hook_double;
+
+/// The ranking hook double (R-FIX3): the door that stands in for the root's linked ranking row in a
+/// test build. Linked only.
+pub mod ranking_double;
+
+/// The store double (R-FIX3): the door that stands in for the root's linked store row in a test
+/// build, and the `MemoryStore` the kernel's tests build a `GovState` over. Linked only.
+pub mod store_double;
 
 /// A [`crate::hooks::HookEnv`] whose registry holds one `kind: hook` row per alias (each stating the
 /// given manifest `needs`, as a dropped-in plugin's signed manifest does) and whose hook axis is the
@@ -2433,20 +2439,30 @@ pub fn fetch_stand_in(
     }
 }
 
+/// A test build's release key: the first-party key [`trust_policy`] holds in place of the embedded
+/// one, whose private half no test holds. A test signs a first-party plugin with it (publisher
+/// `busbar`), as the loader's conformance tests sign under a release key of their own.
+pub fn test_release_key() -> busbar_plugin_loader::sign::SigningKey {
+    busbar_plugin_loader::sign::SigningKey::from_bytes(&[0x5a; 32])
+}
+
 /// A test build's trust resolution (it has no composition root): the `plugins:` block through the
-/// loader's `TrustPolicy::from_config`, exactly as the root resolves it.
+/// loader's `TrustPolicy::from_config`, exactly as the root resolves it, its first-party key
+/// [`test_release_key`].
 pub fn trust_policy(
     cfg: &crate::config::PluginsCfg,
 ) -> Result<busbar_plugin_loader::sign::TrustPolicy, String> {
     use busbar_plugin_loader::sign::{TrustInput, TrustPolicy};
-    TrustPolicy::from_config(TrustInput {
+    let mut policy = TrustPolicy::from_config(TrustInput {
         publishers: &cfg.publisher_keys(),
         allow_unsigned: cfg.trust.allow_unsigned,
         allow_third_party: cfg.trust.allow_third_party,
         min_versions: &cfg.min_versions,
         first_party_floors: &cfg.first_party_floors,
         binary_version: env!("CARGO_PKG_VERSION"),
-    })
+    })?;
+    policy.first_party_key = Some(test_release_key().verifying_key());
+    Ok(policy)
 }
 
 /// A test build's store axis (it has no composition root): the loader's axis over a dispatcher of

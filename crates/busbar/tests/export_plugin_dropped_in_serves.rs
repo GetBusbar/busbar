@@ -45,24 +45,28 @@ const PLUGIN: &str = "dropped-sink";
 const CDYLIB: &str = "busbar_export_file_plugin";
 
 /// The real sink's `cdylib`, newest wins: uplifted by its exact name, or under `deps/` with a metadata
-/// hash. Under CI a missing artifact is a hard failure, never a silent skip.
-fn export_cdylib() -> Option<Vec<u8>> {
-    let found = common::plugins::cdylib(CDYLIB);
-    assert!(
-        found.is_some() || std::env::var_os("CI").is_none(),
-        "the {CDYLIB} cdylib is not built under CI; refusing to silently skip item 141's control"
-    );
-    found
+/// hash. A missing artifact is a hard failure in every run, never a silent skip of item 141's
+/// control.
+fn export_cdylib() -> Vec<u8> {
+    common::plugins::cdylib(CDYLIB)
+        .unwrap_or_else(|| common::plugins::missing(CDYLIB, common::plugins::BUILD_PINNED))
 }
 
 fn fixture_dir() -> PathBuf {
     let d = std::env::temp_dir().join(format!(
         "busbar-export-dropped-in-{}-{}",
         std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
+        {
+            static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            format!(
+                "{}-{}-{}",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |d| d.as_nanos()),
+                line!(),
+                NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            )
+        }
     ));
     std::fs::create_dir_all(d.join("plugins")).unwrap();
     d
@@ -167,10 +171,7 @@ fn log_of(dir: &Path) -> String {
 
 #[test]
 fn a_dropped_in_export_plugin_serves() {
-    let Some(lib) = export_cdylib() else {
-        eprintln!("skip: the {CDYLIB} cdylib is not built");
-        return;
-    };
+    let lib = export_cdylib();
     let dir = fixture_dir();
     write_tarball_declaring(&dir, &lib, &["path"]);
     let lines = dir.join("lines.jsonl");
@@ -286,10 +287,7 @@ fn a_dropped_in_export_plugin_serves() {
 /// accepts validate clean. RED before the op: the refused settings validated clean (exit 0).
 #[test]
 fn validate_reports_a_dropped_in_sinks_settings_errors_in_its_own_words() {
-    let Some(lib) = export_cdylib() else {
-        eprintln!("skip: the {CDYLIB} cdylib is not built");
-        return;
-    };
+    let lib = export_cdylib();
     let dir = fixture_dir();
     write_tarball_declaring(&dir, &lib, &[]);
     let validate = |tail_settings: &str| {

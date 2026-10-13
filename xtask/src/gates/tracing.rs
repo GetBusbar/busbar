@@ -12,10 +12,13 @@
 //!
 //! Three rows, because the shell had three ways to be wrong and only one of them was a rogue span:
 //!
-//! * `tracing:scan-floor` — the walk found the crates. "Every `#[instrument]` has a level" is
+//! * `tracing:scan-floor` — the walk read the crates. "Every `#[instrument]` has a level" is
 //!   VACUOUSLY TRUE over zero files, so a workspace restructure that moves crates out from under
-//!   `crates/` would leave this reporting `ok` forever about a tree it never opened. The floor is
-//!   not `> 0`: one surviving file is as vacuous as none.
+//!   `crates/` would leave this reporting `ok` forever about a tree it never opened. The scanned
+//!   LIST is reconciled against the tracked set under the same scope (Law 8: "a census reports the
+//!   LIST it scanned, not the count"): a tracked file the walk did not read, or a file it read that
+//!   nothing tracks, is refused by name. It replaced a hand-kept file count (last 978) that every
+//!   change adding or removing a source file had to re-pin.
 //! * `tracing:instrument-level` — the finding.
 //! * `tracing:attribute-closes` — an attribute whose parens never balance before EOF. This is its
 //!   own row rather than a line in the finding row because it is the accumulator saying it lost
@@ -28,7 +31,7 @@
 //! are blanked before the parens are counted, and the SAME blanked text is what the `level` check
 //! reads — so `name = "log_level"` does not count as declaring a level either.
 
-use crate::ctx::{Ctx, Overlay, WalkSpec};
+use crate::ctx::{Coverage, Ctx, Overlay, WalkSpec};
 use crate::gates::{prove_green, prove_red, Gate, Report};
 use crate::ledger::{Row, Verdict};
 use crate::parity::LegacyRun;
@@ -44,22 +47,13 @@ pub const ROW_CLOSES: &str = "tracing:attribute-closes";
 const SCAN_ROOT: &str = "crates";
 const EXCLUDE_TESTS_DIR: &str = "/tests/";
 
-/// The denominator floor, pinned AT the measured count: the crates walk reads 971 files on this
-/// branch merged with predev bd39476618, after busbar-kernel-ledger's usage/series.rs left (972 on
-/// predev 3bc48823df; 971 on predev 39374ec00e; 980 on 5e672d125d, before the egress_auth /
-/// auth_cache / ingress_sigv4 files left the kernel crates; it was 130 against a tree that had
-/// grown past 700). A drop below 971 is refused until a reviewed diff re-measures;
-/// the selftest plant removes one file and fails if the floor sits under the count. It is a
-/// `const` here and has no environment override: the only way to lower one is a reviewable
-/// source edit.
-const SCAN_FLOOR: usize = 971;
-
-/// THE SUBJECT FLOOR (item 228). The file floor above proves the walk opened the crates; it says
-/// nothing about whether the thing this gate judges is still there. "Every `#[instrument]` has a
-/// level" is as vacuous over zero SPANS as over zero files, and the files-to-spans ratio is ~150:1
-/// (971 files, 5 attributes), so every span could leave the tree with the file floor
-/// untouched. Armed at the measured count (arrival.rs 3, ingress/mod.rs 2); like the file floor it
-/// has no override, and lowering it is a reviewable source edit that says which span went where.
+/// THE SUBJECT FLOOR (item 228). The reconciliation proves the walk read every tracked file; it
+/// says nothing about whether the thing this gate judges is still there. "Every `#[instrument]` has
+/// a level" is as vacuous over zero SPANS as over zero files, and the files-to-spans ratio is
+/// ~150:1 (977 files, 5 attributes), so every span could leave the tree with every file still
+/// read. Armed at the measured count (arrival.rs 3, ingress/mod.rs 2); it has no override, and
+/// lowering it is a reviewable source edit that says which span went where. It is the gate's
+/// positive control, not a file count.
 const SPAN_FLOOR: usize = 5;
 
 /// The two findings, spelled ONCE so both the gate and its legacy translator write them the same
@@ -243,6 +237,55 @@ fn row_closes(offenders: &[String]) -> Row {
     )
 }
 
+/// The walk the gate judges — the one place the scan set is spelled, so the tracked set it is
+/// reconciled against is cut by exactly the same scope and filters.
+fn scan_spec() -> WalkSpec {
+    WalkSpec::new([SCAN_ROOT])
+        .ext("rs")
+        .exclude([EXCLUDE_TESTS_DIR])
+}
+
+/// THE COVERAGE PLANT: one tracked file that carries no span hidden from the walk while the index
+/// still lists it, returned with its path. Only a span-free file is hidden, so the subject floor
+/// stays out of it and the refusal is the reconciliation's alone.
+fn coverage_plant(cx: &Ctx) -> Result<(Overlay, String), String> {
+    let files = cx
+        .walk(&scan_spec())
+        .map_err(|e| format!("the base tree's crates walk is unreadable ({e})"))?;
+    let rel = files
+        .iter()
+        .rev()
+        .find(|f| !f.text.contains("#[instrument"))
+        .map(|f| f.rel_str())
+        .ok_or_else(|| "the crates walk holds no span-free file to hide".to_string())?;
+    let ov = cx
+        .hide_from_scan([&rel])
+        .map_err(|why| format!("the coverage plant cannot hide {rel} ({why})"))?;
+    Ok((ov, rel))
+}
+
+/// The three rows when the scan cannot draw a verdict: the coverage row says why, the other two
+/// say they did not run.
+fn not_run(title: &str, why: String) -> Verdict {
+    Verdict::of(vec![
+        Row::fail(ROW_SCAN_FLOOR, title, why),
+        Row::fail(
+            ROW_LEVEL,
+            "the instrument scan did not run",
+            "this lint did not read the tree it would report on, so its verdict is meaningless — \
+             it is NOT a pass"
+                .to_string(),
+        ),
+        Row::fail(
+            ROW_CLOSES,
+            "the instrument scan did not run",
+            "this lint did not read the tree it would report on, so its verdict is meaningless — \
+             it is NOT a pass"
+                .to_string(),
+        ),
+    ])
+}
+
 pub struct TracingGate;
 
 impl Gate for TracingGate {
@@ -259,39 +302,37 @@ impl Gate for TracingGate {
     }
 
     fn run(&self, cx: &Ctx) -> Verdict {
-        let spec = WalkSpec::new([SCAN_ROOT])
-            .ext("rs")
-            .exclude([EXCLUDE_TESTS_DIR])
-            .min_files(SCAN_FLOOR);
-        let files = match cx.walk(&spec) {
+        let files = match cx.walk(&scan_spec()) {
             Ok(f) => f,
             Err(e) => {
-                return Verdict::of(vec![
-                    Row::fail(
-                        ROW_SCAN_FLOOR,
-                        "the crates walk did not clear its floor",
-                        format!(
-                            "{e} If the workspace layout legitimately changed, move the root AND \
-                             the floor together, in a diff that says so."
-                        ),
+                return not_run(
+                    "the crates walk did not read",
+                    format!(
+                        "{e} If the workspace layout legitimately changed, move the root in a diff \
+                         that says so."
                     ),
-                    Row::fail(
-                        ROW_LEVEL,
-                        "the instrument scan did not run",
-                        "this lint scanned (almost) nothing, so its verdict is meaningless — it is \
-                         NOT a pass"
-                            .to_string(),
-                    ),
-                    Row::fail(
-                        ROW_CLOSES,
-                        "the instrument scan did not run",
-                        "this lint scanned (almost) nothing, so its verdict is meaningless — it is \
-                         NOT a pass"
-                            .to_string(),
-                    ),
-                ]);
+                );
             }
         };
+        let coverage = match cx.tracked(&scan_spec()) {
+            Ok(whole) => Coverage::of(files.iter().map(|f| f.rel_str()), whole),
+            Err(e) => {
+                return not_run(
+                    "the tracked set the walk is reconciled against would not read",
+                    e,
+                );
+            }
+        };
+        if !coverage.is_whole() {
+            return not_run(
+                "the crates walk is not the tracked set",
+                format!(
+                    "{}. A scan that skipped a tracked file, or read one nothing tracks, is not a \
+                     claim about this tree.",
+                    coverage.census()
+                ),
+            );
+        }
 
         let mut level = Vec::new();
         let mut unclosed = Vec::new();
@@ -333,11 +374,10 @@ impl Gate for TracingGate {
         Verdict::of(vec![
             Row::pass(
                 ROW_SCAN_FLOOR,
-                "the crates walk cleared its floor",
+                "the crates walk is the tracked set",
                 format!(
-                    "{} files, {spans} #[instrument] span(s) (floors {SCAN_FLOOR} / {SPAN_FLOOR}); \
-                     {CLEAN}",
-                    files.len()
+                    "{}; {spans} #[instrument] span(s) (span floor {SPAN_FLOOR}); {CLEAN}",
+                    coverage.census()
                 ),
             ),
             row_level(&level),
@@ -520,50 +560,23 @@ impl Gate for TracingGate {
             ));
         }
 
-        // THE FLOOR SITS AT THE MEASURED COUNT. One crate file fewer than the walk finds today
-        // (one that carries no span, so the subject floor stays out of it) is refused; a floor set
-        // a margin below the count passes it, so this is red exactly when the floor has slipped
-        // under the number the tree measures.
-        match cx.walk(
-            &WalkSpec::new([SCAN_ROOT])
-                .ext("rs")
-                .exclude([EXCLUDE_TESTS_DIR]),
-        ) {
-            Ok(files) => match files
-                .iter()
-                .rev()
-                .find(|f| !f.text.contains("#[instrument"))
-            {
-                Some(f) => {
-                    let mut ov = Overlay::new();
-                    ov.remove(&f.rel);
-                    report.push(prove_red(
-                        cx,
-                        self,
-                        "a crates walk one file short of the measured floor is refused",
-                        &[ROW_SCAN_FLOOR],
-                        ov,
-                        &["floor"],
-                    ));
-                }
-                None => report.note_infra_failure(
-                    "tracing selftest: every crate file carries a span, so no file can be removed \
-                     without also moving the subject floor"
-                        .to_string(),
-                ),
-            },
-            Err(e) => report.note_infra_failure(format!(
-                "tracing selftest: the base tree's crates walk is unreadable ({e})"
+        // THE SCAN IS RECONCILED AGAINST THE TRACKED SET: one tracked file hidden from the walk
+        // is refused, and the refusal NAMES it. No count, so no tree size turns it green.
+        match coverage_plant(cx) {
+            Ok((ov, rel)) => report.push(prove_red(
+                cx,
+                self,
+                "a tracked file the crates walk did not read is refused by name",
+                &[ROW_SCAN_FLOOR],
+                ov,
+                &["NOT scanned", rel.as_str()],
             )),
+            Err(why) => report.note_infra_failure(format!("tracing selftest: {why}")),
         }
 
-        // THE FLOOR, on the RUN path. Every candidate file is removed from the overlay's view,
+        // AN EMPTY WALK, on the RUN path. Every candidate file is removed from the overlay's view,
         // which is what a workspace restructure looks like from the scan's side.
-        match cx.walk(
-            &WalkSpec::new([SCAN_ROOT])
-                .ext("rs")
-                .exclude([EXCLUDE_TESTS_DIR]),
-        ) {
+        match cx.walk(&scan_spec()) {
             Ok(files) => {
                 let mut ov = Overlay::new();
                 for f in &files {
@@ -572,14 +585,14 @@ impl Gate for TracingGate {
                 report.push(prove_red(
                     cx,
                     self,
-                    "a scan set below its floor is refused, not reported as a clean tree",
+                    "an empty scan set is refused, not reported as a clean tree",
                     &[ROW_SCAN_FLOOR],
                     ov,
-                    &["floor"],
+                    &["ZERO files"],
                 ));
             }
             Err(e) => report.note_infra_failure(format!(
-                "tracing selftest: the base tree's crates walk is unreadable ({e}), so the floor \
+                "tracing selftest: the base tree's crates walk is unreadable ({e}), so the empty \
                  plant has nothing to empty"
             )),
         }
@@ -664,4 +677,92 @@ fn translate(run: &LegacyRun) -> Result<Vec<Row>, String> {
         row_level(&level),
         row_closes(&unclosed),
     ])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ledger::Status;
+
+    /// A temp tree of `SPAN_FLOOR + 3` `.rs` files under `crates/`, the first `SPAN_FLOOR` of them
+    /// carrying a levelled span so the subject floor is met, and a context over it whose index is
+    /// planted (a temp tree has no git index of its own) — every file but `untracked`.
+    fn fixture(tag: &str, untracked: Option<&str>) -> (std::path::PathBuf, Ctx) {
+        let root = std::env::temp_dir().join(format!(
+            "xtask-tracing-coverage-{tag}-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let src = root.join("crates").join("a").join("src");
+        let scratch = root.join(".fix").join("xtask");
+        std::fs::create_dir_all(&src).expect("src dir creates");
+        std::fs::create_dir_all(&scratch).expect("scratch dir creates");
+        let mut index = Vec::new();
+        for i in 0..SPAN_FLOOR + 3 {
+            let text = if i < SPAN_FLOOR {
+                "#[instrument(level = \"debug\")]\npub fn f() {}\n"
+            } else {
+                "pub fn f() {}\n"
+            };
+            std::fs::write(src.join(format!("f{i:05}.rs")), text).expect("seed");
+            let rel = format!("crates/a/src/f{i:05}.rs");
+            if Some(rel.as_str()) != untracked {
+                index.push(rel);
+            }
+        }
+        let mut ov = Overlay::new();
+        ov.set_command(crate::ctx::INDEX_KEY, index.join("\n"));
+        let cx = Ctx::at(&root, &scratch)
+            .expect("ctx opens over the temp root")
+            .with_overlay(ov);
+        (root, cx)
+    }
+
+    fn coverage_row(cx: &Ctx) -> Row {
+        TracingGate
+            .run(cx)
+            .rows
+            .into_iter()
+            .find(|r| r.id == ROW_SCAN_FLOOR)
+            .expect("the scan-floor row is reported")
+    }
+
+    /// THE RED ARM: a tree whose walk reads exactly its index is green; the same tree with one
+    /// span-free tracked file hidden from the walk is refused, and the refusal names the file.
+    #[test]
+    fn a_tracked_file_hidden_from_the_walk_is_refused_by_name() {
+        let (root, cx) = fixture("hidden", None);
+        let base = coverage_row(&cx);
+        assert_eq!(base.status, Status::Pass, "{}", base.detail);
+        let (ov, rel) = coverage_plant(&cx).expect("the coverage plant plants");
+        assert_eq!(rel, format!("crates/a/src/f{:05}.rs", SPAN_FLOOR + 2));
+        let planted = coverage_row(&cx.with_overlay(ov));
+        assert_eq!(planted.status, Status::Fail, "{}", planted.detail);
+        assert!(planted.detail.contains("NOT scanned"), "{}", planted.detail);
+        assert!(planted.detail.contains(&rel), "{}", planted.detail);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// THE OTHER DIRECTION: a file the walk read that the index does not hold is refused by name.
+    #[test]
+    fn a_walked_file_nothing_tracks_is_refused_by_name() {
+        let stray = "crates/a/src/f00000.rs";
+        let (root, cx) = fixture("extra", Some(stray));
+        let row = coverage_row(&cx);
+        assert_eq!(row.status, Status::Fail, "{}", row.detail);
+        assert!(row.detail.contains("NOT tracked"), "{}", row.detail);
+        assert!(row.detail.contains(stray), "{}", row.detail);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The gate's whole selftest over the real tree: every case holds, the floor plant among them.
+    #[test]
+    fn the_tracing_selftest_holds_on_the_workspace() {
+        let cx = Ctx::workspace().expect("workspace context");
+        let report = TracingGate.selftest(&cx);
+        if let Err(why) = crate::gates::verify_report(&TracingGate, &report) {
+            panic!("tracing selftest failed:\n{}", why.join("\n"));
+        }
+    }
 }

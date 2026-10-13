@@ -26,14 +26,20 @@ fn cx() -> Ctx {
 }
 
 fn tmpdir(tag: &str) -> PathBuf {
-    let d = repo_root().join(".fix").join(format!(
-        "xtask-test-{tag}-{}-{:?}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
+    let d =
+        repo_root()
+            .join(".fix")
+            .join(format!("xtask-test-{tag}-{}-{:?}", std::process::id(), {
+                static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+                format!(
+                    "{}-{}-{}",
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map_or(0, |d| d.as_nanos()),
+                    line!(),
+                    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                )
+            }));
     std::fs::create_dir_all(&d).expect("scratch dir");
     d
 }
@@ -1597,29 +1603,29 @@ fn no_deferral_reports_the_unwaived_markers_and_the_stale_waiver_together() {
     assert_eq!(row("no-deferral:discovery-floor").status, Status::Pass);
 }
 
-/// THE ONE-SHORT PLANT BITES ON THE REAL TREE. The self-test's floor case, driven over the committed
-/// tree: discovery must come back at exactly one under `DISCOVERY_FLOOR` and the floor row must
-/// refuse it as UNPROVEN. In the #627 merge group this plant cut one file from a tree already past
-/// the pin and the row read PASS.
+/// THE COVERAGE PLANT BITES ON THE REAL TREE. The self-test's coverage case, driven over the
+/// committed tree: one discovered file hidden from the walk while the index still lists it, and
+/// the discovery row must refuse it as UNPROVEN and NAME it. It replaced a one-short cut against a
+/// hand-kept floor, which every change that added or removed source had to re-pin.
 #[test]
-fn no_deferral_one_short_plant_leaves_the_real_tree_one_under_the_floor() {
-    use xtask::gates::no_deferral::{one_short_of_floor, DISCOVERY_FLOOR};
+fn no_deferral_refuses_a_tracked_file_hidden_from_discovery_by_name() {
+    use xtask::gates::no_deferral::one_file_hidden_from_discovery;
 
     let base = cx();
-    let ov = one_short_of_floor(&base).expect("discovery reads the real tree");
+    let (ov, rel) = one_file_hidden_from_discovery(&base).expect("discovery reads the real tree");
     let reg = gates::find("no-deferral").expect("the gate is registered");
     let gate = (reg.build)();
     let rows = gates::execute(gate.as_ref(), &base.with_overlay(ov)).rows;
     let floor = rows
         .iter()
         .find(|r| r.id == "no-deferral:discovery-floor")
-        .expect("the floor row is owed and must be emitted");
+        .expect("the discovery row is owed and must be emitted");
     assert_eq!(floor.status, Status::Fail, "{}", floor.detail);
-    let found = format!("found only {} shipped source file(s)", DISCOVERY_FLOOR - 1);
     assert!(
-        floor.detail.contains(&found) && floor.detail.contains("UNPROVEN, not PASS"),
-        "the plant leaves {} files and the row says UNPROVEN: {}",
-        DISCOVERY_FLOOR - 1,
+        floor.detail.contains(&rel)
+            && floor.detail.contains("NOT scanned")
+            && floor.detail.contains("UNPROVEN, not PASS"),
+        "the row names the hidden file {rel} and says UNPROVEN: {}",
         floor.detail
     );
 }
