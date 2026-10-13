@@ -4955,15 +4955,15 @@ pub fn selftest<'a>(
         &[ROW_MATRIX],
         plant(
             cx,
-            // THE DIRECTORY, NOT THE PACKAGE NAME: `busbar-store-memory` lives at
-            // `crates/store-memory`, or the plant lands under no crate at all.
-            "crates/store-memory/src/vendor.rs",
+            // THE DIRECTORY THE CENSUS READS: `busbar-store-memory` is pinned (P5) and its checkout
+            // is mounted at `crates/<package>`, or the plant lands under no crate at all.
+            "crates/busbar-store-memory/src/vendor.rs",
             "pub const VD: &str = \"anthropic\";\npub fn openai_shim() {}\n",
         ),
         &[
             "vendor-name",
             "busbar-store-memory",
-            "crates/store-memory/src/vendor.rs:1",
+            "crates/busbar-store-memory/src/vendor.rs:1",
         ],
     ));
 
@@ -4989,7 +4989,7 @@ pub fn selftest<'a>(
         &[ROW_MATRIX],
         plant(
             cx,
-            "crates/store-memory/src/tests/planted_vendor.rs",
+            "crates/busbar-store-memory/src/tests/planted_vendor.rs",
             "#[test]\nfn t() { let _ = \"gemini\"; }\n",
         ),
         &["vendor-name", "busbar-store-memory", "\ttest\t"],
@@ -5005,7 +5005,7 @@ pub fn selftest<'a>(
         &[ROW_MATRIX],
         plant(
             cx,
-            "crates/store-memory/src/vendor.rs",
+            "crates/busbar-store-memory/src/vendor.rs",
             "pub const VD: &str = \"anthropic\"; // plane-purity: frozen-wire frozen since 1.5.5 key: vd\n",
         ),
         &["vendor-frozen-wire", "busbar-store-memory", "vendor.rs:1"],
@@ -6102,22 +6102,26 @@ mod tests {
     /// A PLANT OF A FILE THE TREE HAS NOT GOT REACHES THE SCAN SET, AND REACHES IT UNDER THE CRATE
     /// THAT OWNS IT — the two claims the `dialect` fixture was silently failing.
     ///
-    /// `crates/busbar-store-memory/src/vendor.rs` is a path no manifest sits above: `owning_dir`
-    /// answers `crates/busbar-store-memory`, `by_dir` has no entry for it, [`measure`] `continue`s,
-    /// and the case asserting RED went GREEN while the same bytes written to disk at
-    /// `crates/store-memory/src/vendor.rs` went red as they should. The fixture was corrected to
-    /// name the directory the tree really has; this is the unit-speed guard that says so, because
-    /// the only other instrument that could was a twenty-six-minute self-test.
+    /// A plant under a directory no manifest sits above is scanned and owned by nothing: `owning_dir`
+    /// answers its directory, `by_dir` has no entry for it, [`measure`] `continue`s, and a case
+    /// asserting RED goes GREEN (the `dialect` fixture once planted at the store's package name while
+    /// the crate lived at `crates/store-memory`). Since P5 the store is pinned and its checkout is
+    /// mounted at `crates/busbar-store-memory`, the directory the census owns; this is the
+    /// unit-speed guard that says so, because the only other instrument that could was a
+    /// twenty-six-minute self-test.
     ///
     /// The three steps are asserted separately on purpose — a plant can be dropped by the walker,
     /// by the ignore filter, or by the crate lookup, and a single end-to-end assertion cannot say
     /// which. NO VENDOR WORD IS PLANTED HERE: what is under test is the path, not the scanner.
     #[test]
     fn a_planted_new_file_reaches_the_scan_set_under_the_crate_that_owns_it() {
-        let cx = Ctx::workspace().expect("the workspace opens");
-        let rel = "crates/store-memory/src/vendor.rs";
+        let ws = Ctx::workspace().expect("the workspace opens");
+        let rel = "crates/busbar-store-memory/src/vendor.rs";
         let body = "pub const PLANTED: &str = \"planted\";\n";
-        let cx = cx.with_overlay(plant(&cx, rel, body));
+        // The store is a pinned checkout (P5): the tree the gate reads lays it at its mount, beneath
+        // the plant, exactly as the gate run does.
+        let pinned = super::super::pinned::with_pinned(&ws);
+        let cx = super::super::pinned::with_pinned(&ws.with_overlay(plant(&pinned, rel, body)));
 
         // THE WALKER, and the ignore filter it ends in.
         let listed = cx.list(&WalkSpec::new(["crates"])).expect("the walk lists");
@@ -6154,20 +6158,21 @@ mod tests {
     /// nothing while the vendor rule's only population was `plane-purity`'s listed roots.
     #[test]
     fn the_red_team_vendor_plant_in_a_neutral_plugin_crate_moves_the_row() {
-        let cx = Ctx::workspace().expect("the workspace opens");
+        let ws = Ctx::workspace().expect("the workspace opens");
+        let cx = super::super::pinned::with_pinned(&ws);
         let reg = super::super::load_registry(&cx).expect("the ledger reads");
         let crates = super::super::census(&cx).expect("the census reads");
-        let rel = "crates/store-memory/src/vendor.rs";
+        let rel = "crates/busbar-store-memory/src/vendor.rs";
         let base = rule_matrix(&cx, &crates, &reg, false, true);
         assert!(
             !base.detail.contains(rel),
             "the unplanted tree already names {rel}"
         );
-        let planted = cx.with_overlay(plant(
+        let planted = super::super::pinned::with_pinned(&ws.with_overlay(plant(
             &cx,
             rel,
             "pub const VD: &str = \"anthropic\";\npub fn openai_shim() {}\n",
-        ));
+        )));
         let crates = super::super::census(&planted).expect("the census reads");
         let row = rule_matrix(&planted, &crates, &reg, false, true);
         let finding = format!("vendor-name\tbusbar-store-memory\t{rel}:1");
@@ -6195,8 +6200,12 @@ mod tests {
     /// The same helper still plants a NEW crate's manifest, and a file of a crate that has one.
     #[test]
     fn a_plant_under_a_governed_directory_or_of_a_new_manifest_is_accepted() {
-        let cx = Ctx::workspace().expect("the workspace opens");
-        let _ = plant(&cx, "crates/store-memory/src/vendor.rs", "pub fn f() {}\n");
+        let cx = super::super::pinned::with_pinned(&Ctx::workspace().expect("the workspace opens"));
+        let _ = plant(
+            &cx,
+            "crates/busbar-store-memory/src/vendor.rs",
+            "pub fn f() {}\n",
+        );
         let _ = plant(
             &cx,
             "crates/busbar-store-zanzibar/Cargo.toml",

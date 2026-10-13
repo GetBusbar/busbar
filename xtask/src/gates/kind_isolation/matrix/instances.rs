@@ -1361,7 +1361,7 @@ pub fn selftest<'a>(
         &[ROW_MATRIX],
         super::plant(
             cx,
-            "crates/store-memory/src/planted_self.rs",
+            "crates/busbar-store-memory/src/planted_self.rs",
             "pub const ME: &str = \"memory\";\n",
         ),
     ));
