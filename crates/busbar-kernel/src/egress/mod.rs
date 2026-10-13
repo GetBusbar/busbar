@@ -22,6 +22,11 @@
 #[cfg(feature = "egress-seam")]
 pub mod seam;
 
+// THE EGRESS-TRUST SEAM and its three primitives (client identity, extra trust anchors, the
+// peer-SPKI pin): kernel-owned outbound trust, read by the engine below, the secure layer and the
+// root's connector install. It is not plane hosting, so it does not live in `plane_host`.
+pub mod trust;
+
 // ==== merged from busbar-substrate (W4.b P2 engine drain) ====
 
 // THE EGRESS ENGINE — the one owned outbound HTTP stack (the owned dial-coalescing pool over

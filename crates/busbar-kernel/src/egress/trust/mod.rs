@@ -5,8 +5,8 @@
 //!
 //! The outbound trust decision — which extra trust anchors a governed hop adds, which mTLS client
 //! identity it presents, and the SubjectPublicKeyInfo pin of the peer certificate a completed
-//! handshake produced — lives today as three host-side primitives: [`identity`](super::identity),
-//! [`trust_anchor`](super::trust_anchor) and [`spki`](super::spki). Each is already host-owned (a
+//! handshake produced — lives today as three host-side primitives: [`identity`](identity),
+//! [`trust_anchor`](trust_anchor) and [`spki`](spki). Each is already host-owned (a
 //! process registry, or a pure DER walk), but nothing NAMES the three together as ONE host capability
 //! a plane reaches through a trait object.
 //!
@@ -15,7 +15,7 @@
 //! [`egress_trust_host`] and calls typed methods instead of the free functions directly, so the trust
 //! machinery is swappable behind a stable boundary without any call site changing. It mirrors the
 //! egress fetch seam's `install_hostless_egress` / `hostless` (see `crate::egress::seam`) and the
-//! `plane_host` capability-slice pattern ([`EngineHost`](super::EngineHost) and its supertraits).
+//! `plane_host` capability-slice pattern ([`EngineHost`](crate::plane_host::EngineHost) and its supertraits).
 //!
 //! ## Additive and DORMANT
 //!
@@ -30,51 +30,59 @@
 // sites flip onto the seam — the same not-yet-mounted posture `identity`/`trust_anchor` record.
 #![cfg_attr(not(test), allow(dead_code))]
 
+// The three primitives the seam names. Their home is the kernel's outbound surface, not the plane
+// host: the egress engine, the root's connector install and the secure layer read them, and none of
+// them is plane hosting (BUSBAR-1.6.0.md Part 4 Axis 3: "the kernel owns the allow-list, pin,
+// breaker and meter valves").
+pub mod identity;
+pub mod spki;
+pub mod trust_anchor;
+
 use std::net::IpAddr;
 use std::sync::Arc;
 
 use crate::config::Destinations;
 use crate::egress::engine::ClientIdentity;
 use crate::host_services::{DestJudge, DestRefusal};
-use crate::plane_host::spki::SpkiError;
 use crate::secure::SecureLayer;
 use busbar_kernel_egress::trust::net::Resolver;
+use spki::SpkiError;
 
 /// THE OUTBOUND EGRESS-TRUST HOST CAPABILITY, as a neutral trait a plane reaches through instead of
-/// calling [`identity`](super::identity) / [`trust_anchor`](super::trust_anchor) / [`spki`](super::spki)
+/// calling [`identity`](identity) / [`trust_anchor`](trust_anchor) / [`spki`](spki)
 /// directly. Groups the three outbound trust primitives — client-identity registration/resolution,
 /// extra-trust-anchor registration/resolution, and the peer-certificate SPKI pin — as one capability.
 /// `Send + Sync` so the installed capability is a process-wide `&'static dyn`.
 pub trait EgressTrustHost: Send + Sync {
     /// Register a parsed mTLS client `identity` at boot, returning the opaque `client_identity_ref` a
-    /// hop carries. Pass-through to [`identity::register`](super::identity::register).
+    /// hop carries. Pass-through to [`identity::register`](identity::register).
     fn register_client_identity(&self, identity: ClientIdentity) -> u64 {
-        super::identity::register(identity)
+        identity::register(identity)
     }
 
     /// Resolve a `client_identity_ref` to its parsed identity (`None` for the reserved `0` ref or an
-    /// unknown one). Pass-through to [`identity::resolve`](super::identity::resolve).
+    /// unknown one). Pass-through to [`identity::resolve`](identity::resolve).
     fn resolve_client_identity(&self, client_identity_ref: u64) -> Option<ClientIdentity> {
-        super::identity::resolve(client_identity_ref)
+        identity::resolve(client_identity_ref)
     }
 
     /// Register a set of parsed extra-root `roots` at boot, returning the opaque `trust_anchor_ref` a
-    /// hop carries. Pass-through to [`trust_anchor::register`](super::trust_anchor::register).
+    /// hop carries. Pass-through to [`trust_anchor::register`](trust_anchor::register).
     fn register_trust_anchor(&self, roots: Vec<Vec<u8>>) -> u64 {
-        super::trust_anchor::register(roots)
+        trust_anchor::register(roots)
     }
 
     /// Resolve a `trust_anchor_ref` to its extra roots (an EMPTY vec for the reserved `0` ref or an
     /// unknown one — fail-closed). Pass-through to
-    /// [`trust_anchor::resolve`](super::trust_anchor::resolve).
+    /// [`trust_anchor::resolve`](trust_anchor::resolve).
     fn resolve_trust_anchor(&self, trust_anchor_ref: u64) -> Vec<Vec<u8>> {
-        super::trust_anchor::resolve(trust_anchor_ref)
+        trust_anchor::resolve(trust_anchor_ref)
     }
 
     /// The `sha256/<base64>` SPKI pin of a peer certificate a completed handshake produced. Pure DER
-    /// walk; pass-through to [`spki::pin`](super::spki::pin).
+    /// walk; pass-through to [`spki::pin`](spki::pin).
     fn peer_leaf_pin(&self, cert_der: &[u8]) -> Result<String, SpkiError> {
-        super::spki::pin(cert_der)
+        spki::pin(cert_der)
     }
 
     /// An answer the kernel's own pooled client resolved for `host`, judged whole under `class` by

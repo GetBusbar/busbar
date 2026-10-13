@@ -243,7 +243,7 @@ pub async fn dial_with_credential(
         &host,
         port,
         secure,
-        &crate::plane_host::egress_trust::InstalledResolver,
+        &crate::egress::trust::InstalledResolver,
         policy,
     )?;
 

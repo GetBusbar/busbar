@@ -43,7 +43,7 @@ fn client_identity_seam_is_a_pass_through_to_the_registry() {
     assert!(host.resolve_client_identity(0).is_none());
     assert_eq!(
         host.resolve_client_identity(0).is_none(),
-        super::super::identity::resolve(0).is_none(),
+        super::identity::resolve(0).is_none(),
         "seam and free fn agree on the reserved ref"
     );
     assert!(host.resolve_client_identity(u64::MAX).is_none());
@@ -64,7 +64,7 @@ fn trust_anchor_seam_is_a_pass_through_to_the_registry() {
     assert!(host.resolve_trust_anchor(u64::MAX).is_empty());
     assert_eq!(
         host.resolve_trust_anchor(u64::MAX).len(),
-        super::super::trust_anchor::resolve(u64::MAX).len(),
+        super::trust_anchor::resolve(u64::MAX).len(),
         "seam and free fn agree on an unknown ref"
     );
 }
@@ -77,7 +77,7 @@ fn peer_leaf_pin_seam_is_byte_for_byte_the_free_walk() {
     // being a pass-through and not a second answer to "what is this key's pin".
     assert_eq!(
         host.peer_leaf_pin(der.as_ref()),
-        super::super::spki::pin(der.as_ref()),
+        super::spki::pin(der.as_ref()),
         "the seam pins byte-for-byte identically to the free walk"
     );
     assert!(
@@ -108,7 +108,7 @@ fn the_composition_root_install_hands_the_installed_capability_back() {
     let der = a_root();
     assert_eq!(
         installed.peer_leaf_pin(der.as_ref()),
-        super::super::spki::pin(der.as_ref()),
+        super::spki::pin(der.as_ref()),
         "the installed capability pins byte-identically to the free walk"
     );
 }

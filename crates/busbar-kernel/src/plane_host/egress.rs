@@ -256,12 +256,12 @@ fn close_and_remove(id: u64) -> bool {
 
 /// The observed peer identity: the SubjectPublicKeyInfo PIN of the leaf certificate the
 /// (already-verified) TLS handshake produced, in the ONE canonical spelling
-/// (`sha256/<base64>` — [`super::spki::pin`]). Empty on a plaintext hop (nothing was proved) and
+/// (`sha256/<base64>` — [`crate::egress::trust::spki::pin`]). Empty on a plaintext hop (nothing was proved) and
 /// empty where the certificate cannot be walked — reported honestly as absent rather than softened
 /// into a pass, exactly as `a2a::transport::peer_spki_of` reports `None`.
 ///
 /// This is the SAME pin the plane would compute itself: the host and the plane share one DER walk
-/// (lifted to [`super::spki`]), so a governed hop hands back the string the plane's own spelling
+/// (lifted to [`crate::egress::trust::spki`]), so a governed hop hands back the string the plane's own spelling
 /// yields, byte for byte — and it survives a certificate renewal because it pins the KEY, not the
 /// leaf bytes.
 fn observed_identity(resp: &http::Response<hyper::body::Incoming>) -> Vec<u8> {
@@ -743,14 +743,14 @@ fn open_http(
     // never sees a key. An unknown/zero ref resolves to `None`, which is the honest mTLS outcome: the
     // hop presents no certificate and an mTLS peer closes the handshake itself rather than the host
     // forging one (the a2a `presenting`/no-identity posture, restated at the seam). See
-    // [`super::identity`].
-    let identity = super::identity::resolve(d.client_identity_ref);
+    // [`crate::egress::trust::identity`].
+    let identity = crate::egress::trust::identity::resolve(d.client_identity_ref);
     // THE EXTRA TRUST ANCHORS, resolved host-side from the opaque ref the plane named — the plane never
     // holds certificate bytes. A zero/unknown ref resolves to no extra roots (the ordinary public-CA
     // hop); a real ref adds the private-CA roots the registration parsed at boot (the a2a `trusting_root`
     // path). The sized-struct guard means a sender that predates the field leaves it `0` → no extra
-    // roots. See [`super::trust_anchor`].
-    let extra_roots = super::trust_anchor::resolve(
+    // roots. See [`crate::egress::trust::trust_anchor`].
+    let extra_roots = crate::egress::trust::trust_anchor::resolve(
         read_sized_field!(d, d.size, EgressDesc, trust_anchor_ref).unwrap_or(0),
     );
     // BUSBAR'S OWN END OF THE HANDSHAKE, decided HERE — before the streaming thread MOVES `identity`.
@@ -993,7 +993,7 @@ fn run_http_stream(
                 host_name,
                 port,
                 https,
-                &crate::plane_host::egress_trust::InstalledResolver,
+                &crate::egress::trust::InstalledResolver,
                 policy,
             ) {
                 Ok(pin) => pin.socket_addr(),
@@ -1508,7 +1508,7 @@ pub(crate) struct OpenedHead {
     /// The observed status/response code.
     pub status: u16,
     /// The observed peer SPKI pin (`sha256/…`), or `None` on a plaintext hop / an unwalkable cert.
-    /// Decoded from the SAME bytes `crate::plane_host::spki::pin` produced, so it is byte-identical to
+    /// Decoded from the SAME bytes `crate::egress::trust::spki::pin` produced, so it is byte-identical to
     /// the pin a plane's own `peer_spki_of` would compute (they share that one function).
     pub peer_spki: Option<String>,
     /// The response `Location`, verbatim, when the head surfaced one (a redirect).

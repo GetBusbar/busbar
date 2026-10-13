@@ -3,10 +3,12 @@
 
 //! The HOST side of the [`PlaneHostVtable`]: the construction point that fills every slot with a
 //! host-side `extern "C-unwind"` fn wired over a real core primitive. After the Phase-1 capability
-//! fan-out (breaker, govern, trust, journal, egress, dispatch) every slot is now wired — ZERO
-//! `unimplemented!()` stubs remain. The three PROOF-OF-LIFE impls (`clock_now`, `metrics_emit`,
-//! `govern_admit`) live here; the rest forward into their capability modules ([`super::breaker`],
-//! [`super::govern`], [`super::trust`], [`super::journal`], [`super::egress`], [`super::dispatch`]).
+//! fan-out (breaker, govern, journal, egress, dispatch) every slot is wired — ZERO `unimplemented!()`
+//! stubs remain — except the trust family and `guard_url`, which are absent: no plane calls them, the
+//! host services a plane calls are the `HostSlots` families (BUSBAR-1.6.0.md Part 3 §4, SUPERSEDED
+//! 2026-09-28), and `trust.*` is served there. The three PROOF-OF-LIFE impls (`clock_now`,
+//! `metrics_emit`, `govern_admit`) live here; the rest forward into their capability modules
+//! ([`super::breaker`], [`super::govern`], [`super::journal`], [`super::egress`], [`super::dispatch`]).
 //!
 //! ## Boundary discipline (reused from `busbar-contract/src/abi/sdk/boundary.rs`)
 //!
@@ -18,7 +20,7 @@
 //!    clock), never to a permissive one;
 //! 3. translates POD ↔ primitive by pointer, writing any out-param only on the `Ok` path.
 
-use super::{recover, trust};
+use super::recover;
 use busbar_contract::abi::hot::host::{HostCtx, PlaneHostVtable};
 use busbar_contract::abi::hot::{
     AuthQuery, AuthResolved, Decision, DeclStr, Facts, GovRefusal, MeterOutcome, MetricSample,
@@ -51,8 +53,6 @@ pub fn build_plane_host_vtable() -> PlaneHostVtable {
         breaker_admit: Some(super::breaker::breaker_admit),
         breaker_admit_reason: Some(super::breaker::breaker_admit_reason),
         breaker_settle: Some(super::breaker::breaker_settle),
-        verify_lookup: Some(trust::verify_lookup),
-        verify_store: Some(trust::verify_store),
         egress_open: Some(super::egress::egress_open),
         egress_poll: Some(super::egress::egress_poll),
         egress_write: Some(super::egress::egress_write),
@@ -63,18 +63,9 @@ pub fn build_plane_host_vtable() -> PlaneHostVtable {
         nested_dispatch: Some(super::dispatch::nested_dispatch),
         workhandle_open: Some(super::dispatch::workhandle_open),
         workhandle_resume: Some(super::dispatch::workhandle_resume),
-        drift_quarantine: Some(trust::drift_quarantine),
-        approval_redeem: Some(trust::approval_redeem),
         auth_resolve: Some(auth_resolve),
-        trust_evaluate: Some(trust::trust_evaluate),
         entitlement_check: Some(super::dispatch::entitlement_check),
         gate_scan: Some(super::dispatch::gate_scan),
-        // ── The stateless verify-freshness DECISION + expiry-carrying approval redemption (verify/
-        //    approval faithfulness). The `verify_decide` slot funnels to `trust::verify_decide_q`,
-        //    which shares the `trust::verify_decide_due` body with the a2a plane; the MCP plane's own
-        //    `VerifyGate` now lives in the neutral substrate and names `reverify::due` directly. ─────
-        verify_decide: Some(trust::verify_decide_q),
-        approval_redeem_q: Some(trust::approval_redeem_q),
         // ── The byte-duplex PIPE tier (CLUSTER-3 egress): raw-connection / subprocess byte channels,
         //    keyed by a `PipeId`, wired over the real governed child process in `super::pipe`. ──────
         pipe_read: Some(super::pipe::pipe_read),
@@ -97,10 +88,6 @@ pub fn build_plane_host_vtable() -> PlaneHostVtable {
         subkey_sign: Some(card_sign),
         #[cfg(not(feature = "card-signing"))]
         subkey_sign: None,
-        // ── WIRED `guard_url` (minor-12) → the host-owned structural URL guard in `super::guard`: the
-        //    SSRF/URL-guard chokepoint for a URL-shaped tool argument. Always wired (the host owns the
-        //    URL-guard internals whatever the plane); no plane feature gates it. ─────────────────────────
-        guard_url: Some(super::guard::guard_url),
         // ── WIRED `identity_admit` (minor-17) → the host-side inbound admission in
         //    `super::identity_admit`: the configured auth chain + the one verdict resolution over the
         //    caller's own credential, returning an opaque resolved-identity handle. Always wired (the
@@ -111,7 +98,11 @@ pub fn build_plane_host_vtable() -> PlaneHostVtable {
         counter_add: Some(counter_add),
         // ── The HOST SERVICES (minor 30): entropy, wall clock, usage-tap fault latch, translate
         //    cap — the contract ports this image's host armed, served by the contract itself, so a
-        //    dropped-in plane gets the services a linked one does (ARCHITECT SD-3 queue (6)). ──
+        //    dropped-in plane gets the services a linked one does (ARCHITECT SD-3 queue (6)). The
+        //    trust family (`verify_lookup`/`verify_store`/`verify_decide`/`drift_quarantine`/
+        //    `approval_redeem[_q]`/`trust_evaluate`) and `guard_url` stay at the base's `None`: no
+        //    plane calls them, and a plane's trust and destination judging are the `HostSlots`
+        //    `trust.*` and `dest.judge` services. ──
         ..PlaneHostVtable::SERVICES
     }
 }
@@ -470,16 +461,13 @@ extern "C-unwind" fn meter_charge(host: HostCtx, usage: *const Usage) -> MeterOu
     .unwrap_or(MeterOutcome::Rejected) // fail-closed: a panicked charge rejects.
 }
 // `breaker_admit` / `breaker_settle` are WIRED over the real breaker in `super::breaker` (the BREAKER
-// family fan-out); `verify_lookup` / `verify_store` are WIRED over the real trust store in
-// `super::trust` (the TRUST family fan-out); their vtable slots reference those modules directly.
-// The EGRESS family (`egress_open`/`_poll`/`_write`/`_close`/`_fault`) and `guard_url` are WIRED in
-// `super::egress` and `super::guard`; their vtable slots reference those modules directly.
+// family fan-out); its vtable slots reference that module directly.
+// The EGRESS family (`egress_open`/`_poll`/`_write`/`_close`/`_fault`) is WIRED in `super::egress`;
+// its vtable slots reference that module directly.
 // journal_append / journal_read are WIRED in `super::journal` (the JOURNAL family, over the real
 // `crate::audit` hash chain). The builder references them directly; no stub lives here.
 // `nested_dispatch` / `workhandle_open` / `workhandle_resume` / `entitlement_check` / `gate_scan`
 // are WIRED in `super::dispatch` (the DISPATCH family); their vtable slots reference that module.
-// `drift_quarantine` / `approval_redeem` / `trust_evaluate` are WIRED over the real trust store in
-// `super::trust` (the TRUST family fan-out); their vtable slots reference that module directly.
 /// WIRED `auth_resolve` → the REAL principal resolution over `crate::auth` (see
 /// [`super::govern::resolve_auth`]): resolve a credential REF to an OPAQUE host-side reference (NEVER
 /// plaintext), writing the [`AuthResolved`] out-param ONLY on `Ok`. Fail-closed (`Refused`) on a null
