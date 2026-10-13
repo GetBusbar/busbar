@@ -1774,11 +1774,15 @@ pub fn build_app_from_config(
             // otherwise; spawned once per generation).
             // The PRIOR generation's server goes in with it: what the server holds carries across
             // the swap, so a reload does not void its tokens, clients, sessions and replay ledgers.
+            // The deployment's store, when one is configured: the server keeps its records there,
+            // shared by every node on it (the governance state holds the store's calls).
+            let store = governance.as_ref().and_then(|gs| gs.store_calls());
             Some((seam.build)(
                 &checked.block,
                 secrets,
                 protected_resources,
                 prior.and_then(state::App::oauth_as_any),
+                store,
             )?)
         }
     };

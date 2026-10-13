@@ -580,18 +580,42 @@ pub(crate) struct CimdStore {
 /// WHAT THE SERVER HOLDS: its records (clients registered, codes, tokens, refresh tokens, consents,
 /// pushed requests, the replay ledger) and the consent screen's notes of the pushed requests. A
 /// config reload builds a new server over the SAME records, so a reload voids none of them.
+///
+/// With the deployment's store reachable, the records are the store's ([`crate::shared`]) and every
+/// node on that store serves one server; without one (no store is configured), they live in this
+/// process.
 pub(crate) struct Records {
-    inner: MemoryStorage,
+    inner: Backend,
     /// What the consent screen needs to show of each RFC 9126 pushed request that has not been
-    /// redeemed, keyed by `request_uri`. See [`Pushed`].
+    /// redeemed, keyed by `request_uri` (in-process records only; the store's are read from the
+    /// pushed record itself). See [`Pushed`].
     pushed: Mutex<HashMap<String, Pushed>>,
 }
 
 impl Records {
     pub(crate) fn new(inner: MemoryStorage) -> Self {
         Self {
-            inner,
+            inner: Backend::Memory(inner),
             pushed: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// The records the deployment's store keeps, shared with every node on it.
+    pub(crate) fn shared(shared: Arc<crate::shared::Shared>) -> Self {
+        Self {
+            inner: Backend::Shared(
+                crate::shared::SharedStorage::new(Arc::clone(&shared)),
+                shared,
+            ),
+            pushed: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// The store these records are kept in, when they are the deployment's.
+    pub(crate) fn store(&self) -> Option<&Arc<crate::shared::Shared>> {
+        match &self.inner {
+            Backend::Memory(_) => None,
+            Backend::Shared(_, shared) => Some(shared),
         }
     }
 }
@@ -599,6 +623,60 @@ impl Records {
 impl Default for Records {
     fn default() -> Self {
         Self::new(MemoryStorage::new())
+    }
+}
+
+/// Where the records are: this process, or the deployment's store.
+pub(crate) enum Backend {
+    Memory(MemoryStorage),
+    Shared(crate::shared::SharedStorage, Arc<crate::shared::Shared>),
+}
+
+/// One `Storage` method, answered by whichever backend holds the records.
+macro_rules! delegate {
+    ($( fn $name:ident(&self $(, $arg:ident : $ty:ty)* ) -> $ret:ty; )*) => {
+        $(
+            async fn $name(&self $(, $arg: $ty)*) -> Result<$ret, StorageError> {
+                match self {
+                    Backend::Memory(m) => m.$name($($arg),*).await,
+                    Backend::Shared(s, _) => s.$name($($arg),*).await,
+                }
+            }
+        )*
+    };
+}
+
+impl Storage for Backend {
+    delegate! {
+        fn get_client(&self, client_id: &ClientId) -> Option<Arc<Client>>;
+        fn put_client(&self, client: Client) -> ();
+        fn compare_and_swap_client(&self, expected: &Client, updated: Client) -> bool;
+        fn delete_client(&self, client_id: &ClientId, window: RevocationWindow) -> bool;
+        fn put_device_grant(&self, grant: DeviceGrant) -> ();
+        fn get_device_grant(&self, device_code: &str) -> Option<DeviceGrant>;
+        fn find_device_grant_by_user_code(&self, normalized_user_code: &str) -> Option<DeviceGrant>;
+        fn take_device_grant(&self, device_code: &str) -> Option<DeviceGrant>;
+        fn compare_and_swap_device_grant(&self, expected: &DeviceGrantState, updated: DeviceGrant) -> bool;
+        fn put_authorization_code(&self, record: AuthorizationCodeRecord) -> ();
+        fn compare_and_swap_authorization_code(&self, expected: &AuthorizationCodeState, updated: AuthorizationCodeRecord) -> bool;
+        fn take_authorization_code(&self, code: &str) -> Option<AuthorizationCodeRecord>;
+        fn put_pushed_authorization_request(&self, record: oauth_as::par::PushedAuthorizationRequest) -> WriteOutcome;
+        fn take_pushed_authorization_request(&self, request_uri: &str) -> Option<oauth_as::par::PushedAuthorizationRequest>;
+        fn put_token(&self, token: IssuedToken) -> WriteOutcome;
+        fn get_token(&self, access_token: &str) -> Option<Arc<IssuedToken>>;
+        fn delete_token(&self, access_token: &str) -> ();
+        fn put_refresh_token(&self, record: RefreshTokenRecord) -> WriteOutcome;
+        fn get_refresh_token(&self, refresh_token: &str) -> Option<Arc<RefreshTokenRecord>>;
+        fn take_refresh_token(&self, refresh_token: &str) -> Option<RefreshTokenRecord>;
+        fn revoke_token_family(&self, family_id: &str, window: RevocationWindow) -> u64;
+        fn put_consent(&self, record: ConsentRecord) -> ();
+        fn compare_and_swap_consent(&self, expected: Option<&ConsentRecord>, updated: ConsentRecord) -> bool;
+        fn get_consent(&self, consent_id: &str) -> Option<Arc<ConsentRecord>>;
+        fn find_consent(&self, client_id: &ClientId, subject: &str) -> Option<Arc<ConsentRecord>>;
+        fn consents_for_subject(&self, subject: &str) -> Vec<Arc<ConsentRecord>>;
+        fn revoke_consent(&self, consent_id: &str, window: RevocationWindow) -> u64;
+        fn claim_replay_id(&self, id: &str, expires_at: std::time::SystemTime) -> bool;
+        fn sweep_expired(&self, now: std::time::SystemTime) -> u64;
     }
 }
 
@@ -651,7 +729,22 @@ impl CimdStore {
     }
 
     /// The summary of a pushed request that is still live, or `None`.
-    pub(crate) fn pushed(&self, request_uri: &str) -> Option<Pushed> {
+    pub(crate) async fn pushed(&self, request_uri: &str) -> Option<Pushed> {
+        if let Some(store) = self.records.store() {
+            return match store.pushed(request_uri).await {
+                Ok(found) => found.map(|record| Pushed {
+                    client_id: record.client_id.as_str().to_string(),
+                    scope: record.scope.clone().unwrap_or_default(),
+                    redirect_uri: record.redirect_uri.clone().unwrap_or_default(),
+                    expires_at: record.expires_at,
+                    shown: false,
+                }),
+                Err(e) => {
+                    tracing::debug!(error = %e, "oauth_as: the pushed request could not be read");
+                    None
+                }
+            };
+        }
         let pushed = self
             .records
             .pushed
@@ -664,7 +757,17 @@ impl CimdStore {
     }
 
     /// Mark a live pushed request as shown, answering whether it already had been.
-    pub(crate) fn mark_pushed_shown(&self, request_uri: &str) -> bool {
+    pub(crate) async fn mark_pushed_shown(&self, request_uri: &str) -> bool {
+        if let Some(store) = self.records.store() {
+            let until = self
+                .pushed(request_uri)
+                .await
+                .map_or_else(std::time::SystemTime::now, |p| p.expires_at);
+            return store
+                .mark_pushed_shown(request_uri, until)
+                .await
+                .unwrap_or(false);
+        }
         let mut pushed = self
             .records
             .pushed
@@ -977,7 +1080,7 @@ impl Storage for CimdStore {
         let put = self.records.inner.put_pushed_authorization_request(record);
         async move {
             let outcome = put.await?;
-            if matches!(outcome, WriteOutcome::Applied) {
+            if matches!(outcome, WriteOutcome::Applied) && self.records.store().is_none() {
                 self.records
                     .pushed
                     .lock()
