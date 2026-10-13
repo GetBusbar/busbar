@@ -215,6 +215,7 @@ fn classify_reads_the_callers_fault_reading_as_nothing_recorded() {
         UpstreamStatus {
             class: Some(WireStatusClass::CallerFault),
             fault: Some(WireFault::Caller),
+            code: None,
             retry_after: None,
         },
     );
@@ -232,6 +233,7 @@ fn classify_never_reads_the_class_in_place_of_a_fault_reading() {
         UpstreamStatus {
             class: Some(WireStatusClass::FarEndFault),
             fault: None,
+            code: None,
             retry_after: Some(5),
         },
     );
@@ -282,6 +284,7 @@ fn a_hard_reading_is_hard_down_and_takes_every_sibling_pool_cell_for_the_destina
         UpstreamStatus {
             class: Some(WireStatusClass::CallerFault),
             fault: Some(WireFault::Hard),
+            code: None,
             retry_after: None,
         },
     );
@@ -322,6 +325,7 @@ fn a_transient_reading_with_a_stated_wait_of_seven_sets_a_seven_second_cooldown(
         UpstreamStatus {
             class: Some(WireStatusClass::CallerFault),
             fault: Some(WireFault::Transient),
+            code: None,
             retry_after: Some(7),
         },
     );
@@ -356,6 +360,7 @@ fn a_transient_reading_with_no_stated_wait_keeps_the_ladders_own_cooldown() {
         UpstreamStatus {
             class: Some(WireStatusClass::FarEndFault),
             fault: Some(WireFault::Transient),
+            code: None,
             retry_after: None,
         },
     );

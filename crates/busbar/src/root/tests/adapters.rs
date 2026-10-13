@@ -28,6 +28,7 @@ fn a_transient_fault_reading_is_recorded_against_the_destination_and_suppresses_
         UpstreamStatus {
             class: Some(WireStatusClass::FarEndFault),
             fault: Some(WireFault::Transient),
+            code: None,
             retry_after: None,
         },
     );
@@ -52,6 +53,61 @@ fn a_transient_fault_reading_is_recorded_against_the_destination_and_suppresses_
     );
 }
 
+/// ROW 66 HOLDS WITH THE NUMBER ON THE PORT (ARCHITECT ruling on #787, 2026-10-13): the port
+/// carries the upstream's numbered status beside the fault reading, for the composition root's
+/// model egress alone (the previous release's 429 ladder and 4xx count). The breaker classifies
+/// from the fault reading and never reads the number: whatever `code` says, in either reserved
+/// numbering or none, a fixed class and fault reading classify the same.
+#[test]
+fn the_breakers_classification_never_moves_with_the_number_beside_the_fault_reading() {
+    use busbar_contract::transport::registry::status_ns::RESERVED;
+    use busbar_contract::WireStatus;
+    let breaker = adapter_for("pool");
+    let dest = DestinationId::new(21);
+    let codes = [
+        None,
+        Some(WireStatus::new(RESERVED[0], 429)),
+        Some(WireStatus::new(RESERVED[0], 503)),
+        Some(WireStatus::new(RESERVED[0], 400)),
+        Some(WireStatus::new(RESERVED[0], 401)),
+        Some(WireStatus::new(RESERVED[0], 200)),
+        Some(WireStatus::new(RESERVED[1], 14)),
+    ];
+    let readings = [
+        (
+            Some(WireStatusClass::FarEndFault),
+            Some(WireFault::Transient),
+        ),
+        (Some(WireStatusClass::CallerFault), Some(WireFault::Caller)),
+        (Some(WireStatusClass::CallerFault), Some(WireFault::Hard)),
+        (Some(WireStatusClass::Success), Some(WireFault::Healthy)),
+        (Some(WireStatusClass::FarEndFault), None),
+        (None, None),
+    ];
+    for (class, fault) in readings {
+        let at = |code| {
+            breaker.classify(
+                dest,
+                UpstreamStatus {
+                    class,
+                    fault,
+                    code,
+                    retry_after: Some(3),
+                },
+            )
+        };
+        let baseline = at(None);
+        for code in codes {
+            let got = at(code);
+            assert_eq!(
+                (got.disposition, got.outcome, got.label),
+                (baseline.disposition, baseline.outcome, baseline.label),
+                "{class:?} / {fault:?} classified differently with code {code:?}"
+            );
+        }
+    }
+}
+
 /// The breaker reads the FAULT reading and never the class: the class is the fee decision's leg,
 /// and the two disagree where the money and the destination's health do. A caller-fault class with
 /// a hard reading is a refused credential (the destination is down for everyone); a far-end class
@@ -62,6 +118,7 @@ fn the_adapter_reads_the_fault_reading_and_never_the_class() {
         BreakerAdapter::reading(UpstreamStatus {
             class,
             fault,
+            code: None,
             retry_after: None,
         })
     };
@@ -220,6 +277,7 @@ fn a_callers_fault_reading_records_nothing() {
         UpstreamStatus {
             class: Some(WireStatusClass::CallerFault),
             fault: Some(WireFault::Caller),
+            code: None,
             retry_after: None,
         },
     );
@@ -241,6 +299,7 @@ fn a_transient_reading_carries_the_stated_wait() {
         UpstreamStatus {
             class: Some(WireStatusClass::CallerFault),
             fault: Some(WireFault::Transient),
+            code: None,
             retry_after: Some(5),
         },
     );
@@ -262,6 +321,7 @@ fn a_hard_reading_is_hard_down() {
         UpstreamStatus {
             class: Some(WireStatusClass::CallerFault),
             fault: Some(WireFault::Hard),
+            code: None,
             retry_after: Some(5),
         },
     );

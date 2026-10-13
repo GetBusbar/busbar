@@ -67,7 +67,8 @@ use busbar_contract::conn::{
     ConnError, ConnId, InstanceId, NeedId, OpenDesc, PieceKind, PollConns,
 };
 use busbar_contract::redacted::Redacted;
-use busbar_contract::transport::wire::{WireFault, WireStatusClass};
+use busbar_contract::transport::registry::status_ns;
+use busbar_contract::transport::wire::{WireFault, WireStatus, WireStatusClass};
 
 use super::hooks::{CandidateFacts, Candidates, Constraint};
 use super::route::{FarEnd, FarPiece, OutboundRequest, Pick};
@@ -429,11 +430,26 @@ struct Unjudged {
     classified: Classified,
     /// The frame's class (the fee leg), so the plane's reading is classified as an answer.
     class: Option<WireStatusClass>,
+    /// The answer's numbered status, carried beside the plane's reading as it was beside the
+    /// transport's.
+    code: Option<WireStatus>,
     /// The wait the answer stated.
     retry_after: Option<u64>,
     /// The answer's head was already recorded as a success: a reading of the answer that is a
     /// success again records nothing more (one answer, one success).
     after_success: bool,
+}
+
+/// The far end's number in its numbering, as the frame names it: the numbering when it is one the
+/// kernel reserves, the first reserved numbering otherwise (the one a response head carries). The
+/// root's model egress reads it; the breaker never does.
+fn wire_code(piece: &busbar_contract::conn::Piece) -> Option<WireStatus> {
+    let namespace = piece
+        .status_namespace
+        .as_deref()
+        .and_then(|ns| status_ns::RESERVED.iter().copied().find(|r| *r == ns))
+        .unwrap_or(status_ns::RESERVED[0]);
+    piece.status_code.map(|c| WireStatus::new(namespace, c))
 }
 
 /// One unit's state: the egress unit's walk, the attempt in flight, and a health probe's one
@@ -779,6 +795,7 @@ impl EgressFarEnd<'_> {
                 UpstreamStatus {
                     class: held.class,
                     fault: Some(fault),
+                    code: held.code,
                     retry_after: held.retry_after,
                 },
             ),
@@ -1434,6 +1451,7 @@ impl EgressFarEnd<'_> {
                 let status = UpstreamStatus {
                     class: piece.status,
                     fault: piece.fault,
+                    code: wire_code(piece),
                     retry_after: piece.retry_after_secs,
                 };
                 live.unjudged = Some(Unjudged {
@@ -1442,6 +1460,7 @@ impl EgressFarEnd<'_> {
                         .breaker
                         .classify(live.member.destination, status),
                     class: piece.status,
+                    code: status.code,
                     retry_after: piece.retry_after_secs,
                     after_success: true,
                 });
@@ -1532,11 +1551,13 @@ impl EgressFarEnd<'_> {
     ) -> FarPiece {
         let e = self.egress;
         let now = e.clock.now_secs();
-        // The transport's readings of the answer, never its number: the class (the fee leg, and
-        // success or not), the fault reading for the breaker, the wait it asked for.
+        // The transport's readings of the answer: the class (the fee leg, and success or not), the
+        // fault reading for the breaker, the number in its numbering (the root's model egress
+        // reads it; the breaker never does), the wait it asked for.
         let status = UpstreamStatus {
             class: piece.status,
             fault: piece.fault,
+            code: wire_code(piece),
             retry_after: piece.retry_after_secs,
         };
         let far_status = Some((piece.status_code.unwrap_or(0), class_code(piece.status)));
@@ -1560,6 +1581,7 @@ impl EgressFarEnd<'_> {
                 live.unjudged = Some(Unjudged {
                     classified: e.breaker.classify(destination, status),
                     class: status.class,
+                    code: status.code,
                     retry_after: status.retry_after,
                     after_success: false,
                 });
@@ -1609,6 +1631,7 @@ impl EgressFarEnd<'_> {
             live.unjudged = Some(Unjudged {
                 classified,
                 class: status.class,
+                code: status.code,
                 retry_after: status.retry_after,
                 after_success: false,
             });

@@ -113,10 +113,15 @@ pub enum Outcome {
 
 /// What the upstream said, as the classifier reads it.
 ///
-/// Facts, never a number: the transport's own class of the frame (the fee leg, which also tells a
-/// success from a failure), its fault reading of the answer for the breaker, and the wait the
-/// upstream asked for. What a given code means is the transport's own declared table, read on the
-/// transport's side of the frame; no code crosses this port.
+/// The transport's own class of the frame (the fee leg, which also tells a success from a
+/// failure), its fault reading of the answer for the breaker, the upstream's numbered status in the
+/// numbering that spelled it, and the wait the upstream asked for. THE BREAKER CLASSIFIES FROM THE
+/// FAULT READING ALONE and never reads `code` (row 66: the kernel names no protocol); what a given
+/// code means to the breaker is the transport's own declared table, read on the transport's side of
+/// the frame. `code` crosses for the composition root's model egress, which runs the previous
+/// release's 429 rate-limit ladder and 4xx client-fault count on the number (ARCHITECT ruling on
+/// #787, 2026-10-13: the transport ABI carries the number beside the class, `FrameMeta`'s
+/// `status_code`, BUSBAR-1.6.0.md l.4036-4053).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct UpstreamStatus {
     /// The transport's own class of the frame, where it carries one.
@@ -124,6 +129,10 @@ pub struct UpstreamStatus {
     /// The transport's fault reading of the answer, where it states one (`None` is read as the
     /// caller's). With no class and no reading at all, no answer came.
     pub fault: Option<busbar_contract::transport::wire::WireFault>,
+    /// The upstream's numeric status AND the numbering that spelled it, where the transport
+    /// reports one, carried across from the frame exactly as the transport named it. Never read by
+    /// the breaker.
+    pub code: Option<busbar_contract::transport::wire::WireStatus>,
     /// The wait the upstream asked for, in seconds.
     pub retry_after: Option<u64>,
 }
