@@ -732,3 +732,7 @@ pub fn compose(
         shown,
     ))
 }
+
+#[cfg(test)]
+#[path = "tests/model_egress.rs"]
+mod tests;
