@@ -46,13 +46,14 @@ use crate::ctx::{Ctx, Overlay, SourceFile, WalkSpec};
 /// `outputschema.rs` and added `door_sessions.rs`, a reviewed net removal of one file. Raised from
 /// 947 to 949 when FLIP-LLM (#464) added `busbar/src/root/model_egress.rs` and
 /// `busbar-plane-llm/src/exchange/project.rs` (it had raised 941 to 943 over predev d7929b661d).
-/// Lowered from 949 to 947, files deleted by row 156 deleted the kernel's uncalled call log (`busbar-kernel` calllog.rs and
-/// plane/calllog.rs; the per-call chain is a plane's declared chained record kind). A drop below 947 is refused until a reviewed diff
-/// re-measures. The selftest plant
+/// Re-pinned from 949 to 948 when #686 (q128-linked-neutral) deleted `crates/busbar-kernel/build.rs`,
+/// the one non-test file that PR removed, a reviewed removal. Lowered from 948 to 946, files deleted by
+/// row 156 (the kernel's uncalled call log, `busbar-kernel` calllog.rs and plane/calllog.rs; the
+/// per-call chain is a plane's declared chained record kind). A drop below 946 is refused until a reviewed diff re-measures. The selftest plant
 /// ([`one_file_short`]) cuts the live population to `FLOOR - 1` whatever its size, so predev
 /// growing a file no longer forces a re-pin for the plant's sake. Lowering the floor is how a gate
 /// stops reading the repository without saying so, so a diff that lowers it is the diff to refuse.
-pub const FLOOR: usize = 947;
+pub const FLOOR: usize = 946;
 
 /// The `.rs` under `crates/` that are not test scaffolding, plus the accounting to refuse a
 /// population that cannot support a verdict.

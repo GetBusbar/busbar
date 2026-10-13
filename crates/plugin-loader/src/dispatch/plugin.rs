@@ -1355,6 +1355,13 @@ impl<K: Kind> Plugin<K> {
                     });
                 }
                 (ConnTable::Host(table), n) if n > 0 => {
+                    // AUTH IS ONE KIND (ARCHITECT ruling on #780; Part 1 Law 0, Part 2 #3): the
+                    // host writes the authority of every connection an auth instance opens through
+                    // its own needs (token exchange, key set, login), so a `host` field of its own
+                    // is refused, as 1.5.5 refused it on the one request an auth module described.
+                    if v.kind == KindCode::Auth {
+                        table.hold_authority(instance);
+                    }
                     // SAFETY: `validate` ran `check_statement`, which refused a NULL list with a
                     // count; the rendering reads the Statement's `'static` lists.
                     let needs = unsafe { busbar_contract::abi::mechanism::rendering::render(&st) }

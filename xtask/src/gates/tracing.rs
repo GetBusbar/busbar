@@ -44,9 +44,7 @@ pub const ROW_CLOSES: &str = "tracing:attribute-closes";
 const SCAN_ROOT: &str = "crates";
 const EXCLUDE_TESTS_DIR: &str = "/tests/";
 
-/// The denominator floor, pinned AT the measured count: the crates walk reads 977 files, files
-/// deleted by row 156 deleted the kernel's uncalled call log (`busbar-kernel` calllog.rs and
-/// plane/calllog.rs; the per-call chain is a plane's declared chained record kind); 979 once
+/// The denominator floor, pinned AT the measured count: the crates walk reads 979 files once
 /// FLIP-LLM (#464) adds `busbar/src/root/model_egress.rs` and
 /// `busbar-plane-llm/src/exchange/project.rs` (973 over predev d7929b661d's 971) to predev's 977;
 /// 977 after #703 (the MCP-FIX stack) deleted busbar-plane-mcp's tool_plane.rs and outputschema.rs
@@ -56,11 +54,14 @@ const EXCLUDE_TESTS_DIR: &str = "/tests/";
 /// `busbar-transport-stdio` carrier.rs and conn.rs) — 971 on predev d7929b661d, after
 /// busbar-kernel-ledger's usage/series.rs left (972 on predev 3bc48823df; 971 on predev
 /// 39374ec00e; 980 on 5e672d125d, before the egress_auth / auth_cache / ingress_sigv4 files left
-/// the kernel crates; it was 130 against a tree that had grown past 700). A drop below 977 is
+/// the kernel crates; it was 130 against a tree that had grown past 700); #686 (q128-linked-neutral)
+/// then deleted `crates/busbar-kernel/build.rs`, the one non-test file it removed, so the floor
+/// re-pins from 979 to 978; it re-pins from 978 to 976, files deleted by row 156 (the kernel's uncalled call log, `busbar-kernel` calllog.rs and plane/calllog.rs; the
+/// per-call chain is a plane's declared chained record kind). A drop below 976 is
 /// refused until a reviewed diff re-measures; the selftest plant cuts the walk to one file under
 /// the floor (see [`floor_plant`]), so the tree growing past it needs no re-pin. It is a `const`
 /// here and has no environment override: the only way to lower one is a reviewable source edit.
-const SCAN_FLOOR: usize = 977;
+const SCAN_FLOOR: usize = 976;
 
 /// THE SUBJECT FLOOR (item 228). The file floor above proves the walk opened the crates; it says
 /// nothing about whether the thing this gate judges is still there. "Every `#[instrument]` has a

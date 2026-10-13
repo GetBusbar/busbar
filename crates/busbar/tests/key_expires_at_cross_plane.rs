@@ -12,6 +12,11 @@
 //!
 //! `a_key_row_whose_expires_at_is_in_the_past_still_verifies` (the governance-seam half, no
 //! `TestApp`/router involved) names no plane and stays in `src/tests/key_expires_at_tests.rs`.
+//!
+//! MOVED HERE from `crates/busbar-kernel/tests/`, assertions unchanged (kind-isolation, ARCHITECT:
+//! core names zero plane types, its tests included; Q128 audit HIGH on the kernel's test-linked
+//! build.rs): the cell drives an HTTP round trip through a plane that routes `/pa/v1/messages`, a
+//! lane and a pool, and the composition root is where a plane may be linked.
 
 mod linked;
 
