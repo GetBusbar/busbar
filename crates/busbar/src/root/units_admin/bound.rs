@@ -62,6 +62,31 @@ pub fn no_trust() -> TrustDesk {
 /// is recognisable as a committed release without guessing.
 pub const COMMIT_UPGRADE_RECORD_TAG: &str = "busbar/commit-upgrade/v1";
 
+/// A COMMITTED RELEASE, as its `Policy` journal record carries it: the release, the second it was
+/// committed at, and who committed it. Typed so the money-invariants Policy rule reads its fields
+/// by declared role (`at` is a time); no Policy body is written inline.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommitUpgradeRecord {
+    /// The release committed to.
+    pub version: String,
+    /// When, in whole Unix seconds.
+    pub at: u64,
+    /// Who committed it.
+    pub principal: String,
+}
+
+/// The `Policy` journal body of a committed release: the tag, the release, the second, the
+/// principal — the bytes this record has always had.
+#[must_use]
+pub fn commit_upgrade_body(record: &CommitUpgradeRecord) -> Vec<u8> {
+    let mut body = busbar_kernel_wal::BodyWriter::new();
+    body.text(COMMIT_UPGRADE_RECORD_TAG);
+    body.text(&record.version);
+    body.num(record.at);
+    body.text(&record.principal);
+    body.finish()
+}
+
 /// The release this binary is — the only release a `commit_upgrade` on this node may name.
 pub const RUNNING_RELEASE: &str = env!("CARGO_PKG_VERSION");
 
@@ -373,12 +398,12 @@ pub(crate) fn commit_upgrade_effect(
     if let Err(why) = journal.admit() {
         return Ok(journal_unavailable(&why));
     }
-    let mut record = busbar_kernel_wal::BodyWriter::new();
-    record.text(COMMIT_UPGRADE_RECORD_TAG);
-    record.text(version);
-    record.num(at);
-    record.text(principal);
-    let (node_seq, hash) = journal.seal_policy(record.finish(), at)?;
+    let record = CommitUpgradeRecord {
+        version: version.to_string(),
+        at,
+        principal: principal.to_string(),
+    };
+    let (node_seq, hash) = journal.seal_policy(commit_upgrade_body(&record), at)?;
     if let Err(why) = journal.acked(node_seq) {
         return Ok(journal_unavailable(&format!(
             "the commit is sealed at journal position {node_seq} and not yet kept by the store: \

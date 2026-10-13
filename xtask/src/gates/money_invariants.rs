@@ -1024,11 +1024,54 @@ const POLICY_FIELDS: &[(&str, &str, &str, Option<u8>)] = &[
     ("AmendmentRecord", "amended_at_ms", "time", None),
     ("AmendmentRecord", "sealed_fee", "money-rate", Some(2)),
     ("AmendmentRecord", "rates", "money-rate", Some(9)),
+    ("CommitUpgradeRecord", "at", "time", None),
 ];
 
-/// The Policy record types the writers yield today (`CardApplied`, `AmendmentRecord`): fewer is a
-/// Policy writer the derivation stopped seeing.
-const POLICY_ROOT_FLOOR: usize = 2;
+/// The Policy record types the writers yield today (`CardApplied`, `AmendmentRecord`,
+/// `CommitUpgradeRecord`): fewer is a Policy writer the derivation stopped seeing.
+const POLICY_ROOT_FLOOR: usize = 3;
+
+/// The call that seals a Policy record (`AmendmentJournal::seal_policy`). A file that calls it is a
+/// Policy writer file, and its first argument must be a typed body writer's (`<name>_body(..)` or
+/// `.body()`), never a body built inline.
+const POLICY_SEAL: &str = "seal_policy(";
+
+/// The first argument of every `seal_policy(` call in `code` that is not a typed body writer's.
+fn inline_policy_bodies(code: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for (i, _) in code.match_indices(POLICY_SEAL) {
+        // The declaration (`fn seal_policy(`) is not a call.
+        if code[..i].trim_end().ends_with("fn") {
+            continue;
+        }
+        let rest = &code[i + POLICY_SEAL.len()..];
+        let mut depth = 0i32;
+        let arg: String = rest
+            .chars()
+            .take_while(|c| {
+                match c {
+                    '(' | '{' | '[' => depth += 1,
+                    ')' | '}' | ']' if depth == 0 => return false,
+                    ')' | '}' | ']' => depth -= 1,
+                    ',' if depth == 0 => return false,
+                    _ => {}
+                }
+                true
+            })
+            .collect();
+        let arg = arg.trim();
+        let head: String = arg
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == ':')
+            .collect();
+        let typed = (head.ends_with("_body") && arg[head.len()..].starts_with('('))
+            || arg.ends_with(".body()");
+        if !typed {
+            out.push(arg.to_string());
+        }
+    }
+    out
+}
 
 /// The table's own rules: a known role; a rate with a declared scale the ledger knows; nothing
 /// else with a scale. One finding per broken row.
@@ -1082,10 +1125,17 @@ fn policy_scan(cx: &Ctx, table: &[(&str, &str, &str, Option<u8>)]) -> (Vec<Strin
             .map(|(_, l)| l)
             .collect::<Vec<_>>()
             .join("\n");
-        if !(code.contains("Entry::new(") && code.contains(POLICY_CLASS)) {
+        let seals = code.contains(POLICY_SEAL);
+        if !((code.contains("Entry::new(") && code.contains(POLICY_CLASS)) || seals) {
             continue;
         }
         let path = f.rel_str();
+        for arg in inline_policy_bodies(&code) {
+            findings.push(format!(
+                "a Policy body built inline (`seal_policy({arg}, ..)` in {path}) — a Policy record \
+                 is written by a typed body writer whose fields the rule reads"
+            ));
+        }
         let local = parse_decls(&path, &f.text);
         let uses = use_paths(&f.text);
         for root in journal_roots(&path, &f.text) {
@@ -1690,6 +1740,23 @@ impl Gate for MoneyInvariantsGate {
                 }
             },
         });
+
+        // RED (r): a Policy body built inline, out of the field-role rule's reach, is refused.
+        const BOUND: &str = "crates/busbar/src/root/units_admin/bound.rs";
+        let ov16 = plant_over(cx, &fixture, BOUND, |s| {
+            s.replace(
+                "journal.seal_policy(commit_upgrade_body(&record), at)",
+                "journal.seal_policy(busbar_kernel_wal::BodyWriter::new().finish(), at)",
+            )
+        });
+        report.push(prove_red(
+            &fcx,
+            self,
+            "a Policy body built inline is RED",
+            &[ROW_NO_STORED_PRICE],
+            ov16,
+            &["a Policy body built inline"],
+        ));
 
         // RED (c): a plane/plugin crate sealing its own facts line is caught (#77(2)).
         let victim = "crates/busbar-llm/src/lib.rs";
