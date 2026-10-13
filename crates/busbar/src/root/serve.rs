@@ -824,6 +824,9 @@ pub struct Served {
     /// THE FLUSH EPOCH every served plane's money steps pace their checkpoints by: bumped once per
     /// checkpoint flush tick ([`Served::spawn_ticks`]).
     pub epoch: busbar_kernel::plane_driver::FlushEpoch,
+    /// THE CLAIM DOORS, by the claim their datagram framer answers: the datagram port each one's
+    /// inbound need binds ([`datagram::ClaimDoor`]). Empty = no datagram claim is served.
+    pub claim_doors: datagram::ClaimDoors,
 }
 
 /// The framer that answers a claim, by its name (`Connector::framer_for`).
@@ -2738,7 +2741,7 @@ impl DataRoutes {
             open,
             credential,
         };
-        tokio::spawn(self.session(door, caller, arrival, verdict));
+        tokio::spawn(self.session(door, caller, arrival, verdict, Attach::switched()));
         match said.await {
             Ok(Ok(())) => SessionAnswer::Accepted(SessionPipe {
                 from_caller,
@@ -2760,12 +2763,13 @@ impl DataRoutes {
     /// session opener; `verdict` told what the door said before the session runs; the session pumped
     /// through the plane driver's two tickets until either side ends; its slot given back, and its
     /// money settled (the session's one line was written at its end; the fee by the plane's report).
-    async fn session(
+    async fn session<C: SessionCaller + Send + Sync + 'static>(
         self: Arc<Self>,
         door: SessionDoor,
-        caller: PipeCaller,
+        caller: C,
         arrival: Arrival,
         verdict: oneshot::Sender<Result<(), Option<Rendered>>>,
+        mut attach: Attach,
     ) {
         use busbar_kernel::teller::SessionOpen;
         let served = &self.served.planes[door.plane];
@@ -2815,10 +2819,15 @@ impl DataRoutes {
             SessionOpen::Admitted {
                 route,
                 destinations,
-            } if units.open_hooks(&route, &ctx).await.is_ok() => {
+            } if units.open_hooks(&route, &ctx).await.is_ok()
+                && attach
+                    .admitted
+                    .take()
+                    .is_none_or(|admitted| admitted(unit.get()).is_ok()) =>
+            {
                 let _ = verdict.send(Ok(()));
                 let _ended = units.session(&route, &ctx, &destinations).await;
-                SWITCHED
+                attach.answered
             }
             _ => {
                 let rendered = units.take_rendered();
@@ -2829,8 +2838,88 @@ impl DataRoutes {
                 status
             }
         };
+        // The carrier's cleanup, once, however the session ended.
+        if let Some(ended) = attach.ended.take() {
+            ended(unit.get());
+        }
         slot.finish(&self.post);
         served.money.settle_end(unit, status);
+    }
+
+    /// ONE DATAGRAM SESSION ARRIVAL (ARCHITECT rulings, row 132; [`datagram`]): the far end's
+    /// description is the request body; the accepting association over the claim's claim door is
+    /// settled by it before the unit is admitted (a description the framer refuses is refused
+    /// here); once admitted, the association joins the door and the session's pairing the
+    /// connector's session book under the unit's key, and the unit is answered with the plane's
+    /// head and the framer's own description; the session's cleanup closes the pairing once.
+    async fn open_datagram(
+        self: Arc<Self>,
+        (framer, carrier): (Arc<dyn busbar_core_connector::framer::FramerDoor>, String),
+        door: SessionDoor,
+        arrival: Arrival,
+    ) -> Response {
+        let Some(claim_door) = self.served.claim_doors.get(&carrier) else {
+            return stated(
+                (refusal_status(ReasonCode::NoDestination), Vec::new()),
+                Body::empty(),
+            );
+        };
+        let opened = match datagram::Opened::open(&claim_door, framer, &arrival.body) {
+            Ok(o) => o,
+            Err(_) => {
+                return stated(
+                    (refusal_status(ReasonCode::DecodeFailed), Vec::new()),
+                    Body::empty(),
+                )
+            }
+        };
+        let datagram::Opened {
+            description,
+            caller,
+            head,
+            joining,
+        } = opened;
+        let joining = Arc::new(Mutex::new(Some(joining)));
+        let admitted = {
+            let joining = Arc::clone(&joining);
+            Box::new(move |unit: u64| {
+                let j = joining
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .take();
+                j.map_or(Err("admitted twice".to_owned()), |j| j.admit(unit))
+            }) as Box<dyn FnOnce(u64) -> Result<(), String> + Send>
+        };
+        let ended = Box::new(|unit: u64| crate::root::connector::the().unpair(unit))
+            as Box<dyn FnOnce(u64) + Send>;
+        let (verdict, said) = oneshot::channel();
+        let attach = Attach {
+            answered: CREATED,
+            admitted: Some(admitted),
+            ended: Some(ended),
+        };
+        tokio::spawn(self.session(door, caller, arrival, verdict, attach));
+        match said.await {
+            Ok(Ok(())) => {
+                // The plane's head where it stated one before the session ran, else the created
+                // status alone; the body is the framer's own description.
+                let mut head = head;
+                let (status, fields) = head.try_recv().unwrap_or((CREATED, Vec::new()));
+                stated((status, fields), Body::from(description))
+            }
+            Ok(Err(Some(rendered))) => stated(
+                (rendered.status, rendered.fields),
+                Body::from(rendered.body),
+            ),
+            Ok(Err(None)) | Err(_) => {
+                // Never admitted: the association that never joined goes with its opening.
+                drop(joining);
+                stated(
+                    (refusal_status(ReasonCode::PlanePanic), Vec::new()),
+                    Body::empty(),
+                )
+            }
+        }
     }
 
     /// ONE CLAIMED ARRIVAL, SERVED: the caller's head (the credentials the auth gate consumed and
@@ -2876,6 +2965,28 @@ impl DataRoutes {
                 .get(claim as usize)
                 .is_some_and(|c| c.flags & CLAIM_OPEN != 0);
         let key = gov.key.clone();
+        // A DATAGRAM SESSION (row 132): the claim's carrier is answered by a datagram framer.
+        let datagram_carrier = self.served.planes[plane]
+            .snapshot
+            .claims
+            .get(claim as usize)
+            .map(|c| c.carrier.clone())
+            .and_then(|c| {
+                self.framer_for(&c)
+                    .filter(|d| d.facts().datagram)
+                    .map(|d| (d, c))
+            });
+        if let Some(carried) = datagram_carrier {
+            let door = SessionDoor {
+                plane,
+                app,
+                principal,
+                key,
+                open,
+                credential,
+            };
+            return self.open_datagram(carried, door, arrival).await;
+        }
         // A STREAM ANOTHER FRAMER FRAMES (ARCHITECT 4l): the claim's carrier is answered by a
         // framer whose claim rows state it rides a stream (an upgrade or a session, Q128 U7); that
         // framer frames this stream alone. A claim stating neither is the data listener's own.
@@ -3384,6 +3495,30 @@ impl FarEnd for DoorFar<'_, '_> {
 /// The status a session's caller was answered with: the upgrade (`101 Switching Protocols`).
 const SWITCHED: u32 = 101;
 
+/// The status a datagram session's caller is answered with when its plane states no head of its
+/// own: the session was created (`201 Created`).
+const CREATED: u32 = 201;
+
+/// WHAT A SESSION'S CARRIER DOES AROUND ITS ADMISSION: the status its caller was answered with
+/// (the session's money settles on it); what runs once the unit is admitted, before the session
+/// runs (a refusal fails the unit, unanswered); and what runs once in the session's cleanup.
+struct Attach {
+    answered: u32,
+    admitted: Option<Box<dyn FnOnce(u64) -> Result<(), String> + Send>>,
+    ended: Option<Box<dyn FnOnce(u64) + Send>>,
+}
+
+impl Attach {
+    /// An upgraded stream's session: answered `101`, nothing around it.
+    fn switched() -> Self {
+        Attach {
+            answered: SWITCHED,
+            admitted: None,
+            ended: None,
+        }
+    }
+}
+
 /// What a session arrival was admitted as: its plane, the generation serving it, and its caller.
 struct SessionDoor {
     plane: usize,
@@ -3829,6 +3964,10 @@ pub mod lines;
 // in every build, not only one whose linked plane rides the node axis.
 #[path = "serve_framed.rs"]
 mod serve_framed;
+
+// The datagram-session path (row 132), reached from every build's data routes as the framed one.
+#[path = "serve_datagram.rs"]
+pub mod datagram;
 
 #[cfg(test)]
 #[path = "tests/serve.rs"]
