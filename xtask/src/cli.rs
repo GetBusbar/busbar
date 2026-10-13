@@ -32,6 +32,7 @@ usage:
   cargo xtask loc --selftest
   cargo xtask teller-steps [--root-legs] [--root-legs-gating]
   cargo xtask ledger {sync|status|next|record|fixed|move} | --check
+  cargo xtask q128 audit [--record <path>] [--out <path>]   (the Q128 architecture audit on this tree; writes target/q128-audit.json; exit 1 on an open BLOCK)
   cargo xtask proof-manifest --version <v> --out <file> [--sha S] [--run-id ID] [--run-url U] [--staged-json F] [--reports-dir D] [--hits-dir D] [--repo-root D] [--run-cargo|--run-parity|--run-composability] [--mark ID=STATUS]... [--index] [--print]
   cargo xtask proof-manifest --selftest
   cargo xtask proof-manifest --check [<manifest.json>...]   (the public-safety guard; no args = docs/proof/*.json)
@@ -75,6 +76,7 @@ const LEGACY_LEDGER_ENV: &str = "LEDGER";
 /// here, beside the dispatch arms that prove it, so the reader and the dispatcher cannot drift.
 pub const NON_GATE_SUBCOMMANDS: &[&str] = &[
     "ledger",
+    "q128",
     "audit-verify",
     "plugin-gates",
     "conformance",
@@ -207,6 +209,12 @@ pub fn main(args: &[String]) -> i32 {
         Some("loom") => crate::loom::main(&args[1..]),
         Some("ledger") => match open_ctx() {
             Ok(cx) => crate::audit_cmd::main(cx.root(), &args[1..]),
+            Err(code) => code,
+        },
+        // THE Q128 ARCHITECTURE AUDIT (DEV-GREEN item 5): the auditor's record and the audit ledger,
+        // judged on this tree; exit 1 on an open BLOCK.
+        Some("q128") => match open_ctx() {
+            Ok(cx) => crate::q128::main(cx.root(), &args[1..]),
             Err(code) => code,
         },
         Some("teller-steps") => match open_ctx() {

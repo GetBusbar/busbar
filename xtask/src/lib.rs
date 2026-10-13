@@ -63,6 +63,7 @@ pub mod perf_ab;
 pub mod pin_missing_cells;
 pub mod planes;
 pub mod proof_manifest;
+pub mod q128;
 pub mod readme_assets;
 pub mod rx;
 pub mod scan;
