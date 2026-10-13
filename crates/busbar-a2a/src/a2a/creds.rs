@@ -94,15 +94,9 @@ pub(crate) struct AgentEgress<'a> {
     agent_id: &'a str,
 }
 
-/// WHAT THIS PLANE SUPPLIES TO THE CORE GATE: one grant, and the key-liveness rule.
+/// WHAT THIS PLANE SUPPLIES TO THE CORE GATE: one grant. Key liveness is the gate's, for every plane.
 impl EgressSubject for AgentEgress<'_> {
     type Grant = AgentGrant;
-
-    /// TRUE, and it stays true: a key that may not authenticate may certainly not cause a credential
-    /// to be minted, and a LEASE outliving the key that occasioned it is a hop nobody's grant covers.
-    /// The sibling MCP plane sets this FALSE, which is the divergence the unification wrote down
-    /// rather than introduced — see `mcp/client/egress.rs`.
-    const REQUIRE_LIVE_KEY: bool = true;
 
     fn grants_required(&self) -> Vec<Requirement<AgentGrant>> {
         vec![Requirement {
