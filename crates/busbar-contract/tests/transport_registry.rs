@@ -49,12 +49,12 @@ fn the_real_stack_boots() {
 fn a_declared_layer_that_nothing_registered_refuses_the_boot() {
     let registry = [
         declared("tcp", &[], None),
-        declared("webrtc", &["udp"], None),
+        declared("dgram", &["udp"], None),
     ];
     assert_eq!(
         check_composition(&registry),
         Err(CompositionError::UnregisteredLayer {
-            transport: "webrtc",
+            transport: "dgram",
             layer: "udp",
         })
     );
