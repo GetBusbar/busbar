@@ -18,13 +18,14 @@ use crate::plane::AsPlane;
 use crate::testkit::oauth_as_plane;
 
 /// The resolved config of a deployment that is an authorization server (no `signing_key`: the
-/// key is an ephemeral one).
+/// key is an ephemeral one). Its `store:` is the kernel's own compiled-in module, named by the
+/// kernel: this crate names no store instance.
 fn cfg() -> busbar_kernel::config::RootCfg {
     crate::testkit::install_test_seam();
     let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
         "providers": {},
         "models": {},
-        "store": { "module": "memory" },
+        "store": { "module": busbar_kernel::config::MIGRATED_STORE_MODULE },
         "oauth_as": { "issuer": "https://as.example.com" },
     }))
     .expect("a deploy config carrying `oauth_as:` parses");
