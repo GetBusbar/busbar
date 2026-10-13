@@ -50,7 +50,17 @@ usage:
   cargo xtask dialect compile
   cargo xtask readme-assets [<outdir>]   (redraw the README SVGs from assets/readme/data.json + install.json)
   cargo xtask install-sizes [--check]    (re-measure the image sizes from the registries into assets/readme/install.json)
-  cargo xtask perf-ab [--base <busbar>] [--candidate <busbar>] [--conc 1,64,512] [--secs N] [--streams N] [--trend <file>]";
+  cargo xtask perf-ab [--base <busbar>] [--candidate <busbar>] [--conc 1,64,512] [--secs N] [--streams N] [--trend <file>]
+
+gate --format=tsv columns:
+  <id>\\t<PASS|FAIL|SKIP>\\t<title>\\t<detail>       one line per ledger row
+  \\t<id>/<cell>\\t<PASS|FAIL>\\t<figure>/<ceiling>\\t<finding(s)>
+      under a FAIL row whose detail is a list of coded findings, one line per CELL, indented by
+      one tab: <cell> is the key busbar-release's baseline::cells files a finding under (`busbar
+      × plane`) with its spaces removed (`kind-isolation:law0/busbar×plane`); <figure>/<ceiling>
+      is the cell's measured count over its ceiling (`828/826`), `-` for a side not stated. A row
+      measured cell by cell (kind-isolation:law0) prints every cell, the at-ceiling ones PASS.
+      A reader keyed on column 1 (busbar-release's parse_tsv_rows) reads no cell line.";
 
 /// The environment variable the legacy release-gate scripts write their ledger through.
 const LEGACY_LEDGER_ENV: &str = "LEDGER";

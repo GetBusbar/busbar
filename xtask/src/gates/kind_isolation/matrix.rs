@@ -2621,18 +2621,25 @@ pub fn rule_law0(
     let reg = &registry.law0;
     let mut ceilings: BTreeMap<(String, String), usize> = BTreeMap::new();
     let mut offenders: Vec<String> = Vec::new();
+    // THE ROW'S CELLS, one per neutral crate × axis, each with its own verdict and figure: what
+    // `gate --format=tsv` prints under the row so a reader judging rows judges each cell
+    // (crate::cells). A cell's findings are the row's findings filed under it.
+    let mut cells: BTreeMap<(String, String), crate::ledger::Cell> = BTreeMap::new();
     // THE ROW'S FIGURE: hits off the ledger, summed over every finding (see [`law0_off`]).
     let mut off = 0usize;
+    let mut duplicates: Vec<((String, String), String)> = Vec::new();
     for r in reg {
         if ceilings
             .insert((r.krate.clone(), r.axis.clone()), r.count)
             .is_some()
         {
             off += 1;
-            offenders.push(format!(
+            let finding = format!(
                 "law0-duplicate\t{} / {}\ttwo `[[law0]]` rows for one crate and axis",
                 r.krate, r.axis
-            ));
+            );
+            duplicates.push(((r.krate.clone(), r.axis.clone()), finding.clone()));
+            offenders.push(finding);
         }
     }
     let keys: BTreeSet<(String, String)> =
@@ -2641,14 +2648,14 @@ pub fn rule_law0(
         let now = measured.get(key).copied().unwrap_or(0);
         let ceiling = ceilings.get(key).copied();
         off += law0_off(now, ceiling);
-        match ceiling {
-            None if now > 0 => offenders.push(format!(
+        let finding = match ceiling {
+            None if now > 0 => Some(format!(
                 "law0-new\t{} \u{d7} {}\t{now} hit(s) in a NEUTRAL crate with no `[[law0]]` \
                  ceiling: a new leak of plugin-instance vocabulary into core. Drain it; the \
                  ceiling is today's number and nothing raises it",
                 key.0, key.1
             )),
-            Some(c) if now > c => offenders.push(format!(
+            Some(c) if now > c => Some(format!(
                 "law0-rise\t{} \u{d7} {}\t{now} hit(s) against a ceiling of {c}: this landing grew \
                  a neutral crate's instance vocabulary. Ceilings only fall ({})",
                 key.0,
@@ -2657,12 +2664,40 @@ pub fn rule_law0(
                     .find(|r| r.krate == key.0 && r.axis == key.1)
                     .map_or("", |r| r.cite.as_str())
             )),
-            Some(c) if now < c => offenders.push(format!(
+            Some(c) if now < c => Some(format!(
                 "law0-slack\t{} \u{d7} {}\t{now} hit(s) under a ceiling of {c}: lower the \
                  `[[law0]]` row to {now} in the commit that drained it",
                 key.0, key.1
             )),
-            _ => {}
+            _ => None,
+        };
+        cells.insert(
+            key.clone(),
+            crate::ledger::Cell {
+                key: format!("{} \u{d7} {}", key.0, key.1),
+                status: if finding.is_some() {
+                    crate::ledger::Status::Fail
+                } else {
+                    crate::ledger::Status::Pass
+                },
+                figure: Some(now as u64),
+                ceiling: ceiling.map(|c| c as u64),
+                detail: finding
+                    .clone()
+                    .unwrap_or_else(|| format!("{now} hit(s) at its `[[law0]]` ceiling of {now}")),
+            },
+        );
+        offenders.extend(finding);
+    }
+    // A duplicated `[[law0]]` row is a finding on its crate × axis cell.
+    for (key, finding) in duplicates {
+        if let Some(cell) = cells.get_mut(&key) {
+            cell.detail = if cell.status == crate::ledger::Status::Pass {
+                finding
+            } else {
+                format!("{} | {finding}", cell.detail)
+            };
+            cell.status = crate::ledger::Status::Fail;
         }
     }
     let total: usize = measured.values().sum();
@@ -2688,6 +2723,7 @@ pub fn rule_law0(
             offenders.join(" | ")
         ),
     )
+    .with_cells(cells.into_values().collect())
 }
 
 /// How far one cell sits from its `[[law0]]` row, in HITS: above it (a rise), below it (slack the
@@ -5205,6 +5241,106 @@ mod tests {
             crate::ledger::Status::Pass,
             "{}",
             clean.detail
+        );
+    }
+
+    /// THE LAW 0 ROW'S CELLS ON THE `--format=tsv` WIRE (`crate::cells`, BUSBAR-1.6.0.md Law 9:
+    /// busbar-release judges this row per cell). Two cells over their rows and one at its row print
+    /// three cell lines under the FAIL row, keyed as busbar-release keys each finding, with the
+    /// at-ceiling cell PASS. RED ARM: one hit grown in one cell changes that cell's line and no
+    /// other cell's. The rows busbar-release reads, and the JSON report it builds from them, are
+    /// byte-identical to the output before cell lines existed (pinned here as a literal).
+    #[test]
+    fn the_law0_row_prints_one_tsv_line_per_cell() {
+        use crate::cells::tests::{report_json, rows_only};
+        let crates = vec![neutral_kernel("busbar-kernel")];
+        let reg = law0_reg(&[
+            ("busbar-kernel", "plane", 10),
+            ("busbar-kernel", "transport", 5),
+            ("busbar-kernel", "auth", 3),
+        ]);
+        let at =
+            |cells: &[(&str, &str, usize)]| rule_law0(&crates, &reg, Some(&law0_counts_of(cells)));
+        let cols = |row: &Row| -> Vec<String> {
+            crate::cells::cell_lines(row)
+                .iter()
+                .map(|l| {
+                    l.splitn(5, '\t')
+                        .skip(1)
+                        .take(3)
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                })
+                .collect()
+        };
+        let base = at(&[
+            ("busbar-kernel", "plane", 12),
+            ("busbar-kernel", "transport", 7),
+            ("busbar-kernel", "auth", 3),
+        ]);
+        assert_eq!(base.status, crate::ledger::Status::Fail);
+        assert_eq!(
+            cols(&base),
+            vec![
+                "kind-isolation:law0/busbar-kernel\u{d7}auth PASS 3/3",
+                "kind-isolation:law0/busbar-kernel\u{d7}plane FAIL 12/10",
+                "kind-isolation:law0/busbar-kernel\u{d7}transport FAIL 7/5",
+            ]
+        );
+        // The FAIL cells are keyed exactly as busbar-release's `baseline::cells` files the row's
+        // findings.
+        let keyed: BTreeSet<String> = crate::cells::findings(&crate::ledger::flatten(&base.detail))
+            .expect("coded findings")
+            .iter()
+            .map(|f| crate::cells::finding_parts(f).1)
+            .collect();
+        assert_eq!(
+            keyed,
+            [
+                "busbar-kernel \u{d7} plane",
+                "busbar-kernel \u{d7} transport"
+            ]
+            .map(String::from)
+            .into()
+        );
+
+        // RED ARM: `plane` grows one hit; only its cell line moves, and it reads the rise.
+        let grown = at(&[
+            ("busbar-kernel", "plane", 13),
+            ("busbar-kernel", "transport", 7),
+            ("busbar-kernel", "auth", 3),
+        ]);
+        let (was, now) = (
+            crate::cells::cell_lines(&base),
+            crate::cells::cell_lines(&grown),
+        );
+        assert_eq!(was.len(), now.len());
+        let moved: Vec<usize> = (0..was.len()).filter(|i| was[*i] != now[*i]).collect();
+        assert_eq!(moved, vec![1], "{was:#?}\n{now:#?}");
+        assert_eq!(
+            cols(&grown)[1],
+            "kind-isolation:law0/busbar-kernel\u{d7}plane FAIL 13/10"
+        );
+
+        // THE REPORT busbar-release READS: its rows from this output equal its rows from the output
+        // before cell lines, byte for byte. The literal is the row line as the gate printed it
+        // before this change.
+        let before =
+            "kind-isolation:law0\tFAIL\ta neutral crate's Law 0 count is not its ceiling\t\
+            4 hit(s) off the [[law0]] ceilings, 2 finding(s) over 1 neutral crate(s): law0-rise \
+            busbar-kernel \u{d7} plane 12 hit(s) against a ceiling of 10: this landing grew a \
+            neutral crate's instance vocabulary. Ceilings only fall (planted) | law0-rise \
+            busbar-kernel \u{d7} transport 7 hit(s) against a ceiling of 5: this landing grew a \
+            neutral crate's instance vocabulary. Ceilings only fall (planted)\n";
+        let rows = vec![base.clone()];
+        assert_eq!(rows_only(&rows), before);
+        let after = crate::cells::render(&rows);
+        assert_eq!(after.lines().count(), 4, "{after}");
+        assert_eq!(report_json(&after), report_json(before));
+        let rows = vec![grown];
+        assert_eq!(
+            report_json(&crate::cells::render(&rows)),
+            report_json(&rows_only(&rows))
         );
     }
 
