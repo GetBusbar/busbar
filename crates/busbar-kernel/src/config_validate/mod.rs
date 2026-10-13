@@ -850,7 +850,7 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
     }
 
     // Rule (admin_auth/known-modules): the operator credential's provider always resolves; any
-    // OTHER name is an EXTERNAL `kind: auth` admin plugin, resolved at LOAD (`open_auth` in
+    // OTHER name is an EXTERNAL `kind: auth` admin plugin, resolved at LOAD (opened on the auth axis in
     // `build_app_from_config`, which fails boot on a missing/untrusted/wrong-kind tarball) — exactly
     // as the data plane defers non-builtin `auth.chain` names to the plugin-aware check. This
     // function runs before the plugin registry exists, so it CANNOT tell a genuine admin plugin name
