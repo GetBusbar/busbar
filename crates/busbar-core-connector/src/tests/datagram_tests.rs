@@ -437,7 +437,7 @@ fn judge(asked: Arc<Mutex<Vec<String>>>) -> Arc<dyn DialJudge> {
         asked.lock().unwrap().push(dest.to_owned());
         let addr: SocketAddr = dest.parse().ok()?;
         match addr.ip() {
-            std::net::IpAddr::V4(v4) if v4.is_link_local() => Some(Err(7)),
+            std::net::IpAddr::V4(v4) if v4.is_link_local() => Some(Err(7_u64)),
             _ => Some(Ok(addr)),
         }
     })
