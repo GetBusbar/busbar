@@ -789,31 +789,22 @@ fn transcription_transcribe_round_trips_as_transcribe() {
     );
 }
 
-// L3: whisper Duration billing (an openai->gemini hop emits `audioDurationSeconds`) must read back
-// as Duration, not be flattened to Tokens{0,0}. Fails pre-fix: the reader forced Tokens.
+// An upstream cannot choose the duration meter: a `usageMetadata.audioDurationSeconds` member (not
+// Gemini's wire) is not read, and the answer bills its token fields exactly as 1.5.5 read them
+// (v1.5.5 `crates/busbar/src/handlers/gemini.rs:229-241`: `promptTokenCount`/`candidatesTokenCount`
+// only, here both absent, so Tokens{0,0}). RED while the reader billed 12.5 seconds of `audio_ms`.
 #[test]
-fn transcription_response_round_trips_audio_duration() {
-    let resp = crate::codec::ir::audio::TranscriptionResp {
-        text: "hello".into(),
-        usage: Some(busbar_contract::billing::Billing::Duration {
-            seconds: busbar_contract::Count::parse("12.5").expect("12.5 is an exact decimal"),
-        }),
-        ..Default::default()
-    };
-    let wb = write_transcription_response(&resp);
-    let v: Value = serde_json::from_slice(&wb.bytes).unwrap();
-    assert_eq!(
-        v.pointer("/usageMetadata/audioDurationSeconds"),
-        Some(&json!(12.5)),
-        "duration must be emitted under audioDurationSeconds: {v}"
-    );
-    let back = read_transcription_response(&wb.bytes).expect("re-read");
+fn transcription_response_reads_no_audio_duration_member() {
+    let wire = json!({
+        "candidates": [{"content": {"parts": [{"text": "hello"}], "role": "model"}}],
+        "usageMetadata": {"audioDurationSeconds": 12.5},
+    });
+    let back = read_transcription_response(&serde_json::to_vec(&wire).unwrap()).expect("read");
     assert_eq!(
         back.usage,
-        Some(busbar_contract::billing::Billing::Duration {
-            seconds: busbar_contract::Count::parse("12.5").expect("12.5 is an exact decimal"),
-        }),
-        "duration must round-trip as Duration, not collapse to Tokens{{0,0}}"
+        Some(busbar_contract::billing::Billing::Tokens(
+            busbar_contract::billing::TokenUsage::default()
+        ))
     );
 }
 

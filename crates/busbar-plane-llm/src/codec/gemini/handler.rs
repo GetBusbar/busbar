@@ -601,26 +601,10 @@ pub fn read_transcription_response(
         .get(FIELD_USAGE_METADATA)
         .map(
             |u| -> Result<busbar_contract::billing::Billing, CodecError> {
-                // The transcription writer emits `audioDurationSeconds` (not a token count) when the
-                // source billing was whisper-1's `Billing::Duration` (an openai->gemini hop). Reading it
-                // back as Duration preserves the billable seconds; forcing Tokens{0,0} — as the old
-                // reader did — silently discarded the duration. Real Gemini upstreams emit only the
-                // token fields, which take the Tokens branch as before.
-                // THE DURATION IS A MEASUREMENT, so it is read from the wire's DECIMAL TEXT and never
-                // through an `f64` (#81): a quantity that transits a double has already lost the
-                // exactness no later conversion can give back. `u.get(..)` would hand back a `Value`
-                // whose number is already a double, so the read goes to the ORIGINAL BYTES by pointer.
-                if u.get(FIELD_AUDIO_DURATION_SECONDS).is_some() {
-                    let seconds = busbar_contract::Count::read_at(
-                        wire,
-                        "/usageMetadata/audioDurationSeconds",
-                    )
-                    .map_err(|e| CodecError::Malformed(format!("audioDurationSeconds: {e}")))?
-                    .ok_or_else(|| {
-                        CodecError::Malformed("audioDurationSeconds: located then lost".to_string())
-                    })?;
-                    return Ok(busbar_contract::billing::Billing::Duration { seconds });
-                }
+                // Only the token fields are read, exactly as 1.5.5 read them (v1.5.5
+                // `crates/busbar/src/handlers/gemini.rs:229-241`): an upstream cannot pick the
+                // duration meter (`audio_ms`) by sending an `audioDurationSeconds` member Gemini's
+                // `UsageMetadata` does not define. A real Gemini upstream sends only token counts.
                 // BILLED COUNTS: absent is zero, UNREADABLE IS A REFUSAL (#81/#42). The old
                 // `.unwrap_or(0)` wrote "no work happened" for a count the provider really sent and
                 // this build could not read, and every money view over that row was then faithfully
