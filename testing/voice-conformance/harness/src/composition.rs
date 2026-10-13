@@ -162,7 +162,7 @@ fn cred_script(p: &Plugin<Plane>) -> CredObs {
     let dialect_auth = served
         .dialect_auth
         .iter()
-        .map(|(d, style)| {
+        .map(|(d, style, _)| {
             let name = served.dialects.get(*d as usize).copied().unwrap_or("?");
             format!("{name}={style}")
         })

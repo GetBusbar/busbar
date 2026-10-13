@@ -861,8 +861,8 @@ pub(super) mod session_door {
                 .dialect_auth
                 .iter()
                 .rev()
-                .filter(|(_, style)| *style == "bearer")
-                .find_map(|(d, _)| {
+                .filter(|(_, style, _)| *style == "bearer")
+                .find_map(|(d, _, _)| {
                     usize::try_from(*d)
                         .ok()
                         .and_then(|i| served.dialects.get(i).copied())
