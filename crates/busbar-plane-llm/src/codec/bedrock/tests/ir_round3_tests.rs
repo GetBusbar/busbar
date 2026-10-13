@@ -20,10 +20,11 @@ fn anthropic_off() -> crate::codec::ir::IrRequest {
     ir
 }
 
-/// Item 12: on a Bedrock Claude lane declaring `thinking_always_on` an Off ask OMITS `thinking`
-/// (`{type:"disabled"}` 400s there); the default lane keeps today's bytes.
+/// Item 12: an Off ask writes no `thinking` on any Bedrock lane, `thinking_always_on` or not: a
+/// cross-protocol reasoning ask does not reach Bedrock, as in 1.5.5 (v1.5.5
+/// `crates/busbar/src/proto/bedrock/writer.rs:139-146`).
 #[test]
-fn item12_off_omits_thinking_on_an_always_on_lane() {
+fn item12_off_writes_no_thinking_on_any_lane() {
     let w = protocol_for("bedrock").unwrap();
     let always_on = LaneCaps {
         anthropic_adaptive_thinking: true,
@@ -32,37 +33,31 @@ fn item12_off_omits_thinking_on_an_always_on_lane() {
         ..Default::default()
     };
     let model = "us.anthropic.claude-fable-5-v1:0";
-    let out = w
-        .writer()
-        .write_request_for_lane(&anthropic_off(), model, &always_on);
-    assert!(
-        out.pointer("/additionalModelRequestFields/thinking")
-            .is_none(),
-        "{out}"
-    );
-    let out = w
-        .writer()
-        .write_request_for_lane(&anthropic_off(), model, &Default::default());
-    assert_eq!(
-        out.pointer("/additionalModelRequestFields/thinking"),
-        Some(&json!({"type": "disabled"})),
-        "{out}"
-    );
+    for caps in [always_on, LaneCaps::default()] {
+        let out = w
+            .writer()
+            .write_request_for_lane(&anthropic_off(), model, &caps);
+        assert!(
+            out.pointer("/additionalModelRequestFields/thinking")
+                .is_none(),
+            "{out}"
+        );
+    }
 }
 
 // ───────────────────────── item 8: the shipped Bedrock catalog entry ─────────────────────────
 
 /// Item 8, the writer's half: a lane whose catalog entry turns adaptive thinking and native
-/// structured output on (the shipped catalog does so for the newest Claude generations on Bedrock —
-/// the host's suite pins that resolution) gets a word reasoning ask written as adaptive thinking.
+/// structured output on still receives no `thinking` for a foreign word ask. The ask does not reach
+/// Bedrock, as in 1.5.5 (v1.5.5 `crates/busbar/src/proto/bedrock/writer.rs:139-146`), so the
+/// request bills no thinking tokens 1.5.5 did not bill. RED while it wrote adaptive thinking.
 #[test]
-fn item8_a_word_ask_on_an_adaptive_lane_writes_adaptive_thinking() {
+fn item8_a_word_ask_on_an_adaptive_lane_writes_no_thinking() {
     let caps = LaneCaps {
         anthropic_adaptive_thinking: true,
         native_structured_output: true,
         ..LaneCaps::NONE
     };
-    // And the writer turns them into the native forms: a word ask on Fable → adaptive thinking.
     let ir = protocol_for("openai")
         .unwrap()
         .reader()
@@ -76,9 +71,8 @@ fn item8_a_word_ask_on_an_adaptive_lane_writes_adaptive_thinking() {
         .unwrap()
         .writer()
         .write_request_for_lane(&ir, model, &caps);
-    assert_eq!(
-        out.pointer("/additionalModelRequestFields/thinking/type"),
-        Some(&json!("adaptive")),
+    assert!(
+        out.pointer("/additionalModelRequestFields").is_none(),
         "{out}"
     );
 }

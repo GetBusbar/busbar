@@ -233,11 +233,12 @@ fn shr03_both_openai_readers_produce_a_reference_the_helper_resolves() {
     }
 }
 
-/// BED-06 family gate through the production write (`write_egress_request` with the lane model):
-/// a cross-protocol reasoning ask becomes Converse `thinking` on a Claude lane and is dropped on a
-/// Nova lane, whose reasoning field is spelled differently.
+/// Through the production write (`write_egress_request` with the lane model), a cross-protocol
+/// reasoning ask writes no Converse `thinking` on ANY Bedrock lane, Claude or Nova, as in 1.5.5
+/// (v1.5.5 `crates/busbar/src/proto/bedrock/writer.rs:139-146`), so it bills no thinking tokens 1.5.5
+/// did not bill. RED while a Claude lane received `thinking {enabled}`.
 #[test]
-fn bed06_bedrock_thinking_is_written_only_for_a_claude_lane_model() {
+fn bedrock_thinking_is_written_for_no_lane_model() {
     use busbar_contract::ir::handle::IrHandle;
     let body = json!({
         "model": "claude-x", "max_tokens": 8192,
@@ -256,21 +257,17 @@ fn bed06_bedrock_thinking_is_written_only_for_a_claude_lane_model() {
             _ => panic!("chat writes JSON"),
         }
     };
-    for claude in [
+    for model in [
         "anthropic.claude-sonnet-4-5-20250929-v1:0",
         "us.anthropic.claude-opus-4-1-20250805-v1:0",
         "arn:aws:bedrock:us-east-1:123:inference-profile/global.anthropic.claude-sonnet-4-5",
+        "amazon.nova-pro-v1:0",
     ] {
-        let out = write(claude);
-        assert_eq!(
-            out["additionalModelRequestFields"]["thinking"]["type"], "enabled",
-            "{claude}: {out}"
+        let out = write(model);
+        assert!(
+            out.pointer("/additionalModelRequestFields/thinking")
+                .is_none(),
+            "{model}: {out}"
         );
     }
-    let nova = write("amazon.nova-pro-v1:0");
-    assert!(
-        nova.pointer("/additionalModelRequestFields/thinking")
-            .is_none(),
-        "Claude's thinking field reached a Nova lane: {nova}"
-    );
 }

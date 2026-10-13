@@ -118,39 +118,21 @@ impl ProtocolWriter for BedrockWriter {
                 .map(crate::codec::carry::Slot::name),
         );
         dropped.extend(req.hosted_tools.iter().map(|h| h.kind_str()));
+        if req.reasoning.is_some() {
+            dropped.push(crate::codec::drops::name::REASONING);
+        }
         dropped
     }
 
-    /// The production write: the lane's wire `model` gates the Claude-only spellings, and its
-    /// declared [`LaneCaps`] choose the reasoning and structured-output forms (see
-    /// `write_request_with`).
-    ///
-    /// BED-06 family gate. The reasoning ask is written into `additionalModelRequestFields` in
-    /// CLAUDE's spelling (`thinking`, `output_config.effort`); another Converse family (Amazon Nova's
-    /// `reasoningConfig`, and others) rejects or ignores it. The model id is the only place the
-    /// family is visible — the Converse body carries none — so a cross-protocol ask reaches the wire
-    /// only when the lane model names Claude (`anthropic.` / `claude`, which covers the bare model
-    /// id, the regional and global inference profiles and their ARNs). Any other model, including an
-    /// opaque application-inference-profile ARN, has the ask dropped with a warn rather than risk a
-    /// 400.
+    /// The production write: the lane's declared [`LaneCaps`] choose the structured-output form
+    /// (see `write_request_with`). A cross-protocol reasoning ask is dropped for every model family
+    /// there, as 1.5.5 dropped it.
     fn write_request_for_lane(
         &self,
         req: &crate::codec::ir::IrRequest,
-        model: &str,
+        _model: &str,
         caps: &LaneCaps,
     ) -> serde_json::Value {
-        if req.reasoning.is_some() && !bedrock_model_is_claude(model) {
-            crate::codec::drops::writer_drop!(
-                crate::codec::drops::REASONING,
-                &crate::codec::diagnostics::IR_DROP_REASONING,
-                [model,],
-                "dropping cross-protocol reasoning/thinking ask on Bedrock egress: the lane model \
-                 is not a Claude model, and Converse's `thinking` field is Claude's spelling"
-            );
-            let mut without = req.clone();
-            without.reasoning = None;
-            return self.write_request_with(&without, caps);
-        }
         self.write_request_with(req, caps)
     }
 
@@ -1184,6 +1166,24 @@ impl BedrockWriter {
             );
         }
 
+        // A cross-protocol reasoning ask is DROPPED, with a warn, for every model family, exactly
+        // as 1.5.5 dropped it (v1.5.5 `crates/busbar/src/proto/bedrock/writer.rs:139-146`: "no
+        // Bedrock Converse mapping in this release"). Writing it as Claude's
+        // `additionalModelRequestFields.thinking` switched on billed thinking tokens (and changed
+        // the sampling controls and a forced tool choice) on requests 1.5.5 billed without them,
+        // and no owner ruling signs that (BUSBAR-1.6.0.md THE LLM DIALECT FIDELITY RULE: "Billing
+        // never moves"). A raw native ask already in `extra` (a same-protocol body) is re-emitted
+        // verbatim below, untouched.
+        if req.reasoning.is_some() {
+            crate::codec::drops::writer_drop!(
+                crate::codec::drops::REASONING,
+                &crate::codec::diagnostics::IR_DROP_REASONING,
+                [],
+                "dropping cross-protocol reasoning/thinking ask on Bedrock egress: no Bedrock \
+                 Converse mapping, as in 1.5.5"
+            );
+        }
+
         // Rebuild `inferenceConfig` by OVERLAYING the two typed fields (`maxTokens`/`temperature`)
         // onto the RAW `inferenceConfig` object the reader captured into `extra`. This preserves
         // every sub-field the reader does not model (`stopSequences`, `topP`, `topK`, `stopCriteria`,
@@ -1192,101 +1192,6 @@ impl BedrockWriter {
         // typed IR. The typed fields WIN over any same-named raw entry so the structured IR remains
         // the source of truth for the values it models. `extra`'s raw `inferenceConfig` is consumed
         // here (not re-emitted by the trailing extra-merge), so there is no double-emit.
-        // BED-06: the reasoning ASK projects onto `additionalModelRequestFields` in the
-        // Anthropic-on-Bedrock spelling (Claude is the Converse family whose reasoning a
-        // cross-protocol caller reaches; `write_request_for_lane` strips the ask for any other
-        // family). A raw native ask already in `extra` (a same-protocol body: `thinking`,
-        // `output_config.effort` or Nova `reasoningConfig`) is authoritative and re-emitted verbatim
-        // below, so nothing is synthesized over it. The forms mirror the Anthropic writer:
-        //   * a WORD ask (or "model decides") on a lane declaring adaptive thinking
-        //     (`LaneCaps::anthropic_adaptive_thinking` — the only on-mode the newest Claude models
-        //     accept; `budget_tokens` 400s there) → `thinking: {type: "adaptive"}` plus
-        //     `output_config.effort` (no effort word is invented for "model decides");
-        //   * `Off` (IR-09) → `thinking: {type: "disabled"}`, matched BEFORE any budget projection
-        //     (which would read it as the smallest ENABLE ask);
-        //   * every other ask → `{type: "enabled", budget_tokens}`, clamped to leave 1024 answer
-        //     tokens under `maxTokens`, floored at the 1024 minimum, and dropped with a warn when
-        //     `maxTokens` has no room for it.
-        let native_reasoning_present = req
-            .extra
-            .get(super::ADDITIONAL_MODEL_REQUEST_FIELDS)
-            .and_then(|v| v.as_object())
-            .is_some_and(|a| {
-                a.contains_key(keys::THINKING)
-                    || a.contains_key(super::REASONING_CONFIG)
-                    || a.get(keys::OUTPUT_CONFIG)
-                        .is_some_and(|c| c.get(keys::EFFORT).is_some())
-            });
-        let mut thinking: Option<serde_json::Value> = None;
-        let mut effort_word: Option<&'static str> = None;
-        let mut thinking_disabled = false;
-        match req.reasoning.filter(|_| !native_reasoning_present) {
-            None => {}
-            // A lane whose Claude model cannot switch thinking off (`LaneCaps::thinking_always_on`)
-            // rejects `{type:"disabled"}`: omitted with a warn.
-            Some(crate::codec::ir::IrReasoningAsk::Off) if caps.thinking_always_on => {
-                crate::codec::drops::writer_drop!(
-                    crate::codec::drops::REASONING,
-                    &crate::codec::diagnostics::IR_DROP_REASONING,
-                    [],
-                    "omitting reasoning OFF on Bedrock egress: this lane's model cannot switch \
-                     thinking off (thinking_always_on) and rejects thinking.type \"disabled\""
-                );
-            }
-            Some(crate::codec::ir::IrReasoningAsk::Off) => thinking_disabled = true,
-            Some(crate::codec::ir::IrReasoningAsk::Effort(effort))
-                if caps.anthropic_adaptive_thinking =>
-            {
-                thinking = Some(serde_json::json!({ (keys::TYPE): super::THINKING_TYPE_ADAPTIVE }));
-                effort_word = Some(super::bedrock_claude_effort_word(effort));
-            }
-            Some(crate::codec::ir::IrReasoningAsk::Dynamic) if caps.anthropic_adaptive_thinking => {
-                thinking = Some(serde_json::json!({ (keys::TYPE): super::THINKING_TYPE_ADAPTIVE }));
-            }
-            // "The model decides" on a lane without adaptive thinking: `budget_tokens` has no
-            // "model decides" value, so the ask is DROPPED (design F3: never a table entry put in
-            // its place) and the model runs at its default.
-            Some(crate::codec::ir::IrReasoningAsk::Dynamic) => {
-                crate::codec::drops::writer_drop!(
-                    crate::codec::drops::REASONING,
-                    &crate::codec::diagnostics::IR_DROP_REASONING,
-                    [],
-                    "dropping a \"model decides\" reasoning ask on Bedrock egress: this lane does \
-                     not declare adaptive thinking and budget_tokens has no dynamic form"
-                );
-            }
-            Some(ask) => {
-                let table = req
-                    .reasoning_budgets
-                    .unwrap_or(crate::codec::ir::REASONING_BUDGET_DEFAULTS);
-                // `Off` and `Dynamic` are matched above; every other ask has a table entry.
-                if let Some(want) = ask.to_budget(table) {
-                    let cap = req.max_tokens.map(|mt| mt.saturating_sub(1024));
-                    let budget = cap.map_or(want, |c| want.min(c));
-                    if budget >= 1024 {
-                        if budget != want {
-                            crate::codec::drops::writer_drop!(
-                                crate::codec::drops::REASONING,
-                                &crate::codec::diagnostics::IR_DROP_REASONING,
-                                [requested_budget = want, clamped_budget = budget, max_tokens = ?req.max_tokens, ],
-                                "thinking budget clamped to fit under maxTokens on Bedrock egress");
-                        }
-                        thinking = Some(
-                            serde_json::json!({(keys::TYPE): keys::ENABLED, (keys::BUDGET_TOKENS): budget}),
-                        );
-                    } else {
-                        crate::codec::drops::writer_drop!(
-                            crate::codec::drops::REASONING,
-                            &crate::codec::diagnostics::IR_DROP_REASONING,
-                            [max_tokens = ?req.max_tokens, ],
-                            "dropping reasoning ask on Bedrock egress: maxTokens leaves no room for the \
-                             1024-token thinking minimum");
-                    }
-                }
-            }
-        }
-        let thinking_emitted = thinking.is_some();
-
         let mut inference_config = req
             .extra
             .get(super::INFERENCE_CONFIG)
@@ -1301,8 +1206,7 @@ impl BedrockWriter {
         }
         // `inferenceConfig.{temperature, topP, stopSequences}`: rows of the mapping file, overlaid
         // on the raw object (typed IR wins over the captured value, so a same-protocol round-trip
-        // re-emits the identical value). Temperature is clamped to Converse's [0.0, 1.0]; beside an
-        // emitted thinking ask temperature and topP are omitted, observably (the think-ask wins).
+        // re-emits the identical value). Temperature is clamped to Converse's [0.0, 1.0].
         out.insert(
             super::INFERENCE_CONFIG.to_string(),
             serde_json::Value::Object(inference_config),
@@ -1310,9 +1214,7 @@ impl BedrockWriter {
         crate::codec::carry::write_fields(
             super::map::REQUEST,
             req,
-            crate::codec::carry::Egress {
-                thinking: thinking_emitted,
-            },
+            crate::codec::carry::Egress { thinking: false },
             &mut out,
         );
         if out
@@ -1473,28 +1375,6 @@ impl BedrockWriter {
         if tool_config.contains_key(keys::TOOLS) {
             if let Some(tc) = &req.tool_choice {
                 match write_bedrock_tool_choice(tc) {
-                    // Claude rejects a FORCED/TARGETED tool choice alongside thinking (only auto is
-                    // allowed); the think-ask wins and the choice degrades to `auto`, observably —
-                    // the Anthropic writer's rule, for the same model.
-                    Some(_)
-                        if thinking_emitted
-                            && matches!(
-                                tc,
-                                crate::codec::ir::IrToolChoice::Required
-                                    | crate::codec::ir::IrToolChoice::Tool { .. }
-                            ) =>
-                    {
-                        crate::codec::drops::writer_drop!(
-                            crate::codec::drops::TOOL_CHOICE,
-                            &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
-                            [],
-                            "downgrading forced/targeted toolChoice to auto on Bedrock egress: not \
-                             compatible with thinking");
-                        tool_config.insert(
-                            super::TOOL_CHOICE_CAMEL.to_string(),
-                            serde_json::json!({(keys::AUTO): {}}),
-                        );
-                    }
                     Some(v) => {
                         tool_config.insert(super::TOOL_CHOICE_CAMEL.to_string(), v);
                     }
@@ -1555,35 +1435,7 @@ impl BedrockWriter {
             .and_then(|v| v.as_object())
             .cloned()
             .unwrap_or_default();
-        if let Some(t) = thinking {
-            additional_fields.insert(keys::THINKING.to_string(), t);
-        } else if thinking_disabled {
-            additional_fields.insert(
-                keys::THINKING.to_string(),
-                serde_json::json!({ (keys::TYPE): super::THINKING_TYPE_DISABLED }),
-            );
-        }
-        if let Some(word) = effort_word {
-            // Claude's effort word rides `output_config` inside `additionalModelRequestFields`
-            // (Converse's own `outputConfig` is a different, top-level member).
-            let oc = additional_fields
-                .entry(keys::OUTPUT_CONFIG)
-                .or_insert_with(|| serde_json::json!({}));
-            if let Some(map) = oc.as_object_mut() {
-                map.insert(keys::EFFORT.to_string(), serde_json::json!(word));
-            }
-        }
-        if let Some(top_k) = req.top_k.filter(|_| {
-            if thinking_emitted {
-                crate::codec::drops::writer_drop!(
-                    crate::codec::drops::TOP_K,
-                    &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
-                    [],
-                    "omitting top_k on Bedrock egress: not compatible with thinking"
-                );
-            }
-            !thinking_emitted
-        }) {
+        if let Some(top_k) = req.top_k {
             // Preserve the source spelling on a same-protocol passthrough: re-emit camelCase `topK`
             // when the reader stamped the sentinel (the body arrived as `topK`), else the canonical
             // snake_case `top_k`. The sentinel only survives on the same-protocol path (`extra` is

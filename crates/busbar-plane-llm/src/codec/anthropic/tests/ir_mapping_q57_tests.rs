@@ -485,8 +485,9 @@ fn ant12_content_filter_stop_is_a_refusal() {
 
 /// ANT-13: an Anthropic server tool is hosted, not a function: it never reaches a foreign backend as
 /// a function tool with a null schema. A KIND the IR models (web search) crosses in the IR-11
-/// hosted slot and the Anthropic writer re-emits it as its server tool; any other server tool
-/// (`bash_*`) keeps its raw definition, same-protocol only.
+/// hosted slot; the Anthropic writer, which runs only across dialects, drops it as 1.5.5 did (an
+/// Anthropic caller's own server tools are relayed byte for byte, never written); any other server
+/// tool (`bash_*`) keeps its raw definition, same-protocol only.
 #[test]
 fn ant13_server_tools_are_hosted_not_functions() {
     let body = json!({"model": "m", "max_tokens": 100, "messages": [user_text("hi")],
@@ -520,11 +521,7 @@ fn ant13_server_tools_are_hosted_not_functions() {
         Some(&json!({"type": "bash_20250124", "name": "bash"})),
         "{back}"
     );
-    assert_eq!(
-        back.pointer("/tools/2"),
-        Some(&json!({"type": "web_search_20250305", "name": "web_search", "max_uses": 3})),
-        "{back}"
-    );
+    assert_eq!(back.pointer("/tools/2"), None, "{back}");
 }
 
 /// ANT-14: a streamed server-tool block (`server_tool_use` + its `input_json_delta`s + stop, then a

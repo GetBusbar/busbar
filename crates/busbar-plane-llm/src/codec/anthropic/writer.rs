@@ -190,6 +190,8 @@ impl ProtocolWriter for AnthropicWriter {
             crate::codec::carry::dropped(super::map::REQUEST, super::map::CONTROLS, req)
                 .map(crate::codec::carry::Slot::name),
         );
+        // Every hosted tool that crossed the seam is dropped on Anthropic egress (1.5.5).
+        dropped.extend(req.hosted_tools.iter().map(|h| h.kind_str()));
         dropped
     }
 
@@ -252,8 +254,20 @@ impl ProtocolWriter for AnthropicWriter {
         //
         // IR-10: a tool SUBSET (`allowed_tools`) has no Anthropic `tool_choice` form, so it is
         // expressed by omission — only the listed function tools are sent; `tool_choice` already
-        // carries the mode (auto / required → `auto` / `any`). IR-11: the hosted tools that crossed
-        // the seam follow the function tools in Anthropic's server-tool spelling.
+        // carries the mode (auto / required → `auto` / `any`).
+        //
+        // A hosted tool that crossed the seam (a Responses `web_search`, a Chat
+        // `web_search_options`, a web fetch or code execution) is DROPPED with a warn, as 1.5.5
+        // dropped it (its writer saw none: "prepare_for_egress strips hosted tools", v1.5.5
+        // `crates/busbar/src/proto/anthropic/writer.rs:171-178`). Writing it as an Anthropic server
+        // tool ran Anthropic searches that 1.5.5 did not, and the turn's
+        // `server_tool_use.web_search_requests` then charged the key `search_units` it was never
+        // charged; no owner ruling signs that (BUSBAR-1.6.0.md THE LLM DIALECT FIDELITY RULE:
+        // "Billing never moves").
+        crate::codec::dialect::warn_dropped(
+            req.hosted_tools.iter().map(|h| h.kind_str()),
+            &super::map::DROP_WARN,
+        );
         let tools_array: Vec<_> = req
             .tools
             .iter()
@@ -265,7 +279,6 @@ impl ProtocolWriter for AnthropicWriter {
                         .is_none_or(|allowed| allowed.contains(&t.name))
             })
             .filter_map(write_tool)
-            .chain(req.hosted_tools.iter().filter_map(write_hosted_tool))
             .collect();
         if !tools_array.is_empty() {
             out.insert(

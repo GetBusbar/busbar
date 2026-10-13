@@ -1,39 +1,33 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! IR MAPPING (owner directive Q57) — the Bedrock reasoning ask (BED-06) and structured output
-//! (BED-08). Split from `ir_mapping_tests.rs` because each moves a committed request golden
-//! (`req_a2b_thinking_metadata.json`, `req_o2b_tools.json`).
+//! IR MAPPING (owner directive Q57) — the Bedrock reasoning ask (dropped both ways, as in 1.5.5)
+//! and structured output (BED-08). Split from `ir_mapping_tests.rs`; BED-08 moves a committed
+//! request golden (`req_o2b_tools.json`).
 
 use super::*;
 use serde_json::json;
 
-/// BED-06 (reader): `additionalModelRequestFields.thinking` / Nova `reasoningConfig` were never
-/// read, so a Bedrock caller's reasoning ask died at the seam.
+/// The reader promotes no `additionalModelRequestFields` reasoning ask, as in 1.5.5 (v1.5.5
+/// `crates/busbar/src/proto/bedrock/reader.rs:678`, `reasoning: None`): the native object stays a
+/// same-protocol member and is re-emitted verbatim. RED while `thinking` read as `Budget(4096)` and
+/// Nova `reasoningConfig` as `Effort(High)`.
 #[test]
-fn bed06_reasoning_ask_is_read_from_additional_model_request_fields() {
+fn a_native_reasoning_ask_is_not_promoted_to_the_ir() {
     let body = json!({
         "messages": [{"role": "user", "content": [{"text": "hi"}]}],
         "inferenceConfig": {"maxTokens": 20000},
         "additionalModelRequestFields": {"thinking": {"type": "enabled", "budget_tokens": 4096}}
     });
     let ir = BedrockReader.read_request(&body).expect("read");
-    assert_eq!(
-        ir.reasoning,
-        Some(crate::codec::ir::IrReasoningAsk::Budget(4096))
-    );
+    assert_eq!(ir.reasoning, None);
     let nova = json!({
         "messages": [{"role": "user", "content": [{"text": "hi"}]}],
         "additionalModelRequestFields": {"reasoningConfig": {"type": "enabled", "maxReasoningEffort": "high"}}
     });
     let ir = BedrockReader.read_request(&nova).expect("read");
-    assert_eq!(
-        ir.reasoning,
-        Some(crate::codec::ir::IrReasoningAsk::Effort(
-            crate::codec::ir::IrReasoningEffort::High
-        ))
-    );
-    // Same-protocol: the native object is re-emitted verbatim, not re-synthesized over.
+    assert_eq!(ir.reasoning, None);
+    // Same-protocol: the native object is re-emitted verbatim.
     let back = writer().write_request(&ir);
     assert_eq!(
         back["additionalModelRequestFields"],
@@ -42,12 +36,13 @@ fn bed06_reasoning_ask_is_read_from_additional_model_request_fields() {
     );
 }
 
-/// BED-06 (writer): a foreign reasoning ask was never written; it projects onto
-/// `additionalModelRequestFields.thinking` with the Anthropic budget rules, and knobs Claude rejects
-/// alongside thinking are omitted.
+/// A foreign reasoning ask is DROPPED on Bedrock egress, as in 1.5.5 (v1.5.5
+/// `crates/busbar/src/proto/bedrock/writer.rs:139-146`): no `thinking` is written, so no thinking
+/// tokens are billed, and the sampling knobs (`temperature`, `topP`, `top_k`) are sent as 1.5.5
+/// sent them. RED while the ask wrote `thinking {enabled, 7168}` and stripped the knobs.
 #[test]
-fn bed06_foreign_reasoning_ask_writes_thinking() {
-    let mut ir = crate::codec::ir::IrRequest {
+fn a_foreign_reasoning_ask_is_dropped_on_bedrock_egress() {
+    let ir = crate::codec::ir::IrRequest {
         messages: vec![crate::codec::ir::IrMessage {
             role: crate::codec::ir::IrRole::User,
             content: vec![crate::codec::ir::IrBlock::Text {
@@ -67,26 +62,14 @@ fn bed06_foreign_reasoning_ask_writes_thinking() {
         ..Default::default()
     };
     let out = writer().write_request(&ir);
-    assert_eq!(
-        out["additionalModelRequestFields"]["thinking"],
-        json!({"type": "enabled", "budget_tokens": 7168}),
-        "budget clamped to leave 1024 under maxTokens: {out}"
-    );
-    assert!(out["inferenceConfig"].get("temperature").is_none(), "{out}");
-    assert!(out["inferenceConfig"].get("topP").is_none(), "{out}");
-    assert!(
-        out["additionalModelRequestFields"].get("top_k").is_none(),
-        "{out}"
-    );
-    // No room for the 1024 minimum: dropped, sampling knobs kept.
-    ir.max_tokens = Some(1500);
-    let out = writer().write_request(&ir);
     assert!(
         out.pointer("/additionalModelRequestFields/thinking")
             .is_none(),
         "{out}"
     );
     assert_eq!(out["inferenceConfig"]["temperature"], 0.5, "{out}");
+    assert_eq!(out["inferenceConfig"]["topP"], 0.9, "{out}");
+    assert_eq!(out["additionalModelRequestFields"]["top_k"], 40, "{out}");
 }
 
 /// BED-08: Converse's `outputConfig.textFormat` and `toolSpec.strict` are read into the IR and

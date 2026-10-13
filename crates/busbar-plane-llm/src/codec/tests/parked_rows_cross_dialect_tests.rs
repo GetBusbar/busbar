@@ -215,8 +215,8 @@ fn gemini_service_tier_same_dialect_keeps_the_raw_word() {
 }
 
 /// DF-MAP: Converse `outputConfig.effort` is the reasoning effort Anthropic (`output_config.effort`)
-/// and the OpenAI family (`reasoning_effort`, `reasoning.effort`) map. It is read when the request
-/// states no `additionalModelRequestFields` reasoning ask (that ask wins).
+/// and the OpenAI family (`reasoning_effort`, `reasoning.effort`) map (CHANGELOG 1.6.0). An
+/// `additionalModelRequestFields` reasoning ask does not cross, as in 1.5.5.
 #[test]
 fn bedrock_output_config_effort_crosses_as_the_reasoning_ask() {
     let body = json!({"messages": [{"role": "user", "content": [{"text": "hi"}]}],
@@ -258,13 +258,22 @@ fn bedrock_output_config_effort_crosses_as_the_reasoning_ask() {
     );
     assert!(out.pointer("/output_config/effort").is_none(), "{out}");
 
-    // An explicit thinking budget in additionalModelRequestFields wins over the effort word.
+    // A thinking ask in additionalModelRequestFields does not cross (as in 1.5.5, v1.5.5
+    // `crates/busbar/src/proto/bedrock/reader.rs:678`), so the registered effort word alone decides:
+    // the egress is exactly the effort-only request's.
+    let low = json!({"messages": [{"role": "user", "content": [{"text": "hi"}]}],
+                     "outputConfig": {"effort": "low"}});
     let both = json!({"messages": [{"role": "user", "content": [{"text": "hi"}]}],
                       "outputConfig": {"effort": "low"},
                       "additionalModelRequestFields":
                           {"thinking": {"type": "enabled", "budget_tokens": 2048}}});
     let out = cross("bedrock", "anthropic", &both);
     assert_eq!(
+        out.pointer("/thinking"),
+        cross("bedrock", "anthropic", &low).pointer("/thinking"),
+        "{out}"
+    );
+    assert_ne!(
         out.pointer("/thinking/budget_tokens"),
         Some(&json!(2048)),
         "{out}"

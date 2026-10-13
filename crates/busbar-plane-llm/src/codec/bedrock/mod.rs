@@ -72,7 +72,6 @@ const NEGATIVE_TEXT: &str = "negativeText";
 const NUMBER_OF_IMAGES: &str = "numberOfImages";
 const OUTPUT_CONFIG_CAMEL: &str = "outputConfig";
 const OUTPUT_TOKENS_CAMEL: &str = "outputTokens";
-const REASONING_CONFIG: &str = "reasoningConfig";
 const REASONING_CONTENT: &str = "reasoningContent";
 const REASONING_TEXT: &str = "reasoningText";
 const REDACTED_CONTENT: &str = "redactedContent";
@@ -660,13 +659,9 @@ const PARKED: &[crate::codec::drops::Parked] = &[
     },
     crate::codec::drops::Parked {
         key: ADDITIONAL_MODEL_REQUEST_FIELDS,
-        holds: crate::codec::drops::Holds::Members(&[
-            TOP_K,
-            TOP_K_CAMEL,
-            keys::THINKING,
-            keys::OUTPUT_CONFIG,
-            REASONING_CONFIG,
-        ]),
+        // The reasoning asks that ride here (`thinking`, `output_config`, Nova `reasoningConfig`)
+        // do not cross, as in 1.5.5: the drop walk names them.
+        holds: crate::codec::drops::Holds::Members(&[TOP_K, TOP_K_CAMEL]),
     },
     crate::codec::drops::Parked {
         key: keys::TOOL_CONFIG,
@@ -1206,76 +1201,6 @@ fn bedrock_cache_point() -> serde_json::Value {
     serde_json::json!({ (CACHE_POINT): { (keys::TYPE): "default" } })
 }
 
-/// Read a native reasoning ASK off a Converse `additionalModelRequestFields` object (BED-06). Two
-/// model-family spellings ride there:
-///   * Anthropic-on-Bedrock `thinking`, read exactly as the Anthropic reader reads its own:
-///     `{type: "enabled", budget_tokens: N}` → `Budget(N)`; `{type: "adaptive"}` → `Effort(<the
-///     output_config.effort word>)` when one is given, else `Dynamic`; no `thinking` but an
-///     `output_config.effort` word → `Effort(word)`; `{type: "disabled"}` → `Off` (IR-09).
-///   * Amazon Nova `reasoningConfig: {type: "enabled", maxReasoningEffort: "low"|"medium"|"high"}`
-///     → `Effort`, and `{type: "disabled"}` → `Off`.
-///
-/// Anything else (malformed, an unknown type) is no ask.
-fn read_bedrock_reasoning_ask(
-    amrf: Option<&serde_json::Map<String, serde_json::Value>>,
-) -> Option<crate::codec::ir::IrReasoningAsk> {
-    use crate::codec::ir::IrReasoningAsk as Ask;
-    let amrf = amrf?;
-    let type_of =
-        |v: &serde_json::Value| v.get(keys::TYPE).and_then(|t| t.as_str()).map(String::from);
-    let effort = amrf
-        .get(keys::OUTPUT_CONFIG)
-        .and_then(|c| c.get(keys::EFFORT))
-        .and_then(|e| e.as_str())
-        .and_then(read_bedrock_claude_effort_word);
-    if let Some(thinking) = amrf.get(keys::THINKING) {
-        return match type_of(thinking).as_deref() {
-            Some(keys::ENABLED) => thinking
-                .get(keys::BUDGET_TOKENS)
-                .and_then(|v| v.as_u64())
-                .and_then(|v| u32::try_from(v).ok())
-                .map(Ask::Budget),
-            Some(THINKING_TYPE_ADAPTIVE) => Some(effort.map(Ask::Effort).unwrap_or(Ask::Dynamic)),
-            Some(THINKING_TYPE_DISABLED) => Some(Ask::Off),
-            _ => None,
-        };
-    }
-    if let Some(rc) = amrf.get(REASONING_CONFIG) {
-        return match type_of(rc).as_deref() {
-            Some(keys::ENABLED) => rc
-                .get("maxReasoningEffort")
-                .and_then(|e| e.as_str())
-                .and_then(crate::codec::ir::IrReasoningEffort::parse)
-                .map(Ask::Effort),
-            Some(THINKING_TYPE_DISABLED) => Some(Ask::Off),
-            _ => None,
-        };
-    }
-    effort.map(Ask::Effort)
-}
-
-/// Claude's adaptive-thinking `thinking.type` (Anthropic-on-Bedrock spells it as Anthropic does).
-const THINKING_TYPE_ADAPTIVE: &str = "adaptive";
-/// Reasoning explicitly switched off (Claude `thinking.type`, Nova `reasoningConfig.type`).
-const THINKING_TYPE_DISABLED: &str = "disabled";
-
-/// Claude `output_config.effort` word (Anthropic-on-Bedrock) → IR effort. The Claude scale is
-/// `low` / `medium` / `high` / `xhigh` / `max` (IR-09 carries all five).
-fn read_bedrock_claude_effort_word(word: &str) -> Option<crate::codec::ir::IrReasoningEffort> {
-    match word {
-        "minimal" => None,
-        other => crate::codec::ir::IrReasoningEffort::parse_extended(other),
-    }
-}
-
-/// IR effort → Claude `output_config.effort` word. Claude has no `minimal`; the nearest is `low`.
-fn bedrock_claude_effort_word(effort: crate::codec::ir::IrReasoningEffort) -> &'static str {
-    match effort {
-        crate::codec::ir::IrReasoningEffort::Minimal => "low",
-        other => other.as_str(),
-    }
-}
-
 /// Read Converse's native structured-output directive, `outputConfig.textFormat` (`{type:
 /// "json_schema", structure: {jsonSchema: {schema: "<JSON as a string>", name, description}}}`),
 /// into the typed [`crate::codec::ir::IrResponseFormat`] (BED-08). The schema travels as a STRING on this
@@ -1666,7 +1591,7 @@ fn stop_reason_map(ward: &str) -> crate::codec::ir::IrStopReason {
 
 /// Whether a Bedrock model id names a Claude model: `anthropic.` / `claude`, which covers the bare
 /// model id, the regional and global inference profiles and their ARNs. The Converse body carries no
-/// model family, so the id is the only place it is visible (see `write_request_for_lane`).
+/// model family, so the id is the only place it is visible (see `bedrock_signature_origin`).
 fn bedrock_model_is_claude(model: &str) -> bool {
     let m = model.to_ascii_lowercase();
     m.contains("anthropic.") || m.contains("claude")

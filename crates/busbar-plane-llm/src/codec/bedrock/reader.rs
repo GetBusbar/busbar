@@ -762,10 +762,14 @@ impl ProtocolReader for BedrockReader {
             );
         }
 
-        // BED-06: the reasoning ASK rides `additionalModelRequestFields` (Anthropic-on-Bedrock
-        // `thinking`, Nova `reasoningConfig`); promote it so it carries cross-protocol. The raw
-        // object stays in `extra` for the same-protocol passthrough.
-        let reasoning = read_bedrock_reasoning_ask(amrf);
+        // The reasoning asks that ride `additionalModelRequestFields` (Anthropic-on-Bedrock
+        // `thinking` and `output_config.effort`, Nova `reasoningConfig`) are NOT promoted to the
+        // IR, exactly as 1.5.5 read none (v1.5.5 `crates/busbar/src/proto/bedrock/reader.rs:678`,
+        // `reasoning: None`): carrying them switched on billed thinking on a foreign lane for a
+        // request 1.5.5 billed without it, and no owner ruling signs that. The raw object stays in
+        // `extra` for the same-protocol passthrough; the one registered crossing, Converse's
+        // top-level `outputConfig.effort` (CHANGELOG 1.6.0), is the map file's row.
+        let reasoning = None;
         // BED-08: Converse's native structured output, `outputConfig.textFormat`.
         let response_format = read_bedrock_response_format(obj);
 
