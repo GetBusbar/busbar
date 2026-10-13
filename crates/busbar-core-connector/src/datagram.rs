@@ -758,7 +758,7 @@ impl DatagramFraming {
             }
         }
         for (path, lane, bytes) in asked.routes {
-            self.route(path, lane, bytes);
+            self.send_answered(path, lane, bytes);
         }
         self.request(asked.request, now);
         Ok(done)
@@ -798,7 +798,7 @@ impl DatagramFraming {
     }
 
     /// Send one route where the secure layer allows it, or drop it.
-    fn route(&mut self, path: u32, lane: u32, bytes: Vec<u8>) {
+    fn send_answered(&mut self, path: u32, lane: u32, bytes: Vec<u8>) {
         let to = self.book.addr(path);
         let sent = match (self.secure.as_mut(), to) {
             (Some(secure), Some(to)) if lane == LANE_CLEAR => {
