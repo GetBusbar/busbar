@@ -29,6 +29,19 @@
 //!   PENDING and the host re-enters it on its ticket when the wake fires. A TICKET-LESS `fields`
 //!   (the host's on-the-spot try) cannot pend: it answers REFUSED there, and the host submits the
 //!   same call on a ticket.
+//! * THE DECLARED DIAGNOSTICS (#85, the reply envelope's `diags` in every op's out head): the
+//!   lines the plugin's Statement names in `diag_ids` (its 1.5.5 builders' own lines), staged into
+//!   [`Diags`] by `open_outbound` (READY or FAILED), `fields` ([`FieldsWriter::diag`]), `tick` and
+//!   `drive`, and written by the kit into that call's envelope through [`Out::diag`]: kept by the
+//!   answering instance until the host has copied the reply. The host renders each as the plugin's
+//!   main-log line.
+//! * THE DRIVER TICKET (`abi::mechanism::lifecycle`, `tick`/`drive`/`cancel`): a plugin that mints
+//!   ahead of expiry runs its exchange on the instance's driver ticket. `tick` hands it the host
+//!   tables and that ticket ([`OutboundPlugin::tick`]); `drive` re-enters it when the ticket is
+//!   woken ([`OutboundPlugin::drive`]); `cancel` answers the plugin's own disposition for the
+//!   cancelled ticket ([`OutboundPlugin::cancel`]). The defaults are a plugin that holds no driver
+//!   ticket: `tick` wants none, `drive` is REFUSED, `cancel` is
+//!   [`CANCEL_ABANDONED`](crate::abi::auth::CANCEL_ABANDONED).
 
 use std::borrow::Cow;
 use std::marker::PhantomData;
@@ -42,9 +55,12 @@ use crate::abi::auth::{
     OpenOutboundOut, OutboundReadyIn, OutboundReadyOut, StyleDecl, VerifyIn, EXT_SCOPE,
     FIELD_QUERY, FIELD_SENSITIVE, MODE_OWN, MODE_PASSTHROUGH,
 };
-use crate::abi::mechanism::call::{Blob, Outcome, Span, BLOB_ABSENT};
+use crate::abi::mechanism::call::{Blob, OutHead, Outcome, Span, BLOB_ABSENT};
 use crate::abi::mechanism::door::KindTailHead;
+use crate::abi::mechanism::lifecycle::{CancelIn, CancelOut, DriveIn, TickIn, TickOut};
+use crate::abi::mechanism::ticket::Ticket;
 use crate::abi::sdk::auth_door::{verify_answer, VerifyPlugin};
+use crate::abi::sdk::conn::Host;
 use crate::abi::sdk::door::{AbiIn, AbiOut};
 use crate::abi::sdk::exchange::Op;
 use crate::abi::sdk::lent::{HostBuf, Lent};
@@ -171,6 +187,45 @@ impl<'a> FieldsView<'a> {
     }
 }
 
+/// THE DECLARED DIAGNOSTICS ONE CALL REPORTS (#85): each the id at its index in the Statement's
+/// `diag_ids`, a `SEVERITY_*` (`abi::mechanism::call`) and its text, in order. The kit writes them
+/// into the call's reply envelope (`OutHead.envelope.diags`) through [`Out::diag`] when the plugin
+/// answers, whatever it answers; the host renders each as the plugin's main-log line. Past
+/// [`MAX_ENVELOPE_ENTRIES`](crate::abi::mechanism::call::MAX_ENVELOPE_ENTRIES) in one reply, the
+/// rest are not reported.
+#[derive(Debug, Default)]
+pub struct Diags {
+    staged: Vec<(u32, u8, Box<str>)>,
+}
+
+impl Diags {
+    /// Report the diagnostic `id_idx` at `severity`, saying `text`, after those before it.
+    pub fn push(&mut self, id_idx: u32, severity: u8, text: impl Into<Box<str>>) {
+        self.staged.push((id_idx, severity, text.into()));
+    }
+
+    /// How many are staged.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.staged.len()
+    }
+
+    /// Whether none is.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.staged.is_empty()
+    }
+
+    /// Write them into the reply's envelope, in order.
+    fn write<T: AbiOut>(self, out: &mut Out<'_, T>) {
+        for (id_idx, severity, text) in self.staged {
+            if !out.diag(id_idx, severity, text) {
+                break;
+            }
+        }
+    }
+}
+
 /// One staged field: its name and value lengths in the staging bytes, in order, and its flags.
 #[derive(Debug, Clone, Copy)]
 struct Staged {
@@ -189,6 +244,7 @@ pub struct FieldsWriter<'a> {
     staged: Zeroizing<Vec<u8>>,
     fields: Vec<Staged>,
     stray: bool,
+    diags: Diags,
 }
 
 impl std::fmt::Debug for FieldsWriter<'_> {
@@ -208,7 +264,14 @@ impl<'a> FieldsWriter<'a> {
             staged: Zeroizing::new(Vec::new()),
             fields: Vec::new(),
             stray: false,
+            diags: Diags::default(),
         }
+    }
+
+    /// Report the declared diagnostic `id_idx` at `severity`, saying `text`, in this call's reply
+    /// envelope (whatever the call answers): [`Diags::push`].
+    pub fn diag(&mut self, id_idx: u32, severity: u8, text: impl Into<Box<str>>) {
+        self.diags.push(id_idx, severity, text);
     }
 
     /// Stage the field `name: value`, after those staged before it. `flags` holds only
@@ -375,7 +438,9 @@ pub trait OutboundPlugin: Send + Sync + Sized + 'static {
 
     /// Bind `style` (one the tail declares) to its resolved `credential` (`None` for a
     /// passthrough-only binding) and the provider's auth `settings` (`None` when absent); the
-    /// handle, valid until `retire` of this generation. Never waits: a first mint runs on `tick`.
+    /// handle, valid until `retire` of this generation. Never waits: a first mint runs on the
+    /// driver ticket ([`OutboundPlugin::tick`]; `host` wakes it at once). What the binding notes
+    /// (a credential it opened but cannot present) goes in `diags`, READY or FAILED alike.
     ///
     /// # Errors
     /// The binding is refused, in the plugin's own lines.
@@ -384,6 +449,8 @@ pub trait OutboundPlugin: Send + Sync + Sized + 'static {
         style: &str,
         credential: Option<&[u8]>,
         settings: Option<&[u8]>,
+        host: Option<&Host>,
+        diags: &mut Diags,
     ) -> Result<u64, OpenRefusal>;
 
     /// The auth fields for `request`, staged into `out`; [`Poll::Pending`] while `op`'s one
@@ -412,11 +479,51 @@ pub trait OutboundPlugin: Send + Sync + Sized + 'static {
         let _ = generation;
     }
 
-    /// `tick` at `now_ns`: refresh what is about to expire; the next tick wanted, `0` = none.
-    fn tick(&self, now_ns: u64) -> u64 {
-        let _ = now_ns;
+    /// `tick` at `now_ns` on the instance's DRIVER TICKET `driver` (owned by the instance, outside
+    /// `max_inflight`), over the host tables `open` handed the instance (`None`: none): refresh
+    /// what is about to expire, starting its exchange on `driver` (`host.connector(driver)`); the
+    /// next tick wanted, `0` = none. What it notes goes in `diags`.
+    fn tick(&self, now_ns: u64, host: Option<&Host>, driver: Ticket, diags: &mut Diags) -> u64 {
+        let _ = (now_ns, host, driver, diags);
         0
     }
+
+    /// `drive`: the driver ticket `driver` was woken (a read of the exchange that pended, or a
+    /// mint wanted at once): carry the exchange on. [`Driven::Pending`] while it waits, with the
+    /// instant to be re-driven at even if nothing wakes it; the plugin wakes the call tickets that
+    /// wait on what it minted ([`Host::wake`]). The default holds no driver ticket: REFUSED.
+    fn drive(&self, host: Option<&Host>, driver: Ticket, diags: &mut Diags) -> Driven {
+        let _ = (host, driver, diags);
+        Driven::Refused
+    }
+
+    /// `cancel` of `ticket` (a call that waited, or the driver ticket): forget what waits on it,
+    /// and answer the kind's disposition (`abi::auth`: [`CANCEL_ABANDONED`] = nothing kept,
+    /// [`CANCEL_CONTINUES`] = the work it started completes and fills the cache). The SDK has
+    /// already dropped what the ticket parked.
+    ///
+    /// [`CANCEL_ABANDONED`]: crate::abi::auth::CANCEL_ABANDONED
+    /// [`CANCEL_CONTINUES`]: crate::abi::auth::CANCEL_CONTINUES
+    fn cancel(&self, ticket: Ticket) -> u32 {
+        let _ = ticket;
+        crate::abi::auth::CANCEL_ABANDONED
+    }
+}
+
+/// What a `drive` answers ([`OutboundPlugin::drive`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Driven {
+    /// Nothing waits on the driver ticket now: READY.
+    Ready,
+    /// The exchange waits: PENDING, re-driven when its wake fires, and no later than `wake_at_ns`
+    /// on the host's monotonic clock (`0` = on a wake only). A ticket-less `drive` cannot pend: it
+    /// answers READY.
+    Pending {
+        /// The latest re-drive, `0` = none.
+        wake_at_ns: u64,
+    },
+    /// The plugin holds no driver ticket: REFUSED.
+    Refused,
 }
 
 /// A [`Life`] that holds an [`OutboundPlugin`] `T`: [`Outbound<T>`], or [`Both<T>`] for a plugin
@@ -430,11 +537,12 @@ pub trait HoldsOutbound<T: OutboundPlugin>: Life {
 /// lifecycle slots (`abi::sdk::life`) serve, a [`Held`] of it. Each per-kind value is stated here:
 ///
 /// * `validate` answers READY: the settings are judged by `open`;
-/// * `open`, `refresh`, `retire` and `tick` are the plugin's;
-/// * `drive` answers REFUSED (the plugin holds no driver ticket: a pending `fields` is re-entered
-///   on its own ticket, never through `drive`), and `cancel` answers
-///   [`CANCEL_ABANDONED`](crate::abi::auth::CANCEL_ABANDONED): the SDK drops what the cancelled
-///   ticket parked.
+/// * `open`, `refresh` and `retire` are the plugin's;
+/// * `tick`, `drive` and `cancel` are the plugin's too, through the kit's own slots
+///   ([`OutboundTick`], [`OutboundDrive`], [`OutboundCancel`]), which hand it the host tables and
+///   the driver ticket: [`Life::DRIVE`] and [`Life::CANCEL`] here are what a door naming the
+///   generic slots would answer for a plugin with no driver ticket (REFUSED, and
+///   [`CANCEL_ABANDONED`](crate::abi::auth::CANCEL_ABANDONED)).
 pub struct Outbound<T>(T);
 
 impl<T> std::fmt::Debug for Outbound<T> {
@@ -473,10 +581,6 @@ impl<T: OutboundPlugin> Life for Outbound<T> {
     fn retire(&self, generation: u64) {
         self.0.retire(generation);
     }
-
-    fn tick(&self, now_ns: u64) -> u64 {
-        self.0.tick(now_ns)
-    }
 }
 
 impl<T: OutboundPlugin> HoldsOutbound<T> for Outbound<T> {
@@ -488,8 +592,8 @@ impl<T: OutboundPlugin> HoldsOutbound<T> for Outbound<T> {
 /// THE AUTH KIND'S [`Life`] over a plugin `T` that both verifies and presents (the SigV4 shape):
 /// ONE `T`, built by [`OutboundPlugin::open`] (its [`VerifyPlugin::open`] must build the same
 /// plugin). `refresh` calls both refreshes and reports the inbound entries
-/// [`VerifyPlugin::refresh`] dropped under [`VerifyPlugin::CACHE_FAMILY`]; `retire` and `tick`
-/// are the outbound side's; `validate`, `drive` and `cancel` are [`Outbound`]'s.
+/// [`VerifyPlugin::refresh`] dropped under [`VerifyPlugin::CACHE_FAMILY`]; `retire`, `tick`,
+/// `drive` and `cancel` are the outbound side's; `validate` is [`Outbound`]'s.
 pub struct Both<T>(T);
 
 impl<T> std::fmt::Debug for Both<T> {
@@ -534,10 +638,6 @@ impl<T: VerifyPlugin + OutboundPlugin> Life for Both<T> {
     fn retire(&self, generation: u64) {
         OutboundPlugin::retire(&self.0, generation);
     }
-
-    fn tick(&self, now_ns: u64) -> u64 {
-        OutboundPlugin::tick(&self.0, now_ns)
-    }
 }
 
 impl<T: VerifyPlugin + OutboundPlugin> HoldsOutbound<T> for Both<T> {
@@ -568,7 +668,10 @@ impl<T: OutboundPlugin, L: HoldsOutbound<T>> SafeSlot for OpenOutboundSlot<T, L>
         let credential = present(input.field(|i| &i.credential));
         let settings = present(input.field(|i| &i.settings));
         let plugin = h.life().outbound();
-        match plugin.open_outbound(style, credential, settings) {
+        let mut diags = Diags::default();
+        let opened = plugin.open_outbound(style, credential, settings, h.host(), &mut diags);
+        diags.write(&mut out);
+        match opened {
             Ok(handle) => {
                 out.set(|o| &o.handle, handle);
                 Outcome::Ready
@@ -622,7 +725,13 @@ impl<T: OutboundPlugin, L: HoldsOutbound<T>> SafeSlot for FieldsSlot<T, L> {
         let mut writer = FieldsWriter::of(input);
         let op = Op::new(&instance, h.host());
         let plugin = h.life().outbound();
-        match plugin.fields(&FieldsView { input }, &mut writer, &op) {
+        let answer = plugin.fields(&FieldsView { input }, &mut writer, &op);
+        if writer.stray {
+            // The plugin's bug: FAULT, and a FAULT reply carries no envelope.
+            return Outcome::Fault;
+        }
+        std::mem::take(&mut writer.diags).write(&mut out);
+        match answer {
             // On the spot the call cannot pend (a ticket-less PENDING is FAULT): REFUSED there,
             // and the host submits it on a ticket.
             Poll::Pending if instance.ticket().is_none() => Outcome::Refused,
@@ -631,6 +740,94 @@ impl<T: OutboundPlugin, L: HoldsOutbound<T>> SafeSlot for FieldsSlot<T, L> {
             Poll::Ready(FieldsAnswer::Refused) => Outcome::Refused,
             Poll::Ready(FieldsAnswer::Failed(why)) => out.fail(Refusal::failed(why)),
         }
+    }
+}
+
+/// `tick` on an outbound door: [`OutboundPlugin::tick`] on the call's ticket (the instance's driver
+/// ticket), over the host tables `open` handed the instance; what it noted rides the reply.
+#[derive(Debug)]
+pub struct OutboundTick<T, L = Outbound<T>>(PhantomData<(T, L)>);
+impl<T: OutboundPlugin, L: HoldsOutbound<T>> SafeSlot for OutboundTick<T, L> {
+    type In = TickIn;
+    type Out = TickOut;
+    type State = Held<L>;
+    fn call(
+        instance: Instance<'_, Held<L>>,
+        input: Lent<'_, TickIn>,
+        mut out: Out<'_, TickOut>,
+    ) -> Outcome {
+        let Some(h) = instance.get() else {
+            return Outcome::Fault;
+        };
+        let mut diags = Diags::default();
+        let next = h
+            .life()
+            .outbound()
+            .tick(input.now_ns, h.host(), instance.ticket(), &mut diags);
+        diags.write(&mut out);
+        out.set(|o| &o.next_tick_ns, next);
+        Outcome::Ready
+    }
+}
+
+/// `drive` on an outbound door: [`OutboundPlugin::drive`] on the woken driver ticket; PENDING (with
+/// its latest re-drive) while the exchange waits, READY on a ticket-less call.
+#[derive(Debug)]
+pub struct OutboundDrive<T, L = Outbound<T>>(PhantomData<(T, L)>);
+impl<T: OutboundPlugin, L: HoldsOutbound<T>> SafeSlot for OutboundDrive<T, L> {
+    type In = DriveIn;
+    type Out = OutHead;
+    type State = Held<L>;
+    fn call(
+        instance: Instance<'_, Held<L>>,
+        input: Lent<'_, DriveIn>,
+        mut out: Out<'_, OutHead>,
+    ) -> Outcome {
+        let Some(h) = instance.get() else {
+            return Outcome::Fault;
+        };
+        // The driver ticket that woke (`DriveIn::driver`); the call's own when the host named none.
+        let driver = if input.driver.is_none() {
+            instance.ticket()
+        } else {
+            input.driver
+        };
+        let mut diags = Diags::default();
+        let driven = h.life().outbound().drive(h.host(), driver, &mut diags);
+        diags.write(&mut out);
+        match driven {
+            Driven::Ready => Outcome::Ready,
+            // A ticket-less PENDING is FAULT: only a drive on the driver ticket waits.
+            Driven::Pending { .. } if instance.ticket().is_none() => Outcome::Ready,
+            Driven::Pending { wake_at_ns } => {
+                if wake_at_ns != 0 {
+                    out.wake_at(wake_at_ns);
+                }
+                Outcome::Pending
+            }
+            Driven::Refused => Outcome::Refused,
+        }
+    }
+}
+
+/// `cancel` on an outbound door: [`OutboundPlugin::cancel`] of the cancelled ticket, its
+/// disposition answered (the SDK has dropped what the ticket parked, `abi::sdk::safe`).
+#[derive(Debug)]
+pub struct OutboundCancel<T, L = Outbound<T>>(PhantomData<(T, L)>);
+impl<T: OutboundPlugin, L: HoldsOutbound<T>> SafeSlot for OutboundCancel<T, L> {
+    type In = CancelIn;
+    type Out = CancelOut;
+    type State = Held<L>;
+    fn call(
+        instance: Instance<'_, Held<L>>,
+        input: Lent<'_, CancelIn>,
+        mut out: Out<'_, CancelOut>,
+    ) -> Outcome {
+        let disposition = instance
+            .get()
+            .map_or(L::CANCEL, |h| h.life().outbound().cancel(input.ticket));
+        out.set(|o| &o.disposition, disposition);
+        Outcome::Ready
     }
 }
 
@@ -668,8 +865,9 @@ impl<L: Life, I: AbiIn, O: AbiOut> SafeSlot for NotServed<L, I, O> {
 
 /// THE OUTBOUND DOOR: `plugin_door!` over the auth table for an [`OutboundPlugin`] `$plugin`,
 /// stating `$statement` (its `kind_tail` an [`AuthTail`] from [`outbound_tail`], through
-/// [`with_tail`](crate::abi::sdk::auth_door::with_tail)). `verify` and the login pair answer
-/// REFUSED.
+/// [`with_tail`](crate::abi::sdk::auth_door::with_tail)). The lifecycle is the SDK's generic one
+/// but for `tick`, `drive` and `cancel`, which are the plugin's ([`OutboundTick`],
+/// [`OutboundDrive`], [`OutboundCancel`]). `verify` and the login pair answer REFUSED.
 ///
 /// ```ignore
 /// busbar_contract::auth_outbound_door!(MyPlugin, STATEMENT);
@@ -680,7 +878,26 @@ macro_rules! auth_outbound_door {
         $crate::plugin_door! {
             ops: $crate::abi::auth::Ops,
             statement: $statement,
-            lifecycle: life($crate::abi::sdk::auth_outbound::Outbound<$plugin>),
+            lifecycle: {
+                validate: $crate::abi::sdk::Safe<$crate::abi::sdk::life::Validate<
+                    $crate::abi::sdk::auth_outbound::Outbound<$plugin>>>,
+                open: $crate::abi::sdk::Safe<$crate::abi::sdk::life::Open<
+                    $crate::abi::sdk::auth_outbound::Outbound<$plugin>>>,
+                refresh: $crate::abi::sdk::Safe<$crate::abi::sdk::life::Refresh<
+                    $crate::abi::sdk::auth_outbound::Outbound<$plugin>>>,
+                retire: $crate::abi::sdk::Safe<$crate::abi::sdk::life::Retire<
+                    $crate::abi::sdk::auth_outbound::Outbound<$plugin>>>,
+                tick: $crate::abi::sdk::Safe<$crate::abi::sdk::auth_outbound::OutboundTick<
+                    $plugin, $crate::abi::sdk::auth_outbound::Outbound<$plugin>>>,
+                drive: $crate::abi::sdk::Safe<$crate::abi::sdk::auth_outbound::OutboundDrive<
+                    $plugin, $crate::abi::sdk::auth_outbound::Outbound<$plugin>>>,
+                cancel: $crate::abi::sdk::Safe<$crate::abi::sdk::auth_outbound::OutboundCancel<
+                    $plugin, $crate::abi::sdk::auth_outbound::Outbound<$plugin>>>,
+                release: $crate::abi::sdk::Safe<$crate::abi::sdk::life::Release<
+                    $crate::abi::sdk::auth_outbound::Outbound<$plugin>>>,
+                close: $crate::abi::sdk::Safe<$crate::abi::sdk::life::Close<
+                    $crate::abi::sdk::auth_outbound::Outbound<$plugin>>>,
+            },
             kind_ops: {
                 verify: $crate::abi::sdk::Safe<$crate::abi::sdk::auth_outbound::NotServed<
                     $crate::abi::sdk::auth_outbound::Outbound<$plugin>,
@@ -716,7 +933,26 @@ macro_rules! auth_door {
         $crate::plugin_door! {
             ops: $crate::abi::auth::Ops,
             statement: $statement,
-            lifecycle: life($crate::abi::sdk::auth_outbound::Both<$plugin>),
+            lifecycle: {
+                validate: $crate::abi::sdk::Safe<$crate::abi::sdk::life::Validate<
+                    $crate::abi::sdk::auth_outbound::Both<$plugin>>>,
+                open: $crate::abi::sdk::Safe<$crate::abi::sdk::life::Open<
+                    $crate::abi::sdk::auth_outbound::Both<$plugin>>>,
+                refresh: $crate::abi::sdk::Safe<$crate::abi::sdk::life::Refresh<
+                    $crate::abi::sdk::auth_outbound::Both<$plugin>>>,
+                retire: $crate::abi::sdk::Safe<$crate::abi::sdk::life::Retire<
+                    $crate::abi::sdk::auth_outbound::Both<$plugin>>>,
+                tick: $crate::abi::sdk::Safe<$crate::abi::sdk::auth_outbound::OutboundTick<
+                    $plugin, $crate::abi::sdk::auth_outbound::Both<$plugin>>>,
+                drive: $crate::abi::sdk::Safe<$crate::abi::sdk::auth_outbound::OutboundDrive<
+                    $plugin, $crate::abi::sdk::auth_outbound::Both<$plugin>>>,
+                cancel: $crate::abi::sdk::Safe<$crate::abi::sdk::auth_outbound::OutboundCancel<
+                    $plugin, $crate::abi::sdk::auth_outbound::Both<$plugin>>>,
+                release: $crate::abi::sdk::Safe<$crate::abi::sdk::life::Release<
+                    $crate::abi::sdk::auth_outbound::Both<$plugin>>>,
+                close: $crate::abi::sdk::Safe<$crate::abi::sdk::life::Close<
+                    $crate::abi::sdk::auth_outbound::Both<$plugin>>>,
+            },
             kind_ops: {
                 verify: $crate::abi::sdk::Safe<
                     $crate::abi::sdk::auth_outbound::VerifyBoth<$plugin>>,

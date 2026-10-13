@@ -462,6 +462,19 @@ impl<'a> Op<'a> {
         Self { on: instance, host }
     }
 
+    /// The host tables the op runs over (`None`: the instance was handed none): what an op that
+    /// waits on another ticket's work wakes that ticket with ([`Host::wake`]).
+    #[must_use]
+    pub fn host(&self) -> Option<&'a Host> {
+        self.host
+    }
+
+    /// The op's ticket ([`Ticket::NONE`] on the spot).
+    #[must_use]
+    pub fn ticket(&self) -> Ticket {
+        self.on.ticket()
+    }
+
     /// [`exchange`] over the declared framed need `need` to `target`: `request` is built only on
     /// the op's first entry (its refusal answers at once, nothing sent). PENDING until it
     /// completes.

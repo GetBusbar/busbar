@@ -776,7 +776,8 @@ mod outbound {
     use std::task::Poll;
 
     use busbar_contract::abi::sdk::auth_outbound::{
-        outbound_tail, style, FieldsAnswer, FieldsView, FieldsWriter, OpenRefusal, OutboundPlugin,
+        outbound_tail, style, Diags, FieldsAnswer, FieldsView, FieldsWriter, OpenRefusal,
+        OutboundPlugin,
     };
     use busbar_contract::abi::sdk::exchange::Op;
     use busbar_contract::auth_calls::{AuthField, Fields, FieldsRequest};
@@ -799,6 +800,8 @@ mod outbound {
             style: &str,
             credential: Option<&[u8]>,
             _: Option<&[u8]>,
+            _: Option<&busbar_contract::abi::sdk::conn::Host>,
+            _: &mut Diags,
         ) -> Result<u64, OpenRefusal> {
             if style != "bearer-test" {
                 return Err(OpenRefusal::new("style: not served"));
