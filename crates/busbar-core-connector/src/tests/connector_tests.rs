@@ -1279,8 +1279,8 @@ fn an_inbound_need_listens_and_its_connections_are_its_owners() {
     });
 }
 
-/// RED (ARCHITECT ruling 2026-10-02, WIRE-EXPORT userinfo; kept by the audit export-webhook #1
-/// ruling (a)): the refusal of a userinfo in a need's target STAYS for every target the need's own
+/// RED (ARCHITECT ruling 2026-10-02, WIRE-EXPORT userinfo; kept by the row 159 settings-URL
+/// userinfo ruling (a)): the refusal of a userinfo in a need's target STAYS for every target the need's own
 /// settings did not give it — a need with no `target_from`, a member path, a path outside its
 /// settings. Such a target carrying a userinfo — a URL's `user:pass@` or a bare `user@host:port` —
 /// is REFUSED, fail closed: the answer is kept for the need's admission, and nothing opens on it.
@@ -1346,7 +1346,7 @@ fn a_target_not_from_its_own_settings_carrying_a_userinfo_is_still_refused() {
     });
 }
 
-/// RED (ARCHITECT ruling, audit export-webhook #1 (a)(b)): USERINFO IS NOT PART OF A
+/// RED (ARCHITECT ruling, row 159 settings-URL userinfo finding (a)(b)): USERINFO IS NOT PART OF A
 /// SETTINGS-DERIVED TARGET. A need whose `target_from` reads the plugin's own settings, declared
 /// with a target carrying a userinfo — a URL's `user:pass@`, a bare `user:pass@host:port` or
 /// `user@host:port` — is declared, pinned to that target WITHOUT the userinfo, and opens there.

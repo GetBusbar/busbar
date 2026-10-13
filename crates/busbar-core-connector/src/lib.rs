@@ -1493,8 +1493,8 @@ impl DeclaredConns for Connector {
             && !per_member(&spec.target_from)
             && target.is_none())
             || (!spec.trust_from.is_empty() && !per_member(&spec.trust_from) && trust.is_none());
-        // USERINFO IS NOT PART OF A SETTINGS-DERIVED TARGET (ARCHITECT ruling, audit
-        // export-webhook #1): a target read from the plugin's own settings through `target_from`
+        // USERINFO IS NOT PART OF A SETTINGS-DERIVED TARGET (ARCHITECT ruling, row 159 audit,
+        // the settings-URL userinfo finding): a target read from the plugin's own settings through `target_from`
         // is declared without its userinfo, which is dropped here — never recorded, judged or
         // repeated; a credential the plugin means to send rides its request's own fields. Every
         // other target carrying a userinfo is refused, and so is one this reading cannot clear.
