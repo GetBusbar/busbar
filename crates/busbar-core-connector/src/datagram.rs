@@ -30,6 +30,13 @@
 //! * PATH REQUESTS go to the secure layer, which binds only a path it has proven by its own round
 //!   trip; the lane's `bound` says where it stands on every call after.
 //! * Every answer is judged (`check_datagram`) before any byte of it is used.
+//! * THE DIALLING SIDE ([`DatagramFraming::dial`]) hears nothing before it sends: the far end's
+//!   description advertised its candidates, and each is judged by the host's ONE destination judge
+//!   ([`DialJudge`], under the dialling need's egress class) BEFORE any byte goes there. A candidate
+//!   the judge refuses is never numbered, never told to the framer and never sent to; one it admits
+//!   becomes an admitted candidate of the secure layer ([`Association::admit_candidate`]), which
+//!   probes it and binds it only once that probe is answered from it. The accepting side learns
+//!   its paths from verified checks alone and admits no candidate.
 //!
 //! Sans-IO: the caller hands in what the port read and the clock, takes
 //! [`DatagramFraming::poll_send`] out to the port, and calls [`DatagramFraming::timeout`] at
@@ -40,18 +47,19 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Instant;
 
-use busbar_contract::abi::mechanism::call::{AbiStr, Outcome};
+use busbar_contract::abi::mechanism::call::{AbiStr, Field, Outcome};
 use busbar_contract::abi::sdk::door::{blank_in, blank_out};
 use busbar_contract::abi::transport::check::check_datagram;
 use busbar_contract::abi::transport::{
     BeginIn, ConnFacts, DatagramLane, DatagramPath, DatagramRoute, EmitIn, FinishIn, FramerOut,
     FramingIn, IngestIn, KeyingMaterial, RendezvousTerms, CLOSE_NORMAL, EMIT_TEXT,
     FINGERPRINT_BYTES, HANDSHAKE_ANSWERS, HANDSHAKE_INITIATES, HANDSHAKE_NONE, LANE_CLEAR,
-    LANE_RENDEZVOUS, LANE_SECURED, PATH_REQUEST_BIND, PATH_REQUEST_REBIND, SIDE_ACCEPT,
+    LANE_RENDEZVOUS, LANE_SECURED, PATH_REQUEST_BIND, PATH_REQUEST_REBIND, SIDE_ACCEPT, SIDE_DIAL,
 };
 
 use crate::dtls::{Association, IceCredentials, Role, SessionCert, SrtpKeying, Up, Verdict};
 use crate::framer::{instant_of, ready, Buffers, Call, Crossed, FramerDoor, Refused, Yielded};
+use crate::DialJudge;
 
 /// The routes one framer answer may write.
 const ROUTES_CAP: usize = 64;
@@ -130,7 +138,8 @@ impl PathBook {
 /// One framer op, as this driver makes it.
 #[derive(Clone, Copy)]
 enum Op<'a> {
-    Begin,
+    /// The opening fields a dialling framing offers.
+    Begin(&'a [(String, Vec<u8>)]),
     /// Bytes on a lane (`0` = a call that only carries the host's state); `end` = the far end
     /// closed.
     Ingest {
@@ -152,7 +161,7 @@ impl Op<'_> {
     /// The re-call a `YIELD_MORE` answer asks for: the same op, no new bytes.
     fn again(self) -> Self {
         match self {
-            Op::Begin | Op::Timer => Op::Timer,
+            Op::Begin(_) | Op::Timer => Op::Timer,
             Op::Ingest { .. } => Op::Ingest {
                 lane: 0,
                 from: None,
@@ -183,6 +192,8 @@ struct Terms {
     local: IceCredentials,
     remote: IceCredentials,
     fingerprint: [u8; 32],
+    /// The far end's advertised addresses, one per line, as the framer wrote them.
+    candidates: Vec<String>,
 }
 
 /// ONE ASSOCIATION'S DATAGRAM FRAMER, driven over the host's port and secure layer (module docs).
@@ -206,6 +217,11 @@ pub struct DatagramFraming {
     refused_routes: u64,
     deadline_ns: Option<u64>,
     ended: bool,
+    /// `SIDE_ACCEPT` or `SIDE_DIAL`.
+    side: u32,
+    /// The dialling side's destination judge and the need's egress class.
+    judge: Option<(Arc<dyn DialJudge>, u32)>,
+    refused_candidates: u64,
 }
 
 impl std::fmt::Debug for DatagramFraming {
@@ -232,10 +248,40 @@ impl DatagramFraming {
         cert: Arc<SessionCert>,
         local: SocketAddr,
     ) -> Result<(Self, Yielded), Refused> {
+        Self::begin(door, cert, local, SIDE_ACCEPT, None, &[])
+    }
+
+    /// Begin a DIALLING association on `door`: as [`Self::accept`], with the `opening` fields the
+    /// framing offers (its own description comes back as a piece) and the destination `judge` every
+    /// candidate the far end's answer advertises meets, under the dialling need's egress `class`,
+    /// before any byte goes there.
+    ///
+    /// # Errors
+    ///
+    /// The entry refused to frame it, or answered outside the lane's rules.
+    pub fn dial(
+        door: Arc<dyn FramerDoor>,
+        cert: Arc<SessionCert>,
+        local: SocketAddr,
+        opening: &[(String, Vec<u8>)],
+        judge: Arc<dyn DialJudge>,
+        class: u32,
+    ) -> Result<(Self, Yielded), Refused> {
+        Self::begin(door, cert, local, SIDE_DIAL, Some((judge, class)), opening)
+    }
+
+    fn begin(
+        door: Arc<dyn FramerDoor>,
+        cert: Arc<SessionCert>,
+        local: SocketAddr,
+        side: u32,
+        judge: Option<(Arc<dyn DialJudge>, u32)>,
+        opening: &[(String, Vec<u8>)],
+    ) -> Result<(Self, Yielded), Refused> {
         let mut f = DatagramFraming {
             door,
             token: 0,
-            bufs: Buffers::for_side(SIDE_ACCEPT),
+            bufs: Buffers::for_side(side),
             routes: vec![DatagramRoute::default(); ROUTES_CAP],
             cert,
             local: local.to_string(),
@@ -248,8 +294,11 @@ impl DatagramFraming {
             refused_routes: 0,
             deadline_ns: None,
             ended: false,
+            side,
+            judge,
+            refused_candidates: 0,
         };
-        let y = f.run(Op::Begin, Instant::now())?;
+        let y = f.run(Op::Begin(opening), Instant::now())?;
         Ok((f, y))
     }
 
@@ -369,6 +418,12 @@ impl DatagramFraming {
         self.refused_routes
     }
 
+    /// How many of the far end's advertised candidates the destination judge refused (dialling).
+    #[must_use]
+    pub fn refused_candidates(&self) -> u64 {
+        self.refused_candidates
+    }
+
     /// Whether the keying-material item has been presented to the framer.
     #[must_use]
     pub fn presented(&self) -> bool {
@@ -437,7 +492,7 @@ impl DatagramFraming {
                 return Err(fault("keying material with the far end not verified"));
             }
             let state = (self.bound_path(), self.verified());
-            let owed = state != self.told || self.keying.is_some();
+            let owed = state != self.told || self.keying.is_some() || !self.book.untold.is_empty();
             if opened.is_empty() && !closed && !owed {
                 y.wire.clear();
                 return Ok(y);
@@ -485,7 +540,7 @@ impl DatagramFraming {
     }
 
     fn cross_once(&mut self, op: Op<'_>) -> Result<FramerOut, Refused> {
-        if self.token == 0 && !matches!(op, Op::Begin) {
+        if self.token == 0 && !matches!(op, Op::Begin(_)) {
             return Err(fault("the association's framing is closed"));
         }
         // The lane's host state at this call. Every pointer below is into memory that outlives
@@ -544,7 +599,14 @@ impl DatagramFraming {
         };
         let mut o: FramerOut = blank_out();
         let c: Crossed = match op {
-            Op::Begin => {
+            Op::Begin(opening) => {
+                let fields: Vec<Field> = opening
+                    .iter()
+                    .map(|(n, v)| Field {
+                        name: text(n.as_bytes()),
+                        value: text(v),
+                    })
+                    .collect();
                 let facts = ConnFacts {
                     size: u32::try_from(std::mem::size_of::<ConnFacts>()).unwrap_or(u32::MAX),
                     _reserved: 0,
@@ -557,8 +619,12 @@ impl DatagramFraming {
                     local_certificate: text(self.cert.public_der()),
                 };
                 let mut i: BeginIn = blank_in();
-                i.side = SIDE_ACCEPT;
+                i.side = self.side;
                 i.facts = &facts;
+                if !fields.is_empty() {
+                    i.fields = fields.as_ptr();
+                    i.fields_len = fields.len();
+                }
                 i.lane = &lane;
                 i.sink = self.bufs.sink();
                 self.door.cross(Call::Begin(&mut i, &mut o))
@@ -605,7 +671,7 @@ impl DatagramFraming {
             )));
         }
         ready(c)?;
-        if matches!(op, Op::Begin) {
+        if matches!(op, Op::Begin(_)) {
             self.token = o.framing;
         }
         // What this call carried reached the framer: the paths are told, the host state is the
@@ -661,12 +727,48 @@ impl DatagramFraming {
                 &t.remote,
                 t.fingerprint,
             ));
+            if self.side == SIDE_DIAL {
+                self.admit(&t.candidates, now);
+            }
         }
         for (path, lane, bytes) in asked.routes {
             self.route(path, lane, bytes);
         }
         self.request(asked.request, now);
         Ok(done)
+    }
+
+    /// The dialling side's candidates: each judged by the destination judge first; an admitted one
+    /// numbered (told to the framer on the next call) and handed to the secure layer, which probes
+    /// it. A refused, unparsable or still-pending one is dropped and counted.
+    fn admit(&mut self, candidates: &[String], now: Instant) {
+        let Some((judge, class)) = self.judge.clone() else {
+            return;
+        };
+        for c in candidates {
+            let admitted = c.parse::<SocketAddr>().ok().filter(|addr| {
+                // A literal is judged at once; a judgement that would pend is no admission.
+                matches!(
+                    judge.judge_dial(&addr.to_string(), class, Box::new(|_| {})),
+                    Some(Ok(pinned)) if pinned == *addr
+                )
+            });
+            let Some(addr) = admitted else {
+                self.refused_candidates += 1;
+                continue;
+            };
+            let Some(secure) = self.secure.as_mut() else {
+                return;
+            };
+            if !secure.admit_candidate(addr, now) {
+                self.refused_candidates += 1;
+                continue;
+            }
+            let known = |a: SocketAddr| secure.knows(a) || secure.bound_path() == Some(a);
+            if self.book.number(addr, known).is_none() {
+                self.refused_candidates += 1;
+            }
+        }
     }
 
     /// Send one route where the secure layer allows it, or drop it.
@@ -731,6 +833,13 @@ fn read_terms(t: &RendezvousTerms, frame: &[u8]) -> Result<Terms, Refused> {
         HANDSHAKE_ANSWERS => Role::Server,
         _ => return Err(fault("the framer's terms name no handshake role")),
     };
+    let candidates = String::from_utf8(span(t.candidates)?.to_vec())
+        .map_err(|_| fault("the far end's candidates are not text"))?
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .map(str::to_owned)
+        .collect();
     let mut fingerprint = [0_u8; FINGERPRINT_BYTES as usize];
     fingerprint.copy_from_slice(
         span(t.peer_fingerprint)?
@@ -748,6 +857,7 @@ fn read_terms(t: &RendezvousTerms, frame: &[u8]) -> Result<Terms, Refused> {
             pwd: utf8(t.remote_secret)?,
         },
         fingerprint,
+        candidates,
     })
 }
 

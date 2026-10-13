@@ -14,7 +14,11 @@
 //!   number is told for it;
 //! * a rebind to a path that never answered core's probe is not applied, and a clear route to a
 //!   heard but unbound path that is not a check's answer is dropped and counted;
-//! * a framer answer that breaks the datagram lane's rules is a FAULT before any byte is used.
+//! * a framer answer that breaks the datagram lane's rules is a FAULT before any byte is used;
+//! * DIALLING: every advertised candidate meets the destination judge before any byte goes there;
+//!   a refused one is never told to the framer and never sent a byte, and an admitted one binds
+//!   only once core's probe is answered from it (RED arms: unanswered, or answered from another
+//!   source, it never binds).
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -24,13 +28,14 @@ use std::time::{Duration, Instant};
 use busbar_contract::abi::mechanism::call::Outcome;
 use busbar_contract::abi::transport::{
     DatagramLane, DatagramRoute, FramePiece, FrameSpan, FramerOut, FramerSink, RendezvousTerms,
-    HANDSHAKE_ANSWERS, LANE_CLEAR, LANE_RENDEZVOUS, LANE_SECURED, PATH_REQUEST_BIND,
-    PATH_REQUEST_REBIND, PIECE_END_OF_FRAME, ROLE_FRAMER,
+    HANDSHAKE_ANSWERS, HANDSHAKE_INITIATES, LANE_CLEAR, LANE_RENDEZVOUS, LANE_SECURED,
+    PATH_REQUEST_BIND, PATH_REQUEST_REBIND, PIECE_END_OF_FRAME, ROLE_FRAMER,
 };
 
 use super::DatagramFraming;
 use crate::dtls::{Association, IceCredentials, Role, SessionCert, SrtpKeying, Up, Verdict};
 use crate::framer::{Call, Crossed, DoorFacts, FramerDoor};
+use crate::{DialJudge, Judged};
 
 const HOST_UFRAG: &str = "hostfrag";
 const HOST_PWD: &str = "host-password-0123456789";
@@ -109,6 +114,9 @@ struct Knobs {
     /// On a check from a path other than the bound one: ask to move there, and route it a clear
     /// datagram that is not a check's answer.
     rebind_new: bool,
+    /// A dialling framing: it offers at begin, settles terms that initiate and carry the far end's
+    /// candidates, and checks every path it is told of, asking to bind the first.
+    dial: bool,
 }
 
 #[derive(Default)]
@@ -121,6 +129,8 @@ struct St {
     pieces: Vec<(u64, Vec<u8>)>,
     terms: bool,
     request: (u32, u32, u32),
+    candidates: String,
+    txid: u8,
 }
 
 struct Scripted {
@@ -226,15 +236,24 @@ fn write_answer(st: &mut St, sink: &FramerSink, lane: Option<&DatagramLane>, o: 
     }
     if std::mem::take(&mut st.terms) {
         let (ru, rp, fp) = st.remote.clone().expect("terms after a rendezvous");
+        let candidates = std::mem::take(&mut st.candidates);
         o.datagram.terms = RendezvousTerms {
-            role: HANDSHAKE_ANSWERS,
+            role: if candidates.is_empty() {
+                HANDSHAKE_ANSWERS
+            } else {
+                HANDSHAKE_INITIATES
+            },
             _reserved: 0,
             local_user: frame(HOST_UFRAG.as_bytes()),
             local_secret: frame(HOST_PWD.as_bytes()),
             remote_user: frame(ru.as_bytes()),
             remote_secret: frame(rp.as_bytes()),
             peer_fingerprint: frame(&fp),
-            candidates: FrameSpan::default(),
+            candidates: if candidates.is_empty() {
+                FrameSpan::default()
+            } else {
+                frame(candidates.as_bytes())
+            },
         };
     }
     let mut n = 0_usize;
@@ -268,6 +287,25 @@ fn unhex(s: &str) -> Vec<u8> {
         .collect()
 }
 
+impl Scripted {
+    /// Dialling: a check to every path this call told, and a bind request for the first while
+    /// nothing is bound.
+    fn check_told(&self, st: &mut St, lane: &DatagramLane) {
+        if !self.knobs.dial {
+            return;
+        }
+        let told = st.seen.last().map(|s| s.told.clone()).unwrap_or_default();
+        for (path, _) in told {
+            st.txid = st.txid.wrapping_add(1);
+            let c = check(FAR_UFRAG, HOST_UFRAG, FAR_PWD, 0x40 | st.txid);
+            st.routes.push((path, LANE_CLEAR, c));
+            if lane.bound == 0 && st.request.0 == 0 {
+                st.request = (PATH_REQUEST_BIND, 0, path);
+            }
+        }
+    }
+}
+
 impl FramerDoor for Scripted {
     fn facts(&self) -> &DoorFacts {
         &self.facts
@@ -283,6 +321,9 @@ impl FramerDoor for Scripted {
             Call::Begin(i, o) => {
                 let lane = read_lane(&mut st, i.lane);
                 o.framing = 7;
+                if self.knobs.dial {
+                    st.pieces.push((0, b"offer".to_vec()));
+                }
                 write_answer(&mut st, &i.sink, lane, o);
             }
             Call::Ingest(i, o) => {
@@ -295,6 +336,9 @@ impl FramerDoor for Scripted {
                         let mut w = text.split(' ');
                         let (u, pw, fp) = (w.next().unwrap(), w.next().unwrap(), w.next().unwrap());
                         st.remote = Some((u.into(), pw.into(), unhex(fp)));
+                        if let Some(c) = w.next() {
+                            st.candidates = c.split(',').map(|a| format!("{a}\n")).collect();
+                        }
                         st.terms = true;
                         st.pieces.push((0, b"description".to_vec()));
                         if self.knobs.bad_route {
@@ -317,6 +361,7 @@ impl FramerDoor for Scripted {
                     }
                     _ => {}
                 }
+                self.check_told(&mut st, lane);
                 write_answer(&mut st, &i.sink, Some(lane), o);
             }
             Call::Emit(i, o) => {
@@ -329,6 +374,9 @@ impl FramerDoor for Scripted {
             }
             Call::Timer(i, o) => {
                 let lane = read_lane(&mut st, i.lane);
+                if let Some(l) = lane {
+                    self.check_told(&mut st, l);
+                }
                 write_answer(&mut st, &i.sink, lane, o);
             }
             Call::Finish(..) => {}
@@ -361,6 +409,27 @@ struct Rig {
     got: Vec<(u64, Vec<u8>)>,
     /// Datagrams the host sent anywhere but the far end.
     elsewhere: Vec<(SocketAddr, Vec<u8>)>,
+    /// The far end's ICE agent answers the requests it is sent.
+    answers: bool,
+    /// Requests the far end was sent and did not answer.
+    unanswered: Vec<Vec<u8>>,
+    /// Every destination the judge was asked about.
+    judged: Arc<Mutex<Vec<String>>>,
+}
+
+const METADATA: &str = "169.254.169.254:3478";
+
+/// The destination judge: the link-local metadata range refused, any other literal admitted as
+/// itself.
+fn judge(asked: Arc<Mutex<Vec<String>>>) -> Arc<dyn DialJudge> {
+    Arc::new(move |dest: &str, _class: u32, _done: Judged| {
+        asked.lock().unwrap().push(dest.to_owned());
+        let addr: SocketAddr = dest.parse().ok()?;
+        match addr.ip() {
+            std::net::IpAddr::V4(v4) if v4.is_link_local() => Some(Err(7)),
+            _ => Some(Ok(addr)),
+        }
+    })
 }
 
 fn hex(b: &[u8]) -> String {
@@ -372,12 +441,33 @@ fn rig(knobs: Knobs) -> Rig {
     let host_cert = Arc::new(SessionCert::mint().unwrap());
     let far_cert = Arc::new(SessionCert::mint().unwrap());
     let host_addr = p("198.51.100.1:3478");
-    let (host, _) = DatagramFraming::accept(door.clone(), Arc::clone(&host_cert), host_addr)
+    let judged = Arc::new(Mutex::new(Vec::new()));
+    let host = if knobs.dial {
+        let opening = [("media".to_owned(), b"audio".to_vec())];
+        let (host, y) = DatagramFraming::dial(
+            door.clone(),
+            Arc::clone(&host_cert),
+            host_addr,
+            &opening,
+            judge(Arc::clone(&judged)),
+            0,
+        )
         .expect("the framing begins");
+        assert_eq!(y.pieces.len(), 1, "the dialling framing offers at once");
+        host
+    } else {
+        DatagramFraming::accept(door.clone(), Arc::clone(&host_cert), host_addr)
+            .expect("the framing begins")
+            .0
+    };
     let far = Far {
         a: Association::new(
             Arc::clone(&far_cert),
-            Role::Client,
+            if knobs.dial {
+                Role::Server
+            } else {
+                Role::Client
+            },
             &creds(FAR_UFRAG, FAR_PWD),
             &creds(HOST_UFRAG, HOST_PWD),
             host_cert.fingerprint(),
@@ -393,8 +483,14 @@ fn rig(knobs: Knobs) -> Rig {
         now: Instant::now(),
         got: Vec::new(),
         elsewhere: Vec::new(),
+        answers: true,
+        unanswered: Vec::new(),
+        judged,
     };
-    let description = format!("{FAR_UFRAG} {FAR_PWD} {}", hex(&far_cert.fingerprint()));
+    let mut description = format!("{FAR_UFRAG} {FAR_PWD} {}", hex(&far_cert.fingerprint()));
+    if knobs.dial {
+        description.push_str(&format!(" {},{METADATA},not-an-address", r.far.addr));
+    }
     let y = r
         .host
         .rendezvous(description.as_bytes(), r.now)
@@ -428,7 +524,9 @@ impl Rig {
                     continue;
                 }
                 let v = self.far.a.ingest(self.host_addr, &d, self.now);
-                if v == Verdict::Raw && is_request(&d) {
+                if v == Verdict::Raw && is_request(&d) && !self.answers {
+                    self.unanswered.push(d);
+                } else if v == Verdict::Raw && is_request(&d) {
                     // The far end's ICE agent answers the host's probe under its own password.
                     let a = answer(&d, FAR_PWD);
                     let from = self.far.addr;
@@ -623,4 +721,83 @@ fn nothing_on_the_port_is_the_associations_before_the_rendezvous() {
     // The begin told the framer the host port, and no secret.
     let seen = door.st.lock().unwrap().seen.clone();
     assert!(seen.iter().all(|s| s.keying.is_none() && !s.verified));
+}
+
+fn dialling() -> Knobs {
+    Knobs {
+        dial: true,
+        ..Knobs::default()
+    }
+}
+
+#[test]
+fn dialling_every_candidate_meets_the_judge_and_a_refused_one_is_never_sent_a_byte() {
+    let mut r = rig(dialling());
+    r.pump(200);
+    // Every advertised literal was asked about; the unparsable one never reached the judge.
+    let judged = r.judged.lock().unwrap().clone();
+    assert!(judged.contains(&r.far.addr.to_string()), "{judged:?}");
+    assert!(judged.contains(&METADATA.to_owned()), "{judged:?}");
+    assert_eq!(
+        r.host.refused_candidates(),
+        2,
+        "the metadata address and the non-address"
+    );
+    // RED: the refused candidate got no byte and was never told to the framer.
+    assert!(
+        r.elsewhere.is_empty(),
+        "nothing left for any other address: {:?}",
+        r.elsewhere
+    );
+    assert!(r
+        .seen()
+        .iter()
+        .all(|s| s.told.iter().all(|(_, a)| a != METADATA)));
+    // The admitted one binds once proven, the handshake runs and the item crosses once, verified.
+    assert_eq!(r.host.bound(), Some(r.far.addr));
+    assert!(r.host.presented());
+    let keyed: Vec<Seen> = r
+        .seen()
+        .into_iter()
+        .filter(|s| s.keying.is_some())
+        .collect();
+    assert_eq!(keyed.len(), 1);
+    assert!(keyed[0].verified);
+    assert_eq!(
+        keyed[0].keying.as_ref().unwrap().1,
+        r.far_keying().material()
+    );
+    r.host.emit(1, b"hello", true, false, r.now).unwrap();
+    r.pump(5);
+    assert!(r
+        .far
+        .ups
+        .iter()
+        .any(|u| matches!(u, Up::Plaintext(p) if p == b"hello")));
+}
+
+#[test]
+fn dialling_an_admitted_candidate_never_binds_unverified() {
+    let mut r = rig(dialling());
+    r.answers = false;
+    r.pump(200);
+    // The framer asked to bind it and the far end saw core's probes, but none was answered.
+    assert!(!r.unanswered.is_empty(), "core probed the candidate");
+    assert_eq!(r.host.bound(), None, "an unproven candidate is not bound");
+    assert!(!r.host.presented());
+    // Answers to every request it was sent, from ANOTHER source, prove nothing.
+    let unanswered = std::mem::take(&mut r.unanswered);
+    for d in &unanswered {
+        r.into_host(p("192.0.2.88:6666"), &answer(d, FAR_PWD));
+    }
+    assert_eq!(r.host.bound(), None, "an answer from elsewhere is no proof");
+    // RED arm: answered from the candidate itself, the bind applies.
+    let from = r.far.addr;
+    for d in &unanswered {
+        r.into_host(from, &answer(d, FAR_PWD));
+    }
+    r.answers = true;
+    r.pump(200);
+    assert_eq!(r.host.bound(), Some(r.far.addr));
+    assert!(r.host.presented());
 }
