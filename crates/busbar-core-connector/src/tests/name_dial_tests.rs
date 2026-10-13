@@ -283,7 +283,7 @@ fn a_name_that_does_not_resolve_fails_the_exchange_and_is_never_a_refusal() {
         let resolver = Flaky {
             up: Arc::clone(&up),
             table: Table(vec![
-                ("collector.test", [127, 0, 0, 1].into()),
+                ("collector.localhost", [127, 0, 0, 1].into()),
                 ("rebind.test", [169, 254, 169, 254].into()),
             ]),
         };
@@ -305,7 +305,7 @@ fn a_name_that_does_not_resolve_fails_the_exchange_and_is_never_a_refusal() {
         .expect("a served scheme declares");
         let host = host(&c);
         let t = table(&host);
-        let target = format!("collector.test:{port}");
+        let target = format!("collector.localhost:{port}");
         let open = |target: &str| {
             t.open(
                 NEED,

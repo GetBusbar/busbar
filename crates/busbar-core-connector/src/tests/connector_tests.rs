@@ -772,6 +772,86 @@ fn a_head_carrying_nul_or_its_own_framing_is_refused_before_any_dial() {
     });
 }
 
+/// RED (ARCHITECT ruling on #780, Part 1 Law 0 and Part 2 #3; ports the `Host` arm of
+/// `sanitize_hop_header_rejects_crlf_and_hop_control`, v1.5.5 `crates/busbar/src/auth/token.rs:805`
+/// `FORBIDDEN_HOP_HEADERS`, `crates/busbar/src/auth/tests/token_tests.rs:750-762`): where the host
+/// writes an instance's authority ([`DeclaredConns::hold_authority`], held by the loader for every
+/// auth-kind instance), an open whose head carries a `host` field of its own (any case) is REFUSED
+/// before anything is dialled, as 1.5.5 refused it on an auth module's token exchange: the far end
+/// sees no connection. The same instance's clean head opens. GREEN ARM: an instance the host holds
+/// no authority for (a plane's upstream, which may sign its `host`, SigV4) opens with the `host`
+/// field it wrote. RED on the head check that refused only the framing fields.
+#[test]
+fn an_auth_instances_own_host_field_is_refused_before_any_dial() {
+    worker().block_on(async {
+        let (l, far) = far_end().await;
+        let c = serving(Arc::new(AtomicU64::new(0)));
+        c.hold_authority(OWNER);
+        for owner in [OWNER, OTHER] {
+            c.declare_over(owner, NeedId(0), "bytes")
+                .expect("a served scheme declares");
+        }
+        for host in ["host", "Host", "HOST", " host"] {
+            let fields: &[(&str, &[u8])] = &[
+                ("content-type", b"application/x-www-form-urlencoded".as_slice()),
+                (host, b"idp.example.com".as_slice()),
+            ];
+            assert_eq!(
+                c.open(
+                    OWNER,
+                    NeedId(0),
+                    &OpenDesc {
+                        target: &far,
+                        fields,
+                        method: b"POST",
+                        head_target: b"/token",
+                        body: b"grant_type=authorization_code",
+                        ..OpenDesc::default()
+                    },
+                ),
+                Err(ConnError::Refused),
+                "the auth instance's own {host:?} field"
+            );
+        }
+        let dialled = tokio::time::timeout(std::time::Duration::from_millis(100), l.accept()).await;
+        assert!(dialled.is_err(), "a refused head dials nothing");
+        let id = c
+            .open(
+                OWNER,
+                NeedId(0),
+                &OpenDesc {
+                    target: &far,
+                    fields: &[("content-type", b"application/x-www-form-urlencoded".as_slice())],
+                    method: b"POST",
+                    head_target: b"/token",
+                    body: b"grant_type=authorization_code",
+                    ..OpenDesc::default()
+                },
+            )
+            .expect("the auth instance's clean head opens");
+        c.close(OWNER, id).unwrap();
+        // GREEN ARM: a plane's upstream keeps the `host` field it wrote (and signed).
+        let id = c
+            .open(
+                OTHER,
+                NeedId(0),
+                &OpenDesc {
+                    target: &far,
+                    fields: &[
+                        ("host", b"upstream.example.com".as_slice()),
+                        ("authorization", b"AWS4-HMAC-SHA256 Credential=AKID/20261012/us-east-1/svc/aws4_request, SignedHeaders=host;x-amz-date, Signature=00".as_slice()),
+                    ],
+                    method: b"POST",
+                    head_target: b"/v1/op",
+                    body: b"{}",
+                    ..OpenDesc::default()
+                },
+            )
+            .expect("a plane's signed host field opens");
+        c.close(OTHER, id).unwrap();
+    });
+}
+
 /// A HOST-SIDE READER awaits a connection through `poll_read`: nothing ready is `Pending` with the
 /// reader's own waker registered, the far end's bytes wake THAT waker (the task finishes without
 /// being re-polled by anything else), and no plugin ticket is ever woken.

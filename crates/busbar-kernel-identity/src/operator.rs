@@ -17,7 +17,9 @@
 use std::sync::Arc;
 
 use busbar_contract::auth::{AuthVerdict, Principal};
-use busbar_contract::auth_calls::{AuthCalls, Verified, VerifyAnswer, VerifyRequest};
+use busbar_contract::auth_calls::{
+    AuthCalls, Replay, Strip, Verified, VerifyAnswer, VerifyRequest,
+};
 
 /// A linked auth row: the key configuration names it by (and the auth catalog, `/info` and every
 /// refusal print), its CANONICAL name (the manifest name its release tarball carries, which config
@@ -183,30 +185,68 @@ pub fn migrated_token(op: &str) -> String {
     format!("governance.admin_token -> auth.admin_auth: [ {op}: {{ token: <secret-ref> }} ]")
 }
 
-/// What the operator credential answered one request.
+/// What the operator credential answered one request, and what rides with it: the verdict (or why
+/// there is none), the identity's replay claim and the lines the plugin named. Nothing of a `verify`
+/// answer is dropped here: the admin door claims the replay before it admits, and strips the lines
+/// before any plane sees the request (THE DESIGN §6, Inbound verify; §6.4).
 #[derive(Debug)]
-pub enum Judgement {
-    /// A verdict: identified, a bad credential (1.5.5's refusal bytes), or not its credential.
-    Verdict(AuthVerdict),
-    /// The verifier's `max_inflight` is full and the call was not queued: the request is answered
-    /// 503 unavailable, never refused as a bad credential (THE DESIGN's overloaded-verifier ruling).
-    Overloaded,
-    /// The verifier answered no verdict (FAILED, FAULT, REFUSED, a timeout): an outage, distinct
-    /// from a bad credential, as a login's `LoginOutcome::Outage` is (ARCHITECT ruling 2026-09-30,
-    /// AUTH-DOOR Q1).
-    Outage,
+pub struct Judgement {
+    /// A verdict — identified, a bad credential (1.5.5's refusal bytes), or not its credential — or
+    /// why the chain cannot be judged: the verifier is overloaded (its `max_inflight` full, the call
+    /// not queued) or answered no verdict (FAILED, FAULT, REFUSED, a timeout), each answered 503
+    /// unavailable, never refused as a bad credential (ARCHITECT ruling 2026-09-30, AUTH-DOOR Q1).
+    pub outcome: Result<AuthVerdict, AdminUnavailable>,
+    /// The replay claim the identity asks for (THE DESIGN §6, Inbound verify): the caller admits the
+    /// identity only once it wins the claim. `None` = none, or no identity.
+    pub replay: Option<Box<Replay>>,
+    /// The credential lines and query keys the plugin named, whatever its verdict: they are struck
+    /// before any plane sees the request (THE DESIGN §6.4).
+    pub strips: Vec<Strip>,
 }
 
 impl Judgement {
-    /// The judgement as the admin chain walks it: a verdict, or the chain cannot be judged.
-    ///
-    /// # Errors
-    /// The verifier is overloaded or answered no verdict.
-    pub fn verdict(self) -> Result<AuthVerdict, AdminUnavailable> {
-        match self {
-            Self::Verdict(v) => Ok(v),
-            Self::Overloaded => Err(AdminUnavailable::Overloaded),
-            Self::Outage => Err(AdminUnavailable::Outage),
+    /// `verdict` alone: no claim, nothing named.
+    #[must_use]
+    pub fn of(verdict: AuthVerdict) -> Self {
+        Self::carrying(Ok(verdict), Vec::new())
+    }
+
+    /// The chain cannot be judged (`why`), with nothing named.
+    #[must_use]
+    pub fn unavailable(why: AdminUnavailable) -> Self {
+        Self::carrying(Err(why), Vec::new())
+    }
+
+    /// `outcome` with the lines `strips` and no claim.
+    fn carrying(outcome: Result<AuthVerdict, AdminUnavailable>, strips: Vec<Strip>) -> Self {
+        Self {
+            outcome,
+            replay: None,
+            strips,
+        }
+    }
+
+    /// A `verify` answer as a chain reads it: the verdict, the identity's replay claim, and the
+    /// lines the plugin named, whatever its verdict. An overloaded verifier and one that answered no
+    /// verdict keep the lines they named.
+    #[must_use]
+    pub fn answered(answer: VerifyAnswer) -> Self {
+        let strips = answer.strips;
+        match answer.verified {
+            Verified::Identity(id) => Self {
+                outcome: Ok(AuthVerdict::Identify(Principal {
+                    id: id.subject,
+                    name: id.name,
+                    roles: id.groups,
+                    ttl_secs: id.ttl_secs,
+                })),
+                replay: id.replay,
+                strips,
+            },
+            Verified::Reject => Self::carrying(Ok(AuthVerdict::Reject), strips),
+            Verified::Pass => Self::carrying(Ok(AuthVerdict::Pass), strips),
+            Verified::Overloaded => Self::carrying(Err(AdminUnavailable::Overloaded), strips),
+            Verified::Failed => Self::carrying(Err(AdminUnavailable::Outage), strips),
         }
     }
 }
@@ -228,23 +268,6 @@ impl AdminUnavailable {
     /// overloaded verifier does (ARCHITECT ruling 2026-09-30, AUTH-DOOR: no new customer string).
     pub fn message(self) -> &'static str {
         "the admin credential verifier is overloaded; retry shortly"
-    }
-}
-
-/// A `verify` answer as the admin chain reads it. The strips are the transport's, never the
-/// chain's.
-fn judgement(answer: VerifyAnswer) -> Judgement {
-    match answer.verified {
-        Verified::Identity(id) => Judgement::Verdict(AuthVerdict::Identify(Principal {
-            id: id.subject,
-            name: id.name,
-            roles: id.groups,
-            ttl_secs: id.ttl_secs,
-        })),
-        Verified::Reject => Judgement::Verdict(AuthVerdict::Reject),
-        Verified::Pass => Judgement::Verdict(AuthVerdict::Pass),
-        Verified::Overloaded => Judgement::Overloaded,
-        Verified::Failed => Judgement::Outage,
     }
 }
 
@@ -285,27 +308,26 @@ impl OperatorCredential {
     pub async fn judge(&self, request: VerifyRequest) -> Option<Judgement> {
         let module = match self {
             Self::Unanswered => return None,
-            Self::Unset => return Some(Judgement::Verdict(AuthVerdict::Pass)),
+            Self::Unset => return Some(Judgement::of(AuthVerdict::Pass)),
             Self::Module(module) => module,
         };
-        Some(judgement(module.verify(request).await))
+        Some(Judgement::answered(module.verify(request).await))
     }
 
     /// The SYNCHRONOUS PROBE of the same judgement: one ticketless, watchdog-bounded crossing on
     /// the caller's thread (`verify_now`), for a caller that cannot await (the dry run, the root's
-    /// admin door). A plugin that must wait answers no verdict here, which is a
-    /// [`Judgement::Outage`] — the probe fails closed.
+    /// admin door). A plugin that must wait answers no verdict here, which is an
+    /// [`AdminUnavailable::Outage`] — the probe fails closed.
     pub fn probe(&self, request: &VerifyRequest) -> Option<Judgement> {
         let module = match self {
             Self::Unanswered => return None,
-            Self::Unset => return Some(Judgement::Verdict(AuthVerdict::Pass)),
+            Self::Unset => return Some(Judgement::of(AuthVerdict::Pass)),
             Self::Module(module) => module,
         };
-        Some(
-            module
-                .verify_now(request)
-                .map_or(Judgement::Outage, judgement),
-        )
+        Some(module.verify_now(request).map_or_else(
+            || Judgement::unavailable(AdminUnavailable::Outage),
+            Judgement::answered,
+        ))
     }
 }
 
