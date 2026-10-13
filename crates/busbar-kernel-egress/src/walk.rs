@@ -54,6 +54,21 @@ pub struct WalkPorts<'p> {
     pub pools: &'p HashMap<String, Pool>,
 }
 
+/// THE SHAPE A UNIT'S HOOKS PUT ON ITS PICKS (the design's route pump, "Hooks": the routing-stage policy
+/// keeps and orders the routed pool's members; a required restrict holds a pool the walk spills
+/// into): each pick's admissible members, the ones kept, and the order the walk prefers among them
+/// (empty = the weighted floor's own). `None` = a required restriction no member satisfies: the
+/// walk answers [`Shed::restrict_no_lane`] from there.
+pub trait Shape {
+    /// `members` of a pick, as the unit's hooks leave them: the walk's own pool (`primary`) or a
+    /// pool it spills into.
+    fn shape(
+        &self,
+        members: Vec<Member>,
+        primary: bool,
+    ) -> Option<(Vec<Member>, Vec<DestinationId>)>;
+}
+
 /// The walk's whole budget over `pool`, seconds: the pool's request timeout, `0` for a pool that is
 /// not configured.
 #[must_use]
@@ -184,6 +199,17 @@ impl Walk {
         &self.ctx
     }
 
+    /// The pool the walk is in and whether it is the walk's own (`true`) rather than a spill;
+    /// `None` once every path is spent.
+    #[must_use]
+    pub fn walking(&self) -> Option<(&str, bool)> {
+        match &self.phase {
+            Phase::Primary(name) => Some((name, true)),
+            Phase::Spill(name) | Phase::Terminal(name) => Some((name, false)),
+            Phase::Shed(_) => None,
+        }
+    }
+
     /// The walk ends here, before its pool's terminal: every step from now answers `shed`.
     pub fn refuse(&mut self, shed: Shed) {
         self.phase = Phase::Shed(shed);
@@ -204,6 +230,17 @@ impl Walk {
         affinity: Option<u64>,
         token: &Pass<Route>,
     ) -> Step {
+        self.next_shaped(ports, affinity, None, token)
+    }
+
+    /// [`Self::next`], each pick's members as the unit's hooks `shape` them.
+    pub fn next_shaped(
+        &mut self,
+        ports: &WalkPorts<'_>,
+        affinity: Option<u64>,
+        shape: Option<&dyn Shape>,
+        token: &Pass<Route>,
+    ) -> Step {
         loop {
             if self.ctx.expired(ports.clock.now_secs()) {
                 return Step::Shed(Shed::request_timeout());
@@ -218,9 +255,13 @@ impl Walk {
                         return Step::Shed(Shed::empty_pool());
                     }
                     if self.hops <= pool.failover.max_hops {
-                        if let Some(taken) = self.pick(ports, pool, affinity, token, true) {
-                            self.hops += 1;
-                            return Step::Take(taken);
+                        match self.pick(ports, pool, affinity, shape, token, true) {
+                            Ok(Some(taken)) => {
+                                self.hops += 1;
+                                return Step::Take(taken);
+                            }
+                            Ok(None) => {}
+                            Err(shed) => return Step::Shed(shed),
                         }
                     }
                     self.phase = Phase::Terminal(name);
@@ -229,8 +270,10 @@ impl Walk {
                     let Some(pool) = ports.pools.get(&name) else {
                         return Step::Shed(pool_shed(ports, &name, token));
                     };
-                    if let Some(taken) = self.pick(ports, pool, None, token, false) {
-                        return Step::Take(taken);
+                    match self.pick(ports, pool, None, shape, token, false) {
+                        Ok(Some(taken)) => return Step::Take(taken),
+                        Ok(None) => {}
+                        Err(shed) => return Step::Shed(shed),
                     }
                     self.phase = Phase::Terminal(name);
                 }
@@ -285,17 +328,34 @@ impl Walk {
 
     /// THE ONE PICK, over `pool`'s members this unit has not tried: the walk's own pool
     /// (`primary`, with the unit's affinity) and every pool it spills into (degraded).
+    ///
+    /// # Errors
+    ///
+    /// The unit's hooks hold the pool to a restriction no member satisfies: that shed, which every
+    /// step from here answers.
     fn pick(
         &mut self,
         ports: &WalkPorts<'_>,
         pool: &Pool,
         affinity: Option<u64>,
+        shape: Option<&dyn Shape>,
         token: &Pass<Route>,
         primary: bool,
-    ) -> Option<Taken> {
-        let members = pool.admissible_members();
+    ) -> Result<Option<Taken>, Shed> {
+        let admissible = pool.admissible_members().into_owned();
+        let (members, order) = match shape {
+            Some(shape) => match shape.shape(admissible, primary) {
+                Some(shaped) => shaped,
+                None => {
+                    let shed = Shed::restrict_no_lane();
+                    self.phase = Phase::Shed(shed.clone());
+                    return Err(shed);
+                }
+            },
+            None => (admissible, Vec::new()),
+        };
         let now = ports.clock.now_secs();
-        let mut picked = pick_among(
+        let Some(mut picked) = pick_among(
             &PickInput {
                 breaker: ports.breaker,
                 capacity: ports.capacity,
@@ -303,18 +363,29 @@ impl Walk {
                 pool: &pool.name,
                 members: &members,
                 affinity,
-                preference: None,
+                preference: (!order.is_empty()).then_some(order.as_slice()),
                 now,
                 token,
             },
             &mut self.ctx,
-        )?;
-        let member = members
+        ) else {
+            return Ok(None);
+        };
+        let Some(member) = members
             .iter()
-            .find(|m| m.destination == picked.destination)?
-            .clone();
+            .find(|m| m.destination == picked.destination)
+            .cloned()
+        else {
+            return Ok(None);
+        };
         let probe = picked.take_probe_epoch();
-        Some(self.take(&pool.name, member, picked.permit, probe, !primary))
+        Ok(Some(self.take(
+            &pool.name,
+            member,
+            picked.permit,
+            probe,
+            !primary,
+        )))
     }
 
     /// Take `member` of `pool` for the next attempt: excluded from every pick of the unit after it.

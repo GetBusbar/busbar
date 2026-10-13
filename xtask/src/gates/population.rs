@@ -43,15 +43,17 @@ use crate::ctx::{Ctx, Overlay, SourceFile, WalkSpec};
 /// dispatch/inline.rs, dispatch/io_slots.rs) and remove three (`busbar-core-connector` stream.rs,
 /// `busbar-transport-stdio` carrier.rs and conn.rs, whose work moved to the host's I/O). Lowered
 /// from 948 to 947 when #703 (the MCP-FIX stack) deleted `busbar-plane-mcp/src/tool_plane.rs` and
-/// `outputschema.rs` and added `door_sessions.rs`, a reviewed net removal of one file. Lowered
-/// from 947 to 932 when FLIP-STREAMING (#503) deleted the `busbar-voice` crate (its sessions are
-/// served through the streaming plane's door), merged with predev 1617e9f019: a reviewed removal
-/// of a whole crate (941 -> 926 on the branch alone, 15 non-test files across the crate). A drop
-/// below 932 is refused until a reviewed diff re-measures. The selftest plant ([`one_file_short`])
-/// cuts the live population to `FLOOR - 1` whatever its size, so predev growing a file no longer
-/// forces a re-pin for the plant's sake. Lowering the floor is how a gate stops reading the
-/// repository without saying so, so a diff that lowers it is the diff to refuse.
-pub const FLOOR: usize = 932;
+/// `outputschema.rs` and added `door_sessions.rs`, a reviewed net removal of one file. Raised from
+/// 947 to 949 when FLIP-LLM (#464) added `busbar/src/root/model_egress.rs` and
+/// `busbar-plane-llm/src/exchange/project.rs` (it had raised 941 to 943 over predev d7929b661d).
+/// Lowered from 949 to 934 when FLIP-STREAMING (#503) deleted the `busbar-voice` crate (its sessions
+/// are served through the streaming plane's door), merged with predev 561c69a3fd: a reviewed
+/// removal of a whole crate (941 -> 926 on the branch alone, 15 non-test files across the crate). A
+/// drop below 934 is refused until a reviewed diff re-measures. The selftest plant
+/// ([`one_file_short`]) cuts the live population to `FLOOR - 1` whatever its size, so predev
+/// growing a file no longer forces a re-pin for the plant's sake. Lowering the floor is how a gate
+/// stops reading the repository without saying so, so a diff that lowers it is the diff to refuse.
+pub const FLOOR: usize = 934;
 
 /// The `.rs` under `crates/` that are not test scaffolding, plus the accounting to refuse a
 /// population that cannot support a verdict.

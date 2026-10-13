@@ -137,6 +137,9 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     max_citations_per_delta: None,
     // OpenAI Python SDK UA (the Responses surface shares it). RELEASE OBLIGATION: re-verify/bump per
     // release; the `test_egress_ua_versions_are_pinned_and_present` guard forces a conscious change.
+    // OWNER RULING Q10: the plane writes this on a translated route into this dialect, on a
+    // same-dialect route whose caller sent no user-agent (1.5.5's bytes), and on the
+    // kernel-originated health probe; a same-dialect caller's own user-agent replaces it.
     egress_user_agent: "OpenAI/Python 1.54.0",
     has_model_in_url: false,
     auth_failure_status_and_kind: (
