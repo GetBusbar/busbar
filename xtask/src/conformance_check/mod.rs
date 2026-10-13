@@ -1,8 +1,9 @@
 //! `cargo xtask conformance check` — the TURNSTILE-FACING per-suite conformance admission command.
 //!
-//! This is the one command the release pipeline's `busbar-release-turnstile` shells to as a
-//! `CommandCheck` (`CONFORMANCE-GATES-PLAN.md` §1.3: turnstile drives everything as local
-//! subprocesses over a busbar checkout, never GitHub check-runs). It answers exactly one question
+//! This is the one command the pipeline shells to: ModernCI's `conformance` check on the
+//! `predev` -> `dev` move (`.ci/predev.yaml`) runs it over a busbar checkout, as a local subprocess,
+//! never a GitHub check-run (`CONFORMANCE-GATES-PLAN.md` §1.3; the busbar-release turnstile that ran
+//! it before is deleted). It answers exactly one question
 //! per invocation — "is this suite a fresh green, right now, on this commit" — and answers it
 //! deny-safe: every error path (missing manifest, unparseable manifest, unregistered suite id,
 //! missing/absent verdict commit, a non-pass status, a stale pass) is a REFUSAL, never a silent 0.

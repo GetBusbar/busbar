@@ -3356,7 +3356,7 @@ pub static REGISTRY: &[Registration] = &[
     },
     // THE ONE-MEMORY-ABI GATES (M0 ABI-SPEC; the design's locked plugin ABI). REPORT-ONLY: each is
     // armed at today's count as a drain-only ledger qa/<name>.toml whose rows are the M2 work
-    // list, and the pipeline's turnstile runs them like every registered gate.
+    // list, and the pipeline (ModernCI's `gates` check) runs them like every registered gate.
     Registration {
         name: "one-memory-abi",
         batch: 1,
