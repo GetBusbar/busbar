@@ -32,30 +32,36 @@ use std::collections::BTreeMap;
 /// it could be quantised at and nothing to choose between. A denomination-dependent conversion would
 /// be a cross-rate by another name.
 ///
-/// Multiply by a thousand and round to nearest, half away from zero, exactly once. A value that is
-/// not finite, not positive, or too large for a `u64` to hold becomes zero: config validation should
-/// already have refused it, and a rate of zero is the safe reading of a value nobody can price. The
-/// test that a bare cast would pass is the infinite one and the finite-but-overflowing one alike —
-/// casting a float outside the target range to an integer SATURATES to the largest integer there is,
-/// which would be a garbage rate (an astronomical overcharge) rather than the intended defence,
-/// whether the float that produced it was infinite or merely a config typo with too many zeros.
+/// Multiply by a thousand and round to nearest, half away from zero, exactly once — IN DECIMAL, never
+/// in binary floating point (#81, #77(8)). The configured figure arrives as the double the config
+/// parser read, and that double is NOT the number the operator wrote: `0.3` is held as
+/// `0.299999999999999988898…` and `0.5005` as `0.500499999999999944…`, so `(v * 1000.0).round()`
+/// rounded the exact half-nano `0.5005` DOWN to 500 where #44's half-away-from-zero says 501. The
+/// conversion therefore reads back the DECIMAL the operator wrote — `Display` prints the shortest
+/// text that reads back as this double, never in exponent form, so `0.3` is `"0.3"` — and does
+/// the multiply and the rounding on its digits: the first three decimals are the nano-units, the
+/// fourth alone decides the half. Every rate of up to three decimals converts to exactly the integer
+/// it always did; the only rates that move are exact halves the binary product had pushed below the
+/// half, and they move to #44's answer.
+///
+/// A value that is not finite, not positive, or too large for a `u64` of nano-units becomes zero:
+/// config validation should already have refused it, and a rate of zero is the safe reading of a
+/// value nobody can price. There is no saturating cast to guard against here — a whole part past
+/// the integer is a failed parse or a failed checked multiply, both of which are the zero.
 pub fn nano_rate(micro_per_unit: f64) -> u64 {
-    let v = (micro_per_unit * 1000.0).round();
-    // REJECT AT THE TRUE BOUNDARY. `u64::MAX` is `2^64 - 1`, which an `f64` cannot represent, so
-    // `u64::MAX as f64` rounds UP to exactly `2^64` and a `v <= u64::MAX as f64` guard admits a
-    // finite `v == 2^64` — one past the top — which `v as u64` then SATURATES to `u64::MAX`: the
-    // astronomical overcharge described above, arriving at the one input the guard was written to
-    // stop. Comparing against `2^64` itself is the boundary the cast actually has, so an
-    // out-of-range value falls to `0` as the paragraph above promises.
-    //
-    // BYTE-NEUTRAL for every rate a deployment can hold: the largest `f64` strictly below `2^64` is
-    // `2^64 - 2048`, it still passes, and it still converts to itself. Exactly one `f64` changes
-    // answer, and it is the one that was never a rate.
-    if v.is_finite() && v > 0.0 && v < 2.0_f64.powi(64) {
-        v as u64
-    } else {
-        0
+    if !micro_per_unit.is_finite() || micro_per_unit <= 0.0 {
+        return 0;
     }
+    let text = micro_per_unit.to_string();
+    let (whole, frac) = text.split_once('.').unwrap_or((text.as_str(), ""));
+    let digit = |i: usize| frac.as_bytes().get(i).map_or(0, |d| u64::from(d - b'0'));
+    whole
+        .parse::<u64>()
+        .ok()
+        .and_then(|whole| whole.checked_mul(1000))
+        .and_then(|nanos| nanos.checked_add(digit(0) * 100 + digit(1) * 10 + digit(2)))
+        .and_then(|nanos| nanos.checked_add(u64::from(digit(3) >= 5)))
+        .unwrap_or(0)
 }
 
 /// **THE CARD-BUILD QUESTION**: can the card hold this configured rate as what it says it is?
@@ -94,7 +100,7 @@ pub const CLASS_CACHE_READ: &str = "cache_read";
 /// The cache-write (cache creation) meter class.
 pub const CLASS_CACHE_WRITE: &str = "cache_write";
 
-/// ONE LANE'S CONFIGURED RATES, in micro-units per unit of quantity — the neutral raw-value view a
+/// ONE LANE'S CONFIGURED RATES, as exact integer nano-units per unit of quantity — the neutral view a
 /// card is built from.
 ///
 /// A small record of the section's raw scalars in a canonical order, and deliberately nothing more:
@@ -107,23 +113,37 @@ pub const CLASS_CACHE_WRITE: &str = "cache_write";
 /// token classes a 1.5.5 deployment configures, and a card's class map is string-keyed, so seconds,
 /// bytes and any other declared class price through the same card with no type change.
 ///
-/// FLOATS LIVE ONLY HERE. [`RateCard::from_config`] converts each one to an integer nano-unit rate
-/// exactly once, and no decimal touches money after that.
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
+/// NO FLOAT LIVES HERE (#81, #77(8)). Each configured decimal was converted to its integer nano-unit
+/// rate ONCE, at the config intake, by [`representable_nano_rate`]; this record and every hop that
+/// carries it hold that integer. `None` is a configured rate the card cannot hold (item 22), placed
+/// as an UNPRICED cell so a hit refuses (#42) — never a zero.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TierRates {
-    /// Micro-units per uncached input unit.
-    pub input: f64,
-    /// Micro-units per response unit.
-    pub output: f64,
-    /// Micro-units per cache-read unit.
-    pub cache_read: f64,
-    /// Micro-units per cache-write unit.
-    pub cache_write: f64,
+    /// Nano-units per uncached input unit.
+    pub input: Option<u64>,
+    /// Nano-units per response unit.
+    pub output: Option<u64>,
+    /// Nano-units per cache-read unit.
+    pub cache_read: Option<u64>,
+    /// Nano-units per cache-write unit.
+    pub cache_write: Option<u64>,
+}
+
+impl Default for TierRates {
+    /// Every class configured at zero: an omitted tier prices at 0, as 1.5.5's did.
+    fn default() -> Self {
+        TierRates {
+            input: Some(0),
+            output: Some(0),
+            cache_read: Some(0),
+            cache_write: Some(0),
+        }
+    }
 }
 
 impl TierRates {
     /// The four rates paired with the class each one prices, in the canonical order.
-    fn by_class(self) -> [(&'static str, f64); 4] {
+    fn by_class(self) -> [(&'static str, Option<u64>); 4] {
         [
             (CLASS_INPUT, self.input),
             (CLASS_OUTPUT, self.output),
@@ -323,14 +343,28 @@ impl RateCard {
         }
     }
 
-    /// Resolve a card from configured micro-unit rates. Each rate converts to nano-units once,
-    /// here, and never again.
+    /// Resolve a card from configured micro-unit rates. Each rate converts to nano-units once, by
+    /// [`representable_nano_rate`] — the one conversion — and never again.
     ///
     /// A configured value the card cannot represent ([`representable_nano_rate`] answers `None`)
     /// lands as an UNPRICED cell of its lane and is listed in [`Self::refused_cells`] — never as a
     /// cell priced at zero (item 22).
     pub fn from_micro_rates(
         entries: impl IntoIterator<Item = (LaneClass, f64)>,
+        per_request_fee: i64,
+    ) -> Self {
+        RateCard::from_cells(
+            entries
+                .into_iter()
+                .map(|(cell, micro)| (cell, representable_nano_rate(micro))),
+            per_request_fee,
+        )
+    }
+
+    /// A present card from cells ALREADY converted at the intake: `Some` an integer nano-unit rate,
+    /// `None` a configured rate the card cannot hold (placed UNPRICED, item 22). No decimal enters.
+    fn from_cells(
+        entries: impl IntoIterator<Item = (LaneClass, Option<u64>)>,
         per_request_fee: i64,
     ) -> Self {
         let mut card = RateCard {
@@ -341,8 +375,8 @@ impl RateCard {
             planes: BTreeMap::new(),
             session_fee: 0,
         };
-        for (cell, micro) in entries {
-            card.place_rate(cell, micro);
+        for (cell, nanos) in entries {
+            card.place_rate(cell, nanos);
         }
         card
     }
@@ -410,7 +444,7 @@ impl RateCard {
         let Some(lanes) = lanes else {
             return RateCard::absent(per_request_fee);
         };
-        let mut by_plane: BTreeMap<&str, Vec<(LaneClass, f64)>> = BTreeMap::new();
+        let mut by_plane: BTreeMap<&str, Vec<(LaneClass, Option<u64>)>> = BTreeMap::new();
         for (key, tiers) in lanes {
             let (plane, lane) = split_plane_lane(key);
             let cells = by_plane.entry(plane).or_default();
@@ -418,20 +452,20 @@ impl RateCard {
                 cells.extend(
                     tiers
                         .by_class()
-                        .map(|(class, micro)| (LaneClass::new(lane, class), micro)),
+                        .map(|(class, nanos)| (LaneClass::new(lane, class), nanos)),
                 );
             }
         }
         let flat_present = flat_card_present(by_plane.keys().copied());
         let flat = by_plane.remove("").unwrap_or_default();
         let mut card = if flat_present {
-            RateCard::from_micro_rates(flat, per_request_fee)
+            RateCard::from_cells(flat, per_request_fee)
         } else {
             RateCard::absent(per_request_fee)
         };
         card.planes = by_plane
             .into_iter()
-            .map(|(plane, cells)| (plane.to_string(), RateCard::from_micro_rates(cells, 0)))
+            .map(|(plane, cells)| (plane.to_string(), RateCard::from_cells(cells, 0)))
             .collect();
         card
     }
@@ -616,7 +650,7 @@ impl RateCard {
     ///
     /// A value the card cannot represent leaves the cell UNPRICED (and records it in
     /// [`Self::refused_cells`]) — it never sets a zero the operator did not configure (item 22).
-    fn place_rate(&mut self, cell: LaneClass, micro_per_unit: f64) {
+    fn place_rate(&mut self, cell: LaneClass, nanos_per_unit: Option<u64>) {
         self.present = true;
         let slot = self
             .prices
@@ -624,7 +658,7 @@ impl RateCard {
             .or_default()
             .entry(cell.class.clone())
             .or_default();
-        match representable_nano_rate(micro_per_unit) {
+        match nanos_per_unit {
             Some(nanos) => {
                 slot.set(nanos);
                 self.refused.retain(|r| r != &cell);

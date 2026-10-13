@@ -32,7 +32,8 @@ use crate::billing::RawTierRates;
 /// the card is a price derived where nobody can see it. So the seam spells a flat minor-unit figure
 /// and leaves the word "fee" to the crate entitled to say it.
 pub struct RawRates<'r> {
-    /// `(lane, its four raw micro-per-token tier rates)`, as configured.
+    /// `(lane, its four tier rates)` in exact nano-units per token, as the config intake converted
+    /// them once (#81: no float crosses this seam).
     pub lanes: &'r [(String, RawTierRates)],
     /// `(lane, open class, nano-units per unit)` for every open-class rate a lane's `units:` names
     /// (item 123) — so a card rebuilt from this view prices the open classes the live one does.

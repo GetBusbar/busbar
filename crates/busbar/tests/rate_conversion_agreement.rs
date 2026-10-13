@@ -15,8 +15,9 @@
 //! It noticed. A clamp for a finite-but-overflowing rate landed on one copy and not the other, and
 //! the two answered a config typo with too many zeros as "prices at nothing" and "prices at the
 //! largest rate there is". A test that catches a drift is not as good as an arithmetic that cannot
-//! drift, so the live door's projection, the kernel's `RateNanos::from_raw`, CALLS the ledger's
-//! conversion.
+//! drift, so the live door reads the rate the CONFIG INTAKE converted once
+//! (`RateEntryCfg::raw_tier_rates`, which calls the ledger's conversion), and `RateNanos::from_raw`
+//! copies those integers — no float crosses into it at all (#81).
 //!
 //! What is left is a guard against the second copy coming back. Both sides of every assertion below
 //! are the same function today — and the moment somebody re-forks those three lines to "avoid a
@@ -34,19 +35,19 @@
 //! than read off the implementation, and the agreement assertion rides alongside it as the
 //! second-copy tripwire it was always meant to be.
 
-use busbar_contract::billing::RawTierRates;
+use busbar_kernel::config::RateEntryCfg;
 use busbar_kernel::cost::RateNanos;
 use busbar_kernel_ledger::cost::{nano_rate, LaneClass, Money, RateCard, NANOS_PER_CENT};
 
-/// The live door's conversion, asked for one rate: the kernel's `RateNanos::from_raw`, the second
-/// reader of the configured decimal.
+/// The live door's rate, asked for one configured figure: the config intake
+/// (`RateEntryCfg::raw_tier_rates`) and then the kernel's `RateNanos` projection of what it carried.
 ///
-/// Its projection converts all four reserved token rates at once, so the value under test goes into
+/// The intake converts all four reserved token rates at once, so the value under test goes into
 /// the first slot and the answer is read back out of it.
 fn admission_nano_rate(micro_per_unit: f64) -> u64 {
-    RateNanos::from_raw(&RawTierRates {
-        input: micro_per_unit,
-        ..RawTierRates::default()
+    RateNanos::from_cfg(&RateEntryCfg {
+        input_utok: micro_per_unit,
+        ..RateEntryCfg::default()
     })
     .input
 }
@@ -105,35 +106,18 @@ fn the_two_conversions_agree_on_ten_thousand_generated_rates() {
 /// is useful: as the tripwire for a second copy of those three lines coming back.
 ///
 /// The expected column is derived from the rule, not read off the implementation: multiply the
-/// configured decimal by a thousand, round half away from zero (#44 — card-build quantization is
-/// half-away-from-zero, and `f64::round` IS that rule), and take it only if it lands strictly inside
-/// `(0, 2^64)`.
+/// configured DECIMAL by a thousand, round half away from zero (#44), and take it only if it is
+/// positive and fits a `u64`. The decimal, not the double: `0.5005` is an exact half nano-unit and
+/// rounds UP to 501, where the binary product `0.5005 * 1000.0` is `500.4999…` and rounded DOWN to
+/// 500 (#81: no binary float on the money path).
 ///
-/// `CEILING_MICRO` IS THE SHARP ONE. `u64::MAX` is `2^64 - 1`, which no `f64` represents, so
-/// `u64::MAX as f64` rounds UP to exactly `2^64` — this constant is NOT "the largest configured
-/// micro-rate whose ×1000 still fits a `u64`", as it was once described here. Its `×1000` is one
-/// past the top, and a float-to-integer cast SATURATES rather than wrapping, so a guard written
-/// `v <= u64::MAX as f64` converted this value to `u64::MAX`: an astronomical overcharge, from a
-/// config typo, at the one input the guard existed to stop. It is kept as a case, with `0` written
-/// beside it, because it is the exact value that was wrong.
+/// THE CEILING IS AN INTEGER ONE. The conversion used to cast a float, and `u64::MAX as f64` rounds
+/// UP to `2^64`, so a guard spelled against it let a cast SATURATE to `u64::MAX` — an astronomical
+/// overcharge from a config typo. The conversion is a checked integer multiply now: the last
+/// configured rate whose nano-units fit converts exactly, and the next one prices at nothing.
 #[test]
 fn every_boundary_value_converts_to_its_named_integer_and_both_readers_agree() {
-    // The value `u64::MAX as f64` really is `2^64`, asserted rather than assumed: the whole defect
-    // this table now pins is that one silent rounding-up.
-    assert_eq!(u64::MAX as f64, 2.0_f64.powi(64));
-
-    // The micro-rate whose ×1000 lands exactly on `2^64` — one past the largest integer a `u64`
-    // holds. Written as arithmetic on `u64::MAX` rather than as a literal, so the case follows the
-    // type; the name is kept for continuity, but it is a ceiling that does NOT fit, which is why the
-    // expected answer beside it is nothing.
-    const CEILING_MICRO: f64 = (u64::MAX as f64) / 1000.0;
-
-    // The largest `f64` STRICTLY below `2^64`, as a micro-rate: the neighbour on the legal side of
-    // the same edge. It must still convert. This row is what makes the row above a one-value
-    // correction rather than a clamp that swallowed the top of the range.
-    let last_below_micro = f64::from_bits(2.0_f64.powi(64).to_bits() - 1) / 1000.0;
-
-    let cases: [(f64, u64, &str); 24] = [
+    let cases: [(f64, u64, &str); 25] = [
         (0.0, 0, "zero is not a rate"),
         (0.0004, 0, "below the half-nano-unit boundary: floors to nothing"),
         (0.0005, 1, "exactly a half nano-unit: rounds AWAY from zero"),
@@ -141,6 +125,16 @@ fn every_boundary_value_converts_to_its_named_integer_and_both_readers_agree() {
         (0.0015, 2, "one and a half: rounds to two"),
         (0.001, 1, "exactly one nano-unit"),
         (1.0, 1_000, "one micro-unit is a thousand nano-units"),
+        (
+            0.5005,
+            501,
+            "an exact half the binary product (`500.4999…`) rounded DOWN to 500: the decimal says 501",
+        ),
+        (
+            0.5015,
+            502,
+            "the same, one nano-unit up: `501.4999…` rounded to 501, the decimal says 502",
+        ),
         (10_000.0, 10_000_000, "ten thousand micro-units, converted flat"),
         (f64::MIN_POSITIVE, 0, "the smallest positive f64 rounds to nothing"),
         (-0.0, 0, "negative zero is still not a rate"),
@@ -150,16 +144,14 @@ fn every_boundary_value_converts_to_its_named_integer_and_both_readers_agree() {
         (f64::NEG_INFINITY, 0, "not finite and not positive"),
         (f64::MAX, 0, "finite, but times a thousand it is not"),
         (
-            CEILING_MICRO,
-            0,
-            "ONE PAST THE TOP: `u64::MAX as f64` is 2^64, and the cast beneath the guard SATURATES \
-             — this must price at nothing, never at u64::MAX",
+            18_446_744_073_709_548.0,
+            18_446_744_073_709_548_000,
+            "the last rate under the ceiling converts EXACTLY (the float product was …547_520)",
         ),
-        (CEILING_MICRO * 2.0, 0, "finite, and further past it"),
         (
-            last_below_micro,
-            18_446_744_073_709_547_520,
-            "the legal neighbour of the same edge still converts",
+            18_446_744_073_709_556.0,
+            0,
+            "one past what a u64 of nano-units holds: nothing, never u64::MAX",
         ),
         (1e15, 1_000_000_000_000_000_000, "x1000 is 1e18: comfortably inside"),
         (

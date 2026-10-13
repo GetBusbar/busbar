@@ -27,7 +27,7 @@ fn card() -> RateCard {
     let flat = BTreeMap::from([(
         "lane-flat".to_string(),
         TierRates {
-            input: 1.0,
+            input: Some(1_000),
             ..TierRates::default()
         },
     )]);

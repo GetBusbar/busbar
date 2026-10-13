@@ -10,8 +10,8 @@
 //! → pricing is an exhaustive match, so adding a unit is a compile error at every price site.
 //!
 //! [`Usage`] is the ONE neutral carrier a plane hands the kernel, [`TokenUsage`] the token total a
-//! reader projects, and [`RawTierRates`] the neutral raw-rate view a plane fills from its own rate
-//! card grammar. Every side of the seam must agree on these fields, which is what makes them shapes.
+//! reader projects, and [`RawTierRates`] the neutral exact tier-rate view a plane fills from its own
+//! rate card grammar. Every side of the seam must agree on these fields, which is what makes them shapes.
 //!
 //! RELOCATED, module-path-only and byte-identical, from `busbar-substrate-values::billing`, which
 //! re-exports every item here under its historical path so every caller compiles unchanged. The
@@ -157,43 +157,45 @@ pub struct Usage {
     pub usage_units: std::collections::BTreeMap<String, u64>,
 }
 
-/// THE NEUTRAL RAW-RATE VIEW (1.6.0 config-seam S2a): one entry's four reserved-tier rates as RAW
-/// micro-float-per-token values (1e-6 abstract cost unit per token), in the CANONICAL reserved-four
+/// THE NEUTRAL TIER-RATE VIEW (1.6.0 config-seam S2a): one entry's four reserved-tier rates as EXACT
+/// integer NANO-units per token (1e-9 abstract cost unit per token), in the CANONICAL reserved-four
 /// order the engine already fixes ([`crate::records::RESERVED_UNITS`] = input, output, cache_read,
 /// cache_write). The field names are the neutral reserved-unit spellings (`crate::records::UNIT_INPUT`
 /// …), NOT any plane's config grammar (`rate_card:`'s `input_utok:` etc.).
 ///
-/// It is the read-back seam core's pricing oracle projects to integer nanos through
-/// (`busbar_kernel::cost::RateNanos::from_raw`) WITHOUT naming the plane's own config type: today
-/// (S2a) core fills it from its in-core `RateEntryCfg`; once the `rate_card:` grammar relocates to
-/// the owning plane (S2b), the plane fills the SAME view from its parsed section and
-/// core is unchanged. FLOATS live ONLY at this config boundary; the projection to integer nanos and
-/// all hot-path math stay integer, exactly as before.
+/// NO FLOAT CROSSES THIS SEAM (#81, #77(8)). The configured decimal is converted ONCE, at the config
+/// intake (`RateEntryCfg::raw_tier_rates`, through the ledger's `representable_nano_rate`, #44), and
+/// every hop after it — the rate-apply seam, the root's relay, the card — carries these integers
+/// unchanged. `None` is a configured rate the card CANNOT hold (item 22: a positive rate below the
+/// half-nano quantum, or past a `u64`), which the card records UNPRICED so a hit refuses (#42); it
+/// is never read as zero.
 ///
 /// THE REUSABLE PATTERN: each evictable numeric config section (S3 `limits`, S4 `models`-caps) gets
-/// its own neutral raw-value view of this shape — a small POD of the section's raw scalars in a
-/// canonical order — that core reads through and the owning plane fills. The section's GRAMMAR (field
-/// spellings, `deny_unknown_fields`, validation strings) stays with the plane; only these neutral
-/// numbers cross into core.
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
+/// its own neutral view of this shape — a small POD of the section's values in a canonical order —
+/// that core reads through and the owning plane fills. The section's GRAMMAR (field spellings,
+/// `deny_unknown_fields`, validation strings) stays with the plane; only these neutral numbers cross
+/// into core.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RawTierRates {
-    /// Raw micro-units per token for the `input` reserved tier (`crate::records::UNIT_INPUT`).
-    pub input: f64,
-    /// Raw micro-units per token for the `output` reserved tier (`crate::records::UNIT_OUTPUT`).
-    pub output: f64,
-    /// Raw micro-units per token for the `cache_read` reserved tier (`crate::records::UNIT_CACHE_READ`).
-    pub cache_read: f64,
-    /// Raw micro-units per token for the `cache_write` reserved tier (`crate::records::UNIT_CACHE_WRITE`).
-    pub cache_write: f64,
+    /// Nano-units per token for the `input` reserved tier (`crate::records::UNIT_INPUT`).
+    pub input: Option<u64>,
+    /// Nano-units per token for the `output` reserved tier (`crate::records::UNIT_OUTPUT`).
+    pub output: Option<u64>,
+    /// Nano-units per token for the `cache_read` reserved tier (`crate::records::UNIT_CACHE_READ`).
+    pub cache_read: Option<u64>,
+    /// Nano-units per token for the `cache_write` reserved tier (`crate::records::UNIT_CACHE_WRITE`).
+    pub cache_write: Option<u64>,
 }
 
-impl RawTierRates {
-    /// The ROUTING cost scalar (abstract units per MILLION tokens) the `cheapest` policy and the hook
-    /// `Candidate.cost_per_mtok` signal read: the blended `(input + output) / 2` (1 micro-unit/token
-    /// == 1 unit/mtok, so no further scaling). Byte-identical to the pre-seam
-    /// `busbar_kernel::config::rate_entry_per_mtok`, which now delegates here.
-    pub fn blended_per_mtok(&self) -> f64 {
-        (self.input + self.output) / 2.0
+impl Default for RawTierRates {
+    /// Every tier configured at zero — an omitted tier prices at 0 (1.5.5's `#[serde(default)]`).
+    fn default() -> Self {
+        RawTierRates {
+            input: Some(0),
+            output: Some(0),
+            cache_read: Some(0),
+            cache_write: Some(0),
+        }
     }
 }
 

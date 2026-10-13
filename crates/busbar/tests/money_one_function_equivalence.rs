@@ -122,10 +122,10 @@ fn ledger_card(rates: Option<&[(&str, Rates4)]>, fee: i64) -> RateCard {
                 (
                     *lane,
                     ledger_cost::TierRates {
-                        input: r[0],
-                        output: r[1],
-                        cache_read: r[2],
-                        cache_write: r[3],
+                        input: busbar_kernel_ledger::cost::representable_nano_rate(r[0]),
+                        output: busbar_kernel_ledger::cost::representable_nano_rate(r[1]),
+                        cache_read: busbar_kernel_ledger::cost::representable_nano_rate(r[2]),
+                        cache_write: busbar_kernel_ledger::cost::representable_nano_rate(r[3]),
                     },
                 )
             })

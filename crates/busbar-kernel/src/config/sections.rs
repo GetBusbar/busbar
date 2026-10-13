@@ -397,8 +397,8 @@ pub struct OverlayBackend {
 /// One top-level `rate_card:` entry: the four per-token rates in MICRO-units (1e-6 abstract cost
 /// unit) per token, one per pricing tier. A tier omitted in YAML prices at 0 for that tier (e.g. a
 /// model with no cache pricing simply omits the cache rates). Values must be finite and >= 0
-/// (validated at boot). Floats exist ONLY here at the config boundary: they are converted once at
-/// resolve time to integer nano-units per token, and the hot path does pure integer math.
+/// (validated at boot). Floats exist ONLY here at the config boundary: [`RateEntryCfg::raw_tier_rates`]
+/// converts them ONCE, exactly, to integer nano-units per token, and nothing past it carries a float.
 ///
 /// `units:` (item 123) prices the OPEN meter classes a plane declares on this lane — a rerank's
 /// `search_units`, an a2a `hops` — keyed by the class string, each rate in micro-units per unit like
@@ -423,16 +423,18 @@ pub struct RateEntryCfg {
 }
 
 impl RateEntryCfg {
-    /// This entry's NEUTRAL raw-rate view — the four raw micro-float rates in canonical reserved order
-    /// ([`crate::billing::RawTierRates`]). The seam the pricing oracle + routing scalar read rates
-    /// through WITHOUT naming this config type's `_utok` grammar: the map values ARE the raw
-    /// micro-floats, so this is a pure field lift, byte-identical.
+    /// **THE MONEY INTAKE**: this entry's four rates, converted ONCE and exactly into the integer
+    /// nano-units per token every later hop carries ([`crate::billing::RawTierRates`]), by the
+    /// ledger's one conversion (`representable_nano_rate`, #44: half away from zero on the decimal's
+    /// own digits, #81). `None` is a configured rate the card cannot hold (item 22), which boot
+    /// validation refuses and the card records unpriced. No float leaves this function.
     pub fn raw_tier_rates(&self) -> crate::billing::RawTierRates {
+        let nanos = busbar_kernel_ledger::cost::representable_nano_rate;
         crate::billing::RawTierRates {
-            input: self.input_utok,
-            output: self.output_utok,
-            cache_read: self.cache_read_utok,
-            cache_write: self.cache_write_utok,
+            input: nanos(self.input_utok),
+            output: nanos(self.output_utok),
+            cache_read: nanos(self.cache_read_utok),
+            cache_write: nanos(self.cache_write_utok),
         }
     }
 }
@@ -441,11 +443,12 @@ impl RateEntryCfg {
 /// `cheapest` policy and the hook `Candidate.cost_per_mtok` signal: the blended
 /// (input + output) / 2 (1 micro-unit/token == 1 unit/mtok, so no further scaling).
 ///
-/// Delegates to the NEUTRAL raw-rate view ([`crate::billing::RawTierRates::blended_per_mtok`])
-/// so the routing scalar is computed through the same seam the pricing oracle projects through;
-/// byte-identical to the pre-seam `(r.input_utok + r.output_utok) / 2.0`.
+/// A ROUTING ORDER, NOT MONEY: no ledger, cap or bill reads it, and it is a float because the
+/// `cheapest` ranking and the hook signal it feeds are, exactly as 1.5.5's
+/// (`crates/busbar/src/config/mod.rs:2137` at v1.5.5) — so it reads the configured figures here and
+/// never the exact money view, whose integers would re-order a tie 1.5.5 ranked on these doubles.
 pub fn rate_entry_per_mtok(r: &RateEntryCfg) -> f64 {
-    r.raw_tier_rates().blended_per_mtok()
+    (r.input_utok + r.output_utok) / 2.0
 }
 
 /// One entry in the top-level `export:` NAMED-DEFINITION map (1.5.3). The map KEY is the

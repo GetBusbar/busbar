@@ -1084,9 +1084,9 @@ impl CardForm {
     /// apply built it through: the lanes' presence, then every cell's integer rate, then each
     /// plane's fees.
     ///
-    /// A cell the applied card could not represent was UNPRICED on it. The rebuild cannot spell an
-    /// unpriced reserved cell without a decimal, so it leaves that whole LANE off the card, which
-    /// REFUSES every class on it (#42) rather than pricing any at a zero nobody configured. Config
+    /// A cell the applied card could not represent was UNPRICED on it. The rebuild leaves that whole
+    /// LANE off the card, which REFUSES every class on it (#42) rather than pricing any at a zero
+    /// nobody configured. Config
     /// validation refuses such a rate before a card is ever built, so no admitted card has one.
     #[must_use]
     pub fn card(&self) -> busbar_kernel_ledger::cost::RateCard {

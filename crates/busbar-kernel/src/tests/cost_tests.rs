@@ -730,17 +730,23 @@ fn four_maximal_products_are_refused_rather_than_wrapped_or_pinned() {
 fn from_raw_clamps_a_finite_but_overflowing_rate_to_zero_not_to_u64_max() {
     // 1e300 micro-units per token is a config typo with too many zeros, not a price. Times a
     // thousand it is 1e303: finite, positive, and hugely past `u64::MAX`, so a finiteness test
-    // alone lets it through and the float-to-integer cast SATURATES — turning a typo into the
-    // largest rate expressible, an astronomical OVERCHARGE, which is the exact opposite of the
-    // defence the clamp was there to provide. The ledger's projection refuses it to zero: a rate
-    // nobody can price is priced at nothing, and config validation is what is supposed to have
-    // caught it one layer earlier.
-    let raw = busbar_contract::billing::RawTierRates {
-        input: 1e300,
-        output: f64::INFINITY,
-        cache_read: -1.0,
-        cache_write: f64::NAN,
+    // alone let it through and a float-to-integer cast SATURATED — turning a typo into the
+    // largest rate expressible, an astronomical OVERCHARGE. The config intake converts it ONCE
+    // (`raw_tier_rates`) to a rate the card cannot hold, and the projection reads that as the zero
+    // a rate nobody can price is priced at; config validation refuses it one layer earlier.
+    let cfg = crate::config::RateEntryCfg {
+        input_utok: 1e300,
+        output_utok: f64::INFINITY,
+        cache_read_utok: -1.0,
+        cache_write_utok: f64::NAN,
+        ..crate::config::RateEntryCfg::default()
     };
+    let raw = cfg.raw_tier_rates();
+    assert_eq!(
+        (raw.input, raw.output, raw.cache_read, raw.cache_write),
+        (None, None, None, None),
+        "the intake carries every one of them as a rate the card cannot hold, never a figure"
+    );
     let got = RateNanos::from_raw(&raw);
     assert_eq!(
         got.input, 0,
@@ -899,12 +905,12 @@ fn the_one_function_is_byte_identical_to_the_unguarded_sum_wherever_that_sum_fit
 
 #[test]
 fn from_raw_is_byte_identical_to_the_unclamped_projection_for_every_in_range_rate() {
-    // The mirror equivalence for the rate projection. The reference is the conversion this
-    // function used to carry: multiply by a thousand, round half away from zero (#44 — card-build
-    // quantization is half-away-from-zero, and `f64::round` IS that rule), cast. It is exact for
-    // every value that fits a u64, and the delegation must agree with it on all of them; the
-    // values it does NOT have an answer for are precisely the ones the missing clamp used to turn
-    // into u64::MAX.
+    // THE 1.5.5 EQUIVALENCE FOR THE RATE PROJECTION ($). The reference is 1.5.5's conversion
+    // (`crates/busbar/src/cost.rs:99` at v1.5.5): multiply the double by a thousand, round half
+    // away from zero, cast. The intake now does the same multiply and rounding on the configured
+    // DECIMAL (#81), so it must agree with 1.5.5 on every in-range rate, bar exactly one signed
+    // class: an exact decimal half nano-unit (`x.xxx5`) whose binary product fell below the half,
+    // which 1.5.5 rounded DOWN and #44 rounds UP — one nano-unit more, and only there.
     fn unclamped_reference(utok: f64) -> Option<u64> {
         let v = (utok * 1000.0).round();
         // The in-range test is `< 2^64`, NOT `<= u64::MAX as f64`. `u64::MAX` is `2^64 - 1` and no
@@ -933,18 +939,27 @@ fn from_raw_is_byte_identical_to_the_unclamped_projection_for_every_in_range_rat
             2 => (next() % 1_000_000_000) as f64 / 1_000_000.0,
             _ => (next() % 100) as f64 / 7.0,
         };
-        let raw = busbar_contract::billing::RawTierRates {
-            input: utok,
-            output: utok,
-            cache_read: utok,
-            cache_write: utok,
+        let cfg = crate::config::RateEntryCfg {
+            input_utok: utok,
+            output_utok: utok,
+            cache_read_utok: utok,
+            cache_write_utok: utok,
+            ..crate::config::RateEntryCfg::default()
         };
         if let Some(want) = unclamped_reference(utok) {
-            assert_eq!(
-                RateNanos::from_raw(&raw).input,
-                want,
-                "delegation changed an ORDINARY rate projection: utok={utok}"
-            );
+            let got = RateNanos::from_cfg(&cfg).input;
+            // The one signed divergence: the configured decimal is an EXACT half nano-unit.
+            let decimal = utok.to_string();
+            let exact_half = decimal
+                .split_once('.')
+                .is_some_and(|(_, frac)| frac.len() == 4 && frac.ends_with('5'));
+            if got != want {
+                assert!(
+                    exact_half && got == want + 1,
+                    "the intake moved a rate 1.5.5 priced exactly: utok={utok}, 1.5.5 {want}, \
+                     now {got}"
+                );
+            }
             agreed += 1;
         }
     }
@@ -991,4 +1006,75 @@ fn the_one_function_does_not_wrap_an_astronomical_bill_down_to_nearly_free() {
         Err(busbar_kernel_ledger::cost::MoneyError::Overflow),
         "a total one past the ceiling is REFUSED — never wrapped to 1, never pinned at the top"
     );
+}
+
+/// $ RED (#81): A FRACTIONAL-CENT RATE PRICES EXACTLY, through the live intake. `0.1 + 0.2`
+/// micro-units per token is the double `0.30000000000000004`, and times a million tokens it is
+/// `300000.00000000006` in floats. The intake reads the decimal and carries 300 nano-units, so every
+/// count prices to the integer `count × 300`, with no float digit anywhere past the config.
+#[test]
+fn a_fractional_cent_rate_prices_exactly_through_the_live_intake() {
+    let c = card(&[("m", 0.1 + 0.2, 0.1)]);
+    let cm = resolve_card_fee(Some(&c), 0);
+    let r = cm.rate_for("m").expect("the lane is priced");
+    assert_eq!(
+        (r.input, r.output),
+        (300, 100),
+        "the intake carries exact nano-units"
+    );
+    assert_eq!(one_nanos(&r, &toks(3, 7)), Ok(3 * 300 + 7 * 100));
+    assert_eq!(
+        cm.derive_spend_micros([("m", &toks(1_000_000, 1_000_000))].into_iter(), 0, false),
+        Ok(400_000),
+        "0.3 + 0.1 units per Mtok over a million of each is 400 000 micro-units exactly"
+    );
+}
+
+/// $ RED (#81): A LARGE COUNT TIMES A RATE HAS NO FLOAT DRIFT. `2^53 + 1` tokens is the first count
+/// a double cannot hold; a float product loses the `+ 1` and with it 300 nano-units. The integer
+/// path keeps every one.
+#[test]
+fn a_large_count_times_a_rate_has_no_float_drift() {
+    let c = card(&[("m", 0.3, 0.0)]);
+    let cm = resolve_card_fee(Some(&c), 0);
+    let r = cm.rate_for("m").expect("the lane is priced");
+    let count: u64 = (1 << 53) + 1;
+    assert_eq!(
+        one_nanos(&r, &toks(count, 0)),
+        Ok(u128::from(count) * 300),
+        "every token of a count past f64's integer range is billed"
+    );
+    assert_eq!(
+        cm.derive_spend_micros([("m", &toks(count, 0))].into_iter(), 0, false),
+        Ok(i64::try_from(u128::from(count) * 300 / 1_000).expect("fits")),
+        "the micro projection truncates the exact figure once"
+    );
+}
+
+/// $ 1.5.5 PARITY: every rate the 1.5.5 golden's money fixtures configure (busbar-oracle's rate
+/// cards: 0, 1, 100 000, 200 000, 1e6, 2e6, 1e7 and 2e7 micro-units per token) and this file's own
+/// card fixtures converts at the intake to exactly 1.5.5's integer (`(utok * 1000.0).round()`,
+/// `crates/busbar/src/cost.rs:99` at v1.5.5) and prices a count to exactly 1.5.5's figure.
+#[test]
+fn the_intake_prices_every_money_fixture_rate_at_its_1_5_5_figure() {
+    for utok in [
+        0.0, 1.0, 100_000.0, 200_000.0, 1e6, 2e6, 1e7, 2e7, 2.5, 10.0, 3.125, 0.0015, 0.0014, 15.0,
+        0.075, 3.75, 0.3, 1.25,
+    ] {
+        let v155 = (utok * 1000.0_f64).round() as u64;
+        let c = card(&[("m", utok, utok)]);
+        let r = resolve_card_fee(Some(&c), 0)
+            .rate_for("m")
+            .expect("the lane is priced");
+        assert_eq!(
+            (r.input, r.output),
+            (v155, v155),
+            "{utok} converts as 1.5.5 did"
+        );
+        assert_eq!(
+            one_nanos(&r, &toks(1_234_567, 7_654_321)),
+            Ok(u128::from(v155) * (1_234_567 + 7_654_321)),
+            "{utok} prices a count as 1.5.5 did"
+        );
+    }
 }

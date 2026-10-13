@@ -112,10 +112,10 @@ fn one_nano_card() -> busbar_kernel_ledger::cost::RateCard {
         Some([(
             LANE,
             busbar_kernel_ledger::cost::TierRates {
-                input: 0.001,
-                output: 0.001,
-                cache_read: 0.001,
-                cache_write: 0.001,
+                input: busbar_kernel_ledger::cost::representable_nano_rate(0.001),
+                output: busbar_kernel_ledger::cost::representable_nano_rate(0.001),
+                cache_read: busbar_kernel_ledger::cost::representable_nano_rate(0.001),
+                cache_write: busbar_kernel_ledger::cost::representable_nano_rate(0.001),
             },
         )]),
         0,
@@ -1758,10 +1758,10 @@ fn the_chain_holds_counts_and_an_epoch_and_the_rebuilt_book_prices_them() {
         Some([(
             LANE,
             busbar_kernel_ledger::cost::TierRates {
-                input: 0.002,
-                output: 0.002,
-                cache_read: 0.002,
-                cache_write: 0.002,
+                input: busbar_kernel_ledger::cost::representable_nano_rate(0.002),
+                output: busbar_kernel_ledger::cost::representable_nano_rate(0.002),
+                cache_read: busbar_kernel_ledger::cost::representable_nano_rate(0.002),
+                cache_write: busbar_kernel_ledger::cost::representable_nano_rate(0.002),
             },
         )]),
         0,

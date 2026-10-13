@@ -15,6 +15,17 @@ use crate::cost::{nano_rate, History, LaneClass, RateCard, STANDARD_TIER_BP};
 fn nano_rate_rounds_to_nearest_at_the_nano_boundary() {
     assert_eq!(nano_rate(0.0015), 2, "one and a half rounds away from zero");
     assert_eq!(nano_rate(0.0014), 1, "one and four tenths floors to one");
+    // THE HALF IS THE DECIMAL'S, NOT THE DOUBLE'S (#81). `0.5005` is an exact half nano-unit; its
+    // double times a thousand is `500.4999…`, which a float round took DOWN to 500.
+    assert_eq!(
+        nano_rate(0.5005),
+        501,
+        "an exact decimal half rounds away from zero"
+    );
+    assert_eq!(nano_rate(0.5015), 502, "and the next one up");
+    // A fractional-cent sum (0.1 + 0.2 micro-units) is the decimal `0.30000000000000004`: three
+    // hundred nano-units exactly, with no drift carried into the card.
+    assert_eq!(nano_rate(0.1 + 0.2), 300);
 }
 
 /// The clamp is "finite AND positive", not "finite OR positive". An infinite rate — reachable from
@@ -43,70 +54,30 @@ fn nano_rate_clamps_a_finite_but_overflowing_rate_to_zero_not_the_maximum() {
     assert_eq!(nano_rate(1e12), 1_000_000_000_000_000);
 }
 
-/// **THE BOUNDARY IS `2^64`, AND `u64::MAX as f64` IS NOT IT.**
+/// **THE CEILING IS THE INTEGER'S, CHECKED — NOT A FLOAT CAST'S.**
 ///
-/// `u64::MAX` is `2^64 - 1`: an odd integer sixty-four bits wide. An `f64` carries a fifty-three bit
-/// mantissa, so that value is NOT REPRESENTABLE and `u64::MAX as f64` rounds — UP — to exactly
-/// `2^64`. A guard spelled `v <= u64::MAX as f64` therefore admits a finite `v == 2^64`, which is
-/// one past the largest integer a `u64` holds, and the `v as u64` beneath it SATURATES to
-/// `u64::MAX`. That is the astronomical overcharge the doc on [`nano_rate`] promises this function
-/// never produces, arriving at the single input the guard exists to stop. There is exactly ONE
-/// `f64` in the gap the wrong spelling opens, and this test is standing on it.
-///
-/// It is reachable from operator config, not just from a unit test: `RateCard::from_micro_rates`
-/// converts a configured decimal through here, so a card quoting `2^64 / 1000`
-/// micro-units per unit is the whole of it.
-///
-/// WHY THIS SURVIVED, which is the more useful half. The test that NAMES this case
-/// ([`nano_rate_clamps_a_finite_but_overflowing_rate_to_zero_not_the_maximum`], above) feeds `1e18`
-/// — whose `×1000` is `1e21`, some thirty doublings past the ceiling — and so steps clean over the
-/// one point that fails. A case that is merely far outside the range does not test a boundary; only
-/// a case ON the boundary does.
-///
-/// This is a correction to the guard's own stated contract and nothing more. It does not settle what
-/// an out-of-range configured rate OUGHT to do — #42 rules that an unpriced class REFUSES rather
-/// than silently answering zero, so neither `u64::MAX` nor `0` is the ruled answer, and the finding
-/// that says so (U-1) stays open.
+/// The conversion used to be `(v * 1000.0).round()` cast to `u64`, and its guard had to be spelled
+/// against `2^64` because `u64::MAX as f64` rounds UP to it and a cast past the top SATURATES to
+/// `u64::MAX` — an astronomical overcharge. The conversion is now integer arithmetic on the
+/// configured decimal's digits (#81), so the ceiling is a checked multiply: the last configured
+/// rate whose nano-units fit converts EXACTLY (the float product of the same rate was
+/// `…547_520`, 480 nano-units short), and the first past it prices at nothing.
 #[test]
-fn nano_rate_refuses_the_one_value_past_the_ceiling_that_the_max_cast_admits() {
-    // The premise, asserted rather than trusted: the cast rounds UP, past what it names.
+fn nano_rate_ceiling_is_a_checked_integer_multiply() {
     assert_eq!(
-        u64::MAX as f64,
-        2.0_f64.powi(64),
-        "u64::MAX as f64 rounds up to 2^64 — the whole defect is this one step"
-    );
-
-    // The admitted micro-rate: the value whose ×1000 lands exactly on 2^64. This is, character for
-    // character, the `CEILING_MICRO` the cross-crate agreement test has been feeding both copies.
-    let admitted_micro = (u64::MAX as f64) / 1000.0;
-    assert_eq!(
-        (admitted_micro * 1000.0).round(),
-        2.0_f64.powi(64),
-        "this case proves nothing unless it lands exactly on 2^64"
+        nano_rate(18_446_744_073_709_548.0),
+        18_446_744_073_709_548_000,
+        "the last rate under the ceiling converts exactly, with no float drift"
     );
     assert_eq!(
-        nano_rate(admitted_micro),
+        nano_rate(18_446_744_073_709_556.0),
         0,
-        "a rate of 2^64 nano-units is one past what a u64 holds: it must price at NOTHING, \
-         not saturate to u64::MAX ({})",
-        u64::MAX
+        "one past what a u64 of nano-units holds prices at NOTHING, never u64::MAX"
     );
-
-    // BYTE-NEUTRALITY AT THE SAME EDGE. The correction moves exactly one f64 and no other. The
-    // largest value the conversion could ever legitimately return is still returned: 2^64 - 2048 is
-    // the last f64 below the ceiling, and a rate a whisker under the top must convert, not fall to
-    // zero along with the one past it.
-    let last_below = f64::from_bits(2.0_f64.powi(64).to_bits() - 1);
     assert_eq!(
-        last_below, 18_446_744_073_709_549_568.0,
-        "the last f64 strictly below 2^64 is 2^64 - 2048"
-    );
-    let near_ceiling_micro = last_below / 1000.0;
-    assert_eq!(
-        nano_rate(near_ceiling_micro),
-        18_446_744_073_709_547_520,
-        "a rate just under the ceiling still converts — the correction narrows the door by one \
-         value, it does not close it"
+        nano_rate(2.0_f64.powi(64)),
+        0,
+        "the old cast's premise case"
     );
 }
 
@@ -276,17 +247,16 @@ fn a_report_is_priced_by_the_spend_fold_and_a_silent_class_refuses() {
 #[test]
 fn a_corrected_card_keeps_everything_it_does_not_name() {
     use crate::cost::TierRates;
-    let tiers = |input, output| TierRates {
-        input,
-        output,
-        cache_read: 0.0,
-        cache_write: 0.0,
+    let tiers = |input: u64, output: u64| TierRates {
+        input: Some(input),
+        output: Some(output),
+        ..TierRates::default()
     };
     let card = RateCard::from_config(
         Some([
-            ("lane-g", tiers(2.0, 8.0)),
-            ("lane-c", tiers(3.0, 15.0)),
-            ("plane-b\u{1f}search", tiers(5.0, 6.0)),
+            ("lane-g", tiers(2_000, 8_000)),
+            ("lane-c", tiers(3_000, 15_000)),
+            ("plane-b\u{1f}search", tiers(5_000, 6_000)),
         ]),
         3,
     );
@@ -361,7 +331,8 @@ fn a_corrected_card_keeps_everything_it_does_not_name() {
 #[test]
 fn a_correction_that_prices_a_refused_cell_takes_it_off_the_refused_list() {
     use crate::cost::TierRates;
-    let unrepresentable = 0.0001;
+    // `0.0001` micro-units, as the intake converts it: a rate the card cannot hold.
+    let unrepresentable = crate::cost::representable_nano_rate(0.0001);
     let card = RateCard::from_config(
         Some([
             (
@@ -369,17 +340,15 @@ fn a_correction_that_prices_a_refused_cell_takes_it_off_the_refused_list() {
                 TierRates {
                     input: unrepresentable,
                     output: unrepresentable,
-                    cache_read: 0.0,
-                    cache_write: 0.0,
+                    ..TierRates::default()
                 },
             ),
             (
                 "plane-b\u{1f}search",
                 TierRates {
                     input: unrepresentable,
-                    output: 1.0,
-                    cache_read: 0.0,
-                    cache_write: 0.0,
+                    output: Some(1_000),
+                    ..TierRates::default()
                 },
             ),
         ]),

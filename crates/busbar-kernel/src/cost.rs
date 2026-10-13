@@ -16,7 +16,8 @@
 //!   is a display concern owned entirely by the consumer.
 //! - ALL-OR-NOTHING pricing: `rate_card` absent => every model prices at 0 (only the flat
 //!   per-request fee counts); present => authoritative + complete (validated at boot).
-//! - INTEGER MATH ONLY on the hot path: config floats convert ONCE here to nano-units per token;
+//! - INTEGER MATH ONLY on the hot path: config floats convert ONCE, at the config intake
+//!   (`RateEntryCfg::raw_tier_rates`), to exact nano-units per token;
 //!   derivation is a few u128 multiply-adds over the models a bucket actually used.
 //! - GROUPS are the ONE limit tree: a group's generic limits (requests / tokens / budget per
 //!   window, plus the instantaneous `concurrent` gauge) resolve here into per-(group, window)
@@ -96,37 +97,28 @@ pub struct RateNanos {
 }
 
 impl RateNanos {
-    /// Project the NEUTRAL raw-rate view ([`busbar_contract::billing::RawTierRates`]) — the four raw
-    /// micro-float-per-token rates in canonical reserved order — to this integer nano-rate. Core
-    /// reads rates through this NEUTRAL view so the projection names no plane config type.
+    /// Project the NEUTRAL tier-rate view ([`busbar_contract::billing::RawTierRates`]) — the four
+    /// exact nano-per-token rates in canonical reserved order — to this nano-rate. Core reads rates
+    /// through this NEUTRAL view so the projection names no plane config type.
     ///
-    /// THE CONVERSION IS THE LEDGER'S, NOT A COPY OF IT. `busbar_kernel_ledger::cost::nano_rate` is
-    /// the one decimal-to-money conversion in the tree, and this used to be a second copy of its
-    /// three lines. The two DID drift, in the way a doc comment is no defence against: the ledger's
-    /// clamp refuses a value too large for a `u64` to hold, and this copy tested only finiteness —
-    /// so one configured rate with too many zeros (`1e300` micro-units per token) priced as ZERO in
-    /// the book and, because a float-to-integer cast SATURATES rather than wrapping, as
-    /// `u64::MAX` nanos per token here. A request JUDGED at one rate and BILLED at another is
-    /// precisely the failure a duplicate exists to cause, so the duplicate is gone rather than
-    /// patched: the clamp, the half-away-from-zero rounding (#44 — card-build quantization) and the
-    /// ×1000 are the ledger's, once.
-    ///
-    /// Every in-range rate projects to the same integer it always did; only the out-of-range ones
-    /// move, and they move from a garbage overcharge to the zero that means "nobody can price
-    /// this".
+    /// THERE IS NO CONVERSION HERE, AND THAT IS THE POINT. This used to be a SECOND copy of the
+    /// decimal-to-money conversion, and the two drifted (a `1e300` rate priced as zero in the book
+    /// and as `u64::MAX` nanos here). The view now carries the integers the config intake converted
+    /// once (`RateEntryCfg::raw_tier_rates`, the ledger's `representable_nano_rate`), so this is a
+    /// copy of four integers: a rate the card cannot hold (`None`) reads as the zero the ledger's
+    /// `nano_rate` gives it, exactly as before.
     pub fn from_raw(raw: &busbar_contract::billing::RawTierRates) -> Self {
-        let nanos = busbar_kernel_ledger::cost::nano_rate;
         Self {
-            input: nanos(raw.input),
-            output: nanos(raw.output),
-            cache_read: nanos(raw.cache_read),
-            cache_write: nanos(raw.cache_write),
+            input: raw.input.unwrap_or(0),
+            output: raw.output.unwrap_or(0),
+            cache_read: raw.cache_read.unwrap_or(0),
+            cache_write: raw.cache_write.unwrap_or(0),
         }
     }
 
-    /// Project a core `RateEntryCfg` by first taking its neutral raw-rate view, then
-    /// [`from_raw`](Self::from_raw). A thin BYTE-IDENTICAL adapter kept while the `rate_card:` grammar
-    /// still lives in core (S2a): the map values ARE the raw micro-floats. Once the grammar relocates
+    /// Project a core `RateEntryCfg` by first taking its neutral exact view (the intake), then
+    /// [`from_raw`](Self::from_raw). A thin adapter kept while the `rate_card:` grammar
+    /// still lives in core (S2a). Once the grammar relocates
     /// to the owning plane (S2b) this adapter goes and callers hand [`from_raw`] the plane-filled view.
     pub fn from_cfg(r: &crate::config::RateEntryCfg) -> Self {
         Self::from_raw(&r.raw_tier_rates())
@@ -304,9 +296,10 @@ impl CostModel {
         groups_cfg: &std::collections::BTreeMap<String, crate::config::GroupCfg>,
     ) -> Self {
         // rate_card is the ONLY cost source: no per-entry cost override lives anywhere else in
-        // config. The card is built by the one constructor that owns card-building — the class
-        // fan-out, the quantisation (#44), the representability refusal (item 22) and the fee's
-        // clamp are all `RateCard::from_config`'s, so the door and the bill hold ONE card.
+        // config. Each rate was quantised ONCE at the intake (`raw_tier_rates`, #44); the card is
+        // built by the one constructor that owns card-building — the class fan-out, the unpriced
+        // placement of an unrepresentable rate (item 22) and the fee's clamp are all
+        // `RateCard::from_config`'s, so the door and the bill hold ONE card.
         let card = busbar_kernel_ledger::cost::RateCard::from_config(
             rate_card.map(|card| {
                 card.iter().map(|(model, r)| {
