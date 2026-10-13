@@ -31,6 +31,7 @@ fn plane(grant: &[&str]) -> AsPlane {
         key_id: None,
         default_grant: grant.iter().map(|s| (*s).to_string()).collect(),
         access_token_ttl_secs: None,
+        refresh_token_ttl_secs: None,
         fapi2: false,
         clients: Vec::new(),
     };
@@ -169,6 +170,7 @@ async fn registration_is_on_whenever_the_plane_is() {
         key_id: None,
         default_grant: vec!["tools:read".to_string()],
         access_token_ttl_secs: None,
+        refresh_token_ttl_secs: None,
         fapi2: false,
         clients: Vec::new(),
     };

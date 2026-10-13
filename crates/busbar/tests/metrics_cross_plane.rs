@@ -15,6 +15,11 @@
 //!
 //! Every OTHER test in `metrics_tests.rs` (counters, `describe()`, key-spend gauges, the gauge
 //! idle-timeout constant, …) names no lane/pool topology and stays in the unit module.
+//!
+//! MOVED HERE from `crates/busbar-kernel/tests/`, assertions unchanged (kind-isolation, ARCHITECT:
+//! core names zero plane types, its tests included; Q128 audit HIGH on the kernel's test-linked
+//! build.rs): every cell reads lane/pool gauges through the fallback plane's runtime view, which
+//! only a real plane builds, and the composition root is where a plane may be linked.
 
 mod linked;
 

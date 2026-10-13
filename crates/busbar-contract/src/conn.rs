@@ -307,8 +307,9 @@ pub trait DeclaredConns: Conns {
     ///
     /// # Errors
     ///
-    /// [`ConnError::Pending`], [`ConnError::Refused`] (the stream is framed, already secure, or
-    /// the far end's certificate was refused), [`ConnError::NotOwner`], [`ConnError::Closed`],
+    /// [`ConnError::Pending`], [`ConnError::Refused`] (the stream is framed, already secure,
+    /// bytes the far end sent in the clear are still unread, which fails the stream, or the far
+    /// end's certificate was refused), [`ConnError::NotOwner`], [`ConnError::Closed`],
     /// [`ConnError::Timeout`].
     fn upgrade_secure(
         &self,
@@ -365,6 +366,18 @@ pub trait DeclaredConns: Conns {
         let _ = (owner, conn);
         None
     }
+
+    /// THE HOST WRITES THE AUTHORITY of every connection `owner` opens: an open whose head
+    /// carries its own `host` field is refused before anything is dialled. The loader holds it for
+    /// every instance of the auth kind, before any of its needs is declared (ARCHITECT ruling on
+    /// #780, Part 1 Law 0 and Part 2 #3: 1.5.5 refused a module-set `Host` on the one request an
+    /// auth module described, its login hop, and no other auth request carried a module's field,
+    /// v1.5.5 `crates/busbar/src/auth/token.rs:805` `FORBIDDEN_HOP_HEADERS`). A table that holds no
+    /// such rule ignores it.
+    fn hold_authority(&self, owner: InstanceId) {
+        let _ = owner;
+    }
+
     /// Hold `binding` as the auth binding of `owner`'s requests on `need` that name the
     /// registration `member` ([`OpenDesc::member`]) and reach `origin` (`scheme://authority`,
     /// [`origin_of`]): that MEMBER's binding, which the plugin's own requests to that member are

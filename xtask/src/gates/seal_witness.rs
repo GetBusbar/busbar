@@ -132,15 +132,13 @@ const EXCLUDE: &[&str] = &["/target/"];
 /// 0fd08ee75d; predev then retired the kernel-identity and kernel `egress_auth` modules (24 files
 /// out, 15 in), re-armed at 2174 on predev 39374ec00e; predev grew to 2176, and the MCP-FIX stack
 /// retired the plane-mcp `outputschema` and `tool_plane` modules with their tests (5 files out, 2
-/// in). FLIP-A2A (#787) then deleted the `busbar-a2a` crate (all 97 of its files, the retired
-/// engine), and in `busbar-plane-a2a` the in-process `Plane` impl the engine served
-/// (`src/plane.rs`, its tests, alloc gate and test scaffold) and the anomaly breaker predev never
-/// wired (`src/a2a/anomaly.rs` and its tests): 2213 measured at #778 merged with predev
-/// 561c69a3fd (FLIP-LLM's files in), 2177 after, the door crate's fold having added 64 files (the restored door alloc
-/// gate among them; the kernel's two moved cross-plane tests are counted at their new home in the
-/// root). A floor above the tree it guards refuses every walk. A tree that grows keeps this floor;
-/// a walk that comes back short of it is refused.
-const SCAN_FLOOR: usize = 2177;
+/// in). FLIP-A2A (#787) re-pins it from 2173 to 2139: it deletes the `busbar-a2a` crate (all 97 of
+/// its files, the retired engine), and in `busbar-plane-a2a` the in-process `Plane` impl the engine
+/// served (`src/plane.rs`, its tests, alloc gate and test scaffold) and the anomaly breaker predev
+/// never wired (`src/a2a/anomaly.rs` and its tests), the door crate's fold adding 64 (34 fewer in
+/// all, with the stack it carries). A floor above the tree it guards refuses every walk. A tree
+/// that grows keeps this floor; a walk that comes back short of it is refused.
+const SCAN_FLOOR: usize = 2139;
 
 /// Is `rel` a file that compiles only into a TEST, BENCH or EXAMPLE target — never into a shipped
 /// lib/bin? A `tests/` directory anywhere on the path (which covers `src/tests/`), a `benches/` or
