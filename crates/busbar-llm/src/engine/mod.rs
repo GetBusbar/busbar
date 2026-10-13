@@ -118,8 +118,7 @@ pub(crate) use busbar_kernel::proxy::{
 // historical `EgressClientSpec`/`EgressError` short names are preserved via the same aliases core used.
 #[cfg_attr(not(test), allow(unused_imports))]
 pub(crate) use busbar_kernel::egress::engine::{
-    egress_request, install_proxy_tunnel_if_configured, EngineError as EgressError,
-    EngineSpec as EgressClientSpec,
+    egress_request, EngineError as EgressError, EngineSpec as EgressClientSpec,
 };
 
 // The NEUTRAL content-type / disposition / error-KIND vocabulary named at its TRUE substrate home

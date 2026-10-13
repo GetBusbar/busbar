@@ -51,7 +51,7 @@ pub use proxy_vocab::{
 // (`EgressConnector`) have no remaining in-core reader after the move, and an externally-visible
 // re-export cannot rot into an unused-import warning while the path contract stands.
 pub use busbar_kernel::egress::engine::{
-    egress_request, install_proxy_tunnel_if_configured, EngineClient as EgressClient,
+    egress_request, install_proxy, EngineClient as EgressClient,
     EngineConnector as EgressConnector, EngineError as EgressError, EngineSpec as EgressClientSpec,
 };
 

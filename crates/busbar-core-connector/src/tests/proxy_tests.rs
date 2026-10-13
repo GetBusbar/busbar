@@ -24,7 +24,7 @@ use crate::Connector;
 const OWNER: busbar_contract::conn::InstanceId = busbar_contract::conn::InstanceId(1);
 
 /// The selected proxy's `host:port` for a target, or `None` for the direct arm.
-fn selected(config: &Arc<ProxyConfig>, https: bool, host: &str) -> Option<String> {
+fn selected(config: &Arc<ProxyChoice>, https: bool, host: &str) -> Option<String> {
     config.select(https, host).map(|p| p.endpoint())
 }
 
@@ -285,7 +285,7 @@ fn the_proxys_answer_is_judged_on_its_status_line() {
 
 /// A framer over the test carrier, the dial judged by a judge that pins IP literals and finds no
 /// name (so a named target is one only the proxy resolves), proxying under `config`.
-fn proxying(config: Option<Arc<ProxyConfig>>) -> Connector {
+fn proxying(config: Option<Arc<ProxyChoice>>) -> Connector {
     let view = Transports::new(vec![
         Entry {
             door: Arc::new(
