@@ -3,21 +3,21 @@
 
 //! A SECRET'S SOURCE STAYS ON THE OPERATOR'S SIDE OF THE REQUEST-TIME HAND-OFF (coordinator ruling
 //! 2026-10-07): the one place on a door plane's request path where a secret reference that does
-//! not resolve meets a plugin is a member program's `env` (the loader resolves it when it declares
-//! the instance's members, at `open` and every `refresh`). A reference that does not resolve makes
-//! its registration NO MEMBER: nothing of it reaches the connection table, and the plugin's open
-//! naming that member reaches it as the table's FIXED-CLASS refusal (`ConnError::Refused`, its
-//! static text), never the source's own words (the variable's name, the reference as written,
-//! "environment variable ... is unset"). The source's refusal is the real one: the linked `env`
-//! source, the kind's both-ways fixture.
+//! not resolve meets a plugin is a member program's `env`. The loader declares it as the REFERENCE
+//! (`Program::env_refs`), at `open` and every `refresh`, and never resolves it; the host resolves it
+//! at the SPAWN (SECURITY ruling 2026-10-07). A reference that does not resolve is never spawned,
+//! and the plugin's open naming that member reaches it as the table's FIXED-CLASS refusal
+//! (`ConnError::Refused`, its static text), never the source's own words (the variable's name, the
+//! reference as written, "environment variable ... is unset"). The source's refusal is the real
+//! one: the linked `env` source, the kind's both-ways fixture.
 //!
 //! The table here holds the connector's contract for member programs (an open naming a member the
 //! declaration did not name is refused, `busbar-core-connector`'s
-//! `a_redeclaration_kills_a_changed_or_removed_members_program`), so the cell reads what crosses
-//! the hand-off and not one connector's internals. Plane-neutral: the plugin is the loader's own
-//! test door, its one need the member-program path.
-
-use std::collections::BTreeSet;
+//! `a_redeclaration_kills_a_changed_or_removed_members_program`; an open whose program's reference
+//! does not resolve at its spawn is refused, its
+//! `a_member_whose_env_refsironment_does_not_resolve_is_not_spawned`), so the cell reads what
+//! crosses the hand-off and not one connector's internals. Plane-neutral: the plugin is the
+//! loader's own test door, its one need the member-program path.
 
 use busbar_contract::secret_ref::{SecretRef, SECRET_MODULE_FILE};
 
@@ -42,8 +42,20 @@ fn source_in(text: &str, secret: &SecretRef) -> Vec<String> {
         .collect()
 }
 
+/// An `env` secret reference's value, as the linked `env` secret plugin (the kind's both-ways
+/// fixture, the real source) resolves it, its refusal the source's own text; any other module does
+/// not resolve.
+fn env_reference(r: &SecretRef) -> Result<String, String> {
+    if r.module != busbar_contract::secret_ref::SECRET_MODULE_ENV {
+        return Err(format!("{} does not resolve", r.describe()));
+    }
+    let bytes = crate::both_ways::secret_fixture::resolve(&r.settings).map_err(|e| e.message)?;
+    String::from_utf8(bytes).map_err(|_| format!("{} is not UTF-8", r.describe()))
+}
+
 /// A connection table holding the connector's member-program contract: the members each
-/// declaration named, and an open naming any other refused (`ConnError::Refused`).
+/// declaration named, an open naming any other refused (`ConnError::Refused`), and an open whose
+/// program's `env` reference does not resolve ([`env_reference`]) at its spawn refused the same.
 #[derive(Default)]
 struct Members {
     slab: ConnSlab<()>,
@@ -89,14 +101,22 @@ impl Conns for Members {
         desc: &OpenDesc<'_>,
     ) -> Result<ConnId, ConnError> {
         let member = desc.target.split('/').next().unwrap_or_default();
-        let named: BTreeSet<String> = self
+        let program = self
             .declared
             .lock()
             .unwrap()
             .last()
-            .map(|d| d.iter().map(|(name, _)| name.clone()).collect())
-            .unwrap_or_default();
-        if !named.contains(member) {
+            .and_then(|d| d.iter().find(|(name, _)| name == member).cloned())
+            .map(|(_, program)| program);
+        let Some(program) = program else {
+            return Err(ConnError::Refused);
+        };
+        // The spawn: every reference resolves now, or the program is not spawned.
+        if program
+            .env_refs
+            .iter()
+            .any(|(_, reference)| env_reference(reference).is_err())
+        {
             return Err(ConnError::Refused);
         }
         self.slab.insert(caller, need, ())
@@ -125,15 +145,14 @@ impl Conns for Members {
     }
 }
 
-/// RED (coordinator ruling 2026-10-07): a member program whose `env` reference does not resolve is
-/// no member; the open naming it reaches the plugin as the table's fixed-class refusal, and nothing
-/// the table was handed or the plugin read carries the reference's source. A member whose `env`
-/// resolves is declared and opened beside it (the control), and the source's own refusal names the
-/// source (so a clean hand-off withheld it).
+/// RED (coordinator ruling 2026-10-07; SECURITY ruling 2026-10-07): a member program whose `env`
+/// reference does not resolve is declared as the reference, never resolved by the loader; the open
+/// naming it reaches the plugin as the table's fixed-class refusal, and nothing the table was
+/// handed carries the source's refusal, nor anything the plugin read its source. A member with no
+/// reference is declared and opened beside it (the control), and the source's own refusal names
+/// the source (so a clean hand-off withheld it).
 #[test]
 fn a_member_whose_env_secret_does_not_resolve_reaches_the_plugin_as_a_fixed_class_refusal() {
-    // The root installs the linked secret plugins' resolver; this one is the linked `env` source.
-    let _ = crate::dispatch::install_member_secrets(env_reference);
     let var = format!("BUSBAR_LOADER_MEMBER_SECRET_SOURCE_{}", std::process::id());
     std::env::remove_var(&var);
     let secret = SecretRef::env(&var);
@@ -163,15 +182,23 @@ fn a_member_whose_env_secret_does_not_resolve_reaches_the_plugin_as_a_fixed_clas
     let declared = table.declared.lock().unwrap().clone();
     assert_eq!(declared.len(), 1, "the members were declared once");
     let names: Vec<&str> = declared[0].iter().map(|(n, _)| n.as_str()).collect();
+    assert_eq!(names, ["ghost", "live"], "both registrations are members");
+    let ghost = &declared[0][0].1;
     assert_eq!(
-        names,
-        ["live"],
-        "the member whose env did not resolve is no member"
+        ghost.env_refs,
+        [("TOKEN".to_string(), secret.clone())],
+        "the member's env crosses as the reference, unresolved"
     );
+    assert!(ghost.env.is_empty(), "and as no value");
     let handed = format!("{declared:?}");
+    let refusal: Vec<&str> = SOURCE_WORDS
+        .iter()
+        .copied()
+        .filter(|w| handed.to_ascii_lowercase().contains(w))
+        .collect();
     assert!(
-        source_in(&handed, &secret).is_empty(),
-        "nothing the table was handed carries the source: {handed}"
+        refusal.is_empty() && !handed.contains(&operator),
+        "nothing the table was handed carries the source's refusal: {handed}"
     );
 
     let refused = establish(&p, 0, "ghost");
@@ -193,6 +220,6 @@ fn a_member_whose_env_secret_does_not_resolve_reaches_the_plugin_as_a_fixed_clas
     assert_eq!(
         establish(&p, 0, "live").outcome,
         RawOutcome::of(Outcome::Ready),
-        "the member whose env resolved is opened"
+        "the member with no reference is opened"
     );
 }

@@ -106,51 +106,6 @@ impl SpentTokenLedger {
             .as_ref()
             .cloned()
     }
-
-    /// SPEND this approval. `true` if it had not been spent before; `false` if it had.
-    ///
-    /// Test-and-set on both halves, and that is not an optimisation: a caller that fires two
-    /// redemptions of one approval concurrently is the obvious way to attack a check that reads and
-    /// then writes, and it is the shape the whole gate exists to refuse.
-    ///
-    /// The LOCAL half runs first and, on a nonce it has already seen, answers `false` without a
-    /// round trip. The DURABLE half is what a second node and a restarted process consult, and its
-    /// `false` is final. Note the local map is written on the way past regardless of what the store
-    /// then says — an approval this node has now attempted is one it need never ask about again.
-    ///
-    /// A STORE FAILURE REFUSES. This is the one place on this seam where a durable-write error is
-    /// not swallowed, and the asymmetry is the point: the durable call log is EVIDENCE, so losing a
-    /// row must not refuse a call, while this is ADMISSION, and a ledger that cannot answer "has
-    /// this been redeemed" cannot be read as "no". Failing open here would mean a store outage
-    /// silently restores confirm-once-execute-many across the fleet.
-    pub(crate) fn spend(&self, nonce: &str, expires_at: u64, now: u64) -> bool {
-        // Poison-recovering, like every other request-path lock in this process: the data behind it
-        // is still valid after a panic, and cascading the poison would turn one stray panic into a
-        // gate that refuses every confirmation for the life of the process.
-        {
-            let mut seen = self.seen.lock().unwrap_or_else(|e| e.into_inner());
-            seen.retain(|_, expiry| *expiry >= now);
-            if seen.insert(nonce.to_string(), expires_at).is_some() {
-                return false;
-            }
-        }
-        let Some(store) = self.sink() else {
-            return true;
-        };
-        match store.redeem_plane_token(crate::plane::store::KIND_ASK, nonce, expires_at, now) {
-            Ok(fresh) => fresh,
-            Err(e) => {
-                crate::diagnostics::diag_error!(
-                    crate::diagnostics::APPROVAL_LEDGER_UNREACHABLE_REFUSED,
-                    error = %e,
-                    "the shared spent-approval ledger could not be reached, so this redemption is \
-                     REFUSED: a ledger that cannot say whether an approval was already spent must \
-                     not be read as saying it was not"
-                );
-                false
-            }
-        }
-    }
 }
 
 // ONE APPROVAL, REDEEMED ONCE — across a restart and across a fleet. Judged through the served

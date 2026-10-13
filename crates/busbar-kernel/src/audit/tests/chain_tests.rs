@@ -612,15 +612,25 @@ fn an_egress_refusal_is_audited_on_the_chain() {
         scope_kind: "queue_broker",
         value: "kafka-prod".to_string(),
     };
+    // The audit row names the refused destination as `<scope kind>:<value>` and the refused caller.
+    let EgressRefusal::NoGrant {
+        caller,
+        scope_kind,
+        value,
+        ..
+    } = &refusal
+    else {
+        unreachable!("built as NoGrant above")
+    };
     let mut chain: Chain<AuditEntry> = Chain::new();
     let records = vec![chain.append(
         "admin",
         AuditInput {
             ts: 1,
             action: "queue.egress".to_string(),
-            resource: refusal.audit_resource(),
+            resource: format!("{scope_kind}:{value}"),
             outcome: crate::audit_ring::OUTCOME_REJECTED.to_string(),
-            principal: refusal.caller().to_string(),
+            principal: caller.clone(),
         },
     )];
     assert_eq!(verify_chain(&records), Ok(()));
