@@ -625,7 +625,7 @@ impl DoorApply {
         let settings = if section.is_null() {
             Vec::new()
         } else {
-            handed_settings(section)?
+            handed_settings(settings_path(&self.served_facts), section)?
         };
         crate::root::loader::dispatch::kinds::plane::refresh_door(
             &self.plugin,
@@ -736,7 +736,12 @@ impl DoorAppliers {
                 continue;
             };
             let name = p.plugin.name();
-            let settings = match serde_json::to_vec(&settings_of(facts, section, sections)) {
+            // A secret reference at every credential position `${VAR}` filled, never the bytes
+            // (THE DESIGN §6): the keyed map sits at the configuration's root.
+            let settings = match busbar_kernel::config::filled::plane_bound_bytes(
+                settings_path(facts),
+                &settings_of(facts, section, sections),
+            ) {
                 Ok(settings) => settings,
                 Err(e) => {
                     tracing::error!(plane = name, error = %e, "door plane's new configuration is not JSON; it keeps serving the previous one");
@@ -1188,15 +1193,32 @@ fn section_with_pools(
     section
 }
 
-/// THE BYTES A DOOR PLANE IS HANDED for its section: [`plane_settings`] as JSON, with the
-/// core-owned `work:` bounds struck (the kernel reads them; the plane never sees them). The one
-/// rule `open` and a config apply's refresh both apply (audit root-R1 leftover C1).
-fn handed_settings(section: &serde_yaml::Value) -> Result<Vec<u8>, String> {
+/// THE BYTES A DOOR PLANE IS HANDED for its section at `path` ([`settings_path`]):
+/// [`plane_settings`] as JSON, with the core-owned `work:` bounds struck (the kernel reads them; the
+/// plane never sees them) and a secret reference at every credential position `${VAR}` filled,
+/// never the bytes (THE DESIGN §6: a plane never receives secret bytes; SECURITY ruling 2026-10-07:
+/// credential fields only, a template for a part). The one rule `open` and a config apply's refresh
+/// both apply (audit root-R1 leftover C1).
+fn handed_settings(path: &[&str], section: &serde_yaml::Value) -> Result<Vec<u8>, String> {
     let mut section = plane_settings(section);
     if let Some(map) = section.as_mapping_mut() {
         map.remove(busbar_contract::section::RESERVED_WORK_KEY);
     }
-    serde_json::to_vec(&section).map_err(|e| format!("its section: {e}"))
+    busbar_kernel::config::filled::plane_bound_bytes(path, &section)
+        .map_err(|e| format!("its section: {e}"))
+}
+
+/// Where the settings a plane is handed ([`settings_of`]) sit in the configuration, for the
+/// credential binding ([`handed_settings`]): a plane handed the kernel-owned `pools` map keyed
+/// beside the sections it reads sits at the root; any other at its own section's key.
+fn settings_path(
+    facts: &crate::root::loader::dispatch::kinds::plane::ServedFacts,
+) -> &[&'static str] {
+    if facts.section == busbar_contract::section::RESERVED_POOLS_KEY {
+        &[]
+    } else {
+        std::slice::from_ref(&facts.section)
+    }
 }
 
 /// `stated`, a named-definition section's unified pools, written into `section` at its reserved
@@ -1388,6 +1410,8 @@ pub(crate) fn compose_planes_over(
             .iter()
             .filter_map(|name| {
                 let value = serde_json::to_value(sections.get(name)?).ok()?;
+                // A secret reference at every credential position `${VAR}` filled, never the bytes.
+                let value = busbar_kernel::config::filled::plane_bound(&[name], value);
                 Some(((*name).to_string(), value))
             })
             .collect();
@@ -1396,8 +1420,15 @@ pub(crate) fn compose_planes_over(
         let dialects = egress
             .map(|e| crate::root::door_steps::dialect_facts(&walked, e.reach.providers))
             .unwrap_or_default();
-        let snapshot = open(plugin, &settings, public_url, &owned, &dialects)
-            .map_err(|e| format!("{instance}: {e}"))?;
+        let snapshot = open(
+            plugin,
+            settings_path(&served_facts),
+            &settings,
+            public_url,
+            &owned,
+            &dialects,
+        )
+        .map_err(|e| format!("{instance}: {e}"))?;
         let section = &walked;
         let calls = Arc::new(PlaneInstance::new(
             plugin.clone(),
@@ -1834,18 +1865,20 @@ fn walked_section(
     }
 }
 
-/// `open` the plane, generation 1, its settings `section` as JSON, the deployment's `public_url`
-/// (absent = none stated), its `owned` sections and the `dialects` of the providers its section
-/// references; the snapshot it published.
+/// `open` the plane, generation 1, its settings `section` (at `path` in the configuration, as it
+/// crosses: [`handed_settings`]) as JSON, the deployment's `public_url` (absent = none stated), its
+/// `owned` sections and the `dialects` of the providers its section references; the snapshot it
+/// published.
 fn open(
     plugin: &DoorPlane,
+    path: &[&str],
     section: &serde_yaml::Value,
     public_url: Option<&str>,
     owned: &serde_json::Map<String, serde_json::Value>,
     dialects: &[busbar_contract::plane_calls::DialectFacts],
 ) -> Result<OwnedSnapshot, String> {
     // The reserved `work:` bounds are core-owned: the kernel reads them; the plane never sees them.
-    let settings = handed_settings(section)?;
+    let settings = handed_settings(path, section)?;
     let owned = if owned.is_empty() {
         Vec::new()
     } else {
