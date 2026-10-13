@@ -151,8 +151,26 @@ fn piece(
     member: &'static [u8],
     attempt_no: u32,
 ) -> Answer {
+    piece_into(
+        p, unit, from, flags, status, bytes, member, attempt_no, 4096,
+    )
+}
+
+/// [`piece`], its answer written into a reply buffer of `cap` bytes.
+#[allow(clippy::too_many_arguments)]
+fn piece_into(
+    p: &Plugin<Plane>,
+    unit: u64,
+    from: u32,
+    flags: u32,
+    status: u32,
+    bytes: &'static [u8],
+    member: &'static [u8],
+    attempt_no: u32,
+    cap: usize,
+) -> Answer {
     let (mut reply, mut units, mut fields, mut arena) = (
-        vec![0_u8; 4096],
+        vec![0_u8; cap],
         [z::<UnitCount>(); 8],
         [z::<OutField>(); 16],
         [0_u8; 1024],
@@ -438,4 +456,67 @@ fn a_buffered_answer_cut_mid_body_is_the_callers_502_and_bills_no_tokens() {
         "never the truncated body: {cut:?}"
     );
     assert!(cut.units.iter().all(|(_, n)| *n == 0), "no tokens: {cut:?}");
+}
+
+/// The cancel disposition the door answers for the unit on the (one) ticket these tests cross on.
+fn cancel(p: &Plugin<Plane>) -> u32 {
+    let mut x: Frame<
+        busbar_contract::abi::plane::PlaneCancelIn,
+        busbar_contract::abi::plane::PlaneCancelOut,
+    > = Frame::new(z(), z());
+    (x.input.cancel.head, x.out.cancel.head) = (in_head(), out_head());
+    assert_eq!(p.call(life::CANCEL, &mut x).outcome, Outcome::Ready);
+    x.out.cancel.disposition
+}
+
+/// A CALLER THAT LEAVES WHILE THE LAST WINDOW OF A COMPLETED STREAM IS BEING WRITTEN (row-159
+/// plane-llm L1#5), `$`: the answer was a usable success, fully reported, so its cancel is PARTIAL and
+/// the units the stream stated bill, as a caller that left mid-relay does and as 1.5.5's drop arm
+/// billed the reader's usage (v1.5.5 `proxy/response_body.rs` `FirstByteBody::drop`). RED: the door
+/// read the finished reply as nothing usable and answered ABORTED, billing 0 tokens for a fully
+/// reported completion.
+#[test]
+fn a_caller_that_leaves_during_the_last_window_bills_what_the_stream_stated() {
+    let (_d, p) = door();
+    arrive_with(&p, 31, STREAM_CHAT);
+    attempt_with(&p, 31, b"large", 1, STREAM_CHAT);
+    let head = piece(
+        &p,
+        31,
+        FROM_FAR_END,
+        PIECE_HAS_STATUS,
+        200,
+        STREAM_START,
+        b"large",
+        0,
+    );
+    assert_eq!(head.outcome, Outcome::Ready, "{head:?}");
+    // The far end's last piece, its answer written 16 bytes at a time: the first window only.
+    let last = piece_into(
+        &p,
+        31,
+        FROM_FAR_END,
+        PIECE_LAST,
+        0,
+        b"event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":3}}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
+        b"large",
+        0,
+        16,
+    );
+    assert_eq!(last.outcome, Outcome::Ready, "{last:?}");
+    assert!(!last.done, "more of the last window is owed: {last:?}");
+    assert_eq!(
+        cancel(&p),
+        busbar_contract::abi::plane::CANCEL_OK_PARTIAL,
+        "the stated units of a fully reported stream bill"
+    );
+}
+
+/// THE CONTROL: a caller that leaves before the first byte of the answer reached it bills nothing.
+#[test]
+fn a_caller_that_leaves_before_the_first_byte_bills_nothing() {
+    let (_d, p) = door();
+    arrive_with(&p, 33, STREAM_CHAT);
+    attempt_with(&p, 33, b"large", 1, STREAM_CHAT);
+    assert_eq!(cancel(&p), busbar_contract::abi::plane::CANCEL_ABORTED);
 }
