@@ -27,7 +27,10 @@ fn scratch(tag: &str) -> std::path::PathBuf {
 }
 
 /// A PIN-CACHED entry skips the network: the file already on disk hashes to the pin, so the
-/// root's fetch reports it cached and never calls the downloader (which would fail the test).
+/// loader's fetch the root delegates to reports it cached and never calls the download (which
+/// would fail the test). The root's `plugins_fetch` downloads only through the connector
+/// (`root::plugin_fetch`, row 130 E6), so the panicking download is handed to the loader's fetch
+/// directly; the root maps its outcome one to one.
 #[test]
 fn a_pin_cached_fetch_never_downloads() {
     let dir = scratch("cached");
@@ -39,10 +42,16 @@ fn a_pin_cached_fetch_never_downloads() {
         filename: "cached-blob.dat".into(),
     };
     let never = |url: &str| -> Result<Vec<u8>, String> { panic!("downloaded {url}") };
-    let got = plugins_fetch(&dir, &[target], true, &never).expect("the cached pin fetches");
+    let spec = super::super::loader::FetchSpec {
+        url: target.url.clone(),
+        sha256: target.sha256.clone(),
+        filename: target.filename.clone(),
+    };
+    let got = super::super::loader::fetch_plugins(&dir, &[spec], true, &never)
+        .expect("the cached pin fetches");
     assert_eq!(
         got,
-        vec![Fetched::Cached {
+        vec![super::super::loader::FetchOutcome::Cached {
             filename: "cached-blob.dat".into()
         }]
     );
