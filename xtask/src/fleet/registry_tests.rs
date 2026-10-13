@@ -47,3 +47,79 @@ fn a_duplicate_repo_row_is_refused() {
     let err = parse(&doubled).unwrap_err();
     assert!(err.contains("duplicate repo `busbar-secret-env`"), "{err}");
 }
+
+/// Every fault in `testing/shadow-oracle/plugin-digests.tsv`, read the way busbar-release's
+/// `recorder::plugin_build` reads it (one row per line, tab-separated): a published row is `name, tag,
+/// asset, 64-hex sha256[, line]`; a source row is `name, src:<40-hex commit>, build:<repo>, -, line`.
+/// A source row that does not parse is not an error there: it is silently no pin, and `fetch-plugin`
+/// on its line answers NoPin.
+fn digest_row_faults(tsv: &str) -> Vec<String> {
+    let hex = |s: &str, n: usize| s.len() == n && s.bytes().all(|b| b.is_ascii_hexdigit());
+    let mut out = Vec::new();
+    for (i, row) in tsv.lines().enumerate() {
+        if row.is_empty() || row.starts_with('#') {
+            continue;
+        }
+        let f: Vec<&str> = row.split('\t').collect();
+        let at = format!("line {}", i + 1);
+        if !(4..=5).contains(&f.len()) {
+            out.push(format!("{at}: {} fields, not 4 or 5", f.len()));
+            continue;
+        }
+        if f[1].starts_with("src:") || f[2].starts_with("build:") {
+            let commit = f[1].strip_prefix("src:").unwrap_or("");
+            let repo = f[2].strip_prefix("build:").unwrap_or("");
+            let repo_ok = !repo.is_empty()
+                && repo
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'.');
+            if !hex(commit, 40) || !repo_ok || f.len() != 5 || f[4].is_empty() {
+                out.push(format!(
+                    "{at}: {} is not a source row (src:<40 hex>, build:<repo>, -, line)",
+                    f[0]
+                ));
+            }
+        } else if !hex(f[3], 64) {
+            out.push(format!("{at}: {} has no 64-hex digest", f[0]));
+        }
+    }
+    out
+}
+
+#[test]
+fn every_plugin_digest_row_parses_and_the_sans_io_plugins_are_pinned_on_the_1_6_line() {
+    let tsv = Ctx::workspace()
+        .unwrap()
+        .read("testing/shadow-oracle/plugin-digests.tsv")
+        .unwrap();
+    assert_eq!(digest_row_faults(&tsv), Vec::<String>::new());
+    // /status row 129: the sans-IO postgres, valkey and ldap heads are each one 1.6 source pin.
+    for name in ["store-postgres", "store-valkey", "auth-ldap"] {
+        let pins = tsv
+            .lines()
+            .filter(|r| r.starts_with(&format!("{name}\tsrc:")) && r.ends_with("\t1.6"))
+            .count();
+        assert_eq!(pins, 1, "{name}");
+    }
+
+    // RED: the shape #716 committed (the tab between the commit and `build:` dropped) is refused.
+    let is_pg = |r: &str| r.starts_with("store-postgres\tsrc:");
+    let row = tsv.lines().position(is_pg).unwrap();
+    let joined: Vec<String> = tsv
+        .lines()
+        .map(|r| {
+            if is_pg(r) {
+                r.replacen("\tbuild:", "build:", 1)
+            } else {
+                r.to_string()
+            }
+        })
+        .collect();
+    assert_eq!(
+        digest_row_faults(&joined.join("\n")),
+        [format!(
+            "line {}: store-postgres is not a source row (src:<40 hex>, build:<repo>, -, line)",
+            row + 1
+        )]
+    );
+}
