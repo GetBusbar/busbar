@@ -872,7 +872,8 @@ pub(super) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
 
     // THE COMPOSITION, as production seals it: the door opened with the deployment's sections,
     // its egress the model-serving walk over the kernel's lane cells, its hooks the kernel's stage.
-    let secrets = busbar_kernel::config::secret::SecretResolver::builtins_only();
+    let secrets: Arc<dyn busbar_contract::secret::SecretResolve> =
+        Arc::new(busbar_kernel::config::secret::SecretResolver::builtins_only());
     let auths = Arc::new(OutboundAuths::new(
         Arc::clone(&dispatcher),
         crate::LINKED.auths,
@@ -891,7 +892,7 @@ pub(super) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
     };
     let reach = DoorReach {
         providers: &providers,
-        secrets: &secrets,
+        secrets: Arc::clone(&secrets),
         auths: Arc::clone(&auths),
         conns: Arc::clone(&connector) as Arc<dyn PollConns>,
         stream_ceiling_secs: opts.stream_ceiling_secs.unwrap_or(600),
@@ -932,7 +933,8 @@ pub(super) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
         let stream_ceiling_secs = opts.stream_ceiling_secs.unwrap_or(600);
         let (sections, providers) = (sections.clone(), providers.clone());
         Arc::new(move || {
-            let secrets = busbar_kernel::config::secret::SecretResolver::builtins_only();
+            let secrets: Arc<dyn busbar_contract::secret::SecretResolve> =
+                Arc::new(busbar_kernel::config::secret::SecretResolver::builtins_only());
             let models = crate::root::model_egress::ModelServing {
                 pools: model_pools.clone(),
                 lanes: (0..lanes).map(|i| (format!("m{i}"), i)).collect(),
@@ -943,7 +945,7 @@ pub(super) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
             };
             let reach = DoorReach {
                 providers: &providers,
-                secrets: &secrets,
+                secrets: Arc::clone(&secrets),
                 auths: Arc::clone(&auths),
                 conns: Arc::clone(&connector) as Arc<dyn PollConns>,
                 stream_ceiling_secs,

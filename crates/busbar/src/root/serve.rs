@@ -2106,7 +2106,6 @@ pub struct DoorRequest {
 /// documents (its protected-resource metadata, its own card) are what a caller reads BEFORE it holds
 /// a credential, and they answer the same with a chain configured as without one. Every other claim
 /// takes a credential, verified by the deployment's chain (an empty chain admits none).
-#[cfg(linked_axis_node)]
 fn line_auth(flags: u32, data_chain: &[String]) -> busbar_kernel::guest::LineAuth {
     use busbar_kernel::guest::LineAuth;
     if flags & CLAIM_OPEN != 0 {
