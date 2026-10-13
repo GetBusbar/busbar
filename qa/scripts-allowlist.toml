@@ -124,16 +124,6 @@ class = "port"
 reason = "a verify-1.6.0-done.sh group: becomes an xtask gate, proven to give identical verdicts on predev before this file goes"
 
 [[script]]
-path = "scripts/ci-branch-protection.sh"
-class = "port"
-reason = "writes the qa/main branch-protection floor (RELEASE.md): becomes a busbar-release subcommand over the shared GitHub crate"
-
-[[script]]
-path = "scripts/cost-watch.py"
-class = "port"
-reason = "the CI cost gate BUSBAR-1.6.0.md #78 requires: becomes a busbar-release subcommand"
-
-[[script]]
 path = "scripts/fleet/pin-check.sh"
 class = "port"
 reason = "plugin-ci.yml / plugin-repin.yml / plugin-release.yml step: becomes an xtask fleet subcommand the reusable workflows call"
