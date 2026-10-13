@@ -2139,7 +2139,7 @@ const WAIVED_HEAD: &[u8] = b"PATCH/v1/xbusbar-no-member-auth: 1\r\na: 1\r\n";
 
 /// One whole request on a fresh stream (`seq` onwards): its head `head` laid out over `bytes`, then
 /// its end.
-fn whole_request(p: &Plugin<TestKind>, seq: u32, head: &RequestPiece, bytes: &[u8]) {
+fn whole_request_with(p: &Plugin<TestKind>, seq: u32, head: &RequestPiece, bytes: &[u8]) {
     let stream = opened_stream(p, seq).value;
     assert!(ready(&request(p, seq + 1, stream, head, bytes)));
     assert!(ready(&request(
@@ -2163,9 +2163,9 @@ fn a_waived_request_carries_no_member_auth_and_the_waiver_never_reaches_the_tabl
         fields: span(10, WAIVED_HEAD.len() - 10),
         ..head_piece()
     };
-    whole_request(&p, 0, &waived, WAIVED_HEAD);
-    whole_request(&p, 3, &head_piece(), HEAD_BYTES);
-    whole_request(&p, 6, &head_piece(), HEAD_BYTES);
+    whole_request_with(&p, 0, &waived, WAIVED_HEAD);
+    whole_request_with(&p, 3, &head_piece(), HEAD_BYTES);
+    whole_request_with(&p, 6, &head_piece(), HEAD_BYTES);
     let fields: Vec<Vec<(String, Vec<u8>)>> = table
         .opened
         .lock()
