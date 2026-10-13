@@ -1,19 +1,18 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! **THE BOTH-WAYS HARNESS FOR THE COLD KINDS** (DECISIONS #2 rule (1): a plugin is compiled in OR
-//! dropped in — same contract, same loading path).
+//! **THE BOTH-WAYS HARNESS** (DECISIONS #2 rule (1): a plugin is compiled in OR dropped in — same
+//! contract, same loading path).
 //!
-//! One in-tree SDK plugin is registered TWICE: LINKED (its `rlib`'s `BUSBAR_COLD_ENTRY`, through
-//! [`PluginRegistry::link`]) and DROPPED IN (its `cdylib`, signed first-party into a fresh
-//! `plugins/` directory and found by [`crate::scan_and_validate`]). Each kind's conformance test then
-//! asks both registries for the row the plugin's name resolves to and opens it through the kind's
-//! own `open_*`, runs one script against each opened instance, and requires the two rows and the two
-//! transcripts to be byte-identical.
+//! One plugin is registered TWICE: LINKED (its door, through [`PluginRegistry::link`]) and DROPPED
+//! IN (its `cdylib`, signed first-party into a fresh `plugins/` directory and found by
+//! [`crate::scan_and_validate`]). Each kind's conformance test then asks both registries for the row
+//! the plugin's name resolves to, opens it, runs one script against each opened instance, and
+//! requires the two rows and the two transcripts to be byte-identical.
 //!
-//! Each kind's fixture comes from the table `build.rs` generates out of `Cargo.toml`'s
-//! `[package.metadata.busbar.both-ways]` ([`fixture`]): the tests reach a fixture by its KIND, and no
-//! test source names a plugin instance.
+//! Each kind's fixture comes from the tables `build.rs` generates out of `Cargo.toml`'s
+//! `[package.metadata.busbar.both-ways]` ([`door_fixture`], [`hot_cdylib`]): the tests reach a
+//! fixture by its KIND, and no test source names a plugin instance.
 //!
 //! What is compared is the plugin's STATEMENT (its manifest, every field but the two that describe
 //! a tarball — `sha256` and `signature`) and its BEHAVIOUR. What is not compared is provenance —

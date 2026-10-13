@@ -52,6 +52,7 @@ pub mod gitp;
 pub mod install_sizes;
 pub mod json_lite;
 pub mod ledger;
+pub mod ledger_merge;
 pub mod libtest_path;
 pub mod loc;
 pub mod loom;
