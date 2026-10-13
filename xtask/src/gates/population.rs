@@ -17,8 +17,8 @@
 //!
 //! * [`Population::below_floor`] — the aggregate ratchet. It is not `> 0`: a walk that collapses to
 //!   a handful of files reports no findings and reads exactly like a clean tree. The floor is a
-//!   RATCHET pinned AT the measured count ([`FLOOR`], 949 after row 130 E2 merged with predev
-//!   62fdbdf3bc), not a margin below it: one file fewer is refused until a reviewed diff
+//!   RATCHET pinned AT the measured count ([`FLOOR`], 948 after row 130 E2 merged with predev
+//!   872b6ae0e2), not a margin below it: one file fewer is refused until a reviewed diff
 //!   re-measures. It is raised as the tree grows, never lowered to accommodate a scan that stopped
 //!   finding things.
 //! * [`Population::drained`] — a crate that has a `src/` and contributed NOTHING. The floor catches
@@ -46,16 +46,15 @@ use crate::ctx::{Ctx, Overlay, SourceFile, WalkSpec};
 /// `outputschema.rs` and added `door_sessions.rs`, a reviewed net removal of one file. Raised from
 /// 947 to 949 when FLIP-LLM (#464) added `busbar/src/root/model_egress.rs` and
 /// `busbar-plane-llm/src/exchange/project.rs` (it had raised 941 to 943 over predev d7929b661d).
-/// Raised from 949 to 950 when row 130 E1 (#710's ruling) moved the inbound listener's serve loop
-/// out of `busbar-kernel/src/tls.rs` into the new `busbar/src/root/listener.rs` (the kernel file
-/// stays for `read_pem`, so the tree grew by that one file). Lowered from 950 to 949 when row 130
-/// E2 deleted the kernel's `net_guard.rs` re-export shim (its call sites name the egress unit and
-/// the contract directly; its resolver moved into the connector's existing `process.rs`), a
-/// reviewed removal of one file. A drop below 949 is refused until a reviewed diff re-measures. The selftest plant
+/// Re-pinned from 949 to 948 when #686 (q128-linked-neutral) deleted `crates/busbar-kernel/build.rs`,
+/// the one non-test file that PR removed, a reviewed removal. Row 130 E1 (#710's ruling) added `busbar/src/root/listener.rs` (the
+/// listener's serve loop out of `busbar-kernel/src/tls.rs`, which stays for `read_pem`) and row 130
+/// E2 deleted the kernel's `net_guard.rs` re-export shim, a reviewed net change of none. A drop
+/// below 948 is refused until a reviewed diff re-measures. The selftest plant
 /// ([`one_file_short`]) cuts the live population to `FLOOR - 1` whatever its size, so predev
 /// growing a file no longer forces a re-pin for the plant's sake. Lowering the floor is how a gate
 /// stops reading the repository without saying so, so a diff that lowers it is the diff to refuse.
-pub const FLOOR: usize = 949;
+pub const FLOOR: usize = 948;
 
 /// The `.rs` under `crates/` that are not test scaffolding, plus the accounting to refuse a
 /// population that cannot support a verdict.

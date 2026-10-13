@@ -1937,7 +1937,7 @@ not the vision**. Consequences:
   the architecture, never opinions a row may grant itself; an edge the architecture does not rule on
   carries its written question to the owner. The ship check admits only the classes the
   architecture allows — `tcb`, `not-allowed` and every unruled edge are refused, because the
-  criterion for a tag is not "no worse than the last commit".
+  criterion for a tag is not "no worse than the last commit". The loader atop the contract (`plugin-tooling -> contract`) is a ruled edge, `allowed` (ARCHITECT 2026-10-12: Part 2 #33, :2957). A merge-base older than the plugin kinds is measured with today's vocabulary, never exempted (ARCHITECT 2026-10-12, `kind-isolation:law0-base`).
 
 ## Rejected (do not resurrect)
 - **D36 "dialect as a plugin kind" / per-dialect crates** (`busbar-plane-<plane>-<dialect>`). A

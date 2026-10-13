@@ -4,11 +4,17 @@
 //! THE TEST-LINKED ROSTER, witnessed. `tests/linked/mod.rs` is how every cross-plane test here
 //! gets real planes without naming one; these two arms prove the mechanism is not vacuous:
 //!
-//! - GREEN: every crate in `[package.metadata.busbar] test-linked` registers exactly one plane, so
-//!   the registry the tests address holds as many planes as the manifest lists.
+//! - GREEN: every crate in `[package.metadata.busbar.test-linked] planes` registers exactly one
+//!   plane, so the registry the tests address holds as many planes as the manifest lists.
 //! - RED: an address no linked plane answers refuses, naming what was asked for and the manifest
 //!   list — so a test addressed at a plane that is not test-linked fails, never passes over an
 //!   empty roster.
+//!
+//! MOVED HERE from `crates/busbar-kernel/tests/`, assertions unchanged (kind-isolation, ARCHITECT:
+//! core names zero plane types, its tests included; Q128 audit HIGH on the kernel's test-linked
+//! build.rs): the roster it witnesses is the composition root's test-linked roster
+//! (`[package.metadata.busbar.test-linked] planes`), the only one left, and the composition root is
+//! where a plane may be linked.
 
 mod linked;
 

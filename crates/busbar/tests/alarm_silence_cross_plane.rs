@@ -12,6 +12,11 @@
 //!
 //! `metric_name_reads_every_exposition_line_shape` (a pure-function test, no `TestApp`/router) names
 //! no plane and stays in `src/tests/alarm_silence_tests.rs`.
+//!
+//! MOVED HERE from `crates/busbar-kernel/tests/`, assertions unchanged (kind-isolation, ARCHITECT:
+//! core names zero plane types, its tests included; Q128 audit HIGH on the kernel's test-linked
+//! build.rs): the cell drives a request lifecycle through a plane that routes `/pa/v1/messages`, a
+//! lane and a pool, and the composition root is where a plane may be linked.
 
 mod linked;
 
