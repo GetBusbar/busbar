@@ -750,16 +750,6 @@ drain   = "none: the architecture grants cleanliness -> kernel. What this row ho
 
 [[dep]]
 from    = "busbar-kernel"
-to      = "busbar-hook-ranking"
-half    = "shipped"
-count   = "1"
-verdict = "not-allowed"
-cite    = "ARCHITECT K5/K5b/K5c/K5d rulings (b17f0a2c1, 0ade205df): the composition root links the build's ranking hooks as a row of its linked tables (roster def 1); the kernel names neither crate in production. `kernel -> hooks` is in neither ARCHITECTURE_ALLOWED nor ARCHITECTURE_TCB, so the verdict stays the one the architecture implies; the row holds a TEST-SUPPORT stand-in edge, not a shipped coupling."
-why     = "busbar-kernel names busbar-hook-ranking as `fixture-hook`: declared normal, optional in the shipped graph, enabled ONLY by the kernel's `test-support` feature (`dep:fixture-hook`) — a test build has no root, so this fixture stands in for the row the root links (`preflight::install_linked_rows`); no kernel source names the plugin, and no default or shipped feature turns the edge on. 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions."
-drain   = "delete the `fixture-hook` stand-in from busbar-kernel's Cargo.toml once the kernel's own tests take their linked rows from a contract-only fixture; the shipped edge is the root's (busbar -> busbar-hook-ranking)."
-
-[[dep]]
-from    = "busbar-kernel"
 to      = "busbar-kernel-egress"
 half    = "shipped"
 count   = "1"
