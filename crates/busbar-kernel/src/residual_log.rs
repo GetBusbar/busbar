@@ -302,7 +302,7 @@ pub struct PlaneResidualLog {
     unresumable: std::sync::Mutex<std::collections::HashSet<String>>,
 }
 
-/// THE PROCESS-WIDE RESIDUAL LOG. Process state, like [`crate::calllog::CALLS`]: a config apply
+/// THE PROCESS-WIDE RESIDUAL LOG. Process state, like [`crate::audit::auditlog::AUDIT_LOG`]: a config apply
 /// must not reopen a principal's chain at seq 1.
 pub static RESIDUALS: std::sync::LazyLock<PlaneResidualLog> =
     std::sync::LazyLock::new(|| PlaneResidualLog::with_kind_id(KIND_ID_RESIDUAL));
@@ -559,6 +559,14 @@ pub(crate) fn register_and_restore(app: &Arc<crate::state::App>) {
     });
 }
 
+/// TEST ONLY: a fresh, process-unique stream id, well above the production ids and the
+/// `plane_host::journal` test range (base 10_000) and the `task_event` test range (base 100_000).
+#[cfg(test)]
+fn fresh_test_kind_id() -> u32 {
+    static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(200_000);
+    NEXT.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+}
+
 /// TEST ONLY: a residual log over a fresh stream id, registered against an app whose governance
 /// store is `store`. A "restart" is a second `over` the SAME store.
 #[cfg(test)]
@@ -570,7 +578,7 @@ pub(crate) struct ResidualTestHarness {
 #[cfg(test)]
 impl ResidualTestHarness {
     pub(crate) fn over(store: Arc<dyn busbar_contract::records::RecordStore>) -> Self {
-        let kind_id = crate::calllog::fresh_test_kind_id();
+        let kind_id = fresh_test_kind_id();
         let gov =
             Arc::new(crate::governance::GovState::new(store, None).expect("gov store constructs"));
         let app = crate::test_support::TestApp::new().governance(gov).build();

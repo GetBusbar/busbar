@@ -203,10 +203,6 @@ pub mod billing;
 /// crate-private. See the module header.
 pub mod boot;
 pub mod breaker;
-/// THE DURABLE PER-CALL LOG: one hash-chained record per recorded call. A plane supplies the RECORD
-/// SHAPE for core's one audit chain — named at the crate root rather than under the
-/// neutral `plane::` namespace. See the module header.
-pub mod calllog;
 pub mod catalogue;
 pub mod config;
 pub mod config_validate;

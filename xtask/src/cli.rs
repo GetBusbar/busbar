@@ -32,6 +32,7 @@ usage:
   cargo xtask loc --selftest
   cargo xtask teller-steps [--root-legs] [--root-legs-gating]
   cargo xtask ledger {sync|status|next|record|fixed|move} | --check
+  cargo xtask ledger-merge <base> <ours> <theirs> [<path> [<marker-size>]]   (git merge driver `ledger-count` for qa/kind-isolation.toml: a count both sides moved is theirs + ours - base; ours is rewritten in place; exit 1 leaves the conflict, reasons on stderr)
   cargo xtask q128 audit [--record <path>] [--out <path>]   (the Q128 architecture audit on this tree; writes target/q128-audit.json; exit 1 on an open BLOCK)
   cargo xtask proof-manifest --version <v> --out <file> [--sha S] [--run-id ID] [--run-url U] [--staged-json F] [--reports-dir D] [--hits-dir D] [--repo-root D] [--run-cargo|--run-parity|--run-composability] [--mark ID=STATUS]... [--index] [--print]
   cargo xtask proof-manifest --selftest
@@ -76,6 +77,7 @@ const LEGACY_LEDGER_ENV: &str = "LEDGER";
 /// here, beside the dispatch arms that prove it, so the reader and the dispatcher cannot drift.
 pub const NON_GATE_SUBCOMMANDS: &[&str] = &[
     "ledger",
+    "ledger-merge",
     "q128",
     "audit-verify",
     "plugin-gates",
@@ -207,6 +209,9 @@ pub fn main(args: &[String]) -> i32 {
         Some("txn-fence") => crate::txn_fence::main(&args[1..]),
         // THE LOOM MODEL of the config swap (slow, exhaustive; refuses a run that ran no model).
         Some("loom") => crate::loom::main(&args[1..]),
+        // THE LEDGER MERGE DRIVER (`.gitattributes`: `merge=ledger-count`). Not a gate: git hands it
+        // three versions of `qa/kind-isolation.toml` and it reads no tree.
+        Some("ledger-merge") => crate::ledger_merge::main(&args[1..]),
         Some("ledger") => match open_ctx() {
             Ok(cx) => crate::audit_cmd::main(cx.root(), &args[1..]),
             Err(code) => code,
