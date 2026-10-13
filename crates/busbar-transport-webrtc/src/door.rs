@@ -99,6 +99,10 @@ const TAIL: TransportTail = TransportTail {
     status_rows_len: 0,
     settings: std::ptr::null(),
     settings_len: 0,
+    // A datagram lane states no status rows, so it states no fault table either: its pieces carry
+    // no reading (`FAULT_NONE`), as the byte-stream carrier's do.
+    fault_rows: std::ptr::null(),
+    fault_rows_len: 0,
 };
 
 /// The door's Statement.
@@ -330,7 +334,7 @@ fn answer(
             len: n as u64,
             code: 0,
             status_class: 0,
-            _reserved: 0,
+            fault: 0,
             flags,
             retry_after_secs: 0,
         });
