@@ -309,6 +309,13 @@ pub struct Declares {
     /// keeps its canonical bytes.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub breaker: Option<BreakerDecl>,
+    /// THE DISK NEED (THE DESIGN §11.11 R4, as the OWNER amended it 2026-10-13): the plugin's
+    /// source reads the local disk. Stated by a `kind: secret` plugin ONLY (no other kind may claim
+    /// the exception; [`validate_identity`] refuses it elsewhere): the host runs its `resolve` on the
+    /// bounded disk lane at config time and refuses it on a request path. Left off the wire when
+    /// false, so every manifest packed before the field existed keeps its canonical bytes.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub disk: bool,
 }
 
 /// A plane's declared BREAKER FACTS (`declares.breaker`, ARCHITECT Q4): per-plane facts about the
@@ -405,6 +412,7 @@ impl Declares {
             && self.egress.is_default()
             && self.contract_abi.is_none()
             && self.breaker.is_none()
+            && !self.disk
     }
 }
 
@@ -942,6 +950,14 @@ pub fn validate_identity(m: &Manifest, host_identity: &str) -> Result<(), String
     if !KNOWN_KINDS.contains(&m.kind.as_str()) {
         return Err(format!(
             "manifest kind '{}' is not one of {KNOWN_KINDS:?}",
+            m.kind
+        ));
+    }
+    if m.declares.disk && m.kind != "secret" {
+        return Err(format!(
+            "manifest kind '{}' declares a disk need; only a `kind: secret` source may (THE DESIGN \
+             §11.11 R4: the store and the export sink reach the disk lane through their host \
+             services, and no other kind claims the exception)",
             m.kind
         ));
     }

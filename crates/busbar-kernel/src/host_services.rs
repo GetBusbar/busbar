@@ -620,8 +620,9 @@ pub struct KernelServices {
     /// over its live snapshot; unattached, the principal admitted is the one judged.
     standing: OnceLock<Standing>,
     nested: Arc<crate::pump::NestedPool>,
-    /// The bounded disk lane `disk.append` runs on (THE DESIGN §11.11 R4).
-    disk: crate::host_disk::DiskLane,
+    /// The bounded disk lane `disk.append` runs on (THE DESIGN §11.11 R4): the process's one lane
+    /// where the composition root hands it ([`Self::with_disk_lane`]).
+    disk: Arc<crate::host_disk::DiskLane>,
     /// THE OPEN CARRIER SESSIONS (`session.emit`), by number: the instance each serves, its
     /// verified principal and the writer its unsolicited output goes to.
     sessions: Mutex<HashMap<u64, CarrierSession>>,
@@ -700,7 +701,7 @@ impl KernelServices {
                 NEST_CONCURRENCY,
                 NEST_DEPTH_MAX as usize + 1,
             )),
-            disk: crate::host_disk::DiskLane::default(),
+            disk: Arc::default(),
             sessions: Mutex::default(),
             verify: crate::host_verify::VerifyBook::default(),
         }
@@ -796,6 +797,14 @@ impl KernelServices {
     #[must_use]
     pub fn with_dest_judge(mut self, judge: Arc<dyn DestJudge>) -> Self {
         self.judge = Some(judge);
+        self
+    }
+
+    /// The same services appending on `lane`: the process's ONE disk lane (THE DESIGN §11.11 R4),
+    /// the lane a disk-declared secret source's config-time `resolve` runs on too.
+    #[must_use]
+    pub fn with_disk_lane(mut self, lane: Arc<crate::host_disk::DiskLane>) -> Self {
+        self.disk = lane;
         self
     }
 

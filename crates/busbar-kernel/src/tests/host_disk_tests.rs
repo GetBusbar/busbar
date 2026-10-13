@@ -142,3 +142,42 @@ fn the_lane_runs_appends_in_order_and_answers_through_later() {
     assert_eq!(std::fs::read_to_string(&file).unwrap(), want);
     let _ = std::fs::remove_dir_all(&d);
 }
+
+/// A JOB runs ON THE LANE THREAD, in order with the appends (THE DESIGN §11.11 R4 as the OWNER
+/// amended it: a disk-declared secret source's config-time resolve runs here), and a job that
+/// panics is its own failure: the appends behind it still land.
+#[test]
+fn a_job_runs_on_the_lane_thread_and_a_panicking_one_leaves_the_lane_running() {
+    let d = dir("job");
+    let file = d.join("log.jsonl");
+    let lane = DiskLane::default();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let ran_on = tx.clone();
+    lane.run(Box::new(move || {
+        let _ = ran_on.send(std::thread::current().name().map(str::to_string));
+    }))
+    .expect("the lane takes the job");
+    assert_eq!(
+        rx.recv_timeout(std::time::Duration::from_secs(10))
+            .expect("the job ran"),
+        Some(LANE_THREAD.to_string())
+    );
+    assert_ne!(std::thread::current().name(), Some(LANE_THREAD));
+
+    lane.run(Box::new(|| panic!("a job that panics")))
+        .expect("the lane takes the job");
+    let (done_tx, done_rx) = std::sync::mpsc::channel();
+    let later: Later = Box::new(move |s| {
+        let _ = done_tx.send(s);
+    });
+    assert!(lane
+        .submit(dest(&file, None), b"after\n".to_vec(), later)
+        .is_ok());
+    let stored = done_rx
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect("the lane still answers after a job panicked");
+    assert_eq!(stored.outcome, Outcome::Ready);
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "after\n");
+    drop(tx);
+    let _ = std::fs::remove_dir_all(&d);
+}

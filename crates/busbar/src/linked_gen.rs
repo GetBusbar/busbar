@@ -367,6 +367,22 @@ pub(crate) fn linked_source(
         out.push_str(&format!("{e}::door, "));
     }
     out.push_str("],\n");
+    // EACH LINKED SECRET DOOR'S DECLARED METADATA: `(door, declares)`, the JSON its
+    // `[package.metadata.busbar.linked-declares]` row names (the crate's `declares.json`), read as a
+    // dropped-in copy's signed `declares` is (its disk need, THE DESIGN §11.11 R4). A secret door
+    // with no such row declares none.
+    out.push_str("    secret_declares: &[");
+    for ((entry, list), (feature, _)) in linked.iter().zip(&on) {
+        if !list.iter().any(|a| a == SECRET_AXIS) {
+            continue;
+        }
+        if let Some(path) =
+            metadata_value(manifest, "package.metadata.busbar.linked-declares", feature)
+        {
+            out.push_str(&format!("({entry}::door, {path}), "));
+        }
+    }
+    out.push_str("],\n");
     // Each door row's place among the plane rows (how many `plane` rows precede it in manifest
     // order): a door plane's registry row folds in at its row's place, so the layering order is the
     // manifest's whichever axis a plane registers on.
