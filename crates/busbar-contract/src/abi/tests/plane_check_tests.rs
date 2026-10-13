@@ -521,6 +521,8 @@ fn the_catalogue_bits_share_no_bit_with_their_neighbours() {
         PIECE_LAST,
         PIECE_HAS_STATUS,
         PIECE_CATALOGUE_MOVED,
+        PIECE_CUT,
+        PIECE_FINAL,
     ];
     let emit_bits = [
         EMIT_TO_FAR_END,
@@ -3062,4 +3064,53 @@ fn a_refused_arrival_may_name_the_entry_it_is_about() {
         f(Rule::UnknownCode, "arrive.refusal_status"),
         "a refusal about no entry is the caller's: a 4xx"
     );
+}
+
+/// A CUT ANSWER AND A FINAL ANSWER ARE STATED ON THE FAR END'S PIECES ALONE (`PIECE_CUT`,
+/// `PIECE_FINAL`): a cut only on the far end's last piece, the final mark only on the far end's first
+/// piece (the one carrying its status). RED: either bit on a caller's or the kernel's piece, a cut
+/// on a far-end piece that is not its last, or a final mark on a far-end piece with no status.
+#[test]
+fn a_cut_and_a_final_mark_ride_only_the_far_ends_own_pieces() {
+    use crate::abi::plane::check::check_piece_in;
+    assert_eq!(check_piece_in(FROM_FAR_END, PIECE_LAST | PIECE_CUT), Ok(()));
+    assert_eq!(
+        check_piece_in(FROM_FAR_END, PIECE_HAS_STATUS | PIECE_FINAL),
+        Ok(())
+    );
+    assert_eq!(
+        check_piece_in(
+            FROM_FAR_END,
+            PIECE_HAS_STATUS | PIECE_LAST | PIECE_FINAL | PIECE_CUT
+        ),
+        Ok(()),
+        "a one-piece answer cut on its head piece carries both"
+    );
+    assert_eq!(
+        check_piece_in(FROM_FAR_END, PIECE_LAST | PIECE_HAS_STATUS),
+        Ok(())
+    );
+    for (from, flags) in [
+        (FROM_FAR_END, PIECE_CUT),
+        (FROM_CALLER, PIECE_LAST | PIECE_CUT),
+        (FROM_KERNEL, PIECE_LAST | PIECE_CUT),
+    ] {
+        assert_eq!(
+            check_piece_in(from, flags),
+            f(Rule::Contradiction, "on_piece_in.cut"),
+            "from {from}, flags {flags}"
+        );
+    }
+    for (from, flags) in [
+        (FROM_FAR_END, PIECE_FINAL),
+        (FROM_FAR_END, PIECE_LAST | PIECE_FINAL),
+        (FROM_CALLER, PIECE_HAS_STATUS | PIECE_FINAL),
+        (FROM_KERNEL, PIECE_HAS_STATUS | PIECE_FINAL),
+    ] {
+        assert_eq!(
+            check_piece_in(from, flags),
+            f(Rule::Contradiction, "on_piece_in.final"),
+            "from {from}, flags {flags}"
+        );
+    }
 }

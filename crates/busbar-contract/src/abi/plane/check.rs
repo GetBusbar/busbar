@@ -305,6 +305,26 @@ fn trust_facts(outcome: Outcome, out: &ArriveOut) -> Result<(), Fault> {
     Ok(())
 }
 
+/// A PIECE'S FLAGS, as the kernel hands them to `on_piece`: [`super::PIECE_CUT`] only on the far
+/// end's last piece, and [`super::PIECE_FINAL`] only on the far end's first piece (the one carrying
+/// its status). The kernel holds every piece it pushes to this; a plane that reads either bit holds
+/// the piece it is given to it and faults one that breaks it.
+///
+/// # Errors
+///
+/// The rule the flags break.
+pub fn check_piece_in(from: u32, flags: u32) -> Result<(), Fault> {
+    use super::{FROM_FAR_END, PIECE_CUT, PIECE_FINAL, PIECE_HAS_STATUS, PIECE_LAST};
+    let far = from == FROM_FAR_END;
+    if flags & PIECE_CUT != 0 && !(far && flags & PIECE_LAST != 0) {
+        return Err(fault(Rule::Contradiction, "on_piece_in.cut"));
+    }
+    if flags & PIECE_FINAL != 0 && !(far && flags & PIECE_HAS_STATUS != 0) {
+        return Err(fault(Rule::Contradiction, "on_piece_in.final"));
+    }
+    Ok(())
+}
+
 /// (`arrive` above: a REFUSED answer names the plane's own refusal code and a 4xx status; any other
 /// outcome carries neither.)
 ///

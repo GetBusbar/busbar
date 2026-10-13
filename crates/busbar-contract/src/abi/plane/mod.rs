@@ -471,6 +471,17 @@ pub const PIECE_FIELDS: u32 = 1 << 3;
 /// with whatever it tells the session about the move, or with nothing. See
 /// the catalogue-moved tick in this module's documentation.
 pub const PIECE_CATALOGUE_MOVED: u32 = 1 << 4;
+/// [`OnPieceIn::flags`], [`FROM_FAR_END`] with [`PIECE_LAST`]: the far end's answer ended without
+/// completing (its connection failed, or the send's deadline passed, after its head). Without it,
+/// the far end's [`PIECE_LAST`] is a complete answer. The kernel sets it on no other piece; a plane
+/// that receives it on any other piece faults the piece ([`check::check_piece_in`]). A plane that
+/// reads no cut ignores the bit and ends the answer as it would any other.
+pub const PIECE_CUT: u32 = 1 << 5;
+/// [`OnPieceIn::flags`], [`FROM_FAR_END`] with [`PIECE_HAS_STATUS`] (the answer's first piece): the
+/// kernel will not fail this answer over, whatever verdict the plane answers it with, so an answer
+/// whose verdict is [`VERDICT_RETRY`] is the unit's last. The kernel sets it on no other piece; a
+/// plane that receives it on any other piece faults the piece ([`check::check_piece_in`]).
+pub const PIECE_FINAL: u32 = 1 << 6;
 
 /// [`OnPieceOut::flags`]: the emitted bytes go to the far end (else to the caller).
 pub const EMIT_TO_FAR_END: u32 = 1;
