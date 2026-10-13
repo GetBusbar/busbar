@@ -1757,8 +1757,8 @@ cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain 
 [[law0]]
 crate = "busbar-kernel"
 axis  = "auth"
-count = "50"
-cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; LOWERED 76 -> 61, predev 9c0a394771's measure: the drain landed without giving its row back (Law 9: the ceiling ratchets down); LOWERED 61 -> 50 by GetBusbar/busbar#570: the kernel's auth plugin-chain tests run on in-crate doubles and name no plugin; the real-plugin proofs are the root's (crates/busbar/tests/auth_plugin_chain.rs), which name the plugin through the one root helper (tests/common/plugins.rs), so busbar x auth stays at its ceiling"
+count = "48"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; LOWERED 76 -> 61, predev 9c0a394771's measure: the drain landed without giving its row back (Law 9: the ceiling ratchets down); LOWERED 61 -> 50 by GetBusbar/busbar#570: the kernel's auth plugin-chain tests run on in-crate doubles and name no plugin; the real-plugin proofs are the root's (crates/busbar/tests/auth_plugin_chain.rs), which name the plugin through the one root helper (tests/common/plugins.rs), so busbar x auth stays at its ceiling; LOWERED 50 -> 48 by GetBusbar/busbar#532 (Q1): the kernel's cold auth path is deleted, re-measured on #532 merged with predev 1617e9f019"
 
 [[law0]]
 crate = "busbar-kernel"
@@ -1817,8 +1817,8 @@ cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain 
 [[law0]]
 crate = "busbar-kernel"
 axis  = "transport"
-count = "261"
-cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; LOWERED 288 -> 286, predev 9c0a394771's measure: the drain landed without giving its row back (Law 9: the ceiling ratchets down); LOWERED 286 -> 285 by GetBusbar/busbar#570: the kernel's auth proof no longer cites the root's stdio-served proof; LOWERED 285 -> 284 by row 157: the hit drained with the same deletion; REBALANCED 284 -> 267 (-17), the verbatim listener serve loop moved out of busbar-kernel into the root (#710), paired with busbar x transport 208 -> 225 (+17) so the law0 total does not rise (ARCHITECT RULING 2026-10-10, https://github.com/GetBusbar/busbar/pull/710#issuecomment-6096420101; BUSBAR-1.6.0.md l.475-483 INBOUND-LISTEN: the root's stream hand-up); LOWERED 267 -> 261 by row 130 E5a (#804): the proxy tunnel left the egress engine (engine/mod.rs, engine_tests.rs) for busbar-core-connector's proxy.rs — 5 hits drained with it (three `TCP` prose mentions, two `\"http\"` test literals) and 1 MOVED verbatim (the `\"http\"` proxy-scheme check; busbar-core-connector × transport 68 -> 69, net flat)"
+count = "260"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; LOWERED 288 -> 286, predev 9c0a394771's measure: the drain landed without giving its row back (Law 9: the ceiling ratchets down); LOWERED 286 -> 285 by GetBusbar/busbar#570: the kernel's auth proof no longer cites the root's stdio-served proof; LOWERED 285 -> 284 by row 157: the hit drained with the same deletion; REBALANCED 284 -> 267 (-17), the verbatim listener serve loop moved out of busbar-kernel into the root (#710), paired with busbar x transport 208 -> 225 (+17) so the law0 total does not rise (ARCHITECT RULING 2026-10-10, https://github.com/GetBusbar/busbar/pull/710#issuecomment-6096420101; BUSBAR-1.6.0.md l.475-483 INBOUND-LISTEN: the root's stream hand-up); LOWERED 267 -> 266 by GetBusbar/busbar#532 (Q1): the kernel's cold auth path is deleted (auth/token.rs's `\"http\"` scheme check), a different hit from row 157's; LOWERED 266 -> 260 by row 130 E5a (#804): the proxy tunnel left the egress engine (engine/mod.rs, engine_tests.rs) for busbar-core-connector's proxy.rs — 5 hits drained with it (three `TCP` prose mentions, two `\"http\"` test literals) and 1 MOVED verbatim (the `\"http\"` proxy-scheme check; busbar-core-connector × transport 68 -> 69, net flat)"
 
 [[law0]]
 crate = "busbar-kernel-breaker"
@@ -1865,7 +1865,7 @@ cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain 
 [[law0]]
 crate = "busbar-plugin-loader"
 axis  = "auth"
-count = "5"
+count = "2"
 cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance"
 
 [[law0]]
@@ -1889,8 +1889,8 @@ cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain 
 [[law0]]
 crate = "busbar-plugin-loader"
 axis  = "instance:secret"
-count = "109"
-cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance. -1: dispatch/plugin.rs no longer edits a member's `env` map in place (a member's env references resolve at the spawn). predev -1: the secret shared-instance open moved to OpenOnce (f664bca2cf)"
+count = "107"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance. -1: dispatch/plugin.rs no longer edits a member's `env` map in place (a member's env references resolve at the spawn). predev -1: the secret shared-instance open moved to OpenOnce (f664bca2cf) -2 (GetBusbar/busbar#532, Q1; 109 - 2 = 107): the raw JSON-lane loader and the cold auth lane are deleted (111 -> 109 on #532 merged with predev 1617e9f019); #532 touches neither of predev's two drains above"
 
 [[law0]]
 crate = "busbar-plugin-loader"
