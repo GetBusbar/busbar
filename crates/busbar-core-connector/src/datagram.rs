@@ -222,6 +222,9 @@ pub struct DatagramFraming {
     /// The dialling side's destination judge and the need's egress class.
     judge: Option<(Arc<dyn DialJudge>, u32)>,
     refused_candidates: u64,
+    /// The user name the far end's checks carry first, once the terms settled it: the key the
+    /// port's demultiplexer finds this association by ([`Associations`]).
+    user: Option<String>,
 }
 
 impl std::fmt::Debug for DatagramFraming {
@@ -297,6 +300,7 @@ impl DatagramFraming {
             side,
             judge,
             refused_candidates: 0,
+            user: None,
         };
         let y = f.run(Op::Begin(opening), Instant::now())?;
         Ok((f, y))
@@ -416,6 +420,27 @@ impl DatagramFraming {
     #[must_use]
     pub fn refused_routes(&self) -> u64 {
         self.refused_routes
+    }
+
+    /// The user name the far end's checks carry first, once the rendezvous settled it.
+    #[must_use]
+    pub fn user(&self) -> Option<&str> {
+        self.user.as_deref()
+    }
+
+    /// Whether a datagram from `path` is this association's: the secure layer knows it (a verified
+    /// check, core's proof, an admitted candidate) or has it bound.
+    #[must_use]
+    pub fn owns(&self, path: SocketAddr) -> bool {
+        self.secure
+            .as_ref()
+            .is_some_and(|s| s.knows(path) || s.bound_path() == Some(path))
+    }
+
+    /// The far-end addresses this association owns ([`Self::owns`]) that it has numbered: on the
+    /// dialling side its admitted candidates, before any of them has sent a byte.
+    pub fn addresses(&self) -> impl Iterator<Item = SocketAddr> + '_ {
+        self.book.by_addr.keys().copied().filter(|a| self.owns(*a))
     }
 
     /// How many of the far end's advertised candidates the destination judge refused (dialling).
@@ -720,6 +745,7 @@ impl DatagramFraming {
             if self.secure.is_some() {
                 return Err(fault("the framer answered terms twice"));
             }
+            self.user = Some(t.local.ufrag.clone());
             self.secure = Some(Association::new(
                 Arc::clone(&self.cert),
                 t.role,
@@ -859,6 +885,171 @@ fn read_terms(t: &RendezvousTerms, frame: &[u8]) -> Result<Terms, Refused> {
         fingerprint,
         candidates,
     })
+}
+
+/// THE PORT'S ASSOCIATIONS: every association one host port carries, and the demultiplexer that
+/// finds the one a datagram belongs to. A connectivity check names its association by the user
+/// name its first USERNAME field carries (the association's own; the association still verifies
+/// the check's integrity itself); any other datagram is found by the path it came from, which an
+/// association claims only once its secure layer knows it. A datagram neither finds is dropped
+/// here, before any association or framer sees it.
+///
+/// One port carries many ACCEPTED associations: each far end reaches it from its own address. A
+/// DIALLED association takes a port of its own, because two calls to one far end would share
+/// every address of the 5-tuple.
+#[derive(Debug, Default)]
+pub struct Associations {
+    framings: HashMap<u64, DatagramFraming>,
+    by_user: HashMap<String, u64>,
+    by_path: HashMap<SocketAddr, u64>,
+    last: u64,
+}
+
+/// Why an association was not added to a port.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NotAdded {
+    /// Its rendezvous has not settled terms: nothing would find it.
+    NoTerms,
+    /// Another association on the port already answers to its user name.
+    UserTaken,
+}
+
+impl Associations {
+    /// An empty port.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Carry `framing` on this port; its number.
+    ///
+    /// # Errors
+    ///
+    /// [`NotAdded`]: no terms yet, or its user name is another association's.
+    pub fn add(&mut self, framing: DatagramFraming) -> Result<u64, NotAdded> {
+        let user = framing.user().ok_or(NotAdded::NoTerms)?.to_owned();
+        if self.by_user.contains_key(&user) {
+            return Err(NotAdded::UserTaken);
+        }
+        self.last += 1;
+        let id = self.last;
+        self.by_user.insert(user, id);
+        // A dialled association hears nothing first: its admitted candidates' answers find it by
+        // their path. A path another association already holds stays that association's (a
+        // dialled association that shares a far end with another is given a port of its own).
+        for addr in framing.addresses() {
+            self.by_path.entry(addr).or_insert(id);
+        }
+        self.framings.insert(id, framing);
+        Ok(id)
+    }
+
+    /// Stop carrying association `id`; the framing, for its owner to finish.
+    pub fn remove(&mut self, id: u64) -> Option<DatagramFraming> {
+        let f = self.framings.remove(&id)?;
+        self.by_user.retain(|_, v| *v != id);
+        self.by_path.retain(|_, v| *v != id);
+        Some(f)
+    }
+
+    /// The association `id`.
+    pub fn get_mut(&mut self, id: u64) -> Option<&mut DatagramFraming> {
+        self.framings.get_mut(&id)
+    }
+
+    /// How many associations the port carries.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.framings.len()
+    }
+
+    /// Whether the port carries none.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.framings.is_empty()
+    }
+
+    /// One datagram the port read from `from`: the association it belongs to and what that
+    /// association answered; `None` = it belongs to none and was dropped. An association that
+    /// fails is removed (its framing dropped, which finishes it).
+    pub fn datagram(
+        &mut self,
+        from: SocketAddr,
+        bytes: &[u8],
+        now: Instant,
+    ) -> Option<(u64, Result<Yielded, Refused>)> {
+        let id = match check_user(bytes) {
+            Some(user) => self.by_user.get(user).copied(),
+            None => self.by_path.get(&from).copied(),
+        }?;
+        let f = self.framings.get_mut(&id)?;
+        let answer = f.datagram(from, bytes, now);
+        if answer.is_ok() && f.owns(from) {
+            self.by_path.insert(from, id);
+        }
+        if answer.is_err() {
+            self.remove(id);
+        }
+        Some((id, answer))
+    }
+
+    /// The clock, for every association whose deadline has passed; a failed one is removed.
+    pub fn timeout(&mut self, now: Instant) -> Vec<(u64, Result<Yielded, Refused>)> {
+        let due: Vec<u64> = self
+            .framings
+            .iter()
+            .filter(|(_, f)| f.deadline().is_some_and(|d| d <= now))
+            .map(|(id, _)| *id)
+            .collect();
+        let mut out = Vec::new();
+        for id in due {
+            if let Some(f) = self.framings.get_mut(&id) {
+                let answer = f.timeout(now);
+                if answer.is_err() {
+                    self.remove(id);
+                }
+                out.push((id, answer));
+            }
+        }
+        out
+    }
+
+    /// The earliest deadline of any association.
+    #[must_use]
+    pub fn deadline(&self) -> Option<Instant> {
+        self.framings
+            .values()
+            .filter_map(DatagramFraming::deadline)
+            .min()
+    }
+
+    /// The next datagram any association owes the port, and where it goes.
+    pub fn poll_send(&mut self) -> Option<(SocketAddr, Vec<u8>)> {
+        self.framings
+            .values_mut()
+            .find_map(DatagramFraming::poll_send)
+    }
+}
+
+/// The user name a connectivity check names its receiver by: the part of its first USERNAME
+/// field before the `:`. `None` for anything that is not a Binding request carrying one.
+fn check_user(d: &[u8]) -> Option<&str> {
+    const HEADER: usize = 20;
+    if d.len() < HEADER || d[0..2] != [0x00, 0x01] || d[4..8] != [0x21, 0x12, 0xa4, 0x42] {
+        return None;
+    }
+    let mut at = HEADER;
+    while let Some(head) = d.get(at..at + 4) {
+        let kind = u16::from_be_bytes([head[0], head[1]]);
+        let len = usize::from(u16::from_be_bytes([head[2], head[3]]));
+        let value = d.get(at + 4..at + 4 + len)?;
+        if kind == 0x0006 {
+            let name = std::str::from_utf8(value).ok()?;
+            return name.split(':').next().filter(|u| !u.is_empty());
+        }
+        at += 4 + len.div_ceil(4) * 4;
+    }
+    None
 }
 
 impl Drop for DatagramFraming {

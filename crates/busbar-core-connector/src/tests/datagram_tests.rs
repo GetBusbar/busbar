@@ -131,6 +131,8 @@ struct St {
     request: (u32, u32, u32),
     candidates: String,
     txid: u8,
+    /// This framing's own check credentials.
+    local: (&'static str, &'static str),
 }
 
 struct Scripted {
@@ -140,6 +142,10 @@ struct Scripted {
 }
 
 fn scripted(knobs: Knobs) -> Arc<Scripted> {
+    scripted_as(knobs, (HOST_UFRAG, HOST_PWD))
+}
+
+fn scripted_as(knobs: Knobs, local: (&'static str, &'static str)) -> Arc<Scripted> {
     Arc::new(Scripted {
         facts: DoorFacts {
             name: "scripted".into(),
@@ -151,7 +157,10 @@ fn scripted(knobs: Knobs) -> Arc<Scripted> {
             duplex: Vec::new(),
         },
         knobs,
-        st: Mutex::new(St::default()),
+        st: Mutex::new(St {
+            local,
+            ..St::default()
+        }),
     })
 }
 
@@ -236,6 +245,7 @@ fn write_answer(st: &mut St, sink: &FramerSink, lane: Option<&DatagramLane>, o: 
     }
     if std::mem::take(&mut st.terms) {
         let (ru, rp, fp) = st.remote.clone().expect("terms after a rendezvous");
+        let (lu, lp) = st.local;
         let candidates = std::mem::take(&mut st.candidates);
         o.datagram.terms = RendezvousTerms {
             role: if candidates.is_empty() {
@@ -244,8 +254,8 @@ fn write_answer(st: &mut St, sink: &FramerSink, lane: Option<&DatagramLane>, o: 
                 HANDSHAKE_INITIATES
             },
             _reserved: 0,
-            local_user: frame(HOST_UFRAG.as_bytes()),
-            local_secret: frame(HOST_PWD.as_bytes()),
+            local_user: frame(lu.as_bytes()),
+            local_secret: frame(lp.as_bytes()),
             remote_user: frame(ru.as_bytes()),
             remote_secret: frame(rp.as_bytes()),
             peer_fingerprint: frame(&fp),
@@ -347,7 +357,7 @@ impl FramerDoor for Scripted {
                     }
                     LANE_CLEAR if is_request(&bytes) => {
                         st.routes
-                            .push((lane.path, LANE_CLEAR, answer(&bytes, HOST_PWD)));
+                            .push((lane.path, LANE_CLEAR, answer(&bytes, st.local.1)));
                         if lane.bound == 0 {
                             st.request = (PATH_REQUEST_BIND, 0, lane.path);
                         } else if self.knobs.rebind_new && lane.path != lane.bound {
@@ -800,4 +810,130 @@ fn dialling_an_admitted_candidate_never_binds_unverified() {
     r.pump(200);
     assert_eq!(r.host.bound(), Some(r.far.addr));
     assert!(r.host.presented());
+}
+
+// ── the port's demultiplexer ────────────────────────────────────────────────────────────────────
+
+const B_UFRAG: &str = "bfrag";
+const B_PWD: &str = "b-password-0123456789";
+
+/// An accepted association on `door`, its rendezvous settled.
+fn settled(door: Arc<Scripted>) -> DatagramFraming {
+    let cert = Arc::new(SessionCert::mint().unwrap());
+    let (mut f, _) = DatagramFraming::accept(door, cert, p("198.51.100.1:3478")).unwrap();
+    let fp = hex(&SessionCert::mint().unwrap().fingerprint());
+    f.rendezvous(
+        format!("{FAR_UFRAG} {FAR_PWD} {fp}").as_bytes(),
+        Instant::now(),
+    )
+    .unwrap();
+    f
+}
+
+fn lanes(door: &Scripted) -> Vec<u32> {
+    door.st
+        .lock()
+        .unwrap()
+        .seen
+        .iter()
+        .map(|s| s.lane)
+        .collect()
+}
+
+#[test]
+fn one_port_finds_each_datagram_its_association_by_user_name_then_by_path() {
+    let (da, db) = (
+        scripted(Knobs::default()),
+        scripted_as(Knobs::default(), (B_UFRAG, B_PWD)),
+    );
+    let mut port = super::Associations::new();
+    let a = port.add(settled(da.clone())).unwrap();
+    let b = port.add(settled(db.clone())).unwrap();
+    assert_ne!(a, b);
+    let (pa, pb, stranger) = (
+        p("203.0.113.1:1000"),
+        p("203.0.113.2:2000"),
+        p("192.0.2.3:3000"),
+    );
+    let now = Instant::now();
+    let (before_a, before_b) = (lanes(&da).len(), lanes(&db).len());
+
+    // Each check finds the association its user name names.
+    let (id, y) = port
+        .datagram(pa, &check(HOST_UFRAG, FAR_UFRAG, HOST_PWD, 1), now)
+        .unwrap();
+    assert_eq!(id, a);
+    y.unwrap();
+    let (id, y) = port
+        .datagram(pb, &check(B_UFRAG, FAR_UFRAG, B_PWD, 2), now)
+        .unwrap();
+    assert_eq!(id, b);
+    y.unwrap();
+    assert_eq!(
+        lanes(&da)[before_a..],
+        [LANE_CLEAR],
+        "a saw its own check only"
+    );
+    assert_eq!(
+        lanes(&db)[before_b..],
+        [LANE_CLEAR],
+        "b saw its own check only"
+    );
+
+    // Anything else finds the association by the path a verified check claimed.
+    let (id, _) = port.datagram(pb, &[0x80, 0x6f, 0, 1], now).unwrap();
+    assert_eq!(id, b);
+    // RED: a user name nobody holds, and a path nobody claimed, reach no association.
+    assert!(port
+        .datagram(stranger, &check("nobody", FAR_UFRAG, HOST_PWD, 3), now)
+        .is_none());
+    assert!(port.datagram(stranger, &[0x80, 0x6f, 0, 2], now).is_none());
+    // A check that names a but fails its integrity claims no path for a.
+    let (id, _) = port
+        .datagram(
+            stranger,
+            &check(HOST_UFRAG, FAR_UFRAG, "wrong-password-012345", 4),
+            now,
+        )
+        .unwrap();
+    assert_eq!(id, a);
+    assert!(port.datagram(stranger, &[0x80, 0x6f, 0, 3], now).is_none());
+
+    // A user name is one association's; one with no terms is refused.
+    assert_eq!(
+        port.add(settled(scripted(Knobs::default()))),
+        Err(super::NotAdded::UserTaken)
+    );
+    let unsettled = DatagramFraming::accept(
+        scripted(Knobs::default()),
+        Arc::new(SessionCert::mint().unwrap()),
+        p("198.51.100.1:3478"),
+    )
+    .unwrap()
+    .0;
+    assert_eq!(port.add(unsettled), Err(super::NotAdded::NoTerms));
+    // Removed, its user name and paths go with it.
+    assert!(port.remove(b).is_some());
+    assert!(port.datagram(pb, &[0x80, 0x6f, 0, 4], now).is_none());
+    assert_eq!(port.len(), 1);
+}
+
+#[test]
+fn a_dialled_association_is_found_by_its_admitted_candidates_before_they_speak() {
+    let mut r = rig(dialling());
+    let mut port = super::Associations::new();
+    let host = std::mem::replace(
+        &mut r.host,
+        settled(scripted_as(Knobs::default(), (B_UFRAG, B_PWD))),
+    );
+    let id = port.add(host).unwrap();
+    // The candidate's first datagram is an answer, not a check: found by its path.
+    let (got, _) = port
+        .datagram(r.far.addr, &[0x80, 0x6f, 0, 1], r.now)
+        .unwrap();
+    assert_eq!(got, id);
+    // RED: the refused candidate's address finds nothing.
+    assert!(port
+        .datagram(p(METADATA), &[0x80, 0x6f, 0, 1], r.now)
+        .is_none());
 }
