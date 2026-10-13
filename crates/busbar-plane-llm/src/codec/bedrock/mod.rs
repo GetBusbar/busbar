@@ -1657,9 +1657,12 @@ fn stop_reason_map(ward: &str) -> crate::codec::ir::IrStopReason {
         // a token limit, which is what `MaxTokens` means to every client dialect (a dedicated
         // context-window reason needs the IR-16 slot).
         STOP_MODEL_CONTEXT_WINDOW_EXCEEDED => S::MaxTokens,
-        // BED-10: the model produced output Bedrock could not parse (text or a tool call) — an
-        // error termination, not a natural end.
-        "malformed_model_output" | "malformed_tool_use" => S::Error,
+        // The model produced output Bedrock could not parse (text or a tool call). It reads as
+        // `Other`, as in 1.5.5 (v1.5.5 `crates/busbar/src/proto/bedrock/mod.rs:705-716`,
+        // `_ => S::Other`): the answer is served and billed as 1.5.5 served and billed it. Reading
+        // it as `Error` turned a translated buffered answer into a billed 502 and a lane fault, a
+        // money and serving change no owner ruling signs.
+        "malformed_model_output" | "malformed_tool_use" => S::Other,
         _ => S::Other,
     }
 }

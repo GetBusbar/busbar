@@ -692,7 +692,7 @@ fn coh14_streamed_logprobs_reach_a_foreign_client() {
     assert!(carried, "COH-14: {out}");
 }
 
-// ── COH-15 / COH-16: stop reasons ─────────────────────────────────────────────────────────────────
+// ── COH-15 and TIMEOUT: stop reasons ─────────────────────────────────────────────────────────────────
 
 /// COH-15: a foreign content-filter stop is a served answer; a Cohere client is told `COMPLETE`, not
 /// the `ERROR` that reads as an infrastructure failure — buffered and streamed.
@@ -724,11 +724,12 @@ fn coh15_safety_stop_is_not_an_error_for_a_cohere_client() {
     );
 }
 
-/// COH-16: Cohere `TIMEOUT` is the upstream failing to finish; it reads as `Error` (it used to be
-/// `Other`, which every writer renders as a natural end of turn), and a streamed one raises the
-/// error event exactly as `ERROR` does.
+/// Cohere `TIMEOUT` is served and billed as 1.5.5 served and billed it: it reads as `Other` (v1.5.5
+/// `crates/busbar/src/proto/cohere/mod.rs:179-191`, `_ => S::Other`), so the buffered answer is not
+/// a generation failure (no 502, no lane fault, its 3 + 1 tokens billed as a served answer) and a
+/// streamed one raises no error event. RED while `TIMEOUT` read as `Error`.
 #[test]
-fn coh16_timeout_is_an_upstream_error() {
+fn timeout_is_served_and_billed_as_in_1_5_5() {
     use crate::codec::ir::{IrStopReason, IrStreamEvent as E};
     let body = json!({
         "id": "c-1", "finish_reason": "TIMEOUT",
@@ -740,7 +741,13 @@ fn coh16_timeout_is_an_upstream_error() {
         .reader()
         .read_response(&body)
         .expect("read");
-    assert_eq!(ir.stop_reason, Some(IrStopReason::Error), "COH-16");
+    assert_eq!(ir.stop_reason, Some(IrStopReason::Other));
+    assert!(
+        !crate::exchange::reply::wire::generation_failed("cohere", &body),
+        "a TIMEOUT answer is served, never a generation failure"
+    );
+    let t = ir.usage.to_token_usage();
+    assert_eq!((t.input, t.output), (3, 1));
     let raw: String = [
         json!({"type":"message-start","id":"c-1","delta":{"message":{"role":"assistant"}}}),
         json!({"type":"content-delta","index":0,"delta":{"message":{"content":{"text":"part"}}}}),
@@ -750,19 +757,16 @@ fn coh16_timeout_is_an_upstream_error() {
     .map(frame)
     .collect();
     let evs = read_events(&raw);
-    assert!(
-        evs.iter().any(|e| matches!(e, E::Error(_))),
-        "COH-16: {evs:?}"
-    );
+    assert!(!evs.iter().any(|e| matches!(e, E::Error(_))), "{evs:?}");
     assert!(
         evs.iter().any(|e| matches!(
             e,
             E::MessageDelta {
-                stop_reason: Some(IrStopReason::Error),
+                stop_reason: Some(IrStopReason::Other),
                 ..
             }
         )),
-        "COH-16: {evs:?}"
+        "{evs:?}"
     );
 }
 

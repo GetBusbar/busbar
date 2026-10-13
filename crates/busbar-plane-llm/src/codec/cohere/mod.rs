@@ -794,11 +794,12 @@ fn read_cohere_stop_reason(token: &str) -> crate::codec::ir::IrStopReason {
         // `ERROR_TOXIC` is the content-moderation stop; generic `ERROR` is an infra failure.
         COHERE_FINISH_ERROR_TOXIC => S::Safety,
         COHERE_FINISH_ERROR => S::Error,
-        // `TIMEOUT`: the upstream stopped generating because it ran out of time — a failure to
-        // finish, not a natural stop. It used to fall to `Other`, which every writer renders as a
-        // natural end of turn, so a cut-off answer reached a foreign client as a complete one
-        // (COH-16).
-        COHERE_FINISH_TIMEOUT => S::Error,
+        // `TIMEOUT` reads as `Other`, as in 1.5.5 (v1.5.5 `crates/busbar/src/proto/cohere/mod.rs:179-191`,
+        // `_ => S::Other`): the answer Cohere returned is served and billed as 1.5.5 served and
+        // billed it. Reading it as `Error` turned a translated buffered answer into a billed 502
+        // and a lane fault, a money and serving change no owner ruling signs (CHANGELOG 1.6.0
+        // registers only the generic stream `ERROR`).
+        COHERE_FINISH_TIMEOUT => S::Other,
         _ => S::Other,
     }
 }
