@@ -1517,12 +1517,10 @@ models: {{}}
     .unwrap();
 }
 
-/// THE DECISIONS PLANE'S FIRST DIALECT, discovered black-box rather than spelled: a `decisions:`
-/// model whose provider speaks an unknown protocol is refused naming the dialects the plane speaks
-/// ("this plane speaks only: <d>, <d>."), so the binary itself says which protocols the linked
-/// decisions plane reads: `jev`'s spine and NanoJev's (THE DESIGN section 2, the decisions bullet:
-/// "NanoJev is the one, dialect `nanojev`"). Exactly two are required; a refusal that stops naming
-/// them fails here, loudly.
+/// THE PLANE'S FIRST DIALECT, discovered black-box rather than spelled: a model whose provider
+/// speaks an unknown protocol is refused naming the dialects the plane speaks ("this plane speaks
+/// only: <d>, <d>."), so the binary itself says which protocols the linked plane reads. Exactly
+/// two are required; a refusal that stops naming them fails here, loudly.
 #[cfg(feature = "plane-decisions")]
 fn decision_dialect() -> String {
     let dir = fixture_dir("decisions-dialect-probe");
@@ -1543,11 +1541,7 @@ fn decision_dialect() -> String {
         .and_then(|rest| rest.split('.').next())
         .unwrap_or_else(|| panic!("the refusal names the dialects the plane speaks: {stderr}"));
     let dialects: Vec<&str> = spoken.split(',').map(str::trim).collect();
-    assert_eq!(
-        dialects.len(),
-        2,
-        "the decision plane speaks two dialects: {stderr}"
-    );
+    assert_eq!(dialects.len(), 2, "the plane speaks two dialects: {stderr}");
     dialects[0].to_string()
 }
 
@@ -1572,12 +1566,11 @@ fn validate_ok_on_a_good_decisions_config() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// THE SECOND DIALECT (THE DESIGN section 2: "NanoJev is the one, dialect `nanojev`"): a
-/// `decisions:` model whose provider speaks the plane's second dialect validates clean too.
+/// THE SECOND DIALECT: a model whose provider speaks the plane's second dialect validates clean too.
 #[cfg(feature = "plane-decisions")]
 #[test]
-fn validate_ok_on_a_decisions_config_in_the_second_dialect() {
-    let dir = fixture_dir("decisions-ok-second-dialect");
+fn validate_ok_on_a_config_in_the_planes_second_dialect() {
+    let dir = fixture_dir("plane-ok-second-dialect");
     write_decisions_configs(
         &dir,
         "nanojev",
@@ -1586,7 +1579,7 @@ fn validate_ok_on_a_decisions_config_in_the_second_dialect() {
     let (code, stdout, stderr) = run_busbar(&dir, &["--validate"]);
     assert_eq!(
         code, 0,
-        "a nanojev decisions config validates: stdout={stdout} stderr={stderr}"
+        "a config in the second dialect validates: stdout={stdout} stderr={stderr}"
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
