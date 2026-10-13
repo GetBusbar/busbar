@@ -27,24 +27,14 @@ pub struct Requirement<G> {
     pub value: String,
 }
 
-/// WHAT A CONSUMER SUPPLIES: the grants an egress on this subject requires, and whether the
-/// consumer's key-liveness rule applies. Everything else is [`authorise`]'s business.
+/// WHAT A CONSUMER SUPPLIES: the grants an egress on this subject requires. Everything else —
+/// including the caller key's liveness, which every plane gets alike — is [`authorise`]'s business.
 pub trait EgressSubject {
     /// The consumer's own enumeration of the checks — ONE variant per requirement. An enum rather
     /// than a string so the consumer's refusal conversion is exhaustive over its own checks: a
     /// consumer that grows a third requirement gets a compile error at its wording, not a nearby arm
     /// silently reused.
     type Grant: Copy + std::fmt::Debug;
-
-    /// Whether the caller's KEY must still be live (not tombstoned, enabled, not expired) for this
-    /// consumer's egress.
-    ///
-    /// A CONST rather than a runtime flag, because it is a property of the consumer and not of the
-    /// request. Different consumers can legitimately disagree on this, and this const is where that
-    /// divergence is stated rather than being an accident of which file a reader opens. Unifying the
-    /// gate does not force either answer: a gate that quietly started refusing more for one
-    /// consumer, or less, would be a behaviour change wearing a refactor's clothes.
-    const REQUIRE_LIVE_KEY: bool;
 
     /// EVERY grant that must pass, IN THE ORDER THEY ARE CHECKED. All of them must pass; the first
     /// that fails is the refusal reported, so the order is the operator-facing diagnosis order and
@@ -55,7 +45,7 @@ pub trait EgressSubject {
 /// WHY NO OUTBOUND CREDENTIAL MAY BE SELECTED FOR THIS CALLER.
 ///
 /// Core's refusal, which every plane converts into its own wording with a TOTAL `From`. Totality is
-/// deliberate: a refusal this enum grows later must be given a sentence on every plane rather than
+/// deliberate: a refusal this enum grows must be given a sentence on every plane rather than
 /// being folded silently into a nearby arm, and an exhaustive match is what forces that.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum EgressRefusal<G> {
@@ -103,37 +93,6 @@ impl<G> std::fmt::Display for EgressRefusal<G> {
     }
 }
 
-// NOT MOUNTED YET, deliberately named rather than omitted. Existing consumers each audit their own
-// egress refusal at their ingress with their own resource spelling; those call sites are what these
-// methods exist to replace, and the replacement is a separate change because it edits an ingress
-// module. Present now because the audit VOCABULARY is the part that needs to be shared, and a
-// consumer that arrives later must find it here rather than invent a third spelling. Exercised by
-// `tests/egress.rs`.
-impl<G> EgressRefusal<G> {
-    /// The refused destination in the vocabulary the AUDIT ring speaks: `<scope kind>:<value>`, or
-    /// the key itself when the refusal is about the key rather than the destination.
-    ///
-    /// Here rather than on each consumer because an audit row that is spelled one way per consumer
-    /// is an audit an auditor cannot read across — a single shared spelling keeps the audit trail
-    /// legible no matter which consumer produced the refusal.
-    pub fn audit_resource(&self) -> String {
-        match self {
-            EgressRefusal::KeyNotLive { caller } => format!("key:{caller}"),
-            EgressRefusal::NoGrant {
-                scope_kind, value, ..
-            } => format!("{scope_kind}:{value}"),
-        }
-    }
-
-    /// WHO was refused. Every refusal names the caller, because an unattributable denial is a denial
-    /// nobody can act on.
-    pub fn caller(&self) -> &str {
-        match self {
-            EgressRefusal::KeyNotLive { caller } | EgressRefusal::NoGrant { caller, .. } => caller,
-        }
-    }
-}
-
 /// PROOF THAT THE INBOUND PRINCIPAL IS ITSELF AUTHORISED FOR THIS DESTINATION.
 ///
 /// The whole value of this type is that it cannot be built anywhere but [`authorise`]: the field is
@@ -157,11 +116,13 @@ impl<S> EgressGrant<S> {
 ///
 /// Two checks and an order:
 ///
-/// 1. LIVENESS, when the plane requires it, FIRST — a key that may not authenticate at all is
-///    refused as itself rather than as a missing grant, because those are different operator
-///    actions.
+/// 1. LIVENESS, FIRST, for every plane alike (THE DESIGN §1: every plane gets every capability) —
+///    a key that is tombstoned, disabled or past its own `expires_at` at `now` may not cause a
+///    credential to be minted, and is refused as itself rather than as a missing grant, because
+///    those are different operator actions. `now` is the caller's clock in the key's unit (unix
+///    seconds); a consumer passing a clock it does not have would be switching this check off.
 /// 2. EVERY requirement, in the plane's declared order. ALL must pass. Requiring all of them is what
-///    keeps a coarse grant (`mcp_server`) from silently becoming a fine one (`mcp_tool`).
+///    keeps a coarse grant from silently becoming a fine one.
 ///
 /// `VirtualKey::scope_allowed` is reused verbatim rather than reimplemented: its cross-kind
 /// fail-closed semantics are frozen at 1.5.3 (an OMITTED scope list is a wildcard, an EMPTY one is
@@ -171,9 +132,7 @@ pub fn authorise<S: EgressSubject>(
     subject: S,
     now: u64,
 ) -> Result<EgressGrant<S>, EgressRefusal<S::Grant>> {
-    if S::REQUIRE_LIVE_KEY
-        && (!caller.is_live() || !caller.enabled || caller.expires_at.is_some_and(|exp| now >= exp))
-    {
+    if !caller.is_live() || !caller.enabled || caller.expires_at.is_some_and(|exp| now >= exp) {
         return Err(EgressRefusal::KeyNotLive {
             caller: caller.id.clone(),
         });
