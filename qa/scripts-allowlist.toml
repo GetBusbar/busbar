@@ -879,6 +879,11 @@ class = "oracle-driver"
 reason = "a conformance suite runner that writes a conformance/verdicts artifact: becomes Rust, identical verdicts proven first HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
 
 [[script]]
+path = "testing/webrtc-conformance/scripts/run.sh"
+class = "oracle-driver"
+reason = "a conformance suite runner that writes a conformance/verdicts artifact (the browser cell: headless browsers against the terminating datagram path): becomes Rust, identical verdicts proven first HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
 path = "tests/migration-corpus/refresh.sh"
 class = "port"
 reason = "regenerates the migration corpus (a verify-1.6.0-done.sh step): becomes a `cargo xtask` generator"

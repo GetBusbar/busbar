@@ -167,6 +167,16 @@
     },
     {
       "claim": null,
+      "plan": "headless Chromium and Firefox against busbar's terminating datagram path; control: the browser against itself; negative control: a broken line echo",
+      "public": true,
+      "reason": "no verdict artifact for this commit",
+      "standard": "WebRTC (browser interop: ICE, DTLS-SRTP, SCTP data channels)",
+      "status": "not-run",
+      "suite": "webrtc-browser",
+      "tier": "spec-conformant"
+    },
+    {
+      "claim": null,
       "plan": "Autobahn|Testsuite against busbar-transport-ws",
       "public": true,
       "reason": "127 of 517 cases FAIL (216 UNIMPLEMENTED -- RFC 7692 permessage-deflate, out of this suite's RFC 6455 claim, not counted). Root cause diagnosed and singular: busbar-transport-ws's wire Frame carries no text/binary discriminator, so every inbound WS TEXT frame is echoed back as BINARY -- content, close code and close cleanliness all now match (the close-handshake defects this same commit range fixed are gone from the failure set). Fix in flight as PIECE_TEXT (abi/transport vocabulary bit); this verdict is expected to flip to pass once that lands and Autobahn is re-run clean.",

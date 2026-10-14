@@ -1,6 +1,6 @@
 //! The rigs, each run as a subprocess the way its instrument is meant to be run, and the PURE
 //! deciders that turn what a rig left behind (exit codes, its ledger, its report) into one
-//! [`Outcome`] per suite. The llm, mcp, voice and ws rigs live here; a2a, h2, tls, slsa-verifier,
+//! [`Outcome`] per suite. The llm, mcp, voice, ws and webrtc rigs live here; a2a, h2, tls, slsa-verifier,
 //! oidf (oidf-oauth2 + fapi2) and jev each have a module of their own beside this one.
 //!
 //! The deciders hold one rule in common: a rig that did not judge busbar — a red self-test, a red
@@ -69,6 +69,7 @@ pub enum Rig {
     Mcp,
     Voice,
     Ws,
+    Webrtc,
     Jev,
     A2a,
     H2,
@@ -84,6 +85,7 @@ impl Rig {
             Rig::Mcp => "mcp",
             Rig::Voice => "voice",
             Rig::Ws => "ws",
+            Rig::Webrtc => "webrtc",
             Rig::Jev => "jev",
             Rig::A2a => "a2a",
             Rig::H2 => "h2",
@@ -107,6 +109,7 @@ pub fn rig_for(id: &str) -> Option<Rig> {
     match id {
         "mcp" => Some(Rig::Mcp),
         "ws" => Some(Rig::Ws),
+        WEBRTC_SUITE => Some(Rig::Webrtc),
         "jev" => Some(Rig::Jev),
         "a2a" => Some(Rig::A2a),
         "h2" => Some(Rig::H2),
@@ -503,6 +506,98 @@ pub fn decide_ws(run: &WsRun) -> Outcome {
     }
 }
 
+// ── webrtc (the browser cell) ────────────────────────────────────────────────────────────────
+
+/// The browser cell's suite id.
+pub const WEBRTC_SUITE: &str = "webrtc-browser";
+
+/// The legs of testing/webrtc-conformance/scripts/run.sh and the subject's verdict.
+#[derive(Debug, Clone)]
+pub struct WebrtcRun {
+    pub selftest: Option<i32>,
+    pub install: Option<i32>,
+    pub control: Option<i32>,
+    pub negative_control: Option<i32>,
+    pub subject: Option<i32>,
+    /// `reports/subject/verdict.json`, as `bin/drive.mjs` wrote it.
+    pub subject_verdict: Option<String>,
+    pub evidence: String,
+}
+
+/// The browser cell's outcome. The browsers are the instrument: one that is not installed or does
+/// not launch (a leg's exit 3), a red self-test, a red control (the browser against itself) or a
+/// negative control that does not bite judges the instrument, so nothing about busbar was judged:
+/// `not-run`. Only a red SUBJECT leg is a `fail`, and only a subject leg that exited 0 over an
+/// armed verdict reading `pass` is a `pass`.
+pub fn decide_webrtc(run: &WebrtcRun) -> Outcome {
+    if run.install != Some(0) {
+        return Outcome::not_run(format!(
+            "the pinned browsers could not be installed ({}): the browser cell could not run",
+            rc(run.install)
+        ));
+    }
+    if [run.control, run.negative_control, run.subject].contains(&Some(3)) {
+        return Outcome::not_run("a browser did not launch: the browser cell could not run");
+    }
+    for (leg, code, why) in [
+        (
+            "selftest",
+            run.selftest,
+            "the judgement or the arm-state check does not bite",
+        ),
+        (
+            "control",
+            run.control,
+            "the cell cannot pass the browser against itself",
+        ),
+        (
+            "negative-control",
+            run.negative_control,
+            "the cell cannot catch a subject whose line echo is broken",
+        ),
+    ] {
+        if code != Some(0) {
+            return Outcome::not_run(format!(
+                "webrtc {leg} leg is red ({}): {why}, so nothing about busbar was judged",
+                rc(code)
+            ));
+        }
+    }
+    let Some(code) = run.subject else {
+        return Outcome::not_run("the webrtc subject leg did not finish");
+    };
+    let Some(v) = run
+        .subject_verdict
+        .as_deref()
+        .and_then(|t| serde_json::from_str::<Value>(t).ok())
+    else {
+        return Outcome::not_run(format!(
+            "the webrtc subject leg wrote no readable verdict (exit {code})"
+        ));
+    };
+    if v.get("armed").and_then(Value::as_bool) != Some(true) {
+        return Outcome::not_run(
+            "the webrtc subject was not armed: webrtc-conformance-subject did not build or boot",
+        );
+    }
+    let reason = v
+        .get("reason")
+        .and_then(Value::as_str)
+        .unwrap_or("the browsers graded the subject red")
+        .to_string();
+    match v.get("status").and_then(Value::as_str) {
+        Some("pass") if code == 0 => Outcome::pass(run.evidence.clone()),
+        Some("pass") => Outcome::fail(
+            format!("the verdict reads pass but the subject leg exited {code}"),
+            run.evidence.clone(),
+        ),
+        Some("fail") => Outcome::fail(reason, run.evidence.clone()),
+        other => Outcome::not_run(format!(
+            "the webrtc subject verdict carries status {other:?}, not pass or fail"
+        )),
+    }
+}
+
 // ── mcp ──────────────────────────────────────────────────────────────────────────────────────
 
 /// Legs judged the way the removed `qa-conformance-mcp.yml` verdict job judged them: every leg
@@ -689,6 +784,7 @@ impl Runner {
             Rig::Voice => self.run_voice(),
             Rig::Mcp => BTreeMap::from([("mcp".to_string(), self.run_mcp())]),
             Rig::Ws => BTreeMap::from([("ws".to_string(), self.run_ws())]),
+            Rig::Webrtc => BTreeMap::from([(WEBRTC_SUITE.to_string(), self.run_webrtc())]),
             Rig::Jev => BTreeMap::from([("jev".to_string(), self.run_jev())]),
             Rig::A2a => BTreeMap::from([("a2a".to_string(), self.run_a2a())]),
             Rig::H2 => BTreeMap::from([("h2".to_string(), self.run_h2())]),
@@ -1126,6 +1222,48 @@ impl Runner {
             subject_verdict: read_opt(&verdict),
             subject_log: read_opt(&self.work.join(rig.name()).join("subject.log"))
                 .unwrap_or_default(),
+            evidence: self.rel(&verdict),
+        })
+    }
+
+    fn run_webrtc(&self) -> Outcome {
+        let rig = Rig::Webrtc;
+        if let Some(o) = self.missing(rig, &["bash", "node", "npm", "npx", "cargo"]) {
+            return o;
+        }
+        let dir = self.root.join("testing/webrtc-conformance");
+        let npm = self.leg(rig, "npm-ci", &["npm", "ci"], Some(&dir), &[]);
+        if npm != Some(0) {
+            return Outcome::not_run(format!(
+                "`npm ci` in testing/webrtc-conformance failed ({})",
+                rc(npm)
+            ));
+        }
+        let reports = dir.join("reports");
+        let _ = std::fs::remove_dir_all(&reports);
+        let script = "testing/webrtc-conformance/scripts/run.sh";
+        let leg = |name: &str| {
+            self.leg(
+                rig,
+                name,
+                &["bash", script, &format!("--{name}")],
+                None,
+                &[],
+            )
+        };
+        let selftest = leg("selftest");
+        let install = leg("install");
+        let control = leg("control");
+        let negative_control = leg("negative-control");
+        let subject = leg("subject");
+        let verdict = reports.join("subject").join("verdict.json");
+        decide_webrtc(&WebrtcRun {
+            selftest,
+            install,
+            control,
+            negative_control,
+            subject,
+            subject_verdict: read_opt(&verdict),
             evidence: self.rel(&verdict),
         })
     }
