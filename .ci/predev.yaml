@@ -36,17 +36,73 @@ checks:
     # add-only from dev to this commit; then the candidate's release binary is recorded over the
     # corpus and replayed against the committed 1.5.5 golden, strict: green is every cell byte-green
     # or forgiven by an owner-signed accepted difference.
+    #
+    # THE FIRST MOVE. dev is the v1.5.5 commit until predev first lands on it, and that commit has no
+    # testing/shadow-oracle at all, so it names no judge. Then, and only then, the judge is the
+    # busbar-oracle ModernCI installed on the backend (queue rule 11: ModernCI runs only the pinned
+    # install), and one line says so. The candidate's own pin is never read. A target that has the
+    # oracle data but no pin, or a target this checkout does not hold, names no judge: RED.
+    # golden-guard already reads a target with no golden as one where every cell is added.
+    # `judge_selftest` proves those five arms on throwaway repos before the real target is judged.
     run: |
-      pin=$(git show "$MODERNCI_TO_SHA:testing/shadow-oracle/oracle-rust.pin")
-      want=$(printf '%s\n' "$pin" | sed -n "s/^sha256_linux_$(uname -m)=//p")
-      [[ "$want" =~ ^[0-9a-f]{64}$ ]] || { echo "ORACLE-PIN: oracle-rust.pin at $MODERNCI_TO_SHA pins no linux $(uname -m) judge"; exit 1; }
-      echo "$want  $BUSBAR_ORACLE_RUST_BIN" | sha256sum -c -
+      set -euo pipefail
+      judge() { # judge <repo> <target sha> <installed busbar-oracle>
+        local repo=$1 to=$2 bin=$3 want
+        local pin=testing/shadow-oracle/oracle-rust.pin
+        git -C "$repo" cat-file -e "$to^{commit}" 2>/dev/null \
+          || { echo "ORACLE-PIN: the target $to is not in this checkout, so it names no judge"; return 1; }
+        if git -C "$repo" cat-file -e "$to:$pin" 2>/dev/null; then
+          want=$(git -C "$repo" show "$to:$pin" | sed -n "s/^sha256_linux_$(uname -m)=//p")
+          [[ "$want" =~ ^[0-9a-f]{64}$ ]] || { echo "ORACLE-PIN: oracle-rust.pin at $to pins no linux $(uname -m) judge"; return 1; }
+          echo "$want  $bin" | sha256sum -c - || return 1
+        elif git -C "$repo" cat-file -e "$to:testing/shadow-oracle" 2>/dev/null; then
+          echo "ORACLE-PIN: $to holds testing/shadow-oracle but no oracle-rust.pin, so it names no judge"
+          return 1
+        else
+          [ -x "$bin" ] || { echo "ORACLE-PIN: no backend-installed busbar-oracle at '$bin'"; return 1; }
+          echo "ORACLE-PIN: the target $to predates oracle-rust.pin (the first move onto it); judging with the backend-installed busbar-oracle $bin, sha256 $(sha256sum "$bin" | cut -d' ' -f1)"
+        fi
+      }
+      judge_selftest() {
+        local t r bin good fails=0 pre pinned wrong unpinned
+        t=$(mktemp -d); r="$t/r"; bin="$t/busbar-oracle"
+        printf 'judge\n' >"$bin"; chmod +x "$bin"; good=$(sha256sum "$bin" | cut -d' ' -f1)
+        g() { git -C "$r" -c core.hooksPath=/dev/null -c user.name=selftest -c user.email=selftest@invalid "$@"; }
+        git init -q "$r"
+        g commit -q --allow-empty -m v1.5.5; pre=$(g rev-parse HEAD)
+        mkdir -p "$r/testing/shadow-oracle"
+        printf 'sha256_linux_%s=%s\n' "$(uname -m)" "$good" >"$r/testing/shadow-oracle/oracle-rust.pin"
+        g add -A; g commit -q -m pinned; pinned=$(g rev-parse HEAD)
+        printf 'sha256_linux_%s=%064d\n' "$(uname -m)" 0 >"$r/testing/shadow-oracle/oracle-rust.pin"
+        g commit -q -am wrong; wrong=$(g rev-parse HEAD)
+        printf '{}\n' >"$r/testing/shadow-oracle/cells.json"; g rm -q testing/shadow-oracle/oracle-rust.pin
+        g add -A; g commit -q -m unpinned; unpinned=$(g rev-parse HEAD)
+        expect() { # expect <ok|red> <why> <target> [bin] [output substring]
+          local out rc=0
+          out=$(judge "$r" "$3" "${4:-$bin}" 2>&1) || rc=$?
+          if { [ "$1" = ok ] && [ $rc -eq 0 ]; } || { [ "$1" = red ] && [ $rc -ne 0 ]; }; then
+            if [ -n "${5:-}" ] && [[ "$out" != *"$5"* ]]; then echo "  MISS: $2 (no '$5' in: $out)"; fails=$((fails+1)); else echo "  ok: $2"; fi
+          else echo "  MISS: $2 (rc $rc: $out)"; fails=$((fails+1)); fi
+        }
+        expect ok "a target whose pin names this judge" "$pinned"
+        expect red "a target whose pin names another judge" "$wrong"
+        expect red "a target with oracle data and no pin" "$unpinned" "" "no oracle-rust.pin"
+        expect red "a target this checkout does not hold" 0000000000000000000000000000000000000000 "" "not in this checkout"
+        expect ok "a target that predates the oracle: the installed judge, said in one line" "$pre" "" "predates oracle-rust.pin"
+        expect red "a target that predates the oracle and no installed judge" "$pre" "$t/absent"
+        rm -rf "$t"
+        [ "$fails" -eq 0 ] || { echo "ORACLE-PIN self-test: $fails arm(s) did not hold"; return 1; }
+      }
+      judge_selftest
+      judge . "$MODERNCI_TO_SHA" "$BUSBAR_ORACLE_RUST_BIN"
       "$BUSBAR_ORACLE_RUST_BIN" golden-guard --repo . --base "$MODERNCI_TO_SHA" --head HEAD
       cargo build --locked --release -p busbar --bin busbar
       ./bin/oracle fetch-golden
       rm -rf target/oracle/recordings/candidate target/oracle/reports/dev
       ./bin/oracle record --bin target/release/busbar --plane all --out target/oracle/recordings/candidate
       ./bin/oracle replay --golden testing/shadow-oracle/golden/1.5.5 --candidate target/oracle/recordings/candidate --out target/oracle/reports/dev --strict
+    # golden-guard and the judge's target both read history (`git merge-base`, `git show <target>:`).
+    requires: [git-history]
     needs: [gates]
   conformance:
     # Every registered suite recorded on this commit (the llm rigs judge the oracle's candidate
