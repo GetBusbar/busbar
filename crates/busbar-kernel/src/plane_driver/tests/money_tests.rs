@@ -438,6 +438,69 @@ fn a_plane_named_lane_is_the_units_ledger_lane_not_its_route_entry() {
     );
 }
 
+/// THE PLANE'S DECLARED CLASSES REACH ITS ROW (#71; /status row 123, the rigs' `h2-class-price`): a
+/// served unit of a plane that declares a count class and a byte class, reporting one call and the
+/// answer's length beside its fee unit, meters ONE request on the plane's row `(lane, plane)` and
+/// that row carries both counts, which the admin usage read prices (`classes.<class>.{count,cost}`).
+/// The fee unit says only whether the fee was incurred: it is never a counted class. RED: counts
+/// lost on the way to the row read 0 under the declared classes and only the flat fee is charged.
+#[test]
+fn a_plane_units_declared_class_counts_reach_its_metering_row() {
+    const CALLS: u32 = 0;
+    const BYTES: u32 = 1;
+    let r = rig_with(None, 0, ExhaustionMode::FinishUnit, plane_fees());
+    r.money.open(
+        UnitKey::new(1),
+        UnitMoney {
+            model: "tp\u{1f}srv".into(),
+            classes: Arc::from(vec![
+                "calls".to_string(),
+                "bytes".to_string(),
+                busbar_contract::plane::PER_REQUEST.to_string(),
+            ]),
+            ..r.unit.clone()
+        },
+    );
+    let report = [
+        fee_reported(1),
+        UnitCount {
+            class: CALLS,
+            source: UNITS_REPORTED,
+            amount: 1,
+        },
+        UnitCount {
+            class: BYTES,
+            source: UNITS_REPORTED,
+            amount: 37,
+        },
+    ];
+    let _ = r.money.checkpoint(&ctx(1), &report);
+    r.money.laned(&ctx(1), "srv_read");
+    r.money.settle_end(UnitKey::new(1), 200);
+    let rows = metering_rows(&r);
+    let counts: Vec<_> = rows
+        .iter()
+        .map(|row| {
+            (
+                row.model.as_str(),
+                row.provider.as_str(),
+                row.requests,
+                row.usage_units.clone(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        counts,
+        vec![(
+            "srv_read",
+            "tp",
+            1,
+            BTreeMap::from([("bytes".to_string(), 37), ("calls".to_string(), 1)]),
+        )],
+        "one request on the plane's row, carrying every declared class it reported and no fee unit"
+    );
+}
+
 /// A unit whose plane names no lane is laned by its route entry, as before (the serving member's).
 #[test]
 fn a_unit_naming_no_lane_keeps_its_route_entry() {
