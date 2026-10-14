@@ -63,6 +63,42 @@ fn path_base_reshapes_the_gemini_url_for_vertex() {
         );
 }
 
+/// Moderation and rerank (no Gemini cell) answer `:generateContent` whether or not the request
+/// streams, as 1.5.5 did (v1.5.5 `crates/busbar/src/handlers/gemini.rs:62-63`); only chat,
+/// transcription and speech are stream-aware (`:52-58`). RED while every fallback verb took
+/// `:streamGenerateContent` on a streamed request.
+#[test]
+fn moderation_and_rerank_always_use_generate_content() {
+    let h = GeminiRequestHandler;
+    let model = "gemini-2.0-flash";
+    for operation in [OpVerb::MODERATION, OpVerb::RERANK] {
+        for stream in [false, true] {
+            assert_eq!(
+                h.upstream_path(&EgressCtx {
+                    operation,
+                    model,
+                    stream,
+                    path_base: None,
+                }),
+                "/v1beta/models/gemini-2.0-flash:generateContent",
+                "{operation:?} stream={stream}"
+            );
+        }
+    }
+    for operation in [OpVerb::CHAT, OpVerb::TRANSCRIPTION, OpVerb::SPEECH] {
+        assert_eq!(
+            h.upstream_path(&EgressCtx {
+                operation,
+                model,
+                stream: true,
+                path_base: None,
+            }),
+            "/v1beta/models/gemini-2.0-flash:streamGenerateContent",
+            "{operation:?}"
+        );
+    }
+}
+
 #[test]
 fn transcription_read_request_captures_inline_audio() {
     // A generateContent body with a valid-base64 inline_data audio part → IR Transcription
@@ -847,10 +883,11 @@ fn transcription_response_reads_token_usage() {
     );
 }
 
-// L1: a token-metered gemini image response must re-emit `usageMetadata` in the client-facing body
-// (asymmetric with the OpenAI image writer before). Fails pre-fix: the writer dropped usage.
+// An Imagen `:predict` response is `{predictions}` alone, as 1.5.5 wrote it (v1.5.5
+// `crates/busbar/src/handlers/gemini.rs:474-492`): Imagen's `PredictResponse` has no `usageMetadata`,
+// so a foreign answer's token usage is not written into one. RED while the writer invented it.
 #[test]
-fn image_response_writer_round_trips_usage() {
+fn image_response_writer_writes_no_usage_metadata() {
     let resp = crate::codec::ir::image::ImageResp {
         images: vec![busbar_contract::media::ImageOutput {
             b64: Some("aGVsbG8=".into()),
@@ -864,24 +901,10 @@ fn image_response_writer_round_trips_usage() {
     };
     let wb = write_image_response(&resp);
     let v: Value = serde_json::from_slice(&wb.bytes).unwrap();
+    assert!(v.get("usageMetadata").is_none(), "{v}");
     assert_eq!(
-        v.pointer("/usageMetadata/promptTokenCount"),
-        Some(&json!(10)),
-        "image usage must be emitted: {v}"
-    );
-    assert_eq!(
-        v.pointer("/usageMetadata/candidatesTokenCount"),
-        Some(&json!(5))
-    );
-    // And it round-trips back through the response reader instead of being dropped.
-    let back = read_image_response(&wb.bytes).expect("re-read");
-    assert_eq!(
-        back.usage,
-        Some(crate::codec::ir::image::ImageTokens {
-            input: Some(10),
-            output: Some(5),
-        }),
-        "image usage must round-trip through write->read"
+        v.pointer("/predictions/0/bytesBase64Encoded"),
+        Some(&json!("aGVsbG8="))
     );
 }
 

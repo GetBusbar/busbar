@@ -176,8 +176,10 @@ fn additive_sum_is_correct_when_exactly_one_term_is_float_spelled() {
 /// its usage said (v1.5.5 `crates/busbar/src/handlers/gemini.rs:446-472` read no usage at all), so
 /// an unreadable count must not refuse it; and a recorded count is a ledger row, so it must not
 /// become a fabricated 0 either (#81, OWNER rule 21). It is UNKNOWN: left out of the record, named
-/// on the answer's warnings, and left out of the re-emitted body. RED while `gemini/handler.rs`
-/// `read_image_response` defaulted it to zero, and while it refused the answer.
+/// on the answer's warnings. The re-emitted Imagen body carries no `usageMetadata` at all (1.5.5's
+/// `{predictions}` alone, v1.5.5 `crates/busbar/src/handlers/gemini.rs:474-492`), so no 0 can be
+/// written for it there. RED while `gemini/handler.rs` `read_image_response` defaulted it to zero,
+/// and while it refused the answer.
 #[test]
 fn an_unreadable_image_count_is_recorded_as_unknown_and_the_answer_served() {
     // `"27"` is a string, not a number: present, and not a count.
@@ -212,19 +214,9 @@ fn an_unreadable_image_count_is_recorded_as_unknown_and_the_answer_served() {
     let written: serde_json::Value =
         serde_json::from_slice(&crate::codec::gemini::handler::write_image_response(&resp).bytes)
             .unwrap();
-    assert_eq!(
-        written.pointer("/usageMetadata/promptTokenCount"),
-        None,
-        "no 0 is written for it: {written}"
-    );
-    assert_eq!(
-        written.pointer("/usageMetadata/totalTokenCount"),
-        None,
-        "nor a total that would include it"
-    );
-    assert_eq!(
-        written.pointer("/usageMetadata/candidatesTokenCount"),
-        Some(&serde_json::json!(5))
+    assert!(
+        written.get("usageMetadata").is_none(),
+        "the Imagen body is `{{predictions}}` alone, as in 1.5.5; no usage (and so no 0) is written: {written}"
     );
 
     // The same body, float-spelled, reads and is recorded: only an unreadable count is unknown.
