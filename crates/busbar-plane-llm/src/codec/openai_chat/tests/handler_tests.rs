@@ -621,10 +621,12 @@ fn multipart_single_char_boundary_parses_correctly() {
     assert!(r.audio.is_some());
 }
 
-// FIND-1 (money): a gpt-image-1 response carries a token `usage` object; the reader must surface it
-// so `billing()` token-meters the request instead of billing nothing. Fails pre-fix (usage unset).
+// A gpt-image-1 response carries a token `usage` object. Its tokens are RECORDED (residual units,
+// the settle's `usage.residual` audit row) and bill NOTHING on the four token tiers, as in 1.5.5,
+// whose image reader read no `usage` (v1.5.5 `crates/busbar/src/handlers/openai.rs:731-758`) and
+// whose image op tapped no same-dialect body. RED while the reader token-billed 20 in / 10 out.
 #[test]
-fn image_response_with_usage_object_bills_tokens() {
+fn image_response_usage_is_recorded_never_billed() {
     let wire = json!({
         "created": 1,
         "data": [{ "b64_json": "AAAA" }],
@@ -633,11 +635,31 @@ fn image_response_with_usage_object_bills_tokens() {
     let resp = super::read_image_response(&serde_json::to_vec(&wire).unwrap()).unwrap();
     match resp.billing() {
         Some(busbar_contract::billing::Billing::Tokens(t)) => {
-            assert_eq!(t.input, 20);
-            assert_eq!(t.output, 10);
+            assert_eq!(
+                (t.input, t.output, t.cache_read, t.cache_creation),
+                (0, 0, None, None),
+                "no image token bills: {t:?}"
+            );
+            assert!(t.open_units.is_empty(), "no open class bills: {t:?}");
+            assert_eq!(
+                t.residual_units,
+                std::collections::BTreeMap::from([
+                    ("image.input_tokens".to_string(), 20),
+                    ("image.output_tokens".to_string(), 10),
+                ]),
+                "the reported tokens are recorded"
+            );
         }
-        other => panic!("gpt-image-1 usage must token-bill, got {other:?}"),
+        other => panic!("gpt-image-1 usage is recorded on a zero token line, got {other:?}"),
     }
+    // The same-dialect tap reads the same zero bill.
+    let tapped = busbar_contract::codec::OperationHandler::extract_usage(
+        &super::OpenAiImage,
+        "openai",
+        &serde_json::to_vec(&wire).unwrap(),
+    )
+    .expect("the tap reads the answer");
+    assert_eq!((tapped.input, tapped.output), (0, 0));
 }
 
 // FIND-1 (money): a per-image (dall-e-style) response has NO usage object; the reader must record a
