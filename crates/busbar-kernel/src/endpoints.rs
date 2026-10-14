@@ -281,17 +281,9 @@ fn list_models_dialect(
 }
 
 pub async fn healthz(crate::state::CurrentApp(app): crate::state::CurrentApp) -> Response {
-    // THE PLUGIN HANDLE LATCH (#74): a plugin handed the host contexts it did not mint from outside
-    // any crossing until the latch tripped; every host call made outside a crossing is refused from
-    // then on (a plugin's background wakes included), so the node is not ready and says why. The
-    // remedy is a restart without the plugin that forged them.
-    if busbar_plugin_loader::dispatch::handle::latched() {
-        return (
-            StatusCode::SERVICE_UNAVAILABLE,
-            "plugin handle latch tripped: a plugin forged host contexts outside any crossing; \
-             restart without it",
-        )
-            .into_response();
+    if let Some(halted) = plugin_dispatch_halted(busbar_plugin_loader::dispatch::handle::latched())
+    {
+        return halted;
     }
     let t = now();
     // Side-effect-FREE readiness check: `/healthz` is unauthenticated and high-frequency (k8s
@@ -315,6 +307,34 @@ pub async fn healthz(crate::state::CurrentApp(app): crate::state::CurrentApp) ->
         (StatusCode::OK, "ok").into_response()
     } else {
         (StatusCode::SERVICE_UNAVAILABLE, "no usable lanes").into_response()
+    }
+}
+
+/// THE PLUGIN HANDLE LATCH (#74): once plugins handed the host enough contexts it did not mint from
+/// outside any crossing, every host call made outside a crossing is refused for the rest of the
+/// process (a plugin's background wakes included), so the node is not ready. The reason line is
+/// neutral (this route is unauthenticated); the detail is the ERROR line the latch logged.
+fn plugin_dispatch_halted(latched: bool) -> Option<Response> {
+    latched.then(|| {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "plugin dispatch halted; restart required",
+        )
+            .into_response()
+    })
+}
+
+#[cfg(test)]
+mod plugin_dispatch_halted_tests {
+    use super::*;
+
+    /// RED: while the handle latch is tripped `/healthz` answers 503 with the neutral reason, and
+    /// with it untripped the readiness check goes on to the lanes.
+    #[test]
+    fn healthz_answers_503_while_the_handle_latch_is_tripped() {
+        let halted = plugin_dispatch_halted(true).expect("a tripped latch halts readiness");
+        assert_eq!(halted.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert!(plugin_dispatch_halted(false).is_none());
     }
 }
 
