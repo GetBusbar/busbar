@@ -1467,6 +1467,9 @@ pub struct ProviderRoute {
     /// sent and signed the host after it (v1.5.5 `crates/busbar/src/proxy/egress.rs:18`; row 74, F25),
     /// so the member's route, its sealed reach, its binding and every dial read that host alone.
     pub base_url: String,
+    /// The `Authorization: Basic` that userinfo spelled, held opaque for the member's route: its
+    /// attempts carry it as 1.5.5 sent it (see `busbar_kernel::egress::engine::UrlUserinfo`).
+    pub userinfo: Option<busbar_kernel::egress::engine::UrlUserinfo>,
     /// The default wire protocol (#51).
     pub protocol: String,
     /// The `error_map`, catalog-merged; empty = none stated.
@@ -1546,6 +1549,7 @@ pub fn provider_routes(
                 name.clone(),
                 ProviderRoute {
                     base_url: busbar_kernel::net_guard::strip_userinfo(&p.base_url).into_owned(),
+                    userinfo: busbar_kernel::egress::engine::UrlUserinfo::of(&p.base_url),
                     protocol: p.protocol.clone(),
                     error_map: p
                         .error_map
@@ -2355,6 +2359,7 @@ pub fn member_routes(
                 rides: Vec::new(),
                 need,
                 base_url,
+                userinfo: None,
                 auth,
                 provider: entry,
                 keep: busbar_kernel::plane_driver::ResponseKeep::default(),
@@ -2372,6 +2377,7 @@ pub fn member_routes(
                 rides: Vec::new(),
                 need,
                 base_url: entry.clone(),
+                userinfo: None,
                 auth: None,
                 provider: entry,
                 keep: busbar_kernel::plane_driver::ResponseKeep::default(),
@@ -2427,6 +2433,7 @@ pub fn member_routes(
             MemberRoute {
                 need,
                 base_url: r.provider.base_url.clone(),
+                userinfo: r.provider.userinfo.clone(),
                 auth: Some(AuthBinding {
                     auth,
                     handle,

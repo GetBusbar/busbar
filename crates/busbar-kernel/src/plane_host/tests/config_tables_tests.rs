@@ -15,6 +15,7 @@ fn lane(model: &str, provider: &str) -> LaneInput {
         provider: provider.to_string(),
         protocol: "widget".to_string(),
         base_url: format!("https://{provider}.invalid"),
+        url_userinfo: None,
         path: None,
         path_base: None,
         organization: None,

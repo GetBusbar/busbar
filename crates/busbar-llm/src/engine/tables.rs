@@ -16,6 +16,10 @@ pub(crate) struct Lane {
     pub(crate) model: String,
     pub(crate) provider: String,
     pub(crate) base_url: String,
+    /// The `user:pass@` the operator's base URL spelled, as the kernel holds it: opaque, handed back
+    /// to the kernel's egress hop on every request this lane sends, which presents it as 1.5.5 did
+    /// (row 74, F25). This plane never reads it.
+    pub(crate) url_userinfo: Option<busbar_kernel::egress::engine::UrlUserinfo>,
     /// THE DIAL TARGET THIS LANE NAMES, as the node's interned `&'static str` — `base_url` seated
     /// through `busbar_contract::Registration` ONCE, here, when the generation's lane table is
     /// built. A planned leg names its upstream as a borrowed static string, and a configured

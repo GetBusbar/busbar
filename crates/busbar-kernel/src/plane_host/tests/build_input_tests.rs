@@ -12,6 +12,7 @@ fn lane(api_key: &str) -> LaneInput {
         provider: "p".to_string(),
         protocol: "widget".to_string(),
         base_url: "https://example.invalid".to_string(),
+        url_userinfo: None,
         path: None,
         path_base: None,
         organization: None,

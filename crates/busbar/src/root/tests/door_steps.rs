@@ -372,6 +372,7 @@ fn styled() -> crate::root::loader::dispatch::kinds::plane::ServedFacts {
 fn provider(protocol: &str, style: Option<&str>) -> super::ProviderRoute {
     super::ProviderRoute {
         base_url: "http://127.0.0.1:9".to_string(),
+        userinfo: None,
         protocol: protocol.to_string(),
         error_map: Default::default(),
         credential: busbar_contract::secret_ref::SecretRef::none(),
@@ -576,6 +577,10 @@ fn a_provider_base_url_with_userinfo_is_reached_at_its_stripped_authority() {
     );
     let route = &routes["p"];
     assert_eq!(route.base_url, "https://api.example.com:8443/v1");
+    assert!(
+        route.userinfo.is_some(),
+        "the userinfo is held, opaque, for the member's attempts to present as 1.5.5 did"
+    );
     let shown = format!("{route:?}");
     assert!(
         !shown.contains("hunter2") && !shown.contains("svcuser"),
@@ -888,6 +893,7 @@ async fn a_member_under_an_oauth_grant_presents_its_minted_then_refreshed_bearer
         "p".to_string(),
         super::ProviderRoute {
             base_url: "http://127.0.0.1:9".to_string(),
+            userinfo: None,
             protocol: "d".to_string(),
             error_map: Default::default(),
             credential: busbar_contract::secret_ref::SecretRef::file(
@@ -1030,6 +1036,7 @@ fn jwt_bearer_routes(
         "p".to_string(),
         super::ProviderRoute {
             base_url: "http://127.0.0.1:9".to_string(),
+            userinfo: None,
             protocol: "d".to_string(),
             error_map: Default::default(),
             credential: busbar_contract::secret_ref::SecretRef::file(

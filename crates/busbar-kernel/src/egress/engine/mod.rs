@@ -488,6 +488,116 @@ fn strip_userinfo_into_basic_auth(uri: http::Uri, headers: &mut http::HeaderMap)
     http::Uri::from_parts(parts).expect("removing userinfo keeps the URI well-formed")
 }
 
+/// A PROVIDER BASE URL'S USERINFO, AS 1.5.5 PRESENTED IT (row 74, F25): the `Authorization: Basic`
+/// value its `user[:pass]@` spells, held core-side and presented at the egress hop alone.
+///
+/// 1.5.5 built every provider request with reqwest over `{base_url}{path}`, its credential after
+/// (v1.5.5 `crates/busbar/src/proxy/engine/mod.rs:1669-1670`, `proxy/engine/walk.rs:583-584`,
+/// `health.rs:313-314`). reqwest 0.12.28's `RequestBuilder::new`
+/// (`src/async_impl/request.rs:169-182`) took the URL's userinfo out (`extract_authority`,
+/// `:581-605`: percent-decoded, nothing when the user is empty and there is
+/// no password) and added it FIRST as `authorization: Basic base64(user:pass)`, sensitive
+/// (`src/util.rs:4-25`); the lane's own credential then went in through `.headers(auth)`, whose
+/// `replace_headers` (`src/util.rs:50-77`) REPLACED that field when the credential named
+/// `authorization` and left it in place otherwise. So: the Basic field rides, first, exactly when
+/// the request's own credential names no `authorization`.
+///
+/// The value is never readable outside the kernel: no accessor leaves the crate, `Debug` prints a
+/// marker, and the header is sensitive. A plane that carries one hands it back to the kernel's
+/// hop as an opaque request extension ([`present_url_userinfo`]).
+#[derive(Clone)]
+pub struct UrlUserinfo(http::HeaderValue);
+
+impl UrlUserinfo {
+    /// The Basic value `url`'s authority spells, or `None` when it spells no user and no password.
+    /// The authority ends at the first `/`, `?`, `#` or `\`, and the userinfo is everything before
+    /// its LAST `@`; the user is what precedes the first `:`, the pass what follows it (an empty
+    /// pass is none). Both are percent-decoded as reqwest decoded them: a user that does not decode
+    /// to UTF-8 presents nothing, a pass that does not is no pass (`extract_authority`'s two arms).
+    #[must_use]
+    pub fn of(url: &str) -> Option<Self> {
+        use base64::Engine as _;
+        use zeroize::Zeroize as _;
+        let (_, rest) = url.split_once("://")?;
+        let end = rest.find(['/', '?', '#', '\\']).unwrap_or(rest.len());
+        let (spelled, _) = rest[..end].rsplit_once('@')?;
+        let (user, pass) = match spelled.split_once(':') {
+            Some((user, pass)) => (user, Some(pass).filter(|p| !p.is_empty())),
+            None => (spelled, None),
+        };
+        let mut plain = percent_decoded(user)?;
+        // A pass that does not decode is no pass, as reqwest's `password` arm read it.
+        let mut pass = pass.and_then(percent_decoded);
+        if plain.is_empty() && pass.is_none() {
+            return None;
+        }
+        plain.push(':');
+        if let Some(pass) = pass.as_mut() {
+            plain.push_str(pass);
+            pass.zeroize();
+        }
+        let mut encoded = base64::engine::general_purpose::STANDARD.encode(plain.as_bytes());
+        plain.zeroize();
+        let value = http::HeaderValue::from_maybe_shared(Bytes::from(format!("Basic {encoded}")));
+        encoded.zeroize();
+        let mut value = value.ok()?;
+        value.set_sensitive(true);
+        Some(Self(value))
+    }
+
+    /// The field value, for the kernel's own hops.
+    pub(crate) fn value(&self) -> &http::HeaderValue {
+        &self.0
+    }
+}
+
+impl std::fmt::Debug for UrlUserinfo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("UrlUserinfo(<redacted>)")
+    }
+}
+
+/// `%XX` sequences decoded to bytes, the result read as UTF-8 (`None` when it is not). A `%` that
+/// opens no two-digit hex escape is kept as written, as the percent-decoder reqwest used kept it.
+fn percent_decoded(text: &str) -> Option<String> {
+    let bytes = text.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let hex = |b: u8| (b as char).to_digit(16);
+        match (bytes[i], bytes.get(i + 1), bytes.get(i + 2)) {
+            (b'%', Some(&h), Some(&l)) if hex(h).is_some() && hex(l).is_some() => {
+                let (h, l) = (hex(h).unwrap_or(0), hex(l).unwrap_or(0));
+                out.push((h * 16 + l) as u8);
+                i += 3;
+            }
+            (b, _, _) => {
+                out.push(b);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8(out).ok()
+}
+
+/// THE HOP THAT PRESENTS A BASE URL'S USERINFO: a request carrying a [`UrlUserinfo`] extension
+/// goes out with `authorization: Basic …` as its FIRST field when, and only when, it names no
+/// `authorization` of its own — 1.5.5's order and condition (see [`UrlUserinfo`]). The extension is
+/// taken off either way, so nothing past this hop holds it. A request without one is untouched.
+pub(crate) fn present_url_userinfo(req: &mut http::Request<Full<Bytes>>) {
+    let Some(userinfo) = req.extensions_mut().remove::<UrlUserinfo>() else {
+        return;
+    };
+    if req.headers().contains_key(http::header::AUTHORIZATION) {
+        return;
+    }
+    let rest = std::mem::take(req.headers_mut());
+    let mut fields = http::HeaderMap::with_capacity(rest.len() + 1);
+    fields.insert(http::header::AUTHORIZATION, userinfo.0);
+    fields.extend(rest);
+    *req.headers_mut() = fields;
+}
+
 /// Assemble one egress request from boot-precomputed parts, POST (the one method this
 /// fixed-destination forward path speaks). Deliberately NOT [`request`]: the caller's `http::Uri`
 /// was validated at boot (no userinfo can survive config validation), so this path keeps zero

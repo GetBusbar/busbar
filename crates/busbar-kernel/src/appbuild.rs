@@ -875,11 +875,15 @@ pub fn build_app_from_config(
         let base_url =
             crate::net_guard::strip_userinfo(provider_cfg.base_url.trim_end_matches('/'))
                 .into_owned();
+        // ...and the Basic that userinfo spelled, held opaque for the kernel's hop to present as
+        // 1.5.5 did (see `UrlUserinfo`): the plane never reads it.
+        let url_userinfo = crate::egress::engine::UrlUserinfo::of(&provider_cfg.base_url);
         lane_inputs.push(LaneInput {
             model: ld.model.clone(),
             provider: ld.provider.clone(),
             protocol: protocol.to_string(),
             base_url,
+            url_userinfo,
             path: provider_cfg.path.clone(),
             path_base: provider_cfg.path_base.clone(),
             organization: provider_cfg.organization.clone(),

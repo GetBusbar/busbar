@@ -381,7 +381,12 @@ pub(crate) async fn probe_lane(host: &dyn EngineHost, i: usize, timeout: Duratio
         ACCEPT,
         axum::http::HeaderValue::from_static(crate::engine::egress_accept(egress_name, false)),
     );
-    let req = crate::engine::egress_request(uri, headers, bytes::Bytes::from(body));
+    let mut req = crate::engine::egress_request(uri, headers, bytes::Bytes::from(body));
+    // The base URL's userinfo rides the probe as it rides organic traffic (row 74; 1.5.5's probe
+    // was the same reqwest build over `{base_url}{path}`, v1.5.5 `crates/busbar/src/health.rs:313`).
+    if let Some(userinfo) = &lane.url_userinfo {
+        req.extensions_mut().insert(userinfo.clone());
+    }
     // TIMEOUT RE-PROVISION: reqwest's per-request `.timeout(timeout)` bounded the ENTIRE probe
     // lifecycle — connect, headers, AND the body read. The owned client carries no per-request
     // total timeout, so re-provide the same bound as ONE deadline shared by the send below and the

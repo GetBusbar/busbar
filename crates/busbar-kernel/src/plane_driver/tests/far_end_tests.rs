@@ -361,6 +361,9 @@ struct Bearer {
     stall: std::sync::atomic::AtomicBool,
     /// Refuses to field the attempt.
     refuse: std::sync::atomic::AtomicBool,
+    /// Presents the credential under `x-api-key` (a dialect whose credential is not
+    /// `authorization`) instead of as `authorization: Bearer`.
+    api_key: std::sync::atomic::AtomicBool,
     facts: Mutex<Vec<Facts>>,
     /// The point each call was made at and the body it lent.
     points: Mutex<Vec<(AuthPoint, Option<Vec<u8>>)>>,
@@ -415,9 +418,14 @@ impl OutboundAuth for Bearer {
             .push((r.method.clone(), r.authority.clone(), r.path.clone()));
         self.points.lock().unwrap().push((r.point, r.body.clone()));
         self.extensions.lock().unwrap().push(r.extensions.clone());
+        let (name, value): (&[u8], &[u8]) = if self.api_key.load(Ordering::SeqCst) {
+            (b"x-api-key", b"sk-test")
+        } else {
+            (b"authorization", b"Bearer sk-test")
+        };
         Some(Fields::Ready(vec![AuthField {
-            name: b"authorization".to_vec(),
-            value: b"Bearer sk-test".to_vec().into(),
+            name: name.to_vec(),
+            value: value.to_vec().into(),
             sensitive: true,
         }]))
     }
@@ -476,6 +484,7 @@ fn rig(
                 MemberRoute {
                     need: NeedId(0),
                     base_url: format!("https://{host}/v1/"),
+                    userinfo: None,
                     provider: format!("p{k}"),
                     keep: super::ResponseKeep::default(),
                     rides: Vec::new(),
@@ -1083,6 +1092,65 @@ async fn a_target_that_is_not_a_path_is_refused_before_the_dial() {
     assert!(r.table.opened.lock().unwrap().is_empty());
     assert_eq!(r.auth.calls.load(Ordering::SeqCst), 0);
     assert!(r.book.observed.lock().unwrap().is_empty());
+}
+
+/// ROW 74 (F25): a member whose base URL spelled `user:pass@` carries the Basic value that userinfo
+/// spells as its attempt's FIRST field when the auth binding presents its credential under another
+/// field, and not at all when the binding presents `authorization` — 1.5.5's request builder put
+/// it first and its credential replaced it only by that name. A plane field named `authorization`
+/// never doubles it; nothing of the userinfo reaches the target or the auth call's authority.
+#[tokio::test]
+async fn a_base_url_userinfo_rides_first_unless_the_binding_presents_authorization() {
+    let userinfo =
+        crate::egress::engine::UrlUserinfo::of("https://svcuser:hunter2-P4ss@a.test/v1/")
+            .expect("the base spells a userinfo");
+    let basic = userinfo.value().as_bytes().to_vec();
+    for (api_key, expected) in [
+        (
+            true,
+            vec![
+                ("authorization", basic.clone()),
+                ("x-api-key", b"sk-test".to_vec()),
+                ("content-type", b"application/json".to_vec()),
+            ],
+        ),
+        (
+            false,
+            vec![
+                ("authorization", b"Bearer sk-test".to_vec()),
+                ("content-type", b"application/json".to_vec()),
+            ],
+        ),
+    ] {
+        let mut r = rig(
+            &[("a.test", Script::Answer(200, None, vec![b"ok"]))],
+            OnExhausted::Status503,
+            None,
+        );
+        r.auth.api_key.store(api_key, Ordering::SeqCst);
+        r.egress
+            .routes
+            .get_mut(&DestinationId::new(1))
+            .expect("m0's route")
+            .userinfo = Some(userinfo.clone());
+        let t = token();
+        let far = r.egress.unit(route());
+        assert!(matches!(far.member(&t, 1).await, Pick::Member { .. }));
+        let mut req = request();
+        req.fields
+            .push((b"Authorization".to_vec(), b"Bearer caller".to_vec()));
+        assert!(far.send(&t, req).await);
+        let _ = drain(&far, &t).await;
+        let opened = r.table.opened.lock().unwrap().clone();
+        let head: Vec<(&str, Vec<u8>)> = opened[0]
+            .1
+            .iter()
+            .map(|(n, v)| (n.as_str(), v.clone()))
+            .collect();
+        assert_eq!(head, expected, "x-api-key binding: {api_key}");
+        assert_eq!(opened[0].0, "https://a.test/v1/chat");
+        assert_eq!(r.auth.facts.lock().unwrap()[0].1, "a.test");
+    }
 }
 
 /// A plane field whose name is not an RFC 9110 token never leaves: `authorization:x` = `v` would be

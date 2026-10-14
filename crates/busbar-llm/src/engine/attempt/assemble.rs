@@ -148,7 +148,11 @@ pub(super) async fn build(
         egress_headers.insert(name.clone(), value.clone());
     }
     let uri = with_query.unwrap_or_else(|| target.uri.clone());
-    let hreq = crate::engine::egress_request(uri, egress_headers, payload);
+    let mut hreq = crate::engine::egress_request(uri, egress_headers, payload);
+    // The base URL's userinfo, opaque, handed back to the kernel's hop that presents it (row 74).
+    if let Some(userinfo) = &hop.lane_row().url_userinfo {
+        hreq.extensions_mut().insert(userinfo.clone());
+    }
     drop(_cb_reqwest);
     Ok(hreq)
 }

@@ -655,3 +655,122 @@ fn proxy_env_refusals_never_echo_the_proxy_password() {
         );
     }
 }
+
+/// ROW 74 (F25): a provider base URL's `user[:pass]@` becomes the Basic value 1.5.5's reqwest built
+/// (`extract_authority` + `util::basic_auth`, reqwest 0.12.28): the LAST `@` of the authority ends
+/// the userinfo, the first `:` splits user from pass, both are percent-decoded, an empty pass is
+/// none, and a spelling with neither user nor pass (or a user that is not UTF-8) presents nothing. The
+/// value is sensitive and its `Debug` is a marker.
+#[test]
+fn a_base_url_userinfo_becomes_the_basic_value_reqwest_built() {
+    use base64::Engine as _;
+    let basic = |plain: &str| {
+        format!(
+            "Basic {}",
+            base64::engine::general_purpose::STANDARD.encode(plain)
+        )
+    };
+    for (url, plain) in [
+        (
+            "https://svcuser:hunter2-P4ss@api.example.com/v1",
+            "svcuser:hunter2-P4ss",
+        ),
+        (
+            "https://svcuser:hun@ter2@api.example.com",
+            "svcuser:hun@ter2",
+        ),
+        (
+            "https://svcuser:p%40ss%3A1@api.example.com",
+            "svcuser:p@ss:1",
+        ),
+        ("https://svcuser@api.example.com", "svcuser:"),
+        ("https://svcuser:@api.example.com", "svcuser:"),
+        ("https://:hunter2@api.example.com", ":hunter2"),
+        // A pass that does not decode to UTF-8 is no pass (reqwest's `password` arm).
+        ("https://svcuser:%FF@api.example.com", "svcuser:"),
+    ] {
+        let userinfo = UrlUserinfo::of(url).expect("the userinfo presents");
+        assert_eq!(userinfo.value().to_str().unwrap(), basic(plain), "{url}");
+        assert!(userinfo.value().is_sensitive(), "{url}");
+        assert_eq!(format!("{userinfo:?}"), "UrlUserinfo(<redacted>)");
+    }
+    for url in [
+        "https://api.example.com/v1",
+        "https://api.example.com/x@y",
+        "https://@api.example.com",
+        "https://:@api.example.com",
+        // A user that does not decode to UTF-8 presents nothing (reqwest's `username` arm).
+        "https://%FF:hunter2@api.example.com",
+        "https://:%FF@api.example.com",
+        "api.example.com",
+    ] {
+        assert!(UrlUserinfo::of(url).is_none(), "{url} presents nothing");
+    }
+}
+
+/// ROW 74 (F25), THE HOP: a request carrying a [`UrlUserinfo`] goes out with the Basic field FIRST
+/// when its own fields name no `authorization` (a dialect whose credential rides another field),
+/// and without it when they do (the credential replaced it in 1.5.5's `replace_headers`). The
+/// extension never survives the hop; a request without one is untouched.
+#[test]
+fn the_hop_presents_the_userinfo_first_unless_the_request_names_authorization() {
+    let userinfo =
+        UrlUserinfo::of("https://svcuser:hunter2-P4ss@api.example.com").expect("a userinfo");
+    let request_with = |fields: &[(&'static str, &'static str)], carry: bool| {
+        let mut headers = http::HeaderMap::new();
+        for (n, v) in fields {
+            headers.append(*n, http::HeaderValue::from_static(*v));
+        }
+        let mut req = egress_request(
+            "https://api.example.com/v1/messages".parse().unwrap(),
+            headers,
+            Bytes::new(),
+        );
+        if carry {
+            req.extensions_mut().insert(userinfo.clone());
+        }
+        present_url_userinfo(&mut req);
+        assert!(req.extensions().get::<UrlUserinfo>().is_none());
+        req.headers()
+            .iter()
+            .map(|(n, v)| (n.as_str().to_string(), v.to_str().unwrap().to_string()))
+            .collect::<Vec<_>>()
+    };
+    let basic = userinfo.value().to_str().unwrap().to_string();
+    let owned = |v: &[(&str, &str)]| -> Vec<(String, String)> {
+        v.iter()
+            .map(|(n, v)| ((*n).to_string(), (*v).to_string()))
+            .collect()
+    };
+    assert_eq!(
+        request_with(
+            &[("x-api-key", "k"), ("content-type", "application/json")],
+            true
+        ),
+        owned(&[
+            ("authorization", &basic),
+            ("x-api-key", "k"),
+            ("content-type", "application/json"),
+        ]),
+        "a credential under another field leaves the Basic field in, first"
+    );
+    assert_eq!(
+        request_with(
+            &[
+                ("authorization", "Bearer k"),
+                ("content-type", "application/json")
+            ],
+            true
+        ),
+        owned(&[
+            ("authorization", "Bearer k"),
+            ("content-type", "application/json")
+        ]),
+        "a credential named `authorization` displaces it"
+    );
+    assert_eq!(
+        request_with(&[("x-api-key", "k")], false),
+        owned(&[("x-api-key", "k")]),
+        "no userinfo, nothing presented"
+    );
+}

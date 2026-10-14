@@ -89,8 +89,12 @@ pub struct LaneInput {
     /// The lane's protocol NAME (the registry's interned dialect key), carried as an owned `String`;
     /// the plane re-interns it against the protocol registry.
     pub protocol: String,
-    /// The provider's upstream base URL, already trailing-slash-trimmed.
+    /// The provider's upstream base URL, already trailing-slash-trimmed, its userinfo stripped.
     pub base_url: String,
+    /// The `Authorization: Basic` the operator's base URL spelled as `user:pass@` (row 74, F25),
+    /// opaque: the plane hands it back to the kernel's hop on each request it sends to this lane,
+    /// and the hop presents it as 1.5.5 did. `None` when the base URL spelled no userinfo.
+    pub url_userinfo: Option<crate::egress::engine::UrlUserinfo>,
     /// Optional upstream request-path override.
     pub path: Option<String>,
     /// Optional path-BASE override (URL-model protocols).
