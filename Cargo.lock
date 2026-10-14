@@ -526,7 +526,7 @@ dependencies = [
 [[package]]
 name = "busbar-auth-webhook-signature"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-auth-webhook-signature?rev=ac7eabefd872599f2942fd44474fe40297e2ee93#ac7eabefd872599f2942fd44474fe40297e2ee93"
+source = "git+https://github.com/GetBusbar/busbar-auth-webhook-signature?rev=fd3bb09947ec4cffceb68a7f7674abed6df47810#fd3bb09947ec4cffceb68a7f7674abed6df47810"
 dependencies = [
  "base64 0.22.1",
  "busbar-contract",
