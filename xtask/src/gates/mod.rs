@@ -29,6 +29,7 @@ pub mod config_schema;
 pub mod conformance_sync;
 pub mod construction;
 pub mod contract_stateless;
+pub mod default_measurements;
 pub mod deferral_words;
 pub mod denylist_gate;
 pub mod dep_wall;
@@ -3188,6 +3189,13 @@ pub static REGISTRY: &[Registration] = &[
         tier: Tier::Fast,
         build: || Box::new(deferral_words::DeferralWordsGate),
         summary: "DECISIONS #15 banned-word shapes over the 1.6.0 docs (report-only) + the pinned positive control",
+    },
+    Registration {
+        name: "default-measurements",
+        batch: 1,
+        tier: Tier::Fast,
+        build: || Box::new(default_measurements::DefaultMeasurementsGate),
+        summary: "a manifest comment that authorises a default by a measurement names the registered gate that re-runs it",
     },
     Registration {
         name: "design-docs-allowlist",
