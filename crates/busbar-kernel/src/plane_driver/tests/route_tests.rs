@@ -103,30 +103,6 @@ fn a_node_without_signing_material_lends_no_caller_reference() {
     assert!(i.caller_ref.ptr.is_null() && i.caller_ref.len == 0);
 }
 
-/// The reference the driver derives is the node's keyed digest of the principal, never the
-/// principal: 64 lower-case hex characters that do not contain it.
-#[test]
-fn the_caller_reference_is_never_the_principal() {
-    let key = crate::auth::CallerRefKey::derive(b"node signing material");
-    let r = key.caller_ref("acct:alice@example.com");
-    assert_eq!(r.len(), 64);
-    assert!(r
-        .bytes()
-        .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
-    assert!(!r.contains("alice"));
-}
-
-/// A door plane is lent the operator's name of the member (and pool) its attempt was picked from —
-/// the entry its own section writes — never the kernel's `(plane key, entry)` key; a name with no
-/// plane key is lent as it is.
-#[test]
-fn a_plane_is_lent_the_operators_name_of_its_member() {
-    let key = format!("door{}fs", crate::governance::PLANE_LANE_SEP);
-    assert_eq!(super::operator_name(key.as_bytes()), b"fs");
-    assert_eq!(super::operator_name(b"gpt-model"), b"gpt-model");
-    assert_eq!(super::operator_name(b""), b"");
-}
-
 // ── F25 rows 630-633: rehomed from crates/busbar-llm/src/engine/tests/wire_tests.rs. The
 // route-policy transparency pair as the pump stamps it
 // (`route_policy_fields`, 1.5.5's `maybe_attach_route_policy_gated`), over the full 2x2 matrix of
@@ -216,4 +192,28 @@ fn route_policy_headers_absent_when_both_gates_closed() {
     let (policy, target) = built_route_fields(false, None, b"claude");
     assert_eq!(policy, "");
     assert_eq!(target, "");
+}
+
+/// The reference the driver derives is the node's keyed digest of the principal, never the
+/// principal: 64 lower-case hex characters that do not contain it.
+#[test]
+fn the_caller_reference_is_never_the_principal() {
+    let key = crate::auth::CallerRefKey::derive(b"node signing material");
+    let r = key.caller_ref("acct:alice@example.com");
+    assert_eq!(r.len(), 64);
+    assert!(r
+        .bytes()
+        .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
+    assert!(!r.contains("alice"));
+}
+
+/// A door plane is lent the operator's name of the member (and pool) its attempt was picked from —
+/// the entry its own section writes — never the kernel's `(plane key, entry)` key; a name with no
+/// plane key is lent as it is.
+#[test]
+fn a_plane_is_lent_the_operators_name_of_its_member() {
+    let key = format!("door{}fs", crate::governance::PLANE_LANE_SEP);
+    assert_eq!(super::operator_name(key.as_bytes()), b"fs");
+    assert_eq!(super::operator_name(b"gpt-model"), b"gpt-model");
+    assert_eq!(super::operator_name(b""), b"");
 }

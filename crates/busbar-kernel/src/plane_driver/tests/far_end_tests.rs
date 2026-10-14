@@ -1112,6 +1112,91 @@ async fn a_plane_field_name_that_is_not_a_token_is_refused_before_the_dial() {
     assert!(r.book.observed.lock().unwrap().is_empty());
 }
 
+/// F25 row 75: rehomed from crates/busbar-llm/src/engine/tests/auth_style_tests.rs::
+/// test_host_from_base_backslash_authority_matches_wire_host (its signed-host half; the dialler's
+/// reading of each URL is pinned in busbar-kernel-egress's `net_tests`). A WHATWG reader ends a web
+/// URL's authority at the first `\` exactly as at `/`, so the host the auth call signs must be the
+/// host the connection dials, byte for byte, never the post-`@` host a backslash-blind split reads
+/// (v1.5.5 `crates/busbar/src/proxy/egress.rs:18`, `host_from_base`); the port survives and the
+/// backslash path rides the head as a path.
+#[tokio::test]
+async fn test_host_from_base_backslash_authority_matches_wire_host() {
+    for (base, script_host, authority, host, port, head_path) in [
+        (
+            "https://evil.example.com\\@victim.example/path",
+            "evil.example.com",
+            "evil.example.com",
+            "evil.example.com",
+            None,
+            "/@victim.example/path/chat",
+        ),
+        (
+            "https://host.example.com\\some\\path",
+            "host.example.com",
+            "host.example.com",
+            "host.example.com",
+            None,
+            "/some/path/chat",
+        ),
+        (
+            "https://host.example.com:8443\\v1\\foo",
+            "host.example.com:8443",
+            "host.example.com:8443",
+            "host.example.com",
+            Some(8443),
+            "/v1/foo/chat",
+        ),
+    ] {
+        let mut r = rig(
+            &[(script_host, Script::Answer(200, None, vec![b"ok"]))],
+            OnExhausted::Status503,
+            None,
+        );
+        r.egress
+            .routes
+            .get_mut(&DestinationId::new(1))
+            .expect("m0's route")
+            .base_url = base.to_string();
+        let t = token();
+        let far = r.egress.unit(route());
+        assert!(matches!(far.member(&t, 1).await, Pick::Member { .. }));
+        assert!(far.send(&t, request()).await, "{base}");
+        let pieces = drain(&far, &t).await;
+        assert_eq!(pieces[0].status, Some((200, 1)), "{base}");
+        drop(far);
+
+        let signed = r.auth.facts.lock().unwrap()[0].1.clone();
+        assert_eq!(signed, authority, "{base}: the signed host");
+        let opened = r.table.opened.lock().unwrap().clone();
+        assert_eq!(opened.len(), 1, "{base}");
+        let dialled =
+            busbar_contract::net::parse_url(&opened[0].0).unwrap_or_else(|e| panic!("{base}: {e}"));
+        assert_eq!(
+            (dialled.host.as_str(), dialled.port),
+            (host, port),
+            "{base}: the dialled host"
+        );
+        let dialled_authority = match dialled.port {
+            Some(p) => format!("{}:{p}", dialled.host),
+            None => dialled.host.clone(),
+        };
+        assert_eq!(
+            signed, dialled_authority,
+            "{base}: the signed host is the dialled host"
+        );
+        assert_eq!(
+            r.table.words.lock().unwrap()[0],
+            (b"POST".to_vec(), head_path.as_bytes().to_vec()),
+            "{base}: the head's path"
+        );
+        assert_eq!(
+            r.auth.facts.lock().unwrap()[0].2,
+            head_path.as_bytes().to_vec(),
+            "{base}: the signed path is the head's path"
+        );
+    }
+}
+
 /// An auth binding that must wait (a refresh that never comes back) is awaited no longer than the
 /// attempt's cap: the attempt ends without a dial, nothing recorded against the member.
 #[tokio::test]
@@ -1746,89 +1831,4 @@ async fn a_text_request_opens_bare_and_is_written_as_text() {
         1,
         "no write of its own"
     );
-}
-
-/// F25 row 75: rehomed from crates/busbar-llm/src/engine/tests/auth_style_tests.rs::
-/// test_host_from_base_backslash_authority_matches_wire_host (its signed-host half; the dialler's
-/// reading of each URL is pinned in busbar-kernel-egress's `net_tests`). A WHATWG reader ends a web
-/// URL's authority at the first `\` exactly as at `/`, so the host the auth call signs must be the
-/// host the connection dials, byte for byte, never the post-`@` host a backslash-blind split reads
-/// (v1.5.5 `crates/busbar/src/proxy/egress.rs:18`, `host_from_base`); the port survives and the
-/// backslash path rides the head as a path.
-#[tokio::test]
-async fn test_host_from_base_backslash_authority_matches_wire_host() {
-    for (base, script_host, authority, host, port, head_path) in [
-        (
-            "https://evil.example.com\\@victim.example/path",
-            "evil.example.com",
-            "evil.example.com",
-            "evil.example.com",
-            None,
-            "/@victim.example/path/chat",
-        ),
-        (
-            "https://host.example.com\\some\\path",
-            "host.example.com",
-            "host.example.com",
-            "host.example.com",
-            None,
-            "/some/path/chat",
-        ),
-        (
-            "https://host.example.com:8443\\v1\\foo",
-            "host.example.com:8443",
-            "host.example.com:8443",
-            "host.example.com",
-            Some(8443),
-            "/v1/foo/chat",
-        ),
-    ] {
-        let mut r = rig(
-            &[(script_host, Script::Answer(200, None, vec![b"ok"]))],
-            OnExhausted::Status503,
-            None,
-        );
-        r.egress
-            .routes
-            .get_mut(&DestinationId::new(1))
-            .expect("m0's route")
-            .base_url = base.to_string();
-        let t = token();
-        let far = r.egress.unit(route());
-        assert!(matches!(far.member(&t, 1).await, Pick::Member { .. }));
-        assert!(far.send(&t, request()).await, "{base}");
-        let pieces = drain(&far, &t).await;
-        assert_eq!(pieces[0].status, Some((200, 1)), "{base}");
-        drop(far);
-
-        let signed = r.auth.facts.lock().unwrap()[0].1.clone();
-        assert_eq!(signed, authority, "{base}: the signed host");
-        let opened = r.table.opened.lock().unwrap().clone();
-        assert_eq!(opened.len(), 1, "{base}");
-        let dialled =
-            busbar_contract::net::parse_url(&opened[0].0).unwrap_or_else(|e| panic!("{base}: {e}"));
-        assert_eq!(
-            (dialled.host.as_str(), dialled.port),
-            (host, port),
-            "{base}: the dialled host"
-        );
-        let dialled_authority = match dialled.port {
-            Some(p) => format!("{}:{p}", dialled.host),
-            None => dialled.host.clone(),
-        };
-        assert_eq!(
-            signed, dialled_authority,
-            "{base}: the signed host is the dialled host"
-        );
-        assert_eq!(
-            r.table.words.lock().unwrap()[0],
-            (b"POST".to_vec(), head_path.as_bytes().to_vec()),
-            "{base}: the head's path"
-        );
-        assert_eq!(
-            r.auth.facts.lock().unwrap()[0].2,
-            head_path.as_bytes().to_vec(),
-            "{base}: the signed path is the head's path"
-        );
-    }
 }
