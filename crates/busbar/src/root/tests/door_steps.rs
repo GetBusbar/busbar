@@ -11,7 +11,7 @@ use busbar_contract::abi::plane::{ROUTE_DIRECT, ROUTE_POOL};
 use super::DoorPools;
 
 fn pools(yaml: &str) -> DoorPools {
-    DoorPools::of(&serde_yaml::from_str(yaml).expect("yaml"))
+    DoorPools::of(&serde_yaml::from_str(yaml).expect("yaml")).expect("the pools read")
 }
 
 fn routed(p: &DoorPools, class: u8, named: Option<&str>) -> Option<(String, Vec<String>)> {
@@ -152,21 +152,49 @@ fn the_grant_is_judged_over_the_named_pool_then_its_fallback() {
 }
 
 /// THE MEMBER'S TIER (the core-owned per-member `tier`, `BUSBAR-1.6.0.md` l.4196 (b), R2-G
-/// l.4285): read off a member written `{name, tier}`, `0` for a bare name, for one with no tier, and
-/// for a tier that is no unsigned integer; a pool's entries are its members' names either way.
+/// l.4285): read off a member written `{name, tier}`, `0` for a bare name and for one with no tier;
+/// a pool's entries are its members' names either way.
 #[test]
 fn a_pool_members_tier_is_read_off_its_member() {
     let p = pools(
-        "a: {}\nb: {}\nc: {}\npools:\n  t:\n    members: [{name: b, tier: 2}, a, {name: c}]\n\
-         \x20 u:\n    members: [{name: a, tier: minus}]",
+        "a: {}\nb: {}\nc: {}\npools:\n  t:\n    members: [{name: b, tier: 2}, a, {name: c}]",
     );
     assert_eq!(
         routed(&p, ROUTE_POOL, Some("t")),
         owned("t", &["b", "a", "c"])
     );
     assert_eq!((p.tier("t", 0), p.tier("t", 1), p.tier("t", 2)), (2, 0, 0));
-    assert_eq!(p.tier("u", 0), 0);
     assert_eq!(p.tier("absent", 0), 0);
+}
+
+/// A TIER THAT IS NO FAILOVER TIER REFUSES THE LOAD (ARCHITECT 2026-10-13, row 155): a member's
+/// `tier` that is a word, negative, fractional or past `u32::MAX` refuses the section in fixed
+/// words naming the member and the value, as 1.5.5 refused a member setting it could not read. It
+/// is never read as tier 0, which would make it its pool's primary. RED: the member read as tier 0
+/// and the pool served with it first.
+#[test]
+fn a_pool_member_whose_tier_is_no_failover_tier_refuses_the_load() {
+    for (written, shown) in [
+        ("first", "first"),
+        ("-1", "-1"),
+        ("1.5", "1.5"),
+        ("4294967296", "4294967296"),
+    ] {
+        let section = format!(
+            "a: {{}}\nb: {{}}\npools:\n  t:\n    members: [{{name: a, tier: 1}}, {{name: b, tier: {written}}}]"
+        );
+        let refused = DoorPools::of(&serde_yaml::from_str(&section).expect("yaml"))
+            .expect_err("the load is refused");
+        assert_eq!(
+            refused,
+            format!("{}: pools.t.members[1].tier = {shown}", super::TIER_REFUSAL),
+            "{written}"
+        );
+    }
+    let highest = pools(
+        "a: {}\npools:\n  t:\n    members: [{name: a, tier: 4294967295}]",
+    );
+    assert_eq!(highest.tier("t", 0), u32::MAX, "the highest tier reads");
 }
 
 /// A NAMED-DEFINITION SECTION'S POOLS, AS THE ROOT HANDS THEM: each member written `{name, tier}`,
@@ -185,7 +213,7 @@ fn named_definition_pools_are_tiered_in_declared_order_and_the_plane_sees_bare_n
     .into();
     let mut section: serde_yaml::Value = serde_yaml::from_str("a: {}\nb: {}").expect("yaml");
     crate::root::serve::pools_into(&mut section, &stated);
-    let p = DoorPools::of(&section);
+    let p = DoorPools::of(&section).expect("the pools read");
     assert_eq!(
         routed(&p, ROUTE_POOL, Some("twins")),
         owned("twins", &["b", "a"])
@@ -434,7 +462,7 @@ fn resolve_upgrading(
         models: None,
         upgrades,
     };
-    super::member_routes(&section, &DoorPools::of(&section), served, &reach)
+    super::member_routes(&section, &DoorPools::of(&section).expect("the pools read"), served, &reach)
 }
 
 /// SEAM-L(n), `spelled_for`: a need over a framer composed over the base URL's carrier dials the
@@ -895,7 +923,7 @@ async fn a_member_under_an_oauth_grant_presents_its_minted_then_refreshed_bearer
         dialects: vec!["d"],
         ..Default::default()
     };
-    let routes = super::member_routes(&section, &DoorPools::of(&section), &facts, &reach)
+    let routes = super::member_routes(&section, &DoorPools::of(&section).expect("the pools read"), &facts, &reach)
         .expect("the member resolves");
     let _ = std::fs::remove_file(&key_file);
     let binding = routes["m"].auth.clone().expect("its credential is bound");
@@ -1032,7 +1060,7 @@ fn jwt_bearer_routes(
         dialects: vec!["d"],
         ..Default::default()
     };
-    let routes = super::member_routes(&section, &DoorPools::of(&section), &facts, &reach);
+    let routes = super::member_routes(&section, &DoorPools::of(&section).expect("the pools read"), &facts, &reach);
     let _ = std::fs::remove_file(&key_file);
     routes
 }

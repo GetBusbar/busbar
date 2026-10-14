@@ -757,6 +757,7 @@ fn an_applied_door_section_carries_its_pools_and_hands_the_plane_no_work_key() {
     let applied = section_with_pools(key, &written, &pools);
     assert_eq!(
         crate::root::door_steps::DoorPools::of(&applied)
+            .expect("the pools read")
             .pools()
             .get("files")
             .cloned(),

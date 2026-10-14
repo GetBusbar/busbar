@@ -67,7 +67,8 @@ pub struct DoorPools {
     /// Each entry's reserved `timeout:`, in milliseconds, where it writes one
     /// (`busbar_contract::section::ENTRY_TIMEOUT_KEY`): its member's attempt bound.
     timeouts: BTreeMap<String, u64>,
-    /// Each pool's members' tiers, in member order (`0` where a member states none).
+    /// Each pool's members' tiers, in member order (`0` where a member states none; a tier that is no
+    /// unsigned integer refuses the load).
     tiers: BTreeMap<String, Vec<u32>>,
 }
 
@@ -76,10 +77,15 @@ pub type Routed = (String, Vec<String>);
 
 impl DoorPools {
     /// The pools `section` states.
-    #[must_use]
-    pub fn of(section: &serde_yaml::Value) -> Self {
+    ///
+    /// # Errors
+    ///
+    /// A pool member whose `tier` is no failover tier (an unsigned 32-bit integer): the load is
+    /// refused ([`TIER_REFUSAL`]), as 1.5.5 refused a member setting it could not read. The member
+    /// never silently becomes tier 0, its pool's primary.
+    pub fn of(section: &serde_yaml::Value) -> Result<Self, String> {
         let Some(map) = section.as_mapping() else {
-            return Self::default();
+            return Ok(Self::default());
         };
         let key = |k: &serde_yaml::Value| k.as_str().map(str::to_owned);
         // A model-serving section's entries are its `models` map's; any other section's are its own
@@ -99,36 +105,21 @@ impl DoorPools {
                 })
                 .collect(),
         };
-        let pools = map
+        let mut pools = BTreeMap::new();
+        let mut tiers = BTreeMap::new();
+        for (name, pool) in map
             .get(RESERVED_POOLS_KEY)
             .and_then(serde_yaml::Value::as_mapping)
-            .map(|pools| {
-                pools
-                    .iter()
-                    .filter_map(|(name, pool)| {
-                        Some((
-                            key(name)?,
-                            members(pool).into_iter().map(|(m, _)| m).collect(),
-                        ))
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-        let tiers = map
-            .get(RESERVED_POOLS_KEY)
-            .and_then(serde_yaml::Value::as_mapping)
-            .map(|pools| {
-                pools
-                    .iter()
-                    .filter_map(|(name, pool)| {
-                        Some((
-                            key(name)?,
-                            members(pool).into_iter().map(|(_, t)| t).collect(),
-                        ))
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
+            .into_iter()
+            .flatten()
+        {
+            let Some(name) = key(name) else {
+                continue;
+            };
+            let listed = members(&name, pool)?;
+            pools.insert(name.clone(), listed.iter().map(|(m, _)| m.clone()).collect());
+            tiers.insert(name, listed.into_iter().map(|(_, t)| t).collect());
+        }
         let fallbacks = map
             .get(RESERVED_POOLS_KEY)
             .and_then(serde_yaml::Value::as_mapping)
@@ -174,14 +165,14 @@ impl DoorPools {
                 Some((entry.clone(), ms))
             })
             .collect();
-        DoorPools {
+        Ok(DoorPools {
             entries,
             pools,
             fallbacks,
             member_granted,
             timeouts,
             tiers,
-        }
+        })
     }
 
     /// The attempt bound of `entry`'s member, milliseconds: its reserved `timeout:`; `None` = the
@@ -283,28 +274,44 @@ impl DoorPools {
     }
 }
 
-/// A pool's member entries: its `members` list, each an entry name or a member naming one, with the
-/// member's tier (`0` where it states none, or states one that is no unsigned integer).
-fn members(pool: &serde_yaml::Value) -> Vec<(String, u32)> {
-    pool.get(POOL_MEMBERS_KEY)
-        .and_then(serde_yaml::Value::as_sequence)
-        .map(|list| {
-            list.iter()
-                .filter_map(|m| {
-                    let name = m.as_str().or_else(|| {
-                        m.get(POOL_MEMBER_NAME_KEY)
-                            .and_then(serde_yaml::Value::as_str)
-                    })?;
-                    let tier = m
-                        .get(POOL_MEMBER_TIER_KEY)
-                        .and_then(serde_yaml::Value::as_u64)
-                        .and_then(|t| u32::try_from(t).ok())
-                        .unwrap_or(0);
-                    Some((name.to_owned(), tier))
-                })
-                .collect()
-        })
-        .unwrap_or_default()
+/// The refusal of a pool member whose `tier` is no failover tier, the words every such load is
+/// refused in: `pools.<pool>.members[<i>].tier` and the value as written follow it.
+pub const TIER_REFUSAL: &str = "a pool member's tier is not a failover tier (an unsigned 32-bit integer)";
+
+/// `pool`'s member entries: its `members` list, each an entry name or a member naming one, with the
+/// member's tier (`0` where it states none).
+///
+/// # Errors
+///
+/// A member that states a tier that is no unsigned 32-bit integer ([`TIER_REFUSAL`]).
+fn members(pool_name: &str, pool: &serde_yaml::Value) -> Result<Vec<(String, u32)>, String> {
+    let mut out = Vec::new();
+    let list = pool
+        .get(POOL_MEMBERS_KEY)
+        .and_then(serde_yaml::Value::as_sequence);
+    for (i, m) in list.into_iter().flatten().enumerate() {
+        let Some(name) = m.as_str().or_else(|| {
+            m.get(POOL_MEMBER_NAME_KEY)
+                .and_then(serde_yaml::Value::as_str)
+        }) else {
+            continue;
+        };
+        let tier = match m.get(POOL_MEMBER_TIER_KEY) {
+            None => 0,
+            Some(written) => written
+                .as_u64()
+                .and_then(|t| u32::try_from(t).ok())
+                .ok_or_else(|| {
+                    let shown = serde_yaml::to_string(written)
+                        .map_or_else(|_| String::new(), |s| s.trim_end().to_owned());
+                    format!(
+                        "{TIER_REFUSAL}: pools.{pool_name}.{POOL_MEMBERS_KEY}[{i}].{POOL_MEMBER_TIER_KEY} = {shown}"
+                    )
+                })?,
+        };
+        out.push((name.to_owned(), tier));
+    }
+    Ok(out)
 }
 
 /// THE KEY A DOOR PLANE'S ENTRY IS PRICED, METERED AND ROUTED UNDER (ARCHITECT Q-FL3: "keys the

@@ -630,7 +630,7 @@ impl DoorApply {
             &settings,
             generation,
         )?;
-        let pools = DoorPools::of(section);
+        let pools = DoorPools::of(section)?;
         let egress = match &self.reach {
             Some(r) => {
                 let reach = crate::root::door_steps::DoorReach {
@@ -1535,7 +1535,7 @@ pub(crate) fn compose_planes_over(
         // The door's own requests to its members carry the members' bindings (ARCHITECT round 5
         // Q-L3B-DOOR-EXCHANGE), held on the connection table its need is declared on.
         if let (Some(egress), Some(table)) = (egress, plugin.conn_table()) {
-            let pools = DoorPools::of(section);
+            let pools = DoorPools::of(section).map_err(|e| format!("{instance}: {e}"))?;
             let routes = crate::root::door_steps::member_routes(
                 section,
                 &pools,
@@ -1653,7 +1653,7 @@ fn seal_live(
             ),
         );
     }
-    let pools = DoorPools::of(section);
+    let pools = DoorPools::of(section).map_err(|e| format!("{instance}: {e}"))?;
     let egress = match egress {
         Some(egress) => {
             let routes =
