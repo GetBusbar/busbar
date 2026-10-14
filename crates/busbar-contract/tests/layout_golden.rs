@@ -9,7 +9,9 @@
 //!
 //! Offsets are stable across the 64-bit targets busbar ships (pointers/`usize` are 8 bytes on
 //! x86_64 and aarch64 alike; every field here is a fixed-width scalar or pointer), so ONE golden
-//! covers them. Re-seed intentionally with `BUSBAR_UPDATE_GOLDEN=1 cargo test -p busbar-plugin`.
+//! covers them. Re-seed intentionally with `BUSBAR_UPDATE_GOLDEN=1 cargo test -p busbar-contract`;
+//! a re-seed that is not append-only is refused unless named `BUSBAR_UPDATE_GOLDEN=break`
+//! ([`layout_breaks`]).
 
 use busbar_contract::abi::host::conn::{ConnCtx, ConnSlots, WireOpenDesc, WirePiece};
 use busbar_contract::abi::hot::decl::{
@@ -115,6 +117,7 @@ use busbar_contract::abi::store::{
     VerdictOut as StoreVerdictOut, WindowCap as StoreWindowCap, WindowCapsIn as StoreWindowCapsIn,
     WindowIn as StoreWindowIn,
 };
+use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
 /// Append `Struct.field=offset` lines for the given fields, then a `Struct.__size=N` line.
@@ -2494,7 +2497,22 @@ fn abi_layout_matches_golden() {
 
     let existing = std::fs::read_to_string(path).unwrap_or_default();
 
-    if std::env::var_os("BUSBAR_UPDATE_GOLDEN").is_some() {
+    if let Some(mode) = std::env::var_os("BUSBAR_UPDATE_GOLDEN") {
+        // THE RE-SEED IS JUDGED, NOT TRUSTED (TODO l.1829-1831): it used to write whatever layout it
+        // found, and the "do not re-seed" below was a sentence a re-seed never reads. A diff that
+        // moves, resizes or removes what a peer already reads is refused unless the seed names it.
+        let breaks = layout_breaks(&existing, &actual);
+        assert!(
+            breaks.is_empty() || mode == RESEED_BREAK,
+            "\nABI LAYOUT RE-SEED REFUSED: the new layout is not append-only against the golden.\n  \
+             {}\n\
+             A reorder, resize, insert or removal changes what a peer built against the golden \
+             reads. Until the 1.6.0 tag a v1 layout edit is re-seeded in the same commit with no \
+             version bump (owner 2026-09-28, BUSBAR-1.6.0.md R9): name it with \
+             `BUSBAR_UPDATE_GOLDEN={RESEED_BREAK}`. From the tag on, it needs that kind's ABI \
+             version bumped (R9).\n",
+            breaks.join("\n  ")
+        );
         std::fs::write(path, &actual).expect("write golden");
         // On a seed run, do not also assert (the file was just written to match).
         return;
@@ -2524,6 +2542,123 @@ fn abi_layout_matches_golden() {
          If it is a REORDER/RESIZE/INSERT, that is a MAJOR airlock break — do not re-seed \
          without bumping ABI_MAJOR.\n"
     );
+}
+
+/// The `BUSBAR_UPDATE_GOLDEN` value that re-seeds a layout break deliberately.
+const RESEED_BREAK: &str = "break";
+
+/// A golden as `struct -> member -> value`, every line `<struct>.<member>=<value>`.
+fn golden_members(text: &str) -> BTreeMap<&str, BTreeMap<&str, u64>> {
+    let mut out: BTreeMap<&str, BTreeMap<&str, u64>> = BTreeMap::new();
+    for line in text.lines() {
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        let (Some((ty, member)), Ok(value)) = (key.rsplit_once('.'), value.trim().parse::<u64>())
+        else {
+            continue;
+        };
+        out.entry(ty).or_default().insert(member, value);
+    }
+    out
+}
+
+/// WHAT A RE-SEED WOULD BREAK: every change from `old` to `new` that is not an append. A struct
+/// that is new, or that gains fields at or past its old size with every old field where it was, is
+/// an append. A field whose offset moved (a reorder, or an insert before it), a size or alignment
+/// that changed with nothing appended to explain it (a resize), and a field or struct that is gone
+/// are breaks, one line each.
+fn layout_breaks(old: &str, new: &str) -> Vec<String> {
+    let (old, new) = (golden_members(old), golden_members(new));
+    let mut out = Vec::new();
+    for (ty, was) in &old {
+        let Some(now) = new.get(ty) else {
+            out.push(format!("{ty}: removed"));
+            continue;
+        };
+        for (member, at) in was {
+            match (member.starts_with("__"), now.get(member)) {
+                (_, None) => out.push(format!("{ty}.{member}: removed")),
+                (false, Some(n)) if n != at => out.push(format!(
+                    "{ty}.{member}: moved {at} -> {n} (reorder, resize or insert)"
+                )),
+                _ => {}
+            }
+        }
+        let old_size = was.get("__size").copied().unwrap_or(0);
+        let appended = now
+            .iter()
+            .any(|(m, at)| !m.starts_with("__") && !was.contains_key(m) && *at >= old_size);
+        let inserted: Vec<&&str> = now
+            .iter()
+            .filter(|(m, at)| !m.starts_with("__") && !was.contains_key(*m) && **at < old_size)
+            .map(|(m, _)| m)
+            .collect();
+        for m in inserted {
+            out.push(format!("{ty}.{m}: inserted inside the old size {old_size}"));
+        }
+        let new_size = now.get("__size").copied().unwrap_or(0);
+        if new_size != old_size && !(appended && new_size > old_size) {
+            out.push(format!(
+                "{ty}.__size: {old_size} -> {new_size} with no field appended (a resize)"
+            ));
+        }
+        if was.get("__align") != now.get("__align") && !appended {
+            out.push(format!(
+                "{ty}.__align: {:?} -> {:?} with no field appended",
+                was.get("__align"),
+                now.get("__align")
+            ));
+        }
+    }
+    out
+}
+
+/// RED ARM, THE RE-SEED (TODO l.1829-1831): a moved field, a resize, an insert and a removal are
+/// each a break the re-seed refuses; an append and a new struct are not; the layout against itself
+/// is clean.
+#[test]
+fn a_reseed_that_is_not_append_only_is_refused() {
+    let actual = compute_layout();
+    assert!(layout_breaks(&actual, &actual).is_empty());
+
+    let moved = actual.replacen("MechDoor.kind_abi=20", "MechDoor.kind_abi=24", 1);
+    let b = layout_breaks(&actual, &moved);
+    assert!(
+        b.iter()
+            .any(|l| l.starts_with("MechDoor.kind_abi: moved 20 -> 24")),
+        "{b:?}"
+    );
+
+    let line = "AbiPreamble.__size=16";
+    assert!(actual.lines().any(|l| l == line), "the golden holds {line}");
+    let resized = actual.replacen(line, "AbiPreamble.__size=24", 1);
+    let b = layout_breaks(&actual, &resized);
+    assert!(
+        b.iter()
+            .any(|l| l.starts_with("AbiPreamble.__size: 16 -> 24")),
+        "{b:?}"
+    );
+
+    let inserted = actual.replacen(line, "AbiPreamble.wedge=4\nAbiPreamble.__size=16", 1);
+    let b = layout_breaks(&actual, &inserted);
+    assert!(
+        b.iter()
+            .any(|l| l.starts_with("AbiPreamble.wedge: inserted")),
+        "{b:?}"
+    );
+
+    let removed = actual.replacen("AbiPreamble.abi_minor=12\n", "", 1);
+    let b = layout_breaks(&actual, &removed);
+    assert!(
+        b.iter().any(|l| l == "AbiPreamble.abi_minor: removed"),
+        "{b:?}"
+    );
+
+    let appended = actual.replacen(line, "AbiPreamble.tail=16\nAbiPreamble.__size=24", 1);
+    assert!(layout_breaks(&actual, &appended).is_empty());
+    let grown = format!("{actual}NewShape.a=0\nNewShape.__size=8\nNewShape.__align=8\n");
+    assert!(layout_breaks(&actual, &grown).is_empty());
 }
 
 /// THE COMPARATOR: the golden and the layout agree line for line, or the first line that differs is
