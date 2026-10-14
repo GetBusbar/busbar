@@ -1178,9 +1178,10 @@ async fn a_member_under_jwt_bearer_mints_at_its_service_accounts_token_uri() {
 /// ROW 74 (F25), `jwt-bearer`: 1.5.5 POSTed the signed assertion with reqwest to the service
 /// account's `token_uri` as written (v1.5.5 `crates/busbar/src/egress_auth/jwt_bearer.rs:175-181`),
 /// whose builder took a `user:pass@` out of the URL and sent it FIRST as `authorization: Basic` (the
-/// form names no `authorization`). A service account whose `token_uri` spells one is sealed with its
-/// mint need pinned to the stripped endpoint, its mint dials the stripped endpoint, and each mint
-/// leads with the Basic value; no field carries the userinfo in the clear.
+/// form names no `authorization`). A service account whose `token_uri` spells one, served on the
+/// DOOR path: the plane's side of the seal (the member's route, the declared need) carries no
+/// userinfo; the assertion's `aud` is the raw `token_uri`, as 1.5.5 signed it; and the mint POSTs
+/// to the stripped endpoint, led by the Basic value, with no field carrying the userinfo in clear.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_service_account_token_uri_userinfo_rides_the_mint_as_1_5_5_sent_it() {
     use base64::Engine as _;
@@ -1234,6 +1235,49 @@ async fn a_service_account_token_uri_userinfo_rides_the_mint_as_1_5_5_sent_it() 
         head.iter()
             .all(|(_, v)| !String::from_utf8_lossy(v).contains("hunter2")),
         "{head:?}"
+    );
+    drop(fields);
+    // (1) Nothing the plane's side of the seal holds carries the userinfo: the member's sealed
+    // route (its base and every base a framer spells it in) and the need the minting plugin
+    // declared over its settings. The service account itself goes to the auth plugin alone.
+    let route = &routes["m"];
+    assert!(
+        !route.base_url.contains("svcuser")
+            && route
+                .spelled
+                .iter()
+                .all(|(_, url)| !url.contains("svcuser")),
+        "the member's route carries no userinfo"
+    );
+    assert!(
+        table
+            .declared
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|(_, _, target)| !matches!(target, Some(t) if t.contains("svcuser"))),
+        "no declared need carries the userinfo: {:?}",
+        table.declared.lock().unwrap()
+    );
+    // (2) The assertion's `aud` is the service account's `token_uri` AS WRITTEN, userinfo and all:
+    // 1.5.5 signed it over the raw endpoint (v1.5.5 `crates/busbar/src/egress_auth/jwt_bearer.rs:
+    // 152-159`, `jwt_claims_json(.., &self.token_uri, ..)`), and only the POST's URL lost it.
+    let body = table.opened.lock().unwrap()[0].3.clone();
+    let assertion = body
+        .split('&')
+        .find_map(|pair| pair.strip_prefix("assertion="))
+        .expect("the RFC 7523 form carries the assertion");
+    let claims = assertion.split('.').nth(1).expect("a compact JWT");
+    let claims: serde_json::Value = serde_json::from_slice(
+        &base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(claims)
+            .expect("base64url claims"),
+    )
+    .expect("JSON claims");
+    assert_eq!(
+        claims["aud"],
+        written.as_str(),
+        "the aud is the raw token_uri, as 1.5.5 signed it"
     );
 }
 
