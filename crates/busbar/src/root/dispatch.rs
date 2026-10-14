@@ -136,8 +136,8 @@ mod tests;
 
 // The suite binds each dialect's declared scheme on the LINKED auth plugins serving its style (the
 // static schemes and the signing scheme; the default distribution links a plugin serving each). A
-// build that links no auth row links no plugin serving either style, so the bind is refused there:
-// the suite rides the linked auth axis.
-#[cfg(all(test, linked_axis_auths))]
+// build missing an auth row may link no plugin serving one of the styles, so the bind is refused
+// there: the suite rides every linked auth row (`linked_every_auth`, build.rs).
+#[cfg(all(test, linked_every_auth))]
 #[path = "tests/declared_credentials.rs"]
 mod declared_credentials_tests;

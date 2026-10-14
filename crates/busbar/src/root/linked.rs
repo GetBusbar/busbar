@@ -1493,7 +1493,7 @@ mod tests;
 #[path = "tests/linked_secret_sources.rs"]
 mod secret_source_tests;
 
-#[cfg(all(test, linked_axis_auths, linked_axis_body_ingress))]
+#[cfg(all(test, linked_operator_auth, linked_axis_body_ingress))]
 #[path = "tests/linked_auth.rs"]
 mod auth_tests;
 
