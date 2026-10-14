@@ -11,10 +11,13 @@
 //! own lines. Two different claimants' lines that could match one request at an equal key are
 //! refused ([`GuestRefusal::EqualPrecedence`]).
 //!
-//! POINTS. A line's point set is the union of its auths' sets. A listener whose lines need `Peer`
-//! must need it on every line: some lines needing `Peer` and others not is refused
-//! ([`GuestRefusal::PeerMix`]; THE DESIGN §6 step 3, boot refusals), and so is a line whose auth
-//! needs a point its transport does not offer ([`GuestRefusal::PointNotOffered`]).
+//! POINTS. A line's point set is the union of its auths' sets. A listener where some lines need
+//! `Peer` and others need a per-request point (`Head`, `HeadBody`) without it is refused
+//! ([`GuestRefusal::PeerMix`]; THE DESIGN §6 step 3, boot refusals). A line that needs no point
+//! (auth `none`) is neutral to that rule: it sits on a `Peer` listener behind the connection's
+//! `Peer` verdict, which gates the whole connection ([`GuestList::connection_gated`]; §6 step 7).
+//! A line whose auth needs a point its transport does not offer is refused
+//! ([`GuestRefusal::PointNotOffered`]).
 //!
 //! MATCH. The first line whose path and predicates hold AND whose method set holds the method wins.
 //! When some line's path and predicates hold but none admits the method, the answer is a method
@@ -194,8 +197,9 @@ pub struct Line {
 pub enum GuestRefusal {
     /// Two claimants' lines could match one request at an equal precedence (CG-62).
     EqualPrecedence(Box<(Line, Line)>),
-    /// Some lines need `Peer` and others do not: the lines that need it, then the lines that do
-    /// not, each in the order they are tried.
+    /// Some lines need `Peer` and others need a per-request point without it: the lines that need
+    /// `Peer`, then the lines that need only `Head` or `HeadBody`, each in the order they are
+    /// tried. A line that needs no point is on neither side.
     PeerMix(Box<(Vec<Line>, Vec<Line>)>),
     /// A line's auth needs a point its transport does not offer: the line.
     PointNotOffered(Box<Line>),
@@ -216,12 +220,13 @@ pub enum Matched<'a> {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct GuestList {
     lines: Vec<Line>,
+    connection_gated: bool,
 }
 
 impl GuestList {
     /// Order `lines` and refuse two claimants' lines that could meet at an equal precedence, a list
-    /// where some lines need `Peer` and others do not, and a line whose auth needs a point its
-    /// transport does not offer.
+    /// where some lines need `Peer` and others need a per-request point without it, and a line
+    /// whose auth needs a point its transport does not offer.
     ///
     /// # Errors
     ///
@@ -249,9 +254,16 @@ impl GuestList {
             }
         }
         let peer = |l: &Line| l.auth.points().has(AuthPoint::Peer);
-        if lines.iter().any(peer) && !lines.iter().all(peer) {
-            let mix: (Vec<Line>, Vec<Line>) = lines.iter().cloned().partition(peer);
-            return Err(GuestRefusal::PeerMix(Box::new(mix)));
+        let per_request = |l: &Line| {
+            let points = l.auth.points();
+            !points.has(AuthPoint::Peer)
+                && (points.has(AuthPoint::Head) || points.has(AuthPoint::HeadBody))
+        };
+        let connection_gated = lines.iter().any(peer);
+        if connection_gated && lines.iter().any(per_request) {
+            let need = lines.iter().filter(|l| peer(l)).cloned().collect();
+            let without = lines.iter().filter(|l| per_request(l)).cloned().collect();
+            return Err(GuestRefusal::PeerMix(Box::new((need, without))));
         }
         if let Some(line) = lines
             .iter()
@@ -259,7 +271,19 @@ impl GuestList {
         {
             return Err(GuestRefusal::PointNotOffered(Box::new(line.clone())));
         }
-        Ok(Self { lines })
+        Ok(Self {
+            lines,
+            connection_gated,
+        })
+    }
+
+    /// Whether the listener's connections are gated by a `Peer` verdict: some line needs `Peer`.
+    /// The verdict is the connection's, so every line on the list sits behind it, a `none` line
+    /// included (THE DESIGN §6 step 7): no request on a connection the `Peer` verdict refused
+    /// reaches any line.
+    #[must_use]
+    pub fn connection_gated(&self) -> bool {
+        self.connection_gated
     }
 
     /// The lines, in the order they are tried.
