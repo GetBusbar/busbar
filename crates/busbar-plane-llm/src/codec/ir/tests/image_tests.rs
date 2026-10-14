@@ -24,10 +24,9 @@ fn geometry_conventions_are_parallel_not_collapsed() {
 #[test]
 fn billing_prefers_tokens_else_per_image() {
     let tokenized = ImageResp {
-        usage: Some(TokenUsage {
-            input: 5,
-            output: 272,
-            ..Default::default()
+        usage: Some(super::ImageTokens {
+            input: Some(5),
+            output: Some(272),
         }),
         ..Default::default()
     };

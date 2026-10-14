@@ -411,12 +411,20 @@ pub fn write_image_response(r: &crate::codec::ir::image::ImageResp) -> WireBody 
     // `usageMetadata` for token-metered gemini image models). The old writer dropped it, so a
     // token-metered gemini->gemini image response lost its usage in the client-facing body —
     // asymmetric with the OpenAI image writer. Emitted only when the IR carries usage.
+    // An UNKNOWN count (one the reader could not read) is left out rather than written as 0, and
+    // so is the total it would have summed into.
     if let Some(u) = &r.usage {
-        body[FIELD_USAGE_METADATA] = json!({
-            (FIELD_PROMPT_TOKEN_COUNT): u.input,
-            (FIELD_CANDIDATES_TOKEN_COUNT): u.output,
-            (FIELD_TOTAL_TOKEN_COUNT): u.input.saturating_add(u.output),
-        });
+        let mut meta = serde_json::Map::new();
+        if let Some(n) = u.input {
+            meta.insert(FIELD_PROMPT_TOKEN_COUNT.into(), json!(n));
+        }
+        if let Some(n) = u.output {
+            meta.insert(FIELD_CANDIDATES_TOKEN_COUNT.into(), json!(n));
+        }
+        if let (Some(i), Some(o)) = (u.input, u.output) {
+            meta.insert(FIELD_TOTAL_TOKEN_COUNT.into(), json!(i.saturating_add(o)));
+        }
+        body[FIELD_USAGE_METADATA] = Value::Object(meta);
     }
     WireBody::json(SlabBytes::from(
         serde_json::to_vec(&body).unwrap_or_default(),
@@ -841,26 +849,25 @@ pub fn read_image_response(wire: &[u8]) -> Result<crate::codec::ir::image::Image
     // object; Imagen `:predict` per-image responses carry none. The tokens are RECORDED, never
     // billed (`ImageResp::billing`, 1.5.5 parity: v1.5.5
     // `crates/busbar/src/handlers/gemini.rs:446-472` billed none).
-    // A recorded count is still a ledger row, so it is read through the one count seam: absent is
-    // zero, UNREADABLE IS A REFUSAL (#81/#42, OWNER rule 21) — a defaulted zero would record no
-    // work for work that happened. See `usage_count::billed_count`.
+    // A recorded count is still a ledger row, so it is read through the one count seam
+    // (`usage_count::recorded_count`): absent is zero; a present count this build cannot read is
+    // UNKNOWN, left out of the record and named on `warnings` and in the log. It is never a 0
+    // (#81, OWNER rule 21) and never a refusal: 1.5.5 served the answer whatever its usage said.
+    let mut warnings = Vec::new();
     let usage = v
         .get(FIELD_USAGE_METADATA)
-        .map(
-            |u| -> Result<busbar_contract::billing::TokenUsage, CodecError> {
-                Ok(busbar_contract::billing::TokenUsage {
-                    input: crate::codec::usage_count::billed_count(u, FIELD_PROMPT_TOKEN_COUNT)
-                        .map_err(|e| CodecError::Malformed(e.to_string()))?,
-                    output: crate::codec::usage_count::billed_count(
-                        u,
-                        FIELD_CANDIDATES_TOKEN_COUNT,
-                    )
-                    .map_err(|e| CodecError::Malformed(e.to_string()))?,
-                    ..Default::default()
-                })
-            },
-        )
-        .transpose()?;
+        .map(|u| crate::codec::ir::image::ImageTokens {
+            input: crate::codec::usage_count::recorded_count(
+                u,
+                FIELD_PROMPT_TOKEN_COUNT,
+                &mut warnings,
+            ),
+            output: crate::codec::usage_count::recorded_count(
+                u,
+                FIELD_CANDIDATES_TOKEN_COUNT,
+                &mut warnings,
+            ),
+        });
     // Per-image (Imagen `:predict`) responses carry no `usageMetadata` — record the per-image cost
     // basis so the op bills as `Billing::Images` rather than nothing. The billable COUNT is
     // recoverable from the response itself (one image per `predictions` entry). Size/quality tiers
@@ -877,6 +884,7 @@ pub fn read_image_response(wire: &[u8]) -> Result<crate::codec::ir::image::Image
         images,
         usage,
         cost_basis,
+        warnings,
         ..Default::default()
     })
 }

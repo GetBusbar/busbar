@@ -179,10 +179,21 @@ pub struct CostBasis {
 pub struct ImageResp {
     pub created: Option<u64>,
     pub images: Vec<ImageOutput>, // additive per image (b64 AND url may coexist)
-    pub usage: Option<TokenUsage>, // gpt-image-1, Gemini: the reported tokens (recorded, not billed)
+    pub usage: Option<ImageTokens>, // gpt-image-1, Gemini: reported tokens (recorded, not billed)
     pub cost_basis: Option<CostBasis>, // per-image providers (dall-e/Imagen/Titan/SDXL)
-    pub warnings: Vec<String>,     // raiFilteredReason, finish_reasons, moderation notes
+    pub warnings: Vec<String>,    // raiFilteredReason, finish_reasons, moderation notes
     pub extra: SourceScopedExtra,
+}
+
+/// The token counts an image answer reported (gpt-image-1 `usage`, a Gemini image model's
+/// `usageMetadata`). They are RECORDED, never billed (see [`ImageResp::billing`]). `None` is
+/// UNKNOWN: the provider sent a count this build cannot read. An unknown count is left out of the
+/// record, never written as 0, and never refuses the answer (1.5.5 served it whatever the usage
+/// said).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ImageTokens {
+    pub input: Option<u64>,
+    pub output: Option<u64>,
 }
 
 /// The residual key an image answer's reported INPUT token count is recorded under.
@@ -208,7 +219,8 @@ impl ImageResp {
                 (IMAGE_INPUT_TOKENS_RESIDUAL, u.input),
                 (IMAGE_OUTPUT_TOKENS_RESIDUAL, u.output),
             ] {
-                if n != 0 {
+                // An unknown count (`None`) is left out, as a zero is: neither is a reported unit.
+                if let Some(n) = n.filter(|n| *n != 0) {
                     residual_units.insert(class.to_string(), n);
                 }
             }

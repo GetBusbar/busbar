@@ -856,10 +856,9 @@ fn image_response_writer_round_trips_usage() {
             b64: Some("aGVsbG8=".into()),
             ..Default::default()
         }],
-        usage: Some(busbar_contract::billing::TokenUsage {
-            input: 10,
-            output: 5,
-            ..Default::default()
+        usage: Some(crate::codec::ir::image::ImageTokens {
+            input: Some(10),
+            output: Some(5),
         }),
         ..Default::default()
     };
@@ -878,10 +877,9 @@ fn image_response_writer_round_trips_usage() {
     let back = read_image_response(&wb.bytes).expect("re-read");
     assert_eq!(
         back.usage,
-        Some(busbar_contract::billing::TokenUsage {
-            input: 10,
-            output: 5,
-            ..Default::default()
+        Some(crate::codec::ir::image::ImageTokens {
+            input: Some(10),
+            output: Some(5),
         }),
         "image usage must round-trip through write->read"
     );

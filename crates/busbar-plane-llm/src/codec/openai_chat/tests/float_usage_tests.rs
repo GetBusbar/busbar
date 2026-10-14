@@ -132,24 +132,66 @@ fn buffered_read_response_reads_float_encoded_counts() {
 // `ledger x ratecard`, so every figure derived from that row was faithfully wrong and nothing
 // downstream could tell. These pin the live reader paths, which is where the ledger row comes from.
 
-/// THE BUFFERED IMAGE READER REFUSES AN UNREADABLE RECORDED COUNT (#81/#42, OWNER rule 21).
+/// AN UNREADABLE IMAGE COUNT IS RECORDED AS UNKNOWN: THE ANSWER IS SERVED, THE COUNT NEVER 0.
 ///
-/// The image tokens are recorded (residual units), never billed, but a recorded count is a ledger
-/// row: a present count the build cannot read is a refusal, never a zero that records no work for
-/// work that happened. RED while `openai_chat/handler.rs` `read_image_response` defaulted an unreadable
-/// count to zero.
+/// The image tokens are recorded (residual units), never billed. 1.5.5 served the answer whatever
+/// its usage said (v1.5.5 `crates/busbar/src/handlers/openai.rs:731-758` read no usage at all), so
+/// an unreadable count must not refuse it; and a recorded count is a ledger row, so it must not
+/// become a fabricated 0 either (#81, OWNER rule 21). It is UNKNOWN: left out of the record, named
+/// on the answer's warnings, and left out of the re-emitted body. RED while
+/// `openai_chat/handler.rs` `read_image_response` defaulted it to zero, and while it refused the
+/// answer.
 #[test]
-fn an_unreadable_image_count_refuses_instead_of_recording_zero() {
+fn an_unreadable_image_count_is_recorded_as_unknown_and_the_answer_served() {
     // `"27"` is a string, not a number: present, and not a count.
     let wire = br#"{"data":[{"b64_json":"aGk="}],"usage":{"input_tokens":"27","output_tokens":5}}"#;
-    let err = crate::codec::openai_chat::handler::read_image_response(wire)
-        .expect_err("a present, unreadable count is a refusal, never a zero");
+    let resp = crate::codec::openai_chat::handler::read_image_response(wire)
+        .expect("the answer is served whatever its usage said, as in 1.5.5");
+    assert_eq!(resp.images.len(), 1, "the image is served");
+    assert_eq!(
+        resp.usage,
+        Some(crate::codec::ir::image::ImageTokens {
+            input: None,
+            output: Some(5),
+        }),
+        "the unreadable count is unknown, not 0; the readable one is read"
+    );
     assert!(
-        format!("{err:?}").contains("input_tokens"),
-        "the refusal names the field: {err:?}"
+        resp.warnings.iter().any(|w| w.contains("input_tokens")),
+        "the unreadable field is named: {:?}",
+        resp.warnings
+    );
+    match resp.billing() {
+        Some(busbar_contract::billing::Billing::Tokens(t)) => {
+            assert_eq!((t.input, t.output), (0, 0), "image tokens never bill");
+            assert_eq!(
+                t.residual_units,
+                std::collections::BTreeMap::from([("image.output_tokens".to_string(), 5)]),
+                "the unknown count is left out of the record, never recorded as 0"
+            );
+        }
+        other => panic!("expected a zero token line, got {other:?}"),
+    }
+    let written: serde_json::Value = serde_json::from_slice(
+        &crate::codec::openai_chat::handler::write_image_response(&resp).bytes,
+    )
+    .unwrap();
+    assert_eq!(
+        written.pointer("/usage/input_tokens"),
+        None,
+        "no 0 is written for it: {written}"
+    );
+    assert_eq!(
+        written.pointer("/usage/total_tokens"),
+        None,
+        "nor a total that would include it"
+    );
+    assert_eq!(
+        written.pointer("/usage/output_tokens"),
+        Some(&serde_json::json!(5))
     );
 
-    // The same body with a READABLE count still reads, float-spelled included, and is recorded.
+    // The same body, float-spelled, reads and is recorded: only an unreadable count is unknown.
     let ok = br#"{"data":[{"b64_json":"aGk="}],"usage":{"input_tokens":27.0,"output_tokens":5}}"#;
     let resp = crate::codec::openai_chat::handler::read_image_response(ok)
         .expect("a float-spelled count reads");

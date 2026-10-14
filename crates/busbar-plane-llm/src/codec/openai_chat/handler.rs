@@ -737,12 +737,20 @@ pub fn write_image_response(r: &ImageResp) -> WireBody {
     // gpt-image-1 returns a token `usage` object; the reader parses it (for billing) but the writer
     // dropped it, so a same-/cross-protocol image hop lost the usage the client should see. Re-emit
     // it in OpenAI's own image-usage shape when present.
+    // An UNKNOWN count (one the reader could not read) is left out rather than written as 0, and
+    // so is the total it would have summed into.
     if let Some(u) = &r.usage {
-        body[keys::USAGE] = json!({
-            (keys::INPUT_TOKENS): u.input,
-            (keys::OUTPUT_TOKENS): u.output,
-            (keys::TOTAL_TOKENS): u.input.saturating_add(u.output),
-        });
+        let mut usage = serde_json::Map::new();
+        if let Some(n) = u.input {
+            usage.insert(keys::INPUT_TOKENS.into(), json!(n));
+        }
+        if let Some(n) = u.output {
+            usage.insert(keys::OUTPUT_TOKENS.into(), json!(n));
+        }
+        if let (Some(i), Some(o)) = (u.input, u.output) {
+            usage.insert(keys::TOTAL_TOKENS.into(), json!(i.saturating_add(o)));
+        }
+        body[keys::USAGE] = Value::Object(usage);
     }
     WireBody::json(SlabBytes::from(
         serde_json::to_vec(&body).unwrap_or_default(),
@@ -1366,23 +1374,21 @@ pub fn read_image_response(wire: &[u8]) -> Result<crate::codec::ir::image::Image
     // per-image models (dall-e, etc.) return no usage body at all. The tokens are RECORDED, never
     // billed (`ImageResp::billing`, 1.5.5 parity: v1.5.5
     // `crates/busbar/src/handlers/openai.rs:731-758` billed none).
-    // A recorded count is still a ledger row, so it is read through the one count seam: absent is
-    // zero, UNREADABLE IS A REFUSAL (#81/#42, OWNER rule 21) — a defaulted zero would record no
-    // work for work that happened. See `usage_count::billed_count`.
+    // A recorded count is still a ledger row, so it is read through the one count seam
+    // (`usage_count::recorded_count`): absent is zero; a present count this build cannot read is
+    // UNKNOWN, left out of the record and named on `warnings` and in the log. It is never a 0
+    // (#81, OWNER rule 21) and never a refusal: 1.5.5 served the answer whatever its usage said.
+    let mut warnings = Vec::new();
     let usage = v
         .get(keys::USAGE)
-        .map(
-            |u| -> Result<busbar_contract::billing::TokenUsage, CodecError> {
-                Ok(busbar_contract::billing::TokenUsage {
-                    input: crate::codec::usage_count::billed_count(u, keys::INPUT_TOKENS)
-                        .map_err(|e| CodecError::Malformed(e.to_string()))?,
-                    output: crate::codec::usage_count::billed_count(u, keys::OUTPUT_TOKENS)
-                        .map_err(|e| CodecError::Malformed(e.to_string()))?,
-                    ..Default::default()
-                })
-            },
-        )
-        .transpose()?;
+        .map(|u| crate::codec::ir::image::ImageTokens {
+            input: crate::codec::usage_count::recorded_count(u, keys::INPUT_TOKENS, &mut warnings),
+            output: crate::codec::usage_count::recorded_count(
+                u,
+                keys::OUTPUT_TOKENS,
+                &mut warnings,
+            ),
+        });
     // Per-image (dall-e-style) providers carry no `usage` — record the per-image cost basis so the
     // op is billed as `Billing::Images` rather than nothing. The billable COUNT is recoverable from
     // the response itself (one image per `data` entry). The size/quality TIERS live on the request
@@ -1400,6 +1406,7 @@ pub fn read_image_response(wire: &[u8]) -> Result<crate::codec::ir::image::Image
         images,
         usage,
         cost_basis,
+        warnings,
         ..Default::default()
     })
 }
