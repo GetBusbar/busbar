@@ -2,6 +2,7 @@
   "schema": "blackbox/1",
   "case": "the binary carrying this door answers --version",
   "_comment": "The seed case that proves the root resolves this crate's black-box directory; the plane's served cases are written beside it.",
+  "oracle": "cli|--version",
   "requires": {"sections": ["agents"]},
   "steps": [
     {"validate": {"args": ["--version"], "exit": 0, "stdout_contains": ["busbar "]}}

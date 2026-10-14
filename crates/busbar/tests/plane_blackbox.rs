@@ -18,6 +18,9 @@
 //! field, step or placeholder is refused, naming the plane crate and the case file. A case whose
 //! `requires` this build lacks is not applicable to it and is counted as such; a directory whose
 //! every case is not applicable, or that holds no case, fails.
+//!
+//! A case that cites a 1.5.5 golden cell (`oracle`) is held to the cell's recorded bytes before it
+//! runs: its stated status and every body or line it states must be the cell's ([`held_to_cell`]).
 
 mod common;
 
@@ -461,6 +464,171 @@ impl Case {
                     .map(|f| format!("the build enables no `{f}` feature"))
             })
     }
+}
+
+// ── the cited 1.5.5 cell, held ──────────────────────────────────────────────────────────────────
+
+/// The 1.5.5 golden cell `id` as it was recorded: `{status, body: {text}|{json}, effects: {stderr?}}`.
+fn golden_cell(id: &str) -> Result<Value, String> {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../testing/shadow-oracle/golden/1.5.5/cells")
+        .join(format!("{}.json", id.replace('|', "__")));
+    let text = std::fs::read_to_string(&path)
+        .map_err(|e| format!("the cell records no bytes ({}: {e})", path.display()))?;
+    serde_json::from_str(&text).map_err(|e| format!("the cell does not read ({e})"))
+}
+
+/// A CITED CELL IS COMPARED, NOT ONLY NAMED: the case's last step that states a status (`exit`, or
+/// an answered `status`, or a `session` that expects a refusal) is held to the cell — its status to
+/// the cell's `status`, and every body or line it states to the cell's recorded body (`body.text`,
+/// or `body.json`) and stderr (`effects.stderr`). A line stated `_line_eq` must be a whole line of
+/// the record; a `_contains` must be in it; a `_lacks` must not; an admin `json_eq` pointer must
+/// hold the recorded value. A citation whose step states a status and no byte is refused: there is
+/// nothing of 1.5.5's to hold.
+fn held_to_cell(case: &Case, cell: &Value) -> Result<(), String> {
+    let recorded = cell
+        .get("status")
+        .and_then(Value::as_i64)
+        .ok_or("the cell records no status")?;
+    let body_json = cell.pointer("/body/json");
+    let body = match (
+        cell.pointer("/body/text").and_then(Value::as_str),
+        body_json,
+    ) {
+        (Some(text), _) => text.to_string(),
+        (None, Some(json)) => json.to_string(),
+        (None, None) => String::new(),
+    };
+    let stderr = cell
+        .pointer("/effects/stderr")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let both = format!("{body}{stderr}");
+    let stated = case.steps.iter().rev().find_map(|step| match step {
+        Step::Validate(s) if s.get("exit").is_some() => Some((step.kind(), s, "exit")),
+        Step::Boot(s) if s.get("exit").is_some() => Some((step.kind(), s, "exit")),
+        Step::Call(s) | Step::Admin(s) if s.get("status").is_some() => {
+            Some((step.kind(), s, "status"))
+        }
+        Step::Session(s) if s.get("expect").and_then(Value::as_str) == Some("refused") => {
+            Some((step.kind(), s, "refused"))
+        }
+        _ => None,
+    });
+    let (kind, s, how) = stated.ok_or("no step states the status the cell records")?;
+    let status_ok = match (how, s.get(how)) {
+        ("refused", _) => recorded != 0,
+        (_, Some(Value::String(word))) if word == "nonzero" => recorded != 0,
+        (_, Some(v)) => v.as_i64() == Some(recorded),
+        _ => false,
+    };
+    if !status_ok {
+        let stated = s
+            .get(how)
+            .map_or_else(|| "a refusal".to_string(), Value::to_string);
+        return Err(format!(
+            "the `{kind}` step states status {stated}; the cell records {recorded}"
+        ));
+    }
+    let (contains, lacks, lines): (Vec<(&str, &str)>, Vec<(&str, &str)>, Vec<(&str, &str)>) =
+        match kind {
+            "validate" => (
+                vec![
+                    ("stdout_contains", body.as_str()),
+                    ("stderr_contains", stderr.as_str()),
+                    ("output_contains", both.as_str()),
+                ],
+                vec![("output_lacks", both.as_str())],
+                vec![
+                    ("stdout_line_eq", body.as_str()),
+                    ("stderr_line_eq", stderr.as_str()),
+                ],
+            ),
+            "boot" => (
+                vec![("output_contains", both.as_str())],
+                vec![("output_lacks", both.as_str())],
+                vec![],
+            ),
+            "session" => (
+                vec![("output_contains", stderr.as_str())],
+                vec![("output_lacks", stderr.as_str())],
+                vec![],
+            ),
+            "call" => (
+                vec![("body_contains", body.as_str())],
+                vec![("body_lacks", body.as_str())],
+                vec![],
+            ),
+            _ => (vec![], vec![], vec![]),
+        };
+    let mut held = 0usize;
+    for (key, record) in contains {
+        for want in texts(s, key) {
+            held += 1;
+            if !record.contains(want.as_str()) {
+                return Err(format!(
+                    "the `{kind}` step's `{key}` `{want}` is not in the cell's record:\n{record}"
+                ));
+            }
+        }
+    }
+    for (key, record) in lacks {
+        for unwanted in texts(s, key) {
+            held += 1;
+            if record.contains(unwanted.as_str()) {
+                return Err(format!(
+                    "the `{kind}` step's `{key}` `{unwanted}` is in the cell's record:\n{record}"
+                ));
+            }
+        }
+    }
+    for (key, record) in lines {
+        for want in texts(s, key) {
+            held += 1;
+            if !record.lines().any(|l| l == want) {
+                return Err(format!(
+                    "the `{kind}` step's `{key}` `{want}` is no line of the cell's record:\n{record}"
+                ));
+            }
+        }
+    }
+    if kind == "admin" {
+        for (pointer, want) in s
+            .get("json_eq")
+            .and_then(Value::as_object)
+            .into_iter()
+            .flatten()
+        {
+            held += 1;
+            if body_json.and_then(|j| j.pointer(pointer)) != Some(want) {
+                return Err(format!(
+                    "the `{kind}` step's `json_eq` `{pointer}` = {want} is not the cell's: {body}"
+                ));
+            }
+        }
+    }
+    if held == 0 {
+        return Err(format!(
+            "the `{kind}` step states a status and no body or line to hold to the cell"
+        ));
+    }
+    Ok(())
+}
+
+/// The case's cited cell compared, its failure naming the plane crate, the case and the cell.
+fn oracle_held(krate: &str, case: &Case) -> Result<(), String> {
+    let Some(id) = &case.oracle else {
+        return Ok(());
+    };
+    golden_cell(id)
+        .and_then(|cell| held_to_cell(case, &cell))
+        .map_err(|e| {
+            format!(
+                "`{krate}` case `{}`: its stated bytes are not the 1.5.5 cell `{id}`'s: {e}",
+                case.name
+            )
+        })
 }
 
 // ── the run ─────────────────────────────────────────────────────────────────────────────────────
@@ -1171,6 +1339,8 @@ fn run_step(world: &mut World, step: &Step) -> Result<(), String> {
 /// Run one case: `Ok(None)` ran clean, `Ok(Some(why))` the build does not apply to it, `Err` a
 /// mismatch naming the plane crate, the case and the step.
 fn run_case(krate: &str, case: &Case) -> Result<Option<String>, String> {
+    // The citation is data against data: held whether or not this build applies to the case.
+    oracle_held(krate, case)?;
     if let Some(why) = case.not_applicable() {
         return Ok(Some(why));
     }
@@ -1357,6 +1527,56 @@ fn a_malformed_case_is_refused_naming_the_plane_and_the_case() {
         assert!(
             refusal.contains("`planted-plane`") && refusal.contains(file) && refusal.contains(why),
             "{file}: {refusal}"
+        );
+    }
+}
+
+/// A CITED CELL IS COMPARED: a case citing a 1.5.5 cell whose stated bytes are not the cell's
+/// fails, naming the plane crate, the case and the cell — a wrong line, a wrong status, and a
+/// citation that states no byte at all; the same citation stating the cell's own bytes holds (the
+/// control).
+#[test]
+fn a_cited_cell_whose_bytes_differ_fails_naming_the_plane_the_case_and_the_cell() {
+    let case = |name: &str, step: &str| {
+        Case::parse(&format!(
+            r#"{{"schema": "blackbox/1", "case": "{name}", "oracle": "cli|--version",
+                "steps": [{{"validate": {step}}}]}}"#
+        ))
+        .expect("the planted case reads")
+    };
+    oracle_held(
+        "planted-plane",
+        &case(
+            "the-cells-own-bytes",
+            r#"{"args": ["--version"], "exit": 0, "stdout_contains": ["busbar "]}"#,
+        ),
+    )
+    .expect("the cell's own bytes hold");
+    for (name, step, why) in [
+        (
+            "a-wrong-line",
+            r#"{"args": ["--version"], "exit": 0, "stdout_line_eq": ["busbar 0.0.0"]}"#,
+            "is no line of the cell's record",
+        ),
+        (
+            "a-wrong-status",
+            r#"{"args": ["--version"], "exit": 2, "stdout_contains": ["busbar "]}"#,
+            "the cell records 0",
+        ),
+        (
+            "no-byte-stated",
+            r#"{"args": ["--version"], "exit": 0}"#,
+            "no body or line to hold to the cell",
+        ),
+    ] {
+        let failure = run_case("planted-plane", &case(name, step))
+            .expect_err("a citation whose bytes differ fails");
+        assert!(
+            failure.contains("`planted-plane`")
+                && failure.contains(&format!("case `{name}`"))
+                && failure.contains("cell `cli|--version`")
+                && failure.contains(why),
+            "{name}: {failure}"
         );
     }
 }
