@@ -890,6 +890,61 @@ fn pending_audit_queue_recovers_a_write_once_the_backend_recovers() {
     assert_eq!(q.len(), 0, "a delivered record leaves the queue");
 }
 
+/// A STORE BACKEND THAT PANICS cannot take the request down or lose the record. The stream
+/// registry calls its sink with no `catch_unwind` of its own: every production store is a door the
+/// loader dispatches to, and the door's slot body runs under the SDK's mandatory `catch_unwind`
+/// (`busbar-contract/src/abi/sdk/door.rs`, `export_door!`/`plugin_door!`'s trampoline), which
+/// answers FAULT. Here the store is the kernel's store double opened THROUGH its door on the test
+/// store axis, with a panic planted in its `append_plane_record` slot: the append comes back as an
+/// error, never an unwind, and the admin record is QUEUED exactly as `emit_admin_hostless` queues a
+/// failed write. RED if the boundary let the panic through: this test would unwind.
+#[test]
+fn a_panicking_store_behind_its_door_is_a_queued_fault_not_an_unwind() {
+    use busbar_contract::store_calls::StoreDoor;
+    let opened = crate::test_support::store_axis_stand_in()
+        .open(
+            StoreDoor::Linked(crate::test_support::store_double::door),
+            crate::test_support::store_double::NAME,
+            br#"{"panic_on_plane_append": true}"#,
+        )
+        .expect("the store double opens through its door");
+    let kind_id = fresh_test_kind_id();
+    crate::audit::stream_registry::register(
+        kind_id,
+        KIND_AUDIT.to_string(),
+        AUDIT_FRAMING,
+        AUDIT_DIGESTS_SCOPE,
+        crate::audit::stream_registry::Decode::Native(reframe_audit),
+        usize::MAX,
+        Some(PlaneStoreView::narrow(opened.records)),
+    );
+    let suffix = audit_suffix(1_700_000_000, "hook.register", "hook:x", "applied", "admin");
+    let refused = crate::audit::stream_registry::append_full(kind_id, ADMIN_LOG, &suffix);
+    assert!(
+        refused.is_err(),
+        "the planted panic answers FAULT at the door and reads back as a store error"
+    );
+
+    // The emitter's own recovery step over the SAME path: the failed record stays queued.
+    let q = PendingAuditQueue::new(4);
+    q.enqueue(PendingAudit {
+        scope: ADMIN_LOG.to_string(),
+        suffix,
+    });
+    let mut recovered = 0;
+    q.drain_with(
+        |scope, suffix| {
+            crate::audit::stream_registry::append_full(kind_id, scope, suffix).map_err(|_| ())
+        },
+        |_, _, _, _| recovered += 1,
+    );
+    assert_eq!(
+        (recovered, q.len()),
+        (0, 1),
+        "a faulted write is queued for the next healthy write, never dropped"
+    );
+}
+
 /// Multiple queued records drain OLDEST-FIRST, in the order they failed — a recovery that reordered
 /// evidence would itself be a form of corruption.
 #[test]
