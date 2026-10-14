@@ -29,8 +29,8 @@ fn declared(
 #[test]
 fn the_real_stack_boots() {
     // `tcp → tls → http → { sse, ws, grpc }`, with `stdio` standing on its own — the seven
-    // transports' actual `TransportMeta::COMPOSES_OVER` declarations and `Transport::composed_over`
-    // answers, side by side. `tcp`, `tls` and `http` each open their own socket and answer `None`
+    // transports' actual `TransportMeta::COMPOSES_OVER` declarations and the `composed_over` each
+    // registered row records, side by side. `tcp`, `tls` and `http` each open their own socket and answer `None`
     // regardless of what they declare; `sse`, `ws` and `grpc` are only ever built by holding (or
     // being handed) another instance, so they name it; `stdio` composes over nothing at all.
     let registry = [

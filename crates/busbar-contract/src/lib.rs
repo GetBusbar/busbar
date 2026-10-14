@@ -197,8 +197,7 @@ pub use redacted::{constant_time_eq, sha256_hex, Redacted};
 pub use scratch::{Scratch, ScratchRefused};
 pub use signal::{Signal, SignalBag, SignalValue};
 pub use transport::{
-    check_composition, CompositionError, FrameStream, Fut, Registered, Transport,
-    TransportConfigView, TransportMeta, TRANSPORT_ABI,
+    check_composition, CompositionError, FrameStream, Fut, Registered, TransportMeta, TRANSPORT_ABI,
 };
 pub use transport::{Carrier, Framer};
 pub use unit::{

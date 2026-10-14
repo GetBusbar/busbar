@@ -259,8 +259,10 @@ unit-b = "beta"
 /// THE TRANSPORT AND CLAIMS AXES, and the rows no feature can drop. A row whose crate is a required
 /// dependency is linked in every build and its key only names the row; two rows may share a crate,
 /// each naming its own entry; a `transport` row fills `transports` with the entry's `KEY`,
-/// `COMPOSES_OVER`, `build`, its claims and its upgrade claims; a `claims` row fills `claims` with its `PLANE` and `CLAIMS`. A row
-/// on an OPTIONAL crate still needs its feature, and `claims` off the plane axis is refused.
+/// `COMPOSES_OVER`, and the build, claims and upgrade claims its `door` answers; a `claims` row fills
+/// `claims` with its `PLANE` and `CLAIMS`. A row on an OPTIONAL crate still needs its feature,
+/// `claims` off the plane axis is refused, and so is a `transport` row off the door axis: a
+/// transport is linked only as its memory-ABI door (step 36).
 #[test]
 fn the_generator_folds_the_transport_and_claims_axes() {
     let manifest = r#"
@@ -278,8 +280,8 @@ wire-high = "busbar-wire"
 
 [package.metadata.busbar.linked-axes]
 host = "plane claims"
-wire-low = "transport"
-wire-high = "transport"
+wire-low = "transport transport-door"
+wire-high = "transport transport-door"
 
 [package.metadata.busbar.linked-entry]
 wire-high = "busbar_wire::linked::high"
@@ -293,12 +295,12 @@ host = "unit"
         1,
         "two rows on one crate link it once: {out}"
     );
-    // A row off the door axis claims its own key and opens no upgrade (a door row reads both off
-    // its door's Statement: `crate::root::doors::{claims_of, upgrades_of}`).
-    assert!(out.contains("key: busbar_wire::linked::KEY, composes_over: busbar_wire::linked::COMPOSES_OVER, build: busbar_wire::linked::build, claims: __row_claims_0, upgrades: __row_upgrades_0 }"), "{out}");
+    // A door row is built from its door and reads its claims and upgrades off the door's Statement
+    // (`crate::root::doors::{build, claims_of, upgrades_of}`).
+    assert!(out.contains("key: busbar_wire::linked::KEY, composes_over: busbar_wire::linked::COMPOSES_OVER, build: __door_build_0, claims: __door_claims_0, upgrades: __door_upgrades_0 }"), "{out}");
     assert!(
         out.contains(
-            "fn __row_claims_0() -> Vec<&'static str> {\n    vec![busbar_wire::linked::KEY]\n}"
+            "fn __door_claims_0() -> Vec<&'static str> {\n    crate::root::doors::claims_of(busbar_wire::linked::door)\n}"
         ),
         "{out}"
     );
@@ -321,6 +323,10 @@ host = "unit"
             "wire-low = \"busbar-plane-host\"",
         ),
         manifest.replace("host = \"plane claims\"", "host = \"claims\""),
+        manifest.replace(
+            "wire-low = \"transport transport-door\"",
+            "wire-low = \"transport\"",
+        ),
     ] {
         let refused = std::panic::catch_unwind(|| linked_source(&broken, &|f: &str| f == "host"));
         assert!(refused.is_err(), "must be refused:\n{broken}");

@@ -1,17 +1,15 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! `Transport::composed_over` has no default body: every implementor answers it explicitly. This
-//! is the witness that the linked wires' answers agree with how they are actually built — by the
-//! same bottom-up fold the boot seal (`busbar::root::registry::compose`) runs over the linked
-//! transport table, which build.rs hands this test as data (`$OUT_DIR/linked_transports.rs`).
-//!
-//! A wire that opens its own socket answers `None` no matter what it declares in `COMPOSES_OVER`; a
-//! wire that is only ever built by being handed another instance names that instance's key. Both
-//! halves are checked against the shipped fold (`src/root/tests/fixtures/transport_fold.txt`, the
-//! same rows the root's own fold test reads): every wire's answer is the layer that table names, and
-//! a composed wire's answer is one of the layers it declares — which is exactly what the registry's
-//! boot check (`busbar_contract::transport::registry::check_composition`) relies on being true. The
+//! Every linked wire is built over nothing, as the boot seal records it. A transport is linked only
+//! as its memory-ABI door (step 36), and the host serves a door over its own sockets: the door is
+//! refused at its build if it names a transport it composes over (`HostWire::new`), so the seal's
+//! rows record no layer (`composed_over: None`, which the registry's boot check,
+//! `busbar_contract::transport::registry::check_composition`, holds against each declaration). This
+//! is the witness that the linked wires agree with that — built by the same bottom-up fold the boot
+//! seal (`busbar::root::registry::compose`) runs over the linked transport table, which build.rs
+//! hands this test as data (`$OUT_DIR/linked_transports.rs`), and checked against the shipped fold
+//! (`src/root/tests/fixtures/transport_fold.txt`, the same rows the root's own fold test reads). The
 //! test names no transport: every key it holds is one a linked row declared.
 
 use busbar_contract::transport::TransportSettings;
@@ -50,44 +48,21 @@ fn every_real_transport_answers_composed_over_consistently_with_its_construction
         LINKED_TRANSPORTS.len(),
         "every linked wire is built"
     );
-    let mut composed = 0;
     for (row, t) in &built {
         assert_eq!(t.key(), row.key, "a wire answers the key its row declares");
         let (_, expected) = shipped
             .iter()
             .find(|(key, _)| *key == row.key)
             .unwrap_or_else(|| panic!("`{}` is linked but the shipped fold has no row", row.key));
-        let over = t.composed_over();
-        match over {
-            // A wire that opens its own socket: `None`, regardless of what it declares.
-            None => assert_eq!(
-                *expected, None,
-                "{} opens its own socket and must answer composed_over() = None",
-                row.key
-            ),
-            // A wire only ever built composed: the layer it was actually given, which must be one
-            // of the layers `COMPOSES_OVER` names and the one the shipped fold names.
-            Some(over) => {
-                composed += 1;
-                assert!(
-                    row.composes_over.contains(&over),
-                    "{}.composed_over() = {over:?}, which is not in its own COMPOSES_OVER {:?}",
-                    row.key,
-                    row.composes_over
-                );
-                assert_eq!(
-                    Some(over),
-                    *expected,
-                    "{} is built over a layer the shipped fold does not name",
-                    row.key
-                );
-            }
-        }
+        assert_eq!(
+            *expected, None,
+            "{} is served over the host's sockets and is built over nothing",
+            row.key
+        );
     }
     // NO TRANSPORT NAMES ANOTHER (ARCHITECT ruling Q128 U7; TRANSPORT-STACK (2), :4721): the carrier
     // is the connector's choice from the target's scheme, so no shipped wire is built over another
     // and the shipped fold names no layer.
-    assert_eq!(composed, 0, "a wire was built over another");
     assert!(
         shipped.iter().all(|(_, over)| over.is_none()),
         "the shipped fold names a layer"
