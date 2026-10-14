@@ -1701,15 +1701,17 @@ async fn completion_tap_fires_once_on_the_walk_and_never_on_a_pre_forward_refusa
 }
 
 /// LEGACY `crates/busbar-llm/src/unit/tests/route.rs::completion_tap_carries_response_tokens_out_when_declared`
-/// (coverage map v2 row 728). 1.5.5: a deployment that declares the `response_tokens_out` signal
-/// reads the unit's reported output count on the `response` stage tap (`request.
-/// response_tokens_out`, here the far end's 1 output token); one that declares nothing gets a
-/// payload with no such key.
+/// (coverage map v2 row 728), held to 1.5.5: 1.5.5 never computed `response_tokens_out`. Its
+/// stage taps (candidate, routing, response) projected no catalog signal
+/// (`v1.5.5 crates/busbar/src/proxy/hooks.rs:1348-1352`, `signals: Default::default()`, "the wire is
+/// byte-identical"), and the signal was reserved in the catalog with no compute fn
+/// (`v1.5.5 crates/api/src/signal.rs:90-95`). The legacy crate's figure (the far end's 1 output token
+/// on the tap) was post-1.5.5 drift. So the `response` stage tap's payload carries no
+/// `response_tokens_out` key, declared or not.
 ///
-/// RED: a declared `response_tokens_out` is missing from the completion tap (or wrong), or an
-/// undeclared one appears.
+/// RED: a `response_tokens_out` key on the completion tap, which 1.5.5's wire never carried.
 #[tokio::test]
-async fn completion_tap_carries_response_tokens_out_when_declared() {
+async fn completion_tap_carries_no_response_tokens_out_as_in_1_5_5() {
     async fn tapped(declared: bool) -> Value {
         let (tap, entry) = counting_tap(Vec::new());
         let mut hooks = Hooks::default();
@@ -1728,9 +1730,9 @@ async fn completion_tap_carries_response_tokens_out_when_declared() {
     }
     let declared = tapped(true).await;
     assert_eq!(declared["stage"]["at"], "response");
-    assert_eq!(
-        declared["request"]["response_tokens_out"], 1,
-        "a declared response_tokens_out carries the unit's output count"
+    assert!(
+        declared["request"].get("response_tokens_out").is_none(),
+        "1.5.5's response tap projected no signal, a declared one included: {declared}"
     );
     let undeclared = tapped(false).await;
     assert!(
