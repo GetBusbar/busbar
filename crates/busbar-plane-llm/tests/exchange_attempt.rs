@@ -1660,7 +1660,7 @@ fn a_huge_body_is_written_like_a_small_one() {
             let v = far_json(&r);
             let carried = v
                 .pointer("/messages/0/content")
-                .map(|c| match c {
+                .map(|content_value| match content_value {
                     Value::String(text) => text.len(),
                     other => other
                         .pointer("/0/text")
