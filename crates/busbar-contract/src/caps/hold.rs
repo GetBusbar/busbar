@@ -85,7 +85,7 @@
 
 use crate::caps::capability::{Admittance, DurableWrite, Exit, Recover, WriteMoney};
 use crate::caps::step::PrincipalId;
-use crate::caps::token::Grant;
+use crate::caps::token::{CallId, Grant};
 use crate::caps::usage::Usage;
 use std::marker::PhantomData;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -114,6 +114,9 @@ pub enum Admission {
 #[must_use = "a hold must reach the exit path; dropping it here loses the unit's admission"]
 pub struct Hold {
     principal: PrincipalId,
+    /// The call whose admittance grant opened it (#74): the grant that later admits it into a cell
+    /// must be that call's. A recovered hold belongs to no call.
+    call: CallId,
     reserved: u64,
     accrued: u64,
     topped_up: u64,
@@ -159,8 +162,8 @@ pub struct Spend {
 
 impl Hold {
     /// Open the unit's hold at the door, sized at `reserved` nano-units.
-    pub fn open(_token: &Grant<Admittance>, principal: PrincipalId, reserved: u64) -> Self {
-        Hold::raw(principal, reserved, 0, false)
+    pub fn open(token: &Grant<Admittance>, principal: PrincipalId, reserved: u64) -> Self {
+        Hold::raw(principal, reserved, 0, false, token.call())
     }
 
     /// Bring a hold back from its journal record after a crash, with whatever accrual was last
@@ -172,12 +175,19 @@ impl Hold {
         reserved: u64,
         checkpointed: u64,
     ) -> Self {
-        Hold::raw(principal, reserved, checkpointed, true)
+        Hold::raw(principal, reserved, checkpointed, true, CallId::UNBOUND)
     }
 
-    fn raw(principal: PrincipalId, reserved: u64, accrued: u64, recovered: bool) -> Self {
+    fn raw(
+        principal: PrincipalId,
+        reserved: u64,
+        accrued: u64,
+        recovered: bool,
+        call: CallId,
+    ) -> Self {
         Hold {
             principal,
+            call,
             reserved,
             accrued,
             topped_up: 0,
@@ -190,6 +200,11 @@ impl Hold {
     /// Whose admission this is.
     pub fn principal(&self) -> &PrincipalId {
         &self.principal
+    }
+
+    /// The call whose admittance grant opened it (#74); [`CallId::UNBOUND`] for a recovered hold.
+    pub fn call(&self) -> CallId {
+        self.call
     }
 
     /// What the door reserved, plus every top-up since.
@@ -302,6 +317,9 @@ impl std::fmt::Debug for Hold {
 #[derive(Debug)]
 pub struct HoldAccrual {
     principal: PrincipalId,
+    /// The child's call, from the admittance grant it accrued with (#74): the grant that converts it
+    /// at the parent's exit must be that call's.
+    call: CallId,
     amount: u64,
     overdraft: u64,
 }
@@ -368,6 +386,8 @@ pub enum CellError {
     AlreadyAdmitted,
     /// A hold was offered to a cell whose hold has already been taken.
     AlreadyTaken,
+    /// The admittance grant offered with a hold was minted for another call than the hold (#74).
+    CallMismatch,
 }
 
 impl std::fmt::Display for CellError {
@@ -375,6 +395,7 @@ impl std::fmt::Display for CellError {
         f.write_str(match self {
             CellError::AlreadyAdmitted => "cell already admitted",
             CellError::AlreadyTaken => "cell already taken",
+            CellError::CallMismatch => "admittance grant of another call",
         })
     }
 }
@@ -441,7 +462,15 @@ impl HoldCell {
     /// back so the admission unit can fold it into the record.
     ///
     /// A second attempt is refused, and the hold that lost comes back untouched.
-    pub fn admit(&self, admitted: Hold, _token: &Grant<Admittance>) -> Result<Hold, AdmitRejected> {
+    pub fn admit(&self, admitted: Hold, token: &Grant<Admittance>) -> Result<Hold, AdmitRejected> {
+        // THE PER-CALL BINDING (#74): the grant that admits a hold is the grant of the call that
+        // opened it. A grant from another call is refused and the hold comes back untouched.
+        if token.call() != admitted.call {
+            return Err(AdmitRejected {
+                hold: admitted,
+                error: CellError::CallMismatch,
+            });
+        }
         let mut slot = self.slot();
         match std::mem::replace(&mut *slot, Slot::Taken) {
             Slot::Arrival(arrival) => {
@@ -484,7 +513,7 @@ impl HoldCell {
         &self,
         principal: &PrincipalId,
         amount: u64,
-        _token: &Grant<Admittance>,
+        token: &Grant<Admittance>,
     ) -> Result<HoldAccrual, AccrualRefused> {
         let mut slot = self.slot();
         match &mut *slot {
@@ -505,6 +534,7 @@ impl HoldCell {
                 self.accruals.fetch_add(1, Ordering::Relaxed);
                 Ok(HoldAccrual {
                     principal: principal.clone(),
+                    call: token.call(),
                     amount: spend.accrued,
                     overdraft: spend.overdraft,
                 })
@@ -559,8 +589,20 @@ impl HoldAccrual {
     /// parent exits with a child still running, the child's accrual becomes a hold of its own,
     /// sized at the child's maximum reported push and drawn synchronously — so the child cannot
     /// afterwards post late with no reservation behind it, whatever it goes on to spend.
-    pub fn convert_at_parent_exit(self, sized: u64, token: &Grant<Admittance>) -> Hold {
-        Hold::open(token, self.principal, sized)
+    ///
+    /// # Errors
+    ///
+    /// The accrual itself, untouched, when `token` was minted for another call than the one that
+    /// accrued it (#74): a grant of call A never converts call B's accrual.
+    pub fn convert_at_parent_exit(
+        self,
+        sized: u64,
+        token: &Grant<Admittance>,
+    ) -> Result<Hold, HoldAccrual> {
+        if token.call() != self.call {
+            return Err(self);
+        }
+        Ok(Hold::open(token, self.principal, sized))
     }
 
     /// A spend that became knowable only AFTER the unit's own terminal, on its way to
@@ -580,9 +622,10 @@ impl HoldAccrual {
     /// The ledger's token is required and unread, exactly as [`Posted::settle_late`] requires and
     /// does not read it: minting one is the kernel's, so an accrual cannot be conjured by anything
     /// the kernel did not hand a token to.
-    pub fn after_terminal(principal: PrincipalId, amount: u64, _token: &Grant<WriteMoney>) -> Self {
+    pub fn after_terminal(principal: PrincipalId, amount: u64, token: &Grant<WriteMoney>) -> Self {
         HoldAccrual {
             principal,
+            call: token.call(),
             amount,
             overdraft: amount,
         }

@@ -64,11 +64,11 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use busbar_contract::caps::{
     Abort, AdminVerb, Admission, Admit, Admittance, Approve, Arrival, Audit, AuditFacts,
-    Authenticate, Authenticated, CallId, Canary, Consumption, Decode, Dial, DurabilityLost,
-    DurableWrite, Encode, Exit, Grant, Hold, HoldAccrual, HoldCell, HoldCellState, KernelSeal,
-    Meter, Origin, OriginKind, Outcome, Pass, Posted, PostingFlags, PrincipalId, QuantitySource,
-    ReasonCode, Refusal, Route, SeatVerdict, SessionId, Sign, StepName, UnitEnd, UnitKey, Usage,
-    UsageLine, VerifiedDestination, Verify, WriteMoney,
+    Authenticate, Authenticated, CallId, Canary, CellError, Consumption, Decode, Dial,
+    DurabilityLost, DurableWrite, Encode, Exit, Grant, Hold, HoldAccrual, HoldCell, HoldCellState,
+    KernelSeal, Meter, Origin, OriginKind, Outcome, Pass, Posted, PostingFlags, PrincipalId,
+    QuantitySource, ReasonCode, Refusal, Route, SeatVerdict, SessionId, Sign, Step, StepName,
+    UnitEnd, UnitKey, Usage, UsageLine, VerifiedDestination, Verify, WriteMoney,
 };
 
 use crate::registry::Generation;
@@ -231,6 +231,10 @@ impl Kernel {
 /// What the loop knows about a unit that is not the money.
 #[derive(Debug, Clone)]
 pub struct UnitCtx {
+    /// The per-request generation the unit's proofs are bound to (#74). A caller builds the
+    /// context [`CallId::UNBOUND`]; the loop binds it at the unit's start ([`Kernel::next_call`])
+    /// and mints every pass and grant it hands a stage for that call.
+    pub call: CallId,
     /// The unit's key.
     pub key: UnitKey,
     /// Where it came from.
@@ -566,6 +570,22 @@ pub enum Ended {
     AlreadySettled,
 }
 
+/// THE UNIT'S CALL (#74): `ctx` as the loop runs it, bound to a per-request generation of its own
+/// unless its caller bound one already. Every pass and grant the loop mints from here is minted
+/// for this call, and a proof presented for another call is refused at the stage it reaches.
+fn bound(kernel: &Kernel, ctx: &UnitCtx) -> UnitCtx {
+    let mut ctx = ctx.clone();
+    if ctx.call == CallId::UNBOUND {
+        ctx.call = kernel.next_call();
+    }
+    ctx
+}
+
+/// Whether `pass` is this unit's (#74): bound to the call the loop runs it under.
+fn presented<S: Step>(pass: &Pass<S>, ctx: &UnitCtx) -> bool {
+    pass.bound_to(ctx.call)
+}
+
 /// Run one unit through every step, and end it exactly once — for a plane whose Route answers in
 /// place.
 ///
@@ -608,6 +628,8 @@ pub async fn run_unit_async<U: Units, R: RouteAwait>(
     route: &R,
 ) -> Ended {
     let seal = &kernel.seal;
+    let bound_ctx = bound(kernel, ctx);
+    let ctx = &bound_ctx;
     // THE CANARY'S THREE COUNTS, each at the seat that makes it true for EVERY unit (item 272). A
     // draft is a unit the table admitted and this loop runs; every unit ends with exactly one hold
     // or one accrual (the arrival hold the table minted is the hold a refused or zero-priced unit
@@ -634,12 +656,12 @@ pub async fn run_unit_async<U: Units, R: RouteAwait>(
             // from a decision at all, and the door is the last step it could have been raised at.
             let outcome =
                 Outcome::Refused(refusal.step().unwrap_or(StepName::Admit), refusal.reason());
-            let pass = Pass::<Audit>::mint(seal);
+            let pass = Pass::<Audit>::mint_bound(seal, ctx.call);
             if let Ok(facts) = units.audit_refused(&pass, ctx, &refusal).into_result(seal) {
                 units.audited(ctx, facts, pass);
             }
             let _bytes = units
-                .encode(&Pass::<Encode>::mint(seal), ctx, &outcome)
+                .encode(&Pass::<Encode>::mint_bound(seal, ctx.call), ctx, &outcome)
                 .into_result(seal);
             exit(kernel, units, ctx, run, outcome, false)
         }
@@ -663,7 +685,10 @@ pub async fn run_unit_async<U: Units, R: RouteAwait>(
                 Admission::ZeroHold => (Settling::Exit(false), None),
                 // The ordinary case: the door's hold replaces the arrival hold in the cell, once.
                 Admission::Own(hold) => {
-                    match run.cell.admit(hold, &Grant::<Admittance>::mint(seal)) {
+                    match run
+                        .cell
+                        .admit(hold, &Grant::<Admittance>::mint_bound(seal, ctx.call))
+                    {
                         Ok(arrival) => {
                             // The arrival hold has done its job; the admitted hold has taken its
                             // place and is the one the exit settles.
@@ -671,12 +696,18 @@ pub async fn run_unit_async<U: Units, R: RouteAwait>(
                             (Settling::Exit(true), None)
                         }
                         Err(rejected) => {
-                            // The cell refused a second hold. The unit that lost the race ends here
-                            // and the hold it was carrying comes back rather than vanishing.
+                            // The cell refused the hold: a second hold (the unit that lost the race
+                            // ends here), or one offered with another call's grant (#74, a replay).
+                            // Either way the hold it was carrying comes back rather than vanishing.
+                            let reason = if rejected.error == CellError::CallMismatch {
+                                ReasonCode::Replayed
+                            } else {
+                                ReasonCode::InFlight
+                            };
                             drop_arrival(rejected.hold);
                             (
                                 Settling::Exit(true),
-                                Some(Outcome::Failed(StepName::Admit, ReasonCode::InFlight)),
+                                Some(Outcome::Failed(StepName::Admit, reason)),
                             )
                         }
                     }
@@ -727,16 +758,16 @@ async fn open_to_door<'s, U: Units>(
     screen: impl FnOnce() -> Screen<'s>,
 ) -> Result<(Admission, Vec<VerifiedDestination>), Refusal> {
     let authenticated = units
-        .arrival(&Pass::<Arrival>::mint(seal), ctx)
+        .arrival(&Pass::<Arrival>::mint_bound(seal, ctx.call), ctx)
         .into_result(seal)
         .and_then(|_| {
             units
-                .decode(&Pass::<Decode>::mint(seal), ctx)
+                .decode(&Pass::<Decode>::mint_bound(seal, ctx.call), ctx)
                 .into_result(seal)
         })
         .and_then(|_| {
             units
-                .authenticate(&Pass::<Authenticate>::mint(seal), ctx)
+                .authenticate(&Pass::<Authenticate>::mint_bound(seal, ctx.call), ctx)
                 .into_result(seal)
         });
     // A challenge is not a decision about this unit: it is a request for one more round before
@@ -790,13 +821,18 @@ async fn open_to_door<'s, U: Units>(
                 let nowhere: [VerifiedDestination; 0] = [];
                 let groups = GroupLeaseSlip::new();
                 units
-                    .approve(&Pass::<Approve>::mint(seal), ctx, &anonymous, &nowhere)
+                    .approve(
+                        &Pass::<Approve>::mint_bound(seal, ctx.call),
+                        ctx,
+                        &anonymous,
+                        &nowhere,
+                    )
                     .into_result(seal)
                     .and_then(|_| {
                         units
                             .admit(
-                                &Pass::<Admit>::mint(seal),
-                                &Grant::<Admittance>::mint(seal),
+                                &Pass::<Admit>::mint_bound(seal, ctx.call),
+                                &Grant::<Admittance>::mint_bound(seal, ctx.call),
                                 ctx,
                                 &anonymous,
                                 &nowhere,
@@ -809,21 +845,26 @@ async fn open_to_door<'s, U: Units>(
             Authenticated::Principal(principal) => {
                 let approved = units
                     .verify(
-                        &Pass::<Verify>::mint(seal),
-                        &Grant::<Dial>::mint(seal),
+                        &Pass::<Verify>::mint_bound(seal, ctx.call),
+                        &Grant::<Dial>::mint_bound(seal, ctx.call),
                         ctx,
                         &principal,
                     )
                     .into_result(seal)
                     .and_then(|destinations| {
                         units
-                            .approve(&Pass::<Approve>::mint(seal), ctx, &principal, &destinations)
+                            .approve(
+                                &Pass::<Approve>::mint_bound(seal, ctx.call),
+                                ctx,
+                                &principal,
+                                &destinations,
+                            )
                             .into_result(seal)
                             .map(|_| destinations)
                     });
                 // THE SCREEN BEFORE THE DOOR ([`RouteAwait::screen`]; a gate-first plane's hooks):
                 // a unit it stops is refused at Approve's seat, before anything is admitted.
-                screened_by(approved, screen, seal)
+                screened_by(approved, screen, seal, ctx.call)
                     .await
                     .and_then(|destinations| {
                         // The slip the door names its capped groups on, for the length of the one
@@ -833,8 +874,8 @@ async fn open_to_door<'s, U: Units>(
                         let groups = GroupLeaseSlip::new();
                         let admitted = units
                             .admit(
-                                &Pass::<Admit>::mint(seal),
-                                &Grant::<Admittance>::mint(seal),
+                                &Pass::<Admit>::mint_bound(seal, ctx.call),
+                                &Grant::<Admittance>::mint_bound(seal, ctx.call),
                                 ctx,
                                 &principal,
                                 &destinations,
@@ -866,12 +907,13 @@ async fn screened_by<'s>(
     approved: Result<Vec<VerifiedDestination>, Refusal>,
     screen: impl FnOnce() -> Screen<'s>,
     seal: &KernelSeal,
+    call: CallId,
 ) -> Result<Vec<VerifiedDestination>, Refusal> {
     match approved {
         Ok(destinations) => screen()
             .await
             .map(|()| destinations)
-            .map_err(|refusal| screened(seal, refusal)),
+            .map_err(|refusal| screened(seal, call, refusal)),
         Err(refusal) => Err(refusal),
     }
 }
@@ -922,8 +964,8 @@ impl Drop for HoldCount<'_> {
 }
 
 /// A screen's stop, stamped at the seat it stands beside (Approve): the unit never reached the door.
-fn screened(seal: &KernelSeal, refusal: Refusal) -> Refusal {
-    match SeatVerdict::<Approve>::refuse(&Pass::<Approve>::mint(seal), refusal.clone())
+fn screened(seal: &KernelSeal, call: CallId, refusal: Refusal) -> Refusal {
+    match SeatVerdict::<Approve>::refuse(&Pass::<Approve>::mint_bound(seal, call), refusal.clone())
         .into_result(seal)
     {
         Err(stamped) => stamped,
@@ -964,6 +1006,8 @@ pub enum SessionOpen {
 /// no Route here), so a synchronous `begin_session` calls this directly.
 pub fn open_unit<U: Units>(kernel: &Kernel, units: &U, ctx: &UnitCtx, run: Run<'_>) -> SessionOpen {
     let seal = &kernel.seal;
+    let bound_ctx = bound(kernel, ctx);
+    let ctx = &bound_ctx;
     match at_once(open_to_door(seal, units, ctx, &run, no_screen)) {
         // The door refused, at or before Admit: nothing was charged. Audit the refusal and encode
         // its bytes — the same two doors a refused one-shot leaves through, minus the settling exit
@@ -971,12 +1015,12 @@ pub fn open_unit<U: Units>(kernel: &Kernel, units: &U, ctx: &UnitCtx, run: Run<'
         Err(refusal) => {
             let outcome =
                 Outcome::Refused(refusal.step().unwrap_or(StepName::Admit), refusal.reason());
-            let pass = Pass::<Audit>::mint(seal);
+            let pass = Pass::<Audit>::mint_bound(seal, ctx.call);
             if let Ok(facts) = units.audit_refused(&pass, ctx, &refusal).into_result(seal) {
                 units.audited(ctx, facts, pass);
             }
             let _bytes = units
-                .encode(&Pass::<Encode>::mint(seal), ctx, &outcome)
+                .encode(&Pass::<Encode>::mint_bound(seal, ctx.call), ctx, &outcome)
                 .into_result(seal);
             SessionOpen::Refused
         }
@@ -985,15 +1029,15 @@ pub fn open_unit<U: Units>(kernel: &Kernel, units: &U, ctx: &UnitCtx, run: Run<'
         // `under_hold`, no `exit`.
         Ok((_admission, destinations)) => {
             let outcome = Outcome::Completed;
-            let pass = Pass::<Audit>::mint(seal);
+            let pass = Pass::<Audit>::mint_bound(seal, ctx.call);
             if let Ok(facts) = units.audit(&pass, ctx, &outcome).into_result(seal) {
                 units.audited(ctx, facts, pass);
             }
             let _bytes = units
-                .encode(&Pass::<Encode>::mint(seal), ctx, &outcome)
+                .encode(&Pass::<Encode>::mint_bound(seal, ctx.call), ctx, &outcome)
                 .into_result(seal);
             SessionOpen::Admitted {
-                route: Pass::<Route>::mint(seal),
+                route: Pass::<Route>::mint_bound(seal, ctx.call),
                 destinations,
             }
         }
@@ -1173,20 +1217,29 @@ fn terminal<U: Units>(
                 )
             }
             Ok(sized) => {
-                let admit = Grant::<Admittance>::mint(seal);
-                let own = accrual.convert_at_parent_exit(sized, &admit);
-                drop_arrival(run.cell.admit(own, &admit).unwrap_or_else(|lost| lost.hold));
-                (outcome, Settling::Converted)
+                let admit = Grant::<Admittance>::mint_bound(seal, ctx.call);
+                match accrual.convert_at_parent_exit(sized, &admit) {
+                    Ok(own) => {
+                        drop_arrival(run.cell.admit(own, &admit).unwrap_or_else(|lost| lost.hold));
+                        (outcome, Settling::Converted)
+                    }
+                    // A grant of another call never converts this one's accrual (#74): refused as
+                    // a replay, and the accrual still posts, late, as a refused door's would.
+                    Err(accrual) => (
+                        Outcome::Failed(StepName::Admit, ReasonCode::Replayed),
+                        Settling::Parent(accrual),
+                    ),
+                }
             }
         },
         other => (outcome, other),
     };
-    let pass = Pass::<Audit>::mint(seal);
+    let pass = Pass::<Audit>::mint_bound(seal, ctx.call);
     if let Ok(facts) = units.audit(&pass, ctx, &outcome).into_result(seal) {
         units.audited(ctx, facts, pass);
     }
     let _bytes = units
-        .encode(&Pass::<Encode>::mint(seal), ctx, &outcome)
+        .encode(&Pass::<Encode>::mint_bound(seal, ctx.call), ctx, &outcome)
         .into_result(seal);
     match settling {
         Settling::Exit(reached_admitted) => {
@@ -1208,7 +1261,7 @@ fn terminal<U: Units>(
             // Emptying the cell HERE is what makes the child's end final: leaving it full would
             // leave the sweep free to settle a unit that already finished, and the parent's hold
             // already carries this spend.
-            let taken = run.cell.take(&Grant::<Exit>::mint(seal));
+            let taken = run.cell.take(&Grant::<Exit>::mint_bound(seal, ctx.call));
             run.leases.release_all(run.gauge);
             match taken {
                 None => Ended::AlreadySettled,
@@ -1219,7 +1272,7 @@ fn terminal<U: Units>(
                     // which already carries this spend. A parent that exited while the child ran
                     // hands the accrual back and it posts late instead — always posted, flagged as
                     // late, against a synchronous draw.
-                    let ledger = Grant::<WriteMoney>::mint(seal);
+                    let ledger = Grant::<WriteMoney>::mint_bound(seal, ctx.call);
                     let parent = run.parent.unwrap_or(run.cell);
                     let posted = match Posted::into_parent(accrual, parent, &ledger) {
                         Ok(posted) => posted,
@@ -1227,7 +1280,11 @@ fn terminal<U: Units>(
                     };
                     run.canary.settled();
                     Ended::Settled {
-                        end: UnitEnd::seal(&Grant::<Exit>::mint(seal), outcome, Ok(posted)),
+                        end: UnitEnd::seal(
+                            &Grant::<Exit>::mint_bound(seal, ctx.call),
+                            outcome,
+                            Ok(posted),
+                        ),
                         // A child draws no request slot and posts no flat fee: the unit that drew
                         // both is the parent it is spending against.
                         requests: 0,
@@ -1255,7 +1312,12 @@ async fn under_hold<U: Units, R: RouteAwait>(
     destinations: &[VerifiedDestination],
 ) -> Outcome {
     let seal = &kernel.seal;
-    let token = Pass::<Route>::mint(seal);
+    let token = Pass::<Route>::mint_bound(seal, ctx.call);
+    // THE STAGE'S COMPARE (#74): the Route stage is handed this call's pass or nothing; a pass of
+    // another call is refused at the stage, as a replay.
+    if !presented(&token, ctx) {
+        return Outcome::Failed(StepName::Route, ReasonCode::Replayed);
+    }
     let leg = route.route_leg(&token, ctx, destinations).await;
     match leg.into_result(seal) {
         Err(refusal) => {
@@ -1265,8 +1327,8 @@ async fn under_hold<U: Units, R: RouteAwait>(
             let provisional = Outcome::Completed;
             match units
                 .meter(
-                    &Pass::<Meter>::mint(seal),
-                    &Grant::<Consumption>::mint(seal),
+                    &Pass::<Meter>::mint_bound(seal, ctx.call),
+                    &Grant::<Consumption>::mint_bound(seal, ctx.call),
                     ctx,
                     &provisional,
                     destinations,
@@ -1302,7 +1364,10 @@ pub fn exit<U: Units>(
     reached_admitted: bool,
 ) -> Ended {
     let seal = &kernel.seal;
-    let taken = run.cell.take(&Grant::<Exit>::mint(seal));
+    // The exit is also reached from outside the loop (the node's sweep): bound here as at the start.
+    let bound_ctx = bound(kernel, ctx);
+    let ctx = &bound_ctx;
+    let taken = run.cell.take(&Grant::<Exit>::mint_bound(seal, ctx.call));
     run.leases.release_all(run.gauge);
     match taken {
         None => Ended::AlreadySettled,
@@ -1327,7 +1392,7 @@ pub fn exit<U: Units>(
                 source: QuantitySource::Count,
                 estimated: flags.contains(PostingFlags::ESTIMATED),
             }];
-            let usage_token = Grant::<Consumption>::mint(seal);
+            let usage_token = Grant::<Consumption>::mint_bound(seal, ctx.call);
             let usage = if flags.contains(PostingFlags::ESTIMATED) {
                 Usage::estimate(&usage_token, lines)
             } else {
@@ -1342,7 +1407,7 @@ pub fn exit<U: Units>(
                         hold,
                         u128::from(amount),
                         &usage,
-                        &Grant::<WriteMoney>::mint(seal),
+                        &Grant::<WriteMoney>::mint_bound(seal, ctx.call),
                     )
                     .flagged(flags))
                 }
@@ -1351,14 +1416,14 @@ pub fn exit<U: Units>(
                 Err(_) => {
                     drop_arrival(hold);
                     Err(DurabilityLost::observed(
-                        &Grant::<DurableWrite>::mint(seal),
+                        &Grant::<DurableWrite>::mint_bound(seal, ctx.call),
                         StepName::Meter,
                     ))
                 }
             };
             run.canary.settled();
             Ended::Settled {
-                end: UnitEnd::seal(&Grant::<Exit>::mint(seal), outcome, posted),
+                end: UnitEnd::seal(&Grant::<Exit>::mint_bound(seal, ctx.call), outcome, posted),
                 requests,
                 fee,
             }

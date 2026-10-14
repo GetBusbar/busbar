@@ -376,6 +376,7 @@ pub async fn run_gauntlet_via_kernel(
                 &kernel,
                 &unit,
                 &UnitCtx {
+                    call: busbar_contract::caps::CallId::UNBOUND,
                     key,
                     origin: OriginKind::Client,
                     session: None,
@@ -477,6 +478,7 @@ pub fn open_gauntlet_via_kernel(
                 &kernel,
                 &unit,
                 &UnitCtx {
+                    call: busbar_contract::caps::CallId::UNBOUND,
                     key,
                     origin: OriginKind::Client,
                     session: None,

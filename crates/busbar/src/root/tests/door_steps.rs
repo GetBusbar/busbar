@@ -308,6 +308,7 @@ fn a_units_principal_is_recorded_from_authenticate_until_its_steps_drop() {
         ..Default::default()
     });
     let ctx = |n: u64| UnitCtx {
+        call: busbar_contract::caps::CallId::UNBOUND,
         key: busbar_contract::UnitKey::new(n),
         origin: busbar_contract::caps::OriginKind::Client,
         session: None,

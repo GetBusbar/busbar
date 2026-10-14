@@ -790,7 +790,9 @@ fn an_outstanding_accrual_becomes_a_hold_of_its_own_at_the_parents_exit() {
 
     // Sized at the child's maximum reported push, drawn synchronously: whatever the child goes on
     // to spend, there is a reservation behind it, which is what makes the exposure a bound.
-    let converted = accrual.convert_at_parent_exit(1_000, &admit);
+    let converted = accrual
+        .convert_at_parent_exit(1_000, &admit)
+        .expect("the accruing call's own grant converts it");
     assert_eq!(converted.reserved(), 1_000);
     assert_eq!(converted.principal(), &who("acct-1"));
     let posted = Posted::settle(converted, 250, &usage_of(&k, 250), &k.ledger_token());
@@ -936,4 +938,42 @@ fn a_posting_settles_the_priced_amount_and_not_the_sum_of_the_quantities() {
         posted.flags().contains(PostingFlags::OVERDRAFT),
         "settling above the reservation is an overdraft even when the hold's own counter is quiet"
     );
+}
+
+/// #74, THE PER-CALL BINDING AT THE MONEY SEAM: a grant minted for call A does not admit call B's
+/// hold into a cell (the hold comes back untouched, `CellError::CallMismatch`), and does not convert
+/// call B's accrual at the parent's exit (the accrual comes back). The control: each call's own
+/// grant does both.
+#[test]
+fn a_grant_of_another_call_neither_admits_nor_converts() {
+    let k = Kernel::new();
+    let (call_a, call_b) = (k.next_call(), k.next_call());
+    let (grant_a, grant_b) = (k.admit_token_for(call_a), k.admit_token_for(call_b));
+
+    let cell = HoldCell::new(Hold::open(&grant_b, who("acct-1"), 0));
+    let rejected = cell
+        .admit(Hold::open(&grant_b, who("acct-1"), 5_000), &grant_a)
+        .expect_err("call A's grant admitted call B's hold");
+    assert_eq!(rejected.error, CellError::CallMismatch);
+    assert_eq!(
+        rejected.hold.reserved(),
+        5_000,
+        "the refused hold did not come back whole"
+    );
+    let arrival = cell
+        .admit(rejected.hold, &grant_b)
+        .expect("call B's own grant admits its hold");
+    let _ = Posted::settle(arrival, 0, &usage_of(&k, 0), &k.ledger_token());
+
+    let accrual = cell
+        .accrue_child(&who("acct-1"), 250, &grant_b)
+        .expect("an open parent takes the child's spend");
+    let accrual = accrual
+        .convert_at_parent_exit(1_000, &grant_a)
+        .expect_err("call A's grant converted call B's accrual");
+    let converted = accrual
+        .convert_at_parent_exit(1_000, &grant_b)
+        .expect("call B's own grant converts it");
+    assert_eq!(converted.reserved(), 1_000);
+    let _ = Posted::settle(converted, 250, &usage_of(&k, 250), &k.ledger_token());
 }

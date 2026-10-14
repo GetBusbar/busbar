@@ -348,6 +348,7 @@ fn the_audit_doors_carry_no_credential_into_the_sealed_facts() {
         request.credential = Some("sk-live-the-presented-secret".to_string());
         binding.units.open(key, request);
         let ctx = UnitCtx {
+            call: busbar_contract::caps::CallId::UNBOUND,
             key,
             origin: busbar_contract::caps::OriginKind::Client,
             session: None,
@@ -419,6 +420,7 @@ fn a_money_governance_verb_is_checked_against_the_posture_the_fleet_sealed() {
         request.path = path.to_string();
         binding.units.open(key, request);
         let ctx = UnitCtx {
+            call: busbar_contract::caps::CallId::UNBOUND,
             key,
             origin: busbar_contract::caps::OriginKind::Client,
             session: None,
@@ -610,6 +612,7 @@ fn a_unit_leaves_the_table_when_it_ends() {
 #[test]
 fn an_admin_unit_settles_at_zero_requests_and_zero_fee() {
     let ctx = UnitCtx {
+        call: busbar_contract::caps::CallId::UNBOUND,
         key: UnitKey::new(1),
         origin: busbar_contract::caps::OriginKind::Client,
         session: None,
@@ -1035,6 +1038,7 @@ fn a_bound_unit(
     let key = UnitKey::new(1);
     binding.units.open(key, request);
     let ctx = UnitCtx {
+        call: busbar_contract::caps::CallId::UNBOUND,
         key,
         origin: busbar_contract::caps::OriginKind::Client,
         session: None,
@@ -1566,6 +1570,7 @@ fn each_recovery_verb_reaches_the_store_and_a_refusing_store_is_the_answer() {
         request.body = body.as_bytes().to_vec();
         binding.units.open(key, request);
         let ctx = UnitCtx {
+            call: busbar_contract::caps::CallId::UNBOUND,
             key,
             origin: busbar_contract::caps::OriginKind::Client,
             session: None,
@@ -2936,6 +2941,7 @@ fn a_read_only_credential_reaches_every_view_and_still_no_mutation() {
         request.method = method.to_string();
         binding.units.open(key, request);
         let ctx = UnitCtx {
+            call: busbar_contract::caps::CallId::UNBOUND,
             key,
             origin: busbar_contract::caps::OriginKind::Client,
             session: None,
@@ -5381,6 +5387,7 @@ fn adjust_through_route(
     request.body = serde_json::to_vec(&body).expect("the body serialises");
     binding.units.open(key, request);
     let ctx = UnitCtx {
+        call: busbar_contract::caps::CallId::UNBOUND,
         key,
         origin: busbar_contract::caps::OriginKind::Client,
         session: None,
@@ -6417,6 +6424,7 @@ fn route_refuses_a_unit_whose_grant_was_never_recorded() {
     request.path = "/api/v1/admin/chain-break".to_string();
     binding.units.open(key, request);
     let ctx = UnitCtx {
+        call: busbar_contract::caps::CallId::UNBOUND,
         key,
         origin: busbar_contract::caps::OriginKind::Client,
         session: None,

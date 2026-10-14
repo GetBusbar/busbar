@@ -29,6 +29,7 @@ const INPUT: u32 = 0;
 
 fn ctx(key: u64) -> UnitCtx {
     UnitCtx {
+        call: busbar_contract::caps::CallId::UNBOUND,
         key: UnitKey::new(key),
         origin: OriginKind::Client,
         session: None,

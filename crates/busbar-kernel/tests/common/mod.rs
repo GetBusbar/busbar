@@ -317,6 +317,7 @@ pub fn principal() -> PrincipalId {
 /// A context for a client unit.
 pub fn ctx(key: u64) -> UnitCtx {
     UnitCtx {
+        call: busbar_contract::caps::CallId::UNBOUND,
         key: UnitKey::new(key),
         origin: OriginKind::Client,
         session: None,

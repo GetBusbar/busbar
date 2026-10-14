@@ -107,6 +107,7 @@ impl AdminNode {
             Err(_refused) => unavailable_answer(),
             Ok(slot) => {
                 let ctx = UnitCtx {
+                    call: busbar_contract::caps::CallId::UNBOUND,
                     key,
                     origin: busbar_contract::caps::OriginKind::Client,
                     session: None,
