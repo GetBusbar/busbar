@@ -16,6 +16,7 @@ env:
 checks:
   preflight:
     run: |
+      . .ci/tool.sh rust
       cargo fmt --all -- --check
       cargo metadata --locked --format-version 1 >/dev/null
       cargo build -q -p xtask
@@ -23,6 +24,7 @@ checks:
       git diff --exit-code -- crates/busbar-contract/include
   gates:
     run: |
+      . .ci/tool.sh rust
       export XTASK_CEILING_BASE="$MODERNCI_TO_SHA" XTASK_SHIP_TARGET=predev
       cargo xtask gate --all --format=tsv
     baseline: target
@@ -33,11 +35,14 @@ checks:
     requires: [git-history]
     needs: [preflight]
   clippy:
-    run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+    run: |
+      . .ci/tool.sh rust
+      cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
     baseline: target
     needs: [gates]
   compile:
     run: |
+      . .ci/tool.sh rust
       cargo check --workspace --all-targets --locked
       cargo check --workspace --exclude xtask --all-targets --no-default-features --locked
       cargo check --release -p busbar --bin busbar --locked
@@ -47,7 +52,7 @@ checks:
     # As the hop's build:dlopen-cdylibs and test:workspace: the workspace's cdylibs and the four
     # dropped-in plugins the tests dlopen, then one build and one nextest run.
     run: |
-      . .ci/tool.sh nextest jq
+      . .ci/tool.sh rust nextest jq
       meta=$(cargo metadata --format-version 1 --locked)
       cargo build --locked $(echo "$meta" | jq -r '.workspace_members as $m | .packages[] | select(.id as $i | $m | index($i)) | select(any(.targets[]; .kind | index("cdylib"))) | "-p " + .name')
       # The example cdylibs the tests dlopen, built BY NAME and always: the loader's (the neutral frame
@@ -90,7 +95,7 @@ checks:
     # transport-webrtc, openapi-schema, timing), filtered to the gated binaries and modules so the
     # default suites do not run twice; B, the plugin-pack CLI (pack); C, the loom models in release.
     run: |
-      . .ci/tool.sh nextest jq
+      . .ci/tool.sh rust nextest jq
       meta=$(cargo metadata --format-version 1 --locked)
       cargo build --locked $(echo "$meta" | jq -r '.workspace_members as $m | .packages[] | select(.id as $i | $m | index($i)) | select(any(.targets[]; .kind | index("cdylib"))) | "-p " + .name')
       # The example cdylibs the tests dlopen, built BY NAME and always: the loader's (the neutral frame
@@ -124,12 +129,15 @@ checks:
     requires: [git-history]
     needs: [gates]
   doctest:
-    run: cargo test --workspace --doc --locked --no-fail-fast
+    run: |
+      . .ci/tool.sh rust
+      cargo test --workspace --doc --locked --no-fail-fast
     scope: affected
     baseline: target
     needs: [test]
   deletion-matrix:
     run: |
+      . .ci/tool.sh rust
       cargo build -p busbar-kernel -p busbar-contract --no-default-features --features plane-a2a --locked
       cargo build -p busbar-kernel -p busbar-contract --no-default-features --features plane-mcp --locked
       cargo build -p busbar-kernel -p busbar-contract --no-default-features --locked
@@ -137,7 +145,7 @@ checks:
     needs: [gates]
   deny:
     run: |
-      . .ci/tool.sh deny
+      . .ci/tool.sh rust deny
       cargo deny check
     baseline: target
     needs: [preflight]
@@ -151,6 +159,7 @@ checks:
     # corpus and replayed against the committed 1.5.5 golden, strict: green is every cell byte-green
     # or forgiven by an owner-signed accepted difference.
     run: |
+      . .ci/tool.sh rust
       pin=$(git show "$MODERNCI_TO_SHA:testing/shadow-oracle/oracle-rust.pin")
       want=$(printf '%s\n' "$pin" | sed -n "s/^sha256_linux_$(uname -m)=//p")
       [[ "$want" =~ ^[0-9a-f]{64}$ ]] || { echo "ORACLE-PIN: oracle-rust.pin at $MODERNCI_TO_SHA pins no linux $(uname -m) judge"; exit 1; }

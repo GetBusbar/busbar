@@ -2,12 +2,18 @@
 # Puts each named tool, at the version pinned below, on PATH. The checks own their toolchain:
 # a tool already on PATH at exactly the pin is used; otherwise the official release asset is
 # fetched with curl, verified against the sha256 pinned here, and cached under
-# ${MODERNCI_CACHE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}}/busbar-ci-tools/<tool>-<version>/.
+# ${MODERNCI_CACHE_DIR:-$HOME/.cache}/busbar-ci-tools/<tool>-<version>/.
+# `rust` is the exception: if cargo is already on PATH it is left alone, else rustup-init is
+# fetched, verified and run with RUSTUP_HOME/CARGO_HOME under the same root, and
+# $CARGO_HOME/bin goes on PATH (rust-toolchain.toml picks the toolchain on the first cargo call).
+# Assumes only Linux (or darwin), sh, git, curl, tar and CA certificates.
 # No sudo, no package manager. Unknown tool, unsupported platform or sha mismatch: message, return 1.
 
 _bbt_nextest_ver=0.9.148
 _bbt_deny_ver=0.20.2
 _bbt_jq_ver=1.7.1
+_bbt_rustup_ver=1.28.2
+_bbt_root=${MODERNCI_CACHE_DIR:-$HOME/.cache}/busbar-ci-tools
 
 # _bbt_pin <tool> <os-arch>: prints "<asset-url> <sha256> <path of the binary inside the asset>"
 _bbt_pin() {
@@ -45,13 +51,45 @@ _bbt_sha256() {
   else shasum -a 256 "$1" | cut -d' ' -f1; fi
 }
 
+# _bbt_rust: cargo on PATH is left alone; else bootstrap rustup (no toolchain; rust-toolchain.toml picks it).
+_bbt_rust() {
+  command -v cargo >/dev/null 2>&1 && return 0
+  RUSTUP_HOME=$_bbt_root/rustup-$_bbt_rustup_ver/rustup; CARGO_HOME=$_bbt_root/rustup-$_bbt_rustup_ver/cargo
+  export RUSTUP_HOME CARGO_HOME
+  if [ ! -x "$CARGO_HOME/bin/cargo" ]; then
+    _os=$(uname -s | tr '[:upper:]' '[:lower:]'); _arch=$(uname -m)
+    case "$_os-$_arch" in
+      linux-x86_64)  _t=x86_64-unknown-linux-gnu;  _sha=20a06e644b0d9bd2fbdbfd52d42540bdde820ea7df86e92e533c073da0cdd43c ;;
+      linux-aarch64) _t=aarch64-unknown-linux-gnu; _sha=e3853c5a252fca15252d07cb23a1bdd9377a8c6f3efa01531109281ae47f841c ;;
+      darwin-arm64)  _t=aarch64-apple-darwin;      _sha=20ef5516c31b1ac2290084199ba77dbbcaa1406c45c1d978ca68558ef5964ef5 ;;
+      *) echo "tool.sh: no pinned rustup $_bbt_rustup_ver for $_os-$_arch (supported: linux-x86_64 linux-aarch64 darwin-arm64)" >&2; return 1 ;;
+    esac
+    _url=https://static.rust-lang.org/rustup/archive/$_bbt_rustup_ver/$_t/rustup-init
+    _tmp=$_bbt_root/rustup-init.tmp.$$
+    mkdir -p "$_tmp" || return 1
+    echo "tool.sh: fetching rustup-init $_bbt_rustup_ver ($_url)" >&2
+    if ! curl -fsSL --retry 3 -o "$_tmp/rustup-init" "$_url"; then
+      echo "tool.sh: download of $_url failed" >&2; rm -rf "$_tmp"; return 1
+    fi
+    _got=$(_bbt_sha256 "$_tmp/rustup-init")
+    if [ "$_got" != "$_sha" ]; then
+      echo "tool.sh: sha256 mismatch for $_url: expected $_sha, got $_got" >&2; rm -rf "$_tmp"; return 1
+    fi
+    chmod +x "$_tmp/rustup-init"
+    "$_tmp/rustup-init" -y --no-modify-path --default-toolchain none || { rm -rf "$_tmp"; return 1; }
+    rm -rf "$_tmp"
+  fi
+  PATH="$CARGO_HOME/bin:$PATH"; export PATH
+}
+
 # _bbt_ensure <tool>
 _bbt_ensure() {
   case "$1" in
+    rust) _bbt_rust; return $? ;;
     nextest) _bin=cargo-nextest; _ver=$_bbt_nextest_ver; _want="cargo-nextest $_ver"; _vargs="nextest --version" ;;
     deny)    _bin=cargo-deny;    _ver=$_bbt_deny_ver;    _want="cargo-deny $_ver"; _vargs=--version ;;
     jq)      _bin=jq;            _ver=$_bbt_jq_ver;      _want="jq-$_ver"; _vargs=--version ;;
-    *) echo "tool.sh: unknown tool '$1' (known: nextest deny jq)" >&2; return 1 ;;
+    *) echo "tool.sh: unknown tool '$1' (known: rust nextest deny jq)" >&2; return 1 ;;
   esac
   # Already on PATH at exactly the pinned version.
   if command -v "$_bin" >/dev/null 2>&1; then
@@ -60,7 +98,7 @@ _bbt_ensure() {
       "$_want" | "$_want "*) return 0 ;;
     esac
   fi
-  _dir=${MODERNCI_CACHE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}}/busbar-ci-tools/$1-$_ver
+  _dir=$_bbt_root/$1-$_ver
   if [ ! -x "$_dir/$_bin" ]; then
     _os=$(uname -s | tr '[:upper:]' '[:lower:]'); _arch=$(uname -m)
     _pin=$(_bbt_pin "$1" "$_os-$_arch") || {
