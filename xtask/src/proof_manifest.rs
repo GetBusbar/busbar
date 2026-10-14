@@ -12,7 +12,7 @@
 //! guard (`cargo xtask proof-manifest --check`, below) fails the build if anything source-like appears.
 //!
 //! HONESTY RULE (carried from the removed `qa/segments.toml`). A source that did not actually run
-//! renders `unknown`, never green. A report-only gate (plane-grep today) renders `report-only`,
+//! renders `unknown`, never green. A report-only gate renders `report-only`,
 //! never `pass`. A class verdict is `fail` if any non-reserved source failed, `unknown` if any is
 //! unknown and none failed, else `pass`. The collator never launders a not-run into a pass.
 //!
@@ -180,57 +180,6 @@ fn exit_code(st: &std::process::ExitStatus) -> i32 {
 #[cfg(not(unix))]
 fn exit_code(st: &std::process::ExitStatus) -> i32 {
     st.code().unwrap_or(-1)
-}
-
-/// Scrape the integer of the first `^\s*<key>\s+(\d+)\s*$` (MULTILINE) match: the `  <KEY>   <n>`
-/// fixed-format table the plane-grep gate prints. `\s` may cross newlines, exactly as in `re`.
-fn scrape_key(text: &str, key: &str) -> Option<i64> {
-    let starts = std::iter::once(0)
-        .chain(text.match_indices('\n').map(|(i, _)| i + 1))
-        .collect::<Vec<_>>();
-    for p in starts {
-        if p > text.len() {
-            continue;
-        }
-        let rest = &text[p..];
-        let after_ws = rest.trim_start_matches(py_space);
-        let Some(after_key) = after_ws.strip_prefix(key) else {
-            continue;
-        };
-        let after_sp = after_key.trim_start_matches(py_space);
-        if after_sp.len() == after_key.len() {
-            continue; // `\s+` needs one
-        }
-        let digits_len = after_sp.chars().take_while(|c| c.is_ascii_digit()).count();
-        if digits_len == 0 {
-            continue;
-        }
-        let tail = &after_sp[digits_len..];
-        let ws_len = tail.len() - tail.trim_start_matches(py_space).len();
-        let ws = &tail[..ws_len];
-        // `\s*$` (MULTILINE): the whitespace run reaches the end of text or swallows a newline.
-        if ws_len == tail.len() || ws.contains('\n') {
-            return after_sp[..digits_len]
-                .parse::<i64>()
-                .ok()
-                .or(Some(i64::MAX));
-        }
-    }
-    None
-}
-
-fn parse_count_table(text: &str, keys: &[&str]) -> Obj {
-    let mut out = Obj::new();
-    for k in keys {
-        if let Some(n) = scrape_key(text, k) {
-            out.insert(*k, Json::Int(n));
-        }
-    }
-    out
-}
-
-fn scrape_total(text: &str) -> Option<i64> {
-    scrape_key(text, "TOTAL")
 }
 
 /// Count `file:line` hit lines in a gate's failure output (`\.rs:\d+` per line; a meter only).
@@ -463,7 +412,6 @@ const GOLDEN_MIN: i64 = 40;
 // The evidence paths this collator names (the selftest checks every one exists).
 const EV_NO_PLUGINS: &str = "scripts/no-plugins-gate.sh";
 const EV_PLANE_DELETE: &str = "scripts/plane-delete-test.sh";
-const EV_PLANE_GREP: &str = "scripts/plane-grep-gate.sh";
 const EV_PROTO_DELETION: &str = "scripts/proto-deletion-gate.sh";
 const EV_DIALECT_COVERAGE: &str = "xtask/src/gates/dialect_coverage.rs";
 const EV_PLANE_ABI: &str = "xtask/src/gates/plane_abi_neutrality.rs";
@@ -471,7 +419,6 @@ const EV_PLANE_PURITY: &str = "xtask/src/gates/plane_purity/mod.rs";
 const EVIDENCE_PATHS: &[&str] = &[
     EV_NO_PLUGINS,
     EV_PLANE_DELETE,
-    EV_PLANE_GREP,
     EV_PROTO_DELETION,
     EV_DIALECT_COVERAGE,
     EV_PLANE_ABI,
@@ -757,54 +704,6 @@ fn verdict_plane_neutrality(root: &Path, hits_dir: &Path) -> Json {
         ("count", Json::Int(freeze.as_ref().map_or(-1, |(_, n)| *n))),
     ]));
 
-    // plane-grep gate: report-only meter, per-needle table + TOTAL.
-    let gp_out = hits_dir.join("plane-grep-hits.tsv");
-    let (st_code, _) = run(&["bash", EV_PLANE_GREP, "--selftest"], root, &[], Some(300));
-    let (_, text) = run(
-        &["bash", EV_PLANE_GREP, "--report"],
-        root,
-        &[
-            ("GREP_GATE_REPORT_ONLY", "1".to_string()),
-            ("PLANE_GREP_HITS_OUT", gp_out.display().to_string()),
-        ],
-        Some(300),
-    );
-    let needles = parse_count_table(
-        &text,
-        &[
-            "openai",
-            "gemini",
-            "anthropic",
-            "bedrock",
-            "cohere",
-            "responses",
-            "mcp",
-            "a2a",
-        ],
-    );
-    let gp_total = scrape_total(&text);
-    sources.push(obj(vec![
-        ("id", s("plane-grep-gate")),
-        ("evidence", s(EV_PLANE_GREP)),
-        (
-            "evidence_present",
-            Json::Bool(root.join(EV_PLANE_GREP).is_file()),
-        ),
-        ("kind", s("gate")),
-        // non-blocking meter until GREP_GATE_REPORT_ONLY=0 is armed
-        ("status", s("report-only")),
-        ("count", Json::Int(gp_total.unwrap_or(-1))),
-        ("breakdown", Json::Object(needles)),
-        ("selftest", s(if st_code == 0 { "pass" } else { "fail" })),
-        (
-            "drilldown",
-            obj(vec![
-                ("type", s("hit-list")),
-                ("artifact", s("plane-grep-hits.tsv")),
-            ]),
-        ),
-    ]));
-
     // plane-abi-neutrality: 0 banned nouns on success.
     let (code, text) = run(
         &["cargo", "xtask", "gate", "plane-abi-neutrality"],
@@ -828,8 +727,7 @@ fn verdict_plane_neutrality(root: &Path, hits_dir: &Path) -> Json {
     ]));
 
     // Headline meter = the by-construction side-channel count in the neutral crates: plane-purity +
-    // g6. plane-grep is a report-only meter (own row); plane-abi is a separate witness (own row)
-    // whose raw declaration-line matches must not dominate the neutral-crate headline.
+    // g6. plane-abi is a separate witness (own row) whose raw declaration-line matches must not dominate the neutral-crate headline.
     let mut headline = 0i64;
     for src in &sources {
         if matches!(
@@ -2928,13 +2826,6 @@ mod tests {
 
     #[test]
     fn scrapers_follow_python_regex_semantics() {
-        let t = "header\n  openai     12\n  mcp   3  \nTOTAL  15\n";
-        assert_eq!(scrape_key(t, "openai"), Some(12));
-        assert_eq!(scrape_key(t, "mcp"), Some(3));
-        assert_eq!(scrape_total(t), Some(15));
-        assert_eq!(scrape_key(t, "gemini"), None);
-        assert_eq!(scrape_key("TOTAL 7 trailing", "TOTAL"), None);
-        assert_eq!(scrape_key("TOTAL 7", "TOTAL"), Some(7));
         assert_eq!(count_hit_lines("a.rs:12\nb.rs:x\nc.rs:3: z"), 2);
         assert_eq!(unclassified_count("x 3 unclassified; 9 unclassified"), 3);
         assert_eq!(unclassified_count("none"), 0);

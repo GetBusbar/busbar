@@ -6,7 +6,7 @@
 //! nouns. The voice plane owns them 100%; a leak of any of them into a neutral crate is exactly the
 //! forward-edge regression — core learning a protocol's transport words — that the plane ABI exists
 //! to prevent. Nothing blocking covered them: `plane-abi-neutrality` scans only the hot lane and
-//! `plane-grep-gate` is report-only.
+//! the substring dialect meter was report-only (it is deleted).
 //!
 //! Three rows:
 //!

@@ -67,9 +67,9 @@
 # could not fire is refused before its verdict is trusted (the house rule).
 #
 # LOCKED EXCLUSION (00-MASTER-PLAN "RECONCILED DECISIONS"): the done-oracle DELIBERATELY does NOT
-# require scripts/plane-noun-gate.sh / scripts/plane-grep-gate.sh == 0. Those meter LLM BILLING VOCAB
+# require scripts/plane-noun-gate.sh == 0. That meters LLM BILLING VOCAB
 # that STAYS in the neutral crates by the LOCKED invariant — an orthogonal axis, not a done condition.
-# Including them would gate the release on a debt the owner ruled out of scope; they are not here.
+# Including it would gate the release on a debt the owner ruled out of scope; it is not here.
 #
 # PROGRESS METER. This is fail-SOFT across groups: it RUNS EVERY sub-gate, collects every RED, prints a
 # grouped readout, and exits non-zero if ANY group is RED. So on an unfinished tree it doubles as a
@@ -459,7 +459,7 @@ filtered_cargo_test() {  # $1 = expected passing count ; rest = the cargo argv
 #   * XTASK_INSN_EMIT_BASELINE / XTASK_PPB_EMIT_BASELINE switch instance-noun-neutrality and
 #     plane-pricing-blindness into their baseline-regeneration mode (the census printed as the
 #     qa/*.toml the gate compares against). The run is then a re-baselining run, not a DONE run.
-#   * GREP_GATE_REPORT_ONLY (plane-grep/noun/config-noun gates) and SECRET_GATE_REPORT_ONLY
+#   * GREP_GATE_REPORT_ONLY (noun/config-noun gates) and SECRET_GATE_REPORT_ONLY
 #     (secret-hygiene gate) turn a gate's RED into exit 0. This file pins GREP_GATE_REPORT_ONLY=0
 #     inline where it runs the config-noun --check; refusing the exported value means a refactor
 #     that drops the inline pin cannot quietly inherit a report-only gate.
@@ -1323,8 +1323,8 @@ end_group
 # ─────────────────────────────────────────────────────────────────────────────────────────────────
 begin_group "CONFIG-NOUN — four-noun parse residual holds at its locked-legitimate floor"
 step "plane-config-noun-gate --selftest" bash scripts/plane-config-noun-gate.sh --selftest
-# ZERO is deliberately NOT the done condition here — same treatment as the plane-noun/plane-grep
-# billing-vocab meters the oracle excludes. Per the kickoff/LOCKED invariant: `pools`/`providers` STAY
+# ZERO is deliberately NOT the done condition here — same treatment as the plane-noun
+# billing-vocab meter the oracle excludes. Per the kickoff/LOCKED invariant: `pools`/`providers` STAY
 # core-owned (CORE_OWNED_CONCRETE_SECTIONS, never evicted), and the `tools`/`agents`/`streams`
 # DeployCfg fields are Option A's `deny_unknown_fields` floor (Option B is serde-blocked). So the
 # residual is a LEGITIMATE floor, not debt; the DoD is "core's generic named-map MACHINERY names no

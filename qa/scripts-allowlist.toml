@@ -244,11 +244,6 @@ class = "port"
 reason = "a verify-1.6.0-done.sh group: becomes an xtask gate, proven to give identical verdicts on predev before this file goes"
 
 [[script]]
-path = "scripts/plane-grep-gate.sh"
-class = "port"
-reason = "a verify-1.6.0-done.sh group: becomes an xtask gate, proven to give identical verdicts on predev before this file goes"
-
-[[script]]
 path = "scripts/plane-keys.sh"
 class = "port"
 reason = "the plane-key list the plane gates and capability_equality.rs read: becomes data an xtask gate owns, ported with the plane gates"

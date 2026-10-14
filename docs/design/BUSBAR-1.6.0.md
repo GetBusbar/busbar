@@ -1924,8 +1924,8 @@ instance named in core/neutral crates, no lateral plugin naming. They are **serv
 not the vision**. Consequences:
 - A plane naming its **own** dialects/vendors is correct (Law 5) — it is internal. A gate that reds
   on that is **scoped wrong**, and the fix is the gate's scope, not the code.
-- `plane-grep-gate` and `plane-noun-gate` are **report-only debt meters**, explicitly **excluded**
-  from the done-oracle (`verify-1.6.0-done.sh`). They do **not** gate the
+- `plane-noun-gate` is a **report-only debt meter**, explicitly **excluded**
+  from the done-oracle (`verify-1.6.0-done.sh`). It does **not** gate the
   release and must never drive architecture (e.g. splitting a plane into per-dialect crates to make
   a substring count hit zero — that violates Laws 4 and 5).
 - **When an instrument must choose, it false-fails.** Owner, 2026-09-09: *"I'd rather have it
