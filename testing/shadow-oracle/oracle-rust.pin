@@ -337,11 +337,19 @@
 # 1.5.5) land with this commit. The digests are dev-bin's busbar-oracle-linux-<arch>-<release_ref>.sha256, each
 # asset's .sig verified with the release key.
 #
+# 2026-10-14 (busbar owner rule 22, named conformance gaps = 0): moved 3365ddbc591e -> 99470fba7c96, busbar-release
+# main after the dev -> qa -> main promotion (#370, #371), which carries #369: the nine llm cells the pinned mock already
+# answered and the recorder hardcoded `needs_fixture` (stream_upstream_error x6 -> `fresh`, ok_citation,
+# ok_cachepoint_document, ok_tool_use_tokens with mock_control tool-use-tokens), plus the vendor-true stream-error
+# bodies. Their cells.json rows, owed-baseline rows and add-only 1.5.5 goldens (oracle-rerecord, recorded from the
+# published 1.5.5) land with this commit. The digests are dev-bin's busbar-oracle-linux-<arch>-<release_ref>.sha256;
+# each asset's .sig verifies (Ed25519, over `<asset name>\n<sha256>\n`) against .github/release-key.pub.pem.
+#
 # To move the pin: set release_ref to the new busbar-release commit and each sha256_linux_<arch> to the
 # sha256 of its dev-bin busbar-oracle-linux-<arch>-<release_ref> asset (the .sha256 beside it).
 release_repo=https://github.com/GetBusbar/busbar-release.git
-release_ref=3365ddbc591ec874d18aaa3ec5df650ba4b9bd3b
-sha256_linux_x86_64=d6be0604b5db12319f71d10cc0892765ed063ca7dd581623ce47950cd6998384
-sha256_linux_aarch64=04bf41bf6e2c027001c9a7b7de68c6e1cb753b7bed6fd866a1f96673b6b35201
+release_ref=99470fba7c968257b13203f1b92aaade719c7c8a
+sha256_linux_x86_64=09402b2c1d51cd9e5d2dc6e6a78abec56ca085ddd696c036e010b2dee1a66219
+sha256_linux_aarch64=6e6820a2b0bf169cf7708953744ed60308aae10e45e08c9bcd4ccec6a4bc9ccc
 crate=busbar-release-oracle
 bin=busbar-oracle

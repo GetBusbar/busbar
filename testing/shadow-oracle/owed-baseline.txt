@@ -774,6 +774,7 @@ llm|anthropic|anthropic|request|ok_stream_whole_answer
 llm|anthropic|anthropic|request|out_of_scope
 llm|anthropic|anthropic|request|over_budget
 llm|anthropic|anthropic|request|over_budget_total
+llm|anthropic|anthropic|request|stream_upstream_error
 llm|anthropic|anthropic|request|unauthenticated
 llm|anthropic|anthropic|request|upstream_down
 llm|anthropic|bedrock|request|ok
@@ -802,11 +803,13 @@ llm|bedrock|anthropic|request|ok_stream_whole_answer
 llm|bedrock|anthropic|request|upstream_down
 llm|bedrock|bedrock|request|malformed
 llm|bedrock|bedrock|request|ok
+llm|bedrock|bedrock|request|ok_cachepoint_document
 llm|bedrock|bedrock|request|ok_stream
 llm|bedrock|bedrock|request|ok_stream_whole_answer
 llm|bedrock|bedrock|request|out_of_scope
 llm|bedrock|bedrock|request|over_budget
 llm|bedrock|bedrock|request|over_budget_total
+llm|bedrock|bedrock|request|stream_upstream_error
 llm|bedrock|bedrock|request|unauthenticated
 llm|bedrock|bedrock|request|upstream_down
 llm|bedrock|cohere|request|ok
@@ -840,6 +843,7 @@ llm|cohere|cohere|request|ok_stream_whole_answer
 llm|cohere|cohere|request|out_of_scope
 llm|cohere|cohere|request|over_budget
 llm|cohere|cohere|request|over_budget_total
+llm|cohere|cohere|request|stream_upstream_error
 llm|cohere|cohere|request|unauthenticated
 llm|cohere|cohere|request|upstream_down
 llm|cohere|gemini|request|ok
@@ -875,9 +879,11 @@ llm|gemini|gemini|request|ok_stream
 llm|gemini|gemini|request|ok_stream_array
 llm|gemini|gemini|request|ok_stream_array_whole_answer
 llm|gemini|gemini|request|ok_stream_whole_answer
+llm|gemini|gemini|request|ok_tool_use_tokens
 llm|gemini|gemini|request|out_of_scope
 llm|gemini|gemini|request|over_budget
 llm|gemini|gemini|request|over_budget_total
+llm|gemini|gemini|request|stream_upstream_error
 llm|gemini|gemini|request|unauthenticated
 llm|gemini|gemini|request|upstream_down
 llm|gemini|openai|request|ok
@@ -913,6 +919,7 @@ llm|openai|openai|request|ok_stream_whole_answer
 llm|openai|openai|request|out_of_scope
 llm|openai|openai|request|over_budget
 llm|openai|openai|request|over_budget_total
+llm|openai|openai|request|stream_upstream_error
 llm|openai|openai|request|unauthenticated
 llm|openai|openai|request|upstream_down
 llm|openai|responses|request|ok
@@ -941,11 +948,13 @@ llm|responses|openai|request|ok_stream_whole_answer
 llm|responses|openai|request|upstream_down
 llm|responses|responses|request|malformed
 llm|responses|responses|request|ok
+llm|responses|responses|request|ok_citation
 llm|responses|responses|request|ok_stream
 llm|responses|responses|request|ok_stream_whole_answer
 llm|responses|responses|request|out_of_scope
 llm|responses|responses|request|over_budget
 llm|responses|responses|request|over_budget_total
+llm|responses|responses|request|stream_upstream_error
 llm|responses|responses|request|unauthenticated
 llm|responses|responses|request|upstream_down
 money.reserved-tier|absent|anthropic-cache

@@ -100,24 +100,10 @@
     "Every entry today is a cell testing/shadow-oracle/record.sh could not record at all (its own",
     "ledger says UNSUPPORTED), so there is no wire for this gate to judge. They are the recorder's",
     "to close, not this rig's; when a fixture lands, the cell records, the rows go PASS or FAIL on",
-    "their merits, and the entry and the count come off."
+    "their merits, and the entry and the count come off.",
+    "",
+    "2026-10-14 (owner rule 22; busbar-release #369, pin 99470fba7c96): the recorder records all sixteen rows these three entries named (stream_upstream_error x6, ok_cachepoint_document, ok_citation); their 1.5.5 goldens are committed and they are judged on their merits, so the entries are struck and `expected` is 0."
   ],
-  "expected": 16,
-  "accepted": [
-    {
-      "cells": "^llm\\|[a-z]+\\|[a-z]+\\|request\\|stream_upstream_error#(request|response)$",
-      "owner": "shadow-oracle recorder (testing/shadow-oracle/record.sh)",
-      "rationale": "The mock upstream cannot yet fail PART WAY THROUGH a stream — N good events, then an in-band error event — so the recorder reports UNSUPPORTED for this outcome in all six ingress dialects and there is no recorded wire to judge. 12 rows: 6 dialects x {request, response}."
-    },
-    {
-      "cells": "^llm\\|bedrock\\|bedrock\\|request\\|ok_cachepoint_document#(request|response)$",
-      "owner": "shadow-oracle recorder (testing/shadow-oracle/record.sh)",
-      "rationale": "A request that puts a `cachePoint` before a native `document` block — a wire slot that yields no IR block, ahead of one that does — has no fixture in the tree, so the recorder reports UNSUPPORTED and records nothing."
-    },
-    {
-      "cells": "^llm\\|responses\\|responses\\|request\\|ok_citation#(request|response)$",
-      "owner": "shadow-oracle recorder (testing/shadow-oracle/record.sh)",
-      "rationale": "An answer carrying a URL citation — the Responses annotation the published UrlCitationBody flattens onto the annotation object — has no fixture in the tree, so the recorder reports UNSUPPORTED and records nothing."
-    }
-  ]
+  "expected": 0,
+  "accepted": []
 }

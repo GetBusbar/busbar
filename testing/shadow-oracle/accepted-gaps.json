@@ -25,21 +25,10 @@
     "does not owe, each with the reason it has no golden reference. They carry no accepted-differences",
     "twin. scripts/verify-1.6.0-done.sh (assert_golden_bookkeeping, run by its --selftest over this",
     "tree) refuses an in-scope cell the golden does not owe and no entry here names.",
-    "The three entries from `admin-kernel-verbs-new-in-1.6.0` onward name the 89 admin.ops cells the admin corpus gained when it was reconciled against the served router: operations 1.5.5 never had, so the 1.5.5 golden cannot owe them. Each regex enumerates its operations; none is a family blanket."
+    "The three entries from `admin-kernel-verbs-new-in-1.6.0` onward name the 89 admin.ops cells the admin corpus gained when it was reconciled against the served router: operations 1.5.5 never had, so the 1.5.5 golden cannot owe them. Each regex enumerates its operations; none is a family blanket.",
+    "2026-10-14 (owner rule 22; busbar-release #369, pin 99470fba7c96): stream-upstream-error, gemini-tool-use-token-term, bedrock-cachepoint-before-document and responses-url-citation are retired: the recorder records those nine cells, owed-baseline.txt owes them and their 1.5.5 goldens are committed (oracle-rerecord, add-only)."
   ],
   "accepted": [
-    {
-      "id": "gemini-tool-use-token-term",
-      "cells": "^llm\\|gemini\\|gemini\\|request\\|ok_tool_use_tokens$",
-      "owner": "llm-plane",
-      "rationale": "needs a tool-use verb in the pinned mock; product decision on the six-dialect tool-use response shape. The cell declared a mock_control the mock resolves to no verb, and an unresolvable control is served as a healthy 200 — so the cell would have recorded the tool-less happy path while claiming to pin usageMetadata.toolUsePromptTokenCount. The control is removed and the cell stays needs_fixture (SKIP) until the mock can answer with the tool-use token term and the product decides what that answer looks like in each of the six dialects; inventing either here would put the oracle's own guess into the golden. Twin of accepted-differences.json 'G-1': that register would forgive `body` when the cell records, but the same recording also moves `effects.usage` (1.5.5 bills 190, 1.6.0 bills 222), which an improvement entry may not waive — so recording is blocked on the owner promoting G-1 to kind=breaking, a product decision, not silence here."
-    },
-    {
-      "id": "stream-upstream-error",
-      "cells": "^llm\\|[a-z_]+\\|[a-z_]+\\|request\\|stream_upstream_error$",
-      "owner": "llm-plane",
-      "rationale": "twin of accepted-differences.json 'M-2 a mid-stream upstream failure is not billed as a completion'. The six diagonal cells (one per streaming backend) exist and carry mock_control {\"stream-error\": true}, but stay needs_fixture (SKIP): the pinned mock answers stream-error for the OpenAI-compatible arm (openai_chat_stream_error emits the inline `data: {\"error\":...}` chunk M-2 shape (1) names) but NOT for the terminal `finish_reason: \"ERROR\"` Cohere shape (2), so recording all six needs a mock verb the oracle may not add here. And when they record, 1.6.0 diverges from 1.5.5 on `status` and `effects.usage` (the failed stream stops being billed as a completion), classes M-2's body-only improvement entry may not waive; per M-2's own rationale the entry deliberately stays fail-closed (an UNACCEPTED divergence is RED) until the owner rescopes it — its `cells` regex still names the stale outcome token `mid-stream-error`, and widening it is the owner's call, never an auditor's. Named here so the SKIP is an owned decision while it waits on both."
-    },
     {
       "id": "boot-refusal-needs-a-feature-off-binary",
       "cells": "^boot\\.refusal\\|BOOT-(059a|079|094)\\|validate$",
@@ -75,18 +64,6 @@
       "cells": "^http\\.crosscut\\|413\\|(a2a-jsonrpc|mcp-streamable-http)$",
       "owner": "shadow-oracle",
       "rationale": "The 413 answer on the A2A JSON-RPC mount (/a2a) and the MCP streamable-http mount (/mcp) is only reachable when the recorder's config mounts the `agents:` / `mcp:` blocks; the oracle baseline config mounts neither, so both cells are needs_fixture in cells.json. It is not recorded because the committed 1.5.5 golden (testing/shadow-oracle/golden/1.5.5, meta.json at 2026-09-16) scored it a needs_fixture SKIP, and giving it a golden reference means re-taking that recording from the published 1.5.5 binary, which only the owner's golden re-take (TODO item 50, the oracle-rerecord workflow) may do; an agent may not bless or re-record a golden (TODO rule 9.2). Named here (TODO item 51) so the missing reference is an owned decision rather than a SKIP nobody wrote a reason for."
-    },
-    {
-      "id": "bedrock-cachepoint-before-document",
-      "cells": "^llm\\|bedrock\\|bedrock\\|request\\|ok_cachepoint_document$",
-      "owner": "llm-plane",
-      "rationale": "The cell's request puts a `cachePoint` before a native `document` block, the index-space case the `ping` fixture's single text block cannot produce; it is needs_fixture in cells.json. It is not recorded because the committed 1.5.5 golden (testing/shadow-oracle/golden/1.5.5, meta.json at 2026-09-16) scored it a needs_fixture SKIP, and giving it a golden reference means re-taking that recording from the published 1.5.5 binary, which only the owner's golden re-take (TODO item 50, the oracle-rerecord workflow) may do; an agent may not bless or re-record a golden (TODO rule 9.2). Named here (TODO item 51) so the missing reference is an owned decision rather than a SKIP nobody wrote a reason for."
-    },
-    {
-      "id": "responses-url-citation",
-      "cells": "^llm\\|responses\\|responses\\|request\\|ok_citation$",
-      "owner": "llm-plane",
-      "rationale": "The cell's answer carries a URL citation (mock_control {\"citation\": true}), the annotation shape the `ok` fixture's bare-text answer never exercises; it is needs_fixture in cells.json. It is not recorded because the committed 1.5.5 golden (testing/shadow-oracle/golden/1.5.5, meta.json at 2026-09-16) scored it a needs_fixture SKIP, and giving it a golden reference means re-taking that recording from the published 1.5.5 binary, which only the owner's golden re-take (TODO item 50, the oracle-rerecord workflow) may do; an agent may not bless or re-record a golden (TODO rule 9.2). Named here (TODO item 51) so the missing reference is an owned decision rather than a SKIP nobody wrote a reason for."
     },
     {
       "id": "admin-kernel-verbs-new-in-1.6.0",
