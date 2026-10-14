@@ -4463,3 +4463,45 @@ fn the_provider_tenant_merges_deployment_over_catalog() {
     assert_eq!(merged.organization.as_deref(), Some("org-deploy"));
     assert_eq!(merged.project.as_deref(), Some("proj-catalog"));
 }
+
+/// A NEUTRAL plane that declares its own section and OWNS a second one beside it, the shape of a
+/// door plane whose Statement states a section that is neither declaring nor consumed (the llm
+/// plane's `webhooks:`, ARCHITECT 2026-10-14 option A).
+static OWNS_BESIDE_PLANE: crate::plane::registry::PlaneDecl = crate::plane::registry::PlaneDecl {
+    declaration: crate::plane::registry::PlaneDeclaration {
+        key: "neutral-test-owns-beside",
+        fallback: false,
+        config_section: "beside_declaring",
+        scope_kinds: &[],
+        owned_config_sections: &["beside_owned"],
+        ..crate::test_support::NEUTRAL_FALLBACK.declaration
+    },
+    ..crate::test_support::NEUTRAL_FALLBACK
+};
+
+/// RED (ARCHITECT 2026-10-14, the plane-owned `webhooks:` section, option A): a section a
+/// registered plane owns BESIDE its declaring one, and that is no endpoint door, is lifted RAW and
+/// handed to that plane as written (`door_sections`, its `PlaneOpenIn::owned`). The kernel learns
+/// the key only from the plane's declared row and spells none. Before the fix it was left unlifted,
+/// so the document was refused at the key as an unknown field. A document that writes the plane's
+/// own section and not this one lifts nothing extra.
+#[test]
+fn a_section_a_plane_owns_beside_its_own_is_lifted_raw_for_it() {
+    let _registry = busbar_kernel::plane::registry::TestRegistryIsolation::seeded(&[
+        crate::test_support::neutral_fallback_plane(),
+        &OWNS_BESIDE_PLANE,
+    ]);
+    let deploy: DeployCfg = crate::config::deploy_from_yaml_str(
+        "beside_declaring:\n  a: 1\nbeside_owned:\n  receiver: true\n\
+         providers: {}\nmodels: {}\npools: {}\n",
+    )
+    .expect("a section a registered plane owns must parse");
+    let written: serde_yaml::Value = serde_yaml::from_str("receiver: true").unwrap();
+    assert_eq!(deploy.plane_raw.get("beside_owned"), Some(&written));
+    assert_eq!(deploy.door_sections().get("beside_owned"), Some(&written));
+    let bare: DeployCfg = crate::config::deploy_from_yaml_str(
+        "beside_declaring:\n  a: 1\nproviders: {}\nmodels: {}\npools: {}\n",
+    )
+    .expect("the plane's own section alone parses");
+    assert!(!bare.plane_raw.contains_key("beside_owned"));
+}
