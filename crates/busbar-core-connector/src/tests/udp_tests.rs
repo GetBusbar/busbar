@@ -77,3 +77,35 @@ fn ipv6_loopback_binds_when_the_host_has_it() {
         assert_eq!(recv(&port), (b"v6".to_vec(), peer.local_addr()));
     }
 }
+
+/// RED: off a worker the port is not put on any reactor.
+#[test]
+fn a_ready_port_off_a_worker_is_refused() {
+    let e = ReadyPort::open(bind("127.0.0.1:0").unwrap()).expect_err("no worker, no reactor");
+    assert_eq!(e.to_string(), crate::io::NOT_ON_A_WORKER);
+}
+
+#[test]
+fn a_ready_port_reads_on_readiness_and_sends_with_the_peer() {
+    crate::support::worker().block_on(async {
+        let port = ReadyPort::open(bind("127.0.0.1:0").unwrap()).unwrap();
+        let far = bind("127.0.0.1:0").unwrap();
+        let mut buf = vec![0_u8; MAX_DATAGRAM];
+        let waker = std::task::Waker::noop();
+        let mut cx = std::task::Context::from_waker(waker);
+        assert!(
+            port.poll_recv_from(&mut cx, &mut buf).is_pending(),
+            "nothing waiting: not ready, no block"
+        );
+        far.try_send_to(b"check", port.local_addr())
+            .unwrap()
+            .unwrap();
+        let (n, peer) = futures::future::poll_fn(|cx| port.poll_recv_from(cx, &mut buf))
+            .await
+            .unwrap();
+        assert_eq!(&buf[..n], b"check");
+        assert_eq!(peer, far.local_addr());
+        assert!(port.send_to(b"answer", peer).unwrap());
+        assert_eq!(recv(&far), (b"answer".to_vec(), port.local_addr()));
+    });
+}

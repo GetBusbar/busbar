@@ -1,33 +1,21 @@
 # Releasing Busbar
 
-The branch ladder is **predev → dev → qa → main**. Pull requests into `predev` are judged and landed by
-ModernCI (required check `ci`, configured by [`.ci/default.yaml`](.ci/default.yaml)). The promotion
-from `predev` to `dev` runs [`.github/workflows/promote.yml`](.github/workflows/promote.yml). The release engine lives in the private `GetBusbar/busbar-release` repository
-(pinned outside this repo by the org variables `ENGINE_REF` and `ENGINE_SHA256`, set with
-`busbar-release engine pin <sha>`; `workflow-rules` R16 holds promote.yml to a 40-hex check and a
-sha256 verify of the engine at run time); busbar-release's `crates/busbar-release-train/ladder.json`
-says what entering each rung needs.
+The branch ladder is **predev → dev → qa → main**, and ModernCI judges and moves every rung from
+this repository's branch files (OWNER 2026-10-12, "ModernCI only"; the ruling is
+[`docs/design/BUSBAR-1.6.0.md`](docs/design/BUSBAR-1.6.0.md) Part 6, "BUSBAR-RELEASE RETIRED FROM
+BUSBAR"). A branch file is named for the branch being moved and says what the move must pass.
 
-| Rung entered (the PR's base) | What the hop runs | Consent |
-|---|---|---|
-| **`predev`** (from a `lane-*` branch) | every registered gate (`cargo xtask gate --list`, each by name) | none |
-| **`dev`** | the gates, the oracle against the 1.5.5 golden, conformance | none |
-| **`qa`** | the same, plus build + test, then the release binaries and the container | the owner (the org ruleset keeps `qa` locked) |
-| **`main`** | the same, then publish | the owner (the org ruleset keeps `main` locked) |
+| Move | Branch file | What it runs | Consent |
+|---|---|---|---|
+| a `lane-*` branch into **`predev`** | [`.ci/default.yaml`](.ci/default.yaml) | preflight, every registered gate, clippy, compile, test, doctest, deletion matrix, `cargo deny`; no worse than predev (required check `ci`) | none |
+| **`predev`** into **`dev`** | [`.ci/predev.yaml`](.ci/predev.yaml) | the gates, the oracle against the 1.5.5 golden, conformance, `scripts/verify-1.6.0-done.sh`, the Q128 audit | the owner's approval |
+| **`dev`** into **`qa`** | `.ci/dev.yaml` | the same, plus build and test, the fuzz smoke and the signing gate, the soak, the release binaries and the container | the owner (the org ruleset keeps `qa` locked) |
+| **`qa`** into **`main`** | `.ci/qa.yaml` | the same; on landing, the release is signed and published from the build that was judged, never rebuilt | the owner (the org ruleset keeps `main` locked) |
 
-A hop has two jobs, both in `promote.yml`:
-
-* **`preflight`**, on a free runner: `cargo fmt --all -- --check`, `cargo metadata --locked`, and the
-  generated C header is current (`cargo xtask gate abi-header --write` leaves no diff).
-* **`hop`**, on a Latchkey runner sized by the rung: the pinned engine plans the hop and admits the
-  candidate sha, and the verdict is uploaded as an artifact. When
-  the rung needs no consent and the repository variable `PROMOTE_BOARD` is `true`, the engine
-  fast-forwards the base branch to the exact sha it tested. Both promotions are **fast-forward
-  pushes**: linear history is what makes "main's HEAD *is* the qa commit" true.
-
-> The entry builds a plan names (`release-binaries`, `container`, `publish`) are not yet ported into
-> the engine: `promote.yml` fails a hop that plans one with that message rather than skipping it.
-> Nothing is built or published until they land in busbar-release.
+`.ci/dev.yaml` and `.ci/qa.yaml` are not written yet: until they land, nothing is built or published
+from `qa` or `main`. The busbar-release hop (`promote.yml`, the engine pin) is deleted. busbar-release
+remains the home of the oracle (`busbar-oracle`, pinned by `testing/shadow-oracle/oracle-rust.pin`),
+the soak and the plugin fleet generator.
 
 **The tag is an OUTPUT of a green release, never an input.** Nobody tags by hand; no workflow is
 triggered by a `v*` tag (`cargo xtask gate workflow-rules`, rule R1). Docker Hub tag immutability
@@ -49,19 +37,17 @@ python3 .github/scripts/roll_changelog.py 1.6.0 CHANGELOG.md
 ```
 
 That bumps `crates/busbar/Cargo.toml` + `Cargo.lock`, regenerates the committed OpenAPI schema, and
-rolls `[Unreleased]` to `[1.6.0]` with today's date. It does **not** tag. Open the result as a pull
-request against `dev` and let the hop run.
+rolls `[Unreleased]` to `[1.6.0]` with today's date. It does **not** tag. Land it on `predev` like
+any other change; it reaches `dev` with the next promotion.
 
 ## Moving a version up the ladder
 
-Open a pull request whose base is the next rung (`dev` into `qa`, `qa` into `main`; a lane branch into `predev`). `promote.yml`
-runs the hop on the PR; the run's check names are `preflight` and `hop`. A red hop is fixed
-forward on the lower branch and the pull request re-run: every push re-runs the hop on the new sha.
+ModernCI opens and judges each promotion (`modernci call moves` shows how each stands). A red move
+is fixed forward on the lower branch: every push re-judges it on the new head.
 
 ## Branch protection this assumes
 
-`qa` and `main` require the two contexts `preflight` and `hop` (plus the org ruleset's owner
-consent).
+`predev` requires ModernCI's check `ci`; `qa` and `main` take the owner's consent (the org ruleset).
 
 Branch protection lives in repository rulesets, not in a script (see `.github/required-status-checks.md`).
 Keep `enforce_admins: true`, `required_linear_history: true`, `allow_force_pushes: false` and

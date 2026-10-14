@@ -287,7 +287,7 @@ fn negated_test_pred(code: &str) -> bool {
 /// the shell's marker file does. `#[cfg(test)] mod { … }` bodies are excluded from BOTH classes.
 fn markers_in(rel: &str, text: &str) -> Vec<String> {
     let mut out = Vec::new();
-    let mut in_block = false;
+    let mut in_block = scan::LexState::default();
     let mut testdepth: i32 = 0;
     let mut pend = false;
     let mut lex = scan::LexState::default();
@@ -911,6 +911,26 @@ impl Gate for NoDeferralGate {
                 "xtask_no_deferral_plant.rs:4",
                 "xtask_no_deferral_plant.rs:7",
             ],
+        ));
+
+        // ── CLASS A AFTER A `/*` INSIDE A CONTINUED STRING. The shared scanner reset its in-string
+        //    flag on every line, so the continuation's `/*` opened a block comment that never
+        //    closed and the `todo!()` below it read as comment: the rest of
+        //    `crates/busbar-kernel/src/plugin_routes.rs` was unread that way (audit xtask A2 HIGH 1,
+        //    H1 HIGH 2).
+        let mut ov = Overlay::new();
+        ov.set(
+            "crates/busbar-core/src/xtask_no_deferral_plant.rs",
+            "pub fn confine(root: &str) -> String {\n    format!(\"routes are confined to \\\n     \
+                     {root}/*\")\n}\npub fn arm() -> u8 { todo!() }\n",
+        );
+        report.push(prove_red(
+            base,
+            self,
+            "a deferral after a `/*` inside a continued string is still a marker",
+            &[ROW_UNWAIVED],
+            ov,
+            &["xtask_no_deferral_plant.rs:5"],
         ));
 
         // ── CLASS B, on the raw line.

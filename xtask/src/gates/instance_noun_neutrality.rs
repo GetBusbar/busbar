@@ -869,7 +869,7 @@ fn census_file(cx: &Ctx, f: &SourceFile) -> (Vec<Leak>, Vec<exempt::Pragma>) {
     // file, and literals anywhere outside a dialect module (kernel, contract, root, loader, a
     // plane's non-dialect code).
     let blank_literals = in_dialect_module(cx, krate, &rel);
-    let mut in_block = false;
+    let mut in_block = crate::scan::LexState::default();
     let mut lex = crate::scan::LexState::default();
     let lines: Vec<(String, String)> = f
         .text

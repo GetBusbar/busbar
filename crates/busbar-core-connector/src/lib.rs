@@ -19,6 +19,9 @@
 //! * [`dtls`] is its datagram sibling — the DTLS engine a media association runs on (the RFC 7983
 //!   demux, the ICE-gated bind, the SRTP exporter), on ring like [`tls`].
 //! * [`udp`] is the host's datagram socket: one bound port, a peer per datagram.
+//! * [`datagram`] drives one association's datagram framer over the port and the dtls engine: the
+//!   datagram lane on every call, the keying-material item presented once, routes and path
+//!   requests only where the secure layer allows them.
 //!
 //! * [`hostio`] is THE HOST'S I/O (`io.*`): the one place that holds an OS handle (a stream, a
 //!   listener, a program's pipes) and moves bytes over it, admitting only what the destination
@@ -47,6 +50,7 @@
 
 pub mod carrier;
 pub mod compose;
+pub mod datagram;
 pub mod dtls;
 pub mod endpoint;
 pub mod framed_stream;
