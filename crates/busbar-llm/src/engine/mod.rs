@@ -36,7 +36,7 @@ use busbar_contract::upstream::Disposition;
 #[cfg_attr(not(test), allow(unused_imports))]
 use busbar_contract::upstream::StatusClass;
 #[cfg(test)]
-use busbar_kernel::handlers::{op_for, usage_tap_fault};
+use busbar_kernel::handlers::op_for;
 use busbar_kernel::plane_host::OnExhaustedInput as OnExhausted;
 use busbar_kernel::{
     auth::{present_caller, CallerCredential as KernelCallerCredential},
