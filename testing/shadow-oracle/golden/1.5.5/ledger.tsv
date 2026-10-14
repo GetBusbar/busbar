@@ -2456,3 +2456,12 @@ llm|responses|responses|request|ok_stream_whole_answer	PASS	HTTP 200; usage Δ {
 neutrality|routes|decisions-shaped-404	PASS	HTTP 404; usage Δ {}	
 neutrality|routes|oauth-as-shaped-404	PASS	HTTP 404; usage Δ {}	
 neutrality|routes|ws-shaped-404	PASS	HTTP 404; usage Δ {}	
+llm|anthropic|anthropic|request|stream_upstream_error@fixture	PASS	HTTP 200; usage Δ {"requests":1}	
+llm|bedrock|bedrock|request|ok_cachepoint_document@fixture	PASS	HTTP 200; usage Δ {"requests":1,"spend_cents":250,"tokens":18}	
+llm|bedrock|bedrock|request|stream_upstream_error@fixture	PASS	HTTP 200; usage Δ {"requests":1}	
+llm|cohere|cohere|request|stream_upstream_error@fixture	PASS	HTTP 200; usage Δ {"requests":1}	
+llm|gemini|gemini|request|ok_tool_use_tokens@fixture	PASS	HTTP 200; usage Δ {"requests":1,"spend_cents":250,"tokens":18}	
+llm|gemini|gemini|request|stream_upstream_error@fixture	PASS	HTTP 200; usage Δ {"requests":1}	
+llm|openai|openai|request|stream_upstream_error@fixture	PASS	HTTP 200; usage Δ {"requests":1}	
+llm|responses|responses|request|ok_citation@fixture	PASS	HTTP 200; usage Δ {"requests":1,"spend_cents":250,"tokens":18}	
+llm|responses|responses|request|stream_upstream_error@fixture	PASS	HTTP 200; usage Δ {"requests":1}	
