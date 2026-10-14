@@ -63,32 +63,12 @@ item = "__BUSBAR_CAPTURE"
 [[finding]]
 rule = "contract-stateless:static"
 file = "crates/busbar-contract/src/abi/sdk/mod.rs"
-item = "BUSBAR_COLD_ENTRY"
-
-[[finding]]
-rule = "contract-stateless:static"
-file = "crates/busbar-contract/src/abi/sdk/mod.rs"
-item = "CTX"
-
-[[finding]]
-rule = "contract-stateless:static"
-file = "crates/busbar-contract/src/abi/sdk/mod.rs"
 item = "DOOR"
 
 [[finding]]
 rule = "contract-stateless:static"
 file = "crates/busbar-contract/src/abi/sdk/mod.rs"
-item = "MAX_LEVEL"
-
-[[finding]]
-rule = "contract-stateless:static"
-file = "crates/busbar-contract/src/abi/sdk/mod.rs"
 item = "REGISTERED"
-
-[[finding]]
-rule = "contract-stateless:static"
-file = "crates/busbar-contract/src/abi/sdk/mod.rs"
-item = "SINK"
 
 [[finding]]
 rule = "contract-stateless:static"
