@@ -11,11 +11,16 @@
 //! for it.
 //!
 //! Which modules the refusal offers is the binary's own answer, and each one it offers is asked of
-//! `--validate` in turn: none of them is an unknown exporter. The source names no sink, and the
-//! refusal's bytes on a default build are the oracle cell's (from the 1.5.5 binary), never pinned here.
+//! `--validate` in turn: none of them is an unknown exporter. A build that serves every module
+//! 1.5.5's refusal offered prints 1.5.5's line byte for byte: that line is DATA
+//! (`fixtures/unknown_exporter_1_5_5.txt`, verbatim from the 1.5.5 binary), so the source names no
+//! sink.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
+
+/// 1.5.5's refusal for `module: nosuch`, byte for byte (DATA, verbatim from the 1.5.5 binary).
+const REFUSAL_1_5_5: &str = include_str!("fixtures/unknown_exporter_1_5_5.txt");
 
 /// The refusal's head for `module: nosuch`; the modules it offers follow, ` | `-separated.
 const REFUSAL_HEAD: &str =
@@ -96,6 +101,31 @@ fn the_unknown_exporter_refusal_lists_exactly_the_modules_this_build_serves() {
             !out.contains(&format!("unknown exporter '{module}'")),
             "the refusal offers `{module}`, which this build does not serve:\n{out}"
         );
+    }
+    // A build serving every module 1.5.5 offered prints 1.5.5's line, byte for byte; a build that
+    // does not link one of them never offers it.
+    let line_1_5_5 = REFUSAL_1_5_5.trim_end();
+    let offered_1_5_5: Vec<&str> = line_1_5_5
+        .strip_prefix(REFUSAL_HEAD)
+        .expect("the 1.5.5 line is the same refusal")
+        .split(" | ")
+        .collect();
+    let serves_all = offered_1_5_5.iter().all(|module| {
+        !validate(&dir, &format!("  x: {{ module: {module} }}\n"))
+            .contains(&format!("unknown exporter '{module}'"))
+    });
+    if serves_all {
+        assert_eq!(line, line_1_5_5, "the refusal is 1.5.5's line, byte for byte");
+    } else {
+        for module in &offered_1_5_5 {
+            if offered.contains(module) {
+                continue;
+            }
+            assert!(
+                !line.contains(&format!(" {module} ")) && !line.ends_with(&format!(" {module}")),
+                "this build does not serve '{module}' but offers it: {line}"
+            );
+        }
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
