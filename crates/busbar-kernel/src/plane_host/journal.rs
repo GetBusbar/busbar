@@ -33,223 +33,30 @@
 //!
 //! ## Durability
 //!
-//! This module holds the per-scope positions and rows in a PROCESS-LOCAL registry and wires
-//! FAITHFULLY to the existing [`crate::audit::Chain::append`] per scope — same seq authority, same
-//! seal/digest — producing byte-identical digests. No persisted byte format is changed. A generic
-//! store-backed `audit::Journal` (host-side seq-authority + per-scope position cache + LRU +
-//! store-resume, naming no plane type) is not yet wired; the two `// durable-store cleave point`
-//! markers below flag where it would attach to the durable store.
+//! The durable slots (`journal_register` and the `journal_*_scoped` family) drive the ONE registry of
+//! store-backed streams, [`crate::audit::stream_registry`]: this module only reads the borrowed ABI
+//! buffers, decodes the descriptor, and hands a stream's own decoder back across the seam. The two
+//! RAM slots (`journal_append`/`journal_read`) hold the per-scope positions and rows in a
+//! PROCESS-LOCAL registry and wire FAITHFULLY to [`crate::audit::Chain::append`] per scope — same seq
+//! authority, same seal/digest — producing byte-identical digests. The two
+//! `// durable-store cleave point` markers below flag where a store would attach to them.
 
 use super::recover;
-use crate::audit::journal::{Journal, NeutralRecord};
-use crate::audit::{frame_prelude, Chain, ChainLabels, ChainedRecord, Digest, Framing};
+use crate::audit::stream_registry::{
+    self, handle as stream_handle, Decode, StreamHandle, StreamInput, StreamRecord,
+};
+use crate::audit::{Chain, ChainedRecord, Framing};
 use crate::plane::store::PlaneStoreView;
 use busbar_contract::abi::hot::host::{HostCtx, JournalReframeFn};
 use busbar_contract::abi::hot::{
     ChainBreakHdr, Framing as AbiFraming, FramingDesc, JournalQuery, JournalStreamDesc, RawFraming,
     ReframeOut, RestoredHdr, Seq, StatusClass, VerifyChainHdr, POD_VERSION,
 };
+use busbar_contract::records::{RecordStoreError, RecordStoreResult};
 use core::mem::MaybeUninit;
 use std::collections::HashMap;
 use std::panic::{catch_unwind, AssertUnwindSafe};
-use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
-
-/// One appended journal record: the host-assigned prelude (`scope`/`seq`/`prev_hash`/`hash`) plus the
-/// plane's opaque pre-framed content suffix and the stream's framing declaration. Implements the real
-/// [`ChainedRecord`] so the ONE [`crate::audit`] verifier walks it unchanged.
-#[derive(Clone)]
-pub(crate) struct PlaneJournalRecord {
-    scope: String,
-    seq: u64,
-    prev_hash: String,
-    hash: String,
-    /// The plane's OWN fields, already framed as a suffix (leading `|` for PipeSeparated — Option A).
-    content: Vec<u8>,
-    /// The stream's prelude framing (carried per-record because the host serves many streams).
-    framing: Framing,
-    /// Whether the scope participates in the digest (admin-style streams omit it).
-    digests_scope: bool,
-}
-
-/// The caller payload for one append: everything the plane supplies. Carries NO `seq`/`prev_hash`/
-/// `hash` — those are the chain's authority, assigned by [`Chain::append`].
-pub(crate) struct PlaneJournalInput {
-    content: Vec<u8>,
-    framing: Framing,
-    digests_scope: bool,
-}
-
-impl PlaneJournalInput {
-    /// One append's payload: the plane's pre-framed `content` suffix under the stream's `framing`,
-    /// the scope digested iff `digests_scope`.
-    pub(crate) fn new(content: Vec<u8>, framing: Framing, digests_scope: bool) -> Self {
-        PlaneJournalInput {
-            content,
-            framing,
-            digests_scope,
-        }
-    }
-}
-
-impl PlaneJournalRecord {
-    /// Assemble a record from reframed parts — the constructor a plane-side reframe (the `call_reframe`
-    /// FFI bridge, OR an in-core seam user's own decode bridge like `plane::taskstore`) uses to turn a
-    /// stored body + its scope back into a chain record. `scope` is the store parent, never read from
-    /// the body; `content` is the plane's opaque pre-framed suffix carried verbatim.
-    #[allow(dead_code)]
-    pub(crate) fn from_parts(
-        scope: String,
-        seq: u64,
-        prev_hash: String,
-        hash: String,
-        content: Vec<u8>,
-        framing: Framing,
-        digests_scope: bool,
-    ) -> Self {
-        PlaneJournalRecord {
-            scope,
-            seq,
-            prev_hash,
-            hash,
-            content,
-            framing,
-            digests_scope,
-        }
-    }
-}
-
-impl ChainedRecord for PlaneJournalRecord {
-    type Input = PlaneJournalInput;
-
-    const LABELS: &'static ChainLabels = &ChainLabels {
-        chain: "the plane journal chain",
-        scope: "scope",
-    };
-    // Unused for framing: `digest_fields` feeds the prelude framed in the RECORD's per-instance
-    // `framing` and then the pre-framed suffix RAW, so this const never governs any byte. It only
-    // satisfies the trait; the real framing travels on the record (the Phase-3 shape).
-    const FRAMING: Framing = Framing::LengthPrefixed;
-
-    fn scope_of(&self) -> &str {
-        &self.scope
-    }
-    fn seq(&self) -> u64 {
-        self.seq
-    }
-    fn prev_hash(&self) -> &str {
-        &self.prev_hash
-    }
-    fn hash(&self) -> &str {
-        &self.hash
-    }
-
-    fn link(scope: &str, seq: u64, prev_hash: String, input: PlaneJournalInput) -> Self {
-        PlaneJournalRecord {
-            scope: scope.to_string(),
-            seq,
-            prev_hash,
-            hash: String::new(),
-            content: input.content,
-            framing: input.framing,
-            digests_scope: input.digests_scope,
-        }
-    }
-
-    fn set_hash(&mut self, hash: String) {
-        self.hash = hash;
-    }
-
-    fn digest_fields(&self, d: &mut Digest) {
-        // HOST frames the prelude; the plane's suffix is appended RAW (Option A) — the two Digest::raw
-        // calls are a pure byte concat, so `sha256_hex(prelude ⧺ suffix)` matches the legacy single
-        // buffer for BOTH framings (the PipeSeparated join `|` lives inside `content`).
-        let scope = self.digests_scope.then_some(self.scope.as_str());
-        d.raw(&frame_prelude(
-            self.framing,
-            &self.prev_hash,
-            scope,
-            self.seq,
-        ));
-        d.raw(&self.content);
-    }
-}
-
-impl NeutralRecord for PlaneJournalRecord {
-    fn content(&self) -> &[u8] {
-        &self.content
-    }
-}
-
-// ── THE DURABLE JOURNAL SEAM (minor-9) — store-backed, keyed by a plane-registered `kind_id` ───────
-//
-// A plane REGISTERS a stream (its neutral `kind`, framing, digests_scope + a plane-provided REFRAME
-// callback) and thereafter addresses append/read/restore/seed/forget/compact/verify by the integer
-// `kind_id`. Each stream owns ONE store-backed [`crate::audit::journal::Journal<PlaneJournalRecord>`]
-// — the SAME seq-authority + position-cache + write-ordering machinery the three shipped streams use,
-// naming no plane type. The host mints seq/prev_hash/hash through the ONE core chain and persists the
-// neutral `{seq, prev_hash, hash, content}` body; the plane's reframe is the decode bridge that turns
-// a stored body (this neutral body OR a legacy serde row) back into a record on read/restore/verify.
-
-/// One registered durable stream. Holds the neutral facts the host learned at register time and the
-/// store-backed journal it drives. The `journal` is an [`Arc`] so an op clones it out from under the
-/// registry lock and does its store I/O + reframe callbacks WITHOUT holding the registry.
-struct DurableStream {
-    kind: String,
-    framing: Framing,
-    digests_scope: bool,
-    reframe: JournalReframeFn,
-    journal: Arc<Journal<PlaneJournalRecord>>,
-}
-
-/// The process-local registry of durable streams, keyed by the host-assigned `kind_id`.
-fn streams() -> &'static Mutex<HashMap<u32, DurableStream>> {
-    static S: OnceLock<Mutex<HashMap<u32, DurableStream>>> = OnceLock::new();
-    S.get_or_init(|| Mutex::new(HashMap::new()))
-}
-
-/// Poison-recovering lock for the durable-stream registry (same discipline as the RAM registry above).
-fn streams_lock() -> MutexGuard<'static, HashMap<u32, DurableStream>> {
-    streams().lock().unwrap_or_else(|e| e.into_inner())
-}
-
-/// The addressable parts of one registered stream, snapshotted so the registry lock is released before
-/// any store I/O or reframe callback runs.
-struct StreamHandle {
-    kind: String,
-    framing: Framing,
-    digests_scope: bool,
-    reframe: JournalReframeFn,
-    journal: Arc<Journal<PlaneJournalRecord>>,
-}
-
-fn stream_handle(kind_id: u32) -> Option<StreamHandle> {
-    let map = streams_lock();
-    map.get(&kind_id).map(|s| StreamHandle {
-        kind: s.kind.clone(),
-        framing: s.framing,
-        digests_scope: s.digests_scope,
-        reframe: s.reframe,
-        journal: s.journal.clone(),
-    })
-}
-
-/// REPORT THE CHAIN BREAKS A RESUME FOUND, once each, after an append. A scope evicted from the
-/// journal's cache is read back from the store to take its next record; a persisted tail that does not
-/// verify is tamper evidence the journal records and resumes past (it never refuses the write). This
-/// drains those records and names each on the diagnostics envelope, so runtime tamper evidence is as
-/// visible as the boot restore's.
-fn report_resume_breaks(h: &StreamHandle) {
-    for brk in h.journal.take_resume_breaks() {
-        crate::diagnostics::diag_error!(
-            crate::diagnostics::PLANE_JOURNAL_RESUME_CHAIN_BROKEN,
-            stream = %h.kind,
-            break_detail = %brk,
-            "plane journal CHAIN VERIFICATION FAILED on resume — the persisted tail of an evicted \
-             scope does not verify against its own hash chain. The chain resumes from the broken \
-             tail; the write is not refused."
-        );
-    }
-}
+use std::sync::{Arc, Mutex, OnceLock};
 
 /// Read a borrowed `(ptr, len)` range into owned bytes; a null/empty range is the empty vector.
 fn read_bytes(ptr: *const u8, len: usize) -> Vec<u8> {
@@ -272,157 +79,7 @@ fn read_scope(ptr: *const u8, len: usize) -> Option<String> {
     Some(String::from_utf8_lossy(bytes).into_owned())
 }
 
-/// THE IN-CORE REFRAME BRIDGE. A within-core plane seam user (`plane::taskstore`, `calllog`)
-/// still owns its own native `Fn(&str, &[u8]) -> StoreResult<PlaneJournalRecord>` decode bridge, but
-/// the durable seam addresses reframe over the [`JournalReframeFn`] FFI shape. This is the adapter:
-/// the plane's `extern "C-unwind"` reframe slot forwards the raw buffers here, and this reads the body,
-/// runs the native decode, and writes `(seq, prev_hash, hash, pre-framed suffix, digests_scope)` back
-/// into the caller's three buffers under the same length-report discipline [`call_reframe`] expects —
-/// so the unsafe buffer work stays in this audited host module and the plane files stay `deny(unsafe)`.
-/// The scope the host assembles the record with is its own (the store parent), so the native decode's
-/// scope argument is inert here; a placeholder is passed.
-#[allow(dead_code)]
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn reframe_bridge(
-    body_ptr: *const u8,
-    body_len: usize,
-    out: *mut MaybeUninit<ReframeOut>,
-    prev_buf: *mut u8,
-    prev_cap: usize,
-    hash_buf: *mut u8,
-    hash_cap: usize,
-    suffix_buf: *mut u8,
-    suffix_cap: usize,
-    native: impl FnOnce(&str, &[u8]) -> busbar_contract::records::RecordStoreResult<PlaneJournalRecord>,
-) -> StatusClass {
-    if out.is_null() {
-        return StatusClass::Refused;
-    }
-    let body = read_bytes(body_ptr, body_len);
-    let record = match native("", &body) {
-        Ok(r) => r,
-        Err(_) => return StatusClass::Fault,
-    };
-    let prev = record.prev_hash.as_bytes();
-    let hash = record.hash.as_bytes();
-    let suffix = record.content.as_slice();
-    let o = ReframeOut {
-        size: core::mem::size_of::<ReframeOut>() as u32,
-        version: POD_VERSION,
-        digests_scope: u8::from(record.digests_scope),
-        _r: 0,
-        seq: record.seq,
-        prev_len: prev.len(),
-        hash_len: hash.len(),
-        suffix_len: suffix.len(),
-    };
-    // SAFETY: non-null `out` is a live, writable `MaybeUninit<ReframeOut>`; always initialized (the
-    // length-report discipline), so it is readable on both `Ok` and `Refused`.
-    unsafe { (*out).write(o) };
-    if prev.len() > prev_cap || hash.len() > hash_cap || suffix.len() > suffix_cap {
-        return StatusClass::Refused;
-    }
-    // SAFETY: each destination cap >= the source length (checked above); the ranges are live for the
-    // call (ABI discipline), and a null buffer only occurs paired with a zero cap ⇒ zero-length copy.
-    unsafe {
-        if !prev.is_empty() {
-            std::ptr::copy_nonoverlapping(prev.as_ptr(), prev_buf, prev.len());
-        }
-        if !hash.is_empty() {
-            std::ptr::copy_nonoverlapping(hash.as_ptr(), hash_buf, hash.len());
-        }
-        if !suffix.is_empty() {
-            std::ptr::copy_nonoverlapping(suffix.as_ptr(), suffix_buf, suffix.len());
-        }
-    }
-    StatusClass::Ok
-}
-
-/// A within-core stream's native decode, named as a TYPE so the ONE [`reframe_slot`] below serves it
-/// and the stream's own file spells no FFI slot (one-memory-abi:c-unwind: a new
-/// `extern "C-unwind"` is never added; the [`JournalReframeFn`] shape it must coerce to is the
-/// contract's, and its spelling stays in this already-audited host module).
-pub(crate) trait NativeReframe {
-    /// The stream's decode of one stored body into its chain record.
-    fn reframe(
-        scope: &str,
-        body: &[u8],
-    ) -> busbar_contract::records::RecordStoreResult<PlaneJournalRecord>;
-}
-
-/// THE IN-CORE REFRAME SLOT, generic over the stream's [`NativeReframe`]: the [`JournalReframeFn`]
-/// a within-core stream registers is `reframe_slot::<ItsDecode>`, forwarding the raw buffers to
-/// [`reframe_bridge`] over that decode.
-#[allow(clippy::too_many_arguments)]
-pub(crate) extern "C-unwind" fn reframe_slot<N: NativeReframe>(
-    _host: HostCtx,
-    _kind_id: u32,
-    body_ptr: *const u8,
-    body_len: usize,
-    out: *mut MaybeUninit<ReframeOut>,
-    prev_buf: *mut u8,
-    prev_cap: usize,
-    hash_buf: *mut u8,
-    hash_cap: usize,
-    suffix_buf: *mut u8,
-    suffix_cap: usize,
-) -> StatusClass {
-    reframe_bridge(
-        body_ptr,
-        body_len,
-        out,
-        prev_buf,
-        prev_cap,
-        hash_buf,
-        hash_cap,
-        suffix_buf,
-        suffix_cap,
-        N::reframe,
-    )
-}
-
-/// SAFE SEED WRAPPER for a within-core seam user: drive [`journal_seed`] over a registered stream and
-/// return the reported [`ChainBreakHdr`] by value, keeping the `MaybeUninit` read (the one unsafe step)
-/// inside this audited module so `plane::taskstore` stays `deny(unsafe)`. `Err(())` is a seam fault
-/// (an unregistered stream, an empty scope, or a reframe that could not decode a body).
-#[allow(dead_code)]
-pub(crate) fn seed_scoped_via_seam(
-    host: HostCtx,
-    kind_id: u32,
-    scope: &str,
-    packed: &[u8],
-) -> Result<ChainBreakHdr, ()> {
-    let mut out = MaybeUninit::<ChainBreakHdr>::uninit();
-    let status = journal_seed(
-        host,
-        kind_id,
-        scope.as_ptr(),
-        scope.len(),
-        packed.as_ptr(),
-        packed.len(),
-        &mut out as *mut MaybeUninit<ChainBreakHdr>,
-    );
-    if status != StatusClass::Ok {
-        return Err(());
-    }
-    // SAFETY: an `Ok` status published the slot (the seed's write-only-on-Ok discipline).
-    Ok(unsafe { out.assume_init() })
-}
-
-/// SAFE COMPACT WRAPPER for a within-core seam user: drive [`journal_compact`] over a registered
-/// stream and return the count of durable rows dropped. `Err(())` is a seam fault. No `unsafe` is
-/// needed: `removed` is an ordinary stack `u64` the host writes on the `Ok` path.
-#[allow(dead_code)]
-pub(crate) fn compact_via_seam(host: HostCtx, kind_id: u32, before: u64) -> Result<u64, ()> {
-    let mut removed: u64 = 0;
-    let status = journal_compact(host, kind_id, before, &mut removed as *mut u64);
-    if status != StatusClass::Ok {
-        return Err(());
-    }
-    Ok(removed)
-}
-
-/// Turn one stored body + its scope back into a [`PlaneJournalRecord`] by calling the stream's
+/// Turn one stored body + its scope back into a [`StreamRecord`] by calling the stream's
 /// PLANE-PROVIDED reframe fn-pointer. The plane decodes the body and writes `(seq, prev_hash, hash,
 /// pre-framed suffix, digests_scope)`; the host assembles the record with the scope IT knows (the
 /// store parent) and the stream's framing. On a too-small buffer the reframe reports the required
@@ -434,7 +91,7 @@ fn call_reframe(
     framing: Framing,
     scope: &str,
     body: &[u8],
-) -> busbar_contract::records::RecordStoreResult<PlaneJournalRecord> {
+) -> RecordStoreResult<StreamRecord> {
     let mut prev = vec![0u8; 128];
     let mut hash = vec![0u8; 128];
     let mut suffix = vec![0u8; 512];
@@ -463,7 +120,7 @@ fn call_reframe(
                 let hash =
                     String::from_utf8_lossy(&hash[..o.hash_len.min(hash.len())]).into_owned();
                 let content = suffix[..o.suffix_len.min(suffix.len())].to_vec();
-                return Ok(PlaneJournalRecord {
+                return Ok(StreamRecord {
                     scope: scope.to_string(),
                     seq: o.seq,
                     prev_hash,
@@ -479,7 +136,7 @@ fn call_reframe(
                     || (o.hash_len > hash.len())
                     || (o.suffix_len > suffix.len());
                 if !grew {
-                    return Err(busbar_contract::records::RecordStoreError(
+                    return Err(RecordStoreError(
                         "journal reframe refused without a larger-buffer request".to_string(),
                     ));
                 }
@@ -494,11 +151,29 @@ fn call_reframe(
                 }
             }
             other => {
-                return Err(busbar_contract::records::RecordStoreError(format!(
+                return Err(RecordStoreError(format!(
                     "journal reframe failed: {other:?}"
                 )))
             }
         }
+    }
+}
+
+/// The decode a durable slot hands the journal: the registrant's own decoder across the seam
+/// ([`call_reframe`]), or the stream's in-core decode for a stream core registered itself.
+fn decode_over(
+    host: HostCtx,
+    kind_id: u32,
+    h: &StreamHandle,
+) -> impl Fn(&str, &[u8]) -> RecordStoreResult<StreamRecord> + '_ {
+    move |sc: &str, body: &[u8]| match &h.decode {
+        Decode::Seam(decoder) => match decoder.downcast_ref::<JournalReframeFn>() {
+            Some(reframe) => call_reframe(host, kind_id, *reframe, h.framing, sc, body),
+            None => Err(RecordStoreError(
+                "journal stream decoder is not a seam decoder".to_string(),
+            )),
+        },
+        Decode::Native(_) => h.decode_native(sc, body),
     }
 }
 
@@ -513,17 +188,18 @@ pub(crate) extern "C-unwind" fn journal_register(
 ) -> StatusClass {
     // `usize::MAX` over the ABI seam: the [`JournalStreamDesc`] POD carries no LRU cap, and a durable
     // TABLE (the A2A task journal) opts OUT of position eviction — its working set is bounded by its own
-    // lifecycle. A stream that needs an LRU cap (the MCP call log, keyed by an unbounded principal space)
-    // registers WITHIN CORE through [`journal_register_capped`], which the ABI descriptor cannot express.
+    // lifecycle. A stream that needs an LRU cap (the usage residual log, keyed by an unbounded principal
+    // space) registers within core through `stream_registry::register`, which the ABI descriptor cannot
+    // express.
     register_stream(host, desc, reframe, usize::MAX)
 }
 
-/// REGISTER a durable journal stream with an explicit LRU `cap` on its position cache — the WITHIN-CORE
-/// entry point for a stream (the MCP `call` log) whose scope space is unbounded (one position per
-/// principal) and must be bounded in RAM. The [`JournalStreamDesc`] ABI POD carries no cap, and this
-/// crate must not touch the hot ABI to add one, so an in-core plane seam user reaches this directly
-/// instead of the vtable's `journal_register`. Byte-behaviour is identical to the ABI path but for the
-/// bound; an evicted position is resumed from the store on the principal's next call.
+/// REGISTER a durable journal stream with an explicit LRU `cap` on its position cache, which the
+/// [`JournalStreamDesc`] ABI POD cannot carry. Byte-behaviour is identical to the ABI path but for the
+/// bound; an evicted position is resumed from the store on the scope's next append. Its one caller is
+/// the resume-break test, which drives a cap of one through the seam; core's own capped stream
+/// registers through [`stream_registry::register`].
+#[cfg(test)]
 pub(crate) fn journal_register_capped(
     host: HostCtx,
     desc: *const JournalStreamDesc,
@@ -557,131 +233,23 @@ fn register_stream(
         let Some(framing) = map_framing(d.framing) else {
             return StatusClass::Unsupported;
         };
-        let journal = Arc::new(Journal::<PlaneJournalRecord>::new(cap));
-        if let Some(gov) = state.app.governance.as_ref() {
-            journal.set_sink(PlaneStoreView::narrow(gov.store()));
-        }
-        let stream = DurableStream {
+        let sink = state
+            .app
+            .governance
+            .as_ref()
+            .map(|gov| PlaneStoreView::narrow(gov.store()));
+        stream_registry::register(
+            d.kind_id,
             kind,
             framing,
-            digests_scope: d.digests_scope != 0,
-            reframe,
-            journal,
-        };
-        streams_lock().insert(d.kind_id, stream);
+            d.digests_scope != 0,
+            Decode::Seam(Arc::new(reframe)),
+            cap,
+            sink,
+        );
         StatusClass::Ok
     }))
     .unwrap_or(StatusClass::Fault)
-}
-
-/// APPEND one record and return its MINTED chain fields `(seq, prev_hash, hash)` — the WITHIN-CORE
-/// analogue of [`journal_append_scoped`] for a seam user that must reconstruct the TYPED record it
-/// returns to its caller (the MCP call log hands back an `McpCallRecord` carrying `prev_hash`/`hash`,
-/// which the `Seq`-only ABI append does not surface). `Err` carries the STORE's own error verbatim (a
-/// durable-write failure the caller surfaces to decide on), an unregistered stream / empty scope, or a
-/// caught panic — so the caller reports the same reason the pre-cleave `Journal::record` did.
-/// Its one caller is the admin audit log's test harness.
-#[cfg(test)]
-pub(crate) fn journal_append_scoped_full(
-    host: HostCtx,
-    kind_id: u32,
-    scope: &str,
-    content: &[u8],
-) -> Result<(u64, String, String), busbar_contract::records::RecordStoreError> {
-    catch_unwind(AssertUnwindSafe(|| {
-        // SAFETY: recovery invariant (see `super::recover`).
-        let Some(_state) = (unsafe { recover(host) }) else {
-            return Err(busbar_contract::records::RecordStoreError(
-                "host handle is stale (its dispatch generation is no longer live)".to_string(),
-            ));
-        };
-        let Some(h) = stream_handle(kind_id) else {
-            return Err(busbar_contract::records::RecordStoreError(
-                "journal stream is not registered".to_string(),
-            ));
-        };
-        if scope.is_empty() {
-            return Err(busbar_contract::records::RecordStoreError(
-                "journal scope must be a non-empty key".to_string(),
-            ));
-        }
-        let input = PlaneJournalInput {
-            content: content.to_vec(),
-            framing: h.framing,
-            digests_scope: h.digests_scope,
-        };
-        let reframe =
-            |sc: &str, body: &[u8]| call_reframe(host, kind_id, h.reframe, h.framing, sc, body);
-        let appended = h.journal.append_scoped(&h.kind, scope, input, &reframe);
-        report_resume_breaks(&h);
-        match appended {
-            Ok(record) => Ok((
-                record.seq(),
-                record.prev_hash().to_string(),
-                record.hash().to_string(),
-            )),
-            Err(crate::audit::journal::JournalError::Store(e)) => Err(e),
-        }
-    }))
-    .unwrap_or_else(|_| {
-        Err(busbar_contract::records::RecordStoreError(
-            "journal append panicked".to_string(),
-        ))
-    })
-}
-
-/// HOSTLESS append for a within-core seam user that has NO `HostCtx` to open — the deferred MCP
-/// client-leg path (`mcp::client::issue`), which is `async` (a `HostCtx` is `!Send` and cannot cross
-/// its `.await`s) and reaches no `App`. It appends to the registered `kind_id` stream WITHOUT recovering
-/// a host: the append itself never reads host state, and the ONLY host-consuming step (the reframe on a
-/// cache-miss resume) is a no-op for the shipped in-core reframes (which ignore the host) and is not
-/// reached at all on a stream with no eviction. `Err` carries the store's reason verbatim, as
-/// [`journal_append_scoped_full`] does. This is the hostless in-core emit path the durable cleave keeps
-/// for the deferred site, not a route any plane crosses the FFI border on.
-#[allow(dead_code)]
-pub(crate) fn journal_append_scoped_full_hostless(
-    kind_id: u32,
-    scope: &str,
-    content: &[u8],
-) -> Result<(u64, String, String), busbar_contract::records::RecordStoreError> {
-    catch_unwind(AssertUnwindSafe(|| {
-        let Some(h) = stream_handle(kind_id) else {
-            return Err(busbar_contract::records::RecordStoreError(
-                "journal stream is not registered".to_string(),
-            ));
-        };
-        if scope.is_empty() {
-            return Err(busbar_contract::records::RecordStoreError(
-                "journal scope must be a non-empty key".to_string(),
-            ));
-        }
-        let input = PlaneJournalInput {
-            content: content.to_vec(),
-            framing: h.framing,
-            digests_scope: h.digests_scope,
-        };
-        // The reframe is reached ONLY on an LRU-evicted-scope resume; the shipped in-core reframes
-        // ignore the `host` argument (see `reframe_bridge`), so a null host here is never dereferenced.
-        let null_host: HostCtx = HostCtx::NULL;
-        let reframe = |sc: &str, body: &[u8]| {
-            call_reframe(null_host, kind_id, h.reframe, h.framing, sc, body)
-        };
-        let appended = h.journal.append_scoped(&h.kind, scope, input, &reframe);
-        report_resume_breaks(&h);
-        match appended {
-            Ok(record) => Ok((
-                record.seq(),
-                record.prev_hash().to_string(),
-                record.hash().to_string(),
-            )),
-            Err(crate::audit::journal::JournalError::Store(e)) => Err(e),
-        }
-    }))
-    .unwrap_or_else(|_| {
-        Err(busbar_contract::records::RecordStoreError(
-            "journal append panicked".to_string(),
-        ))
-    })
 }
 
 /// APPEND one record to a registered stream's durable `scope`: mint the seq/prev_hash/hash through the
@@ -707,16 +275,8 @@ pub(crate) extern "C-unwind" fn journal_append_scoped(
             return Seq::NONE;
         };
         let content = read_bytes(content_ptr, content_len);
-        let input = PlaneJournalInput {
-            content,
-            framing: h.framing,
-            digests_scope: h.digests_scope,
-        };
-        let reframe =
-            |sc: &str, body: &[u8]| call_reframe(host, kind_id, h.reframe, h.framing, sc, body);
-        let appended = h.journal.append_scoped(&h.kind, &scope, input, &reframe);
-        report_resume_breaks(&h);
-        match appended {
+        let reframe = decode_over(host, kind_id, &h);
+        match h.append(&scope, content, &reframe) {
             Ok(record) => Seq(record.seq()),
             Err(_) => Seq::NONE,
         }
@@ -758,8 +318,7 @@ pub(crate) extern "C-unwind" fn journal_read_scoped(
             // No durable sink → a legitimate empty read.
             return StatusClass::Ok;
         };
-        let reframe =
-            |sc: &str, body: &[u8]| call_reframe(host, kind_id, h.reframe, h.framing, sc, body);
+        let reframe = decode_over(host, kind_id, &h);
         let rows = match h
             .journal
             .read_scoped(&h.kind, &scope, store.as_ref(), &reframe)
@@ -806,8 +365,7 @@ pub(crate) extern "C-unwind" fn journal_restore(
         let Some(h) = stream_handle(kind_id) else {
             return StatusClass::Refused;
         };
-        let reframe =
-            |sc: &str, body: &[u8]| call_reframe(host, kind_id, h.reframe, h.framing, sc, body);
+        let reframe = decode_over(host, kind_id, &h);
         let restored = match h.journal.sink() {
             Some(store) => match h.journal.restore_scoped(&h.kind, store.as_ref(), &reframe) {
                 Ok(r) => r,
@@ -862,9 +420,10 @@ pub(crate) extern "C-unwind" fn journal_seed(
         let Some(bodies) = unpack_bodies(&packed) else {
             return StatusClass::Refused;
         };
+        let reframe = decode_over(host, kind_id, &h);
         let mut records = Vec::with_capacity(bodies.len());
         for body in &bodies {
-            match call_reframe(host, kind_id, h.reframe, h.framing, &scope, body) {
+            match reframe(scope.as_str(), body.as_slice()) {
                 Ok(r) => records.push(r),
                 Err(_) => return StatusClass::Fault,
             }
@@ -977,8 +536,7 @@ pub(crate) extern "C-unwind" fn journal_verify_scoped(
         let Some(scope) = read_scope(scope_ptr, scope_len) else {
             return StatusClass::Refused;
         };
-        let reframe =
-            |sc: &str, body: &[u8]| call_reframe(host, kind_id, h.reframe, h.framing, sc, body);
+        let reframe = decode_over(host, kind_id, &h);
         let brk = match h.journal.sink() {
             Some(store) => match h
                 .journal
@@ -1060,8 +618,8 @@ fn unpack_bodies(packed: &[u8]) -> Option<Vec<Vec<u8>>> {
 /// One scope's live position + its appended rows. The `Chain` is the seq authority (identical to the
 /// three shipped streams); `rows` is the store stand-in this Phase-2 bridge holds in-process.
 struct ScopeState {
-    chain: Chain<PlaneJournalRecord>,
-    rows: Vec<PlaneJournalRecord>,
+    chain: Chain<StreamRecord>,
+    rows: Vec<StreamRecord>,
 }
 
 /// The process-local per-scope registry. Durable-store cleave point: this map (position cache + rows)
@@ -1123,11 +681,7 @@ pub(crate) extern "C-unwind" fn journal_append(
             // SAFETY: `(content_ptr, content_len)` is a live borrowed range for the call (ABI).
             unsafe { std::slice::from_raw_parts(content_ptr, content_len) }.to_vec()
         };
-        let input = PlaneJournalInput {
-            content,
-            framing: record_framing,
-            digests_scope: fd.digests_scope != 0,
-        };
+        let input = StreamInput::new(content, record_framing, fd.digests_scope != 0);
         let scope_str = scope.to_string();
 
         let mut map = lock();
@@ -1201,13 +755,13 @@ pub(crate) extern "C-unwind" fn journal_read(
 /// Encode the rows whose `seq >= from_seq` (up to `limit`, `0` = all) into a self-describing blob:
 /// `count:u32-le`, then per row `seq:u64-le · prev_hash · hash · content`, each variable field as
 /// `len:u32-le ⧺ bytes`. A neutral bytes-tier shape (the cold read carries bytes, not typed rows).
-fn encode_rows(rows: &[PlaneJournalRecord], from_seq: u64, limit: u64) -> Vec<u8> {
+fn encode_rows(rows: &[StreamRecord], from_seq: u64, limit: u64) -> Vec<u8> {
     let take = if limit == 0 {
         usize::MAX
     } else {
         limit as usize
     };
-    let selected: Vec<&PlaneJournalRecord> = rows
+    let selected: Vec<&StreamRecord> = rows
         .iter()
         .filter(|r| r.seq >= from_seq)
         .take(take)

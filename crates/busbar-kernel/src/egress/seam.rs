@@ -52,7 +52,7 @@ use crate::proxy::ReadEnd;
 /// planes drive this seam through (they hold no `HostCtx`). The scope lives for the whole closure, so a
 /// STREAMING caller runs its `stream_head` + `pump` (+ fault read-back) under ONE scope — the arena
 /// closer registered at open fires only when `f` returns, not between the two calls. Mirrors
-/// [`crate::plane_host::journal::journal_append_scoped_full_hostless`]: an in-core twin of the FFI
+/// [`crate::audit::stream_registry::append_full`]: an in-core twin of the FFI
 /// path, funnelling into the exact same governed-hop bodies, for a site that has no host to open.
 pub fn with_hostless<R>(f: impl FnOnce(&DispatchScope) -> R) -> R {
     let scope = DispatchScope::new();

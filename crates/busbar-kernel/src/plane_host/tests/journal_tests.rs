@@ -4,6 +4,7 @@
 //! Tests for `crates/busbar-core/src/plane_host/journal.rs`.
 
 use super::*;
+use crate::audit::frame_prelude;
 use crate::plane_host::{recover, with_dispatch_scope, HostState};
 use busbar_contract::abi::hot::host::PlaneHostVtable;
 use busbar_contract::abi::hot::POD_VERSION;
@@ -214,7 +215,7 @@ extern "C-unwind" fn neutral_reframe(
     let nb: NeutralBody = match serde_json::from_slice(body) {
         Ok(nb) => nb,
         Err(_) => {
-            // An undecodable body: fail-closed like the production reframe (reframe_bridge), never
+            // An undecodable body: fail-closed like the production decode (`decode_native`), never
             // panic. Still initialize `out` (the length-report discipline) so the caller can read it.
             let o = ReframeOut {
                 size: core::mem::size_of::<ReframeOut>() as u32,

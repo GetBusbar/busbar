@@ -28,9 +28,9 @@ use busbar_contract::abi::plane::{
 use busbar_contract::records::RecordStoreResult;
 
 use crate::audit::journal::{Journal, NeutralBody};
+use crate::audit::stream_registry::{StreamInput, StreamRecord};
 use crate::audit::Framing;
 use crate::plane::store::{decode, PlaneStore};
-use crate::plane_host::journal::{PlaneJournalInput, PlaneJournalRecord};
 
 /// How many scope positions one chained kind of one instance caches before the coldest is evicted
 /// (and resumed from the store on its next append).
@@ -64,7 +64,7 @@ pub(crate) struct ChainedKind {
     kind: String,
     framing: Framing,
     digests_scope: bool,
-    journal: Journal<PlaneJournalRecord>,
+    journal: Journal<StreamRecord>,
     restored: OnceLock<()>,
     /// Serialises the one-time rehydrate against a first append racing it.
     restoring: Mutex<()>,
@@ -85,10 +85,10 @@ impl ChainedKind {
     }
 
     /// The reframe of one stored neutral body under its store parent.
-    fn reframe(&self) -> impl Fn(&str, &[u8]) -> RecordStoreResult<PlaneJournalRecord> + '_ {
+    fn reframe(&self) -> impl Fn(&str, &[u8]) -> RecordStoreResult<StreamRecord> + '_ {
         move |scope, body| {
             let b: NeutralBody = decode(body)?;
-            Ok(PlaneJournalRecord::from_parts(
+            Ok(StreamRecord::from_parts(
                 scope.to_string(),
                 b.seq,
                 b.prev_hash,
@@ -141,7 +141,7 @@ impl ChainedKind {
             .append_scoped(
                 &self.kind,
                 &parent,
-                PlaneJournalInput::new(content, self.framing, self.digests_scope),
+                StreamInput::new(content, self.framing, self.digests_scope),
                 &reframe,
             )
             .map(|_| ())

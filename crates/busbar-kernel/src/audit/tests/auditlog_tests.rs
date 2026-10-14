@@ -309,7 +309,8 @@ fn seam_write_then_reboot_restore_roundtrips_byte_identically() {
     let h2 = AuditTestHarness::over(store.clone());
     let plane = PlaneStoreView::narrow(store.clone());
     let restored = h2
-        .host(|host| h2.log.restore_from_store(host, plane.as_ref()))
+        .log
+        .restore_from_store(plane.as_ref())
         .expect("plane_records read");
     assert!(
         restored.chain_breaks.is_empty(),
@@ -440,7 +441,8 @@ fn old_store_audit_only_in_legacy_table_boots_migrates_and_verifies() {
     let h = AuditTestHarness::over(store.clone());
     let plane = PlaneStoreView::narrow(store.clone());
     let restored = h
-        .host(|host| h.log.restore_from_store(host, plane.as_ref()))
+        .log
+        .restore_from_store(plane.as_ref())
         .expect("plane_records read");
     assert!(
         restored.chain_breaks.is_empty(),
@@ -581,7 +583,7 @@ fn restore_reports_an_undecodable_audit_row_loudly_and_still_seeds_the_good_row(
         // The decodable row seeds the good row and the bad one is REPORTED — the behaviour under
         // test here. (The undecodable sibling no longer aborts the restore; that no-fork guarantee
         // is pinned by `restore_does_not_fork_the_chain_when_one_row_is_undecodable`.)
-        let _ = h2.host(|host| h2.log.restore_from_store(host, plane.as_ref()));
+        let _ = h2.log.restore_from_store(plane.as_ref());
     }
 
     // The GOOD row still seeded the read model `GET /audit` serves.
@@ -646,7 +648,7 @@ fn restore_does_not_fork_the_chain_when_one_row_is_undecodable() {
     let plane = PlaneStoreView::narrow(store.clone());
     let restored = {
         let _serial = DIAG_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
-        h2.host(|host| h2.log.restore_from_store(host, plane.as_ref()))
+        h2.log.restore_from_store(plane.as_ref())
     }
     .expect("one undecodable row must NOT abort the whole restore and fork the governance chain");
     assert_eq!(restored.unreadable, 1, "the bad row is counted, not fatal");
@@ -1005,7 +1007,7 @@ fn a_clean_restore_captures_no_unreadable_row_diagnostic() {
     let cap = DiagCapture::default();
     {
         let _g = capture_into(&cap);
-        let _ = h.host(|host| h.log.restore_from_store(host, plane.as_ref()));
+        let _ = h.log.restore_from_store(plane.as_ref());
     }
     assert!(
         cap.0.lock().unwrap().iter().all(|d| !d.contains("BUSBAR-2047")),
