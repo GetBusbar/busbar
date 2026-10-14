@@ -17,7 +17,6 @@ members = [
     "crates/busbar-kernel-wal",
     "crates/busbar-kernel-audit",
     "crates/busbar-plane-llm",
-    "crates/busbar-plane-a2a",
     "crates/busbar-plane-streaming",
     "crates/plugin-loader",
     "crates/busbar-transport-webrtc",
@@ -121,6 +120,11 @@ busbar-plane-mcp = { git = "https://github.com/GetBusbar/busbar-plane-mcp", rev 
 # decisions plane's door row (`plane-decisions`, `busbar_plane_decisions::plane_door::door`). Its
 # dropped-in cdylib twin (`busbar-plane-decisions-plugin`) and its gates live in that repo's plugin CI.
 busbar-plane-decisions = { git = "https://github.com/GetBusbar/busbar-plane-decisions", rev = "d78c070da407c53d7235145fb76d69ed41b7046b" }
+# THE A2A PLANE (kind: plane), pulled at a pinned rev: the logic crate the root links as the a2a
+# plane's door row (`plane-a2a-door`, `busbar_plane_a2a::plane_door::door`), whose own root cells it
+# states under its `links` name. Its dropped-in cdylib twin (`busbar-plane-a2a-plugin`) and its gates
+# live in that repo's plugin CI.
+busbar-plane-a2a = { git = "https://github.com/GetBusbar/busbar-plane-a2a", rev = "6466ca164a2e9c42008d14ceac3d0054124e5474" }
 arc-swap = "1"
 async-trait = "0.1"
 axum = "0.8"
@@ -325,14 +329,6 @@ tokio-tungstenite = { version = "0.29", default-features = false, features = ["h
 # generated in the plane from the vendored `a2a.proto` (below), with it. Already in the lock and the
 # shipped artifact through opentelemetry-otlp.
 prost = { version = "0.14", default-features = false, features = ["std"] }
-# THE A2A PLANE'S gRPC LINE (ARCHITECT ruling Q1 (C), 2026-10-04): the plane generates the a2aproject's
-# messages from the vendored `a2a.proto` itself (prost-build at build time, protoc from
-# protoc-bin-vendored) with their ProtoJSON mapping (pbjson-build), so no gRPC server stack enters a
-# plane's closure.
-prost-build = "0.14"
-pbjson = "0.9"
-pbjson-build = "0.9"
-protoc-bin-vendored = "3"
 tower = "0.5"
 tracing = "0.1.44"
 tracing-core = "0.1"

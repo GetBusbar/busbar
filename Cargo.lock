@@ -789,10 +789,10 @@ dependencies = [
 [[package]]
 name = "busbar-plane-a2a"
 version = "1.6.0"
+source = "git+https://github.com/GetBusbar/busbar-plane-a2a?rev=6466ca164a2e9c42008d14ceac3d0054124e5474#6466ca164a2e9c42008d14ceac3d0054124e5474"
 dependencies = [
  "base64 0.22.1",
  "busbar-contract",
- "busbar-plugin-loader",
  "indexmap",
  "pbjson",
  "pbjson-build",

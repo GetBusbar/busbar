@@ -45,10 +45,11 @@ trust model.
 Busbar carries five planes of traffic, and the point of the architecture is that they are
 five *ingresses onto one core* rather than five products sharing a process. By crate, they
 are `busbar-plane-llm`, `busbar-plane-mcp`, `busbar-plane-a2a`, `busbar-plane-streaming`
-and `busbar-plane-decisions`. Three are in this repository (`crates/busbar-plane-llm`,
-`crates/busbar-plane-a2a`, `crates/busbar-plane-streaming`); the MCP and decisions planes
-live in their own repositories (GetBusbar/busbar-plane-mcp, GetBusbar/busbar-plane-decisions)
-and are pinned into the build as git dependencies in the root `Cargo.toml`. Each is a plugin
+and `busbar-plane-decisions`. Two are in this repository (`crates/busbar-plane-llm`,
+`crates/busbar-plane-streaming`); the MCP, A2A and decisions planes live in their own
+repositories (GetBusbar/busbar-plane-mcp, GetBusbar/busbar-plane-a2a,
+GetBusbar/busbar-plane-decisions) and are pinned into the build as git dependencies in the
+root `Cargo.toml`. Each is a plugin
 of kind `plane`, compiled in or dropped into the plugins directory on the same contract, and
 each talks to core only over the ABI.
 
@@ -459,7 +460,7 @@ on A2A. Three identities, one state machine:
 |---|---|---|
 | LLM | a `(pool, lane)` cell | yes, and has been since the breaker landed |
 | MCP | one registered tool server | yes: the kernel's walk admits each member through the host's `breaker_admit` slot (`crates/busbar-kernel/src/plane_host/breaker.rs`) before every leg |
-| A2A | one registered agent | yes: the door plane states the agent as its unit's route at `arrive` (`crates/busbar-plane-a2a/src/plane_door.rs`), and the kernel's plane driver walks that route through the same breaker cells before every attempt (`crates/busbar-kernel/src/plane_driver/far_end.rs`) |
+| A2A | one registered agent | yes: the door plane states the agent as its unit's route at `arrive` (its `plane_door.rs`, in GetBusbar/busbar-plane-a2a), and the kernel's plane driver walks that route through the same breaker cells before every attempt (`crates/busbar-kernel/src/plane_driver/far_end.rs`) |
 
 **One state machine, and one place to tune it.** `BreakerCfg` (the cooldown bounds and
 the `trip:` condition) is accepted under `pools:` and nowhere else. There is no

@@ -140,6 +140,7 @@ allow-git = [
     "https://github.com/GetBusbar/busbar-store-memory",
     "https://github.com/GetBusbar/busbar-plane-mcp",
     "https://github.com/GetBusbar/busbar-plane-decisions",
+    "https://github.com/GetBusbar/busbar-plane-a2a",
     "https://github.com/GetBusbar/busbar-auth-header",
     "https://github.com/GetBusbar/busbar-auth-oauth",
     "https://github.com/GetBusbar/busbar-auth-sigv4",

@@ -404,26 +404,12 @@ pub(crate) const SECRET_BEARING_TYPES: &[(&str, SecretBearing)] = &[
     // this tree with its plane (the pinned plugin repo, #39): its references are read at the door's
     // declared `settings.*.token_exchange.subject_token` / `settings.*.env.*` paths through the
     // `DoorSection` row below, so no type of it is listed here.
-    // `agents.<name>.upstream_credential` — the `agents:` plane's LEASED outbound delegation
-    // credential.
-    (
-        "OutboundCredential",
-        SecretBearing::DoorDeclared(
-            "the `agents:` door's section: its Statement declares \
-             `settings.*.upstream_credential.secret`, and the folded row's section enumerates every \
-             reference at that path",
-        ),
-    ),
-    // `agents.<name>.client_identity` — the `agents:` plane's OUTBOUND CLIENT CERTIFICATE, busbar's
-    // own end of a mutual handshake with a registered peer.
-    (
-        "ClientIdentityCfg",
-        SecretBearing::DoorDeclared(
-            "the `agents:` door's section: its Statement declares \
-             `settings.*.client_identity.cert` and `settings.*.client_identity.key`, and the folded \
-             row's section enumerates every reference at those paths",
-        ),
-    ),
+    // The `agents:` door's own credential types (`agents.<name>.upstream_credential`, its LEASED
+    // outbound delegation credential, and `agents.<name>.client_identity`, busbar's end of a mutual
+    // handshake with a registered peer) left this tree with their plane (the pinned plugin repo,
+    // #39): their references are read at the door's declared `settings.*.upstream_credential.secret`
+    // and `settings.*.client_identity.{cert,key}` paths through the `DoorSection` row below, so no
+    // type of them is listed here.
     // The authorization server's ES256 signing key — the highest-value secret in the process, since
     // whoever holds it forges every token this deployment will ever issue. Reached from `RootCfg`
     // through `oauth_as`, which is the VALIDATED identity, which is why that type carries the

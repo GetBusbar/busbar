@@ -696,9 +696,12 @@ fn plane_root_resolution_ports_the_four_shell_selftest_cases() {
     // 4. the real tree's same-named wire directory is not a home: `busbar-plane-a2a/src/a2a/` holds
     //    the A2A wire and declares nothing, so with the engine deleted (FLIP-A2A) `a2a` resolves
     //    through its DOOR ROW (`plane-a2a-door`) to the door crate's `src`, never to the directory
-    //    that merely shares its name.
-    assert!(repo_root().join("crates/busbar-plane-a2a/src/a2a").is_dir());
+    //    that merely shares its name. The door crate left for its own repo (row 106): the tree it is
+    //    read from is the context's, which lays the pinned plane where it lived.
+    let cx = cx();
+    assert!(cx.is_dir("crates/busbar-plane-a2a/src/a2a"));
     let real = PlaneRoots::at(repo_root().join("crates"))
+        .over(&cx)
         .resolve("a2a")
         .unwrap();
     assert!(
