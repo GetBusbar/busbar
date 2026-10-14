@@ -1443,27 +1443,6 @@ fn raw_sections(cfg: &busbar_kernel::config::RootCfg) -> BTreeMap<&'static str, 
 
 // ── the owned trust anchors: one rule, at boot and before an apply's swap ───────────────────────
 
-/// THE OWNED TRUST ANCHORS the composed door planes name, each a need's `trust_from` in the owned
-/// namespace (`owned.<section>.<key>`, [`busbar_contract::section::owned_path`]): registered as
-/// each plane is composed, read by [`owned_anchor_check`] before a config apply's swap.
-/// Process-wide, as the composed planes are.
-static OWNED_ANCHORS: Mutex<Vec<String>> = Mutex::new(Vec::new());
-
-/// Register the owned trust anchors among a door plane's need `trust_from` paths (`paths`).
-pub fn register_owned_anchors(paths: &[&'static str]) {
-    let mut held = OWNED_ANCHORS
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    for path in paths
-        .iter()
-        .filter(|p| busbar_contract::section::owned_path(p).is_some())
-    {
-        if !held.iter().any(|h| h == path) {
-            held.push((*path).to_string());
-        }
-    }
-}
-
 /// THE ONE RULE an owned trust anchor the operator wrote is judged by, at boot and before an
 /// apply's swap alike: it is one or more PEM certificates the TLS stack takes as trust anchors (the
 /// connector's own reading of it, `tls::client::operator_ca_config`). An anchor the operator did
@@ -1511,24 +1490,49 @@ pub fn owned_anchors_refusal<P: AsRef<str>>(
     Ok(())
 }
 
-/// THE ROOT'S CONFIG CHECK (`busbar_kernel::appbuild::set_config_check`): every owned trust anchor
-/// a composed door plane names, as `cfg` writes it, judged by the rule boot judges it by, before
-/// any part of `cfg` is built. A configuration whose anchor the boot would refuse is refused here,
-/// so it never goes live through an apply, and the running generation (its declared trust among
-/// it) is untouched.
-///
-/// # Errors
-///
-/// The first written anchor that is no trust anchor, named.
-pub fn owned_anchor_check(cfg: &busbar_kernel::config::RootCfg) -> Result<(), String> {
-    let anchors = OWNED_ANCHORS
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .clone();
-    if anchors.is_empty() {
-        return Ok(());
+/// THE COMPOSITION ROOT'S RULES OF A CONFIGURATION (`busbar_kernel::appbuild::RootRules`): what
+/// the build judges every configuration by before any part of it is built, at boot and at every
+/// apply, rebuild or dry run, through the `App` each generation keeps them in. Today, the owned
+/// trust anchors the composed door planes name (`owned.<section>.<key>`): each, as a
+/// configuration writes it, judged by [`owned_anchor_refusal`], the rule the boot judges it by, so a
+/// configuration whose anchor the boot would refuse never goes live through an apply, and the
+/// running generation (its declared trust among it) is untouched.
+#[derive(Debug, Default)]
+pub struct Rules {
+    /// The owned trust anchors the composed door planes name, held as each plane is composed.
+    owned_anchors: Mutex<Vec<&'static str>>,
+}
+
+impl Rules {
+    /// Hold the owned trust anchors among a door plane's need `trust_from` paths (`paths`).
+    pub fn hold_owned_anchors(&self, paths: &[&'static str]) {
+        let mut held = self
+            .owned_anchors
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for path in paths
+            .iter()
+            .filter(|p| busbar_contract::section::owned_path(p).is_some())
+        {
+            if !held.contains(path) {
+                held.push(path);
+            }
+        }
     }
-    owned_anchors_refusal(&anchors, &raw_sections(cfg))
+}
+
+impl busbar_kernel::appbuild::RootRules for Rules {
+    fn check(&self, cfg: &busbar_kernel::config::RootCfg) -> Result<(), String> {
+        let anchors = self
+            .owned_anchors
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        if anchors.is_empty() {
+            return Ok(());
+        }
+        owned_anchors_refusal(&anchors, &raw_sections(cfg))
+    }
 }
 
 // ── the kernel-owned sections a door plane reads ────────────────────────────────────────────────

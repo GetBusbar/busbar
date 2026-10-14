@@ -881,6 +881,16 @@ impl Served {
     pub fn appliers(&self) -> DoorAppliers {
         DoorAppliers(self.planes.iter().map(|p| Arc::clone(&p.live)).collect())
     }
+
+    /// Every need `trust_from` the served planes state, plane by plane (what the root's rules hold
+    /// the owned trust anchors from, `door_steps::Rules::hold_owned_anchors`).
+    #[must_use]
+    pub fn need_trust(&self) -> Vec<&'static str> {
+        self.planes
+            .iter()
+            .flat_map(|p| p.live.served_facts.need_trust.iter().copied())
+            .collect()
+    }
 }
 
 impl Served {
@@ -1447,10 +1457,9 @@ pub(crate) fn compose_planes_over(
             &dialects,
         )
         .map_err(|e| format!("{instance}: {e}"))?;
-        // ITS OWNED TRUST ANCHORS, judged by the one rule a config apply is judged by too
-        // ([`crate::root::door_steps::owned_anchor_check`], before the swap): an anchor the operator
-        // wrote that is no trust anchor refuses the boot, naming the key.
-        crate::root::door_steps::register_owned_anchors(&served_facts.need_trust);
+        // ITS OWNED TRUST ANCHORS, judged by the one rule a config apply is judged by too (the
+        // root's rules, [`crate::root::door_steps::Rules`], before the build): an anchor the
+        // operator wrote that is no trust anchor refuses the boot, naming the key.
         crate::root::door_steps::owned_anchors_refusal(&served_facts.need_trust, sections)
             .map_err(|e| format!("{instance}: {e}"))?;
         let section = &walked;

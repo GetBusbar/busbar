@@ -6773,10 +6773,11 @@ async fn a_malformed_agent_push_ca_refuses_the_boot() {
 
 /// **AN APPLY CARRYING A MALFORMED `agent_push.ca` IS REFUSED, AND DELIVERIES KEEP THE PREVIOUS
 /// ANCHOR** (ARCHITECT ruling 2026-10-14: boot validity and apply validity are one rule): the
-/// root's config check (`root::door_steps::owned_anchor_check`, bound before every build as `main`
-/// binds it) refuses the configuration with the boot's own words before any generation is built
-/// from it, so nothing is swapped and nothing re-declared; the running door keeps delivering to the
-/// webhook under the CA it was composed with.
+/// root's rules (`root::door_steps::Rules`, holding the composed door's owned anchors as `main`
+/// holds them, passed to the build as an apply passes the running App's) refuse the configuration
+/// with the boot's own words before any generation is built from it, so nothing is swapped and
+/// nothing re-declared; the running door keeps delivering to the webhook under the CA it was
+/// composed with.
 /// RED before the fix: the apply built and swapped the generation, and its refresh re-declared the
 /// push need with the malformed value, so every delivery after it was refused.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -6816,7 +6817,8 @@ async fn an_apply_carrying_a_malformed_agent_push_ca_is_refused_and_deliveries_k
     );
     let deploy = busbar_kernel::config::deploy_from_yaml_str(&text).expect("the config parses");
     let cfg = busbar_kernel::config::resolve(&deploy, &Default::default()).expect("resolves");
-    busbar_kernel::appbuild::set_config_check(crate::root::door_steps::owned_anchor_check);
+    let rules = Arc::new(crate::root::door_steps::Rules::default());
+    rules.hold_owned_anchors(&[busbar_plane_a2a::door::PUSH_TRUST_FROM]);
     let built = busbar_kernel::build_app_from_config(
         cfg,
         busbar_kernel::config::PluginsCfg::default(),
@@ -6825,6 +6827,7 @@ async fn an_apply_carrying_a_malformed_agent_push_ca_is_refused_and_deliveries_k
         std::collections::HashSet::new(),
         (None, None),
         None,
+        &(rules as Arc<dyn busbar_kernel::appbuild::RootRules>),
     );
     let refusal = match built {
         Ok(_) => panic!("an apply carrying a malformed agent_push.ca was built"),

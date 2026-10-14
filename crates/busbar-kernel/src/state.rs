@@ -82,6 +82,10 @@ pub struct App {
     /// An ABSENT slot — the featureless binary boots with no fallback plane configured, so none was
     /// inserted — reads as the substrate-resident empty view, never a panic. Neutral: names no dialect.
     pub fallback_runtime_key: &'static str,
+    /// The composition root's rules this generation was built under
+    /// ([`crate::appbuild::RootRules`]): every build after it (an apply, a rebuild, a
+    /// dry run) is judged by them.
+    pub root_rules: Arc<dyn crate::appbuild::RootRules>,
     /// The composition root's projection of the configuration this generation was built from
     /// ([`crate::appbuild::ConfigProjection`]); `None` when the root bound none.
     pub config_projection: Option<Arc<dyn std::any::Any + Send + Sync>>,

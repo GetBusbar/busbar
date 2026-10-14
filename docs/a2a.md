@@ -429,7 +429,7 @@ The CA is trusted **on top of** the public roots, never instead of them, and cha
 
 **The callback credential is the caller's own**, presented as `Authorization: <scheme> <credentials>`, and it is attached only **after** the guard passes, so a refused destination can never see it (`pushdeliver.rs:102-121`, `:226-236`). It lives in a process-local map, never persisted, never logged, never echoed on a read verb — the store seam has no notion of a secret. The consequence, stated because it is operationally visible: **a credential does not survive a restart while the URL does, so Busbar keeps delivering without the header.**
 
-**There is no retry loop.** Delivery is best-effort and a failure never touches the task (`pushdeliver.rs:49-54`). Success is HTTP `200..300`. Every attempt is chained to the task's own provenance under one of three kinds, and the split is deliberate so an operator is sent to the right place:
+**A failed delivery is retried, at most three attempts in all.** The second attempt waits 250 ms and the third 500 ms, each moved by up to 20% either way, and only a failure the receiver might not repeat is retried: a transport error, a `5xx` or a `429`. A refused destination or any other `4xx` ends the delivery at once, because it would answer the same "no" again. Every retry re-runs the destination guard (`crates/busbar-plane-a2a/src/push.rs:48-52`, `Deliveries::settle`). Delivery is best-effort beyond that, and a failure never touches the task. Success is HTTP `200..300`. Every attempt is chained to the task's own provenance under one of three kinds, and the split is deliberate so an operator is sent to the right place:
 
 | Provenance kind | When |
 |---|---|

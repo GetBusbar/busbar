@@ -1928,6 +1928,7 @@ impl TestApp {
             // The kernel's own tables over the fixture's lanes and pools (built above when a fallback
             // plane is registered), read when that plane contributes no runtime of its own.
             config_tables,
+            root_rules: std::sync::Arc::new(crate::appbuild::AcceptAll),
             config_projection: None,
             store: store.clone(),
             plane_breakers: std::sync::Arc::new(crate::store::PlaneBreakers::new()),
