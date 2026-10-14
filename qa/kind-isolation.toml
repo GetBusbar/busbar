@@ -1770,8 +1770,8 @@ cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain 
 [[law0]]
 crate = "busbar-kernel"
 axis  = "instance:export"
-count = "65"
-cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance. -1 for R-FIX3 (the kernel's export tests run on the scrape double); LOWERED 67 -> 65: KN-2c: the host recorder's log line is the root legacy table's frozen 1.5.5 row and snapshot/mod.rs names no sink or plane (measured)"
+count = "63"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance. -1 for R-FIX3 (the kernel's export tests run on the scrape double); LOWERED 67 -> 65: KN-2c: the host recorder's log line is the root legacy table's frozen 1.5.5 row and snapshot/mod.rs names no sink or plane (measured); LOWERED 65 -> 63: the kernel export test axis reads its first-party sink words off the root legacy table (measured)"
 
 [[law0]]
 crate = "busbar-kernel"
