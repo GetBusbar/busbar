@@ -202,10 +202,10 @@ fn the_card_an_apply_builds_carries_its_configured_fee_at_the_one_scale() {
 #[test]
 fn a_card_edit_mid_window_prices_an_open_class_in_both_eras_and_refuses_neither() {
     let zero = busbar_contract::billing::RawTierRates {
-        input: 0.0,
-        output: 0.0,
-        cache_read: 0.0,
-        cache_write: 0.0,
+        input: busbar_kernel_ledger::cost::representable_nano_rate(0.0),
+        output: busbar_kernel_ledger::cost::representable_nano_rate(0.0),
+        cache_read: busbar_kernel_ledger::cost::representable_nano_rate(0.0),
+        cache_write: busbar_kernel_ledger::cost::representable_nano_rate(0.0),
     };
     let lanes = [("rerank".to_string(), zero)];
     let era = |nanos: u64| [("rerank".to_string(), "search_units".to_string(), nanos)];
@@ -613,10 +613,10 @@ const REBOOT_CHANGED: u64 = 50_000;
 
 fn tiers(input: f64) -> busbar_contract::billing::RawTierRates {
     busbar_contract::billing::RawTierRates {
-        input,
-        output: 0.0,
-        cache_read: 0.0,
-        cache_write: 0.0,
+        input: busbar_kernel_ledger::cost::representable_nano_rate(input),
+        output: busbar_kernel_ledger::cost::representable_nano_rate(0.0),
+        cache_read: busbar_kernel_ledger::cost::representable_nano_rate(0.0),
+        cache_write: busbar_kernel_ledger::cost::representable_nano_rate(0.0),
     }
 }
 
