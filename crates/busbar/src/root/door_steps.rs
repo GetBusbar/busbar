@@ -1463,7 +1463,9 @@ pub fn kernel_sections(
 /// default) and the parameters that style is opened with.
 #[derive(Debug, Clone)]
 pub struct ProviderRoute {
-    /// `base_url`, as the operator (or the catalog) spelled it.
+    /// `base_url`, as the operator (or the catalog) spelled it, less any `user:pass@`: 1.5.5 dialled,
+    /// sent and signed the host after it (v1.5.5 `crates/busbar/src/proxy/egress.rs:18`; row 74, F25),
+    /// so the member's route, its sealed reach, its binding and every dial read that host alone.
     pub base_url: String,
     /// The default wire protocol (#51).
     pub protocol: String,
@@ -1543,7 +1545,7 @@ pub fn provider_routes(
             (
                 name.clone(),
                 ProviderRoute {
-                    base_url: p.base_url.clone(),
+                    base_url: busbar_kernel::net_guard::strip_userinfo(&p.base_url).into_owned(),
                     protocol: p.protocol.clone(),
                     error_map: p
                         .error_map

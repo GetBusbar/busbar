@@ -694,6 +694,56 @@ fn a_refusal_never_repeats_the_credential_in_the_authority() {
     assert!(path_at.to_string().contains("mail@archive"));
 }
 
+/// ROW 74 (F25): a provider base URL's userinfo is STRIPPED, as 1.5.5's `host_from_base` stripped
+/// it (v1.5.5 `crates/busbar/src/proxy/egress.rs:18`): the host and port survive, the
+/// credential is gone, the LAST `@` of the authority is the boundary (a password may carry one),
+/// and an `@` past the authority is left alone. The result reads to [`split_url`] as the same host
+/// the stripped spelling names, so what is dialled is what the operator's host says. The refusal on
+/// every other dial target is untouched.
+#[test]
+fn a_base_url_userinfo_is_stripped_to_the_host_it_names() {
+    for (written, stripped) in [
+        (
+            "https://svcuser:hunter2-P4ss@api.example.com",
+            "https://api.example.com",
+        ),
+        (
+            "https://svcuser:hunter2-P4ss@api.example.com:8443/v1",
+            "https://api.example.com:8443/v1",
+        ),
+        (
+            "https://svcuser:hun@ter2@api.example.com/v1",
+            "https://api.example.com/v1",
+        ),
+        ("https://svcuser@api.example.com", "https://api.example.com"),
+        ("https://api.example.com/x@y", "https://api.example.com/x@y"),
+        (
+            "https://api.example.com?q=a@b",
+            "https://api.example.com?q=a@b",
+        ),
+        ("https://api.example.com", "https://api.example.com"),
+        ("api.example.com", "api.example.com"),
+    ] {
+        assert_eq!(strip_userinfo(written), stripped, "{written}");
+    }
+    // Nothing to strip borrows: the common base URL costs no allocation.
+    assert!(matches!(
+        strip_userinfo("https://api.example.com/v1"),
+        std::borrow::Cow::Borrowed(_)
+    ));
+    // The stripped base is a URL the one reader accepts, naming the host after the `@`.
+    let (https, host, port, path) = split_url(&strip_userinfo(
+        "https://svcuser:hunter2-P4ss@api.example.com:8443/v1",
+    ))
+    .expect("the stripped base reads");
+    assert!(https && host == "api.example.com" && port == 8443 && path == "/v1");
+    // The reader the other dial targets use still refuses the unstripped spelling.
+    assert!(matches!(
+        split_url("https://svcuser:hunter2-P4ss@api.example.com"),
+        Err(AddressRefusal::NoHost(_))
+    ));
+}
+
 #[test]
 fn default_ports_are_derived_from_the_scheme_and_ipv6_comes_back_unbracketed() {
     let (https, host, port, path) = split_url("https://a.example/rpc").unwrap();
