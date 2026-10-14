@@ -763,3 +763,46 @@ fn openai_json_object_onto_a_default_anthropic_lane_is_dropped_and_reported() {
         .dropped_egress_controls_for_lane(&ir, &Default::default())
         .contains(&"response_format"));
 }
+
+/// F25 REHOME row 110, from `crates/busbar-llm/src/engine/tests/egress_dropped_controls_audit_tests.rs:245`
+/// (`native_structured_output_lane_drops_schema_less_json_with_audit`): on a lane declaring native
+/// structured outputs a `json_schema` directive rides `output_config.format.type: json_schema` with no
+/// `tool_choice`; a schema-less `json_object` writes no `output_config` and no `tools`, and is reported
+/// as the dropped control `response_format` (the caller's `response_format on anthropic` audit row).
+#[test]
+fn native_structured_output_lane_drops_schema_less_json_and_reports_it() {
+    let native = busbar_contract::ir::egress_prep::LaneCaps {
+        native_structured_output: true,
+        ..Default::default()
+    };
+    let schema = json!({"type": "object", "properties": {"a": {"type": "string"}}});
+    let with_schema = xreq_lane(
+        "openai",
+        "anthropic",
+        &json!({"model": "gpt-4o", "messages": [{"role": "user", "content": "hi"}],
+               "response_format": {"type": "json_schema", "json_schema": {"name": "o", "schema": schema}}}),
+        &native,
+    );
+    assert_eq!(
+        with_schema.pointer("/output_config/format/type"),
+        Some(&json!("json_schema")),
+        "{with_schema}"
+    );
+    assert!(with_schema.get("tool_choice").is_none(), "{with_schema}");
+
+    let object_body = json!({"model": "gpt-4o", "messages": [{"role": "user", "content": "hi"}],
+                             "response_format": {"type": "json_object"}});
+    let object_mode = xreq_lane("openai", "anthropic", &object_body, &native);
+    assert!(object_mode.get("output_config").is_none(), "{object_mode}");
+    assert!(object_mode.get("tools").is_none(), "{object_mode}");
+    let ir = protocol_for("openai")
+        .unwrap()
+        .reader()
+        .read_request(&object_body)
+        .unwrap();
+    assert!(protocol_for("anthropic")
+        .unwrap()
+        .writer()
+        .dropped_egress_controls_for_lane(&ir, &native)
+        .contains(&"response_format"));
+}

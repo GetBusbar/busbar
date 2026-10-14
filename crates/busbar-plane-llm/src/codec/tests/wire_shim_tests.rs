@@ -297,3 +297,92 @@ fn a_transcription_duration_ledgers_one_audio_ms_line() {
 fn a_flat_answer_ledgers_no_open_class() {
     assert!(non_token_open(busbar_contract::billing::Billing::Flat).is_empty());
 }
+
+// ── F25 REHOME (rows 504, 505): the router shim keys ─────────────────────────────────────────────
+
+const SHIM: &str = crate::codec::gemini::GEMINI_JSON_ARRAY_SHIM_KEY;
+
+/// F25 REHOME row 504, from `crates/busbar-llm/src/engine/tests/mid_stream_error_tests.rs:294` (`test_strip_router_shim_keys`):
+/// `strip_router_shim_keys` removes the never-native shim keys per egress — the gemini array key for
+/// every egress, `stream` for a path-model egress (bedrock, gemini) — and never `model`; a
+/// body-model egress (openai) keeps its genuine `model` and `stream`.
+#[test]
+fn strip_router_shim_keys_removes_the_never_native_keys_per_egress() {
+    use super::strip_router_shim_keys;
+    use serde_json::json;
+    let mut v = json!({"model": "p", "stream": true, (SHIM): true, "messages": []});
+    assert!(strip_router_shim_keys(&mut v, "bedrock"));
+    assert_eq!(
+        v["model"], "p",
+        "model NOT stripped here (rewrite_model owns it)"
+    );
+    assert!(v.get("stream").is_none(), "bedrock: stream shim stripped");
+    assert!(
+        v.get(SHIM).is_none(),
+        "gemini array shim key stripped on every protocol"
+    );
+    assert!(v.get("messages").is_some(), "real fields retained");
+
+    let mut v = json!({"stream": true, (SHIM): true});
+    assert!(strip_router_shim_keys(&mut v, "gemini"));
+    assert!(v.get("stream").is_none() && v.get(SHIM).is_none());
+
+    let mut v = json!({"model": "gpt-4o", "stream": true, (SHIM): true});
+    assert!(strip_router_shim_keys(&mut v, "openai"));
+    assert_eq!(
+        v["model"], "gpt-4o",
+        "openai model is genuine, not stripped"
+    );
+    assert_eq!(v["stream"], true, "openai stream is genuine, not stripped");
+    assert!(
+        v.get(SHIM).is_none(),
+        "gemini array key stripped even for body-model ingress"
+    );
+}
+
+/// F25 REHOME row 505, from `crates/busbar-llm/src/engine/tests/mid_stream_error_tests.rs:337`
+/// (`test_shim_strip_ordering_cross_protocol_keeps_model`): a path-model ingress (gemini) crossing to
+/// a body-model egress (openai) reaches the far end WITH the authoritative model: strip, then
+/// `rewrite_model_if_needed`, leaves `model: gpt-4o` and the writer-authored `stream: true`, with
+/// the array key gone; within one dialect (gemini→gemini) the relay sends the caller's own bytes,
+/// with the spliced `model` and `stream` removed.
+#[test]
+fn shim_strip_then_rewrite_model_keeps_the_model_cross_protocol() {
+    use super::strip_router_shim_keys;
+    use serde_json::json;
+    let mut v = json!({"model": "router-placeholder", "stream": true, (SHIM): true});
+    strip_router_shim_keys(&mut v, "openai");
+    crate::codec::proto_codec::protocol_for("openai")
+        .expect("openai")
+        .writer()
+        .rewrite_model_if_needed(&mut v, "gpt-4o");
+    assert_eq!(
+        v["model"], "gpt-4o",
+        "cross-protocol egress body MUST carry the authoritative model"
+    );
+    assert_eq!(
+        v["stream"], true,
+        "writer-authored `stream` survives for a body-model egress"
+    );
+    assert!(
+        v.get(SHIM).is_none(),
+        "gemini array key stripped cross-protocol"
+    );
+
+    let caller = br#"{ "contents": [ ], "z" : 1.0 }"#;
+    let carried = br#"{"model":"router-placeholder","stream":true, "contents": [ ], "z" : 1.0 }"#;
+    let far = crate::exchange::shaping::FarShape {
+        dialect: "gemini",
+        wire_model: "gemini-1.5-pro",
+        default_max_tokens: None,
+        prompt_caching: false,
+        caps: Default::default(),
+        path_base: None,
+    };
+    let relayed = crate::exchange::attempt::relay_request(far, "application/json", carried);
+    assert_eq!(
+        relayed.bytes.as_ref(),
+        caller.as_slice(),
+        "same-protocol gemini relay sends the caller's bytes, no body model or stream"
+    );
+}
