@@ -142,7 +142,7 @@ impl busbar_contract::conn::Conns for Shut {
         &self,
         _: busbar_contract::conn::InstanceId,
         _: busbar_contract::conn::ConnId,
-    ) -> Result<busbar_contract::conn::ConnFacts, busbar_contract::conn::ConnError> {
+    ) -> Result<busbar_contract::transport::ConnFacts, busbar_contract::conn::ConnError> {
         Err(busbar_contract::conn::ConnError::Closed)
     }
     fn close(
