@@ -46,8 +46,39 @@ fn a_fronted_card_names_busbar_and_nothing_of_the_backend() {
         served["securityRequirements"],
         json!([{ "schemes": { INBOUND_SCHEME_NAME: { "list": [] } } }])
     );
-    assert_eq!(served["capabilities"]["extendedAgentCard"], true);
+    assert_eq!(
+        served["capabilities"],
+        json!({}),
+        "the agent states no capability, so busbar promises none on its behalf"
+    );
     assert!(!served.to_string().contains("internal.corp.example"));
+}
+
+/// A FRONTED AGENT'S CAPABILITIES ARE THE AGENT'S: busbar relays the agent's extended card read to
+/// the agent itself, so the served card carries `extendedAgentCard` (and every other capability)
+/// exactly as the agent's card states it, `false` included, and never promises one the agent's
+/// card does not.
+/// RED before the fix: `rewrite_card` set `extendedAgentCard: true` on every fronted card.
+#[test]
+fn a_fronted_card_carries_the_agents_own_capabilities_and_promises_no_extended_card() {
+    let backend = "https://internal.corp.example/a2a";
+    for stated in [
+        json!({ "extendedAgentCard": false, "streaming": true, "pushNotifications": false }),
+        json!({ "streaming": false }),
+        json!({ "extendedAgentCard": true }),
+    ] {
+        let mut card = backend_card();
+        card["capabilities"] = stated.clone();
+        let served = rewrite_card(&card, backend, PUBLIC, "planner").expect("served");
+        assert_eq!(served["capabilities"], stated, "the agent's own: {stated}");
+    }
+    let mut card = backend_card();
+    card["capabilities"] = json!({ "extendedAgentCard": false });
+    let served = rewrite_card(&card, backend, PUBLIC, "planner").expect("served");
+    assert_eq!(
+        served["capabilities"]["extendedAgentCard"], false,
+        "an agent with no extended card is not served as having one"
+    );
 }
 
 #[test]

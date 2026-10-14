@@ -4043,7 +4043,11 @@ async fn a_fronted_agents_card_is_served_rewritten_through_busbar_behind_its_gra
         card["securityRequirements"],
         serde_json::json!([{ "schemes": { "busbarA2aInbound": { "list": [] } } }])
     );
-    assert_eq!(card["capabilities"]["extendedAgentCard"], true);
+    assert_eq!(
+        card["capabilities"],
+        serde_json::json!({}),
+        "the agent's card states no capability, and busbar promises none on its behalf"
+    );
     assert!(card["signatures"][0]["protected"].is_string(), "{body}");
 }
 
