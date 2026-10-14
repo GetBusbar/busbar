@@ -511,11 +511,12 @@ fn path_declarations(root: &Path, file: &str) -> Vec<String> {
 /// `include!(concat!(env!("OUT_DIR"), "/door_cells.rs"))`).
 const DOOR_CELLS_MODULE: &str = "serve";
 
-/// THE DOOR PLANES' OWN ROOT CELLS the composition root compiles: for every
-/// `[package.metadata.busbar.door-cells]` row of its manifest, the repo-relative
-/// `tests/root/mod.rs` of the plane crate its `[dependencies]` row's `path` names. A root leg's
-/// evidence may live there: the cells are written in the plane's own words in the plane's crate
-/// (the composition root names no plane) and compiled into the root's serve module.
+/// THE DOOR PLANES' OWN ROOT CELLS the composition root compiles: for every linked row of its
+/// manifest on the `plane-door` axis whose crate is a path dependency, the repo-relative
+/// `tests/root/mod.rs` of that crate, where it holds one (the crate states that path under its
+/// `links` name; the root's `build.rs` reads it). A root leg's evidence may live there: the cells are
+/// written in the plane's own words in the plane's crate (the composition root names no plane) and
+/// compiled into the root's serve module.
 fn door_cells_files(root: &Path) -> Vec<String> {
     let Ok(manifest) = std::fs::read_to_string(root.join("crates/busbar/Cargo.toml")) else {
         return Vec::new();
@@ -540,13 +541,19 @@ fn door_cells_files(root: &Path) -> Vec<String> {
         out
     };
     let deps = rows("dependencies");
-    rows("package.metadata.busbar.door-cells")
+    let axes = rows("package.metadata.busbar.linked-axes");
+    rows("package.metadata.busbar.linked")
         .into_iter()
+        .filter(|(row, _)| {
+            axes.iter()
+                .any(|(f, a)| f == row && a.split_whitespace().any(|x| x == "plane-door"))
+        })
         .filter_map(|(_, krate)| {
             let dep = deps.iter().find(|(k, _)| *k == krate)?;
             let path = dep.1.split_once("path")?.1.split('"').nth(1)?;
             let dir = path.strip_prefix("../")?;
-            Some(format!("crates/{dir}/tests/root/mod.rs"))
+            let file = format!("crates/{dir}/tests/root/mod.rs");
+            root.join(&file).is_file().then_some(file)
         })
         .collect()
 }
@@ -628,7 +635,7 @@ fn verify_root(
         if !file.starts_with(ROOT_DIR) && !door_cells_files(root).iter().any(|f| f == file) {
             return Err(format!(
                 "root leg `{leg}` names file {file:?}, which is not under {ROOT_DIR} and is no \
-                 door plane's own root cells (a `[package.metadata.busbar.door-cells]` row). A \
+                 door plane's own root cells (its crate's `tests/root/mod.rs`, a linked plane door's). A \
                  leg's evidence lives in the composition root or it is not that leg's evidence."
             ));
         }
