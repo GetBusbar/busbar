@@ -45,12 +45,12 @@ trust model.
 Busbar carries five planes of traffic, and the point of the architecture is that they are
 five *ingresses onto one core* rather than five products sharing a process. By crate, they
 are `busbar-plane-llm`, `busbar-plane-mcp`, `busbar-plane-a2a`, `busbar-plane-streaming`
-and `busbar-plane-decisions`. Four are in this repository (`crates/busbar-plane-llm`,
-`crates/busbar-plane-a2a`, `crates/busbar-plane-streaming`, `crates/busbar-plane-decisions`);
-the MCP plane lives in its own repository (GetBusbar/busbar-plane-mcp) and is pinned into the
-build as a git dependency in the root `Cargo.toml`. Each is a plugin of kind `plane`, compiled
-in or dropped into the plugins directory on the same contract, and each talks to core only over
-the ABI.
+and `busbar-plane-decisions`. Three are in this repository (`crates/busbar-plane-llm`,
+`crates/busbar-plane-a2a`, `crates/busbar-plane-streaming`); the MCP and decisions planes
+live in their own repositories (GetBusbar/busbar-plane-mcp, GetBusbar/busbar-plane-decisions)
+and are pinned into the build as git dependencies in the root `Cargo.toml`. Each is a plugin
+of kind `plane`, compiled in or dropped into the plugins directory on the same contract, and
+each talks to core only over the ABI.
 
 | plane | inbound: Busbar is the server | outbound: Busbar is the client |
 |---|---|---|
