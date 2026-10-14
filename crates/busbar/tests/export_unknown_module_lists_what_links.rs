@@ -115,7 +115,10 @@ fn the_unknown_exporter_refusal_lists_exactly_the_modules_this_build_serves() {
             .contains(&format!("unknown exporter '{module}'"))
     });
     if serves_all {
-        assert_eq!(line, line_1_5_5, "the refusal is 1.5.5's line, byte for byte");
+        assert_eq!(
+            line, line_1_5_5,
+            "the refusal is 1.5.5's line, byte for byte"
+        );
     } else {
         for module in &offered_1_5_5 {
             if offered.contains(module) {

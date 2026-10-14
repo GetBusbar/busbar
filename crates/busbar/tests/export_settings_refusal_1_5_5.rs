@@ -141,12 +141,21 @@ fn every_1_5_5_settings_refusal_reads_as_1_5_5_printed_it() {
         let printed = text
             .lines()
             .map(|l| l.trim_start_matches("  - "))
-            .filter(|l| if prefix { l.starts_with(want) } else { *l == want })
+            .filter(|l| {
+                if prefix {
+                    l.starts_with(want)
+                } else {
+                    *l == want
+                }
+            })
             .count();
         if once {
             assert_eq!(printed, 1, "{module}: 1.5.5's line `{want}`, once:\n{text}");
         } else {
-            assert!(printed > 0, "{module}: the refusal is not 1.5.5's line `{want}`:\n{text}");
+            assert!(
+                printed > 0,
+                "{module}: the refusal is not 1.5.5's line `{want}`:\n{text}"
+            );
         }
     }
     let _ = std::fs::remove_dir_all(&dir);

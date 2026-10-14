@@ -1002,13 +1002,14 @@ fn validate_honors_deprecated_busbar_config_overlay_env_var() {
 /// The env var is removed explicitly rather than merely left unset, so an unrelated variable in the
 /// developer's or the runner's environment can never turn this test green by accident.
 ///
-/// Gated on the linked auth axis because the FIXTURE cannot exist without it: the identity provider
-/// this test configures is the operator credential's module, which a build linking no auth row
-/// compiles out entirely. Built without it, `--validate` fails EARLIER — the operator token is
+/// Gated on the operator credential's linked row (`linked_operator_auth`, build.rs: the row the
+/// manifest's `operator-auth` table names) because the FIXTURE cannot exist without it: the identity
+/// provider this test configures is that row's module, which a build not linking it compiles out
+/// entirely. Built without it, `--validate` fails EARLIER — the operator token is
 /// configured but no row answers it — so the run never reaches the secret check and the assertion
 /// below fails against an error about something else. The B1 behaviour under test is
 /// feature-independent; only this fixture is not.
-#[cfg(linked_axis_auths)]
+#[cfg(linked_operator_auth)]
 #[test]
 fn validate_fails_on_unresolvable_browser_login_client_secret() {
     const UNSET_VAR: &str = "BUSBAR_TEST_B1_OIDC_CLIENT_SECRET_NEVER_SET";
