@@ -254,6 +254,9 @@ mod probe_guard_tests;
 #[path = "tests/probe_release_owner_tests.rs"]
 mod probe_release_owner_tests;
 #[cfg(test)]
+#[path = "tests/provider_keys_drift_tests.rs"]
+mod provider_keys_drift_tests;
+#[cfg(test)]
 #[path = "tests/request_short_circuit_tests.rs"]
 mod request_short_circuit_tests;
 #[cfg(test)]
