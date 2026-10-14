@@ -626,7 +626,7 @@ fn scan_tree(cx: &Ctx) -> Result<Scan, String> {
         // whose raw text holds the minter's name can mint: the lexers run on those alone, which is
         // what keeps a whole-tree scan per selftest plant cheap.
         if ZOO.iter().any(|z| f.text.contains(z)) {
-            let mut in_block = false;
+            let mut in_block = scan::LexState::default();
             for (i, raw) in f.text.lines().enumerate() {
                 let code = scan::strip_comment_line(raw, &mut in_block);
                 for name in ZOO {
@@ -643,7 +643,7 @@ fn scan_tree(cx: &Ctx) -> Result<Scan, String> {
         // THE ONE TEST-SCOPE ANSWER every scanner in this crate uses: `gated` is true inside a
         // `#[cfg(test)]` item.
         let lines = scan::test_scope(&f.text);
-        let mut in_block = false;
+        let mut in_block = scan::LexState::default();
         let code: Vec<String> = f
             .text
             .lines()

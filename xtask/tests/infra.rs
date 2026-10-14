@@ -490,6 +490,66 @@ fn strip_comment_line_keeps_string_literals_intact() {
     );
 }
 
+#[test]
+fn a_comment_opener_inside_a_continued_string_is_string() {
+    // `crates/busbar-kernel/src/plugin_routes.rs`'s shape: a string continued with `\`, whose next
+    // line holds `/*`. The stripper reset its in-string flag per line, read that `/*` as a block
+    // comment that never closed, and every later line of the file came back empty (audit xtask
+    // A2 HIGH 1, H1 HIGH 2).
+    let src = "fn confine(root: &str) -> String {\n    format!(\"confined to \\\n     \
+               {root}/*\")\n}\nfn after() { todo!() }\n";
+    let mut st = scan::LexState::default();
+    let code: Vec<String> = src
+        .lines()
+        .map(|l| scan::strip_comment_line(l, &mut st))
+        .collect();
+    assert_eq!(
+        code[2], "     {root}/*\")",
+        "the continuation is string, not comment"
+    );
+    assert_eq!(
+        code[4], "fn after() { todo!() }",
+        "the code after it is still code"
+    );
+    assert_eq!(
+        st,
+        scan::LexState::default(),
+        "nothing is left open at end of file"
+    );
+    let prod = scan::production_lines(src);
+    assert!(
+        prod.contains(&(5, "fn after() { todo!() }".to_string())),
+        "production_lines must hand back the line after the string: {prod:?}"
+    );
+}
+
+#[test]
+fn the_comment_splitter_reads_raw_strings_chars_lifetimes_and_nesting() {
+    let mut st = scan::LexState::default();
+    let mut split = |l: &str| scan::split_comment_line(l, &mut st);
+    // A raw string: `"` does not close it, `\` is not an escape, `/*` and `//` inside are string.
+    assert_eq!(
+        split("let r = r#\"a \\\" /* \"# ; // c"),
+        ("let r = r#\"a \\\" /* \"# ; ".to_string(), " c".to_string())
+    );
+    // ...and it spans lines.
+    assert_eq!(split("let r = r#\"one \"").0, "let r = r#\"one \"");
+    assert_eq!(split("/* still raw \"# ; x").0, "/* still raw \"# ; x");
+    // A char literal holding `"` opens no string; a lifetime is not a char literal.
+    assert_eq!(
+        split("let q = '\"'; f::<'a>(); // c").0,
+        "let q = '\"'; f::<'a>(); "
+    );
+    // A byte string with an escaped quote, then a comment.
+    assert_eq!(
+        split("let b = b\"\\\"/*\"; // c").0,
+        "let b = b\"\\\"/*\"; "
+    );
+    // Block comments nest: the first `*/` closes only the inner one.
+    assert_eq!(split("a /* x /* y */ z").0, "a ");
+    assert_eq!(split("w */ b"), (" b".to_string(), "w ".to_string()));
+}
+
 // ── planes ──────────────────────────────────────────────────────────────────────────────────────
 
 #[test]
