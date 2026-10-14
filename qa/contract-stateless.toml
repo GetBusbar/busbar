@@ -112,56 +112,6 @@ item = "__BUSBAR_DOOR_SYMBOLS"
 
 [[finding]]
 rule = "contract-stateless:static"
-file = "crates/busbar-contract/src/abi/sdk/transport.rs"
-item = "TRANSPORT_DECL"
-
-[[finding]]
-rule = "contract-stateless:static"
-file = "crates/busbar-contract/src/abi/sdk/transport.rs"
-item = "__CLAIMS"
-
-[[finding]]
-rule = "contract-stateless:static"
-file = "crates/busbar-contract/src/abi/sdk/transport.rs"
-item = "__CLAIM_FACTS"
-
-[[finding]]
-rule = "contract-stateless:static"
-file = "crates/busbar-contract/src/abi/sdk/transport.rs"
-item = "__CLAIM_FORMS"
-
-[[finding]]
-rule = "contract-stateless:static"
-file = "crates/busbar-contract/src/abi/sdk/transport.rs"
-item = "__COMPOSES_OVER"
-
-[[finding]]
-rule = "contract-stateless:static"
-file = "crates/busbar-contract/src/abi/sdk/transport.rs"
-item = "__EGRESS_SELECTOR_FORMS"
-
-[[finding]]
-rule = "contract-stateless:static"
-file = "crates/busbar-contract/src/abi/sdk/transport.rs"
-item = "__SELECTOR_FORMS"
-
-[[finding]]
-rule = "contract-stateless:static"
-file = "crates/busbar-contract/src/abi/sdk/transport.rs"
-item = "__SLOTS"
-
-[[finding]]
-rule = "contract-stateless:static"
-file = "crates/busbar-contract/src/abi/sdk/transport.rs"
-item = "__TRANSPORT_FACTS"
-
-[[finding]]
-rule = "contract-stateless:static"
-file = "crates/busbar-contract/src/abi/sdk/transport.rs"
-item = "__UPGRADES_TO"
-
-[[finding]]
-rule = "contract-stateless:static"
 file = "crates/busbar-contract/src/codec.rs"
 item = "ENTROPY_SOURCE"
 

@@ -666,26 +666,12 @@ impl PluginRegistry {
         crate::plane::load_plane_from_bytes(&p.lib_bytes, &p.manifest.name, &p.manifest.kind)
     }
 
-    /// Open a TRANSPORT resolved by name or alias: verifies the resolved plugin's `kind` is
-    /// `transport`, then loads the VERIFIED bytes over the HOT-tier ABI and admits its
-    /// [`TransportDecl`](busbar_contract::abi::hot::TransportDecl) through the SAME admission a linked
-    /// transport takes ([`crate::link_transport`]), returning the [`crate::DynTransport`] row the
-    /// composition root folds. FAIL-CLOSED on any resolution/kind/load failure.
-    pub fn open_transport(&self, name_or_alias: &str) -> Result<crate::DynTransport, String> {
-        let p = self.resolve_kind(name_or_alias, "transport", "carry bytes as a transport")?;
-        crate::transport::load_transport_from_bytes(
-            &p.lib_bytes,
-            &p.manifest.name,
-            &p.manifest.kind,
-        )
-    }
-
-    /// Open EVERY loadable transport, in scan order, each through the lane its image speaks: a
-    /// library with the memory-ABI door ([`busbar_contract::abi::mechanism::DOOR_SYMBOL`]) is
-    /// admitted through the one dispatcher's door validation and bound with `bind`, labelled with
-    /// its own plugin name (each opened door is its own instance to the host services); any other
-    /// through the HOT decl ([`Self::open_transport`]'s lane). Each image is staged and opened once.
-    /// The first that will not load fails the whole set, naming it.
+    /// Open EVERY loadable transport, in scan order, through its memory-ABI door
+    /// ([`busbar_contract::abi::mechanism::DOOR_SYMBOL`]): admitted through the one dispatcher's door
+    /// validation and bound with `bind`, labelled with its own plugin name (each opened door is its
+    /// own instance to the host services). A library with no door is refused: the HOT transport lane
+    /// is deleted (row 84), and no other lane reads it. Each image is staged and opened once. The
+    /// first that will not load fails the whole set, naming it.
     ///
     /// # Errors
     ///
@@ -716,13 +702,11 @@ impl PluginRegistry {
             .map_err(|e| format!("transport plugin '{name}' refused at its door: {e}"))?
             {
                 Staging::Door(plugin) => entries.doors.push(plugin),
-                Staging::NotADoor(lib, staged) => {
-                    entries.hot.push(crate::transport::wire_up_transport(
-                        lib,
-                        name.clone(),
-                        &p.manifest.kind,
-                        Some(staged),
-                    )?)
+                Staging::NotADoor(..) => {
+                    return Err(format!(
+                        "transport plugin '{name}' exports no memory-ABI door \
+                         (`busbar_plugin_door`): a transport loads only through its door"
+                    ))
                 }
             }
         }
@@ -881,12 +865,9 @@ pub fn stated_version(manifest: &Manifest) -> Result<String, String> {
     }
 }
 
-/// The transports a plugins directory contributes, by the lane each image speaks
-/// ([`PluginRegistry::open_transport_entries`]).
+/// The transports a plugins directory contributes ([`PluginRegistry::open_transport_entries`]).
 #[derive(Default)]
 pub struct TransportEntries {
-    /// HOT-decl wires.
-    pub hot: Vec<crate::DynTransport>,
     /// Memory-ABI transport doors, bound.
     pub doors: Vec<crate::dispatch::Plugin<crate::dispatch::kinds::transport::Transport>>,
 }

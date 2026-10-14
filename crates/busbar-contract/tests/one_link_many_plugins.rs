@@ -17,23 +17,24 @@
 
 use busbar_contract::abi::sdk::__door;
 
-/// Two transports' doors in one link (#84 merge: the transport door is the shared one). Before the
-/// merge a transport defined `busbar_abi` / `busbar_plugin_kind` itself, and two of them in one
-/// link were the duplicate definition fat LTO refuses.
+/// Two planes' doors in one link. Each registers through the SDK's shared door, so two of them in
+/// one link define no frozen symbol twice. (Transports registered the same way until the HOT
+/// transport lane was deleted, row 84: a transport now serves its memory-ABI door.)
 mod first {
-    pub(super) static DECL: [u8; 8] = *b"BUSFIRST";
-    busbar_contract::export_transport!(DECL);
+    pub(super) static DECL: busbar_contract::abi::hot::PlaneDecl =
+        busbar_contract::abi::hot::PlaneDecl::STUB;
+    busbar_contract::export_plane!(DECL);
 }
 
 mod second {
-    pub(super) static DECL: [u8; 8] = *b"BUSSECND";
-    busbar_contract::export_transport!(DECL);
+    pub(super) static DECL: busbar_contract::abi::hot::PlaneDecl =
+        busbar_contract::abi::hot::PlaneDecl::STUB;
+    busbar_contract::export_plane!(DECL);
 }
 
 /// The decl a module's door hands back.
 fn decl_of(door: &__door::Door) -> *const u8 {
     match door {
-        __door::Door::Transport(decl) => decl().cast(),
         __door::Door::Plane(decl) => std::ptr::addr_of!(**decl).cast(),
     }
 }
@@ -60,7 +61,6 @@ fn two_doors_in_one_image_answer_as_no_plugin() {
     // SAFETY: the SDK symbols with no single door never dereference their arguments.
     unsafe {
         assert!(__door::busbar_plane_decl().is_null());
-        assert!(__door::busbar_transport_decl().is_null());
     }
 }
 

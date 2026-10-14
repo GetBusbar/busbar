@@ -704,27 +704,23 @@ pub fn door_planes() -> &'static [(String, DoorPlane)] {
 /// THE TRANSPORTS DROPPED INTO THE CONFIGURED `plugins.dir` (the registry [`dropped_from_config`]
 /// scanned): every `kind: transport` plugin it admitted, loaded ONCE and held for the process, so the
 /// boot seal folds them beside the linked wires (`crate::root::registry::compose`) and a wire the
-/// data door serves through lives as long as the door. Each image is opened on the lane it speaks: a
-/// memory-ABI door through the one dispatcher, served over the host's sockets
-/// (`crate::root::doors`, opened with the deployment's `settings`; the boot's call is the one that
-/// loads them); a HOT decl through its adapter. A trusted transport that will not LOAD refuses the
-/// boot, as a linked plane's would.
+/// data door serves through lives as long as the door. Each image is a memory-ABI door, opened
+/// through the one dispatcher and served over the host's sockets (`crate::root::doors`, opened with
+/// the deployment's `settings`; the boot's call is the one that loads them). A trusted transport
+/// that will not LOAD, or that exports no door, refuses the boot, as a linked plane's would.
 pub fn dropped_transports(
     settings: &busbar_contract::transport::TransportSettings,
 ) -> crate::root::registry::Dropped {
-    type Held = (
-        Vec<crate::root::loader::DynTransport>,
-        Vec<crate::root::registry::DroppedDoor>,
-    );
-    static WIRES: std::sync::OnceLock<Held> = std::sync::OnceLock::new();
-    let (hot, doors) = WIRES.get_or_init(|| {
+    static WIRES: std::sync::OnceLock<Vec<crate::root::registry::DroppedDoor>> =
+        std::sync::OnceLock::new();
+    let doors = WIRES.get_or_init(|| {
         let Some(registry) = REGISTRY.get() else {
-            return (Vec::new(), Vec::new());
+            return Vec::new();
         };
         let opened = registry
             .open_transport_entries(&crate::root::doors::bind())
             .and_then(|entries| {
-                let doors = entries
+                entries
                     .doors
                     .into_iter()
                     .map(|plugin| {
@@ -748,15 +744,14 @@ pub fn dropped_transports(
                             door,
                         })
                     })
-                    .collect::<Result<Vec<_>, String>>()?;
-                Ok((entries.hot, doors))
+                    .collect::<Result<Vec<_>, String>>()
             });
         opened.unwrap_or_else(|refusal| {
             eprintln!("busbar: {refusal}");
             std::process::exit(2);
         })
     });
-    crate::root::registry::Dropped { hot, doors }
+    crate::root::registry::Dropped { doors }
 }
 
 /// THE BOOT BOOK, COMPOSED — the extracted seam [`book`] calls, wired against a store

@@ -18,8 +18,8 @@ pub mod boundary;
 // THE URL AND HOST READER a plugin judges a destination with, the same one the host's guard reads
 // through (`crate::net`, a pure helper outside `abi/`).
 pub use crate::net;
-// THE PLUGIN SIDE OF THE TRANSPORT LOWERING: a carrier's or a framer's slots, generated from its trait
-// implementation (`export_carrier!` / `export_framer!`).
+// THE TRANSPORT DOOR'S HELPER: its selector forms as Statement codes (`form_codes`). The HOT transport
+// lowering that lived here is deleted (row 84).
 pub mod transport;
 // THE DOOR MACRO (THE DESIGN, the plugin ABI; abi-v2, the SDK): the plugin side of the shared mechanism — one door,
 // every slot a catch_unwind trampoline (`plugin_door!` / `export_door!`).
@@ -69,7 +69,7 @@ pub use publish::{Generations, Keyed};
 pub mod life;
 
 // The `#[macro_export]` export macros, named at this module's path too.
-pub use crate::{export_carrier, export_framer, export_plane, export_transport};
+pub use crate::export_plane;
 
 /// The "decision observability" signal catalog: a plugin author references
 /// `busbar_contract::abi::sdk::Signal::CandidateBreakerState` (etc.) at compile time to declare which
@@ -206,10 +206,10 @@ pub use crate::abi::mechanism::endpoint::{EndpointRequest, EndpointResponse};
 pub use crate::abi::mechanism::route::{Route, RouteAuth, RouteMethod};
 
 // ── THE DROPPED-IN DOOR'S FROZEN SYMBOLS, DEFINED ONCE ─────────────────────────────────────────────
-// Every frozen name the HOT lane's loader looks up in a plane or transport `cdylib` (`busbar_abi`,
-// `busbar_plugin_kind`, `busbar_plane_decl`, `busbar_transport_decl`, `busbar_plane_arm`) is defined HERE, in
+// Every frozen name the HOT lane's loader looks up in a plane `cdylib` (`busbar_abi`,
+// `busbar_plugin_kind`, `busbar_plane_decl`, `busbar_plane_arm`) is defined HERE, in
 // `busbar-contract`, exactly once
-// (the SDK merged into the contract, #84, and the transport's door joined the shared one then). A
+// (the SDK merged into the contract, #84). A
 // plugin crate's `export_*!` macro defines none of them: it registers its image's ONE door ([`__door::Door`]) and these symbols
 // answer through it.
 //
@@ -231,21 +231,17 @@ pub use crate::abi::mechanism::route::{Route, RouteAuth, RouteMethod};
 // image's door before the loader can look anything up (`dlopen` runs initializers before it
 // returns). In a `cdylib` exactly one door registers. In a binary that links several plugins several
 // register, and the symbols then answer as no plugin (a null kind, a protocol status) — nothing in a
-// binary looks them up; the linked door is the plane's or the transport's decl, never these.
+// binary looks them up; the linked door is the plane's decl, never these. (A transport's
+// `busbar_transport_decl` left with the HOT transport lane, row 84: every transport serves its door.)
 #[doc(hidden)]
 pub mod __door {
-    use crate::abi::hot::{PlaneDecl, TransportDecl};
+    use crate::abi::hot::PlaneDecl;
     use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
 
     /// What one plugin image is, as its dropped-in door answers for it.
     pub enum Door {
         /// A plane: the same decl its linked door hands the registry.
         Plane(&'static PlaneDecl),
-        /// A transport: the function that answers its `'static` decl — the same decl its linked door
-        /// hands the transport axis. A function rather than a reference so a transport that RESTATES
-        /// the published `#[repr(C)]` layout in its own source (#84: a layout, not a crate) registers
-        /// through this door without naming this crate's type for its decl.
-        Transport(fn() -> *const TransportDecl),
     }
 
     /// How many doors registered in this image, and the last one. The symbols answer only when
@@ -281,7 +277,6 @@ pub mod __door {
     pub extern "C-unwind" fn busbar_plugin_kind() -> *const u8 {
         match the_door() {
             Some(Door::Plane(_)) => c"plane".as_ptr().cast(),
-            Some(Door::Transport(_)) => c"transport".as_ptr().cast(),
             None => std::ptr::null(),
         }
     }
@@ -295,20 +290,6 @@ pub mod __door {
     pub unsafe extern "C-unwind" fn busbar_plane_decl() -> *const PlaneDecl {
         match the_door() {
             Some(Door::Plane(decl)) => *decl,
-            _ => std::ptr::null(),
-        }
-    }
-
-    /// `busbar_transport_decl` — the transport's `'static` decl; null for an image that is not a
-    /// transport.
-    ///
-    /// # Safety
-    /// The returned pointer is to a `'static` [`TransportDecl`] owned by this library, preamble first,
-    /// living for the whole life of the loaded image. The loader NEVER frees it.
-    #[no_mangle]
-    pub unsafe extern "C-unwind" fn busbar_transport_decl() -> *const TransportDecl {
-        match the_door() {
-            Some(Door::Transport(decl)) => decl(),
             _ => std::ptr::null(),
         }
     }
@@ -342,7 +323,6 @@ pub mod __door {
         abi: extern "C-unwind" fn() -> u32,
         kind: extern "C-unwind" fn() -> *const u8,
         plane_decl: unsafe extern "C-unwind" fn() -> *const PlaneDecl,
-        transport_decl: unsafe extern "C-unwind" fn() -> *const TransportDecl,
         plane_arm: crate::abi::hot::PlaneArmFn,
     }
 
@@ -351,13 +331,12 @@ pub mod __door {
         abi: busbar_abi,
         kind: busbar_plugin_kind,
         plane_decl: busbar_plane_decl,
-        transport_decl: busbar_transport_decl,
         plane_arm: busbar_plane_arm,
     };
 }
 
 /// Register a plugin image's ONE door (`$door`, a `__door::Door`) with a load-time constructor, and
-/// keep the SDK's frozen symbols in the image. Emitted by `export_plane!` and `export_transport!`;
+/// keep the SDK's frozen symbols in the image. Emitted by `export_plane!`;
 /// never called by hand.
 #[doc(hidden)]
 #[macro_export]
@@ -466,28 +445,5 @@ macro_rules! export_plane {
         // through `$decl` — so a plane crate linked into a binary beside any other plugin defines no
         // symbol of its own that could collide.
         $crate::__register_door!($crate::abi::sdk::__door::Door::Plane(&$decl));
-    };
-}
-
-/// Emit a `transport`-kind cdylib from `$decl` (the transport's `'static` `#[repr(C)]` decl — the
-/// published `TransportDecl` layout, whether named from `abi::hot` or restated in the transport's
-/// own source). Registers it as the image's door, so the frozen symbols (`__door`) answer the SHARED
-/// handshake `busbar_abi()`, `busbar_plugin_kind() == "transport"`, and the transport's ONE hot-lane
-/// entrypoint `busbar_transport_decl()` returning a pointer to `$decl`.
-///
-/// THE ONE SHARED TRANSPORT DOOR (#3: a transport is swappable, compiled in OR dropped in; LTO-FIX
-/// residue). A transport crate used to define `busbar_abi` / `busbar_plugin_kind` /
-/// `busbar_transport_decl` itself, and those collided with this crate's door in any link that held
-/// both. Through this macro a transport defines no frozen symbol of its own — exactly like a plane.
-#[macro_export]
-macro_rules! export_transport {
-    ($decl:path) => {
-        /// The dropped-in door's decl function: the address of the transport's `'static` decl.
-        fn __busbar_transport_decl() -> *const $crate::abi::hot::TransportDecl {
-            ::core::ptr::addr_of!($decl).cast()
-        }
-        $crate::__register_door!($crate::abi::sdk::__door::Door::Transport(
-            __busbar_transport_decl
-        ));
     };
 }
