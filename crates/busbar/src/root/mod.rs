@@ -99,6 +99,7 @@ pub mod serve;
 pub mod transports;
 #[cfg(feature = "root-admin")]
 pub mod units_admin;
+pub mod userinfo;
 
 // The per-call metering shadow on the plane-neutral kernel bridge: a plane whose one flat charge
 // fires inside `drive` rides `gauntlet_kernel::run_gauntlet_via_kernel` byte- and money-identically

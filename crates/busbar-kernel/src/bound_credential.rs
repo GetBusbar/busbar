@@ -225,6 +225,8 @@ pub fn bind(
 /// userinfo spelled, held opaque, handed to the axis that presents it on the mint as 1.5.5 sent it
 /// ([`AuthAxis::serving_presenting`]). The plane that built the binding never reads it.
 ///
+/// TRANSITIONAL: deleted with the legacy lane plane (row 155 C).
+///
 /// # Errors
 ///
 /// As [`bind`].

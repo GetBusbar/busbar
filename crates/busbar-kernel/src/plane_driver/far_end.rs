@@ -76,9 +76,6 @@ use super::route::{FarEnd, FarPiece, OutboundRequest, Pick};
 /// The bytes one read of the far end takes.
 const READ_BYTES: usize = 16 * 1024;
 
-/// The field a base URL's userinfo rides under, and the one name that displaces it.
-const AUTHORIZATION: &[u8] = b"authorization";
-
 /// The longest pause between two offers of a held far end's frame its connection's buffer had no
 /// room for, milliseconds.
 const WRITE_PAUSE_MAX_MS: u64 = 64;
@@ -95,12 +92,10 @@ pub struct MemberRoute {
     /// The plane instance's declared need the connection opens on, resolved once at config load
     /// by the member's auth key ([`super::resolve_member_needs`]).
     pub need: NeedId,
-    /// The provider's `base_url`, as the operator spelled it, less any `user:pass@` (row 74, F25).
+    /// The provider's `base_url`, as the operator spelled it, less any `user:pass@` (row 74, F25:
+    /// the root reads that userinfo into a basic credential that leads the auth binding's answers;
+    /// this route holds none of its bytes).
     pub base_url: String,
-    /// The `Authorization: Basic` that userinfo spelled, held opaque: every attempt's head carries
-    /// it FIRST when the auth binding's fields name no `authorization`, as 1.5.5 sent it (see
-    /// [`crate::egress::engine::UrlUserinfo`]). `None` when the base URL spelled none.
-    pub userinfo: Option<crate::egress::engine::UrlUserinfo>,
     /// The auth binding the root opened at generation seal; `None` = no auth fields.
     pub auth: Option<AuthBinding>,
     /// The provider the member is served by: the metering row's provider column, as 1.5.5's
@@ -1027,20 +1022,7 @@ impl EgressFarEnd<'_> {
         let (_, path) = split(&url);
         // The head's fields the framer encodes: the auth fields, then the plane's. It holds the
         // auth values, so it wipes itself when the open has taken it.
-        let mut head = Head(Vec::with_capacity(request.fields.len() + auth.len() + 1));
-        // The base URL's userinfo, FIRST, when the auth fields name no `authorization`: 1.5.5's
-        // request builder put it there and its credential replaced it only by that name (row 74).
-        let userinfo = route.userinfo.as_ref().filter(|_| {
-            !auth
-                .iter()
-                .any(|f| f.name.eq_ignore_ascii_case(AUTHORIZATION))
-        });
-        if let Some(userinfo) = userinfo {
-            head.0.push((
-                String::from_utf8_lossy(AUTHORIZATION).into_owned(),
-                userinfo.value().as_bytes().to_vec(),
-            ));
-        }
+        let mut head = Head(Vec::with_capacity(request.fields.len() + auth.len()));
         // The auth fields FIRST, then the plane's: 1.5.5's egress header order.
         head.0.extend(auth.iter().map(|f| {
             (
@@ -1054,7 +1036,6 @@ impl EgressFarEnd<'_> {
                 .fields
                 .iter()
                 .filter(|(n, _)| !auth.iter().any(|f| f.name.eq_ignore_ascii_case(n)))
-                .filter(|(n, _)| userinfo.is_none() || !n.eq_ignore_ascii_case(AUTHORIZATION))
                 .map(|(n, v)| (String::from_utf8_lossy(n).into_owned(), v.clone())),
         );
         drop(auth);

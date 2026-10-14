@@ -588,6 +588,85 @@ fn a_provider_base_url_with_userinfo_is_reached_at_its_stripped_authority() {
     );
 }
 
+/// ROW 74 (F25), THE DOOR PATH HOLDS NO USERINFO BYTES IN A KERNEL TYPE: a member whose provider's
+/// base URL spells `user:pass@` is sealed with the stripped base on its route (the kernel's
+/// `MemberRoute` has no field for the userinfo), and the Basic value reaches its attempts only
+/// through the binding's handle, which the root wrapped ([`crate::root::userinfo::lead_with`]):
+/// first when the style's credential rides another field, displaced when it is `authorization`,
+/// as 1.5.5's reqwest build sent it. The bearer and api-key styles are the linked header plugin's.
+#[cfg(feature = "auth-header")]
+#[test]
+fn a_members_base_url_userinfo_reaches_its_attempts_only_through_its_binding() {
+    use busbar_contract::abi::host::conn::connector::DIRECTION_OUTBOUND;
+    use busbar_contract::auth_calls::{Fields, FieldsRequest};
+    const WRITTEN: &str = "https://svcuser:hunter2-P4ss@api.example.com/v1";
+    let key_file =
+        std::env::temp_dir().join(format!("busbar-door-steps-row74-{}", std::process::id()));
+    std::fs::write(&key_file, "sk-row74").expect("the key");
+    let expected = {
+        use base64::Engine as _;
+        format!(
+            "Basic {}",
+            base64::engine::general_purpose::STANDARD.encode("svcuser:hunter2-P4ss")
+        )
+    };
+    for (style, led) in [("api-key", true), ("bearer", false)] {
+        let provider = super::ProviderRoute {
+            base_url: busbar_kernel::net_guard::strip_userinfo(WRITTEN).into_owned(),
+            userinfo: crate::root::userinfo::UserinfoBasic::of(WRITTEN),
+            protocol: "d".to_string(),
+            error_map: Default::default(),
+            credential: busbar_contract::secret_ref::SecretRef::file(
+                key_file.display().to_string(),
+            ),
+            style: Some(style.to_string()),
+            params: super::StyleParams::default(),
+            metadata: busbar_kernel::config_validate::MetadataPosture::default(),
+        };
+        let facts = crate::root::loader::dispatch::kinds::plane::ServedFacts {
+            need_auths: vec![(DIRECTION_OUTBOUND, style)],
+            dialects: vec!["d"],
+            ..Default::default()
+        };
+        let routes = resolve_for(&facts, "models: {m: {provider: p}}", &[("p", provider)])
+            .expect("the member resolves");
+        let route = &routes["m"];
+        assert_eq!(route.base_url, "https://api.example.com/v1");
+        let binding = route.auth.as_ref().expect("its credential is bound");
+        let Some(Fields::Ready(fields)) = binding
+            .auth
+            .fields_now(binding.handle, &FieldsRequest::default())
+        else {
+            panic!("the {style} binding answers on the spot");
+        };
+        let fields: Vec<(String, String)> = fields
+            .iter()
+            .map(|f| {
+                (
+                    String::from_utf8_lossy(&f.name).to_ascii_lowercase(),
+                    String::from_utf8_lossy(f.value.expose_secret()).into_owned(),
+                )
+            })
+            .collect();
+        if led {
+            assert_eq!(
+                fields[0],
+                ("authorization".to_string(), expected.clone()),
+                "a credential under another field leaves the Basic value first: {fields:?}"
+            );
+            assert!(fields[1..].iter().all(|(n, _)| n != "authorization"));
+        } else {
+            assert!(
+                fields
+                    .iter()
+                    .all(|(n, v)| n != "authorization" || !v.starts_with("Basic ")),
+                "an authorization credential displaces the Basic value: {fields:?}"
+            );
+        }
+    }
+    let _ = std::fs::remove_file(&key_file);
+}
+
 #[test]
 fn a_member_that_cannot_be_reached_refuses_the_load_naming_it() {
     let unknown = resolve("models: {m: {provider: q}}", &[("p", provider("d", None))]);
@@ -1291,7 +1370,7 @@ async fn a_token_url_stripped_before_the_plane_still_presents_its_basic_on_the_m
     use base64::Engine as _;
     use busbar_contract::auth_calls::FieldsRequest;
     const TOKEN_URL: &str = "https://login.example.com/tenant/oauth2/v2.0/token";
-    let held = busbar_kernel::egress::engine::UrlUserinfo::of(&TOKEN_URL.replacen(
+    let held = crate::root::userinfo::UserinfoBasic::of(&TOKEN_URL.replacen(
         "://",
         "://svcuser:hunter2-P4ss@",
         1,

@@ -159,7 +159,7 @@ pub fn stateful_plane_ephemeral_store_warn(
 /// and the `Authorization: Basic` value that userinfo spelled, held opaque for the host to present
 /// on the mint as 1.5.5's reqwest POST did (v1.5.5
 /// `crates/busbar/src/egress_auth/oauth_client_credentials.rs:119-126`). A plane never receives a
-/// URL carrying `user:pass@`.
+/// URL carrying `user:pass@`. TRANSITIONAL: deleted with the legacy lane plane (row 155 C) (the stripping stays: no plane sees a userinfo URL).
 pub(crate) fn lane_token_endpoint(
     written: Option<&str>,
 ) -> (Option<String>, Option<crate::egress::engine::UrlUserinfo>) {
@@ -893,7 +893,7 @@ pub fn build_app_from_config(
             crate::net_guard::strip_userinfo(provider_cfg.base_url.trim_end_matches('/'))
                 .into_owned();
         // ...and the Basic that userinfo spelled, held opaque for the kernel's hop to present as
-        // 1.5.5 did (see `UrlUserinfo`): the plane never reads it.
+        // 1.5.5 did (see `UrlUserinfo`): the plane never reads it. TRANSITIONAL: deleted with the legacy lane plane (row 155 C).
         let url_userinfo = crate::egress::engine::UrlUserinfo::of(&provider_cfg.base_url);
         let (token_url, token_userinfo) = lane_token_endpoint(provider_cfg.token_url.as_deref());
         lane_inputs.push(LaneInput {
