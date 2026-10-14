@@ -1188,28 +1188,78 @@ fn run_root_legs_gating(cx: &Ctx) -> i32 {
             return 1;
         }
     };
-    let (considered, red) = root_legs_gating(&m, &shipped);
+    let (lines, rc) = root_legs_gating_verdict(&m, &shipped);
+    for line in lines {
+        println!("{line}");
+    }
+    rc
+}
+
+/// The shipped legs that leave the bar nothing to judge (TODO l.1503-1515, Law 8): no leg ships at
+/// all, or a shipped leg owns no gating plane x step cell. Over either, an empty `red` is a GREEN
+/// over an empty set, so the bar refuses instead of passing.
+pub fn empty_denominators(m: &Matrix, shipped: &BTreeSet<String>) -> Vec<String> {
+    if shipped.is_empty() {
+        return vec![format!(
+            "no root leg ships: {MANIFEST_REL}'s `default` line turns on no leg's feature"
+        )];
+    }
+    let gating: Vec<String> = m
+        .step_order()
+        .into_iter()
+        .filter(|step| m.steps().get(step).get("gating").truthy())
+        .collect();
+    shipped
+        .iter()
+        .filter(|leg| {
+            !m.planes().iter().any(|plane| {
+                gating
+                    .iter()
+                    .any(|step| m.cell(plane, step).get("root").str_or("leg", "") == leg.as_str())
+            })
+        })
+        .map(|leg| format!("the shipped leg `{leg}` owns no gating plane x step cell"))
+        .collect()
+}
+
+/// The shipped-leg bar's verdict: the lines it prints and its exit code. It states its denominator,
+/// REFUSES an empty one, then judges every gating cell on a shipped leg.
+pub fn root_legs_gating_verdict(m: &Matrix, shipped: &BTreeSet<String>) -> (Vec<String>, i32) {
+    let (considered, red) = root_legs_gating(m, shipped);
     let legs = if shipped.is_empty() {
         "(none)".to_string()
     } else {
         shipped.iter().cloned().collect::<Vec<_>>().join(", ")
     };
-    println!(
+    let mut lines = vec![format!(
         "ROOT-GATING: the shipped legs are {legs}; {considered} gating plane x step cell(s) are \
          theirs to drive."
-    );
-    if red.is_empty() {
-        println!("GREEN: every gating step on every shipped root leg is driven over the loop.");
-        return 0;
+    )];
+    let empty = empty_denominators(m, shipped);
+    if !empty.is_empty() || considered == 0 {
+        lines.push(format!("  nothing to judge: {}", empty.join("; ")));
+        lines.push(
+            "RED: the shipped-leg bar has no denominator. A bar that judges zero cells is not \
+             green; it measured nothing."
+                .to_string(),
+        );
+        return (lines, 1);
     }
-    println!("  not driven: {}", red.join(", "));
-    println!(
+    if red.is_empty() {
+        lines.push(
+            "GREEN: every gating step on every shipped root leg is driven over the loop."
+                .to_string(),
+        );
+        return (lines, 0);
+    }
+    lines.push(format!("  not driven: {}", red.join(", ")));
+    lines.push(format!(
         "RED: {} gating step(s) on a leg the binary SHIPS have no cell over the loop. A default \
          leg is the shipped path for its plane; a gating step nobody drives over it is a \
          half-answer, not a queue entry.",
         red.len()
-    );
-    1
+    ));
+    (lines, 1)
 }
 
 /// The `(leg, file, fn)` triples the matrix claims are proven over the loop.
@@ -2116,5 +2166,63 @@ fn owner_of(detail: &str) -> &'static str {
         ROW_ROOT_COLUMN
     } else {
         ROW_MATRIX
+    }
+}
+
+#[cfg(test)]
+mod root_gating_tests {
+    use super::*;
+
+    /// One plane, one gating step and one non-gating step; the gating cell on `root-x`.
+    fn matrix() -> Matrix {
+        Matrix {
+            doc: json_lite::parse(
+                r#"{"steps": {"admit": {"gating": true}, "note": {"gating": false}},
+                    "matrix": {"p": {"admit": {"root": {"leg": "root-x", "state": "proven"}},
+                                     "note": {"root": {"leg": "root-y", "state": "none"}}}},
+                    "root_legs": {"root-x": {}, "root-y": {}}}"#,
+            )
+            .expect("the planted matrix parses"),
+        }
+    }
+
+    fn legs(names: &[&str]) -> BTreeSet<String> {
+        names.iter().map(|n| n.to_string()).collect()
+    }
+
+    /// TODO l.1503-1515: with no shipped leg the bar printed its `(none)` denominator, found no
+    /// red cell among zero, and printed GREEN with exit 0. It refuses.
+    #[test]
+    fn no_shipped_leg_is_red_not_green() {
+        let (lines, rc) = root_legs_gating_verdict(&matrix(), &legs(&[]));
+        assert_eq!(rc, 1, "{lines:?}");
+        assert!(lines.iter().any(|l| l.starts_with("RED: ")), "{lines:?}");
+        assert!(!lines.iter().any(|l| l.starts_with("GREEN: ")), "{lines:?}");
+        assert!(
+            lines.iter().any(|l| l.contains("no root leg ships")),
+            "{lines:?}"
+        );
+    }
+
+    /// A shipped leg that owns only non-gating cells is judged over nothing: refused, named.
+    #[test]
+    fn a_shipped_leg_with_no_gating_cell_is_red() {
+        let (lines, rc) = root_legs_gating_verdict(&matrix(), &legs(&["root-x", "root-y"]));
+        assert_eq!(rc, 1, "{lines:?}");
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("the shipped leg `root-y` owns no gating")),
+            "{lines:?}"
+        );
+    }
+
+    /// The control: a shipped leg whose gating cell is proven is GREEN, so the refusal is the
+    /// empty denominator's and not every verdict's.
+    #[test]
+    fn a_shipped_leg_with_a_proven_gating_cell_is_green() {
+        let (lines, rc) = root_legs_gating_verdict(&matrix(), &legs(&["root-x"]));
+        assert_eq!(rc, 0, "{lines:?}");
+        assert!(lines.iter().any(|l| l.starts_with("GREEN: ")), "{lines:?}");
     }
 }
