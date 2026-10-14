@@ -551,6 +551,16 @@ impl UrlUserinfo {
         &self.0
     }
 
+    /// The value as it crosses from the kernel to the composition root's auth axis
+    /// ([`busbar_contract::auth_calls::AuthAxis::serving_presenting`]), and back: `None` for bytes
+    /// no field value can carry. Sensitive, like every value this type holds.
+    #[must_use]
+    pub fn from_value(bytes: &[u8]) -> Option<Self> {
+        let mut value = http::HeaderValue::from_bytes(bytes).ok()?;
+        value.set_sensitive(true);
+        Some(Self(value))
+    }
+
     /// A host-side connection open's head `fields` with this value LEADING them under
     /// `authorization`, or `None` when they already name `authorization` (the value then rides
     /// nowhere): 1.5.5's order and condition, for the composition root's own opens (a minting auth

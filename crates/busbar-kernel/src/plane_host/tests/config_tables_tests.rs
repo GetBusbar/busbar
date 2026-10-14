@@ -25,6 +25,7 @@ fn lane(model: &str, provider: &str) -> LaneInput {
         auth_style: AuthStyleInput::Default,
         scope: None,
         token_url: None,
+        token_userinfo: None,
         subject: None,
         error_map: HashMap::new(),
         health: None,

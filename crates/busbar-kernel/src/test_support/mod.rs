@@ -709,6 +709,7 @@ impl LaneSpec {
             auth_style,
             scope: None,
             token_url: None,
+            token_userinfo: None,
             subject: None,
             error_map: self.error_map.clone(),
             health: self

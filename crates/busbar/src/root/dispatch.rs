@@ -112,8 +112,19 @@ impl busbar_contract::auth_calls::AuthAxis for RootAuthAxis {
         style: &str,
         settings: &serde_json::Value,
     ) -> Result<Option<busbar_contract::auth_calls::OutboundServing>, String> {
+        self.serving_presenting(style, settings, None)
+    }
+
+    fn serving_presenting(
+        &self,
+        style: &str,
+        settings: &serde_json::Value,
+        endpoint_basic: Option<&[u8]>,
+    ) -> Result<Option<busbar_contract::auth_calls::OutboundServing>, String> {
+        let endpoint =
+            endpoint_basic.and_then(busbar_kernel::egress::engine::UrlUserinfo::from_value);
         Ok(crate::root::door_steps::process_auths()
-            .serving(style, settings)?
+            .serving_with(style, settings, endpoint)?
             .map(
                 |(auth, decl)| busbar_contract::auth_calls::OutboundServing {
                     auth,

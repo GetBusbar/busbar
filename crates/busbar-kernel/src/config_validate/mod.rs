@@ -2609,6 +2609,9 @@ pub fn vet_token_uri(token_uri: &str, posture: &MetadataPosture) -> Result<(), S
         .map(host_is_private_or_loopback)
         .unwrap_or(false);
     if !(scheme_is(token_uri, "https") || (host_private && scheme_is(token_uri, "http"))) {
+        // Repeated with its userinfo redacted: a `user:pass@` in token_uri rides the mint as
+        // 1.5.5's did (row 74, F25), never a message.
+        let token_uri = crate::net_guard::redact_userinfo(token_uri);
         return Err(format!(
             "service-account token_uri must use https for a public host (got '{token_uri}'); it receives the signed JWT assertion, so plaintext http is permitted only for a private/loopback endpoint"
         ));
@@ -2619,6 +2622,7 @@ pub fn vet_token_uri(token_uri: &str, posture: &MetadataPosture) -> Result<(), S
         posture.allow_all,
         &posture.blocked_hosts,
     ) {
+        let token_uri = crate::net_guard::redact_userinfo(token_uri);
         return Err(format!(
             "service-account token_uri '{token_uri}' targets a blocked cloud-metadata host '{host}' (the signed assertion would be POSTed there; cloud-metadata/IMDS endpoints are denied — override via this provider's allow_metadata_hosts, security.allow_metadata_hosts, or security.allow_all_metadata)"
         ));

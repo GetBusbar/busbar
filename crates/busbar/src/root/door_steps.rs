@@ -1791,14 +1791,30 @@ impl OutboundAuths {
         style: &str,
         settings: &serde_json::Value,
     ) -> Result<Option<Serving>, String> {
+        self.serving_with(style, settings, None)
+    }
+
+    /// [`Self::serving`], with `presented` the Basic value a token endpoint's userinfo spelled
+    /// when the host stripped it before the settings reached a plane (row 74, F25): presented on the
+    /// mint exactly as one [`endpoint_userinfo`] reads off the settings is.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::serving`].
+    pub fn serving_with(
+        &self,
+        style: &str,
+        settings: &serde_json::Value,
+        presented: Option<busbar_kernel::egress::engine::UrlUserinfo>,
+    ) -> Result<Option<Serving>, String> {
         use crate::root::loader::dispatch::auth_outbound::OutboundInstance;
         // A token endpoint spelled `user:pass@` (row 74, F25): the plugin is opened over, and its
         // binding handed, the stripped endpoint, and the userinfo rides its mint as 1.5.5 sent it
-        // ([`endpoint_userinfo`]).
+        // ([`endpoint_userinfo`]); or the host already stripped it and hands its Basic value here.
         let endpoint = endpoint_userinfo(settings);
         let (stated, userinfo) = match &endpoint {
-            Some((stripped, userinfo)) => (stripped, userinfo.clone()),
-            None => (settings, None),
+            Some((stripped, userinfo)) => (stripped, userinfo.clone().or(presented)),
+            None => (settings, presented),
         };
         for row in self.facts() {
             let Some(decl) = row.styles.iter().find(|s| s.name == style).cloned() else {
@@ -1813,7 +1829,19 @@ impl OutboundAuths {
             // their userinfo never share an instance (each one's mint presents its own).
             let key = if row.per_binding {
                 let written = serde_json::to_vec(settings).map_err(|e| e.to_string())?;
-                format!("{}\0{}", row.name, String::from_utf8_lossy(&written))
+                let presenting = userinfo
+                    .as_ref()
+                    .map(|u| u.leading(&[]))
+                    .unwrap_or_default();
+                let presenting = presenting
+                    .first()
+                    .map(|(_, value)| String::from_utf8_lossy(value).into_owned())
+                    .unwrap_or_default();
+                format!(
+                    "{}\0{}\0{presenting}",
+                    row.name,
+                    String::from_utf8_lossy(&written)
+                )
             } else {
                 row.name.clone()
             };
@@ -1861,8 +1889,9 @@ impl OutboundAuths {
     }
 }
 
-/// The settings key a minting style's token endpoint is written under.
-const TOKEN_URL_SETTING: &str = "token_url";
+/// The settings keys a minting style's token endpoint is written under: the configured
+/// `token_url` (`oauth-client-credentials`) and the service account's `token_uri` (`jwt-bearer`).
+const TOKEN_ENDPOINT_SETTINGS: [&str; 2] = ["token_url", "token_uri"];
 
 /// A TOKEN ENDPOINT SPELLED `user:pass@`, AS 1.5.5 REACHED IT (row 74, F25). 1.5.5 POSTed the client
 /// credentials with reqwest to `token_url` as written (v1.5.5
@@ -1870,7 +1899,10 @@ const TOKEN_URL_SETTING: &str = "token_url";
 /// .form(..)`), and reqwest 0.12.28's builder took the userinfo out of the URL and sent it FIRST as
 /// `authorization: Basic base64(user:pass)` (`src/async_impl/request.rs:169-182`,
 /// `extract_authority` `:581-605`, `util::basic_auth` `src/util.rs:4-25`); the form named no
-/// `authorization`, so it always rode. Here the endpoint the plugin is handed is the stripped one,
+/// `authorization`, so it always rode. `jwt-bearer` POSTed its signed assertion to the service
+/// account's `token_uri` the same way (v1.5.5 `crates/busbar/src/egress_auth/jwt_bearer.rs:175-181`,
+/// `.post(&self.token_uri).form(..)`), so the same rule holds for it. Here the endpoint the plugin
+/// is handed in its settings is the stripped one,
 /// so its need is pinned to, and its mint dials, the host after the `@` and the userinfo is in no
 /// plugin's settings, log or error; the Basic value rides the mint's open from the host side
 /// ([`presenting`]). `None` when the settings name no endpoint, or one with no userinfo.
@@ -1880,15 +1912,21 @@ fn endpoint_userinfo(
     serde_json::Value,
     Option<busbar_kernel::egress::engine::UrlUserinfo>,
 )> {
-    let written = settings.get(TOKEN_URL_SETTING)?.as_str()?;
-    let std::borrow::Cow::Owned(stripped) = busbar_kernel::net_guard::strip_userinfo(written)
-    else {
-        return None;
-    };
-    let userinfo = busbar_kernel::egress::engine::UrlUserinfo::of(written);
-    let mut settings = settings.clone();
-    settings[TOKEN_URL_SETTING] = serde_json::Value::String(stripped);
-    Some((settings, userinfo))
+    let mut stripped_settings: Option<serde_json::Value> = None;
+    let mut userinfo = None;
+    for key in TOKEN_ENDPOINT_SETTINGS {
+        let Some(written) = settings.get(key).and_then(serde_json::Value::as_str) else {
+            continue;
+        };
+        let std::borrow::Cow::Owned(stripped) = busbar_kernel::net_guard::strip_userinfo(written)
+        else {
+            continue;
+        };
+        userinfo = userinfo.or_else(|| busbar_kernel::egress::engine::UrlUserinfo::of(written));
+        stripped_settings.get_or_insert_with(|| settings.clone())[key] =
+            serde_json::Value::String(stripped);
+    }
+    stripped_settings.map(|stripped| (stripped, userinfo))
 }
 
 /// A served binding whose endpoint was stripped: its `open_outbound` is handed the stripped

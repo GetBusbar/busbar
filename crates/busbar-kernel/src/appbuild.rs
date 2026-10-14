@@ -155,6 +155,23 @@ pub fn stateful_plane_ephemeral_store_warn(
 /// Map a provider's `Option<config::ProviderAuth>` to the NEUTRAL [`AuthStyleInput`] the carrier holds
 /// (`None` ⇒ the protocol's native auth). The fallback plane maps it to the style its lane's credential
 /// is bound under, on the auth plugin serving that style.
+/// THE TOKEN ENDPOINT AS A PLANE MAY SEE IT (row 74, F25): `token_url` with its userinfo stripped,
+/// and the `Authorization: Basic` value that userinfo spelled, held opaque for the host to present
+/// on the mint as 1.5.5's reqwest POST did (v1.5.5
+/// `crates/busbar/src/egress_auth/oauth_client_credentials.rs:119-126`). A plane never receives a
+/// URL carrying `user:pass@`.
+pub(crate) fn lane_token_endpoint(
+    written: Option<&str>,
+) -> (Option<String>, Option<crate::egress::engine::UrlUserinfo>) {
+    let Some(written) = written else {
+        return (None, None);
+    };
+    (
+        Some(crate::net_guard::strip_userinfo(written).into_owned()),
+        crate::egress::engine::UrlUserinfo::of(written),
+    )
+}
+
 fn auth_style_of(auth: Option<config::ProviderAuth>) -> AuthStyleInput {
     match auth {
         None => AuthStyleInput::Default,
@@ -878,6 +895,7 @@ pub fn build_app_from_config(
         // ...and the Basic that userinfo spelled, held opaque for the kernel's hop to present as
         // 1.5.5 did (see `UrlUserinfo`): the plane never reads it.
         let url_userinfo = crate::egress::engine::UrlUserinfo::of(&provider_cfg.base_url);
+        let (token_url, token_userinfo) = lane_token_endpoint(provider_cfg.token_url.as_deref());
         lane_inputs.push(LaneInput {
             model: ld.model.clone(),
             provider: ld.provider.clone(),
@@ -892,7 +910,8 @@ pub fn build_app_from_config(
             api_key: busbar_contract::redacted::Redacted::new(api_key),
             auth_style: auth_style_of(provider_cfg.auth),
             scope: provider_cfg.scope.clone(),
-            token_url: provider_cfg.token_url.clone(),
+            token_url,
+            token_userinfo,
             subject: provider_cfg.subject.clone(),
             error_map: provider_cfg.error_map.clone(),
             health: provider_cfg.health.as_ref().map(health_input_of),

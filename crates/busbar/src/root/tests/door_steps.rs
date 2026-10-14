@@ -1175,6 +1175,132 @@ async fn a_member_under_jwt_bearer_mints_at_its_service_accounts_token_uri() {
     );
 }
 
+/// ROW 74 (F25), `jwt-bearer`: 1.5.5 POSTed the signed assertion with reqwest to the service
+/// account's `token_uri` as written (v1.5.5 `crates/busbar/src/egress_auth/jwt_bearer.rs:175-181`),
+/// whose builder took a `user:pass@` out of the URL and sent it FIRST as `authorization: Basic` (the
+/// form names no `authorization`). A service account whose `token_uri` spells one is sealed with its
+/// mint need pinned to the stripped endpoint, its mint dials the stripped endpoint, and each mint
+/// leads with the Basic value; no field carries the userinfo in the clear.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_service_account_token_uri_userinfo_rides_the_mint_as_1_5_5_sent_it() {
+    use base64::Engine as _;
+    use busbar_contract::auth_calls::FieldsRequest;
+    const TOKEN_URI: &str = "https://oauth2.example.com/token";
+    let written = TOKEN_URI.replacen("://", "://svcuser:hunter2-P4ss@", 1);
+    let table = std::sync::Arc::new(TokenEndpoint::default());
+    let routes = jwt_bearer_routes(
+        &written,
+        busbar_kernel::config_validate::MetadataPosture::default(),
+        &table,
+    )
+    .expect("a token_uri spelling a userinfo seals, as 1.5.5 accepted it");
+    let binding = routes["m"].auth.clone().expect("its credential is bound");
+    assert!(
+        table
+            .declared
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|(_, _, target)| target.as_deref() == Some(TOKEN_URI)),
+        "the mint need is pinned to the stripped endpoint: {:?}",
+        table.declared.lock().unwrap()
+    );
+    let minted = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            let now = binding
+                .auth
+                .fields_now(binding.handle, &FieldsRequest::default());
+            if presented(now.as_ref()).is_some_and(|a| a.starts_with("Bearer oracle-minted-")) {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    })
+    .await;
+    assert!(minted.is_ok(), "a bearer minted at the stripped endpoint");
+    assert_eq!(table.opened.lock().unwrap()[0].1, TOKEN_URI);
+    let basic = format!(
+        "Basic {}",
+        base64::engine::general_purpose::STANDARD.encode("svcuser:hunter2-P4ss")
+    );
+    let fields = table.fields.lock().unwrap();
+    let head = &fields[0];
+    assert_eq!(
+        head.first().map(|(n, v)| (n.as_str(), v.as_slice())),
+        Some(("authorization", basic.as_bytes())),
+        "{head:?}"
+    );
+    assert!(
+        head.iter()
+            .all(|(_, v)| !String::from_utf8_lossy(v).contains("hunter2")),
+        "{head:?}"
+    );
+}
+
+/// ROW 74 (F25), THE IN-PROCESS LANE'S SHAPE: the host stripped a `token_url`'s userinfo before a
+/// plane built its binding (`appbuild`), so the settings the axis is handed name the stripped
+/// endpoint and the Basic value arrives beside them ([`super::OutboundAuths::serving_with`]). The
+/// mint need is pinned to the stripped endpoint and every mint leads with the Basic value, as
+/// 1.5.5's reqwest POST sent it (v1.5.5 `crates/busbar/src/egress_auth/oauth_client_credentials.rs:119-126`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_token_url_stripped_before_the_plane_still_presents_its_basic_on_the_mint() {
+    use base64::Engine as _;
+    use busbar_contract::auth_calls::FieldsRequest;
+    const TOKEN_URL: &str = "https://login.example.com/tenant/oauth2/v2.0/token";
+    let held = busbar_kernel::egress::engine::UrlUserinfo::of(&TOKEN_URL.replacen(
+        "://",
+        "://svcuser:hunter2-P4ss@",
+        1,
+    ))
+    .expect("the userinfo, held by the host");
+    let table = std::sync::Arc::new(TokenEndpoint::default());
+    let auths = linked_mint_plugin(&table);
+    let style = super::style_word(busbar_kernel::config::ProviderAuth::OAuthClientCredentials);
+    // What the plane built its binding from: the stripped endpoint.
+    let settings = serde_json::json!({
+        "token_url": TOKEN_URL,
+        "scope": "https://x.example.com/.default",
+    });
+    let (auth, _) = auths
+        .serving_with(style, &settings, Some(held))
+        .expect("the plugin opens")
+        .expect("a linked plugin serves the style");
+    let handle = auth
+        .open_outbound(
+            style,
+            b"oracle-client-0001:oracle:secret:with:colons",
+            &settings,
+        )
+        .expect("the binding opens");
+    let first = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        auth.fields(handle, FieldsRequest::default(), 0),
+    )
+    .await
+    .expect("the first mint lands");
+    assert_eq!(
+        presented(Some(&first)).as_deref(),
+        Some("Bearer oracle-minted-1")
+    );
+    assert!(table
+        .declared
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|(_, _, target)| target.as_deref() == Some(TOKEN_URL)));
+    let basic = format!(
+        "Basic {}",
+        base64::engine::general_purpose::STANDARD.encode("svcuser:hunter2-P4ss")
+    );
+    let fields = table.fields.lock().unwrap();
+    assert_eq!(
+        fields[0].first().map(|(n, v)| (n.as_str(), v.as_slice())),
+        Some(("authorization", basic.as_bytes())),
+        "the far end hears the Basic value on the token POST: {:?}",
+        fields[0]
+    );
+}
+
 /// RED (1.5.5 `main.rs:2960-2966` over `egress_auth/jwt_bearer.rs::validate_token_uri`, v1.5.5): A
 /// SERVICE ACCOUNT'S `token_uri` IS JUDGED AT THE SEAL, in 1.5.5's words — plaintext to a public
 /// host and a cloud-metadata host are refused, naming the provider; the provider's metadata posture
