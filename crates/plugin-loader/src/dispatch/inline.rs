@@ -20,7 +20,6 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::task::{Wake, Waker};
 
 use busbar_contract::abi::mechanism::ticket::Ticket;
-use futures::task::AtomicWaker;
 
 use super::handle::{ticket_count, ticket_generation, TicketKey};
 use super::ticket::{decode, encode, MAX_INDEX, MAX_WORKERS};
@@ -28,23 +27,79 @@ use super::ticket::{decode, encode, MAX_INDEX, MAX_WORKERS};
 /// The worker an inline ticket's slot names: past every worker a dispatcher runs.
 pub(crate) const INLINE_WORKER: u32 = MAX_WORKERS - 1;
 
-/// One inline ticket's slot: its mint counter, its generation (`0` once RETIRED: no ticket is
-/// handed out on it again) and the waker of the task driving it.
+/// One inline ticket's slot: its mint counter, and its generation with the waker of the task
+/// driving it under ONE per-slot section ([`Held`]).
 #[derive(Debug, Default)]
 pub(crate) struct Slot {
+    /// How many times the slot was handed out; only grows (read lock-free by the judgement).
     count: AtomicU32,
-    generation: AtomicU32,
-    waker: AtomicWaker,
+    held: Mutex<Held>,
 }
 
-impl Wake for Slot {
+/// THE SLOT'S SECTION: the generation it holds (`0` once RETIRED: no ticket is handed out on it
+/// again) and the waker of the task driving that generation. A recycle bumps (or retires) the
+/// generation and clears the waker in it; a wake checks the generation and takes the waker in it.
+/// So a wake for one generation never takes the waker a later generation's task registered.
+#[derive(Debug, Default)]
+struct Held {
+    generation: u32,
+    waker: Option<Waker>,
+}
+
+impl Slot {
+    fn section(&self) -> std::sync::MutexGuard<'_, Held> {
+        self.held.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// The generation the slot holds now.
+    fn generation(&self) -> u32 {
+        self.section().generation
+    }
+
+    /// Wake the task of `generation`, if the slot still holds it: the generation is checked and the
+    /// waker taken in the section; it is woken once the section is let go (a `Waker::wake` only
+    /// schedules, and the waker taken is that generation's task's, whatever happens after). `false`:
+    /// the slot holds another generation, and nothing is woken.
+    fn wake_generation(&self, generation: u32) -> bool {
+        let taken = {
+            let mut held = self.section();
+            if generation == 0 || held.generation != generation {
+                return false;
+            }
+            held.waker.take()
+        };
+        if let Some(w) = taken {
+            w.wake();
+        }
+        true
+    }
+}
+
+/// THE WAKER OF ONE GENERATION of an inline slot (what [`InlineTickets::waker_of`] hands the host's
+/// I/O): it wakes the slot's task only while the slot still holds that generation. Fired after the
+/// slot was recycled and re-minted, it is a late wake: nothing is woken and no one is blamed (the
+/// host held it, not a forger).
+struct GenerationWaker {
+    slot: Arc<Slot>,
+    generation: u32,
+}
+
+impl Wake for GenerationWaker {
     fn wake(self: Arc<Self>) {
-        self.waker.wake();
+        self.slot.wake_generation(self.generation);
     }
 
     fn wake_by_ref(self: &Arc<Self>) {
-        self.waker.wake();
+        self.slot.wake_generation(self.generation);
     }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// THE TEST HOOK between a wake's lookup and its section: what runs here (a recycle and a
+    /// re-mint) races the wake as another thread would.
+    pub(crate) static BETWEEN_LOOKUP_AND_WAKE: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
 }
 
 /// What a wake for an inline ticket found.
@@ -91,8 +146,10 @@ impl InlineTickets {
                     .filter(|i| *i <= MAX_INDEX)?;
                 held.0.push(Arc::new(Slot {
                     count: AtomicU32::new(1),
-                    generation: AtomicU32::new(ticket_generation(self.key, INLINE_WORKER, i, 1)),
-                    waker: AtomicWaker::new(),
+                    held: Mutex::new(Held {
+                        generation: ticket_generation(self.key, INLINE_WORKER, i, 1),
+                        waker: None,
+                    }),
                 }));
                 i
             }
@@ -100,7 +157,7 @@ impl InlineTickets {
         let slot = Arc::clone(&held.0[index as usize]);
         let ticket = Ticket {
             slot: encode(INLINE_WORKER, index),
-            generation: slot.generation.load(Ordering::Acquire),
+            generation: slot.generation(),
         };
         Some(InlineTicket {
             ticket,
@@ -109,27 +166,23 @@ impl InlineTickets {
         })
     }
 
-    /// The slot `t` names and whether `t` is its held ticket; `None` for no slot.
-    fn lookup(&self, t: Ticket) -> Option<(Arc<Slot>, bool)> {
+    /// The slot `t` names; `None` for no slot.
+    fn lookup(&self, t: Ticket) -> Option<Arc<Slot>> {
         let (w, i) = decode(t.slot);
         if w != INLINE_WORKER {
             return None;
         }
         let held = self.slots.lock().unwrap_or_else(PoisonError::into_inner);
-        let slot = Arc::clone(held.0.get(i as usize)?);
-        drop(held);
-        let g = slot.generation.load(Ordering::Acquire);
-        let live = g != 0 && g == t.generation;
-        Some((slot, live))
+        held.0.get(i as usize).cloned()
     }
 
-    fn slot(&self, t: Ticket) -> Option<Arc<Slot>> {
-        self.lookup(t).and_then(|(s, live)| live.then_some(s))
-    }
-
-    /// The waker of `t`'s task; `None` for a stale or foreign ticket.
+    /// The waker of `t`'s task, bound to `t`'s generation ([`GenerationWaker`]); `None` for a
+    /// ticket the slot does not hold now, or a foreign one.
     pub(crate) fn waker_of(&self, t: Ticket) -> Option<Waker> {
-        self.slot(t).map(Waker::from)
+        let slot = self.lookup(t)?;
+        let generation = slot.generation();
+        (generation != 0 && generation == t.generation)
+            .then(|| Waker::from(Arc::new(GenerationWaker { slot, generation })))
     }
 
     /// Wake `t`'s task, judging a `t` that is not held (#74): a generation the slot minted is a late
@@ -140,11 +193,16 @@ impl InlineTickets {
         if t.generation == 0 {
             return Judged::Stale;
         }
-        let Some((slot, live)) = self.lookup(t) else {
+        let Some(slot) = self.lookup(t) else {
             return Judged::Forged;
         };
-        if live {
-            slot.waker.wake();
+        #[cfg(test)]
+        if let Some(between) = BETWEEN_LOOKUP_AND_WAKE.with(|h| h.borrow_mut().take()) {
+            between();
+        }
+        // The generation checked and the waker taken in the slot's section: a recycle and re-mint
+        // racing this wake cannot hand it the next generation's task.
+        if slot.wake_generation(t.generation) {
             return Judged::Woken;
         }
         let (_, i) = decode(t.slot);
@@ -167,8 +225,14 @@ impl InlineTickets {
             slot.count.store(c, Ordering::Release);
         }
         let g = next.map_or(0, |c| ticket_generation(self.key, INLINE_WORKER, index, c));
-        slot.generation.store(g, Ordering::Release);
-        slot.waker.take();
+        // The generation and the waker go together, in the section: no wake for the old
+        // generation takes a waker from here on, and the next task registers on a clean slot.
+        let gone = {
+            let mut held = slot.section();
+            held.generation = g;
+            held.waker.take()
+        };
+        drop(gone);
         if next.is_some() {
             self.slots
                 .lock()
@@ -182,10 +246,10 @@ impl InlineTickets {
     #[cfg(test)]
     pub(crate) fn seed_count(&self, t: Ticket, count: u32) -> Ticket {
         let (_, i) = decode(t.slot);
-        let slot = self.lookup(t).expect("an inline slot").0;
+        let slot = self.lookup(t).expect("an inline slot");
         let g = ticket_generation(self.key, INLINE_WORKER, i, count);
         slot.count.store(count, Ordering::Release);
-        slot.generation.store(g, Ordering::Release);
+        slot.section().generation = g;
         Ticket {
             slot: t.slot,
             generation: g,
@@ -215,9 +279,13 @@ impl InlineTicket {
         self.ticket
     }
 
-    /// Register `waker` as the task an op pending on this ticket wakes.
+    /// Register `waker` as the task an op pending on this ticket wakes (in the slot's section: the
+    /// ticket is held, so the slot holds its generation).
     pub fn register(&self, waker: &Waker) {
-        self.slot.waker.register(waker);
+        let mut held = self.slot.section();
+        if !held.waker.as_ref().is_some_and(|w| w.will_wake(waker)) {
+            held.waker = Some(waker.clone());
+        }
     }
 }
 

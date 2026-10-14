@@ -1722,6 +1722,12 @@ impl Dispatcher {
         (e.live, st.free.contains(&idx), e.count)
     }
 
+    /// TEST ONLY: the inline tickets, shared, for a test that mints from inside a hook.
+    #[cfg(test)]
+    pub(crate) fn inline_tickets_arc(&self) -> Arc<super::inline::InlineTickets> {
+        Arc::clone(&self.pool.env.inline)
+    }
+
     /// TEST ONLY: the inline tickets, for a test that seeds a slot's counter.
     #[cfg(test)]
     pub(crate) fn inline_tickets(&self) -> &super::inline::InlineTickets {

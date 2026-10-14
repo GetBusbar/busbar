@@ -3005,6 +3005,100 @@ fn red_an_inline_slot_whose_counter_is_spent_is_retired() {
     assert_eq!(latch.forged(), 0);
 }
 
+/// A task waker that counts its wakes.
+#[derive(Default)]
+struct Counted(std::sync::atomic::AtomicUsize);
+
+impl std::task::Wake for Counted {
+    fn wake(self: Arc<Self>) {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+impl Counted {
+    fn woken(&self) -> usize {
+        self.0.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+/// RED (#74, A HELD WAKER OUTLIVES ITS GENERATION): the host's I/O holds the waker of an inline
+/// ticket's task (`waker_of`, what `io.*` registers with the reactor); the connection ends, the slot
+/// is recycled and re-minted to a new connection whose task registers. The old readiness then fires:
+/// it wakes NEITHER task (the old one's waker went with its generation, the new one's is not its
+/// to wake). The control: the new generation's own waker wakes the new task.
+#[test]
+fn red_an_io_held_waker_fired_after_recycle_does_not_wake_the_new_task() {
+    let d = Dispatcher::new(config());
+    let old_task = Arc::new(Counted::default());
+    let held = d.inline_ticket().expect("an inline ticket");
+    held.register(&std::task::Waker::from(old_task.clone()));
+    let io_held = d
+        .inline_tickets()
+        .waker_of(held.ticket())
+        .expect("the held ticket's waker");
+    drop(held);
+    let new_task = Arc::new(Counted::default());
+    let next = d.inline_ticket().expect("the slot again");
+    next.register(&std::task::Waker::from(new_task.clone()));
+    io_held.wake_by_ref();
+    io_held.wake();
+    assert_eq!(
+        new_task.woken(),
+        0,
+        "a stale I/O waker woke the next connection's task"
+    );
+    assert_eq!(old_task.woken(), 0, "a recycled ticket's task was woken");
+    d.inline_tickets()
+        .waker_of(next.ticket())
+        .expect("the new ticket's waker")
+        .wake();
+    assert_eq!(
+        new_task.woken(),
+        1,
+        "the new generation's own waker did not wake its task"
+    );
+}
+
+/// RED (#74, A WAKE RACING A RECYCLE): a wake for an inline ticket looks the slot up; between that
+/// lookup and the wake (the test hook), the ticket is dropped and the slot re-minted to a new task.
+/// The wake checks the generation and takes the waker in one section, so it reaches no task: it is
+/// a late wake of a generation the slot minted, not a forgery. A check made outside the section
+/// would wake the new task.
+#[test]
+fn red_a_wake_interleaved_with_recycle_and_re_mint_does_not_reach_the_new_task() {
+    let d = Dispatcher::new(config());
+    let held = d.inline_ticket().expect("an inline ticket");
+    let old = held.ticket();
+    let new_task = Arc::new(Counted::default());
+    let next: Arc<Mutex<Option<crate::dispatch::InlineTicket>>> = Arc::default();
+    let (tickets, task, slot) = (d.inline_tickets_arc(), new_task.clone(), next.clone());
+    crate::dispatch::inline::BETWEEN_LOOKUP_AND_WAKE.with(|h| {
+        *h.borrow_mut() = Some(Box::new(move || {
+            drop(held);
+            let t = tickets.mint().expect("the slot again");
+            t.register(&std::task::Waker::from(task));
+            *slot.lock().unwrap() = Some(t);
+        }));
+    });
+    let judged = d.inline_tickets().wake(old);
+    assert_eq!(judged, crate::dispatch::inline::Judged::Stale);
+    let re_minted = next
+        .lock()
+        .unwrap()
+        .take()
+        .expect("the hook re-minted the slot");
+    assert_eq!(
+        re_minted.ticket().slot,
+        old.slot,
+        "the race re-minted another slot"
+    );
+    assert_eq!(
+        new_task.woken(),
+        0,
+        "a wake for the recycled generation woke the new task"
+    );
+}
+
 /// RED (#74, A WORKER THE DISPATCHER DOES NOT RUN): a wake for `encode(n, 0)`, `n` past the
 /// dispatcher's workers and short of the inline worker, names a slot nothing minted: a forgery,
 /// blamed on its supplier, not merely a stale wake.
