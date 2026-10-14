@@ -1792,24 +1792,43 @@ impl OutboundAuths {
         settings: &serde_json::Value,
     ) -> Result<Option<Serving>, String> {
         use crate::root::loader::dispatch::auth_outbound::OutboundInstance;
+        // A token endpoint spelled `user:pass@` (row 74, F25): the plugin is opened over, and its
+        // binding handed, the stripped endpoint, and the userinfo rides its mint as 1.5.5 sent it
+        // ([`endpoint_userinfo`]).
+        let endpoint = endpoint_userinfo(settings);
+        let (stated, userinfo) = match &endpoint {
+            Some((stripped, userinfo)) => (stripped, userinfo.clone()),
+            None => (settings, None),
+        };
         for row in self.facts() {
             let Some(decl) = row.styles.iter().find(|s| s.name == style).cloned() else {
                 continue;
             };
-            let settings = if row.per_binding {
-                serde_json::to_vec(settings).map_err(|e| e.to_string())?
+            let open_with = if row.per_binding {
+                serde_json::to_vec(stated).map_err(|e| e.to_string())?
             } else {
                 b"{}".to_vec()
             };
+            // Keyed on the settings as written, so two bindings whose endpoints differ only in
+            // their userinfo never share an instance (each one's mint presents its own).
             let key = if row.per_binding {
-                format!("{}\0{}", row.name, String::from_utf8_lossy(&settings))
+                let written = serde_json::to_vec(settings).map_err(|e| e.to_string())?;
+                format!("{}\0{}", row.name, String::from_utf8_lossy(&written))
             } else {
                 row.name.clone()
             };
             let instance = match self.opened.get(&key) {
                 Some(instance) => instance,
                 None => {
-                    let Some(plugin) = self.load(&row.name, row.door) else {
+                    let loaded = match &userinfo {
+                        Some(userinfo) if row.per_binding => self.load_with(
+                            &row.name,
+                            row.door,
+                            presenting(self.conns.clone(), userinfo),
+                        ),
+                        _ => self.load(&row.name, row.door),
+                    };
+                    let Some(plugin) = loaded else {
                         continue;
                     };
                     let (instance, installed) = self.opened.get_or_open(&key, || {
@@ -1817,7 +1836,7 @@ impl OutboundAuths {
                             plugin,
                             Arc::clone(&self.dispatcher),
                             0,
-                            &settings,
+                            &open_with,
                         )
                     })?;
                     // ITS TICK SCHEDULE, once per instance, on the runtime the composition runs on.
@@ -1829,12 +1848,275 @@ impl OutboundAuths {
                     instance
                 }
             };
-            return Ok(Some((
-                instance as Arc<dyn busbar_contract::auth_calls::OutboundAuth>,
-                decl,
-            )));
+            let auth = instance as Arc<dyn busbar_contract::auth_calls::OutboundAuth>;
+            let auth = if endpoint.is_some() {
+                Arc::new(EndpointStripped(auth))
+                    as Arc<dyn busbar_contract::auth_calls::OutboundAuth>
+            } else {
+                auth
+            };
+            return Ok(Some((auth, decl)));
         }
         Ok(None)
+    }
+}
+
+/// The settings key a minting style's token endpoint is written under.
+const TOKEN_URL_SETTING: &str = "token_url";
+
+/// A TOKEN ENDPOINT SPELLED `user:pass@`, AS 1.5.5 REACHED IT (row 74, F25). 1.5.5 POSTed the client
+/// credentials with reqwest to `token_url` as written (v1.5.5
+/// `crates/busbar/src/egress_auth/oauth_client_credentials.rs:119-126`, `.post(&self.token_url)
+/// .form(..)`), and reqwest 0.12.28's builder took the userinfo out of the URL and sent it FIRST as
+/// `authorization: Basic base64(user:pass)` (`src/async_impl/request.rs:169-182`,
+/// `extract_authority` `:581-605`, `util::basic_auth` `src/util.rs:4-25`); the form named no
+/// `authorization`, so it always rode. Here the endpoint the plugin is handed is the stripped one,
+/// so its need is pinned to, and its mint dials, the host after the `@` and the userinfo is in no
+/// plugin's settings, log or error; the Basic value rides the mint's open from the host side
+/// ([`presenting`]). `None` when the settings name no endpoint, or one with no userinfo.
+fn endpoint_userinfo(
+    settings: &serde_json::Value,
+) -> Option<(
+    serde_json::Value,
+    Option<busbar_kernel::egress::engine::UrlUserinfo>,
+)> {
+    let written = settings.get(TOKEN_URL_SETTING)?.as_str()?;
+    let std::borrow::Cow::Owned(stripped) = busbar_kernel::net_guard::strip_userinfo(written)
+    else {
+        return None;
+    };
+    let userinfo = busbar_kernel::egress::engine::UrlUserinfo::of(written);
+    let mut settings = settings.clone();
+    settings[TOKEN_URL_SETTING] = serde_json::Value::String(stripped);
+    Some((settings, userinfo))
+}
+
+/// A served binding whose endpoint was stripped: its `open_outbound` is handed the stripped
+/// settings too, whatever its caller wrote ([`endpoint_userinfo`]); every other call is the
+/// instance's own.
+struct EndpointStripped(Arc<dyn busbar_contract::auth_calls::OutboundAuth>);
+
+impl busbar_contract::auth_calls::OutboundAuth for EndpointStripped {
+    fn open_outbound(
+        &self,
+        style: &str,
+        credential: &[u8],
+        settings: &serde_json::Value,
+    ) -> Result<u64, String> {
+        let stripped = endpoint_userinfo(settings).map(|(stripped, _)| stripped);
+        self.0
+            .open_outbound(style, credential, stripped.as_ref().unwrap_or(settings))
+    }
+
+    fn fields_now(
+        &self,
+        handle: u64,
+        request: &busbar_contract::auth_calls::FieldsRequest,
+    ) -> Option<busbar_contract::auth_calls::Fields> {
+        self.0.fields_now(handle, request)
+    }
+
+    fn fields(
+        &self,
+        handle: u64,
+        request: busbar_contract::auth_calls::FieldsRequest,
+        deadline_ns: u64,
+    ) -> Box<dyn busbar_contract::auth_calls::Fielding> {
+        self.0.fields(handle, request, deadline_ns)
+    }
+
+    fn ready(&self, handle: u64) -> bool {
+        self.0.ready(handle)
+    }
+}
+
+/// The connection table one binding's minting instance declares its needs on and opens its mint
+/// through: the process's table, with the endpoint's Basic value FIRST on every open whose fields
+/// name no `authorization` (1.5.5's order and condition, see [`endpoint_userinfo`]) and any
+/// userinfo left in the open's target taken out. A table that grants no need stays as it is.
+fn presenting(
+    conns: crate::root::loader::dispatch::ConnTable,
+    userinfo: &busbar_kernel::egress::engine::UrlUserinfo,
+) -> crate::root::loader::dispatch::ConnTable {
+    use crate::root::loader::dispatch::ConnTable;
+    match conns {
+        ConnTable::Host(inner) => ConnTable::Host(Arc::new(PresentingConns {
+            inner,
+            userinfo: userinfo.clone(),
+        })),
+        other => other,
+    }
+}
+
+/// See [`presenting`]: every call but `open` is the inner table's own.
+struct PresentingConns {
+    inner: Arc<dyn busbar_contract::conn::DeclaredConns>,
+    userinfo: busbar_kernel::egress::engine::UrlUserinfo,
+}
+
+impl busbar_contract::conn::Conns for PresentingConns {
+    fn open(
+        &self,
+        caller: busbar_contract::conn::InstanceId,
+        need: busbar_contract::conn::NeedId,
+        desc: &busbar_contract::conn::OpenDesc<'_>,
+    ) -> Result<busbar_contract::conn::ConnId, busbar_contract::conn::ConnError> {
+        let target = busbar_kernel::net_guard::strip_userinfo(desc.target);
+        let led = self.userinfo.leading(desc.fields);
+        let fields = led.as_deref().unwrap_or(desc.fields);
+        self.inner.open(
+            caller,
+            need,
+            &busbar_contract::conn::OpenDesc {
+                target: &target,
+                fields,
+                ..*desc
+            },
+        )
+    }
+
+    fn write(
+        &self,
+        caller: busbar_contract::conn::InstanceId,
+        conn: busbar_contract::conn::ConnId,
+        bytes: &[u8],
+        end: bool,
+        text: bool,
+    ) -> Result<usize, busbar_contract::conn::ConnError> {
+        self.inner.write(caller, conn, bytes, end, text)
+    }
+
+    fn read(
+        &self,
+        caller: busbar_contract::conn::InstanceId,
+        conn: busbar_contract::conn::ConnId,
+        ticket: busbar_contract::conn::Ticket,
+        buf: &mut [u8],
+    ) -> Result<busbar_contract::conn::Piece, busbar_contract::conn::ConnError> {
+        self.inner.read(caller, conn, ticket, buf)
+    }
+
+    fn wait(
+        &self,
+        caller: busbar_contract::conn::InstanceId,
+        set: &[busbar_contract::conn::ConnId],
+        ticket: busbar_contract::conn::Ticket,
+    ) -> Result<usize, busbar_contract::conn::ConnError> {
+        self.inner.wait(caller, set, ticket)
+    }
+
+    fn facts(
+        &self,
+        caller: busbar_contract::conn::InstanceId,
+        conn: busbar_contract::conn::ConnId,
+    ) -> Result<busbar_contract::transport::ConnFacts, busbar_contract::conn::ConnError> {
+        self.inner.facts(caller, conn)
+    }
+
+    fn close(
+        &self,
+        caller: busbar_contract::conn::InstanceId,
+        conn: busbar_contract::conn::ConnId,
+    ) -> Result<(), busbar_contract::conn::ConnError> {
+        self.inner.close(caller, conn)
+    }
+}
+
+impl busbar_contract::conn::DeclaredConns for PresentingConns {
+    fn declare(
+        &self,
+        owner: busbar_contract::conn::InstanceId,
+        need: busbar_contract::conn::NeedId,
+        spec: &busbar_contract::abi::mechanism::rendering::ReadNeed,
+        target: Option<&str>,
+        trust: Option<&str>,
+    ) -> Result<(), busbar_contract::conn::ConnError> {
+        self.inner.declare(owner, need, spec, target, trust)
+    }
+
+    fn declared(
+        &self,
+        owner: busbar_contract::conn::InstanceId,
+        need: busbar_contract::conn::NeedId,
+    ) -> Option<Result<(), busbar_contract::conn::ConnError>> {
+        self.inner.declared(owner, need)
+    }
+
+    fn upgrade_secure(
+        &self,
+        caller: busbar_contract::conn::InstanceId,
+        conn: busbar_contract::conn::ConnId,
+        name: Option<&str>,
+        trust: Option<&str>,
+        verify_off: bool,
+        ticket: busbar_contract::conn::Ticket,
+    ) -> Result<(), busbar_contract::conn::ConnError> {
+        self.inner
+            .upgrade_secure(caller, conn, name, trust, verify_off, ticket)
+    }
+
+    fn framed(
+        &self,
+        owner: busbar_contract::conn::InstanceId,
+        need: busbar_contract::conn::NeedId,
+    ) -> bool {
+        self.inner.framed(owner, need)
+    }
+
+    fn serves_scheme(&self, transport: &str) -> bool {
+        self.inner.serves_scheme(transport)
+    }
+
+    fn declare_program(
+        &self,
+        owner: busbar_contract::conn::InstanceId,
+        need: busbar_contract::conn::NeedId,
+        spec: &busbar_contract::abi::mechanism::rendering::ReadNeed,
+        program: &busbar_contract::conn::Program,
+    ) -> Result<(), busbar_contract::conn::ConnError> {
+        self.inner.declare_program(owner, need, spec, program)
+    }
+
+    fn cause(
+        &self,
+        owner: busbar_contract::conn::InstanceId,
+        conn: busbar_contract::conn::ConnId,
+    ) -> Option<busbar_contract::conn::ConnCause> {
+        self.inner.cause(owner, conn)
+    }
+
+    fn hold_authority(&self, owner: busbar_contract::conn::InstanceId) {
+        self.inner.hold_authority(owner);
+    }
+
+    fn bind_auth(
+        &self,
+        owner: busbar_contract::conn::InstanceId,
+        need: busbar_contract::conn::NeedId,
+        origin: &str,
+        binding: busbar_contract::conn::ConnAuth,
+    ) {
+        self.inner.bind_auth(owner, need, origin, binding);
+    }
+
+    fn auth_of(
+        &self,
+        owner: busbar_contract::conn::InstanceId,
+        need: busbar_contract::conn::NeedId,
+        target: &str,
+    ) -> Option<busbar_contract::conn::ConnAuth> {
+        self.inner.auth_of(owner, need, target)
+    }
+
+    fn declare_member_programs(
+        &self,
+        owner: busbar_contract::conn::InstanceId,
+        need: busbar_contract::conn::NeedId,
+        spec: &busbar_contract::abi::mechanism::rendering::ReadNeed,
+        programs: &[(String, busbar_contract::conn::Program)],
+    ) -> Result<(), busbar_contract::conn::ConnError> {
+        self.inner
+            .declare_member_programs(owner, need, spec, programs)
     }
 }
 

@@ -502,9 +502,10 @@ fn strip_userinfo_into_basic_auth(uri: http::Uri, headers: &mut http::HeaderMap)
 /// `authorization` and left it in place otherwise. So: the Basic field rides, first, exactly when
 /// the request's own credential names no `authorization`.
 ///
-/// The value is never readable outside the kernel: no accessor leaves the crate, `Debug` prints a
-/// marker, and the header is sensitive. A plane that carries one hands it back to the kernel's
-/// hop as an opaque request extension ([`present_url_userinfo`]).
+/// The value is read outside the kernel only by the composition root's own connection opens
+/// ([`UrlUserinfo::leading`]); `Debug` prints a marker and the header is sensitive. A plane that
+/// carries one never reads it: it hands it back to the kernel's hop as an opaque request extension
+/// ([`present_url_userinfo`]).
 #[derive(Clone)]
 pub struct UrlUserinfo(http::HeaderValue);
 
@@ -548,6 +549,29 @@ impl UrlUserinfo {
     /// The field value, for the kernel's own hops.
     pub(crate) fn value(&self) -> &http::HeaderValue {
         &self.0
+    }
+
+    /// A host-side connection open's head `fields` with this value LEADING them under
+    /// `authorization`, or `None` when they already name `authorization` (the value then rides
+    /// nowhere): 1.5.5's order and condition, for the composition root's own opens (a minting auth
+    /// plugin's token endpoint). Never handed to a plane.
+    #[must_use]
+    pub fn leading<'a>(
+        &'a self,
+        fields: &[(&'a str, &'a [u8])],
+    ) -> Option<Vec<(&'a str, &'a [u8])>> {
+        const AUTHORIZATION: &str = "authorization";
+        if fields
+            .iter()
+            .any(|(n, _)| n.eq_ignore_ascii_case(AUTHORIZATION))
+        {
+            return None;
+        }
+        Some(
+            std::iter::once((AUTHORIZATION, self.0.as_bytes()))
+                .chain(fields.iter().copied())
+                .collect(),
+        )
     }
 }
 

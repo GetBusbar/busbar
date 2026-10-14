@@ -3267,6 +3267,54 @@ fn a_base_url_userinfo_is_accepted_and_no_validation_error_repeats_it() {
             "each refusal still names the host it is about: {about:?}"
         );
     }
+    // The token endpoint (row 74, F25): accepted as 1.5.5 accepted it, and repeated redacted.
+    let with_token_url = |token_url: String| {
+        let mut providers = HashMap::new();
+        let mut p = make_provider(proto_b(), "https://api.example.com", "API_KEY");
+        p.token_url = Some(token_url);
+        p.scope = Some("api://x/.default".into());
+        p.auth = Some(config::ProviderAuth::OAuthClientCredentials);
+        providers.insert("myprovider".to_string(), p);
+        let mut models = HashMap::new();
+        models.insert("m".to_string(), make_model("myprovider", 10));
+        let mut pools = HashMap::new();
+        pools.insert("p".to_string(), make_pool(vec![make_member("m")]));
+        validate(&make_root_cfg(providers, models, pools))
+    };
+    let accepted = with_token_url(format!("https://{PLANTED}login.example.com/token"));
+    assert!(
+        accepted.is_ok(),
+        "a token_url spelling user:pass@ validates, as in 1.5.5: {accepted:?}"
+    );
+    let plaintext = format!("https://{PLANTED}login.example.com/token").replacen("s://", "://", 1);
+    for (token_url, host) in [
+        (
+            format!("ftp://{PLANTED}login.example.com/token"),
+            "login.example.com",
+        ),
+        (plaintext, "login.example.com"),
+        (
+            format!("https://{PLANTED}169.254.169.254/token"),
+            "169.254.169.254",
+        ),
+    ] {
+        let errors = with_token_url(token_url).expect_err("the planted endpoint is refused");
+        let about: Vec<&String> = errors.iter().filter(|e| e.contains("token_url")).collect();
+        assert!(
+            !about.is_empty(),
+            "a token_url refusal was written: {errors:?}"
+        );
+        for e in &errors {
+            assert!(
+                !e.contains("hunter2") && !e.contains("svcuser"),
+                "a validation error repeated the planted spelling: {e}"
+            );
+        }
+        assert!(
+            about.iter().all(|e| e.contains(host)),
+            "each refusal still names the host it is about: {about:?}"
+        );
+    }
 }
 
 /// An EMPTY `affinity.header_name` must be REJECTED at boot. It passes
