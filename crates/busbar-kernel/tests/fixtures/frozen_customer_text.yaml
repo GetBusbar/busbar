@@ -25,6 +25,7 @@ legacy_rows:
   export_type_keys: "prometheus:metrics:prometheus | request-log-webhook:req-log:request-log-webhook | request-log-file:req-log-file:request-log-file | generic-webhook:req-log-audit:request-log-webhook"
   renamed_display: Valkey
   retired_url_scheme: redis
+  snapshot_recorder_failed: "prometheus recorder install failed; /metrics will be empty"
   gov14_module: sqlite
   gov14_db_path: busbar-governance.db
   gov14_busy_timeout_key: sqlite_busy_timeout_ms

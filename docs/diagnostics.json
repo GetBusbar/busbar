@@ -1215,10 +1215,10 @@
     "code": "BUSBAR-5032",
     "number": 5032,
     "class": "proxy",
-    "slug": "prometheus-recorder-install-failed",
-    "title": "Prometheus recorder install failed; /metrics will be empty",
+    "slug": "metrics-recorder-install-failed",
+    "title": "Metrics recorder install failed; /metrics will be empty",
     "severity": "actionable",
-    "summary": "The Prometheus metrics recorder failed to install at boot, so the /metrics endpoint will be empty for the life of the process. busbar continues serving proxy traffic, but is blind to metrics.",
+    "summary": "The host's metrics recorder failed to install at boot, so the /metrics endpoint will be empty for the life of the process. busbar continues serving proxy traffic, but is blind to metrics.",
     "action": "Investigate the boot error (often a duplicate recorder install or a conflicting exporter). Restart busbar after resolving it; /metrics stays empty until then.",
     "since": "1.6.0",
     "retired": false
@@ -1254,7 +1254,7 @@
     "slug": "metrics-key-gauge-limit-exceeded",
     "title": "Metrics scrape: virtual-key count exceeds the per-key gauge limit (truncating)",
     "severity": "actionable",
-    "summary": "The number of virtual keys exceeds the per-key gauge limit (`metrics.key_gauge_limit`), so busbar emits gauges for only the first `limit` keys to bound Prometheus cardinality and scrape-path DB load. Some keys have no per-key series. Warned once until the count drops back under the limit.",
+    "summary": "The number of virtual keys exceeds the per-key gauge limit (`metrics.key_gauge_limit`), so busbar emits gauges for only the first `limit` keys to bound the exposition's cardinality and scrape-path DB load. Some keys have no per-key series. Warned once until the count drops back under the limit.",
     "action": "Raise `metrics.key_gauge_limit` if you need per-key series for all keys and can afford the cardinality, or reduce the number of active virtual keys. Aggregate group gauges are unaffected.",
     "since": "1.6.0",
     "retired": false

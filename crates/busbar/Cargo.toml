@@ -725,6 +725,7 @@ required-features = ["auth-admin-tokens"]
 "name_1_5_5.busbar-store-valkey" = "busbar-store-valkey-plugin"
 "renamed_display" = "Valkey"
 "retired_url_scheme" = "redis"
+"snapshot_recorder_failed" = "prometheus recorder install failed; /metrics will be empty"
 "former.mysql" = "busbar-store-mysql-plugin"
 "former.postgres" = "busbar-store-postgres-plugin"
 "former.sqlite" = "busbar-store-sqlite-plugin"

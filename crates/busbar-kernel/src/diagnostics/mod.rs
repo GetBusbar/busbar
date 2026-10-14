@@ -1409,14 +1409,14 @@ pub const FALLBACK_RESTRICT_NO_ELIGIBLE_LANE: Diagnostic = Diagnostic {
     retired: false,
 };
 
-/// The Prometheus recorder failed to install at boot; /metrics will be empty.
-pub const PROMETHEUS_RECORDER_INSTALL_FAILED: Diagnostic = Diagnostic {
+/// The host's metrics recorder failed to install at boot; /metrics will be empty.
+pub const METRICS_RECORDER_INSTALL_FAILED: Diagnostic = Diagnostic {
     code: 5032,
     class: Class::Proxy,
-    slug: "prometheus-recorder-install-failed",
-    title: "Prometheus recorder install failed; /metrics will be empty",
+    slug: "metrics-recorder-install-failed",
+    title: "Metrics recorder install failed; /metrics will be empty",
     severity: Severity::Actionable,
-    summary: "The Prometheus metrics recorder failed to install at boot, so the /metrics endpoint \
+    summary: "The host's metrics recorder failed to install at boot, so the /metrics endpoint \
               will be empty for the life of the process. busbar continues serving proxy traffic, \
               but is blind to metrics.",
     action: "Investigate the boot error (often a duplicate recorder install or a conflicting \
@@ -1468,7 +1468,7 @@ pub const METRICS_KEY_GAUGE_LIMIT_EXCEEDED: Diagnostic = Diagnostic {
     severity: Severity::Actionable,
     summary:
         "The number of virtual keys exceeds the per-key gauge limit (`metrics.key_gauge_limit`), \
-              so busbar emits gauges for only the first `limit` keys to bound Prometheus \
+              so busbar emits gauges for only the first `limit` keys to bound the exposition's \
               cardinality and scrape-path DB load. Some keys have no per-key series. Warned once \
               until the count drops back under the limit.",
     action: "Raise `metrics.key_gauge_limit` if you need per-key series for all keys and can \
@@ -3226,7 +3226,7 @@ pub static REGISTRY: &[&Diagnostic] = &[
     &USAGE_TAP_DECODE_FAILED,
     &ATTEMPT_TIMEOUT_DEGRADED,
     &FALLBACK_RESTRICT_NO_ELIGIBLE_LANE,
-    &PROMETHEUS_RECORDER_INSTALL_FAILED,
+    &METRICS_RECORDER_INSTALL_FAILED,
     &METRICS_MAINTENANCE_THREAD_SPAWN_FAILED,
     &METRICS_SCRAPE_LIST_KEYS_FAILED,
     &METRICS_KEY_GAUGE_LIMIT_EXCEEDED,

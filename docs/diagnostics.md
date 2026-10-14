@@ -1125,14 +1125,14 @@ A compliance restrict re-applied against a fallback pool left no eligible lane, 
 
 **What to do:** None — self-heals per request. If the fallback pool should serve this traffic, ensure its members carry the tags the restrict requires.
 
-<a id="prometheus-recorder-install-failed"></a>
-### BUSBAR-5032 — Prometheus recorder install failed; /metrics will be empty
+<a id="metrics-recorder-install-failed"></a>
+### BUSBAR-5032 — Metrics recorder install failed; /metrics will be empty
 
 - **Severity:** actionable
 - **Since:** 1.6.0
-- **Slug:** `prometheus-recorder-install-failed`
+- **Slug:** `metrics-recorder-install-failed`
 
-The Prometheus metrics recorder failed to install at boot, so the /metrics endpoint will be empty for the life of the process. busbar continues serving proxy traffic, but is blind to metrics.
+The host's metrics recorder failed to install at boot, so the /metrics endpoint will be empty for the life of the process. busbar continues serving proxy traffic, but is blind to metrics.
 
 **What to do:** Investigate the boot error (often a duplicate recorder install or a conflicting exporter). Restart busbar after resolving it; /metrics stays empty until then.
 
@@ -1165,7 +1165,7 @@ A /metrics scrape could not list virtual keys from the governance store (a trans
 - **Since:** 1.6.0
 - **Slug:** `metrics-key-gauge-limit-exceeded`
 
-The number of virtual keys exceeds the per-key gauge limit (`metrics.key_gauge_limit`), so busbar emits gauges for only the first `limit` keys to bound Prometheus cardinality and scrape-path DB load. Some keys have no per-key series. Warned once until the count drops back under the limit.
+The number of virtual keys exceeds the per-key gauge limit (`metrics.key_gauge_limit`), so busbar emits gauges for only the first `limit` keys to bound the exposition's cardinality and scrape-path DB load. Some keys have no per-key series. Warned once until the count drops back under the limit.
 
 **What to do:** Raise `metrics.key_gauge_limit` if you need per-key series for all keys and can afford the cardinality, or reduce the number of active virtual keys. Aggregate group gauges are unaffected.
 
