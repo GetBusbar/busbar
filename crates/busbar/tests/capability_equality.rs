@@ -1230,7 +1230,7 @@ fn every_workspace_plane_crate_maps_to_at_least_one_ledger_column() {
     let crates = workspace_plane_crates(&root);
     for key in &crates {
         // Every enumerated plane must be a crate on disk, or a source and the tree disagree.
-        let crate_dir = common::pinned_planes::resolve(root, &format!("crates/busbar-{key}"));
+        let crate_dir = common::pinned_planes::resolve(&root, &format!("crates/busbar-{key}"));
         assert!(
             crate_dir.is_dir(),
             "plane `{key}` is enumerated but crates/busbar-{key} does not exist; \
