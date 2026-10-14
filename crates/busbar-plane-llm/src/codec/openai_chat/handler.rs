@@ -1364,21 +1364,25 @@ pub fn read_image_response(wire: &[u8]) -> Result<crate::codec::ir::image::Image
         .unwrap_or_default();
     // gpt-image-1 returns a token `usage` object (`{total_tokens,input_tokens,output_tokens}`);
     // per-image models (dall-e, etc.) return no usage body at all. The tokens are RECORDED, never
-    // billed (`ImageResp::billing`, 1.5.5 parity), so they are read leniently: an unreadable count
-    // is left out and never refuses an answer 1.5.5 served (v1.5.5
-    // `crates/busbar/src/handlers/openai.rs:731-758` read no `usage` at all).
-    let usage = v.get(keys::USAGE).map(|u| {
-        let count = |k: &str| {
-            u.get(k)
-                .and_then(crate::codec::usage_count::read_count_u64)
-                .unwrap_or(0)
-        };
-        busbar_contract::billing::TokenUsage {
-            input: count(keys::INPUT_TOKENS),
-            output: count(keys::OUTPUT_TOKENS),
-            ..Default::default()
-        }
-    });
+    // billed (`ImageResp::billing`, 1.5.5 parity: v1.5.5
+    // `crates/busbar/src/handlers/openai.rs:731-758` billed none).
+    // A recorded count is still a ledger row, so it is read through the one count seam: absent is
+    // zero, UNREADABLE IS A REFUSAL (#81/#42, OWNER rule 21) — a defaulted zero would record no
+    // work for work that happened. See `usage_count::billed_count`.
+    let usage = v
+        .get(keys::USAGE)
+        .map(
+            |u| -> Result<busbar_contract::billing::TokenUsage, CodecError> {
+                Ok(busbar_contract::billing::TokenUsage {
+                    input: crate::codec::usage_count::billed_count(u, keys::INPUT_TOKENS)
+                        .map_err(|e| CodecError::Malformed(e.to_string()))?,
+                    output: crate::codec::usage_count::billed_count(u, keys::OUTPUT_TOKENS)
+                        .map_err(|e| CodecError::Malformed(e.to_string()))?,
+                    ..Default::default()
+                })
+            },
+        )
+        .transpose()?;
     // Per-image (dall-e-style) providers carry no `usage` — record the per-image cost basis so the
     // op is billed as `Billing::Images` rather than nothing. The billable COUNT is recoverable from
     // the response itself (one image per `data` entry). The size/quality TIERS live on the request

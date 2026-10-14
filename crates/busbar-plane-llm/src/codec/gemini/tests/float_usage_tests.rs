@@ -170,27 +170,24 @@ fn additive_sum_is_correct_when_exactly_one_term_is_float_spelled() {
 // `usageMetadata` field that is there and is not a number busbar understands. The old readers
 // defaulted it to zero, writing "no work happened" into the ledger for work that did.
 
-/// AN IMAGE ANSWER'S TOKENS ARE RECORDED, NOT BILLED, SO AN UNREADABLE ONE NEVER REFUSES IT.
+/// THE BUFFERED IMAGE READER REFUSES AN UNREADABLE RECORDED COUNT (#81/#42, OWNER rule 21).
 ///
-/// 1.5.5's Imagen reader read no `usageMetadata` (v1.5.5 `crates/busbar/src/handlers/gemini.rs:446-472`)
-/// and served the answer. The counts are now recorded (residual units), never billed, so an
-/// unreadable one is left out of the record rather than refusing a served answer.
+/// The image tokens are recorded (residual units), never billed, but a recorded count is a ledger
+/// row: a present count the build cannot read is a refusal, never a zero that records no work for
+/// work that happened. RED while `gemini/handler.rs` `read_image_response` defaulted an unreadable
+/// count to zero.
 #[test]
-fn an_unreadable_image_count_never_refuses_the_answer() {
+fn an_unreadable_image_count_refuses_instead_of_recording_zero() {
     let wire = br#"{"predictions":[{"bytesBase64Encoded":"aGk="}],"usageMetadata":{"promptTokenCount":"27","candidatesTokenCount":5}}"#;
-    let resp = crate::codec::gemini::handler::read_image_response(wire)
-        .expect("an image answer is served whatever its usage spelling");
-    match resp.billing() {
-        Some(busbar_contract::billing::Billing::Tokens(t)) => {
-            assert_eq!((t.input, t.output), (0, 0));
-            assert_eq!(
-                t.residual_units,
-                std::collections::BTreeMap::from([("image.output_tokens".to_string(), 5)])
-            );
-        }
-        other => panic!("expected a zero token line, got {other:?}"),
-    }
+    let err = crate::codec::gemini::handler::read_image_response(wire)
+        .expect_err("a present, unreadable count is a refusal, never a zero");
+    assert!(
+        format!("{err:?}").contains("promptTokenCount"),
+        "the refusal names the field: {err:?}"
+    );
 
+    // The same body, float-spelled, still reads and is recorded: the refusal is about
+    // unreadability only.
     let ok = br#"{"predictions":[{"bytesBase64Encoded":"aGk="}],"usageMetadata":{"promptTokenCount":27.0,"candidatesTokenCount":5}}"#;
     let resp = crate::codec::gemini::handler::read_image_response(ok)
         .expect("a float-spelled count reads");
