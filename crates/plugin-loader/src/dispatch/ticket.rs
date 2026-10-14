@@ -89,6 +89,9 @@ pub(crate) struct InstanceWake {
     /// Each granted key bound to the file the instance's settings give it, re-bound by every
     /// `open` and `refresh` (`disk.append` maps a key through it).
     pub(crate) bound: std::sync::RwLock<Vec<busbar_contract::services::DiskDest>>,
+    /// The instance's handle names nothing any more (#74): set when it is quarantined, faulted by
+    /// the watchdog, closed or dropped. Checked by `handle::resolve` after the tag verifies.
+    pub(crate) revoked: std::sync::atomic::AtomicBool,
 }
 
 impl std::fmt::Debug for InstanceWake {

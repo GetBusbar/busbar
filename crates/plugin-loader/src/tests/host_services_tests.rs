@@ -2205,8 +2205,10 @@ fn a_forged_context_is_refused_before_it_names_an_instance() {
         HostCtx {
             handle: d.ctx.handle ^ 1,
         },
+        // The raw address of the very entry the handle names: the old shape of a context.
         HostCtx {
-            handle: std::ptr::from_ref(&d) as usize as u64,
+            handle: std::ptr::from_ref(crate::dispatch::handle::resolve(d.ctx).unwrap()) as usize
+                as u64,
         },
     ] {
         let before = crate::dispatch::handle::forged();

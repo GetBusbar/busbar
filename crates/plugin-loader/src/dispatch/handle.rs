@@ -18,18 +18,23 @@
 //! and compares it in constant time BEFORE the table is read; a handle the host did not mint names
 //! no instance, is counted ([`forged`]), and the entry answers as it answers no context. Made inside
 //! a crossing, it QUARANTINES the instance making that crossing (N = 1): faulted, never called
-//! again, so no plugin gets a second guess at a tag.
+//! again, so no plugin gets a second guess at a tag; inside a crossing a context must name the
+//! crossing's own instance. Made outside any crossing it names no one to quarantine, so it counts
+//! against a process-wide LATCH: at [`LATCH_AT`] such forgeries nothing resolves outside a
+//! crossing again. A handle whose instance was quarantined, faulted, closed or let go is REVOKED:
+//! its tag still verifies, and it names nothing.
 //!
 //! Width: the handle is the 8 bytes the pointer was, so no struct that carries it moves (the layout
 //! golden changes one field name). A guess at a 40-bit tag is right once in about 10^12 tries, each
 //! one counted. The key is readable to a native plugin that ignores the ABI and reads process
 //! memory; that is the channel-2 residual BUSBAR-1.6.0.md #75 accepts, not a hole this closes.
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{OnceLock, RwLock};
 
 use busbar_contract::abi::mechanism::ticket::HostCtx;
 
+use super::load::LoadError;
 use super::ticket::InstanceWake;
 
 /// The bits of a handle that index the instance table.
@@ -43,35 +48,92 @@ const ID_MASK: u64 = (1 << HANDLE_ID_BITS) - 1;
 /// key signs.
 const DOMAIN_INSTANCE: u64 = u64::from_le_bytes(*b"bb.inst1");
 
+/// THE LATCH (#74): unattributed forgeries (made outside any crossing, so no instance can be
+/// quarantined for them) the process tolerates. At this many, every resolve made outside a crossing
+/// is refused for the rest of the process: off-crossing guessing is bounded at K tries in all.
+pub const LATCH_AT: u64 = 16;
+
 /// Every handle the host was handed back and did not mint.
 static FORGED: AtomicU64 = AtomicU64::new(0);
+
+/// The process's off-crossing latch ([`LATCH_AT`]).
+static LATCH: Latch = Latch::new();
 
 /// Every instance the host has minted a handle for, by `id - 1`. Instances are leaked, so an entry
 /// never dangles.
 static INSTANCES: RwLock<Vec<&'static InstanceWake>> = RwLock::new(Vec::new());
 
-/// The host's key: 16 bytes from the OS random source, drawn once. A source that cannot answer
-/// falls back to the standard library's own per-process random hasher keys (also OS-seeded), never
-/// to a constant.
-fn key() -> (u64, u64) {
-    static KEY: OnceLock<(u64, u64)> = OnceLock::new();
-    *KEY.get_or_init(|| {
-        let mut b = [0u8; 16];
-        if getrandom::fill(&mut b).is_err() {
-            use std::hash::{BuildHasher, Hasher};
-            let s = std::collections::hash_map::RandomState::new();
-            for (i, chunk) in b.chunks_mut(8).enumerate() {
-                let mut h = s.build_hasher();
-                h.write_usize(i);
-                chunk.copy_from_slice(&h.finish().to_le_bytes());
-            }
+/// The off-crossing latch: unattributed forgeries counted; tripped at [`LATCH_AT`].
+pub(crate) struct Latch {
+    unattributed: AtomicU64,
+    tripped: AtomicBool,
+}
+
+impl Latch {
+    pub(crate) const fn new() -> Self {
+        Self {
+            unattributed: AtomicU64::new(0),
+            tripped: AtomicBool::new(false),
         }
-        let (lo, hi) = b.split_at(8);
-        (
-            u64::from_le_bytes(lo.try_into().unwrap_or_default()),
-            u64::from_le_bytes(hi.try_into().unwrap_or_default()),
-        )
-    })
+    }
+
+    /// One unattributed forgery; trips the latch at [`LATCH_AT`], with ONE error line.
+    fn count(&self) {
+        let n = self.unattributed.fetch_add(1, Ordering::AcqRel) + 1;
+        if n >= LATCH_AT && !self.tripped.swap(true, Ordering::AcqRel) {
+            tracing::error!(
+                forgeries = n,
+                "plugins handed the host {n} contexts it did not mint from outside any crossing; \
+                 every host call made outside a crossing is refused for the rest of the process"
+            );
+        }
+    }
+
+    fn tripped(&self) -> bool {
+        self.tripped.load(Ordering::Acquire)
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// THE TEST SEAM: this thread's next key draw finds the OS random source failing.
+    pub(crate) static ENTROPY_FAILS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// 16 bytes from `source` as the key; a source that cannot answer is a refusal, never a weaker key.
+fn draw(source: impl FnOnce(&mut [u8]) -> Result<(), String>) -> Result<(u64, u64), LoadError> {
+    let mut b = [0u8; 16];
+    source(&mut b).map_err(LoadError::Entropy)?;
+    let (lo, hi) = b.split_at(8);
+    Ok((
+        u64::from_le_bytes(lo.try_into().unwrap_or_default()),
+        u64::from_le_bytes(hi.try_into().unwrap_or_default()),
+    ))
+}
+
+/// The host's key: 16 bytes from the OS random source, drawn once, at the loader's boot
+/// ([`arm`]) and at the latest by the first bind. A source that cannot answer refuses the boot
+/// ([`LoadError::Entropy`]): there is no fallback key.
+fn key() -> Result<(u64, u64), LoadError> {
+    static KEY: OnceLock<(u64, u64)> = OnceLock::new();
+    #[cfg(test)]
+    if ENTROPY_FAILS.with(std::cell::Cell::get) {
+        return draw(|_| Err("the test seam's failing entropy source".to_string()));
+    }
+    if let Some(k) = KEY.get() {
+        return Ok(*k);
+    }
+    let k = draw(|b| getrandom::fill(b).map_err(|e| e.to_string()))?;
+    Ok(*KEY.get_or_init(|| k))
+}
+
+/// THE LOADER'S BOOT: draw the key now, before any plugin binds. A failure is the boot's refusal.
+///
+/// # Errors
+///
+/// [`LoadError::Entropy`] when the OS random source cannot answer.
+pub fn arm() -> Result<(), LoadError> {
+    key().map(|_| ())
 }
 
 /// SipHash-2-4 over `words`, each eight little-endian message bytes.
@@ -117,35 +179,59 @@ fn tag_of(key: (u64, u64), id: u64) -> u64 {
     siphash24(key, &[DOMAIN_INSTANCE, id]) >> HANDLE_ID_BITS
 }
 
-/// Mint the handle for `wake`: the next id, and its tag. `None` once the id space is spent (16.7M
-/// instances in one process): the bind is refused rather than a handle reused.
-pub(crate) fn mint(wake: &'static InstanceWake) -> Option<HostCtx> {
+/// Mint the handle for `wake`: the next id, and its tag.
+///
+/// # Errors
+///
+/// [`LoadError::Entropy`] when the key cannot be drawn; [`LoadError::HandlesSpent`] once the id
+/// space is spent (16.7M instances in one process): the bind is refused rather than a handle
+/// reused.
+pub(crate) fn mint(wake: &'static InstanceWake) -> Result<HostCtx, LoadError> {
+    let key = key()?;
     let mut table = INSTANCES
         .write()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let id = table.len() as u64 + 1;
     if id > ID_MASK {
-        return None;
+        return Err(LoadError::HandlesSpent);
     }
     table.push(wake);
-    Some(HostCtx {
-        handle: (tag_of(key(), id) << HANDLE_ID_BITS) | id,
+    Ok(HostCtx {
+        handle: (tag_of(key, id) << HANDLE_ID_BITS) | id,
     })
 }
 
-/// THE ONE CHECK: the instance `ctx` names, when the host minted it. The tag is recomputed and
-/// compared before the table is read; a context with no id is no context (not counted), and one
-/// whose tag does not verify, or whose id the host never minted, is counted as forged.
+/// THE ONE CHECK: the instance `ctx` names, when the host minted it, it is live, and (inside a
+/// crossing) it is the crossing's own.
 pub(crate) fn resolve(ctx: HostCtx) -> Option<&'static InstanceWake> {
-    let id = ctx.handle & ID_MASK;
+    resolve_in(ctx, &LATCH, super::plugin::crossing_wake())
+}
+
+/// [`resolve`] against `latch`, with `crossing` the entry of the instance crossing on this thread.
+///
+/// In order: no context is no context (not counted); past a tripped latch, nothing resolves outside
+/// a crossing; the tag is recomputed and compared in constant time BEFORE the table is read, and a
+/// tag that does not verify, or an id the host never minted, is a FORGERY; a revoked entry (its
+/// instance quarantined, faulted, closed or let go) names nothing and is NOT a forgery, its tag
+/// being the host's own; and inside a crossing a context naming another instance is a forgery.
+pub(crate) fn resolve_in(
+    ctx: HostCtx,
+    latch: &Latch,
+    crossing: Option<&'static InstanceWake>,
+) -> Option<&'static InstanceWake> {
     if ctx.handle == 0 {
         return None;
     }
-    let want = tag_of(key(), id);
+    if crossing.is_none() && latch.tripped() {
+        return None;
+    }
+    let key = key().ok()?;
+    let id = ctx.handle & ID_MASK;
+    let want = tag_of(key, id);
     let got = ctx.handle >> HANDLE_ID_BITS;
     // Constant time: the whole difference is folded before it is judged.
     if id == 0 || std::hint::black_box(want ^ got) != 0 {
-        refused();
+        count_forgery(latch, crossing);
         return None;
     }
     let table = INSTANCES
@@ -155,17 +241,36 @@ pub(crate) fn resolve(ctx: HostCtx) -> Option<&'static InstanceWake> {
         .ok()
         .and_then(|i| table.get(i).copied());
     drop(table);
-    if found.is_none() {
-        refused();
+    let Some(entry) = found else {
+        count_forgery(latch, crossing);
+        return None;
+    };
+    if entry.revoked.load(Ordering::Acquire) {
+        return None;
     }
-    found
+    if let Some(own) = crossing {
+        if !std::ptr::eq(own, entry) {
+            count_forgery(latch, crossing);
+            return None;
+        }
+    }
+    Some(entry)
 }
 
-/// A handle the host did not mint: counted, and the instance crossing on this thread, if any,
-/// quarantined ([`super::plugin::quarantine_crossing`]): one guess, never a second.
-fn refused() {
+/// A handle the host did not mint, or another instance's inside a crossing: counted; the instance
+/// crossing on this thread, if any, quarantined ([`super::plugin::quarantine_crossing`], one guess,
+/// never a second); and with no crossing to blame, counted against `latch`.
+fn count_forgery(latch: &Latch, crossing: Option<&'static InstanceWake>) {
     FORGED.fetch_add(1, Ordering::Relaxed);
-    super::plugin::quarantine_crossing();
+    if crossing.is_none() || !super::plugin::quarantine_crossing() {
+        latch.count();
+    }
+}
+
+/// Whether the process's off-crossing latch has tripped ([`LATCH_AT`]).
+#[must_use]
+pub fn latched() -> bool {
+    LATCH.tripped()
 }
 
 /// How many handles the host was handed back and did not mint, since the process started.

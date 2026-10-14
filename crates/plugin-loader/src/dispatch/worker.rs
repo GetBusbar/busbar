@@ -135,6 +135,11 @@ pub struct DispatchStats {
     /// cancelled, a WriteBehind op's caller released), never woken before it. A door whose every
     /// wait is woken keeps it 0; every conformance script requires 0.
     pub deadline_without_wake: u64,
+    /// Contexts plugins handed the host that it did not mint, process-wide (#74,
+    /// `dispatch::handle`): each inside a crossing quarantined its instance.
+    pub forged_handles: u64,
+    /// The off-crossing latch tripped (#74): nothing resolves outside a crossing any more.
+    pub handles_latched: bool,
 }
 
 #[derive(Debug, Default)]
@@ -1426,6 +1431,9 @@ impl Dispatcher {
     }
 
     fn build(config: DispatchConfig, provider: Option<Arc<dyn HostServices>>) -> Self {
+        // THE LOADER'S BOOT draws the handle key now (#74); a source that cannot answer refuses
+        // every bind with `LoadError::Entropy`, so nothing is minted under a weaker key.
+        let _ = super::handle::arm();
         // The last worker index names the inline tickets (`inline::INLINE_WORKER`), never a worker.
         let n = config.workers.clamp(1, MAX_WORKERS - 1);
         let env = Arc::new(Env {
@@ -1481,6 +1489,8 @@ impl Dispatcher {
             live_reapers: super::load::live_reapers(),
             driver_kept_high: s.driver_kept_high.load(Ordering::Relaxed),
             deadline_without_wake: s.deadline_without_wake.load(Ordering::Relaxed),
+            forged_handles: super::handle::forged(),
+            handles_latched: super::handle::latched(),
         }
     }
 

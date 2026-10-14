@@ -2501,9 +2501,12 @@ fn a_dispatcher_built_and_first_submitted_inside_a_runtime_runs_in_no_runtime_un
 }
 
 /// #74, ONE GUESS: an instance that hands the host's `wake` a context the host did not mint, from
-/// inside its own crossing, is quarantined (N = 1): faulted, never called again, every later op
-/// FAULT without a crossing. It used to be an address the host read through. The control: an
-/// instance that only hands back its own context is never faulted.
+/// inside its own crossing, is quarantined (N = 1). The crossing is a `tick`, a lifecycle op, so
+/// this is the FFI-worker path: the mark travels with the crossing onto the plugin thread. The
+/// forging op ITSELF answers FAULT (its answer is not judged and its envelope not read), the
+/// instance is faulted and its every later op is FAULT without a crossing, and its own handle is
+/// REVOKED: it names nothing, and is no forgery. The control: an instance that only hands back its
+/// own context is never faulted.
 #[test]
 fn a_forged_context_quarantines_the_instance_that_forged_it() {
     let d = Dispatcher::new(config());
@@ -2518,7 +2521,11 @@ fn a_forged_context_quarantines_the_instance_that_forged_it() {
     let forger = linked(Arc::new(Recorder::default()));
     assert_eq!(open(&d, &forger, 0), Outcome::Ready);
     let before = crate::dispatch::handle::forged();
-    forger.call(TICK, &mut frame(plug::FORGE));
+    assert_eq!(
+        forger.call(TICK, &mut frame(plug::FORGE)).outcome,
+        Outcome::Fault,
+        "the forging op answered other than FAULT"
+    );
     assert!(
         crate::dispatch::handle::forged() > before,
         "the forged context was not counted"
@@ -2532,8 +2539,33 @@ fn a_forged_context_quarantines_the_instance_that_forged_it() {
         Outcome::Fault,
         "a quarantined instance was called again"
     );
+    let at = crate::dispatch::handle::forged();
+    assert!(
+        crate::dispatch::handle::resolve(forger.inner.ctx()).is_none(),
+        "the quarantined instance's own handle still names it"
+    );
+    assert_eq!(
+        crate::dispatch::handle::forged(),
+        at,
+        "a revoked handle was counted as a forgery"
+    );
     assert!(
         !honest.is_faulted(),
         "the quarantine reached another instance"
+    );
+    assert!(crate::dispatch::handle::resolve(honest.inner.ctx()).is_some());
+}
+
+/// #74, THE KEY AT BOOT: a loader whose OS random source cannot answer refuses to bind
+/// (`LoadError::Entropy`); there is no fallback key. Driven through the test seam on this thread.
+#[test]
+fn a_boot_whose_entropy_fails_is_refused() {
+    crate::dispatch::handle::ENTROPY_FAILS.with(|f| f.set(true));
+    let refused = load_linked::<TestKind>(&row(), bind(Arc::new(Recorder::default())));
+    crate::dispatch::handle::ENTROPY_FAILS.with(|f| f.set(false));
+    assert!(
+        matches!(refused, Err(crate::dispatch::LoadError::Entropy(_))),
+        "a failing entropy source did not refuse the bind: {:?}",
+        refused.err()
     );
 }
