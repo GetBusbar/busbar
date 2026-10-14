@@ -811,6 +811,10 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // What the door planes are sealed over, projected from every configuration as it is built
     // (`root::door_steps::door_config`), so a config apply refreshes them onto the new generation.
     busbar_kernel::appbuild::set_config_projection(root::door_steps::door_config);
+    // ...and checks it first: an owned trust anchor a composed door plane names is judged before
+    // any generation is built from the configuration, so an apply carrying one the boot would refuse
+    // is refused, its running generation untouched (`root::door_steps::owned_anchor_check`).
+    busbar_kernel::appbuild::set_config_check(root::door_steps::owned_anchor_check);
 
     // The configured store's name, captured before `cfg` is consumed: the boot book's journal is
     // kept in that store, and a store that cannot keep it is refused by name.

@@ -1447,7 +1447,11 @@ pub(crate) fn compose_planes_over(
             &dialects,
         )
         .map_err(|e| format!("{instance}: {e}"))?;
-        refuse_unusable_owned_trust(plugin, &served_facts, &owned)
+        // ITS OWNED TRUST ANCHORS, judged by the one rule a config apply is judged by too
+        // ([`crate::root::door_steps::owned_anchor_check`], before the swap): an anchor the operator
+        // wrote that is no trust anchor refuses the boot, naming the key.
+        crate::root::door_steps::register_owned_anchors(&served_facts.need_trust);
+        crate::root::door_steps::owned_anchors_refusal(&served_facts.need_trust, sections)
             .map_err(|e| format!("{instance}: {e}"))?;
         let section = &walked;
         let calls = Arc::new(PlaneInstance::new(
@@ -1811,47 +1815,6 @@ fn owned_sections(
             Some(((*name).to_string(), value))
         })
         .collect()
-}
-
-/// AN OWNED-SECTION TRUST ANCHOR THE OPERATOR WROTE THAT IS NO TRUST ANCHOR REFUSES THE BOOT: a
-/// need whose `trust_from` names a value in the plane's other owned sections
-/// (`owned.<section>.<key>`, [`busbar_contract::section::owned_path`]) is declared at `open` with
-/// what the document writes there, and the connection table refuses a value that does not parse
-/// into one. Absent, the need trusts the public roots alone (an owned section is the operator's
-/// to write or not), which is no refusal; present and refused, the boot stops, naming the key,
-/// rather than serving a need every dial of which is refused.
-///
-/// # Errors
-///
-/// The key the operator wrote that the table refused.
-fn refuse_unusable_owned_trust(
-    plugin: &DoorPlane,
-    facts: &crate::root::loader::dispatch::kinds::plane::ServedFacts,
-    owned: &serde_json::Map<String, serde_json::Value>,
-) -> Result<(), String> {
-    let Some(table) = plugin.conn_table() else {
-        return Ok(());
-    };
-    for (i, path) in facts.need_trust.iter().enumerate() {
-        let Some(at) = busbar_contract::section::owned_path(path) else {
-            continue;
-        };
-        let mut segments = at.split('.');
-        let written = segments
-            .next()
-            .and_then(|section| owned.get(section))
-            .and_then(|v| segments.try_fold(v, |v, key| v.get(key)))
-            .and_then(serde_json::Value::as_str)
-            .is_some_and(|t| !t.is_empty());
-        let need = busbar_contract::conn::NeedId(u32::try_from(i).unwrap_or(u32::MAX));
-        if written && matches!(table.declared(plugin.instance(), need), Some(Err(_))) {
-            return Err(format!(
-                "`{at}` is not a usable trust anchor: it must be one or more PEM certificates the \
-                 TLS stack takes as a trust anchor; refusing to boot"
-            ));
-        }
-    }
-    Ok(())
 }
 
 /// `owned` as the JSON bytes a plane is handed (empty when it writes none).

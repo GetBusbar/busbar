@@ -2630,6 +2630,52 @@ fn auth_scope_caps_are_keyed_by_provider_name_not_module() {
     assert_eq!(caps.len(), 3, "one entry per NAMED provider: {caps:?}");
 }
 
+/// THE ROOT'S CONFIG CHECK RUNS FIRST (`appbuild::set_config_check`): a configuration the bound
+/// check refuses is refused by the build itself, with the check's words, before anything of it is
+/// built or installed, so an apply carrying it never reaches a swap; one it passes builds as before.
+/// The check is keyed to a sentinel `public_url`, so no other build in this binary is touched.
+/// RED before the fix: the build had no root check, so a configuration only the root could judge
+/// went live through an apply.
+#[test]
+fn a_configuration_the_root_check_refuses_is_refused_by_the_build() {
+    const REFUSED: &str = "https://refused.config-check.test";
+    fn check(cfg: &crate::config::RootCfg) -> Result<(), String> {
+        if cfg.public_url.as_deref() == Some(REFUSED) {
+            Err("`agent_push.ca` is not a usable trust anchor".to_string())
+        } else {
+            Ok(())
+        }
+    }
+    crate::snapshot::init();
+    crate::appbuild::set_config_check(check);
+    let build = |public_url: Option<&str>| {
+        let mut cfg = cfg_with_provider_api_key(crate::config::SecretRef::env(
+            "BUSBAR_TEST_NO_SUCH_KEY_CONFIG_CHECK",
+        ));
+        cfg.public_url = public_url.map(str::to_string);
+        crate::build_app_from_config(
+            cfg,
+            crate::config::PluginsCfg::default(),
+            None,
+            std::collections::HashSet::new(),
+            std::collections::HashSet::new(),
+            (None, None),
+            None,
+        )
+        .map(|_| ())
+    };
+    assert_eq!(
+        build(Some(REFUSED)),
+        Err("`agent_push.ca` is not a usable trust anchor".to_string()),
+        "the check's words, before anything is built"
+    );
+    assert_eq!(
+        build(None),
+        Ok(()),
+        "a configuration it passes builds as before"
+    );
+}
+
 // ── STEP 2.3: THE TYPE-ERASED PLANE SLOT MAP (`App::plane_slot`) ─────────────────────────────
 //
 // Additive: `App::mcp` / `App::a2a` still exist and every existing reader is untouched. These

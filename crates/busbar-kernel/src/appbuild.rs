@@ -553,6 +553,20 @@ pub fn set_config_projection(project: ConfigProjection) {
     let _ = CONFIG_PROJECTION.set(project);
 }
 
+/// THE COMPOSITION ROOT'S OWN CHECK OF A RESOLVED CONFIGURATION: a rule only the root can state
+/// (one over what the planes it composed declare), run by [`build_app_from_config`] before any part
+/// of the configuration is built or installed. A configuration it refuses is refused there, at boot
+/// and at every apply or reload alike, so a configuration the boot would refuse never goes live
+/// through an apply, and the running generation is untouched.
+pub type ConfigCheck = fn(&config::RootCfg) -> Result<(), String>;
+
+static CONFIG_CHECK: std::sync::OnceLock<ConfigCheck> = std::sync::OnceLock::new();
+
+/// Bind the composition root's [`ConfigCheck`], once, before the first build.
+pub fn set_config_check(check: ConfigCheck) {
+    let _ = CONFIG_CHECK.set(check);
+}
+
 #[cold] // boot/admin-only — keeps hot text dense (never inlined into a warm path)
 #[inline(never)]
 pub fn build_app_from_config(
@@ -564,6 +578,11 @@ pub fn build_app_from_config(
     config_paths: (Option<std::path::PathBuf>, Option<std::path::PathBuf>),
     prior: Option<&state::App>,
 ) -> Result<(state::App, Option<GovCredentialRotation>, InstalledLimits), String> {
+    // The root's own check of this configuration, before any part of it is built or installed: a
+    // refusal leaves the running generation as it is.
+    if let Some(check) = CONFIG_CHECK.get() {
+        check(&cfg)?;
+    }
     // The root's projection of this configuration, taken before any part of it is consumed.
     let config_projection = CONFIG_PROJECTION.get().map(|project| project(&cfg));
     // Install the resolved operational limits process-wide BEFORE any subsystem reads them —

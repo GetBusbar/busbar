@@ -1441,6 +1441,96 @@ fn raw_sections(cfg: &busbar_kernel::config::RootCfg) -> BTreeMap<&'static str, 
         .collect()
 }
 
+// ── the owned trust anchors: one rule, at boot and before an apply's swap ───────────────────────
+
+/// THE OWNED TRUST ANCHORS the composed door planes name, each a need's `trust_from` in the owned
+/// namespace (`owned.<section>.<key>`, [`busbar_contract::section::owned_path`]): registered as
+/// each plane is composed, read by [`owned_anchor_check`] before a config apply's swap.
+/// Process-wide, as the composed planes are.
+static OWNED_ANCHORS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+/// Register the owned trust anchors among a door plane's need `trust_from` paths (`paths`).
+pub fn register_owned_anchors(paths: &[&'static str]) {
+    let mut held = OWNED_ANCHORS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    for path in paths
+        .iter()
+        .filter(|p| busbar_contract::section::owned_path(p).is_some())
+    {
+        if !held.iter().any(|h| h == path) {
+            held.push((*path).to_string());
+        }
+    }
+}
+
+/// THE ONE RULE an owned trust anchor the operator wrote is judged by, at boot and before an
+/// apply's swap alike: it is one or more PEM certificates the TLS stack takes as trust anchors (the
+/// connector's own reading of it, `tls::client::operator_ca_config`). An anchor the operator did
+/// not write is no refusal: an owned section is optional.
+///
+/// # Errors
+///
+/// The refusal, naming `at` (`<section>.<key>`).
+pub fn owned_anchor_refusal(at: &str, written: &str) -> Result<(), String> {
+    busbar_core_connector::tls::client::operator_ca_config(written.as_bytes())
+        .map(|_| ())
+        .map_err(|_| {
+            format!(
+                "`{at}` is not a usable trust anchor: it must be one or more PEM certificates the \
+                 TLS stack takes as a trust anchor"
+            )
+        })
+}
+
+/// Judge every owned trust anchor among `paths` (need `trust_from` paths; any other is skipped)
+/// that `sections` (the configuration's sections, by key) writes, by [`owned_anchor_refusal`].
+///
+/// # Errors
+///
+/// The first written anchor that is no trust anchor, named.
+pub fn owned_anchors_refusal<P: AsRef<str>>(
+    paths: &[P],
+    sections: &BTreeMap<&'static str, serde_yaml::Value>,
+) -> Result<(), String> {
+    for path in paths {
+        let Some(at) = busbar_contract::section::owned_path(path.as_ref()) else {
+            continue;
+        };
+        let mut segments = at.split('.');
+        let written = segments
+            .next()
+            .and_then(|section| sections.get(section))
+            .and_then(|v| segments.try_fold(v, |v, key| v.get(key)))
+            .and_then(serde_yaml::Value::as_str)
+            .filter(|t| !t.is_empty());
+        if let Some(written) = written {
+            owned_anchor_refusal(at, written)?;
+        }
+    }
+    Ok(())
+}
+
+/// THE ROOT'S CONFIG CHECK (`busbar_kernel::appbuild::set_config_check`): every owned trust anchor
+/// a composed door plane names, as `cfg` writes it, judged by the rule boot judges it by, before
+/// any part of `cfg` is built. A configuration whose anchor the boot would refuse is refused here,
+/// so it never goes live through an apply, and the running generation (its declared trust among
+/// it) is untouched.
+///
+/// # Errors
+///
+/// The first written anchor that is no trust anchor, named.
+pub fn owned_anchor_check(cfg: &busbar_kernel::config::RootCfg) -> Result<(), String> {
+    let anchors = OWNED_ANCHORS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    if anchors.is_empty() {
+        return Ok(());
+    }
+    owned_anchors_refusal(&anchors, &raw_sections(cfg))
+}
+
 // ── the kernel-owned sections a door plane reads ────────────────────────────────────────────────
 
 /// THE KERNEL-OWNED SECTIONS A DOOR PLANE MAY READ, as the configuration validated and resolved

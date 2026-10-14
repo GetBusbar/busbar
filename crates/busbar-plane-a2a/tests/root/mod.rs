@@ -6766,10 +6766,85 @@ async fn a_malformed_agent_push_ca_refuses_the_boot() {
             .unwrap_or_default(),
     };
     assert!(
-        refusal.contains("`agent_push.ca` is not a usable trust anchor")
-            && refusal.contains("refusing to boot"),
+        refusal.contains("`agent_push.ca` is not a usable trust anchor"),
         "the boot names the key it refuses: {refusal}"
     );
+}
+
+/// **AN APPLY CARRYING A MALFORMED `agent_push.ca` IS REFUSED, AND DELIVERIES KEEP THE PREVIOUS
+/// ANCHOR** (ARCHITECT ruling 2026-10-14: boot validity and apply validity are one rule): the
+/// root's config check (`root::door_steps::owned_anchor_check`, bound before every build as `main`
+/// binds it) refuses the configuration with the boot's own words before any generation is built
+/// from it, so nothing is swapped and nothing re-declared; the running door keeps delivering to the
+/// webhook under the CA it was composed with.
+/// RED before the fix: the apply built and swapped the generation, and its refresh re-declared the
+/// push need with the malformed value, so every delivery after it was refused.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_apply_carrying_a_malformed_agent_push_ca_is_refused_and_deliveries_keep_the_anchor() {
+    let _one = PUBLISHING.lock().await;
+    let instance = "serve-agent-door-push-apply-ca";
+    let _published = Published(instance);
+    let tls = AgentTls::new();
+    tls.rekey();
+    let mut hook = Agent::start_over(200, "{}", Some(tls.acceptor())).await;
+    let mut agent =
+        Agent::start_answering(200, Arc::new(|r: &str| far_answer(r, "working", "working")))
+            .await;
+    let s = served_push_trusting(
+        instance,
+        &agent.entry("planner", "1h"),
+        vec!["127.0.0.1".to_string()],
+        Some(pem_of(&tls.root)),
+    );
+
+    // THE APPLY: a document writing the same agent and a malformed `agent_push.ca`, built as an
+    // apply builds it, under the root's check.
+    {
+        use crate::root::loader::dispatch::kinds::plane::{linked_probe, registration};
+        busbar_kernel::plane::registry::register_test_plane(
+            busbar_kernel::plane::door::fold(
+                registration(linked_probe(door(), instance)).expect("the door binds"),
+            )
+            .expect("the door folds"),
+        );
+    }
+    let text = format!(
+        "store: {{module: memory}}\nproviders: {{}}\nmodels: {{}}\n{}:\n  planner: {{ url: \
+         https://planner.example/rpc, pin: {{ mechanism: unpinned }} }}\nagent_push:\n  ca: \
+         not a certificate\n",
+        surface("section")
+    );
+    let deploy = busbar_kernel::config::deploy_from_yaml_str(&text).expect("the config parses");
+    let cfg = busbar_kernel::config::resolve(&deploy, &Default::default()).expect("resolves");
+    busbar_kernel::appbuild::set_config_check(crate::root::door_steps::owned_anchor_check);
+    let built = busbar_kernel::build_app_from_config(
+        cfg,
+        busbar_kernel::config::PluginsCfg::default(),
+        None,
+        std::collections::HashSet::new(),
+        std::collections::HashSet::new(),
+        (None, None),
+        None,
+    );
+    let refusal = match built {
+        Ok(_) => panic!("an apply carrying a malformed agent_push.ca was built"),
+        Err(e) => e,
+    };
+    assert!(
+        refusal.contains("`agent_push.ca` is not a usable trust anchor"),
+        "the apply is refused in the boot's words: {refusal}"
+    );
+
+    // Nothing was swapped: the running door delivers under the anchor it was composed with.
+    let delivered = delivered_within(
+        &s,
+        &mut agent,
+        &mut hook,
+        std::time::Duration::from_secs(2),
+    )
+    .await
+    .expect("the previous anchor still delivers");
+    assert!(delivered.starts_with("POST /hook"), "{delivered}");
 }
 
 /// **A DELIVERY REACHES THE WEBHOOK EXACTLY ONCE** (R-PUSH, coordinator round 2): the queued
