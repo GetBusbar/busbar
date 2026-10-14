@@ -545,7 +545,7 @@ impl Drop for Inner {
     fn drop(&mut self) {
         // The last owner: nothing else can reach the state, so no lock is taken to close it.
         if let State::Live(p) = self.state.get_mut().unwrap_or_else(|p| p.into_inner()) {
-            close(&**p);
+            close(p);
         }
     }
 }

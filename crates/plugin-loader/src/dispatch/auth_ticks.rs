@@ -46,7 +46,7 @@ pub fn spawn(
     worker: u32,
 ) -> Option<tokio::task::JoinHandle<()>> {
     let runtime = tokio::runtime::Handle::try_current().ok()?;
-    Some(runtime.spawn(async move { ticks(&*plugin, &dispatcher, worker).await }))
+    Some(runtime.spawn(async move { ticks(&plugin, &dispatcher, worker).await }))
 }
 
 #[cfg(test)]

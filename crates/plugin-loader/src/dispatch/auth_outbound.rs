@@ -131,7 +131,7 @@ impl OutboundInstance {
     /// expiry on `tick`): the one auth schedule, [`super::auth_ticks::ticks`], holding the instance
     /// for as long as it runs.
     pub async fn ticks(self: Arc<Self>) {
-        super::auth_ticks::ticks(&*self.plugin, &self.dispatcher, self.worker).await;
+        super::auth_ticks::ticks(&self.plugin, &self.dispatcher, self.worker).await;
     }
 }
 
