@@ -794,6 +794,17 @@ extern "C" fn arrive(instance: *mut c_void, input: *const c_void, out: *mut c_vo
                 (me.wake)(me.ctx, ticket);
                 vec![estimate(0, 0)]
             }
+            b"/forge-context" => {
+                // #74: hand the host's `wake` this instance's own context one tag bit off, a
+                // context the host never minted, from inside a non-lifecycle op. The host
+                // quarantines the instance, and this arrive itself answers FAULT.
+                me.count(Stat::HostCalls);
+                let forged = HostCtx {
+                    handle: me.ctx.handle ^ (1 << 24),
+                };
+                (me.wake)(forged, Ticket::NONE);
+                vec![estimate(0, 0)]
+            }
             b"/clock" => {
                 // The host's own clock, through its service table: the reading, as two amounts. A
                 // clock the host would not read (no table, no slot, not READY) refuses the arrival,

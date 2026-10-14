@@ -97,12 +97,15 @@ impl Latch {
         self.tripped.load(Ordering::Acquire)
     }
 
-    /// Forgeries judged against this latch.
+    /// Forgeries judged against this latch: the tests' reading (no production path reads a
+    /// latch's own count; the process's figure is [`forged`]).
+    #[cfg(test)]
     pub(crate) fn forged(&self) -> u64 {
         self.forged.load(Ordering::Acquire)
     }
 
-    /// Unattributed forgeries counted towards the trip.
+    /// Unattributed forgeries counted towards the trip: the tests' reading.
+    #[cfg(test)]
     pub(crate) fn unattributed(&self) -> u64 {
         self.unattributed.load(Ordering::Acquire)
     }

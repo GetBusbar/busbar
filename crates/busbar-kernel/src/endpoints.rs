@@ -324,20 +324,6 @@ fn plugin_dispatch_halted(latched: bool) -> Option<Response> {
     })
 }
 
-#[cfg(test)]
-mod plugin_dispatch_halted_tests {
-    use super::*;
-
-    /// RED: while the handle latch is tripped `/healthz` answers 503 with the neutral reason, and
-    /// with it untripped the readiness check goes on to the lanes.
-    #[test]
-    fn healthz_answers_503_while_the_handle_latch_is_tripped() {
-        let halted = plugin_dispatch_halted(true).expect("a tripped latch halts readiness");
-        assert_eq!(halted.status(), StatusCode::SERVICE_UNAVAILABLE);
-        assert!(plugin_dispatch_halted(false).is_none());
-    }
-}
-
 /// Whether any configured non-model plane's generation opened: its runtime slot was built for this
 /// generation and, for a door plane, its open answered ([`crate::plane::door::opened`]).
 fn a_plane_opened(app: &crate::state::App) -> bool {
@@ -358,3 +344,7 @@ fn a_plane_opened(app: &crate::state::App) -> bool {
 #[cfg(test)]
 #[path = "tests/endpoints_doc_tests.rs"]
 mod endpoints_doc_tests;
+
+#[cfg(test)]
+#[path = "tests/plugin_dispatch_halted_tests.rs"]
+mod plugin_dispatch_halted_tests;
