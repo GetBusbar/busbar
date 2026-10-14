@@ -410,18 +410,11 @@ pub fn write_image_response(r: &crate::codec::ir::image::ImageResp) -> WireBody 
             p
         })
         .collect();
-    let mut body = json!({ (FIELD_PREDICTIONS): predictions });
-    // Re-emit the token usage the response reader parses (`read_image_response` captures
-    // `usageMetadata` for token-metered gemini image models). The old writer dropped it, so a
-    // token-metered gemini->gemini image response lost its usage in the client-facing body —
-    // asymmetric with the OpenAI image writer. Emitted only when the IR carries usage.
-    if let Some(u) = &r.usage {
-        body[FIELD_USAGE_METADATA] = json!({
-            (FIELD_PROMPT_TOKEN_COUNT): u.input,
-            (FIELD_CANDIDATES_TOKEN_COUNT): u.output,
-            (FIELD_TOTAL_TOKEN_COUNT): u.input.saturating_add(u.output),
-        });
-    }
+    // Imagen's `:predict` response is `{predictions}` alone: its `PredictResponse` has no
+    // `usageMetadata` member, so none is written, exactly as 1.5.5 wrote it (v1.5.5
+    // `crates/busbar/src/handlers/gemini.rs:474-492`). A foreign answer's token usage has no Imagen
+    // member to map to.
+    let body = json!({ (FIELD_PREDICTIONS): predictions });
     WireBody::json(SlabBytes::from(
         serde_json::to_vec(&body).unwrap_or_default(),
     ))
