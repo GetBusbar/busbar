@@ -907,7 +907,7 @@ pub fn dirs_for_globs(cx: &Ctx, patterns: &[String]) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for pat in patterns {
         for d in glob_dirs(cx, pat) {
-            if cx.abs(&d).is_dir() && !out.contains(&d) {
+            if cx.is_dir(&d) && !out.contains(&d) {
                 out.push(d);
             }
         }
