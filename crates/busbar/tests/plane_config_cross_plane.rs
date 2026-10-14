@@ -89,7 +89,7 @@ fn every_section_the_grammar_declares_is_refused_on_both_planes() {
 /// boundary. Neither check subsumes the other, which is why merging them would delete one.
 ///
 /// Relocated from `src/plane/tests/config_tests.rs`: the final assertion pins the rendered message's
-/// PROSE, which names the real A2A plane's own config section (`"agents"`) — see this file's header.
+/// PROSE, which names the real agent plane's own config section (`"agents"`) — see this file's header.
 #[test]
 fn the_resolve_time_refusal_fires_on_a_bare_name_that_binds_across_the_boundary() {
     register_planes();

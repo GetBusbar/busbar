@@ -6,7 +6,8 @@
 //! Both loops are pass-through wrappers around the SAME `GauntletPlane::drive`, so for one plane on
 //! one input they must return identical status, headers and body. This is the local proof that the
 //! loop unification adds nothing to the wire — the same faithfulness the fleet-box money oracle
-//! (DECISIONS #29) will later confirm on the MCP money family. Any difference here is a divergence.
+//! (DECISIONS #29) will later confirm on a door-served plane's money family. Any difference here is
+//! a divergence.
 
 use std::future::Future;
 use std::pin::Pin;

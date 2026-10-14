@@ -7,9 +7,9 @@
 //! off by default". Part 2 #17 keeps every plane in `default`, so this is config gating, not removal.
 //!
 //! Before the gate, a 1.5.5 config (with its ordinary `public_url:`) booted with eleven admin paths
-//! 1.5.5 never had (`/tools`, `/tools/{name}`, `/tools/{name}/settings`, the three MCP trust verbs,
-//! the same CRUD for `/agents` and its two verbs), `DELETE /overlay/{section}` listing `tools` and
-//! `agents`, and the voice plane's `/v1/realtime` doors mounted and audience-checked. The control
+//! 1.5.5 never had (`/tools`, `/tools/{name}`, `/tools/{name}/settings`, the tool plane's three
+//! trust verbs, the same CRUD for `/agents` and its two verbs), `DELETE /overlay/{section}` listing `tools` and
+//! `agents`, and the session plane's realtime doors mounted and audience-checked. The control
 //! boots the SAME binary with each plane section present and requires every one of those back.
 #![cfg(unix)]
 #![cfg(linked_every_plane)]
@@ -212,7 +212,7 @@ fn read_to_string(path: &Path) -> String {
 }
 
 /// The shape a mounted plane door answers an unauthenticated caller with (RFC 6750), as opposed to
-/// the LLM catch-all's protocol-native envelope.
+/// the catch-all plane's protocol-native envelope.
 fn is_plane_door(body: &str) -> bool {
     body.contains("error_description")
 }
@@ -344,7 +344,7 @@ models:
 
 /// Oracle cell `boot.refusal|BOOT-181|boot`: on the default (all-planes) build a 1.5.5 config's
 /// boot output carries nothing from a plane it did not configure. The line this once caught — the
-/// root's listener-slot provisioning WARN — is 1.6.0-only text (1.5.5 refuses the `streams:` key
+/// root's listener-slot provisioning WARN — is 1.6.0-only text (1.5.5 refuses that plane's section key
 /// outright) and left with that provisioning; the arm stays as the guard against its return.
 /// Control: a configured plane is observable — each plane door answers as that plane's door once
 /// every plane section is configured, and does not on a 1.5.5 config.

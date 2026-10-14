@@ -385,7 +385,7 @@ fn a_multi_binding_plane_is_still_labelled_at_the_door_that_was_knocked_on() {
 /// A CLAIM MAY ONLY NAME A DIALECT ITS PLANE ADMITS TO SPEAKING. Every mounted plane's canonical door
 /// speaks JSON-RPC, so every mountable linked plane must declare it; each plane's OWN claims (its
 /// real mount paths and their bindings) are pinned against its declared list in that plane's crate
-/// (busbar-a2a `serve_tests`, busbar-mcp `decl_tests`).
+/// (each plane crate's own suite).
 #[test]
 fn a_claim_only_names_a_wire_format_its_plane_speaks() {
     register_planes();
@@ -528,7 +528,7 @@ fn only_a_mounted_plane_claims_a_path_and_the_two_readings_agree() {
 
 /// THE ZERO-DIALECT PLANE, pinned. Pure data — no registration needed.
 #[test]
-fn a_plane_with_zero_wire_formats_is_labelless_and_irless_by_decision() {
+fn a_plane_with_zero_wire_formats_is_labelless_and_irless_by_design() {
     assert_eq!(
         sole_of(&[]),
         None,

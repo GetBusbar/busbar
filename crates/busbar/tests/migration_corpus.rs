@@ -29,7 +29,9 @@
 // The helpers that supply the deferred decisions, validate a migrated config and read the 1.5.5
 // warning oracle serve only the two corpus tests, which a build without the admin credential's
 // plugin does not compile (see the first of them).
-#![cfg_attr(not(feature = "auth-admin-tokens"), allow(dead_code))]
+#![cfg_attr(not(linked_operator_auth), allow(dead_code))]
+
+mod common;
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -102,19 +104,21 @@ fn apply_deferred_decisions(yaml: &str) -> String {
         .or_insert_with(|| {
             serde_yaml::from_str("{ env: BUSBAR_TEST_SIGNING_KEY }").expect("literal parses")
         });
+    // The operator credential's module, as the manifest's `operator-auth` row names it.
+    let op = common::operator_module();
     auth.entry(serde_yaml::Value::String("admin_auth".into()))
-        .or_insert_with(|| serde_yaml::from_str("[admin-tokens]").expect("literal parses"));
+        .or_insert_with(|| serde_yaml::from_str(&format!("[{op}]")).expect("literal parses"));
     // `admin_auth` references it by bare name, so the provider has to be defined.
     let idp_key = serde_yaml::Value::String("identity-providers".into());
     let idp = map
         .entry(idp_key)
         .or_insert_with(|| serde_yaml::Value::Mapping(Default::default()));
     if let Some(m) = idp.as_mapping_mut() {
-        m.entry(serde_yaml::Value::String("admin-tokens".into()))
+        m.entry(serde_yaml::Value::String(op.clone()))
             .or_insert_with(|| {
-                serde_yaml::from_str(
-                    "{ module: admin-tokens, token: { env: BUSBAR_TEST_ADMIN_TOKEN } }",
-                )
+                serde_yaml::from_str(&format!(
+                    "{{ module: {op}, token: {{ env: BUSBAR_TEST_ADMIN_TOKEN }} }}"
+                ))
                 .expect("literal parses")
             });
     }
@@ -188,7 +192,7 @@ fn yaml_comment_start(line: &str) -> usize {
 /// instead: a `file:` is a value to repoint ONLY when it is the KEY of a `file` mapping — the
 /// built-in `file` secret module — AND it sits in the CODE part of the line, before any comment.
 /// The `file` key appears in two shapes and BOTH occur in the corpus once a config is round-tripped
-/// through the deferred-decision serializer:
+/// through the serializer that defers the choice:
 ///   * flow sugar `{ file: /path }` (as the raw corpus writes it), and
 ///   * block form `\n  file: /path` (as `serde_yaml` re-emits the same `SecretRef`).
 ///
@@ -359,11 +363,11 @@ fn validate(yaml: &str, tmp: &Path, providers: &Path) -> Result<String, String> 
 /// seeing "these 9 all lost their pools block" is a diagnosis where "v1.2.0 failed" is a scavenger
 /// hunt.
 // A config whose chain names `keys` needs an admin credential that can mint one, and the only
-// built-in is `admin-tokens`. Without that feature the binary REFUSES such a config by design ("the
+// built-in is the operator credential's row. Without it the binary REFUSES such a config by design ("the
 // admin API would be silently disabled"), so the deferred decision cannot be supplied and the test
 // would be asserting a property of the build, not of the migrator. A build without it never
 // compiles the test; the default build runs it, so coverage is not lost.
-#[cfg(feature = "auth-admin-tokens")]
+#[cfg(linked_operator_auth)]
 #[test]
 fn every_shipped_config_migrates_to_a_valid_current_config() {
     let files = corpus_files();
@@ -450,7 +454,7 @@ fn a_migration_with_nothing_to_decide_emits_no_comment_banner() {
     );
     assert!(
         dirty.is_empty(),
-        "{} migration(s) that needed no decision still emitted a comment banner:\n\n{}",
+        "{} migration(s) that needed no choice still emitted a comment banner:\n\n{}",
         dirty.len(),
         dirty.join("\n\n")
     );
@@ -522,7 +526,7 @@ fn recorded_1_5_5_warning_count(tag: &str) -> Option<usize> {
 /// is the diagnosis.
 // Gated as [`every_shipped_config_migrates_to_a_valid_current_config`] is: a migrated config naming
 // `keys` has a valid admin mint path only where the admin credential's plugin is linked.
-#[cfg(feature = "auth-admin-tokens")]
+#[cfg(linked_operator_auth)]
 #[test]
 fn no_corpus_config_warns_more_at_boot_than_the_published_1_5_5_did() {
     let files = corpus_files();
