@@ -732,3 +732,34 @@ fn ant18_search_result_citation_source_maps_both_ways() {
                "title": "KB", "search_result_index": 0, "start_block_index": 0, "end_block_index": 1}),
     );
 }
+
+/// F25 REHOME row 107, from `crates/busbar-llm/src/engine/tests/egress_dropped_controls_audit_tests.rs:26`
+/// (`openai_to_anthropic_response_format_forwards_and_translates_not_dropped`), PORTED AT 1.5.5: the
+/// legacy test pinned the post-1.5.5 synthetic `busbar_response_format` forced tool (drift; ARCHITECT
+/// 2026-10-13: 1.5.5 wins). An OpenAI caller's `{"type":"json_object"}` onto a DEFAULT (non-native)
+/// Anthropic lane forwards with no `response_format`, no `tool_choice` and no `tools`, and is
+/// reported as the dropped control `response_format` (the caller's `response_format on anthropic`
+/// audit row) — exactly as 1.5.5 dropped it (v1.5.5 `crates/busbar/src/proto/anthropic/writer.rs:343-347`).
+#[test]
+fn openai_json_object_onto_a_default_anthropic_lane_is_dropped_and_reported() {
+    let body = json!({
+        "model": "gpt-4o",
+        "messages": [{"role": "user", "content": "hi"}],
+        "response_format": {"type": "json_object"}
+    });
+    let out = xreq_lane("openai", "anthropic", &body, &Default::default());
+    assert!(out.as_object().is_some_and(|o| !o.is_empty()), "{out}");
+    assert!(out.get("response_format").is_none(), "{out}");
+    assert!(out.get("tool_choice").is_none(), "{out}");
+    assert!(out.get("tools").is_none(), "{out}");
+    let ir = protocol_for("openai")
+        .unwrap()
+        .reader()
+        .read_request(&body)
+        .unwrap();
+    assert!(protocol_for("anthropic")
+        .unwrap()
+        .writer()
+        .dropped_egress_controls_for_lane(&ir, &Default::default())
+        .contains(&"response_format"));
+}
