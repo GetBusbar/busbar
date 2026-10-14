@@ -3867,3 +3867,9 @@ mod framed_tests;
 #[cfg(all(test, linked_axis_node, linked_axis_plane_door))]
 #[path = "tests/secret_source.rs"]
 mod secret_source_tests;
+
+// THE ROOT LEGS, run over the linked roster from each plane's own table (ARCHITECT ruling, Law 0
+// root lane, option A), and the fixture plane's, dropped in.
+#[cfg(test)]
+#[path = "tests/root_legs.rs"]
+mod root_legs;

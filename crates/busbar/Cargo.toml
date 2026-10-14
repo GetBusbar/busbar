@@ -494,6 +494,15 @@ auth-admin-tokens = "busbar-auth-admin-tokens"
 # compiled when its row's cargo feature is on (the node, keyed `node`, in every build) and exporting
 # a `ROOT_UNIT` (`root::linked::RootUnit`). Order is
 # the order their boot steps run in: seals, then the configuration step, then the book step.
+# THE ROOT LEGS (qa/capability-equality.json `root_legs`; ARCHITECT ruling, Law 0 root lane, option
+# A): linked plane-door row -> the crate whose `testkit::ROOT_LEG` (a JSON table behind its
+# `test-support` feature) states the plane's root-leg scenario. `build.rs` emits
+# `$OUT_DIR/root_legs.rs` (test builds only; `root/tests/root_legs.rs` includes it): every enabled
+# linked plane door with its table, or none — and a door with none fails its root leg. The table's
+# header lands with its first row (each plane's table pins in through its own repo):
+#   [package.metadata.busbar.root-leg]
+#   <plane-door row> = "<crate declaring testkit::ROOT_LEG>"
+
 # THE SERVED-LEG WITNESSES the root's rider tests run: cargo feature -> the plane crate whose
 # `testkit::SERVED` table they drive through the kernel-loop runner `gauntlet_install::install()`
 # registers for that plane's key. Test builds only (`build.rs` emits `$OUT_DIR/served_witness.rs`, which

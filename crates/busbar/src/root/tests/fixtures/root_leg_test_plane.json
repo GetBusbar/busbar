@@ -1,0 +1,21 @@
+{
+  "columns": [],
+  "section": "m: {}\npools: {p: {members: [m]}}",
+  "providers": "",
+  "request": {
+    "method": "POST",
+    "path": "/call/local-counted",
+    "headers": [],
+    "body": "ping"
+  },
+  "far_end": {
+    "ok": { "status": 200, "body": "ping" },
+    "transient": { "status": 503, "body": "unavailable" },
+    "client_fault": { "status": 400, "body": "bad request" }
+  },
+  "served": { "status": 200, "body_contains": ["ping"] },
+  "units": [],
+  "op_class": "call",
+  "cells": [],
+  "not_applicable": []
+}
