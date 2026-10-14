@@ -334,6 +334,50 @@ struct Tables(Box<HostTables>);
 unsafe impl Send for Tables {}
 unsafe impl Sync for Tables {}
 
+thread_local! {
+    /// The instance whose crossing is on this thread (innermost first), for the one thing a host
+    /// entry needs it for: the quarantine of a forged context ([`quarantine_crossing`]).
+    static CROSSING: std::cell::Cell<*const Instance> = const { std::cell::Cell::new(std::ptr::null()) };
+}
+
+/// The crossing of `inst` on this thread, stated for the span of its op and restored (to the
+/// crossing it is nested in, if any) when the op returns.
+struct Crossing(*const Instance);
+
+impl Drop for Crossing {
+    fn drop(&mut self) {
+        CROSSING.with(|c| c.set(self.0));
+    }
+}
+
+fn crossing(inst: &Instance) -> Crossing {
+    Crossing(CROSSING.with(|c| c.replace(std::ptr::from_ref(inst))))
+}
+
+/// THE ONE GUESS (#74): a host entry handed a context the host did not mint, inside a crossing,
+/// quarantines the instance making that crossing, as the watchdog does a hung one: faulted, never
+/// called again on any worker, its connections gone. No plugin gets a second guess. Answers whether
+/// there was a crossing to quarantine (a call from a plugin's own thread, outside any crossing,
+/// names no caller; it is refused and counted all the same).
+pub(crate) fn quarantine_crossing() -> bool {
+    let p = CROSSING.with(std::cell::Cell::get);
+    if p.is_null() {
+        return false;
+    }
+    // SAFETY: `CROSSING` is non-null only for the span of an op of `*p`, set by the guard
+    // `crossing(&*p)` the crossing holds; the instance outlives its own crossing.
+    let inst = unsafe { &*p };
+    inst.faulted.store(true, Ordering::Release);
+    if let Some((id, table)) = inst.wake.conn.get() {
+        super::conn_services::purge(*id, table);
+    }
+    tracing::warn!(
+        plugin = %inst.name,
+        "a plugin handed the host a context the host did not mint; the instance is quarantined"
+    );
+    true
+}
+
 /// One family's shape, copied from the Statement: its kind and its label count.
 #[derive(Debug, Clone, Copy)]
 struct FamilyShape {
@@ -943,6 +987,7 @@ impl Instance {
                 let _runtime = runtime.as_ref().map(tokio::runtime::Handle::enter);
                 let _acting = super::worker::acting_for(acting);
                 let _unit = super::services::serving(unit);
+                let _crossing = crossing(self);
                 enter_lifecycle((self.op_name)(s), op, instance, input, output)
             });
             match routed {
@@ -952,6 +997,7 @@ impl Instance {
                 Err(_) => return Crossed::host(Outcome::Fault),
             }
         } else {
+            let _crossing = crossing(self);
             op(instance, input.cast_const().cast(), out.cast())
         };
         if s == slot::OPEN

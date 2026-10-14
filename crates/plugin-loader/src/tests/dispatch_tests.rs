@@ -2499,3 +2499,41 @@ fn a_dispatcher_built_and_first_submitted_inside_a_runtime_runs_in_no_runtime_un
     );
     assert!(d.installed_runtime().is_some());
 }
+
+/// #74, ONE GUESS: an instance that hands the host's `wake` a context the host did not mint, from
+/// inside its own crossing, is quarantined (N = 1): faulted, never called again, every later op
+/// FAULT without a crossing. It used to be an address the host read through. The control: an
+/// instance that only hands back its own context is never faulted.
+#[test]
+fn a_forged_context_quarantines_the_instance_that_forged_it() {
+    let d = Dispatcher::new(config());
+    let honest = linked(Arc::new(Recorder::default()));
+    assert_eq!(open(&d, &honest, 0), Outcome::Ready);
+    assert_eq!(
+        honest.call(TICK, &mut frame(plug::COUNT)).outcome,
+        Outcome::Ready
+    );
+    assert!(!honest.is_faulted(), "an honest instance was faulted");
+
+    let forger = linked(Arc::new(Recorder::default()));
+    assert_eq!(open(&d, &forger, 0), Outcome::Ready);
+    let before = crate::dispatch::handle::forged();
+    forger.call(TICK, &mut frame(plug::FORGE));
+    assert!(
+        crate::dispatch::handle::forged() > before,
+        "the forged context was not counted"
+    );
+    assert!(
+        forger.is_faulted(),
+        "the forging instance was not quarantined"
+    );
+    assert_eq!(
+        forger.call(TICK, &mut frame(plug::COUNT)).outcome,
+        Outcome::Fault,
+        "a quarantined instance was called again"
+    );
+    assert!(
+        !honest.is_faulted(),
+        "the quarantine reached another instance"
+    );
+}

@@ -16,7 +16,9 @@
 //! a SipHash-2-4 over `(domain, id)` under a 128-bit key drawn from the OS random source at the
 //! first bind, held in host memory only and never written anywhere. [`resolve`] recomputes the tag
 //! and compares it in constant time BEFORE the table is read; a handle the host did not mint names
-//! no instance, is counted ([`forged`]), and the entry answers as it answers no context.
+//! no instance, is counted ([`forged`]), and the entry answers as it answers no context. Made inside
+//! a crossing, it QUARANTINES the instance making that crossing (N = 1): faulted, never called
+//! again, so no plugin gets a second guess at a tag.
 //!
 //! Width: the handle is the 8 bytes the pointer was, so no struct that carries it moves (the layout
 //! golden changes one field name). A guess at a 40-bit tag is right once in about 10^12 tries, each
@@ -143,7 +145,7 @@ pub(crate) fn resolve(ctx: HostCtx) -> Option<&'static InstanceWake> {
     let got = ctx.handle >> HANDLE_ID_BITS;
     // Constant time: the whole difference is folded before it is judged.
     if id == 0 || std::hint::black_box(want ^ got) != 0 {
-        FORGED.fetch_add(1, Ordering::Relaxed);
+        refused();
         return None;
     }
     let table = INSTANCES
@@ -152,10 +154,18 @@ pub(crate) fn resolve(ctx: HostCtx) -> Option<&'static InstanceWake> {
     let found = usize::try_from(id - 1)
         .ok()
         .and_then(|i| table.get(i).copied());
+    drop(table);
     if found.is_none() {
-        FORGED.fetch_add(1, Ordering::Relaxed);
+        refused();
     }
     found
+}
+
+/// A handle the host did not mint: counted, and the instance crossing on this thread, if any,
+/// quarantined ([`super::plugin::quarantine_crossing`]): one guess, never a second.
+fn refused() {
+    FORGED.fetch_add(1, Ordering::Relaxed);
+    super::plugin::quarantine_crossing();
 }
 
 /// How many handles the host was handed back and did not mint, since the process started.
