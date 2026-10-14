@@ -28,7 +28,7 @@ use busbar_kernel::ingress::byte_duplex::{CallRef, DuplexHandle, DuplexPlane};
 #[cfg(feature = "test-support")]
 use busbar_kernel::ingress::duplex_ws as ws_ingress;
 #[cfg(feature = "test-support")]
-use busbar_kernel::net_guard::GuardPolicy;
+use busbar_kernel::proxy::egress_unit::trust::net::GuardPolicy;
 #[cfg(feature = "test-support")]
 use futures::SinkExt;
 

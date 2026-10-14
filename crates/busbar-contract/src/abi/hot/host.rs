@@ -535,12 +535,13 @@ pub type CounterAddFn = extern "C-unwind" fn(
 
 // ── THE HOST SERVICES (minor 30; ARCHITECT SD-3 queue (6), DEC-SERVE G2). The contract ports a
 //    codec reaches — `busbar_contract::codec::{fill_entropy, wall_clock_now,
-//    usage_tap_fault_should_warn, max_translate_body_bytes}` — are process-wide `OnceLock`s the host
-//    arms in ITS image. A plane dropped in as a `cdylib` carries its own copy of the contract, whose
-//    ports nothing armed, so it read the failure path of every one. These four slots carry the
-//    host's own services across the seam; the dropped-in door arms the plane image's ports over
-//    them (`services::arm`) when the host opens the door. Process-wide, so `host` may be
-//    `HostCtx::NULL`. ──
+//    max_translate_body_bytes}` — are process-wide `OnceLock`s the host arms in ITS image. A plane
+//    dropped in as a `cdylib` carries its own copy of the contract, whose ports nothing armed, so it
+//    read the failure path of every one. These slots carry the host's own services across the seam;
+//    the dropped-in door arms the plane image's ports over them (`services::arm`) when the host
+//    opens the door. The usage-tap fault latch is RETIRED (row 155): the fault crosses as data on
+//    the plane's answer (`abi::plane::OnPieceOut::tap_fault`), so no host serves its slot and no
+//    plane calls it. Process-wide, so `host` may be `HostCtx::NULL`. ──
 /// Fill `out_len` bytes at `out` from the host's entropy source (its CSPRNG). [`StatusClass::Ok`]
 /// when every byte was written; [`StatusClass::Refused`] when the host has no entropy to give or
 /// `out` is NULL with a non-zero length (the bytes are then unspecified); [`StatusClass::Fault`] on
@@ -550,9 +551,9 @@ pub type EntropyFillFn =
 /// The host's wall clock in whole seconds since the Unix epoch; `0` when the host holds no clock
 /// (the fail-closed reading, never a real second).
 pub type WallClockFn = extern "C-unwind" fn(host: HostCtx) -> u64;
-/// Count one usage-tap fault of `reason` for `protocol` (two borrowed UTF-8 ranges, live for the
-/// call) and answer `true` only the FIRST time the host sees that pair, so the caller warns once.
-/// `false` for a range that is not UTF-8 or a caught panic.
+/// RETIRED (row 155): the slot's shape, kept so the table's layout holds. A usage-tap fault is data
+/// on the plane's answer (`abi::plane::OnPieceOut::tap_fault`), counted by the kernel; no host
+/// serves this slot and no plane calls it.
 pub type TapFaultLatchFn = extern "C-unwind" fn(
     host: HostCtx,
     protocol_ptr: *const u8,
@@ -714,7 +715,7 @@ pub struct PlaneHostVtable {
     pub entropy_fill: Option<EntropyFillFn>,
     /// Read the host's wall clock (whole Unix seconds).
     pub wall_clock: Option<WallClockFn>,
-    /// Count a usage-tap fault and answer whether it is the first of its kind.
+    /// RETIRED (row 155): always `None`; the usage-tap fault is data on the plane's answer.
     pub tap_fault_latch: Option<TapFaultLatchFn>,
     /// Read the operator's live translation cap.
     pub translate_cap: Option<TranslateCapFn>,
@@ -929,13 +930,12 @@ impl PlaneHostVtable {
         translate_cap: None,
     };
 
-    /// [`EMPTY`](Self::EMPTY) plus the four HOST SERVICES, each served from THIS image's own armed
+    /// [`EMPTY`](Self::EMPTY) plus the three HOST SERVICES, each served from THIS image's own armed
     /// contract ports ([`super::services`]). A host grants them by building its table over this
     /// (`..PlaneHostVtable::SERVICES`): the services are the contract's, so the host adds no code.
     pub const SERVICES: PlaneHostVtable = PlaneHostVtable {
         entropy_fill: Some(super::services::entropy_fill),
         wall_clock: Some(super::services::wall_clock),
-        tap_fault_latch: Some(super::services::tap_fault_latch),
         translate_cap: Some(super::services::translate_cap),
         ..Self::EMPTY
     };

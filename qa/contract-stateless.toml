@@ -5,11 +5,6 @@
 
 [[finding]]
 rule = "contract-stateless:once-cell"
-file = "crates/busbar-contract/src/abi/hot/services.rs"
-item = "OnceLock"
-
-[[finding]]
-rule = "contract-stateless:once-cell"
 file = "crates/busbar-contract/src/codec.rs"
 item = "OnceLock"
 
@@ -42,16 +37,6 @@ item = "ARMED"
 rule = "contract-stateless:static"
 file = "crates/busbar-contract/src/abi/hot/services.rs"
 item = "ARMED_SIZE"
-
-[[finding]]
-rule = "contract-stateless:static"
-file = "crates/busbar-contract/src/abi/hot/services.rs"
-item = "FILLING"
-
-[[finding]]
-rule = "contract-stateless:static"
-file = "crates/busbar-contract/src/abi/hot/services.rs"
-item = "KEPT"
 
 # The door macro's per-thread call-capture slot (plugin logging, #85), expanded in each PLUGIN's own
 # crate: one slot per plugin image, never state shared by host and plugins. Owner 2026-09-28.
@@ -149,16 +134,6 @@ item = "ENTROPY_SOURCE"
 rule = "contract-stateless:static"
 file = "crates/busbar-contract/src/codec.rs"
 item = "TRANSLATE_CAP_READER"
-
-[[finding]]
-rule = "contract-stateless:static"
-file = "crates/busbar-contract/src/codec.rs"
-item = "USAGE_TAP_FAULT_LATCH"
-
-[[finding]]
-rule = "contract-stateless:static"
-file = "crates/busbar-contract/src/codec.rs"
-item = "USAGE_TAP_FAULT_REPORTER"
 
 [[finding]]
 rule = "contract-stateless:static"

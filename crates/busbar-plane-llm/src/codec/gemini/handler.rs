@@ -69,11 +69,14 @@ impl RequestHandler for GeminiRequestHandler {
         if let Some(action) = busbar_contract::codec::path_of(ACTIONS, ctx.operation) {
             return format!("{base}/{m}:{action}");
         }
-        // Chat + audio understanding/TTS all ride generateContent (stream-aware). So does every
-        // verb with no cell above, which is unreachable in practice and answers the same thing —
-        // the pre-1.6.0 answer, verbatim. `stream` is already false for those, because a shape that
-        // cannot stream never sets it (`OpDispatch::wants_stream`'s shape floor).
-        let action = if ctx.stream {
+        // Chat + audio understanding/TTS ride generateContent, stream-aware. Every other verb with
+        // no action above (moderation, rerank: no Gemini cell) answers `:generateContent` whatever
+        // `stream` says, exactly as 1.5.5 did (v1.5.5 `crates/busbar/src/handlers/gemini.rs:52-63`:
+        // only Chat | Transcription | Speech were stream-aware; Moderation and Rerank were
+        // `:generateContent`).
+        let stream_aware =
+            [OpVerb::CHAT, OpVerb::TRANSCRIPTION, OpVerb::SPEECH].contains(&ctx.operation);
+        let action = if stream_aware && ctx.stream {
             FIELD_STREAM_GENERATE_CONTENT
         } else {
             FIELD_GENERATE_CONTENT
@@ -348,11 +351,10 @@ leaf_op! {
     GeminiImage: COUNT_LABEL,
     ImageReqHandle = read_image_request,
     ImageRespHandle = read_image_response;
-    // Buffer the same-protocol non-stream 2xx body so the default `extract_usage` can read the
-    // response's usage and bill the virtual key's TPM/spend. Token-metered image models expose a
-    // `usageMetadata` object (billed as tokens); Imagen `:predict` per-image responses have none, so
-    // the tap bills 0 tokens and the request still meters once via the per-image cost basis on the
-    // cross-protocol seam — mirrors the OpenAI image cell.
+    // Buffer the same-protocol non-stream 2xx body so the default `extract_usage` runs this op's
+    // reader: a token-reporting image model's `usageMetadata` is RECORDED (never billed, as in
+    // 1.5.5; see `ImageResp::billing`), and an Imagen `:predict` per-image answer bills its
+    // `images` count.
     fn taps_usage(&self) -> bool {
         true
     }
@@ -407,18 +409,11 @@ pub fn write_image_response(r: &crate::codec::ir::image::ImageResp) -> WireBody 
             p
         })
         .collect();
-    let mut body = json!({ (FIELD_PREDICTIONS): predictions });
-    // Re-emit the token usage the response reader parses (`read_image_response` captures
-    // `usageMetadata` for token-metered gemini image models). The old writer dropped it, so a
-    // token-metered gemini->gemini image response lost its usage in the client-facing body —
-    // asymmetric with the OpenAI image writer. Emitted only when the IR carries usage.
-    if let Some(u) = &r.usage {
-        body[FIELD_USAGE_METADATA] = json!({
-            (FIELD_PROMPT_TOKEN_COUNT): u.input,
-            (FIELD_CANDIDATES_TOKEN_COUNT): u.output,
-            (FIELD_TOTAL_TOKEN_COUNT): u.input.saturating_add(u.output),
-        });
-    }
+    // Imagen's `:predict` response is `{predictions}` alone: its `PredictResponse` has no
+    // `usageMetadata` member, so none is written, exactly as 1.5.5 wrote it (v1.5.5
+    // `crates/busbar/src/handlers/gemini.rs:474-492`). A foreign answer's token usage has no Imagen
+    // member to map to.
+    let body = json!({ (FIELD_PREDICTIONS): predictions });
     WireBody::json(SlabBytes::from(
         serde_json::to_vec(&body).unwrap_or_default(),
     ))
@@ -838,30 +833,29 @@ pub fn read_image_response(wire: &[u8]) -> Result<crate::codec::ir::image::Image
                 .collect()
         })
         .unwrap_or_default();
-    // Token-metered image models (gemini `generateContent`-shaped) carry a `usageMetadata` token
-    // object; Imagen `:predict` per-image responses carry none. Without this the response was billed
-    // NOTHING — `ImageResp::billing()` returns `None` when BOTH `usage` and `cost_basis` are unset.
-    // Parse the token object when present so `billing()` yields `Billing::Tokens` (same field mapping
-    // as the Gemini transcription/embeddings usage readers).
+    // Token-reporting image models (gemini `generateContent`-shaped) carry a `usageMetadata` token
+    // object; Imagen `:predict` per-image responses carry none. The tokens are RECORDED, never
+    // billed (`ImageResp::billing`, 1.5.5 parity: v1.5.5
+    // `crates/busbar/src/handlers/gemini.rs:446-472` billed none).
+    // A recorded count is still a ledger row, so it is read through the one count seam
+    // (`usage_count::recorded_count`): absent is zero; a present count this build cannot read is
+    // UNKNOWN, left out of the record and named on `warnings` and in the log. It is never a 0
+    // (#81, OWNER rule 21) and never a refusal: 1.5.5 served the answer whatever its usage said.
+    let mut warnings = Vec::new();
     let usage = v
         .get(FIELD_USAGE_METADATA)
-        .map(
-            |u| -> Result<busbar_contract::billing::TokenUsage, CodecError> {
-                // BILLED COUNTS: absent is zero, UNREADABLE IS A REFUSAL (#81/#42) — see
-                // `usage_count::billed_count`.
-                Ok(busbar_contract::billing::TokenUsage {
-                    input: crate::codec::usage_count::billed_count(u, FIELD_PROMPT_TOKEN_COUNT)
-                        .map_err(|e| CodecError::Malformed(e.to_string()))?,
-                    output: crate::codec::usage_count::billed_count(
-                        u,
-                        FIELD_CANDIDATES_TOKEN_COUNT,
-                    )
-                    .map_err(|e| CodecError::Malformed(e.to_string()))?,
-                    ..Default::default()
-                })
-            },
-        )
-        .transpose()?;
+        .map(|u| crate::codec::ir::image::ImageTokens {
+            input: crate::codec::usage_count::recorded_count(
+                u,
+                FIELD_PROMPT_TOKEN_COUNT,
+                &mut warnings,
+            ),
+            output: crate::codec::usage_count::recorded_count(
+                u,
+                FIELD_CANDIDATES_TOKEN_COUNT,
+                &mut warnings,
+            ),
+        });
     // Per-image (Imagen `:predict`) responses carry no `usageMetadata` — record the per-image cost
     // basis so the op bills as `Billing::Images` rather than nothing. The billable COUNT is
     // recoverable from the response itself (one image per `predictions` entry). Size/quality tiers
@@ -878,6 +872,7 @@ pub fn read_image_response(wire: &[u8]) -> Result<crate::codec::ir::image::Image
         images,
         usage,
         cost_basis,
+        warnings,
         ..Default::default()
     })
 }
