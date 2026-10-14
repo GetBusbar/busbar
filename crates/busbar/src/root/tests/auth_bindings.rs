@@ -159,11 +159,49 @@ fn hand_in_the_root_words() {
     busbar_kernel::preflight::install_linked_auth(crate::LINKED.auths, operator_words());
 }
 
+/// THE OPERATOR'S PROVIDER WORD IS THE MANIFEST'S: the registry key of the row the manifest's
+/// operator table names, and — where this build links that row — the row whose own Statement states
+/// it is the operator credential, identifying the operator as the principal the words carry. The
+/// root's source spells neither.
 #[test]
-fn the_legacy_table_spells_the_operator_credential_as_1_5_5_did() {
+fn the_operator_provider_is_the_row_the_manifest_names() {
     let words = operator_words();
-    assert_eq!(words.provider, "admin-tokens");
-    assert_eq!(words.principal_id, "admin");
+    assert!(
+        !words.provider.is_empty(),
+        "the manifest names an operator row"
+    );
+    assert_eq!(words.provider, crate::LINKED.operator_auth);
+    assert_eq!(words.principal_id, ADMIN_PRINCIPAL_ID);
+    let stating: Vec<&str> = crate::LINKED
+        .auths
+        .iter()
+        .filter(|&&(_, _, door)| {
+            crate::root::loader::dispatch::kinds::auth::operator_principal(door).is_some()
+        })
+        .map(|&(key, _, _)| key)
+        .collect();
+    if crate::LINKED.auths.iter().any(|r| r.0 == words.provider) {
+        assert_eq!(
+            stating,
+            [words.provider],
+            "the named row is the one that states it"
+        );
+        let (_, _, door) = crate::LINKED
+            .auths
+            .iter()
+            .find(|r| r.0 == words.provider)
+            .copied()
+            .expect("linked");
+        assert_eq!(
+            crate::root::loader::dispatch::kinds::auth::operator_principal(door).as_deref(),
+            Some(words.principal_id)
+        );
+    } else {
+        assert!(
+            stating.is_empty(),
+            "no unnamed row states the operator: {stating:?}"
+        );
+    }
 }
 
 #[test]

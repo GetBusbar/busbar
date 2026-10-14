@@ -231,10 +231,10 @@ pub(crate) fn handle_cli_flags() -> Option<i32> {
             }
             Some(0)
         }
-        // The STDIO SERVE MODE is not an exit-and-print flag: it proceeds to the ordinary boot and
-        // is read again inside `run()`, where it swaps the two TCP listeners for the process's own
-        // stdin/stdout. Recognised here so it is not refused as an unknown argument.
-        // A flag a linked plane declares (its `Flags:` row) is not an exit-and-print flag either.
+        // A flag a linked plane declares (its `Flags:` row) is not an exit-and-print flag: it
+        // proceeds to the ordinary boot and is read again inside `run()`, where the line-serve flag
+        // swaps the two listeners for the process's own stdin/stdout. Recognised here so it is not
+        // refused as an unknown argument.
         Some(arg) if is_plane_flag(&help_rows(), arg) => None,
         Some("--validate") => Some(validate_config_command()),
         Some("--generate-signing-key") => Some(generate_signing_key_command()),
@@ -422,6 +422,10 @@ fn validate_config_command() -> i32 {
     0
 }
 
+/// THE `--list-plugins` COLUMN HEADER, v1.5.5's bytes (v1.5.5 crates/busbar/src/main.rs:419-422):
+/// the row format's six columns at its widths, then `STATUS`, as the one line it prints.
+const LIST_PLUGINS_HEADER: &str = "FILE                               NAME                     ALIAS        KIND   VERSION   SIGNATURE                STATUS";
+
 /// `--list-plugins`: MANIFEST-ONLY inventory of every plugin tarball in `plugins.dir` — name,
 /// alias, kind, version, signature verdict, and load status (including the exact skip/invalid
 /// reason and which one `store.module` selects). NEVER `dlopen`s anything, so an untrusted
@@ -472,10 +476,7 @@ fn list_plugins_command() -> i32 {
         println!("no plugin tarballs found");
         return 0;
     }
-    println!(
-        "{:<34} {:<24} {:<12} {:<6} {:<9} {:<24} STATUS",
-        "FILE", "NAME", "ALIAS", "KIND", "VERSION", "SIGNATURE"
-    );
+    println!("{LIST_PLUGINS_HEADER}");
     for row in rows {
         let (name, alias, kind, version) = row
             .manifest

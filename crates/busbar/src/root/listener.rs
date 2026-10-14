@@ -5,8 +5,8 @@
 //!
 //! This module is a thin transport wrapper around the *ingress* listener. It does NOT touch routing,
 //! request translation, the breaker, or failover — it only decides, once at startup, whether the
-//! accepted TCP stream is handed to axum as-is (plain HTTP, the historical default) or first put
-//! through a rustls server handshake.
+//! accepted stream is handed to axum as-is (plain, the historical default) or first put through a
+//! rustls server handshake.
 //!
 //! ## Why we drive hyper directly here instead of `axum::serve`
 //!
@@ -199,6 +199,11 @@ impl AcceptBackoff {
     }
 }
 
+/// The wire a plain root listener speaks, as its log lines name it: the request/response transport
+/// the admin plane's one claim is declared over (`busbar_core_admin::admin_codec::claims`). Both
+/// root listeners serve that one wire, and the root holds no transport's name of its own.
+pub const REQUEST_WIRE: &str = busbar_core_admin::admin_codec::claims::TRANSPORT;
+
 /// A tokio socket listener as an accept source, its accept errors absorbed by [`AcceptBackoff`]:
 /// what [`serve`] and [`serve_plain`] are handed, and what a build without the connector's
 /// listener serves on.
@@ -215,7 +220,7 @@ impl SocketAdmits {
         Self {
             listener,
             backoff: AcceptBackoff::new(),
-            scheme: "http",
+            scheme: REQUEST_WIRE,
         }
     }
 }
@@ -431,7 +436,7 @@ async fn accept_loop(
         let Ok(stream) = tokio::net::TcpStream::from_std(a.stream) else {
             return;
         };
-        let conn = served.clone().tcp(stream, a.peer, graceful.watcher());
+        let conn = served.clone().accepted(stream, a.peer, graceful.watcher());
         let hold = a.hold;
         tokio::spawn(async move {
             conn.await;
@@ -690,7 +695,7 @@ fn hardened_conn_builder() -> ConnBuilder<TokioExecutor> {
 }
 
 /// Plain-HTTP serve loop — the no-`tls`-block default path. Mirrors `serve` (and the historical
-/// `axum::serve(listener, router).with_graceful_shutdown(shutdown)`) but over the bare TCP stream
+/// `axum::serve(listener, router).with_graceful_shutdown(shutdown)`) but over the bare stream
 /// (no TLS handshake). Routed through the SAME `hardened_conn_builder` so the plain listener gets the
 /// identical slow-loris header-read bound the TLS listener has — the previous `axum::serve` path
 /// exposed no such timeout, leaving a plain-HTTP edge deployment open to header-trickle clients.
@@ -703,7 +708,7 @@ pub async fn serve_plain(
     let admits = SocketAdmits {
         listener,
         backoff: AcceptBackoff::new(),
-        scheme: "http",
+        scheme: REQUEST_WIRE,
     };
     accept_loop(admits, shutdown, balancer, Served::new(router, None)).await
 }
@@ -722,7 +727,11 @@ struct Served {
 impl Served {
     fn new(router: Router, security: Option<Arc<dyn ConnectionSecurity>>) -> Self {
         let builder = Arc::new(hardened_conn_builder());
-        let scheme = if security.is_some() { "tls" } else { "http" };
+        let scheme = if security.is_some() {
+            "tls"
+        } else {
+            REQUEST_WIRE
+        };
         Self {
             builder,
             router,
@@ -731,10 +740,10 @@ impl Served {
         }
     }
 
-    /// Serve a single accepted TCP connection: as it arrived on a plain listener (the stream itself,
+    /// Serve a single accepted connection: as it arrived on a plain listener (the stream itself,
     /// no compat layer), through the wrap on a TLS one. Any failure is contained to this connection.
-    async fn tcp(self, stream: tokio::net::TcpStream, peer: SocketAddr, watcher: Watcher) {
-        // TCP_NODELAY parity with axum::serve (which sets it by default on accepted streams).
+    async fn accepted(self, stream: tokio::net::TcpStream, peer: SocketAddr, watcher: Watcher) {
+        // No-delay parity with axum::serve (which sets it by default on accepted streams).
         if let Err(e) = stream.set_nodelay(true) {
             tracing::debug!(error = %e, %peer, "{}: set_nodelay failed; continuing", self.scheme);
         }

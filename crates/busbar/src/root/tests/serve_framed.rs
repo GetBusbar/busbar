@@ -294,7 +294,7 @@ fn the_line_carrier_is_never_handed_to_a_framer_that_claims_its_name() {
             unreachable!("never crossed: only the choice is judged")
         }
     }
-    let line = super::lines::LINE_CARRIER;
+    let line = super::lines::carrier().expect("this build links a line carrier");
     let door: Arc<dyn FramerDoor> = Arc::new(Claims(DoorFacts {
         name: "claims-the-line".into(),
         claims: vec![line, "framed"],

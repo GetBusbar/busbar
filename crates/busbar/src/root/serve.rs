@@ -546,7 +546,7 @@ pub struct ApplyReach {
     upgrades: Vec<&'static str>,
 }
 
-/// A CONFIG APPLY ON ONE SERVED DOOR PLANE (ARCHITECT Q-DEL-A2A-APPLY; THE DESIGN §11, plugin
+/// A CONFIG APPLY ON ONE SERVED DOOR PLANE (the ARCHITECT ruling on a door plane's apply; THE DESIGN §11, plugin
 /// memory is "valid to its next refresh generation"): every apply refreshes the plane onto a new
 /// generation of the section the installed generation writes, so the plane re-reads it and its
 /// generation-scoped memory resets with it, as predev rebuilt the plane on every apply; its pools
@@ -1376,7 +1376,7 @@ pub(crate) fn compose_planes_over(
     for (instance, plugin) in doors {
         let served_facts = plugin.served();
         // A door plane is configured when the document writes ANY section it owns: its own, or
-        // another its Statement owns (an `mcp:`-class block alone makes the deployment that plane's
+        // another its Statement owns (a block of a class it owns alone makes the deployment that plane's
         // server, its own section then read as written empty).
         let empty = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
         let section = match sections.get(served_facts.section) {
@@ -2237,7 +2237,7 @@ pub fn door_mounts(
         for (i, claim) in plane.snapshot.claims.iter().enumerate() {
             // A claim over the line carrier is served on the process's own stdin/stdout
             // ([`lines`]), never on the data listener.
-            if claim.carrier == lines::LINE_CARRIER {
+            if lines::carrier() == Some(claim.carrier.as_str()) {
                 continue;
             }
             let rung =
@@ -2504,7 +2504,7 @@ pub(crate) fn line_routes(
     let mut of_line = std::collections::HashMap::new();
     for (p, plane) in served.planes.iter().enumerate() {
         for (i, claim) in plane.snapshot.claims.iter().enumerate() {
-            if claim.carrier == lines::LINE_CARRIER {
+            if lines::carrier() == Some(claim.carrier.as_str()) {
                 continue;
             }
             let rung =
@@ -3823,7 +3823,7 @@ fn framed_by(
     carrier: &str,
     framer_for: impl Fn(&str) -> Option<Arc<dyn busbar_core_connector::framer::FramerDoor>>,
 ) -> Option<Arc<dyn busbar_core_connector::framer::FramerDoor>> {
-    if carrier == lines::LINE_CARRIER {
+    if lines::carrier() == Some(carrier) {
         return None;
     }
     serve_framed::stream_framer(carrier, framer_for)

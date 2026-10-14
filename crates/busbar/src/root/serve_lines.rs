@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE LINE CARRIER (SEAM-S1; ARCHITECT Q1a, consistent with round 4 Q-L3B-STDIO-SHAPE (B)): the
+//! THE LINE CARRIER (SEAM-S1; ARCHITECT Q1a, consistent with round 4's line-shape ruling (B)): the
 //! process's own stdin/stdout, held open as ONE carrier session for one caller. busbar is somebody's
 //! child process here, binds no listener, and serves the door claim a served plane makes over the
-//! line carrier's key ([`LINE_CARRIER`]).
+//! line carrier's key ([`carrier`]): the one linked transport claim whose row opens its unit 0 on
+//! the first line, read off the transport's own declared rows, never named here.
 //!
 //! - The session is only the CARRIER ([`LineCaller`], the driver's one `SessionCaller` for a held
 //!   carrier): each line it reads is ONE unit, opened exactly as a data-listener arrival is (its own
@@ -20,7 +21,8 @@
 //!   stderr, not one frame first.
 //! - EOF on stdin ends the session: every unit still open ends, and the serve returns `0`.
 //!
-//! Every meaning a line has is the plane's; this module names no plane.
+//! Every meaning a line has is the plane's, and every name the carrier answers by is the
+//! transport's; this module names neither.
 
 use std::sync::Arc;
 
@@ -31,50 +33,99 @@ use tokio::sync::{mpsc, Mutex as AsyncMutex};
 
 use super::{DoorRequest, Served};
 
-/// The line transport's claim key: the claims made over it are the line carrier's.
-pub const LINE_CARRIER: &str = "stdio";
+/// THE LINE CARRIER'S CLAIM KEY among `transports`: the one claim whose row opens its unit 0 on
+/// the first line (`unit0_trigger` `FIRST_LINE`, read off each linked door's Statement). `None` when
+/// no linked transport carries lines. Two such claims are refused: the process has one
+/// stdin/stdout, and which claim it carries is never decided by picking one.
+///
+/// # Errors
+///
+/// Two linked claims open on the first line.
+pub fn line_carrier(
+    transports: &[crate::root::linked::LinkedTransport],
+) -> Result<Option<&'static str>, String> {
+    let mut lines = transports.iter().flat_map(|t| (t.lines)());
+    let one = lines.next();
+    match (one, lines.next()) {
+        (Some(one), Some(other)) => Err(format!(
+            "the linked transport claims `{one}` and `{other}` both open a session on their first \
+             line, and the process's own stdin/stdout carries one"
+        )),
+        (one, _) => Ok(one),
+    }
+}
 
-/// The environment variable carrying the session credential for the plane keyed `plane` (its
-/// instance's key, never a literal here): argv is world-readable, and the launching client's `env`
-/// block has exactly this shape.
+/// This build's line carrier, read once off its linked transports ([`line_carrier`]). `Err` when
+/// two linked claims open on the first line; boot refuses that build before anything is served
+/// ([`refusal`]).
+fn installed() -> &'static Result<Option<&'static str>, String> {
+    static CARRIER: std::sync::OnceLock<Result<Option<&'static str>, String>> =
+        std::sync::OnceLock::new();
+    CARRIER.get_or_init(|| line_carrier(crate::LINKED.transports))
+}
+
+/// The line carrier's claim key in this build: the claims made over it are served on the
+/// process's own stdin/stdout. `None` when no linked transport carries lines.
 #[must_use]
-pub fn env_credential(plane: &str) -> String {
-    format!("BUSBAR_{}_STDIO_CREDENTIAL", plane.to_ascii_uppercase())
+pub fn carrier() -> Option<&'static str> {
+    installed().as_ref().ok().copied().flatten()
+}
+
+/// The refusal a build whose linked transports state two line carriers boots to, `None` for every
+/// other build.
+#[must_use]
+pub fn refusal() -> Option<&'static str> {
+    installed().as_ref().err().map(String::as_str)
+}
+
+/// The environment variable carrying the session credential for the plane keyed `plane` over the
+/// line carrier keyed `carrier` (both instances' keys, never a literal here): argv is
+/// world-readable, and the launching client's `env` block has exactly this shape.
+#[must_use]
+pub fn env_credential(plane: &str, carrier: &str) -> String {
+    format!(
+        "BUSBAR_{}_{}_CREDENTIAL",
+        plane.to_ascii_uppercase(),
+        carrier.to_ascii_uppercase()
+    )
 }
 
 /// The `(plane, claim)` a served plane claims over the line carrier, the first in binding order.
 #[must_use]
 pub fn line_claim(served: &Served) -> Option<(usize, u32)> {
+    let carrier = carrier()?;
     served.planes.iter().enumerate().find_map(|(p, plane)| {
         plane
             .snapshot
             .claims
             .iter()
-            .position(|c| c.carrier == LINE_CARRIER)
+            .position(|c| c.carrier == carrier)
             .and_then(|i| u32::try_from(i).ok())
             .map(|claim| (p, claim))
     })
 }
 
 /// The one line a refused serve writes to stderr before it exits nonzero.
-pub fn refuse(plane: &str, sentence: &str) {
-    eprintln!("busbar: {plane} stdio serve refused to start: {sentence}");
+pub fn refuse(plane: &str, carrier: &str, sentence: &str) {
+    eprintln!("busbar: {plane} {carrier} serve refused to start: {sentence}");
 }
 
 /// RESOLVE THE SESSION IDENTITY from the boot credential, against `audience`: `Err` is a sentence
-/// for stderr and a refusal to serve. Every operator sentence names the plane by `plane`.
+/// for stderr and a refusal to serve. Every operator sentence names the plane by `plane` and the
+/// carrier by `carrier`.
 async fn session(
     app: Arc<busbar_kernel::state::App>,
     plane: &str,
+    carrier: &str,
     audience: Option<&str>,
     credential: Option<&str>,
 ) -> Result<busbar_contract::records::PlaneRequestCtx, String> {
-    let env = env_credential(plane);
+    let env = env_credential(plane, carrier);
     // The setting a refusal points the operator at: the plane's canonical resource, by its key.
     let canonical_uri = format!("{plane}.canonical_uri");
     let Some(resource) = audience else {
         return Err(format!(
-            "this deployment's `{plane}:` block states no canonical resource, so a stdio session \
+            "this deployment's `{plane}:` block states no canonical resource, so a {carrier} session \
              has no audience to be bound to."
         ));
     };
@@ -112,7 +163,7 @@ async fn session(
         Ok((_principal, gov)) => {
             if !gov.is_governed() {
                 eprintln!(
-                    "[warn] {plane} stdio session is UNGOVERNED: no enforcement key is bound, so no \
+                    "[warn] {plane} {carrier} session is UNGOVERNED: no enforcement key is bound, so no \
                      budget applies and audit rows attribute to `anonymous`. Configure \
                      `auth.chain` and set {env} to bind the session to a key."
                 );
@@ -121,7 +172,7 @@ async fn session(
         }
         Err(busbar_kernel::auth::IdentityRefusal::Denied) => Err(if credential.is_none() {
             format!(
-                "this deployment's `auth.chain` is configured, so an unauthenticated stdio session \
+                "this deployment's `auth.chain` is configured, so an unauthenticated {carrier} session \
                  is refused exactly as an unauthenticated POST is. Set {env} to a credential the \
                  chain admits (audience-bound to `{canonical_uri}`)."
             )
@@ -197,8 +248,14 @@ where
     R: AsyncRead + Unpin + Send + 'static,
     W: AsyncWrite + Unpin + Send + 'static,
 {
+    let Some(carrier) = carrier() else {
+        eprintln!("busbar: no linked transport carries lines: nothing to serve on stdin");
+        return 1;
+    };
     let Some((plane, claim)) = line_claim(&served) else {
-        eprintln!("busbar: no served plane claims the stdio transport: nothing to serve on stdin");
+        eprintln!(
+            "busbar: no served plane claims the {carrier} transport: nothing to serve on stdin"
+        );
         return 1;
     };
     let instance = served.planes[plane].instance.clone();
@@ -207,12 +264,13 @@ where
         .clone();
     let audience = served.planes[plane].snapshot.audience.clone();
     let kernel = Arc::clone(&served.planes[plane].kernel);
-    let credential = std::env::var(env_credential(&instance))
+    let credential = std::env::var(env_credential(&instance, carrier))
         .ok()
         .filter(|c| !c.is_empty());
     let gov = match session(
         app.load(),
         &instance,
+        carrier,
         audience.as_deref(),
         credential.as_deref(),
     )
@@ -220,18 +278,18 @@ where
     {
         Ok(gov) => gov,
         Err(sentence) => {
-            refuse(&instance, &sentence);
+            refuse(&instance, carrier, &sentence);
             return 1;
         }
     };
     tracing::info!(
         governed = gov.is_governed(),
-        "stdio serve: session bound; serving on stdin/stdout"
+        "{carrier} serve: session bound; serving on stdin/stdout"
     );
     let routes = match super::line_routes(served, pin) {
         Ok(routes) => routes,
         Err(e) => {
-            eprintln!("busbar: stdio serve refused to start: {e}");
+            eprintln!("busbar: {carrier} serve refused to start: {e}");
             return 1;
         }
     };
@@ -372,3 +430,7 @@ fn trim(line: &[u8]) -> &[u8] {
     }
     &line[..end]
 }
+
+#[cfg(test)]
+#[path = "tests/serve_lines.rs"]
+mod tests;

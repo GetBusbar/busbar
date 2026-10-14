@@ -47,11 +47,11 @@
 //! **164 of the cross-plane pairs overlap** — 100 across selector families and 64 within the path
 //! family. Both numbers follow from the overlap rule as the design writes it, and neither is a
 //! rounding of the other. (The decisions plane joining the seal, item 251, added eleven: its two
-//! exact paths against every header claim, and its `/v1/models` against the llm plane's
+//! exact paths against every header claim, and its `/v1/models` against the model-serving plane's
 //! `v1/models/<tail>` pattern — which the order settles in the exact path's favour.)
 //!
 //! The 90 are the conservative arm, and they are conservative because a request really does carry
-//! both a path and a header: `HeaderPresent("x-api-key")` and `ExactPath("/mcp")` can be true of one
+//! both a path and a header: `HeaderPresent("x-api-key")` and `ExactPath("/tools")` can be true of one
 //! arrival, so an overlap is the honest answer rather than a limitation. The 63 are what is left
 //! inside the path family once the grammar reads a suffix and a substring as the segment
 //! constraints they are: a suffix pins a pattern's last segments, a substring carrying slashes asks

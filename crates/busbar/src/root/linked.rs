@@ -111,6 +111,9 @@ pub struct Linked {
     pub hook_doors: &'static [busbar_contract::abi::mechanism::door::DoorFn],
     /// The auth axis: each linked `kind: auth` plugin's `(registry key, SDK boundary)`.
     pub auths: &'static [LinkedAuth],
+    /// The operator credential's provider word: the key the manifest's operator row states
+    /// (`[package.metadata.busbar.operator-auth]`), linked in this build or not.
+    pub operator_auth: &'static str,
     /// The kernel-loop axes (#28): the declaration key of each plane `gauntlet_install::install()`
     /// flips onto the unified loop's ONE-SHOT runner, and of each it flips onto the SESSION runner.
     pub gauntlet_one_shot: &'static [&'static str],
@@ -185,6 +188,9 @@ pub struct LinkedTransport {
     /// The claims whose unit 0 opens at an UPGRADE, read off the door's Statement: the data door's
     /// upgrade lines (`crate::root::serve::upgrade_carriers`; ARCHITECT ruling Q128 U7).
     pub upgrades: ClaimsOf,
+    /// The claims whose unit 0 opens on the FIRST LINE, read off the door's Statement: the line
+    /// carrier the process's own stdin/stdout serves (`crate::root::serve::lines::line_carrier`).
+    pub lines: ClaimsOf,
 }
 
 /// A row's claims, read when the seal runs.
@@ -611,7 +617,7 @@ pub(crate) fn door_probe_dispatcher() -> Arc<crate::root::loader::dispatch::Disp
     crate::root::dispatch::dispatcher()
 }
 
-/// THE DOOR PLANES' REGISTRY ROWS (DECL-FOLD; ARCHITECT RULING 2026-10-03, Q-DEL-A2A-DECL; spec #49
+/// THE DOOR PLANES' REGISTRY ROWS (DECL-FOLD; ARCHITECT RULING 2026-10-03 on the door's declaration; spec #49
 /// and R2-C): every plane [`dropped_planes_of`] discovered through a door, linked or dropped, bound
 /// once through the loader's one load on the process's one dispatcher (booted as main's first act,
 /// before any plane registers and before the config prepass), and its Statement
@@ -997,7 +1003,7 @@ impl crate::root::loader::ReplyStream for Held {
 /// ANSWER ONE REQUEST INLINE ON THE REQUEST'S WORKER (#30 HOT lane; ARCHITECT HOTDOOR-B queue 2): a
 /// plane whose dispatch does not block is called in place — no thread hop. A body it streamed is
 /// held until the dispatch returns and then served as a stream (its length unstated), exactly as
-/// the blocking door serves it; a plane that faults after streaming answers its class status.
+/// the blocking door serves it; a plane that faults after a streamed body answers its class status.
 fn hot_answer_inline(ctx: &PlaneReqCtx) -> PlaneResponse {
     let mut held = Held {
         head: None,
@@ -1487,7 +1493,7 @@ mod tests;
 #[path = "tests/linked_secret_sources.rs"]
 mod secret_source_tests;
 
-#[cfg(all(test, feature = "auth-admin-tokens", linked_axis_body_ingress))]
+#[cfg(all(test, linked_operator_auth, linked_axis_body_ingress))]
 #[path = "tests/linked_auth.rs"]
 mod auth_tests;
 

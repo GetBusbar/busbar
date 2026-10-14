@@ -129,3 +129,18 @@ fn a_declared_plane_flag_is_accepted_and_nothing_else_is() {
         }
     }
 }
+
+/// THE `--list-plugins` HEADER IS THE ROW FORMAT'S: its six column names at the widths every row
+/// prints at, then `STATUS`, so each name heads its own column.
+#[test]
+fn the_list_plugins_header_heads_the_row_formats_columns() {
+    let names: Vec<&str> = super::LIST_PLUGINS_HEADER.split_whitespace().collect();
+    assert_eq!(names.len(), 7, "six columns and STATUS");
+    assert_eq!(
+        super::LIST_PLUGINS_HEADER,
+        format!(
+            "{:<34} {:<24} {:<12} {:<6} {:<9} {:<24} {}",
+            names[0], names[1], names[2], names[3], names[4], names[5], names[6]
+        )
+    );
+}

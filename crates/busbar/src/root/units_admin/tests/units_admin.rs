@@ -1133,6 +1133,14 @@ fn the_admin_listener_is_exempt_from_the_cap_the_data_listener_is_refused_at() {
         .into_result(&seal)
         .expect("an admin unit is never refused at the gate");
     assert_eq!(record.transport_chain, vec![ADMIN_TRANSPORT]);
+    assert_eq!(
+        record.transport_chain,
+        busbar_core_admin::admin_codec::claims::CLAIMS
+            .iter()
+            .map(|c| c.transport)
+            .collect::<Vec<_>>(),
+        "the chain is the transport the admin plane's own claim declares"
+    );
 }
 
 /// Where an admin unit may go, and what that costs it.

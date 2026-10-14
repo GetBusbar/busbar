@@ -135,7 +135,12 @@ fn member_secrets_installed() {
 /// `program_member::script` serves, its environment's `TOKEN` the reference `secret`.
 fn program_section(secret: &SecretRef) -> serde_yaml::Value {
     let mut fs = serde_yaml::Mapping::new();
-    fs.insert("transport".into(), super::lines::LINE_CARRIER.into());
+    fs.insert(
+        "transport".into(),
+        super::lines::carrier()
+            .expect("this build links a line carrier")
+            .into(),
+    );
     fs.insert("command".into(), "/bin/sh".into());
     fs.insert(
         "args".into(),
