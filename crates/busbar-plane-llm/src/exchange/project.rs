@@ -5,8 +5,10 @@
 //! One read, through the operation's own reader, as the previous release's hook seam read it: the
 //! size signals (turns, characters, tools), the end user the dialect spells, and the prompt view
 //! (the system field and one `(role, text)` entry per wire turn, an in-band system turn at its wire
-//! position, a turn with nothing readable still an entry). A body the reader refuses is the
-//! request's failure ([`Unreadable`]); a body there is no reader for projects the zeroed shape.
+//! position, a turn with nothing readable still an entry). A body the reader refuses is projected
+//! off its raw JSON as 1.5.5 projected every body (`project_raw.rs`): 1.5.5's projection never
+//! failed, and the request went on (row 155, F25 row 250). A body there is no reader for projects
+//! the zeroed shape.
 //!
 //! The output-cap signal is the previous release's own read (`max_tokens_for` at `v1.5.5`): the
 //! dialect's cap key off the caller's body, an out-of-range cap saturated to `u32::MAX`, never
@@ -21,6 +23,9 @@ use super::arrive::Arrived;
 use super::attempt::stream_intent;
 use super::{decl, handler_of};
 use crate::codec::translate::TranslateCodec;
+
+#[path = "project_raw.rs"]
+mod raw;
 
 /// The dialect whose output cap the previous release read under `max_output_tokens`.
 const RESPONSES: &str = "responses";
@@ -46,14 +51,8 @@ pub struct HookView {
     pub end_user: Option<String>,
 }
 
-/// The operation's reader refused the body: the request fails (the previous release's 400).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Unreadable;
-
-/// The client-facing message for a body the operation's reader refuses: content-free, it names the
-/// failure, never the field or the value.
-pub const UNREADABLE_BODY_MESSAGE: &str =
-    "request body could not be read as a valid request for this endpoint";
+/// The operation's reader refused the body.
+struct Unreadable;
 
 /// The previous release's output-cap signal: the dialect's cap key (`max_output_tokens` for the
 /// responses dialect, `max_tokens` for every other) off the caller's body, saturated.
@@ -122,12 +121,9 @@ fn prompt(ir: &dyn IrFacts) -> (Option<String>, Vec<(String, String)>) {
     )
 }
 
-/// PROJECT one arrival for the hooks.
-///
-/// # Errors
-///
-/// [`Unreadable`] when the operation's reader refuses the body.
-pub fn project(arrived: &Arrived) -> Result<HookView, Unreadable> {
+/// PROJECT one arrival for the hooks. Never fails, as 1.5.5's projection never failed.
+#[must_use]
+pub fn project(arrived: &Arrived) -> HookView {
     let stream = handler_of(arrived)
         .map(|h| stream_intent(h, arrived.parsed.as_ref()).wants_stream)
         .unwrap_or(false);
@@ -135,20 +131,45 @@ pub fn project(arrived: &Arrived) -> Result<HookView, Unreadable> {
         .parsed
         .as_ref()
         .and_then(|v| max_tokens_for(v, arrived.dialect));
-    let Some(ir) = facts(arrived)? else {
+    let read = match facts(arrived) {
+        Ok(read) => read,
+        // The reader refuses the body: 1.5.5's raw projection, which never failed (v1.5.5
+        // proxy/hooks.rs:682). A same-dialect request goes on verbatim; a translation to another
+        // dialect still refuses it when the attempt is written.
+        Err(Unreadable) => {
+            let null = Value::Null;
+            let v = arrived
+                .parsed
+                .as_ref()
+                .filter(|v| v.is_object())
+                .unwrap_or(&null);
+            let raw = raw::raw_view(v, arrived.dialect);
+            return HookView {
+                turn_count: raw.turn_count,
+                text_chars: raw.text_chars,
+                has_tools: raw.has_tools,
+                max_tokens,
+                stream,
+                system: raw.system,
+                turns: raw.turns,
+                end_user: raw.end_user,
+            };
+        }
+    };
+    let Some(ir) = read else {
         let shape = Shape::EMPTY;
-        return Ok(HookView {
+        return HookView {
             turn_count: shape.turn_count,
             text_chars: shape.text_chars,
             has_tools: shape.has_tools,
             max_tokens,
             stream,
             ..HookView::default()
-        });
+        };
     };
     let shape = ir.shape();
     let (system, turns) = prompt(&*ir);
-    Ok(HookView {
+    HookView {
         turn_count: shape.turn_count,
         text_chars: shape.text_chars,
         has_tools: shape.has_tools,
@@ -157,7 +178,7 @@ pub fn project(arrived: &Arrived) -> Result<HookView, Unreadable> {
         system,
         turns,
         end_user: ir.end_user().map(str::to_string),
-    })
+    }
 }
 
 /// A rewrite as it crosses: the hook's `{messages, tools}`.
