@@ -142,7 +142,11 @@ fn content_block_start_clamps_pathological_index() {
         "content_block": { "type": "text" }
     });
     let ev = AnthropicReader
-        .read_response_event(EVT_CONTENT_BLOCK_START, &data)
+        .read_response_event(
+            crate::codec::test_host::HOST,
+            EVT_CONTENT_BLOCK_START,
+            &data,
+        )
         .expect("content_block_start parses");
     match ev {
         IrStreamEvent::BlockStart { index, .. } => {
@@ -166,7 +170,11 @@ fn content_block_delta_and_stop_clamp_pathological_index() {
         "delta": { "type": DELTA_TYPE_TEXT, "text": "x" }
     });
     match AnthropicReader
-        .read_response_event(EVT_CONTENT_BLOCK_DELTA, &delta)
+        .read_response_event(
+            crate::codec::test_host::HOST,
+            EVT_CONTENT_BLOCK_DELTA,
+            &delta,
+        )
         .expect("content_block_delta parses")
     {
         IrStreamEvent::BlockDelta { index, .. } => {
@@ -180,7 +188,7 @@ fn content_block_delta_and_stop_clamp_pathological_index() {
         "index": u64::MAX
     });
     match AnthropicReader
-        .read_response_event(EVT_CONTENT_BLOCK_STOP, &stop)
+        .read_response_event(crate::codec::test_host::HOST, EVT_CONTENT_BLOCK_STOP, &stop)
         .expect("content_block_stop parses")
     {
         IrStreamEvent::BlockStop { index } => {
@@ -241,7 +249,12 @@ fn extract_error_400_context_length_still_synthesized_under_gate() {
 /// `kind` into Anthropic's typed error vocabulary so a native SDK decodes the right exception.
 #[test]
 fn write_error_native_anthropic_envelope_shape() {
-    let v = anthropic_writer().write_error(404, "not_found", "model 'x' not found");
+    let v = anthropic_writer().write_error(
+        crate::codec::test_host::HOST,
+        404,
+        "not_found",
+        "model 'x' not found",
+    );
     // Top-level discriminator is "error" (Anthropic), NOT the generic `{"error":{...}}`.
     assert_eq!(v.get("type").and_then(|t| t.as_str()), Some("error"));
     let err = v.get("error").expect("error object present");
@@ -265,7 +278,7 @@ fn write_error_native_anthropic_envelope_shape() {
 fn write_error_kind_vocabulary_mapping() {
     let map_of = |kind: &str| {
         anthropic_writer()
-            .write_error(400, kind, "m")
+            .write_error(crate::codec::test_host::HOST, 400, kind, "m")
             .get("error")
             .and_then(|e| e.get("type"))
             .and_then(|t| t.as_str())
@@ -301,7 +314,12 @@ fn write_error_kind_vocabulary_mapping() {
 fn write_error_503_maps_to_overloaded_error_not_api_error() {
     let type_for = |status: u16| {
         anthropic_writer()
-            .write_error(status, ERR_TYPE_API_ERROR, "upstream is overloaded")
+            .write_error(
+                crate::codec::test_host::HOST,
+                status,
+                ERR_TYPE_API_ERROR,
+                "upstream is overloaded",
+            )
             .get("error")
             .and_then(|e| e.get("type"))
             .and_then(|t| t.as_str())
@@ -323,6 +341,7 @@ fn write_error_503_maps_to_overloaded_error_not_api_error() {
     assert_eq!(type_for(500).as_deref(), Some("api_error")); // golden wire-contract literal (kept bare on purpose)
                                                              // The envelope is still well-formed and request_id is minted on the status-override path.
     let v = anthropic_writer().write_error(
+        crate::codec::test_host::HOST,
         STATUS_OVERLOADED,
         ERR_TYPE_API_ERROR,
         "upstream is overloaded",
@@ -358,7 +377,9 @@ fn read_then_write_response_preserves_identity() {
         "stop_sequence": "\n\nHuman:",
         "usage": {"input_tokens": 3, "output_tokens": 1}
     });
-    let ir = AnthropicReader.read_response(&body).expect("read_response");
+    let ir = AnthropicReader
+        .read_response(crate::codec::test_host::HOST, &body)
+        .expect("read_response");
     assert_eq!(ir.id.as_deref(), Some("msg_01XYZabc123"));
     assert_eq!(ir.model.as_deref(), Some("claude-opus-4-8"));
     assert_eq!(
@@ -367,7 +388,7 @@ fn read_then_write_response_preserves_identity() {
     );
     assert_eq!(ir.stop_sequence.as_deref(), Some("\n\nHuman:"));
 
-    let out = anthropic_writer().write_response(&ir);
+    let out = anthropic_writer().write_response(crate::codec::test_host::HOST, &ir);
     assert_eq!(
         out.get("id").and_then(|v| v.as_str()),
         Some("msg_01XYZabc123"),
@@ -404,7 +425,7 @@ fn message_start_roundtrip_preserves_id_and_model() {
         }
     });
     let ev = AnthropicReader
-        .read_response_event(EVT_MESSAGE_START, &data)
+        .read_response_event(crate::codec::test_host::HOST, EVT_MESSAGE_START, &data)
         .expect("message_start parses");
     match &ev {
         IrStreamEvent::MessageStart { id, model, .. } => {
@@ -414,7 +435,7 @@ fn message_start_roundtrip_preserves_id_and_model() {
         _ => panic!("expected MessageStart"),
     }
     let (et, out) = anthropic_writer()
-        .write_response_event(&ev)
+        .write_response_event(crate::codec::test_host::HOST, &ev)
         .expect("writes message_start");
     assert_eq!(et, "message_start"); // golden wire-contract literal (kept bare on purpose)
     let msg = out.get("message").expect("message object");
@@ -467,8 +488,8 @@ fn cross_protocol_write_synthesizes_valid_unique_id() {
         stop_detail: None,
         ..Default::default()
     };
-    let out1 = anthropic_writer().write_response(&make());
-    let out2 = anthropic_writer().write_response(&make());
+    let out1 = anthropic_writer().write_response(crate::codec::test_host::HOST, &make());
+    let out2 = anthropic_writer().write_response(crate::codec::test_host::HOST, &make());
     let id1 = out1.get("id").and_then(|v| v.as_str()).expect("synth id 1");
     let id2 = out2.get("id").and_then(|v| v.as_str()).expect("synth id 2");
     assert!(
@@ -516,7 +537,7 @@ fn write_response_synthesizes_id_when_neither_id_nor_created() {
         stop_detail: None,
         ..Default::default()
     };
-    let out = anthropic_writer().write_response(&resp);
+    let out = anthropic_writer().write_response(crate::codec::test_host::HOST, &resp);
     let id = out
         .get("id")
         .and_then(|v| v.as_str())
@@ -534,7 +555,7 @@ fn write_response_synthesizes_id_when_neither_id_nor_created() {
 /// `synth_message_id` must never panic and always returns a non-empty `msg_`-prefixed id.
 #[test]
 fn synth_message_id_is_well_formed() {
-    let id = synth_message_id();
+    let id = synth_message_id(crate::codec::test_host::HOST);
     assert!(id.starts_with("msg_"));
     assert!(id.len() > "msg_".len());
 }
@@ -542,7 +563,7 @@ fn synth_message_id_is_well_formed() {
 /// `synth_request_id` must never panic and always returns a non-empty `req_`-prefixed id.
 #[test]
 fn synth_request_id_is_well_formed() {
-    let id = synth_request_id();
+    let id = synth_request_id(crate::codec::test_host::HOST);
     assert!(id.starts_with("req_"));
     assert!(id.len() > "req_".len());
 }
@@ -559,7 +580,7 @@ fn write_response_event_error_serializes_native_shape() {
         retry_after: None,
     };
     let (event_type, data) = anthropic_writer()
-        .write_response_event(&IrStreamEvent::Error(err))
+        .write_response_event(crate::codec::test_host::HOST, &IrStreamEvent::Error(err))
         .expect("error event must serialize");
     assert_eq!(event_type, "error");
     // Top-level `type:"error"` discriminator must be present in the data body, matching every
@@ -599,7 +620,7 @@ fn write_response_event_error_null_type_when_signal_absent() {
         retry_after: None,
     };
     let (event_type, data) = anthropic_writer()
-        .write_response_event(&IrStreamEvent::Error(err))
+        .write_response_event(crate::codec::test_host::HOST, &IrStreamEvent::Error(err))
         .expect("error event must serialize");
     assert_eq!(event_type, "error");
     assert_eq!(
@@ -636,7 +657,7 @@ fn write_response_event_error_type_is_a_spec_token_not_free_text() {
         retry_after: None,
     };
     let (_, data) = anthropic_writer()
-        .write_response_event(&IrStreamEvent::Error(err))
+        .write_response_event(crate::codec::test_host::HOST, &IrStreamEvent::Error(err))
         .expect("error event must serialize");
     let error_obj = data.get("error").expect("error sub-object present");
     assert_eq!(
@@ -661,7 +682,7 @@ fn write_response_event_error_type_falls_back_to_api_error() {
         retry_after: None,
     };
     let (_, data) = anthropic_writer()
-        .write_response_event(&IrStreamEvent::Error(err))
+        .write_response_event(crate::codec::test_host::HOST, &IrStreamEvent::Error(err))
         .expect("error event must serialize");
     let error_obj = data.get("error").expect("error sub-object present");
     assert_eq!(
@@ -681,7 +702,7 @@ fn write_response_event_error_type_round_trips_a_native_token() {
         retry_after: None,
     };
     let (_, data) = anthropic_writer()
-        .write_response_event(&IrStreamEvent::Error(err))
+        .write_response_event(crate::codec::test_host::HOST, &IrStreamEvent::Error(err))
         .expect("error event must serialize");
     assert_eq!(
         data["error"].get("type").and_then(|t| t.as_str()),
@@ -696,7 +717,7 @@ fn write_response_event_error_type_round_trips_a_native_token() {
 fn read_error_event_without_type_carries_none() {
     let data = serde_json::json!({ "error": { "message": "boom" } });
     let ev = AnthropicReader
-        .read_response_event("error", &data)
+        .read_response_event(crate::codec::test_host::HOST, "error", &data)
         .expect("error event parses");
     match ev {
         IrStreamEvent::Error(err) => assert_eq!(
@@ -712,10 +733,10 @@ fn read_error_event_without_type_carries_none() {
 fn read_error_event_with_type_round_trips() {
     let data = serde_json::json!({ "error": { "type": ERR_TYPE_OVERLOADED } });
     let ev = AnthropicReader
-        .read_response_event("error", &data)
+        .read_response_event(crate::codec::test_host::HOST, "error", &data)
         .expect("error event parses");
     let (_, out) = anthropic_writer()
-        .write_response_event(&ev)
+        .write_response_event(crate::codec::test_host::HOST, &ev)
         .expect("writes error event");
     assert_eq!(
         out.get("error")
@@ -734,7 +755,7 @@ fn read_error_event_with_type_round_trips() {
 fn read_stream_error_class(error_type: &str) -> StatusClass {
     let data = serde_json::json!({ "error": { "type": error_type } });
     let ev = AnthropicReader
-        .read_response_event("error", &data)
+        .read_response_event(crate::codec::test_host::HOST, "error", &data)
         .expect("error event parses");
     match ev {
         IrStreamEvent::Error(err) => err.class,
@@ -886,7 +907,7 @@ fn stream_error_unknown_or_absent_type_falls_back_to_client_error() {
     // Absent type: the event carries no `type`, so the class defaults to ClientError too.
     let data = serde_json::json!({ "error": { "message": "boom" } });
     let ev = AnthropicReader
-        .read_response_event("error", &data)
+        .read_response_event(crate::codec::test_host::HOST, "error", &data)
         .expect("error event parses");
     match ev {
         IrStreamEvent::Error(err) => {
@@ -901,7 +922,12 @@ fn stream_error_unknown_or_absent_type_falls_back_to_client_error() {
 /// Anthropic error envelope, alongside the `type`/`error` fields.
 #[test]
 fn write_error_includes_synthesized_request_id() {
-    let v = anthropic_writer().write_error(429, "rate_limit", "slow down");
+    let v = anthropic_writer().write_error(
+        crate::codec::test_host::HOST,
+        429,
+        "rate_limit",
+        "slow down",
+    );
     let request_id = v
         .get("request_id")
         .and_then(|r| r.as_str())
@@ -1008,7 +1034,7 @@ fn read_response_array_content_parses_no_unwrap() {
         "usage": {"input_tokens": 1, "output_tokens": 2}
     });
     let ir = AnthropicReader
-        .read_response(&body)
+        .read_response(crate::codec::test_host::HOST, &body)
         .expect("array content must parse without panic");
     assert_eq!(ir.content.len(), 2);
 }
@@ -1020,7 +1046,9 @@ fn read_response_array_content_parses_no_unwrap() {
 #[test]
 fn synth_message_id_no_collision_under_rapid_minting() {
     let n = 10_000;
-    let ids: std::collections::HashSet<String> = (0..n).map(|_| synth_message_id()).collect();
+    let ids: std::collections::HashSet<String> = (0..n)
+        .map(|_| synth_message_id(crate::codec::test_host::HOST))
+        .collect();
     assert_eq!(
         ids.len(),
         n,
@@ -1054,7 +1082,9 @@ fn synth_message_id_no_collision_under_rapid_minting() {
 #[test]
 fn synth_request_id_no_collision_under_rapid_minting() {
     let n = 10_000;
-    let ids: std::collections::HashSet<String> = (0..n).map(|_| synth_request_id()).collect();
+    let ids: std::collections::HashSet<String> = (0..n)
+        .map(|_| synth_request_id(crate::codec::test_host::HOST))
+        .collect();
     assert_eq!(
         ids.len(),
         n,
@@ -1344,7 +1374,7 @@ fn anthropic_unmodeled_document_survives_same_protocol_round_trip() {
         ir.messages[0].content[1]
     );
 
-    let out = anthropic_writer().write_request(&ir);
+    let out = anthropic_writer().write_request(crate::codec::test_host::HOST, &ir);
     let content = out["messages"][0]["content"]
         .as_array()
         .expect("content array");
@@ -1383,7 +1413,12 @@ fn streaming_redacted_thinking_is_not_dropped() {
         "index": 0,
         "content_block": { "type": BLOCK_TYPE_REDACTED_THINKING, "data": "ENCRYPTED_BYTES" }
     });
-    let evs = reader.read_response_events(EVT_CONTENT_BLOCK_START, &start, &mut state);
+    let evs = reader.read_response_events(
+        crate::codec::test_host::HOST,
+        EVT_CONTENT_BLOCK_START,
+        &start,
+        &mut state,
+    );
     assert_eq!(
         evs.len(),
         2,
@@ -1413,7 +1448,12 @@ fn streaming_redacted_thinking_is_not_dropped() {
     }
     // The following content_block_stop still yields a BlockStop.
     let stop = serde_json::json!({"type": EVT_CONTENT_BLOCK_STOP, "index": 0});
-    let stop_evs = reader.read_response_events(EVT_CONTENT_BLOCK_STOP, &stop, &mut state);
+    let stop_evs = reader.read_response_events(
+        crate::codec::test_host::HOST,
+        EVT_CONTENT_BLOCK_STOP,
+        &stop,
+        &mut state,
+    );
     assert!(
         matches!(stop_evs.as_slice(), [IrStreamEvent::BlockStop { index: 0 }]),
         "content_block_stop closes the redacted block: {stop_evs:?}"
@@ -1436,7 +1476,7 @@ fn redacted_thinking_response_round_trips_as_native_block() {
         "usage": {"input_tokens": 1, "output_tokens": 1}
     });
     let ir = AnthropicReader
-        .read_response(&native)
+        .read_response(crate::codec::test_host::HOST, &native)
         .expect("response with redacted_thinking parses");
     // Carrier shape preserved in the IR.
     match &ir.content[0] {
@@ -1447,7 +1487,7 @@ fn redacted_thinking_response_round_trips_as_native_block() {
         other => panic!("expected redacted Thinking carrier, got {other:?}"),
     }
     // Writer re-emits a NATIVE redacted_thinking block.
-    let out = anthropic_writer().write_response(&ir);
+    let out = anthropic_writer().write_response(crate::codec::test_host::HOST, &ir);
     let block = &out["content"][0];
     assert_eq!(
         block["type"].as_str(),
@@ -1468,7 +1508,9 @@ fn redacted_thinking_response_round_trips_as_native_block() {
 #[test]
 fn synth_id_uniform_and_unique_under_burst() {
     let n = 20_000usize;
-    let ids: Vec<String> = (0..n).map(|_| synth_request_id()).collect();
+    let ids: Vec<String> = (0..n)
+        .map(|_| synth_request_id(crate::codec::test_host::HOST))
+        .collect();
     let unique: std::collections::HashSet<&String> = ids.iter().collect();
     assert_eq!(
         unique.len(),
@@ -1513,7 +1555,7 @@ fn synth_id_uniform_and_unique_under_burst() {
 /// or alphabet — `req_01` + 24 base62 chars = 30 total.
 #[test]
 fn synth_id_matches_native_length_and_alphabet() {
-    let id = synth_request_id();
+    let id = synth_request_id(crate::codec::test_host::HOST);
     assert_eq!(id.len(), 30, "native 30-char length");
     let token = id.strip_prefix("req_01").expect("req_01 prefix");
     assert_eq!(token.len(), 24, "24-char base62 token");
@@ -1718,7 +1760,7 @@ fn write_response_keeps_unsigned_thinking_block() {
         stop_detail: None,
         ..Default::default()
     };
-    let out = anthropic_writer().write_response(&resp);
+    let out = anthropic_writer().write_response(crate::codec::test_host::HOST, &resp);
     let content = out
         .get("content")
         .and_then(|c| c.as_array())
@@ -1745,7 +1787,7 @@ fn message_start_emits_zero_usage_when_none() {
         model: Some("gpt-4o".to_string()),
     };
     let (et, out) = anthropic_writer()
-        .write_response_event(&ev)
+        .write_response_event(crate::codec::test_host::HOST, &ev)
         .expect("message_start writes");
     assert_eq!(et, "message_start"); // golden wire-contract literal (kept bare on purpose)
     let usage = out
@@ -1782,7 +1824,7 @@ fn message_start_emits_present_usage_with_cache_fields() {
         model: None,
     };
     let (_, out) = anthropic_writer()
-        .write_response_event(&ev)
+        .write_response_event(crate::codec::test_host::HOST, &ev)
         .expect("message_start writes");
     let usage = out
         .get("message")
@@ -1813,7 +1855,7 @@ fn read_message_delta_without_usage_preserves_terminal_event() {
         "delta": { "stop_reason": STOP_END_TURN, "stop_sequence": null }
     });
     let ev = AnthropicReader
-        .read_response_event(EVT_MESSAGE_DELTA, &data)
+        .read_response_event(crate::codec::test_host::HOST, EVT_MESSAGE_DELTA, &data)
         .expect("message_delta without usage must still parse, not be dropped");
     match ev {
         IrStreamEvent::MessageDelta {
@@ -1851,7 +1893,7 @@ fn read_message_delta_with_usage_flows_through() {
         }
     });
     let ev = AnthropicReader
-        .read_response_event(EVT_MESSAGE_DELTA, &data)
+        .read_response_event(crate::codec::test_host::HOST, EVT_MESSAGE_DELTA, &data)
         .expect("message_delta parses");
     match ev {
         IrStreamEvent::MessageDelta { usage, .. } => {
@@ -1892,7 +1934,7 @@ fn write_response_emits_empty_model_when_none() {
         stop_detail: None,
         ..Default::default()
     };
-    let out = anthropic_writer().write_response(&resp);
+    let out = anthropic_writer().write_response(crate::codec::test_host::HOST, &resp);
     assert_eq!(
         out.get("model").and_then(|v| v.as_str()),
         Some(""),
@@ -1926,7 +1968,7 @@ fn write_response_preserves_present_model() {
         stop_detail: None,
         ..Default::default()
     };
-    let out = anthropic_writer().write_response(&resp);
+    let out = anthropic_writer().write_response(crate::codec::test_host::HOST, &resp);
     assert_eq!(
         out.get("model").and_then(|v| v.as_str()),
         Some("claude-opus-4-8")
@@ -1945,7 +1987,7 @@ fn message_start_emits_empty_model_when_none() {
         model: None,
     };
     let (_, out) = anthropic_writer()
-        .write_response_event(&ev)
+        .write_response_event(crate::codec::test_host::HOST, &ev)
         .expect("message_start writes");
     let model = out.get("message").and_then(|m| m.get("model"));
     assert_eq!(
@@ -2006,7 +2048,7 @@ fn every_write_response_event_carries_matching_top_level_type() {
     let writer = AnthropicWriter;
     for ev in events {
         let (event_type, data) = writer
-            .write_response_event(&ev)
+            .write_response_event(crate::codec::test_host::HOST, &ev)
             .expect("event must serialize");
         let data_type = data
             .get("type")
@@ -2051,7 +2093,7 @@ fn write_response_emits_null_stop_sequence_when_absent() {
         stop_detail: None,
         ..Default::default()
     };
-    let out = anthropic_writer().write_response(&resp);
+    let out = anthropic_writer().write_response(crate::codec::test_host::HOST, &resp);
     let ss = out
         .get("stop_sequence")
         .expect("stop_sequence key must be present in a non-streaming Message");
@@ -2060,7 +2102,9 @@ fn write_response_emits_null_stop_sequence_when_absent() {
         "stop_sequence must be JSON null when absent, not omitted, got {ss:?}"
     );
     // IR-idempotence: re-reading the written body maps the null back to None.
-    let reread = AnthropicReader.read_response(&out).expect("reread");
+    let reread = AnthropicReader
+        .read_response(crate::codec::test_host::HOST, &out)
+        .expect("reread");
     assert_eq!(reread.stop_sequence, None);
 }
 
@@ -2090,7 +2134,7 @@ fn write_response_emits_matched_stop_sequence_string() {
         stop_detail: None,
         ..Default::default()
     };
-    let out = anthropic_writer().write_response(&resp);
+    let out = anthropic_writer().write_response(crate::codec::test_host::HOST, &resp);
     assert_eq!(
         out.get("stop_sequence").and_then(|s| s.as_str()),
         Some("STOP")
@@ -2170,8 +2214,8 @@ fn synth_ids_match_native_shape_base62_versioned_fixed_length() {
                 "token must not have a 6+ run of leading '0' (the clock+counter fingerprint), got `{token}`"
             );
     };
-    check(&synth_message_id(), "msg_");
-    check(&synth_request_id(), "req_");
+    check(&synth_message_id(crate::codec::test_host::HOST), "msg_");
+    check(&synth_request_id(crate::codec::test_host::HOST), "req_");
 }
 
 /// Regression: synthesized ids must come from the CSPRNG, not a deterministic clock+counter
@@ -2182,11 +2226,11 @@ fn synth_ids_match_native_shape_base62_versioned_fixed_length() {
 /// is not all-zero (which would mean the RNG path silently produced no entropy).
 #[test]
 fn synth_ids_are_csprng_unique_within_tick() {
-    let a = synth_message_id();
-    let b = synth_message_id();
+    let a = synth_message_id(crate::codec::test_host::HOST);
+    let b = synth_message_id(crate::codec::test_host::HOST);
     assert_ne!(a, b, "two synthesized message ids must never collide");
-    let ra = synth_request_id();
-    let rb = synth_request_id();
+    let ra = synth_request_id(crate::codec::test_host::HOST);
+    let rb = synth_request_id(crate::codec::test_host::HOST);
     assert_ne!(ra, rb, "two synthesized request ids must never collide");
 
     // The full 24-char token must never be all-'0' (that would mean no entropy AND a degenerate
@@ -2208,7 +2252,7 @@ fn synth_ids_are_csprng_unique_within_tick() {
 fn synth_id_leading_chars_are_not_constant() {
     let mut firsts = std::collections::HashSet::new();
     for _ in 0..64 {
-        let id = synth_message_id();
+        let id = synth_message_id(crate::codec::test_host::HOST);
         let token = &id[id.len() - 24..];
         firsts.insert(token.as_bytes()[0]);
     }
@@ -2296,7 +2340,7 @@ fn write_response_event_error_message_has_no_proxy_vocabulary() {
             retry_after: None,
         };
         let (_, data) = anthropic_writer()
-            .write_response_event(&IrStreamEvent::Error(err))
+            .write_response_event(crate::codec::test_host::HOST, &IrStreamEvent::Error(err))
             .expect("error event must serialize");
         let message = data
             .get("error")
@@ -2330,7 +2374,7 @@ fn read_response_without_usage_zero_defaults_no_error() {
         // NOTE: no `usage` field
     });
     let ir = AnthropicReader
-        .read_response(&body)
+        .read_response(crate::codec::test_host::HOST, &body)
         .expect("a 200 body without usage must read back, not 400");
     assert_eq!(ir.usage.input_tokens, 0, "missing usage → input_tokens 0");
     assert_eq!(ir.usage.output_tokens, 0, "missing usage → output_tokens 0");
@@ -2445,7 +2489,7 @@ fn write_request_never_emits_system_role_message() {
         system_role: None,
         output_modalities: None,
     };
-    let out = anthropic_writer().write_request(&req);
+    let out = anthropic_writer().write_request(crate::codec::test_host::HOST, &req);
     let messages = out
         .get("messages")
         .and_then(|m| m.as_array())
@@ -2514,7 +2558,7 @@ fn tool_choice_any_required_roundtrips() {
         ir.tool_choice,
         Some(crate::codec::ir::IrToolChoice::Required)
     );
-    let out = anthropic_writer().write_request(&ir);
+    let out = anthropic_writer().write_request(crate::codec::test_host::HOST, &ir);
     assert_eq!(out["tool_choice"], serde_json::json!({"type": "any"}));
 }
 
@@ -2531,7 +2575,7 @@ fn tool_choice_specific_tool_roundtrips() {
             name: "get_weather".to_string()
         })
     );
-    let out = anthropic_writer().write_request(&ir);
+    let out = anthropic_writer().write_request(crate::codec::test_host::HOST, &ir);
     assert_eq!(
         out["tool_choice"],
         serde_json::json!({"type": "tool", "name": "get_weather"})
@@ -2550,7 +2594,7 @@ fn tool_choice_auto_and_none_roundtrip() {
             "tool_choice": {"type": native_type}
         }));
         assert_eq!(ir.tool_choice, Some(variant));
-        let out = anthropic_writer().write_request(&ir);
+        let out = anthropic_writer().write_request(crate::codec::test_host::HOST, &ir);
         assert_eq!(out["tool_choice"], serde_json::json!({"type": native_type}));
     }
 }
@@ -2561,7 +2605,7 @@ fn tool_choice_absent_emits_nothing() {
         "model": "c", "max_tokens": 16, "messages": []
     }));
     assert_eq!(ir.tool_choice, None);
-    let out = anthropic_writer().write_request(&ir);
+    let out = anthropic_writer().write_request(crate::codec::test_host::HOST, &ir);
     assert!(
         out.get("tool_choice").is_none(),
         "absent tool_choice must NOT gain a spurious value on write"
@@ -2588,7 +2632,7 @@ fn tool_choice_openai_specific_to_anthropic_targeted() {
         })
     );
     ir.extra.clear(); // cross-protocol seam
-    let out = anthropic_writer().write_request(&ir);
+    let out = anthropic_writer().write_request(crate::codec::test_host::HOST, &ir);
     assert_eq!(
         out["tool_choice"],
         serde_json::json!({"type": "tool", "name": "get_weather"}),
@@ -2611,7 +2655,7 @@ fn tool_definition_cache_control_roundtrips() {
         ir.tools[0].cache_control.is_some(),
         "tool-def cache_control must be promoted into the IR"
     );
-    let out = anthropic_writer().write_request(&ir);
+    let out = anthropic_writer().write_request(crate::codec::test_host::HOST, &ir);
     assert_eq!(
         out["tools"][0]["cache_control"],
         serde_json::json!({"type": "ephemeral"}), // golden wire-contract literal (kept bare on purpose)
@@ -2648,7 +2692,7 @@ fn tool_use_and_result_cache_control_roundtrips() {
         }
         other => panic!("expected ToolResult, got {other:?}"),
     }
-    let out = anthropic_writer().write_request(&ir);
+    let out = anthropic_writer().write_request(crate::codec::test_host::HOST, &ir);
     assert_eq!(
         out["messages"][0]["content"][0]["cache_control"],
         serde_json::json!({"type": "ephemeral"}) // golden wire-contract literal (kept bare on purpose)
@@ -2669,7 +2713,7 @@ fn temperature_above_one_is_clamped_not_422() {
         "model": "c", "max_tokens": 16, "messages": []
     }));
     ir.temperature = Some(1.5);
-    let out = anthropic_writer().write_request(&ir);
+    let out = anthropic_writer().write_request(crate::codec::test_host::HOST, &ir);
     assert_eq!(
         out["temperature"],
         serde_json::json!(1.0),
@@ -2677,11 +2721,11 @@ fn temperature_above_one_is_clamped_not_422() {
     );
     // A value already in range is untouched.
     ir.temperature = Some(0.7);
-    let out = anthropic_writer().write_request(&ir);
+    let out = anthropic_writer().write_request(crate::codec::test_host::HOST, &ir);
     assert_eq!(out["temperature"], serde_json::json!(0.7));
     // A negative value clamps up to 0.0.
     ir.temperature = Some(-0.3);
-    let out = anthropic_writer().write_request(&ir);
+    let out = anthropic_writer().write_request(crate::codec::test_host::HOST, &ir);
     assert_eq!(out["temperature"], serde_json::json!(0.0));
 }
 
@@ -2766,7 +2810,7 @@ fn test_openai_to_anthropic_tool_choice_directions() {
             "tools": [{"name": "get_weather", "input_schema": {"type": "object"}}]
         }));
         ir.tool_choice = Some(tc.clone());
-        let out = anthropic_writer().write_request(&ir);
+        let out = anthropic_writer().write_request(crate::codec::test_host::HOST, &ir);
         assert_eq!(out["tool_choice"], expected, "tool_choice {tc:?}");
     }
 }
@@ -2816,7 +2860,7 @@ fn test_anthropic_safety_stop_reason_maps_to_refusal() {
         stop_detail: None,
         ..Default::default()
     };
-    let out = anthropic_writer().write_response(&resp);
+    let out = anthropic_writer().write_response(crate::codec::test_host::HOST, &resp);
     assert_eq!(
         out["stop_reason"],
         serde_json::json!("refusal"), // golden wire-contract literal (kept bare on purpose)
@@ -2827,7 +2871,7 @@ fn test_anthropic_safety_stop_reason_maps_to_refusal() {
         stop_reason: Some(crate::codec::ir::IrStopReason::MaxTokens),
         ..resp
     };
-    let out2 = anthropic_writer().write_response(&resp2);
+    let out2 = anthropic_writer().write_response(crate::codec::test_host::HOST, &resp2);
     assert_eq!(out2["stop_reason"], serde_json::json!("max_tokens")); // golden wire-contract literal (kept bare on purpose)
 }
 
@@ -2850,7 +2894,7 @@ fn test_anthropic_streaming_safety_stop_reason_maps_to_refusal() {
         stop_detail: None,
     };
     let (event, data) = anthropic_writer()
-        .write_response_event(&ev)
+        .write_response_event(crate::codec::test_host::HOST, &ev)
         .expect("MessageDelta must emit a message_delta event");
     assert_eq!(event, "message_delta"); // golden wire-contract literal (kept bare on purpose)
     assert_eq!(
@@ -2874,7 +2918,7 @@ fn test_anthropic_streaming_safety_stop_reason_maps_to_refusal() {
         stop_detail: None,
     };
     let (_event2, data2) = anthropic_writer()
-        .write_response_event(&ev2)
+        .write_response_event(crate::codec::test_host::HOST, &ev2)
         .expect("MessageDelta must emit a message_delta event");
     assert_eq!(
         data2["delta"]["stop_reason"],
@@ -2911,7 +2955,7 @@ fn write_request_omits_unsupported_sampling_params() {
         n: Some(3),
         ..Default::default()
     };
-    let out = anthropic_writer().write_request(&req);
+    let out = anthropic_writer().write_request(crate::codec::test_host::HOST, &req);
     let obj = out.as_object().expect("write_request emits an object");
     for key in ["frequency_penalty", "presence_penalty", "seed", "n"] {
         assert!(
@@ -2970,7 +3014,7 @@ fn write_request_downgrades_forced_tool_choice_to_auto_when_thinking_emitted() {
         )),
         crate::codec::ir::IrToolChoice::Required,
     );
-    let out = anthropic_writer().write_request(&req);
+    let out = anthropic_writer().write_request(crate::codec::test_host::HOST, &req);
     assert!(
         out.get("thinking").is_some(),
         "thinking must be emitted: {out}"
@@ -2990,7 +3034,7 @@ fn write_request_downgrades_forced_tool_choice_to_auto_when_thinking_emitted() {
             name: "get_weather".to_string(),
         },
     );
-    let out_tool = anthropic_writer().write_request(&req_tool);
+    let out_tool = anthropic_writer().write_request(crate::codec::test_host::HOST, &req_tool);
     assert_eq!(
         out_tool
             .pointer("/tool_choice/type")
@@ -3005,7 +3049,8 @@ fn write_request_downgrades_forced_tool_choice_to_auto_when_thinking_emitted() {
 
     // WITHOUT a thinking ask: the forced `any` is preserved verbatim (no spurious downgrade).
     let req_no_think = mk(None, crate::codec::ir::IrToolChoice::Required);
-    let out_no_think = anthropic_writer().write_request(&req_no_think);
+    let out_no_think =
+        anthropic_writer().write_request(crate::codec::test_host::HOST, &req_no_think);
     assert!(
         out_no_think.get("thinking").is_none(),
         "no thinking must be emitted without a reasoning ask: {out_no_think}"
@@ -3056,6 +3101,7 @@ fn write_request_projects_response_format_to_native_output_config() {
     };
 
     let out = anthropic_writer().write_request_for_lane(
+        crate::codec::test_host::HOST,
         &req,
         "claude-opus-5",
         &busbar_contract::ir::egress_prep::LaneCaps {
@@ -3110,7 +3156,7 @@ fn read_response_maps_forced_response_format_tool_use_back_to_text() {
         "usage": {"input_tokens": 3, "output_tokens": 5}
     });
     let resp = AnthropicReader
-        .read_response(&body)
+        .read_response(crate::codec::test_host::HOST, &body)
         .expect("valid response");
     assert_eq!(resp.content.len(), 1, "one content block");
     match &resp.content[0] {
@@ -3139,7 +3185,7 @@ fn read_response_maps_forced_response_format_tool_use_back_to_text() {
         "usage": {"input_tokens": 3, "output_tokens": 5}
     });
     let resp = AnthropicReader
-        .read_response(&native)
+        .read_response(crate::codec::test_host::HOST, &native)
         .expect("valid response");
     assert!(
         matches!(&resp.content[0], crate::codec::ir::IrBlock::ToolUse { name, .. } if name == "get_weather"),
@@ -3179,7 +3225,7 @@ fn write_request_carries_json_tool_result_block_as_text() {
         ..Default::default()
     };
 
-    let out = anthropic_writer().write_request(&req);
+    let out = anthropic_writer().write_request(crate::codec::test_host::HOST, &req);
 
     let wire = serde_json::to_string(&out).unwrap();
     assert!(
@@ -3216,8 +3262,9 @@ fn write_request_no_response_format_warning_when_absent() {
 
     let cap = WarnCapture::default();
     let subscriber = cap.clone();
-    let _ =
-        tracing::subscriber::with_default(subscriber, || anthropic_writer().write_request(&req));
+    let _ = tracing::subscriber::with_default(subscriber, || {
+        anthropic_writer().write_request(crate::codec::test_host::HOST, &req)
+    });
 
     let msgs = cap.messages();
     assert!(
@@ -3316,7 +3363,7 @@ fn thinking_block_with_signature_survives_response_egress() {
         stop_detail: None,
         ..Default::default()
     };
-    let out = anthropic_writer().write_response(&resp);
+    let out = anthropic_writer().write_response(crate::codec::test_host::HOST, &resp);
     let content = out
         .get("content")
         .and_then(|c| c.as_array())
@@ -3397,7 +3444,7 @@ fn test_write_request_file_id_image_dropped_not_corrupted() {
         system_role: None,
         output_modalities: None,
     };
-    let out = writer.write_request(&req);
+    let out = writer.write_request(crate::codec::test_host::HOST, &req);
     let wire = serde_json::to_string(&out).unwrap();
     assert!(
         !wire.contains("file-abc123") && !wire.contains("file_id"),
@@ -3483,7 +3530,7 @@ fn test_write_request_image_s3_dropped_not_corrupted() {
         system_role: None,
         output_modalities: None,
     };
-    let out = writer.write_request(&req);
+    let out = writer.write_request(crate::codec::test_host::HOST, &req);
     let wire = serde_json::to_string(&out).unwrap();
     assert!(
         !wire.contains("image_s3")
@@ -3691,7 +3738,11 @@ fn read_write_streaming_citations_delta_roundtrips_byte_exact() {
 
     // READ: a citations_delta content_block_delta → IrDelta::CitationsDelta(vec![citation]).
     let ev = AnthropicReader
-        .read_response_event(EVT_CONTENT_BLOCK_DELTA, &data)
+        .read_response_event(
+            crate::codec::test_host::HOST,
+            EVT_CONTENT_BLOCK_DELTA,
+            &data,
+        )
         .expect("a citations_delta content_block_delta must parse, not be dropped");
     let (index, citations) = match &ev {
         IrStreamEvent::BlockDelta {
@@ -3713,7 +3764,7 @@ fn read_write_streaming_citations_delta_roundtrips_byte_exact() {
     // WRITE: the same IR delta re-emits the native content_block_delta/citations_delta, and the
     // `citation` object is BYTE-EXACT the source (raw verbatim, not reconstructed).
     let (event_type, body) = anthropic_writer()
-        .write_response_event(&ev)
+        .write_response_event(crate::codec::test_host::HOST, &ev)
         .expect("a CitationsDelta must emit a content_block_delta, not None");
     assert_eq!(event_type, "content_block_delta"); // golden wire-contract literal (kept bare on purpose)
     assert_eq!(
@@ -3853,13 +3904,15 @@ fn read_write_response_unknown_stop_reason_degrades_to_end_turn() {
         "stop_sequence": null,
         "usage": {"input_tokens": 3, "output_tokens": 1}
     });
-    let ir = AnthropicReader.read_response(&body).expect("read_response");
+    let ir = AnthropicReader
+        .read_response(crate::codec::test_host::HOST, &body)
+        .expect("read_response");
     assert_eq!(
         ir.stop_reason,
         Some(crate::codec::ir::IrStopReason::Other),
         "an unmodeled native stop_reason must map to Other (never carried verbatim)"
     );
-    let out = anthropic_writer().write_response(&ir);
+    let out = anthropic_writer().write_response(crate::codec::test_host::HOST, &ir);
     assert_eq!(
         out.get("stop_reason").and_then(|v| v.as_str()),
         Some("end_turn"), // golden wire-contract literal (kept bare on purpose)
@@ -3888,7 +3941,9 @@ fn read_response_cache_usage_is_additive_not_subtracted() {
             "cache_read_input_tokens": 1000
         }
     });
-    let ir = AnthropicReader.read_response(&body).expect("read_response");
+    let ir = AnthropicReader
+        .read_response(crate::codec::test_host::HOST, &body)
+        .expect("read_response");
     // Wire values stored verbatim — Anthropic input is already the UNCACHED count, so no subtract.
     assert_eq!(
         ir.usage.input_tokens, 10,
@@ -3901,7 +3956,7 @@ fn read_response_cache_usage_is_additive_not_subtracted() {
     assert_eq!(ir.usage.billable_tokens(), 1215);
 
     // WRITE re-emits the additive cache fields on the same-protocol egress.
-    let out = anthropic_writer().write_response(&ir);
+    let out = anthropic_writer().write_response(crate::codec::test_host::HOST, &ir);
     assert_eq!(
         out.pointer("/usage/cache_creation_input_tokens")
             .and_then(|v| v.as_u64()),
@@ -3993,11 +4048,14 @@ fn write_message_keeps_redacted_thinking_block() {
 fn content_block_start_carries_seed_fields() {
     // Text block start → `text: ""`.
     let (_et, out) = anthropic_writer()
-        .write_response_event(&crate::codec::ir::IrStreamEvent::BlockStart {
-            index: 0,
-            block: crate::codec::ir::IrBlockMeta::Text,
-            refusal: false,
-        })
+        .write_response_event(
+            crate::codec::test_host::HOST,
+            &crate::codec::ir::IrStreamEvent::BlockStart {
+                index: 0,
+                block: crate::codec::ir::IrBlockMeta::Text,
+                refusal: false,
+            },
+        )
         .expect("text block_start writes");
     assert_eq!(
         out.pointer("/content_block/type").and_then(|v| v.as_str()),
@@ -4011,14 +4069,17 @@ fn content_block_start_carries_seed_fields() {
 
     // Tool-use block start → `input: {}` (plus id/name).
     let (_et, out) = anthropic_writer()
-        .write_response_event(&crate::codec::ir::IrStreamEvent::BlockStart {
-            index: 1,
-            block: crate::codec::ir::IrBlockMeta::ToolUse {
-                id: "toolu_01".to_string(),
-                name: "get_weather".to_string(),
+        .write_response_event(
+            crate::codec::test_host::HOST,
+            &crate::codec::ir::IrStreamEvent::BlockStart {
+                index: 1,
+                block: crate::codec::ir::IrBlockMeta::ToolUse {
+                    id: "toolu_01".to_string(),
+                    name: "get_weather".to_string(),
+                },
+                refusal: false,
             },
-            refusal: false,
-        })
+        )
         .expect("tool_use block_start writes");
     assert_eq!(
         out.pointer("/content_block/type").and_then(|v| v.as_str()),
@@ -4042,11 +4103,14 @@ fn content_block_start_carries_seed_fields() {
 
     // Thinking block start → `thinking: ""`.
     let (_et, out) = anthropic_writer()
-        .write_response_event(&crate::codec::ir::IrStreamEvent::BlockStart {
-            index: 2,
-            block: crate::codec::ir::IrBlockMeta::Thinking { kind: None },
-            refusal: false,
-        })
+        .write_response_event(
+            crate::codec::test_host::HOST,
+            &crate::codec::ir::IrStreamEvent::BlockStart {
+                index: 2,
+                block: crate::codec::ir::IrBlockMeta::Thinking { kind: None },
+                refusal: false,
+            },
+        )
         .expect("thinking block_start writes");
     assert_eq!(
         out.pointer("/content_block/type").and_then(|v| v.as_str()),
@@ -4125,7 +4189,7 @@ fn unmodelled_block_is_left_out_of_the_ir_and_spliced_back_same_dialect() {
 
     // Same dialect through the IR: every turn block comes back, in its own place.
     let writer = AnthropicWriter;
-    let out = writer.write_request(&ir);
+    let out = writer.write_request(crate::codec::test_host::HOST, &ir);
     assert_eq!(
         out["messages"][0]["content"], body["messages"][0]["content"],
         "{out}"

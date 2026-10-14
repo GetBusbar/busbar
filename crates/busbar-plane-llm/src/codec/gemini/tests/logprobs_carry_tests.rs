@@ -67,13 +67,15 @@ fn openai_logprobs_codec_round_trips_bytes_and_top() {
 fn gemini_logprobs_reach_openai_caller() {
     let ir = Protocol::gemini()
         .reader()
-        .read_response(&gemini_body_with_logprobs())
+        .read_response(crate::codec::test_host::HOST, &gemini_body_with_logprobs())
         .expect("parses");
     assert_eq!(ir.logprobs.len(), 2);
     assert_eq!(ir.logprobs[0].token, "Hi");
     assert_eq!(ir.logprobs[0].top.len(), 2);
 
-    let out = Protocol::openai().writer().write_response(&ir);
+    let out = Protocol::openai()
+        .writer()
+        .write_response(crate::codec::test_host::HOST, &ir);
     let content = &out["choices"][0]["logprobs"]["content"];
     assert_eq!(content[0]["token"], "Hi");
     assert_eq!(content[0]["logprob"], -0.031);
@@ -121,7 +123,9 @@ fn top_logprobs_clamped_to_gemini_max_on_egress() {
     let ir = super::super::openai_chat::OpenAiReader
         .read_request(&body)
         .expect("parses");
-    let out = Protocol::gemini().writer().write_request(&ir);
+    let out = Protocol::gemini()
+        .writer()
+        .write_request(crate::codec::test_host::HOST, &ir);
     assert_eq!(out["generationConfig"]["logprobs"], 5);
     assert_eq!(out["generationConfig"]["responseLogprobs"], true);
 }
@@ -138,7 +142,9 @@ fn top_logprobs_zero_omits_gemini_logprobs_count_but_forces_response_logprobs() 
     let ir = super::super::openai_chat::OpenAiReader
         .read_request(&body)
         .expect("parses");
-    let out = Protocol::gemini().writer().write_request(&ir);
+    let out = Protocol::gemini()
+        .writer()
+        .write_request(crate::codec::test_host::HOST, &ir);
     assert_eq!(out["generationConfig"]["responseLogprobs"], true);
     assert!(
         out["generationConfig"].get("logprobs").is_none(),
@@ -154,7 +160,9 @@ fn top_logprobs_zero_omits_gemini_logprobs_count_but_forces_response_logprobs() 
     let ir3 = super::super::openai_chat::OpenAiReader
         .read_request(&body3)
         .expect("parses");
-    let out3 = Protocol::gemini().writer().write_request(&ir3);
+    let out3 = Protocol::gemini()
+        .writer()
+        .write_request(crate::codec::test_host::HOST, &ir3);
     assert_eq!(out3["generationConfig"]["logprobs"], 3);
     assert_eq!(out3["generationConfig"]["responseLogprobs"], true);
 }
@@ -176,12 +184,14 @@ fn openai_logprobs_reach_gemini_caller() {
     });
     let ir = Protocol::openai()
         .reader()
-        .read_response(&body)
+        .read_response(crate::codec::test_host::HOST, &body)
         .expect("parses");
     assert_eq!(ir.logprobs.len(), 1);
     assert_eq!(ir.logprobs[0].bytes.as_deref(), Some(&[72u8, 105][..]));
 
-    let out = Protocol::gemini().writer().write_response(&ir);
+    let out = Protocol::gemini()
+        .writer()
+        .write_response(crate::codec::test_host::HOST, &ir);
     let lr = &out["candidates"][0]["logprobsResult"];
     assert_eq!(lr["chosenCandidates"][0]["token"], "Hi");
     assert_eq!(lr["chosenCandidates"][0]["logProbability"], -0.05);
@@ -198,9 +208,14 @@ fn absence_gains_nothing() {
         .as_object_mut()
         .unwrap()
         .remove("logprobsResult");
-    let ir = Protocol::gemini().reader().read_response(&body).unwrap();
+    let ir = Protocol::gemini()
+        .reader()
+        .read_response(crate::codec::test_host::HOST, &body)
+        .unwrap();
     assert!(ir.logprobs.is_empty());
-    let out = Protocol::openai().writer().write_response(&ir);
+    let out = Protocol::openai()
+        .writer()
+        .write_response(crate::codec::test_host::HOST, &ir);
     assert_eq!(
         out["choices"][0].get("logprobs"),
         Some(&serde_json::Value::Null),
@@ -221,9 +236,12 @@ fn gemini_stream_logprobs_reach_openai_caller() {
         }]
     });
     let mut state = crate::codec::ir::StreamDecodeState::default();
-    let events = Protocol::gemini()
-        .reader()
-        .read_response_events("", &chunk, &mut state);
+    let events = Protocol::gemini().reader().read_response_events(
+        crate::codec::test_host::HOST,
+        "",
+        &chunk,
+        &mut state,
+    );
     let lp_event = events
         .iter()
         .find(|e| {
@@ -240,7 +258,7 @@ fn gemini_stream_logprobs_reach_openai_caller() {
     let openai = Protocol::openai();
     let (_, frame) = openai
         .writer()
-        .write_response_event(lp_event)
+        .write_response_event(crate::codec::test_host::HOST, lp_event)
         .expect("openai writer must emit a logprobs chunk");
     assert_eq!(frame["choices"][0]["logprobs"]["content"][0]["token"], "Hi");
     assert_eq!(frame["choices"][0]["delta"], serde_json::json!({}));
@@ -260,9 +278,12 @@ fn stream_thinking_plus_logprobs_do_not_collide_on_index_zero() {
         }]
     });
     let mut state = crate::codec::ir::StreamDecodeState::default();
-    let events = Protocol::gemini()
-        .reader()
-        .read_response_events("", &chunk, &mut state);
+    let events = Protocol::gemini().reader().read_response_events(
+        crate::codec::test_host::HOST,
+        "",
+        &chunk,
+        &mut state,
+    );
     use crate::codec::ir::{IrBlockMeta, IrDelta, IrStreamEvent};
     // Thinking block opened at 0.
     assert!(events.iter().any(|e| matches!(
@@ -310,9 +331,12 @@ fn openai_stream_logprobs_reach_gemini_caller() {
         }]
     });
     let mut state = crate::codec::ir::StreamDecodeState::default();
-    let events = Protocol::openai()
-        .reader()
-        .read_response_events("", &chunk, &mut state);
+    let events = Protocol::openai().reader().read_response_events(
+        crate::codec::test_host::HOST,
+        "",
+        &chunk,
+        &mut state,
+    );
     let lp_event = events
         .iter()
         .find(|e| {
@@ -329,7 +353,7 @@ fn openai_stream_logprobs_reach_gemini_caller() {
     let gemini = Protocol::gemini();
     let (_, frame) = gemini
         .writer()
-        .write_response_event(lp_event)
+        .write_response_event(crate::codec::test_host::HOST, lp_event)
         .expect("gemini writer must emit a logprobsResult chunk");
     assert_eq!(
         frame["candidates"][0]["logprobsResult"]["chosenCandidates"][0]["token"],

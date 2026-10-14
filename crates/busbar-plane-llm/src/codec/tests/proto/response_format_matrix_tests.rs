@@ -35,7 +35,7 @@ fn every_writer_emits_its_native_shape() {
     });
 
     // OpenAI: {type:"json_schema", json_schema:{name, schema}} — schema NESTED under .schema.
-    let o = openai_writer().write_request(&req);
+    let o = openai_writer().write_request(crate::codec::test_host::HOST, &req);
     assert_eq!(
         o.pointer("/response_format/type"),
         Some(&serde_json::json!("json_schema"))
@@ -52,7 +52,7 @@ fn every_writer_emits_its_native_shape() {
 
     // Cohere: {type:"json_object", json_schema:<schema DIRECTLY>}.
     let cohere_writer = CohereWriter;
-    let c = cohere_writer.write_request(&req);
+    let c = cohere_writer.write_request(crate::codec::test_host::HOST, &req);
     assert_eq!(
         c.pointer("/response_format/type"),
         Some(&serde_json::json!("json_object"))
@@ -68,7 +68,7 @@ fn every_writer_emits_its_native_shape() {
 
     // Gemini: generationConfig.responseMimeType + responseSchema; no top-level response_format.
     let gemini_writer = GeminiWriter;
-    let g = gemini_writer.write_request(&req);
+    let g = gemini_writer.write_request(crate::codec::test_host::HOST, &req);
     assert_eq!(
         g.pointer("/generationConfig/responseMimeType"),
         Some(&serde_json::json!("application/json"))
@@ -84,7 +84,7 @@ fn every_writer_emits_its_native_shape() {
 
     // Responses: text.format FLAT json_schema (name/schema beside type, not nested).
     let responses_writer = ResponsesWriter;
-    let r = responses_writer.write_request(&req);
+    let r = responses_writer.write_request(crate::codec::test_host::HOST, &req);
     assert_eq!(
         r.pointer("/text/format/type"),
         Some(&serde_json::json!("json_schema"))
@@ -185,12 +185,12 @@ fn tool_choice_without_tools_is_omitted_on_every_writer() {
         let value = tracing::subscriber::with_default(subscriber, f);
         (value, cap)
     };
-    let (a, cap_a) = run(&|| anthropic_writer().write_request(&req));
-    let (o, cap_o) = run(&|| openai_writer().write_request(&req));
-    let (g, cap_g) = run(&|| gemini_writer.write_request(&req));
-    let (b, cap_b) = run(&|| bedrock_writer.write_request(&req));
-    let (c, cap_c) = run(&|| cohere_writer.write_request(&req));
-    let (r, cap_r) = run(&|| responses_writer.write_request(&req));
+    let (a, cap_a) = run(&|| anthropic_writer().write_request(crate::codec::test_host::HOST, &req));
+    let (o, cap_o) = run(&|| openai_writer().write_request(crate::codec::test_host::HOST, &req));
+    let (g, cap_g) = run(&|| gemini_writer.write_request(crate::codec::test_host::HOST, &req));
+    let (b, cap_b) = run(&|| bedrock_writer.write_request(crate::codec::test_host::HOST, &req));
+    let (c, cap_c) = run(&|| cohere_writer.write_request(crate::codec::test_host::HOST, &req));
+    let (r, cap_r) = run(&|| responses_writer.write_request(crate::codec::test_host::HOST, &req));
 
     assert!(
         a.get("tool_choice").is_none(),
@@ -282,7 +282,7 @@ fn stop_sequences_clamped_per_vendor_cap() {
         Some((4, "OpenAI")),
         "openai must publish its documented stop-sequence cap of 4"
     );
-    let o = openai_writer.write_request(&req);
+    let o = openai_writer.write_request(crate::codec::test_host::HOST, &req);
     let o_stop = o["stop"].as_array().expect("openai stop array");
     assert_eq!(
         o_stop.len(),
@@ -296,7 +296,7 @@ fn stop_sequences_clamped_per_vendor_cap() {
         Some((5, "Gemini")),
         "gemini must publish its documented stop-sequence cap of 5"
     );
-    let g = gemini_writer.write_request(&req);
+    let g = gemini_writer.write_request(crate::codec::test_host::HOST, &req);
     let g_stop = g["generationConfig"]["stopSequences"]
         .as_array()
         .expect("gemini stopSequences array");
@@ -313,7 +313,7 @@ fn stop_sequences_clamped_per_vendor_cap() {
     );
 
     // Anthropic and Bedrock publish no fixed cap — UNCHANGED, still carrying all 8.
-    let a = anthropic_writer().write_request(&req);
+    let a = anthropic_writer().write_request(crate::codec::test_host::HOST, &req);
     let a_stop = a["stop_sequences"]
         .as_array()
         .expect("anthropic stop_sequences array");
@@ -355,9 +355,9 @@ fn parallel_tool_calls_discarded_on_gemini_cohere_bedrock_warns() {
     let cohere_writer = CohereWriter;
     let bedrock_writer = BedrockWriter;
     tracing::subscriber::with_default(subscriber, || {
-        gemini_writer.write_request(&with_flag);
-        cohere_writer.write_request(&with_flag);
-        bedrock_writer.write_request(&with_flag);
+        gemini_writer.write_request(crate::codec::test_host::HOST, &with_flag);
+        cohere_writer.write_request(crate::codec::test_host::HOST, &with_flag);
+        bedrock_writer.write_request(crate::codec::test_host::HOST, &with_flag);
     });
     assert!(
         cap.contains("parallel_tool_calls") && cap.contains("Gemini"),
@@ -381,9 +381,9 @@ fn parallel_tool_calls_discarded_on_gemini_cohere_bedrock_warns() {
     let subscriber2 = cap2.clone();
     let without_flag = req(None);
     tracing::subscriber::with_default(subscriber2, || {
-        gemini_writer.write_request(&without_flag);
-        cohere_writer.write_request(&without_flag);
-        bedrock_writer.write_request(&without_flag);
+        gemini_writer.write_request(crate::codec::test_host::HOST, &without_flag);
+        cohere_writer.write_request(crate::codec::test_host::HOST, &without_flag);
+        bedrock_writer.write_request(crate::codec::test_host::HOST, &without_flag);
     });
     assert!(
         !cap2.contains("parallel_tool_calls"),

@@ -87,30 +87,30 @@ fn every_writer_emits_only_valid_native_finish_tokens() {
     let responses_writer = ResponsesWriter;
     let bedrock_writer = BedrockWriter;
     for r in ALL {
-        let o = openai_writer().write_response(&resp(r));
+        let o = openai_writer().write_response(crate::codec::test_host::HOST, &resp(r));
         let fr = o["choices"][0]["finish_reason"].as_str().unwrap();
         assert!(openai_ok.contains(&fr), "openai leaked {fr:?} for {r:?}");
 
-        let a = anthropic_writer().write_response(&resp(r));
+        let a = anthropic_writer().write_response(crate::codec::test_host::HOST, &resp(r));
         let sr = a["stop_reason"].as_str().unwrap();
         assert!(
             anthropic_ok.contains(&sr),
             "anthropic leaked {sr:?} for {r:?}"
         );
 
-        let g = gemini_writer.write_response(&resp(r));
+        let g = gemini_writer.write_response(crate::codec::test_host::HOST, &resp(r));
         let gr = g["candidates"][0]["finishReason"].as_str().unwrap();
         assert!(gemini_ok.contains(&gr), "gemini leaked {gr:?} for {r:?}");
 
-        let b = bedrock_writer.write_response(&resp(r));
+        let b = bedrock_writer.write_response(crate::codec::test_host::HOST, &resp(r));
         let br = b["stopReason"].as_str().unwrap();
         assert!(bedrock_ok.contains(&br), "bedrock leaked {br:?} for {r:?}");
 
-        let c = cohere_writer.write_response(&resp(r));
+        let c = cohere_writer.write_response(crate::codec::test_host::HOST, &resp(r));
         let cr = c["finish_reason"].as_str().unwrap();
         assert!(cohere_ok.contains(&cr), "cohere leaked {cr:?} for {r:?}");
 
-        let re = responses_writer.write_response(&resp(r));
+        let re = responses_writer.write_response(crate::codec::test_host::HOST, &resp(r));
         let rs = re["status"].as_str().unwrap();
         assert!(
             responses_ok.contains(&rs),

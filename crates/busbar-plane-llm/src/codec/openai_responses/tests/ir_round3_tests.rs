@@ -29,13 +29,19 @@ fn item12_off_is_reasoning_effort_none_on_a_declaring_lane() {
         reasoning_none: true,
         ..Default::default()
     };
-    let out = w
-        .writer()
-        .write_request_for_lane(&anthropic_off(), "gpt-5.1", &none_lane);
+    let out = w.writer().write_request_for_lane(
+        crate::codec::test_host::HOST,
+        &anthropic_off(),
+        "gpt-5.1",
+        &none_lane,
+    );
     assert_eq!(out["reasoning"], json!({"effort": "none"}), "{out}");
-    let out = w
-        .writer()
-        .write_request_for_lane(&anthropic_off(), "gpt-4o", &Default::default());
+    let out = w.writer().write_request_for_lane(
+        crate::codec::test_host::HOST,
+        &anthropic_off(),
+        "gpt-4o",
+        &Default::default(),
+    );
     assert!(out.get("reasoning").is_none(), "{out}");
 }
 
@@ -65,9 +71,15 @@ fn item16_gemini_thought_streams_into_the_responses_summary() {
     ];
     let mut out = String::new();
     for c in chunks {
-        out.push_str(&String::from_utf8(t.feed(format!("data: {c}\r\n\r\n").as_bytes())).unwrap());
+        out.push_str(
+            &String::from_utf8(t.feed(
+                crate::codec::test_host::HOST,
+                format!("data: {c}\r\n\r\n").as_bytes(),
+            ))
+            .unwrap(),
+        );
     }
-    out.push_str(&String::from_utf8(t.finish()).unwrap());
+    out.push_str(&String::from_utf8(t.finish(crate::codec::test_host::HOST)).unwrap());
     let payloads = sse_payloads(&out);
     assert!(
         payloads
@@ -105,12 +117,16 @@ fn item16_synthesized_stream_keeps_a_summary_in_summary() {
     let mut ir = protocol_for("gemini")
         .unwrap()
         .reader()
-        .read_response(&gemini)
+        .read_response(crate::codec::test_host::HOST, &gemini)
         .expect("read");
     crate::codec::chat_handle::chat_prepare_for_ingress(&mut ir, "responses", 0);
     let out = String::from_utf8(
-        crate::codec::proto_stream::StreamTranslate::synthesize_from_response("responses", &ir)
-            .expect("synthesized"),
+        crate::codec::proto_stream::StreamTranslate::synthesize_from_response(
+            crate::codec::test_host::HOST,
+            "responses",
+            &ir,
+        )
+        .expect("synthesized"),
     )
     .unwrap();
     let item = sse_payloads(&out)

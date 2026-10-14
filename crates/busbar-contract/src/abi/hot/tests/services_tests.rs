@@ -6,14 +6,6 @@
 
 use super::*;
 
-extern "C-unwind" fn host_entropy(_host: HostCtx, out: *mut u8, len: usize) -> StatusClass {
-    // SAFETY: the slot's buffer discipline.
-    unsafe { core::ptr::write_bytes(out, 0xA5, len) };
-    StatusClass::Ok
-}
-extern "C-unwind" fn host_clock(_host: HostCtx) -> u64 {
-    1_700_000_000
-}
 extern "C-unwind" fn host_latch(
     _host: HostCtx,
     _protocol_ptr: *const u8,
@@ -32,12 +24,14 @@ extern "C-unwind" fn host_cap(_host: HostCtx) -> u64 {
 /// is refused, and so is a table the airlock refuses — neither installs anything.
 #[test]
 fn an_armed_image_reads_the_hosts_services_through_every_port() {
-    let mut before = [0u8; 4];
     assert!(
-        !crate::codec::fill_entropy(&mut before),
+        !crate::codec::usage_tap_fault_should_warn("proto", "reason"),
         "unarmed: the failure path"
     );
-    assert_eq!(crate::codec::wall_clock_now(), None);
+    assert_eq!(
+        crate::codec::max_translate_body_bytes(),
+        crate::codec::TRANSLATE_BODY_MAX_BYTES_DEFAULT
+    );
 
     // SAFETY (each arm): every table below is a whole `'static` `PlaneHostVtable`.
     assert_eq!(unsafe { arm(core::ptr::null()) }, StatusClass::Refused);
@@ -49,23 +43,18 @@ fn an_armed_image_reads_the_hosts_services_through_every_port() {
         unsafe { arm(&PlaneHostVtable::SERVICES) },
         StatusClass::Unsupported
     );
-    assert!(
-        !crate::codec::fill_entropy(&mut before),
+    assert_eq!(
+        crate::codec::max_translate_body_bytes(),
+        crate::codec::TRANSLATE_BODY_MAX_BYTES_DEFAULT,
         "a refused arm installs nothing"
     );
 
     static HOST: PlaneHostVtable = PlaneHostVtable {
-        entropy_fill: Some(host_entropy),
-        wall_clock: Some(host_clock),
         tap_fault_latch: Some(host_latch),
         translate_cap: Some(host_cap),
         ..PlaneHostVtable::EMPTY
     };
     assert_eq!(unsafe { arm(&HOST) }, StatusClass::Ok);
-    let mut drawn = [0u8; 4];
-    assert!(crate::codec::fill_entropy(&mut drawn));
-    assert_eq!(drawn, [0xA5; 4], "the draw is the host's");
-    assert_eq!(crate::codec::wall_clock_now(), Some(1_700_000_000));
     assert!(crate::codec::usage_tap_fault_should_warn("proto", "reason"));
     assert!(!crate::codec::usage_tap_fault_should_warn(
         "proto",
@@ -73,22 +62,10 @@ fn an_armed_image_reads_the_hosts_services_through_every_port() {
     ));
     assert_eq!(crate::codec::max_translate_body_bytes(), 4_096);
 
-    // The HOST side of the same seam: `SERVICES` answers from this image's (now armed) ports.
-    let mut served = [0u8; 3];
-    let fill = PlaneHostVtable::SERVICES.entropy_fill.unwrap();
-    assert_eq!(
-        fill(HostCtx::NULL, served.as_mut_ptr(), served.len()),
-        StatusClass::Ok
-    );
-    assert_eq!(served, [0xA5; 3]);
-    assert_eq!(
-        fill(HostCtx::NULL, core::ptr::null_mut(), 1),
-        StatusClass::Refused
-    );
-    assert_eq!(
-        (PlaneHostVtable::SERVICES.wall_clock.unwrap())(HostCtx::NULL),
-        1_700_000_000
-    );
+    // The HOST side of the same seam: `SERVICES` answers from this image's (now armed) ports, and
+    // serves no entropy and no clock — the contract holds neither; a host fills those slots itself.
+    assert!(PlaneHostVtable::SERVICES.entropy_fill.is_none());
+    assert!(PlaneHostVtable::SERVICES.wall_clock.is_none());
     assert_eq!(
         (PlaneHostVtable::SERVICES.translate_cap.unwrap())(HostCtx::NULL),
         4_096

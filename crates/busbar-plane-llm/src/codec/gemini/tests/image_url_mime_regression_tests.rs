@@ -35,7 +35,10 @@ fn file_data(out: &serde_json::Value) -> serde_json::Value {
 #[test]
 fn openai_url_image_to_gemini_emits_filedata_with_mimetype() {
     let w = GeminiWriter;
-    let out = w.write_request(&image_url_req("https://ex.com/cat.png"));
+    let out = w.write_request(
+        crate::codec::test_host::HOST,
+        &image_url_req("https://ex.com/cat.png"),
+    );
     let fd = file_data(&out);
     assert_eq!(fd["fileUri"], "https://ex.com/cat.png");
     assert_eq!(
@@ -47,7 +50,10 @@ fn openai_url_image_to_gemini_emits_filedata_with_mimetype() {
 #[test]
 fn extensionless_url_image_defaults_to_jpeg_mimetype() {
     let w = GeminiWriter;
-    let out = w.write_request(&image_url_req("https://ex.com/generate?id=42"));
+    let out = w.write_request(
+        crate::codec::test_host::HOST,
+        &image_url_req("https://ex.com/generate?id=42"),
+    );
     let fd = file_data(&out);
     assert!(
         fd.get("mimeType").and_then(|m| m.as_str()).is_some(),

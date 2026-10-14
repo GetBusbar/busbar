@@ -12,6 +12,27 @@ use busbar_plane_llm::exchange::arrive::arrive;
 use busbar_plane_llm::exchange::attempt::{build, FarRequest};
 use busbar_plane_llm::exchange::shaping::Shaping;
 
+/// The codec host these tests hand the plane: the OS CSPRNG and the system clock in whole seconds,
+/// read the way the kernel's host reads them.
+struct TestHost;
+
+impl busbar_contract::codec::CodecHost for TestHost {
+    fn fill_entropy(&self, out: &mut [u8]) -> bool {
+        getrandom::fill(out).is_ok()
+    }
+
+    fn wall_clock_now(&self) -> Option<u64> {
+        Some(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_secs()),
+        )
+    }
+}
+
+/// The handle every codec call here is handed.
+const HOST: &dyn busbar_contract::codec::CodecHost = &TestHost;
+
 fn shaping() -> Shaping {
     Shaping::from_settings(&json!({
         "providers": {
@@ -40,7 +61,7 @@ fn far(target: &str, body: &str, caller_ua: Option<&'static str>, member: &str) 
         h.push((b"user-agent".as_slice(), ua.as_bytes()));
     }
     let a = arrive("POST", target, &h, body.as_bytes(), &()).expect("arrives");
-    build(&a, &h, &shaping(), "p", member).expect("built")
+    build(HOST, &a, &h, &shaping(), "p", member).expect("built")
 }
 
 fn user_agent(r: &FarRequest) -> Vec<&[u8]> {

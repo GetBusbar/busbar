@@ -89,7 +89,12 @@ fn test_find_frame_terminator_crlf_frame_split_is_clean() {
 fn test_write_error_default_envelope_is_valid_json() {
     // Any writer exercises the default impl since none override it yet.
     let writer: Box<dyn ProtocolWriter> = Box::new(OpenAiWriter);
-    let v = writer.write_error(404, "not_found", "model 'x' not found");
+    let v = writer.write_error(
+        crate::codec::test_host::HOST,
+        404,
+        "not_found",
+        "model 'x' not found",
+    );
     // Round-trips as JSON (no panic) and has the generic envelope shape.
     let serialized = serde_json::to_string(&v).expect("write_error output must serialize");
     let reparsed: serde_json::Value =
@@ -111,7 +116,8 @@ fn test_write_error_default_envelope_is_valid_json() {
 /// a well-formed `Message._request_id` / `APIError.request_id`.
 #[test]
 fn test_synth_anthropic_request_id_is_well_formed() {
-    let id = synth_anthropic_request_id().expect("entropy available in test");
+    let id = synth_anthropic_request_id(crate::codec::test_host::HOST)
+        .expect("entropy available in test");
     assert!(
         id.starts_with("req_01"),
         "anthropic request-id must carry the native req_01 prefix; got {id}"
@@ -137,7 +143,8 @@ fn test_synth_anthropic_request_id_is_well_formed() {
         "the token must be base62 (alphanumeric); got {token}"
     );
     // Distinct across calls (CSPRNG-backed) — no fixed/predictable id.
-    let id2 = synth_anthropic_request_id().expect("entropy available in test");
+    let id2 = synth_anthropic_request_id(crate::codec::test_host::HOST)
+        .expect("entropy available in test");
     assert_ne!(id, id2, "successive ids must differ");
 }
 
@@ -156,7 +163,8 @@ fn synth_anthropic_request_id_msd_is_uniform() {
     let mut low = 0usize; // token[msd] in alphabet[0..29]
     let mut total = 0usize;
     for _ in 0..N {
-        let id = synth_anthropic_request_id().expect("entropy available in test");
+        let id = synth_anthropic_request_id(crate::codec::test_host::HOST)
+            .expect("entropy available in test");
         let token = &id["req_01".len()..];
         let bytes = token.as_bytes();
         for &msd in &[bytes[0], bytes[12]] {
@@ -216,7 +224,9 @@ fn test_probe_body_valid_for_all_protocols() {
         "cohere",
     ] {
         let proto = protocol_for(name).unwrap();
-        let body = proto.writer().probe_body("my-model");
+        let body = proto
+            .writer()
+            .probe_body(crate::codec::test_host::HOST, "my-model");
         assert!(!body.is_empty(), "{name}: probe body must be non-empty");
         let v: serde_json::Value =
             serde_json::from_slice(&body).unwrap_or_else(|e| panic!("{name}: invalid JSON: {e}"));
@@ -261,7 +271,9 @@ fn test_openai_reasoning_content_maps_to_thinking() {
         }],
         "usage": {"prompt_tokens": 5, "completion_tokens": 7}
     });
-    let ir = OpenAiReader.read_response(&body).expect("read_response");
+    let ir = OpenAiReader
+        .read_response(crate::codec::test_host::HOST, &body)
+        .expect("read_response");
     assert!(
         matches!(ir.content.first(), Some(crate::codec::ir::IrBlock::Thinking { text, .. }) if text == "step 1: think; step 2: answer"),
         "first block should be the reasoning as a Thinking block"
@@ -273,7 +285,7 @@ fn test_openai_reasoning_content_maps_to_thinking() {
         "the answer text should follow"
     );
     // And it should render as an Anthropic thinking block on write.
-    let wire = anthropic_writer().write_response(&ir);
+    let wire = anthropic_writer().write_response(crate::codec::test_host::HOST, &ir);
     let blocks = wire.get("content").and_then(|c| c.as_array()).unwrap();
     assert!(
         blocks
@@ -292,16 +304,18 @@ fn test_openai_streaming_reasoning_blocks() {
     let mut st = crate::codec::ir::StreamDecodeState::default();
     let mut ev = Vec::new();
     ev.extend(reader.read_response_events(
+        crate::codec::test_host::HOST,
         "",
         &serde_json::json!({"choices":[{"delta":{"reasoning_content":"mulling"}}]}),
         &mut st,
     ));
     ev.extend(reader.read_response_events(
+        crate::codec::test_host::HOST,
         "",
         &serde_json::json!({"choices":[{"delta":{"content":"answer"}}]}),
         &mut st,
     ));
-    ev.extend(reader.read_response_events(
+    ev.extend(reader.read_response_events(crate::codec::test_host::HOST,
             "",
             &serde_json::json!({"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}),
             &mut st,
@@ -362,6 +376,7 @@ fn test_openai_streaming_no_reasoning_text_index_zero() {
     let reader = OpenAiReader;
     let mut st = crate::codec::ir::StreamDecodeState::default();
     let ev = reader.read_response_events(
+        crate::codec::test_host::HOST,
         "",
         &serde_json::json!({"choices":[{"delta":{"content":"hi"}}]}),
         &mut st,
@@ -431,7 +446,7 @@ fn test_openai_tool_schema_translates_to_anthropic() {
         "parameters schema must be read into IrTool.input_schema"
     );
 
-    let anthropic = anthropic_writer().write_request(&ir);
+    let anthropic = anthropic_writer().write_request(crate::codec::test_host::HOST, &ir);
     let tools = anthropic.get("tools").unwrap().as_array().unwrap();
     assert_eq!(tools[0]["name"], "get_weather");
     assert!(
@@ -454,7 +469,7 @@ fn test_roundtrip_identity() {
     let ir = reader
         .read_request(&j)
         .expect("read_request should succeed");
-    let roundtrip = writer.write_request(&ir);
+    let roundtrip = writer.write_request(crate::codec::test_host::HOST, &ir);
     assert_eq!(
         roundtrip, j,
         "round-trip must be byte-identical on representable subset"
@@ -486,7 +501,7 @@ fn test_signature_verbatim() {
         }
     }
     assert!(found_thinking);
-    let roundtrip = writer.write_request(&ir);
+    let roundtrip = writer.write_request(crate::codec::test_host::HOST, &ir);
     // The write side needs the same found-flag the read side above uses. Without it, a writer that
     // dropped assistant `thinking` blocks (or emitted them as `"type":"reasoning"`) reached ZERO
     // iterations of the assert and this test — whose whole subject is signature survival ON WRITE —
@@ -548,7 +563,7 @@ fn test_cache_control_preserved() {
     match cache_control.as_ref().unwrap().kind {
         crate::codec::ir::CacheKind::Ephemeral => {}
     };
-    let roundtrip = writer.write_request(&ir);
+    let roundtrip = writer.write_request(crate::codec::test_host::HOST, &ir);
     let system_arr = roundtrip
         .get("system")
         .and_then(|v| v.as_array())
@@ -609,7 +624,9 @@ fn cache_breakpoints_gated_by_lane_capability_on_bedrock() {
     let mut req = ir;
     crate::codec::chat_handle::chat_prepare_for_egress(&mut req, &prep(false));
     let ir = req;
-    let wire = bedrock.writer().write_request(&ir);
+    let wire = bedrock
+        .writer()
+        .write_request(crate::codec::test_host::HOST, &ir);
     assert!(
         !contains_cache_point(&wire),
         "an unasserted lane must never receive a cachePoint (Nova 400s on it): {wire}"
@@ -620,7 +637,9 @@ fn cache_breakpoints_gated_by_lane_capability_on_bedrock() {
     let mut req = ir;
     crate::codec::chat_handle::chat_prepare_for_egress(&mut req, &prep(true));
     let ir = req;
-    let wire = bedrock.writer().write_request(&ir);
+    let wire = bedrock
+        .writer()
+        .write_request(crate::codec::test_host::HOST, &ir);
     assert!(
         contains_cache_point(&wire),
         "an asserted lane keeps its cache markers: {wire}"
@@ -642,7 +661,7 @@ fn test_extra_passthrough() {
     // field into the written body.
     assert!(!ir.extra.contains_key("top_p"));
     assert!(ir.top_p.is_some());
-    let roundtrip = writer.write_request(&ir);
+    let roundtrip = writer.write_request(crate::codec::test_host::HOST, &ir);
     assert!(roundtrip.as_object().unwrap().contains_key("top_p"));
 }
 
@@ -663,7 +682,7 @@ fn test_cross_protocol_openai_top_p_to_anthropic() {
     let mut ir = OpenAiReader.read_request(&body).expect("openai parses");
     assert_eq!(ir.top_p, Some(0.81));
     ir.extra.clear(); // simulate the cross-protocol seam
-    let out = anthropic_writer().write_request(&ir);
+    let out = anthropic_writer().write_request(crate::codec::test_host::HOST, &ir);
     assert_eq!(
         out.get("top_p").and_then(|v| v.as_f64()),
         Some(0.81),
@@ -681,7 +700,7 @@ fn test_cross_protocol_gemini_stop_sequences_to_openai_stop() {
     let mut ir = GeminiReader.read_request(&body).expect("gemini parses");
     assert_eq!(ir.stop, vec!["STOP".to_string(), "END".to_string()]);
     ir.extra.clear(); // simulate the cross-protocol seam
-    let out = openai_writer().write_request(&ir);
+    let out = openai_writer().write_request(crate::codec::test_host::HOST, &ir);
     assert_eq!(
         out.get("stop"),
         Some(&serde_json::json!(["STOP", "END"])),
@@ -703,7 +722,7 @@ fn test_cross_protocol_anthropic_top_k_to_gemini() {
     assert_eq!(ir.top_k, Some(40));
     ir.extra.clear(); // simulate the cross-protocol seam
     let writer = GeminiWriter;
-    let out = writer.write_request(&ir);
+    let out = writer.write_request(crate::codec::test_host::HOST, &ir);
     assert_eq!(
         out.pointer("/generationConfig/topK")
             .and_then(|v| v.as_u64()),
@@ -725,7 +744,7 @@ fn test_cross_protocol_top_k_dropped_for_openai_target() {
         .read_request(&body)
         .expect("anthropic parses");
     ir.extra.clear();
-    let out = openai_writer().write_request(&ir);
+    let out = openai_writer().write_request(crate::codec::test_host::HOST, &ir);
     assert!(
         out.get("top_k").is_none() && out.get("k").is_none(),
         "OpenAI has no top_k knob; the writer must not synthesize one; got {out}"
@@ -802,11 +821,11 @@ fn test_stream_roundtrip_identity() {
             }
         }
     });
-    let ev = reader.read_response_event("message_start", &data);
+    let ev = reader.read_response_event(crate::codec::test_host::HOST, "message_start", &data);
     assert!(ev.is_some());
     if let Some(e) = ev {
         let (et, out) = writer
-            .write_response_event(&e)
+            .write_response_event(crate::codec::test_host::HOST, &e)
             .expect("writes message_start");
         assert_eq!(et, "message_start");
         let msg = out.get("message").expect("message object");
@@ -851,11 +870,12 @@ fn test_stream_roundtrip_identity() {
             "caller": {"type": "direct"}
         }
     });
-    let ev = reader.read_response_event("content_block_start", &data);
+    let ev =
+        reader.read_response_event(crate::codec::test_host::HOST, "content_block_start", &data);
     assert!(ev.is_some());
     if let Some(e) = ev {
         assert_eq!(
-            writer.write_response_event(&e),
+            writer.write_response_event(crate::codec::test_host::HOST, &e),
             Some(("content_block_start".to_string(), data))
         );
     }
@@ -869,11 +889,12 @@ fn test_stream_roundtrip_identity() {
             "text": "hello"
         }
     });
-    let ev = reader.read_response_event("content_block_delta", &data);
+    let ev =
+        reader.read_response_event(crate::codec::test_host::HOST, "content_block_delta", &data);
     assert!(ev.is_some());
     if let Some(e) = ev {
         assert_eq!(
-            writer.write_response_event(&e),
+            writer.write_response_event(crate::codec::test_host::HOST, &e),
             Some(("content_block_delta".to_string(), data))
         );
     }
@@ -887,11 +908,12 @@ fn test_stream_roundtrip_identity() {
             "thinking": "I need to think"
         }
     });
-    let ev = reader.read_response_event("content_block_delta", &data);
+    let ev =
+        reader.read_response_event(crate::codec::test_host::HOST, "content_block_delta", &data);
     assert!(ev.is_some());
     if let Some(e) = ev {
         assert_eq!(
-            writer.write_response_event(&e),
+            writer.write_response_event(crate::codec::test_host::HOST, &e),
             Some(("content_block_delta".to_string(), data))
         );
     }
@@ -905,11 +927,12 @@ fn test_stream_roundtrip_identity() {
             "partial_json": "{\"loc"
         }
     });
-    let ev = reader.read_response_event("content_block_delta", &data);
+    let ev =
+        reader.read_response_event(crate::codec::test_host::HOST, "content_block_delta", &data);
     assert!(ev.is_some());
     if let Some(e) = ev {
         assert_eq!(
-            writer.write_response_event(&e),
+            writer.write_response_event(crate::codec::test_host::HOST, &e),
             Some(("content_block_delta".to_string(), data))
         );
     }
@@ -923,22 +946,23 @@ fn test_stream_roundtrip_identity() {
             "signature": "sig_abc123xyz"
         }
     });
-    let ev = reader.read_response_event("content_block_delta", &data);
+    let ev =
+        reader.read_response_event(crate::codec::test_host::HOST, "content_block_delta", &data);
     assert!(ev.is_some());
     if let Some(e) = ev {
         assert_eq!(
-            writer.write_response_event(&e),
+            writer.write_response_event(crate::codec::test_host::HOST, &e),
             Some(("content_block_delta".to_string(), data))
         );
     }
 
     // content_block_stop
     let data = serde_json::json!({ "type": "content_block_stop", "index": 0 });
-    let ev = reader.read_response_event("content_block_stop", &data);
+    let ev = reader.read_response_event(crate::codec::test_host::HOST, "content_block_stop", &data);
     assert!(ev.is_some());
     if let Some(e) = ev {
         assert_eq!(
-            writer.write_response_event(&e),
+            writer.write_response_event(crate::codec::test_host::HOST, &e),
             Some(("content_block_stop".to_string(), data))
         );
     }
@@ -964,22 +988,22 @@ fn test_stream_roundtrip_identity() {
             "server_tool_use": null
         }
     });
-    let ev = reader.read_response_event("message_delta", &data);
+    let ev = reader.read_response_event(crate::codec::test_host::HOST, "message_delta", &data);
     assert!(ev.is_some());
     if let Some(e) = ev {
         assert_eq!(
-            writer.write_response_event(&e),
+            writer.write_response_event(crate::codec::test_host::HOST, &e),
             Some(("message_delta".to_string(), data))
         );
     }
 
     // message_stop
     let data = serde_json::json!({ "type": "message_stop" });
-    let ev = reader.read_response_event("message_stop", &data);
+    let ev = reader.read_response_event(crate::codec::test_host::HOST, "message_stop", &data);
     assert!(ev.is_some());
     if let Some(e) = ev {
         assert_eq!(
-            writer.write_response_event(&e),
+            writer.write_response_event(crate::codec::test_host::HOST, &e),
             Some(("message_stop".to_string(), data))
         );
     }
@@ -1002,7 +1026,7 @@ fn test_split_usage_never_collapses() {
     });
 
     let ev = reader
-        .read_response_event("message_delta", &data)
+        .read_response_event(crate::codec::test_host::HOST, "message_delta", &data)
         .expect("should parse");
     if let crate::codec::ir::IrStreamEvent::MessageDelta {
         stop_reason: _,
@@ -1020,18 +1044,21 @@ fn test_split_usage_never_collapses() {
         panic!("expected MessageDelta");
     }
 
-    let roundtrip = writer.write_response_event(&crate::codec::ir::IrStreamEvent::MessageDelta {
-        stop_reason: Some(crate::codec::ir::IrStopReason::EndTurn),
-        stop_sequence: None,
-        usage: crate::codec::ir::IrUsage {
-            input_tokens: 100,
-            output_tokens: 50,
-            cache_creation_input_tokens: Some(30),
-            cache_read_input_tokens: Some(200),
-            detail: crate::codec::ir::IrUsageDetail::default(),
+    let roundtrip = writer.write_response_event(
+        crate::codec::test_host::HOST,
+        &crate::codec::ir::IrStreamEvent::MessageDelta {
+            stop_reason: Some(crate::codec::ir::IrStopReason::EndTurn),
+            stop_sequence: None,
+            usage: crate::codec::ir::IrUsage {
+                input_tokens: 100,
+                output_tokens: 50,
+                cache_creation_input_tokens: Some(30),
+                cache_read_input_tokens: Some(200),
+                detail: crate::codec::ir::IrUsageDetail::default(),
+            },
+            stop_detail: None,
         },
-        stop_detail: None,
-    });
+    );
     assert!(roundtrip.is_some());
     let (_, rt_data) = roundtrip.unwrap();
     assert_eq!(
@@ -1080,7 +1107,7 @@ fn test_signature_delta_verbatim() {
     });
 
     let ev = reader
-        .read_response_event("content_block_delta", &data)
+        .read_response_event(crate::codec::test_host::HOST, "content_block_delta", &data)
         .expect("should parse");
     if let crate::codec::ir::IrStreamEvent::BlockDelta { index: _, delta } = ev {
         if let crate::codec::ir::IrDelta::SignatureDelta(s) = delta {
@@ -1092,10 +1119,13 @@ fn test_signature_delta_verbatim() {
         panic!("expected BlockDelta");
     }
 
-    let roundtrip = writer.write_response_event(&crate::codec::ir::IrStreamEvent::BlockDelta {
-        index: 0,
-        delta: crate::codec::ir::IrDelta::SignatureDelta(sig.to_string()),
-    });
+    let roundtrip = writer.write_response_event(
+        crate::codec::test_host::HOST,
+        &crate::codec::ir::IrStreamEvent::BlockDelta {
+            index: 0,
+            delta: crate::codec::ir::IrDelta::SignatureDelta(sig.to_string()),
+        },
+    );
     assert!(roundtrip.is_some());
     let (_, rt_data) = roundtrip.unwrap();
     let rt_sig = rt_data
@@ -1110,11 +1140,12 @@ fn test_signature_delta_verbatim() {
 fn test_ping_returns_none() {
     let reader = AnthropicReader;
     let data = serde_json::json!({});
-    let result = reader.read_response_event("ping", &data);
+    let result = reader.read_response_event(crate::codec::test_host::HOST, "ping", &data);
     assert!(result.is_none());
 
     // Unknown event type also returns None
-    let result = reader.read_response_event("unknown_event_type", &data);
+    let result =
+        reader.read_response_event(crate::codec::test_host::HOST, "unknown_event_type", &data);
     assert!(result.is_none());
 }
 
@@ -1143,7 +1174,7 @@ fn test_openai_request_roundtrip_identity() {
     let ir = reader
         .read_request(&j)
         .expect("read_request should succeed");
-    let roundtrip = writer.write_request(&ir);
+    let roundtrip = writer.write_request(crate::codec::test_host::HOST, &ir);
 
     // Compare structurally rather than byte-identical since IR doesn't preserve model field and tool_call ids are regenerated
     assert_eq!(
@@ -1245,7 +1276,7 @@ fn test_openai_tool_call_arguments_string_to_value() {
     }
     assert!(found_tool_use);
 
-    let roundtrip = writer.write_request(&ir);
+    let roundtrip = writer.write_request(crate::codec::test_host::HOST, &ir);
 
     // Re-parse the arguments from roundtrip and compare parsed values
     if let Some(msgs) = roundtrip.get("messages").and_then(|v| v.as_array()) {
@@ -1338,7 +1369,7 @@ fn cohere_read_response_surfaces_tool_plan_as_reasoning_not_visible_text() {
         "finish_reason": "COMPLETE"
     });
     let ir = CohereReader
-        .read_response(&body)
+        .read_response(crate::codec::test_host::HOST, &body)
         .expect("cohere read_response");
     assert!(
         matches!(ir.content.first(), Some(crate::codec::ir::IrBlock::Thinking { text, .. }) if text == "First I will check the weather."),
@@ -1399,7 +1430,7 @@ fn string_args_writers_emit_raw_tool_args_verbatim() {
     // Responses: output[].arguments (bind the const to a local before borrowing — the writer holds
     // interior-mutable stream state, so a direct `Const.method()` trips clippy::borrow_interior_mutable_const).
     let resp_w = ResponsesWriter;
-    let resp = resp_w.write_response(&ir);
+    let resp = resp_w.write_response(crate::codec::test_host::HOST, &ir);
     let resp_args = resp
         .get("output")
         .and_then(|o| o.as_array())
@@ -1416,7 +1447,7 @@ fn string_args_writers_emit_raw_tool_args_verbatim() {
 
     // Cohere: message.tool_calls[].function.arguments (bind to a local, as above).
     let coh_w = CohereWriter;
-    let coh = coh_w.write_response(&ir);
+    let coh = coh_w.write_response(crate::codec::test_host::HOST, &ir);
     let coh_args = coh
         .get("message")
         .and_then(|m| m.get("tool_calls"))
@@ -1701,7 +1732,7 @@ mod ir_property_tests {
             .expect("read_request should succeed");
 
         // Round-trip the JSON through write + read and verify DECODED IR is identical
-        let roundtrip_json = writer.write_request(&ir);
+        let roundtrip_json = writer.write_request(crate::codec::test_host::HOST, &ir);
         let rt_ir = reader
             .read_request(&roundtrip_json)
             .expect("read round-trip should succeed");
@@ -1741,7 +1772,7 @@ mod ir_property_tests {
 
         // Round-trip: semantic equivalence (NOT byte-identical) because serializer always outputs
         // content as array even for single text block - this is a known serialization difference
-        let roundtrip = writer.write_request(&ir);
+        let roundtrip = writer.write_request(crate::codec::test_host::HOST, &ir);
 
         // Verify semantic equivalence via decoded IR
         let rt_ir = reader
@@ -1892,7 +1923,7 @@ mod ir_property_tests {
         let ir = reader
             .read_request(&j)
             .expect("read_request should succeed");
-        let roundtrip = writer.write_request(&ir);
+        let roundtrip = writer.write_request(crate::codec::test_host::HOST, &ir);
 
         // BOTH halves need a found-flag. As three nested guards with no flag, a writer that emitted
         // the assistant call under the legacy `function_call` key (or dropped the `id`) reached no
@@ -2006,7 +2037,7 @@ mod ir_property_tests {
         assert!(found_tool_use);
 
         // Write and re-parse arguments from roundtrip
-        let roundtrip = writer.write_request(&ir);
+        let roundtrip = writer.write_request(crate::codec::test_host::HOST, &ir);
         if let Some(msgs) = roundtrip.get("messages").and_then(|v| v.as_array()) {
             for msg_val in msgs {
                 if let Some(tc_arr) = msg_val.get("tool_calls").and_then(|v| v.as_array()) {
@@ -2061,11 +2092,11 @@ mod ir_property_tests {
                 }
             }
         });
-        let ev = reader.read_response_event("message_start", &data);
+        let ev = reader.read_response_event(crate::codec::test_host::HOST, "message_start", &data);
         assert!(ev.is_some());
         if let Some(e) = ev {
             let (et, out) = writer
-                .write_response_event(&e)
+                .write_response_event(crate::codec::test_host::HOST, &e)
                 .expect("writes message_start");
             assert_eq!(et, "message_start");
             let msg = out.get("message").expect("message object");
@@ -2109,11 +2140,12 @@ mod ir_property_tests {
                 "caller": {"type": "direct"}
             }
         });
-        let ev = reader.read_response_event("content_block_start", &data);
+        let ev =
+            reader.read_response_event(crate::codec::test_host::HOST, "content_block_start", &data);
         assert!(ev.is_some());
         if let Some(e) = ev {
             assert_eq!(
-                writer.write_response_event(&e),
+                writer.write_response_event(crate::codec::test_host::HOST, &e),
                 Some(("content_block_start".to_string(), data))
             );
         }
@@ -2124,11 +2156,15 @@ mod ir_property_tests {
             "index": 0,
             "delta": {"type": "text_delta", "text": "hello"}
         });
-        let ev = reader.read_response_event("content_block_delta", &text_data);
+        let ev = reader.read_response_event(
+            crate::codec::test_host::HOST,
+            "content_block_delta",
+            &text_data,
+        );
         assert!(ev.is_some());
         if let Some(e) = ev {
             assert_eq!(
-                writer.write_response_event(&e),
+                writer.write_response_event(crate::codec::test_host::HOST, &e),
                 Some(("content_block_delta".to_string(), text_data))
             );
         }
@@ -2138,11 +2174,15 @@ mod ir_property_tests {
             "index": 1,
             "delta": {"type": "thinking_delta", "thinking": "I need to think"}
         });
-        let ev = reader.read_response_event("content_block_delta", &thinking_data);
+        let ev = reader.read_response_event(
+            crate::codec::test_host::HOST,
+            "content_block_delta",
+            &thinking_data,
+        );
         assert!(ev.is_some());
         if let Some(e) = ev {
             assert_eq!(
-                writer.write_response_event(&e),
+                writer.write_response_event(crate::codec::test_host::HOST, &e),
                 Some(("content_block_delta".to_string(), thinking_data))
             );
         }
@@ -2152,11 +2192,15 @@ mod ir_property_tests {
             "index": 2,
             "delta": {"type": "input_json_delta", "partial_json": "{\"loc"}
         });
-        let ev = reader.read_response_event("content_block_delta", &json_data);
+        let ev = reader.read_response_event(
+            crate::codec::test_host::HOST,
+            "content_block_delta",
+            &json_data,
+        );
         assert!(ev.is_some());
         if let Some(e) = ev {
             assert_eq!(
-                writer.write_response_event(&e),
+                writer.write_response_event(crate::codec::test_host::HOST, &e),
                 Some(("content_block_delta".to_string(), json_data))
             );
         }
@@ -2166,22 +2210,27 @@ mod ir_property_tests {
             "index": 1,
             "delta": {"type": "signature_delta", "signature": "sig_thinking_xyz"}
         });
-        let ev = reader.read_response_event("content_block_delta", &sig_data);
+        let ev = reader.read_response_event(
+            crate::codec::test_host::HOST,
+            "content_block_delta",
+            &sig_data,
+        );
         assert!(ev.is_some());
         if let Some(e) = ev {
             assert_eq!(
-                writer.write_response_event(&e),
+                writer.write_response_event(crate::codec::test_host::HOST, &e),
                 Some(("content_block_delta".to_string(), sig_data))
             );
         }
 
         // 4. content_block_stop
         let data = serde_json::json!({"type": "content_block_stop", "index": 0});
-        let ev = reader.read_response_event("content_block_stop", &data);
+        let ev =
+            reader.read_response_event(crate::codec::test_host::HOST, "content_block_stop", &data);
         assert!(ev.is_some());
         if let Some(e) = ev {
             assert_eq!(
-                writer.write_response_event(&e),
+                writer.write_response_event(crate::codec::test_host::HOST, &e),
                 Some(("content_block_stop".to_string(), data))
             );
         }
@@ -2210,7 +2259,7 @@ mod ir_property_tests {
                 "server_tool_use": null
             }
         });
-        let ev = reader.read_response_event("message_delta", &data);
+        let ev = reader.read_response_event(crate::codec::test_host::HOST, "message_delta", &data);
         assert!(ev.is_some());
         if let Some(e) = ev {
             // The IR must carry stop_sequence = None for a delta whose wire had none.
@@ -2220,7 +2269,7 @@ mod ir_property_tests {
                 panic!("expected MessageDelta");
             }
             assert_eq!(
-                writer.write_response_event(&e),
+                writer.write_response_event(crate::codec::test_host::HOST, &e),
                 Some(("message_delta".to_string(), data))
             );
         }
@@ -2245,7 +2294,7 @@ mod ir_property_tests {
                 "server_tool_use": null
             }
         });
-        let ev = reader.read_response_event("message_delta", &data);
+        let ev = reader.read_response_event(crate::codec::test_host::HOST, "message_delta", &data);
         assert!(ev.is_some());
         if let Some(e) = ev {
             if let crate::codec::ir::IrStreamEvent::MessageDelta { stop_sequence, .. } = &e {
@@ -2254,18 +2303,18 @@ mod ir_property_tests {
                 panic!("expected MessageDelta");
             }
             assert_eq!(
-                writer.write_response_event(&e),
+                writer.write_response_event(crate::codec::test_host::HOST, &e),
                 Some(("message_delta".to_string(), data))
             );
         }
 
         // 6. message_stop
         let data = serde_json::json!({"type": "message_stop"});
-        let ev = reader.read_response_event("message_stop", &data);
+        let ev = reader.read_response_event(crate::codec::test_host::HOST, "message_stop", &data);
         assert!(ev.is_some());
         if let Some(e) = ev {
             assert_eq!(
-                writer.write_response_event(&e),
+                writer.write_response_event(crate::codec::test_host::HOST, &e),
                 Some(("message_stop".to_string(), data))
             );
         }
@@ -2274,7 +2323,7 @@ mod ir_property_tests {
         let data = serde_json::json!({
             "error": {"type": "invalid_request_error"}
         });
-        let ev = reader.read_response_event("error", &data);
+        let ev = reader.read_response_event(crate::codec::test_host::HOST, "error", &data);
         assert!(ev.is_some());
     }
 
@@ -2295,7 +2344,7 @@ mod ir_property_tests {
         });
 
         let ev = reader
-            .read_response_event("message_delta", &data)
+            .read_response_event(crate::codec::test_host::HOST, "message_delta", &data)
             .expect("should parse message_delta");
 
         if let crate::codec::ir::IrStreamEvent::MessageDelta {
@@ -2341,7 +2390,7 @@ mod ir_property_tests {
 
         // Decode assertion: signature decodes to SignatureDelta(s) with s == input
         let ev = reader
-            .read_response_event("content_block_delta", &data)
+            .read_response_event(crate::codec::test_host::HOST, "content_block_delta", &data)
             .expect("should parse");
 
         if let crate::codec::ir::IrStreamEvent::BlockDelta { index: _, delta } = ev {
@@ -2355,10 +2404,13 @@ mod ir_property_tests {
         }
 
         // Round-trip: write back and verify signature preserved verbatim
-        let roundtrip = writer.write_response_event(&crate::codec::ir::IrStreamEvent::BlockDelta {
-            index: 0,
-            delta: crate::codec::ir::IrDelta::SignatureDelta(sig.to_string()),
-        });
+        let roundtrip = writer.write_response_event(
+            crate::codec::test_host::HOST,
+            &crate::codec::ir::IrStreamEvent::BlockDelta {
+                index: 0,
+                delta: crate::codec::ir::IrDelta::SignatureDelta(sig.to_string()),
+            },
+        );
         assert!(roundtrip.is_some());
         let (_, rt_data) = roundtrip.unwrap();
 
@@ -2377,7 +2429,7 @@ mod ir_property_tests {
             index: 0,
             delta: crate::codec::ir::IrDelta::TextDelta("hello".to_string()),
         };
-        let result = writer.write_response_event(&ev);
+        let result = writer.write_response_event(crate::codec::test_host::HOST, &ev);
         assert!(result.is_some());
         let (_, chunk) = result.unwrap();
         assert_eq!(
@@ -2406,7 +2458,7 @@ mod ir_property_tests {
             created: None,
             model: None,
         };
-        let result = writer.write_response_event(&ev);
+        let result = writer.write_response_event(crate::codec::test_host::HOST, &ev);
         assert!(result.is_some());
         let (_, chunk) = result.unwrap();
         assert_eq!(
@@ -2441,7 +2493,7 @@ mod ir_property_tests {
             },
             stop_detail: None,
         };
-        let result1 = writer.write_response_event(&ev1);
+        let result1 = writer.write_response_event(crate::codec::test_host::HOST, &ev1);
         assert!(result1.is_some());
         let (_, chunk1) = result1.unwrap();
         let choices1 = chunk1.get("choices").and_then(|c| c.as_array()).unwrap();
@@ -2463,7 +2515,7 @@ mod ir_property_tests {
             },
             stop_detail: None,
         };
-        let result2 = writer.write_response_event(&ev2);
+        let result2 = writer.write_response_event(crate::codec::test_host::HOST, &ev2);
         assert!(result2.is_some());
         let (_, chunk2) = result2.unwrap();
         let choices2 = chunk2.get("choices").and_then(|c| c.as_array()).unwrap();
@@ -2485,7 +2537,7 @@ mod ir_property_tests {
             },
             stop_detail: None,
         };
-        let result3 = writer.write_response_event(&ev3);
+        let result3 = writer.write_response_event(crate::codec::test_host::HOST, &ev3);
         assert!(result3.is_some());
         let (_, chunk3) = result3.unwrap();
         let choices3 = chunk3.get("choices").and_then(|c| c.as_array()).unwrap();
@@ -2502,7 +2554,7 @@ mod ir_property_tests {
             index: 0,
             delta: crate::codec::ir::IrDelta::InputJsonDelta(r#"{"x":1}"#.to_string()),
         };
-        let result = writer.write_response_event(&ev);
+        let result = writer.write_response_event(crate::codec::test_host::HOST, &ev);
         assert!(result.is_some());
         let (_, chunk) = result.unwrap();
         let choices = chunk.get("choices").and_then(|c| c.as_array()).unwrap();
@@ -2531,22 +2583,30 @@ mod ir_property_tests {
             index: 0,
             delta: crate::codec::ir::IrDelta::ThinkingDelta("thinking...".to_string()),
         };
-        assert!(writer.write_response_event(&ev1).is_none());
+        assert!(writer
+            .write_response_event(crate::codec::test_host::HOST, &ev1)
+            .is_none());
 
         // SignatureDelta -> None
         let ev2 = crate::codec::ir::IrStreamEvent::BlockDelta {
             index: 0,
             delta: crate::codec::ir::IrDelta::SignatureDelta("sig...".to_string()),
         };
-        assert!(writer.write_response_event(&ev2).is_none());
+        assert!(writer
+            .write_response_event(crate::codec::test_host::HOST, &ev2)
+            .is_none());
 
         // BlockStop -> None
         let ev3 = crate::codec::ir::IrStreamEvent::BlockStop { index: 0 };
-        assert!(writer.write_response_event(&ev3).is_none());
+        assert!(writer
+            .write_response_event(crate::codec::test_host::HOST, &ev3)
+            .is_none());
 
         // MessageStop -> None
         let ev4 = crate::codec::ir::IrStreamEvent::MessageStop;
-        assert!(writer.write_response_event(&ev4).is_none());
+        assert!(writer
+            .write_response_event(crate::codec::test_host::HOST, &ev4)
+            .is_none());
     }
 
     #[test]
@@ -2558,7 +2618,7 @@ mod ir_property_tests {
             retry_after: None,
         };
         let ev = crate::codec::ir::IrStreamEvent::Error(err);
-        let result = writer.write_response_event(&ev);
+        let result = writer.write_response_event(crate::codec::test_host::HOST, &ev);
         assert!(result.is_some());
         let (_, chunk) = result.unwrap();
         assert_eq!(

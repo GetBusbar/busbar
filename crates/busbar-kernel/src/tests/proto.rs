@@ -150,6 +150,7 @@ mod registry_fold {
         }
         fn read_response(
             &self,
+            _host: &dyn busbar_contract::codec::CodecHost,
             wire: &[u8],
         ) -> Result<Box<dyn busbar_contract::ir::handle::IrHandle>, CodecError> {
             let text = std::str::from_utf8(wire)
@@ -184,6 +185,7 @@ mod registry_fold {
         }
         fn write_ingress_response(
             &self,
+            _host: &dyn busbar_contract::codec::CodecHost,
             _ingress_protocol: &str,
             _ingress_serves_op: bool,
         ) -> busbar_contract::codec::TranslatedResponse {
@@ -245,10 +247,10 @@ mod registry_fold {
         // The write inverted onto the handle (G6 A4b): the cell's handle writes its own telex wire.
         assert_eq!(&ir.write_egress_request_bytes("telex", "")[..], b"TO paris");
         let resp = cell
-            .read_response(b"REGISTERED paris")
+            .read_response(crate::proto::CODEC_HOST, b"REGISTERED paris")
             .expect("its cell reads its own response");
         let busbar_contract::codec::TranslatedResponse::Typed(out) =
-            resp.write_ingress_response("telex", true)
+            resp.write_ingress_response(crate::proto::CODEC_HOST, "telex", true)
         else {
             panic!("telex response writes a typed body");
         };

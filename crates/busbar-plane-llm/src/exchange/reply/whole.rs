@@ -108,8 +108,9 @@ pub struct WholeCtx<'a> {
 }
 
 /// The caller's error for an answer that could not be relayed.
-fn internal(ingress: &str, status: u16) -> Rendered {
+fn internal(host: &dyn busbar_contract::codec::CodecHost, ingress: &str, status: u16) -> Rendered {
     render(
+        host,
         ingress,
         status,
         KIND_API_ERROR,
@@ -119,9 +120,15 @@ fn internal(ingress: &str, status: u16) -> Rendered {
 }
 
 /// A delivered answer: the far end's status, the content type, the caller's request id.
-fn delivered(ctx: &WholeCtx<'_>, status: u16, content_type: &[u8], body: Vec<u8>) -> Rendered {
+fn delivered(
+    host: &dyn busbar_contract::codec::CodecHost,
+    ctx: &WholeCtx<'_>,
+    status: u16,
+    content_type: &[u8],
+    body: Vec<u8>,
+) -> Rendered {
     let mut fields = vec![("content-type".to_string(), content_type.to_vec())];
-    fields.extend(request_id_field(ctx.ingress, &[]));
+    fields.extend(request_id_field(host, ctx.ingress, &[]));
     Rendered {
         status,
         fields,
@@ -141,25 +148,30 @@ fn whole(end: WholeEnd, usage: Option<Billing>, answer: Rendered) -> Whole {
 
 /// The body over the translation cap: our limit, not the far end's fault, and nothing delivered.
 #[must_use]
-pub fn over_cap(ingress: &str) -> Whole {
-    whole(WholeEnd::OverCap, None, internal(ingress, 500))
+pub fn over_cap(host: &dyn busbar_contract::codec::CodecHost, ingress: &str) -> Whole {
+    whole(WholeEnd::OverCap, None, internal(host, ingress, 500))
 }
 
 /// The far end's body stopped short of its end: a failed transfer, nothing delivered.
 #[must_use]
-pub fn cut(ingress: &str) -> Whole {
-    whole(WholeEnd::Cut, None, internal(ingress, 502))
+pub fn cut(host: &dyn busbar_contract::codec::CodecHost, ingress: &str) -> Whole {
+    whole(WholeEnd::Cut, None, internal(host, ingress, 502))
 }
 
 /// TRANSLATE A WHOLE ANSWER: the far end's 2xx `status` and its whole body.
 #[must_use]
-pub fn translate(ctx: &WholeCtx<'_>, status: u16, bytes: &[u8]) -> Whole {
+pub fn translate(
+    host: &dyn busbar_contract::codec::CodecHost,
+    ctx: &WholeCtx<'_>,
+    status: u16,
+    bytes: &[u8],
+) -> Whole {
     let egress_op = handler(ctx.egress, ctx.operation);
     let ingress_serves = handler(ctx.ingress, ctx.operation).is_some();
     let body_json = crate::codec::json::parse::<Value>(bytes);
     let mut refused = None;
     if body_json.is_err() {
-        match opaque(ctx, status, egress_op, ingress_serves, bytes) {
+        match opaque(host, ctx, status, egress_op, ingress_serves, bytes) {
             Ok(Some(w)) => return w,
             Ok(None) => {}
             Err(detail) => {
@@ -172,7 +184,7 @@ pub fn translate(ctx: &WholeCtx<'_>, status: u16, bytes: &[u8]) -> Whole {
     }
     if let (Ok(rv), Some(eh)) = (&body_json, egress_op) {
         if decl(ctx.ingress).is_some_and(|d| d.codec.is_some()) {
-            match json(ctx, status, eh, ingress_serves, rv) {
+            match json(host, ctx, status, eh, ingress_serves, rv) {
                 Ok(Some(w)) => return w,
                 Ok(None) => {}
                 Err(detail) => {
@@ -186,13 +198,18 @@ pub fn translate(ctx: &WholeCtx<'_>, status: u16, bytes: &[u8]) -> Whole {
     }
     Whole {
         refused,
-        ..whole(WholeEnd::NotTranslatable, None, internal(ctx.ingress, 500))
+        ..whole(
+            WholeEnd::NotTranslatable,
+            None,
+            internal(host, ctx.ingress, 500),
+        )
     }
 }
 
 /// An opaque body bridged at the byte level; `None` falls through to the JSON path, `Err` is the
 /// far end's dialect refusing the body.
 fn opaque(
+    host: &dyn busbar_contract::codec::CodecHost,
     ctx: &WholeCtx<'_>,
     status: u16,
     egress_op: Option<&'static dyn OperationHandler>,
@@ -204,6 +221,7 @@ fn opaque(
     };
     let (usage, answered) = eh
         .translate_response(
+            host,
             TranslateRespInput::Opaque(bytes),
             ingress_serves,
             ctx.ingress,
@@ -221,6 +239,7 @@ fn opaque(
         WholeEnd::Delivered,
         usage,
         delivered(
+            host,
             ctx,
             status,
             wire.content_type.as_bytes(),
@@ -232,6 +251,7 @@ fn opaque(
 /// A JSON body translated; `None` when no body could be written, `Err` the far end's dialect
 /// refusing the body.
 fn json(
+    host: &dyn busbar_contract::codec::CodecHost,
     ctx: &WholeCtx<'_>,
     status: u16,
     eh: &dyn OperationHandler,
@@ -240,6 +260,7 @@ fn json(
 ) -> Result<Option<Whole>, String> {
     let read = || {
         let answered = eh.translate_response(
+            host,
             TranslateRespInput::Json(rv),
             ingress_serves,
             ctx.ingress,
@@ -273,11 +294,11 @@ fn json(
             | TranslatedResponse::Typed(_)
             | TranslatedResponse::Json(_)
     );
-    if delivers && ctx.operation == OpVerb::CHAT && wire::generation_failed(ctx.egress, rv) {
+    if delivers && ctx.operation == OpVerb::CHAT && wire::generation_failed(host, ctx.egress, rv) {
         return Ok(Some(whole(
             WholeEnd::FailedGeneration,
             usage,
-            internal(ctx.ingress, 502),
+            internal(host, ctx.ingress, 502),
         )));
     }
     let mut w = match answered {
@@ -286,13 +307,14 @@ fn json(
             whole(
                 WholeEnd::Delivered,
                 usage,
-                delivered(ctx, status, ct.as_bytes(), frames),
+                delivered(host, ctx, status, ct.as_bytes(), frames),
             )
         }
         TranslatedResponse::IngressUnsupported => whole(
             WholeEnd::IngressUnsupported,
             None,
             render(
+                host,
                 ctx.ingress,
                 404,
                 KIND_NOT_FOUND,
@@ -304,6 +326,7 @@ fn json(
             WholeEnd::Delivered,
             usage,
             delivered(
+                host,
                 ctx,
                 status,
                 wire.content_type.as_bytes(),
@@ -328,7 +351,7 @@ fn json(
             } else {
                 let body = crate::codec::json::to_vec(&translated)
                     .unwrap_or_else(|_| translated.to_string().into_bytes());
-                delivered(ctx, status, APPLICATION_JSON.as_bytes(), body)
+                delivered(host, ctx, status, APPLICATION_JSON.as_bytes(), body)
             };
             whole(WholeEnd::Delivered, usage, answer)
         }

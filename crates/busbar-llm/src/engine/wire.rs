@@ -33,6 +33,7 @@ pub(crate) fn maybe_attach_response_request_id(
     upstream_request_id: Option<&str>,
 ) -> axum::http::response::Builder {
     match crate::engine::xchg::reply::wire::response_request_id(
+        crate::engine::CODEC_HOST,
         ingress_protocol,
         upstream_request_id,
     ) {
@@ -264,6 +265,7 @@ pub(crate) fn translate_request_cross_protocol(
         path_base: lane.path_base.as_deref(),
     };
     let t = crate::engine::xchg::attempt::translate_request(
+        crate::engine::CODEC_HOST,
         ingress_protocol,
         op.operation,
         far,

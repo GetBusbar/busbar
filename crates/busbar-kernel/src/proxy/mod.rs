@@ -219,7 +219,7 @@ pub fn ingress_error(
     use axum::response::IntoResponse;
     let dialect = crate::proto::decl_for(ingress).and_then(|d| d.dialect());
     let envelope = match &dialect {
-        Some(di) => di.write_error(status.as_u16(), kind, msg),
+        Some(di) => di.write_error(crate::proto::CODEC_HOST, status.as_u16(), kind, msg),
         None => agnostic_error_envelope(kind, msg),
     };
     let body = crate::json::to_string(&envelope)
@@ -230,7 +230,12 @@ pub fn ingress_error(
         .body(axum::body::Body::from(body))
         .unwrap_or_else(|_| status.into_response());
     if let Some(di) = &dialect {
-        di.attach_error_response_headers(resp.headers_mut(), kind, &envelope);
+        di.attach_error_response_headers(
+            crate::proto::CODEC_HOST,
+            resp.headers_mut(),
+            kind,
+            &envelope,
+        );
     }
     resp
 }

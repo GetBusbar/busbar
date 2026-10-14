@@ -21,10 +21,14 @@ fn decl(name: &str) -> Option<&'static ProtocolDecl> {
 
 /// The probe body the far end's dialect answers for `wire_model` (empty when it has none).
 #[must_use]
-pub fn probe_body(dialect: &str, wire_model: &str) -> Vec<u8> {
+pub fn probe_body(
+    host: &dyn busbar_contract::codec::CodecHost,
+    dialect: &str,
+    wire_model: &str,
+) -> Vec<u8> {
     decl(dialect)
         .and_then(|d| d.dialect())
-        .map(|dc| dc.probe_body(wire_model))
+        .map(|dc| dc.probe_body(host, wire_model))
         .unwrap_or_default()
 }
 
@@ -42,7 +46,7 @@ pub fn probe_path(lane: &Lane) -> String {
 
 /// THE PROBE REQUEST for `lane`; `None` for a lane under a path base, which is not probed.
 #[must_use]
-pub fn request(lane: &Lane) -> Option<FarRequest> {
+pub fn request(host: &dyn busbar_contract::codec::CodecHost, lane: &Lane) -> Option<FarRequest> {
     if lane.path_base.is_some() {
         return None;
     }
@@ -59,7 +63,7 @@ pub fn request(lane: &Lane) -> Option<FarRequest> {
             ("user-agent".to_string(), user_agent.as_bytes().to_vec()),
             ("accept".to_string(), APPLICATION_JSON.as_bytes().to_vec()),
         ],
-        body: probe_body(lane.dialect, lane.wire_model()),
+        body: probe_body(host, lane.dialect, lane.wire_model()),
         pristine: false,
         dropped_controls: Vec::new(),
     })

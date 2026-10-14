@@ -48,7 +48,12 @@ impl IrHandle for EmbeddingsReqHandle {
     fn set_model(&mut self, model: &str) {
         self.0.model = model.to_string();
     }
-    fn write_egress_request(&mut self, egress_proto: &str, model: &str) -> EgressWire {
+    fn write_egress_request(
+        &mut self,
+        _host: &dyn busbar_contract::codec::CodecHost,
+        egress_proto: &str,
+        model: &str,
+    ) -> EgressWire {
         let bytes = super::leaf_codec::embeddings_write_request(egress_proto, &self.0);
         match serde_json::from_slice::<Value>(&bytes) {
             Ok(v) => EgressWire::Json(v),
@@ -77,7 +82,12 @@ impl IrHandle for EmbeddingsRespHandle {
     fn billing(&self) -> Option<Billing> {
         self.0.billing()
     }
-    fn write_ingress_response(&self, ingress_proto: &str, serves_op: bool) -> TranslatedResponse {
+    fn write_ingress_response(
+        &self,
+        _host: &dyn busbar_contract::codec::CodecHost,
+        ingress_proto: &str,
+        serves_op: bool,
+    ) -> TranslatedResponse {
         if !serves_op {
             return TranslatedResponse::IngressUnsupported;
         }
@@ -89,6 +99,7 @@ impl IrHandle for EmbeddingsRespHandle {
     }
     fn write_ingress_response_bytes(
         &self,
+        _host: &dyn busbar_contract::codec::CodecHost,
         ingress_proto: &str,
         serves_op: bool,
     ) -> TranslatedResponse {
@@ -121,7 +132,12 @@ impl IrHandle for ImageReqHandle {
     fn set_model(&mut self, model: &str) {
         self.0.model = model.to_string();
     }
-    fn write_egress_request(&mut self, egress_proto: &str, model: &str) -> EgressWire {
+    fn write_egress_request(
+        &mut self,
+        _host: &dyn busbar_contract::codec::CodecHost,
+        egress_proto: &str,
+        model: &str,
+    ) -> EgressWire {
         let bytes = super::leaf_codec::image_write_request(egress_proto, &self.0);
         match serde_json::from_slice::<Value>(&bytes) {
             Ok(v) => EgressWire::Json(v),
@@ -150,7 +166,12 @@ impl IrHandle for ImageRespHandle {
     fn billing(&self) -> Option<Billing> {
         self.0.billing()
     }
-    fn write_ingress_response(&self, ingress_proto: &str, serves_op: bool) -> TranslatedResponse {
+    fn write_ingress_response(
+        &self,
+        _host: &dyn busbar_contract::codec::CodecHost,
+        ingress_proto: &str,
+        serves_op: bool,
+    ) -> TranslatedResponse {
         if !serves_op {
             return TranslatedResponse::IngressUnsupported;
         }
@@ -162,6 +183,7 @@ impl IrHandle for ImageRespHandle {
     }
     fn write_ingress_response_bytes(
         &self,
+        _host: &dyn busbar_contract::codec::CodecHost,
         ingress_proto: &str,
         serves_op: bool,
     ) -> TranslatedResponse {
@@ -194,7 +216,12 @@ impl IrHandle for RerankReqHandle {
     fn set_model(&mut self, model: &str) {
         self.0.model = model.to_string();
     }
-    fn write_egress_request(&mut self, egress_proto: &str, model: &str) -> EgressWire {
+    fn write_egress_request(
+        &mut self,
+        _host: &dyn busbar_contract::codec::CodecHost,
+        egress_proto: &str,
+        model: &str,
+    ) -> EgressWire {
         let bytes = super::leaf_codec::rerank_write_request(egress_proto, &self.0);
         match serde_json::from_slice::<Value>(&bytes) {
             Ok(v) => EgressWire::Json(v),
@@ -223,7 +250,12 @@ impl IrHandle for RerankRespHandle {
     fn billing(&self) -> Option<Billing> {
         self.0.billing()
     }
-    fn write_ingress_response(&self, ingress_proto: &str, serves_op: bool) -> TranslatedResponse {
+    fn write_ingress_response(
+        &self,
+        _host: &dyn busbar_contract::codec::CodecHost,
+        ingress_proto: &str,
+        serves_op: bool,
+    ) -> TranslatedResponse {
         if !serves_op {
             return TranslatedResponse::IngressUnsupported;
         }
@@ -235,6 +267,7 @@ impl IrHandle for RerankRespHandle {
     }
     fn write_ingress_response_bytes(
         &self,
+        _host: &dyn busbar_contract::codec::CodecHost,
         ingress_proto: &str,
         serves_op: bool,
     ) -> TranslatedResponse {
@@ -267,7 +300,12 @@ impl IrHandle for ModerationReqHandle {
     fn set_model(&mut self, model: &str) {
         self.0.model = model.to_string();
     }
-    fn write_egress_request(&mut self, egress_proto: &str, model: &str) -> EgressWire {
+    fn write_egress_request(
+        &mut self,
+        _host: &dyn busbar_contract::codec::CodecHost,
+        egress_proto: &str,
+        model: &str,
+    ) -> EgressWire {
         let bytes = super::leaf_codec::moderation_write_request(egress_proto, &self.0);
         match serde_json::from_slice::<Value>(&bytes) {
             Ok(v) => EgressWire::Json(v),
@@ -296,7 +334,12 @@ impl IrHandle for ModerationRespHandle {
     fn billing(&self) -> Option<Billing> {
         Some(Billing::Flat)
     }
-    fn write_ingress_response(&self, ingress_proto: &str, serves_op: bool) -> TranslatedResponse {
+    fn write_ingress_response(
+        &self,
+        _host: &dyn busbar_contract::codec::CodecHost,
+        ingress_proto: &str,
+        serves_op: bool,
+    ) -> TranslatedResponse {
         if !serves_op {
             return TranslatedResponse::IngressUnsupported;
         }
@@ -308,6 +351,7 @@ impl IrHandle for ModerationRespHandle {
     }
     fn write_ingress_response_bytes(
         &self,
+        _host: &dyn busbar_contract::codec::CodecHost,
         ingress_proto: &str,
         serves_op: bool,
     ) -> TranslatedResponse {
@@ -340,7 +384,12 @@ impl IrHandle for TranscriptionReqHandle {
     fn set_model(&mut self, model: &str) {
         self.0.model = model.to_string();
     }
-    fn write_egress_request(&mut self, egress_proto: &str, model: &str) -> EgressWire {
+    fn write_egress_request(
+        &mut self,
+        _host: &dyn busbar_contract::codec::CodecHost,
+        egress_proto: &str,
+        model: &str,
+    ) -> EgressWire {
         let bytes = super::leaf_codec::transcription_write_request(egress_proto, &self.0);
         match serde_json::from_slice::<Value>(&bytes) {
             Ok(v) => EgressWire::Json(v),
@@ -369,7 +418,12 @@ impl IrHandle for TranscriptionRespHandle {
     fn billing(&self) -> Option<Billing> {
         self.0.billing()
     }
-    fn write_ingress_response(&self, ingress_proto: &str, serves_op: bool) -> TranslatedResponse {
+    fn write_ingress_response(
+        &self,
+        _host: &dyn busbar_contract::codec::CodecHost,
+        ingress_proto: &str,
+        serves_op: bool,
+    ) -> TranslatedResponse {
         if !serves_op {
             return TranslatedResponse::IngressUnsupported;
         }
@@ -381,6 +435,7 @@ impl IrHandle for TranscriptionRespHandle {
     }
     fn write_ingress_response_bytes(
         &self,
+        _host: &dyn busbar_contract::codec::CodecHost,
         ingress_proto: &str,
         serves_op: bool,
     ) -> TranslatedResponse {
@@ -418,7 +473,12 @@ impl IrHandle for SpeechReqHandle {
     fn set_model(&mut self, model: &str) {
         self.0.model = model.to_string();
     }
-    fn write_egress_request(&mut self, egress_proto: &str, model: &str) -> EgressWire {
+    fn write_egress_request(
+        &mut self,
+        _host: &dyn busbar_contract::codec::CodecHost,
+        egress_proto: &str,
+        model: &str,
+    ) -> EgressWire {
         let bytes = super::leaf_codec::speech_write_request(egress_proto, &self.0);
         match serde_json::from_slice::<Value>(&bytes) {
             Ok(v) => EgressWire::Json(v),
@@ -447,7 +507,12 @@ impl IrHandle for SpeechRespHandle {
     fn billing(&self) -> Option<Billing> {
         self.0.billing()
     }
-    fn write_ingress_response(&self, ingress_proto: &str, serves_op: bool) -> TranslatedResponse {
+    fn write_ingress_response(
+        &self,
+        _host: &dyn busbar_contract::codec::CodecHost,
+        ingress_proto: &str,
+        serves_op: bool,
+    ) -> TranslatedResponse {
         if !serves_op {
             return TranslatedResponse::IngressUnsupported;
         }
@@ -459,6 +524,7 @@ impl IrHandle for SpeechRespHandle {
     }
     fn write_ingress_response_bytes(
         &self,
+        _host: &dyn busbar_contract::codec::CodecHost,
         ingress_proto: &str,
         serves_op: bool,
     ) -> TranslatedResponse {

@@ -18,7 +18,7 @@ fn buffered_response_refuses_a_stringified_count() {
         "usage": {"input_tokens": "1500", "output_tokens": 9}
     });
     AnthropicReader
-        .read_response(&body)
+        .read_response(crate::codec::test_host::HOST, &body)
         .expect_err("a present, unreadable input_tokens is a refusal, never a zero");
 }
 
@@ -31,7 +31,7 @@ fn buffered_response_with_an_absent_count_still_reads_as_zero() {
         "usage": {"output_tokens": 9}
     });
     let ir = AnthropicReader
-        .read_response(&body)
+        .read_response(crate::codec::test_host::HOST, &body)
         .expect("an absent count is zero");
     assert_eq!(ir.usage.input_tokens, 0);
     assert_eq!(ir.usage.output_tokens, 9);
@@ -45,7 +45,11 @@ fn streaming_usage_frames_refuse_a_stringified_count() {
     });
     assert!(
         matches!(
-            AnthropicReader.read_response_event("message_start", &start),
+            AnthropicReader.read_response_event(
+                crate::codec::test_host::HOST,
+                "message_start",
+                &start
+            ),
             Some(IrStreamEvent::Error(_))
         ),
         "message_start with an unreadable count must end the stream in an error"
@@ -57,7 +61,11 @@ fn streaming_usage_frames_refuse_a_stringified_count() {
     });
     assert!(
         matches!(
-            AnthropicReader.read_response_event("message_delta", &delta),
+            AnthropicReader.read_response_event(
+                crate::codec::test_host::HOST,
+                "message_delta",
+                &delta
+            ),
             Some(IrStreamEvent::Error(_))
         ),
         "message_delta with an unreadable count must end the stream in an error"
@@ -105,7 +113,7 @@ fn unreadable_detail_usages() -> [serde_json::Value; 3] {
 fn buffered_response_refuses_an_unreadable_cache_tier_or_metered_count() {
     for usage in unreadable_detail_usages() {
         AnthropicReader
-            .read_response(&message(usage.clone()))
+            .read_response(crate::codec::test_host::HOST, &message(usage.clone()))
             .expect_err(&format!(
                 "{usage}: an unreadable priced detail count is a refusal"
             ));
@@ -115,7 +123,7 @@ fn buffered_response_refuses_an_unreadable_cache_tier_or_metered_count() {
 #[test]
 fn buffered_response_tier_counts_absent_null_and_readable_still_read() {
     let ir = AnthropicReader
-        .read_response(&message(serde_json::json!({
+        .read_response(crate::codec::test_host::HOST, &message(serde_json::json!({
             "input_tokens": 5, "output_tokens": 9, "cache_creation_input_tokens": 40,
             "cache_creation": {"ephemeral_5m_input_tokens": 40, "ephemeral_1h_input_tokens": null},
             "server_tool_use": {"web_search_requests": 2}
@@ -135,7 +143,11 @@ fn streaming_usage_frames_refuse_an_unreadable_cache_tier_or_metered_count() {
         });
         assert!(
             matches!(
-                AnthropicReader.read_response_event("message_start", &start),
+                AnthropicReader.read_response_event(
+                    crate::codec::test_host::HOST,
+                    "message_start",
+                    &start
+                ),
                 Some(IrStreamEvent::Error(_))
             ),
             "message_start with {usage} must end the stream in an error"
@@ -147,7 +159,11 @@ fn streaming_usage_frames_refuse_an_unreadable_cache_tier_or_metered_count() {
         });
         assert!(
             matches!(
-                AnthropicReader.read_response_event("message_delta", &delta),
+                AnthropicReader.read_response_event(
+                    crate::codec::test_host::HOST,
+                    "message_delta",
+                    &delta
+                ),
                 Some(IrStreamEvent::Error(_))
             ),
             "message_delta with {usage} must end the stream in an error"

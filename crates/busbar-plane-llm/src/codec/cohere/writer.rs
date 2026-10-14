@@ -1,10 +1,10 @@
 use super::*;
 
 impl ProtocolWriter for CohereWriter {
-    fn probe_request(&self) -> serde_json::Value {
+    fn probe_request(&self, host: &dyn busbar_contract::codec::CodecHost) -> serde_json::Value {
         // The ping IR is built by the plugin (ir_encode::ping_request); this dialect serializes it
         // through its own write_request, so the probe body matches a real request on this wire.
-        self.write_request(&super::super::ir_encode::ping_request())
+        self.write_request(host, &super::super::ir_encode::ping_request())
     }
 
     fn upstream_path(&self) -> &str {
@@ -22,7 +22,11 @@ impl ProtocolWriter for CohereWriter {
             .collect()
     }
 
-    fn write_request(&self, req: &crate::codec::ir::IrRequest) -> serde_json::Value {
+    fn write_request(
+        &self,
+        _host: &dyn busbar_contract::codec::CodecHost,
+        req: &crate::codec::ir::IrRequest,
+    ) -> serde_json::Value {
         let mut out = serde_json::Map::new();
         let mut messages_arr: Vec<serde_json::Value> = Vec::new();
 
@@ -607,7 +611,11 @@ impl ProtocolWriter for CohereWriter {
         serde_json::Value::Object(out)
     }
 
-    fn write_response_event(&self, ev: &IrStreamEvent) -> Option<(String, serde_json::Value)> {
+    fn write_response_event(
+        &self,
+        host: &dyn busbar_contract::codec::CodecHost,
+        ev: &IrStreamEvent,
+    ) -> Option<(String, serde_json::Value)> {
         match ev {
             IrStreamEvent::MessageStart { role, id, .. } => {
                 let cohere_role = match role {
@@ -621,7 +629,8 @@ impl ProtocolWriter for CohereWriter {
                 // emitted stream is indistinguishable from a native Cohere stream.
                 // The FIRST `message-start` decides this stream's id; a duplicate replays it rather
                 // than announcing the same message under a second identity.
-                let id = self.carried_stream_id(|| id.clone().unwrap_or_else(synthesize_cohere_id));
+                let id = self
+                    .carried_stream_id(|| id.clone().unwrap_or_else(|| synthesize_cohere_id(host)));
                 Some((
                     "".to_string(),
                     serde_json::json!({
@@ -957,7 +966,11 @@ impl ProtocolWriter for CohereWriter {
         }
     }
 
-    fn write_response_events(&self, ev: &IrStreamEvent) -> Vec<(String, serde_json::Value)> {
+    fn write_response_events(
+        &self,
+        host: &dyn busbar_contract::codec::CodecHost,
+        ev: &IrStreamEvent,
+    ) -> Vec<(String, serde_json::Value)> {
         // Cohere v2's native SSE brackets EACH citation with a `citation-start` (which carries the
         // Citation object) AND a matching `citation-end` (a bare structural close) — see
         // docs.cohere.com/v2/docs/streaming. `write_response_event` can only return ONE frame, so on
@@ -984,7 +997,7 @@ impl ProtocolWriter for CohereWriter {
                     index: *index,
                     delta: crate::codec::ir::IrDelta::CitationsDelta(vec![c.clone()]),
                 };
-                if let Some(start) = self.write_response_event(&one) {
+                if let Some(start) = self.write_response_event(host, &one) {
                     frames.push(start);
                     frames.push((
                         "".to_string(),
@@ -994,16 +1007,24 @@ impl ProtocolWriter for CohereWriter {
             }
             return frames;
         }
-        self.write_response_event(ev).into_iter().collect()
+        self.write_response_event(host, ev).into_iter().collect()
     }
 
-    fn write_error_frame(&self, err: &IrError) -> Option<(String, serde_json::Value)> {
+    fn write_error_frame(
+        &self,
+        host: &dyn busbar_contract::codec::CodecHost,
+        err: &IrError,
+    ) -> Option<(String, serde_json::Value)> {
         // The streaming-error seam: delegate to this dialect's own event writer so the mid-stream
         // error frame is byte-for-byte what an `Error` event produces on this wire.
-        self.write_response_event(&IrStreamEvent::Error(err.clone()))
+        self.write_response_event(host, &IrStreamEvent::Error(err.clone()))
     }
 
-    fn write_response(&self, resp: &crate::codec::ir::IrResponse) -> serde_json::Value {
+    fn write_response(
+        &self,
+        host: &dyn busbar_contract::codec::CodecHost,
+        resp: &crate::codec::ir::IrResponse,
+    ) -> serde_json::Value {
         let mut out = serde_json::Map::new();
         let mut content_arr: Vec<serde_json::Value> = Vec::new();
         let mut tool_calls_arr: Vec<serde_json::Value> = Vec::new();
@@ -1082,7 +1103,10 @@ impl ProtocolWriter for CohereWriter {
         // `id` exactly; the cross-protocol case (a non-Cohere backend that never supplied one)
         // hits `None` and we synthesize a shape-valid Cohere id so a native SDK always reads a
         // non-empty `.id` string.
-        let id = resp.id.clone().unwrap_or_else(synthesize_cohere_id);
+        let id = resp
+            .id
+            .clone()
+            .unwrap_or_else(|| synthesize_cohere_id(host));
         out.insert(keys::ID.to_string(), serde_json::Value::String(id));
         // model that served the response (preserved across cross-protocol translation)
         if let Some(ref model) = resp.model {
@@ -1192,7 +1216,13 @@ impl ProtocolWriter for CohereWriter {
     /// proxy engine, and auth.rs all dispatch `p.writer().write_error(...)`). It carries no
     /// `allow(dead_code)` suppression — matching every other protocol writer — because the
     /// dead-code lint never fires on vtable-dispatched trait method implementations.
-    fn write_error(&self, _status: u16, _kind: &str, message: &str) -> serde_json::Value {
+    fn write_error(
+        &self,
+        _host: &dyn busbar_contract::codec::CodecHost,
+        _status: u16,
+        _kind: &str,
+        message: &str,
+    ) -> serde_json::Value {
         serde_json::json!({
             (keys::MESSAGE): message,
         })

@@ -79,6 +79,27 @@ fn minted_id_entropy(ctx: &Ctx<'_>) -> [u8; 24] {
     bytes
 }
 
+/// THE CODEC HOST A PLANE CALL HANDS ITS CODECS: the context's own clock reading, and no random
+/// source — a plane holds none and the context carries none (see [`minted_id_entropy`]), so a codec
+/// reached through this trait takes its own entropy-unavailable branch.
+struct CtxHost(u64);
+
+impl CtxHost {
+    fn of(ctx: &Ctx<'_>) -> Self {
+        Self(ctx.clock().unix_secs)
+    }
+}
+
+impl busbar_contract::codec::CodecHost for CtxHost {
+    fn fill_entropy(&self, _out: &mut [u8]) -> bool {
+        false
+    }
+
+    fn wall_clock_now(&self) -> Option<u64> {
+        Some(self.0)
+    }
+}
+
 /// The default response ceiling used when a dialect requires one and the client sent none.
 ///
 /// The design fixes the fallback and the order it is reached in: the lane's own default, then the
@@ -295,18 +316,22 @@ fn event_payload(bytes: &[u8]) -> Option<(&str, serde_json::Value)> {
 /// The stream state is a fresh one because a usage frame states its own figures: this step reads
 /// one frame and returns what that frame reported, and it holds nothing across frames the way the
 /// decode step, which owns the kernel's state, does.
-fn reported_usage(dialect: &str, r: &Response<'_>) -> Option<crate::codec::ir::IrUsage> {
+fn reported_usage(
+    host: &dyn busbar_contract::codec::CodecHost,
+    dialect: &str,
+    r: &Response<'_>,
+) -> Option<crate::codec::ir::IrUsage> {
     let bytes = r.ir.body();
     if !is_streamed(r) {
         let value: serde_json::Value = sonic_rs::from_slice(bytes).ok()?;
-        return with_reader(dialect, |rd| rd.read_response(&value))?
+        return with_reader(dialect, |rd| rd.read_response(host, &value))?
             .ok()
             .map(|r| r.usage);
     }
     let (name, value) = event_payload(bytes)?;
     let mut state = StreamDecodeState::default();
     with_reader(dialect, |rd| {
-        rd.read_response_events(name, &value, &mut state)
+        rd.read_response_events(host, name, &value, &mut state)
     })?
     .into_iter()
     .find_map(|event| match event {
@@ -463,6 +488,7 @@ impl Plane for LlmPlane {
         _st: Option<&mut PlaneSessionState>,
         ctx: &Ctx<'u>,
     ) -> Result<EgressBody<'u>, Encode> {
+        let host = &CtxHost::of(ctx);
         let upstream = upstream_for(self, dest).ok_or(Encode::Unrepresentable)?;
         let egress = dialect::dialect(upstream.dialect).ok_or(Encode::Unrepresentable)?;
         let ingress = unit_dialect(u).ok_or(Encode::Unrepresentable)?;
@@ -558,7 +584,7 @@ impl Plane for LlmPlane {
                 // cannot see from the request (OAI-01, ANT-07/09/10 lane-capability ruling).
                 with_writer(egress.name, |w| {
                     let mut written =
-                        w.write_request_for_lane(&request, upstream.model, &upstream.caps);
+                        w.write_request_for_lane(host, &request, upstream.model, &upstream.caps);
                     w.rewrite_model_if_needed(&mut written, upstream.model);
                     written
                 })
@@ -618,6 +644,7 @@ impl Plane for LlmPlane {
         st: Option<&mut PlaneSessionState>,
         ctx: &Ctx<'u>,
     ) -> Result<Progress<'u>, Decode> {
+        let host = &CtxHost::of(ctx);
         let Some(frame) = frames.next_frame() else {
             return Ok(Progress::NeedMore);
         };
@@ -651,7 +678,9 @@ impl Plane for LlmPlane {
             // borrowed for the length of the call — so this is a stateless question and the writer
             // a resolved `Protocol` would box alongside it is never touched.
             let events = with_decode_state(st, |state| {
-                with_reader(egress.name, |r| r.read_response_events(name, &value, state))
+                with_reader(egress.name, |r| {
+                    r.read_response_events(host, name, &value, state)
+                })
             })
             .ok_or(Decode::UnsupportedOperation)?;
             let _ = facts.set(meta::FACT_FRAME_KIND, FactValue::Str("event"));
@@ -687,7 +716,7 @@ impl Plane for LlmPlane {
         }
 
         let value = parse(bytes)?;
-        let response = with_reader(egress.name, |r| r.read_response(&value))
+        let response = with_reader(egress.name, |r| r.read_response(host, &value))
             .ok_or(Decode::UnsupportedOperation)?
             .map_err(|_| Decode::Malformed)?;
         let _ = facts.set(meta::FACT_FRAME_KIND, FactValue::Str("body"));
@@ -708,6 +737,7 @@ impl Plane for LlmPlane {
         st: Option<&mut PlaneSessionState>,
         ctx: &Ctx<'u>,
     ) -> Result<ScratchBytes<'u>, Encode> {
+        let host = &CtxHost::of(ctx);
         let ingress = ingress_dialect(ctx).ok_or(Encode::Unrepresentable)?;
         let source = match r.facts.get(meta::FACT_SOURCE_DIALECT) {
             Some(FactValue::Str(name)) => name,
@@ -752,13 +782,16 @@ impl Plane for LlmPlane {
             };
             let events = with_decode_state(st, |state| {
                 with_reader(source, |r| {
-                    crate::codec::drops::read_stream_frame(seam, r, name, &value, state)
+                    crate::codec::drops::read_stream_frame(host, seam, r, name, &value, state)
                 })
             })
             .ok_or(Encode::Unrepresentable)?;
             let mut out = Vec::new();
             for event in events {
-                for (kind, payload) in ingress_protocol.writer().write_response_events(&event) {
+                for (kind, payload) in ingress_protocol
+                    .writer()
+                    .write_response_events(host, &event)
+                {
                     out.extend_from_slice(b"event: ");
                     out.extend_from_slice(kind.as_bytes());
                     out.extend_from_slice(b"\ndata: ");
@@ -779,7 +812,7 @@ impl Plane for LlmPlane {
             egress: source,
         };
         let (read, _dropped) = crate::codec::drops::scope(seam, || {
-            let read = with_reader(source, |r| r.read_response(&value));
+            let read = with_reader(source, |r| r.read_response(host, &value));
             if matches!(read, Some(Ok(_))) {
                 crate::codec::chat_handle::drop_untranslatable_response(source, &value);
             }
@@ -806,7 +839,7 @@ impl Plane for LlmPlane {
         // Two calls, one writer, for the same reason the crossing's request side has two: what the
         // second stamps is what the first wrote.
         let written = with_writer(ingress.name, |w| {
-            let mut written = w.write_response(&response);
+            let mut written = w.write_response(host, &response);
             w.inject_response_metrics(&mut written, elapsed_ms(ctx));
             written
         })
@@ -821,6 +854,7 @@ impl Plane for LlmPlane {
         _st: Option<&PlaneSessionState>,
         ctx: &Ctx<'u>,
     ) -> Result<ScratchBytes<'u>, Encode> {
+        let host = &CtxHost::of(ctx);
         let ingress = ingress_dialect(ctx).ok_or(Encode::Unrepresentable)?;
         let (status, kind) = refusal_shape(refusal.reason);
         // One dialect puts a minted identifier at the top of its error envelope, because a native
@@ -829,6 +863,7 @@ impl Plane for LlmPlane {
         // shape while leaving this method a pure function of what it was given. Two refusals built
         // from the same context are therefore the same bytes.
         let envelope = crate::codec::write_error_envelope(
+            host,
             ingress.name,
             status,
             kind,
@@ -846,6 +881,7 @@ impl Plane for LlmPlane {
         _st: Option<&mut PlaneSessionState>,
         ctx: &Ctx<'u>,
     ) -> Result<Option<ScratchBytes<'u>>, Encode> {
+        let host = &CtxHost::of(ctx);
         // A completed request has already had its whole answer written; there is no separate
         // ending to send. A failure mid-answer is the one case with an ending to write, and the
         // dialect's own error frame is what a client of that dialect knows how to read.
@@ -854,7 +890,12 @@ impl Plane for LlmPlane {
         };
         let ingress = unit_dialect(u).ok_or(Encode::Unrepresentable)?;
         let envelope = with_writer(ingress.name, |w| {
-            w.write_error(500, KIND_API_ERROR, "The request could not be completed.")
+            w.write_error(
+                host,
+                500,
+                KIND_API_ERROR,
+                "The request could not be completed.",
+            )
         })
         .ok_or(Encode::Unrepresentable)?;
         Ok(Some(put(ctx, &serialize(&envelope)?)?))
@@ -893,7 +934,7 @@ impl Plane for LlmPlane {
         plan
     }
 
-    fn meter<'u>(&self, _u: &Unit<'u>, r: &Response<'u>, _ctx: &Ctx<'u>) -> UsageLocators {
+    fn meter<'u>(&self, _u: &Unit<'u>, r: &Response<'u>, ctx: &Ctx<'u>) -> UsageLocators {
         let mut locators = UsageLocators::default();
         let Some(source) = (match r.facts.get(meta::FACT_SOURCE_DIALECT) {
             Some(FactValue::Str(name)) => dialect::dialect(name),
@@ -901,7 +942,7 @@ impl Plane for LlmPlane {
         }) else {
             return locators;
         };
-        let Some(usage) = reported_usage(source.name, r) else {
+        let Some(usage) = reported_usage(&CtxHost::of(ctx), source.name, r) else {
             return locators;
         };
         // The quantities come back already normalized: a dialect that reports its cached count
@@ -989,6 +1030,7 @@ impl Plane for LlmPlane {
         r: &Response<'u>,
         ctx: &Ctx<'u>,
     ) -> ContentFacts<'u> {
+        let host = &CtxHost::of(ctx);
         let mut facts = Facts::new();
         let source = match r.facts.get(meta::FACT_SOURCE_DIALECT) {
             Some(FactValue::Str(name)) => name,
@@ -1004,7 +1046,7 @@ impl Plane for LlmPlane {
             };
             let mut state = StreamDecodeState::default();
             let events = with_reader(source, |rd| {
-                rd.read_response_events(name, &value, &mut state)
+                rd.read_response_events(host, name, &value, &mut state)
             })
             .unwrap_or_default();
             for event in events {
@@ -1015,7 +1057,7 @@ impl Plane for LlmPlane {
         let Ok(value) = sonic_rs::from_slice::<serde_json::Value>(r.ir.body()) else {
             return ContentFacts { facts };
         };
-        let Some(Ok(response)) = with_reader(source, |rd| rd.read_response(&value)) else {
+        let Some(Ok(response)) = with_reader(source, |rd| rd.read_response(host, &value)) else {
             return ContentFacts { facts };
         };
         response_facts(ctx, &response, &mut facts);

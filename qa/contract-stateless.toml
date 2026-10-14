@@ -163,11 +163,6 @@ item = "__UPGRADES_TO"
 [[finding]]
 rule = "contract-stateless:static"
 file = "crates/busbar-contract/src/codec.rs"
-item = "ENTROPY_SOURCE"
-
-[[finding]]
-rule = "contract-stateless:static"
-file = "crates/busbar-contract/src/codec.rs"
 item = "TRANSLATE_CAP_READER"
 
 [[finding]]
@@ -179,11 +174,6 @@ item = "USAGE_TAP_FAULT_LATCH"
 rule = "contract-stateless:static"
 file = "crates/busbar-contract/src/codec.rs"
 item = "USAGE_TAP_FAULT_REPORTER"
-
-[[finding]]
-rule = "contract-stateless:static"
-file = "crates/busbar-contract/src/codec.rs"
-item = "WALL_CLOCK"
 
 [[finding]]
 rule = "contract-stateless:static"

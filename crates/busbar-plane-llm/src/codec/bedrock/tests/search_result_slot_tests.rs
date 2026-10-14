@@ -25,7 +25,9 @@ fn xreq(ingress: &'static str, egress: &str, body: &Value) -> Value {
             egress_p.decl().is_some_and(|d| d.requires_max_tokens),
         );
     }
-    let mut out = egress_p.writer().write_request(&req);
+    let mut out = egress_p
+        .writer()
+        .write_request(crate::codec::test_host::HOST, &req);
     crate::codec::wire_shim::strip_router_shim_keys(&mut out, egress);
     out
 }
@@ -205,7 +207,7 @@ fn dropping_the_citation_loses_the_search_result_block() {
     let anthropic = crate::codec::proto_codec::protocol_for("anthropic")
         .expect("anthropic")
         .writer()
-        .write_request(&ir);
+        .write_request(crate::codec::test_host::HOST, &ir);
     assert_eq!(
         anthropic["messages"][0]["content"][1]["type"], "text",
         "{anthropic}"
@@ -213,7 +215,7 @@ fn dropping_the_citation_loses_the_search_result_block() {
     let bedrock = crate::codec::proto_codec::protocol_for("bedrock")
         .expect("bedrock")
         .writer()
-        .write_request(&ir);
+        .write_request(crate::codec::test_host::HOST, &ir);
     assert!(
         bedrock["messages"][0]["content"][1]
             .get("searchResult")

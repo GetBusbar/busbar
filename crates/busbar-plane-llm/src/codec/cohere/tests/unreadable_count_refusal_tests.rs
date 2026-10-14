@@ -21,21 +21,26 @@ fn body(usage: serde_json::Value) -> serde_json::Value {
 #[test]
 fn buffered_response_refuses_a_stringified_count() {
     CohereReader
-        .read_response(&body(
-            serde_json::json!({"tokens": {"input_tokens": "1500", "output_tokens": 9}}),
-        ))
+        .read_response(
+            crate::codec::test_host::HOST,
+            &body(serde_json::json!({"tokens": {"input_tokens": "1500", "output_tokens": 9}})),
+        )
         .expect_err("a present, unreadable tokens.input_tokens is a refusal, never a zero");
     CohereReader
-        .read_response(&body(
-            serde_json::json!({"billed_units": {"input_tokens": "1500"}}),
-        ))
+        .read_response(
+            crate::codec::test_host::HOST,
+            &body(serde_json::json!({"billed_units": {"input_tokens": "1500"}})),
+        )
         .expect_err("billed_units.input_tokens WINS the bill; unreadable, it refuses too");
 }
 
 #[test]
 fn buffered_response_with_an_absent_count_still_reads_as_zero() {
     let ir = CohereReader
-        .read_response(&body(serde_json::json!({"tokens": {"output_tokens": 9}})))
+        .read_response(
+            crate::codec::test_host::HOST,
+            &body(serde_json::json!({"tokens": {"output_tokens": 9}})),
+        )
         .expect("an absent count is zero");
     assert_eq!(ir.usage.input_tokens, 0);
     assert_eq!(ir.usage.output_tokens, 9);
@@ -44,7 +49,7 @@ fn buffered_response_with_an_absent_count_still_reads_as_zero() {
 #[test]
 fn streaming_message_end_refuses_a_stringified_count() {
     let mut state = crate::codec::ir::StreamDecodeState::default();
-    let ev = CohereReader.read_response_events(
+    let ev = CohereReader.read_response_events(crate::codec::test_host::HOST,
         "",
         &serde_json::json!({
             "type": "message-end",
@@ -89,7 +94,10 @@ fn billed_units(field: &str, value: serde_json::Value) -> serde_json::Value {
 fn buffered_response_refuses_an_unreadable_billed_unit() {
     for field in BILLED_UNIT_FIELDS {
         CohereReader
-            .read_response(&body(billed_units(field, serde_json::json!("3"))))
+            .read_response(
+                crate::codec::test_host::HOST,
+                &body(billed_units(field, serde_json::json!("3"))),
+            )
             .expect_err(&format!(
                 "a present, unreadable billed_units.{field} is a refusal, never a dropped unit"
             ));
@@ -99,16 +107,22 @@ fn buffered_response_refuses_an_unreadable_billed_unit() {
 #[test]
 fn buffered_response_reads_a_readable_absent_or_null_billed_unit() {
     let ir = CohereReader
-        .read_response(&body(serde_json::json!({
-            "tokens": {"input_tokens": 10, "output_tokens": 5},
-            "billed_units": {"search_units": 3.0, "classifications": 2}
-        })))
+        .read_response(
+            crate::codec::test_host::HOST,
+            &body(serde_json::json!({
+                "tokens": {"input_tokens": 10, "output_tokens": 5},
+                "billed_units": {"search_units": 3.0, "classifications": 2}
+            })),
+        )
         .expect("readable billed units read");
     assert_eq!(ir.usage.detail.search_units, Some(3));
     assert_eq!(ir.usage.detail.billed_classifications, Some(2));
     for field in BILLED_UNIT_FIELDS {
         let ir = CohereReader
-            .read_response(&body(billed_units(field, serde_json::Value::Null)))
+            .read_response(
+                crate::codec::test_host::HOST,
+                &body(billed_units(field, serde_json::Value::Null)),
+            )
             .expect("a null billed unit is absence, not a refusal");
         assert_eq!(ir.usage.detail.search_units, None);
         assert_eq!(ir.usage.detail.billed_classifications, None);
@@ -119,7 +133,7 @@ fn buffered_response_reads_a_readable_absent_or_null_billed_unit() {
 fn streaming_message_end_refuses_an_unreadable_billed_unit() {
     for field in BILLED_UNIT_FIELDS {
         let mut state = crate::codec::ir::StreamDecodeState::default();
-        let ev = CohereReader.read_response_events(
+        let ev = CohereReader.read_response_events(crate::codec::test_host::HOST,
             "",
             &serde_json::json!({
                 "type": "message-end",

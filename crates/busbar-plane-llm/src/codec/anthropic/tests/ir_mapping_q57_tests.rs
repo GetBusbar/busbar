@@ -29,7 +29,9 @@ fn xreq(ingress: &'static str, egress: &str, body: &Value) -> Value {
             lane_caps: Default::default(),
         },
     );
-    egress_p.writer().write_request(&req)
+    egress_p
+        .writer()
+        .write_request(crate::codec::test_host::HOST, &req)
 }
 
 /// [`xreq`] onto a lane with the declared capabilities, through the production lane write.
@@ -62,7 +64,7 @@ fn xreq_lane(
     );
     egress_p
         .writer()
-        .write_request_for_lane(&req, "claude-x", caps)
+        .write_request_for_lane(crate::codec::test_host::HOST, &req, "claude-x", caps)
 }
 
 /// A lane of the newest Claude generation: declares adaptive thinking AND native structured
@@ -81,18 +83,20 @@ fn xresp(egress: &str, ingress: &'static str, body: &Value) -> Value {
     let ingress_p = protocol_for(ingress).expect("ingress protocol");
     let mut resp = egress_p
         .reader()
-        .read_response(body)
+        .read_response(crate::codec::test_host::HOST, body)
         .expect("response reads");
     super::super::chat_handle::chat_prepare_for_ingress(&mut resp, ingress, 1_752_000_000);
-    ingress_p.writer().write_response(&resp)
+    ingress_p
+        .writer()
+        .write_response(crate::codec::test_host::HOST, &resp)
 }
 
 /// Cross-protocol STREAM: backend `egress` SSE bytes → the `ingress` client's bytes.
 fn xstream(egress: &str, ingress: &str, raw: &str) -> String {
     let mut st =
         super::super::proto_stream::StreamTranslate::new(ingress, egress).expect("translator");
-    let mut out = st.feed(raw.as_bytes());
-    out.extend(st.finish());
+    let mut out = st.feed(crate::codec::test_host::HOST, raw.as_bytes());
+    out.extend(st.finish(crate::codec::test_host::HOST));
     String::from_utf8_lossy(&out).into_owned()
 }
 
@@ -191,7 +195,7 @@ fn ant03_file_image_source_is_a_vendor_handle_not_empty_base64() {
     let back = protocol_for("anthropic")
         .unwrap()
         .writer()
-        .write_request(&ir);
+        .write_request(crate::codec::test_host::HOST, &ir);
     assert_eq!(
         back.pointer("/messages/0/content/1"),
         Some(&json!({"type": "image", "source": {"type": "file", "file_id": "file_abc"}})),
@@ -320,7 +324,12 @@ fn ant07_response_format_is_native_and_leaves_tool_choice_alone() {
         .unwrap();
     let anthropic = protocol_for("anthropic").unwrap();
     let w = anthropic.writer();
-    let out3 = w.write_request_for_lane(&ir, "claude-x", &newest_lane());
+    let out3 = w.write_request_for_lane(
+        crate::codec::test_host::HOST,
+        &ir,
+        "claude-x",
+        &newest_lane(),
+    );
     assert!(out3.get("output_config").is_none(), "{out3}");
     assert_eq!(out3["tools"].as_array().unwrap().len(), 1, "{out3}");
     assert!(w
@@ -514,7 +523,7 @@ fn ant13_server_tools_are_hosted_not_functions() {
     let back = protocol_for("anthropic")
         .unwrap()
         .writer()
-        .write_request(&ir);
+        .write_request(crate::codec::test_host::HOST, &ir);
     assert_eq!(
         back.pointer("/tools/1"),
         Some(&json!({"type": "bash_20250124", "name": "bash"})),
@@ -553,7 +562,12 @@ fn ant14_suppressed_stream_block_drops_its_deltas_and_stop() {
         let ev = lines.next().unwrap().trim_start_matches("event: ");
         let data: Value =
             serde_json::from_str(lines.next().unwrap().trim_start_matches("data: ")).unwrap();
-        events.extend(decoder.reader().read_response_events(ev, &data, &mut state));
+        events.extend(decoder.reader().read_response_events(
+            crate::codec::test_host::HOST,
+            ev,
+            &data,
+            &mut state,
+        ));
     }
     for ev in &events {
         match ev {
@@ -616,7 +630,7 @@ fn ant15_response_image_and_json_blocks_are_not_invalid_blocks() {
     let out = protocol_for("anthropic")
         .unwrap()
         .writer()
-        .write_response(&resp);
+        .write_response(crate::codec::test_host::HOST, &resp);
     let content = out["content"].as_array().unwrap();
     assert!(
         content.iter().all(|b| b["type"] == "text"),
@@ -695,7 +709,7 @@ fn ant17_tool_result_content_is_filtered_like_message_content() {
     let out = protocol_for("anthropic")
         .unwrap()
         .writer()
-        .write_request(&req);
+        .write_request(crate::codec::test_host::HOST, &req);
     assert_eq!(
         out.pointer("/messages/0/content/0/content"),
         Some(&json!([{"type": "text", "text": "ok"}])),
@@ -717,7 +731,7 @@ fn ant18_search_result_citation_source_maps_both_ways() {
     let resp = protocol_for("anthropic")
         .unwrap()
         .reader()
-        .read_response(&body)
+        .read_response(crate::codec::test_host::HOST, &body)
         .unwrap();
     let crate::codec::ir::IrBlock::Text { citations, .. } = &resp.content[0] else {
         panic!("text block expected");

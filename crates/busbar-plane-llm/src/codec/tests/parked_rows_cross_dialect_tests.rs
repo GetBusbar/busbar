@@ -47,7 +47,7 @@ fn cross(ingress: &str, egress: &str, body: &Value) -> Value {
     protocol_for(egress)
         .expect("egress")
         .writer()
-        .write_request(&req)
+        .write_request(crate::codec::test_host::HOST, &req)
 }
 
 const MOVED: [&str; 5] = [
@@ -208,7 +208,7 @@ fn gemini_service_tier_same_dialect_keeps_the_raw_word() {
         let out = protocol_for("gemini")
             .expect("gemini")
             .writer()
-            .write_request(&req);
+            .write_request(crate::codec::test_host::HOST, &req);
         assert_eq!(out.get("serviceTier"), Some(&json!(tier)), "{out}");
         assert_eq!(out.get("store"), Some(&json!(false)), "{out}");
     }
@@ -239,7 +239,12 @@ fn bedrock_output_config_effort_crosses_as_the_reasoning_ask() {
     let out = protocol_for("anthropic")
         .expect("anthropic")
         .writer()
-        .write_request_for_lane(&req, "claude-opus-4-7", &adaptive);
+        .write_request_for_lane(
+            crate::codec::test_host::HOST,
+            &req,
+            "claude-opus-4-7",
+            &adaptive,
+        );
     assert_eq!(
         out.pointer("/output_config/effort"),
         Some(&json!("high")),

@@ -24,7 +24,12 @@ fn item18_citation_on_a_later_text_block_is_block_relative() {
     ];
     let mut events = Vec::new();
     for c in chunks {
-        events.extend(reader.reader().read_response_events("", &c, &mut state));
+        events.extend(reader.reader().read_response_events(
+            crate::codec::test_host::HOST,
+            "",
+            &c,
+            &mut state,
+        ));
     }
     let (index, cits) = events
         .iter()
@@ -71,7 +76,7 @@ fn bedrock_image_answer() -> crate::codec::ir::IrResponse {
     protocol_for("bedrock")
         .unwrap()
         .reader()
-        .read_response(&converse)
+        .read_response(crate::codec::test_host::HOST, &converse)
         .expect("read")
 }
 
@@ -84,8 +89,12 @@ fn item17_generated_image_streams_to_a_gemini_client() {
     let mut ir = bedrock_image_answer();
     crate::codec::chat_handle::chat_prepare_for_ingress(&mut ir, "gemini", 0);
     let out = String::from_utf8(
-        crate::codec::proto_stream::StreamTranslate::synthesize_from_response("gemini", &ir)
-            .expect("synthesized"),
+        crate::codec::proto_stream::StreamTranslate::synthesize_from_response(
+            crate::codec::test_host::HOST,
+            "gemini",
+            &ir,
+        )
+        .expect("synthesized"),
     )
     .unwrap();
     let inline = sse_payloads(&out)
@@ -102,8 +111,12 @@ fn item17_generated_image_streams_to_a_gemini_client() {
     let mut ir = bedrock_image_answer();
     crate::codec::chat_handle::chat_prepare_for_ingress(&mut ir, "anthropic", 0);
     let out = String::from_utf8(
-        crate::codec::proto_stream::StreamTranslate::synthesize_from_response("anthropic", &ir)
-            .expect("synthesized"),
+        crate::codec::proto_stream::StreamTranslate::synthesize_from_response(
+            crate::codec::test_host::HOST,
+            "anthropic",
+            &ir,
+        )
+        .expect("synthesized"),
     )
     .unwrap();
     let payloads = sse_payloads(&out);

@@ -37,7 +37,13 @@ fn translate(ingress: &str, egress: &str, body: &Value) -> (Vec<String>, WarnCap
     };
     let cap = WarnCapture::default();
     let out = tracing::subscriber::with_default(cap.clone(), || {
-        handler.translate_request(TranslateReqInput::Json(body), Some(egress), &prep, "m")
+        handler.translate_request(
+            crate::codec::test_host::HOST,
+            TranslateReqInput::Json(body),
+            Some(egress),
+            &prep,
+            "m",
+        )
     });
     let Ok(out) = out else {
         panic!("{ingress} -> {egress}: the request must translate");
@@ -63,7 +69,7 @@ fn answer(egress: &str, ingress: &str, body: &Value) -> (Vec<String>, WarnCaptur
     let bytes = serde_json::to_vec(body).unwrap();
     let cap = WarnCapture::default();
     let whole = tracing::subscriber::with_default(cap.clone(), || {
-        crate::exchange::reply::whole::translate(&ctx, 200, &bytes)
+        crate::exchange::reply::whole::translate(crate::codec::test_host::HOST, &ctx, 200, &bytes)
     });
     (whole.dropped, cap)
 }
@@ -249,7 +255,9 @@ fn outside_an_attempt_the_writers_own_warn_is_said() {
     };
     let cap = WarnCapture::default();
     let writer = crate::codec::gemini::GeminiWriter;
-    tracing::subscriber::with_default(cap.clone(), || writer.write_request(&ir));
+    tracing::subscriber::with_default(cap.clone(), || {
+        writer.write_request(crate::codec::test_host::HOST, &ir)
+    });
     let text = "dropping parallel_tool_calls on Gemini egress";
     assert_eq!(cap.count(text), 1, "{:?}", cap.messages());
     assert!(
@@ -286,7 +294,13 @@ fn translate_body(ingress: &str, egress: &str, body: &Value) -> (Value, Vec<Stri
     };
     let cap = WarnCapture::default();
     let out = tracing::subscriber::with_default(cap.clone(), || {
-        handler.translate_request(TranslateReqInput::Json(body), Some(egress), &prep, "m")
+        handler.translate_request(
+            crate::codec::test_host::HOST,
+            TranslateReqInput::Json(body),
+            Some(egress),
+            &prep,
+            "m",
+        )
     });
     let Ok(out) = out else {
         panic!("{ingress} -> {egress}: the request must translate");
@@ -317,7 +331,13 @@ fn refused_natively(ingress: &str, egress: &str, body: &Value) {
         lane_caps: Default::default(),
         thought_signature_fill: false,
     };
-    let out = handler.translate_request(TranslateReqInput::Json(body), Some(egress), &prep, "m");
+    let out = handler.translate_request(
+        crate::codec::test_host::HOST,
+        TranslateReqInput::Json(body),
+        Some(egress),
+        &prep,
+        "m",
+    );
     assert!(
         matches!(
             out,

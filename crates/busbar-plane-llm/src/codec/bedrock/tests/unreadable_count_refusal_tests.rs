@@ -17,7 +17,7 @@ fn buffered_response_refuses_a_stringified_count() {
         "usage": {"inputTokens": "1500", "outputTokens": 9}
     });
     BedrockReader
-        .read_response(&body)
+        .read_response(crate::codec::test_host::HOST, &body)
         .expect_err("a present, unreadable inputTokens is a refusal, never a zero");
 }
 
@@ -29,7 +29,7 @@ fn buffered_response_with_an_absent_count_still_reads_as_zero() {
         "usage": {"outputTokens": 9}
     });
     let ir = BedrockReader
-        .read_response(&body)
+        .read_response(crate::codec::test_host::HOST, &body)
         .expect("an absent count is zero");
     assert_eq!(ir.usage.input_tokens, 0);
     assert_eq!(ir.usage.output_tokens, 9);
@@ -39,11 +39,13 @@ fn buffered_response_with_an_absent_count_still_reads_as_zero() {
 fn streaming_metadata_refuses_a_stringified_count() {
     let mut state = crate::codec::ir::StreamDecodeState::default();
     BedrockReader.read_response_events(
+        crate::codec::test_host::HOST,
         "",
         &serde_json::json!({"type": "messageStop", "stopReason": "end_turn"}),
         &mut state,
     );
     let ev = BedrockReader.read_response_events(
+        crate::codec::test_host::HOST,
         "",
         &serde_json::json!({"type": "metadata", "usage": {"inputTokens": 5, "outputTokens": "27"}}),
         &mut state,
@@ -89,7 +91,7 @@ fn buffered_response_refuses_an_unreadable_cache_count() {
                            "cacheDetails": [{"ttl": "5m", "inputTokens": "40"}]}),
     ] {
         BedrockReader
-            .read_response(&converse(usage.clone()))
+            .read_response(crate::codec::test_host::HOST, &converse(usage.clone()))
             .expect_err(&format!(
                 "{usage} carries an unreadable cache count: refusal, not `none`"
             ));
@@ -99,16 +101,19 @@ fn buffered_response_refuses_an_unreadable_cache_count() {
 #[test]
 fn buffered_response_cache_counts_absent_null_readable_and_unknown_ttl_still_read() {
     let ir = BedrockReader
-        .read_response(&converse(serde_json::json!({
-            "inputTokens": 5, "outputTokens": 9,
-            "cacheReadInputTokens": null, "cacheWriteInputTokens": 60,
-            "cacheDetails": [
-                {"ttl": "1h", "inputTokens": 20},
-                {"ttl": "5m", "inputTokens": 40},
-                {"ttl": "5m"},
-                {"ttl": "9d", "inputTokens": "not a tier this build prices"}
-            ]
-        })))
+        .read_response(
+            crate::codec::test_host::HOST,
+            &converse(serde_json::json!({
+                "inputTokens": 5, "outputTokens": 9,
+                "cacheReadInputTokens": null, "cacheWriteInputTokens": 60,
+                "cacheDetails": [
+                    {"ttl": "1h", "inputTokens": 20},
+                    {"ttl": "5m", "inputTokens": 40},
+                    {"ttl": "5m"},
+                    {"ttl": "9d", "inputTokens": "not a tier this build prices"}
+                ]
+            })),
+        )
         .expect("absent, null, readable and unknown-TTL entries all read");
     assert_eq!(ir.usage.cache_read_input_tokens, None);
     assert_eq!(ir.usage.cache_creation_input_tokens, Some(60));
@@ -125,11 +130,13 @@ fn streaming_metadata_refuses_an_unreadable_cache_count() {
     ] {
         let mut state = crate::codec::ir::StreamDecodeState::default();
         BedrockReader.read_response_events(
+            crate::codec::test_host::HOST,
             "",
             &serde_json::json!({"type": "messageStop", "stopReason": "end_turn"}),
             &mut state,
         );
         let ev = BedrockReader.read_response_events(
+            crate::codec::test_host::HOST,
             "",
             &serde_json::json!({"type": "metadata", "usage": usage}),
             &mut state,

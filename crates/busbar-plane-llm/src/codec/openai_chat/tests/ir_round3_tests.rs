@@ -29,13 +29,19 @@ fn item12_off_is_reasoning_effort_none_on_a_declaring_lane() {
         reasoning_none: true,
         ..Default::default()
     };
-    let out = w
-        .writer()
-        .write_request_for_lane(&anthropic_off(), "gpt-5.1", &none_lane);
+    let out = w.writer().write_request_for_lane(
+        crate::codec::test_host::HOST,
+        &anthropic_off(),
+        "gpt-5.1",
+        &none_lane,
+    );
     assert_eq!(out["reasoning_effort"], "none", "{out}");
-    let out = w
-        .writer()
-        .write_request_for_lane(&anthropic_off(), "gpt-4o", &Default::default());
+    let out = w.writer().write_request_for_lane(
+        crate::codec::test_host::HOST,
+        &anthropic_off(),
+        "gpt-4o",
+        &Default::default(),
+    );
     assert!(out.get("reasoning_effort").is_none(), "{out}");
 }
 
@@ -74,7 +80,10 @@ fn to_egress(egress: &str, body: &serde_json::Value) -> serde_json::Value {
             lane_caps: Default::default(),
         },
     );
-    protocol_for(egress).unwrap().writer().write_request(&ir)
+    protocol_for(egress)
+        .unwrap()
+        .writer()
+        .write_request(crate::codec::test_host::HOST, &ir)
 }
 
 /// Item 11 (OAI-09): a Chat custom (grammar) tool reaches a Responses lane as the flat Responses
@@ -108,7 +117,10 @@ fn item11_custom_tool_dropped_and_reported_where_not_representable() {
         .writer()
         .dropped_egress_controls(&ir)
         .contains(&"custom_tool"));
-    let same = protocol_for("openai").unwrap().writer().write_request(&ir);
+    let same = protocol_for("openai")
+        .unwrap()
+        .writer()
+        .write_request(crate::codec::test_host::HOST, &ir);
     assert!(
         same["tools"]
             .as_array()

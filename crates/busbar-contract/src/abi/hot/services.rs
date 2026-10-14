@@ -3,20 +3,20 @@
 
 //! THE HOST SERVICES ACROSS THE HOT SEAM (minor 30; ARCHITECT SD-3 queue (6), DEC-SERVE G2).
 //!
-//! The contract ports a codec reaches — [`fill_entropy`](crate::codec::fill_entropy),
-//! [`wall_clock_now`](crate::codec::wall_clock_now),
-//! [`usage_tap_fault_should_warn`](crate::codec::usage_tap_fault_should_warn) and
-//! [`max_translate_body_bytes`](crate::codec::max_translate_body_bytes) — are process-wide
+//! The contract ports a codec reaches — [`usage_tap_fault_should_warn`](crate::codec::usage_tap_fault_should_warn)
+//! and [`max_translate_body_bytes`](crate::codec::max_translate_body_bytes) — are process-wide
 //! `OnceLock`s the host arms in ITS image. A plane LINKED into the host shares that image, so it
 //! reads the host's services. A plane DROPPED IN as a `cdylib` carries its own copy of this crate,
-//! whose ports nothing armed: it read the failure path of every one (a synthesized id with no
-//! entropy, an unstamped time, a latch that never warns, the default cap instead of the operator's).
+//! whose ports nothing armed: it read the failure path of every one (a latch that never warns, the
+//! default cap instead of the operator's). The host's entropy and wall clock are no longer ports: a
+//! codec is HANDED them, as a [`CodecHost`](crate::codec::CodecHost), down its call graph, so the
+//! `entropy_fill` and `wall_clock` slots are the host's own to serve (the kernel serves them) and
+//! nothing here arms or answers them.
 //!
 //! Two halves, one file, because they are one contract:
 //!
-//! * **HOST side** — `entropy_fill`, `wall_clock`, `tap_fault_latch`, `translate_cap`: the
-//!   four slots of [`PlaneHostVtable::SERVICES`], each answering from THIS image's own ports, which
-//!   the host armed. A host that builds its table over `SERVICES` adds no code of its own.
+//! * **HOST side** — `tap_fault_latch`, `translate_cap`: two slots of
+//!   [`PlaneHostVtable::SERVICES`], each answering from THIS image's own ports, which the host armed.
 //! * **PLANE side** — [`arm`]: run in a dropped-in plane's image (the door's `busbar_plane_arm`
 //!   symbol, which the host calls when it opens the door), it installs that image's ports over the
 //!   host's slots, so a codec in the plane reads the host's services exactly as a linked codec does.
@@ -26,38 +26,7 @@ use super::pod::StatusClass;
 use std::panic::catch_unwind;
 use std::sync::atomic::{AtomicPtr, AtomicU32, Ordering};
 
-// ── HOST SIDE: the four slots, served from this image's armed contract ports ────────────────────────
-
-/// `entropy_fill` — fill `out_len` bytes at `out` through [`crate::codec::fill_entropy`].
-pub(crate) extern "C-unwind" fn entropy_fill(
-    _host: HostCtx,
-    out: *mut u8,
-    out_len: usize,
-) -> StatusClass {
-    catch_unwind(|| {
-        if out.is_null() && out_len > 0 {
-            return StatusClass::Refused;
-        }
-        let buf: &mut [u8] = if out_len == 0 {
-            &mut []
-        } else {
-            // SAFETY: a non-null `out` addresses `out_len` writable bytes for the call (the slot's
-            // buffer discipline).
-            unsafe { core::slice::from_raw_parts_mut(out, out_len) }
-        };
-        if crate::codec::fill_entropy(buf) {
-            StatusClass::Ok
-        } else {
-            StatusClass::Refused
-        }
-    })
-    .unwrap_or(StatusClass::Fault)
-}
-
-/// `wall_clock` — [`crate::codec::wall_clock_now`], `0` when the host armed no clock.
-pub(crate) extern "C-unwind" fn wall_clock(_host: HostCtx) -> u64 {
-    catch_unwind(|| crate::codec::wall_clock_now().unwrap_or(0)).unwrap_or(0)
-}
+// ── HOST SIDE: the two slots, served from this image's armed contract ports ─────────────────────────
 
 /// `tap_fault_latch` — [`crate::codec::usage_tap_fault_should_warn`] over the two borrowed ranges.
 /// The port takes the reason as `&'static str` (a codec names its reasons as constants), so a
@@ -159,8 +128,8 @@ pub unsafe fn arm(host: *const PlaneHostVtable) -> StatusClass {
         return StatusClass::Refused;
     };
     // SAFETY: as below — `host`/`size` are what `check` just validated.
-    let own = crate::host_slot!(host, size, entropy_fill)
-        .is_some_and(|fill| fill as usize == entropy_fill as super::host::EntropyFillFn as usize);
+    let own = crate::host_slot!(host, size, translate_cap)
+        .is_some_and(|cap| cap as usize == translate_cap as super::host::TranslateCapFn as usize);
     if own {
         // The host IS this image (a linked plane): its ports are the host's own, armed by the host,
         // and a forwarder installed here would call back into itself.
@@ -168,13 +137,7 @@ pub unsafe fn arm(host: *const PlaneHostVtable) -> StatusClass {
     }
     ARMED_SIZE.store(size, Ordering::Release);
     ARMED.store(host.cast_mut(), Ordering::Release);
-    // SAFETY (all four): `host`/`size` are what `check` just validated.
-    if crate::host_slot!(host, size, entropy_fill).is_some() {
-        crate::codec::install_entropy_source(armed_entropy);
-    }
-    if crate::host_slot!(host, size, wall_clock).is_some() {
-        crate::codec::install_wall_clock(armed_wall_clock);
-    }
+    // SAFETY (both): `host`/`size` are what `check` just validated.
     if crate::host_slot!(host, size, tap_fault_latch).is_some() {
         crate::codec::install_usage_tap_fault_latch(armed_tap_fault_latch);
     }
@@ -190,29 +153,9 @@ fn armed() -> Option<(*const PlaneHostVtable, u32)> {
     (!host.is_null()).then(|| (host.cast_const(), ARMED_SIZE.load(Ordering::Acquire)))
 }
 
-/// The entropy port, forwarded through the host's `entropy_fill`.
-fn armed_entropy(out: &mut [u8]) -> bool {
-    let Some((host, size)) = armed() else {
-        return false;
-    };
-    // SAFETY: `host`/`size` were validated by `arm` over a table that outlives the image.
-    let Some(fill) = crate::host_slot!(host, size, entropy_fill) else {
-        return false;
-    };
-    fill(HostCtx::NULL, out.as_mut_ptr(), out.len()) == StatusClass::Ok
-}
-
-/// The wall-clock port, forwarded through the host's `wall_clock`.
-fn armed_wall_clock() -> u64 {
-    // SAFETY: as `armed_entropy`.
-    armed()
-        .and_then(|(host, size)| crate::host_slot!(host, size, wall_clock))
-        .map_or(0, |now| now(HostCtx::NULL))
-}
-
 /// The usage-tap latch port, forwarded through the host's `tap_fault_latch`.
 fn armed_tap_fault_latch(protocol: &str, reason: &'static str) -> bool {
-    // SAFETY: as `armed_entropy`.
+    // SAFETY: `host`/`size` were validated by `arm` over a table that outlives the image.
     armed()
         .and_then(|(host, size)| crate::host_slot!(host, size, tap_fault_latch))
         .is_some_and(|latch| {
@@ -228,7 +171,7 @@ fn armed_tap_fault_latch(protocol: &str, reason: &'static str) -> bool {
 
 /// The translate-cap port, forwarded through the host's `translate_cap`.
 fn armed_translate_cap() -> usize {
-    // SAFETY: as `armed_entropy`.
+    // SAFETY: `host`/`size` were validated by `arm` over a table that outlives the image.
     armed()
         .and_then(|(host, size)| crate::host_slot!(host, size, translate_cap))
         .map_or(crate::codec::TRANSLATE_BODY_MAX_BYTES_DEFAULT, |cap| {

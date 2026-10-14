@@ -13,8 +13,8 @@ use serde_json::{json, Value};
 fn translate_stream(egress: &str, ingress: &str, raw: &str) -> String {
     let mut st =
         crate::codec::proto_stream::StreamTranslate::new(ingress, egress).expect("translator");
-    let mut out = st.feed(raw.as_bytes());
-    out.extend(st.finish());
+    let mut out = st.feed(crate::codec::test_host::HOST, raw.as_bytes());
+    out.extend(st.finish(crate::codec::test_host::HOST));
     String::from_utf8_lossy(&out).into_owned()
 }
 
@@ -64,7 +64,11 @@ fn read_events(raw: &str) -> Vec<crate::codec::ir::IrStreamEvent> {
     for v in sse_data(raw) {
         out.extend(
             crate::codec::proto_codec::ProtocolReader::read_response_events(
-                &reader, "", &v, &mut state,
+                &reader,
+                crate::codec::test_host::HOST,
+                "",
+                &v,
+                &mut state,
             ),
         );
     }
@@ -195,10 +199,12 @@ fn translate_response(egress: &str, ingress: &'static str, body: &Value) -> Valu
     let ingress_p = crate::codec::proto_codec::protocol_for(ingress).expect("ingress");
     let mut resp = egress_p
         .reader()
-        .read_response(body)
+        .read_response(crate::codec::test_host::HOST, body)
         .expect("read_response");
     crate::codec::chat_handle::chat_prepare_for_ingress(&mut resp, ingress, 1_752_000_000);
-    ingress_p.writer().write_response(&resp)
+    ingress_p
+        .writer()
+        .write_response(crate::codec::test_host::HOST, &resp)
 }
 
 // ── COH-10: the prompt-token count a Cohere client is told (MONEY) ────────────────────────────────
@@ -261,7 +267,7 @@ fn coh10_cohere_usage_is_the_inverse_of_the_cohere_reader() {
     let back = crate::codec::proto_codec::protocol_for("cohere")
         .expect("cohere")
         .reader()
-        .read_response(&out)
+        .read_response(crate::codec::test_host::HOST, &out)
         .expect("read back");
     assert_eq!(back.usage.input_tokens, 6, "{back:?}");
     assert_eq!(back.usage.cache_read_input_tokens, Some(4), "{back:?}");
@@ -324,7 +330,9 @@ fn translate_request(ingress: &'static str, egress: &str, body: &Value) -> Value
             lane_caps: Default::default(),
         },
     );
-    egress_p.writer().write_request(&req)
+    egress_p
+        .writer()
+        .write_request(crate::codec::test_host::HOST, &req)
 }
 
 // ── COH-03 / COH-04 / COH-07 / COH-08 / COH-09: reasoning is reasoning, in both directions ─────────
@@ -342,7 +350,7 @@ fn coh03_buffered_thinking_part_reaches_a_foreign_client() {
     let ir = crate::codec::proto_codec::protocol_for("cohere")
         .expect("cohere")
         .reader()
-        .read_response(&body)
+        .read_response(crate::codec::test_host::HOST, &body)
         .expect("read");
     assert!(
         matches!(&ir.content[..], [crate::codec::ir::IrBlock::Thinking { text, .. }, crate::codec::ir::IrBlock::Text { .. }] if text == "hmm"),
@@ -653,7 +661,7 @@ fn coh13_buffered_logprobs_reach_a_foreign_client() {
     let ir = crate::codec::proto_codec::protocol_for("cohere")
         .expect("cohere")
         .reader()
-        .read_response(&body)
+        .read_response(crate::codec::test_host::HOST, &body)
         .expect("read");
     let got: Vec<(String, f64)> = ir
         .logprobs
@@ -738,7 +746,7 @@ fn coh16_timeout_is_an_upstream_error() {
     let ir = crate::codec::proto_codec::protocol_for("cohere")
         .expect("cohere")
         .reader()
-        .read_response(&body)
+        .read_response(crate::codec::test_host::HOST, &body)
         .expect("read");
     assert_eq!(ir.stop_reason, Some(IrStopReason::Error), "COH-16");
     let raw: String = [
@@ -1053,7 +1061,7 @@ fn ir09_reasoning_off_maps_both_ways() {
     let out = crate::codec::proto_codec::protocol_for("cohere")
         .expect("cohere")
         .writer()
-        .write_request(&ir);
+        .write_request(crate::codec::test_host::HOST, &ir);
     assert_eq!(out["thinking"], json!({"type": "disabled"}), "IR-09: {out}");
 }
 
@@ -1090,7 +1098,7 @@ fn ir10_allowed_tools_send_only_the_listed_tools() {
     let out = crate::codec::proto_codec::protocol_for("cohere")
         .expect("cohere")
         .writer()
-        .write_request(&req);
+        .write_request(crate::codec::test_host::HOST, &req);
     let names: Vec<&str> = out["tools"]
         .as_array()
         .into_iter()
@@ -1135,7 +1143,7 @@ fn ir_slots_with_no_cohere_form_are_reported_dropped() {
             "code_execution",
         ]
     );
-    let out = writer.write_request(&req);
+    let out = writer.write_request(crate::codec::test_host::HOST, &req);
     for key in [
         "metadata",
         "service_tier",

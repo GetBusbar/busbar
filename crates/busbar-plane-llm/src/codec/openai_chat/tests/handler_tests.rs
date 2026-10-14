@@ -402,7 +402,7 @@ fn embeddings_taps_usage_and_extract_usage_reads_prompt_tokens() {
     assert!(OpenAiEmbeddings.taps_usage());
     let body = br#"{"object":"list","data":[{"object":"embedding","index":0,"embedding":[0.1,0.2]}],"usage":{"prompt_tokens":7,"total_tokens":7}}"#;
     let usage = OpenAiEmbeddings
-        .extract_usage("openai", body)
+        .extract_usage(crate::codec::test_host::HOST, "openai", body)
         .expect("token-metered embeddings yields usage");
     assert_eq!(usage.input, 7);
 }

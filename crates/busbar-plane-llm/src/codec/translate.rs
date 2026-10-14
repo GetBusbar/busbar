@@ -93,6 +93,7 @@ pub trait TranslateCodec: OperationHandler {
     /// `prep` is the router-built neutral param bag; `model` is the resolved lane wire model.
     fn translate_request(
         &self,
+        host: &dyn busbar_contract::codec::CodecHost,
         input: TranslateReqInput<'_>,
         egress_proto: Option<&str>,
         prep: &EgressPrep,
@@ -148,7 +149,7 @@ pub trait TranslateCodec: OperationHandler {
                     let controls = ir.egress_dropped_controls(egress_proto);
                     // A4b: the handle owns the value-first / set-model+bytes write onto the egress
                     // dialect.
-                    let wire = ir.write_egress_request(egress_proto, model);
+                    let wire = ir.write_egress_request(host, egress_proto, model);
                     // A write that could not be represented is a REFUSAL, on the same terminal the
                     // pre-write representability guard above uses: the guard answers before the
                     // write for what it can see, and this answers after it for what only the writer
@@ -227,6 +228,7 @@ pub trait TranslateCodec: OperationHandler {
     #[allow(clippy::too_many_arguments)]
     fn translate_response(
         &self,
+        host: &dyn busbar_contract::codec::CodecHost,
         input: TranslateRespInput<'_>,
         // Does the caller's INGRESS protocol serve this operation? (Resolved by the engine via
         // `op_for`; replaces the former `ingress_op: Option<&dyn OperationHandler>`.)
@@ -249,7 +251,7 @@ pub trait TranslateCodec: OperationHandler {
     ) -> Result<(Option<Billing>, TranslatedResponse), CodecError> {
         match input {
             TranslateRespInput::Opaque(bytes) => {
-                let mut ir = self.read_response(bytes)?;
+                let mut ir = self.read_response(host, bytes)?;
                 let usage = ir.billing();
                 ir.fill_response_model_if_absent(lane_model);
                 if let Some(body) = ingress_request_body {
@@ -260,11 +262,11 @@ pub trait TranslateCodec: OperationHandler {
                 // absent=>Untranslatable, keyed by `ingress_protocol` + `ingress_serves_op`.
                 Ok((
                     usage,
-                    ir.write_ingress_response_bytes(ingress_protocol, ingress_serves_op),
+                    ir.write_ingress_response_bytes(host, ingress_protocol, ingress_serves_op),
                 ))
             }
             TranslateRespInput::Json(v) => {
-                let mut ir = self.read_response_value(v)?;
+                let mut ir = self.read_response_value(host, v)?;
                 let usage = ir.billing();
                 ir.fill_response_model_if_absent(lane_model);
                 if let Some(body) = ingress_request_body {
@@ -275,7 +277,9 @@ pub trait TranslateCodec: OperationHandler {
                 // upstream): try first; `None` falls through to the normal write. The handle resolves
                 // the ingress writer by `ingress_protocol` internally.
                 if wants_stream {
-                    if let Some(frames) = ir.wrap_buffered_as_stream(ingress_protocol, elapsed_ms) {
+                    if let Some(frames) =
+                        ir.wrap_buffered_as_stream(host, ingress_protocol, elapsed_ms)
+                    {
                         return Ok((usage, TranslatedResponse::StreamFrames(frames)));
                     }
                 }
@@ -283,7 +287,7 @@ pub trait TranslateCodec: OperationHandler {
                 // Typed(WireBody) write onto the ingress dialect.
                 Ok((
                     usage,
-                    ir.write_ingress_response(ingress_protocol, ingress_serves_op),
+                    ir.write_ingress_response(host, ingress_protocol, ingress_serves_op),
                 ))
             }
         }

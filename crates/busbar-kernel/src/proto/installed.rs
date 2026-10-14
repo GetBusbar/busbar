@@ -253,11 +253,11 @@ static INSTALLED: std::sync::OnceLock<Vec<&'static ProtocolDecl>> = std::sync::O
 /// Arm the HOST SERVICES a protocol cell reaches through the contract: the usage-tap fault reporter
 /// (`handlers::report_usage_tap_decode_failure`) a cell's default usage tap reports through, the
 /// usage-tap fault latch (`handlers::usage_tap_decode_fail_should_warn`) a codec whose tap reads a
-/// body more than one way counts each way through, the translate-body cap reader
-/// (`proxy::max_translate_body_bytes`, the live operator knob), the host entropy source (the OS
-/// CSPRNG) and the host wall clock (`store::now`). Called wherever protocols become reachable —
-/// [`install_protocols`] and the test registration seams — so no cell can be dispatched before they
-/// are armed. Idempotent.
+/// body more than one way counts each way through, and the translate-body cap reader
+/// (`proxy::max_translate_body_bytes`, the live operator knob). Called wherever protocols become
+/// reachable — [`install_protocols`] and the test registration seams — so no cell can be dispatched
+/// before they are armed. Idempotent. The host's entropy and wall clock are not armed: a codec the
+/// kernel drives is HANDED them, as [`CodecHostServices`].
 fn arm_host_services() {
     busbar_contract::codec::install_usage_tap_fault_reporter(
         crate::handlers::report_usage_tap_decode_failure,
@@ -266,13 +266,26 @@ fn arm_host_services() {
         crate::handlers::usage_tap_decode_fail_should_warn,
     );
     busbar_contract::codec::install_translate_cap_reader(crate::proxy::max_translate_body_bytes);
-    busbar_contract::codec::install_entropy_source(os_entropy);
-    busbar_contract::codec::install_wall_clock(crate::store::now);
 }
 
-/// The host entropy source: the OS CSPRNG, one `getrandom` fill per call.
-fn os_entropy(out: &mut [u8]) -> bool {
-    getrandom::fill(out).is_ok()
+/// THE KERNEL'S CODEC HOST: the host services every codec the kernel drives is handed, down its call
+/// graph, as a `&dyn CodecHost` — the host entropy source (the OS CSPRNG, one `getrandom` fill per
+/// call) and the host wall clock (`store::now`, whole Unix seconds). A value with no state: the
+/// services are the kernel's, and the contract holds neither.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct CodecHostServices;
+
+/// The kernel's codec host, as the borrowed handle a codec call takes.
+pub const CODEC_HOST: &dyn busbar_contract::codec::CodecHost = &CodecHostServices;
+
+impl busbar_contract::codec::CodecHost for CodecHostServices {
+    fn fill_entropy(&self, out: &mut [u8]) -> bool {
+        getrandom::fill(out).is_ok()
+    }
+
+    fn wall_clock_now(&self) -> Option<u64> {
+        Some(crate::store::now())
+    }
 }
 
 /// INSTALL PROTOCOL DECLARATIONS — the composition root's one write into the protocol axis, and the

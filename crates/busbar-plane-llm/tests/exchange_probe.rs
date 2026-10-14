@@ -7,6 +7,27 @@ use busbar_plane_llm::exchange::probe::{probe_path, request};
 use busbar_plane_llm::exchange::shaping::Shaping;
 use serde_json::json;
 
+/// The codec host these tests hand the plane: the OS CSPRNG and the system clock in whole seconds,
+/// read the way the kernel's host reads them.
+struct TestHost;
+
+impl busbar_contract::codec::CodecHost for TestHost {
+    fn fill_entropy(&self, out: &mut [u8]) -> bool {
+        getrandom::fill(out).is_ok()
+    }
+
+    fn wall_clock_now(&self) -> Option<u64> {
+        Some(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_secs()),
+        )
+    }
+}
+
+/// The handle every codec call here is handed.
+const HOST: &dyn busbar_contract::codec::CodecHost = &TestHost;
+
 fn shaping() -> Shaping {
     Shaping::from_settings(&json!({
         "providers": {
@@ -35,7 +56,7 @@ fn every_dialect_probes_with_its_own_body_on_its_single_answer_path() {
     let s = shaping();
     for m in ["oai", "ant", "goo", "bed", "res", "coh"] {
         let lane = s.lane(m).expect("lane");
-        let r = request(lane).expect("probed");
+        let r = request(HOST, lane).expect("probed");
         assert_eq!(r.verb, "POST");
         assert!(!r.body.is_empty(), "{m}: a probe body");
         assert!(r.target.starts_with('/'), "{m}: {}", r.target);
@@ -43,7 +64,7 @@ fn every_dialect_probes_with_its_own_body_on_its_single_answer_path() {
         let names: Vec<&str> = r.fields.iter().map(|(n, _)| n.as_str()).collect();
         assert_eq!(names, ["content-type", "user-agent", "accept"], "{m}");
     }
-    let bed = request(s.lane("bed").expect("lane")).expect("probed");
+    let bed = request(HOST, s.lane("bed").expect("lane")).expect("probed");
     assert!(
         bed.target.contains("%3A"),
         "the wire model is encoded: {}",
@@ -54,9 +75,9 @@ fn every_dialect_probes_with_its_own_body_on_its_single_answer_path() {
 #[test]
 fn a_lane_under_a_path_base_is_not_probed_and_a_fixed_path_is_kept() {
     let s = shaping();
-    assert!(request(s.lane("vtx").expect("lane")).is_none());
+    assert!(request(HOST, s.lane("vtx").expect("lane")).is_none());
     assert_eq!(
-        request(s.lane("fix").expect("lane"))
+        request(HOST, s.lane("fix").expect("lane"))
             .expect("probed")
             .target,
         "/fixed/chat"

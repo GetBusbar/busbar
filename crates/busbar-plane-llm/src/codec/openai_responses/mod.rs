@@ -414,7 +414,7 @@ const AUTH_FAILURE_MSG: &str = "Incorrect API key provided.";
 /// `const N < 11` fails to build (a monomorphization-time `assert!`), so a too-small width can never
 /// reach the wire. Both live callers use 48 (`ITEM_ID_TOKEN_LEN`/`RESPONSE_ID_TOKEN_LEN`), far above
 /// the floor.
-fn synth_token<const N: usize>() -> String {
+fn synth_token<const N: usize>(host: &dyn busbar_contract::codec::CodecHost) -> String {
     // Compile-time guard: a too-small `N` fails to build rather than emitting a short, low-entropy,
     // fingerprintable id at runtime. An inline `const` item cannot reference the outer fn's const
     // generic (E0401), so the assertion lives on an associated const of a zero-sized generic carrier
@@ -439,7 +439,7 @@ fn synth_token<const N: usize>() -> String {
         // and the loop still terminates — keeping the function infallible and panic-free.
         let mut buf = [0u8; 1];
         loop {
-            if !super::synth_rng::fill_entropy(&mut buf) {
+            if !super::synth_rng::fill_entropy(host, &mut buf) {
                 // Entropy failure: leave this slot at its existing '0' fallback and move on.
                 break;
             }
@@ -470,8 +470,8 @@ fn synth_token<const N: usize>() -> String {
 /// per-`(prefix, index)` determinism within a stream via a per-writer cache (see
 /// `ResponsesWriter::item_id_for`). This free function mints a FRESH opaque id; callers that need
 /// the stream-stable id go through the writer's cache.
-fn synthesize_item_id(prefix: &str) -> String {
-    format!("{prefix}_{}", synth_token::<ITEM_ID_TOKEN_LEN>())
+fn synthesize_item_id(host: &dyn busbar_contract::codec::CodecHost, prefix: &str) -> String {
+    format!("{prefix}_{}", synth_token::<ITEM_ID_TOKEN_LEN>(host))
 }
 
 // THE CREATION TIME IS AN INPUT, NOT A CLOCK READ.
@@ -688,11 +688,11 @@ fn read_responses_reasoning_effort(word: &str) -> Option<crate::codec::ir::IrRea
 /// base62 chars (~285 bits) the birthday bound makes a per-process collision astronomically unlikely,
 /// so a counter would only ADD a predictable low-entropy region (a structural fingerprint) for no
 /// uniqueness benefit. Native passthrough never calls this: it carries the upstream id verbatim.
-fn synthesize_response_id() -> String {
+fn synthesize_response_id(host: &dyn busbar_contract::codec::CodecHost) -> String {
     format!(
         "{}{}",
         RESPONSE_ID_PREFIX,
-        synth_token::<RESPONSE_ID_TOKEN_LEN>()
+        synth_token::<RESPONSE_ID_TOKEN_LEN>(host)
     )
 }
 
@@ -3192,13 +3192,18 @@ impl ResponsesWriter {
     /// id itself stays opaque — no positional/sequential structure for an observer to fingerprint.
     /// A poisoned lock degrades to a freshly-minted opaque id (still structurally native, just not
     /// cached) rather than panicking on the request path.
-    fn item_id_for(&self, prefix: &'static str, index: usize) -> String {
+    fn item_id_for(
+        &self,
+        host: &dyn busbar_contract::codec::CodecHost,
+        prefix: &'static str,
+        index: usize,
+    ) -> String {
         match self.item_ids.lock() {
             Ok(mut map) => map
                 .entry((prefix, index))
-                .or_insert_with(|| synthesize_item_id(prefix))
+                .or_insert_with(|| synthesize_item_id(host, prefix))
                 .clone(),
-            Err(_) => synthesize_item_id(prefix),
+            Err(_) => synthesize_item_id(host, prefix),
         }
     }
 }
@@ -3294,6 +3299,7 @@ fn read_web_search_call(item: &serde_json::Value) -> crate::codec::ir::IrBlock {
 /// carries none, `status` `completed` when it names none, its results as the search action's
 /// `sources`).
 fn write_web_search_call(
+    host: &dyn busbar_contract::codec::CodecHost,
     call_id: Option<&str>,
     status: Option<&str>,
     results: &[crate::codec::ir::IrSearchResult],
@@ -3304,7 +3310,7 @@ fn write_web_search_call(
         .collect();
     serde_json::json!({
         (keys::TYPE): ITEM_TYPE_WEB_SEARCH_CALL,
-        (keys::ID): call_id.map_or_else(|| synthesize_item_id(ITEM_ID_PREFIX_WEB_SEARCH), String::from),
+        (keys::ID): call_id.map_or_else(|| synthesize_item_id(host, ITEM_ID_PREFIX_WEB_SEARCH), String::from),
         (keys::STATUS): status.unwrap_or(STATUS_COMPLETED),
         (ACTION): { (keys::TYPE): SEARCH, (SOURCES): sources },
     })

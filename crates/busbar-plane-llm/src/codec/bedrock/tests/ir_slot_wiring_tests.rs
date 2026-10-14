@@ -28,7 +28,7 @@ fn xreq_lane(ingress: &'static str, body: &Value, model: &str, caps: LaneCaps) -
             lane_caps: caps,
         },
     );
-    writer().write_request_for_lane(&req, model, &caps)
+    writer().write_request_for_lane(crate::codec::test_host::HOST, &req, model, &caps)
 }
 
 /// A bare user turn.
@@ -63,7 +63,9 @@ fn bed10_context_window_detail_is_read_and_written_buffered() {
         "stopReason": "model_context_window_exceeded",
         "usage": {"inputTokens": 10, "outputTokens": 5, "totalTokens": 15}
     });
-    let resp = BedrockReader.read_response(&body).expect("read");
+    let resp = BedrockReader
+        .read_response(crate::codec::test_host::HOST, &body)
+        .expect("read");
     assert_eq!(
         resp.stop_reason,
         Some(crate::codec::ir::IrStopReason::MaxTokens)
@@ -72,7 +74,7 @@ fn bed10_context_window_detail_is_read_and_written_buffered() {
         resp.stop_detail,
         Some(crate::codec::ir::IrStopDetail::ContextWindowExceeded)
     );
-    let back = writer().write_response(&resp);
+    let back = writer().write_response(crate::codec::test_host::HOST, &resp);
     assert_eq!(
         back["stopReason"], "model_context_window_exceeded",
         "{back}"
@@ -80,7 +82,10 @@ fn bed10_context_window_detail_is_read_and_written_buffered() {
     // The coarse reason alone still writes the coarse value.
     let mut coarse = resp.clone();
     coarse.stop_detail = None;
-    assert_eq!(writer().write_response(&coarse)["stopReason"], "max_tokens");
+    assert_eq!(
+        writer().write_response(crate::codec::test_host::HOST, &coarse)["stopReason"],
+        "max_tokens"
+    );
 }
 
 /// BED-10 / IR-16 (stream writer + buffered→stream synthesis): the stop-bearing delta carries the
@@ -94,7 +99,9 @@ fn bed10_context_window_detail_rides_the_message_stop_frame() {
         usage: crate::codec::ir::IrUsage::default(),
         stop_detail: Some(crate::codec::ir::IrStopDetail::ContextWindowExceeded),
     };
-    let (et, payload) = writer().write_response_event(&ev).expect("frame");
+    let (et, payload) = writer()
+        .write_response_event(crate::codec::test_host::HOST, &ev)
+        .expect("frame");
     assert_eq!(et, "messageStop");
     assert_eq!(payload["stopReason"], "model_context_window_exceeded");
 
@@ -109,7 +116,7 @@ fn bed10_context_window_detail_rides_the_message_stop_frame() {
         stop_detail: Some(crate::codec::ir::IrStopDetail::ContextWindowExceeded),
         ..Default::default()
     };
-    let mut bytes = bedrock_response_to_eventstream(&ir, Some(1));
+    let mut bytes = bedrock_response_to_eventstream(crate::codec::test_host::HOST, &ir, Some(1));
     let frames = crate::codec::eventstream::drain_frames(&mut bytes);
     let stop = frames
         .iter()
@@ -131,9 +138,10 @@ fn bed10_bed11_stream_stop_detail_and_stop_sequence_are_carried() {
         json!({"type": "messageStop", "stopReason": "model_context_window_exceeded",
             "additionalModelResponseFields": {"stop_sequence": "END"}}),
     ] {
-        reader.read_response_events("", &frame, &mut state);
+        reader.read_response_events(crate::codec::test_host::HOST, "", &frame, &mut state);
     }
     let evs = reader.read_response_events(
+        crate::codec::test_host::HOST,
         "",
         &json!({"type": "metadata", "usage": {"inputTokens": 3, "outputTokens": 2}}),
         &mut state,
@@ -182,7 +190,7 @@ fn ir12_document_citations_and_context_cross() {
         other => panic!("expected Media, got {other:?}"),
     }
     ir.extra.clear();
-    let out = writer().write_request(&ir);
+    let out = writer().write_request(crate::codec::test_host::HOST, &ir);
     let doc = &out["messages"][0]["content"][0]["document"];
     assert_eq!(doc["citations"], json!({"enabled": true}), "{out}");
     assert_eq!(doc["context"], "a memo", "{out}");
@@ -206,7 +214,7 @@ fn ir03_request_metadata_maps_both_ways() {
     );
     // Same-protocol: the raw object is re-emitted verbatim (once).
     assert_eq!(
-        writer().write_request(&ir)["requestMetadata"],
+        writer().write_request(crate::codec::test_host::HOST, &ir)["requestMetadata"],
         body["requestMetadata"]
     );
 
@@ -220,7 +228,7 @@ fn ir03_request_metadata_maps_both_ways() {
         ]),
         ..Default::default()
     };
-    let out = writer().write_request(&foreign);
+    let out = writer().write_request(crate::codec::test_host::HOST, &foreign);
     assert_eq!(out["requestMetadata"], json!({"team": "search"}), "{out}");
     assert!(writer().dropped_egress_controls(&foreign).is_empty());
 }
@@ -243,7 +251,7 @@ fn ir10_allowed_tools_send_only_the_listed_tools() {
         allowed_tools: Some(vec!["c".to_string(), "a".to_string()]),
         ..Default::default()
     };
-    let out = writer().write_request(&ir);
+    let out = writer().write_request(crate::codec::test_host::HOST, &ir);
     let names: Vec<&str> = out["toolConfig"]["tools"]
         .as_array()
         .expect("tools")
@@ -254,7 +262,7 @@ fn ir10_allowed_tools_send_only_the_listed_tools() {
     assert_eq!(out["toolConfig"]["toolChoice"], json!({"any": {}}), "{out}");
     // No restriction: every tool.
     ir.allowed_tools = None;
-    let out = writer().write_request(&ir);
+    let out = writer().write_request(crate::codec::test_host::HOST, &ir);
     assert_eq!(out["toolConfig"]["tools"].as_array().map(Vec::len), Some(3));
 }
 
@@ -286,7 +294,9 @@ fn ir_slots_without_a_converse_member_are_reported_dropped() {
             "code_execution"
         ]
     );
-    let wire = writer().write_request(&ir).to_string();
+    let wire = writer()
+        .write_request(crate::codec::test_host::HOST, &ir)
+        .to_string();
     for k in [
         "store",
         "safety_identifier",
@@ -369,8 +379,8 @@ fn ir18_signature_origin_is_read_and_a_foreign_signature_is_not_sent() {
         ..Default::default()
     };
     let sig = |origin: Option<O>| {
-        writer().write_request(&thinking(origin))["messages"][1]["content"][0]["reasoningContent"]
-            ["reasoningText"]
+        writer().write_request(crate::codec::test_host::HOST, &thinking(origin))["messages"][1]
+            ["content"][0]["reasoningContent"]["reasoningText"]
             .get("signature")
             .cloned()
     };
@@ -419,8 +429,12 @@ fn lane_caps_adaptive_thinking_on_a_bedrock_claude_lane() {
     };
     use crate::codec::ir::{IrReasoningAsk as A, IrReasoningEffort as E};
     let amrf = |ask| {
-        writer().write_request_for_lane(&req(ask), CLAUDE_NEWEST, &adaptive())
-            ["additionalModelRequestFields"]
+        writer().write_request_for_lane(
+            crate::codec::test_host::HOST,
+            &req(ask),
+            CLAUDE_NEWEST,
+            &adaptive(),
+        )["additionalModelRequestFields"]
             .clone()
     };
     assert_eq!(amrf(A::Dynamic), json!({"thinking": {"type": "adaptive"}}));
@@ -438,6 +452,7 @@ fn lane_caps_adaptive_thinking_on_a_bedrock_claude_lane() {
     );
     // A non-Claude model never gets Claude's spelling, capability or not.
     let nova = writer().write_request_for_lane(
+        crate::codec::test_host::HOST,
         &req(A::Effort(E::High)),
         "amazon.nova-pro-v1:0",
         &adaptive(),
@@ -473,7 +488,12 @@ fn ir09_reasoning_off_reads_and_writes_disabled() {
         ..Default::default()
     };
     for caps in [LaneCaps::default(), adaptive()] {
-        let out = writer().write_request_for_lane(&req, CLAUDE_NEWEST, &caps);
+        let out = writer().write_request_for_lane(
+            crate::codec::test_host::HOST,
+            &req,
+            CLAUDE_NEWEST,
+            &caps,
+        );
         assert_eq!(
             out["additionalModelRequestFields"],
             json!({"thinking": {"type": "disabled"}}),
@@ -495,7 +515,7 @@ fn adaptive_thinking_ask_is_read_from_additional_model_request_fields() {
             "additionalModelRequestFields": amrf
         });
         let ir = BedrockReader.read_request(&body).expect("read");
-        let back = writer().write_request(&ir);
+        let back = writer().write_request(crate::codec::test_host::HOST, &ir);
         assert_eq!(
             back["additionalModelRequestFields"], body["additionalModelRequestFields"],
             "{back}"

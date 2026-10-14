@@ -148,7 +148,10 @@ fn read_all_paths(usage: &serde_json::Value) -> [(Units, Note, u64); 3] {
         "choices": [{"index": 0, "message": {"role": "assistant", "content": "hi"}, "finish_reason": "stop"}],
         "usage": usage
     });
-    let buffered = OpenAiReader.read_response(&body).expect("read").usage;
+    let buffered = OpenAiReader
+        .read_response(crate::codec::test_host::HOST, &body)
+        .expect("read")
+        .usage;
     let chunk = serde_json::json!({
         "id": "chatcmpl-census",
         "object": OBJ_CHUNK,
@@ -158,7 +161,12 @@ fn read_all_paths(usage: &serde_json::Value) -> [(Units, Note, u64); 3] {
         "usage": usage
     });
     let streamed = OpenAiReader
-        .read_response_events("", &chunk, &mut StreamDecodeState::default())
+        .read_response_events(
+            crate::codec::test_host::HOST,
+            "",
+            &chunk,
+            &mut StreamDecodeState::default(),
+        )
         .into_iter()
         .find_map(|e| match e {
             crate::codec::ir::IrStreamEvent::MessageDelta { usage, .. } => Some(usage),

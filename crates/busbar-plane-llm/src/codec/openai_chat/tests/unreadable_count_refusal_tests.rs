@@ -17,7 +17,7 @@ fn buffered_response_refuses_a_stringified_count() {
         "usage": {"prompt_tokens": "1500", "completion_tokens": 9}
     });
     OpenAiReader
-        .read_response(&body)
+        .read_response(crate::codec::test_host::HOST, &body)
         .expect_err("a present, unreadable prompt_tokens is a refusal, never a zero");
 }
 
@@ -29,7 +29,7 @@ fn buffered_response_with_an_absent_count_still_reads_as_zero() {
         "usage": {"completion_tokens": 9}
     });
     let ir = OpenAiReader
-        .read_response(&body)
+        .read_response(crate::codec::test_host::HOST, &body)
         .expect("an absent count is zero");
     assert_eq!(ir.usage.input_tokens, 0);
     assert_eq!(ir.usage.output_tokens, 9);
@@ -43,7 +43,8 @@ fn streaming_usage_chunk_refuses_a_stringified_count() {
         "choices": [],
         "usage": {"prompt_tokens": 10, "completion_tokens": "9"}
     });
-    let ev = OpenAiReader.read_response_events("", &chunk, &mut state);
+    let ev =
+        OpenAiReader.read_response_events(crate::codec::test_host::HOST, "", &chunk, &mut state);
     assert!(
         matches!(ev.last(), Some(IrStreamEvent::Error(_))),
         "a usage chunk with an unreadable count must end the stream in an error; got {ev:?}"
@@ -83,10 +84,13 @@ fn chat_body(usage: serde_json::Value) -> serde_json::Value {
 #[test]
 fn buffered_response_refuses_an_unreadable_cache_write_count() {
     OpenAiReader
-        .read_response(&chat_body(serde_json::json!({
-            "prompt_tokens": 100, "completion_tokens": 9,
-            "prompt_tokens_details": {"cache_write_tokens": "40"}
-        })))
+        .read_response(
+            crate::codec::test_host::HOST,
+            &chat_body(serde_json::json!({
+                "prompt_tokens": 100, "completion_tokens": 9,
+                "prompt_tokens_details": {"cache_write_tokens": "40"}
+            })),
+        )
         .expect_err(
             "a present, unreadable cache_write_tokens is a refusal, never `no cache write`",
         );
@@ -100,9 +104,12 @@ fn buffered_response_cache_write_absent_null_and_readable_still_read() {
         (serde_json::json!({"cache_write_tokens": 40}), Some(40)),
     ] {
         let ir = OpenAiReader
-            .read_response(&chat_body(serde_json::json!({
-                "prompt_tokens": 100, "completion_tokens": 9, "prompt_tokens_details": details
-            })))
+            .read_response(
+                crate::codec::test_host::HOST,
+                &chat_body(serde_json::json!({
+                    "prompt_tokens": 100, "completion_tokens": 9, "prompt_tokens_details": details
+                })),
+            )
             .expect("an absent, null or readable cache count reads");
         assert_eq!(ir.usage.cache_creation_input_tokens, want);
         assert_eq!(ir.usage.input_tokens, 100 - want.unwrap_or(0));
@@ -118,7 +125,8 @@ fn streaming_usage_chunk_refuses_an_unreadable_cache_write_count() {
         "usage": {"prompt_tokens": 100, "completion_tokens": 9,
                   "prompt_tokens_details": {"cache_write_tokens": "40"}}
     });
-    let ev = OpenAiReader.read_response_events("", &chunk, &mut state);
+    let ev =
+        OpenAiReader.read_response_events(crate::codec::test_host::HOST, "", &chunk, &mut state);
     assert!(
         matches!(ev.last(), Some(IrStreamEvent::Error(_))),
         "a usage chunk with an unreadable cache count must end the stream in an error; got {ev:?}"

@@ -31,10 +31,10 @@ impl ProtocolWriter for BedrockWriter {
         false
     }
 
-    fn probe_request(&self) -> serde_json::Value {
+    fn probe_request(&self, host: &dyn busbar_contract::codec::CodecHost) -> serde_json::Value {
         // The ping IR is built by the plugin (ir_encode::ping_request); this dialect serializes it
         // through its own write_request, so the probe body matches a real request on this wire.
-        self.write_request(&super::super::ir_encode::ping_request())
+        self.write_request(host, &super::super::ir_encode::ping_request())
     }
 
     fn upstream_path(&self) -> &str {
@@ -135,6 +135,7 @@ impl ProtocolWriter for BedrockWriter {
     /// 400.
     fn write_request_for_lane(
         &self,
+        _host: &dyn busbar_contract::codec::CodecHost,
         req: &crate::codec::ir::IrRequest,
         model: &str,
         caps: &LaneCaps,
@@ -156,17 +157,26 @@ impl ProtocolWriter for BedrockWriter {
 
     fn write_request_for_model(
         &self,
+        host: &dyn busbar_contract::codec::CodecHost,
         req: &crate::codec::ir::IrRequest,
         model: &str,
     ) -> serde_json::Value {
-        self.write_request_for_lane(req, model, &LaneCaps::default())
+        self.write_request_for_lane(host, req, model, &LaneCaps::default())
     }
 
-    fn write_request(&self, req: &crate::codec::ir::IrRequest) -> serde_json::Value {
+    fn write_request(
+        &self,
+        _host: &dyn busbar_contract::codec::CodecHost,
+        req: &crate::codec::ir::IrRequest,
+    ) -> serde_json::Value {
         self.write_request_with(req, &LaneCaps::default())
     }
 
-    fn write_response_event(&self, ev: &IrStreamEvent) -> Option<(String, serde_json::Value)> {
+    fn write_response_event(
+        &self,
+        _host: &dyn busbar_contract::codec::CodecHost,
+        ev: &IrStreamEvent,
+    ) -> Option<(String, serde_json::Value)> {
         match ev {
             IrStreamEvent::MessageStart { .. } => Some((
                 ET_MESSAGE_START.to_string(),
@@ -418,7 +428,11 @@ impl ProtocolWriter for BedrockWriter {
     /// citations rather than silently keep the first. Each is framed by re-entering the single-frame
     /// arm with a one-citation delta, so that arm stays the ONE source of truth for the `citation`
     /// delta's shape. Every other event keeps the base wrapper's one-frame behaviour.
-    fn write_response_events(&self, ev: &IrStreamEvent) -> Vec<(String, serde_json::Value)> {
+    fn write_response_events(
+        &self,
+        host: &dyn busbar_contract::codec::CodecHost,
+        ev: &IrStreamEvent,
+    ) -> Vec<(String, serde_json::Value)> {
         if let IrStreamEvent::BlockDelta {
             index,
             delta: crate::codec::ir::IrDelta::CitationsDelta(cits),
@@ -428,15 +442,18 @@ impl ProtocolWriter for BedrockWriter {
                 return cits
                     .iter()
                     .filter_map(|c| {
-                        self.write_response_event(&IrStreamEvent::BlockDelta {
-                            index: *index,
-                            delta: crate::codec::ir::IrDelta::CitationsDelta(vec![c.clone()]),
-                        })
+                        self.write_response_event(
+                            host,
+                            &IrStreamEvent::BlockDelta {
+                                index: *index,
+                                delta: crate::codec::ir::IrDelta::CitationsDelta(vec![c.clone()]),
+                            },
+                        )
                     })
                     .collect();
             }
         }
-        self.write_response_event(ev).into_iter().collect()
+        self.write_response_event(host, ev).into_iter().collect()
     }
 
     /// A Bedrock-ingress stream signals a mid-stream error with a MODELED-EXCEPTION event-stream
@@ -450,6 +467,7 @@ impl ProtocolWriter for BedrockWriter {
     /// `write_response_event` Error arm so both stay consistent.
     fn write_response_exception(
         &self,
+        _host: &dyn busbar_contract::codec::CodecHost,
         err: &busbar_contract::protocol::IrError,
     ) -> Option<(String, String)> {
         let (exception_name, message) = bedrock_stream_exception_for(err);
@@ -458,6 +476,7 @@ impl ProtocolWriter for BedrockWriter {
 
     fn write_error_frame(
         &self,
+        host: &dyn busbar_contract::codec::CodecHost,
         err: &busbar_contract::protocol::IrError,
     ) -> Option<(String, serde_json::Value)> {
         // The streaming-error seam. A Bedrock-INGRESS stream never reaches here — its mid-stream
@@ -465,10 +484,14 @@ impl ProtocolWriter for BedrockWriter {
         // before the SSE framer runs. This override exists for a non-eventstream consumer driving a
         // Bedrock writer, and delegates to the `write_response_event` Error arm (the documented
         // fallback) so the two stay byte-identical.
-        self.write_response_event(&IrStreamEvent::Error(err.clone()))
+        self.write_response_event(host, &IrStreamEvent::Error(err.clone()))
     }
 
-    fn write_response(&self, resp: &crate::codec::ir::IrResponse) -> serde_json::Value {
+    fn write_response(
+        &self,
+        _host: &dyn busbar_contract::codec::CodecHost,
+        resp: &crate::codec::ir::IrResponse,
+    ) -> serde_json::Value {
         let mut content_arr: Vec<serde_json::Value> = Vec::new();
 
         for block in &resp.content {
@@ -638,7 +661,13 @@ impl ProtocolWriter for BedrockWriter {
     /// `{"error":{...}}` envelope here would make a Bedrock SDK fail to decode the error. We map
     /// busbar's generic `kind` to the closed AWS exception set via `error_kind_to_bedrock_type` so
     /// the `__type` is always a real Converse exception name. Served as `application/json`.
-    fn write_error(&self, _status: u16, kind: &str, message: &str) -> serde_json::Value {
+    fn write_error(
+        &self,
+        _host: &dyn busbar_contract::codec::CodecHost,
+        _status: u16,
+        kind: &str,
+        message: &str,
+    ) -> serde_json::Value {
         serde_json::json!({
             (super::DUNDER_TYPE): error_kind_to_bedrock_type(kind),
             (keys::MESSAGE): message,
@@ -647,6 +676,7 @@ impl ProtocolWriter for BedrockWriter {
 
     fn attach_error_response_headers(
         &self,
+        host: &dyn busbar_contract::codec::CodecHost,
         headers: &mut busbar_contract::http::HeaderMap,
         kind: &str,
         _envelope: &serde_json::Value,
@@ -655,7 +685,7 @@ impl ProtocolWriter for BedrockWriter {
         // surface the AWS SDK exposes via `*Output::request_id()`) and `x-amzn-errortype` == the body
         // `__type`. Omitting them was distinguishable from native Bedrock and left the SDK request id
         // empty on the most-exercised failover error surface.
-        attach_bedrock_error_headers(headers, kind);
+        attach_bedrock_error_headers(host, headers, kind);
     }
 
     fn new_stream_framing(&self) -> Box<dyn super::StreamFraming> {
@@ -667,6 +697,7 @@ impl ProtocolWriter for BedrockWriter {
 
     fn wrap_buffered_as_stream(
         &self,
+        host: &dyn busbar_contract::codec::CodecHost,
         ir: &crate::codec::ir::IrResponse,
         elapsed_ms: Option<u64>,
     ) -> Option<Vec<u8>> {
@@ -676,7 +707,7 @@ impl ProtocolWriter for BedrockWriter {
         // (hard decode failure and a deterministic proxy tell). Delegate to the module-local free fn
         // which synthesizes the full frame sequence through this same writer — the call sites now
         // dispatch through the vtable instead of branching on `ingress_protocol == "bedrock"`.
-        Some(bedrock_response_to_eventstream(ir, elapsed_ms))
+        Some(bedrock_response_to_eventstream(host, ir, elapsed_ms))
     }
 
     fn inject_response_metrics(&self, value: &mut serde_json::Value, elapsed_ms: Option<u64>) {
@@ -691,16 +722,17 @@ impl ProtocolWriter for BedrockWriter {
 
     fn ingress_response_request_id(
         &self,
+        host: &dyn busbar_contract::codec::CodecHost,
         upstream_request_id: Option<&str>,
     ) -> Option<(&'static str, String)> {
         // A real ConverseStream/Converse response carries `x-amzn-RequestId`. Forward the captured
         // upstream id verbatim on a same-protocol passthrough (the streaming path captures one);
         // synthesize otherwise (the non-stream/cross-protocol case supplies `None`). Identical to the
-        // prior inline `upstream_amzn_id.or_else(synth_amzn_request_id)` / synth-only attaches.
+        // prior inline `upstream_amzn_id.or_else(|| synth_amzn_request_id())` / synth-only attaches.
         // Synthesis failure (no entropy) omits the header rather than panicking.
         upstream_request_id
             .map(String::from)
-            .or_else(synth_amzn_request_id)
+            .or_else(|| synth_amzn_request_id(host))
             .map(|id| (HDR_AMZN_REQUEST_ID, id))
     }
 

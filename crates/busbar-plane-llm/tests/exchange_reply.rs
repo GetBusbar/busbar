@@ -14,6 +14,27 @@ use busbar_plane_llm::exchange::reply::failure::{
 use busbar_plane_llm::exchange::reply::wire::head_field;
 use serde_json::Value;
 
+/// The codec host these tests hand the plane: the OS CSPRNG and the system clock in whole seconds,
+/// read the way the kernel's host reads them.
+struct TestHost;
+
+impl busbar_contract::codec::CodecHost for TestHost {
+    fn fill_entropy(&self, out: &mut [u8]) -> bool {
+        getrandom::fill(out).is_ok()
+    }
+
+    fn wall_clock_now(&self) -> Option<u64> {
+        Some(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_secs()),
+        )
+    }
+}
+
+/// The handle every codec call here is handed.
+const HOST: &dyn busbar_contract::codec::CodecHost = &TestHost;
+
 const SIX: [&str; 6] = [
     "anthropic",
     "openai",
@@ -128,6 +149,7 @@ fn a_far_end_error_is_judged_for_every_pair() {
         for egress in SIX {
             let far = |status| FarError { status, head, body };
             let j = judge(
+                HOST,
                 ingress,
                 egress,
                 OpVerb::CHAT,
@@ -140,6 +162,7 @@ fn a_far_end_error_is_judged_for_every_pair() {
             assert_eq!(j.answer.status, 401);
 
             let j = judge(
+                HOST,
                 ingress,
                 egress,
                 OpVerb::CHAT,
@@ -167,6 +190,7 @@ fn a_far_end_error_is_judged_for_every_pair() {
             }
 
             let j = judge(
+                HOST,
                 ingress,
                 egress,
                 OpVerb::CHAT,
@@ -175,9 +199,10 @@ fn a_far_end_error_is_judged_for_every_pair() {
                 &far(401),
             );
             assert_eq!(j.disposition, Disposition::HardDown);
-            assert_eq!(j.answer, auth_failure(ingress), "{ingress}<-{egress}");
+            assert_eq!(j.answer, auth_failure(HOST, ingress), "{ingress}<-{egress}");
 
             let j = judge(
+                HOST,
                 ingress,
                 egress,
                 OpVerb::CHAT,
@@ -335,7 +360,7 @@ fn a_whole_answer_is_delivered_in_the_callers_dialect() {
         );
         for (name, body) in &answers {
             for ingress in SIX.iter().copied().filter(|i| *i != egress) {
-                let w = whole::translate(&ctx(ingress, egress, false, false), 200, body);
+                let w = whole::translate(HOST, &ctx(ingress, egress, false, false), 200, body);
                 assert_eq!(
                     w.end,
                     WholeEnd::Delivered,
@@ -361,7 +386,7 @@ fn a_whole_answer_is_delivered_in_the_callers_dialect() {
 #[test]
 fn a_failed_generation_is_a_502_that_keeps_its_usage() {
     let body = br#"{"id":"c-1","finish_reason":"ERROR","message":{"role":"assistant","content":[{"type":"text","text":"x"}]},"usage":{"tokens":{"input_tokens":10,"output_tokens":5}}}"#;
-    let w = whole::translate(&ctx("openai", "cohere", false, false), 200, body);
+    let w = whole::translate(HOST, &ctx("openai", "cohere", false, false), 200, body);
     assert_eq!(w.end, WholeEnd::FailedGeneration);
     assert_eq!(w.answer.status, 502);
     assert!(w.usage.is_some());
@@ -373,6 +398,7 @@ fn a_failed_generation_is_a_502_that_keeps_its_usage() {
 fn an_untranslatable_answer_is_the_callers_500() {
     for ingress in SIX {
         let w = whole::translate(
+            HOST,
             &ctx(ingress, "anthropic", false, false),
             200,
             b"not json at all",
@@ -380,10 +406,10 @@ fn an_untranslatable_answer_is_the_callers_500() {
         assert_eq!(w.end, WholeEnd::NotTranslatable, "{ingress}");
         assert_eq!(w.answer.status, 500);
         assert!(w.usage.is_none());
-        assert_eq!(whole::over_cap(ingress).answer.status, 500);
-        assert_eq!(whole::over_cap(ingress).end, WholeEnd::OverCap);
-        assert_eq!(whole::cut(ingress).answer.status, 502);
-        assert_eq!(whole::cut(ingress).end, WholeEnd::Cut);
+        assert_eq!(whole::over_cap(HOST, ingress).answer.status, 500);
+        assert_eq!(whole::over_cap(HOST, ingress).end, WholeEnd::OverCap);
+        assert_eq!(whole::cut(HOST, ingress).answer.status, 502);
+        assert_eq!(whole::cut(HOST, ingress).end, WholeEnd::Cut);
     }
 }
 
@@ -395,7 +421,7 @@ fn a_json_array_caller_reads_a_one_element_array() {
         .into_iter()
         .next()
         .expect("an openai answer");
-    let w = whole::translate(&ctx("gemini", "openai", true, true), 200, &body);
+    let w = whole::translate(HOST, &ctx("gemini", "openai", true, true), 200, &body);
     assert_eq!(w.end, WholeEnd::Delivered);
     let v: Value = serde_json::from_slice(&w.answer.body).expect("JSON");
     assert_eq!(v.as_array().map(Vec::len), Some(1), "{v}");
@@ -448,11 +474,11 @@ fn openai_stream() -> Vec<u8> {
 fn relay_all(r: &mut Relay, far: &[u8], step: usize) -> Vec<u8> {
     let mut out = Vec::new();
     for piece in far.chunks(step) {
-        if let (Fed::Bytes(b), _) = r.feed(piece) {
+        if let (Fed::Bytes(b), _) = r.feed(HOST, piece) {
             out.extend_from_slice(&b);
         }
     }
-    out.extend(r.end().bytes);
+    out.extend(r.end(HOST).bytes);
     out
 }
 
@@ -477,12 +503,12 @@ fn a_same_dialect_whole_body_relays_untouched_and_meters() {
         let mut r = Relay::new(relay_ctx(dialect, dialect, false));
         let mut out = Vec::new();
         for piece in body.chunks(9) {
-            match r.feed(piece) {
+            match r.feed(HOST, piece) {
                 (Fed::Bytes(std::borrow::Cow::Borrowed(b)), _) => out.extend_from_slice(b),
                 other => panic!("{dialect}: {other:?}"),
             }
         }
-        let end = r.end();
+        let end = r.end(HOST);
         assert_eq!(out, body, "{dialect}");
         assert!(end.bytes.is_empty() && !end.failed, "{dialect}");
         assert!(end.usage.is_some(), "{dialect}: usage");
@@ -544,9 +570,12 @@ fn a_same_dialect_answer_carrying_an_unknown_member_reaches_the_caller_byte_iden
         ctx.client_include_usage = true;
         let mut r = Relay::new(ctx);
         for piece in far.chunks(7) {
-            let _ = r.feed(piece);
+            let _ = r.feed(HOST, piece);
         }
-        assert!(r.end().usage.is_some(), "{dialect}: the stream is metered");
+        assert!(
+            r.end(HOST).usage.is_some(),
+            "{dialect}: the stream is metered"
+        );
     }
 }
 
@@ -587,9 +616,9 @@ fn a_stream_relays_for_every_pair_whatever_the_piece_boundaries() {
             }
             let mut r = Relay::new(relay_ctx(ingress, egress, true));
             for piece in far.chunks(5) {
-                let _ = r.feed(piece);
+                let _ = r.feed(HOST, piece);
             }
-            let end = r.end();
+            let end = r.end(HOST);
             assert!(!end.failed, "{ingress}<-{egress}");
             assert!(end.usage.is_some(), "{ingress}<-{egress}: usage");
             checked += 1;
@@ -605,14 +634,14 @@ fn a_cut_stream_ends_on_the_callers_error_frame() {
     for ingress in SIX {
         let far = native_stream("openai");
         let mut r = Relay::new(relay_ctx(ingress, "openai", true));
-        let _ = r.feed(&far[..far.len() / 2]);
-        let cut = r.cut(true);
+        let _ = r.feed(HOST, &far[..far.len() / 2]);
+        let cut = r.cut(HOST, true);
         assert_eq!(cut.reason, "mid-stream");
         assert!(cut.partial);
         assert!(cut.bytes.is_some_and(|b| !b.is_empty()), "{ingress}");
 
         let mut r = Relay::new(relay_ctx(ingress, "openai", true));
-        let cut = r.cut(true);
+        let cut = r.cut(HOST, true);
         assert_eq!(cut.reason, "pre-first-byte-transport");
         assert!(!cut.partial && cut.bytes.is_none() && cut.usage.is_none());
     }
@@ -698,12 +727,12 @@ fn a_reply_relays_a_stream_piece_by_piece() {
     };
     let far = native_stream("anthropic");
     let head: &[(&[u8], &[u8])] = &[(b"content-type", b"text/event-stream")];
-    let mut reply = Reply::new(&ctx, 200, head);
+    let mut reply = Reply::new(HOST, &ctx, 200, head);
     let pieces: Vec<&[u8]> = far.chunks(40).collect();
     let mut body = Vec::new();
     for (i, p) in pieces.iter().enumerate() {
         let last = i + 1 == pieces.len();
-        let piece = reply.feed(&ctx, p, last, AT);
+        let piece = reply.feed(HOST, &ctx, p, last, AT);
         if i == 0 {
             let h = piece.head.clone().expect("the head rides the first piece");
             assert_eq!(h.status, 200);
@@ -747,12 +776,12 @@ fn a_reply_takes_a_whole_answer_whole() {
         .next()
         .expect("an answer");
     let head: &[(&[u8], &[u8])] = &[(b"content-type", b"application/json")];
-    let mut reply = Reply::new(&ctx, 200, head);
+    let mut reply = Reply::new(HOST, &ctx, 200, head);
     let (a, b) = far.split_at(far.len() / 2);
-    let first = reply.feed(&ctx, a, false, AT);
+    let first = reply.feed(HOST, &ctx, a, false, AT);
     assert!(first.head.is_none() && first.bytes.is_empty() && !first.done);
     assert_eq!(first.verdict, Verdict::None);
-    let last = reply.feed(&ctx, b, true, AT);
+    let last = reply.feed(HOST, &ctx, b, true, AT);
     assert_eq!(last.head.map(|h| h.status), Some(200));
     assert!(last.done);
     assert_eq!(last.verdict, Verdict::Ok);
@@ -779,10 +808,10 @@ fn a_reply_judges_a_far_end_error() {
         (529, Verdict::Retry, Disposition::TransientUpstream),
         (401, Verdict::Hard, Disposition::HardDown),
     ] {
-        let mut reply = Reply::new(&ctx, status, JSON_HEAD);
+        let mut reply = Reply::new(HOST, &ctx, status, JSON_HEAD);
         let (a, b) = body.split_at(10);
-        assert!(!reply.feed(&ctx, a, false, AT).done);
-        let piece = reply.feed(&ctx, b, true, AT);
+        assert!(!reply.feed(HOST, &ctx, a, false, AT).done);
+        let piece = reply.feed(HOST, &ctx, b, true, AT);
         assert!(piece.done);
         assert_eq!(piece.verdict, verdict, "{status}");
         assert!(matches!(
@@ -821,9 +850,9 @@ fn a_judged_far_end_error_carries_the_breakers_reading_apart_from_its_verdict() 
         (401, "invalid_api_key", Verdict::Hard, FAULT_HARD),
         (503, "busy", Verdict::Retry, FAULT_TRANSIENT),
     ] {
-        let mut reply = Reply::new(&ctx, status, JSON_HEAD);
+        let mut reply = Reply::new(HOST, &ctx, status, JSON_HEAD);
         let body = error(code);
-        let piece = reply.feed(&ctx, body.as_bytes(), true, AT);
+        let piece = reply.feed(HOST, &ctx, body.as_bytes(), true, AT);
         assert!(piece.done, "{status} {code}");
         assert_eq!(piece.verdict, verdict, "{status} {code}");
         assert_eq!(
@@ -855,9 +884,9 @@ fn a_reply_that_is_cut_says_so() {
     };
     let far = native_stream("anthropic");
     let head: &[(&[u8], &[u8])] = &[(b"content-type", b"text/event-stream")];
-    let mut reply = Reply::new(&ctx, 200, head);
-    let _ = reply.feed(&ctx, &far[..far.len() / 2], false, AT);
-    let cut = reply.cut(&ctx, true);
+    let mut reply = Reply::new(HOST, &ctx, 200, head);
+    let _ = reply.feed(HOST, &ctx, &far[..far.len() / 2], false, AT);
+    let cut = reply.cut(HOST, &ctx, true);
     assert!(cut.done && !cut.bytes.is_empty());
     assert_eq!(cut.verdict, Verdict::Hard);
     assert_eq!(cut.fault, Some(Fault::Transient("mid-stream")));
@@ -869,9 +898,9 @@ fn a_reply_that_is_cut_says_so() {
         intent: stream_intent(chat_handler("openai"), arrived.parsed.as_ref()),
         passthrough: false,
     };
-    let mut reply = Reply::new(&ctx, 200, JSON_HEAD);
-    let _ = reply.feed(&ctx, b"{\"id\":", false, AT);
-    let cut = reply.cut(&ctx, true);
+    let mut reply = Reply::new(HOST, &ctx, 200, JSON_HEAD);
+    let _ = reply.feed(HOST, &ctx, b"{\"id\":", false, AT);
+    let cut = reply.cut(HOST, &ctx, true);
     assert_eq!(cut.head.map(|h| h.status), Some(502));
     assert_eq!(cut.fault, Some(Fault::Transient("transport")));
 }
@@ -884,9 +913,9 @@ fn stream_drops(caller: &str, far: &str, bytes: &[u8]) -> Vec<String> {
     ctx.client_include_usage = true;
     let mut r = Relay::new(ctx);
     for piece in bytes.chunks(7) {
-        let _ = r.feed(piece);
+        let _ = r.feed(HOST, piece);
     }
-    r.end().dropped
+    r.end(HOST).dropped
 }
 
 /// The far end's spec-shaped stream of `dialect` (the OpenAI stream itself, or as busbar writes it

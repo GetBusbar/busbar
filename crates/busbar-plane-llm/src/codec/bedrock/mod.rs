@@ -357,9 +357,9 @@ pub fn error_kind_to_bedrock_type(kind: &str) -> &'static str {
 /// and error (`proxy::ingress_error` and the `main.rs` fallback, both via
 /// `attach_bedrock_error_headers`) — reaches this through the writer vtable, so there are no private
 /// copies.
-pub fn synth_amzn_request_id() -> Option<String> {
+pub fn synth_amzn_request_id(host: &dyn busbar_contract::codec::CodecHost) -> Option<String> {
     let mut buf = [0u8; 16];
-    if !super::synth_rng::fill_entropy(&mut buf) {
+    if !super::synth_rng::fill_entropy(host, &mut buf) {
         return None;
     }
     // RFC 4122 v4 layout (version + variant bits) so the value is a well-formed UUID.
@@ -386,8 +386,12 @@ pub fn synth_amzn_request_id() -> Option<String> {
 /// ingress_error`, `ingress`, and `auth.rs` reach it through that vtable (not by name), so they
 /// cannot drift on which headers a Bedrock error must carry. Best-effort: if entropy or header
 /// encoding fails we skip that header rather than panic — this runs on the request path.
-fn attach_bedrock_error_headers(headers: &mut busbar_contract::http::HeaderMap, kind: &str) {
-    if let Some(id) = synth_amzn_request_id() {
+fn attach_bedrock_error_headers(
+    host: &dyn busbar_contract::codec::CodecHost,
+    headers: &mut busbar_contract::http::HeaderMap,
+    kind: &str,
+) {
+    if let Some(id) = synth_amzn_request_id(host) {
         if let Ok(hv) = HeaderValue::from_str(&id) {
             headers.insert(HeaderName::from_static(HDR_AMZN_REQUEST_ID), hv);
         }
@@ -2280,6 +2284,7 @@ impl BedrockWriter {
 /// encoded via `eventstream::encode_frame`, so the bytes are byte-for-byte what a native stream sends.
 /// Never panics on the request path: a frame whose payload fails to serialize is skipped.
 pub fn bedrock_response_to_eventstream(
+    host: &dyn busbar_contract::codec::CodecHost,
     ir: &crate::codec::ir::IrResponse,
     elapsed_ms: Option<u64>,
 ) -> Vec<u8> {
@@ -2292,7 +2297,7 @@ pub fn bedrock_response_to_eventstream(
     // `write_response_events` (not the single-frame method): a multi-citation delta frames as one
     // `citation` delta per citation, exactly as a native ConverseStream interleaves them.
     let push = |ev: &IrStreamEvent, out: &mut Vec<u8>| {
-        for (event_type, mut payload) in writer.write_response_events(ev) {
+        for (event_type, mut payload) in writer.write_response_events(host, ev) {
             // A native ConverseStream `metadata` frame ALWAYS carries a `metrics.latencyMs` (the SDK
             // surfaces it via `ConverseStreamMetadataEvent::metrics()`); the bedrock writer's
             // `MessageDelta` arm deliberately omits `metrics`, and the LIVE StreamTranslate path injects

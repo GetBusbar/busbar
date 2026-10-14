@@ -29,7 +29,7 @@ fn read(body: &serde_json::Value) -> crate::codec::ir::IrResponse {
     protocol_for("cohere")
         .unwrap()
         .reader()
-        .read_response(body)
+        .read_response(crate::codec::test_host::HOST, body)
         .expect("reads")
 }
 
@@ -37,7 +37,7 @@ fn write(resp: &crate::codec::ir::IrResponse) -> serde_json::Value {
     protocol_for("cohere")
         .unwrap()
         .writer()
-        .write_response(resp)
+        .write_response(crate::codec::test_host::HOST, resp)
 }
 
 #[test]

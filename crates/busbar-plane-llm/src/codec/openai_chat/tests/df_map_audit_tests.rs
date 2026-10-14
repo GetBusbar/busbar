@@ -20,7 +20,7 @@ fn read(body: &serde_json::Value) -> crate::codec::ir::IrResponse {
     protocol_for("openai")
         .unwrap()
         .reader()
-        .read_response(body)
+        .read_response(crate::codec::test_host::HOST, body)
         .expect("reads")
 }
 
@@ -88,7 +88,7 @@ fn usage_modality_slices_cross_both_ways() {
     let out = protocol_for("openai")
         .unwrap()
         .writer()
-        .write_response(&resp);
+        .write_response(crate::codec::test_host::HOST, &resp);
     assert_eq!(out["usage"]["prompt_tokens_details"]["text_tokens"], 7);
     assert_eq!(out["usage"]["prompt_tokens_details"]["image_tokens"], 3);
     assert_eq!(out["usage"]["completion_tokens_details"]["text_tokens"], 4);

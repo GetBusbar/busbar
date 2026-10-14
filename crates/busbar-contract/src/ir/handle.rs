@@ -25,7 +25,7 @@ pub mod handle_impl {
     use super::sealed;
     use crate::billing::{Billing, TokenUsage};
     use crate::bounded::SlabBytes;
-    use crate::codec::{EgressWire, TranslatedResponse};
+    use crate::codec::{CodecHost, EgressWire, TranslatedResponse};
     use crate::ir::egress_prep::EgressPrep;
     use crate::ir::facts::IrFacts;
     use crate::operation::OpVerb;
@@ -85,7 +85,13 @@ pub mod handle_impl {
         /// be done — not an empty body, which is a DIFFERENT request forwarded upstream in the
         /// caller's name and diagnosable only from the backend's own complaint. The seam turns
         /// [`EgressWire::Unrepresentable`] into the same refusal the representability guard raises.
-        fn write_egress_request(&mut self, egress_proto: &str, _model: &str) -> EgressWire {
+        /// `host` is the caller's [`CodecHost`]: a writer that mints an item id draws it there.
+        fn write_egress_request(
+            &mut self,
+            _host: &dyn CodecHost,
+            egress_proto: &str,
+            _model: &str,
+        ) -> EgressWire {
             EgressWire::Unrepresentable {
                 reason: format!(
                     "this request cannot be written onto {egress_proto}: the operation carries no \
@@ -141,6 +147,7 @@ pub mod handle_impl {
         /// event-stream client served a buffered body). `None` when a plain buffered body is correct. Default `None`.
         fn wrap_buffered_as_stream(
             &self,
+            _host: &dyn CodecHost,
             _ingress_protocol: &str,
             _elapsed_ms: Option<u64>,
         ) -> Option<Vec<u8>> {
@@ -148,9 +155,11 @@ pub mod handle_impl {
         }
 
         /// JSON ingress path: write this response onto the `ingress_protocol` dialect
-        /// (`ingress_serves_op` = does that protocol serve this op). Default `Untranslatable`.
+        /// (`ingress_serves_op` = does that protocol serve this op). Default `Untranslatable`. A
+        /// writer that mints an identifier or stamps a time reads it from `host`.
         fn write_ingress_response(
             &self,
+            _host: &dyn CodecHost,
             _ingress_protocol: &str,
             _ingress_serves_op: bool,
         ) -> TranslatedResponse {
@@ -160,6 +169,7 @@ pub mod handle_impl {
         /// OPAQUE ingress path (audio / the opaque bridge). Default `Untranslatable`.
         fn write_ingress_response_bytes(
             &self,
+            _host: &dyn CodecHost,
             _ingress_protocol: &str,
             _ingress_serves_op: bool,
         ) -> TranslatedResponse {

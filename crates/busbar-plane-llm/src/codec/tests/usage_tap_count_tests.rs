@@ -36,10 +36,18 @@ fn the_chat_cells_three_fault_paths_each_count_once_under_their_reason() {
     let chat = crate::codec::chat_handle::ChatOperation("bedrock");
     let unknown = crate::codec::chat_handle::ChatOperation("no-such-dialect");
     let counts = crate::codec::test_host::tap_faults(|| {
-        assert!(chat.extract_usage("bedrock", UNREADABLE).is_none());
-        assert!(chat.extract_usage("bedrock", NOT_JSON).is_none());
-        assert!(chat.extract_usage("bedrock", NOT_JSON).is_none());
-        assert!(unknown.extract_usage("no-such-dialect", b"{}").is_none());
+        assert!(chat
+            .extract_usage(crate::codec::test_host::HOST, "bedrock", UNREADABLE)
+            .is_none());
+        assert!(chat
+            .extract_usage(crate::codec::test_host::HOST, "bedrock", NOT_JSON)
+            .is_none());
+        assert!(chat
+            .extract_usage(crate::codec::test_host::HOST, "bedrock", NOT_JSON)
+            .is_none());
+        assert!(unknown
+            .extract_usage(crate::codec::test_host::HOST, "no-such-dialect", b"{}")
+            .is_none());
     });
     assert_eq!(
         counts,
@@ -55,10 +63,10 @@ fn the_chat_cells_three_fault_paths_each_count_once_under_their_reason() {
 fn a_leaf_cells_default_tap_counts_a_refused_body_as_a_decode_failure() {
     let counts = crate::codec::test_host::tap_faults(|| {
         assert!(cell(OpVerb::EMBEDDINGS)
-            .extract_usage("bedrock", NOT_JSON)
+            .extract_usage(crate::codec::test_host::HOST, "bedrock", NOT_JSON)
             .is_none());
         assert!(cell(OpVerb::IMAGE)
-            .extract_usage("bedrock", NOT_JSON)
+            .extract_usage(crate::codec::test_host::HOST, "bedrock", NOT_JSON)
             .is_none());
     });
     assert_eq!(counts, faults(&[("bedrock", "decode", 2)]));

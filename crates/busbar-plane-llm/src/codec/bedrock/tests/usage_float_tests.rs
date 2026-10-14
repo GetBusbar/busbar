@@ -23,12 +23,14 @@ fn stream_metadata_float_token_counts_survive_as_integers() {
 
     // Buffer the stopReason first, matching the real frame order (messageStop then metadata).
     reader.read_response_events(
+        crate::codec::test_host::HOST,
         "",
         &serde_json::json!({"type": "messageStop", "stopReason": "end_turn"}),
         &mut state,
     );
 
     let ev = reader.read_response_events(
+        crate::codec::test_host::HOST,
         "",
         &serde_json::json!({
             "type": "metadata",
@@ -75,7 +77,9 @@ fn buffered_response_float_usage_counts_survive_as_integers() {
             "cacheReadInputTokens": 3.0, "cacheWriteInputTokens": 7.0
         }
     });
-    let resp = reader.read_response(&body).expect("read");
+    let resp = reader
+        .read_response(crate::codec::test_host::HOST, &body)
+        .expect("read");
     assert_eq!(
         resp.usage.input_tokens, 10,
         "float-encoded inputTokens must survive as the exact integer, not 0"

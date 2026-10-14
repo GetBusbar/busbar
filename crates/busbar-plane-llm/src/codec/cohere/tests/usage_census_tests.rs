@@ -72,7 +72,7 @@ fn buffered_and_truncated(usage: &serde_json::Value) -> [Ledgered; 2] {
         "usage": usage
     });
     let buffered = CohereReader
-        .read_response(&body)
+        .read_response(crate::codec::test_host::HOST, &body)
         .expect("read")
         .usage
         .to_token_usage();
@@ -90,12 +90,18 @@ fn streamed(usage: &serde_json::Value) -> Ledgered {
         "type": "message-end",
         "delta": {"finish_reason": "COMPLETE", "usage": usage}
     });
-    let _ = t.feed(b"data: {\"type\":\"message-start\",\"id\":\"m\"}\n\n");
     let _ = t.feed(
+        crate::codec::test_host::HOST,
+        b"data: {\"type\":\"message-start\",\"id\":\"m\"}\n\n",
+    );
+    let _ = t.feed(crate::codec::test_host::HOST,
         b"data: {\"type\":\"content-delta\",\"index\":0,\"delta\":{\"message\":{\"content\":{\"text\":\"hi\"}}}}\n\n",
     );
-    let _ = t.feed(format!("data: {end}\n\n").as_bytes());
-    let _ = t.finish();
+    let _ = t.feed(
+        crate::codec::test_host::HOST,
+        format!("data: {end}\n\n").as_bytes(),
+    );
+    let _ = t.finish(crate::codec::test_host::HOST);
     ledgered(&t.usage().expect("the tap captured usage").to_token_usage())
 }
 

@@ -38,7 +38,7 @@ fn egress(
     protocol_for("anthropic")
         .unwrap()
         .writer()
-        .write_request_for_lane(&req, "claude-x", caps)
+        .write_request_for_lane(crate::codec::test_host::HOST, &req, "claude-x", caps)
 }
 
 fn newest_lane() -> busbar_contract::ir::egress_prep::LaneCaps {
@@ -65,7 +65,7 @@ fn resp_to_anthropic(resp: &mut crate::codec::ir::IrResponse) -> Value {
     protocol_for("anthropic")
         .unwrap()
         .writer()
-        .write_response(resp)
+        .write_response(crate::codec::test_host::HOST, resp)
 }
 
 fn anthropic_response(stop_reason: &str, stop_details: Value) -> Value {
@@ -131,7 +131,7 @@ fn ant11_context_window_stop_round_trips_buffered() {
     let mut ir = protocol_for("anthropic")
         .unwrap()
         .reader()
-        .read_response(&body)
+        .read_response(crate::codec::test_host::HOST, &body)
         .unwrap();
     assert_eq!(
         ir.stop_reason,
@@ -155,7 +155,7 @@ fn ant11_context_window_stop_round_trips_stream() {
     let ev = protocol_for("anthropic")
         .unwrap()
         .reader()
-        .read_response_event("message_delta", &data)
+        .read_response_event(crate::codec::test_host::HOST, "message_delta", &data)
         .expect("event");
     match &ev {
         crate::codec::ir::IrStreamEvent::MessageDelta {
@@ -177,7 +177,7 @@ fn ant11_context_window_stop_round_trips_stream() {
     let (_, out) = protocol_for("anthropic")
         .unwrap()
         .writer()
-        .write_response_event(&ev)
+        .write_response_event(crate::codec::test_host::HOST, &ev)
         .expect("written");
     assert_eq!(
         out.pointer("/delta/stop_reason"),
@@ -194,7 +194,10 @@ fn ir02_refusal_stop_details_are_carried() {
     let mut ir = protocol_for("anthropic")
         .unwrap()
         .reader()
-        .read_response(&anthropic_response("refusal", details.clone()))
+        .read_response(
+            crate::codec::test_host::HOST,
+            &anthropic_response("refusal", details.clone()),
+        )
         .unwrap();
     assert_eq!(
         ir.stop_reason,
@@ -216,19 +219,22 @@ fn ir02_refusal_stop_details_are_carried() {
     let ev = protocol_for("anthropic")
         .unwrap()
         .reader()
-        .read_response_event("message_delta", &data)
+        .read_response_event(crate::codec::test_host::HOST, "message_delta", &data)
         .unwrap();
     let (_, out) = protocol_for("anthropic")
         .unwrap()
         .writer()
-        .write_response_event(&ev)
+        .write_response_event(crate::codec::test_host::HOST, &ev)
         .unwrap();
     assert_eq!(out.pointer("/delta/stop_details"), Some(&details), "{out}");
 
     let mut plain = protocol_for("anthropic")
         .unwrap()
         .reader()
-        .read_response(&anthropic_response("end_turn", Value::Null))
+        .read_response(
+            crate::codec::test_host::HOST,
+            &anthropic_response("end_turn", Value::Null),
+        )
         .unwrap();
     assert_eq!(plain.stop_detail, None);
     assert_eq!(resp_to_anthropic(&mut plain)["stop_details"], Value::Null);
@@ -514,11 +520,14 @@ fn ir04_same_dialect_service_tier_bytes_are_the_callers() {
         json!("turbo"),
         json!(7),
     ] {
-        let out = writer.write_request(&read(&with(base(), "service_tier", raw.clone())));
+        let out = writer.write_request(
+            crate::codec::test_host::HOST,
+            &read(&with(base(), "service_tier", raw.clone())),
+        );
         assert_eq!(out.get("service_tier"), Some(&raw), "{raw}");
     }
     assert!(writer
-        .write_request(&read(&base()))
+        .write_request(crate::codec::test_host::HOST, &read(&base()))
         .get("service_tier")
         .is_none());
 }

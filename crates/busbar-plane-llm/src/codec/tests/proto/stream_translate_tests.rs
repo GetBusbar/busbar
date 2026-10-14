@@ -57,7 +57,11 @@ fn test_all_protocols_stream_write_read_roundtrip_preserves_text_and_terminal() 
         // intentionally has no frame for).
         let frames: Vec<(String, serde_json::Value)> = events
             .iter()
-            .filter_map(|ev| proto.writer().write_response_event(ev))
+            .filter_map(|ev| {
+                proto
+                    .writer()
+                    .write_response_event(crate::codec::test_host::HOST, ev)
+            })
             .collect();
         assert!(
             !frames.is_empty(),
@@ -80,7 +84,12 @@ fn test_all_protocols_stream_write_read_roundtrip_preserves_text_and_terminal() 
                         .or_insert_with(|| serde_json::Value::String(et.clone()));
                 }
             }
-            decoded.extend(proto.reader().read_response_events(et, &data, &mut state));
+            decoded.extend(proto.reader().read_response_events(
+                crate::codec::test_host::HOST,
+                et,
+                &data,
+                &mut state,
+            ));
         }
         // Streamed text must survive (concatenation of all decoded TextDeltas).
         let got: String = decoded
@@ -201,19 +210,28 @@ fn encode_ir_events_as_wire(
                 framing.on_combined_stop_delta(*reason, stop_sequence.clone(), usage)
             {
                 for sub in &sub_events {
-                    if let Some((et, data)) = proto.writer().write_response_event(sub) {
+                    if let Some((et, data)) = proto
+                        .writer()
+                        .write_response_event(crate::codec::test_host::HOST, sub)
+                    {
                         emit_via_framing(framing.as_mut(), is_es, &et, data, &mut out);
                     }
                 }
                 continue;
             }
         }
-        if let Some((et, data)) = proto.writer().write_response_event(ev) {
+        if let Some((et, data)) = proto
+            .writer()
+            .write_response_event(crate::codec::test_host::HOST, ev)
+        {
             emit_via_framing(framing.as_mut(), is_es, &et, data, &mut out);
         }
     }
     if let Some(flush) = framing.on_finish() {
-        if let Some((et, data)) = proto.writer().write_response_event(&flush) {
+        if let Some((et, data)) = proto
+            .writer()
+            .write_response_event(crate::codec::test_host::HOST, &flush)
+        {
             emit_via_framing(framing.as_mut(), is_es, &et, data, &mut out);
         }
     }
@@ -342,8 +360,8 @@ fn test_all_protocol_pairs_stream_translate_roundtrip_preserves_text_and_termina
 
             let mut st = StreamTranslate::new(ingress, egress)
                 .unwrap_or_else(|| panic!("{ingress}<-{egress}: StreamTranslate::new returned None for a genuinely different pair"));
-            let mut out = st.feed(&wire);
-            out.extend_from_slice(&st.finish());
+            let mut out = st.feed(crate::codec::test_host::HOST, &wire);
+            out.extend_from_slice(&st.finish(crate::codec::test_host::HOST));
             assert!(
                 !st.aborted(),
                 "{ingress}<-{egress}: translator aborted on a normal text stream; out so far: {out:?}"
@@ -362,11 +380,12 @@ fn test_all_protocol_pairs_stream_translate_roundtrip_preserves_text_and_termina
                             .or_insert_with(|| serde_json::Value::String(et.clone()));
                     }
                 }
-                decoded.extend(
-                    ingress_proto
-                        .reader()
-                        .read_response_events(&et, &data, &mut state),
-                );
+                decoded.extend(ingress_proto.reader().read_response_events(
+                    crate::codec::test_host::HOST,
+                    &et,
+                    &data,
+                    &mut state,
+                ));
             }
 
             let got: String = decoded
@@ -480,10 +499,15 @@ fn test_all_protocols_nonstream_write_read_roundtrip_preserves_text() {
             stop_detail: None,
             ..Default::default()
         };
-        let body = proto.writer().write_response(&resp);
-        let back = proto.reader().read_response(&body).unwrap_or_else(|e| {
-            panic!("{name}: write_response output must read back: {e:?}\nbody: {body}")
-        });
+        let body = proto
+            .writer()
+            .write_response(crate::codec::test_host::HOST, &resp);
+        let back = proto
+            .reader()
+            .read_response(crate::codec::test_host::HOST, &body)
+            .unwrap_or_else(|e| {
+                panic!("{name}: write_response output must read back: {e:?}\nbody: {body}")
+            });
         let got: String = back
             .content
             .iter()
@@ -564,10 +588,15 @@ fn a2_roundtrip_usage_fidelity_with_cache() {
             "openai",
             json!({"prompt_tokens": 100, "completion_tokens": 10, "prompt_tokens_details": {"cached_tokens": 5}}),
         );
-        let ir = p.reader().read_response(&native).unwrap();
+        let ir = p
+            .reader()
+            .read_response(crate::codec::test_host::HOST, &native)
+            .unwrap();
         assert_eq!(ir.usage.input_tokens, 95, "openai: uncached input");
         assert_eq!(ir.usage.cache_read_input_tokens, Some(5));
-        let out = p.writer().write_response(&ir);
+        let out = p
+            .writer()
+            .write_response(crate::codec::test_host::HOST, &ir);
         assert_eq!(
             out["usage"]["prompt_tokens"],
             json!(100),
@@ -586,10 +615,15 @@ fn a2_roundtrip_usage_fidelity_with_cache() {
             "gemini",
             json!({"promptTokenCount": 150, "candidatesTokenCount": 20, "cachedContentTokenCount": 30, "totalTokenCount": 170}),
         );
-        let ir = p.reader().read_response(&native).unwrap();
+        let ir = p
+            .reader()
+            .read_response(crate::codec::test_host::HOST, &native)
+            .unwrap();
         assert_eq!(ir.usage.input_tokens, 120, "gemini: uncached input");
         assert_eq!(ir.usage.cache_read_input_tokens, Some(30));
-        let out = p.writer().write_response(&ir);
+        let out = p
+            .writer()
+            .write_response(crate::codec::test_host::HOST, &ir);
         assert_eq!(
             out["usageMetadata"]["promptTokenCount"],
             json!(150),
@@ -606,10 +640,15 @@ fn a2_roundtrip_usage_fidelity_with_cache() {
             "responses",
             json!({"input_tokens": 100, "output_tokens": 10, "input_tokens_details": {"cached_tokens": 64}}),
         );
-        let ir = p.reader().read_response(&native).unwrap();
+        let ir = p
+            .reader()
+            .read_response(crate::codec::test_host::HOST, &native)
+            .unwrap();
         assert_eq!(ir.usage.input_tokens, 36, "responses: uncached input");
         assert_eq!(ir.usage.cache_read_input_tokens, Some(64));
-        let out = p.writer().write_response(&ir);
+        let out = p
+            .writer()
+            .write_response(crate::codec::test_host::HOST, &ir);
         assert_eq!(
             out["usage"]["input_tokens"],
             json!(100),
@@ -628,14 +667,19 @@ fn a2_roundtrip_usage_fidelity_with_cache() {
             "anthropic",
             json!({"input_tokens": 100, "output_tokens": 50, "cache_read_input_tokens": 5000, "cache_creation_input_tokens": 2000}),
         );
-        let ir = p.reader().read_response(&native).unwrap();
+        let ir = p
+            .reader()
+            .read_response(crate::codec::test_host::HOST, &native)
+            .unwrap();
         assert_eq!(
             ir.usage.input_tokens, 100,
             "anthropic: input stays uncached (additive)"
         );
         assert_eq!(ir.usage.cache_read_input_tokens, Some(5000));
         assert_eq!(ir.usage.cache_creation_input_tokens, Some(2000));
-        let out = p.writer().write_response(&ir);
+        let out = p
+            .writer()
+            .write_response(crate::codec::test_host::HOST, &ir);
         assert_eq!(
             out["usage"]["input_tokens"],
             json!(100),
@@ -651,14 +695,19 @@ fn a2_roundtrip_usage_fidelity_with_cache() {
             "bedrock",
             json!({"inputTokens": 100, "outputTokens": 50, "cacheReadInputTokens": 5000, "cacheWriteInputTokens": 2000}),
         );
-        let ir = p.reader().read_response(&native).unwrap();
+        let ir = p
+            .reader()
+            .read_response(crate::codec::test_host::HOST, &native)
+            .unwrap();
         assert_eq!(
             ir.usage.input_tokens, 100,
             "bedrock: input stays uncached (additive)"
         );
         assert_eq!(ir.usage.cache_read_input_tokens, Some(5000));
         assert_eq!(ir.usage.cache_creation_input_tokens, Some(2000));
-        let out = p.writer().write_response(&ir);
+        let out = p
+            .writer()
+            .write_response(crate::codec::test_host::HOST, &ir);
         assert_eq!(
             out["usage"]["inputTokens"],
             json!(100),
@@ -682,10 +731,15 @@ fn a2_roundtrip_usage_fidelity_no_cache_emits_no_cache_object() {
             "openai",
             json!({"prompt_tokens": 12, "completion_tokens": 4}),
         );
-        let ir = p.reader().read_response(&native).unwrap();
+        let ir = p
+            .reader()
+            .read_response(crate::codec::test_host::HOST, &native)
+            .unwrap();
         assert_eq!(ir.usage.input_tokens, 12);
         assert_eq!(ir.usage.cache_read_input_tokens, None);
-        let out = p.writer().write_response(&ir);
+        let out = p
+            .writer()
+            .write_response(crate::codec::test_host::HOST, &ir);
         assert_eq!(out["usage"]["prompt_tokens"], json!(12));
         assert!(
             out["usage"].get("prompt_tokens_details").is_none(),
@@ -699,9 +753,14 @@ fn a2_roundtrip_usage_fidelity_no_cache_emits_no_cache_object() {
             "gemini",
             json!({"promptTokenCount": 12, "candidatesTokenCount": 4, "totalTokenCount": 16}),
         );
-        let ir = p.reader().read_response(&native).unwrap();
+        let ir = p
+            .reader()
+            .read_response(crate::codec::test_host::HOST, &native)
+            .unwrap();
         assert_eq!(ir.usage.cache_read_input_tokens, None);
-        let out = p.writer().write_response(&ir);
+        let out = p
+            .writer()
+            .write_response(crate::codec::test_host::HOST, &ir);
         assert_eq!(out["usageMetadata"]["promptTokenCount"], json!(12));
         assert!(
             out["usageMetadata"]
@@ -717,9 +776,14 @@ fn a2_roundtrip_usage_fidelity_no_cache_emits_no_cache_object() {
             "responses",
             json!({"input_tokens": 12, "output_tokens": 4}),
         );
-        let ir = p.reader().read_response(&native).unwrap();
+        let ir = p
+            .reader()
+            .read_response(crate::codec::test_host::HOST, &native)
+            .unwrap();
         assert_eq!(ir.usage.cache_read_input_tokens, None);
-        let out = p.writer().write_response(&ir);
+        let out = p
+            .writer()
+            .write_response(crate::codec::test_host::HOST, &ir);
         assert_eq!(out["usage"]["input_tokens"], json!(12));
         // Unlike Chat Completions (where `prompt_tokens_details` is optional), the Responses
         // API SDKs type `input_tokens_details`/`output_tokens_details` and `total_tokens` as REQUIRED,
@@ -743,9 +807,14 @@ fn a2_roundtrip_usage_fidelity_no_cache_emits_no_cache_object() {
             "anthropic",
             json!({"input_tokens": 12, "output_tokens": 4}),
         );
-        let ir = p.reader().read_response(&native).unwrap();
+        let ir = p
+            .reader()
+            .read_response(crate::codec::test_host::HOST, &native)
+            .unwrap();
         assert_eq!(ir.usage.cache_read_input_tokens, None);
-        let out = p.writer().write_response(&ir);
+        let out = p
+            .writer()
+            .write_response(crate::codec::test_host::HOST, &ir);
         assert_eq!(out["usage"]["input_tokens"], json!(12));
         // Anthropic's published `Usage` schema REQUIRES both cache counters, and a real uncached
         // response reports them as 0 (never omits them) — so "no spurious cache" here means the
@@ -762,8 +831,13 @@ fn a2_roundtrip_usage_fidelity_no_cache_emits_no_cache_object() {
         let p = protocol_for("bedrock").unwrap();
         let native =
             native_response_with_usage("bedrock", json!({"inputTokens": 12, "outputTokens": 4}));
-        let ir = p.reader().read_response(&native).unwrap();
-        let out = p.writer().write_response(&ir);
+        let ir = p
+            .reader()
+            .read_response(crate::codec::test_host::HOST, &native)
+            .unwrap();
+        let out = p
+            .writer()
+            .write_response(crate::codec::test_host::HOST, &ir);
         assert_eq!(out["usage"]["inputTokens"], json!(12));
         assert!(
             out["usage"].get("cacheReadInputTokens").is_none(),
@@ -778,7 +852,10 @@ fn a2_roundtrip_usage_fidelity_no_cache_emits_no_cache_object() {
             "cohere",
             json!({"tokens": {"input_tokens": 12, "output_tokens": 4}}),
         );
-        let ir = p.reader().read_response(&native).unwrap();
+        let ir = p
+            .reader()
+            .read_response(crate::codec::test_host::HOST, &native)
+            .unwrap();
         assert_eq!(ir.usage.input_tokens, 12);
         assert_eq!(ir.usage.cache_read_input_tokens, None);
         assert_eq!(ir.usage.billable_tokens(), 16);
@@ -797,7 +874,10 @@ fn a2_billing_parity_and_fix() {
             "openai",
             json!({"prompt_tokens": 100, "completion_tokens": 10, "prompt_tokens_details": {"cached_tokens": 5}}),
         );
-        let ir = p.reader().read_response(&native).unwrap();
+        let ir = p
+            .reader()
+            .read_response(crate::codec::test_host::HOST, &native)
+            .unwrap();
         // prompt_tokens(100) + completion(10) = 110. Must stay 110.
         assert_eq!(
             ir.usage.billable_tokens(),
@@ -811,7 +891,10 @@ fn a2_billing_parity_and_fix() {
             "gemini",
             json!({"promptTokenCount": 150, "candidatesTokenCount": 20, "cachedContentTokenCount": 30}),
         );
-        let ir = p.reader().read_response(&native).unwrap();
+        let ir = p
+            .reader()
+            .read_response(crate::codec::test_host::HOST, &native)
+            .unwrap();
         assert_eq!(
             ir.usage.billable_tokens(),
             170,
@@ -824,7 +907,10 @@ fn a2_billing_parity_and_fix() {
             "responses",
             json!({"input_tokens": 100, "output_tokens": 10, "input_tokens_details": {"cached_tokens": 64}}),
         );
-        let ir = p.reader().read_response(&native).unwrap();
+        let ir = p
+            .reader()
+            .read_response(crate::codec::test_host::HOST, &native)
+            .unwrap();
         assert_eq!(
             ir.usage.billable_tokens(),
             110,
@@ -839,7 +925,10 @@ fn a2_billing_parity_and_fix() {
             "anthropic",
             json!({"input_tokens": 100, "output_tokens": 50, "cache_read_input_tokens": 5000, "cache_creation_input_tokens": 2000}),
         );
-        let ir = p.reader().read_response(&native).unwrap();
+        let ir = p
+            .reader()
+            .read_response(crate::codec::test_host::HOST, &native)
+            .unwrap();
         assert_eq!(
             ir.usage.billable_tokens(),
             7150,
@@ -853,7 +942,10 @@ fn a2_billing_parity_and_fix() {
             "bedrock",
             json!({"inputTokens": 100, "outputTokens": 50, "cacheReadInputTokens": 5000, "cacheWriteInputTokens": 2000}),
         );
-        let ir = p.reader().read_response(&native).unwrap();
+        let ir = p
+            .reader()
+            .read_response(crate::codec::test_host::HOST, &native)
+            .unwrap();
         assert_eq!(
             ir.usage.billable_tokens(),
             7150,
@@ -886,7 +978,10 @@ fn a2_billing_parity_and_fix() {
     ] {
         let p = protocol_for(name).unwrap();
         let native = native_response_with_usage(name, usage);
-        let ir = p.reader().read_response(&native).unwrap();
+        let ir = p
+            .reader()
+            .read_response(crate::codec::test_host::HOST, &native)
+            .unwrap();
         assert_eq!(
             ir.usage.billable_tokens(),
             150,
@@ -907,12 +1002,18 @@ fn a2_cross_protocol_cache_creation_included_in_prompt_total() {
         "anthropic",
         json!({"input_tokens": 11, "output_tokens": 5, "cache_read_input_tokens": 20, "cache_creation_input_tokens": 40}),
     );
-    let ir = anth.reader().read_response(&native).unwrap();
+    let ir = anth
+        .reader()
+        .read_response(crate::codec::test_host::HOST, &native)
+        .unwrap();
     assert_eq!(ir.usage.input_tokens, 11);
     assert_eq!(ir.usage.cache_read_input_tokens, Some(20));
     assert_eq!(ir.usage.cache_creation_input_tokens, Some(40));
     // OpenAI egress: prompt_tokens = 11 + 20 + 40 = 71; total_tokens = 76.
-    let o = protocol_for("openai").unwrap().writer().write_response(&ir);
+    let o = protocol_for("openai")
+        .unwrap()
+        .writer()
+        .write_response(crate::codec::test_host::HOST, &ir);
     assert_eq!(
         o["usage"]["prompt_tokens"],
         json!(71),
@@ -920,7 +1021,10 @@ fn a2_cross_protocol_cache_creation_included_in_prompt_total() {
     );
     assert_eq!(o["usage"]["total_tokens"], json!(76));
     // Gemini egress: promptTokenCount = 71.
-    let g = protocol_for("gemini").unwrap().writer().write_response(&ir);
+    let g = protocol_for("gemini")
+        .unwrap()
+        .writer()
+        .write_response(crate::codec::test_host::HOST, &ir);
     assert_eq!(
         g["usageMetadata"]["promptTokenCount"],
         json!(71),
@@ -930,7 +1034,7 @@ fn a2_cross_protocol_cache_creation_included_in_prompt_total() {
     let r = protocol_for("responses")
         .unwrap()
         .writer()
-        .write_response(&ir);
+        .write_response(crate::codec::test_host::HOST, &ir);
     assert_eq!(
         r["usage"]["input_tokens"],
         json!(71),
@@ -951,7 +1055,10 @@ fn a2_cached_exceeds_prompt_saturates_to_zero() {
         "openai",
         json!({"prompt_tokens": 10, "completion_tokens": 4, "prompt_tokens_details": {"cached_tokens": 50}}),
     );
-    let ir = p.reader().read_response(&native).unwrap();
+    let ir = p
+        .reader()
+        .read_response(crate::codec::test_host::HOST, &native)
+        .unwrap();
     assert_eq!(
         ir.usage.input_tokens, 0,
         "saturating_sub clamps to 0, no underflow"
@@ -963,7 +1070,10 @@ fn a2_cached_exceeds_prompt_saturates_to_zero() {
         "gemini",
         json!({"promptTokenCount": 10, "candidatesTokenCount": 4, "cachedContentTokenCount": 50}),
     );
-    let irg = pg.reader().read_response(&gnative).unwrap();
+    let irg = pg
+        .reader()
+        .read_response(crate::codec::test_host::HOST, &gnative)
+        .unwrap();
     assert_eq!(
         irg.usage.input_tokens, 0,
         "gemini saturating_sub clamps to 0"
@@ -974,7 +1084,10 @@ fn a2_cached_exceeds_prompt_saturates_to_zero() {
         "responses",
         json!({"input_tokens": 10, "output_tokens": 4, "input_tokens_details": {"cached_tokens": 50}}),
     );
-    let irr = pr.reader().read_response(&rnative).unwrap();
+    let irr = pr
+        .reader()
+        .read_response(crate::codec::test_host::HOST, &rnative)
+        .unwrap();
     assert_eq!(
         irr.usage.input_tokens, 0,
         "responses saturating_sub clamps to 0"
@@ -1087,13 +1200,13 @@ fn test_gemini_json_array_surfaces_upstream_translate_abort() {
     // Drive a real chunk through translate→framer so the array opens with one element.
     let chunk = b"data: {\"choices\":[{\"delta\":{\"content\":\"hi\"},\"index\":0}]}\n\n";
     let mut framer = GeminiJsonArrayFramer::new();
-    let translated = st.feed(chunk);
+    let translated = st.feed(crate::codec::test_host::HOST, chunk);
     let mut out = framer.feed(&translated);
     // Now overflow the TRANSLATE reassembly buffer with a never-terminated frame → it aborts.
     let huge = vec![b'x'; StreamTranslate::MAX_BUF + 16];
     let mut never_terminated = Vec::from(&b"data: {\"choices\":[{\"delta\":{\"content\":\""[..]);
     never_terminated.extend_from_slice(&huge);
-    let _ = st.feed(&never_terminated);
+    let _ = st.feed(crate::codec::test_host::HOST, &never_terminated);
     assert!(
         st.aborted(),
         "the translate must have aborted on the MAX_BUF overflow"
@@ -1113,8 +1226,8 @@ fn test_gemini_json_array_surfaces_upstream_translate_abort() {
     // element) — the accessor must not spuriously inject an error on a healthy stream.
     let mut clean_st = StreamTranslate::new("gemini", "openai").expect("translator");
     let mut clean_framer = GeminiJsonArrayFramer::new();
-    let mut clean_out = clean_framer.feed(&clean_st.feed(chunk));
-    let _ = clean_st.finish();
+    let mut clean_out = clean_framer.feed(&clean_st.feed(crate::codec::test_host::HOST, chunk));
+    let _ = clean_st.finish(crate::codec::test_host::HOST);
     clean_out.extend_from_slice(&clean_framer.finish_for_translate(clean_st.aborted()));
     let clean: serde_json::Value = serde_json::from_slice(&clean_out).expect("clean finish parses");
     assert!(
@@ -1145,7 +1258,7 @@ fn test_egress_eventstream_malformed_prelude_aborts_and_surfaces_error() {
     malformed.extend_from_slice(&u32::MAX.to_be_bytes()); // total_len = ~4 GiB (out of range)
     malformed.extend_from_slice(&0u32.to_be_bytes()); // headers_len = 0
     malformed.extend_from_slice(&[0, 0, 0, 0]); // prelude CRC (unchecked by the decoder)
-    let out = st.feed(&malformed);
+    let out = st.feed(crate::codec::test_host::HOST, &malformed);
     assert!(
         out.is_empty(),
         "a malformed prelude yields no translated frames; got {} bytes",
@@ -1157,12 +1270,13 @@ fn test_egress_eventstream_malformed_prelude_aborts_and_surfaces_error() {
     );
     // Every subsequent feed is a no-op (the stream is abandoned).
     assert!(
-        st.feed(b"anything").is_empty(),
+        st.feed(crate::codec::test_host::HOST, b"anything")
+            .is_empty(),
         "an aborted translator must ignore all further input"
     );
     // `finish()` must surface the ingress-native (anthropic SSE) terminal error frame — the
     // truncation is signaled in-band, not swallowed.
-    let term = st.finish();
+    let term = st.finish(crate::codec::test_host::HOST);
     let text = String::from_utf8_lossy(&term);
     assert!(
         text.contains("error"),
@@ -1188,7 +1302,7 @@ fn same_proto_bedrock_malformed_prelude_emits_only_valid_frames_not_garbage() {
     bytes.extend_from_slice(&0u32.to_be_bytes()); // headers_len
     bytes.extend_from_slice(&[0, 0, 0, 0]); // prelude CRC (unchecked by the decoder)
     bytes.extend_from_slice(b"GARBAGE-MUST-NOT-REACH-CLIENT");
-    let out = st.feed(&bytes);
+    let out = st.feed(crate::codec::test_host::HOST, &bytes);
     assert_eq!(
         out, valid,
         "same-proto verbatim emit must forward ONLY the valid frame bytes, never the cleared \
@@ -1201,7 +1315,7 @@ fn same_proto_bedrock_malformed_prelude_emits_only_valid_frames_not_garbage() {
     assert!(st.aborted(), "a malformed prelude aborts the stream");
     // finish() surfaces the native bedrock terminal exception frame (not a silent truncation).
     assert!(
-        !st.finish().is_empty(),
+        !st.finish(crate::codec::test_host::HOST).is_empty(),
         "an aborted same-proto bedrock stream must emit a terminal exception frame"
     );
 }
@@ -1221,8 +1335,8 @@ fn stream_gemini_multi_citation_yields_separate_single_object_anthropic_events()
     let chunk = br#"data: {"candidates":[{"index":0,"content":{"role":"model","parts":[{"text":"answer text"}]},"citationMetadata":{"citationSources":[{"startIndex":0,"endIndex":3,"uri":"https://example.com/a","title":"A"},{"startIndex":3,"endIndex":6,"uri":"https://example.com/b","title":"B"},{"startIndex":6,"endIndex":9,"uri":"https://example.com/c","title":"C"}]}}]}
 
 "#;
-    let mut out = st.feed(chunk);
-    out.extend_from_slice(&st.finish());
+    let mut out = st.feed(crate::codec::test_host::HOST, chunk);
+    out.extend_from_slice(&st.finish(crate::codec::test_host::HOST));
     let text = String::from_utf8(out).expect("anthropic SSE is utf-8");
 
     // Collect every `data:` line whose parsed body is a `citations_delta` content_block_delta.
@@ -1287,8 +1401,8 @@ fn stream_gemini_multi_citation_yields_separate_single_object_cohere_events() {
     let chunk = br#"data: {"candidates":[{"index":0,"content":{"role":"model","parts":[{"text":"answer text"}]},"citationMetadata":{"citationSources":[{"startIndex":0,"endIndex":3,"uri":"https://example.com/a","title":"A"},{"startIndex":3,"endIndex":6,"uri":"https://example.com/b","title":"B"},{"startIndex":6,"endIndex":9,"uri":"https://example.com/c","title":"C"}]}}]}
 
 "#;
-    let mut out = st.feed(chunk);
-    out.extend_from_slice(&st.finish());
+    let mut out = st.feed(crate::codec::test_host::HOST, chunk);
+    out.extend_from_slice(&st.finish(crate::codec::test_host::HOST));
     let text = String::from_utf8(out).expect("cohere SSE is utf-8");
 
     let mut citation_bodies: Vec<serde_json::Value> = Vec::new();
@@ -1367,7 +1481,7 @@ fn stream_anthropic_single_citations_project_to_valid_gemini_citation_metadata()
     };
     for url in ["https://x/1", "https://x/2", "https://x/3"] {
         let (_, body) = writer
-            .write_response_event(&mk(url))
+            .write_response_event(crate::codec::test_host::HOST, &mk(url))
             .expect("each single-citation delta emits a Gemini citationMetadata chunk");
         let sources = body
             .pointer("/candidates/0/citationMetadata/citationSources")
@@ -1420,10 +1534,18 @@ fn redacted_reasoning_drops_on_writers_without_a_native_form() {
 
     // Bind each writer to a local (interior-mutable per-stream state).
     let (gw, rw, cw) = (GeminiWriter, ResponsesWriter, CohereWriter);
-    let gemini = gw.write_response(&ir).to_string();
-    let responses = rw.write_response(&ir).to_string();
-    let openai = openai_writer().write_response(&ir).to_string();
-    let cohere = cw.write_response(&ir).to_string();
+    let gemini = gw
+        .write_response(crate::codec::test_host::HOST, &ir)
+        .to_string();
+    let responses = rw
+        .write_response(crate::codec::test_host::HOST, &ir)
+        .to_string();
+    let openai = openai_writer()
+        .write_response(crate::codec::test_host::HOST, &ir)
+        .to_string();
+    let cohere = cw
+        .write_response(crate::codec::test_host::HOST, &ir)
+        .to_string();
     for (name, wire) in [
         ("gemini", &gemini),
         ("responses", &responses),
@@ -1444,7 +1566,8 @@ fn redacted_reasoning_drops_on_writers_without_a_native_form() {
         ),
     };
     assert!(
-        gw.write_response_event(&redacted_delta).is_none(),
+        gw.write_response_event(crate::codec::test_host::HOST, &redacted_delta)
+            .is_none(),
         "gemini stream must drop a redacted-reasoning delta"
     );
 }
@@ -1486,7 +1609,7 @@ fn test_translate_bedrock_egress_exception_frame_surfaces_error_to_ingress() {
         "rate exceeded mid-stream",
     ));
 
-    let out = String::from_utf8(st.feed(&bytes)).unwrap();
+    let out = String::from_utf8(st.feed(crate::codec::test_host::HOST, &bytes)).unwrap();
     // The mid-stream exception must reach the client as an Anthropic-native error event, NOT be
     // dropped (which would leave the client on a hanging / EOF-without-terminator stream).
     assert!(
@@ -1521,8 +1644,8 @@ fn test_translate_bedrock_eventstream_egress_to_anthropic_ingress() {
     // finish() (see StreamFraming::folds_terminal_usage), which the response body streams to the
     // client after the feed() output — so collect both, exactly as the client receives them. The
     // delta-before-stop ordering below is preserved: finish() emits the delta then the stop.
-    let mut out = String::from_utf8(st.feed(&bytes)).unwrap();
-    out.push_str(&String::from_utf8(st.finish()).unwrap());
+    let mut out = String::from_utf8(st.feed(crate::codec::test_host::HOST, &bytes)).unwrap();
+    out.push_str(&String::from_utf8(st.finish(crate::codec::test_host::HOST)).unwrap());
     // Anthropic SSE framing with the translated content.
     assert!(out.contains("event: message_start"), "got:\n{out}");
     // Pin the STRUCTURAL shape only: the `|| out.contains("Hi")` disjunct that used to widen this
@@ -1593,8 +1716,8 @@ fn test_bedrock_egress_redacted_reasoning_preserved_to_anthropic_ingress() {
         br#"{"usage":{"inputTokens":5,"outputTokens":2}}"#,
     ));
 
-    let mut out = String::from_utf8(st.feed(&bytes)).unwrap();
-    out.push_str(&String::from_utf8(st.finish()).unwrap());
+    let mut out = String::from_utf8(st.feed(crate::codec::test_host::HOST, &bytes)).unwrap();
+    out.push_str(&String::from_utf8(st.finish(crate::codec::test_host::HOST)).unwrap());
 
     // The Anthropic client receives a native redacted_thinking block carrying the opaque bytes intact.
     assert!(
@@ -1633,11 +1756,13 @@ fn test_bedrock_reader_emits_delta_before_stop_for_anthropic_ingress() {
     // The terminal pair of the Bedrock wire: `messageStop` (stop_reason) then `metadata` (usage).
     let mut events: Vec<IrStreamEvent> = Vec::new();
     events.extend(reader.read_response_events(
+        crate::codec::test_host::HOST,
         "",
         &serde_json::json!({"type": "messageStop", "stopReason": "end_turn"}),
         &mut state,
     ));
     events.extend(reader.read_response_events(
+        crate::codec::test_host::HOST,
         "",
         &serde_json::json!({"type": "metadata", "usage": {"inputTokens": 5, "outputTokens": 2}}),
         &mut state,
@@ -1656,7 +1781,11 @@ fn test_bedrock_reader_emits_delta_before_stop_for_anthropic_ingress() {
     // The Anthropic writer maps that order to `message_delta` then `message_stop`.
     let wire: Vec<String> = events
         .iter()
-        .filter_map(|e| writer.write_response_event(e).map(|(et, _)| et))
+        .filter_map(|e| {
+            writer
+                .write_response_event(crate::codec::test_host::HOST, e)
+                .map(|(et, _)| et)
+        })
         .collect();
     let delta_pos = wire.iter().position(|t| t == "message_delta");
     let stop_pos = wire.iter().position(|t| t == "message_stop");
@@ -1689,7 +1818,7 @@ fn test_duplicate_terminal_message_delta_after_stop_is_dropped() {
             // DUPLICATE terminal delta AFTER the stop — must be dropped by the guard.
             "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"input_tokens\":5,\"output_tokens\":2}}\n\n",
         ] {
-            raw.extend(st.feed(frame.as_bytes()));
+            raw.extend(st.feed(crate::codec::test_host::HOST, frame.as_bytes()));
         }
 
     let out = String::from_utf8(raw).expect("utf8 SSE");
@@ -1725,9 +1854,9 @@ fn openai_egress_chunk_identity_and_trailing_usage_byte_shape() {
             "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"input_tokens\":5,\"output_tokens\":2}}\n\n",
             "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
         ] {
-            raw.extend(st.feed(frame.as_bytes()));
+            raw.extend(st.feed(crate::codec::test_host::HOST, frame.as_bytes()));
         }
-    raw.extend(st.finish());
+    raw.extend(st.finish(crate::codec::test_host::HOST));
     let out = String::from_utf8(raw).expect("utf8 SSE");
 
     // (a) Every chat.completion.chunk shares ONE latched stream id — never a per-chunk id, never
@@ -1791,9 +1920,9 @@ fn openai_egress_without_include_usage_emits_no_usage_chunk() {
             "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"input_tokens\":5,\"output_tokens\":2}}\n\n",
             "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
         ] {
-            raw.extend(st.feed(frame.as_bytes()));
+            raw.extend(st.feed(crate::codec::test_host::HOST, frame.as_bytes()));
         }
-    raw.extend(st.finish());
+    raw.extend(st.finish(crate::codec::test_host::HOST));
     let out = String::from_utf8(raw).expect("utf8 SSE");
 
     // (a) The finish chunk is still present.
@@ -1865,9 +1994,9 @@ fn openai_egress_multi_tool_stream_uses_0_based_tool_call_indices() {
             "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\"},\"usage\":{\"input_tokens\":5,\"output_tokens\":9}}\n\n",
             "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
         ] {
-            raw.extend(st.feed(frame.as_bytes()));
+            raw.extend(st.feed(crate::codec::test_host::HOST, frame.as_bytes()));
         }
-    raw.extend(st.finish());
+    raw.extend(st.finish(crate::codec::test_host::HOST));
     let out = String::from_utf8(raw).expect("utf8 SSE");
 
     // Collect the (tool name, tool_call_index) pairs from the OPEN chunks (the only ones carrying
@@ -1944,9 +2073,9 @@ fn bedrock_egress_emits_exactly_one_metadata_frame() {
             "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"input_tokens\":5,\"output_tokens\":2}}\n\n",
             "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
         ] {
-            raw_a.extend(a.feed(frame.as_bytes()));
+            raw_a.extend(a.feed(crate::codec::test_host::HOST, frame.as_bytes()));
         }
-    raw_a.extend(a.finish());
+    raw_a.extend(a.finish(crate::codec::test_host::HOST));
     let mut buf_a = raw_a;
     let frames_a = crate::codec::eventstream::drain_frames(&mut buf_a);
     assert!(
@@ -1970,9 +2099,9 @@ fn bedrock_egress_emits_exactly_one_metadata_frame() {
             "data: {\"id\":\"chatcmpl-x\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
             "data: [DONE]\n\n",
         ] {
-            raw_b.extend(b.feed(frame.as_bytes()));
+            raw_b.extend(b.feed(crate::codec::test_host::HOST, frame.as_bytes()));
         }
-    raw_b.extend(b.finish());
+    raw_b.extend(b.finish(crate::codec::test_host::HOST));
     let mut buf_b = raw_b;
     let frames_b = crate::codec::eventstream::drain_frames(&mut buf_b);
     assert!(
@@ -2005,11 +2134,11 @@ fn test_translate_anthropic_egress_to_bedrock_ingress_binary_frames() {
             "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"input_tokens\":5,\"output_tokens\":2}}\n\n",
             "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
         ] {
-            raw.extend(t.feed(frame.as_bytes()));
+            raw.extend(t.feed(crate::codec::test_host::HOST, frame.as_bytes()));
         }
     // Bedrock has no `[DONE]`: the messageStop frame is the terminator, so finish() is empty.
     assert!(
-        t.finish().is_empty(),
+        t.finish(crate::codec::test_host::HOST).is_empty(),
         "bedrock ingress emits no terminator frame in finish()"
     );
 
@@ -2122,7 +2251,7 @@ fn test_translate_anthropic_text_to_bedrock_ingress_has_no_content_block_start()
             "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"input_tokens\":3,\"output_tokens\":1}}\n\n",
             "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
         ] {
-            raw.extend(t.feed(frame.as_bytes()));
+            raw.extend(t.feed(crate::codec::test_host::HOST, frame.as_bytes()));
         }
     let mut buf = raw.clone();
     let frames = crate::codec::eventstream::drain_frames(&mut buf);
@@ -2178,7 +2307,7 @@ fn test_translate_anthropic_reasoning_to_bedrock_ingress_uses_delta_not_start() 
             "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"input_tokens\":3,\"output_tokens\":4}}\n\n",
             "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
         ] {
-            raw.extend(t.feed(frame.as_bytes()));
+            raw.extend(t.feed(crate::codec::test_host::HOST, frame.as_bytes()));
         }
     let mut buf = raw.clone();
     let frames = crate::codec::eventstream::drain_frames(&mut buf);
@@ -2248,7 +2377,7 @@ fn test_translate_anthropic_egress_to_bedrock_ingress_tool_call() {
             "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
             "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
         ] {
-            raw.extend(t.feed(frame.as_bytes()));
+            raw.extend(t.feed(crate::codec::test_host::HOST, frame.as_bytes()));
         }
 
     let mut buf = raw.clone();
@@ -2348,6 +2477,7 @@ fn cohere_stream_truncated_tool_call_is_closed_before_message_stop() {
     ] {
         out.push_str(&String::from_utf8_lossy(
             &t.feed(
+                crate::codec::test_host::HOST,
                 format!(
                     "event: {}\ndata: {}\n\n",
                     frame["type"].as_str().unwrap(),
@@ -2357,7 +2487,9 @@ fn cohere_stream_truncated_tool_call_is_closed_before_message_stop() {
             ),
         ));
     }
-    out.push_str(&String::from_utf8_lossy(&t.finish()));
+    out.push_str(&String::from_utf8_lossy(
+        &t.finish(crate::codec::test_host::HOST),
+    ));
 
     let payloads = data_payloads(&out);
     let types: Vec<&str> = payloads
@@ -2391,11 +2523,13 @@ fn cohere_stream_truncated_tool_call_is_closed_before_message_stop() {
 fn gemini_stream_truncated_before_finish_reason_closes_blocks() {
     let mut t = StreamTranslate::new("anthropic", "gemini").expect("anthropic ingress translator");
     let mut out = String::new();
-    out.push_str(&String::from_utf8_lossy(&t.feed(
+    out.push_str(&String::from_utf8_lossy(&t.feed(crate::codec::test_host::HOST,
         b"data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"Hello\"}]}}]}\n\n",
     )));
     // Upstream connection drops here: no `finishReason` chunk ever arrives.
-    out.push_str(&String::from_utf8_lossy(&t.finish()));
+    out.push_str(&String::from_utf8_lossy(
+        &t.finish(crate::codec::test_host::HOST),
+    ));
 
     let payloads = data_payloads(&out);
     let starts: Vec<u64> = payloads
@@ -2426,14 +2560,16 @@ fn gemini_stream_truncated_before_finish_reason_closes_blocks() {
 fn openai_stream_truncated_tool_call_is_closed() {
     let mut t = StreamTranslate::new("anthropic", "openai").expect("anthropic ingress translator");
     let mut out = String::new();
-    out.push_str(&String::from_utf8_lossy(&t.feed(
+    out.push_str(&String::from_utf8_lossy(&t.feed(crate::codec::test_host::HOST,
         b"data: {\"id\":\"x\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"arguments\":\"\"}}]}}]}\n\n",
     )));
-    out.push_str(&String::from_utf8_lossy(&t.feed(
+    out.push_str(&String::from_utf8_lossy(&t.feed(crate::codec::test_host::HOST,
         b"data: {\"id\":\"x\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{\\\"city\\\":\\\"SF\\\"}\"}}]}}]}\n\n",
     )));
     // Connection drops here: no finish_reason chunk ever arrives.
-    out.push_str(&String::from_utf8_lossy(&t.finish()));
+    out.push_str(&String::from_utf8_lossy(
+        &t.finish(crate::codec::test_host::HOST),
+    ));
 
     let payloads = data_payloads(&out);
     let starts: Vec<u64> = payloads
@@ -2487,6 +2623,7 @@ fn cohere_truncated_tool_call_survives_gemini_ingress() {
     ] {
         out.push_str(&String::from_utf8_lossy(
             &t.feed(
+                crate::codec::test_host::HOST,
                 format!(
                     "event: {}\ndata: {}\n\n",
                     frame["type"].as_str().unwrap(),
@@ -2496,7 +2633,9 @@ fn cohere_truncated_tool_call_survives_gemini_ingress() {
             ),
         ));
     }
-    out.push_str(&String::from_utf8_lossy(&t.finish()));
+    out.push_str(&String::from_utf8_lossy(
+        &t.finish(crate::codec::test_host::HOST),
+    ));
 
     // Gemini's JSON-array framer wraps every emitted object; scan for a `functionCall` part with
     // the tool's name anywhere in the output rather than parsing the full array shape.
@@ -2576,14 +2715,20 @@ fn every_writer_that_suppresses_a_block_start_suppresses_its_stop() {
 
             let start_index = 0usize;
             let start_emitted = writer
-                .write_response_event(&IrStreamEvent::BlockStart {
-                    index: start_index,
-                    block: meta.clone(),
-                    refusal: false,
-                })
+                .write_response_event(
+                    crate::codec::test_host::HOST,
+                    &IrStreamEvent::BlockStart {
+                        index: start_index,
+                        block: meta.clone(),
+                        refusal: false,
+                    },
+                )
                 .is_some();
             let stop_emitted = writer
-                .write_response_event(&IrStreamEvent::BlockStop { index: start_index })
+                .write_response_event(
+                    crate::codec::test_host::HOST,
+                    &IrStreamEvent::BlockStop { index: start_index },
+                )
                 .is_some();
 
             // The declared exceptions (suppressed start, REQUIRED stop): gemini's ToolUse
@@ -2644,19 +2789,27 @@ fn anthropic_deferred_redacted_start_pairs_with_its_stop_exactly_once() {
 
     assert!(
         writer
-            .write_response_event(&IrStreamEvent::BlockStart {
-                index: 0,
-                block: IrBlockMeta::RedactedThinking,
-                refusal: false,
-            })
+            .write_response_event(
+                crate::codec::test_host::HOST,
+                &IrStreamEvent::BlockStart {
+                    index: 0,
+                    block: IrBlockMeta::RedactedThinking,
+                    refusal: false,
+                }
+            )
             .is_none(),
         "the redacted BlockStart is deferred: it writes no frame"
     );
     let start = writer
-        .write_response_event(&IrStreamEvent::BlockDelta {
-            index: 0,
-            delta: crate::codec::ir::IrDelta::RedactedReasoningDelta("opaque-bytes".to_string()),
-        })
+        .write_response_event(
+            crate::codec::test_host::HOST,
+            &IrStreamEvent::BlockDelta {
+                index: 0,
+                delta: crate::codec::ir::IrDelta::RedactedReasoningDelta(
+                    "opaque-bytes".to_string(),
+                ),
+            },
+        )
         .expect("the delta writes the block's sole content_block_start");
     assert_eq!(start.0, "content_block_start", "start event: {start:?}");
     assert_eq!(
@@ -2666,15 +2819,23 @@ fn anthropic_deferred_redacted_start_pairs_with_its_stop_exactly_once() {
     );
     assert!(
         writer
-            .write_response_event(&IrStreamEvent::BlockDelta {
-                index: 0,
-                delta: crate::codec::ir::IrDelta::RedactedReasoningDelta("more-bytes".to_string()),
-            })
+            .write_response_event(
+                crate::codec::test_host::HOST,
+                &IrStreamEvent::BlockDelta {
+                    index: 0,
+                    delta: crate::codec::ir::IrDelta::RedactedReasoningDelta(
+                        "more-bytes".to_string()
+                    ),
+                }
+            )
             .is_none(),
         "a second redacted delta must not write a duplicate, unpaired content_block_start"
     );
     let stop = writer
-        .write_response_event(&IrStreamEvent::BlockStop { index: 0 })
+        .write_response_event(
+            crate::codec::test_host::HOST,
+            &IrStreamEvent::BlockStop { index: 0 },
+        )
         .expect("the written start owes its content_block_stop");
     assert_eq!(stop.0, "content_block_stop", "stop event: {stop:?}");
 }
@@ -2697,9 +2858,9 @@ fn anthropic_image_stream_to_bedrock_ingress_has_no_orphan_content_block_stop() 
             "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}\n\n",
             "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
         ] {
-            raw.extend(t.feed(frame.as_bytes()));
+            raw.extend(t.feed(crate::codec::test_host::HOST, frame.as_bytes()));
         }
-    t.finish();
+    t.finish(crate::codec::test_host::HOST);
 
     let mut buf = raw.clone();
     let frames = crate::codec::eventstream::drain_frames(&mut buf);
@@ -2749,7 +2910,7 @@ fn test_translate_error_to_bedrock_ingress_is_exception_frame() {
     // which the bedrock-ingress writer frames as `ServiceUnavailableException` (the transient
     // overload exception), NOT the generic `ValidationException` a client fault would yield.
     let err_frame = "event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"upstream is overloaded\"}}\n\n";
-    let raw = t.feed(err_frame.as_bytes());
+    let raw = t.feed(crate::codec::test_host::HOST, err_frame.as_bytes());
     assert!(!raw.is_empty(), "an error event must emit a frame");
     // Must be binary framing, not SSE text.
     assert!(
@@ -2799,7 +2960,7 @@ fn test_translate_to_gemini_ingress_synthesizes_response_id() {
     let mut t = StreamTranslate::new("gemini", "openai").expect("gemini ingress translator");
     // OpenAI chunk with a top-level id/model that the cross-protocol strip will clear.
     let chunk = "data: {\"id\":\"chatcmpl-abc\",\"created\":1,\"model\":\"gpt-4o\",\"choices\":[{\"delta\":{\"role\":\"assistant\"}}]}\n\n";
-    let out = String::from_utf8(t.feed(chunk.as_bytes())).unwrap();
+    let out = String::from_utf8(t.feed(crate::codec::test_host::HOST, chunk.as_bytes())).unwrap();
     assert!(
         out.contains("responseId"),
         "gemini cross-protocol stream must carry a synthesized responseId; got:\n{out}"
@@ -2835,9 +2996,9 @@ fn test_translate_to_gemini_tool_call_single_functioncall_part() {
             // finish
             "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n",
         ] {
-            out.push_str(&String::from_utf8(t.feed(frame.as_bytes())).unwrap());
+            out.push_str(&String::from_utf8(t.feed(crate::codec::test_host::HOST, frame.as_bytes())).unwrap());
         }
-    out.push_str(&String::from_utf8(t.finish()).unwrap());
+    out.push_str(&String::from_utf8(t.finish(crate::codec::test_host::HOST)).unwrap());
 
     // Collect every `functionCall` part across all emitted Gemini chunks.
     let payloads = data_payloads(&out);
@@ -2886,7 +3047,7 @@ fn test_translate_crlf_sse_frames() {
     let mut t = StreamTranslate::new("anthropic", "openai").expect("translator");
     // OpenAI-style bare `data:` frames with CRLF line endings and `\r\n\r\n` terminators.
     let chunk = "data: {\"choices\":[{\"delta\":{\"content\":\"He\"}}]}\r\n\r\ndata: {\"choices\":[{\"delta\":{\"content\":\"llo\"}}]}\r\n\r\n";
-    let out = String::from_utf8(t.feed(chunk.as_bytes())).unwrap();
+    let out = String::from_utf8(t.feed(crate::codec::test_host::HOST, chunk.as_bytes())).unwrap();
     assert!(
         !out.is_empty(),
         "CRLF SSE must produce translated output, not stall"
@@ -2909,8 +3070,8 @@ fn test_translate_bedrock_eventstream_split_chunks() {
         br#"{"contentBlockIndex":0,"delta":{"text":"Yo"}}"#,
     ));
     let split = bytes.len() - 6; // mid-second-frame
-    let mut out = st.feed(&bytes[..split]);
-    out.extend(st.feed(&bytes[split..]));
+    let mut out = st.feed(crate::codec::test_host::HOST, &bytes[..split]);
+    out.extend(st.feed(crate::codec::test_host::HOST, &bytes[split..]));
     let s = String::from_utf8(out).unwrap();
     assert!(
         s.contains("Yo"),
@@ -2940,9 +3101,9 @@ fn test_translate_anthropic_egress_to_openai_ingress() {
             "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}\n\n",
             "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
         ] {
-            out.push_str(&String::from_utf8(t.feed(frame.as_bytes())).unwrap());
+            out.push_str(&String::from_utf8(t.feed(crate::codec::test_host::HOST, frame.as_bytes())).unwrap());
         }
-    out.push_str(&String::from_utf8(t.finish()).unwrap());
+    out.push_str(&String::from_utf8(t.finish(crate::codec::test_host::HOST)).unwrap());
 
     assert!(
         !out.contains("event:"),
@@ -2980,13 +3141,13 @@ fn test_translate_openai_egress_to_anthropic_ingress() {
             "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":1}}\n\n",
             "data: [DONE]\n\n",
         ] {
-            out.push_str(&String::from_utf8(t.feed(frame.as_bytes())).unwrap());
+            out.push_str(&String::from_utf8(t.feed(crate::codec::test_host::HOST, frame.as_bytes())).unwrap());
         }
     // The terminal message_delta + message_stop are now flushed at finish() for a folding SSE ingress
     // (StreamFraming::folds_terminal_usage); the response body streams finish() output to the client,
     // so collect it here too. Anthropic still emits NO [DONE] terminator (that's an OpenAI-ingress
     // literal) — assert its absence rather than that finish() is wholly empty.
-    out.push_str(&String::from_utf8(t.finish()).unwrap());
+    out.push_str(&String::from_utf8(t.finish(crate::codec::test_host::HOST)).unwrap());
     assert!(
         !out.contains("[DONE]"),
         "Anthropic ingress must not emit a [DONE] terminator; got {out}"
@@ -3029,9 +3190,9 @@ fn test_translate_anthropic_egress_to_gemini_ingress_preserves_input_tokens() {
             "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":7}}\n\n",
             "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
         ] {
-            out.push_str(&String::from_utf8(t.feed(frame.as_bytes())).unwrap());
+            out.push_str(&String::from_utf8(t.feed(crate::codec::test_host::HOST, frame.as_bytes())).unwrap());
         }
-    out.push_str(&String::from_utf8(t.finish()).unwrap());
+    out.push_str(&String::from_utf8(t.finish(crate::codec::test_host::HOST)).unwrap());
     let payloads = data_payloads(&out);
     // The terminal Gemini chunk's usageMetadata must report BOTH the input (prompt) tokens
     // latched at stream start AND the output (candidates) tokens from the delta.
@@ -3066,9 +3227,14 @@ fn test_anthropic_stream_usage_roundtrips_input_and_output_tokens() {
         "type":"message_start",
         "message":{"role":"assistant","usage":{"input_tokens":42,"output_tokens":0}}
     });
-    let start_evs = reader.read_response_events("message_start", &start_in, &mut state);
+    let start_evs = reader.read_response_events(
+        crate::codec::test_host::HOST,
+        "message_start",
+        &start_in,
+        &mut state,
+    );
     let (_et, start_out) = writer
-        .write_response_event(&start_evs[0])
+        .write_response_event(crate::codec::test_host::HOST, &start_evs[0])
         .expect("message_start writes");
     assert_eq!(
         start_out
@@ -3084,9 +3250,14 @@ fn test_anthropic_stream_usage_roundtrips_input_and_output_tokens() {
         "delta":{"stop_reason":"end_turn"},
         "usage":{"output_tokens":7}
     });
-    let delta_evs = reader.read_response_events("message_delta", &delta_in, &mut state);
+    let delta_evs = reader.read_response_events(
+        crate::codec::test_host::HOST,
+        "message_delta",
+        &delta_in,
+        &mut state,
+    );
     let (_et, delta_out) = writer
-        .write_response_event(&delta_evs[0])
+        .write_response_event(crate::codec::test_host::HOST, &delta_evs[0])
         .expect("message_delta writes");
     assert_eq!(
         delta_out
@@ -3112,9 +3283,9 @@ fn test_translate_anthropic_egress_to_cohere_ingress() {
             "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}\n\n",
             "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
         ] {
-            out.push_str(&String::from_utf8(t.feed(frame.as_bytes())).unwrap());
+            out.push_str(&String::from_utf8(t.feed(crate::codec::test_host::HOST, frame.as_bytes())).unwrap());
         }
-    out.push_str(&String::from_utf8(t.finish()).unwrap());
+    out.push_str(&String::from_utf8(t.finish(crate::codec::test_host::HOST)).unwrap());
 
     // Cohere v2 native stream: bare `data:` frames, no `event:` lines.
     assert!(
@@ -3159,9 +3330,9 @@ fn test_translate_anthropic_egress_to_responses_ingress() {
             "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}\n\n",
             "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
         ] {
-            out.push_str(&String::from_utf8(t.feed(frame.as_bytes())).unwrap());
+            out.push_str(&String::from_utf8(t.feed(crate::codec::test_host::HOST, frame.as_bytes())).unwrap());
         }
-    out.push_str(&String::from_utf8(t.finish()).unwrap());
+    out.push_str(&String::from_utf8(t.finish(crate::codec::test_host::HOST)).unwrap());
 
     // Responses uses named events for the stream boundaries.
     assert!(
@@ -3194,7 +3365,7 @@ fn responses_ingress_terminal_error_continues_the_live_stream_identity() {
         "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\"}}\n\n",
         "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hi\"}}\n\n",
     ] {
-        out.push_str(&String::from_utf8_lossy(&t.feed(frame.as_bytes())));
+        out.push_str(&String::from_utf8_lossy(&t.feed(crate::codec::test_host::HOST, frame.as_bytes())));
     }
     let payloads = data_payloads(&out);
     let last_seq = payloads
@@ -3217,7 +3388,7 @@ fn responses_ingress_terminal_error_continues_the_live_stream_identity() {
         retry_after: None,
     };
     let (event_type, data) = t
-        .terminal_error_frame(&err)
+        .terminal_error_frame(crate::codec::test_host::HOST, &err)
         .expect("a Responses ingress frames its terminal error in band");
 
     assert_eq!(
@@ -3257,9 +3428,9 @@ fn test_translate_openai_include_usage_egress_to_bedrock_ingress_single_metadata
         "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":7,\"completion_tokens\":11}}\n\n",
         "data: [DONE]\n\n",
     ] {
-        raw.extend_from_slice(&t.feed(frame.as_bytes()));
+        raw.extend_from_slice(&t.feed(crate::codec::test_host::HOST, frame.as_bytes()));
     }
-    raw.extend_from_slice(&t.finish());
+    raw.extend_from_slice(&t.finish(crate::codec::test_host::HOST));
 
     // Decode the binary eventstream frames.
     let mut buf = raw.clone();
@@ -3309,9 +3480,9 @@ fn test_translate_openai_include_usage_to_anthropic_ingress_no_post_stop_message
         "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":7,\"completion_tokens\":11}}\n\n",
         "data: [DONE]\n\n",
     ] {
-        raw.extend_from_slice(&t.feed(frame.as_bytes()));
+        raw.extend_from_slice(&t.feed(crate::codec::test_host::HOST, frame.as_bytes()));
     }
-    raw.extend_from_slice(&t.finish());
+    raw.extend_from_slice(&t.finish(crate::codec::test_host::HOST));
     let wire = String::from_utf8_lossy(&raw);
 
     // The deferred terminal `message_delta` must carry the MERGED usage from the trailing include_usage
@@ -3355,10 +3526,10 @@ fn test_translate_openai_no_include_usage_egress_to_bedrock_ingress_emits_metada
         "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
         "data: [DONE]\n\n",
     ] {
-        raw.extend_from_slice(&t.feed(frame.as_bytes()));
+        raw.extend_from_slice(&t.feed(crate::codec::test_host::HOST, frame.as_bytes()));
     }
     // finish() must flush the deferred metadata frame.
-    raw.extend_from_slice(&t.finish());
+    raw.extend_from_slice(&t.finish(crate::codec::test_host::HOST));
 
     let mut buf = raw.clone();
     let frames = crate::codec::eventstream::drain_frames(&mut buf);
@@ -3403,8 +3574,11 @@ fn test_translate_split_frame_reassembly() {
     let mut t = StreamTranslate::new("openai", "anthropic").expect("translator");
     let frame = "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hi\"}}\n\n";
     let (a, b) = frame.as_bytes().split_at(20);
-    assert!(t.feed(a).is_empty(), "partial frame must yield no output");
-    let s = String::from_utf8(t.feed(b)).unwrap();
+    assert!(
+        t.feed(crate::codec::test_host::HOST, a).is_empty(),
+        "partial frame must yield no output"
+    );
+    let s = String::from_utf8(t.feed(crate::codec::test_host::HOST, b)).unwrap();
     assert!(
         s.contains("\"content\":\"hi\""),
         "completed frame must translate to openai content; got {s}"
@@ -3423,7 +3597,7 @@ fn test_translate_tool_call_fidelity() {
             "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{\\\"loc\\\":\\\"SF\\\"}\"}}]}}]}\n\n",
             "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n",
         ] {
-            out.push_str(&String::from_utf8(t.feed(frame.as_bytes())).unwrap());
+            out.push_str(&String::from_utf8(t.feed(crate::codec::test_host::HOST, frame.as_bytes())).unwrap());
         }
     assert!(
         out.contains("content_block_start"),
@@ -3487,7 +3661,8 @@ fn drain_frames_once(n: usize) -> (usize, std::time::Duration) {
             );
     }
     let start = std::time::Instant::now();
-    let out = String::from_utf8(t.feed(blob.as_bytes())).expect("utf8");
+    let out =
+        String::from_utf8(t.feed(crate::codec::test_host::HOST, blob.as_bytes())).expect("utf8");
     let elapsed = start.elapsed();
     (out.matches("\"content\":\"x\"").count(), elapsed)
 }
@@ -3602,7 +3777,9 @@ fn test_translate_frames_split_across_chunks_reassemble() {
     let mut p = 0;
     while p < bytes.len() {
         let end = (p + 7).min(bytes.len());
-        out.push_str(&String::from_utf8(t.feed(&bytes[p..end])).unwrap());
+        out.push_str(
+            &String::from_utf8(t.feed(crate::codec::test_host::HOST, &bytes[p..end])).unwrap(),
+        );
         p = end;
     }
     for i in 0..50 {
@@ -3649,7 +3826,7 @@ fn test_parse_sse_frame_done_sentinel() {
 fn test_translate_multiline_data_payload() {
     let mut t = StreamTranslate::new("openai", "anthropic").expect("translator");
     let frame = "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\ndata: \"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hi\"}}\n\n";
-    let s = String::from_utf8(t.feed(frame.as_bytes())).unwrap();
+    let s = String::from_utf8(t.feed(crate::codec::test_host::HOST, frame.as_bytes())).unwrap();
     assert!(
         s.contains("\"content\":\"hi\""),
         "multi-line data payload must reassemble and translate; got {s}"
@@ -3666,7 +3843,7 @@ fn test_feed_aborts_on_unbounded_buffer() {
     let mut total = 0usize;
     // Feed past MAX_BUF (16 MiB) — the +1 iteration crosses the cap and triggers the abort.
     for _ in 0..18 {
-        let out = t.feed(&chunk);
+        let out = t.feed(crate::codec::test_host::HOST, &chunk);
         assert!(out.is_empty(), "garbage stream must produce no output");
         total += chunk.len();
         if t.aborted {
@@ -3684,7 +3861,8 @@ fn test_feed_aborts_on_unbounded_buffer() {
     assert!(t.buf.is_empty(), "aborted stream must release its buffer");
     // Further feeds are no-ops, including a now-complete frame.
     assert!(
-        t.feed(b"data: {\"choices\":[]}\n\n").is_empty(),
+        t.feed(crate::codec::test_host::HOST, b"data: {\"choices\":[]}\n\n")
+            .is_empty(),
         "feeds after abort must be ignored"
     );
 }
@@ -3703,7 +3881,7 @@ fn test_bedrock_ingress_overflow_abort_emits_exception_frame() {
     assert!(t.ingress_eventstream, "bedrock ingress must be eventstream");
     let chunk = vec![b'x'; 1024 * 1024]; // garbage, no `\n\n`
     for _ in 0..18 {
-        let _ = t.feed(&chunk);
+        let _ = t.feed(crate::codec::test_host::HOST, &chunk);
         if t.aborted {
             break;
         }
@@ -3711,7 +3889,7 @@ fn test_bedrock_ingress_overflow_abort_emits_exception_frame() {
     assert!(t.aborted, "stream must abort after exceeding MAX_BUF");
     // finish() on the aborted bedrock-ingress stream must emit a well-formed terminal exception
     // frame, not an empty/bare close.
-    let mut tail = t.finish();
+    let mut tail = t.finish(crate::codec::test_host::HOST);
     assert!(
         !tail.is_empty(),
         "aborted bedrock-ingress finish must emit a terminal exception frame, not a bare close"
@@ -3747,7 +3925,7 @@ fn test_sse_ingress_overflow_abort_emits_native_error_frame() {
         "anthropic ingress must be SSE, not eventstream"
     );
     for _ in 0..18 {
-        let _ = t.feed(&chunk);
+        let _ = t.feed(crate::codec::test_host::HOST, &chunk);
         if t.aborted {
             break;
         }
@@ -3756,7 +3934,8 @@ fn test_sse_ingress_overflow_abort_emits_native_error_frame() {
         t.aborted,
         "anthropic-ingress stream must abort after MAX_BUF"
     );
-    let tail = String::from_utf8(t.finish()).expect("SSE error tail is UTF-8");
+    let tail = String::from_utf8(t.finish(crate::codec::test_host::HOST))
+        .expect("SSE error tail is UTF-8");
     assert!(
         !tail.is_empty(),
         "aborted SSE-ingress finish must emit a native error frame, not a silent bare close"
@@ -3786,13 +3965,14 @@ fn test_sse_ingress_overflow_abort_emits_native_error_frame() {
     // must still terminate with `data: [DONE]\n\n` after it (a genuine OpenAI stream's terminator).
     let mut t2 = StreamTranslate::new("openai", "anthropic").expect("translator");
     for _ in 0..18 {
-        let _ = t2.feed(&chunk);
+        let _ = t2.feed(crate::codec::test_host::HOST, &chunk);
         if t2.aborted {
             break;
         }
     }
     assert!(t2.aborted);
-    let tail2 = String::from_utf8(t2.finish()).expect("SSE error tail is UTF-8");
+    let tail2 = String::from_utf8(t2.finish(crate::codec::test_host::HOST))
+        .expect("SSE error tail is UTF-8");
     assert!(
         tail2.contains("\"error\""),
         "openai-ingress abort must emit a native bare `data:` error envelope; got {tail2:?}"
@@ -3817,8 +3997,12 @@ fn test_feed_terminator_straddles_chunk_boundary() {
     let mut t = StreamTranslate::new("openai", "anthropic").expect("translator");
     let frame = "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hi\"}}\n";
     // First chunk ends right after the first '\n'; the second '\n' opens the next chunk.
-    assert!(t.feed(frame.as_bytes()).is_empty(), "no terminator yet");
-    let s = String::from_utf8(t.feed(b"\n")).unwrap();
+    assert!(
+        t.feed(crate::codec::test_host::HOST, frame.as_bytes())
+            .is_empty(),
+        "no terminator yet"
+    );
+    let s = String::from_utf8(t.feed(crate::codec::test_host::HOST, b"\n")).unwrap();
     assert!(
         s.contains("\"content\":\"hi\""),
         "terminator split across chunks must still complete the frame; got {s}"
@@ -3836,7 +4020,7 @@ fn test_feed_large_frame_many_chunks() {
     let bytes = frame.as_bytes();
     let mut out = Vec::new();
     for chunk in bytes.chunks(64) {
-        out.extend(t.feed(chunk));
+        out.extend(t.feed(crate::codec::test_host::HOST, chunk));
     }
     let s = String::from_utf8(out).unwrap();
     assert!(
@@ -3865,7 +4049,9 @@ fn test_anthropic_read_response_decode() {
     });
 
     let reader = AnthropicReader;
-    let resp = reader.read_response(&data).expect("should parse");
+    let resp = reader
+        .read_response(crate::codec::test_host::HOST, &data)
+        .expect("should parse");
 
     assert_eq!(resp.role, crate::codec::ir::IrRole::Assistant);
     assert_eq!(resp.content.len(), 1);
@@ -3896,7 +4082,9 @@ fn test_openai_read_response_decode() {
     });
 
     let reader = OpenAiReader;
-    let resp = reader.read_response(&data).expect("should parse");
+    let resp = reader
+        .read_response(crate::codec::test_host::HOST, &data)
+        .expect("should parse");
 
     assert_eq!(resp.role, crate::codec::ir::IrRole::Assistant);
     assert_eq!(resp.content.len(), 1);
@@ -3927,9 +4115,9 @@ fn test_cross_protocol_openai_to_anthropic() {
     });
 
     let ir_resp = OpenAiReader
-        .read_response(&openai_data)
+        .read_response(crate::codec::test_host::HOST, &openai_data)
         .expect("OpenAI read");
-    let anthropic_json = anthropic_writer().write_response(&ir_resp);
+    let anthropic_json = anthropic_writer().write_response(crate::codec::test_host::HOST, &ir_resp);
 
     // Assert Anthropic-shaped output
     assert_eq!(
@@ -3969,9 +4157,9 @@ fn test_cross_protocol_anthropic_to_openai() {
     });
 
     let ir_resp = AnthropicReader
-        .read_response(&anthropic_data)
+        .read_response(crate::codec::test_host::HOST, &anthropic_data)
         .expect("Anthropic read");
-    let openai_json = openai_writer().write_response(&ir_resp);
+    let openai_json = openai_writer().write_response(crate::codec::test_host::HOST, &ir_resp);
 
     // Assert OpenAI-shaped output
     assert_eq!(
@@ -4018,7 +4206,7 @@ fn test_cross_protocol_tool_use_response() {
     });
 
     let ir_resp = OpenAiReader
-        .read_response(&openai_data)
+        .read_response(crate::codec::test_host::HOST, &openai_data)
         .expect("OpenAI read");
 
     // Verify IR has ToolUse block
@@ -4039,7 +4227,7 @@ fn test_cross_protocol_tool_use_response() {
         panic!("expected ToolUse block");
     }
 
-    let anthropic_json = anthropic_writer().write_response(&ir_resp);
+    let anthropic_json = anthropic_writer().write_response(crate::codec::test_host::HOST, &ir_resp);
 
     // Assert Anthropic output has tool_use block with correct fields
     if let Some(content_arr) = anthropic_json.get("content").and_then(|c| c.as_array()) {
@@ -4177,20 +4365,23 @@ fn test_tool_id_remap_is_a_stable_reversible_bijection() {
 fn test_tool_id_remap_response_round_trip_through_seam() {
     // Response seam (egress → ingress): an OpenAI `tool_use` reshaped to the Anthropic-native shape.
     let mut ir = OpenAiReader
-        .read_response(&serde_json::json!({
-            "choices": [{
-                "message": {
-                    "role": "assistant",
-                    "tool_calls": [{
-                        "id": "call_seam",
-                        "type": "function",
-                        "function": {"name": "f", "arguments": "{\"x\":1}"}
-                    }]
-                },
-                "finish_reason": "tool_calls"
-            }],
-            "usage": {"prompt_tokens": 5, "completion_tokens": 3}
-        }))
+        .read_response(
+            crate::codec::test_host::HOST,
+            &serde_json::json!({
+                "choices": [{
+                    "message": {
+                        "role": "assistant",
+                        "tool_calls": [{
+                            "id": "call_seam",
+                            "type": "function",
+                            "function": {"name": "f", "arguments": "{\"x\":1}"}
+                        }]
+                    },
+                    "finish_reason": "tool_calls"
+                }],
+                "usage": {"prompt_tokens": 5, "completion_tokens": 3}
+            }),
+        )
         .expect("OpenAI read");
     ToolIdRemap::default().remap_response("anthropic", &mut ir);
     let client_id = match &ir.content[0] {
@@ -4285,13 +4476,17 @@ fn test_same_protocol_roundtrip_idempotence() {
     let writer = AnthropicWriter;
 
     // First read
-    let ir1 = reader.read_response(&original_data).expect("first read");
+    let ir1 = reader
+        .read_response(crate::codec::test_host::HOST, &original_data)
+        .expect("first read");
 
     // Write to JSON
-    let written_json = writer.write_response(&ir1);
+    let written_json = writer.write_response(crate::codec::test_host::HOST, &ir1);
 
     // Read again
-    let ir2 = reader.read_response(&written_json).expect("second read");
+    let ir2 = reader
+        .read_response(crate::codec::test_host::HOST, &written_json)
+        .expect("second read");
 
     // Decode IR must be identical (ground truth for anti-fab)
     assert_eq!(ir1, ir2, "decoded IR must be identical after round-trip");
@@ -4459,7 +4654,7 @@ fn test_gemini_roundtrip_identity() {
     let ir = reader
         .read_request(&j)
         .expect("read_request should succeed");
-    let roundtrip = writer.write_request(&ir);
+    let roundtrip = writer.write_request(crate::codec::test_host::HOST, &ir);
 
     // Compare as Value - exact identity on representable subset
     assert_eq!(roundtrip, j, "round-trip must be byte-identical");
@@ -4483,7 +4678,7 @@ fn test_gemini_protocol_resolves() {
 
     // Verify writer methods work. Pin the CONTENT, not just the key: `contains_key("contents")` is
     // satisfied by `{"contents": []}`, i.e. the user's message dropped entirely.
-    let output = writer.write_request(&ir);
+    let output = writer.write_request(crate::codec::test_host::HOST, &ir);
     assert_eq!(
         output["contents"][0]["parts"][0]["text"], "test",
         "the user turn must survive to the gemini wire, got {output}"
@@ -4616,9 +4811,9 @@ fn same_proto_openai_opted_out_strips_trailing_usage_chunk() {
     ];
     let mut raw: Vec<u8> = Vec::new();
     for f in frames {
-        raw.extend(st.feed(f.as_bytes()));
+        raw.extend(st.feed(crate::codec::test_host::HOST, f.as_bytes()));
     }
-    raw.extend(st.finish());
+    raw.extend(st.finish(crate::codec::test_host::HOST));
     let out = String::from_utf8(raw).expect("utf8 SSE");
 
     // The content chunk, finish chunk, and [DONE] survive verbatim.
@@ -4672,9 +4867,9 @@ fn same_proto_openai_opted_in_keeps_trailing_usage_chunk() {
     ];
     let mut raw: Vec<u8> = Vec::new();
     for f in frames {
-        raw.extend(st.feed(f.as_bytes()));
+        raw.extend(st.feed(crate::codec::test_host::HOST, f.as_bytes()));
     }
-    raw.extend(st.finish());
+    raw.extend(st.finish(crate::codec::test_host::HOST));
     let out = String::from_utf8(raw).expect("utf8 SSE");
 
     // The trailing usage-only chunk IS present for the opted-in client (byte-for-byte).
@@ -4725,9 +4920,9 @@ fn same_proto_openai_opted_out_strips_usage_from_every_chunk() {
     ];
     let mut raw: Vec<u8> = Vec::new();
     for f in frames {
-        raw.extend(st.feed(f.as_bytes()));
+        raw.extend(st.feed(crate::codec::test_host::HOST, f.as_bytes()));
     }
-    raw.extend(st.finish());
+    raw.extend(st.finish(crate::codec::test_host::HOST));
     let out = String::from_utf8(raw).expect("utf8 SSE");
 
     // THE TELL CHECK: not one client-visible chunk may carry a `usage` key (present-as-null on the
@@ -4785,9 +4980,9 @@ fn same_proto_openai_opted_in_keeps_usage_on_every_chunk() {
     ];
     let mut raw: Vec<u8> = Vec::new();
     for f in frames {
-        raw.extend(st.feed(f.as_bytes()));
+        raw.extend(st.feed(crate::codec::test_host::HOST, f.as_bytes()));
     }
-    raw.extend(st.finish());
+    raw.extend(st.finish(crate::codec::test_host::HOST));
     let out = String::from_utf8(raw).expect("utf8 SSE");
 
     // Every original frame reaches the opted-in client byte-for-byte: intermediate `usage:null` and the
@@ -4825,9 +5020,9 @@ fn same_proto_openai_opted_out_preserves_usage_text_in_content() {
     ];
     let mut raw: Vec<u8> = Vec::new();
     for f in frames {
-        raw.extend(st.feed(f.as_bytes()));
+        raw.extend(st.feed(crate::codec::test_host::HOST, f.as_bytes()));
     }
-    raw.extend(st.finish());
+    raw.extend(st.finish(crate::codec::test_host::HOST));
     let out = String::from_utf8(raw).expect("utf8 SSE");
 
     // The content string (which contains the literal `"usage":null` text) must survive intact.
@@ -4857,6 +5052,7 @@ fn same_proto_openai_opted_out_preserves_usage_text_in_content() {
 fn anthropic_cross_protocol_stream_emits_ping_after_message_start() {
     let mut t = StreamTranslate::new("anthropic", "openai").expect("translator");
     let out = String::from_utf8(t.feed(
+        crate::codec::test_host::HOST,
         b"data: {\"choices\":[{\"delta\":{\"role\":\"assistant\",\"content\":\"hi\"}}]}\n\n",
     ))
     .unwrap();
@@ -4896,7 +5092,7 @@ fn same_proto_anthropic_skips_decode_for_non_usage_frames() {
         "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
         "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":5}}\n\n",
     );
-    let out = t.feed(frames.as_bytes());
+    let out = t.feed(crate::codec::test_host::HOST, frames.as_bytes());
     // Bytes stay verbatim regardless of which frames were decoded.
     assert_eq!(
         out,
@@ -4943,8 +5139,8 @@ fn fold_path_merges_trailing_usage_detail_sub_buckets_end_to_end() {
         "data: {\"id\":\"c1\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"o3\",\"choices\":[],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":20,\"total_tokens\":30,\"completion_tokens_details\":{\"reasoning_tokens\":9}}}\n\n",
         "data: [DONE]\n\n",
     );
-    let mut out = st.feed(wire.as_bytes());
-    out.extend_from_slice(&st.finish());
+    let mut out = st.feed(crate::codec::test_host::HOST, wire.as_bytes());
+    out.extend_from_slice(&st.finish(crate::codec::test_host::HOST));
     let frames = decode_wire_frames(false, &out);
     let completed = frames
         .iter()
@@ -5016,8 +5212,9 @@ fn test_buffered_as_stream_remaps_tool_ids_exactly_once() {
         "precondition: the prepared answer already carries a once-encoded native id"
     );
 
-    let bytes = StreamTranslate::synthesize_from_response("anthropic", &ir)
-        .expect("anthropic is SSE-framed, so the shared synthesizer answers");
+    let bytes =
+        StreamTranslate::synthesize_from_response(crate::codec::test_host::HOST, "anthropic", &ir)
+            .expect("anthropic is SSE-framed, so the shared synthesizer answers");
     let out = String::from_utf8(bytes).expect("utf-8 SSE");
     let emitted = data_payloads(&out)
         .into_iter()
@@ -5052,9 +5249,9 @@ fn responses_failed_stream_bills_its_reported_usage() {
     let failed = b"event: response.failed\ndata: {\"type\":\"response.failed\",\"sequence_number\":1,\"response\":{\"id\":\"resp_1\",\"object\":\"response\",\"created_at\":1,\"status\":\"failed\",\"model\":\"m\",\"output\":[],\"error\":{\"code\":\"server_error\",\"message\":\"boom\"},\"usage\":{\"input_tokens\":300,\"output_tokens\":2000,\"total_tokens\":2300}}}\n\n";
 
     let mut same = StreamTranslate::new_same_proto("responses").expect("same-proto translator");
-    let _ = same.feed(created);
-    let _ = same.feed(failed);
-    let _ = same.finish();
+    let _ = same.feed(crate::codec::test_host::HOST, created);
+    let _ = same.feed(crate::codec::test_host::HOST, failed);
+    let _ = same.finish(crate::codec::test_host::HOST);
     let u = same
         .usage()
         .expect("same-protocol: the usage a response.failed reports must bill");
@@ -5063,9 +5260,9 @@ fn responses_failed_stream_bills_its_reported_usage() {
     assert!(same.terminal_error().is_some(), "the stream still failed");
 
     let mut cross = StreamTranslate::new("anthropic", "responses").expect("cross-proto translator");
-    let _ = cross.feed(created);
-    let _ = cross.feed(failed);
-    let _ = cross.finish();
+    let _ = cross.feed(crate::codec::test_host::HOST, created);
+    let _ = cross.feed(crate::codec::test_host::HOST, failed);
+    let _ = cross.finish(crate::codec::test_host::HOST);
     let u = cross
         .usage()
         .expect("cross-protocol: the usage a response.failed reports must bill");
@@ -5075,9 +5272,9 @@ fn responses_failed_stream_bills_its_reported_usage() {
 
     // A failed response that reports `"usage": null` carries nothing to bill.
     let mut none = StreamTranslate::new_same_proto("responses").expect("same-proto translator");
-    let _ = none.feed(created);
-    let _ = none.feed(b"event: response.failed\ndata: {\"type\":\"response.failed\",\"sequence_number\":1,\"response\":{\"id\":\"resp_1\",\"object\":\"response\",\"created_at\":1,\"status\":\"failed\",\"model\":\"m\",\"output\":[],\"error\":{\"code\":\"server_error\",\"message\":\"boom\"},\"usage\":null}}\n\n");
-    let _ = none.finish();
+    let _ = none.feed(crate::codec::test_host::HOST, created);
+    let _ = none.feed(crate::codec::test_host::HOST, b"event: response.failed\ndata: {\"type\":\"response.failed\",\"sequence_number\":1,\"response\":{\"id\":\"resp_1\",\"object\":\"response\",\"created_at\":1,\"status\":\"failed\",\"model\":\"m\",\"output\":[],\"error\":{\"code\":\"server_error\",\"message\":\"boom\"},\"usage\":null}}\n\n");
+    let _ = none.finish(crate::codec::test_host::HOST);
     assert!(none.usage().is_none());
     assert!(none.terminal_error().is_some());
 }

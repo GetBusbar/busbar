@@ -884,11 +884,11 @@ fn format_uuid_layout(bytes: &[u8; 16]) -> String {
 /// id is collision-free in practice for a per-process id stream. Never panics on the request path:
 /// on the near-impossible entropy failure the buffer stays zeroed and the version/variant
 /// stamping still yields a well-formed (if non-random) v4.
-fn synthesize_cohere_id() -> String {
+fn synthesize_cohere_id(host: &dyn busbar_contract::codec::CodecHost) -> String {
     let mut bytes = [0u8; 16];
     // OS CSPRNG. Ignore failure (no unwrap/expect/panic on the request path): the version/variant
     // stamping below still produces a valid v4 even if the buffer stays all-zero.
-    let _ = super::synth_rng::fill_entropy(&mut bytes);
+    let _ = super::synth_rng::fill_entropy(host, &mut bytes);
 
     // RFC-4122 v4: high nibble of byte 6 (the 3rd group's first nibble) = 4; top two bits of byte 8
     // (the 4th group's first nibble) = 10.

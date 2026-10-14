@@ -22,7 +22,9 @@ fn test_gemini_read_response_decode() {
     });
 
     let reader = GeminiReader;
-    let resp = reader.read_response(&j).expect("should parse");
+    let resp = reader
+        .read_response(crate::codec::test_host::HOST, &j)
+        .expect("should parse");
 
     // Assert content: Text + ToolUse
     assert_eq!(resp.content.len(), 2);
@@ -86,8 +88,10 @@ fn test_gemini_read_write_response_roundtrip() {
     let reader = GeminiReader;
     let writer = GeminiWriter;
 
-    let ir = reader.read_response(&j).expect("should parse");
-    let roundtrip = writer.write_response(&ir);
+    let ir = reader
+        .read_response(crate::codec::test_host::HOST, &j)
+        .expect("should parse");
+    let roundtrip = writer.write_response(crate::codec::test_host::HOST, &ir);
 
     // Round-trip must be byte-identical for canonical text-only fixture
     assert_eq!(roundtrip, j, "whole-response round-trip must be identical");
@@ -116,13 +120,15 @@ fn test_gemini_same_protocol_minimal_response_omits_synthesized_identity() {
 
     let reader = GeminiReader;
     let writer = GeminiWriter;
-    let ir = reader.read_response(&j).expect("should parse");
+    let ir = reader
+        .read_response(crate::codec::test_host::HOST, &j)
+        .expect("should parse");
     // The minimal native body carries no identity signal at all.
     assert_eq!(ir.id, None, "no responseId in the minimal native body");
     assert_eq!(ir.created, None, "Gemini bodies carry no timestamp");
     assert_eq!(ir.model, None, "no modelVersion in the minimal body");
 
-    let out = writer.write_response(&ir);
+    let out = writer.write_response(crate::codec::test_host::HOST, &ir);
     assert!(
         out.get("responseId").is_none(),
         "minimal same-protocol roundtrip must NOT synthesize a responseId: {out}"
@@ -154,10 +160,10 @@ fn test_singular_read_response_event_delegates_for_fanout_protocols() {
     });
     // Singular path (trait default) must yield the same first event the fan-out produces,
     // never a silent None.
-    let singular = reader.read_response_event("", &chunk);
+    let singular = reader.read_response_event(crate::codec::test_host::HOST, "", &chunk);
     let mut st = crate::codec::ir::StreamDecodeState::default();
     let plural_first = reader
-        .read_response_events("", &chunk, &mut st)
+        .read_response_events(crate::codec::test_host::HOST, "", &chunk, &mut st)
         .into_iter()
         .next();
     assert!(
@@ -173,9 +179,9 @@ fn test_singular_read_response_event_delegates_for_fanout_protocols() {
     let empty = serde_json::json!({});
     let mut st2 = crate::codec::ir::StreamDecodeState::default();
     assert_eq!(
-        GeminiReader.read_response_event("", &empty),
+        GeminiReader.read_response_event(crate::codec::test_host::HOST, "", &empty),
         GeminiReader
-            .read_response_events("", &empty, &mut st2)
+            .read_response_events(crate::codec::test_host::HOST, "", &empty, &mut st2)
             .into_iter()
             .next(),
         "default singular must track the fan-out's first event on any input"
@@ -219,7 +225,12 @@ fn test_gemini_read_response_events_stream_fanout() {
     let mut events: Vec<IrStreamEvent> = Vec::new();
 
     for chunk in [chunk1.clone(), chunk2.clone(), chunk3.clone()] {
-        events.extend(reader.read_response_events("", &chunk, &mut state));
+        events.extend(reader.read_response_events(
+            crate::codec::test_host::HOST,
+            "",
+            &chunk,
+            &mut state,
+        ));
     }
 
     // Assert exact event sequence: MessageStart, BlockStart{0,Text}, BlockDelta×2, BlockStop{0}, MessageDelta{end_turn,usage}, MessageStop
@@ -291,7 +302,7 @@ fn test_gemini_write_response_event_text_delta() {
         delta: crate::codec::ir::IrDelta::TextDelta("hi".to_string()),
     };
 
-    let result = writer.write_response_event(&ev);
+    let result = writer.write_response_event(crate::codec::test_host::HOST, &ev);
     assert!(result.is_some());
 
     let (_, chunk) = result.unwrap();
@@ -330,7 +341,7 @@ fn test_gemini_write_response_event_message_delta() {
         stop_detail: None,
     };
 
-    let result = writer.write_response_event(&ev);
+    let result = writer.write_response_event(crate::codec::test_host::HOST, &ev);
     assert!(result.is_some());
 
     let (_, chunk) = result.unwrap();
@@ -404,7 +415,12 @@ fn test_gemini_read_response_events_function_call() {
     let mut events: Vec<IrStreamEvent> = Vec::new();
 
     for chunk in [chunk1.clone(), chunk2.clone(), chunk3.clone()] {
-        events.extend(reader.read_response_events("", &chunk, &mut state));
+        events.extend(reader.read_response_events(
+            crate::codec::test_host::HOST,
+            "",
+            &chunk,
+            &mut state,
+        ));
     }
 
     // Verify we have MessageStart + BlockStart{Text} + text delta + ToolUse block + tool args delta + blocks stop + MessageDelta + MessageStop
@@ -488,9 +504,9 @@ fn test_openai_ingress_per_chunk_identity_repeated() {
             "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"input_tokens\":5,\"output_tokens\":2}}\n\n",
             "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
         ] {
-            raw.extend(t.feed(frame.as_bytes()));
+            raw.extend(t.feed(crate::codec::test_host::HOST, frame.as_bytes()));
         }
-    raw.extend(t.finish());
+    raw.extend(t.finish(crate::codec::test_host::HOST));
 
     let chunks = openai_sse_chunks(&raw);
     assert!(
@@ -561,9 +577,9 @@ fn test_openai_ingress_mid_stream_error_envelope_unchanged_by_identity() {
             // Mid-stream error: the writer emits an in-band `{"error":{...}}` envelope (no `object`).
             "event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"upstream overloaded\"}}\n\n",
         ] {
-            raw.extend(t.feed(frame.as_bytes()));
+            raw.extend(t.feed(crate::codec::test_host::HOST, frame.as_bytes()));
         }
-    raw.extend(t.finish());
+    raw.extend(t.finish(crate::codec::test_host::HOST));
 
     let chunks = openai_sse_chunks(&raw);
     // There must be at least one error envelope; locate it.
@@ -628,9 +644,9 @@ fn test_bedrock_to_bedrock_stream_roundtrips_stop_and_metadata() {
             "data: {\"id\":\"chatcmpl-x\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"gpt\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":7,\"completion_tokens\":3}}\n\n",
             "data: [DONE]\n\n",
         ] {
-            raw.extend(t.feed(frame.as_bytes()));
+            raw.extend(t.feed(crate::codec::test_host::HOST, frame.as_bytes()));
         }
-    raw.extend(t.finish());
+    raw.extend(t.finish(crate::codec::test_host::HOST));
 
     let mut buf = raw.clone();
     let frames = crate::codec::eventstream::drain_frames(&mut buf);
@@ -703,9 +719,9 @@ fn test_bedrock_ingress_ir_usage_carries_real_tokens() {
             "data: {\"id\":\"chatcmpl-x\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"gpt\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":11,\"completion_tokens\":4}}\n\n",
             "data: [DONE]\n\n",
         ] {
-            binary_out.extend(t.feed(frame.as_bytes()));
+            binary_out.extend(t.feed(crate::codec::test_host::HOST, frame.as_bytes()));
         }
-    binary_out.extend(t.finish());
+    binary_out.extend(t.finish(crate::codec::test_host::HOST));
 
     // The IR A-tap (billing source) carries the real usage, sourced from the structured IR.
     let usage = t.usage().expect("A-tap captured terminal usage");
@@ -840,7 +856,9 @@ fn gemini_citation_byte_indices_convert_to_characters() {
             }
         }]
     });
-    let ir = GeminiReader.read_response(&body).expect("parses");
+    let ir = GeminiReader
+        .read_response(crate::codec::test_host::HOST, &body)
+        .expect("parses");
     let citations = ir
         .content
         .iter()
@@ -912,7 +930,7 @@ fn gemini_writer_reemits_char_indices_as_bytes_for_foreign_citations() {
         ..Default::default()
     };
     let gemini_writer = GeminiWriter;
-    let out = gemini_writer.write_response(&resp);
+    let out = gemini_writer.write_response(crate::codec::test_host::HOST, &resp);
     let src = &out["candidates"][0]["citationMetadata"]["citationSources"][0];
     assert_eq!(
         src["startIndex"], 7,

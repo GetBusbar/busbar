@@ -48,8 +48,10 @@ fn test_synth_amzn_request_id_is_uuid_v4() {
     // not a private copy — assert the canonical fn's shape so the bedrock auth-failure header
     // contract stays covered. Two consecutive ids must differ (entropy-sourced, not a predictable
     // timestamp||counter).
-    let a = bedrock::synth_amzn_request_id().expect("entropy must be available under test");
-    let b = bedrock::synth_amzn_request_id().expect("entropy must be available under test");
+    let a = bedrock::synth_amzn_request_id(crate::codec::test_host::HOST)
+        .expect("entropy must be available under test");
+    let b = bedrock::synth_amzn_request_id(crate::codec::test_host::HOST)
+        .expect("entropy must be available under test");
     assert_uuid_v4_shaped(&a);
     assert_uuid_v4_shaped(&b);
     assert_ne!(a, b, "consecutive synthetic request ids must differ");

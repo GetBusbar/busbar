@@ -193,7 +193,8 @@ impl OpDispatch {
         ingress_protocol: &str,
         body: &[u8],
     ) -> Option<busbar_contract::billing::TokenUsage> {
-        self.op_handler.extract_usage(ingress_protocol, body)
+        self.op_handler
+            .extract_usage(crate::proto::CODEC_HOST, ingress_protocol, body)
     }
     pub fn egress_accept(&self, egress_protocol: &str, wants_stream: bool) -> &'static str {
         // The registry read the trait default used to do, hoisted here so the `OperationHandler`

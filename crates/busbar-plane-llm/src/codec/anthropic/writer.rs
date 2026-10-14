@@ -7,10 +7,10 @@ impl ProtocolWriter for AnthropicWriter {
         false
     }
 
-    fn probe_request(&self) -> serde_json::Value {
+    fn probe_request(&self, host: &dyn busbar_contract::codec::CodecHost) -> serde_json::Value {
         // The ping IR is built by the plugin (ir_encode::ping_request); this dialect serializes it
         // through its own write_request, so the probe body matches a real request on this wire.
-        self.write_request(&super::super::ir_encode::ping_request())
+        self.write_request(host, &super::super::ir_encode::ping_request())
     }
 
     fn clone_box(&self) -> Box<dyn ProtocolWriter> {
@@ -31,12 +31,13 @@ impl ProtocolWriter for AnthropicWriter {
     /// the envelope is the writer's in every other byte and the same bytes give the same envelope.
     fn write_error_from_entropy(
         &self,
+        host: &dyn busbar_contract::codec::CodecHost,
         status: u16,
         kind: &str,
         message: &str,
         entropy: &[u8],
     ) -> serde_json::Value {
-        let mut envelope = self.write_error(status, kind, message);
+        let mut envelope = self.write_error(host, status, kind, message);
         if let Some(obj) = envelope.as_object_mut() {
             if obj.contains_key(super::REQUEST_ID) {
                 obj.insert(
@@ -48,7 +49,13 @@ impl ProtocolWriter for AnthropicWriter {
         envelope
     }
 
-    fn write_error(&self, status: u16, kind: &str, message: &str) -> serde_json::Value {
+    fn write_error(
+        &self,
+        host: &dyn busbar_contract::codec::CodecHost,
+        status: u16,
+        kind: &str,
+        message: &str,
+    ) -> serde_json::Value {
         // Native Anthropic error envelope: `{"type":"error","error":{"type":<kind>,"message":<msg>}}`
         // (see the Anthropic SDK / API error shape — the `anthropic.APIStatusError` family decodes
         // `error.type` into the typed exception, e.g. `RateLimitError`, and surfaces `error.message`).
@@ -66,7 +73,7 @@ impl ProtocolWriter for AnthropicWriter {
         // under load) rather than a generic server error. Status takes precedence over `kind` here
         // because the wire status is the authoritative signal of the overload condition.
         if status == STATUS_OVERLOADED || status == STATUS_ANTHROPIC_OVERLOADED {
-            return Self::error_envelope(ERR_TYPE_OVERLOADED, message);
+            return Self::error_envelope(host, ERR_TYPE_OVERLOADED, message);
         }
         let anthropic_type = match kind {
             // Generic router/auth/forward `kind`s → Anthropic's typed error vocabulary.
@@ -109,11 +116,12 @@ impl ProtocolWriter for AnthropicWriter {
             | ERR_TYPE_TIMEOUT => kind,
             other => other,
         };
-        Self::error_envelope(anthropic_type, message)
+        Self::error_envelope(host, anthropic_type, message)
     }
 
     fn attach_error_response_headers(
         &self,
+        _host: &dyn busbar_contract::codec::CodecHost,
         headers: &mut busbar_contract::http::HeaderMap,
         _kind: &str,
         envelope: &serde_json::Value,
@@ -132,13 +140,14 @@ impl ProtocolWriter for AnthropicWriter {
 
     fn ingress_response_request_id(
         &self,
+        host: &dyn busbar_contract::codec::CodecHost,
         upstream_request_id: Option<&str>,
     ) -> Option<(&'static str, String)> {
         // Forward the captured UPSTREAM `request-id` verbatim on a same-protocol passthrough;
         // synthesize a shape-correct `req_…` id otherwise. Synthesis failure OMITS the header.
         upstream_request_id
             .map(String::from)
-            .or_else(synth_anthropic_request_id)
+            .or_else(|| synth_anthropic_request_id(host))
             .map(|id| (HDR_REQUEST_ID, id))
     }
 
@@ -193,12 +202,17 @@ impl ProtocolWriter for AnthropicWriter {
         dropped
     }
 
-    fn write_request(&self, req: &crate::codec::ir::IrRequest) -> serde_json::Value {
-        self.write_request_for_lane(req, "", &LaneCaps::default())
+    fn write_request(
+        &self,
+        host: &dyn busbar_contract::codec::CodecHost,
+        req: &crate::codec::ir::IrRequest,
+    ) -> serde_json::Value {
+        self.write_request_for_lane(host, req, "", &LaneCaps::default())
     }
 
     fn write_request_for_lane(
         &self,
+        _host: &dyn busbar_contract::codec::CodecHost,
         req: &crate::codec::ir::IrRequest,
         _model: &str,
         caps: &LaneCaps,
@@ -607,7 +621,11 @@ impl ProtocolWriter for AnthropicWriter {
         serde_json::Value::Object(out)
     }
 
-    fn write_response_event(&self, ev: &IrStreamEvent) -> Option<(String, serde_json::Value)> {
+    fn write_response_event(
+        &self,
+        host: &dyn busbar_contract::codec::CodecHost,
+        ev: &IrStreamEvent,
+    ) -> Option<(String, serde_json::Value)> {
         match ev {
             IrStreamEvent::MessageStart {
                 role,
@@ -636,8 +654,8 @@ impl ProtocolWriter for AnthropicWriter {
                 // requires to construct its streaming Message (a decode failure and a proxy tell).
                 // The FIRST `message_start` decides this stream's id; a duplicate replays it rather
                 // than announcing the same message under a second identity.
-                let msg_id =
-                    self.carried_message_id(|| id.clone().unwrap_or_else(synth_message_id));
+                let msg_id = self
+                    .carried_message_id(|| id.clone().unwrap_or_else(|| synth_message_id(host)));
                 msg_obj.insert(keys::ID.to_string(), serde_json::json!(msg_id));
                 msg_obj.insert(keys::TYPE.to_string(), serde_json::json!(keys::MESSAGE));
                 msg_obj.insert(keys::ROLE.to_string(), serde_json::json!(role_str));
@@ -992,13 +1010,21 @@ impl ProtocolWriter for AnthropicWriter {
         }
     }
 
-    fn write_error_frame(&self, err: &IrError) -> Option<(String, serde_json::Value)> {
+    fn write_error_frame(
+        &self,
+        host: &dyn busbar_contract::codec::CodecHost,
+        err: &IrError,
+    ) -> Option<(String, serde_json::Value)> {
         // The streaming-error seam: delegate to this dialect's own event writer so the mid-stream
         // error frame is byte-for-byte what an `Error` event produces on this wire.
-        self.write_response_event(&IrStreamEvent::Error(err.clone()))
+        self.write_response_event(host, &IrStreamEvent::Error(err.clone()))
     }
 
-    fn write_response(&self, resp: &crate::codec::ir::IrResponse) -> serde_json::Value {
+    fn write_response(
+        &self,
+        host: &dyn busbar_contract::codec::CodecHost,
+        resp: &crate::codec::ir::IrResponse,
+    ) -> serde_json::Value {
         let mut obj = serde_json::Map::new();
 
         // id: an official SDK's `Message.id` is a REQUIRED `"msg_<rand>"` string — the Python/TS SDK
@@ -1017,7 +1043,7 @@ impl ProtocolWriter for AnthropicWriter {
         //     `write_response` runs ONLY on the cross-protocol translate path (see the `stop_sequence`
         //     note below: same-protocol non-stream relays the raw upstream body and never reaches this
         //     writer), so there is no same-protocol read→write→read round-trip to keep id-less.
-        let id = resp.id.clone().unwrap_or_else(synth_message_id);
+        let id = resp.id.clone().unwrap_or_else(|| synth_message_id(host));
         obj.insert(keys::ID.to_string(), serde_json::json!(id));
 
         // type/role are constant for a Messages API response ("message"/"assistant").

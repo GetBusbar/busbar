@@ -44,7 +44,7 @@ fn egress_request(
     protocol_for(egress)
         .expect("egress")
         .writer()
-        .write_request(&req)
+        .write_request(crate::codec::test_host::HOST, &req)
 }
 
 fn anthropic_signed_answer() -> serde_json::Value {
@@ -128,13 +128,13 @@ fn ir18_claude_signature_survives_a_responses_client_round_trip_buffered() {
     let mut ir = protocol_for("anthropic")
         .unwrap()
         .reader()
-        .read_response(&anthropic_signed_answer())
+        .read_response(crate::codec::test_host::HOST, &anthropic_signed_answer())
         .expect("read_response");
     crate::codec::chat_handle::chat_prepare_for_ingress(&mut ir, "responses", 0);
     let to_client = protocol_for("responses")
         .unwrap()
         .writer()
-        .write_response(&ir);
+        .write_response(crate::codec::test_host::HOST, &ir);
     let item = to_client["output"]
         .as_array()
         .unwrap()
@@ -181,9 +181,11 @@ fn ir18_claude_signature_survives_a_responses_client_round_trip_stream() {
     for data in frames {
         let v: serde_json::Value = serde_json::from_str(&data).unwrap();
         let frame = format!("event: {}\ndata: {data}\n\n", v["type"].as_str().unwrap());
-        out.push_str(&String::from_utf8(t.feed(frame.as_bytes())).unwrap());
+        out.push_str(
+            &String::from_utf8(t.feed(crate::codec::test_host::HOST, frame.as_bytes())).unwrap(),
+        );
     }
-    out.push_str(&String::from_utf8(t.finish()).unwrap());
+    out.push_str(&String::from_utf8(t.finish(crate::codec::test_host::HOST)).unwrap());
 
     let item = sse_payloads(&out)
         .into_iter()
@@ -226,13 +228,13 @@ fn ir18_openai_blob_survives_an_anthropic_client_round_trip() {
     let mut ir = protocol_for("responses")
         .unwrap()
         .reader()
-        .read_response(&responses_answer)
+        .read_response(crate::codec::test_host::HOST, &responses_answer)
         .expect("read_response");
     crate::codec::chat_handle::chat_prepare_for_ingress(&mut ir, "anthropic", 0);
     let to_client = protocol_for("anthropic")
         .unwrap()
         .writer()
-        .write_response(&ir);
+        .write_response(crate::codec::test_host::HOST, &ir);
     let thinking = to_client["content"]
         .as_array()
         .unwrap()
@@ -301,10 +303,13 @@ fn ir19_claude_signature_survives_a_gemini_client_round_trip_buffered() {
     let mut ir = protocol_for("anthropic")
         .unwrap()
         .reader()
-        .read_response(&anthropic_signed_answer())
+        .read_response(crate::codec::test_host::HOST, &anthropic_signed_answer())
         .expect("read_response");
     crate::codec::chat_handle::chat_prepare_for_ingress(&mut ir, "gemini", 0);
-    let to_client = protocol_for("gemini").unwrap().writer().write_response(&ir);
+    let to_client = protocol_for("gemini")
+        .unwrap()
+        .writer()
+        .write_response(crate::codec::test_host::HOST, &ir);
     let sigs = gemini_thought_signatures(std::slice::from_ref(&to_client));
     assert_eq!(sigs.len(), 1, "{to_client}");
     assert!(sigs[0].starts_with(ENVELOPE_PREFIX), "{to_client}");
@@ -336,9 +341,11 @@ fn ir19_claude_signature_survives_a_gemini_client_round_trip_stream() {
     for data in frames {
         let v: serde_json::Value = serde_json::from_str(&data).unwrap();
         let frame = format!("event: {}\ndata: {data}\n\n", v["type"].as_str().unwrap());
-        out.push_str(&String::from_utf8(t.feed(frame.as_bytes())).unwrap());
+        out.push_str(
+            &String::from_utf8(t.feed(crate::codec::test_host::HOST, frame.as_bytes())).unwrap(),
+        );
     }
-    out.push_str(&String::from_utf8(t.finish()).unwrap());
+    out.push_str(&String::from_utf8(t.finish(crate::codec::test_host::HOST)).unwrap());
     let sigs = gemini_thought_signatures(&sse_payloads(&out));
     assert_eq!(sigs.len(), 1, "{out}");
     assert!(sigs[0].starts_with(ENVELOPE_PREFIX), "{out}");

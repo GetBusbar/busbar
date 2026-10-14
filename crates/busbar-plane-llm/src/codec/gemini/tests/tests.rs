@@ -6,7 +6,12 @@ fn collect_stream(chunks: &[serde_json::Value]) -> Vec<IrStreamEvent> {
     let mut state = StreamDecodeState::default();
     let mut events = Vec::new();
     for chunk in chunks {
-        events.extend(reader.read_response_events("", chunk, &mut state));
+        events.extend(reader.read_response_events(
+            crate::codec::test_host::HOST,
+            "",
+            chunk,
+            &mut state,
+        ));
     }
     events
 }
@@ -614,7 +619,9 @@ fn test_writer_tool_blockstart_emits_no_frame() {
         refusal: false,
     };
     assert!(
-        writer.write_response_event(&ev).is_none(),
+        writer
+            .write_response_event(crate::codec::test_host::HOST, &ev)
+            .is_none(),
         "tool BlockStart must buffer the name and emit no separate frame"
     );
 }
@@ -628,7 +635,9 @@ fn test_writer_text_blockstart_is_none() {
         block: IrBlockMeta::Text,
         refusal: false,
     };
-    assert!(writer.write_response_event(&ev).is_none());
+    assert!(writer
+        .write_response_event(crate::codec::test_host::HOST, &ev)
+        .is_none());
 }
 
 /// HIGH (asymmetric twin of the file_id leak): a Bedrock S3-source image (IMAGE_S3_SENTINEL
@@ -692,7 +701,7 @@ fn test_write_request_image_s3_dropped_not_corrupted() {
         system_role: None,
         output_modalities: None,
     };
-    let out = writer.write_request(&req);
+    let out = writer.write_request(crate::codec::test_host::HOST, &req);
     let wire = serde_json::to_string(&out).unwrap();
     assert!(
         !wire.contains("image_s3")
@@ -718,7 +727,7 @@ fn collect_function_calls(events: &[IrStreamEvent]) -> Vec<serde_json::Value> {
     let writer = GeminiWriter;
     let mut calls = Vec::new();
     for ev in events {
-        if let Some((_, chunk)) = writer.write_response_event(ev) {
+        if let Some((_, chunk)) = writer.write_response_event(crate::codec::test_host::HOST, ev) {
             if let Some(parts) = chunk
                 .pointer("/candidates/0/content/parts")
                 .and_then(|p| p.as_array())
@@ -838,28 +847,37 @@ fn test_writer_tool_call_reassembles_split_json_args() {
 fn test_writer_tool_call_args_capped_at_max_len() {
     let cap = busbar_contract::codec::max_translate_body_bytes();
     let writer = GeminiWriter;
-    writer.write_response_event(&IrStreamEvent::BlockStart {
-        index: 1,
-        block: IrBlockMeta::ToolUse {
-            id: String::new(),
-            name: "big_tool".to_string(),
+    writer.write_response_event(
+        crate::codec::test_host::HOST,
+        &IrStreamEvent::BlockStart {
+            index: 1,
+            block: IrBlockMeta::ToolUse {
+                id: String::new(),
+                name: "big_tool".to_string(),
+            },
+            refusal: false,
         },
-        refusal: false,
-    });
+    );
 
     // Feed fragments that sum to well past the cap. Each fragment is a run of `'a'` bytes inside a
     // JSON string value, so a successful (unfixed) accumulation would be syntactically valid JSON.
     let fragment = "a".repeat(1024 * 1024); // 1 MiB per fragment
     let total_fragments = (cap / fragment.len()) + 8; // overshoot the cap
-    writer.write_response_event(&IrStreamEvent::BlockDelta {
-        index: 1,
-        delta: IrDelta::InputJsonDelta("{\"blob\":\"".to_string()),
-    });
-    for _ in 0..total_fragments {
-        writer.write_response_event(&IrStreamEvent::BlockDelta {
+    writer.write_response_event(
+        crate::codec::test_host::HOST,
+        &IrStreamEvent::BlockDelta {
             index: 1,
-            delta: IrDelta::InputJsonDelta(fragment.clone()),
-        });
+            delta: IrDelta::InputJsonDelta("{\"blob\":\"".to_string()),
+        },
+    );
+    for _ in 0..total_fragments {
+        writer.write_response_event(
+            crate::codec::test_host::HOST,
+            &IrStreamEvent::BlockDelta {
+                index: 1,
+                delta: IrDelta::InputJsonDelta(fragment.clone()),
+            },
+        );
     }
 
     // Inspect the accumulator directly (before BlockStop consumes it) to prove the byte cap held.
@@ -882,7 +900,10 @@ fn test_writer_tool_call_args_capped_at_max_len() {
     // Flush on the SAME writer instance (preserving its accumulated buffer) — collect_function_calls
     // would construct a fresh GeminiWriter with an empty buffer, losing all the state built above.
     let (_, chunk) = writer
-        .write_response_event(&IrStreamEvent::BlockStop { index: 1 })
+        .write_response_event(
+            crate::codec::test_host::HOST,
+            &IrStreamEvent::BlockStop { index: 1 },
+        )
         .expect("BlockStop on an open tool block must flush a functionCall frame");
     let parts = chunk
         .pointer("/candidates/0/content/parts")
@@ -1045,17 +1066,23 @@ fn test_writer_parallel_tool_calls_keep_distinct_names_and_args() {
 fn test_writer_tool_call_empty_args_flushed_on_stop() {
     let writer = GeminiWriter;
     assert!(writer
-        .write_response_event(&IrStreamEvent::BlockStart {
-            index: 1,
-            block: IrBlockMeta::ToolUse {
-                id: String::new(),
-                name: "ping".to_string(),
-            },
-            refusal: false,
-        })
+        .write_response_event(
+            crate::codec::test_host::HOST,
+            &IrStreamEvent::BlockStart {
+                index: 1,
+                block: IrBlockMeta::ToolUse {
+                    id: String::new(),
+                    name: "ping".to_string(),
+                },
+                refusal: false,
+            }
+        )
         .is_none());
     let (_, chunk) = writer
-        .write_response_event(&IrStreamEvent::BlockStop { index: 1 })
+        .write_response_event(
+            crate::codec::test_host::HOST,
+            &IrStreamEvent::BlockStop { index: 1 },
+        )
         .expect("zero-arg tool call must flush a functionCall frame on BlockStop");
     let func = chunk
         .pointer("/candidates/0/content/parts/0/functionCall")
@@ -1078,29 +1105,38 @@ fn test_writer_tool_call_no_frame_before_block_stop() {
     let writer = GeminiWriter;
     assert!(
         writer
-            .write_response_event(&IrStreamEvent::BlockStart {
-                index: 1,
-                block: IrBlockMeta::ToolUse {
-                    id: String::new(),
-                    name: "get_weather".to_string(),
-                },
-                refusal: false,
-            })
+            .write_response_event(
+                crate::codec::test_host::HOST,
+                &IrStreamEvent::BlockStart {
+                    index: 1,
+                    block: IrBlockMeta::ToolUse {
+                        id: String::new(),
+                        name: "get_weather".to_string(),
+                    },
+                    refusal: false,
+                }
+            )
             .is_none(),
         "tool BlockStart must emit no frame"
     );
     assert!(
         writer
-            .write_response_event(&IrStreamEvent::BlockDelta {
-                index: 1,
-                delta: IrDelta::InputJsonDelta("{\"city\":\"SF\"}".to_string()),
-            })
+            .write_response_event(
+                crate::codec::test_host::HOST,
+                &IrStreamEvent::BlockDelta {
+                    index: 1,
+                    delta: IrDelta::InputJsonDelta("{\"city\":\"SF\"}".to_string()),
+                }
+            )
             .is_none(),
         "args delta must accumulate, not emit a frame"
     );
     assert!(
         writer
-            .write_response_event(&IrStreamEvent::BlockStop { index: 1 })
+            .write_response_event(
+                crate::codec::test_host::HOST,
+                &IrStreamEvent::BlockStop { index: 1 }
+            )
             .is_some(),
         "BlockStop must flush the single functionCall frame"
     );
@@ -1371,7 +1407,12 @@ fn test_extract_error_non_json_body() {
 #[test]
 fn test_write_error_native_gemini_envelope() {
     let writer = GeminiWriter;
-    let v = writer.write_error(404, "not_found", "model 'x' not found");
+    let v = writer.write_error(
+        crate::codec::test_host::HOST,
+        404,
+        "not_found",
+        "model 'x' not found",
+    );
     // Round-trips as JSON (no panic).
     let serialized = serde_json::to_string(&v).expect("write_error must serialize");
     let reparsed: serde_json::Value =
@@ -1393,14 +1434,24 @@ fn test_write_error_native_gemini_envelope() {
 #[test]
 fn test_write_error_kind_maps_to_status_vocabulary() {
     let writer = GeminiWriter;
-    let v = writer.write_error(429, "rate_limit_error", "slow down");
+    let v = writer.write_error(
+        crate::codec::test_host::HOST,
+        429,
+        "rate_limit_error",
+        "slow down",
+    );
     assert_eq!(v["error"]["code"], serde_json::json!(429));
     assert_eq!(
         v["error"]["status"],
         serde_json::json!("RESOURCE_EXHAUSTED") // golden wire-contract literal (kept bare on purpose)
     );
 
-    let v = writer.write_error(400, "invalid_request_error", "bad");
+    let v = writer.write_error(
+        crate::codec::test_host::HOST,
+        400,
+        "invalid_request_error",
+        "bad",
+    );
     assert_eq!(v["error"]["status"], serde_json::json!("INVALID_ARGUMENT"));
     // golden wire-contract literal (kept bare on purpose)
 }
@@ -1410,10 +1461,20 @@ fn test_write_error_kind_maps_to_status_vocabulary() {
 #[test]
 fn test_write_error_unknown_kind_falls_back_to_http_status() {
     let writer = GeminiWriter;
-    let v = writer.write_error(403, "totally_made_up_kind", "nope");
+    let v = writer.write_error(
+        crate::codec::test_host::HOST,
+        403,
+        "totally_made_up_kind",
+        "nope",
+    );
     assert_eq!(v["error"]["status"], serde_json::json!("PERMISSION_DENIED")); // golden wire-contract literal (kept bare on purpose)
                                                                               // A 5xx with an unknown kind maps to INTERNAL.
-    let v = writer.write_error(502, "totally_made_up_kind", "bad gateway");
+    let v = writer.write_error(
+        crate::codec::test_host::HOST,
+        502,
+        "totally_made_up_kind",
+        "bad gateway",
+    );
     assert_eq!(v["error"]["status"], serde_json::json!("INTERNAL")); // golden wire-contract literal (kept bare on purpose)
 }
 
@@ -1429,7 +1490,12 @@ fn test_write_error_code_status_pair_stays_consistent() {
     let writer = GeminiWriter;
 
     // 503 relayed as the generic `api_error` kind (would have been INTERNAL) → HTTP status wins.
-    let v = writer.write_error(503, "api_error", "upstream overloaded");
+    let v = writer.write_error(
+        crate::codec::test_host::HOST,
+        503,
+        "api_error",
+        "upstream overloaded",
+    );
     assert_eq!(v["error"]["code"], serde_json::json!(503));
     assert_eq!(
         v["error"]["status"],
@@ -1438,21 +1504,26 @@ fn test_write_error_code_status_pair_stays_consistent() {
     );
 
     // The bare `overloaded` alias (cross_protocol_error_kind's 503 kind) maps to UNAVAILABLE.
-    let v = writer.write_error(503, "overloaded", "upstream overloaded");
+    let v = writer.write_error(
+        crate::codec::test_host::HOST,
+        503,
+        "overloaded",
+        "upstream overloaded",
+    );
     assert_eq!(v["error"]["status"], serde_json::json!("UNAVAILABLE")); // golden wire-contract literal (kept bare on purpose)
 
     // A genuine 500 with `api_error` stays INTERNAL (consistent: INTERNAL pairs with 500).
-    let v = writer.write_error(500, "api_error", "boom");
+    let v = writer.write_error(crate::codec::test_host::HOST, 500, "api_error", "boom");
     assert_eq!(v["error"]["code"], serde_json::json!(500));
     assert_eq!(v["error"]["status"], serde_json::json!("INTERNAL")); // golden wire-contract literal (kept bare on purpose)
 
     // A 504 relayed as `timeout` stays DEADLINE_EXCEEDED (canonical 504 == 504).
-    let v = writer.write_error(504, "timeout", "slow");
+    let v = writer.write_error(crate::codec::test_host::HOST, 504, "timeout", "slow");
     assert_eq!(v["error"]["status"], serde_json::json!("DEADLINE_EXCEEDED")); // golden wire-contract literal (kept bare on purpose)
 
     // A kind whose canonical status disagrees with the code (auth→401 vs code 403) lets the HTTP
     // status drive so the pair stays a real google.rpc pairing (403→PERMISSION_DENIED).
-    let v = writer.write_error(403, "auth", "denied");
+    let v = writer.write_error(crate::codec::test_host::HOST, 403, "auth", "denied");
     assert_eq!(v["error"]["code"], serde_json::json!(403));
     assert_eq!(v["error"]["status"], serde_json::json!("PERMISSION_DENIED"));
     // golden wire-contract literal (kept bare on purpose)
@@ -1473,11 +1544,13 @@ fn test_response_identity_roundtrip_preserves_id_and_model() {
         "modelVersion": "gemini-1.5-pro-002",
         "responseId": "abc-XYZ-123_opaque"
     });
-    let ir = reader.read_response(&upstream).expect("read_response");
+    let ir = reader
+        .read_response(crate::codec::test_host::HOST, &upstream)
+        .expect("read_response");
     assert_eq!(ir.id.as_deref(), Some("abc-XYZ-123_opaque"));
     assert_eq!(ir.model.as_deref(), Some("gemini-1.5-pro-002"));
 
-    let wire = writer.write_response(&ir);
+    let wire = writer.write_response(crate::codec::test_host::HOST, &ir);
     assert_eq!(
         wire[FIELD_RESPONSE_ID],
         serde_json::json!("abc-XYZ-123_opaque"),
@@ -1537,7 +1610,7 @@ fn foreign_stop_reason_maps_to_other_not_verbatim() {
             stop_detail: None,
             ..Default::default()
         };
-        let wire = writer.write_response(&ir);
+        let wire = writer.write_response(crate::codec::test_host::HOST, &ir);
         assert_eq!(
             wire["candidates"][0]["finishReason"],
             serde_json::json!(native),
@@ -1556,7 +1629,7 @@ fn foreign_stop_reason_maps_to_other_not_verbatim() {
             stop_detail: None,
         };
         let (_, frame) = writer
-            .write_response_event(&ev)
+            .write_response_event(crate::codec::test_host::HOST, &ev)
             .expect("MessageDelta must emit a frame");
         assert_eq!(
             frame["candidates"][0]["finishReason"],
@@ -1600,7 +1673,7 @@ fn test_response_identity_cross_protocol_emits_foreign_id() {
         stop_detail: None,
         ..Default::default()
     };
-    let wire = writer.write_response(&ir);
+    let wire = writer.write_response(crate::codec::test_host::HOST, &ir);
     assert_eq!(
         wire[FIELD_RESPONSE_ID],
         serde_json::json!("chatcmpl-abc123"),
@@ -1642,7 +1715,7 @@ fn test_response_identity_none_id_is_omitted_not_fabricated() {
         stop_detail: None,
         ..Default::default()
     };
-    let wire = writer.write_response(&ir);
+    let wire = writer.write_response(crate::codec::test_host::HOST, &ir);
     assert!(
         wire.get(FIELD_RESPONSE_ID).is_none(),
         "must not fabricate a responseId when the IR carries none: {wire}"
@@ -1673,13 +1746,16 @@ fn test_stream_message_start_captures_and_emits_identity() {
     // The writer emits a leading identity frame carrying the captured responseId.
     let writer = GeminiWriter;
     let frame = writer
-        .write_response_event(&IrStreamEvent::MessageStart {
-            role: crate::codec::ir::IrRole::Assistant,
-            usage: None,
-            id: start.0.clone(),
-            created: None,
-            model: start.1.clone(),
-        })
+        .write_response_event(
+            crate::codec::test_host::HOST,
+            &IrStreamEvent::MessageStart {
+                role: crate::codec::ir::IrRole::Assistant,
+                usage: None,
+                id: start.0.clone(),
+                created: None,
+                model: start.1.clone(),
+            },
+        )
         .expect("MessageStart must emit an identity frame");
     assert_eq!(
         frame.1[FIELD_RESPONSE_ID],
@@ -1700,13 +1776,16 @@ fn test_stream_message_start_captures_and_emits_identity() {
 fn test_stream_message_start_no_identity_synthesizes_response_id() {
     let writer = GeminiWriter;
     let frame = writer
-        .write_response_event(&IrStreamEvent::MessageStart {
-            role: crate::codec::ir::IrRole::Assistant,
-            usage: None,
-            id: None,
-            created: None,
-            model: None,
-        })
+        .write_response_event(
+            crate::codec::test_host::HOST,
+            &IrStreamEvent::MessageStart {
+                role: crate::codec::ir::IrRole::Assistant,
+                usage: None,
+                id: None,
+                created: None,
+                model: None,
+            },
+        )
         .expect("a synthesized-identity MessageStart must emit a frame");
     assert!(
         frame
@@ -1769,7 +1848,7 @@ fn test_write_request_omits_stream_field() {
         system_role: None,
         output_modalities: None,
     };
-    let wire = writer.write_request(&req);
+    let wire = writer.write_request(crate::codec::test_host::HOST, &req);
     assert!(
         wire.get("stream").is_none(),
         "write_request must not serialise a top-level `stream` field: {wire}"
@@ -1795,7 +1874,7 @@ fn test_native_request_without_stream_stays_streamless() {
         ir.extra
     );
     let writer = GeminiWriter;
-    let wire = writer.write_request(&ir);
+    let wire = writer.write_request(crate::codec::test_host::HOST, &ir);
     assert!(
         wire.get("stream").is_none(),
         "stream intent must not be serialised into the body: {wire}"
@@ -1926,7 +2005,7 @@ fn test_write_request_thinking_only_turn_survives_with_placeholder() {
         system_role: None,
         output_modalities: None,
     };
-    let wire = writer.write_request(&req);
+    let wire = writer.write_request(crate::codec::test_host::HOST, &req);
     let contents = wire
         .get("contents")
         .and_then(|v| v.as_array())
@@ -2022,7 +2101,7 @@ fn test_write_request_null_tool_result_coerced_to_struct() {
         system_role: None,
         output_modalities: None,
     };
-    let wire = writer.write_request(&req);
+    let wire = writer.write_request(crate::codec::test_host::HOST, &req);
     let response = wire
         .get("contents")
         .and_then(|v| v.as_array())
@@ -2097,7 +2176,7 @@ fn test_write_request_scalar_tool_result_coerced_to_struct() {
         system_role: None,
         output_modalities: None,
     };
-    let wire = writer.write_request(&req);
+    let wire = writer.write_request(crate::codec::test_host::HOST, &req);
     let response = wire
         .get("contents")
         .and_then(|v| v.as_array())
@@ -2254,7 +2333,7 @@ fn test_write_request_tool_result_plaintext_wrapped_not_dropped() {
         system_role: None,
         output_modalities: None,
     };
-    let wire = writer.write_request(&req);
+    let wire = writer.write_request(crate::codec::test_host::HOST, &req);
     let resp = wire
         .pointer("/contents/0/parts/0/functionResponse/response")
         .expect("functionResponse.response must be present");
@@ -2323,7 +2402,7 @@ fn test_write_request_tool_result_json_passthrough() {
         system_role: None,
         output_modalities: None,
     };
-    let wire = writer.write_request(&req);
+    let wire = writer.write_request(crate::codec::test_host::HOST, &req);
     let temp = wire
         .pointer("/contents/0/parts/0/functionResponse/response/temp")
         .and_then(|v| v.as_i64());
@@ -2363,7 +2442,7 @@ fn test_response_identity_cross_protocol_synthesizes_id_when_created_set() {
         stop_detail: None,
         ..Default::default()
     };
-    let wire = writer.write_response(&ir);
+    let wire = writer.write_response(crate::codec::test_host::HOST, &ir);
     let synth = wire
         .get(FIELD_RESPONSE_ID)
         .and_then(|v| v.as_str())
@@ -2386,7 +2465,7 @@ fn test_stream_error_emits_full_google_rpc_status() {
         retry_after: None,
     };
     let (_, frame) = writer
-        .write_response_event(&IrStreamEvent::Error(err))
+        .write_response_event(crate::codec::test_host::HOST, &IrStreamEvent::Error(err))
         .expect("Error event must emit a frame");
     assert_eq!(
         frame.pointer("/error/code"),
@@ -2415,7 +2494,7 @@ fn test_stream_error_server_error_maps_internal() {
         retry_after: None,
     };
     let (_, frame) = writer
-        .write_response_event(&IrStreamEvent::Error(err))
+        .write_response_event(crate::codec::test_host::HOST, &IrStreamEvent::Error(err))
         .expect("Error event must emit a frame");
     assert_eq!(frame.pointer("/error/code"), Some(&serde_json::json!(500)));
     assert_eq!(
@@ -2436,13 +2515,16 @@ fn test_stream_error_server_error_maps_internal() {
 fn test_stream_message_start_model_only_emits_model_version() {
     let writer = GeminiWriter;
     let frame = writer
-        .write_response_event(&IrStreamEvent::MessageStart {
-            role: crate::codec::ir::IrRole::Assistant,
-            usage: None,
-            id: None,
-            created: None,
-            model: Some("gemini-1.5-pro".to_string()),
-        })
+        .write_response_event(
+            crate::codec::test_host::HOST,
+            &IrStreamEvent::MessageStart {
+                role: crate::codec::ir::IrRole::Assistant,
+                usage: None,
+                id: None,
+                created: None,
+                model: Some("gemini-1.5-pro".to_string()),
+            },
+        )
         .expect("a model-bearing MessageStart must emit a frame");
     assert_eq!(
         frame.1[FIELD_MODEL_VERSION],
@@ -2578,7 +2660,9 @@ fn test_read_response_functioncall_gets_nonempty_id() {
         }],
         "usageMetadata": {"promptTokenCount": 1, "candidatesTokenCount": 1}
     });
-    let ir = reader.read_response(&body).expect("read_response");
+    let ir = reader
+        .read_response(crate::codec::test_host::HOST, &body)
+        .expect("read_response");
     let id = ir.content.iter().find_map(|b| match b {
         crate::codec::ir::IrBlock::ToolUse { id, .. } => Some(id.clone()),
         _ => None,
@@ -2604,7 +2688,7 @@ fn test_read_response_safety_filtered_candidate_no_content_is_ok() {
         "usageMetadata": {"promptTokenCount": 5, "candidatesTokenCount": 0}
     });
     let ir = reader
-        .read_response(&body)
+        .read_response(crate::codec::test_host::HOST, &body)
         .expect("safety-filtered candidate (no content) must decode, not error");
     assert!(
         ir.content.is_empty(),
@@ -2693,6 +2777,7 @@ fn test_stream_mid_stream_prompt_block_closes_open_text_block() {
 
     // Chunk 1: a normal text chunk opens a content block.
     let first = reader.read_response_events(
+        crate::codec::test_host::HOST,
         "",
         &serde_json::json!({
             "candidates": [{
@@ -2714,6 +2799,7 @@ fn test_stream_mid_stream_prompt_block_closes_open_text_block() {
 
     // Chunk 2: a mid-stream prompt-block (NO candidates) must close block 0, then terminate.
     let second = reader.read_response_events(
+        crate::codec::test_host::HOST,
         "",
         &serde_json::json!({
             "promptFeedback": {"blockReason": GEMINI_FINISH_SAFETY},
@@ -2763,7 +2849,7 @@ fn test_read_response_prompt_block_is_safety_stop_not_error() {
         "usageMetadata": {"promptTokenCount": 9, "candidatesTokenCount": 0}
     });
     let ir = reader
-        .read_response(&body)
+        .read_response(crate::codec::test_host::HOST, &body)
         .expect("prompt-blocked body must decode, not error");
     assert!(
         ir.content.is_empty(),
@@ -2785,7 +2871,9 @@ fn test_read_response_candidates_absent_without_block_still_errors() {
     let reader = GeminiReader;
     let body = serde_json::json!({"usageMetadata": {"promptTokenCount": 1}});
     assert!(
-        reader.read_response(&body).is_err(),
+        reader
+            .read_response(crate::codec::test_host::HOST, &body)
+            .is_err(),
         "a candidates-absent body with no block reason must still error"
     );
 }
@@ -2826,7 +2914,9 @@ fn test_read_response_zero_arg_function_call_input_is_empty_object_not_null() {
             "finishReason": GEMINI_FINISH_STOP
         }]
     });
-    let ir = reader.read_response(&body).expect("read_response");
+    let ir = reader
+        .read_response(crate::codec::test_host::HOST, &body)
+        .expect("read_response");
     let input = ir.content.iter().find_map(|b| match b {
         crate::codec::ir::IrBlock::ToolUse { input, .. } => Some(input.clone()),
         _ => None,
@@ -2887,7 +2977,7 @@ fn test_read_request_source_stream_round_trips_via_extra() {
         ir.extra
     );
     let writer = GeminiWriter;
-    let wire = writer.write_request(&ir);
+    let wire = writer.write_request(crate::codec::test_host::HOST, &ir);
     assert_eq!(
         wire.get("stream"),
         Some(&serde_json::json!(true)),
@@ -2912,7 +3002,7 @@ fn test_read_request_native_no_stream_stays_absent() {
         ir.extra
     );
     let writer = GeminiWriter;
-    let wire = writer.write_request(&ir);
+    let wire = writer.write_request(crate::codec::test_host::HOST, &ir);
     assert!(
         wire.get("stream").is_none(),
         "stream intent must not be synthesized onto a native body: {wire}"
@@ -2973,7 +3063,7 @@ fn test_read_request_native_tool_config_round_trips_via_extra() {
         ir.extra
     );
     let writer = GeminiWriter;
-    let wire = writer.write_request(&ir);
+    let wire = writer.write_request(crate::codec::test_host::HOST, &ir);
     assert_eq!(
         wire.get("toolConfig"),
         Some(&tool_config),
@@ -3013,7 +3103,7 @@ fn test_generation_config_unmodeled_subfields_survive_roundtrip() {
     assert_eq!(ir.max_tokens, Some(256));
     assert_eq!(ir.temperature, Some(0.3));
 
-    let wire = writer.write_request(&ir);
+    let wire = writer.write_request(crate::codec::test_host::HOST, &ir);
     let gc = wire
         .get("generationConfig")
         .and_then(|g| g.as_object())
@@ -3099,7 +3189,7 @@ fn test_generation_config_typed_fields_override_raw_extra() {
         system_role: None,
         output_modalities: None,
     };
-    let wire = writer.write_request(&ir);
+    let wire = writer.write_request(crate::codec::test_host::HOST, &ir);
     let gc = wire
         .get("generationConfig")
         .and_then(|g| g.as_object())
@@ -3136,7 +3226,7 @@ fn test_stream_message_delta_includes_total_token_count() {
         stop_detail: None,
     };
     let (_, frame) = writer
-        .write_response_event(&ev)
+        .write_response_event(crate::codec::test_host::HOST, &ev)
         .expect("MessageDelta must emit a frame");
     assert_eq!(
         frame.pointer("/usageMetadata/totalTokenCount"),
@@ -3171,7 +3261,7 @@ fn test_stream_message_delta_total_token_count_saturates() {
         stop_detail: None,
     };
     let (_, frame) = writer
-        .write_response_event(&ev)
+        .write_response_event(crate::codec::test_host::HOST, &ev)
         .expect("MessageDelta must emit a frame");
     assert_eq!(
         frame.pointer("/usageMetadata/totalTokenCount"),
@@ -3216,7 +3306,7 @@ fn test_write_response_includes_total_token_count_cross_protocol() {
         stop_detail: None,
         ..Default::default()
     };
-    let wire = writer.write_response(&ir);
+    let wire = writer.write_response(crate::codec::test_host::HOST, &ir);
     assert_eq!(
         wire.pointer("/usageMetadata/totalTokenCount"),
         Some(&serde_json::json!(8)),
@@ -3267,7 +3357,7 @@ fn test_write_response_omits_total_token_count_same_protocol() {
         stop_detail: None,
         ..Default::default()
     };
-    let wire = writer.write_response(&ir);
+    let wire = writer.write_response(crate::codec::test_host::HOST, &ir);
     assert!(
         wire.pointer("/usageMetadata/totalTokenCount").is_none(),
         "same-protocol round-trip must omit totalTokenCount for byte-identity: {wire}"
@@ -3300,7 +3390,7 @@ fn test_write_response_total_token_count_saturates() {
         stop_detail: None,
         ..Default::default()
     };
-    let wire = writer.write_response(&ir);
+    let wire = writer.write_response(crate::codec::test_host::HOST, &ir);
     assert_eq!(
         wire.pointer("/usageMetadata/totalTokenCount"),
         Some(&serde_json::json!(u64::MAX)),
@@ -3348,7 +3438,7 @@ fn test_write_response_includes_total_token_count_when_only_model_present() {
         stop_detail: None,
         ..Default::default()
     };
-    let wire = writer.write_response(&ir);
+    let wire = writer.write_response(crate::codec::test_host::HOST, &ir);
     assert_eq!(
         wire.pointer("/usageMetadata/totalTokenCount"),
         Some(&serde_json::json!(15)),
@@ -3391,7 +3481,7 @@ fn test_write_response_model_only_total_token_count_saturates() {
         stop_detail: None,
         ..Default::default()
     };
-    let wire = writer.write_response(&ir);
+    let wire = writer.write_response(crate::codec::test_host::HOST, &ir);
     assert_eq!(
         wire.pointer("/usageMetadata/totalTokenCount"),
         Some(&serde_json::json!(u64::MAX)),
@@ -3490,7 +3580,7 @@ fn test_write_response_tool_use_maps_to_stop() {
         stop_detail: None,
         ..Default::default()
     };
-    let wire = writer.write_response(&ir);
+    let wire = writer.write_response(crate::codec::test_host::HOST, &ir);
     assert_eq!(
         wire.pointer("/candidates/0/finishReason")
             .and_then(|f| f.as_str()),
@@ -3517,7 +3607,7 @@ fn test_stream_message_delta_tool_use_maps_to_stop() {
         stop_detail: None,
     };
     let (_, frame) = writer
-        .write_response_event(&ev)
+        .write_response_event(crate::codec::test_host::HOST, &ev)
         .expect("MessageDelta must emit a frame");
     assert_eq!(
         frame
@@ -3582,7 +3672,7 @@ fn test_write_request_image_url_sentinel_emits_file_data() {
         system_role: None,
         output_modalities: None,
     };
-    let wire = writer.write_request(&req);
+    let wire = writer.write_request(crate::codec::test_host::HOST, &req);
     assert_eq!(
         wire.pointer("/contents/0/parts/0/fileData/fileUri")
             .and_then(|u| u.as_str()),
@@ -3646,7 +3736,7 @@ fn test_write_request_base64_image_still_inline_data() {
         system_role: None,
         output_modalities: None,
     };
-    let wire = writer.write_request(&req);
+    let wire = writer.write_request(crate::codec::test_host::HOST, &req);
     assert_eq!(
         wire.pointer("/contents/0/parts/0/inlineData/mimeType")
             .and_then(|m| m.as_str()),
@@ -3685,7 +3775,7 @@ fn test_file_data_image_round_trips_via_url() {
         Some("gs://bucket/img.jpg"),
         "fileData must read into the typed Url source: {ir:?}"
     );
-    let wire = writer.write_request(&ir);
+    let wire = writer.write_request(crate::codec::test_host::HOST, &ir);
     assert_eq!(
         wire.pointer("/contents/0/parts/0/fileData/fileUri")
             .and_then(|u| u.as_str()),
@@ -3703,7 +3793,7 @@ fn test_file_data_image_round_trips_via_url() {
 /// AND leaked the proxy host clock in its leading hex segment. Assert the shape never regresses.
 #[test]
 fn test_synth_response_id_is_opaque_native_shape() {
-    let id = synth_response_id();
+    let id = synth_response_id(crate::codec::test_host::HOST);
     assert_eq!(
         id.len(),
         RESPONSE_ID_TOKEN_LEN,
@@ -3720,10 +3810,12 @@ fn test_synth_response_id_is_opaque_native_shape() {
     // A lowercase-hex-only token (`[0-9a-f]*`) is the old timestamp-hex tell. Across a batch the
     // synthesized ids must NOT be confinable to that class — at least one carries an uppercase
     // letter or a digit/letter outside `[0-9a-f]`, proving the wider base62 character class.
-    let saw_non_hex = (0..64).map(|_| synth_response_id()).any(|s| {
-        s.chars()
-            .any(|c| !c.is_ascii_hexdigit() || c.is_ascii_uppercase())
-    });
+    let saw_non_hex = (0..64)
+        .map(|_| synth_response_id(crate::codec::test_host::HOST))
+        .any(|s| {
+            s.chars()
+                .any(|c| !c.is_ascii_hexdigit() || c.is_ascii_uppercase())
+        });
     assert!(
         saw_non_hex,
         "synthesized responseIds must draw from mixed-case base62, not lowercase-hex only"
@@ -3743,7 +3835,7 @@ fn test_synth_response_id_leaks_no_timestamp() {
             .unwrap_or(0)
     );
     for _ in 0..16 {
-        let id = synth_response_id();
+        let id = synth_response_id(crate::codec::test_host::HOST);
         assert!(
             !id.starts_with(&now_hex),
             "synthesized responseId must not lead with the unix-second hex (clock leak): {id}"
@@ -3759,8 +3851,8 @@ fn test_synth_response_id_leaks_no_timestamp() {
 /// the host entropy pool (~95 bits of entropy) — guards the collision-free per-process uniqueness property.
 #[test]
 fn test_synth_response_id_distinct_consecutive() {
-    let a = synth_response_id();
-    let b = synth_response_id();
+    let a = synth_response_id(crate::codec::test_host::HOST);
+    let b = synth_response_id(crate::codec::test_host::HOST);
     assert_ne!(a, b, "consecutive synthesized ids must differ: {a} vs {b}");
 }
 
@@ -3784,7 +3876,7 @@ fn test_synth_response_id_base62_is_unbiased() {
     let mut counts: HashMap<char, u64> = HashMap::new();
     let mut total: u64 = 0;
     for _ in 0..40_000 {
-        for c in synth_response_id().chars() {
+        for c in synth_response_id(crate::codec::test_host::HOST).chars() {
             *counts.entry(c).or_insert(0) += 1;
             total += 1;
         }
@@ -3820,7 +3912,7 @@ fn test_synth_response_id_uniqueness_burst() {
     use std::collections::HashSet;
     let mut seen = HashSet::new();
     for _ in 0..50_000 {
-        let id = synth_response_id();
+        let id = synth_response_id(crate::codec::test_host::HOST);
         assert_eq!(id.len(), RESPONSE_ID_TOKEN_LEN, "non-native length: {id}");
         assert!(
             id.chars().all(|c| c.is_ascii_alphanumeric()),
@@ -3846,6 +3938,7 @@ fn test_stream_open_tools_growth_is_capped() {
     // drain path never runs — the only thing that can keep the set bounded is the cap.
     for n in 0..(MAX_GEMINI_TOOL_FRAMES + 200) {
         reader.read_response_events(
+            crate::codec::test_host::HOST,
             "",
             &serde_json::json!({
                 "candidates": [{
@@ -3877,6 +3970,7 @@ fn test_stream_tool_frame_cap_drop_is_observable() {
     // Under the cap: no warning latch yet.
     for n in 0..10 {
         reader.read_response_events(
+            crate::codec::test_host::HOST,
             "",
             &serde_json::json!({
                 "candidates": [{
@@ -3897,6 +3991,7 @@ fn test_stream_tool_frame_cap_drop_is_observable() {
     // Push past the cap; the drop must now be latched as observed.
     for n in 0..(MAX_GEMINI_TOOL_FRAMES + 200) {
         reader.read_response_events(
+            crate::codec::test_host::HOST,
             "",
             &serde_json::json!({
                 "candidates": [{
@@ -3924,6 +4019,7 @@ fn test_stream_open_tools_under_cap_records_all() {
     let mut starts = 0usize;
     for n in 0..3 {
         for ev in reader.read_response_events(
+            crate::codec::test_host::HOST,
             "",
             &serde_json::json!({
                 "candidates": [{
@@ -4093,7 +4189,7 @@ fn test_tool_role_maps_to_user_for_function_response() {
         output_modalities: None,
     };
 
-    let wire = writer.write_request(&req);
+    let wire = writer.write_request(crate::codec::test_host::HOST, &req);
     let content = &wire["contents"][0];
 
     assert_eq!(
@@ -4165,7 +4261,7 @@ fn test_assistant_tool_use_stays_model_role() {
         output_modalities: None,
     };
 
-    let wire = writer.write_request(&req);
+    let wire = writer.write_request(crate::codec::test_host::HOST, &req);
     let content = &wire["contents"][0];
     assert_eq!(
         content["role"], "model",
@@ -4284,7 +4380,12 @@ fn test_gemini_error_status_class_mapping() {
 #[test]
 fn test_write_error_bad_key_carries_api_key_invalid_details() {
     let writer = GeminiWriter;
-    let envelope = writer.write_error(400, "invalid_request_error", super::GEMINI_BAD_KEY_MESSAGE);
+    let envelope = writer.write_error(
+        crate::codec::test_host::HOST,
+        400,
+        "invalid_request_error",
+        super::GEMINI_BAD_KEY_MESSAGE,
+    );
 
     assert_eq!(
         envelope.pointer("/error/code"),
@@ -4327,7 +4428,12 @@ fn test_write_error_bad_key_carries_api_key_invalid_details() {
 #[test]
 fn test_write_error_generic_invalid_argument_has_no_details() {
     let writer = GeminiWriter;
-    let envelope = writer.write_error(400, "invalid_request_error", "Invalid value at 'contents'.");
+    let envelope = writer.write_error(
+        crate::codec::test_host::HOST,
+        400,
+        "invalid_request_error",
+        "Invalid value at 'contents'.",
+    );
     assert_eq!(
         envelope.pointer("/error/status").and_then(|s| s.as_str()),
         Some("INVALID_ARGUMENT"), // golden wire-contract literal (kept bare on purpose)
@@ -4416,7 +4522,7 @@ fn test_write_request_cross_protocol_function_response_name_matches_call() {
         output_modalities: None,
     };
 
-    let wire = writer.write_request(&req);
+    let wire = writer.write_request(crate::codec::test_host::HOST, &req);
     let call_name = wire
         .pointer("/contents/0/parts/0/functionCall/name")
         .and_then(|n| n.as_str());
@@ -4496,7 +4602,7 @@ fn test_write_request_same_protocol_function_response_name_falls_back_to_id() {
         system_role: None,
         output_modalities: None,
     };
-    let wire = writer.write_request(&req);
+    let wire = writer.write_request(crate::codec::test_host::HOST, &req);
     assert_eq!(
         wire.pointer("/contents/0/parts/0/functionResponse/name")
             .and_then(|n| n.as_str()),
@@ -4545,7 +4651,7 @@ fn test_read_response_empty_candidates_array_prompt_block_is_safety_stop() {
         "usageMetadata": {"promptTokenCount": 9, "candidatesTokenCount": 0}
     });
     let ir = reader
-        .read_response(&body)
+        .read_response(crate::codec::test_host::HOST, &body)
         .expect("empty-candidates prompt-blocked body must decode, not error");
     assert!(
         ir.content.is_empty(),
@@ -4567,7 +4673,9 @@ fn test_read_response_empty_candidates_array_without_block_still_errors() {
     let reader = GeminiReader;
     let body = serde_json::json!({"candidates": [], "usageMetadata": {"promptTokenCount": 1}});
     assert!(
-        reader.read_response(&body).is_err(),
+        reader
+            .read_response(crate::codec::test_host::HOST, &body)
+            .is_err(),
         "an empty candidates[] body with no block reason must still error"
     );
 }
@@ -4590,7 +4698,7 @@ fn test_read_response_stop_with_function_call_is_tool_use() {
         }]
     });
     let ir = reader
-        .read_response(&body)
+        .read_response(crate::codec::test_host::HOST, &body)
         .expect("tool-call STOP body must decode");
     assert!(
         ir.content
@@ -4617,7 +4725,9 @@ fn test_read_response_plain_stop_stays_end_turn() {
             "finishReason": GEMINI_FINISH_STOP
         }]
     });
-    let ir = reader.read_response(&body).expect("plain STOP must decode");
+    let ir = reader
+        .read_response(crate::codec::test_host::HOST, &body)
+        .expect("plain STOP must decode");
     assert_eq!(
         ir.stop_reason,
         Some(crate::codec::ir::IrStopReason::EndTurn),
@@ -4727,7 +4837,7 @@ fn test_tool_use_array_input_coerced_to_object_args() {
         system_role: None,
         output_modalities: None,
     };
-    let wire = writer.write_request(&req);
+    let wire = writer.write_request(crate::codec::test_host::HOST, &req);
     let args = wire
         .pointer("/contents/0/parts/0/functionCall/args")
         .expect("functionCall.args must be present");
@@ -4764,7 +4874,7 @@ fn test_tool_use_array_input_coerced_to_object_args() {
         stop_detail: None,
         ..Default::default()
     };
-    let rwire = writer.write_response(&resp);
+    let rwire = writer.write_response(crate::codec::test_host::HOST, &resp);
     let rargs = rwire
         .pointer("/candidates/0/content/parts/0/functionCall/args")
         .expect("response functionCall.args must be present");
@@ -4812,7 +4922,7 @@ fn test_tool_use_object_input_passes_through_unchanged() {
         stop_detail: None,
         ..Default::default()
     };
-    let rwire = writer.write_response(&resp);
+    let rwire = writer.write_response(crate::codec::test_host::HOST, &resp);
     let rargs = rwire
         .pointer("/candidates/0/content/parts/0/functionCall/args")
         .expect("functionCall.args must be present");
@@ -4842,7 +4952,7 @@ fn tool_choice_any_required_roundtrips() {
         Some(crate::codec::ir::IrToolChoice::Required)
     );
     let writer = GeminiWriter;
-    let out = writer.write_request(&ir);
+    let out = writer.write_request(crate::codec::test_host::HOST, &ir);
     assert_eq!(
         out["toolConfig"]["functionCallingConfig"],
         serde_json::json!({"mode": "ANY"})
@@ -4863,7 +4973,7 @@ fn tool_choice_specific_tool_roundtrips() {
         })
     );
     let writer = GeminiWriter;
-    let out = writer.write_request(&ir);
+    let out = writer.write_request(crate::codec::test_host::HOST, &ir);
     assert_eq!(
         out["toolConfig"]["functionCallingConfig"],
         serde_json::json!({"mode": "ANY", "allowedFunctionNames": ["get_weather"]})
@@ -4913,7 +5023,7 @@ fn tool_choice_none_and_auto_roundtrip() {
         }));
         assert_eq!(ir.tool_choice, Some(variant));
         let writer = GeminiWriter;
-        let out = writer.write_request(&ir);
+        let out = writer.write_request(crate::codec::test_host::HOST, &ir);
         assert_eq!(out["toolConfig"]["functionCallingConfig"]["mode"], mode);
     }
 }
@@ -4923,7 +5033,7 @@ fn tool_choice_absent_emits_no_function_calling_config() {
     let ir = gemini_read(serde_json::json!({"contents": []}));
     assert_eq!(ir.tool_choice, None);
     let writer = GeminiWriter;
-    let out = writer.write_request(&ir);
+    let out = writer.write_request(crate::codec::test_host::HOST, &ir);
     assert!(
         out.get("toolConfig")
             .and_then(|tc| tc.get("functionCallingConfig"))
@@ -4942,7 +5052,7 @@ fn tool_choice_no_duplicate_function_calling_config() {
         "toolConfig": {"functionCallingConfig": {"mode": "ANY"}}
     }));
     let writer = GeminiWriter;
-    let out = writer.write_request(&ir);
+    let out = writer.write_request(crate::codec::test_host::HOST, &ir);
     let s = serde_json::to_string(&out).unwrap();
     assert_eq!(
         s.matches("functionCallingConfig").count(),
@@ -4983,7 +5093,7 @@ fn tool_choice_overlay_survives_stale_raw_toolconfig_in_extra() {
     );
 
     let writer = GeminiWriter;
-    let out = writer.write_request(&req);
+    let out = writer.write_request(crate::codec::test_host::HOST, &req);
     assert_eq!(
         out["toolConfig"]["functionCallingConfig"],
         serde_json::json!({"mode": "ANY", "allowedFunctionNames": ["get_weather"]}),
@@ -5036,7 +5146,7 @@ fn response_tool_call_ids_do_not_collide_across_conversation_turns() {
     });
 
     let id1 = reader
-        .read_response(&turn1)
+        .read_response(crate::codec::test_host::HOST, &turn1)
         .expect("read_response turn1")
         .content
         .iter()
@@ -5046,7 +5156,7 @@ fn response_tool_call_ids_do_not_collide_across_conversation_turns() {
         })
         .expect("turn1 tool_use id");
     let id2 = reader
-        .read_response(&turn2)
+        .read_response(crate::codec::test_host::HOST, &turn2)
         .expect("read_response turn2")
         .content
         .iter()
@@ -5104,7 +5214,9 @@ fn finish_reason_recitation_in_response_is_safety() {
         }],
         "usageMetadata": {"promptTokenCount": 1, "candidatesTokenCount": 1}
     });
-    let resp = GeminiReader.read_response(&body).expect("read_response");
+    let resp = GeminiReader
+        .read_response(crate::codec::test_host::HOST, &body)
+        .expect("read_response");
     assert_eq!(
         resp.stop_reason,
         Some(crate::codec::ir::IrStopReason::Safety)
@@ -5124,7 +5236,9 @@ fn finish_reason_malformed_function_call_in_response_is_error() {
         }],
         "usageMetadata": {"promptTokenCount": 1, "candidatesTokenCount": 1}
     });
-    let resp = GeminiReader.read_response(&body).expect("read_response");
+    let resp = GeminiReader
+        .read_response(crate::codec::test_host::HOST, &body)
+        .expect("read_response");
     assert_eq!(
         resp.stop_reason,
         Some(crate::codec::ir::IrStopReason::Error)
@@ -5219,7 +5333,9 @@ fn raw_stop_reason_agrees_with_read_response() {
             }],
             "usageMetadata": {"promptTokenCount": 10, "candidatesTokenCount": 5}
         });
-        let parsed = GeminiReader.read_response(&body).expect("read_response");
+        let parsed = GeminiReader
+            .read_response(crate::codec::test_host::HOST, &body)
+            .expect("read_response");
         assert_eq!(
             GeminiReader.raw_stop_reason(body.to_string().as_bytes()),
             parsed.stop_reason,
@@ -5390,7 +5506,7 @@ fn test_write_request_sampling_controls_emit_generation_config() {
     req.n = Some(3);
     let wire = {
         let __w = GeminiWriter;
-        __w.write_request(&req)
+        __w.write_request(crate::codec::test_host::HOST, &req)
     };
     let gc = wire
         .get("generationConfig")
@@ -5410,7 +5526,7 @@ fn test_write_request_sampling_controls_emit_generation_config() {
 fn test_write_request_sampling_controls_omitted_when_none() {
     let wire = {
         let __w = GeminiWriter;
-        __w.write_request(&base_ir_request())
+        __w.write_request(crate::codec::test_host::HOST, &base_ir_request())
     };
     if let Some(gc) = wire.get("generationConfig") {
         assert!(gc.get("frequencyPenalty").is_none());
@@ -5441,7 +5557,7 @@ fn test_read_request_sampling_controls_promote_and_round_trip() {
 
     let wire = {
         let __w = GeminiWriter;
-        __w.write_request(&ir)
+        __w.write_request(crate::codec::test_host::HOST, &ir)
     };
     let gc = wire.get("generationConfig").expect("generationConfig");
     assert_eq!(gc.get("frequencyPenalty"), Some(&serde_json::json!(0.7)));
@@ -5476,7 +5592,7 @@ fn test_response_format_round_trips_native_gemini() {
 
     let wire = {
         let __w = GeminiWriter;
-        __w.write_request(&ir)
+        __w.write_request(crate::codec::test_host::HOST, &ir)
     };
     let gc = wire.get("generationConfig").expect("generationConfig");
     assert_eq!(
@@ -5508,7 +5624,7 @@ fn test_response_format_maps_to_gemini_and_sanitizes_schema() {
     });
     let wire = {
         let __w = GeminiWriter;
-        __w.write_request(&req)
+        __w.write_request(crate::codec::test_host::HOST, &req)
     };
     let gc = wire.get("generationConfig").expect("generationConfig");
     assert_eq!(
@@ -5543,7 +5659,9 @@ fn test_thought_part_round_trips_through_ir_thinking() {
         }],
         "usageMetadata": {"promptTokenCount": 1, "candidatesTokenCount": 1}
     });
-    let resp = GeminiReader.read_response(&body).expect("read_response");
+    let resp = GeminiReader
+        .read_response(crate::codec::test_host::HOST, &body)
+        .expect("read_response");
     // First block is Thinking with text + signature; second is plain Text.
     match &resp.content[0] {
         crate::codec::ir::IrBlock::Thinking {
@@ -5561,7 +5679,7 @@ fn test_thought_part_round_trips_through_ir_thinking() {
 
     let wire = {
         let __w = GeminiWriter;
-        __w.write_response(&resp)
+        __w.write_response(crate::codec::test_host::HOST, &resp)
     };
     let part0 = wire
         .pointer("/candidates/0/content/parts/0")
@@ -5593,7 +5711,7 @@ fn test_thinking_block_round_trips_in_write_request() {
     });
     let wire = {
         let __w = GeminiWriter;
-        __w.write_request(&req)
+        __w.write_request(crate::codec::test_host::HOST, &req)
     };
     // Assistant turn is the 2nd contents entry (role "model").
     let parts = wire
@@ -5627,7 +5745,9 @@ fn test_cached_content_token_count_reads_into_cache_read() {
             "cachedContentTokenCount": 80
         }
     });
-    let resp = GeminiReader.read_response(&body).expect("read_response");
+    let resp = GeminiReader
+        .read_response(crate::codec::test_host::HOST, &body)
+        .expect("read_response");
     assert_eq!(
         resp.usage.cache_read_input_tokens,
         Some(80),
@@ -5639,7 +5759,7 @@ fn test_cached_content_token_count_reads_into_cache_read() {
         "usageMetadata": {"promptTokenCount": 1, "candidatesTokenCount": 1}
     });
     let resp2 = GeminiReader
-        .read_response(&body_no_cache)
+        .read_response(crate::codec::test_host::HOST, &body_no_cache)
         .expect("read_response");
     assert_eq!(resp2.usage.cache_read_input_tokens, None);
 }
@@ -5667,7 +5787,7 @@ fn test_file_data_reads_into_url_source_and_round_trips() {
     }
     let wire = {
         let __w = GeminiWriter;
-        __w.write_request(&ir)
+        __w.write_request(crate::codec::test_host::HOST, &ir)
     };
     assert_eq!(
         wire.pointer("/contents/0/parts/0/fileData/fileUri"),
@@ -5699,7 +5819,7 @@ fn test_file_data_url_reemits_with_derived_mime_type() {
     }
     let wire = {
         let __w = GeminiWriter;
-        __w.write_request(&ir)
+        __w.write_request(crate::codec::test_host::HOST, &ir)
     };
     assert_eq!(
         wire.pointer("/contents/0/parts/0/fileData/fileUri"),
@@ -5745,7 +5865,7 @@ fn test_write_request_strips_rejected_schema_keywords() {
     });
     let wire = {
         let __w = GeminiWriter;
-        __w.write_request(&req)
+        __w.write_request(crate::codec::test_host::HOST, &req)
     };
     let params = wire
         .pointer("/tools/0/functionDeclarations/0/parameters")
@@ -6019,10 +6139,13 @@ fn test_stream_thinking_and_signature_deltas_emit_thought_parts() {
 
     // ThinkingDelta → a `thought:true` text part on a candidates chunk.
     let think = writer
-        .write_response_event(&IrStreamEvent::BlockDelta {
-            index: 0,
-            delta: IrDelta::ThinkingDelta("let me reason".to_string()),
-        })
+        .write_response_event(
+            crate::codec::test_host::HOST,
+            &IrStreamEvent::BlockDelta {
+                index: 0,
+                delta: IrDelta::ThinkingDelta("let me reason".to_string()),
+            },
+        )
         .expect("a ThinkingDelta must emit a streamed thought chunk, not None");
     let think_part = think
         .1
@@ -6041,10 +6164,13 @@ fn test_stream_thinking_and_signature_deltas_emit_thought_parts() {
 
     // SignatureDelta → a `thought:true` part bearing the opaque `thoughtSignature`.
     let sig = writer
-        .write_response_event(&IrStreamEvent::BlockDelta {
-            index: 0,
-            delta: IrDelta::SignatureDelta("sig-xyz".to_string()),
-        })
+        .write_response_event(
+            crate::codec::test_host::HOST,
+            &IrStreamEvent::BlockDelta {
+                index: 0,
+                delta: IrDelta::SignatureDelta("sig-xyz".to_string()),
+            },
+        )
         .expect("a SignatureDelta must emit a streamed thought chunk, not None");
     let sig_part = sig
         .1
@@ -6096,7 +6222,9 @@ fn gemini_citation_metadata_reads_and_projects_to_anthropic() {
             "totalTokenCount": 9
         }
     });
-    let ir = reader.read_response(&body).expect("read_response");
+    let ir = reader
+        .read_response(crate::codec::test_host::HOST, &body)
+        .expect("read_response");
     // Citations land on the Text block with neutral fields populated.
     let citations = ir
         .content
@@ -6116,7 +6244,7 @@ fn gemini_citation_metadata_reads_and_projects_to_anthropic() {
 
     // Cross-protocol Anthropic egress carries url + title.
     let aw = super::super::anthropic::AnthropicWriter;
-    let wire = aw.write_response(&ir);
+    let wire = aw.write_response(crate::codec::test_host::HOST, &ir);
     let c = wire
         .pointer("/content")
         .and_then(|c| c.as_array())
@@ -6155,10 +6283,12 @@ fn gemini_citations_roundtrip_and_absent_unaffected() {
         }],
         "usageMetadata": {"promptTokenCount": 2, "candidatesTokenCount": 1}
     });
-    let mut ir = reader.read_response(&body).expect("read_response");
+    let mut ir = reader
+        .read_response(crate::codec::test_host::HOST, &body)
+        .expect("read_response");
     // Force the cross-protocol boundary signal so the Gemini writer runs the full egress path.
     ir.created = Some(1);
-    let wire = writer.write_response(&ir);
+    let wire = writer.write_response(crate::codec::test_host::HOST, &ir);
     let src = wire
         .pointer("/candidates/0/citationMetadata/citationSources/0")
         .expect("citationMetadata re-emitted at candidate level");
@@ -6176,9 +6306,11 @@ fn gemini_citations_roundtrip_and_absent_unaffected() {
         }],
         "usageMetadata": {"promptTokenCount": 2, "candidatesTokenCount": 1}
     });
-    let mut plain_ir = reader.read_response(&plain_body).expect("read_response");
+    let mut plain_ir = reader
+        .read_response(crate::codec::test_host::HOST, &plain_body)
+        .expect("read_response");
     plain_ir.created = Some(1);
-    let plain_wire = writer.write_response(&plain_ir);
+    let plain_wire = writer.write_response(crate::codec::test_host::HOST, &plain_ir);
     assert!(
         plain_wire
             .pointer("/candidates/0/citationMetadata")
@@ -6220,7 +6352,9 @@ fn gemini_citation_offsets_correct_across_multiple_text_parts() {
         }],
         "usageMetadata": {"promptTokenCount": 5, "candidatesTokenCount": 8}
     });
-    let ir = reader.read_response(&body).expect("read_response");
+    let ir = reader
+        .read_response(crate::codec::test_host::HOST, &body)
+        .expect("read_response");
 
     let text_blocks: Vec<(&str, &Vec<crate::codec::ir::IrCitation>)> = ir
         .content
@@ -6398,7 +6532,7 @@ fn stream_gemini_citation_metadata_projects_to_anthropic_citations_delta() {
             IrStreamEvent::BlockDelta {
                 delta: crate::codec::ir::IrDelta::CitationsDelta(_),
                 ..
-            } => aw.write_response_event(e),
+            } => aw.write_response_event(crate::codec::test_host::HOST, e),
             _ => None,
         })
         .expect("Anthropic writer must emit a frame for the CitationsDelta");
@@ -6460,7 +6594,7 @@ fn stream_anthropic_citation_projects_to_gemini_citation_metadata() {
         delta: crate::codec::ir::IrDelta::CitationsDelta(vec![cit]),
     };
     let (_, body) = writer
-        .write_response_event(&ev)
+        .write_response_event(crate::codec::test_host::HOST, &ev)
         .expect("Gemini writer must emit a citationMetadata chunk for a CitationsDelta");
     let src = body
         .pointer("/candidates/0/citationMetadata/citationSources/0")
@@ -6632,7 +6766,7 @@ fn write_response_reconstructs_prompt_token_count_with_cached() {
     };
     let out = {
         let w = GeminiWriter;
-        w.write_response(&resp)
+        w.write_response(crate::codec::test_host::HOST, &resp)
     };
     let um = out.get("usageMetadata").expect("usageMetadata present");
     assert_eq!(
@@ -6677,7 +6811,7 @@ fn system_instruction_round_trips_through_ir_system() {
     // WRITE re-emits the native systemInstruction.parts[] container.
     let out = {
         let w = GeminiWriter;
-        w.write_request(&ir)
+        w.write_request(crate::codec::test_host::HOST, &ir)
     };
     assert_eq!(
         out.pointer("/systemInstruction/parts/0/text")
@@ -6713,7 +6847,9 @@ fn test_read_response_captures_function_call_thought_signature() {
             }
         }]
     });
-    let ir = reader.read_response(&body).expect("read_response");
+    let ir = reader
+        .read_response(crate::codec::test_host::HOST, &body)
+        .expect("read_response");
     assert_eq!(ir.content.len(), 1, "expected one ToolUse block: {ir:?}");
     match &ir.content[0] {
         crate::codec::ir::IrBlock::ToolUse {
@@ -6830,7 +6966,7 @@ fn test_outage_cross_protocol_tool_use_gets_sentinel_thought_signature() {
     );
     let ir = &ir_req;
     let writer = GeminiWriter;
-    let wire = writer.write_request(ir);
+    let wire = writer.write_request(crate::codec::test_host::HOST, ir);
     assert_eq!(
         wire.pointer("/contents/0/parts/0/thoughtSignature")
             .and_then(|s| s.as_str()),
@@ -6997,7 +7133,7 @@ fn test_vertex_lane_gets_no_sentinel_thought_signature() {
     );
     let ir = &ir_req;
     let writer = GeminiWriter;
-    let wire = writer.write_request(ir);
+    let wire = writer.write_request(crate::codec::test_host::HOST, ir);
     assert!(
         wire.pointer("/contents/0/parts/0/thoughtSignature")
             .is_none(),
@@ -7139,7 +7275,7 @@ fn test_write_response_emits_real_signature_never_sentinel() {
         stop_detail: None,
         ..Default::default()
     };
-    let wire = writer.write_response(&with_sig);
+    let wire = writer.write_response(crate::codec::test_host::HOST, &with_sig);
     assert_eq!(
         wire.pointer("/candidates/0/content/parts/0/thoughtSignature")
             .and_then(|s| s.as_str()),
@@ -7157,7 +7293,7 @@ fn test_write_response_emits_real_signature_never_sentinel() {
         }],
         ..with_sig
     };
-    let wire2 = writer.write_response(&without_sig);
+    let wire2 = writer.write_response(crate::codec::test_host::HOST, &without_sig);
     assert!(
         wire2
             .pointer("/candidates/0/content/parts/0/thoughtSignature")
@@ -7203,7 +7339,9 @@ fn test_empty_string_thought_signature_normalizes_to_none() {
             }
         }]
     });
-    let resp_ir = reader.read_response(&resp_body).expect("read_response");
+    let resp_ir = reader
+        .read_response(crate::codec::test_host::HOST, &resp_body)
+        .expect("read_response");
     match &resp_ir.content[0] {
         crate::codec::ir::IrBlock::ToolUse {
             thought_signature, ..
@@ -7367,14 +7505,17 @@ fn gemini_char_index_matches_per_offset_conversion() {
 fn test_writer_open_tools_capped_in_entry_count() {
     let writer = GeminiWriter;
     for index in 0..(MAX_GEMINI_TOOL_FRAMES + 50) {
-        writer.write_response_event(&IrStreamEvent::BlockStart {
-            index,
-            block: IrBlockMeta::ToolUse {
-                id: String::new(),
-                name: "t".to_string(),
+        writer.write_response_event(
+            crate::codec::test_host::HOST,
+            &IrStreamEvent::BlockStart {
+                index,
+                block: IrBlockMeta::ToolUse {
+                    id: String::new(),
+                    name: "t".to_string(),
+                },
+                refusal: false,
             },
-            refusal: false,
-        });
+        );
     }
     let held = writer.open_tools.lock().unwrap().len();
     assert_eq!(

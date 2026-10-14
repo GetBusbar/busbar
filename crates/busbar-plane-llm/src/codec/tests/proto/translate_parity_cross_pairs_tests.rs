@@ -106,7 +106,9 @@ fn translate_request(ingress: &'static str, egress: &str, body: &str) -> Vec<u8>
             lane_caps: Default::default(),
         },
     );
-    let mut out = egress_p.writer().write_request(&req);
+    let mut out = egress_p
+        .writer()
+        .write_request(crate::codec::test_host::HOST, &req);
     crate::codec::wire_shim::strip_router_shim_keys(&mut out, egress);
     egress_p
         .writer()
@@ -222,9 +224,14 @@ fn translate_response(egress: &str, ingress: &'static str, body: &str) -> Vec<u8
     let egress_p = crate::codec::proto_codec::protocol_for(egress).expect("egress protocol");
     let ingress_p = crate::codec::proto_codec::protocol_for(ingress).expect("ingress protocol");
     let v: Value = crate::codec::json::parse(body.as_bytes()).expect("valid corpus JSON");
-    let mut resp = egress_p.reader().read_response(&v).expect("reads");
+    let mut resp = egress_p
+        .reader()
+        .read_response(crate::codec::test_host::HOST, &v)
+        .expect("reads");
     crate::codec::chat_handle::chat_prepare_for_ingress(&mut resp, ingress, FIXED_NOW);
-    let mut out = ingress_p.writer().write_response(&resp);
+    let mut out = ingress_p
+        .writer()
+        .write_response(crate::codec::test_host::HOST, &resp);
     ingress_p
         .writer()
         .inject_response_metrics(&mut out, Some(123));

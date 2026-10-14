@@ -8,7 +8,7 @@ fn read(body: &serde_json::Value) -> crate::codec::ir::IrResponse {
     protocol_for("gemini")
         .unwrap()
         .reader()
-        .read_response(body)
+        .read_response(crate::codec::test_host::HOST, body)
         .expect("reads")
 }
 
@@ -34,7 +34,7 @@ fn grounding_chunks_read_as_a_web_search_record_and_write_back() {
     let out = protocol_for("gemini")
         .unwrap()
         .writer()
-        .write_response(&resp);
+        .write_response(crate::codec::test_host::HOST, &resp);
     assert_eq!(
         out["candidates"][0]["groundingMetadata"]["groundingChunks"][0]["web"]["uri"],
         "https://a.example/x",
@@ -55,7 +55,7 @@ fn safety_ratings_read_as_verdicts_without_their_probability() {
     let out = protocol_for("gemini")
         .unwrap()
         .writer()
-        .write_response(&resp);
+        .write_response(crate::codec::test_host::HOST, &resp);
     let ratings = &out["candidates"][0]["safetyRatings"];
     assert_eq!(ratings[0]["category"], "HARM_CATEGORY_HARASSMENT");
     assert!(ratings[0].get("probability").is_none(), "{out}");
@@ -72,7 +72,7 @@ fn modality_details_cross_both_ways() {
     let out = protocol_for("gemini")
         .unwrap()
         .writer()
-        .write_response(&resp);
+        .write_response(crate::codec::test_host::HOST, &resp);
     assert_eq!(
         out["usageMetadata"]["promptTokensDetails"][1]["tokenCount"], 3,
         "{out}"

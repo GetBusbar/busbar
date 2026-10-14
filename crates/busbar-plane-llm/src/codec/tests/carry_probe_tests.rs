@@ -300,12 +300,12 @@ fn probe(lock_name: &str) {
                 if dir == "request" {
                     reader.read_request(&body).map(|mut req| {
                         req.extra.clear();
-                        writer.write_request(&req)
+                        writer.write_request(crate::codec::test_host::HOST, &req)
                     })
                 } else {
                     reader
-                        .read_response(&body)
-                        .map(|resp| writer.write_response(&resp))
+                        .read_response(crate::codec::test_host::HOST, &body)
+                        .map(|resp| writer.write_response(crate::codec::test_host::HOST, &resp))
                 }
             }));
             let verdict = match out {

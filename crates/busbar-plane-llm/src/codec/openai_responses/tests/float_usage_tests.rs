@@ -50,7 +50,12 @@ fn streaming_terminal_reads_float_encoded_counts() {
             }
         }
     });
-    let events = reader.read_response_events(EVT_RESPONSE_COMPLETED, &completed, &mut state);
+    let events = reader.read_response_events(
+        crate::codec::test_host::HOST,
+        EVT_RESPONSE_COMPLETED,
+        &completed,
+        &mut state,
+    );
     let usage = events
         .into_iter()
         .find_map(|e| match e {
@@ -94,7 +99,9 @@ fn buffered_read_response_reads_float_encoded_counts() {
             "output_tokens_details": {"reasoning_tokens": 400.0}
         }
     });
-    let ir = ResponsesReader.read_response(&body).expect("read_response");
+    let ir = ResponsesReader
+        .read_response(crate::codec::test_host::HOST, &body)
+        .expect("read_response");
     assert_eq!(
         ir.usage.input_tokens, 800,
         "input_tokens(1000.0) - cached_tokens(200.0), buffered, both float-spelled"

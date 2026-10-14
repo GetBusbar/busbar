@@ -13,6 +13,27 @@ use busbar_contract::unit::{Refusal, RefusalReason, Step};
 use busbar_plane_llm::LlmPlane;
 
 /// The six dialects, and the request target that names each.
+/// The codec host these tests hand the plane: the OS CSPRNG and the system clock in whole seconds,
+/// read the way the kernel's host reads them.
+struct TestHost;
+
+impl busbar_contract::codec::CodecHost for TestHost {
+    fn fill_entropy(&self, out: &mut [u8]) -> bool {
+        getrandom::fill(out).is_ok()
+    }
+
+    fn wall_clock_now(&self) -> Option<u64> {
+        Some(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_secs()),
+        )
+    }
+}
+
+/// The handle every codec call here is handed.
+const HOST: &dyn busbar_contract::codec::CodecHost = &TestHost;
+
 const DIALECTS: &[&str] = &[
     "anthropic",
     "openai",
@@ -190,6 +211,7 @@ fn every_refusal_is_the_dialects_own_envelope() {
                 _ => "Request rejected.",
             };
             let expected = sonic_rs::to_vec(&protocol.writer().write_error(
+                HOST,
                 *status,
                 kind,
                 expected_message,

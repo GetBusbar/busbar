@@ -79,7 +79,7 @@ macro_rules! leaf_op {
                 Ok(Box::new($crate::codec::leaf_handles::$req($read_req(body, content_type)?)))
             }
             fn read_response(
-                &self,
+                &self,_host: &dyn busbar_contract::codec::CodecHost,
                 wire: &[u8],
             ) -> Result<Box<dyn busbar_contract::ir::handle::IrHandle>, busbar_contract::codec::CodecError>
             {
@@ -215,6 +215,7 @@ pub mod wire_shim;
 /// Returns `None` for a protocol name the registry does not know.
 #[must_use]
 pub fn write_error_envelope(
+    host: &dyn busbar_contract::codec::CodecHost,
     ingress_protocol: &str,
     status: u16,
     kind: &str,
@@ -225,7 +226,7 @@ pub fn write_error_envelope(
     Some(
         protocol
             .writer()
-            .write_error_from_entropy(status, kind, message, entropy),
+            .write_error_from_entropy(host, status, kind, message, entropy),
     )
 }
 
@@ -261,6 +262,9 @@ pub(crate) mod test_host;
 pub(crate) mod usage_census;
 #[cfg(test)]
 pub(crate) use test_host::ensure_test_protocols_registered;
+#[cfg(test)]
+#[path = "tests/codec_host_tests.rs"]
+mod codec_host_tests;
 
 /// EVERY DIALECT THIS PLUGIN DECLARES, in the order an operator sees.
 ///

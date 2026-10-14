@@ -197,41 +197,33 @@ pub fn max_translate_body_bytes() -> usize {
         .map_or(TRANSLATE_BODY_MAX_BYTES_DEFAULT, |read| read())
 }
 
-/// The host's ENTROPY SOURCE: fills the buffer with fresh bytes from the host's CSPRNG and answers
-/// `true`, or answers `false` when the host has none to give (the buffer's contents are then
-/// unspecified). A codec that mints a random wire identifier draws through here instead of reading an
-/// OS generator itself, so the draw is the host's.
-pub type EntropySource = fn(&mut [u8]) -> bool;
+/// THE HOST SERVICES A CODEC READS — the handle a codec is HANDED, never a port it reaches.
+///
+/// A codec that mints a random wire identifier, or stamps a creation time the answer it is writing
+/// does not carry, reads the HOST's entropy and the HOST's wall clock through the `&dyn CodecHost`
+/// its caller passes down the codec call graph: the kernel hands its own for the linked engine, a
+/// plane's door hands one over the host services it was given at open. The contract carries only
+/// the shape: it is the ABI's home of shapes and holds no state (gate `contract-stateless`), so
+/// there is no process-wide port here to arm, and a codec with no handle has nothing to call.
+///
+/// ```compile_fail
+/// // A codec cannot reach the host without the handle: there is no free port to call.
+/// let mut id = [0u8; 16];
+/// let _ = busbar_contract::codec::fill_entropy(&mut id);
+/// ```
+///
+/// ```compile_fail
+/// let _ = busbar_contract::codec::wall_clock_now();
+/// ```
+pub trait CodecHost: Sync {
+    /// Fill `out` with fresh bytes from the host's CSPRNG and answer `true`, or answer `false` when
+    /// the host has none to give (the buffer's contents are then unspecified and the caller takes
+    /// its own entropy-unavailable branch).
+    fn fill_entropy(&self, out: &mut [u8]) -> bool;
 
-static ENTROPY_SOURCE: std::sync::OnceLock<EntropySource> = std::sync::OnceLock::new();
-
-/// Install the host's [`EntropySource`]. First install wins.
-pub fn install_entropy_source(source: EntropySource) {
-    let _ = ENTROPY_SOURCE.set(source);
-}
-
-/// Fill `out` from the installed host entropy source. `false` when no host installed one, or when
-/// the host's source failed: the caller takes its own entropy-unavailable branch.
-pub fn fill_entropy(out: &mut [u8]) -> bool {
-    ENTROPY_SOURCE.get().is_some_and(|fill| fill(out))
-}
-
-/// The host's WALL CLOCK: whole seconds since the Unix epoch, as the host reads it. A codec that must
-/// stamp a creation time the answer it is writing does not carry reads it here, so the reading is the
-/// host's and the codec reads no clock of its own.
-pub type WallClock = fn() -> u64;
-
-static WALL_CLOCK: std::sync::OnceLock<WallClock> = std::sync::OnceLock::new();
-
-/// Install the host's [`WallClock`]. First install wins.
-pub fn install_wall_clock(clock: WallClock) {
-    let _ = WALL_CLOCK.set(clock);
-}
-
-/// The host's wall-clock reading, or `None` in a process whose host installed no clock (the caller
-/// then writes what its dialect writes for an unstamped time).
-pub fn wall_clock_now() -> Option<u64> {
-    WALL_CLOCK.get().map(|now| now())
+    /// The host's wall clock, whole seconds since the Unix epoch, or `None` when the host holds no
+    /// clock (the caller then writes what its dialect writes for an unstamped time).
+    fn wall_clock_now(&self) -> Option<u64>;
 }
 
 /// ONE ROW OF A PROTOCOL'S SUPPORT MATRIX — a verb the protocol speaks and the codec that speaks it.
@@ -329,8 +321,13 @@ pub trait OperationHandler: Send + Sync {
     /// end, only when [`Self::taps_usage`] is true). Default: run THIS operation's own reader over the
     /// body and project its token usage — so a token-metered non-chat op (embeddings) bills the same
     /// as the cross-protocol path. Chat overrides this to run the egress protocol's chat reader.
-    fn extract_usage(&self, ingress_protocol: &str, body: &[u8]) -> Option<TokenUsage> {
-        match self.read_response(body) {
+    fn extract_usage(
+        &self,
+        host: &dyn CodecHost,
+        ingress_protocol: &str,
+        body: &[u8],
+    ) -> Option<TokenUsage> {
+        match self.read_response(host, body) {
             Ok(r) => r.token_usage(),
             Err(e) => {
                 // A same-protocol 2xx body the op's own codec cannot decode: record it (like the
@@ -373,9 +370,13 @@ pub trait OperationHandler: Send + Sync {
         self.read_request(&bytes, crate::protocol::APPLICATION_JSON)
     }
     /// Value-level codec bridge (response).
-    fn read_response_value(&self, v: &Value) -> Result<Box<dyn IrHandle>, CodecError> {
+    fn read_response_value(
+        &self,
+        host: &dyn CodecHost,
+        v: &Value,
+    ) -> Result<Box<dyn IrHandle>, CodecError> {
         let bytes = serde_json::to_vec(v).map_err(|e| CodecError::Malformed(e.to_string()))?;
-        self.read_response(&bytes)
+        self.read_response(host, &bytes)
     }
 
     /// Wire → IR HANDLE (request). The OperationHandler owns the ENTIRE wire format: it receives RAW
@@ -389,8 +390,13 @@ pub trait OperationHandler: Send + Sync {
         content_type: &str,
     ) -> Result<Box<dyn IrHandle>, IngressReject>;
     /// Egress wire → IR HANDLE (response) — for the usage tap or a cross-protocol translation. Raw
-    /// bytes: binary responses (audio) were always fine here.
-    fn read_response(&self, wire: &[u8]) -> Result<Box<dyn IrHandle>, CodecError>;
+    /// bytes: binary responses (audio) were always fine here. `host` is the caller's
+    /// [`CodecHost`]: a reader that synthesizes an identifier the upstream omitted draws it there.
+    fn read_response(
+        &self,
+        host: &dyn CodecHost,
+        wire: &[u8],
+    ) -> Result<Box<dyn IrHandle>, CodecError>;
 }
 
 /// A protocol's dialect + its OperationHandlers (one impl per protocol).

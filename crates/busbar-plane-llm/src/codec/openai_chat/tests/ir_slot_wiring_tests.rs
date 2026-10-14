@@ -28,7 +28,7 @@ fn through_seam(body: &Value) -> Value {
             lane_caps: Default::default(),
         },
     );
-    super::openai_writer().write_request(&req)
+    super::openai_writer().write_request(crate::codec::test_host::HOST, &req)
 }
 
 fn chat_body(extra: Value) -> Value {
@@ -66,7 +66,9 @@ fn oai12_refusal_block_is_carried_exactly() {
                      "finish_reason": "stop"}],
         "usage": {"prompt_tokens": 3, "completion_tokens": 1, "total_tokens": 4}
     });
-    let ir = super::OpenAiReader.read_response(&body).expect("reads");
+    let ir = super::OpenAiReader
+        .read_response(crate::codec::test_host::HOST, &body)
+        .expect("reads");
     assert!(
         ir.content.iter().any(
             |b| matches!(b, crate::codec::ir::IrBlock::Text { refusal: true, text, .. } if text == "no")
@@ -83,7 +85,7 @@ fn oai12_refusal_block_is_carried_exactly() {
         stop_reason: Some(crate::codec::ir::IrStopReason::EndTurn),
         ..Default::default()
     };
-    let out = super::openai_writer().write_response(&resp);
+    let out = super::openai_writer().write_response(crate::codec::test_host::HOST, &resp);
     let msg = &out["choices"][0]["message"];
     assert_eq!(msg["content"], json!("Here is part. "), "{out}");
     assert_eq!(msg["refusal"], json!("I can't do the rest."), "{out}");
@@ -102,7 +104,7 @@ fn oai12_stream_refusal_is_carried_exactly() {
         json!({"choices": [{"index": 0, "delta": {"refusal": " help."}, "finish_reason": null}]}),
         json!({"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]}),
     ] {
-        events.extend(reader.read_response_events("", &c, &mut st));
+        events.extend(reader.read_response_events(crate::codec::test_host::HOST, "", &c, &mut st));
     }
     assert!(
         events.iter().any(|e| matches!(
@@ -119,7 +121,10 @@ fn oai12_stream_refusal_is_carried_exactly() {
     let w = super::openai_writer();
     let frames: Vec<Value> = events
         .iter()
-        .filter_map(|e| w.write_response_event(e).map(|(_, v)| v))
+        .filter_map(|e| {
+            w.write_response_event(crate::codec::test_host::HOST, e)
+                .map(|(_, v)| v)
+        })
         .collect();
     let refusal: String = frames
         .iter()
@@ -160,9 +165,11 @@ fn oai03_flex_and_scale_tiers_cross() {
             "choices": [{"index": 0, "message": {"role": "assistant", "content": "hi"}, "finish_reason": "stop"}],
             "usage": {"prompt_tokens": 3, "completion_tokens": 1, "total_tokens": 4}
         });
-        let ir = super::OpenAiReader.read_response(&body).expect("reads");
+        let ir = super::OpenAiReader
+            .read_response(crate::codec::test_host::HOST, &body)
+            .expect("reads");
         assert_eq!(ir.usage.detail.service_tier.as_deref(), Some(tier));
-        let out = super::openai_writer().write_response(&ir);
+        let out = super::openai_writer().write_response(crate::codec::test_host::HOST, &ir);
         assert_eq!(out["service_tier"], json!(tier), "{out}");
     }
 }
@@ -190,7 +197,7 @@ fn shr03_responses_file_id_reaches_chat() {
         }],
         ..Default::default()
     };
-    let out = super::openai_writer().write_request(&req);
+    let out = super::openai_writer().write_request(crate::codec::test_host::HOST, &req);
     assert_eq!(
         out.pointer("/messages/0/content/0"),
         Some(&json!({"type": "file", "file": {"file_id": "file-abc"}})),
@@ -235,7 +242,7 @@ fn ir19_modalities_cross() {
             crate::codec::ir::IrModality::Audio
         ])
     );
-    let same = super::openai_writer().write_request(&ir);
+    let same = super::openai_writer().write_request(crate::codec::test_host::HOST, &ir);
     assert_eq!(same["modalities"], json!(["text", "audio"]), "{same}");
 
     let out = through_seam(&chat_body(json!({"modalities": ["text", "audio"]})));
@@ -268,7 +275,10 @@ fn ir11_web_search_options_cross() {
     };
     let w = super::openai_writer();
     assert_eq!(w.dropped_egress_controls(&req), vec!["code_execution"]);
-    assert!(w.write_request(&req).get("web_search_options").is_none());
+    assert!(w
+        .write_request(crate::codec::test_host::HOST, &req)
+        .get("web_search_options")
+        .is_none());
 }
 
 /// IR-10. `tool_choice:{type:"allowed_tools"}` crosses as the allowed subset plus its mode.
@@ -335,7 +345,7 @@ fn unrepresentable_slot_members_relay_verbatim_on_the_same_dialect() {
     let ir = super::OpenAiReader.read_request(&body).expect("reads");
     assert_eq!(ir.metadata, None);
     assert_eq!(ir.service_tier, None);
-    let same = super::openai_writer().write_request(&ir);
+    let same = super::openai_writer().write_request(crate::codec::test_host::HOST, &ir);
     assert_eq!(same["metadata"], json!({"n": 1}), "{same}");
     assert_eq!(same["service_tier"], json!("turbo"), "{same}");
 
@@ -356,7 +366,7 @@ fn oai10_none_is_reasoning_off() {
     let body = chat_body(json!({"reasoning_effort": "none"}));
     let ir = super::OpenAiReader.read_request(&body).expect("reads");
     assert_eq!(ir.reasoning, Some(crate::codec::ir::IrReasoningAsk::Off));
-    let same = super::openai_writer().write_request(&ir);
+    let same = super::openai_writer().write_request(crate::codec::test_host::HOST, &ir);
     assert_eq!(same["reasoning_effort"], json!("none"), "{same}");
 
     // Through the seam (`extra` cleared) the Chat writer omits it rather than writing `"low"`.

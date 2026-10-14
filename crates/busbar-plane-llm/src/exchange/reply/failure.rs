@@ -39,6 +39,7 @@ pub struct FarError<'a> {
 /// The request-id head field a caller of `ingress` reads, forwarding the far end's own id (the
 /// first head field the caller's dialect relays) when it sent one.
 pub(crate) fn request_id_field(
+    host: &dyn busbar_contract::codec::CodecHost,
     ingress: &str,
     far_head: HeadFields<'_>,
 ) -> Option<(String, Vec<u8>)> {
@@ -46,7 +47,7 @@ pub(crate) fn request_id_field(
         .first()
         .and_then(|name| head_value(far_head, name))
         .and_then(head_text);
-    let (name, id) = wire::response_request_id(ingress, upstream)?;
+    let (name, id) = wire::response_request_id(host, ingress, upstream)?;
     head_field(name, id.as_bytes())
 }
 
@@ -137,10 +138,15 @@ pub fn relay_verbatim(ingress: &str, far: &FarError<'_>) -> Rendered {
 /// The far end's error as the caller reads it when the walk ends on it: across dialects, reshaped
 /// into the caller's envelope (a foreign error body is never relayed); within one, verbatim.
 #[must_use]
-pub fn relay(ingress: &str, egress: &str, far: &FarError<'_>) -> Rendered {
+pub fn relay(
+    host: &dyn busbar_contract::codec::CodecHost,
+    ingress: &str,
+    egress: &str,
+    far: &FarError<'_>,
+) -> Rendered {
     if ingress != egress {
         let (kind, msg) = wire::cross_protocol_error(far.status, far.body);
-        return render(ingress, far.status, kind, &msg, 0);
+        return render(host, ingress, far.status, kind, &msg, 0);
     }
     relay_verbatim(ingress, far)
 }
@@ -149,6 +155,7 @@ pub fn relay(ingress: &str, egress: &str, far: &FarError<'_>) -> Rendered {
 /// and the far end's own message (else the generic one); within one, verbatim.
 #[must_use]
 pub fn client_fault(
+    host: &dyn busbar_contract::codec::CodecHost,
     ingress: &str,
     egress: &str,
     class: StatusClass,
@@ -157,7 +164,14 @@ pub fn client_fault(
     if ingress != egress {
         let msg = wire::extract_error_message(far.body)
             .unwrap_or_else(|| wire::GENERIC_REJECTED_DETAIL.to_string());
-        return render(ingress, far.status, wire::client_fault_kind(class), &msg, 0);
+        return render(
+            host,
+            ingress,
+            far.status,
+            wire::client_fault_kind(class),
+            &msg,
+            0,
+        );
     }
     relay_verbatim(ingress, far)
 }
@@ -165,7 +179,7 @@ pub fn client_fault(
 /// The caller dialect's own authentication refusal, for a far end that refused the deployment's
 /// credential: its native status, kind and vendor sentence, never the far end's status or body.
 #[must_use]
-pub fn auth_failure(ingress: &str) -> Rendered {
+pub fn auth_failure(host: &dyn busbar_contract::codec::CodecHost, ingress: &str) -> Rendered {
     let d = decl(ingress);
     let (status, kind) = d.map_or((401, KIND_AUTHENTICATION), |d| {
         (
@@ -174,7 +188,7 @@ pub fn auth_failure(ingress: &str) -> Rendered {
         )
     });
     let message = d.map_or("authentication failed", |d| d.auth_failure_message);
-    render(ingress, status, kind, message, 0)
+    render(host, ingress, status, kind, message, 0)
 }
 
 /// A far-end error, judged.
@@ -195,6 +209,7 @@ pub struct Judged {
 /// credential (the kernel's fact), whose 401 or 403 is the caller's and is relayed unjudged.
 #[must_use]
 pub fn judge(
+    host: &dyn busbar_contract::codec::CodecHost,
     ingress: &str,
     egress: &str,
     operation: OpVerb,
@@ -206,7 +221,7 @@ pub fn judge(
         return Judged {
             signal: None,
             disposition: Disposition::ClientFault,
-            answer: relay(ingress, egress, far),
+            answer: relay(host, ingress, egress, far),
         };
     }
     let sig = normalize(
@@ -216,10 +231,10 @@ pub fn judge(
     );
     let disposition = sig.class.disposition();
     let answer = match disposition {
-        Disposition::ClientFault => client_fault(ingress, egress, sig.class, far),
-        Disposition::HardDown if sig.class == StatusClass::Auth => auth_failure(ingress),
+        Disposition::ClientFault => client_fault(host, ingress, egress, sig.class, far),
+        Disposition::HardDown if sig.class == StatusClass::Auth => auth_failure(host, ingress),
         Disposition::HardDown | Disposition::TransientUpstream | Disposition::ContextLength => {
-            relay(ingress, egress, far)
+            relay(host, ingress, egress, far)
         }
     };
     Judged {

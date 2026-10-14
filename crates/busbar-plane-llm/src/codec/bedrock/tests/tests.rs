@@ -208,7 +208,7 @@ fn test_write_request() {
     };
 
     let writer = BedrockWriter;
-    let json = writer.write_request(&ir);
+    let json = writer.write_request(crate::codec::test_host::HOST, &ir);
 
     assert_eq!(
         json.get("system")
@@ -392,7 +392,7 @@ fn test_roundtrip() {
     let ir = reader
         .read_request(&wire)
         .expect("read round-trip should succeed");
-    let wire_after = writer.write_request(&ir);
+    let wire_after = writer.write_request(crate::codec::test_host::HOST, &ir);
 
     assert_eq!(
         wire, wire_after,
@@ -432,7 +432,7 @@ fn test_read_response_decode() {
 
     let reader = BedrockReader;
     let resp = reader
-        .read_response(&j)
+        .read_response(crate::codec::test_host::HOST, &j)
         .expect("read_response should succeed");
 
     assert_eq!(resp.role, crate::codec::ir::IrRole::Assistant);
@@ -489,9 +489,9 @@ fn test_read_write_response_roundtrip() {
     let writer = BedrockWriter;
 
     let resp = reader
-        .read_response(&j)
+        .read_response(crate::codec::test_host::HOST, &j)
         .expect("read_response should succeed");
-    let written = writer.write_response(&resp);
+    let written = writer.write_response(crate::codec::test_host::HOST, &resp);
 
     assert_eq!(
         written, j,
@@ -534,7 +534,9 @@ fn test_stream_decode_sequence() {
         })),
     ]
     .into_iter()
-    .flat_map(|data| reader.read_response_events("", &data, &mut state))
+    .flat_map(|data| {
+        reader.read_response_events(crate::codec::test_host::HOST, "", &data, &mut state)
+    })
     .collect();
 
     // Seven events: MessageStart, text BlockStart, 2×BlockDelta, BlockStop, ONE combined
@@ -631,7 +633,9 @@ fn test_write_response_event() {
         delta: crate::codec::ir::IrDelta::TextDelta("hi".to_string()),
     };
 
-    if let Some((event_type, payload)) = writer.write_response_event(&delta_ev) {
+    if let Some((event_type, payload)) =
+        writer.write_response_event(crate::codec::test_host::HOST, &delta_ev)
+    {
         assert_eq!(event_type, "contentBlockDelta");
         assert_eq!(
             payload.get("contentBlockIndex").and_then(|i| i.as_u64()),
@@ -662,7 +666,9 @@ fn test_write_response_event() {
         stop_detail: None,
     };
 
-    if let Some((event_type, payload)) = writer.write_response_event(&delta_ev2) {
+    if let Some((event_type, payload)) =
+        writer.write_response_event(crate::codec::test_host::HOST, &delta_ev2)
+    {
         assert_eq!(event_type, "messageStop");
         assert_eq!(
             payload.get("stopReason").and_then(|s| s.as_str()),
@@ -758,7 +764,9 @@ fn test_stream_metadata_less_defers_terminator() {
         // NOTE: no `metadata` event — the upstream truncated here.
     ]
     .into_iter()
-    .flat_map(|data| reader.read_response_events("", &data, &mut state))
+    .flat_map(|data| {
+        reader.read_response_events(crate::codec::test_host::HOST, "", &data, &mut state)
+    })
     .collect();
 
     // `messageStop` only BUFFERS the stop_reason now; without the trailing `metadata` neither the
@@ -797,7 +805,9 @@ fn test_stream_emits_single_message_stop_with_metadata() {
         serde_json::json!({"type": "metadata", "usage": {"inputTokens": 3, "outputTokens": 1}}),
     ]
     .into_iter()
-    .flat_map(|data| reader.read_response_events("", &data, &mut state))
+    .flat_map(|data| {
+        reader.read_response_events(crate::codec::test_host::HOST, "", &data, &mut state)
+    })
     .collect();
 
     let stop_count = events
@@ -819,7 +829,12 @@ fn test_stream_emits_single_message_stop_with_metadata() {
 #[test]
 fn test_write_error_native_bedrock_shape() {
     let writer = BedrockWriter;
-    let v = writer.write_error(400, "invalid_request_error", "bad input");
+    let v = writer.write_error(
+        crate::codec::test_host::HOST,
+        400,
+        "invalid_request_error",
+        "bad input",
+    );
     assert_eq!(
         v.get("message").and_then(|m| m.as_str()),
         Some("bad input"),
@@ -883,7 +898,12 @@ fn test_error_kind_to_bedrock_type_mapping() {
 fn test_write_error_roundtrips_through_extract_error() {
     let writer = BedrockWriter;
     let reader = BedrockReader;
-    let v = writer.write_error(429, "rate_limit_error", "Rate exceeded");
+    let v = writer.write_error(
+        crate::codec::test_host::HOST,
+        429,
+        "rate_limit_error",
+        "Rate exceeded",
+    );
     let body = serde_json::to_vec(&v).expect("serialize");
     let raw = reader.extract_error(StatusCode::TOO_MANY_REQUESTS, &body);
     assert_eq!(raw.provider_code.as_deref(), Some("Rate exceeded"));
@@ -909,7 +929,9 @@ fn test_response_identity_same_protocol_roundtrip_no_synth() {
         "usage": {"inputTokens": 10, "outputTokens": 5, "totalTokens": 15}
     });
 
-    let resp = reader.read_response(&j).expect("read_response");
+    let resp = reader
+        .read_response(crate::codec::test_host::HOST, &j)
+        .expect("read_response");
     // Capture: Bedrock's minimal body yields no body-level identity.
     assert_eq!(resp.id, None, "Converse body has no id to capture");
     assert_eq!(
@@ -926,7 +948,7 @@ fn test_response_identity_same_protocol_roundtrip_no_synth() {
     assert_eq!(resp.usage.input_tokens, 10);
     assert_eq!(resp.usage.output_tokens, 5);
 
-    let written = writer.write_response(&resp);
+    let written = writer.write_response(crate::codec::test_host::HOST, &resp);
     assert_eq!(
         written, j,
         "same-protocol round-trip must be byte-identical"
@@ -981,7 +1003,7 @@ fn test_write_response_event_usage_delta_is_metadata_frame() {
         stop_detail: None,
     };
     let (et, payload) = writer
-        .write_response_event(&usage_only)
+        .write_response_event(crate::codec::test_host::HOST, &usage_only)
         .expect("usage-only delta must emit a frame");
     assert_eq!(
         et, "metadata",
@@ -1021,7 +1043,7 @@ fn test_write_response_event_usage_delta_is_metadata_frame() {
         stop_detail: None,
     };
     let (et2, payload2) = writer
-        .write_response_event(&stop)
+        .write_response_event(crate::codec::test_host::HOST, &stop)
         .expect("stop delta must emit a frame");
     assert_eq!(et2, "messageStop");
     assert_eq!(
@@ -1044,14 +1066,19 @@ fn test_write_response_event_text_block_start_emits_no_frame() {
         refusal: false,
     };
     assert!(
-        writer.write_response_event(&ev).is_none(),
+        writer
+            .write_response_event(crate::codec::test_host::HOST, &ev)
+            .is_none(),
         "a text BlockStart must emit NO contentBlockStart frame; the block opens implicitly on \
          its first contentBlockDelta"
     );
 
     // The block is still tracked as OPEN so its BlockStop emits the spec-required contentBlockStop.
     let stop = writer
-        .write_response_event(&IrStreamEvent::BlockStop { index: 0 })
+        .write_response_event(
+            crate::codec::test_host::HOST,
+            &IrStreamEvent::BlockStop { index: 0 },
+        )
         .expect("a text BlockStop must still emit a contentBlockStop");
     assert_eq!(stop.0, "contentBlockStop");
     assert_eq!(
@@ -1070,6 +1097,7 @@ fn test_stream_decode_surfaces_midstream_exception() {
     let reader = BedrockReader;
 
     let events = reader.read_response_events(
+        crate::codec::test_host::HOST,
         "",
         &serde_json::json!({
             "type": "internalServerException",
@@ -1093,6 +1121,7 @@ fn test_stream_decode_surfaces_midstream_exception() {
     // A throttling exception maps to the RateLimit class and falls back to the exception name
     // when no `message` is present.
     let throttle = reader.read_response_events(
+        crate::codec::test_host::HOST,
         "",
         &serde_json::json!({"type": "throttlingException"}),
         &mut state,
@@ -1107,6 +1136,7 @@ fn test_stream_decode_surfaces_midstream_exception() {
 
     // An unrecognized (future / non-error) event type is still a silent no-op.
     let unknown = reader.read_response_events(
+        crate::codec::test_host::HOST,
         "",
         &serde_json::json!({"type": "someFutureEvent"}),
         &mut state,
@@ -1123,6 +1153,7 @@ fn test_stream_decode_surfaces_midstream_exception() {
     // `ModelStreamErrorException`, which would mutate the exception type across a same-protocol
     // boundary.
     let model_timeout = reader.read_response_events(
+        crate::codec::test_host::HOST,
         "",
         &serde_json::json!({"type": "modelTimeoutException", "message": "slow"}),
         &mut state,
@@ -1275,7 +1306,7 @@ fn test_write_request_skips_system_role_message() {
         output_modalities: None,
     };
 
-    let json = writer.write_request(&req);
+    let json = writer.write_request(crate::codec::test_host::HOST, &req);
     let msgs = json
         .get("messages")
         .and_then(|m| m.as_array())
@@ -1356,7 +1387,7 @@ fn test_write_request_tool_result_preserves_non_text_content() {
         output_modalities: None,
     };
 
-    let json = writer.write_request(&req);
+    let json = writer.write_request(crate::codec::test_host::HOST, &req);
     let inner = json
         .pointer("/messages/0/content/0/toolResult/content/0")
         .expect("tool result inner content block");
@@ -1393,7 +1424,7 @@ fn test_write_response_event_error_names_real_exception() {
         retry_after: None,
     });
     let (et, payload) = writer
-        .write_response_event(&throttle)
+        .write_response_event(crate::codec::test_host::HOST, &throttle)
         .expect("error event must emit a frame");
     assert_eq!(
         et, "ThrottlingException",
@@ -1412,7 +1443,7 @@ fn test_write_response_event_error_names_real_exception() {
         retry_after: None,
     });
     let (et2, payload2) = writer
-        .write_response_event(&server)
+        .write_response_event(crate::codec::test_host::HOST, &server)
         .expect("error event must emit a frame");
     assert_eq!(et2, "InternalServerException");
     assert_eq!(
@@ -1507,7 +1538,7 @@ fn test_request_passthrough_preserves_unmodeled_fields() {
     let writer = BedrockWriter;
     let j = bedrock_rich_fixture(); // carries a top-level `top_p`
     let ir = reader.read_request(&j).expect("read_request");
-    let out = writer.write_request(&ir);
+    let out = writer.write_request(crate::codec::test_host::HOST, &ir);
     assert_eq!(
         out.get("top_p").and_then(|v| v.as_f64()),
         Some(0.95),
@@ -1555,7 +1586,7 @@ fn test_request_passthrough_preserves_tool_choice() {
         ir.extra
     );
 
-    let out = writer.write_request(&ir);
+    let out = writer.write_request(crate::codec::test_host::HOST, &ir);
     let tc = out
         .get("toolConfig")
         .and_then(|v| v.as_object())
@@ -1629,7 +1660,7 @@ fn test_write_request_tool_config_cross_protocol_and_empty() {
         system_role: None,
         output_modalities: None,
     };
-    let out = writer.write_request(&ir_tools);
+    let out = writer.write_request(crate::codec::test_host::HOST, &ir_tools);
     let tc = out
         .get("toolConfig")
         .and_then(|v| v.as_object())
@@ -1680,7 +1711,7 @@ fn test_write_request_tool_config_cross_protocol_and_empty() {
         system_role: None,
         output_modalities: None,
     };
-    let out_empty = writer.write_request(&ir_empty);
+    let out_empty = writer.write_request(crate::codec::test_host::HOST, &ir_empty);
     assert!(
         out_empty.get("toolConfig").is_none(),
         "no toolConfig must be emitted when there are no tools; got {out_empty}"
@@ -1725,7 +1756,7 @@ fn test_stream_text_block_after_tool_not_dropped() {
         serde_json::json!({"type": "contentBlockStop", "contentBlockIndex": 2}),
     ]
     .into_iter()
-    .flat_map(|d| reader.read_response_events("", &d, &mut state))
+    .flat_map(|d| reader.read_response_events(crate::codec::test_host::HOST, "", &d, &mut state))
     .collect();
 
     // Two text BlockStarts must appear (at index 1 and index 2).
@@ -1770,12 +1801,14 @@ fn test_stream_unrecognized_start_does_not_open_text() {
     let reader = BedrockReader;
 
     let _ = reader.read_response_events(
+        crate::codec::test_host::HOST,
         "",
         &serde_json::json!({"type": "messageStart", "role": "assistant"}),
         &mut state,
     );
     // A `start` with an unrecognized key — must emit nothing (no spurious Text BlockStart).
     let evs = reader.read_response_events(
+        crate::codec::test_host::HOST,
         "",
         &serde_json::json!({
             "type": "contentBlockStart",
@@ -1801,6 +1834,7 @@ fn test_stream_unrecognized_start_does_not_open_text() {
 
     // The empty `start: {}` text shape still opens a Text block (sanity).
     let evs2 = reader.read_response_events(
+        crate::codec::test_host::HOST,
         "",
         &serde_json::json!({"type": "contentBlockStart", "contentBlockIndex": 0, "start": {}}),
         &mut state,
@@ -1840,7 +1874,7 @@ fn test_write_response_event_metadata_no_fabricated_metrics() {
         stop_detail: None,
     };
     let (et, payload) = writer
-        .write_response_event(&usage_only)
+        .write_response_event(crate::codec::test_host::HOST, &usage_only)
         .expect("usage-only delta emits a metadata frame");
     assert_eq!(et, "metadata");
     assert!(
@@ -1878,7 +1912,7 @@ fn test_write_response_event_total_tokens_saturates() {
         stop_detail: None,
     };
     let (et, payload) = writer
-        .write_response_event(&ev)
+        .write_response_event(crate::codec::test_host::HOST, &ev)
         .expect("usage-only delta emits a metadata frame");
     assert_eq!(et, "metadata");
     // No panic on the request path, and the total clamps at u64::MAX rather than wrapping to 0.
@@ -1914,17 +1948,23 @@ fn bedrock_writer_image_block_stop_is_suppressed() {
     let writer = BedrockWriter;
     assert!(
         writer
-            .write_response_event(&IrStreamEvent::BlockStart {
-                index: 0,
-                block: crate::codec::ir::IrBlockMeta::Image,
-                refusal: false,
-            })
+            .write_response_event(
+                crate::codec::test_host::HOST,
+                &IrStreamEvent::BlockStart {
+                    index: 0,
+                    block: crate::codec::ir::IrBlockMeta::Image,
+                    refusal: false,
+                }
+            )
             .is_none(),
         "Image BlockStart must stay suppressed"
     );
     assert!(
         writer
-            .write_response_event(&IrStreamEvent::BlockStop { index: 0 })
+            .write_response_event(
+                crate::codec::test_host::HOST,
+                &IrStreamEvent::BlockStop { index: 0 }
+            )
             .is_none(),
         "a BlockStop for an index whose BlockStart was suppressed must ALSO be suppressed, \
          not emit an orphan contentBlockStop"
@@ -1974,7 +2014,7 @@ fn eventstream_emits_reasoning_content_for_thinking_block() {
         stop_detail: None,
         ..Default::default()
     };
-    let bytes = bedrock_response_to_eventstream(&resp, Some(5));
+    let bytes = bedrock_response_to_eventstream(crate::codec::test_host::HOST, &resp, Some(5));
     let text = String::from_utf8_lossy(&bytes);
     assert!(
         text.contains("reasoningContent"),
@@ -2033,7 +2073,7 @@ fn eventstream_content_block_index_is_contiguous_when_a_block_is_skipped() {
         stop_detail: None,
         ..Default::default()
     };
-    let mut bytes = bedrock_response_to_eventstream(&resp, Some(5));
+    let mut bytes = bedrock_response_to_eventstream(crate::codec::test_host::HOST, &resp, Some(5));
     let frames = crate::codec::eventstream::drain_frames(&mut bytes);
     // A text block emits NO `contentBlockStart` (the ConverseStream union has no text member); it
     // opens implicitly with its first `contentBlockDelta`. So the contiguity check keys off that
@@ -2131,7 +2171,7 @@ fn eventstream_every_content_block_start_has_exactly_one_stop() {
         stop_detail: None,
         ..Default::default()
     };
-    let mut bytes = bedrock_response_to_eventstream(&resp, Some(5));
+    let mut bytes = bedrock_response_to_eventstream(crate::codec::test_host::HOST, &resp, Some(5));
     let frames = crate::codec::eventstream::drain_frames(&mut bytes);
 
     let mut starts: Vec<u64> = Vec::new();
@@ -2216,7 +2256,7 @@ fn test_write_response_total_tokens_saturates() {
         stop_detail: None,
         ..Default::default()
     };
-    let body = writer.write_response(&resp);
+    let body = writer.write_response(crate::codec::test_host::HOST, &resp);
     assert_eq!(
         body.pointer("/usage/totalTokens").and_then(|v| v.as_u64()),
         Some(u64::MAX),
@@ -2233,7 +2273,7 @@ fn test_write_response_total_tokens_saturates() {
         },
         ..resp
     };
-    let body = writer.write_response(&normal);
+    let body = writer.write_response(crate::codec::test_host::HOST, &normal);
     assert_eq!(
         body.pointer("/usage/totalTokens").and_then(|v| v.as_u64()),
         Some(15)
@@ -2284,7 +2324,7 @@ fn test_write_response_projects_image_block() {
         stop_detail: None,
         ..Default::default()
     };
-    let body = writer.write_response(&resp);
+    let body = writer.write_response(crate::codec::test_host::HOST, &resp);
     let content = body
         .pointer("/output/message/content")
         .and_then(|v| v.as_array())
@@ -2348,7 +2388,7 @@ fn test_write_response_empty_content_emits_placeholder() {
         stop_detail: None,
         ..Default::default()
     };
-    let body = writer.write_response(&resp);
+    let body = writer.write_response(crate::codec::test_host::HOST, &resp);
     let content = body
         .pointer("/output/message/content")
         .and_then(|v| v.as_array())
@@ -2397,7 +2437,7 @@ fn test_inference_config_passthrough_preserves_unmodeled_subfields() {
     // The whole raw inferenceConfig is captured for passthrough fidelity.
     assert!(ir.extra.contains_key("inferenceConfig"));
 
-    let out = writer.write_request(&ir);
+    let out = writer.write_request(crate::codec::test_host::HOST, &ir);
     // Every sub-field — modeled AND unmodeled — must round-trip onto the wire.
     assert_eq!(
         out.pointer("/inferenceConfig/maxTokens")
@@ -2484,7 +2524,7 @@ fn test_top_k_reaches_bedrock_via_additional_model_request_fields() {
         system_role: None,
         output_modalities: None,
     };
-    let out = writer.write_request(&ir);
+    let out = writer.write_request(crate::codec::test_host::HOST, &ir);
     assert_eq!(
         out.pointer("/additionalModelRequestFields/top_k")
             .and_then(|v| v.as_u64()),
@@ -2502,7 +2542,7 @@ fn test_top_k_reaches_bedrock_via_additional_model_request_fields() {
     });
     let ir2 = reader.read_request(&wire).expect("read_request");
     assert_eq!(ir2.top_k, Some(40), "reader must promote top_k into the IR");
-    let out2 = writer.write_request(&ir2);
+    let out2 = writer.write_request(crate::codec::test_host::HOST, &ir2);
     assert_eq!(
         out2.pointer("/additionalModelRequestFields/top_k")
             .and_then(|v| v.as_u64()),
@@ -2537,7 +2577,7 @@ fn test_top_k_camel_spelling_round_trips_and_cross_protocol_stays_snake() {
         ir.extra.contains_key(TOP_K_CAMEL_SENTINEL),
         "reader must stamp the camel-spelling sentinel when source used topK"
     );
-    let out = writer.write_request(&ir);
+    let out = writer.write_request(crate::codec::test_host::HOST, &ir);
     assert_eq!(
         out.pointer("/additionalModelRequestFields/topK")
             .and_then(|v| v.as_u64()),
@@ -2565,7 +2605,7 @@ fn test_top_k_camel_spelling_round_trips_and_cross_protocol_stays_snake() {
         extra: serde_json::Map::new(),
         ..ir.clone()
     };
-    let out_cross = writer.write_request(&ir_cross);
+    let out_cross = writer.write_request(crate::codec::test_host::HOST, &ir_cross);
     assert_eq!(
         out_cross
             .pointer("/additionalModelRequestFields/top_k")
@@ -2652,7 +2692,7 @@ fn test_inference_config_typed_fields_override_raw_and_cross_protocol() {
         system_role: None,
         output_modalities: None,
     };
-    let out = writer.write_request(&ir);
+    let out = writer.write_request(crate::codec::test_host::HOST, &ir);
     assert_eq!(
         out.pointer("/inferenceConfig/maxTokens")
             .and_then(|v| v.as_u64()),
@@ -2711,7 +2751,7 @@ fn test_inference_config_typed_fields_override_raw_and_cross_protocol() {
         system_role: None,
         output_modalities: None,
     };
-    let out2 = writer.write_request(&ir2);
+    let out2 = writer.write_request(crate::codec::test_host::HOST, &ir2);
     assert_eq!(
         out2.pointer("/inferenceConfig/maxTokens")
             .and_then(|v| v.as_u64()),
@@ -2767,7 +2807,7 @@ fn test_stream_exception_only_emits_converse_stream_union_members() {
         };
         // Exception-frame path.
         let (exc, msg) = writer
-            .write_response_exception(&err)
+            .write_response_exception(crate::codec::test_host::HOST, &err)
             .expect("write_response_exception must map every class");
         assert_eq!(
             exc, expected,
@@ -2786,7 +2826,7 @@ fn test_stream_exception_only_emits_converse_stream_union_members() {
             retry_after: None,
         });
         let (et, payload) = writer
-            .write_response_event(&ev)
+            .write_response_event(crate::codec::test_host::HOST, &ev)
             .expect("error event must emit a frame");
         assert_eq!(
             et, expected,
@@ -2814,7 +2854,9 @@ fn test_stream_exception_only_emits_converse_stream_union_members() {
             provider_signal: None,
             retry_after: None,
         };
-        let (exc, _) = writer.write_response_exception(&err).unwrap();
+        let (exc, _) = writer
+            .write_response_exception(crate::codec::test_host::HOST, &err)
+            .unwrap();
         assert_ne!(exc, "ModelTimeoutException");
         assert_ne!(exc, "AccessDeniedException");
         assert_ne!(exc, "ServiceQuotaExceededException");
@@ -2885,7 +2927,7 @@ fn test_write_request_url_sentinel_image_not_emitted_as_base64() {
         system_role: None,
         output_modalities: None,
     };
-    let out = writer.write_request(&req);
+    let out = writer.write_request(crate::codec::test_host::HOST, &req);
     let wire = serde_json::to_string(&out).unwrap();
     assert!(
         !wire.contains(url),
@@ -2917,7 +2959,7 @@ fn test_write_request_url_sentinel_image_not_emitted_as_base64() {
         }],
         ..req.clone()
     };
-    let out2 = writer.write_request(&req2);
+    let out2 = writer.write_request(crate::codec::test_host::HOST, &req2);
     assert_eq!(
         out2.pointer("/messages/0/content/0/image/format")
             .and_then(|v| v.as_str()),
@@ -3012,7 +3054,7 @@ fn test_write_request_all_nonrepresentable_turn_kept_with_placeholder() {
         system_role: None,
         output_modalities: None,
     };
-    let out = writer.write_request(&req);
+    let out = writer.write_request(crate::codec::test_host::HOST, &req);
 
     // All three turns survive (old code dropped turns 1 and 2, yielding length 1).
     let msgs = out
@@ -3225,7 +3267,9 @@ fn test_stream_metadata_without_usage_still_emits_delta_with_stop_reason() {
         serde_json::json!({"type": "metadata", "metrics": {"latencyMs": 12}}),
     ]
     .into_iter()
-    .flat_map(|data| reader.read_response_events("", &data, &mut state))
+    .flat_map(|data| {
+        reader.read_response_events(crate::codec::test_host::HOST, "", &data, &mut state)
+    })
     .collect();
 
     // The combined MessageDelta must be present, carry the buffered stop_reason, and have
@@ -3335,7 +3379,7 @@ fn test_write_request_tool_result_url_sentinel_image_dropped() {
         system_role: None,
         output_modalities: None,
     };
-    let out = writer.write_request(&req);
+    let out = writer.write_request(crate::codec::test_host::HOST, &req);
     let wire = serde_json::to_string(&out).unwrap();
     assert!(
         !wire.contains(url),
@@ -3470,7 +3514,7 @@ fn test_image_s3_location_round_trip() {
         }]
     });
     let ir = reader.read_request(&body).expect("read_request");
-    let out = writer.write_request(&ir);
+    let out = writer.write_request(crate::codec::test_host::HOST, &ir);
     let img = out
         .pointer("/messages/0/content/0/image")
         .expect("image block must be re-emitted, not dropped");
@@ -3570,7 +3614,7 @@ fn test_tool_result_image_s3_round_trip() {
         }]
     });
     let ir = reader.read_request(&body).expect("read_request");
-    let out = writer.write_request(&ir);
+    let out = writer.write_request(crate::codec::test_host::HOST, &ir);
     let inner = out
         .pointer("/messages/0/content/0/toolResult/content/0/image")
         .expect("toolResult image must round-trip, not be dropped");
@@ -3648,7 +3692,9 @@ fn test_read_response_plumbs_cache_tokens() {
             "cacheWriteInputTokens": 128
         }
     });
-    let resp = reader.read_response(&j).expect("read_response");
+    let resp = reader
+        .read_response(crate::codec::test_host::HOST, &j)
+        .expect("read_response");
     assert_eq!(
         resp.usage.cache_read_input_tokens,
         Some(64),
@@ -3671,7 +3717,9 @@ fn test_read_response_absent_cache_tokens_are_none() {
         "stopReason": "end_turn",
         "usage": {"inputTokens": 10, "outputTokens": 5, "totalTokens": 15}
     });
-    let resp = reader.read_response(&j).expect("read_response");
+    let resp = reader
+        .read_response(crate::codec::test_host::HOST, &j)
+        .expect("read_response");
     assert_eq!(resp.usage.cache_read_input_tokens, None);
     assert_eq!(resp.usage.cache_creation_input_tokens, None);
 }
@@ -3696,7 +3744,9 @@ fn test_read_stream_metadata_plumbs_cache_tokens() {
         }),
     ]
     .into_iter()
-    .flat_map(|data| reader.read_response_events("", &data, &mut state))
+    .flat_map(|data| {
+        reader.read_response_events(crate::codec::test_host::HOST, "", &data, &mut state)
+    })
     .collect();
 
     let usage = events
@@ -3731,8 +3781,10 @@ fn test_write_response_emits_cache_tokens_roundtrip() {
             "cacheWriteInputTokens": 128
         }
     });
-    let resp = reader.read_response(&j).expect("read_response");
-    let written = writer.write_response(&resp);
+    let resp = reader
+        .read_response(crate::codec::test_host::HOST, &j)
+        .expect("read_response");
+    let written = writer.write_response(crate::codec::test_host::HOST, &resp);
     assert_eq!(
         written
             .pointer("/usage/cacheReadInputTokens")
@@ -3780,7 +3832,7 @@ fn test_write_response_omits_absent_cache_tokens() {
         stop_detail: None,
         ..Default::default()
     };
-    let written = writer.write_response(&resp);
+    let written = writer.write_response(crate::codec::test_host::HOST, &resp);
     assert!(
         written.pointer("/usage/cacheReadInputTokens").is_none(),
         "absent cache_read must not be emitted as 0"
@@ -3809,7 +3861,7 @@ fn test_write_stream_metadata_emits_cache_tokens() {
         stop_detail: None,
     };
     let (et, payload) = writer
-        .write_response_event(&usage_only)
+        .write_response_event(crate::codec::test_host::HOST, &usage_only)
         .expect("usage-only delta must emit a frame");
     assert_eq!(et, "metadata");
     assert_eq!(
@@ -3878,7 +3930,7 @@ fn test_cache_point_round_trip() {
         ir.extra
     );
 
-    let out = writer.write_request(&ir);
+    let out = writer.write_request(crate::codec::test_host::HOST, &ir);
     // The sentinel must NEVER leak onto the wire.
     assert!(
         out.get(CACHE_POINTS_SENTINEL).is_none(),
@@ -3917,7 +3969,7 @@ fn a_cache_point_before_a_document_does_not_double_the_document() {
     });
 
     let ir = reader.read_request(&wire).expect("read_request");
-    let out = writer.write_request(&ir);
+    let out = writer.write_request(crate::codec::test_host::HOST, &ir);
 
     let content = out
         .pointer("/messages/0/content")
@@ -3957,7 +4009,7 @@ fn test_cache_point_only_message_round_trip() {
     });
 
     let ir = reader.read_request(&wire).expect("read_request");
-    let out = writer.write_request(&ir);
+    let out = writer.write_request(crate::codec::test_host::HOST, &ir);
     // The input carries two CONSECUTIVE `user` messages — a shape Bedrock Converse itself rejects
     // (roles must alternate). The F4 alternation fix coalesces them into ONE user turn, appending
     // the cachePoint AFTER the text block: the canonical, Bedrock-valid placement with identical
@@ -4003,7 +4055,7 @@ fn test_no_cache_point_no_sentinel() {
         "no cachePoint marker → no sentinel key; got {:?}",
         ir.extra
     );
-    let out = writer.write_request(&ir);
+    let out = writer.write_request(crate::codec::test_host::HOST, &ir);
     assert_eq!(
         out, wire,
         "cache-free body must round-trip byte-identically"
@@ -4082,6 +4134,7 @@ fn test_stream_tool_block_start_before_message_start_is_dropped() {
 
     // toolUse contentBlockStart BEFORE any messageStart: state.started is false → drop it.
     let evs = reader.read_response_events(
+        crate::codec::test_host::HOST,
         "",
         &serde_json::json!({
             "type": "contentBlockStart",
@@ -4103,11 +4156,13 @@ fn test_stream_tool_block_start_before_message_start_is_dropped() {
 
     // After a proper messageStart, the same toolUse start DOES emit a BlockStart (sanity).
     let _ = reader.read_response_events(
+        crate::codec::test_host::HOST,
         "",
         &serde_json::json!({"type": "messageStart", "role": "assistant"}),
         &mut state,
     );
     let evs2 = reader.read_response_events(
+        crate::codec::test_host::HOST,
         "",
         &serde_json::json!({
             "type": "contentBlockStart",
@@ -4142,6 +4197,7 @@ fn test_stream_block_stop_before_message_start_is_dropped() {
     let reader = BedrockReader;
 
     let evs = reader.read_response_events(
+        crate::codec::test_host::HOST,
         "",
         &serde_json::json!({"type": "contentBlockStop", "contentBlockIndex": 0}),
         &mut state,
@@ -4163,6 +4219,7 @@ fn test_stream_block_stop_for_unopened_tool_index_is_dropped() {
     let reader = BedrockReader;
 
     let _ = reader.read_response_events(
+        crate::codec::test_host::HOST,
         "",
         &serde_json::json!({"type": "messageStart", "role": "assistant"}),
         &mut state,
@@ -4170,6 +4227,7 @@ fn test_stream_block_stop_for_unopened_tool_index_is_dropped() {
 
     // No contentBlockStart was ever sent for index 3 — a duplicate/reordered/unmatched STOP.
     let evs = reader.read_response_events(
+        crate::codec::test_host::HOST,
         "",
         &serde_json::json!({"type": "contentBlockStop", "contentBlockIndex": 3}),
         &mut state,
@@ -4192,11 +4250,13 @@ fn test_stream_block_stop_for_opened_tool_index_still_emits() {
     let reader = BedrockReader;
 
     let _ = reader.read_response_events(
+        crate::codec::test_host::HOST,
         "",
         &serde_json::json!({"type": "messageStart", "role": "assistant"}),
         &mut state,
     );
     let _ = reader.read_response_events(
+        crate::codec::test_host::HOST,
         "",
         &serde_json::json!({
             "type": "contentBlockStart",
@@ -4206,6 +4266,7 @@ fn test_stream_block_stop_for_opened_tool_index_still_emits() {
         &mut state,
     );
     let evs = reader.read_response_events(
+        crate::codec::test_host::HOST,
         "",
         &serde_json::json!({"type": "contentBlockStop", "contentBlockIndex": 2}),
         &mut state,
@@ -4228,12 +4289,14 @@ fn test_stream_block_stop_closes_concurrent_tool_blocks_independently() {
     let reader = BedrockReader;
 
     let _ = reader.read_response_events(
+        crate::codec::test_host::HOST,
         "",
         &serde_json::json!({"type": "messageStart", "role": "assistant"}),
         &mut state,
     );
     for idx in [0u64, 1u64] {
         let _ = reader.read_response_events(
+            crate::codec::test_host::HOST,
             "",
             &serde_json::json!({
                 "type": "contentBlockStart",
@@ -4245,6 +4308,7 @@ fn test_stream_block_stop_closes_concurrent_tool_blocks_independently() {
     }
 
     let evs1 = reader.read_response_events(
+        crate::codec::test_host::HOST,
         "",
         &serde_json::json!({"type": "contentBlockStop", "contentBlockIndex": 1}),
         &mut state,
@@ -4252,6 +4316,7 @@ fn test_stream_block_stop_closes_concurrent_tool_blocks_independently() {
     assert_eq!(evs1, vec![IrStreamEvent::BlockStop { index: 1 }]);
 
     let evs0 = reader.read_response_events(
+        crate::codec::test_host::HOST,
         "",
         &serde_json::json!({"type": "contentBlockStop", "contentBlockIndex": 0}),
         &mut state,
@@ -4265,6 +4330,7 @@ fn test_stream_block_stop_closes_concurrent_tool_blocks_independently() {
 
     // A second STOP for the already-closed index 1 must now be dropped (duplicate STOP).
     let evs_dup = reader.read_response_events(
+        crate::codec::test_host::HOST,
         "",
         &serde_json::json!({"type": "contentBlockStop", "contentBlockIndex": 1}),
         &mut state,
@@ -4290,18 +4356,21 @@ fn test_stream_block_stop_prefers_indexed_tool_over_stale_text_flag() {
     let reader = BedrockReader;
 
     let _ = reader.read_response_events(
+        crate::codec::test_host::HOST,
         "",
         &serde_json::json!({"type": "messageStart", "role": "assistant"}),
         &mut state,
     );
     // Text block opens at index 0 (absent-`start` shape) and is never closed before...
     let _ = reader.read_response_events(
+        crate::codec::test_host::HOST,
         "",
         &serde_json::json!({"type": "contentBlockStart", "contentBlockIndex": 0}),
         &mut state,
     );
     // ...a malformed toolUse start interleaves at index 1 while text is still open.
     let _ = reader.read_response_events(
+        crate::codec::test_host::HOST,
         "",
         &serde_json::json!({
             "type": "contentBlockStart",
@@ -4313,6 +4382,7 @@ fn test_stream_block_stop_prefers_indexed_tool_over_stale_text_flag() {
 
     // The tool's own STOP must close INDEX 1, not the text block.
     let evs1 = reader.read_response_events(
+        crate::codec::test_host::HOST,
         "",
         &serde_json::json!({"type": "contentBlockStop", "contentBlockIndex": 1}),
         &mut state,
@@ -4325,6 +4395,7 @@ fn test_stream_block_stop_prefers_indexed_tool_over_stale_text_flag() {
 
     // The text block's own STOP must still fire afterward — not be silently swallowed.
     let evs0 = reader.read_response_events(
+        crate::codec::test_host::HOST,
         "",
         &serde_json::json!({"type": "contentBlockStop", "contentBlockIndex": 0}),
         &mut state,
@@ -4359,7 +4430,7 @@ fn test_tool_result_json_block_round_trip() {
         }]
     });
     let ir = reader.read_request(&body).expect("read_request");
-    let out = writer.write_request(&ir);
+    let out = writer.write_request(crate::codec::test_host::HOST, &ir);
     let inner = out
         .pointer("/messages/0/content/0/toolResult/content/0/json")
         .expect("toolResult json block must round-trip as `json`, not be collapsed to text");
@@ -4389,6 +4460,7 @@ fn test_stream_huge_content_block_index_is_clamped() {
 
     // Open the stream so the BlockStart `state.started` guard passes.
     let _ = reader.read_response_events(
+        crate::codec::test_host::HOST,
         "",
         &serde_json::json!({"type": "messageStart", "role": "assistant"}),
         &mut state,
@@ -4399,6 +4471,7 @@ fn test_stream_huge_content_block_index_is_clamped() {
 
     // contentBlockStart (text shape: empty `start` object).
     let start = reader.read_response_events(
+        crate::codec::test_host::HOST,
         "",
         &serde_json::json!({
             "type": "contentBlockStart",
@@ -4420,6 +4493,7 @@ fn test_stream_huge_content_block_index_is_clamped() {
 
     // contentBlockDelta.
     let delta = reader.read_response_events(
+        crate::codec::test_host::HOST,
         "",
         &serde_json::json!({
             "type": "contentBlockDelta",
@@ -4440,6 +4514,7 @@ fn test_stream_huge_content_block_index_is_clamped() {
 
     // contentBlockStop.
     let stop = reader.read_response_events(
+        crate::codec::test_host::HOST,
         "",
         &serde_json::json!({
             "type": "contentBlockStop",
@@ -4567,7 +4642,9 @@ fn test_read_response_carries_image_block() {
         "stopReason": "end_turn",
         "usage": {"inputTokens": 1, "outputTokens": 2}
     });
-    let ir = reader.read_response(&body).expect("read_response");
+    let ir = reader
+        .read_response(crate::codec::test_host::HOST, &body)
+        .expect("read_response");
     let img = ir.content.iter().find_map(|b| match b {
         crate::codec::ir::IrBlock::Image {
             source: crate::codec::ir::IrImageSource::Base64 { media_type, data },
@@ -4595,7 +4672,9 @@ fn test_read_response_carries_image_block() {
         "stopReason": "end_turn",
         "usage": {"inputTokens": 1, "outputTokens": 2}
     });
-    let ir_s3 = reader.read_response(&body_s3).expect("read_response s3");
+    let ir_s3 = reader
+        .read_response(crate::codec::test_host::HOST, &body_s3)
+        .expect("read_response s3");
     let has_s3 = ir_s3.content.iter().any(|b| {
         matches!(
             b,
@@ -4650,7 +4729,7 @@ fn test_request_reasoning_content_round_trips() {
         "reasoningContent must be carried into IR as a Thinking block; got {:?}",
         ir.messages[0].content
     );
-    let out = writer.write_request(&ir);
+    let out = writer.write_request(crate::codec::test_host::HOST, &ir);
     // Writer re-emits the reasoningContent block at the head of the content array.
     assert_eq!(
         out.pointer("/messages/0/content/0/reasoningContent/reasoningText/text")
@@ -4691,7 +4770,9 @@ fn test_response_reasoning_content_round_trips() {
         "stopReason": "end_turn",
         "usage": {"inputTokens": 3, "outputTokens": 4, "totalTokens": 7}
     });
-    let ir = reader.read_response(&body).expect("read_response");
+    let ir = reader
+        .read_response(crate::codec::test_host::HOST, &body)
+        .expect("read_response");
     assert!(
         ir.content.iter().any(|b| matches!(
             b,
@@ -4701,7 +4782,7 @@ fn test_response_reasoning_content_round_trips() {
         "response reasoningContent must be carried into IR as a Thinking block; got {:?}",
         ir.content
     );
-    let out = writer.write_response(&ir);
+    let out = writer.write_response(crate::codec::test_host::HOST, &ir);
     assert_eq!(
         out, body,
         "a reasoningContent-bearing response must round-trip byte-identically; got {out}"
@@ -4721,7 +4802,9 @@ fn test_response_reasoning_content_round_trips() {
         "stopReason": "end_turn",
         "usage": {"inputTokens": 1, "outputTokens": 1, "totalTokens": 2}
     });
-    let ir_r = reader.read_response(&redacted_body).expect("read redacted");
+    let ir_r = reader
+        .read_response(crate::codec::test_host::HOST, &redacted_body)
+        .expect("read redacted");
     assert!(
         ir_r.content.iter().any(|b| matches!(
             b,
@@ -4731,7 +4814,7 @@ fn test_response_reasoning_content_round_trips() {
         "redactedContent must be carried under the redacted-signature sentinel; got {:?}",
         ir_r.content
     );
-    let out_r = writer.write_response(&ir_r);
+    let out_r = writer.write_response(crate::codec::test_host::HOST, &ir_r);
     assert_eq!(
             out_r.pointer("/output/message/content/0/reasoningContent/redactedContent")
                 .and_then(|v| v.as_str()),
@@ -4795,7 +4878,9 @@ fn test_stream_reasoning_content_round_trips() {
 
     let events: Vec<IrStreamEvent> = frames
         .into_iter()
-        .flat_map(|f| reader.read_response_events("", &f, &mut state))
+        .flat_map(|f| {
+            reader.read_response_events(crate::codec::test_host::HOST, "", &f, &mut state)
+        })
         .collect();
 
     // The reader opened a Thinking block lazily on the first reasoningContent delta and emitted
@@ -4835,26 +4920,35 @@ fn test_stream_reasoning_content_round_trips() {
     // `contentBlockDelta.reasoningContent` and closes with `contentBlockStop`.
     assert!(
         writer
-            .write_response_event(&IrStreamEvent::BlockStart {
-                index: 0,
-                block: IrBlockMeta::Thinking { kind: None },
-                refusal: false,
-            })
+            .write_response_event(
+                crate::codec::test_host::HOST,
+                &IrStreamEvent::BlockStart {
+                    index: 0,
+                    block: IrBlockMeta::Thinking { kind: None },
+                    refusal: false,
+                }
+            )
             .is_none(),
         "a Thinking BlockStart must emit NO contentBlockStart frame; reasoning is streamed via \
          contentBlockDelta.reasoningContent"
     );
     // The block is still tracked as OPEN so its BlockStop emits the spec-required contentBlockStop.
     let think_stop = writer
-        .write_response_event(&IrStreamEvent::BlockStop { index: 0 })
+        .write_response_event(
+            crate::codec::test_host::HOST,
+            &IrStreamEvent::BlockStop { index: 0 },
+        )
         .expect("a Thinking BlockStop must still emit a contentBlockStop");
     assert_eq!(think_stop.0, "contentBlockStop");
 
     let text_delta = writer
-        .write_response_event(&IrStreamEvent::BlockDelta {
-            index: 0,
-            delta: IrDelta::ThinkingDelta("hello".to_string()),
-        })
+        .write_response_event(
+            crate::codec::test_host::HOST,
+            &IrStreamEvent::BlockDelta {
+                index: 0,
+                delta: IrDelta::ThinkingDelta("hello".to_string()),
+            },
+        )
         .expect("ThinkingDelta must produce a frame");
     assert_eq!(text_delta.0, "contentBlockDelta");
     assert_eq!(
@@ -4868,10 +4962,13 @@ fn test_stream_reasoning_content_round_trips() {
     );
 
     let sig_delta = writer
-        .write_response_event(&IrStreamEvent::BlockDelta {
-            index: 0,
-            delta: IrDelta::SignatureDelta("sig-xyz".to_string()),
-        })
+        .write_response_event(
+            crate::codec::test_host::HOST,
+            &IrStreamEvent::BlockDelta {
+                index: 0,
+                delta: IrDelta::SignatureDelta("sig-xyz".to_string()),
+            },
+        )
         .expect("SignatureDelta must produce a frame");
     assert_eq!(sig_delta.0, "contentBlockDelta");
     assert_eq!(
@@ -4920,7 +5017,9 @@ fn test_stream_reasoning_redacted_round_trips() {
 
     let events: Vec<IrStreamEvent> = frames
         .into_iter()
-        .flat_map(|f| reader.read_response_events("", &f, &mut state))
+        .flat_map(|f| {
+            reader.read_response_events(crate::codec::test_host::HOST, "", &f, &mut state)
+        })
         .collect();
 
     // A RedactedThinking block is opened (the redacted-typed carrier, so a cross-protocol writer
@@ -4961,10 +5060,15 @@ fn test_stream_reasoning_redacted_round_trips() {
 
     // Writer re-emits the bytes under redactedContent from a typed RedactedReasoningDelta.
     let frame = writer
-        .write_response_event(&IrStreamEvent::BlockDelta {
-            index: 0,
-            delta: IrDelta::RedactedReasoningDelta(redacted_delta.expect("redacted delta present")),
-        })
+        .write_response_event(
+            crate::codec::test_host::HOST,
+            &IrStreamEvent::BlockDelta {
+                index: 0,
+                delta: IrDelta::RedactedReasoningDelta(
+                    redacted_delta.expect("redacted delta present"),
+                ),
+            },
+        )
         .expect("RedactedReasoningDelta must produce a frame");
     assert_eq!(frame.0, "contentBlockDelta");
     assert_eq!(
@@ -5023,7 +5127,7 @@ fn test_guard_content_round_trips() {
         "guardContent markers must be captured into extra; got {:?}",
         ir.extra
     );
-    let out = writer.write_request(&ir);
+    let out = writer.write_request(crate::codec::test_host::HOST, &ir);
     assert!(
         out.get(GUARD_CONTENT_SENTINEL).is_none(),
         "the guardContent sentinel must not appear on the wire; got {out}"
@@ -5056,7 +5160,7 @@ fn test_guard_content_and_cache_point_interleave_preserved() {
         ]
     });
     let ir = reader.read_request(&body).expect("read_request");
-    let out = writer.write_request(&ir);
+    let out = writer.write_request(crate::codec::test_host::HOST, &ir);
     assert_eq!(
         out, body,
         "interleaved guardContent + cachePoint markers must round-trip at their original \
@@ -5175,7 +5279,7 @@ fn consecutive_user_turns_coalesce_for_alternation() {
         output_modalities: None,
     };
     let writer = BedrockWriter;
-    let out = writer.write_request(&req);
+    let out = writer.write_request(crate::codec::test_host::HOST, &req);
     let msgs = out
         .get("messages")
         .and_then(|m| m.as_array())
@@ -5272,7 +5376,7 @@ fn tool_choice_without_tools_emits_no_tool_config() {
         let mut req = tool_choice_req(Some(tc.clone()));
         req.tools = vec![]; // tool_choice set, but no tools survived
         let writer = BedrockWriter;
-        let out = writer.write_request(&req);
+        let out = writer.write_request(crate::codec::test_host::HOST, &req);
         assert!(
             out.get("toolConfig").is_none(),
             "toolConfig must be omitted entirely when tool_choice={tc:?} has no tools: {out}"
@@ -5330,7 +5434,7 @@ fn test_bedrock_tool_choice_any_required_roundtrips() {
     );
 
     let writer = BedrockWriter;
-    let out = writer.write_request(&ir);
+    let out = writer.write_request(crate::codec::test_host::HOST, &ir);
     let tc = out
         .get("toolConfig")
         .and_then(|t| t.get("toolChoice"))
@@ -5359,7 +5463,7 @@ fn test_bedrock_tool_choice_specific_tool() {
     );
 
     let writer = BedrockWriter;
-    let out = writer.write_request(&ir);
+    let out = writer.write_request(crate::codec::test_host::HOST, &ir);
     let tc = out
         .get("toolConfig")
         .and_then(|t| t.get("toolChoice"))
@@ -5383,7 +5487,9 @@ fn bedrock_specific_tool_choice_warns_it_is_claude_only() {
 
     let cap = WarnCapture::default();
     let subscriber = cap.clone();
-    let out = tracing::subscriber::with_default(subscriber, || writer.write_request(&req));
+    let out = tracing::subscriber::with_default(subscriber, || {
+        writer.write_request(crate::codec::test_host::HOST, &req)
+    });
 
     // Behavior unchanged (regression half): the directive is still emitted.
     let tc = out
@@ -5407,7 +5513,7 @@ fn bedrock_specific_tool_choice_warns_it_is_claude_only() {
 fn test_bedrock_tool_choice_none_omitted_on_write() {
     let req = tool_choice_req(Some(crate::codec::ir::IrToolChoice::None));
     let writer = BedrockWriter;
-    let out = writer.write_request(&req);
+    let out = writer.write_request(crate::codec::test_host::HOST, &req);
     let tool_config = out
         .get("toolConfig")
         .expect("toolConfig with tools emitted");
@@ -5433,7 +5539,7 @@ fn test_bedrock_tool_choice_absent_is_none() {
     let ir = reader.read_request(&j).expect("read ok");
     assert_eq!(ir.tool_choice, None);
     let writer = BedrockWriter;
-    let out = writer.write_request(&ir);
+    let out = writer.write_request(crate::codec::test_host::HOST, &ir);
     assert!(
         out.get("toolConfig")
             .and_then(|t| t.get("toolChoice"))
@@ -5491,7 +5597,7 @@ fn test_bedrock_writer_clamps_temperature_above_one() {
         output_modalities: None,
     };
     let writer = BedrockWriter;
-    let out = writer.write_request(&ir);
+    let out = writer.write_request(crate::codec::test_host::HOST, &ir);
     assert_eq!(
         out.pointer("/inferenceConfig/temperature")
             .and_then(|v| v.as_f64()),
@@ -5581,7 +5687,7 @@ fn test_cache_control_on_message_block_emits_cache_point() {
         vec![],
     );
     let writer = BedrockWriter;
-    let out = writer.write_request(&req);
+    let out = writer.write_request(crate::codec::test_host::HOST, &req);
     // The cachePoint sits AFTER the first text block (index 1), before the second text (index 2).
     assert_eq!(
         out.pointer("/messages/0/content/0/text")
@@ -5623,7 +5729,7 @@ fn test_cache_control_on_system_block_emits_cache_point() {
         vec![],
     );
     let writer = BedrockWriter;
-    let out = writer.write_request(&req);
+    let out = writer.write_request(crate::codec::test_host::HOST, &req);
     assert_eq!(
         out.pointer("/system/0/text").and_then(|v| v.as_str()),
         Some("long static preamble"),
@@ -5654,7 +5760,7 @@ fn test_cache_control_on_tool_emits_cache_point() {
         }],
     );
     let writer = BedrockWriter;
-    let out = writer.write_request(&req);
+    let out = writer.write_request(crate::codec::test_host::HOST, &req);
     assert_eq!(
         out.pointer("/toolConfig/tools/0/toolSpec/name")
             .and_then(|v| v.as_str()),
@@ -5759,7 +5865,7 @@ fn test_cache_control_round_trip_via_field_only() {
     // first-class `cache_control` field remains to drive emission.
     ir.extra.clear();
     let writer = BedrockWriter;
-    let out = writer.write_request(&ir);
+    let out = writer.write_request(crate::codec::test_host::HOST, &ir);
     assert_eq!(
         out.pointer("/messages/0/content/0/text")
             .and_then(|v| v.as_str()),
@@ -5790,7 +5896,7 @@ fn test_same_protocol_cache_point_no_double_emit() {
     });
     let ir = reader.read_request(&wire).expect("read_request");
     let writer = BedrockWriter;
-    let out = writer.write_request(&ir);
+    let out = writer.write_request(crate::codec::test_host::HOST, &ir);
     let count = out
         .pointer("/messages/0/content")
         .and_then(|c| c.as_array())
@@ -5815,7 +5921,7 @@ fn test_same_protocol_cache_point_no_double_emit() {
 fn test_tool_choice_none_warns_and_omits() {
     let req = tool_choice_req(Some(crate::codec::ir::IrToolChoice::None));
     let writer = BedrockWriter;
-    let out = writer.write_request(&req);
+    let out = writer.write_request(crate::codec::test_host::HOST, &req);
     let tool_config = out.get("toolConfig").expect("toolConfig emitted");
     assert!(
         tool_config.get("toolChoice").is_none(),
@@ -5917,9 +6023,10 @@ fn test_write_request_response_format_projects_output_config() {
         system_role: None,
         output_modalities: None,
     };
-    let default_lane = writer.write_request(&req);
+    let default_lane = writer.write_request(crate::codec::test_host::HOST, &req);
     assert!(default_lane.get("outputConfig").is_none(), "{default_lane}");
     let out = writer.write_request_for_lane(
+        crate::codec::test_host::HOST,
         &req,
         "anthropic.claude-opus-4-7",
         &LaneCaps {
@@ -6097,7 +6204,7 @@ fn consecutive_tool_result_turns_coalesce_into_single_user_message() {
         ..Default::default()
     };
     let writer = BedrockWriter;
-    let out = writer.write_request(&req);
+    let out = writer.write_request(crate::codec::test_host::HOST, &req);
     let msgs = out
         .get("messages")
         .and_then(|m| m.as_array())
@@ -6139,13 +6246,15 @@ fn unknown_stop_reason_maps_to_other_and_degrades_to_end_turn() {
         "stopReason": "some_future_reason",
         "usage": {"inputTokens": 3, "outputTokens": 1, "totalTokens": 4}
     });
-    let resp = BedrockReader.read_response(&body).expect("read_response");
+    let resp = BedrockReader
+        .read_response(crate::codec::test_host::HOST, &body)
+        .expect("read_response");
     assert_eq!(
         resp.stop_reason,
         Some(crate::codec::ir::IrStopReason::Other)
     );
     let writer = BedrockWriter;
-    let out = writer.write_response(&resp);
+    let out = writer.write_response(crate::codec::test_host::HOST, &resp);
     assert_eq!(
         out.get("stopReason").and_then(|v| v.as_str()),
         Some("end_turn"),
@@ -6170,7 +6279,9 @@ fn cache_usage_is_additive_input_not_reduced() {
             "cacheWriteInputTokens": 200
         }
     });
-    let resp = BedrockReader.read_response(&body).expect("read_response");
+    let resp = BedrockReader
+        .read_response(crate::codec::test_host::HOST, &body)
+        .expect("read_response");
     assert_eq!(
         resp.usage.input_tokens, 10,
         "Bedrock inputTokens stored AS-IS (additive convention), NOT reduced by cache reads"
@@ -6182,7 +6293,7 @@ fn cache_usage_is_additive_input_not_reduced() {
 
     // Round-trip: write re-emits the native additive fields under AWS's spellings.
     let writer = BedrockWriter;
-    let out = writer.write_response(&resp);
+    let out = writer.write_response(crate::codec::test_host::HOST, &resp);
     assert_eq!(
         out.pointer("/usage/cacheReadInputTokens")
             .and_then(|v| v.as_u64()),
@@ -6220,7 +6331,9 @@ fn bedrock_input_tier_excludes_cache_at_billing_boundary() {
             "cacheWriteInputTokens": 200
         }
     });
-    let resp = BedrockReader.read_response(&body).expect("read_response");
+    let resp = BedrockReader
+        .read_response(crate::codec::test_host::HOST, &body)
+        .expect("read_response");
     // Project through the SAME seam the non-stream billing arm uses: IrUsage → neutral TokenUsage →
     // the four pricing tiers.
     let tu = resp.usage.to_token_usage();
@@ -6277,11 +6390,13 @@ fn total_tokens_includes_cache_tokens_on_both_write_paths() {
             "cacheWriteInputTokens": 200
         }
     });
-    let resp = BedrockReader.read_response(&body).expect("read_response");
+    let resp = BedrockReader
+        .read_response(crate::codec::test_host::HOST, &body)
+        .expect("read_response");
     let writer = BedrockWriter;
 
     // Buffered Converse body: a Bedrock→Bedrock round-trip must reproduce the upstream total.
-    let out = writer.write_response(&resp);
+    let out = writer.write_response(crate::codec::test_host::HOST, &resp);
     assert_eq!(
         out.pointer("/usage/totalTokens").and_then(|v| v.as_u64()),
         Some(wire_total),
@@ -6311,7 +6426,7 @@ fn total_tokens_includes_cache_tokens_on_both_write_paths() {
         stop_detail: None,
     };
     let (et, payload) = writer
-        .write_response_event(&usage_only)
+        .write_response_event(crate::codec::test_host::HOST, &usage_only)
         .expect("usage-only delta must emit a frame");
     assert_eq!(et, "metadata");
     assert_eq!(
@@ -6349,7 +6464,7 @@ fn write_response_exception_folds_to_stream_union_members() {
     for (class, expect) in cases {
         let writer = BedrockWriter;
         let (name, _msg) = writer
-            .write_response_exception(&mk(class))
+            .write_response_exception(crate::codec::test_host::HOST, &mk(class))
             .expect("Bedrock always returns Some for a stream exception");
         assert_eq!(name, expect, "class {class:?} must fold to {expect}");
     }
@@ -6360,7 +6475,9 @@ fn write_response_exception_folds_to_stream_union_members() {
         retry_after: None,
     };
     let writer = BedrockWriter;
-    let (name, msg) = writer.write_response_exception(&err).unwrap();
+    let (name, msg) = writer
+        .write_response_exception(crate::codec::test_host::HOST, &err)
+        .unwrap();
     assert_eq!(name, "ThrottlingException");
     assert_eq!(
         msg, "slow down",
@@ -6403,7 +6520,9 @@ fn test_stream_text_delta_lazily_opens_block_start() {
         }),
     ]
     .into_iter()
-    .flat_map(|data| reader.read_response_events("", &data, &mut state))
+    .flat_map(|data| {
+        reader.read_response_events(crate::codec::test_host::HOST, "", &data, &mut state)
+    })
     .collect();
 
     // A Text BlockStart at index 0 must precede any TextDelta.
@@ -6472,7 +6591,7 @@ fn test_roundtrip_preserves_document_and_video_blocks() {
     let ir = reader
         .read_request(&wire)
         .expect("read round-trip should succeed");
-    let wire_after = writer.write_request(&ir);
+    let wire_after = writer.write_request(crate::codec::test_host::HOST, &ir);
 
     assert_eq!(
         wire, wire_after,
@@ -6505,6 +6624,7 @@ fn bedrock_orphan_content_block_delta_before_start_is_dropped() {
     // A text delta arriving before any messageStart (state.started == false) must NOT emit a delta.
     let mut st = crate::codec::ir::StreamDecodeState::default();
     let evs = reader.read_response_events(
+        crate::codec::test_host::HOST,
         "",
         &serde_json::json!({
             "type": "contentBlockDelta", "contentBlockIndex": 0, "delta": {"text": "orphan"}
@@ -6520,6 +6640,7 @@ fn bedrock_orphan_content_block_delta_before_start_is_dropped() {
     // A toolUse input delta at an index with no open tool block must NOT emit a delta either.
     let mut st2 = crate::codec::ir::StreamDecodeState::default();
     let evs2 = reader.read_response_events(
+        crate::codec::test_host::HOST,
         "",
         &serde_json::json!({
             "type": "contentBlockDelta", "contentBlockIndex": 0,
@@ -6616,7 +6737,7 @@ fn buffered_to_eventstream_metadata_carries_metrics_even_without_timing() {
         stop_detail: None,
         ..Default::default()
     };
-    let mut bytes = bedrock_response_to_eventstream(&ir, None);
+    let mut bytes = bedrock_response_to_eventstream(crate::codec::test_host::HOST, &ir, None);
     let frames = crate::codec::eventstream::drain_frames(&mut bytes);
     let (_, payload) = frames
         .iter()
@@ -6650,10 +6771,13 @@ fn bedrock_writer_emits_every_citation_in_a_multi_citation_delta() {
         ..Default::default()
     };
     let writer = BedrockWriter;
-    let frames = writer.write_response_events(&crate::codec::ir::IrStreamEvent::BlockDelta {
-        index: 0,
-        delta: crate::codec::ir::IrDelta::CitationsDelta(vec![cit("first"), cit("second")]),
-    });
+    let frames = writer.write_response_events(
+        crate::codec::test_host::HOST,
+        &crate::codec::ir::IrStreamEvent::BlockDelta {
+            index: 0,
+            delta: crate::codec::ir::IrDelta::CitationsDelta(vec![cit("first"), cit("second")]),
+        },
+    );
 
     let titles: Vec<Option<&str>> = frames
         .iter()
@@ -6706,10 +6830,12 @@ fn the_served_tier_is_read_and_written() {
         "usage": {"inputTokens": 3, "outputTokens": 1, "totalTokens": 4},
         "serviceTier": {"type": "priority"}
     });
-    let resp = BedrockReader.read_response(&answer).expect("reads");
+    let resp = BedrockReader
+        .read_response(crate::codec::test_host::HOST, &answer)
+        .expect("reads");
     assert_eq!(resp.usage.detail.service_tier.as_deref(), Some("priority"));
     let writer = BedrockWriter;
-    let written = writer.write_response(&resp);
+    let written = writer.write_response(crate::codec::test_host::HOST, &resp);
     assert_eq!(written["serviceTier"]["type"], "priority");
 
     let mut state = crate::codec::ir::StreamDecodeState::default();
@@ -6719,7 +6845,9 @@ fn the_served_tier_is_read_and_written() {
             "serviceTier": {"type": "flex"}}),
     ]
     .into_iter()
-    .flat_map(|data| BedrockReader.read_response_events("", &data, &mut state))
+    .flat_map(|data| {
+        BedrockReader.read_response_events(crate::codec::test_host::HOST, "", &data, &mut state)
+    })
     .collect();
     let tier = events.iter().find_map(|e| match e {
         crate::codec::ir::IrStreamEvent::MessageDelta { usage, .. } => {

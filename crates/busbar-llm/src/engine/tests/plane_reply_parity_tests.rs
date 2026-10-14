@@ -350,7 +350,7 @@ fn planed(ingress: &'static str, egress: &'static str, req: &Value, far: &Far, n
         .iter()
         .map(|(n, v)| (n.as_bytes(), v.as_bytes()))
         .collect();
-    let mut reply = Reply::new(&ctx, far.status, &head);
+    let mut reply = Reply::new(crate::engine::CODEC_HOST, &ctx, far.status, &head);
     let at = At {
         now_s,
         elapsed_ms: Some(0),
@@ -365,21 +365,27 @@ fn planed(ingress: &'static str, egress: &'static str, req: &Value, far: &Far, n
     let n = far.pieces.len();
     let mut pieces: Vec<crate::engine::xchg::reply::Piece<'static>> = Vec::new();
     for (i, p) in far.pieces.iter().enumerate() {
-        let piece = reply.feed(&ctx, p, i + 1 == n && !far.drop_after, at);
+        let piece = reply.feed(
+            crate::engine::CODEC_HOST,
+            &ctx,
+            p,
+            i + 1 == n && !far.drop_after,
+            at,
+        );
         pieces.push(crate::engine::xchg::reply::Piece {
             bytes: std::borrow::Cow::Owned(piece.bytes.into_owned()),
             ..piece
         });
     }
     if n == 0 {
-        let piece = reply.feed(&ctx, &[], !far.drop_after, at);
+        let piece = reply.feed(crate::engine::CODEC_HOST, &ctx, &[], !far.drop_after, at);
         pieces.push(crate::engine::xchg::reply::Piece {
             bytes: std::borrow::Cow::Owned(piece.bytes.into_owned()),
             ..piece
         });
     }
     if far.drop_after {
-        pieces.push(reply.cut(&ctx, true));
+        pieces.push(reply.cut(crate::engine::CODEC_HOST, &ctx, true));
         // A cut with no in-band frame ends the caller's body in an error.
         read.body_failed = pieces.last().is_some_and(|p| p.bytes.is_empty());
     }
@@ -612,10 +618,12 @@ fn native_stream(dialect: &'static str) -> (Vec<u8>, &'static str) {
         },
     );
     let mut out = Vec::new();
-    if let (crate::engine::xchg::reply::relay::Fed::Bytes(b), _) = r.feed(&openai_stream()) {
+    if let (crate::engine::xchg::reply::relay::Fed::Bytes(b), _) =
+        r.feed(crate::engine::CODEC_HOST, &openai_stream())
+    {
         out.extend_from_slice(&b);
     }
-    out.extend(r.end().bytes);
+    out.extend(r.end(crate::engine::CODEC_HOST).bytes);
     let ct = crate::engine::xchg::reply::wire::ingress_stream_content_type(dialect)
         .expect("a stream content type");
     (out, ct)
@@ -802,7 +810,12 @@ async fn a_far_end_errors_relay_is_the_engines() {
                     head: &head,
                     body: &body,
                 };
-                let plane = crate::engine::xchg::reply::failure::relay(ingress, egress, &far);
+                let plane = crate::engine::xchg::reply::failure::relay(
+                    crate::engine::CODEC_HOST,
+                    ingress,
+                    egress,
+                    &far,
+                );
                 if ingress != egress {
                     let legacy = crate::engine::shape_cross_protocol_error(
                         ingress,

@@ -837,6 +837,7 @@ pub fn note_unmapped(carried: &Carried, root: &str, body: &Value) {
 /// drop walk names what the caller's dialect will not get, once per path per STREAM (the paths
 /// already dropped ride `state.dropped`, read for the audit at the stream's end).
 pub fn read_stream_frame(
+    host: &dyn busbar_contract::codec::CodecHost,
     seam: Seam<'_>,
     reader: &dyn crate::codec::proto_codec::ProtocolReader,
     event_type: &str,
@@ -845,11 +846,11 @@ pub fn read_stream_frame(
 ) -> Vec<crate::codec::ir::IrStreamEvent> {
     // A same-dialect stream is a relay: its reader is a tap and drops nothing.
     if seam.ingress == seam.egress {
-        return reader.read_response_events(event_type, data, state);
+        return reader.read_response_events(host, event_type, data, state);
     }
     let mut seen = std::mem::take(&mut state.dropped);
     let events = scope_more(seam, &mut seen, || {
-        let events = reader.read_response_events(event_type, data, state);
+        let events = reader.read_response_events(host, event_type, data, state);
         if let Some(carried) = reader.stream_carried() {
             let root = if reader.stream_keyed_by_event() {
                 event_type

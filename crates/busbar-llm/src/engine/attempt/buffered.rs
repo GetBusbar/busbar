@@ -120,7 +120,7 @@ pub(crate) async fn translate_response_cross_protocol(
         now_s: now(),
         elapsed_ms: u64::try_from(upstream_started.elapsed().as_millis()).ok(),
     };
-    let w = whole::translate(&ctx, status.as_u16(), &bytes);
+    let w = whole::translate(crate::engine::CODEC_HOST, &ctx, status.as_u16(), &bytes);
     let Whole {
         end,
         usage,
@@ -295,7 +295,9 @@ async fn read_capped_body(
             emit_breaker_trip(host, rt, pool, i);
         }
         tap.report(failed_transfer(i));
-        return Err(rendered_response(whole::cut(ingress_protocol).answer));
+        return Err(rendered_response(
+            whole::cut(crate::engine::CODEC_HOST, ingress_protocol).answer,
+        ));
     }
     if read_end == ReadEnd::Truncated {
         // OUR translation cap, not an upstream fault: no tokens charged (the client receives no
@@ -310,7 +312,9 @@ async fn read_capped_body(
         );
         budget_guard.disarm();
         tap.report(failed_transfer(i));
-        return Err(rendered_response(whole::over_cap(ingress_protocol).answer));
+        return Err(rendered_response(
+            whole::over_cap(crate::engine::CODEC_HOST, ingress_protocol).answer,
+        ));
     }
     Ok(bytes)
 }

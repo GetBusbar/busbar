@@ -122,7 +122,12 @@ impl UpstreamError {
     /// request-id header(s) a real endpoint carries.
     fn relay(&self, hop: &Hop<'_>) -> Response {
         rendered_response(self.with_far(|far| {
-            crate::engine::xchg::reply::failure::relay(hop.ingress_protocol, hop.egress_name, far)
+            crate::engine::xchg::reply::failure::relay(
+                crate::engine::CODEC_HOST,
+                hop.ingress_protocol,
+                hop.egress_name,
+                far,
+            )
         }))
     }
 }
@@ -185,6 +190,7 @@ fn classify_error(
             host.lane_store().record_client_fault(i);
             AttemptOutcome::Response(rendered_response(err.with_far(|far| {
                 crate::engine::xchg::reply::failure::client_fault(
+                    crate::engine::CODEC_HOST,
                     hop.ingress_protocol,
                     hop.egress_name,
                     sig.class,
@@ -291,7 +297,10 @@ fn hard_down(
         // a 403 AccessDeniedException, a real Gemini bad key a 400 INVALID_ARGUMENT), with the
         // vendor-plausible message — never the egress backend's raw status or body.
         return AttemptOutcome::Response(rendered_response(
-            crate::engine::xchg::reply::failure::auth_failure(hop.ingress_protocol),
+            crate::engine::xchg::reply::failure::auth_failure(
+                crate::engine::CODEC_HOST,
+                hop.ingress_protocol,
+            ),
         ));
     }
     AttemptOutcome::Failed {

@@ -42,7 +42,11 @@ fn a_request() -> InvokeReqHandle {
 #[test]
 fn the_write_default_is_unrepresentable_and_names_the_dialect() {
     let mut handle = a_request();
-    match handle.write_egress_request("some-other-dialect", "a-model") {
+    match handle.write_egress_request(
+        crate::codec::test_host::HOST,
+        "some-other-dialect",
+        "a-model",
+    ) {
         EgressWire::Unrepresentable { reason } => assert!(
             reason.contains("some-other-dialect"),
             "the refusal must name the dialect it could not be written onto, got: {reason}"
@@ -73,7 +77,11 @@ impl OperationHandler for DefaultWriteCodec {
     ) -> Result<Box<dyn IrHandle>, IngressReject> {
         Ok(Box::new(a_request()))
     }
-    fn read_response(&self, _wire: &[u8]) -> Result<Box<dyn IrHandle>, CodecError> {
+    fn read_response(
+        &self,
+        _host: &dyn busbar_contract::codec::CodecHost,
+        _wire: &[u8],
+    ) -> Result<Box<dyn IrHandle>, CodecError> {
         Err(CodecError::Malformed("not a response codec".to_string()))
     }
 }
@@ -85,6 +93,7 @@ fn the_translate_seam_refuses_an_unrepresentable_write() {
     let body = serde_json::json!({"tool": "search"});
     let reject = DefaultWriteCodec
         .translate_request(
+            crate::codec::test_host::HOST,
             TranslateReqInput::Json(&body),
             Some("some-other-dialect"),
             &prep(),

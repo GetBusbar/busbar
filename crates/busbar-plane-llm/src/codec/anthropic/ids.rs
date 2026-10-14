@@ -10,8 +10,11 @@ use super::*;
 /// Anthropic SDK only requires the `msg_` prefix and a non-empty unique suffix (it does not parse
 /// the body), but matching the native alphabet/version-prefix/length AND drawing the token from the
 /// OS CSPRNG removes the structural/entropy tell a client could use to spot a synthesized id.
-pub(super) fn synth_message_id() -> String {
-    synth_id_with_prefix("msg_")
+pub(super) fn synth_message_id(
+    host: &dyn busbar_contract::codec::CodecHost,
+    host: &dyn busbar_contract::codec::CodecHost,
+) -> String {
+    synth_id_with_prefix(host, "msg_")
 }
 
 /// Mint a protocol-correct Anthropic request id (`req_01<token>`) for the top level of an error
@@ -19,8 +22,11 @@ pub(super) fn synth_message_id() -> String {
 /// Current Anthropic API error responses carry a top-level `request_id`; emitting one whose shape
 /// (version prefix, mixed-case base62 alphabet, fixed length) AND entropy match the native form
 /// keeps the envelope indistinguishable. Same CSPRNG construction as `synth_message_id`.
-pub(super) fn synth_request_id() -> String {
-    synth_id_with_prefix("req_")
+pub(super) fn synth_request_id(
+    host: &dyn busbar_contract::codec::CodecHost,
+    host: &dyn busbar_contract::codec::CodecHost,
+) -> String {
+    synth_id_with_prefix(host, "req_")
 }
 
 /// The same `req_01<24 base62>` id, built from entropy the CALLER supplies.
@@ -90,7 +96,11 @@ pub fn request_id_from_entropy(entropy: &[u8]) -> String {
 /// `openai_chat::synth_completion_id`, the other rejection-sampling base62 synth). Returns `false`
 /// on an entropy failure — callers decide what to do with the partially-filled buffer; `out` is
 /// left with whatever prefix was already written plus its initial contents for the rest.
-pub(super) fn fill_base62(out: &mut [u8], alphabet: &[u8; 62]) -> bool {
+pub(super) fn fill_base62(
+    host: &dyn busbar_contract::codec::CodecHost,
+    out: &mut [u8],
+    alphabet: &[u8; 62],
+) -> bool {
     const BASE62_REJECT_FLOOR: u8 = crate::codec::dialect::BASE62_REJECT_THRESHOLD;
     // Fixed stack buffer, no heap allocation on this hot path — both callers' tokens (24 chars)
     // fit comfortably; a batch this size draws `len` fresh bytes per retry round, same as before.
@@ -110,7 +120,7 @@ pub(super) fn fill_base62(out: &mut [u8], alphabet: &[u8; 62]) -> bool {
         // build (`crate::codec::synth_rng`) and the `#[path]` dual-compile into busbar-core
         // (`crate::codec::proto::synth_rng`), matching the `super::super::usage_tail` convention the readers
         // use (this file sits one module below the dialect root).
-        if !super::super::synth_rng::fill_entropy(batch) {
+        if !super::super::synth_rng::fill_entropy(host, batch) {
             return false;
         }
         for &byte in batch.iter() {
@@ -127,12 +137,15 @@ pub(super) fn fill_base62(out: &mut [u8], alphabet: &[u8; 62]) -> bool {
     true
 }
 
-pub(super) fn synth_id_with_prefix(prefix: &str) -> String {
+pub(super) fn synth_id_with_prefix(
+    host: &dyn busbar_contract::codec::CodecHost,
+    prefix: &str,
+) -> String {
     // On an entropy failure we leave the remaining '0' fill rather than panic; no counter. Same
     // ordering-independent reduction cutoff as every other base62 synth (4 * 62 = 248); only this
     // module's ALPHABET *ordering* (uppercase-first) is intentionally local.
     let mut token = [b'0'; SYNTH_ID_TOKEN_LEN];
-    fill_base62(&mut token, ANTHROPIC_NATIVE_ALPHABET);
+    fill_base62(host, &mut token, ANTHROPIC_NATIVE_ALPHABET);
 
     // `token` is ASCII base62 by construction, hence always valid UTF-8; the fallback only guards
     // against an impossible non-ASCII byte and keeps the path panic-free.
@@ -156,12 +169,12 @@ pub(super) fn synth_id_with_prefix(prefix: &str) -> String {
 /// deliberately — NOT this module's local uppercase-first `ANTHROPIC_NATIVE_ALPHABET`. The alphabet
 /// ORDERING differs from the sibling synth, but a uniform draw over a permuted alphabet is uniform
 /// over the same character set, so that difference is irrelevant to the distribution.
-pub fn synth_anthropic_request_id() -> Option<String> {
+pub fn synth_anthropic_request_id(host: &dyn busbar_contract::codec::CodecHost) -> Option<String> {
     // 24 base62 chars via the SAME rejection-sampling fill `synth_id_with_prefix` uses — the
     // `Option` contract (omit the header on entropy failure) differs from that sibling's
     // '0'-fill-on-failure contract, so this stays a separate call rather than delegating to it.
     let mut token = [0u8; 24];
-    if !fill_base62(&mut token, crate::codec::dialect::BASE62_ALPHABET) {
+    if !fill_base62(host, &mut token, crate::codec::dialect::BASE62_ALPHABET) {
         return None;
     }
     // token is ASCII base62, always valid UTF-8.

@@ -187,7 +187,13 @@ fn translate(ingress: &str, egress: &str, body: &Value) -> (Value, Vec<String>, 
     let cap = WarnCapture::default();
     let p = prep(ingress);
     let out = tracing::subscriber::with_default(cap.clone(), || {
-        handler.translate_request(TranslateReqInput::Json(body), Some(egress), &p, "m")
+        handler.translate_request(
+            crate::codec::test_host::HOST,
+            TranslateReqInput::Json(body),
+            Some(egress),
+            &p,
+            "m",
+        )
     });
     let Ok(out) = out else {
         panic!("{ingress} -> {egress}: the request must translate");
@@ -378,7 +384,7 @@ fn answer(egress: &str, ingress: &str, body: &Value) -> (String, Vec<String>, Wa
     let bytes = serde_json::to_vec(body).unwrap();
     let cap = WarnCapture::default();
     let whole = tracing::subscriber::with_default(cap.clone(), || {
-        crate::exchange::reply::whole::translate(&ctx, 200, &bytes)
+        crate::exchange::reply::whole::translate(crate::codec::test_host::HOST, &ctx, 200, &bytes)
     });
     assert_eq!(
         whole.end,

@@ -145,11 +145,12 @@ pub trait ProtocolReader: Send + Sync {
     /// this with its native 1:1 singular implementation (its plural form wraps the singular).
     fn read_response_event(
         &self,
+        host: &dyn busbar_contract::codec::CodecHost,
         event_type: &str,
         data: &serde_json::Value,
     ) -> Option<IrStreamEvent> {
         let mut state = crate::codec::ir::StreamDecodeState::default();
-        self.read_response_events(event_type, data, &mut state)
+        self.read_response_events(host, event_type, data, &mut state)
             .into_iter()
             .next()
     }
@@ -160,6 +161,7 @@ pub trait ProtocolReader: Send + Sync {
     /// API the live response-translation path calls.
     fn read_response_events(
         &self,
+        host: &dyn busbar_contract::codec::CodecHost,
         event_type: &str,
         data: &serde_json::Value,
         state: &mut crate::codec::ir::StreamDecodeState,
@@ -168,6 +170,7 @@ pub trait ProtocolReader: Send + Sync {
     /// Read a whole (non-streaming) response from wire JSON.
     fn read_response(
         &self,
+        host: &dyn busbar_contract::codec::CodecHost,
         body: &serde_json::Value,
     ) -> Result<crate::codec::ir::IrResponse, IrError>;
 
@@ -296,7 +299,11 @@ pub trait ProtocolWriter: Send + Sync {
     }
 
     /// Write an IR request to wire JSON.
-    fn write_request(&self, req: &crate::codec::ir::IrRequest) -> serde_json::Value;
+    fn write_request(
+        &self,
+        host: &dyn busbar_contract::codec::CodecHost,
+        req: &crate::codec::ir::IrRequest,
+    ) -> serde_json::Value;
 
     /// THE PRODUCTION REQUEST WRITE: an IR request for a known egress lane — its resolved wire
     /// `model` and its declared [`LaneCaps`]. Both request seams (the engine's cross-protocol hop via
@@ -306,12 +313,13 @@ pub trait ProtocolWriter: Send + Sync {
     /// model-blind write.
     fn write_request_for_lane(
         &self,
+        host: &dyn busbar_contract::codec::CodecHost,
         req: &crate::codec::ir::IrRequest,
         model: &str,
         caps: &LaneCaps,
     ) -> serde_json::Value {
         let _ = caps;
-        self.write_request_for_model(req, model)
+        self.write_request_for_model(host, req, model)
     }
 
     /// Write an IR request for a KNOWN egress model — the production write the cross-protocol seam
@@ -322,10 +330,11 @@ pub trait ProtocolWriter: Send + Sync {
     /// writes exactly what [`Self::write_request`] writes. Default: `write_request`, model ignored.
     fn write_request_for_model(
         &self,
+        host: &dyn busbar_contract::codec::CodecHost,
         req: &crate::codec::ir::IrRequest,
         _model: &str,
     ) -> serde_json::Value {
-        self.write_request(req)
+        self.write_request(host, req)
     }
 
     /// Apply a hook's `rewrite` reply to an INGRESS body of THIS dialect, in place. Returns whether
@@ -424,7 +433,11 @@ pub trait ProtocolWriter: Send + Sync {
     }
 
     /// Write a response/stream event to wire (event_type, data).
-    fn write_response_event(&self, ev: &IrStreamEvent) -> Option<(String, serde_json::Value)>;
+    fn write_response_event(
+        &self,
+        host: &dyn busbar_contract::codec::CodecHost,
+        ev: &IrStreamEvent,
+    ) -> Option<(String, serde_json::Value)>;
 
     /// Write ONE IR stream event to wire as an ORDERED sequence of frames, allowing a dialect to
     /// emit MORE than one wire frame per IR event.
@@ -439,8 +452,12 @@ pub trait ProtocolWriter: Send + Sync {
     /// part before the first `output_text.delta`), and the closing `output_text.done` /
     /// `content_part.done` precede `output_item.done`. A single `(event_type, data)` cannot carry
     /// that bracket, so the seam drives streaming through this method.
-    fn write_response_events(&self, ev: &IrStreamEvent) -> Vec<(String, serde_json::Value)> {
-        self.write_response_event(ev).into_iter().collect()
+    fn write_response_events(
+        &self,
+        host: &dyn busbar_contract::codec::CodecHost,
+        ev: &IrStreamEvent,
+    ) -> Vec<(String, serde_json::Value)> {
+        self.write_response_event(host, ev).into_iter().collect()
     }
 
     /// Map a mid-stream `IrError` to a MODELED-EXCEPTION pair `(exception_name, message)` for
@@ -455,7 +472,11 @@ pub trait ProtocolWriter: Send + Sync {
     /// Returns `None` by default: every SSE-framed protocol (openai/anthropic/gemini/cohere/responses)
     /// carries its error in-band via `write_response_event`, so the StreamTranslate caller falls back
     /// to the normal event path for them. Only `BedrockWriter` overrides this.
-    fn write_response_exception(&self, _err: &IrError) -> Option<(String, String)> {
+    fn write_response_exception(
+        &self,
+        _host: &dyn busbar_contract::codec::CodecHost,
+        _err: &IrError,
+    ) -> Option<(String, String)> {
         None
     }
 
@@ -475,12 +496,20 @@ pub trait ProtocolWriter: Send + Sync {
     /// Returns `None` by default so a future protocol without an override falls back to core's
     /// dialect-free terminal frame — the same fallback the caller already applies when a writer
     /// declines to frame an error in-band.
-    fn write_error_frame(&self, _err: &IrError) -> Option<(String, serde_json::Value)> {
+    fn write_error_frame(
+        &self,
+        _host: &dyn busbar_contract::codec::CodecHost,
+        _err: &IrError,
+    ) -> Option<(String, serde_json::Value)> {
         None
     }
 
     /// Write a whole (non-streaming) response to wire JSON.
-    fn write_response(&self, resp: &crate::codec::ir::IrResponse) -> serde_json::Value;
+    fn write_response(
+        &self,
+        host: &dyn busbar_contract::codec::CodecHost,
+        resp: &crate::codec::ir::IrResponse,
+    ) -> serde_json::Value;
 
     /// Render a router/forward/auth-layer error as this protocol's NATIVE error envelope, so a
     /// client on the vendor's official SDK gets the typed exception it expects instead of a
@@ -504,7 +533,13 @@ pub trait ProtocolWriter: Send + Sync {
     /// router/auth/forward error sites (`ingress::ingress_error`, `auth`, `proxy::ingress_error`).
     /// Only the default *body* is unreachable in release (every concrete writer overrides it), so no
     /// dead-code suppression is needed here.
-    fn write_error(&self, _status: u16, kind: &str, message: &str) -> serde_json::Value {
+    fn write_error(
+        &self,
+        _host: &dyn busbar_contract::codec::CodecHost,
+        _status: u16,
+        kind: &str,
+        message: &str,
+    ) -> serde_json::Value {
         serde_json::json!({
             "error": {
                 "message": message,
@@ -519,12 +554,13 @@ pub trait ProtocolWriter: Send + Sync {
     /// envelope carries a minted id overrides this and builds that id from `entropy`.
     fn write_error_from_entropy(
         &self,
+        host: &dyn busbar_contract::codec::CodecHost,
         status: u16,
         kind: &str,
         message: &str,
         _entropy: &[u8],
     ) -> serde_json::Value {
-        self.write_error(status, kind, message)
+        self.write_error(host, status, kind, message)
     }
 
     /// Attach any protocol-specific RESPONSE HEADERS a native endpoint always carries on an error
@@ -535,6 +571,7 @@ pub trait ProtocolWriter: Send + Sync {
     /// branching on the protocol name, so the main/degraded/auth/route error paths cannot drift.
     fn attach_error_response_headers(
         &self,
+        _host: &dyn busbar_contract::codec::CodecHost,
         _headers: &mut busbar_contract::http::HeaderMap,
         _kind: &str,
         _envelope: &serde_json::Value,
@@ -556,6 +593,7 @@ pub trait ProtocolWriter: Send + Sync {
     /// `BedrockWriter` overrides: returns `Some(bedrock_response_to_eventstream(ir, elapsed_ms))`.
     fn wrap_buffered_as_stream(
         &self,
+        _host: &dyn busbar_contract::codec::CodecHost,
         _ir: &crate::codec::ir::IrResponse,
         _elapsed_ms: Option<u64>,
     ) -> Option<Vec<u8>> {
@@ -592,6 +630,7 @@ pub trait ProtocolWriter: Send + Sync {
     /// Default: `None` (no other protocol attaches a request-id header on the success path).
     fn ingress_response_request_id(
         &self,
+        _host: &dyn busbar_contract::codec::CodecHost,
         _upstream_request_id: Option<&str>,
     ) -> Option<(&'static str, String)> {
         None
@@ -601,13 +640,13 @@ pub trait ProtocolWriter: Send + Sync {
     /// wire `Value`. The concrete ping IR is built by the owning plugin (busbar-llm's `ir_encode`),
     /// so core's `probe_body` orchestration below names no concrete IR. The model is stamped
     /// afterward by [`Self::rewrite_model_if_needed`], so the ping itself carries none.
-    fn probe_request(&self) -> serde_json::Value;
+    fn probe_request(&self, host: &dyn busbar_contract::codec::CodecHost) -> serde_json::Value;
 
     /// Build a minimal, protocol-correct request body for an active health probe of `model`.
     /// Serializes a one-token "ping" through this protocol's own [`Self::probe_request`], so every
     /// protocol gets a valid probe body for free — no per-protocol probe code, no extra dependency.
-    fn probe_body(&self, model: &str) -> Vec<u8> {
-        let mut body = self.probe_request();
+    fn probe_body(&self, host: &dyn busbar_contract::codec::CodecHost, model: &str) -> Vec<u8> {
+        let mut body = self.probe_request(host);
         let _ = self.rewrite_model_if_needed(&mut body, model);
         crate::codec::json::to_vec(&body).unwrap_or_default()
     }
@@ -1144,8 +1183,8 @@ pub const fn dialect_ref(name: &'static str) -> DialectRef {
 }
 
 impl DialectCodec for DialectRef {
-    fn probe_body(&self, model: &str) -> Vec<u8> {
-        with_writer(self.0, |w| w.probe_body(model)).unwrap_or_default()
+    fn probe_body(&self, host: &dyn busbar_contract::codec::CodecHost, model: &str) -> Vec<u8> {
+        with_writer(self.0, |w| w.probe_body(host, model)).unwrap_or_default()
     }
     fn apply_rewrite_to_ingress_body(
         &self,
@@ -1163,24 +1202,39 @@ impl DialectCodec for DialectRef {
     }
     fn ingress_response_request_id(
         &self,
+        host: &dyn busbar_contract::codec::CodecHost,
         upstream_request_id: Option<&str>,
     ) -> Option<(&'static str, String)> {
         with_writer(self.0, |w| {
-            w.ingress_response_request_id(upstream_request_id)
+            w.ingress_response_request_id(host, upstream_request_id)
         })
         .flatten()
     }
-    fn write_error(&self, status: u16, kind: &str, message: &str) -> serde_json::Value {
-        with_writer(self.0, |w| w.write_error(status, kind, message)).unwrap_or_default()
+    fn write_error(
+        &self,
+        host: &dyn busbar_contract::codec::CodecHost,
+        status: u16,
+        kind: &str,
+        message: &str,
+    ) -> serde_json::Value {
+        with_writer(self.0, |w| w.write_error(host, status, kind, message)).unwrap_or_default()
     }
     fn requested_candidate_count(&self, body: &serde_json::Value) -> Option<u64> {
         with_writer(self.0, |w| w.requested_candidate_count(body)).flatten()
     }
-    fn write_response_exception(&self, err: &IrError) -> Option<(String, String)> {
-        with_writer(self.0, |w| w.write_response_exception(err)).flatten()
+    fn write_response_exception(
+        &self,
+        host: &dyn busbar_contract::codec::CodecHost,
+        err: &IrError,
+    ) -> Option<(String, String)> {
+        with_writer(self.0, |w| w.write_response_exception(host, err)).flatten()
     }
-    fn write_error_frame(&self, err: &IrError) -> Option<(String, serde_json::Value)> {
-        with_writer(self.0, |w| w.write_error_frame(err)).flatten()
+    fn write_error_frame(
+        &self,
+        host: &dyn busbar_contract::codec::CodecHost,
+        err: &IrError,
+    ) -> Option<(String, serde_json::Value)> {
+        with_writer(self.0, |w| w.write_error_frame(host, err)).flatten()
     }
     fn wants_array_stream(&self, body: &serde_json::Value) -> bool {
         with_writer(self.0, |w| w.wants_array_stream(body)).unwrap_or(false)
@@ -1190,12 +1244,13 @@ impl DialectCodec for DialectRef {
     }
     fn attach_error_response_headers(
         &self,
+        host: &dyn busbar_contract::codec::CodecHost,
         headers: &mut busbar_contract::http::HeaderMap,
         kind: &str,
         envelope: &serde_json::Value,
     ) {
         with_writer(self.0, |w| {
-            w.attach_error_response_headers(headers, kind, envelope)
+            w.attach_error_response_headers(host, headers, kind, envelope)
         });
     }
     fn extract_error(

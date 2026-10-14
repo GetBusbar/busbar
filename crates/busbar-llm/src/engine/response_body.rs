@@ -310,7 +310,7 @@ where
                 Poll::Ready(Some(Ok(chunk))) => {
                     // The plane's relay: the translated frames, or the far end's own bytes (the
                     // chunk itself, never copied) with a bounded tail-anchored copy kept for usage.
-                    let (fed, truncated_now) = this.relay.feed(&chunk);
+                    let (fed, truncated_now) = this.relay.feed(crate::engine::CODEC_HOST, &chunk);
                     let out = match fed {
                         Fed::Nothing => None,
                         Fed::Bytes(std::borrow::Cow::Borrowed(_)) => Some(None),
@@ -340,7 +340,10 @@ where
                     // streamed before the cut is still billed — by the Drop below (#62: a
                     // mid-stream cut is not a refund).
                     let had_first = this.relay.had_first();
-                    let cut = this.relay.cut(matches!(e, StreamCut::Transport(_)));
+                    let cut = this.relay.cut(
+                        crate::engine::CODEC_HOST,
+                        matches!(e, StreamCut::Transport(_)),
+                    );
                     if let Some(err_bytes) = cut.bytes {
                         // After the first byte of a stream: the breaker records the failure, the
                         // client's stream ends on the plane's in-band error frame in its own
@@ -406,7 +409,7 @@ where
                     // time); the breaker hears only a stream the relay saw fail after its first
                     // byte, and a same-protocol non-stream body whose own stop reason says the
                     // generation failed (owner ruling Q31).
-                    let end = this.relay.end();
+                    let end = this.relay.end(crate::engine::CODEC_HOST);
                     if let Some(reason) = end.stream_fault {
                         this.record_transient(reason);
                     }

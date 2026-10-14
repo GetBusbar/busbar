@@ -10,10 +10,10 @@ fn event(name: &'static str, mut data: serde_json::Value) -> (String, serde_json
 }
 
 impl ProtocolWriter for ResponsesWriter {
-    fn probe_request(&self) -> serde_json::Value {
+    fn probe_request(&self, host: &dyn busbar_contract::codec::CodecHost) -> serde_json::Value {
         // The ping IR is built by the plugin (ir_encode::ping_request); this dialect serializes it
         // through its own write_request, so the probe body matches a real request on this wire.
-        self.write_request(&super::super::ir_encode::ping_request())
+        self.write_request(host, &super::super::ir_encode::ping_request())
     }
 
     fn upstream_path(&self) -> &str {
@@ -71,8 +71,13 @@ impl ProtocolWriter for ResponsesWriter {
         true
     }
 
-    fn write_request(&self, req: &crate::codec::ir::IrRequest) -> serde_json::Value {
+    fn write_request(
+        &self,
+        host: &dyn busbar_contract::codec::CodecHost,
+        req: &crate::codec::ir::IrRequest,
+    ) -> serde_json::Value {
         self.write_request_for_lane(
+            host,
             req,
             "",
             &busbar_contract::ir::egress_prep::LaneCaps::default(),
@@ -81,6 +86,7 @@ impl ProtocolWriter for ResponsesWriter {
 
     fn write_request_for_lane(
         &self,
+        host: &dyn busbar_contract::codec::CodecHost,
         req: &crate::codec::ir::IrRequest,
         _model: &str,
         caps: &busbar_contract::ir::egress_prep::LaneCaps,
@@ -273,7 +279,10 @@ impl ProtocolWriter for ResponsesWriter {
                                     );
                                     item.insert(
                                         keys::ID.to_string(),
-                                        serde_json::json!(synthesize_item_id(ITEM_ID_PREFIX_RS)),
+                                        serde_json::json!(synthesize_item_id(
+                                            host,
+                                            ITEM_ID_PREFIX_RS
+                                        )),
                                     );
                                     // IR-17: a summary goes back into `summary[]`.
                                     super::slots::insert_reasoning_text(&mut item, text, *kind);
@@ -632,16 +641,24 @@ impl ProtocolWriter for ResponsesWriter {
         serde_json::Value::Object(out)
     }
 
-    fn write_response_event(&self, ev: &IrStreamEvent) -> Option<(String, serde_json::Value)> {
+    fn write_response_event(
+        &self,
+        host: &dyn busbar_contract::codec::CodecHost,
+        ev: &IrStreamEvent,
+    ) -> Option<(String, serde_json::Value)> {
         // SINGULAR contract (one wire frame). The streaming seam drives emission through
         // `write_response_events` (which can carry the multi-frame content-part bracket), so this
         // method is now reached only for events that frame to a SINGLE wire event — notably
         // `write_error_frame`, which passes an `Error` (always one frame) — and by tests that assert
         // the single-frame arms directly. A multi-frame event yields only its FIRST frame here.
-        self.write_response_events(ev).into_iter().next()
+        self.write_response_events(host, ev).into_iter().next()
     }
 
-    fn write_response_events(&self, ev: &IrStreamEvent) -> Vec<(String, serde_json::Value)> {
+    fn write_response_events(
+        &self,
+        host: &dyn busbar_contract::codec::CodecHost,
+        ev: &IrStreamEvent,
+    ) -> Vec<(String, serde_json::Value)> {
         // The stream's opening event resets the per-stream `sequence_number` counter so each stream's
         // sequence starts at 0. Only the FIRST `MessageStart` is that opening event: the writer
         // cannot rely on seeing exactly one, because the Anthropic reader emits `MessageStart` 1:1
@@ -685,7 +702,7 @@ impl ProtocolWriter for ResponsesWriter {
                 let id = self
                     .carried_response_id()
                     .filter(|_| !opening)
-                    .unwrap_or_else(|| id.clone().unwrap_or_else(synthesize_response_id));
+                    .unwrap_or_else(|| id.clone().unwrap_or_else(|| synthesize_response_id(host)));
                 // Carry this stream's id forward so the terminal events (and any failure) replay
                 // the SAME `response.id`.
                 self.set_response_id(&id);
@@ -762,7 +779,7 @@ impl ProtocolWriter for ResponsesWriter {
                     if !self.open_text_item(*index) {
                         return Vec::new();
                     }
-                    let item_id = self.item_id_for(ITEM_ID_PREFIX_MSG, *index);
+                    let item_id = self.item_id_for(host, ITEM_ID_PREFIX_MSG, *index);
                     // IR-02: a refusal block opens a `refusal` part instead of an `output_text`
                     // part; its deltas and closing frames follow suit (`is_refusal`).
                     if *refusal {
@@ -830,7 +847,7 @@ impl ProtocolWriter for ResponsesWriter {
                     if !self.mark_tool_open(*index) {
                         return Vec::new();
                     }
-                    let item_id = self.item_id_for(ITEM_ID_PREFIX_FC, *index);
+                    let item_id = self.item_id_for(host, ITEM_ID_PREFIX_FC, *index);
                     // Capture call_id/name now so the matching `output_item.done` can emit the
                     // fully finalized item (native `done` carries call_id/name/arguments; the IR
                     // BlockStop carries only the index).
@@ -874,7 +891,7 @@ impl ProtocolWriter for ResponsesWriter {
                     if !self.open_reasoning_item(*index) {
                         return Vec::new();
                     }
-                    let item_id = self.item_id_for(ITEM_ID_PREFIX_RS, *index);
+                    let item_id = self.item_id_for(host, ITEM_ID_PREFIX_RS, *index);
                     // IR-17: a SUMMARY block opens the item with its one
                     // `summary_text` part (no `content[]`, as the buffered item has none); every
                     // other block keeps the pre-slot `reasoning_text` shape.
@@ -932,7 +949,7 @@ impl ProtocolWriter for ResponsesWriter {
                         EVT_REFUSAL_DELTA,
                         serde_json::json!({
                             (OUTPUT_INDEX): index,
-                            (ITEM_ID): self.item_id_for(ITEM_ID_PREFIX_MSG, *index),
+                            (ITEM_ID): self.item_id_for(host, ITEM_ID_PREFIX_MSG, *index),
                             (CONTENT_INDEX): 0,
                             (keys::DELTA): text
                         }),
@@ -956,7 +973,7 @@ impl ProtocolWriter for ResponsesWriter {
                         EVT_OUTPUT_TEXT_DELTA,
                         serde_json::json!({
                             (OUTPUT_INDEX): index,
-                            (ITEM_ID): self.item_id_for(ITEM_ID_PREFIX_MSG, *index),
+                            (ITEM_ID): self.item_id_for(host, ITEM_ID_PREFIX_MSG, *index),
                             (CONTENT_INDEX): 0,
                             (keys::DELTA): text,
                             (keys::LOGPROBS): []
@@ -972,7 +989,7 @@ impl ProtocolWriter for ResponsesWriter {
                         EVT_FUNCTION_CALL_ARGS_DELTA,
                         serde_json::json!({
                             (OUTPUT_INDEX): index,
-                            (ITEM_ID): self.item_id_for(ITEM_ID_PREFIX_FC, *index),
+                            (ITEM_ID): self.item_id_for(host, ITEM_ID_PREFIX_FC, *index),
                             (keys::DELTA): json_str
                         }),
                     )]
@@ -995,7 +1012,7 @@ impl ProtocolWriter for ResponsesWriter {
                         serde_json::json!({
                             (keys::TYPE): event,
                             (OUTPUT_INDEX): index,
-                            (ITEM_ID): self.item_id_for(ITEM_ID_PREFIX_RS, *index),
+                            (ITEM_ID): self.item_id_for(host, ITEM_ID_PREFIX_RS, *index),
                             part_key: 0,
                             (keys::DELTA): text
                         }),
@@ -1069,7 +1086,7 @@ impl ProtocolWriter for ResponsesWriter {
                     // `response.completed` emits it in `output[]`. The prior writer dropped reasoning
                     // entirely, so a reasoning stream reassembled to an OpenAI/Anthropic client lost
                     // the chain-of-thought.
-                    let item_id = self.item_id_for(ITEM_ID_PREFIX_RS, *index);
+                    let item_id = self.item_id_for(host, ITEM_ID_PREFIX_RS, *index);
                     let text = self.take_reasoning_accum(*index);
                     let summary = self.take_summary_reasoning(*index);
                     // IR-17: the same `summary[]` / `content[]` placement the buffered item uses.
@@ -1153,7 +1170,7 @@ impl ProtocolWriter for ResponsesWriter {
                     // The function-call `output_item.added` used `item_id_for("fc", index)`, so the
                     // cached id reconstructs the matching pair here. A poisoned-lock-empty accumulator
                     // degrades to empty-string fields rather than panicking.
-                    let item_id = self.item_id_for(ITEM_ID_PREFIX_FC, *index);
+                    let item_id = self.item_id_for(host, ITEM_ID_PREFIX_FC, *index);
                     let accum = self.take_tool_accum(*index).unwrap_or_default();
                     let item = serde_json::json!({
                         (keys::TYPE): ITEM_TYPE_FUNCTION_CALL,
@@ -1179,7 +1196,7 @@ impl ProtocolWriter for ResponsesWriter {
                     // `content_part.done` (the `refusal` part) → `output_item.done`. A refusal part
                     // carries no annotations or logprobs, so any buffered for it are discarded.
                     self.take_refusal(*index);
-                    let item_id = self.item_id_for(ITEM_ID_PREFIX_MSG, *index);
+                    let item_id = self.item_id_for(host, ITEM_ID_PREFIX_MSG, *index);
                     let text = self.take_text_accum(*index);
                     let _ = self.take_citation_accum(*index);
                     let _ = self.take_logprob_accum(*index);
@@ -1232,7 +1249,7 @@ impl ProtocolWriter for ResponsesWriter {
                     // than an empty content array. The `output_text.done`/`content_part.done` brackets
                     // are what a strict Responses client (Codex CLI) needs to accept the streamed text
                     // — without them it saw deltas against a part that was never opened/closed.
-                    let item_id = self.item_id_for(ITEM_ID_PREFIX_MSG, *index);
+                    let item_id = self.item_id_for(host, ITEM_ID_PREFIX_MSG, *index);
                     let text = self.take_text_accum(*index);
                     let annotations = super::super::url_citation_wire::url_annotations(
                         &text,
@@ -1355,7 +1372,7 @@ impl ProtocolWriter for ResponsesWriter {
                 // structurally valid.
                 let response_id = self
                     .carried_response_id()
-                    .unwrap_or_else(synthesize_response_id);
+                    .unwrap_or_else(|| synthesize_response_id(host));
                 resp_obj.insert(keys::ID.to_string(), serde_json::json!(response_id));
                 resp_obj.insert(keys::OBJECT.to_string(), serde_json::json!(OBJ_RESPONSE));
                 // Replay the `created_at` captured on this stream's opening `MessageStart` so the
@@ -1490,7 +1507,7 @@ impl ProtocolWriter for ResponsesWriter {
                 // `MessageStart`, or a poisoned lock).
                 let response_id = self
                     .carried_response_id()
-                    .unwrap_or_else(synthesize_response_id);
+                    .unwrap_or_else(|| synthesize_response_id(host));
                 let mut resp_obj = serde_json::Map::new();
                 resp_obj.insert(keys::ID.to_string(), serde_json::json!(response_id));
                 resp_obj.insert(keys::OBJECT.to_string(), serde_json::json!(OBJ_RESPONSE));
@@ -1549,13 +1566,21 @@ impl ProtocolWriter for ResponsesWriter {
             .collect()
     }
 
-    fn write_error_frame(&self, err: &IrError) -> Option<(String, serde_json::Value)> {
+    fn write_error_frame(
+        &self,
+        host: &dyn busbar_contract::codec::CodecHost,
+        err: &IrError,
+    ) -> Option<(String, serde_json::Value)> {
         // The streaming-error seam: delegate to this dialect's own event writer so the mid-stream
         // error frame is byte-for-byte what an `Error` event produces on this wire.
-        self.write_response_event(&IrStreamEvent::Error(err.clone()))
+        self.write_response_event(host, &IrStreamEvent::Error(err.clone()))
     }
 
-    fn write_response(&self, resp: &crate::codec::ir::IrResponse) -> serde_json::Value {
+    fn write_response(
+        &self,
+        host: &dyn busbar_contract::codec::CodecHost,
+        resp: &crate::codec::ir::IrResponse,
+    ) -> serde_json::Value {
         // Unknown/None stop reasons default to `completed` (not `failed`): a future IR reason that
         // did not explicitly signal an error must not surface as a failed response to a Responses
         // client. Only the explicitly-mapped incomplete reasons downgrade the status.
@@ -1594,7 +1619,7 @@ impl ProtocolWriter for ResponsesWriter {
                     }
                     output_arr.push(serde_json::json!({
                         (keys::TYPE): ITEM_TYPE_MESSAGE,
-                        (keys::ID): synthesize_item_id(ITEM_ID_PREFIX_MSG),
+                        (keys::ID): synthesize_item_id(host, ITEM_ID_PREFIX_MSG),
                         (keys::ROLE): keys::ASSISTANT,
                         (keys::STATUS): STATUS_COMPLETED,
                         (keys::CONTENT): [{ (keys::TYPE): keys::REFUSAL, (keys::REFUSAL): text }]
@@ -1620,7 +1645,7 @@ impl ProtocolWriter for ResponsesWriter {
                     // spec requires `logprobs` on every `output_text` part.
                     output_arr.push(serde_json::json!({
                         (keys::TYPE): ITEM_TYPE_MESSAGE,
-                        (keys::ID): synthesize_item_id(ITEM_ID_PREFIX_MSG),
+                        (keys::ID): synthesize_item_id(host, ITEM_ID_PREFIX_MSG),
                         (keys::ROLE): keys::ASSISTANT,
                         (keys::STATUS): STATUS_COMPLETED,
                         (keys::CONTENT): [{
@@ -1642,7 +1667,7 @@ impl ProtocolWriter for ResponsesWriter {
                         // from `call_id` — the streaming `output_item.done` emits it, so the non-stream
                         // body must too or a typed SDK reading `item.id` sees a missing field (a proxy
                         // tell). The IR has no per-item id, so synthesize one of the native shape.
-                        (keys::ID): synthesize_item_id(ITEM_ID_PREFIX_FC),
+                        (keys::ID): synthesize_item_id(host, ITEM_ID_PREFIX_FC),
                         (CALL_ID): id,
                         (keys::NAME): name,
                         (keys::ARGUMENTS): args_str
@@ -1679,7 +1704,7 @@ impl ProtocolWriter for ResponsesWriter {
                     );
                     item.insert(
                         keys::ID.to_string(),
-                        serde_json::json!(synthesize_item_id(ITEM_ID_PREFIX_RS)),
+                        serde_json::json!(synthesize_item_id(host, ITEM_ID_PREFIX_RS)),
                     );
                     item.insert(SUMMARY.to_string(), serde_json::Value::Array(Vec::new()));
                     item.insert(
@@ -1709,6 +1734,7 @@ impl ProtocolWriter for ResponsesWriter {
                     results,
                     ..
                 } => output_arr.push(super::write_web_search_call(
+                    host,
                     call_id.as_deref(),
                     status.as_deref(),
                     results,
@@ -1727,7 +1753,10 @@ impl ProtocolWriter for ResponsesWriter {
         // upstream values verbatim; cross-protocol (backend supplied none) synthesizes a
         // protocol-correct `resp_` id and the current unix time so the body stays SDK-valid.
         // `created_at` is the Responses field name (the official SDK's `Response.created_at`).
-        let id = resp.id.clone().unwrap_or_else(synthesize_response_id);
+        let id = resp
+            .id
+            .clone()
+            .unwrap_or_else(|| synthesize_response_id(host));
         let created_at = resp.created.unwrap_or(self.stamped_created_at);
         obj.insert(keys::ID.to_string(), serde_json::json!(id));
         obj.insert(keys::OBJECT.to_string(), serde_json::json!(OBJ_RESPONSE));
@@ -1799,7 +1828,13 @@ impl ProtocolWriter for ResponsesWriter {
     /// as `application/json`. `code` and `param` are always present (null here — busbar's
     /// router/auth/forward errors are not field-level validation errors). The generic `kind` is
     /// mapped to the Responses `type` vocabulary where one exists.
-    fn write_error(&self, _status: u16, kind: &str, message: &str) -> serde_json::Value {
+    fn write_error(
+        &self,
+        _host: &dyn busbar_contract::codec::CodecHost,
+        _status: u16,
+        kind: &str,
+        message: &str,
+    ) -> serde_json::Value {
         // Map busbar's generic error `kind` to the OpenAI/Responses `error.type` vocabulary. The
         // canonical Responses/OpenAI types are `invalid_request_error`, `authentication_error`,
         // `permission_error`, `not_found_error`, `rate_limit_error`, `server_error`, and

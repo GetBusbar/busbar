@@ -15,8 +15,12 @@ impl AnthropicWriter {
     /// we mint one to match the native shape — the SDK doesn't require it to decode the typed
     /// exception, but its absence is a distinguishability tell. Shared by every `write_error` exit
     /// so the status-driven and kind-driven paths emit byte-identical envelopes.
-    pub(super) fn error_envelope(error_type: &str, message: &str) -> serde_json::Value {
-        Self::error_envelope_with_request_id(error_type, message, &synth_request_id())
+    pub(super) fn error_envelope(
+        host: &dyn busbar_contract::codec::CodecHost,
+        error_type: &str,
+        message: &str,
+    ) -> serde_json::Value {
+        Self::error_envelope_with_request_id(error_type, message, &synth_request_id(host))
     }
 
     /// The same envelope, with the top-level `request_id` supplied rather than minted.

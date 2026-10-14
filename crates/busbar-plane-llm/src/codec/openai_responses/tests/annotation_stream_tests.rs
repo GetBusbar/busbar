@@ -111,14 +111,16 @@ fn stream_events() -> Vec<crate::codec::ir::IrStreamEvent> {
     let mut state = crate::codec::ir::StreamDecodeState::default();
     frames
         .iter()
-        .flat_map(|(t, d)| reader.read_response_events(t, d, &mut state))
+        .flat_map(|(t, d)| {
+            reader.read_response_events(crate::codec::test_host::HOST, t, d, &mut state)
+        })
         .collect()
 }
 
 #[test]
 fn streamed_responses_annotations_equal_buffered_citations() {
     let buffered = ResponsesReader
-        .read_response(&completed_response())
+        .read_response(crate::codec::test_host::HOST, &completed_response())
         .expect("buffered read");
     let buffered_citations: Vec<crate::codec::ir::IrCitation> = buffered
         .content
@@ -197,7 +199,7 @@ fn streamed_responses_annotation_reaches_anthropic_egress() {
                 }
             )
         })
-        .filter_map(|e| aw.write_response_event(e))
+        .filter_map(|e| aw.write_response_event(crate::codec::test_host::HOST, e))
         .filter(|(_, body)| {
             body.pointer("/delta/type").and_then(|t| t.as_str()) == Some("citations_delta")
         })
@@ -216,7 +218,7 @@ fn streamed_responses_annotation_reaches_anthropic_egress() {
 fn annotation_without_open_text_block_emits_nothing() {
     let reader = ResponsesReader;
     let mut state = crate::codec::ir::StreamDecodeState::default();
-    let out = reader.read_response_events(
+    let out = reader.read_response_events(crate::codec::test_host::HOST,
         "response.output_text.annotation.added",
         &serde_json::json!({"output_index": 3, "content_index": 0, "annotation_index": 0, "annotation": annotation(URL_A, "t", 0, 1)}),
         &mut state,

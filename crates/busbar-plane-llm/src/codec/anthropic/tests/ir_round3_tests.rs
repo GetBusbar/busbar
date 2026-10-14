@@ -36,13 +36,13 @@ fn item10_unknown_served_tier_never_reaches_an_anthropic_client_buffered() {
         let mut ir = protocol_for("openai")
             .unwrap()
             .reader()
-            .read_response(&chat)
+            .read_response(crate::codec::test_host::HOST, &chat)
             .expect("read");
         crate::codec::chat_handle::chat_prepare_for_ingress(&mut ir, "anthropic", 0);
         let out = protocol_for("anthropic")
             .unwrap()
             .writer()
-            .write_response(&ir);
+            .write_response(crate::codec::test_host::HOST, &ir);
         assert_eq!(out["usage"]["service_tier"], want, "{openai_tier}: {out}");
     }
 }
@@ -64,10 +64,18 @@ fn item10_unknown_served_tier_never_reaches_an_anthropic_client_stream() {
         ];
         let mut out = String::new();
         for c in chunks {
-            out.push_str(&String::from_utf8(t.feed(format!("data: {c}\n\n").as_bytes())).unwrap());
+            out.push_str(
+                &String::from_utf8(t.feed(
+                    crate::codec::test_host::HOST,
+                    format!("data: {c}\n\n").as_bytes(),
+                ))
+                .unwrap(),
+            );
         }
-        out.push_str(&String::from_utf8(t.feed(b"data: [DONE]\n\n")).unwrap());
-        out.push_str(&String::from_utf8(t.finish()).unwrap());
+        out.push_str(
+            &String::from_utf8(t.feed(crate::codec::test_host::HOST, b"data: [DONE]\n\n")).unwrap(),
+        );
+        out.push_str(&String::from_utf8(t.finish(crate::codec::test_host::HOST)).unwrap());
         for p in sse_payloads(&out) {
             for tier in [
                 p.pointer("/usage/service_tier"),
@@ -112,12 +120,18 @@ fn item12_off_omits_thinking_on_an_always_on_lane() {
         thinking_always_on: true,
         ..Default::default()
     };
-    let out = w
-        .writer()
-        .write_request_for_lane(&off_ask(), "claude-fable-5", &always_on);
+    let out = w.writer().write_request_for_lane(
+        crate::codec::test_host::HOST,
+        &off_ask(),
+        "claude-fable-5",
+        &always_on,
+    );
     assert!(out.get("thinking").is_none(), "{out}");
-    let out = w
-        .writer()
-        .write_request_for_lane(&off_ask(), "claude-opus-4-5", &Default::default());
+    let out = w.writer().write_request_for_lane(
+        crate::codec::test_host::HOST,
+        &off_ask(),
+        "claude-opus-4-5",
+        &Default::default(),
+    );
     assert_eq!(out["thinking"], json!({"type": "disabled"}), "{out}");
 }

@@ -533,14 +533,13 @@ pub type CounterAddFn = extern "C-unwind" fn(
     delta: u64,
 ) -> StatusClass;
 
-// ── THE HOST SERVICES (minor 30; ARCHITECT SD-3 queue (6), DEC-SERVE G2). The contract ports a
-//    codec reaches — `busbar_contract::codec::{fill_entropy, wall_clock_now,
-//    usage_tap_fault_should_warn, max_translate_body_bytes}` — are process-wide `OnceLock`s the host
-//    arms in ITS image. A plane dropped in as a `cdylib` carries its own copy of the contract, whose
-//    ports nothing armed, so it read the failure path of every one. These four slots carry the
-//    host's own services across the seam; the dropped-in door arms the plane image's ports over
-//    them (`services::arm`) when the host opens the door. Process-wide, so `host` may be
-//    `HostCtx::NULL`. ──
+// ── THE HOST SERVICES (minor 30; ARCHITECT SD-3 queue (6), DEC-SERVE G2). The host's entropy,
+//    its wall clock, the usage-tap fault latch and the translate cap, carried across the seam. The
+//    contract ports a codec reaches for the latter two — `busbar_contract::codec::{
+//    usage_tap_fault_should_warn, max_translate_body_bytes}` — are process-wide `OnceLock`s the
+//    host arms in ITS image; the dropped-in door arms the plane image's ports over these slots
+//    (`services::arm`) when the host opens the door. Entropy and the clock are handed to a codec as
+//    a `CodecHost`, never armed. Process-wide, so `host` may be `HostCtx::NULL`. ──
 /// Fill `out_len` bytes at `out` from the host's entropy source (its CSPRNG). [`StatusClass::Ok`]
 /// when every byte was written; [`StatusClass::Refused`] when the host has no entropy to give or
 /// `out` is NULL with a non-zero length (the bytes are then unspecified); [`StatusClass::Fault`] on
@@ -929,12 +928,11 @@ impl PlaneHostVtable {
         translate_cap: None,
     };
 
-    /// [`EMPTY`](Self::EMPTY) plus the four HOST SERVICES, each served from THIS image's own armed
-    /// contract ports ([`super::services`]). A host grants them by building its table over this
-    /// (`..PlaneHostVtable::SERVICES`): the services are the contract's, so the host adds no code.
+    /// [`EMPTY`](Self::EMPTY) plus the two HOST SERVICES still served from THIS image's own armed
+    /// contract ports ([`super::services`]): the usage-tap latch and the translate cap. A host grants
+    /// them by building its table over this (`..PlaneHostVtable::SERVICES`). `entropy_fill` and
+    /// `wall_clock` are the host's own to fill: the contract holds no entropy source and no clock.
     pub const SERVICES: PlaneHostVtable = PlaneHostVtable {
-        entropy_fill: Some(super::services::entropy_fill),
-        wall_clock: Some(super::services::wall_clock),
         tap_fault_latch: Some(super::services::tap_fault_latch),
         translate_cap: Some(super::services::translate_cap),
         ..Self::EMPTY

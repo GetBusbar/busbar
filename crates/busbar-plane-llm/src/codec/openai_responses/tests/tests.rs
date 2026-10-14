@@ -135,7 +135,7 @@ fn write_request_drops_top_k_with_warn() {
 
     let writer = ResponsesWriter;
     // With top_k set: the warn-drop branch runs and NO `top_k` reaches the body.
-    let with = writer.write_request(&mk(Some(40)));
+    let with = writer.write_request(crate::codec::test_host::HOST, &mk(Some(40)));
     assert!(
         with.get("top_k").is_none(),
         "the Responses body must NOT carry top_k (lossy-by-target): {with}"
@@ -144,7 +144,7 @@ fn write_request_drops_top_k_with_warn() {
     assert_eq!(with.get("top_p").and_then(|v| v.as_f64()), Some(0.9));
 
     // Without top_k: body shape is identical w.r.t. top_k absence (sanity baseline).
-    let without = writer.write_request(&mk(None));
+    let without = writer.write_request(crate::codec::test_host::HOST, &mk(None));
     assert!(without.get("top_k").is_none());
 }
 
@@ -240,7 +240,7 @@ fn test_write_request() {
     };
 
     let writer = ResponsesWriter;
-    let json = writer.write_request(&ir);
+    let json = writer.write_request(crate::codec::test_host::HOST, &ir);
 
     assert_eq!(
         json.get("instructions").and_then(|v| v.as_str()),
@@ -491,7 +491,7 @@ fn test_roundtrip_identity() {
     let reader = ResponsesReader;
     let writer = ResponsesWriter;
 
-    let json = writer.write_request(&ir);
+    let json = writer.write_request(crate::codec::test_host::HOST, &ir);
     let rt_ir = reader
         .read_request(&json)
         .expect("read round-trip should succeed");
@@ -599,7 +599,7 @@ fn test_read_response_decode() {
 
     let reader = ResponsesReader;
     let resp = reader
-        .read_response(&json)
+        .read_response(crate::codec::test_host::HOST, &json)
         .expect("read_response should succeed");
 
     assert_eq!(resp.content.len(), 2);
@@ -649,7 +649,7 @@ fn read_response_without_usage_zero_defaults_no_error() {
     });
 
     let resp = ResponsesReader
-        .read_response(&json)
+        .read_response(crate::codec::test_host::HOST, &json)
         .expect("absent usage must parse to zero, not error");
     assert_eq!(resp.usage.input_tokens, 0);
     assert_eq!(resp.usage.output_tokens, 0);
@@ -685,8 +685,10 @@ fn test_write_response_roundtrip_text_only() {
     let reader = ResponsesReader;
     let writer = ResponsesWriter;
 
-    let ir_resp = reader.read_response(&json).expect("read should succeed");
-    let out = writer.write_response(&ir_resp);
+    let ir_resp = reader
+        .read_response(crate::codec::test_host::HOST, &json)
+        .expect("read should succeed");
+    let out = writer.write_response(crate::codec::test_host::HOST, &ir_resp);
 
     // Top-level identity preserved verbatim.
     assert_eq!(out["id"], json["id"]);
@@ -754,7 +756,7 @@ fn test_write_response_function_call_item_has_native_id() {
         ..Default::default()
     };
     let writer = ResponsesWriter;
-    let out = writer.write_response(&resp);
+    let out = writer.write_response(crate::codec::test_host::HOST, &resp);
     let fc = out["output"]
         .as_array()
         .and_then(|a| a.iter().find(|i| i["type"] == "function_call")) // golden wire-contract literal (kept bare on purpose)
@@ -797,7 +799,9 @@ fn test_read_response_incomplete_with_function_call_keeps_max_tokens() {
     });
 
     let reader = ResponsesReader;
-    let resp = reader.read_response(&json).expect("read should succeed");
+    let resp = reader
+        .read_response(crate::codec::test_host::HOST, &json)
+        .expect("read should succeed");
 
     // The tool call survived as content...
     assert!(
@@ -841,7 +845,9 @@ fn read_response_refusal_part_survives_and_promotes_stop_reason() {
     });
 
     let reader = ResponsesReader;
-    let resp = reader.read_response(&json).expect("read should succeed");
+    let resp = reader
+        .read_response(crate::codec::test_host::HOST, &json)
+        .expect("read should succeed");
 
     // The refusal text survived as assistant Text (not dropped).
     assert!(
@@ -904,7 +910,7 @@ fn test_write_response_preserves_text_after_tool_order() {
         ..Default::default()
     };
     let writer = ResponsesWriter;
-    let out = writer.write_response(&resp);
+    let out = writer.write_response(crate::codec::test_host::HOST, &resp);
     let arr = out["output"].as_array().expect("output is an array");
     assert_eq!(arr.len(), 2, "one item per non-empty block, in order");
     // Encounter order: the tool block came first, the text block second.
@@ -927,7 +933,12 @@ fn test_write_response_preserves_text_after_tool_order() {
 #[test]
 fn test_write_error_native_responses_envelope() {
     let writer = ResponsesWriter;
-    let v = writer.write_error(404, "not_found", "model 'x' not found");
+    let v = writer.write_error(
+        crate::codec::test_host::HOST,
+        404,
+        "not_found",
+        "model 'x' not found",
+    );
 
     // Round-trips as JSON without panic.
     let serialized = serde_json::to_string(&v).expect("write_error output must serialize");
@@ -970,7 +981,7 @@ fn test_write_error_kind_mapping() {
         ("authentication_error", "authentication_error"),
         ("some_future_type", "some_future_type"),
     ] {
-        let v = writer.write_error(400, kind, "m");
+        let v = writer.write_error(crate::codec::test_host::HOST, 400, kind, "m");
         assert_eq!(
             v.get("error")
                 .and_then(|e| e.get("type"))
@@ -1004,11 +1015,13 @@ fn test_same_protocol_roundtrip_preserves_identity() {
     let reader = ResponsesReader;
     let writer = ResponsesWriter;
 
-    let ir = reader.read_response(&json).expect("read should succeed");
+    let ir = reader
+        .read_response(crate::codec::test_host::HOST, &json)
+        .expect("read should succeed");
     assert_eq!(ir.id.as_deref(), Some("resp_0123456789abcdef"));
     assert_eq!(ir.created, Some(1_710_000_000));
 
-    let out = writer.write_response(&ir);
+    let out = writer.write_response(crate::codec::test_host::HOST, &ir);
     assert_eq!(
         out.get("id").and_then(|i| i.as_str()),
         Some("resp_0123456789abcdef"),
@@ -1088,7 +1101,7 @@ fn test_cross_protocol_write_synthesizes_valid_id() {
         ..Default::default()
     };
 
-    let out1 = writer.write_response(&make_ir());
+    let out1 = writer.write_response(crate::codec::test_host::HOST, &make_ir());
     let id1 = out1
         .get("id")
         .and_then(|i| i.as_str())
@@ -1102,7 +1115,7 @@ fn test_cross_protocol_write_synthesizes_valid_id() {
         "synthesized created_at must be present"
     );
 
-    let out2 = writer.write_response(&make_ir());
+    let out2 = writer.write_response(crate::codec::test_host::HOST, &make_ir());
     let id2 = out2.get("id").and_then(|i| i.as_str()).unwrap();
     assert_ne!(id1, id2, "successive synthesized ids must be unique");
 }
@@ -1283,7 +1296,9 @@ fn test_write_response_event_blockdelta() {
         index: 0,
         delta: crate::codec::ir::IrDelta::TextDelta("hi".to_string()),
     };
-    let (etype1, payload1) = writer.write_response_event(&ev1).expect("should emit");
+    let (etype1, payload1) = writer
+        .write_response_event(crate::codec::test_host::HOST, &ev1)
+        .expect("should emit");
     assert_eq!(etype1, "response.output_text.delta"); // golden wire-contract literal (kept bare on purpose)
     assert_eq!(payload1.get("delta").and_then(|d| d.as_str()), Some("hi"));
 
@@ -1300,7 +1315,9 @@ fn test_write_response_event_blockdelta() {
         },
         stop_detail: None,
     };
-    let (etype2, payload2) = writer.write_response_event(&ev2).expect("should emit");
+    let (etype2, payload2) = writer
+        .write_response_event(crate::codec::test_host::HOST, &ev2)
+        .expect("should emit");
     assert_eq!(etype2, "response.completed"); // golden wire-contract literal (kept bare on purpose)
     let resp_obj = payload2
         .get("response")
@@ -1317,7 +1334,7 @@ fn reader_read_response_events(
     state: &mut crate::codec::ir::StreamDecodeState,
 ) -> Vec<crate::codec::ir::IrStreamEvent> {
     let reader = ResponsesReader;
-    reader.read_response_events(event_type, data, state)
+    reader.read_response_events(crate::codec::test_host::HOST, event_type, data, state)
 }
 
 /// Regression: a text part arriving at a non-zero `output_index` must open AND write to the
@@ -1798,7 +1815,7 @@ fn test_tool_only_assistant_turn_no_empty_message_wrapper() {
         output_modalities: None,
     };
     let writer = ResponsesWriter;
-    let json = writer.write_request(&ir);
+    let json = writer.write_request(crate::codec::test_host::HOST, &ir);
     let input = json
         .get("input")
         .and_then(|v| v.as_array())
@@ -1884,7 +1901,7 @@ fn test_assistant_text_then_tool_call_order() {
         output_modalities: None,
     };
     let writer = ResponsesWriter;
-    let json = writer.write_request(&ir);
+    let json = writer.write_request(crate::codec::test_host::HOST, &ir);
     let input = json
         .get("input")
         .and_then(|v| v.as_array())
@@ -2038,7 +2055,7 @@ fn test_stream_failed_invalid_api_key_classifies_as_auth() {
 fn test_read_response_failed_body_classifies_by_signal() {
     let reader = ResponsesReader;
     let err = reader
-            .read_response(&serde_json::json!({
+            .read_response(crate::codec::test_host::HOST, &serde_json::json!({
                 "status": STATUS_FAILED,
                 "output": [],
                 "error": {"code": busbar_contract::protocol::PROVIDER_CODE_CONTEXT_LENGTH, "type": ERR_TYPE_INVALID_REQUEST}
@@ -2056,11 +2073,14 @@ fn test_read_response_failed_body_classifies_by_signal() {
 
     // An auth-failed body classifies as Auth.
     let err_auth = reader
-        .read_response(&serde_json::json!({
-            "status": STATUS_FAILED,
-            "output": [],
-            "error": {"code": "invalid_api_key", "type": ERR_TYPE_AUTHENTICATION}
-        }))
+        .read_response(
+            crate::codec::test_host::HOST,
+            &serde_json::json!({
+                "status": STATUS_FAILED,
+                "output": [],
+                "error": {"code": "invalid_api_key", "type": ERR_TYPE_AUTHENTICATION}
+            }),
+        )
         .expect_err("failed body must surface an IrError");
     assert_eq!(err_auth.class, StatusClass::Auth);
 }
@@ -2224,7 +2244,7 @@ fn write_request_tool_result_multi_text_concatenates_without_separator() {
         system_role: None,
         output_modalities: None,
     };
-    let out = writer.write_request(&req);
+    let out = writer.write_request(crate::codec::test_host::HOST, &req);
     let item = out["input"]
         .as_array()
         .and_then(|a| a.iter().find(|m| m["type"] == "function_call_output"))
@@ -2275,7 +2295,7 @@ fn write_request_tool_result_multi_text_concatenates_without_separator() {
         system_role: None,
         output_modalities: None,
     };
-    let out = writer.write_request(&req);
+    let out = writer.write_request(crate::codec::test_host::HOST, &req);
     let item = out["input"]
         .as_array()
         .and_then(|a| a.iter().find(|m| m["type"] == "function_call_output"))
@@ -2301,7 +2321,7 @@ fn test_write_error_stream_event_full_shape() {
         retry_after: None,
     });
     let (etype, payload) = writer
-        .write_response_event(&ev)
+        .write_response_event(crate::codec::test_host::HOST, &ev)
         .expect("error event should emit");
     assert_eq!(etype, "response.failed"); // golden wire-contract literal (kept bare on purpose)
                                           // The error is nested under `response` (SDK reads `event.response`), not top-level.
@@ -2343,7 +2363,9 @@ fn test_unknown_stop_reason_maps_to_completed() {
         },
         stop_detail: None,
     };
-    let (etype, payload) = writer.write_response_event(&ev).expect("should emit");
+    let (etype, payload) = writer
+        .write_response_event(crate::codec::test_host::HOST, &ev)
+        .expect("should emit");
     assert_eq!(etype, "response.completed"); // golden wire-contract literal (kept bare on purpose)
     assert_eq!(
         payload
@@ -2382,7 +2404,7 @@ fn test_unknown_stop_reason_maps_to_completed() {
         stop_detail: None,
         ..Default::default()
     };
-    let out = writer.write_response(&resp);
+    let out = writer.write_response(crate::codec::test_host::HOST, &resp);
     assert_eq!(
         out.get("status").and_then(|s| s.as_str()),
         Some("completed"), // golden wire-contract literal (kept bare on purpose)
@@ -2428,7 +2450,9 @@ fn test_malformed_function_call_args_preserved() {
         ],
         "usage": {"input_tokens": 1, "output_tokens": 1}
     });
-    let resp = reader.read_response(&resp_json).expect("read_response ok");
+    let resp = reader
+        .read_response(crate::codec::test_host::HOST, &resp_json)
+        .expect("read_response ok");
     match &resp.content[0] {
         crate::codec::ir::IrBlock::ToolUse { input, .. } => {
             assert_eq!(input.as_str(), Some("broken]"));
@@ -2536,7 +2560,7 @@ fn test_input_image_roundtrip_lossless() {
     };
     let writer = ResponsesWriter;
     let reader = ResponsesReader;
-    let json = writer.write_request(&ir);
+    let json = writer.write_request(crate::codec::test_host::HOST, &ir);
     let rt = reader.read_request(&json).expect("read round-trip ok");
     match &rt.messages[0].content[0] {
         crate::codec::ir::IrBlock::Image {
@@ -2622,7 +2646,7 @@ fn test_input_image_https_url_sentinel_roundtrip() {
         output_modalities: None,
     };
     let writer = ResponsesWriter;
-    let json = writer.write_request(&ir);
+    let json = writer.write_request(crate::codec::test_host::HOST, &ir);
     let emitted = json["input"][0]["content"][0]["image_url"]
         .as_str()
         .expect("image_url present");
@@ -2679,12 +2703,16 @@ fn test_write_request_emits_stream() {
     };
     let writer = ResponsesWriter;
     assert_eq!(
-        writer.write_request(&make(true)).get("stream"),
+        writer
+            .write_request(crate::codec::test_host::HOST, &make(true))
+            .get("stream"),
         Some(&serde_json::json!(true)),
         "stream: true must be emitted"
     );
     assert_eq!(
-        writer.write_request(&make(false)).get("stream"),
+        writer
+            .write_request(crate::codec::test_host::HOST, &make(false))
+            .get("stream"),
         Some(&serde_json::json!(false)),
         "stream: false must be emitted explicitly"
     );
@@ -2737,7 +2765,9 @@ fn test_message_start_emits_identity() {
         created: Some(1_720_000_000),
         model: Some("gpt-4o".to_string()),
     };
-    let (etype, payload) = writer.write_response_event(&ev).expect("should emit");
+    let (etype, payload) = writer
+        .write_response_event(crate::codec::test_host::HOST, &ev)
+        .expect("should emit");
     assert_eq!(etype, "response.created"); // golden wire-contract literal (kept bare on purpose)
     let resp = payload.get("response").expect("response object");
     assert_eq!(
@@ -2762,7 +2792,9 @@ fn test_message_start_emits_identity() {
         created: None,
         model: None,
     };
-    let (_, payload2) = writer.write_response_event(&ev2).expect("should emit");
+    let (_, payload2) = writer
+        .write_response_event(crate::codec::test_host::HOST, &ev2)
+        .expect("should emit");
     let resp2 = payload2.get("response").expect("response object");
     let id = resp2
         .get("id")
@@ -2791,7 +2823,9 @@ fn test_message_start_emits_identity() {
 #[test]
 fn test_synthesize_response_id_unique() {
     let n = 1000;
-    let ids: std::collections::HashSet<String> = (0..n).map(|_| synthesize_response_id()).collect();
+    let ids: std::collections::HashSet<String> = (0..n)
+        .map(|_| synthesize_response_id(crate::codec::test_host::HOST))
+        .collect();
     assert_eq!(
         ids.len(),
         n,
@@ -2818,7 +2852,7 @@ fn test_synth_token_meets_minimum_width() {
     const { assert!(ITEM_ID_TOKEN_LEN >= MIN_TOKEN_LEN) };
     const { assert!(RESPONSE_ID_TOKEN_LEN >= MIN_TOKEN_LEN) };
 
-    let resp_id = synthesize_response_id();
+    let resp_id = synthesize_response_id(crate::codec::test_host::HOST);
     let resp_suffix = resp_id
         .strip_prefix("resp_") // golden wire-contract literal (kept bare on purpose)
         .expect("synthesized response id uses resp_ prefix");
@@ -2828,7 +2862,7 @@ fn test_synth_token_meets_minimum_width() {
         resp_suffix.len()
     );
 
-    let item_id = synthesize_item_id("msg");
+    let item_id = synthesize_item_id(crate::codec::test_host::HOST, "msg");
     let item_suffix = item_id
         .strip_prefix("msg_") // golden wire-contract literal (kept bare on purpose)
         .expect("synthesized item id uses the given prefix");
@@ -2848,11 +2882,14 @@ fn test_synth_token_meets_minimum_width() {
 fn test_response_failed_carries_empty_output_skeleton() {
     let writer = ResponsesWriter;
     let (etype, failed) = writer
-        .write_response_event(&IrStreamEvent::Error(IrError {
-            class: StatusClass::ServerError,
-            provider_signal: Some("boom".to_string()),
-            retry_after: None,
-        }))
+        .write_response_event(
+            crate::codec::test_host::HOST,
+            &IrStreamEvent::Error(IrError {
+                class: StatusClass::ServerError,
+                provider_signal: Some("boom".to_string()),
+                retry_after: None,
+            }),
+        )
         .expect("Error emits response.failed");
     assert_eq!(etype, "response.failed"); // golden wire-contract literal (kept bare on purpose)
     let resp = failed
@@ -2912,7 +2949,7 @@ fn test_metadata_round_trips_through_the_slot() {
     assert!(!ir.extra.contains_key("metadata"));
 
     // write_request writes the slot back, so metadata survives to the upstream body.
-    let out = writer.write_request(&ir);
+    let out = writer.write_request(crate::codec::test_host::HOST, &ir);
     assert_eq!(
         out.get("metadata"),
         Some(&serde_json::json!({"trace_id": "abc-123", "team": "billing"})),
@@ -2934,7 +2971,9 @@ fn test_message_start_skeleton_carries_usage_output_error() {
         created: None,
         model: None,
     };
-    let (etype, payload) = writer.write_response_event(&ev).expect("should emit");
+    let (etype, payload) = writer
+        .write_response_event(crate::codec::test_host::HOST, &ev)
+        .expect("should emit");
     assert_eq!(etype, "response.created"); // golden wire-contract literal (kept bare on purpose)
     let resp = payload.get("response").expect("response object present");
 
@@ -3018,7 +3057,12 @@ fn test_failed_event_without_body_surfaces_error() {
     let reader = ResponsesReader;
     let mut state = crate::codec::ir::StreamDecodeState::default();
     let data = serde_json::json!({});
-    let events = reader.read_response_events(EVT_RESPONSE_FAILED, &data, &mut state);
+    let events = reader.read_response_events(
+        crate::codec::test_host::HOST,
+        EVT_RESPONSE_FAILED,
+        &data,
+        &mut state,
+    );
 
     assert_eq!(
         events.len(),
@@ -3053,7 +3097,12 @@ fn test_completed_event_without_body_emits_end_turn() {
     let reader = ResponsesReader;
     let mut state = crate::codec::ir::StreamDecodeState::default();
     let data = serde_json::json!({});
-    let events = reader.read_response_events(EVT_RESPONSE_COMPLETED, &data, &mut state);
+    let events = reader.read_response_events(
+        crate::codec::test_host::HOST,
+        EVT_RESPONSE_COMPLETED,
+        &data,
+        &mut state,
+    );
 
     assert_eq!(events.len(), 2, "expected MessageDelta + MessageStop");
     match &events[0] {
@@ -3082,7 +3131,7 @@ fn test_error_event_wraps_in_response_object() {
         retry_after: None,
     });
     let (etype, payload) = writer
-        .write_response_event(&ev)
+        .write_response_event(crate::codec::test_host::HOST, &ev)
         .expect("error event should emit");
     assert_eq!(etype, "response.failed"); // golden wire-contract literal (kept bare on purpose)
 
@@ -3182,7 +3231,7 @@ fn test_every_stream_event_carries_top_level_type() {
 
     for ev in &events {
         let (event_name, payload) = writer
-            .write_response_event(ev)
+            .write_response_event(crate::codec::test_host::HOST, ev)
             .unwrap_or_else(|| panic!("event {ev:?} must emit a body"));
         assert_eq!(
             payload.get("type").and_then(|t| t.as_str()),
@@ -3239,7 +3288,7 @@ fn test_sequence_number_monotonic_from_zero() {
 
     let mut seqs = Vec::new();
     for ev in &stream {
-        if let Some((_, payload)) = writer.write_response_event(ev) {
+        if let Some((_, payload)) = writer.write_response_event(crate::codec::test_host::HOST, ev) {
             let n = payload
                 .get("sequence_number")
                 .and_then(|s| s.as_u64())
@@ -3283,15 +3332,23 @@ fn test_sequence_number_resets_per_stream() {
     };
 
     // Stream A: created(0), delta(1).
-    let (_, a0) = writer.write_response_event(&start()).expect("emit");
-    let (_, a1) = writer.write_response_event(&delta()).expect("emit");
+    let (_, a0) = writer
+        .write_response_event(crate::codec::test_host::HOST, &start())
+        .expect("emit");
+    let (_, a1) = writer
+        .write_response_event(crate::codec::test_host::HOST, &delta())
+        .expect("emit");
     assert_eq!(a0.get("sequence_number").and_then(|s| s.as_u64()), Some(0));
     assert_eq!(a1.get("sequence_number").and_then(|s| s.as_u64()), Some(1));
 
     // Stream B is a new stream, so a new writer → its counter starts at 0.
     let writer_b = ResponsesWriter;
-    let (_, b0) = writer_b.write_response_event(&start()).expect("emit");
-    let (_, b1) = writer_b.write_response_event(&delta()).expect("emit");
+    let (_, b0) = writer_b
+        .write_response_event(crate::codec::test_host::HOST, &start())
+        .expect("emit");
+    let (_, b1) = writer_b
+        .write_response_event(crate::codec::test_host::HOST, &delta())
+        .expect("emit");
     assert_eq!(
         b0.get("sequence_number").and_then(|s| s.as_u64()),
         Some(0),
@@ -3346,7 +3403,7 @@ fn test_every_stream_event_carries_sequence_number() {
 
     for ev in &events {
         let (event_name, payload) = writer
-            .write_response_event(ev)
+            .write_response_event(crate::codec::test_host::HOST, ev)
             .unwrap_or_else(|| panic!("event {ev:?} must emit a body"));
         assert!(
             payload
@@ -3367,10 +3424,13 @@ fn test_delta_and_item_added_carry_item_id_and_content_index() {
 
     // Text delta.
     let (_, text) = writer
-        .write_response_event(&IrStreamEvent::BlockDelta {
-            index: 2,
-            delta: crate::codec::ir::IrDelta::TextDelta("hi".to_string()),
-        })
+        .write_response_event(
+            crate::codec::test_host::HOST,
+            &IrStreamEvent::BlockDelta {
+                index: 2,
+                delta: crate::codec::ir::IrDelta::TextDelta("hi".to_string()),
+            },
+        )
         .expect("emit");
     let text_item = text
         .get("item_id")
@@ -3388,14 +3448,17 @@ fn test_delta_and_item_added_carry_item_id_and_content_index() {
 
     // output_item.added for a function call.
     let (_, added) = writer
-        .write_response_event(&IrStreamEvent::BlockStart {
-            index: 1,
-            block: crate::codec::ir::IrBlockMeta::ToolUse {
-                id: "call_9".to_string(),
-                name: "lookup".to_string(),
+        .write_response_event(
+            crate::codec::test_host::HOST,
+            &IrStreamEvent::BlockStart {
+                index: 1,
+                block: crate::codec::ir::IrBlockMeta::ToolUse {
+                    id: "call_9".to_string(),
+                    name: "lookup".to_string(),
+                },
+                refusal: false,
             },
-            refusal: false,
-        })
+        )
         .expect("emit");
     let added_item = added
         .get("item_id")
@@ -3417,10 +3480,13 @@ fn test_delta_and_item_added_carry_item_id_and_content_index() {
 
     // The function_call_arguments.delta at the same index reuses the same fc_ item_id.
     let (_, args) = writer
-        .write_response_event(&IrStreamEvent::BlockDelta {
-            index: 1,
-            delta: crate::codec::ir::IrDelta::InputJsonDelta("{\"q\":1}".to_string()),
-        })
+        .write_response_event(
+            crate::codec::test_host::HOST,
+            &IrStreamEvent::BlockDelta {
+                index: 1,
+                delta: crate::codec::ir::IrDelta::InputJsonDelta("{\"q\":1}".to_string()),
+            },
+        )
         .expect("emit");
     assert_eq!(
         args.get("item_id").and_then(|i| i.as_str()),
@@ -3460,12 +3526,12 @@ fn test_sequence_number_is_per_instance_not_thread_local() {
     };
 
     // Interleave the two streams on the same "thread".
-    let a0 = seq(stream_a.write_response_event(&start())); // A: 0
-    let b0 = seq(stream_b.write_response_event(&start())); // B: 0 (must NOT touch A)
-    let a1 = seq(stream_a.write_response_event(&delta())); // A: 1
-    let b1 = seq(stream_b.write_response_event(&delta())); // B: 1
-    let a2 = seq(stream_a.write_response_event(&delta())); // A: 2
-    let b2 = seq(stream_b.write_response_event(&delta())); // B: 2
+    let a0 = seq(stream_a.write_response_event(crate::codec::test_host::HOST, &start())); // A: 0
+    let b0 = seq(stream_b.write_response_event(crate::codec::test_host::HOST, &start())); // B: 0 (must NOT touch A)
+    let a1 = seq(stream_a.write_response_event(crate::codec::test_host::HOST, &delta())); // A: 1
+    let b1 = seq(stream_b.write_response_event(crate::codec::test_host::HOST, &delta())); // B: 1
+    let a2 = seq(stream_a.write_response_event(crate::codec::test_host::HOST, &delta())); // A: 2
+    let b2 = seq(stream_b.write_response_event(crate::codec::test_host::HOST, &delta())); // B: 2
 
     assert_eq!(
         (a0, a1, a2),
@@ -3488,14 +3554,17 @@ fn test_output_item_done_carries_matching_item_id_and_item() {
     let writer = ResponsesWriter;
 
     let (_, added) = writer
-        .write_response_event(&IrStreamEvent::BlockStart {
-            index: 3,
-            block: crate::codec::ir::IrBlockMeta::ToolUse {
-                id: "call_x".to_string(),
-                name: "f".to_string(),
+        .write_response_event(
+            crate::codec::test_host::HOST,
+            &IrStreamEvent::BlockStart {
+                index: 3,
+                block: crate::codec::ir::IrBlockMeta::ToolUse {
+                    id: "call_x".to_string(),
+                    name: "f".to_string(),
+                },
+                refusal: false,
             },
-            refusal: false,
-        })
+        )
         .expect("added emits");
     let added_id = added
         .get("item_id")
@@ -3504,7 +3573,10 @@ fn test_output_item_done_carries_matching_item_id_and_item() {
         .to_string();
 
     let (etype, done) = writer
-        .write_response_event(&IrStreamEvent::BlockStop { index: 3 })
+        .write_response_event(
+            crate::codec::test_host::HOST,
+            &IrStreamEvent::BlockStop { index: 3 },
+        )
         .expect("done emits");
     assert_eq!(etype, "response.output_item.done"); // golden wire-contract literal (kept bare on purpose)
     assert_eq!(
@@ -3539,11 +3611,14 @@ fn test_response_failed_uses_native_responseerror_shape() {
 
     // With a provider signal: it becomes the non-null code enum AND the message.
     let (etype, payload) = writer
-        .write_response_event(&IrStreamEvent::Error(IrError {
-            class: StatusClass::ServerError,
-            provider_signal: Some("rate_limit_exceeded".to_string()),
-            retry_after: None,
-        }))
+        .write_response_event(
+            crate::codec::test_host::HOST,
+            &IrStreamEvent::Error(IrError {
+                class: StatusClass::ServerError,
+                provider_signal: Some("rate_limit_exceeded".to_string()),
+                retry_after: None,
+            }),
+        )
         .expect("emit");
     assert_eq!(etype, "response.failed"); // golden wire-contract literal (kept bare on purpose)
     let error = payload
@@ -3571,11 +3646,14 @@ fn test_response_failed_uses_native_responseerror_shape() {
 
     // Without a provider signal: code defaults to the canonical `server_error`, never null.
     let (_, payload) = writer
-        .write_response_event(&IrStreamEvent::Error(IrError {
-            class: StatusClass::ServerError,
-            provider_signal: None,
-            retry_after: None,
-        }))
+        .write_response_event(
+            crate::codec::test_host::HOST,
+            &IrStreamEvent::Error(IrError {
+                class: StatusClass::ServerError,
+                provider_signal: None,
+                retry_after: None,
+            }),
+        )
         .expect("emit");
     let code = payload
         .get("response")
@@ -3597,11 +3675,14 @@ fn test_response_failed_uses_native_responseerror_shape() {
 fn test_response_failed_code_is_enum_even_for_human_provider_signal() {
     let writer = ResponsesWriter;
     let (_, payload) = writer
-        .write_response_event(&IrStreamEvent::Error(IrError {
-            class: StatusClass::ServerError,
-            provider_signal: Some(busbar_contract::protocol::STREAM_ABORT_DETAIL.to_string()),
-            retry_after: None,
-        }))
+        .write_response_event(
+            crate::codec::test_host::HOST,
+            &IrStreamEvent::Error(IrError {
+                class: StatusClass::ServerError,
+                provider_signal: Some(busbar_contract::protocol::STREAM_ABORT_DETAIL.to_string()),
+                retry_after: None,
+            }),
+        )
         .expect("emit");
     let error = payload
         .get("response")
@@ -3621,11 +3702,14 @@ fn test_response_failed_code_is_enum_even_for_human_provider_signal() {
 
     // An auth-class transport error derives the auth code enum, not the human string.
     let (_, payload) = writer
-        .write_response_event(&IrStreamEvent::Error(IrError {
-            class: StatusClass::Auth,
-            provider_signal: Some("connection reset by peer".to_string()),
-            retry_after: None,
-        }))
+        .write_response_event(
+            crate::codec::test_host::HOST,
+            &IrStreamEvent::Error(IrError {
+                class: StatusClass::Auth,
+                provider_signal: Some("connection reset by peer".to_string()),
+                retry_after: None,
+            }),
+        )
         .expect("emit");
     assert_eq!(
         payload
@@ -3647,19 +3731,25 @@ fn test_response_failed_code_is_enum_even_for_human_provider_signal() {
 #[test]
 fn test_text_block_emits_message_item_lifecycle() {
     let writer = ResponsesWriter;
-    let _ = writer.write_response_events(&IrStreamEvent::MessageStart {
-        role: crate::codec::ir::IrRole::Assistant,
-        usage: None,
-        id: None,
-        created: None,
-        model: None,
-    });
+    let _ = writer.write_response_events(
+        crate::codec::test_host::HOST,
+        &IrStreamEvent::MessageStart {
+            role: crate::codec::ir::IrRole::Assistant,
+            usage: None,
+            id: None,
+            created: None,
+            model: None,
+        },
+    );
     // Text BlockStart opens the message item AND its output_text content part (two ordered frames).
-    let added_frames = writer.write_response_events(&IrStreamEvent::BlockStart {
-        index: 0,
-        block: crate::codec::ir::IrBlockMeta::Text,
-        refusal: false,
-    });
+    let added_frames = writer.write_response_events(
+        crate::codec::test_host::HOST,
+        &IrStreamEvent::BlockStart {
+            index: 0,
+            block: crate::codec::ir::IrBlockMeta::Text,
+            refusal: false,
+        },
+    );
     let added_types: Vec<&str> = added_frames.iter().map(|(et, _)| et.as_str()).collect();
     assert_eq!(
         added_types,
@@ -3683,13 +3773,19 @@ fn test_text_block_emits_message_item_lifecycle() {
     assert_eq!(part_added["part"]["type"], "output_text"); // golden wire-contract literal (kept bare on purpose)
     assert_eq!(part_added["part"]["text"], "");
 
-    let _ = writer.write_response_events(&IrStreamEvent::BlockDelta {
-        index: 0,
-        delta: crate::codec::ir::IrDelta::TextDelta("hi".to_string()),
-    });
+    let _ = writer.write_response_events(
+        crate::codec::test_host::HOST,
+        &IrStreamEvent::BlockDelta {
+            index: 0,
+            delta: crate::codec::ir::IrDelta::TextDelta("hi".to_string()),
+        },
+    );
 
     // Text BlockStop closes the content part then the item, in the native order.
-    let done_frames = writer.write_response_events(&IrStreamEvent::BlockStop { index: 0 });
+    let done_frames = writer.write_response_events(
+        crate::codec::test_host::HOST,
+        &IrStreamEvent::BlockStop { index: 0 },
+    );
     let done_types: Vec<&str> = done_frames.iter().map(|(et, _)| et.as_str()).collect();
     assert_eq!(
         done_types,
@@ -3722,7 +3818,10 @@ fn test_text_block_emits_message_item_lifecycle() {
     // A SECOND BlockStop at the (already-closed) text index must NOT re-emit any frame.
     assert!(
         writer
-            .write_response_events(&IrStreamEvent::BlockStop { index: 0 })
+            .write_response_events(
+                crate::codec::test_host::HOST,
+                &IrStreamEvent::BlockStop { index: 0 }
+            )
             .is_empty(),
         "a repeated BlockStop for a closed text index must not re-emit any lifecycle frame"
     );
@@ -3735,37 +3834,52 @@ fn test_text_block_emits_message_item_lifecycle() {
 #[test]
 fn test_tool_and_text_block_stop_emit_correctly_typed_done() {
     let writer = ResponsesWriter;
-    let _ = writer.write_response_event(&IrStreamEvent::MessageStart {
-        role: crate::codec::ir::IrRole::Assistant,
-        usage: None,
-        id: None,
-        created: None,
-        model: None,
-    });
+    let _ = writer.write_response_event(
+        crate::codec::test_host::HOST,
+        &IrStreamEvent::MessageStart {
+            role: crate::codec::ir::IrRole::Assistant,
+            usage: None,
+            id: None,
+            created: None,
+            model: None,
+        },
+    );
     // Tool at index 0, text at index 1.
     let _ = writer
-        .write_response_event(&IrStreamEvent::BlockStart {
-            index: 0,
-            block: crate::codec::ir::IrBlockMeta::ToolUse {
-                id: "call_1".to_string(),
-                name: "f".to_string(),
+        .write_response_event(
+            crate::codec::test_host::HOST,
+            &IrStreamEvent::BlockStart {
+                index: 0,
+                block: crate::codec::ir::IrBlockMeta::ToolUse {
+                    id: "call_1".to_string(),
+                    name: "f".to_string(),
+                },
+                refusal: false,
             },
-            refusal: false,
-        })
+        )
         .expect("tool added emits");
     let _ = writer
-        .write_response_event(&IrStreamEvent::BlockStart {
-            index: 1,
-            block: crate::codec::ir::IrBlockMeta::Text,
-            refusal: false,
-        })
+        .write_response_event(
+            crate::codec::test_host::HOST,
+            &IrStreamEvent::BlockStart {
+                index: 1,
+                block: crate::codec::ir::IrBlockMeta::Text,
+                refusal: false,
+            },
+        )
         .expect("text added emits");
-    let _ = writer.write_response_event(&IrStreamEvent::BlockDelta {
-        index: 1,
-        delta: crate::codec::ir::IrDelta::TextDelta("hi".to_string()),
-    });
+    let _ = writer.write_response_event(
+        crate::codec::test_host::HOST,
+        &IrStreamEvent::BlockDelta {
+            index: 1,
+            delta: crate::codec::ir::IrDelta::TextDelta("hi".to_string()),
+        },
+    );
     // Tool index closes with a SINGLE function_call done (a tool has no content-part bracket).
-    let tool_frames = writer.write_response_events(&IrStreamEvent::BlockStop { index: 0 });
+    let tool_frames = writer.write_response_events(
+        crate::codec::test_host::HOST,
+        &IrStreamEvent::BlockStop { index: 0 },
+    );
     let tool_types: Vec<&str> = tool_frames.iter().map(|(et, _)| et.as_str()).collect();
     assert_eq!(
         tool_types,
@@ -3774,7 +3888,10 @@ fn test_tool_and_text_block_stop_emit_correctly_typed_done() {
     );
     assert_eq!(tool_frames[0].1["item"]["type"], "function_call"); // golden wire-contract literal (kept bare on purpose)
                                                                    // Text index closes with the content-part bracket THEN a message done.
-    let text_frames = writer.write_response_events(&IrStreamEvent::BlockStop { index: 1 });
+    let text_frames = writer.write_response_events(
+        crate::codec::test_host::HOST,
+        &IrStreamEvent::BlockStop { index: 1 },
+    );
     let text_types: Vec<&str> = text_frames.iter().map(|(et, _)| et.as_str()).collect();
     assert_eq!(
         text_types,
@@ -3790,7 +3907,10 @@ fn test_tool_and_text_block_stop_emit_correctly_typed_done() {
                                                              // A SECOND BlockStop at the (already-closed) tool index 0 must not emit a duplicate done.
     assert!(
         writer
-            .write_response_events(&IrStreamEvent::BlockStop { index: 0 })
+            .write_response_events(
+                crate::codec::test_host::HOST,
+                &IrStreamEvent::BlockStop { index: 0 }
+            )
             .is_empty(),
         "a repeated BlockStop for a closed tool index must not re-emit output_item.done"
     );
@@ -3805,12 +3925,15 @@ fn test_tool_and_text_block_stop_emit_correctly_typed_done() {
 fn test_completed_event_carries_id_and_created_at() {
     let writer = ResponsesWriter;
     let (etype, payload) = writer
-        .write_response_event(&IrStreamEvent::MessageDelta {
-            stop_reason: Some(crate::codec::ir::IrStopReason::EndTurn),
-            stop_sequence: None,
-            usage: usage_fixture(),
-            stop_detail: None,
-        })
+        .write_response_event(
+            crate::codec::test_host::HOST,
+            &IrStreamEvent::MessageDelta {
+                stop_reason: Some(crate::codec::ir::IrStopReason::EndTurn),
+                stop_sequence: None,
+                usage: usage_fixture(),
+                stop_detail: None,
+            },
+        )
         .expect("emit");
     assert_eq!(etype, "response.completed"); // golden wire-contract literal (kept bare on purpose)
     let resp = payload
@@ -3838,7 +3961,7 @@ fn test_completed_event_carries_id_and_created_at() {
 fn write_error_emits_invalid_api_key_code_for_auth_failure() {
     let writer = ResponsesWriter;
     for kind in ["authentication", "authentication_error", "auth"] {
-        let body = writer.write_error(401, kind, "bad key");
+        let body = writer.write_error(crate::codec::test_host::HOST, 401, kind, "bad key");
         assert_eq!(
             body["error"]["type"],
             serde_json::json!("authentication_error"), // golden wire-contract literal (kept bare on purpose)
@@ -3865,7 +3988,7 @@ fn write_error_keeps_null_code_for_non_auth_errors() {
         "rate_limit",
         "server_error",
     ] {
-        let body = writer.write_error(400, kind, "msg");
+        let body = writer.write_error(crate::codec::test_host::HOST, 400, kind, "msg");
         assert_eq!(
             body["error"]["code"],
             serde_json::Value::Null,
@@ -3882,7 +4005,7 @@ fn write_error_keeps_null_code_for_non_auth_errors() {
 fn write_error_insufficient_quota_keeps_type_and_sets_code() {
     let writer = ResponsesWriter;
     for kind in ["insufficient_quota", "billing"] {
-        let body = writer.write_error(429, kind, "over quota");
+        let body = writer.write_error(crate::codec::test_host::HOST, 429, kind, "over quota");
         assert_eq!(
             body["error"]["type"],
             serde_json::json!("insufficient_quota"), // golden wire-contract literal (kept bare on purpose)
@@ -3978,13 +4101,16 @@ fn test_terminal_id_matches_created_id_cross_protocol() {
     let writer = ResponsesWriter;
     // Cross-protocol: id is None, so response.created synthesizes one.
     let (_, created) = writer
-        .write_response_event(&IrStreamEvent::MessageStart {
-            role: crate::codec::ir::IrRole::Assistant,
-            usage: None,
-            id: None,
-            created: None,
-            model: None,
-        })
+        .write_response_event(
+            crate::codec::test_host::HOST,
+            &IrStreamEvent::MessageStart {
+                role: crate::codec::ir::IrRole::Assistant,
+                usage: None,
+                id: None,
+                created: None,
+                model: None,
+            },
+        )
         .expect("MessageStart emits response.created");
     let created_id = created["response"]["id"]
         .as_str()
@@ -3993,12 +4119,15 @@ fn test_terminal_id_matches_created_id_cross_protocol() {
     assert!(created_id.starts_with("resp_")); // golden wire-contract literal (kept bare on purpose)
 
     let (etype, completed) = writer
-        .write_response_event(&IrStreamEvent::MessageDelta {
-            stop_reason: Some(crate::codec::ir::IrStopReason::EndTurn),
-            stop_sequence: None,
-            usage: usage_fixture(),
-            stop_detail: None,
-        })
+        .write_response_event(
+            crate::codec::test_host::HOST,
+            &IrStreamEvent::MessageDelta {
+                stop_reason: Some(crate::codec::ir::IrStopReason::EndTurn),
+                stop_sequence: None,
+                usage: usage_fixture(),
+                stop_detail: None,
+            },
+        )
         .expect("MessageDelta emits terminal");
     assert_eq!(etype, "response.completed"); // golden wire-contract literal (kept bare on purpose)
     assert_eq!(
@@ -4016,22 +4145,28 @@ fn test_terminal_id_matches_created_id_cross_protocol() {
 fn test_failed_id_matches_created_id_cross_protocol() {
     let writer = ResponsesWriter;
     let (_, created) = writer
-        .write_response_event(&IrStreamEvent::MessageStart {
-            role: crate::codec::ir::IrRole::Assistant,
-            usage: None,
-            id: None,
-            created: None,
-            model: None,
-        })
+        .write_response_event(
+            crate::codec::test_host::HOST,
+            &IrStreamEvent::MessageStart {
+                role: crate::codec::ir::IrRole::Assistant,
+                usage: None,
+                id: None,
+                created: None,
+                model: None,
+            },
+        )
         .expect("MessageStart emits response.created");
     let created_id = created["response"]["id"].as_str().unwrap().to_string();
 
     let (etype, failed) = writer
-        .write_response_event(&IrStreamEvent::Error(IrError {
-            class: StatusClass::ServerError,
-            provider_signal: Some("boom".to_string()),
-            retry_after: None,
-        }))
+        .write_response_event(
+            crate::codec::test_host::HOST,
+            &IrStreamEvent::Error(IrError {
+                class: StatusClass::ServerError,
+                provider_signal: Some("boom".to_string()),
+                retry_after: None,
+            }),
+        )
         .expect("Error emits response.failed");
     assert_eq!(etype, "response.failed"); // golden wire-contract literal (kept bare on purpose)
     assert_eq!(
@@ -4047,22 +4182,28 @@ fn test_failed_id_matches_created_id_cross_protocol() {
 fn test_terminal_id_matches_forwarded_created_id() {
     let writer = ResponsesWriter;
     let (_, created) = writer
-        .write_response_event(&IrStreamEvent::MessageStart {
-            role: crate::codec::ir::IrRole::Assistant,
-            usage: None,
-            id: Some("resp_upstream123".to_string()),
-            created: Some(42),
-            model: None,
-        })
+        .write_response_event(
+            crate::codec::test_host::HOST,
+            &IrStreamEvent::MessageStart {
+                role: crate::codec::ir::IrRole::Assistant,
+                usage: None,
+                id: Some("resp_upstream123".to_string()),
+                created: Some(42),
+                model: None,
+            },
+        )
         .expect("emit");
     assert_eq!(created["response"]["id"].as_str(), Some("resp_upstream123"));
     let (_, completed) = writer
-        .write_response_event(&IrStreamEvent::MessageDelta {
-            stop_reason: Some(crate::codec::ir::IrStopReason::EndTurn),
-            stop_sequence: None,
-            usage: usage_fixture(),
-            stop_detail: None,
-        })
+        .write_response_event(
+            crate::codec::test_host::HOST,
+            &IrStreamEvent::MessageDelta {
+                stop_reason: Some(crate::codec::ir::IrStopReason::EndTurn),
+                stop_sequence: None,
+                usage: usage_fixture(),
+                stop_detail: None,
+            },
+        )
         .expect("emit");
     assert_eq!(
         completed["response"]["id"].as_str(),
@@ -4080,24 +4221,30 @@ fn test_terminal_id_matches_forwarded_created_id() {
 fn test_carried_id_resets_per_stream() {
     let writer = ResponsesWriter;
     let (_, a_created) = writer
-        .write_response_event(&IrStreamEvent::MessageStart {
-            role: crate::codec::ir::IrRole::Assistant,
-            usage: None,
-            id: Some("resp_A".to_string()),
-            created: None,
-            model: None,
-        })
+        .write_response_event(
+            crate::codec::test_host::HOST,
+            &IrStreamEvent::MessageStart {
+                role: crate::codec::ir::IrRole::Assistant,
+                usage: None,
+                id: Some("resp_A".to_string()),
+                created: None,
+                model: None,
+            },
+        )
         .expect("emit");
     assert_eq!(a_created["response"]["id"].as_str(), Some("resp_A"));
     // A duplicate opening event on the SAME instance, naming a different id.
     let (_, dup_created) = writer
-        .write_response_event(&IrStreamEvent::MessageStart {
-            role: crate::codec::ir::IrRole::Assistant,
-            usage: None,
-            id: Some("resp_B".to_string()),
-            created: None,
-            model: None,
-        })
+        .write_response_event(
+            crate::codec::test_host::HOST,
+            &IrStreamEvent::MessageStart {
+                role: crate::codec::ir::IrRole::Assistant,
+                usage: None,
+                id: Some("resp_B".to_string()),
+                created: None,
+                model: None,
+            },
+        )
         .expect("emit");
     assert_eq!(
         dup_created["response"]["id"].as_str(),
@@ -4105,12 +4252,15 @@ fn test_carried_id_resets_per_stream() {
         "one stream states one id; the duplicate must not re-mint it"
     );
     let (_, completed) = writer
-        .write_response_event(&IrStreamEvent::MessageDelta {
-            stop_reason: Some(crate::codec::ir::IrStopReason::EndTurn),
-            stop_sequence: None,
-            usage: usage_fixture(),
-            stop_detail: None,
-        })
+        .write_response_event(
+            crate::codec::test_host::HOST,
+            &IrStreamEvent::MessageDelta {
+                stop_reason: Some(crate::codec::ir::IrStopReason::EndTurn),
+                stop_sequence: None,
+                usage: usage_fixture(),
+                stop_detail: None,
+            },
+        )
         .expect("emit");
     assert_eq!(
         completed["response"]["id"].as_str(),
@@ -4121,13 +4271,16 @@ fn test_carried_id_resets_per_stream() {
     // A genuinely NEW stream is a NEW writer, and carries nothing from the last one.
     let next = ResponsesWriter;
     let (_, b_created) = next
-        .write_response_event(&IrStreamEvent::MessageStart {
-            role: crate::codec::ir::IrRole::Assistant,
-            usage: None,
-            id: Some("resp_B".to_string()),
-            created: None,
-            model: None,
-        })
+        .write_response_event(
+            crate::codec::test_host::HOST,
+            &IrStreamEvent::MessageStart {
+                role: crate::codec::ir::IrRole::Assistant,
+                usage: None,
+                id: Some("resp_B".to_string()),
+                created: None,
+                model: None,
+            },
+        )
         .expect("emit");
     assert_eq!(
         b_created["response"]["id"].as_str(),
@@ -4189,21 +4342,27 @@ fn test_reader_output_index_clamped() {
 #[test]
 fn test_writer_open_text_indices_capped() {
     let writer = ResponsesWriter;
-    let _ = writer.write_response_event(&IrStreamEvent::MessageStart {
-        role: crate::codec::ir::IrRole::Assistant,
-        usage: None,
-        id: None,
-        created: None,
-        model: None,
-    });
+    let _ = writer.write_response_event(
+        crate::codec::test_host::HOST,
+        &IrStreamEvent::MessageStart {
+            role: crate::codec::ir::IrRole::Assistant,
+            usage: None,
+            id: None,
+            created: None,
+            model: None,
+        },
+    );
     let mut opened = 0usize;
     for i in 0..(MAX_OPEN_TOOLS + 200) {
         if writer
-            .write_response_event(&IrStreamEvent::BlockStart {
-                index: i,
-                block: crate::codec::ir::IrBlockMeta::Text,
-                refusal: false,
-            })
+            .write_response_event(
+                crate::codec::test_host::HOST,
+                &IrStreamEvent::BlockStart {
+                    index: i,
+                    block: crate::codec::ir::IrBlockMeta::Text,
+                    refusal: false,
+                },
+            )
             .is_some()
         {
             opened += 1;
@@ -4255,24 +4414,30 @@ fn test_writer_open_tool_indices_capped() {
 #[test]
 fn test_writer_refused_tool_open_emits_no_output_item_added() {
     let writer = ResponsesWriter;
-    let _ = writer.write_response_event(&IrStreamEvent::MessageStart {
-        role: crate::codec::ir::IrRole::Assistant,
-        usage: None,
-        id: None,
-        created: None,
-        model: None,
-    });
+    let _ = writer.write_response_event(
+        crate::codec::test_host::HOST,
+        &IrStreamEvent::MessageStart {
+            role: crate::codec::ir::IrRole::Assistant,
+            usage: None,
+            id: None,
+            created: None,
+            model: None,
+        },
+    );
     let mut added = Vec::new();
     for i in 0..(MAX_OPEN_TOOLS + 200) {
         if writer
-            .write_response_event(&IrStreamEvent::BlockStart {
-                index: i,
-                block: crate::codec::ir::IrBlockMeta::ToolUse {
-                    id: format!("call_{i}"),
-                    name: "f".to_string(),
+            .write_response_event(
+                crate::codec::test_host::HOST,
+                &IrStreamEvent::BlockStart {
+                    index: i,
+                    block: crate::codec::ir::IrBlockMeta::ToolUse {
+                        id: format!("call_{i}"),
+                        name: "f".to_string(),
+                    },
+                    refusal: false,
                 },
-                refusal: false,
-            })
+            )
             .is_some()
         {
             added.push(i);
@@ -4290,7 +4455,10 @@ fn test_writer_refused_tool_open_emits_no_output_item_added() {
     for i in added {
         assert!(
             writer
-                .write_response_event(&IrStreamEvent::BlockStop { index: i })
+                .write_response_event(
+                    crate::codec::test_host::HOST,
+                    &IrStreamEvent::BlockStop { index: i }
+                )
                 .is_some(),
             "`output_item.added` at index {i} was never closed by its BlockStop"
         );
@@ -4403,20 +4571,26 @@ fn test_responses_classify_delegates() {
 #[test]
 fn test_terminal_incomplete_emits_response_incomplete_for_max_tokens() {
     let writer = ResponsesWriter;
-    let _ = writer.write_response_event(&IrStreamEvent::MessageStart {
-        role: crate::codec::ir::IrRole::Assistant,
-        usage: None,
-        id: None,
-        created: None,
-        model: None,
-    });
+    let _ = writer.write_response_event(
+        crate::codec::test_host::HOST,
+        &IrStreamEvent::MessageStart {
+            role: crate::codec::ir::IrRole::Assistant,
+            usage: None,
+            id: None,
+            created: None,
+            model: None,
+        },
+    );
     let (etype, body) = writer
-        .write_response_event(&IrStreamEvent::MessageDelta {
-            stop_reason: Some(crate::codec::ir::IrStopReason::MaxTokens),
-            stop_sequence: None,
-            usage: usage_fixture(),
-            stop_detail: None,
-        })
+        .write_response_event(
+            crate::codec::test_host::HOST,
+            &IrStreamEvent::MessageDelta {
+                stop_reason: Some(crate::codec::ir::IrStopReason::MaxTokens),
+                stop_sequence: None,
+                usage: usage_fixture(),
+                stop_detail: None,
+            },
+        )
         .expect("MessageDelta emits a terminal event");
     assert_eq!(
         etype,
@@ -4445,20 +4619,26 @@ fn test_terminal_incomplete_emits_response_incomplete_for_max_tokens() {
 #[test]
 fn test_terminal_incomplete_emits_response_incomplete_for_safety() {
     let writer = ResponsesWriter;
-    let _ = writer.write_response_event(&IrStreamEvent::MessageStart {
-        role: crate::codec::ir::IrRole::Assistant,
-        usage: None,
-        id: None,
-        created: None,
-        model: None,
-    });
+    let _ = writer.write_response_event(
+        crate::codec::test_host::HOST,
+        &IrStreamEvent::MessageStart {
+            role: crate::codec::ir::IrRole::Assistant,
+            usage: None,
+            id: None,
+            created: None,
+            model: None,
+        },
+    );
     let (etype, body) = writer
-        .write_response_event(&IrStreamEvent::MessageDelta {
-            stop_reason: Some(crate::codec::ir::IrStopReason::Safety),
-            stop_sequence: None,
-            usage: usage_fixture(),
-            stop_detail: None,
-        })
+        .write_response_event(
+            crate::codec::test_host::HOST,
+            &IrStreamEvent::MessageDelta {
+                stop_reason: Some(crate::codec::ir::IrStopReason::Safety),
+                stop_sequence: None,
+                usage: usage_fixture(),
+                stop_detail: None,
+            },
+        )
         .expect("MessageDelta emits a terminal event");
     assert_eq!(etype, "response.incomplete"); // golden wire-contract literal (kept bare on purpose)
     assert_eq!(body["type"].as_str(), Some("response.incomplete")); // golden wire-contract literal (kept bare on purpose)
@@ -4475,22 +4655,28 @@ fn test_terminal_incomplete_emits_response_incomplete_for_safety() {
 fn test_terminal_completed_unchanged_for_end_turn() {
     let writer = ResponsesWriter;
     let (_, created) = writer
-        .write_response_event(&IrStreamEvent::MessageStart {
-            role: crate::codec::ir::IrRole::Assistant,
-            usage: None,
-            id: None,
-            created: None,
-            model: None,
-        })
+        .write_response_event(
+            crate::codec::test_host::HOST,
+            &IrStreamEvent::MessageStart {
+                role: crate::codec::ir::IrRole::Assistant,
+                usage: None,
+                id: None,
+                created: None,
+                model: None,
+            },
+        )
         .expect("created");
     let created_id = created["response"]["id"].as_str().unwrap().to_string();
     let (etype, body) = writer
-        .write_response_event(&IrStreamEvent::MessageDelta {
-            stop_reason: Some(crate::codec::ir::IrStopReason::EndTurn),
-            stop_sequence: None,
-            usage: usage_fixture(),
-            stop_detail: None,
-        })
+        .write_response_event(
+            crate::codec::test_host::HOST,
+            &IrStreamEvent::MessageDelta {
+                stop_reason: Some(crate::codec::ir::IrStopReason::EndTurn),
+                stop_sequence: None,
+                usage: usage_fixture(),
+                stop_detail: None,
+            },
+        )
         .expect("terminal");
     assert_eq!(etype, "response.completed"); // golden wire-contract literal (kept bare on purpose)
     assert_eq!(body["type"].as_str(), Some("response.completed")); // golden wire-contract literal (kept bare on purpose)
@@ -4516,7 +4702,7 @@ fn test_write_error_maps_overloaded_to_server_error() {
         "service_unavailable",
         "unavailable",
     ] {
-        let v = writer.write_error(503, kind, "upstream busy");
+        let v = writer.write_error(crate::codec::test_host::HOST, 503, kind, "upstream busy");
         assert_eq!(
             v["error"]["type"].as_str(),
             Some("server_error"), // golden wire-contract literal (kept bare on purpose)
@@ -4532,7 +4718,7 @@ fn test_write_error_maps_overloaded_to_server_error() {
 /// fingerprint a proxied response or extract the server clock from the id.
 #[test]
 fn test_synthesize_response_id_is_opaque_native_length() {
-    let id = synthesize_response_id();
+    let id = synthesize_response_id(crate::codec::test_host::HOST);
     let suffix = id.strip_prefix("resp_").expect("resp_ prefix");
     assert_eq!(
         suffix.len(),
@@ -4560,7 +4746,7 @@ fn test_synthesize_response_id_is_opaque_native_length() {
 #[test]
 fn test_synthesize_item_id_is_opaque_native_length() {
     for prefix in ["msg", "fc"] {
-        let id = synthesize_item_id(prefix);
+        let id = synthesize_item_id(crate::codec::test_host::HOST, prefix);
         let suffix = id
             .strip_prefix(&format!("{prefix}_"))
             .expect("prefix present");
@@ -4589,8 +4775,14 @@ fn test_synthesize_item_id_is_opaque_native_length() {
 fn test_synthesized_ids_are_unique() {
     let mut seen = std::collections::HashSet::new();
     for _ in 0..10_000 {
-        assert!(seen.insert(synthesize_response_id()), "duplicate resp_ id");
-        assert!(seen.insert(synthesize_item_id("msg")), "duplicate msg_ id");
+        assert!(
+            seen.insert(synthesize_response_id(crate::codec::test_host::HOST)),
+            "duplicate resp_ id"
+        );
+        assert!(
+            seen.insert(synthesize_item_id(crate::codec::test_host::HOST, "msg")),
+            "duplicate msg_ id"
+        );
     }
 }
 
@@ -4600,16 +4792,16 @@ fn test_synthesized_ids_are_unique() {
 #[test]
 fn test_item_id_for_is_stream_stable_and_opaque() {
     let writer = ResponsesWriter;
-    let a1 = writer.item_id_for("msg", 0);
-    let a2 = writer.item_id_for("msg", 0);
+    let a1 = writer.item_id_for(crate::codec::test_host::HOST, "msg", 0);
+    let a2 = writer.item_id_for(crate::codec::test_host::HOST, "msg", 0);
     assert_eq!(
         a1, a2,
         "same (prefix,index) yields a stable id within a stream"
     );
     assert!(a1.starts_with("msg_")); // golden wire-contract literal (kept bare on purpose)
-    let b = writer.item_id_for("msg", 1);
+    let b = writer.item_id_for(crate::codec::test_host::HOST, "msg", 1);
     assert_ne!(a1, b, "different indices get distinct ids");
-    let fc = writer.item_id_for("fc", 0);
+    let fc = writer.item_id_for(crate::codec::test_host::HOST, "fc", 0);
     assert_ne!(
         a1, fc,
         "different prefixes at the same index get distinct ids"
@@ -4618,7 +4810,7 @@ fn test_item_id_for_is_stream_stable_and_opaque() {
 
     // A new stream (reset) mints a fresh id for the same key.
     writer.reset_sequence_number();
-    let a_after = writer.item_id_for("msg", 0);
+    let a_after = writer.item_id_for(crate::codec::test_host::HOST, "msg", 0);
     assert_ne!(
         a1, a_after,
         "a reused writer must not replay a previous stream's item id"
@@ -4631,18 +4823,24 @@ fn test_item_id_for_is_stream_stable_and_opaque() {
 #[test]
 fn test_streamed_text_item_shares_one_item_id() {
     let writer = ResponsesWriter;
-    let _ = writer.write_response_events(&IrStreamEvent::MessageStart {
-        role: crate::codec::ir::IrRole::Assistant,
-        usage: None,
-        id: None,
-        created: None,
-        model: None,
-    });
-    let added_frames = writer.write_response_events(&IrStreamEvent::BlockStart {
-        index: 0,
-        block: crate::codec::ir::IrBlockMeta::Text,
-        refusal: false,
-    });
+    let _ = writer.write_response_events(
+        crate::codec::test_host::HOST,
+        &IrStreamEvent::MessageStart {
+            role: crate::codec::ir::IrRole::Assistant,
+            usage: None,
+            id: None,
+            created: None,
+            model: None,
+        },
+    );
+    let added_frames = writer.write_response_events(
+        crate::codec::test_host::HOST,
+        &IrStreamEvent::BlockStart {
+            index: 0,
+            block: crate::codec::ir::IrBlockMeta::Text,
+            refusal: false,
+        },
+    );
     // output_item.added THEN content_part.added, both carrying the msg_… id.
     let added_id = added_frames[0].1["item_id"].as_str().unwrap().to_string();
     assert!(added_id.starts_with("msg_")); // golden wire-contract literal (kept bare on purpose)
@@ -4653,14 +4851,20 @@ fn test_streamed_text_item_shares_one_item_id() {
     );
 
     let (_, delta) = writer
-        .write_response_event(&IrStreamEvent::BlockDelta {
-            index: 0,
-            delta: crate::codec::ir::IrDelta::TextDelta("hello".to_string()),
-        })
+        .write_response_event(
+            crate::codec::test_host::HOST,
+            &IrStreamEvent::BlockDelta {
+                index: 0,
+                delta: crate::codec::ir::IrDelta::TextDelta("hello".to_string()),
+            },
+        )
         .expect("output_text.delta");
     assert_eq!(delta["item_id"].as_str(), Some(added_id.as_str()));
 
-    let done_frames = writer.write_response_events(&IrStreamEvent::BlockStop { index: 0 });
+    let done_frames = writer.write_response_events(
+        crate::codec::test_host::HOST,
+        &IrStreamEvent::BlockStop { index: 0 },
+    );
     // output_text.done → content_part.done → output_item.done, ALL sharing the item id.
     assert_eq!(done_frames.len(), 3, "text close is a three-frame bracket");
     for (et, frame) in &done_frames {
@@ -4810,24 +5014,30 @@ fn test_args_delta_routed_for_opened_index() {
 fn test_created_at_is_constant_across_stream_events() {
     let writer = ResponsesWriter;
     let (_, created) = writer
-        .write_response_event(&IrStreamEvent::MessageStart {
-            role: crate::codec::ir::IrRole::Assistant,
-            usage: None,
-            id: None,
-            created: Some(1_700_000_000),
-            model: None,
-        })
+        .write_response_event(
+            crate::codec::test_host::HOST,
+            &IrStreamEvent::MessageStart {
+                role: crate::codec::ir::IrRole::Assistant,
+                usage: None,
+                id: None,
+                created: Some(1_700_000_000),
+                model: None,
+            },
+        )
         .expect("response.created");
     let created_ts = created["response"]["created_at"].as_u64();
     assert_eq!(created_ts, Some(1_700_000_000));
 
     let (_, completed) = writer
-        .write_response_event(&IrStreamEvent::MessageDelta {
-            stop_reason: Some(crate::codec::ir::IrStopReason::EndTurn),
-            stop_sequence: None,
-            usage: usage_fixture(),
-            stop_detail: None,
-        })
+        .write_response_event(
+            crate::codec::test_host::HOST,
+            &IrStreamEvent::MessageDelta {
+                stop_reason: Some(crate::codec::ir::IrStopReason::EndTurn),
+                stop_sequence: None,
+                usage: usage_fixture(),
+                stop_detail: None,
+            },
+        )
         .expect("terminal event");
     assert_eq!(
         completed["response"]["created_at"].as_u64(),
@@ -4842,22 +5052,28 @@ fn test_created_at_is_constant_across_stream_events() {
 fn test_failed_event_replays_created_at() {
     let writer = ResponsesWriter;
     let (_, created) = writer
-        .write_response_event(&IrStreamEvent::MessageStart {
-            role: crate::codec::ir::IrRole::Assistant,
-            usage: None,
-            id: None,
-            created: Some(1_700_000_123),
-            model: None,
-        })
+        .write_response_event(
+            crate::codec::test_host::HOST,
+            &IrStreamEvent::MessageStart {
+                role: crate::codec::ir::IrRole::Assistant,
+                usage: None,
+                id: None,
+                created: Some(1_700_000_123),
+                model: None,
+            },
+        )
         .expect("response.created");
     let created_ts = created["response"]["created_at"].as_u64();
 
     let (_, failed) = writer
-        .write_response_event(&IrStreamEvent::Error(IrError {
-            class: StatusClass::ServerError,
-            provider_signal: Some("boom".to_string()),
-            retry_after: None,
-        }))
+        .write_response_event(
+            crate::codec::test_host::HOST,
+            &IrStreamEvent::Error(IrError {
+                class: StatusClass::ServerError,
+                provider_signal: Some("boom".to_string()),
+                retry_after: None,
+            }),
+        )
         .expect("response.failed");
     assert_eq!(
         failed["response"]["created_at"].as_u64(),
@@ -4881,7 +5097,7 @@ fn test_write_error_maps_forward_transient_kinds() {
         "transient",
         "api_error",
     ] {
-        let v = writer.write_error(503, kind, "upstream failure");
+        let v = writer.write_error(crate::codec::test_host::HOST, 503, kind, "upstream failure");
         assert_eq!(
             v["error"]["type"].as_str(),
             Some("server_error"), // golden wire-contract literal (kept bare on purpose)
@@ -4893,7 +5109,7 @@ fn test_write_error_maps_forward_transient_kinds() {
         busbar_contract::protocol::PROVIDER_CODE_CONTEXT_LENGTH,
         "bad_request",
     ] {
-        let v = writer.write_error(400, kind, "bad request");
+        let v = writer.write_error(crate::codec::test_host::HOST, 400, kind, "bad request");
         assert_eq!(
             v["error"]["type"].as_str(),
             Some("invalid_request_error"), // golden wire-contract literal (kept bare on purpose)
@@ -4910,39 +5126,54 @@ fn test_write_error_maps_forward_transient_kinds() {
 fn test_function_call_done_carries_finalized_item() {
     let writer = ResponsesWriter;
     // Open the stream so the per-stream state is initialized/reset.
-    let _ = writer.write_response_event(&crate::codec::ir::IrStreamEvent::MessageStart {
-        role: crate::codec::ir::IrRole::Assistant,
-        usage: None,
-        id: None,
-        created: None,
-        model: None,
-    });
+    let _ = writer.write_response_event(
+        crate::codec::test_host::HOST,
+        &crate::codec::ir::IrStreamEvent::MessageStart {
+            role: crate::codec::ir::IrRole::Assistant,
+            usage: None,
+            id: None,
+            created: None,
+            model: None,
+        },
+    );
     // BlockStart(ToolUse) captures call_id + name.
     let added = writer
-        .write_response_event(&crate::codec::ir::IrStreamEvent::BlockStart {
-            index: 0,
-            block: crate::codec::ir::IrBlockMeta::ToolUse {
-                id: "call_abc".to_string(),
-                name: "get_weather".to_string(),
+        .write_response_event(
+            crate::codec::test_host::HOST,
+            &crate::codec::ir::IrStreamEvent::BlockStart {
+                index: 0,
+                block: crate::codec::ir::IrBlockMeta::ToolUse {
+                    id: "call_abc".to_string(),
+                    name: "get_weather".to_string(),
+                },
+                refusal: false,
             },
-            refusal: false,
-        })
+        )
         .expect("output_item.added should emit");
     assert_eq!(added.0, "response.output_item.added"); // golden wire-contract literal (kept bare on purpose)
 
     // Two argument fragments accumulate into the complete string.
-    let _ = writer.write_response_event(&crate::codec::ir::IrStreamEvent::BlockDelta {
-        index: 0,
-        delta: crate::codec::ir::IrDelta::InputJsonDelta("{\"city\":".to_string()),
-    });
-    let _ = writer.write_response_event(&crate::codec::ir::IrStreamEvent::BlockDelta {
-        index: 0,
-        delta: crate::codec::ir::IrDelta::InputJsonDelta("\"SF\"}".to_string()),
-    });
+    let _ = writer.write_response_event(
+        crate::codec::test_host::HOST,
+        &crate::codec::ir::IrStreamEvent::BlockDelta {
+            index: 0,
+            delta: crate::codec::ir::IrDelta::InputJsonDelta("{\"city\":".to_string()),
+        },
+    );
+    let _ = writer.write_response_event(
+        crate::codec::test_host::HOST,
+        &crate::codec::ir::IrStreamEvent::BlockDelta {
+            index: 0,
+            delta: crate::codec::ir::IrDelta::InputJsonDelta("\"SF\"}".to_string()),
+        },
+    );
 
     // BlockStop closes it with the fully finalized item.
     let (etype, payload) = writer
-        .write_response_event(&crate::codec::ir::IrStreamEvent::BlockStop { index: 0 })
+        .write_response_event(
+            crate::codec::test_host::HOST,
+            &crate::codec::ir::IrStreamEvent::BlockStop { index: 0 },
+        )
         .expect("output_item.done should emit");
     assert_eq!(etype, "response.output_item.done"); // golden wire-contract literal (kept bare on purpose)
     let item = &payload["item"];
@@ -5131,7 +5362,7 @@ fn test_write_response_emits_model_fallback() {
 
     // Cross-protocol: no model in the IR → DEFAULT_MODEL, never an absent key.
     let writer = ResponsesWriter;
-    let out_none = writer.write_response(&make_resp(None));
+    let out_none = writer.write_response(crate::codec::test_host::HOST, &make_resp(None));
     assert_eq!(
         out_none.get("model").and_then(|m| m.as_str()),
         Some(DEFAULT_MODEL),
@@ -5140,7 +5371,10 @@ fn test_write_response_emits_model_fallback() {
 
     // Same-protocol passthrough: the upstream model is preserved verbatim.
     let writer_some = ResponsesWriter;
-    let out_some = writer_some.write_response(&make_resp(Some("gpt-4o-mini".to_string())));
+    let out_some = writer_some.write_response(
+        crate::codec::test_host::HOST,
+        &make_resp(Some("gpt-4o-mini".to_string())),
+    );
     assert_eq!(
         out_some.get("model").and_then(|m| m.as_str()),
         Some("gpt-4o-mini"),
@@ -5164,7 +5398,9 @@ fn test_stream_terminal_events_carry_model_fallback() {
         created: None,
         model: None,
     };
-    let (_, created) = writer.write_response_event(&start).expect("created event");
+    let (_, created) = writer
+        .write_response_event(crate::codec::test_host::HOST, &start)
+        .expect("created event");
     assert_eq!(
         created
             .get("response")
@@ -5186,7 +5422,9 @@ fn test_stream_terminal_events_carry_model_fallback() {
         },
         stop_detail: None,
     };
-    let (ename, completed) = writer.write_response_event(&delta).expect("terminal event");
+    let (ename, completed) = writer
+        .write_response_event(crate::codec::test_host::HOST, &delta)
+        .expect("terminal event");
     assert_eq!(ename, "response.completed"); // golden wire-contract literal (kept bare on purpose)
     assert_eq!(
         completed
@@ -5207,14 +5445,16 @@ fn test_stream_terminal_events_carry_model_fallback() {
         model: Some("gpt-4o-mini".to_string()),
     };
     writer2
-        .write_response_event(&start2)
+        .write_response_event(crate::codec::test_host::HOST, &start2)
         .expect("created event");
     let err = crate::codec::ir::IrStreamEvent::Error(IrError {
         class: StatusClass::ServerError,
         provider_signal: Some("boom".to_string()),
         retry_after: None,
     });
-    let (ename2, failed) = writer2.write_response_event(&err).expect("failed event");
+    let (ename2, failed) = writer2
+        .write_response_event(crate::codec::test_host::HOST, &err)
+        .expect("failed event");
     assert_eq!(ename2, "response.failed"); // golden wire-contract literal (kept bare on purpose)
     assert_eq!(
         failed
@@ -5257,7 +5497,10 @@ fn test_write_response_emits_error_null_for_completed_and_incomplete() {
     let writer = ResponsesWriter;
 
     // Completed: error key present and explicitly null.
-    let completed = writer.write_response(&make_resp(crate::codec::ir::IrStopReason::EndTurn));
+    let completed = writer.write_response(
+        crate::codec::test_host::HOST,
+        &make_resp(crate::codec::ir::IrStopReason::EndTurn),
+    );
     assert_eq!(completed["status"].as_str(), Some("completed")); // golden wire-contract literal (kept bare on purpose)
     assert!(
         completed.get("error").is_some(),
@@ -5270,7 +5513,10 @@ fn test_write_response_emits_error_null_for_completed_and_incomplete() {
 
     // Incomplete (max_tokens): error is still present and null (the failure path is the error
     // envelope, never this success/incomplete body).
-    let incomplete = writer.write_response(&make_resp(crate::codec::ir::IrStopReason::MaxTokens));
+    let incomplete = writer.write_response(
+        crate::codec::test_host::HOST,
+        &make_resp(crate::codec::ir::IrStopReason::MaxTokens),
+    );
     assert_eq!(incomplete["status"].as_str(), Some("incomplete")); // golden wire-contract literal (kept bare on purpose)
     assert!(
         incomplete["error"].is_null(),
@@ -5301,7 +5547,7 @@ fn test_read_response_failed_surfaces_upstream_error() {
         "model": "gpt-4o-mini"
     });
     let err = reader
-        .read_response(&body)
+        .read_response(crate::codec::test_host::HOST, &body)
         .expect_err("failed status must surface as an error");
     assert_eq!(
         err.class,
@@ -5322,7 +5568,7 @@ fn test_read_response_failed_surfaces_upstream_error() {
         "usage": { "input_tokens": 1, "output_tokens": 0 }
     });
     let err_type = reader
-        .read_response(&body_type)
+        .read_response(crate::codec::test_host::HOST, &body_type)
         .expect_err("failed status must surface as an error");
     assert_eq!(err_type.class, StatusClass::ServerError);
     assert_eq!(err_type.provider_signal.as_deref(), Some("content_filter")); // golden wire-contract literal (kept bare on purpose)
@@ -5330,7 +5576,7 @@ fn test_read_response_failed_surfaces_upstream_error() {
     // failed with no usable error object → generic response_failed signal, default ServerError.
     let body_bare = serde_json::json!({ "status": STATUS_FAILED });
     let err_bare = reader
-        .read_response(&body_bare)
+        .read_response(crate::codec::test_host::HOST, &body_bare)
         .expect_err("failed status must surface as an error");
     assert_eq!(err_bare.class, StatusClass::ServerError);
     assert_eq!(err_bare.provider_signal.as_deref(), Some("response_failed"));
@@ -5339,7 +5585,7 @@ fn test_read_response_failed_surfaces_upstream_error() {
     // failed-status path must not swallow real parse failures.
     let body_parse = serde_json::json!({ "id": "resp_x" });
     let err_parse = reader
-        .read_response(&body_parse)
+        .read_response(crate::codec::test_host::HOST, &body_parse)
         .expect_err("missing output must surface as a parse error");
     assert_eq!(err_parse.class, StatusClass::ClientError);
     assert_eq!(err_parse.provider_signal.as_deref(), Some("ir_parse")); // golden wire-contract literal (kept bare on purpose)
@@ -5364,7 +5610,7 @@ fn test_read_response_failed_with_empty_output_array_not_masked() {
         // was part of what masked the error. The failed early return must not require usage.
     });
     let err = reader
-        .read_response(&body)
+        .read_response(crate::codec::test_host::HOST, &body)
         .expect_err("failed status with output:[] must surface as an error, not be masked");
     assert_eq!(
         err.class,
@@ -5467,20 +5713,26 @@ fn test_read_request_max_output_tokens_out_of_range_drops_to_none() {
 fn test_stream_terminal_events_carry_output_and_error() {
     // --- completed terminal ---
     let writer = ResponsesWriter;
-    let _ = writer.write_response_event(&IrStreamEvent::MessageStart {
-        role: crate::codec::ir::IrRole::Assistant,
-        usage: None,
-        id: None,
-        created: None,
-        model: None,
-    });
+    let _ = writer.write_response_event(
+        crate::codec::test_host::HOST,
+        &IrStreamEvent::MessageStart {
+            role: crate::codec::ir::IrRole::Assistant,
+            usage: None,
+            id: None,
+            created: None,
+            model: None,
+        },
+    );
     let (_, completed) = writer
-        .write_response_event(&IrStreamEvent::MessageDelta {
-            stop_reason: Some(crate::codec::ir::IrStopReason::EndTurn),
-            stop_sequence: None,
-            usage: usage_fixture(),
-            stop_detail: None,
-        })
+        .write_response_event(
+            crate::codec::test_host::HOST,
+            &IrStreamEvent::MessageDelta {
+                stop_reason: Some(crate::codec::ir::IrStopReason::EndTurn),
+                stop_sequence: None,
+                usage: usage_fixture(),
+                stop_detail: None,
+            },
+        )
         .expect("terminal event");
     assert!(
         completed["response"]["output"].is_array(),
@@ -5493,20 +5745,26 @@ fn test_stream_terminal_events_carry_output_and_error() {
 
     // --- incomplete terminal ---
     let writer2 = ResponsesWriter;
-    let _ = writer2.write_response_event(&IrStreamEvent::MessageStart {
-        role: crate::codec::ir::IrRole::Assistant,
-        usage: None,
-        id: None,
-        created: None,
-        model: None,
-    });
+    let _ = writer2.write_response_event(
+        crate::codec::test_host::HOST,
+        &IrStreamEvent::MessageStart {
+            role: crate::codec::ir::IrRole::Assistant,
+            usage: None,
+            id: None,
+            created: None,
+            model: None,
+        },
+    );
     let (_, incomplete) = writer2
-        .write_response_event(&IrStreamEvent::MessageDelta {
-            stop_reason: Some(crate::codec::ir::IrStopReason::MaxTokens),
-            stop_sequence: None,
-            usage: usage_fixture(),
-            stop_detail: None,
-        })
+        .write_response_event(
+            crate::codec::test_host::HOST,
+            &IrStreamEvent::MessageDelta {
+                stop_reason: Some(crate::codec::ir::IrStopReason::MaxTokens),
+                stop_sequence: None,
+                usage: usage_fixture(),
+                stop_detail: None,
+            },
+        )
         .expect("terminal event");
     assert!(
         incomplete["response"]["output"].is_array(),
@@ -5519,19 +5777,25 @@ fn test_stream_terminal_events_carry_output_and_error() {
 
     // --- failed terminal: output present-but-empty alongside the populated error object ---
     let writer3 = ResponsesWriter;
-    let _ = writer3.write_response_event(&IrStreamEvent::MessageStart {
-        role: crate::codec::ir::IrRole::Assistant,
-        usage: None,
-        id: None,
-        created: None,
-        model: None,
-    });
+    let _ = writer3.write_response_event(
+        crate::codec::test_host::HOST,
+        &IrStreamEvent::MessageStart {
+            role: crate::codec::ir::IrRole::Assistant,
+            usage: None,
+            id: None,
+            created: None,
+            model: None,
+        },
+    );
     let (ename, failed) = writer3
-        .write_response_event(&IrStreamEvent::Error(IrError {
-            class: StatusClass::ServerError,
-            provider_signal: Some("boom".to_string()),
-            retry_after: None,
-        }))
+        .write_response_event(
+            crate::codec::test_host::HOST,
+            &IrStreamEvent::Error(IrError {
+                class: StatusClass::ServerError,
+                provider_signal: Some("boom".to_string()),
+                retry_after: None,
+            }),
+        )
         .expect("failed event");
     assert_eq!(ename, "response.failed"); // golden wire-contract literal (kept bare on purpose)
     assert!(
@@ -5554,57 +5818,87 @@ fn test_stream_terminal_events_carry_output_and_error() {
 fn test_terminal_output_assembles_streamed_text_and_tool_items() {
     let writer = ResponsesWriter;
     // Opening event.
-    let _ = writer.write_response_event(&IrStreamEvent::MessageStart {
-        role: crate::codec::ir::IrRole::Assistant,
-        usage: None,
-        id: None,
-        created: None,
-        model: None,
-    });
+    let _ = writer.write_response_event(
+        crate::codec::test_host::HOST,
+        &IrStreamEvent::MessageStart {
+            role: crate::codec::ir::IrRole::Assistant,
+            usage: None,
+            id: None,
+            created: None,
+            model: None,
+        },
+    );
 
     // Text item at index 0: BlockStart + two deltas + BlockStop.
-    let _ = writer.write_response_event(&IrStreamEvent::BlockStart {
-        index: 0,
-        block: crate::codec::ir::IrBlockMeta::Text,
-        refusal: false,
-    });
-    let _ = writer.write_response_event(&IrStreamEvent::BlockDelta {
-        index: 0,
-        delta: crate::codec::ir::IrDelta::TextDelta("Hello ".to_string()),
-    });
-    let _ = writer.write_response_event(&IrStreamEvent::BlockDelta {
-        index: 0,
-        delta: crate::codec::ir::IrDelta::TextDelta("world".to_string()),
-    });
-    let _ = writer.write_response_event(&IrStreamEvent::BlockStop { index: 0 });
+    let _ = writer.write_response_event(
+        crate::codec::test_host::HOST,
+        &IrStreamEvent::BlockStart {
+            index: 0,
+            block: crate::codec::ir::IrBlockMeta::Text,
+            refusal: false,
+        },
+    );
+    let _ = writer.write_response_event(
+        crate::codec::test_host::HOST,
+        &IrStreamEvent::BlockDelta {
+            index: 0,
+            delta: crate::codec::ir::IrDelta::TextDelta("Hello ".to_string()),
+        },
+    );
+    let _ = writer.write_response_event(
+        crate::codec::test_host::HOST,
+        &IrStreamEvent::BlockDelta {
+            index: 0,
+            delta: crate::codec::ir::IrDelta::TextDelta("world".to_string()),
+        },
+    );
+    let _ = writer.write_response_event(
+        crate::codec::test_host::HOST,
+        &IrStreamEvent::BlockStop { index: 0 },
+    );
 
     // Function-call item at index 1: BlockStart(ToolUse) + arg deltas + BlockStop.
-    let _ = writer.write_response_event(&IrStreamEvent::BlockStart {
-        index: 1,
-        block: crate::codec::ir::IrBlockMeta::ToolUse {
-            id: "call_abc".to_string(),
-            name: "get_weather".to_string(),
+    let _ = writer.write_response_event(
+        crate::codec::test_host::HOST,
+        &IrStreamEvent::BlockStart {
+            index: 1,
+            block: crate::codec::ir::IrBlockMeta::ToolUse {
+                id: "call_abc".to_string(),
+                name: "get_weather".to_string(),
+            },
+            refusal: false,
         },
-        refusal: false,
-    });
-    let _ = writer.write_response_event(&IrStreamEvent::BlockDelta {
-        index: 1,
-        delta: crate::codec::ir::IrDelta::InputJsonDelta("{\"city\":".to_string()),
-    });
-    let _ = writer.write_response_event(&IrStreamEvent::BlockDelta {
-        index: 1,
-        delta: crate::codec::ir::IrDelta::InputJsonDelta("\"SF\"}".to_string()),
-    });
-    let _ = writer.write_response_event(&IrStreamEvent::BlockStop { index: 1 });
+    );
+    let _ = writer.write_response_event(
+        crate::codec::test_host::HOST,
+        &IrStreamEvent::BlockDelta {
+            index: 1,
+            delta: crate::codec::ir::IrDelta::InputJsonDelta("{\"city\":".to_string()),
+        },
+    );
+    let _ = writer.write_response_event(
+        crate::codec::test_host::HOST,
+        &IrStreamEvent::BlockDelta {
+            index: 1,
+            delta: crate::codec::ir::IrDelta::InputJsonDelta("\"SF\"}".to_string()),
+        },
+    );
+    let _ = writer.write_response_event(
+        crate::codec::test_host::HOST,
+        &IrStreamEvent::BlockStop { index: 1 },
+    );
 
     // Terminal.
     let (ename, completed) = writer
-        .write_response_event(&IrStreamEvent::MessageDelta {
-            stop_reason: Some(crate::codec::ir::IrStopReason::ToolUse),
-            stop_sequence: None,
-            usage: usage_fixture(),
-            stop_detail: None,
-        })
+        .write_response_event(
+            crate::codec::test_host::HOST,
+            &IrStreamEvent::MessageDelta {
+                stop_reason: Some(crate::codec::ir::IrStopReason::ToolUse),
+                stop_sequence: None,
+                usage: usage_fixture(),
+                stop_detail: None,
+            },
+        )
         .expect("terminal event");
     assert_eq!(ename, "response.completed"); // golden wire-contract literal (kept bare on purpose)
 
@@ -5645,20 +5939,26 @@ fn test_terminal_output_assembles_streamed_text_and_tool_items() {
 #[test]
 fn test_terminal_output_empty_when_no_blocks_streamed() {
     let writer = ResponsesWriter;
-    let _ = writer.write_response_event(&IrStreamEvent::MessageStart {
-        role: crate::codec::ir::IrRole::Assistant,
-        usage: None,
-        id: None,
-        created: None,
-        model: None,
-    });
+    let _ = writer.write_response_event(
+        crate::codec::test_host::HOST,
+        &IrStreamEvent::MessageStart {
+            role: crate::codec::ir::IrRole::Assistant,
+            usage: None,
+            id: None,
+            created: None,
+            model: None,
+        },
+    );
     let (_, completed) = writer
-        .write_response_event(&IrStreamEvent::MessageDelta {
-            stop_reason: Some(crate::codec::ir::IrStopReason::EndTurn),
-            stop_sequence: None,
-            usage: usage_fixture(),
-            stop_detail: None,
-        })
+        .write_response_event(
+            crate::codec::test_host::HOST,
+            &IrStreamEvent::MessageDelta {
+                stop_reason: Some(crate::codec::ir::IrStopReason::EndTurn),
+                stop_sequence: None,
+                usage: usage_fixture(),
+                stop_detail: None,
+            },
+        )
         .expect("terminal event");
     let output = completed["response"]["output"]
         .as_array()
@@ -5828,7 +6128,7 @@ fn test_synth_token_uniform_base62_only() {
     // 20_000 tokens * 48 chars = 960_000 samples. With ~15.5k expected per digit, the standard
     // deviation per digit is ~124 (<1%), so a 25% group-mean gap is overwhelmingly significant.
     for _ in 0..20_000 {
-        let tok = synth_token::<48>();
+        let tok = synth_token::<48>(crate::codec::test_host::HOST);
         assert_eq!(tok.len(), 48, "token width must be exactly N");
         for c in tok.chars() {
             assert!(
@@ -5879,7 +6179,7 @@ fn test_responses_tool_choice_required_roundtrips() {
     assert!(!ir.extra.contains_key("tool_choice"));
 
     let writer = ResponsesWriter;
-    let out = writer.write_request(&ir);
+    let out = writer.write_request(crate::codec::test_host::HOST, &ir);
     assert_eq!(
         out.get("tool_choice").and_then(|v| v.as_str()),
         Some("required")
@@ -5905,7 +6205,7 @@ fn test_responses_tool_choice_specific_function() {
         })
     );
     let writer = ResponsesWriter;
-    let out = writer.write_request(&ir);
+    let out = writer.write_request(crate::codec::test_host::HOST, &ir);
     let tc = out.get("tool_choice").expect("tool_choice emitted");
     assert_eq!(tc.get("type").and_then(|v| v.as_str()), Some("function"));
     assert_eq!(tc.get("name").and_then(|v| v.as_str()), Some("get_weather"));
@@ -5923,7 +6223,7 @@ fn test_responses_tool_choice_absent_is_none() {
     let ir = reader.read_request(&json).expect("read_request");
     assert_eq!(ir.tool_choice, None);
     let writer = ResponsesWriter;
-    let out = writer.write_request(&ir);
+    let out = writer.write_request(crate::codec::test_host::HOST, &ir);
     assert!(out.get("tool_choice").is_none());
 }
 
@@ -5994,7 +6294,9 @@ fn test_reasoning_item_thinking_round_trip() {
         "usage": {"input_tokens": 5, "output_tokens": 7}
     });
     let reader = ResponsesReader;
-    let ir = reader.read_response(&body).expect("read_response");
+    let ir = reader
+        .read_response(crate::codec::test_host::HOST, &body)
+        .expect("read_response");
     // The reasoning item became a Thinking block carrying both text and the encrypted_content
     // mapped into the signature slot.
     let thinking = ir
@@ -6013,7 +6315,7 @@ fn test_reasoning_item_thinking_round_trip() {
     // Write back: the Thinking block must re-emit a native `reasoning` output item with the text
     // under `content[].reasoning_text` and the signature back in `encrypted_content`.
     let writer = ResponsesWriter;
-    let out = writer.write_response(&ir);
+    let out = writer.write_response(crate::codec::test_host::HOST, &ir);
     let reasoning = out["output"]
         .as_array()
         .and_then(|a| a.iter().find(|i| i["type"] == "reasoning")) // golden wire-contract literal (kept bare on purpose)
@@ -6090,7 +6392,7 @@ fn reasoning_input_item_round_trips_through_request() {
 
     // Writer re-emits a top-level `reasoning` input item (round-trip).
     let writer = ResponsesWriter;
-    let out = writer.write_request(&ir);
+    let out = writer.write_request(crate::codec::test_host::HOST, &ir);
     let reasoning = out["input"]
         .as_array()
         .and_then(|a| a.iter().find(|i| i["type"] == "reasoning")) // golden wire-contract literal (kept bare on purpose)
@@ -6124,7 +6426,7 @@ fn user_role_thinking_is_not_emitted_as_a_reasoning_item() {
         ..Default::default()
     };
     let writer = ResponsesWriter;
-    let out = writer.write_request(&req);
+    let out = writer.write_request(crate::codec::test_host::HOST, &req);
     // A dropped Thinking block leaves the User message with no content at all, so `input` may be
     // entirely absent (not just empty) — `write_request` only inserts it when non-empty (:277-279).
     let has_reasoning_item = out
@@ -6157,7 +6459,9 @@ fn test_cached_tokens_mapping() {
         }
     });
     let reader = ResponsesReader;
-    let ir = reader.read_response(&body).expect("read_response");
+    let ir = reader
+        .read_response(crate::codec::test_host::HOST, &body)
+        .expect("read_response");
     assert_eq!(
         ir.usage.cache_read_input_tokens,
         Some(64),
@@ -6166,7 +6470,7 @@ fn test_cached_tokens_mapping() {
 
     // Write back: the cache count re-emits under usage.input_tokens_details.cached_tokens.
     let writer = ResponsesWriter;
-    let out = writer.write_response(&ir);
+    let out = writer.write_response(crate::codec::test_host::HOST, &ir);
     assert_eq!(
         out["usage"]["input_tokens_details"]["cached_tokens"], 64,
         "cache_read_input_tokens written back to cached_tokens"
@@ -6178,9 +6482,11 @@ fn test_cached_tokens_mapping() {
         "output": [{"type":ITEM_TYPE_MESSAGE,"role":"assistant","content":[{"type":CONTENT_TYPE_OUTPUT_TEXT,"text":"x"}]}],
         "usage": {"input_tokens": 1, "output_tokens": 1}
     });
-    let ir2 = reader.read_response(&no_cache).expect("read_response");
+    let ir2 = reader
+        .read_response(crate::codec::test_host::HOST, &no_cache)
+        .expect("read_response");
     assert_eq!(ir2.usage.cache_read_input_tokens, None);
-    let out2 = writer.write_response(&ir2);
+    let out2 = writer.write_response(crate::codec::test_host::HOST, &ir2);
     // `input_tokens_details` is a REQUIRED field in the official SDKs, so it is ALWAYS
     // emitted — with `cached_tokens: 0` when there was no cache hit (NOT omitted, which would raise a
     // strict Pydantic/Zod decoder).
@@ -6206,7 +6512,7 @@ fn test_stop_not_emitted_on_responses() {
     });
     req.stop = vec!["STOP".to_string(), "END".to_string()];
     let writer = ResponsesWriter;
-    let out = writer.write_request(&req);
+    let out = writer.write_request(crate::codec::test_host::HOST, &req);
     assert!(
         out.get("stop").is_none(),
         "/v1/responses models no stop param; it must not be emitted: {out}"
@@ -6236,7 +6542,7 @@ fn test_unsupported_sampling_params_omitted() {
     req.seed = Some(42);
     req.n = Some(3);
     let writer = ResponsesWriter;
-    let out = writer.write_request(&req);
+    let out = writer.write_request(crate::codec::test_host::HOST, &req);
     for key in ["frequency_penalty", "presence_penalty", "seed", "n"] {
         assert!(
             out.get(key).is_none(),
@@ -6290,7 +6596,7 @@ fn test_response_format_text_format_round_trip() {
 
     // Write back: text.format flat shape, merged with the preserved verbosity.
     let writer = ResponsesWriter;
-    let out = writer.write_request(&ir);
+    let out = writer.write_request(crate::codec::test_host::HOST, &ir);
     let fmt = &out["text"]["format"];
     assert_eq!(fmt["type"], "json_schema", "flat text.format type");
     assert_eq!(fmt["name"], "out", "name flattened beside type");
@@ -6340,7 +6646,7 @@ fn test_input_image_file_id_round_trip() {
     // CANONICAL message-wrapped form (`{type:message, role, content:[{type:input_image,...}]}`),
     // so the input_image lives inside a message's `content`, not at the top of `input[]`.
     let writer = ResponsesWriter;
-    let out = writer.write_request(&ir);
+    let out = writer.write_request(crate::codec::test_host::HOST, &ir);
     let image_item = out["input"]
         .as_array()
         .into_iter()
@@ -6366,6 +6672,7 @@ fn test_streaming_reasoning_round_trip() {
 
     // output_item.added (reasoning) at index 0 opens a Thinking BlockStart.
     let added = reader.read_response_events(
+        crate::codec::test_host::HOST,
         EVT_OUTPUT_ITEM_ADDED,
         &serde_json::json!({
             "output_index": 0,
@@ -6387,6 +6694,7 @@ fn test_streaming_reasoning_round_trip() {
 
     // reasoning_text.delta carries a ThinkingDelta.
     let delta = reader.read_response_events(
+        crate::codec::test_host::HOST,
         EVT_REASONING_TEXT_DELTA,
         &serde_json::json!({"output_index": 0, "delta": "pondering"}),
         &mut state,
@@ -6405,29 +6713,37 @@ fn test_streaming_reasoning_round_trip() {
     // Writer side: a Thinking BlockStart emits a native reasoning output_item.added.
     let writer = ResponsesWriter;
     let (etype, payload) = writer
-        .write_response_event(&crate::codec::ir::IrStreamEvent::BlockStart {
-            index: 0,
-            block: crate::codec::ir::IrBlockMeta::Thinking { kind: None },
-            refusal: false,
-        })
+        .write_response_event(
+            crate::codec::test_host::HOST,
+            &crate::codec::ir::IrStreamEvent::BlockStart {
+                index: 0,
+                block: crate::codec::ir::IrBlockMeta::Thinking { kind: None },
+                refusal: false,
+            },
+        )
         .expect("Thinking BlockStart emits a frame");
     assert_eq!(etype, "response.output_item.added"); // golden wire-contract literal (kept bare on purpose)
     assert_eq!(payload["item"]["type"], "reasoning"); // golden wire-contract literal (kept bare on purpose)
 
     // A ThinkingDelta emits a native reasoning_text.delta.
     let (etype2, payload2) = writer
-        .write_response_event(&crate::codec::ir::IrStreamEvent::BlockDelta {
-            index: 0,
-            delta: crate::codec::ir::IrDelta::ThinkingDelta("pondering".to_string()),
-        })
+        .write_response_event(
+            crate::codec::test_host::HOST,
+            &crate::codec::ir::IrStreamEvent::BlockDelta {
+                index: 0,
+                delta: crate::codec::ir::IrDelta::ThinkingDelta("pondering".to_string()),
+            },
+        )
         .expect("ThinkingDelta emits a frame");
     assert_eq!(etype2, "response.reasoning_text.delta"); // golden wire-contract literal (kept bare on purpose)
     assert_eq!(payload2["delta"], "pondering");
 
     // BlockStop closes it: `reasoning_text.done` (the bracket the reasoning_text.delta run needs)
     // THEN a reasoning `output_item.done` carrying the assembled text.
-    let close_frames =
-        writer.write_response_events(&crate::codec::ir::IrStreamEvent::BlockStop { index: 0 });
+    let close_frames = writer.write_response_events(
+        crate::codec::test_host::HOST,
+        &crate::codec::ir::IrStreamEvent::BlockStop { index: 0 },
+    );
     let close_types: Vec<&str> = close_frames.iter().map(|(et, _)| et.as_str()).collect();
     assert_eq!(
         close_types,
@@ -6450,6 +6766,7 @@ fn test_streaming_cached_tokens_round_trip() {
     let reader = ResponsesReader;
     let mut state = crate::codec::ir::StreamDecodeState::default();
     let events = reader.read_response_events(
+        crate::codec::test_host::HOST,
         EVT_RESPONSE_COMPLETED,
         &serde_json::json!({
             "response": {
@@ -6475,18 +6792,21 @@ fn test_streaming_cached_tokens_round_trip() {
     // Writer re-emits cached_tokens on the terminal event's inner response.usage.
     let writer = ResponsesWriter;
     let (_etype, payload) = writer
-        .write_response_event(&crate::codec::ir::IrStreamEvent::MessageDelta {
-            stop_reason: Some(crate::codec::ir::IrStopReason::EndTurn),
-            stop_sequence: None,
-            usage: crate::codec::ir::IrUsage {
-                input_tokens: 50,
-                output_tokens: 5,
-                cache_creation_input_tokens: None,
-                cache_read_input_tokens: Some(32),
-                detail: crate::codec::ir::IrUsageDetail::default(),
+        .write_response_event(
+            crate::codec::test_host::HOST,
+            &crate::codec::ir::IrStreamEvent::MessageDelta {
+                stop_reason: Some(crate::codec::ir::IrStopReason::EndTurn),
+                stop_sequence: None,
+                usage: crate::codec::ir::IrUsage {
+                    input_tokens: 50,
+                    output_tokens: 5,
+                    cache_creation_input_tokens: None,
+                    cache_read_input_tokens: Some(32),
+                    detail: crate::codec::ir::IrUsageDetail::default(),
+                },
+                stop_detail: None,
             },
-            stop_detail: None,
-        })
+        )
         .expect("MessageDelta emits a terminal frame");
     assert_eq!(
         payload["response"]["usage"]["input_tokens_details"]["cached_tokens"], 32,
@@ -6517,7 +6837,9 @@ fn read_response_subtracts_cached_prefix_from_input_tokens() {
             "input_tokens_details": {"cached_tokens": 100}
         }
     });
-    let resp = ResponsesReader.read_response(&body).expect("read_response");
+    let resp = ResponsesReader
+        .read_response(crate::codec::test_host::HOST, &body)
+        .expect("read_response");
     assert_eq!(
         resp.usage.input_tokens, 50,
         "input_tokens must be wire input(150) MINUS cached(100) = 50 (uncached)"
@@ -6561,7 +6883,7 @@ fn write_response_reconstructs_input_tokens_total_with_cached_details() {
         ..Default::default()
     };
     let writer = ResponsesWriter;
-    let out = writer.write_response(&resp);
+    let out = writer.write_response(crate::codec::test_host::HOST, &resp);
     assert_eq!(
         out["usage"]["input_tokens"],
         serde_json::json!(150),
@@ -6637,14 +6959,20 @@ fn read_response_incomplete_details_promote_stop_reason() {
     };
     assert_eq!(
         ResponsesReader
-            .read_response(&mk(INCOMPLETE_REASON_CONTENT_FILTER))
+            .read_response(
+                crate::codec::test_host::HOST,
+                &mk(INCOMPLETE_REASON_CONTENT_FILTER)
+            )
             .expect("read")
             .stop_reason,
         Some(crate::codec::ir::IrStopReason::Safety)
     );
     assert_eq!(
         ResponsesReader
-            .read_response(&mk(INCOMPLETE_REASON_MAX_OUTPUT))
+            .read_response(
+                crate::codec::test_host::HOST,
+                &mk(INCOMPLETE_REASON_MAX_OUTPUT)
+            )
             .expect("read")
             .stop_reason,
         Some(crate::codec::ir::IrStopReason::MaxTokens)
@@ -6686,7 +7014,7 @@ fn text_format_json_schema_flat_round_trips() {
 
     // WRITE re-emits the FLAT Responses text.format shape (fields beside type, not nested).
     let writer = ResponsesWriter;
-    let out = writer.write_request(&ir);
+    let out = writer.write_request(crate::codec::test_host::HOST, &ir);
     let fmt = out
         .pointer("/text/format")
         .expect("text.format must be emitted");
@@ -6752,7 +7080,7 @@ fn test_hosted_tools_pass_through_intact() {
     );
 
     let writer = ResponsesWriter;
-    let out = writer.write_request(&ir);
+    let out = writer.write_request(crate::codec::test_host::HOST, &ir);
     let tools = out["tools"].as_array().expect("tools array");
     assert_eq!(tools.len(), 3);
     let by_type = |t: &str| {
@@ -6846,7 +7174,8 @@ fn test_hosted_tools_dropped_cross_protocol() {
     assert_eq!(ir.tools[0].name, "get_weather");
 
     // The OpenAI-chat (non-Responses) writer now emits NO malformed empty-name function tool.
-    let out = super::super::openai_chat::openai_writer().write_request(&ir);
+    let out = super::super::openai_chat::openai_writer()
+        .write_request(crate::codec::test_host::HOST, &ir);
     let tools = out["tools"].as_array().expect("tools array");
     assert_eq!(tools.len(), 1, "only the function tool is written: {out}");
     for t in tools {
@@ -6887,7 +7216,8 @@ fn test_hosted_tools_dropped_cross_protocol() {
     }
 
     // Anthropic egress.
-    let anthropic = super::super::anthropic::anthropic_writer().write_request(&ir);
+    let anthropic = super::super::anthropic::anthropic_writer()
+        .write_request(crate::codec::test_host::HOST, &ir);
     assert!(
         !any_empty_name(&anthropic),
         "Anthropic egress must not emit an empty-name tool: {anthropic}"
@@ -6900,7 +7230,7 @@ fn test_hosted_tools_dropped_cross_protocol() {
     // Gemini egress. Bind the interior-mutable writer const to a local before use (its per-stream
     // Mutex state makes a bare-const borrow a clippy::borrow_interior_mutable_const).
     let gemini_writer = super::super::gemini::GeminiWriter;
-    let gemini = gemini_writer.write_request(&ir);
+    let gemini = gemini_writer.write_request(crate::codec::test_host::HOST, &ir);
     assert!(
         !any_empty_name(&gemini),
         "Gemini egress must not emit an empty-name tool: {gemini}"
@@ -6912,7 +7242,7 @@ fn test_hosted_tools_dropped_cross_protocol() {
 
     // Cohere egress. Same interior-mutable-const bind as Gemini above.
     let cohere_writer = super::super::cohere::CohereWriter;
-    let cohere = cohere_writer.write_request(&ir);
+    let cohere = cohere_writer.write_request(crate::codec::test_host::HOST, &ir);
     assert!(
         !any_empty_name(&cohere),
         "Cohere egress must not emit an empty-name tool: {cohere}"
@@ -6924,7 +7254,7 @@ fn test_hosted_tools_dropped_cross_protocol() {
 
     // Bedrock egress.
     let bedrock_writer = super::super::bedrock::BedrockWriter;
-    let bedrock = bedrock_writer.write_request(&ir);
+    let bedrock = bedrock_writer.write_request(crate::codec::test_host::HOST, &ir);
     assert!(
         !any_empty_name(&bedrock),
         "Bedrock egress must not emit an empty-name tool: {bedrock}"
@@ -7054,47 +7384,53 @@ fn responses_spec_required_members_present_on_every_response_shape() {
 
     // Non-stream body (completed).
     let non_stream = ResponsesWriter;
-    let body = non_stream.write_response(&crate::codec::ir::IrResponse {
-        role: crate::codec::ir::IrRole::Assistant,
-        content: vec![crate::codec::ir::IrBlock::Text {
-            text: "hi".into(),
-            cache_control: None,
-            citations: Vec::new(),
-            refusal: false,
-        }],
-        stop_reason: Some(crate::codec::ir::IrStopReason::EndTurn),
-        usage: usage_fixture(),
-        model: None,
-        id: None,
-        created: None,
-        system_fingerprint: None,
-        stop_sequence: None,
-        logprobs: Vec::new(),
+    let body = non_stream.write_response(
+        crate::codec::test_host::HOST,
+        &crate::codec::ir::IrResponse {
+            role: crate::codec::ir::IrRole::Assistant,
+            content: vec![crate::codec::ir::IrBlock::Text {
+                text: "hi".into(),
+                cache_control: None,
+                citations: Vec::new(),
+                refusal: false,
+            }],
+            stop_reason: Some(crate::codec::ir::IrStopReason::EndTurn),
+            usage: usage_fixture(),
+            model: None,
+            id: None,
+            created: None,
+            system_fingerprint: None,
+            stop_sequence: None,
+            logprobs: Vec::new(),
 
-        request_echo: None,
-        stop_detail: None,
-        ..Default::default()
-    });
+            request_echo: None,
+            stop_detail: None,
+            ..Default::default()
+        },
+    );
     assert_required(&body, "non-stream body");
     assert_eq!(body["incomplete_details"], serde_json::Value::Null);
 
     // Non-stream body (incomplete keeps its real incomplete_details object).
-    let truncated = non_stream.write_response(&crate::codec::ir::IrResponse {
-        role: crate::codec::ir::IrRole::Assistant,
-        content: Vec::new(),
-        stop_reason: Some(crate::codec::ir::IrStopReason::MaxTokens),
-        usage: usage_fixture(),
-        model: None,
-        id: None,
-        created: None,
-        system_fingerprint: None,
-        stop_sequence: None,
-        logprobs: Vec::new(),
+    let truncated = non_stream.write_response(
+        crate::codec::test_host::HOST,
+        &crate::codec::ir::IrResponse {
+            role: crate::codec::ir::IrRole::Assistant,
+            content: Vec::new(),
+            stop_reason: Some(crate::codec::ir::IrStopReason::MaxTokens),
+            usage: usage_fixture(),
+            model: None,
+            id: None,
+            created: None,
+            system_fingerprint: None,
+            stop_sequence: None,
+            logprobs: Vec::new(),
 
-        request_echo: None,
-        stop_detail: None,
-        ..Default::default()
-    });
+            request_echo: None,
+            stop_detail: None,
+            ..Default::default()
+        },
+    );
     assert_required(&truncated, "non-stream incomplete body");
     assert_eq!(
         truncated["incomplete_details"]["reason"],
@@ -7104,31 +7440,43 @@ fn responses_spec_required_members_present_on_every_response_shape() {
     // Streaming lifecycle: created -> text bracket -> completed, then a failed event.
     let writer = ResponsesWriter;
     let created = writer
-        .write_response_event(&IrStreamEvent::MessageStart {
-            role: crate::codec::ir::IrRole::Assistant,
-            usage: None,
-            id: None,
-            created: None,
-            model: None,
-        })
+        .write_response_event(
+            crate::codec::test_host::HOST,
+            &IrStreamEvent::MessageStart {
+                role: crate::codec::ir::IrRole::Assistant,
+                usage: None,
+                id: None,
+                created: None,
+                model: None,
+            },
+        )
         .expect("created");
     assert_required(&created.1["response"], "response.created");
 
-    let opened = writer.write_response_events(&IrStreamEvent::BlockStart {
-        index: 0,
-        block: crate::codec::ir::IrBlockMeta::Text,
-        refusal: false,
-    });
+    let opened = writer.write_response_events(
+        crate::codec::test_host::HOST,
+        &IrStreamEvent::BlockStart {
+            index: 0,
+            block: crate::codec::ir::IrBlockMeta::Text,
+            refusal: false,
+        },
+    );
     assert_eq!(opened[1].0, "response.content_part.added");
     assert_eq!(opened[1].1["part"]["logprobs"], serde_json::json!([]));
     let delta = writer
-        .write_response_event(&IrStreamEvent::BlockDelta {
-            index: 0,
-            delta: crate::codec::ir::IrDelta::TextDelta("hi".into()),
-        })
+        .write_response_event(
+            crate::codec::test_host::HOST,
+            &IrStreamEvent::BlockDelta {
+                index: 0,
+                delta: crate::codec::ir::IrDelta::TextDelta("hi".into()),
+            },
+        )
         .expect("delta");
     assert_eq!(delta.1["logprobs"], serde_json::json!([]));
-    let closed = writer.write_response_events(&IrStreamEvent::BlockStop { index: 0 });
+    let closed = writer.write_response_events(
+        crate::codec::test_host::HOST,
+        &IrStreamEvent::BlockStop { index: 0 },
+    );
     assert_eq!(closed[0].0, "response.output_text.done");
     assert_eq!(closed[0].1["logprobs"], serde_json::json!([]));
     assert_eq!(closed[1].0, "response.content_part.done");
@@ -7140,21 +7488,27 @@ fn responses_spec_required_members_present_on_every_response_shape() {
     );
 
     let completed = writer
-        .write_response_event(&IrStreamEvent::MessageDelta {
-            stop_reason: Some(crate::codec::ir::IrStopReason::EndTurn),
-            stop_sequence: None,
-            usage: usage_fixture(),
-            stop_detail: None,
-        })
+        .write_response_event(
+            crate::codec::test_host::HOST,
+            &IrStreamEvent::MessageDelta {
+                stop_reason: Some(crate::codec::ir::IrStopReason::EndTurn),
+                stop_sequence: None,
+                usage: usage_fixture(),
+                stop_detail: None,
+            },
+        )
         .expect("completed");
     assert_required(&completed.1["response"], "response.completed");
 
     let failed = writer
-        .write_response_event(&IrStreamEvent::Error(IrError {
-            class: StatusClass::ServerError,
-            provider_signal: Some("boom".to_string()),
-            retry_after: None,
-        }))
+        .write_response_event(
+            crate::codec::test_host::HOST,
+            &IrStreamEvent::Error(IrError {
+                class: StatusClass::ServerError,
+                provider_signal: Some("boom".to_string()),
+                retry_after: None,
+            }),
+        )
         .expect("failed");
     assert_required(&failed.1["response"], "response.failed");
 }
@@ -7166,37 +7520,54 @@ fn responses_spec_required_members_present_on_every_response_shape() {
 fn responses_stream_logprobs_ride_text_done_and_finalized_part() {
     let writer = ResponsesWriter;
     writer
-        .write_response_event(&IrStreamEvent::MessageStart {
-            role: crate::codec::ir::IrRole::Assistant,
-            usage: None,
-            id: None,
-            created: None,
-            model: None,
-        })
+        .write_response_event(
+            crate::codec::test_host::HOST,
+            &IrStreamEvent::MessageStart {
+                role: crate::codec::ir::IrRole::Assistant,
+                usage: None,
+                id: None,
+                created: None,
+                model: None,
+            },
+        )
         .expect("created");
-    writer.write_response_events(&IrStreamEvent::BlockStart {
-        index: 0,
-        block: crate::codec::ir::IrBlockMeta::Text,
-        refusal: false,
-    });
-    writer.write_response_events(&IrStreamEvent::BlockDelta {
-        index: 0,
-        delta: crate::codec::ir::IrDelta::TextDelta("Hi".into()),
-    });
-    writer.write_response_events(&IrStreamEvent::BlockDelta {
-        index: 0,
-        delta: crate::codec::ir::IrDelta::LogprobsDelta(vec![crate::codec::ir::IrTokenLogprob {
-            token: "Hi".into(),
-            logprob: -0.25,
-            bytes: None,
-            top: vec![crate::codec::ir::IrTopLogprob {
-                token: "Hello".into(),
-                logprob: -1.5,
-                bytes: None,
-            }],
-        }]),
-    });
-    let closed = writer.write_response_events(&IrStreamEvent::BlockStop { index: 0 });
+    writer.write_response_events(
+        crate::codec::test_host::HOST,
+        &IrStreamEvent::BlockStart {
+            index: 0,
+            block: crate::codec::ir::IrBlockMeta::Text,
+            refusal: false,
+        },
+    );
+    writer.write_response_events(
+        crate::codec::test_host::HOST,
+        &IrStreamEvent::BlockDelta {
+            index: 0,
+            delta: crate::codec::ir::IrDelta::TextDelta("Hi".into()),
+        },
+    );
+    writer.write_response_events(
+        crate::codec::test_host::HOST,
+        &IrStreamEvent::BlockDelta {
+            index: 0,
+            delta: crate::codec::ir::IrDelta::LogprobsDelta(vec![
+                crate::codec::ir::IrTokenLogprob {
+                    token: "Hi".into(),
+                    logprob: -0.25,
+                    bytes: None,
+                    top: vec![crate::codec::ir::IrTopLogprob {
+                        token: "Hello".into(),
+                        logprob: -1.5,
+                        bytes: None,
+                    }],
+                },
+            ]),
+        },
+    );
+    let closed = writer.write_response_events(
+        crate::codec::test_host::HOST,
+        &IrStreamEvent::BlockStop { index: 0 },
+    );
     assert_eq!(
         closed[0].1["logprobs"],
         serde_json::json!([{
@@ -7313,7 +7684,7 @@ fn write_response_emits_url_citations_without_inventing_fields() {
     };
 
     let writer = ResponsesWriter;
-    let v = writer.write_response(&resp);
+    let v = writer.write_response(crate::codec::test_host::HOST, &resp);
     let anns = v["output"][0]["content"][0]["annotations"]
         .as_array()
         .expect("annotations array");
@@ -7341,7 +7712,9 @@ fn write_response_emits_url_citations_without_inventing_fields() {
 #[test]
 fn streamed_citations_reach_the_assembled_output_item() {
     let w = ResponsesWriter;
-    let ev = |e: crate::codec::ir::IrStreamEvent| w.write_response_event(&e);
+    let ev = |e: crate::codec::ir::IrStreamEvent| {
+        w.write_response_event(crate::codec::test_host::HOST, &e)
+    };
 
     let _ = ev(crate::codec::ir::IrStreamEvent::BlockStart {
         index: 0,
@@ -7368,8 +7741,10 @@ fn streamed_citations_reach_the_assembled_output_item() {
             ..Default::default()
         }]),
     });
-    let close_frames =
-        w.write_response_events(&crate::codec::ir::IrStreamEvent::BlockStop { index: 0 });
+    let close_frames = w.write_response_events(
+        crate::codec::test_host::HOST,
+        &crate::codec::ir::IrStreamEvent::BlockStop { index: 0 },
+    );
     let close_types: Vec<&str> = close_frames.iter().map(|(et, _)| et.as_str()).collect();
     assert_eq!(
         close_types,
@@ -7455,7 +7830,7 @@ fn cross_protocol_egress_into_responses_emits_content_part_bracket() {
     // Collect EVERY emitted wire frame in order, exactly as the seam's per-event loop would frame it.
     let frames: Vec<serde_json::Value> = ir_stream
         .iter()
-        .flat_map(|ev| writer.write_response_events(ev))
+        .flat_map(|ev| writer.write_response_events(crate::codec::test_host::HOST, ev))
         .map(|(_et, data)| data)
         .collect();
     let types: Vec<String> = frames
@@ -7639,7 +8014,7 @@ fn responses_output_text_annotations_read_into_ir_citations() {
     });
 
     let resp = ResponsesReader
-        .read_response(&json)
+        .read_response(crate::codec::test_host::HOST, &json)
         .expect("read_response should succeed");
     let citations = resp
         .content
@@ -7782,7 +8157,9 @@ fn response_blank_call_id_is_synthesized() {
         ],
         "usage": {"input_tokens": 1, "output_tokens": 1}
     });
-    let resp = ResponsesReader.read_response(&json).expect("read_response");
+    let resp = ResponsesReader
+        .read_response(crate::codec::test_host::HOST, &json)
+        .expect("read_response");
     let ids: Vec<&str> = resp
         .content
         .iter()
@@ -7821,7 +8198,9 @@ fn response_object_function_arguments_preserved() {
         ],
         "usage": {"input_tokens": 1, "output_tokens": 1}
     });
-    let resp = ResponsesReader.read_response(&json).expect("read_response");
+    let resp = ResponsesReader
+        .read_response(crate::codec::test_host::HOST, &json)
+        .expect("read_response");
     let input = resp
         .content
         .iter()
@@ -7921,8 +8300,10 @@ fn writer_tool_arguments_stop_growing_at_the_translate_cap() {
     }
 
     // The item still closes cleanly: a well-formed `output_item.done` naming the call.
-    let frames =
-        writer.write_response_events(&crate::codec::ir::IrStreamEvent::BlockStop { index: 0 });
+    let frames = writer.write_response_events(
+        crate::codec::test_host::HOST,
+        &crate::codec::ir::IrStreamEvent::BlockStop { index: 0 },
+    );
     let done = frames
         .iter()
         .find(|(et, _)| et == "response.output_item.done")
@@ -7991,7 +8372,7 @@ fn responses_url_citation_survives_a_responses_round_trip() {
     };
 
     let writer = ResponsesWriter;
-    let wire = writer.write_response(&resp);
+    let wire = writer.write_response(crate::codec::test_host::HOST, &resp);
 
     // The written shape is the spec's flat `UrlCitationBody`, not Chat's nested object.
     let ann = wire
@@ -8010,7 +8391,7 @@ fn responses_url_citation_survives_a_responses_round_trip() {
 
     // And the reader recovers it rather than dropping it on the floor.
     let back = ResponsesReader
-        .read_response(&wire)
+        .read_response(crate::codec::test_host::HOST, &wire)
         .expect("read_response should succeed");
     let citations = back
         .content

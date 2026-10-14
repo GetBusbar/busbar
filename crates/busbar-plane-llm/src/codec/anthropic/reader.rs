@@ -467,6 +467,7 @@ impl ProtocolReader for AnthropicReader {
 
     fn read_response_event(
         &self,
+        _host: &dyn busbar_contract::codec::CodecHost,
         event_type: &str,
         data: &serde_json::Value,
     ) -> Option<IrStreamEvent> {
@@ -663,6 +664,7 @@ impl ProtocolReader for AnthropicReader {
 
     fn read_response_events(
         &self,
+        host: &dyn busbar_contract::codec::CodecHost,
         event_type: &str,
         data: &serde_json::Value,
         state: &mut crate::codec::ir::StreamDecodeState,
@@ -733,7 +735,7 @@ impl ProtocolReader for AnthropicReader {
             }
         }
         // Anthropic events are otherwise already block-structured (1:1): wrap the singular.
-        match self.read_response_event(event_type, data) {
+        match self.read_response_event(host, event_type, data) {
             Some(ev) => vec![ev],
             None => vec![],
         }
@@ -741,6 +743,7 @@ impl ProtocolReader for AnthropicReader {
 
     fn read_response(
         &self,
+        _host: &dyn busbar_contract::codec::CodecHost,
         body: &serde_json::Value,
     ) -> Result<crate::codec::ir::IrResponse, IrError> {
         let obj = body.as_object().ok_or_else(ir_parse_error)?;

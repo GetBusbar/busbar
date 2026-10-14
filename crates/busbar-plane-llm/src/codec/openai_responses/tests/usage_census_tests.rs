@@ -126,12 +126,16 @@ fn read_all_paths(usage: &serde_json::Value) -> [(Units, Note, u64); 3] {
         }],
         "usage": usage
     });
-    let buffered = ResponsesReader.read_response(&body).expect("read").usage;
+    let buffered = ResponsesReader
+        .read_response(crate::codec::test_host::HOST, &body)
+        .expect("read")
+        .usage;
     let completed = serde_json::json!({
         "response": {"status": STATUS_COMPLETED, "usage": usage}
     });
     let streamed = ResponsesReader
         .read_response_events(
+            crate::codec::test_host::HOST,
             EVT_RESPONSE_COMPLETED,
             &completed,
             &mut StreamDecodeState::default(),
