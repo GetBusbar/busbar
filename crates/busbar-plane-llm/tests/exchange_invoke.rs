@@ -45,8 +45,8 @@ fn arrived(
     extra: &[(&'static [u8], &'static [u8])],
 ) -> (Arrived, Vec<(&'static [u8], &'static [u8])>) {
     let mut h: Vec<(&'static [u8], &'static [u8])> = vec![
-        (b"content-type", b"application/json"),
-        (b"anthropic-version", b"2023-06-01"),
+        (&b"content-type"[..], &b"application/json"[..]),
+        (&b"anthropic-version"[..], &b"2023-06-01"[..]),
     ];
     h.extend_from_slice(extra);
     let a = arrive("POST", "/v1/messages", &h, body.as_bytes(), &()).expect("arrives");
@@ -117,8 +117,8 @@ fn a_carried_dialect_caller_is_relayed_inside_the_envelope() {
     let (a, h) = arrived(
         body,
         &[(
-            b"anthropic-beta",
-            b"prompt-caching-2024-07-31, output-128k-2025-02-19",
+            &b"anthropic-beta"[..],
+            &b"prompt-caching-2024-07-31, output-128k-2025-02-19"[..],
         )],
     );
     let r = build(&a, &h, &shaping(), "p", "claude-invoke").expect("built");
