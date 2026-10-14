@@ -11,6 +11,21 @@
 use super::*;
 use testing::exclusive;
 
+/// [`Observing::fold`] on the test binary's own observability (its recorder installed).
+fn fold<R>(plugin: &str, kind: &str, envelope: &Envelope<R>) {
+    testing::observing().fold(plugin, kind, envelope);
+}
+
+/// [`Observing::fold_entries`] on the test binary's own observability.
+fn fold_entries(
+    plugin: &str,
+    kind: &str,
+    metrics: &[serde_json::Value],
+    diagnostics: &[serde_json::Value],
+) {
+    testing::observing().fold_entries(plugin, kind, metrics, diagnostics);
+}
+
 /// A BARE envelope never reaches the observer at all. That is the common case on every kind, and it
 /// is what keeps the envelope from being a per-call tax on a plugin with nothing to say.
 #[test]
@@ -91,8 +106,8 @@ fn either_half_alone_still_folds() {
 }
 
 /// The FIRST install wins and a later one is refused, so a second caller cannot silently re-point
-/// where plugin telemetry goes mid-process. (`exclusive` has already installed the test recorder, so
-/// this call is the second one by construction.)
+/// where plugin telemetry goes mid-process. (Every `Observing` of this test binary stands with the
+/// test recorder installed, so this call is the second one by construction.)
 #[test]
 fn a_second_install_is_refused() {
     struct Other;
@@ -101,8 +116,41 @@ fn a_second_install_is_refused() {
         fn observe(&self, _: &str, _: &str, _: &[serde_json::Value], _: &[serde_json::Value]) {}
     }
     let _guard = exclusive();
-    assert!(!install_plugin_observer(&Other));
-    assert!(OBSERVER.get().is_some());
+    let observing = Observing::default();
+    assert!(!observing.install_observer(&Other));
+    assert!(observing.observer.get().is_some());
+}
+
+/// THE OBSERVER AND THE HOST'S SERIES ARE THE DISPATCHER'S, NOT A PROCESS SEAM (`door-only`
+/// static-seam rule, `BUSBAR-1.6.0.md` l.1475-1478, l.1543): a series predicate installed on one
+/// dispatcher's observability refuses a first-party claim on the host's series THERE and nowhere
+/// else, and a door bound on a dispatcher folds through that dispatcher's observability. RED before:
+/// the observer and the predicate were process-global statics the root installed Rust code into.
+#[test]
+fn the_observer_and_the_host_series_are_the_dispatchers() {
+    use busbar_contract::abi::mechanism::observe::SeriesDecl;
+    let mine = crate::dispatch::Dispatcher::new(crate::dispatch::DispatchConfig::default());
+    let other = crate::dispatch::Dispatcher::new(crate::dispatch::DispatchConfig::default());
+    assert!(mine
+        .observing()
+        .install_host_series(|name| name == "dispatcher_owned_host_total"));
+    assert!(
+        !mine.observing().install_host_series(|_| true),
+        "first install wins"
+    );
+    let claim = [SeriesDecl::new("dispatcher_owned_host_total", "counter")];
+    let refused = grant_series(mine.observing(), "seam-mine", true, &claim)
+        .expect_err("the host's own series is refused on the dispatcher that names it");
+    assert!(refused.contains("dispatcher_owned_host_total"), "{refused}");
+    grant_series(other.observing(), "seam-other", true, &claim)
+        .expect("a dispatcher whose host named no series refuses nothing");
+    // The door's envelope sink is the adopting dispatcher's observability.
+    let adopted = mine
+        .adopter()
+        .observing()
+        .expect("an adopter of a live dispatcher");
+    assert!(std::ptr::eq(&*adopted, mine.observing()));
+    assert!(!std::ptr::eq(&*adopted, other.observing()));
 }
 
 /// K9b: a first-party sink's declaration marked `shed` is the counter the host counts its shed
@@ -117,13 +165,14 @@ fn a_granted_shed_declaration_is_the_hosts_shed_counter() {
         SeriesDecl::new("k9b_dropped_total", "counter").shed(),
         SeriesDecl::new("k9b_level", "gauge").shed(),
     ];
-    grant_series("k9b-first-party", true, &declared).expect("granted");
+    grant_series(&testing::observing(), "k9b-first-party", true, &declared).expect("granted");
     assert_eq!(shed_series("k9b-first-party"), vec!["k9b_dropped_total"]);
     let third: Vec<SeriesDecl> = declared
         .iter()
         .map(|d| SeriesDecl::new(format!("{}_3p", d.name), d.kind.clone()).shed())
         .collect();
-    grant_series("k9b-third-party", false, &third).expect("nothing to refuse");
+    grant_series(&testing::observing(), "k9b-third-party", false, &third)
+        .expect("nothing to refuse");
     assert!(shed_series("k9b-third-party").is_empty());
 }
 
@@ -295,6 +344,7 @@ fn a_metric_is_named_by_its_family_for_every_kind() {
     for kind in kinds {
         testing::clear(&guard);
         let sink = EnvelopeObserver::before(
+            testing::observing(),
             std::sync::Arc::new(Binder::default()),
             "envelope-all",
             kind,

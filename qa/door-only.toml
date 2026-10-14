@@ -202,12 +202,3 @@ rule = "door-only:static-seam"
 file = "crates/busbar-voice/src/mount.rs"
 item = "COMPOSED_GOVERNED_CALLS"
 
-[[finding]]
-rule = "door-only:static-seam"
-file = "crates/plugin-loader/src/observe.rs"
-item = "HOST_SERIES"
-
-[[finding]]
-rule = "door-only:static-seam"
-file = "crates/plugin-loader/src/observe.rs"
-item = "OBSERVER"
