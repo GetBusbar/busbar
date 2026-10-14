@@ -427,7 +427,7 @@ impl Node {
         arrived: Arrived,
         card: Option<&crate::root::kernel::PinnedHistory>,
         ended: busbar_kernel::teller::Ended,
-        seal: Option<UnitSeal>,
+        seal: Option<impl Into<Sealing>>,
     ) {
         let Some(book) = self.book.get() else {
             return;
@@ -458,7 +458,7 @@ impl Node {
             &self.durability_token,
             posted,
         );
-        if let Some(seal) = seal {
+        if let Some(seal) = seal.map(Into::<Sealing>::into) {
             seal.seal(
                 book,
                 &self.durability_token,
@@ -468,6 +468,10 @@ impl Node {
                 outcome,
                 lines,
                 0,
+                Line {
+                    settled_at: shared.landed(),
+                    served: None,
+                },
             );
         }
     }
@@ -482,10 +486,11 @@ impl Node {
     /// The record carries the COUNTS the reservation was sized for, never a figure (#71): the door
     /// on this plane reserves nothing (its arrival hold opens at zero and no step sizes it), so the
     /// counts are none and the book derives a reservation of nothing from them.
-    fn open_on_book(&self, principal: &PrincipalId, arrived: Arrived) {
-        let Some(book) = self.book.get() else {
-            return;
-        };
+    ///
+    /// Answers the seq the hold's record landed at on the chain, which the unit's audit record
+    /// names as the hold it ran under; `None` with no book, or when the journal did not take it.
+    fn open_on_book(&self, principal: &PrincipalId, arrived: Arrived) -> Option<u64> {
+        let book = self.book.get()?;
         let key = balance(principal);
         let at = crate::root::durability::Settling {
             key: &key,
@@ -502,12 +507,13 @@ impl Node {
             },
         };
         let mut durability = book.lock().unwrap_or_else(|p| p.into_inner());
-        let _opened = durability.open_hold(
+        let opened = durability.open_hold(
             &at,
             principal,
             &crate::root::durability::UnitCounts::default(),
             arrived.ms(),
         );
+        opened.ok().as_ref().and_then(landed_at)
     }
 
     /// Record on the book that this unit DISPATCHED, before its leg leaves the node.
@@ -652,7 +658,7 @@ impl Node {
                             fee: 0,
                         },
                         // A unit the sweep ends never handed back its audit pass: it has no record.
-                        None,
+                        None::<Sealing>,
                     );
                 }
             }
@@ -732,7 +738,7 @@ impl Node {
             post.close(key);
             return None;
         };
-        self.open_on_book(principal, arrived);
+        post.held(key, self.open_on_book(principal, arrived));
         let mut occupied = Occupied {
             node: self,
             slot: Arc::clone(&slot),
@@ -770,12 +776,9 @@ impl Node {
             Ended::AlreadySettled => None,
         };
         // The unit returned: its facts close here, and its record is sealed with its one line.
-        let seal = post.take(key).map(|(facts, pass)| UnitSeal {
-            facts,
-            pass,
-            key,
-            origin: self.kernel.origin(origin),
-            parent: parent.map(|p| p.key),
+        let seal = post.take(key).and_then(|open| {
+            open.sealing
+                .into_seal(key, self.kernel.origin(origin), parent.map(|p| p.key))
         });
         match self.late_arm(Some(late), principal, arrived, history.as_ref()) {
             Some(mut arm) => {
@@ -957,7 +960,7 @@ impl Node {
                 // THE HOLD, ON THE JOURNAL, before the unit runs (item 127): what this unit holds
                 // is written down now, so a node killed mid-unit leaves a record the next boot
                 // recovers and posts rather than a hold that only ever existed in memory.
-                self.open_on_book(&principal, arrived);
+                let hold = self.open_on_book(&principal, arrived);
                 let mut occupied = Occupied {
                     node: self,
                     slot: Arc::clone(&slot),
@@ -980,7 +983,13 @@ impl Node {
                     principal: &principal,
                     arrived,
                     history: history.as_ref(),
-                    sealing: Mutex::new(None),
+                    sealing: Mutex::new(Some(Accruing {
+                        door: None,
+                        ran: Ran {
+                            hold,
+                            ..Ran::default()
+                        },
+                    })),
                 };
                 let ended = busbar_kernel::teller::run_unit_async(
                     &self.kernel,
@@ -1047,7 +1056,7 @@ impl Node {
         principal: &PrincipalId,
         arrived: Arrived,
         history: Option<&crate::root::kernel::PinnedHistory>,
-        seal: Option<UnitSeal>,
+        seal: Option<Sealing>,
     ) -> Response {
         match self.late_arm(late, principal, arrived, history) {
             Some(mut arm) => {
@@ -1344,7 +1353,7 @@ struct LateAccrual {
     /// How the unit ended, as the exit sealed it — the record's outcome.
     outcome: Option<Outcome>,
     /// The unit's audit pass and facts, sealed into its one record with the line this arm writes.
-    seal: Option<UnitSeal>,
+    seal: Option<Sealing>,
 }
 
 impl LateAccrual {
@@ -1401,6 +1410,10 @@ impl LateAccrual {
                         outcome,
                         lines,
                         0,
+                        Line {
+                            settled_at: book.landed(),
+                            served: None,
+                        },
                     );
                 }
             }
@@ -1429,6 +1442,10 @@ impl LateAccrual {
                 outcome,
                 report_lines(&report),
                 report.fee_count,
+                Line {
+                    settled_at: book.landed(),
+                    served: Some(report.lane.as_str()),
+                },
             );
         }
     }
@@ -1770,26 +1787,29 @@ struct Driven<'n> {
     arrived: Arrived,
     /// The history snapshot the unit was admitted under.
     history: Option<&'n crate::root::kernel::PinnedHistory>,
-    /// The audit pass and facts the loop handed back at the unit's audit door (`Units::audited`),
-    /// held until the unit's one line is written, where its record is sealed with them.
-    sealing: Mutex<Option<(busbar_contract::caps::AuditFacts, Pass<Audit>)>>,
+    /// The unit's record-to-be as it accrues: the seq its hold landed at, the destinations its
+    /// Route leg was lent, and the audit pass and facts the loop handed back at its audit door
+    /// (`Units::audited`) — held until the unit's one line is written, where its record is sealed
+    /// with them.
+    sealing: Mutex<Option<Accruing>>,
 }
 
 impl Driven<'_> {
     /// The unit's record-to-be, if its audit door handed its pass back.
-    fn take_seal(&self, key: UnitKey) -> Option<UnitSeal> {
-        let (facts, pass) = self
+    fn take_seal(&self, key: UnitKey) -> Option<Sealing> {
+        let accruing = self
             .sealing
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .take()?;
-        Some(UnitSeal {
-            facts,
-            pass,
-            key,
-            origin: self.node.kernel.origin(OriginKind::Client),
-            parent: None,
-        })
+        accruing.into_seal(key, self.node.kernel.origin(OriginKind::Client), None)
+    }
+
+    /// The unit's record-to-be, to note one more fact on.
+    fn accruing(&self) -> std::sync::MutexGuard<'_, Option<Accruing>> {
+        self.sealing
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 }
 
@@ -1887,10 +1907,7 @@ impl Units for Driven<'_> {
     }
 
     fn audited(&self, _ctx: &UnitCtx, facts: busbar_contract::caps::AuditFacts, pass: Pass<Audit>) {
-        *self
-            .sealing
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((facts, pass));
+        self.accruing().get_or_insert_with(Accruing::default).door = Some((facts, pass));
     }
 }
 
@@ -1904,6 +1921,11 @@ impl RouteAwait for Driven<'_> {
         // THE DISPATCH, ON THE JOURNAL, before the leg leaves: what a recovery reads to tell a unit
         // that sent something from one that never did.
         self.node.dispatch_on_book(self.principal, self.arrived);
+        // Where the unit may go, as Verify sealed it: what its record names as its destination.
+        self.accruing()
+            .get_or_insert_with(Accruing::default)
+            .ran
+            .verified = lanes_of(destinations);
         // THROUGH THE ONE SEAM. The leg is the plane's own; the seam awaits it and gives back its
         // value, so the bytes, the status, the headers, the stream's frames and the tap on its body
         // are the plane's exactly — byte identity is a property of that construction, not of a
@@ -2059,6 +2081,7 @@ impl<U: RouteAwait> RouteAwait for Borrowed<'_, U> {
         ctx: &'a UnitCtx,
         destinations: &'a [VerifiedDestination],
     ) -> RouteLeg<'a> {
+        self.post.routed(ctx.key, destinations);
         self.units.route_leg(token, ctx, destinations)
     }
 
@@ -2076,17 +2099,20 @@ impl<U: RouteAwait> RouteAwait for Borrowed<'_, U> {
 // The driven plane's abandoned end
 // ---------------------------------------------------------------------------------------------
 
-/// Each open unit's facts, by key: its principal, its pinned arrival, its admitted card history,
-/// and the audit facts and pass its audit door handed back, once it has.
-type OpenUnits = HashMap<
-    UnitKey,
-    (
-        PrincipalId,
-        Arrived,
-        Option<crate::root::kernel::PinnedHistory>,
-        Option<(busbar_contract::caps::AuditFacts, Pass<Audit>)>,
-    ),
->;
+/// Each open unit's facts, by key.
+type OpenUnits = HashMap<UnitKey, OpenUnit>;
+
+/// One open unit's facts: what it was admitted with, and what its record will say of it.
+struct OpenUnit {
+    /// Whose unit it is.
+    principal: PrincipalId,
+    /// Its pinned arrival.
+    arrived: Arrived,
+    /// The card history it was admitted under.
+    history: Option<crate::root::kernel::PinnedHistory>,
+    /// Its record-to-be as it accrues.
+    sealing: Accruing,
+}
 
 /// THE ROOT'S POSTING SITE for an abandoned end of a unit the kernel's plane driver runs
 /// (`busbar_kernel::plane_driver::EndPost`): the caller went away, the loop's guard sealed the end,
@@ -2135,7 +2161,29 @@ impl NodeEndPost {
         arrived: Arrived,
         history: Option<crate::root::kernel::PinnedHistory>,
     ) {
-        self.lock().insert(key, (principal, arrived, history, None));
+        self.lock().insert(
+            key,
+            OpenUnit {
+                principal,
+                arrived,
+                history,
+                sealing: Accruing::default(),
+            },
+        );
+    }
+
+    /// Unit `key`'s hold landed on the chain at `seq`.
+    fn held(&self, key: UnitKey, seq: Option<u64>) {
+        if let Some(open) = self.lock().get_mut(&key) {
+            open.sealing.ran.hold = seq;
+        }
+    }
+
+    /// Unit `key`'s Route leg was lent the sealed `destinations`.
+    fn routed(&self, key: UnitKey, destinations: &[VerifiedDestination]) {
+        if let Some(open) = self.lock().get_mut(&key) {
+            open.sealing.ran.verified = lanes_of(destinations);
+        }
     }
 
     /// Unit `key`'s audit door handed back its facts and pass (`Units::audited`): they are held with
@@ -2148,14 +2196,14 @@ impl NodeEndPost {
         pass: Pass<Audit>,
     ) {
         if let Some(open) = self.lock().get_mut(&key) {
-            open.3 = Some((facts, pass));
+            open.sealing.door = Some((facts, pass));
         }
     }
 
-    /// Unit `key` returned: its facts close, and the audit facts and pass its audit door handed
-    /// back come out for the record its one line seals ([`Node::drive_borrowed`]).
-    pub fn take(&self, key: UnitKey) -> Option<(busbar_contract::caps::AuditFacts, Pass<Audit>)> {
-        self.lock().remove(&key).and_then(|open| open.3)
+    /// Unit `key` returned: its facts close and come out for the record its one line seals
+    /// ([`Node::drive_borrowed`]).
+    fn take(&self, key: UnitKey) -> Option<OpenUnit> {
+        self.lock().remove(&key)
     }
 
     /// Unit `key` returned: its end is the node's exit arm's to post, never this site's.
@@ -2180,10 +2228,12 @@ impl busbar_kernel_egress::ports::Journal for NodeEndPost {
         &self,
         record: &busbar_kernel_egress::ports::Dispatched,
     ) -> Result<(), busbar_kernel_egress::ports::DurabilityUnavailable> {
-        let facts = self
-            .lock()
-            .get(&record.unit)
-            .map(|(principal, arrived, _, _)| (principal.clone(), *arrived));
+        // The member of the verified set this attempt dials is where the unit goes: the last
+        // attempt's is the one its record names.
+        let facts = self.lock().get_mut(&record.unit).map(|open| {
+            open.sealing.ran.dialled = record.lane;
+            (open.principal.clone(), open.arrived)
+        });
         let (principal, arrived) =
             facts.ok_or(busbar_kernel_egress::ports::DurabilityUnavailable)?;
         // As the node's own dispatch record: a journal that will not take it retains and re-offers
@@ -2208,7 +2258,7 @@ impl busbar_kernel::plane_driver::Checkpointer for NodeEndPost {
         let facts = self
             .lock()
             .get(&key)
-            .map(|(principal, arrived, _, _)| (principal.clone(), *arrived));
+            .map(|open| (open.principal.clone(), open.arrived));
         let Some((principal, arrived)) = facts else {
             return;
         };
@@ -2226,20 +2276,22 @@ impl busbar_kernel::plane_driver::EndPost for NodeEndPost {
     /// node's in-memory posting behind one short lock, and nothing here awaits or crosses a plugin.
     fn post(&self, ctx: &UnitCtx, ended: Ended) {
         let facts = self.lock().remove(&ctx.key);
-        if let Some((principal, arrived, history, sealing)) = facts {
+        if let Some(open) = facts {
             // The unit's one audit record is sealed with its one line, as a returned end's is.
-            let seal = sealing.map(|(facts, pass)| UnitSeal {
-                facts,
-                pass,
-                key: ctx.key,
-                origin: self.node.kernel.origin(ctx.origin),
-                parent: match ctx.origin {
-                    OriginKind::Nested { parent } => Some(parent),
-                    _ => None,
-                },
-            });
-            self.node
-                .settle_end(&principal, arrived, history.as_ref(), ended, seal);
+            let parent = match ctx.origin {
+                OriginKind::Nested { parent } => Some(parent),
+                _ => None,
+            };
+            let seal = open
+                .sealing
+                .into_seal(ctx.key, self.node.kernel.origin(ctx.origin), parent);
+            self.node.settle_end(
+                &open.principal,
+                open.arrived,
+                open.history.as_ref(),
+                ended,
+                seal,
+            );
         }
     }
 }
@@ -2287,7 +2339,101 @@ struct UnitSeal {
     parent: Option<UnitKey>,
 }
 
-impl UnitSeal {
+/// WHAT THE UNIT RAN UNDER AND WHERE IT WENT, as the node saw it happen: the facts its record's
+/// destination and controls are taken from, beside what its audit door sealed.
+#[derive(Default)]
+struct Ran {
+    /// The seq of the unit's hold record on the chain, opened at admission ([`Node::open_on_book`]).
+    hold: Option<u64>,
+    /// The sealed destinations its Route leg was lent: empty for a unit that never routed.
+    verified: Vec<LaneId>,
+    /// The lane of the verified destination its egress walk last dialled, where one dialled.
+    dialled: Option<LaneId>,
+}
+
+/// A unit's record-to-be while it runs: what the node saw ([`Ran`]), and its audit door's facts and
+/// pass once the loop handed them back.
+#[derive(Default)]
+struct Accruing {
+    door: Option<(busbar_contract::caps::AuditFacts, Pass<Audit>)>,
+    ran: Ran,
+}
+
+impl Accruing {
+    /// The unit's record-to-be, if its audit door handed its pass back.
+    fn into_seal(
+        self,
+        key: UnitKey,
+        origin: busbar_contract::caps::Origin,
+        parent: Option<UnitKey>,
+    ) -> Option<Sealing> {
+        let (facts, pass) = self.door?;
+        Some(Sealing {
+            seal: UnitSeal {
+                facts,
+                pass,
+                key,
+                origin,
+                parent,
+            },
+            ran: self.ran,
+        })
+    }
+}
+
+/// A UNIT'S RECORD, READY TO SEAL at its one line: what its audit door sealed, and what it ran.
+struct Sealing {
+    seal: UnitSeal,
+    ran: Ran,
+}
+
+/// What the door sealed, with no run facts beside it: the record names no destination and no
+/// controls the node did not see.
+impl From<UnitSeal> for Sealing {
+    fn from(seal: UnitSeal) -> Self {
+        Sealing {
+            seal,
+            ran: Ran::default(),
+        }
+    }
+}
+
+/// The lanes of a sealed destination set.
+fn lanes_of(destinations: &[VerifiedDestination]) -> Vec<LaneId> {
+    destinations.iter().map(|d| *d.lane()).collect()
+}
+
+/// What the unit's one line said about where it went and what closed it, as the line's writer
+/// learned it: the seq the settlement landed at, and the lane the plane reported serving it.
+struct Line<'l> {
+    /// The seq of the settlement record that closed the unit's hold (`SharedBook::landed`).
+    settled_at: Option<u64>,
+    /// The serving lane the plane's report named, where the line was written from a report.
+    served: Option<&'l str>,
+}
+
+impl Ran {
+    /// WHERE THE UNIT WENT: the verified destination it was dispatched to, by lane.
+    ///
+    /// The member its egress walk dialled, where a walk dialled one; else the lane the plane's
+    /// report says served it, when that lane is one Verify sealed; else the one destination Verify
+    /// sealed, when it sealed exactly one. A unit that never routed, or one whose plane chose among
+    /// several and did not say which, names none: the record never guesses.
+    fn destination(&self, served: Option<&str>) -> Option<String> {
+        let sealed = |lane: &str| self.verified.iter().any(|v| v.as_str() == lane);
+        let lane = match (self.dialled, served) {
+            (Some(dialled), _) => Some(dialled.as_str()),
+            (None, Some(served)) => sealed(served).then_some(served),
+            (None, None) => match self.verified.as_slice() {
+                [only] => Some(only.as_str()),
+                _ => None,
+            },
+        };
+        lane.map(str::to_owned)
+    }
+}
+
+impl Sealing {
     /// Seal the record beside the line just written: its outcome is how the unit ended, its amount
     /// is the line's counts (none for a refused unit), and the book stamps this boot's incarnation.
     #[allow(clippy::too_many_arguments)]
@@ -2301,26 +2447,37 @@ impl UnitSeal {
         outcome: Outcome,
         lines: Vec<RecordLine>,
         fee_count: u32,
+        line: Line<'_>,
     ) {
+        let Sealing { seal, ran } = self;
         let refused = matches!(outcome, Outcome::Refused(..));
+        // THE CONTROLS THE UNIT REALLY RAN UNDER (THE DESIGN §1: hold/settle seqs): the hold its
+        // admission opened on the chain and the settlement its one line closed it with, by seq —
+        // refs, never an amount. The hook facts stay unset: the plane's hook taps run inside its
+        // own leg and the audit step's facts carry none of them across to the node.
+        let controls = Controls {
+            hold_ref: ran.hold.map(|seq| seq.to_string()),
+            settle_ref: line.settled_at.map(|seq| seq.to_string()),
+            ..Controls::default()
+        };
         let inputs = AuditInputs {
             subject: Subject::PrincipalId(principal.as_str().to_string()),
             what: What {
-                unit_key: self.key,
+                unit_key: seal.key,
                 incarnation: 0,
-                op_class: RecordOpClass::new(self.facts.op_class.as_str()),
-                destination: None,
-                parent: self.parent,
+                op_class: RecordOpClass::new(seal.facts.op_class.as_str()),
+                destination: ran.destination(line.served),
+                parent: seal.parent,
                 pre_hook_head: None,
                 post_hook_head: None,
             },
             wall: arrived.secs(),
             mono: arrived.mono(),
-            origin: self.origin,
+            origin: seal.origin,
             outcome: OutcomeFacts {
                 unit_end: outcome,
                 step: outcome.step(),
-                finish: audit_finish(self.facts.finish),
+                finish: audit_finish(seal.facts.finish),
                 hook_failed: false,
                 emission_delta: 0,
                 stale_policy: false,
@@ -2332,17 +2489,17 @@ impl UnitSeal {
                 rate_card_version,
                 bucket_chain_ref: String::new(),
             },
-            controls: Controls::default(),
+            controls,
             correlation_label: None,
         };
         let sealed = book
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .seal_unit(inputs, self.pass, token);
+            .seal_unit(inputs, seal.pass, token);
         if let Err(lost) = sealed {
             tracing::error!(
                 step = lost.step().as_str(),
-                unit = self.key.get(),
+                unit = seal.key.get(),
                 "the journal lost a unit's audit record: it is sealed on the chain and cached, and \
                  a restart will not read it back"
             );
@@ -2358,6 +2515,15 @@ fn audit_finish(finish: busbar_contract::FinishClass) -> RecordFinish {
         busbar_contract::FinishClass::Partial => RecordFinish::Partial,
         busbar_contract::FinishClass::Error => RecordFinish::Error,
     }
+}
+
+/// The seq one append put the unit's own record at: the first transaction record it sealed (a
+/// `ChainBreak` the bound forced is sealed ahead of it and is not the unit's).
+fn landed_at(ack: &busbar_kernel_wal::JournalAck) -> Option<u64> {
+    ack.sealed
+        .iter()
+        .find(|record| record.class == busbar_kernel_wal::RecordClass::Transaction)
+        .map(|record| record.node_seq)
 }
 
 /// The record's amount for a line the LATE ARM wrote: every class the unit reported, by the
@@ -2576,3 +2742,9 @@ fn bind_node_book(
 #[cfg(all(test, linked_axis_node))]
 #[path = "tests/plane_node.rs"]
 mod tests;
+
+/// A unit's one audit record names where it went and the controls it ran under (audit root-R1#1),
+/// driven through the node with a unit of the test's own: no plane is needed to ask it.
+#[cfg(test)]
+#[path = "tests/plane_node_seal.rs"]
+mod seal_tests;
