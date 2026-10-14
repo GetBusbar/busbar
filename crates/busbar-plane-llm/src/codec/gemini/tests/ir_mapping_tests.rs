@@ -328,16 +328,18 @@ fn gem12_audio_token_details_reach_openai() {
     assert_eq!(out["usage"]["completion_tokens"], json!(8), "{out}");
 }
 
-/// GEM-14: a refusal reaches a Gemini client as its policy stop `SAFETY`, not `OTHER`.
+/// A refusal reaches a Gemini client as the native unenumerated `OTHER`, as in 1.5.5 (v1.5.5
+/// `crates/busbar/src/proto/gemini/mod.rs:771`): Gemini has no refusal stop, and `SAFETY` names a
+/// safety filter. RED while the writer wrote `SAFETY`.
 #[test]
-fn gem14_refusal_is_safety_for_a_gemini_client() {
+fn a_refusal_is_other_for_a_gemini_client() {
     let body = json!({"id": "msg_1", "type": "message", "role": "assistant", "model": "m",
         "content": [{"type": "text", "text": "no"}], "stop_reason": "refusal", "stop_sequence": null,
         "usage": {"input_tokens": 1, "output_tokens": 1}});
     let out = xresp("anthropic", "gemini", &body);
     assert_eq!(
         out["candidates"][0]["finishReason"],
-        json!("SAFETY"),
+        json!("OTHER"),
         "{out}"
     );
 }
