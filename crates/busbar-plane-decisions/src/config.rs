@@ -89,6 +89,15 @@ pub struct DecisionsSection {
 /// transport-protocol string).
 pub const PROTOCOL: &str = "jev";
 
+/// THE SECOND WIRE DIALECT (THE DESIGN section 2, the decisions bullet): "a second dialect exists
+/// only where a provider's request spine really differs (NanoJev is the one, dialect `nanojev`:
+/// `/api/evaluate` is its second exact claim; a model's dialect is its override or its provider's
+/// protocol ...)".
+pub const PROTOCOL_NANOJEV: &str = "nanojev";
+
+/// Every dialect this plane speaks, in its dialect-index order.
+pub const PROTOCOLS: &[&str] = &[PROTOCOL, PROTOCOL_NANOJEV];
+
 /// THE DECLARING SECTION: the top-level config key whose presence declares this plane, beside
 /// `pools:`, `tools:`, `agents:` and `streams:`. The plane owns it and says so here; the composition
 /// root reads this constant for its registry declaration and spells no literal of its own.
@@ -147,14 +156,26 @@ pub fn validate_cross_refs(
                     }
                 ));
             }
-            Some(protocol) if protocol != PROTOCOL => {
+            Some(protocol)
+                if !PROTOCOLS
+                    .contains(&model_cfg.protocol.as_deref().unwrap_or(protocol.as_str())) =>
+            {
+                let (key, protocol) = match model_cfg.protocol.as_deref() {
+                    Some(own) => (format!("decisions.models.{model_name}.protocol"), own),
+                    None => (
+                        format!(
+                            "decisions.models.{model_name}.provider '{}'",
+                            model_cfg.provider
+                        ),
+                        protocol.as_str(),
+                    ),
+                };
                 errors.push(format!(
-                    "decisions.models.{model_name}.provider '{}' resolves to protocol '{protocol}', \
-                     but the decision plane speaks only '{PROTOCOL}' (jev is a direct HTTP+JSON \
-                     passthrough with no translating IR — BUSBAR-1.6.0.md #51: an unknown dialect \
-                     FAILS CLOSED rather than boot). Point decisions.models.{model_name} at a \
-                     provider whose protocol resolves to '{PROTOCOL}', or remove this model.",
-                    model_cfg.provider
+                    "{key} resolves to protocol '{protocol}', but the decision plane speaks only \
+                     {} (BUSBAR-1.6.0.md #51: an unknown dialect FAILS CLOSED rather than boot). \
+                     Point decisions.models.{model_name} at a provider whose protocol resolves to \
+                     one of them, or remove this model.",
+                    PROTOCOLS.join(", ")
                 ));
             }
             Some(_) => {}

@@ -16,7 +16,7 @@
 //!   exactly the record-number mask for ChaCha20 (dimpl checks its first 5 bytes), so
 //!   `TLS_CHACHA20_POLY1305_SHA256` is offered to satisfy it. The AES-GCM 1.3 suites need a full
 //!   16-byte AES-ECB block, which ring does not expose. Associations are built DTLS 1.2
-//!   (`Dtls::new_12`), the version every browser's WebRTC stack speaks.
+//!   (`Dtls::new_12`), the version every browser's media stack speaks.
 
 use dimpl::crypto::{
     Aad, ActiveKeyExchange, Buf, Cipher, CryptoProvider, Dtls12CipherSuite, Dtls13CipherSuite,

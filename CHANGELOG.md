@@ -950,6 +950,16 @@ each dialect translates, field by field, is listed in the generated
   ToolUse input and ToolResult content); 1.5.5 showed only text blocks.
 - A Bedrock response served from an Anthropic upstream carries `usage.cacheDetails`, the per-TTL
   split of the cache-write tokens (additive: billed counts are unchanged).
+- A translated OpenAI Chat answer carries a model refusal in `message.refusal` / `delta.refusal`
+  and the serving `service_tier`, an image answer omits `created` when the upstream sent none, and
+  a translated request keeps a `developer` system prompt in the `developer` role.
+- A translated OpenAI Responses request keeps a `developer` system prompt as a `developer` input
+  item and sends a JSON tool result as the `function_call_output` text, and a translated Responses
+  stream ends at `response.failed` and names the serving `service_tier`.
+- A translated Gemini request or answer carries `functionCall.id` / `functionResponse.id`, a failed
+  tool result as `functionResponse.response.error`, a `fileData.mimeType`, the caller's
+  transcription prompt and temperature, and reads Vertex `createTime`, a `functionResponse.id` as
+  the call id, and the image content-policy stops as safety stops.
 - A buffered OpenAI chat response carries its citations as nested `url_citation` annotations, the
   shape the published Chat Completions schema defines.
 - On a same-dialect route the caller receives every upstream response header except hop-by-hop

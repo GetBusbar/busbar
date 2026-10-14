@@ -48,10 +48,14 @@ use crate::gitp;
 pub use a2a::{discriminates, governance_observed, NEGATIVE_PAIRS};
 pub use h2::{decide_h2, junit_cases, Case, CaseResult, H2Run};
 pub use jev::{
-    decide_jev, is_jev_refusal, jev_refusal_code, jev_subject_config, judge_admit, judge_audit,
-    judge_audit_window, judge_exit, judge_jev_ledger, judge_meter, judge_refused_before_dial,
-    judge_route, ledger_spend, tests_passed, Call, JevRun, Spend, AUDIT_OP_CLASS, ELSEWHERE,
-    H2_CHECKS, ONE_REQUEST_GROUP, REPORTED_UNITS, SUCCESS as JEV_SUCCESS, UNAVAILABLE,
+    decide_jev, is_jev_refusal, jev_models_config, jev_nanojev_config, jev_providers,
+    jev_refusal_code, jev_subject_config, judge_admit, judge_audit, judge_audit_window, judge_exit,
+    judge_jev_ledger, judge_meter, judge_nanojev_no_count, judge_nanojev_served,
+    judge_refused_before_dial, judge_route, judge_unrouted, judge_upstream_model, ledger_spend,
+    models_request, nanojev_providers, tests_passed, Call, JevRun, Spend, AUDIT_OP_CLASS,
+    ELSEWHERE, H2_CHECKS, NANOJEV_MODEL, NANOJEV_NO_COUNT, NANOJEV_PROVIDER, NANOJEV_REQUEST,
+    NANOJEV_SUCCESS, ONE_REQUEST_GROUP, PATH_EVALUATE, REPORTED_UNITS, SUCCESS as JEV_SUCCESS,
+    UNAVAILABLE, UPSTREAM_MODEL, UPSTREAM_NAME,
 };
 pub use oidf::{
     as_signing_key, base64_std, decide_oidf, es256_jwk, idp_reply, module_results,

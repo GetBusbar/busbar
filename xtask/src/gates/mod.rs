@@ -648,23 +648,68 @@ impl Registration {
 /// 23 under the shard's own contention. Fifty-four budgets fired, on a tree with no regression in
 /// it. A gate that is red because the machine was busy is a gate somebody deletes.
 ///
-/// So the budget is denominated in WORK UNITS: [`work_unit`] times a fixed, deterministic piece of
-/// arithmetic once per process, and every budget is a multiple of that. A box four times slower, or
-/// four times more contended, produces a calibration four times slower too, and the ratio the
-/// budget is about survives both. It is not a perfect proxy -- the calibration is arithmetic and
-/// the gates are regex and I/O -- which is exactly why the multiples carry roughly twice the
-/// measured cost rather than a tight fit. The failure being caught is a factor of ten.
+/// So the budget is denominated in WORK UNITS: one unit is what a fixed, deterministic piece of
+/// arithmetic (the ruler, [`ruler_once`]) costs on this box, and every budget is a multiple of
+/// that. A box four times slower produces a ruler four times dearer too, and the ratio the budget
+/// is about survives it. It is not a perfect proxy -- the ruler is arithmetic and the gates are
+/// regex and I/O -- which is why the multiples carry a measured slack rather than a tight fit. The
+/// failure being caught is a factor of ten.
+///
+/// A UNIT IS CPU TIME, NOT WALL CLOCK (ARCHITECT 2026-10-12; Law 8: an instrument must not report
+/// by noise). From 2026-10-07 a unit was a case's WALL CLOCK over one ruler pass read on the same
+/// worker ("runner wall-minutes are what is paid for"). Under contention the I/O- and
+/// subprocess-heavy batteries stretched far more than the arithmetic ruler did, so a busy box read
+/// as a dearer battery: busbar #785's merge group went red on `xtask selftest
+/// plane-transport-neutrality` (run 38263971339, shard 4) though #785 does not touch that gate, and
+/// origin/predev itself read 23 187 units contended against that gate's budget of 20 734 (its
+/// serial re-take: 9 345). A red that a busy box can produce is a red somebody learns to re-run,
+/// and Law 8 outranks the wall-clock choice. A busy box makes a battery WAIT; it does not make it
+/// SPEND, so the unit is now what the battery spent:
+///
+/// * THE BATTERY'S COST is the CPU the whole PROCESS spent on it ([`take_battery`]): user+sys of
+///   every thread (`getrusage(RUSAGE_SELF)` — the harness's workers, the scan pools `par_map` and
+///   the gates' own scoped threads start, `gitp`'s writer and drainer) plus user+sys of every child
+///   process reaped (`RUSAGE_CHILDREN` — every `git`), read just before and just after the battery.
+///   ONE TOTAL FOR THE PROCESS, NOT A SUM OF PER-THREAD READINGS, because several batteries do most
+///   of their work on threads other than the case's worker (`plane-purity`'s scanner is a `par_map`
+///   over the files) and a `git` child is reaped by whichever thread ran it: a per-thread account is
+///   one that a future thread or child silently falls out of. The process-wide total cannot lose
+///   one. No ruler pass runs inside the window, so there is no ruler CPU to subtract from it.
+/// * THE UNIT is the ruler's CPU time per pass, measured in the same process with
+///   the thread's own CPU account (`RUSAGE_THREAD`'s, read through `CLOCK_THREAD_CPUTIME_ID`; see
+///   [`cpu::thread`]) on the thread that ran it, just before and just after the battery
+///   ([`ruler_cpu`]).
+/// * BATTERIES NEVER OVERLAP IN ONE PROCESS while they are measured. `xtask selftest <gate>` takes
+///   one battery and `xtask selftest` takes them one after another; the `test:xtask-selftest` check
+///   runs `xtask selftest {part}`, ONE PROCESS PER GATE. A window that opens while another is open
+///   makes BOTH readings refused ([`BatteryReading::Refused`]) — an overlap is never guessed
+///   around.
+/// * PER-CASE FIGURES (`XTASK_SELFTEST_TIMING`) are the worker thread's own wall clock and CPU, for
+///   diagnosis only: they do not sum to the battery's total, and no verdict reads them.
+/// * WHAT CPU TIME STILL FEELS. Not waiting — but a busy box still empties the caches a battery
+///   leans on, and a virtual machine whose host has cores of two speeds (the prover VM on an M3)
+///   runs a battery partly on the slow ones, while the guest counts the time either way. Measured
+///   there at a load of 25 from other work: `segregation` 3.6 s -> 6.2 s of CPU, and
+///   `plane-transport-neutrality` 10.9 s -> 14.2 s, against wall clocks that went 3.6 s -> 16.3 s
+///   and 10.9 s -> 28.1 s. That residue is what the slack ([`BUDGET_SLACK`]) and the serial
+///   re-take are still for; the factor of ten the budget exists to catch is far outside it.
+/// * THE HANG GUARD IS UNCHANGED. [`execute_within`] and [`Watchdog`] are still wall clock, because
+///   a hang is a property of wall time. The serial re-take ([`budget_verdict`]) stays as a
+///   backstop.
+/// * LINUX ONLY. CI's runners and the prover VM are Linux. On any other host the battery is still
+///   proven (verdict and coverage) and the budget is NOT read; the selftest says so in its output
+///   rather than reading something else in its place.
 ///
 /// THE BUDGET IS ON THE GATE'S TOTAL, not on one case. A rule that grew a whole-tree scan makes
 /// EVERY case slower by the same factor, so a per-case limit would have to be set high enough to
 /// pass the slowest legitimate case and would then miss the uniform regression that actually costs
 /// the shard its hour. The slowest case is printed beside the total, because that is what a reader
 /// needs in order to act on it.
-/// Everything not named below. The most expensive gate that is NOT named measured 5 012 units
-/// (`response-header`; `duplex-ws-default-edge` 5 009) at the sitting in [`TAKEN`], so this is 1.8x
-/// the dearest ordinary self-test: above the ruler's measured spread of 1.43x ([`BUDGET_SLACK`]),
-/// and every gate that measured above 9 000 / 1.6 = 5 625 has an entry of its own below rather than
-/// sharing this one.
+/// Everything not named below. The most expensive gate that is NOT named measured 5 523 units
+/// (`no-float-money`; `no-deferral` 5 225) at the sitting in [`TAKEN`], so this is 1.63x the
+/// dearest ordinary self-test: above the ruler's measured spread ([`BUDGET_SLACK`]), and every
+/// gate that measured above 9 000 / 1.6 = 5 625 has an entry of its own below rather than sharing
+/// this one.
 const DEFAULT_BUDGET_UNITS: f64 = 9000.0;
 
 /// The gates whose self-tests legitimately cost more, each with its MEASURED cost and the reason.
@@ -675,57 +720,57 @@ const DEFAULT_BUDGET_UNITS: f64 = 9000.0;
 /// and I/O, so the proxy drifts a little with the machine; and the failure being caught is a rule
 /// that grew a whole-tree scan per plant, which is a factor of ten. A budget tight enough to flap
 /// is a budget somebody raises without reading it.
-/// WHAT A UNIT IS: units = this case's wall clock ÷ one single-thread ruler pass, same worker.
-/// (ARCHITECT 2026-10-07: wall clock, not work, because runner wall-minutes are what is paid for.)
+/// WHAT A UNIT IS: units = the battery's process CPU (RUSAGE_SELF + RUSAGE_CHILDREN) ÷ the ruler's
+/// CPU time per pass (the thread's own account). ARCHITECT 2026-10-12, Law 8: CPU time, not wall
+/// clock, because contention inflates wall clock and not the CPU a battery spends. It replaces the
+/// 2026-10-07 wall-clock unit; see the note on [`DEFAULT_BUDGET_UNITS`].
 /// WHEN AND ON WHAT EVERY MEASUREMENT BELOW WAS TAKEN. One constant, because they were taken in one
 /// sitting on one tree — and because a re-baseline that moves the numbers and not the date is the
 /// failure this whole shape exists to make impossible.
 ///
-/// RE-MEASURED 2026-10-07 FOR THE OPT-LEVEL CHANGE (ARCHITECT-approved measured re-measure,
-/// p6-selftest-memo). xtask is now built at opt-level 2 in every dev build (the workspace
-/// `Cargo.toml`, `[profile.dev.package.xtask]`), and the RULER is xtask code: its fixed arithmetic
-/// ran about 10.6 ms per unit at opt-level 0 (`construction`: 352.4 s / 33 096 units at the
-/// 2026-09-10 sitting) and runs 1.0 ms per unit at opt-level 2 (43.5 s / 41 969 units here), while
-/// the gates themselves sped up by less than that (regex and I/O, which the opt-level does not
-/// touch). So the same work reads as more units, and every measurement below was taken again, by
-/// the same method as every sitting before it: `xtask selftest <gate> --jobs 1`, each gate alone,
-/// the units read off the self-test's own cost line, on one box (Latchkey large, 8 cores), on one
-/// tree. Nothing was loosened beyond that: the slack is the same 1.6x, the default is the same
-/// 9 000, and the gates whose re-measurement put them above 9 000 / 1.6 got entries of their own
-/// instead of a raised default. The opt-level 0 measurements these replace are in each constant's
-/// note. Every per-case verdict line of all 64 batteries (1 290 lines) was byte-identical at
-/// opt-level 0 and opt-level 2 on that tree.
-const TAKEN: &str = "2026-10-07 214678af59";
+/// RE-MEASURED 2026-10-12 FOR THE CPU-TIME UNIT (ARCHITECT 2026-10-12; Law 8). Every battery was
+/// taken again by the same method as every sitting before it: `xtask selftest <gate> --jobs 1`,
+/// each gate alone in its own process, the units read off the self-test's own cost line, xtask at
+/// opt-level 2, on one box (the prover VM: Linux 6.8, 8 virtual cores on an Apple M3 host), on one
+/// tree (predev 7a7091060e with this change). The ruler's fastest pass read 1.068-1.095 ms of CPU
+/// across the 64 batteries. THE BOX WAS NOT QUIET: it is shared, and its load average read 12-22
+/// from other work through the sitting. An earlier sitting of the same batteries at a load of about
+/// 5 read 0.89x-1.39x these CPU totals (`structure-lint` 1.39x the most, `kind-isolation` 1.12x),
+/// so the numbers below lean high by up to that much; they are what the box measured, and they were
+/// not adjusted by hand in either direction. Nothing was loosened: the slack is the same 1.6x, the
+/// default is the same 9 000, the gates that measured above 9 000 / 1.6 have entries of their own
+/// and the ones that came in under it were struck rather than kept. The numbers moved two ways, and
+/// both are the unit telling the truth: a battery whose gate scans on every core (`plane-purity`'s
+/// scanner, the kind-isolation matrix, `ship-ready`, `construction`) now counts the CPU of every
+/// core it used, where the wall clock counted one; a battery that waited on `git` and the disk now
+/// counts what it spent rather than how long it waited. Every per-case verdict line of all 64
+/// batteries (1 429 lines) was byte-identical between predev 7a7091060e and this change, both taken
+/// at `--jobs 1`.
+const TAKEN: &str = "2026-10-12 7a7091060e";
 
 // THE MEASUREMENTS. Each is `work units at --jobs 1` on the tree named in [`TAKEN`], read off the
-// self-test's own cost line, xtask at opt-level 2. Constants rather than literals inside the table
-// so that a re-baseline is a diff a reviewer can read as a list of numbers that moved. The note on
-// each is the opt-level 0 figure it replaces, and where that was taken.
-const MEASURED_PLANE_PURITY: f64 = 65_100.0; // 25 cases, 64.9 s (opt 0: 27 923, 2026-09-10 b6f66e929)
-const MEASURED_PLANE_PURITY_STRICT: f64 = 26_155.0; // 12 cases, 26.2 s (opt 0: 19 435, same sitting)
-const MEASURED_STRUCTURE_LINT: f64 = 39_110.0; // 42 cases, 39.0 s (opt 0: 7 938, same sitting)
-const MEASURED_CONSTRUCTION: f64 = 41_969.0; // 36 cases, 43.5 s (opt 0: 33 096, same sitting)
-const MEASURED_KIND_ISOLATION: f64 = 711_866.0; // 238 cases, 782.2 s (opt 0: 319 876, 2026-10-03 9c479c0fe9)
-const MEASURED_KIND_ISOLATION_SHIP: f64 = 536_090.0; // 141 cases, 539.4 s (opt 0: 199 904, same)
-const MEASURED_SHIP_READY: f64 = 23_918.0; // 17 cases, 23.6 s (opt 0: under the default)
-const MEASURED_DESIGN_BINDINGS: f64 = 15_089.0; // 22 cases, 15.0 s (opt 0: under the default)
-const MEASURED_PLANE_TRANSPORT_NEUTRALITY: f64 = 12_959.0; // 9 cases, 12.9 s (opt 0: under the default)
-/// RE-MEASURED for the decision plane's seven gating rig cells (ARCHITECT Q12(a): raise the measure to
-/// the measured units and keep the case). The battery grew from 15 to 22 cases (the derived roster's
-/// plants and the `jev.rig|<check>` resolver plant), and the serial re-take read 21 803 units on
-/// Latchkey large. The 12 382 before it is the 15-case figure taken at [`TAKEN`]; the teller lane's
-/// 21-case re-take (19 850, #628) is below this battery, which carries the jev rig's resolver case.
-const MEASURED_TELLER_STEPS: f64 = 21_803.0; // 22 cases, --jobs 1 re-take (was 12 382, 15 cases)
-/// Where [`MEASURED_TELLER_STEPS`] was taken: the jev rig cells' head, `xtask selftest teller-steps`
-/// re-taken at `--jobs 1`, Latchkey large (job cli-d72bc289).
-const TAKEN_TELLER_STEPS: &str = "2026-10-07 75ebf74496";
-const MEASURED_CONFIG_SCHEMA: f64 = 11_917.0; // 69 cases, 11.9 s (opt 0: under the default)
-const MEASURED_SEAL_WITNESS: f64 = 11_332.0; // 6 cases, 14.2 s (opt 0: under the default)
-const MEASURED_NO_DEFERRAL_STRICT_DONE: f64 = 10_704.0; // 16 cases, 10.6 s (opt 0: under the default)
-const MEASURED_UNCONSTRUCTED: f64 = 10_238.0; // 14 cases, 10.4 s (opt 0: under the default)
-const MEASURED_NO_DEFERRAL: f64 = 9_648.0; // 15 cases, 9.6 s (opt 0: under the default)
-const MEASURED_ABI_LOCATION: f64 = 7_490.0; // 7 cases, 7.7 s (opt 0: under the default)
-const MEASURED_SEGREGATION: f64 = 5_905.0; // 9 cases, 6.1 s (opt 0: under the default)
+// self-test's own cost line (CPU-time units). Constants rather than literals inside the table so
+// that a re-baseline is a diff a reviewer can read as a list of numbers that moved. The note on
+// each is the battery's CPU and the 2026-10-07 wall-clock figure it replaces.
+const MEASURED_KIND_ISOLATION: f64 = 353_037.0; // 256 cases, 384.5 s CPU (wall unit: 711 866)
+const MEASURED_KIND_ISOLATION_SHIP: f64 = 257_958.0; // 167 cases, 280.9 s CPU (wall unit: 536 090)
+const MEASURED_PLANE_PURITY: f64 = 63_115.0; // 25 cases, 68.8 s CPU (wall unit: 65 100)
+const MEASURED_STRUCTURE_LINT: f64 = 25_120.0; // 43 cases, 27.2 s CPU (wall unit: 39 110)
+const MEASURED_PLANE_PURITY_STRICT: f64 = 22_934.0; // 11 cases, 24.8 s CPU (wall unit: 26 155)
+const MEASURED_TELLER_STEPS: f64 = 15_773.0; // 22 cases, 17.1 s CPU (wall unit: 21 803)
+const MEASURED_SHIP_READY: f64 = 13_017.0; // 17 cases, 14.1 s CPU (wall unit: 23 918)
+const MEASURED_PLANE_TRANSPORT_NEUTRALITY: f64 = 12_128.0; // 13 cases, 13.2 s CPU (wall unit: 12 959)
+const MEASURED_CONSTRUCTION: f64 = 11_603.0; // 41 cases, 12.5 s CPU (wall unit: 41 969)
+const MEASURED_DESIGN_BINDINGS: f64 = 9_610.0; // 22 cases, 10.5 s CPU (wall unit: 15 089)
+const MEASURED_UNCONSTRUCTED: f64 = 7_043.0; // 16 cases, 7.7 s CPU (wall unit: 10 238)
+const MEASURED_CONFIG_SCHEMA: f64 = 6_589.0; // 69 cases, 7.2 s CPU (wall unit: 11 917)
+const MEASURED_NO_DEFERRAL_STRICT_DONE: f64 = 5_914.0; // 17 cases, 6.4 s CPU (wall unit: 10 704)
+
+// STRUCK AT THE 2026-10-12 SITTING, each measured under 9 000 / 1.6 = 5 625 and so guarded by the
+// default (`every_selftest_budget_names_a_registered_gate_with_a_reason` refuses an entry that is
+// not above it): `no-deferral` 5 225 (wall unit 9 648), `abi-location` 4 641 (7 490),
+// `segregation` 3 657 (5 905), `seal-witness` 959 (11 332). If one grows back past 9 000 the
+// default is what says so.
 
 // `audit-ledger` IS STRUCK AGAIN, AND THE EXPLANATION IT WAS RE-BASELINED ON WAS WRONG.
 //
@@ -797,8 +842,8 @@ pub struct Budget {
 ///
 /// It used to be "about three times what the gate measured", for two reasons: the ruler drifts with
 /// the machine, and the failure being caught is a factor of ten. The first half is now a number
-/// instead of an adjective. With the ruler read on the worker between cases (see
-/// [`work_unit_here`]), `structure-lint` measured, on one box, in one sitting:
+/// instead of an adjective. Under the 2026-10-07 wall-clock unit, with the ruler read on the worker
+/// between cases, `structure-lint` measured, on one box, in one sitting:
 ///
 /// ```text
 /// jobs    summed     units    vs serial
@@ -808,6 +853,22 @@ pub struct Budget {
 ///   12    142.1 s     9323      1.18x
 ///   18    179.7 s    11367      1.43x
 /// ```
+///
+/// UNDER THE CPU-TIME UNIT (ARCHITECT 2026-10-12, Law 8) the same reading was taken again on the
+/// box named in [`TAKEN`] (the prover VM, whose default job count is 8), the battery's CPU in one
+/// sitting:
+///
+/// ```text
+/// jobs    CPU       vs serial    (structure-lint)
+///    1    20.9 s      1.00x
+///    2    21.3 s      1.02x
+///    4    22.1 s      1.06x
+///    8    25.4 s      1.22x
+/// ```
+///
+/// with `plane-transport-neutrality` at 1.19x and `segregation` at 1.11x at 8 jobs. CPU time does not
+/// count waiting, but it still feels the cache and memory bandwidth the workers share, so the
+/// spread is not 1.00x; it is inside the 1.43x the slack was set from, and the slack stays.
 ///
 /// So the ruler's own spread, between the serial figure written into an entry and the worst reading
 /// the harness's DEFAULT job count produces, is 1.43x. THE SLACK IS 1.6x: that measured worst case
@@ -876,7 +937,8 @@ const SELFTEST_BUDGETS: &[Budget] = &[
         why: "The ship twin of the battery above: the same shape held to a ceiling of zero, plus the derivations with a degenerate answer and the floors whose subject is the size of their own input. It grew on #454's tree for the same cause as its non-ship twin.",
     },
     // THE ENTRIES BELOW WERE UNDER THE DEFAULT AT OPT-LEVEL 0 and are above 9 000 / 1.6 at
-    // opt-level 2 (see [`TAKEN`]): the same work, read on a ruler that sped up more than it did.
+    // opt-level 2: the same work, read on a ruler that sped up more than it did. They are still
+    // above it in CPU-time units (see [`TAKEN`]).
     Budget {
         gate: "ship-ready",
         measured: MEASURED_SHIP_READY,
@@ -896,13 +958,13 @@ const SELFTEST_BUDGETS: &[Budget] = &[
         measured: MEASURED_PLANE_TRANSPORT_NEUTRALITY,
         allowed: MEASURED_PLANE_TRANSPORT_NEUTRALITY * BUDGET_SLACK,
         taken: TAKEN,
-        why: "Nine cases, each scanning every plane and transport crate for the other side's vocabulary. Not analysed here; the entry is the measurement, written down so that a doubling is a red row.",
+        why: "Thirteen cases, each scanning every plane and transport crate for the other side's vocabulary. Not analysed here; the entry is the measurement, written down so that a doubling is a red row.",
     },
     Budget {
         gate: "teller-steps",
         measured: MEASURED_TELLER_STEPS,
         allowed: MEASURED_TELLER_STEPS * BUDGET_SLACK,
-        taken: TAKEN_TELLER_STEPS,
+        taken: TAKEN,
         why: "Twenty-two cases over the teller-step table, its roster derived from the tree, the jev rig's declared checks and the root's legs. Not analysed here; the entry is the measurement, written down so that a doubling is a red row rather than minutes nobody attributes.",
     },
     Budget {
@@ -913,66 +975,33 @@ const SELFTEST_BUDGETS: &[Budget] = &[
         why: "Sixty-nine cases, the most of any battery under a minute; each is cheap and the count is what costs. Not analysed here; the entry is the measurement, written down so that a doubling is a red row.",
     },
     Budget {
-        gate: "seal-witness",
-        measured: MEASURED_SEAL_WITNESS,
-        allowed: MEASURED_SEAL_WITNESS * BUDGET_SLACK,
-        taken: TAKEN,
-        why: "Six cases, each a whole-gate run over the sealed crates. Not analysed here; the entry is the measurement, written down so that a doubling is a red row rather than minutes nobody attributes.",
-    },
-    Budget {
         gate: "no-deferral-strict-done",
         measured: MEASURED_NO_DEFERRAL_STRICT_DONE,
         allowed: MEASURED_NO_DEFERRAL_STRICT_DONE * BUDGET_SLACK,
         taken: TAKEN,
-        why: "The strict twin of no-deferral: sixteen cases, each scanning the whole tree's text for the banned markers. Not analysed here; the entry is the measurement, written down so that a doubling is a red row.",
+        why: "The strict twin of no-deferral: seventeen cases, each scanning the whole tree's text for the banned markers. Not analysed here; the entry is the measurement, written down so that a doubling is a red row.",
     },
     Budget {
         gate: "unconstructed",
         measured: MEASURED_UNCONSTRUCTED,
         allowed: MEASURED_UNCONSTRUCTED * BUDGET_SLACK,
         taken: TAKEN,
-        why: "Fourteen cases, each reading every crate for types declared and never built. Not analysed here; the entry is the measurement, written down so that a doubling is a red row.",
-    },
-    Budget {
-        gate: "no-deferral",
-        measured: MEASURED_NO_DEFERRAL,
-        allowed: MEASURED_NO_DEFERRAL * BUDGET_SLACK,
-        taken: TAKEN,
-        why: "Fifteen cases, each scanning the whole tree's text for the banned markers and their waivers. Not analysed here; the entry is the measurement, written down so that a doubling is a red row.",
-    },
-    Budget {
-        gate: "abi-location",
-        measured: MEASURED_ABI_LOCATION,
-        allowed: MEASURED_ABI_LOCATION * BUDGET_SLACK,
-        taken: TAKEN,
-        why: "Seven cases, each walking the whole tree for ABI shapes outside busbar-contract/src/abi/. Under the default, but within the ruler's spread of it, so it carries its own measured entry.",
-    },
-    Budget {
-        gate: "segregation",
-        measured: MEASURED_SEGREGATION,
-        allowed: MEASURED_SEGREGATION * BUDGET_SLACK,
-        taken: TAKEN,
-        why: "Nine cases over the shadow-oracle tree and every crate's manifest. Under the default, but within the ruler's spread of it, so it carries its own measured entry.",
+        why: "Sixteen cases, each reading every crate for types declared and never built. Not analysed here; the entry is the measurement, written down so that a doubling is a red row.",
     },
     // `audit-ledger` HAS NO ENTRY HERE. It had one, set from 8 779 units and justified by a
     // register-growth story that measurement refuted; the cost was 128 `rev-list` processes per
     // `check` where 17 answer the same questions. Memoised, it measures 2 865, which is under the
-    // default. The struck note sits above, where the measurement constants are.
+    // default. The struck note sits above, where the measurement constants are; so does the note
+    // on the four entries struck at the 2026-10-12 sitting.
 ];
 
-/// One WORK UNIT: how long THIS process takes to run a fixed piece of arithmetic, measured once.
+/// THE RULER: a fixed, deterministic piece of arithmetic, once, on this thread.
 ///
 /// Deterministic and dependency-free on purpose. It is not a benchmark of anything a gate does; it
-/// is a ruler that shrinks and stretches with the machine and its load, which is the only property
-/// a budget compared against it needs.
-pub fn work_unit() -> std::time::Duration {
-    static UNIT: std::sync::OnceLock<std::time::Duration> = std::sync::OnceLock::new();
-    *UNIT.get_or_init(ruler_once)
-}
-
-/// The fixed arithmetic, once, on this thread.
-fn ruler_once() -> std::time::Duration {
-    let t = std::time::Instant::now();
+/// is a ruler that shrinks and stretches with the machine, which is the only property a budget
+/// compared against it needs. The accumulator goes through [`std::hint::black_box`], so the loop is
+/// not code the optimiser may delete: a ruler that compiles away measures nothing.
+fn ruler_once() -> u64 {
     let buf: Vec<u8> = (0..1u32 << 16).map(|i| (i % 251) as u8).collect();
     let mut acc: u64 = 0;
     for round in 0..64u64 {
@@ -982,47 +1011,277 @@ fn ruler_once() -> std::time::Duration {
         buf.hash(&mut h);
         acc = acc.wrapping_add(h.finish());
     }
-    // The accumulator is fed to something the caller could observe, so the loop is not code the
-    // optimiser may delete: a ruler that compiles away measures nothing.
-    if acc == u64::MAX {
-        eprintln!("xtask: the calibration ruler measured {acc}");
-    }
-    t.elapsed().max(std::time::Duration::from_micros(1))
+    std::hint::black_box(acc)
 }
 
-/// ONE WORK UNIT AS THE THREAD THAT JUST TOOK A CASE FINDS IT — the ruler for a battery taken
-/// across the cores.
+/// How many ruler passes one reading of the unit takes ([`ruler_cpu`]): about a millisecond of CPU
+/// each at xtask's opt-level, so a reading is about fifteen milliseconds and is taken twice per
+/// battery.
+const RULER_PASSES: usize = 15;
+
+/// The ruler's CPU time, pass by pass, on THIS thread ([`cpu::thread`]) read around each pass.
+/// `None` where thread CPU time cannot be read (see [`cpu`]).
+fn ruler_passes() -> Option<Vec<Duration>> {
+    let mut passes = Vec::with_capacity(RULER_PASSES);
+    for _ in 0..RULER_PASSES {
+        let before = cpu::thread()?;
+        std::hint::black_box(ruler_once());
+        let after = cpu::thread()?;
+        passes.push(after.saturating_sub(before));
+    }
+    Some(passes)
+}
+
+/// ONE WORK UNIT: the ruler's CPU time per pass, measured in this process on the thread that ran
+/// it ([`cpu::thread`], the `RUSAGE_THREAD` account) (ARCHITECT 2026-10-12, Law 8). The FASTEST of
+/// [`RULER_PASSES`] passes. `None` where thread CPU time cannot be read.
 ///
-/// THE BUG THIS EXISTS TO FIX, AND IT IS THE ONE THE BUDGET'S OWN DOCTRINE WARNED ABOUT. The cases
-/// are summed by WALL CLOCK, so taking eighteen at once inflates every one of them: they share
-/// memory bandwidth, caches and whatever else is on the machine. `construction` measured 68 063
-/// units against a budget of 50 000 AT `--jobs 18` AND WAS COMFORTABLY UNDER IT AT `--jobs 1`, on
-/// the same tree, in the same minute. A gate that is red because the box was busy is a gate
-/// somebody deletes -- which is exactly why the budget is denominated in work units and not in
-/// seconds in the first place.
+/// THE MINIMUM, NOT THE MEDIAN, and the measurement says why. Everything that disturbs one pass of
+/// fixed arithmetic only ever ADDS to it: an interrupt, a page fault, a cache another process
+/// emptied, and — on a virtual machine — the host preempting the guest's virtual CPU, which the
+/// guest cannot see and counts as the thread running. A median of thirty passes taken in two bursts
+/// of fifteen milliseconds is a sample of whatever the box was doing in those thirty milliseconds: on the
+/// prover VM at a load of 37 it read 3.047 ms against a quiet 1.04-1.10 ms, and that battery read
+/// 4 872 units instead of about 13 000 — a reading that would have hidden a threefold regression.
+/// The fastest pass is the one nothing disturbed, and that is the ruler.
 ///
-/// The ruler was measured ONCE, ON ONE THREAD, so it did not stretch when the cases did. Here it
-/// does: the same fixed arithmetic is run on `jobs` threads AT THE SAME TIME and the unit is the
-/// mean of what each thread took. "Four times more contended produces a calibration four times
-/// slower too" was always the claim; this is what makes it true when the contention is the
-/// harness's own.
+/// WHY IT IS NO LONGER READ ON EACH WORKER BETWEEN CASES. That was the 2026-10-07 answer to a
+/// WALL-CLOCK unit: a ruler read while the box was quiet did not stretch when the cases did, so
+/// each worker read one in the thick of its own contention (`construction` measured 68 063 units
+/// against a budget of 50 000 at `--jobs 18` and was comfortably under it at `--jobs 1`). CPU time
+/// does not stretch with waiting, so there is no contention for the ruler to track — and every
+/// pass taken inside a battery would be CPU the battery's total had to have subtracted from it.
+/// [`take_battery`] reads it OUTSIDE the window, just before and just after.
+pub fn ruler_cpu() -> Option<Duration> {
+    fastest(ruler_passes()?)
+}
+
+/// The fastest pass, at least a microsecond (a unit of zero would make every battery infinite).
+fn fastest(passes: Vec<Duration>) -> Option<Duration> {
+    passes
+        .into_iter()
+        .min()
+        .map(|d| d.max(Duration::from_micros(1)))
+}
+
+/// CPU TIME, READ FROM THE KERNEL, for the self-test budget (ARCHITECT 2026-10-12, Law 8).
 ///
-/// AND IT IS READ ON THE WORKER, BETWEEN CASES, NOT ONCE BEFORE THEM. Calibrating `jobs` threads of
-/// arithmetic up front does not work and the measurement says so: on eighteen cores that is one
-/// arithmetic thread per core and it barely stretches at all — `structure-lint`'s ruler moved from
-/// 11.0 ms to 11.6 ms while the cases it was measuring went from 85.7 s to 152.5 s. Pure arithmetic
-/// on an idle box is not what a battery does to a box.
-///
-/// So each worker reads the ruler immediately after the case it just took, WITH THE OTHER
-/// SEVENTEEN STILL SCANNING. It is then competing for cache and memory with the real work, which is
-/// the only condition under which the proxy tracks what it is a proxy for — and a case is scored
-/// against the ruler read on its own thread, in its own seconds, rather than against a number taken
-/// when the machine was quiet.
-///
-/// It costs one ruler per case: about 11 ms against cases that average a second, which is under one
-/// per cent of a battery and is the price of a budget that does not flap.
-fn work_unit_here() -> std::time::Duration {
-    ruler_once()
+/// `getrusage(2)`: `RUSAGE_SELF` is user+sys of every thread of this process, live or exited;
+/// `RUSAGE_CHILDREN` is user+sys of every child this process has REAPED (and of their reaped
+/// descendants). The calling thread's own account is read through `CLOCK_THREAD_CPUTIME_ID` (see
+/// [`thread`]). LINUX ONLY: the per-thread account is read the Linux way, and CI's runners and the
+/// prover VM are Linux. On any other host every reading is
+/// `None`, and the budget says it was not read rather than reading something else in its place
+/// ([`BatteryReading::Unread`]).
+pub mod cpu {
+    use std::time::Duration;
+
+    /// user+sys of `who`, as the kernel accounts it.
+    #[cfg(target_os = "linux")]
+    fn rusage(who: libc::c_int) -> Option<Duration> {
+        let mut usage = std::mem::MaybeUninit::<libc::rusage>::uninit();
+        // SAFETY: `getrusage` is handed a pointer to storage for exactly one `rusage`, which it
+        // fills in full when it returns 0; the storage is read only on that path. `who` is one of
+        // the two `RUSAGE_*` constants below.
+        let usage = unsafe {
+            if libc::getrusage(who, usage.as_mut_ptr()) != 0 {
+                return None;
+            }
+            usage.assume_init()
+        };
+        let tv = |t: libc::timeval| {
+            Duration::from_secs(u64::try_from(t.tv_sec).ok()?)
+                .checked_add(Duration::from_micros(u64::try_from(t.tv_usec).ok()?))
+        };
+        tv(usage.ru_utime)?.checked_add(tv(usage.ru_stime)?)
+    }
+
+    /// The PROCESS: every thread (`RUSAGE_SELF`) plus every reaped child (`RUSAGE_CHILDREN`).
+    #[cfg(target_os = "linux")]
+    pub fn process() -> Option<Duration> {
+        rusage(libc::RUSAGE_SELF)?.checked_add(rusage(libc::RUSAGE_CHILDREN)?)
+    }
+
+    /// The calling THREAD alone: the same kernel account `RUSAGE_THREAD` reads (the thread's
+    /// `sum_exec_runtime`), read through `clock_gettime(CLOCK_THREAD_CPUTIME_ID)`.
+    ///
+    /// NOT `getrusage(RUSAGE_THREAD)` ITSELF, and the measurement says why. For the CALLING thread
+    /// `RUSAGE_THREAD` reports the account as of the last scheduler tick: the time run since is not
+    /// folded in. On the prover VM (Linux 6.8, a 1 ms tick) the ruler's median pass read exactly
+    /// 1.000 ms on one battery and exactly 2.000 ms on the next — a unit that halves every budget
+    /// at random. `CLOCK_THREAD_CPUTIME_ID` folds the running delta in, to the nanosecond.
+    #[cfg(target_os = "linux")]
+    pub fn thread() -> Option<Duration> {
+        let mut now = std::mem::MaybeUninit::<libc::timespec>::uninit();
+        // SAFETY: `clock_gettime` is handed a pointer to storage for exactly one `timespec`, which
+        // it fills in full when it returns 0; the storage is read only on that path.
+        let now = unsafe {
+            if libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, now.as_mut_ptr()) != 0 {
+                return None;
+            }
+            now.assume_init()
+        };
+        Duration::from_secs(u64::try_from(now.tv_sec).ok()?)
+            .checked_add(Duration::from_nanos(u64::try_from(now.tv_nsec).ok()?))
+    }
+
+    /// Not readable here: see the module note.
+    #[cfg(not(target_os = "linux"))]
+    pub fn process() -> Option<Duration> {
+        None
+    }
+
+    /// Not readable here: see the module note.
+    #[cfg(not(target_os = "linux"))]
+    pub fn thread() -> Option<Duration> {
+        None
+    }
+}
+
+/// WHAT ONE BATTERY COST, READ AROUND IT ([`measure_battery`]).
+#[derive(Debug, Clone, PartialEq)]
+pub enum BatteryReading {
+    /// `cpu` is what the process spent over the battery (every thread, every reaped child);
+    /// `unit` is the ruler's CPU time per pass.
+    Measured { cpu: Duration, unit: Duration },
+    /// The reading is not this battery's alone, or the kernel refused a read. The budget is RED on
+    /// it: a reading that cannot be trusted is refused, never guessed (Law 8).
+    Refused(String),
+    /// This host cannot read CPU time the way the budget is denominated, so the budget is not read
+    /// at all — and the selftest says so.
+    Unread(String),
+}
+
+impl BatteryReading {
+    /// The battery's cost in work units: its CPU over the ruler's. `None` unless measured.
+    #[must_use]
+    pub fn units(&self) -> Option<f64> {
+        match self {
+            BatteryReading::Measured { cpu, unit } => {
+                Some(cpu.as_secs_f64() / unit.as_secs_f64().max(1e-9))
+            }
+            _ => None,
+        }
+    }
+}
+
+/// How many measurement windows are open in this process right now.
+static BATTERY_WINDOWS_OPEN: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+/// How many windows have EVER opened while another was open. A window that sees this move between
+/// its opening and its closing shared the process with another battery.
+static BATTERY_OVERLAPS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// One battery's measurement window: the ruler and the process's CPU read on the way in, and the
+/// overlap accounting that refuses a reading another battery shared.
+struct BatteryWindow {
+    /// The overlap count when this window opened.
+    overlaps: u64,
+    /// Another window was already open when this one opened.
+    contested: bool,
+    ruler: Option<Vec<Duration>>,
+    before: Option<Duration>,
+    closed: bool,
+}
+
+impl BatteryWindow {
+    fn open() -> BatteryWindow {
+        use std::sync::atomic::Ordering::SeqCst;
+        // THE COUNT IS READ BEFORE THIS WINDOW REGISTERS, so a window that opens after this one has
+        // registered — and therefore bumps the count — is always seen at the close.
+        let overlaps = BATTERY_OVERLAPS.load(SeqCst);
+        let contested = BATTERY_WINDOWS_OPEN.fetch_add(1, SeqCst) > 0;
+        if contested {
+            BATTERY_OVERLAPS.fetch_add(1, SeqCst);
+        }
+        // The ruler BEFORE the CPU is read, so none of its passes fall inside the window.
+        let ruler = ruler_passes();
+        BatteryWindow {
+            overlaps,
+            contested,
+            ruler,
+            before: cpu::process(),
+            closed: false,
+        }
+    }
+
+    fn close(mut self) -> BatteryReading {
+        use std::sync::atomic::Ordering::SeqCst;
+        let after = cpu::process();
+        let shared = self.contested || BATTERY_OVERLAPS.load(SeqCst) != self.overlaps;
+        BATTERY_WINDOWS_OPEN.fetch_sub(1, SeqCst);
+        self.closed = true;
+        // The ruler AFTER the CPU is read: outside the window again.
+        let ruler_after = ruler_passes();
+        if shared {
+            return BatteryReading::Refused(
+                "another self-test battery was being measured in this process at the same time, \
+                 so the process's CPU over this one is not this battery's alone — refused rather \
+                 than guessed (Law 8)"
+                    .to_string(),
+            );
+        }
+        let (Some(before), Some(after), Some(mut ruler), Some(ruler_after)) =
+            (self.before, after, self.ruler.take(), ruler_after)
+        else {
+            return if cfg!(target_os = "linux") {
+                BatteryReading::Refused(
+                    "the kernel refused a CPU-time read, so this battery's CPU time is unknown — \
+                     refused rather than guessed (Law 8)"
+                        .to_string(),
+                )
+            } else {
+                BatteryReading::Unread(
+                    "the self-test budget is CPU time, read with getrusage(2) and \
+                     CLOCK_THREAD_CPUTIME_ID the Linux way, which this host does not have; it is \
+                     read on Linux (CI, the prover VM)"
+                        .to_string(),
+                )
+            };
+        };
+        ruler.extend(ruler_after);
+        match fastest(ruler) {
+            Some(unit) => BatteryReading::Measured {
+                cpu: after.saturating_sub(before),
+                unit,
+            },
+            None => BatteryReading::Refused("the ruler took no passes".to_string()),
+        }
+    }
+}
+
+impl Drop for BatteryWindow {
+    /// A battery that panicked never reaches [`BatteryWindow::close`]; its window still closes, so
+    /// it does not mark every battery after it in the process as overlapped.
+    fn drop(&mut self) {
+        if !self.closed {
+            BATTERY_WINDOWS_OPEN.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+}
+
+/// RUN `work` AS ONE MEASURED BATTERY: the process's CPU (RUSAGE_SELF + RUSAGE_CHILDREN) read just
+/// before and just after it, over the ruler's CPU per pass read just outside it (ARCHITECT
+/// 2026-10-12, Law 8). Two of these open at once in one process refuse each other.
+pub fn measure_battery<T>(work: impl FnOnce() -> T) -> (T, BatteryReading) {
+    let window = BatteryWindow::open();
+    let out = work();
+    (out, window.close())
+}
+
+/// TAKE `gate`'s SELF-TEST AS ONE MEASURED BATTERY: built (every plant pushed, every sealed
+/// sub-report taken) and resolved (every case taken, across the cores) inside one window
+/// ([`measure_battery`]), with the reading kept on the report for the budget to judge. The one
+/// way `cargo xtask selftest` takes a battery.
+pub fn take_battery<'a>(gate: &'a dyn Gate, cx: &'a Ctx) -> Report<'a> {
+    let (report, reading) = measure_battery(|| {
+        let report = gate.selftest(cx);
+        let _ = report.cases();
+        report
+    });
+    let _ = report.battery.set(reading);
+    report
 }
 
 /// The budget of `gate`'s self-test, in work units: its entry's, else the default.
@@ -1477,11 +1736,12 @@ pub fn default_jobs() -> usize {
     {
         return n;
     }
-    // The work-unit budgets and the calibration ruler are measured at --jobs 18 (see TAKEN and
-    // BUDGET); above that the ruler under-normalises contention and a battery reads spuriously over
-    // budget on a box with more cores (measured: construction 33k units at 18-way, 54k at 32-way for
-    // the same work). Cap the DEFAULT at the calibrated width so an unattended `cargo xtask selftest`
-    // on a 32-core fleet box runs in the ruler's valid range; an explicit --jobs N still overrides.
+    // Under the 2026-10-07 wall-clock unit the slack was read up to --jobs 18 (see BUDGET_SLACK);
+    // above that the ruler under-normalised contention and a battery read spuriously over budget on
+    // a box with more cores (measured: construction 33k units at 18-way, 54k at 32-way for the same
+    // work). The CPU-time unit (ARCHITECT 2026-10-12) does not count waiting but still feels the
+    // cache and memory bandwidth workers share, so the DEFAULT stays capped at the widest job count
+    // the slack has been read against; an explicit --jobs N still overrides.
     const CALIBRATED_JOBS: usize = 18;
     std::thread::available_parallelism()
         .map(|n| n.get().min(CALIBRATED_JOBS))
@@ -1506,10 +1766,11 @@ pub fn set_selftest_jobs(jobs: usize) {
 struct Taken {
     cases: Vec<Case>,
     took: Vec<Duration>,
-    /// What each case cost IN WORK UNITS, scored against the ruler its own worker read right after
-    /// taking it. Kept per case rather than as one divisor because the machine is not the same from
-    /// one end of a battery to the other, and the whole point is that the ruler moves with it.
-    units: Vec<f64>,
+    /// The CPU the case's WORKER THREAD spent taking it ([`cpu::thread`]; `None` where that cannot
+    /// be read). FOR DIAGNOSIS ONLY: it leaves out the scan pools and scoped threads a case starts
+    /// and the `git` children it reaps, so the cases do not sum to the battery's cost. The budget
+    /// reads the battery's process-wide total ([`take_battery`]) and nothing else.
+    cpu: Vec<Option<Duration>>,
     /// The half of `took` that was spent BEFORE the case reached a worker — building the plant, on
     /// the one thread that pushes. THE SERIAL FRACTION, itemised: it is the only part of a battery
     /// that more cores cannot help, so it is the only part worth rewriting, and a number beats a
@@ -1530,6 +1791,9 @@ pub struct Report<'a> {
     /// cost: the overlay it built, and whatever a hand-built case did to produce itself.
     mark: std::time::Instant,
     jobs: usize,
+    /// WHAT THE WHOLE BATTERY COST, when it was taken as one ([`take_battery`]): the only figure
+    /// the budget judges. Empty for a report nothing measured — a sub-report, a test's.
+    battery: std::sync::OnceLock<BatteryReading>,
 }
 
 impl Default for Report<'_> {
@@ -1540,6 +1804,7 @@ impl Default for Report<'_> {
             infra: Vec::new(),
             mark: std::time::Instant::now(),
             jobs: default_jobs(),
+            battery: std::sync::OnceLock::new(),
         }
     }
 }
@@ -1623,6 +1888,7 @@ impl<'a> Report<'a> {
             infra: self.infra,
             mark: self.mark,
             jobs: self.jobs,
+            battery: self.battery,
         }
     }
 
@@ -1649,19 +1915,40 @@ impl<'a> Report<'a> {
         })
     }
 
-    /// What this report cost, in [`work_unit`]s — each case scored against the ruler its own
-    /// worker read, never against one taken when the machine was quiet.
-    pub fn units(&self) -> f64 {
-        self.resolve().units.iter().sum()
+    /// What the whole battery cost, when it was taken as one ([`take_battery`]). `None` for a
+    /// report nothing measured.
+    pub fn battery(&self) -> Option<&BatteryReading> {
+        self.battery.get()
     }
 
-    /// The ruler this report's units worked out to, for the message that quotes one.
-    pub fn unit(&self) -> std::time::Duration {
-        let units = self.units();
-        if units <= 0.0 {
-            return work_unit();
+    /// What this battery cost in work units — its process CPU over the ruler's CPU per pass — when
+    /// it was taken as one battery and the reading stands ([`BatteryReading::units`]).
+    pub fn units(&self) -> Option<f64> {
+        self.battery().and_then(BatteryReading::units)
+    }
+
+    /// Hand the report a reading taken elsewhere — for a test that needs a known reading without
+    /// taking a real battery.
+    #[cfg(test)]
+    pub(crate) fn with_battery(self, reading: BatteryReading) -> Self {
+        let _ = self.battery.set(reading);
+        self
+    }
+
+    /// THE COST LINE's figure: `N work units (C s CPU)`, or why there is none. The units a budget
+    /// is re-measured from are read off this.
+    pub fn cost(&self) -> String {
+        match self.battery() {
+            Some(BatteryReading::Measured { cpu, unit }) => format!(
+                "{:.0} work units ({:.1}s CPU at {:.3}ms a unit)",
+                cpu.as_secs_f64() / unit.as_secs_f64().max(1e-9),
+                cpu.as_secs_f64(),
+                unit.as_secs_f64() * 1000.0
+            ),
+            Some(BatteryReading::Refused(why)) => format!("work units REFUSED: {why}"),
+            Some(BatteryReading::Unread(why)) => format!("work units not read: {why}"),
+            None => "work units not read: the battery was not taken as one".to_string(),
         }
-        std::time::Duration::from_secs_f64(self.total().as_secs_f64() / units)
     }
 
     pub fn total(&self) -> std::time::Duration {
@@ -1695,14 +1982,17 @@ impl<'a> Report<'a> {
             .map(|(c, t)| (c.name.as_str(), *t))
     }
 
-    /// Per-case timing rows `(name, took, units, prepaid)` for `XTASK_SELFTEST_TIMING`,
-    /// the diagnostic that surfaces which case is spending the self-test's work-unit budget.
-    pub fn timings(&self) -> Vec<(String, std::time::Duration, f64, std::time::Duration)> {
+    /// Per-case timing rows `(name, wall, worker-thread CPU, prepaid)` for
+    /// `XTASK_SELFTEST_TIMING`: which case is where the time goes. FOR DIAGNOSIS ONLY — the worker
+    /// thread's own figures, which leave out the threads and children a case starts, so they do
+    /// not sum to the battery's cost and no verdict reads them.
+    #[allow(clippy::type_complexity)]
+    pub fn timings(&self) -> Vec<(String, Duration, Option<Duration>, Duration)> {
         let t = self.resolve();
         t.cases
             .iter()
             .zip(t.took.iter())
-            .zip(t.units.iter())
+            .zip(t.cpu.iter())
             .zip(t.prepaid.iter())
             .map(|(((c, d), u), p)| (c.name.clone(), *d, *u, *p))
             .collect()
@@ -1778,7 +2068,7 @@ fn take_all(plans: Vec<CasePlan<'_>>, jobs: usize) -> Taken {
         return Taken {
             cases: Vec::new(),
             took: Vec::new(),
-            units: Vec::new(),
+            cpu: Vec::new(),
             prepaid: Vec::new(),
         };
     }
@@ -1787,7 +2077,7 @@ fn take_all(plans: Vec<CasePlan<'_>>, jobs: usize) -> Taken {
     queue.reverse();
     let queue = std::sync::Mutex::new(queue);
     #[allow(clippy::type_complexity)]
-    let out: Vec<std::sync::Mutex<Option<(Case, Duration, Duration, f64)>>> =
+    let out: Vec<std::sync::Mutex<Option<(Case, Duration, Duration, Option<Duration>)>>> =
         (0..n).map(|_| std::sync::Mutex::new(None)).collect();
     let out = &out;
     let queue = &queue;
@@ -1802,16 +2092,18 @@ fn take_all(plans: Vec<CasePlan<'_>>, jobs: usize) -> Taken {
                 let Some((slot, plan)) = next else { return };
                 let prepaid = plan.prepaid;
                 let started = std::time::Instant::now();
+                let cpu_before = cpu::thread();
                 let case = (plan.take)();
                 let spent = prepaid + started.elapsed();
-                // THE RULER, HERE, NOW — with the other workers still at their own cases. See
-                // [`work_unit_here`].
-                let unit = work_unit_here();
-                let units = spent.as_secs_f64() / unit.as_secs_f64();
+                // THIS WORKER'S OWN CPU, for the per-case diagnostic only: the battery's cost is
+                // the process-wide reading around the whole battery ([`take_battery`]).
+                let worker_cpu = cpu::thread()
+                    .zip(cpu_before)
+                    .map(|(after, before)| after.saturating_sub(before));
                 *out[slot]
                     .lock()
                     .expect("a case slot is never held across a panic") =
-                    Some((case, spent, prepaid, units));
+                    Some((case, spent, prepaid, worker_cpu));
             });
         }
     });
@@ -1819,9 +2111,9 @@ fn take_all(plans: Vec<CasePlan<'_>>, jobs: usize) -> Taken {
     let mut cases = Vec::with_capacity(n);
     let mut took = Vec::with_capacity(n);
     let mut prepaid = Vec::with_capacity(n);
-    let mut units = Vec::with_capacity(n);
+    let mut cpus = Vec::with_capacity(n);
     for slot in out {
-        let (case, spent, before, scored) = slot
+        let (case, spent, before, worker_cpu) = slot
             .lock()
             .expect("a case slot is never held across a panic")
             .take()
@@ -1829,12 +2121,12 @@ fn take_all(plans: Vec<CasePlan<'_>>, jobs: usize) -> Taken {
         cases.push(case);
         took.push(spent);
         prepaid.push(before);
-        units.push(scored);
+        cpus.push(worker_cpu);
     }
     Taken {
         cases,
         took,
-        units,
+        cpu: cpus,
         prepaid,
     }
 }
@@ -2105,7 +2397,12 @@ pub fn verify_report(gate: &dyn Gate, report: &Report<'_>) -> Result<(), Vec<Str
 /// across the cores that comes in over it is taken once more at `--jobs 1`, and the SERIAL reading
 /// is the verdict — the same rule the harness applies to a red case. Over at `--jobs 1` too, it is
 /// red; there is no third try.
-#[derive(Debug, Clone, Copy, PartialEq)]
+///
+/// THE RE-TAKE IS A BACKSTOP NOW, NOT A ROUTINE (ARCHITECT 2026-10-12). The unit is CPU time
+/// ([`take_battery`]), which a busy box does not inflate, so a battery over budget at the default
+/// job count should be over at `--jobs 1` too. It stays because the default job count still shares
+/// cache and memory bandwidth between workers, which CPU time does feel a little.
+#[derive(Debug, Clone, PartialEq)]
 pub struct BudgetVerdict {
     /// The battery's budget, in work units.
     pub budget: f64,
@@ -2115,6 +2412,9 @@ pub struct BudgetVerdict {
     pub jobs: usize,
     /// The serial re-take's reading, when the contended one was over budget at more than one job.
     pub serial: Option<f64>,
+    /// Why a reading that the verdict needed could not be trusted ([`BatteryReading::Refused`]).
+    /// A refused reading is RED: it is never guessed (Law 8).
+    pub refused: Option<String>,
 }
 
 impl BudgetVerdict {
@@ -2124,10 +2424,22 @@ impl BudgetVerdict {
         self.serial.unwrap_or(self.contended)
     }
 
-    /// Whether the battery is over its budget.
+    /// Whether the battery is over its budget — or its reading was refused, which is red too.
     #[must_use]
     pub fn over(&self) -> bool {
-        self.spent() > self.budget
+        self.refused.is_some() || self.spent() > self.budget
+    }
+
+    /// The verdict on a battery whose reading was refused: red, with the reason.
+    #[must_use]
+    pub fn refused(budget: f64, jobs: usize, why: String) -> BudgetVerdict {
+        BudgetVerdict {
+            budget,
+            contended: 0.0,
+            jobs,
+            serial: None,
+            refused: Some(why),
+        }
     }
 
     /// `contended X → serial Y` when the battery was re-taken.
@@ -2144,26 +2456,34 @@ impl BudgetVerdict {
 
 /// [`BudgetVerdict`] of a battery that spent `contended` units at `jobs` against `budget`;
 /// `serial` re-takes it at `--jobs 1` and is called only when the contended reading is over and
-/// `jobs` is more than one.
+/// `jobs` is more than one. A re-take whose reading is refused makes the verdict refused.
 pub fn budget_verdict(
     budget: f64,
     contended: f64,
     jobs: usize,
-    serial: impl FnOnce() -> f64,
+    serial: impl FnOnce() -> Result<f64, String>,
 ) -> BudgetVerdict {
     let retake = contended > budget && jobs > 1;
+    let (serial, refused) = match retake.then(serial) {
+        None => (None, None),
+        Some(Ok(units)) => (Some(units), None),
+        Some(Err(why)) => (None, Some(why)),
+    };
     BudgetVerdict {
         budget,
         contended,
         jobs,
-        serial: retake.then(serial),
+        serial,
+        refused,
     }
 }
 
-/// THE BUDGET'S READING OF `report`, `gate`'s self-test as just taken over `cx`, with an
-/// over-budget contended battery re-taken once at `--jobs 1` ([`budget_verdict`]). Read by
-/// `cargo xtask selftest` alone ([`verify_selftest`]); no test judges the budget.
-pub fn budget_reading(gate: &dyn Gate, report: &Report<'_>, cx: &Ctx) -> BudgetVerdict {
+/// THE BUDGET'S READING OF `report`, `gate`'s self-test as just taken over `cx` by
+/// [`take_battery`], with an over-budget contended battery re-taken once at `--jobs 1`
+/// ([`budget_verdict`]). Read by `cargo xtask selftest` alone ([`verify_selftest`]); no test judges
+/// the budget. `None` only where this host cannot read CPU time ([`BatteryReading::Unread`]), and
+/// that is printed; a report that was not taken as one battery is REFUSED, never passed.
+pub fn budget_reading(gate: &dyn Gate, report: &Report<'_>, cx: &Ctx) -> Option<BudgetVerdict> {
     budget_reading_within(gate, report, cx, selftest_budget(gate.name()))
 }
 
@@ -2173,13 +2493,30 @@ pub fn budget_reading_within(
     report: &Report<'_>,
     cx: &Ctx,
     budget: f64,
-) -> BudgetVerdict {
+) -> Option<BudgetVerdict> {
     let jobs = report.jobs();
-    let reading = budget_verdict(budget, report.units(), jobs, || {
+    let Some(battery) = report.battery() else {
+        return Some(BudgetVerdict::refused(
+            budget,
+            jobs,
+            "the battery was not taken as one (`take_battery`), so nothing measured what it cost"
+                .to_string(),
+        ));
+    };
+    let contended = match battery {
+        BatteryReading::Measured { .. } => battery.units()?,
+        BatteryReading::Unread(why) => {
+            println!("  budget: not read — {why}");
+            return None;
+        }
+        BatteryReading::Refused(why) => {
+            return Some(BudgetVerdict::refused(budget, jobs, why.clone()));
+        }
+    };
+    let reading = budget_verdict(budget, contended, jobs, || {
         println!(
-            "  ...over budget at --jobs {jobs} ({:.0} work units): re-taking the battery at \
-             --jobs 1 to read it as the budget was measured",
-            report.units()
+            "  ...over budget at --jobs {jobs} ({contended:.0} work units): re-taking the battery \
+             at --jobs 1 to read it as the budget was measured"
         );
         set_selftest_jobs(1);
         let started = std::time::Instant::now();
@@ -2188,20 +2525,24 @@ pub fn budget_reading_within(
             gate.owed(),
             selftest_ceiling_from_env(gate.name()),
         );
-        let serial = gate.selftest(cx);
-        let _ = serial.cases();
+        let serial = take_battery(gate, cx);
         drop(watchdog);
         set_selftest_jobs(jobs);
         println!(
-            "  ...the serial re-take took {:.1}s",
-            started.elapsed().as_secs_f64()
+            "  ...the serial re-take took {:.1}s: {}",
+            started.elapsed().as_secs_f64(),
+            serial.cost()
         );
-        serial.units()
+        match serial.battery() {
+            Some(BatteryReading::Measured { .. }) => serial.units().ok_or_else(String::new),
+            Some(BatteryReading::Refused(why) | BatteryReading::Unread(why)) => Err(why.clone()),
+            None => Err("the serial re-take was not measured".to_string()),
+        }
     });
     if let Some(line) = reading.retake_line() {
         println!("  budget: {line}");
     }
-    reading
+    Some(reading)
 }
 
 /// THE BUDGET IS THE BINARY'S, and only the binary's — the same split as
@@ -2242,12 +2583,8 @@ pub fn verify_selftest_within(
     cx: &Ctx,
     budget: Option<f64>,
 ) -> Result<(), Vec<String>> {
-    match budget {
-        Some(budget) => verify_report_with(
-            gate,
-            report,
-            &budget_reading_within(gate, report, cx, budget),
-        ),
+    match budget.and_then(|budget| budget_reading_within(gate, report, cx, budget)) {
+        Some(reading) => verify_report_with(gate, report, &reading),
         None => verify_report(gate, report),
     }
 }
@@ -2271,7 +2608,14 @@ fn judge_report(
 
     // THE BUDGET. See [`SELFTEST_BUDGETS`]: an unmeasured selftest is one that grows until the
     // runner kills it, and a killed job is neither green nor red.
-    if let Some(reading) = reading.filter(|r| r.over()) {
+    if let Some(why) = reading.and_then(|r| r.refused.as_ref()) {
+        errs.push(format!(
+            "{}: this self-test's work units could not be read against a budget of {:.0}: {why}. \
+             A budget that cannot be read is refused, never guessed (Law 8).",
+            gate.name(),
+            reading.map_or(0.0, |r| r.budget),
+        ));
+    } else if let Some(reading) = reading.filter(|r| r.over()) {
         let budget = reading.budget;
         let spent = reading.spent();
         let slowest = report
@@ -2283,9 +2627,9 @@ fn judge_report(
             .map(|l| format!(" Re-taken serially and still over: {l}."))
             .unwrap_or_default();
         errs.push(format!(
-            "{}: this self-test spent {spent:.0} work units against a budget of {budget:.0} (one unit is {:.1}ms on this box right now, so {:.0}s of wall clock here). A self-test that grew a whole-tree scan per plant is how the xtask shard goes from minutes to an hour, and the runner that finds out is the one that cancels the job.{slowest}{retaken}",
+            "{}: this self-test spent {spent:.0} work units against a budget of {budget:.0} (a unit is the ruler's CPU time per pass; as taken: {}, {:.0}s of wall clock). A self-test that grew a whole-tree scan per plant is how the xtask shard goes from minutes to an hour, and the runner that finds out is the one that cancels the job.{slowest}{retaken}",
             gate.name(),
-            report.unit().as_secs_f64() * 1000.0,
+            report.cost(),
             report.total().as_secs_f64()
         ));
     }
@@ -3375,10 +3719,10 @@ pub fn print_verdict(name: &str, verdict: &Verdict) {
     );
 }
 
+/// The `--format=tsv` printer: each row's line, then one indented line per cell of a row whose
+/// detail is a list of coded findings (see [`crate::cells`] for the columns).
 pub fn print_rows_tsv(rows: &[Row]) {
-    for row in rows {
-        println!("{}", row.tsv());
-    }
+    print!("{}", crate::cells::render(rows));
 }
 
 /// THE FALSIFICATION OF THE FALSIFIER — the three outcomes `prove_red` must be able to produce on
@@ -4190,12 +4534,17 @@ mod posture_tests {
         }
     }
 
-    /// The ruler must be a ruler: measurable, and the same every time it is asked.
+    /// The ruler must be a ruler: a positive CPU time per pass where CPU time can be read, and
+    /// nothing at all — never a stand-in — where it cannot (ARCHITECT 2026-10-12, Law 8).
     #[test]
-    fn the_work_unit_is_a_positive_memoised_measurement() {
-        let a = work_unit();
-        assert!(a > std::time::Duration::ZERO);
-        assert_eq!(a, work_unit());
+    fn the_ruler_is_a_positive_cpu_time_per_pass() {
+        match ruler_cpu() {
+            Some(unit) => assert!(unit > std::time::Duration::ZERO),
+            None => {
+                #[cfg(target_os = "linux")]
+                panic!("Linux reads a thread's CPU time, so the ruler must read there");
+            }
+        }
     }
 
     /// ITEMS 207, 208: prose in this file that says a row is CARRIED on a standing-red list names a

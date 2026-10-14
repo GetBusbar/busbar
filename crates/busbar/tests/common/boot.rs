@@ -12,6 +12,7 @@
 //! `busbar --version` to completion once per test process before handing the path out: the
 //! first-exec cost is paid before any clock starts, and the deadline keeps its value.
 
+use std::path::Path;
 use std::process::Command;
 use std::sync::OnceLock;
 
@@ -106,4 +107,28 @@ pub fn try_reserve(port: u16) -> Option<std::fs::File> {
         .open(dir.join(format!("{port}.lock")))
         .expect("the port-claim file");
     file.try_lock().ok().map(|()| file)
+}
+
+/// Whether the node's log shows BOTH listeners up: one "busbar listening" line from the data side
+/// (written by data worker 0) and one from the admin side (written once the control thread binds
+/// admin). The FIRST line alone is not enough: it lands before admin is bound, so an admin call
+/// fired on it is refused (ConnectionRefused).
+pub fn log_shows_data_and_admin_listening(log: &str) -> bool {
+    log.matches("busbar listening").count() >= 2
+}
+
+/// The node's whole log, printed to the test's stderr when the test panics while this guard is
+/// held, so a red shows what the node said (a refused connection names no cause on its own).
+pub struct DumpOnPanic<'a>(pub &'a Path);
+
+impl Drop for DumpOnPanic<'_> {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            eprintln!(
+                "--- the node's log ({}):\n{}",
+                self.0.display(),
+                std::fs::read_to_string(self.0).unwrap_or_default()
+            );
+        }
+    }
 }

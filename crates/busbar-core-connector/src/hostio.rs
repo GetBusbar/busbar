@@ -25,7 +25,7 @@
 
 use std::collections::HashMap;
 use std::io::{self, Read, Write};
-use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
+use std::net::{IpAddr, Shutdown, SocketAddr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, RwLock};
 use std::task::{Context, Poll, Waker};
@@ -595,10 +595,17 @@ impl IoHost for HostIo {
     }
 
     fn spawn(&self, owner: u64, ticket: Ticket, spawn: &Spawn<'_>) -> IoResult<u64> {
+        // The admitted program's environment REFERENCES: never in the destination the carrier was
+        // handed (it carries the written values only), resolved below, at the spawn.
+        let mut env_refs = Vec::new();
         self.admits(ticket, |a| {
-            matches!(a, Admission::Spawn(p) if p.command == spawn.program
+            let admitted = matches!(a, Admission::Spawn(p) if p.command == spawn.program
                 && p.args.iter().map(String::as_str).eq(spawn.args.iter().copied())
-                && p.env.iter().map(|(k, v)| (k.as_str(), v.as_str())).eq(spawn.env.iter().copied()))
+                && p.env.iter().map(|(k, v)| (k.as_str(), v.as_str())).eq(spawn.env.iter().copied()));
+            if let (true, Admission::Spawn(p)) = (admitted, a) {
+                env_refs.clone_from(&p.env_refs);
+            }
+            admitted
         })?;
         if !spawn.program.starts_with('/') {
             return Err(IoRefusal::Refused(
@@ -608,6 +615,9 @@ impl IoHost for HostIo {
         if tokio::runtime::Handle::try_current().is_err() {
             return Err(IoRefusal::Failed(reactor::NOT_ON_A_WORKER.into()));
         }
+        // The environment's references resolve here, at the spawn, and nowhere earlier: a value
+        // exists only in the child's environment. One that does not resolve spawns nothing.
+        let resolved = crate::compose::resolve_spawn_env(&env_refs).map_err(IoRefusal::Refused)?;
         // Two OS pipes: the child reads one and writes the other; the host keeps the far ends.
         // The child's error output is the host's own (a spawned command inherits it).
         let (child_reads, host_writes) = std::io::pipe().map_err(|e| failed(&e))?;
@@ -618,6 +628,7 @@ impl IoHost for HostIo {
             .args(spawn.args)
             .env_clear()
             .envs(spawn.env.iter().copied())
+            .envs(resolved.iter().map(|(k, v)| (k.as_str(), v.as_str())))
             .stdin(child_reads)
             .stdout(child_writes)
             .kill_on_drop(true)
@@ -656,6 +667,58 @@ impl IoHost for HostIo {
             )),
             Kind::Program(_) => Ok((0, String::new())),
         }
+    }
+}
+
+/// THE SYSTEM NAME LOOKUP the kernel's remaining resolve-then-pin dials ask through its egress-trust
+/// capability (row 130 E2: the kernel opens no socket, a resolver's included, so its lookup is the
+/// connector's host I/O, the one place here that touches the OS; the root installs this behind the
+/// capability at boot). Returns EVERY address the
+/// name answered with, de-duplicated but otherwise untouched and unsorted: filtering or re-ordering
+/// would quietly decide which address the guard gets to judge, and the guard judges all of them; a
+/// name answering one address under both a v4 and a v6 query is ONE fact.
+///
+/// ## Why a thread of its own
+///
+/// The seam is synchronous, so this runs `getaddrinfo` and waits. Not `Handle::current().block_on`
+/// and not `block_in_place`: both make assumptions about the caller (that there IS a runtime, that
+/// it is multi-threaded) that a synchronous seam cannot make, and its callers reach it from
+/// different postures — a foreign thread already inside `Runtime::block_on`, a boxed future on a
+/// shared worker, a plain `async fn`. A thread with its own current-thread runtime has no such
+/// precondition and cannot panic on the caller's behalf. (Moved verbatim from the kernel's deleted
+/// `net_guard::SystemResolver`.)
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SystemNames;
+
+impl busbar_kernel_egress::trust::net::Resolver for SystemNames {
+    fn resolve(&self, host: &str) -> Result<Vec<IpAddr>, String> {
+        // Port zero: this seam answers about ADDRESSES. The port belongs to the URL and is applied
+        // by the caller that built the pin, so asking the resolver about one would be asking a
+        // second question.
+        let target = format!("{host}:0");
+        std::thread::scope(|s| {
+            s.spawn(|| {
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .map_err(|e| format!("name lookup: could not start a runtime: {e}"))?;
+                rt.block_on(async move {
+                    let answered = tokio::net::lookup_host(target)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    let mut out: Vec<IpAddr> = Vec::new();
+                    for sa in answered {
+                        let ip = sa.ip();
+                        if !out.contains(&ip) {
+                            out.push(ip);
+                        }
+                    }
+                    Ok(out)
+                })
+            })
+            .join()
+            .map_err(|_| "name lookup: the worker thread panicked".to_string())?
+        })
     }
 }
 

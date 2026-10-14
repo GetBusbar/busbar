@@ -12,17 +12,29 @@ use busbar_kernel_egress::trust::{
     select_weighted, BreakerView, LaneCandidate, LaneTable, SwrrState,
 };
 use std::alloc::{GlobalAlloc, Layout, System};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::cell::Cell;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// An allocator that counts allocations while a test asks it to.
 struct CountingAllocator;
 
-static COUNTING: AtomicBool = AtomicBool::new(false);
 static ALLOCATIONS: AtomicUsize = AtomicUsize::new(0);
+
+thread_local! {
+    // Per thread, not per process: the harness's own thread keeps allocating while the test runs
+    // (it files the test it just spawned), and those allocations are not the selection's. The
+    // selection runs wholly on the thread that measures it, so every allocation it makes is still
+    // counted.
+    static COUNTING: Cell<bool> = const { Cell::new(false) };
+}
+
+fn counting() -> bool {
+    COUNTING.try_with(Cell::get).unwrap_or(false)
+}
 
 unsafe impl GlobalAlloc for CountingAllocator {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        if COUNTING.load(Ordering::Relaxed) {
+        if counting() {
             ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
         }
         unsafe { System.alloc(layout) }
@@ -31,7 +43,7 @@ unsafe impl GlobalAlloc for CountingAllocator {
         unsafe { System.dealloc(ptr, layout) }
     }
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-        if COUNTING.load(Ordering::Relaxed) {
+        if counting() {
             ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
         }
         unsafe { System.realloc(ptr, layout, new_size) }
@@ -41,12 +53,12 @@ unsafe impl GlobalAlloc for CountingAllocator {
 #[global_allocator]
 static ALLOCATOR: CountingAllocator = CountingAllocator;
 
-/// Count the allocations one closure performs.
+/// Count the allocations one closure performs on this thread.
 fn allocations_during(f: impl FnOnce()) -> usize {
     ALLOCATIONS.store(0, Ordering::Relaxed);
-    COUNTING.store(true, Ordering::Relaxed);
+    COUNTING.with(|c| c.set(true));
     f();
-    COUNTING.store(false, Ordering::Relaxed);
+    COUNTING.with(|c| c.set(false));
     ALLOCATIONS.load(Ordering::Relaxed)
 }
 

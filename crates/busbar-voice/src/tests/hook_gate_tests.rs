@@ -176,10 +176,10 @@ async fn ws_accept_handshake(host: Arc<dyn EngineHost>) -> Result<(), ()> {
     tokio::spawn(async move {
         axum::serve(listener, app).await.unwrap();
     });
-    let policy = busbar_kernel::net_guard::GuardPolicy {
+    let policy = busbar_kernel::proxy::egress_unit::trust::net::GuardPolicy {
         allow_private: true,
         allow_plaintext: true,
-        ..busbar_kernel::net_guard::GuardPolicy::default()
+        ..busbar_kernel::proxy::egress_unit::trust::net::GuardPolicy::default()
     };
     match busbar_kernel::egress::duplex_ws::dial(&format!("ws://{addr}/telephony/call-ws"), policy)
         .await

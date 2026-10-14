@@ -755,10 +755,10 @@ fn an_evicted_neutral_scopes_tampered_tail_surfaces_a_break_on_resume() {
 /// AUDIT-INTEGRITY FIX: `append_scoped` hardcoded every row's `PlaneRecord::ts` to `0`, which defeats
 /// retention entirely — `purge_plane_records_before` drops any row with `r.ts < before`, so a `ts` of
 /// 0 makes every row look infinitely old and the FIRST retention sweep deletes the whole class
-/// regardless of how recently it was written. Proven over the REAL `busbar-store-memory` backend
-/// (not this file's in-RAM `MockStore`, whose `purge_plane_records_before` is a stub that always
-/// answers 0 and so cannot exercise this): a record appended just now must SURVIVE a retention sweep
-/// whose cutoff is safely in the past.
+/// regardless of how recently it was written. Proven over the kernel's store double, which carries
+/// the shipped RAM store's retention (not this file's in-RAM `MockStore`, whose
+/// `purge_plane_records_before` is a stub that always answers 0 and so cannot exercise this): a
+/// record appended just now must SURVIVE a retention sweep whose cutoff is safely in the past.
 #[test]
 fn append_scoped_stamps_a_real_instant_so_a_fresh_row_survives_retention() {
     let store: Arc<dyn busbar_contract::records::RecordStore> =

@@ -2093,18 +2093,18 @@ pub const PLANE_CALLLOG_CHAIN_VERIFY_FAILED: Diagnostic = Diagnostic {
     code: 2042,
     class: Class::Audit,
     slug: "plane-calllog-chain-verify-failed",
-    title: "Plane per-call records failed hash-chain verification on restore (tamper evidence)",
+    title: "Plane per-call records failed hash-chain verification on restore (tamper evidence) — RETIRED",
     severity: Severity::Actionable,
-    summary: "A principal's persisted plane per-call records were read at boot but do NOT verify \
+    summary: "RETIRED. A principal's persisted plane per-call records were read at boot but do NOT verify \
               against their own hash chain, which is tamper evidence. They are still restored and \
               the chain resumes from the broken tail, because refusing here would convert a \
               detection control into a deletion primitive — anyone able to write to the store could \
               delete a caller's history by corrupting one record.",
-    action: "Treat the durable governance store as compromised until explained: capture it for \
-             forensic review before it is overwritten, then restore from a trusted backup once the \
-             cause is understood.",
+    action: "Nothing emits this code. The per-call log is a plane's declared chained record kind, \
+             appended and resumed by the host's generic journal; a chain that does not verify \
+             from its stored tail is BUSBAR-2048.",
     since: "1.6.0",
-    retired: false,
+    retired: true,
 };
 
 pub const PLANE_AUDITLOG_CHAIN_VERIFY_FAILED: Diagnostic = Diagnostic {
@@ -2147,18 +2147,19 @@ pub const PLANE_CALLLOG_ROW_UNREADABLE: Diagnostic = Diagnostic {
     code: 2045,
     class: Class::Audit,
     slug: "plane-calllog-row-unreadable",
-    title: "Persisted plane per-call record could not be decoded on restore (skipped, not dropped)",
+    title: "Persisted plane per-call record could not be decoded on restore (skipped, not dropped) — RETIRED",
     severity: Severity::Actionable,
-    summary: "A principal's persisted plane per-call record could not be decoded at boot — a body \
+    summary: "RETIRED. A principal's persisted plane per-call record could not be decoded at boot — a body \
               from a store format no released build wrote, or a corrupt row. It is COUNTED and \
               SKIPPED per-record rather than allowed to abort the whole rehydrate (which would drop \
               every OTHER principal's working set), but the skip is reported here so a silently \
               lost evidence row is never invisible. Usually an engine-version mismatch or a corrupt \
               store.",
-    action: "Note the principal. If many rows are unreadable, suspect a store format mismatch after \
-             an upgrade or downgrade; capture the durable governance store for review.",
+    action: "Nothing emits this code. The per-call log is a plane's declared chained record kind, \
+             appended and resumed by the host's generic journal; a chain that does not verify \
+             from its stored tail is BUSBAR-2048.",
     since: "1.6.0",
-    retired: false,
+    retired: true,
 };
 
 pub const PLANE_JOURNAL_ROW_UNREADABLE: Diagnostic = Diagnostic {
@@ -2269,53 +2270,53 @@ pub const APPROVAL_LEDGER_UNREACHABLE_REFUSED: Diagnostic = Diagnostic {
     code: 7091,
     class: Class::Plane,
     slug: "approval-ledger-unreachable-refused",
-    title: "Spent-approval ledger unreachable — redemption refused",
+    title: "Spent-approval ledger unreachable — redemption refused — RETIRED",
     severity: Severity::Actionable,
     summary:
-        "The shared spent-approval ledger could not be reached, so an approval redemption was \
+        "RETIRED. The shared spent-approval ledger could not be reached, so an approval redemption was \
               REFUSED: a ledger that cannot say whether an approval was already spent must not be \
               read as saying it was not (a double-spend on a money-moving tool is the defect the \
               gate exists to stop).",
-    action:
-        "Restore connectivity to the shared spent-approval ledger's durable store. Until then, \
-             approval redemptions fail closed by design.",
+    action: "Nothing emits this code. A one-time approval is redeemed through the host's \
+             records.claim service.",
     since: "1.6.0",
-    retired: false,
+    retired: true,
 };
 
 pub const PLANE_CALLLOG_EMPTY_CHAIN: Diagnostic = Diagnostic {
     code: 7092,
     class: Class::Plane,
     slug: "plane-calllog-empty-chain",
-    title: "Durable plane call log enumerates a principal with NO records",
+    title: "Durable plane call log enumerates a principal with NO records — RETIRED",
     severity: Severity::Actionable,
     summary:
-        "The durable plane call log named a principal and then produced no records for it, so its \
+        "RETIRED. The durable plane call log named a principal and then produced no records for it, so its \
               chain is reopened at seq 1 and the discrepancy is reported rather than skipped. The \
               verifier alone cannot distinguish this from a caller's evidence being deleted \
               wholesale.",
-    action:
-        "Confirm whether this principal was expected to have call history. If it was, treat the \
-             store as possibly tampered and capture it for review before it is overwritten.",
+    action: "Nothing emits this code. The per-call log is a plane's declared chained record kind, \
+             appended and resumed by the host's generic journal; a chain that does not verify \
+             from its stored tail is BUSBAR-2048.",
     since: "1.6.0",
-    retired: false,
+    retired: true,
 };
 
 pub const PLANE_CALLLOG_WRITE_FAILED: Diagnostic = Diagnostic {
     code: 7093,
     class: Class::Plane,
     slug: "plane-calllog-write-failed",
-    title: "Durable plane per-call record could not be written (evidence lost)",
+    title: "Durable plane per-call record could not be written (evidence lost) — RETIRED",
     severity: Severity::Actionable,
-    summary: "The durable plane per-call record could NOT be written, so this call is being served but \
+    summary: "RETIRED. The durable plane per-call record could NOT be written, so this call is being served but \
               its evidence is being lost. The chain position is unchanged, so the chain stays \
               contiguous — what is missing is this one record, not the ones after it. This can recur \
               per request during a store outage, so it warns on the transition into the failing \
               state and holds subsequent occurrences at debug.",
-    action: "Restore the durable governance store's write path. Once writes succeed again the latch \
-             resets and a future outage re-warns.",
+    action: "Nothing emits this code. The per-call log is a plane's declared chained record kind, \
+             appended and resumed by the host's generic journal; a chain that does not verify \
+             from its stored tail is BUSBAR-2048.",
     since: "1.6.0",
-    retired: false,
+    retired: true,
 };
 
 pub const PLANE_DEMOTION_WRITE_FAILED: Diagnostic = Diagnostic {

@@ -26,7 +26,7 @@ use crate::a2a::jws::ED25519_KEY_INFO_PREFIX;
 use crate::testkit::engine_boot::engine;
 use busbar_kernel::{
     governance::signing::{TokenSigner, DEFAULT_KID},
-    plane::registry::{CardIssuer, PlaneBootCtx, RestoredSummary},
+    plane::registry::{CardIssuer, PlaneBootCtx},
     plane::store::{PlaneStore, PlaneStoreView},
     plane_host::EngineHost,
 };
@@ -535,10 +535,6 @@ struct RestartBootCtx {
 impl PlaneBootCtx for RestartBootCtx {
     fn has_store(&self) -> bool {
         true
-    }
-    fn register_call_stream(&self) {}
-    fn restore_call_log(&self) -> Result<RestoredSummary, String> {
-        Ok(RestoredSummary::default())
     }
     fn attach_durable_sinks(&self) {}
     fn plane_store(&self) -> Option<Arc<dyn PlaneStore>> {

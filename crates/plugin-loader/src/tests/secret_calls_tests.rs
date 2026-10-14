@@ -155,6 +155,69 @@ fn a_door_of_another_kind_is_refused() {
     assert!(err.contains("not a secret one"), "{err}");
 }
 
+/// How many times [`gated_dispatcher`] was asked for, and whether its first ask is released.
+static GATE: (std::sync::Mutex<(usize, bool)>, std::sync::Condvar) =
+    (std::sync::Mutex::new((0, false)), std::sync::Condvar::new());
+
+/// The dispatcher, asked for inside a shared instance's open: the FIRST ask waits until the test
+/// releases it (an open wedged in its plugin); every later ask answers at once.
+fn gated_dispatcher() -> Arc<Dispatcher> {
+    let (lock, cv) = &GATE;
+    let mut g = lock.lock().unwrap();
+    g.0 += 1;
+    cv.notify_all();
+    if g.0 == 1 {
+        while !g.1 {
+            g = cv.wait(g).unwrap();
+        }
+    }
+    drop(g);
+    dispatcher()
+}
+
+/// RED (THE DESIGN §11.13 M1): a linked module's shared instance is opened with the shared map's
+/// lock let go, so an open wedged in its plugin holds no other caller: a second caller opens and
+/// answers while the first is still wedged, and the first then answers the instance installed.
+#[test]
+fn a_wedged_shared_open_holds_no_other_caller() {
+    environment();
+    let mut rows = SecretRows::new(gated_dispatcher, || None);
+    rows.link(door).expect("the env source's door links");
+    let rows = Arc::new(rows);
+    let wedged = {
+        let rows = Arc::clone(&rows);
+        std::thread::spawn(move || rows.shared(NAME).expect("opens once released"))
+    };
+    {
+        let (lock, cv) = &GATE;
+        let mut g = lock.lock().unwrap();
+        while g.0 == 0 {
+            g = cv.wait(g).unwrap();
+        }
+    }
+    let (done_tx, done) = std::sync::mpsc::channel();
+    {
+        let rows = Arc::clone(&rows);
+        std::thread::spawn(move || {
+            let _ = done_tx.send(rows.shared(NAME).map(|s| resolves(s.as_ref())));
+        });
+    }
+    let answered = done.recv_timeout(std::time::Duration::from_secs(5));
+    {
+        let (lock, cv) = &GATE;
+        lock.lock().unwrap().1 = true;
+        cv.notify_all();
+    }
+    let answered = answered.expect("a wedged open held another caller behind the shared map");
+    assert_eq!(
+        answered.expect("the second caller opens")[0],
+        format!("ok {MATERIAL}")
+    );
+    let first = wedged.join().unwrap();
+    let again = rows.shared(NAME).unwrap();
+    assert!(Arc::ptr_eq(&first, &again), "one shared instance is kept");
+}
+
 /// The directory the test's `plugins.logs` names (a `fn` pointer reads it, as the root's does).
 static LOG_DIR: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
 

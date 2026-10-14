@@ -12,7 +12,7 @@
 /// dropped, one production-code line per output entry, 1-based line numbers.
 pub fn production_lines(src: &str) -> Vec<(usize, String)> {
     let mut out = Vec::new();
-    let mut in_block_comment = false;
+    let mut in_block_comment = LexState::default();
     let mut pending_test_attr = false;
     let mut test_mod_depth: Option<i32> = None;
     let mut depth: i32 = 0;
@@ -346,8 +346,39 @@ pub fn blank_code(line: &str, st: &mut LexState) -> String {
 /// lets [`code_of`] strip a trailer off a line that also holds a string.
 pub fn blank_code_marking(line: &str, st: &mut LexState) -> (String, Option<usize>) {
     let chars: Vec<char> = line.chars().collect();
-    let mut comment_at: Option<usize> = None;
     let mut out = String::with_capacity(line.len());
+    let mut at = 0;
+    let comment_at = lex_line(&chars, st, |class, n| {
+        for c in &chars[at..at + n] {
+            out.push(if class == Class::Code { *c } else { ' ' });
+        }
+        at += n;
+    });
+    (out, comment_at)
+}
+
+/// What one char of a line is, to THE ONE LEXER. [`blank_code_marking`] keeps only [`Class::Code`];
+/// [`split_comment_line`] keeps code AND literal text in its code half and [`Class::Comment`] in
+/// its comment half. One classification, two readers, so the comment stripper and the delimiter
+/// counter cannot disagree about where a string or a comment ends.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Class {
+    /// Code, including every literal's quote delimiters and a byte char's `b`.
+    Code,
+    /// The inside of a literal: its body, a raw or byte prefix, a raw literal's closing `#`s.
+    Literal,
+    /// The text of a comment.
+    Comment,
+    /// A comment's own `//`, `/*` or `*/`.
+    CommentMark,
+}
+
+/// Classify every char of a line, in order, carrying `st` from the previous line: `put(class, n)`
+/// says the next `n` chars are `class`, and the calls cover the line exactly once. Answers where
+/// this line's `//` comment began, if it has one. A sink rather than a returned list, so the hot
+/// reader ([`blank_code`], on every line of every scan) still allocates only its output.
+fn lex_line(chars: &[char], st: &mut LexState, mut put: impl FnMut(Class, usize)) -> Option<usize> {
+    let mut comment_at: Option<usize> = None;
     let mut i = 0;
 
     while i < chars.len() {
@@ -356,14 +387,14 @@ pub fn blank_code_marking(line: &str, st: &mut LexState) -> (String, Option<usiz
         if st.block > 0 {
             if c == '/' && chars.get(i + 1) == Some(&'*') {
                 st.block += 1;
-                out.push_str("  ");
+                put(Class::CommentMark, 2);
                 i += 2;
             } else if c == '*' && chars.get(i + 1) == Some(&'/') {
                 st.block -= 1;
-                out.push_str("  ");
+                put(Class::CommentMark, 2);
                 i += 2;
             } else {
-                out.push(' ');
+                put(Class::Comment, 1);
                 i += 1;
             }
             continue;
@@ -372,29 +403,26 @@ pub fn blank_code_marking(line: &str, st: &mut LexState) -> (String, Option<usiz
         match st.open {
             Some(OpenLit::Quoted) => {
                 if c == '\\' {
-                    out.push(' ');
-                    if i + 1 < chars.len() {
-                        out.push(' ');
-                    }
+                    put(Class::Literal, if i + 1 < chars.len() { 2 } else { 1 });
                     i += 2;
                 } else if c == '"' {
                     st.open = None;
-                    out.push('"');
+                    put(Class::Code, 1);
                     i += 1;
                 } else {
-                    out.push(' ');
+                    put(Class::Literal, 1);
                     i += 1;
                 }
                 continue;
             }
             Some(OpenLit::Raw(hashes)) => {
-                if c == '"' && closes_raw(&chars, i + 1, hashes) {
+                if c == '"' && closes_raw(chars, i + 1, hashes) {
                     st.open = None;
-                    out.push('"');
-                    out.extend(std::iter::repeat_n(' ', hashes));
+                    put(Class::Code, 1);
+                    put(Class::Literal, hashes);
                     i += 1 + hashes;
                 } else {
-                    out.push(' ');
+                    put(Class::Literal, 1);
                     i += 1;
                 }
                 continue;
@@ -404,53 +432,53 @@ pub fn blank_code_marking(line: &str, st: &mut LexState) -> (String, Option<usiz
 
         if c == '/' && chars.get(i + 1) == Some(&'*') {
             st.block = 1;
-            out.push_str("  ");
+            put(Class::CommentMark, 2);
             i += 2;
             continue;
         }
         // A line comment runs to end of line and carries no state with it.
         if c == '/' && chars.get(i + 1) == Some(&'/') {
             comment_at = Some(i);
-            out.extend(std::iter::repeat_n(' ', chars.len() - i));
+            put(Class::CommentMark, 2);
+            put(Class::Comment, chars.len() - i - 2);
             break;
         }
 
         // A literal PREFIX (`b`, `c`, `r`, `br`, `cr`) only reads as a prefix when it is not the
         // tail of an identifier — `for_r"x"` is not Rust, but `char_r` followed by nothing is, and
         // a scanner that guessed wrong here would blank live code.
-        let prefixed = st.open.is_none() && !is_ident_char(prev_char(&chars, i));
+        let prefixed = st.open.is_none() && !is_ident_char(prev_char(chars, i));
         if prefixed {
-            if let Some((consumed, lit)) = opens_literal(&chars, i) {
-                out.extend(std::iter::repeat_n(' ', consumed - 1));
-                out.push('"');
+            if let Some((consumed, lit)) = opens_literal(chars, i) {
+                put(Class::Literal, consumed - 1);
+                put(Class::Code, 1);
                 st.open = Some(lit);
                 i += consumed;
                 continue;
             }
-            if let Some(end) = char_literal_end(&chars, i) {
-                out.push('\'');
-                out.extend(std::iter::repeat_n(' ', end - i - 1));
-                out.push('\'');
+            if let Some(end) = char_literal_end(chars, i) {
+                put(Class::Code, 1);
+                put(Class::Literal, end - i - 1);
+                put(Class::Code, 1);
                 i = end + 1;
                 continue;
             }
             // A byte char: `b'{'`. The `b` is code, the literal after it is not.
             if c == 'b' {
-                if let Some(end) = char_literal_end(&chars, i + 1) {
-                    out.push('b');
-                    out.push('\'');
-                    out.extend(std::iter::repeat_n(' ', end - i - 2));
-                    out.push('\'');
+                if let Some(end) = char_literal_end(chars, i + 1) {
+                    put(Class::Code, 2);
+                    put(Class::Literal, end - i - 2);
+                    put(Class::Code, 1);
                     i = end + 1;
                     continue;
                 }
             }
         }
 
-        out.push(c);
+        put(Class::Code, 1);
         i += 1;
     }
-    (out, comment_at)
+    comment_at
 }
 
 /// The same blanking for a line read on its own, with no carried state.
@@ -518,72 +546,79 @@ fn char_literal_end(chars: &[char], i: usize) -> Option<usize> {
     (chars.get(i + 1).is_some() && chars.get(i + 2) == Some(&'\'')).then_some(i + 2)
 }
 
-/// One line split into **(code, comment)** — the same single pass as [`strip_comment_line`], which
-/// now delegates here, except the comment text is HANDED BACK rather than dropped on the floor.
+/// What a line-by-line comment stripper carries from one line to the next.
 ///
-/// There is one lexer so the two halves cannot disagree: anything absent from `code` is present in
-/// `comment` and vice versa. String literals stay verbatim in the CODE half, so a `//` inside a
-/// `"…"` is not a comment — which is precisely the distinction
-/// [`crate::gates::no_deferral`]'s Class-B comment tags stand on. A `TODO(migrate):` inside a
-/// `format!("# TODO(migrate): {t}")` is **data the program emits**, not a label its author attached
-/// to this code, and only the second of those is a deferral marker.
-pub fn split_comment_line(line: &str, in_block: &mut bool) -> (String, String) {
+/// [`LexState`] is the whole answer: an open block comment AND an open literal. Carrying only the
+/// block flag is the defect this trait exists to end — the continuation line of a multi-line
+/// string (`"{root}/*"` after a `\` line end) was read from a clean state, its `/*` opened a block
+/// comment, and no `*/` ever came: the rest of `crates/busbar-kernel/src/plugin_routes.rs` (292 of
+/// its 564 lines) read as comment to every gate built on this scanner.
+///
+/// `bool` remains a carrier only so a caller not yet moved to [`LexState`] still compiles. It holds
+/// the block comment and NOTHING ELSE, so it still loses an open literal at a line end and still
+/// inherits the defect; every caller that can say `LexState::default()` should.
+pub trait CommentCarry {
+    fn load(&self) -> LexState;
+    fn store(&mut self, st: LexState);
+}
+
+impl CommentCarry for LexState {
+    fn load(&self) -> LexState {
+        *self
+    }
+    fn store(&mut self, st: LexState) {
+        *self = st;
+    }
+}
+
+impl CommentCarry for bool {
+    fn load(&self) -> LexState {
+        LexState {
+            block: u32::from(*self),
+            open: None,
+        }
+    }
+    fn store(&mut self, st: LexState) {
+        *self = st.block > 0;
+    }
+}
+
+/// One line split into **(code, comment)**, read by THE ONE LEXER (`lex_line`) — the same
+/// classification [`blank_code`] reads — with the comment text HANDED BACK rather than dropped.
+///
+/// Anything absent from `code` is present in `comment` or is a comment's own `//`, `/*` or `*/`.
+/// String literals stay verbatim in the CODE half, so a `//` inside a `"…"` is not a comment — which
+/// is precisely the distinction [`crate::gates::no_deferral`]'s Class-B comment tags stand on. A
+/// `TODO(migrate):` inside a `format!("# TODO(migrate): {t}")` is **data the program emits**, not a
+/// label its author attached to this code, and only the second of those is a deferral marker.
+///
+/// `carry` holds what the previous line left open; see [`CommentCarry`] for why it must be a
+/// [`LexState`]. Raw strings (`r#"…"#`), byte strings, escapes, char literals (`'"'`) and lifetimes
+/// (`'a`) are told apart exactly as [`blank_code`] tells them apart, and block comments nest.
+pub fn split_comment_line(line: &str, carry: &mut impl CommentCarry) -> (String, String) {
+    let chars: Vec<char> = line.chars().collect();
     let mut code = String::new();
     let mut comment = String::new();
-    let bytes: Vec<char> = line.chars().collect();
-    let mut i = 0;
-    let mut in_str = false;
-    while i < bytes.len() {
-        if *in_block {
-            if bytes[i] == '*' && bytes.get(i + 1) == Some(&'/') {
-                *in_block = false;
-                i += 2;
-            } else {
-                comment.push(bytes[i]);
-                i += 1;
-            }
-            continue;
+    let mut at = 0;
+    let mut st = carry.load();
+    lex_line(&chars, &mut st, |class, n| {
+        let run = &chars[at..at + n];
+        match class {
+            Class::Code | Class::Literal => code.extend(run),
+            Class::Comment => comment.extend(run),
+            Class::CommentMark => {}
         }
-        if in_str {
-            code.push(bytes[i]);
-            if bytes[i] == '\\' {
-                if let Some(c) = bytes.get(i + 1) {
-                    code.push(*c);
-                }
-                i += 2;
-                continue;
-            }
-            if bytes[i] == '"' {
-                in_str = false;
-            }
-            i += 1;
-            continue;
-        }
-        if bytes[i] == '/' && bytes.get(i + 1) == Some(&'*') {
-            *in_block = true;
-            i += 2;
-            continue;
-        }
-        if bytes[i] == '/' && bytes.get(i + 1) == Some(&'/') {
-            comment.extend(bytes[i + 2..].iter());
-            break;
-        }
-        if bytes[i] == '"' {
-            in_str = true;
-            code.push(bytes[i]);
-            i += 1;
-            continue;
-        }
-        code.push(bytes[i]);
-        i += 1;
-    }
+        at += n;
+    });
+    carry.store(st);
     (code, comment)
 }
 
-/// One line with `//` and `/* */` comments removed. `in_block` carries block-comment state across
-/// lines. String literals are preserved verbatim, so a `//` inside a `"…"` is not a comment.
-pub fn strip_comment_line(line: &str, in_block: &mut bool) -> String {
-    split_comment_line(line, in_block).0
+/// One line with `//` and `/* */` comments removed. `carry` carries the comment and literal state
+/// across lines ([`CommentCarry`]). String literals are preserved verbatim, so a `//` inside a
+/// `"…"` is not a comment.
+pub fn strip_comment_line(line: &str, carry: &mut impl CommentCarry) -> String {
+    split_comment_line(line, carry).0
 }
 
 /// EVERY FILE WHOSE MODULE IS DECLARED UNDER A TEST-ONLY `cfg`, among `files` (repo-relative path,

@@ -17,18 +17,29 @@
 //! * The Statement: the plane's key and version, `decisions:` declared and `providers:` consumed,
 //!   its one outbound need, and the tail [`TAIL`] (every list read off [`crate::driven::tail`]).
 //! * `validate`, `open`, `refresh`: the settings blob read as the `decisions:` section
-//!   ([`crate::config::DecisionsSection`]); a generation's snapshot claims
-//!   [`crate::driven::served_claims`] for its model count, lists every model the section
-//!   configures (the kernel filters them by scope and `/v1/models` appends them), and binds no
-//!   audience (the operation is served on the plain data plane to a keyed caller). `retire` drops
-//!   a generation.
-//! * `arrive`: [`crate::driven::arrive`]; an unclaimed request is refused at 404.
+//!   ([`crate::config::DecisionsSection`]), each model's dialect resolved ([`routes`]: its own
+//!   `protocol`, else its provider's as the host stated it at `open`); a generation's snapshot
+//!   claims [`crate::driven::served_claims`] for its models' dialects, lists every model the
+//!   section configures (the kernel filters them by scope and `/v1/models` appends them), and
+//!   binds no audience (the operation is served on the plain data plane to a keyed caller).
+//!   `retire` drops a generation.
+//! * `arrive`: [`crate::driven::arrive`], routed over the model the request names
+//!   ([`crate::driven::route_model`]); an unclaimed request is refused at 404, and one that routes
+//!   over no model at its [`crate::driven::Unrouted`] status.
 //! * `on_piece`: the ATTEMPT's request head ([`crate::driven::attempt_request`]), the caller's body to the
-//!   far end unchanged ([`crate::driven::caller_piece`]), and the far end's answer relayed unchanged
-//!   with its count read at the last piece ([`crate::driven::FarEndReading`]).
-//! * `refusal`: [`crate::driven::refusal_body`].
+//!   far end unchanged ([`crate::driven::caller_piece`]) but for the routed model's `upstream_model`
+//!   ([`crate::driven::spliced`]), and the far end's answer relayed unchanged with its count read at
+//!   the last piece ([`crate::driven::FarEndReading`]).
+//! * `refusal`: [`crate::driven::refusal_body`]; the refused unit's state is dropped.
+//! * `cancel`: the unit on the cancelled ticket is dropped, `CANCEL_ABORTED` before its far end
+//!   answered and `CANCEL_OK_PARTIAL` after.
 //! * `serve` and `project` are REFUSED: the plane publishes no admin route and binds no hook view.
-//!   `hydrate`, `start`, `tick`, `drive`, `cancel`, `release` and `close` hold nothing.
+//!   `hydrate`, `start`, `tick`, `drive`, `release` and `close` hold nothing.
+//!
+//! A unit's state lives from its arrival to its end (its last far-end piece, its refusal or its
+//! cancel), and at most [`MAX_UNITS`] live at once: an arrival past that is refused, and a live
+//! unit is never dropped to make room (THE DESIGN section 11.2: memory is plugin-owned, and no
+//! state grows without bound on the hot path).
 
 use std::collections::BTreeMap;
 use std::mem::size_of;
@@ -44,13 +55,15 @@ use busbar_contract::abi::mechanism::door::{
 use busbar_contract::abi::mechanism::lifecycle::{
     GenIn, RefreshIn, ReleaseIn, TickIn, TickOut, ValidateIn,
 };
+use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::plane::{
     ArriveIn, ArriveOut, BillableClass, DialectAuth, OnPieceIn, OnPieceOut, OpClass, OutField,
     PlaneDriveIn, PlaneDriveOut, PlaneOpenIn, PlaneOpenOut, PlaneRefreshOut, PlaneSnapshot,
     PlaneTail, ProjectIn, ProjectOut, RefusalIn, RefusalOut, ServeIn, ServeOut, UnitCount,
-    CANCEL_ABORTED, CLAIM_EXACT, EMIT_DONE, EMIT_TO_FAR_END, FROM_CALLER, FROM_FAR_END,
-    FROM_KERNEL, INGRESS_REQUEST_RESPONSE, PIECE_HAS_STATUS, PIECE_LAST, PRINCIPAL_NONE,
-    PRINCIPAL_OPTIONAL, PRINCIPAL_REQUIRED, ROUTE_DIRECT, SHAPE_WHOLE, UNITS_REPORTED,
+    CANCEL_ABORTED, CANCEL_OK_PARTIAL, CLAIM_EXACT, EMIT_DONE, EMIT_TO_FAR_END, FROM_CALLER,
+    FROM_FAR_END, FROM_KERNEL, INGRESS_REQUEST_RESPONSE, PIECE_HAS_STATUS, PIECE_LAST,
+    PRINCIPAL_NONE, PRINCIPAL_OPTIONAL, PRINCIPAL_REQUIRED, ROUTE_DIRECT, SHAPE_WHOLE,
+    UNITS_REPORTED,
 };
 use busbar_contract::abi::plane::{PlaneCancelIn, PlaneCancelOut};
 use busbar_contract::abi::sdk::door::{abi_str, statement};
@@ -72,7 +85,8 @@ pub const VERSION: &str = "1.6.0";
 /// The most calls the kernel keeps in flight on one instance.
 const MAX_INFLIGHT: u32 = 64;
 
-/// The most units the instance keeps state for at once; past it, the oldest is dropped first.
+/// The most units the instance keeps state for at once; past it, a new arrival is refused
+/// ([`BUSY`]) and no live unit is dropped.
 pub const MAX_UNITS: usize = 4096;
 
 /// [`ArriveOut::refusal`]: the request names no operation this plane claims.
@@ -80,6 +94,16 @@ pub const UNCLAIMED: u32 = 1;
 
 /// The status an unclaimed request is refused at.
 const STATUS_NOT_FOUND: u32 = 404;
+
+/// [`ArriveOut::refusal`]: the request routes over no configured model ([`driven::Unrouted`]).
+pub const UNROUTED: u32 = 2;
+
+/// [`ArriveOut::refusal`]: the instance holds [`MAX_UNITS`] live units; the arrival is refused at
+/// [`STATUS_BUSY`], about the entry it routed over, before anything is charged.
+pub const BUSY: u32 = 3;
+
+/// The status a [`BUSY`] arrival is refused at.
+const STATUS_BUSY: u32 = 503;
 
 /// The human label.
 const LABEL: &str = "Decisions";
@@ -105,33 +129,42 @@ const SECTIONS: &[Section] = &[
     },
 ];
 
-const DIALECTS: &[AbiStr] = &[abi_str(tail::DIALECTS[0])];
+const DIALECTS: &[AbiStr] = &[abi_str(tail::DIALECTS[0]), abi_str(tail::DIALECTS[1])];
 
-/// The dialect's default outbound style ([`tail::DIALECT_AUTH`]).
-const DIALECT_AUTH: &[DialectAuth] = &[DialectAuth {
-    dialect: tail::DIALECT_AUTH[0].0,
-    _reserved: 0,
-    style: abi_str(tail::DIALECT_AUTH[0].1),
-    params: Blob::ABSENT,
-}];
+/// Each dialect's default outbound style ([`tail::DIALECT_AUTH`]).
+const DIALECT_AUTH: &[DialectAuth] = &[dialect_auth(0), dialect_auth(1)];
+
+/// [`tail::DIALECT_AUTH`]'s row `i`, on the ABI.
+const fn dialect_auth(i: usize) -> DialectAuth {
+    DialectAuth {
+        dialect: tail::DIALECT_AUTH[i].0,
+        _reserved: 0,
+        style: abi_str(tail::DIALECT_AUTH[i].1),
+        params: Blob::ABSENT,
+    }
+}
 
 const SCOPE_KINDS: &[AbiStr] = &[abi_str(tail::SCOPE_KINDS[0])];
 
-const OP_CLASSES: &[OpClass] = &[OpClass {
-    op: abi_str(tail::OP_CLASSES[0].as_str()),
-    name: abi_str(tail::OP_CLASSES[0].as_str()),
-}];
+const OP_CLASSES: &[OpClass] = &[op_class(0), op_class(1)];
 
-const BILLABLE_CLASSES: &[BillableClass] = &[
+/// [`tail::OP_CLASSES`]' class `i`, on the ABI.
+const fn op_class(i: usize) -> OpClass {
+    OpClass {
+        op: abi_str(tail::OP_CLASSES[i].as_str()),
+        name: abi_str(tail::OP_CLASSES[i].as_str()),
+    }
+}
+
+const BILLABLE_CLASSES: &[BillableClass] = &[billable(0), billable(1), billable(2), billable(3)];
+
+/// [`tail::BILLABLE_CLASSES`]' class `i`, on the ABI.
+const fn billable(i: usize) -> BillableClass {
     BillableClass {
-        class: abi_str(tail::BILLABLE_CLASSES[0].0.as_str()),
-        family: abi_str(tail::BILLABLE_CLASSES[0].1),
-    },
-    BillableClass {
-        class: abi_str(tail::BILLABLE_CLASSES[1].0.as_str()),
-        family: abi_str(tail::BILLABLE_CLASSES[1].1),
-    },
-];
+        class: abi_str(tail::BILLABLE_CLASSES[i].0.as_str()),
+        family: abi_str(tail::BILLABLE_CLASSES[i].1),
+    }
+}
 
 /// The fee unit the plane counts ([`tail::FEE_UNITS`]).
 const FEE_UNITS: &[AbiStr] = &[abi_str(tail::FEE_UNITS[0])];
@@ -272,31 +305,83 @@ pub fn read_dealt(settings: &[u8]) -> Result<DecisionsSection, String> {
     }
 }
 
-/// ONE GENERATION'S SNAPSHOT for a section with `models` configured models: the claims
-/// [`driven::served_claims`] serves, each an exact target over the claim's transport. It binds no
-/// audience: the operation is served on the plain data plane to a keyed caller, as the llm plane's
-/// is, and its refusals are this dialect's.
+/// ONE GENERATION'S SNAPSHOT for a section whose models are of `dialects`: the claims
+/// [`driven::served_claims`] serves, each an exact target over the claim's transport, wearing its
+/// own dialect for a refusal before `arrive`. It binds no audience: the operation is served on the
+/// plain data plane to a keyed caller, as the llm plane's is.
 #[must_use]
-pub fn snapshot_spec(models: usize) -> SnapshotSpec {
+pub fn snapshot_spec(dialects: &[u32]) -> SnapshotSpec {
     SnapshotSpec {
-        claims: driven::served_claims(models)
-            .iter()
-            .map(|(verb, target)| ClaimSpec::new(verb, target, claims::TRANSPORT, CLAIM_EXACT))
+        claims: driven::served_claims(dialects)
+            .into_iter()
+            .map(|(verb, target, dialect)| ClaimSpec {
+                refusal_dialect: u16::try_from(dialect).unwrap_or(0),
+                ..ClaimSpec::new(verb, target, claims::TRANSPORT, CLAIM_EXACT)
+            })
             .collect(),
         ..SnapshotSpec::default()
     }
 }
 
-/// ONE GENERATION'S SNAPSHOT for `section`: [`snapshot_spec`]'s claims for its model count, and
-/// every model it configures LISTED (THE DESIGN section 2: all configured decisions models are
-/// listed, scope-filtered by the kernel; `/v1/models` appends them), in ascending name order.
+/// What a claimed arrival routes over: a model's dialect, and its `upstream_model`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Routed {
+    /// Its index in [`tail::DIALECTS`].
+    pub dialect: u32,
+    /// Its `upstream_model`.
+    pub upstream: Option<String>,
+}
+
+/// EVERY MODEL'S ROUTE under `section`: its dialect, its own `protocol` override or else its
+/// provider's protocol (`protocols`, the provider facts the host handed at `open`; THE DESIGN
+/// section 2: "a model's dialect is its override or its provider's protocol"), `jev` for a provider
+/// the host stated no protocol for.
+///
+/// # Errors
+///
+/// A model whose dialect is none this plane speaks, named with the dialects it does (#51: an
+/// unknown dialect fails closed).
+pub fn routes(
+    section: &DecisionsSection,
+    protocols: &BTreeMap<String, String>,
+) -> Result<BTreeMap<String, Routed>, String> {
+    section
+        .models
+        .iter()
+        .map(|(name, model)| {
+            let protocol = model
+                .protocol
+                .as_deref()
+                .or_else(|| protocols.get(&model.provider).map(String::as_str))
+                .unwrap_or(tail::DIALECTS[0]);
+            let dialect = driven::dialect_of(protocol).ok_or_else(|| {
+                format!(
+                    "decisions.models.{name} resolves to protocol '{protocol}', but the decisions \
+                     plane speaks only: {}.",
+                    tail::DIALECTS.join(", ")
+                )
+            })?;
+            Ok((
+                name.clone(),
+                Routed {
+                    dialect,
+                    upstream: model.upstream_model.clone(),
+                },
+            ))
+        })
+        .collect()
+}
+
+/// ONE GENERATION'S SNAPSHOT for `section`'s `routes`: [`snapshot_spec`]'s claims for its models'
+/// dialects, and every model it configures LISTED (THE DESIGN section 2: all configured decisions
+/// models are listed, scope-filtered by the kernel; `/v1/models` appends them), in ascending name
+/// order.
 #[must_use]
-pub fn generation_spec(section: &DecisionsSection) -> SnapshotSpec {
-    let mut listed: Vec<String> = section.models.keys().cloned().collect();
-    listed.sort();
+pub fn generation_spec(routes: &BTreeMap<String, Routed>) -> SnapshotSpec {
+    let dialects: Vec<u32> = routes.values().map(|r| r.dialect).collect();
     SnapshotSpec {
-        listed,
-        ..snapshot_spec(section.models.len())
+        listed: routes.keys().cloned().collect(),
+        ..snapshot_spec(&dialects)
     }
 }
 
@@ -317,9 +402,16 @@ struct Unit {
     owed_flags: u32,
     /// The caller's fields the far end receives ([`driven::relayed_fields`]), kept from `arrive`
     /// (the caller's head crosses once) for every ATTEMPT of the unit.
-    caller: Vec<(Vec<u8>, Vec<u8>)>,
+    caller: driven::Relayed,
+    /// The ticket the unit's last piece crossed on: what a `cancel` names it by.
+    ticket: Option<Ticket>,
+    /// Its place in the instance's arrivals ([`DecisionsDoor::arrivals`]).
+    seq: u64,
     /// The far end's status, read off its first piece; the request fee is judged on it.
     status: Option<u32>,
+    /// The routed model's `upstream_model`, kept from `arrive`: the caller's top-level `model` is
+    /// spliced to it on the way to the far end where the two differ ([`driven::spliced`]).
+    upstream: Option<String>,
 }
 
 /// One instance: every live generation's snapshot, and the units in flight.
@@ -327,28 +419,21 @@ struct Unit {
 pub struct DecisionsDoor {
     generations: Generations<PlaneSnapshot>,
     units: Keyed<u64, Unit>,
-    /// The entry a claimed arrival routes over, directly: the one configured model of the latest
-    /// generation (none held when the section configures other than one, and nothing is claimed).
-    routed: Keyed<(), String>,
+    /// The models a claimed arrival routes over, directly, by name: every model the latest
+    /// generation configures, each with its dialect and `upstream_model`.
+    models: Keyed<String, Routed>,
+    /// How many arrivals the instance has kept: each unit's [`Unit::seq`]. The count is the
+    /// SDK's per-instance keyed state, its one entry under `()`: the plane holds no interior
+    /// state of its own.
+    arrivals: Keyed<(), u64>,
+    /// Each provider's protocol, as the host stated it at `open` (`PlaneOpenIn::providers`).
+    protocols: BTreeMap<String, String>,
 }
 
 impl DecisionsDoor {
-    /// Route claimed arrivals over `section`'s one model, or none.
-    fn route_over(&self, section: &DecisionsSection) {
-        match routed_model(section) {
-            Some(model) => self.routed.insert((), model),
-            None => self.routed.remove(&()),
-        };
-    }
-}
-
-/// The entry a claimed arrival routes over under `section`: its one model, when it configures
-/// exactly one ([`driven::served_claims`]' rule); `None` otherwise.
-fn routed_model(section: &DecisionsSection) -> Option<String> {
-    let mut models = section.models.keys();
-    match (models.next(), models.next()) {
-        (Some(one), None) => Some(one.clone()),
-        _ => None,
+    /// Route claimed arrivals over `routes`.
+    fn route_over(&self, routes: BTreeMap<String, Routed>) {
+        self.models.with_all(|models| *models = routes);
     }
 }
 
@@ -372,7 +457,11 @@ macro_rules! slot {
 slot!(
     /// `validate`: the settings read as the section, or refused in the grammar's words.
     Validate, ValidateIn, OutHead, |_, input, mut out| {
-        match read_dealt(input.field(|i| &i.settings).bytes()) {
+        // A model's own `protocol` must be a dialect this plane speaks; its provider's is judged
+        // by the kernel against the dialects the Statement states.
+        match read_dealt(input.field(|i| &i.settings).bytes())
+            .and_then(|section| routes(&section, &BTreeMap::new()))
+        {
             Ok(_) => Outcome::Ready,
             Err(words) => out.fail(Refusal::refused(words)),
         }
@@ -387,13 +476,29 @@ slot!(
             Ok(section) => section,
             Err(words) => return open_failed(open, &mut out, |o| &o.open.err_len, &words),
         };
+        let protocols: BTreeMap<String, String> = input
+            .providers()
+            .iter()
+            .filter_map(|p| {
+                Some((
+                    p.field(|p| &p.name).as_str().ok()?.to_string(),
+                    p.field(|p| &p.protocol).as_str().ok()?.to_string(),
+                ))
+            })
+            .collect();
+        let routed = match routes(&section, &protocols) {
+            Ok(routed) => routed,
+            Err(words) => return open_failed(open, &mut out, |o| &o.open.err_len, &words),
+        };
         let plane = DecisionsDoor {
             generations: Generations::new(),
             units: Keyed::new(),
-            routed: Keyed::new(),
+            models: Keyed::new(),
+            arrivals: Keyed::new(),
+            protocols,
         };
-        plane.route_over(&section);
-        let spec = generation_spec(&section);
+        let spec = generation_spec(&routed);
+        plane.route_over(routed);
         out.publish(|o| &o.snapshot, &plane.generations, open.generation, &spec);
         instance.open(plane);
         Outcome::Ready
@@ -410,8 +515,12 @@ slot!(
             Ok(section) => section,
             Err(words) => return out.fail(Refusal::refused(words)),
         };
-        let spec = generation_spec(&section);
-        plane.route_over(&section);
+        let routed = match routes(&section, &plane.protocols) {
+            Ok(routed) => routed,
+            Err(words) => return out.fail(Refusal::refused(words)),
+        };
+        let spec = generation_spec(&routed);
+        plane.route_over(routed);
         out.publish(|o| &o.snapshot, &plane.generations, input.generation, &spec);
         Outcome::Ready
     }
@@ -441,9 +550,24 @@ slot!(
 );
 
 slot!(
-    /// `cancel`: a unit is never answered before its far end has, so nothing is moved.
-    Cancel, PlaneCancelIn, PlaneCancelOut, |_, _, mut out| {
-        out.set(|o| &o.cancel.disposition, CANCEL_ABORTED);
+    /// `cancel`: the unit on the cancelled ticket is dropped. Before its far end answered it was
+    /// aborted (nothing billed); after, it was cut partway.
+    Cancel, PlaneCancelIn, PlaneCancelOut, |instance, input, mut out| {
+        let ticket = input.get().cancel.ticket;
+        let answered = instance.get().is_some_and(|plane| {
+            plane.units.with_all(|units| {
+                let key = units
+                    .iter()
+                    .find(|(_, unit)| unit.ticket == Some(ticket))
+                    .map(|(key, _)| *key);
+                key.and_then(|key| units.remove(&key))
+                    .is_some_and(|unit| unit.status.is_some())
+            })
+        });
+        out.set(
+            |o| &o.cancel.disposition,
+            if answered { CANCEL_OK_PARTIAL } else { CANCEL_ABORTED },
+        );
         Outcome::Ready
     }
 );
@@ -459,8 +583,9 @@ slot!(
 );
 
 slot!(
-    /// `arrive`: a claimed request's op class, principal need, dialect and route (its one model,
-    /// directly: ARCHITECT Q-SW6/Q-FL3); an unclaimed one is refused at 404.
+    /// `arrive`: a claimed request's op class, principal need, dialect and route (the model it
+    /// names, or the only one configured, directly: ARCHITECT Q-SW6/Q-FL3); an unclaimed one is
+    /// refused at 404, and one that routes over no model at its [`driven::Unrouted`] status.
     Arrive, ArriveIn, ArriveOut, |instance, input, mut out| {
         let verb = input.field(|i| &i.method).as_str().unwrap_or_default();
         let target = input.field(|i| &i.target).as_str().unwrap_or_default();
@@ -480,9 +605,22 @@ slot!(
             },
         );
         if let Some(plane) = instance.get() {
-            if let Some(model) = plane.routed.get(&()) {
-                out.route(ROUTE_DIRECT, &model);
-            }
+            let body = input.field(|i| &i.body).bytes();
+            let routed = plane.models.with_all(|models| {
+                driven::route_model(body, models, |r| r.dialect == arrived.dialect)
+                    .map(|(name, routed)| (name.to_string(), routed.upstream.clone()))
+            });
+            let upstream = match routed {
+                Ok((model, upstream)) => {
+                    out.route(ROUTE_DIRECT, &model);
+                    upstream
+                }
+                Err(unrouted) => {
+                    out.set(|o| &o.refusal, UNROUTED);
+                    out.set(|o| &o.refusal_status, u32::from(unrouted.status()));
+                    return out.fail(Refusal::refused(unrouted.text()));
+                }
+            };
             // The caller's head crosses here once: keep what the far end receives of it.
             let caller = driven::relayed_fields(input.fields().iter().map(|f| {
                 (
@@ -491,7 +629,31 @@ slot!(
                 )
             }));
             let unit = input.get().unit;
-            plane.units.with_all(|units| unit_of(units, unit).caller = caller);
+            let seq = plane.arrivals.with_all(|n| {
+                let next = n.entry(()).or_insert(0);
+                let seq = *next;
+                *next = seq.wrapping_add(1);
+                seq
+            });
+            let kept = plane.units.with_all(|units| {
+                reclaim_stale(units, unit, seq);
+                let Some(kept) = unit_of(units, unit) else {
+                    return false;
+                };
+                kept.caller = caller;
+                kept.upstream = upstream;
+                kept.seq = seq;
+                true
+            });
+            if !kept {
+                // Full: the arrival is refused, about the entry it routed over, and no live unit
+                // is dropped to make room.
+                out.set(|o| &o.refusal, BUSY);
+                out.set(|o| &o.refusal_status, STATUS_BUSY);
+                return out.fail(Refusal::refused(
+                    "the decisions plane is serving as many requests as it holds; retry",
+                ));
+            }
         }
         Outcome::Ready
     }
@@ -542,7 +704,8 @@ fn pay(unit: &mut Unit, input: Lent<'_, OnPieceIn>, out: &mut Out<'_, OnPieceOut
     done
 }
 
-/// Owe `bytes` under `flags`, and pay what fits now. Answers whether the unit is done.
+/// Owe `bytes` under `flags`: write what fits straight from `bytes`, and keep only what does not
+/// fit for the re-calls `more = 1` asks for. Answers whether the unit is done.
 fn owe(
     unit: &mut Unit,
     bytes: &[u8],
@@ -550,11 +713,18 @@ fn owe(
     input: Lent<'_, OnPieceIn>,
     out: &mut Out<'_, OnPieceOut>,
 ) -> bool {
+    let n = input.reply_buf().stream(bytes);
     unit.owed.clear();
-    unit.owed.extend_from_slice(bytes);
     unit.at = 0;
     unit.owed_flags = flags;
-    pay(unit, input, out)
+    let more = n < bytes.len();
+    if more {
+        unit.owed.extend_from_slice(&bytes[n..]);
+    }
+    out.set(|o| &o.emitted, n as u64);
+    out.set(|o| &o.more, u32::from(more));
+    out.set(|o| &o.flags, if more { flags & !EMIT_DONE } else { flags });
+    !more && flags & EMIT_DONE != 0
 }
 
 /// An ATTEMPT: the request bound for the far end, its verb, target and dialect fields. A new
@@ -566,7 +736,8 @@ fn attempt_piece(
     input: Lent<'_, OnPieceIn>,
     out: &mut Out<'_, OnPieceOut>,
 ) -> Outcome {
-    let request = driven::attempt_request(&[]);
+    let dialect = input.get().dialect;
+    let request = driven::attempt_request(dialect, &[]);
     let (mut fields, units, mut arena) = (input.fields_buf(), input.units_buf(), input.arena_buf());
     let verb = arena.span(request.verb.as_bytes());
     let target = arena.span(request.target.as_bytes());
@@ -576,7 +747,7 @@ fn attempt_piece(
             value: arena.span(value),
         });
     }
-    for (name, value) in &unit.caller {
+    for (name, value) in unit.caller.iter() {
         fields.push(OutField {
             name: arena.span(name),
             value: arena.span(value),
@@ -588,8 +759,14 @@ fn attempt_piece(
     *unit = Unit {
         attempt: true,
         caller: std::mem::take(&mut unit.caller),
+        upstream: unit.upstream.take(),
+        ticket: unit.ticket,
+        seq: unit.seq,
+        owed: std::mem::take(&mut unit.owed),
+        reading: FarEndReading::for_dialect(dialect),
         ..Unit::default()
     };
+    unit.owed.clear();
     out.set(|o| &o.verb, verb);
     out.set(|o| &o.target, target);
     out.set(|o| &o.flags, EMIT_TO_FAR_END);
@@ -628,10 +805,20 @@ fn far_end(
         }
     }
     if last {
-        for count in [unit.reading.units(), unit.reading.fee(unit.status)]
-            .into_iter()
-            .flatten()
-        {
+        // THE MONEY RULE (THE DESIGN section 7): a success bills its decision count, its tokens and
+        // its fee; a usage member that is not a whole count fails the unit loudly, never a silent 0.
+        let counts = match unit.reading.counts(unit.status) {
+            Ok(counts) => counts,
+            Err(driven::Unreadable(pointer)) => {
+                return (
+                    out.fail(Refusal::failed(format!(
+                        "the far end's answer carries `{pointer}`, which is not a whole count"
+                    ))),
+                    true,
+                );
+            }
+        };
+        for count in counts.into_iter().flatten() {
             units.push(UnitCount {
                 class: count.class,
                 source: UNITS_REPORTED,
@@ -651,14 +838,30 @@ fn far_end(
     (Outcome::Ready, done)
 }
 
-/// Keep `unit`'s state in `units`, dropping the smallest (oldest) keys first past [`MAX_UNITS`].
-fn unit_of(units: &mut BTreeMap<u64, Unit>, key: u64) -> &mut Unit {
-    while units.len() >= MAX_UNITS && !units.contains_key(&key) {
-        if units.pop_first().is_none() {
-            break;
-        }
+/// At [`MAX_UNITS`], the oldest unit that arrived [`MAX_UNITS`] or more arrivals before `seq` and
+/// never crossed a piece is reclaimed: the kernel never started it, and keeping it would leave the
+/// instance refusing every arrival for good. A unit that crossed a piece is never reclaimed.
+fn reclaim_stale(units: &mut BTreeMap<u64, Unit>, key: u64, seq: u64) {
+    if units.len() < MAX_UNITS || units.contains_key(&key) {
+        return;
     }
-    units.entry(key).or_default()
+    let stale = units
+        .iter()
+        .filter(|(_, u)| u.ticket.is_none() && seq.saturating_sub(u.seq) >= MAX_UNITS as u64)
+        .min_by_key(|(_, u)| u.seq)
+        .map(|(k, _)| *k);
+    if let Some(stale) = stale {
+        units.remove(&stale);
+    }
+}
+
+/// `unit`'s state in `units`, a new entry when it has none; `None` when it has none and
+/// [`MAX_UNITS`] live already (a live unit is never dropped to make room).
+fn unit_of(units: &mut BTreeMap<u64, Unit>, key: u64) -> Option<&mut Unit> {
+    if units.len() >= MAX_UNITS && !units.contains_key(&key) {
+        return None;
+    }
+    Some(units.entry(key).or_default())
 }
 
 slot!(
@@ -671,7 +874,10 @@ slot!(
         let given = input.get();
         let bytes = input.field(|i| &i.bytes).bytes();
         plane.units.with_all(|units| {
-            let unit = unit_of(units, given.unit);
+            let Some(unit) = unit_of(units, given.unit) else {
+                return Outcome::Refused;
+            };
+            unit.ticket = Some(given.head.ticket);
             // A re-call after `more = 1` carries no bytes, no flags and no attempt: it is paid from
             // what is owed.
             let continues = bytes.is_empty() && given.flags == 0 && given.attempt_no == 0;
@@ -685,7 +891,9 @@ slot!(
                     FROM_CALLER => match driven::caller_piece(bytes, given.flags & PIECE_LAST != 0) {
                         CallerAnswer::Empty => (Outcome::Refused, true),
                         CallerAnswer::Keep if unit.attempt => {
-                            owe(unit, bytes, EMIT_TO_FAR_END, input, &mut out);
+                            let spliced =
+                                unit.upstream.as_deref().and_then(|up| driven::spliced(bytes, up));
+                            owe(unit, spliced.as_deref().unwrap_or(bytes), EMIT_TO_FAR_END, input, &mut out);
                             (Outcome::Ready, false)
                         }
                         CallerAnswer::Keep => (Outcome::Ready, false),
@@ -706,8 +914,14 @@ slot!(
     /// `refusal`: the kernel's status and text in this dialect's error shape, as JSON, and the
     /// wait the kernel handed beside it (`retry_after_s`, a limit's rolling window or the walk's
     /// floor) as `Retry-After`, as every plane answers it.
-    RefusalSlot, RefusalIn, RefusalOut, |_, input, mut out| {
+    RefusalSlot, RefusalIn, RefusalOut, |instance, input, mut out| {
         let given = input.get();
+        // The refusal ends the unit: its state goes with it.
+        if let Some(plane) = instance.get() {
+            if given.unit != 0 {
+                plane.units.remove(&given.unit);
+            }
+        }
         let status = u16::try_from(given.status).unwrap_or(0);
         let text = input.field(|i| &i.text).as_str().unwrap_or_default();
         let body = driven::refusal_body(status, text);

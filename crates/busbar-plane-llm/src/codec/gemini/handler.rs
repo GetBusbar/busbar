@@ -69,11 +69,14 @@ impl RequestHandler for GeminiRequestHandler {
         if let Some(action) = busbar_contract::codec::path_of(ACTIONS, ctx.operation) {
             return format!("{base}/{m}:{action}");
         }
-        // Chat + audio understanding/TTS all ride generateContent (stream-aware). So does every
-        // verb with no cell above, which is unreachable in practice and answers the same thing —
-        // the pre-1.6.0 answer, verbatim. `stream` is already false for those, because a shape that
-        // cannot stream never sets it (`OpDispatch::wants_stream`'s shape floor).
-        let action = if ctx.stream {
+        // Chat + audio understanding/TTS ride generateContent, stream-aware. Every other verb with
+        // no action above (moderation, rerank: no Gemini cell) answers `:generateContent` whatever
+        // `stream` says, exactly as 1.5.5 did (v1.5.5 `crates/busbar/src/handlers/gemini.rs:52-63`:
+        // only Chat | Transcription | Speech were stream-aware; Moderation and Rerank were
+        // `:generateContent`).
+        let stream_aware =
+            [OpVerb::CHAT, OpVerb::TRANSCRIPTION, OpVerb::SPEECH].contains(&ctx.operation);
+        let action = if stream_aware && ctx.stream {
             FIELD_STREAM_GENERATE_CONTENT
         } else {
             FIELD_GENERATE_CONTENT
@@ -407,18 +410,11 @@ pub fn write_image_response(r: &crate::codec::ir::image::ImageResp) -> WireBody 
             p
         })
         .collect();
-    let mut body = json!({ (FIELD_PREDICTIONS): predictions });
-    // Re-emit the token usage the response reader parses (`read_image_response` captures
-    // `usageMetadata` for token-metered gemini image models). The old writer dropped it, so a
-    // token-metered gemini->gemini image response lost its usage in the client-facing body —
-    // asymmetric with the OpenAI image writer. Emitted only when the IR carries usage.
-    if let Some(u) = &r.usage {
-        body[FIELD_USAGE_METADATA] = json!({
-            (FIELD_PROMPT_TOKEN_COUNT): u.input,
-            (FIELD_CANDIDATES_TOKEN_COUNT): u.output,
-            (FIELD_TOTAL_TOKEN_COUNT): u.input.saturating_add(u.output),
-        });
-    }
+    // Imagen's `:predict` response is `{predictions}` alone: its `PredictResponse` has no
+    // `usageMetadata` member, so none is written, exactly as 1.5.5 wrote it (v1.5.5
+    // `crates/busbar/src/handlers/gemini.rs:474-492`). A foreign answer's token usage has no Imagen
+    // member to map to.
+    let body = json!({ (FIELD_PREDICTIONS): predictions });
     WireBody::json(SlabBytes::from(
         serde_json::to_vec(&body).unwrap_or_default(),
     ))

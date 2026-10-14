@@ -42,9 +42,12 @@ pub const ROW_PERM: &str = "no-self-filed-issues:no-issues-permission";
 
 const WF_DIR: &str = ".github/workflows";
 
-/// A discovery step that finds nothing passes everything. Twenty-odd workflows today; the floor is
-/// the shell's, a `const` with no environment override.
-const DISCOVERY_FLOOR: usize = 5;
+/// A discovery step that finds nothing passes everything. The floor is the workflow count, a `const`
+/// with no environment override: the four reusable `plugin-*.yml` workflows the plugin repos call.
+/// It was the shell's 5 while `promote.yml` (the busbar-release hop) stood; that file is deleted
+/// (OWNER 2026-10-12, "ModernCI only": busbar's moves are judged from `.ci/*.yaml`), so 5 would
+/// read the honest tree as broken discovery.
+const DISCOVERY_FLOOR: usize = 4;
 
 const CLEAN: &str = "the scan cleared its floor and named nothing";
 

@@ -550,16 +550,24 @@ fn every_linked_section_row_is_a_linked_doors_declaring_section() {
 /// every family type the recorder writes (a HELP-less counter, labels with escapes, a histogram, a
 /// quantile summary), the sink answers exactly those bytes. Moved here from busbar-kernel's
 /// `export/tests/scrape_tests.rs` (R-FIX3: the kernel's own tests run on the stand-in axis's scrape
-/// double). A build that links no scrape sink has no sink to prove.
+/// double). Compiled only where an export door is linked (`linked_axis_export_doors`): a build without one
+/// has no sink to prove, and reports no vacuous pass; where it is linked, an absent module word or
+/// an unresolved row is a failure.
+#[cfg(linked_axis_export_doors)]
 #[test]
 fn the_linked_scrape_sink_renders_the_recorder_snapshot_byte_identically() {
     let module = busbar_kernel::test_support::export_axis::scrape_module();
     let registry = PluginRegistry::empty()
         .link(linked_exports(crate::LINKED.export_doors).expect("the linked export rows"))
         .expect("the linked rows alone");
-    if module.is_empty() || registry.resolve(module).is_none() {
-        return;
-    }
+    assert!(
+        !module.is_empty(),
+        "the build links the scrape sink, so the frozen scrape module word is set"
+    );
+    assert!(
+        registry.resolve(module).is_some(),
+        "the linked export rows carry the scrape sink under `{module}`"
+    );
     let sink = crate::root::loader::export_axis::ExportRows::new(
         &registry,
         crate::root::dispatch::dispatcher(),

@@ -40,7 +40,7 @@ fn hop(host: &str, port: u16) -> http::Request<Full<Bytes>> {
 /// A SUPERSEDED IDENTITY'S PRIVATE KEY MUST NOT BE FREED INTACT.
 ///
 /// The key's DER is an ordinary `Vec<u8>`, and its drop glue is an ordinary deallocation, so without an `impl Drop` here the key DER is handed back to
-/// the allocator byte-for-byte. The drop is on a live path — `plane_host::identity::register`
+/// the allocator byte-for-byte. The drop is on a live path — `egress::trust::identity::register`
 /// retains `MAX_RETAINED_IDENTITIES` identities and evicts the oldest FIFO, and the evicted
 /// `ClientIdentity` drops right there — so a long-lived node that rotates its mTLS client
 /// certificate accumulates one intact client key in freed heap per eviction.
@@ -108,7 +108,7 @@ fn the_drop_path_wipes_the_private_key() {
 
 /// ...AND IT FIRES AT THE LAST HANDLE, NOT AT EVERY ONE.
 ///
-/// The whole point of the `Arc` is that one parsed identity is shared — `plane_host::identity`
+/// The whole point of the `Arc` is that one parsed identity is shared — `egress::trust::identity`
 /// hands out a clone per resolve, and the client build clones again. A wipe that fired on every
 /// handle's drop would blank a key another hop is about to hand to the TLS stack, turning a memory-hygiene
 /// fix into a handshake failure. `Arc::get_mut` is what makes the wipe fire only when this handle
@@ -185,7 +185,7 @@ async fn the_pinned_posture_presents_its_identity_and_a_demanding_peer_refuses_w
     assert_eq!(
         peer_key_pin(&resp),
         Some(
-            crate::plane_host::spki::pin(&server.leaf_der)
+            crate::egress::trust::spki::pin(&server.leaf_der)
                 .expect("server leaf")
                 .as_str()
         ),

@@ -1592,10 +1592,12 @@ fn write_gemini_stop_reason(reason: crate::codec::ir::IrStopReason) -> &'static 
     match reason {
         S::EndTurn | S::StopSequence | S::ToolUse => GEMINI_FINISH_STOP,
         S::MaxTokens => GEMINI_FINISH_MAX_TOKENS,
-        // A refusal is the model declining on policy grounds — Gemini's SAFETY stop, not an
-        // unenumerated OTHER (IR audit GEM-14).
-        S::Safety | S::Refusal => GEMINI_FINISH_SAFETY,
-        S::Error | S::PauseTurn | S::Other => GEMINI_FINISH_OTHER,
+        S::Safety => GEMINI_FINISH_SAFETY,
+        // A refusal (the model declining) has no Gemini finishReason: it is written as the native
+        // unenumerated `OTHER`, exactly as 1.5.5 wrote it (v1.5.5
+        // `crates/busbar/src/proto/gemini/mod.rs:771`). `SAFETY` names a safety filter, which a
+        // refusal is not, so writing it would substitute a value the source never stated.
+        S::Refusal | S::Error | S::PauseTurn | S::Other => GEMINI_FINISH_OTHER,
     }
 }
 

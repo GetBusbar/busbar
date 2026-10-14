@@ -1317,7 +1317,7 @@ mod tests {
     #[test]
     fn the_reader_is_picked_by_the_files_own_shape_and_only_markdown_is_unread() {
         assert_eq!(reader_for("xtask/src/gates/x.rs"), Reader::Rust);
-        assert_eq!(reader_for(".github/workflows/promote.yml"), Reader::Yaml);
+        assert_eq!(reader_for(".github/workflows/plugin-ci.yml"), Reader::Yaml);
         assert_eq!(reader_for(".github/actions/a/action.yaml"), Reader::Yaml);
         assert_eq!(reader_for("qa/pipeline-checks.json"), Reader::Json);
         assert_eq!(reader_for("qa/DESIGN-BINDINGS.md"), Reader::Prose);

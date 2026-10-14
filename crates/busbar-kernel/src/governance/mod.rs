@@ -1508,10 +1508,10 @@ impl<T> IntoStoreResult<T> for Result<T, getrandom::Error> {
     }
 }
 
-// The universal test double: the build's default store, which the composition root links onto the
-// store axis (the kernel names no store); a test build links it as its store fixture.
+// The universal test double: the in-crate R-FIX3 store double (`test_support::store_double`), which a
+// test build also links as its stand-in store row. The kernel names no store crate.
 #[cfg(any(test, feature = "test-support"))]
-pub use fixture_store::MemoryStore;
+pub use crate::test_support::store_double::MemoryStore;
 
 /// The write-behind flusher: on a fixed cadence (and once more on graceful shutdown) pushes the
 /// dirty in-memory budget cells and the accumulated `pending_metering` rows to the durable store off

@@ -1686,8 +1686,6 @@ pub struct ProductionUnits {
     /// no read can see a unit half-settled, and no reader can write, because what crosses the seam
     /// is a value and never the ledger.
     pub durability: Arc<Mutex<crate::root::durability::Durability>>,
-    /// What the scope unit reads at Approve. Silence is a refusal.
-    pub scope_policy: crate::root::policy::ScopePolicy,
     /// The admin plane's bindings: the seam an operation's body is reached through, and the table
     /// of admin units the loop is currently walking.
     ///
@@ -1738,7 +1736,6 @@ impl ProductionUnits {
         kernel: &busbar_kernel::teller::Kernel,
         durability: crate::root::durability::Durability,
         breaker_policy: crate::root::adapters::BreakerPolicy,
-        scope_policy: crate::root::policy::ScopePolicy,
         #[cfg(feature = "root-admin")] admin: crate::root::units_admin::AdminBinding,
         store: VerbStoreHandle,
     ) -> Self {
@@ -1746,7 +1743,6 @@ impl ProductionUnits {
             kernel,
             Arc::new(Mutex::new(durability)),
             breaker_policy,
-            scope_policy,
             #[cfg(feature = "root-admin")]
             admin,
             store,
@@ -1765,7 +1761,6 @@ impl ProductionUnits {
         kernel: &busbar_kernel::teller::Kernel,
         durability: Arc<Mutex<crate::root::durability::Durability>>,
         breaker_policy: crate::root::adapters::BreakerPolicy,
-        scope_policy: crate::root::policy::ScopePolicy,
         #[cfg(feature = "root-admin")] admin: crate::root::units_admin::AdminBinding,
         store: VerbStoreHandle,
     ) -> Self {
@@ -1780,7 +1775,6 @@ impl ProductionUnits {
             trust: Trust,
             arrival_door: AdmissionDoor,
             durability,
-            scope_policy,
             #[cfg(feature = "root-admin")]
             admin,
             store,
@@ -1907,7 +1901,6 @@ impl ProductionUnits {
             &kernel,
             Arc::clone(&durability),
             crate::root::adapters::BreakerPolicy::new(),
-            crate::root::policy::ScopePolicy::new(),
             crate::root::units_admin::AdminBinding::new(dispatch, door),
             store,
         );

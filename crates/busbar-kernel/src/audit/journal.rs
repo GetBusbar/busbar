@@ -202,14 +202,6 @@ impl<R: ChainedRecord> Journal<R> {
         *self.sink.lock().unwrap_or_else(|e| e.into_inner()) = Some(store);
     }
 
-    /// TEST ONLY: drop the sink again, so a test that attached one to a process-wide journal leaves it
-    /// as it found it. No production caller: detaching a live deployment's sink mid-run would silently
-    /// stop persisting evidence, the exact failure this module exists to prevent.
-    #[cfg(any(test, feature = "test-support"))]
-    pub(crate) fn clear_sink_for_test(&self) {
-        *self.sink.lock().unwrap_or_else(|e| e.into_inner()) = None;
-    }
-
     /// Commit `chain` as `scope`'s current position and record it as the MOST-recently-used, evicting
     /// the coldest scope(s) from the front while the map exceeds [`Journal::cap`]. Shared by the write
     /// hot path and the boot rehydrate so both keep the same bound and the same recency discipline. An

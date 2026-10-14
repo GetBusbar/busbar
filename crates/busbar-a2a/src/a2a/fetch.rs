@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE AGENT CARD FETCH: the card-shaped part of a guarded fetch, over the guard in
-//! [`busbar_kernel::net_guard`].
+//! [`busbar_kernel::proxy::egress_unit::trust::net`].
 //!
 //! Everything else on this plane decides. This is the one module that REACHES OUT, at a URL an
 //! operator wrote and following redirects a stranger controls, and it therefore carries the whole
@@ -11,7 +11,7 @@
 //! ## THE GUARD IS NOT HERE, and that is the point
 //!
 //! Resolve-then-pin, the address judgement, the metadata arm that sits ahead of `allow_private`, the
-//! hop bound and the body cap all live in [`busbar_kernel::net_guard`]. They were written twice — once here
+//! hop bound and the body cap all live in [`busbar_kernel::proxy::egress_unit::trust::net`]. They were written twice — once here
 //! and once for the MCP dispatch path — and the doc comments in each copy had already started
 //! citing the other's function names as the reason an ordering was correct. A security control that
 //! has to cite its twin to explain itself has two implementations and one of them will be the stale
@@ -52,7 +52,9 @@
 
 use std::net::IpAddr;
 
-use busbar_kernel::net_guard::{self, AddressRefusal, GuardPolicy, PinnedTarget};
+use busbar_kernel::proxy::egress_unit::trust::net::{
+    self, AddressRefusal, GuardPolicy, PinnedTarget,
+};
 
 use super::card::{WELL_KNOWN_CARD_PATH, WELL_KNOWN_CARD_PATH_LEGACY};
 
@@ -61,7 +63,7 @@ use super::card::{WELL_KNOWN_CARD_PATH, WELL_KNOWN_CARD_PATH_LEGACY};
 /// Re-exported rather than redeclared: a second trait with the same shape would let a transport be
 /// written against one and a guard against the other, which is how two implementations of one
 /// control start.
-pub(crate) use busbar_kernel::net_guard::Resolver;
+pub(crate) use busbar_kernel::proxy::egress_unit::trust::net::Resolver;
 
 /// The operator's fetch policy. Config, therefore intent.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -88,7 +90,7 @@ pub(crate) struct FetchPolicy {
     /// concept and two spellings of it would be two things to learn and two things to get wrong.
     /// It relaxes the loopback/private ARMS of the guard and NOTHING else: a cloud-metadata name
     /// and a cloud-metadata address are refused with this set, because
-    /// [`busbar_kernel::net_guard::judge_address`] tests the metadata arm BEFORE it reads this flag, and
+    /// [`busbar_kernel::proxy::egress_unit::trust::net::judge_address`] tests the metadata arm BEFORE it reads this flag, and
     /// the alternate-IPv4-encoding arm is likewise unconditional. An `allow_private` that reached
     /// IMDS would be a config flag that hands out cloud credentials.
     pub(crate) allow_private: bool,
@@ -320,7 +322,7 @@ impl Pin {
     }
 }
 
-/// GUARD ONE HOP AND PIN IT: the card fetch's door onto [`busbar_kernel::net_guard::resolve_and_pin`].
+/// GUARD ONE HOP AND PIN IT: the card fetch's door onto [`busbar_kernel::proxy::egress_unit::trust::net::resolve_and_pin`].
 ///
 /// Returns the parsed URL BESIDE the pin, because the two are needed together and for different
 /// things: the socket goes to [`PinnedTarget::addr`], and the request carries the URL — its host in
@@ -332,10 +334,10 @@ impl Pin {
 ///
 /// The one difference between the two callers of the guard that could NOT be parameterised away.
 /// The MCP dispatch path wants a strict recogniser on an attacker-influenced string, and gets
-/// [`busbar_kernel::net_guard::split_url`]. This path must FOLLOW redirects, and following one means
+/// [`busbar_kernel::proxy::egress_unit::trust::net::split_url`]. This path must FOLLOW redirects, and following one means
 /// joining a relative `Location` against the hop that sent it exactly as a client would — which
 /// needs a real URL type and its resolution rules, not a splitter. Both then bring the host they
-/// parsed through the SAME [`busbar_kernel::net_guard::judge_host_name`] and the same resolve-then-pin, so
+/// parsed through the SAME [`busbar_kernel::proxy::egress_unit::trust::net::judge_host_name`] and the same resolve-then-pin, so
 /// what differs is the recognition and never the judgement.
 pub(crate) fn guard_hop(
     url: &str,
@@ -364,7 +366,7 @@ pub(crate) fn guard_hop(
     // `http://127.0.0.1` has made ONE decision; making them write two flags would teach that the
     // second one is harmless. `allow_plaintext` stays its own field because a plaintext fetch of a
     // PUBLIC host is a different, worse thing than a plaintext fetch of loopback.
-    if net_guard::judge_scheme(parsed.as_str(), https, guard).is_err() {
+    if net::judge_scheme(parsed.as_str(), https, guard).is_err() {
         return Err(FetchRefusal::NotHttps {
             url: parsed.to_string(),
             scheme,
@@ -382,12 +384,12 @@ pub(crate) fn guard_hop(
     let host = host.strip_suffix('.').unwrap_or(host);
     let port = parsed
         .port_or_known_default()
-        .unwrap_or_else(|| net_guard::default_port(https));
+        .unwrap_or_else(|| net::default_port(https));
 
     // ── THE GUARD. Structural name refusals, then EXACTLY ONE resolution, then EVERY answered
     //    address, then the pin. All of it core's, including the ordering that keeps the
     //    cloud-metadata arm ahead of `allow_private`.
-    let target = net_guard::resolve_and_pin(host, port, https, resolver, guard)?;
+    let target = net::resolve_and_pin(host, port, https, resolver, guard)?;
     Ok((parsed, target))
 }
 
@@ -466,7 +468,7 @@ pub(crate) fn fetch_card(
         if (300..400).contains(&resp.status) {
             // THE HOP BOUND IS CORE'S. A guard applied correctly to an unbounded chain is a way to
             // spend the process, and the bound is the same one every guarded fetch gets.
-            net_guard::refuse_hop_overflow(hops, url.as_str(), policy.guard())?;
+            net::refuse_hop_overflow(hops, url.as_str(), policy.guard())?;
             let location = resp
                 .location
                 .as_deref()
@@ -499,7 +501,7 @@ pub(crate) fn fetch_card(
         }
 
         // THE BODY CAP IS CORE'S, and it is applied BEFORE the bytes are parsed.
-        net_guard::refuse_oversized_body(url.as_str(), resp.body.len(), policy.guard())?;
+        net::refuse_oversized_body(url.as_str(), resp.body.len(), policy.guard())?;
         let document: serde_json::Value =
             serde_json::from_slice(&resp.body).map_err(|e| FetchRefusal::NotACard {
                 url: url.to_string(),

@@ -323,6 +323,7 @@ async fn serve(fapi2: bool) -> Subject {
         key_id: None,
         default_grant: vec![SCOPE.to_string()],
         access_token_ttl_secs: None,
+        refresh_token_ttl_secs: None,
         fapi2,
         clients: vec![
             declared(CLIENT_ID, key.static_jwk()),

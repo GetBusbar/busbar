@@ -70,12 +70,14 @@ fn boot(dir: &std::path::Path) -> Arc<Mutex<Durability>> {
     book
 }
 
-/// ONE HALF OF THE RESTART, run only in a child process the restart test below starts; a no-op
-/// anywhere else.
+/// ONE HALF OF THE RESTART, run only in a child process the restart tests below start
+/// ([`run_phase`], `--ignored`). Ignored so the default run never counts it as a pass: alone it
+/// proves nothing, and run without its phase it fails (status row 114).
 #[test]
+#[ignore = "child process of the restart tests: run_phase runs it with --ignored"]
 fn restart_phase() {
     let (Ok(phase), Ok(dir)) = (std::env::var(PHASE), std::env::var(DIR)) else {
-        return;
+        panic!("restart_phase is the child half of the restart tests: run them, not this");
     };
     let book = boot(std::path::Path::new(&dir));
     let recorded = counts(1_000);
@@ -208,7 +210,7 @@ fn restart_phase() {
 fn run_phase(phase: &str, dir: &std::path::Path) {
     let out = std::process::Command::new(std::env::current_exe().expect("the test binary"))
         .args(["--exact", "root::durability::amend::tests::restart_phase"])
-        .args(["--test-threads", "1", "--nocapture"])
+        .args(["--ignored", "--test-threads", "1", "--nocapture"])
         .env(PHASE, phase)
         .env(DIR, dir)
         .output()

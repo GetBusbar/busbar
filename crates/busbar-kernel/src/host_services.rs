@@ -9,7 +9,7 @@
 //!
 //! * `clock.now` — the kernel's clock: wall time, and monotonic time from an origin fixed when the
 //!   services are built.
-//! * `dest.judge` — the ONE destination judge, the egress unit's (through `net_guard`): the
+//! * `dest.judge` — the ONE destination judge, the egress unit's (`busbar_kernel_egress::trust::net`): the
 //!   metadata denylist, then the refusals the name decides,
 //!   answered at once and before any resolution, as 1.5.5 answered them. Asked to resolve
 //!   (`DEST_RESOLVE`), a name is resolved off the caller's thread, the call pends, and the address
@@ -146,7 +146,7 @@ pub trait DestJudge: Send + Sync {
     /// A config commit: the deployment's destinations are now `d`. A judge that re-reads its
     /// metadata lists at every commit (as 1.5.5 did) takes them from here; the default keeps what
     /// it was built with. Raised through the egress-trust capability the root installs the
-    /// deployment's one guard behind (`plane_host::egress_trust::destinations_applied`), no static
+    /// deployment's one guard behind (`egress::trust::destinations_applied`), no static
     /// of its own (door-only:static-seam).
     fn destinations_applied(&self, d: &crate::config::Destinations) {
         let _ = d;

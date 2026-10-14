@@ -473,6 +473,52 @@ fn open_auth_refuses_non_auth_kind() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// THE AUTH REFUSAL, in the one kind-neutral mechanism ([`PluginRegistry::kind_refusal`]): a name
+/// no auth row resolves to keeps the loader's resolution words (the ones the cold lane's
+/// resolution gave), and a name that resolves to an auth row the auth axis still does not answer
+/// (a row stating no auth door) is refused naming the rebuild. No 1.5.5 golden covers the second
+/// case (1.5.5 loaded every resolved auth row), so its text is pinned here, byte for byte.
+#[test]
+fn the_auth_refusal_keeps_the_resolution_words_and_names_the_rebuild() {
+    let release = key(1);
+    let dir = tmpdir("authrefusal");
+    let mut m = manifest("busbar-auth-idp-plugin", "idp", "busbar");
+    m.kind = "auth".into();
+    m.abi_version = busbar_contract::abi::auth::ABI_VERSION;
+    let m = sign(&release, m, b"auth lib");
+    write_tarball(&dir, "idp.tar.gz", &m, b"auth lib");
+    let st = sign(
+        &release,
+        manifest("busbar-store-gamma-plugin", "gamma", "busbar"),
+        b"store lib",
+    );
+    write_tarball(&dir, "gamma.tar.gz", &st, b"store lib");
+    let reg = scan_and_validate(&dir, &policy(&release)).expect("scan admits both kinds");
+    let refusal = |name: &str| reg.kind_refusal("auth", "serve as an auth module", name);
+    assert_eq!(
+        refusal("gamma"),
+        "plugin 'busbar-store-gamma-plugin' has kind 'store', not 'auth' - it cannot serve as an \
+         auth module"
+    );
+    assert!(
+        refusal("nope").starts_with("no plugin named or aliased 'nope' is available"),
+        "got {}",
+        refusal("nope")
+    );
+    assert_eq!(
+        refusal("idp"),
+        "plugin 'busbar-auth-idp-plugin': it speaks the 1.5.5 JSON auth contract, which this host \
+         does not load — rebuild the plugin against the 1.6.0 SDK"
+    );
+    // The secret kind's words through the same mechanism are the ones it always gave.
+    assert_eq!(
+        reg.kind_refusal("secret", "resolve config secrets", "idp"),
+        "plugin 'busbar-auth-idp-plugin' has kind 'auth', not 'secret' - it cannot resolve config \
+         secrets"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// Kind gating: a non-hook plugin resolves but cannot serve as a hook. Mirrors
 /// `open_store_refuses_non_store_kind`: a store-kind manifest passes phase 1/2/3, and the hook axis
 /// over the registry holds no row for it, so opening it as a hook is refused naming the module,

@@ -4,7 +4,7 @@
 //! THE LINE CARRIER (SEAM-S1; ARCHITECT Q1a, consistent with round 4 Q-L3B-STDIO-SHAPE (B)): the
 //! process's own stdin/stdout, held open as ONE carrier session for one caller. busbar is somebody's
 //! child process here, binds no listener, and serves the door claim a served plane makes over the
-//! stdio transport's key.
+//! line carrier's key ([`LINE_CARRIER`]).
 //!
 //! - The session is only the CARRIER ([`LineCaller`], the driver's one `SessionCaller` for a held
 //!   carrier): each line it reads is ONE unit, opened exactly as a data-listener arrival is (its own
@@ -31,7 +31,7 @@ use tokio::sync::{mpsc, Mutex as AsyncMutex};
 
 use super::{DoorRequest, Served};
 
-/// The stdio transport's claim key: the claims made over it are the line carrier's.
+/// The line transport's claim key: the claims made over it are the line carrier's.
 pub const LINE_CARRIER: &str = "stdio";
 
 /// The environment variable carrying the session credential for the plane keyed `plane` (its

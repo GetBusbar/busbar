@@ -11,8 +11,15 @@
 //! `oauth-as` against the request), and materialised as an EPHEMERAL
 //! [`oauth_as::client::Client`] under the SAME [`super::policy::default_grant_scopes`] ceiling
 //! registration uses. Ephemeral means ephemeral: the materialised client is never written to the
-//! store, so there is nothing to revoke, nothing to sweep, and nothing a restart resurrects — the
-//! document is re-fetched and re-judged on every request that names it.
+//! store, so there is nothing to revoke, nothing to sweep, and nothing a restart resurrects.
+//!
+//! ## Fetched once, held a while, never more than a few at a time
+//!
+//! The URL is a stranger's, and `/authorize` and `/token` take no credential, so the fetch is
+//! bounded ([`Documents`]): a validated document answers for its client for [`DOCUMENT_TTL`] (at
+//! most [`MAX_CACHED_DOCUMENTS`] held), concurrent requests naming one uncached document wait on
+//! ONE fetch, and at most [`MAX_CONCURRENT_FETCHES`] fetches run at once. Past that a request
+//! naming an uncached document reads as an unknown client, as every other fetch failure does.
 //!
 //! ## Every failure is an UNKNOWN CLIENT, not an error
 //!
@@ -80,6 +87,79 @@ pub(crate) trait CimdFetch: Send + Sync {
         &'a self,
         url: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>, String>> + Send + 'a>>;
+}
+
+/// How long a validated document answers for its client before it is fetched again.
+pub(crate) const DOCUMENT_TTL: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// The most validated documents held at once.
+pub(crate) const MAX_CACHED_DOCUMENTS: usize = 1024;
+
+/// The most document fetches in flight at once.
+pub(crate) const MAX_CONCURRENT_FETCHES: usize = 16;
+
+/// THE DOCUMENTS ONE SERVER HOLDS AND FETCHES: the validated ones by URL, each until it expires;
+/// the fetch in flight for each URL, which every concurrent request naming it waits on; and the
+/// permits that bound how many fetches run at once.
+pub(crate) struct Documents {
+    held: Mutex<HashMap<String, (Arc<Client>, std::time::Instant)>>,
+    flights: Mutex<HashMap<String, Flight>>,
+    permits: tokio::sync::Semaphore,
+}
+
+/// One URL's fetch in flight: the client its document validated to, or `None`, once it lands.
+type Flight = Arc<tokio::sync::OnceCell<Option<Arc<Client>>>>;
+
+impl Default for Documents {
+    fn default() -> Self {
+        Self {
+            held: Mutex::new(HashMap::new()),
+            flights: Mutex::new(HashMap::new()),
+            permits: tokio::sync::Semaphore::new(MAX_CONCURRENT_FETCHES),
+        }
+    }
+}
+
+impl Documents {
+    /// The validated document's client for `url`, while it has not expired.
+    fn held(&self, url: &str) -> Option<Arc<Client>> {
+        let held = self.held.lock().unwrap_or_else(|p| p.into_inner());
+        held.get(url)
+            .filter(|(_, until)| *until > std::time::Instant::now())
+            .map(|(client, _)| Arc::clone(client))
+    }
+
+    /// The fetch in flight for `url`, joined, or a new one.
+    fn flight(&self, url: &str) -> Flight {
+        let mut flights = self.flights.lock().unwrap_or_else(|p| p.into_inner());
+        Arc::clone(flights.entry(url.to_string()).or_default())
+    }
+
+    /// The flight for `url` landed with `answer`: it is over, and a client it validated is held.
+    fn land(&self, url: &str, flight: &Flight, answer: Option<&Arc<Client>>) {
+        {
+            let mut flights = self.flights.lock().unwrap_or_else(|p| p.into_inner());
+            if flights.get(url).is_some_and(|f| Arc::ptr_eq(f, flight)) {
+                flights.remove(url);
+            }
+        }
+        let Some(client) = answer else { return };
+        let now = std::time::Instant::now();
+        let mut held = self.held.lock().unwrap_or_else(|p| p.into_inner());
+        if held.len() >= MAX_CACHED_DOCUMENTS {
+            held.retain(|_, (_, until)| *until > now);
+        }
+        if held.len() >= MAX_CACHED_DOCUMENTS {
+            if let Some(oldest) = held
+                .iter()
+                .min_by_key(|(_, (_, until))| *until)
+                .map(|(k, _)| k.clone())
+            {
+                held.remove(&oldest);
+            }
+        }
+        held.insert(url.to_string(), (Arc::clone(client), now + DOCUMENT_TTL));
+    }
 }
 
 /// The one need this crate declares on the root Connector: the document fetch's.
@@ -244,13 +324,80 @@ async fn read_document(
     Ok(body)
 }
 
-/// Does this `client_id` name a metadata document at all? HTTPS, a parseable authority, and no
-/// fragment. Anything else is an ordinary opaque identifier and gets the ordinary answer:
-/// unknown unless registered.
+/// The longest client identifier this server fetches (the draft's bound, as `oauth-as` holds it).
+pub(crate) const MAX_CLIENT_ID_URL_BYTES: usize = 2048;
+
+/// Does this `client_id` name a metadata document at all? Section 3 of the client-ID metadata
+/// document draft, every clause: printable ASCII and at most [`MAX_CLIENT_ID_URL_BYTES`], `https`
+/// in lower case, a host, a PATH (`https://client.example` has none), no `.` or `..` path segment
+/// (two strings would name one client while section 4.1 compares them byte for byte), no query,
+/// no fragment, no userinfo. As `oauth-as`'s own validator holds it, the authority carries no
+/// backslash and no percent-escape, and a host that ends in a number is a canonical dotted-quad:
+/// a WHATWG reader of the URL would otherwise reach another host than the one read here. Anything
+/// else is an ordinary opaque identifier and gets the ordinary answer: unknown unless registered.
 fn is_cimd_client_id(client_id: &str) -> bool {
-    client_id.starts_with("https://")
-        && !client_id.contains('#')
-        && busbar_contract::net::parse_url(client_id).is_ok_and(|p| !p.userinfo)
+    if client_id.len() > MAX_CLIENT_ID_URL_BYTES
+        || !client_id.bytes().all(|b| (0x21..=0x7e).contains(&b))
+        || client_id.contains('#')
+    {
+        return false;
+    }
+    let Some(rest) = client_id.strip_prefix("https://") else {
+        return false;
+    };
+    let authority_end = rest.find(['/', '?']).unwrap_or(rest.len());
+    let (authority, path) = rest.split_at(authority_end);
+    if authority.is_empty()
+        || authority.contains(['@', '\\', '%'])
+        || !path.starts_with('/')
+        || path.contains('?')
+        || path
+            .split('/')
+            .any(|segment| segment == "." || segment == "..")
+    {
+        return false;
+    }
+    let host = match authority.strip_prefix('[') {
+        Some(v6) => v6.split(']').next().unwrap_or_default(),
+        None => authority.split(':').next().unwrap_or_default(),
+    };
+    if host.is_empty()
+        || (!host.contains(':')
+            && ends_in_a_number(host)
+            && host.parse::<std::net::Ipv4Addr>().is_err())
+    {
+        return false;
+    }
+    busbar_contract::net::parse_url(client_id).is_ok_and(|p| !p.userinfo)
+}
+
+/// Whether a host's last label is all digits or `0x` hex: a WHATWG reader takes it for an IPv4
+/// address however it is spelled (`2130706433`, `0x7f000001`, `127.1`).
+fn ends_in_a_number(host: &str) -> bool {
+    let host = host.strip_suffix('.').unwrap_or(host);
+    match host.rsplit('.').next() {
+        None | Some("") => false,
+        Some(last) => match last.strip_prefix("0x").or_else(|| last.strip_prefix("0X")) {
+            Some(hex) => hex.chars().all(|c| c.is_ascii_hexdigit()),
+            None => last.chars().all(|c| c.is_ascii_digit()),
+        },
+    }
+}
+
+/// Whether a redirect URI is one the server can ever match (RFC 6749 section 3.1.2): ABSOLUTE (a
+/// scheme, its first character a letter, then letters, digits, `+`, `-` or `.`, then `:`), no
+/// fragment, nothing outside printable ASCII.
+fn is_absolute_uri(value: &str) -> bool {
+    let Some((scheme, _)) = value.split_once(':') else {
+        return false;
+    };
+    scheme.starts_with(|c: char| c.is_ascii_alphabetic())
+        && scheme
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'-' | b'.'))
+        && value
+            .bytes()
+            .all(|b| b != b'#' && (0x21..=0x7e).contains(&b))
 }
 
 /// VALIDATE THE DOCUMENT AND MATERIALISE THE CLIENT, under the operator's ceiling.
@@ -281,10 +428,33 @@ fn materialize(url: &str, body: &[u8], ceiling: &ScopeSet) -> Result<Client, Str
         None => return Err("the document carries no client_id member".to_string()),
     }
 
+    // Section 4.1: the document is world-readable, so it carries no shared secret; and a key
+    // (`jwks`, `jwks_uri`) this server cannot register would leave a client its author believes
+    // confidential registered as a public one. Refused, not dropped.
+    for member in [
+        "client_secret",
+        "client_secret_expires_at",
+        "jwks",
+        "jwks_uri",
+    ] {
+        if doc.contains_key(member) {
+            return Err(format!(
+                "the document carries `{member}`; a metadata-document client is public by \
+                 construction"
+            ));
+        }
+    }
+
     // The redirect URIs come from the DOCUMENT, never from the request: `oauth-as` exact-matches
     // the request's `redirect_uri` against this list, which is what makes a stolen `client_id`
     // useless for sending a code anywhere the document's owner did not name.
     let redirect_uris: Vec<String> = match doc.get("redirect_uris").and_then(|v| v.as_array()) {
+        Some(list) if list.len() > oauth_as::registration::MAX_REGISTERED_REDIRECT_URIS => {
+            return Err(format!(
+                "the document carries more than {} redirect_uris",
+                oauth_as::registration::MAX_REGISTERED_REDIRECT_URIS
+            ))
+        }
         Some(list) if !list.is_empty() => list
             .iter()
             .map(|v| match v.as_str() {
@@ -297,12 +467,8 @@ fn materialize(url: &str, body: &[u8], ceiling: &ScopeSet) -> Result<Client, Str
                 {
                     Err("redirect_uris entries carry no backslash and no userinfo".to_string())
                 }
-                Some(s)
-                    if !s.is_empty() && !s.contains('#') && !s.contains(char::is_whitespace) =>
-                {
-                    Ok(s.to_string())
-                }
-                _ => Err("redirect_uris entries must be fragment-free URI strings".to_string()),
+                Some(s) if is_absolute_uri(s) => Ok(s.to_string()),
+                _ => Err("redirect_uris entries must be absolute, fragment-free URIs".to_string()),
             })
             .collect::<Result<_, _>>()?,
         _ => return Err("the document carries no redirect_uris".to_string()),
@@ -398,7 +564,8 @@ fn materialize(url: &str, body: &[u8], ceiling: &ScopeSet) -> Result<Client, Str
 /// admissibility, scope) it decides against that materialised record, exactly as it would against
 /// a stored one.
 pub(crate) struct CimdStore {
-    inner: MemoryStorage,
+    /// What the server holds, carried from generation to generation ([`Records`]).
+    records: Arc<Records>,
     /// The operator's `default_grant`, as the ceiling every materialised client lands under.
     ceiling: ScopeSet,
     /// Swappable so the flow tests can stand in a stub document host; production never swaps it.
@@ -406,9 +573,33 @@ pub(crate) struct CimdStore {
     /// The operator's `oauth_as.clients:`, by `client_id`. Answered before anything else: the
     /// config is the operator's own word on who these clients are.
     provisioned: HashMap<String, Arc<Client>>,
+    /// The metadata documents held and in flight ([`Documents`]).
+    documents: Documents,
+}
+
+/// WHAT THE SERVER HOLDS: its records (clients registered, codes, tokens, refresh tokens, consents,
+/// pushed requests, the replay ledger) and the consent screen's notes of the pushed requests. A
+/// config reload builds a new server over the SAME records, so a reload voids none of them.
+pub(crate) struct Records {
+    inner: MemoryStorage,
     /// What the consent screen needs to show of each RFC 9126 pushed request that has not been
     /// redeemed, keyed by `request_uri`. See [`Pushed`].
     pushed: Mutex<HashMap<String, Pushed>>,
+}
+
+impl Records {
+    pub(crate) fn new(inner: MemoryStorage) -> Self {
+        Self {
+            inner,
+            pushed: Mutex::new(HashMap::new()),
+        }
+    }
+}
+
+impl Default for Records {
+    fn default() -> Self {
+        Self::new(MemoryStorage::new())
+    }
 }
 
 /// WHAT A PUSHED REQUEST ASKS FOR, kept for the consent screen alone.
@@ -430,27 +621,42 @@ pub(crate) struct Pushed {
 }
 
 impl CimdStore {
+    #[cfg(test)]
     pub(crate) fn new(
         inner: MemoryStorage,
         ceiling: ScopeSet,
         fetcher: Arc<dyn CimdFetch>,
         provisioned: Vec<Client>,
     ) -> Self {
+        Self::over(Arc::new(Records::new(inner)), ceiling, fetcher, provisioned)
+    }
+
+    /// The store over `records` an earlier generation may already hold.
+    pub(crate) fn over(
+        records: Arc<Records>,
+        ceiling: ScopeSet,
+        fetcher: Arc<dyn CimdFetch>,
+        provisioned: Vec<Client>,
+    ) -> Self {
         Self {
-            inner,
+            records,
             ceiling,
             fetcher: RwLock::new(fetcher),
             provisioned: provisioned
                 .into_iter()
                 .map(|c| (c.client_id.as_str().to_string(), Arc::new(c)))
                 .collect(),
-            pushed: Mutex::new(HashMap::new()),
+            documents: Documents::default(),
         }
     }
 
     /// The summary of a pushed request that is still live, or `None`.
     pub(crate) fn pushed(&self, request_uri: &str) -> Option<Pushed> {
-        let pushed = self.pushed.lock().unwrap_or_else(|p| p.into_inner());
+        let pushed = self
+            .records
+            .pushed
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         pushed
             .get(request_uri)
             .filter(|p| p.expires_at > std::time::SystemTime::now())
@@ -459,7 +665,11 @@ impl CimdStore {
 
     /// Mark a live pushed request as shown, answering whether it already had been.
     pub(crate) fn mark_pushed_shown(&self, request_uri: &str) -> bool {
-        let mut pushed = self.pushed.lock().unwrap_or_else(|p| p.into_inner());
+        let mut pushed = self
+            .records
+            .pushed
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         pushed
             .get_mut(request_uri)
             .map(|p| std::mem::replace(&mut p.shown, true))
@@ -488,21 +698,19 @@ impl CimdStore {
     }
 }
 
-impl Storage for CimdStore {
-    async fn get_client(&self, client_id: &ClientId) -> Result<Option<Arc<Client>>, StorageError> {
-        // A PROVISIONED client first: `oauth_as.clients:` is the operator's config.
-        if let Some(found) = self.provisioned.get(client_id.as_str()) {
-            return Ok(Some(Arc::clone(found)));
-        }
-        // A STORED client wins, whatever its id looks like: the store is what the operator
-        // and the registration endpoint wrote, and a fetch cannot override either.
-        if let Some(found) = self.inner.get_client(client_id).await? {
-            return Ok(Some(found));
-        }
-        let url = client_id.as_str();
-        if !is_cimd_client_id(url) {
-            return Ok(None);
-        }
+impl CimdStore {
+    /// One fetch of the document at `url`, validated: its client, or `None` (an unknown client)
+    /// when the fetch is refused or fails, the document fails validation, or
+    /// [`MAX_CONCURRENT_FETCHES`] are already in flight.
+    async fn fetch_document(&self, url: &str) -> Option<Arc<Client>> {
+        let Ok(_permit) = self.documents.permits.try_acquire() else {
+            tracing::debug!(
+                client_id = url,
+                "oauth_as: every client metadata document fetch is in flight; the client is \
+                 unknown"
+            );
+            return None;
+        };
         let body = match self.fetcher().fetch(url).await {
             Ok(body) => body,
             Err(why) => {
@@ -515,11 +723,11 @@ impl Storage for CimdStore {
                     "oauth_as: the client metadata document fetch was refused or failed; the \
                      client is unknown"
                 );
-                return Ok(None);
+                return None;
             }
         };
         match materialize(url, &body, &self.ceiling) {
-            Ok(client) => Ok(Some(Arc::new(client))),
+            Ok(client) => Some(Arc::new(client)),
             Err(why) => {
                 // Routine authz denial (a fetched document that fails validation), one per request —
                 // `debug!`, not `warn!`, for the same reason as the fetch-failure arm above.
@@ -529,9 +737,37 @@ impl Storage for CimdStore {
                     "oauth_as: the client metadata document failed validation; the client is \
                      unknown"
                 );
-                Ok(None)
+                None
             }
         }
+    }
+}
+
+impl Storage for CimdStore {
+    async fn get_client(&self, client_id: &ClientId) -> Result<Option<Arc<Client>>, StorageError> {
+        // A PROVISIONED client first: `oauth_as.clients:` is the operator's config.
+        if let Some(found) = self.provisioned.get(client_id.as_str()) {
+            return Ok(Some(Arc::clone(found)));
+        }
+        // A STORED client wins, whatever its id looks like: the store is what the operator
+        // and the registration endpoint wrote, and a fetch cannot override either.
+        if let Some(found) = self.records.inner.get_client(client_id).await? {
+            return Ok(Some(found));
+        }
+        let url = client_id.as_str();
+        if !is_cimd_client_id(url) {
+            return Ok(None);
+        }
+        if let Some(held) = self.documents.held(url) {
+            return Ok(Some(held));
+        }
+        let flight = self.documents.flight(url);
+        let answer = flight
+            .get_or_init(|| self.fetch_document(url))
+            .await
+            .clone();
+        self.documents.land(url, &flight, answer.as_ref());
+        Ok(answer)
     }
 
     // ── EVERYTHING BELOW DELEGATES VERBATIM. No logic, no logging, no reordering: the wrapper
@@ -540,7 +776,7 @@ impl Storage for CimdStore {
     //    would silently stop being this store's. ──
 
     fn put_client(&self, client: Client) -> impl Future<Output = Result<(), StorageError>> + Send {
-        self.inner.put_client(client)
+        self.records.inner.put_client(client)
     }
 
     fn compare_and_swap_client(
@@ -548,7 +784,9 @@ impl Storage for CimdStore {
         expected: &Client,
         updated: Client,
     ) -> impl Future<Output = Result<bool, StorageError>> + Send {
-        self.inner.compare_and_swap_client(expected, updated)
+        self.records
+            .inner
+            .compare_and_swap_client(expected, updated)
     }
 
     fn delete_client(
@@ -556,28 +794,29 @@ impl Storage for CimdStore {
         client_id: &ClientId,
         window: RevocationWindow,
     ) -> impl Future<Output = Result<bool, StorageError>> + Send {
-        self.inner.delete_client(client_id, window)
+        self.records.inner.delete_client(client_id, window)
     }
 
     fn put_device_grant(
         &self,
         grant: DeviceGrant,
     ) -> impl Future<Output = Result<(), StorageError>> + Send {
-        self.inner.put_device_grant(grant)
+        self.records.inner.put_device_grant(grant)
     }
 
     fn get_device_grant(
         &self,
         device_code: &str,
     ) -> impl Future<Output = Result<Option<DeviceGrant>, StorageError>> + Send {
-        self.inner.get_device_grant(device_code)
+        self.records.inner.get_device_grant(device_code)
     }
 
     fn find_device_grant_by_user_code(
         &self,
         normalized_user_code: &str,
     ) -> impl Future<Output = Result<Option<DeviceGrant>, StorageError>> + Send {
-        self.inner
+        self.records
+            .inner
             .find_device_grant_by_user_code(normalized_user_code)
     }
 
@@ -585,7 +824,7 @@ impl Storage for CimdStore {
         &self,
         device_code: &str,
     ) -> impl Future<Output = Result<Option<DeviceGrant>, StorageError>> + Send {
-        self.inner.take_device_grant(device_code)
+        self.records.inner.take_device_grant(device_code)
     }
 
     fn compare_and_swap_device_grant(
@@ -593,14 +832,16 @@ impl Storage for CimdStore {
         expected: &DeviceGrantState,
         updated: DeviceGrant,
     ) -> impl Future<Output = Result<bool, StorageError>> + Send {
-        self.inner.compare_and_swap_device_grant(expected, updated)
+        self.records
+            .inner
+            .compare_and_swap_device_grant(expected, updated)
     }
 
     fn put_authorization_code(
         &self,
         record: AuthorizationCodeRecord,
     ) -> impl Future<Output = Result<(), StorageError>> + Send {
-        self.inner.put_authorization_code(record)
+        self.records.inner.put_authorization_code(record)
     }
 
     fn compare_and_swap_authorization_code(
@@ -608,7 +849,8 @@ impl Storage for CimdStore {
         expected: &AuthorizationCodeState,
         updated: AuthorizationCodeRecord,
     ) -> impl Future<Output = Result<bool, StorageError>> + Send {
-        self.inner
+        self.records
+            .inner
             .compare_and_swap_authorization_code(expected, updated)
     }
 
@@ -616,49 +858,49 @@ impl Storage for CimdStore {
         &self,
         code: &str,
     ) -> impl Future<Output = Result<Option<AuthorizationCodeRecord>, StorageError>> + Send {
-        self.inner.take_authorization_code(code)
+        self.records.inner.take_authorization_code(code)
     }
 
     fn put_token(
         &self,
         token: IssuedToken,
     ) -> impl Future<Output = Result<WriteOutcome, StorageError>> + Send {
-        self.inner.put_token(token)
+        self.records.inner.put_token(token)
     }
 
     fn get_token(
         &self,
         access_token: &str,
     ) -> impl Future<Output = Result<Option<Arc<IssuedToken>>, StorageError>> + Send {
-        self.inner.get_token(access_token)
+        self.records.inner.get_token(access_token)
     }
 
     fn delete_token(
         &self,
         access_token: &str,
     ) -> impl Future<Output = Result<(), StorageError>> + Send {
-        self.inner.delete_token(access_token)
+        self.records.inner.delete_token(access_token)
     }
 
     fn put_refresh_token(
         &self,
         record: RefreshTokenRecord,
     ) -> impl Future<Output = Result<WriteOutcome, StorageError>> + Send {
-        self.inner.put_refresh_token(record)
+        self.records.inner.put_refresh_token(record)
     }
 
     fn get_refresh_token(
         &self,
         refresh_token: &str,
     ) -> impl Future<Output = Result<Option<Arc<RefreshTokenRecord>>, StorageError>> + Send {
-        self.inner.get_refresh_token(refresh_token)
+        self.records.inner.get_refresh_token(refresh_token)
     }
 
     fn take_refresh_token(
         &self,
         refresh_token: &str,
     ) -> impl Future<Output = Result<Option<RefreshTokenRecord>, StorageError>> + Send {
-        self.inner.take_refresh_token(refresh_token)
+        self.records.inner.take_refresh_token(refresh_token)
     }
 
     fn revoke_token_family(
@@ -666,14 +908,14 @@ impl Storage for CimdStore {
         family_id: &str,
         window: RevocationWindow,
     ) -> impl Future<Output = Result<u64, StorageError>> + Send {
-        self.inner.revoke_token_family(family_id, window)
+        self.records.inner.revoke_token_family(family_id, window)
     }
 
     fn put_consent(
         &self,
         record: ConsentRecord,
     ) -> impl Future<Output = Result<(), StorageError>> + Send {
-        self.inner.put_consent(record)
+        self.records.inner.put_consent(record)
     }
 
     fn compare_and_swap_consent(
@@ -681,14 +923,16 @@ impl Storage for CimdStore {
         expected: Option<&ConsentRecord>,
         updated: ConsentRecord,
     ) -> impl Future<Output = Result<bool, StorageError>> + Send {
-        self.inner.compare_and_swap_consent(expected, updated)
+        self.records
+            .inner
+            .compare_and_swap_consent(expected, updated)
     }
 
     fn get_consent(
         &self,
         consent_id: &str,
     ) -> impl Future<Output = Result<Option<Arc<ConsentRecord>>, StorageError>> + Send {
-        self.inner.get_consent(consent_id)
+        self.records.inner.get_consent(consent_id)
     }
 
     fn find_consent(
@@ -696,14 +940,14 @@ impl Storage for CimdStore {
         client_id: &ClientId,
         subject: &str,
     ) -> impl Future<Output = Result<Option<Arc<ConsentRecord>>, StorageError>> + Send {
-        self.inner.find_consent(client_id, subject)
+        self.records.inner.find_consent(client_id, subject)
     }
 
     fn consents_for_subject(
         &self,
         subject: &str,
     ) -> impl Future<Output = Result<Vec<Arc<ConsentRecord>>, StorageError>> + Send {
-        self.inner.consents_for_subject(subject)
+        self.records.inner.consents_for_subject(subject)
     }
 
     fn revoke_consent(
@@ -711,7 +955,7 @@ impl Storage for CimdStore {
         consent_id: &str,
         window: RevocationWindow,
     ) -> impl Future<Output = Result<u64, StorageError>> + Send {
-        self.inner.revoke_consent(consent_id, window)
+        self.records.inner.revoke_consent(consent_id, window)
     }
 
     // RFC 9126 PAR and the RFC 7523 / RFC 9449 replay ledger: delegated, so the atomic single use
@@ -730,11 +974,12 @@ impl Storage for CimdStore {
             expires_at: record.expires_at,
             shown: false,
         };
-        let put = self.inner.put_pushed_authorization_request(record);
+        let put = self.records.inner.put_pushed_authorization_request(record);
         async move {
             let outcome = put.await?;
             if matches!(outcome, WriteOutcome::Applied) {
-                self.pushed
+                self.records
+                    .pushed
                     .lock()
                     .unwrap_or_else(|p| p.into_inner())
                     .insert(request_uri, summary);
@@ -748,12 +993,16 @@ impl Storage for CimdStore {
         request_uri: &str,
     ) -> impl Future<Output = Result<Option<oauth_as::par::PushedAuthorizationRequest>, StorageError>>
            + Send {
-        let take = self.inner.take_pushed_authorization_request(request_uri);
+        let take = self
+            .records
+            .inner
+            .take_pushed_authorization_request(request_uri);
         let request_uri = request_uri.to_string();
         async move {
             let taken = take.await?;
             if taken.is_some() {
-                self.pushed
+                self.records
+                    .pushed
                     .lock()
                     .unwrap_or_else(|p| p.into_inner())
                     .remove(&request_uri);
@@ -767,18 +1016,19 @@ impl Storage for CimdStore {
         id: &str,
         expires_at: std::time::SystemTime,
     ) -> impl Future<Output = Result<bool, StorageError>> + Send {
-        self.inner.claim_replay_id(id, expires_at)
+        self.records.inner.claim_replay_id(id, expires_at)
     }
 
     fn sweep_expired(
         &self,
         now: std::time::SystemTime,
     ) -> impl Future<Output = Result<u64, StorageError>> + Send {
-        self.pushed
+        self.records
+            .pushed
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .retain(|_, p| p.expires_at > now);
-        self.inner.sweep_expired(now)
+        self.records.inner.sweep_expired(now)
     }
 }
 

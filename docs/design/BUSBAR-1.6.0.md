@@ -1462,9 +1462,11 @@ completes) — no verified-credential cache of its own. This supersedes the "sta
 unresolved until Q-INCACHE was answered" line above and closes Q-INCACHE.
 
 **R4 — Q-DISK.** A host-owned bounded disk lane is the ONE exception to "no blocking" (§11.2's rule
-otherwise holds absolutely): it exists solely for the SQLite store and the file export sink, both of
-which are inherently local-disk-bound and cannot be made sans-IO without becoming a different product.
-No other kind may claim this exception.
+otherwise holds absolutely): it exists solely for the SQLite store, the file export sink, and the
+secret kind's file source (config-time only; OWNER 2026-10-13), each inherently local-disk-bound and
+not sans-IO without becoming a different product. The secret kind's file source reads on the lane only
+at config time (boot, config apply, refresh) and is never reachable from a request path; a gate holds
+that. No other kind may claim this exception.
 
 **R5 — Q-MYSQL.** A sans-IO mysql store and a sans-IO ldap auth plugin are built (the `mysql-ldap-stream`
 ruling, Q82, patches both drivers to take a host-supplied stream); both ship in the default distribution.
@@ -1937,7 +1939,7 @@ not the vision**. Consequences:
   the architecture, never opinions a row may grant itself; an edge the architecture does not rule on
   carries its written question to the owner. The ship check admits only the classes the
   architecture allows — `tcb`, `not-allowed` and every unruled edge are refused, because the
-  criterion for a tag is not "no worse than the last commit".
+  criterion for a tag is not "no worse than the last commit". The loader atop the contract (`plugin-tooling -> contract`) is a ruled edge, `allowed` (ARCHITECT 2026-10-12: Part 2 #33, :2957). A merge-base older than the plugin kinds is measured with today's vocabulary, never exempted (ARCHITECT 2026-10-12, `kind-isolation:law0-base`).
 
 ## Rejected (do not resurrect)
 - **D36 "dialect as a plugin kind" / per-dialect crates** (`busbar-plane-<plane>-<dialect>`). A
@@ -2893,7 +2895,7 @@ shape guarantee each is a clean add, never a break. That is "fits-or-cleanly-ext
 > definition and the owner rulings that shape execution.
 
 ## DONE = DEV-GREEN (the definition every wave drives to)
-DEV-GREEN is reached when ALL of the following hold and turnstile boards ADMIT:
+DEV-GREEN is reached when ALL of the following hold ~~and turnstile boards ADMIT~~ and ModernCI's `predev` → `dev` move (`.ci/predev.yaml`) is green and lands (Part 6, "BUSBAR-RELEASE RETIRED FROM BUSBAR", OWNER 2026-10-12/13):
 1. **Oracle byte-identical vs the 1.5.5 golden on every family** (money sacred, #9/#10). The ONLY
    accepted diffs are the entries of `testing/shadow-oracle/accepted-differences.json`, all 45
    re-signed by the owner 2026-09-30. Everything else byte-green.
@@ -2911,7 +2913,7 @@ DEV-GREEN is reached when ALL of the following hold and turnstile boards ADMIT:
    independent architecture audit on the DEV-GREEN candidate sha, graded against the Laws and THE DESIGN; it
    passes with no open BLOCK findings. The "two audits ≥9/10" requirement is struck (#60; the §11a baseline
    that score depended on never existed).
-6. **turnstile BOARD = ADMIT → train ff `predev`→`dev` = DEV-GREEN** (#32/#67).
+6. ~~**turnstile BOARD = ADMIT → train ff `predev`→`dev` = DEV-GREEN** (#32/#67).~~ SUPERSEDED 2026-10-13 by Part 6, "BUSBAR-RELEASE RETIRED FROM BUSBAR": **ModernCI's `predev` → `dev` move green on `.ci/predev.yaml` and landed = DEV-GREEN.**
 
 ## money-touching step shadow-oracle-gated; each wave loops `/codeaudit` to 2 clean passes #60)
 
@@ -2984,8 +2986,8 @@ Agents: (a) land `integration/conformance-b`; conformance MUST-set green for all
 arm + green every gate in the DONE battery above (each RED-provable, red-before-green).
 
 ### W8 — BOARD → DEV-GREEN [#32/#67]
-turnstile runs gates + oracle + conformance → BOARD verdict. On ADMIT, the train fast-forwards
-`predev`→`dev`. **DEV-GREEN.**
+~~turnstile runs gates + oracle + conformance → BOARD verdict. On ADMIT, the train fast-forwards
+`predev`→`dev`.~~ ModernCI runs `.ci/predev.yaml` (gates, oracle, conformance, the done-oracle, the Q128 audit) on the `predev` → `dev` move; green, it lands. **DEV-GREEN.**
 
 ---
 
@@ -3110,14 +3112,60 @@ Everything in Parts 1–5 describes the product. This Part describes the machine
 lives in **two repos**, and that split is the single most common source of "I can't find the
 autoscaler" confusion.
 
+## BUSBAR-RELEASE RETIRED FROM BUSBAR; MODERNCI IS BUSBAR'S CI (OWNER 2026-10-12, 2026-10-13)
+
+> **OWNER 2026-10-12:** *"ModernCI only."* **OWNER 2026-10-13:** *"delete anything you don't need
+> anymore, yes"* and *"Yes, we keep the busbar-release repo, slimmed down. ModernCI replaces its CI
+> half; the busbar-specific tools stay."* This section governs Part 6. Every passage below that
+> names the hop, the turnstile, the train, the conductor, the runner gateway, `promote.yml` or the
+> engine pin is SUPERSEDED by it and is struck where it stands.
+
+**ModernCI judges and moves every rung, from busbar's own branch files** (ModernCI's answer,
+2026-10-13: a branch file per moving branch, `promote: auto` opens the promotion, `on.landed` steps
+run on each new target tip):
+
+| Move | Branch file | What it runs |
+|---|---|---|
+| `lane-*` → `predev` | `.ci/default.yaml` | preflight, gates, clippy, compile, test, doctest, deletion-matrix, deny; no worse than predev; ModernCI's merge train lands it (required check `ci`) |
+| `predev` → `dev` | `.ci/predev.yaml` | gates, the oracle against the 1.5.5 golden, conformance, `verify-1.6.0-done.sh`, the Q128 audit; the owner's approval. **Its green landing is DEV-GREEN** (Part 5) |
+| `dev` → `qa` | `.ci/dev.yaml` | the `dev` rung plus build and test, the fuzz smoke and the signing gate (today `qa/pipeline-checks.json`), the soak, the release binaries and the container; the owner's approval |
+| `qa` → `main` | `.ci/qa.yaml` | the same battery; on landing, the `release` step signs and publishes the build it judged (no rebuild) and a `run` step does cosign and the container push, with secrets scoped to `on_landed` |
+
+**busbar-release stays, as the tools repo** (judged by ModernCI, not by its own Actions, once
+ModernCI registers it). KEEP: `busbar-release-oracle` (the money judge `busbar-oracle`, pinned by
+`testing/shadow-oracle/oracle-rust.pin`: one commit, one sha256 per architecture), with
+`busbar-release-fetch` and `busbar-release-golden-scope`; the published `busbar-oracle-linux-<arch>-<ref>`
+assets every pin names, kept for as long as a busbar branch pins them; `oracle-rerecord` (the
+add-only golden recorder); `busbar-release-soak`; `busbar-release-plugin` (the fleet generator:
+`plugin new|sync|check`, `template/`) and its daily `plugin-drift` check, which stays on Actions
+until ModernCI's scheduled checks are live (ModernCI PR #91); `busbar-release-github` (the plugin
+generator and the soak call GitHub through it); and the `busbar-release` command line, cut to those
+verbs. DELETE: the conductor and its state repo, the turnstile, the hop, the train and the ladder
+(`ci` verbs, `ladder.json`, `preflight.json`), the runner gateway (`busbar-release-runners`,
+`vars.RUNNERS` once the last workflow that reads it is gone), the EC2 backend and autoscaler, the
+runner canary and probe, the `dev` dispatch workflow, the engine build on `dev-bin`, and the engine
+pin (the org variables `ENGINE_REF`, `ENGINE_SHA256`, `ENGINE_JUDGE`, and the R2 cache keys the
+hop alone read). In busbar: `.github/workflows/promote.yml` and the `workflow-rules` rows that
+held it (R16 the engine pin, R18 its release-artifact wiring, R19 its R2 keys).
+
+**The oracle and the golden do not move.** The 1.5.5 golden stays in
+`testing/shadow-oracle/golden/1.5.5`, read-only and add-only (above, "The 1.5.5 golden is
+read-only"). The judge is built from busbar-release at the pinned commit; ModernCI runs only that
+pinned install, checked against the pin's sha256 for its host, and a candidate never picks its own
+judge.
+
+**The plugin fleet.** Each plugin repo is judged by ModernCI once it is registered there with its
+own branch files; until then the reusable `plugin-ci.yml`, `plugin-consumer-verify.yml`,
+`plugin-release.yml` and `plugin-repin.yml` stay, because the fleet's rendered callers name them.
+
 ## The branch roster (#67) — four branches, and no others
 
 | Branch | Rule | CI |
 |---|---|---|
-| `predev` | **permanent WIP.** Every in-flight session lands here and forks from here. | Pull requests only, landed through GitHub's merge queue; `promote.yml` `preflight` + `hop` are the required checks on both the pull request (the fast pre-check) and the merge group (the full plan, the proof of record), and the verdict is "no worse than base" (see "How work lands" below). |
-| `dev` | **release-train-write-only.** "Next version's WIP, nowhere near done." | full `ci.yml` |
-| `qa` | promotion target. **The one release build happens here** — the PGO build that ships, tested for real. | full CI + the real-media matrix |
-| `main` | **a push here cuts a release** — tag, GitHub Release, container promotion, `latest` moved. Irreversible. **`main` never compiles:** it tags and publishes the artifacts, by digest, that `qa` built and verified. | release orchestration |
+| `predev` | **permanent WIP.** Every in-flight session lands here and forks from here. | ~~Pull requests only, landed through GitHub's merge queue; `promote.yml` `preflight` + `hop` are the required checks on both the pull request (the fast pre-check) and the merge group (the full plan, the proof of record), and the verdict is "no worse than base" (see "How work lands" below).~~ SUPERSEDED 2026-10-13 by "BUSBAR-RELEASE RETIRED FROM BUSBAR" above: pull requests only, judged by ModernCI on `.ci/default.yaml` (required check `ci`), no worse than predev, landed by ModernCI's merge train. |
+| `dev` | **release-train-write-only.** "Next version's WIP, nowhere near done." | ~~full `ci.yml`~~ SUPERSEDED 2026-10-13 by "BUSBAR-RELEASE RETIRED FROM BUSBAR" above: `.ci/predev.yaml` judges the move in |
+| `qa` | promotion target. **The one release build happens here** — the PGO build that ships, tested for real. | ~~full CI + the real-media matrix~~ SUPERSEDED 2026-10-13 by "BUSBAR-RELEASE RETIRED FROM BUSBAR" above: `.ci/dev.yaml` judges the move in |
+| `main` | **a push here cuts a release** — tag, GitHub Release, container promotion, `latest` moved. Irreversible. **`main` never compiles:** it tags and publishes the artifacts, by digest, that `qa` built and verified. | ~~release orchestration~~ SUPERSEDED 2026-10-13 by "BUSBAR-RELEASE RETIRED FROM BUSBAR" above: `.ci/qa.yaml` judges the move in; its `on.landed` steps publish |
 
 **Never push `dev`, `qa` or `main` by hand.** `predev` and `dev` take changes by pull request only
 (ruleset; OWNER R3 2026-10-01); `--force-with-lease` is permitted only on your own `lane-*` branch. **Branch protection is on `qa` only** —
@@ -3138,21 +3186,21 @@ Nothing is rebuilt between them.
 **`GetBusbar/busbar`** — the product. `crates/`, `xtask/` (every gate), `scripts/` (including
 `verify-1.6.0-done.sh`, the definition of done), `conformance/`, `testing/shadow-oracle/`.
 
-**`GetBusbar/busbar-release`** — the engine, nine crates. Being redesigned as one PR state machine (busbar-release docs/ARCHITECTURE.md).
+~~**`GetBusbar/busbar-release`** — the engine, nine crates. Being redesigned as one PR state machine (busbar-release docs/ARCHITECTURE.md).~~ SUPERSEDED 2026-10-13 by "BUSBAR-RELEASE RETIRED FROM BUSBAR" above: busbar-release is the tools repo; the rows below for the turnstile, the train, the autoscaler and the CI half of the command line are deleted.
 
 | Crate | Job |
 |---|---|
-| `busbar-release-turnstile` | The gate. Runs the batteries and returns a **BOARD** verdict — `ADMIT` or deny. Nothing reaches `dev` without it. |
-| `busbar-release-train` | The mover. Fast-forwards `predev` → `dev` → `qa` → `main` in lockstep, refusing unless every precondition holds. |
+| `busbar-release-turnstile` | ~~The gate. Runs the batteries and returns a **BOARD** verdict — `ADMIT` or deny. Nothing reaches `dev` without it.~~ DELETE |
+| `busbar-release-train` | ~~The mover. Fast-forwards `predev` → `dev` → `qa` → `main` in lockstep, refusing unless every precondition holds.~~ DELETE |
 | `busbar-release-oracle` | The byte-identity oracle: this build vs the published 1.5.5 binary. |
-| `busbar-release-autoscaler` | Runner capacity. Ships the **`busbar-fleet`** binary (`src/bin/busbar-fleet.rs`) — this is the "fleet" tool; there is no separate fleet crate. |
+| `busbar-release-autoscaler` | ~~Runner capacity. Ships the **`busbar-fleet`** binary (`src/bin/busbar-fleet.rs`) — this is the "fleet" tool; there is no separate fleet crate.~~ DELETE |
 | `busbar-release-corpus` | The recorded request corpus the oracle replays. |
-| `busbar-release-cli` | The one `busbar-release` command line: ship, dev, watch, status, plugin, and the CI internals under `ci`. |
+| `busbar-release-cli` | ~~The one `busbar-release` command line: ship, dev, watch, status, plugin, and the CI internals under `ci`.~~ KEEP only the oracle, soak and plugin verbs |
 | `busbar-release-github` | The one door to GitHub: batched GraphQL reads, REST writes, shared rate-limit and retry policy. |
 | `busbar-release-plugin` | The plugin fleet generator: renders `template/` into every `busbar-<kind>-<name>` repo, with drift check, sync and repin. |
 | `busbar-release-soak` | The sustained mixed-traffic soak of a built binary against the oracle's mocks, judged row by row. |
 
-Its workflows: `turnstile.yml`, `fleet-control.yml`, `oracle-rerecord.yml`, `docker-autoscaler.yml`, `ci.yml`.
+~~Its workflows: `turnstile.yml`, `fleet-control.yml`, `oracle-rerecord.yml`, `docker-autoscaler.yml`, `ci.yml`.~~ SUPERSEDED 2026-10-13 by "BUSBAR-RELEASE RETIRED FROM BUSBAR" above.
 
 **The marketing site is observed, never depended on** (owner, 2026-09-06). Nothing in the release
 path triggers, `needs:` or waits on the site deploy; the site keeps its own trigger. Site checks
@@ -3165,7 +3213,7 @@ fully torn down — zero instances, zero volumes, zero NAT gateways, zero elasti
 both cheaper and the money oracle's home (**#56 wins over #29** — the oracle rides Latchkey, it does
 not need a dedicated fleet box; `CI_RUNNER_ONDEMAND_FLOOR` is 0, not 2).
 
-**Runner gateway (OWNER 2026-10-10, supersedes the 2026-09-28 capacity order):** every job asks for a logical size (small, medium, large, xlarge), never a vendor label. One table maps each size to a backend (latchkey, ec2 or github), so switching a backend is a one-line change and nothing else breaks. Today every size maps to Latchkey (account cap 80 concurrent jobs); EC2 burst is off. A daily canary job runs on every backend in the table, including the switched-off ones, so a dormant backend is proven before anyone switches to it. #78's spend breaker binds every paid backend.
+~~**Runner gateway (OWNER 2026-10-10, supersedes the 2026-09-28 capacity order):** every job asks for a logical size (small, medium, large, xlarge), never a vendor label. One table maps each size to a backend (latchkey, ec2 or github), so switching a backend is a one-line change and nothing else breaks. Today every size maps to Latchkey (account cap 80 concurrent jobs); EC2 burst is off. A daily canary job runs on every backend in the table, including the switched-off ones, so a dormant backend is proven before anyone switches to it. #78's spend breaker binds every paid backend.~~ SUPERSEDED 2026-10-13 by "BUSBAR-RELEASE RETIRED FROM BUSBAR" above: ModernCI places each check on its backends.
 Agent compute is Latchkey only, through one
 shared job budget (`1.6.0-TODO.md`, THE RULES 6.1-6.3); the owner has ruled no extra build capacity
 (2026-09-29). EC2 is allowed for the performance phase (§11.9).
@@ -3270,7 +3318,7 @@ now fixed, one was a misdiagnosis, and one dissolves on the first promotion.** C
 
 ## Size is not a CI check (owner 2026-10-02)
 
-The hop (`promote` → `preflight` + `hop`) never denies a PR for size, at any rung. Line counts are
+ModernCI ~~The hop (`promote` → `preflight` + `hop`)~~ never denies a PR for size, at any rung. Line counts are
 not measured in CI at all: the construction gate's `loc-ceilings:*` and `surface-ceiling:*` rows,
 its `ceiling-rose` / `ceiling-slack` rows, `ship-ready`'s two ceiling rows and the per-cell counts
 of `kind-isolation:matrix` are deleted, and with them every hand-kept size integer in
@@ -3297,33 +3345,36 @@ in the default `pull_request` types.
 
 ## THE CONDUCTOR (OWNER 2026-10-11) — one deterministic driver; authors write code, nothing else
 
-> **OWNER 2026-10-11.** *"We have the pieces, not a thing pushing things through the pieces, and
+> **SUPERSEDED 2026-10-13 by "BUSBAR-RELEASE RETIRED FROM BUSBAR" above.** The conductor is deleted: ModernCI is the one program that judges, trains and
+> moves busbar's branches. The text below is struck, kept for its history.
+
+> ~~**OWNER 2026-10-11.** *"We have the pieces, not a thing pushing things through the pieces, and
 > that can't be an agent."* *"I wake up one day, never use agents again, replace them with human Bob,
 > and the system still works. Bob codes, runs one command, and it does its thing and tells Bob (or
 > the agent) if they need to do something else."* *"Every second of waste is $ burnt — money and
 > time."* *"The workflow is the workflow"* (no run cap). Supersedes, where they disagree: "How work
 > lands" item 3 (GitHub's merge queue, OWNER 2026-10-02), "Ship and stop", and every rule that has
-> an agent push, prove, retry, land, promote, or be spawned by the pipeline.
+> an agent push, prove, retry, land, promote, or be spawned by the pipeline.~~
 
-**Why (measured 2026-10-10/11, busbar-release's 2-hour audit ledger, 9 windows):** Latchkey $442,
+~~**Why (measured 2026-10-10/11, busbar-release's 2-hour audit ledger, 9 windows):** Latchkey $442,
 of which $254 (57%) bought nothing: 166 of 264 merge-group runs were cascades thrown away behind a
 red group, 211 of 419 PR runs were red (fixes nobody had run), and the proof that would have caught
-them cheaply was refused by a run cap.
+them cheaply was refused by a run cap.~~
 
-**The rule.** One program decides; authors only write code. An AUTHOR is whoever writes code — a
+~~**The rule.** One program decides; authors only write code. An AUTHOR is whoever writes code — a
 person or an agent, interchangeably; the pipeline never knows or cares which, and never spawns one.
 The CONDUCTOR is `busbar-release conductor`, one always-on service (today on the build server, the
 M3 at `10.1.7.14`; it runs anywhere from one config directory). It is deterministic code: every
 decision is a rule over measured facts. It updates itself from each green `main` release of
-busbar-release; nothing about running it is agent-driven.
+busbar-release; nothing about running it is agent-driven.~~
 
-**The author's whole interface is one command:** `busbar-release submit` from a branch (it replaces
+~~**The author's whole interface is one command:** `busbar-release submit` from a branch (it replaces
 `ship`). The conductor takes it from there and tells the author only when they must act — what is
 red, with the output, and the one thing to do next (fix and `submit` again; resolve a conflict;
 owner sign-off needed) — on the terminal, as the PR's one verdict comment, and in `busbar-release
-status`.
+status`.~~
 
-**The stations after `submit`.** The conductor owns every move.
+~~**The stations after `submit`.** The conductor owns every move.~~
 
 | Station | What happens | Junk it refuses |
 |---|---|---|
@@ -3332,46 +3383,46 @@ status`.
 | TRAIN | The conductor batches the PRs whose PR check is green onto the predev tip (`train/<n>`, one merge per PR, a conflicting PR goes back to its author) and runs the full plan ONCE on the batch. Green: predev takes the batch and every PR in it lands. Red: the failing rows are attributed to the PRs whose changes reach them and those go back to their authors; the rest re-batch (unattributable: split in half). Only the conductor moves predev. | Speculative per-PR merge groups and their cascades (impossible by construction); a batch rebuilt for PRs that did not change. |
 | PROMOTE | predev -> dev -> qa -> main on the same engine, each rung judged once, absolutely where the ladder says so. | A promotion run that cannot pass (a rung whose required suite is registered not-run). |
 
-**METER** runs under every station: each proof and CI run records backend, minutes, dollars and
-outcome in one ledger; the waste over any window is a `health` row that fails above 10%.
+~~**METER** runs under every station: each proof and CI run records backend, minutes, dollars and
+outcome in one ledger; the waste over any window is a `health` row that fails above 10%.~~
 
-**PROVERS are registered backends, like runners.** A prover is a drop-in driver beside the runner
+~~**PROVERS are registered backends, like runners.** A prover is a drop-in driver beside the runner
 gateway's (`Driver`): its name, slots, price per minute, readiness, canary, its own idempotent
 `up`/`down` (the M3 prover's `up` builds its Linux VM from nothing), and `prove(commit, commands) ->
 verdict`. Which provers are live, in what order and with how many slots is one table (`PROVERS`),
 switched with one command after a canary, never by code: today the M3 (an arm64 Linux VM, warm
 cache), Latchkey as overflow; tomorrow any mix of M3, Latchkey, EC2. The conductor fills the first
 prover with a free slot. A proof is a filter, never the verdict: the verdict stays CI's, on Linux
-x86_64, so a rare arm64/x86_64 difference costs at most one CI run.
+x86_64, so a rare arm64/x86_64 difference costs at most one CI run.~~
 
-**The conductor IS the workflow; GitHub is one forge driver (OWNER 2026-10-11).** *"Conductor is the
+~~**The conductor IS the workflow; GitHub is one forge driver (OWNER 2026-10-11).** *"Conductor is the
 master workflow: what could be a GitHub Actions workflow is the Rust conductor with pluggable
 infra."* *"We shouldn't be tightly coupled to GitHub; it is a code repo, and if I want to go to
-Forgejo I could, mid-work."* So:
-- The conductor executes every job of every station itself, on INFRA DRIVERS (the M3's per-job
+Forgejo I could, mid-work."* So:~~
+- ~~The conductor executes every job of every station itself, on INFRA DRIVERS (the M3's per-job
   Linux VMs, the Latchkey CLI, EC2 boxes, GitHub-hosted runners), chosen by one owner command
   (`busbar-release infra use <backends>`, canaried, effective on the next job). Every job asks for a
   size, including the light orchestration jobs; nothing names a vendor. It stores logs and links
   them in the PR's one verdict comment, and posts ONE verdict status per PR head that branch
-  protection requires.
-- The code host is a FORGE DRIVER: git push/fetch, pull requests, comments, the verdict status, branch
+  protection requires.~~
+- ~~The code host is a FORGE DRIVER: git push/fetch, pull requests, comments, the verdict status, branch
   protection. GitHub is the driver today; Forgejo is the same interface. Nothing in the pipeline
   depends on a forge-only feature: Actions workflows (replaced by the conductor), the merge queue
-  (replaced by the train), forge-only APIs. Switching forge is configuration and a mirror push.
-- Platform of record: busbar's VERDICT jobs run on x86_64 Linux (the 1.5.5 golden was recorded
+  (replaced by the train), forge-only APIs. Switching forge is configuration and a mirror push.~~
+- ~~Platform of record: busbar's VERDICT jobs run on x86_64 Linux (the 1.5.5 golden was recorded
   there) unless a measured run proves arm64 byte-identical; the M3's arm64 VMs take proofs and
-  busbar-release's own CI. The M3 runs untrusted-safe: one throwaway VM per job.
-- OPEN (owner, before step 7 of 1.6.0): release signing without a forge-specific identity (SLSA
+  busbar-release's own CI. The M3 runs untrusted-safe: one throwaway VM per job.~~
+- ~~OPEN (owner, before step 7 of 1.6.0): release signing without a forge-specific identity (SLSA
   provenance today assumes GitHub's OIDC token, which exists only inside Actions): our own signing
-  key, or the chosen forge's CI.
+  key, or the chosen forge's CI.~~
 
-**What the conductor replaces** (deleted as each station lands): GitHub's merge queue on predev,
+~~**What the conductor replaces** (deleted as each station lands): GitHub's merge queue on predev,
 `jump`, the merge-group re-check and orphan machinery, the STALE/UPDATE rule, `ship` and `dev` as
 author tools, and every agent the pipeline spawns (fix, stuck, rebase, shared). The turnstile, the
-hop, the ladder, the step cache, autopin and the EC2 runner backend stay as its internals.
+hop, the ladder, the step cache, autopin and the EC2 runner backend stay as its internals.~~
 
-**Interim, until the train is live:** predev's merge queue builds at most 2 groups at once (OWNER
-2026-10-11, was 10).
+~~**Interim, until the train is live:** predev's merge queue builds at most 2 groups at once (OWNER
+2026-10-11, was 10).~~
 
 ## How work lands: the PR flow and the rules every contributor follows
 
@@ -3385,10 +3436,11 @@ branches live on GitHub so CI runs the pipeline).
 
 1. One branch per lane, `lane-<name>`, cut from `origin/predev`. A branch that depends on another
    unmerged lane says so in its PR body.
-2. Changes reach `predev` and `dev` **only by pull request**. The ruleset on both requires the two
-   jobs of `.github/workflows/promote.yml`, `preflight` and `hop`; no direct push, no force-push, no
-   deletion. `dev` moves only through the promote engine.
-3. predev lands through GitHub's merge queue (OWNER 2026-10-02). The MERGE-GROUP run is the proof of
+2. Changes reach `predev` and `dev` **only by pull request**. The ruleset on both requires ~~the two
+   jobs of `.github/workflows/promote.yml`, `preflight` and `hop`~~ ModernCI's check `ci`; no direct
+   push, no force-push, no deletion. `dev` moves only through ~~the promote engine~~ ModernCI's
+   `predev` → `dev` move (`.ci/predev.yaml`).
+3. ~~predev lands through GitHub's merge queue (OWNER 2026-10-02). The MERGE-GROUP run is the proof of
    record: the full plan (every gate, every build/test step, the money oracle forced, conformance
    produced at judge time and judged absolutely per #68) on the queue's merge commit, judged "no worse
    than base" against the base the queue built it on; its report becomes the base of the commit it
@@ -3398,19 +3450,19 @@ branches live on GitHub so CI runs the pipeline).
    PR merged onto the base tip, with no oracle and no conformance; on ONE runner when that is
    estimated within 20 minutes, else as the merge group's shard matrix ("Verification runs once per
    input", OWNER-LOCKED 2026-10-06). Neither may add a red. A local Latchkey
-   run is for iteration only.
+   run is for iteration only.~~ SUPERSEDED 2026-10-13 by "BUSBAR-RELEASE RETIRED FROM BUSBAR" above: ModernCI judges every pull request on its branch file and lands it with its own merge train; `dev`, `qa` and `main` move by ModernCI's promotion.
 4. A `$` (money-touching) change is its own PR, never bundled with anything else.
 5. On merge the branch is deleted (OWNER 2026-10-01, BRANCH LIFETIME: "as soon as merged into
    predev get rid of the branch").
 
-**Ship and stop** (ARCHITECT 2026-10-02, supersedes every polling instruction). When a slice is
+~~**Ship and stop** (ARCHITECT 2026-10-02, supersedes every polling instruction). When a slice is
 ready, run one command from the lane's worktree:
 `busbar-release ship "<PR title>" [--body <file>]` (the release CLI, `bin/busbar-release` in a clone
 of GetBusbar/busbar-release; OWNER 2026-10-02: every release tool lives there, and `cargo xtask
 ship` is gone). It refuses any branch that is not `lane-*`, merges `origin/predev` in, runs the local pre-flight, commits what the pre-flight changed (tracked
 files only), pushes, opens or reuses the PR into `predev` and turns on auto-merge. Then STOP: no
 polling of CI, PRs or Latchkey, no sleep loops. A red or conflicted PR comes back to the owning
-lane as a new task; fix it, ship again, stop again.
+lane as a new task; fix it, ship again, stop again.~~ SUPERSEDED 2026-10-13 by "BUSBAR-RELEASE RETIRED FROM BUSBAR" above: the author pushes the branch and opens the pull request; ModernCI does the rest (`modernci done`).
 
 **Never bless a golden or a ratchet.** A red is fixed forward with a root cause; nothing is waived
 and nothing is blessed (OWNER 2026-10-01, PREDEV IS THE CONVERGENCE BRANCH). Customer-visible

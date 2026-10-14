@@ -22,16 +22,25 @@ fn reads_the_declared_pointers_off_a_failure_body() {
     assert_eq!(read_u64(FAILURE, PTR_USAGE_UNITS), None);
 }
 
+/// A request is read at its top-level `model` alone (DECISIONS D8b), never at `state`.
 #[test]
-fn request_ptrs_is_empty() {
-    assert!(REQUEST_PTRS.is_empty());
+fn request_ptrs_is_the_model_alone() {
+    assert_eq!(REQUEST_PTRS, &[PTR_MODEL]);
+    assert_eq!(
+        read_str(br#"{"model":"jev","state":{}}"#, PTR_MODEL),
+        Some("jev")
+    );
 }
 
+/// No declared pointer passes through a `state` or `answers` member (a member merely spelled with
+/// those letters, as NanoJev's `/execution/states`, is another member).
 #[test]
 fn response_ptrs_never_names_state_or_answers() {
     for p in RESPONSE_PTRS {
-        assert!(!p.contains("state"));
-        assert!(!p.contains("answers"));
+        assert!(
+            !p.split('/').any(|seg| seg == "state" || seg == "answers"),
+            "{p}"
+        );
     }
 }
 

@@ -5,9 +5,9 @@
 //! new boot is never answered as the replay of an earlier boot's write.
 
 use super::*;
+use crate::test_support::store_double::MemoryStore;
 use busbar_contract::abi::sdk::store::{Op, Step, StoreSlots};
 use busbar_contract::records::{RecordStore, UsageDelta};
-use fixture_store::MemoryStore;
 
 fn cells() -> [(&'static str, u64, UsageDelta); 1] {
     [(

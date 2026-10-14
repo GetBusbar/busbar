@@ -22,6 +22,11 @@
 #[cfg(feature = "egress-seam")]
 pub mod seam;
 
+// THE EGRESS-TRUST SEAM and its three primitives (client identity, extra trust anchors, the
+// peer-SPKI pin): kernel-owned outbound trust, read by the engine below, the secure layer and the
+// root's connector install. It is not plane hosting, so it does not live in `plane_host`.
+pub mod trust;
+
 // ==== merged from busbar-substrate (W4.b P2 engine drain) ====
 
 // THE EGRESS ENGINE — the one owned outbound HTTP stack (the owned dial-coalescing pool over
@@ -30,7 +35,7 @@ pub mod seam;
 // `crate::proxy::` paths.
 pub mod engine;
 
-// THE NEUTRAL FULL-DUPLEX WS EGRESS DIALER — dial an upstream `wss://` THROUGH `net_guard`
+// THE NEUTRAL FULL-DUPLEX WS EGRESS DIALER — dial an upstream `wss://` THROUGH the egress unit's guard
 // (resolve→pin→guard, then TCP to the pinned address, then TLS with the URL host for SNI, then the WS
 // handshake) and hand back the `Stream`/`Sink<Vec<u8>>` pair `byte_duplex::serve_messages` consumes.
 // The outbound half of the WS transport `Transport::WebSocket` selects; armed under `runtime`. This is

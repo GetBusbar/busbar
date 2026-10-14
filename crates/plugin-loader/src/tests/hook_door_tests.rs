@@ -638,6 +638,94 @@ fn a_linked_hook_and_a_different_dropped_in_hook_claiming_one_word_are_refused()
     );
 }
 
+/// RED (THE DESIGN §11.13 M1: no plugin code, `dlopen` and `open` included, runs under a host
+/// lock): a quarantine's trial binds and opens its fresh instance with the hook's state lock let
+/// go, so a trial wedged in its bind holds no other caller — the hook still answers whether it is
+/// quarantined — and the trial then serves.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_wedged_trial_holds_no_other_caller() {
+    use super::{HookInstance, State};
+    use crate::dispatch::{ConnTable, NoSink};
+    use busbar_contract::hook_calls::HookCalls;
+    use std::sync::mpsc;
+    let axis = rows(hook_door_plugin::conforming::door, "hook_door", Way::Linked);
+    let c = axis.find(NAME).expect("the linked row").clone();
+    let dispatcher = Arc::clone(&axis.dispatcher);
+    let bind = {
+        let (c, dispatcher) = (c.clone(), Arc::clone(&dispatcher));
+        move || {
+            HookRows::bind(
+                &c,
+                &dispatcher,
+                "hooks.trial",
+                Arc::new(NoSink),
+                ConnTable::NoNeeds,
+            )
+        }
+    };
+    let (entered_tx, entered) = mpsc::channel::<()>();
+    let (release, released) = mpsc::channel::<()>();
+    let gate = std::sync::Mutex::new(Some((entered_tx, released)));
+    let first = bind().expect("the hook binds");
+    let instance = Arc::new(
+        HookInstance::open(
+            first,
+            Arc::clone(&dispatcher),
+            br#"{"reject_over_messages": 3}"#,
+            move || {
+                // The trial's bind, wedged until the test releases it.
+                if let Some((entered, released)) = gate.lock().unwrap().take() {
+                    entered.send(()).unwrap();
+                    released.recv().unwrap();
+                }
+                bind()
+            },
+        )
+        .expect("the hook opens"),
+    );
+    // Faulted, its trial window open now.
+    *instance.inner.lock() = State::Quarantined {
+        trial_at: std::time::Instant::now(),
+        window: super::QUARANTINE_FIRST,
+    };
+    let trial = {
+        let instance = Arc::clone(&instance);
+        tokio::spawn(async move {
+            let a = instance.decide(frame(2), BUDGET).await;
+            let ready = matches!(
+                a,
+                Answered::Answer {
+                    outcome: busbar_contract::abi::mechanism::call::Outcome::Ready,
+                    ..
+                }
+            );
+            (ready, decided(2, &a))
+        })
+    };
+    tokio::task::spawn_blocking(move || entered.recv().unwrap())
+        .await
+        .unwrap();
+    let (asked_tx, asked) = mpsc::channel();
+    {
+        let instance = Arc::clone(&instance);
+        std::thread::spawn(move || {
+            let _ = asked_tx.send(instance.quarantined());
+        });
+    }
+    let answered = tokio::task::spawn_blocking(move || asked.recv_timeout(Duration::from_secs(5)))
+        .await
+        .unwrap();
+    release.send(()).unwrap();
+    assert_eq!(
+        answered,
+        Ok(true),
+        "a wedged trial held another caller behind the hook's state lock"
+    );
+    let (ready, served) = trial.await.unwrap();
+    assert!(ready, "the trial's fresh instance serves: {served}");
+    assert!(!instance.quarantined());
+}
+
 /// THE SETTINGS NEVER PRINT. An opened instance keeps the settings bytes it was opened over (a
 /// resolved bag) to re-open a fresh instance on a quarantine trial; its `Debug` names the instance
 /// and nothing else, so `{:?}` in a log line, a `tracing` field or a panic cannot carry them.

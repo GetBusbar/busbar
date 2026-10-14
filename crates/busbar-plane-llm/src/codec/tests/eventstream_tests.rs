@@ -867,8 +867,8 @@ fn a_malformed_prelude_after_valid_frames_still_clears_and_reports_the_prefix() 
 /// Complexity regression: `drain_frames_checked` used `Vec::drain(..total_len)` PER FRAME, which
 /// memmoves the entire remaining tail on every call — O(frames × bytes) for a buffer of many
 /// small frames. The index-tracking rewrite does ONE buffer edit for the whole pass, O(bytes).
-/// A ratio test (not an absolute wall-clock threshold) so it stays machine-independent: quadratic
-/// predicts ~16× for a 4× frame-count increase; linear predicts ~4×.
+/// A ratio test (not an absolute threshold) of CPU time (not wall clock, which contention
+/// inflates) so it stays machine-independent: quadratic predicts ~16× for a 4× frame-count increase; linear predicts ~4×.
 ///
 /// WEAKEST TEST IN THIS FILE: if `t(1000)` is too fast to be
 /// above timer-granularity noise, the ratio is meaningless. The assertion checks that floor first
@@ -891,6 +891,23 @@ fn drain_frames_checked_scales_linearly_in_frame_count() {
     /// rounding error here, and min-of-N only needs ONE uncontended trial to converge.
     const TRIALS: u32 = 3;
 
+    /// This thread's own CPU time, in nanoseconds: the first field of `/proc/thread-self/schedstat`
+    /// (time spent on a CPU). Contention makes the drain WAIT, which this clock does not count, so
+    /// a busy machine no longer reads as a dearer drain (Law 8: an instrument must not report by
+    /// noise; the same unit the xtask selftest budget moved to). `std` has no CPU clock, and a
+    /// plane crate takes no `libc`, so the kernel's own account is read as a file.
+    fn thread_cpu_ns() -> Option<u64> {
+        std::fs::read_to_string("/proc/thread-self/schedstat")
+            .ok()?
+            .split_whitespace()
+            .next()?
+            .parse()
+            .ok()
+    }
+
+    /// One drain of `n` frames, as a duration: CPU time where the kernel reports it (Linux, where
+    /// every run that gates this tree runs), else the wall clock of the same window (macOS), which
+    /// is why the minimum across trials stays.
     fn bench(n: usize) -> std::time::Duration {
         let mut best: Option<std::time::Duration> = None;
         for _ in 0..TRIALS {
@@ -899,10 +916,14 @@ fn drain_frames_checked_scales_linearly_in_frame_count() {
                 let payload = format!("{{\"i\":{i}}}");
                 buf.extend_from_slice(&encode_frame("contentBlockDelta", payload.as_bytes()));
             }
-            let start = std::time::Instant::now();
+            let wall = std::time::Instant::now();
+            let cpu = thread_cpu_ns();
             let (_, status, _) = drain_frames_checked(&mut buf, None);
             assert_eq!(status, DrainStatus::Ok);
-            let elapsed = start.elapsed();
+            let elapsed = match (cpu, thread_cpu_ns()) {
+                (Some(before), Some(after)) => std::time::Duration::from_nanos(after - before),
+                _ => wall.elapsed(),
+            };
             best = Some(match best {
                 Some(b) if b <= elapsed => b,
                 _ => elapsed,

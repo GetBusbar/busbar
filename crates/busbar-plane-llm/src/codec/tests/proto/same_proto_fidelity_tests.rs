@@ -169,7 +169,7 @@ fn same_proto_cross_chunk_split_is_verbatim() {
 /// suite (timing is environment-sensitive). Run with:
 ///   cargo test --release bench_same_proto_short_circuit -- --ignored --nocapture
 #[test]
-#[ignore]
+#[ignore = "a timing bench: run with --release --ignored --nocapture"]
 fn bench_same_proto_short_circuit() {
     use crate::codec::eventstream::encode_frame;
 

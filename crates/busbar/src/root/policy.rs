@@ -6,18 +6,8 @@
 //!
 //! ## Why a default is the wrong answer here
 //!
-//! Every value below has a perfectly sensible `Default` or a perfectly sensible empty case, and
-//! none of them is safe to bind: a transport built from its own default ignores the operator's
-//! limits, and an empty scope view authorizes everything.
-//!
-//! **The scope view.** Its natural empty case is a policy that says nothing about anything, and the
-//! scope unit is explicit that a pair the policy is silent about has NO required scope, which is a
-//! REFUSAL and not a pass. An operation nobody wrote a policy entry for has not been authorized. A
-//! view that inverted that — answering "read-only is enough" for an unknown pair, or answering
-//! `Some` where it meant "I do not know" — would authorize by omission, and every plane's operation
-//! classes would open at once. So the type below cannot express the inversion: it holds declared
-//! entries and answers `None` for everything else, and the only way to permit something is to have
-//! said so.
+//! The value below has a perfectly sensible `Default`, and it is not safe to bind: a transport
+//! built from its own default ignores the operator's limits.
 //!
 //! ## What is not here
 //!
@@ -26,12 +16,8 @@
 //! first, and a veto after it wins regardless of what it returned. That ordering belongs to the
 //! step, not to the policy it reads, so it is not a field of anything in this file.
 
-use std::collections::BTreeMap;
-
 use busbar_contract::transport::TransportSettings;
-use busbar_contract::{ClaimKey, OpClassId};
 use busbar_kernel::config::limits::LimitsResolved;
-use busbar_kernel_scope::{PolicyView, Scope};
 
 /// The settings every linked transport is built from, taken off the deployment's resolved limits
 /// rather than from a `Default`.
@@ -86,52 +72,6 @@ pub(crate) fn client_settings_under(
         // which is the same posture its own default takes.
         response_body_max_bytes: limits.request_body_max_bytes,
         request_timeout_secs: limits.upstream_request_timeout_secs,
-    }
-}
-
-/// The scope unit's policy view, over what the deployment's policy actually declared.
-///
-/// It holds entries and nothing else. There is no default arm, no catch-all and no "unknown means
-/// read-only": a pair with no entry answers `None`, and the scope unit reads `None` as a refusal.
-/// The type is shaped so that the dangerous answer cannot be given by accident — you cannot
-/// construct one that permits something it was not told about.
-#[derive(Debug, Default, Clone)]
-pub struct ScopePolicy {
-    entries: BTreeMap<(&'static str, &'static str), Scope>,
-}
-
-impl ScopePolicy {
-    /// A policy that permits nothing, because it has been told nothing.
-    #[must_use]
-    pub fn new() -> Self {
-        ScopePolicy::default()
-    }
-
-    /// Declare the scope one claim's operation class requires.
-    #[must_use]
-    pub fn declaring(mut self, claim: ClaimKey, op: OpClassId, scope: Scope) -> Self {
-        self.entries.insert((claim.as_str(), op.as_str()), scope);
-        self
-    }
-
-    /// How many pairs the policy speaks about.
-    #[must_use]
-    pub fn len(&self) -> usize {
-        self.entries.len()
-    }
-
-    /// Whether the policy speaks about nothing, and therefore permits nothing.
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.entries.is_empty()
-    }
-}
-
-impl PolicyView for ScopePolicy {
-    fn required_scope(&self, claim: ClaimKey, op: OpClassId) -> Option<Scope> {
-        // `None` here is a refusal, not a pass, and this is the whole of the implementation for
-        // exactly that reason: there is nowhere for a fallback to be added by accident.
-        self.entries.get(&(claim.as_str(), op.as_str())).copied()
     }
 }
 

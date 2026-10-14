@@ -25,7 +25,6 @@
 
 use crate::sign::{evaluate, validate_structure, Manifest, TrustPolicy, Verdict, HOST_IDENTITY};
 use crate::tarball;
-use busbar_contract::abi::cold::ColdEntry;
 use busbar_contract::abi::mechanism::kind;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -114,7 +113,6 @@ impl LoadablePlugin {
                     .ok()
                     .map(|row| row.statement)
             }
-            Some(LinkedEntry::Boundary(_)) => None,
             None => self.manifest.stated_rendering().ok().flatten(),
         }
     }
@@ -123,12 +121,6 @@ impl LoadablePlugin {
     /// handed no configuration, so there is none to resolve for it.
     pub fn in_process(&self) -> bool {
         matches!(self.entry, Some(LinkedEntry::Store { .. }))
-    }
-
-    /// M6-COLD-DELETE residue: whether this row is a LINKED JSON-lane auth plugin
-    /// (`BUSBAR_COLD_ENTRY`), until the auth plugin's door re-pin.
-    pub fn image_is_cold_linked(&self) -> bool {
-        matches!(self.entry, Some(LinkedEntry::Boundary(_)))
     }
 
     /// A compiled-in memory-ABI row's door; `None` for any other row.
@@ -142,15 +134,6 @@ impl LoadablePlugin {
     /// Whether this row came in through the LINKED door (it has no tarball).
     pub fn linked(&self) -> bool {
         self.entry.is_some()
-    }
-
-    /// What a JSON-lane load runs over (M6-COLD-DELETE residue: the auth plugin's verify and hosted
-    /// login): the linked boundary, or the verified bytes.
-    pub fn image(&self) -> crate::Image<'_> {
-        match self.entry {
-            Some(LinkedEntry::Boundary(entry)) => crate::Image::Linked(entry),
-            _ => crate::Image::Bytes(&self.lib_bytes),
-        }
     }
 
     /// FIRST-PARTY: admitted through the LINKED door, or dropped in and signed by the busbar
@@ -167,7 +150,8 @@ impl LoadablePlugin {
     }
 }
 
-/// The refusal of a `kind: secret` plugin that states no door.
+/// The refusal of a `kind: secret` plugin that states no door ([`PluginRegistry::kind_refusal`]'s
+/// words for the secret kind).
 pub const JSON_SECRET_REFUSED: &str = "it speaks the 1.5.5 JSON secret contract, which this host does not load — rebuild the plugin against the 1.6.0 SDK";
 
 /// The `file` a linked row reports: it has no tarball.
@@ -211,9 +195,6 @@ pub enum LinkedEntry {
     /// the same door a dropped-in build exports as `busbar_plugin_door` (THE DESIGN: compiled-in =
     /// dropped-in). Loaded through [`crate::dispatch::load_linked`].
     Door(busbar_contract::abi::mechanism::door::DoorFn),
-    /// M6-COLD-DELETE residue: a linked JSON-lane auth plugin's SDK boundary (`BUSBAR_COLD_ENTRY`),
-    /// until the auth plugin's door re-pin.
-    Boundary(&'static ColdEntry),
 }
 
 impl LinkedPlugin {
@@ -230,16 +211,6 @@ impl LinkedPlugin {
             }
         }
         self
-    }
-
-    /// M6-COLD-DELETE residue: a linked JSON-lane auth plugin, `manifest` and its boundary.
-    pub fn boundary(manifest: Manifest, entry: &'static ColdEntry) -> Self {
-        LinkedPlugin {
-            manifest,
-            entry: LinkedEntry::Boundary(entry),
-            ephemeral: false,
-            keyed_by_alias: false,
-        }
     }
 
     /// A linked MEMORY-ABI plugin: `manifest` and its door (THE DESIGN: compiled-in = dropped-in,
@@ -647,7 +618,7 @@ impl PluginRegistry {
         if let Some(entry) = p.entry {
             return match entry {
                 LinkedEntry::Store { door } => Ok(StoreDoor::Linked(door)),
-                LinkedEntry::Door(_) | LinkedEntry::Boundary(_) => Err(no_door()),
+                LinkedEntry::Door(_) => Err(no_door()),
             };
         }
         let named = |e: String| format!("plugin '{}': {e}", p.key());
@@ -661,65 +632,27 @@ impl PluginRegistry {
         }
     }
 
-    /// M6-COLD-DELETE: whether the `kind: auth` row `name_or_alias` resolves to opens on the COLD
-    /// auth lane — a linked `BUSBAR_COLD_ENTRY`, or a dropped-in library with no door and no
-    /// Statement (`crate::auth_axis::AuthRows` opens such a row through its `ColdAuth`) — rather
-    /// than on the auth kind's memory ABI. A cold row's `verify` is a synchronous call that may
-    /// block: its caller keeps it off an async worker.
-    ///
-    /// # Errors
-    /// No row resolves to `name_or_alias`, or it is not `kind: auth`, in [`Self::open_auth`]'s words.
-    /// A name only a door's Statement alias answers resolves to no row here: the auth axis answers it.
-    pub fn auth_row_is_cold(&self, name_or_alias: &str) -> Result<bool, String> {
-        let p = self.resolve_kind(name_or_alias, "auth", "serve as an auth module")?;
-        Ok(p.door().is_none()
-            && (p.image_is_cold_linked() || matches!(p.manifest.stated_rendering(), Ok(None))))
-    }
-
-    /// Open an AUTH plugin resolved by name or alias: verifies the resolved plugin's `kind` is `auth`,
-    /// then loads it over the kind-neutral C ABI and `open`s it with `cfg_json`, returning
-    /// `Box<dyn AuthModule>` — the seam the engine's auth chain consumes. Same trust and load
-    /// pipeline as store/secret; only the kind (and the consuming seam) differs. FAIL-CLOSED.
-    pub fn open_auth(
-        &self,
-        name_or_alias: &str,
-        cfg_json: &str,
-    ) -> Result<Box<dyn busbar_contract::auth::AuthModule>, String> {
-        let p = self.resolve_kind(name_or_alias, "auth", "serve as an auth module")?;
-        if p.door().is_some() {
-            return Err(format!(
-                "auth plugin '{name_or_alias}' is on the memory ABI: it opens through the auth \
-                 axis, not the cold lane"
-            ));
+    /// Why no `kind` plugin answers `name_or_alias` on that kind's axis, for every kind's axis: no
+    /// row of `kind` resolves to it (in [`Self::resolve_kind`]'s words, the ones 1.5.5's loader
+    /// gave, `purpose` saying what the row could not do), or the row resolves and its axis still
+    /// does not answer it — a row that states no door of `kind`, a 1.5.5 JSON-contract plugin,
+    /// refused naming the rebuild (THE DESIGN §11.8).
+    #[must_use]
+    pub fn kind_refusal(&self, kind: &str, purpose: &str, name_or_alias: &str) -> String {
+        match self.resolve_kind(name_or_alias, kind, purpose) {
+            Err(e) => e,
+            Ok(p) => format!(
+                "plugin '{}': it speaks the 1.5.5 JSON {kind} contract, which this host does not \
+                 load — rebuild the plugin against the 1.6.0 SDK",
+                p.manifest.name
+            ),
         }
-        crate::auth::load_auth_image(p.image(), cfg_json, p.key(), &p.manifest.kind)
     }
 
-    /// M6-COLD-DELETE RESIDUE (deleted when the hosted login moves onto the auth door): open an AUTH
-    /// plugin as the unified [`busbar_contract::auth::AuthPlugin`] handle, KEEPING the `LoginModule`
-    /// capability the hosted browser-login flow (`auth.methods`, 1.5.2) drives. Also
-    /// returns the resolved plugin's manifest `abi_version` so the caller can gate v2-only login
-    /// methods (a `browser_login` method needs an ABI v2 login-capable plugin). FAIL-CLOSED.
-    pub fn open_login(
-        &self,
-        name_or_alias: &str,
-        cfg_json: &str,
-    ) -> Result<(Box<dyn busbar_contract::auth::AuthPlugin>, u32), String> {
-        let p = self.resolve_kind(name_or_alias, "auth", "serve as a login module")?;
-        let abi_version = p.manifest.abi_version;
-        let module = crate::auth::load_login_image(p.image(), cfg_json, p.key(), &p.manifest.kind)?;
-        Ok((module, abi_version))
-    }
-
-    /// Why no secret plugin answers `name_or_alias` on the secret axis: no `kind: secret` row
-    /// resolves to it (in [`Self::resolve_kind`]'s words), or the row states no door — a 1.5.5
-    /// JSON-contract secret plugin, refused naming the rebuild (THE DESIGN §11.8).
+    /// Why no secret plugin answers `name_or_alias` on the secret axis ([`Self::kind_refusal`]).
     #[must_use]
     pub fn secret_refusal(&self, name_or_alias: &str) -> String {
-        match self.resolve_kind(name_or_alias, kind::SECRET, "resolve config secrets") {
-            Err(e) => e,
-            Ok(p) => format!("plugin '{}': {JSON_SECRET_REFUSED}", p.key()),
-        }
+        self.kind_refusal(kind::SECRET, "resolve config secrets", name_or_alias)
     }
 
     /// Open a PLANE resolved by name or alias: verifies the resolved plugin's `kind` is `plane`, then

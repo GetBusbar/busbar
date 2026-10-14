@@ -6,8 +6,8 @@
 //! * BATTERY — `cargo test -p busbar-plane-decisions`: the codec, the fixtures, the PII witness,
 //!   purity and invariance, and the both-ways door. It says the plane reads and writes jev. It
 //!   cannot say busbar SERVES jev, and a battery that selected zero tests says nothing at all.
-//! * SERVED — a busbar built from this checkout, booted with exactly one `decisions.models` entry
-//!   (the one shape that mounts `POST /v1/systemone`, `busbar-plane-decisions/src/driven.rs`),
+//! * SERVED — a busbar built from this checkout, booted with one `decisions.models` entry (so a
+//!   request naming no model routes over it, the default, `busbar-plane-decisions/src/driven.rs`),
 //!   whose provider is a far end this rig owns ([`super::upstream::FarEnd`]). The leg judges the
 //!   SERVED BYTES from both ends of the relay:
 //!
@@ -45,8 +45,31 @@
 //!   The 1.6.0 node keeps its rows at bucket-day width (no lane, no provider), so there the jev
 //!   lane's row is the rig's caller's own bucket ([`judge_jev_ledger`]).
 //!   The subject's own card prices the `decision` class at 1 micro-unit per unit
-//!   (`decisions.rate_card.<model>.units.decision: 1`, in the rig's generated config only), so the
-//!   lane's `priced_micros` IS the unit count: 42.
+//!   (`decisions.rate_card.<model>.units.decision: 1`, in the rig's generated config only) and the
+//!   two token classes the plane also declares at 0 (THE DESIGN §7: "all three required, 0 =
+//!   free"), so the lane's `priced_micros` IS the unit count: 42.
+//!
+//!   THE MODEL-RESOLUTION CHECKS (THE DESIGN §2, the decisions bullet; DECISIONS D8b) run on a second
+//!   boot whose `decisions.models` holds two models, [`MODEL`] and [`UPSTREAM_MODEL`] (its
+//!   `upstream_model` set to [`UPSTREAM_NAME`]), on the same far end:
+//!
+//!   | check | what a correct busbar does |
+//!   |---|---|
+//!   | `models.unnamed-400` | two models and none named: `400` in jev's shape, no far-end hop |
+//!   | `models.unknown-404` | a model no entry has: `404` in jev's shape, no far-end hop |
+//!   | `models.upstream-model` | the second model named: served, and the far end receives the caller's bytes with the top-level `model` value alone spliced to its `upstream_model` |
+//!
+//!   THE `nanojev` CHECKS (THE DESIGN §2: "NanoJev is the one, dialect `nanojev`: `/api/evaluate` is
+//!   its second exact claim ... it meters the upstream's own billing unit, counted from the answer
+//!   already read (`execution.states`; an answer with no count refuses loudly ...), with no extra
+//!   egress") run on a third boot whose `decisions.models` holds [`MODEL`] on the jev provider and
+//!   [`NANOJEV_MODEL`] on a provider whose protocol is `nanojev`:
+//!
+//!   | check | what a correct busbar does |
+//!   |---|---|
+//!   | `nanojev.served` | `POST /api/evaluate` is served: the far end receives `POST /api/evaluate` with the caller's bytes, the caller its 200 bytes, over one dial |
+//!   | `nanojev.wrong-dialect-404` | the jev model named on `/api/evaluate`: `404` in jev's shape, no far-end hop |
+//!   | `nanojev.no-count-refused` | a success with no `execution.states`: a 5xx in jev's shape, never the far end's bytes, over one dial |
 //!
 //! The rules, in order: battery red or empty ⇒ `fail`; no subject binary ⇒ `not-run` (nothing was
 //! booted); a subject that does not boot ⇒ `fail`; `POST /v1/systemone` answering the absence code
@@ -67,6 +90,20 @@ use super::Outcome;
 const MODEL: &str = "jev-1";
 const PROVIDER: &str = "typesafe";
 const PATH: &str = "/v1/systemone";
+/// The second boot's second model, and the `upstream_model` it names.
+pub const UPSTREAM_MODEL: &str = "jev-2";
+pub const UPSTREAM_NAME: &str = "jev-upstream-2";
+/// The `nanojev` boot's provider and model, and its dialect's one path.
+pub const NANOJEV_PROVIDER: &str = "nanoprov";
+pub const NANOJEV_MODEL: &str = "nano-1";
+pub const PATH_EVALUATE: &str = "/api/evaluate";
+/// A NanoJev request, odd spacing kept, naming no model (the one `nanojev` model is its default).
+pub const NANOJEV_REQUEST: &[u8] = b"{ \"input\" : {\"case\":\"conformance\"} }";
+/// A NanoJev success, its billing unit stated.
+pub const NANOJEV_SUCCESS: &[u8] =
+    b"{\"result\":{\"decision\":\"approve\"}, \"execution\" : {\"states\":3}}";
+/// A NanoJev success with no billing unit: the plane refuses it loudly.
+pub const NANOJEV_NO_COUNT: &[u8] = b"{\"result\":{\"decision\":\"approve\"}}";
 /// The header outside the deny-set the caller sends and the far end must receive unchanged.
 const PROBE_HEADER: &str = "x-jev-conformance-probe";
 
@@ -554,9 +591,153 @@ pub fn jev_subject_config(data: u16, admin: u16, key_file: &Path) -> String {
          advanced:\n  allow_destinations: [\"127.0.0.1\"]\n\
          groups:\n  {ONE_REQUEST_GROUP}:\n    limits:\n      - {{ requests: 1, per: day }}\n\
          decisions:\n  models:\n    {MODEL}:\n      provider: {PROVIDER}\n\
-         \x20 rate_card:\n    {MODEL}: {{ units: {{ decision: 1 }} }}\n",
+         \x20 rate_card:\n    {MODEL}: {{ units: {{ decision: 1, input_tokens: 0, output_tokens: 0 }} }}\n",
         key_file.display()
     )
+}
+
+/// The second boot's config: [`MODEL`] and [`UPSTREAM_MODEL`] (its `upstream_model`
+/// [`UPSTREAM_NAME`]) on the one provider, each priced on its own card entry, the admin token, and
+/// the far end's loopback address declared as an allowed destination.
+pub fn jev_models_config(data: u16, admin: u16, key_file: &Path) -> String {
+    format!(
+        "listen: \"127.0.0.1:{data}\"\n\
+         admin_listen: \"127.0.0.1:{admin}\"\n\
+         store: {{ module: memory }}\n\
+         providers:\n  {PROVIDER}:\n    api_key: {{ env: JEV_CONFORMANCE_PROVIDER_KEY }}\n\
+         models: {{}}\n\
+         identity-providers:\n  admin-tokens: {{ module: admin-tokens, token: {{ env: BUSBAR_ADMIN_TOKEN }} }}\n\
+         auth:\n  chain: [keys]\n  admin_auth: [admin-tokens]\n  signing_key: {{ file: {} }}\n\
+         advanced:\n  allow_destinations: [\"127.0.0.1\"]\n\
+         decisions:\n  models:\n    {MODEL}:\n      provider: {PROVIDER}\n\
+         \x20   {UPSTREAM_MODEL}:\n      provider: {PROVIDER}\n      upstream_model: {UPSTREAM_NAME}\n\
+         \x20 rate_card:\n    {MODEL}: {{ units: {{ decision: 1, input_tokens: 0, output_tokens: 0 }} }}\n\
+         \x20   {UPSTREAM_MODEL}: {{ units: {{ decision: 1, input_tokens: 0, output_tokens: 0 }} }}\n",
+        key_file.display()
+    )
+}
+
+/// The rig's providers on the far end at `port`: the jev provider.
+pub fn jev_providers(port: u16) -> String {
+    format!(
+        "{PROVIDER}:\n  protocol: jev\n  base_url: http://127.0.0.1:{port}\n  error_map: {{}}\n"
+    )
+}
+
+/// The `nanojev` boot's providers on the far end at `port`: the jev provider and a `nanojev` one.
+pub fn nanojev_providers(port: u16) -> String {
+    format!(
+        "{}{NANOJEV_PROVIDER}:\n  protocol: nanojev\n  base_url: http://127.0.0.1:{port}\n  error_map: {{}}\n",
+        jev_providers(port)
+    )
+}
+
+/// The `nanojev` boot's config: [`MODEL`] on the jev provider and [`NANOJEV_MODEL`] on the
+/// `nanojev` one, each priced on its own card entry.
+pub fn jev_nanojev_config(data: u16, admin: u16, key_file: &Path) -> String {
+    format!(
+        "listen: \"127.0.0.1:{data}\"\n\
+         admin_listen: \"127.0.0.1:{admin}\"\n\
+         store: {{ module: memory }}\n\
+         providers:\n  {PROVIDER}:\n    api_key: {{ env: JEV_CONFORMANCE_PROVIDER_KEY }}\n\
+         \x20 {NANOJEV_PROVIDER}:\n    api_key: {{ env: JEV_CONFORMANCE_PROVIDER_KEY }}\n\
+         models: {{}}\n\
+         identity-providers:\n  admin-tokens: {{ module: admin-tokens, token: {{ env: BUSBAR_ADMIN_TOKEN }} }}\n\
+         auth:\n  chain: [keys]\n  admin_auth: [admin-tokens]\n  signing_key: {{ file: {} }}\n\
+         advanced:\n  allow_destinations: [\"127.0.0.1\"]\n\
+         decisions:\n  models:\n    {MODEL}:\n      provider: {PROVIDER}\n\
+         \x20   {NANOJEV_MODEL}:\n      provider: {NANOJEV_PROVIDER}\n\
+         \x20 rate_card:\n    {MODEL}: {{ units: {{ decision: 1, input_tokens: 0, output_tokens: 0 }} }}\n\
+         \x20   {NANOJEV_MODEL}: {{ units: {{ decision: 1, input_tokens: 0, output_tokens: 0 }} }}\n",
+        key_file.display()
+    )
+}
+
+/// `nanojev.served`: the caller got the far end's 200 bytes over one dial, and the far end was asked
+/// at `/api/evaluate` with the caller's bytes.
+pub fn judge_nanojev_served(call: &Call, path: &str, received: &[u8]) -> Result<(), String> {
+    check(
+        call.status == 200 && call.body == NANOJEV_SUCCESS && call.hops == 1,
+        || {
+            format!(
+                "a NanoJev success answered {} `{}` over {} hop(s), not the far end's 200 bytes over one",
+                call.status,
+                show(&call.body),
+                call.hops
+            )
+        },
+    )?;
+    check(path == PATH_EVALUATE && received == NANOJEV_REQUEST, || {
+        format!(
+            "the far end was asked at `{path}` with `{}`, not at {PATH_EVALUATE} with the caller's bytes",
+            show(received)
+        )
+    })
+}
+
+/// `nanojev.no-count-refused`: a success with no billing unit ends in a 5xx in jev's shape, never
+/// the far end's bytes, over exactly one dial (no extra egress).
+pub fn judge_nanojev_no_count(call: &Call) -> Result<(), String> {
+    if !(500..=599).contains(&call.status) || call.body == NANOJEV_NO_COUNT {
+        return Err(format!(
+            "a NanoJev success with no `execution.states` answered {} `{}`, not a 5xx refusal",
+            call.status,
+            show(&call.body)
+        ));
+    }
+    check(call.hops == 1, || {
+        format!("the unit made {} far-end hop(s), not one", call.hops)
+    })?;
+    jev_refusal_code(&call.body).map(|_| ())
+}
+
+/// A request naming `model` (none: [`REQUEST`]'s own bytes), the odd spacing kept.
+pub fn models_request(model: Option<&str>) -> Vec<u8> {
+    match model {
+        None => REQUEST.to_vec(),
+        Some(m) => format!(
+            "{{ \"model\" :  \"{m}\" , \"state\" : {{\"session\":\"conformance-state\"}},\n  \"context\":{{}} }}"
+        )
+        .into_bytes(),
+    }
+}
+
+/// `models.unnamed-400` and `models.unknown-404`: the `status` refusal in jev's shape (`code`), and
+/// no request at the far end.
+pub fn judge_unrouted(call: &Call, status: u16, code: &str) -> Result<(), String> {
+    if call.status != status {
+        return Err(format!(
+            "answered {} `{}`, not the {status} refusal",
+            call.status,
+            show(&call.body)
+        ));
+    }
+    if call.hops != 0 {
+        return Err(format!(
+            "the unrouted request reached the far end ({} hop(s))",
+            call.hops
+        ));
+    }
+    is_jev_refusal(&call.body, code)
+}
+
+/// `models.upstream-model`: the request naming [`UPSTREAM_MODEL`] is served (the far end's 200 bytes
+/// over one dial), and the far end received `sent` with the top-level `model` value alone spliced
+/// to [`UPSTREAM_NAME`].
+pub fn judge_upstream_model(call: &Call, sent: &[u8], received: &[u8]) -> Result<(), String> {
+    served_once(call)?;
+    let want = String::from_utf8_lossy(sent).replacen(
+        &format!("\"{UPSTREAM_MODEL}\""),
+        &format!("\"{UPSTREAM_NAME}\""),
+        1,
+    );
+    check(received == want.as_bytes(), || {
+        format!(
+            "the far end received `{}`, not the caller's bytes with `model` spliced to \
+             `{UPSTREAM_NAME}`: `{want}`",
+            show(received)
+        )
+    })
 }
 
 fn check(ok: bool, finding: impl FnOnce() -> String) -> Result<(), String> {
@@ -601,6 +782,10 @@ impl Runner {
                     run.build = Ok(());
                     run.boot = Ok(());
                     self.served(&bin, &dir, &mut run);
+                    if run.boot.is_ok() && !run.checks.is_empty() {
+                        self.served_models(&bin, &dir, &mut run);
+                        self.served_nanojev(&bin, &dir, &mut run);
+                    }
                 }
                 Err(e) => run.build = Err(e),
             }
@@ -641,10 +826,7 @@ impl Runner {
             }
         };
         let config = jev_subject_config(data, admin, &key_file);
-        let providers = format!(
-            "{PROVIDER}:\n  protocol: jev\n  base_url: http://127.0.0.1:{}\n  error_map: {{}}\n",
-            far.port
-        );
+        let providers = jev_providers(far.port);
         let booted = match subject::boot(
             bin,
             dir,
@@ -880,6 +1062,162 @@ impl Runner {
             (H2_ROUTE.to_string(), gate.route(&client)),
         ]);
         drop(booted);
+    }
+}
+
+/// A booted subject of one of the extra legs: its far end, its data port and a minted caller.
+struct Leg {
+    far: FarEnd,
+    scratch: std::path::PathBuf,
+    data: u16,
+    bearer: String,
+    _booted: subject::Booted,
+}
+
+impl Leg {
+    /// One call on `path` with `body`, and the far-end hops it made.
+    fn call(&self, path: &str, body: &[u8]) -> Result<Call, String> {
+        let before = self.far.seen().len();
+        let r = curl(
+            &self.scratch,
+            "POST",
+            &format!("http://127.0.0.1:{}{path}", self.data),
+            &[
+                ("content-type", "application/json"),
+                ("authorization", self.bearer.as_str()),
+            ],
+            Some(body),
+            &[],
+        )?;
+        Ok(Call {
+            status: r.status,
+            body: r.body,
+            hops: self.far.seen().len() - before,
+        })
+    }
+
+    /// The body of the last request the far end received.
+    fn received(&self) -> Vec<u8> {
+        self.far
+            .seen()
+            .last()
+            .map(|s| s.body.clone())
+            .unwrap_or_default()
+    }
+}
+
+impl Runner {
+    /// Boot an extra leg's subject under `dir/<name>`: its config written by `config` for its
+    /// ports and signing key, its providers by `providers` for the far end's port, and a caller
+    /// minted.
+    fn boot_leg(
+        &self,
+        bin: &Path,
+        dir: &Path,
+        name: &str,
+        config: fn(u16, u16, &Path) -> String,
+        providers: fn(u16) -> String,
+    ) -> Result<Leg, String> {
+        let dir = dir.join(name);
+        let scratch = dir.join("http");
+        let far = FarEnd::start()?;
+        let (ports, admin_token, provider_key) = match (
+            subject::free_ports(2),
+            subject::random_hex(24),
+            subject::random_hex(16),
+        ) {
+            (Ok(p), Ok(a), Ok(k)) => (p, a, k),
+            (p, a, k) => {
+                return Err([p.err(), a.err(), k.err()]
+                    .into_iter()
+                    .flatten()
+                    .collect::<Vec<_>>()
+                    .join("; "))
+            }
+        };
+        let (data, admin) = (ports[0], ports[1]);
+        let key_file = subject::signing_key(bin, &dir)?;
+        let booted = subject::boot(
+            bin,
+            &dir,
+            &config(data, admin, &key_file),
+            &providers(far.port),
+            &[
+                ("BUSBAR_ADMIN_TOKEN", admin_token.clone()),
+                ("JEV_CONFORMANCE_PROVIDER_KEY", provider_key),
+            ],
+            &format!("http://127.0.0.1:{data}/stats"),
+            &[],
+        )
+        .map_err(|e| format!("the {name} subject did not boot: {e}"))?;
+        let bearer = match subject::mint_key(&scratch, admin, &admin_token, &format!("jev-{name}"))
+        {
+            Ok((key, _)) => format!("Bearer {key}"),
+            Err(e) => return Err(format!("{e}: {}", booted.log_tail())),
+        };
+        Ok(Leg {
+            far,
+            scratch,
+            data,
+            bearer,
+            _booted: booted,
+        })
+    }
+
+    /// THE MODEL-RESOLUTION BOOT: two models on the rig's far end, and the three `models.*` checks.
+    fn served_models(&self, bin: &Path, dir: &Path, run: &mut JevRun) {
+        let leg = match self.boot_leg(bin, dir, "models", jev_models_config, jev_providers) {
+            Ok(leg) => leg,
+            Err(why) => return run.checks.push(("models.boot".to_string(), Err(why))),
+        };
+        run.checks.push((
+            "models.unnamed-400".to_string(),
+            leg.call(PATH, &models_request(None))
+                .and_then(|c| judge_unrouted(&c, 400, "invalid_request")),
+        ));
+        run.checks.push((
+            "models.unknown-404".to_string(),
+            leg.call(PATH, &models_request(Some("jev-no-such-model")))
+                .and_then(|c| judge_unrouted(&c, 404, "invalid_params")),
+        ));
+        leg.far.clear_replies();
+        leg.far.reply(200, SUCCESS);
+        let sent = models_request(Some(UPSTREAM_MODEL));
+        run.checks.push((
+            "models.upstream-model".to_string(),
+            leg.call(PATH, &sent)
+                .and_then(|c| judge_upstream_model(&c, &sent, &leg.received())),
+        ));
+    }
+
+    /// THE `nanojev` BOOT: a NanoJev model beside a jev one, and the three `nanojev.*` checks.
+    fn served_nanojev(&self, bin: &Path, dir: &Path, run: &mut JevRun) {
+        let leg = match self.boot_leg(bin, dir, "nanojev", jev_nanojev_config, nanojev_providers) {
+            Ok(leg) => leg,
+            Err(why) => return run.checks.push(("nanojev.boot".to_string(), Err(why))),
+        };
+        leg.far.clear_replies();
+        leg.far.reply(200, NANOJEV_SUCCESS);
+        run.checks.push((
+            "nanojev.served".to_string(),
+            leg.call(PATH_EVALUATE, NANOJEV_REQUEST).and_then(|c| {
+                let seen = leg.far.seen();
+                let path = seen.last().map(|s| s.path.clone()).unwrap_or_default();
+                judge_nanojev_served(&c, &path, &leg.received())
+            }),
+        ));
+        run.checks.push((
+            "nanojev.wrong-dialect-404".to_string(),
+            leg.call(PATH_EVALUATE, &models_request(Some(MODEL)))
+                .and_then(|c| judge_unrouted(&c, 404, "invalid_params")),
+        ));
+        leg.far.clear_replies();
+        leg.far.reply(200, NANOJEV_NO_COUNT);
+        run.checks.push((
+            "nanojev.no-count-refused".to_string(),
+            leg.call(PATH_EVALUATE, NANOJEV_REQUEST)
+                .and_then(|c| judge_nanojev_no_count(&c)),
+        ));
     }
 }
 

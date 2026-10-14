@@ -40,6 +40,11 @@ use crate::abi::sdk::conn::{ConnFailure, Host, ProcessId};
 /// How much one read asks the connector for.
 pub const READ_CHUNK: usize = 16 * 1024;
 
+/// THE REFUSAL OF AN UPGRADE OVER UNREAD INPUT: the far end sent bytes in the clear that the body
+/// has not consumed when it asked for connection security ([`Wire::upgrade_secure`]).
+pub const UPGRADE_OVER_UNREAD_INPUT: &str =
+    "bytes the far end sent in the clear are still unread; the upgrade is refused";
+
 /// How long an op waiting for a kept connection, or re-offering a write the connector had no
 /// room for, waits at most before it looks again (a returned connection wakes it sooner).
 const RETRY_NS: u64 = 5_000_000;
@@ -243,14 +248,10 @@ impl Wire {
     /// protocol's own negotiation), offering `name` (`None` = the target's host).
     ///
     /// # Errors
-    /// The connector's failure (the handshake or the trust refused).
+    /// The connector's failure (the handshake or the trust refused); REFUSED
+    /// ([`UPGRADE_OVER_UNREAD_INPUT`]) while the input holds bytes the body has not consumed.
     pub async fn upgrade_secure(&self, name: Option<&str>) -> Result<(), ConnFailure> {
-        self.ask(Ask::Upgrade {
-            name: name.map(str::to_owned),
-            verify_off: false,
-        })
-        .await
-        .map(|_| ())
+        self.upgrade(name, false).await
     }
 
     /// [`Wire::upgrade_secure`] WITHOUT verifying the far end's certificate: the operator's
@@ -261,9 +262,24 @@ impl Wire {
     /// # Errors
     /// The connector's failure; REFUSED for a need of any other class.
     pub async fn upgrade_secure_unverified(&self, name: Option<&str>) -> Result<(), ConnFailure> {
+        self.upgrade(name, true).await
+    }
+
+    /// The upgrade, asked of the connector only over an input the body consumed whole: bytes the
+    /// far end sent in the clear and the body has not consumed would be parsed after it as the
+    /// secured far end's (STARTTLS response injection), so the upgrade is refused and the
+    /// connection is never kept.
+    async fn upgrade(&self, name: Option<&str>, verify_off: bool) -> Result<(), ConnFailure> {
+        {
+            let mut st = self.state();
+            if !st.input.is_empty() {
+                st.unfit = true;
+                return Err(ConnFailure::Refused(UPGRADE_OVER_UNREAD_INPUT.into()));
+            }
+        }
         self.ask(Ask::Upgrade {
             name: name.map(str::to_owned),
-            verify_off: true,
+            verify_off,
         })
         .await
         .map(|_| ())

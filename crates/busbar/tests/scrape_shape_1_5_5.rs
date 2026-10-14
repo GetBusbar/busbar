@@ -212,6 +212,8 @@ fn a_1_5_5_shaped_config_exposes_no_plane_series_with_every_plane_compiled_in() 
         .stderr(log_err)
         .spawn()
         .expect("spawn busbar");
+    // Any panic from here on prints the node's whole log (its stdout and stderr) with it.
+    let _dump = common::boot::DumpOnPanic(&log_path);
 
     let booted = wait_for(Duration::from_secs(30), || {
         if let Some(status) = child.try_wait().expect("try_wait") {
@@ -220,11 +222,11 @@ fn a_1_5_5_shaped_config_exposes_no_plane_series_with_every_plane_compiled_in() 
                 read_to_string(&log_path)
             );
         }
-        read_to_string(&log_path).contains("busbar listening")
+        common::boot::log_shows_data_and_admin_listening(&read_to_string(&log_path))
     });
     assert!(
         booted,
-        "busbar did not reach 'listening' within 30s; log:\n{}",
+        "busbar did not reach 'listening' (data and admin) within 30s; log:\n{}",
         read_to_string(&log_path)
     );
 

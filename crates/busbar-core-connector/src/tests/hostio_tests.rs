@@ -118,6 +118,7 @@ fn an_admitted_program_is_spawned_bare_and_killed_with_its_handle() {
             command: "/bin/cat".into(),
             args: Vec::new(),
             env: Vec::new(),
+            env_refs: Vec::new(),
         };
         io.admit(ticket(20), Admission::Spawn(program));
         let h = io
@@ -142,6 +143,100 @@ fn an_admitted_program_is_spawned_bare_and_killed_with_its_handle() {
         assert_eq!(&buf[..n], b"line\n");
         assert!(!io.program_exited(h));
         io.close(OWNER, h).unwrap();
+        assert_eq!(io.held(), 0);
+    });
+}
+
+/// The spawn's resolver in this cell: an `env` reference reads its variable, nothing else resolves.
+fn env_only(r: &busbar_contract::secret_ref::SecretRef) -> Result<String, String> {
+    r.env_var()
+        .and_then(|v| std::env::var(v).ok())
+        .ok_or_else(|| format!("{} does not resolve", r.describe()))
+}
+
+/// RED (SECURITY ruling 2026-10-07: a member's env resolves at the spawn): the carrier hands the
+/// host's `io.spawn` the program's WRITTEN environment only; the admitted program's references
+/// resolve inside the host's spawn, so the value exists in the child's environment and nowhere the
+/// carrier reaches. A reference that does not resolve spawns nothing.
+#[test]
+fn a_programs_environment_reference_resolves_inside_the_hosts_spawn() {
+    const VAR: &str = "BUSBAR_HOSTIO_SPAWN_SECRET";
+    std::env::set_var(VAR, "hostio-spawn-value");
+    let _ = crate::compose::install_spawn_secrets(env_only);
+    worker().block_on(async {
+        let io = HostIo::new();
+        let program = Program {
+            command: "/usr/bin/env".into(),
+            args: Vec::new(),
+            env: vec![("DECLARED".to_owned(), "yes".to_owned())],
+            env_refs: vec![(
+                "WHOLE".to_owned(),
+                busbar_contract::secret_ref::SecretRef::env(VAR),
+            )],
+        };
+        io.admit(ticket(30), Admission::Spawn(program.clone()));
+        let h = io
+            .spawn(
+                OWNER,
+                ticket(30),
+                &Spawn {
+                    program: "/usr/bin/env",
+                    args: &[],
+                    env: &[("DECLARED", "yes")],
+                },
+            )
+            .unwrap();
+        let mut out = Vec::new();
+        loop {
+            let mut buf = [0_u8; 256];
+            let n = poll_fn(|cx| io.read(OWNER, h, &mut buf, cx.waker()))
+                .await
+                .unwrap();
+            if n == 0 {
+                break;
+            }
+            out.extend_from_slice(&buf[..n]);
+        }
+        let mut lines: Vec<String> = String::from_utf8(out)
+            .unwrap()
+            .lines()
+            .map(str::to_owned)
+            .collect();
+        lines.sort();
+        assert_eq!(
+            lines,
+            vec![
+                "DECLARED=yes".to_owned(),
+                "WHOLE=hostio-spawn-value".to_owned()
+            ]
+        );
+        io.close(OWNER, h).unwrap();
+
+        // RED: a reference that does not resolve spawns nothing, and its refusal names the
+        // reference, never a value.
+        let unresolved = Program {
+            env_refs: vec![(
+                "MISSING".to_owned(),
+                busbar_contract::secret_ref::SecretRef::env("BUSBAR_HOSTIO_SPAWN_UNSET_VAR"),
+            )],
+            ..program
+        };
+        io.admit(ticket(31), Admission::Spawn(unresolved));
+        match io.spawn(
+            OWNER,
+            ticket(31),
+            &Spawn {
+                program: "/usr/bin/env",
+                args: &[],
+                env: &[("DECLARED", "yes")],
+            },
+        ) {
+            Err(IoRefusal::Refused(why)) => {
+                assert!(why.contains("MISSING"), "{why}");
+                assert!(!why.contains("hostio-spawn-value"), "{why}");
+            }
+            other => panic!("an unresolved reference spawned: {other:?}"),
+        }
         assert_eq!(io.held(), 0);
     });
 }

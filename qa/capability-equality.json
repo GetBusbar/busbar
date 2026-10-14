@@ -917,7 +917,7 @@
       "capability": "catalogue",
       "plane": "llm",
       "state": "proven",
-      "test": "crates/busbar-kernel/tests/endpoints_cross_plane.rs::test_v1_models_restricted_key_sees_only_reachable_names",
+      "test": "crates/busbar/tests/endpoints_cross_plane.rs::test_v1_models_restricted_key_sees_only_reachable_names",
       "root": {
         "state": "proven",
         "leg": "root-llm",

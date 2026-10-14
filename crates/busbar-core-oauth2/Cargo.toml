@@ -2,7 +2,7 @@
 # busbar-core into its own sibling crate.
 #
 # ONE-WAY DEPENDENCY (Cargo-enforced): this crate depends on busbar-core (to reach `CoreRouter`,
-# `App`/`AppHandle`, `net_guard`, the diagnostics macros, and the `oauth_as::config` types the
+# `App`/`AppHandle`, the diagnostics macros, and the `oauth_as::config` types the
 # single-document config pipeline still owns). busbar-core depends on NOTHING here — naming this
 # crate from core would be a dependency cycle, which Cargo refuses outright. Core reaches this
 # plane's runtime object only through the small seam in `busbar_core::oauth_as::seam`
@@ -43,7 +43,7 @@ http-body-util = { workspace = true }
 # The plane's own sweeper (`plane::spawn_sweeper`) and the CIMD fetch's hop-deadline timeout are
 # PRODUCTION code, not test-only — this is a real (non-dev) dependency, matching what it cost when
 # both lived inside busbar-core (a normal dependency there too).
-tokio = { workspace = true, features = ["rt", "time"] }
+tokio = { workspace = true, features = ["rt", "sync", "time"] }
 tracing = { workspace = true }
 serde = { workspace = true }
 serde_yaml = { workspace = true }

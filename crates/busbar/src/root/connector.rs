@@ -22,8 +22,8 @@ use busbar_core_connector::pool::PoolPosture;
 use busbar_core_connector::registry::Entry;
 use busbar_core_connector::{process, Connector};
 use busbar_kernel::config::{Destinations, RootCfg};
+use busbar_kernel::egress::trust::{install_egress_trust_host, GuardedEgressTrust};
 use busbar_kernel::host_services::DestJudge;
-use busbar_kernel::plane_host::egress_trust::{install_egress_trust_host, GuardedEgressTrust};
 
 use crate::root::loader::dispatch::{
     kinds::transport::Transport as TransportKind, load_linked, LinkedRow,
@@ -165,11 +165,13 @@ pub fn guard_for(d: &Destinations) -> Result<Arc<process::GuardJudge>, String> {
 /// build commits: every config commit is raised to it there. The same capability carries the one
 /// TLS wrap every kernel outbound connection is secured with — the connector's
 /// (`busbar_core_connector::tls::engine::Layer`; THE DESIGN: TLS stays in the connector, and the
-/// kernel names no TLS library).
+/// kernel names no TLS library), and the one name lookup every kernel resolve-then-pin asks
+/// (`busbar_core_connector::hostio::SystemNames`; row 130 E2: the kernel resolves no name itself).
 pub fn install_egress_trust(dest: Arc<dyn DestJudge>) {
     install_egress_trust_host(Arc::new(GuardedEgressTrust(
         dest,
         Arc::new(busbar_core_connector::tls::engine::Layer),
+        Arc::new(busbar_core_connector::hostio::SystemNames),
     )));
 }
 

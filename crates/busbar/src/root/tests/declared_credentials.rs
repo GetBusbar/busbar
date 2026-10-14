@@ -920,14 +920,25 @@ fn concurrent_binds_of_one_instance_each_log_their_own_header() {
     use std::sync::atomic::{AtomicBool, Ordering};
     const SIBLINGS: usize = 8;
     const ROUNDS: usize = 300;
-    let goog = named_binding("gemini", "static-twin-header");
+    // The measured bind's header: any name of the api-key style other than (and longer than) the
+    // siblings' default `api-key`. The cell is about the instance's per-call envelope, not about a
+    // dialect, so its binding names none (Law 1): it is the fixture's `api-key-override` binding
+    // with its own header written in, the shape a dialect's declared header takes.
+    const OWN_HEADER: &str = "x-twin-api-key";
+    let own_header = {
+        let mut binding = named_binding("api-key-override", "static-twin-header");
+        let header = serde_json::json!({ "header": OWN_HEADER });
+        binding.params["families"] = serde_json::json!([]);
+        binding.params["own"] = header.clone();
+        binding.params["passthrough"] = header;
+        binding
+    };
     let api_key = named_binding("api-key-override", "static-twin-header");
-    let want = vec![
+    let want = vec![format!(
         "egress credential contains invalid header bytes (ASCII control character); \
          omitting auth header — upstream will reject with 401 diag=BUSBAR-4013 \
-         header=x-goog-api-key"
-            .to_string(),
-    ];
+         header={OWN_HEADER}"
+    )];
     /// Stops the siblings however the measuring thread leaves the scope.
     struct Stop<'a>(&'a AtomicBool);
     impl Drop for Stop<'_> {
@@ -948,7 +959,7 @@ fn concurrent_binds_of_one_instance_each_log_their_own_header() {
         }
         let _stop = Stop(&done);
         (0..ROUNDS)
-            .map(|_| lines(&goog, "bad\nkey"))
+            .map(|_| lines(&own_header, "bad\nkey"))
             .filter(|l| *l != want)
             .collect()
     });

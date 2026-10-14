@@ -12,6 +12,7 @@ fn cfg(issuer: &str) -> OauthAsCfg {
         key_id: None,
         default_grant: Vec::new(),
         access_token_ttl_secs: None,
+        refresh_token_ttl_secs: None,
         fapi2: false,
         clients: Vec::new(),
     }
@@ -377,4 +378,68 @@ fn the_signing_key_reference_is_listed_for_the_kernel_to_resolve() {
     let resolved =
         resolve_block(serde_json::json!({ "issuer": "https://gw.example.com" })).expect("valid");
     assert!(resolved.oauth_as.expect("accepted").secret_refs.is_empty());
+}
+
+/// RED (audit core-oauth2#6): a refresh chain ends. Absent, it ends after thirty days; written, it
+/// ends when the operator says, and the built server holds it to that (before the fix the server
+/// was built with no refresh lifetime at all: a refresh token taken once was a credential
+/// forever, and the key did not exist).
+#[test]
+fn a_refresh_chain_has_a_bounded_lifetime() {
+    let plain: crate::config::OauthAsCfg =
+        serde_json::from_value(serde_json::json!({"issuer": "https://as.example.com"}))
+            .expect("parses");
+    let plane = crate::plane::AsPlane::build(
+        crate::config::AsIdentity::from_cfg(&plain).expect("valid"),
+        None,
+        Vec::new(),
+        crate::cimd::unconnected(),
+    )
+    .expect("builds");
+    assert_eq!(
+        plane.server().config().refresh_token_ttl,
+        Some(std::time::Duration::from_secs(30 * 24 * 60 * 60)),
+        "absent, a refresh chain lives thirty days"
+    );
+
+    let written: crate::config::OauthAsCfg = serde_json::from_value(serde_json::json!({
+        "issuer": "https://as.example.com",
+        "refresh_token_ttl_secs": 3600,
+    }))
+    .expect("the refresh lifetime is a key of the block");
+    let plane = crate::plane::AsPlane::build(
+        crate::config::AsIdentity::from_cfg(&written).expect("valid"),
+        None,
+        Vec::new(),
+        crate::cimd::unconnected(),
+    )
+    .expect("builds");
+    assert_eq!(
+        plane.server().config().refresh_token_ttl,
+        Some(std::time::Duration::from_secs(3600))
+    );
+}
+
+/// RED (audit core-oauth2#6): a lifetime of zero, or past its ceiling (a day for an access token,
+/// a year for a refresh chain), is refused at boot.
+#[test]
+fn a_token_lifetime_out_of_range_is_refused() {
+    for (key, secs) in [
+        ("access_token_ttl_secs", 0_u64),
+        ("access_token_ttl_secs", 24 * 60 * 60 + 1),
+        ("access_token_ttl_secs", u64::MAX),
+        ("refresh_token_ttl_secs", 0),
+        ("refresh_token_ttl_secs", 365 * 24 * 60 * 60 + 1),
+    ] {
+        let mut block = serde_json::Map::new();
+        block.insert("issuer".into(), "https://as.example.com".into());
+        block.insert(key.into(), secs.into());
+        let cfg: Result<crate::config::OauthAsCfg, _> =
+            serde_json::from_value(serde_json::Value::Object(block));
+        let refused = cfg.map(|cfg| crate::config::AsIdentity::from_cfg(&cfg).is_err());
+        assert!(
+            matches!(refused, Ok(true)),
+            "{key}: {secs} is refused at boot"
+        );
+    }
 }

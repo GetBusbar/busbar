@@ -15,8 +15,8 @@ use futures::{SinkExt, StreamExt};
 use crate::egress::duplex_ws::{self, DialError};
 use crate::ingress::byte_duplex::{CallRef, DuplexHandle, DuplexPlane};
 use crate::ingress::duplex_ws as ws_ingress;
-use crate::net_guard::{AddressRefusal, GuardPolicy};
 use crate::transport::{Transport, UpstreamWireKind};
+use busbar_kernel_egress::trust::net::{AddressRefusal, GuardPolicy};
 
 /// A trivial ECHO plane bound to the acceptor: no protocol, no wire vocabulary — it echoes each frame
 /// back verbatim. Exactly the shape the `serve_messages` header describes an upgraded WS session taking.

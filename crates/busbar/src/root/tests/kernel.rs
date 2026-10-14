@@ -388,7 +388,6 @@ fn the_units_assemble_from_values_configuration_decided() {
         &kernel,
         durability,
         crate::root::adapters::BreakerPolicy::new(),
-        crate::root::policy::ScopePolicy::new(),
         #[cfg(feature = "root-admin")]
         crate::root::units_admin::AdminBinding::new(
             std::sync::Arc::new(crate::root::units_admin::RefusingDispatch),
@@ -402,13 +401,11 @@ fn the_units_assemble_from_values_configuration_decided() {
     #[cfg(feature = "root-admin")]
     assert!(units.admin.units.is_empty());
 
-    // The journal opened nothing, the ledger is dual-writing, and the scope policy permits
-    // nothing until it is told to. All three are the safe end of a choice that had an unsafe
-    // end, and all three are checkable here rather than at the first request.
+    // The journal opened nothing and the ledger is dual-writing. Both are the safe end of a choice
+    // that had an unsafe end, and both are checkable here rather than at the first request.
     let durability = units.durability.lock().expect("durability lock");
     assert!(!durability.on_disk());
     assert!(durability.ledger.is_dual_writing());
-    assert!(units.scope_policy.is_empty());
 }
 
 /// **The units carry no metering policy, and the root has no pool-expansion boot check** (items

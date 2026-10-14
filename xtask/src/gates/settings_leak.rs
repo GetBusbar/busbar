@@ -1094,7 +1094,7 @@ impl Gate for SettingsLeakGate {
             ]);
         }
 
-        if population.below_floor() {
+        if population.unreconciled() {
             return Verdict::of(vec![
                 Row::pass(ROW_PLANE_ROOTS, "every plane root resolved", CLEAN),
                 Row::pass(
@@ -1104,10 +1104,10 @@ impl Gate for SettingsLeakGate {
                 ),
                 Row::fail(
                     ROW_SCAN_FLOOR,
-                    "the scan set is below its floor",
+                    "the scan set is not the tracked set",
                     format!(
-                        "{}. This gate scanned (almost) nothing, so its verdict is meaningless — \
-                         it is NOT a pass.",
+                        "{}. This gate did not read the tree it would report on, so its verdict \
+                         is meaningless — it is NOT a pass.",
                         population.census()
                     ),
                 ),
@@ -1147,7 +1147,7 @@ impl Gate for SettingsLeakGate {
             ),
             Row::pass(
                 ROW_SCAN_FLOOR,
-                "the scan set cleared its floor",
+                "the scan set is the tracked set",
                 population.census(),
             ),
             row_no_raw_bag(&offenders, &census),
@@ -1429,55 +1429,54 @@ impl Gate for SettingsLeakGate {
             )),
         }
 
-        // THE AGGREGATE FLOOR, on the run path: every root keeps a file, so the per-root check
-        // passes, and the total still falls under the floor.
+        // THE RECONCILIATION, on the run path: every root keeps a file, so the per-root check
+        // passes, and the files hidden from the walk are still owed by the tracked set.
         match scan_roots(cx) {
             Ok(roots) => {
-                let mut ov = Overlay::new();
-                let mut planted_any = false;
+                let mut hidden = Vec::new();
                 for root in &roots {
                     if let Ok(files) = cx.walk(
                         &WalkSpec::new([root.clone()])
                             .ext("rs")
                             .exclude([EXCLUDE_TESTS_DIR]),
                     ) {
-                        for f in files.iter().skip(1) {
-                            ov.remove(&f.rel);
-                            planted_any = true;
-                        }
+                        hidden.extend(files.iter().skip(1).map(|f| f.rel.clone()));
                     }
                 }
-                if planted_any {
-                    report.push(prove_red(
-                        cx,
-                        self,
-                        "a scan set below its floor is refused even when every root still holds a file",
-                        &[ROW_SCAN_FLOOR],
-                        ov,
-                        &["below its floor"],
-                    ));
-                } else {
+                if hidden.is_empty() {
                     report.note_infra_failure(
-                        "settings-leak selftest: no root holds a second file, so the aggregate \
-                         floor cannot be driven without also emptying a root"
+                        "settings-leak selftest: no root holds a second file, so a file cannot be \
+                         hidden from the walk without also emptying a root"
                             .to_string(),
                     );
+                } else {
+                    match cx.hide_from_scan(&hidden) {
+                        Ok(ov) => report.push(prove_red(
+                            cx,
+                            self,
+                            "files hidden from the walk are refused even when every root still holds one",
+                            &[ROW_SCAN_FLOOR],
+                            ov,
+                            &["NOT scanned"],
+                        )),
+                        Err(e) => report.note_infra_failure(format!("settings-leak selftest: {e}")),
+                    }
                 }
             }
             Err(_) => { /* already reported by the case above */ }
         }
 
-        // THE FLOOR REFUSES A POPULATION UNDER IT: the plant cuts the live tree to FLOOR - 1
-        // whatever its size (`Overlay::below_floor`), so predev growing a file never turns this
-        // plant green and never forces a re-pin for its sake.
-        match population::one_file_short(cx) {
-            Ok(ov) => report.push(prove_red(
+        // THE SCAN IS RECONCILED AGAINST THE TRACKED SET: one tracked file hidden from the walk
+        // is refused, and the refusal NAMES it. There is no count to re-pin, so neither a tree that
+        // grew nor one that shrank turns this plant green.
+        match population::one_file_hidden(cx) {
+            Ok((ov, rel)) => report.push(prove_red(
                 cx,
                 self,
-                "a population one file short of the measured floor is refused",
+                "a tracked file the scan did not read is refused by name",
                 &[ROW_SCAN_FLOOR],
                 ov,
-                &["below its floor"],
+                &["NOT scanned", rel.as_str()],
             )),
             Err(e) => report.note_infra_failure(format!("settings-leak selftest: {e}")),
         }

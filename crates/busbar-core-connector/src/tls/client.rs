@@ -391,59 +391,10 @@ pub fn peer_key_pin(leaf_der: &[u8]) -> Option<String> {
 /// key off. The pin is taken over the SPKI's whole encoding, so a pinning caller and any other tool
 /// compute the same digest for one key.
 fn subject_public_key_info(cert_der: &[u8]) -> Option<&[u8]> {
-    /// ASN.1 SEQUENCE, constructed — the only tag this walk expects at a structural position.
-    const TAG_SEQUENCE: u8 = 0x30;
     /// `[0] EXPLICIT`, the optional context tag carrying `TBSCertificate.version`.
     const TAG_VERSION: u8 = 0xA0;
     /// `serialNumber`, `signature`, `issuer`, `validity`, `subject` — the members before the SPKI.
     const MEMBERS_BEFORE_KEY: usize = 5;
-
-    // (tag, contents, whole) of one DER element off the front of `buf`, DER-strict on length.
-    fn element(buf: &[u8]) -> Option<(u8, &[u8])> {
-        let (&tag, rest) = buf.split_first()?;
-        let (&first_len, rest) = rest.split_first()?;
-        let (len, header) = if first_len < 0x80 {
-            (usize::from(first_len), 2usize)
-        } else if first_len == 0x80 {
-            return None; // an indefinite length is BER, not DER
-        } else {
-            let count = usize::from(first_len & 0x7f);
-            if count > 4 {
-                return None; // a length wider than any certificate needs
-            }
-            let bytes = rest.get(..count)?;
-            if bytes.first() == Some(&0) {
-                return None; // a non-minimal length
-            }
-            let mut len = 0usize;
-            for b in bytes {
-                len = (len << 8) | usize::from(*b);
-            }
-            if len < 0x80 {
-                return None; // long form where the short form would have fit
-            }
-            (len, 2 + count)
-        };
-        let end = header.checked_add(len)?;
-        let whole = buf.get(..end)?;
-        Some((tag, whole))
-    }
-
-    fn expect_sequence(buf: &[u8]) -> Option<&[u8]> {
-        let (tag, whole) = element(buf)?;
-        (tag == TAG_SEQUENCE).then_some(whole)
-    }
-
-    fn contents(whole: &[u8]) -> Option<&[u8]> {
-        // Re-read the header length off the whole element to hand back its contents.
-        let first_len = *whole.get(1)?;
-        let header = if first_len < 0x80 {
-            2
-        } else {
-            2 + usize::from(first_len & 0x7f)
-        };
-        whole.get(header..)
-    }
 
     let certificate = expect_sequence(cert_der)?;
     let tbs = expect_sequence(contents(certificate)?)?;
@@ -457,6 +408,110 @@ fn subject_public_key_info(cert_der: &[u8]) -> Option<&[u8]> {
         rest = &rest[member.len()..];
     }
     expect_sequence(rest)
+}
+
+/// ASN.1 SEQUENCE, constructed: the only tag the DER walks here expect at a structural position.
+const TAG_SEQUENCE: u8 = 0x30;
+
+/// (tag, whole) of one DER element off the front of `buf`, DER-strict on length.
+fn element(buf: &[u8]) -> Option<(u8, &[u8])> {
+    let (&tag, rest) = buf.split_first()?;
+    let (&first_len, rest) = rest.split_first()?;
+    let (len, header) = if first_len < 0x80 {
+        (usize::from(first_len), 2usize)
+    } else if first_len == 0x80 {
+        return None; // an indefinite length is BER, not DER
+    } else {
+        let count = usize::from(first_len & 0x7f);
+        if count > 4 {
+            return None; // a length wider than any certificate needs
+        }
+        let bytes = rest.get(..count)?;
+        if bytes.first() == Some(&0) {
+            return None; // a non-minimal length
+        }
+        let mut len = 0usize;
+        for b in bytes {
+            len = (len << 8) | usize::from(*b);
+        }
+        if len < 0x80 {
+            return None; // long form where the short form would have fit
+        }
+        (len, 2 + count)
+    };
+    let end = header.checked_add(len)?;
+    let whole = buf.get(..end)?;
+    Some((tag, whole))
+}
+
+/// The SEQUENCE off the front of `buf`, whole.
+fn expect_sequence(buf: &[u8]) -> Option<&[u8]> {
+    let (tag, whole) = element(buf)?;
+    (tag == TAG_SEQUENCE).then_some(whole)
+}
+
+/// The contents of one whole DER element.
+fn contents(whole: &[u8]) -> Option<&[u8]> {
+    // Re-read the header length off the whole element to hand back its contents.
+    let first_len = *whole.get(1)?;
+    let header = if first_len < 0x80 {
+        2
+    } else {
+        2 + usize::from(first_len & 0x7f)
+    };
+    whole.get(header..)
+}
+
+/// THE CHANNEL-BINDING DIGEST of a DER certificate (RFC 5929 section 4.1, `tls-server-end-point`):
+/// the hash function of the certificate's `signatureAlgorithm`, or SHA-256 when that is MD5 or
+/// SHA-1, uses no single hash this reads (Ed25519), or is one `ring` has no digest for (SHA-224).
+#[must_use]
+pub fn end_point_digest(cert_der: &[u8]) -> &'static ring::digest::Algorithm {
+    signature_hash(cert_der).unwrap_or(&ring::digest::SHA256)
+}
+
+/// The SHA-384 or SHA-512 a certificate's `signatureAlgorithm` names (RSASSA-PSS through its
+/// `hashAlgorithm` parameter), or `None`.
+fn signature_hash(cert_der: &[u8]) -> Option<&'static ring::digest::Algorithm> {
+    /// ASN.1 OBJECT IDENTIFIER.
+    const TAG_OID: u8 = 0x06;
+    /// `[0] EXPLICIT`, `RSASSA-PSS-params.hashAlgorithm`.
+    const TAG_PSS_HASH: u8 = 0xA0;
+    const SHA384_RSA: &[u8] = &[0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x01, 0x0C];
+    const SHA512_RSA: &[u8] = &[0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x01, 0x0D];
+    const RSA_PSS: &[u8] = &[0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x01, 0x0A];
+    const ECDSA_SHA384: &[u8] = &[0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x04, 0x03, 0x03];
+    const ECDSA_SHA512: &[u8] = &[0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x04, 0x03, 0x04];
+    const SHA384: &[u8] = &[0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x02];
+    const SHA512: &[u8] = &[0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x03];
+
+    // An AlgorithmIdentifier's OID and what follows it (its parameters).
+    fn algorithm(identifier: &[u8]) -> Option<(&[u8], &[u8])> {
+        let body = contents(expect_sequence(identifier)?)?;
+        let (tag, oid) = element(body)?;
+        (tag == TAG_OID).then_some((contents(oid)?, &body[oid.len()..]))
+    }
+    fn hash(oid: &[u8]) -> Option<&'static ring::digest::Algorithm> {
+        match oid {
+            SHA384_RSA | ECDSA_SHA384 | SHA384 => Some(&ring::digest::SHA384),
+            SHA512_RSA | ECDSA_SHA512 | SHA512 => Some(&ring::digest::SHA512),
+            _ => None,
+        }
+    }
+
+    // Certificate ::= SEQUENCE { tbsCertificate, signatureAlgorithm, signatureValue }
+    let body = contents(expect_sequence(cert_der)?)?;
+    let (_, tbs) = element(body)?;
+    let (oid, params) = algorithm(&body[tbs.len()..])?;
+    if oid != RSA_PSS {
+        return hash(oid);
+    }
+    // RSASSA-PSS-params ::= SEQUENCE { hashAlgorithm [0] AlgorithmIdentifier DEFAULT sha1, ... }
+    let (tag, first) = element(contents(expect_sequence(params)?)?)?;
+    if tag != TAG_PSS_HASH {
+        return None;
+    }
+    hash(algorithm(contents(first)?)?.0)
 }
 
 /// The client-side connection-security wrap: runs the rustls client handshake built by

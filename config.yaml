@@ -75,8 +75,12 @@ listen: "0.0.0.0:8080"
 #   # above: registration confers nothing beyond `default_grant`, which is empty until you
 #   # widen it.
 #
-#   # Access token lifetime in seconds; default 600. Short on purpose - clients refresh.
+#   # Access token lifetime in seconds; default 600, at most 86400. Short on purpose - clients refresh.
 #   access_token_ttl_secs: 600
+#
+#   # Refresh chain lifetime in seconds, absolute (rotation keeps the first expiry); default
+#   # 2592000 (30 days), at most 31536000 (a year).
+#   refresh_token_ttl_secs: 2592000
 #
 #   # The FAPI 2.0 Security Profile posture (plain OAuth, private_key_jwt, DPoP); default false.
 #   # true makes RFC 9126 pushed authorization requests MANDATORY at {issuer}/par (with

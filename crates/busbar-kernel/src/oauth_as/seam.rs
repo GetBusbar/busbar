@@ -27,6 +27,7 @@ type AsPlaneBuildFn = fn(
     &serde_yaml::Value,
     Vec<(String, String)>,
     Vec<String>,
+    Option<&Arc<dyn Any + Send + Sync>>,
 ) -> Result<Arc<dyn Any + Send + Sync>, String>;
 
 /// The plane's config check (the type of [`AsPlaneSeam::check`]).
@@ -68,7 +69,9 @@ pub struct AsPlaneSeam {
     /// Build the plane's runtime object for one config generation, from the opaque `oauth_as:`
     /// block (the owner re-derives its identity), the resolved secrets keyed by the paths
     /// [`Self::check`] reported (an unresolved signing key means an ephemeral one), and this
-    /// deployment's protected-resource audiences (RFC 8707 `allowed_resources`). Also spawns the
+    /// deployment's protected-resource audiences (RFC 8707 `allowed_resources`), and the PRIOR
+    /// generation's object (`None` at boot): what the server holds (its records, its consent
+    /// sessions, an ephemeral key) carries across the generation swap. Also spawns the
     /// plane's own expired-record sweeper, mirroring what `appbuild.rs` did inline before the
     /// extraction — the seam owns the whole "how do I come alive" act, not just allocation.
     /// Returns the type-erased object `App::oauth_as` stores, or the plane's own build error

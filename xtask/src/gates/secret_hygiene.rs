@@ -111,8 +111,6 @@ pub const ALLOWLIST_C1: &[Allow] = &[
         "crates/busbar-core-admin/src/v1/contract/mod.rs",
         "upstream_credentials",
     ),
-    allow("token", "crates/busbar-contract/src/abi/cold/auth.rs", ""),
-    allow("secret", "crates/busbar-contract/src/abi/cold/auth.rs", ""),
     allow(
         "token",
         "crates/busbar-plane-llm/src/codec/ir/types.rs",

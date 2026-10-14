@@ -80,7 +80,7 @@ pub const PRIVATE_REFUSED_IN: &[u32] = &[
 const CARVE_OUT_CLASS: u32 = connector::EGRESS_PROVIDER;
 
 /// The loopback-allowed class: private addresses refused but loopback, and an alternate IPv4
-/// spelling of loopback judged as the loopback address it spells ([`Guard::judge_name_with`]).
+/// spelling judged as the address it spells ([`Guard::judge_name_with`]).
 const LOOPBACK_CLASS: u32 = connector::EGRESS_LOOPBACK_ALLOWED;
 
 /// LOOPBACK AS 1.5.5'S COLLECTOR GUARD READ IT (v1.5.5 `crates/busbar/src/observability.rs:620-633`
@@ -94,6 +94,23 @@ pub fn is_loopback(addr: IpAddr) -> bool {
     match addr {
         IpAddr::V4(v4) => v4.is_loopback(),
         IpAddr::V6(v6) => v6.is_loopback() || v6.to_ipv4().is_some_and(|v4| v4.is_loopback()),
+    }
+}
+
+/// A HOST WRITTEN AS LOOPBACK, as 1.5.5's collector and webrequest guards read the URL's host for
+/// their plaintext rule (v1.5.5 `crates/busbar/src/observability.rs:643-664` `otlp_host_is_loopback`;
+/// busbar-hook-webrequest v1.0.6 `src/net_guard/mod.rs:155` `host_is_loopback`): a literal, in any
+/// spelling, of a loopback address ([`is_loopback`]: `127.0.0.1`, `127.1`, `2130706433`, `[::1]`,
+/// `[::ffff:127.0.0.1]`, …), or the RFC 6761 `localhost` / `*.localhost` names, any case, one
+/// trailing root dot ignored. Any other name is not loopback whatever it resolves to: 1.5.5 refused
+/// `http://` to it ("must use https:// for a non-loopback collector") before resolving anything.
+/// The loopback-allowed class's plaintext rule reads loopback through this one predicate.
+#[must_use]
+pub fn names_loopback(host: &str) -> bool {
+    let name = norm(host);
+    match host_ip(&name) {
+        Some(ip) => is_loopback(ip),
+        None => name == "localhost" || name.ends_with(".localhost"),
     }
 }
 
@@ -330,7 +347,7 @@ impl Metadata {
         let mut by_host: HashMap<String, Vec<Entry>> = HashMap::new();
         for (url, own) in &d.url_allow {
             // The one http(s) URL reader; a URL it cannot read names no host, so carves nothing.
-            if let Ok((_, host, _, _)) = busbar_kernel::net_guard::split_url(url) {
+            if let Ok((_, host, _, _)) = busbar_kernel_egress::trust::net::split_url(url) {
                 by_host
                     .entry(norm(&host))
                     .or_default()
@@ -494,13 +511,16 @@ impl Guard {
             return refuse(DEST_METADATA);
         }
         // An alternate IPv4 spelling names no address the guard reads, so it is refused; but in
-        // the loopback-allowed class, a spelling of a loopback address is that address, as 1.5.5's
-        // collector guard read it (its URL parser canonicalized `127.1`, `2130706433`,
-        // `0x7f000001`, `017700000001`, `0177.0.0.1` to `127.0.0.1` before the guard looked, and
-        // `is_alternate_loopback_v4` admitted them besides: v1.5.5
-        // `crates/busbar/src/observability.rs:695-710`, `:738-764`). ARCHITECT parity ruling A3.
+        // the loopback-allowed class a spelling is the address it spells, judged as that address,
+        // as 1.5.5's collector and webrequest guards read it: their URL parser canonicalized
+        // `127.1`, `2130706433`, `0x7f000001`, `017700000001`, `0177.0.0.1` to `127.0.0.1`, and
+        // `16909060` to `1.2.3.4`, before the guard looked (v1.5.5
+        // `crates/busbar/src/observability.rs:695-710`, `:738-764`). So a spelling of loopback is
+        // the loopback collector, a spelling of a public address a public collector, and a
+        // spelling of a private or metadata address is refused as the address it is. ARCHITECT
+        // parity ruling A3.
         if is_alternate_ipv4_encoding(&name)
-            && !(class == LOOPBACK_CLASS && host_ip(&name).is_some_and(is_loopback))
+            && !(class == LOOPBACK_CLASS && host_ip(&name).is_some())
         {
             return refuse(DEST_OBFUSCATED);
         }

@@ -12,14 +12,12 @@ mod operator_tests;
 use crate::chain::{ChainEntry, ResolvedKey};
 use crate::module::{AuthModule, AuthOutcome};
 
-/// A stand-in module with a canned answer and a declared cacheability, so a test can state exactly
+/// A stand-in module with a canned answer, so a test can state exactly
 /// the chain shape it means and nothing else.
 pub(crate) struct Canned {
     pub(crate) name: &'static str,
     pub(crate) outcome: AuthOutcome,
-    pub(crate) cacheable: bool,
-    /// How many times the module was actually consulted — the only way to tell a cache hit from a
-    /// re-verification. Shared so a test can watch it after the module is boxed into the chain.
+    /// How many times the module was actually consulted. Shared so a test can watch it after the module is boxed into the chain.
     pub(crate) calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
 }
 
@@ -28,7 +26,6 @@ impl Canned {
         Canned {
             name,
             outcome,
-            cacheable: false,
             calls: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         }
     }
@@ -42,9 +39,6 @@ impl AuthModule for Canned {
         self.calls
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         self.outcome.clone()
-    }
-    fn cacheable(&self) -> bool {
-        self.cacheable
     }
 }
 

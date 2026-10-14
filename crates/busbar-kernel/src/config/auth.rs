@@ -259,8 +259,9 @@ pub struct BrowserLoginCfg {
     /// The OAuth/OIDC confidential-client secret, a SECRET REFERENCE. OPTIONAL: only the REDIRECT
     /// (OAuth-family) flow is a confidential client that needs one — a CREDENTIAL method (LDAP/AD-bind)
     /// has none. Enforced per the method's `login_kind` at build (`login_kind == Redirect` ⇒ REQUIRED;
-    /// `== Credential` ⇒ must be ABSENT). Injected by the core ONLY into the token-exchange hop's
-    /// `client_secret` form field; never serialized back to the plugin.
+    /// `== Credential` ⇒ must be ABSENT). Resolved and LENT to the plugin at `open` (the Statement's
+    /// `client_secret` secret reference), which makes its own token exchange with it; the host keeps
+    /// none of it.
     #[serde(default)]
     pub client_secret: Option<SecretRef>,
     /// The OAuth client id advertised on the authorize URL. Optional here (an IdP-specific plugin may

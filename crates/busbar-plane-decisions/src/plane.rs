@@ -197,9 +197,9 @@ impl Plane for DecisionPlane {
         let facts = self.draft_facts(row);
         Ok(Ingress::OneShot(Box::new(UnitDraft {
             op: row.op,
-            // The request body is never read for a declared pointer — see `codec::REQUEST_PTRS`'s
-            // own note on why that list is empty. The view still carries the WHOLE body, because
-            // byte-identity forwarding reads `Ir::body()`, never a pointer.
+            // The request body is read at the declared pointers alone (`codec::REQUEST_PTRS`, the
+            // top-level `model`). The view still carries the WHOLE body, because byte-identity
+            // forwarding reads `Ir::body()`, never a pointer.
             body_ir: codec::view(body, REQUEST_PTRS, ctx)?,
             correlates: None,
             correlation_out: None,

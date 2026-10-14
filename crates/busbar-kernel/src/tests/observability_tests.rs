@@ -166,8 +166,9 @@ fn test_validate_webhook_url_rejects_https_internal_hosts() {
         "https://[::1]/hook",                        // IPv6 loopback
         "https://[fe80::1]/hook",                    // IPv6 link-local
         "https://[fc00::1]/hook",                    // IPv6 unique-local
-        // THE RANGES THIS GUARD'S HAND-WRITTEN V6 ARM MISSED while `net_guard::ipv6_is_internal`
-        // — the predicate it was supposed to be a sibling of — had them. v6 multicast reaches every
+        // THE RANGES THIS GUARD'S HAND-WRITTEN V6 ARM MISSED while
+        // `busbar_contract::net::ipv6_is_internal` — the predicate it was supposed to be a sibling
+        // of — had them. v6 multicast reaches every
         // node on the segment; the IPv4-COMPATIBLE spelling matches no v6 range at all.
         "https://[ff02::1]/hook",           // IPv6 multicast (all-nodes)
         "https://[::169.254.169.254]/hook", // IPv4-COMPATIBLE metadata
@@ -502,8 +503,9 @@ fn a_registry_level_filter_gates_the_otlp_layer() {
 /// POSITIVE CONTROL (call site 5/5: `observability.rs`, the webhook / OTLP guard).
 ///
 /// The same three planted targets every other call site is driven with. This guard is the one that
-/// used to keep its OWN two-name `METADATA_HOSTS`; it now reads `net_guard::METADATA_HOSTS`, so the
-/// four names it had never heard of are refused here too.
+/// used to keep its OWN two-name `METADATA_HOSTS`; it now reads
+/// `busbar_contract::net::METADATA_HOSTS`, so the four names it had never heard of are refused here
+/// too.
 #[test]
 fn planted_blocked_targets_are_refused_by_the_telemetry_guard() {
     for target in [

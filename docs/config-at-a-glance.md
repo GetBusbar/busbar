@@ -235,7 +235,7 @@ providers_file: providers.yaml  # provider catalog pointer (overridden by the --
   plane declares. The fix is additive: add the `units:` map above (every LLM open class at `0`) to
   any one entry of the flat/`pools` card (declared classes per plane: `pools` = `input`, `output`,
   `cache_read`, `cache_write`, `search_units`, `classifications`, `web_fetch_requests`, `unitemized_tokens`, `images`, `audio_ms`, `guardrail_automated_reasoning_policies`, `guardrail_automated_reasoning_policy_units`, `guardrail_content_policy_image_units`, `guardrail_content_policy_units`, `guardrail_contextual_grounding_policy_units`, `guardrail_sensitive_information_policy_free_units`, `guardrail_sensitive_information_policy_units`, `guardrail_topic_policy_units`, `guardrail_word_policy_units` · `tools` = `tool_calls`, `bytes` · `agents` = `bytes` ·
-  `decisions` = `decision` · `streams` = `audio_tokens_in`, `audio_tokens_out`, `text_tokens_in`,
+  `decisions` = `decision`, `input_tokens`, `output_tokens` · `streams` = `audio_tokens_in`, `audio_tokens_out`, `text_tokens_in`,
   `text_tokens_out`, `cached_tokens`, `audio_seconds_in`, `tool_calls`). A plane section with no
   card of its own is unaffected.
 - **[Validation](configuration.md#startup-validation-summary)**: `busbar --validate` runs the exact

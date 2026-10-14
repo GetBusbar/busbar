@@ -405,7 +405,7 @@ pub struct PlaneAuditLog {
 
 /// THE PROCESS-WIDE admin audit READ MODEL on the seam. Process state, not config-derived state, so it
 /// lives as a global rather than on the swappable `App` snapshot — exactly like
-/// [`crate::audit_ring::AUDIT`] and [`crate::calllog::CALLS`], and for the same reason: a
+/// [`crate::audit_ring::AUDIT`] and [`crate::residual_log::RESIDUALS`], and for the same reason: a
 /// config apply must not fork the chain by opening a SECOND ring at seq 1 under a chain that already
 /// has one.
 pub static AUDIT_LOG: std::sync::LazyLock<PlaneAuditLog> =
@@ -1002,8 +1002,7 @@ pub(crate) fn fresh_test_kind_id() -> u32 {
 
 /// TEST ONLY: the PRODUCTION `audit` stream ([`KIND_ID_AUDIT`]), registered ONCE against a shared
 /// no-sink app so the live-server `GET /audit` tests mint sequences without racing to re-register (a
-/// re-register resets every position — see [`crate::plane_host::journal::register_stream`]). The direct
-/// twin of [`crate::calllog`]'s `global_call_host_app`. Audit is the ONLY seam stream with a
+/// re-register resets every position — see [`crate::plane_host::journal::register_stream`]). Audit is the ONLY seam stream with a
 /// mounted read verb (`get_audit`) exercised by live-server assertions, so it is the only one that
 /// needs the process-wide registration the test HTTP harness never boots through `register_and_migrate`.
 ///

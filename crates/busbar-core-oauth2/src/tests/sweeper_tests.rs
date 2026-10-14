@@ -18,6 +18,7 @@ fn block() -> serde_yaml::Value {
         key_id: None,
         default_grant: Vec::new(),
         access_token_ttl_secs: None,
+        refresh_token_ttl_secs: None,
         fapi2: false,
         clients: Vec::new(),
     })
@@ -26,7 +27,7 @@ fn block() -> serde_yaml::Value {
 
 /// One generation, as the kernel's build holds it.
 fn generation() -> Arc<dyn std::any::Any + Send + Sync> {
-    seam_build::<crate::NoConnections>(&block(), Vec::new(), Vec::new()).expect("builds")
+    seam_build::<crate::NoConnections>(&block(), Vec::new(), Vec::new(), None).expect("builds")
 }
 
 #[tokio::test]

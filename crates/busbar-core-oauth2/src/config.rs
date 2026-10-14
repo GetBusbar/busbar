@@ -59,6 +59,12 @@ pub struct OauthAsCfg {
     #[serde(default)]
     pub access_token_ttl_secs: Option<u64>,
 
+    /// Refresh chain lifetime in seconds: an ABSOLUTE ceiling on a chain (rotation keeps the
+    /// chain's first expiry), so a refresh token taken once is not a credential forever (RFC 9700
+    /// section 4.14.2; OAuth 2.1 section 6.1). Thirty days when absent.
+    #[serde(default)]
+    pub refresh_token_ttl_secs: Option<u64>,
+
     /// The FAPI 2.0 Security Profile posture (`openid=plain_oauth`, `private_key_jwt`, DPoP). OFF
     /// BY DEFAULT: a block that does not name it is the plain OAuth 2.1 server.
     ///
@@ -144,6 +150,12 @@ pub enum AsCfgError {
     IssuerHasTrailingSlash(String),
     /// `default_grant` names a scope that is not a legal RFC 6749 §3.3 scope token.
     ScopeNotAToken(String),
+    /// A token lifetime is zero or past its ceiling: `field`, the value, and the ceiling.
+    TtlOutOfRange {
+        field: &'static str,
+        secs: u64,
+        max: u64,
+    },
     /// An `oauth_as.clients:` entry is malformed; `why` says how.
     StaticClient {
         client_id: String,
@@ -179,6 +191,11 @@ impl std::fmt::Display for AsCfgError {
             AsCfgError::StaticClient { client_id, why } => {
                 write!(f, "oauth_as.clients entry `{client_id}`: {why}")
             }
+            AsCfgError::TtlOutOfRange { field, secs, max } => write!(
+                f,
+                "oauth_as.{field} `{secs}` is out of range: a lifetime is at least 1 second and \
+                 at most {max} seconds"
+            ),
             AsCfgError::ScopeNotAToken(v) => write!(
                 f,
                 "oauth_as.default_grant entry `{v}` is not a scope token. RFC 6749 section 3.3 \
@@ -227,6 +244,8 @@ pub struct AsIdentity {
     pub clients: Vec<StaticClientCfg>,
     pub default_grant: Vec<String>,
     pub access_token_ttl: std::time::Duration,
+    /// The refresh chain lifetime ([`OauthAsCfg::refresh_token_ttl_secs`]).
+    pub refresh_token_ttl: std::time::Duration,
     pub key_id: String,
     /// The operator's `signing_key:` reference, carried VERBATIM and unresolved.
     ///
@@ -246,6 +265,31 @@ const AS_WELL_KNOWN: &str = "/.well-known/oauth-authorization-server";
 /// The default access token lifetime: ten minutes. Short because the `2026-07-28` authorization revision's token-theft note
 /// asks for short-lived access tokens, and a client that wants continuity has a refresh token.
 const DEFAULT_ACCESS_TOKEN_TTL: std::time::Duration = std::time::Duration::from_secs(600);
+
+/// The longest access token lifetime: one day. An access token is a bearer credential with no
+/// revocation path at the resource; past a day it is not short-lived by any reading.
+pub(crate) const MAX_ACCESS_TOKEN_TTL_SECS: u64 = 24 * 60 * 60;
+
+/// The default refresh chain lifetime: thirty days.
+const DEFAULT_REFRESH_TOKEN_TTL: std::time::Duration =
+    std::time::Duration::from_secs(30 * 24 * 60 * 60);
+
+/// The longest refresh chain lifetime: one year.
+pub(crate) const MAX_REFRESH_TOKEN_TTL_SECS: u64 = 365 * 24 * 60 * 60;
+
+/// A configured lifetime, held to 1 second ..= `max`; absent is `default`.
+fn ttl(
+    field: &'static str,
+    secs: Option<u64>,
+    max: u64,
+    default: std::time::Duration,
+) -> Result<std::time::Duration, AsCfgError> {
+    match secs {
+        None => Ok(default),
+        Some(secs) if (1..=max).contains(&secs) => Ok(std::time::Duration::from_secs(secs)),
+        Some(secs) => Err(AsCfgError::TtlOutOfRange { field, secs, max }),
+    }
+}
 
 impl AsIdentity {
     /// Validate and derive. Every refusal is at BOOT rather than at first request: an operator finds
@@ -269,6 +313,18 @@ impl AsIdentity {
             }
         }
         validate_clients(&cfg.clients)?;
+        let access_token_ttl = ttl(
+            "access_token_ttl_secs",
+            cfg.access_token_ttl_secs,
+            MAX_ACCESS_TOKEN_TTL_SECS,
+            DEFAULT_ACCESS_TOKEN_TTL,
+        )?;
+        let refresh_token_ttl = ttl(
+            "refresh_token_ttl_secs",
+            cfg.refresh_token_ttl_secs,
+            MAX_REFRESH_TOKEN_TTL_SECS,
+            DEFAULT_REFRESH_TOKEN_TTL,
+        )?;
 
         let issuer_path = path.trim_end_matches('/').to_string();
         let under = |name: &str| format!("{issuer_path}/{name}");
@@ -288,9 +344,8 @@ impl AsIdentity {
             clients: cfg.clients.clone(),
             issuer_path,
             default_grant: cfg.default_grant.clone(),
-            access_token_ttl: cfg
-                .access_token_ttl_secs
-                .map_or(DEFAULT_ACCESS_TOKEN_TTL, std::time::Duration::from_secs),
+            access_token_ttl,
+            refresh_token_ttl,
             key_id: cfg.key_id.clone().unwrap_or_else(|| "busbar-as-1".into()),
             signing_key: cfg.signing_key.clone(),
         })
@@ -347,6 +402,9 @@ impl AsIdentity {
     }
     pub fn access_token_ttl(&self) -> std::time::Duration {
         self.access_token_ttl
+    }
+    pub fn refresh_token_ttl(&self) -> std::time::Duration {
+        self.refresh_token_ttl
     }
     pub fn key_id(&self) -> &str {
         &self.key_id
@@ -532,6 +590,7 @@ pub(crate) fn secret_refs(identity: &AsIdentity) -> Vec<(String, &SecretRef)> {
         clients: _,
         default_grant: _,
         access_token_ttl: _,
+        refresh_token_ttl: _,
         key_id: _,
     } = identity;
     signing_key

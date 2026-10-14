@@ -13,7 +13,6 @@
 </p>
 
 <p align="center">
-<a href="https://github.com/GetBusbar/busbar/actions/workflows/promote.yml"><img src="https://github.com/GetBusbar/busbar/actions/workflows/promote.yml/badge.svg" alt="promote"></a>
 <a href="https://codecov.io/gh/GetBusbar/busbar"><img src="https://codecov.io/gh/GetBusbar/busbar/branch/main/graph/badge.svg" alt="Coverage"></a>
 <a href="https://securityscorecards.dev/viewer/?uri=github.com/GetBusbar/busbar"><img src="https://api.securityscorecards.dev/projects/github.com/GetBusbar/busbar/badge" alt="OpenSSF Scorecard"></a>
 <a href="https://www.bestpractices.dev/projects/14739"><img src="https://www.bestpractices.dev/projects/14739/badge" alt="OpenSSF Best Practices"></a>

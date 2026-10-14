@@ -213,7 +213,7 @@ busbar-export-otlp-plugin = { workspace = true }
 # build's default RAM store, its `rlib` the COMPILED-IN door. The store v3 door DROPPED IN is the
 # `store_v3_door` example below, not the crate's own `dropped-in` feature: that exports
 # `busbar_plugin_door` from the rlib too, which this test build's own linked fixtures already define.
-busbar-store-memory = { path = "../store-memory" }
+busbar-store-memory = { workspace = true }
 # The `kind: secret` BOTH-WAYS proof is a REAL secret source (owner FIXTURES ruling: "real plugins are the
 # examples"): the env source from its own repo (GetBusbar/busbar-secret-env) at the rev the workspace pins.
 # The edge is its LOGIC crate: that crate's door is the LINKED door. The DROPPED-IN door is the same repo's

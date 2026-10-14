@@ -14,8 +14,8 @@
 // Here they are a defense-in-depth parity mirror (the webhook/OTLP URL is already
 // `url::Url::parse`-normalized, so the canonical `parse::<IpAddr>()` path does the real
 // blocking); keeping the byte-identical atoms in one tested leaf stops the two guards drifting.
-use crate::net_guard::{
-    ipv4_is_internal as net_guard_ipv4_is_internal, ipv6_is_internal, is_alternate_ipv4_encoding,
+use busbar_contract::net::{
+    ipv4_is_internal as shared_ipv4_is_internal, ipv6_is_internal, is_alternate_ipv4_encoding,
 };
 
 // 1.5.3 LIFT-OUT: the request-log webhook DELIVERY (the `WEBHOOK_URL`/`CLIENT`/
@@ -163,22 +163,22 @@ pub fn validate_webhook_url(url: Option<String>) -> Result<Option<String>, Strin
 /// block DIFFERENT sets on the LOCALHOST family.
 ///
 /// The METADATA family is NOT a place the two may differ, and this is no longer a second copy: it
-/// is [`crate::net_guard::METADATA_HOSTS`] itself — which is now the egress unit's list, reached
-/// through the re-export shim, so there is exactly ONE metadata list in the tree and this guard
+/// is [`busbar_contract::net::METADATA_HOSTS`] itself — the list the egress unit's guard and the
+/// connector's guard read too, so there is exactly ONE metadata list in the tree and this guard
 /// reads it rather than a sibling of it. It used to be a private two-name list beside a six-name
 /// one, which is a telemetry guard that had never heard of four names the config guard refused.
-use crate::net_guard::METADATA_HOSTS;
+use busbar_contract::net::METADATA_HOSTS;
 
 /// True for an IPv4 literal busbar must not POST telemetry to. Shared by the V4 arm and the
 /// IPv4-mapped-IPv6 arm so the two stay identical. Covers loopback, link-local (incl. the
 /// `169.254.169.254` IMDS endpoint), RFC1918 private, RFC6598 CGNAT, unspecified, and broadcast.
 fn is_internal_v4(v4: &std::net::Ipv4Addr) -> bool {
-    // THE PREDICATE ITSELF LIVES IN `net_guard` and is called, not copied. It used to be spelled
-    // out here, and another SSRF guard elsewhere in the codebase would have been the THIRD copy of the
+    // THE PREDICATE ITSELF LIVES IN `busbar_contract::net` and is called, not copied. It used to
+    // be spelled out here, and another SSRF guard elsewhere in the codebase would have been the THIRD copy of the
     // same range list (Azure WireServer and OCI IMDS in particular sit on public addresses that every range
     // predicate misses, so a copy that forgets them looks correct). Hoisted rather than duplicated:
     // a contributor hardening one guard against a new range must not be able to miss the others.
-    net_guard_ipv4_is_internal(v4)
+    shared_ipv4_is_internal(v4)
 }
 
 /// True if the URL's host is an address busbar must not POST telemetry to: a literal loopback,
@@ -223,8 +223,9 @@ fn host_is_internal(url: &url::Url) -> bool {
                 return true;
             }
 
-            // Defense-in-depth parity mirror via the shared `net_guard::is_alternate_ipv4_encoding`, NOT the
-            // primary guard. For an http(s) URL the PRIMARY protection is `url::Url::parse`: http(s)
+            // Defense-in-depth parity mirror via the shared
+            // `busbar_contract::net::is_alternate_ipv4_encoding`, NOT the primary guard. For an
+            // http(s) URL the PRIMARY protection is `url::Url::parse`: http(s)
             // is a WHATWG "special scheme", so its host parser already canonicalizes every alternate
             // IPv4 encoding to a dotted-quad BEFORE we ever read `host_str()` — `2130706433` /
             // `0x7f000001` / `017700000001` / `127.1` / `0177.0.0.1` all arrive here as `127.0.0.1`,
@@ -242,7 +243,7 @@ fn host_is_internal(url: &url::Url) -> bool {
                 // THE V6 ARM IS THE SHARED PREDICATE, not a local transcription of it. It used to be
                 // spelled out here — `is_loopback()`, then `to_ipv4()`, then unspecified /
                 // unique-local / link-local — and the transcription had DROPPED `is_multicast()`,
-                // which `net_guard::ipv6_is_internal` has. `[ff02::1]` is the all-nodes group: it
+                // which `busbar_contract::net::ipv6_is_internal` has. `[ff02::1]` is the all-nodes group: it
                 // reaches every host on the segment, and this guard admitted it while the predicate
                 // it was written as a sibling of refused it. The order that arm depends on (loopback
                 // first, embedded-v4 before the v6 masks) is documented once, on `ipv6_is_internal`.

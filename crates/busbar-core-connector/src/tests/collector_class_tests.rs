@@ -16,10 +16,10 @@
 //! `crates/busbar/src/observability.rs`, the collector guard as it shipped). A private, CGNAT or
 //! unique-local collector is refused, over a secure connection or not, as 1.5.5 refused it; 1.6.0's
 //! destination guard admits it when `advanced.allow_destinations` names it (A2: the owner-signed
-//! guard still applying). An alternate IPv4 spelling of loopback (`127.1`, `2130706433`,
-//! `0x7f000001`, …) is the loopback collector it spells, and a scheme spelled in upper case is the
-//! scheme (A3). The one alternate-spelling difference left: a spelling of a NON-loopback address is
-//! refused as the spelling it is (1.5.5 canonicalized it and judged the address).
+//! guard still applying). An alternate IPv4 spelling (`127.1`, `2130706433`, `0x7f000001`,
+//! `16909060`, …) is the address it spells, judged as that address; plaintext reaches only a host
+//! WRITTEN as loopback (a loopback literal in any spelling, `localhost`, `*.localhost`), never a
+//! name for what it resolves to; and a scheme spelled in upper case is the scheme (A3).
 
 use std::sync::mpsc;
 use std::time::Duration;
@@ -55,6 +55,8 @@ const NAMES: &[(&str, &str)] = &[
     ("imds.test", "169.254.169.254"),
     ("public.test", "93.184.216.34"),
     ("public6.test", "2606:2800:220:1:248:1893:25c8:1946"),
+    // A name in the RFC 6761 `localhost` family answered by a public address.
+    ("public.localhost", "93.184.216.34"),
 ];
 
 /// A resolver answering from [`NAMES`], off the caller's thread.
@@ -128,7 +130,7 @@ fn open(
         rx.recv_timeout(Duration::from_secs(10))
             .expect("the judgement answered")
     })?;
-    if crate::class_admits(class, secure, &[], at) {
+    if crate::class_admits(class, secure, &[], authority, at) {
         Ok(at)
     } else {
         Err(DEST_PLAINTEXT)
@@ -242,8 +244,8 @@ fn cloud_metadata_never_reaches_a_collector_in_any_spelling() {
 /// as 1.5.5 reached it — its URL parser canonicalized every spelling to the dotted quad before its
 /// guard looked, and `is_alternate_loopback_v4` admitted the decimal, hex, octal and short-dotted
 /// forms besides (v1.5.5 `crates/busbar/src/observability.rs:695-710`, `:738-764`). An alternate
-/// spelling of an internal address is still refused (1.5.5 refused it as the private address it
-/// spelled; 1.6.0 as the spelling), IMDS's decimal spelling as metadata. Each other class keeps its
+/// spelling of an internal address is still refused, as the private address it spells (as 1.5.5
+/// refused it), IMDS's decimal spelling as metadata. Each other class keeps its
 /// own 1.5.5 rule: the webhook (open-web) and request-data classes refused loopback in every
 /// spelling, and still refuse these. RED on the guard that refused every alternate spelling.
 #[test]
@@ -279,11 +281,13 @@ fn an_alternate_ipv4_spelling_of_loopback_reaches_a_collector_as_in_1_5_5() {
         open(&j, &format!("127.1:{OWN}"), false, LA),
         Err(DEST_INTERNAL)
     );
+    // A spelling of a private address is refused as the private address it spells, as 1.5.5
+    // refused it.
     for authority in ["0xa000001:80", "167772161:80", "0xa000001:443"] {
         for secure in [false, true] {
             assert_eq!(
                 open(&j, authority, secure, LA),
-                Err(DEST_OBFUSCATED),
+                Err(DEST_INTERNAL),
                 "{authority} secure={secure}"
             );
         }
@@ -455,6 +459,118 @@ fn only_an_http_or_https_url_names_a_collector() {
                 j.judge_name(upper, class, false),
                 j.judge_name(lower, class, false),
                 "{upper}, class {class}"
+            );
+        }
+    }
+}
+
+/// RED (ARCHITECT parity ruling A3; ports the plaintext rule of 1.5.5's collector guard,
+/// `otlp_host_is_loopback`, v1.5.5 `crates/busbar/src/observability.rs:565-576`, `:643-664`, and the
+/// webrequest hook's `host_is_loopback` / `validate_target_url`, busbar-hook-webrequest v1.0.6
+/// `src/net_guard/mod.rs:155-171`, `:241`): plaintext reaches a collector only where the URL WRITES
+/// its host as loopback — a loopback literal in any spelling, `localhost`, `*.localhost` — and
+/// never a name for what it resolves to. 1.5.5 refused `http://` to any other name before resolving
+/// it ("must use https:// for a non-loopback collector"), so a name answered by `127.0.0.1` or
+/// `::1` is reached over a secure connection only, and a `*.localhost` name is reached in plaintext
+/// whatever public address answers it. Both the dial (a need's open) and the destination judge's
+/// URL arm (`dest.judge`, the kernel's own clients) read it so. RED on the class rule that read
+/// loopback off the pinned address: it admitted `lo.test` in plaintext and refused
+/// `public.localhost`.
+#[test]
+fn plaintext_reaches_a_collector_only_where_its_url_writes_loopback() {
+    let j = dial_judge();
+    for authority in ["lo.test:4318", "lo6.test:4318", "LO.TEST:4318"] {
+        assert_eq!(
+            open(&j, authority, false, LA),
+            Err(DEST_PLAINTEXT),
+            "plaintext to a name answered by loopback: {authority}"
+        );
+        assert!(
+            open(&j, authority, true, LA).is_ok(),
+            "the same name over a secure connection: {authority}"
+        );
+    }
+    for (authority, at) in [
+        ("public.localhost:4318", "93.184.216.34:4318"),
+        ("127.1:4318", "127.0.0.1:4318"),
+        ("[::ffff:127.0.0.1]:4318", "[::ffff:127.0.0.1]:4318"),
+    ] {
+        assert_eq!(
+            open(&j, authority, false, LA),
+            Ok(at.parse().unwrap()),
+            "plaintext to a host written as loopback: {authority}"
+        );
+    }
+    // The destination judge's URL arm, waiting out the resolution.
+    let d = dest_judge();
+    let judged = |url: &str| {
+        let (tx, rx) = mpsc::channel();
+        let now = d.judge(
+            url,
+            LA,
+            false,
+            Box::new(move |v| {
+                let _ = tx.send(v);
+            }),
+        );
+        now.unwrap_or_else(|| {
+            rx.recv_timeout(Duration::from_secs(10))
+                .expect("the judgement answered")
+        })
+        .map(|(at, _)| at)
+        .map_err(|r| r.verdict)
+    };
+    for url in [
+        "http://lo.test:4318/v1/traces",
+        "HTTP://lo6.test:4318/v1/traces",
+    ] {
+        assert_eq!(judged(url), Err(DEST_PLAINTEXT), "{url}");
+    }
+    for (url, at) in [
+        ("https://lo.test:4318/v1/traces", "127.0.0.1:4318"),
+        (
+            "http://public.localhost:4318/v1/traces",
+            "93.184.216.34:4318",
+        ),
+        ("http://localhost:4318/v1/traces", "127.0.0.1:4318"),
+        ("http://2130706433:4318/v1/traces", "127.0.0.1:4318"),
+    ] {
+        assert_eq!(judged(url), Ok(at.parse().unwrap()), "{url}");
+    }
+}
+
+/// RED (ARCHITECT parity ruling A3; 1.5.5's collector guard read an alternate IPv4 spelling as the
+/// address its URL parser canonicalized it to, v1.5.5 `crates/busbar/src/observability.rs:695-710`,
+/// as did the webrequest hook's): in the collector's class a spelling of a PUBLIC address is the
+/// public collector it spells, reached over a secure connection at that address and refused in
+/// plaintext as any remote collector is. Every other class still refuses the spelling as written.
+/// RED on the guard that refused every non-loopback spelling in this class as obfuscated.
+#[test]
+fn a_spelling_of_a_public_address_is_the_collector_it_spells() {
+    let j = dial_judge();
+    for spelling in [
+        "16909060",
+        "0x1020304",
+        "0X01020304",
+        "1.2.772",
+        "0001.0002.0003.0004",
+    ] {
+        let authority = format!("{spelling}:4318");
+        assert_eq!(
+            open(&j, &authority, true, LA),
+            Ok("1.2.3.4:4318".parse().unwrap()),
+            "{spelling}"
+        );
+        assert_eq!(
+            open(&j, &authority, false, LA),
+            Err(DEST_PLAINTEXT),
+            "{spelling} in plaintext"
+        );
+        for class in [EGRESS_OPEN_WEB, EGRESS_DEFAULT, EGRESS_PROVIDER] {
+            assert_eq!(
+                open(&j, &authority, true, class),
+                Err(DEST_OBFUSCATED),
+                "{spelling} class {class}"
             );
         }
     }

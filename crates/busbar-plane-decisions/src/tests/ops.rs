@@ -38,3 +38,10 @@ fn op_classes_matches_the_method_table() {
         assert!(OP_CLASSES.contains(&row.op));
     }
 }
+
+#[test]
+fn row_for_matches_evaluate() {
+    let row = row_for("POST", PATH_EVALUATE).expect("evaluate is declared");
+    assert_eq!(row.op, OP_EVALUATE);
+    assert!(row.has_request_body);
+}

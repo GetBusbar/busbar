@@ -112,7 +112,7 @@ async fn extras_propagate_through_pooled_reuse_both_responses_carry_the_peer_pin
         Duration::from_secs(10),
         true,
     ));
-    let expected = crate::plane_host::spki::pin(&material.leaf_der).expect("fixture leaf");
+    let expected = crate::egress::trust::spki::pin(&material.leaf_der).expect("fixture leaf");
 
     for round in 1..=2 {
         let resp = client

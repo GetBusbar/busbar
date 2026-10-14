@@ -74,6 +74,9 @@ mod flow_tests;
 #[cfg(test)]
 #[path = "tests/mount_tests.rs"]
 mod mount_tests;
+#[cfg(test)]
+#[path = "tests/reload_tests.rs"]
+mod reload_tests;
 
 /// THE CONNECTION TABLE THE COMPOSITION ROOT HANDS THIS CRATE: the root Connector's table, read
 /// as the connection-table traits the contract defines, and the instance identity this crate's

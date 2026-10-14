@@ -276,7 +276,10 @@ impl PlaneCfg for DoorSection {
         else {
             return Ok(());
         };
-        (fold.reg.validate)(&dealt(self.section, settings_of(&self.value)?)?)
+        (fold.reg.validate)(&dealt(
+            self.section,
+            settings_of(self.section, &self.value)?,
+        )?)
     }
 
     /// Every `<section>.models.<m>.provider` reference the section's reserved model map makes
@@ -386,11 +389,11 @@ fn dealt(section: &str, settings: Vec<u8>) -> Result<Vec<u8>, String> {
     serde_json::to_vec(&serde_json::json!({ section: value })).map_err(|e| e.to_string())
 }
 
-fn settings_of(value: &serde_yaml::Value) -> Result<Vec<u8>, String> {
-    if value.is_null() {
-        return Ok(Vec::new());
-    }
-    serde_json::to_vec(value).map_err(|e| format!("the section is not representable as JSON: {e}"))
+/// The section `key` as it crosses to the door (its `validate`, its facing probe): JSON, in the order
+/// it was written, a secret reference at every credential position `${VAR}` filled (a plane never
+/// receives secret bytes, THE DESIGN §6; [`crate::config::filled::plane_bound`]); empty when absent.
+fn settings_of(key: &str, value: &serde_yaml::Value) -> Result<Vec<u8>, String> {
+    crate::config::filled::plane_bound_bytes(&[key], value)
 }
 
 /// One registration projected onto the shared named-definition view: its name, and the trust keys
@@ -519,7 +522,7 @@ fn build<const I: usize>(
             )
         })
     });
-    let (facing, opened) = match settings_of(&section.value)
+    let (facing, opened) = match settings_of(section.section, &section.value)
         .and_then(|bytes| (d.reg.facing)(&bytes, &owned, ctx.public_url, &dialects))
     {
         Ok(f) => (f, true),
@@ -704,7 +707,8 @@ pub struct DoorOwned {
 
 impl DoorOwned {
     /// The owned sections as `PlaneOpenIn::owned` carries them: one JSON object keyed by section
-    /// name; empty when the section is absent or not representable.
+    /// name, a secret reference at every credential position `${VAR}` filled; empty when the
+    /// section is absent or not representable.
     #[must_use]
     pub fn bytes(&self) -> Vec<u8> {
         if self.value.is_null() {
@@ -712,6 +716,7 @@ impl DoorOwned {
         }
         serde_json::to_value(&self.value)
             .ok()
+            .map(|v| crate::config::filled::plane_bound(&[self.section], v))
             .and_then(|v| serde_json::to_vec(&serde_json::json!({ self.section: v })).ok())
             .unwrap_or_default()
     }
@@ -757,7 +762,7 @@ fn parse_section<const I: usize>(value: &serde_yaml::Value) -> Result<Box<dyn Pl
     let Some(d) = door(I) else {
         return Err("a door plane's section was parsed before its door was folded".to_string());
     };
-    (d.reg.validate)(&dealt(d.reg.section, settings_of(value)?)?)?;
+    (d.reg.validate)(&dealt(d.reg.section, settings_of(d.reg.section, value)?)?)?;
     Ok(Box::new(DoorSection::new(d.reg.section, value.clone())))
 }
 

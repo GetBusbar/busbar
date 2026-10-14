@@ -1,19 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! M6-COLD-DELETE RESIDUE: the one JSON-lane path that has not moved yet, and nothing else.
-//!
-//! THE DESIGN's plugin ABI abolished the COLD/JSON lane: no store, secret, hook or export plugin
-//! rides it. What is left here: the six `extern "C-unwind"` symbols, JSON over ptr+len, and one wire
-//! — [`auth`]: the `kind: auth` plugin built on `export_login_plugin!` (its verify and its hosted
-//! browser login, `identity-providers.<n>.browser_login`), until that plugin's door re-pin moves
-//! both onto the auth door.
-//!
-//! It is deleted with the last plugin on it. Nothing new may ride this lane.
+//! M6-COLD-DELETE RESIDUE: no plugin of any kind rides the COLD/JSON lane any more. What is left
+//! here is what the HOT lane still shares with it — the frozen symbol names, the transport version
+//! the `busbar_abi()` handshake answers, the log-sink shape and the status codes — deleted with the
+//! HOT lane. Nothing new may ride this lane.
 
 use std::os::raw::c_void;
-
-pub mod auth;
 
 /// The kind-neutral **TRANSPORT** ABI version, returned by a plugin's `busbar_abi()`. Frozen at 1:
 /// this is the low-level linker contract (the six C signatures, ptr+len byte buffers, the

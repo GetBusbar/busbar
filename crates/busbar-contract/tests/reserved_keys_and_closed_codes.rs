@@ -117,12 +117,12 @@ fn a_composition_refusal_says_which_transport_and_which_layer() {
     // Each of the three is read by a human at boot, off a node that will not start. A refusal that
     // rendered as nothing would leave the operator with an exit code.
     let unregistered = CompositionError::UnregisteredLayer {
-        transport: "webrtc",
+        transport: "dgram",
         layer: "udp",
     };
     let rendered = unregistered.to_string();
     assert!(
-        rendered.contains("webrtc") && rendered.contains("udp"),
+        rendered.contains("dgram") && rendered.contains("udp"),
         "{rendered}"
     );
     assert!(rendered.contains("no registered transport"), "{rendered}");

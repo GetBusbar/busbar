@@ -19,7 +19,7 @@
 //! The wire bytes are the host's `build_pinned_client` reqwest codec — the SAME one a plane's own
 //! transport used — so status/body/headers/ALPN are unchanged by moving the hop host-side. The peer
 //! SPKI pin is decoded from the same observed-identity bytes the neutral
-//! `busbar_kernel::plane_host::spki` pin walk produces, which a plane's own transport calls to
+//! `busbar_kernel::egress::trust::spki` pin walk produces, which a plane's own transport calls to
 //! compute its pin, so the pin string is byte-identical. The body cap / `ReadEnd` classification is
 //! re-expressed over the poll seam to match
 //! [`crate::proxy::read_capped`] exactly (Ok-0 = Complete, Fault = TransportError, an over-cap probe =

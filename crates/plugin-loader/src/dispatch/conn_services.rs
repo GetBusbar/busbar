@@ -19,7 +19,9 @@
 //!   caller's ticket while the handshake runs. A framed stream refuses it.
 //! * `FACTS` writes the stream's facts: whether it is secure, the protocol agreed and the hash of
 //!   the far end's certificate (the channel-binding input), the strings held until it closes.
-//! * `RANDOM` fills the buffer from the OS; `IDENTITY` names the process.
+//! * `IDENTITY` names the process, written afresh on every call (a replayed handle included: it
+//!   writes the caller's memory, so its answer is never kept). `RANDOM` is RETIRED and served by
+//!   no host: `random.fill`, a host service, is the one random service.
 //! * `FACTS` answers what the stream's connection security established, as the connector observed
 //!   it: the agreed protocol, the far end's key pin and whether busbar presented its client identity
 //!   (the transport pin, ARCHITECT 2026-10-03) — a stream whose connection the connector refused for its
@@ -53,10 +55,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use busbar_contract::abi::host::conn::connector::{
-    service, ConnectorSlots, EstablishIn, FactsIn, IdentityIn, IoIn, ProcessIdentity, RandomIn,
-    ReplyIn, ReplyPiece, RequestIn, RequestPiece, StreamFacts, StreamIn, UpgradeIn, REPLY_ACK,
-    REPLY_BODY, REPLY_END, REPLY_HEAD, REQUEST_BODY, REQUEST_END, REQUEST_HEAD, SERVICES,
-    UPGRADE_IN_V1_SIZE, UPGRADE_VERIFY_OFF, WITHIN_SEPARATOR,
+    service, ConnectorSlots, EstablishIn, FactsIn, IdentityIn, IoIn, ProcessIdentity, ReplyIn,
+    ReplyPiece, RequestIn, RequestPiece, StreamFacts, StreamIn, UpgradeIn, REPLY_ACK, REPLY_BODY,
+    REPLY_END, REPLY_HEAD, REQUEST_BODY, REQUEST_END, REQUEST_HEAD, SERVICES, UPGRADE_IN_V1_SIZE,
+    UPGRADE_VERIFY_OFF, WITHIN_SEPARATOR,
 };
 use busbar_contract::abi::host::service::{ServiceHead, ServiceOut};
 use busbar_contract::abi::mechanism::call::{AbiStr, Outcome, RawOutcome};
@@ -84,7 +86,8 @@ pub static CONN_SLOTS: ConnectorSlots = ConnectorSlots {
     checkout: None,
     checkin: None,
     close: Some(close),
-    random: Some(random),
+    // RETIRED: `random.fill` (the host services' table) is the one random service.
+    random: None,
     identity: Some(identity),
     read_reply: Some(read_reply),
     write_request: Some(write_request),
@@ -225,6 +228,9 @@ fn slot(
             return Answer::with(Outcome::Fault, "");
         }
         match armed(ctx) {
+            // A never-pend service that writes the caller's memory is run afresh on a replay: a
+            // kept answer would say the bytes were written into memory this call never touched.
+            Some((id, table)) if service == service::IDENTITY => body(*id, table, head),
             Some((id, table)) => kept(*id, head.handle, || body(*id, table, head)),
             None => Answer::of(ConnError::Unarmed),
         }
@@ -450,7 +456,8 @@ extern "C" fn close(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) ->
             let conn = match held.map(|s| s.conn) {
                 // Never opened, or refused: nothing on the table to close.
                 // (A request waiting on its auth call drops the call: a client drop.)
-                Some(Conn::Held { .. } | Conn::Failed(_) | Conn::Authing(_)) => {
+                // (A stream being opened outside the lock is closed by the call that opens it.)
+                Some(Conn::Held { .. } | Conn::Failed(_) | Conn::Authing(_) | Conn::Opening) => {
                     return Answer::ready(0, 0)
                 }
                 Some(Conn::Open(c)) => c,
@@ -686,6 +693,27 @@ pub(crate) fn forget_worker(ids: &[InstanceId], worker: u32) {
         .retain(|(id, t), _| !(ids.contains(id) && super::ticket::decode(t.slot).0 == worker));
 }
 
+/// FORGET EVERYTHING instance `id` holds on the connector's process-wide maps — its held streams
+/// and their facts, its kept answers — and close on `table` every connection a held stream had open.
+/// Made when the instance can never cross again: the watchdog faulted it, or it is dropped (a
+/// close, a reload). The maps are let go before anything is closed or dropped: a held stream's
+/// pending auth call is the auth plugin's, and a close may cross into a transport door (THE DESIGN
+/// §11.13 M1).
+pub(crate) fn purge(id: InstanceId, table: &Arc<dyn DeclaredConns>) {
+    held_facts().retain(|(i, _), _| *i != id);
+    kept_answers().retain(|(i, _), _| *i != id);
+    let gone: Vec<Stream> = {
+        let mut all = held_conns();
+        let keys: Vec<(InstanceId, u64)> = all.keys().filter(|(i, _)| *i == id).copied().collect();
+        keys.iter().filter_map(|k| all.remove(k)).collect()
+    };
+    for s in gone {
+        if let Conn::Open(c) = s.conn {
+            let _ = table.close(id, c);
+        }
+    }
+}
+
 // ── FRAMED REQUESTS AND REPLIES ──────────────────────────────────────────────────────────────────
 
 /// The bit a stream the host holds unopened carries (a connection table's ids never set it).
@@ -725,6 +753,11 @@ enum Conn {
     /// The request is whole and its member's auth call is in flight: it opens when the fields
     /// answer (ARCHITECT round 5 Q-L3B-DOOR-EXCHANGE: the open calls the member binding's fields).
     Authing(Box<Authing>),
+    /// One call has taken the stream out to open it, or to make or poll its member's auth call,
+    /// OUTSIDE the connector's lock (THE DESIGN §11.13 M1: no plugin code runs under a host lock;
+    /// the auth call is the auth plugin's, and an open may cross into a transport door). That call
+    /// installs what it got ([`install`]); any other call on the stream meanwhile is refused.
+    Opening,
 }
 
 /// A whole request waiting on its member binding's auth fields.
@@ -759,12 +792,40 @@ struct Stream {
 
 type HeldConns = HashMap<(InstanceId, u64), Stream>;
 
-fn held_conns() -> MutexGuard<'static, HeldConns> {
+/// THE ONE LOCK over every instance's streams. Held only to read or swap a stream's state, never
+/// across a call that can run plugin code: an auth plugin's `fields`, or a table open that may
+/// cross into a transport door (THE DESIGN §11.13 M1). A wedged plugin would otherwise hold every
+/// worker's connector I/O behind it, and a plugin that called back into the connector from inside
+/// that call would relock it on its own thread.
+fn held_conns_lock() -> &'static Mutex<HeldConns> {
     static HELD_CONNS: OnceLock<Mutex<HeldConns>> = OnceLock::new();
-    HELD_CONNS
-        .get_or_init(Mutex::default)
+    HELD_CONNS.get_or_init(Mutex::default)
+}
+
+fn held_conns() -> MutexGuard<'static, HeldConns> {
+    held_conns_lock()
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Install `conn` on the stream a call took out to open ([`Conn::Opening`]), the lock re-taken
+/// for the swap alone. A stream closed meanwhile is gone: what was opened for it is closed on the
+/// table, and anything else it held (a pending auth call) is dropped, both after the lock is let
+/// go.
+fn install(id: InstanceId, stream: u64, table: &Arc<dyn DeclaredConns>, conn: Conn) {
+    let orphan = {
+        let mut all = held_conns();
+        match all.get_mut(&(id, stream)) {
+            Some(s) if matches!(s.conn, Conn::Opening) => {
+                s.conn = conn;
+                None
+            }
+            _ => Some(conn),
+        }
+    };
+    if let Some(Conn::Open(c)) = orphan {
+        let _ = table.close(id, c);
+    }
 }
 
 /// A new held stream's id.
@@ -784,30 +845,48 @@ fn resolve(
     if stream & HELD == 0 {
         return Ok(ConnId(stream));
     }
-    let mut all = held_conns();
-    let s = all.get_mut(&(id, stream)).ok_or(ConnError::Closed)?;
-    match &s.conn {
-        Conn::Open(c) => Ok(*c),
-        Conn::Failed(e) => Err(*e),
-        Conn::Held { head: Some(_), .. } | Conn::Authing(_) => Err(ConnError::Refused),
-        Conn::Held {
-            need,
-            target,
-            within,
-            member,
-            ..
-        } => {
-            let desc = OpenDesc {
+    let (need, target, within, member) = {
+        let mut all = held_conns();
+        let s = all.get_mut(&(id, stream)).ok_or(ConnError::Closed)?;
+        match &mut s.conn {
+            Conn::Open(c) => return Ok(*c),
+            Conn::Failed(e) => return Err(*e),
+            Conn::Held { head: Some(_), .. } | Conn::Authing(_) | Conn::Opening => {
+                return Err(ConnError::Refused)
+            }
+            Conn::Held {
+                need,
                 target,
                 within,
                 member,
-                ..OpenDesc::default()
-            };
-            let opened = table.open(id, *need, &desc);
-            s.conn = opened.map_or_else(Conn::Failed, Conn::Open);
-            opened
+                ..
+            } => {
+                let taken = (
+                    *need,
+                    std::mem::take(target),
+                    std::mem::take(within),
+                    std::mem::take(member),
+                );
+                s.conn = Conn::Opening;
+                taken
+            }
         }
-    }
+    };
+    // The open, outside the lock: it may cross into a transport door.
+    let desc = OpenDesc {
+        target: &target,
+        within: &within,
+        member: &member,
+        ..OpenDesc::default()
+    };
+    let opened = table.open(id, need, &desc);
+    install(
+        id,
+        stream,
+        table,
+        opened.map_or_else(Conn::Failed, Conn::Open),
+    );
+    opened
 }
 
 /// A field block's fields, owned; a name that is not text, or a pseudo-field, refuses the block.
@@ -914,6 +993,17 @@ extern "C" fn write_request(
                     let Some(mut h) = head.take() else {
                         return Answer::with(Outcome::Fault, "");
                     };
+                    // The request is whole: taken out of the map, so the member's auth call and
+                    // the open run with the connector's lock let go (THE DESIGN §11.13 M1).
+                    let need = *need;
+                    let (target, within, member, body) = (
+                        std::mem::take(target),
+                        std::mem::take(within),
+                        std::mem::take(member),
+                        std::mem::take(body),
+                    );
+                    s.conn = Conn::Opening;
+                    drop(all);
                     // THE PLUGIN'S STATED SCOPE is the host's own field
                     // (`abi::auth::SCOPE_REQUEST_FIELD`): out of the request before anything is
                     // encoded, lent to the member's auth call. No wire carries it.
@@ -926,43 +1016,37 @@ extern "C" fn write_request(
                             true
                         }
                     });
+                    let at = (target.as_str(), within.as_slice(), member.as_str());
                     // THE MEMBER'S BINDING (ARCHITECT round 5 Q-L3B-DOOR-EXCHANGE): a request to a
                     // member the connector holds a binding for carries that binding's auth fields,
                     // as the member's relayed calls do. The request is handed over whole; what
                     // became of it is the reply's to say.
-                    s.conn = match table.auth_of(id, *need, target) {
-                        None => {
-                            open_with(table, id, *need, (target, within, member), &h, body, &[])
-                        }
-                        Some(binding) => match auth_request(&binding, &h, target, body, scope) {
+                    let conn = match table.auth_of(id, need, &target) {
+                        None => open_with(table, id, need, at, &h, &body, &[]),
+                        Some(binding) => match auth_request(&binding, &h, &target, &body, scope) {
                             None => Conn::Failed(ConnError::Refused),
                             Some(request) => {
                                 match binding.auth.fields_now(binding.handle, &request) {
-                                    Some(Fields::Ready(auth)) => open_with(
-                                        table,
-                                        id,
-                                        *need,
-                                        (target, within, member),
-                                        &h,
-                                        body,
-                                        &auth,
-                                    ),
+                                    Some(Fields::Ready(auth)) => {
+                                        open_with(table, id, need, at, &h, &body, &auth)
+                                    }
                                     Some(Fields::Refused | Fields::Failed) => {
                                         Conn::Failed(ConnError::Refused)
                                     }
                                     None => Conn::Authing(Box::new(Authing {
                                         fielding: binding.auth.fields(binding.handle, request, 0),
-                                        need: *need,
-                                        target: std::mem::take(target),
-                                        within: std::mem::take(within),
-                                        member: std::mem::take(member),
+                                        need,
+                                        target,
+                                        within,
+                                        member,
                                         head: h,
-                                        body: std::mem::take(body),
+                                        body,
                                     })),
                                 }
                             }
                         },
                     };
+                    install(id, i.stream, table, conn);
                     Answer::ready(0, 0)
                 }
                 (REQUEST_HEAD, true) => {
@@ -1152,46 +1236,57 @@ fn reply(
     stream: u64,
     buf: &mut [u8],
 ) -> (Option<ReplyPiece>, Answer) {
+    // A REQUEST WAITING ON ITS AUTH CALL opens when the call answers (its fields lead the head),
+    // fails its ack when the call refuses or fails, and reads as nothing ready (on the caller's
+    // ticket, woken when the call answers) until then. The call is taken out of the map to be
+    // polled and opened with the connector's lock let go (THE DESIGN §11.13 M1).
+    let waker = ticket_waker(ctx, head.handle.ticket);
+    let authing = {
+        let mut all = held_conns();
+        match all.get_mut(&(id, stream)) {
+            Some(s) if matches!(s.conn, Conn::Authing(_)) => {
+                if waker.is_none() {
+                    return (
+                        None,
+                        Answer::with(
+                            Outcome::Refused,
+                            "a read that would pend is callable only inside a ticketed op",
+                        ),
+                    );
+                }
+                match std::mem::replace(&mut s.conn, Conn::Opening) {
+                    Conn::Authing(a) => Some(a),
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    };
+    if let (Some(mut a), Some(waker)) = (authing, waker) {
+        let mut cx = std::task::Context::from_waker(&waker);
+        let answered = match std::pin::Pin::new(&mut a.fielding).poll(&mut cx) {
+            std::task::Poll::Pending => {
+                install(id, stream, table, Conn::Authing(a));
+                return (None, Answer::of(ConnError::Pending));
+            }
+            std::task::Poll::Ready(f) => f,
+        };
+        let opened = match answered {
+            Fields::Ready(auth) => open_with(
+                table,
+                id,
+                a.need,
+                (&a.target, &a.within, &a.member),
+                &a.head,
+                &a.body,
+                &auth,
+            ),
+            Fields::Refused | Fields::Failed => Conn::Failed(ConnError::Refused),
+        };
+        install(id, stream, table, opened);
+    }
     {
         let mut all = held_conns();
-        // A REQUEST WAITING ON ITS AUTH CALL opens when the call answers (its fields lead the
-        // head), fails its ack when the call refuses or fails, and reads as nothing ready (on the
-        // caller's ticket, woken when the call answers) until then.
-        if let Some(Stream {
-            conn: Conn::Authing(a),
-            ..
-        }) = all.get_mut(&(id, stream))
-        {
-            let Some(waker) = ticket_waker(ctx, head.handle.ticket) else {
-                return (
-                    None,
-                    Answer::with(
-                        Outcome::Refused,
-                        "a read that would pend is callable only inside a ticketed op",
-                    ),
-                );
-            };
-            let mut cx = std::task::Context::from_waker(&waker);
-            let answered = match std::pin::Pin::new(&mut a.fielding).poll(&mut cx) {
-                std::task::Poll::Pending => return (None, Answer::of(ConnError::Pending)),
-                std::task::Poll::Ready(f) => f,
-            };
-            let opened = match answered {
-                Fields::Ready(auth) => open_with(
-                    table,
-                    id,
-                    a.need,
-                    (&a.target, &a.within, &a.member),
-                    &a.head,
-                    &a.body,
-                    &auth,
-                ),
-                Fields::Refused | Fields::Failed => Conn::Failed(ConnError::Refused),
-            };
-            if let Some(s) = all.get_mut(&(id, stream)) {
-                s.conn = opened;
-            }
-        }
         let s = all.entry((id, stream)).or_insert(Stream {
             conn: Conn::Open(ConnId(stream)),
             headed: false,
@@ -1215,6 +1310,15 @@ fn reply(
             }
             Conn::Open(_) => {}
             Conn::Authing(_) => return (None, Answer::of(ConnError::Pending)),
+            Conn::Opening => {
+                return (
+                    None,
+                    Answer::with(
+                        Outcome::Refused,
+                        "another call on the stream is opening it; read when it answers",
+                    ),
+                )
+            }
         }
     }
     let conn = match resolve(id, table, stream) {
@@ -1291,28 +1395,6 @@ fn reply(
             }
         };
     }
-}
-
-extern "C" fn random(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
-    slot(
-        ctx,
-        input,
-        out,
-        service::RANDOM,
-        size_of::<RandomIn>(),
-        |_, _, _| {
-            // SAFETY: the head covered a `RandomIn`.
-            let i = unsafe { input.cast::<RandomIn>().read_unaligned() };
-            // SAFETY: the caller's buffer, live for the call.
-            let Some(buf) = (unsafe { bytes(i.buf, i.len) }) else {
-                return Answer::with(Outcome::Fault, "");
-            };
-            match getrandom::fill(buf) {
-                Ok(()) => Answer::ready(0, i.len as u64),
-                Err(_) => Answer::with(Outcome::Failed, "the host has no randomness"),
-            }
-        },
-    )
 }
 
 /// The process's OS user and program name, read once and held for the process's life.

@@ -17,13 +17,15 @@
 //!
 //! ## What it is now
 //!
-//! There is one definition. It lives in [`busbar_kernel_egress::trust::net`], and
-//! `busbar_kernel::net_guard` is a re-export shim over it. So the two names below are two paths to
-//! ONE function, and every equality in this file is trivially true — *while that stays true*.
+//! There is one definition. It lives in [`busbar_kernel_egress::trust::net`]. The kernel's
+//! `net_guard` re-export shim is gone (row 130 E2); the kernel reaches the judge's config arm as
+//! `busbar_kernel::config_validate::{extract_normalized_host, ssrf_blocked_host}`, re-exports of
+//! the unit's. So the two names below are two paths to ONE function, and every equality in this
+//! file is trivially true — *while that stays true*.
 //!
 //! That is precisely what this file now gates. The failure mode it watches for is no longer "the
 //! two copies disagree" but "somebody re-grew a second copy behind one of these names", and the
-//! shape of that regression is identical: a local definition under `busbar_kernel::net_guard` that
+//! shape of that regression is identical: a local definition under `busbar_kernel::config_validate` that
 //! answers some hostile spelling differently from the unit. The rows below are chosen to be the
 //! spellings a re-fork would get wrong — in particular [`BARE_AUTHORITIES`], which the shim's
 //! predecessor answered `None` for while the unit judged them, and the metadata NAMES, which is
@@ -97,7 +99,7 @@ const HOSTILE: &[&str] = &[
 /// spell its destination either way and the operator's denylist fires for both.
 ///
 /// They stay in this file as the sharpest re-fork detector it has. A second copy grown behind
-/// `busbar_kernel::net_guard` would almost certainly be the OLD shape — scheme-only extraction,
+/// `busbar_kernel::config_validate` would almost certainly be the OLD shape — scheme-only extraction,
 /// `None` for every row here — so this is the table where "somebody re-forked the guard" shows up
 /// as a refusal that silently stopped happening.
 const BARE_AUTHORITIES: &[&str] = &[
@@ -117,11 +119,11 @@ const BARE_AUTHORITIES: &[&str] = &[
 fn both_names_reach_one_extraction() {
     let mut compared = 0usize;
     for spelling in HOSTILE.iter().chain(BARE_AUTHORITIES) {
-        let through_kernel = busbar_kernel::net_guard::extract_normalized_host(spelling);
+        let through_kernel = busbar_kernel::config_validate::extract_normalized_host(spelling);
         let through_unit = busbar_kernel_egress::trust::net::extract_normalized_host(spelling);
         assert_eq!(
             through_kernel, through_unit,
-            "`busbar_kernel::net_guard` and the egress unit read {spelling:?} as different hosts — \
+            "`busbar_kernel::config_validate` and the egress unit read {spelling:?} as different hosts — \
              the shim has grown a second definition, and whichever one a call site routes through \
              now decides whether this destination is guarded"
         );
@@ -149,13 +151,18 @@ fn both_names_reach_one_denylist_judgement() {
     for spelling in HOSTILE.iter().chain(BARE_AUTHORITIES) {
         // The bare guard, no operator lists at all.
         assert_eq!(
-            busbar_kernel::net_guard::ssrf_blocked_host(spelling, &[], false, &[]),
+            busbar_kernel::config_validate::ssrf_blocked_host(spelling, &[], false, &[]),
             busbar_kernel_egress::trust::net::ssrf_blocked_host(spelling, &[], false, &[]),
             "bare guard disagrees on {spelling:?}"
         );
         // With the operator's denylist — the arm the trailing-space bypass defeated.
         assert_eq!(
-            busbar_kernel::net_guard::ssrf_blocked_host(spelling, &[], false, &operator_blocked),
+            busbar_kernel::config_validate::ssrf_blocked_host(
+                spelling,
+                &[],
+                false,
+                &operator_blocked
+            ),
             busbar_kernel_egress::trust::net::ssrf_blocked_host(
                 spelling,
                 &[],
@@ -166,7 +173,7 @@ fn both_names_reach_one_denylist_judgement() {
         );
         // With a surgical allow-override, which must win through both names or through neither.
         assert_eq!(
-            busbar_kernel::net_guard::ssrf_blocked_host(
+            busbar_kernel::config_validate::ssrf_blocked_host(
                 spelling,
                 &operator_allowed,
                 false,
@@ -197,7 +204,7 @@ fn the_bare_authority_arm_is_reached_through_the_kernel_name() {
     for spelling in BARE_AUTHORITIES {
         for blocked in [&[][..], &operator_blocked[..]] {
             let through_kernel =
-                busbar_kernel::net_guard::ssrf_blocked_host(spelling, &[], false, blocked);
+                busbar_kernel::config_validate::ssrf_blocked_host(spelling, &[], false, blocked);
             let through_unit =
                 busbar_kernel_egress::trust::net::ssrf_blocked_host(spelling, &[], false, blocked);
             assert_eq!(
@@ -229,30 +236,30 @@ fn the_bare_authority_arm_is_reached_through_the_kernel_name() {
 /// [`judge_host_name`]: busbar_kernel_egress::trust::net::judge_host_name
 #[test]
 fn the_dialing_arm_and_the_config_arm_read_the_same_metadata_list() {
-    let names = busbar_kernel::net_guard::METADATA_HOSTS;
+    let names = busbar_contract::net::METADATA_HOSTS;
     assert_eq!(
         names,
         busbar_kernel_egress::trust::net::METADATA_HOSTS,
-        "the shim and the unit publish different metadata lists"
+        "the contract and the unit publish different metadata lists"
     );
     assert!(
         names.len() >= 6 && names.contains(&"metadata.platformequinix.com"),
         "the metadata list shrank back toward the two-entry copy: {names:?}"
     );
-    let permissive = busbar_kernel::net_guard::GuardPolicy {
+    let permissive = busbar_kernel_egress::trust::net::GuardPolicy {
         allow_private: true,
-        ..busbar_kernel::net_guard::GuardPolicy::default()
+        ..busbar_kernel_egress::trust::net::GuardPolicy::default()
     };
     for name in names {
         // The DIALING arm, under the permissive stance: the metadata arm is unconditional, so
         // `allow_private` must not reach it.
         assert!(
-            busbar_kernel::net_guard::judge_host_name(name, permissive).is_err(),
+            busbar_kernel_egress::trust::net::judge_host_name(name, permissive).is_err(),
             "`{name}` is on the metadata list and the dialing arm let it through"
         );
         // And the CONFIG arm, over the same name spelled as a URL.
         assert!(
-            busbar_kernel::net_guard::ssrf_blocked_host(
+            busbar_kernel::config_validate::ssrf_blocked_host(
                 &format!("https://{name}/latest/meta-data/"),
                 &[],
                 false,
@@ -271,7 +278,7 @@ fn the_hostile_table_actually_reaches_the_guard_through_both_names() {
     let mut blocked_through_kernel = 0usize;
     let mut blocked_through_unit = 0usize;
     for spelling in HOSTILE {
-        if busbar_kernel::net_guard::ssrf_blocked_host(spelling, &[], false, &[]).is_some() {
+        if busbar_kernel::config_validate::ssrf_blocked_host(spelling, &[], false, &[]).is_some() {
             blocked_through_kernel += 1;
         }
         if busbar_kernel_egress::trust::net::ssrf_blocked_host(spelling, &[], false, &[]).is_some()

@@ -1,0 +1,45 @@
+[package]
+name = "busbar-transport-webrtc"
+version = "1.6.0"
+publish = false            # internal workspace crate until its repo is extracted (step 40)
+edition = "2021"
+rust-version = "1.97"
+description = "The webrtc framer: ICE, SRTP and SCTP over the host's datagram port and secure layer, sans-IO. It holds no DTLS state; the host's secure layer hands it the exported keying material."
+license = "Apache-2.0"
+
+[lib]
+name = "busbar_transport_webrtc"
+path = "src/lib.rs"
+# rlib: the linked door (`linked::door`) and the tests. cdylib: the dropped-in door, the same door
+# exported as `busbar_plugin_door` under the `dropped-in` feature (Part 2 #2: one table, linked in or
+# dropped in). The plugins.yaml twin (`busbar-transport-webrtc-plugin`, pending_crate) takes this
+# crate when it moves to its repo; in this workspace the cdylib is this crate's own, as stdio's is.
+crate-type = ["rlib", "cdylib"]
+
+[features]
+# THE DROPPED-IN DOOR (`exported`): this crate's door as its image's one `busbar_plugin_door`. OFF in
+# a build that links this crate (the linked door is `linked::door`); the dropped-in artifact is built
+# on its own: `cargo build -p busbar-transport-webrtc --release --features dropped-in`.
+dropped-in = []
+
+# DEPENDENCY POLICY (THE DESIGN l.749-757, ARCHITECT D2 approval). A transport plugin's closure is
+# busbar-contract plus what its framing needs:
+# * str0m: ICE, SRTP, SCTP and the session description, sans-IO, default features off.
+# * ring: every cryptographic primitive the framer runs (AEAD-AES-GCM, HMAC-SHA1, SHA-256, random).
+# * aes: the SRTP key derivation's AES block, the one exception to ring-only, confined by
+#   tests/dependency_closure.rs.
+# * zeroize: the keying material and the keys derived from it are cleared when dropped.
+[dependencies]
+busbar-contract = { path = "../busbar-contract" }
+str0m = { workspace = true }
+ring = { workspace = true }
+aes = { workspace = true, features = ["zeroize"] }
+zeroize = { workspace = true }
+
+[dev-dependencies]
+# THE BOTH-WAYS WITNESS (tests/conformance.rs, its only user): the linked door and the dropped-in
+# cdylib, each admitted by the real loader, run one script to one transcript (Part 2 #2). This crate
+# names itself with its dropped-in door on, so `cargo test` builds the cdylib that test opens.
+# Dev-only: absent from every release build.
+busbar-plugin-loader = { path = "../plugin-loader", features = ["conformance"] }
+busbar-transport-webrtc = { path = ".", features = ["dropped-in"] }
