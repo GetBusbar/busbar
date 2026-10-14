@@ -374,6 +374,10 @@ extern "C" {
 #define BB_PLANE_UNITS_ESTIMATED UINT32_C(0) /* [`UnitCount::source`]: the plane's own estimate; never billed. */
 #define BB_PLANE_UNITS_REPORTED UINT32_C(1) /* [`UnitCount::source`]: the far end reported it; it bills. */
 #define BB_PLANE_UNITS_FLOOR UINT32_C(2) /* [`UnitCount::source`]: the plane's floor for a delivered reply whose far-end usage could not be */
+#define BB_PLANE_TAP_FAULT_NONE UINT8_C(0) /* [`OnPieceOut::tap_fault`]: no usage-tap fault. */
+#define BB_PLANE_TAP_FAULT_DECODE UINT8_C(1) /* [`OnPieceOut::tap_fault`]: the cell's own reader refused the body (`reason="decode"`). */
+#define BB_PLANE_TAP_FAULT_BAD_JSON UINT8_C(2) /* [`OnPieceOut::tap_fault`]: the body is not JSON (`reason="bad_json"`). */
+#define BB_PLANE_TAP_FAULT_UNKNOWN_PROTOCOL UINT8_C(3) /* [`OnPieceOut::tap_fault`]: the caller's dialect is not one the tap reads */
 #define BB_PLANE_PRINCIPAL_NONE UINT32_C(0) /* [`ArriveOut::principal_need`]: no principal. */
 #define BB_PLANE_PRINCIPAL_REQUIRED UINT32_C(1) /* [`ArriveOut::principal_need`]: the kernel must verify a principal before the first piece. */
 #define BB_PLANE_PRINCIPAL_OPTIONAL UINT32_C(2) /* [`ArriveOut::principal_need`]: verify one if the caller presents it. */
@@ -2793,7 +2797,8 @@ struct bb_plane_OnPieceOut {
     bb_mech_Span target;
     uint32_t need;
     uint8_t fault;
-    uint8_t _fault_reserved[3];
+    uint8_t tap_fault;
+    uint8_t _fault_reserved[2];
     bb_mech_Span lane;
     uint32_t final_status;
     uint32_t _final_reserved;
@@ -5292,7 +5297,8 @@ BB_ASSERT(offsetof(bb_plane_OnPieceOut, verb) == 160, "bb_plane_OnPieceOut.verb:
 BB_ASSERT(offsetof(bb_plane_OnPieceOut, target) == 168, "bb_plane_OnPieceOut.target: offset");
 BB_ASSERT(offsetof(bb_plane_OnPieceOut, need) == 176, "bb_plane_OnPieceOut.need: offset");
 BB_ASSERT(offsetof(bb_plane_OnPieceOut, fault) == 180, "bb_plane_OnPieceOut.fault: offset");
-BB_ASSERT(offsetof(bb_plane_OnPieceOut, _fault_reserved) == 181, "bb_plane_OnPieceOut._fault_reserved: offset");
+BB_ASSERT(offsetof(bb_plane_OnPieceOut, tap_fault) == 181, "bb_plane_OnPieceOut.tap_fault: offset");
+BB_ASSERT(offsetof(bb_plane_OnPieceOut, _fault_reserved) == 182, "bb_plane_OnPieceOut._fault_reserved: offset");
 BB_ASSERT(offsetof(bb_plane_OnPieceOut, lane) == 184, "bb_plane_OnPieceOut.lane: offset");
 BB_ASSERT(offsetof(bb_plane_OnPieceOut, final_status) == 192, "bb_plane_OnPieceOut.final_status: offset");
 BB_ASSERT(offsetof(bb_plane_OnPieceOut, _final_reserved) == 196, "bb_plane_OnPieceOut._final_reserved: offset");

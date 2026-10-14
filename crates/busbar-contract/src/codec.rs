@@ -123,53 +123,84 @@ pub enum CodecError {
     Malformed(String),
 }
 
-/// The host's USAGE-TAP FAULT REPORTER: told when a cell's own reader refused a same-protocol 2xx body
-/// in [`OperationHandler::extract_usage`]'s default, so the request billed 0 tokens. The host counts
-/// it (a per-request volume signal) and warns once per `(protocol, reason)`; the contract carries
-/// only the shape of the call, because counting and logging are the host's, not the cell's.
-pub type UsageTapFaultReporter = fn(ingress_protocol: &str, error: &CodecError);
-
-static USAGE_TAP_FAULT_REPORTER: std::sync::OnceLock<UsageTapFaultReporter> =
-    std::sync::OnceLock::new();
-
-/// Install the host's [`UsageTapFaultReporter`]. The first install wins and later ones are ignored:
-/// one process has one host. The host installs it where it installs the protocols whose cells report
-/// through it, so no cell is reachable before it is armed.
-pub fn install_usage_tap_fault_reporter(reporter: UsageTapFaultReporter) {
-    let _ = USAGE_TAP_FAULT_REPORTER.set(reporter);
+/// A USAGE-TAP FAULT: why a cell's usage tap could not read a same-protocol 2xx body, so the request
+/// billed 0 tokens. It is DATA the tap returns ([`OperationHandler::extract_usage`]'s `Err`): the
+/// plane carries it out on its door's answer beside the units it reports
+/// ([`crate::abi::plane::OnPieceOut::tap_fault`]), and the kernel counts it (one increment of
+/// `busbar_billing_tap_decode_fail_total{protocol,reason}`) and warns once per `(protocol, reason)`.
+/// The contract carries only the shape: no port, no latch and no static, so a codec reaches no host
+/// to report it and holds nothing that counts it.
+///
+/// ```compile_fail
+/// // There is no host port to report through: the fault is returned, never reported.
+/// busbar_contract::codec::report_usage_tap_decode_failure(
+///     "proto",
+///     &busbar_contract::codec::CodecError::Malformed(String::new()),
+/// );
+/// ```
+///
+/// ```compile_fail
+/// // And no latch a codec asks whether to warn: the kernel's count is the only one.
+/// let _ = busbar_contract::codec::usage_tap_fault_should_warn("proto", "decode");
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UsageTapFault {
+    /// The cell's own reader refused the body (`decode`).
+    Decode,
+    /// The body is not JSON (`bad_json`).
+    BadJson,
+    /// The caller's dialect is not one the tap reads (`unknown_protocol`).
+    UnknownProtocol,
 }
 
-/// Report a usage-tap decode failure to the installed host reporter; a no-op in a process whose host
-/// installed none (a bare codec test).
-pub fn report_usage_tap_decode_failure(ingress_protocol: &str, error: &CodecError) {
-    if let Some(report) = USAGE_TAP_FAULT_REPORTER.get() {
-        report(ingress_protocol, error);
+impl UsageTapFault {
+    /// The `reason` label the kernel counts the fault under.
+    #[must_use]
+    pub const fn reason(self) -> &'static str {
+        match self {
+            UsageTapFault::Decode => "decode",
+            UsageTapFault::BadJson => "bad_json",
+            UsageTapFault::UnknownProtocol => "unknown_protocol",
+        }
     }
-}
 
-/// The host's USAGE-TAP FAULT LATCH: counts one usage-tap fault of `reason` for `ingress_protocol`
-/// (a per-request volume signal) and answers `true` only the FIRST time the host sees that
-/// `(protocol, reason)`, so a codec that raises its own coded diagnostic for the fault warns once and
-/// logs at debug after. [`UsageTapFaultReporter`] is this latch plus the one decode-failure line a
-/// cell's default tap prints; a codec whose tap reads a body in more than one way reports each way's
-/// reason through the latch and prints its own line. Counting is the host's, not the codec's.
-pub type UsageTapFaultLatch = fn(ingress_protocol: &str, reason: &'static str) -> bool;
+    /// The fault's code on the door's answer ([`crate::abi::plane::TAP_FAULT_DECODE`] and on).
+    #[must_use]
+    pub const fn code(self) -> u8 {
+        match self {
+            UsageTapFault::Decode => crate::abi::plane::TAP_FAULT_DECODE,
+            UsageTapFault::BadJson => crate::abi::plane::TAP_FAULT_BAD_JSON,
+            UsageTapFault::UnknownProtocol => crate::abi::plane::TAP_FAULT_UNKNOWN_PROTOCOL,
+        }
+    }
 
-static USAGE_TAP_FAULT_LATCH: std::sync::OnceLock<UsageTapFaultLatch> = std::sync::OnceLock::new();
+    /// The reason the kernel counts a door's answer code under, the byte read as the CLOSED enum
+    /// it is: `None` only for [`crate::abi::plane::TAP_FAULT_NONE`]; a named code's
+    /// [`Self::reason`]; and every other value [`Self::UNKNOWN_REASON`]. A byte outside the
+    /// vocabulary is never ignored and never read as none: it is counted, and warned once.
+    #[must_use]
+    pub const fn reason_of(code: u8) -> Option<&'static str> {
+        match Self::of_code(code) {
+            Some(fault) => Some(fault.reason()),
+            None if code == crate::abi::plane::TAP_FAULT_NONE => None,
+            None => Some(Self::UNKNOWN_REASON),
+        }
+    }
 
-/// Install the host's [`UsageTapFaultLatch`]. First install wins, exactly as
-/// [`install_usage_tap_fault_reporter`], and the host installs both in the same place.
-pub fn install_usage_tap_fault_latch(latch: UsageTapFaultLatch) {
-    let _ = USAGE_TAP_FAULT_LATCH.set(latch);
-}
+    /// The `reason` a tap-fault byte outside the vocabulary is counted under.
+    pub const UNKNOWN_REASON: &'static str = "unknown";
 
-/// Count one usage-tap fault through the installed host latch and answer whether this is the first
-/// of its `(protocol, reason)`. In a process whose host installed none (a bare codec test) nothing is
-/// counted and the answer is `false`, so the caller logs at debug.
-pub fn usage_tap_fault_should_warn(ingress_protocol: &str, reason: &'static str) -> bool {
-    USAGE_TAP_FAULT_LATCH
-        .get()
-        .is_some_and(|latch| latch(ingress_protocol, reason))
+    /// The fault a door's answer code names; `None` for [`crate::abi::plane::TAP_FAULT_NONE`] and
+    /// for a code outside the vocabulary (which [`Self::reason_of`] counts as `unknown`).
+    #[must_use]
+    pub const fn of_code(code: u8) -> Option<Self> {
+        match code {
+            crate::abi::plane::TAP_FAULT_DECODE => Some(UsageTapFault::Decode),
+            crate::abi::plane::TAP_FAULT_BAD_JSON => Some(UsageTapFault::BadJson),
+            crate::abi::plane::TAP_FAULT_UNKNOWN_PROTOCOL => Some(UsageTapFault::UnknownProtocol),
+            _ => None,
+        }
+    }
 }
 
 /// The host's TRANSLATE-BODY CAP READER: the operator's per-response translation cap, in bytes, as
@@ -329,16 +360,19 @@ pub trait OperationHandler: Send + Sync {
     /// end, only when [`Self::taps_usage`] is true). Default: run THIS operation's own reader over the
     /// body and project its token usage — so a token-metered non-chat op (embeddings) bills the same
     /// as the cross-protocol path. Chat overrides this to run the egress protocol's chat reader.
-    fn extract_usage(&self, ingress_protocol: &str, body: &[u8]) -> Option<TokenUsage> {
+    ///
+    /// `Err` is the [`UsageTapFault`] that kept the tap from reading the body: the request bills 0
+    /// tokens, and the fault is returned as data for the kernel to count, never reported from here.
+    fn extract_usage(
+        &self,
+        _ingress_protocol: &str,
+        body: &[u8],
+    ) -> Result<Option<TokenUsage>, UsageTapFault> {
+        // A same-protocol 2xx body the op's own codec cannot decode is a `decode` fault (like the
+        // cross-protocol seam), never a silent 0-token bill with no operator signal.
         match self.read_response(body) {
-            Ok(r) => r.token_usage(),
-            Err(e) => {
-                // A same-protocol 2xx body the op's own codec cannot decode: record it (like the
-                // cross-protocol seam) rather than silently bill 0 tokens with no operator signal.
-                // The host's reporter counts it and warns once per (protocol, reason).
-                report_usage_tap_decode_failure(ingress_protocol, &e);
-                None
-            }
+            Ok(r) => Ok(r.token_usage()),
+            Err(_) => Err(UsageTapFault::Decode),
         }
     }
     /// The Content-Type of THIS operation's egress request wire (what `write_request` emits).

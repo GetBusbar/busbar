@@ -23,7 +23,7 @@ use busbar_contract::abi::plane::{
     self, slot, ArriveIn, ArriveOut, OnPieceIn, OnPieceOut, OutField, PlaneOpenIn, PlaneOpenOut,
     PlaneRefreshOut, ProjectIn, ProjectOut, RefusalIn, RefusalOut, ServeIn, ServeOut, UnitCount,
     EMIT_DONE, EMIT_TO_FAR_END, FROM_CALLER, FROM_FAR_END, FROM_KERNEL, PIECE_HAS_STATUS,
-    PIECE_LAST, PRINCIPAL_REQUIRED, REFUSAL_KERNEL, UNITS_REPORTED,
+    PIECE_LAST, PRINCIPAL_REQUIRED, REFUSAL_KERNEL, TAP_FAULT_BAD_JSON, UNITS_REPORTED,
 };
 use busbar_contract::abi::sdk::capture::{CaptureHome, CaptureSlot};
 use busbar_contract::abi::sdk::door::kind_op;
@@ -158,7 +158,7 @@ impl Piece {
             .collect();
         format!(
             "{:?} emitted={} more={} to_far_end={} done={} status={} verdict={} verb={} target={} \
-             fields={fields:?} units={units:?}",
+             fields={fields:?} units={units:?} tap_fault={}",
             c.outcome,
             String::from_utf8_lossy(&self.reply[..o.emitted as usize]),
             o.more,
@@ -168,6 +168,7 @@ impl Piece {
             o.verdict,
             at(&self.arena, o.verb),
             at(&self.arena, o.target),
+            o.tap_fault,
         )
     }
 }
@@ -481,6 +482,55 @@ fn the_linked_and_the_dropped_in_door_answer_every_op_the_same() {
     let linked = script(&linked(&d));
     assert_the_planes_answers(&linked);
     assert_eq!(script(&dropped(&d)), linked, "the dropped-in door");
+}
+
+/// A same-dialect 2xx body the usage tap cannot read: not JSON, and longer than one narrow window.
+const UNREADABLE: &[u8] = b"{not json: the far end answered 200 with a body no reader can meter";
+
+/// THE USAGE-TAP FAULT RIDES THE DOOR'S ANSWER AS DATA, ONCE (row 155): a same-dialect 2xx body the
+/// tap cannot read is relayed as it came, and the answer that carries its units carries the fault
+/// beside them, on ONE window of the answer however many the reply takes, so the kernel, which
+/// counts each answer's fault, counts it exactly once. Linked and dropped in alike: the codec
+/// reaches no host to report it.
+#[test]
+fn a_usage_tap_fault_rides_one_window_of_the_doors_answer() {
+    let d = Dispatcher::new(DispatchConfig::default());
+    for p in [linked(&d), dropped(&d)] {
+        let mut i: PlaneOpenIn = z();
+        i.open.head = in_head();
+        (i.open.generation, i.open.settings) = (1, octets(SETTINGS));
+        let mut o: PlaneOpenOut = z();
+        o.open.head = out_head();
+        assert_eq!(p.open(&mut Frame::new(i, o)).0.outcome, Outcome::Ready);
+        assert!(arrive(&p, 11, b"/v1/messages", CHAT).starts_with("arrive Ready"));
+        let mut wide = Piece::new(1024);
+        assert!(wide
+            .call(&p, 11, FROM_KERNEL, 0, b"", 1)
+            .contains("to_far_end=true"));
+        assert!(wide
+            .call(&p, 11, FROM_CALLER, PIECE_LAST, CHAT, 0)
+            .contains(" more=0 "));
+        let mut narrow = Piece::new(16);
+        let whole = PIECE_HAS_STATUS | PIECE_LAST;
+        let mut windows = vec![narrow.call(&p, 11, FROM_FAR_END, whole, UNREADABLE, 0)];
+        while windows.last().is_some_and(|w| w.contains(" more=1 ")) {
+            windows.push(narrow.call(&p, 11, FROM_FAR_END, 0, b"", 0));
+        }
+        let all = windows.join("\n");
+        assert!(
+            windows.len() > 1,
+            "the answer takes more than one window: {all}"
+        );
+        let carried: Vec<&String> = windows
+            .iter()
+            .filter(|w| !w.ends_with(" tap_fault=0"))
+            .collect();
+        assert_eq!(carried.len(), 1, "one window carries the fault: {all}");
+        assert!(
+            carried[0].ends_with(&format!(" tap_fault={TAP_FAULT_BAD_JSON}")),
+            "the fault is the tap's own reason: {all}"
+        );
+    }
 }
 
 /// A call capture for the hand-built table entry below: one slot per thread, as `plugin_door!`

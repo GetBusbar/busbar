@@ -400,7 +400,7 @@ pub static SEED: &[(&str, &[SeededCheck])] = &[
         ("test", "test_ssrf_allows_private_and_loopback_by_default", "no over-blocking, no runtime DNS check"),
         ("test", "test_validate_rejects_non_https_base_url", "the public-https / private-http scheme rule literals"),
         ("test", "test_validate_token_url_ssrf_and_scheme", "the same rules on token_url"),
-        ("test", "crates/busbar-kernel/src/tests/net_guard_tests.rs::the_shared_internal_predicate_covers_every_range_any_plane_ever_checked", "one shared predicate across planes"),
+        ("test", "crates/busbar-kernel-egress/src/trust/tests/net_tests.rs::the_shared_internal_predicate_covers_every_range_any_plane_ever_checked", "one shared predicate across planes"),
     ]),
     ("PB-73", &[
         ("test", "server_timing_header_absent_by_default_present_when_enabled", "Server-Timing absent by default, on every response when enabled"),
