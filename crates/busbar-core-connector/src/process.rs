@@ -134,9 +134,11 @@ fn split(dest: &str) -> Result<(String, u16, bool), u64> {
     if let Some((scheme, rest)) = dest.split_once("://") {
         let lowered = format!("{}://{rest}", scheme.to_ascii_lowercase());
         // The one http(s) URL reader (scheme allowlist, userinfo refused, the scheme's port).
-        return match busbar_kernel::net_guard::split_url(&lowered) {
+        return match busbar_kernel_egress::trust::net::split_url(&lowered) {
             Ok((https, host, port, _)) => Ok((host, port, https)),
-            Err(busbar_kernel::net_guard::AddressRefusal::Scheme { .. }) => Err(DEST_SCHEME),
+            Err(busbar_kernel_egress::trust::net::AddressRefusal::Scheme { .. }) => {
+                Err(DEST_SCHEME)
+            }
             Err(_) => Err(DEST_NO_HOST),
         };
     }

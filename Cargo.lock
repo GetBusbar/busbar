@@ -579,6 +579,7 @@ dependencies = [
  "axum",
  "busbar-contract",
  "busbar-kernel",
+ "busbar-kernel-egress",
  "busbar-plugin-loader",
  "busbar-transport-tcp-plugin",
  "bytes",
@@ -1026,10 +1027,9 @@ dependencies = [
 [[package]]
 name = "busbar-transport-stdio"
 version = "1.6.0"
+source = "git+https://github.com/GetBusbar/busbar-transport-stdio?rev=604a5caf1349fd3024af80f3ee8a92353189149e#604a5caf1349fd3024af80f3ee8a92353189149e"
 dependencies = [
  "busbar-contract",
- "busbar-plugin-loader",
- "busbar-transport-stdio",
 ]
 
 [[package]]

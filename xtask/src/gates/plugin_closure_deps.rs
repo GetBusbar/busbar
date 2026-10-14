@@ -124,9 +124,10 @@ impl Gate for PluginClosureDepsGate {
     }
 
     fn selftest<'a>(&'a self, cx: &'a Ctx) -> Report<'a> {
-        // THE PLANTS GO INTO THE ONE PLUGIN CRATE THAT DEPENDS ON busbar-contract ALONE TODAY, so a
-        // plant's finding is the only new one.
-        let manifest = "crates/busbar-transport-stdio/Cargo.toml";
+        // THE PLANTS GO INTO A PLUGIN CRATE WHOSE ONE busbar CRATE IS busbar-contract, so a plant's
+        // finding is the only new one: the webrtc transport, the one transport still in `crates/` (the
+        // stdio wire left for its own repo, P5; its third-party libraries are not this gate's rows).
+        let manifest = "crates/busbar-transport-webrtc/Cargo.toml";
         let with_dep = |dep: &str| {
             let text = cx.read(manifest).unwrap_or_default();
             let text = text.replacen("[dependencies]\n", &format!("[dependencies]\n{dep}\n"), 1);
