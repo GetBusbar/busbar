@@ -65,12 +65,73 @@ const NONE: AbiStr = AbiStr {
     len: 0,
 };
 
-/// The plane's settings sections, as its Statement states them: `agents:` is the one it declares.
-pub const SECTIONS: &[Section] = &[Section {
-    name: abi_str(crate::CONFIG_SECTION),
-    flags: SECTION_DECLARING,
-    _reserved: 0,
-}];
+/// The plane's settings sections, as its Statement states them: `agents:` is the one it declares;
+/// `agent_push:` ([`PUSH_SECTION`]) is its own beside it, handed as written at `open`.
+pub const SECTIONS: &[Section] = &[
+    Section {
+        name: abi_str(crate::CONFIG_SECTION),
+        flags: SECTION_DECLARING,
+        _reserved: 0,
+    },
+    Section {
+        name: abi_str(PUSH_SECTION),
+        flags: 0,
+        _reserved: 0,
+    },
+];
+
+/// THE PLANE'S OWN `agent_push:` SECTION (new in 1.6.0; absent = off): `{ca: <PEM>}`, the operator
+/// CA a push delivery's connection trusts on top of the public roots (ARCHITECT ruling 2026-10-14:
+/// the connector's per-connection trust, reached through the push need's `trust_from`,
+/// [`PUSH_TRUST_FROM`]). The host reads the PEM; the plane judges only the section's shape
+/// ([`read_push_section`]). A section of its own rather than an `agents:` key: every key of
+/// `agents:` is a registration.
+pub const PUSH_SECTION: &str = "agent_push";
+
+/// The [`PUSH_SECTION`] key holding the operator CA, PEM text.
+pub const PUSH_CA_KEY: &str = "ca";
+
+/// WHERE [`NEED_OPEN_WEB`]'s TRUST ANCHOR COMES FROM: [`PUSH_SECTION`]`.`[`PUSH_CA_KEY`] in the
+/// plane's owned sections (`busbar_contract::section::OWNED_PATH_PREFIX`), optional by definition.
+pub const PUSH_TRUST_FROM: &str = "owned.agent_push.ca";
+
+/// Judge the [`PUSH_SECTION`] the plane's owned sections (`{section: value}`, JSON) write: absent
+/// or empty is the push trusting the public roots alone; present, it is a mapping holding
+/// [`PUSH_CA_KEY`] alone, a non-empty text. Whether that text is a usable trust anchor is the
+/// host's to judge when it declares the push need (a PEM that is none refuses the boot).
+///
+/// # Errors
+///
+/// The section's words: not a mapping, an unknown key, or a `ca` that is not non-empty text.
+pub fn read_push_section(owned: &[u8]) -> Result<(), String> {
+    use serde_json::Value;
+    if owned.is_empty() {
+        return Ok(());
+    }
+    let all: Value = serde_json::from_slice(owned).map_err(|e| format!("`{PUSH_SECTION}`: {e}"))?;
+    match all.get(PUSH_SECTION) {
+        None | Some(Value::Null) => Ok(()),
+        Some(Value::Object(fields)) => {
+            for (key, value) in fields {
+                if key != PUSH_CA_KEY {
+                    return Err(format!(
+                        "`{PUSH_SECTION}.{key}` is not a key of `{PUSH_SECTION}:`; it holds \
+                         `{PUSH_CA_KEY}` alone"
+                    ));
+                }
+                if !value.as_str().is_some_and(|text| !text.trim().is_empty()) {
+                    return Err(format!(
+                        "`{PUSH_SECTION}.{PUSH_CA_KEY}` must be the operator CA as PEM text"
+                    ));
+                }
+            }
+            Ok(())
+        }
+        Some(_) => Err(format!(
+            "`{PUSH_SECTION}:` must be a mapping, `{{{PUSH_CA_KEY}: <PEM>}}`"
+        )),
+    }
+}
 
 /// The three bindings, in the order the engine names its wire formats.
 const DIALECTS: &[AbiStr] = &[
@@ -295,7 +356,7 @@ pub const NEEDS: &[Need] = &[
         transport: abi_str(DOCUMENT_TRANSPORT),
         auth: NONE,
         target_from: NONE,
-        trust_from: NONE,
+        trust_from: abi_str(PUSH_TRUST_FROM),
         details: Blob {
             ptr: std::ptr::null(),
             len: 0,

@@ -583,6 +583,75 @@ fn a_trust_from_need_is_declared_with_its_settings_ca_at_open_and_every_refresh(
     );
 }
 
+/// A need whose trust anchors come from the OWNED namespace: `owned.agent_push.ca`.
+const OWNED_TRUSTING: [Need; 1] = [Need {
+    target_from: NONE,
+    trust_from: abi_str("owned.agent_push.ca"),
+    ..NEEDS[0]
+}];
+
+/// `refresh` with `json` as the instance's new settings and `owned` as its owned sections, carried
+/// in the extensions blob under `abi::plane::EXT_OWNED`, ticket-less.
+fn refresh_owning(p: &Plugin<TestKind>, json: &'static [u8], owned: &[u8]) -> Outcome {
+    use busbar_contract::abi::mechanism::call::BLOB_OCTETS;
+    let extensions = busbar_contract::abi::mechanism::extensions::encode(&[(
+        busbar_contract::abi::plane::EXT_OWNED,
+        owned,
+    )]);
+    let mut head = in_head();
+    head.extensions = Blob {
+        ptr: extensions.as_ptr(),
+        len: extensions.len(),
+        fmt: BLOB_OCTETS,
+        flags: 0,
+    };
+    let mut f = Frame::new(
+        RefreshIn {
+            head,
+            generation: 2,
+            settings: settings(json),
+            secrets: std::ptr::null(),
+            secrets_len: 0,
+        },
+        out_head(),
+    );
+    p.call(slot::REFRESH, &mut f).outcome
+}
+
+/// RED: a need whose `trust_from` is in the OWNED namespace resolves against the owned sections
+/// alone, never the settings (no fallback between the two): its `open` (no owned sections for a
+/// kind that is no plane) and a refresh carrying none declare it WITHOUT a trust (the public roots
+/// alone, the table's to take as optional), even when the settings hold the same path; a refresh
+/// whose owned sections write the anchor declares it with that PEM.
+/// RED before the fix: the path resolved against the settings only, so an owned anchor never
+/// reached the table.
+#[test]
+fn an_owned_trust_from_resolves_against_the_owned_sections_alone() {
+    let table = Arc::new(Recording::default());
+    let p = bound(Box::leak(Box::new(OWNED_TRUSTING)), &table);
+    let decoy: &'static [u8] = br#"{"agent_push":{"ca":"PEM-IN-SETTINGS"},"owned":{"agent_push":{"ca":"PEM-IN-SETTINGS"}}}"#;
+    assert_eq!(open_with(&p, decoy), Outcome::Ready);
+    assert_eq!(
+        refresh_owning(&p, decoy, br#"{"agent_push":{"ca":"PEM-OWNED"}}"#),
+        Outcome::Ready
+    );
+    assert_eq!(refresh_with(&p, decoy), Outcome::Ready);
+    let declared = table.declared.lock().unwrap().clone();
+    let seen: Vec<Option<String>> = declared
+        .iter()
+        .filter(|(owner, need, ..)| (*owner, *need) == (p.instance(), NeedId(0)))
+        .map(|(_, _, spec, _, trust)| {
+            assert_eq!(spec.trust_from, "owned.agent_push.ca");
+            trust.clone()
+        })
+        .collect();
+    assert_eq!(
+        seen,
+        vec![None, Some("PEM-OWNED".to_owned()), None],
+        "the settings are never read for an owned path"
+    );
+}
+
 /// RED (Q-FC7): two instances, each on its own dispatcher, whose first tickets collide (fresh
 /// dispatchers mint identical first tickets). Recycling one's ticket forgets only its own kept
 /// answers: the other's re-issued `ESTABLISH` redeems its stored stream and is never run a second

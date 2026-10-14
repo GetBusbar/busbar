@@ -796,9 +796,10 @@ pub fn open_door(
 pub fn refresh_door(
     plugin: &crate::dispatch::Plugin<Plane>,
     settings: &[u8],
+    owned: &[u8],
     next: u64,
 ) -> Result<OwnedSnapshot, String> {
-    use busbar_contract::abi::mechanism::call::{Blob, BLOB_ABSENT, BLOB_JSON};
+    use busbar_contract::abi::mechanism::call::{Blob, BLOB_ABSENT, BLOB_JSON, BLOB_OCTETS};
     let blob = if settings.is_empty() {
         Blob {
             ptr: std::ptr::null(),
@@ -814,9 +815,29 @@ pub fn refresh_door(
             flags: 0,
         }
     };
+    // ITS OTHER OWNED SECTIONS ride the extensions blob under `EXT_OWNED` (the same JSON object
+    // `open` carries in `PlaneOpenIn::owned`; absent when the document writes none), so a need whose
+    // trust anchor sits in one is re-declared over the applied value.
+    let extensions = if owned.is_empty() {
+        Vec::new()
+    } else {
+        busbar_contract::abi::mechanism::extensions::encode(&[(
+            busbar_contract::abi::plane::EXT_OWNED,
+            owned,
+        )])
+    };
+    let mut head = in_head();
+    if !extensions.is_empty() {
+        head.extensions = Blob {
+            ptr: extensions.as_ptr(),
+            len: extensions.len(),
+            fmt: BLOB_OCTETS,
+            flags: 0,
+        };
+    }
     let mut frame = Frame::new(
         RefreshIn {
-            head: in_head(),
+            head,
             generation: next,
             settings: blob,
             secrets: std::ptr::null(),

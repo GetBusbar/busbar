@@ -1373,6 +1373,14 @@ pub struct PlaneTail {
 /// The most lane words a plane's tail may declare ([`PlaneTail::metric_lanes`]).
 pub const MAX_METRIC_LANES: usize = 16;
 
+/// A plane `refresh`'s EXTENSIONS KEY ([`crate::abi::mechanism::extensions`], carried in
+/// `RefreshIn::head.extensions`): the plane's other owned sections the applied document writes,
+/// the same JSON object [`PlaneOpenIn::owned`] carries at `open` (keyed by section name, each as
+/// written). Absent = the document writes none. A plane that reads no owned section at `refresh`
+/// never reads it; the host resolves a need's `owned.` trust path against it (§11: a new field
+/// lives in the extensions blob first).
+pub const EXT_OWNED: &str = "owned";
+
 // ── the generation snapshot ──────────────────────────────────────────────────────────────────────
 
 /// One path the built plane answers on. One route — a verb, a target and whether the target is

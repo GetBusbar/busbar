@@ -1403,7 +1403,9 @@ pub fn compose_egress(
 /// read back when that generation is swapped in.
 #[derive(Debug)]
 pub struct DoorConfig {
-    /// The kernel-owned sections.
+    /// The kernel-owned sections, and beside them every plane section the configuration carries RAW
+    /// (a door plane's other owned sections among them: a config apply hands a plane its owned
+    /// sections from here, as boot hands them from the document's sections).
     pub sections: BTreeMap<&'static str, serde_yaml::Value>,
     /// The providers, by name.
     pub providers: BTreeMap<String, ProviderRoute>,
@@ -1414,14 +1416,29 @@ pub struct DoorConfig {
 /// The [`DoorConfig`] of `cfg` (the root's `ConfigProjection`).
 #[must_use]
 pub fn door_config(cfg: &busbar_kernel::config::RootCfg) -> Arc<dyn std::any::Any + Send + Sync> {
+    let mut sections = kernel_sections(cfg);
+    for (key, value) in raw_sections(cfg) {
+        sections.entry(key).or_insert(value);
+    }
     Arc::new(DoorConfig {
-        sections: kernel_sections(cfg),
+        sections,
         providers: provider_routes(
             &cfg.providers,
             &busbar_kernel::config_validate::MetadataPosture::global(cfg),
         ),
         model_pools: crate::root::model_egress::ModelPools::of(cfg),
     })
+}
+
+/// EVERY PLANE SECTION `cfg` CARRIES RAW, by section key, as written: each is its plane's resource
+/// (`RootCfg::endpoint_resources`, `(section, value)`), a plane's other owned sections among them.
+fn raw_sections(cfg: &busbar_kernel::config::RootCfg) -> BTreeMap<&'static str, serde_yaml::Value> {
+    cfg.endpoint_resources
+        .values()
+        .filter_map(|r| r.downcast_ref::<(&'static str, serde_yaml::Value)>())
+        .filter(|(_, v)| !v.is_null())
+        .map(|(k, v)| (*k, v.clone()))
+        .collect()
 }
 
 // ── the kernel-owned sections a door plane reads ────────────────────────────────────────────────

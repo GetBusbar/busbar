@@ -356,10 +356,71 @@ fn the_statement_declares_its_open_web_need_and_its_agent_member_need() {
         "the http claim"
     );
     assert_eq!(
-        (need.auth.len, need.target_from.len, need.trust_from.len),
-        (0, 0, 0),
+        (need.auth.len, need.target_from.len),
+        (0, 0),
         "no auth style, no configured target: the plane names each dial's target"
     );
+    assert_eq!(
+        need.trust_from.len,
+        crate::door::PUSH_TRUST_FROM.len(),
+        "its trust anchor is the operator's optional `agent_push.ca` (the text is pinned by the \
+         conformance read of the rendered Statement)"
+    );
+}
+
+/// THE PUSH NEED'S TRUST IS THE PLANE'S OWN `agent_push.ca`, in the owned namespace (ARCHITECT ruling
+/// 2026-10-14): the path names the section the Statement owns beside `agents:` and its one key, and
+/// the section is stated as the plane's own (not declaring, not consumed).
+#[test]
+fn the_push_trust_path_names_the_owned_agent_push_section() {
+    use crate::door::{PUSH_CA_KEY, PUSH_SECTION, PUSH_TRUST_FROM, SECTIONS};
+    use busbar_contract::section::{owned_path, OWNED_PATH_PREFIX};
+    assert_eq!(
+        PUSH_TRUST_FROM,
+        format!("{OWNED_PATH_PREFIX}{PUSH_SECTION}.{PUSH_CA_KEY}")
+    );
+    assert_eq!(
+        owned_path(PUSH_TRUST_FROM),
+        Some(format!("{PUSH_SECTION}.{PUSH_CA_KEY}").as_str())
+    );
+    assert_eq!(SECTIONS.len(), 2, "`agents:`, and `agent_push:` beside it");
+    assert_eq!(
+        (SECTIONS[1].name.len, SECTIONS[1].flags),
+        (PUSH_SECTION.len(), 0),
+        "owned, as written: neither declaring nor consumed"
+    );
+}
+
+/// THE `agent_push:` SECTION'S SHAPE, as the plane judges it at `open` and `refresh`: absent (or
+/// null) is off; present, a mapping holding `ca` alone, non-empty text. Whether the text is a
+/// usable trust anchor is the host's to judge.
+#[test]
+fn the_agent_push_section_holds_its_ca_alone() {
+    use crate::door::read_push_section;
+    for fine in [
+        &b""[..],
+        br#"{}"#,
+        br#"{"agent_push":null}"#,
+        br#"{"agent_push":{}}"#,
+        br#"{"agent_push":{"ca":"-----BEGIN CERTIFICATE-----"}}"#,
+        br#"{"other":{"x":1}}"#,
+    ] {
+        assert_eq!(
+            read_push_section(fine),
+            Ok(()),
+            "{}",
+            String::from_utf8_lossy(fine)
+        );
+    }
+    for (bad, says) in [
+        (&br#"{"agent_push":"pem"}"#[..], "must be a mapping"),
+        (br#"{"agent_push":{"ca":""}}"#, "PEM text"),
+        (br#"{"agent_push":{"ca":7}}"#, "PEM text"),
+        (br#"{"agent_push":{"cert":"pem"}}"#, "`agent_push.cert`"),
+    ] {
+        let err = read_push_section(bad).expect_err("refused");
+        assert!(err.contains(says), "{err}");
+    }
 }
 
 /// predev's token: `<task-id>.` then `hex::encode` of an HMAC-SHA256, 64 lower-case hex digits.

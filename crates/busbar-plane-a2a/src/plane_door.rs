@@ -688,6 +688,10 @@ slot!(
             Ok(cfg) => cfg,
             Err(refusal) => return out.fail(refusal),
         };
+        // ITS OWN `agent_push:` SECTION, judged for its shape (the host reads the CA itself).
+        if let Err(words) = door::read_push_section(input.field(|i| &i.owned).bytes()) {
+            return out.fail(Refusal::refused(words));
+        }
         let generation = input.get().open.generation;
         let plane = A2aDoor {
             public_url: public_url(input.field(|i| &i.public_url).bytes()),
@@ -730,6 +734,17 @@ slot!(
             Ok(cfg) => cfg,
             Err(refusal) => return out.fail(refusal),
         };
+        // The applied `agent_push:` section rides the refresh's extensions blob
+        // (`abi::plane::EXT_OWNED`), judged as `open` judges it.
+        let extensions = input.field(|i| &i.head.extensions).bytes();
+        let owned = busbar_contract::abi::mechanism::extensions::get(
+            extensions,
+            busbar_contract::abi::plane::EXT_OWNED,
+        )
+        .unwrap_or_default();
+        if let Err(words) = door::read_push_section(owned) {
+            return out.fail(Refusal::refused(words));
+        }
         let spec = door::snapshot_spec(plane.public_url.as_deref(), !cfg.agents.is_empty());
         let generation = input.get().generation;
         // THE CARDS A KEPT REGISTRATION HOLDS are held under the new generation too: the apply
