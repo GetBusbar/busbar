@@ -1,16 +1,18 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! A TEST STAND-IN FOR THE HOST'S CONNECTION TABLE: [`TcpConns`] serves the `tcp` transport to a
-//! plugin's declared needs, so a store (or any kind) that reaches a real backend over the host's
-//! connector can be opened on a [`Dispatcher`](crate::dispatch::Dispatcher) in a test without the
-//! process's connector. As the connector does, it dials `host:port` (bounded by the open's
-//! timeout), a `unix:/absolute/path` target over a unix-domain socket, and secures a stream on
+//! A TEST STAND-IN FOR THE HOST'S CONNECTION TABLE: [`TcpConns`] serves the stream transport its
+//! facts name ([`StreamFacts`], data the conformance case supplies) to a plugin's declared needs,
+//! so a store (or any kind) that reaches a real backend over the host's connector can be opened on
+//! a [`Dispatcher`](crate::dispatch::Dispatcher) in a test without the process's connector. As the
+//! connector does, it dials `host:port` (bounded by the open's timeout), a target under its local
+//! prefix (`<prefix>/absolute/path`) over a domain socket, and secures a stream on
 //! `upgrade_secure` with the TLS a test hands it ([`TcpConns::with_tls`], a [`SecureDial`]): TLS
 //! stays in the connector and this crate names no TLS library, so a test hands it a double of the
-//! connector's (whose real `upgrade_secure` its own suite proves). A read with nothing ready answers
-//! PENDING and wakes the ticket shortly after, so a plugin's pending path is exercised. A test double: it never ships
-//! (`test-support`; and `conformance`, the published suite's table, a plugin repo's dev-dependency).
+//! connector's (whose real `upgrade_secure` its own suite proves). A read with nothing ready
+//! answers PENDING and wakes the ticket shortly after, so a plugin's pending path is exercised. A
+//! test double: it never ships (`test-support`; and `conformance`, the published suite's table, a
+//! plugin repo's dev-dependency).
 
 use std::io::{ErrorKind, Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
@@ -29,8 +31,7 @@ use busbar_contract::transport::ConnFacts;
 /// How long after a read found nothing its ticket is woken to look again.
 const POLL: Duration = Duration::from_millis(1);
 
-/// A unix-domain target's prefix, as the connector reads it.
-pub const UNIX_PREFIX: &str = "unix:";
+use crate::stand_in::StreamFacts;
 
 /// The TLS a table secures a stream with on `upgrade_secure`, handed to it by a test
 /// ([`TcpConns::with_tls`]): the connector's, never this crate's.
@@ -102,6 +103,8 @@ struct Conn {
 
 /// THE TEST CONNECTION TABLE.
 pub struct TcpConns {
+    /// The transport it stands in for: the claim it serves and its local-socket prefix.
+    facts: StreamFacts,
     slab: ConnSlab<Mutex<Conn>>,
     wake: Arc<dyn Fn(u64) + Send + Sync>,
     tls: Option<Arc<dyn SecureDial>>,
@@ -139,7 +142,15 @@ impl TcpConns {
     /// [`conn_waker`](crate::dispatch::Dispatcher::conn_waker)); `upgrade_secure` is refused.
     #[must_use]
     pub fn new(wake: Arc<dyn Fn(u64) + Send + Sync>) -> Self {
+        Self::serving(StreamFacts::stand_in(), wake)
+    }
+
+    /// A table standing in for the stream transport `facts` names, its parked reads woken through
+    /// `wake`.
+    #[must_use]
+    pub fn serving(facts: StreamFacts, wake: Arc<dyn Fn(u64) + Send + Sync>) -> Self {
         Self {
+            facts,
             slab: ConnSlab::default(),
             wake,
             tls: None,
@@ -171,8 +182,11 @@ fn host_of(target: &str) -> String {
     t.trim_start_matches('[').trim_end_matches(']').to_owned()
 }
 
-fn dial(target: &str, timeout_ms: u64) -> Result<Sock, ConnError> {
-    if let Some(path) = target.strip_prefix(UNIX_PREFIX) {
+fn dial(target: &str, local_prefix: &str, timeout_ms: u64) -> Result<Sock, ConnError> {
+    if let Some(path) = target
+        .strip_prefix(local_prefix)
+        .filter(|_| !local_prefix.is_empty())
+    {
         let s = UnixStream::connect(path).map_err(|_| ConnError::Refused)?;
         s.set_nonblocking(true).map_err(|e| io(&e))?;
         return Ok(Sock::Unix(s));
@@ -218,7 +232,7 @@ impl Conns for TcpConns {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .push(desc.timeout_ms);
-        let sock = dial(desc.target, desc.timeout_ms)?;
+        let sock = dial(desc.target, &self.facts.local_prefix, desc.timeout_ms)?;
         self.slab.insert(
             caller,
             need,
@@ -330,7 +344,7 @@ impl DeclaredConns for TcpConns {
         _: Option<&str>,
         _: Option<&str>,
     ) -> Result<(), ConnError> {
-        if spec.transport != "tcp" {
+        if spec.transport.is_empty() || spec.transport != self.facts.transport {
             return Err(ConnError::Refused);
         }
         self.classes
@@ -388,6 +402,6 @@ impl DeclaredConns for TcpConns {
     }
 
     fn serves_scheme(&self, transport: &str) -> bool {
-        transport == "tcp"
+        !transport.is_empty() && transport == self.facts.transport
     }
 }

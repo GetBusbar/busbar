@@ -66,6 +66,10 @@ pub mod secret_calls;
 mod needs_restated;
 pub mod sign;
 mod stage;
+/// NEVER SHIPPED: the facts the test connection tables stand in for, read from data
+/// (`stand_in.json`), so no Rust source of this crate names a transport.
+#[cfg(any(test, feature = "test-support", feature = "conformance"))]
+pub mod stand_in;
 pub mod store_adapter;
 pub mod store_v3;
 pub mod tarball;

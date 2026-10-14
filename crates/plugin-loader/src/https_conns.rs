@@ -2,9 +2,9 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! A STAND-IN FOR THE HOST'S CONNECTION TABLE, FRAMED (tests, and the published conformance
-//! suite): [`HttpsConns`] serves a plugin's declared outbound needs over the `http` transport (the
-//! scheme the http framer claims), to `https` targets, as the connector's framed `exchange()`
-//! does, so a plugin that fetches over the host (an IdP's JWKS) can be opened on a
+//! suite): [`HttpsConns`] serves a plugin's declared outbound needs over the framed transport its
+//! facts name ([`FramedFacts`], data the conformance case supplies), to targets of its secured
+//! scheme, as the connector's framed `exchange()` does, so a plugin that fetches over the host (an IdP's JWKS) can be opened on a
 //! [`Dispatcher`](crate::dispatch::Dispatcher) in a build that cannot link the process's connector
 //! (a kernel test, a plugin repo's conformance run). It never ships (`test-support`,
 //! `conformance`), and it names no TLS library (TLS stays in the connector).
@@ -28,6 +28,8 @@ use busbar_contract::conn::{
 };
 use busbar_contract::ids::StreamId;
 use busbar_contract::transport::ConnFacts;
+
+use crate::stand_in::FramedFacts;
 
 /// One declared need, as the table carries it.
 struct Declared {
@@ -56,8 +58,9 @@ struct Reply {
 }
 
 /// THE TEST CONNECTION TABLE.
-#[derive(Default)]
 pub struct HttpsConns {
+    /// The transport it stands in for: the claim it serves, its secured scheme, its default port.
+    facts: FramedFacts,
     slab: ConnSlab<Mutex<Reply>>,
     needs: Mutex<HashMap<(InstanceId, NeedId), Result<Declared, ConnError>>>,
     far: Mutex<HashMap<String, FarEnd>>,
@@ -70,11 +73,29 @@ impl std::fmt::Debug for HttpsConns {
     }
 }
 
+impl Default for HttpsConns {
+    fn default() -> Self {
+        Self::framing(FramedFacts::stand_in())
+    }
+}
+
 impl HttpsConns {
-    /// A table with no far end.
+    /// A table with no far end, standing in for the framed transport `stand_in.json` names.
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// A table with no far end, standing in for the framed transport `facts` names.
+    #[must_use]
+    pub fn framing(facts: FramedFacts) -> Self {
+        Self {
+            facts,
+            slab: ConnSlab::default(),
+            needs: Mutex::default(),
+            far: Mutex::default(),
+            sent: Mutex::default(),
+        }
     }
 
     /// Serve `url` (exact, query included) under the certificate `cert_pem` (`None`: one chaining
@@ -114,20 +135,24 @@ impl HttpsConns {
     }
 }
 
-/// `https://host[:port]/...` as `(host, port)`.
-fn authority(url: &str) -> Option<(String, u16)> {
-    let rest = url.strip_prefix("https://")?;
+/// `<secure scheme>://host[:port]/...` as `(host, port)`, the port `facts.default_port` where the
+/// URL names none; `None` for a URL of any other scheme (the double reaches secured targets only).
+fn authority(url: &str, facts: &FramedFacts) -> Option<(String, u16)> {
+    let (scheme, rest) = url.split_once("://")?;
+    if facts.secure_scheme.is_empty() || !scheme.eq_ignore_ascii_case(&facts.secure_scheme) {
+        return None;
+    }
     let auth = rest.split(['/', '?', '#']).next()?;
     let (host, port) = if let Some(v6) = auth.strip_prefix('[') {
         let (h, tail) = v6.split_once(']')?;
         match tail.strip_prefix(':') {
             Some(p) => (h, p.parse().ok()?),
-            None => (h, 443),
+            None => (h, facts.default_port),
         }
     } else {
         match auth.rsplit_once(':') {
             Some((h, p)) => (h, p.parse().ok()?),
-            None => (auth, 443),
+            None => (auth, facts.default_port),
         }
     };
     Some((host.to_ascii_lowercase(), port))
@@ -137,8 +162,11 @@ fn authority(url: &str) -> Option<(String, u16)> {
 /// query (the head target).
 fn reached(target: &str, desc: &OpenDesc<'_>) -> String {
     let origin_end = target
-        .strip_prefix("https://")
-        .and_then(|r| r.find(['/', '?', '#']).map(|i| i + "https://".len()))
+        .split_once("://")
+        .and_then(|(scheme, r)| {
+            r.find(['/', '?', '#'])
+                .map(|i| i + scheme.len() + "://".len())
+        })
         .unwrap_or(target.len());
     let path = String::from_utf8_lossy(desc.head_target);
     if path.is_empty() {
@@ -192,10 +220,10 @@ impl Conns for HttpsConns {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .push((need.0, url.clone()));
-        let at = authority(&target).ok_or(ConnError::Refused)?;
+        let at = authority(&target, &self.facts).ok_or(ConnError::Refused)?;
         // A need whose config names its target dials that target and no other.
         if let Some(d) = declared_target {
-            if authority(&d).as_ref() != Some(&at) {
+            if authority(&d, &self.facts).as_ref() != Some(&at) {
                 return Err(ConnError::Refused);
             }
         }
@@ -288,14 +316,15 @@ impl DeclaredConns for HttpsConns {
     ) -> Result<(), ConnError> {
         let unresolved = (!spec.target_from.is_empty() && target.is_none())
             || (!spec.trust_from.is_empty() && trust.is_none());
-        let answer = if spec.transport != "http" || unresolved {
-            Err(ConnError::Refused)
-        } else {
-            Ok(Declared {
-                target: target.map(str::to_owned),
-                trust: trust.map(str::to_owned),
-            })
-        };
+        let answer =
+            if spec.transport.is_empty() || spec.transport != self.facts.transport || unresolved {
+                Err(ConnError::Refused)
+            } else {
+                Ok(Declared {
+                    target: target.map(str::to_owned),
+                    trust: trust.map(str::to_owned),
+                })
+            };
         let result = answer.as_ref().map(|_| ()).map_err(|e| *e);
         if result.is_ok() {
             self.slab.declare(owner, need);
@@ -320,6 +349,6 @@ impl DeclaredConns for HttpsConns {
     }
 
     fn serves_scheme(&self, transport: &str) -> bool {
-        transport == "http"
+        !transport.is_empty() && transport == self.facts.transport
     }
 }

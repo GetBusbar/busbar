@@ -52,7 +52,8 @@
 //!   that states none is not called (0 crossings); one that states it is awaited on a real ticket.
 //!
 //! THE CONNECTION TABLE (ARCHITECT, "SUITE CONNECTIONS"): a plugin whose Statement declares a
-//! need the table serves (`tcp`: `host:port`, `unix:/path`) is bound, on each leg, to a connection
+//! need the table serves (its stream transport, `stand_in.json`: `host:port` or a local socket
+//! path) is bound, on each leg, to a connection
 //! table of its own built the same way ([`Subject::conns`], the loader's test table
 //! [`TcpConns`](crate::tcp_conns::TcpConns) over the leg dispatcher's conn waker), so a networked
 //! plugin dials the REAL local endpoint its `conformance.json` settings name, through the host
@@ -69,7 +70,7 @@
 //! linked (`WrongKind`) and dropped in (`ManifestKind`); its instance's connection over a need it
 //! never declared is refused (`UndeclaredNeed`), and one instance's use of another's connection is
 //! refused (`NotOwner`) (`red.rs`); the door with a `ready` that fails refuses the boot with the
-//! plugin's text; a networked door (the real one, or restated with a `tcp` need) bound to serve with
+//! plugin's text; a networked door (the real one, or restated with a stream need) bound to serve with
 //! no connection table is refused at bind, naming the plugin. And `BUSBAR_CONFORMANCE_RED=count` perturbs the both-ways arm itself, so the CI
 //! step can require that the suite FAILS when a count moves.
 //!
@@ -144,7 +145,7 @@ pub struct Subject {
     pub inputs: serde_json::Value,
     /// THE HOST CONNECTOR the suite binds a networked plugin over (`conformance_suite! { …, host: …
     /// }`): busbar's own connector, composed as the root composes it ([`Host`]). `None`: the
-    /// loader's test table ([`TcpConns`], plain `tcp` only).
+    /// loader's test table ([`TcpConns`], its stream transport only).
     pub host: Option<Host>,
     /// TEST TRUST ANCHORS (CA certificates, PEM) for the HOST connector's TLS
     /// (`conformance_suite! { …, tls: … }`): never handed to the plugin.
@@ -348,7 +349,8 @@ impl Subject {
     #[must_use]
     pub fn far_ends(&self) -> Option<Arc<dyn busbar_contract::conn::DeclaredConns>> {
         let ends = self.inputs.get("far_ends")?.as_array()?;
-        let table = crate::https_conns::HttpsConns::new();
+        let table =
+            crate::https_conns::HttpsConns::framing(crate::stand_in::FramedFacts::stand_in());
         for e in ends {
             let url = e["url"]
                 .as_str()
@@ -385,16 +387,16 @@ impl Subject {
     }
 
     /// THE LEG'S CONNECTION TABLE, built the same way for the linked and the dropped-in leg: the
-    /// loader's test table ([`TcpConns`]) waking a parked read's ticket through `d`'s conn waker,
-    /// when the Statement declares a need and the table serves every one it declares (`tcp`; a need
-    /// naming no transport asks for none). `None` when it declares no need (bound as before), or a
-    /// need over a scheme the table does not serve (`http`, `https`, ...: the host connector's
-    /// framing, which the test table has not; bound with no table, as before). `upgrade_secure` is
-    /// refused: the table secures no stream (it names no TLS library).
+    /// loader's test table ([`TcpConns`], standing in for the stream transport `stand_in.json`
+    /// names) waking a parked read's ticket through `d`'s conn waker, when the Statement declares a
+    /// need and the table serves every one it declares (a need naming no transport asks for none).
+    /// `None` when it declares no need (bound as before), or a need over a scheme the table does
+    /// not serve (a framed one: the host connector's framing, which the test table has not; bound
+    /// with no table, as before). `upgrade_secure` is refused: the table secures no stream (it
+    /// names no TLS library).
     ///
-    /// With a HOST connector ([`Subject::host`]) every need, over any scheme it serves (`tcp`,
-    /// `http`, `https`, …), binds over it, built the same way for each leg; its TLS trusts the
-    /// subject's [`Subject::anchors`].
+    /// With a HOST connector ([`Subject::host`]) every need, over any scheme it serves, binds over
+    /// it, built the same way for each leg; its TLS trusts the subject's [`Subject::anchors`].
     ///
     /// # Panics
     /// Test anchors are named with no host connector to trust them.
@@ -411,7 +413,7 @@ impl Subject {
             self.anchors.is_none(),
             "conformance_suite!'s `tls:` anchors are the HOST connector's: name its `host:` too"
         );
-        let table = TcpConns::new(d.conn_waker());
+        let table = TcpConns::serving(crate::stand_in::StreamFacts::stand_in(), d.conn_waker());
         let served = needs
             .iter()
             .all(|n| n.transport.is_empty() || table.serves_scheme(&n.transport));
@@ -1671,7 +1673,8 @@ pub fn red_ready(s: &Subject) {
     });
 }
 
-/// The real door restated with one outbound `tcp` need, its target its own (the RED arm's subject
+/// The real door restated with one outbound need over the stream double's transport
+/// (`stand_in.json`), its target its own (the RED arm's subject
 /// for a door that declares none).
 fn with_an_outbound_need(real: Door) -> Door {
     use busbar_contract::abi::host::conn::connector::{Need, DIRECTION_OUTBOUND, KEEP_NAMED};
@@ -1680,13 +1683,17 @@ fn with_an_outbound_need(real: Door) -> Door {
         ptr: std::ptr::null(),
         len: 0,
     };
-    const TCP: &str = "tcp";
+    let stream: &'static str = Box::leak(
+        crate::stand_in::StreamFacts::stand_in()
+            .transport
+            .into_boxed_str(),
+    );
     let needs: &'static [Need] = Box::leak(Box::new([Need {
         direction: DIRECTION_OUTBOUND,
         egress_class: 0,
         transport: AbiStr {
-            ptr: TCP.as_ptr(),
-            len: TCP.len(),
+            ptr: stream.as_ptr(),
+            len: stream.len(),
         },
         auth: NONE,
         target_from: NONE,
@@ -1732,7 +1739,7 @@ fn connection_fixture(
 /// **RED: a networked door bound to serve with NO connection table is refused, naming the plugin**
 /// (Q-P4-3). A door that declares a need is bound as the kernel serves it but with no table
 /// ([`bind`]: [`ConnTable::NoNeeds`]), linked and dropped in, and refused at bind with
-/// [`LoadError::NoConnectionTable`]; a door that declares none is restated with one `tcp` need (as
+/// [`LoadError::NoConnectionTable`]; a door that declares none is restated with one stream need (as
 /// [`red_ready`] restates its `ready`) and bound linked. The GREEN twins: the same door bound as a
 /// PROBE binds, and the honest door binds over the suite's own table ([`Subject::bind`]).
 ///
