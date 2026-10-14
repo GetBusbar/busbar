@@ -141,7 +141,7 @@ fn every_dialect() -> Shaping {
 /// RED: any far dialect's request goes out with another (or no) `user-agent`, the foreign default
 /// moves, or a pinned version string is edited without touching this table.
 #[test]
-fn test_egress_ua_versions_are_pinned_and_present() {
+fn every_dialects_egress_user_agent_version_is_pinned_and_present() {
     let s = every_dialect();
     let pinned = [
         ("claude", "Anthropic/Python 0.39.0"),

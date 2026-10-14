@@ -277,7 +277,7 @@ fn sealed_attempt_ms(
 ///
 /// RED: the sealed member carries the model's 10000 ms (or nothing) instead of its pool's 50 ms.
 #[test]
-fn test_member_override_wins_over_model_default() {
+fn a_members_attempt_timeout_wins_over_its_models_default() {
     let egress = sealed_timeouts();
     assert_eq!(
         sealed_attempt_ms(&egress, "fast", "patient"),
@@ -335,7 +335,7 @@ fn test_empty_cands_uses_model_default() {
 /// RED: one freed slot wakes both waiters, hands out a second slot, or loses the wake so neither
 /// (or only the first) ever proceeds.
 #[tokio::test]
-async fn queue_two_waiters_one_freed_permit_wakes_exactly_one() {
+async fn the_queue_frees_one_permit_to_exactly_one_of_two_waiters() {
     let permits = std::sync::Arc::new(MemberPermits::new([(A, 1)]));
     let held = permits.try_acquire(A).expect("the one slot");
     let (woke, mut wakes) = tokio::sync::mpsc::unbounded_channel();

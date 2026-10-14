@@ -1024,7 +1024,8 @@ async fn test_role_bound_principal_governed_like_a_virtual_key() {
     let answer = |credential: &'static str, pool: &'static str| {
         let (auth, app, pools) = (Arc::clone(&auth), Arc::clone(&app), pools.clone());
         async move {
-            let headers = bearer(credential);
+            // The test module judges the credential handed beside the head, never the head's own line.
+            let headers = axum::http::HeaderMap::new();
             let head = ChainHead::of_parts("POST", "/v1/chat/completions", &headers);
             let verdict = AuthMiddleware::run_chain_on_request_path(
                 &auth,

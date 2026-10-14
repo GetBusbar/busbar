@@ -630,7 +630,7 @@ fn test_lane_state_by_model_default_cell_untouched_zero_cooldown_reports_healthy
 /// RED: the door read seam ignores the walk's park depth (reads 0 while parked, or keeps 1 after
 /// the leave), or the scrape renders a value other than the live depth its read seam reports.
 #[test]
-fn test_scrape_gauges_pool_queued_reads_live_depth() {
+fn the_scrapes_pool_queued_gauge_reads_the_live_depth() {
     use busbar_kernel::plane_host::{set_pool_queued_depth, ConfigTables, EngineTablesView};
     register_planes();
     init();
