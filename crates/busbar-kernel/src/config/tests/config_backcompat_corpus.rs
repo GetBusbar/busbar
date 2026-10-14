@@ -39,7 +39,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use super::{resolve, DeployCfg, ProviderDef, DEFAULT_PROTOCOL};
+use super::{resolve, DeployCfg, ProviderDef};
 
 /// The directory holding the corpus configs and their blessed golden snapshots.
 fn corpus_dir() -> PathBuf {
@@ -60,7 +60,7 @@ fn corpus_configs() -> Vec<PathBuf> {
 /// A minimal `ProviderDef` for every provider a corpus config's `providers:` map names. `resolve`
 /// refuses a deployment provider with no catalog entry, so it needs a def per name — but the
 /// billing/limits surface never reads any provider FIELD, so a single fixed protocol/base_url def
-/// (the grammar's default protocol) per name is faithful. Built by deserialize so it stays valid as `ProviderDef` gains fields.
+/// (an opaque dialect name: the merge names none) per name is faithful. Built by deserialize so it stays valid as `ProviderDef` gains fields.
 fn defs_for(deploy: &DeployCfg) -> HashMap<String, ProviderDef> {
     // `providers` is `pub(crate)`; this test compiles inside busbar-core, so it reads it directly.
     deploy
@@ -68,7 +68,7 @@ fn defs_for(deploy: &DeployCfg) -> HashMap<String, ProviderDef> {
         .keys()
         .map(|name| {
             let def: ProviderDef = serde_yaml::from_str(&format!(
-                "{{ protocol: {DEFAULT_PROTOCOL}, base_url: \"https://provider.invalid\" }}"
+                "{{ protocol: proto-a, base_url: \"https://provider.invalid\" }}"
             ))
             .expect("the fixed ProviderDef literal parses");
             (name.clone(), def)
