@@ -1457,14 +1457,14 @@
     },
     {
      "kind": "test",
-     "ref": "test_fallback_openai_404_is_json_no_amzn_headers",
+     "ref": "test_fallback_chat_completions_404_is_json_no_amzn_headers",
      "proves": "fallback_error_response per inferred protocol (openai)",
      "source": "curated",
      "status": "mapped"
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "oracle-cell:http.crosscut|api-prefix|data, oracle-cell:http.crosscut|unknown-path|anthropic-beta, oracle-cell:http.crosscut|unknown-path|bare, test:resolver_table, test:test_api_root_unmatched_paths_speak_the_admin_envelope, test:test_fallback_bedrock_404_is_native_envelope_with_amzn_headers, test:test_fallback_openai_404_is_json_no_amzn_headers"
+   "verdict_detail": "oracle-cell:http.crosscut|api-prefix|data, oracle-cell:http.crosscut|unknown-path|anthropic-beta, oracle-cell:http.crosscut|unknown-path|bare, test:resolver_table, test:test_api_root_unmatched_paths_speak_the_admin_envelope, test:test_fallback_bedrock_404_is_native_envelope_with_amzn_headers, test:test_fallback_chat_completions_404_is_json_no_amzn_headers"
   },
   {
    "id": "PB-31",

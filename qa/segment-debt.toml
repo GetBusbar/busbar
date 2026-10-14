@@ -341,13 +341,6 @@ dialect = "anthropic"
 owner = "kernel-neutrality lane"
 
 [[segment-debt]]
-file = "crates/busbar-kernel/src/tests/tests.rs"
-line = 426
-text = "async fn test_fallback_openai_404_is_json_no_amzn_headers() {"
-dialect = "openai"
-owner = "kernel-neutrality lane"
-
-[[segment-debt]]
 file = "crates/busbar/src/root/door_steps.rs"
 line = 1339
 text = "\"anthropic_adaptive_thinking\","

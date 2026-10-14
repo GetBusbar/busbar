@@ -183,7 +183,7 @@ pub static SEED: &[(&str, &[SeededCheck])] = &[
         ("test", "resolver_table", "the detect ladder rungs: headers, SigV4 prefix, path suffixes, catch-all"),
         ("test", "test_api_root_unmatched_paths_speak_the_admin_envelope", "/api paths get the frozen admin envelope"),
         ("test", "test_fallback_bedrock_404_is_native_envelope_with_amzn_headers", "fallback_error_response per inferred protocol (bedrock)"),
-        ("test", "test_fallback_openai_404_is_json_no_amzn_headers", "fallback_error_response per inferred protocol (openai)"),
+        ("test", "test_fallback_chat_completions_404_is_json_no_amzn_headers", "fallback_error_response per inferred protocol (openai)"),
     ]),
     ("PB-31", &[
         ("test", "confinement_rejects_hook_out_of_namespace", "/hooks/{owner} confinement"),
