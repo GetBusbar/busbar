@@ -124,53 +124,71 @@ fn the_scope_matrix_matches_the_enforced_one_verbatim() {
     );
 }
 
-/// The table test: `required_scope` reproduces every one of the 66 pinned 1.5.5 admin operations,
-/// and the table's own read-only/full split is exactly 34/32.
+/// Every admin operation 1.5.5 published, read off the 1.5.5 document in the oracle corpus
+/// (`testing/shadow-oracle/fixtures/openapi-1.5.5.json`): `(method, path, x-busbar-required-scope)`.
+fn operations_1_5_5() -> Vec<(String, String, Scope)> {
+    const OPENAPI_1_5_5: &str =
+        include_str!("../../../../testing/shadow-oracle/fixtures/openapi-1.5.5.json");
+    let doc: serde_json::Value =
+        serde_json::from_str(OPENAPI_1_5_5).expect("the 1.5.5 admin document is JSON");
+    let paths = doc["paths"].as_object().expect("the document has paths");
+    let mut ops = Vec::new();
+    for (path, item) in paths {
+        for (method, op) in item.as_object().expect("a path item is an object") {
+            if !matches!(
+                method.as_str(),
+                "get" | "head" | "post" | "put" | "patch" | "delete"
+            ) {
+                continue;
+            }
+            let scope = match op["x-busbar-required-scope"].as_str() {
+                Some("read-only") => Scope::ReadOnly,
+                Some("full") => Scope::Full,
+                other => panic!("{method} {path}: 1.5.5 states no known scope ({other:?})"),
+            };
+            ops.push((method.to_ascii_uppercase(), path.clone(), scope));
+        }
+    }
+    ops
+}
+
+/// The table test: `required_scope` reproduces every one of the 66 1.5.5 admin operations, read off
+/// the 1.5.5 document, and the document's own read-only/full split is exactly 34/32.
 #[test]
 fn required_scope_matches_every_pinned_admin_operation() {
+    let ops = operations_1_5_5();
     assert_eq!(
-        ADMIN_SCOPE_TABLE.len(),
+        ops.len(),
         66,
         "the 1.5.5 admin API had exactly 66 operations at the tag"
     );
-    let read_only = ADMIN_SCOPE_TABLE
-        .iter()
-        .filter(|o| o.scope == Scope::ReadOnly)
-        .count();
-    let full = ADMIN_SCOPE_TABLE
-        .iter()
-        .filter(|o| o.scope == Scope::Full)
-        .count();
+    let read_only = ops.iter().filter(|o| o.2 == Scope::ReadOnly).count();
+    let full = ops.iter().filter(|o| o.2 == Scope::Full).count();
     assert_eq!(read_only, 34, "34 read-only operations");
     assert_eq!(full, 32, "32 full operations");
 
-    for entry in ADMIN_SCOPE_TABLE {
+    for (method, path, scope) in &ops {
         assert_eq!(
-            admin_required_scope(entry.method, entry.path),
-            entry.scope,
-            "{} {}",
-            entry.method,
-            entry.path
+            admin_required_scope(method, path),
+            *scope,
+            "{method} {path}"
         );
     }
 }
 
-/// Every path in the table is `ADMIN_PREFIX`-rooted and every method is one of the five HTTP verbs
-/// the admin API actually uses — a sanity check on the table's own shape, independent of
+/// Every path in the 1.5.5 document is `ADMIN_PREFIX`-rooted and every method is one of the five
+/// HTTP verbs the admin API actually uses — a sanity check on the data's own shape, independent of
 /// `required_scope`.
 #[test]
 fn admin_scope_table_rows_are_well_formed() {
-    for entry in ADMIN_SCOPE_TABLE {
+    for (method, path, _) in operations_1_5_5() {
         assert!(
-            entry.path.starts_with(ADMIN_PREFIX),
-            "{} is not ADMIN_PREFIX-rooted",
-            entry.path
+            path.starts_with(ADMIN_PREFIX),
+            "{path} is not ADMIN_PREFIX-rooted"
         );
         assert!(
-            matches!(entry.method, "GET" | "POST" | "PUT" | "PATCH" | "DELETE"),
-            "unexpected method {} on {}",
-            entry.method,
-            entry.path
+            matches!(method.as_str(), "GET" | "POST" | "PUT" | "PATCH" | "DELETE"),
+            "unexpected method {method} on {path}"
         );
     }
 }

@@ -827,6 +827,7 @@ name = "busbar-kernel-scope"
 version = "1.6.0"
 dependencies = [
  "busbar-contract",
+ "serde_json",
 ]
 
 [[package]]
