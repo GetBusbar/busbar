@@ -5871,3 +5871,240 @@ done
         );
     }
 }
+
+/// THE BUDGET DOWNGRADE AT THE DOOR'S `$` ADMISSION (coverage map rows 475-477, F25 REHOME): a
+/// group budget scoped to a pool that declares `on_exhaust: downgrade` re-routes an admission that
+/// would exhaust it onto its `downgrade_to` pool, charged there; a downgrade chain that comes back
+/// on itself ends in the plain budget refusal at the last pool it reached; and a downgrade never
+/// takes a key past its pool grant. Each unit is one `DoorSteps` of the plane serving the `pools`
+/// map, routed over the pool it named and charged by the door's own admission step.
+mod budget_downgrade {
+    use std::collections::BTreeMap;
+    use std::sync::Arc;
+
+    use busbar_contract::caps::{OriginKind, PrincipalId, ReasonCode};
+    use busbar_contract::records::{ScopeRef, VirtualKey};
+    use busbar_kernel::config::groups::{LimitCfg, LimitMetric, LimitWindow, OnExhaust};
+    use busbar_kernel::governance::{GovState, MemoryStore, NewKeySpec};
+    use busbar_kernel::plane_driver::{EndPost, PlaneMoney};
+    use busbar_kernel::state::App;
+    use busbar_kernel::teller::UnitCtx;
+
+    use crate::root::door_steps::{door_facts, DoorCaller, DoorFacts, DoorPools, DoorSteps};
+    use crate::root::plane_node::{Node, NodeEndPost};
+
+    /// The three tiers a downgrade walks, in the order the tests name them.
+    const FIRST_TIER: &str = "first-tier";
+    const SECOND_TIER: &str = "second-tier";
+    const THIRD_TIER: &str = "third-tier";
+    /// The group every key is bound to, and the flat per-request fee in cents.
+    const GROUP: &str = "team";
+    const FEE_CENTS: i64 = 10;
+
+    /// A daily budget of `amount` cents scoped to pool `scope`, downgrading to `to` when exhausted.
+    fn downgrading(scope: &str, amount: u64, to: &str) -> LimitCfg {
+        LimitCfg {
+            metric: LimitMetric::Budget,
+            amount,
+            per: Some(LimitWindow::Day),
+            scope: Some(ScopeRef::pool(scope)),
+            on_exhaust: Some(OnExhaust::Downgrade),
+            downgrade_to: Some(ScopeRef::pool(to)),
+            admission: None,
+            on_exhaustion: None,
+        }
+    }
+
+    /// One governed deployment: a key in [`GROUP`] (whose limits are `limits`) reaching
+    /// `allowed_pools`, the governance book, the generation, and the door's money steps.
+    struct Deployment {
+        app: Arc<App>,
+        key: Arc<VirtualKey>,
+        money: PlaneMoney,
+        facts: DoorFacts,
+        pools: DoorPools,
+    }
+
+    fn deployment(limits: Vec<LimitCfg>, allowed_pools: Option<Vec<String>>) -> Deployment {
+        let gov =
+            Arc::new(GovState::new(Arc::new(MemoryStore::new()), None).expect("a governance book"));
+        let group = busbar_kernel::config::GroupCfg {
+            parent: None,
+            enabled: true,
+            limits,
+            ..Default::default()
+        };
+        let groups = BTreeMap::from([(GROUP.to_string(), group.clone())]);
+        let cost = busbar_kernel::cost::CostModel::resolve_parts(None, FEE_CENTS, &groups);
+        let (key, _secret) = gov
+            .create_key(
+                NewKeySpec {
+                    name: "dev".to_string(),
+                    allowed_pools,
+                    group: Some(GROUP.to_string()),
+                    ..Default::default()
+                },
+                1_700_000_000,
+            )
+            .expect("create key");
+        gov.hydrate_budgets(&cost, 0).expect("hydrate");
+        let app = busbar_kernel::test_support::TestApp::new()
+            .group(GROUP, group)
+            .governance(Arc::clone(&gov))
+            .cost(cost)
+            .build();
+        let post = Arc::new(NodeEndPost::new(Arc::new(Node::new())));
+        Deployment {
+            app,
+            key: Arc::new(key),
+            money: PlaneMoney::new(gov, post as Arc<dyn EndPost>),
+            // The plane serving the `pools` map: the empty plane key, its pools its labels.
+            facts: door_facts("", &[], &[], &[], "call", Vec::new()),
+            pools: DoorPools::default(),
+        }
+    }
+
+    /// ONE UNIT routed over `pool` (its one member `m`), through the door's `$` admission step: the
+    /// pool its dispatch follows once admitted, or the refusal's reason and the words it renders.
+    fn admit(
+        deployment: &Deployment,
+        unit: u64,
+        pool: &str,
+    ) -> Result<String, (ReasonCode, Option<String>)> {
+        let steps = DoorSteps::new(
+            &deployment.facts,
+            &deployment.pools,
+            Arc::new(|_: &str| None),
+            Arc::clone(&deployment.app),
+            Some(&deployment.money),
+            DoorCaller {
+                principal: PrincipalId::new(deployment.key.id.as_str()),
+                key: Some(Arc::clone(&deployment.key)),
+                open: false,
+                arrived: busbar_kernel::store::now(),
+                records: None,
+                depth: 0,
+                credential: None,
+            },
+        );
+        steps.lock().routed = Some((pool.to_string(), vec!["m".to_string()]));
+        let ctx = UnitCtx {
+            key: busbar_contract::UnitKey::new(unit),
+            origin: OriginKind::Client,
+            session: None,
+            generation: busbar_kernel::registry::Generation::FIRST,
+            admin_listener: false,
+            kernel_verb_only: false,
+        };
+        match steps.charge(&ctx, &deployment.key) {
+            Ok(_) => Ok(steps.routed().map(|(label, _)| label).unwrap_or_default()),
+            Err(refusal) => Err((refusal.reason(), steps.lock().refused.1.clone())),
+        }
+    }
+
+    /// BUDGET EXHAUSTION DOWNGRADES THE POOL.
+    ///
+    /// Legacy: the retiring engine crate's `src/engine/tests/ingress_integration_tests.rs::test_budget_exhaustion_downgrades_pool`
+    /// (coverage map row 475, REHOME). 1.5.5 behaviour pinned: a 25-cent daily budget on the first
+    /// tier at a 10-cent fee admits two units there; the third, which would reach 30 > 25, is
+    /// DOWNGRADED rather than refused — admitted and charged on the `downgrade_to` pool, which the
+    /// dispatch then follows, so the caller keeps working on the cheaper tier.
+    ///
+    /// RED: the third admission refused over budget (the downgrade unserved), or admitted with its
+    /// dispatch left on the exhausted tier.
+    #[test]
+    fn budget_exhaustion_downgrades_to_the_downgrade_pool() {
+        let governed = deployment(vec![downgrading(FIRST_TIER, 25, SECOND_TIER)], None);
+        for unit in 0..2 {
+            assert_eq!(
+                admit(&governed, unit, FIRST_TIER),
+                Ok(FIRST_TIER.to_string()),
+                "admission {unit} is under the first tier's cap: no downgrade"
+            );
+        }
+        assert_eq!(
+            admit(&governed, 2, FIRST_TIER),
+            Ok(SECOND_TIER.to_string()),
+            "the exhausting admission is downgraded, not refused, and its dispatch follows the \
+             charge to the downgrade pool"
+        );
+    }
+
+    /// A DOWNGRADE CYCLE TERMINATES THROUGH THE REVISIT GUARD.
+    ///
+    /// Legacy: the retiring engine crate's `src/engine/tests/ingress_integration_tests.rs::test_downgrade_cycle_terminates_via_the_revisit_guard`
+    /// (coverage map row 476, REHOME). 1.5.5 behaviour pinned: first tier (one 10-cent request a
+    /// day) downgrades to the second, the second (already exhausted) to the third, the third (also
+    /// exhausted) back to the second. The first unit is admitted on the first tier; the second
+    /// walks first -> second -> third, the revisit of the second is refused by the guard, and the
+    /// caller gets the plain budget refusal naming the THIRD tier — never a loop, a panic, a second
+    /// charge on the second tier, or an admission.
+    ///
+    /// RED: the chain stops a hop early (the refusal names the first or the second tier), loops,
+    /// or admits the unit.
+    #[test]
+    fn a_downgrade_cycle_terminates_through_the_revisit_guard() {
+        let governed = deployment(
+            vec![
+                downgrading(FIRST_TIER, 10, SECOND_TIER),
+                downgrading(SECOND_TIER, 0, THIRD_TIER),
+                downgrading(THIRD_TIER, 0, SECOND_TIER),
+            ],
+            None,
+        );
+        assert_eq!(
+            admit(&governed, 0, FIRST_TIER),
+            Ok(FIRST_TIER.to_string()),
+            "the first tier's one-request budget admits once"
+        );
+        let refused = admit(&governed, 1, FIRST_TIER);
+        let Err((reason, words)) = refused else {
+            panic!("a cyclic downgrade chain must end in a refusal, not an admission: {refused:?}");
+        };
+        assert_eq!(
+            reason,
+            ReasonCode::OverBudget,
+            "the plain budget refusal once the cycle is detected"
+        );
+        let words = words.unwrap_or_default();
+        assert!(
+            words.contains(&format!("pool '{THIRD_TIER}'")),
+            "the chain walks first -> second -> third before the revisit guard breaks it, so the \
+             refusal names the third tier: {words}"
+        );
+    }
+
+    /// A DOWNGRADE NEVER BYPASSES THE KEY'S POOL GRANT.
+    ///
+    /// Legacy: the retiring engine crate's `src/engine/tests/ingress_integration_tests.rs::test_downgrade_never_bypasses_pool_acl`
+    /// (coverage map row 477, REHOME). 1.5.5 behaviour pinned: a key granted the first tier alone
+    /// is admitted there twice; the exhausting third admission re-runs the grant on the downgrade
+    /// pool, which the key may not reach, so it falls back to the plain budget refusal for the
+    /// first tier and never lands on the second.
+    ///
+    /// RED: the exhausting admission lands on the second tier (the grant bypassed), or its refusal
+    /// names a pool the key may not reach.
+    #[test]
+    fn a_downgrade_never_bypasses_the_keys_pool_grant() {
+        let governed = deployment(
+            vec![downgrading(FIRST_TIER, 25, SECOND_TIER)],
+            Some(vec![FIRST_TIER.to_string()]),
+        );
+        for unit in 0..2 {
+            assert_eq!(
+                admit(&governed, unit, FIRST_TIER),
+                Ok(FIRST_TIER.to_string())
+            );
+        }
+        let refused = admit(&governed, 2, FIRST_TIER);
+        let Err((reason, words)) = refused else {
+            panic!("a grant-blocked downgrade must fall back to the budget refusal: {refused:?}");
+        };
+        assert_eq!(reason, ReasonCode::OverBudget, "the plain budget refusal");
+        let words = words.unwrap_or_default();
+        assert!(
+            !words.contains(SECOND_TIER),
+            "the refusal leaks no pool the key may not reach: {words}"
+        );
+    }
+}

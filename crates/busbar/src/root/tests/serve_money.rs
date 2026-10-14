@@ -60,7 +60,7 @@ const TEST_PLANE: &str = "plane-driver-test-plane";
 /// [`governed`], the key bound to a group whose all-time budget is `budget` cents, the test plane
 /// charging one cent per request (`None`: no group, no fee).
 fn governed_with(instance: &'static str, keys_chain: bool, budget: Option<u64>) -> Governed {
-    governed_full(instance, keys_chain, budget, Screen::Nothing, None)
+    governed_full(instance, keys_chain, budget, Screen::Nothing, None, None)
 }
 
 /// What a governed deployment's `hooks:` screen.
@@ -143,7 +143,7 @@ fn governed_hooked(
     budget: Option<u64>,
     screen: Screen<'_>,
 ) -> Governed {
-    governed_full(instance, keys_chain, budget, screen, None)
+    governed_full(instance, keys_chain, budget, screen, None, None)
 }
 
 /// The node a composition's units are driven on, and the book it is already bound to.
@@ -160,17 +160,19 @@ fn governed_over(
     budget: Option<u64>,
     on: Option<BoundNode>,
 ) -> Governed {
-    governed_full(instance, keys_chain, budget, Screen::Nothing, on)
+    governed_full(instance, keys_chain, budget, Screen::Nothing, on, None)
 }
 
 /// [`governed_with`] with both: `screen` configured, and its units driven on `on` (or on a node of
-/// its own bound to a fresh memory-buffered book).
+/// its own bound to a fresh memory-buffered book). `flat_fee`: with no budget, the flat card's
+/// per-request fee in cents (`None`: one cent).
 fn governed_full(
     instance: &'static str,
     keys_chain: bool,
     budget: Option<u64>,
     screen: Screen<'_>,
     on: Option<BoundNode>,
+    flat_fee: Option<i64>,
 ) -> Governed {
     // The dispatcher serves its instances the composition's host services (`unit.nest` among
     // them), as the boot's does.
@@ -208,7 +210,7 @@ fn governed_full(
         .into_iter()
         .collect();
     let cost = match budget {
-        None => CostModel::flat(1),
+        None => CostModel::flat(flat_fee.unwrap_or(1)),
         Some(_) => {
             let fees: busbar_kernel::config::PlaneFeesMap = [(
                 TEST_PLANE.to_string(),
@@ -888,6 +890,80 @@ async fn the_boot_composition_serves_a_dropped_in_door_plane_in_every_build() {
         .requests;
     assert_eq!(requests, 1, "its request was charged at admission");
     assert_eq!(post.open_units(), 0, "its node facts closed at its end");
+}
+
+/// AN UNGROUPED KEY IS AUTHENTICATED BUT UNLIMITED: ADMISSION NEVER BLOCKS IT (G3 by-design guard).
+///
+/// Legacy: the retiring engine crate's `src/engine/tests/ingress_integration_tests.rs::test_ungrouped_key_is_authed_but_unlimited_admission_never_blocks`
+/// (coverage map row 376, REHOME). 1.5.5 behaviour pinned: a governed key bound to no group carries
+/// no budget, request or token cap (its charge chain is its own attribution bucket alone), so the
+/// real limit engine admits the same key 500 times (the legacy `ADMITS`) on the governance book the
+/// served door charges, its spend accruing without a ceiling to 500 x the 30-cent flat fee; and
+/// with all of that spent, the served door still admits the key's next unit. The old home showed
+/// one admission.
+///
+/// RED: a default cap on an ungrouped key (an admission blocked on the book, or the door refusing
+/// the next unit over budget or rate limited), or an admission that stops charging the fee (spend
+/// short of 500 x 30).
+#[tokio::test]
+async fn an_ungrouped_key_is_authed_but_unlimited_and_admission_never_blocks() {
+    const ADMITS: u64 = 500;
+    const FEE_CENTS: i64 = 30;
+    let _one = PUBLISHING.lock().await;
+    let deployment = governed_full(
+        "serve-money-ungrouped",
+        true,
+        None,
+        Screen::Nothing,
+        None,
+        Some(FEE_CENTS),
+    );
+    assert!(
+        deployment.key.group.is_none(),
+        "precondition: the key under test carries no group"
+    );
+    let at = busbar_kernel::store::now();
+    for admitted in 0..ADMITS {
+        deployment
+            .gov
+            .try_admit(&deployment.app.cost, &deployment.key, "", at)
+            .unwrap_or_else(|blocked| {
+                panic!(
+                    "an ungrouped key is authed but UNLIMITED: admission #{admitted} must not \
+                     block, got {blocked:?}"
+                )
+            });
+    }
+    let spend = || {
+        deployment
+            .gov
+            .usage_for(&deployment.app.cost, &deployment.key.id, at)
+            .expect("a read")
+            .expect("the key exists")
+            .spend_cents
+    };
+    assert_eq!(
+        spend(),
+        i64::try_from(ADMITS).expect("fits") * FEE_CENTS,
+        "an ungrouped key accrues spend without any cap ever blocking its admission"
+    );
+    // The served door, over the same book, still admits the key after all of that spend.
+    let (status, body) = deployment.post("/call/local-counted", true).await;
+    assert_eq!(
+        (status, body.as_str()),
+        (200, "ping"),
+        "the door admits an ungrouped key whatever it has spent"
+    );
+    assert_eq!(
+        deployment.requests(),
+        ADMITS + 1,
+        "the door's admission was counted"
+    );
+    assert_eq!(
+        deployment.money.open_units(),
+        0,
+        "its money facts closed at its end"
+    );
 }
 
 /// The framer that answers a claim, for the compositions here: the neutral frame door (the plugin

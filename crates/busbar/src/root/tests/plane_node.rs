@@ -74,7 +74,7 @@ impl Fixture {
     fn upstream(self) -> MockResponse {
         match self {
             Fixture::StreamedOk => MockResponse::Sse {
-                events: sse_events(),
+                events: stream_events(),
                 abort_at_index: None,
             },
             _ => MockResponse::Ok {
@@ -107,7 +107,7 @@ impl Fixture {
     }
 }
 
-fn sse_events() -> Vec<String> {
+fn stream_events() -> Vec<String> {
     vec![
         serde_json::json!({"id": "chatcmpl-root", "object": "chat.completion.chunk",
                            "created": 0, "model": LANE,
@@ -5004,4 +5004,882 @@ fn the_exit_arm_seals_no_money_figure_into_the_record() {
         "the record carries counts, never the settled money figure: {:?}",
         record.usage.lines
     );
+}
+
+// ---------------------------------------------------------------------------------------------
+// F25 REHOME (coverage map rows 378, 381, 584, 585, 629, 688): the legacy plane's money cells, on
+// the node
+// ---------------------------------------------------------------------------------------------
+
+/// A rig whose key is bound (when `limit` is set) to one group carrying `limit`, priced by `card`
+/// (`None`: billing off) at a flat fee of `fee` cents, its one lane `lane` (handed the scripted
+/// upstream's origin) in pool [`POOL`], the upstream answering each of `replies`, the last first.
+async fn rig_over(
+    limit: Option<busbar_kernel::config::groups::LimitCfg>,
+    card: Option<std::collections::BTreeMap<String, busbar_kernel::config::RateEntryCfg>>,
+    fee: i64,
+    lane: impl FnOnce(&str) -> LaneSpec,
+    replies: Vec<MockResponse>,
+) -> Rig {
+    plane::install_test_seams();
+    busbar_kernel::snapshot::init();
+    let state = Arc::new(MockServerState::new());
+    for reply in replies {
+        state.push(reply);
+    }
+    let server = MockServer::new(Arc::clone(&state)).await;
+    let group = unique("root-node-over");
+    let groups: std::collections::BTreeMap<String, busbar_kernel::config::GroupCfg> = limit
+        .map(|limit| {
+            (
+                group.clone(),
+                busbar_kernel::config::GroupCfg {
+                    parent: None,
+                    enabled: true,
+                    limits: vec![limit],
+                    ..Default::default()
+                },
+            )
+        })
+        .into_iter()
+        .collect();
+    let signer = busbar_kernel::governance::signing::TokenSigner::from_secret_bytes(
+        &SIGNING_SECRET,
+        busbar_kernel::governance::signing::DEFAULT_KID,
+    );
+    let gov = Arc::new(
+        busbar_kernel::governance::GovState::new_with_signer(
+            Arc::new(busbar_kernel::governance::MemoryStore::new()),
+            None,
+            Some(signer),
+        )
+        .expect("governance"),
+    );
+    let spec = |name: &str| busbar_kernel::governance::NewKeySpec {
+        name: name.to_string(),
+        group: groups.keys().next().cloned(),
+        ..Default::default()
+    };
+    let (key, token) = gov
+        .mint_signed(spec("root-node-over"), LIVE_EXP, MINTED_AT)
+        .expect("mint the deployment's key");
+    let (_, expired_token) = gov
+        .mint_signed(spec("root-node-over-expired"), DEAD_EXP, MINTED_AT)
+        .expect("mint the expired key");
+    let cost = busbar_kernel::cost::CostModel::resolve_parts(card.as_ref(), fee, &groups);
+    gov.hydrate_budgets(&cost, 0).expect("hydrate");
+    let app = TestApp::new()
+        .keys_chain()
+        .lane(lane(&server.base_url()))
+        .pool(POOL, &[(0, 1)])
+        .governance(gov)
+        .cost(cost)
+        .build();
+    Rig {
+        app,
+        key: Arc::new(key),
+        token: token.expose_secret().clone(),
+        expired_token: expired_token.expose_secret().clone(),
+        server,
+        upstream: state,
+        charged_at: busbar_kernel::store::now(),
+        group,
+    }
+}
+
+/// The rig's one lane, as [`rig`] configures it, over the upstream at `origin`.
+fn the_lane(origin: &str) -> LaneSpec {
+    LaneSpec::new(LANE, PROTO, origin).provider("test")
+}
+
+/// A daily budget of `amount` cents on the key's group.
+fn budget_per_day(amount: u64) -> busbar_kernel::config::groups::LimitCfg {
+    busbar_kernel::config::groups::LimitCfg {
+        metric: busbar_kernel::config::groups::LimitMetric::Budget,
+        amount,
+        per: Some(busbar_kernel::config::groups::LimitWindow::Day),
+        scope: None,
+        on_exhaust: None,
+        downgrade_to: None,
+        admission: None,
+        on_exhaustion: None,
+    }
+}
+
+/// One chat arrival on the rig, as the plane's arrivals hand it to the node.
+fn chat_arrival(rig: &Rig, fixture: Fixture) -> plane::WalkArrival {
+    plane::WalkArrival {
+        host: rig.host(),
+        gov: rig.gov(),
+        proto: PROTO,
+        operation: busbar_contract::operation::OpVerb::CHAT,
+        caller_token: None,
+        headers: json_headers(),
+        query: None,
+        body: fixture.body(),
+        path: None,
+    }
+}
+
+/// A PRE-ROUTING REFUSAL NEVER REFUNDS A PRIOR CHARGE.
+///
+/// Legacy: the retiring engine crate's `src/engine/tests/ingress_integration_tests.rs::test_pre_routing_failure_does_not_refund_prior_charge`
+/// (coverage map row 378, REHOME). 1.5.5 behaviour pinned: a key carrying one legitimately charged
+/// request (one flat fee, admitted on the real admission charge) sends a body that is not JSON; the
+/// arrival step refuses it 400 before any model resolves, it was never charged, so it refunds
+/// nothing: the prior request and its fee stay on the key's bucket. Beside
+/// [`the_loop_leaves_the_money_where_the_shipped_plane_leaves_it`], which never drives `Malformed`.
+///
+/// RED: the pre-routing 400 finished through the refunding arm, eroding the prior charge (the
+/// requests or the spend read 0), which a repeated malformed body would turn into unbounded
+/// overspend past a hard cap.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_pre_routing_refusal_leaves_a_prior_charge_intact() {
+    let rig = rig(Fixture::Malformed).await;
+    rig.app
+        .governance
+        .clone()
+        .expect("governance is configured")
+        .try_admit(&rig.app.cost, &rig.key, "", rig.charged_at)
+        .expect("an uncapped chain admits the prior request");
+    let resp = drive(&rig, Fixture::Malformed).await;
+    let observed = observe(&rig, resp).await;
+    rig.server.shutdown().await;
+    assert_eq!(
+        field(&observed, "status"),
+        "400",
+        "a malformed body is a pre-routing 400"
+    );
+    assert_eq!(
+        field(&observed, "ledger_requests"),
+        "1",
+        "the prior request is still on the key's bucket"
+    );
+    assert_eq!(
+        field(&observed, "ledger_spend_cents"),
+        FEE_CENTS.to_string(),
+        "the pre-routing refusal refunded nothing: the prior fee stands"
+    );
+}
+
+/// THE ADMISSION CHECK READS THE ARRIVAL'S WINDOW, NOT THE CLOCK (#29, admission side).
+///
+/// Legacy: the retiring engine crate's `src/engine/tests/ingress_integration_tests.rs::test_admit_check_uses_charged_at_window_not_clock`
+/// (coverage map row 381, REHOME). 1.5.5 behaviour pinned: a key's group holds one fee a day and
+/// that fee was already charged into a PAST day. A unit arriving in that past day is refused over
+/// budget (429) against the window it arrived in, where the spend lives; a unit arriving now, in
+/// today's empty window, is admitted and served. The old home pinned the window's rows only.
+///
+/// RED: the admission check keyed off a fresh clock read: the past-day unit is admitted against
+/// today's empty window (and its charge overshoots the cap of the day it arrived in).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_admission_check_reads_the_arrival_window_and_not_the_clock() {
+    use busbar_kernel::governance::SECS_PER_DAY;
+    let rig = rig_over(
+        Some(budget_per_day(FEE_CENTS.unsigned_abs())),
+        None,
+        FEE_CENTS,
+        the_lane,
+        (0..4).map(|_| Fixture::BufferedOk.upstream()).collect(),
+    )
+    .await;
+    let past_day = EPOCH;
+    assert_ne!(
+        past_day / SECS_PER_DAY,
+        busbar_kernel::store::now() / SECS_PER_DAY,
+        "precondition: the arrival day is not today"
+    );
+    let gov = rig
+        .app
+        .governance
+        .clone()
+        .expect("governance is configured");
+    gov.try_admit(&rig.app.cost, &rig.key, "", past_day)
+        .expect("the first request fits the cap exactly");
+    assert_eq!(
+        gov.derived_bucket_usage(
+            &rig.app.cost,
+            &format!("group:{}@day", rig.group),
+            "day",
+            true,
+            past_day
+        )
+        .expect("usage read")
+        .spend_cents,
+        FEE_CENTS,
+        "precondition: the arrival day's window is at its cap"
+    );
+
+    let node = Node::new();
+    let refused = node
+        .answer_arriving_at(
+            plane::handed(chat_arrival(&rig, Fixture::BufferedOk), None),
+            Arrived::at(past_day * 1_000, 0),
+        )
+        .await;
+    assert_eq!(
+        refused.status(),
+        StatusCode::TOO_MANY_REQUESTS,
+        "the unit is refused against the window it arrived in, where the spend lives"
+    );
+    let served = node
+        .answer(plane::handed(chat_arrival(&rig, Fixture::BufferedOk), None))
+        .await;
+    let status = served.status();
+    let _ = axum::body::to_bytes(served.into_body(), usize::MAX).await;
+    rig.server.shutdown().await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "today's window is empty, so a unit arriving now is admitted"
+    );
+}
+
+/// AN ALIASED LANE PRICES AT THE RATE CARD UNDER ITS CONFIG NAME.
+///
+/// Legacy: the retiring engine crate's `src/engine/tests/usage_tap_tests.rs::ledger_prices_an_aliased_lane_at_the_rate_card`
+/// (coverage map row 629, REHOME; mapped to `serve_money.rs`, whose dropped-in test plane composes
+/// no egress and has no lane alias to serve, so it is pinned here on the node-axis plane's served
+/// unit). 1.5.5 behaviour pinned: the card is keyed by the CONFIG model name; a lane whose
+/// `upstream_model` differs is sent the wire name but ledgered and priced under its config name, so
+/// 600 input and 400 output tokens at 1,000 micro-units each land as 1,000 tokens on the key's
+/// group bucket and derive 100 cents against the card.
+///
+/// RED: the accrual keyed by the wire model, which the card cannot name: the spend derives 0 and a
+/// budget-capped group goes uncapped on token cost.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_aliased_lane_prices_at_the_rate_card_under_its_config_name() {
+    const WIRE: &str = "m0-on-the-wire";
+    let card = std::collections::BTreeMap::from([(
+        LANE.to_string(),
+        busbar_kernel::config::RateEntryCfg {
+            input_utok: 1000.0,
+            output_utok: 1000.0,
+            cache_read_utok: 0.0,
+            cache_write_utok: 0.0,
+            ..Default::default()
+        },
+    )]);
+    let answered = || MockResponse::Ok {
+        status: reqwest::StatusCode::OK,
+        body: serde_json::json!({
+            "id": "chatcmpl-aliased", "object": "chat.completion", "created": 0, "model": WIRE,
+            "choices": [{"index": 0, "finish_reason": "stop",
+                         "message": {"role": "assistant", "content": "hello"}}],
+            "usage": {"prompt_tokens": 600, "completion_tokens": 400, "total_tokens": 1000}
+        }),
+    };
+    let rig = rig_over(
+        Some(budget_per_day(1_000_000_000)),
+        Some(card),
+        0,
+        |origin| the_lane(origin).upstream_model(WIRE),
+        (0..4).map(|_| answered()).collect(),
+    )
+    .await;
+    let resp = drive(&rig, Fixture::BufferedOk).await;
+    assert_eq!(resp.status(), StatusCode::OK, "the aliased lane served it");
+    let _ = axum::body::to_bytes(resp.into_body(), usize::MAX).await;
+    tokio::task::yield_now().await;
+    rig.server.shutdown().await;
+    let sent: serde_json::Value = serde_json::from_slice(
+        &rig.upstream
+            .get_last_request_body()
+            .expect("the upstream was dialled"),
+    )
+    .expect("the upstream was sent JSON");
+    assert_eq!(
+        sent["model"], WIRE,
+        "precondition: the lane is ALIASED, or the fault is masked"
+    );
+    let derived = rig
+        .app
+        .governance
+        .clone()
+        .expect("governance is configured")
+        .derived_bucket_usage(
+            &rig.app.cost,
+            &format!("group:{}@day", rig.group),
+            "day",
+            true,
+            rig.charged_at,
+        )
+        .expect("usage read");
+    assert_eq!(derived.tokens, 1000, "the tokens are ledgered either way");
+    assert_eq!(
+        derived.spend_cents, 100,
+        "1,000 tokens at 1,000 micro-units each price at the card under the config name"
+    );
+}
+
+/// The first frame of the streamed answer: one content delta, no usage.
+const FIRST_FRAME: &str = r#"{"id":"chatcmpl-root","object":"chat.completion.chunk","created":0,"model":"m0","choices":[{"index":0,"delta":{"role":"assistant","content":"hello"}}]}"#;
+
+/// What a drive that keeps the unit's finish observed: the status line, the bytes the caller
+/// drained before the body ended or broke, and the tap's late reading of what the unit consumed.
+struct Reached {
+    status: StatusCode,
+    drained: Vec<u8>,
+    reported: Option<Reported>,
+}
+
+/// One streamed chat through the real loop on a node of its own, its finish kept: the caller's
+/// answer is drained frame by frame (a broken body ends the drain), then the tap is read.
+async fn drive_reading_the_tap(rig: &Rig) -> Reached {
+    use http_body_util::BodyExt as _;
+    let node = Node::new();
+    let arrived = node.arrived();
+    let (principal, op_class, _proto, build) =
+        plane::handed(chat_arrival(rig, Fixture::StreamedOk), None);
+    let key = node.next_key.mint();
+    let meter = Arc::new(AccrualMeter::new());
+    let (units, route, finish) = build((node.resolver(), arrived.secs()));
+    let hold = busbar_kernel::inflight::arrival_hold(&node.kernel, &node.door, principal.clone());
+    let slot = node
+        .inflight
+        .insert(busbar_kernel::inflight::Enter {
+            key,
+            origin: OriginKind::Client,
+            session: None,
+            admin_listener: false,
+            zero_hold_tick: false,
+            arrival: hold,
+            now: arrived.ms(),
+        })
+        .expect("the uncapped table takes the unit");
+    let ctx = UnitCtx {
+        key,
+        origin: OriginKind::Client,
+        session: None,
+        generation: busbar_kernel::registry::Generation::FIRST,
+        admin_listener: false,
+        kernel_verb_only: false,
+    };
+    let driven = Driven {
+        node: &node,
+        units: &*units,
+        route: &*route,
+        op_class,
+        principal: &principal,
+        arrived,
+        history: None,
+        sealing: Mutex::new(None),
+    };
+    let _ended = busbar_kernel::teller::run_unit_async(
+        &node.kernel,
+        &driven,
+        &ctx,
+        busbar_kernel::teller::Run {
+            cell: slot.cell(),
+            parent: None,
+            leases: slot.leases(),
+            gauge: &node.gauge,
+            canary: &node.canary,
+            meter: &meter,
+        },
+        &driven,
+    )
+    .await;
+    node.inflight.remove(key);
+    let (answer, late) = finish();
+    let response = answer
+        .expect("the unit posted its terminal")
+        .into_response();
+    let status = response.status();
+    let mut body = response.into_body();
+    let mut drained = Vec::new();
+    while let Some(frame) = body.frame().await {
+        let Ok(frame) = frame else { break };
+        if let Ok(data) = frame.into_data() {
+            drained.extend_from_slice(&data);
+        }
+    }
+    tokio::task::yield_now().await;
+    Reached {
+        status,
+        drained,
+        reported: late.and_then(|read| read()),
+    }
+}
+
+/// THE TAP REPORTS THE END A STATUS LINE CANNOT.
+///
+/// Legacy: the retiring engine crate's `src/unit/tests/chain.rs::the_tap_reports_the_end_a_status_line_cannot`
+/// (coverage map row 688, REHOME). 1.5.5 behaviour pinned for the two tap fixtures — a 2xx stream
+/// cut after one content frame, and a 2xx transfer that failed before its first byte: both answer
+/// the caller under a 200 status line and neither completes, so what the response actually reached
+/// is the cut (the one relayed frame, no terminator) or nothing at all; the tap's report names the
+/// lane that served it (the legacy lane 0, the config lane `m0`), bills what streamed before the
+/// end — zero tokens, no usage frame arrived — and the key's ledger holds no tokens and no metering
+/// row. The old home pinned the cut reasons and partial flags on the relay alone.
+///
+/// RED: the tap reports nothing, keys the report to another lane, bills tokens that never streamed,
+/// or the caller is handed an end (a terminator) the far end never reached.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_tap_reports_the_end_a_status_line_cannot() {
+    let tap_cases = [
+        (
+            "a stream cut after its first frame",
+            MockResponse::SseTransportError {
+                ok_events: vec![FIRST_FRAME.to_string()],
+            },
+            true,
+        ),
+        (
+            "a transfer that failed before its first byte",
+            MockResponse::SseTransportError {
+                ok_events: Vec::new(),
+            },
+            false,
+        ),
+    ];
+    for (label, cut, relayed) in tap_cases {
+        let rig = rig_over(None, None, FEE_CENTS, the_lane, vec![cut; 8]).await;
+        let reached = drive_reading_the_tap(&rig).await;
+        let observed = observe(&rig, Response::new(axum::body::Body::empty())).await;
+        rig.server.shutdown().await;
+        assert_eq!(
+            reached.status,
+            StatusCode::OK,
+            "{label}: the status line says success"
+        );
+        let text = String::from_utf8_lossy(&reached.drained);
+        assert!(
+            !text.contains("[DONE]"),
+            "{label}: the answer never completed, and the caller is not told it did: {text}"
+        );
+        assert_eq!(
+            text.contains("hello"),
+            relayed,
+            "{label}: the caller has exactly what was relayed before the end: {text}"
+        );
+        let (usage, _fee_count, lane) = reached
+            .reported
+            .unwrap_or_else(|| panic!("{label}: the tap reported nothing at all"));
+        assert_eq!(
+            lane, LANE,
+            "{label}: the report is keyed to the lane that served it"
+        );
+        assert_eq!(
+            usage.usage_units.values().sum::<u64>(),
+            0,
+            "{label}: no usage frame streamed before the end, so there is no token to bill"
+        );
+        assert_eq!(field(&observed, "ledger_tokens"), "0", "{label}");
+        assert_eq!(field(&observed, "metering_rows"), "", "{label}");
+    }
+}
+
+/// What one served rerank left on the two books: its status, the governance ledger's counts for
+/// the serving lane (as the unit's counts row), the key's derived spend in cents on the governance
+/// ledger (`Err`: the read refused, #42), and the second (durable) book's rows for the unit.
+struct RerankBooks {
+    status: StatusCode,
+    governance: crate::root::durability::UnitCounts,
+    spend: Result<i64, String>,
+    rows: Vec<crate::root::durability::Posting>,
+}
+
+impl RerankBooks {
+    /// The search units the durable book's row carries.
+    fn durable_units(&self) -> Option<u64> {
+        self.rows
+            .first()
+            .and_then(|row| row.counts.as_ref())
+            .and_then(|counts| counts.classes.get(SEARCH_UNITS))
+            .copied()
+    }
+}
+
+/// ONE RERANK SERVED THROUGH THE REAL WALK, as [`a_served_rerank_puts_identical_search_units_on_both_books`]
+/// serves it: a `lane_dialect` lane whose upstream answers `upstream`, the unit arriving in
+/// `arrival_dialect` (by its URL when `by_path`, else by its body's `model`), the governance side
+/// priced by `cost`, the node's book over `history`.
+async fn serve_rerank(
+    lane_dialect: &'static str,
+    arrival_dialect: &'static str,
+    by_path: bool,
+    upstream: serde_json::Value,
+    cost: busbar_kernel::cost::CostModel,
+    history: crate::root::kernel::PinnedHistory,
+) -> RerankBooks {
+    declare_test_classes();
+    plane::install_test_seams();
+    busbar_kernel::snapshot::init();
+    let state = Arc::new(MockServerState::new());
+    for _ in 0..4 {
+        state.push(MockResponse::Ok {
+            status: reqwest::StatusCode::OK,
+            body: upstream.clone(),
+        });
+    }
+    let server = MockServer::new(Arc::clone(&state)).await;
+    let gov = Arc::new(
+        busbar_kernel::governance::GovState::new(
+            Arc::new(busbar_kernel::governance::MemoryStore::new()),
+            None,
+        )
+        .expect("governance"),
+    );
+    let (key, _secret) = gov
+        .create_key(
+            busbar_kernel::governance::NewKeySpec {
+                name: unique("root-rerank-books"),
+                ..Default::default()
+            },
+            MINTED_AT,
+        )
+        .expect("create key");
+    gov.hydrate_budgets(&cost, 0).expect("hydrate");
+    let app = TestApp::new()
+        .keys_chain()
+        .lane(LaneSpec::new(RERANK_LANE, lane_dialect, &server.base_url()))
+        .pool(RERANK_POOL, &[(0, 1)])
+        .governance(Arc::clone(&gov))
+        .cost(cost)
+        .build();
+    let key = Arc::new(key);
+    let (body, path) = if by_path {
+        let mut facts = path_facts(arrival_dialect, Fixture::BufferedOk);
+        facts.operation = busbar_contract::operation::OpVerb::RERANK;
+        facts.model = RERANK_POOL.to_string();
+        (
+            Bytes::from_static(br#"{"query":"which is fastest","documents":["a","b","c"]}"#),
+            Some(facts),
+        )
+    } else {
+        (
+            Bytes::from(
+                serde_json::to_vec(&serde_json::json!({
+                    "model": RERANK_POOL,
+                    "query": "which is fastest",
+                    "documents": ["a", "b", "c"]
+                }))
+                .expect("the rerank body serializes"),
+            ),
+            None,
+        )
+    };
+    let node = Node::new();
+    let pinned = history.clone();
+    let book = crate::root::durability::node_book_over(Box::new(move || Some(pinned.clone())));
+    node.bind_book(Arc::clone(&book.durability));
+    let arrival = plane::WalkArrival {
+        host: busbar_kernel::plane_host::engine_host(&app),
+        gov: busbar_contract::records::PlaneRequestCtx {
+            key: Some(Arc::clone(&key)),
+        },
+        proto: arrival_dialect,
+        operation: busbar_contract::operation::OpVerb::RERANK,
+        caller_token: None,
+        headers: json_headers(),
+        query: None,
+        body,
+        path,
+    };
+    let arrived = Arrived::at(EPOCH * 1_000, 0);
+    let unit = node.next_key.mint();
+    let (principal, op_class, _proto, build) = plane::handed(arrival, None);
+    let meter = Arc::new(AccrualMeter::new());
+    let (units, route, finish) = build((node.resolver(), EPOCH));
+    let hold = busbar_kernel::inflight::arrival_hold(&node.kernel, &node.door, principal.clone());
+    let slot = node
+        .inflight
+        .insert(busbar_kernel::inflight::Enter {
+            key: unit,
+            origin: OriginKind::Client,
+            session: None,
+            admin_listener: false,
+            zero_hold_tick: false,
+            arrival: hold,
+            now: arrived.ms(),
+        })
+        .expect("the uncapped table takes the unit");
+    let ctx = UnitCtx {
+        key: unit,
+        origin: OriginKind::Client,
+        session: None,
+        generation: busbar_kernel::registry::Generation::FIRST,
+        admin_listener: false,
+        kernel_verb_only: false,
+    };
+    let driven = Driven {
+        node: &node,
+        units: &*units,
+        route: &*route,
+        op_class,
+        principal: &principal,
+        arrived,
+        history: Some(&history),
+        sealing: Mutex::new(None),
+    };
+    let ended = busbar_kernel::teller::run_unit_async(
+        &node.kernel,
+        &driven,
+        &ctx,
+        busbar_kernel::teller::Run {
+            cell: slot.cell(),
+            parent: None,
+            leases: slot.leases(),
+            gauge: &node.gauge,
+            canary: &node.canary,
+            meter: &meter,
+        },
+        &driven,
+    )
+    .await;
+    node.inflight.remove(unit);
+    let (answer, late) = finish();
+    let response = answer
+        .expect("the served unit posted its terminal")
+        .into_response();
+    let status = response.status();
+    let seal = driven.take_seal(ctx.key);
+    let response = node.tail(
+        ended,
+        response,
+        late,
+        &principal,
+        arrived,
+        Some(&history),
+        seal,
+    );
+    let _body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("the served body drains");
+    server.shutdown().await;
+
+    let spend = gov
+        .usage_for(&app.cost, &key.id, EPOCH)
+        .map(|usage| usage.expect("the key exists").spend_cents)
+        .map_err(|refusal| format!("{refusal:?}"));
+    gov.flush_budgets();
+    let ledger = gov
+        .store()
+        .get_usage(
+            &key.id,
+            busbar_kernel::governance::budget_window(
+                busbar_kernel::governance::WINDOW_TOTAL,
+                EPOCH,
+            ),
+        )
+        .expect("the governance ledger reads");
+    let classes = ledger
+        .models
+        .iter()
+        .find(|row| row.model == RERANK_LANE)
+        .map(|row| {
+            row.usage_units
+                .iter()
+                .filter(|(_, count)| **count > 0)
+                .map(|(class, count)| (class.clone(), *count))
+                .collect::<std::collections::BTreeMap<_, _>>()
+        })
+        .unwrap_or_default();
+    RerankBooks {
+        status,
+        governance: crate::root::durability::UnitCounts {
+            lane: RERANK_LANE.to_string(),
+            fee_count: ledger.billable_requests,
+            classes,
+        },
+        spend,
+        rows: second_book_rows(&book),
+    }
+}
+
+/// The far end's rerank answer, billing `units` search units (`None`: it bills none).
+fn rerank_answer(units: Option<u64>) -> serde_json::Value {
+    let mut answer = serde_json::json!({
+        "id": "rr-1",
+        "results": [{"index": 0, "relevance_score": 0.9}]
+    });
+    if let Some(units) = units {
+        answer["meta"] = serde_json::json!({"billed_units": {"search_units": units}});
+    }
+    answer
+}
+
+/// The rerank fixture's two dialects, in the linked table's own spelling: the dialect its lane's
+/// provider speaks, and the URL-model dialect it arrives on.
+fn rerank_dialects() -> (&'static str, &'static str) {
+    let named = |key: &str| {
+        linked_dialect(
+            DIALECTS["rerank"][key]
+                .as_str()
+                .unwrap_or_else(|| panic!("the fixture names the rerank `{key}`")),
+        )
+    };
+    (named("provider"), named("path_dialect"))
+}
+
+/// A RERANK'S SEARCH UNITS REACH THE PRICE, ON BOTH BOOKS (item 134; #42's three arms).
+///
+/// Legacy: the retiring engine crate's `src/engine/tests/rerank_search_units_tests.rs::a_reranks_search_units_reach_the_price`
+/// (coverage map row 584, REHOME). 1.5.5 behaviour pinned, on a served rerank of the fixture's
+/// provider dialect: a card pricing `search_units` at 2,000 micro-units (0.2 cents) each derives 10
+/// cents for 50 units and 0 cents for 1 (a 5,000-document rerank no longer bills like a
+/// 1-document one, and one unit rounds to nothing); a present card silent about `search_units`
+/// REFUSES the read, never a silent 0; no card (billing off) reads 0. The durable book agrees cell
+/// by cell on every arm: 50 x and 1 x 2,000,000 nano-units settled, the silent card refused, the
+/// absent card a counts row with no figure. The old home pinned the 50-unit price and the silent
+/// card's refusal on the second book alone.
+///
+/// RED: the search units dropped or priced as a flat request (10 cents read 0), one unit rounded
+/// up, a silent card read as 0, billing off charging, or the two books disagreeing on any arm.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_reranks_search_units_reach_the_price_on_both_books() {
+    let (provider, _) = rerank_dialects();
+    let card = |entry: &str| {
+        let rates: std::collections::BTreeMap<String, busbar_kernel::config::RateEntryCfg> =
+            serde_yaml::from_str(&format!("{RERANK_LANE}: {entry}\n")).expect("the card parses");
+        busbar_kernel::cost::CostModel::resolve_parts(Some(&rates), 0, &Default::default())
+    };
+    let priced = format!("{{ units: {{ {SEARCH_UNITS}: 2000 }} }}");
+    let at = EPOCH * 1_000;
+    for (units, cents) in [(50_u64, 10_i64), (1, 0)] {
+        let books = serve_rerank(
+            provider,
+            provider,
+            false,
+            rerank_answer(Some(units)),
+            card(&priced),
+            rerank_history_on(RERANK_LANE, 0, Some(2_000_000)),
+        )
+        .await;
+        assert_eq!(books.status, StatusCode::OK, "{units} units: served");
+        assert_eq!(books.spend, Ok(cents), "{units} search units at 0.2 cents");
+        assert_eq!(
+            books.rows.first().map(|row| row.settled),
+            Some(i128::from(units) * 2_000_000),
+            "{units} units: the durable book settles them at the card"
+        );
+        every_cell_agrees(
+            "rerank, priced",
+            &books.rows,
+            &books.governance,
+            &rerank_history_on(RERANK_LANE, 0, Some(2_000_000)),
+            at,
+        )
+        .expect("both books price the rerank alike");
+    }
+
+    let silent = serve_rerank(
+        provider,
+        provider,
+        false,
+        rerank_answer(Some(50)),
+        card("{ input_utok: 1 }"),
+        rerank_history_on(RERANK_LANE, 0, None),
+    )
+    .await;
+    assert!(
+        silent.spend.is_err(),
+        "a present card silent about search_units REFUSES (#42), never a silent 0: {:?}",
+        silent.spend
+    );
+    assert!(
+        silent
+            .rows
+            .first()
+            .and_then(|row| row.refusal.as_deref())
+            .is_some_and(|why| why.contains(SEARCH_UNITS)),
+        "the durable book refuses the same class: {:?}",
+        silent.rows
+    );
+
+    let absent = crate::root::kernel::PinnedHistory::for_test(
+        Arc::new(busbar_kernel_ledger::cost::History::opening(
+            crate::root::kernel::card_from_config(
+                std::iter::empty::<(&str, busbar_contract::billing::RawTierRates)>(),
+                0,
+                false,
+            ),
+            0,
+        )),
+        busbar_kernel_ledger::cost::HistorySeq(0),
+    );
+    let off = serve_rerank(
+        provider,
+        provider,
+        false,
+        rerank_answer(Some(50)),
+        busbar_kernel::cost::CostModel::resolve_parts(None, 0, &Default::default()),
+        absent.clone(),
+    )
+    .await;
+    assert_eq!(off.spend, Ok(0), "no card: billing off reads 0");
+    assert_eq!(
+        off.durable_units(),
+        Some(50),
+        "billing off still keeps the counts"
+    );
+    every_cell_agrees(
+        "rerank, billing off",
+        &off.rows,
+        &off.governance,
+        &absent,
+        at,
+    )
+    .expect("both books read the rerank at nothing with billing off");
+}
+
+/// A SAME-DIALECT RERANK PUTS IDENTICAL SEARCH UNITS ON BOTH BOOKS (Q29, completing item 134).
+///
+/// Legacy: the retiring engine crate's `src/engine/tests/rerank_search_units_tests.rs::a_same_protocol_rerank_puts_identical_search_units_on_both_books`
+/// (coverage map row 585, REHOME). 1.5.5 behaviour pinned, for BOTH of the fixture's rerank
+/// dialects served same-dialect (its provider dialect arriving by body, and its URL-model dialect
+/// arriving by URL, each onto a lane of its own dialect): a far end billing 50 search units leaves
+/// 50 on the governance ledger and 50 on the durable book's row; a rerank that bills none books
+/// none on either (`None`, `None`). The old home served one cross-dialect rerank.
+///
+/// RED: a same-dialect relay that keeps no copy of the far end's body (neither book holds the
+/// units), a tap that reads token usage only (the durable book misses them), or a unit-less rerank
+/// that books a count.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_same_dialect_rerank_puts_identical_search_units_on_both_books() {
+    let (provider, by_url) = rerank_dialects();
+    let history = || rerank_history_on(RERANK_LANE, 3, Some(2_000_000));
+    let cost =
+        || busbar_kernel::cost::CostModel::resolve_parts(None, FEE_CENTS, &Default::default());
+    for (dialect, by_path) in [(provider, false), (by_url, true)] {
+        let billed = serve_rerank(
+            dialect,
+            dialect,
+            by_path,
+            rerank_answer(Some(RERANK_UNITS)),
+            cost(),
+            history(),
+        )
+        .await;
+        assert_eq!(billed.status, StatusCode::OK, "{dialect}: served");
+        assert_eq!(
+            billed.governance.classes.get(SEARCH_UNITS),
+            Some(&RERANK_UNITS),
+            "{dialect} -> {dialect}: the governance ledger holds the rerank's search units"
+        );
+        assert_eq!(
+            billed.durable_units(),
+            Some(RERANK_UNITS),
+            "{dialect} -> {dialect}: the durable book holds the rerank's search units"
+        );
+
+        let unbilled = serve_rerank(
+            dialect,
+            dialect,
+            by_path,
+            rerank_answer(None),
+            cost(),
+            history(),
+        )
+        .await;
+        assert_eq!(
+            (
+                unbilled.governance.classes.get(SEARCH_UNITS).copied(),
+                unbilled.durable_units()
+            ),
+            (None, None),
+            "{dialect}: no units, none booked"
+        );
+    }
 }

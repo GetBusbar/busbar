@@ -105,6 +105,8 @@ const HEAD: &[Field] = &[field(b"content-type", b"application/json")];
 
 /// The host's buffers for one `on_piece`.
 struct Piece {
+    /// The status code a piece flagged `PIECE_HAS_STATUS` carries (the far end's answer head).
+    status: u32,
     reply: Vec<u8>,
     units: [UnitCount; 8],
     fields: [OutField; 16],
@@ -114,6 +116,7 @@ struct Piece {
 impl Piece {
     fn new(reply_cap: usize) -> Box<Self> {
         Box::new(Self {
+            status: 200,
             reply: vec![0; reply_cap],
             units: [z(); 8],
             fields: [z(); 16],
@@ -136,7 +139,7 @@ impl Piece {
         (i.unit, i.from, i.flags, i.bytes) = (unit, from, flags, octets(bytes));
         (i.attempt_no, i.member, i.pool) = (attempt_no, text(b"claude"), text(b"p"));
         if flags & PIECE_HAS_STATUS != 0 {
-            i.status_code = 200;
+            i.status_code = self.status;
             (i.head_fields, i.head_fields_len) = (HEAD.as_ptr(), HEAD.len());
         }
         (i.reply_buf, i.reply_cap) = (self.reply.as_mut_ptr(), self.reply.len());
@@ -543,4 +546,161 @@ fn red_a_door_that_stops_counting_the_far_ends_units_answers_differently() {
     assert!(red_line.contains("units=[]"), "{red_line}");
     assert_ne!(Some(red_line), far_end(&honest));
     assert_ne!(red, honest);
+}
+
+/// The door brought up on [`SETTINGS`]: settings checked, opened, hydrated and started, as the
+/// script brings it up.
+fn opened(dispatcher: &Dispatcher) -> Plugin<Plane> {
+    let door = linked(dispatcher);
+    let mut validate = Frame::new(
+        ValidateIn {
+            head: in_head(),
+            settings: octets(SETTINGS),
+            err_buf: std::ptr::null_mut(),
+            err_cap: 0,
+        },
+        out_head(),
+    );
+    assert_eq!(
+        door.call(life::VALIDATE, &mut validate).outcome,
+        Outcome::Ready
+    );
+    let mut open_in: PlaneOpenIn = z();
+    open_in.open.head = in_head();
+    (open_in.open.generation, open_in.open.settings) = (1, octets(SETTINGS));
+    let mut open_out: PlaneOpenOut = z();
+    open_out.open.head = out_head();
+    let (called, _) = door.open(&mut Frame::new(open_in, open_out));
+    assert_eq!(called.outcome, Outcome::Ready, "the door opens");
+    for lifecycle in [slot::HYDRATE, slot::START] {
+        let mut generation = Frame::new(
+            GenIn {
+                head: in_head(),
+                generation: 1,
+            },
+            out_head(),
+        );
+        door.call(lifecycle, &mut generation);
+    }
+    door
+}
+
+/// A probe arrival for `unit`: the claim is the probe claim, no caller body.
+fn arrive_probe(door: &Plugin<Plane>, unit: u64) -> String {
+    let mut arrival: Frame<ArriveIn, ArriveOut> = Frame::new(z(), z());
+    (arrival.input.head, arrival.out.head) = (in_head(), out_head());
+    (arrival.input.unit, arrival.input.claim) = (unit, plane::CLAIM_PROBE);
+    (arrival.input.method, arrival.input.target) = (text(b"POST"), text(b"/v1/messages"));
+    let called = door.call(slot::ARRIVE, &mut arrival);
+    format!(
+        "arrive {:?} principal_required={}",
+        called.outcome,
+        arrival.out.principal_need == PRINCIPAL_REQUIRED
+    )
+}
+
+/// The far end's error answers the fee cases feed.
+const UPSTREAM_FAILED: &[u8] =
+    br#"{"type":"error","error":{"type":"api_error","message":"upstream failed"}}"#;
+const NOT_FOUND: &[u8] =
+    br#"{"type":"error","error":{"type":"not_found_error","message":"no such model"}}"#;
+
+/// The per-request fee unit as a transcript line spells it: the fee class, one, reported.
+fn fee_line() -> String {
+    format!("\"{}:1:true\"", plane_door::FEE_CLASS_INDEX)
+}
+
+/// One whole caller unit on a fresh door: arrive, attempt, the caller's body, then the far end's
+/// whole answer under `status`. Answers the attempt, body and far-end lines.
+fn one_unit(status: u32, answer: &'static [u8]) -> (String, String, String) {
+    let dispatcher = Dispatcher::new(DispatchConfig::default());
+    let door = opened(&dispatcher);
+    assert!(arrive(&door, 7, b"/v1/messages", CHAT).starts_with("arrive Ready"));
+    let mut piece = Piece::new(1024);
+    let attempt = piece.call(&door, 7, FROM_KERNEL, 0, b"", 1);
+    let body = piece.call(&door, 7, FROM_CALLER, PIECE_LAST, CHAT, 0);
+    piece.status = status;
+    let far = piece.call(
+        &door,
+        7,
+        FROM_FAR_END,
+        PIECE_HAS_STATUS | PIECE_LAST,
+        answer,
+        0,
+    );
+    (attempt, body, far)
+}
+
+/// THE FEE IS DECIDED BY THE LEG AND THE CLIENT-FACING STATUS (row 719).
+///
+/// Legacy: the retiring engine crate's `src/unit/tests/meter.rs::the_fee_is_decided_by_the_leg_and_the_client_facing_status`
+/// (coverage map row 719, REHOME). 1.5.5 behaviour pinned: one flat fee per delivered request that
+/// routed to a far end — a 2xx answer from the far end carries the fee unit; a far-end 502 and a
+/// post-admission 404 carry none; a leg that is not the caller's answer (the attempt and the body
+/// the door sends TO the far end, the kernel-verb side of a unit) carries none; and a breaker probe
+/// is no billable request, so its 2xx carries none either. `fee_unit()` in `plane_door.rs` is the
+/// one decider (2xx only, not a probe, not a far-end-bound leg).
+///
+/// RED: a door that bills the fee on any status (a 502 or a 404 carries the fee unit), on the
+/// far-end-bound legs, or on a probe's 2xx; or one that stops billing a delivered 2xx.
+#[test]
+fn the_fee_is_decided_by_the_leg_and_the_client_facing_status() {
+    let fee = fee_line();
+
+    let (attempt, body, delivered) = one_unit(200, ANSWER);
+    assert!(
+        delivered.contains("status=200") && delivered.contains(&fee),
+        "a 2xx delivered from the far end carries the one fee unit: {delivered}"
+    );
+    assert_eq!(
+        delivered.matches(&fee).count(),
+        1,
+        "exactly one fee unit: {delivered}"
+    );
+    for (leg, line) in [("attempt", &attempt), ("body", &body)] {
+        assert!(
+            line.contains("to_far_end=true") && line.ends_with("units=[]"),
+            "the {leg} leg goes TO the far end, so it is no delivered request and carries no \
+             fee: {line}"
+        );
+    }
+
+    for (status, answer, why) in [
+        (502, UPSTREAM_FAILED, "a failed transfer posts no fee"),
+        (404, NOT_FOUND, "a post-admission 404 is unbilled"),
+    ] {
+        let (_, _, far) = one_unit(status, answer);
+        assert!(
+            far.starts_with("Ready ") && !far.contains("status=200"),
+            "{why}: the far end's {status} is answered, never as a success: {far}"
+        );
+        assert!(!far.contains(&fee), "{why}: no fee unit: {far}");
+    }
+
+    // A breaker probe: one member, no caller. Its 2xx is the far end's own, and no billable request.
+    let dispatcher = Dispatcher::new(DispatchConfig::default());
+    let door = opened(&dispatcher);
+    assert_eq!(
+        arrive_probe(&door, 11),
+        "arrive Ready principal_required=false",
+        "a probe claim needs no principal"
+    );
+    let mut piece = Piece::new(1024);
+    let probe_attempt = piece.call(&door, 11, FROM_KERNEL, 0, b"", 1);
+    assert!(
+        probe_attempt.contains("to_far_end=true") && probe_attempt.ends_with("units=[]"),
+        "the probe's request goes to the far end and carries no fee: {probe_attempt}"
+    );
+    let probe_far = piece.call(
+        &door,
+        11,
+        FROM_FAR_END,
+        PIECE_HAS_STATUS | PIECE_LAST,
+        ANSWER,
+        0,
+    );
+    assert!(
+        probe_far.contains("status=200") && !probe_far.contains(&fee),
+        "a probe's 2xx is no billable request: {probe_far}"
+    );
 }
